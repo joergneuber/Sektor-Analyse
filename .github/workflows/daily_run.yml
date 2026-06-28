@@ -1,0 +1,30 @@
+name: Tägliche Aktien Analyse
+
+on:
+  schedule:
+    - cron: '0 20 * * *' # Läuft täglich um 20:00 Uhr UTC
+  workflow_dispatch:     # Erlaubt manuellen Start per Klick
+
+jobs:
+  run-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code abrufen
+        uses: actions/checkout@v3
+
+      - name: Python einrichten
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Bibliotheken installieren
+        run: |
+          pip install yfinance pandas google-api-python-client google-auth
+
+      - name: Analyse ausführen
+        run: python analyse.py
+
+      - name: Daten in Google Drive hochladen
+        env:
+          GDRIVE_JSON: ${{ secrets.GDRIVE_CREDENTIALS }}
+        run: python upload_to_drive.py
