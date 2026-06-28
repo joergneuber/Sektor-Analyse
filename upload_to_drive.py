@@ -1,35 +1,44 @@
 import os
-# Diese Zeile zwingt das Skript, immer im Verzeichnis zu suchen, wo es selbst liegt
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import json
-from google.oauth2 import service_account
+import pickle
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# Konfiguration
-FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+# Festlegen des Arbeitsverzeichnisses
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-def upload_file(filename):
-    # JSON-Creds aus dem Environment-Secret lesen
-    creds_json = os.getenv('GDRIVE_JSON')
-    if not creds_json:
-        raise Exception("GDRIVE_CREDENTIALS Secret nicht gefunden!")
+def get_drive_service():
+    # Lädt das Token aus dem GitHub Secret
+    token_json = os.getenv('GDRIVE_TOKEN')
+    if not token_json:
+        raise ValueError("Das Secret 'GDRIVE_TOKEN' wurde nicht gefunden.")
     
-    creds_dict = json.loads(creds_json)
-    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    service = build('drive', 'v3', credentials=creds)
+    # Erstellt die Credentials aus dem JSON-Inhalt
+    creds = Credentials.from_authorized_user_info(json.loads(token_json))
+    return build('drive', 'v3', credentials=creds)
 
-    file_metadata = {'name': filename, 'parents': [FOLDER_ID]}
-    media = MediaFileUpload(filename, mimetype='text/csv')
+def upload_file(filename, folder_id):
+    service = get_drive_service()
     
-    service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"Erfolgreich hochgeladen: {filename}")
+    file_metadata = {
+        'name': filename,
+        'parents': [folder_id]
+    }
+    
+    media = MediaFileUpload(filename, resumable=True)
+    
+    file = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
+    
+    print(f"Datei '{filename}' erfolgreich hochgeladen. ID: {file.get('id')}")
 
-# Dateien hochladen
-if __name__ == "__main__":
-    for f in ['Performance.csv', 'Setups.csv']:
-        if os.path.exists(f):
-            upload_file(f)
-        else:
-            print(f"Datei nicht gefunden: {f}")
+if __name__ == '__main__':
+    # HIER: Deine FOLDER_ID eintragen
+    FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL' 
+    
+    # Beispielaufruf für eine Datei, die analysiert wurde
+    # upload_file('deine_datei.csv', FOLDER_ID)
