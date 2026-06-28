@@ -21,8 +21,11 @@ jobs:
         run: |
           pip install yfinance pandas google-api-python-client google-auth
 
-      - name: Analyse ausführen
+     - name: Analyse ausführen
         run: python analyse.py
+
+      - name: Prüfen ob Dateien da sind
+        run: ls -l # Das zeigt dir im Log, ob die CSVs wirklich erstellt wurden
 
       - name: Daten in Google Drive hochladen
         env:
