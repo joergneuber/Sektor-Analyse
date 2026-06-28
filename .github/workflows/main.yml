@@ -1,0 +1,27 @@
+name: Tägliche Aktien Analyse
+on:
+  schedule:
+    - cron: '0 20 * * *' # Läuft täglich um 20:00 Uhr UTC
+  workflow_dispatch: # Ermöglicht dir den manuellen Start über einen Button
+
+jobs:
+  run-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code abrufen
+        uses: actions/checkout@v3
+      - name: Python einrichten
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Bibliotheken installieren
+        run: pip install yfinance pandas
+      - name: Skript starten
+        run: python analyse.py
+      - name: Ergebnisse hochladen
+        uses: actions/upload-artifact@v3
+        with:
+          name: Analysedaten
+          path: |
+            Performance.csv
+            Setups.csv
