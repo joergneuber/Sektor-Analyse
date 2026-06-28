@@ -1,5 +1,6 @@
 import os
 import json
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
