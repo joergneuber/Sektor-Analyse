@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # Konfiguration
-FOLDER_ID = 1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL
+FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 def upload_file(filename):
