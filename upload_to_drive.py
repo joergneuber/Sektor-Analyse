@@ -5,7 +5,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # Deine Ordner-ID: Kopiere sie aus der Adresszeile deines Drive-Ordners
-FOLDER_ID = https://drive.google.com/drive/my-drive
+FOLDER_ID = 'root'
 
 def upload_file(filename):
     # Holt das JSON aus dem GitHub-Geheimnis
