@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code abrufen
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Python einrichten
         uses: actions/setup-python@v4
