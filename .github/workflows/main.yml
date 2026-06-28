@@ -21,7 +21,8 @@ jobs:
 
       - name: Abhängigkeiten installieren
         run: |
-          pip install google-auth-oauthlib google-api-python-client google-auth-httplib2 yfinance pandas
+          python -m pip install --upgrade pip
+          pip install yfinance pandas google-auth-oauthlib google-api-python-client google-auth-httplib2
 
       - name: Analyse ausführen
         run: python analyse.py
