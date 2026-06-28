@@ -1,4 +1,6 @@
 import os
+print(f"Aktuelles Verzeichnis: {os.getcwd()}")
+print(f"Dateien in diesem Verzeichnis: {os.listdir('.')}")
 import json
 import pickle
 from google.oauth2.credentials import Credentials
