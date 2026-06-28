@@ -37,8 +37,15 @@ def upload_file(filename, folder_id):
     print(f"Datei '{filename}' erfolgreich hochgeladen. ID: {file.get('id')}")
 
 if __name__ == '__main__':
-    # HIER: Deine FOLDER_ID eintragen
+    # HIER: Trage deine FOLDER_ID ein (aus der URL deines Drive-Ordners)
     FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL' 
     
-    # Beispielaufruf für eine Datei, die analysiert wurde
-    # upload_file('deine_datei.csv', FOLDER_ID)
+    # Dateien, die analysiert wurden
+    dateien_zum_hochladen = ['Performance.csv', 'Setups.csv']
+    
+    for datei in dateien_zum_hochladen:
+        if os.path.exists(datei):
+            print(f"Lade {datei} hoch...")
+            upload_file(datei, FOLDER_ID)
+        else:
+            print(f"Warnung: Datei {datei} nicht gefunden!")
