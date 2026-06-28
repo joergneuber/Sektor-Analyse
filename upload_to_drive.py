@@ -4,23 +4,30 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# Deine Ordner-ID: Kopiere sie aus der Adresszeile deines Drive-Ordners
-FOLDER_ID = 'root'
+# Konfiguration
+FOLDER_ID = 'root' # Oder deine spezifische ID
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 def upload_file(filename):
-    # Holt das JSON aus dem GitHub-Geheimnis
-    creds_dict = json.loads(os.environ['GDRIVE_JSON'])
-    creds = service_account.Credentials.from_service_account_info(creds_dict)
+    # JSON-Creds aus dem Environment-Secret lesen
+    creds_json = os.getenv('GDRIVE_JSON')
+    if not creds_json:
+        raise Exception("GDRIVE_CREDENTIALS Secret nicht gefunden!")
+    
+    creds_dict = json.loads(creds_json)
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     service = build('drive', 'v3', credentials=creds)
 
-    file_metadata = {
-        'name': filename,
-        'parents': [FOLDER_ID]
-    }
+    file_metadata = {'name': filename, 'parents': [FOLDER_ID]}
     media = MediaFileUpload(filename, mimetype='text/csv')
+    
     service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Erfolgreich hochgeladen: {filename}")
 
+# Dateien hochladen
 if __name__ == "__main__":
-    upload_file('Performance.csv')
-    upload_file('Setups.csv')
-    print("Dateien erfolgreich in Google Drive hochgeladen.")
+    for f in ['Performance.csv', 'Setups.csv']:
+        if os.path.exists(f):
+            upload_file(f)
+        else:
+            print(f"Datei nicht gefunden: {f}")
