@@ -9,11 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code abrufen
-        uses: actions/checkout@v3
-      - name: Python einrichten
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
+                 python-version: '3.9'
       - name: Bibliotheken installieren
         run: pip install yfinance pandas
       - name: Skript starten
