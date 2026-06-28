@@ -2,8 +2,8 @@ name: Tägliche Aktien Analyse
 
 on:
   schedule:
-    - cron: '0 20 * * *' # Läuft täglich um 20:00 Uhr UTC
-  workflow_dispatch:     # Erlaubt manuellen Start per Klick
+    - cron: '0 20 * * *' 
+  workflow_dispatch:     
 
 jobs:
   run-analysis:
@@ -21,11 +21,8 @@ jobs:
         run: |
           pip install yfinance pandas google-api-python-client google-auth
 
-     - name: Analyse ausführen
+      - name: Analyse ausführen
         run: python analyse.py
-
-      - name: Prüfen ob Dateien da sind
-        run: ls -l # Das zeigt dir im Log, ob die CSVs wirklich erstellt wurden
 
       - name: Daten in Google Drive hochladen
         env:
