@@ -102,23 +102,27 @@ def analyze_a_setup(ticker, sektor, context):
         "CRV": "1:2"
     }
     
-# Marktstatus abrufen
+# 1. Marktstatus abrufen
 markt_status, markt_details = get_market_status()
 market_context = f"{markt_status} - {markt_details}"
 
-# Jetzt sind sektoren_map und get_perf bereits bekannt
+# 2. Performance berechnen
 perf_list = [get_perf(t, n) for t, n in sektoren_map.items()]
 df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
 
-# 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
+# 3. Hauptlogik - Analyse der Top-Sektoren
 print("Starte Analyse...")
 setups = []
 
-# 2. Jetzt erst die Schleife starten
-# ... hier steht dein Code, der durch die Sektoren loopt ...
-for index, row in df_perf.iterrows():
-    # ... hier wird jetzt market_context verwendet, und der Fehler ist weg:
-    setups.append(analyze_a_setup(t, row['Sektor'], market_context))
+# Wir gehen die Top-Sektoren durch
+for index, row in df_perf.head(2).iterrows():
+    sektor_name = row['Sektor']
+    ticker_key = row['Ticker']
+    
+    # HIER ist die innere Schleife, die 't' definiert:
+    for t in sektoren_aktien.get(ticker_key, [])[:3]:
+        # Jetzt kennt Python 't' und kann es an analyze_a_setup übergeben
+        setups.append(analyze_a_setup(t, sektor_name, market_context))
 
 df_setups = pd.DataFrame(setups)
 
