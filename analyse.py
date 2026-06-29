@@ -30,12 +30,25 @@ def get_market_status():
     return "Bullish", "Details..."
 
 def get_perf(ticker, name):
-    data = yf.Ticker(ticker).history(period="1mo")
-    score = (data['Close'].iloc[-1] / data['Close'].iloc[0]) - 1
-    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": score}
+    # Lade Daten für 90 Tage, um sicher 60 Handelstage abdecken zu können
+    data = yf.Ticker(ticker).history(period="90d")
+    
+    if len(data) < 60:
+        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
 
-def analyze_a_setup(ticker, sektor, context):
-    return {"Ticker": ticker, "Sektor": sektor, "Status": "Check"}
+    last_close = data['Close'].iloc[-1]
+    
+    # Berechne Performance für die Zeiträume
+    perf = {
+        "Ticker": ticker,
+        "Sektor": name,
+        "5T": (last_close / data['Close'].iloc[-5]) - 1,
+        "12T": (last_close / data['Close'].iloc[-12]) - 1,
+        "30T": (last_close / data['Close'].iloc[-30]) - 1,
+        "60T": (last_close / data['Close'].iloc[-60]) - 1,
+        "Rotation-Score": (last_close / data['Close'].iloc[-20]) - 1 # Beispiel für 1 Monat
+    }
+    return perf
 
 # 3. Hauptlogik
 print("Starte Analyse...")
