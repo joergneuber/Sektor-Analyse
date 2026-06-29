@@ -87,22 +87,22 @@ def analyze_a_setup(ticker, sektor, context):
     low_60 = hist['Low'].min()
     atr = (hist['High'] - hist['Low']).rolling(window=14).mean().iloc[-1]
     
-    # Kalkulationen
+    # 1. Kalkulation
     einstieg = round(last_close, 2)
     stop_loss = round(min(last_close - (atr * 2), low_60 * 0.98), 2)
-    
-    # TP1 bleibt konservativ für Teilgewinne
-    tp1 = round(einstieg + (einstieg - stop_loss), 2)
-    
-    # TP2 wird dynamisch: Das Maximum aus 2x Risiko ODER 60-Tage-Hoch
-    high_60 = hist['High'].max()
-    tp2 = round(max(einstieg + ((einstieg - stop_loss) * 2), high_60), 2)
-    
-    # CRV Dynamisch berechnen
     risiko = einstieg - stop_loss
-    gewinn = tp2 - einstieg
     
-    if risiko != 0:
+    # 2. TP1: Konservativ (1:1 Risiko)
+    tp1 = round(einstieg + risiko, 2)
+    
+    # 3. TP2: Dynamisch (Durchschnitt aus 2.5x Risiko und 60-Tage-Hoch)
+    # Dies sorgt dafür, dass nicht jedes TP2 den gleichen Abstand hat
+    high_60 = hist['High'].max()
+    tp2 = round((einstieg + (risiko * 2.5) + high_60) / 2, 2)
+    
+    # 4. CRV Berechnung (jetzt mit tatsächlichem TP2 Wert)
+    gewinn = tp2 - einstieg
+    if risiko > 0:
         crv_wert = round(gewinn / risiko, 1)
         crv_string = f"1:{crv_wert}"
     else:
