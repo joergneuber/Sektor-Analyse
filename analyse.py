@@ -81,7 +81,7 @@ def analyze_a_setup(ticker, sektor, context):
     hist = ticker_obj.history(period="60d")
     
     if hist.empty:
-        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A"}
+        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A", "Stop": "N/A", "TP1": "N/A", "TP2": "N/A", "CRV": "N/A"}
 
     last_close = hist['Close'].iloc[-1]
     low_60 = hist['Low'].min()
@@ -93,32 +93,31 @@ def analyze_a_setup(ticker, sektor, context):
     tp1 = round(einstieg + (einstieg - stop_loss), 2)
     tp2 = round(einstieg + ((einstieg - stop_loss) * 2), 2)
     
-    return {
-        "Ticker": ticker, "Name": name, "Sektor": sektor, 
-        "Einstieg": einstieg, "Begründung_Einstieg": "Einstieg zum aktuellen Schlusskurs",
-        "Stop": stop_loss, "Begründung_Stop": "Absicherung unter 60T-Tief und ATR-Puffer",
-        "TP1": tp1, "Begründung_TP1": "Teilgewinnmitnahme bei 1:1 Chance-Risiko-Verhältnis",
-        "TP2": tp2, "Begründung_TP2": "Vollständiger Ausstieg bei 1:2 Chance-Risiko-Verhältnis",
-        # Berechnung des CRV
-    # CRV = (Ziel - Einstieg) / (Einstieg - Stop)
+    # CRV Dynamisch berechnen
     risiko = einstieg - stop_loss
     gewinn = tp2 - einstieg
     
-    # Schutz vor Division durch Null
     if risiko != 0:
         crv_wert = round(gewinn / risiko, 1)
         crv_string = f"1:{crv_wert}"
     else:
         crv_string = "N/A"
-
+    
+    # Einziges Return-Statement am Ende
     return {
-        "Ticker": ticker, "Name": name, "Sektor": sektor, 
+        "Ticker": ticker, 
+        "Name": name, 
+        "Sektor": sektor, 
         "Einstieg": einstieg, 
+        "Begründung_Einstieg": "Einstieg zum aktuellen Schlusskurs",
         "Stop": stop_loss, 
+        "Begründung_Stop": "Absicherung unter 60T-Tief und ATR-Puffer",
         "TP1": tp1, 
-        "TP2": tp2,
-        "CRV": crv_string # Hier wird nun der dynamische Wert übergeben
-        }
+        "Begründung_TP1": "Teilgewinnmitnahme bei 1:1 Chance-Risiko-Verhältnis",
+        "TP2": tp2, 
+        "Begründung_TP2": "Vollständiger Ausstieg bei 1:2 Chance-Risiko-Verhältnis",
+        "CRV": crv_string
+    }
     
 # 1. Marktstatus abrufen
 markt_status, markt_details = get_market_status()
