@@ -27,24 +27,27 @@ sektoren_aktien = {
 
 # 2. Hilfsfunktionen - MÜSSEN AM LINKEN RAND STEHEN
 def get_market_status():
-    # Wir holen uns SPY für den Marktkontext
-    market = yf.Ticker("SPY")
-    hist = market.history(period="250d") # Genug Daten für EMA200
+    # ^GSPC ist das offizielle Ticker-Symbol für den S&P 500 bei Yahoo Finance
+    market = yf.Ticker("^GSPC")
+    hist = market.history(period="250d") 
     
     if hist.empty:
-        return "Neutral", "Keine Marktdaten verfügbar"
+        return "Neutral", "Marktdaten aktuell nicht abrufbar"
     
     current_close = hist['Close'].iloc[-1]
     ema50 = hist['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
     ema200 = hist['Close'].ewm(span=200, adjust=False).mean().iloc[-1]
     
+    # Einordnung
     if current_close > ema50 and current_close > ema200:
-        return "Bullish", f"SPY über EMA50 ({ema50:.2f}) & EMA200 ({ema200:.2f})"
+        status = "Bullish"
     elif current_close < ema50 and current_close < ema200:
-        return "Bearish", f"SPY unter EMA50 ({ema50:.2f}) & EMA200 ({ema200:.2f})"
+        status = "Bearish"
     else:
-        return "Neutral", f"SPY zwischen EMAs (Kurs: {current_close:.2f})"
-
+        status = "Neutral (Korrekturphase oder Seitwärts)"
+        
+    details = f"S&P 500 Kurs: {current_close:.2f} | EMA50: {ema50:.2f} | EMA200: {ema200:.2f}"
+    return status, details
 def get_perf(ticker, name):
     # Historie laden (120 Tage für Sicherheit)
     data = yf.Ticker(ticker).history(period="120d")
