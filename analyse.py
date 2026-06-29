@@ -81,25 +81,27 @@ def analyze_a_setup(ticker, sektor, context):
     hist = ticker_obj.history(period="60d")
     
     if hist.empty:
-        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A", "Stop": "N/A", "CRV": "N/A"}
+        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A"}
 
     last_close = hist['Close'].iloc[-1]
-    # ATR Berechnung (einfache Näherung über 14 Tage)
-    high_low = hist['High'] - hist['Low']
-    atr = high_low.rolling(window=14).mean().iloc[-1]
+    low_60 = hist['Low'].min()
+    atr = (hist['High'] - hist['Low']).rolling(window=14).mean().iloc[-1]
     
-    # Beispiel-Logik für Kennzahlen
+    # Kalkulationen
     einstieg = round(last_close, 2)
-    stop_loss = round(last_close - (atr * 1.5), 2)
-    take_profit = round(last_close + (atr * 3.0), 2)
-    crv = round((take_profit - einstieg) / (einstieg - stop_loss), 2)
+    stop_loss = round(min(last_close - (atr * 2), low_60 * 0.98), 2)
+    tp1 = round(einstieg + (einstieg - stop_loss), 2)
+    tp2 = round(einstieg + ((einstieg - stop_loss) * 2), 2)
     
     return {
         "Ticker": ticker, "Name": name, "Sektor": sektor, 
-        "Einstieg": einstieg, "Stop": stop_loss, 
-        "Target": take_profit, "CRV": crv
+        "Einstieg": einstieg, "Begründung_Einstieg": "Einstieg zum aktuellen Schlusskurs",
+        "Stop": stop_loss, "Begründung_Stop": "Absicherung unter 60T-Tief und ATR-Puffer",
+        "TP1": tp1, "Begründung_TP1": "Teilgewinnmitnahme bei 1:1 Chance-Risiko-Verhältnis",
+        "TP2": tp2, "Begründung_TP2": "Vollständiger Ausstieg bei 1:2 Chance-Risiko-Verhältnis",
+        "CRV": "1:2"
     }
-
+    
 # 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
 print("Starte Analyse...")
 market_context, market_details = get_market_status()
