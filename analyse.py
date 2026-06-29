@@ -93,9 +93,19 @@ for _, row in df_perf.head(2).iterrows():
 
 df_setups = pd.DataFrame(setups)
 
-# 4. Speichern
+# 4. Speichern mit aktuellem Datum
 base_path = os.getcwd()
-df_perf.to_csv(os.path.join(base_path, "Performance.csv"), index=False)
-df_setups.to_csv(os.path.join(base_path, "Setups.csv"), index=False)
+today = datetime.now().strftime("%Y-%m-%d")
+
+# Dateinamen dynamisch erstellen
+perf_filename = f"Performance({today}).csv"
+setups_filename = f"Setups({today}).csv"
+
+perf_path = os.path.join(base_path, perf_filename)
+setups_path = os.path.join(base_path, setups_filename)
+
+df_perf.to_csv(perf_path, index=False)
+df_setups.to_csv(setups_path, index=False)
 
 print(f"Dateien erfolgreich gespeichert unter: {base_path}")
+print(f"Dateinamen: {perf_filename} und {setups_filename}")
