@@ -102,14 +102,17 @@ def analyze_a_setup(ticker, sektor, context):
         "CRV": "1:2"
     }
     
-# 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
-print("Starte Analyse...")
-
 # Marktstatus abrufen
 markt_status, markt_details = get_market_status()
-
-# Jetzt definieren wir die Variable, die dein Skript erwartet
 market_context = f"{markt_status} - {markt_details}"
+
+# Jetzt sind sektoren_map und get_perf bereits bekannt
+perf_list = [get_perf(t, n) for t, n in sektoren_map.items()]
+df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
+
+# 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
+print("Starte Analyse...")
+setups = []
 
 # 2. Jetzt erst die Schleife starten
 # ... hier steht dein Code, der durch die Sektoren loopt ...
@@ -117,26 +120,17 @@ for index, row in df_perf.iterrows():
     # ... hier wird jetzt market_context verwendet, und der Fehler ist weg:
     setups.append(analyze_a_setup(t, row['Sektor'], market_context))
 
+df_setups = pd.DataFrame(setups)
+
 # Marktstatus in das Setup-Log oder den Report einfügen
 print(f"--- Marktstatus ---")
 print(f"Trend: {markt_status}")
 print(f"Details: {markt_details}")
 
-# Wenn du diesen Text in deine Setups.csv oder eine Textdatei schreiben willst:
+# 4. Marktbericht speichern
 with open("Marktbericht.txt", "w") as f:
     f.write(f"Trend SPY: {markt_status}\n")
     f.write(f"Details: {markt_details}\n")
-
-# Jetzt sind sektoren_map und get_perf bereits bekannt
-perf_list = [get_perf(t, n) for t, n in sektoren_map.items()]
-df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
-
-setups = []
-for _, row in df_perf.head(2).iterrows():
-    for t in sektoren_aktien.get(row['Ticker'], [])[:3]:
-        setups.append(analyze_a_setup(t, row['Sektor'], market_context))
-
-df_setups = pd.DataFrame(setups)
 
 # 4. Speichern mit aktuellem Datum
 base_path = os.getcwd()
