@@ -78,41 +78,46 @@ def get_perf(ticker, name):
 def analyze_a_setup(ticker, sektor, context):
     ticker_obj = yf.Ticker(ticker)
     name = ticker_obj.info.get('longName', ticker)
-    hist = ticker_obj.history(period="60d")
+    # Wir brauchen mehr Historie (200d) für die EMAs
+    hist = ticker_obj.history(period="200d")
     
-    if hist.empty:
-        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A", "Stop": "N/A", "TP1": "N/A", "TP2": "N/A", "CRV_TP1": "N/A", "CRV_TP2": "N/A"}
+    if hist.empty or len(hist) < 200:
+        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A"}
 
-    last_close = hist['Close'].iloc[-1]
-    low_60 = hist['Low'].min()
-    atr = (hist['High'] - hist['Low']).rolling(window=14).mean().iloc[-1]
+    # Charttechnische Indikatoren
+    ema50 = hist['Close'].ewm(span=50).mean().iloc[-1]
+    ema200 = hist['Close'].ewm(span=200).mean().iloc[-1]
+    low_20 = hist['Low'].iloc[-20:].min()
+    high_20 = hist['High'].iloc[-20:].max()
     
-    # 1. Basis-Werte berechnen
-    einstieg = round(last_close, 2)
-    stop_loss = round(min(last_close - (atr * 2), low_60 * 0.98), 2)
+    # LOGIK:
+    # Einstieg: Wir orientieren uns am EMA50 (Pullback-Zone)
+    einstieg = round(ema50, 2)
+    
+    # Stop-Loss: Technischer Support unter dem EMA200 oder 20-Tage-Tief
+    support_level = min(ema200, low_20)
+    stop_loss = round(support_level * 0.98, 2) # 2% Puffer unter Support
+    
     risiko = einstieg - stop_loss
     
-    # 2. HIER die TP-Werte berechnen (Das fehlte in deinem Code!)
-    tp1 = round(einstieg + risiko, 2)
-    tp2 = round(einstieg + (risiko * 2.5), 2) # Oder deine dynamische Logik
+    # TP1: Erster Widerstand bei den Hochs der letzten 20 Tage
+    tp1 = round(high_20, 2)
     
-    # 3. Jetzt erst die CRVs mit den nun bekannten TP-Werten berechnen
+    # TP2: Fibonacci-Erweiterung (1.618) des Risiko-Abstands
+    tp2 = round(einstieg + (risiko * 1.618), 2)
+    
+    # Dynamische CRV Berechnung
     gewinn_tp1 = tp1 - einstieg
-    crv_tp1 = round(gewinn_tp1 / risiko, 1) if risiko != 0 else 0
-    
     gewinn_tp2 = tp2 - einstieg
-    crv_tp2 = round(gewinn_tp2 / risiko, 1) if risiko != 0 else 0
+    
+    crv_tp1 = round(gewinn_tp1 / risiko, 1) if risiko > 0 else 0
+    crv_tp2 = round(gewinn_tp2 / risiko, 1) if risiko > 0 else 0
 
     return {
-        "Ticker": ticker, 
-        "Name": name, 
-        "Sektor": sektor, 
-        "Einstieg": einstieg, 
-        "Stop": stop_loss, 
-        "TP1": tp1, 
-        "CRV_TP1": f"1:{crv_tp1}",
-        "TP2": tp2, 
-        "CRV_TP2": f"1:{crv_tp2}"
+        "Ticker": ticker, "Name": name, "Sektor": sektor, 
+        "Einstieg": einstieg, "Stop": stop_loss, 
+        "TP1": tp1, "CRV_TP1": f"1:{crv_tp1}",
+        "TP2": tp2, "CRV_TP2": f"1:{crv_tp2}"
     }
     
 # 1. Marktstatus abrufen
