@@ -104,7 +104,19 @@ def analyze_a_setup(ticker, sektor, context):
     
 # 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
 print("Starte Analyse...")
-market_context, market_details = get_market_status()
+
+# Marktstatus abrufen
+markt_status, markt_details = get_market_status()
+
+# Marktstatus in das Setup-Log oder den Report einfügen
+print(f"--- Marktstatus ---")
+print(f"Trend: {markt_status}")
+print(f"Details: {markt_details}")
+
+# Wenn du diesen Text in deine Setups.csv oder eine Textdatei schreiben willst:
+with open("Marktbericht.txt", "w") as f:
+    f.write(f"Trend SPY: {markt_status}\n")
+    f.write(f"Details: {markt_details}\n")
 
 # Jetzt sind sektoren_map und get_perf bereits bekannt
 perf_list = [get_perf(t, n) for t, n in sektoren_map.items()]
