@@ -57,17 +57,37 @@ def get_market_status():
 
 
 def get_perf(ticker, name):
+    # Lade Daten mit Puffer
+    data = yf.Ticker(ticker).history(period="120d")
+    
+    if data.empty:
+        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
 
-    data = yf.Ticker(ticker).history(period="1mo")
+    last_close = data['Close'].iloc[-1]
+    
+    # Hier der Clou: Wenn ein Zeitraum (z.B. -60) außerhalb der verfügbaren 
+    # Daten liegt, nehmen wir den ältesten verfügbaren Kurs (data.iloc[0]) 
+    # anstatt einer 0 oder eines Fehlers.
+    def safe_perf(days):
+        index = -days
+        if abs(index) >= len(data): 
+            # Nutze den ältesten verfügbaren Kurs als Basis, wenn Historie zu kurz
+            return (last_close / data['Close'].iloc[0]) - 1
+        return (last_close / data['Close'].iloc[index]) - 1
 
-    score = (data['Close'].iloc[-1] / data['Close'].iloc[0]) - 1
-
-    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": score}
-
-
-def analyze_a_setup(ticker, sektor, context):
-
-    return {"Ticker": ticker, "Sektor": sektor, "Status": "Check"}
+    perf_5t = safe_perf(5)
+    perf_12t = safe_perf(12)
+    perf_30t = safe_perf(30)
+    perf_60t = safe_perf(60)
+    
+    rotation_score = (perf_5t * 0.7) + (perf_12t * 0.3)
+    
+    return {
+        "Ticker": ticker, "Sektor": name, 
+        "5T": perf_5t, "12T": perf_12t, 
+        "30T": perf_30t, "60T": perf_60t, 
+        "Rotation-Score": rotation_score
+    }
 
 
 # 3. Hauptlogik
