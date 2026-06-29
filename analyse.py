@@ -133,6 +133,11 @@ df_setups = pd.DataFrame(setups)
 base_path = os.getcwd()
 today = datetime.now().strftime("%Y-%m-%d")
 
+# Hier werden die Markt-Daten in den DataFrame geschrieben, 
+# damit sie in der CSV landen:
+df_setups['Markt_Trend'] = markt_status
+df_setups['Markt_Details'] = markt_details
+
 # Dateinamen dynamisch erstellen
 perf_filename = f"Performance({today}).csv"
 setups_filename = f"Setups({today}).csv"
