@@ -92,46 +92,24 @@ def analyze_a_setup(ticker, sektor, context):
     stop_loss = round(min(last_close - (atr * 2), low_60 * 0.98), 2)
     risiko = einstieg - stop_loss
     
-    # 2. TP1: Konservativ (1:1 Risiko)
-    tp1 = round(einstieg + risiko, 2)
+    # CRV für TP1
+    gewinn_tp1 = tp1 - einstieg
+    crv_tp1 = round(gewinn_tp1 / risiko, 1) if risiko != 0 else 0
     
-    # 3. TP2: Dynamisch (Durchschnitt aus 2.5x Risiko und 60-Tage-Hoch)
-    # Dies sorgt dafür, dass nicht jedes TP2 den gleichen Abstand hat
-    high_60 = hist['High'].max()
-    tp2 = round((einstieg + (risiko * 2.5) + high_60) / 2, 2)
-    
-    # 4. CRV Berechnung (jetzt mit tatsächlichem TP2 Wert)
-    gewinn = tp2 - einstieg
-    if risiko > 0:
-        crv_wert = round(gewinn / risiko, 1)
-        crv_string = f"1:{crv_wert}"
-    else:
-        crv_string = "N/A"
-    
-    # CRV Dynamisch berechnen
-    risiko = einstieg - stop_loss
-    gewinn = tp2 - einstieg
-    
-    if risiko != 0:
-        crv_wert = round(gewinn / risiko, 1)
-        crv_string = f"1:{crv_wert}"
-    else:
-        crv_string = "N/A"
-    
-    # Einziges Return-Statement am Ende
+    # CRV für TP2
+    gewinn_tp2 = tp2 - einstieg
+    crv_tp2 = round(gewinn_tp2 / risiko, 1) if risiko != 0 else 0
+
     return {
         "Ticker": ticker, 
         "Name": name, 
         "Sektor": sektor, 
         "Einstieg": einstieg, 
-        "Begründung_Einstieg": "Einstieg zum aktuellen Schlusskurs",
         "Stop": stop_loss, 
-        "Begründung_Stop": "Absicherung unter 60T-Tief und ATR-Puffer",
         "TP1": tp1, 
-        "Begründung_TP1": "Teilgewinnmitnahme bei 1:1 Chance-Risiko-Verhältnis",
+        "CRV_TP1": f"1:{crv_tp1}", # Neues Feld
         "TP2": tp2, 
-        "Begründung_TP2": "Vollständiger Ausstieg bei 1:2 Chance-Risiko-Verhältnis",
-        "CRV": crv_string
+        "CRV_TP2": f"1:{crv_tp2}", # Neues Feld
     }
     
 # 1. Marktstatus abrufen
