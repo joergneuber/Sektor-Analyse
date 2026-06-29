@@ -81,22 +81,25 @@ def analyze_a_setup(ticker, sektor, context):
     hist = ticker_obj.history(period="60d")
     
     if hist.empty:
-        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A", "Stop": "N/A", "TP1": "N/A", "TP2": "N/A", "CRV": "N/A"}
+        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A", "Stop": "N/A", "TP1": "N/A", "TP2": "N/A", "CRV_TP1": "N/A", "CRV_TP2": "N/A"}
 
     last_close = hist['Close'].iloc[-1]
     low_60 = hist['Low'].min()
     atr = (hist['High'] - hist['Low']).rolling(window=14).mean().iloc[-1]
     
-    # 1. Kalkulation
+    # 1. Basis-Werte berechnen
     einstieg = round(last_close, 2)
     stop_loss = round(min(last_close - (atr * 2), low_60 * 0.98), 2)
     risiko = einstieg - stop_loss
     
-    # CRV für TP1
+    # 2. HIER die TP-Werte berechnen (Das fehlte in deinem Code!)
+    tp1 = round(einstieg + risiko, 2)
+    tp2 = round(einstieg + (risiko * 2.5), 2) # Oder deine dynamische Logik
+    
+    # 3. Jetzt erst die CRVs mit den nun bekannten TP-Werten berechnen
     gewinn_tp1 = tp1 - einstieg
     crv_tp1 = round(gewinn_tp1 / risiko, 1) if risiko != 0 else 0
     
-    # CRV für TP2
     gewinn_tp2 = tp2 - einstieg
     crv_tp2 = round(gewinn_tp2 / risiko, 1) if risiko != 0 else 0
 
@@ -107,9 +110,9 @@ def analyze_a_setup(ticker, sektor, context):
         "Einstieg": einstieg, 
         "Stop": stop_loss, 
         "TP1": tp1, 
-        "CRV_TP1": f"1:{crv_tp1}", # Neues Feld
+        "CRV_TP1": f"1:{crv_tp1}",
         "TP2": tp2, 
-        "CRV_TP2": f"1:{crv_tp2}", # Neues Feld
+        "CRV_TP2": f"1:{crv_tp2}"
     }
     
 # 1. Marktstatus abrufen
