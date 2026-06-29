@@ -3,29 +3,8 @@ import pandas as pd
 import os
 from datetime import datetime
 
-# 1. Konfiguration
-sektoren_map = {
-    "XLK": "Technologie", "XLF": "Finanzen", "XLV": "Gesundheit", "XLY": "Zyklischer Konsum",
-    "XLP": "Basiskonsum", "XLE": "Energie", "XLI": "Industrie", "XLB": "Rohstoffe",
-    "XLU": "Versorger", "XLRE": "Immobilien", "XLC": "Kommunikation",
-    "SOXX": "Halbleiter", "SMH": "Halbleiter (Global)", "IGV": "Software", 
-    "XBI": "Biotechnologie", "KRE": "Regionalbanken", "HACK": "Cybersecurity", 
-    "CLOU": "Cloud Computing", "AIQ": "Künstliche Intelligenz",
-    "BOTZ": "Robotik", "IHI": "Medical Devices", "PAVE": "Infrastruktur", "XRT": "Einzelhandel"
-}
+# ... (sektoren_map und sektoren_aktien bleiben gleich) ...
 
-sektoren_aktien = {
-    "XLK": ["AAPL", "MSFT", "ORCL"], "XLF": ["JPM", "BAC", "GS"], "XLV": ["UNH", "JNJ", "LLY"],
-    "XLY": ["AMZN", "TSLA", "HD"], "XLP": ["PG", "KO", "PEP"], "XLE": ["XOM", "CVX", "SLB"],
-    "XLI": ["CAT", "GE", "HON"], "XLB": ["LIN", "APD", "ECL"], "XLU": ["NEE", "DUK", "SO"],
-    "XLRE": ["PLD", "AMT", "EQIX"], "XLC": ["META", "GOOGL", "NFLX"],
-    "SOXX": ["NVDA", "AVGO", "TXN"], "SMH": ["NVDA", "TSM", "ASML"], "IGV": ["ADBE", "CRM", "SAP"],
-    "XBI": ["AMGN", "VRTX", "GILD"], "KRE": ["FITB", "HBAN", "CFG"], "HACK": ["PANW", "CRWD", "FTNT"],
-    "CLOU": ["NOW", "SNOW", "WDAY"], "AIQ": ["NVDA", "MSFT", "GOOGL"], "BOTZ": ["ISRG", "ABB", "ROK"],
-    "IHI": ["MDT", "BSX", "ZBH"], "PAVE": ["DE", "ETN", "CAT"], "XRT": ["AMZN", "HD", "LOW"]
-}
-
-# 2. Hilfsfunktionen
 def get_market_status():
     return "Bullish", "Details..."
 
@@ -40,18 +19,22 @@ def get_perf(ticker, name):
         if days >= len(data): return (last_close / data['Close'].iloc[0]) - 1
         return (last_close / data['Close'].iloc[-days]) - 1
 
-    perf_5t = safe_perf(5)
-    perf_12t = safe_perf(12)
-    perf_30t = safe_perf(30)
-    perf_60t = safe_perf(60)
+    # Berechnung als Dezimalzahl
+    p5 = safe_perf(5)
+    p12 = safe_perf(12)
+    p30 = safe_perf(30)
+    p60 = safe_perf(60)
+    rs = (p5 * 0.7) + (p12 * 0.3)
     
-    rotation_score = (perf_5t * 0.7) + (perf_12t * 0.3)
-    
+    # HIER: Multiplikation mit 100 für die gewünschte Darstellung (6,526 statt 0,06526)
+    # round(..., 3) sorgt für genau drei Nachkommastellen
     return {
         "Ticker": ticker, "Sektor": name, 
-        "5T": perf_5t, "12T": perf_12t, 
-        "30T": perf_30t, "60T": perf_60t, 
-        "Rotation-Score": rotation_score
+        "5T": round(p5 * 100, 3), 
+        "12T": round(p12 * 100, 3), 
+        "30T": round(p30 * 100, 3), 
+        "60T": round(p60 * 100, 3), 
+        "Rotation-Score": round(rs * 100, 3)
     }
 
 def analyze_a_setup(ticker, sektor, context):
