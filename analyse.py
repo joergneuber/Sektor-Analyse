@@ -57,20 +57,34 @@ def get_market_status():
 
 
 def get_perf(ticker, name):
+    # Wir brauchen mindestens 90 Tage Daten für die 60T-Berechnung
+    # yfinance liefert Handelstage, daher reicht 90d völlig aus.
+    data = yf.Ticker(ticker).history(period="90d")
+    
+    if len(data) < 60:
+        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
 
-    data = yf.Ticker(ticker).history(period="1mo")
-
-    score = (data['Close'].iloc[-1] / data['Close'].iloc[0]) - 1
-
-    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": score}
-
-
-def analyze_a_setup(ticker, sektor, context):
-
-    return {"Ticker": ticker, "Sektor": sektor, "Status": "Check"}
-
-
-# 3. Hauptlogik
+    last_close = data['Close'].iloc[-1]
+    
+    # Performance für die einzelnen Zeiträume berechnen (relativ zum Schlusskurs)
+    # iloc[-5] ist der Kurs vor 5 Handelstagen, usw.
+    perf_5t = (last_close / data['Close'].iloc[-5]) - 1
+    perf_12t = (last_close / data['Close'].iloc[-12]) - 1
+    perf_30t = (last_close / data['Close'].iloc[-30]) - 1
+    perf_60t = (last_close / data['Close'].iloc[-60]) - 1
+    
+    # Deine neue Rotation-Score Formel: 70% 5T + 30% 12T
+    rotation_score = (perf_5t * 0.7) + (perf_12t * 0.3)
+    
+    return {
+        "Ticker": ticker, 
+        "Sektor": name, 
+        "5T": perf_5t, 
+        "12T": perf_12t, 
+        "30T": perf_30t, 
+        "60T": perf_60t, 
+        "Rotation-Score": rotation_score
+    }# 3. Hauptlogik
 
 print("Starte Analyse...")
 
