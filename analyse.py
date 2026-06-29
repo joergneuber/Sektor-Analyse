@@ -76,7 +76,11 @@ def get_perf(ticker, name):
     }
 
 def analyze_a_setup(ticker, sektor, context):
-    return {"Ticker": ticker, "Sektor": sektor, "Status": "Check"}
+    ticker_obj = yf.Ticker(ticker)
+    # .info kann manchmal langsam sein, aber für die Setup-Liste ist es präzise
+    name = ticker_obj.info.get('longName', ticker) 
+    return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Status": "Check"}
+
 
 # 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
 print("Starte Analyse...")
