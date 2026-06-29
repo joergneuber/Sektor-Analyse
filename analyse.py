@@ -77,10 +77,28 @@ def get_perf(ticker, name):
 
 def analyze_a_setup(ticker, sektor, context):
     ticker_obj = yf.Ticker(ticker)
-    # .info kann manchmal langsam sein, aber für die Setup-Liste ist es präzise
-    name = ticker_obj.info.get('longName', ticker) 
-    return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Status": "Check"}
+    name = ticker_obj.info.get('longName', ticker)
+    hist = ticker_obj.history(period="60d")
+    
+    if hist.empty:
+        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A", "Stop": "N/A", "CRV": "N/A"}
 
+    last_close = hist['Close'].iloc[-1]
+    # ATR Berechnung (einfache Näherung über 14 Tage)
+    high_low = hist['High'] - hist['Low']
+    atr = high_low.rolling(window=14).mean().iloc[-1]
+    
+    # Beispiel-Logik für Kennzahlen
+    einstieg = round(last_close, 2)
+    stop_loss = round(last_close - (atr * 1.5), 2)
+    take_profit = round(last_close + (atr * 3.0), 2)
+    crv = round((take_profit - einstieg) / (einstieg - stop_loss), 2)
+    
+    return {
+        "Ticker": ticker, "Name": name, "Sektor": sektor, 
+        "Einstieg": einstieg, "Stop": stop_loss, 
+        "Target": take_profit, "CRV": crv
+    }
 
 # 3. Hauptlogik - WIRD ERST HIER AUSGEFÜHRT
 print("Starte Analyse...")
