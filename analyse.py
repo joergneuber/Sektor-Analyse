@@ -103,8 +103,9 @@ def analyze_a_setup(ticker, sektor, context):
     # TP1: Erster Widerstand bei den Hochs der letzten 20 Tage
     tp1 = round(high_20, 2)
     
-    # TP2: Fibonacci-Erweiterung (1.618) des Risiko-Abstands
-    tp2 = round(einstieg + (risiko * 1.618), 2)
+    # NEU: TP2 soll mindestens 2.5x das Risiko sein ODER das nächste Widerstands-Level
+    # Das zwingt das Skript zu größeren Zielen:
+    tp2 = round(max(einstieg + (risiko * 2.5), high_20 * 1.05), 2)
     
     # Dynamische CRV Berechnung
     gewinn_tp1 = tp1 - einstieg
