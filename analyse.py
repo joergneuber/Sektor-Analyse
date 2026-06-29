@@ -118,7 +118,7 @@ def analyze_a_setup(ticker, sektor, context):
         "TP1": tp1, 
         "TP2": tp2,
         "CRV": crv_string # Hier wird nun der dynamische Wert übergeben
-    }    }
+        }
     
 # 1. Marktstatus abrufen
 markt_status, markt_details = get_market_status()
