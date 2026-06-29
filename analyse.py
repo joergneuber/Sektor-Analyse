@@ -108,6 +108,15 @@ print("Starte Analyse...")
 # Marktstatus abrufen
 markt_status, markt_details = get_market_status()
 
+# Jetzt definieren wir die Variable, die dein Skript erwartet
+market_context = f"{markt_status} - {markt_details}"
+
+# 2. Jetzt erst die Schleife starten
+# ... hier steht dein Code, der durch die Sektoren loopt ...
+for index, row in df_perf.iterrows():
+    # ... hier wird jetzt market_context verwendet, und der Fehler ist weg:
+    setups.append(analyze_a_setup(t, row['Sektor'], market_context))
+
 # Marktstatus in das Setup-Log oder den Report einfügen
 print(f"--- Marktstatus ---")
 print(f"Trend: {markt_status}")
