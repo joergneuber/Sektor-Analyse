@@ -1,53 +1,38 @@
 import os
-print(f"Aktuelles Verzeichnis: {os.getcwd()}")
-print(f"Dateien in diesem Verzeichnis: {os.listdir('.')}")
 import json
-import pickle
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# Festlegen des Arbeitsverzeichnisses
+# Arbeitsverzeichnis festlegen
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 def get_drive_service():
-    # Lädt das Token aus dem GitHub Secret
     token_json = os.getenv('GDRIVE_TOKEN')
     if not token_json:
         raise ValueError("Das Secret 'GDRIVE_TOKEN' wurde nicht gefunden.")
-    
-    # Erstellt die Credentials aus dem JSON-Inhalt
     creds = Credentials.from_authorized_user_info(json.loads(token_json))
     return build('drive', 'v3', credentials=creds)
 
 def upload_file(filename, folder_id):
     service = get_drive_service()
-    
-    file_metadata = {
-        'name': filename,
-        'parents': [folder_id]
-    }
-    
+    file_metadata = {'name': filename, 'parents': [folder_id]}
     media = MediaFileUpload(filename, resumable=True)
-    
-    file = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields='id'
-    ).execute()
-    
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
     print(f"Datei '{filename}' erfolgreich hochgeladen. ID: {file.get('id')}")
 
 if __name__ == '__main__':
-    # HIER: Trage deine FOLDER_ID ein (aus der URL deines Drive-Ordners)
-    FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL' 
+    # HIER DEINE FOLDER-ID EINTRAGEN
+    FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
     
-    # Dateien, die analysiert wurden
-    dateien_zum_hochladen = ['Performance.csv', 'Setups.csv']
-    
-    for datei in dateien_zum_hochladen:
-        if os.path.exists(datei):
-            print(f"Lade {datei} hoch...")
-            upload_file(datei, FOLDER_ID)
-        else:
-            print(f"Warnung: Datei {datei} nicht gefunden!")
+    print("Suche nach neuen Dateien zum Hochladen...")
+    found = False
+    for filename in os.listdir('.'):
+        # Scannt nach allen Dateien, die Performance oder Setups enthalten
+        if (filename.startswith("Performance") or filename.startswith("Setups")) and filename.endswith(".csv"):
+            print(f"Lade '{filename}' hoch...")
+            upload_file(filename, FOLDER_ID)
+            found = True
+            
+    if not found:
+        print("Keine passenden Dateien zum Hochladen gefunden.")
