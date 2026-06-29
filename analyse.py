@@ -99,8 +99,26 @@ def analyze_a_setup(ticker, sektor, context):
         "Stop": stop_loss, "Begründung_Stop": "Absicherung unter 60T-Tief und ATR-Puffer",
         "TP1": tp1, "Begründung_TP1": "Teilgewinnmitnahme bei 1:1 Chance-Risiko-Verhältnis",
         "TP2": tp2, "Begründung_TP2": "Vollständiger Ausstieg bei 1:2 Chance-Risiko-Verhältnis",
-        "CRV": "1:2"
-    }
+        # Berechnung des CRV
+    # CRV = (Ziel - Einstieg) / (Einstieg - Stop)
+    risiko = einstieg - stop_loss
+    gewinn = tp2 - einstieg
+    
+    # Schutz vor Division durch Null
+    if risiko != 0:
+        crv_wert = round(gewinn / risiko, 1)
+        crv_string = f"1:{crv_wert}"
+    else:
+        crv_string = "N/A"
+
+    return {
+        "Ticker": ticker, "Name": name, "Sektor": sektor, 
+        "Einstieg": einstieg, 
+        "Stop": stop_loss, 
+        "TP1": tp1, 
+        "TP2": tp2,
+        "CRV": crv_string # Hier wird nun der dynamische Wert übergeben
+    }    }
     
 # 1. Marktstatus abrufen
 markt_status, markt_details = get_market_status()
