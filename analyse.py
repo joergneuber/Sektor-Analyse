@@ -76,9 +76,15 @@ if setups:
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # Briefing.txt erstellen
+    # Briefing.txt mit ALLEN Informationen erstellen
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Markt-Update {today}: {markt_details}\n")
-        f.write("Top Setups nach Score:\n")
-        f.write(df_s[['Ticker', 'Score', 'Einstieg', 'Stop']].to_string())
-    print("Analyse und Briefing erstellt.")
+        f.write("="*50 + "\n")
+        f.write("Detaillierte Analyse aller Setups:\n\n")
+        
+        # Hier ändern wir den Zugriff auf df_s, um alles zu exportieren
+        # .to_string() nimmt jetzt automatisch alle verfügbaren Spalten
+        f.write(df_s.to_string(index=False)) 
+        
+        f.write("\n\n" + "="*50 + "\n")
+        f.write("Legende: Score (Trendstärke), RSI_Warn (-1=überkauft), Momentum/Impuls (1=aktiv)")
