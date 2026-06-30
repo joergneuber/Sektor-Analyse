@@ -135,51 +135,30 @@ def analyze_a_setup(ticker, sektor, context):
         "Markt_Trend": markt_trend, "Markt_Details": markt_details
     }
 
-# --- HAUPTTEIL: Analyse ausführen und sortieren ---
-# Hier fügst du deine Liste ein, z.B. ticker_liste = ['AMGN', 'VRTX', ...]
-# setups = []
-# for t in ticker_liste:
-#     result = analyze_a_setup(t, "DeinSektor", None)
-#     if result: setups.append(result)
+# --- HIER IST DIE KORREKTE REIHENFOLGE ---
 
-print(f"DEBUG: Anzahl der gesammelten Setups: {len(setups)}")
-# df = pd.DataFrame(setups)
-# if not df.empty:
-#     # Sortieren nach Score (absteigend) und CRV_TP2 (absteigend)
-#     df = df.sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
-#     df.to_csv('analyse_ergebnisse.csv', index=False)
-    
-# 1. Marktstatus abrufen
-markt_status, markt_details = get_market_status()
-market_context = f"{markt_status} - {markt_details}"
-
-# 2. Performance berechnen
-perf_list = [get_perf(t, n) for t, n in sektoren_map.items()]
-df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
-
-# 3. Hauptlogik - Analyse der Top-Sektoren
 print("Starte Analyse...")
-setups = []  # <--- HIER wird die Variable initialisiert
+setups = []  # 1. Variable HIER initialisieren
 
-setups = []
-
-# Wir gehen die Top-Sektoren durch
+# 2. Schleife zum Füllen der Liste
 for index, row in df_perf.head(2).iterrows():
     sektor_name = row['Sektor']
     ticker_key = row['Ticker']
     
-    # Hier werden die Daten gesammelt
     for t in sektoren_aktien.get(ticker_key, [])[:3]:
         res = analyze_a_setup(t, sektor_name, market_context)
         if res:
             setups.append(res)
+        else:
+            print(f"DEBUG: Keine Daten für {t}")
 
-# Erst JETZT existiert 'setups' und kann geprüft werden
+# 3. JETZT ist 'setups' bekannt und kann benutzt werden
 print(f"DEBUG: Anzahl der gesammelten Setups: {len(setups)}")
 
-# 4. DataFrame erstellen und filtern
+# 4. Erst jetzt wird das DataFrame erzeugt
 df_setups = pd.DataFrame(setups)
 
+# ... weiter mit deinem Speicher-Code
 if not df_setups.empty:
     # Filter: Entferne Rauschen (Score >= 1)
     df_setups = df_setups[df_setups['Score'] >= 1]
