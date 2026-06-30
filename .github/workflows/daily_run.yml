@@ -2,7 +2,7 @@ name: Tägliche Analyse Sektoren
 
 on:
   schedule:
-    - cron: '0 20 * * *' 
+    - cron: '1 23 * * *' 
   workflow_dispatch:     
 
 jobs:
