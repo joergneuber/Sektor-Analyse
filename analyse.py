@@ -1,7 +1,6 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import os
 from datetime import datetime
 
 # --- KONFIGURATION ---
@@ -37,38 +36,41 @@ def get_market_status():
 
 def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
-    if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+    if data.empty: return {"Ticker": ticker, "Sektor": name, "Rotation-Score": 0}
     last = data['Close'].iloc[-1]
     def get_p(d): return round(((last / data['Close'].iloc[-d]) - 1) * 100, 2) if len(data) >= d else 0
-    p5, p12, p30, p60 = get_p(5), get_p(12), get_p(30), get_p(60)
-    return {"Ticker": ticker, "Sektor": name, "5T": p5, "12T": p12, "30T": p30, "60T": p60, "Rotation-Score": round((p5 * 0.7 + p12 * 0.3), 3)}
+    p5, p12 = get_p(5), get_p(12)
+    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": round((p5 * 0.7 + p12 * 0.3), 3)}
 
 def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
-    for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
-    hist['WMA200'] = hist['Close'].rolling(200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
+    # Charttechnische Anker
+    low_20 = hist['Low'].rolling(20).min().iloc[-1]
+    high_20 = hist['High'].rolling(20).max().iloc[-1]
+    ema200 = hist['Close'].ewm(span=200).mean().iloc[-1]
     
-    close, wma200 = hist['Close'].iloc[-1], hist['WMA200'].iloc[-1]
-    low_20d, high_20d = hist['Low'].rolling(20).min().iloc[-1], hist['High'].rolling(20).max().iloc[-1]
-    swing_high = hist['High'].rolling(20).max().iloc[-20:-1].mean()
+    # 1. Einstieg: Bestätigung am Pullback-Niveau (z.B. Fib 61.8% des letzten Swings)
+    entry = round(max(hist['Close'].iloc[-1], (high_20 - (high_20 - low_20) * 0.382)), 2)
     
-    entry = round(max(close, wma200, (high_20d - (high_20d - low_20d) * 0.618)), 2)
-    stop_loss = round(min(low_20d, wma200 * 0.98), 2)
-    risiko = round(entry - stop_loss, 2)
+    # 2. Stop-Loss: Unter signifikantes Tief
+    stop_loss = round(min(low_20, ema200 * 0.97), 2)
+    risiko = entry - stop_loss
     
-    tp1 = round(max(swing_high, entry + risiko), 2)
+    # 3. TP1: Konservatives Ziel (Nächstes Widerstandsniveau/Verlaufshoch)
+    tp1 = round(high_20, 2)
+    
+    # 4. TP2: Erweitertes Ziel (Fib-Extension 161.8% des Risikos)
     tp2 = round(entry + (risiko * 1.618), 2)
     
-    score = sum([1 if close > hist[f'EMA{e}'].iloc[-1] else 0 for e in [20, 50, 100, 200]])
+    # Dynamisches CRV
+    crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
+    crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
     
     return {
         "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-        "Score": score, "Einstieg": entry, "Stop": stop_loss, "TP1": tp1, "TP2": tp2,
-        "CRV1": round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0,
-        "CRV2": round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0,
-        "Markt_Trend": context
+        "Einstieg": entry, "Stop": stop_loss, "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Trend": context
     }
 
 # --- HAUPTTEIL ---
@@ -77,15 +79,14 @@ if __name__ == "__main__":
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
     all_setups = [
-        analyze_a_setup(t, row['Sektor'], f"{markt_status} - {markt_details}") 
+        analyze_a_setup(t, row['Sektor'], markt_status) 
         for _, row in df_perf.head(2).iterrows() 
         for t in sektoren_aktien.get(row['Ticker'], [])
     ]
     
     if (setups := [s for s in all_setups if s]):
         today = datetime.now().strftime("%Y-%m-%d")
-        df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
+        df_s = pd.DataFrame(setups)
         df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-        df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
             f.write(f"Markt-Update {today}: {markt_details}\n\n" + df_s.to_string(index=False))
