@@ -50,6 +50,10 @@ def analyze_a_setup(ticker, sektor, context):
     ticker_obj = yf.Ticker(ticker)
     name = ticker_obj.info.get('longName', ticker)
     hist = ticker_obj.history(period="200d")
+    # DEBUG: Schau, ob wir überhaupt Daten bekommen
+    if hist.empty or len(hist) < 200:
+        print(f"DEBUG: Ticker {ticker} hat zu wenige Daten ({len(hist)} Tage)")
+        return None
     if hist.empty or len(hist) < 200: return None
     hist['EMA50'] = hist['Close'].ewm(span=50).mean()
     hist['EMA200'] = hist['Close'].ewm(span=200).mean()
