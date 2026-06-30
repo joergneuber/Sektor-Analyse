@@ -38,26 +38,27 @@ def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
-    # EMAs für dynamische Unterstützung/Widerstand
+    # Indikatoren zur Trendbestimmung
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
     
     close = hist['Close'].iloc[-1]
-    # Charttechnische Anker: Horizontale Marken
-    low_support = hist['Low'].rolling(40).min().iloc[-1]
-    high_res_1 = hist['High'].rolling(20).max().iloc[-1]
-    high_res_2 = hist['High'].rolling(60).max().iloc[-1]
     
-    # Einstieg am EMA50 oder aktuellem Kurs
+    # 1. Stop-Loss (Swing Lows als Basis)
+    # Wir nehmen das Tief der letzten 20 Tage als signifikantes Swing Low
+    swing_low = hist['Low'].rolling(20).min().iloc[-1]
+    stop_loss = round(swing_low * 0.99, 2)
+    
+    # 2. Einstieg (Pullback an EMA50 oder Breakout-Niveau)
     entry = round(max(close, hist['EMA50'].iloc[-1]), 2)
-    # Stop-Loss knapp unter Support
-    stop_loss = round(min(low_support, hist['EMA200'].iloc[-1] * 0.98), 2)
     risiko = entry - stop_loss
     
-    # Individuelle, charttechnisch begründete Ziele
-    tp1 = round(high_res_1, 2)
-    tp2 = round(high_res_2, 2)
+    # 3. Take Profit (Strukturziele)
+    # TP1: Erstes Widerstandsniveau (Hoch der letzten 20 Tage)
+    tp1 = round(hist['High'].rolling(20).max().iloc[-1], 2)
+    # TP2: Fibonacci-Level oder übergeordnetes Ziel (hier 161.8% Risiko-Projektion)
+    tp2 = round(entry + (risiko * 1.618), 2)
     
-    # CRV-Berechnung basiert auf den individuellen Marken
+    # CRV-Berechnung auf Basis der Chart-Struktur
     crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
     crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
     
