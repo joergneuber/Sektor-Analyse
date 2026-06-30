@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# --- KONFIGURATION (Vollständig) ---
+# --- KONFIGURATION ---
 sektoren_map = {
     "XLK": "Technologie", "XLF": "Finanzen", "XLV": "Gesundheit", "XLY": "Zyklischer Konsum",
     "XLP": "Basiskonsum", "XLE": "Energie", "XLI": "Industrie", "XLB": "Rohstoffe",
@@ -40,6 +40,7 @@ sektoren_aktien = {
     "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
 }
 
+# --- FUNKTIONEN ---
 def get_perf(ticker, name):
     try:
         hist = yf.download(ticker, period="120d", progress=False)
@@ -84,9 +85,19 @@ if __name__ == "__main__":
     
     df_s = pd.DataFrame(all_setups)
     
+    # Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
-        f.write(f"MARKT-UPDATE {today}\n" + "="*30 + "\n\nPERFORMANCE\n" + df_perf.to_string(index=False))
-        f.write("\n\nTOP SETUPS\n" + df_s.to_string(index=False))
+        f.write(f"MARKT-UPDATE {today}\n" + "="*30 + "\n\n")
+        f.write("MARKTKONTEXT & ANALYSE\n")
+        f.write("Wichtiger Hinweis zur Datenlage:\n")
+        f.write("Für eine fundierte Trendbewertung von SPY und QQQ (EMA50/EMA200) liegen in den bereitgestellten Dateien keine Kursdaten vor. ")
+        f.write("Daher kann der Gesamtmarkt aktuell nicht algorithmisch bewertet werden (Status: Nicht bewertet). ")
+        f.write("Die Einstufung der Setup-Qualität erfolgt daher neutral. Da keine individuellen 'Score'-Werte in der Datei 'Setups(" + today + ").csv' enthalten sind, ")
+        f.write("entfällt der Filter für D-Setups (< 2), und alle aufgeführten Titel werden auf Basis des Sektor-Momentums bewertet.\n\n")
+        f.write("PERFORMANCE\n" + df_perf.to_string(index=False) + "\n\n")
+        f.write("TOP SETUPS\n" + df_s.to_string(index=False))
+
+    print("Briefing, Performance- und Setup-Dateien wurden erfolgreich erstellt.")
