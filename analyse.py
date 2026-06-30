@@ -38,18 +38,21 @@ def analyze_a_setup(ticker, sektor, context):
     if hist.empty or len(hist) < 200: return None
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
     
-    # ATR Berechnung
+    # ATR Berechnung für TP2
     hist['TR'] = hist['High'] - hist['Low']
     atr = hist['TR'].rolling(14).mean().iloc[-1]
     
     current_price = round(hist['Close'].iloc[-1], 2)
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
     
-    tp1 = round(hist['High'].rolling(20).max().iloc[-1], 2)
-    tp2 = round(tp1 + (atr * 3), 2)
+    # Charttechnische Marken
+    # Entry = Ausbruch aus der Konsolidierung (Hoch der letzten 20 Tage)
+    entry = round(hist['High'].rolling(20).max().iloc[-1], 2)
+    tp1 = round(entry + atr, 2) # TP1 als erste ATR-Strecke
+    tp2 = round(entry + (atr * 3), 2) # TP2 als 3*ATR Ziel
     
-    entry = round(max(hist['Close'].iloc[-1], hist['EMA50'].iloc[-1]), 2)
-    stop_loss = round(min(low_20, hist['EMA200'].iloc[-1] * 0.98), 2)
+    # SL = Signifikantes Tief (Swing Low)
+    stop_loss = round(low_20, 2)
     risiko = entry - stop_loss
     
     crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
