@@ -39,10 +39,20 @@ def get_market_status():
 
 def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
-    if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "Rotation-Score": 0}
+    if data.empty: 
+        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
     last = data['Close'].iloc[-1]
-    p5 = (last / data['Close'].iloc[-5]) - 1
-    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": round(p5*100, 3)}
+    def safe_calc(days): 
+        if days >= len(data): return (last / data['Close'].iloc[0]) - 1
+        return (last / data['Close'].iloc[-days]) - 1
+    
+    p5, p12, p30, p60 = safe_calc(5), safe_calc(12), safe_calc(30), safe_calc(60)
+    rs = (p5 * 0.7) + (p12 * 0.3)
+    return {
+        "Ticker": ticker, "Sektor": name, 
+        "5T": round(p5*100, 3), "12T": round(p12*100, 3), "30T": round(p30*100, 3), "60T": round(p60*100, 3), 
+        "Rotation-Score": round(rs*100, 3)
+    }
 
 def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
@@ -53,11 +63,12 @@ def analyze_a_setup(ticker, sektor, context):
     hist['EMA100'] = hist['Close'].ewm(span=100).mean()
     hist['EMA200'] = hist['Close'].ewm(span=200).mean()
     
-    # ATR Berechnung
+    # ATR Berechnung für Stop-Loss
     tr = pd.concat([hist['High']-hist['Low'], abs(hist['High']-hist['Close'].shift()), abs(hist['Low']-hist['Close'].shift())], axis=1).max(axis=1)
     atr = tr.rolling(14).mean().iloc[-1]
-    
     close = hist['Close'].iloc[-1]
+    
+    # Scoring
     c_ema20, c_ema50, c_ema100, c_ema200 = (1 if close > hist[e].iloc[-1] else 0 for e in ['EMA20','EMA50','EMA100','EMA200'])
     c_mom = 1 if hist['EMA20'].iloc[-1] > hist['EMA50'].iloc[-1] else 0
     c_imp = 1 if close > hist['Close'].iloc[-5] else 0
@@ -76,6 +87,7 @@ def analyze_a_setup(ticker, sektor, context):
     }
 
 # --- 3. HAUPTTEIL ---
+print("Starte Analyse...")
 markt_status, markt_details = get_market_status()
 df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
 setups = []
@@ -88,17 +100,11 @@ if setups:
     df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # Pfade definieren
-    files_to_save = {
-        "Setups.csv": df_s,
-        f"Setups({today}).csv": df_s,
-        "Performance.csv": df_perf,
-        f"Performance({today}).csv": df_perf
+    # Speichern aller Dateien
+    files = {
+        "Setups.csv": df_s, f"Setups({today}).csv": df_s,
+        "Performance.csv": df_perf, f"Performance({today}).csv": df_perf
     }
-    
-    for filename, df in files_to_save.items():
-        df.to_csv(os.path.join(os.getcwd(), filename), index=False, sep=';', encoding='utf-8-sig')
-    
-    print(f"Analyse fertig: {len(df_s)} Setups und Performance-Daten gespeichert.")
-else:
-    print("Keine Setups gefunden.")
+    for name, df in files.items():
+        df.to_csv(os.path.join(os.getcwd(), name), index=False, sep=';', encoding='utf-8-sig')
+    print(f"Analyse fertig. Setups: {len(df_s)} | Sektoren: {len(df_perf)}")
