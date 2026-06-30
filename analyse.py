@@ -45,7 +45,7 @@ def get_perf(ticker, name):
     try:
         hist = yf.download(ticker, period="120d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "Rotation-Score": 0}
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
@@ -90,7 +90,14 @@ if __name__ == "__main__":
     
     with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n" + "="*30 + "\n\n")
-        f.write("GESAMTMARKTFILTER\n")
-        f.write("Trend SPY: Nicht bewertet (Daten nicht verfügbar)\n")
-        f.write("Trend QQQ: Nicht bewertet (Daten nicht verfügbar)\n")
-        f.write("Markteinschätzung: Aufgrund fehlender Kursdaten für EMA50/EMA200 erfolgt keine algorithmische Trendbewertung. Die Setup-Qualität
+        f.write("""GESAMTMARKTFILTER
+Trend SPY: Nicht bewertet (Daten nicht verfügbar)
+Trend QQQ: Nicht bewertet (Daten nicht verfügbar)
+Markteinschätzung: Aufgrund fehlender Kursdaten für EMA50/EMA200 erfolgt keine algorithmische Trendbewertung. Die Setup-Qualität wird daher neutral als B-Setup (Basis) eingestuft.
+
+MARKTKONTEXT & ANALYSE
+Da keine individuellen 'Score'-Werte in der Datei 'Setups(""" + today + """).csv' enthalten sind, entfällt der Filter für D-Setups (< 2), und alle aufgeführten Titel werden auf Basis des Sektor-Momentums bewertet.\n\n""")
+        f.write("PERFORMANCE\n" + df_perf.to_string(index=False) + "\n\n")
+        f.write("TOP SETUPS\n" + df_s.to_string(index=False))
+
+    print("Briefing, Performance- und Setup-Dateien wurden erfolgreich erstellt.")
