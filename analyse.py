@@ -46,20 +46,22 @@ def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
-    # Charttechnische Anker
+    # Ankerpunkte
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
     high_20 = hist['High'].rolling(20).max().iloc[-1]
-    ema200 = hist['Close'].ewm(span=200).mean().iloc[-1]
+    # Nächstes Widerstandsniveau (z.B. das 50-Tage-Hoch als charttechnischer Anker für TP2)
+    resistance_50 = hist['High'].rolling(50).max().iloc[-1] 
     
     entry = round(max(hist['Close'].iloc[-1], (high_20 - (high_20 - low_20) * 0.382)), 2)
-    stop_loss = round(min(low_20, ema200 * 0.97), 2)
+    stop_loss = round(min(low_20, hist['Close'].ewm(span=200).mean().iloc[-1] * 0.97), 2)
     risiko = entry - stop_loss
     
+    # Charttechnische Ziele
     tp1 = round(high_20, 2)
-    # TP2 ist nun dynamisch basierend auf Risiko (Fib-Extension)
-    tp2 = round(entry + (risiko * 1.618), 2)
+    # TP2 ist jetzt der Widerstand des 50-Tage-Charts (echter Chart-Wert!)
+    tp2 = round(resistance_50, 2) 
     
-    # CRV Berechnungen (jetzt individuell pro Ticker)
+    # Dynamisches CRV (jetzt fluktuierend, da TP2 individuell ist)
     crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
     crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
     
