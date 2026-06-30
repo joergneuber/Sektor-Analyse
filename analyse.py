@@ -75,51 +75,78 @@ def get_perf(ticker, name):
         "Rotation-Score": round(rs * 100, 3)
     }
 
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
 def analyze_a_setup(ticker, sektor, context):
     ticker_obj = yf.Ticker(ticker)
     name = ticker_obj.info.get('longName', ticker)
-    # Wir brauchen mehr Historie (200d) für die EMAs
     hist = ticker_obj.history(period="200d")
     
     if hist.empty or len(hist) < 200:
-        return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Einstieg": "N/A"}
+        return None
 
-    # Charttechnische Indikatoren
-    ema50 = hist['Close'].ewm(span=50).mean().iloc[-1]
-    ema200 = hist['Close'].ewm(span=200).mean().iloc[-1]
+    # --- 1. Indikatoren berechnen ---
+    hist['EMA50'] = hist['Close'].ewm(span=50).mean()
+    hist['EMA200'] = hist['Close'].ewm(span=200).mean()
+    
+    # RSI & BB für Signale
+    delta = hist['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    hist['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    
+    sma20 = hist['Close'].rolling(window=20).mean()
+    std20 = hist['Close'].rolling(window=20).std()
+    hist['BB_Width'] = (sma20 + (std20 * 2)) - (sma20 - (std20 * 2))
+
+    # --- 2. Charttechnische Werte ---
+    close = hist['Close'].iloc[-1]
+    ema50 = hist['EMA50'].iloc[-1]
+    ema200 = hist['EMA200'].iloc[-1]
     low_20 = hist['Low'].iloc[-20:].min()
     high_20 = hist['High'].iloc[-20:].max()
     
-    # LOGIK:
-    # Einstieg: Wir orientieren uns am EMA50 (Pullback-Zone)
     einstieg = round(ema50, 2)
-    
-    # Stop-Loss: Technischer Support unter dem EMA200 oder 20-Tage-Tief
     support_level = min(ema200, low_20)
-    stop_loss = round(support_level * 0.98, 2) # 2% Puffer unter Support
-    
+    stop_loss = round(support_level * 0.98, 2)
     risiko = einstieg - stop_loss
     
-    # TP1: Erster Widerstand bei den Hochs der letzten 20 Tage
     tp1 = round(high_20, 2)
-    
-    # NEU: TP2 soll mindestens 2.5x das Risiko sein ODER das nächste Widerstands-Level
-    # Das zwingt das Skript zu größeren Zielen:
     tp2 = round(max(einstieg + (risiko * 2.5), high_20 * 1.05), 2)
     
-    # Dynamische CRV Berechnung
-    gewinn_tp1 = tp1 - einstieg
-    gewinn_tp2 = tp2 - einstieg
+    # --- 3. Scoring & Signale ---
+    is_golden_cross = (hist['EMA50'].iloc[-2] < hist['EMA200'].iloc[-2]) & (hist['EMA50'].iloc[-1] > hist['EMA200'].iloc[-1])
+    is_breakout = close > high_20
+    is_oversold = hist['RSI'].iloc[-1] < 40
+    score = (2 if is_golden_cross else 0) + (1 if is_breakout else 0) + (1 if is_oversold else 0)
     
-    crv_tp1 = round(gewinn_tp1 / risiko, 1) if risiko > 0 else 0
-    crv_tp2 = round(gewinn_tp2 / risiko, 1) if risiko > 0 else 0
+    # --- 4. Markt-Kontext ---
+    markt_trend = "Bullish" if close > ema200 else "Bearish"
+    markt_details = f"Kurs: {round(close, 2)} | EMA50: {round(ema50, 2)} | EMA200: {round(ema200, 2)}"
 
     return {
-        "Ticker": ticker, "Name": name, "Sektor": sektor, 
-        "Einstieg": einstieg, "Stop": stop_loss, 
-        "TP1": tp1, "CRV_TP1": f"1:{crv_tp1}",
-        "TP2": tp2, "CRV_TP2": f"1:{crv_tp2}"
+        "Ticker": ticker, "Name": name, "Sektor": sektor,
+        "Score": score, "Setup": "Breakout" if is_breakout else "Neutral",
+        "Einstieg": einstieg, "Stop": stop_loss,
+        "CRV_TP1": round((tp1 - einstieg) / risiko, 1) if risiko > 0 else 0,
+        "CRV_TP2": round((tp2 - einstieg) / risiko, 1) if risiko > 0 else 0,
+        "Markt_Trend": markt_trend, "Markt_Details": markt_details
     }
+
+# --- HAUPTTEIL: Analyse ausführen und sortieren ---
+# Hier fügst du deine Liste ein, z.B. ticker_liste = ['AMGN', 'VRTX', ...]
+# setups = []
+# for t in ticker_liste:
+#     result = analyze_a_setup(t, "DeinSektor", None)
+#     if result: setups.append(result)
+
+# df = pd.DataFrame(setups)
+# if not df.empty:
+#     # Sortieren nach Score (absteigend) und CRV_TP2 (absteigend)
+#     df = df.sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+#     df.to_csv('analyse_ergebnisse.csv', index=False)
     
 # 1. Marktstatus abrufen
 markt_status, markt_details = get_market_status()
