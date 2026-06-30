@@ -14,14 +14,19 @@ sektoren_map = {
 }
 
 sektoren_aktien = {
-    "XLK": ["AAPL", "MSFT", "ORCL"], "XLF": ["JPM", "BAC", "GS"], "XLV": ["UNH", "JNJ", "LLY"],
-    "XLY": ["AMZN", "TSLA", "HD"], "XLP": ["PG", "KO", "PEP"], "XLE": ["XOM", "CVX", "SLB"],
-    "XLI": ["CAT", "GE", "HON"], "XLB": ["LIN", "APD", "ECL"], "XLU": ["NEE", "DUK", "SO"],
-    "XLRE": ["PLD", "AMT", "EQIX"], "XLC": ["META", "GOOGL", "NFLX"],
-    "SOXX": ["NVDA", "AVGO", "TXN"], "SMH": ["NVDA", "TSM", "ASML"], "IGV": ["ADBE", "CRM", "SAP"],
-    "XBI": ["AMGN", "VRTX", "GILD"], "KRE": ["FITB", "HBAN", "CFG"], "HACK": ["PANW", "CRWD", "FTNT"],
-    "CLOU": ["NOW", "SNOW", "WDAY"], "AIQ": ["NVDA", "MSFT", "GOOGL"], "BOTZ": ["ISRG", "ABB", "ROK"],
-    "IHI": ["MDT", "BSX", "ZBH"], "PAVE": ["DE", "ETN", "CAT"], "XRT": ["AMZN", "HD", "LOW"]
+    "XLK": ["AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC"],
+    "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB"],
+    "XLV": ["UNH", "JNJ", "LLY", "MRK", "PFE", "ABBV", "TMO", "DHR", "AMGN", "GILD"],
+    "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TGT", "GM", "F"],
+    "XLP": ["PG", "KO", "PEP", "COST", "WMT", "CL", "EL", "MDLZ", "GIS", "K"],
+    "XLE": ["XOM", "CVX", "SLB", "COP", "EOG", "PXD", "MPC", "PSX", "VLO", "HAL"],
+    "XLI": ["CAT", "GE", "HON", "BA", "UPS", "LMT", "DE", "MMM", "RTX", "UNP"],
+    "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC"],
+    "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL"],
+    "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI"],
+    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"],
+    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT"],
+    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU"]
 }
 
 # --- FUNKTIONEN ---
@@ -35,11 +40,12 @@ def get_live_market_data(ticker):
 
 def get_perf(ticker, name):
     hist = yf.download(ticker, period="120d", progress=False)
-    if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+    if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "Rotation-Score": 0}
     if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
     last = hist['Close'].iloc[-1]
-    def get_p(d): return round(((last / hist['Close'].iloc[-d]) - 1) * 100, 2) if len(hist) >= d else 0
-    return {"Ticker": ticker, "Sektor": name, "5T": get_p(5), "12T": get_p(12), "30T": get_p(30), "60T": get_p(60), "Rotation-Score": round((get_p(5) * 0.7 + get_p(12) * 0.3), 3)}
+    p5 = round(((last / hist['Close'].iloc[-5]) - 1) * 100, 2)
+    p12 = round(((last / hist['Close'].iloc[-12]) - 1) * 100, 2)
+    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": round((p5 * 0.7 + p12 * 0.3), 3)}
 
 def analyze_a_setup(ticker, sektor):
     hist = yf.download(ticker, period="250d", progress=False)
@@ -61,12 +67,19 @@ if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     markt_info = {"S&P 500": get_live_market_data("^GSPC"), "Nasdaq 100": get_live_market_data("^NDX")}
     
-    # Daten generieren
-    all_perf = [get_perf(t, n) for t, n in sektoren_map.items()]
-    all_setups = [analyze_a_setup(stock, sektoren_map[s_ticker]) for s_ticker, stocks in sektoren_aktien.items() for stock in stocks]
+    # Performance-Analyse
+    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+    top_2_sektoren = df_perf.head(2)['Ticker'].tolist()
     
-    df_perf = pd.DataFrame(all_perf).sort_values("Rotation-Score", ascending=False)
-    df_s = pd.DataFrame([s for s in all_setups if s and s['Score'] >= 2]).sort_values(by=['Score'], ascending=False)
+    # Setups für Top 2 Sektoren
+    all_setups = []
+    for s_ticker in top_2_sektoren:
+        for stock in sektoren_aktien.get(s_ticker, []):
+            res = analyze_a_setup(stock, sektoren_map[s_ticker])
+            if res and res['Score'] >= 2: all_setups.append(res)
+    
+    # Sortierung nach CRV1, dann CRV2
+    df_s = pd.DataFrame(all_setups).sort_values(by=['CRV1', 'CRV2'], ascending=[False, False])
     
     # Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
@@ -76,4 +89,4 @@ if __name__ == "__main__":
         f.write(f"MARKT-UPDATE {today}\n" + "="*30 + "\n\nGESAMTMARKTFILTER\n")
         for m, vals in markt_info.items():
             if vals: f.write(f"{m}: " + " | ".join([f"{k}:{v:.2f}" for k, v in vals.items()]) + "\n")
-        f.write("\nVALIDE SETUPS (Score >= 2)\n" + df_s.to_string(index=False))
+        f.write("\nTOP 2 SEKTOR SETUPS (Sortiert nach CRV)\n" + df_s.to_string(index=False))
