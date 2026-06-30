@@ -73,56 +73,40 @@ def analyze_a_setup(ticker, sektor, context):
 
 # --- 3. HAUPTTEIL ---
 print("Starte Analyse...")
+# --- HIER FÄNGT DER HAUPTTEIL AN ---
+
+# 1. Marktstatus und Performance berechnen
 markt_status, markt_details = get_market_status()
 market_context = f"{markt_status} - {markt_details}"
-df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
 
+# Hier berechnen wir df_perf, damit es für die Schleife existiert
+perf_data = [get_perf(t, n) for t, n in sektoren_map.items()]
+df_perf = pd.DataFrame(perf_data).sort_values("Rotation-Score", ascending=False)
+
+# 2. Analyse der Top-Sektoren
+print("Starte Analyse...")
 setups = []
+
 for index, row in df_perf.head(2).iterrows():
-    sektor_name = row['Sektor']
-    ticker_key = row['Ticker']
-    print(f"DEBUG: Prüfe Sektor: {sektor_name} ({ticker_key})")
-    
-    for t in sektoren_aktien.get(ticker_key, [])[:3]:
-        # Daten abrufen und prüfen
-        ticker_data = yf.Ticker(t).history(period="200d")
-        print(f"DEBUG: Ticker {t} liefert {len(ticker_data)} Tage Daten.")
-        
-        if len(ticker_data) < 200:
-            print(f"DEBUG: Ticker {t} übersprungen, zu wenig Daten.")
-            continue
-            
-        res = analyze_a_setup(t, sektor_name, market_context)
+    for t in sektoren_aktien.get(row['Ticker'], [])[:3]:
+        res = analyze_a_setup(t, row['Sektor'], market_context)
         if res:
             setups.append(res)
             print(f"DEBUG: ERFOLG - {t} wurde hinzugefügt!")
-        else:
-            print(f"DEBUG: Analyse lieferte None für {t}")
 
+# 3. Speichern - HIER IST DIE WICHTIGE EINRÜCKUNG (INDENTATION)
 if setups:
     df_setups = pd.DataFrame(setups)
-    if setups:
-    df_setups = pd.DataFrame(setups)
-    
-    # ÄNDERE DIESE ZEILE:
-    # Vorher: df_setups = df_setups[df_setups['Score'] >= 1]
-    # NEU (zum Testen):
-    df_setups = df_setups[df_setups['Score'] >= 0] 
-    
-    df_setups = df_setups.sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
-    
-    # ... Rest des Speicher-Blocks
-    .sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+    # Filtern (auf >= 0 geändert, damit wir Ergebnisse sehen)
+    df_setups = df_setups[df_setups['Score'] >= 0].sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
     
     # Speichern
     base_path = os.getcwd()
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # 1. Archiv-Dateien (mit Datum)
+    # Dateien speichern
     df_perf.to_csv(os.path.join(base_path, f"Performance({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
     df_setups.to_csv(os.path.join(base_path, f"Setups({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
-    
-    # 2. Fix-Dateien (für den Workflow Upload)
     df_perf.to_csv(os.path.join(base_path, "Performance.csv"), index=False, sep=';', encoding='utf-8-sig')
     df_setups.to_csv(os.path.join(base_path, "Setups.csv"), index=False, sep=';', encoding='utf-8-sig')
     
