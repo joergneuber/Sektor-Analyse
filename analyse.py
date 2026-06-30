@@ -54,4 +54,47 @@ def get_perf(ticker, name):
 def analyze_a_setup(ticker, sektor):
     try:
         hist = yf.download(ticker, period="250d", progress=False)
-        if hist.empty or len(hist) < 2
+        if hist.empty or len(hist) < 200: return None
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
+        atr = (hist['High'] - hist['Low']).rolling(14).mean().iloc[-1]
+        curr, entry, stop = round(hist['Close'].iloc[-1], 2), round(hist['High'].rolling(20).max().iloc[-1], 2), round(hist['Low'].rolling(20).min().iloc[-1], 2)
+        risiko = entry - stop
+        return {
+            "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
+            "Score": sum([1 for e in [20, 50, 100, 200] if hist['Close'].iloc[-1] > hist[f'EMA{e}'].iloc[-1]]),
+            "Kurs": curr, "Einstieg": entry, "Stop": stop, "TP1": round(entry + atr, 2), 
+            "TP2": round(entry + (atr * 3), 2), 
+            "CRV1": round((entry + atr - entry) / risiko, 2) if risiko > 0 else 0.0, 
+            "CRV2": round((entry + (atr * 3) - entry) / risiko, 2) if risiko > 0 else 0.0
+        }
+    except: return None
+
+# --- HAUPTTEIL ---
+if __name__ == "__main__":
+    today = datetime.now().strftime("%Y-%m-%d")
+    markt_info = {"S&P 500": get_live_market_data("^GSPC"), "Nasdaq 100": get_live_market_data("^NDX")}
+    
+    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+    top_2_sektoren = df_perf.head(2)['Ticker'].tolist()
+    
+    all_setups = []
+    for s_ticker in top_2_sektoren:
+        for stock in sektoren_aktien.get(s_ticker, []):
+            res = analyze_a_setup(stock, sektoren_map[s_ticker])
+            if res and res.get('Score', 0) >= 2 and res.get('CRV1', 0) > 0: 
+                all_setups.append(res)
+    
+    cols = ["Ticker", "Name", "Sektor", "Score", "Kurs", "Einstieg", "Stop", "TP1", "TP2", "CRV1", "CRV2"]
+    df_s = pd.DataFrame(all_setups).sort_values(by=['CRV1', 'CRV2'], ascending=[False, False]) if all_setups else pd.DataFrame(columns=cols)
+    
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
+        f.write(f"MARKT-UPDATE {today}\n" + "="*30 + "\n\nGESAMTMARKTFILTER\n")
+        for m, vals in markt_info.items():
+            if vals: f.write(f"{m}: " + " | ".join([f"{k}:{v:.2f}" for k, v in vals.items()]) + "\n")
+        f.write("\nTOP 2 SEKTOR SETUPS (Sortiert nach CRV)\n" + df_s.to_string(index=False))
+
+    print("Briefing, Performance- und Setup-Dateien wurden erfolgreich erstellt.")
