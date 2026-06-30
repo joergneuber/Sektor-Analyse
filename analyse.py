@@ -135,28 +135,32 @@ def analyze_a_setup(ticker, sektor, context):
         "Markt_Trend": markt_trend, "Markt_Details": markt_details
     }
 
-# --- HIER IST DIE KORREKTE REIHENFOLGE ---
+# ... (dein Code für die Sektoren-Performance und Markt-Status)
 
+# --- HIER IST DIE DEFINITION DER LISTE ---
+setups = []  # <--- Muss vor der Schleife stehen!
+
+# 3. Hauptlogik - Analyse der Top-Sektoren
 print("Starte Analyse...")
-setups = []  # 1. Variable HIER initialisieren
 
-# 2. Schleife zum Füllen der Liste
+# Wir gehen die Top-Sektoren durch
 for index, row in df_perf.head(2).iterrows():
     sektor_name = row['Sektor']
     ticker_key = row['Ticker']
     
+    # Innere Schleife
     for t in sektoren_aktien.get(ticker_key, [])[:3]:
         res = analyze_a_setup(t, sektor_name, market_context)
         if res:
             setups.append(res)
-        else:
-            print(f"DEBUG: Keine Daten für {t}")
 
-# 3. JETZT ist 'setups' bekannt und kann benutzt werden
+# Erst NACH der Schleife darfst du auf 'setups' zugreifen
 print(f"DEBUG: Anzahl der gesammelten Setups: {len(setups)}")
 
-# 4. Erst jetzt wird das DataFrame erzeugt
-df_setups = pd.DataFrame(setups)
+# --- HIER ERST DIE WEITERVERARBEITUNG ---
+if len(setups) > 0:
+    df_setups = pd.DataFrame(setups)
+    # ... (Rest deines Codes)
 
 # ... weiter mit deinem Speicher-Code
 if not df_setups.empty:
