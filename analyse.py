@@ -159,18 +159,24 @@ df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
 
 # 3. Hauptlogik - Analyse der Top-Sektoren
 print("Starte Analyse...")
-setups = []
+setups = []  # <--- HIER MUSS ES INITIALISIERT WERDEN
 
 # Wir gehen die Top-Sektoren durch
 for index, row in df_perf.head(2).iterrows():
     sektor_name = row['Sektor']
     ticker_key = row['Ticker']
     
-    # HIER ist die innere Schleife, die 't' definiert:
     for t in sektoren_aktien.get(ticker_key, [])[:3]:
-        # Jetzt kennt Python 't' und kann es an analyze_a_setup übergeben
-        setups.append(analyze_a_setup(t, sektor_name, market_context))
+        res = analyze_a_setup(t, sektor_name, market_context)
+        if res:
+            setups.append(res)
+        else:
+            print(f"DEBUG: Keine Daten für {t}")
 
+# JETZT ist 'setups' gefüllt und der print-Befehl funktioniert:
+print(f"DEBUG: Anzahl der gesammelten Setups: {len(setups)}")
+
+# Erst danach das DataFrame erstellen und speichern
 df_setups = pd.DataFrame(setups)
 
 # Marktstatus in das Setup-Log oder den Report einfügen
