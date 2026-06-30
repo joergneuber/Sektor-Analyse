@@ -36,15 +36,21 @@ def get_perf(ticker, name):
 def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
+    
+    # 1. EMAs berechnen
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
+    
+    # 2. ATR selbst berechnen (High - Low der letzten 14 Tage)
+    hist['TR'] = hist['High'] - hist['Low']
+    atr = hist['TR'].rolling(14).mean().iloc[-1]
     
     close = hist['Close'].iloc[-1]
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
     
-    # Charttechnische Ziele
+    # 3. Charttechnische Ziele
     tp1 = round(hist['High'].rolling(20).max().iloc[-1], 2)
-    atr = hist['High'].sub(hist['Low']).rolling(14).mean().iloc[-1]
-    tp2 = round(tp1 + (atr * 3), 2) # TP2 auf Basis 3*ATR
+    # TP2 basierend auf der selbst berechneten ATR
+    tp2 = round(tp1 + (atr * 3), 2)
     
     entry = round(max(close, hist['EMA50'].iloc[-1]), 2)
     stop_loss = round(min(low_20, hist['EMA200'].iloc[-1] * 0.98), 2)
