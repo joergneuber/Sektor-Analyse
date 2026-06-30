@@ -53,6 +53,16 @@ def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
+    # --- WICHTIG: Hier müssen die Spalten erst berechnet werden ---
+    hist['EMA20'] = hist['Close'].ewm(span=20).mean()
+    hist['EMA50'] = hist['Close'].ewm(span=50).mean()
+    hist['EMA100'] = hist['Close'].ewm(span=100).mean()
+    hist['EMA200'] = hist['Close'].ewm(span=200).mean()
+    
+    # Jetzt existieren die Spalten und die Score-Berechnung funktioniert
+    close = hist['Close'].iloc[-1]
+    # ... Rest des Codes ...
+    
     close = hist['Close'].iloc[-1]
     # Technische Anker identifizieren
     wma200 = hist['Close'].rolling(window=200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True).iloc[-1]
