@@ -40,9 +40,11 @@ def analyze_a_setup(ticker, sektor, context):
     
     close = hist['Close'].iloc[-1]
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
-    # Charttechnische Marken für TP1 (20d High) und TP2 (60d High)
+    
+    # Charttechnische Ziele
     tp1 = round(hist['High'].rolling(20).max().iloc[-1], 2)
-    tp2 = round(hist['High'].rolling(60).max().iloc[-1], 2)
+    atr = hist['High'].sub(hist['Low']).rolling(14).mean().iloc[-1]
+    tp2 = round(tp1 + (atr * 3), 2) # TP2 auf Basis 3*ATR
     
     entry = round(max(close, hist['EMA50'].iloc[-1]), 2)
     stop_loss = round(min(low_20, hist['EMA200'].iloc[-1] * 0.98), 2)
@@ -61,23 +63,20 @@ def analyze_a_setup(ticker, sektor, context):
 
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
-    # 1. Performance-Daten berechnen
-    perf_list = [get_perf(t, n) for t, n in sektoren_map.items()]
-    df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
+    # 1. Performance-Daten
+    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
-    # 2. Setup-Analysen erstellen
+    # 2. Setup-Analysen
     all_setups = [analyze_a_setup(t, row['Sektor'], "Trend aktiv") for _, row in df_perf.head(2).iterrows() for t in sektoren_aktien.get(row['Ticker'], [])]
     
-    # 3. Export aller Dateien
+    # 3. Export
     if (setups := [s for s in all_setups if s]):
         today = datetime.now().strftime("%Y-%m-%d")
         df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
         
-        # Speichern als CSV
         df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
         df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
         
-        # Briefing.txt schreiben
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
             f.write(f"Markt-Update {today}\n" + "="*30 + "\n\n")
             cols = ["Ticker", "Name", "Score", "Bedeutung", "Einstieg", "Stop", "TP1", "TP2", "CRV1", "CRV2"]
