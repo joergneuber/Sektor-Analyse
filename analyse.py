@@ -25,6 +25,22 @@ sektoren_aktien = {
 }
 
 # --- FUNKTIONEN ---
+def check_marktfilter():
+    markt_status = {}
+    for ticker in ["SPY", "QQQ"]:
+        data = yf.Ticker(ticker).history(period="250d")
+        ema20 = data['Close'].ewm(span=20).mean().iloc[-1]
+        ema50 = data['Close'].ewm(span=50).mean().iloc[-1]
+        ema100 = data['Close'].ewm(span=100).mean().iloc[-1]
+        ema200 = data['Close'].ewm(span=200).mean().iloc[-1]
+        
+        # Marktqualität bewerten: Bullish, wenn EMA20 > EMA50 > EMA100 > EMA200
+        is_bullish = ema20 > ema50 > ema100 > ema200
+        status = "Stark Bullish (EMA-Fächer offen)" if is_bullish else "Neutral/Vorsichtig"
+        markt_status[ticker] = f"{status} (EMA20: {round(ema20, 2)} | EMA50: {round(ema50, 2)} | EMA100: {round(ema100, 2)} | EMA200: {round(ema200, 2)})"
+    return markt_status
+
+# --- FUNKTIONEN ---
 def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
     if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
