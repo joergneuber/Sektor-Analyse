@@ -87,6 +87,18 @@ for index, row in df_perf.head(2).iterrows():
 if setups:
     df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
     today = datetime.now().strftime("%Y-%m-%d")
-    for f in ["Setups.csv", f"Setups({today}).csv"]:
-        df_s.to_csv(os.path.join(os.getcwd(), f), index=False, sep=';', encoding='utf-8-sig')
-    print(f"Analyse fertig: {len(df_s)} Aktien analysiert.")
+    
+    # Pfade definieren
+    files_to_save = {
+        "Setups.csv": df_s,
+        f"Setups({today}).csv": df_s,
+        "Performance.csv": df_perf,
+        f"Performance({today}).csv": df_perf
+    }
+    
+    for filename, df in files_to_save.items():
+        df.to_csv(os.path.join(os.getcwd(), filename), index=False, sep=';', encoding='utf-8-sig')
+    
+    print(f"Analyse fertig: {len(df_s)} Setups und Performance-Daten gespeichert.")
+else:
+    print("Keine Setups gefunden.")
