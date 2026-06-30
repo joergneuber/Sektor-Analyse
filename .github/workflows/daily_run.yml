@@ -1,4 +1,4 @@
-name: Tägliche Aktien Analyse
+name: Tägliche Analyse Sektoren
 
 on:
   schedule:
