@@ -40,7 +40,7 @@ def get_live_market_data(ticker):
 
 def get_perf(ticker, name):
     hist = yf.download(ticker, period="120d", progress=False)
-    if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "Rotation-Score": 0}
+    if hist.empty: return {"Ticker": ticker, "Sektor": name, "Rotation-Score": 0}
     if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
     last = hist['Close'].iloc[-1]
     p5 = round(((last / hist['Close'].iloc[-5]) - 1) * 100, 2)
@@ -55,11 +55,14 @@ def analyze_a_setup(ticker, sektor):
     atr = (hist['High'] - hist['Low']).rolling(14).mean().iloc[-1]
     curr, entry, stop = round(hist['Close'].iloc[-1], 2), round(hist['High'].rolling(20).max().iloc[-1], 2), round(hist['Low'].rolling(20).min().iloc[-1], 2)
     risiko = entry - stop
+    
     return {
         "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
         "Score": sum([1 for e in [20, 50, 100, 200] if hist['Close'].iloc[-1] > hist[f'EMA{e}'].iloc[-1]]),
-        "Kurs": curr, "Einstieg": entry, "Stop": stop, "TP1": round(entry + atr, 2), "TP2": round(entry + (atr * 3), 2),
-        "CRV1": round((entry + atr - entry) / risiko, 2) if risiko > 0 else 0, "CRV2": round((entry + (atr * 3) - entry) / risiko, 2) if risiko > 0 else 0
+        "Kurs": curr, "Einstieg": entry, "Stop": stop, "TP1": round(entry + atr, 2), 
+        "TP2": round(entry + (atr * 3), 2), 
+        "CRV1": round((entry + atr - entry) / risiko, 2) if risiko > 0 else 0.0, 
+        "CRV2": round((entry + (atr * 3) - entry) / risiko, 2) if risiko > 0 else 0.0
     }
 
 # --- HAUPTTEIL ---
@@ -67,21 +70,20 @@ if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     markt_info = {"S&P 500": get_live_market_data("^GSPC"), "Nasdaq 100": get_live_market_data("^NDX")}
     
-    # Performance-Analyse
+    # 1. Top 2 Sektoren finden
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     top_2_sektoren = df_perf.head(2)['Ticker'].tolist()
     
-    # Setups für Top 2 Sektoren
+    # 2. Setups nur für Top 2 Sektoren
     all_setups = []
     for s_ticker in top_2_sektoren:
         for stock in sektoren_aktien.get(s_ticker, []):
             res = analyze_a_setup(stock, sektoren_map[s_ticker])
-            if res and res['Score'] >= 2: all_setups.append(res)
+            if res and res['Score'] >= 2 and res['CRV1'] > 0: all_setups.append(res)
     
-    # Sortierung nach CRV1, dann CRV2
+    # 3. Sortierung & Export
     df_s = pd.DataFrame(all_setups).sort_values(by=['CRV1', 'CRV2'], ascending=[False, False])
     
-    # Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
@@ -90,3 +92,5 @@ if __name__ == "__main__":
         for m, vals in markt_info.items():
             if vals: f.write(f"{m}: " + " | ".join([f"{k}:{v:.2f}" for k, v in vals.items()]) + "\n")
         f.write("\nTOP 2 SEKTOR SETUPS (Sortiert nach CRV)\n" + df_s.to_string(index=False))
+
+print("Skript beendet. Dateien erfolgreich erstellt.")
