@@ -159,76 +159,39 @@ df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
 
 # 3. Hauptlogik - Analyse der Top-Sektoren
 print("Starte Analyse...")
-setups = []  # <--- HIER MUSS ES INITIALISIERT WERDEN
+setups = []  # <--- HIER wird die Variable initialisiert
 
 # Wir gehen die Top-Sektoren durch
 for index, row in df_perf.head(2).iterrows():
     sektor_name = row['Sektor']
     ticker_key = row['Ticker']
     
+    # Hier werden die Daten gesammelt
     for t in sektoren_aktien.get(ticker_key, [])[:3]:
         res = analyze_a_setup(t, sektor_name, market_context)
         if res:
             setups.append(res)
-        else:
-            print(f"DEBUG: Keine Daten für {t}")
 
-# JETZT ist 'setups' gefüllt und der print-Befehl funktioniert:
+# Erst JETZT existiert 'setups' und kann geprüft werden
 print(f"DEBUG: Anzahl der gesammelten Setups: {len(setups)}")
 
-# Erst danach das DataFrame erstellen und speichern
+# 4. DataFrame erstellen und filtern
 df_setups = pd.DataFrame(setups)
 
-# Marktstatus in das Setup-Log oder den Report einfügen
-print(f"--- Marktstatus ---")
-print(f"Trend: {markt_status}")
-print(f"Details: {markt_details}")
-
-# 4. Marktbericht speichern
-with open("Marktbericht.txt", "w") as f:
-    f.write(f"Trend SPY: {markt_status}\n")
-    f.write(f"Details: {markt_details}\n")
-
-# ... (dein restlicher Code vorher bleibt gleich)
-
-# Hier werden die Markt-Daten in den DataFrame geschrieben
-df_setups['Markt_Trend'] = markt_status
-df_setups['Markt_Details'] = markt_details
-
-# --- HIER EINFÜGEN: Sortier- & Filterlogik ---
 if not df_setups.empty:
-    # 1. Filtern: Entferne "Rauschen" (Score < 1)
+    # Filter: Entferne Rauschen (Score >= 1)
     df_setups = df_setups[df_setups['Score'] >= 1]
     
-    # 2. Sortieren nach Score (absteigend) und CRV_TP2 (absteigend)
+    # Sortieren
     df_setups = df_setups.sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+    
+    # Markt-Details hinzufügen
+    df_setups['Markt_Trend'] = markt_status
+    df_setups['Markt_Details'] = markt_details
 
-# Dateinamen dynamisch erstellen
+# 5. Speichern
 today = datetime.now().strftime("%Y-%m-%d")
-setups_filename = f"Setups({today}).csv"
-setups_path = os.path.join(os.getcwd(), setups_filename)
-
-# 3. CSV mit sauberem Format speichern (semikolon-getrennt für Excel)
+setups_path = os.path.join(os.getcwd(), f"Setups({today}).csv")
 df_setups.to_csv(setups_path, index=False, sep=';', encoding='utf-8-sig')
 
-# ... (restliche print-Befehle)
-# Hier werden die Markt-Daten in den DataFrame geschrieben, 
-# damit sie in der CSV landen:
-df_setups['Markt_Trend'] = markt_status
-df_setups['Markt_Details'] = markt_details
-
-base_path = os.getcwd()
-today = datetime.now().strftime("%Y-%m-%d")
-
-# Dateinamen dynamisch erstellen
-perf_filename = f"Performance({today}).csv"
-setups_filename = f"Setups({today}).csv"
-
-perf_path = os.path.join(base_path, perf_filename)
-setups_path = os.path.join(base_path, setups_filename)
-
-df_perf.to_csv(perf_path, index=False)
-df_setups.to_csv(setups_path, index=False)
-
-print(f"Dateien erfolgreich gespeichert unter: {base_path}")
-print(f"Dateinamen: {perf_filename} und {setups_filename}")
+print(f"Analyse fertig. {len(df_setups)} Setups in {setups_path} gespeichert.")
