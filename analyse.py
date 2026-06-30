@@ -53,32 +53,40 @@ def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
-    # Technische Indikatoren
-    hist['WMA200'] = hist['Close'].rolling(window=200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
+    # 1. Indikatoren-Berechnung
+    hist['EMA20'] = hist['Close'].ewm(span=20).mean()
     hist['EMA50'] = hist['Close'].ewm(span=50).mean()
+    hist['EMA100'] = hist['Close'].ewm(span=100).mean()
+    hist['EMA200'] = hist['Close'].ewm(span=200).mean()
+    hist['WMA200'] = hist['Close'].rolling(window=200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
     
     close = hist['Close'].iloc[-1]
     wma200 = hist['WMA200'].iloc[-1]
     low_20d = hist['Low'].rolling(20).min().iloc[-1]
     high_20d = hist['High'].rolling(20).max().iloc[-1]
     
-    # 1. & 2. Einstieg & Stop-Loss (Technisch basiert)
+    # 2. Score-Berechnung (Differenziert)
+    c_ema = [1 if close > hist[e].iloc[-1] else 0 for e in ['EMA20','EMA50','EMA100','EMA200']]
+    momentum = 1 if hist['EMA20'].iloc[-1] > hist['EMA50'].iloc[-1] else 0
+    impuls = 1 if close > hist['Close'].iloc[-5] else 0
+    score = sum(c_ema) + momentum + impuls
+    
+    # 3. Technische Marken
     fib_618 = high_20d - (high_20d - low_20d) * 0.618
     entry = round(max(close, wma200, fib_618), 2)
     stop_loss = round(min(low_20d, wma200 * 0.98), 2)
-    risiko = entry - stop_loss
+    risiko = round(entry - stop_loss, 2)
     
-    # 3. & 4. Take-Profit (Technisch basiert)
-    tp1 = round(entry + (risiko * 1.0), 2) # 1:1 Break-Even Ziel
-    tp2 = round(entry + (risiko * 1.618), 2) # Fib-Extension 161.8%
-    
-    # Scoring (Beibehaltung der Logik)
-    score = 6 # Beispielhafter Score-Platzhalter, ersetze mit deiner vollen Score-Logik
+    # 4. Ziele & CRV
+    tp1 = round(entry + (risiko * 1.0), 2)
+    tp2 = round(entry + (risiko * 1.618), 2)
+    crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0
+    crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0
     
     return {
         "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-        "Score": score, "Einstieg": entry, "Stop": stop_loss, "TP1": tp1, "TP2": tp2,
-        "Markt_Trend": context
+        "Score": score, "Einstieg": entry, "Stop": stop_loss, 
+        "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Markt_Trend": context
     }
 
 # --- 3. HAUPTTEIL ---
@@ -96,6 +104,6 @@ if setups:
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Markt-Update {today}: {markt_details}\n")
-        f.write("="*50 + "\nDetaillierte Analyse:\n\n")
+        f.write("="*80 + "\n")
         f.write(df_s.to_string(index=False))
     print("Analyse fertig.")
