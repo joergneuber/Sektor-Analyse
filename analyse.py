@@ -30,86 +30,63 @@ sektoren_aktien = {
 def get_market_status():
     market = yf.Ticker("^GSPC")
     hist = market.history(period="250d") 
-    if hist.empty: return "Neutral", "Marktdaten nicht abrufbar"
-    current_close = hist['Close'].iloc[-1]
-    ema50 = hist['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    ema200 = hist['Close'].ewm(span=200, adjust=False).mean().iloc[-1]
-    status = "Bullish" if current_close > ema50 and current_close > ema200 else ("Bearish" if current_close < ema50 and current_close < ema200 else "Neutral")
-    details = f"S&P 500 Kurs: {current_close:.2f} | EMA50: {ema50:.2f} | EMA200: {ema200:.2f}"
-    return status, details
+    if hist.empty: return "Neutral", "Keine Marktdaten"
+    c = hist['Close'].iloc[-1]
+    e50 = hist['Close'].ewm(span=50).mean().iloc[-1]
+    e200 = hist['Close'].ewm(span=200).mean().iloc[-1]
+    status = "Bullish" if c > e50 and c > e200 else ("Bearish" if c < e50 and c < e200 else "Neutral")
+    return status, f"S&P 500: {c:.2f} | EMA50: {e50:.2f} | EMA200: {e200:.2f}"
 
 def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
-    if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
-    last_close = data['Close'].iloc[-1]
-    def safe_calc(days): return (last_close / data['Close'].iloc[-days]) - 1 if days < len(data) else 0
-    p5, p12, p30, p60 = safe_calc(5), safe_calc(12), safe_calc(30), safe_calc(60)
-    return {"Ticker": ticker, "Sektor": name, "5T": round(p5*100, 3), "12T": round(p12*100, 3), "30T": round(p30*100, 3), "60T": round(p60*100, 3), "Rotation-Score": round(((p5*0.7) + (p12*0.3))*100, 3)}
+    if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "Rotation-Score": 0}
+    last = data['Close'].iloc[-1]
+    p5 = (last / data['Close'].iloc[-5]) - 1
+    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": round(p5*100, 3)}
 
 def analyze_a_setup(ticker, sektor, context):
-    ticker_obj = yf.Ticker(ticker)
-    name = ticker_obj.info.get('longName', ticker)
-    hist = ticker_obj.history(period="200d")
-    # DEBUG: Schau, ob wir überhaupt Daten bekommen
-    if hist.empty or len(hist) < 200:
-        print(f"DEBUG: Ticker {ticker} hat zu wenige Daten ({len(hist)} Tage)")
-        return None
-    if hist.empty: return None (entferne or len(hist) < 200)
+    hist = yf.Ticker(ticker).history(period="250d")
+    if hist.empty or len(hist) < 200: return None
+    
+    hist['EMA20'] = hist['Close'].ewm(span=20).mean()
     hist['EMA50'] = hist['Close'].ewm(span=50).mean()
+    hist['EMA100'] = hist['Close'].ewm(span=100).mean()
     hist['EMA200'] = hist['Close'].ewm(span=200).mean()
+    
+    # ATR Berechnung
+    tr = pd.concat([hist['High']-hist['Low'], abs(hist['High']-hist['Close'].shift()), abs(hist['Low']-hist['Close'].shift())], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1]
+    
+    close = hist['Close'].iloc[-1]
+    c_ema20, c_ema50, c_ema100, c_ema200 = (1 if close > hist[e].iloc[-1] else 0 for e in ['EMA20','EMA50','EMA100','EMA200'])
+    c_mom = 1 if hist['EMA20'].iloc[-1] > hist['EMA50'].iloc[-1] else 0
+    c_imp = 1 if close > hist['Close'].iloc[-5] else 0
+    
     delta = hist['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    hist['RSI'] = 100 - (100 / (1 + (gain / loss)))
-    close, ema50, ema200 = hist['Close'].iloc[-1], hist['EMA50'].iloc[-1], hist['EMA200'].iloc[-1]
-    low_20, high_20 = hist['Low'].iloc[-20:].min(), hist['High'].iloc[-20:].max()
-    einstieg = round(ema50, 2)
-    stop_loss = round(min(ema200, low_20) * 0.98, 2)
-    risiko = einstieg - stop_loss
-    tp1 = round(high_20, 2)
-    tp2 = round(max(einstieg + (risiko * 2.5), high_20 * 1.05), 2)
-    score = (2 if (hist['EMA50'].iloc[-2] < hist['EMA200'].iloc[-2] and hist['EMA50'].iloc[-1] > hist['EMA200'].iloc[-1]) else 0) + (1 if close > high_20 else 0) + (1 if hist['RSI'].iloc[-1] < 40 else 0)
-    return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Score": score, "Setup": "Breakout" if close > high_20 else "Neutral", "Einstieg": einstieg, "Stop": stop_loss, "CRV_TP1": round((tp1 - einstieg) / risiko, 1) if risiko > 0 else 0, "CRV_TP2": round((tp2 - einstieg) / risiko, 1) if risiko > 0 else 0, "Markt_Trend": "Bullish" if close > ema200 else "Bearish", "Markt_Details": f"Kurs: {round(close, 2)} | EMA50: {round(ema50, 2)} | EMA200: {round(ema200, 2)}"}
+    rsi = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / (-delta.where(delta < 0, 0).rolling(14).mean()))))
+    c_rsi = -1 if rsi.iloc[-1] > 75 else 0
+    
+    return {
+        "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
+        "Score": c_ema20 + c_ema50 + c_ema100 + c_ema200 + c_mom + c_imp + c_rsi,
+        "EMA20": c_ema20, "EMA50": c_ema50, "EMA100": c_ema100, "EMA200": c_ema200,
+        "Momentum": c_mom, "Impuls": c_imp, "RSI_Warn": c_rsi,
+        "Einstieg": round(close, 2), "Stop": round(close - (atr * 2), 2),
+        "CRV_TP1": 1.0, "CRV_TP2": 2.5, "Markt_Trend": context
+    }
 
 # --- 3. HAUPTTEIL ---
-print("Starte Analyse...")
-# --- HIER FÄNGT DER HAUPTTEIL AN ---
-
-# 1. Marktstatus und Performance berechnen
 markt_status, markt_details = get_market_status()
-market_context = f"{markt_status} - {markt_details}"
-
-# Hier berechnen wir df_perf, damit es für die Schleife existiert
-perf_data = [get_perf(t, n) for t, n in sektoren_map.items()]
-df_perf = pd.DataFrame(perf_data).sort_values("Rotation-Score", ascending=False)
-
-# 2. Analyse der Top-Sektoren
-print("Starte Analyse...")
+df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
 setups = []
-
 for index, row in df_perf.head(2).iterrows():
     for t in sektoren_aktien.get(row['Ticker'], [])[:3]:
-        res = analyze_a_setup(t, row['Sektor'], market_context)
-        if res:
-            setups.append(res)
-            print(f"DEBUG: ERFOLG - {t} wurde hinzugefügt!")
+        res = analyze_a_setup(t, row['Sektor'], f"{markt_status} - {markt_details}")
+        if res: setups.append(res)
 
-# 3. Speichern - HIER IST DIE WICHTIGE EINRÜCKUNG (INDENTATION)
 if setups:
-    df_setups = pd.DataFrame(setups)
-    # Filtern (auf >= 0 geändert, damit wir Ergebnisse sehen)
-    df_setups = df_setups[df_setups['Score'] >= 0].sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
-    
-    # Speichern
-    base_path = os.getcwd()
+    df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
     today = datetime.now().strftime("%Y-%m-%d")
-    
-    # Dateien speichern
-    df_perf.to_csv(os.path.join(base_path, f"Performance({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
-    df_setups.to_csv(os.path.join(base_path, f"Setups({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
-    df_perf.to_csv(os.path.join(base_path, "Performance.csv"), index=False, sep=';', encoding='utf-8-sig')
-    df_setups.to_csv(os.path.join(base_path, "Setups.csv"), index=False, sep=';', encoding='utf-8-sig')
-    
-    print(f"Analyse abgeschlossen. {len(df_setups)} Setups gespeichert.")
-else:
-    print("Keine Setups gefunden.")
+    for f in ["Setups.csv", f"Setups({today}).csv"]:
+        df_s.to_csv(os.path.join(os.getcwd(), f), index=False, sep=';', encoding='utf-8-sig')
+    print(f"Analyse fertig: {len(df_s)} Aktien analysiert.")
