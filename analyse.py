@@ -38,7 +38,6 @@ def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
-    # Indikatoren berechnen
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
     
     close = hist['Close'].iloc[-1]
@@ -46,38 +45,6 @@ def analyze_a_setup(ticker, sektor, context):
     high_20 = hist['High'].rolling(20).max().iloc[-1]
     resistance_50 = hist['High'].rolling(50).max().iloc[-1]
     
-    # Scoring-Logik: 4 EMAs werden geprüft
-    emas = [20, 50, 100, 200]
-    score = sum([1 for e in emas if close > hist[f'EMA{e}'].iloc[-1]])
+    score = sum([1 for e in [20, 50, 100, 200] if close > hist[f'EMA{e}'].iloc[-1]])
     
-    entry = round(max(close, (high_20 - (high_20 - low_20) * 0.382)), 2)
-    stop_loss = round(min(low_20, hist['Close'].ewm(span=200).mean().iloc[-1] * 0.97), 2)
-    risiko = entry - stop_loss
-    
-    tp1 = round(high_20, 2)
-    tp2 = round(resistance_50, 2)
-    
-    crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
-    crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
-    
-    return {
-        "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-        "Score": score, "Bedeutung": f"{score}/4 EMAs bullish", 
-        "Einstieg": entry, "Stop": stop_loss, "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Trend": context
-    }
-
-# --- HAUPTTEIL ---
-if __name__ == "__main__":
-    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
-    
-    all_setups = [
-        analyze_a_setup(t, row['Sektor'], "Trend aktiv") 
-        for _, row in df_perf.head(2).iterrows() 
-        for t in sektoren_aktien.get(row['Ticker'], [])
-    ]
-    
-    if (setups := [s for s in all_setups if s]):
-        today = datetime.now().strftime("%Y-%m-%d")
-        df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
-        df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-        df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    entry = round(max(close
