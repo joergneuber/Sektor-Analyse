@@ -85,3 +85,37 @@ def analyze_a_setup(ticker, sektor, context):
         "Score": score, "Einstieg": entry, "Stop": stop_loss, 
         "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Markt_Trend": context
     }
+
+# --- 3. HAUPTTEIL: Berechnungen und Speichern ---
+if __name__ == "__main__":
+    print("Starte Analyse...")
+    markt_status, markt_details = get_market_status()
+    
+    # 1. Performance-Analyse
+    perf_data = [get_perf(t, n) for t, n in sektoren_map.items()]
+    df_perf = pd.DataFrame(perf_data).sort_values("Rotation-Score", ascending=False)
+    
+    # 2. Setup-Analyse für die Top-2 Sektoren
+    all_setups = []
+    for _, row in df_perf.head(2).iterrows():
+        for ticker in sektoren_aktien.get(row['Ticker'], []):
+            setup = analyze_a_setup(ticker, row['Sektor'], f"{markt_status} - {markt_details}")
+            if setup: all_setups.append(setup)
+    
+    # 3. Dateien speichern
+    if all_setups:
+        today = datetime.now().strftime("%Y-%m-%d")
+        df_s = pd.DataFrame(all_setups).sort_values(by=['Score'], ascending=False)
+        
+        # Speichern für den Upload-Prozess
+        df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+        df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+        
+        # Briefing für Gemini
+        with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+            f.write(f"Markt-Update {today}: {markt_details}\n\n")
+            f.write(df_s.to_string(index=False))
+            
+        print(f"Analyse abgeschlossen. Dateien für {today} erstellt.")
+    else:
+        print("Keine Setups gefunden.")
