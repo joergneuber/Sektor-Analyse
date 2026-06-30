@@ -182,10 +182,29 @@ with open("Marktbericht.txt", "w") as f:
     f.write(f"Trend SPY: {markt_status}\n")
     f.write(f"Details: {markt_details}\n")
 
-# 4. Speichern mit aktuellem Datum
-base_path = os.getcwd()
-today = datetime.now().strftime("%Y-%m-%d")
+# ... (dein restlicher Code vorher bleibt gleich)
 
+# Hier werden die Markt-Daten in den DataFrame geschrieben
+df_setups['Markt_Trend'] = markt_status
+df_setups['Markt_Details'] = markt_details
+
+# --- HIER EINFÜGEN: Sortier- & Filterlogik ---
+if not df_setups.empty:
+    # 1. Filtern: Entferne "Rauschen" (Score < 1)
+    df_setups = df_setups[df_setups['Score'] >= 1]
+    
+    # 2. Sortieren nach Score (absteigend) und CRV_TP2 (absteigend)
+    df_setups = df_setups.sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+
+# Dateinamen dynamisch erstellen
+today = datetime.now().strftime("%Y-%m-%d")
+setups_filename = f"Setups({today}).csv"
+setups_path = os.path.join(os.getcwd(), setups_filename)
+
+# 3. CSV mit sauberem Format speichern (semikolon-getrennt für Excel)
+df_setups.to_csv(setups_path, index=False, sep=';', encoding='utf-8-sig')
+
+# ... (restliche print-Befehle)
 # Hier werden die Markt-Daten in den DataFrame geschrieben, 
 # damit sie in der CSV landen:
 df_setups['Markt_Trend'] = markt_status
