@@ -53,33 +53,30 @@ def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
     
-    # 1. Indikatoren-Berechnung
-    hist['EMA20'] = hist['Close'].ewm(span=20).mean()
-    hist['EMA50'] = hist['Close'].ewm(span=50).mean()
-    hist['EMA100'] = hist['Close'].ewm(span=100).mean()
-    hist['EMA200'] = hist['Close'].ewm(span=200).mean()
-    hist['WMA200'] = hist['Close'].rolling(window=200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
-    
     close = hist['Close'].iloc[-1]
-    wma200 = hist['WMA200'].iloc[-1]
-    low_20d = hist['Low'].rolling(20).min().iloc[-1]
+    # Technische Anker identifizieren
+    wma200 = hist['Close'].rolling(window=200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True).iloc[-1]
+    swing_low = hist['Low'].rolling(20).min().iloc[-1]  # Stop-Anker
+    swing_high = hist['High'].rolling(20).max().iloc[-20:-1].mean() # TP1-Anker (Vortrend-Hoch)
+    
+    # 1. EINSTIEG (Entry) - Wenn Kurs nahe am WMA200 oder Fib 61.8%
     high_20d = hist['High'].rolling(20).max().iloc[-1]
-    
-    # 2. Score-Berechnung (Differenziert)
-    c_ema = [1 if close > hist[e].iloc[-1] else 0 for e in ['EMA20','EMA50','EMA100','EMA200']]
-    momentum = 1 if hist['EMA20'].iloc[-1] > hist['EMA50'].iloc[-1] else 0
-    impuls = 1 if close > hist['Close'].iloc[-5] else 0
-    score = sum(c_ema) + momentum + impuls
-    
-    # 3. Technische Marken
+    low_20d = hist['Low'].rolling(20).min().iloc[-1]
     fib_618 = high_20d - (high_20d - low_20d) * 0.618
     entry = round(max(close, wma200, fib_618), 2)
-    stop_loss = round(min(low_20d, wma200 * 0.98), 2)
+    
+    # 2. STOP-LOSS (SL) - Technisch unter Swing-Low & WMA200
+    stop_loss = round(min(swing_low, wma200 * 0.98), 2)
     risiko = round(entry - stop_loss, 2)
     
-    # 4. Ziele & CRV
-    tp1 = round(entry + (risiko * 1.0), 2)
+    # 3. TP1 - Am nächsten Widerstand (letztes Verlaufshoch)
+    tp1 = round(max(swing_high, entry + risiko), 2)
+    
+    # 4. TP2 - Übergeordnete Zone (Fib-Extension 161.8%)
     tp2 = round(entry + (risiko * 1.618), 2)
+    
+    # Scoring & CRV (Dynamisch basierend auf echten Preisen)
+    score = sum([1 if close > hist[e].iloc[-1] else 0 for e in ['EMA20','EMA50','EMA100','EMA200']])
     crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0
     crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0
     
@@ -88,22 +85,3 @@ def analyze_a_setup(ticker, sektor, context):
         "Score": score, "Einstieg": entry, "Stop": stop_loss, 
         "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Markt_Trend": context
     }
-
-# --- 3. HAUPTTEIL ---
-print("Starte Analyse...")
-markt_status, markt_details = get_market_status()
-df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
-setups = [analyze_a_setup(t, row['Sektor'], f"{markt_status} - {markt_details}") for index, row in df_perf.head(2).iterrows() for t in sektoren_aktien.get(row['Ticker'], [])[:3]]
-setups = [s for s in setups if s]
-
-if setups:
-    df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
-    today = datetime.now().strftime("%Y-%m-%d")
-    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    
-    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        f.write(f"Markt-Update {today}: {markt_details}\n")
-        f.write("="*80 + "\n")
-        f.write(df_s.to_string(index=False))
-    print("Analyse fertig.")
