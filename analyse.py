@@ -79,9 +79,25 @@ df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_v
 
 setups = []
 for index, row in df_perf.head(2).iterrows():
-    for t in sektoren_aktien.get(row['Ticker'], [])[:3]:
-        res = analyze_a_setup(t, row['Sektor'], market_context)
-        if res: setups.append(res)
+    sektor_name = row['Sektor']
+    ticker_key = row['Ticker']
+    print(f"DEBUG: Prüfe Sektor: {sektor_name} ({ticker_key})")
+    
+    for t in sektoren_aktien.get(ticker_key, [])[:3]:
+        # Daten abrufen und prüfen
+        ticker_data = yf.Ticker(t).history(period="200d")
+        print(f"DEBUG: Ticker {t} liefert {len(ticker_data)} Tage Daten.")
+        
+        if len(ticker_data) < 200:
+            print(f"DEBUG: Ticker {t} übersprungen, zu wenig Daten.")
+            continue
+            
+        res = analyze_a_setup(t, sektor_name, market_context)
+        if res:
+            setups.append(res)
+            print(f"DEBUG: ERFOLG - {t} wurde hinzugefügt!")
+        else:
+            print(f"DEBUG: Analyse lieferte None für {t}")
 
 if setups:
     df_setups = pd.DataFrame(setups)
