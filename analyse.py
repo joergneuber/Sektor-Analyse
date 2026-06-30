@@ -36,11 +36,11 @@ def get_market_status():
 
 def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
-    if data.empty: return {"Ticker": ticker, "Sektor": name, "Rotation-Score": 0}
+    if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
     last = data['Close'].iloc[-1]
     def get_p(d): return round(((last / data['Close'].iloc[-d]) - 1) * 100, 2) if len(data) >= d else 0
-    p5, p12 = get_p(5), get_p(12)
-    return {"Ticker": ticker, "Sektor": name, "Rotation-Score": round((p5 * 0.7 + p12 * 0.3), 3)}
+    p5, p12, p30, p60 = get_p(5), get_p(12), get_p(30), get_p(60)
+    return {"Ticker": ticker, "Sektor": name, "5T": p5, "12T": p12, "30T": p30, "60T": p60, "Rotation-Score": round((p5 * 0.7 + p12 * 0.3), 3)}
 
 def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
@@ -51,20 +51,15 @@ def analyze_a_setup(ticker, sektor, context):
     high_20 = hist['High'].rolling(20).max().iloc[-1]
     ema200 = hist['Close'].ewm(span=200).mean().iloc[-1]
     
-    # 1. Einstieg: Bestätigung am Pullback-Niveau (z.B. Fib 61.8% des letzten Swings)
     entry = round(max(hist['Close'].iloc[-1], (high_20 - (high_20 - low_20) * 0.382)), 2)
-    
-    # 2. Stop-Loss: Unter signifikantes Tief
     stop_loss = round(min(low_20, ema200 * 0.97), 2)
     risiko = entry - stop_loss
     
-    # 3. TP1: Konservatives Ziel (Nächstes Widerstandsniveau/Verlaufshoch)
     tp1 = round(high_20, 2)
-    
-    # 4. TP2: Erweitertes Ziel (Fib-Extension 161.8% des Risikos)
+    # TP2 ist nun dynamisch basierend auf Risiko (Fib-Extension)
     tp2 = round(entry + (risiko * 1.618), 2)
     
-    # Dynamisches CRV
+    # CRV Berechnungen (jetzt individuell pro Ticker)
     crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
     crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
     
@@ -76,8 +71,11 @@ def analyze_a_setup(ticker, sektor, context):
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     markt_status, markt_details = get_market_status()
-    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+    # Performance-Daten berechnen
+    perf_data = [get_perf(t, n) for t, n in sektoren_map.items()]
+    df_perf = pd.DataFrame(perf_data).sort_values("Rotation-Score", ascending=False)
     
+    # Setup-Analysen
     all_setups = [
         analyze_a_setup(t, row['Sektor'], markt_status) 
         for _, row in df_perf.head(2).iterrows() 
@@ -87,6 +85,8 @@ if __name__ == "__main__":
     if (setups := [s for s in all_setups if s]):
         today = datetime.now().strftime("%Y-%m-%d")
         df_s = pd.DataFrame(setups)
+        # Export aller Dateien
         df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+        df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
             f.write(f"Markt-Update {today}: {markt_details}\n\n" + df_s.to_string(index=False))
