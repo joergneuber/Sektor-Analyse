@@ -36,20 +36,16 @@ def get_perf(ticker, name):
 def analyze_a_setup(ticker, sektor, context):
     hist = yf.Ticker(ticker).history(period="250d")
     if hist.empty or len(hist) < 200: return None
-    
-    # 1. EMAs berechnen
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
     
-    # 2. ATR selbst berechnen (High - Low der letzten 14 Tage)
+    # ATR Berechnung (True Range = High - Low)
     hist['TR'] = hist['High'] - hist['Low']
     atr = hist['TR'].rolling(14).mean().iloc[-1]
     
     close = hist['Close'].iloc[-1]
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
     
-    # 3. Charttechnische Ziele
     tp1 = round(hist['High'].rolling(20).max().iloc[-1], 2)
-    # TP2 basierend auf der selbst berechneten ATR
     tp2 = round(tp1 + (atr * 3), 2)
     
     entry = round(max(close, hist['EMA50'].iloc[-1]), 2)
@@ -69,13 +65,9 @@ def analyze_a_setup(ticker, sektor, context):
 
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
-    # 1. Performance-Daten
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
-    
-    # 2. Setup-Analysen
     all_setups = [analyze_a_setup(t, row['Sektor'], "Trend aktiv") for _, row in df_perf.head(2).iterrows() for t in sektoren_aktien.get(row['Ticker'], [])]
     
-    # 3. Export
     if (setups := [s for s in all_setups if s]):
         today = datetime.now().strftime("%Y-%m-%d")
         df_s = pd.DataFrame(setups).sort_values(by=['Score'], ascending=False)
