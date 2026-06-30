@@ -63,8 +63,10 @@ def analyze_a_setup(ticker, sektor, context):
     tp1 = round(max(swing_high, entry + risiko), 2)
     tp2 = round(entry + (risiko * 1.618), 2)
     
-    crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0
-    crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0
+    # KORREKTE BERECHNUNG: CRV = (Ziel - Einstieg) / Risiko
+    # Wenn das Risiko <= 0 ist, setzen wir einen Platzhalter, um Division durch Null zu vermeiden
+    crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
+    crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
     
     score = sum([1 if close > hist[f'EMA{e}'].iloc[-1] else 0 for e in [20, 50, 100, 200]])
     
@@ -73,7 +75,6 @@ def analyze_a_setup(ticker, sektor, context):
         "Score": score, "Einstieg": entry, "Stop": stop_loss, 
         "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Markt_Trend": context
     }
-
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     markt_status, markt_details = get_market_status()
