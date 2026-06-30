@@ -3,10 +3,15 @@ import pandas as pd
 from datetime import datetime
 import time
 
+# --- KONFIGURATION (Vollständig) ---
 sektoren_map = {
     "XLK": "Technologie", "XLF": "Finanzen", "XLV": "Gesundheit", "XLY": "Zyklischer Konsum",
     "XLP": "Basiskonsum", "XLE": "Energie", "XLI": "Industrie", "XLB": "Rohstoffe",
-    "XLU": "Versorger", "XLRE": "Immobilien", "XLC": "Kommunikation"
+    "XLU": "Versorger", "XLRE": "Immobilien", "XLC": "Kommunikation",
+    "SOXX": "Halbleiter", "SMH": "Halbleiter (Global)", "IGV": "Software", 
+    "XBI": "Biotechnologie", "KRE": "Regionalbanken", "HACK": "Cybersecurity", 
+    "CLOU": "Cloud Computing", "AIQ": "Künstliche Intelligenz",
+    "BOTZ": "Robotik", "IHI": "Medical Devices", "PAVE": "Infrastruktur", "XRT": "Einzelhandel"
 }
 
 sektoren_aktien = {
@@ -20,21 +25,33 @@ sektoren_aktien = {
     "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC"],
     "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL"],
     "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI"],
-    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"]
+    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"],
+    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT"],
+    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU"],
+    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK"],
+    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "SGEN", "EXAS", "MRNA", "TECH"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "PBCT", "SNV", "HBAP"],
+    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CYBR", "QLYS", "TENB", "VRSN", "CHKP"],
+    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "SPLK", "MDB", "TEAM", "DOCU"],
+    "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM"],
+    "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC"],
+    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN"],
+    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR"],
+    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
 }
 
+# --- FUNKTIONEN (Wie gehabt) ---
 def get_perf(ticker, name):
     try:
         hist = yf.download(ticker, period="120d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "Rotation-Score": 0}
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
-        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
-        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+        res = {"Ticker": ticker, "Sektor": name, "Rotation-Score": round((p(5) * 0.7 + p(12) * 0.3), 3)}
         return res
-    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+    except: return {"Ticker": ticker, "Sektor": name, "Rotation-Score": 0}
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
@@ -46,17 +63,13 @@ def analyze_a_setup(ticker, sektor):
         entry = hist['High'].rolling(20).max().iloc[-1]
         stop = hist['Low'].rolling(20).min().iloc[-1]
         risiko = entry - stop
-        tp1 = entry + atr
-        tp2 = entry + (atr * 3)
         return {
             "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-            "Kurs": round(hist['Close'].iloc[-1], 2), "Einstieg": round(entry, 2), "Stop": round(stop, 2),
-            "TP1": round(tp1, 2), "TP2": round(tp2, 2),
-            "CRV1": round((tp1 - entry) / risiko, 2) if risiko > 0 else 0,
-            "CRV2": round((tp2 - entry) / risiko, 2) if risiko > 0 else 0
+            "CRV1": round(((entry + atr) - entry) / risiko, 2) if risiko > 0 else 0
         }
     except: return None
 
+# --- HAUPTTEIL ---
 if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -68,6 +81,7 @@ if __name__ == "__main__":
     
     df_s = pd.DataFrame(all_setups)
     
+    # Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
