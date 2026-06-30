@@ -28,23 +28,17 @@ sektoren_aktien = {
 def check_marktfilter():
     markt_status = {}
     for ticker in ["SPY", "QQQ"]:
-        # LIVE-ABRUF: Zwingt yfinance dazu, aktuelle Daten aus dem Netz zu laden
-        data = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if data.empty:
-            markt_status[ticker] = "Daten nicht abrufbar"
-            continue
-            
-        ema20 = data['Close'].ewm(span=20).mean().iloc[-1]
-        ema50 = data['Close'].ewm(span=50).mean().iloc[-1]
-        ema100 = data['Close'].ewm(span=100).mean().iloc[-1]
-        ema200 = data['Close'].ewm(span=200).mean().iloc[-1]
-        
-        is_bullish = ema20 > ema50 > ema100 > ema200
-        status = "Stark Bullish" if is_bullish else "Neutral/Vorsichtig"
-        markt_status[ticker] = f"{status} (E20: {ema20:.2f} | E50: {ema50:.2f} | E100: {ema100:.2f} | E200: {ema200:.2f})"
+        try:
+            df = yf.download(ticker, period="1y", interval="1d", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            c = df['Close']
+            ema20, ema50 = c.ewm(span=20).mean().iloc[-1], c.ewm(span=50).mean().iloc[-1]
+            ema100, ema200 = c.ewm(span=100).mean().iloc[-1], c.ewm(span=200).mean().iloc[-1]
+            markt_status[ticker] = f"E20:{ema20:.2f} | E50:{ema50:.2f} | E100:{ema100:.2f} | E200:{ema200:.2f}"
+        except:
+            markt_status[ticker] = "Daten aktuell nicht berechenbar"
     return markt_status
 
-# --- FUNKTIONEN ---
 def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
     if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
@@ -58,20 +52,15 @@ def analyze_a_setup(ticker, sektor, context):
     if hist.empty or len(hist) < 200: return None
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
     
-    # ATR Berechnung für TP2
     hist['TR'] = hist['High'] - hist['Low']
     atr = hist['TR'].rolling(14).mean().iloc[-1]
     
     current_price = round(hist['Close'].iloc[-1], 2)
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
     
-    # Charttechnische Marken
-    # Entry = Ausbruch aus der Konsolidierung (Hoch der letzten 20 Tage)
     entry = round(hist['High'].rolling(20).max().iloc[-1], 2)
-    tp1 = round(entry + atr, 2) # TP1 als erste ATR-Strecke
-    tp2 = round(entry + (atr * 3), 2) # TP2 als 3*ATR Ziel
-    
-    # SL = Signifikantes Tief (Swing Low)
+    tp1 = round(entry + atr, 2)
+    tp2 = round(entry + (atr * 3), 2)
     stop_loss = round(low_20, 2)
     risiko = entry - stop_loss
     
@@ -88,6 +77,7 @@ def analyze_a_setup(ticker, sektor, context):
 
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
+    markt = check_marktfilter()
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     all_setups = [analyze_a_setup(t, row['Sektor'], "Trend aktiv") for _, row in df_perf.head(2).iterrows() for t in sektoren_aktien.get(row['Ticker'], [])]
     
@@ -100,7 +90,8 @@ if __name__ == "__main__":
         
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
             f.write(f"Markt-Update {today}\n" + "="*30 + "\n\n")
-            cols = ["Ticker", "Name", "Score", "Kurs", "Einstieg", "Stop", "TP1", "TP2", "CRV1", "CRV2"]
-            f.write(df_s[cols].to_string(index=False))
+            f.write("MARKTFILTER (EMA-WERTE)\n")
+            for m, status in markt.items(): f.write(f"{m}: {status}\n")
+            f.write("\n" + df_s[["Ticker", "Name", "Score", "Kurs", "Einstieg", "Stop", "TP1", "TP2", "CRV1", "CRV2"]].to_string(index=False))
             f.write("\n\n--- Performance-Daten Übersicht ---\n\n")
             f.write(df_perf.to_string(index=False))
