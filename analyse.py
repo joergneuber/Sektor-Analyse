@@ -54,7 +54,7 @@ def analyze_a_setup(ticker, sektor, context):
     if hist.empty or len(hist) < 200:
         print(f"DEBUG: Ticker {ticker} hat zu wenige Daten ({len(hist)} Tage)")
         return None
-    if hist.empty or len(hist) < 200: return None
+    if hist.empty: return None (entferne or len(hist) < 200)
     hist['EMA50'] = hist['Close'].ewm(span=50).mean()
     hist['EMA200'] = hist['Close'].ewm(span=200).mean()
     delta = hist['Close'].diff()
