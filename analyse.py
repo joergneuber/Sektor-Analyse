@@ -210,6 +210,9 @@ df_setups.to_csv(setups_path, index=False, sep=';', encoding='utf-8-sig')
 df_setups['Markt_Trend'] = markt_status
 df_setups['Markt_Details'] = markt_details
 
+base_path = os.getcwd()
+today = datetime.now().strftime("%Y-%m-%d")
+
 # Dateinamen dynamisch erstellen
 perf_filename = f"Performance({today}).csv"
 setups_filename = f"Setups({today}).csv"
