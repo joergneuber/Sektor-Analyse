@@ -39,45 +39,4 @@ def get_perf(ticker, name):
     data = yf.Ticker(ticker).history(period="120d")
     if data.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
     last = data['Close'].iloc[-1]
-    def get_p(d): return round(((last / data['Close'].iloc[-d]) - 1) * 100, 2) if len(data) >= d else 0
-    p5, p12, p30, p60 = get_p(5), get_p(12), get_p(30), get_p(60)
-    return {"Ticker": ticker, "Sektor": name, "5T": p5, "12T": p12, "30T": p30, "60T": p60, "Rotation-Score": round((p5 * 0.7 + p12 * 0.3), 3)}
-
-def analyze_a_setup(ticker, sektor, context):
-    hist = yf.Ticker(ticker).history(period="250d")
-    if hist.empty or len(hist) < 200: return None
-    
-    for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
-    hist['WMA200'] = hist['Close'].rolling(200).apply(lambda x: np.dot(x, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
-    
-    close, wma200 = hist['Close'].iloc[-1], hist['WMA200'].iloc[-1]
-    low_20d, high_20d = hist['Low'].rolling(20).min().iloc[-1], hist['High'].rolling(20).max().iloc[-1]
-    swing_high = hist['High'].rolling(20).max().iloc[-20:-1].mean()
-    
-    fib_618 = high_20d - (high_20d - low_20d) * 0.618
-    entry = round(max(close, wma200, fib_618), 2)
-    stop_loss = round(min(low_20d, wma200 * 0.98), 2)
-    risiko = round(entry - stop_loss, 2)
-    
-    tp1 = round(max(swing_high, entry + risiko), 2)
-    tp2 = round(entry + (risiko * 1.618), 2)
-    
-    # CRV Berechnungen
-    crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0
-    crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0
-    
-    score = sum([1 if close > hist[f'EMA{e}'].iloc[-1] else 0 for e in [20, 50, 100, 200]])
-    
-    return {
-        "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-        "Score": score, "Einstieg": entry, "Stop": stop_loss, 
-        "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Markt_Trend": context
-    }
-
-# --- HAUPTTEIL ---
-if __name__ == "__main__":
-    markt_status, markt_details = get_market_status()
-    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
-    
-    all_setups = [analyze_a_setup(t, row['Sektor'], f"{markt_status} - {markt_details}") 
-                  for _, row in df_perf.head(2).iterrows() for t in sekt
+    def get_p(d): return round(((last / data['Close'].iloc[-d
