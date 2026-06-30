@@ -101,7 +101,18 @@ for index, row in df_perf.head(2).iterrows():
 
 if setups:
     df_setups = pd.DataFrame(setups)
-    df_setups = df_setups[df_setups['Score'] >= 1].sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+    if setups:
+    df_setups = pd.DataFrame(setups)
+    
+    # ÄNDERE DIESE ZEILE:
+    # Vorher: df_setups = df_setups[df_setups['Score'] >= 1]
+    # NEU (zum Testen):
+    df_setups = df_setups[df_setups['Score'] >= 0] 
+    
+    df_setups = df_setups.sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+    
+    # ... Rest des Speicher-Blocks
+    .sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
     
     # Speichern
     base_path = os.getcwd()
