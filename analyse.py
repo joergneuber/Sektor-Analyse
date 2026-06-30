@@ -53,8 +53,48 @@ def analyze_a_setup(ticker, sektor, context):
     if hist.empty or len(hist) < 200: return None
     hist['EMA50'] = hist['Close'].ewm(span=50).mean()
     hist['EMA200'] = hist['Close'].ewm(span=200).mean()
-    hist['RSI'] = 100 - (100 / (1 + (hist['Close'].diff().where(hist['Close'].diff()>0, 0).rolling(14).mean() / (-hist['Close'].diff().where(hist['Close'].diff()<0, 0).rolling(14).mean()))))
+    delta = hist['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    hist['RSI'] = 100 - (100 / (1 + (gain / loss)))
     close, ema50, ema200 = hist['Close'].iloc[-1], hist['EMA50'].iloc[-1], hist['EMA200'].iloc[-1]
     low_20, high_20 = hist['Low'].iloc[-20:].min(), hist['High'].iloc[-20:].max()
     einstieg = round(ema50, 2)
-    stop
+    stop_loss = round(min(ema200, low_20) * 0.98, 2)
+    risiko = einstieg - stop_loss
+    tp1 = round(high_20, 2)
+    tp2 = round(max(einstieg + (risiko * 2.5), high_20 * 1.05), 2)
+    score = (2 if (hist['EMA50'].iloc[-2] < hist['EMA200'].iloc[-2] and hist['EMA50'].iloc[-1] > hist['EMA200'].iloc[-1]) else 0) + (1 if close > high_20 else 0) + (1 if hist['RSI'].iloc[-1] < 40 else 0)
+    return {"Ticker": ticker, "Name": name, "Sektor": sektor, "Score": score, "Setup": "Breakout" if close > high_20 else "Neutral", "Einstieg": einstieg, "Stop": stop_loss, "CRV_TP1": round((tp1 - einstieg) / risiko, 1) if risiko > 0 else 0, "CRV_TP2": round((tp2 - einstieg) / risiko, 1) if risiko > 0 else 0, "Markt_Trend": "Bullish" if close > ema200 else "Bearish", "Markt_Details": f"Kurs: {round(close, 2)} | EMA50: {round(ema50, 2)} | EMA200: {round(ema200, 2)}"}
+
+# --- 3. HAUPTTEIL ---
+print("Starte Analyse...")
+markt_status, markt_details = get_market_status()
+market_context = f"{markt_status} - {markt_details}"
+df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+
+setups = []
+for index, row in df_perf.head(2).iterrows():
+    for t in sektoren_aktien.get(row['Ticker'], [])[:3]:
+        res = analyze_a_setup(t, row['Sektor'], market_context)
+        if res: setups.append(res)
+
+if setups:
+    df_setups = pd.DataFrame(setups)
+    df_setups = df_setups[df_setups['Score'] >= 1].sort_values(by=['Score', 'CRV_TP2'], ascending=[False, False])
+    
+    # Speichern
+    base_path = os.getcwd()
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # 1. Archiv-Dateien (mit Datum)
+    df_perf.to_csv(os.path.join(base_path, f"Performance({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
+    df_setups.to_csv(os.path.join(base_path, f"Setups({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
+    
+    # 2. Fix-Dateien (für den Workflow Upload)
+    df_perf.to_csv(os.path.join(base_path, "Performance.csv"), index=False, sep=';', encoding='utf-8-sig')
+    df_setups.to_csv(os.path.join(base_path, "Setups.csv"), index=False, sep=';', encoding='utf-8-sig')
+    
+    print(f"Analyse abgeschlossen. {len(df_setups)} Setups gespeichert.")
+else:
+    print("Keine Setups gefunden.")
