@@ -45,14 +45,14 @@ def get_perf(ticker, name):
     try:
         hist = yf.download(ticker, period="120d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "Rotation-Score": 0}
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
         res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
         res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
         return res
-    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "Rotation-Score": 0}
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
@@ -85,17 +85,18 @@ if __name__ == "__main__":
     
     df_s = pd.DataFrame(all_setups)
     
-    # Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n" + "="*30 + "\n\n")
+        f.write("GESAMTMARKTFILTER\n")
+        f.write("Trend SPY: Nicht bewertet (Daten nicht verfügbar)\n")
+        f.write("Trend QQQ: Nicht bewertet (Daten nicht verfügbar)\n")
+        f.write("Markteinschätzung: Aufgrund fehlender Kursdaten für EMA50/EMA200 erfolgt keine algorithmische Trendbewertung. ")
+        f.write("Die Setup-Qualität wird daher neutral als B-Setup (Basis) eingestuft.\n\n")
         f.write("MARKTKONTEXT & ANALYSE\n")
-        f.write("Wichtiger Hinweis zur Datenlage:\n")
-        f.write("Für eine fundierte Trendbewertung von SPY und QQQ (EMA50/EMA200) liegen in den bereitgestellten Dateien keine Kursdaten vor. ")
-        f.write("Daher kann der Gesamtmarkt aktuell nicht algorithmisch bewertet werden (Status: Nicht bewertet). ")
-        f.write("Die Einstufung der Setup-Qualität erfolgt daher neutral. Da keine individuellen 'Score'-Werte in der Datei 'Setups(" + today + ").csv' enthalten sind, ")
+        f.write("Da keine individuellen 'Score'-Werte in der Datei 'Setups(" + today + ").csv' enthalten sind, ")
         f.write("entfällt der Filter für D-Setups (< 2), und alle aufgeführten Titel werden auf Basis des Sektor-Momentums bewertet.\n\n")
         f.write("PERFORMANCE\n" + df_perf.to_string(index=False) + "\n\n")
         f.write("TOP SETUPS\n" + df_s.to_string(index=False))
