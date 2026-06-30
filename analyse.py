@@ -40,18 +40,18 @@ sektoren_aktien = {
     "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
 }
 
-# --- FUNKTIONEN (Wie gehabt) ---
 def get_perf(ticker, name):
     try:
         hist = yf.download(ticker, period="120d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "Rotation-Score": 0}
+        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
-        res = {"Ticker": ticker, "Sektor": name, "Rotation-Score": round((p(5) * 0.7 + p(12) * 0.3), 3)}
+        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
+        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
         return res
-    except: return {"Ticker": ticker, "Sektor": name, "Rotation-Score": 0}
+    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
@@ -65,7 +65,10 @@ def analyze_a_setup(ticker, sektor):
         risiko = entry - stop
         return {
             "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-            "CRV1": round(((entry + atr) - entry) / risiko, 2) if risiko > 0 else 0
+            "Kurs": round(hist['Close'].iloc[-1], 2), "Einstieg": round(entry, 2), "Stop": round(stop, 2),
+            "TP1": round(entry + atr, 2), "TP2": round(entry + (atr * 3), 2),
+            "CRV1": round(((entry + atr) - entry) / risiko, 2) if risiko > 0 else 0,
+            "CRV2": round(((entry + (atr * 3)) - entry) / risiko, 2) if risiko > 0 else 0
         }
     except: return None
 
@@ -81,7 +84,6 @@ if __name__ == "__main__":
     
     df_s = pd.DataFrame(all_setups)
     
-    # Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
