@@ -38,29 +38,29 @@ def analyze_a_setup(ticker, sektor, context):
     if hist.empty or len(hist) < 200: return None
     for span in [20, 50, 100, 200]: hist[f'EMA{span}'] = hist['Close'].ewm(span=span).mean()
     
-    # ATR Berechnung (True Range = High - Low)
+    # ATR Berechnung
     hist['TR'] = hist['High'] - hist['Low']
     atr = hist['TR'].rolling(14).mean().iloc[-1]
     
-    close = hist['Close'].iloc[-1]
+    current_price = round(hist['Close'].iloc[-1], 2)
     low_20 = hist['Low'].rolling(20).min().iloc[-1]
     
     tp1 = round(hist['High'].rolling(20).max().iloc[-1], 2)
     tp2 = round(tp1 + (atr * 3), 2)
     
-    entry = round(max(close, hist['EMA50'].iloc[-1]), 2)
+    entry = round(max(hist['Close'].iloc[-1], hist['EMA50'].iloc[-1]), 2)
     stop_loss = round(min(low_20, hist['EMA200'].iloc[-1] * 0.98), 2)
     risiko = entry - stop_loss
     
     crv1 = round((tp1 - entry) / risiko, 2) if risiko > 0 else 0.0
     crv2 = round((tp2 - entry) / risiko, 2) if risiko > 0 else 0.0
     
-    score = sum([1 for e in [20, 50, 100, 200] if close > hist[f'EMA{e}'].iloc[-1]])
+    score = sum([1 for e in [20, 50, 100, 200] if hist['Close'].iloc[-1] > hist[f'EMA{e}'].iloc[-1]])
     
     return {
         "Ticker": ticker, "Name": yf.Ticker(ticker).info.get('longName', ticker), "Sektor": sektor,
-        "Score": score, "Bedeutung": f"{score}/4 EMAs bullish", "Einstieg": entry, 
-        "Stop": stop_loss, "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Trend": context
+        "Score": score, "Kurs": current_price, "Einstieg": entry, "Stop": stop_loss, 
+        "TP1": tp1, "TP2": tp2, "CRV1": crv1, "CRV2": crv2, "Trend": context
     }
 
 # --- HAUPTTEIL ---
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
             f.write(f"Markt-Update {today}\n" + "="*30 + "\n\n")
-            cols = ["Ticker", "Name", "Score", "Bedeutung", "Einstieg", "Stop", "TP1", "TP2", "CRV1", "CRV2"]
+            cols = ["Ticker", "Name", "Score", "Kurs", "Einstieg", "Stop", "TP1", "TP2", "CRV1", "CRV2"]
             f.write(df_s[cols].to_string(index=False))
             f.write("\n\n--- Performance-Daten Übersicht ---\n\n")
             f.write(df_perf.to_string(index=False))
