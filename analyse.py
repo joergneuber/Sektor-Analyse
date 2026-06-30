@@ -142,6 +142,7 @@ def analyze_a_setup(ticker, sektor, context):
 #     result = analyze_a_setup(t, "DeinSektor", None)
 #     if result: setups.append(result)
 
+print(f"DEBUG: Anzahl der gesammelten Setups: {len(setups)}")
 # df = pd.DataFrame(setups)
 # if not df.empty:
 #     # Sortieren nach Score (absteigend) und CRV_TP2 (absteigend)
