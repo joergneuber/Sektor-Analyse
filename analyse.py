@@ -161,6 +161,8 @@ df_perf = pd.DataFrame(perf_list).sort_values("Rotation-Score", ascending=False)
 print("Starte Analyse...")
 setups = []  # <--- HIER wird die Variable initialisiert
 
+setups = []
+
 # Wir gehen die Top-Sektoren durch
 for index, row in df_perf.head(2).iterrows():
     sektor_name = row['Sektor']
