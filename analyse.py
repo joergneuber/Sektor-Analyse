@@ -96,7 +96,6 @@ def analyze_a_setup(ticker, sektor):
         if hist.empty or len(hist) < 200: 
             return None
             
-        # Kürzere Zeilen zur Vermeidung von Syntax-Abschnitten
         highs = hist['High']
         lows = hist['Low']
         closes = hist['Close']
