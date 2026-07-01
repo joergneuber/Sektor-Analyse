@@ -8,7 +8,11 @@ import time
 sektoren_map = {
     "XLK": "Technologie", "XLF": "Finanzen", "XLV": "Gesundheit", "XLY": "Zyklischer Konsum",
     "XLP": "Basiskonsum", "XLE": "Energie", "XLI": "Industrie", "XLB": "Rohstoffe",
-    "XLU": "Versorger", "XLRE": "Immobilien", "XLC": "Kommunikation"
+    "XLU": "Versorger", "XLRE": "Immobilien", "XLC": "Kommunikation",
+    "SOXX": "Halbleiter", "SMH": "Halbleiter (Global)", "IGV": "Software", 
+    "XBI": "Biotechnologie", "KRE": "Regionalbanken", "HACK": "Cybersecurity", 
+    "CLOU": "Cloud Computing", "AIQ": "Künstliche Intelligenz",
+    "BOTZ": "Robotik", "IHI": "Medical Devices", "PAVE": "Infrastruktur", "XRT": "Einzelhandel"
 }
 
 sektoren_aktien = {
@@ -22,10 +26,54 @@ sektoren_aktien = {
     "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC"],
     "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL"],
     "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI"],
-    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"]
+    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"],
+    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT"],
+    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU"],
+    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK"],
+    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "SGEN", "EXAS", "MRNA", "TECH"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "PBCT", "SNV", "HBAP"],
+    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CYBR", "QLYS", "TENB", "VRSN", "CHKP"],
+    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "SPLK", "MDB", "TEAM", "DOCU"],
+    "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM"],
+    "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC"],
+    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN"],
+    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR"],
+    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
 }
 
 # --- FUNKTIONEN ---
+def get_sp500_data():
+    try:
+        hist = yf.download("^GSPC", period="300d", progress=False)
+        if isinstance(hist.columns, pd.MultiIndex): 
+            hist.columns = hist.columns.get_level_values(0)
+        
+        if hist.empty or len(hist) < 200:
+            return "Trend S&P 500: Nicht bewertet (Daten unvollständig)"
+            
+        close = hist['Close']
+        aktuell = close.iloc[-1]
+        
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
+        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+        
+        weights = np.arange(1, 201)
+        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
+        
+        output = (
+            f"S&P 500 Kurs: {aktuell:.2f}\n"
+            f"EMA 20:  {e20:.2f}\n"
+            f"EMA 50:  {e50:.2f}\n"
+            f"EMA 100: {e100:.2f}\n"
+            f"EMA 200: {e200:.2f}\n"
+            f"WMA 200: {w200:.2f}"
+        )
+        return output
+    except Exception as e:
+        return f"Trend S&P 500: Fehler bei Berechnung ({str(e)})"
+
 def get_perf(ticker, name):
     try:
         hist = yf.download(ticker, period="120d", progress=False)
@@ -33,19 +81,9 @@ def get_perf(ticker, name):
         if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
-        
-        # EMA/WMA Prüfung für die Performance-Tabelle
-        def check(span): return "Ja" if last > close.ewm(span=span, adjust=False).mean().iloc[-1] else "Nein"
-        weights = np.arange(1, 201)
-        w200_val = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
-        res = {
-            "Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60), 
-            "Rotation-Score": round((p(5) * 0.7 + p(12) * 0.3), 3),
-            "Über EMA20": check(20), "Über EMA50": check(50), 
-            "Über EMA100": check(100), "Über EMA200": check(200), "Über WMA200": "Ja" if last > w200_val else "Nein"
-        }
+        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
+        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
         return res
     except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
 
@@ -53,30 +91,50 @@ def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
     try:
         hist = yf.download(ticker, period="250d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
-        if hist.empty or len(hist) < 200: return None
-        highs, lows, closes = hist['High'], hist['Low'], hist['Close']
+        if isinstance(hist.columns, pd.MultiIndex): 
+            hist.columns = hist.columns.get_level_values(0)
+        if hist.empty or len(hist) < 200: 
+            return None
+            
+        # Kürzere Zeilen zur Vermeidung von Syntax-Abschnitten
+        highs = hist['High']
+        lows = hist['Low']
+        closes = hist['Close']
+        
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         entry = highs.rolling(20).max().iloc[-1]
         stop = lows.rolling(20).min().iloc[-1]
         risiko = entry - stop
+        
+        tp1 = entry + atr
+        tp2 = entry + (atr * 3)
+        
+        crv1 = ((tp1 - entry) / risiko) if risiko > 0 else 0
+        crv2 = ((tp2 - entry) / risiko) if risiko > 0 else 0
+        
         return {
-            "Ticker": ticker, "Sektor": sektor, "Kurs": round(closes.iloc[-1], 2),
-            "Einstieg": round(entry, 2), "Stop": round(stop, 2), "CRV1": round(((entry + atr) - entry) / risiko if risiko > 0 else 0, 2)
+            "Ticker": ticker, 
+            "Name": yf.Ticker(ticker).info.get('longName', ticker), 
+            "Sektor": sektor,
+            "Kurs": round(closes.iloc[-1], 2), 
+            "Einstieg": round(entry, 2), 
+            "Stop": round(stop, 2),
+            "TP1": round(tp1, 2), 
+            "TP2": round(tp2, 2),
+            "CRV1": round(crv1, 2),
+            "CRV2": round(crv2, 2)
         }
-    except: return None
+    except Exception: 
+        return None
 
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # Performance-Daten aller Aktien sammeln
-    all_perf = []
-    for ticker, name in sektoren_map.items():
-        for s in sektoren_aktien.get(ticker, []):
-            all_perf.append(get_perf(s, name))
-            
-    df_perf = pd.DataFrame(all_perf).sort_values("Rotation-Score", ascending=False)
+    # S&P 500 Berechnung ausführen
+    sp500_filter_text = get_sp500_data()
+    
+    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
     all_setups = []
     for _, row in df_perf.head(2).iterrows():
@@ -85,13 +143,21 @@ if __name__ == "__main__":
     
     df_s = pd.DataFrame(all_setups)
     
-    # Export
+    # CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        f.write(f"MARKT-UPDATE {today}\n\nPERFORMANCE\n")
-        f.write(df_perf.to_string(index=False) + "\n\nTOP SETUPS\n")
+    # Briefing schreiben
+    with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
+        f.write(f"MARKT-UPDATE {today}\n")
+        f.write("==============================\n\n")
+        f.write("GESAMTMARKTFILTER\n")
+        f.write(sp500_filter_text + "\n\n")
+        f.write("MARKTKONTEXT & ANALYSE\n")
+        f.write(f"Da keine individuellen 'Score'-Werte in der Datei 'Setups({today}).csv' enthalten sind, entfällt der Filter für D-Setups (< 2), und alle aufgeführten Titel werden auf Basis des Sektor-Momentums bewertet.\n\n")
+        f.write("PERFORMANCE\n")
+        f.write(df_perf.to_string(index=False) + "\n\n")
+        f.write("TOP SETUPS\n")
         f.write(df_s.to_string(index=False))
 
-    print("Analyse erfolgreich abgeschlossen.")
+    print("Briefing-Dateien erfolgreich geschrieben.")
