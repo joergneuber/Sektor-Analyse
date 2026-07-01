@@ -47,6 +47,7 @@ if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     results = []
     
+    # Analyse der Aktien
     for ticker, name in sektoren_map.items():
         aktien = sektoren_aktien.get(ticker, [])
         for aktie in aktien:
@@ -54,14 +55,20 @@ if __name__ == "__main__":
             if res: results.append(res)
     
     df = pd.DataFrame(results)
-    if not df.empty:
-        df.to_csv(f"Setups({today}).csv", sep=';', index=False)
-        
-        with open(f"Briefing_{today}.txt", "w") as f:
+    
+    # 1. Immer CSV schreiben (für Google Drive Sync)
+    df.to_csv(f"Setups({today}).csv", sep=';', index=False, encoding='utf-8-sig')
+    
+    # 2. Briefing schreiben
+    try:
+        with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
             f.write(f"MARKT-UPDATE {today}\n\n")
             f.write("MARKTKONTEXT & ANALYSE\n\n")
             f.write("TOP SETUPS (Score >= 2):\n")
-            f.write(df.sort_values("Score", ascending=False).to_string(index=False))
+            if not df.empty:
+                f.write(df.sort_values("Score", ascending=False).to_string(index=False))
+            else:
+                f.write("Keine Setups mit Score >= 2 gefunden.")
         print("Analyse erfolgreich abgeschlossen.")
-    else:
-        print("Keine Setups gefunden.")
+    except Exception as e:
+        print(f"Fehler beim Schreiben des Briefings: {e}")
