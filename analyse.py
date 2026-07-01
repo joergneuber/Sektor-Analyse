@@ -44,9 +44,9 @@ sektoren_aktien = {
 # --- FUNKTIONEN ---
 def get_sp500_data():
     try:
-        # ^GSPC ist das offizielle Kürzel für den S&P 500 Index
         hist = yf.download("^GSPC", period="300d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        if isinstance(hist.columns, pd.MultiIndex): 
+            hist.columns = hist.columns.get_level_values(0)
         
         if hist.empty or len(hist) < 200:
             return "Trend S&P 500: Nicht bewertet (Daten unvollständig)"
@@ -54,13 +54,11 @@ def get_sp500_data():
         close = hist['Close']
         aktuell = close.iloc[-1]
         
-        # Berechnung der Indikatoren
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
         e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
         e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
         
-        # WMA 200 Berechnung
         weights = np.arange(1, 201)
         w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
         
@@ -93,6 +91,73 @@ def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
     try:
         hist = yf.download(ticker, period="250d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
-        if hist.empty or len(hist) < 200: return None
-        atr = (hist['High'] - hist['Low']).rolling
+        if isinstance(hist.columns, pd.MultiIndex): 
+            hist.columns = hist.columns.get_level_values(0)
+        if hist.empty or len(hist) < 200: 
+            return None
+            
+        # Kürzere Zeilen zur Vermeidung von Syntax-Abschnitten
+        highs = hist['High']
+        lows = hist['Low']
+        closes = hist['Close']
+        
+        atr = (highs - lows).rolling(14).mean().iloc[-1]
+        entry = highs.rolling(20).max().iloc[-1]
+        stop = lows.rolling(20).min().iloc[-1]
+        risiko = entry - stop
+        
+        tp1 = entry + atr
+        tp2 = entry + (atr * 3)
+        
+        crv1 = ((tp1 - entry) / risiko) if risiko > 0 else 0
+        crv2 = ((tp2 - entry) / risiko) if risiko > 0 else 0
+        
+        return {
+            "Ticker": ticker, 
+            "Name": yf.Ticker(ticker).info.get('longName', ticker), 
+            "Sektor": sektor,
+            "Kurs": round(closes.iloc[-1], 2), 
+            "Einstieg": round(entry, 2), 
+            "Stop": round(stop, 2),
+            "TP1": round(tp1, 2), 
+            "TP2": round(tp2, 2),
+            "CRV1": round(crv1, 2),
+            "CRV2": round(crv2, 2)
+        }
+    except Exception: 
+        return None
+
+# --- HAUPTTEIL ---
+if __name__ == "__main__":
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # S&P 500 Berechnung ausführen
+    sp500_filter_text = get_sp500_data()
+    
+    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+    
+    all_setups = []
+    for _, row in df_perf.head(2).iterrows():
+        sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
+        all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV1'], reverse=True)[:5])
+    
+    df_s = pd.DataFrame(all_setups)
+    
+    # CSV Exporte
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    # Briefing schreiben
+    with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
+        f.write(f"MARKT-UPDATE {today}\n")
+        f.write("==============================\n\n")
+        f.write("GESAMTMARKTFILTER\n")
+        f.write(sp500_filter_text + "\n\n")
+        f.write("MARKTKONTEXT & ANALYSE\n")
+        f.write(f"Da keine individuellen 'Score'-Werte in der Datei 'Setups({today}).csv' enthalten sind, entfällt der Filter für D-Setups (< 2), und alle aufgeführten Titel werden auf Basis des Sektor-Momentums bewertet.\n\n")
+        f.write("PERFORMANCE\n")
+        f.write(df_perf.to_string(index=False) + "\n\n")
+        f.write("TOP SETUPS\n")
+        f.write(df_s.to_string(index=False))
+
+    print("Briefing-Dateien erfolgreich geschrieben.")
