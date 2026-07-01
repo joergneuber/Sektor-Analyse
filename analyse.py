@@ -33,30 +33,21 @@ def get_perf(ticker, name):
         if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
+        
+        # EMA/WMA Prüfung für die Performance-Tabelle
+        def check(span): return "Ja" if last > close.ewm(span=span, adjust=False).mean().iloc[-1] else "Nein"
+        weights = np.arange(1, 201)
+        w200_val = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
+        
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
-        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
-        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+        res = {
+            "Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60), 
+            "Rotation-Score": round((p(5) * 0.7 + p(12) * 0.3), 3),
+            "Über EMA20": check(20), "Über EMA50": check(50), 
+            "Über EMA100": check(100), "Über EMA200": check(200), "Über WMA200": "Ja" if last > w200_val else "Nein"
+        }
         return res
     except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
-
-def analyze_stock_indicators(ticker, sektor):
-    time.sleep(0.1)
-    try:
-        hist = yf.download(ticker, period="300d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
-        if hist.empty or len(hist) < 200: return None
-        c = hist['Close']
-        akt = c.iloc[-1]
-        def check(span): return "Ja" if akt > c.ewm(span=span, adjust=False).mean().iloc[-1] else "Nein"
-        weights = np.arange(1, 201)
-        w200_val = c.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        return {
-            "Ticker": ticker, "Sektor": sektor, "Kurs": round(akt, 2),
-            "Über EMA20": check(20), "Über EMA50": check(50), 
-            "Über EMA100": check(100), "Über EMA200": check(200),
-            "Über WMA200": "Ja" if akt > w200_val else "Nein"
-        }
-    except: return None
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
@@ -79,21 +70,19 @@ def analyze_a_setup(ticker, sektor):
 if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # Performance-Daten mit Indikatoren sammeln
-    perf_list = []
+    # Performance-Daten aller Aktien sammeln
+    all_perf = []
     for ticker, name in sektoren_map.items():
         for s in sektoren_aktien.get(ticker, []):
-            res = analyze_stock_indicators(s, name)
-            if res: perf_list.append(res)
+            all_perf.append(get_perf(s, name))
             
-    df_perf = pd.DataFrame(perf_list)
+    df_perf = pd.DataFrame(all_perf).sort_values("Rotation-Score", ascending=False)
     
-    # Setups sammeln
-    df_rot = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     all_setups = []
-    for _, row in df_rot.head(2).iterrows():
+    for _, row in df_perf.head(2).iterrows():
         sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
         all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV1'], reverse=True)[:5])
+    
     df_s = pd.DataFrame(all_setups)
     
     # Export
