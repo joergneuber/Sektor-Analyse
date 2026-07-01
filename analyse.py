@@ -25,4 +25,74 @@ sektoren_aktien = {
     "XLI": ["CAT", "GE", "HON", "BA", "UPS", "LMT", "DE", "MMM", "RTX", "UNP"],
     "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC"],
     "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL"],
-    "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB
+    "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI"],
+    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"],
+    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT"],
+    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU"],
+    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK"],
+    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "SGEN", "EXAS", "MRNA", "TECH"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "PBCT", "SNV", "HBAP"],
+    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CYBR", "QLYS", "TENB", "VRSN", "CHKP"],
+    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "SPLK", "MDB", "TEAM", "DOCU"],
+    "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM"],
+    "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC"],
+    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN"],
+    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR"],
+    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
+}
+
+# --- FUNKTIONEN ---
+def get_sp500_data():
+    try:
+        # ^GSPC ist das offizielle Kürzel für den S&P 500 Index
+        hist = yf.download("^GSPC", period="300d", progress=False)
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        
+        if hist.empty or len(hist) < 200:
+            return "Trend S&P 500: Nicht bewertet (Daten unvollständig)"
+            
+        close = hist['Close']
+        aktuell = close.iloc[-1]
+        
+        # Berechnung der Indikatoren
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
+        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+        
+        # WMA 200 Berechnung
+        weights = np.arange(1, 201)
+        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
+        
+        output = (
+            f"S&P 500 Kurs: {aktuell:.2f}\n"
+            f"EMA 20:  {e20:.2f}\n"
+            f"EMA 50:  {e50:.2f}\n"
+            f"EMA 100: {e100:.2f}\n"
+            f"EMA 200: {e200:.2f}\n"
+            f"WMA 200: {w200:.2f}"
+        )
+        return output
+    except Exception as e:
+        return f"Trend S&P 500: Fehler bei Berechnung ({str(e)})"
+
+def get_perf(ticker, name):
+    try:
+        hist = yf.download(ticker, period="120d", progress=False)
+        if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
+        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+        close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
+        last = close.iloc[-1]
+        def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
+        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
+        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+        return res
+    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+
+def analyze_a_setup(ticker, sektor):
+    time.sleep(0.1)
+    try:
+        hist = yf.download(ticker, period="250d", progress=False)
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        if hist.empty or len(hist) < 200: return None
+        atr = (hist['High'] - hist['Low']).rolling
