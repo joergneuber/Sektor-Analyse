@@ -45,72 +45,71 @@ sektoren_aktien = {
 def get_sp500_data():
     try:
         hist = yf.download("^GSPC", period="300d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): 
-            hist.columns = hist.columns.get_level_values(0)
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        if hist.empty: return None, "Fehler S&P 500"
         
-        if hist.empty or len(hist) < 200:
-            return None, "Trend S&P 500: Keine Daten"
-            
         close = hist['Close']
-        aktuell = close.iloc[-1]
-        
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
-        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
-        
-        weights = np.arange(1, 201)
-        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        
-        metrics = {
-            "aktuell": aktuell, "ema20": e20, "ema50": e50, 
-            "ema100": e100, "ema200": e200, "wma200": w200
+        m = {
+            "aktuell": close.iloc[-1],
+            "e20": close.ewm(span=20, adjust=False).mean().iloc[-1],
+            "e50": close.ewm(span=50, adjust=False).mean().iloc[-1],
+            "e200": close.ewm(span=200, adjust=False).mean().iloc[-1]
         }
-        
-        output = (
-            f"S&P 500 Kurs: {aktuell:.2f}\n"
-            f"EMA 20:  {e20:.2f}\n"
-            f"EMA 50:  {e50:.2f}\n"
-            f"EMA 100: {e100:.2f}\n"
-            f"EMA 200: {e200:.2f}\n"
-            f"WMA 200: {w200:.2f}"
-        )
-        return metrics, output
-    except Exception as e:
-        return None, f"Trend S&P 500: Fehler ({str(e)})"
-
-def get_perf(ticker, name):
-    try:
-        hist = yf.download(ticker, period="120d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
-        close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
-        last = close.iloc[-1]
-        def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
-        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
-        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
-        return res
-    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+        text = f"S&P 500 Kurs: {m['aktuell']:.2f} | EMA 50: {m['e50']:.2f} | EMA 200: {m['e200']:.2f}"
+        return m, text
+    except: return None, "Fehler S&P 500"
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
     try:
         hist = yf.download(ticker, period="250d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): 
-            hist.columns = hist.columns.get_level_values(0)
-        if hist.empty or len(hist) < 200: 
-            return None
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+        if hist.empty or len(hist) < 200: return None
             
-        highs = hist['High']
-        lows = hist['Low']
-        closes = hist['Close']
-        aktueller_kurs = closes.iloc[-1]
+        c = hist['Close']
+        highs, lows = hist['High'], hist['Low']
+        akt = c.iloc[-1]
         
-        # Trend-Score Ermittlung (EMA 20, 50, 100, 200)
-        e20 = closes.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = closes.ewm(span=50, adjust=False).mean().iloc[-1]
-        e100 = closes.ewm(span=100, adjust=False).mean().iloc[-1]
-        e200 = closes.ewm(span=200, adjust=False).mean().iloc[-1]
+        # Scoring
+        score = sum([1 for ema in [c.ewm(span=20).mean().iloc[-1], c.ewm(span=50).mean().iloc[-1], 
+                                   c.ewm(span=100).mean().iloc[-1], c.ewm(span=200).mean().iloc[-1]] if akt > ema])
+        if score < 2: return None
+            
+        atr = (highs - lows).rolling(14).mean().iloc[-1]
+        entry = highs.rolling(20).max().iloc[-1]
+        stop = lows.rolling(20).min().iloc[-1]
+        risiko = entry - stop
         
-        score = 0
-        if aktueller_kurs
+        return {
+            "Ticker": ticker, "Sektor": sektor, "Kurs": round(akt, 2), "Score": score,
+            "Einstieg": round(entry, 2), "Stop": round(stop, 2), "CRV1": round(((entry + atr) - entry) / risiko, 2)
+        }
+    except: return None
+
+# --- MAIN ---
+if __name__ == "__main__":
+    today = datetime.now().strftime("%Y-%m-%d")
+    sp500_m, sp500_txt = get_sp500_data()
+    
+    # Performance-Analyse
+    perf_data = []
+    for t, n in sektoren_map.items():
+        hist = yf.download(t, period="60d", progress=False)
+        if not hist.empty:
+            close = hist['Close'].iloc[:, 0] if isinstance(hist['Close'], pd.DataFrame) else hist['Close']
+            perf_data.append({"Ticker": t, "Sektor": n, "Score": round(((close.iloc[-1] / close.iloc[0]) - 1) * 100, 2)})
+    
+    df_perf = pd.DataFrame(perf_data).sort_values("Score", ascending=False)
+    
+    # Setups
+    all_setups = []
+    for _, row in df_perf.head(3).iterrows():
+        for s in sektoren_aktien.get(row['Ticker'], []):
+            res = analyze_a_setup(s, row['Sektor'])
+            if res: all_setups.append(res)
+    
+    df_s = pd.DataFrame(all_setups)
+    df_perf.to_csv(f"Performance({today}).csv", sep=';')
+    df_s.to_csv(f"Setups({today}).csv", sep=';')
+    
+    print("Analyse erfolgreich abgeschlossen.")
