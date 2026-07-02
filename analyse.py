@@ -153,8 +153,6 @@ if __name__ == "__main__":
         f.write("==============================\n\n")
         f.write("GESAMTMARKTFILTER\n")
         f.write(sp500_filter_text + "\n\n")
-        f.write("MARKTKONTEXT & ANALYSE\n")
-        f.write(f"Da keine individuellen 'Score'-Werte in der Datei 'Setups({today}).csv' enthalten sind, entfällt der Filter für D-Setups (< 2), und alle aufgeführten Titel werden auf Basis des Sektor-Momentums bewertet.\n\n")
         f.write("PERFORMANCE\n")
         f.write(df_perf.to_string(index=False) + "\n\n")
         f.write("TOP SETUPS\n")
