@@ -74,18 +74,44 @@ def get_sp500_data():
     except Exception as e:
         return f"Trend S&P 500: Fehler bei Berechnung ({str(e)})"
 
+import datetime
+import pandas as pd
+import yfinance as yf
+
 def get_perf(ticker, name):
     try:
-        hist = yf.download(ticker, period="120d", progress=False)
+        # Zeitraum auf 1 Jahr erhöhen, um YTD abdecken zu können
+        hist = yf.download(ticker, period="1y", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+        
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
+        
+        # Berechnung relative Performance
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
-        res = {"Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60)}
+        
+        # YTD Berechnung
+        current_year = datetime.datetime.now().year
+        ytd_data = close[close.index.year == current_year]
+        if not ytd_data.empty:
+            ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2)
+        else:
+            ytd_perf = 0
+            
+        res = {
+            "Ticker": ticker, 
+            "Sektor": name, 
+            "5T": p(5), 
+            "12T": p(12), 
+            "30T": p(30), 
+            "60T": p(60), 
+            "YTD": ytd_perf
+        }
         res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
         return res
-    except: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "Rotation-Score": 0}
+    except: 
+        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
