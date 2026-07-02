@@ -113,6 +113,22 @@ def get_perf(ticker, name):
     except: 
         return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
 
+def calculate_retest_entry(hist, breakout_level):
+    close = hist['Close']
+    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+    ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+    ema100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
+    ema200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+    
+    # Primär: EMA 20 & 50
+    primary = [val for val in [ema20, ema50] if val < breakout_level]
+    # Sekundär: EMA 100, 200
+    secondary = [val for val in [ema100, ema200] if val < breakout_level]
+    
+    if primary: return round(max(primary), 2)
+    if secondary: return round(max(secondary), 2)
+    return round(breakout_level * 0.98, 2) # Fallback
+
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
     try:
@@ -122,22 +138,33 @@ def analyze_a_setup(ticker, sektor):
         if hist.empty or len(hist) < 200: 
             return None
             
-        # Kürzere Zeilen zur Vermeidung von Syntax-Abschnitten
+        # ... innerhalb von analyze_a_setup ...
         highs = hist['High']
         lows = hist['Low']
         closes = hist['Close']
         
         atr = (highs - lows).rolling(14).mean().iloc[-1]
-        entry = highs.rolling(20).max().iloc[-1]
+        breakout_level = highs.rolling(20).max().iloc[-1]
+        
+        # NEU: Re-Test Einstieg berechnen und den alten 'entry' überschreiben
+        entry = calculate_retest_entry(hist, breakout_level)
+        
         stop = lows.rolling(20).min().iloc[-1]
+        
+        # Sicherheitsprüfung: Wenn der EMA-Einstieg unter dem Stop liegt, 
+        # nehmen wir das Ausbruchsniveau als Einstieg, um keine unsinnigen Trades zu machen.
+        if entry <= stop: 
+            entry = breakout_level
+            
         risiko = entry - stop
         
+        # TP1 und TP2 basieren jetzt auf dem neuen, tieferen Einstieg
         tp1 = entry + atr
         tp2 = entry + (atr * 3)
         
         crv1 = ((tp1 - entry) / risiko) if risiko > 0 else 0
         crv2 = ((tp2 - entry) / risiko) if risiko > 0 else 0
-        
+        # ... (Rest der Funktion bleibt wie gehabt)        
         return {
             "Ticker": ticker, 
             "Name": yf.Ticker(ticker).info.get('longName', ticker), 
