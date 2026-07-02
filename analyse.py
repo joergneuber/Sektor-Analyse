@@ -147,60 +147,37 @@ def analyze_a_setup(ticker, sektor):
         if hist.empty or len(hist) < 100: 
             return None
             
-        highs = hist['High']
-        lows = hist['Low']
-        closes = hist['Close']
-        
-        # Indikatoren berechnen
+        highs, lows, closes = hist['High'], hist['Low'], hist['Close']
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         breakout_level = highs.rolling(20).max().iloc[-1]
         stop = lows.rolling(20).min().iloc[-1]
-        
-        # RSI (14)
-        delta = closes.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs)).iloc[-1]
-        
-        # MACD (12, 26, 9)
-        exp1 = closes.ewm(span=12, adjust=False).mean()
-        exp2 = closes.ewm(span=26, adjust=False).mean()
-        macd_line = exp1 - exp2
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        
-        # Einstieg & Setup-Typ bestimmen
+    
         entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
-        
-        # Trendfolge-Logik: Wenn MACD > Signal, dann ist es ein Trendfolge-Setup
-        if macd_line.iloc[-1] > signal_line.iloc[-1]:
-            setup_typ = "Trendfolge"
-            
-        # Sicherheitsprüfung: Stop-Check
         if entry_val <= stop: 
             entry_val = breakout_level
             setup_typ = "Ausbruch"
 
         risiko = entry_val - stop
-        tp1 = entry_val + atr
-        tp2 = entry_val + (atr * 3)
+        tp1, tp2 = entry_val + atr, entry_val + (atr * 3)
         crv1 = ((tp1 - entry_val) / risiko) if risiko > 0 else 0
         crv2 = ((tp2 - entry_val) / risiko) if risiko > 0 else 0
         
-        status = "Beobachten" if closes.iloc[-1] <= (entry_val * 1.03) else "Gelaufen"
-
-        # --- ERWEITERTE STATUS-LOGIK ---
-        # "Valide" wenn: RSI nicht überhitzt UND Trend bullisch UND Status = Beobachten
+        # Indikatoren
+        delta = closes.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+        
+        exp1, exp2 = closes.ewm(span=12, adjust=False).mean(), closes.ewm(span=26, adjust=False).mean()
+        macd_line, signal_line = exp1 - exp2, (exp1 - exp2).ewm(span=9, adjust=False).mean()
+        
+        # Logik-Definitionen
         is_overheated = rsi > 80
         is_bullish = macd_line.iloc[-1] > signal_line.iloc[-1]
-        is_near_entry = closes.iloc[-1] <= (entry_val * 1.05) # 5% Toleranz für "Beobachten"
+        is_near_entry = closes.iloc[-1] <= (entry_val * 1.01) # Nur 1% Puffer für VALIDE
         
-        status2 = "VALIDE" if (is_bullish and not is_overheated and is_near_entry) else "WACHSAMKEIT"
-        
-        # Statuserweiterung für Überhitzung
-        status_final = status
-        if is_overheated:
-            status_final = "ÜBERHITZT!"
+        status = "ÜBERHITZT!" if is_overheated else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
+        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten") else "WACHSAMKEIT"
         
         return {
             "Ticker": ticker, 
@@ -209,17 +186,18 @@ def analyze_a_setup(ticker, sektor):
             "Setup-Typ": setup_typ,
             "RSI": round(rsi, 2),
             "MACD-Trend": "Bullish" if is_bullish else "Bearish",
-            "Status": status_final,
-            "Status2": status2,         # <--- Die neue Ampel-Spalte
+            "Status": status,
+            "Status2": status2,
             "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
+            "TP1": round(tp1, 2),
+            "TP2": round(tp2, 2),
             "CRV1": round(crv1, 2),
             "CRV2": round(crv2, 2)
         }
     except Exception: 
-        return None
-        
+        return None        
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
