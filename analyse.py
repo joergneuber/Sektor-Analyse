@@ -155,7 +155,7 @@ def analyze_a_setup(ticker, sektor):
 
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
     
     # S&P 500 Berechnung ausführen
     sp500_filter_text = get_sp500_data()
