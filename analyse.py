@@ -148,7 +148,7 @@ if __name__ == "__main__":
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # Briefing schreiben
-    with open(f"Briefing_{today}.txt", "w", encoding="utf-8") as f:
+    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n")
         f.write("==============================\n\n")
         f.write("GESAMTMARKTFILTER\n")
