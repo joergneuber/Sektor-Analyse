@@ -142,9 +142,13 @@ if __name__ == "__main__":
         # Hier wurde "[:5]" entfernt, um alle Aktien des Sektors zu verarbeiten
         sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
         # Ergebnisse sortieren und komplett anhängen
-        all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV2'], reverse=True))
+        all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV1'], reverse=True))
     
     df_s = pd.DataFrame(all_setups)
+    
+    # HIER: Sortierung des GESAMTEN DataFrames nach CRV2 absteigend
+    if not df_s.empty:
+        df_s = df_s.sort_values(by='CRV2', ascending=False)
     
     # CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
