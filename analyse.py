@@ -30,9 +30,9 @@ sektoren_aktien = {
     "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT"],
     "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU"],
     "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK"],
-    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "EXAS", "MRNA", "IBB"],
+    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB"],
     "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "NYCB", "WBS"],
-    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN", "PFPT"],
+    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN"],
     "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "SPLK", "MDB", "TEAM", "DOCU"],
     "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM"],
     "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC"],
@@ -203,20 +203,27 @@ def analyze_a_setup(ticker, sektor):
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
-    # S&P 500 Berechnung ausführen
+    # 1. Benchmarks sicher abrufen
     sp500_filter_text = get_sp500_data()
+    qqq_text = get_qqq_quote() 
     
+    # 2. Performance berechnen
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
+    # 3. Setups verarbeiten
     all_setups = []
-    # Iteration über die Top 2 Sektoren
     for _, row in df_perf.head(2).iterrows():
-        # Hier wurde "[:5]" entfernt, um alle Aktien des Sektors zu verarbeiten
         sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
-        # Ergebnisse sortieren und komplett anhängen
-        all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV1'], reverse=True))
+        all_setups.extend([r for r in sector_results if r])
     
     df_s = pd.DataFrame(all_setups)
+    
+    # 4. Statistiken sicher berechnen
+    if not df_s.empty and 'Setup-Typ' in df_s.columns:
+        df_s = df_s.sort_values(by='CRV2', ascending=False)
+        setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
+    else:
+        setup_stats = {"Info": "Keine Setups mit validen Daten gefunden"}
     
     # HIER: Sortierung des GESAMTEN DataFrames nach CRV2 absteigend
     if not df_s.empty:
