@@ -152,9 +152,21 @@ def analyze_a_setup(ticker, sektor):
             return None # Aktie wird ignoriert
         # ---------------------------
 
-        if hist.empty or len(hist) < 100: 
-            return None
-        
+        # --- NEU: EARNINGS-PRÜFUNG ---
+        ticker_obj = yf.Ticker(ticker)
+        earnings_date = "N/A"
+        is_earnings_near = False
+        try:
+            calendar = ticker_obj.calendar
+            if calendar is not None and not calendar.empty:
+                date_val = calendar.index[0]
+                earnings_date = date_val.strftime('%Y-%m-%d')
+                # Prüfe, ob Earnings innerhalb der nächsten 3 Tage sind
+                if (date_val.date() - datetime.date.today()).days <= 3:
+                    is_earnings_near = True
+        except:
+            earnings_date = "Unbekannt"
+            
         if hist.empty or len(hist) < 100: 
             return None
             
@@ -182,18 +194,21 @@ def analyze_a_setup(ticker, sektor):
         exp1, exp2 = closes.ewm(span=12, adjust=False).mean(), closes.ewm(span=26, adjust=False).mean()
         macd_line, signal_line = exp1 - exp2, (exp1 - exp2).ewm(span=9, adjust=False).mean()
         
-        # Logik-Definitionen
+        # Logik-Definitionen (oben bei status2 anpassen!)
         is_overheated = rsi > 80
         is_bullish = macd_line.iloc[-1] > signal_line.iloc[-1]
-        is_near_entry = closes.iloc[-1] <= (entry_val * 1.01) # Nur 1% Puffer für VALIDE
+        is_near_entry = closes.iloc[-1] <= (entry_val * 1.01)
         
         status = "ÜBERHITZT!" if is_overheated else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
-        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten") else "WACHSAMKEIT"
+        
+        # Status2: Wenn Earnings nah sind, erzwingen wir WACHSAMKEIT
+        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_earnings_near) else "WACHSAMKEIT"
         
         return {
             "Ticker": ticker, 
-            "Name": yf.Ticker(ticker).info.get('longName', ticker), 
+            "Name": ticker_obj.info.get('longName', ticker), 
             "Sektor": sektor,
+            "Earnings": earnings_date,  # <--- Neue Spalte
             "Setup-Typ": setup_typ,
             "RSI": round(rsi, 2),
             "MACD-Trend": "Bullish" if is_bullish else "Bearish",
@@ -209,6 +224,7 @@ def analyze_a_setup(ticker, sektor):
         }
     except Exception: 
         return None        
+        
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
