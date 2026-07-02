@@ -144,6 +144,17 @@ def analyze_a_setup(ticker, sektor):
         hist = yf.download(ticker, period="250d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): 
             hist.columns = hist.columns.get_level_values(0)
+    
+        # --- NEU: VOLUMEN-FILTER ---
+        # Prüfe den Durchschnitt der letzten 20 Tage
+        avg_vol = hist['Volume'].tail(20).mean()
+        if avg_vol < 500_000: # Unter 500.000 Million Aktien Durchschnittsvolumen
+            return None # Aktie wird ignoriert
+        # ---------------------------
+
+        if hist.empty or len(hist) < 100: 
+            return None
+        
         if hist.empty or len(hist) < 100: 
             return None
             
@@ -211,7 +222,7 @@ if __name__ == "__main__":
     
     # 3. Setups verarbeiten
     all_setups = []
-    for _, row in df_perf.head(2).iterrows():
+    for _, row in df_perf.head(3).iterrows():
         sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
         all_setups.extend([r for r in sector_results if r])
     
