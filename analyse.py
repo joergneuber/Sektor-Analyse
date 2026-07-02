@@ -151,14 +151,32 @@ def analyze_a_setup(ticker, sektor):
         lows = hist['Low']
         closes = hist['Close']
         
+        # Indikatoren berechnen
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         breakout_level = highs.rolling(20).max().iloc[-1]
         stop = lows.rolling(20).min().iloc[-1]
-    
-        # Einstieg & Typ bestimmen
+        
+        # RSI (14)
+        delta = closes.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+        
+        # MACD (12, 26, 9)
+        exp1 = closes.ewm(span=12, adjust=False).mean()
+        exp2 = closes.ewm(span=26, adjust=False).mean()
+        macd_line = exp1 - exp2
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        
+        # Einstieg & Setup-Typ bestimmen
         entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
         
-        # Sicherheitsprüfung
+        # Trendfolge-Logik: Wenn MACD > Signal, dann ist es ein Trendfolge-Setup
+        if macd_line.iloc[-1] > signal_line.iloc[-1]:
+            setup_typ = "Trendfolge"
+            
+        # Sicherheitsprüfung: Stop-Check
         if entry_val <= stop: 
             entry_val = breakout_level
             setup_typ = "Ausbruch"
@@ -169,26 +187,23 @@ def analyze_a_setup(ticker, sektor):
         crv1 = ((tp1 - entry_val) / risiko) if risiko > 0 else 0
         crv2 = ((tp2 - entry_val) / risiko) if risiko > 0 else 0
         
-        # NEU: Status-Logik
         status = "Beobachten" if closes.iloc[-1] <= (entry_val * 1.03) else "Gelaufen"
-        
+            
         return {
             "Ticker": ticker, 
             "Name": yf.Ticker(ticker).info.get('longName', ticker), 
             "Sektor": sektor,
             "Setup-Typ": setup_typ,
-            "Status": status,           # <--- NEU
+            "RSI": round(rsi, 2),
+            "MACD-Trend": "Bullish" if macd_line.iloc[-1] > signal_line.iloc[-1] else "Bearish",
+            "Status": status,
             "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
-            "TP1": round(tp1, 2), 
-            "TP2": round(tp2, 2),
-            "CRV1": round(crv1, 2),
             "CRV2": round(crv2, 2)
         }
     except Exception: 
         return None
-
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
