@@ -147,7 +147,6 @@ def analyze_a_setup(ticker, sektor):
         if hist.empty or len(hist) < 100: 
             return None
             
-        # ... innerhalb von analyze_a_setup ...
         highs = hist['High']
         lows = hist['Low']
         closes = hist['Close']
@@ -159,26 +158,26 @@ def analyze_a_setup(ticker, sektor):
         # Einstieg & Typ bestimmen
         entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
         
-        # Sicherheitsprüfung: Wenn der EMA-Einstieg unter dem Stop liegt, Ausbruch nehmen
+        # Sicherheitsprüfung
         if entry_val <= stop: 
             entry_val = breakout_level
             setup_typ = "Ausbruch"
 
         risiko = entry_val - stop
-        
-# TP Berechnungen
         tp1 = entry_val + atr
         tp2 = entry_val + (atr * 3)
-        
-        # CRV Berechnung (nicht mehr als Filter genutzt, nur noch zur Anzeige)
         crv1 = ((tp1 - entry_val) / risiko) if risiko > 0 else 0
         crv2 = ((tp2 - entry_val) / risiko) if risiko > 0 else 0
+        
+        # NEU: Status-Logik
+        status = "Beobachten" if closes.iloc[-1] <= (entry_val * 1.03) else "Gelaufen"
         
         return {
             "Ticker": ticker, 
             "Name": yf.Ticker(ticker).info.get('longName', ticker), 
             "Sektor": sektor,
-            "Setup-Typ": setup_typ, # Jetzt korrekt im Dict
+            "Setup-Typ": setup_typ,
+            "Status": status,           # <--- NEU
             "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
