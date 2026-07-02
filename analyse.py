@@ -131,14 +131,12 @@ def calculate_retest_entry(hist, breakout_level):
     ema100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
     ema200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
     
-    # Primär: EMA 20 & 50
     primary = [val for val in [ema20, ema50] if val < breakout_level]
-    # Sekundär: EMA 100, 200
     secondary = [val for val in [ema100, ema200] if val < breakout_level]
     
-    if primary: return round(max(primary), 2)
-    if secondary: return round(max(secondary), 2)
-    return round(breakout_level * 0.98, 2) # Fallback
+    if primary: return round(max(primary), 2), "Re-Test"
+    if secondary: return round(max(secondary), 2), "Re-Test"
+    return round(breakout_level * 0.98, 2), "Ausbruch"
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
@@ -156,6 +154,16 @@ def analyze_a_setup(ticker, sektor):
         
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         breakout_level = highs.rolling(20).max().iloc[-1]
+    
+        # entry und setup_typ abholen (NEU)
+        entry, setup_typ = calculate_retest_entry(hist, breakout_level)    
+
+        stop = lows.rolling(20).min().iloc[-1]
+
+        # Sicherheitsprüfung (NEU)
+        if entry <= stop: 
+            entry = breakout_level
+            setup_typ = "Ausbruch"
         
         # NEU: Re-Test Einstieg berechnen und den alten 'entry' überschreiben
         entry = calculate_retest_entry(hist, breakout_level)
@@ -213,6 +221,10 @@ if __name__ == "__main__":
     # HIER: Sortierung des GESAMTEN DataFrames nach CRV2 absteigend
     if not df_s.empty:
         df_s = df_s.sort_values(by='CRV2', ascending=False)
+
+    # Statistik erstellen
+    setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
+    stats_text = f"\nSETUP-STATISTIK: {setup_stats}"
     
     # CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
@@ -222,11 +234,14 @@ if __name__ == "__main__":
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n")
         f.write("==============================\n\n")
-        f.write("GESAMTMARKTFILTER\n")
-        f.write(sp500_filter_text + "\n\n")
+        f.write("BENCHMARKS\n")
+        f.write(sp500_filter_text + "\n")
+        f.write(qqq_text + "\n\n")
+        f.write("SETUP-VERTEILUNG\n")
+        f.write(stats_text + "\n\n") # <--- Hier die Statistik
         f.write("PERFORMANCE\n")
         f.write(df_perf.to_string(index=False) + "\n\n")
         f.write("TOP SETUPS\n")
         f.write(df_s.to_string(index=False))
-
-    print("Briefing-Dateien erfolgreich geschrieben.")
+        
+        print("Briefing-Dateien erfolgreich geschrieben.")
