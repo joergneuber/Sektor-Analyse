@@ -235,18 +235,28 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # Briefing schreiben
+    # --- NEU: Briefing mit Filter für VALIDE Setups ---
+    valide_setups = df_s[df_s['Status2'] == "VALIDE"]
+    
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n")
         f.write("==============================\n\n")
         f.write("BENCHMARKS\n")
         f.write(sp500_filter_text + "\n")
         f.write(qqq_text + "\n\n")
-        f.write("SETUP-VERTEILUNG\n")
-        f.write(stats_text + "\n\n") # <--- Hier die Statistik
-        f.write("PERFORMANCE\n")
-        f.write(df_perf.to_string(index=False) + "\n\n")
-        f.write("TOP SETUPS\n")
-        f.write(df_s.to_string(index=False))
         
-        print("Briefing-Dateien erfolgreich geschrieben.")
+        f.write("VALIDE SETUPS (Dein Fokus für heute)\n")
+        if not valide_setups.empty:
+            # Hier schreiben wir nur die Validen ins Briefing
+            f.write(valide_setups.to_string(index=False) + "\n\n")
+        else:
+            f.write("Keine Setups aktuell im Status 'VALIDE'.\n\n")
+            
+        f.write("PERFORMANCE ÜBERSICHT\n")
+        f.write(df_perf.to_string(index=False) + "\n\n")
+        
+        # Falls du die Statistik noch willst, kannst du sie hier lassen:
+        f.write("SETUP-STATISTIK\n")
+        f.write(str(setup_stats) + "\n")
+        
+    print("Briefing-Dateien erfolgreich geschrieben.")
