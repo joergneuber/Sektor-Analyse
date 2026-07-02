@@ -144,7 +144,9 @@ def analyze_a_setup(ticker, sektor):
         hist = yf.download(ticker, period="250d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): 
             hist.columns = hist.columns.get_level_values(0)
-        if hist.empty or len(hist) < 200: 
+        if hist.empty or len(hist) < 100: 
+            # DIESE ZEILE HILFT DIR BEI DER FEHLERSUCHE:
+            print(f"DEBUG: {ticker} übersprungen (Daten unzureichend)") 
             return None
             
         # ... innerhalb von analyze_a_setup ...
