@@ -188,22 +188,38 @@ def analyze_a_setup(ticker, sektor):
         crv2 = ((tp2 - entry_val) / risiko) if risiko > 0 else 0
         
         status = "Beobachten" if closes.iloc[-1] <= (entry_val * 1.03) else "Gelaufen"
-            
+
+        # --- ERWEITERTE STATUS-LOGIK ---
+        # "Valide" wenn: RSI nicht überhitzt UND Trend bullisch UND Status = Beobachten
+        is_overheated = rsi > 80
+        is_bullish = macd_line.iloc[-1] > signal_line.iloc[-1]
+        is_near_entry = closes.iloc[-1] <= (entry_val * 1.05) # 5% Toleranz für "Beobachten"
+        
+        status2 = "VALIDE" if (is_bullish and not is_overheated and is_near_entry) else "WACHSAMKEIT"
+        
+        # Statuserweiterung für Überhitzung
+        status_final = status
+        if is_overheated:
+            status_final = "ÜBERHITZT!"
+        
         return {
             "Ticker": ticker, 
             "Name": yf.Ticker(ticker).info.get('longName', ticker), 
             "Sektor": sektor,
             "Setup-Typ": setup_typ,
             "RSI": round(rsi, 2),
-            "MACD-Trend": "Bullish" if macd_line.iloc[-1] > signal_line.iloc[-1] else "Bearish",
-            "Status": status,
+            "MACD-Trend": "Bullish" if is_bullish else "Bearish",
+            "Status": status_final,
+            "Status2": status2,         # <--- Die neue Ampel-Spalte
             "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
+            "CRV1": round(crv1, 2),
             "CRV2": round(crv2, 2)
         }
     except Exception: 
         return None
+        
 # --- HAUPTTEIL ---
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -223,20 +239,14 @@ if __name__ == "__main__":
     
     df_s = pd.DataFrame(all_setups)
     
-    # 4. Statistiken sicher berechnen
-    if not df_s.empty and 'Setup-Typ' in df_s.columns:
-        df_s = df_s.sort_values(by='CRV2', ascending=False)
-        setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
-    else:
-        setup_stats = {"Info": "Keine Setups mit validen Daten gefunden"}
-    
-    # HIER: Sortierung des GESAMTEN DataFrames nach CRV2 absteigend
+    # 4. Statistiken und Sortierung
     if not df_s.empty:
-        df_s = df_s.sort_values(by='CRV2', ascending=False)
-
-    # HIER: Sortierung des GESAMTEN DataFrames nach CRV2 absteigend
-    if not df_s.empty and 'Setup-Typ' in df_s.columns:
-        df_s = df_s.sort_values(by='CRV2', ascending=False)
+        # Zuerst nach Status2 sortieren (VALIDE oben), dann nach CRV2 (Performance)
+        # Dazu definieren wir eine Sortier-Priorität (VALIDE = 0, WACHSAMKEIT = 1)
+        df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
+        df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
+        df_s = df_s.drop(columns=['sort_col']) # Hilfsspalte wieder löschen
+        
         setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
     else:
         setup_stats = {"Keine": "Setups gefunden"}
