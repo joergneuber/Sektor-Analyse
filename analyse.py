@@ -74,6 +74,17 @@ def get_sp500_data():
     except Exception as e:
         return f"Trend S&P 500: Fehler bei Berechnung ({str(e)})"
 
+def get_qqq_quote():
+    try:
+        ticker = yf.Ticker("QQQ")
+        # .history(period="1d") lädt den aktuellsten verfügbaren Schlusskurs
+        data = ticker.history(period="1d")
+        if not data.empty:
+            return f"QQQ (Nasdaq 100) Kurs: {data['Close'].iloc[-1]:.2f}"
+        return "QQQ Kurs: Daten nicht verfügbar"
+    except:
+        return "QQQ Kurs: Fehler beim Abruf"
+
 import datetime
 import pandas as pd
 import yfinance as yf
