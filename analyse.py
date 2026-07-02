@@ -145,8 +145,6 @@ def analyze_a_setup(ticker, sektor):
         if isinstance(hist.columns, pd.MultiIndex): 
             hist.columns = hist.columns.get_level_values(0)
         if hist.empty or len(hist) < 100: 
-            # DIESE ZEILE HILFT DIR BEI DER FEHLERSUCHE:
-            print(f"DEBUG: {ticker} übersprungen (Daten unzureichend)") 
             return None
             
         # ... innerhalb von analyze_a_setup ...
@@ -156,42 +154,33 @@ def analyze_a_setup(ticker, sektor):
         
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         breakout_level = highs.rolling(20).max().iloc[-1]
+        stop = lows.rolling(20).min().iloc[-1]
     
-        # entry und setup_typ abholen (NEU)
-        entry, setup_typ = calculate_retest_entry(hist, breakout_level)    
-
-        stop = lows.rolling(20).min().iloc[-1]
-
-        # Sicherheitsprüfung (NEU)
-        if entry <= stop: 
-            entry = breakout_level
+        # Einstieg & Typ bestimmen
+        entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
+        
+        # Sicherheitsprüfung: Wenn der EMA-Einstieg unter dem Stop liegt, Ausbruch nehmen
+        if entry_val <= stop: 
+            entry_val = breakout_level
             setup_typ = "Ausbruch"
+
+        risiko = entry_val - stop
         
-        # NEU: Re-Test Einstieg berechnen und den alten 'entry' überschreiben
-        entry = calculate_retest_entry(hist, breakout_level)
+# TP Berechnungen
+        tp1 = entry_val + atr
+        tp2 = entry_val + (atr * 3)
         
-        stop = lows.rolling(20).min().iloc[-1]
+        # CRV Berechnung (nicht mehr als Filter genutzt, nur noch zur Anzeige)
+        crv1 = ((tp1 - entry_val) / risiko) if risiko > 0 else 0
+        crv2 = ((tp2 - entry_val) / risiko) if risiko > 0 else 0
         
-        # Sicherheitsprüfung: Wenn der EMA-Einstieg unter dem Stop liegt, 
-        # nehmen wir das Ausbruchsniveau als Einstieg, um keine unsinnigen Trades zu machen.
-        if entry <= stop: 
-            entry = breakout_level
-            
-        risiko = entry - stop
-        
-        # TP1 und TP2 basieren jetzt auf dem neuen, tieferen Einstieg
-        tp1 = entry + atr
-        tp2 = entry + (atr * 3)
-        
-        crv1 = ((tp1 - entry) / risiko) if risiko > 0 else 0
-        crv2 = ((tp2 - entry) / risiko) if risiko > 0 else 0
-        # ... (Rest der Funktion bleibt wie gehabt)        
         return {
             "Ticker": ticker, 
             "Name": yf.Ticker(ticker).info.get('longName', ticker), 
             "Sektor": sektor,
+            "Setup-Typ": setup_typ, # Jetzt korrekt im Dict
             "Kurs": round(closes.iloc[-1], 2), 
-            "Einstieg": round(entry, 2), 
+            "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
             "TP1": round(tp1, 2), 
             "TP2": round(tp2, 2),
