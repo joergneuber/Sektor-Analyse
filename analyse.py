@@ -137,9 +137,12 @@ if __name__ == "__main__":
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
     all_setups = []
+    # Iteration über die Top 2 Sektoren
     for _, row in df_perf.head(2).iterrows():
+        # Hier wurde "[:5]" entfernt, um alle Aktien des Sektors zu verarbeiten
         sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
-        all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV1'], reverse=True)[:5])
+        # Ergebnisse sortieren und komplett anhängen
+        all_setups.extend(sorted([r for r in sector_results if r], key=lambda x: x['CRV1'], reverse=True))
     
     df_s = pd.DataFrame(all_setups)
     
