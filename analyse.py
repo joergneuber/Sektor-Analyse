@@ -297,7 +297,7 @@ if __name__ == "__main__":
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
         if not valide_setups.empty:
             for _, row in valide_setups.iterrows():
-                # Sicherheits-Check: Sektor-Score abrufen
+                # Sektor-Momentum abrufen
                 perf_row = df_perf[df_perf['Sektor'] == row['Sektor']]
                 sektor_score = perf_row['Rotation-Score'].values[0] if not perf_row.empty else "N/A"
                 
