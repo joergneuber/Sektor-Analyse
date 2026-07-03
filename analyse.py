@@ -254,17 +254,20 @@ if __name__ == "__main__":
         
     # 4. Statistiken und Sortierung
     if not df_s.empty:
-        # Zuerst nach Status2 sortieren (VALIDE oben), dann nach CRV2 (Performance)
-        # Dazu definieren wir eine Sortier-Priorität (VALIDE = 0, WACHSAMKEIT = 1)
+        # Zuerst nach Status2 sortieren (VALIDE oben), dann nach CRV2
         df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
         df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
-        df_s = df_s.drop(columns=['sort_col']) # Hilfsspalte wieder löschen
-        
+        df_s = df_s.drop(columns=['sort_col'])
         setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
     else:
         setup_stats = {"Keine": "Setups gefunden"}
+
+    # 5. CSV Exporte (Wie in deinem funktionierenden alten Code)
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    print("CSV-Dateien erfolgreich geschrieben.")
     
-    # 5. Briefing erstellen (Optimiert für Analyse)
+    # 6. Briefing erstellen (Neues Format)
     valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
     beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
 
