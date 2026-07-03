@@ -82,8 +82,7 @@ def get_qqq_quote():
         if not data.empty:
             kurs = data['Close'].iloc[-1]
             return (f"QQQ (Nasdaq 100) Kurs: {kurs:.2f}\n"
-                    f"Trend QQQ: Nicht explizit quantifizierbar (keine EMAs in den Quelldaten verfügbar), "
-                    f"wird jedoch aufgrund des bullischen S&P 500-Bildes als bullisch eingestuft.")
+                    f"Trend QQQ (Nasdaq 100): Da keine expliziten EMA-Daten für QQQ vorliegen, wird der Trend aufgrund des bullischen S&P 500-Bildes ebenfalls als bullisch eingestuft.")
         return "QQQ Kurs: Daten nicht verfügbar"
     except:
         return "QQQ Kurs: Fehler beim Abruf"
@@ -298,12 +297,16 @@ if __name__ == "__main__":
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
         if not valide_setups.empty:
             for _, row in valide_setups.iterrows():
+                # Sektor-Momentum für Gemini (aus df_perf abrufen)
+                sektor_score = df_perf.loc[df_perf['Sektor'] == row['Sektor'], 'Rotation-Score'].values[0]
+                
                 f.write(f"------------------------------\n")
                 f.write(f"Ticker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
                 f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
                 f.write(f"Setup-Typ: {row['Setup-Typ']} | Qualität: A\n")
                 f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
                 f.write(f"CRV: {row['CRV2']}\n")
+                f.write(f"Sektor-Momentum: {sektor_score}\n")
                 f.write(f"Upside: Technisch {row['Tech-Upside']}% | Fundamentaler Analysten-Check {row['Fund-Upside']}%\n")
                 f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
         else:
