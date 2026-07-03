@@ -286,6 +286,13 @@ if __name__ == "__main__":
     valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
     beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
 
+    # Automatische Generierung der Top-Sektoren-Beschreibung
+    top_3 = df_perf.head(3)
+    sektor_beschreibung = "DIE STÄRKSTEN SEKTOREN (nach Rotation-Score):\n"
+    for _, row in top_3.iterrows():
+        sektor_beschreibung += (f"- {row['Sektor']} ({row['Ticker']}): Score {row['Rotation-Score']}, "
+                                f"60T: {row['60T']}%, YTD: {row['YTD']}%\n")
+    
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n")
         f.write("==============================\n\n")
@@ -297,7 +304,7 @@ if __name__ == "__main__":
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
         if not valide_setups.empty:
             for _, row in valide_setups.iterrows():
-                # Sektor-Momentum abrufen
+                # Sicherheits-Check für Sektor-Momentum
                 perf_row = df_perf[df_perf['Sektor'] == row['Sektor']]
                 sektor_score = perf_row['Rotation-Score'].values[0] if not perf_row.empty else "N/A"
                 
@@ -308,6 +315,7 @@ if __name__ == "__main__":
                 f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
                 f.write(f"CRV: {row['CRV2']}\n")
                 f.write(f"Sektor-Momentum: {sektor_score}\n")
+                # Hier steht nun exakt die neue Zeile:
                 f.write(f"Upside: Technisch {row['Tech-Upside']}% | Fundamentaler Analysten-Check {row['Fund-Upside']}%\n")
                 f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
         else:
