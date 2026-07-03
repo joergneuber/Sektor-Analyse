@@ -297,8 +297,9 @@ if __name__ == "__main__":
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
         if not valide_setups.empty:
             for _, row in valide_setups.iterrows():
-                # Sektor-Momentum für Gemini (aus df_perf abrufen)
-                sektor_score = df_perf.loc[df_perf['Sektor'] == row['Sektor'], 'Rotation-Score'].values[0]
+                # Sicherheits-Check: Sektor-Score abrufen
+                perf_row = df_perf[df_perf['Sektor'] == row['Sektor']]
+                sektor_score = perf_row['Rotation-Score'].values[0] if not perf_row.empty else "N/A"
                 
                 f.write(f"------------------------------\n")
                 f.write(f"Ticker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
