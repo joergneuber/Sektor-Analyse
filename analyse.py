@@ -268,6 +268,20 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     print("CSV-Dateien erfolgreich geschrieben.")
+
+    # Upside-Berechnungen (Technisch vs. Fundamentaler Analysten-Check)
+    def berechne_upsides(row):
+        # Technisches Upside: Von Einstieg zu TP2
+        tech_up = round(((row['TP2'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
+        # Fundamentales Upside: Von Einstieg zu Analysten-Kursziel
+        fund_up = 0.0
+        if isinstance(row['Kursziel'], (int, float)) and row['Kursziel'] > 0:
+            fund_up = round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
+        return tech_up, fund_up
+
+    # Neue Spalten zuweisen
+    df_s[['Tech-Upside', 'Fund-Upside']] = df_s.apply(lambda row: pd.Series(berechne_upsides(row)), axis=1)    
+
     
     # 6. Briefing erstellen (Neues Format)
     valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
@@ -289,7 +303,8 @@ if __name__ == "__main__":
                 f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
                 f.write(f"Setup-Typ: {row['Setup-Typ']} | Qualität: A\n")
                 f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
-                f.write(f"CRV: {row['CRV2']} | Upside-Potenzial: {row['Upside']}%\n")
+                f.write(f"CRV: {row['CRV2']}\n")
+                f.write(f"Upside: Technisch {row['Tech-Upside']}% | Fundamentaler Analysten-Check {row['Fund-Upside']}%\n")
                 f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
         else:
             f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")
