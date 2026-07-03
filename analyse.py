@@ -233,13 +233,14 @@ def analyze_a_setup(ticker, sektor):
             "Ticker": ticker, 
             "Name": ticker_obj.info.get('longName', ticker), 
             "Sektor": sektor,
-            "Earnings": earnings_date if 'earnings_date' in locals() else "Unbekannt",
-            "Kursziel": analyst_target if 'analyst_target' in locals() else "N/A",
+            "Earnings": earnings_date,
+            "Kursziel": analyst_target,
+            "Upside": 0.0, # Platzhalter für die Berechnung im Hauptteil
             "Setup-Typ": setup_typ,
             "RSI": round(rsi, 2),
             "MACD-Trend": "Bullish" if is_bullish else "Bearish",
             "Status": status,
-            "Status2": status2,  # Hier darf kein Fehler passieren
+            "Status2": status2,
             "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
@@ -252,8 +253,8 @@ def analyze_a_setup(ticker, sektor):
         print(f"Fehler bei {ticker}: {e}") # Druckt den echten Fehler aus
         return None        
         
-# --- HAUPTTEIL ---
-if __name__ == "__main__":
+    # --- HAUPTTEIL ---
+    if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
     # 1. Benchmarks sicher abrufen
@@ -276,6 +277,14 @@ if __name__ == "__main__":
     if df_s.empty or 'Status2' not in df_s.columns:
         print("WARNUNG: Keine Setups gefunden oder Status2 Spalte fehlt.")
         sys.exit() 
+
+    # Sicherstellen, dass Upside berechnet wird
+    def berechne_upside(row):
+        if isinstance(row['Kursziel'], (int, float)) and row['Kursziel'] > 0:
+            return round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
+        return 0.0
+
+    df_s['Upside'] = df_s.apply(berechne_upside, axis=1)
         
     # 4. Statistiken und Sortierung
     if not df_s.empty:
