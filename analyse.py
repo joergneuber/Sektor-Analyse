@@ -181,18 +181,27 @@ def analyze_a_setup(ticker, sektor):
         info = ticker_obj.info
         analyst_target = info.get('targetMeanPrice', None) # None wenn nicht vorhanden
         
-        # 5. Status-Logik (mit None-Check!)
-        is_overheated = rsi > 80
-        is_earnings_near = False # Hier könntest du bei Bedarf noch die calendar-Logik einfügen
+        # 5. Status-Logik (Erweiterter Filter)
+        is_overheated = rsi > 70  # RSI-Grenze auf 70 gesenkt
+        is_bad_crv = (risiko > 0 and (calculate_crv(entry_val, stop, atr) < 1.0)) # CRV Check
         
-        # Analysten-Risiko-Check nur wenn Werte existieren
+        # Analytischer Risikocheck
         is_analyst_risk = False
         if analyst_target is not None and analyst_target < entry_val:
             is_analyst_risk = True
             
         status = "ÜBERHITZT!" if is_overheated else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
-        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_analyst_risk) else "WACHSAMKEIT"
         
+        # VALIDE nur, wenn alles stimmt:
+        # 1. Bullischer MACD
+        # 2. Nicht überhitzt (RSI <= 70)
+        # 3. Gutes CRV (>= 1.0)
+        # 4. Kein analyst_risk
+        if is_bullish and not is_overheated and not is_bad_crv and status == "Beobachten" and not is_analyst_risk:
+            status2 = "VALIDE"
+        else:
+            status2 = "WACHSAMKEIT"
+            
         return {
             "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
             "Earnings": "N/A", "Kursziel": analyst_target if analyst_target else "N/A",
