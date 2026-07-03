@@ -254,7 +254,8 @@ def analyze_a_setup(ticker, sektor):
         return None        
         
     # --- HAUPTTEIL ---
-    if __name__ == "__main__":
+if __name__ == "__main__":
+    # Alles ab hier muss um 4 Leerzeichen eingerückt sein!
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
     # 1. Benchmarks sicher abrufen
