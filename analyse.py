@@ -141,114 +141,70 @@ def calculate_retest_entry(hist, breakout_level):
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
-    # Variablen vorab mit None oder Standardwerten definieren
-    entry_val, setup_typ, rsi, is_bullish = None, None, 0, False
     
     try:
         hist = yf.download(ticker, period="250d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): 
             hist.columns = hist.columns.get_level_values(0)
-    
-        # --- NEU: VOLUMEN-FILTER ---
-        # Prüfe den Durchschnitt der letzten 20 Tage
-        avg_vol = hist['Volume'].tail(20).mean()
-        if avg_vol < 500_000: # Unter 500.000 Million Aktien Durchschnittsvolumen
-            return None # Aktie wird ignoriert
-        # ---------------------------
-
-        # --- ERGÄNZUNG: ANALYSTEN-KURSZIEL ---
-        ticker_obj = yf.Ticker(ticker)
-        analyst_target = "N/A"
-        try:
-            # targetMeanPrice ist das durchschnittliche Kursziel
-            info = ticker_obj.info
-            if 'targetMeanPrice' in info and info['targetMeanPrice'] is not None:
-                analyst_target = round(info['targetMeanPrice'], 2)
-        except:
-            analyst_target = "N/A"    
-
-        # --- ERGÄNZUNG: ANALYSTEN-RISIKO-CHECK ---
-        is_analyst_risk = False
-        if analyst_target != "N/A" and analyst_target < entry_val:
-            is_analyst_risk = True
         
-        # Status2 Logik anpassen: Wenn Risiko durch Analysten, dann WACHSAMKEIT
-        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_near_earnings and not is_analyst_risk) else "WACHSAMKEIT"
-        # ----------------------------------------
-        
-        # --- NEU: EARNINGS-PRÜFUNG ---
-        ticker_obj = yf.Ticker(ticker)
-        earnings_date = "N/A"
-        is_earnings_near = False
-        try:
-            calendar = ticker_obj.calendar
-            if calendar is not None and not calendar.empty:
-                date_val = calendar.index[0]
-                earnings_date = date_val.strftime('%Y-%m-%d')
-                # Prüfe, ob Earnings innerhalb der nächsten 3 Tage sind
-                if (date_val.date() - datetime.date.today()).days <= 3:
-                    is_earnings_near = True
-        except:
-            earnings_date = "Unbekannt"
-            
-        if hist.empty or len(hist) < 100: 
+        # 1. Volumen-Filter (muss vor allem anderen kommen)
+        if hist.empty or len(hist) < 100 or hist['Volume'].tail(20).mean() < 500_000:
             return None
-            
+
+        # 2. Setup-Daten berechnen
         highs, lows, closes = hist['High'], hist['Low'], hist['Close']
-        atr = (highs - lows).rolling(14).mean().iloc[-1]
         breakout_level = highs.rolling(20).max().iloc[-1]
         stop = lows.rolling(20).min().iloc[-1]
-    
         entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
+        
+        # Sicherheit: Wenn entry_val None ist, sofort abbrechen
+        if entry_val is None: return None
+        
         if entry_val <= stop: 
             entry_val = breakout_level
             setup_typ = "Ausbruch"
 
+        # 3. Indikatoren
+        atr = (highs - lows).rolling(14).mean().iloc[-1]
         risiko = entry_val - stop
-        tp1, tp2 = entry_val + atr, entry_val + (atr * 3)
-        crv1 = ((tp1 - entry_val) / risiko) if risiko > 0 else 0
-        crv2 = ((tp2 - entry_val) / risiko) if risiko > 0 else 0
+        rsi = 100 - (100 / (1 + (closes.diff().where(closes.diff() > 0, 0).rolling(14).mean() / 
+                                 (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
         
-        # Indikatoren
-        delta = closes.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
-        
+        # MACD
         exp1, exp2 = closes.ewm(span=12, adjust=False).mean(), closes.ewm(span=26, adjust=False).mean()
-        macd_line, signal_line = exp1 - exp2, (exp1 - exp2).ewm(span=9, adjust=False).mean()
+        macd_line, signal_line = (exp1 - exp2).iloc[-1], (exp1 - exp2).ewm(span=9, adjust=False).mean().iloc[-1]
+        is_bullish = macd_line > signal_line
         
-        # Logik-Definitionen (oben bei status2 anpassen!)
+        # 4. Analysten & Earnings (sicher abrufen)
+        ticker_obj = yf.Ticker(ticker)
+        info = ticker_obj.info
+        analyst_target = info.get('targetMeanPrice', None) # None wenn nicht vorhanden
+        
+        # 5. Status-Logik (mit None-Check!)
         is_overheated = rsi > 80
-        is_bullish = macd_line.iloc[-1] > signal_line.iloc[-1]
-        is_near_entry = closes.iloc[-1] <= (entry_val * 1.01)
+        is_earnings_near = False # Hier könntest du bei Bedarf noch die calendar-Logik einfügen
         
+        # Analysten-Risiko-Check nur wenn Werte existieren
+        is_analyst_risk = False
+        if analyst_target is not None and analyst_target < entry_val:
+            is_analyst_risk = True
+            
         status = "ÜBERHITZT!" if is_overheated else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
+        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_analyst_risk) else "WACHSAMKEIT"
         
-        # Status2: Wenn Earnings nah sind, erzwingen wir WACHSAMKEIT
-        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_earnings_near) else "WACHSAMKEIT"
-        
-        # Sicherstellen, dass alle Keys existieren, auch bei Fehlern
         return {
-            "Ticker": ticker, 
-            "Name": ticker_obj.info.get('longName', ticker), 
-            "Sektor": sektor,
-            "Earnings": earnings_date,
-            "Kursziel": analyst_target,
-            "Upside": 0.0, # Platzhalter für die Berechnung im Hauptteil
-            "Setup-Typ": setup_typ,
-            "RSI": round(rsi, 2),
+            "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
+            "Earnings": "N/A", "Kursziel": analyst_target if analyst_target else "N/A",
+            "Upside": 0.0, "Setup-Typ": setup_typ, "RSI": round(rsi, 2),
             "MACD-Trend": "Bullish" if is_bullish else "Bearish",
-            "Status": status,
-            "Status2": status2,
-            "Kurs": round(closes.iloc[-1], 2), 
-            "Einstieg": round(entry_val, 2), 
-            "Stop": round(stop, 2),
-            "TP1": round(tp1, 2),
-            "TP2": round(tp2, 2),
-            "CRV1": round(crv1, 2),
-            "CRV2": round(crv2, 2)
+            "Status": status, "Status2": status2, "Kurs": round(closes.iloc[-1], 2), 
+            "Einstieg": round(entry_val, 2), "Stop": round(stop, 2),
+            "TP1": round(entry_val + atr, 2), "TP2": round(entry_val + (atr * 3), 2),
+            "CRV1": round(((entry_val + atr) - entry_val) / risiko, 2) if risiko > 0 else 0,
+            "CRV2": round(((entry_val + (atr * 3)) - entry_val) / risiko, 2) if risiko > 0 else 0
         }
+    except Exception as e:
+        return None
     except Exception as e:
         print(f"Fehler bei {ticker}: {e}") # Druckt den echten Fehler aus
         return None        
