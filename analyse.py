@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import datetime
 import time
+import sys
 
 # --- KONFIGURATION ---
 sektoren_map = {
@@ -140,6 +141,9 @@ def calculate_retest_entry(hist, breakout_level):
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
+    # Variablen vorab mit None oder Standardwerten definieren
+    entry_val, setup_typ, rsi, is_bullish = None, None, 0, False
+    
     try:
         hist = yf.download(ticker, period="250d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): 
