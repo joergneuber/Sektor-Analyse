@@ -320,11 +320,10 @@ if __name__ == "__main__":
                 f.write(f"Sektor-Momentum: {sektor_score}\n")
                 
                 # NEUER BLOCK FÜR SAUBERE UPSIDE-AUSGABE:
+                f.write(f"Technisches Upside: {row['Tech-Upside']}%\n")
                 fund_val = row['Fund-Upside']
-                # Wenn Fund-Upside 0 ist, schreibe N/A, sonst den Wert mit %
                 fund_display = f"{fund_val}%" if fund_val != 0.0 else "N/A"
-                
-                f.write(f"Upside: Technisch {row['Tech-Upside']}% | Fundamentaler Analysten-Check {fund_display}\n")
+                f.write(f"Fundamentaler Analysten-Check: {fund_display}\n")
                 f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
         else:
             f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")
