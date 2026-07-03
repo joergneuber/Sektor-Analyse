@@ -81,10 +81,9 @@ def get_qqq_quote():
         data = ticker.history(period="1d")
         if not data.empty:
             kurs = data['Close'].iloc[-1]
-            return (f"QQQ (Nasdaq 100): Kurs ({kurs:.2f}).\n"
-                    f"Trend QQQ (Nasdaq 100): Nicht explizit quantifizierbar.\n"
-                    f"Es liegen keine EMAs für den QQQ in den Quelldaten vor. Da der S&P 500 jedoch "
-                    f"ein bullisches Bild zeigt, wird das Marktumfeld insgesamt als bullisch eingestuft.")
+            return (f"QQQ (Nasdaq 100) Kurs: {kurs:.2f}\n"
+                    f"Trend QQQ: Nicht explizit quantifizierbar (keine EMAs in den Quelldaten verfügbar), "
+                    f"wird jedoch aufgrund des bullischen S&P 500-Bildes als bullisch eingestuft.")
         return "QQQ Kurs: Daten nicht verfügbar"
     except:
         return "QQQ Kurs: Fehler beim Abruf"
