@@ -284,27 +284,41 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # --- NEU: Briefing mit Filter für VALIDE Setups ---
-    valide_setups = df_s[df_s['Status2'] == "VALIDE"]
-    
+    # 5. Briefing erstellen (Neues Format)
+    valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
+    beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
+    warnungen = df_s[df_s['Status'].isin(["ÜBERHITZT!", "Gelaufen"])]
+
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n")
         f.write("==============================\n\n")
+        
         f.write("BENCHMARKS\n")
         f.write(sp500_filter_text + "\n")
         f.write(qqq_text + "\n\n")
         
-        f.write("VALIDE SETUPS (Dein Fokus für heute)\n")
+        f.write("TOP-CHANCEN (STATUS: VALIDE)\n")
         if not valide_setups.empty:
-            # Hier schreiben wir nur die Validen ins Briefing
-            f.write(valide_setups.to_string(index=False) + "\n\n")
+            # Zeige Fokus-Spalten für schnelle Entscheidungen
+            f.write(valide_setups[['Ticker', 'Kurs', 'Einstieg', 'Upside', 'CRV2']].to_string(index=False) + "\n\n")
         else:
-            f.write("Keine Setups aktuell im Status 'VALIDE'.\n\n")
+            f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")
             
-        f.write("PERFORMANCE ÜBERSICHT\n")
-        f.write(df_perf.to_string(index=False) + "\n\n")
+        f.write("BEACHTEN (STATUS: BEOBACHTEN)\n")
+        if not beobachten.empty:
+            f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) + "\n\n")
+        else:
+            f.write("Keine.\n\n")
+            
+        f.write("WARNUNGEN (ÜBERHITZT / GELAUFEN)\n")
+        if not warnungen.empty:
+            f.write(warnungen[['Ticker', 'Status', 'Kurs', 'Einstieg']].head(5).to_string(index=False) + "\n\n")
+        else:
+            f.write("Keine.\n\n")
         
-        # Falls du die Statistik noch willst, kannst du sie hier lassen:
+        f.write("SEKTOR-PERFORMANCE\n")
+        f.write(df_perf[['Ticker', 'Sektor', 'Rotation-Score']].head(5).to_string(index=False) + "\n\n")
+        
         f.write("SETUP-STATISTIK\n")
         f.write(str(setup_stats) + "\n")
         
