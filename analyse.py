@@ -265,10 +265,13 @@ if __name__ == "__main__":
         sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
         all_setups.extend([r for r in sector_results if r])
     
+    # --- JETZT WIRD DER DATAFRAME ERSTELLT ---
     df_s = pd.DataFrame(all_setups)
-    if 'Status2' not in df_s.columns:
-        print("WARNUNG: Status2 Spalte fehlt! Setups könnten leer sein.")
-        return # Abbruch, bevor der Fehler kommt
+    
+    # --- JETZT ERST DIE FEHLERPRÜFUNG ---
+    if df_s.empty or 'Status2' not in df_s.columns:
+        print("WARNUNG: Keine Setups gefunden oder Status2 Spalte fehlt.")
+        sys.exit() 
         
     # 4. Statistiken und Sortierung
     if not df_s.empty:
