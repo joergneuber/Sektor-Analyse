@@ -224,17 +224,18 @@ def analyze_a_setup(ticker, sektor):
         # Status2: Wenn Earnings nah sind, erzwingen wir WACHSAMKEIT
         status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_earnings_near) else "WACHSAMKEIT"
         
+        # Sicherstellen, dass alle Keys existieren, auch bei Fehlern
         return {
             "Ticker": ticker, 
             "Name": ticker_obj.info.get('longName', ticker), 
             "Sektor": sektor,
-            "Earnings": earnings_date, 
-            "Kursziel": analyst_target,
+            "Earnings": earnings_date if 'earnings_date' in locals() else "Unbekannt",
+            "Kursziel": analyst_target if 'analyst_target' in locals() else "N/A",
             "Setup-Typ": setup_typ,
             "RSI": round(rsi, 2),
             "MACD-Trend": "Bullish" if is_bullish else "Bearish",
             "Status": status,
-            "Status2": status2,
+            "Status2": status2,  # Hier darf kein Fehler passieren
             "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), 
             "Stop": round(stop, 2),
@@ -243,7 +244,8 @@ def analyze_a_setup(ticker, sektor):
             "CRV1": round(crv1, 2),
             "CRV2": round(crv2, 2)
         }
-    except Exception: 
+    except Exception as e:
+        print(f"Fehler bei {ticker}: {e}") # Druckt den echten Fehler aus
         return None        
         
 # --- HAUPTTEIL ---
@@ -264,7 +266,10 @@ if __name__ == "__main__":
         all_setups.extend([r for r in sector_results if r])
     
     df_s = pd.DataFrame(all_setups)
-    
+    if 'Status2' not in df_s.columns:
+        print("WARNUNG: Status2 Spalte fehlt! Setups könnten leer sein.")
+        return # Abbruch, bevor der Fehler kommt
+        
     # 4. Statistiken und Sortierung
     if not df_s.empty:
         # Zuerst nach Status2 sortieren (VALIDE oben), dann nach CRV2 (Performance)
