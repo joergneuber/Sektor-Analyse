@@ -315,19 +315,18 @@ if __name__ == "__main__":
                 f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
                 f.write(f"CRV: {row['CRV2']}\n")
                 f.write(f"Sektor-Momentum: {sektor_score}\n")
-                # Hier steht nun exakt die neue Zeile:
-                f.write(f"CRV: {row['CRV2']}\n")
-                f.write(f"Sektor-Momentum: {sektor_score}\n")
                 
-                # NEUER BLOCK FÜR SAUBERE UPSIDE-AUSGABE:
+                # ZWINGENDE TRENNUNG DER DATEN
                 f.write(f"Technisches Upside: {row['Tech-Upside']}%\n")
+
                 fund_val = row['Fund-Upside']
-                fund_display = f"{fund_val}%" if fund_val != 0.0 else "N/A"
+                # Wenn Fundamental 0 ist oder identisch mit Technisch, schreibe explizit N/A
+                fund_display = f"{fund_val}%" if (fund_val != 0.0 and fund_val != row['Tech-Upside']) else "N/A"
+
                 f.write(f"Fundamentaler Analysten-Check: {fund_display}\n")
                 f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
         else:
-            f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")
-            
+            f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")            
         f.write("BEACHTEN (STATUS: BEOBACHTEN)\n")
         if not beobachten.empty:
             f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) + "\n\n")
