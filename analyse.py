@@ -264,30 +264,9 @@ if __name__ == "__main__":
     else:
         setup_stats = {"Keine": "Setups gefunden"}
     
-    # 5. Briefing mit Potenzial-Berechnung
-    valide_setups = df_s[df_s['Status2'] == "VALIDE"].copy()
-    
-    if not valide_setups.empty:
-        # Berechnung des Potenzials in %: (Kursziel - Einstieg) / Einstieg
-        # Wir stellen sicher, dass Kursziel keine "N/A" Strings enthält
-        valide_setups['Upside'] = valide_setups.apply(
-            lambda row: round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1) 
-            if isinstance(row['Kursziel'], (int, float)) else 0, axis=1
-        )
-        
-        # Sortiere die validen Setups nach dem höchsten Potenzial
-        valide_setups = valide_setups.sort_values(by='Upside', ascending=False)
-    
-    stats_text = f"\nSETUP-STATISTIK: {setup_stats}"
-    
-    # CSV Exporte
-    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    
-    # 5. Briefing erstellen (Neues Format)
+    # 5. Briefing erstellen (Optimiert für Analyse)
     valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
     beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
-    warnungen = df_s[df_s['Status'].isin(["ÜBERHITZT!", "Gelaufen"])]
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n")
@@ -297,10 +276,16 @@ if __name__ == "__main__":
         f.write(sp500_filter_text + "\n")
         f.write(qqq_text + "\n\n")
         
-        f.write("TOP-CHANCEN (STATUS: VALIDE)\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
         if not valide_setups.empty:
-            # Zeige Fokus-Spalten für schnelle Entscheidungen
-            f.write(valide_setups[['Ticker', 'Kurs', 'Einstieg', 'Upside', 'CRV2']].to_string(index=False) + "\n\n")
+            for _, row in valide_setups.iterrows():
+                f.write(f"------------------------------\n")
+                f.write(f"Ticker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
+                f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
+                f.write(f"Setup-Typ: {row['Setup-Typ']} | Qualität: A\n")
+                f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
+                f.write(f"CRV: {row['CRV2']} | Upside-Potenzial: {row['Upside']}%\n")
+                f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
         else:
             f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")
             
@@ -309,15 +294,6 @@ if __name__ == "__main__":
             f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) + "\n\n")
         else:
             f.write("Keine.\n\n")
-            
-        f.write("WARNUNGEN (ÜBERHITZT / GELAUFEN)\n")
-        if not warnungen.empty:
-            f.write(warnungen[['Ticker', 'Status', 'Kurs', 'Einstieg']].head(5).to_string(index=False) + "\n\n")
-        else:
-            f.write("Keine.\n\n")
-        
-        f.write("SEKTOR-PERFORMANCE\n")
-        f.write(df_perf[['Ticker', 'Sektor', 'Rotation-Score']].head(5).to_string(index=False) + "\n\n")
         
         f.write("SETUP-STATISTIK\n")
         f.write(str(setup_stats) + "\n")
