@@ -309,7 +309,8 @@ if __name__ == "__main__":
                 sektor_score = perf_row['Rotation-Score'].values[0] if not perf_row.empty else "N/A"
                 
                 f.write(f"------------------------------\n")
-                f.write(f"Ticker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
+                # Hier wurde der Name ergänzt:
+                f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']} | Sektor: {row['Sektor']}\n")
                 f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
                 f.write(f"Setup-Typ: {row['Setup-Typ']} | Qualität: A\n")
                 f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
