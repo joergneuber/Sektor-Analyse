@@ -267,19 +267,28 @@ if __name__ == "__main__":
     
     # 3. Setups verarbeiten
     all_setups = []
-    for _, row in df_perf.head(3).iterrows():
-        sector_results = [analyze_a_setup(s, row['Sektor']) for s in sektoren_aktien.get(row['Ticker'], [])]
-        all_setups.extend([r for r in sector_results if r])
+    print("Starte Setup-Analyse für die Top-3 Sektoren...")
     
-    # --- JETZT WIRD DER DATAFRAME ERSTELLT ---
+    for _, row in df_perf.head(3).iterrows():
+        aktien_liste = sektoren_aktien.get(row['Ticker'], [])
+        print(f"-> Analysiere Sektor: {row['Sektor']} ({len(aktien_liste)} potenzielle Aktien)")
+        
+        for s in aktien_liste:
+            res = analyze_a_setup(s, row['Sektor'])
+            if res:
+                all_setups.append(res)
+            else:
+                # Optional: Hier stumm lassen, wenn das Log zu voll wird
+                pass 
+    
+    # DataFrame Erstellung und Sicherheitsprüfung
     df_s = pd.DataFrame(all_setups)
     
-    # --- JETZT ERST DIE FEHLERPRÜFUNG ---
     if df_s.empty or 'Status2' not in df_s.columns:
         print("WARNUNG: Keine Setups gefunden oder Status2 Spalte fehlt.")
-        sys.exit() 
-
-    # Sicherstellen, dass Upside berechnet wird
+        sys.exit()
+    
+    # Upside-Berechnung direkt im Anschluss für den kompletten DataFrame
     def berechne_upside(row):
         if isinstance(row['Kursziel'], (int, float)) and row['Kursziel'] > 0:
             return round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
