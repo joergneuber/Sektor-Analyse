@@ -152,6 +152,26 @@ def analyze_a_setup(ticker, sektor):
             return None # Aktie wird ignoriert
         # ---------------------------
 
+        # --- ERGÄNZUNG: ANALYSTEN-KURSZIEL ---
+        ticker_obj = yf.Ticker(ticker)
+        analyst_target = "N/A"
+        try:
+            # targetMeanPrice ist das durchschnittliche Kursziel
+            info = ticker_obj.info
+            if 'targetMeanPrice' in info and info['targetMeanPrice'] is not None:
+                analyst_target = round(info['targetMeanPrice'], 2)
+        except:
+            analyst_target = "N/A"    
+
+        # --- ERGÄNZUNG: ANALYSTEN-RISIKO-CHECK ---
+        is_analyst_risk = False
+        if analyst_target != "N/A" and analyst_target < entry_val:
+            is_analyst_risk = True
+        
+        # Status2 Logik anpassen: Wenn Risiko durch Analysten, dann WACHSAMKEIT
+        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_near_earnings and not is_analyst_risk) else "WACHSAMKEIT"
+        # ----------------------------------------
+        
         # --- NEU: EARNINGS-PRÜFUNG ---
         ticker_obj = yf.Ticker(ticker)
         earnings_date = "N/A"
@@ -208,7 +228,8 @@ def analyze_a_setup(ticker, sektor):
             "Ticker": ticker, 
             "Name": ticker_obj.info.get('longName', ticker), 
             "Sektor": sektor,
-            "Earnings": earnings_date,  # <--- Neue Spalte
+            "Earnings": earnings_date, 
+            "Kursziel": analyst_target,
             "Setup-Typ": setup_typ,
             "RSI": round(rsi, 2),
             "MACD-Trend": "Bullish" if is_bullish else "Bearish",
@@ -255,6 +276,20 @@ if __name__ == "__main__":
         setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
     else:
         setup_stats = {"Keine": "Setups gefunden"}
+    
+    # 5. Briefing mit Potenzial-Berechnung
+    valide_setups = df_s[df_s['Status2'] == "VALIDE"].copy()
+    
+    if not valide_setups.empty:
+        # Berechnung des Potenzials in %: (Kursziel - Einstieg) / Einstieg
+        # Wir stellen sicher, dass Kursziel keine "N/A" Strings enthält
+        valide_setups['Upside'] = valide_setups.apply(
+            lambda row: round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1) 
+            if isinstance(row['Kursziel'], (int, float)) else 0, axis=1
+        )
+        
+        # Sortiere die validen Setups nach dem höchsten Potenzial
+        valide_setups = valide_setups.sort_values(by='Upside', ascending=False)
     
     stats_text = f"\nSETUP-STATISTIK: {setup_stats}"
     
