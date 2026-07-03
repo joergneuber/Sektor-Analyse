@@ -78,10 +78,10 @@ def get_sp500_data():
 def get_qqq_quote():
     try:
         ticker = yf.Ticker("QQQ")
-        # .history(period="1d") lädt den aktuellsten verfügbaren Schlusskurs
         data = ticker.history(period="1d")
         if not data.empty:
-            return f"QQQ (Nasdaq 100) Kurs: {data['Close'].iloc[-1]:.2f}"
+            kurs = data['Close'].iloc[-1]
+            return f"QQQ (Nasdaq 100): Kurs ({kurs:.2f}). Da keine expliziten EMAs für den QQQ in den Quelldaten enthalten sind, wird der Markt primär durch den S&P 500 als leitend für den Gesamttrend bewertet."
         return "QQQ Kurs: Daten nicht verfügbar"
     except:
         return "QQQ Kurs: Fehler beim Abruf"
