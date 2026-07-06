@@ -4,8 +4,11 @@ on:
   push:
     branches:
       - main
+  # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
+  workflow_dispatch: 
   schedule:
-    - cron: '15 3 * * 1-5'
+    # 03:00 UTC entspricht 05:00 Uhr MESZ (Sommerzeit)
+    - cron: '0 3 * * 1-5'
 
 jobs:
   run-scripts:
@@ -24,7 +27,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas google-auth-oauthlib google-api-python-client google-auth-httplib2
 
+      # Hier prüfen wir, ob die Umgebungsvariablen korrekt geladen sind
       - name: Analyse ausführen
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: python analyse.py
 
       - name: Daten hochladen
