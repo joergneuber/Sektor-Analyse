@@ -269,7 +269,7 @@ if __name__ == "__main__":
     # 3. Setups verarbeiten
     all_setups = []
     print("Starte Setup-Analyse...")
-    blacklist = ["SPLK"] # Delistete Symbole ignorieren
+    blacklist = ["SPLK"] 
     
     for _, row in df_perf.head(3).iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
@@ -292,7 +292,6 @@ if __name__ == "__main__":
     else:
         df_s = pd.DataFrame(all_setups)
         
-        # Status-Logik
         def update_status_logic(row):
             if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
                 return "VALIDE"
@@ -301,27 +300,30 @@ if __name__ == "__main__":
             return "WACHSAMKEIT"
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-        # Sortieren: Erst VALIDE, dann nach CRV1 absteigend
         df_s = df_s.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
 
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen
-    valide_setups = df_s[df_s['Status2'] == "VALIDE"] if 'Status2' in df_s.columns else pd.DataFrame()
+    # 6. Briefing erstellen (Nur Valide & Wachsamkeit, mit mehr Details)
+    relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
+    relevante_setups = relevante_setups.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-        f.write("TRADE-ZUSAMMENFASSUNG\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
-        if not valide_setups.empty:
-            for _, row in valide_setups.iterrows():
-                f.write(f"\nTicker: {row['Ticker']} ({row['Pattern']}-Signal)\n")
-                f.write(f"Einstieg: {row['Einstieg']} | Delta: {row['Ideales_Delta']} | CRV1: {row['CRV1']}\n")
-                f.write("-" * 20 + "\n")
+        if not relevante_setups.empty:
+            for _, row in relevante_setups.iterrows():
+                f.write(f"\nTicker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
+                f.write(f"Status: {row['Status2']} | Signal: {row['Pattern']}\n")
+                f.write(f"Aktueller Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
+                f.write(f"TP1 (Ziel): {row['TP1']} | CRV1: {row['CRV1']}\n")
+                f.write(f"Delta-Target: {row['Ideales_Delta']}\n")
+                f.write("-" * 30 + "\n")
         else:
-            f.write("Keine validen Setups (Wachsamkeit).\n")
+            f.write("Keine validen Setups oder Wachsamkeits-Kandidaten gefunden.\n")
             
-    print("Analyse abgeschlossen. Dateien lokal bereit für Upload.")
+    print("Analyse abgeschlossen. Briefing mit Details erstellt.")
