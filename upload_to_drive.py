@@ -1,7 +1,23 @@
+import os
+import json
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-import json
-import os
+
+def get_drive_service():
+    token_str = os.environ.get("GDRIVE_TOKEN")
+    
+    # Debug: Falls das Secret in GitHub nicht ankommt
+    if not token_str:
+        print("FEHLER: Umgebungsvariable GDRIVE_TOKEN nicht gefunden!")
+        raise EnvironmentError("GDRIVE_TOKEN ist nicht gesetzt.")
+        
+    try:
+        token_data = json.loads(token_str)
+        creds = Credentials.from_authorized_user_info(token_data)
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"FEHLER beim Parsen des Tokens: {e}")
+        raise
 
 def get_drive_service():
     # Lädt den Token aus dem GitHub-Secret "GDRIVE_TOKEN"
