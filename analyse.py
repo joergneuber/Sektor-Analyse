@@ -269,9 +269,12 @@ if __name__ == "__main__":
     # 3. Setups verarbeiten
     all_setups = []
     print("Starte Setup-Analyse...")
+    blacklist = ["SPLK"] # Delistete Symbole ignorieren
+    
     for _, row in df_perf.head(3).iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
         for s in aktien_liste:
+            if s in blacklist: continue
             try:
                 res = analyze_a_setup(s, row['Sektor'])
                 if res:
@@ -280,53 +283,33 @@ if __name__ == "__main__":
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
     
-    df_s = pd.DataFrame(all_setups)
-    
-    # Sicherstellen, dass das Skript nicht bei leeren Daten abstürzt
-    if df_s.empty:
+    # 4. DataFrame erstellen und Logik anwenden
+    if not all_setups:
         print("Keine Setups gefunden.")
-        ccols = ['Ticker', 'Name', 'Sektor', 'Status2', 'CRV1', 'CRV2', 'Kurs', 
-        'Einstieg', 'Stop', 'TP1', 'TP2', 'Pattern', 'Ideales_Delta']
+        cols = ['Ticker', 'Name', 'Sektor', 'Status2', 'CRV1', 'CRV2', 'Kurs', 
+                'Einstieg', 'Stop', 'TP1', 'TP2', 'Pattern', 'Ideales_Delta']
         df_s = pd.DataFrame(columns=cols)
     else:
-        # Fehlende Spalten ergänzen, falls sie durch die Analyse nicht erstellt wurden
-        if 'Status2' not in df_s.columns: df_s['Status2'] = "WACHSAMKEIT"
-        if 'Pattern' not in df_s.columns: df_s['Pattern'] = "Kein"
-        if 'Ideales_Delta' not in df_s.columns: df_s['Ideales_Delta'] = 0.6
+        df_s = pd.DataFrame(all_setups)
         
-        # Upside & Status Logik
-        df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
-        # Hinweis: berechne_upsides muss definiert sein!
-        df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
-        df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
-        setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
+        # Status-Logik
+        def update_status_logic(row):
+            if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
+                return "VALIDE"
+            elif row['Kurs'] >= row['TP1']:
+                return "GELAUFEN"
+            return "WACHSAMKEIT"
+            
+        df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+        # Sortieren: Erst VALIDE, dann nach CRV1 absteigend
+        df_s = df_s.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
 
-    def update_status_logic(row):
-    # Nur wenn Kurs < TP1 und Pattern vorhanden -> VALIDE
-    if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
-        return "VALIDE"
-    # Wenn TP1 erreicht -> GELAUFEN
-    elif row['Kurs'] >= row['TP1']:
-        return "GELAUFEN"
-    # Sonst -> WACHSAMKEIT
-    return "WACHSAMKEIT"
-
-    # Anwendung:
-    if not df_s.empty:
-    df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-    # Sortiere nach Status (VALIDE zuerst) und dann nach CRV1
-    df_s = df_s.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
-    
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # 6. Briefing erstellen
-    # Sicherstellen, dass valide_setups existiert und korrekt gefiltert ist
-    if 'Status2' in df_s.columns:
-        valide_setups = df_s[df_s['Status2'] == "VALIDE"]
-    else:
-        valide_setups = pd.DataFrame()
+    valide_setups = df_s[df_s['Status2'] == "VALIDE"] if 'Status2' in df_s.columns else pd.DataFrame()
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
@@ -336,7 +319,7 @@ if __name__ == "__main__":
         if not valide_setups.empty:
             for _, row in valide_setups.iterrows():
                 f.write(f"\nTicker: {row['Ticker']} ({row['Pattern']}-Signal)\n")
-                f.write(f"Einstieg: {row['Einstieg']} | Delta: {row['Ideales_Delta']} | CRV: {row['CRV2']}\n")
+                f.write(f"Einstieg: {row['Einstieg']} | Delta: {row['Ideales_Delta']} | CRV1: {row['CRV1']}\n")
                 f.write("-" * 20 + "\n")
         else:
             f.write("Keine validen Setups (Wachsamkeit).\n")
