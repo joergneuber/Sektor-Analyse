@@ -197,7 +197,15 @@ if __name__ == "__main__":
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        f.write(f"MARKT-UPDATE {today}\n\n{sp500_filter_text}\n{qqq_text}\n\nTRADE-ZUSAMMENFASSUNG\n")
+        f.write(f"MARKT-UPDATE {today}\n==============================\n\nBENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
+        
         valide = df_s[df_s['Status2'] == "VALIDE"]
         for _, row in valide.iterrows():
-            f.write(f"Ticker: {row['Ticker']} | Einstieg: {row['Einstieg']} | TP2: {row['TP2']} | CRV: {row['CRV2']}\n")
+            f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']} | Sektor: {row['Sektor']}\n")
+            f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
+            f.write(f"Setup-Typ: {row['Setup-Typ']}\n")
+            f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
+            f.write(f"CRV: {row['CRV2']} | Technisches Upside: {row['Upside']}%\n")
+            f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
+            f.write("------------------------------\n")
