@@ -157,6 +157,9 @@ def analyze_a_setup(ticker, sektor):
         target_1 = round(resistance * 0.95, 2)
         target_2 = round(resistance, 2)
 
+        # Berechnung des prozentualen Abstands bis zum Ziel (TP1)
+        distanz_zum_ziel = round(((target_1 - current_price) / current_price) * 100, 2)
+        
         # CANDIDATES (Individuelle Setups mit individuellen CRVs)
         candidates = [
             {"typ": "Bounce",   "entry": support + (0.5 * atr), "stop": stop_level, "tp1": target_1, "tp2": target_2},
@@ -209,66 +212,40 @@ def analyze_a_setup(ticker, sektor):
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     sp500_filter_text = get_sp500_data()
-    qqq_text = get_qqq_quote() 
+    qqq_text = get_qqq_quote()
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
     all_setups = []
+    # Nur die Top 3 Sektoren wie bisher
     for _, row in df_perf.head(3).iterrows():
         for s in sektoren_aktien.get(row['Ticker'], []):
             res = analyze_a_setup(s, row['Sektor'])
-            if res: all_setups.append(res)
+            if res: 
+                all_setups.append(res)
+    
+    if not all_setups:
+        print("Keine Setups gefunden, die alle Kriterien erfüllen.")
+        sys.exit()
     
     df_s = pd.DataFrame(all_setups)
-    if df_s.empty: sys.exit()
     
-    # --- FINALE BERECHNUNGEN (Konsistent zu analyze_a_setup) ---
-    # Upside basierend auf Fundamentaldaten (Kursziel vs. Einstieg)
-    df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
+    # Sortierung nach CRV2
+    df_s = df_s.sort_values(by='CRV2', ascending=False)
     
-    # Tech_Upside (TP2 vs. Einstieg)
-    df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
+    # Speichern als CSV
+    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # CRV1 (TP1 vs. Risiko)
-    df_s['CRV1'] = df_s.apply(lambda r: round(((r['TP1'] - r['Einstieg']) / (r['Einstieg'] - r['Stop'])), 2) if (r['Einstieg'] - r['Stop']) != 0 else 0, axis=1)
-    
-    # STATUS-LOGIK (ATR-S&R konform)
-    def determine_status(row):
-        if (row['CRV2'] >= 1.5 and row['MACD-Trend'] == 'Bullish' and 30 <= row['RSI'] <= 70 and row['Status'] == "Beobachten"):
-            return "VALIDE"
-        elif row['RSI'] > 70:
-            return "ÜBERHITZT!"
-        else:
-            return "BEOBACHTEN"
-    
-    df_s['Status2'] = df_s.apply(determine_status, axis=1)
-    
-    # Sortierung: VALIDE nach oben, dann CRV2 absteigend
-    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else (1 if x == "BEOBACHTEN" else 2))
-    df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
-    
-    # --- EXPORT ---
-    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    
-    cols = ['Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 'RSI', 'Status', 'Status2', 
-            'Kursziel', 'Upside', 'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2']
-    
-    df_s[cols].to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    
-    # --- BRIEFING SCHREIB-BLOCK ---
-    # --- KORREKTER BRIEFING SCHREIB-BLOCK ---
+    # Briefing schreiben
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n{sp500_filter_text}\n{qqq_text}\n\n")
-        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
+        f.write("VALIDIERTE HANDELS-SETUPS (CRV >= 1.5)\n------------------------------\n")
         
-        valide = df_s[df_s['Status2'] == "VALIDE"]
-        for _, row in valide.iterrows():
-            f.write(f"Ticker: {row['Ticker']} | {row['Name']} ({row['Sektor']})\n")
-            f.write(f"Setup: {row['Setup-Typ']} | Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
-            f.write(f"Stop: {row['Stop']} | TP1: {row['TP1']} | TP2: {row['TP2']}\n")
+        for _, row in df_s.iterrows():
+            distanz = round(((row['TP1'] - row['Kurs']) / row['Kurs']) * 100, 2)
             
-            # Hier fügen wir die fehlenden Upside-Daten hinzu
-            analyst_info = f"{row['Kursziel']} (Fund. Ziel)" if row['Kursziel'] != "N/A" else "Kein Ziel"
-            f.write(f"Analystenziel: {analyst_info} | Upside: {row['Upside']}% | Tech. Upside: {row['Tech_Upside']}%\n")
-            
-            f.write(f"CRV (TP1): {row['CRV1']} | CRV (TP2): {row['CRV2']}\n")
-            f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n------------------------------\n")
+            f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']}\n")
+            f.write(f"Sektor: {row['Sektor']} | Setup: {row['Setup-Typ']}\n")
+            f.write(f"Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']} | RSI: {row['RSI']}\n")
+            f.write(f"Stop: {row['Stop']} | Ziel (TP1): {row['TP1']} (Potenzial: {distanz}%)\n")
+            f.write(f"CRV: {row['CRV2']}\n")
+            f.write("------------------------------\n")
