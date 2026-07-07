@@ -1,18 +1,17 @@
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 import json
 import os
 
+def get_drive_service():
+    # Lädt den Token aus dem GitHub-Secret "GDRIVE_TOKEN"
+    token_data = json.loads(os.environ.get("GDRIVE_TOKEN"))
+    creds = Credentials.from_authorized_user_info(token_data)
+    # Erstellt den Service
+    return build('drive', 'v3', credentials=creds)
+
 # Arbeitsverzeichnis festlegen
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-def get_drive_service():
-    # Lädt den JSON-Inhalt direkt aus der Umgebungsvariable
-    creds_info = json.loads(os.environ.get("SERVICE_ACCOUNT_JSON"))
-    creds = service_account.Credentials.from_service_account_info(creds_info)
-    # Erstellt den Drive-Service
-    return build('drive', 'v3', credentials=creds)
 
 def upload_file(filename, folder_id):
     service = get_drive_service()
