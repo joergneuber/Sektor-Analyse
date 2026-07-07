@@ -189,40 +189,28 @@ if __name__ == "__main__":
     df_s = pd.DataFrame(all_setups)
     if df_s.empty: sys.exit()
     
+    # Berechnungen
     df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
-    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
-    df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
-    # Berechnung Technisches Upside zusätzlich zur Fundamentalen
     df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
-    
-    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-
-    # Definierte Spalten-Reihenfolge (beispielhaft)
-    cols = [
-    'Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 
-    'RSI', 'Status', 'Status2', 'Krusziel',
-    'Upside', 'Kurs', 'Tech_Upside', 'Einstieg',
-    'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2'
-]
-
-# Filtern und sortieren (erzeugt eine neue Ansicht)
-df_final = df_s[cols]
-
-# Jetzt speichern
-df_final.to_csv('deine_datei.csv', index=False)
-
-    # Berechne Tech_Upside, bevor df_s sortiert oder exportiert wird
-    df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
-
-    # Berechne CRV1 (wie gewünscht)
-    # Formel: (TP1 - Einstieg) / Risiko
     df_s['CRV1'] = df_s.apply(lambda r: round(((r['TP1'] - r['Einstieg']) / (r['Einstieg'] - r['Stop'])), 2) if (r['Einstieg'] - r['Stop']) != 0 else 0, axis=1)
-
-    # Jetzt die Sortierung/Spaltenreihenfolge
+    
+    # Sortierung
     df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
     df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
     
+    # Export Performance
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    # Definierte Spalten-Reihenfolge (ohne Ticker)
+    cols = [
+        'Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 
+        'RSI', 'Status', 'Status2', 'Kursziel', 'Upside', 
+        'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2'
+    ]
+    
+    # Finales Speichern
+    df_s[cols].to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+      
     # Schreib-Block für das Briefing
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         # Header und Benchmarks
