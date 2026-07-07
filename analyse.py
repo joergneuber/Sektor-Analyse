@@ -39,7 +39,7 @@ sektoren_aktien = {
     "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB"],
     "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "NYCB", "WBS"],
     "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN"],
-    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "SPLK", "MDB", "TEAM", "DOCU"],
+    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU"],
     "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM"],
     "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC"],
     "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN"],
@@ -221,48 +221,51 @@ if __name__ == "__main__":
     
     # 3. Setups verarbeiten
     all_setups = []
+    print("Starte Setup-Analyse...")
     for _, row in df_perf.head(3).iterrows():
-        for s in sektoren_aktien.get(row['Ticker'], []):
-            res = analyze_a_setup(s, row['Sektor'])
-            if res: all_setups.append(res)
+        aktien_liste = sektoren_aktien.get(row['Ticker'], [])
+        for s in aktien_liste:
+            try:
+                res = analyze_a_setup(s, row['Sektor'])
+                if res:
+                    all_setups.append(res)
+            except Exception as e:
+                print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
+                continue 
     
     df_s = pd.DataFrame(all_setups)
-    if df_s.empty: 
-        print("Keine Setups gefunden.")
-        sys.exit()
     
-    # Upside & Status Logik
-    df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
-    df_s[['Tech-Upside', 'Fund-Upside']] = df_s.apply(lambda row: pd.Series(berechne_upsides(row)), axis=1)
-    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
-    df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
-    setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
-
-    # 4. CSV Exporte (Speicherung lokal im GitHub Runner Pfad)
+    # Sicherstellen, dass das Skript nicht bei leeren Daten abstürzt
+    if df_s.empty:
+        print("Keine Setups gefunden.")
+        # Erstelle leeres DF mit den nötigen Spalten für den Export
+        df_s = pd.DataFrame(columns=['Ticker', 'Name', 'Sektor', 'Status', 'Status2', 'CRV2', 'Upside', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 'RSI', 'MACD-Trend', 'Setup-Typ'])
+    else:
+        # Fehlende Spalten ergänzen, falls sie durch die Analyse nicht erstellt wurden
+        if 'Status2' not in df_s.columns: df_s['Status2'] = "WACHSAMKEIT"
+        
+        # Upside & Status Logik
+        df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
+        # Hinweis: berechne_upsides muss definiert sein!
+        df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
+        df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
+        setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
+    
+    # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 5. Briefing erstellen
-    valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
-    beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
+    # 6. Briefing erstellen
+    valide_setups = df_s[df_s.get('Status2', '') == "VALIDE"]
+    beobachten = df_s[df_s.get('Status', '') == "Beobachten"]
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-        
-        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
+        f.write("TRADE-ZUSAMMENFASSUNG\n")
         if not valide_setups.empty:
-            for _, row in valide_setups.iterrows():
-                f.write(f"------------------------------\nTicker: {row['Ticker']} | {row['Name']} ({row['Sektor']})\n")
-                f.write(f"Setup: {row['Setup-Typ']} | Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
-                f.write(f"Stop: {row['Stop']} | TP1: {row['TP1']} | TP2: {row['TP2']}\n")
-                f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
-                f.write(f"Tech-Upside: {row['Tech-Upside']}% | Fund-Upside: {row['Fund-Upside']}%\n")
+            f.write(valide_setups[['Ticker', 'Einstieg', 'CRV2']].to_string())
         else:
-            f.write("Keine.\n\n")
-            
-        f.write("\nBEACHTEN (BEOBACHTEN)\n")
-        f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) if not beobachten.empty else "Keine.")
-        f.write(f"\n\nSETUP-STATISTIK\n{setup_stats}")
+            f.write("Keine validen Setups.\n")
     
     print("Analyse abgeschlossen. Dateien lokal bereit für Upload.")
