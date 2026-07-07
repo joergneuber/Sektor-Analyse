@@ -36,5 +36,5 @@ jobs:
 
       - name: Daten hochladen
         env:
-          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
         run: python upload_to_drive.py
