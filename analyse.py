@@ -196,10 +196,13 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
+    # Schreib-Block für das Briefing
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+        # Header und Benchmarks
         f.write(f"MARKT-UPDATE {today}\n==============================\n\nBENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
         
+        # Valide Trades
+        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
         valide = df_s[df_s['Status2'] == "VALIDE"]
         for _, row in valide.iterrows():
             f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']} | Sektor: {row['Sektor']}\n")
@@ -209,3 +212,12 @@ if __name__ == "__main__":
             f.write(f"CRV: {row['CRV2']} | Technisches Upside: {row['Upside']}%\n")
             f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
             f.write("------------------------------\n")
+
+        # Beobachtungsliste
+        f.write("\nBEACHTEN (STATUS: BEOBACHTEN)\nTicker   Kurs  Einstieg   RSI\n")
+        beobachten = df_s[df_s['Status2'] != "VALIDE"]
+        for _, row in beobachten.iterrows():
+            f.write(f"{row['Ticker']:>6} {row['Kurs']:>7} {row['Einstieg']:>9} {row['RSI']:>5}\n")
+            
+        # Statistik
+        f.write(f"\nSETUP-STATISTIK\n{df_s['Setup-Typ'].value_counts().to_dict()}\n")
