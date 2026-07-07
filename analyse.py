@@ -4,8 +4,13 @@ import numpy as np
 import datetime
 import time
 import sys
+import os
+from groq import Groq
 
 # --- KONFIGURATION ---
+# Initialisiere den Groq Client
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
 sektoren_map = {
     "XLK": "Technologie", "XLF": "Finanzen", "XLV": "Gesundheit", "XLY": "Zyklischer Konsum",
     "XLP": "Basiskonsum", "XLE": "Energie", "XLI": "Industrie", "XLB": "Rohstoffe",
@@ -82,18 +87,13 @@ def get_qqq_quote():
         if not data.empty:
             kurs = data['Close'].iloc[-1]
             return (f"QQQ (Nasdaq 100) Kurs: {kurs:.2f}\n"
-                    f"Trend QQQ (Nasdaq 100): Da keine expliziten EMA-Daten für QQQ vorliegen, wird der Trend aufgrund des bullischen S&P 500-Bildes ebenfalls als bullisch eingestuft.")
+                    f"Trend QQQ (Nasdaq 100): Bullisch (Proxy)")
         return "QQQ Kurs: Daten nicht verfügbar"
     except:
         return "QQQ Kurs: Fehler beim Abruf"
 
-import datetime
-import pandas as pd
-import yfinance as yf
-
 def get_perf(ticker, name):
     try:
-        # Zeitraum auf 1 Jahr erhöhen, um YTD abdecken zu können
         hist = yf.download(ticker, period="1y", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
         if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
@@ -101,25 +101,14 @@ def get_perf(ticker, name):
         close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
         last = close.iloc[-1]
         
-        # Berechnung relative Performance
         def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
         
-        # YTD Berechnung
         current_year = datetime.datetime.now().year
         ytd_data = close[close.index.year == current_year]
-        if not ytd_data.empty:
-            ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2)
-        else:
-            ytd_perf = 0
+        ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2) if not ytd_data.empty else 0
             
         res = {
-            "Ticker": ticker, 
-            "Sektor": name, 
-            "5T": p(5), 
-            "12T": p(12), 
-            "30T": p(30), 
-            "60T": p(60), 
-            "YTD": ytd_perf
+            "Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60), "YTD": ytd_perf
         }
         res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
         return res
@@ -142,200 +131,73 @@ def calculate_retest_entry(hist, breakout_level):
 
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
-    
     try:
         hist = yf.download(ticker, period="250d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): 
-            hist.columns = hist.columns.get_level_values(0)
+        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
         
-        # 1. Volumen-Filter (muss vor allem anderen kommen)
         if hist.empty or len(hist) < 100 or hist['Volume'].tail(20).mean() < 500_000:
             return None
 
-        # 2. Setup-Daten berechnen
         highs, lows, closes = hist['High'], hist['Low'], hist['Close']
         breakout_level = highs.rolling(20).max().iloc[-1]
         stop = lows.rolling(20).min().iloc[-1]
         entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
         
-        # Sicherheit: Wenn entry_val None ist, sofort abbrechen
-        if entry_val is None: return None
-        
         if entry_val <= stop: 
             entry_val = breakout_level
             setup_typ = "Ausbruch"
 
-        # 3. Indikatoren
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         risiko = entry_val - stop
         rsi = 100 - (100 / (1 + (closes.diff().where(closes.diff() > 0, 0).rolling(14).mean() / 
                                  (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
         
-        # MACD
         exp1, exp2 = closes.ewm(span=12, adjust=False).mean(), closes.ewm(span=26, adjust=False).mean()
         macd_line, signal_line = (exp1 - exp2).iloc[-1], (exp1 - exp2).ewm(span=9, adjust=False).mean().iloc[-1]
         is_bullish = macd_line > signal_line
         
-        # 4. Analysten & Earnings (sicher abrufen)
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
-        analyst_target = info.get('targetMeanPrice', None) # None wenn nicht vorhanden
-        
-        # 5. Status-Logik (mit None-Check!)
-        is_overheated = rsi > 80
-        is_earnings_near = False # Hier könntest du bei Bedarf noch die calendar-Logik einfügen
-        
-        # Analysten-Risiko-Check nur wenn Werte existieren
-        is_analyst_risk = False
-        if analyst_target is not None and analyst_target < entry_val:
-            is_analyst_risk = True
+        analyst_target = info.get('targetMeanPrice', None)
             
-        status = "ÜBERHITZT!" if is_overheated else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
-        status2 = "VALIDE" if (is_bullish and not is_overheated and status == "Beobachten" and not is_analyst_risk) else "WACHSAMKEIT"
+        status = "ÜBERHITZT!" if rsi > 80 else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
+        status2 = "VALIDE" if (is_bullish and rsi <= 80 and status == "Beobachten" and (analyst_target is None or analyst_target >= entry_val)) else "WACHSAMKEIT"
         
         return {
             "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
-            "Earnings": "N/A", "Kursziel": analyst_target if analyst_target else "N/A",
-            "Upside": 0.0, "Setup-Typ": setup_typ, "RSI": round(rsi, 2),
-            "MACD-Trend": "Bullish" if is_bullish else "Bearish",
+            "Kursziel": analyst_target if analyst_target else "N/A", "Setup-Typ": setup_typ,
+            "RSI": round(rsi, 2), "MACD-Trend": "Bullish" if is_bullish else "Bearish",
             "Status": status, "Status2": status2, "Kurs": round(closes.iloc[-1], 2), 
             "Einstieg": round(entry_val, 2), "Stop": round(stop, 2),
             "TP1": round(entry_val + atr, 2), "TP2": round(entry_val + (atr * 3), 2),
-            "CRV1": round(((entry_val + atr) - entry_val) / risiko, 2) if risiko > 0 else 0,
             "CRV2": round(((entry_val + (atr * 3)) - entry_val) / risiko, 2) if risiko > 0 else 0
         }
-    except Exception as e:
-        return None
-    except Exception as e:
-        print(f"Fehler bei {ticker}: {e}") # Druckt den echten Fehler aus
-        return None        
+    except: return None
         
-    # --- HAUPTTEIL ---
 if __name__ == "__main__":
-    # Alles ab hier muss um 4 Leerzeichen eingerückt sein!
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # 1. Benchmarks sicher abrufen
     sp500_filter_text = get_sp500_data()
     qqq_text = get_qqq_quote() 
-    
-    # 2. Performance berechnen
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
-    # 3. Setups verarbeiten
     all_setups = []
-    print("Starte Setup-Analyse für die Top-3 Sektoren...")
-    
     for _, row in df_perf.head(3).iterrows():
-        aktien_liste = sektoren_aktien.get(row['Ticker'], [])
-        print(f"-> Analysiere Sektor: {row['Sektor']} ({len(aktien_liste)} potenzielle Aktien)")
-        
-        for s in aktien_liste:
+        for s in sektoren_aktien.get(row['Ticker'], []):
             res = analyze_a_setup(s, row['Sektor'])
-            if res:
-                all_setups.append(res)
-            else:
-                # Optional: Hier stumm lassen, wenn das Log zu voll wird
-                pass 
+            if res: all_setups.append(res)
     
-    # DataFrame Erstellung und Sicherheitsprüfung
     df_s = pd.DataFrame(all_setups)
+    if df_s.empty: sys.exit()
     
-    if df_s.empty or 'Status2' not in df_s.columns:
-        print("WARNUNG: Keine Setups gefunden oder Status2 Spalte fehlt.")
-        sys.exit()
+    df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
+    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
+    df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
     
-    # Upside-Berechnung direkt im Anschluss für den kompletten DataFrame
-    def berechne_upside(row):
-        if isinstance(row['Kursziel'], (int, float)) and row['Kursziel'] > 0:
-            return round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
-        return 0.0
-
-    df_s['Upside'] = df_s.apply(berechne_upside, axis=1)
-        
-    # 4. Statistiken und Sortierung
-    if not df_s.empty:
-        # Zuerst nach Status2 sortieren (VALIDE oben), dann nach CRV2
-        df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
-        df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
-        df_s = df_s.drop(columns=['sort_col'])
-        setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
-    else:
-        setup_stats = {"Keine": "Setups gefunden"}
-
-    # 5. CSV Exporte (Wie in deinem funktionierenden alten Code)
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    print("CSV-Dateien erfolgreich geschrieben.")
 
-    # Upside-Berechnungen (Technisch vs. Fundamentaler Analysten-Check)
-    def berechne_upsides(row):
-        # Technisches Upside: Von Einstieg zu TP2
-        tech_up = round(((row['TP2'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
-        # Fundamentales Upside: Von Einstieg zu Analysten-Kursziel
-        fund_up = 0.0
-        if isinstance(row['Kursziel'], (int, float)) and row['Kursziel'] > 0:
-            fund_up = round(((row['Kursziel'] - row['Einstieg']) / row['Einstieg']) * 100, 1)
-        return tech_up, fund_up
-
-    # Neue Spalten zuweisen
-    df_s[['Tech-Upside', 'Fund-Upside']] = df_s.apply(lambda row: pd.Series(berechne_upsides(row)), axis=1)    
-
-    
-    # 6. Briefing erstellen (Neues Format)
-    valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
-    beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
-
-    # Automatische Generierung der Top-Sektoren-Beschreibung
-    top_3 = df_perf.head(3)
-    sektor_beschreibung = "DIE STÄRKSTEN SEKTOREN (nach Rotation-Score):\n"
-    for _, row in top_3.iterrows():
-        sektor_beschreibung += (f"- {row['Sektor']} ({row['Ticker']}): Score {row['Rotation-Score']}, "
-                                f"60T: {row['60T']}%, YTD: {row['YTD']}%\n")
-    
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        f.write(f"MARKT-UPDATE {today}\n")
-        f.write("==============================\n\n")
-        
-        f.write("BENCHMARKS\n")
-        f.write(sp500_filter_text + "\n")
-        f.write(qqq_text + "\n\n")
-        
-        f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
-        if not valide_setups.empty:
-            for _, row in valide_setups.iterrows():
-                # Sicherheits-Check für Sektor-Momentum
-                perf_row = df_perf[df_perf['Sektor'] == row['Sektor']]
-                sektor_score = perf_row['Rotation-Score'].values[0] if not perf_row.empty else "N/A"
-                
-                f.write(f"------------------------------\n")
-                # Hier wurde der Name ergänzt:
-                f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']} | Sektor: {row['Sektor']}\n")
-                f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
-                f.write(f"Setup-Typ: {row['Setup-Typ']} | Qualität: A\n")
-                f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
-                f.write(f"CRV: {row['CRV2']}\n")
-                f.write(f"Sektor-Momentum: {sektor_score}\n")
-                
-                # ZWINGENDE TRENNUNG DER DATEN
-                f.write(f"Technisches Upside: {row['Tech-Upside']}%\n")
-
-                fund_val = row['Fund-Upside']
-                # Wenn Fundamental 0 ist oder identisch mit Technisch, schreibe explizit N/A
-                fund_display = f"{fund_val}%" if (fund_val != 0.0 and fund_val != row['Tech-Upside']) else "N/A"
-
-                f.write(f"Fundamentaler Analysten-Check: {fund_display}\n")
-                f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n\n")
-        else:
-            f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")            
-        f.write("BEACHTEN (STATUS: BEOBACHTEN)\n")
-        if not beobachten.empty:
-            f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) + "\n\n")
-        else:
-            f.write("Keine.\n\n")
-        
-        f.write("SETUP-STATISTIK\n")
-        f.write(str(setup_stats) + "\n")
-        
-    print("Briefing-Dateien erfolgreich geschrieben.")
-
+        f.write(f"MARKT-UPDATE {today}\n\n{sp500_filter_text}\n{qqq_text}\n\nTRADE-ZUSAMMENFASSUNG\n")
+        valide = df_s[df_s['Status2'] == "VALIDE"]
+        for _, row in valide.iterrows():
+            f.write(f"Ticker: {row['Ticker']} | Einstieg: {row['Einstieg']} | TP2: {row['TP2']} | CRV: {row['CRV2']}\n")
