@@ -8,9 +8,10 @@ import os
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 def get_drive_service():
-    # Lädt das JSON aus dem Secret, das du als SERVICE_ACCOUNT_JSON hinterlegt hast
+    # Lädt den JSON-Inhalt direkt aus der Umgebungsvariable
     creds_info = json.loads(os.environ.get("SERVICE_ACCOUNT_JSON"))
     creds = service_account.Credentials.from_service_account_info(creds_info)
+    # Erstellt den Drive-Service
     return build('drive', 'v3', credentials=creds)
 
 def upload_file(filename, folder_id):
