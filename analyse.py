@@ -134,43 +134,68 @@ def analyze_a_setup(ticker, sektor):
     try:
         hist = yf.download(ticker, period="250d", progress=False)
         if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
-        
         if hist.empty or len(hist) < 100 or hist['Volume'].tail(20).mean() < 500_000:
             return None
 
-        highs, lows, closes = hist['High'], hist['Low'], hist['Close']
-        breakout_level = highs.rolling(20).max().iloc[-1]
-        stop = lows.rolling(20).min().iloc[-1]
-        entry_val, setup_typ = calculate_retest_entry(hist, breakout_level)
-        
-        if entry_val <= stop: 
-            entry_val = breakout_level
-            setup_typ = "Ausbruch"
-
+        closes, highs, lows = hist['Close'], hist['High'], hist['Low']
         atr = (highs - lows).rolling(14).mean().iloc[-1]
-        risiko = entry_val - stop
-        rsi = 100 - (100 / (1 + (closes.diff().where(closes.diff() > 0, 0).rolling(14).mean() / 
-                                 (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
         
-        exp1, exp2 = closes.ewm(span=12, adjust=False).mean(), closes.ewm(span=26, adjust=False).mean()
-        macd_line, signal_line = (exp1 - exp2).iloc[-1], (exp1 - exp2).ewm(span=9, adjust=False).mean().iloc[-1]
-        is_bullish = macd_line > signal_line
+        # S&R Zonen (60 Tage Fenster)
+        support = lows.rolling(60).min().iloc[-1]
+        resistance = highs.rolling(60).max().iloc[-1]
+        
+        # Definition der Setup-Typen
+        # 1. Bounce: Einstieg an Support + 0.5 ATR
+        # 2. Re-Test: Einstieg am EMA20/50
+        # 3. Breakout: Einstieg über Resistance
+        ema20 = closes.ewm(span=20).mean().iloc[-1]
+        
+        candidates = [
+            {"typ": "Bounce",   "entry": support + (0.5 * atr), "stop": support - (2 * atr)},
+            {"typ": "Re-Test",  "entry": ema20,                 "stop": ema20 - (2 * atr)},
+            {"typ": "Breakout", "entry": resistance,            "stop": resistance - (2 * atr)}
+        ]
+        
+        best_setup = None
+        best_crv = 0
+        
+        for s in candidates:
+            risiko = s['entry'] - s['stop']
+            if risiko <= 0: continue
+            
+            # TP2 als 3x ATR über Entry
+            tp2 = s['entry'] + (3 * atr)
+            crv = (tp2 - s['entry']) / risiko
+            
+            if crv > best_crv:
+                best_crv = crv
+                best_setup = s.copy()
+                best_setup['crv'] = round(crv, 2)
+                best_setup['tp2'] = round(tp2, 2)
+                best_setup['tp1'] = round(s['entry'] + (1.5 * atr), 2)
+                best_setup['stop'] = round(s['stop'], 2)
+                best_setup['entry'] = round(s['entry'], 2)
+        
+        if not best_setup or best_setup['crv'] < 1.0:
+            return None
+            
+        # RSI & Trend für Status
+        rsi = 100 - (100 / (1 + (closes.diff().where(closes.diff() > 0, 0).rolling(14).mean() / 
+                                (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
+        exp1, exp2 = closes.ewm(span=12).mean(), closes.ewm(span=26).mean()
+        is_bullish = (exp1 - exp2).iloc[-1] > (exp1 - exp2).ewm(span=9).mean().iloc[-1]
         
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
-        analyst_target = info.get('targetMeanPrice', None)
-            
-        status = "ÜBERHITZT!" if rsi > 70 else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
-        status2 = "VALIDE" if (is_bullish and rsi <= 80 and status == "Beobachten" and (analyst_target is None or analyst_target >= entry_val)) else "WACHSAMKEIT"
         
         return {
             "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
-            "Kursziel": analyst_target if analyst_target else "N/A", "Setup-Typ": setup_typ,
+            "Kursziel": info.get('targetMeanPrice', "N/A"), "Setup-Typ": best_setup['typ'],
             "RSI": round(rsi, 2), "MACD-Trend": "Bullish" if is_bullish else "Bearish",
-            "Status": status, "Status2": status2, "Kurs": round(closes.iloc[-1], 2), 
-            "Einstieg": round(entry_val, 2), "Stop": round(stop, 2),
-            "TP1": round(entry_val + atr, 2), "TP2": round(entry_val + (atr * 3), 2),
-            "CRV2": round(((entry_val + (atr * 3)) - entry_val) / risiko, 2) if risiko > 0 else 0
+            "Status": "Gelaufen" if closes.iloc[-1] > (best_setup['entry'] * 1.01) else "Beobachten",
+            "Kurs": round(closes.iloc[-1], 2), "Einstieg": best_setup['entry'],
+            "Stop": best_setup['stop'], "TP1": best_setup['tp1'], "TP2": best_setup['tp2'],
+            "CRV2": best_setup['crv']
         }
     except: return None
         
@@ -189,71 +214,47 @@ if __name__ == "__main__":
     df_s = pd.DataFrame(all_setups)
     if df_s.empty: sys.exit()
     
-    # Berechnungen
+    # --- FINALE BERECHNUNGEN (Konsistent zu analyze_a_setup) ---
+    # Upside basierend auf Fundamentaldaten (Kursziel vs. Einstieg)
     df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
+    
+    # Tech_Upside (TP2 vs. Einstieg)
     df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
+    
+    # CRV1 (TP1 vs. Risiko)
     df_s['CRV1'] = df_s.apply(lambda r: round(((r['TP1'] - r['Einstieg']) / (r['Einstieg'] - r['Stop'])), 2) if (r['Einstieg'] - r['Stop']) != 0 else 0, axis=1)
     
-    # OPTIMIERTE STATUS-LOGIK
+    # STATUS-LOGIK (ATR-S&R konform)
     def determine_status(row):
-        # Bedingung für VALIDE:
-        # 1. CRV2 muss >= 1.0 sein
-        # 2. MACD muss Bullish sein
-        # 3. RSI muss im gesunden Bereich (30-70) sein
-        # 4. Der Status darf NICHT 'Gelaufen' sein (muss 'Beobachten' sein)
-        if (row['CRV2'] >= 1.0 and 
-            row['MACD-Trend'] == 'Bullish' and 
-            30 <= row['RSI'] <= 70 and 
-            row['Status'] == "Beobachten"):
+        if (row['CRV2'] >= 1.5 and row['MACD-Trend'] == 'Bullish' and 30 <= row['RSI'] <= 70 and row['Status'] == "Beobachten"):
             return "VALIDE"
-        
-        # Bedingung für ÜBERHITZT:
         elif row['RSI'] > 70:
             return "ÜBERHITZT!"
-        
-        # Alles andere bleibt im Status BEOBACHTEN
         else:
             return "BEOBACHTEN"
-
-    # Anwendung auf den DataFrame
+    
     df_s['Status2'] = df_s.apply(determine_status, axis=1)
     
-    # Sortierung (VALIDE Titel zuerst)
+    # Sortierung: VALIDE nach oben, dann CRV2 absteigend
     df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else (1 if x == "BEOBACHTEN" else 2))
     df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
     
-    # Export Performance
+    # --- EXPORT ---
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # Spalten-Reihenfolge (ohne Ticker wie gewünscht)
-    cols = [
-        'Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 
-        'RSI', 'Status', 'Status2', 'Kursziel', 'Upside', 
-        'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2'
-    ]
+    cols = ['Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 'RSI', 'Status', 'Status2', 
+            'Kursziel', 'Upside', 'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2']
     
-    # Finales Speichern
     df_s[cols].to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # Schreib-Block für das Briefing
+    # --- BRIEFING SCHREIB-BLOCK ---
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        f.write(f"MARKT-UPDATE {today}\n==============================\n\nBENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-        
+        f.write(f"MARKT-UPDATE {today}\n==============================\n\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
+        
         valide = df_s[df_s['Status2'] == "VALIDE"]
         for _, row in valide.iterrows():
-            f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']} | Sektor: {row['Sektor']}\n")
-            f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
-            f.write(f"Setup-Typ: {row['Setup-Typ']}\n")
-            f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (Techn. Ziel)\n")
-            analyst_info = f"{row['Kursziel']} (Fund. Ziel)" if row['Kursziel'] != "N/A" else "Kein Ziel"
-            f.write(f"Analystenziel: {analyst_info} | Upside (Fund.): {row['Upside']}% | Tech. Upside: {row['Tech_Upside']}%\n")
-            f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
-            f.write("------------------------------\n")
-
-        f.write("\nBEACHTEN (STATUS: BEOBACHTEN & ÜBERHITZT)\nTicker   Kurs  Einstieg   RSI    Status\n")
-        beobachten = df_s[df_s['Status2'] != "VALIDE"]
-        for _, row in beobachten.iterrows():
-            f.write(f"{row['Ticker']:>6} {row['Kurs']:>7} {row['Einstieg']:>9} {row['RSI']:>5}   {row['Status2']}\n")
-            
-        f.write(f"\nSETUP-STATISTIK\n{df_s['Setup-Typ'].value_counts().to_dict()}\n")
+            f.write(f"Ticker: {row['Ticker']} | {row['Name']} ({row['Sektor']})\n")
+            f.write(f"Setup: {row['Setup-Typ']} | Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
+            f.write(f"Stop: {row['Stop']} | TP1: {row['TP1']} | TP2: {row['TP2']}\n")
+            f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n------------------------------\n")
