@@ -25,14 +25,13 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas google-auth-oauthlib google-api-python-client google-auth-httplib2
-          # Füge hier 'groq' hinzu:
-          pip install yfinance pandas google-auth-oauthlib google-api-python-client
+          # Hier ist 'groq' nun enthalten:
+          pip install yfinance pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq
 
       # Hier prüfen wir, ob die Umgebungsvariablen korrekt geladen sind
       - name: Analyse ausführen
         env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python analyse.py
 
       - name: Daten hochladen
