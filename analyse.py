@@ -236,9 +236,15 @@ if __name__ == "__main__":
     setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
     
     # --- EXPORT (DRIVE) ---
+    # Am Anfang von analyse.py (oder direkt vor dem Export-Teil)
+    # Setze drive_path auf den aktuellen Arbeitsordner ("."), 
+    # dann funktioniert os.path.join einwandfrei.
+    drive_path = "." 
+
+    # --- EXPORT (DRIVE) ---
     df_perf.to_csv(os.path.join(drive_path, f"Performance({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(os.path.join(drive_path, f"Setups({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
-    
+        
     # --- BRIEFING SCHREIBEN (DRIVE) ---
     valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
     beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
