@@ -1,17 +1,16 @@
-import os
-import json
-from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+import json
+import os
 
 # Arbeitsverzeichnis festlegen
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 def get_drive_service():
-    token_json = os.getenv('GDRIVE_TOKEN')
-    if not token_json:
-        raise ValueError("Das Secret 'GDRIVE_TOKEN' wurde nicht gefunden.")
-    creds = Credentials.from_authorized_user_info(json.loads(token_json))
+    # Lädt das JSON aus dem Secret, das du als SERVICE_ACCOUNT_JSON hinterlegt hast
+    creds_info = json.loads(os.environ.get("SERVICE_ACCOUNT_JSON"))
+    creds = service_account.Credentials.from_service_account_info(creds_info)
     return build('drive', 'v3', credentials=creds)
 
 def upload_file(filename, folder_id):
