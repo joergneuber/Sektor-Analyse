@@ -211,10 +211,18 @@ df_final = df_s[cols]
 
 # Jetzt speichern
 df_final.to_csv('deine_datei.csv', index=False)
-    
-    # Das muss vor dem Schreib-Block in dein Skript:
+
+    # Berechne Tech_Upside, bevor df_s sortiert oder exportiert wird
     df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
 
+    # Berechne CRV1 (wie gewünscht)
+    # Formel: (TP1 - Einstieg) / Risiko
+    df_s['CRV1'] = df_s.apply(lambda r: round(((r['TP1'] - r['Einstieg']) / (r['Einstieg'] - r['Stop'])), 2) if (r['Einstieg'] - r['Stop']) != 0 else 0, axis=1)
+
+    # Jetzt die Sortierung/Spaltenreihenfolge
+    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
+    df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
+    
     # Schreib-Block für das Briefing
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         # Header und Benchmarks
