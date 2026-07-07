@@ -209,6 +209,10 @@ def analyze_a_setup(ticker, sektor):
                 best_setup['tp2'] = round(s['tp2'], 2)
                 best_setup['stop'] = round(s['stop'], 2)
                 best_setup['entry'] = round(s['entry'], 2)
+                crv2 = (s['tp2'] - s['entry']) / risiko
+                crv1 = (s['tp1'] - s['entry']) / risiko # NEU
+                best_setup['crv1'] = round(crv1, 2)
+                best_setup['crv2'] = round(crv2, 2)
                 best_crv = crv
         
         if not best_setup or best_setup['crv'] < 1.0:
@@ -227,19 +231,30 @@ def analyze_a_setup(ticker, sektor):
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
     
+        # ... am Ende von analyze_a_setup ...
         return {
-        "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
-        "Kursziel": info.get('targetMeanPrice', "N/A"), "Setup-Typ": best_setup['typ'],
-        "Pattern": pattern or "Kein", # NEU
-        "Ideales_Delta": 0.6,          # NEU
-        "RSI": round(rsi, 2), "MACD-Trend": "Bullish" if is_bullish else "Bearish",
-        "Status": "Gelaufen" if closes.iloc[-1] > (best_setup['entry'] * 1.01) else "Beobachten",
-        "Status2": status2,            # NEU
-        "Kurs": round(closes.iloc[-1], 2), "Einstieg": best_setup['entry'],
-        "Stop": best_setup['stop'], "TP1": best_setup['tp1'], "TP2": best_setup['tp2'],
-        "CRV2": best_setup['crv']
-    }
-    except: return None
+            "Ticker": ticker, 
+            "Name": info.get('longName', ticker), 
+            "Sektor": sektor,
+            "Kursziel": info.get('targetMeanPrice', "N/A"), 
+            "Setup-Typ": best_setup['typ'],
+            "Pattern": pattern or "Kein",
+            "Ideales_Delta": 0.6,
+            "RSI": round(rsi, 2), 
+            "MACD-Trend": "Bullish" if is_bullish else "Bearish",
+            # Status2 wird später im Main-Block via update_status_logic überschrieben
+            "Status2": status2, 
+            "Kurs": round(closes.iloc[-1], 2), 
+            "Einstieg": best_setup['entry'],
+            "Stop": best_setup['stop'], 
+            "TP1": best_setup['tp1'], 
+            "TP2": best_setup['tp2'],
+            "CRV1": best_setup['crv1'], # NEU
+            "CRV2": best_setup['crv2']  # Bereinigtes CRV2
+        }
+    except Exception as e:
+        print(f"Fehler bei Analyse von {ticker}: {e}")
+        return None
         
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -270,9 +285,8 @@ if __name__ == "__main__":
     # Sicherstellen, dass das Skript nicht bei leeren Daten abstürzt
     if df_s.empty:
         print("Keine Setups gefunden.")
-        cols = ['Ticker', 'Name', 'Sektor', 'Status', 'Status2', 'CRV2', 'Upside', 
-                'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 'RSI', 'MACD-Trend', 
-                'Setup-Typ', 'Pattern', 'Ideales_Delta'] # HIER ERGÄNZT
+        ccols = ['Ticker', 'Name', 'Sektor', 'Status2', 'CRV1', 'CRV2', 'Kurs', 
+        'Einstieg', 'Stop', 'TP1', 'TP2', 'Pattern', 'Ideales_Delta']
         df_s = pd.DataFrame(columns=cols)
     else:
         # Fehlende Spalten ergänzen, falls sie durch die Analyse nicht erstellt wurden
@@ -286,6 +300,22 @@ if __name__ == "__main__":
         df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
         df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
         setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
+
+    def update_status_logic(row):
+    # Nur wenn Kurs < TP1 und Pattern vorhanden -> VALIDE
+    if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
+        return "VALIDE"
+    # Wenn TP1 erreicht -> GELAUFEN
+    elif row['Kurs'] >= row['TP1']:
+        return "GELAUFEN"
+    # Sonst -> WACHSAMKEIT
+    return "WACHSAMKEIT"
+
+    # Anwendung:
+    if not df_s.empty:
+    df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+    # Sortiere nach Status (VALIDE zuerst) und dann nach CRV1
+    df_s = df_s.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
     
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
