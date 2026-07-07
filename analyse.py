@@ -194,29 +194,38 @@ if __name__ == "__main__":
     df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
     df_s['CRV1'] = df_s.apply(lambda r: round(((r['TP1'] - r['Einstieg']) / (r['Einstieg'] - r['Stop'])), 2) if (r['Einstieg'] - r['Stop']) != 0 else 0, axis=1)
     
-    # Sortierung
-    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
+    # NEUE STATUS-LOGIK
+    def determine_status(row):
+        if (row['CRV2'] >= 1.0 and row['MACD-Trend'] == 'Bullish' and 30 <= row['RSI'] <= 70):
+            return "VALIDE"
+        elif row['RSI'] > 70:
+            return "ÜBERHITZT!"
+        else:
+            return "BEOBACHTEN"
+    
+    df_s['Status2'] = df_s.apply(determine_status, axis=1)
+    
+    # Sortierung (VALIDE Titel zuerst)
+    df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else (1 if x == "BEOBACHTEN" else 2))
     df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
     
     # Export Performance
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # Definierte Spalten-Reihenfolge (ohne Ticker)
+    # Spalten-Reihenfolge (ohne Ticker wie gewünscht)
     cols = [
         'Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 
         'RSI', 'Status', 'Status2', 'Kursziel', 'Upside', 
-        'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'TP2', 'CRV1', 'CRV2'
+        'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2'
     ]
     
     # Finales Speichern
     df_s[cols].to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-      
+    
     # Schreib-Block für das Briefing
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        # Header und Benchmarks
         f.write(f"MARKT-UPDATE {today}\n==============================\n\nBENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         
-        # Valide Trades
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
         valide = df_s[df_s['Status2'] == "VALIDE"]
         for _, row in valide.iterrows():
@@ -224,20 +233,14 @@ if __name__ == "__main__":
             f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
             f.write(f"Setup-Typ: {row['Setup-Typ']}\n")
             f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (Techn. Ziel)\n")
-            
-            # Hier trennen wir die beiden Ziele
-            # ... innerhalb der for-Schleife nach dem Setup-Typ ...
             analyst_info = f"{row['Kursziel']} (Fund. Ziel)" if row['Kursziel'] != "N/A" else "Kein Ziel"
             f.write(f"Analystenziel: {analyst_info} | Upside (Fund.): {row['Upside']}% | Tech. Upside: {row['Tech_Upside']}%\n")
-            
             f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
             f.write("------------------------------\n")
 
-        # Beobachtungsliste
-        f.write("\nBEACHTEN (STATUS: BEOBACHTEN)\nTicker   Kurs  Einstieg   RSI\n")
+        f.write("\nBEACHTEN (STATUS: BEOBACHTEN & ÜBERHITZT)\nTicker   Kurs  Einstieg   RSI    Status\n")
         beobachten = df_s[df_s['Status2'] != "VALIDE"]
         for _, row in beobachten.iterrows():
-            f.write(f"{row['Ticker']:>6} {row['Kurs']:>7} {row['Einstieg']:>9} {row['RSI']:>5}\n")
+            f.write(f"{row['Ticker']:>6} {row['Kurs']:>7} {row['Einstieg']:>9} {row['RSI']:>5}   {row['Status2']}\n")
             
-        # Statistik
         f.write(f"\nSETUP-STATISTIK\n{df_s['Setup-Typ'].value_counts().to_dict()}\n")
