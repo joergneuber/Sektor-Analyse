@@ -198,6 +198,20 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
+    # Definierte Spalten-Reihenfolge (beispielhaft)
+    cols = [
+    'Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 
+    'RSI', 'Status', 'Status2', 'Krusziel',
+    'Upside', 'Kurs', 'Tech_Upside', 'Einstieg',
+    'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2'
+]
+
+# Filtern und sortieren (erzeugt eine neue Ansicht)
+df_final = df_s[cols]
+
+# Jetzt speichern
+df_final.to_csv('deine_datei.csv', index=False)
+    
     # Das muss vor dem Schreib-Block in dein Skript:
     df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
 
