@@ -129,6 +129,34 @@ def calculate_retest_entry(hist, breakout_level):
     if secondary: return round(max(secondary), 2), "Re-Test"
     return round(breakout_level * 0.98, 2), "Ausbruch"
 
+def check_bullish_confirmation(df):
+    """Prüft die letzte Kerze auf bullische Umkehr mit erhöhter Sicherheit."""
+    # Wir brauchen mindestens 3 Kerzen, um die Dynamik (bärisch -> bullisch) zu sehen
+    if len(df) < 3: return None
+    
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    prev2 = df.iloc[-3]
+    
+    body = abs(last['Close'] - last['Open'])
+    lower_wick = min(last['Open'], last['Close']) - last['Low']
+    upper_wick = last['High'] - max(last['Open'], last['Close'])
+    
+    # 1. HAMMER-Check (klassisch)
+    if lower_wick > (2 * body) and upper_wick < body:
+        return "Hammer"
+        
+    # 2. ERWEITERTES BULLISH ENGULFING: 
+    # Vorletzte Kerze war rot (bärisch), letzte ist grün (bullisch) und umschließt den Körper
+    is_prev_bearish = prev['Close'] < prev['Open']
+    is_last_bullish = last['Close'] > last['Open']
+    engulfs = last['Close'] > prev['Open'] and last['Open'] < prev['Close']
+    
+    if is_prev_bearish and is_last_bullish and engulfs:
+        return "Engulfing"
+        
+    return None
+
 def analyze_a_setup(ticker, sektor):
     time.sleep(0.1)
     try:
@@ -191,19 +219,26 @@ def analyze_a_setup(ticker, sektor):
                                 (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
         exp1, exp2 = closes.ewm(span=12).mean(), closes.ewm(span=26).mean()
         is_bullish = (exp1 - exp2).iloc[-1] > (exp1 - exp2).ewm(span=9).mean().iloc[-1]
+
+        # NEU: Kerzen-Check hinzufügen
+        pattern = check_bullish_confirmation(hist)
+        status2 = "VALIDE" if pattern else "WACHSAMKEIT"
         
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
-        
+    
         return {
-            "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
-            "Kursziel": info.get('targetMeanPrice', "N/A"), "Setup-Typ": best_setup['typ'],
-            "RSI": round(rsi, 2), "MACD-Trend": "Bullish" if is_bullish else "Bearish",
-            "Status": "Gelaufen" if closes.iloc[-1] > (best_setup['entry'] * 1.01) else "Beobachten",
-            "Kurs": round(closes.iloc[-1], 2), "Einstieg": best_setup['entry'],
-            "Stop": best_setup['stop'], "TP1": best_setup['tp1'], "TP2": best_setup['tp2'],
-            "CRV2": best_setup['crv']
-        }
+        "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor,
+        "Kursziel": info.get('targetMeanPrice', "N/A"), "Setup-Typ": best_setup['typ'],
+        "Pattern": pattern or "Kein", # NEU
+        "Ideales_Delta": 0.6,          # NEU
+        "RSI": round(rsi, 2), "MACD-Trend": "Bullish" if is_bullish else "Bearish",
+        "Status": "Gelaufen" if closes.iloc[-1] > (best_setup['entry'] * 1.01) else "Beobachten",
+        "Status2": status2,            # NEU
+        "Kurs": round(closes.iloc[-1], 2), "Einstieg": best_setup['entry'],
+        "Stop": best_setup['stop'], "TP1": best_setup['tp1'], "TP2": best_setup['tp2'],
+        "CRV2": best_setup['crv']
+    }
     except: return None
         
 if __name__ == "__main__":
@@ -235,11 +270,15 @@ if __name__ == "__main__":
     # Sicherstellen, dass das Skript nicht bei leeren Daten abstürzt
     if df_s.empty:
         print("Keine Setups gefunden.")
-        # Erstelle leeres DF mit den nötigen Spalten für den Export
-        df_s = pd.DataFrame(columns=['Ticker', 'Name', 'Sektor', 'Status', 'Status2', 'CRV2', 'Upside', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 'RSI', 'MACD-Trend', 'Setup-Typ'])
+        cols = ['Ticker', 'Name', 'Sektor', 'Status', 'Status2', 'CRV2', 'Upside', 
+                'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 'RSI', 'MACD-Trend', 
+                'Setup-Typ', 'Pattern', 'Ideales_Delta'] # HIER ERGÄNZT
+        df_s = pd.DataFrame(columns=cols)
     else:
         # Fehlende Spalten ergänzen, falls sie durch die Analyse nicht erstellt wurden
         if 'Status2' not in df_s.columns: df_s['Status2'] = "WACHSAMKEIT"
+        if 'Pattern' not in df_s.columns: df_s['Pattern'] = "Kein"
+        if 'Ideales_Delta' not in df_s.columns: df_s['Ideales_Delta'] = 0.6
         
         # Upside & Status Logik
         df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
@@ -253,16 +292,16 @@ if __name__ == "__main__":
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # 6. Briefing erstellen
-    valide_setups = df_s[df_s.get('Status2', '') == "VALIDE"]
-    beobachten = df_s[df_s.get('Status', '') == "Beobachten"]
-
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG\n")
+        
         if not valide_setups.empty:
-            f.write(valide_setups[['Ticker', 'Einstieg', 'CRV2']].to_string())
+            for _, row in valide_setups.iterrows():
+                f.write(f"\nTicker: {row['Ticker']} ({row['Pattern']}-Signal)\n")
+                f.write(f"Einstieg: {row['Einstieg']} | Delta: {row['Ideales_Delta']} | CRV: {row['CRV2']}\n")
+                f.write("-" * 20 + "\n")
         else:
-            f.write("Keine validen Setups.\n")
-    
+            f.write("Keine validen Setups (Wachsamkeit).\n")
     print("Analyse abgeschlossen. Dateien lokal bereit für Upload.")
