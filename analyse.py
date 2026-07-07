@@ -140,20 +140,28 @@ def analyze_a_setup(ticker, sektor):
         closes, highs, lows = hist['Close'], hist['High'], hist['Low']
         atr = (highs - lows).rolling(14).mean().iloc[-1]
         
-        # S&R Zonen (60 Tage Fenster)
+        # CHARTTECHNISCHE ZONEN
+        # Support: Lokales Tief der letzten 60 Tage
+        # Resistance: Lokales Hoch der letzten 60 Tage
         support = lows.rolling(60).min().iloc[-1]
         resistance = highs.rolling(60).max().iloc[-1]
-        
-        # Definition der Setup-Typen
-        # 1. Bounce: Einstieg an Support + 0.5 ATR
-        # 2. Re-Test: Einstieg am EMA20/50
-        # 3. Breakout: Einstieg über Resistance
         ema20 = closes.ewm(span=20).mean().iloc[-1]
+
+        # STOP-LOSS (Charttechnisch + Puffer)
+        # Wir setzen den Stop unter den Support, aber mit ATR-Puffer
+        stop_level = round(support - (1.0 * atr), 2)
         
+        # TARGETS (Charttechnisch)
+        # TP1: Mitte zwischen Einstieg und Widerstand
+        # TP2: Widerstand (Resistance-Zone)
+        target_1 = round(resistance * 0.95, 2)
+        target_2 = round(resistance, 2)
+
+        # CANDIDATES (Individuelle Setups mit individuellen CRVs)
         candidates = [
-            {"typ": "Bounce",   "entry": support + (0.5 * atr), "stop": support - (2 * atr)},
-            {"typ": "Re-Test",  "entry": ema20,                 "stop": ema20 - (2 * atr)},
-            {"typ": "Breakout", "entry": resistance,            "stop": resistance - (2 * atr)}
+            {"typ": "Bounce",   "entry": support + (0.5 * atr), "stop": stop_level, "tp1": target_1, "tp2": target_2},
+            {"typ": "Re-Test",  "entry": ema20,                 "stop": stop_level, "tp1": target_1, "tp2": target_2},
+            {"typ": "Breakout", "entry": resistance * 1.01,     "stop": support,    "tp1": resistance * 1.05, "tp2": resistance * 1.10}
         ]
         
         best_setup = None
@@ -163,23 +171,22 @@ def analyze_a_setup(ticker, sektor):
             risiko = s['entry'] - s['stop']
             if risiko <= 0: continue
             
-            # TP2 als 3x ATR über Entry
-            tp2 = s['entry'] + (3 * atr)
-            crv = (tp2 - s['entry']) / risiko
+            # CRV2 basierend auf TP2
+            crv = (s['tp2'] - s['entry']) / risiko
             
             if crv > best_crv:
-                best_crv = crv
                 best_setup = s.copy()
                 best_setup['crv'] = round(crv, 2)
-                best_setup['tp2'] = round(tp2, 2)
-                best_setup['tp1'] = round(s['entry'] + (1.5 * atr), 2)
+                best_setup['tp1'] = round(s['tp1'], 2)
+                best_setup['tp2'] = round(s['tp2'], 2)
                 best_setup['stop'] = round(s['stop'], 2)
                 best_setup['entry'] = round(s['entry'], 2)
+                best_crv = crv
         
         if not best_setup or best_setup['crv'] < 1.0:
             return None
             
-        # RSI & Trend für Status
+        # RSI & Trend (für Status)
         rsi = 100 - (100 / (1 + (closes.diff().where(closes.diff() > 0, 0).rolling(14).mean() / 
                                 (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
         exp1, exp2 = closes.ewm(span=12).mean(), closes.ewm(span=26).mean()
@@ -248,6 +255,7 @@ if __name__ == "__main__":
     df_s[cols].to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # --- BRIEFING SCHREIB-BLOCK ---
+    # --- KORREKTER BRIEFING SCHREIB-BLOCK ---
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n------------------------------\n")
@@ -257,4 +265,10 @@ if __name__ == "__main__":
             f.write(f"Ticker: {row['Ticker']} | {row['Name']} ({row['Sektor']})\n")
             f.write(f"Setup: {row['Setup-Typ']} | Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
             f.write(f"Stop: {row['Stop']} | TP1: {row['TP1']} | TP2: {row['TP2']}\n")
-            f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n------------------------------\n")
+            
+            # Hier fügen wir die fehlenden Upside-Daten hinzu
+            analyst_info = f"{row['Kursziel']} (Fund. Ziel)" if row['Kursziel'] != "N/A" else "Kein Ziel"
+            f.write(f"Analystenziel: {analyst_info} | Upside: {row['Upside']}% | Tech. Upside: {row['Tech_Upside']}%\n")
+            
+            f.write(f"CRV (TP1): {row['CRV1']} | CRV (TP2): {row['CRV2']}\n")
+            f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n------------------------------\n")
