@@ -160,7 +160,7 @@ def analyze_a_setup(ticker, sektor):
         info = ticker_obj.info
         analyst_target = info.get('targetMeanPrice', None)
             
-        status = "ÜBERHITZT!" if rsi > 80 else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
+        status = "ÜBERHITZT!" if rsi > 70 else ("Gelaufen" if closes.iloc[-1] > (entry_val * 1.01) else "Beobachten")
         status2 = "VALIDE" if (is_bullish and rsi <= 80 and status == "Beobachten" and (analyst_target is None or analyst_target >= entry_val)) else "WACHSAMKEIT"
         
         return {
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     cols = [
         'Name', 'Sektor', 'Setup-Typ', 'MACD-Trend', 
         'RSI', 'Status', 'Status2', 'Kursziel', 'Upside', 
-        'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'CRV1', 'TP2', 'CRV2'
+        'Kurs', 'Tech_Upside', 'Einstieg', 'Stop', 'TP1', 'TP2', 'CRV1', 'CRV2'
     ]
     
     # Finales Speichern
