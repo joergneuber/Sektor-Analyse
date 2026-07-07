@@ -306,9 +306,17 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen (Nur Valide & Wachsamkeit, mit mehr Details)
+    # 6. Briefing erstellen (Nur Valide & Wachsamkeit)
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
-    relevante_setups = relevante_setups.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
+    
+    # Manuelle Sortier-Reihenfolge definieren: Valide zuerst
+    relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'WACHSAMKEIT': 1})
+    
+    # Erst nach Order (0 kommt vor 1), dann nach CRV1 (absteigend)
+    relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
+    
+    # Hilfsspalte wieder löschen
+    relevante_setups = relevante_setups.drop(columns=['Status_Order'])
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
