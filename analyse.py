@@ -192,9 +192,14 @@ if __name__ == "__main__":
     df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
     df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
     df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
+    # Berechnung Technisches Upside zusätzlich zur Fundamentalen
+    df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
     
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+
+    # Das muss vor dem Schreib-Block in dein Skript:
+    df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
 
     # Schreib-Block für das Briefing
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
@@ -208,9 +213,14 @@ if __name__ == "__main__":
             f.write(f"Ticker: {row['Ticker']} | Name: {row['Name']} | Sektor: {row['Sektor']}\n")
             f.write(f"Aktueller Kurs: {row['Kurs']} | Geplanter Einstieg: {row['Einstieg']}\n")
             f.write(f"Setup-Typ: {row['Setup-Typ']}\n")
-            f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (TP2)\n")
-            f.write(f"CRV: {row['CRV2']} | Technisches Upside: {row['Upside']}%\n")
-            f.write(f"RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
+            f.write(f"Stop-Loss: {row['Stop']} | Take-Profit: {row['TP1']} (TP1) / {row['TP2']} (Techn. Ziel)\n")
+            
+            # Hier trennen wir die beiden Ziele
+            # ... innerhalb der for-Schleife nach dem Setup-Typ ...
+            analyst_info = f"{row['Kursziel']} (Fund. Ziel)" if row['Kursziel'] != "N/A" else "Kein Ziel"
+            f.write(f"Analystenziel: {analyst_info} | Upside (Fund.): {row['Upside']}% | Tech. Upside: {row['Tech_Upside']}%\n")
+            
+            f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
             f.write("------------------------------\n")
 
         # Beobachtungsliste
