@@ -210,17 +210,16 @@ def analyze_a_setup(ticker, sektor):
     except: return None
         
 if __name__ == "__main__":
-    # --- DRIVE INTEGRATION ---
-    from google.colab import drive
-    drive.mount('/content/drive')
-    drive_path = '/content/drive/MyDrive/Trading/'
-    if not os.path.exists(drive_path): os.makedirs(drive_path)
-
     today = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    # 1. Benchmarks sicher abrufen
     sp500_filter_text = get_sp500_data()
     qqq_text = get_qqq_quote() 
+    
+    # 2. Performance berechnen
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
+    # 3. Setups verarbeiten
     all_setups = []
     for _, row in df_perf.head(3).iterrows():
         for s in sektoren_aktien.get(row['Ticker'], []):
@@ -228,49 +227,42 @@ if __name__ == "__main__":
             if res: all_setups.append(res)
     
     df_s = pd.DataFrame(all_setups)
-    if df_s.empty: sys.exit()
-
-    # --- SORTIERUNG & STATISTIK ---
+    if df_s.empty: 
+        print("Keine Setups gefunden.")
+        sys.exit()
+    
+    # Upside & Status Logik
+    df_s['Upside'] = df_s.apply(lambda r: round(((r['Kursziel'] - r['Einstieg']) / r['Einstieg']) * 100, 1) if isinstance(r['Kursziel'], (int, float)) else 0.0, axis=1)
+    df_s[['Tech-Upside', 'Fund-Upside']] = df_s.apply(lambda row: pd.Series(berechne_upsides(row)), axis=1)
     df_s['sort_col'] = df_s['Status2'].apply(lambda x: 0 if x == "VALIDE" else 1)
     df_s = df_s.sort_values(by=['sort_col', 'CRV2'], ascending=[True, False])
     setup_stats = df_s['Setup-Typ'].value_counts().to_dict()
-    
-    # --- EXPORT (DRIVE) ---
-    # Am Anfang von analyse.py (oder direkt vor dem Export-Teil)
-    # Setze drive_path auf den aktuellen Arbeitsordner ("."), 
-    # dann funktioniert os.path.join einwandfrei.
-    drive_path = "." 
 
-    # --- EXPORT (DRIVE) ---
-    df_perf.to_csv(os.path.join(drive_path, f"Performance({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
-    df_s.to_csv(os.path.join(drive_path, f"Setups({today}).csv"), index=False, sep=';', encoding='utf-8-sig')
-        
-    # --- BRIEFING SCHREIBEN (DRIVE) ---
+    # 4. CSV Exporte (Speicherung lokal im GitHub Runner Pfad)
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    # 5. Briefing erstellen
     valide_setups = df_s[df_s['Status2'] == "VALIDE"].sort_values(by='Upside', ascending=False)
     beobachten = df_s[df_s['Status'] == "Beobachten"].sort_values(by='CRV2', ascending=False)
 
-    with open(os.path.join(drive_path, f"Briefing({today}).txt"), "w", encoding="utf-8") as f:
+    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         
         f.write("TRADE-ZUSAMMENFASSUNG (VALIDE TITEL)\n")
         if not valide_setups.empty:
             for _, row in valide_setups.iterrows():
-                f.write(f"------------------------------\n")
-                f.write(f"Ticker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
-                f.write(f"Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']} | RSI: {row['RSI']}\n")
-                f.write(f"Setup: {row['Setup-Typ']} | Qualität: A\n")
+                f.write(f"------------------------------\nTicker: {row['Ticker']} | {row['Name']} ({row['Sektor']})\n")
+                f.write(f"Setup: {row['Setup-Typ']} | Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
                 f.write(f"Stop: {row['Stop']} | TP1: {row['TP1']} | TP2: {row['TP2']}\n")
-                f.write(f"CRV: {row['CRV2']} | Upside: {row['Upside']}%\n")
-        else:
-            f.write("Keine. Heute keine Setups im Status 'VALIDE'.\n\n")
-            
-        f.write("\nBEACHTEN (STATUS: BEOBACHTEN)\n")
-        if not beobachten.empty:
-            f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) + "\n\n")
+                f.write(f"CRV: {row['CRV2']} | RSI: {row['RSI']} | Trend: {row['MACD-Trend']}\n")
+                f.write(f"Tech-Upside: {row['Tech-Upside']}% | Fund-Upside: {row['Fund-Upside']}%\n")
         else:
             f.write("Keine.\n\n")
-        
-        f.write(f"SETUP-STATISTIK\n{setup_stats}\n")
+            
+        f.write("\nBEACHTEN (BEOBACHTEN)\n")
+        f.write(beobachten[['Ticker', 'Kurs', 'Einstieg', 'RSI']].head(8).to_string(index=False) if not beobachten.empty else "Keine.")
+        f.write(f"\n\nSETUP-STATISTIK\n{setup_stats}")
     
-    print("Briefing und Daten erfolgreich in Google Drive gespeichert.")
+    print("Analyse abgeschlossen. Dateien lokal bereit für Upload.")
