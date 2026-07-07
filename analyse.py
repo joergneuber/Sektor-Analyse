@@ -292,6 +292,12 @@ if __name__ == "__main__":
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # 6. Briefing erstellen
+    # Sicherstellen, dass valide_setups existiert und korrekt gefiltert ist
+    if 'Status2' in df_s.columns:
+        valide_setups = df_s[df_s['Status2'] == "VALIDE"]
+    else:
+        valide_setups = pd.DataFrame()
+
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
@@ -304,4 +310,5 @@ if __name__ == "__main__":
                 f.write("-" * 20 + "\n")
         else:
             f.write("Keine validen Setups (Wachsamkeit).\n")
+            
     print("Analyse abgeschlossen. Dateien lokal bereit für Upload.")
