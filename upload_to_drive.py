@@ -4,6 +4,10 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+print(f"Aktuelles Arbeitsverzeichnis: {os.getcwd()}")
+print("Gefundene Dateien im Ordner:")
+print(os.listdir('.'))
+
 def get_drive_service():
     token_str = os.environ.get("GDRIVE_TOKEN")
     
