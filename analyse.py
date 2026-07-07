@@ -157,9 +157,6 @@ def analyze_a_setup(ticker, sektor):
         target_1 = round(resistance * 0.95, 2)
         target_2 = round(resistance, 2)
 
-        # Berechnung des prozentualen Abstands bis zum Ziel (TP1)
-        distanz_zum_ziel = round(((target_1 - current_price) / current_price) * 100, 2)
-        
         # CANDIDATES (Individuelle Setups mit individuellen CRVs)
         candidates = [
             {"typ": "Bounce",   "entry": support + (0.5 * atr), "stop": stop_level, "tp1": target_1, "tp2": target_2},
