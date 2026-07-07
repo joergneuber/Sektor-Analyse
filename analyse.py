@@ -194,15 +194,28 @@ if __name__ == "__main__":
     df_s['Tech_Upside'] = df_s.apply(lambda r: round(((r['TP2'] - r['Einstieg']) / r['Einstieg']) * 100, 1), axis=1)
     df_s['CRV1'] = df_s.apply(lambda r: round(((r['TP1'] - r['Einstieg']) / (r['Einstieg'] - r['Stop'])), 2) if (r['Einstieg'] - r['Stop']) != 0 else 0, axis=1)
     
-    # NEUE STATUS-LOGIK
+    # OPTIMIERTE STATUS-LOGIK
     def determine_status(row):
-        if (row['CRV2'] >= 1.0 and row['MACD-Trend'] == 'Bullish' and 30 <= row['RSI'] <= 70):
+        # Bedingung für VALIDE:
+        # 1. CRV2 muss >= 1.0 sein
+        # 2. MACD muss Bullish sein
+        # 3. RSI muss im gesunden Bereich (30-70) sein
+        # 4. Der Status darf NICHT 'Gelaufen' sein (muss 'Beobachten' sein)
+        if (row['CRV2'] >= 1.0 and 
+            row['MACD-Trend'] == 'Bullish' and 
+            30 <= row['RSI'] <= 70 and 
+            row['Status'] == "Beobachten"):
             return "VALIDE"
+        
+        # Bedingung für ÜBERHITZT:
         elif row['RSI'] > 70:
             return "ÜBERHITZT!"
+        
+        # Alles andere bleibt im Status BEOBACHTEN
         else:
             return "BEOBACHTEN"
-    
+
+    # Anwendung auf den DataFrame
     df_s['Status2'] = df_s.apply(determine_status, axis=1)
     
     # Sortierung (VALIDE Titel zuerst)
