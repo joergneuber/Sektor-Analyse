@@ -308,6 +308,9 @@ if __name__ == "__main__":
                 if res:
                     all_setups.append(res)
                     print(f" -> Setup gefunden: {s}")
+                else:
+                    # Hier siehst du, ob er etwas findet, es aber verwirft
+                    print(f" -> {s} wurde durch Filter aussortiert.") 
             except Exception as e:
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
@@ -345,12 +348,27 @@ if __name__ == "__main__":
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
 
-   # 5. FILTERN, SORTIEREN & EXPORTIEREN
-    
-    # 1. Top-3 Sektoren Filtern
-    top_3_sektoren = df_perf.nlargest(3, 'Rotation-Score')['Sektor'].tolist()
-    df_s = df_s[df_s['Sektor'].isin(top_3_sektoren)].copy()
 
+    # Status-Logik anwenden
+    df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+
+    # --- DEIN DEBUG-BLOCK ---
+    print(f"DEBUG: Anzahl gefundener Setups insgesamt: {len(all_setups)}")
+    if not all_setups:
+        print("DEBUG: Es wurden keine Setups gefunden, die die Filterbedingungen erfüllen.")
+    else:
+        # Hier ist df_s noch ungefiltert
+        print(f"DEBUG: Setups vor Filter: {len(df_s)}")
+        
+    # 5. FILTERN, SORTIEREN & EXPORTIEREN
+    top_3_sektoren = df_perf.nlargest(3, 'Rotation-Score')['Sektor'].tolist()
+    
+    # Debug Info nach dem Filter
+    if not df_s.empty:
+        print(f"DEBUG: Top 3 Sektoren für Filterung: {top_3_sektoren}")
+        df_s = df_s[df_s['Sektor'].isin(top_3_sektoren)].copy()
+        print(f"DEBUG: Setups nach Sektor-Filter: {len(df_s)}")
+    
     # 2. Numerische Konvertierung & Sortieren
     cols_to_num = ['CRV1', 'Risk_Perc']
     for col in cols_to_num:
