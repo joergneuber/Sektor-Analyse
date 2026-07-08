@@ -364,7 +364,7 @@ if __name__ == "__main__":
 
         # Ticker aus der Tabelle entfernen, aber Name behalten
         if 'Ticker' in df_s.columns:
-        df_s = df_s.drop(columns=['Ticker'])
+            df_s = df_s.drop(columns=['Ticker'])
 
 # Jetzt erst reindexieren mit der gekürzten cols-Liste
 df_s = df_s.reindex(columns=cols)
