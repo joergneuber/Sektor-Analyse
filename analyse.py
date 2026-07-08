@@ -190,16 +190,13 @@ def analyze_a_setup(ticker, sektor):
     try:
         # 1. Daten laden
         t = yf.Ticker(ticker)
-        ata = t.history(period="1y")
+        # Info VORHER abrufen
+        info = t.info 
+        data = t.history(period="1y") # 'ata' korrigiert zu 'data'
 
-        # Name abrufen (hier mit Try-Except, falls info nicht erreichbar ist)
-        try:
-            firma_name = t.info.get('shortName', 'N/A')
-            # Hier das echte Analysten-Ziel abrufen
-            analysten_ziel = info.get('targetMeanPrice', 0)
-        except:
-            firma_name = 'N/A'
-            analysten_ziel = 0
+        # Name und Analysten-Ziel abrufen
+        firma_name = info.get('shortName', 'N/A')
+        analysten_ziel = info.get('targetMeanPrice', 0)
 
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
@@ -255,8 +252,8 @@ def analyze_a_setup(ticker, sektor):
             return None # Keine Filterbedingung erfüllt
 
         # 7. Metriken (Dynamische CRV Berechnung)
-        info = t.info
         entry = data['Close'].iloc[-1]
+       
         # 8. STOP-LOSS
         stop = data['Low'].rolling(10).min().iloc[-1]
         
@@ -272,7 +269,7 @@ def analyze_a_setup(ticker, sektor):
         
         # 11. ZIELE IN POTENTIAL_TARGETS LISTE AUFNEHMEN
         # Wir sortieren jetzt alle relevanten Chart-Widerstände
-        potential_targets = sorted([ema20, ema50, ema100, wma200, fib1, fib2])
+        potenzial_targets = sorted([ema20, ema50, ema100, wma200, fib1, fib2])
         
         # 12. Logik: TP1 ist der erste Widerstand über dem Einstieg, TP2 der zweite
         targets_above = [t for t in potential_targets if t > entry]
@@ -295,10 +292,9 @@ def analyze_a_setup(ticker, sektor):
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
 
-        upside_pct = 0
-        if analysten_ziel > 0:
-            upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2)
-        
+        # Berechnung für das neue Feld
+        upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2) if analysten_ziel > 0 else 0
+
         # HIER DIE WERTE FÜR DAS ZUKÜNFTIGE DATAFRAME ZUSAMMENFASSEN
         return {
             "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Setup_Typ": setup_typ,
@@ -310,30 +306,7 @@ def analyze_a_setup(ticker, sektor):
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
-    
-     # Status-Logik anwenden
-        def update_status_logic(row):
-            # 1. Bedingung: Überkaufter RSI (über 70) -> ACHTUNG
-            if row['RSI'] > 70:
-                return "ACHTUNG"
-            
-            # 2. Bedingung: Bärischer MACD bei bullischem Signal -> ACHTUNG
-            if row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein":
-                return "ACHTUNG"
-            
-            # 3. Standard-Logik
-            if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
-                return "VALIDE"
-            elif row['Kurs'] >= row['TP1']:
-                return "GELAUFEN"
-            
-            return "ACHTUNG"
-            
-        df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-
-    # Status-Logik anwenden
-    df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-
+         
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
@@ -372,41 +345,38 @@ if __name__ == "__main__":
             'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
 
+    # 4. DataFrame erstellen & Basis-Daten aufbereiten
     if not all_setups:
         print("Keine Setups gefunden.")
         df_s = pd.DataFrame(columns=cols)
     else:
         df_s = pd.DataFrame(all_setups)
         df_s = df_s.drop_duplicates(subset=['Ticker'], keep='first')
-        df_s = df_s.reindex(columns=cols)  
-       
-    # --- DEIN DEBUG-BLOCK ---
-    print(f"DEBUG: Anzahl gefundener Setups insgesamt: {len(all_setups)}")
-    if not all_setups:
-        print("DEBUG: Es wurden keine Setups gefunden, die die Filterbedingungen erfüllen.")
-    else:
-        # Hier ist df_s noch ungefiltert
-        print(f"DEBUG: Setups vor Filter: {len(df_s)}")
         
-    # 5. FILTERN, SORTIEREN & EXPORTIEREN
-    top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
-    
-    # Debug Info nach dem Filter
+        # A) Spalten angleichen (WICHTIG: Name muss exakt wie im return von analyze_a_setup sein!)
+        # Prüfe: return hat "Upside-Potential (%)", cols hat 'Upside-Potenzial%' -> ÄNDERE DAS!
+        df_s = df_s.reindex(columns=cols) 
+        
+        # B) Erst jetzt Status-Logik
+        df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+
+    # 5. FILTERN (Sektoren-Filter)
     if not df_s.empty:
-        print(f"DEBUG: Top 5 Sektoren für Filterung: {top_5_sektoren}")
+        top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
         df_s = df_s[df_s['Sektor'].isin(top_5_sektoren)].copy()
         print(f"DEBUG: Setups nach Sektor-Filter: {len(df_s)}")
-    
-    # 2. Numerische Konvertierung & Sortieren
-    cols_to_num = ['CRV1', 'Risk_Perc']
-    for col in cols_to_num:
-        df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
 
-    df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
-    df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
-    df_s = df_s.drop(columns=['Status_Order'])
+    # 6. KONVERTIERUNG & SORTIEREN
+    if not df_s.empty:
+        cols_to_num = ['CRV1', 'Risk_Perc']
+        for col in cols_to_num:
+            df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
 
-    # 3. CSV Speichern
+        df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
+        df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
+        df_s = df_s.drop(columns=['Status_Order'])
+
+    # 7. EXPORT (Nur einmalig am Ende)
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv("setup_liste.csv", index=False)
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
