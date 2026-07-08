@@ -342,7 +342,7 @@ if __name__ == "__main__":
         relevante_setups = relevante_setups.drop(columns=['Status_Order'])
         
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        # Alles hier drunter MUSS eingerückt sein!
+        # Alles hier drunter muss um 4 Leerzeichen eingerückt sein!
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
