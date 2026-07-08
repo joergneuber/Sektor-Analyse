@@ -316,28 +316,45 @@ if __name__ == "__main__":
 
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    # Vor dem Speichern der CSV:
+    # 1. Numerische Konvertierung
+    cols_to_num = ['CRV1', 'Risk_Perc']
+    for col in cols_to_num:
+        # Diese Zeile muss eingerückt sein!
+        df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
+
+    # 2. Sortieren (exakt wie im Briefing)
+    df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
+    df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
+    df_s = df_s.drop(columns=['Status_Order'])
+
+    # 3. Jetzt speichern
+    df_s.to_csv("setup_liste.csv", index=False)
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # 6. Briefing erstellen (Nur Valide & Achtung)
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
     if not relevante_setups.empty:
-        # Sicherstellen, dass die Werte numerisch sind, sonst sortiert Pandas nicht korrekt
-        relevante_setups['CRV1'] = pd.to_numeric(relevante_setups['CRV1'], errors='coerce')
-        relevante_setups['Risk_Perc'] = pd.to_numeric(relevante_setups['Risk_Perc'], errors='coerce')
+        # Sicherstellen, dass die Werte numerisch sind
+        cols_to_num = ['CRV1', 'Risk_Perc']
+        for col in cols_to_num:
+            relevante_setups[col] = pd.to_numeric(relevante_setups[col], errors='coerce').fillna(0)
         
-        # Mappen der Status-Werte (VALIDE=0, ACHTUNG=1)
-        relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
+        # Mapping für Status (VALIDE=0, ACHTUNG=1)
+        relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
         
-        # SORTIERUNG: 
-        # 1. Status_Order (0/VALIDE zuerst)
-        # 2. CRV1 (Absteigend = False: Größtes CRV zuerst)
-        # 3. Risk_Perc (Aufsteigend = True: Niedrigstes Risiko zuerst bei gleichem CRV)
+        # Sortierung: 
+        # 1. Status (VALIDE oben)
+        # 2. CRV1 (Absteigend: Größeres CRV zuerst)
+        # 3. Risk_Perc (Aufsteigend: Kleineres Risiko zuerst)
         relevante_setups = relevante_setups.sort_values(
             by=['Status_Order', 'CRV1', 'Risk_Perc'], 
             ascending=[True, False, True]
         )
-        # Hilfsspalte löschen
+        
+        # Aufräumen
         relevante_setups = relevante_setups.drop(columns=['Status_Order'])
         
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
