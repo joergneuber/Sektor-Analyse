@@ -221,16 +221,18 @@ def analyze_a_setup(ticker, sektor):
         else:
             return None # Keine Filterbedingung erfüllt
 
-        # 7. Metriken (unverändert)
+        # 7. Metriken (Dynamische CRV Berechnung)
         info = t.info
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
         risiko = entry - stop
+
         if risiko <= 0: return None
-        
+
+        # Dynamische Zielmarken (TP1 = 1.5x Risiko, TP2 = 3.0x Risiko)
         tp1 = entry + (risiko * 1.5)
         tp2 = entry + (risiko * 3.0)
-        
+
         return {
             "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor, 
             "Pattern": pattern, "Setup_Typ": setup_typ,
@@ -238,6 +240,7 @@ def analyze_a_setup(ticker, sektor):
             "RSI": round(rsi.iloc[-1], 2), "MACD_Trend": macd_trend,
             "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
             "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
+            # CRV jetzt mathematisch korrekt aus dem Chart abgeleitet:
             "CRV1": round((tp1 - entry) / risiko, 2),
             "CRV2": round((tp2 - entry) / risiko, 2),
             "Vol_Ratio": round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2),
@@ -320,7 +323,7 @@ if __name__ == "__main__":
     top_3_sektoren = df_perf.nlargest(3, 'Rotation-Score')['Sektor'].tolist()
     df_s = df_s[df_s['Sektor'].isin(top_3_sektoren)].copy()
 
-    # 2. Numerische Konvertierung & Sortieren (einmalig für alles)
+    # 2. Numerische Konvertierung & Sortieren
     cols_to_num = ['CRV1', 'Risk_Perc']
     for col in cols_to_num:
         df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
@@ -335,7 +338,6 @@ if __name__ == "__main__":
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # 6. Briefing erstellen
-    # Da df_s bereits sortiert und gefiltert ist, können wir direkt mit 'relevante_setups' weiterarbeiten
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
