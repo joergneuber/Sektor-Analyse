@@ -337,27 +337,26 @@ if __name__ == "__main__":
             by=['Status_Order', 'CRV1', 'Risk_Perc'], 
             ascending=[True, False, True]
         )
-        
         # Hilfsspalte löschen
         relevante_setups = relevante_setups.drop(columns=['Status_Order'])
         
         with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        # Alles hier drunter muss um 4 Leerzeichen eingerückt sein!
-        f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-        f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
-        
-        if not relevante_setups.empty:
-            for _, row in relevante_setups.iterrows():
-                f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
-                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
-                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
-                f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-                f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-                f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
-                f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
-                f.write("-" * 30 + "\n")
-        else:
-            f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
-        
-        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
+            # DIESE ZEILEN MÜSSEN WEITER RECHTS STEHEN (eingerückt)
+            f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
+            f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
+            f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
+            
+            if not relevante_setups.empty:
+                for _, row in relevante_setups.iterrows():
+                    f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
+                    f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
+                    f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+                    f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+                    f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+                    f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
+                    f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
+                    f.write("-" * 30 + "\n")
+            else:
+                f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
+            
+            f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
