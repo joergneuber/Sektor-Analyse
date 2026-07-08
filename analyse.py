@@ -367,12 +367,14 @@ if __name__ == "__main__":
             df_s = df_s.drop(columns=['Ticker'])
 
 # Jetzt erst reindexieren mit der gekürzten cols-Liste
-df_s = df_s.reindex(columns=cols)
+        df_s = df_s.reindex(columns=cols)
         
         # B) Erst jetzt Status-Logik
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
 
     # 5. FILTERN (Sektoren-Filter)
+    # Diese Zeile muss wieder weiter links stehen als die Zeilen darüber,
+    # da der vorherige Block (wahrscheinlich ein if) hier endet.
     if not df_s.empty:
         top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
         df_s = df_s[df_s['Sektor'].isin(top_5_sektoren)].copy()
