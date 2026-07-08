@@ -180,7 +180,7 @@ def get_fib_levels(data):
     swing_low = recent_data['Low'].min()
     span = swing_high - swing_low
     
-    # Extension-Level für Kursziele (über dem aktuellen Kurs)
+    # Extension-Level für techn. Kursziele (über dem aktuellen Kurs)
     fib_0618 = swing_low + (span * 1.618)
     fib_1000 = swing_low + (span * 2.0)
     
@@ -190,11 +190,21 @@ def analyze_a_setup(ticker, sektor):
     try:
         # 1. Daten laden
         t = yf.Ticker(ticker)
-        data = t.history(period="1y")
+        ata = t.history(period="1y")
+
+        # Name abrufen (hier mit Try-Except, falls info nicht erreichbar ist)
+        try:
+            firma_name = t.info.get('shortName', 'N/A')
+            # Hier das echte Analysten-Ziel abrufen
+            analysten_ziel = info.get('targetMeanPrice', 0)
+        except:
+            firma_name = 'N/A'
+            analysten_ziel = 0
+
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
         if data.empty or len(data) < 200: return None
-
+        
         # 2. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
         data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
@@ -247,24 +257,24 @@ def analyze_a_setup(ticker, sektor):
         # 7. Metriken (Dynamische CRV Berechnung)
         info = t.info
         entry = data['Close'].iloc[-1]
-        # 1. STOP-LOSS
+        # 8. STOP-LOSS
         stop = data['Low'].rolling(10).min().iloc[-1]
         
-        # 2. ALLE INDIKATOREN FÜR ZIELE BERECHNEN (EMA20, EMA50, EMA100, WMA200)
+        # 9. ALLE INDIKATOREN FÜR ZIELE BERECHNEN (EMA20, EMA50, EMA100, WMA200)
         # Stelle sicher, dass diese Spalten in 'data' existieren
         ema20 = data['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = data['EMA50'].iloc[-1] if 'EMA50' in data.columns else entry * 1.05
         ema100 = data['Close'].ewm(span=100, adjust=False).mean().iloc[-1]
         wma200 = data['WMA200'].iloc[-1]
         
-        # FIBONACCI-LEVELS
+        # 10. FIBONACCI-LEVELS
         fib1, fib2 = get_fib_levels(data)
         
-        # 3. ZIELE IN POTENTIAL_TARGETS LISTE AUFNEHMEN
+        # 11. ZIELE IN POTENTIAL_TARGETS LISTE AUFNEHMEN
         # Wir sortieren jetzt alle relevanten Chart-Widerstände
         potential_targets = sorted([ema20, ema50, ema100, wma200, fib1, fib2])
         
-        # Logik: TP1 ist der erste Widerstand über dem Einstieg, TP2 der zweite
+        # 12. Logik: TP1 ist der erste Widerstand über dem Einstieg, TP2 der zweite
         targets_above = [t for t in potential_targets if t > entry]
         
         if len(targets_above) >= 2:
@@ -277,7 +287,7 @@ def analyze_a_setup(ticker, sektor):
             tp1 = entry * 1.08  # Fallback
             tp2 = entry * 1.15  # Fallback
             
-        # 4. DYNAMISCHES CRV
+        # 13. DYNAMISCHES CRV
         risiko = entry - stop
         if risiko <= 0: return None
         
@@ -285,10 +295,14 @@ def analyze_a_setup(ticker, sektor):
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
 
+        upside_pct = 0
+        if analysten_ziel > 0:
+            upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2)
+        
         # HIER DIE WERTE FÜR DAS ZUKÜNFTIGE DATAFRAME ZUSAMMENFASSEN
         return {
-            "Ticker": ticker, "Name": "N/A", "Sektor": sektor, "Setup_Typ": setup_typ,
-            "Pattern": pattern, "Kursziel": round(tp1, 2), "RSI": round(rsi.iloc[-1], 2),
+            "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Setup_Typ": setup_typ,
+            "Pattern": pattern, "Tech-Kursziel": round(tp1, 2), "Analysten-Kursziel": analysten_ziel, "RSI": round(rsi.iloc[-1], 2),
             "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, "Kurs": round(entry, 2),
             "Einstieg": round(entry, 2), "Stop": round(stop, 2), "TP1": round(tp1, 2),
             "TP2": round(tp2, 2), "Vol_Ratio": 0, "Risk_Perc": 0, "Ideales_Delta": 0
@@ -354,7 +368,7 @@ if __name__ == "__main__":
                 continue 
     
     # 4. Spalten-Reihenfolge (Setup-Datei)
-    cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Kursziel', 'RSI', 'MACD_Trend', 
+    cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
             'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
 
@@ -375,12 +389,12 @@ if __name__ == "__main__":
         print(f"DEBUG: Setups vor Filter: {len(df_s)}")
         
     # 5. FILTERN, SORTIEREN & EXPORTIEREN
-    top_3_sektoren = df_perf.nlargest(3, 'Rotation-Score')['Sektor'].tolist()
+    top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
     
     # Debug Info nach dem Filter
     if not df_s.empty:
-        print(f"DEBUG: Top 3 Sektoren für Filterung: {top_3_sektoren}")
-        df_s = df_s[df_s['Sektor'].isin(top_3_sektoren)].copy()
+        print(f"DEBUG: Top 5 Sektoren für Filterung: {top_5_sektoren}")
+        df_s = df_s[df_s['Sektor'].isin(top_5_sektoren)].copy()
         print(f"DEBUG: Setups nach Sektor-Filter: {len(df_s)}")
     
     # 2. Numerische Konvertierung & Sortieren
