@@ -168,11 +168,11 @@ def check_bullish_confirmation(df):
 def analyze_a_setup(ticker, sektor):
     try:
         # 1. Daten laden
-        data = yf.download(ticker, period="1y", progress=False)
+        t = yf.Ticker(ticker)
+        data = t.history(period="1y", progress=False)
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
-        if data.empty or len(data) < 200:
-            return None
+        if data.empty or len(data) < 200: return None
 
         # 2. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
@@ -180,9 +180,22 @@ def analyze_a_setup(ticker, sektor):
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         
+        # RSI Berechnung
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        # MACD Berechnung
+        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        signal = macd.ewm(span=9, adjust=False).mean()
+        macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
+
         # 3. Vorab-Filter: Trend
-        if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]:
-            return None
+        if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]: return None
 
         # 4. Candlestick-Muster bestimmen
         c1, c2 = data.iloc[-1], data.iloc[-2]
@@ -198,11 +211,11 @@ def analyze_a_setup(ticker, sektor):
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
         
-        # 6. Filter: Muster ODER Ausbruch zwingend erforderlich
-        if pattern == "Kein" and not ema_breakout:
-            return None
+        # 6. Filter
+        if pattern == "Kein" and not ema_breakout: return None
 
-        # 7. Metriken berechnen
+        # 7. Metriken
+        info = t.info
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
         risiko = entry - stop
@@ -210,19 +223,31 @@ def analyze_a_setup(ticker, sektor):
         
         tp1 = entry + (risiko * 1.5)
         tp2 = entry + (risiko * 3.0)
-        vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
-        risk_perc = round(((entry - stop) / entry) * 100, 2)
         
         return {
-            "Ticker": ticker, "Sektor": sektor, "Pattern": pattern,
-            "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
-            "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
+            "Ticker": ticker, 
+            "Name": info.get('longName', ticker),
+            "Sektor": sektor, 
+            "Pattern": pattern,
+            "Kursziel": info.get('targetMeanPrice', entry),
+            "Setup_Typ": "Ausbruch" if ema_breakout else pattern,
+            "RSI": round(rsi.iloc[-1], 2),
+            "MACD_Trend": macd_trend,
+            "Kurs": round(entry, 2), 
+            "Einstieg": round(entry, 2),
+            "Stop": round(stop, 2), 
+            "TP1": round(tp1, 2), 
+            "TP2": round(tp2, 2),
             "CRV1": round((tp1 - entry) / risiko, 2),
             "CRV2": round((tp2 - entry) / risiko, 2),
-            "Vol_Ratio": vol_ratio,
-            "Risk_Perc": risk_perc,
-            "Ideales_Delta": 0.6
+            "Vol_Ratio": round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2),
+            "Risk_Perc": round(((entry - stop) / entry) * 100, 2),
+            "Ideales_Delta": 0.6,
+            "Status2": "ACHTUNG" # Initialwert
         }
+    except Exception as e:
+        print(f"Fehler bei Analyse von {ticker}: {e}")
+        return None
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
@@ -255,23 +280,32 @@ if __name__ == "__main__":
                 continue 
     
     # 4. DataFrame erstellen und Logik anwenden
+    # Alle Spalten, die in deiner Funktion definiert werden
+    cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Kursziel', 'RSI', 'MACD_Trend', 
+            'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
+            'Pattern', 'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
+
     if not all_setups:
         print("Keine Setups gefunden.")
-        cols = ['Ticker', 'Name', 'Sektor', 'Status2', 'CRV1', 'CRV2', 'Kurs', 
-                'Einstieg', 'Stop', 'TP1', 'TP2', 'Pattern', 'Ideales_Delta']
         df_s = pd.DataFrame(columns=cols)
     else:
         df_s = pd.DataFrame(all_setups)
         
+        # DUPLET-CHECK: Entferne Duplikate basierend auf dem Ticker
+        df_s = df_s.drop_duplicates(subset=['Ticker'], keep='first')
+        
+        # Spalten in der definierten Reihenfolge anordnen
+        df_s = df_s.reindex(columns=cols)
+        
+        # Status-Logik anwenden
         def update_status_logic(row):
             if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
                 return "VALIDE"
             elif row['Kurs'] >= row['TP1']:
                 return "GELAUFEN"
-            return "ACHTUNG" # Hier wurde "Achtung" statt "Wachsamkeit" gesetzt
+            return "ACHTUNG"
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
@@ -295,17 +329,17 @@ if __name__ == "__main__":
         
         if not relevante_setups.empty:
             for _, row in relevante_setups.iterrows():
-                f.write(f"\nTicker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
-                f.write(f"Status: {row['Status2']} | Signal: {row['Pattern']}\n")
-                f.write(f"Aktueller Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
+                f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
+                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
+                f.write(f"Signal: {row['Pattern']} | Typ: {row['Setup_Typ']}\n")
+                f.write(f"Kurs: {row['Kurs']} | Ziel (Analysten): {row['Kursziel']}\n")
+                f.write(f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']}\n")
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-                # HIER kommt die Zeile hin:
-                f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
                 f.write(f"Vol-Stärke: {row['Vol_Ratio']}x | Risiko: {row['Risk_Perc']}%\n")
+                f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
                 f.write("-" * 30 + "\n")
         else:
             f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
-            # Statistik hinzufügen:
-            f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
-            
-    print("Analyse abgeschlossen. Briefing mit Details erstellt.")
+        
+        # Die Statistik steht nun außerhalb des if/else, damit sie immer erscheint
+        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
