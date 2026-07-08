@@ -159,20 +159,18 @@ def check_bullish_confirmation(df):
 
 def analyze_a_setup(ticker, sektor):
     try:
-        # Hier Daten abrufen (beispielhaft, stelle sicher, dass 'data' definiert ist)
-        # data = yf.download(ticker, period="1y")
-        
+        # Hier die Daten berechnen
         data = data.copy()
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
         data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         
-        # 3. Filter: Trend-Anker (WMA200)
+        # Filter
         if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]:
             return None
-        
-        # 4. Candlestick-Muster
+            
+        # Candlestick-Muster
         c1, c2 = data.iloc[-1], data.iloc[-2]
         pattern = "Kein"
         body = abs(c1['Close'] - c1['Open'])
@@ -181,7 +179,7 @@ def analyze_a_setup(ticker, sektor):
         elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
             pattern = "Engulfing"
 
-        # 5. EMA-Ausbruch mit Volumen-Filter
+        # EMA-Ausbruch + Volumen
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
@@ -189,7 +187,7 @@ def analyze_a_setup(ticker, sektor):
         if pattern == "Kein" and not ema_breakout:
             return None
 
-        # 6. Risiko & Ziele
+        # Berechnung der Metriken
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
         risiko = entry - stop
@@ -197,20 +195,19 @@ def analyze_a_setup(ticker, sektor):
         
         tp1 = entry + (risiko * 1.5)
         tp2 = entry + (risiko * 3.0)
-        
         vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
         risk_perc = round(((entry - stop) / entry) * 100, 2)
-    
-    return {
-        "Ticker": ticker, "Sektor": sektor, "Pattern": pattern,
-        "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
-        "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
-        "CRV1": round((tp1 - entry) / risiko, 2),
-        "CRV2": round((tp2 - entry) / risiko, 2),
-        "Vol_Ratio": vol_ratio,     # NEU: Bestätigung
-        "Risk_Perc": risk_perc,     # NEU: Positionsgröße
-        "Ideales_Delta": 0.6
-    }
+        
+        return {
+            "Ticker": ticker, "Sektor": sektor, "Pattern": pattern,
+            "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
+            "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
+            "CRV1": round((tp1 - entry) / risiko, 2),
+            "CRV2": round((tp2 - entry) / risiko, 2),
+            "Vol_Ratio": vol_ratio,
+            "Risk_Perc": risk_perc,
+            "Ideales_Delta": 0.6
+        }
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
