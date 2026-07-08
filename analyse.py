@@ -267,22 +267,22 @@ if __name__ == "__main__":
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
-    for _, row in df_perf.head(10).iterrows(): # Erweitert auf Top 10
+    for _, row in df_perf.head(10).iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
         print(f"Prüfe Sektor: {row['Sektor']} ({len(aktien_liste)} Aktien)")
         
         for s in aktien_liste:
             if s in blacklist: continue
-            res = analyze_a_setup(s, row['Sektor'])
-            if res:
-                all_setups.append(res)
-                print(f" -> Setup gefunden: {s}")
+            try:
+                res = analyze_a_setup(s, row['Sektor'])
+                if res:
+                    all_setups.append(res)
+                    print(f" -> Setup gefunden: {s}")
             except Exception as e:
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
     
     # 4. DataFrame erstellen und Logik anwenden
-    # Alle Spalten, die in deiner Funktion definiert werden
     cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Kursziel', 'RSI', 'MACD_Trend', 
             'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Pattern', 'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
@@ -292,14 +292,9 @@ if __name__ == "__main__":
         df_s = pd.DataFrame(columns=cols)
     else:
         df_s = pd.DataFrame(all_setups)
-        
-        # DUPLET-CHECK: Entferne Duplikate basierend auf dem Ticker
         df_s = df_s.drop_duplicates(subset=['Ticker'], keep='first')
-        
-        # Spalten in der definierten Reihenfolge anordnen
         df_s = df_s.reindex(columns=cols)
         
-        # Status-Logik anwenden
         def update_status_logic(row):
             if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
                 return "VALIDE"
@@ -308,21 +303,17 @@ if __name__ == "__main__":
             return "ACHTUNG"
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen (Nur Valide & Achtung)
+    # 6. Briefing erstellen
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
-    
-    # Mapping auf den neuen Status "ACHTUNG" angepasst
-    relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
-    
-    # Erst nach Order (0 kommt vor 1), dann nach CRV1 (absteigend)
-    relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
-    
-    # Hilfsspalte wieder löschen
-    relevante_setups = relevante_setups.drop(columns=['Status_Order'])
+    if not relevante_setups.empty:
+        relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
+        relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
+        relevante_setups = relevante_setups.drop(columns=['Status_Order'])
 
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
@@ -343,5 +334,4 @@ if __name__ == "__main__":
         else:
             f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
         
-        # Die Statistik steht nun außerhalb des if/else, damit sie immer erscheint
         f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
