@@ -314,66 +314,46 @@ if __name__ == "__main__":
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
 
-    # 5. CSV Exporte
-    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+   # 5. FILTERN, SORTIEREN & EXPORTIEREN
     
-    # Vor dem Speichern der CSV:
-    # 1. Numerische Konvertierung
+    # 1. Top-3 Sektoren Filtern
+    top_3_sektoren = df_perf.nlargest(3, 'Rotation-Score')['Sektor'].tolist()
+    df_s = df_s[df_s['Sektor'].isin(top_3_sektoren)].copy()
+
+    # 2. Numerische Konvertierung & Sortieren (einmalig für alles)
     cols_to_num = ['CRV1', 'Risk_Perc']
     for col in cols_to_num:
-        # Diese Zeile muss eingerückt sein!
         df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
 
-    # 2. Sortieren (exakt wie im Briefing)
     df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
     df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
     df_s = df_s.drop(columns=['Status_Order'])
 
-    # 3. Jetzt speichern
+    # 3. CSV Speichern
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv("setup_liste.csv", index=False)
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen (Nur Valide & Achtung)
+    # 6. Briefing erstellen
+    # Da df_s bereits sortiert und gefiltert ist, können wir direkt mit 'relevante_setups' weiterarbeiten
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
-    if not relevante_setups.empty:
-        # Sicherstellen, dass die Werte numerisch sind
-        cols_to_num = ['CRV1', 'Risk_Perc']
-        for col in cols_to_num:
-            relevante_setups[col] = pd.to_numeric(relevante_setups[col], errors='coerce').fillna(0)
+    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+        f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
-        # Mapping für Status (VALIDE=0, ACHTUNG=1)
-        relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
+        if not relevante_setups.empty:
+            for _, row in relevante_setups.iterrows():
+                f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
+                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
+                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+                f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+                f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+                f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
+                f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
+                f.write("-" * 30 + "\n")
+        else:
+            f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
         
-        # Sortierung: 
-        # 1. Status (VALIDE oben)
-        # 2. CRV1 (Absteigend: Größeres CRV zuerst)
-        # 3. Risk_Perc (Aufsteigend: Kleineres Risiko zuerst)
-        relevante_setups = relevante_setups.sort_values(
-            by=['Status_Order', 'CRV1', 'Risk_Perc'], 
-            ascending=[True, False, True]
-        )
-        
-        # Aufräumen
-        relevante_setups = relevante_setups.drop(columns=['Status_Order'])
-        
-        with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-            # DIESE ZEILEN MÜSSEN WEITER RECHTS STEHEN (eingerückt)
-            f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
-            f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-            f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
-            
-            if not relevante_setups.empty:
-                for _, row in relevante_setups.iterrows():
-                    f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
-                    f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
-                    f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
-                    f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-                    f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-                    f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
-                    f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
-                    f.write("-" * 30 + "\n")
-            else:
-                f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
-            
-            f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
+        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
