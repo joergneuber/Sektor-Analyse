@@ -348,7 +348,7 @@ if __name__ == "__main__":
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
     
-    # 4. Spalten-Reihenfolge (Setup-Datei)
+   # 4. Spalten-Reihenfolge (Setup-Datei)
     cols = ['Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
             'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
@@ -358,23 +358,15 @@ if __name__ == "__main__":
         print("Keine Setups gefunden.")
         df_s = pd.DataFrame(columns=cols)
     else:
-        # Im Hauptskript, nachdem du df_s erstellt hast:
         df_s = pd.DataFrame(all_setups)
-        # ... hier die Status-Logik ...
-
-        # Ticker aus der Tabelle entfernen, aber Name behalten
-        if 'Ticker' in df_s.columns:
-            df_s = df_s.drop(columns=['Ticker'])
-
-# Jetzt erst reindexieren mit der gekürzten cols-Liste
+        # Ticker als Index setzen und danach die Spalten ordnen
+        df_s = df_s.set_index('Ticker')
         df_s = df_s.reindex(columns=cols)
         
         # B) Erst jetzt Status-Logik
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
 
-    # 5. FILTERN (Sektoren-Filter)
-    # Diese Zeile muss wieder weiter links stehen als die Zeilen darüber,
-    # da der vorherige Block (wahrscheinlich ein if) hier endet.
+    # 5. FILTERN (Sektoren-Filter) - MUSS auf der gleichen Ebene wie "if not all_setups" stehen
     if not df_s.empty:
         top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
         df_s = df_s[df_s['Sektor'].isin(top_5_sektoren)].copy()
@@ -390,12 +382,12 @@ if __name__ == "__main__":
         df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
         df_s = df_s.drop(columns=['Status_Order'])
 
-    # 7. EXPORT (Nur einmalig am Ende)
+    # 7. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv("setup_liste.csv", index=False)
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen
+    # 8. Briefing erstellen
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
@@ -404,14 +396,15 @@ if __name__ == "__main__":
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
         if not relevante_setups.empty:
-            for _, row in relevante_setups.iterrows():
-                f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
+            # Hier greifen wir nun korrekt auf den Index zu (ticker_val)
+            for ticker_val, row in relevante_setups.iterrows():
+                f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
                 f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
                 f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
                 f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
                 f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
-                f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
+                f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
                 f.write("-" * 30 + "\n")
         else:
             f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
