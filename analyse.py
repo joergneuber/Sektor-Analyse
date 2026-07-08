@@ -58,7 +58,8 @@ def update_status_logic(row):
 # --- FUNKTIONEN ---
 def get_sp500_data():
     try:
-        hist = yf.download("^GSPC", period="300d", progress=False)
+        ticker_obj = yf.Ticker("^GSPC")
+        hist = ticker_obj.history(period="300d")
         # Fix für MultiIndex-Spalten falls nötig
         if isinstance(hist.columns, pd.MultiIndex): 
             hist.columns = hist.columns.get_level_values(0)
