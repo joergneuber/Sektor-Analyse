@@ -303,6 +303,8 @@ if __name__ == "__main__":
                 f.write(f"Vol-Stärke: {row['Vol_Ratio']}x | Risiko: {row['Risk_Perc']}%\n")
                 f.write("-" * 30 + "\n")
         else:
-            f.write("Keine validen Setups oder Wachsamkeits-Kandidaten gefunden.\n")
+            f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
+            # Statistik hinzufügen:
+            f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
             
     print("Analyse abgeschlossen. Briefing mit Details erstellt.")
