@@ -322,15 +322,26 @@ if __name__ == "__main__":
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
     if not relevante_setups.empty:
-        # 1. Wir mappen Status zu Zahlen, damit VALIDE (0) vor ACHTUNG (1) sortiert wird
+        # Sicherstellen, dass die Werte numerisch sind, sonst sortiert Pandas nicht korrekt
+        relevante_setups['CRV1'] = pd.to_numeric(relevante_setups['CRV1'], errors='coerce')
+        relevante_setups['Risk_Perc'] = pd.to_numeric(relevante_setups['Risk_Perc'], errors='coerce')
+        
+        # Mappen der Status-Werte (VALIDE=0, ACHTUNG=1)
         relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
         
-        # 2. Sortierung: Erst Status (0 vor 1), dann CRV1 absteigend (ascending=[True, False])
-        relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
+        # SORTIERUNG: 
+        # 1. Status_Order (0/VALIDE zuerst)
+        # 2. CRV1 (Absteigend = False: Größtes CRV zuerst)
+        # 3. Risk_Perc (Aufsteigend = True: Niedrigstes Risiko zuerst bei gleichem CRV)
+        relevante_setups = relevante_setups.sort_values(
+            by=['Status_Order', 'CRV1', 'Risk_Perc'], 
+            ascending=[True, False, True]
+        )
         
-        # Hilfsspalte wieder entfernen
+        # Hilfsspalte löschen
         relevante_setups = relevante_setups.drop(columns=['Status_Order'])
-    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+        
+        with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
