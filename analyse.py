@@ -322,11 +322,14 @@ if __name__ == "__main__":
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
     if not relevante_setups.empty:
-        # Sortierung: Valide zuerst, dann CRV1 absteigend
+        # 1. Wir mappen Status zu Zahlen, damit VALIDE (0) vor ACHTUNG (1) sortiert wird
         relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
+        
+        # 2. Sortierung: Erst Status (0 vor 1), dann CRV1 absteigend (ascending=[True, False])
         relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
+        
+        # Hilfsspalte wieder entfernen
         relevante_setups = relevante_setups.drop(columns=['Status_Order'])
-
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
@@ -336,9 +339,11 @@ if __name__ == "__main__":
             for _, row in relevante_setups.iterrows():
                 f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
                 f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
-                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+                # Wir zeigen nur Setup_Typ, da Pattern dort schon enthalten ist
+                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n") 
                 f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+                f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
                 f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
                 f.write("-" * 30 + "\n")
         else:
