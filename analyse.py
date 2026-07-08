@@ -168,13 +168,13 @@ def analyze_a_setup(ticker, sektor):
         
         # Filter
         if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]:
-            # print(f"{ticker} scheitert am WMA200") # Kommentarzeichen entfernen zum Testen
-        return None
+        # print(f"{ticker} scheitert am WMA200") # Kommentarzeichen entfernen zum Testen
+            return None
 
         # ... nach dem EMA-Ausbruch / Pattern Check:
         if pattern == "Kein" and not ema_breakout:
         # print(f"{ticker} scheitert an Pattern/EMA-Ausbruch")
-        return None
+            return None
             
         # Candlestick-Muster
         c1, c2 = data.iloc[-1], data.iloc[-2]
