@@ -167,24 +167,24 @@ def check_bullish_confirmation(df):
 
 def analyze_a_setup(ticker, sektor):
     try:
-        # Hier die Daten berechnen
-        data = data.copy()
+        # 1. Daten laden
+        data = yf.download(ticker, period="1y", progress=False)
+        if isinstance(data.columns, pd.MultiIndex): 
+            data.columns = data.columns.get_level_values(0)
+        if data.empty or len(data) < 200:
+            return None
+
+        # 2. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
         data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         
-        # Filter
+        # 3. Vorab-Filter: Trend
         if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]:
-        # print(f"{ticker} scheitert am WMA200") # Kommentarzeichen entfernen zum Testen
             return None
 
-        # ... nach dem EMA-Ausbruch / Pattern Check:
-        if pattern == "Kein" and not ema_breakout:
-        # print(f"{ticker} scheitert an Pattern/EMA-Ausbruch")
-            return None
-            
-        # Candlestick-Muster
+        # 4. Candlestick-Muster bestimmen
         c1, c2 = data.iloc[-1], data.iloc[-2]
         pattern = "Kein"
         body = abs(c1['Close'] - c1['Open'])
@@ -193,15 +193,16 @@ def analyze_a_setup(ticker, sektor):
         elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
             pattern = "Engulfing"
 
-        # EMA-Ausbruch + Volumen
+        # 5. EMA-Ausbruch bestimmen
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
         
+        # 6. Filter: Muster ODER Ausbruch zwingend erforderlich
         if pattern == "Kein" and not ema_breakout:
             return None
 
-        # Berechnung der Metriken
+        # 7. Metriken berechnen
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
         risiko = entry - stop
