@@ -187,6 +187,11 @@ def get_fib_levels(data):
     return fib_0618, fib_1000
 
 def analyze_a_setup(ticker, sektor):
+    # 0. Initialisierung von Variablen, damit sie im except-Block existieren
+    potential_targets = []
+    setup_typ = "Kein"
+    pattern = "Kein"
+    tp1 = 0
     try:
         # 1. Daten laden
         t = yf.Ticker(ticker)
@@ -304,7 +309,9 @@ def analyze_a_setup(ticker, sektor):
             "TP2": round(tp2, 2), "Vol_Ratio": 0, "Risk_Perc": 0, "Ideales_Delta": 0
         }
     except Exception as e:
+        import traceback
         print(f"Fehler bei Analyse von {ticker}: {e}")
+        traceback.print_exc() # Zeigt dir genau die Zeilennummer des Fehlers
         return None
          
 if __name__ == "__main__":
