@@ -267,14 +267,16 @@ if __name__ == "__main__":
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
-    for _, row in df_perf.head(3).iterrows():
+    for _, row in df_perf.head(10).iterrows(): # Erweitert auf Top 10
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
+        print(f"Prüfe Sektor: {row['Sektor']} ({len(aktien_liste)} Aktien)")
+        
         for s in aktien_liste:
             if s in blacklist: continue
-            try:
-                res = analyze_a_setup(s, row['Sektor'])
-                if res:
-                    all_setups.append(res)
+            res = analyze_a_setup(s, row['Sektor'])
+            if res:
+                all_setups.append(res)
+                print(f" -> Setup gefunden: {s}")
             except Exception as e:
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
