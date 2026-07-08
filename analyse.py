@@ -158,100 +158,59 @@ def check_bullish_confirmation(df):
     return None
 
 def analyze_a_setup(ticker, sektor):
-    time.sleep(0.1)
     try:
-        hist = yf.download(ticker, period="250d", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
-        if hist.empty or len(hist) < 100 or hist['Volume'].tail(20).mean() < 500_000:
+        # Hier Daten abrufen (beispielhaft, stelle sicher, dass 'data' definiert ist)
+        # data = yf.download(ticker, period="1y")
+        
+        data = data.copy()
+        data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
+        data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+        data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
+        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+        
+        # 3. Filter: Trend-Anker (WMA200)
+        if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]:
+            return None
+        
+        # 4. Candlestick-Muster
+        c1, c2 = data.iloc[-1], data.iloc[-2]
+        pattern = "Kein"
+        body = abs(c1['Close'] - c1['Open'])
+        lower_wick = min(c1['Open'], c1['Close']) - c1['Low']
+        if lower_wick > (2 * body): pattern = "Hammer"
+        elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
+            pattern = "Engulfing"
+
+        # 5. EMA-Ausbruch mit Volumen-Filter
+        ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
+                       (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
+                       (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
+        
+        if pattern == "Kein" and not ema_breakout:
             return None
 
-        closes, highs, lows = hist['Close'], hist['High'], hist['Low']
-        atr = (highs - lows).rolling(14).mean().iloc[-1]
+        # 6. Risiko & Ziele
+        entry = data['Close'].iloc[-1]
+        stop = data['Low'].rolling(10).min().iloc[-1]
+        risiko = entry - stop
+        if risiko <= 0: return None
         
-        # CHARTTECHNISCHE ZONEN
-        # Support: Lokales Tief der letzten 60 Tage
-        # Resistance: Lokales Hoch der letzten 60 Tage
-        support = lows.rolling(60).min().iloc[-1]
-        resistance = highs.rolling(60).max().iloc[-1]
-        ema20 = closes.ewm(span=20).mean().iloc[-1]
-
-        # STOP-LOSS (Charttechnisch + Puffer)
-        # Wir setzen den Stop unter den Support, aber mit ATR-Puffer
-        stop_level = round(support - (1.0 * atr), 2)
+        tp1 = entry + (risiko * 1.5)
+        tp2 = entry + (risiko * 3.0)
         
-        # TARGETS (Charttechnisch)
-        # TP1: Mitte zwischen Einstieg und Widerstand
-        # TP2: Widerstand (Resistance-Zone)
-        target_1 = round(resistance * 0.95, 2)
-        target_2 = round(resistance, 2)
-
-        # CANDIDATES (Individuelle Setups mit individuellen CRVs)
-        candidates = [
-            {"typ": "Bounce",   "entry": support + (0.5 * atr), "stop": stop_level, "tp1": target_1, "tp2": target_2},
-            {"typ": "Re-Test",  "entry": ema20,                 "stop": stop_level, "tp1": target_1, "tp2": target_2},
-            {"typ": "Breakout", "entry": resistance * 1.01,     "stop": support,    "tp1": resistance * 1.05, "tp2": resistance * 1.10}
-        ]
-        
-        best_setup = None
-        best_crv = 0
-        
-        for s in candidates:
-            risiko = s['entry'] - s['stop']
-            if risiko <= 0: continue
-            
-            # CRV2 basierend auf TP2
-            crv = (s['tp2'] - s['entry']) / risiko
-            
-            if crv > best_crv:
-                best_setup = s.copy()
-                best_setup['crv'] = round(crv, 2)
-                best_setup['tp1'] = round(s['tp1'], 2)
-                best_setup['tp2'] = round(s['tp2'], 2)
-                best_setup['stop'] = round(s['stop'], 2)
-                best_setup['entry'] = round(s['entry'], 2)
-                crv2 = (s['tp2'] - s['entry']) / risiko
-                crv1 = (s['tp1'] - s['entry']) / risiko # NEU
-                best_setup['crv1'] = round(crv1, 2)
-                best_setup['crv2'] = round(crv2, 2)
-                best_crv = crv
-        
-        if not best_setup or best_setup['crv'] < 1.0:
-            return None
-            
-        # RSI & Trend (für Status)
-        rsi = 100 - (100 / (1 + (closes.diff().where(closes.diff() > 0, 0).rolling(14).mean() / 
-                                (-closes.diff().where(closes.diff() < 0, 0)).rolling(14).mean()))).iloc[-1]
-        exp1, exp2 = closes.ewm(span=12).mean(), closes.ewm(span=26).mean()
-        is_bullish = (exp1 - exp2).iloc[-1] > (exp1 - exp2).ewm(span=9).mean().iloc[-1]
-
-        # NEU: Kerzen-Check hinzufügen
-        pattern = check_bullish_confirmation(hist)
-        status2 = "VALIDE" if pattern else "WACHSAMKEIT"
-        
-        ticker_obj = yf.Ticker(ticker)
-        info = ticker_obj.info
+        vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
+        risk_perc = round(((entry - stop) / entry) * 100, 2)
     
-        # ... am Ende von analyze_a_setup ...
-        return {
-            "Ticker": ticker, 
-            "Name": info.get('longName', ticker), 
-            "Sektor": sektor,
-            "Kursziel": info.get('targetMeanPrice', "N/A"), 
-            "Setup-Typ": best_setup['typ'],
-            "Pattern": pattern or "Kein",
-            "Ideales_Delta": 0.6,
-            "RSI": round(rsi, 2), 
-            "MACD-Trend": "Bullish" if is_bullish else "Bearish",
-            # Status2 wird später im Main-Block via update_status_logic überschrieben
-            "Status2": status2, 
-            "Kurs": round(closes.iloc[-1], 2), 
-            "Einstieg": best_setup['entry'],
-            "Stop": best_setup['stop'], 
-            "TP1": best_setup['tp1'], 
-            "TP2": best_setup['tp2'],
-            "CRV1": best_setup['crv1'], # NEU
-            "CRV2": best_setup['crv2']  # Bereinigtes CRV2
-        }
+    return {
+        "Ticker": ticker, "Sektor": sektor, "Pattern": pattern,
+        "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
+        "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
+        "CRV1": round((tp1 - entry) / risiko, 2),
+        "CRV2": round((tp2 - entry) / risiko, 2),
+        "Vol_Ratio": vol_ratio,     # NEU: Bestätigung
+        "Risk_Perc": risk_perc,     # NEU: Positionsgröße
+        "Ideales_Delta": 0.6
+    }
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
@@ -300,7 +259,7 @@ if __name__ == "__main__":
             return "WACHSAMKEIT"
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-        df_s = df_s.sort_values(by=['Status2', 'CRV1'], ascending=[True, False])
+        df_s = df_s.sort_values(by=['CRV1', 'CRV2'], ascending=[False, False])
 
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
@@ -328,8 +287,10 @@ if __name__ == "__main__":
                 f.write(f"\nTicker: {row['Ticker']} | Sektor: {row['Sektor']}\n")
                 f.write(f"Status: {row['Status2']} | Signal: {row['Pattern']}\n")
                 f.write(f"Aktueller Kurs: {row['Kurs']} | Einstieg: {row['Einstieg']}\n")
-                f.write(f"TP1 (Ziel): {row['TP1']} | CRV1: {row['CRV1']}\n")
-                f.write(f"Delta-Target: {row['Ideales_Delta']}\n")
+                f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+                # HIER kommt die Zeile hin:
+                f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
+                f.write(f"Vol-Stärke: {row['Vol_Ratio']}x | Risiko: {row['Risk_Perc']}%\n")
                 f.write("-" * 30 + "\n")
         else:
             f.write("Keine validen Setups oder Wachsamkeits-Kandidaten gefunden.\n")
