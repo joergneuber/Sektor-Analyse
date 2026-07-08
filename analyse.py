@@ -349,7 +349,7 @@ if __name__ == "__main__":
                 continue 
     
     # 4. Spalten-Reihenfolge (Setup-Datei)
-    cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
+    cols = ['Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
             'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
 
@@ -358,12 +358,16 @@ if __name__ == "__main__":
         print("Keine Setups gefunden.")
         df_s = pd.DataFrame(columns=cols)
     else:
+        # Im Hauptskript, nachdem du df_s erstellt hast:
         df_s = pd.DataFrame(all_setups)
-        df_s = df_s.drop_duplicates(subset=['Ticker'], keep='first')
-        
-        # A) Spalten angleichen (WICHTIG: Name muss exakt wie im return von analyze_a_setup sein!)
-        # Prüfe: return hat "Upside-Potential (%)", cols hat 'Upside-Potenzial%' -> ÄNDERE DAS!
-        df_s = df_s.reindex(columns=cols) 
+        # ... hier die Status-Logik ...
+
+        # Ticker aus der Tabelle entfernen, aber Name behalten
+        if 'Ticker' in df_s.columns:
+        df_s = df_s.drop(columns=['Ticker'])
+
+# Jetzt erst reindexieren mit der gekürzten cols-Liste
+df_s = df_s.reindex(columns=cols)
         
         # B) Erst jetzt Status-Logik
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
