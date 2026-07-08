@@ -169,7 +169,7 @@ def analyze_a_setup(ticker, sektor):
     try:
         # 1. Daten laden
         t = yf.Ticker(ticker)
-        data = t.history(period="1y", progress=False)
+        data = t.history(period="1y")
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
         if data.empty or len(data) < 200: return None
