@@ -48,6 +48,14 @@ sektoren_aktien = {
 }
 
 # --- FUNKTIONEN ---
+def update_status_logic(row):
+    if row['RSI'] > 70: return "ACHTUNG"
+    if row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein": return "ACHTUNG"
+    if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']: return "VALIDE"
+    if row['Kurs'] >= row['TP1']: return "GELAUFEN"
+    return "ACHTUNG"
+
+# --- FUNKTIONEN ---
 def get_sp500_data():
     try:
         hist = yf.download("^GSPC", period="300d", progress=False)
@@ -273,15 +281,45 @@ def analyze_a_setup(ticker, sektor):
         risiko = entry - stop
         if risiko <= 0: return None
         
+        # ... (dein restlicher Code in analyze_a_setup)
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
+
+        # HIER DIE WERTE FÜR DAS ZUKÜNFTIGE DATAFRAME ZUSAMMENFASSEN
+        return {
+            "Ticker": ticker, "Name": "N/A", "Sektor": sektor, "Setup_Typ": setup_typ,
+            "Pattern": pattern, "Kursziel": round(tp1, 2), "RSI": round(rsi.iloc[-1], 2),
+            "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, "Kurs": round(entry, 2),
+            "Einstieg": round(entry, 2), "Stop": round(stop, 2), "TP1": round(tp1, 2),
+            "TP2": round(tp2, 2), "Vol_Ratio": 0, "Risk_Perc": 0, "Ideales_Delta": 0
+        }
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
-    except Exception as e:
-        print(f"Fehler bei Analyse von {ticker}: {e}")
-        return None
-        
+    
+     # Status-Logik anwenden
+        def update_status_logic(row):
+            # 1. Bedingung: Überkaufter RSI (über 70) -> ACHTUNG
+            if row['RSI'] > 70:
+                return "ACHTUNG"
+            
+            # 2. Bedingung: Bärischer MACD bei bullischem Signal -> ACHTUNG
+            if row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein":
+                return "ACHTUNG"
+            
+            # 3. Standard-Logik
+            if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
+                return "VALIDE"
+            elif row['Kurs'] >= row['TP1']:
+                return "GELAUFEN"
+            
+            return "ACHTUNG"
+            
+        df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+
+    # Status-Logik anwenden
+    df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
@@ -326,32 +364,8 @@ if __name__ == "__main__":
     else:
         df_s = pd.DataFrame(all_setups)
         df_s = df_s.drop_duplicates(subset=['Ticker'], keep='first')
-        df_s = df_s.reindex(columns=cols)
-        
-        # Status-Logik anwenden
-        def update_status_logic(row):
-            # 1. Bedingung: Überkaufter RSI (über 70) -> ACHTUNG
-            if row['RSI'] > 70:
-                return "ACHTUNG"
-            
-            # 2. Bedingung: Bärischer MACD bei bullischem Signal -> ACHTUNG
-            if row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein":
-                return "ACHTUNG"
-            
-            # 3. Standard-Logik
-            if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
-                return "VALIDE"
-            elif row['Kurs'] >= row['TP1']:
-                return "GELAUFEN"
-            
-            return "ACHTUNG"
-            
-        df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-
-
-    # Status-Logik anwenden
-    df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-
+        df_s = df_s.reindex(columns=cols)  
+       
     # --- DEIN DEBUG-BLOCK ---
     print(f"DEBUG: Anzahl gefundener Setups insgesamt: {len(all_setups)}")
     if not all_setups:
