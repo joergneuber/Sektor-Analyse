@@ -164,6 +164,19 @@ def check_bullish_confirmation(df):
         return "Engulfing"
         
     return None
+    
+def get_fib_levels(data):
+    """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
+    recent_data = data.iloc[-60:]
+    swing_high = recent_data['High'].max()
+    swing_low = recent_data['Low'].min()
+    span = swing_high - swing_low
+    
+    # Extension-Level für Kursziele (über dem aktuellen Kurs)
+    fib_0618 = swing_low + (span * 1.618)
+    fib_1000 = swing_low + (span * 2.0)
+    
+    return fib_0618, fib_1000
 
 def analyze_a_setup(ticker, sektor):
     try:
@@ -177,6 +190,8 @@ def analyze_a_setup(ticker, sektor):
         # 2. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
         data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+        data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean() # NEU
+        data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean() # NEU
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         
@@ -224,29 +239,42 @@ def analyze_a_setup(ticker, sektor):
         # 7. Metriken (Dynamische CRV Berechnung)
         info = t.info
         entry = data['Close'].iloc[-1]
+        # 1. STOP-LOSS
         stop = data['Low'].rolling(10).min().iloc[-1]
+        
+        # 2. ALLE INDIKATOREN FÜR ZIELE BERECHNEN (EMA20, EMA50, EMA100, WMA200)
+        # Stelle sicher, dass diese Spalten in 'data' existieren
+        ema20 = data['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = data['EMA50'].iloc[-1] if 'EMA50' in data.columns else entry * 1.05
+        ema100 = data['Close'].ewm(span=100, adjust=False).mean().iloc[-1]
+        wma200 = data['WMA200'].iloc[-1]
+        
+        # FIBONACCI-LEVELS
+        fib1, fib2 = get_fib_levels(data)
+        
+        # 3. ZIELE IN POTENTIAL_TARGETS LISTE AUFNEHMEN
+        # Wir sortieren jetzt alle relevanten Chart-Widerstände
+        potential_targets = sorted([ema20, ema50, ema100, wma200, fib1, fib2])
+        
+        # Logik: TP1 ist der erste Widerstand über dem Einstieg, TP2 der zweite
+        targets_above = [t for t in potential_targets if t > entry]
+        
+        if len(targets_above) >= 2:
+            tp1 = targets_above[0]
+            tp2 = targets_above[1]
+        elif len(targets_above) == 1:
+            tp1 = targets_above[0]
+            tp2 = targets_above[0] * 1.05 # TP2 etwas höher setzen
+        else:
+            tp1 = entry * 1.08  # Fallback
+            tp2 = entry * 1.15  # Fallback
+            
+        # 4. DYNAMISCHES CRV
         risiko = entry - stop
-
         if risiko <= 0: return None
-
-        # Dynamische Zielmarken (TP1 = 1.5x Risiko, TP2 = 3.0x Risiko)
-        tp1 = entry + (risiko * 1.5)
-        tp2 = entry + (risiko * 3.0)
-
-        return {
-            "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor, 
-            "Pattern": pattern, "Setup_Typ": setup_typ,
-            "Kursziel": info.get('targetMeanPrice', entry),
-            "RSI": round(rsi.iloc[-1], 2), "MACD_Trend": macd_trend,
-            "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
-            "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
-            # CRV jetzt mathematisch korrekt aus dem Chart abgeleitet:
-            "CRV1": round((tp1 - entry) / risiko, 2),
-            "CRV2": round((tp2 - entry) / risiko, 2),
-            "Vol_Ratio": round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2),
-            "Risk_Perc": round(((entry - stop) / entry) * 100, 2),
-            "Ideales_Delta": 0.6, "Status2": "ACHTUNG"
-        }
+        
+        crv1 = round((tp1 - entry) / risiko, 2)
+        crv2 = round((tp2 - entry) / risiko, 2)        }
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
