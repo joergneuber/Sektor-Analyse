@@ -274,7 +274,7 @@ def analyze_a_setup(ticker, sektor):
         if risiko <= 0: return None
         
         crv1 = round((tp1 - entry) / risiko, 2)
-        crv2 = round((tp2 - entry) / risiko, 2)        }
+        crv2 = round((tp2 - entry) / risiko, 2)
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
         return None
