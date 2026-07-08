@@ -51,46 +51,54 @@ sektoren_aktien = {
 def get_sp500_data():
     try:
         hist = yf.download("^GSPC", period="300d", progress=False)
+        # Fix für MultiIndex-Spalten falls nötig
         if isinstance(hist.columns, pd.MultiIndex): 
             hist.columns = hist.columns.get_level_values(0)
-        
-        if hist.empty or len(hist) < 200:
-            return "Trend S&P 500: Nicht bewertet (Daten unvollständig)"
             
-        close = hist['Close']
-        aktuell = close.iloc[-1]
+        if hist.empty or len(hist) < 200:
+            return "S&P 500: Nicht bewertet (Daten unvollständig)"
         
+        close = hist['Close']
+        last_close = close.iloc[-1]
+        
+        # Indikatoren berechnen
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
         e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
         e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
-        
         weights = np.arange(1, 201)
         w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
         
-        output = (
-            f"S&P 500 Kurs: {aktuell:.2f}\n"
-            f"EMA 20:  {e20:.2f}\n"
-            f"EMA 50:  {e50:.2f}\n"
-            f"EMA 100: {e100:.2f}\n"
-            f"EMA 200: {e200:.2f}\n"
-            f"WMA 200: {w200:.2f}"
-        )
-        return output
+        return (f"S&P 500: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
+                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
     except Exception as e:
-        return f"Trend S&P 500: Fehler bei Berechnung ({str(e)})"
+        return f"S&P 500: Fehler beim Abruf ({e})"
 
 def get_qqq_quote():
     try:
-        ticker = yf.Ticker("QQQ")
-        data = ticker.history(period="1d")
-        if not data.empty:
-            kurs = data['Close'].iloc[-1]
-            return (f"QQQ (Nasdaq 100) Kurs: {kurs:.2f}\n"
-                    f"Trend QQQ (Nasdaq 100): Bullisch (Proxy)")
-        return "QQQ Kurs: Daten nicht verfügbar"
-    except:
-        return "QQQ Kurs: Fehler beim Abruf"
+        hist = yf.download("QQQ", period="300d", progress=False)
+        # Fix für MultiIndex-Spalten falls nötig
+        if isinstance(hist.columns, pd.MultiIndex): 
+            hist.columns = hist.columns.get_level_values(0)
+            
+        if hist.empty or len(hist) < 200:
+            return "Nasdaq: Nicht bewertet (Daten unvollständig)"
+            
+        close = hist['Close']
+        last_close = close.iloc[-1]
+        
+        # Indikatoren berechnen
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
+        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+        weights = np.arange(1, 201)
+        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
+        
+        return (f"Nasdaq: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
+                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+    except Exception as e:
+        return f"Nasdaq: Fehler beim Abruf ({e})"
 
 def get_perf(ticker, name):
     try:
@@ -259,20 +267,19 @@ if __name__ == "__main__":
                 return "VALIDE"
             elif row['Kurs'] >= row['TP1']:
                 return "GELAUFEN"
-            return "WACHSAMKEIT"
+            return "ACHTUNG" # Hier wurde "Achtung" statt "Wachsamkeit" gesetzt
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
-        df_s = df_s.sort_values(by=['CRV1', 'CRV2'], ascending=[False, False])
 
     # 5. CSV Exporte
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen (Nur Valide & Wachsamkeit)
+    # 6. Briefing erstellen (Nur Valide & Achtung)
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
     
-    # Manuelle Sortier-Reihenfolge definieren: Valide zuerst
-    relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'WACHSAMKEIT': 1})
+    # Mapping auf den neuen Status "ACHTUNG" angepasst
+    relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
     
     # Erst nach Order (0 kommt vor 1), dann nach CRV1 (absteigend)
     relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
