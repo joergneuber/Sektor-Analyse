@@ -206,15 +206,22 @@ def analyze_a_setup(ticker, sektor):
         elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
             pattern = "Engulfing"
 
-        # 5. EMA-Ausbruch bestimmen
+        # 5. EMA-Ausbruch & Kombi-Logik bestimmen
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
         
-        # 6. Filter
-        if pattern == "Kein" and not ema_breakout: return None
+        # 6. Setup-Typ Definition
+        if ema_breakout and pattern != "Kein":
+            setup_typ = f"Kombi: {pattern} + Ausbruch"
+        elif ema_breakout:
+            setup_typ = "Trend-Ausbruch"
+        elif pattern != "Kein":
+            setup_typ = f"Reines Pattern: {pattern}"
+        else:
+            return None # Keine Filterbedingung erfüllt
 
-        # 7. Metriken
+        # 7. Metriken (unverändert)
         info = t.info
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
@@ -225,25 +232,17 @@ def analyze_a_setup(ticker, sektor):
         tp2 = entry + (risiko * 3.0)
         
         return {
-            "Ticker": ticker, 
-            "Name": info.get('longName', ticker),
-            "Sektor": sektor, 
-            "Pattern": pattern,
+            "Ticker": ticker, "Name": info.get('longName', ticker), "Sektor": sektor, 
+            "Pattern": pattern, "Setup_Typ": setup_typ,
             "Kursziel": info.get('targetMeanPrice', entry),
-            "Setup_Typ": "Ausbruch" if ema_breakout else pattern,
-            "RSI": round(rsi.iloc[-1], 2),
-            "MACD_Trend": macd_trend,
-            "Kurs": round(entry, 2), 
-            "Einstieg": round(entry, 2),
-            "Stop": round(stop, 2), 
-            "TP1": round(tp1, 2), 
-            "TP2": round(tp2, 2),
+            "RSI": round(rsi.iloc[-1], 2), "MACD_Trend": macd_trend,
+            "Kurs": round(entry, 2), "Einstieg": round(entry, 2),
+            "Stop": round(stop, 2), "TP1": round(tp1, 2), "TP2": round(tp2, 2),
             "CRV1": round((tp1 - entry) / risiko, 2),
             "CRV2": round((tp2 - entry) / risiko, 2),
             "Vol_Ratio": round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2),
             "Risk_Perc": round(((entry - stop) / entry) * 100, 2),
-            "Ideales_Delta": 0.6,
-            "Status2": "ACHTUNG" # Initialwert
+            "Ideales_Delta": 0.6, "Status2": "ACHTUNG"
         }
     except Exception as e:
         print(f"Fehler bei Analyse von {ticker}: {e}")
@@ -282,10 +281,10 @@ if __name__ == "__main__":
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
     
-    # 4. DataFrame erstellen und Logik anwenden
-    cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Kursziel', 'RSI', 'MACD_Trend', 
+    # 4. Spalten-Reihenfolge (Setup-Datei)
+    cols = ['Ticker', 'Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Kursziel', 'RSI', 'MACD_Trend', 
             'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
-            'Pattern', 'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
+            'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
 
     if not all_setups:
         print("Keine Setups gefunden.")
@@ -295,11 +294,22 @@ if __name__ == "__main__":
         df_s = df_s.drop_duplicates(subset=['Ticker'], keep='first')
         df_s = df_s.reindex(columns=cols)
         
+        # Status-Logik anwenden
         def update_status_logic(row):
+            # 1. Bedingung: Überkaufter RSI (über 70) -> ACHTUNG
+            if row['RSI'] > 70:
+                return "ACHTUNG"
+            
+            # 2. Bedingung: Bärischer MACD bei bullischem Signal -> ACHTUNG
+            if row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein":
+                return "ACHTUNG"
+            
+            # 3. Standard-Logik
             if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']:
                 return "VALIDE"
             elif row['Kurs'] >= row['TP1']:
                 return "GELAUFEN"
+            
             return "ACHTUNG"
             
         df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
@@ -308,9 +318,11 @@ if __name__ == "__main__":
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 6. Briefing erstellen
+    # 6. Briefing erstellen (Nur Valide & Achtung)
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
+    
     if not relevante_setups.empty:
+        # Sortierung: Valide zuerst, dann CRV1 absteigend
         relevante_setups['Status_Order'] = relevante_setups['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1})
         relevante_setups = relevante_setups.sort_values(by=['Status_Order', 'CRV1'], ascending=[True, False])
         relevante_setups = relevante_setups.drop(columns=['Status_Order'])
@@ -324,11 +336,9 @@ if __name__ == "__main__":
             for _, row in relevante_setups.iterrows():
                 f.write(f"\nTicker: {row['Ticker']} | {row['Name']}\n")
                 f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
-                f.write(f"Signal: {row['Pattern']} | Typ: {row['Setup_Typ']}\n")
-                f.write(f"Kurs: {row['Kurs']} | Ziel (Analysten): {row['Kursziel']}\n")
-                f.write(f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']}\n")
+                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+                f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-                f.write(f"Vol-Stärke: {row['Vol_Ratio']}x | Risiko: {row['Risk_Perc']}%\n")
                 f.write(f"Suche: Hebelprodukt auf {row['Ticker']} (Ziel: {row['TP1']})\n")
                 f.write("-" * 30 + "\n")
         else:
