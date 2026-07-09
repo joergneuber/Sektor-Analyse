@@ -213,6 +213,14 @@ def analyze_a_setup(ticker, sektor):
         firma_name = info.get('shortName', 'N/A')
         analysten_ziel = info.get('targetMeanPrice', 0)
 
+        # Berechnung für das neue Feld (ersetze deinen alten Block damit)
+        analysten_ziel = info.get('targetMeanPrice') # Gibt None zurück, wenn nicht vorhanden
+
+        if analysten_ziel and analysten_ziel > 0:
+        upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2)
+        else:
+            upside_pct = None # Wir markieren es als "Kein Ziel"
+
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
         if data.empty or len(data) < 200: return None
@@ -418,6 +426,12 @@ if __name__ == "__main__":
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
                 f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
                 f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
+                # In deiner for-Schleife im Briefing-Export:
+                upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
+
+f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
+
+                
                 f.write("-" * 30 + "\n")
         else:
             f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
