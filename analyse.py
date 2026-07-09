@@ -205,19 +205,23 @@ def analyze_a_setup(ticker, sektor):
     
     try:
         t = yf.Ticker(ticker)
-        info = t.info 
+        # 1. Kursdaten zuerst (geht meist schneller)
         data = t.history(period="1y")
         
-        # Prüfen, ob wir überhaupt Daten bekommen haben
-        # Diese Zeilen sind nun alle bündig mit 8 Leerzeichen eingerückt
         if data.empty or 'Close' not in data.columns:
             print(f"Skippe {ticker}: Keine Kursdaten gefunden.")
             return None
             
-        # Name und Analysten-Ziel abrufen
-        firma_name = info.get('shortName', 'N/A')
-        analysten_ziel = info.get('targetMeanPrice')
-            
+        # 2. Info-Abfrage in einen eigenen try-Block, damit das Skript 
+        # nicht abbricht, wenn Yahoo mal keine Infos sendet
+        try:
+            info = t.info
+            firma_name = info.get('shortName', ticker)
+            analysten_ziel = info.get('targetMeanPrice', 0)
+        except:
+            firma_name = ticker
+            analysten_ziel = 0
+                            
     except Exception as e:
         print(f"Fehler beim Laden von {ticker}: {e}")
         return None
