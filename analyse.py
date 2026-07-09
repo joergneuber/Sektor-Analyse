@@ -1,4 +1,3 @@
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
@@ -6,13 +5,14 @@ import time
 import sys
 import os
 from groq import Groq
-import requests
 
-# Einmalig beim Start erstellen
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
+# Neue Alpaca-Imports
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.timeframe import TimeFrame
+
+# Initialisierung des Clients direkt beim Start
+# Wir nutzen os.getenv, um die Keys sicher aus deinen GitHub-Secrets zu lesen
+alpaca_client = StockHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
 
 
 # --- KONFIGURATION ---
@@ -75,17 +75,38 @@ def update_status_logic(row):
 # --- FUNKTIONEN ---
 def get_sp500_data():
     try:
-        ticker_obj = yf.Ticker("^GSPC")
-        hist = ticker_obj.history(period="300d")
-        # Fix für MultiIndex-Spalten falls nötig
-        if isinstance(hist.columns, pd.MultiIndex): 
-            hist.columns = hist.columns.get_level_values(0)
-            
+        # Zeitraum für 300 Tage
+        start_date = datetime.datetime.now() - datetime.timedelta(days=300)
+        
+        # Alpaca Anfrage
+        request = StockBarsRequest(
+            symbol_or_symbols=["SPY"],
+            start=start_date,
+            timeframe=TimeFrame.Day
+        )
+        
+        bars = alpaca_client.get_stock_bars(request)
+        hist = bars.df
+        
+        # Daten prüfen
         if hist.empty or len(hist) < 200:
             return "S&P 500: Nicht bewertet (Daten unvollständig)"
+            
+        # Index bereinigen (Alpaca liefert oft einen MultiIndex [Symbol, Timestamp])
+        hist = hist.reset_index(level=0, drop=True)
         
-        close = hist['Close']
-        last_close = close.iloc[-1]
+        # Alpaca liefert 'close' (kleingeschrieben), dein Code erwartet 'Close'
+        if 'close' in hist.columns:
+            hist = hist.rename(columns={'close': 'Close'})
+            
+        last_close = hist['Close'].iloc[-1]
+        
+        # ... ab hier dein restlicher Code ...
+        return last_close # oder was auch immer du weitergibst
+        
+    except Exception as e:
+        print(f"FEHLER beim Abruf von SPY: {e}")
+        return "S&P 500: Fehler beim Datenabruf"
         
         # Indikatoren berechnen
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
@@ -102,16 +123,38 @@ def get_sp500_data():
 
 def get_qqq_quote():
     try:
-        hist = yf.download("QQQ", period="300d", progress=False)
-        # Fix für MultiIndex-Spalten falls nötig
-        if isinstance(hist.columns, pd.MultiIndex): 
-            hist.columns = hist.columns.get_level_values(0)
-            
+        # Zeitraum für 300 Tage
+        start_date = datetime.datetime.now() - datetime.timedelta(days=300)
+        
+        # Alpaca Anfrage für QQQ
+        request = StockBarsRequest(
+            symbol_or_symbols=["QQQ"],
+            start=start_date,
+            timeframe=TimeFrame.Day
+        )
+        
+        bars = alpaca_client.get_stock_bars(request)
+        hist = bars.df
+        
+        # Daten prüfen
         if hist.empty or len(hist) < 200:
             return "Nasdaq: Nicht bewertet (Daten unvollständig)"
             
-        close = hist['Close']
-        last_close = close.iloc[-1]
+        # Index bereinigen (Alpaca liefert oft einen MultiIndex [Symbol, Timestamp])
+        hist = hist.reset_index(level=0, drop=True)
+        
+        # Alpaca liefert 'close' (kleingeschrieben), wir benennen es um
+        if 'close' in hist.columns:
+            hist = hist.rename(columns={'close': 'Close'})
+            
+        last_close = hist['Close'].iloc[-1]
+        
+        # ... Rest deines Codes ...
+        return last_close
+        
+    except Exception as e:
+        print(f"FEHLER beim Abruf von QQQ: {e}")
+        return "Nasdaq: Fehler beim Datenabruf"
         
         # Indikatoren berechnen
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
@@ -128,17 +171,40 @@ def get_qqq_quote():
 
 def get_perf(ticker, name):
     try:
-        hist = yf.download(ticker, period="1y", progress=False)
-        if isinstance(hist.columns, pd.MultiIndex): hist = hist['Close']
-        if hist.empty: return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+        # Zeitraum für 1 Jahr (ca. 260 Handelstage reichen für 60T Performance)
+        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
         
-        close = hist.iloc[:, 0] if isinstance(hist, pd.DataFrame) else hist
+        request = StockBarsRequest(
+            symbol_or_symbols=[ticker],
+            start=start_date,
+            timeframe=TimeFrame.Day
+        )
+        
+        bars = alpaca_client.get_stock_bars(request)
+        hist = bars.df
+        
+        if hist.empty:
+            return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+        
+        # Index bereinigen und sicherstellen, dass 'close' vorhanden ist
+        hist = hist.reset_index(level=0, drop=True)
+        if 'close' in hist.columns:
+            hist = hist.rename(columns={'close': 'Close'})
+            
+        close = hist['Close']
         last = close.iloc[-1]
         
-        def p(d): return round(((last / close.iloc[-d]) - 1) * 100, 2)
+        # Hilfsfunktion für prozentuale Performance
+        # Sicherstellen, dass wir nicht über das Ende hinaus greifen
+        def p(d): 
+            if len(close) > d:
+                return round(((last / close.iloc[-d]) - 1) * 100, 2)
+            return 0
         
+        # YTD Performance berechnen
         current_year = datetime.datetime.now().year
-        ytd_data = close[close.index.year == current_year]
+        # Wir nutzen den Index (Timestamp) um YTD zu filtern
+        ytd_data = close[hist.index.year == current_year]
         ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2) if not ytd_data.empty else 0
             
         res = {
@@ -146,7 +212,9 @@ def get_perf(ticker, name):
         }
         res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
         return res
-    except: 
+        
+    except Exception as e:
+        print(f"FEHLER bei Performance-Berechnung für {ticker}: {e}")
         return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
 
 def calculate_retest_entry(hist, breakout_level):
@@ -205,42 +273,43 @@ def get_fib_levels(data):
     return fib_0618, fib_1000
 
 def analyze_a_setup(ticker, sektor):
-    # 0. Initialisierung von Variablen
+    # 0. Initialisierung
     potential_targets = []
     setup_typ = "Kein"
     pattern = "Kein"
     tp1 = 0
     
     try:
-        t = yf.Ticker(ticker, session=session)
-        # 1. Kursdaten zuerst (geht meist schneller)
-        data = t.history(period="1y")
+        # Kursdaten über Alpaca laden
+        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+        request = StockBarsRequest(
+            symbol_or_symbols=[ticker],
+            start=start_date,
+            timeframe=TimeFrame.Day
+        )
+        
+        bars = alpaca_client.get_stock_bars(request)
+        data = bars.df
         
         if data.empty:
-            print(f"DEBUG: {ticker} -> DataFrame ist leer (Dataframe.empty)")
+            print(f"DEBUG: {ticker} -> Daten von Alpaca leer.")
             return None
+            
+        # Index und Spalten bereinigen
+        data = data.reset_index(level=0, drop=True)
+        if 'close' in data.columns:
+            data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
         
-        if 'Close' not in data.columns:
-            print(f"DEBUG: {ticker} -> Spalte 'Close' fehlt. Verfügbare Spalten: {data.columns.tolist()}")
-            return None
+        # Fundamentaldaten: Da Alpaca diese im Data-Client nicht liefert, setzen wir Default
+        firma_name = ticker 
+        analysten_ziel = 0
+        
+        # ... ab hier folgen deine Berechnungen (WMA, RSI, etc. mit dem DataFrame 'data') ...
+        
+        return {"Ticker": ticker, "Name": firma_name, "TP1": tp1} # Beispielrückgabe
 
     except Exception as e:
-        # Dies fängt Fehler wie Timeouts, Verbindungsabbrüche oder Yahoo-404-Fehler ab
         print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
-        return None
-        
-        # 2. Info-Abfrage in einen eigenen try-Block, damit das Skript 
-        # nicht abbricht, wenn Yahoo mal keine Infos sendet
-        try:
-            info = t.info
-            firma_name = info.get('shortName', ticker)
-            analysten_ziel = info.get('targetMeanPrice', 0)
-        except:
-            firma_name = ticker
-            analysten_ziel = 0
-                            
-    except Exception as e:
-        print(f"Fehler beim Laden von {ticker}: {e}")
         return None
         
         # Hier die Datenprüfung (wichtig: erst prüfen, dann mit data arbeiten)
