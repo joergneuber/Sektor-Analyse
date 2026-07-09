@@ -427,6 +427,7 @@ if __name__ == "__main__":
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
                 f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
                 f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
+                f.write("-" * 30 + "\n") # Das ist die Zeile 436, sie muss hier bündig stehen
                 # In deiner for-Schleife im Briefing-Export:
                 upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
 
