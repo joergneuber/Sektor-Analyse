@@ -470,9 +470,9 @@ if __name__ == "__main__":
                 continue 
     
    # 4. Spalten-Reihenfolge (Setup-Datei)
-    cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'RSI', 'MACD_Trend', 
-            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
-            'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
+    cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'Status_Grund', 'RSI', 'MACD_Trend', 
+            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
+            'Vol_Ratio', 'Ideales_Delta']
 
     # 4. DataFrame erstellen & Basis-Daten aufbereiten
     if not all_setups:
@@ -505,39 +505,43 @@ if __name__ == "__main__":
 
     # 7. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
     df_s.to_csv("setup_liste.csv", index=False)
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 8. Briefing erstellen
-    print(f"DEBUG: Anzahl der Ticker im DataFrame: {len(df_s)}")
-    relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
+    # 8. Briefing erstellen (Vollständig)
+df_clean = df_s.drop_duplicates(subset=['Ticker'])
+
+relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
+valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
+achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
+
+with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+    f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
+    f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
     
-    # KORREKTUR: Zähle nur die, die wirklich den Status "VALIDE" haben
-    valide_anzahl = len(relevante_setups[relevante_setups['Status2'] == "VALIDE"])
-    
-    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-        f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
-        
-        if not relevante_setups.empty:
-            for ticker_val, row in relevante_setups.iterrows():
-                f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
-                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
-                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
-                f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-                f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-                f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
-                f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
-                
-                # Hier sicherstellen, dass die Spalte im DF existiert (sie heißt 'Upside-Potenzial%')
-                upside_val = row.get('Upside-Potenzial%')
-                upside_text = f"{upside_val}%" if upside_val is not None else "Kein Analysten-Ziel"
-                f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Fundamentaler Analysten-Check: {upside_text}\n")
-                
-                f.write("-" * 30 + "\n")
-        else:
-            f.write("Keine validen Setups gefunden.\n")
+    # 1. TOP-CHANCEN (VALIDE)
+    f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups - VALIDE)\n")
+    for ticker_val, row in valide_setups.iterrows():
+        f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
+        f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
+        f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+        f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+        f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
+        f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
+        # In deinem Briefing-Schreib-Block:
+        upside_val = row.get('Upside-Potenzial%')
+        # Wir zeigen nun den Kurs an, auf den sich die Berechnung bezieht:
+        upside_text = f"{upside_val}%" if upside_val is not None else "Kein Ziel"
+        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Fundamentaler Analysten-Check: {upside_text} (basierend auf Kurs {row['Kurs']})\n")
+        upside_text = f"{upside_val}%" if upside_val is not None else "Kein Ziel"
+        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Fundamentaler Analysten-Check: {upside_text}\n")
+        f.write("-" * 30 + "\n")
+
+    # 2. WATCHLIST (ACHTUNG)
+    f.write("\nWATCHLIST (ACHTUNG)\n")
+    for ticker_val, row in achtung_setups.iterrows():
+        f.write(f"Ticker: {ticker_val} | Sektor: {row['Sektor']} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
             
-        # Jetzt wird hier die korrekte Anzahl eingefügt:
-        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert, davon {valide_anzahl} valide Setups gefunden.\n")
+    f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
