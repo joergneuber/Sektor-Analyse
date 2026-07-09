@@ -336,8 +336,11 @@ def analyze_a_setup(ticker, sektor):
         # Risk_Perc: Abstand vom Einstieg zum Stop in Prozent
         risk_perc = round(((entry - stop) / entry) * 100, 2)
 
+        status_val, grund_val = "VALIDE", "Alles ok"
+        if rsi.iloc[-1] > 70: status_val, grund_val = "ACHTUNG", "RSI zu hoch"
+        
         return {
-            "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Setup_Typ": setup_typ,
+            "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Trend": trend_status, "Status2": status_val, "Setup_Typ": setup_typ,
             "Pattern": pattern, "Tech-Kursziel": round(tp1, 2), "Analysten-Kursziel": analysten_ziel, 
             "RSI": round(rsi.iloc[-1], 2), "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, 
             "Kurs": round(entry, 2), "Einstieg": round(entry, 2), "Stop": round(stop, 2), 
@@ -374,19 +377,19 @@ if __name__ == "__main__":
             if s in blacklist: continue
             try:
                 res = analyze_a_setup(s, row['Sektor'])
+                # ÄNDERUNG: Wir append-en IMMER, solange res kein None ist (z.B. bei Fehler)
                 if res:
                     all_setups.append(res)
-                    print(f" -> Setup gefunden: {s}")
+                    print(f" -> {s} verarbeitet.")
                 else:
-                    # Hier siehst du, ob er etwas findet, es aber verwirft
-                    print(f" -> {s} wurde durch Filter aussortiert.") 
+                    print(f" -> {s} konnte nicht analysiert werden.")
             except Exception as e:
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
     
    # 4. Spalten-Reihenfolge (Setup-Datei)
-    cols = ['Name', 'Sektor', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
-            'Status2', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
+    cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Status2', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
+            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
 
     # 4. DataFrame erstellen & Basis-Daten aufbereiten
