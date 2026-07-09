@@ -418,22 +418,21 @@ if __name__ == "__main__":
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
-if not relevante_setups.empty:
-            for ticker_val, row in relevante_setups.iterrows():
-                f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
-                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
-                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
-                f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-                f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-                f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
-                f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
-                
-                # Berechnung Analysten-Check
-                upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
-                f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
-                
-                f.write("-" * 30 + "\n")
-        else:
-            f.write("Keine validen Setups gefunden.\n")
-        
-        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
+    if not relevante_setups.empty:
+        for ticker_val, row in relevante_setups.iterrows():
+            f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
+            f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
+            f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+            f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+            f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+            f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
+            f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
+            
+            upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
+            f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
+            
+            f.write("-" * 30 + "\n")
+    else:
+        f.write("Keine validen Setups gefunden.\n")
+    
+    f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
