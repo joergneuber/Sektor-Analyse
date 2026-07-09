@@ -509,8 +509,10 @@ if __name__ == "__main__":
     df_s.to_csv("setup_liste.csv", index=False)
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 8. Briefing erstellen (Vollständig)
-df_clean = df_s.drop_duplicates(subset=['Ticker'])
+    # 8. Briefing erstellen
+# 1. Korrektur des Fehlers: Index kurzzeitig zurücksetzen, um die Dubletten zu löschen
+# Wir nutzen reset_index(), damit 'Ticker' wieder eine Spalte ist
+df_clean = df_s.reset_index().drop_duplicates(subset=['Ticker']).set_index('Ticker')
 
 relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
 valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
@@ -530,13 +532,11 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
         f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
         f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
-        # In deinem Briefing-Schreib-Block:
-        upside_val = row.get('Upside-Potenzial%')
-        # Wir zeigen nun den Kurs an, auf den sich die Berechnung bezieht:
+        
+        # Upside berechnen
+        upside_val = row.get('Upside_%_vs_Aktuell') 
         upside_text = f"{upside_val}%" if upside_val is not None else "Kein Ziel"
         f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Fundamentaler Analysten-Check: {upside_text} (basierend auf Kurs {row['Kurs']})\n")
-        upside_text = f"{upside_val}%" if upside_val is not None else "Kein Ziel"
-        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Fundamentaler Analysten-Check: {upside_text}\n")
         f.write("-" * 30 + "\n")
 
     # 2. WATCHLIST (ACHTUNG)
@@ -544,4 +544,5 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     for ticker_val, row in achtung_setups.iterrows():
         f.write(f"Ticker: {ticker_val} | Sektor: {row['Sektor']} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
             
+    # HIER: Die überflüssige Klammer am Ende wurde entfernt
     f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
