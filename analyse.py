@@ -207,20 +207,20 @@ def analyze_a_setup(ticker, sektor):
         t = yf.Ticker(ticker)
         info = t.info 
         data = t.history(period="1y")
-     
-               
-            # Prüfen, ob wir überhaupt Daten bekommen haben
-            if data.empty or 'Close' not in data.columns:
-                print(f"Skippe {ticker}: Keine Kursdaten gefunden.")
-                return None
-                
-            # Name und Analysten-Ziel abrufen
-            firma_name = info.get('shortName', 'N/A')
-            analysten_ziel = info.get('targetMeanPrice')
-            
-        except Exception as e:
-            print(f"Fehler beim Laden von {ticker}: {e}")
+        
+        # Prüfen, ob wir überhaupt Daten bekommen haben
+        # Diese Zeilen sind nun alle bündig mit 8 Leerzeichen eingerückt
+        if data.empty or 'Close' not in data.columns:
+            print(f"Skippe {ticker}: Keine Kursdaten gefunden.")
             return None
+            
+        # Name und Analysten-Ziel abrufen
+        firma_name = info.get('shortName', 'N/A')
+        analysten_ziel = info.get('targetMeanPrice')
+            
+    except Exception as e:
+        print(f"Fehler beim Laden von {ticker}: {e}")
+        return None
         
         # Hier die Datenprüfung (wichtig: erst prüfen, dann mit data arbeiten)
         if isinstance(data.columns, pd.MultiIndex): 
