@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import yfinance as yf
 import datetime
 import time
 import sys
@@ -55,6 +56,20 @@ sektoren_aktien = {
     "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR"],
     "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
 }
+
+def get_analyst_target(ticker):
+    try:
+        # Kurze Pause einhalten, um Yahoo nicht zu fluten
+        time.sleep(2) 
+        stock = yf.Ticker(ticker)
+        # 'targetMeanPrice' ist der Durchschnitt der Analystenschätzungen
+        data = stock.info
+        target = data.get('targetMeanPrice', 0)
+        return target if target is not None else 0
+    except Exception as e:
+        # Falls Yahoo blockiert oder Fehler wirft, geben wir 0 zurück
+        # Das Skript läuft dadurch einfach weiter
+        return 0
 
 # --- FUNKTIONEN ---
 def update_status_logic(row):
@@ -307,6 +322,21 @@ def analyze_a_setup(ticker, sektor):
         # Fundamentaldaten-Platzhalter
         firma_name = ticker 
         analysten_ziel = 0
+
+        # --- ERGÄNZUNG START: Fundamentaldaten abrufen ---
+        firma_name = ticker 
+        analysten_ziel = get_analyst_target(ticker)
+        
+        # Berechnung des Upside-Potenzials
+        if analysten_ziel > 0:
+            upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
+        else:
+            # Fallback auf TP1, falls kein Analysten-Ziel vorhanden ist
+            # TP1 wird hier durch die Fib-Logik etwas später definiert, 
+            # daher nutzen wir hier den Platzhalter oder berechnen es später.
+            # Da tp1 hier noch nicht existiert, setzen wir es auf 0 und korrigieren es im Return
+            upside_potenzial = None 
+        # --- ERGÄNZUNG ENDE ---
         
         # 1. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
@@ -383,11 +413,19 @@ def analyze_a_setup(ticker, sektor):
 
         status_val = "ACHTUNG" if rsi.iloc[-1] > 70 else "VALIDE"
         grund_val = "RSI zu hoch" if status_val == "ACHTUNG" else "Alles ok"
+
+        # ... (nachdem tp1 definiert wurde)
         
+        # Berechne Upside-Potenzial final, falls noch None
+        if upside_potenzial is None:
+            upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
+
         return {
             "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Trend": trend_status, "Status2": status_val, 
             "Status_Grund": grund_val, "Setup_Typ": setup_typ, "Pattern": pattern, "Tech-Kursziel": round(tp1, 2), 
-            "Analysten-Kursziel": analysten_ziel, "Upside-Potenzial%": None, "RSI": round(rsi.iloc[-1], 2), 
+            "Analysten-Kursziel": round(analysten_ziel, 2), # Hier gerundet
+            "Upside-Potenzial%": upside_potenzial,           # Hier der echte Wert
+            "RSI": round(rsi.iloc[-1], 2), 
             "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, "Kurs": round(entry, 2), 
             "Einstieg": round(entry, 2), "Stop": round(stop, 2), "TP1": round(tp1, 2), 
             "TP2": round(tp2, 2), "Vol_Ratio": vol_ratio, "Risk_Perc": risk_perc, "Ideales_Delta": 0
@@ -432,7 +470,7 @@ if __name__ == "__main__":
                 continue 
     
    # 4. Spalten-Reihenfolge (Setup-Datei)
-    cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Status2', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'RSI', 'MACD_Trend', 
+    cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'RSI', 'MACD_Trend', 
             'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'TP1', 'TP2', 
             'Vol_Ratio', 'Risk_Perc', 'Ideales_Delta']
 
