@@ -6,6 +6,14 @@ import time
 import sys
 import os
 from groq import Groq
+import requests
+
+# Einmalig beim Start erstellen
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
+
 
 # --- KONFIGURATION ---
 # Initialisiere den Groq Client
@@ -204,14 +212,23 @@ def analyze_a_setup(ticker, sektor):
     tp1 = 0
     
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=session)
         # 1. Kursdaten zuerst (geht meist schneller)
         data = t.history(period="1y")
         
-        if data.empty or 'Close' not in data.columns:
-            print(f"Skippe {ticker}: Keine Kursdaten gefunden.")
+        if data.empty:
+            print(f"DEBUG: {ticker} -> DataFrame ist leer (Dataframe.empty)")
             return None
-            
+        
+        if 'Close' not in data.columns:
+            print(f"DEBUG: {ticker} -> Spalte 'Close' fehlt. Verfügbare Spalten: {data.columns.tolist()}")
+            return None
+
+    except Exception as e:
+        # Dies fängt Fehler wie Timeouts, Verbindungsabbrüche oder Yahoo-404-Fehler ab
+        print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
+        return None
+        
         # 2. Info-Abfrage in einen eigenen try-Block, damit das Skript 
         # nicht abbricht, wenn Yahoo mal keine Infos sendet
         try:
