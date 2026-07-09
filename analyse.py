@@ -7,8 +7,6 @@ import sys
 import os
 from groq import Groq
 
-yf.pdr_override()
-
 # --- KONFIGURATION ---
 # Initialisiere den Groq Client
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
