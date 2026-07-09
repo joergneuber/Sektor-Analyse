@@ -49,11 +49,20 @@ sektoren_aktien = {
 
 # --- FUNKTIONEN ---
 def update_status_logic(row):
-    if row['RSI'] > 70: return "ACHTUNG"
-    if row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein": return "ACHTUNG"
-    if row['Pattern'] != "Kein" and row['Kurs'] < row['TP1']: return "VALIDE"
-    if row['Kurs'] >= row['TP1']: return "GELAUFEN"
-    return "ACHTUNG"
+    # Standardwerte
+    status = "VALIDE"
+    grund = "Alles ok"
+
+    if row['RSI'] > 70:
+        status, grund = "ACHTUNG", "RSI überkauft (>70)"
+    elif row['Pattern'] != "Kein" and row['Vol_Ratio'] < 0.5:
+        status, grund = "ACHTUNG", f"Schwaches Volumen ({row['Vol_Ratio']}x SMA20)"
+    elif row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein":
+        status, grund = "ACHTUNG", "Bärischer MACD-Trend"
+    elif row['Kurs'] >= row['TP1']:
+        status, grund = "GELAUFEN", "Kursziel erreicht"
+    
+    return pd.Series([status, grund])
 
 # --- FUNKTIONEN ---
 def get_sp500_data():
@@ -368,8 +377,8 @@ if __name__ == "__main__":
         df_s = df_s.set_index('Ticker')
         df_s = df_s.reindex(columns=cols)
         
-        # B) Erst jetzt Status-Logik
-        df_s['Status2'] = df_s.apply(update_status_logic, axis=1)
+        # B) Status-Logik anwenden
+        df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
 
     # 5. FILTERN (Sektoren-Filter) - MUSS auf der gleichen Ebene wie "if not all_setups" stehen
     if not df_s.empty:
@@ -401,10 +410,9 @@ if __name__ == "__main__":
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
         if not relevante_setups.empty:
-            # Hier greifen wir nun korrekt auf den Index zu (ticker_val)
             for ticker_val, row in relevante_setups.iterrows():
                 f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
-                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']}\n")
+                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
                 f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
                 f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
