@@ -27,11 +27,13 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq
 
       - name: Analyse ausführen
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python analyse.py
 
       - name: Daten hochladen
