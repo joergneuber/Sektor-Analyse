@@ -202,15 +202,23 @@ def analyze_a_setup(ticker, sektor):
     setup_typ = "Kein"
     pattern = "Kein"
     tp1 = 0
-    try:
-        # 1. Daten laden
-        t = yf.Ticker(ticker)
-        info = t.info 
-        data = t.history(period="1y")
-        
-        # Name und Analysten-Ziel abrufen
-        firma_name = info.get('shortName', 'N/A')
-        analysten_ziel = info.get('targetMeanPrice')
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info 
+            data = t.history(period="1y")
+            
+            # Prüfen, ob wir überhaupt Daten bekommen haben
+            if data.empty or 'Close' not in data.columns:
+                print(f"Skippe {ticker}: Keine Kursdaten gefunden.")
+                return None
+                
+            # Name und Analysten-Ziel abrufen
+            firma_name = info.get('shortName', 'N/A')
+            analysten_ziel = info.get('targetMeanPrice')
+            
+        except Exception as e:
+            print(f"Fehler beim Laden von {ticker}: {e}")
+            return None
         
         # Hier die Datenprüfung (wichtig: erst prüfen, dann mit data arbeiten)
         if isinstance(data.columns, pd.MultiIndex): 
@@ -418,21 +426,22 @@ if __name__ == "__main__":
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
-    if not relevante_setups.empty:
-        for ticker_val, row in relevante_setups.iterrows():
-            f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
-            f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
-            f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
-            f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-            f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
-            f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
-            f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
-            
-            upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
-            f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
-            
-            f.write("-" * 30 + "\n")
-    else:
-        f.write("Keine validen Setups gefunden.\n")
-    
-    f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
+        # Alles ab hier muss eingerückt sein, damit es zum 'with' gehört:
+        if not relevante_setups.empty:
+            for ticker_val, row in relevante_setups.iterrows():
+                f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
+                f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
+                f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
+                f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+                f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+                f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
+                f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
+                
+                upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
+                f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
+                
+                f.write("-" * 30 + "\n")
+        else:
+            f.write("Keine validen Setups gefunden.\n")
+        
+        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
