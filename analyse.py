@@ -6,8 +6,9 @@ import sys
 import os
 from groq import Groq
 
-# Neue Alpaca-Imports
+# Importe für Alpaca
 from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 # Initialisierung des Clients direkt beim Start
