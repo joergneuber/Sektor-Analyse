@@ -10,13 +10,14 @@ on:
     # 03:00 UTC entspricht 05:00 Uhr MESZ (Sommerzeit)
     - cron: '0 3 * * 1-5'
 
-jobs:
-  run-scripts:
+run-scripts:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--no-deprecation"
     steps:
       - name: Code auschecken
         uses: actions/checkout@v4
-
+      
       - name: Python einrichten
         uses: actions/setup-python@v5
         with:
