@@ -428,14 +428,12 @@ if not relevante_setups.empty:
                 f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
                 f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
                 
-                # Hier die korrekte Einrückung für die neuen Zeilen
+                # Berechnung Analysten-Check
                 upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
                 f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
                 
                 f.write("-" * 30 + "\n")
-                f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
-    
         else:
-            f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
+            f.write("Keine validen Setups gefunden.\n")
         
         f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
