@@ -7,6 +7,8 @@ import sys
 import os
 from groq import Groq
 
+yf.pdr_override()
+
 # --- KONFIGURATION ---
 # Initialisiere den Groq Client
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
@@ -379,6 +381,7 @@ if __name__ == "__main__":
         
         for s in aktien_liste:
             if s in blacklist: continue
+            time.sleep(1) # <-- Warte 1 Sekunde zwischen jeder Aktie    
             try:
                 res = analyze_a_setup(s, row['Sektor'])
                 # ÄNDERUNG: Wir append-en IMMER, solange res kein None ist (z.B. bei Fehler)
