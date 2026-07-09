@@ -418,7 +418,7 @@ if __name__ == "__main__":
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
         f.write("TRADE-ZUSAMMENFASSUNG (Relevante Setups)\n")
         
-        if not relevante_setups.empty:
+if not relevante_setups.empty:
             for ticker_val, row in relevante_setups.iterrows():
                 f.write(f"\nTicker: {ticker_val} | {row['Name']}\n")
                 f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
@@ -427,14 +427,14 @@ if __name__ == "__main__":
                 f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
                 f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
                 f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
-                f.write("-" * 30 + "\n") # Das ist die Zeile 436, sie muss hier bündig stehen
-                # In deiner for-Schleife im Briefing-Export:
+                
+                # Hier die korrekte Einrückung für die neuen Zeilen
                 upside_text = f"{row['Upside-Potenzial%']}%" if row['Upside-Potenzial%'] is not None else "Kein Analysten-Ziel"
-
-f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
-
+                f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
                 
                 f.write("-" * 30 + "\n")
+                f.write(f"Upside: Technisch {row['Tech-Kursziel']}% | Fundamentaler Analysten-Check: {upside_text}\n")
+    
         else:
             f.write("Keine validen Setups oder ACHTUNG-Kandidaten gefunden.\n")
         
