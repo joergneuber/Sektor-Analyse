@@ -422,6 +422,7 @@ if __name__ == "__main__":
     
     # 8. Briefing erstellen
     relevante_setups = df_s[df_s['Status2'] != "GELAUFEN"].copy()
+    valide_anzahl = 0 # Neue Zähl-Variable
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
@@ -445,5 +446,7 @@ if __name__ == "__main__":
                 f.write("-" * 30 + "\n")
         else:
             f.write("Keine validen Setups gefunden.\n")
-        
+        # Neue Statistik-Zeile
+        f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert, davon {valide_anzahl} valide Setups gefunden.\n")
+       
         f.write(f"\nScan-Statistik: {len(df_s)} Ticker analysiert.\n")
