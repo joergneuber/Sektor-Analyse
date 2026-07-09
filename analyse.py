@@ -301,6 +301,13 @@ def analyze_a_setup(ticker, sektor):
         # Berechnung für das neue Feld
         upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2) if analysten_ziel > 0 else 0
 
+        # Dynamische Risiko-Berechnung (Stop-Loss Abstand in Prozent)
+        # Wenn der Stop-Loss bei 100 steht und der Kurs bei 110, ist das Risiko ca. 9.1%
+        risk_perc = round(((entry - stop) / entry) * 100, 2)
+        
+        # Vol-Ratio (Verhältnis aktuelles Volumen zu 20-Tage Durchschnitt)
+        vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
+
         # HIER DIE WERTE FÜR DAS ZUKÜNFTIGE DATAFRAME ZUSAMMENFASSEN
         return {
             "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Setup_Typ": setup_typ,
