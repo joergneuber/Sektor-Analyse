@@ -205,25 +205,26 @@ def analyze_a_setup(ticker, sektor):
     try:
         # 1. Daten laden
         t = yf.Ticker(ticker)
-        # Info VORHER abrufen
         info = t.info 
-        data = t.history(period="1y") # 'ata' korrigiert zu 'data'
-
+        data = t.history(period="1y")
+        
         # Name und Analysten-Ziel abrufen
         firma_name = info.get('shortName', 'N/A')
-        analysten_ziel = info.get('targetMeanPrice', 0)
-
-        # Berechnung für das neue Feld (ersetze deinen alten Block damit)
-        analysten_ziel = info.get('targetMeanPrice') # Gibt None zurück, wenn nicht vorhanden
-
-        if analysten_ziel and analysten_ziel > 0:
-        upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2)
-        else:
-            upside_pct = None # Wir markieren es als "Kein Ziel"
-
+        analysten_ziel = info.get('targetMeanPrice')
+        
+        # Hier die Datenprüfung (wichtig: erst prüfen, dann mit data arbeiten)
         if isinstance(data.columns, pd.MultiIndex): 
             data.columns = data.columns.get_level_values(0)
         if data.empty or len(data) < 200: return None
+        
+        # Einstieg (entry) jetzt erst definieren, damit die Berechnung funktioniert
+        entry = data['Close'].iloc[-1]
+        
+        # Berechnung (jetzt mit Einrückung)
+        if analysten_ziel and analysten_ziel > 0:
+            upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2)
+        else:
+            upside_pct = None    
         
         # 2. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
