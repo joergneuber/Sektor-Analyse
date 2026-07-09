@@ -258,8 +258,11 @@ def analyze_a_setup(ticker, sektor):
         signal = macd.ewm(span=9, adjust=False).mean()
         macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
 
-        # 3. Vorab-Filter: Trend
-        if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]: return None
+       # 3. Vorab-Filter: Trend (Warnung statt Abbruch)
+        trend_status = "OK"
+        if data['Close'].iloc[-1] < data['WMA200'].iloc[-1]:
+            trend_status = "Unter WMA200"
+            # return None  <-- LÖSCHE DIESE ZEILE ODER KOMMENTIERE SIE AUS
 
         # 4. Candlestick-Muster bestimmen
         c1, c2 = data.iloc[-1], data.iloc[-2]
