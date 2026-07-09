@@ -197,16 +197,18 @@ def get_fib_levels(data):
     return fib_0618, fib_1000
 
 def analyze_a_setup(ticker, sektor):
-    # 0. Initialisierung von Variablen, damit sie im except-Block existieren
+    # 0. Initialisierung von Variablen
     potential_targets = []
     setup_typ = "Kein"
     pattern = "Kein"
     tp1 = 0
-        try:
-            t = yf.Ticker(ticker)
-            info = t.info 
-            data = t.history(period="1y")
-            
+    
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info 
+        data = t.history(period="1y")
+     
+               
             # Prüfen, ob wir überhaupt Daten bekommen haben
             if data.empty or 'Close' not in data.columns:
                 print(f"Skippe {ticker}: Keine Kursdaten gefunden.")
