@@ -290,32 +290,30 @@ def analyze_a_setup(ticker, sektor):
             tp1 = entry * 1.08  # Fallback
             tp2 = entry * 1.15  # Fallback
             
-        # 13. DYNAMISCHES CRV
+        # 13. DYNAMISCHES CRV & METRIKEN
         risiko = entry - stop
         if risiko <= 0: return None
         
-        # ... (dein restlicher Code in analyze_a_setup)
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
 
-        # Berechnung für das neue Feld
-        upside_pct = round(((analysten_ziel - entry) / entry) * 100, 2) if analysten_ziel > 0 else 0
-
-        # Dynamische Risiko-Berechnung (Stop-Loss Abstand in Prozent)
-        # Wenn der Stop-Loss bei 100 steht und der Kurs bei 110, ist das Risiko ca. 9.1%
-        risk_perc = round(((entry - stop) / entry) * 100, 2)
+        # KORREKTE BERECHNUNG:
+        # Vol_Ratio: Wenn Vol_SMA20 0 ist, setze Ratio auf 1, um Division durch 0 zu vermeiden
+        vol_sma20 = data['Vol_SMA20'].iloc[-1]
+        vol_ratio = round(data['Volume'].iloc[-1] / vol_sma20, 2) if vol_sma20 > 0 else 1.0
         
-        # Vol-Ratio (Verhältnis aktuelles Volumen zu 20-Tage Durchschnitt)
-        vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
+        # Risk_Perc: Abstand vom Einstieg zum Stop in Prozent
+        risk_perc = round(((entry - stop) / entry) * 100, 2)
 
-        # HIER DIE WERTE FÜR DAS ZUKÜNFTIGE DATAFRAME ZUSAMMENFASSEN
         return {
             "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Setup_Typ": setup_typ,
-            "Pattern": pattern, "Tech-Kursziel": round(tp1, 2), "Analysten-Kursziel": analysten_ziel, "RSI": round(rsi.iloc[-1], 2),
-            "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, "Kurs": round(entry, 2),
-            "Einstieg": round(entry, 2), "Stop": round(stop, 2), "TP1": round(tp1, 2),
-            "TP2": round(tp2, 2), "Vol_Ratio": 0, "Risk_Perc": 0, "Ideales_Delta": 0
+            "Pattern": pattern, "Tech-Kursziel": round(tp1, 2), "Analysten-Kursziel": analysten_ziel, 
+            "RSI": round(rsi.iloc[-1], 2), "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, 
+            "Kurs": round(entry, 2), "Einstieg": round(entry, 2), "Stop": round(stop, 2), 
+            "TP1": round(tp1, 2), "TP2": round(tp2, 2), "Vol_Ratio": vol_ratio, 
+            "Risk_Perc": risk_perc, "Ideales_Delta": 0
         }
+
     except Exception as e:
         import traceback
         print(f"Fehler bei Analyse von {ticker}: {e}")
