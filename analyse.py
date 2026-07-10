@@ -509,11 +509,14 @@ if __name__ == "__main__":
         df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
         df_s = df_s.drop(columns=['Status_Order'])
     
+    # NEU: Hier definieren wir df_clean, damit die nachfolgenden Zeilen funktionieren
+    df_clean = df_s.copy()
+    
     # 7. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # Spalten umbenennen
-    df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
+    df_clean = df_clean.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
         
     # Exportieren
     df_clean.to_csv("setup_liste.csv", index=False)
@@ -522,9 +525,7 @@ if __name__ == "__main__":
     relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
     valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
     achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
-
-    # ... (ab hier folgt dein restlicher Code für die .txt Datei)
-
+    
 with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
     f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
