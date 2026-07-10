@@ -475,7 +475,7 @@ if __name__ == "__main__":
     
     # 4. Spalten-Reihenfolge (Setup-Datei)
     cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'Status_Grund', 'RSI', 'MACD_Trend', 
-            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2'; 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
+            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
             'Vol_Ratio', 'Ideales_Delta']
 
     # 4. DataFrame erstellen & Basis-Daten aufbereiten
