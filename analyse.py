@@ -455,13 +455,19 @@ def analyze_a_setup(ticker, sektor):
 
        # --- SICHERER RÜCKGABEWERT ---
         # Wir stellen sicher, dass alle Keys vorhanden sind und keine None-Werte vorkommen.
+
         
-        # Hilfsfunktion für saubere Zahlen
         def clean_num(val, default=0.0):
-            try:
-                return float(val) if val is not None else default
-            except:
-                return default
+    try:
+        # Hier loggen wir, was reinkommt
+        if val is None:
+            return None # Oder einen Platzhalter, damit du siehst: "hier fehlt ein Wert"
+        
+        return float(val)
+    except Exception as e:
+        # Hier wird der Fehler ausgegeben, statt ihn zu verschlucken
+        print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
+        return default
                 
         # Nur zur Kontrolle – das hilft dir den Fehler in 1 Sekunde zu finden
         print(f"DEBUG: Ticker={ticker}, Name={firma_name}, Sektor={sektor}")
