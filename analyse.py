@@ -407,11 +407,13 @@ def analyze_a_setup(ticker, sektor):
         # 2. DANN erst das Upside-Potenzial berechnen (jetzt ist tp1 bekannt!)
         analysten_ziel = get_analyst_target(ticker)
 
+        # Berechnung des Upside-Potenzials
+        # Achte darauf, dass die Zeilen darunter exakt 4 Leerzeichen weiter eingerückt sind!
         if analysten_ziel > 0:
-        upside_potenzial = round(((analysten_ziel - entry) / entry) * 100, 2)
+            upside_potenzial = round(((analysten_ziel - entry) / entry) * 100, 2)
         else:
-        # Jetzt kannst du hier sicher auf tp1 zugreifen
-        upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
+            # Fallback auf TP1, da tp1 nun vorher definiert wurde
+            upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
             
         risiko = entry - stop
         if risiko <= 0: return None
