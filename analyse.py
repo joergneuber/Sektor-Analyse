@@ -623,21 +623,26 @@ if __name__ == "__main__":
 
     # 7. BEREINIGUNG & FORMATIERUNG
     df_clean = df_s.copy()
-
-    # NEU: Ideales Delta berechnen (nachdem Upside berechnet wurde)
-    # Wir wenden die Funktion auf die Upside-Spalte an
+    
+    # 1. ZUERST umbenennen
+    df_clean = df_clean.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
+    
+    # 2. DANN das Delta berechnen (da der Name jetzt existiert)
+    # Stelle sicher, dass die Funktion 'get_ideal_delta' weiter oben im Skript definiert ist
     df_clean['Ideales_Delta'] = df_clean['Upside_%_vs_Aktuell'].apply(get_ideal_delta)
     
-    # Spalten umbenennen
-    df_clean = df_clean.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
-            
-    # Runden
+    # 3. DANN Runden
     cols_to_round = [
         'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
         'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
         'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
+    
+    # 4. Leere Spalte entfernen (falls nötig)
+    if 'Ideales_Delta' in df_clean.columns:
+        # Hier optional noch Delta auf 2 Stellen runden, falls es eine Fließkommazahl ist
+        pass
     
     # 8. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
