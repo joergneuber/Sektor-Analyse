@@ -474,12 +474,6 @@ def analyze_a_setup(ticker, sektor):
             print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
 
-    return None
-        
-        # Stelle sicher, dass RSI und Vol_Ratio vorher als Spalten in 'data' sind:
-# data['RSI'] = ...
-# data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
-
     return {
         "Ticker": str(ticker),
         "Name": str(firma_name),
