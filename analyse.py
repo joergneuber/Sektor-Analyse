@@ -432,6 +432,9 @@ def analyze_a_setup(ticker, sektor):
                 return float(val) if val is not None else default
             except:
                 return default
+                
+        # Nur zur Kontrolle – das hilft dir den Fehler in 1 Sekunde zu finden
+        print(f"DEBUG: Ticker={ticker}, Name={firma_name}, Sektor={sektor}")
 
         return {
             "Ticker": str(ticker),
@@ -508,14 +511,16 @@ if __name__ == "__main__":
         print("Keine Setups gefunden.")
         df_s = pd.DataFrame(columns=cols)
     else:
-        df_s = pd.DataFrame(all_setups)
+        # Hier erzwingst du die Spaltenreihenfolge!
+        # Auch wenn in einem Dictionary mal ein Wert fehlt, 
+        # bleibt die Struktur durch 'columns=cols' stabil.
+        df_s = pd.DataFrame(all_setups, columns=cols)
         
-        # FIX: Duplikate entfernen
+        # Duplikate entfernen (auf Basis der Ticker-Spalte)
         df_s = df_s.drop_duplicates(subset=['Ticker'])
         
         # Jetzt erst den Index setzen
         df_s = df_s.set_index('Ticker')
-        df_s = df_s.reindex(columns=cols)
         
         # B) Status-Logik anwenden
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
