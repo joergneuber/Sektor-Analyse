@@ -434,6 +434,7 @@ def analyze_a_setup(ticker, sektor):
                 return default
 
         return {
+            "Ticker": str(ticker),
             "Name": str(firma_name),
             "Sektor": str(sektor),
             "Trend": str(trend_status),
