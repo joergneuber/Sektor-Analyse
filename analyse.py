@@ -293,7 +293,17 @@ def get_fib_levels(data):
     fib_1000 = swing_low + (span * 2.0)
     
     return fib_0618, fib_1000
-    
+
+def clean_num(val, default=0.0):
+    # Alles hier drunter muss um 4 Leerzeichen eingerückt sein!
+    try:
+        if val is None:
+            return None
+        return float(val)
+    except Exception as e:
+        print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
+        return default
+
 def analyze_a_setup(ticker, sektor):
     upside_potenzial = None
     # Firmennamen abrufen
@@ -452,21 +462,7 @@ def analyze_a_setup(ticker, sektor):
         # Berechne Upside-Potenzial final, falls noch None
         if upside_potenzial is None:
             upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
-
-       # --- SICHERER RÜCKGABEWERT ---
-        # Wir stellen sicher, dass alle Keys vorhanden sind und keine None-Werte vorkommen.
-
-        
-def clean_num(val, default=0.0):
-    # Alles hier drunter muss um 4 Leerzeichen eingerückt sein!
-    try:
-        if val is None:
-            return None
-        return float(val)
-    except Exception as e:
-        print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
-        return default
-                
+              
         # Nur zur Kontrolle – das hilft dir den Fehler in 1 Sekunde zu finden
         print(f"DEBUG: Ticker={ticker}, Name={firma_name}, Sektor={sektor}")
 
