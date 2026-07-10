@@ -513,13 +513,10 @@ if __name__ == "__main__":
     # 1. Spalten umbenennen
     df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
     
-    if 'Name' in df_s.columns:
-        df_s = df_s.rename(columns={'Name': 'Ticker'})
-    
-    # 2. Dubletten entfernen (Ergebnis in df_clean speichern)
+    # 2. Dubletten entfernen (nutzt direkt die ohnehin existierende Ticker-Spalte)
     df_clean = df_s.drop_duplicates(subset=['Ticker'])
     
-    # 3. Das bereinigte DataFrame (df_clean) exportieren!
+    # 3. Das bereinigte DataFrame exportieren
     df_clean.to_csv("setup_liste.csv", index=False)
     df_clean.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
