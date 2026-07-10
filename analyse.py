@@ -424,26 +424,19 @@ def analyze_a_setup(ticker, sektor):
         # Erst den Wert holen (Stelle sicher, dass dies VOR der Prüfung passiert)
         analysten_ziel = get_analyst_target(ticker)
 
-        # DANN prüfen:
+        # Berechnung des Upside-Potenzials (Einmalig und sicher)
+        # Wir prüfen erst auf None, dann auf den Wert > 0
         if analysten_ziel is not None and analysten_ziel > 0:
-            upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
+            target_value = analysten_ziel
         else:
-            # Jetzt ist es sicher, hier None-Werte abzufangen
-            upside_potenzial = None
+            # Fallback auf Technisches Kursziel (TP1), falls kein Analysten-Ziel vorliegt
+            target_value = tp1
 
-        if analysten_ziel and analysten_ziel > 0:
-            upside_potenzial = round(((analysten_ziel - entry) / entry) * 100, 2)
+        # Finale Berechnung
+        if entry > 0:
+            upside_potenzial = round(((target_value - entry) / entry) * 100, 2)
         else:
-            # Hier greift dein Fallback auf TP1, da kein validiertes Analystenziel vorliegt
-            upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
-
-        # Berechnung des Upside-Potenzials
-        # Achte darauf, dass die Zeilen darunter exakt 4 Leerzeichen weiter eingerückt sind!
-        if analysten_ziel > 0:
-            upside_potenzial = round(((analysten_ziel - entry) / entry) * 100, 2)
-        else:
-            # Fallback auf TP1, da tp1 nun vorher definiert wurde
-            upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
+            upside_potenzial = 0.0   
             
         risiko = entry - stop
         if risiko <= 0: return None
