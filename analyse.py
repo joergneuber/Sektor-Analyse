@@ -336,17 +336,18 @@ def analyze_a_setup(ticker, sektor):
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         
-        # RSI Berechnung
+        # RSI Berechnung direkt als Spalte
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-
-        # 1. RSI als Spalte im DataFrame speichern
+        
+        # Hier wird 'RSI' als Spalte gespeichert
         data['RSI'] = 100 - (100 / (1 + (gain / loss)))
-
-        # 2. Optional: NaN Werte am Anfang (wegen rolling window) durch 50 ersetzen
-        # Das verhindert, dass dein Skript mit undefinierten Werten rechnet
-        data['RSI'] = data['RSI'].fillna(50)
+        data['RSI'] = data['RSI'].fillna(50) # Wichtig: NaN durch 50 ersetzen
+        
+        # Vol_Ratio direkt als Spalte speichern
+        data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
+        data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
         
         # MACD Berechnung
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
@@ -410,7 +411,7 @@ def analyze_a_setup(ticker, sektor):
         vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
         risk_perc = round(((entry - stop) / entry) * 100, 2)
 
-        # Zugriff über die Spalte im DataFrame
+        # Nutze data['RSI'] anstatt der alten Variable rsi
         status_val = "ACHTUNG" if data['RSI'].iloc[-1] > 70 else "VALIDE"
         grund_val = "RSI zu hoch" if status_val == "ACHTUNG" else "Alles ok"
 
