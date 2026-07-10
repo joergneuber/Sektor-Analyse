@@ -335,10 +335,22 @@ def analyze_a_setup(ticker, sektor):
         firma_name = ticker 
         analysten_ziel = 0
 
-        # --- ERGÄNZUNG START: Fundamentaldaten abrufen ---
-        firma_name = ticker 
-        analysten_ziel = get_analyst_target(ticker)
+        # --- [HIER EINFÜGEN] ---
         
+        # 1. Eindeutiger Zugriff auf die aktuelle Zeile (verhindert Index-Verschiebung)
+        last_row = data.iloc[-1]
+        
+        # 2. Plausibilitäts-Check
+        # EMA20 darf nicht extrem weit vom Kurs entfernt sein (hier Faktor 2 als Limit)
+        if last_row['EMA20'] > (last_row['Close'] * 2):
+            print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
+            return None
+
+        # 3. Bereinigung der Analysten-Daten (verhindert 0-Upside Berechnung)
+        analysten_ziel = get_analyst_target(ticker)
+        if analysten_ziel is None or analysten_ziel <= 0:
+            analysten_ziel = last_row['Close'] # Fallback auf Kurs, um Berechnung nicht zu sprengen
+      
         # Berechnung des Upside-Potenzials
         if analysten_ziel > 0:
             upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
@@ -449,32 +461,47 @@ def analyze_a_setup(ticker, sektor):
         # Nur zur Kontrolle – das hilft dir den Fehler in 1 Sekunde zu finden
         print(f"DEBUG: Ticker={ticker}, Name={firma_name}, Sektor={sektor}")
 
-        return {
-            "Ticker": str(ticker),
-            "Name": str(firma_name),
-            "Sektor": str(sektor),
-            "Trend": str(trend_status),
-            "Setup_Typ": str(setup_typ),
-            "Pattern": str(pattern),
-            "Tech-Kursziel": clean_num(tp1),
-            "Analysten-Kursziel": clean_num(analysten_ziel),
-            "Upside-Potenzial%": clean_num(upside_potenzial),
-            "Status2": str(status_val),
-            "Status_Grund": str(grund_val),
-            "RSI": clean_num(rsi.iloc[-1]),
-            "MACD_Trend": str(macd_trend),
-            "CRV1": clean_num(crv1),
-            "CRV2": clean_num(crv2),
-            "Kurs": clean_num(entry),
-            "Einstieg": clean_num(entry),
-            "Einstieg2": clean_num(entry2),
-            "Stop": clean_num(stop),
-            "Risk_Perc": clean_num(risk_perc),
-            "TP1": clean_num(tp1),
-            "TP2": clean_num(tp2),
-            "Vol_Ratio": clean_num(vol_ratio),
-            "Ideales_Delta": clean_num(0)
-        }
+        # --- VOR DER RÜCKGABE EINFÜGEN ---
+        # Plausibilitäts-Check: Wenn EMA20 > 2 * Kurs, ist die Berechnung vermutlich falsch
+        current_price = entry
+        ema20_val = data['EMA20'].iloc[-1]
+
+        if ema20_val > (current_price * 2):
+        print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({ema20_val}) vs Kurs ({current_price})")
+        # Hier erzwingen wir ein korrektes Mapping oder geben None zurück
+
+    return None
+        
+        # Stelle sicher, dass RSI und Vol_Ratio vorher als Spalten in 'data' sind:
+# data['RSI'] = ...
+# data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
+
+    return {
+        "Ticker": str(ticker),
+        "Name": str(firma_name),
+        "Sektor": str(sektor),
+        "Trend": str(trend_status),
+        "Setup_Typ": str(setup_typ),
+        "Pattern": str(pattern),
+        "Tech-Kursziel": clean_num(tp1),
+        "Analysten-Kursziel": clean_num(analysten_ziel),
+        "Upside-Potenzial%": clean_num(upside_potenzial),
+        "Status2": str(status_val),
+        "Status_Grund": str(grund_val),
+        "RSI": clean_num(last_row['RSI']),          # Direkt aus last_row
+        "MACD_Trend": str(macd_trend),
+        "CRV1": clean_num(crv1),
+        "CRV2": clean_num(crv2),
+        "Kurs": round(last_row['Close'], 2),
+        "Einstieg": round(last_row['Close'], 2),
+        "Einstieg2": round(last_row['EMA20'], 2),
+        "Stop": clean_num(stop),
+        "Risk_Perc": clean_num(risk_perc),
+        "TP1": clean_num(tp1),
+        "TP2": clean_num(tp2),
+        "Vol_Ratio": clean_num(last_row['Vol_Ratio']), # Direkt aus last_row
+        "Ideales_Delta": clean_num(0)
+    }
 
     except Exception as e:
         print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
