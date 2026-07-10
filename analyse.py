@@ -500,8 +500,9 @@ def analyze_a_setup(ticker, sektor):
             # Da tp1 hier noch nicht existiert, setzen wir es auf 0 und korrigieren es im Return
             upside_potenzial = None 
 
-        # Ganz am Ende vor dem Speichern der Zeile:
+        # Das 'if' steht am linken Rand (bzw. auf gleicher Ebene wie der restliche Code)
         if upside_potenzial is None:
+            # Diese Zeile muss zwingend mit 4 Leerzeichen eingerückt sein
             upside_potenzial = 0
 
         # Sicherstellen, dass last_row definiert ist
@@ -523,8 +524,9 @@ def analyze_a_setup(ticker, sektor):
             "Setup_Typ": str(setup_typ),
             "Pattern": str(pattern),
             "Tech-Kursziel": clean_num(tp1),
-            "Analysten-Kursziel": clean_num(analysten_ziel),
-            "Upside-Potenzial%": clean_num(upside_potenzial),
+            # Ändere das kurzzeitig so:
+            "Analysten-Kursziel": analysten_ziel,
+            "Upside-Potenzial%": upside_potenzial,
             "Status2": str(status_val),
             "Status_Grund": str(grund_val),
             "RSI": clean_num(last_row['RSI']),
