@@ -482,8 +482,15 @@ if __name__ == "__main__":
         df_s = pd.DataFrame(columns=cols)
     else:
         df_s = pd.DataFrame(all_setups)
+        
+        # FIX: Duplikate entfernen, SOLANGE 'Ticker' noch eine Spalte ist
+        df_s = df_s.drop_duplicates(subset=['Ticker'])
+        
+        # Jetzt erst den Index setzen
         df_s = df_s.set_index('Ticker')
         df_s = df_s.reindex(columns=cols)
+        
+        # B) Status-Logik anwenden
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
 
     # 5. FILTERN
@@ -507,10 +514,7 @@ if __name__ == "__main__":
     
     # Spalten umbenennen
     df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
-    
-    # Dubletten entfernen (nutzt direkt die Ticker-Spalte)
-    df_clean = df_s.drop_duplicates(subset=['Ticker'])
-    
+        
     # Exportieren
     df_clean.to_csv("setup_liste.csv", index=False)
     df_clean.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
