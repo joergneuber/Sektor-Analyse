@@ -513,8 +513,8 @@ def analyze_a_setup(ticker, sektor):
             print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
             
-# --- RETURN DICTIONARY ---
-        # Dieses return muss eingerückt sein, damit es zum `try` gehört!
+        #DEBUG: Überprüfe, was wirklich in das Dictionary geht
+        print(f"DEBUG: Ticker {ticker} -> Analysten-Ziel im Dictionary: {analysten_ziel}")
         
         return {
             "Ticker": str(ticker),
