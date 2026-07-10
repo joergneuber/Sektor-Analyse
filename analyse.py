@@ -396,12 +396,22 @@ def analyze_a_setup(ticker, sektor):
         ema100 = data['EMA100'].iloc[-1]
         wma200 = data['WMA200'].iloc[-1]
         
+        # 1. Zuerst die Ziele (TP1/TP2) festlegen
         fib1, fib2 = get_fib_levels(data)
         potenzial_targets = sorted([ema20, ema50, ema100, wma200, fib1, fib2])
         targets_above = [t for t in potenzial_targets if t > entry]
-        
+
         tp1 = targets_above[0] if targets_above else entry * 1.08
         tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
+
+        # 2. DANN erst das Upside-Potenzial berechnen (jetzt ist tp1 bekannt!)
+        analysten_ziel = get_analyst_target(ticker)
+
+        if analysten_ziel > 0:
+        upside_potenzial = round(((analysten_ziel - entry) / entry) * 100, 2)
+        else:
+        # Jetzt kannst du hier sicher auf tp1 zugreifen
+        upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
             
         risiko = entry - stop
         if risiko <= 0: return None
@@ -457,12 +467,7 @@ def analyze_a_setup(ticker, sektor):
         if last_row['EMA20'] > (last_row['Close'] * 2):
             print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
-
-        # 3. Bereinigung der Analysten-Daten (verhindert 0-Upside Berechnung)
-        analysten_ziel = get_analyst_target(ticker)
-        if analysten_ziel is None or analysten_ziel <= 0:
-            analysten_ziel = last_row['Close'] # Fallback auf Kurs, um Berechnung nicht zu sprengen
-      
+           
         # Berechnung des Upside-Potenzials
         if analysten_ziel > 0:
             upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
@@ -623,8 +628,10 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         
         # Upside berechnen
         upside_val = row.get('Upside_%_vs_Aktuell') 
-        upside_text = f"{upside_val}%" if upside_val is not None else "Kein Ziel"
-        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Fundamentaler Analysten-Check: {upside_text} (basierend auf Kurs {row['Kurs']})\n")
+        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel" # .2f formatiert auf 2 Nachkommastellen
+
+        # Anpassung: Textlabel korrigiert
+        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Technisches Potenzial: {upside_text} (basierend auf Kurs {row['Kurs']})\n")
         f.write("-" * 30 + "\n")
 
     # 2. WATCHLIST (ACHTUNG)
