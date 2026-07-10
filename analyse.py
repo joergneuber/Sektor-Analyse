@@ -286,8 +286,9 @@ def get_fib_levels(data):
     fib_1000 = swing_low + (span * 2.0)
     
     return fib_0618, fib_1000
-
-# Firmennamen abrufen
+    
+def analyze_a_setup(ticker, sektor):
+    # Firmennamen abrufen
     try:
         ticker_obj = yf.Ticker(ticker)
         # Wir versuchen den longName zu laden, falls nicht verfügbar, nehmen wir den Ticker
