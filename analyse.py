@@ -11,6 +11,7 @@ from groq import Groq
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from concurrent.futures import ThreadPoolExecutor
 
 # Initialisierung des Clients direkt beim Start
 # Wir nutzen os.getenv, um die Keys sicher aus deinen GitHub-Secrets zu lesen
@@ -59,8 +60,6 @@ sektoren_aktien = {
 
 def get_analyst_target(ticker):
     try:
-        # Kurze Pause einhalten, um Yahoo nicht zu fluten
-        time.sleep(2) 
         stock = yf.Ticker(ticker)
         # 'targetMeanPrice' ist der Durchschnitt der Analystenschätzungen
         data = stock.info
@@ -439,6 +438,8 @@ def analyze_a_setup(ticker, sektor):
         print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
         return None
          
+from concurrent.futures import ThreadPoolExecutor
+
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
@@ -449,49 +450,43 @@ if __name__ == "__main__":
     # 2. Performance berechnen
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     
-    # 3. Setups verarbeiten
-    all_setups = []
+    # 3. Setups verarbeiten (PARALLEL)
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
+    # Aufgabenliste erstellen
+    tasks = []
     for _, row in df_perf.head(10).iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
-        print(f"Prüfe Sektor: {row['Sektor']} ({len(aktien_liste)} Aktien)")
-        
         for s in aktien_liste:
-            if s in blacklist: continue
-            time.sleep(1) # <-- Warte 1 Sekunde zwischen jeder Aktie    
-            try:
-                res = analyze_a_setup(s, row['Sektor'])
-                # ÄNDERUNG: Wir append-en IMMER, solange res kein None ist (z.B. bei Fehler)
-                if res:
-                    all_setups.append(res)
-                    print(f" -> {s} verarbeitet.")
-                else:
-                    print(f" -> {s} konnte nicht analysiert werden.")
-            except Exception as e:
-                print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
-                continue 
+            if s not in blacklist:
+                tasks.append((s, row['Sektor']))
+    
+    # Parallel mit max_workers=10 ausführen
+    all_setups = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Führt analyze_a_setup für alle Tasks gleichzeitig aus
+        results = list(executor.map(lambda p: analyze_a_setup(*p), tasks))
+        
+    # Ergebnisse filtern (None-Werte entfernen)
+    all_setups = [r for r in results if r is not None]
+    print(f"Analyse beendet. {len(all_setups)} Setups gefunden.")
     
     # 4. Spalten-Reihenfolge (Setup-Datei)
     cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'Status_Grund', 'RSI', 'MACD_Trend', 
             'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
             'Vol_Ratio', 'Ideales_Delta']
 
-    # 4. DataFrame erstellen & Basis-Daten aufbereiten
     if not all_setups:
         print("Keine Setups gefunden.")
         df_s = pd.DataFrame(columns=cols)
     else:
         df_s = pd.DataFrame(all_setups)
-        # Ticker als Index setzen und danach die Spalten ordnen
         df_s = df_s.set_index('Ticker')
         df_s = df_s.reindex(columns=cols)
-        
-        # B) Status-Logik anwenden
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
 
-    # 5. FILTERN (Sektoren-Filter) - MUSS auf der gleichen Ebene wie "if not all_setups" stehen
+    # 5. FILTERN
     if not df_s.empty:
         top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
         df_s = df_s[df_s['Sektor'].isin(top_5_sektoren)].copy()
@@ -510,19 +505,21 @@ if __name__ == "__main__":
     # 7. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 1. Spalten umbenennen
+    # Spalten umbenennen
     df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
     
-    # 2. Dubletten entfernen (nutzt direkt die ohnehin existierende Ticker-Spalte)
+    # Dubletten entfernen (nutzt direkt die Ticker-Spalte)
     df_clean = df_s.drop_duplicates(subset=['Ticker'])
     
-    # 3. Das bereinigte DataFrame exportieren
+    # Exportieren
     df_clean.to_csv("setup_liste.csv", index=False)
     df_clean.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
     relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
     valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
     achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
+
+    # ... (ab hier folgt dein restlicher Code für die .txt Datei)
 
 with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
