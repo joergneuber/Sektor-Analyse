@@ -506,17 +506,22 @@ if __name__ == "__main__":
         df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
         df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
         df_s = df_s.drop(columns=['Status_Order'])
-
+    
     # 7. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
-    df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
-    df_s.to_csv("setup_liste.csv", index=False)
-    df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
-    # 8. Briefing erstellen
+    # 1. Spalten umbenennen
+    df_s = df_s.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
+    
     if 'Name' in df_s.columns:
-    df_s = df_s.rename(columns={'Name': 'Ticker'})
-    df_clean = df_s.reset_index().drop_duplicates(subset=['Ticker']).set_index('Ticker')
+        df_s = df_s.rename(columns={'Name': 'Ticker'})
+    
+    # 2. Dubletten entfernen (Ergebnis in df_clean speichern)
+    df_clean = df_s.drop_duplicates(subset=['Ticker'])
+    
+    # 3. Das bereinigte DataFrame (df_clean) exportieren!
+    df_clean.to_csv("setup_liste.csv", index=False)
+    df_clean.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
     relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
     valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
