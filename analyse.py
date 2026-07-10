@@ -476,11 +476,7 @@ def analyze_a_setup(ticker, sektor):
         # Datenprüfung
         if len(data) < 200: 
             return None
-        
-        # Fundamentaldaten-Platzhalter
-        firma_name = ticker 
-        analysten_ziel = 0
-        
+                
         # 1. Eindeutiger Zugriff auf die aktuelle Zeile (verhindert Index-Verschiebung)
         last_row = data.iloc[-1]
         
