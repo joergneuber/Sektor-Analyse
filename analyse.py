@@ -389,6 +389,10 @@ def analyze_a_setup(ticker, sektor):
 
         # 6. Metriken & Ziele
         entry = data['Close'].iloc[-1]
+        
+        # NEU: Re-Test Einstieg am EMA20
+        entry2 = round(data['EMA20'].iloc[-1], 2)
+        
         stop = data['Low'].rolling(10).min().iloc[-1]
         
         ema20 = data['EMA20'].iloc[-1]
@@ -427,7 +431,7 @@ def analyze_a_setup(ticker, sektor):
             "Upside-Potenzial%": upside_potenzial,           # Hier der echte Wert
             "RSI": round(rsi.iloc[-1], 2), 
             "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, "Kurs": round(entry, 2), 
-            "Einstieg": round(entry, 2), "Stop": round(stop, 2), "TP1": round(tp1, 2), 
+            "Einstieg": round(entry, 2), "Einstieg2": entry2, "Stop": round(stop, 2), "TP1": round(tp1, 2), 
             "TP2": round(tp2, 2), "Vol_Ratio": vol_ratio, "Risk_Perc": risk_perc, "Ideales_Delta": 0
         }
 
@@ -469,9 +473,9 @@ if __name__ == "__main__":
                 print(f"Überspringe {s} aufgrund eines Fehlers: {e}")
                 continue 
     
-   # 4. Spalten-Reihenfolge (Setup-Datei)
+    # 4. Spalten-Reihenfolge (Setup-Datei)
     cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'Status_Grund', 'RSI', 'MACD_Trend', 
-            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
+            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2; 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
             'Vol_Ratio', 'Ideales_Delta']
 
     # 4. DataFrame erstellen & Basis-Daten aufbereiten
@@ -510,13 +514,13 @@ if __name__ == "__main__":
     df_s.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # 8. Briefing erstellen
-# 1. Korrektur des Fehlers: Index kurzzeitig zurücksetzen, um die Dubletten zu löschen
-# Wir nutzen reset_index(), damit 'Ticker' wieder eine Spalte ist
-df_clean = df_s.reset_index().drop_duplicates(subset=['Ticker']).set_index('Ticker')
+    if 'Name' in df_s.columns:
+    df_s = df_s.rename(columns={'Name': 'Ticker'})
+    df_clean = df_s.reset_index().drop_duplicates(subset=['Ticker']).set_index('Ticker')
 
-relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
-valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
-achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
+    relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
+    valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
+    achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
 
 with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
@@ -530,6 +534,7 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Setup-Qualität: {row['Setup_Typ']}\n")
         f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
         f.write(f"TP1: {row['TP1']} | CRV1: {row['CRV1']}\n")
+        f.write(f"Einstieg1: {row['Einstieg']} | Einstieg2 (EMA20): {row['Einstieg2']}\n")
         f.write(f"Risiko: {row['Risk_Perc']}% | Vol-Ratio: {row['Vol_Ratio']}x\n")
         f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
         
