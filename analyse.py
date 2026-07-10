@@ -304,6 +304,17 @@ def clean_num(val, default=0.0):
         print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
         return default
 
+def get_ideal_delta(upside_prozent):
+    # Einfache Heuristik:
+    # Bei kleinem Upside brauchen wir hohes Delta für direkte Reaktion
+    # Bei großem Upside reicht moderates Delta für Hebel
+    if upside_prozent < 5:
+        return 0.70  # Aggressiv, tief im Geld
+    elif upside_prozent < 15:
+        return 0.55  # Der "Sweet Spot"
+    else:
+        return 0.40  # Mehr Hebel, weniger Delta-Risiko
+
 def analyze_a_setup(ticker, sektor):
     upside_potenzial = None
     # Firmennamen abrufen
@@ -609,17 +620,29 @@ if __name__ == "__main__":
         df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
         df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
         df_s = df_s.drop(columns=['Status_Order'])
-    
-    # NEU: Hier definieren wir df_clean, damit die nachfolgenden Zeilen funktionieren
+
+    # 7. BEREINIGUNG & FORMATIERUNG
     df_clean = df_s.copy()
-    
-    # 7. EXPORT
-    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+
+    # NEU: Ideales Delta berechnen (nachdem Upside berechnet wurde)
+    # Wir wenden die Funktion auf die Upside-Spalte an
+    df_clean['Ideales_Delta'] = df_clean['Upside_%_vs_Aktuell'].apply(get_ideal_delta)
     
     # Spalten umbenennen
     df_clean = df_clean.rename(columns={'Upside-Potenzial%': 'Upside_%_vs_Aktuell'})
-        
-    # Exportieren
+            
+    # Runden
+    cols_to_round = [
+        'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
+        'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
+        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio'
+    ]
+    df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
+    
+    # 8. EXPORT
+    df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    
+    # Hier exportierst du jetzt zwei Versionen (falls das so gewollt ist)
     df_clean.to_csv("setup_liste.csv", index=False)
     df_clean.to_csv(f"Setups({today}).csv", index=False, sep=';', encoding='utf-8-sig')
 
