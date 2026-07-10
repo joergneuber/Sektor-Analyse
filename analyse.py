@@ -457,15 +457,13 @@ def analyze_a_setup(ticker, sektor):
         # Wir stellen sicher, dass alle Keys vorhanden sind und keine None-Werte vorkommen.
 
         
-        def clean_num(val, default=0.0):
+def clean_num(val, default=0.0):
+    # Alles hier drunter muss um 4 Leerzeichen eingerückt sein!
     try:
-        # Hier loggen wir, was reinkommt
         if val is None:
-            return None # Oder einen Platzhalter, damit du siehst: "hier fehlt ein Wert"
-        
+            return None
         return float(val)
     except Exception as e:
-        # Hier wird der Fehler ausgegeben, statt ihn zu verschlucken
         print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
         return default
                 
