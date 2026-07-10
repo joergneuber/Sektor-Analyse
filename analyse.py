@@ -411,8 +411,15 @@ def analyze_a_setup(ticker, sektor):
         tp1 = targets_above[0] if targets_above else entry * 1.08
         tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
 
-        # Berechnung des Upside-Potenzials
+        # Erst den Wert holen (Stelle sicher, dass dies VOR der Prüfung passiert)
         analysten_ziel = get_analyst_target(ticker)
+
+        # DANN prüfen:
+        if analysten_ziel is not None and analysten_ziel > 0:
+            upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
+        else:
+            # Jetzt ist es sicher, hier None-Werte abzufangen
+            upside_potenzial = None
 
         if analysten_ziel and analysten_ziel > 0:
             upside_potenzial = round(((analysten_ziel - entry) / entry) * 100, 2)
@@ -492,7 +499,11 @@ def analyze_a_setup(ticker, sektor):
             # daher nutzen wir hier den Platzhalter oder berechnen es später.
             # Da tp1 hier noch nicht existiert, setzen wir es auf 0 und korrigieren es im Return
             upside_potenzial = None 
-        
+
+        # Ganz am Ende vor dem Speichern der Zeile:
+        if upside_potenzial is None:
+        upside_potenzial = 0
+
         # Sicherstellen, dass last_row definiert ist
         last_row = data.iloc[-1]
 
