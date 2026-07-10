@@ -502,7 +502,7 @@ def analyze_a_setup(ticker, sektor):
 
         # Ganz am Ende vor dem Speichern der Zeile:
         if upside_potenzial is None:
-        upside_potenzial = 0
+            upside_potenzial = 0
 
         # Sicherstellen, dass last_row definiert ist
         last_row = data.iloc[-1]
