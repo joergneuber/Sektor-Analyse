@@ -473,39 +473,41 @@ def analyze_a_setup(ticker, sektor):
         if last_row['EMA20'] > (last_row['Close'] * 2):
             print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
+            
+# --- RETURN DICTIONARY ---
+        # Dieses return muss eingerückt sein, damit es zum `try` gehört!
+        
+        return {
+            "Ticker": str(ticker),
+            "Name": str(firma_name),
+            "Sektor": str(sektor),
+            "Trend": str(trend_status),
+            "Setup_Typ": str(setup_typ),
+            "Pattern": str(pattern),
+            "Tech-Kursziel": clean_num(tp1),
+            "Analysten-Kursziel": clean_num(analysten_ziel),
+            "Upside-Potenzial%": clean_num(upside_potenzial),
+            "Status2": str(status_val),
+            "Status_Grund": str(grund_val),
+            "RSI": clean_num(last_row['RSI']),
+            "MACD_Trend": str(macd_trend),
+            "CRV1": clean_num(crv1),
+            "CRV2": clean_num(crv2),
+            "Kurs": round(last_row['Close'], 2),
+            "Einstieg": round(last_row['Close'], 2),
+            "Einstieg2": round(last_row['EMA20'], 2),
+            "Stop": clean_num(stop),
+            "Risk_Perc": clean_num(risk_perc),
+            "TP1": clean_num(tp1),
+            "TP2": clean_num(tp2),
+            "Vol_Ratio": clean_num(last_row['Vol_Ratio']),
+            "Ideales_Delta": clean_num(0)
+        }
 
-    return {
-        "Ticker": str(ticker),
-        "Name": str(firma_name),
-        "Sektor": str(sektor),
-        "Trend": str(trend_status),
-        "Setup_Typ": str(setup_typ),
-        "Pattern": str(pattern),
-        "Tech-Kursziel": clean_num(tp1),
-        "Analysten-Kursziel": clean_num(analysten_ziel),
-        "Upside-Potenzial%": clean_num(upside_potenzial),
-        "Status2": str(status_val),
-        "Status_Grund": str(grund_val),
-        "RSI": clean_num(last_row['RSI']),          # Direkt aus last_row
-        "MACD_Trend": str(macd_trend),
-        "CRV1": clean_num(crv1),
-        "CRV2": clean_num(crv2),
-        "Kurs": round(last_row['Close'], 2),
-        "Einstieg": round(last_row['Close'], 2),
-        "Einstieg2": round(last_row['EMA20'], 2),
-        "Stop": clean_num(stop),
-        "Risk_Perc": clean_num(risk_perc),
-        "TP1": clean_num(tp1),
-        "TP2": clean_num(tp2),
-        "Vol_Ratio": clean_num(last_row['Vol_Ratio']), # Direkt aus last_row
-        "Ideales_Delta": clean_num(0)
-    }
-
+    # Das 'except' MUSS auf der gleichen Einrückungsebene wie das 'try' stehen!
     except Exception as e:
         print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
         return None
-         
-from concurrent.futures import ThreadPoolExecutor
 
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
