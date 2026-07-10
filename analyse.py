@@ -466,9 +466,13 @@ def analyze_a_setup(ticker, sektor):
         current_price = entry
         ema20_val = data['EMA20'].iloc[-1]
 
-        if ema20_val > (current_price * 2):
-        print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({ema20_val}) vs Kurs ({current_price})")
-        # Hier erzwingen wir ein korrektes Mapping oder geben None zurück
+        # Sicherstellen, dass last_row definiert ist
+        last_row = data.iloc[-1]
+
+        # Plausibilitäts-Check (korrekt eingerückt)
+        if last_row['EMA20'] > (last_row['Close'] * 2):
+            print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
+            return None
 
     return None
         
