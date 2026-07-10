@@ -340,8 +340,13 @@ def analyze_a_setup(ticker, sektor):
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
+
+        # 1. RSI als Spalte im DataFrame speichern
+        data['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+        # 2. Optional: NaN Werte am Anfang (wegen rolling window) durch 50 ersetzen
+        # Das verhindert, dass dein Skript mit undefinierten Werten rechnet
+        data['RSI'] = data['RSI'].fillna(50)
         
         # MACD Berechnung
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
