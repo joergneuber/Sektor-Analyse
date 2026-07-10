@@ -326,42 +326,7 @@ def analyze_a_setup(ticker, sektor):
         data = data.reset_index(level=0, drop=True)
         if 'close' in data.columns:
             data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
-        
-        # Datenprüfung
-        if len(data) < 200: 
-            return None
-        
-        # Fundamentaldaten-Platzhalter
-        firma_name = ticker 
-        analysten_ziel = 0
 
-        # --- [HIER EINFÜGEN] ---
-        
-        # 1. Eindeutiger Zugriff auf die aktuelle Zeile (verhindert Index-Verschiebung)
-        last_row = data.iloc[-1]
-        
-        # 2. Plausibilitäts-Check
-        # EMA20 darf nicht extrem weit vom Kurs entfernt sein (hier Faktor 2 als Limit)
-        if last_row['EMA20'] > (last_row['Close'] * 2):
-            print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
-            return None
-
-        # 3. Bereinigung der Analysten-Daten (verhindert 0-Upside Berechnung)
-        analysten_ziel = get_analyst_target(ticker)
-        if analysten_ziel is None or analysten_ziel <= 0:
-            analysten_ziel = last_row['Close'] # Fallback auf Kurs, um Berechnung nicht zu sprengen
-      
-        # Berechnung des Upside-Potenzials
-        if analysten_ziel > 0:
-            upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
-        else:
-            # Fallback auf TP1, falls kein Analysten-Ziel vorhanden ist
-            # TP1 wird hier durch die Fib-Logik etwas später definiert, 
-            # daher nutzen wir hier den Platzhalter oder berechnen es später.
-            # Da tp1 hier noch nicht existiert, setzen wir es auf 0 und korrigieren es im Return
-            upside_potenzial = None 
-        # --- ERGÄNZUNG ENDE ---
-        
         # 1. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
         data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
@@ -466,6 +431,40 @@ def analyze_a_setup(ticker, sektor):
         current_price = entry
         ema20_val = data['EMA20'].iloc[-1]
 
+
+        
+        # Datenprüfung
+        if len(data) < 200: 
+            return None
+        
+        # Fundamentaldaten-Platzhalter
+        firma_name = ticker 
+        analysten_ziel = 0
+        
+        # 1. Eindeutiger Zugriff auf die aktuelle Zeile (verhindert Index-Verschiebung)
+        last_row = data.iloc[-1]
+        
+        # 2. Plausibilitäts-Check
+        # EMA20 darf nicht extrem weit vom Kurs entfernt sein (hier Faktor 2 als Limit)
+        if last_row['EMA20'] > (last_row['Close'] * 2):
+            print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
+            return None
+
+        # 3. Bereinigung der Analysten-Daten (verhindert 0-Upside Berechnung)
+        analysten_ziel = get_analyst_target(ticker)
+        if analysten_ziel is None or analysten_ziel <= 0:
+            analysten_ziel = last_row['Close'] # Fallback auf Kurs, um Berechnung nicht zu sprengen
+      
+        # Berechnung des Upside-Potenzials
+        if analysten_ziel > 0:
+            upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
+        else:
+            # Fallback auf TP1, falls kein Analysten-Ziel vorhanden ist
+            # TP1 wird hier durch die Fib-Logik etwas später definiert, 
+            # daher nutzen wir hier den Platzhalter oder berechnen es später.
+            # Da tp1 hier noch nicht existiert, setzen wir es auf 0 und korrigieren es im Return
+            upside_potenzial = None 
+        
         # Sicherstellen, dass last_row definiert ist
         last_row = data.iloc[-1]
 
