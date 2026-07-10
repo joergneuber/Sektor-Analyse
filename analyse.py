@@ -410,7 +410,8 @@ def analyze_a_setup(ticker, sektor):
         vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
         risk_perc = round(((entry - stop) / entry) * 100, 2)
 
-        status_val = "ACHTUNG" if rsi.iloc[-1] > 70 else "VALIDE"
+        # Zugriff über die Spalte im DataFrame
+        status_val = "ACHTUNG" if data['RSI'].iloc[-1] > 70 else "VALIDE"
         grund_val = "RSI zu hoch" if status_val == "ACHTUNG" else "Alles ok"
 
         # ... (nachdem tp1 definiert wurde)
