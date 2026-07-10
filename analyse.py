@@ -423,15 +423,40 @@ def analyze_a_setup(ticker, sektor):
         if upside_potenzial is None:
             upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
 
+       # --- SICHERER RÜCKGABEWERT ---
+        # Wir stellen sicher, dass alle Keys vorhanden sind und keine None-Werte vorkommen.
+        
+        # Hilfsfunktion für saubere Zahlen
+        def clean_num(val, default=0.0):
+            try:
+                return float(val) if val is not None else default
+            except:
+                return default
+
         return {
-            "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Trend": trend_status, "Status2": status_val, 
-            "Status_Grund": grund_val, "Setup_Typ": setup_typ, "Pattern": pattern, "Tech-Kursziel": round(tp1, 2), 
-            "Analysten-Kursziel": round(analysten_ziel, 2), # Hier gerundet
-            "Upside-Potenzial%": upside_potenzial,           # Hier der echte Wert
-            "RSI": round(rsi.iloc[-1], 2), 
-            "MACD_Trend": macd_trend, "CRV1": crv1, "CRV2": crv2, "Kurs": round(entry, 2), 
-            "Einstieg": round(entry, 2), "Einstieg2": entry2, "Stop": round(stop, 2), "TP1": round(tp1, 2), 
-            "TP2": round(tp2, 2), "Vol_Ratio": vol_ratio, "Risk_Perc": risk_perc, "Ideales_Delta": 0
+            "Name": str(firma_name),
+            "Sektor": str(sektor),
+            "Trend": str(trend_status),
+            "Setup_Typ": str(setup_typ),
+            "Pattern": str(pattern),
+            "Tech-Kursziel": clean_num(tp1),
+            "Analysten-Kursziel": clean_num(analysten_ziel),
+            "Upside-Potenzial%": clean_num(upside_potenzial),
+            "Status2": str(status_val),
+            "Status_Grund": str(grund_val),
+            "RSI": clean_num(rsi.iloc[-1]),
+            "MACD_Trend": str(macd_trend),
+            "CRV1": clean_num(crv1),
+            "CRV2": clean_num(crv2),
+            "Kurs": clean_num(entry),
+            "Einstieg": clean_num(entry),
+            "Einstieg2": clean_num(entry2),
+            "Stop": clean_num(stop),
+            "Risk_Perc": clean_num(risk_perc),
+            "TP1": clean_num(tp1),
+            "TP2": clean_num(tp2),
+            "Vol_Ratio": clean_num(vol_ratio),
+            "Ideales_Delta": clean_num(0)
         }
 
     except Exception as e:
@@ -472,10 +497,11 @@ if __name__ == "__main__":
     all_setups = [r for r in results if r is not None]
     print(f"Analyse beendet. {len(all_setups)} Setups gefunden.")
     
-    # 4. Spalten-Reihenfolge (Setup-Datei)
-    cols = ['Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', "Analysten-Kursziel", 'Upside-Potenzial%', 'Status2', 'Status_Grund', 'RSI', 'MACD_Trend', 
-            'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 'Stop', 'Risk_Perc', 'TP1', 'TP2', 
-            'Vol_Ratio', 'Ideales_Delta']
+    # Deine Liste/Spalten und Reihenfolge in setup-Datei
+cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
+        'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
+        'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
+        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta']
 
     if not all_setups:
         print("Keine Setups gefunden.")
