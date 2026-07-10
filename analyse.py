@@ -497,11 +497,11 @@ if __name__ == "__main__":
     all_setups = [r for r in results if r is not None]
     print(f"Analyse beendet. {len(all_setups)} Setups gefunden.")
     
-    # Deine Liste/Spalten und Reihenfolge in setup-Datei
-cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
-        'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
-        'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
-        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta']
+    # Deine Liste/Spalten und Reihenfolge in setup-Datei (HIER EINGERÜCKT!)
+    cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
+            'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
+            'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
+            'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta']
 
     if not all_setups:
         print("Keine Setups gefunden.")
@@ -509,7 +509,7 @@ cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursz
     else:
         df_s = pd.DataFrame(all_setups)
         
-        # FIX: Duplikate entfernen, SOLANGE 'Ticker' noch eine Spalte ist
+        # FIX: Duplikate entfernen
         df_s = df_s.drop_duplicates(subset=['Ticker'])
         
         # Jetzt erst den Index setzen
