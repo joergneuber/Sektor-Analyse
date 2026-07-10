@@ -287,14 +287,17 @@ def get_fib_levels(data):
     
     return fib_0618, fib_1000
 
-def analyze_a_setup(ticker, sektor):
-    # 1. Firmennamen abrufen
+# Firmennamen abrufen
     try:
-        # Hier wird der echte Name von Yahoo Finance geladen
         ticker_obj = yf.Ticker(ticker)
-        firma_name = ticker_obj.info.get('longName', ticker) 
+        # Wir versuchen den longName zu laden, falls nicht verfügbar, nehmen wir den Ticker
+        info = ticker_obj.info
+        firma_name = info.get('longName', ticker)
+        # Fallback, falls longName ein leeres String ist
+        if not firma_name or firma_name == "":
+            firma_name = ticker
     except:
-        firma_name = ticker # Fallback auf Ticker, falls der Abruf fehlschlägt
+        firma_name = ticker
     
     # ... hier folgt dein restlicher Code ...
     # 0. Initialisierung
