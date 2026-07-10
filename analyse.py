@@ -288,6 +288,7 @@ def get_fib_levels(data):
     return fib_0618, fib_1000
     
 def analyze_a_setup(ticker, sektor):
+    upside_potenzial = None
     # Firmennamen abrufen
     try:
         ticker_obj = yf.Ticker(ticker)
