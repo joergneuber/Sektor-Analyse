@@ -541,9 +541,9 @@ def analyze_a_setup(ticker, sektor):
             print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
 
-  except Exception as e:
-        print(f"Fehler bei der Analyse von {ticker}: {e}")
-        return None  # Oder ein leeres Dictionary, falls du das bevorzugst      
+    except Exception as e:
+       print(f"Fehler bei der Analyse von {ticker}: {e}")
+       return None  # Oder ein leeres Dictionary, falls du das bevorzugst      
     
         # Berechnung des Upside-Potenzials
         if analysten_ziel > 0:
