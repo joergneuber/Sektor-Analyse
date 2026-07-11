@@ -394,6 +394,11 @@ def analyze_a_setup(ticker, sektor):
         data['RSI'] = 100 - (100 / (1 + (gain / loss)))
         data['RSI'] = data['RSI'].fillna(50) # Wichtig: NaN durch 50 ersetzen
         
+        # --- HIER DEIN SICHERHEITS-CHECK ---
+        if 'RSI' not in data.columns:
+            print(f"FEHLER: RSI konnte für {ticker} nicht berechnet werden.")
+            return None # Überspringt diesen Ticker sauber
+        
         # Vol_Ratio direkt als Spalte speichern
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
         data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
