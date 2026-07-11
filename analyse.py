@@ -60,46 +60,19 @@ sektoren_aktien = {
 }
 
 def berechne_indikatoren(df):
-    # 1. FIX: MultiIndex entfernen, falls yfinance das so liefert
+    # 1. MultiIndex entfernen (wichtig für yfinance-Struktur)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # 2. Prüfen, ob 'Close' überhaupt existiert
+    # 2. Prüfen, ob 'Close' existiert (Sicherheitsprüfung)
     if 'Close' not in df.columns:
-        return df # Gib unverändertes df zurück, wenn keine Preisdaten da sind
+        return df 
 
-    # Prüfen, ob RSI existiert, sonst berechnen
-    if 'RSI' not in df.columns:
-        # Einfache RSI-Berechnung (Standardperiode 14)
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-
-        # Jetzt ist die Spalte garantiert da (oder wurde eben erst erstellt)
-        # Hier geht dein restlicher Code weiter, z.B.:
-    if df['RSI'].iloc[-1] < 30: 
-    # ...
+    # 3. RSI berechnen (ersetzt die alten, fehlerhaften Zeilen 74-93)
+    # get_safe_rsi kümmert sich intern um die Prüfung der Länge und Division durch Null
+    df['RSI'] = get_safe_rsi(df)
     
-    # 3. RSI sicher berechnen
-    if len(df) >= 14:
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        
-        # Division durch Null vermeiden
-        rs = gain / loss.replace(0, 0.000001)
-        df['RSI'] = 100 - (100 / (1 + rs))
-    else:
-        # Falls zu wenig Daten, RSI neutral setzen (50), damit der Code nicht abstürzt
-        df['RSI'] = 50.0
-        
     return df
-
-import yfinance as yf
-import time
-
 def get_analyst_target(ticker, retries=3):
     """Holt Analysten-Daten mit Retry-Logik."""
     for i in range(retries):
