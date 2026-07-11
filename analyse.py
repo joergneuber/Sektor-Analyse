@@ -541,7 +541,7 @@ def analyze_a_setup(ticker, sektor):
             "CRV2": clean_num(crv2),
             "Kurs": round(last_row['Close'], 2),
             "Einstieg": round(last_row['Close'], 2),
-            "Einstieg2": round(last_row['EMA20'], 2),
+            "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
             "Stop": clean_num(stop),
             "Risk_Perc": clean_num(risk_perc),
             "TP1": clean_num(tp1),
@@ -590,7 +590,7 @@ if __name__ == "__main__":
     # Deine Liste/Spalten und Reihenfolge in setup-Datei (HIER EINGERÜCKT!)
     cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
-            'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
+            'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
             'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta']
 
     if not all_setups:
@@ -612,10 +612,17 @@ if __name__ == "__main__":
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
 
     # 5. FILTERN
+    # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
         top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
-        df_s = df_s[df_s['Sektor'].isin(top_5_sektoren)].copy()
-        print(f"DEBUG: Setups nach Sektor-Filter: {len(df_s)}")
+        
+        # NEU: Nur Sektoren-Treffer UND nur Aktien, die im Aufwärtstrend (über WMA200) sind
+        df_s = df_s[
+            (df_s['Sektor'].isin(top_5_sektoren)) & 
+            (df_s['Trend'] == 'OK')
+        ].copy()
+        
+        print(f"DEBUG: Setups nach Sektor-Filter & Trend-Check: {len(df_s)}")
 
     # 6. KONVERTIERUNG & SORTIEREN
     if not df_s.empty:
@@ -624,7 +631,11 @@ if __name__ == "__main__":
             df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
 
         df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
-        df_s = df_s.sort_values(by=['Status_Order', 'CRV1', 'Risk_Perc'], ascending=[True, False, True])
+        # Sortierung: Status (Valide zuerst), dann Momentum (Upside), dann CRV (Qualität)
+        df_s = df_s.sort_values(
+            by=['Status_Order', 'Upside_%_vs_Aktuell', 'CRV1'], 
+            ascending=[True, False, False]
+        )
         df_s = df_s.drop(columns=['Status_Order'])
 
     # 7. BEREINIGUNG & FORMATIERUNG
@@ -640,7 +651,7 @@ if __name__ == "__main__":
     # 3. DANN Runden
     cols_to_round = [
         'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
-        'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2', 
+        'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
         'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
@@ -677,6 +688,8 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write("-" * 40 + "\n")
         f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
         f.write(f"Einstieg: {row['Einstieg']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
+        # Ändere die Zeile im Briefing-Teil so:
+        f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
         f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
         f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
         f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
