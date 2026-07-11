@@ -5,6 +5,7 @@ import datetime
 import time
 import sys
 import os
+from scipy.signal import argrelextrema
 from groq import Groq
 
 # Importe für Alpaca
@@ -82,7 +83,7 @@ def update_status_logic(row):
     # Standardwerte
     status = "VALIDE"
     grund = "Alles ok"
-
+     
     if row['RSI'] > 70:
         status, grund = "ACHTUNG", "RSI überkauft (>70)"
     elif row['Pattern'] != "Kein" and row['Vol_Ratio'] < 0.5:
@@ -91,8 +92,13 @@ def update_status_logic(row):
         status, grund = "ACHTUNG", "Bärischer MACD-Trend"
     elif row['Kurs'] >= row['TP1']:
         status, grund = "GELAUFEN", "Kursziel erreicht"
+    # 2. DANN DIE SIGNALE (Nur wenn keine Warnung vorliegt)
+    elif row['Divergenz'] == "Bullisch":
+        return pd.Series(["VALIDE", "Bullische Divergenz (Signal)"])
     
-    return pd.Series([status, grund])
+    # 3. STANDARDFALL
+    else:
+        return pd.Series(["VALIDE", "Alles ok"])
 
 # --- FUNKTIONEN ---
 def get_sp500_data():
@@ -286,7 +292,34 @@ def check_bullish_confirmation(df):
         return "Engulfing"
         
     return None
+
+def check_rsi_divergence(data):
+    """Prüft auf RSI-Divergenz in den letzten 40 Tagen."""
+    # Wir schauen auf die letzten 40 Tage für die Minima/Maxima
+    df = data.tail(40)
     
+    # Lokale Extrema finden (order=5 bedeutet: min 5 Kerzen Abstand für einen Peak)
+    ilocs_min = argrelextrema(df['Close'].values, np.less_equal, order=5)[0]
+    ilocs_max = argrelextrema(df['Close'].values, np.greater_equal, order=5)[0]
+    
+    # Brauchen mindestens 2 Punkte für einen Vergleich
+    if len(ilocs_min) < 2 or len(ilocs_max) < 2:
+        return None
+
+    # Bullische Divergenz (Preis tiefer, RSI höher)
+    if (df['Close'].iloc[ilocs_min[-1]] < df['Close'].iloc[ilocs_min[-2]]) and \
+       (df['RSI'].iloc[ilocs_min[-1]] > df['RSI'].iloc[ilocs_min[-2]]):
+        return "Bullisch"
+        
+    # Bärische Divergenz (Preis höher, RSI tiefer)
+    if (df['Close'].iloc[ilocs_max[-1]] > df['Close'].iloc[ilocs_max[-2]]) and \
+       (df['RSI'].iloc[ilocs_max[-1]] < df['RSI'].iloc[ilocs_max[-2]]):
+        return "Bärisch"
+        
+    return None
+
+
+
 def get_fib_levels(data):
     """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
     recent_data = data.iloc[-60:]
@@ -370,6 +403,7 @@ def analyze_a_setup(ticker, sektor):
         data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+        data['Divergenz'] = check_rsi_divergence(data)
         
         # RSI Berechnung direkt als Spalte
         delta = data['Close'].diff()
@@ -536,6 +570,7 @@ def analyze_a_setup(ticker, sektor):
             "Status2": str(status_val),
             "Status_Grund": str(grund_val),
             "RSI": clean_num(last_row['RSI']),
+            "Divergenz": str(last_row['Divergenz'] if 'Divergenz' in last_row else "
             "MACD_Trend": str(macd_trend),
             "CRV1": clean_num(crv1),
             "CRV2": clean_num(crv2),
@@ -687,9 +722,9 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
         f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
         f.write("-" * 40 + "\n")
-        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-        f.write(f"Einstieg: {row['Einstieg']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
-        # Ändere die Zeile im Briefing-Teil so:
+        # Hier habe ich die Divergenz eingefügt:
+        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']} | Div: {row.get('Divergenz', 'Keine')}\n")
+        # Einstiegszeile bereinigt:
         f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
         f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
         f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
@@ -701,17 +736,13 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
     f.write("="*50 + "\n")
     
-    # HIER MUSS 'achtung_setups' stehen, NICHT 'watchlist'
     for ticker_val, row in achtung_setups.iterrows():
         upside_val = row.get('Upside_%_vs_Aktuell') 
-        # Sicherstellen, dass der Wert vorhanden ist
-        if upside_val is not None:
-            upside_text = f"{upside_val:.2f}%"
-        else:
-            upside_text = "Kein Ziel"
+        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel"
 
-        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
+        # Hier habe ich die Divergenz ebenfalls eingefügt:
+        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']} | Div: {row.get('Divergenz', 'Keine')}\n")
         f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
-        f.write("-" * 30 + "\n")
-            
+        f.write("-" * 30 + "\n")            
+        
     f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
