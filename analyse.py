@@ -73,6 +73,7 @@ def berechne_indikatoren(df):
     df['RSI'] = get_safe_rsi(df)
     
     return df
+    
 def get_analyst_target(ticker, retries=3):
     """Holt Analysten-Daten mit Retry-Logik."""
     for i in range(retries):
@@ -107,9 +108,8 @@ def get_safe_rsi(df, period=14):
 
 # --- FUNKTIONEN ---
 def update_status_logic(row):
-    # Defensiver Zugriff: .get(key, default_value)
-    # Falls die Spalte fehlt, wird der Standardwert genommen
-    rsi = row.get('RSI', 0)
+    # ... (deine Variablen-Extraktion bleibt gleich)
+    rsi = row.get('RSI', 50) # Standard 50, falls was schiefgeht
     pattern = row.get('Pattern', "Kein")
     vol_ratio = row.get('Vol_Ratio', 1.0) # Standard 1.0, damit kein Fehler bei < 0.5
     macd_trend = row.get('MACD_Trend', "Neutral")
@@ -120,6 +120,9 @@ def update_status_logic(row):
     # Logik mit den sicheren Variablen
     if rsi > 70:
         return pd.Series(["ACHTUNG", "RSI überkauft (>70)"])
+    # NEU: Dein RSI-Check für unter 30
+    elif rsi < 30:
+        return pd.Series(["VALIDE", "RSI überverkauft (<30) - Kaufsignal"])   
     elif pattern != "Kein" and vol_ratio < 0.5:
         return pd.Series(["ACHTUNG", f"Schwaches Volumen ({vol_ratio}x SMA20)"])
     elif macd_trend == "Bärisch" and pattern != "Kein":
@@ -537,7 +540,11 @@ def analyze_a_setup(ticker, sektor):
         if last_row['EMA20'] > (last_row['Close'] * 2):
             print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
-           
+
+  except Exception as e:
+        print(f"Fehler bei der Analyse von {ticker}: {e}")
+        return None  # Oder ein leeres Dictionary, falls du das bevorzugst      
+    
         # Berechnung des Upside-Potenzials
         if analysten_ziel > 0:
             upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
