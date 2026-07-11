@@ -367,21 +367,19 @@ def analyze_a_setup(ticker, sektor):
     # Firmennamen abrufen
     try:
         ticker_obj = yf.Ticker(ticker)
-        # Wir versuchen den longName zu laden, falls nicht verfügbar, nehmen wir den Ticker
         info = ticker_obj.info
         firma_name = info.get('longName', ticker)
-        # Fallback, falls longName ein leeres String ist
         if not firma_name or firma_name == "":
             firma_name = ticker
     except:
         firma_name = ticker
-    
-    # ... hier folgt dein restlicher Code ...
+
     # 0. Initialisierung
     setup_typ = "Kein"
     pattern = "Kein"
     tp1 = 0
-    
+
+    # Start des Haupt-Blocks
     try:
         # Kursdaten über Alpaca laden
         start_date = datetime.datetime.now() - datetime.timedelta(days=365)
@@ -390,14 +388,13 @@ def analyze_a_setup(ticker, sektor):
             start=start_date,
             timeframe=TimeFrame.Day
         )
-        
         bars = alpaca_client.get_stock_bars(request)
         data = bars.df
-        
+
         if data.empty:
             print(f"DEBUG: {ticker} -> Daten von Alpaca leer.")
             return None
-            
+
         # Index und Spalten bereinigen
         data = data.reset_index(level=0, drop=True)
         if 'close' in data.columns:
@@ -412,23 +409,18 @@ def analyze_a_setup(ticker, sektor):
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         data['Divergenz'] = check_rsi_divergence(data)
-        
-        # RSI Berechnung sicher als Spalte
+
+        # RSI Berechnung
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        
-        # SICHERHEIT: Division durch Null verhindern (falls 'loss' 0 ist)
         rs = gain / loss.replace(0, 0.000001)
-        
-        # Jetzt 'RSI' als Spalte speichern
         data['RSI'] = 100 - (100 / (1 + rs))
-        data['RSI'] = data['RSI'].fillna(50) # NaN durch 50 ersetzen
-        
-        # Vol_Ratio direkt als Spalte speichern
+        data['RSI'] = data['RSI'].fillna(50)
+
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
         data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
-        
+
         # MACD Berechnung
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = data['Close'].ewm(span=26, adjust=False).mean()
@@ -437,10 +429,9 @@ def analyze_a_setup(ticker, sektor):
         macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
 
         # 2. Trend-Status
-        # Jetzt muss der Kurs über WMA200 UND über EMA200 liegen
         trend_status = "Unter WMA200/EMA200" if (data['Close'].iloc[-1] < data['WMA200'].iloc[-1] or data['Close'].iloc[-1] < data['EMA200'].iloc[-1]) else "OK"
 
-        # 3. Candlestick-Muster bestimmen
+        # 3. Candlestick-Muster
         c1, c2 = data.iloc[-1], data.iloc[-2]
         body = abs(c1['Close'] - c1['Open'])
         lower_wick = min(c1['Open'], c1['Close']) - c1['Low']
@@ -453,8 +444,8 @@ def analyze_a_setup(ticker, sektor):
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
-        
-        # 5. Setup-Typ Definition
+
+        # 5. Setup-Typ
         if ema_breakout and pattern != "Kein":
             setup_typ = f"Kombi: {pattern} + Ausbruch"
         elif ema_breakout:
@@ -462,139 +453,59 @@ def analyze_a_setup(ticker, sektor):
         elif pattern != "Kein":
             setup_typ = f"Reines Pattern: {pattern}"
         else:
-            return None # Keine Filterbedingung erfüllt
+            return None
 
-       # 6. Metriken & Ziele
+        # 6. Metriken & Ziele
         entry = data['Close'].iloc[-1]
-        entry2 = round(data['EMA20'].iloc[-1], 2)
         stop = data['Low'].rolling(10).min().iloc[-1]
         
-        ema20 = data['EMA20'].iloc[-1]
-        ema50 = data['EMA50'].iloc[-1]
-        ema100 = data['EMA100'].iloc[-1]
-        ema200 = data['EMA200'].iloc[-1]
-        wma200 = data['WMA200'].iloc[-1]
-        
-        # Ziele (TP1/TP2) festlegen
         fib1, fib2 = get_fib_levels(data)
-        potenzial_targets = sorted([ema20, ema50, ema100, ema200, wma200, fib1, fib2])
+        potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
         targets_above = [t for t in potenzial_targets if t > entry]
 
         tp1 = targets_above[0] if targets_above else entry * 1.08
         tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
 
-        # --- SICHERE BERECHNUNG ANALYSTEN-ZIEL & UPSIDE ---
         analysten_ziel = get_analyst_target(ticker)
+        if analysten_ziel is None: analysten_ziel = 0.0
         
-        # Sicherstellen, dass analysten_ziel eine Zahl ist (0.0 statt None)
-        if analysten_ziel is None:
-            analysten_ziel = 0.0
-            
-        # Target bestimmen (Analysten-Ziel bevorzugt, sonst technisches TP1)
         target_value = analysten_ziel if analysten_ziel > 0 else tp1
-        
-        # Upside-Potenzial berechnen
-        if entry > 0:
-            upside_potenzial = round(((target_value - entry) / entry) * 100, 2)
-        else:
-            upside_potenzial = 0.0
-            
-        # Risiko prüfen
+        upside_potenzial = round(((target_value - entry) / entry) * 100, 2) if entry > 0 else 0.0
+
         risiko = entry - stop
         if risiko <= 0: return None
         
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
-        # --- HIER EINFÜGEN: CRV-FILTER ---
-        # Verwirft Setups, die ein schlechtes Chance-Risiko-Verhältnis haben
-        if crv1 < 1.0 or crv2 < 1.0:
-            return None 
-        # ---------------------------------
+        if crv1 < 1.0 or crv2 < 1.0: return None
         
-        vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
         risk_perc = round(((entry - stop) / entry) * 100, 2)
-
-        # Nutze data['RSI'] anstatt der alten Variable rsi
-        status_val = "ACHTUNG" if data['RSI'].iloc[-1] > 70 else "VALIDE"
-        grund_val = "RSI zu hoch" if status_val == "ACHTUNG" else "Alles ok"
-             
-        # Nur zur Kontrolle – das hilft dir den Fehler in 1 Sekunde zu finden
-        print(f"DEBUG: Ticker={ticker}, Name={firma_name}, Sektor={sektor}")
-
-        # --- VOR DER RÜCKGABE EINFÜGEN ---
-        # Plausibilitäts-Check: Wenn EMA20 > 2 * Kurs, ist die Berechnung vermutlich falsch
-        current_price = entry
-        ema20_val = data['EMA20'].iloc[-1]
-
-
-        
-        # Datenprüfung
-        if len(data) < 200: 
-            return None
-                
-        # 1. Eindeutiger Zugriff auf die aktuelle Zeile (verhindert Index-Verschiebung)
-        last_row = data.iloc[-1]
-        
-        # 2. Plausibilitäts-Check
-        # EMA20 darf nicht extrem weit vom Kurs entfernt sein (hier Faktor 2 als Limit)
-        if last_row['EMA20'] > (last_row['Close'] * 2):
-            print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
-            return None
-
-    except Exception as e:
-       print(f"Fehler bei der Analyse von {ticker}: {e}")
-       return None  # Oder ein leeres Dictionary, falls du das bevorzugst      
-    
-        # Berechnung des Upside-Potenzials
-        if analysten_ziel > 0:
-            upside_potenzial = round(((analysten_ziel - data['Close'].iloc[-1]) / data['Close'].iloc[-1]) * 100, 2)
-        else:
-            # Fallback auf TP1, falls kein Analysten-Ziel vorhanden ist
-            # TP1 wird hier durch die Fib-Logik etwas später definiert, 
-            # daher nutzen wir hier den Platzhalter oder berechnen es später.
-            # Da tp1 hier noch nicht existiert, setzen wir es auf 0 und korrigieren es im Return
-            upside_potenzial = None 
-
-        # Das 'if' steht am linken Rand (bzw. auf gleicher Ebene wie der restliche Code)
-        if upside_potenzial is None:
-            # Diese Zeile muss zwingend mit 4 Leerzeichen eingerückt sein
-            upside_potenzial = 0
-
-        # Sicherstellen, dass last_row definiert ist
         last_row = data.iloc[-1]
 
-        # Plausibilitäts-Check (korrekt eingerückt)
+        # Plausibilitäts-Check
         if last_row['EMA20'] > (last_row['Close'] * 2):
-            print(f"DEBUG: Plausibilitätsfehler bei {ticker}. EMA20 ({last_row['EMA20']:.2f}) vs Kurs ({last_row['Close']:.2f})")
             return None
-            
-        #DEBUG: Überprüfe, was wirklich in das Dictionary geht
-        print(f"DEBUG: Ticker {ticker} -> Analysten-Ziel im Dictionary: {analysten_ziel}")
-        
-        # ... am Ende von analyze_a_setup, statt des manuellen Dicts ...
-    
-    # Template für JEDEN Rückgabewert (default Werte)
-    res = {
-        "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
-        "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
-        "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
-        "Upside-Potenzial%": float(upside_potenzial or 0), "Status2": "VALIDE", 
-        "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
-        "Divergenz": str(last_row.get('Divergenz', "Keine")),
-        "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), 
-        "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
-        "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
-        "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
-        "TP1": clean_num(tp1), "TP2": clean_num(tp2),
-        "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0
-    }
-    return res
-    
-    # Das 'except' MUSS auf der gleichen Einrückungsebene wie das 'try' stehen!
+
+        # Wenn alles erfolgreich durchläuft, erstellen wir das Dictionary
+        res = {
+            "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
+            "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
+            "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
+            "Upside-Potenzial%": float(upside_potenzial), "Status2": "VALIDE", 
+            "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
+            "Divergenz": str(last_row.get('Divergenz', "Keine")),
+            "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), 
+            "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
+            "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
+            "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
+            "TP1": clean_num(tp1), "TP2": clean_num(tp2),
+            "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0
+        }
+        return res
+
     except Exception as e:
-        print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
+        print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
-
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
