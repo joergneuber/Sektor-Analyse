@@ -676,12 +676,13 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
         f.write("\n")
 
-        # Füge diesen Block UNTER dem oberen Block hinzu, um die Watchlist nicht zu verlieren:
-        f.write("\n" + "="*50 + "\n")
-        f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
-        f.write("="*50 + "\n")
+    # Füge diesen Block UNTER dem oberen Block hinzu, um die Watchlist nicht zu verlieren:
+    f.write("\n" + "="*50 + "\n")
+    f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
+    f.write("="*50 + "\n")
+    
     for ticker_val, row in watchlist.iterrows(): # 'watchlist' wäre dein DataFrame mit den 'ACHTUNG' Trades
-            f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
+        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
         
         # Upside berechnen
         upside_val = row.get('Upside_%_vs_Aktuell') 
