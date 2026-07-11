@@ -83,7 +83,25 @@ def berechne_indikatoren(df):
         
     return df
 
-get_analyst_target
+def get_analyst_target(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        data = stock.info
+        # Hol dir den Wert. Wenn None, wird target automatisch None
+        target = data.get('targetMeanPrice') 
+        
+        # DEBUG: Damit siehst du in der Konsole, was ankommt
+        print(f"DEBUG: {ticker} | Gefundenes Analysten-Ziel: {target}")
+
+        # Rückgabe: Wenn target existiert und > 0, gib es zurück. Sonst None.
+        if target and target > 0:
+            return target
+        return None
+        
+    except Exception as e:
+        print(f"ERROR: Fehler bei {ticker}: {e}")
+        return None
+
 
 # --- FUNKTIONEN ---
 def update_status_logic(row):
