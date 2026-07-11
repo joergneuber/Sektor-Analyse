@@ -687,42 +687,17 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
     f.write("="*50 + "\n")
     
+    # HIER MUSS 'achtung_setups' stehen, NICHT 'watchlist'
     for ticker_val, row in achtung_setups.iterrows():
         upside_val = row.get('Upside_%_vs_Aktuell') 
-        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel"
+        # Sicherstellen, dass der Wert vorhanden ist
+        if upside_val is not None:
+            upside_text = f"{upside_val:.2f}%"
+        else:
+            upside_text = "Kein Ziel"
 
         f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
         f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
         f.write("-" * 30 + "\n")
             
-    f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
-    
-    # Hier wurde 'watchlist' durch 'achtung_setups' ersetzt
-    for ticker_val, row in achtung_setups.iterrows():
-        upside_val = row.get('Upside_%_vs_Aktuell') 
-        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel"
-
-        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
-        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
-        f.write("-" * 30 + "\n")
-            
-    f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
-    
-    for ticker_val, row in watchlist.iterrows(): # 'watchlist' wäre dein DataFrame mit den 'ACHTUNG' Trades
-        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
-        
-        # Upside berechnen
-        upside_val = row.get('Upside_%_vs_Aktuell') 
-        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel" # .2f formatiert auf 2 Nachkommastellen
-
-        # Anpassung: Textlabel korrigiert
-        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Technisches Potenzial: {upside_text} (basierend auf Kurs {row['Kurs']})\n")
-        f.write("-" * 30 + "\n")
-
-    # 2. WATCHLIST (ACHTUNG)
-    f.write("\nWATCHLIST (ACHTUNG)\n")
-    for ticker_val, row in achtung_setups.iterrows():
-        f.write(f"Ticker: {ticker_val} | Sektor: {row['Sektor']} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
-            
-    # HIER: Die überflüssige Klammer am Ende wurde entfernt
     f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
