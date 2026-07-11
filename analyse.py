@@ -60,16 +60,27 @@ sektoren_aktien = {
 }
 
 def berechne_indikatoren(df):
-    if len(df) < 14:
-        return df 
-    
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    
-    rs = gain / loss.replace(0, 0.000001)
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
+    # 1. FIX: MultiIndex entfernen, falls yfinance das so liefert
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    # 2. Prüfen, ob 'Close' überhaupt existiert
+    if 'Close' not in df.columns:
+        return df # Gib unverändertes df zurück, wenn keine Preisdaten da sind
+
+    # 3. RSI sicher berechnen
+    if len(df) >= 14:
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        
+        # Division durch Null vermeiden
+        rs = gain / loss.replace(0, 0.000001)
+        df['RSI'] = 100 - (100 / (1 + rs))
+    else:
+        # Falls zu wenig Daten, RSI neutral setzen (50), damit der Code nicht abstürzt
+        df['RSI'] = 50.0
+        
     return df
 
 def get_analyst_target(ticker):
