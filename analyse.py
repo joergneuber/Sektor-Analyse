@@ -680,7 +680,7 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write("\n" + "="*50 + "\n")
         f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
         f.write("="*50 + "\n")
-        for ticker_val, row in watchlist.iterrows(): # 'watchlist' wäre dein DataFrame mit den 'ACHTUNG' Trades
+    for ticker_val, row in watchlist.iterrows(): # 'watchlist' wäre dein DataFrame mit den 'ACHTUNG' Trades
             f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
         
         # Upside berechnen
