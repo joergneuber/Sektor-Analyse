@@ -97,38 +97,34 @@ def update_status_logic(row):
 # --- FUNKTIONEN ---
 def get_sp500_data():
     try:
-        # Zeitraum für 300 Tage
         start_date = datetime.datetime.now() - datetime.timedelta(days=300)
-        
-        # Alpaca Anfrage
-        request = StockBarsRequest(
-            symbol_or_symbols=["SPY"],
-            start=start_date,
-            timeframe=TimeFrame.Day
-        )
-        
+        request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day)
         bars = alpaca_client.get_stock_bars(request)
         hist = bars.df
         
-        # Daten prüfen
         if hist.empty or len(hist) < 200:
-            return "S&P 500: Nicht bewertet (Daten unvollständig)"
+            return "S&P 500: Daten unvollständig"
             
-        # Index bereinigen (Alpaca liefert oft einen MultiIndex [Symbol, Timestamp])
         hist = hist.reset_index(level=0, drop=True)
-        
-        # Alpaca liefert 'close' (kleingeschrieben), dein Code erwartet 'Close'
         if 'close' in hist.columns:
             hist = hist.rename(columns={'close': 'Close'})
             
-        last_close = hist['Close'].iloc[-1]
+        # WICHTIG: Erst berechnen, dann returnen
+        close = hist['Close']
+        last_close = close.iloc[-1]
         
-        # ... ab hier dein restlicher Code ...
-        return last_close # oder was auch immer du weitergibst
+        # Indikatoren berechnen
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+        weights = np.arange(1, 201)
+        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
         
+        return (f"S&P 500: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
+                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+                
     except Exception as e:
-        print(f"FEHLER beim Abruf von SPY: {e}")
-        return "S&P 500: Fehler beim Datenabruf"
+        return f"S&P 500: Fehler beim Abruf ({e})"
         
         # Indikatoren berechnen
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
@@ -162,22 +158,32 @@ def get_qqq_quote():
         if hist.empty or len(hist) < 200:
             return "Nasdaq: Nicht bewertet (Daten unvollständig)"
             
-        # Index bereinigen (Alpaca liefert oft einen MultiIndex [Symbol, Timestamp])
+        # Index bereinigen
         hist = hist.reset_index(level=0, drop=True)
-        
-        # Alpaca liefert 'close' (kleingeschrieben), wir benennen es um
         if 'close' in hist.columns:
             hist = hist.rename(columns={'close': 'Close'})
             
-        last_close = hist['Close'].iloc[-1]
+        # Daten für Berechnungen extrahieren
+        close = hist['Close']
+        last_close = close.iloc[-1]
         
-        # ... Rest deines Codes ...
-        return last_close
+        # Indikatoren berechnen
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
+        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
         
+        # WMA200 Berechnung
+        weights = np.arange(1, 201)
+        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
+        
+        # Rückgabe des formatierten Strings
+        return (f"Nasdaq: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
+                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+                
     except Exception as e:
         print(f"FEHLER beim Abruf von QQQ: {e}")
-        return "Nasdaq: Fehler beim Datenabruf"
-        
+        return f"Nasdaq: Fehler beim Datenabruf ({e})"        
         # Indikatoren berechnen
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
@@ -676,10 +682,21 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
         f.write("\n")
 
-    # Füge diesen Block UNTER dem oberen Block hinzu, um die Watchlist nicht zu verlieren:
+    # 2. WATCHLIST (ACHTUNG)
     f.write("\n" + "="*50 + "\n")
     f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
     f.write("="*50 + "\n")
+    
+    # Hier wurde 'watchlist' durch 'achtung_setups' ersetzt
+    for ticker_val, row in achtung_setups.iterrows():
+        upside_val = row.get('Upside_%_vs_Aktuell') 
+        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel"
+
+        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
+        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
+        f.write("-" * 30 + "\n")
+            
+    f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
     
     for ticker_val, row in watchlist.iterrows(): # 'watchlist' wäre dein DataFrame mit den 'ACHTUNG' Trades
         f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
