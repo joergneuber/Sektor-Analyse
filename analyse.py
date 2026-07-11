@@ -460,19 +460,19 @@ def analyze_a_setup(ticker, sektor):
         
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
+        # --- HIER EINFÜGEN: CRV-FILTER ---
+        # Verwirft Setups, die ein schlechtes Chance-Risiko-Verhältnis haben
+        if crv1 < 1.0 or crv2 < 1.0:
+            return None 
+        # ---------------------------------
+        
         vol_ratio = round(data['Volume'].iloc[-1] / data['Vol_SMA20'].iloc[-1], 2)
         risk_perc = round(((entry - stop) / entry) * 100, 2)
 
         # Nutze data['RSI'] anstatt der alten Variable rsi
         status_val = "ACHTUNG" if data['RSI'].iloc[-1] > 70 else "VALIDE"
         grund_val = "RSI zu hoch" if status_val == "ACHTUNG" else "Alles ok"
-
-        # ... (nachdem tp1 definiert wurde)
-        
-        # Berechne Upside-Potenzial final, falls noch None
-        if upside_potenzial is None:
-            upside_potenzial = round(((tp1 - entry) / entry) * 100, 2)
-              
+             
         # Nur zur Kontrolle – das hilft dir den Fehler in 1 Sekunde zu finden
         print(f"DEBUG: Ticker={ticker}, Name={firma_name}, Sektor={sektor}")
 
