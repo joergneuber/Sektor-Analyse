@@ -68,6 +68,20 @@ def berechne_indikatoren(df):
     if 'Close' not in df.columns:
         return df # Gib unverändertes df zurück, wenn keine Preisdaten da sind
 
+    # Prüfen, ob RSI existiert, sonst berechnen
+    if 'RSI' not in df.columns:
+        # Einfache RSI-Berechnung (Standardperiode 14)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+
+        # Jetzt ist die Spalte garantiert da (oder wurde eben erst erstellt)
+        # Hier geht dein restlicher Code weiter, z.B.:
+    if df['RSI'].iloc[-1] < 30: 
+    # ...
+    
     # 3. RSI sicher berechnen
     if len(df) >= 14:
         delta = df['Close'].diff()
@@ -83,24 +97,39 @@ def berechne_indikatoren(df):
         
     return df
 
-def get_analyst_target(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        data = stock.info
-        # Hol dir den Wert. Wenn None, wird target automatisch None
-        target = data.get('targetMeanPrice') 
-        
-        # DEBUG: Damit siehst du in der Konsole, was ankommt
-        print(f"DEBUG: {ticker} | Gefundenes Analysten-Ziel: {target}")
+import yfinance as yf
+import time
 
-        # Rückgabe: Wenn target existiert und > 0, gib es zurück. Sonst None.
-        if target and target > 0:
-            return target
-        return None
-        
-    except Exception as e:
-        print(f"ERROR: Fehler bei {ticker}: {e}")
-        return None
+def get_analyst_target(ticker, retries=3):
+    """Holt Analysten-Daten mit Retry-Logik."""
+    for i in range(retries):
+        try:
+            stock = yf.Ticker(ticker)
+            data = stock.info
+            target = data.get('targetMeanPrice')
+            
+            if target and target > 0:
+                return target
+            return None
+            
+        except Exception as e:
+            print(f"Versuch {i+1} für {ticker} fehlgeschlagen: {e}. Warte 2s...")
+            time.sleep(2)
+    return None
+
+def get_safe_rsi(df, period=14):
+    """Berechnet RSI und gibt immer eine saubere Series zurück."""
+    if 'Close' not in df.columns or len(df) < period:
+        return pd.Series([50.0] * len(df), index=df.index)
+    
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    # Division durch Null verhindern
+    rs = gain / loss.replace(0, 1e-9) 
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0)
 
 
 # --- FUNKTIONEN ---
@@ -323,8 +352,6 @@ def check_rsi_divergence(data):
         
     return None
 
-
-
 def get_fib_levels(data):
     """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
     recent_data = data.iloc[-60:]
@@ -410,19 +437,17 @@ def analyze_a_setup(ticker, sektor):
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         data['Divergenz'] = check_rsi_divergence(data)
         
-        # RSI Berechnung direkt als Spalte
+        # RSI Berechnung sicher als Spalte
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         
-        # Hier wird 'RSI' als Spalte gespeichert
-        data['RSI'] = 100 - (100 / (1 + (gain / loss)))
-        data['RSI'] = data['RSI'].fillna(50) # Wichtig: NaN durch 50 ersetzen
+        # SICHERHEIT: Division durch Null verhindern (falls 'loss' 0 ist)
+        rs = gain / loss.replace(0, 0.000001)
         
-        # --- HIER DEIN SICHERHEITS-CHECK ---
-        if 'RSI' not in data.columns:
-            print(f"FEHLER: RSI konnte für {ticker} nicht berechnet werden.")
-            return None # Überspringt diesen Ticker sauber
+        # Jetzt 'RSI' als Spalte speichern
+        data['RSI'] = 100 - (100 / (1 + rs))
+        data['RSI'] = data['RSI'].fillna(50) # NaN durch 50 ersetzen
         
         # Vol_Ratio direkt als Spalte speichern
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
@@ -566,35 +591,25 @@ def analyze_a_setup(ticker, sektor):
         #DEBUG: Überprüfe, was wirklich in das Dictionary geht
         print(f"DEBUG: Ticker {ticker} -> Analysten-Ziel im Dictionary: {analysten_ziel}")
         
-        return {
-            "Ticker": str(ticker),
-            "Name": str(firma_name),
-            "Sektor": str(sektor),
-            "Trend": str(trend_status),
-            "Setup_Typ": str(setup_typ),
-            "Pattern": str(pattern),
-            "Tech-Kursziel": clean_num(tp1),
-            # Ändere das kurzzeitig so:
-            "Analysten-Kursziel": analysten_ziel,
-            "Upside-Potenzial%": upside_potenzial,
-            "Status2": str(status_val),
-            "Status_Grund": str(grund_val),
-            "RSI": clean_num(last_row['RSI']),
-            "Divergenz": str(last_row['Divergenz'] if 'Divergenz' in last_row else "Keine"),
-            "MACD_Trend": str(macd_trend),
-            "CRV1": clean_num(crv1),
-            "CRV2": clean_num(crv2),
-            "Kurs": round(last_row['Close'], 2),
-            "Einstieg": round(last_row['Close'], 2),
-            "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
-            "Stop": clean_num(stop),
-            "Risk_Perc": clean_num(risk_perc),
-            "TP1": clean_num(tp1),
-            "TP2": clean_num(tp2),
-            "Vol_Ratio": clean_num(last_row['Vol_Ratio']),
-            "Ideales_Delta": clean_num(0)
-        }
-
+        # ... am Ende von analyze_a_setup, statt des manuellen Dicts ...
+    
+    # Template für JEDEN Rückgabewert (default Werte)
+    res = {
+        "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
+        "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
+        "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
+        "Upside-Potenzial%": float(upside_potenzial or 0), "Status2": "VALIDE", 
+        "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
+        "Divergenz": str(last_row.get('Divergenz', "Keine")),
+        "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), 
+        "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
+        "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
+        "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
+        "TP1": clean_num(tp1), "TP2": clean_num(tp2),
+        "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0
+    }
+    return res
+    
     # Das 'except' MUSS auf der gleichen Einrückungsebene wie das 'try' stehen!
     except Exception as e:
         print(f"FEHLER: Bei der Analyse von {ticker} ist ein Problem aufgetreten: {e}")
