@@ -367,6 +367,7 @@ def analyze_a_setup(ticker, sektor):
         data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
         data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
         data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean()
+        data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         
@@ -391,7 +392,8 @@ def analyze_a_setup(ticker, sektor):
         macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
 
         # 2. Trend-Status
-        trend_status = "Unter WMA200" if data['Close'].iloc[-1] < data['WMA200'].iloc[-1] else "OK"
+        # Jetzt muss der Kurs über WMA200 UND über EMA200 liegen
+        trend_status = "Unter WMA200/EMA200" if (data['Close'].iloc[-1] < data['WMA200'].iloc[-1] or data['Close'].iloc[-1] < data['EMA200'].iloc[-1]) else "OK"
 
         # 3. Candlestick-Muster bestimmen
         c1, c2 = data.iloc[-1], data.iloc[-2]
@@ -417,44 +419,42 @@ def analyze_a_setup(ticker, sektor):
         else:
             return None # Keine Filterbedingung erfüllt
 
-        # 6. Metriken & Ziele
+       # 6. Metriken & Ziele
         entry = data['Close'].iloc[-1]
-        
-        # NEU: Re-Test Einstieg am EMA20
         entry2 = round(data['EMA20'].iloc[-1], 2)
-        
         stop = data['Low'].rolling(10).min().iloc[-1]
         
         ema20 = data['EMA20'].iloc[-1]
         ema50 = data['EMA50'].iloc[-1]
         ema100 = data['EMA100'].iloc[-1]
+        ema200 = data['EMA200'].iloc[-1]
         wma200 = data['WMA200'].iloc[-1]
         
-        # 1. Zuerst die Ziele (TP1/TP2) festlegen
+        # Ziele (TP1/TP2) festlegen
         fib1, fib2 = get_fib_levels(data)
-        potenzial_targets = sorted([ema20, ema50, ema100, wma200, fib1, fib2])
+        potenzial_targets = sorted([ema20, ema50, ema100, ema200, wma200, fib1, fib2])
         targets_above = [t for t in potenzial_targets if t > entry]
 
         tp1 = targets_above[0] if targets_above else entry * 1.08
         tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
 
-        # Erst den Wert holen (Stelle sicher, dass dies VOR der Prüfung passiert)
+        # --- SICHERE BERECHNUNG ANALYSTEN-ZIEL & UPSIDE ---
         analysten_ziel = get_analyst_target(ticker)
-
-        # Berechnung des Upside-Potenzials (Einmalig und sicher)
-        # Wir prüfen erst auf None, dann auf den Wert > 0
-        if analysten_ziel is not None and analysten_ziel > 0:
-            target_value = analysten_ziel
-        else:
-            # Fallback auf Technisches Kursziel (TP1), falls kein Analysten-Ziel vorliegt
-            target_value = tp1
-
-        # Finale Berechnung
+        
+        # Sicherstellen, dass analysten_ziel eine Zahl ist (0.0 statt None)
+        if analysten_ziel is None:
+            analysten_ziel = 0.0
+            
+        # Target bestimmen (Analysten-Ziel bevorzugt, sonst technisches TP1)
+        target_value = analysten_ziel if analysten_ziel > 0 else tp1
+        
+        # Upside-Potenzial berechnen
         if entry > 0:
             upside_potenzial = round(((target_value - entry) / entry) * 100, 2)
         else:
-            upside_potenzial = 0.0   
+            upside_potenzial = 0.0
             
+        # Risiko prüfen
         risiko = entry - stop
         if risiko <= 0: return None
         
@@ -625,18 +625,19 @@ if __name__ == "__main__":
         print(f"DEBUG: Setups nach Sektor-Filter & Trend-Check: {len(df_s)}")
 
     # 6. KONVERTIERUNG & SORTIEREN
-    if not df_s.empty:
-        cols_to_num = ['CRV1', 'Risk_Perc']
-        for col in cols_to_num:
-            df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
+        if not df_s.empty:
+            cols_to_num = ['CRV1', 'Risk_Perc', 'Upside-Potenzial%'] # 'Upside-Potenzial%' hier hinzufügen
+            for col in cols_to_num:
+                df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
 
-        df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
-        # Sortierung: Status (Valide zuerst), dann Momentum (Upside), dann CRV (Qualität)
-        df_s = df_s.sort_values(
-            by=['Status_Order', 'Upside_%_vs_Aktuell', 'CRV1'], 
-            ascending=[True, False, False]
-        )
-        df_s = df_s.drop(columns=['Status_Order'])
+            df_s['Status_Order'] = df_s['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
+            
+            # HIER ÄNDERN: Verwende den ursprünglichen Namen 'Upside-Potenzial%'
+            df_s = df_s.sort_values(
+                by=['Status_Order', 'Upside-Potenzial%', 'CRV1'], 
+                ascending=[True, False, False]
+            )
+            df_s = df_s.drop(columns=['Status_Order'])
 
     # 7. BEREINIGUNG & FORMATIERUNG
     df_clean = df_s.copy()
