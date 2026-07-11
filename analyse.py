@@ -80,20 +80,26 @@ def get_analyst_target(ticker):
 
 # --- FUNKTIONEN ---
 def update_status_logic(row):
-    # Standardwerte
-    status = "VALIDE"
-    grund = "Alles ok"
-     
-    if row['RSI'] > 70:
-        status, grund = "ACHTUNG", "RSI überkauft (>70)"
-    elif row['Pattern'] != "Kein" and row['Vol_Ratio'] < 0.5:
-        status, grund = "ACHTUNG", f"Schwaches Volumen ({row['Vol_Ratio']}x SMA20)"
-    elif row['MACD_Trend'] == "Bärisch" and row['Pattern'] != "Kein":
-        status, grund = "ACHTUNG", "Bärischer MACD-Trend"
-    elif row['Kurs'] >= row['TP1']:
-        status, grund = "GELAUFEN", "Kursziel erreicht"
-    # 2. DANN DIE SIGNALE (Nur wenn keine Warnung vorliegt)
-    elif row['Divergenz'] == "Bullisch":
+    # Defensiver Zugriff: .get(key, default_value)
+    # Falls die Spalte fehlt, wird der Standardwert genommen
+    rsi = row.get('RSI', 0)
+    pattern = row.get('Pattern', "Kein")
+    vol_ratio = row.get('Vol_Ratio', 1.0) # Standard 1.0, damit kein Fehler bei < 0.5
+    macd_trend = row.get('MACD_Trend', "Neutral")
+    kurs = row.get('Kurs', 0)
+    tp1 = row.get('TP1', float('inf')) # Unendlich, falls kein TP1 existiert
+    divergenz = row.get('Divergenz', "Keine")
+
+    # Logik mit den sicheren Variablen
+    if rsi > 70:
+        return pd.Series(["ACHTUNG", "RSI überkauft (>70)"])
+    elif pattern != "Kein" and vol_ratio < 0.5:
+        return pd.Series(["ACHTUNG", f"Schwaches Volumen ({vol_ratio}x SMA20)"])
+    elif macd_trend == "Bärisch" and pattern != "Kein":
+        return pd.Series(["ACHTUNG", "Bärischer MACD-Trend"])
+    elif kurs >= tp1:
+        return pd.Series(["GELAUFEN", "Kursziel erreicht"])
+    elif divergenz == "Bullisch":
         return pd.Series(["VALIDE", "Bullische Divergenz (Signal)"])
     
     # 3. STANDARDFALL
@@ -643,10 +649,25 @@ if __name__ == "__main__":
         # Jetzt erst den Index setzen
         df_s = df_s.set_index('Ticker')
         
-        # B) Status-Logik anwenden
-        df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
+        # Hier die Sicherheitsprüfung einfügen:
+        if 'Divergenz' not in df_s.columns:
+            df_s['Divergenz'] = "Keine"
 
-    # 5. FILTERN
+        # --- VORBEREITUNG FÜR DAS APPLY ---
+
+        # Sicherstellen, dass alle benötigten Spalten existieren, falls der Fetch fehlgeschlagen ist
+        for col in ['Divergenz', 'RSI', 'Pattern', 'Vol_Ratio', 'MACD_Trend', 'TP1']:
+            if col not in df_s.columns:
+                # Falls es eine Zahlenspalte ist: 0 setzen
+                if col in ['RSI', 'Vol_Ratio', 'TP1']:
+                    df_s[col] = 0
+                # Falls es eine Textspalte ist: "Kein" oder "Neutral" setzen
+                else:
+                    df_s[col] = "Kein"
+
+        # Erst danach kommt dein eigentlicher Aufruf, der vorher abgestürzt ist:
+        df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
+    
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
         top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
