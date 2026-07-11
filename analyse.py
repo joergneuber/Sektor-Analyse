@@ -59,6 +59,19 @@ sektoren_aktien = {
     "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
 }
 
+def berechne_indikatoren(df):
+    if len(df) < 14:
+        return df 
+    
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    
+    rs = gain / loss.replace(0, 0.000001)
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    return df
+
 def get_analyst_target(ticker):
     try:
         stock = yf.Ticker(ticker)
