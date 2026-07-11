@@ -121,7 +121,6 @@ def get_sp500_data():
         if 'close' in hist.columns:
             hist = hist.rename(columns={'close': 'Close'})
             
-        # WICHTIG: Erst berechnen, dann returnen
         close = hist['Close']
         last_close = close.iloc[-1]
         
@@ -135,19 +134,6 @@ def get_sp500_data():
         return (f"S&P 500: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
                 f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
                 
-    except Exception as e:
-        return f"S&P 500: Fehler beim Abruf ({e})"
-        
-        # Indikatoren berechnen
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
-        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
-        weights = np.arange(1, 201)
-        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        
-        return (f"S&P 500: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
     except Exception as e:
         return f"S&P 500: Fehler beim Abruf ({e})"
 
@@ -195,19 +181,7 @@ def get_qqq_quote():
                 
     except Exception as e:
         print(f"FEHLER beim Abruf von QQQ: {e}")
-        return f"Nasdaq: Fehler beim Datenabruf ({e})"        
-        # Indikatoren berechnen
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
-        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
-        weights = np.arange(1, 201)
-        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        
-        return (f"Nasdaq: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
-    except Exception as e:
-        return f"Nasdaq: Fehler beim Abruf ({e})"
+        return f"Nasdaq: Fehler beim Datenabruf ({e})"
 
 def get_perf(ticker, name):
     try:
@@ -743,9 +717,9 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
         f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
         f.write("-" * 40 + "\n")
-        # Hier habe ich die Divergenz eingefügt:
-        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']} | Div: {row.get('Divergenz', 'Keine')}\n")
-        # Einstiegszeile bereinigt:
+        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+        f.write(f"Einstieg: {row['Einstieg']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
+        # Ändere die Zeile im Briefing-Teil so:
         f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
         f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
         f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
@@ -757,13 +731,17 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
     f.write("="*50 + "\n")
     
+    # HIER MUSS 'achtung_setups' stehen, NICHT 'watchlist'
     for ticker_val, row in achtung_setups.iterrows():
         upside_val = row.get('Upside_%_vs_Aktuell') 
-        upside_text = f"{upside_val:.2f}%" if upside_val is not None else "Kein Ziel"
+        # Sicherstellen, dass der Wert vorhanden ist
+        if upside_val is not None:
+            upside_text = f"{upside_val:.2f}%"
+        else:
+            upside_text = "Kein Ziel"
 
-        # Hier habe ich die Divergenz ebenfalls eingefügt:
-        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']} | Div: {row.get('Divergenz', 'Keine')}\n")
+        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
         f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
-        f.write("-" * 30 + "\n")            
-        
+        f.write("-" * 30 + "\n")
+            
     f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
