@@ -570,7 +570,7 @@ def analyze_a_setup(ticker, sektor):
             "Status2": str(status_val),
             "Status_Grund": str(grund_val),
             "RSI": clean_num(last_row['RSI']),
-            "Divergenz": str(last_row['Divergenz'] if 'Divergenz' in last_row else "
+            "Divergenz": str(last_row['Divergenz'] if 'Divergenz' in last_row else "Keine"),
             "MACD_Trend": str(macd_trend),
             "CRV1": clean_num(crv1),
             "CRV2": clean_num(crv2),
