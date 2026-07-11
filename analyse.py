@@ -639,7 +639,28 @@ if __name__ == "__main__":
                 else:
                     df_s[col] = "Kein"
 
-        # Erst danach kommt dein eigentlicher Aufruf, der vorher abgestürzt ist:
+        # --- SICHERE VORBEREITUNG FÜR APPLY ---
+
+        # Spalten, die sicher numerisch sein müssen
+        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1']
+        
+        for col in numeric_cols:
+            if col in df_s.columns:
+                # Konvertiere in Zahl, Fehler werden zu NaN, diese füllen wir mit 0
+                df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
+            else:
+                # Falls die Spalte komplett fehlt, erstelle sie mit 0
+                df_s[col] = 0
+
+        # Spalten, die Text sein müssen
+        text_cols = ['Pattern', 'MACD_Trend', 'Divergenz']
+        for col in text_cols:
+            if col in df_s.columns:
+                df_s[col] = df_s[col].fillna("Kein").astype(str)
+            else:
+                df_s[col] = "Kein"
+
+        # JETZT ist das DataFrame sauber und der Fehler beim Vergleich verschwindet
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
     
     # 5. FILTERN (Erweitert um Trend-Check)
