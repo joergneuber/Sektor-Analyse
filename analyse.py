@@ -529,8 +529,23 @@ def analyze_a_setup(ticker, sektor):
         # Plausibilitäts-Check
         if last_row['EMA20'] > (last_row['Close'] * 2):
             return None
-
-        # Dictionary erstellen
+        
+        # --- Debug-Detektiv ---
+        bedingung_erfuellt = (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90
+        
+        # Nur um zu sehen, ob wir überhaupt in die Nähe eines Setups kommen:
+        if bedingung_erfuellt:
+            print(f"---> TREFFER: {ticker} erfüllt Kriterien!")
+        
+        # --- Eigentliche Logik ---
+        if bedingung_erfuellt:
+            # 1. Setup-Typ bestimmen
+            if pattern != "Kein":
+                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
+            else:
+                setup_typ = "Trend-Setup (Basis)"
+            
+            # 2. Dictionary erstellen
             res = {
                 "Ticker": str(ticker), 
                 "Name": str(firma_name), 
