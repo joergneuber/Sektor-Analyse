@@ -168,6 +168,29 @@ def get_sp500_data():
     except Exception as e:
         return f"S&P 500: Fehler beim Abruf ({e})"
 
+def get_benchmark_close():
+    """Lädt die rohen SPY-Schlusskurse (ca. 1 Jahr) als Series für die
+    Relative-Stärke-Berechnung einzelner Aktien gegenüber dem Gesamtmarkt."""
+    try:
+        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+        request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day)
+        bars = alpaca_client.get_stock_bars(request)
+        hist = bars.df
+
+        if hist.empty:
+            print("DEBUG: SPY-Benchmark leer, Relative Stärke wird übersprungen.")
+            return None
+
+        hist = hist.reset_index(level=0, drop=True)
+        if 'close' in hist.columns:
+            hist = hist.rename(columns={'close': 'Close'})
+
+        return hist['Close']
+
+    except Exception as e:
+        print(f"FEHLER beim Laden der SPY-Benchmark: {e}")
+        return None
+
 def get_qqq_quote():
     try:
         # Zeitraum für 300 Tage
@@ -363,7 +386,7 @@ def get_ideal_delta(upside_prozent):
     else:
         return 0.40  # Mehr Hebel, weniger Delta-Risiko
 
-def analyze_a_setup(ticker, sektor):
+def analyze_a_setup(ticker, sektor, spy_close=None):
     upside_potenzial = None
     # Firmennamen abrufen
     try:
@@ -503,7 +526,31 @@ def analyze_a_setup(ticker, sektor):
         else:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, Stoch={stoch_k:.1f})")
             return None
-        
+
+        # --- Momentum-Zusatzkriterien: Relative Stärke & 52-Wochen-Hoch-Nähe ---
+        # Klassische Momentum-Bausteine (u.a. CANSLIM): Eine Aktie sollte sich
+        # stärker entwickeln als der breite Markt (Relative Stärke) und in der
+        # Nähe ihres 52-Wochen-Hochs notieren statt nahe am Tief.
+
+        # Relative Stärke vs. SPY (60-Tage-Performance im Vergleich zum Index)
+        rel_staerke = None
+        if spy_close is not None and len(spy_close) > 60 and len(data) > 60:
+            stock_perf_60 = ((data['Close'].iloc[-1] / data['Close'].iloc[-60]) - 1) * 100
+            spy_perf_60 = ((spy_close.iloc[-1] / spy_close.iloc[-60]) - 1) * 100
+            rel_staerke = round(stock_perf_60 - spy_perf_60, 2)
+
+            if rel_staerke <= 0:
+                print(f"DEBUG-VERWORFEN: {ticker} | Grund: Relative Stärke vs. SPY <= 0 ({rel_staerke}%)")
+                return None
+
+        # 52-Wochen-Hoch-Nähe (geladene Daten decken ca. 1 Jahr ab)
+        hoch_52w = data['High'].max()
+        abstand_52w_hoch = round(((entry / hoch_52w) - 1) * 100, 2)
+
+        if abstand_52w_hoch < -25:
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Zu weit vom 52-Wochen-Hoch entfernt ({abstand_52w_hoch}%, Hoch={hoch_52w:.2f})")
+            return None
+
         fib1, fib2 = get_fib_levels(data)
         potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
         targets_above = [t for t in potenzial_targets if t > entry]
@@ -599,7 +646,9 @@ def analyze_a_setup(ticker, sektor):
                 "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
                 "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
                 "TP1": clean_num(tp1), "TP2": clean_num(tp2),
-                "Stoch_K": stoch, "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0
+                "Stoch_K": stoch, "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0,
+                "RS_vs_SPY%": clean_num(rel_staerke) if rel_staerke is not None else None,
+                "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch)
             }
             return res
         
@@ -617,14 +666,17 @@ if __name__ == "__main__":
     
     # 2. Performance berechnen
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+
+    # 2b. SPY-Benchmark für die Relative-Stärke-Berechnung laden (einmalig)
+    spy_close = get_benchmark_close()
     
     # 3. Setups verarbeiten (PARALLEL)
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
-    # Aufgabenliste erstellen
+    # Aufgabenliste erstellen (Top 8 Sektoren, konsistent zum finalen Sektor-Filter unten)
     tasks = []
-    for _, row in df_perf.head(10).iterrows():
+    for _, row in df_perf.head(8).iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
         for s in aktien_liste:
             if s not in blacklist:
@@ -634,7 +686,7 @@ if __name__ == "__main__":
     all_setups = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         # Führt analyze_a_setup für alle Tasks gleichzeitig aus
-        results = list(executor.map(lambda p: analyze_a_setup(*p), tasks))
+        results = list(executor.map(lambda p: analyze_a_setup(*p, spy_close=spy_close), tasks))
         
     # Ergebnisse filtern (None-Werte entfernen)
     all_setups = [r for r in results if r is not None]
@@ -644,7 +696,8 @@ if __name__ == "__main__":
     cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
             'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
-            'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta']
+            'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta',
+            'RS_vs_SPY%', 'Abstand_52W_Hoch%']
 
     if not all_setups:
         print("Keine Setups gefunden.")
@@ -680,7 +733,7 @@ if __name__ == "__main__":
         # --- SICHERE VORBEREITUNG FÜR APPLY ---
 
         # Spalten, die sicher numerisch sein müssen
-        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1']
+        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'RS_vs_SPY%', 'Abstand_52W_Hoch%']
         
         for col in numeric_cols:
             if col in df_s.columns:
@@ -703,17 +756,17 @@ if __name__ == "__main__":
     
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
-        top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
+        top_8_sektoren = df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
 
         # DEBUG: Zeigt, an welchem der beiden Kriterien (Sektor oder Trend) die
         # gefundenen Setups vor dem Filter stehen
-        print(f"DEBUG: Top-5-Sektoren laut Rotation-Score: {top_5_sektoren}")
+        print(f"DEBUG: Top-8-Sektoren laut Rotation-Score: {top_8_sektoren}")
         for tk, r in df_s[['Sektor', 'Trend']].iterrows():
-            print(f"DEBUG: Setup vor Filter -> {tk} | Sektor: {r['Sektor']} (in Top5: {r['Sektor'] in top_5_sektoren}) | Trend: {r['Trend']}")
+            print(f"DEBUG: Setup vor Filter -> {tk} | Sektor: {r['Sektor']} (in Top8: {r['Sektor'] in top_8_sektoren}) | Trend: {r['Trend']}")
 
         # NEU: Nur Sektoren-Treffer UND nur Aktien, die im Aufwärtstrend (über WMA200) sind
         df_s = df_s[
-            (df_s['Sektor'].isin(top_5_sektoren)) & 
+            (df_s['Sektor'].isin(top_8_sektoren)) & 
             (df_s['Trend'] == 'OK')
         ].copy()
         
@@ -748,7 +801,7 @@ if __name__ == "__main__":
     cols_to_round = [
         'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
         'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
-        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio'
+        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'RS_vs_SPY%', 'Abstand_52W_Hoch%'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
     
@@ -789,6 +842,7 @@ if __name__ == "__main__":
             f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
             f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
+            f.write(f"RelStärke vs SPY: {row.get('RS_vs_SPY%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
             f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}\n")
             f.write("\n")
 
