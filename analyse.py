@@ -501,6 +501,7 @@ def analyze_a_setup(ticker, sektor):
             
         # 2. Das 'else' MUSS genau unter dem 'if' stehen (gleiche Einrückung)
         else:
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, Stoch={stoch_k:.1f})")
             return None
         
         fib1, fib2 = get_fib_levels(data)
@@ -517,17 +518,22 @@ def analyze_a_setup(ticker, sektor):
         upside_potenzial = round(((target_value - entry) / entry) * 100, 2) if entry > 0 else 0.0
 
         risiko = entry - stop
-        if risiko <= 0: return None
+        if risiko <= 0:
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
+            return None
         
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
-        if crv1 < 1.0 or crv2 < 1.0: return None
+        if crv1 < 1.0 or crv2 < 1.0:
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
+            return None
         
         risk_perc = round(((entry - stop) / entry) * 100, 2)
         last_row = data.iloc[-1]
 
         # Plausibilitäts-Check
         if last_row['EMA20'] > (last_row['Close'] * 2):
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Plausibilitäts-Check fehlgeschlagen (EMA20={last_row['EMA20']:.2f} > 2x Close={last_row['Close']:.2f})")
             return None
         
         # --- Debug-Detektiv ---
