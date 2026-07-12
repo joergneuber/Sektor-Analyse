@@ -415,9 +415,23 @@ def analyze_a_setup(ticker, sektor):
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss.replace(0, 0.000001)
+        
+
+        # Vor der Berechnung des RSI:
+        if len(data) < 15: # Puffer für 14 Perioden + 1
+            print(f"Zu wenig Daten für {ticker}: {len(data)} Zeilen")
+            return None
+
+        # Deine Berechnung des RSI hier einfügen
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
 
+# Danach direkt prüfen:
+if 'RSI' not in data.columns:
+    print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
+    return None
+
+        
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
         data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
 
