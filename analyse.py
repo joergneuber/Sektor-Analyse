@@ -209,6 +209,32 @@ def get_sp500_data():
     except Exception as e:
         return f"S&P 500: Fehler beim Abruf ({e})"
 
+def get_index_benchmark_yf(ticker, label):
+    """Generische Benchmark-Funktion für Indizes, die nicht über Alpaca verfügbar
+    sind (z.B. DAX, EuroStoxx50) - lädt Kursdaten via yfinance, identisches
+    Kennzahlen-Format wie get_sp500_data()."""
+    try:
+        hist = yf.Ticker(ticker).history(period="300d")
+
+        if hist.empty or len(hist) < 200:
+            return f"{label}: Daten unvollständig"
+
+        close = hist['Close']
+        last_close = close.iloc[-1]
+
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
+        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+        weights = np.arange(1, 201)
+        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
+
+        return (f"{label}: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
+                f"EMA100: {e100:.0f} | EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+
+    except Exception as e:
+        return f"{label}: Fehler beim Abruf ({e})"
+
 def get_benchmark_close():
     """Lädt die rohen SPY-Schlusskurse (ca. 1 Jahr) als Series für die
     Relative-Stärke-Berechnung einzelner Aktien gegenüber dem Gesamtmarkt."""
@@ -574,9 +600,12 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
             pattern = "Engulfing"
 
-        # 4. EMA-Ausbruch
+        # 4. EMA-Ausbruch (Crossover darf innerhalb der letzten 3 Kerzen liegen, nicht nur gestern)
+        crossover_kuerzlich = any(
+            data['EMA8'].iloc[-1 - i] <= data['EMA20'].iloc[-1 - i] for i in range(1, 4)
+        )
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
-                       (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
+                       crossover_kuerzlich and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
        
         # --- 5. Setup-Typ mit Pro-Check Filter ---
@@ -587,7 +616,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         stoch_k = 100 * ((data['Close'].iloc[-1] - low_min.iloc[-1]) / (high_max.iloc[-1] - low_min.iloc[-1] + 1e-9))
         
         is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
-        buffer = 0.003  # 0.3% Puffer für Zone
+        buffer = 0.01  # 1.0% Puffer für Zone (vorher 0.3%)
         
         # Prüfung: Kurs in der EMA-Zone?
         price = data['Close'].iloc[-1]
@@ -828,8 +857,11 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
             pattern = "Engulfing"
 
+        crossover_kuerzlich = any(
+            data['EMA8'].iloc[-1 - i] <= data['EMA20'].iloc[-1 - i] for i in range(1, 4)
+        )
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
-                       (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
+                       crossover_kuerzlich and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
 
         low_min = data['Low'].rolling(14).min()
@@ -837,7 +869,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         stoch_k = 100 * ((data['Close'].iloc[-1] - low_min.iloc[-1]) / (high_max.iloc[-1] - low_min.iloc[-1] + 1e-9))
 
         is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
-        buffer = 0.003
+        buffer = 0.01  # 1.0% Puffer für Zone (vorher 0.3%)
 
         price = data['Close'].iloc[-1]
         in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
@@ -948,7 +980,9 @@ if __name__ == "__main__":
     
     # 1. Benchmarks sicher abrufen
     sp500_filter_text = get_sp500_data()
-    qqq_text = get_qqq_quote() 
+    qqq_text = get_qqq_quote()
+    dax_text = get_index_benchmark_yf("^GDAXI", "DAX")
+    eurostoxx_text = get_index_benchmark_yf("^STOXX50E", "EuroStoxx50")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -1168,7 +1202,7 @@ if __name__ == "__main__":
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, Breakouts = nächstes EMA/Fib-Level\n")
         f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
