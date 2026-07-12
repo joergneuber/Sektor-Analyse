@@ -511,6 +511,33 @@ def analyze_a_setup(ticker, sektor):
         tp1 = targets_above[0] if targets_above else entry * 1.08
         tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
 
+        # --- Setup-spezifische Stop-/Ziel-Logik (Pullback vs. Breakout) ---
+        # Ein Pullback-Setup (Kurs testet EMA20/50, Higher-Low bestätigt, kein
+        # Breakout) hat eine andere charttechnische Erwartung als ein Breakout:
+        # Das Ziel ist der letzte Swing-High vor dem Pullback (Rückkehr zum
+        # vorherigen Hoch), der Stop liegt knapp unter dem jüngsten Swing-Low
+        # statt einem starren 10-Tage-Tief, das bei einem Pullback-Entry oft
+        # weit über das tatsächliche Setup-Risiko hinausschießt.
+        # Breakout-Setups (ema_breakout=True) sind von dieser Anpassung nicht
+        # betroffen und nutzen weiterhin die ursprüngliche Stop-/TP1-Logik.
+        is_pullback_setup = (not ema_breakout) and in_ema_zone and is_higher_low
+
+        if is_pullback_setup:
+            # Engerer, setup-naher Stop: Tief der letzten 5 Kerzen
+            swing_low_stop = data['Low'].iloc[-5:].min()
+            if swing_low_stop < entry:
+                stop = swing_low_stop
+
+            # Letzter Swing-High vor dem aktuellen Pullback (Fenster -40 bis -3,
+            # damit die jüngsten Pullback-Kerzen selbst nicht als Ziel zählen)
+            vorlauf = data.iloc[-40:-3]
+            if not vorlauf.empty:
+                swing_high_target = vorlauf['High'].max()
+                if swing_high_target > entry:
+                    tp1 = swing_high_target
+                    hoehere_ziele = [t for t in targets_above if t > tp1]
+                    tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
+
         analysten_ziel = get_analyst_target(ticker)
         if analysten_ziel is None: analysten_ziel = 0.0
         
