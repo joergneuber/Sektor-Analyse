@@ -423,6 +423,16 @@ def analyze_a_setup(ticker, sektor):
         data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()    
+
+        # --- NEU: Stochastik & Marktstruktur ---
+        # Stochastik (14,3,3)
+        low_min = data['Low'].rolling(14).min()
+        high_max = data['High'].rolling(14).max()
+        data['Stoch_K'] = 100 * ((data['Close'] - low_min) / (high_max - low_min + 1e-9))
+        data['Stoch_D'] = data['Stoch_K'].rolling(3).mean()
+        
+        # Marktstruktur (einfacher Higher-Low Check: Low[last] > Low[prev])
+        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-2]
         
         # Danach direkt prüfen:
         if 'RSI' not in data.columns:
@@ -456,19 +466,29 @@ def analyze_a_setup(ticker, sektor):
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
 
-        # 5. Setup-Typ
-        if ema_breakout and pattern != "Kein":
-            setup_typ = f"Kombi: {pattern} + Ausbruch"
-        elif ema_breakout:
-            setup_typ = "Trend-Ausbruch"
-        elif pattern != "Kein":
-            setup_typ = f"Reines Pattern: {pattern}"
-        else:
-            return None
+        # --- 5. Setup-Typ mit Pro-Check Filter ---
+        
+        # Berechnungen für den Filter
+        low_min = data['Low'].rolling(14).min()
+        high_max = data['High'].rolling(14).max()
+        stoch_k = 100 * ((data['Close'].iloc[-1] - low_min.iloc[-1]) / (high_max.iloc[-1] - low_min.iloc[-1] + 1e-9))
+        
+        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-2]
+        buffer = 0.003  # 0.3% Puffer für Zone
+        
+        # Prüfung: Kurs in der EMA-Zone?
+        price = data['Close'].iloc[-1]
+        in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
 
-        # 6. Metriken & Ziele
-        entry = data['Close'].iloc[-1]
-        stop = data['Low'].rolling(10).min().iloc[-1]
+        # Filter-Logik
+        # Nur wenn Stochastik nicht überkauft (<80) UND Trend-Setup oder Zonen-Setup vorliegt
+        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 80:
+            if pattern != "Kein":
+                setup_typ = f"Kombi (Zone/Stoch): {pattern}"
+            else:
+                setup_typ = "Trend-Setup (Zone)"
+        else:
+            return None  # Filtert schwache Signale rigoros aus
         
         fib1, fib2 = get_fib_levels(data)
         potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
@@ -510,6 +530,8 @@ def analyze_a_setup(ticker, sektor):
             "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
             "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
             "TP1": clean_num(tp1), "TP2": clean_num(tp2),
+            # In deiner Funktion analyze_a_setup (im res-Dictionary) hinzufügen:
+            "Stoch_K": float(stoch_k), # Sicherstellen, dass stoch_k hier definiert ist
             "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0
         }
         return res
@@ -676,21 +698,24 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
     f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
     
-    # 1. TOP-CHANCEN (VALIDE)
+    # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV)
     f.write("\n" + "="*50 + "\n")
     f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups)\n")
     f.write("="*50 + "\n")
     
     for ticker_val, row in valide_setups.iterrows():
+        # Stochastik sicher auslesen (fallback auf 0.0 falls nicht vorhanden)
+        stoch_val = row.get('Stoch_K', 0.0)
+        
         f.write(f"\n>>> {ticker_val} | {row['Name']} <<<\n")
         f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
         f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
         f.write("-" * 40 + "\n")
-        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
+        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | Stoch-K: {stoch_val:.1f} | MACD: {row['MACD_Trend']}\n")
         f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
         f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
         f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
-        f.write(f"Suche: Hebelprodukt auf {ticker_val} (Ziel: {row['TP1']})\n")
+        f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}\n")
         f.write("\n")
 
     # 2. WATCHLIST (ACHTUNG)
@@ -698,10 +723,8 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
     f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
     f.write("="*50 + "\n")
     
-    # HIER MUSS 'achtung_setups' stehen, NICHT 'watchlist'
     for ticker_val, row in achtung_setups.iterrows():
         upside_val = row.get('Upside_%_vs_Aktuell') 
-        # Sicherstellen, dass der Wert vorhanden ist
         if upside_val is not None:
             upside_text = f"{upside_val:.2f}%"
         else:
