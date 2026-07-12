@@ -537,8 +537,7 @@ def analyze_a_setup(ticker, sektor):
         # Wir geben die Werte aus, bevor das IF überhaupt startet
         print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | Stoch: {stoch_k} ({type(stoch_k)})")
 
-    try:
-        # Hilfs-Funktion (kann auch außerhalb der Funktion stehen)
+        # Sicherstellen, dass wir echte Booleans haben
         def to_bool(v):
             if isinstance(v, bool): return v
             return str(v).lower() == 'true'
@@ -549,9 +548,10 @@ def analyze_a_setup(ticker, sektor):
         is_hl = to_bool(is_higher_low)
         stoch = float(stoch_k)
 
-        # Die Prüfung
+        # Die exakte Prüfung
         if (is_breakout or (in_zone and is_hl)) and stoch < 90:
             
+            # Setup-Typ bestimmen
             setup_typ = f"Kombi (Zone/Stoch + {pattern})" if pattern != "Kein" else "Trend-Setup (Basis)"
             
             res = {
@@ -575,7 +575,6 @@ def analyze_a_setup(ticker, sektor):
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
-        
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
@@ -733,16 +732,16 @@ if __name__ == "__main__":
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
-    
+
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV)
         f.write("\n" + "="*50 + "\n")
         f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups)\n")
         f.write("="*50 + "\n")
-    
+
         for ticker_val, row in valide_setups.iterrows():
             # Stochastik sicher auslesen (fallback auf 0.0 falls nicht vorhanden)
             stoch_val = row.get('Stoch_K', 0.0)
-        
+
             f.write(f"\n>>> {ticker_val} | {row['Name']} <<<\n")
             f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
             f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
@@ -754,20 +753,20 @@ if __name__ == "__main__":
             f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}\n")
             f.write("\n")
 
-            # 2. WATCHLIST (ACHTUNG)
-            f.write("\n" + "="*50 + "\n")
-            f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
-            f.write("="*50 + "\n")
-    
-    for ticker_val, row in achtung_setups.iterrows():
-        upside_val = row.get('Upside_%_vs_Aktuell') 
-        if upside_val is not None:
-            upside_text = f"{upside_val:.2f}%"
-        else:
-            upside_text = "Kein Ziel"
+        # 2. WATCHLIST (ACHTUNG)
+        f.write("\n" + "="*50 + "\n")
+        f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
+        f.write("="*50 + "\n")
 
-        f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
-        f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
-        f.write("-" * 30 + "\n")
-            
+        for ticker_val, row in achtung_setups.iterrows():
+            upside_val = row.get('Upside_%_vs_Aktuell')
+            if upside_val is not None:
+                upside_text = f"{upside_val:.2f}%"
+            else:
+                upside_text = "Kein Ziel"
+
+            f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
+            f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
+            f.write("-" * 30 + "\n")
+
         f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
