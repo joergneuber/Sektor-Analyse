@@ -489,22 +489,19 @@ def analyze_a_setup(ticker, sektor):
         print(f"DEBUG: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f}")
 
-        # Filter-Logik
-        # --- Filter-Logik angepasst ---
-        # Bedingung 1: Trend-Breakout ODER (Zone UND HigherLow)
-        # Bedingung 2: Stochastik nicht überkauft
+        # --- Filter-Logik ---
+        # 1. Der Haupt-Filter (muss mit 'if' beginnen)
         if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90:
             
             # Hier definieren wir, was ein Setup ist
             if pattern != "Kein":
                 setup_typ = f"Kombi (Zone/Stoch + {pattern})"
             else:
-                # WICHTIG: Hier akzeptieren wir das Setup jetzt auch ohne spezielles Pattern
-                setup_typ = "Trend-Setup (Basis)" 
+                setup_typ = "Trend-Setup (Basis)"
             
-            # Jetzt wird das Setup gespeichert
-            # (Stelle sicher, dass hier dein Code zum Hinzufügen zur Liste steht, 
-            # z.B. valide_setups.append(...))
+        # 2. Das 'else' MUSS genau unter dem 'if' stehen (gleiche Einrückung)
+        else:
+            return None
         
         fib1, fib2 = get_fib_levels(data)
         potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
@@ -533,41 +530,36 @@ def analyze_a_setup(ticker, sektor):
         if last_row['EMA20'] > (last_row['Close'] * 2):
             return None
 
-        # 2. Dictionary erstellen (mit dem eben definierten setup_typ)
-        res = {
-            "Ticker": str(ticker), 
-            "Name": str(firma_name), 
-            "Sektor": str(sektor),
-            "Trend": str(trend_status), 
-            "Setup_Typ": str(setup_typ), # Hier wird die Variable verwendet
-            "Pattern": str(pattern),
-            "Tech-Kursziel": clean_num(tp1), 
-            "Analysten-Kursziel": float(analysten_ziel),
-            "Upside-Potenzial%": float(upside_potenzial), 
-            "Status2": "VALIDE", 
-            "Status_Grund": "Alles ok", 
-            "RSI": float(last_row['RSI']),
-            "Divergenz": divergenz if divergenz else "Keine",
-            "MACD_Trend": str(macd_trend), 
-            "CRV1": clean_num(crv1), 
-            "CRV2": clean_num(crv2), 
-            "Kurs": round(last_row['Close'], 2),
-            "Einstieg": round(last_row['Close'], 2), 
-            "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
-            "Stop": clean_num(stop), 
-            "Risk_Perc": clean_num(risk_perc),
-            "TP1": clean_num(tp1), 
-            "TP2": clean_num(tp2),
-            "Stoch_K": float(stoch_k), 
-            "Vol_Ratio": clean_num(last_row['Vol_Ratio']), 
-            "Ideales_Delta": 0.0
-        }
-        return res
-        
-    else:
-        # Wenn die Bedingungen nicht erfüllt sind, geben wir None zurück
-        return None
-
+        # Dictionary erstellen
+            res = {
+                "Ticker": str(ticker), 
+                "Name": str(firma_name), 
+                "Sektor": str(sektor),
+                "Trend": str(trend_status), 
+                "Setup_Typ": str(setup_typ),
+                "Pattern": str(pattern),
+                "Tech-Kursziel": clean_num(tp1), 
+                "Analysten-Kursziel": float(analysten_ziel),
+                "Upside-Potenzial%": float(upside_potenzial), 
+                "Status2": "VALIDE", 
+                "Status_Grund": "Alles ok", 
+                "RSI": float(last_row['RSI']),
+                "Divergenz": divergenz if divergenz else "Keine",
+                "MACD_Trend": str(macd_trend), 
+                "CRV1": clean_num(crv1), 
+                "CRV2": clean_num(crv2), 
+                "Kurs": round(last_row['Close'], 2),
+                "Einstieg": round(last_row['Close'], 2), 
+                "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
+                "Stop": clean_num(stop), 
+                "Risk_Perc": clean_num(risk_perc),
+                "TP1": clean_num(tp1), 
+                "TP2": clean_num(tp2),
+                "Stoch_K": float(stoch_k), 
+                "Vol_Ratio": clean_num(last_row['Vol_Ratio']), 
+                "Ideales_Delta": 0.0
+            }
+            return res
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
