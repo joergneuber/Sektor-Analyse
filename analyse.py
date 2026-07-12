@@ -704,7 +704,13 @@ if __name__ == "__main__":
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
         top_5_sektoren = df_perf.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
-        
+
+        # DEBUG: Zeigt, an welchem der beiden Kriterien (Sektor oder Trend) die
+        # gefundenen Setups vor dem Filter stehen
+        print(f"DEBUG: Top-5-Sektoren laut Rotation-Score: {top_5_sektoren}")
+        for tk, r in df_s[['Sektor', 'Trend']].iterrows():
+            print(f"DEBUG: Setup vor Filter -> {tk} | Sektor: {r['Sektor']} (in Top5: {r['Sektor'] in top_5_sektoren}) | Trend: {r['Trend']}")
+
         # NEU: Nur Sektoren-Treffer UND nur Aktien, die im Aufwärtstrend (über WMA200) sind
         df_s = df_s[
             (df_s['Sektor'].isin(top_5_sektoren)) & 
