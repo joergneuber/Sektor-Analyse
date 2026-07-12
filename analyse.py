@@ -413,7 +413,7 @@ def analyze_a_setup(ticker, sektor):
         rs = gain / loss.replace(0, 0.000001)
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
-        data['Divergenz'] = check_rsi_divergence(data)
+        divergenz = check_rsi_divergence(data)
 
         # 1. Indikatoren berechnen
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
@@ -466,7 +466,7 @@ def analyze_a_setup(ticker, sektor):
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
 
-        ntry = data['Close'].iloc[-1]
+        entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
         
         # --- 5. Setup-Typ mit Pro-Check Filter ---
@@ -527,7 +527,7 @@ def analyze_a_setup(ticker, sektor):
             "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
             "Upside-Potenzial%": float(upside_potenzial), "Status2": "VALIDE", 
             "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
-            "Divergenz": str(last_row.get('Divergenz', "Keine")),
+            "Divergenz": divergenz if divergenz else "Keine",
             "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), 
             "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
             "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
