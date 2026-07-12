@@ -157,12 +157,13 @@ def get_sp500_data():
         # Indikatoren berechnen
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1] # Neu
         e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
         weights = np.arange(1, 201)
         w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
         
         return (f"S&P 500: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+                f"EMA100: {e100:.0f} | EMA200: {e200:.0f} | WMA200: {w200:.0f}")
                 
     except Exception as e:
         return f"S&P 500: Fehler beim Abruf ({e})"
@@ -207,7 +208,7 @@ def get_qqq_quote():
         
         # Rückgabe des formatierten Strings
         return (f"Nasdaq: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+                f"EMA100: {e100:.0f} | EMA200: {e200:.0f} | WMA200: {w200:.0f}")
                 
     except Exception as e:
         print(f"FEHLER beim Abruf von QQQ: {e}")
@@ -686,8 +687,6 @@ with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
         f.write("-" * 40 + "\n")
         f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | MACD: {row['MACD_Trend']}\n")
-        f.write(f"Einstieg: {row['Einstieg']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
-        # Ändere die Zeile im Briefing-Teil so:
         f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
         f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
         f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
