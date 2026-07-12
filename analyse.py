@@ -435,7 +435,7 @@ def analyze_a_setup(ticker, sektor):
         data['Stoch_D'] = data['Stoch_K'].rolling(3).mean()
         
         # Marktstruktur (einfacher Higher-Low Check: Low[last] > Low[prev])
-        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-2]
+        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
         
         # Danach direkt prüfen:
         if 'RSI' not in data.columns:
@@ -476,7 +476,7 @@ def analyze_a_setup(ticker, sektor):
         high_max = data['High'].rolling(14).max()
         stoch_k = 100 * ((data['Close'].iloc[-1] - low_min.iloc[-1]) / (high_max.iloc[-1] - low_min.iloc[-1] + 1e-9))
         
-        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-2]
+        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
         buffer = 0.003  # 0.3% Puffer für Zone
         
         # Prüfung: Kurs in der EMA-Zone?
