@@ -423,10 +423,10 @@ def analyze_a_setup(ticker, sektor):
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
 
-    # Danach direkt prüfen:
-    if 'RSI' not in data.columns:
-        print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
-    return None
+        # Danach direkt prüfen:
+        if 'RSI' not in data.columns:
+            print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
+            return None
         
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
         data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
