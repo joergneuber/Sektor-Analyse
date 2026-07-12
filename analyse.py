@@ -399,17 +399,7 @@ def analyze_a_setup(ticker, sektor):
         data = data.reset_index(level=0, drop=True)
         if 'close' in data.columns:
             data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
-
-        # 1. Indikatoren berechnen
-        data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
-        data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
-        data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
-        data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean()
-        data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
-        data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
-        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
-        data['Divergenz'] = check_rsi_divergence(data)
-
+       
         # Vor der Berechnung des RSI:
         if len(data) < 15: # Puffer für 14 Perioden + 1
             print(f"Zu wenig Daten für {ticker}: {len(data)} Zeilen")
@@ -422,7 +412,17 @@ def analyze_a_setup(ticker, sektor):
         rs = gain / loss.replace(0, 0.000001)
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
+        data['Divergenz'] = check_rsi_divergence(data)
 
+        # 1. Indikatoren berechnen
+        data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
+        data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+        data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
+        data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean()
+        data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
+        data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
+        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()    
+        
         # Danach direkt prüfen:
         if 'RSI' not in data.columns:
             print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
