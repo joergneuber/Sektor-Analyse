@@ -1054,7 +1054,7 @@ if __name__ == "__main__":
     cols = ['Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
             'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
-            'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta',
+            'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'Ideales_Delta',
             'RS_vs_SPY%', 'Abstand_52W_Hoch%']
 
     if not all_setups:
@@ -1091,7 +1091,7 @@ if __name__ == "__main__":
         # --- SICHERE VORBEREITUNG FÜR APPLY ---
 
         # Spalten, die sicher numerisch sein müssen
-        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'RS_vs_SPY%', 'Abstand_52W_Hoch%']
+        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'Stoch_K', 'RS_vs_SPY%', 'Abstand_52W_Hoch%']
         
         for col in numeric_cols:
             if col in df_s.columns:
@@ -1165,7 +1165,7 @@ if __name__ == "__main__":
     cols_to_round = [
         'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
         'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
-        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'RS_vs_SPY%', 'Abstand_52W_Hoch%'
+        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'RS_vs_SPY%', 'Abstand_52W_Hoch%'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
     
