@@ -537,7 +537,7 @@ def analyze_a_setup(ticker, sektor):
         # Wir geben die Werte aus, bevor das IF überhaupt startet
         print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | Stoch: {stoch_k} ({type(stoch_k)})")
 
-        try:
+    try:
         # Hilfs-Funktion (kann auch außerhalb der Funktion stehen)
         def to_bool(v):
             if isinstance(v, bool): return v
