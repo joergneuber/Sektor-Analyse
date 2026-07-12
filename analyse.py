@@ -537,62 +537,45 @@ def analyze_a_setup(ticker, sektor):
         # Wir geben die Werte aus, bevor das IF überhaupt startet
         print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | Stoch: {stoch_k} ({type(stoch_k)})")
 
-        # Die explizite Prüfung
-        # Wir erzwingen hier boolesche Werte, falls es Strings sein sollten
-        check_breakout = bool(ema_breakout)
-        check_zone = bool(in_ema_zone)
-        check_hl = bool(is_higher_low)
-        check_stoch = float(stoch_k)
+        try:
+        # Sicherstellen, dass wir echte Booleans haben
+        def to_bool(v):
+            if isinstance(v, bool): return v
+            return str(v).lower() == 'true'
 
-        bedingung_erfuellt = (check_breakout or (check_zone and check_hl)) and check_stoch < 90
+        # Konvertierung
+        is_breakout = to_bool(ema_breakout)
+        in_zone = to_bool(in_ema_zone)
+        is_hl = to_bool(is_higher_low)
+        stoch = float(stoch_k)
 
-        if bedingung_erfuellt:
-            print(f"---> TREFFER: {ticker} hat bestanden!")
+        # Die exakte Prüfung
+        if (is_breakout or (in_zone and is_hl)) and stoch < 90:
             
-            # --- Hier kommt dann deine Logik ---
-            if pattern != "Kein":
-                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
-            else:
-                setup_typ = "Trend-Setup (Basis)"
+            # Setup-Typ bestimmen
+            setup_typ = f"Kombi (Zone/Stoch + {pattern})" if pattern != "Kein" else "Trend-Setup (Basis)"
             
             res = {
-                "Ticker": str(ticker), 
-                "Name": str(firma_name), 
-                "Sektor": str(sektor),
-                "Trend": str(trend_status), 
-                "Setup_Typ": str(setup_typ),
-                "Pattern": str(pattern),
-                "Tech-Kursziel": clean_num(tp1), 
-                "Analysten-Kursziel": float(analysten_ziel),
-                "Upside-Potenzial%": float(upside_potenzial), 
-                "Status2": "VALIDE", 
-                "Status_Grund": "Alles ok", 
-                "RSI": float(last_row['RSI']),
+                "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
+                "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
+                "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
+                "Upside-Potenzial%": float(upside_potenzial), "Status2": "VALIDE", 
+                "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
                 "Divergenz": divergenz if divergenz else "Keine",
-                "MACD_Trend": str(macd_trend), 
-                "CRV1": clean_num(crv1), 
-                "CRV2": clean_num(crv2), 
-                "Kurs": round(last_row['Close'], 2),
-                "Einstieg": round(last_row['Close'], 2), 
-                "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
-                "Stop": clean_num(stop), 
-                "Risk_Perc": clean_num(risk_perc),
-                "TP1": clean_num(tp1), 
-                "TP2": clean_num(tp2),
-                "Stoch_K": check_stoch, 
-                "Vol_Ratio": clean_num(last_row['Vol_Ratio']), 
-                "Ideales_Delta": 0.0
+                "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), 
+                "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
+                "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
+                "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
+                "TP1": clean_num(tp1), "TP2": clean_num(tp2),
+                "Stoch_K": stoch, "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0
             }
             return res
         
-        else:
-            # Wir geben hier nichts aus, um das Log nicht zu fluten
-            return None
- 
+        return None
+
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
-
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
