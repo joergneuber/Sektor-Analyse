@@ -166,7 +166,7 @@ def update_status_logic(row):
         return pd.Series(["VALIDE", "RSI überverkauft (<30) - Kaufsignal"])   
     elif pattern != "Kein" and vol_ratio < 0.5:
         return pd.Series(["ACHTUNG", f"Schwaches Volumen ({vol_ratio}x SMA20)"])
-    elif macd_trend == "Bärisch" and pattern != "Kein":
+    elif macd_trend == "Bärisch":
         return pd.Series(["ACHTUNG", "Bärischer MACD-Trend"])
     elif kurs >= tp1:
         return pd.Series(["GELAUFEN", "Kursziel erreicht"])
