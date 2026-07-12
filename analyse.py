@@ -533,19 +533,28 @@ def analyze_a_setup(ticker, sektor):
         # --- Debug-Detektiv ---
         bedingung_erfuellt = (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90
         
-        # Nur um zu sehen, ob wir überhaupt in die Nähe eines Setups kommen:
+        # --- Universal-Debugger ---
+        # Wir geben die Werte aus, bevor das IF überhaupt startet
+        print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | Stoch: {stoch_k} ({type(stoch_k)})")
+
+        # Die explizite Prüfung
+        # Wir erzwingen hier boolesche Werte, falls es Strings sein sollten
+        check_breakout = bool(ema_breakout)
+        check_zone = bool(in_ema_zone)
+        check_hl = bool(is_higher_low)
+        check_stoch = float(stoch_k)
+
+        bedingung_erfuellt = (check_breakout or (check_zone and check_hl)) and check_stoch < 90
+
         if bedingung_erfuellt:
-            print(f"---> TREFFER: {ticker} erfüllt Kriterien!")
-        
-        # --- Eigentliche Logik ---
-        if bedingung_erfuellt:
-            # 1. Setup-Typ bestimmen
+            print(f"---> TREFFER: {ticker} hat bestanden!")
+            
+            # --- Hier kommt dann deine Logik ---
             if pattern != "Kein":
                 setup_typ = f"Kombi (Zone/Stoch + {pattern})"
             else:
                 setup_typ = "Trend-Setup (Basis)"
             
-            # 2. Dictionary erstellen
             res = {
                 "Ticker": str(ticker), 
                 "Name": str(firma_name), 
@@ -570,11 +579,16 @@ def analyze_a_setup(ticker, sektor):
                 "Risk_Perc": clean_num(risk_perc),
                 "TP1": clean_num(tp1), 
                 "TP2": clean_num(tp2),
-                "Stoch_K": float(stoch_k), 
+                "Stoch_K": check_stoch, 
                 "Vol_Ratio": clean_num(last_row['Vol_Ratio']), 
                 "Ideales_Delta": 0.0
             }
             return res
+        
+        else:
+            # Wir geben hier nichts aus, um das Log nicht zu fluten
+            return None
+ 
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
