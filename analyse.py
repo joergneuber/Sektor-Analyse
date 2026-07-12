@@ -697,34 +697,34 @@ if __name__ == "__main__":
     valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
     achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
     
-with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-    f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
-    f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
+    with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+        f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
     
-    # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV)
-    f.write("\n" + "="*50 + "\n")
-    f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups)\n")
-    f.write("="*50 + "\n")
+        # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV)
+        f.write("\n" + "="*50 + "\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups)\n")
+        f.write("="*50 + "\n")
     
-    for ticker_val, row in valide_setups.iterrows():
-        # Stochastik sicher auslesen (fallback auf 0.0 falls nicht vorhanden)
-        stoch_val = row.get('Stoch_K', 0.0)
+        for ticker_val, row in valide_setups.iterrows():
+            # Stochastik sicher auslesen (fallback auf 0.0 falls nicht vorhanden)
+            stoch_val = row.get('Stoch_K', 0.0)
         
-        f.write(f"\n>>> {ticker_val} | {row['Name']} <<<\n")
-        f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
-        f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
-        f.write("-" * 40 + "\n")
-        f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | Stoch-K: {stoch_val:.1f} | MACD: {row['MACD_Trend']}\n")
-        f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
-        f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
-        f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
-        f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}\n")
-        f.write("\n")
+            f.write(f"\n>>> {ticker_val} | {row['Name']} <<<\n")
+            f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
+            f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | Stoch-K: {stoch_val:.1f} | MACD: {row['MACD_Trend']}\n")
+            f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
+            f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
+            f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
+            f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}\n")
+            f.write("\n")
 
-    # 2. WATCHLIST (ACHTUNG)
-    f.write("\n" + "="*50 + "\n")
-    f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
-    f.write("="*50 + "\n")
+            # 2. WATCHLIST (ACHTUNG)
+            f.write("\n" + "="*50 + "\n")
+            f.write("WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)\n")
+            f.write("="*50 + "\n")
     
     for ticker_val, row in achtung_setups.iterrows():
         upside_val = row.get('Upside_%_vs_Aktuell') 
