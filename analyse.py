@@ -737,4 +737,4 @@ if __name__ == "__main__":
         f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
         f.write("-" * 30 + "\n")
             
-    f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
+        f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
