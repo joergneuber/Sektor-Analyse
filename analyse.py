@@ -34,7 +34,8 @@ sektoren_map = {
 }
 
 sektoren_aktien = {
-    "XLK": ["AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC"],
+    "XLK": ["AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC",
+            "MRVL", "KLAC", "SNPS", "CDNS", "PYPL", "EA", "INTU", "NOW"],
     "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB"],
     "XLV": ["UNH", "JNJ", "LLY", "MRK", "PFE", "ABBV", "TMO", "DHR", "AMGN", "GILD"],
     "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TGT", "GM", "F"],
@@ -45,18 +46,58 @@ sektoren_aktien = {
     "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL"],
     "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI"],
     "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"],
-    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT"],
-    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU"],
-    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK"],
-    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB"],
+    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT",
+             "KLAC", "MRVL", "MPWR", "SWKS", "ON", "MCHP", "TER", "ENTG"],
+    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU",
+            "KLAC", "MRVL", "MPWR", "ON", "MCHP"],
+    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK",
+            "CRWD", "ZS", "DDOG", "TEAM", "HUBS", "VEEV", "PTC", "BSY"],
+    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB",
+            "INCY", "EXEL", "NBIX", "BMRN", "UTHR"],
     "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "NYCB", "WBS"],
-    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN"],
-    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU"],
-    "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM"],
-    "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC"],
+    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN",
+             "S", "NET", "RPD", "CYBR", "FFIV"],
+    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU",
+             "TWLO", "HUBS", "BILL", "PATH", "FSLY", "ESTC"],
+    "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM",
+            "PLTR", "SNOW", "NOW", "CRWD", "MRVL"],
+    "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC",
+             "CGNX", "SYM"],
     "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN"],
     "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR"],
     "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
+}
+
+# --- STOXX EUROPE 600 / DAX (Xetra, via yfinance) ---
+# Sektor-Rotation läuft über STOXX-Europe-600-Sektor-ETFs (breiterer Referenzrahmen),
+# die Kandidaten selbst stammen ausschließlich aus dem DAX40 (deutsche Blue Chips + Mid-Caps).
+# Hinweis: Nur 3 der 7 ETF-Ticker (Banken, Versicherungen, Versorger) wurden einzeln
+# verifiziert; die übrigen folgen dem etablierten iShares-Namensschema, sollten aber
+# einmalig gegengeprüft werden. Falls ein Ticker falsch ist, liefert get_perf_yf()
+# einfach eine Performance von 0 für diesen Sektor (kein Absturz, siehe Try/Except).
+eu_sektoren_etf = {
+    "EXV1.DE": "Banken",
+    "EXH5.DE": "Versicherungen",
+    "EXV3.DE": "Technologie",
+    "EXV4.DE": "Gesundheit",
+    "EXV6.DE": "Industrie",
+    "EXH9.DE": "Versorger",
+    "EXV5.DE": "Automobil",
+}
+
+eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-Referenzindex für RS
+
+# DAX40-Ticker nach Sektor (Stand: geprüft anhand aktueller DAX-Zusammensetzung, Juli 2026;
+# die Zusammensetzung wird von der Deutschen Börse zweimal jährlich überprüft, daher
+# gelegentlich gegenchecken)
+dax_aktien = {
+    "Banken": ["DBK.DE", "CBK.DE"],
+    "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE"],
+    "Technologie": ["SAP.DE", "IFX.DE"],
+    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE"],
+    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE"],
+    "Versorger": ["EOAN.DE", "RWE.DE"],
+    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE"],
 }
 
 def berechne_indikatoren(df):
@@ -190,6 +231,52 @@ def get_benchmark_close():
     except Exception as e:
         print(f"FEHLER beim Laden der SPY-Benchmark: {e}")
         return None
+
+# --- EU-SPEZIFISCHE DATENFUNKTIONEN (yfinance, da Alpaca keine STOXX-600-Werte abdeckt) ---
+
+def get_eu_benchmark_close():
+    """Lädt die rohen Schlusskurse des STOXX-Europe-600-ETF (EXSA.DE) für die
+    Relative-Stärke-Berechnung der DAX-Werte gegenüber dem europäischen Markt."""
+    try:
+        hist = yf.Ticker(eu_benchmark_ticker).history(period="1y")
+        if hist.empty:
+            print("DEBUG: EU-Benchmark (EXSA.DE) leer, Relative Stärke EU wird übersprungen.")
+            return None
+        return hist['Close']
+    except Exception as e:
+        print(f"FEHLER beim Laden der EU-Benchmark: {e}")
+        return None
+
+def get_perf_yf(ticker, name):
+    """yfinance-Äquivalent zu get_perf() für die STOXX-Europe-600-Sektor-ETFs,
+    da diese nicht über Alpaca verfügbar sind. Gleiche Kennzahlen/Formel wie US-Version."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y")
+
+        if hist.empty:
+            return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+
+        close = hist['Close']
+        last = close.iloc[-1]
+
+        def p(d):
+            if len(close) > d:
+                return round(((last / close.iloc[-d]) - 1) * 100, 2)
+            return 0
+
+        current_year = datetime.datetime.now().year
+        ytd_data = close[close.index.year == current_year]
+        ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2) if not ytd_data.empty else 0
+
+        res = {
+            "Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60), "YTD": ytd_perf
+        }
+        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+        return res
+
+    except Exception as e:
+        print(f"FEHLER bei EU-Performance-Berechnung für {ticker}: {e}")
+        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
 
 def get_qqq_quote():
     try:
@@ -648,7 +735,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
                 "TP1": clean_num(tp1), "TP2": clean_num(tp2),
                 "Stoch_K": stoch, "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0,
                 "RS_vs_SPY%": clean_num(rel_staerke) if rel_staerke is not None else None,
-                "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch)
+                "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
+                "Markt": "US", "Waehrung": "USD"
             }
             return res
         
@@ -657,6 +745,204 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
+
+def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
+    """EU-Variante von analyze_a_setup: identische Analyse-Logik (RSI, EMAs, MACD,
+    Stochastik, Breakout/Pullback-Filter, Momentum-Kriterien, CRV, setup-spezifische
+    Stop/TP-Logik), aber Kursdaten via yfinance statt Alpaca, da Alpaca DAX-Werte
+    nicht abdeckt. Relative Stärke wird gegen den STOXX-Europe-600-ETF statt SPY
+    berechnet, sonst laufen die Kriterien 1:1 identisch zur US-Funktion."""
+    upside_potenzial = None
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        info = ticker_obj.info
+        firma_name = info.get('longName', ticker)
+        if not firma_name or firma_name == "":
+            firma_name = ticker
+    except:
+        firma_name = ticker
+
+    setup_typ = "Kein"
+    pattern = "Kein"
+    tp1 = 0
+
+    try:
+        # Kursdaten über yfinance laden (Alpaca deckt DAX-Werte nicht ab)
+        data = yf.Ticker(ticker).history(period="1y")
+
+        if data.empty:
+            print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
+            return None
+
+        # yfinance liefert bereits 'Close','High','Low','Open','Volume' - keine Umbenennung nötig
+        if len(data) < 15:
+            print(f"Zu wenig Daten für {ticker}: {len(data)} Zeilen")
+            return None
+
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss.replace(0, 0.000001)
+        data['RSI'] = 100 - (100 / (1 + rs))
+        data['RSI'] = data['RSI'].fillna(50)
+        divergenz = check_rsi_divergence(data)
+
+        data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
+        data['EMA20'] = data['Close'].ewm(span=20, adjust=False).mean()
+        data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
+        data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean()
+        data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
+        data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
+        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+
+        entry = data['Close'].iloc[-1]
+        stop = data['Low'].rolling(10).min().iloc[-1]
+
+        low_min = data['Low'].rolling(14).min()
+        high_max = data['High'].rolling(14).max()
+        data['Stoch_K'] = 100 * ((data['Close'] - low_min) / (high_max - low_min + 1e-9))
+        data['Stoch_D'] = data['Stoch_K'].rolling(3).mean()
+
+        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
+
+        if 'RSI' not in data.columns:
+            print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
+            return None
+
+        data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
+        data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
+
+        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        signal = macd.ewm(span=9, adjust=False).mean()
+        macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
+
+        trend_status = "Unter WMA200/EMA200" if (data['Close'].iloc[-1] < data['WMA200'].iloc[-1] or data['Close'].iloc[-1] < data['EMA200'].iloc[-1]) else "OK"
+
+        c1, c2 = data.iloc[-1], data.iloc[-2]
+        body = abs(c1['Close'] - c1['Open'])
+        lower_wick = min(c1['Open'], c1['Close']) - c1['Low']
+        if lower_wick > (2 * body):
+            pattern = "Hammer"
+        elif c1['Close'] > c1['Open'] and c2['Close'] < c2['Open'] and c1['Close'] > c2['Open'] and c1['Open'] < c2['Close']:
+            pattern = "Engulfing"
+
+        ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
+                       (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
+                       (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
+
+        low_min = data['Low'].rolling(14).min()
+        high_max = data['High'].rolling(14).max()
+        stoch_k = 100 * ((data['Close'].iloc[-1] - low_min.iloc[-1]) / (high_max.iloc[-1] - low_min.iloc[-1] + 1e-9))
+
+        is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
+        buffer = 0.003
+
+        price = data['Close'].iloc[-1]
+        in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
+
+        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
+              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f}")
+
+        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90:
+            if pattern != "Kein":
+                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
+            else:
+                setup_typ = "Trend-Setup (Basis)"
+        else:
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, Stoch={stoch_k:.1f})")
+            return None
+
+        # Relative Stärke vs. STOXX Europe 600 (statt SPY)
+        rel_staerke = None
+        if eu_bench_close is not None and len(eu_bench_close) > 60 and len(data) > 60:
+            stock_perf_60 = ((data['Close'].iloc[-1] / data['Close'].iloc[-60]) - 1) * 100
+            bench_perf_60 = ((eu_bench_close.iloc[-1] / eu_bench_close.iloc[-60]) - 1) * 100
+            rel_staerke = round(stock_perf_60 - bench_perf_60, 2)
+
+            if rel_staerke <= 0:
+                print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Relative Stärke vs. STOXX600 <= 0 ({rel_staerke}%)")
+                return None
+
+        hoch_52w = data['High'].max()
+        abstand_52w_hoch = round(((entry / hoch_52w) - 1) * 100, 2)
+
+        if abstand_52w_hoch < -25:
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Zu weit vom 52-Wochen-Hoch entfernt ({abstand_52w_hoch}%, Hoch={hoch_52w:.2f})")
+            return None
+
+        fib1, fib2 = get_fib_levels(data)
+        potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
+        targets_above = [t for t in potenzial_targets if t > entry]
+
+        tp1 = targets_above[0] if targets_above else entry * 1.08
+        tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
+
+        is_pullback_setup = (not ema_breakout) and in_ema_zone and is_higher_low
+
+        if is_pullback_setup:
+            swing_low_stop = data['Low'].iloc[-5:].min()
+            if swing_low_stop < entry:
+                stop = swing_low_stop
+
+            vorlauf = data.iloc[-40:-3]
+            if not vorlauf.empty:
+                swing_high_target = vorlauf['High'].max()
+                if swing_high_target > entry:
+                    tp1 = swing_high_target
+                    hoehere_ziele = [t for t in targets_above if t > tp1]
+                    tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
+
+        # Kein Analysten-Kursziel für EU-Werte (get_analyst_target ist auf US-Info-Feld
+        # ausgelegt; yf liefert targetMeanPrice aber grundsätzlich auch für DAX-Werte)
+        analysten_ziel = get_analyst_target(ticker)
+        if analysten_ziel is None: analysten_ziel = 0.0
+
+        target_value = analysten_ziel if analysten_ziel > 0 else tp1
+        upside_potenzial = round(((target_value - entry) / entry) * 100, 2) if entry > 0 else 0.0
+
+        risiko = entry - stop
+        if risiko <= 0:
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
+            return None
+
+        crv1 = round((tp1 - entry) / risiko, 2)
+        crv2 = round((tp2 - entry) / risiko, 2)
+        if crv1 < 1.0 or crv2 < 1.0:
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
+            return None
+
+        risk_perc = round(((entry - stop) / entry) * 100, 2)
+        last_row = data.iloc[-1]
+
+        if last_row['EMA20'] > (last_row['Close'] * 2):
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Plausibilitäts-Check fehlgeschlagen (EMA20={last_row['EMA20']:.2f} > 2x Close={last_row['Close']:.2f})")
+            return None
+
+        res = {
+            "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
+            "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
+            "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
+            "Upside-Potenzial%": float(upside_potenzial), "Status2": "VALIDE",
+            "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
+            "Divergenz": divergenz if divergenz else "Keine",
+            "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1),
+            "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
+            "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
+            "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
+            "TP1": clean_num(tp1), "TP2": clean_num(tp2),
+            "Stoch_K": float(stoch_k), "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0,
+            "RS_vs_SPY%": clean_num(rel_staerke) if rel_staerke is not None else None,
+            "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
+            "Markt": "DAX", "Waehrung": "EUR"
+        }
+        return res
+
+    except Exception as e:
+        print(f"Fehler bei der EU-Analyse von {ticker}: {e}")
+        return None
+
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
@@ -664,11 +950,17 @@ if __name__ == "__main__":
     sp500_filter_text = get_sp500_data()
     qqq_text = get_qqq_quote() 
     
-    # 2. Performance berechnen
+    # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
 
-    # 2b. SPY-Benchmark für die Relative-Stärke-Berechnung laden (einmalig)
+    # 2a. EU-Sektor-Rotation separat berechnen (STOXX-Europe-600-Sektor-ETFs über yfinance,
+    # da Alpaca diese nicht abdeckt). Läuft unabhängig von der US-Rotation.
+    print("Berechne EU-Sektor-Rotation (STOXX Europe 600)...")
+    df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()]).sort_values("Rotation-Score", ascending=False)
+
+    # 2b. Benchmarks für die Relative-Stärke-Berechnung laden (einmalig, US + EU getrennt)
     spy_close = get_benchmark_close()
+    eu_bench_close = get_eu_benchmark_close()
     
     # 3. Setups verarbeiten (PARALLEL)
     print("Starte Setup-Analyse...")
@@ -681,19 +973,51 @@ if __name__ == "__main__":
         for s in aktien_liste:
             if s not in blacklist:
                 tasks.append((s, row['Sektor']))
+
+    # EU-Aufgabenliste erstellen (Top 5 von 7 EU-Sektoren, eigene, unabhängige Rotation)
+    tasks_eu = []
+    for _, row in df_perf_eu.head(5).iterrows():
+        aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
+        for s in aktien_liste_eu:
+            tasks_eu.append((s, row['Sektor']))
+
+    # Rate-Limit-Budget: max. 150 Ticker insgesamt (US + EU) pro Lauf, da sowohl
+    # yfinance (Analysten-Ziele + alle EU-Kursdaten) als auch die Alpaca-Anfragen
+    # sonst zu viele Requests in kurzer Zeit auslösen könnten. Bei Überschreitung
+    # werden zuerst EU-Tasks (kleineres Volumen, geringere Priorität) gekürzt.
+    MAX_TICKER_BUDGET = 150
+    gesamt_anzahl = len(tasks) + len(tasks_eu)
+    if gesamt_anzahl > MAX_TICKER_BUDGET:
+        ueberschuss = gesamt_anzahl - MAX_TICKER_BUDGET
+        kuerzung_eu = min(ueberschuss, len(tasks_eu))
+        if kuerzung_eu > 0:
+            print(f"DEBUG: Ticker-Budget überschritten ({gesamt_anzahl} > {MAX_TICKER_BUDGET}) - kürze {kuerzung_eu} EU-Tasks.")
+            tasks_eu = tasks_eu[:len(tasks_eu) - kuerzung_eu]
+        rest_ueberschuss = (len(tasks) + len(tasks_eu)) - MAX_TICKER_BUDGET
+        if rest_ueberschuss > 0:
+            print(f"DEBUG: Budget weiterhin überschritten - kürze zusätzlich {rest_ueberschuss} US-Tasks.")
+            tasks = tasks[:len(tasks) - rest_ueberschuss]
+
+    print(f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | Gesamt: {len(tasks) + len(tasks_eu)}")
     
-    # Parallel mit max_workers=10 ausführen
+    # Parallel mit max_workers=10 ausführen (US)
     all_setups = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         # Führt analyze_a_setup für alle Tasks gleichzeitig aus
         results = list(executor.map(lambda p: analyze_a_setup(*p, spy_close=spy_close), tasks))
+
+    # Parallel mit max_workers=10 ausführen (EU)
+    results_eu = []
+    if tasks_eu:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results_eu = list(executor.map(lambda p: analyze_a_setup_eu(*p, eu_bench_close=eu_bench_close), tasks_eu))
         
-    # Ergebnisse filtern (None-Werte entfernen)
-    all_setups = [r for r in results if r is not None]
+    # Ergebnisse filtern (None-Werte entfernen) und US+EU zusammenführen
+    all_setups = [r for r in results if r is not None] + [r for r in results_eu if r is not None]
     print(f"Analyse beendet. {len(all_setups)} Setups gefunden.")
     
     # Deine Liste/Spalten und Reihenfolge in setup-Datei (HIER EINGERÜCKT!)
-    cols = ['Ticker', 'Name', 'Sektor', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
+    cols = ['Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
             'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
             'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Vol_Ratio', 'Ideales_Delta',
@@ -757,18 +1081,24 @@ if __name__ == "__main__":
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
         top_8_sektoren = df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
+        top_5_eu_sektoren = df_perf_eu.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
 
         # DEBUG: Zeigt, an welchem der beiden Kriterien (Sektor oder Trend) die
-        # gefundenen Setups vor dem Filter stehen
-        print(f"DEBUG: Top-8-Sektoren laut Rotation-Score: {top_8_sektoren}")
-        for tk, r in df_s[['Sektor', 'Trend']].iterrows():
-            print(f"DEBUG: Setup vor Filter -> {tk} | Sektor: {r['Sektor']} (in Top8: {r['Sektor'] in top_8_sektoren}) | Trend: {r['Trend']}")
+        # gefundenen Setups vor dem Filter stehen. Marktbewusst, da US- und EU-
+        # Sektornamen sich überschneiden können (z.B. "Technologie" in beiden).
+        print(f"DEBUG: Top-8-US-Sektoren laut Rotation-Score: {top_8_sektoren}")
+        print(f"DEBUG: Top-5-EU-Sektoren laut Rotation-Score: {top_5_eu_sektoren}")
+        for tk, r in df_s[['Sektor', 'Markt', 'Trend']].iterrows():
+            erlaubte_liste = top_8_sektoren if r['Markt'] == 'US' else top_5_eu_sektoren
+            print(f"DEBUG: Setup vor Filter -> {tk} | Markt: {r['Markt']} | Sektor: {r['Sektor']} (in Top: {r['Sektor'] in erlaubte_liste}) | Trend: {r['Trend']}")
 
-        # NEU: Nur Sektoren-Treffer UND nur Aktien, die im Aufwärtstrend (über WMA200) sind
-        df_s = df_s[
-            (df_s['Sektor'].isin(top_8_sektoren)) & 
-            (df_s['Trend'] == 'OK')
-        ].copy()
+        # NEU: Nur Sektoren-Treffer UND nur Aktien, die im Aufwärtstrend (über WMA200) sind.
+        # Marktbewusst: US-Setups gegen US-Top-8, DAX-Setups gegen EU-Top-5 (separate Rotationen).
+        sektor_ok = (
+            ((df_s['Markt'] == 'US') & (df_s['Sektor'].isin(top_8_sektoren))) |
+            ((df_s['Markt'] == 'DAX') & (df_s['Sektor'].isin(top_5_eu_sektoren)))
+        )
+        df_s = df_s[sektor_ok & (df_s['Trend'] == 'OK')].copy()
         
         print(f"DEBUG: Setups nach Sektor-Filter & Trend-Check: {len(df_s)}")
 
@@ -823,27 +1153,44 @@ if __name__ == "__main__":
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
+
+        # Kurzüberblick über den zugrunde liegenden Trading-Ansatz
+        f.write("STRATEGIE-ANSATZ\n")
+        f.write("-"*50 + "\n")
+        f.write("- Sektor-Rotation: Top-8-US-Sektoren (Alpaca) + separat Top-5-EU-Sektoren (STOXX 600, yfinance)\n")
+        f.write("- Kandidaten: US-Sektoren (inkl. Nasdaq-Mid-Caps) + DAX40-Werte (EUR)\n")
+        f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
+        f.write("- Setup: EMA8/20-Breakout ODER Pullback (Kurs testet EMA20/50, Higher-Low)\n")
+        f.write("- Momentum: Relative Stärke der Aktie > 0 vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
+        f.write("- Momentum: Kurs max. 25% unter dem 52-Wochen-Hoch\n")
+        f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein\n")
+        f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, Breakouts = 10-Tage-Tief\n")
+        f.write("- Ziel: Pullback-Setups = letzter Swing-High, Breakouts = nächstes EMA/Fib-Level\n")
+        f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n\n")
+
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n\n")
 
-        # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV)
+        # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
-        f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups)\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups, US + DAX)\n")
         f.write("="*50 + "\n")
 
         for ticker_val, row in valide_setups.iterrows():
             # Stochastik sicher auslesen (fallback auf 0.0 falls nicht vorhanden)
             stoch_val = row.get('Stoch_K', 0.0)
+            waehrungszeichen = "€" if row.get('Waehrung') == 'EUR' else "$"
+            markt_label = row.get('Markt', 'US')
 
-            f.write(f"\n>>> {ticker_val} | {row['Name']} <<<\n")
+            f.write(f"\n>>> {ticker_val} | {row['Name']} | Markt: {markt_label} <<<\n")
             f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
             f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
             f.write("-" * 40 + "\n")
-            f.write(f"Kurs: {row['Kurs']} | RSI: {row['RSI']} | Stoch-K: {stoch_val:.1f} | MACD: {row['MACD_Trend']}\n")
-            f.write(f"Einstieg: {row['Einstieg']} | EMA20: {row['Einstieg2(EMA 20)']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n")
-            f.write(f"TP1: {row['TP1']} | TP2: {row['TP2']} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
+            f.write(f"Kurs: {row['Kurs']}{waehrungszeichen} | RSI: {row['RSI']} | Stoch-K: {stoch_val:.1f} | MACD: {row['MACD_Trend']}\n")
+            f.write(f"Einstieg: {row['Einstieg']}{waehrungszeichen} | EMA20: {row['Einstieg2(EMA 20)']}{waehrungszeichen} | Stop: {row['Stop']}{waehrungszeichen} | Risiko: {row['Risk_Perc']}%\n")
+            f.write(f"TP1: {row['TP1']}{waehrungszeichen} | TP2: {row['TP2']}{waehrungszeichen} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
-            f.write(f"RelStärke vs SPY: {row.get('RS_vs_SPY%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
-            f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}\n")
+            f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_SPY%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
+            f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}{waehrungszeichen}\n")
             f.write("\n")
 
         # 2. WATCHLIST (ACHTUNG)
@@ -857,9 +1204,10 @@ if __name__ == "__main__":
                 upside_text = f"{upside_val:.2f}%"
             else:
                 upside_text = "Kein Ziel"
+            waehrungszeichen = "€" if row.get('Waehrung') == 'EUR' else "$"
 
-            f.write(f"Ticker: {ticker_val} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}\n")
-            f.write(f"Upside: Technisch {row['Tech-Kursziel']} | Potenzial: {upside_text}\n")
+            f.write(f"Ticker: {ticker_val} | Markt: {row.get('Markt', 'US')} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}{waehrungszeichen}\n")
+            f.write(f"Upside: Technisch {row['Tech-Kursziel']}{waehrungszeichen} | Potenzial: {upside_text}\n")
             f.write("-" * 30 + "\n")
 
         f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
