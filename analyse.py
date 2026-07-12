@@ -538,7 +538,7 @@ def analyze_a_setup(ticker, sektor):
         print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | Stoch: {stoch_k} ({type(stoch_k)})")
 
         try:
-        # Sicherstellen, dass wir echte Booleans haben
+        # Hilfs-Funktion (kann auch außerhalb der Funktion stehen)
         def to_bool(v):
             if isinstance(v, bool): return v
             return str(v).lower() == 'true'
@@ -549,10 +549,9 @@ def analyze_a_setup(ticker, sektor):
         is_hl = to_bool(is_higher_low)
         stoch = float(stoch_k)
 
-        # Die exakte Prüfung
+        # Die Prüfung
         if (is_breakout or (in_zone and is_hl)) and stoch < 90:
             
-            # Setup-Typ bestimmen
             setup_typ = f"Kombi (Zone/Stoch + {pattern})" if pattern != "Kein" else "Trend-Setup (Basis)"
             
             res = {
@@ -576,6 +575,7 @@ def analyze_a_setup(ticker, sektor):
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
         return None
+        
 if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
