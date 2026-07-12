@@ -466,6 +466,9 @@ def analyze_a_setup(ticker, sektor):
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
 
+        ntry = data['Close'].iloc[-1]
+        stop = data['Low'].rolling(10).min().iloc[-1]
+        
         # --- 5. Setup-Typ mit Pro-Check Filter ---
         
         # Berechnungen für den Filter
