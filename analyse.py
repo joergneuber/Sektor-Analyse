@@ -484,15 +484,14 @@ def analyze_a_setup(ticker, sektor):
         in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
 
         # 5. Setup-Typ mit Pro-Check Filter
+        # --- DEBUG-LOGGING ---
+        # Dieser Print zeigt dir im Log genau, warum ein Setup abgelehnt wird
         print(f"DEBUG: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
-              f"HigherLow: {is_higher_low} | Stoch: {stoch_k:.1f}")
+              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f}")
 
         # Filter-Logik
-        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 80:
-            if pattern != "Kein":
-        
-        # Nur wenn Stochastik nicht überkauft (<80) UND Trend-Setup oder Zonen-Setup vorliegt
-        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 80:
+        # (Wichtig: Diese Zeilen müssen alle sauber untereinander eingerückt sein)
+        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90:
             if pattern != "Kein":
                 setup_typ = f"Kombi (Zone/Stoch): {pattern}"
             else:
