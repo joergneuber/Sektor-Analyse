@@ -56,7 +56,7 @@ sektoren_aktien = {
             "INCY", "EXEL", "NBIX", "BMRN", "UTHR"],
     "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "NYCB", "WBS"],
     "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN",
-             "S", "NET", "RPD", "CYBR", "FFIV"],
+             "S", "NET", "RPD", "VRNS", "FFIV"],
     "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU",
              "TWLO", "HUBS", "BILL", "PATH", "FSLY", "ESTC"],
     "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM",
@@ -626,8 +626,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             spy_perf_60 = ((spy_close.iloc[-1] / spy_close.iloc[-60]) - 1) * 100
             rel_staerke = round(stock_perf_60 - spy_perf_60, 2)
 
-            if rel_staerke <= 0:
-                print(f"DEBUG-VERWORFEN: {ticker} | Grund: Relative Stärke vs. SPY <= 0 ({rel_staerke}%)")
+            if rel_staerke <= -10:
+                print(f"DEBUG-VERWORFEN: {ticker} | Grund: Relative Stärke vs. SPY <= -10% ({rel_staerke}%)")
                 return None
 
         # 52-Wochen-Hoch-Nähe (geladene Daten decken ca. 1 Jahr ab)
@@ -861,8 +861,8 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             bench_perf_60 = ((eu_bench_close.iloc[-1] / eu_bench_close.iloc[-60]) - 1) * 100
             rel_staerke = round(stock_perf_60 - bench_perf_60, 2)
 
-            if rel_staerke <= 0:
-                print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Relative Stärke vs. STOXX600 <= 0 ({rel_staerke}%)")
+            if rel_staerke <= -10:
+                print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Relative Stärke vs. STOXX600 <= -10% ({rel_staerke}%)")
                 return None
 
         hoch_52w = data['High'].max()
@@ -1161,7 +1161,7 @@ if __name__ == "__main__":
         f.write("- Kandidaten: US-Sektoren (inkl. Nasdaq-Mid-Caps) + DAX40-Werte (EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
         f.write("- Setup: EMA8/20-Breakout ODER Pullback (Kurs testet EMA20/50, Higher-Low)\n")
-        f.write("- Momentum: Relative Stärke der Aktie > 0 vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
+        f.write("- Momentum: Relative Stärke der Aktie > -10% vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
         f.write("- Momentum: Kurs max. 25% unter dem 52-Wochen-Hoch\n")
         f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein\n")
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, Breakouts = 10-Tage-Tief\n")
