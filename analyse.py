@@ -424,6 +424,9 @@ def analyze_a_setup(ticker, sektor):
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()    
 
+        entry = data['Close'].iloc[-1]
+        stop = data['Low'].rolling(10).min().iloc[-1]
+        
         # --- NEU: Stochastik & Marktstruktur ---
         # Stochastik (14,3,3)
         low_min = data['Low'].rolling(14).min()
@@ -465,10 +468,7 @@ def analyze_a_setup(ticker, sektor):
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        (data['EMA8'].iloc[-2] <= data['EMA20'].iloc[-2]) and \
                        (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
-
-        entry = data['Close'].iloc[-1]
-        stop = data['Low'].rolling(10).min().iloc[-1]
-        
+       
         # --- 5. Setup-Typ mit Pro-Check Filter ---
         
         # Berechnungen für den Filter
