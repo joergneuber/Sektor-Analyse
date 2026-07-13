@@ -508,7 +508,9 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
 
     # Linie bis heute projizieren und Ausbruch prüfen: Kreuzung innerhalb der
     # letzten 3 Kerzen (analog zum EMA-Breakout-Fenster), aktuell darüber,
-    # plus Pflicht-Volumen-Bestätigung am Ausbruchstag
+    # plus Volumen-Bestätigung an einem der letzten 3 Tage (nicht zwingend heute -
+    # der eigentliche Ausbruchstag mit dem Volumen-Spike kann auch 1-2 Tage
+    # zurückliegen, während der Kurs seitdem über der Linie hält)
     heute_pos = len(fenster) - 1
     linie_heute = slope * heute_pos + intercept
     close_heute = fenster['Close'].iloc[-1]
@@ -518,7 +520,10 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
         for i in range(1, 4)
     )
 
-    volumen_ok = fenster['Volume'].iloc[-1] > fenster['Vol_SMA20'].iloc[-1]
+    volumen_ok = any(
+        fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
+        for i in range(0, 3)
+    )
 
     ausbruch = bool(close_heute > linie_heute) and crossover_kuerzlich and bool(volumen_ok)
     return ausbruch, (float(linie_heute) if ausbruch else None)
@@ -662,9 +667,15 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         crossover_kuerzlich = any(
             data['EMA8'].iloc[-1 - i] <= data['EMA20'].iloc[-1 - i] for i in range(1, 4)
         )
+        # Volumen-Bestätigung an einem der letzten 3 Tage (nicht zwingend heute -
+        # der eigentliche Ausbruchstag mit dem Volumen-Spike kann auch 1-2 Tage
+        # zurückliegen, während der Kurs seitdem über der EMA20 hält)
+        volumen_kuerzlich = any(
+            data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i] for i in range(0, 3)
+        )
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        crossover_kuerzlich and \
-                       (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
+                       volumen_kuerzlich
        
         # --- 5. Setup-Typ mit Pro-Check Filter ---
         
@@ -778,6 +789,15 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             tp1 = realer_deckel_120
             hoehere_ziele = [t for t in targets_above if t > tp1]
             tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
+
+        # --- TP2-Realitäts-Deckel: großzügigeres 250-Tage-Fenster (statt 120
+        # bei TP1), da TP2 bewusst ambitionierter sein darf - aber auch hier
+        # keine reine Fib-Extension ohne jemals real erreichtes Kursniveau.
+        realer_deckel_250 = data['High'].iloc[-250:].max()
+        if realer_deckel_250 > entry and tp2 > realer_deckel_250:
+            tp2 = realer_deckel_250
+            if tp2 <= tp1:
+                tp2 = tp1 * 1.05
 
         analysten_ziel = get_analyst_target(ticker)
         if analysten_ziel is None: analysten_ziel = 0.0
@@ -945,9 +965,12 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         crossover_kuerzlich = any(
             data['EMA8'].iloc[-1 - i] <= data['EMA20'].iloc[-1 - i] for i in range(1, 4)
         )
+        volumen_kuerzlich = any(
+            data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i] for i in range(0, 3)
+        )
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        crossover_kuerzlich and \
-                       (data['Volume'].iloc[-1] > data['Vol_SMA20'].iloc[-1])
+                       volumen_kuerzlich
 
         low_min = data['Low'].rolling(14).min()
         high_max = data['High'].rolling(14).max()
@@ -1025,6 +1048,14 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             tp1 = realer_deckel_120
             hoehere_ziele = [t for t in targets_above if t > tp1]
             tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
+
+        # --- TP2-Realitäts-Deckel: großzügigeres 250-Tage-Fenster (siehe
+        # US-Funktion für ausführliche Begründung).
+        realer_deckel_250 = data['High'].iloc[-250:].max()
+        if realer_deckel_250 > entry and tp2 > realer_deckel_250:
+            tp2 = realer_deckel_250
+            if tp2 <= tp1:
+                tp2 = tp1 * 1.05
 
         # Kein Analysten-Kursziel für EU-Werte (get_analyst_target ist auf US-Info-Feld
         # ausgelegt; yf liefert targetMeanPrice aber grundsätzlich auch für DAX-Werte)
@@ -1301,7 +1332,7 @@ if __name__ == "__main__":
         f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein\n")
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
-        f.write("- Realitäts-Deckel: TP1 wird auf das reale 120-Tage-Hoch begrenzt (keine reinen Fib-Extensions ohne Kursdeckung)\n")
+        f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
         f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
