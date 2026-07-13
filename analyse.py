@@ -868,7 +868,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
                 "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
                 "TP1": clean_num(tp1), "TP2": clean_num(tp2),
                 "Stoch_K": stoch, "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0,
-                "RS_vs_SPY%": clean_num(rel_staerke) if rel_staerke is not None else None,
+                "RS_vs_Benchmark%": clean_num(rel_staerke) if rel_staerke is not None else None,
                 "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
                 "Markt": "US", "Waehrung": "USD"
             }
@@ -1096,7 +1096,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
             "TP1": clean_num(tp1), "TP2": clean_num(tp2),
             "Stoch_K": float(stoch_k), "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0,
-            "RS_vs_SPY%": clean_num(rel_staerke) if rel_staerke is not None else None,
+            "RS_vs_Benchmark%": clean_num(rel_staerke) if rel_staerke is not None else None,
             "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
             "Markt": "DAX", "Waehrung": "EUR"
         }
@@ -1186,7 +1186,7 @@ if __name__ == "__main__":
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
             'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
             'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'Ideales_Delta',
-            'RS_vs_SPY%', 'Abstand_52W_Hoch%']
+            'RS_vs_Benchmark%', 'Abstand_52W_Hoch%']
 
     if not all_setups:
         print("Keine Setups gefunden.")
@@ -1222,7 +1222,7 @@ if __name__ == "__main__":
         # --- SICHERE VORBEREITUNG FÜR APPLY ---
 
         # Spalten, die sicher numerisch sein müssen
-        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'Stoch_K', 'RS_vs_SPY%', 'Abstand_52W_Hoch%']
+        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'Stoch_K', 'RS_vs_Benchmark%', 'Abstand_52W_Hoch%']
         
         for col in numeric_cols:
             if col in df_s.columns:
@@ -1296,7 +1296,7 @@ if __name__ == "__main__":
     cols_to_round = [
         'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
         'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
-        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'RS_vs_SPY%', 'Abstand_52W_Hoch%'
+        'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'RS_vs_Benchmark%', 'Abstand_52W_Hoch%'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
     
@@ -1357,7 +1357,7 @@ if __name__ == "__main__":
             f.write(f"Einstieg: {row['Einstieg']}{waehrungszeichen} | EMA20: {row['Einstieg2(EMA 20)']}{waehrungszeichen} | Stop: {row['Stop']}{waehrungszeichen} | Risiko: {row['Risk_Perc']}%\n")
             f.write(f"TP1: {row['TP1']}{waehrungszeichen} | TP2: {row['TP2']}{waehrungszeichen} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
-            f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_SPY%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
+            f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
             f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}{waehrungszeichen}\n")
             f.write("\n")
 
