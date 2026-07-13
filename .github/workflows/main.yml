@@ -1,5 +1,4 @@
 name: tägliche Analyse Sektoren
-
 on:
   push:
     branches:
@@ -7,9 +6,12 @@ on:
   # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
   workflow_dispatch: 
   schedule:
-    # 03:00 UTC entspricht 05:00 Uhr MESZ (Sommerzeit)
-    - cron: '0 3 * * 1-5'
-
+    # 03:17 UTC entspricht 05:17 Uhr MESZ (Sommerzeit). Bewusst NICHT zur vollen
+    # Stunde (03:00), da GitHub Actions Cron-Läufe zu vollen Stunden/Mitternacht
+    # UTC nachweislich häufiger verzögert oder komplett überspringt (Best-Effort-
+    # Scheduling, siehe GitHub-Community-Diskussionen zu Backend-Zuverlässigkeit
+    # seit Februar 2026).
+    - cron: '17 3 * * 1-5'
 jobs:
   run-scripts:
     runs-on: ubuntu-latest
@@ -23,7 +25,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
@@ -35,7 +36,6 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python analyse.py
-
       - name: Daten hochladen
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
