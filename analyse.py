@@ -1307,6 +1307,7 @@ if __name__ == "__main__":
     
     # 8. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
+    df_perf_eu.to_csv(f"Performance_EU({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     
     # Hier exportierst du jetzt zwei Versionen (falls das so gewollt ist)
     df_clean.to_csv("setup_liste.csv", index=False)
