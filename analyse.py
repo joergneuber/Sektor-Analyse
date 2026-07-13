@@ -465,6 +465,64 @@ def check_rsi_divergence(data):
         
     return None
 
+def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
+    """
+    Sucht eine fallende Widerstands-Trendlinie durch mindestens 3 Swing-Highs
+    (Toleranz: 1% Abstand zur Linie) in den letzten `lookback` Handelstagen
+    und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
+    durchschnittlichem Volumen darüber ausgebrochen ist.
+    Nur Long-Ausbrüche (fallende Linie nach oben durchbrochen) - ein Bruch
+    einer STEIGENDEN Linie nach unten wird bewusst nicht erfasst, da die
+    Strategie ausschließlich Long-Setups handelt.
+    Gibt (ausbruch: bool, linien_level_heute: float|None) zurück.
+    """
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < 10:
+        return False, None
+
+    # Ausbruchskerzen selbst (letzte 3) von der Linienbildung ausschließen,
+    # damit die Linie nicht durch den möglichen Ausbruch selbst verzerrt wird
+    suchbereich = fenster.iloc[:-3]
+    if len(suchbereich) < 10:
+        return False, None
+
+    highs = suchbereich['High'].values
+    idx_swings = argrelextrema(highs, np.greater_equal, order=order)[0]
+
+    if len(idx_swings) < 3:
+        return False, None
+
+    x = idx_swings.astype(float)
+    y = highs[idx_swings]
+    slope, intercept = np.polyfit(x, y, 1)
+
+    # Nur fallende Trendlinien relevant (Ausbruch nach oben = Long-Signal)
+    if slope >= 0:
+        return False, None
+
+    # Berührungspunkte innerhalb der Toleranz zählen (mind. 3 gefordert)
+    linie_bei_punkten = slope * x + intercept
+    beruehrungen = int(np.sum(np.abs(y - linie_bei_punkten) <= (linie_bei_punkten * touch_tolerance)))
+    if beruehrungen < 3:
+        return False, None
+
+    # Linie bis heute projizieren und Ausbruch prüfen: Kreuzung innerhalb der
+    # letzten 3 Kerzen (analog zum EMA-Breakout-Fenster), aktuell darüber,
+    # plus Pflicht-Volumen-Bestätigung am Ausbruchstag
+    heute_pos = len(fenster) - 1
+    linie_heute = slope * heute_pos + intercept
+    close_heute = fenster['Close'].iloc[-1]
+
+    crossover_kuerzlich = any(
+        fenster['Close'].iloc[-1 - i] <= (slope * (heute_pos - i) + intercept)
+        for i in range(1, 4)
+    )
+
+    volumen_ok = fenster['Volume'].iloc[-1] > fenster['Vol_SMA20'].iloc[-1]
+
+    ausbruch = bool(close_heute > linie_heute) and crossover_kuerzlich and bool(volumen_ok)
+    return ausbruch, (float(linie_heute) if ausbruch else None)
+
 def get_fib_levels(data):
     """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
     recent_data = data.iloc[-60:]
@@ -622,25 +680,33 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         price = data['Close'].iloc[-1]
         in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
 
+        # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
+        # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
+        trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
+
         # 5. Setup-Typ mit Pro-Check Filter
         # --- DEBUG-LOGGING ---
         # Dieser Print zeigt dir im Log genau, warum ein Setup abgelehnt wird
         print(f"DEBUG: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
-              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f}")
+              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch}")
 
         # --- Filter-Logik ---
         # 1. Der Haupt-Filter (muss mit 'if' beginnen)
-        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90:
+        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch) and stoch_k < 90:
             
             # Hier definieren wir, was ein Setup ist
-            if pattern != "Kein":
+            if trendlinien_ausbruch and not ema_breakout and not (in_ema_zone and is_higher_low):
+                # Reiner Trendlinien-Ausbruch (kein EMA-Breakout, keine Pullback-Zone) -
+                # eigenständiger dritter Setup-Typ, klar von den anderen beiden getrennt
+                setup_typ = f"Trendlinien-Ausbruch + {pattern}" if pattern != "Kein" else "Trendlinien-Ausbruch"
+            elif pattern != "Kein":
                 setup_typ = f"Kombi (Zone/Stoch + {pattern})"
             else:
                 setup_typ = "Trend-Setup (Basis)"
             
         # 2. Das 'else' MUSS genau unter dem 'if' stehen (gleiche Einrückung)
         else:
-            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, Stoch={stoch_k:.1f})")
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Stoch={stoch_k:.1f})")
             return None
 
         # --- Momentum-Zusatzkriterien: Relative Stärke & 52-Wochen-Hoch-Nähe ---
@@ -701,6 +767,18 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
                     hoehere_ziele = [t for t in targets_above if t > tp1]
                     tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
 
+        # --- Realitäts-Deckel: TP1 darf nicht über dem höchsten tatsächlich
+        # erreichten Kurs der letzten 120 Handelstage liegen. Verhindert, dass
+        # eine reine Fibonacci-Extension (mathematische Projektion, kein real
+        # getestetes Niveau) als Ziel genutzt wird - das passiert z.B., wenn
+        # der Kurs bereits über allen EMAs notiert und nur noch fib1/fib2 als
+        # TP-Kandidat übrig bleibt. Greift für Breakout- UND Pullback-Setups.
+        realer_deckel_120 = data['High'].iloc[-120:].max()
+        if realer_deckel_120 > entry and tp1 > realer_deckel_120:
+            tp1 = realer_deckel_120
+            hoehere_ziele = [t for t in targets_above if t > tp1]
+            tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
+
         analysten_ziel = get_analyst_target(ticker)
         if analysten_ziel is None: analysten_ziel = 0.0
         
@@ -727,11 +805,11 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             return None
         
         # --- Debug-Detektiv ---
-        bedingung_erfuellt = (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90
+        bedingung_erfuellt = (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch) and stoch_k < 90
         
         # --- Universal-Debugger ---
         # Wir geben die Werte aus, bevor das IF überhaupt startet
-        print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | Stoch: {stoch_k} ({type(stoch_k)})")
+        print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | TL-Ausbruch: {trendlinien_ausbruch} | Stoch: {stoch_k} ({type(stoch_k)})")
 
         # Sicherstellen, dass wir echte Booleans haben
         def to_bool(v):
@@ -742,13 +820,20 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         is_breakout = to_bool(ema_breakout)
         in_zone = to_bool(in_ema_zone)
         is_hl = to_bool(is_higher_low)
+        is_tl = to_bool(trendlinien_ausbruch)
         stoch = float(stoch_k)
 
         # Die exakte Prüfung
-        if (is_breakout or (in_zone and is_hl)) and stoch < 90:
+        if (is_breakout or (in_zone and is_hl) or is_tl) and stoch < 90:
             
-            # Setup-Typ bestimmen
-            setup_typ = f"Kombi (Zone/Stoch + {pattern})" if pattern != "Kein" else "Trend-Setup (Basis)"
+            # Setup-Typ bestimmen (konsistent zur Hauptprüfung weiter oben,
+            # damit ein reiner Trendlinien-Ausbruch hier nicht überschrieben wird)
+            if is_tl and not is_breakout and not (in_zone and is_hl):
+                setup_typ = f"Trendlinien-Ausbruch + {pattern}" if pattern != "Kein" else "Trendlinien-Ausbruch"
+            elif pattern != "Kein":
+                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
+            else:
+                setup_typ = "Trend-Setup (Basis)"
             
             res = {
                 "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
@@ -874,16 +959,22 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         price = data['Close'].iloc[-1]
         in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
 
-        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
-              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f}")
+        # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
+        # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
+        trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
 
-        if (ema_breakout or (in_ema_zone and is_higher_low)) and stoch_k < 90:
-            if pattern != "Kein":
+        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
+              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch}")
+
+        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch) and stoch_k < 90:
+            if trendlinien_ausbruch and not ema_breakout and not (in_ema_zone and is_higher_low):
+                setup_typ = f"Trendlinien-Ausbruch + {pattern}" if pattern != "Kein" else "Trendlinien-Ausbruch"
+            elif pattern != "Kein":
                 setup_typ = f"Kombi (Zone/Stoch + {pattern})"
             else:
                 setup_typ = "Trend-Setup (Basis)"
         else:
-            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, Stoch={stoch_k:.1f})")
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Stoch={stoch_k:.1f})")
             return None
 
         # Relative Stärke vs. STOXX Europe 600 (statt SPY)
@@ -925,6 +1016,15 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
                     tp1 = swing_high_target
                     hoehere_ziele = [t for t in targets_above if t > tp1]
                     tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
+
+        # --- Realitäts-Deckel: TP1 darf nicht über dem höchsten tatsächlich
+        # erreichten Kurs der letzten 120 Handelstage liegen (siehe US-Funktion
+        # für ausführliche Begründung).
+        realer_deckel_120 = data['High'].iloc[-120:].max()
+        if realer_deckel_120 > entry and tp1 > realer_deckel_120:
+            tp1 = realer_deckel_120
+            hoehere_ziele = [t for t in targets_above if t > tp1]
+            tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
 
         # Kein Analysten-Kursziel für EU-Werte (get_analyst_target ist auf US-Info-Feld
         # ausgelegt; yf liefert targetMeanPrice aber grundsätzlich auch für DAX-Werte)
@@ -1194,12 +1294,14 @@ if __name__ == "__main__":
         f.write("- Sektor-Rotation: Top-8-US-Sektoren (Alpaca) + separat Top-5-EU-Sektoren (STOXX 600, yfinance)\n")
         f.write("- Kandidaten: US-Sektoren (inkl. Nasdaq-Mid-Caps) + DAX40-Werte (EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
-        f.write("- Setup: EMA8/20-Breakout ODER Pullback (Kurs testet EMA20/50, Higher-Low)\n")
+        f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch\n")
+        f.write("- Trendlinien-Ausbruch: fallende Linie durch >= 3 Swing-Highs (120 Tage, 1% Toleranz), Pflicht-Volumen\n")
         f.write("- Momentum: Relative Stärke der Aktie > -10% vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
         f.write("- Momentum: Kurs max. 25% unter dem 52-Wochen-Hoch\n")
         f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein\n")
-        f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, Breakouts = 10-Tage-Tief\n")
-        f.write("- Ziel: Pullback-Setups = letzter Swing-High, Breakouts = nächstes EMA/Fib-Level\n")
+        f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
+        f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
+        f.write("- Realitäts-Deckel: TP1 wird auf das reale 120-Tage-Hoch begrenzt (keine reinen Fib-Extensions ohne Kursdeckung)\n")
         f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
