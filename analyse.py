@@ -706,9 +706,24 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
         buffer = 0.01  # 1.0% Puffer für Zone (vorher 0.3%)
         
-        # Prüfung: Kurs in der EMA-Zone?
+        # Prüfung: Kurs in der EMA-Zone? Richtungsabhängig (NEU): Ein reiner
+        # Bruch nach unten (Kurs dauerhaft unter der EMA) zählt nicht mehr als
+        # Pullback-Test, auch wenn er innerhalb der Toleranz liegt - das wäre
+        # ein Unterstützungsbruch, keine Bestätigung. Es zählt nur, wenn der
+        # Kurs aktuell nah an der EMA liegt UND innerhalb der letzten 3 Tage
+        # mindestens einmal auf/über der EMA stand (frischer Reclaim erlaubt,
+        # analog zum 3-Tage-Fenster beim EMA-Breakout).
         price = data['Close'].iloc[-1]
-        in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
+
+        def ema_pullback_test(ema_series):
+            ema_heute = ema_series.iloc[-1]
+            nah_dran = abs(price - ema_heute) < (price * buffer)
+            war_ueber_ema_kuerzlich = any(
+                data['Close'].iloc[-1 - i] >= ema_series.iloc[-1 - i] for i in range(0, 3)
+            )
+            return nah_dran and war_ueber_ema_kuerzlich
+
+        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50']])
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1009,8 +1024,18 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         is_higher_low = data['Low'].iloc[-1] > data['Low'].iloc[-3]
         buffer = 0.01  # 1.0% Puffer für Zone (vorher 0.3%)
 
+        # Richtungsabhängige Zone-Prüfung (NEU, siehe US-Funktion für Begründung)
         price = data['Close'].iloc[-1]
-        in_ema_zone = any(abs(price - ema) < (price * buffer) for ema in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1]])
+
+        def ema_pullback_test(ema_series):
+            ema_heute = ema_series.iloc[-1]
+            nah_dran = abs(price - ema_heute) < (price * buffer)
+            war_ueber_ema_kuerzlich = any(
+                data['Close'].iloc[-1 - i] >= ema_series.iloc[-1 - i] for i in range(0, 3)
+            )
+            return nah_dran and war_ueber_ema_kuerzlich
+
+        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50']])
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1357,6 +1382,7 @@ if __name__ == "__main__":
         f.write("- Kandidaten: US-Sektoren (inkl. Nasdaq-Mid-Caps) + DAX40-Werte (EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
         f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch\n")
+        f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten)\n")
         f.write("- Trendlinien-Ausbruch: fallende Linie durch >= 3 Swing-Highs (120 Tage, 1% Toleranz), Pflicht-Volumen\n")
         f.write("- Momentum: Relative Stärke der Aktie > -10% vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
         f.write("- Momentum: Kurs max. 25% unter dem 52-Wochen-Hoch\n")
