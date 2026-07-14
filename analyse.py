@@ -54,7 +54,7 @@ sektoren_aktien = {
             "CRWD", "ZS", "DDOG", "TEAM", "HUBS", "VEEV", "PTC", "BSY"],
     "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB",
             "INCY", "EXEL", "NBIX", "BMRN", "UTHR"],
-    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "NYCB", "WBS"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "WBS"],
     "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN",
              "S", "NET", "RPD", "VRNS", "FFIV"],
     "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU",
