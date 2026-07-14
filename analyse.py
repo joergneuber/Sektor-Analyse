@@ -216,6 +216,14 @@ def get_index_benchmark_yf(ticker, label):
     try:
         hist = yf.Ticker(ticker).history(period="300d")
 
+        if hist.empty:
+            return f"{label}: Daten unvollständig"
+
+        # NaN-Platzhalterzeilen entfernen (yfinance legt vor Börsenöffnung teils
+        # eine leere Zeile für den aktuellen Tag an - sonst zeigt iloc[-1] auf NaN
+        # statt auf den letzten echten Schlusskurs)
+        hist = hist.dropna(subset=['Close'])
+
         if hist.empty or len(hist) < 200:
             return f"{label}: Daten unvollständig"
 
@@ -268,6 +276,11 @@ def get_eu_benchmark_close():
         if hist.empty:
             print("DEBUG: EU-Benchmark (EXSA.DE) leer, Relative Stärke EU wird übersprungen.")
             return None
+        # NaN-Platzhalterzeilen entfernen (siehe get_index_benchmark_yf)
+        hist = hist.dropna(subset=['Close'])
+        if hist.empty:
+            print("DEBUG: EU-Benchmark (EXSA.DE) nach NaN-Bereinigung leer, Relative Stärke EU wird übersprungen.")
+            return None
         return hist['Close']
     except Exception as e:
         print(f"FEHLER beim Laden der EU-Benchmark: {e}")
@@ -278,6 +291,12 @@ def get_perf_yf(ticker, name):
     da diese nicht über Alpaca verfügbar sind. Gleiche Kennzahlen/Formel wie US-Version."""
     try:
         hist = yf.Ticker(ticker).history(period="1y")
+
+        if hist.empty:
+            return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+
+        # NaN-Platzhalterzeilen entfernen (siehe get_index_benchmark_yf)
+        hist = hist.dropna(subset=['Close'])
 
         if hist.empty:
             return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
@@ -906,6 +925,17 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         if data.empty:
             print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
+            return None
+
+        # NaN-Platzhalterzeilen entfernen: yfinance legt vor Xetra-Handelsbeginn
+        # teils schon eine leere Zeile für den aktuellen Tag an (NaN in Close/High/
+        # Low/Volume). Ohne diese Bereinigung würde iloc[-1] auf diese Platzhalter-
+        # Zeile zeigen statt auf den letzten echten Schlusskurs, was RSI, Stochastik,
+        # EMAs etc. komplett auf NaN kippen lässt (siehe Log vom 2026-07-14).
+        data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+
+        if data.empty:
+            print(f"DEBUG: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
             return None
 
         # yfinance liefert bereits 'Close','High','Low','Open','Volume' - keine Umbenennung nötig
