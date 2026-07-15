@@ -547,6 +547,48 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
     ausbruch = bool(close_heute > linie_heute) and crossover_kuerzlich and bool(volumen_ok)
     return ausbruch, (float(linie_heute) if ausbruch else None)
 
+def check_kumo_breakout(data):
+    """
+    Prüft einen echten Kumo-Ausbruch (Ichimoku-Wolke): Der Kurs muss die
+    KOMPLETTE Wolke von unten nach oben durchbrochen haben - also über BEIDEN
+    Grenzen (Senkou Span A und B) stehen, nicht nur über einer (sonst befindet
+    sich der Kurs noch innerhalb der Wolke, kein echter Ausbruch).
+    Der Ausbruch selbst darf innerhalb der letzten 3 Tage liegen (analog zum
+    Crossover-Fenster bei EMA-Breakout/Trendlinie), aktuell muss der Kurs
+    weiterhin oberhalb stehen. Pflicht-Volumen an einem der letzten 3 Tage
+    (nicht zwingend heute - der Ausbruchstag mit Volumen-Spike kann auch
+    1-2 Tage zurückliegen, während der Kurs seitdem über der Wolke hält).
+    Gibt (ausbruch: bool, wolken_obergrenze_heute: float|None) zurück.
+    """
+    if len(data) < 5 or 'SenkouA' not in data.columns or 'SenkouB' not in data.columns:
+        return False, None
+
+    kumo_ober = data[['SenkouA', 'SenkouB']].max(axis=1)
+    heute_ober = kumo_ober.iloc[-1]
+    close_heute = data['Close'].iloc[-1]
+
+    if pd.isna(heute_ober):
+        return False, None
+
+    ueber_wolke_heute = close_heute > heute_ober
+    if not ueber_wolke_heute:
+        return False, None
+
+    # War innerhalb der letzten 3 Tage noch NICHT (vollständig) über der Wolke
+    # - frischer Ausbruch, kein bereits seit langem etabliertes "über der Wolke"
+    frischer_ausbruch = any(
+        pd.notna(kumo_ober.iloc[-1 - i]) and data['Close'].iloc[-1 - i] <= kumo_ober.iloc[-1 - i]
+        for i in range(1, 4)
+    )
+
+    volumen_ok = any(
+        data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i]
+        for i in range(0, 3)
+    )
+
+    ausbruch = bool(ueber_wolke_heute) and frischer_ausbruch and bool(volumen_ok)
+    return ausbruch, (float(heute_ober) if ausbruch else None)
+
 def get_fib_levels(data):
     """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
     recent_data = data.iloc[-60:]
@@ -740,29 +782,38 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
         trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
 
+        # Vierter, eigenständiger Setup-Typ: echter Kumo-Ausbruch (Ichimoku-
+        # Wolke komplett von unten nach oben durchbrochen, Pflicht-Volumen)
+        kumo_ausbruch, kumo_level = check_kumo_breakout(data)
+
         # 5. Setup-Typ mit Pro-Check Filter
         # --- DEBUG-LOGGING ---
         # Dieser Print zeigt dir im Log genau, warum ein Setup abgelehnt wird
         print(f"DEBUG: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
-              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch}")
+              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
         # --- Filter-Logik ---
         # 1. Der Haupt-Filter (muss mit 'if' beginnen)
-        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch) and stoch_k < 90:
+        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90:
             
-            # Hier definieren wir, was ein Setup ist
-            if trendlinien_ausbruch and not ema_breakout and not (in_ema_zone and is_higher_low):
-                # Reiner Trendlinien-Ausbruch (kein EMA-Breakout, keine Pullback-Zone) -
-                # eigenständiger dritter Setup-Typ, klar von den anderen beiden getrennt
-                setup_typ = f"Trendlinien-Ausbruch + {pattern}" if pattern != "Kein" else "Trendlinien-Ausbruch"
-            elif pattern != "Kein":
-                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
-            else:
-                setup_typ = "Trend-Setup (Basis)"
+            # Setup-Typ: ALLE zutreffenden Pfade auflisten, nicht nur den ersten
+            # Treffer (sonst geht z.B. ein gleichzeitiger Kumo-Ausbruch neben
+            # einem Trendlinien-Ausbruch stillschweigend verloren)
+            pfade = []
+            if trendlinien_ausbruch:
+                pfade.append("Trendlinien-Ausbruch")
+            if kumo_ausbruch:
+                pfade.append("Kumo-Ausbruch")
+            if ema_breakout:
+                pfade.append("EMA-Breakout")
+            if in_ema_zone and is_higher_low:
+                pfade.append("Pullback-Zone")
+            basis_label = " + ".join(pfade)
+            setup_typ = f"{basis_label} + {pattern}" if pattern != "Kein" else basis_label
             
         # 2. Das 'else' MUSS genau unter dem 'if' stehen (gleiche Einrückung)
         else:
-            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Stoch={stoch_k:.1f})")
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
             return None
 
         # --- Momentum-Zusatzkriterien: Relative Stärke & 52-Wochen-Hoch-Nähe ---
@@ -873,11 +924,11 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             return None
         
         # --- Debug-Detektiv ---
-        bedingung_erfuellt = (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch) and stoch_k < 90
+        bedingung_erfuellt = (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90
         
         # --- Universal-Debugger ---
         # Wir geben die Werte aus, bevor das IF überhaupt startet
-        print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | TL-Ausbruch: {trendlinien_ausbruch} | Stoch: {stoch_k} ({type(stoch_k)})")
+        print(f"DEBUG-CHECK: {ticker} | Breakout: {ema_breakout} ({type(ema_breakout)}) | Zone: {in_ema_zone} ({type(in_ema_zone)}) | HL: {is_higher_low} ({type(is_higher_low)}) | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch} | Stoch: {stoch_k} ({type(stoch_k)})")
 
         # Sicherstellen, dass wir echte Booleans haben
         def to_bool(v):
@@ -889,19 +940,25 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         in_zone = to_bool(in_ema_zone)
         is_hl = to_bool(is_higher_low)
         is_tl = to_bool(trendlinien_ausbruch)
+        is_kumo = to_bool(kumo_ausbruch)
         stoch = float(stoch_k)
 
         # Die exakte Prüfung
-        if (is_breakout or (in_zone and is_hl) or is_tl) and stoch < 90:
+        if (is_breakout or (in_zone and is_hl) or is_tl or is_kumo) and stoch < 90:
             
-            # Setup-Typ bestimmen (konsistent zur Hauptprüfung weiter oben,
-            # damit ein reiner Trendlinien-Ausbruch hier nicht überschrieben wird)
-            if is_tl and not is_breakout and not (in_zone and is_hl):
-                setup_typ = f"Trendlinien-Ausbruch + {pattern}" if pattern != "Kein" else "Trendlinien-Ausbruch"
-            elif pattern != "Kein":
-                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
-            else:
-                setup_typ = "Trend-Setup (Basis)"
+            # Setup-Typ: ALLE zutreffenden Pfade auflisten (konsistent zur
+            # Hauptprüfung weiter oben)
+            pfade = []
+            if is_tl:
+                pfade.append("Trendlinien-Ausbruch")
+            if is_kumo:
+                pfade.append("Kumo-Ausbruch")
+            if is_breakout:
+                pfade.append("EMA-Breakout")
+            if in_zone and is_hl:
+                pfade.append("Pullback-Zone")
+            basis_label = " + ".join(pfade)
+            setup_typ = f"{basis_label} + {pattern}" if pattern != "Kein" else basis_label
             
             res = {
                 "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
@@ -1061,18 +1118,27 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
         trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
 
-        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
-              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch}")
+        # Vierter, eigenständiger Setup-Typ: echter Kumo-Ausbruch (Ichimoku-
+        # Wolke komplett von unten nach oben durchbrochen, Pflicht-Volumen)
+        kumo_ausbruch, kumo_level = check_kumo_breakout(data)
 
-        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch) and stoch_k < 90:
-            if trendlinien_ausbruch and not ema_breakout and not (in_ema_zone and is_higher_low):
-                setup_typ = f"Trendlinien-Ausbruch + {pattern}" if pattern != "Kein" else "Trendlinien-Ausbruch"
-            elif pattern != "Kein":
-                setup_typ = f"Kombi (Zone/Stoch + {pattern})"
-            else:
-                setup_typ = "Trend-Setup (Basis)"
+        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
+              f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
+
+        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90:
+            pfade = []
+            if trendlinien_ausbruch:
+                pfade.append("Trendlinien-Ausbruch")
+            if kumo_ausbruch:
+                pfade.append("Kumo-Ausbruch")
+            if ema_breakout:
+                pfade.append("EMA-Breakout")
+            if in_ema_zone and is_higher_low:
+                pfade.append("Pullback-Zone")
+            basis_label = " + ".join(pfade)
+            setup_typ = f"{basis_label} + {pattern}" if pattern != "Kein" else basis_label
         else:
-            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Stoch={stoch_k:.1f})")
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
             return None
 
         # Relative Stärke vs. STOXX Europe 600 (statt SPY)
@@ -1404,7 +1470,7 @@ if __name__ == "__main__":
         f.write("- Sektor-Rotation: Top-8-US-Sektoren (Alpaca) + separat Top-5-EU-Sektoren (STOXX 600, yfinance)\n")
         f.write("- Kandidaten: US-Sektoren (inkl. Nasdaq-Mid-Caps) + DAX40-Werte (EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
-        f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch\n")
+        f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch ODER Kumo-Ausbruch (Setup_Typ listet ALLE zutreffenden Pfade auf, z.B. \"Trendlinien-Ausbruch + Kumo-Ausbruch\")\n")
         f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten)\n")
         f.write("- Trendlinien-Ausbruch: fallende Linie durch >= 3 Swing-Highs (120 Tage, 1% Toleranz), Pflicht-Volumen\n")
         f.write("- Momentum: Relative Stärke der Aktie > -10% vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
@@ -1415,7 +1481,8 @@ if __name__ == "__main__":
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
         f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
         f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
-        f.write("- Ichimoku (NEU, wirkt nur intern): Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n\n")
+        f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
+        f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
 
