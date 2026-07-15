@@ -1563,6 +1563,16 @@ if __name__ == "__main__":
                     f.write(f"Einstieg: {prow['Einstieg']}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')}) | Aktuell: {aktueller_kurs}{waehrungszeichen} | Performance: {performance}%\n")
                     f.write(f"Stop: {prow['Stop']}{waehrungszeichen} | TP1: {prow['TP1']}{waehrungszeichen} | TP2: {prow['TP2']}{waehrungszeichen}\n")
 
+                    # Optionsschein-Zusatzzeile: nur anzeigen, wenn Produkt_Typ
+                    # tatsächlich als Optionsschein befüllt wurde
+                    produkt_typ = str(prow.get('Produkt_Typ', '')).strip().lower()
+                    if produkt_typ == 'optionsschein':
+                        emittent = prow.get('Emittent', 'n/a')
+                        hebel = prow.get('Hebel', 'n/a')
+                        os_performance = prow.get('OS_Performance%', 'n/a')
+                        os_quelle = prow.get('OS_Quelle', 'n/a')
+                        f.write(f"Optionsschein: {emittent} | Hebel: {hebel}x | OS-Performance: {os_performance}% (Quelle: {os_quelle})\n")
+
                 if not gestoppt_heute.empty:
                     f.write("\n--- HEUTE GESTOPPT ---\n")
                     for _, prow in gestoppt_heute.iterrows():
