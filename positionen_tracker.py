@@ -88,6 +88,39 @@ def finde_datei(service, folder_id):
     return treffer[0]['id'], treffer[0]['mimeType']
 
 
+def _datum_vereinheitlichen(wert):
+    """Wandelt einen einzelnen Datumswert - egal in welchem Format Google
+    Sheets ihn beim CSV-Export geschrieben hat (z.B. '15/7', '2026-07-15',
+    '7/15/2026') - ins einheitliche Format TT.MM.JJJJ um. Unbekannte/leere
+    Werte bleiben unverändert, statt verworfen zu werden."""
+    if wert is None or (isinstance(wert, float) and pd.isna(wert)):
+        return wert
+    text = str(wert).strip()
+    if text == "" or text.lower() == "nan":
+        return text
+    try:
+        datum = pd.to_datetime(text, dayfirst=True, errors='raise')
+        if datum.year < 1970:
+            # Ursprungswert hatte keine Jahresangabe (z.B. '15/7') - Pandas
+            # setzt dann ein unplausibles Platzhalter-Jahr; aktuelles Jahr
+            # ist die sinnvollste Annahme für ein Positions-Tracking
+            datum = datum.replace(year=datetime.datetime.now().year)
+        return datum.strftime("%d.%m.%Y")
+    except Exception:
+        return text  # Unbekanntes Format - lieber unverändert lassen als verwerfen
+
+
+def normalisiere_daten(df):
+    """Vereinheitlicht Einstiegsdatum/Ausstiegsdatum auf TT.MM.JJJJ, egal wie
+    Google Sheets sie exportiert hat - sonst wechselt die Anzeige im Briefing
+    je nach Gebietsschema-Einstellung des Sheets (z.B. '15/7' statt einem
+    festen, lesbaren Format)."""
+    for spalte in ['Einstiegsdatum', 'Ausstiegsdatum']:
+        if spalte in df.columns:
+            df[spalte] = df[spalte].apply(_datum_vereinheitlichen)
+    return df
+
+
 def normalisiere_zahlen(df):
     """Wandelt Zahlen mit Komma als Dezimaltrennzeichen (z.B. '47,77' aus einem
     deutsch lokalisierten Google Sheet exportiert) ins Punkt-Format um, das
@@ -118,7 +151,7 @@ def ergaenze_neue_zeilen(df):
     Sektor wird bewusst NICHT automatisch ermittelt (keine zuverlässige
     Zuordnung ohne Duplizierung der kompletten Sektor-Listen aus analyse.py).
     Die Anleitungszeile (Ticker == ANLEITUNG_TICKER) wird dabei ignoriert."""
-    heute = datetime.datetime.now().strftime("%Y-%m-%d")
+    heute = datetime.datetime.now().strftime("%d.%m.%Y")
 
     for idx, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
@@ -256,7 +289,7 @@ def aktualisiere_positionen(df):
     'Gestoppt' und Ausstiegsdatum/-kurs werden gesetzt. Für alle offenen
     Positionen wird zusätzlich der aktuelle Kurs und die Performance seit
     Einstieg als Info-Spalte ergänzt (für die Briefing-Anzeige)."""
-    heute = datetime.datetime.now().strftime("%Y-%m-%d")
+    heute = datetime.datetime.now().strftime("%d.%m.%Y")
 
     for idx, row in df.iterrows():
         if str(row['Status']).strip().lower() != 'offen':
@@ -311,6 +344,7 @@ if __name__ == '__main__':
     file_id, mime_type = finde_datei(service, FOLDER_ID)
     df = lade_positionen_herunter(service, file_id, mime_type)
     df = normalisiere_zahlen(df)
+    df = normalisiere_daten(df)
 
     df = ergaenze_neue_zeilen(df)
 
