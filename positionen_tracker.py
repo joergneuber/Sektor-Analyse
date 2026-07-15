@@ -31,6 +31,7 @@ SPALTEN = [
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
     'Aktueller_Kurs', 'Performance_Seit_Einstieg%'
 ]
+NUMERISCHE_SPALTEN = ['Einstieg', 'Stop', 'TP1', 'TP2', 'Ausstiegskurs', 'Aktueller_Kurs', 'Performance_Seit_Einstieg%']
 
 alpaca_client = StockHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
 
@@ -85,6 +86,21 @@ def finde_datei(service, folder_id):
         if f['mimeType'] == SHEET_MIME:
             return f['id'], f['mimeType']
     return treffer[0]['id'], treffer[0]['mimeType']
+
+
+def normalisiere_zahlen(df):
+    """Wandelt Zahlen mit Komma als Dezimaltrennzeichen (z.B. '47,77' aus einem
+    deutsch lokalisierten Google Sheet exportiert) ins Punkt-Format um, das
+    Python für float()-Umwandlungen braucht. Ohne diese Bereinigung schlägt
+    jede float()-Umwandlung fehl, sobald das Sheet auf ein Gebietsschema mit
+    Komma-Dezimaltrennzeichen eingestellt ist - unabhängig davon, ob die
+    Zahlen manuell eingetragen oder vom Skript selbst geschrieben wurden."""
+    for spalte in NUMERISCHE_SPALTEN:
+        if spalte in df.columns:
+            df[spalte] = df[spalte].apply(
+                lambda v: str(v).replace(',', '.') if isinstance(v, str) and v.strip() != "" else v
+            )
+    return df
 
 
 def ergaenze_neue_zeilen(df):
@@ -294,6 +310,7 @@ if __name__ == '__main__':
 
     file_id, mime_type = finde_datei(service, FOLDER_ID)
     df = lade_positionen_herunter(service, file_id, mime_type)
+    df = normalisiere_zahlen(df)
 
     df = ergaenze_neue_zeilen(df)
 
