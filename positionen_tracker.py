@@ -29,9 +29,15 @@ SPALTEN = [
     'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
-    'Aktueller_Kurs', 'Performance_Seit_Einstieg%'
+    'Aktueller_Kurs', 'Performance_Seit_Einstieg%',
+    'Produkt_Typ', 'Emittent', 'Hebel',
+    'OS_Einstiegskurs', 'OS_Manueller_Kurs',
+    'OS_Performance%', 'OS_Quelle'
 ]
-NUMERISCHE_SPALTEN = ['Einstieg', 'Stop', 'TP1', 'TP2', 'Ausstiegskurs', 'Aktueller_Kurs', 'Performance_Seit_Einstieg%']
+NUMERISCHE_SPALTEN = [
+    'Einstieg', 'Stop', 'TP1', 'TP2', 'Ausstiegskurs', 'Aktueller_Kurs', 'Performance_Seit_Einstieg%',
+    'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs', 'OS_Performance%'
+]
 
 alpaca_client = StockHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
 
@@ -229,6 +235,14 @@ def stelle_anleitung_sicher(df):
         "ermittelt, bleibt leer, falls nicht manuell eingetragen. Diese Zeile nicht loeschen "
         "oder als Position befuellen (Ticker-Wert 'ANLEITUNG' wird ignoriert)."
     )
+    anleitung['Sektor'] = (
+        "OPTIONSSCHEIN (optional): Produkt_Typ = 'Optionsschein' setzen, dann zusaetzlich "
+        "Emittent, Hebel und OS_Einstiegskurs ausfuellen - die Performance des Scheins wird "
+        "dann automatisch aus Hebel x Aktienkursbewegung GESCHAETZT (OS_Quelle = 'geschaetzt'). "
+        "Traegst du stattdessen den aktuellen Schein-Kurs in OS_Manueller_Kurs ein, wird DIESER "
+        "Wert bevorzugt fuer OS_Performance% genutzt (OS_Quelle = 'manuell') - genauer, aber muss "
+        "von dir selbst nachgetragen werden. Ohne Angaben bleibt Produkt_Typ leer = normale Aktie."
+    )
     return pd.concat([pd.DataFrame([anleitung]), df], ignore_index=True)[SPALTEN]
 
 
@@ -334,6 +348,61 @@ def aktualisiere_positionen(df):
     return df
 
 
+def berechne_optionsschein_performance(df):
+    """Berechnet für Positionen mit Produkt_Typ = 'Optionsschein' die Performance
+    des Scheins selbst (nicht der Aktie). Zwei Quellen, manueller Kurs hat Vorrang:
+    - OS_Manueller_Kurs vorhanden: echte Performance daraus, OS_Quelle = 'manuell'
+      (präziser, da der tatsächliche Schein-Kurs verwendet wird statt einer
+      linearen Näherung - erfasst Spread, Restlaufzeit, Volatilität automatisch)
+    - sonst, falls Hebel + OS_Einstiegskurs vorhanden: GESCHÄTZTE Performance aus
+      Hebel x Aktienkursbewegung, OS_Quelle = 'geschätzt' (vereinfachte lineare
+      Näherung - reale Scheine bewegen sich nicht exakt linear zum Hebel)
+    Gilt nur für Zeilen mit Status = 'Offen' und echten Werten in Aktueller_Kurs
+    (wird vorher von aktualisiere_positionen gesetzt)."""
+    for idx, row in df.iterrows():
+        ticker = str(row['Ticker']).strip()
+        if not ticker or ticker.lower() == 'nan' or ticker.upper() == ANLEITUNG_TICKER:
+            continue
+        if str(row['Status']).strip().lower() != 'offen':
+            continue
+
+        produkt_typ = str(row['Produkt_Typ']).strip().lower()
+        if produkt_typ != 'optionsschein':
+            continue
+
+        os_manuell = row['OS_Manueller_Kurs']
+        os_manuell_vorhanden = not pd.isna(os_manuell) and str(os_manuell).strip() not in ("", "nan")
+
+        os_einstieg = row['OS_Einstiegskurs']
+        os_einstieg_vorhanden = not pd.isna(os_einstieg) and str(os_einstieg).strip() not in ("", "nan")
+
+        if os_manuell_vorhanden and os_einstieg_vorhanden:
+            os_manuell_f = float(os_manuell)
+            os_einstieg_f = float(os_einstieg)
+            if os_einstieg_f > 0:
+                performance = round(((os_manuell_f - os_einstieg_f) / os_einstieg_f) * 100, 2)
+                df.at[idx, 'OS_Performance%'] = performance
+                df.at[idx, 'OS_Quelle'] = 'manuell'
+                print(f"DEBUG: {ticker} -> OS-Performance aus manuellem Kurs: {performance}%")
+            continue
+
+        hebel = row['Hebel']
+        hebel_vorhanden = not pd.isna(hebel) and str(hebel).strip() not in ("", "nan")
+        aktien_performance = row['Performance_Seit_Einstieg%']
+        aktien_performance_vorhanden = not pd.isna(aktien_performance) and str(aktien_performance).strip() not in ("", "nan")
+
+        if hebel_vorhanden and aktien_performance_vorhanden:
+            hebel_f = float(hebel)
+            performance = round(hebel_f * float(aktien_performance), 2)
+            df.at[idx, 'OS_Performance%'] = performance
+            df.at[idx, 'OS_Quelle'] = 'geschätzt'
+            print(f"DEBUG: {ticker} -> OS-Performance geschätzt (Hebel {hebel_f}x): {performance}%")
+        else:
+            print(f"DEBUG: {ticker} -> Produkt_Typ=Optionsschein, aber weder OS_Manueller_Kurs noch (Hebel+OS_Einstiegskurs) vollständig - keine OS-Performance berechenbar.")
+
+    return df
+
+
 def hochladen(service, lokale_datei, folder_id, alte_file_id):
     """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive
     hoch - dafür wird die alte Datei (falls vorhanden) gelöscht und komplett
@@ -370,6 +439,7 @@ if __name__ == '__main__':
 
     if anzahl_offen > 0:
         df = aktualisiere_positionen(df)
+        df = berechne_optionsschein_performance(df)
 
     # Immer lokal speichern (auch bei 0 offenen Positionen), damit
     # analyse.py die Datei für den Briefing-Abschnitt einlesen kann
