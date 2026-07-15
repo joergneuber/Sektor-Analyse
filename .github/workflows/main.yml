@@ -29,7 +29,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy
-          
+
+      - name: Offene Positionen aktualisieren
+        # Läuft VOR der Analyse: lädt Offene_Positionen.csv aus Drive, prüft
+        # jede manuell bestätigte Position gegen den aktuellen Kurs/Stop und
+        # lädt die aktualisierte Datei wieder hoch. Die lokale Kopie wird
+        # anschließend von analyse.py für den Briefing-Abschnitt
+        # "OFFENE POSITIONEN" eingelesen.
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python positionen_tracker.py
+
       - name: Analyse ausführen
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
