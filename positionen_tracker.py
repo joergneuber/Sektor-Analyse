@@ -175,8 +175,18 @@ def ergaenze_neue_zeilen(df):
 
         print(f"DEBUG: Neue Zeile erkannt für {ticker} - ergänze automatisch ableitbare Felder...")
 
-        markt = 'DAX' if ticker.upper().endswith('.DE') else 'US'
-        waehrung = 'EUR' if markt == 'DAX' else 'USD'
+        # Markt-Erkennung über das Ticker-Suffix: Jeder Ticker MIT Punkt-Suffix
+        # (.DE Xetra, .PA Paris, .AS Amsterdam, .MI Mailand, .L London, ...)
+        # ist ein europäischer Titel und läuft über yfinance. Nur suffixlose
+        # Ticker gelten als US-Titel (Alpaca). Die Waehrung wird grob aus dem
+        # Suffix abgeleitet (.L = GBP-Sonderfall, sonst EUR fuer EU-Boersen).
+        ticker_upper = ticker.upper()
+        if '.' in ticker_upper:
+            markt = 'DAX' if ticker_upper.endswith('.DE') else 'EU'
+            waehrung = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
+        else:
+            markt = 'US'
+            waehrung = 'USD'
 
         try:
             info = yf.Ticker(ticker).info
@@ -305,10 +315,13 @@ def lade_positionen_herunter(service, file_id, mime_type):
 
 
 def hole_aktuellen_kurs(ticker, markt):
-    """Holt den letzten verfügbaren Schlusskurs - via Alpaca für US-Werte,
-    via yfinance für DAX-Werte (inkl. NaN-Bereinigung, siehe scan_setups_fixed.py)."""
+    """Holt den letzten verfügbaren Schlusskurs - via Alpaca für US-Werte
+    (suffixlose Ticker), via yfinance für alle europäischen Titel (Ticker mit
+    Punkt-Suffix: .DE, .PA, .AS, .MI, .L, ...), inkl. NaN-Bereinigung.
+    Sicherheitsnetz: Ein Ticker MIT Suffix läuft immer über yfinance, selbst
+    wenn im Markt-Feld (manuell) US steht - Alpaca kennt keine EU-Ticker."""
     try:
-        if markt == 'US':
+        if markt == 'US' and '.' not in str(ticker):
             start_date = datetime.datetime.now() - datetime.timedelta(days=10)
             request = StockBarsRequest(symbol_or_symbols=[ticker], start=start_date, timeframe=TimeFrame.Day)
             bars = alpaca_client.get_stock_bars(request)
@@ -319,7 +332,7 @@ def hole_aktuellen_kurs(ticker, markt):
             if 'close' in hist.columns:
                 hist = hist.rename(columns={'close': 'Close'})
             return float(hist['Close'].iloc[-1])
-        else:  # DAX
+        else:  # Europäische Börsen (jedes Punkt-Suffix) via yfinance
             hist = yf.Ticker(ticker).history(period="10d")
             if hist.empty:
                 return None
