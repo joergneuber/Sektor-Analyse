@@ -15,7 +15,13 @@ from alpaca.data.timeframe import TimeFrame
 
 # --- KONFIGURATION ---
 FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
-DATEINAME = 'Offene_Positionen.csv'
+LOKALE_DATEI = 'Offene_Positionen.csv'          # lokale Arbeitsdatei (für analyse.py)
+DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native Google-Sheets-Datei,
+                                                 # ohne .csv-Endung, damit sie sich direkt per Doppelklick
+                                                 # in Sheets öffnen und bearbeiten lässt - keine separate
+                                                 # Kopie mehr, wie es bei einer echten .csv-Datei passiert)
+DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
+SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 SPALTEN = [
     'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
@@ -59,43 +65,61 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 
-def finde_datei_id(service, dateiname, folder_id):
-    """Sucht eine Datei mit exaktem Namen im Zielordner, gibt die File-ID zurück
-    oder None, falls sie (noch) nicht existiert."""
-    query = f"name='{dateiname}' and '{folder_id}' in parents and trashed=false"
-    ergebnis = service.files().list(q=query, fields="files(id, name)").execute()
+def finde_datei(service, folder_id):
+    """Sucht nach der Positionen-Datei unter dem aktuellen (native Sheet) oder
+    dem alten Namen (rohe .csv aus der ersten Version). Gibt (file_id, mime_type)
+    zurück, oder (None, None), falls noch keine Datei existiert."""
+    query = (
+        f"(name='{DRIVE_NAME}' or name='{DRIVE_NAME_ALT}') "
+        f"and '{folder_id}' in parents and trashed=false"
+    )
+    ergebnis = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
     treffer = ergebnis.get('files', [])
-    if treffer:
-        return treffer[0]['id']
-    return None
+    if not treffer:
+        return None, None
+    # Falls beide Namen existieren (Übergangsfall), das native Sheet bevorzugen
+    for f in treffer:
+        if f['mimeType'] == SHEET_MIME:
+            return f['id'], f['mimeType']
+    return treffer[0]['id'], treffer[0]['mimeType']
 
 
-def lade_positionen_herunter(service, file_id):
-    """Lädt die bestehende Offene_Positionen.csv aus Drive herunter und
-    gibt sie als DataFrame zurück. Legt eine leere Struktur an, falls die
+def lade_positionen_herunter(service, file_id, mime_type):
+    """Lädt die bestehende Positionen-Datei aus Drive herunter und gibt sie als
+    DataFrame zurück. Bei einer nativen Google-Sheets-Datei wird der Inhalt per
+    Export als CSV abgerufen (get_media funktioniert bei nativen Google-Typen
+    nicht); bei einer rohen .csv (Übergangsfall von der ersten Version) wird
+    stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
     Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
     if file_id is None:
-        print(f"DEBUG: {DATEINAME} existiert noch nicht in Drive - starte mit leerer Liste.")
+        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
         return pd.DataFrame(columns=SPALTEN)
 
     try:
-        request = service.files().get_media(fileId=file_id)
+        if mime_type == SHEET_MIME:
+            request = service.files().export(fileId=file_id, mimeType='text/csv')
+        else:
+            request = service.files().get_media(fileId=file_id)
+
         buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(buffer, request)
         fertig = False
         while not fertig:
             _, fertig = downloader.next_chunk()
         buffer.seek(0)
-        df = pd.read_csv(buffer, sep=';', encoding='utf-8-sig')
 
-        # Sicherstellen, dass alle erwarteten Spalten existieren (falls die
-        # Datei manuell bearbeitet wurde und Spalten fehlen)
+        # Native Sheets-Exporte sind komma-getrennt, die alte rohe CSV war
+        # semikolon-getrennt - beides abfangen
+        inhalt = buffer.getvalue().decode('utf-8-sig')
+        sep = ';' if inhalt.count(';') > inhalt.count(',') else ','
+        df = pd.read_csv(io.StringIO(inhalt), sep=sep)
+
         for spalte in SPALTEN:
             if spalte not in df.columns:
                 df[spalte] = ""
         return df[SPALTEN]
     except Exception as e:
-        print(f"FEHLER beim Herunterladen/Parsen von {DATEINAME}: {e}. Starte mit leerer Liste.")
+        print(f"FEHLER beim Herunterladen/Parsen von {DRIVE_NAME}: {e}. Starte mit leerer Liste.")
         return pd.DataFrame(columns=SPALTEN)
 
 
@@ -162,26 +186,31 @@ def aktualisiere_positionen(df):
     return df
 
 
-def hochladen(service, dateiname, folder_id, file_id):
-    """Lädt die aktualisierte Datei nach Drive hoch - überschreibt die
-    bestehende Datei in-place (update), falls sie schon existiert, statt
-    jeden Tag eine neue Datei mit demselben Namen anzulegen."""
-    media = MediaIoBaseUpload(io.FileIO(dateiname, 'rb'), mimetype='text/csv', resumable=True)
-    if file_id:
-        service.files().update(fileId=file_id, media_body=media).execute()
-        print(f"Datei '{dateiname}' in Drive aktualisiert (ID: {file_id}).")
-    else:
-        file_metadata = {'name': dateiname, 'parents': [folder_id]}
-        neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f"Datei '{dateiname}' neu in Drive angelegt (ID: {neue_datei.get('id')}).")
+def hochladen(service, lokale_datei, folder_id, alte_file_id):
+    """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive
+    hoch - dafür wird die alte Datei (falls vorhanden) gelöscht und komplett
+    neu angelegt, mit CSV-Inhalt als Upload-Medium und Sheets-Ziel-MIME-Typ.
+    Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein natives
+    Sheet zu konvertieren (ein reines In-Place-Update per media_body auf eine
+    bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert). Der
+    Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
+    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv."""
+    if alte_file_id:
+        service.files().delete(fileId=alte_file_id).execute()
+        print(f"Alte Datei (ID: {alte_file_id}) gelöscht, wird neu angelegt.")
+
+    media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
+    file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
+    neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
 
 
 if __name__ == '__main__':
     print("Positions-Tracker gestartet...")
     service = get_drive_service()
 
-    file_id = finde_datei_id(service, DATEINAME, FOLDER_ID)
-    df = lade_positionen_herunter(service, file_id)
+    file_id, mime_type = finde_datei(service, FOLDER_ID)
+    df = lade_positionen_herunter(service, file_id, mime_type)
 
     anzahl_offen = len(df[df['Status'] == 'Offen']) if not df.empty else 0
     print(f"DEBUG: {anzahl_offen} offene Position(en) zur Prüfung gefunden.")
@@ -191,7 +220,7 @@ if __name__ == '__main__':
 
     # Immer lokal speichern (auch bei 0 offenen Positionen), damit
     # analyse.py die Datei für den Briefing-Abschnitt einlesen kann
-    df.to_csv(DATEINAME, index=False, sep=';', encoding='utf-8-sig')
-    hochladen(service, DATEINAME, FOLDER_ID, file_id)
+    df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig')
+    hochladen(service, LOKALE_DATEI, FOLDER_ID, file_id)
 
     print("Positions-Tracker abgeschlossen.")
