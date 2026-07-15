@@ -640,11 +640,22 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean()
         data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
-        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()    
+        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+
+        # Ichimoku-Basiswerte (NEU): Tenkan-sen/Kijun-sen als Hoch-Tief-
+        # Mittelpunkte (andere Berechnungsgrundlage als die EMAs oben), Senkou
+        # Span A/B als projizierte Kumo-Grenzen. Werden unten als zusätzliche
+        # TP-Kandidaten (Kumo) bzw. zusätzliches Pullback-Level (Kijun-sen)
+        # genutzt - erscheinen NICHT als eigene Briefing-Felder, sondern
+        # fließen nur in die bestehenden TP1/TP2/Setup-Typ-Werte mit ein.
+        data['Tenkan'] = (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2
+        data['Kijun'] = (data['High'].rolling(26).max() + data['Low'].rolling(26).min()) / 2
+        data['SenkouA'] = ((data['Tenkan'] + data['Kijun']) / 2).shift(26)  # wie im Chart: 26 Perioden Vorlauf
+        data['SenkouB'] = ((data['High'].rolling(52).max() + data['Low'].rolling(52).min()) / 2).shift(26)
 
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
-        
+
         # --- NEU: Stochastik & Marktstruktur ---
         # Stochastik (14,3,3)
         low_min = data['Low'].rolling(14).min()
@@ -723,7 +734,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             )
             return nah_dran and war_ueber_ema_kuerzlich
 
-        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50']])
+        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -779,7 +790,10 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             return None
 
         fib1, fib2 = get_fib_levels(data)
-        potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
+        # Kumo-Grenzen (NEU) als zusätzliche TP-Kandidaten - NaN-sicher, falls
+        # die 26-Perioden-Verschiebung noch keinen gültigen Wert liefert
+        kumo_werte = [w for w in [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]] if pd.notna(w)]
+        potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2] + kumo_werte)
         targets_above = [t for t in potenzial_targets if t > entry]
 
         tp1 = targets_above[0] if targets_above else entry * 1.08
@@ -974,6 +988,12 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
 
+        # Ichimoku-Basiswerte (siehe US-Funktion für Begründung)
+        data['Tenkan'] = (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2
+        data['Kijun'] = (data['High'].rolling(26).max() + data['Low'].rolling(26).min()) / 2
+        data['SenkouA'] = ((data['Tenkan'] + data['Kijun']) / 2).shift(26)  # wie im Chart: 26 Perioden Vorlauf
+        data['SenkouB'] = ((data['High'].rolling(52).max() + data['Low'].rolling(52).min()) / 2).shift(26)
+
         entry = data['Close'].iloc[-1]
         stop = data['Low'].rolling(10).min().iloc[-1]
 
@@ -1035,7 +1055,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             )
             return nah_dran and war_ueber_ema_kuerzlich
 
-        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50']])
+        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1074,7 +1094,10 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             return None
 
         fib1, fib2 = get_fib_levels(data)
-        potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2])
+        # Kumo-Grenzen (NEU) als zusätzliche TP-Kandidaten - NaN-sicher, falls
+        # die 26-Perioden-Verschiebung noch keinen gültigen Wert liefert
+        kumo_werte = [w for w in [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]] if pd.notna(w)]
+        potenzial_targets = sorted([data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1], data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2] + kumo_werte)
         targets_above = [t for t in potenzial_targets if t > entry]
 
         tp1 = targets_above[0] if targets_above else entry * 1.08
@@ -1391,7 +1414,8 @@ if __name__ == "__main__":
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
         f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
-        f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n\n")
+        f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
+        f.write("- Ichimoku (NEU, wirkt nur intern): Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
 
