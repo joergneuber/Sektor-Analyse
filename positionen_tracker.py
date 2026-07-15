@@ -371,6 +371,12 @@ def aktualisiere_positionen(df):
             print(f"DEBUG: Kein aktueller Kurs für {ticker} verfügbar - Status bleibt unverändert.")
             continue
 
+        # Auf 2 Nachkommastellen runden: yfinance liefert volle Float-Präzision
+        # (z.B. 175.13999938964844) - ungerundet in der CSV wird das von einem
+        # deutsch lokalisierten Google Sheet als Riesenzahl fehlinterpretiert
+        # (Punkte als Tausendertrennzeichen gelesen)
+        aktueller_kurs = round(aktueller_kurs, 2)
+
         performance = round(((aktueller_kurs - einstieg) / einstieg) * 100, 2) if einstieg > 0 else 0.0
         df.at[idx, 'Aktueller_Kurs'] = aktueller_kurs
         df.at[idx, 'Performance_Seit_Einstieg%'] = performance
@@ -485,8 +491,13 @@ if __name__ == '__main__':
         df = berechne_optionsschein_performance(df)
 
     # Immer lokal speichern (auch bei 0 offenen Positionen), damit
-    # analyse.py die Datei für den Briefing-Abschnitt einlesen kann
-    df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig')
+    # analyse.py die Datei für den Briefing-Abschnitt einlesen kann.
+    # decimal=',': Zahlen mit KOMMA als Dezimaltrennzeichen schreiben, damit
+    # das deutsch lokalisierte Google Sheet sie beim Import korrekt liest
+    # (bei Punkt-Dezimalen interpretiert es die Punkte als Tausendertrenner
+    # und macht aus 175.14 eine Riesenzahl). Beim nächsten Einlesen wandelt
+    # normalisiere_zahlen die Kommas wieder zurück in Punkte fuer Python.
+    df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig', decimal=',')
     hochladen(service, LOKALE_DATEI, FOLDER_ID, file_id)
 
     print("Positions-Tracker abgeschlossen.")
