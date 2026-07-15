@@ -160,7 +160,7 @@ def aktualisiere_positionen(df):
     heute = datetime.datetime.now().strftime("%Y-%m-%d")
 
     for idx, row in df.iterrows():
-        if str(row['Status']).strip() != 'Offen':
+        if str(row['Status']).strip().lower() != 'offen':
             continue
 
         ticker = row['Ticker']
