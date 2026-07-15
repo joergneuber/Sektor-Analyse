@@ -1445,6 +1445,10 @@ if __name__ == "__main__":
         f.write("="*50 + "\n")
 
         positionen_datei = "Offene_Positionen.csv"
+        # Eigenes Format für den Vergleich mit Ausstiegsdatum, das
+        # positionen_tracker.py jetzt einheitlich als TT.MM.JJJJ schreibt -
+        # 'today' (oben, %Y-%m-%d) bleibt für Dateinamen unverändert
+        heute_de = datetime.datetime.now().strftime("%d.%m.%Y")
         if os.path.exists(positionen_datei):
             try:
                 df_positionen = pd.read_csv(positionen_datei, sep=';', encoding='utf-8-sig')
@@ -1454,7 +1458,7 @@ if __name__ == "__main__":
 
             offene = df_positionen[df_positionen['Status'].astype(str).str.strip().str.lower() == 'offen'] if not df_positionen.empty else df_positionen
             gestoppt_heute = df_positionen[
-                (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt') & (df_positionen['Ausstiegsdatum'].astype(str) == str(today))
+                (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt') & (df_positionen['Ausstiegsdatum'].astype(str) == heute_de)
             ] if not df_positionen.empty else df_positionen
 
             if offene.empty and gestoppt_heute.empty:
