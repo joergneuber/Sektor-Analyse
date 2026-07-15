@@ -205,6 +205,33 @@ def ergaenze_neue_zeilen(df):
     return df
 
 
+def stelle_anleitung_sicher(df):
+    """Stellt sicher, dass die Hinweiszeile (Ticker == ANLEITUNG_TICKER) an
+    erster Stelle steht - unabhängig davon, ob die Datei ganz neu angelegt
+    wurde oder schon vor Einführung dieser Funktion existierte. Läuft bei
+    JEDEM Aufruf, nicht nur bei der Erstanlage, damit bestehende Dateien
+    (wie die aus früheren Versionen) die Anleitung nachträglich bekommen."""
+    vorhanden = (
+        df['Ticker'].astype(str).str.strip().str.upper() == ANLEITUNG_TICKER
+    ).any() if not df.empty else False
+
+    if vorhanden:
+        return df
+
+    print("DEBUG: Anleitungszeile fehlt - wird ergänzt.")
+    anleitung = {spalte: "" for spalte in SPALTEN}
+    anleitung['Ticker'] = ANLEITUNG_TICKER
+    anleitung['Name'] = (
+        "NEUE POSITION: nur Ticker, Einstieg und Stop ausfuellen, Status-Feld LEER LASSEN. "
+        "Rest wird automatisch ergaenzt (Name, Markt, Waehrung, Einstiegsdatum, Status=Offen). "
+        "TP1/TP2 werden nur grob geschaetzt (2:1/3:1 Chance-Risiko) falls leer - bei Bedarf "
+        "manuell mit echten Werten aus Setups.csv ueberschreiben. Sektor wird NICHT automatisch "
+        "ermittelt, bleibt leer, falls nicht manuell eingetragen. Diese Zeile nicht loeschen "
+        "oder als Position befuellen (Ticker-Wert 'ANLEITUNG' wird ignoriert)."
+    )
+    return pd.concat([pd.DataFrame([anleitung]), df], ignore_index=True)[SPALTEN]
+
+
 def lade_positionen_herunter(service, file_id, mime_type):
     """Lädt die bestehende Positionen-Datei aus Drive herunter und gibt sie als
     DataFrame zurück. Bei einer nativen Google-Sheets-Datei wird der Inhalt per
@@ -213,19 +240,8 @@ def lade_positionen_herunter(service, file_id, mime_type):
     stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
     Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
     if file_id is None:
-        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit Anleitungszeile.")
-        leere_liste = pd.DataFrame(columns=SPALTEN)
-        anleitung = {spalte: "" for spalte in SPALTEN}
-        anleitung['Ticker'] = ANLEITUNG_TICKER
-        anleitung['Name'] = (
-            "Neue Position: nur Ticker, Einstieg und Stop ausfuellen, Status-Feld LEER LASSEN. "
-            "Rest wird automatisch ergaenzt (Name, Markt, Waehrung, Einstiegsdatum, Status=Offen). "
-            "TP1/TP2 werden nur grob geschaetzt (2:1/3:1 Chance-Risiko) falls leer - bei Bedarf "
-            "manuell mit echten Werten aus Setups.csv ueberschreiben. Sektor wird NICHT automatisch "
-            "ermittelt, bleibt leer, falls nicht manuell eingetragen. Diese Zeile nicht loeschen "
-            "oder als Position befuellen (Ticker-Wert 'ANLEITUNG' wird ignoriert)."
-        )
-        return pd.concat([leere_liste, pd.DataFrame([anleitung])], ignore_index=True)[SPALTEN]
+        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
+        return pd.DataFrame(columns=SPALTEN)
 
     try:
         if mime_type == SHEET_MIME:
@@ -345,6 +361,7 @@ if __name__ == '__main__':
     df = lade_positionen_herunter(service, file_id, mime_type)
     df = normalisiere_zahlen(df)
     df = normalisiere_daten(df)
+    df = stelle_anleitung_sicher(df)
 
     df = ergaenze_neue_zeilen(df)
 
