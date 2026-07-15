@@ -235,16 +235,20 @@ def stelle_anleitung_sicher(df):
             df[spalte] = ""
     df = df[SPALTEN]
 
-    # Typ-Absicherung: Komplett leere Spalten typisiert Pandas als float64
-    # (reine NaN-Spalten). Eine spätere String-Zuweisung (z.B. Datum
-    # '15.07.2026' in Ausstiegsdatum) löst dann in neueren Pandas-Versionen
-    # einen harten TypeError aus statt still zu konvertieren. Deshalb alle
-    # Nicht-Zahlen-Spalten explizit auf object umstellen und NaN durch ""
-    # ersetzen - Zahlenspalten bleiben unangetastet.
+    # Typ-Absicherung in BEIDE Richtungen (neuere Pandas-Versionen verweigern
+    # dtype-fremde Zuweisungen hart statt still zu konvertieren):
+    # 1. Nicht-Zahlen-Spalten -> object, NaN -> "" (String-Zuweisungen wie
+    #    Datum '15.07.2026' in leere float64-NaN-Spalten crashen sonst)
+    # 2. Zahlen-Spalten -> explizit numerisch (der Sheets-Export liefert alles
+    #    als Text; eine spätere float-Zuweisung wie Aktueller_Kurs = 53.77 in
+    #    eine str-typisierte Spalte crasht sonst genauso). errors='coerce'
+    #    macht Leerstrings/Unlesbares zu NaN - beim CSV-Schreiben wieder leer.
     for spalte in df.columns:
         if spalte not in NUMERISCHE_SPALTEN:
             df[spalte] = df[spalte].astype(object)
             df[spalte] = df[spalte].where(pd.notna(df[spalte]), "")
+        else:
+            df[spalte] = pd.to_numeric(df[spalte], errors='coerce')
 
     vorhanden = (
         df['Ticker'].astype(str).str.strip().str.upper() == ANLEITUNG_TICKER
