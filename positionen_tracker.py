@@ -217,6 +217,14 @@ def stelle_anleitung_sicher(df):
     wurde oder schon vor Einführung dieser Funktion existierte. Läuft bei
     JEDEM Aufruf, nicht nur bei der Erstanlage, damit bestehende Dateien
     (wie die aus früheren Versionen) die Anleitung nachträglich bekommen."""
+    # Defensiv: fehlende Spalten (z.B. neue Optionsschein-Felder bei einer
+    # Datei mit altem Schema) hier zentral nachrüsten, bevor irgendein
+    # Spaltenzugriff stattfindet
+    for spalte in SPALTEN:
+        if spalte not in df.columns:
+            df[spalte] = ""
+    df = df[SPALTEN]
+
     vorhanden = (
         df['Ticker'].astype(str).str.strip().str.upper() == ANLEITUNG_TICKER
     ).any() if not df.empty else False
@@ -359,6 +367,13 @@ def berechne_optionsschein_performance(df):
       Näherung - reale Scheine bewegen sich nicht exakt linear zum Hebel)
     Gilt nur für Zeilen mit Status = 'Offen' und echten Werten in Aktueller_Kurs
     (wird vorher von aktualisiere_positionen gesetzt)."""
+    # Defensiv: Falls die eingelesene Datei die Optionsschein-Spalten (noch)
+    # nicht kennt (altes Schema, manuell bearbeitete Datei), hier nachrüsten
+    # statt mit KeyError abzubrechen
+    for spalte in SPALTEN:
+        if spalte not in df.columns:
+            df[spalte] = ""
+
     for idx, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
         if not ticker or ticker.lower() == 'nan' or ticker.upper() == ANLEITUNG_TICKER:
