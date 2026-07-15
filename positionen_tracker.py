@@ -225,6 +225,17 @@ def stelle_anleitung_sicher(df):
             df[spalte] = ""
     df = df[SPALTEN]
 
+    # Typ-Absicherung: Komplett leere Spalten typisiert Pandas als float64
+    # (reine NaN-Spalten). Eine spätere String-Zuweisung (z.B. Datum
+    # '15.07.2026' in Ausstiegsdatum) löst dann in neueren Pandas-Versionen
+    # einen harten TypeError aus statt still zu konvertieren. Deshalb alle
+    # Nicht-Zahlen-Spalten explizit auf object umstellen und NaN durch ""
+    # ersetzen - Zahlenspalten bleiben unangetastet.
+    for spalte in df.columns:
+        if spalte not in NUMERISCHE_SPALTEN:
+            df[spalte] = df[spalte].astype(object)
+            df[spalte] = df[spalte].where(pd.notna(df[spalte]), "")
+
     vorhanden = (
         df['Ticker'].astype(str).str.strip().str.upper() == ANLEITUNG_TICKER
     ).any() if not df.empty else False
