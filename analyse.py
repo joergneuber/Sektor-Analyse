@@ -1452,9 +1452,9 @@ if __name__ == "__main__":
                 df_positionen = pd.DataFrame()
                 f.write(f"(Fehler beim Lesen von {positionen_datei}: {e})\n")
 
-            offene = df_positionen[df_positionen['Status'] == 'Offen'] if not df_positionen.empty else df_positionen
+            offene = df_positionen[df_positionen['Status'].astype(str).str.strip().str.lower() == 'offen'] if not df_positionen.empty else df_positionen
             gestoppt_heute = df_positionen[
-                (df_positionen['Status'] == 'Gestoppt') & (df_positionen['Ausstiegsdatum'] == today)
+                (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt') & (df_positionen['Ausstiegsdatum'].astype(str) == str(today))
             ] if not df_positionen.empty else df_positionen
 
             if offene.empty and gestoppt_heute.empty:
