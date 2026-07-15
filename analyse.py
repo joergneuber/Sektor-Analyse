@@ -1390,7 +1390,8 @@ if __name__ == "__main__":
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
-        f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n\n")
+        f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
+        f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
 
@@ -1433,5 +1434,46 @@ if __name__ == "__main__":
             f.write(f"Ticker: {ticker_val} | Markt: {row.get('Markt', 'US')} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}{waehrungszeichen}\n")
             f.write(f"Upside: Technisch {row['Tech-Kursziel']}{waehrungszeichen} | Potenzial: {upside_text}\n")
             f.write("-" * 30 + "\n")
+
+        # 3. OFFENE POSITIONEN (manuell bestätigte, laufende Trades)
+        # Wird von positionen_tracker.py als lokale Datei bereitgestellt (läuft
+        # als eigener Workflow-Schritt vor analyse.py). Getrennt von den oben
+        # gescannten NEUEN Setups - hier stehen nur Positionen, die der Nutzer
+        # aktiv in Offene_Positionen.csv (Google Drive) bestätigt hat.
+        f.write("\n" + "="*50 + "\n")
+        f.write("OFFENE POSITIONEN (manuell bestätigt)\n")
+        f.write("="*50 + "\n")
+
+        positionen_datei = "Offene_Positionen.csv"
+        if os.path.exists(positionen_datei):
+            try:
+                df_positionen = pd.read_csv(positionen_datei, sep=';', encoding='utf-8-sig')
+            except Exception as e:
+                df_positionen = pd.DataFrame()
+                f.write(f"(Fehler beim Lesen von {positionen_datei}: {e})\n")
+
+            offene = df_positionen[df_positionen['Status'] == 'Offen'] if not df_positionen.empty else df_positionen
+            gestoppt_heute = df_positionen[
+                (df_positionen['Status'] == 'Gestoppt') & (df_positionen['Ausstiegsdatum'] == today)
+            ] if not df_positionen.empty else df_positionen
+
+            if offene.empty and gestoppt_heute.empty:
+                f.write("Keine offenen Positionen erfasst.\n")
+            else:
+                for _, prow in offene.iterrows():
+                    waehrungszeichen = "€" if prow.get('Waehrung') == 'EUR' else "$"
+                    aktueller_kurs = prow.get('Aktueller_Kurs', "n/a")
+                    performance = prow.get('Performance_Seit_Einstieg%', "n/a")
+                    f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} <<<\n")
+                    f.write(f"Einstieg: {prow['Einstieg']}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')}) | Aktuell: {aktueller_kurs}{waehrungszeichen} | Performance: {performance}%\n")
+                    f.write(f"Stop: {prow['Stop']}{waehrungszeichen} | TP1: {prow['TP1']}{waehrungszeichen} | TP2: {prow['TP2']}{waehrungszeichen}\n")
+
+                if not gestoppt_heute.empty:
+                    f.write("\n--- HEUTE GESTOPPT ---\n")
+                    for _, prow in gestoppt_heute.iterrows():
+                        waehrungszeichen = "€" if prow.get('Waehrung') == 'EUR' else "$"
+                        f.write(f"{prow['Ticker']} | Einstieg: {prow['Einstieg']}{waehrungszeichen} | Ausstieg: {prow['Ausstiegskurs']}{waehrungszeichen} (Stop erreicht)\n")
+        else:
+            f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
         f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
