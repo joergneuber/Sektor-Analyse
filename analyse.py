@@ -1556,7 +1556,7 @@ if __name__ == "__main__":
                 f.write("Keine offenen Positionen erfasst.\n")
             else:
                 for _, prow in offene.iterrows():
-                    waehrungszeichen = "€" if prow.get('Waehrung') == 'EUR' else "$"
+                    waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
                     aktueller_kurs = prow.get('Aktueller_Kurs', "n/a")
                     performance = prow.get('Performance_Seit_Einstieg%', "n/a")
                     f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} <<<\n")
@@ -1576,7 +1576,7 @@ if __name__ == "__main__":
                 if not gestoppt_heute.empty:
                     f.write("\n--- HEUTE GESTOPPT ---\n")
                     for _, prow in gestoppt_heute.iterrows():
-                        waehrungszeichen = "€" if prow.get('Waehrung') == 'EUR' else "$"
+                        waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
                         f.write(f"{prow['Ticker']} | Einstieg: {prow['Einstieg']}{waehrungszeichen} | Ausstieg: {prow['Ausstiegskurs']}{waehrungszeichen} (Stop erreicht)\n")
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
