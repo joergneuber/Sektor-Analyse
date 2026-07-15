@@ -22,6 +22,9 @@ DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native G
                                                  # Kopie mehr, wie es bei einer echten .csv-Datei passiert)
 DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
 SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
+ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
+                                 # nie als echte Position verarbeitet, dienen nur
+                                 # als sichtbarer Hinweistext im Sheet selbst
 SPALTEN = [
     'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
@@ -84,6 +87,75 @@ def finde_datei(service, folder_id):
     return treffer[0]['id'], treffer[0]['mimeType']
 
 
+def ergaenze_neue_zeilen(df):
+    """Vervollständigt Zeilen, bei denen nur Ticker, Einstieg und Stop manuell
+    eingetragen wurden (Status-Feld noch leer). Automatisch abgeleitet:
+    - Markt: aus dem Ticker-Suffix (.DE -> DAX, sonst US)
+    - Waehrung: aus dem Markt (US -> USD, DAX -> EUR)
+    - Name: per yfinance-Firmennamen-Abruf (best effort, Fallback: Ticker)
+    - Einstiegsdatum: heutiges Datum
+    - Status: 'Offen'
+    - TP1/TP2 (NUR falls leer): grobe 2:1/3:1-Chance-Risiko-Schätzung aus
+      Einstieg/Stop - KEINE echte technische Zielberechnung wie im Scanner
+      (dort EMA/Fib/Realitäts-Deckel-basiert), nur ein Platzhalter, damit das
+      Briefing nicht leer bleibt. Bei Bedarf manuell überschreiben.
+    Sektor wird bewusst NICHT automatisch ermittelt (keine zuverlässige
+    Zuordnung ohne Duplizierung der kompletten Sektor-Listen aus analyse.py).
+    Die Anleitungszeile (Ticker == ANLEITUNG_TICKER) wird dabei ignoriert."""
+    heute = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    for idx, row in df.iterrows():
+        ticker = str(row['Ticker']).strip()
+        if not ticker or ticker.lower() == 'nan' or ticker.upper() == ANLEITUNG_TICKER:
+            continue
+
+        status_leer = str(row['Status']).strip() == "" or str(row['Status']).strip().lower() == "nan"
+        if not status_leer:
+            continue  # Zeile schon aktiviert (offen/gestoppt) oder manuell gepflegt - nicht anfassen
+
+        einstieg_vorhanden = not pd.isna(row['Einstieg']) and str(row['Einstieg']).strip() not in ("", "nan")
+        stop_vorhanden = not pd.isna(row['Stop']) and str(row['Stop']).strip() not in ("", "nan")
+        if not (einstieg_vorhanden and stop_vorhanden):
+            continue  # Noch nicht genug für eine neue Position (Einstieg/Stop fehlen)
+
+        print(f"DEBUG: Neue Zeile erkannt für {ticker} - ergänze automatisch ableitbare Felder...")
+
+        markt = 'DAX' if ticker.upper().endswith('.DE') else 'US'
+        waehrung = 'EUR' if markt == 'DAX' else 'USD'
+
+        try:
+            info = yf.Ticker(ticker).info
+            name = info.get('longName', ticker)
+            if not name:
+                name = ticker
+        except Exception as e:
+            print(f"DEBUG: Firmenname für {ticker} konnte nicht ermittelt werden ({e}) - nutze Ticker als Name.")
+            name = ticker
+
+        einstieg = float(row['Einstieg'])
+        stop = float(row['Stop'])
+        risiko = einstieg - stop
+
+        tp1_leer = pd.isna(row['TP1']) or str(row['TP1']).strip() in ("", "nan")
+        tp2_leer = pd.isna(row['TP2']) or str(row['TP2']).strip() in ("", "nan")
+        if risiko > 0:
+            if tp1_leer:
+                df.at[idx, 'TP1'] = round(einstieg + 2 * risiko, 2)
+            if tp2_leer:
+                df.at[idx, 'TP2'] = round(einstieg + 3 * risiko, 2)
+        elif tp1_leer or tp2_leer:
+            print(f"DEBUG: {ticker} -> Stop liegt nicht unter dem Einstieg, TP1/TP2 können nicht geschätzt werden.")
+
+        df.at[idx, 'Markt'] = markt
+        df.at[idx, 'Waehrung'] = waehrung
+        df.at[idx, 'Name'] = name
+        if pd.isna(row['Einstiegsdatum']) or str(row['Einstiegsdatum']).strip() in ("", "nan"):
+            df.at[idx, 'Einstiegsdatum'] = heute
+        df.at[idx, 'Status'] = 'Offen'
+
+    return df
+
+
 def lade_positionen_herunter(service, file_id, mime_type):
     """Lädt die bestehende Positionen-Datei aus Drive herunter und gibt sie als
     DataFrame zurück. Bei einer nativen Google-Sheets-Datei wird der Inhalt per
@@ -92,8 +164,19 @@ def lade_positionen_herunter(service, file_id, mime_type):
     stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
     Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
     if file_id is None:
-        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
-        return pd.DataFrame(columns=SPALTEN)
+        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit Anleitungszeile.")
+        leere_liste = pd.DataFrame(columns=SPALTEN)
+        anleitung = {spalte: "" for spalte in SPALTEN}
+        anleitung['Ticker'] = ANLEITUNG_TICKER
+        anleitung['Name'] = (
+            "Neue Position: nur Ticker, Einstieg und Stop ausfuellen, Status-Feld LEER LASSEN. "
+            "Rest wird automatisch ergaenzt (Name, Markt, Waehrung, Einstiegsdatum, Status=Offen). "
+            "TP1/TP2 werden nur grob geschaetzt (2:1/3:1 Chance-Risiko) falls leer - bei Bedarf "
+            "manuell mit echten Werten aus Setups.csv ueberschreiben. Sektor wird NICHT automatisch "
+            "ermittelt, bleibt leer, falls nicht manuell eingetragen. Diese Zeile nicht loeschen "
+            "oder als Position befuellen (Ticker-Wert 'ANLEITUNG' wird ignoriert)."
+        )
+        return pd.concat([leere_liste, pd.DataFrame([anleitung])], ignore_index=True)[SPALTEN]
 
     try:
         if mime_type == SHEET_MIME:
@@ -212,7 +295,9 @@ if __name__ == '__main__':
     file_id, mime_type = finde_datei(service, FOLDER_ID)
     df = lade_positionen_herunter(service, file_id, mime_type)
 
-    anzahl_offen = len(df[df['Status'] == 'Offen']) if not df.empty else 0
+    df = ergaenze_neue_zeilen(df)
+
+    anzahl_offen = len(df[df['Status'].astype(str).str.strip().str.lower() == 'offen']) if not df.empty else 0
     print(f"DEBUG: {anzahl_offen} offene Position(en) zur Prüfung gefunden.")
 
     if anzahl_offen > 0:
