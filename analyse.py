@@ -1555,13 +1555,23 @@ if __name__ == "__main__":
             if offene.empty and gestoppt_heute.empty:
                 f.write("Keine offenen Positionen erfasst.\n")
             else:
+                def fmt_de(wert):
+                    """Formatiert einen Kurs-/Prozentwert einheitlich mit genau
+                    2 Nachkommastellen und deutschem Komma (168.5 -> '168,50').
+                    Nicht-numerische Werte (leer, 'n/a') bleiben unverändert."""
+                    try:
+                        zahl = float(str(wert).replace(',', '.'))
+                        return f"{zahl:.2f}".replace('.', ',')
+                    except (ValueError, TypeError):
+                        return wert
+
                 for _, prow in offene.iterrows():
                     waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
-                    aktueller_kurs = prow.get('Aktueller_Kurs', "n/a")
-                    performance = prow.get('Performance_Seit_Einstieg%', "n/a")
+                    aktueller_kurs = fmt_de(prow.get('Aktueller_Kurs', "n/a"))
+                    performance = fmt_de(prow.get('Performance_Seit_Einstieg%', "n/a"))
                     f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} <<<\n")
-                    f.write(f"Einstieg: {prow['Einstieg']}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')}) | Aktuell: {aktueller_kurs}{waehrungszeichen} | Performance: {performance}%\n")
-                    f.write(f"Stop: {prow['Stop']}{waehrungszeichen} | TP1: {prow['TP1']}{waehrungszeichen} | TP2: {prow['TP2']}{waehrungszeichen}\n")
+                    f.write(f"Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')}) | Aktuell: {aktueller_kurs}{waehrungszeichen} | Performance: {performance}%\n")
+                    f.write(f"Stop: {fmt_de(prow['Stop'])}{waehrungszeichen} | TP1: {fmt_de(prow['TP1'])}{waehrungszeichen} | TP2: {fmt_de(prow['TP2'])}{waehrungszeichen}\n")
 
                     # Optionsschein-Zusatzzeile: nur anzeigen, wenn Produkt_Typ
                     # tatsächlich als Optionsschein befüllt wurde
@@ -1569,7 +1579,7 @@ if __name__ == "__main__":
                     if produkt_typ == 'optionsschein':
                         emittent = prow.get('Emittent', 'n/a')
                         hebel = prow.get('Hebel', 'n/a')
-                        os_performance = prow.get('OS_Performance%', 'n/a')
+                        os_performance = fmt_de(prow.get('OS_Performance%', 'n/a'))
                         os_quelle = prow.get('OS_Quelle', 'n/a')
                         f.write(f"Optionsschein: {emittent} | Hebel: {hebel}x | OS-Performance: {os_performance}% (Quelle: {os_quelle})\n")
 
@@ -1577,7 +1587,7 @@ if __name__ == "__main__":
                     f.write("\n--- HEUTE GESTOPPT ---\n")
                     for _, prow in gestoppt_heute.iterrows():
                         waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
-                        f.write(f"{prow['Ticker']} | Einstieg: {prow['Einstieg']}{waehrungszeichen} | Ausstieg: {prow['Ausstiegskurs']}{waehrungszeichen} (Stop erreicht)\n")
+                        f.write(f"{prow['Ticker']} | Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} | Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} (Stop erreicht)\n")
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
