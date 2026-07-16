@@ -1581,4 +1581,10 @@ if __name__ == "__main__":
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
-        f.write(f"\nScan-Statistik: {len(df_clean)} Ticker analysiert, davon {len(valide_setups)} valide Setups gefunden.\n")
+        # Gesamtes Aktien-Universum: alle Einzelaktien aus den Kandidatenlisten
+        # (US-Sektorlisten + DAX-Liste), dedupliziert (manche Ticker stehen in
+        # mehreren Sektorlisten), unabhängig davon, welche Sektoren heute in
+        # der Rotation waren. ETFs/Benchmarks sind nicht enthalten.
+        us_universum = len({t for liste in sektoren_aktien.values() for t in liste})
+        eu_universum = len({t for liste in dax_aktien.values() for t in liste})
+        f.write(f"\nScan-Statistik: Aktien-Universum {us_universum + eu_universum} Titel (US: {us_universum} / EU: {eu_universum}, ohne ETFs/Benchmarks), heute {len(tasks) + len(tasks_eu)} in den Top-Sektoren analysiert, davon {len(valide_setups)} valide Setups.\n")
