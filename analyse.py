@@ -1577,12 +1577,14 @@ if __name__ == "__main__":
                 def fmt_de(wert):
                     """Formatiert einen Kurs-/Prozentwert einheitlich mit genau
                     2 Nachkommastellen und deutschem Komma (168.5 -> '168,50').
-                    Nicht-numerische Werte (leer, 'n/a') bleiben unverändert."""
+                    Nicht-numerische Werte (leer, 'n/a', NaN) werden zu 'n/a'."""
                     try:
                         zahl = float(str(wert).replace(',', '.'))
+                        if pd.isna(zahl):
+                            return "n/a"
                         return f"{zahl:.2f}".replace('.', ',')
                     except (ValueError, TypeError):
-                        return wert
+                        return wert if str(wert).strip() not in ("", "nan") else "n/a"
 
                 for _, prow in offene.iterrows():
                     waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
