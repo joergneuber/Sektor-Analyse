@@ -142,6 +142,43 @@ def normalisiere_zahlen(df):
     return df
 
 
+def vervollstaendige_stammdaten(df):
+    """Füllt fehlende Stammdaten (Markt, Waehrung, ggf. Name) für ALLE echten
+    Positionszeilen nach - auch für bereits aktive (Status Offen/Gestoppt).
+    Hintergrund: ergaenze_neue_zeilen greift nur bei leerem Status (Neuanlage);
+    korrigiert der Nutzer nachträglich einen Ticker und leert dabei die
+    Markt-/Waehrung-Felder, blieben diese sonst dauerhaft leer und das
+    Briefing zeigt 'Markt: nan' bzw. das falsche Währungssymbol ($ statt €).
+    Ableitung wie bei der Neuanlage: Punkt-Suffix = EU/EUR (.L = GBP),
+    suffixlos = US/USD. Name nur nachschlagen, wenn komplett leer."""
+    for idx, row in df.iterrows():
+        ticker = str(row['Ticker']).strip()
+        if not ticker or ticker.lower() == 'nan' or ticker.upper() == ANLEITUNG_TICKER:
+            continue
+
+        ticker_upper = ticker.upper()
+        markt_leer = str(row['Markt']).strip() in ("", "nan")
+        waehrung_leer = str(row['Waehrung']).strip() in ("", "nan")
+        name_leer = str(row['Name']).strip() in ("", "nan")
+
+        if markt_leer:
+            df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
+        if waehrung_leer:
+            if '.' in ticker_upper:
+                df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
+            else:
+                df.at[idx, 'Waehrung'] = 'USD'
+        if name_leer:
+            try:
+                info = yf.Ticker(ticker).info
+                name = info.get('longName') or ticker
+                df.at[idx, 'Name'] = name
+            except Exception:
+                df.at[idx, 'Name'] = ticker
+
+    return df
+
+
 def ergaenze_neue_zeilen(df):
     """Vervollständigt Zeilen, bei denen nur Ticker, Einstieg und Stop manuell
     eingetragen wurden (Status-Feld noch leer). Automatisch abgeleitet:
@@ -482,6 +519,7 @@ if __name__ == '__main__':
     df = stelle_anleitung_sicher(df)
 
     df = ergaenze_neue_zeilen(df)
+    df = vervollstaendige_stammdaten(df)
 
     anzahl_offen = len(df[df['Status'].astype(str).str.strip().str.lower() == 'offen']) if not df.empty else 0
     print(f"DEBUG: {anzahl_offen} offene Position(en) zur Prüfung gefunden.")
