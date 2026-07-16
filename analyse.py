@@ -30,22 +30,24 @@ sektoren_map = {
     "SOXX": "Halbleiter", "SMH": "Halbleiter (Global)", "IGV": "Software", 
     "XBI": "Biotechnologie", "KRE": "Regionalbanken", "HACK": "Cybersecurity", 
     "CLOU": "Cloud Computing", "AIQ": "Künstliche Intelligenz",
-    "BOTZ": "Robotik", "IHI": "Medical Devices", "PAVE": "Infrastruktur", "XRT": "Einzelhandel"
+    "BOTZ": "Robotik", "IHI": "Medical Devices", "PAVE": "Infrastruktur", "XRT": "Einzelhandel",
+    "ITA": "Rüstung/Aerospace", "XME": "Minen/Metalle", "GDX": "Gold-Miner",
+    "OIH": "Öl-Services", "TAN": "Solar/Clean Energy"
 }
 
 sektoren_aktien = {
     "XLK": ["AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC",
             "MRVL", "KLAC", "SNPS", "CDNS", "PYPL", "EA", "INTU", "NOW"],
-    "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB"],
-    "XLV": ["UNH", "JNJ", "LLY", "MRK", "PFE", "ABBV", "TMO", "DHR", "AMGN", "GILD"],
-    "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TGT", "GM", "F"],
-    "XLP": ["PG", "KO", "PEP", "COST", "WMT", "CL", "EL", "MDLZ", "GIS", "KLG"],
-    "XLE": ["XOM", "CVX", "SLB", "COP", "EOG", "MPC", "PSX", "VLO", "HAL", "OXY"],
-    "XLI": ["CAT", "GE", "HON", "BA", "UPS", "LMT", "DE", "MMM", "RTX", "UNP"],
-    "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC"],
-    "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL"],
-    "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI"],
-    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA"],
+    "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB", "PNC", "TFC", "COF"],
+    "XLV": ["UNH", "JNJ", "LLY", "MRK", "PFE", "ABBV", "TMO", "DHR", "AMGN", "GILD", "ISRG", "BMY", "CVS"],
+    "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TGT", "GM", "F", "BKNG", "CMG", "ORLY"],
+    "XLP": ["PG", "KO", "PEP", "COST", "WMT", "CL", "EL", "MDLZ", "GIS", "KLG", "KMB", "KHC", "SYY"],
+    "XLE": ["XOM", "CVX", "SLB", "COP", "EOG", "MPC", "PSX", "VLO", "HAL", "OXY", "DVN", "FANG", "WMB"],
+    "XLI": ["CAT", "GE", "HON", "BA", "UPS", "LMT", "DE", "MMM", "RTX", "UNP", "ETN", "CSX", "WM"],
+    "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC", "NUE", "MLM", "IFF"],
+    "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL", "WEC", "ES", "AWK"],
+    "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI", "VICI", "EXR", "IRM"],
+    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA", "TTWO", "LYV", "OMC"],
     "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT",
              "KLAC", "MRVL", "MPWR", "SWKS", "ON", "MCHP", "TER", "ENTG"],
     "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU",
@@ -54,7 +56,7 @@ sektoren_aktien = {
             "CRWD", "ZS", "DDOG", "TEAM", "HUBS", "VEEV", "PTC", "BSY"],
     "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB",
             "INCY", "EXEL", "NBIX", "BMRN", "UTHR"],
-    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "WBS"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "WBS", "EWBC", "PNFP", "WAL"],
     "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN",
              "S", "NET", "RPD", "VRNS", "FFIV"],
     "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU",
@@ -63,14 +65,19 @@ sektoren_aktien = {
             "PLTR", "SNOW", "NOW", "CRWD", "MRVL"],
     "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC",
              "CGNX", "SYM"],
-    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN"],
-    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR"],
-    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA"]
+    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN", "PODD", "DXCM", "GEHC"],
+    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR", "PWR", "MLM", "URI"],
+    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA", "DKS", "BURL", "FIVE"],
+    "ITA": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HWM", "TDG", "HEI", "AXON", "TXT", "HII"],
+    "XME": ["FCX", "NUE", "STLD", "CLF", "AA", "X", "RS", "CMC", "ATI", "MP", "HL", "CRS"],
+    "GDX": ["NEM", "GOLD", "AEM", "WPM", "FNV", "GFI", "KGC", "AU", "RGLD", "PAAS", "HMY", "EGO"],
+    "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "CHX", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
+    "TAN": ["FSLR", "ENPH", "SEDG", "RUN", "NXT", "ARRY", "SHLS", "CSIQ", "JKS", "DQ", "MAXN", "FLNC"]
 }
 
 # --- STOXX EUROPE 600 / DAX (Xetra, via yfinance) ---
 # Sektor-Rotation läuft über STOXX-Europe-600-Sektor-ETFs (breiterer Referenzrahmen),
-# die Kandidaten selbst stammen ausschließlich aus dem DAX40 (deutsche Blue Chips + Mid-Caps).
+# die Kandidaten stammen aus DAX40, MDAX und Eurozonen-Large-Caps (nur EUR-Börsen).
 # Hinweis: Nur 3 der 7 ETF-Ticker (Banken, Versicherungen, Versorger) wurden einzeln
 # verifiziert; die übrigen folgen dem etablierten iShares-Namensschema, sollten aber
 # einmalig gegengeprüft werden. Falls ein Ticker falsch ist, liefert get_perf_yf()
@@ -87,17 +94,21 @@ eu_sektoren_etf = {
 
 eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-Referenzindex für RS
 
-# DAX40-Ticker nach Sektor (Stand: geprüft anhand aktueller DAX-Zusammensetzung, Juli 2026;
+# EU-Ticker nach Sektor (Stand: Juli 2026;
 # die Zusammensetzung wird von der Deutschen Börse zweimal jährlich überprüft, daher
 # gelegentlich gegenchecken)
 dax_aktien = {
-    "Banken": ["DBK.DE", "CBK.DE"],
-    "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE"],
-    "Technologie": ["SAP.DE", "IFX.DE"],
-    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE"],
-    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE"],
-    "Versorger": ["EOAN.DE", "RWE.DE"],
-    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE"],
+    # EU-Kandidaten (nicht mehr nur DAX): DAX40 + MDAX + Eurozonen-Large-Caps.
+    # Bewusst NUR Börsen mit EUR-Notierung (.DE Xetra, .PA Paris, .AS Amsterdam,
+    # .MI Mailand, .MC Madrid) - keine .CO/.SW/.L-Titel, da die EU-Pipeline
+    # durchgängig EUR als Währung annimmt.
+    "Banken": ["DBK.DE", "CBK.DE", "BNP.PA", "ACA.PA", "GLE.PA", "INGA.AS", "ISP.MI", "UCG.MI", "SAN.MC", "BBVA.MC"],
+    "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE", "TLX.DE", "CS.PA", "G.MI"],
+    "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS"],
+    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS"],
+    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AL.PA", "PIA.MI"],
+    "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA"],
+    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI"],
 }
 
 def berechne_indikatoren(df):
@@ -1242,7 +1253,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             "Stoch_K": float(stoch_k), "Vol_Ratio": clean_num(last_row['Vol_Ratio']), "Ideales_Delta": 0.0,
             "RS_vs_Benchmark%": clean_num(rel_staerke) if rel_staerke is not None else None,
             "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
-            "Markt": "DAX", "Waehrung": "EUR"
+            "Markt": "EU", "Waehrung": "EUR"
         }
         return res
 
@@ -1298,11 +1309,11 @@ if __name__ == "__main__":
         for s in aktien_liste_eu:
             tasks_eu.append((s, row['Sektor']))
 
-    # Rate-Limit-Budget: max. 150 Ticker insgesamt (US + EU) pro Lauf, da sowohl
+    # Rate-Limit-Budget: max. 180 Ticker insgesamt (US + EU) pro Lauf, da sowohl
     # yfinance (Analysten-Ziele + alle EU-Kursdaten) als auch die Alpaca-Anfragen
     # sonst zu viele Requests in kurzer Zeit auslösen könnten. Bei Überschreitung
     # werden zuerst EU-Tasks (kleineres Volumen, geringere Priorität) gekürzt.
-    MAX_TICKER_BUDGET = 150
+    MAX_TICKER_BUDGET = 180
     gesamt_anzahl = len(tasks) + len(tasks_eu)
     if gesamt_anzahl > MAX_TICKER_BUDGET:
         ueberschuss = gesamt_anzahl - MAX_TICKER_BUDGET
@@ -1413,7 +1424,7 @@ if __name__ == "__main__":
         # Marktbewusst: US-Setups gegen US-Top-8, DAX-Setups gegen EU-Top-5 (separate Rotationen).
         sektor_ok = (
             ((df_s['Markt'] == 'US') & (df_s['Sektor'].isin(top_8_sektoren))) |
-            ((df_s['Markt'] == 'DAX') & (df_s['Sektor'].isin(top_5_eu_sektoren)))
+            ((df_s['Markt'] == 'EU') & (df_s['Sektor'].isin(top_5_eu_sektoren)))
         )
         df_s = df_s[sektor_ok & (df_s['Trend'] == 'OK')].copy()
         
@@ -1476,7 +1487,7 @@ if __name__ == "__main__":
         f.write("STRATEGIE-ANSATZ\n")
         f.write("-"*50 + "\n")
         f.write("- Sektor-Rotation: Top-8-US-Sektoren (Alpaca) + separat Top-5-EU-Sektoren (STOXX 600, yfinance)\n")
-        f.write("- Kandidaten: US-Sektoren (inkl. Nasdaq-Mid-Caps) + DAX40-Werte (EUR)\n")
+        f.write("- Kandidaten: US-Sektoren (inkl. Themen-ETFs) + EU-Werte (DAX40/MDAX/Eurozonen-Large-Caps, EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
         f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch ODER Kumo-Ausbruch (Setup_Typ listet ALLE zutreffenden Pfade auf, z.B. \"Trendlinien-Ausbruch + Kumo-Ausbruch\")\n")
         f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten)\n")
@@ -1487,7 +1498,7 @@ if __name__ == "__main__":
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
-        f.write("- Ticker-Budget: max. 150 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
+        f.write("- Ticker-Budget: max. 180 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
         f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
@@ -1496,7 +1507,7 @@ if __name__ == "__main__":
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
-        f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups, US + DAX)\n")
+        f.write("TRADE-ZUSAMMENFASSUNG (Valide Setups, US + EU)\n")
         f.write("="*50 + "\n")
 
         for ticker_val, row in valide_setups.iterrows():
