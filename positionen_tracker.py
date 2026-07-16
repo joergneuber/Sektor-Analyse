@@ -182,7 +182,7 @@ def ergaenze_neue_zeilen(df):
         # Suffix abgeleitet (.L = GBP-Sonderfall, sonst EUR fuer EU-Boersen).
         ticker_upper = ticker.upper()
         if '.' in ticker_upper:
-            markt = 'DAX' if ticker_upper.endswith('.DE') else 'EU'
+            markt = 'EU'
             waehrung = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
         else:
             markt = 'US'
