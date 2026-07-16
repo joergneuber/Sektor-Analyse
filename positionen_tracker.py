@@ -287,32 +287,51 @@ def stelle_anleitung_sicher(df):
         else:
             df[spalte] = pd.to_numeric(df[spalte], errors='coerce')
 
-    vorhanden = (
-        df['Ticker'].astype(str).str.strip().str.upper() == ANLEITUNG_TICKER
-    ).any() if not df.empty else False
+    # Aktuelle Anleitungstexte - werden bei JEDEM Lauf in die ANLEITUNG-Zeile
+    # geschrieben (nicht nur bei Erstanlage), damit Text-Verbesserungen auch
+    # in bestehenden Dateien ankommen. Verteilt auf drei Felder, damit die
+    # Spalten im Sheet nicht zu breit werden:
+    anleitung_name = (
+        "NEUE POSITION (Pflichtfelder): 1. Ticker  2. Einstieg  3. Stop - alle anderen Felder "
+        "LEER lassen, besonders Status! Leerer Status = Signal fuer die Automatik, die dann "
+        "Name, Markt, Waehrung, Einstiegsdatum und Status=Offen selbst ergaenzt. "
+        "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
+        "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
+        ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
+        "TP1/TP2: leer = automatische 2:1/3:1-Schaetzung; eigene Werte eintragen ist besser "
+        "(z.B. aus Setups.csv) und wird nie ueberschrieben. Sektor: optional, rein informativ."
+    )
+    anleitung_sektor = (
+        "OPTIONSSCHEIN (zusaetzlich zu Ticker/Einstieg/Stop): Produkt_Typ = 'Optionsschein', "
+        "Emittent (z.B. HSBC), Hebel (z.B. 5) und OS_Einstiegskurs (dein Kaufkurs des SCHEINS) "
+        "ausfuellen. WICHTIG: Ticker/Einstieg/Stop/TP beziehen sich IMMER auf den BASISWERT "
+        "(die Aktie), NIE auf WKN oder Kurs des Scheins selbst! OS_Manueller_Kurs: hier bei "
+        "Gelegenheit den aktuellen Schein-Kurs eintragen -> echte Performance (Quelle 'manuell', "
+        "hat Vorrang). Sonst wird geschaetzt: Hebel x Aktienbewegung (Quelle 'geschaetzt')."
+    )
+    anleitung_markt = (
+        "AUTOMATISCH BEFUELLT (nicht anfassen): Aktueller_Kurs, Performance_Seit_Einstieg%, "
+        "OS_Performance%, OS_Quelle. Bei Stop-Beruehrung: Status -> 'Gestoppt' + Ausstiegsdatum/"
+        "-kurs automatisch. Position entfernen = Zeile loeschen. Wieder aktivieren = Status auf "
+        "'Offen', Ausstiegsdatum/-kurs leeren. Diese ANLEITUNG-Zeile bitte stehen lassen."
+    )
+
+    maske = df['Ticker'].astype(str).str.strip().str.upper() == ANLEITUNG_TICKER
+    vorhanden = bool(maske.any()) if not df.empty else False
 
     if vorhanden:
+        # Texte auf den neuesten Stand bringen (idempotent)
+        df.loc[maske, 'Name'] = anleitung_name
+        df.loc[maske, 'Sektor'] = anleitung_sektor
+        df.loc[maske, 'Markt'] = anleitung_markt
         return df
 
     print("DEBUG: Anleitungszeile fehlt - wird ergänzt.")
     anleitung = {spalte: "" for spalte in SPALTEN}
     anleitung['Ticker'] = ANLEITUNG_TICKER
-    anleitung['Name'] = (
-        "NEUE POSITION: nur Ticker, Einstieg und Stop ausfuellen, Status-Feld LEER LASSEN. "
-        "Rest wird automatisch ergaenzt (Name, Markt, Waehrung, Einstiegsdatum, Status=Offen). "
-        "TP1/TP2 werden nur grob geschaetzt (2:1/3:1 Chance-Risiko) falls leer - bei Bedarf "
-        "manuell mit echten Werten aus Setups.csv ueberschreiben. Sektor wird NICHT automatisch "
-        "ermittelt, bleibt leer, falls nicht manuell eingetragen. Diese Zeile nicht loeschen "
-        "oder als Position befuellen (Ticker-Wert 'ANLEITUNG' wird ignoriert)."
-    )
-    anleitung['Sektor'] = (
-        "OPTIONSSCHEIN (optional): Produkt_Typ = 'Optionsschein' setzen, dann zusaetzlich "
-        "Emittent, Hebel und OS_Einstiegskurs ausfuellen - die Performance des Scheins wird "
-        "dann automatisch aus Hebel x Aktienkursbewegung GESCHAETZT (OS_Quelle = 'geschaetzt'). "
-        "Traegst du stattdessen den aktuellen Schein-Kurs in OS_Manueller_Kurs ein, wird DIESER "
-        "Wert bevorzugt fuer OS_Performance% genutzt (OS_Quelle = 'manuell') - genauer, aber muss "
-        "von dir selbst nachgetragen werden. Ohne Angaben bleibt Produkt_Typ leer = normale Aktie."
-    )
+    anleitung['Name'] = anleitung_name
+    anleitung['Sektor'] = anleitung_sektor
+    anleitung['Markt'] = anleitung_markt
     return pd.concat([pd.DataFrame([anleitung]), df], ignore_index=True)[SPALTEN]
 
 
