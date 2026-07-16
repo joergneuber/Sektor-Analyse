@@ -1258,6 +1258,14 @@ if __name__ == "__main__":
     qqq_text = get_qqq_quote()
     dax_text = get_index_benchmark_yf("^GDAXI", "DAX")
     eurostoxx_text = get_index_benchmark_yf("^STOXX50E", "EuroStoxx50")
+    # Globale Risiko-Benchmarks (NEU): keine Setup-Quellen, dienen nur der
+    # Marktumfeld-/Risikoeinschätzung im Briefing (u.a. für Gemini).
+    # Russell 2000 = US-Small-Cap-Risikobereitschaft, Nikkei = größter
+    # Nicht-US/EU-Markt (Frühindikator, öffnet vor Europa), Hang Seng =
+    # China-Sentiment über frei handelbare Werte.
+    russell_text = get_index_benchmark_yf("^RUT", "Russell 2000")
+    nikkei_text = get_index_benchmark_yf("^N225", "Nikkei 225")
+    hangseng_text = get_index_benchmark_yf("^HSI", "Hang Seng")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -1484,7 +1492,7 @@ if __name__ == "__main__":
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
