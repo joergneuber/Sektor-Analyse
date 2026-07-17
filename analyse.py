@@ -279,8 +279,14 @@ def get_news_headlines(ticker, max_n=3):
             _news_client = NewsClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
         req = NewsRequest(symbols=str(ticker), limit=max_n)
         antwort = _news_client.get_news(req)
+        # Versionssichere Extraktion: je nach alpaca-py-Version liegen die
+        # Artikel unter antwort.news ODER unter antwort.data['news'] (NewsSet)
+        artikel_liste = getattr(antwort, 'news', None)
+        if artikel_liste is None:
+            daten = getattr(antwort, 'data', None)
+            artikel_liste = daten.get('news', []) if isinstance(daten, dict) else []
         headlines = []
-        for artikel in list(antwort.news)[:max_n]:
+        for artikel in list(artikel_liste)[:max_n]:
             datum = artikel.created_at.strftime('%d.%m.') if getattr(artikel, 'created_at', None) else ''
             titel = getattr(artikel, 'headline', '') or ''
             if titel:
