@@ -12,6 +12,14 @@ from groq import Groq
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+# News-API (Benzinga-Feed, in den bestehenden Alpaca-Keys enthalten) - defensiv
+# importiert, damit ein Versions-Problem der Bibliothek nie den Lauf stoppt
+try:
+    from alpaca.data.historical.news import NewsClient
+    from alpaca.data.requests import NewsRequest
+    NEWS_VERFUEGBAR = True
+except Exception:
+    NEWS_VERFUEGBAR = False
 from concurrent.futures import ThreadPoolExecutor
 
 # Initialisierung des Clients direkt beim Start
@@ -219,6 +227,61 @@ def get_sp500_data():
                 
     except Exception as e:
         return f"S&P 500: Fehler beim Abruf ({e})"
+
+def get_earnings_warnung(ticker, warn_tage=7):
+    """Prüft per yfinance, ob der nächste Earnings-Termin innerhalb der
+    nächsten warn_tage liegt. Gibt einen Warntext zurück (z.B.
+    '⚠ Earnings in 3 Tagen (21.07.2026)') oder None. Earnings-Gaps sind
+    das größte Über-Nacht-Risiko für Swing-Positionen - ein Stop schützt
+    nicht vor einem Gap unter den Stop-Kurs. Defensiv: jeder Fehler
+    (kein Termin verfügbar, API-Aussetzer) führt still zu None."""
+    try:
+        kalender = yf.Ticker(ticker).calendar
+        termine = None
+        if isinstance(kalender, dict):
+            termine = kalender.get('Earnings Date')
+        if not termine:
+            return None
+        naechster = termine[0] if isinstance(termine, (list, tuple)) else termine
+        heute = datetime.date.today()
+        if hasattr(naechster, 'date'):
+            naechster = naechster.date()
+        delta = (naechster - heute).days
+        if 0 <= delta <= warn_tage:
+            tage_text = "HEUTE" if delta == 0 else f"in {delta} Tag{'en' if delta != 1 else ''}"
+            return f"⚠ Earnings {tage_text} ({naechster.strftime('%d.%m.%Y')})"
+        return None
+    except Exception:
+        return None
+
+
+_news_client = None
+
+def get_news_headlines(ticker, max_n=3):
+    """Holt die jüngsten Schlagzeilen zu einem US-Ticker über die Alpaca-
+    News-API (Benzinga-Feed, in den bestehenden Keys enthalten). Gibt eine
+    Liste 'TT.MM.: Titel' zurück (max. max_n). Nur für suffixlose US-Ticker -
+    für EU-Titel liefert der Feed nichts, dann leere Liste. Defensiv: jeder
+    Fehler führt still zu leerer Liste, News sind reiner Zusatz-Kontext."""
+    global _news_client
+    if not NEWS_VERFUEGBAR or '.' in str(ticker):
+        return []
+    try:
+        if _news_client is None:
+            _news_client = NewsClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
+        req = NewsRequest(symbols=str(ticker), limit=max_n)
+        antwort = _news_client.get_news(req)
+        headlines = []
+        for artikel in list(antwort.news)[:max_n]:
+            datum = artikel.created_at.strftime('%d.%m.') if getattr(artikel, 'created_at', None) else ''
+            titel = getattr(artikel, 'headline', '') or ''
+            if titel:
+                headlines.append(f"{datum}: {titel}")
+        return headlines
+    except Exception as e:
+        print(f"DEBUG: News für {ticker} nicht abrufbar ({e})")
+        return []
+
 
 def get_index_benchmark_yf(ticker, label):
     """Generische Benchmark-Funktion für Indizes, die nicht über Alpaca verfügbar
@@ -1530,6 +1593,14 @@ if __name__ == "__main__":
             f.write(f"TP1: {row['TP1']}{waehrungszeichen} | TP2: {row['TP2']}{waehrungszeichen} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
             f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
+
+            # Earnings-Warnung (Gap-Risiko) + jüngste Schlagzeilen (nur Kontext)
+            earnings = get_earnings_warnung(ticker_val)
+            if earnings:
+                f.write(f"{earnings}\n")
+            for headline in get_news_headlines(ticker_val):
+                f.write(f"News {headline}\n")
+
             f.write(f"Suche: Hebelprodukt auf {ticker_val} (Fokus: BNP, Goldman, HSBC, UniCredit) | Ziel: {row['TP1']}{waehrungszeichen}\n")
             f.write("\n")
 
@@ -1608,6 +1679,13 @@ if __name__ == "__main__":
                         os_performance = fmt_de(prow.get('OS_Performance%', 'n/a'))
                         os_quelle = prow.get('OS_Quelle', 'n/a')
                         f.write(f"Optionsschein: {emittent} | Hebel: {hebel}x | OS-Performance: {os_performance}% (Quelle: {os_quelle})\n")
+
+                    # Earnings-Warnung + Schlagzeilen auch für laufende Positionen
+                    earnings = get_earnings_warnung(prow['Ticker'])
+                    if earnings:
+                        f.write(f"{earnings}\n")
+                    for headline in get_news_headlines(prow['Ticker']):
+                        f.write(f"News {headline}\n")
 
                 if not gestoppt_heute.empty:
                     f.write("\n--- HEUTE GESTOPPT ---\n")
