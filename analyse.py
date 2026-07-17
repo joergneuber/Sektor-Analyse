@@ -1277,6 +1277,11 @@ if __name__ == "__main__":
     russell_text = get_index_benchmark_yf("^RUT", "Russell 2000")
     nikkei_text = get_index_benchmark_yf("^N225", "Nikkei 225")
     hangseng_text = get_index_benchmark_yf("^HSI", "Hang Seng")
+    # Rohstoff-Kontext (NEU): LIT-ETF als automatisierbarer Proxy fuer den
+    # Lithium-Zyklus (echter Lithiumcarbonat-Spot aus China ist ueber
+    # yfinance/Alpaca nicht verfuegbar). Nur Kontext fuer Lithium-Positionen,
+    # keine Setup-Quelle, keine Abwertungsgrundlage.
+    lithium_text = get_index_benchmark_yf("LIT", "Lithium-Proxy (LIT-ETF)")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -1503,7 +1508,7 @@ if __name__ == "__main__":
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
