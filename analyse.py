@@ -241,6 +241,7 @@ def get_earnings_warnung(ticker, warn_tage=7):
         if isinstance(kalender, dict):
             termine = kalender.get('Earnings Date')
         if not termine:
+            print(f"DEBUG-EARNINGS: {ticker} -> kein Termin im Kalender hinterlegt")
             return None
         naechster = termine[0] if isinstance(termine, (list, tuple)) else termine
         heute = datetime.date.today()
@@ -249,9 +250,12 @@ def get_earnings_warnung(ticker, warn_tage=7):
         delta = (naechster - heute).days
         if 0 <= delta <= warn_tage:
             tage_text = "HEUTE" if delta == 0 else f"in {delta} Tag{'en' if delta != 1 else ''}"
+            print(f"DEBUG-EARNINGS: {ticker} -> Termin {naechster.strftime('%d.%m.%Y')} (in {delta} Tagen) -> WARNUNG")
             return f"⚠ Earnings {tage_text} ({naechster.strftime('%d.%m.%Y')})"
+        print(f"DEBUG-EARNINGS: {ticker} -> nächster Termin {naechster.strftime('%d.%m.%Y')} (in {delta} Tagen, außerhalb Warnfenster)")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG-EARNINGS: {ticker} -> kein Termin ermittelbar ({type(e).__name__})")
         return None
 
 
@@ -264,7 +268,11 @@ def get_news_headlines(ticker, max_n=3):
     für EU-Titel liefert der Feed nichts, dann leere Liste. Defensiv: jeder
     Fehler führt still zu leerer Liste, News sind reiner Zusatz-Kontext."""
     global _news_client
-    if not NEWS_VERFUEGBAR or '.' in str(ticker):
+    if not NEWS_VERFUEGBAR:
+        print(f"DEBUG-NEWS: {ticker} -> übersprungen (News-API in alpaca-py nicht verfügbar)")
+        return []
+    if '.' in str(ticker):
+        print(f"DEBUG-NEWS: {ticker} -> übersprungen (EU-Ticker, kein US-News-Feed)")
         return []
     try:
         if _news_client is None:
@@ -277,6 +285,7 @@ def get_news_headlines(ticker, max_n=3):
             titel = getattr(artikel, 'headline', '') or ''
             if titel:
                 headlines.append(f"{datum}: {titel}")
+        print(f"DEBUG-NEWS: {ticker} -> {len(headlines)} Schlagzeile(n) gefunden")
         return headlines
     except Exception as e:
         print(f"DEBUG: News für {ticker} nicht abrufbar ({e})")
