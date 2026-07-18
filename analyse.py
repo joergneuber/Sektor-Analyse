@@ -1607,9 +1607,9 @@ if __name__ == "__main__":
             f.write(f"Sektor: {row['Sektor']} | Status: {row['Status2']} | Grund: {row['Status_Grund']}\n")
             f.write(f"Pattern: {row['Pattern']} ({row['Setup_Typ']})\n")
             f.write("-" * 40 + "\n")
-            f.write(f"Kurs: {row['Kurs']}{waehrungszeichen} | RSI: {row['RSI']} | Stoch-K: {stoch_val:.1f} | MACD: {row['MACD_Trend']}\n")
-            f.write(f"Einstieg: {row['Einstieg']}{waehrungszeichen} | EMA20: {row['Einstieg2(EMA 20)']}{waehrungszeichen} | Stop: {row['Stop']}{waehrungszeichen} | Risiko: {row['Risk_Perc']}%\n")
-            f.write(f"TP1: {row['TP1']}{waehrungszeichen} | TP2: {row['TP2']}{waehrungszeichen} | CRV1: {row['CRV1']} | CRV2: {row['CRV2']}\n")
+            f.write(f"Kurs: {row['Kurs']}{waehrungszeichen} / RSI: {row['RSI']} / Stoch-K: {stoch_val:.1f} / MACD: {row['MACD_Trend']}\n")
+            f.write(f"Einstieg: {row['Einstieg']}{waehrungszeichen} / EMA20: {row['Einstieg2(EMA 20)']}{waehrungszeichen} / Stop: {row['Stop']}{waehrungszeichen} / Risiko: {row['Risk_Perc']}%\n")
+            f.write(f"TP1: {row['TP1']}{waehrungszeichen} / TP2: {row['TP2']}{waehrungszeichen} / CRV1: {row['CRV1']} / CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
             f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
 
@@ -1637,7 +1637,7 @@ if __name__ == "__main__":
             waehrungszeichen = "€" if row.get('Waehrung') == 'EUR' else "$"
 
             f.write(f"Ticker: {ticker_val} | Markt: {row.get('Markt', 'US')} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}{waehrungszeichen}\n")
-            f.write(f"Upside: Technisch {row['Tech-Kursziel']}{waehrungszeichen} | Potenzial: {upside_text}\n")
+            f.write(f"Upside: Technisch {row['Tech-Kursziel']}{waehrungszeichen} / Potenzial: {upside_text}\n")
             f.write("-" * 30 + "\n")
 
         # 3. OFFENE POSITIONEN (manuell bestätigte, laufende Trades)
@@ -1686,8 +1686,9 @@ if __name__ == "__main__":
                     aktueller_kurs = fmt_de(prow.get('Aktueller_Kurs', "n/a"))
                     performance = fmt_de(prow.get('Performance_Seit_Einstieg%', "n/a"))
                     f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} <<<\n")
-                    f.write(f"Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')}) | Aktuell: {aktueller_kurs}{waehrungszeichen} | Performance: {performance}%\n")
-                    f.write(f"Stop: {fmt_de(prow['Stop'])}{waehrungszeichen} | TP1: {fmt_de(prow['TP1'])}{waehrungszeichen} | TP2: {fmt_de(prow['TP2'])}{waehrungszeichen}\n")
+                    f.write(f"Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')})\n")
+                    f.write(f"Aktuell: {aktueller_kurs}{waehrungszeichen} / Performance: {performance}%\n")
+                    f.write(f"Stop: {fmt_de(prow['Stop'])}{waehrungszeichen} / TP1: {fmt_de(prow['TP1'])}{waehrungszeichen} / TP2: {fmt_de(prow['TP2'])}{waehrungszeichen}\n")
 
                     # Optionsschein-Zusatzzeile: nur anzeigen, wenn Produkt_Typ
                     # tatsächlich als Optionsschein befüllt wurde
@@ -1710,7 +1711,7 @@ if __name__ == "__main__":
                     f.write("\n--- HEUTE GESTOPPT ---\n")
                     for _, prow in gestoppt_heute.iterrows():
                         waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
-                        f.write(f"{prow['Ticker']} | Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} | Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} (Stop erreicht)\n")
+                        f.write(f"{prow['Ticker']} -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} (Stop erreicht)\n")
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
