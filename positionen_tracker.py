@@ -32,7 +32,7 @@ SPALTEN = [
     'Aktueller_Kurs', 'Performance_Seit_Einstieg%',
     'Produkt_Typ', 'Emittent', 'Hebel',
     'OS_Einstiegskurs', 'OS_Manueller_Kurs',
-    'OS_Performance%', 'OS_Quelle'
+    'OS_Performance%', 'OS_Quelle', 'OS_WKN'
 ]
 NUMERISCHE_SPALTEN = [
     'Einstieg', 'Stop', 'TP1', 'TP2', 'Ausstiegskurs', 'Aktueller_Kurs', 'Performance_Seit_Einstieg%',
@@ -307,7 +307,9 @@ def stelle_anleitung_sicher(df):
         "ausfuellen. WICHTIG: Ticker/Einstieg/Stop/TP beziehen sich IMMER auf den BASISWERT "
         "(die Aktie), NIE auf WKN oder Kurs des Scheins selbst! OS_Manueller_Kurs: hier bei "
         "Gelegenheit den aktuellen Schein-Kurs eintragen -> echte Performance (Quelle 'manuell', "
-        "hat Vorrang). Sonst wird geschaetzt: Hebel x Aktienbewegung (Quelle 'geschaetzt')."
+        "hat Vorrang). Sonst wird geschaetzt: Hebel x Aktienbewegung (Quelle 'geschaetzt'). "
+        "OS_WKN: reines Notizfeld fuer die WKN/ISIN deines Scheins - wird nie automatisch "
+        "beschrieben oder ausgewertet, nur fuer deine eigene Zuordnung."
     )
     anleitung_markt = (
         "AUTOMATISCH BEFUELLT (nicht anfassen): Aktueller_Kurs, Performance_Seit_Einstieg%, "
