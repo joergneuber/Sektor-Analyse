@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import time
 import datetime
 import pandas as pd
 import yfinance as yf
@@ -510,23 +511,41 @@ def berechne_optionsschein_performance(df):
     return df
 
 
-def hochladen(service, lokale_datei, folder_id, alte_file_id):
+def hochladen(service, lokale_datei, folder_id, alte_file_id, max_versuche=3):
     """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive
-    hoch - dafür wird die alte Datei (falls vorhanden) gelöscht und komplett
-    neu angelegt, mit CSV-Inhalt als Upload-Medium und Sheets-Ziel-MIME-Typ.
-    Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein natives
-    Sheet zu konvertieren (ein reines In-Place-Update per media_body auf eine
-    bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert). Der
-    Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
-    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv."""
-    if alte_file_id:
-        service.files().delete(fileId=alte_file_id).execute()
-        print(f"Alte Datei (ID: {alte_file_id}) gelöscht, wird neu angelegt.")
+    hoch - dafür wird eine neue Datei angelegt (mit CSV-Inhalt als Upload-Medium
+    und Sheets-Ziel-MIME-Typ) und erst DANACH die alte Datei (falls vorhanden)
+    gelöscht. Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein
+    natives Sheet zu konvertieren (ein reines In-Place-Update per media_body
+    auf eine bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert).
+    Der Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
+    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv.
 
-    media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
-    file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
-    neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
+    Erst-hochladen-dann-löschen (statt umgekehrt) sorgt dafür, dass bei einem
+    fehlgeschlagenen Upload (z.B. Timeout) immer noch eine gültige Datei auf
+    Drive liegt, statt beide Versionen zu verlieren. Zusätzlich mit
+    Retry+Backoff gegen transiente Netzwerk-/Timeout-Fehler beim Upload selbst."""
+    neue_datei = None
+    for versuch in range(1, max_versuche + 1):
+        try:
+            media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
+            file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
+            neue_datei = service.files().create(
+                body=file_metadata, media_body=media, fields='id'
+            ).execute(num_retries=3)
+            print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
+            break
+        except TimeoutError as e:
+            if versuch == max_versuche:
+                print(f"FEHLER: Upload nach {max_versuche} Versuchen endgültig fehlgeschlagen: {e}")
+                raise
+            wartezeit = 2 ** versuch
+            print(f"WARNUNG: Upload-Versuch {versuch} fehlgeschlagen ({e}), erneuter Versuch in {wartezeit}s...")
+            time.sleep(wartezeit)
+
+    if alte_file_id and neue_datei:
+        service.files().delete(fileId=alte_file_id).execute()
+        print(f"Alte Datei (ID: {alte_file_id}) gelöscht.")
 
 
 if __name__ == '__main__':
