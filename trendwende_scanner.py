@@ -364,6 +364,8 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
 
     crv1 = round((tp1 - entry) / (entry - stop), 2) if entry > stop else 0
     crv2 = round((tp2 - entry) / (entry - stop), 2) if entry > stop else 0
+    chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
+    chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
 
     try:
         firma_name = yf.Ticker(ticker).info.get('longName', ticker) or ticker
@@ -378,8 +380,10 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
         "Kurs": round(clean_num(entry), 2),
         "TP1": round(clean_num(tp1), 2),
         "CRV1": crv1,
+        "Chance1_Perc": chance1_perc,
         "TP2": round(clean_num(tp2), 2),
         "CRV2": crv2,
+        "Chance2_Perc": chance2_perc,
         "Stop": stop,
         "Risk_Perc": risk_perc,
         "RSI": round(clean_num(data['RSI'].iloc[-1]), 2),
@@ -494,7 +498,8 @@ def main():
     # Tabelle rendern ("Vorschau konnte nicht angezeigt werden"). Mit fester
     # Spaltenliste bleibt die Kopfzeile auch bei 0 Treffern erhalten.
     SPALTEN_TRENDWENDE = [
-        "Ticker", "Name", "Markt", "Sektor", "Kurs", "TP1", "CRV1", "TP2", "CRV2",
+        "Ticker", "Name", "Markt", "Sektor", "Kurs", "TP1", "CRV1", "Chance1_Perc",
+        "TP2", "CRV2", "Chance2_Perc",
         "Stop", "Risk_Perc", "RSI", "MACD_Trend", "Vol_Ratio", "RS_vs_Benchmark%",
         "Abstand_52W_Tief%", "Setup_Typ", "Qualitaets_Bonus", "Risikohinweis",
     ]
@@ -562,7 +567,7 @@ def main():
                 f.write(
                     f"{row['Ticker']} ({row['Name']}) | Markt: {row['Markt']} | Sektor: {row['Sektor']}\n"
                     f"Kurs: {row['Kurs']} | Stop: {row['Stop']} | Risiko: {row['Risk_Perc']}%\n"
-                    f"TP1: {row['TP1']} | CRV1: {row['CRV1']} | TP2: {row['TP2']} | CRV2: {row['CRV2']}\n"
+                    f"TP1: {row['TP1']} (Chance: {row['Chance1_Perc']}%) | CRV1: {row['CRV1']} | TP2: {row['TP2']} (Chance: {row['Chance2_Perc']}%) | CRV2: {row['CRV2']}\n"
                     f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']}\n"
                     f"Abstand 52W-Tief: {row['Abstand_52W_Tief%']}% | RS vs. Benchmark: {row['RS_vs_Benchmark%']}%\n"
                     f"Setup-Typ: {row['Setup_Typ']}\n"
