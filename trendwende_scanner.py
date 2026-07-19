@@ -487,7 +487,18 @@ def main():
 
     print(f"DEBUG: {len(ergebnisse)} Trendwende-Kandidaten gefunden.")
 
-    df = pd.DataFrame(ergebnisse)
+    # Spalten fest vorgeben (NEU): bei 0 Treffern ist ergebnisse=[] - ohne
+    # explizite Spaltenliste entsteht dann eine DataFrame KOMPLETT OHNE
+    # Spalten (nicht nur ohne Zeilen), was eine praktisch leere 4-Byte-CSV-
+    # Datei ohne Kopfzeile erzeugt. Google Drive kann so eine Datei nicht als
+    # Tabelle rendern ("Vorschau konnte nicht angezeigt werden"). Mit fester
+    # Spaltenliste bleibt die Kopfzeile auch bei 0 Treffern erhalten.
+    SPALTEN_TRENDWENDE = [
+        "Ticker", "Name", "Markt", "Sektor", "Kurs", "TP1", "CRV1", "TP2", "CRV2",
+        "Stop", "Risk_Perc", "RSI", "MACD_Trend", "Vol_Ratio", "RS_vs_Benchmark%",
+        "Abstand_52W_Tief%", "Setup_Typ", "Qualitaets_Bonus", "Risikohinweis",
+    ]
+    df = pd.DataFrame(ergebnisse, columns=SPALTEN_TRENDWENDE)
     if not df.empty:
         bonus_rang = {"Stark bestätigt": 0, "Bestätigt": 1, "Basis": 2}
         df['_bonus_rang'] = df['Qualitaets_Bonus'].map(bonus_rang).fillna(3)
