@@ -100,7 +100,10 @@ if __name__ == '__main__':
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
-        elif "Briefing" in filename and filename.endswith(".txt"):
+        elif ("Briefing" in filename or "Auswertung" in filename) and filename.endswith(".txt"):
+            # "Auswertung" (NEU): die von claude_auswertung.py erzeugte fertige
+            # Daten-Übersicht, landet genau wie die anderen Text-Dateien direkt
+            # im selben Drive-Ordner.
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
