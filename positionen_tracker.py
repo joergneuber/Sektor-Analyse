@@ -1,7 +1,6 @@
 import os
 import io
 import json
-import time
 import datetime
 import pandas as pd
 import yfinance as yf
@@ -41,6 +40,22 @@ NUMERISCHE_SPALTEN = [
 ]
 
 alpaca_client = StockHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
+
+
+def sicheres_float(val, ticker="?", feldname="?"):
+    """Wie clean_num in analyse.py: robuste Float-Konvertierung, die bei
+    einem fehlerhaften/leeren manuellen Eintrag (z.B. beim Nachziehen des
+    Stops in Google Sheets) NICHT den kompletten Lauf abstuerzen laesst,
+    sondern None zurueckgibt - die aufrufende Stelle ueberspringt die
+    betroffene Zeile dann gezielt, alle anderen Positionen werden trotzdem
+    normal weiterverarbeitet."""
+    try:
+        if val is None or (isinstance(val, str) and val.strip() in ("", "nan")):
+            return None
+        return float(val)
+    except (ValueError, TypeError) as e:
+        print(f"WARNUNG: {ticker} -> Feld '{feldname}' enthaelt keinen gueltigen Zahlenwert ({val!r}: {e}) - Zeile wird uebersprungen, andere Positionen laufen normal weiter.")
+        return None
 
 
 def get_drive_service():
@@ -235,8 +250,11 @@ def ergaenze_neue_zeilen(df):
             print(f"DEBUG: Firmenname für {ticker} konnte nicht ermittelt werden ({e}) - nutze Ticker als Name.")
             name = ticker
 
-        einstieg = float(row['Einstieg'])
-        stop = float(row['Stop'])
+        einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
+        stop = sicheres_float(row['Stop'], ticker, 'Stop')
+        if einstieg is None or stop is None:
+            print(f"DEBUG: {ticker} -> Einstieg/Stop nicht als Zahl lesbar - Zeile wird uebersprungen, bis der Wert korrigiert ist.")
+            continue
         risiko = einstieg - stop
 
         tp1_leer = pd.isna(row['TP1']) or str(row['TP1']).strip() in ("", "nan")
@@ -422,8 +440,15 @@ def aktualisiere_positionen(df):
 
         ticker = row['Ticker']
         markt = row['Markt']
-        stop = float(row['Stop'])
-        einstieg = float(row['Einstieg'])
+        stop = sicheres_float(row['Stop'], ticker, 'Stop')
+        einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
+
+        if stop is None or einstieg is None:
+            # Bewusst NICHT den ganzen Lauf abbrechen: eine Zeile mit
+            # ungueltigem manuellem Wert (z.B. gerade beim Nachziehen des
+            # Stops editiert) wird nur fuer diesen Durchlauf uebersprungen -
+            # alle anderen Positionen werden trotzdem normal geprueft.
+            continue
 
         aktueller_kurs = hole_aktuellen_kurs(ticker, markt)
         if aktueller_kurs is None:
@@ -511,41 +536,23 @@ def berechne_optionsschein_performance(df):
     return df
 
 
-def hochladen(service, lokale_datei, folder_id, alte_file_id, max_versuche=3):
+def hochladen(service, lokale_datei, folder_id, alte_file_id):
     """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive
-    hoch - dafür wird eine neue Datei angelegt (mit CSV-Inhalt als Upload-Medium
-    und Sheets-Ziel-MIME-Typ) und erst DANACH die alte Datei (falls vorhanden)
-    gelöscht. Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein
-    natives Sheet zu konvertieren (ein reines In-Place-Update per media_body
-    auf eine bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert).
-    Der Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
-    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv.
-
-    Erst-hochladen-dann-löschen (statt umgekehrt) sorgt dafür, dass bei einem
-    fehlgeschlagenen Upload (z.B. Timeout) immer noch eine gültige Datei auf
-    Drive liegt, statt beide Versionen zu verlieren. Zusätzlich mit
-    Retry+Backoff gegen transiente Netzwerk-/Timeout-Fehler beim Upload selbst."""
-    neue_datei = None
-    for versuch in range(1, max_versuche + 1):
-        try:
-            media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
-            file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
-            neue_datei = service.files().create(
-                body=file_metadata, media_body=media, fields='id'
-            ).execute(num_retries=3)
-            print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
-            break
-        except TimeoutError as e:
-            if versuch == max_versuche:
-                print(f"FEHLER: Upload nach {max_versuche} Versuchen endgültig fehlgeschlagen: {e}")
-                raise
-            wartezeit = 2 ** versuch
-            print(f"WARNUNG: Upload-Versuch {versuch} fehlgeschlagen ({e}), erneuter Versuch in {wartezeit}s...")
-            time.sleep(wartezeit)
-
-    if alte_file_id and neue_datei:
+    hoch - dafür wird die alte Datei (falls vorhanden) gelöscht und komplett
+    neu angelegt, mit CSV-Inhalt als Upload-Medium und Sheets-Ziel-MIME-Typ.
+    Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein natives
+    Sheet zu konvertieren (ein reines In-Place-Update per media_body auf eine
+    bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert). Der
+    Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
+    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv."""
+    if alte_file_id:
         service.files().delete(fileId=alte_file_id).execute()
-        print(f"Alte Datei (ID: {alte_file_id}) gelöscht.")
+        print(f"Alte Datei (ID: {alte_file_id}) gelöscht, wird neu angelegt.")
+
+    media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
+    file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
+    neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
 
 
 if __name__ == '__main__':
