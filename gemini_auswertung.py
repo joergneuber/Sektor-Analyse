@@ -44,10 +44,10 @@ from google.genai import types
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-2.5-flash"  # gemini-2.5-pro hat seit Dez. 2025 KEIN Gratis-
-                              # Kontingent mehr (limit: 0 im Free Tier) - Flash
-                              # hat weiterhin ein echtes, wenn auch kleineres,
-                              # kostenloses Kontingent.
+MODELL = "gemini-3.5-flash"  # gemini-2.5-pro/-flash sind für NEUE API-Konten
+                              # bereits gesperrt (Auslaufen seit Juni/Okt. 2026).
+                              # gemini-3.5-flash ist die aktuelle Generation mit
+                              # echtem Gratis-Kontingent (Stand Juli 2026).
 MAX_VERSUCHE = 5
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit zwischen Retries (steigt leicht an)
 
