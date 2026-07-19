@@ -92,12 +92,15 @@ if __name__ == '__main__':
     print("Suche nach neuen Dateien zum Hochladen...")
     found = False
     for filename in os.listdir('.'):
-        # Scannt nach Performance, Setups (CSV) ODER Briefing (TXT)
-        if (filename.startswith("Performance") or filename.startswith("Setups")) and filename.endswith(".csv"):
+        # Scannt nach Performance, Setups (CSV) ODER Briefing (TXT) - "in" statt
+        # "startswith", damit auch Trendwende_Setups(...).csv und
+        # Trendwende_Briefing(...).txt erfasst werden (eigener Scanner, eigene
+        # Dateien, siehe trendwende_scanner.py).
+        if ("Performance" in filename or "Setups" in filename) and filename.endswith(".csv"):
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
-        elif filename.startswith("Briefing") and filename.endswith(".txt"):
+        elif "Briefing" in filename and filename.endswith(".txt"):
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
