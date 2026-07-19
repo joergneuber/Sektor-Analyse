@@ -48,6 +48,16 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python analyse.py
+
+      - name: Trendwende-Scan ausführen
+        # Separater Scanner (Boden-Suche nach einem Fall) - eigene Datei,
+        # eigener Briefing-Abschnitt, bewusst getrennt vom Hauptscanner.
+        # Läuft NACH analyse.py, da er Bausteine daraus importiert.
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python trendwende_scanner.py
+
       - name: Daten hochladen
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
