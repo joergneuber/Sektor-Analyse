@@ -28,7 +28,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai
 
       - name: Offene Positionen aktualisieren
         # Läuft VOR der Analyse: lädt Offene_Positionen.csv aus Drive, prüft
@@ -61,6 +61,17 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python trendwende_scanner.py
+
+      - name: Gemini-Auswertung erstellen
+        # Ersetzt das manuelle Kopieren in das Gemini-Gem: liest die Master-
+        # Anweisung (Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md,
+        # muss im Repo liegen) sowie alle Tagesdateien und erzeugt
+        # Auswertung(<Datum>).txt. Läuft NACH beiden Scannern, damit alle
+        # Dateien (inkl. Trendwende) bereits vorliegen. Bewusst die
+        # kostenlose Gemini-API statt der kostenpflichtigen Claude-API.
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python gemini_auswertung.py
 
       - name: Daten hochladen
         env:
