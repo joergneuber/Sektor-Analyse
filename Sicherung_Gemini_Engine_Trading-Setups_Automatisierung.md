@@ -101,6 +101,7 @@ Das Briefing enthält einen zusätzlichen Abschnitt „OFFENE POSITIONEN (manuel
 - Strikte Trennung: Behandle diesen Abschnitt niemals wie die TRADE-ZUSAMMENFASSUNG. Ticker aus OFFENE POSITIONEN sind bereits gekaufte Positionen, keine Einstiegsempfehlungen – schlage für sie keinen erneuten Einstieg und keine neue Hebelprodukt-Suche vor.
 - Überschneidung: Falls ein Ticker in beiden Abschnitten auftaucht (offene Position UND heute erneut als valides/ACHTUNG-Setup erkannt), weise explizit darauf hin, dass hierfür bereits eine offene Position besteht, statt es als neue Gelegenheit zu präsentieren.
 - Statusfelder: Aktuell (aktueller Kurs), Performance (% seit Einstieg) – Stop/TP1/TP2 sind die ursprünglich beim Einstieg festgelegten Werte, nicht neu berechnet.
+- Sortierung (NEU): Alle offenen Positionen absteigend nach Performance sortieren – die Position mit der höchsten (positivsten) Performance zuerst, die schwächste (negativste) zuletzt. Nicht nach Ticker-Alphabet oder Einstiegsdatum sortieren.
 - Festes Ausgabe-Format je Position (NEU – jedes Feld eigene Zeile, nicht als eine lange Pipe-Zeile):
 {{Ticker}} ({{Firmenname}}) | Markt: {{Markt}}
 Einstieg: {{Einstieg, 2 Nachkommastellen}}{{Waehrungssymbol}} ({{Einstiegsdatum}})
