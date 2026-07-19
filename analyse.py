@@ -1000,6 +1000,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
+        chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
+        chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             return None
@@ -1058,6 +1060,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
                 "Divergenz": divergenz if divergenz else "Keine",
                 "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), 
                 "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
+                "Chance1_Perc": clean_num(chance1_perc), "Chance2_Perc": clean_num(chance2_perc),
                 "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
                 "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
                 "TP1": clean_num(tp1), "TP2": clean_num(tp2),
@@ -1305,6 +1308,8 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
+        chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
+        chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             return None
@@ -1325,6 +1330,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             "Divergenz": divergenz if divergenz else "Keine",
             "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1),
             "CRV2": clean_num(crv2), "Kurs": round(last_row['Close'], 2),
+            "Chance1_Perc": clean_num(chance1_perc), "Chance2_Perc": clean_num(chance2_perc),
             "Einstieg": round(last_row['Close'], 2), "Einstieg2(EMA 20)": round(last_row['EMA20'], 2),
             "Stop": clean_num(stop), "Risk_Perc": clean_num(risk_perc),
             "TP1": clean_num(tp1), "TP2": clean_num(tp2),
@@ -1434,7 +1440,7 @@ if __name__ == "__main__":
     # Deine Liste/Spalten und Reihenfolge in setup-Datei (HIER EINGERÜCKT!)
     cols = ['Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Trend', 'Setup_Typ', 'Pattern', 'Tech-Kursziel', 
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
-            'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
+            'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Chance1_Perc', 'Chance2_Perc', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
             'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'Ideales_Delta',
             'RS_vs_Benchmark%', 'Abstand_52W_Hoch%']
 
@@ -1545,7 +1551,7 @@ if __name__ == "__main__":
     # 3. DANN Runden
     cols_to_round = [
         'Tech-Kursziel', 'Analysten-Kursziel', 'Upside_%_vs_Aktuell', 
-        'RSI', 'CRV1', 'CRV2', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
+        'RSI', 'CRV1', 'CRV2', 'Chance1_Perc', 'Chance2_Perc', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
         'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'RS_vs_Benchmark%', 'Abstand_52W_Hoch%'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
@@ -1609,7 +1615,7 @@ if __name__ == "__main__":
             f.write("-" * 40 + "\n")
             f.write(f"Kurs: {row['Kurs']}{waehrungszeichen} / RSI: {row['RSI']} / Stoch-K: {stoch_val:.1f} / MACD: {row['MACD_Trend']}\n")
             f.write(f"Einstieg: {row['Einstieg']}{waehrungszeichen} / EMA20: {row['Einstieg2(EMA 20)']}{waehrungszeichen} / Stop: {row['Stop']}{waehrungszeichen} / Risiko: {row['Risk_Perc']}%\n")
-            f.write(f"TP1: {row['TP1']}{waehrungszeichen} / TP2: {row['TP2']}{waehrungszeichen} / CRV1: {row['CRV1']} / CRV2: {row['CRV2']}\n")
+            f.write(f"TP1: {row['TP1']}{waehrungszeichen} (Chance: {row['Chance1_Perc']}%) / CRV1: {row['CRV1']} | TP2: {row['TP2']}{waehrungszeichen} (Chance: {row['Chance2_Perc']}%) / CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
             f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
 
