@@ -1,0 +1,51 @@
+name: Stop-Check nachmittags
+
+on:
+  # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
+  workflow_dispatch:
+  schedule:
+    # 16:23 UTC entspricht 18:23 Uhr MESZ (Sommerzeit). Bewusst NICHT zur
+    # vollen Stunde (16:00), da GitHub Actions Cron-Läufe zu vollen Stunden/
+    # Mitternacht UTC nachweislich häufiger verzögert oder komplett
+    # übersprungen werden (siehe main.yml für dieselbe Begründung).
+    #
+    # Zweck: EU-Börsen sind um diese Zeit frisch geschlossen (heutiger
+    # Schlusskurs, den der Morgenlauf sonst erst am nächsten Tag sähe),
+    # US-Börse läuft seit ca. 2,5 Stunden (Intraday-Kurs) - fängt Stop-
+    # Treffer ab, die intraday ausgelöst und bis zum nächsten Morgen wieder
+    # "erholt" wären und sonst unbemerkt blieben (ein echter Stop-Loss-
+    # Order beim Broker würde ja auch bei jeder Kursberührung sofort
+    # auslösen, nicht erst am Tagesende).
+    - cron: '23 16 * * 1-5'
+
+jobs:
+  stop-check:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--no-deprecation"
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 yfinance
+
+      - name: Offene Positionen gegen aktuellen Kurs prüfen
+        # Bewusst NUR dieser eine Schritt - kein kompletter Scan (analyse.py/
+        # trendwende_scanner.py/gemini_auswertung.py), da es hier ausschließlich
+        # um zeitnahe Stop-Erkennung geht, nicht um eine zweite vollständige
+        # Analyse. positionen_tracker.py lädt das Ergebnis am Ende selbst zu
+        # Drive hoch (eigener hochladen()-Aufruf) - kein separater
+        # upload_to_drive.py-Schritt nötig.
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python positionen_tracker.py
