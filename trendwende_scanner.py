@@ -30,6 +30,12 @@ Kriterien (Stand 19.07.2026, aus gemeinsamer Abstimmung A-F):
       (nicht das 10-Tage-Tief des Hauptscanners, das bei Trendwenden oft zu
       weit weg liegt).
 
+Architektur-Update (19.07.2026): Kursdaten werden per SAMMEL-ABRUF geholt
+(mehrere Ticker pro API-Request statt einem Request pro Ticker) - dadurch
+kein festes Ticker-Budget mehr noetig, das komplette Universum wird jeden
+Tag vollstaendig abgedeckt (vorher wurde bei zu vielen Tickern u.a. die
+komplette EU-Seite stillschweigend uebersprungen).
+
 Voraussetzungen: dieselben Umgebungsvariablen wie analyse.py
 (ALPACA_KEY, ALPACA_SECRET). Muss im selben Verzeichnis wie analyse.py
 liegen (wird importiert).
@@ -69,11 +75,13 @@ ABSTAND_52W_TIEF_MAX = 15.0  # Prozent oberhalb des 52-Wochen-Tiefs
 # innerhalb dieser letzten N Handelstage aufgetreten sein)
 FRISCHE_TAGE = 3
 
-# Sicherheitsbudget gegen zu viele API-Calls in einem Lauf (das komplette
-# Universum ist groesser als das 180er-Budget des Hauptscanners, da hier
-# NICHT auf Top-Sektoren vorgefiltert wird - siehe Architektur-Entscheidung).
-# Bei Bedarf anpassen/entfernen, falls Rate-Limits das erlauben.
-MAX_TICKER_BUDGET = 250
+# Chunk-Groesse fuer Sammel-Abrufe (Alpaca/yfinance koennen mehrere Ticker in
+# einem Request abfragen - das ersetzt die 370-440 einzelnen API-Calls von
+# vorher durch nur eine Handvoll Sammel-Calls, siehe fetch_us_batch/
+# fetch_eu_batch unten. Kein festes Ticker-Budget mehr noetig, da dadurch
+# die Rate-Limit-Sorge von vorher entfaellt - Chunking hier nur als
+# Sicherheitsnetz gegen zu lange einzelne Requests.
+CHUNK_SIZE = 100
 
 STOP_PUFFER = 0.98  # 2% Puffer unter dem juengsten Verlaufstief
 
@@ -117,8 +125,93 @@ def juengstes_verlaufstief(data, fenster=10):
     return round(float(tief) * STOP_PUFFER, 2)
 
 
+def _chunks(liste, groesse):
+    for i in range(0, len(liste), groesse):
+        yield liste[i:i + groesse]
+
+
+def fetch_us_batch(ticker_liste):
+    """Holt Kursdaten fuer ALLE US-Ticker in wenigen Sammel-Requests statt
+    einem Request pro Ticker (Alpaca unterstuetzt mehrere Symbole pro
+    StockBarsRequest). Gibt {ticker: DataFrame} zurueck - fehlende/leere
+    Ticker werden einfach ausgelassen (kein Fehler)."""
+    ergebnis = {}
+    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+
+    for chunk in _chunks(ticker_liste, CHUNK_SIZE):
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day
+            )
+            bars = alpaca_client.get_stock_bars(request)
+            df_alle = bars.df
+        except Exception as e:
+            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
+            continue
+
+        if df_alle.empty:
+            continue
+
+        # MultiIndex (symbol, timestamp) bei mehreren Symbolen - pro Ticker
+        # aufsplitten, Spalten wie beim Hauptscanner umbenennen.
+        for ticker in chunk:
+            try:
+                data = df_alle.loc[ticker].copy()
+            except KeyError:
+                continue
+            if data.empty:
+                continue
+            if 'close' in data.columns:
+                data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
+            ergebnis[ticker] = data
+
+    print(f"DEBUG: US-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
+    return ergebnis
+
+
+def fetch_eu_batch(ticker_liste):
+    """Holt Kursdaten fuer ALLE EU-Ticker in wenigen Sammel-Requests statt
+    einem Request pro Ticker (yf.download akzeptiert mehrere Ticker auf
+    einmal). Gibt {ticker: DataFrame} zurueck."""
+    ergebnis = {}
+
+    for chunk in _chunks(ticker_liste, CHUNK_SIZE):
+        try:
+            df_alle = yf.download(
+                tickers=" ".join(chunk), period="1y", group_by='ticker',
+                threads=True, auto_adjust=False, progress=False
+            )
+        except Exception as e:
+            print(f"FEHLER beim Sammel-Abruf EU-Chunk ({len(chunk)} Ticker): {e}")
+            continue
+
+        if df_alle.empty:
+            continue
+
+        for ticker in chunk:
+            try:
+                # Bei mehreren Tickern liefert yfinance ein MultiIndex-
+                # Spaltenformat (Ticker, Feld) - bei genau einem Ticker im
+                # letzten Chunk waere es flach, daher der Fallback.
+                if isinstance(df_alle.columns, pd.MultiIndex):
+                    data = df_alle[ticker].copy()
+                else:
+                    data = df_alle.copy()
+            except KeyError:
+                continue
+            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+            if data.empty:
+                continue
+            ergebnis[ticker] = data
+
+    print(f"DEBUG: EU-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
+    return ergebnis
+
+
 # ---------------------------------------------------------------------------
-# KERNLOGIK: EIN TICKER (US ueber Alpaca, EU ueber yfinance)
+# KERNLOGIK: EIN TICKER (Daten kommen bereits aus dem Sammel-Abruf, kein
+# weiterer Netzwerk-Call noetig - die Filterung selbst ist reine lokale
+# Pandas-Berechnung und damit fuer das komplette Universum unproblematisch)
 # ---------------------------------------------------------------------------
 
 def _indikatoren_berechnen(data):
@@ -239,31 +332,16 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     }
 
 
-def analyze_trendwende_us(ticker, sektor, spy_close=None):
+def analyze_trendwende_us(ticker, sektor, data, spy_close=None):
     try:
-        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-        request = StockBarsRequest(
-            symbol_or_symbols=[ticker], start=start_date, timeframe=TimeFrame.Day
-        )
-        bars = alpaca_client.get_stock_bars(request)
-        data = bars.df
-        if data.empty:
-            return None
-        data = data.reset_index(level=0, drop=True)
-        if 'close' in data.columns:
-            data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
         return _pruefe_trendwende(ticker, sektor, "US", data, spy_close)
     except Exception as e:
         print(f"FEHLER Trendwende US {ticker}: {e}")
         return None
 
 
-def analyze_trendwende_eu(ticker, sektor, eu_bench_close=None):
+def analyze_trendwende_eu(ticker, sektor, data, eu_bench_close=None):
     try:
-        data = yf.Ticker(ticker).history(period="1y")
-        data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-        if data.empty:
-            return None
         return _pruefe_trendwende(ticker, sektor, "EU", data, eu_bench_close)
     except Exception as e:
         print(f"FEHLER Trendwende EU {ticker}: {e}")
@@ -276,7 +354,11 @@ def analyze_trendwende_eu(ticker, sektor, eu_bench_close=None):
 
 def sammle_universum():
     """A - komplettes Universum: ALLE Sektoren (nicht nur Top-Rotation),
-    dedupliziert. Gibt (us_tasks, eu_tasks) als Listen von (Ticker, Sektor)."""
+    dedupliziert. Gibt (us_tasks, eu_tasks) als Listen von (Ticker, Sektor).
+    Kein Budget-Limit mehr noetig, da die Kursdaten per Sammel-Abruf geholt
+    werden (siehe fetch_us_batch/fetch_eu_batch) - das eigentliche
+    Rate-Limit-Risiko waren die vielen EINZELNEN Requests, nicht die
+    Ticker-Anzahl an sich."""
     us_tasks = []
     gesehen_us = set()
     for sektor_ticker, aktien in sektoren_aktien.items():
@@ -293,18 +375,6 @@ def sammle_universum():
                 gesehen_eu.add(ticker)
                 eu_tasks.append((ticker, sektor_name))
 
-    gesamt = len(us_tasks) + len(eu_tasks)
-    if gesamt > MAX_TICKER_BUDGET:
-        ueberschuss = gesamt - MAX_TICKER_BUDGET
-        kuerzung_eu = min(ueberschuss, len(eu_tasks))
-        if kuerzung_eu > 0:
-            print(f"DEBUG: Trendwende-Ticker-Budget ueberschritten ({gesamt} > {MAX_TICKER_BUDGET}) - kuerze {kuerzung_eu} EU-Tasks.")
-            eu_tasks = eu_tasks[:len(eu_tasks) - kuerzung_eu]
-        rest = (len(us_tasks) + len(eu_tasks)) - MAX_TICKER_BUDGET
-        if rest > 0:
-            print(f"DEBUG: Budget weiterhin ueberschritten - kuerze zusaetzlich {rest} US-Tasks.")
-            us_tasks = us_tasks[:len(us_tasks) - rest]
-
     print(f"DEBUG: Trendwende-Universum -> US: {len(us_tasks)} | EU: {len(eu_tasks)} | Gesamt: {len(us_tasks) + len(eu_tasks)}")
     return us_tasks, eu_tasks
 
@@ -317,11 +387,24 @@ def main():
     eu_bench_close = get_eu_benchmark_close()
 
     us_tasks, eu_tasks = sammle_universum()
+    us_tickers = [t for t, _ in us_tasks]
+    eu_tickers = [t for t, _ in eu_tasks]
+
+    print("Hole US-Kursdaten (Sammel-Abruf)...")
+    us_daten = fetch_us_batch(us_tickers)
+    print("Hole EU-Kursdaten (Sammel-Abruf)...")
+    eu_daten = fetch_eu_batch(eu_tickers)
 
     ergebnisse = []
     print("Starte Trendwende-Analyse (US)...")
+    # Ab hier reine lokale Berechnung (Daten liegen bereits vor) - Threads
+    # dienen hier nur noch der CPU-Parallelisierung, nicht mehr dem
+    # Kaschieren von Netzwerk-Latenz wie vorher.
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(analyze_trendwende_us, t, s, spy_close) for t, s in us_tasks]
+        futures = [
+            executor.submit(analyze_trendwende_us, t, s, us_daten[t], spy_close)
+            for t, s in us_tasks if t in us_daten
+        ]
         for f in futures:
             r = f.result()
             if r:
@@ -329,7 +412,10 @@ def main():
 
     print("Starte Trendwende-Analyse (EU)...")
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(analyze_trendwende_eu, t, s, eu_bench_close) for t, s in eu_tasks]
+        futures = [
+            executor.submit(analyze_trendwende_eu, t, s, eu_daten[t], eu_bench_close)
+            for t, s in eu_tasks if t in eu_daten
+        ]
         for f in futures:
             r = f.result()
             if r:
