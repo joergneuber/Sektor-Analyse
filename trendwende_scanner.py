@@ -54,6 +54,7 @@ from analyse import (
     sektoren_aktien,
     dax_aktien,
     check_kumo_breakout,
+    check_bullish_confirmation,
     get_fib_levels,
     clean_num,
     get_benchmark_close,
@@ -114,6 +115,32 @@ def check_rsi_divergence_recent(data, frische_tage=FRISCHE_TAGE):
         df['RSI'].iloc[ilocs_min[-1]] > df['RSI'].iloc[ilocs_min[-2]]
     )
     return bool(bullische_divergenz)
+
+
+def check_stochastik_crossover_recent(data, frische_tage=FRISCHE_TAGE, ueberverkauft_schwelle=20):
+    """Qualitaets-Bonus-Signal: prueft, ob innerhalb der letzten `frische_tage`
+    Handelstage ein Stochastik-Crossover (%K kreuzt %D von unten) stattfand,
+    UND die Stochastik dabei aus der ueberverkauften Zone (< 20) kam - klassisches
+    Bottom-Fishing-Signal, unabhaengig von RSI-Divergenz und Kumo-Ausbruch
+    berechnet (andere Grundlage: Kurslage im 14-Tage-Hoch/Tief-Bereich statt
+    Preis-Momentum-Vergleich bzw. Ichimoku-Wolke)."""
+    if len(data) < 20 or 'Stoch_K' not in data.columns:
+        return False
+
+    for i in range(0, frische_tage + 1):
+        idx = -1 - i
+        idx_prev = idx - 1
+        if abs(idx_prev) > len(data):
+            break
+        k_heute, d_heute = data['Stoch_K'].iloc[idx], data['Stoch_D'].iloc[idx]
+        k_gestern, d_gestern = data['Stoch_K'].iloc[idx_prev], data['Stoch_D'].iloc[idx_prev]
+        if pd.isna(k_heute) or pd.isna(d_heute) or pd.isna(k_gestern) or pd.isna(d_gestern):
+            continue
+        crossover = (k_heute > d_heute) and (k_gestern <= d_gestern)
+        aus_ueberverkauft = (k_gestern < ueberverkauft_schwelle) or (k_heute < ueberverkauft_schwelle)
+        if crossover and aus_ueberverkauft:
+            return True
+    return False
 
 
 def juengstes_verlaufstief(data, fenster=10):
@@ -243,6 +270,14 @@ def _indikatoren_berechnen(data):
     data['SenkouA'] = ((data['Tenkan'] + data['Kijun']) / 2).shift(26)
     data['SenkouB'] = ((data['High'].rolling(52).max() + data['Low'].rolling(52).min()) / 2).shift(26)
 
+    # Stochastik (14,3,3) - fuer den optionalen Qualitaets-Bonus
+    # "frischer Crossover aus ueberverkaufter Zone" (siehe
+    # check_stochastik_crossover_recent unten)
+    low_min = data['Low'].rolling(14).min()
+    high_max = data['High'].rolling(14).max()
+    data['Stoch_K'] = 100 * ((data['Close'] - low_min) / (high_max - low_min + 1e-9))
+    data['Stoch_D'] = data['Stoch_K'].rolling(3).mean()
+
     return data
 
 
@@ -272,6 +307,34 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
         print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Divergenz: {divergenz_ok} | "
               f"Kumo-Ausbruch: {kumo_ausbruch} | Abstand 52W-Tief: {abstand_52w_tief}%")
         return None
+
+    # Qualitaets-Bonus (NEU, optional - kein Ausschlusskriterium): zwei
+    # zusaetzliche, unabhaengige Signale koennen die Einstufung anheben,
+    # sind aber NICHT Pflicht wie RSI-Divergenz/Kumo-Ausbruch. Bewusst als
+    # eigene, von der Setup-Qualitaets-Skala des Hauptscanners (B-/A+)
+    # visuell unterschiedliche Bezeichnung, um die strikte Trennung der
+    # beiden Setup-Kategorien nicht zu verwischen (siehe Abschnitt 7 der
+    # Gemini-Anleitung).
+    candlestick_muster = check_bullish_confirmation(data)  # "Hammer"/"Engulfing"/None
+    stoch_crossover = check_stochastik_crossover_recent(data)
+
+    bonus_komponenten = []
+    if candlestick_muster:
+        bonus_komponenten.append(candlestick_muster)
+    if stoch_crossover:
+        bonus_komponenten.append("Stochastik-Crossover")
+
+    anzahl_bonus = len(bonus_komponenten)
+    if anzahl_bonus == 0:
+        qualitaets_bonus = "Basis"
+    elif anzahl_bonus == 1:
+        qualitaets_bonus = "Bestätigt"
+    else:
+        qualitaets_bonus = "Stark bestätigt"
+
+    setup_typ = "RSI-Divergenz + Kumo-Ausbruch"
+    if bonus_komponenten:
+        setup_typ += " + " + " + ".join(bonus_komponenten)
 
     # Relative Staerke (nur Info, kein Ausschlusskriterium wie beim
     # Hauptscanner - bei Trendwenden ist schwache RS gegenueber dem Markt
@@ -324,7 +387,8 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
         "Vol_Ratio": round(clean_num(data['Vol_Ratio'].iloc[-1]), 2),
         "RS_vs_Benchmark%": rel_staerke,
         "Abstand_52W_Tief%": abstand_52w_tief,
-        "Setup_Typ": "Trendwende (RSI-Divergenz + Kumo-Ausbruch)",
+        "Setup_Typ": f"Trendwende ({setup_typ})",
+        "Qualitaets_Bonus": qualitaets_bonus,
         "Risikohinweis": (
             "Trendwende-Setup - strukturell riskanter als Trendfolge-Setups "
             "(\u201eMesser-Gefahr\u201c). Enger, wende-spezifischer Stop - Positionsgroesse entsprechend anpassen."
@@ -425,7 +489,9 @@ def main():
 
     df = pd.DataFrame(ergebnisse)
     if not df.empty:
-        df = df.sort_values(by=["CRV1"], ascending=False)
+        bonus_rang = {"Stark bestätigt": 0, "Bestätigt": 1, "Basis": 2}
+        df['_bonus_rang'] = df['Qualitaets_Bonus'].map(bonus_rang).fillna(3)
+        df = df.sort_values(by=["_bonus_rang", "CRV1"], ascending=[True, False]).drop(columns=['_bonus_rang'])
 
     # E - eigene Datei
     dateiname_csv = f"Trendwende_Setups({today}).csv"
@@ -460,6 +526,12 @@ def main():
         f.write("  Kumo-Ausbruch (Kurs durchbricht die komplette Ichimoku-Wolke nach oben -\n")
         f.write(f"  erste technische Trendwechsel-Bestaetigung). Beide Signale muessen innerhalb\n")
         f.write(f"  der letzten {FRISCHE_TAGE} Handelstage aufgetreten sein, sonst gilt das Signal als veraltet.\n")
+        f.write("- Qualitaets-Bonus (optional, NICHT Pflicht): zwei zusaetzliche Signale koennen\n")
+        f.write("  die Einstufung anheben, sind aber kein Ausschlusskriterium wie die beiden\n")
+        f.write("  Pflicht-Signale oben - Candlestick-Bestaetigung (Hammer/Engulfing auf der\n")
+        f.write("  aktuellen Kerze) und ein frischer Stochastik-Crossover (%K kreuzt %D von unten,\n")
+        f.write(f"  aus der ueberverkauften Zone < 20, innerhalb der letzten {FRISCHE_TAGE} Handelstage).\n")
+        f.write("  Einstufung: 0 Bonus-Signale = 'Basis', 1 = 'Bestaetigt', 2 = 'Stark bestaetigt'.\n")
         f.write(f"- Stop (enger als beim Hauptscanner): juengstes markantes Verlaufstief der\n")
         f.write(f"  letzten 10 Kerzen, minus {int((1 - STOP_PUFFER) * 100)}% Sicherheitspuffer - bewusst enger als das\n")
         f.write("  10-Tage-Tief des Hauptscanners, da bei Trendwenden der \"alte\" Boden oft weit\n")
@@ -483,6 +555,7 @@ def main():
                     f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']}\n"
                     f"Abstand 52W-Tief: {row['Abstand_52W_Tief%']}% | RS vs. Benchmark: {row['RS_vs_Benchmark%']}%\n"
                     f"Setup-Typ: {row['Setup_Typ']}\n"
+                    f"Qualitäts-Bonus: {row['Qualitaets_Bonus']}\n"
                     f"Risikohinweis: {row['Risikohinweis']}\n\n"
                 )
 
