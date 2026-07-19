@@ -69,7 +69,7 @@ from alpaca.data.timeframe import TimeFrame
 # Wie nah am 52-Wochen-Tief ein Kandidat maximal noch sein darf, um als
 # "Trendwende-Kandidat" zu gelten (ausgewogen: nicht nur exakte Tiefs, aber
 # auch keine Werte, die schon weit vom Tief weggelaufen sind).
-ABSTAND_52W_TIEF_MAX = 15.0  # Prozent oberhalb des 52-Wochen-Tiefs
+ABSTAND_52W_TIEF_MAX = 10.0  # Prozent oberhalb des 52-Wochen-Tiefs
 
 # Zeitfenster fuer "frisches" Signal (C - beide Bestaetigungen muessen
 # innerhalb dieser letzten N Handelstage aufgetreten sein)
