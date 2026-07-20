@@ -1,0 +1,38 @@
+name: Langfrist-Bewertung wöchentlich
+
+on:
+  # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
+  workflow_dispatch:
+  schedule:
+    # 03:41 UTC entspricht 05:41 Uhr MESZ (Sommerzeit), montags - bewusst
+    # NICHT zur vollen Stunde (siehe main.yml für dieselbe Begründung) und
+    # kurz nach dem regulären Morgenlauf, damit beide Läufe nicht parallel
+    # um dieselben API-Kontingente konkurrieren.
+    - cron: '41 3 * * 1'
+
+jobs:
+  langfrist-bewertung:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--no-deprecation"
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas google-auth-oauthlib google-api-python-client google-auth-httplib2
+
+      - name: Langfrist-Bewertung erstellen
+        run: python langfrist_scanner.py
+
+      - name: Daten hochladen
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python upload_to_drive.py
