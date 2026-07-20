@@ -151,6 +151,22 @@ def sicheres_info_feld(info, feld, default=None):
         return default
 
 
+def normalisiere_dividendenrendite(wert):
+    """Yahoo/yfinance hat das Feld 'dividendYield' im Lauf der Zeit von einem
+    Bruch (0.0371 = 3,71%) auf bereits-Prozent (3.71 = 3,71%) umgestellt -
+    ohne Ankündigung, und je nach Ticker/Zeitpunkt inkonsistent beobachtet.
+    Statt blind mit 100 zu multiplizieren (fuehrte zu Werten wie "371%"),
+    wird hier anhand der Groessenordnung erkannt, welches Format vorliegt:
+    Werte > 1 sind fuer eine Dividendenrendite unplausibel als Bruch (das
+    waere > 100%) - dann ist es bereits Prozent. Werte <= 1 werden als
+    Bruch behandelt und mit 100 multipliziert."""
+    if wert is None:
+        return 0.0
+    if wert > 1:
+        return round(wert, 2)
+    return round(wert * 100, 2)
+
+
 def berechne_naeherungs_kgv(ticker_obj, aktueller_kurs, trailing_eps):
     """NAEHERUNG (siehe Modul-Docstring): wendet den heutigen Gewinn pro
     Aktie auf die historischen Kurse der letzten 5 Jahre an, um zu sehen, ob
@@ -209,7 +225,7 @@ def analysiere_langfrist_titel(ticker, name, markt, sektor):
             "KGV_forward": round(kgv_forward, 2) if kgv_forward else None,
             "KUV": round(kuv, 2) if kuv else None,
             "KBV": round(kbv, 2) if kbv else None,
-            "Dividendenrendite_Perc": round(dividendenrendite * 100, 2) if dividendenrendite else 0.0,
+            "Dividendenrendite_Perc": normalisiere_dividendenrendite(dividendenrendite),
             "Verschuldung_DE": round(verschuldung_de, 1) if verschuldung_de else None,
             "Umsatzwachstum_Perc": round(umsatzwachstum * 100, 2) if umsatzwachstum is not None else None,
             "Gewinnwachstum_Perc": round(gewinnwachstum * 100, 2) if gewinnwachstum is not None else None,
