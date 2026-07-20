@@ -1696,6 +1696,13 @@ if __name__ == "__main__":
                     f.write(f"Aktuell: {aktueller_kurs}{waehrungszeichen} / Performance: {performance}%\n")
                     f.write(f"Stop: {fmt_de(prow['Stop'])}{waehrungszeichen} / TP1: {fmt_de(prow['TP1'])}{waehrungszeichen} / TP2: {fmt_de(prow['TP2'])}{waehrungszeichen}\n")
 
+                    # TP-Hinweis (NEU): nur ausgeben, wenn tatsächlich gesetzt
+                    # (positionen_tracker.py setzt ihn nur einmalig beim ersten
+                    # Erreichen von TP1/TP2, Position bleibt trotzdem offen)
+                    tp_hinweis = str(prow.get('TP_Hinweis', '')).strip()
+                    if tp_hinweis and tp_hinweis.lower() != 'nan':
+                        f.write(f"⚠ Kursziel-Hinweis: {tp_hinweis} (Position weiterhin offen, keine automatische Schließung)\n")
+
                     # Optionsschein-Zusatzzeile: nur anzeigen, wenn Produkt_Typ
                     # tatsächlich als Optionsschein befüllt wurde
                     produkt_typ = str(prow.get('Produkt_Typ', '')).strip().lower()
