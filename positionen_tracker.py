@@ -29,7 +29,7 @@ SPALTEN = [
     'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
-    'Aktueller_Kurs', 'Performance_Seit_Einstieg%',
+    'Aktueller_Kurs', 'Performance_Seit_Einstieg%', 'TP_Hinweis',
     'Produkt_Typ', 'Emittent', 'Hebel',
     'OS_Einstiegskurs', 'OS_Manueller_Kurs',
     'OS_Performance%', 'OS_Quelle', 'OS_WKN'
@@ -427,11 +427,18 @@ def hole_aktuellen_kurs(ticker, markt):
 
 
 def aktualisiere_positionen(df):
-    """Prüft jede offene Position gegen den aktuellen Kurs und den Stop.
-    Wird der Stop erreicht oder unterschritten, wechselt der Status auf
-    'Gestoppt' und Ausstiegsdatum/-kurs werden gesetzt. Für alle offenen
-    Positionen wird zusätzlich der aktuelle Kurs und die Performance seit
-    Einstieg als Info-Spalte ergänzt (für die Briefing-Anzeige)."""
+    """Prüft jede offene Position gegen den aktuellen Kurs, den Stop und die
+    Kursziele TP1/TP2. Wird der Stop erreicht oder unterschritten, wechselt
+    der Status auf 'Gestoppt' und Ausstiegsdatum/-kurs werden gesetzt.
+    Werden TP1/TP2 erreicht, wird das NUR als informativer Hinweis in
+    TP_Hinweis vermerkt (NEU) - die Position bleibt bewusst offen, da ein
+    Kursziel anders als der Stop keine automatische Order ist, sondern eine
+    Entscheidungshilfe (Teilverkauf, Trailing-Stop, komplett raus - das
+    entscheidet der Nutzer selbst manuell). Der Hinweis wird nur beim ERSTEN
+    Erreichen gesetzt (kein taeglicher Neu-Vermerk, falls schon vorhanden).
+    Für alle offenen Positionen wird zusätzlich der aktuelle Kurs und die
+    Performance seit Einstieg als Info-Spalte ergänzt (für die Briefing-
+    Anzeige)."""
     heute = datetime.datetime.now().strftime("%d.%m.%Y")
 
     for idx, row in df.iterrows():
@@ -442,6 +449,8 @@ def aktualisiere_positionen(df):
         markt = row['Markt']
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
+        tp1 = sicheres_float(row['TP1'], ticker, 'TP1')
+        tp2 = sicheres_float(row['TP2'], ticker, 'TP2')
 
         if stop is None or einstieg is None:
             # Bewusst NICHT den ganzen Lauf abbrechen: eine Zeile mit
@@ -470,6 +479,20 @@ def aktualisiere_positionen(df):
             df.at[idx, 'Status'] = 'Gestoppt'
             df.at[idx, 'Ausstiegsdatum'] = heute
             df.at[idx, 'Ausstiegskurs'] = aktueller_kurs
+            continue
+
+        # TP-Hinweis (NEU): nur setzen, wenn noch keiner vorhanden ist -
+        # verhindert taegliches Ueberschreiben/erneutes "Aufploppen" im
+        # Briefing, sobald der Hinweis einmal gesetzt wurde.
+        bestehender_hinweis = str(row.get('TP_Hinweis', '')).strip()
+        hinweis_schon_gesetzt = bestehender_hinweis not in ('', 'nan')
+        if not hinweis_schon_gesetzt:
+            if tp2 is not None and aktueller_kurs >= tp2:
+                print(f"DEBUG: {ticker} -> TP2 erreicht (Kurs={aktueller_kurs}, TP2={tp2}).")
+                df.at[idx, 'TP_Hinweis'] = f"TP2 erreicht am {heute}"
+            elif tp1 is not None and aktueller_kurs >= tp1:
+                print(f"DEBUG: {ticker} -> TP1 erreicht (Kurs={aktueller_kurs}, TP1={tp1}).")
+                df.at[idx, 'TP_Hinweis'] = f"TP1 erreicht am {heute}"
 
     return df
 
