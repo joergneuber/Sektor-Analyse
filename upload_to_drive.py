@@ -96,7 +96,7 @@ if __name__ == '__main__':
         # "startswith", damit auch Trendwende_Setups(...).csv und
         # Trendwende_Briefing(...).txt erfasst werden (eigener Scanner, eigene
         # Dateien, siehe trendwende_scanner.py).
-        if ("Performance" in filename or "Setups" in filename) and filename.endswith(".csv"):
+        if ("Performance" in filename or "Setups" in filename or "Langfrist_Bewertung" in filename) and filename.endswith(".csv"):
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
