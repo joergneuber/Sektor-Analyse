@@ -701,6 +701,33 @@ def clean_num(val, default=0.0):
         print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
         return default
 
+def berechne_fundamental_ampel(ticker):
+    """NEU (21.07.2026): leichte, separate Fundamental-Einordnung für die
+    finalen validierten Setups - bewusst NUR ein grober Kommentar/Ampel
+    ("günstig"/"neutral"/"teuer"), KEIN Punktemodifikator in der Setup-
+    Qualitäts-Matrix (Entscheidung: technisches Setup und fundamentale
+    Bewertung bleiben getrennt bewertbar, nicht vermischt).
+    Wird nur für die bereits gefilterte, kleine Setup-Liste aufgerufen
+    (nicht für das ganze ~370er-Universum) - hält die zusätzliche API-Last
+    gering. Nutzt trailingPE als einfache Hausnummer (keine echte
+    historische KGV-Reihe wie beim Langfrist-Scanner - dafür siehe
+    langfrist_scanner.py, das ist bewusst ausführlicher)."""
+    try:
+        info = yf.Ticker(ticker).info
+        kgv = info.get("trailingPE")
+        if kgv is None or kgv <= 0:
+            return "N/A", "Kein KGV verfügbar (z. B. Verlust-Unternehmen) - keine Bewertungsaussage möglich."
+        if kgv < 15:
+            return "🟢 Günstig", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer."
+        elif kgv > 30:
+            return "🔴 Teuer", f"KGV {round(kgv, 1)} - oberhalb der groben 30er-Hausnummer."
+        else:
+            return "🟡 Neutral", f"KGV {round(kgv, 1)} - im üblichen Rahmen."
+    except Exception as e:
+        print(f"DEBUG: Fundamental-Ampel für {ticker} nicht verfügbar ({e}).")
+        return "N/A", "Fundamentaldaten aktuell nicht abrufbar."
+
+
 def get_ideal_delta(upside_prozent):
     # Einfache Heuristik:
     # Bei kleinem Upside brauchen wir hohes Delta für direkte Reaktion
@@ -1555,6 +1582,17 @@ if __name__ == "__main__":
         'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'RS_vs_Benchmark%', 'Abstand_52W_Hoch%'
     ]
     df_clean[cols_to_round] = df_clean[cols_to_round].round(2)
+
+    # Fundamental-Ampel (NEU, 21.07.2026): nur für die finale, bereits
+    # gefilterte Setup-Liste (klein, API-schonend) - separater Kommentar,
+    # kein Modifikator in der Setup-Qualitäts-Matrix.
+    if not df_clean.empty:
+        ampel_ergebnisse = [berechne_fundamental_ampel(t) for t in df_clean.index]
+        df_clean['Fundamental_Ampel'] = [a for a, _ in ampel_ergebnisse]
+        df_clean['Fundamental_Hinweis'] = [h for _, h in ampel_ergebnisse]
+    else:
+        df_clean['Fundamental_Ampel'] = []
+        df_clean['Fundamental_Hinweis'] = []
     
     # 4. Leere Spalte entfernen (falls nötig)
     if 'Ideales_Delta' in df_clean.columns:
@@ -1618,6 +1656,7 @@ if __name__ == "__main__":
             f.write(f"TP1: {row['TP1']}{waehrungszeichen} (Chance: {row['Chance1_Perc']}%) / CRV1: {row['CRV1']} | TP2: {row['TP2']}{waehrungszeichen} (Chance: {row['Chance2_Perc']}%) / CRV2: {row['CRV2']}\n")
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
             f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
+            f.write(f"Fundamental-Ampel: {row.get('Fundamental_Ampel', 'N/A')} ({row.get('Fundamental_Hinweis', '')})\n")
 
             # Earnings-Warnung (Gap-Risiko) + jüngste Schlagzeilen (nur Kontext)
             earnings = get_earnings_warnung(ticker_val)
