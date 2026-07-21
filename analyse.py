@@ -701,6 +701,33 @@ def clean_num(val, default=0.0):
         print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
         return default
 
+def get_golden_cross_status(data, tage=10):
+    """NEU (21.07.2026): rein informativer Kommentar, KEIN Filter- oder
+    Bewertungskriterium - taucht nur als Zusatzinfo im Briefing auf, hat
+    keinerlei Einfluss auf Setup-Erkennung oder Setup-Qualität. Prüft, ob
+    EMA50 die EMA200 innerhalb der letzten `tage` Handelstage gekreuzt hat:
+    Golden Cross (EMA50 von unten nach oben, klassisch positiv gedeutet)
+    oder Death Cross (EMA50 von oben nach unten, klassisch negativ gedeutet).
+    Kein frischer Cross -> aktuelle Struktur (EMA50 über/unter EMA200) als
+    schwächere Zusatzinfo."""
+    if len(data) < 210 or 'EMA50' not in data.columns or 'EMA200' not in data.columns:
+        return "N/A (zu wenig Kurshistorie)"
+    ema50, ema200 = data['EMA50'], data['EMA200']
+    for i in range(0, tage + 1):
+        idx, idx_prev = -1 - i, -2 - i
+        if abs(idx_prev) > len(data):
+            break
+        if pd.isna(ema50.iloc[idx_prev]) or pd.isna(ema200.iloc[idx_prev]):
+            continue
+        if ema50.iloc[idx] > ema200.iloc[idx] and ema50.iloc[idx_prev] <= ema200.iloc[idx_prev]:
+            return f"🟢 Golden Cross vor {i} Handelstag(en) (EMA50 kreuzt EMA200 nach oben)"
+        if ema50.iloc[idx] < ema200.iloc[idx] and ema50.iloc[idx_prev] >= ema200.iloc[idx_prev]:
+            return f"🔴 Death Cross vor {i} Handelstag(en) (EMA50 kreuzt EMA200 nach unten)"
+    if ema50.iloc[-1] > ema200.iloc[-1]:
+        return "Kein frischer Cross (EMA50 > EMA200, langfristig bullische Struktur)"
+    return "Kein frischer Cross (EMA50 < EMA200, langfristig bärische Struktur)"
+
+
 def berechne_fundamental_ampel(ticker):
     """NEU (21.07.2026): leichte, separate Fundamental-Einordnung für die
     finalen validierten Setups - bewusst NUR ein grober Kommentar/Ampel
@@ -1081,6 +1108,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             res = {
                 "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
                 "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
+                "Golden_Cross_Status": get_golden_cross_status(data),
                 "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
                 "Upside-Potenzial%": float(upside_potenzial), "Status2": "VALIDE", 
                 "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
@@ -1351,6 +1379,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         res = {
             "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
             "Trend": str(trend_status), "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
+                "Golden_Cross_Status": get_golden_cross_status(data),
             "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": float(analysten_ziel),
             "Upside-Potenzial%": float(upside_potenzial), "Status2": "VALIDE",
             "Status_Grund": "Alles ok", "RSI": float(last_row['RSI']),
@@ -1469,7 +1498,7 @@ if __name__ == "__main__":
             'Analysten-Kursziel', 'Upside-Potenzial%', 'Status2', 'Status_Grund', 
             'RSI', 'MACD_Trend', 'CRV1', 'CRV2', 'Chance1_Perc', 'Chance2_Perc', 'Kurs', 'Einstieg', 'Einstieg2(EMA 20)', 
             'Stop', 'Risk_Perc', 'TP1', 'TP2', 'Stoch_K', 'Vol_Ratio', 'Ideales_Delta',
-            'RS_vs_Benchmark%', 'Abstand_52W_Hoch%']
+            'RS_vs_Benchmark%', 'Abstand_52W_Hoch%', 'Golden_Cross_Status']
 
     if not all_setups:
         print("Keine Setups gefunden.")
@@ -1657,6 +1686,7 @@ if __name__ == "__main__":
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
             f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
             f.write(f"Fundamental-Ampel: {row.get('Fundamental_Ampel', 'N/A')} ({row.get('Fundamental_Hinweis', '')})\n")
+            f.write(f"Golden-/Death-Cross (nur Info, keine Bewertung): {row.get('Golden_Cross_Status', 'N/A')}\n")
 
             # Earnings-Warnung (Gap-Risiko) + jüngste Schlagzeilen (nur Kontext)
             earnings = get_earnings_warnung(ticker_val)
