@@ -46,7 +46,6 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
-from scipy.stats import linregress
 
 from analyse import (
     alpaca_client,
@@ -60,6 +59,9 @@ from analyse import (
     clean_num,
     get_benchmark_close,
     get_eu_benchmark_close,
+    check_rsi_divergence,
+    get_earnings_warnung,
+    get_news_headlines,
 )
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -207,26 +209,51 @@ def check_pullback_zone_short(data):
     return bool(lower_high)
 
 
-def check_trendlinien_bruch(data):
-    """Spiegelbild zu Trendlinien-Ausbruch: steigende Stuetzlinie durch die
-    letzten lokalen Tiefpunkte (Regression, mind. 3 Punkte) wird nach unten
-    durchbrochen, mit Volumen-Bestaetigung. Siehe Modul-Docstring zur
-    methodischen Einschraenkung (eigenstaendige Naeherung, nicht 1:1 aus
-    dem Original-Scanner uebernommen)."""
-    fenster = data.tail(40).reset_index(drop=True)
-    if len(fenster) < 15:
-        return False
-    ilocs_min = argrelextrema(fenster['Low'].values, np.less_equal, order=3)[0]
-    if len(ilocs_min) < 3:
-        return False
-    ilocs_min = ilocs_min[-4:] if len(ilocs_min) > 4 else ilocs_min
-    steigung, achsenabschnitt, *_ = linregress(ilocs_min, fenster['Low'].iloc[ilocs_min].values)
-    if steigung <= 0:
-        return False  # nur STEIGENDE Stuetzlinien sind fuer einen Bruch relevant
-    linie_heute = steigung * (len(fenster) - 1) + achsenabschnitt
-    bruch = fenster['Close'].iloc[-1] < linie_heute
-    vol_ok = data['Vol_Ratio'].iloc[-1] > 1.0
-    return bool(bruch and vol_ok)
+def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01):
+    """Exaktes Spiegelbild von check_trendline_breakout in analyse.py: sucht
+    eine STEIGENDE Stütz-Trendlinie durch mindestens 3 Swing-Tiefs (Toleranz
+    1%) und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
+    durchschnittlichem Volumen darunter ausgebrochen ist."""
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < 10:
+        return False, None
+    suchbereich = fenster.iloc[:-3]
+    if len(suchbereich) < 10:
+        return False, None
+
+    lows = suchbereich['Low'].values
+    idx_swings = argrelextrema(lows, np.less_equal, order=order)[0]
+    if len(idx_swings) < 3:
+        return False, None
+
+    x = idx_swings.astype(float)
+    y = lows[idx_swings]
+    slope, intercept = np.polyfit(x, y, 1)
+
+    # Nur STEIGENDE Stützlinien relevant (Bruch nach unten = Short-Signal)
+    if slope <= 0:
+        return False, None
+
+    linie_bei_punkten = slope * x + intercept
+    beruehrungen = int(np.sum(np.abs(y - linie_bei_punkten) <= (linie_bei_punkten * touch_tolerance)))
+    if beruehrungen < 3:
+        return False, None
+
+    heute_pos = len(fenster) - 1
+    linie_heute = slope * heute_pos + intercept
+    close_heute = fenster['Close'].iloc[-1]
+
+    crossunder_kuerzlich = any(
+        fenster['Close'].iloc[-1 - i] >= (slope * (heute_pos - i) + intercept)
+        for i in range(1, 4)
+    )
+    volumen_ok = any(
+        fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
+        for i in range(0, 3)
+    )
+
+    bruch = bool(close_heute < linie_heute) and crossunder_kuerzlich and bool(volumen_ok)
+    return bruch, (float(linie_heute) if bruch else None)
 
 
 def check_kumo_breakdown(data):
@@ -277,7 +304,7 @@ def check_bearish_confirmation(df):
 # SETUP-QUALITAETS-MATRIX (gespiegelt, siehe Modul-Docstring)
 # ---------------------------------------------------------------------------
 
-def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfeld_baerisch=False):
+def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfeld_baerisch=False, sektor_momentum=None):
     if len(data) < 60:
         return None
     data = _indikatoren_berechnen(data)
@@ -288,7 +315,8 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         return None
 
     pfade = []
-    if check_trendlinien_bruch(data):
+    trendlinien_bruch, _ = check_trendline_breakdown(data)
+    if trendlinien_bruch:
         pfade.append("Trendlinien-Bruch")
     kumo_bruch, kumo_level = check_kumo_breakdown(data)
     if kumo_bruch:
@@ -304,15 +332,16 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         return None
     setup_typ = " + ".join(pfade)
 
-    # Basis-Einstufung: Trendlinien-Bruch ODER Kumo-Ausbruch unten -> A,
-    # Pullback-Zone-short UND Muster -> A, alles andere -> B (gespiegelte
-    # Matrix aus der Gemini-Anleitung, Abschnitt 2)
-    if "Trendlinien-Bruch" in pfade or "Kumo-Ausbruch unten" in pfade:
-        basis = "A"
-    elif "Pullback-Zone short" in pfade:
-        basis = "A"
-    else:
-        basis = "B"
+    # Basis-Einstufung (gespiegelte Matrix aus Gemini-Anleitung Abschnitt 2):
+    # Trendlinien-Bruch ODER Kumo-Ausbruch unten -> A, Pullback-Zone-short
+    # UND Muster -> A, alles andere -> B
+    basis = "A" if ("Trendlinien-Bruch" in pfade or "Kumo-Ausbruch unten" in pfade or "Pullback-Zone short" in pfade) else "B"
+
+    # Divergenz (NEU): echte check_rsi_divergence-Funktion wiederverwendet
+    # (deckt beide Richtungen ab). Bärische Divergenz validiert das Setup
+    # analog zur Long-Logik unabhängig von anderen ACHTUNG-Kriterien.
+    divergenz = check_rsi_divergence(data)  # "Bullisch"/"Bärisch"/None
+    divergenz_bearish = (divergenz == "Bärisch")
 
     stufen = ["B-", "B", "B+", "A-", "A", "A+"]
     idx = stufen.index("B" if basis == "B" else "A")
@@ -327,6 +356,18 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         verschiebung += 1
     idx = max(0, min(len(stufen) - 1, idx + verschiebung))
     feinstufe = stufen[idx]
+
+    # Status2/Status_Grund (NEU): ACHTUNG bei widersprüchlichem MACD (Bullisch
+    # trotz Short-These) oder schwachem Volumen - AUSSER bärische Divergenz
+    # validiert automatisch (gespiegelt zur Long-Logik in analyse.py).
+    if divergenz_bearish:
+        status2, status_grund = "VALIDE", "Bärische RSI-Divergenz (Signal-Charakter)"
+    elif data['MACD_Trend'].iloc[-1] == "Bullisch":
+        status2, status_grund = "ACHTUNG", "Bullischer MACD-Trend (widerspricht Short-These)"
+    elif data['Vol_Ratio'].iloc[-1] < 0.5:
+        status2, status_grund = "ACHTUNG", "Schwaches Volumen"
+    else:
+        status2, status_grund = "VALIDE", "Kein Störfaktor erkannt"
 
     rel_staerke = None
     if bench_close is not None and len(bench_close) > 60 and len(data) > 60:
@@ -353,20 +394,32 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     targets_below = [t for t in potenzial_targets if t < entry]
     tp1 = targets_below[0] if targets_below else entry * 0.92
     tp2 = targets_below[1] if len(targets_below) >= 2 else tp1 * 0.95
+    tech_kursziel = tp1  # analog zu analyse.py, wo Tech-Kursziel = TP1 gesetzt wird
 
     crv1 = round((entry - tp1) / (stop - entry), 2) if stop > entry else 0
     crv2 = round((entry - tp2) / (stop - entry), 2) if stop > entry else 0
     chance1_perc = round(((entry - tp1) / entry) * 100, 2)
     chance2_perc = round(((entry - tp2) / entry) * 100, 2)
 
+    # Abstand_52W_Tief% (NEU, gespiegelt zu Abstand_52W_Hoch% bei Long):
+    # wie weit über dem 52-Wochen-Tief - Raum, den der Kurs noch fallen
+    # könnte, bevor der bisherige Tiefpunkt erreicht wird.
+    tief_52w = data['Low'].min()
+    abstand_52w_tief = round(((entry / tief_52w) - 1) * 100, 2) if tief_52w > 0 else None
+
     try:
-        firma_name = yf.Ticker(ticker).info.get('longName', ticker) or ticker
+        info = yf.Ticker(ticker).info
+        firma_name = info.get('longName', ticker) or ticker
+        analysten_kursziel = info.get('targetMeanPrice')
     except Exception:
         firma_name = ticker
+        analysten_kursziel = None
 
     return {
         "Ticker": ticker, "Name": firma_name, "Markt": markt, "Sektor": sektor,
         "Kurs": round(clean_num(entry), 2),
+        "Tech-Kursziel": round(clean_num(tech_kursziel), 2),
+        "Analysten-Kursziel": round(clean_num(analysten_kursziel), 2) if analysten_kursziel else None,
         "TP1": round(clean_num(tp1), 2), "CRV1": crv1, "Chance1_Perc": chance1_perc,
         "TP2": round(clean_num(tp2), 2), "CRV2": crv2, "Chance2_Perc": chance2_perc,
         "Stop": stop, "Risk_Perc": risk_perc,
@@ -374,6 +427,12 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         "MACD_Trend": data['MACD_Trend'].iloc[-1],
         "Vol_Ratio": round(clean_num(data['Vol_Ratio'].iloc[-1]), 2),
         "RS_vs_Benchmark%": rel_staerke,
+        "Abstand_52W_Tief%": abstand_52w_tief,
+        "Divergenz": divergenz or "Keine",
+        "Status2": status2, "Status_Grund": status_grund,
+        "5T": sektor_momentum.get("5T") if sektor_momentum else None,
+        "12T": sektor_momentum.get("12T") if sektor_momentum else None,
+        "Rotation-Score": sektor_momentum.get("Rotation-Score") if sektor_momentum else None,
         "Setup_Typ": setup_typ,
         "Setup_Qualitaet": feinstufe,
         "Pattern": muster or "Kein",
@@ -392,23 +451,38 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
 def bestimme_bottom_sektoren():
     """Analog zu Top-8/Top-5 im Long-Scanner, aber die SCHWAECHSTEN Sektoren
     (nlargest -> nsmallest). Gibt (bottom_us_sektoren, bottom_eu_sektoren,
-    marktumfeld_baerisch_us, marktumfeld_baerisch_eu)."""
+    momentum_us, momentum_eu) - die beiden momentum-Dicts liefern je
+    Sektor-Name {5T, 12T, Rotation-Score} fuer die Briefing-Ausgabe (NEU,
+    analog zum Sektor-Momentum-Feld bei den normalen Setups)."""
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
     df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()]).sort_values("Rotation-Score", ascending=False)
 
     bottom_us = df_perf.nsmallest(BOTTOM_SEKTOREN_US, 'Rotation-Score')['Sektor'].tolist()
     bottom_eu = df_perf_eu.nsmallest(BOTTOM_SEKTOREN_EU, 'Rotation-Score')['Sektor'].tolist()
 
+    momentum_us = df_perf.set_index('Sektor')[['5T', '12T', 'Rotation-Score']].to_dict('index')
+    momentum_eu = df_perf_eu.set_index('Sektor')[['5T', '12T', 'Rotation-Score']].to_dict('index')
+
     print(f"DEBUG: Bottom-{BOTTOM_SEKTOREN_US}-US-Sektoren laut Rotation-Score: {bottom_us}")
     print(f"DEBUG: Bottom-{BOTTOM_SEKTOREN_EU}-EU-Sektoren laut Rotation-Score: {bottom_eu}")
-    return bottom_us, bottom_eu
+    return bottom_us, bottom_eu, momentum_us, momentum_eu
 
 
 def sammle_universum(bottom_us_sektoren, bottom_eu_sektoren):
+    # BUGFIX (21.07.2026): sektoren_aktien nutzt ETF-TICKER als Schlüssel
+    # (z. B. "XLK", "SOXX"), waehrend bottom_us_sektoren LESBARE NAMEN
+    # enthaelt (z. B. "Halbleiter" - kommt aus get_perf()). Ohne dieses
+    # Mapping matcht kein einziger US-Sektor (0 US-Ticker im Testlauf vom
+    # 21.07.2026) - bei dax_aktien sind die Schluessel zufaellig schon
+    # Namen, deshalb ist der EU-Teil davon nicht betroffen.
+    name_zu_ticker = {name: ticker for ticker, name in sektoren_map.items()}
+    bottom_us_ticker_keys = [name_zu_ticker[n] for n in bottom_us_sektoren if n in name_zu_ticker]
+
     us_tasks, eu_tasks = [], []
     for sektor_ticker, aktien in sektoren_aktien.items():
-        if sektor_ticker in bottom_us_sektoren:
-            us_tasks.extend([(t, sektor_ticker) for t in aktien])
+        if sektor_ticker in bottom_us_ticker_keys:
+            sektor_name_lesbar = sektoren_map.get(sektor_ticker, sektor_ticker)
+            us_tasks.extend([(t, sektor_name_lesbar) for t in aktien])
     for sektor_name, aktien in dax_aktien.items():
         if sektor_name in bottom_eu_sektoren:
             eu_tasks.extend([(t, sektor_name) for t in aktien])
@@ -429,7 +503,7 @@ def main():
     marktumfeld_baerisch_us = bool(len(spy_close) > 20 and spy_close.iloc[-1] < spy_close.ewm(span=20, adjust=False).mean().iloc[-1])
     marktumfeld_baerisch_eu = bool(len(eu_bench_close) > 20 and eu_bench_close.iloc[-1] < eu_bench_close.ewm(span=20, adjust=False).mean().iloc[-1])
 
-    bottom_us, bottom_eu = bestimme_bottom_sektoren()
+    bottom_us, bottom_eu, momentum_us, momentum_eu = bestimme_bottom_sektoren()
     us_tasks, eu_tasks = sammle_universum(bottom_us, bottom_eu)
     us_tickers = [t for t, _ in us_tasks]
     eu_tickers = [t for t, _ in eu_tasks]
@@ -442,7 +516,7 @@ def main():
     ergebnisse = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
-            executor.submit(_pruefe_short_setup, t, s, "US", us_daten[t], spy_close, marktumfeld_baerisch_us)
+            executor.submit(_pruefe_short_setup, t, s, "US", us_daten[t], spy_close, marktumfeld_baerisch_us, momentum_us.get(s))
             for t, s in us_tasks if t in us_daten
         ]
         for f in futures:
@@ -452,7 +526,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
-            executor.submit(_pruefe_short_setup, t, s, "EU", eu_daten[t], eu_bench_close, marktumfeld_baerisch_eu)
+            executor.submit(_pruefe_short_setup, t, s, "EU", eu_daten[t], eu_bench_close, marktumfeld_baerisch_eu, momentum_eu.get(s))
             for t, s in eu_tasks if t in eu_daten
         ]
         for f in futures:
@@ -463,10 +537,11 @@ def main():
     print(f"DEBUG: {len(ergebnisse)} Short-Kandidaten gefunden.")
 
     SPALTEN = [
-        "Ticker", "Name", "Markt", "Sektor", "Kurs", "TP1", "CRV1", "Chance1_Perc",
-        "TP2", "CRV2", "Chance2_Perc", "Stop", "Risk_Perc", "RSI", "MACD_Trend",
-        "Vol_Ratio", "RS_vs_Benchmark%", "Setup_Typ", "Setup_Qualitaet", "Pattern",
-        "Risikohinweis",
+        "Ticker", "Name", "Markt", "Sektor", "Kurs", "Tech-Kursziel", "Analysten-Kursziel",
+        "TP1", "CRV1", "Chance1_Perc", "TP2", "CRV2", "Chance2_Perc", "Stop", "Risk_Perc",
+        "RSI", "MACD_Trend", "Vol_Ratio", "RS_vs_Benchmark%", "Abstand_52W_Tief%", "Divergenz",
+        "Status2", "Status_Grund", "5T", "12T", "Rotation-Score",
+        "Setup_Typ", "Setup_Qualitaet", "Pattern", "Risikohinweis",
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)
     if not df.empty:
@@ -501,15 +576,23 @@ def main():
         else:
             for _, row in df.iterrows():
                 f.write(
-                    f"{row['Ticker']} ({row['Name']}) | Markt: {row['Markt']} | Sektor: {row['Sektor']}\n"
-                    f"Kurs: {row['Kurs']} | Stop: {row['Stop']} (oberhalb) | Risiko: {row['Risk_Perc']}%\n"
+                    f"{row['Ticker']} ({row['Name']}) | Markt: {row['Markt']} | Sektor: {row['Sektor']} | Status: {row['Status2']} ({row['Status_Grund']})\n"
+                    f"Kurs: {row['Kurs']}\n"
+                    f"Technisches Kursziel: {row['Tech-Kursziel']} | Analysten-Kursziel: {row['Analysten-Kursziel'] if pd.notna(row['Analysten-Kursziel']) else 'N/A'}\n"
+                    f"Stop: {row['Stop']} (oberhalb) | Risiko: {row['Risk_Perc']}%\n"
                     f"TP1: {row['TP1']} (Chance: {row['Chance1_Perc']}%) | CRV1: {row['CRV1']} | "
                     f"TP2: {row['TP2']} (Chance: {row['Chance2_Perc']}%) | CRV2: {row['CRV2']}\n"
-                    f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']}\n"
-                    f"RS vs. Benchmark: {row['RS_vs_Benchmark%']}%\n"
+                    f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']} | Divergenz: {row['Divergenz']}\n"
+                    f"RS vs. Benchmark: {row['RS_vs_Benchmark%']}% | Abstand 52W-Tief: {row['Abstand_52W_Tief%']}%\n"
+                    f"Sektor-Momentum: {row['5T']}% (5 Tage) / {row['12T']}% (12 Tage), Rotation-Score {row['Rotation-Score']}\n"
                     f"Setup-Typ: {row['Setup_Typ']} | Setup-Qualitaet: [{row['Setup_Qualitaet']}] | Muster: {row['Pattern']}\n"
-                    f"Risikohinweis: {row['Risikohinweis']}\n\n"
                 )
+                earnings = get_earnings_warnung(row['Ticker'])
+                if earnings:
+                    f.write(f"{earnings}\n")
+                for headline in get_news_headlines(row['Ticker']):
+                    f.write(f"News {headline}\n")
+                f.write(f"Risikohinweis: {row['Risikohinweis']}\n\n")
 
     print(f"Gespeichert: {dateiname_briefing}")
     print("Short-Scanner abgeschlossen.")
