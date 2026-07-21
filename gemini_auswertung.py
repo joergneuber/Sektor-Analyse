@@ -25,6 +25,14 @@ Erwartet im Arbeitsverzeichnis (Pfade/Muster unten in KONFIGURATION anpassen):
     Trendwende_Setups(<Datum>).csv (optional)
     Trendwende_Briefing(<Datum>).txt (optional)
 
+Short_Setups(<Datum>).csv und Short_Briefing(<Datum>).txt (NEU, optional)
+werden NICHT lokal erwartet, sondern bei Bedarf automatisch aus Google
+Drive nachgeladen (siehe lade_short_dateien_von_drive) - der Short-Scanner
+laeuft als eigener, frueherer Workflow (z. B. 04:00 Uhr MESZ) und teilt
+sich kein lokales Dateisystem mit diesem Lauf, laedt sein Ergebnis aber
+wie die anderen Scanner nach Drive hoch. Dafuer wird zusaetzlich
+GDRIVE_TOKEN benoetigt (dasselbe Secret wie bei upload_to_drive.py).
+
 Ergebnis wird nach Auswertung(<Datum>).txt geschrieben (gleicher Dateiname
 wie bei claude_auswertung.py, damit upload_to_drive.py nichts anpassen
 muss - beide Skripte sind austauschbar, nicht gleichzeitig laufen lassen).
@@ -34,10 +42,16 @@ import os
 import sys
 import glob
 import time
+import json
 import datetime
 
 from google import genai
 from google.genai import types
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +66,10 @@ MAX_VERSUCHE = 5
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit zwischen Retries (steigt leicht an)
 
 ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
+
+# Gleicher Drive-Ordner wie in upload_to_drive.py - dort landen alle
+# Scanner-Ausgaben, von dort werden ggf. die Short-Dateien nachgeladen.
+DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -85,6 +103,76 @@ ABLEHNUNGS_MUSTER = [
 # HILFSFUNKTIONEN
 # ---------------------------------------------------------------------------
 
+def get_drive_service():
+    """Baut den Drive-Service auf (lesender Zugriff) - identische Auth-Logik
+    wie in upload_to_drive.py, damit Refresh-Fehler konsistent behandelt
+    werden. Gibt None zurueck (statt zu crashen), falls GDRIVE_TOKEN fehlt
+    oder ungueltig ist - das Nachladen der Short-Dateien ist optional, ein
+    fehlendes/kaputtes Token darf die eigentliche Gemini-Auswertung nicht
+    verhindern."""
+    token_str = os.environ.get("GDRIVE_TOKEN")
+    if not token_str:
+        print("INFO: GDRIVE_TOKEN nicht gesetzt - Short-Dateien werden nicht nachgeladen.")
+        return None
+
+    try:
+        token_data = json.loads(token_str)
+        creds = Credentials.from_authorized_user_info(token_data)
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                print("WARNUNG: GDRIVE_TOKEN ungueltig, kein Refresh moeglich - Short-Dateien werden uebersprungen.")
+                return None
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"WARNUNG: Drive-Verbindung fuer Short-Dateien fehlgeschlagen ({e}) - wird uebersprungen.")
+        return None
+
+
+def lade_short_dateien_von_drive():
+    """Sucht im Drive-Ordner nach den heutigen Short_Setups(...).csv und
+    Short_Briefing(...).txt (vom separaten, frueheren Short-Scan-Workflow
+    hochgeladen) und laedt sie lokal herunter, falls vorhanden. Gibt ein
+    Dict {name: lokaler_pfad} zurueck - leer, wenn nichts gefunden wurde
+    oder Drive nicht erreichbar ist (kein Fehler, einfach optional)."""
+    service = get_drive_service()
+    if service is None:
+        return {}
+
+    heute = datetime.date.today().isoformat()
+    gefunden = {}
+
+    for name_praefix, ziel_key, lokaler_name in [
+        ("Short_Setups", "Short_Setups(...).csv", f"Short_Setups({heute}).csv"),
+        ("Short_Briefing", "Short_Briefing(...).txt", f"Short_Briefing({heute}).txt"),
+    ]:
+        try:
+            query = (
+                f"name contains '{name_praefix}' and name contains '{heute}' "
+                f"and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+            )
+            ergebnis = service.files().list(q=query, fields="files(id, name)").execute()
+            treffer = ergebnis.get("files", [])
+            if not treffer:
+                print(f"INFO: Keine {name_praefix}-Datei fuer heute ({heute}) in Drive gefunden - Short-Kategorie entfaellt heute.")
+                continue
+
+            datei_id = treffer[0]["id"]
+            request = service.files().get_media(fileId=datei_id)
+            with io.FileIO(lokaler_name, "wb") as f:
+                downloader = MediaIoBaseDownload(f, request)
+                fertig = False
+                while not fertig:
+                    _, fertig = downloader.next_chunk()
+            print(f"INFO: {treffer[0]['name']} von Drive nachgeladen -> {lokaler_name}")
+            gefunden[ziel_key] = lokaler_name
+        except Exception as e:
+            print(f"WARNUNG: Nachladen von {name_praefix} fehlgeschlagen ({e}) - wird uebersprungen.")
+
+    return gefunden
+
+
 def ist_ablehnung(text):
     if not text or not text.strip():
         return True  # leere Antwort werten wir vorsichtshalber auch als Fehlschlag
@@ -109,6 +197,11 @@ def sammle_eingabedateien():
     if fehlend:
         print(f"FEHLER: Pflichtdateien nicht gefunden: {fehlend}")
         sys.exit(1)
+
+    # Short-Dateien (NEU) kommen nicht aus dem lokalen Verzeichnis, sondern
+    # werden bei Bedarf separat aus Drive nachgeladen (eigener, frueherer
+    # Workflow - siehe Modul-Docstring).
+    gefunden.update(lade_short_dateien_von_drive())
 
     print("Gefundene Eingabedateien:")
     for name, pfad in gefunden.items():
