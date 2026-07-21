@@ -1,0 +1,48 @@
+name: Short-Scan früh
+
+on:
+  # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
+  workflow_dispatch:
+  schedule:
+    # 01:53 UTC entspricht 03:53 Uhr MESZ (Sommerzeit) - nicht exakt 04:00
+    # Uhr (bewusst keine volle Stunde, siehe main.yml für dieselbe
+    # Begründung), aber nah genug am gewünschten ~4-Uhr-Fenster. Läuft
+    # deutlich vor main.yml (05:17 MESZ), damit gemini_auswertung.py dort
+    # die Short-Dateien schon fertig aus Drive nachladen kann.
+    - cron: '53 1 * * 1-5'
+
+jobs:
+  short-scan:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--no-deprecation"
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy
+
+      - name: Short-Scan ausführen
+        # Läuft NACH analyse.py-Import (siehe short_scanner.py) - braucht
+        # deshalb auch GROQ_API_KEY, obwohl short_scanner.py selbst kein
+        # Groq nutzt: der Import von analyse.py führt dessen kompletten
+        # Modul-Code aus, inkl. der Zeile "client = Groq(...)" (gleiche
+        # Erfahrung wie beim Trendwende-Scanner).
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python short_scanner.py
+
+      - name: Daten hochladen
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python upload_to_drive.py
