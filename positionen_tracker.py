@@ -26,7 +26,7 @@ ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
 SPALTEN = [
-    'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung',
+    'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
     'Aktueller_Kurs', 'Performance_Seit_Einstieg%', 'TP_Hinweis',
@@ -255,17 +255,41 @@ def ergaenze_neue_zeilen(df):
         if einstieg is None or stop is None:
             print(f"DEBUG: {ticker} -> Einstieg/Stop nicht als Zahl lesbar - Zeile wird uebersprungen, bis der Wert korrigiert ist.")
             continue
-        risiko = einstieg - stop
+
+        # Richtung (NEU, 21.07.2026): explizite Eintragung in der Spalte
+        # 'Richtung' hat Vorrang. Ist sie leer, wird automatisch erkannt -
+        # Stop UEBER dem Einstieg kann nur eine Short-Position sein (bei
+        # Long liegt der Stop immer darunter). So muss nicht extra "Short"
+        # eingetragen werden, es reicht, Stop oberhalb von Einstieg zu setzen.
+        richtung_manuell = str(row.get('Richtung', '')).strip().lower()
+        if richtung_manuell == 'short':
+            ist_short = True
+        elif richtung_manuell == 'long':
+            ist_short = False
+        else:
+            ist_short = stop > einstieg
+        df.at[idx, 'Richtung'] = 'Short' if ist_short else 'Long'
+
+        # Risiko und TP1/TP2-Schaetzung GESPIEGELT bei Short (Ziele
+        # UNTERHALB statt oberhalb des Einstiegs)
+        risiko = (stop - einstieg) if ist_short else (einstieg - stop)
 
         tp1_leer = pd.isna(row['TP1']) or str(row['TP1']).strip() in ("", "nan")
         tp2_leer = pd.isna(row['TP2']) or str(row['TP2']).strip() in ("", "nan")
         if risiko > 0:
-            if tp1_leer:
-                df.at[idx, 'TP1'] = round(einstieg + 2 * risiko, 2)
-            if tp2_leer:
-                df.at[idx, 'TP2'] = round(einstieg + 3 * risiko, 2)
+            if ist_short:
+                if tp1_leer:
+                    df.at[idx, 'TP1'] = round(einstieg - 2 * risiko, 2)
+                if tp2_leer:
+                    df.at[idx, 'TP2'] = round(einstieg - 3 * risiko, 2)
+            else:
+                if tp1_leer:
+                    df.at[idx, 'TP1'] = round(einstieg + 2 * risiko, 2)
+                if tp2_leer:
+                    df.at[idx, 'TP2'] = round(einstieg + 3 * risiko, 2)
         elif tp1_leer or tp2_leer:
-            print(f"DEBUG: {ticker} -> Stop liegt nicht unter dem Einstieg, TP1/TP2 können nicht geschätzt werden.")
+            richtung_label = "Short" if ist_short else "Long"
+            print(f"DEBUG: {ticker} ({richtung_label}) -> Stop liegt nicht auf der erwarteten Seite des Einstiegs, TP1/TP2 können nicht geschätzt werden.")
 
         df.at[idx, 'Markt'] = markt
         df.at[idx, 'Waehrung'] = waehrung
@@ -438,7 +462,16 @@ def aktualisiere_positionen(df):
     Erreichen gesetzt (kein taeglicher Neu-Vermerk, falls schon vorhanden).
     Für alle offenen Positionen wird zusätzlich der aktuelle Kurs und die
     Performance seit Einstieg als Info-Spalte ergänzt (für die Briefing-
-    Anzeige)."""
+    Anzeige).
+
+    RICHTUNG (NEU, 21.07.2026): Spalte 'Richtung' (Long/Short) steuert, ob
+    Performance/Stop/TP-Logik normal oder gespiegelt gilt. Bei Long (oder
+    leer/fehlend - Standardannahme, damit bestehende Zeilen ohne Richtung
+    weiterhin wie bisher funktionieren) gilt die klassische Logik: Kurs
+    steigt = Gewinn, Stop liegt UNTER dem Einstieg, TP-Erreichen bei
+    Kurs >= TP. Bei Short ist ALLES gespiegelt: Kurs faellt = Gewinn, Stop
+    liegt UEBER dem Einstieg (ausgeloest bei Kurs >= Stop), TP-Erreichen bei
+    Kurs <= TP."""
     heute = datetime.datetime.now().strftime("%d.%m.%Y")
 
     for idx, row in df.iterrows():
@@ -447,6 +480,9 @@ def aktualisiere_positionen(df):
 
         ticker = row['Ticker']
         markt = row['Markt']
+        richtung = str(row.get('Richtung', '')).strip().lower()
+        ist_short = richtung == 'short'  # alles andere (leer, 'long', Tippfehler) -> Long-Logik als sicherer Standard
+
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
         tp1 = sicheres_float(row['TP1'], ticker, 'TP1')
@@ -470,12 +506,20 @@ def aktualisiere_positionen(df):
         # (Punkte als Tausendertrennzeichen gelesen)
         aktueller_kurs = round(aktueller_kurs, 2)
 
-        performance = round(((aktueller_kurs - einstieg) / einstieg) * 100, 2) if einstieg > 0 else 0.0
+        # Performance GESPIEGELT bei Short: fallender Kurs = Gewinn
+        if ist_short:
+            performance = round(((einstieg - aktueller_kurs) / einstieg) * 100, 2) if einstieg > 0 else 0.0
+        else:
+            performance = round(((aktueller_kurs - einstieg) / einstieg) * 100, 2) if einstieg > 0 else 0.0
         df.at[idx, 'Aktueller_Kurs'] = aktueller_kurs
         df.at[idx, 'Performance_Seit_Einstieg%'] = performance
 
-        if aktueller_kurs <= stop:
-            print(f"DEBUG: {ticker} -> Stop erreicht/unterschritten (Kurs={aktueller_kurs}, Stop={stop}). Status -> Gestoppt.")
+        # Stop-Check GESPIEGELT bei Short: Stop liegt oberhalb, ausgeloest
+        # bei Kurs >= Stop (nicht <=)
+        stop_erreicht = (aktueller_kurs >= stop) if ist_short else (aktueller_kurs <= stop)
+        if stop_erreicht:
+            richtung_label = "Short" if ist_short else "Long"
+            print(f"DEBUG: {ticker} ({richtung_label}) -> Stop erreicht (Kurs={aktueller_kurs}, Stop={stop}). Status -> Gestoppt.")
             df.at[idx, 'Status'] = 'Gestoppt'
             df.at[idx, 'Ausstiegsdatum'] = heute
             df.at[idx, 'Ausstiegskurs'] = aktueller_kurs
@@ -483,14 +527,22 @@ def aktualisiere_positionen(df):
 
         # TP-Hinweis (NEU): nur setzen, wenn noch keiner vorhanden ist -
         # verhindert taegliches Ueberschreiben/erneutes "Aufploppen" im
-        # Briefing, sobald der Hinweis einmal gesetzt wurde.
+        # Briefing, sobald der Hinweis einmal gesetzt wurde. GESPIEGELT bei
+        # Short: TP liegt unterhalb, erreicht bei Kurs <= TP (nicht >=)
         bestehender_hinweis = str(row.get('TP_Hinweis', '')).strip()
         hinweis_schon_gesetzt = bestehender_hinweis not in ('', 'nan')
         if not hinweis_schon_gesetzt:
-            if tp2 is not None and aktueller_kurs >= tp2:
+            if ist_short:
+                tp2_erreicht = tp2 is not None and aktueller_kurs <= tp2
+                tp1_erreicht = tp1 is not None and aktueller_kurs <= tp1
+            else:
+                tp2_erreicht = tp2 is not None and aktueller_kurs >= tp2
+                tp1_erreicht = tp1 is not None and aktueller_kurs >= tp1
+
+            if tp2_erreicht:
                 print(f"DEBUG: {ticker} -> TP2 erreicht (Kurs={aktueller_kurs}, TP2={tp2}).")
                 df.at[idx, 'TP_Hinweis'] = f"TP2 erreicht am {heute}"
-            elif tp1 is not None and aktueller_kurs >= tp1:
+            elif tp1_erreicht:
                 print(f"DEBUG: {ticker} -> TP1 erreicht (Kurs={aktueller_kurs}, TP1={tp1}).")
                 df.at[idx, 'TP_Hinweis'] = f"TP1 erreicht am {heute}"
 
