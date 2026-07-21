@@ -887,11 +887,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             
             # Setup-Typ: ALLE zutreffenden Pfade auflisten, nicht nur den ersten
             # Treffer (sonst geht z.B. ein gleichzeitiger Kumo-Ausbruch neben
-            # einem Trendlinien-Ausbruch stillschweigend verloren). Das
-            # Candlestick-Pattern (Hammer/Engulfing) gehört NICHT hierher -
-            # es hat mit 'Pattern' bereits eine eigene Spalte im Ergebnis-
-            # Dict (Bugfix: wurde vorher fälschlich zusätzlich an Setup_Typ
-            # angehängt, z.B. "Pullback-Zone + Hammer").
+            # einem Trendlinien-Ausbruch stillschweigend verloren)
             pfade = []
             if trendlinien_ausbruch:
                 pfade.append("Trendlinien-Ausbruch")
@@ -902,7 +898,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             if in_ema_zone and is_higher_low:
                 pfade.append("Pullback-Zone")
             basis_label = " + ".join(pfade)
-            setup_typ = basis_label
+            setup_typ = basis_label  # NEU: nur die Basis-Pfade, Pattern (Hammer/Engulfing) bleibt in eigener Spalte, wird NICHT mehr an Setup_Typ angehaengt
             
         # 2. Das 'else' MUSS genau unter dem 'if' stehen (gleiche Einrückung)
         else:
@@ -1042,8 +1038,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         if (is_breakout or (in_zone and is_hl) or is_tl or is_kumo) and stoch < 90:
             
             # Setup-Typ: ALLE zutreffenden Pfade auflisten (konsistent zur
-            # Hauptprüfung weiter oben). Bugfix (siehe oben): Pattern gehört
-            # NICHT in Setup_Typ, sondern nur in die eigene Pattern-Spalte.
+            # Hauptprüfung weiter oben)
             pfade = []
             if is_tl:
                 pfade.append("Trendlinien-Ausbruch")
@@ -1054,7 +1049,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             if in_zone and is_hl:
                 pfade.append("Pullback-Zone")
             basis_label = " + ".join(pfade)
-            setup_typ = basis_label
+            setup_typ = basis_label  # NEU: nur die Basis-Pfade, Pattern (Hammer/Engulfing) bleibt in eigener Spalte, wird NICHT mehr an Setup_Typ angehaengt
             
             res = {
                 "Ticker": str(ticker), "Name": str(firma_name), "Sektor": str(sektor),
@@ -1223,8 +1218,6 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
         if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90:
-            # Bugfix (siehe US-Funktion): Pattern gehört NICHT in Setup_Typ,
-            # sondern nur in die eigene Pattern-Spalte.
             pfade = []
             if trendlinien_ausbruch:
                 pfade.append("Trendlinien-Ausbruch")
@@ -1235,7 +1228,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             if in_ema_zone and is_higher_low:
                 pfade.append("Pullback-Zone")
             basis_label = " + ".join(pfade)
-            setup_typ = basis_label
+            setup_typ = basis_label  # NEU: nur die Basis-Pfade, Pattern (Hammer/Engulfing) bleibt in eigener Spalte, wird NICHT mehr an Setup_Typ angehaengt
         else:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
             return None
