@@ -369,7 +369,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     # trotz Short-These) oder schwachem Volumen - AUSSER bärische Divergenz
     # validiert automatisch (gespiegelt zur Long-Logik in analyse.py).
     if divergenz_bearish:
-        status2, status_grund = "VALIDE", "Bärische RSI-Divergenz (Signal-Charakter)"
+        status2, status_grund = "VALIDE", "Alles ok"  # Divergenz steht separat in eigener Spalte (wie bei Setups.csv), nicht im Grund-Text
     elif data['MACD_Trend'].iloc[-1] == "Bullisch":
         status2, status_grund = "ACHTUNG", "Bullischer MACD-Trend (widerspricht Short-These)"
     elif data['Vol_Ratio'].iloc[-1] < 0.5:
