@@ -62,6 +62,8 @@ from analyse import (
     check_rsi_divergence,
     get_earnings_warnung,
     get_news_headlines,
+    get_ideal_delta,
+    berechne_fundamental_ampel,
 )
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -167,6 +169,11 @@ def _indikatoren_berechnen(data):
     data['Kijun'] = (data['High'].rolling(26).max() + data['Low'].rolling(26).min()) / 2
     data['SenkouA'] = ((data['Tenkan'] + data['Kijun']) / 2).shift(26)
     data['SenkouB'] = ((data['High'].rolling(52).max() + data['Low'].rolling(52).min()) / 2).shift(26)
+
+    # Stochastik (14,3) - fehlte bisher, ist aber Teil von Setups.csv
+    low_min = data['Low'].rolling(14).min()
+    high_max = data['High'].rolling(14).max()
+    data['Stoch_K'] = 100 * ((data['Close'] - low_min) / (high_max - low_min + 1e-9))
 
     return data
 
@@ -416,26 +423,30 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         analysten_kursziel = None
 
     return {
-        "Ticker": ticker, "Name": firma_name, "Markt": markt, "Sektor": sektor,
-        "Kurs": round(clean_num(entry), 2),
+        "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Markt": markt,
+        "Waehrung": "EUR" if markt == "EU" else "USD",
+        "Trend": "OK",  # Grundvoraussetzung (Kurs < WMA200) bereits weiter oben geprüft
+        "Setup_Typ": setup_typ, "Pattern": muster or "Kein",
         "Tech-Kursziel": round(clean_num(tech_kursziel), 2),
         "Analysten-Kursziel": round(clean_num(analysten_kursziel), 2) if analysten_kursziel else None,
-        "TP1": round(clean_num(tp1), 2), "CRV1": crv1, "Chance1_Perc": chance1_perc,
-        "TP2": round(clean_num(tp2), 2), "CRV2": crv2, "Chance2_Perc": chance2_perc,
-        "Stop": stop, "Risk_Perc": risk_perc,
+        "Upside_%_vs_Aktuell": chance1_perc,  # Pendant zu Long: % bis Tech-Kursziel
+        "Status2": status2, "Status_Grund": status_grund,
         "RSI": round(clean_num(data['RSI'].iloc[-1]), 2),
         "MACD_Trend": data['MACD_Trend'].iloc[-1],
+        "CRV1": crv1, "CRV2": crv2,
+        "Chance1_Perc": chance1_perc, "Chance2_Perc": chance2_perc,
+        "Kurs": round(clean_num(entry), 2),
+        "Einstieg": round(clean_num(entry), 2),
+        "Einstieg2(EMA 20)": round(clean_num(data['EMA20'].iloc[-1]), 2),
+        "Stop": stop, "Risk_Perc": risk_perc,
+        "TP1": round(clean_num(tp1), 2), "TP2": round(clean_num(tp2), 2),
+        "Stoch_K": round(clean_num(data['Stoch_K'].iloc[-1]), 2),
         "Vol_Ratio": round(clean_num(data['Vol_Ratio'].iloc[-1]), 2),
+        "Ideales_Delta": get_ideal_delta(chance1_perc),
         "RS_vs_Benchmark%": rel_staerke,
         "Abstand_52W_Tief%": abstand_52w_tief,
         "Divergenz": divergenz or "Keine",
-        "Status2": status2, "Status_Grund": status_grund,
-        "5T": sektor_momentum.get("5T") if sektor_momentum else None,
-        "12T": sektor_momentum.get("12T") if sektor_momentum else None,
-        "Rotation-Score": sektor_momentum.get("Rotation-Score") if sektor_momentum else None,
-        "Setup_Typ": setup_typ,
         "Setup_Qualitaet": feinstufe,
-        "Pattern": muster or "Kein",
         "Risikohinweis": (
             "Short-Setup - setzt auf fallende Kurse (Put-Optionsschein/KO). "
             "Theoretisch unbegrenztes Verlustrisiko bei Kursanstieg (anders als bei Long, "
@@ -536,12 +547,24 @@ def main():
 
     print(f"DEBUG: {len(ergebnisse)} Short-Kandidaten gefunden.")
 
+    # Fundamental-Ampel (NEU, wie bei Setups.csv): nur für die finale, kleine
+    # Kandidatenliste berechnen (API-schonend, siehe analyse.py-Vorbild)
+    for r in ergebnisse:
+        ampel, hinweis = berechne_fundamental_ampel(r["Ticker"])
+        r["Fundamental_Ampel"] = ampel
+        r["Fundamental_Hinweis"] = hinweis
+
+    # Spaltenreihenfolge EXAKT wie Setups.csv (siehe analyse.py), Ticker
+    # vorangestellt (fehlt dort, da index=False - hier bewusst behalten,
+    # nuetzlicher Bezug), Abstand_52W_Hoch% -> Abstand_52W_Tief% (gespiegelt),
+    # Setup_Qualitaet/Risikohinweis als Short-spezifische Zusatzfelder ans Ende.
     SPALTEN = [
-        "Ticker", "Name", "Markt", "Sektor", "Kurs", "Tech-Kursziel", "Analysten-Kursziel",
-        "TP1", "CRV1", "Chance1_Perc", "TP2", "CRV2", "Chance2_Perc", "Stop", "Risk_Perc",
-        "RSI", "MACD_Trend", "Vol_Ratio", "RS_vs_Benchmark%", "Abstand_52W_Tief%", "Divergenz",
-        "Status2", "Status_Grund", "5T", "12T", "Rotation-Score",
-        "Setup_Typ", "Setup_Qualitaet", "Pattern", "Risikohinweis",
+        "Ticker", "Name", "Sektor", "Markt", "Waehrung", "Trend", "Setup_Typ", "Pattern",
+        "Tech-Kursziel", "Analysten-Kursziel", "Upside_%_vs_Aktuell", "Status2", "Status_Grund",
+        "RSI", "MACD_Trend", "CRV1", "CRV2", "Chance1_Perc", "Chance2_Perc", "Kurs",
+        "Einstieg", "Einstieg2(EMA 20)", "Stop", "Risk_Perc", "TP1", "TP2", "Stoch_K",
+        "Vol_Ratio", "Ideales_Delta", "RS_vs_Benchmark%", "Abstand_52W_Tief%", "Divergenz",
+        "Fundamental_Ampel", "Fundamental_Hinweis", "Setup_Qualitaet", "Risikohinweis",
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)
     if not df.empty:
@@ -575,7 +598,11 @@ def main():
         f.write(f"- Heutiges Marktumfeld: US {'baerisch' if marktumfeld_baerisch_us else 'nicht baerisch'}, "
                 f"EU {'baerisch' if marktumfeld_baerisch_eu else 'nicht baerisch'} (Basis fuer den Modifikator oben).\n")
         f.write("- RISIKOHINWEIS: Short-Positionen haben ein theoretisch unbegrenztes Verlust-\n")
-        f.write("  risiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht).\n\n")
+        f.write("  risiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht).\n")
+        f.write("- Sektor-Momentum: NICHT in dieser Datei enthalten (genau wie bei Setups.csv) -\n")
+        f.write("  wird aus Performance.csv/Performance_EU.csv per Sektor-Name nachgeschlagen (dort\n")
+        f.write("  stehen ALLE Sektoren, nicht nur die Top-Sektoren, die Bottom-Sektoren sind also\n")
+        f.write("  ebenfalls vorhanden).\n\n")
 
         if df.empty:
             f.write("Keine Short-Kandidaten gefunden.\n")
@@ -590,7 +617,7 @@ def main():
                     f"TP2: {row['TP2']} (Chance: {row['Chance2_Perc']}%) | CRV2: {row['CRV2']}\n"
                     f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']} | Divergenz: {row['Divergenz']}\n"
                     f"RS vs. Benchmark: {row['RS_vs_Benchmark%']}% | Abstand 52W-Tief: {row['Abstand_52W_Tief%']}%\n"
-                    f"Sektor-Momentum: {row['5T']}% (5 Tage) / {row['12T']}% (12 Tage), Rotation-Score {row['Rotation-Score']}\n"
+                    f"Fundamental-Ampel: {row['Fundamental_Ampel']} ({row['Fundamental_Hinweis']})\n"
                     f"Setup-Typ: {row['Setup_Typ']} | Setup-Qualitaet: [{row['Setup_Qualitaet']}] | Muster: {row['Pattern']}\n"
                 )
                 earnings = get_earnings_warnung(row['Ticker'])
