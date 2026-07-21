@@ -545,7 +545,13 @@ def main():
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)
     if not df.empty:
-        df = df.sort_values(by=["CRV1"], ascending=False)
+        # Sortierung exakt wie in analyse.py (Setups.csv): erst Status2
+        # (VALIDE vor ACHTUNG), dann Chance1_Perc absteigend (Pendant zu
+        # Upside-Potenzial% beim Long-Scanner - der Prozentsatz bis zum
+        # Tech-Kursziel/TP1), dann CRV1 absteigend.
+        df['_status_order'] = df['Status2'].map({'VALIDE': 0, 'ACHTUNG': 1}).fillna(2)
+        df = df.sort_values(by=['_status_order', 'Chance1_Perc', 'CRV1'], ascending=[True, False, False])
+        df = df.drop(columns=['_status_order'])
 
     dateiname_csv = f"Short_Setups({today}).csv"
     df.to_csv(dateiname_csv, index=False, sep=';', encoding='utf-8-sig')
