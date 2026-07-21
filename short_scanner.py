@@ -64,6 +64,7 @@ from analyse import (
     get_news_headlines,
     get_ideal_delta,
     berechne_fundamental_ampel,
+    get_golden_cross_status,
 )
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -446,6 +447,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         "RS_vs_Benchmark%": rel_staerke,
         "Abstand_52W_Tief%": abstand_52w_tief,
         "Divergenz": divergenz or "Keine",
+        "Golden_Cross_Status": get_golden_cross_status(data),
         "Setup_Qualitaet": feinstufe,
         "Risikohinweis": (
             "Short-Setup - setzt auf fallende Kurse (Put-Optionsschein/KO). "
@@ -564,6 +566,7 @@ def main():
         "RSI", "MACD_Trend", "CRV1", "CRV2", "Chance1_Perc", "Chance2_Perc", "Kurs",
         "Einstieg", "Einstieg2(EMA 20)", "Stop", "Risk_Perc", "TP1", "TP2", "Stoch_K",
         "Vol_Ratio", "Ideales_Delta", "RS_vs_Benchmark%", "Abstand_52W_Tief%", "Divergenz",
+        "Golden_Cross_Status",
         "Fundamental_Ampel", "Fundamental_Hinweis", "Setup_Qualitaet", "Risikohinweis",
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)
@@ -618,6 +621,7 @@ def main():
                     f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']} | Divergenz: {row['Divergenz']}\n"
                     f"RS vs. Benchmark: {row['RS_vs_Benchmark%']}% | Abstand 52W-Tief: {row['Abstand_52W_Tief%']}%\n"
                     f"Fundamental-Ampel: {row['Fundamental_Ampel']} ({row['Fundamental_Hinweis']})\n"
+                    f"Golden-/Death-Cross (nur Info, keine Bewertung): {row['Golden_Cross_Status']}\n"
                     f"Setup-Typ: {row['Setup_Typ']} | Setup-Qualitaet: [{row['Setup_Qualitaet']}] | Muster: {row['Pattern']}\n"
                 )
                 earnings = get_earnings_warnung(row['Ticker'])
