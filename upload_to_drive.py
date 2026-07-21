@@ -75,6 +75,21 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
 def upload_file(filename, folder_id, service):
+    # NEU (21.07.2026): vor dem Hochladen alte gleichnamige Dateien im
+    # selben Ordner löschen - verhindert Dubletten wie "Short_Briefing(...)
+    # (1).txt", die bei mehrfachen Testläufen am selben Tag entstehen und
+    # in Google Sheets/Drive zu Verwirrung führen (falsche/alte Kopie
+    # geöffnet). Fehler beim Löschen (z. B. Datei existierte noch nicht)
+    # werden bewusst ignoriert, das ist kein Grund den Upload abzubrechen.
+    try:
+        query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
+        alte_dateien = service.files().list(q=query, fields="files(id)").execute().get("files", [])
+        for alt in alte_dateien:
+            service.files().delete(fileId=alt["id"]).execute()
+            print(f"  (alte Version von '{filename}' gelöscht, ID: {alt['id']})")
+    except Exception as e:
+        print(f"  WARNUNG: Konnte alte Version von '{filename}' nicht prüfen/löschen ({e}) - fahre trotzdem fort.")
+
     file_metadata = {'name': filename, 'parents': [folder_id]}
     media = MediaFileUpload(filename, resumable=True)
     file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
