@@ -151,6 +151,7 @@ Zusätzlich ggf. zwei weitere Datei-Anhänge: Short_Setups(...).csv und Short_Br
 - Strikte Trennung (Pflicht): Short-Setups gehören NIEMALS in den Abschnitt „Daten-Übersicht (Valide Setups)“ – eigener Abschnitt „SHORT-SETUPS (fallende Kurse)“, klar abgegrenzt.
 - Risikohinweis Pflicht: Short-Positionen haben ein theoretisch UNBEGRENZTES Verlustrisiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht). Übernimm den Risikohinweis aus der CSV wörtlich, für jeden Titel.
 - Bei diesen Titeln bedeutet „Stop“ einen Kurs OBERHALB des aktuellen Kurses (Ausstieg bei Kursanstieg), und „TP1/TP2“ liegen UNTERHALB des aktuellen Kurses (Ziel: fallender Kurs). Nicht mit den long-typischen Richtungen aus Abschnitt 2 verwechseln.
+- Sektor-Momentum (wie Abschnitt 2): Short_Setups.csv enthält KEIN eigenes Sektor-Momentum-Feld (genau wie bei den normalen Setups). Ermittle es genauso: Sektor-Spalte der Setup-Zeile nehmen, in Performance(...).csv/Performance_EU(...).csv die passende Zeile suchen (dort stehen ALLE Sektoren, auch die schwachen Bottom-Sektoren der Short-Kandidaten), 5T/12T/Rotation-Score von dort übernehmen.
 Festes Ausgabe-Format je Short-Titel: {{Ticker}} ({{Name}}) | Markt: {{Markt}} | Sektor: {{Sektor}} | Status: {{Status2}} ({{Status_Grund}})
 Kurs: {{Kurs, 2 Nachkommastellen}}{{Waehrungssymbol}}
 Technisches Kursziel: {{Tech-Kursziel, 2 Nachkommastellen}}{{Waehrungssymbol}} | Analysten-Kursziel: {{Analysten-Kursziel, 2 Nachkommastellen, oder "N/A"}}{{Waehrungssymbol}}
@@ -159,7 +160,8 @@ TP1 (unterhalb): {{TP1, 2 Nachkommastellen}}{{Waehrungssymbol}} (Chance: {{Chanc
 TP2 (unterhalb): {{TP2, 2 Nachkommastellen}}{{Waehrungssymbol}} (Chance: {{Chance2_Perc, 2 Nachkommastellen}}%) | CRV2: {{CRV2, 2 Nachkommastellen}}
 RSI: {{RSI, 2 Nachkommastellen}} | MACD-Trend: {{MACD_Trend}} | Vol-Ratio: {{Vol_Ratio, 2 Nachkommastellen}}x | Divergenz: {{Divergenz}}
 RS vs. Benchmark: {{RS_vs_Benchmark%, 2 Nachkommastellen}}% | Abstand 52W-Tief: {{Abstand_52W_Tief%, 2 Nachkommastellen}}%
-Sektor-Momentum: {{5T, 2 Nachkommastellen}}% (5 Tage) / {{12T, 2 Nachkommastellen}}% (12 Tage), Rotation-Score {{Rotation-Score}}
+Fundamental-Ampel: {{Fundamental_Ampel, wörtlich aus der CSV}} ({{Fundamental_Hinweis, wörtlich aus der CSV}})
+Sektor-Momentum: {{5T aus Performance.csv}}% (5 Tage) / {{12T aus Performance.csv}}% (12 Tage), Rotation-Score {{Rotation-Score aus Performance.csv}}
 Setup-Typ: {{Setup_Typ}} | Setup-Qualität: [{{Setup_Qualitaet}}] | Muster: {{Pattern}}
 Ereignis-Kontext: {{Earnings-Warnung falls vorhanden}} | {{ALLE News-Zeilen des Titels 1:1 – Pflicht sobald vorhanden}}
 ⚠ Risikohinweis: {{Risikohinweis, wörtlich aus der CSV übernehmen}}
