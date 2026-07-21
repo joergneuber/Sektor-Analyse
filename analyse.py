@@ -1730,7 +1730,8 @@ if __name__ == "__main__":
                     waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
                     aktueller_kurs = fmt_de(prow.get('Aktueller_Kurs', "n/a"))
                     performance = fmt_de(prow.get('Performance_Seit_Einstieg%', "n/a"))
-                    f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} <<<\n")
+                    richtung = str(prow.get('Richtung', '')).strip() or 'Long'
+                    f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} | Richtung: {richtung} <<<\n")
                     f.write(f"Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')})\n")
                     f.write(f"Aktuell: {aktueller_kurs}{waehrungszeichen} / Performance: {performance}%\n")
                     f.write(f"Stop: {fmt_de(prow['Stop'])}{waehrungszeichen} / TP1: {fmt_de(prow['TP1'])}{waehrungszeichen} / TP2: {fmt_de(prow['TP2'])}{waehrungszeichen}\n")
