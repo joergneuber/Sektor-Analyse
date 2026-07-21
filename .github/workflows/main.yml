@@ -69,8 +69,12 @@ jobs:
         # Auswertung(<Datum>).txt. Läuft NACH beiden Scannern, damit alle
         # Dateien (inkl. Trendwende) bereits vorliegen. Bewusst die
         # kostenlose Gemini-API statt der kostenpflichtigen Claude-API.
+        # GDRIVE_TOKEN (NEU): zum optionalen Nachladen der Short_Setups/
+        # Short_Briefing-Dateien aus Drive (separater, früherer Short-Scan-
+        # Workflow) - fehlt das Secret, wird dieser Teil einfach übersprungen.
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
 
       - name: Daten hochladen
