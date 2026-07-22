@@ -298,6 +298,35 @@ def get_news_headlines(ticker, max_n=3):
         return []
 
 
+def get_zins_warner():
+    """NEU (22.07.2026): reiner Kontext-Indikator (wie VIX/Lithium-Proxy),
+    KEINE Setup-Quelle, KEINE Abwertungsgrundlage. ^TYX = CBOE 30-Year
+    Treasury Yield Index (Rendite 30-jaehriger US-Staatsanleihen in Prozent,
+    z.B. 4.85 = 4,85%). Steigende Langfristrenditen gelten klassisch als
+    Belastung fuer Aktienbewertungen (v.a. Wachstums-/Tech-Werte) - anhaltend
+    hohe/steigende Werte (insbesondere neue Mehrjahres-Hochs) sind ein
+    Warnsignal fuer den Gesamtmarkt, sinkende Renditen eher entlastend.
+    2 Nachkommastellen (nicht .0f wie bei Index-Benchmarks), da Renditen im
+    niedrigen einstelligen Prozentbereich liegen - .0f wuerde die
+    Aussagekraft komplett zerstoeren."""
+    try:
+        hist = yf.Ticker("^TYX").history(period="300d")
+        hist = hist.dropna(subset=['Close'])
+        if hist.empty or len(hist) < 200:
+            return "Zins-Warner (30J-US-Rendite): Daten unvollständig"
+
+        close = hist['Close']
+        last_close = close.iloc[-1]
+        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+
+        return (f"Zins-Warner (30J-US-Staatsanleihenrendite, ^TYX): {last_close:.2f}% | "
+                f"EMA20: {e20:.2f}% | EMA50: {e50:.2f}%")
+    except Exception as e:
+        print(f"DEBUG: Zins-Warner nicht verfügbar ({e}).")
+        return "Zins-Warner (30J-US-Rendite): Daten unvollständig"
+
+
 def get_index_benchmark_yf(ticker, label):
     """Generische Benchmark-Funktion für Indizes, die nicht über Alpaca verfügbar
     sind (z.B. DAX, EuroStoxx50) - lädt Kursdaten via yfinance, identisches
@@ -1426,6 +1455,9 @@ if __name__ == "__main__":
     # Indikator. Hoher VIX (>20) = nervoeser Markt, Setups riskanter. Nur
     # Kontext fuer die Risikoeinschaetzung, keine Setup-/Abwertungsquelle.
     vix_text = get_index_benchmark_yf("^VIX", "VIX (Volatilitaet)")
+    # Zins-Warner (NEU): 30J-US-Staatsanleihenrendite als weiterer reiner
+    # Kontext-Indikator, analog zu VIX/Lithium-Proxy - keine Setup-Quelle.
+    zins_text = get_zins_warner()
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -1663,7 +1695,7 @@ if __name__ == "__main__":
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
