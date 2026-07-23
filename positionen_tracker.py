@@ -335,14 +335,18 @@ def stelle_anleitung_sicher(df):
     # in bestehenden Dateien ankommen. Verteilt auf drei Felder, damit die
     # Spalten im Sheet nicht zu breit werden:
     anleitung_name = (
-        "NEUE POSITION (Pflichtfelder): 1. Ticker  2. Einstieg  3. Stop - alle anderen Felder "
-        "LEER lassen, besonders Status! Leerer Status = Signal fuer die Automatik, die dann "
-        "Name, Markt, Waehrung, Einstiegsdatum und Status=Offen selbst ergaenzt. "
+        "NEUE POSITION - Pflichtfelder: 1. Ticker  2. Einstieg  3. Stop. "
+        "EMPFOHLEN zusaetzlich auszufuellen: TP1 und TP2 aus der echten technischen "
+        "Zielberechnung (z.B. direkt aus Setups.csv/Short_Setups.csv/Briefing.txt kopieren) "
+        "- werden nie automatisch ueberschrieben, sobald sie einmal eingetragen sind. Bleiben "
+        "TP1/TP2 leer, greift ersatzweise eine grobe automatische 2:1/3:1-Chance/Risiko-Schaetzung "
+        "(kein echtes Kursziel, nur ein Platzhalter). Alle UEBRIGEN Felder LEER lassen, besonders "
+        "Status! Leerer Status = Signal fuer die Automatik, die dann Name, Markt, Waehrung, "
+        "Einstiegsdatum und Status=Offen selbst ergaenzt. "
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
         ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
-        "TP1/TP2: leer = automatische 2:1/3:1-Schaetzung; eigene Werte eintragen ist besser "
-        "(z.B. aus Setups.csv) und wird nie ueberschrieben. Sektor: optional, rein informativ."
+        "Sektor: optional, rein informativ."
     )
     anleitung_sektor = (
         "OPTIONSSCHEIN (zusaetzlich zu Ticker/Einstieg/Stop): Produkt_Typ = 'Optionsschein', "
