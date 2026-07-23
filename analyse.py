@@ -774,11 +774,11 @@ def berechne_fundamental_ampel(ticker):
         if kgv is None or kgv <= 0:
             return "N/A", "Kein KGV verfügbar (z. B. Verlust-Unternehmen) - keine Bewertungsaussage möglich."
         if kgv < 15:
-            return "🟢 Günstig", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer."
+            return "GUENSTIG", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer."
         elif kgv > 30:
-            return "🔴 Teuer", f"KGV {round(kgv, 1)} - oberhalb der groben 30er-Hausnummer."
+            return "TEUER", f"KGV {round(kgv, 1)} - oberhalb der groben 30er-Hausnummer."
         else:
-            return "🟡 Neutral", f"KGV {round(kgv, 1)} - im üblichen Rahmen."
+            return "NEUTRAL", f"KGV {round(kgv, 1)} - im üblichen Rahmen."
     except Exception as e:
         print(f"DEBUG: Fundamental-Ampel für {ticker} nicht verfügbar ({e}).")
         return "N/A", "Fundamentaldaten aktuell nicht abrufbar."
