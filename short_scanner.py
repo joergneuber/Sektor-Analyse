@@ -351,6 +351,14 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     divergenz = check_rsi_divergence(data)  # "Bullisch"/"Bärisch"/None
     divergenz_bearish = (divergenz == "Bärisch")
 
+    # NEU (23.07.2026): Bullischer MACD widerspricht der Short-These direkt
+    # und wird nur durch eine bärische Divergenz aufgehoben (die validiert
+    # staerker, als der MACD widerspricht) - vorher wurde das Setup nur mit
+    # Status2=ACHTUNG markiert und trotzdem ausgegeben, jetzt wird es an
+    # dieser Stelle komplett verworfen.
+    if data['MACD_Trend'].iloc[-1] == "Bullisch" and not divergenz_bearish:
+        return None
+
     stufen = ["B-", "B", "B+", "A-", "A", "A+"]
     idx = stufen.index("B" if basis == "B" else "A")
     verschiebung = 0
@@ -365,13 +373,13 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     idx = max(0, min(len(stufen) - 1, idx + verschiebung))
     feinstufe = stufen[idx]
 
-    # Status2/Status_Grund (NEU): ACHTUNG bei widersprüchlichem MACD (Bullisch
-    # trotz Short-These) oder schwachem Volumen - AUSSER bärische Divergenz
-    # validiert automatisch (gespiegelt zur Long-Logik in analyse.py).
+    # Status2/Status_Grund (GEÄNDERT 23.07.2026): der bullische-MACD-Fall
+    # wird jetzt schon weiter oben komplett verworfen (return None), taucht
+    # hier also nicht mehr auf - übrig bleibt nur noch schwaches Volumen als
+    # ACHTUNG-Grund, AUSSER bärische Divergenz validiert automatisch
+    # (gespiegelt zur Long-Logik in analyse.py).
     if divergenz_bearish:
         status2, status_grund = "VALIDE", "Alles ok"  # Divergenz steht separat in eigener Spalte (wie bei Setups.csv), nicht im Grund-Text
-    elif data['MACD_Trend'].iloc[-1] == "Bullisch":
-        status2, status_grund = "ACHTUNG", "Bullischer MACD-Trend (widerspricht Short-These)"
     elif data['Vol_Ratio'].iloc[-1] < 0.5:
         status2, status_grund = "ACHTUNG", "Schwaches Volumen"
     else:
