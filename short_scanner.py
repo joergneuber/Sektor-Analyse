@@ -560,7 +560,7 @@ def main():
     # Fundamental-Ampel (NEU, wie bei Setups.csv): nur für die finale, kleine
     # Kandidatenliste berechnen (API-schonend, siehe analyse.py-Vorbild)
     for r in ergebnisse:
-        ampel, hinweis = berechne_fundamental_ampel(r["Ticker"])
+        ampel, hinweis = berechne_fundamental_ampel(r["Ticker"], r["Sektor"], r["Markt"])
         r["Fundamental_Ampel"] = ampel
         r["Fundamental_Hinweis"] = hinweis
 
