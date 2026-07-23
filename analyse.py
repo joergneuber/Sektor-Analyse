@@ -114,7 +114,7 @@ dax_aktien = {
     "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE", "TLX.DE", "CS.PA", "G.MI"],
     "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS"],
     "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS"],
-    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AI.PA", "PIA.MI"],
+    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AL.PA", "PIA.MI"],
     "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA"],
     "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI"],
 }
@@ -749,39 +749,98 @@ def get_golden_cross_status(data, tage=10):
         if pd.isna(ema50.iloc[idx_prev]) or pd.isna(ema200.iloc[idx_prev]):
             continue
         if ema50.iloc[idx] > ema200.iloc[idx] and ema50.iloc[idx_prev] <= ema200.iloc[idx_prev]:
-            return f"🟢 Golden Cross vor {i} Handelstag(en) (EMA50 kreuzt EMA200 nach oben)"
+            return f"GOLDEN CROSS vor {i} Handelstag(en) (EMA50 kreuzt EMA200 nach oben)"
         if ema50.iloc[idx] < ema200.iloc[idx] and ema50.iloc[idx_prev] >= ema200.iloc[idx_prev]:
-            return f"🔴 Death Cross vor {i} Handelstag(en) (EMA50 kreuzt EMA200 nach unten)"
+            return f"DEATH CROSS vor {i} Handelstag(en) (EMA50 kreuzt EMA200 nach unten)"
     if ema50.iloc[-1] > ema200.iloc[-1]:
         return "Kein frischer Cross (EMA50 > EMA200, langfristig bullische Struktur)"
     return "Kein frischer Cross (EMA50 < EMA200, langfristig bärische Struktur)"
 
 
-def berechne_fundamental_ampel(ticker):
-    """NEU (21.07.2026): leichte, separate Fundamental-Einordnung für die
-    finalen validierten Setups - bewusst NUR ein grober Kommentar/Ampel
-    ("günstig"/"neutral"/"teuer"), KEIN Punktemodifikator in der Setup-
-    Qualitäts-Matrix (Entscheidung: technisches Setup und fundamentale
-    Bewertung bleiben getrennt bewertbar, nicht vermischt).
+_sektor_kgv_cache = {}  # NEU (23.07.2026): Cache pro Skriptlauf (Key: (Markt, Sektor)) -
+                         # verhindert, dass derselbe Sektor mehrfach abgefragt wird, nur
+                         # weil mehrere validierte Setups im selben Sektor liegen. Wird bei
+                         # jedem Skriptstart neu geleert (kein persistenter Cache).
+
+_sektoren_map_rev = {name: etf for etf, name in sektoren_map.items()}  # Sektor-Name -> ETF-Ticker
+
+
+def _sektor_median_kgv(sektor, markt, eigener_ticker):
+    """NEU (23.07.2026): ermittelt den Median-KGV der Sektor-Peers (aus den
+    bereits vorhandenen sektoren_aktien/dax_aktien-Listen - KEINE zusaetzliche
+    Ticker-Recherche noetig) fuer einen fairen, sektor-relativen Vergleich statt
+    einer pauschalen 15/30-Grenze (Halbleiter und Minen/Metalle haben strukturell
+    unterschiedliche KGV-Niveaus). API-schonend durch zwei Massnahmen: (1) Cache
+    pro Sektor - wird ein Sektor schon im selben Lauf abgefragt, kommt das
+    Ergebnis aus dem Cache, kein erneuter Fetch; (2) einzelne fehlgeschlagene
+    Peer-Abfragen brechen die Berechnung nicht ab, sie werden einfach
+    uebersprungen. Gibt None zurueck, wenn kein Sektor bekannt ist oder zu wenige
+    Peers auswertbar sind (< 3) - Aufrufer faellt dann auf die alte feste
+    15/30-Grenze zurueck (Sicherheitsnetz, kein Abbruch)."""
+    cache_key = (markt, sektor)
+    if cache_key in _sektor_kgv_cache:
+        return _sektor_kgv_cache[cache_key]
+
+    if markt == "EU":
+        peers = dax_aktien.get(sektor, [])
+    else:
+        peers = sektoren_aktien.get(_sektoren_map_rev.get(sektor), [])
+
+    kgv_werte = []
+    for peer in peers:
+        if peer == eigener_ticker:
+            continue  # der zu bewertende Titel selbst zaehlt nicht als eigener Peer
+        try:
+            peer_kgv = yf.Ticker(peer).info.get("trailingPE")
+            if peer_kgv and peer_kgv > 0:
+                kgv_werte.append(peer_kgv)
+        except Exception:
+            continue  # einzelner Peer-Fehler soll den Sektor-Median nicht verhindern
+
+    median = round(pd.Series(kgv_werte).median(), 1) if len(kgv_werte) >= 3 else None
+    _sektor_kgv_cache[cache_key] = median
+    return median
+
+
+def berechne_fundamental_ampel(ticker, sektor=None, markt=None):
+    """GEAENDERT (23.07.2026): KGV wird jetzt relativ zum Sektor-Median bewertet
+    statt an einer pauschalen 15/30-Grenze - Halbleiter/Software (strukturell
+    hohe KGVs) und Minen/Banken (strukturell niedrige KGVs) waren bei der alten
+    festen Grenze nicht fair vergleichbar (z.B. Broadcom vs. Freeport-McMoRan).
+    GUENSTIG: KGV < 80% des Sektor-Median | TEUER: KGV > 130% des Sektor-Median |
+    dazwischen NEUTRAL. Ohne sektor/markt-Angabe (oder falls kein Sektor-Median
+    ermittelbar, siehe _sektor_median_kgv) faellt die Funktion auf die alte feste
+    15/30-Grenze zurueck - reines Sicherheitsnetz, kein Funktionsverlust.
     Wird nur für die bereits gefilterte, kleine Setup-Liste aufgerufen
     (nicht für das ganze ~370er-Universum) - hält die zusätzliche API-Last
-    gering. Nutzt trailingPE als einfache Hausnummer (keine echte
-    historische KGV-Reihe wie beim Langfrist-Scanner - dafür siehe
-    langfrist_scanner.py, das ist bewusst ausführlicher)."""
+    gering."""
     try:
         info = yf.Ticker(ticker).info
         kgv = info.get("trailingPE")
         if kgv is None or kgv <= 0:
             return "N/A", "Kein KGV verfügbar (z. B. Verlust-Unternehmen) - keine Bewertungsaussage möglich."
-        if kgv < 15:
-            return "GUENSTIG", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer."
-        elif kgv > 30:
-            return "TEUER", f"KGV {round(kgv, 1)} - oberhalb der groben 30er-Hausnummer."
+
+        sektor_median = _sektor_median_kgv(sektor, markt, ticker) if sektor and markt else None
+
+        if sektor_median is None:
+            if kgv < 15:
+                return "GUENSTIG", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer (kein Sektor-Vergleich möglich)."
+            elif kgv > 30:
+                return "TEUER", f"KGV {round(kgv, 1)} - oberhalb der groben 30er-Hausnummer (kein Sektor-Vergleich möglich)."
+            else:
+                return "NEUTRAL", f"KGV {round(kgv, 1)} - im üblichen Rahmen (kein Sektor-Vergleich möglich)."
+
+        rel = kgv / sektor_median
+        if rel < 0.8:
+            return "GUENSTIG", f"KGV {round(kgv, 1)} vs. Sektor-Median {sektor_median} ({sektor}) - {round((1 - rel) * 100)}% günstiger als der Sektor."
+        elif rel > 1.3:
+            return "TEUER", f"KGV {round(kgv, 1)} vs. Sektor-Median {sektor_median} ({sektor}) - {round((rel - 1) * 100)}% teurer als der Sektor."
         else:
-            return "NEUTRAL", f"KGV {round(kgv, 1)} - im üblichen Rahmen."
+            return "NEUTRAL", f"KGV {round(kgv, 1)} vs. Sektor-Median {sektor_median} ({sektor}) - im üblichen Rahmen für den Sektor."
     except Exception as e:
         print(f"DEBUG: Fundamental-Ampel für {ticker} nicht verfügbar ({e}).")
         return "N/A", "Fundamentaldaten aktuell nicht abrufbar."
+
 
 
 def get_ideal_delta(upside_prozent):
@@ -1648,7 +1707,10 @@ if __name__ == "__main__":
     # gefilterte Setup-Liste (klein, API-schonend) - separater Kommentar,
     # kein Modifikator in der Setup-Qualitäts-Matrix.
     if not df_clean.empty:
-        ampel_ergebnisse = [berechne_fundamental_ampel(t) for t in df_clean.index]
+        ampel_ergebnisse = [
+            berechne_fundamental_ampel(t, df_clean.loc[t, 'Sektor'], df_clean.loc[t, 'Markt'])
+            for t in df_clean.index
+        ]
         df_clean['Fundamental_Ampel'] = [a for a, _ in ampel_ergebnisse]
         df_clean['Fundamental_Hinweis'] = [h for _, h in ampel_ergebnisse]
     else:
