@@ -70,7 +70,10 @@ from alpaca.data.timeframe import TimeFrame
 # Wie nah am 52-Wochen-Tief ein Kandidat maximal noch sein darf, um als
 # "Trendwende-Kandidat" zu gelten (ausgewogen: nicht nur exakte Tiefs, aber
 # auch keine Werte, die schon weit vom Tief weggelaufen sind).
-ABSTAND_52W_TIEF_MAX = 10.0  # Prozent oberhalb des 52-Wochen-Tiefs
+ABSTAND_52W_TIEF_MAX = 20.0  # Prozent oberhalb des 52-Wochen-Tiefs (GEÄNDERT 23.07.2026, vorher 10.0 - siehe WMA200_LOOKBACK_TAGE-Kommentar unten für die Begründung)
+WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl Handelstage
+                            # unter der WMA200 gelegen haben, nicht zwingend heute noch -
+                            # siehe Begründung bei _pruefe_trendwende
 
 # Zeitfenster fuer "frisches" Signal (C - beide Bestaetigungen muessen
 # innerhalb dieser letzten N Handelstage aufgetreten sein)
@@ -288,10 +291,22 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     data = _indikatoren_berechnen(data)
     entry = data['Close'].iloc[-1]
 
-    # A/B - Grundvoraussetzung: Kurs UNTER WMA200 (gefallen, nicht im
-    # Aufwaertstrend - Gegenteil des Hauptscanner-Filters) UND nahe am
-    # 52-Wochen-Tief.
-    if pd.isna(data['WMA200'].iloc[-1]) or entry >= data['WMA200'].iloc[-1]:
+    # A/B - Grundvoraussetzung (GELOCKERT 23.07.2026): Kurs muss innerhalb
+    # der letzten WMA200_LOOKBACK_TAGE Handelstage UNTER der WMA200 gelegen
+    # haben (nicht zwingend heute noch). Grund: ein vollstaendiger Kumo-
+    # Ausbruch (siehe unten) ist ein spaetes, traeges Signal - bis der Kurs
+    # wirklich ueber die komplette Wolke steigt, hat er sich in der Praxis
+    # meist schon so weit erholt, dass er auch schon wieder ueber der
+    # WMA200 liegt. Die alte "ist JETZT noch drunter"-Bedingung stand damit
+    # fast im Widerspruch zum Kumo-Ausbruch-Kriterium und war der Grund,
+    # warum praktisch nie beide gleichzeitig erfuellt waren.
+    if pd.isna(data['WMA200'].iloc[-1]):
+        return None
+    war_unter_wma200 = any(
+        pd.notna(data['WMA200'].iloc[-1 - i]) and data['Close'].iloc[-1 - i] < data['WMA200'].iloc[-1 - i]
+        for i in range(0, WMA200_LOOKBACK_TAGE) if (1 + i) <= len(data)
+    )
+    if not war_unter_wma200:
         return None
 
     tief_52w = data['Low'].min()
