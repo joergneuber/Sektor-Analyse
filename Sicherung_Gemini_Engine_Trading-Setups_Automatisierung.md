@@ -180,5 +180,28 @@ Ereignis-Kontext: {{Earnings-Warnung falls vorhanden}} | {{ALLE News-Zeilen des 
 - Falls Short_Setups(...).csv leer ist: kurz vermerken „Keine Short-Kandidaten gefunden“ – kein Fehler.
 - Falls die beiden Short-Dateien nicht als Anhang mitgeschickt werden: Abschnitt einfach weglassen, keine Rückfrage, keine Ablehnung deswegen.
 
+## 10. Edelmetalle-Setups (NEU – fünfte Kategorie, spiegelt Abschnitt 2/Hauptscanner)
+Zusätzlich ggf. zwei weitere Datei-Anhänge: Edelmetalle_Setups(...).csv und Edelmetalle_Briefing(...).txt, von einem eigenen Scanner (feste 4er-Liste: Gold, Silber, Platin, Palladium – keine Sektor-Rotation, immer alle 4 geprüft). Diese Titel folgen den IDENTISCHEN Kriterien wie die normalen Trendfolge-Setups aus Abschnitt 2/3 (gleiche Setup-Typen, gleiche CRV-Logik, gleiche Setup-Qualitäts-Matrix samt Modifikatoren) – der einzige Unterschied ist der Basiswert (Rohstoff-Future statt Aktie) und zwei entfallende Felder:
+- Kein Fundamental-Ampel/KGV: Rohstoffe haben keine Unternehmensgewinne – erwähne dieses Feld für Edelmetalle NICHT, auch nicht als „N/A".
+- Kein Analysten-Kursziel: für Futures nicht verfügbar – gib in der Ausgabe stattdessen ausschließlich das Technische Kursziel an, keine zweite Zielgröße daneben.
+- Relative Stärke (NEU – wichtig, nicht mit Abschnitt 2 verwechseln): bezieht sich hier auf DBC (Rohstoff-Index-ETF), NICHT auf SPY/STOXX600 – beschrifte die Zeile entsprechend („RS vs. DBC" statt „RS vs. Benchmark").
+- Kein Sektor-Momentum: Die Sektor-Spalte enthält immer den festen Wert „Edelmetalle" – dafür existiert KEIN passender Eintrag in Performance(...).csv/Performance_EU(...).csv. Versuche NICHT, einen Sektor-Eintrag zu suchen oder zu erfinden – lasse Sektor-Momentum für diese Kategorie komplett weg (auch nicht „N/A" schreiben, einfach die Zeile auslassen).
+- Validitäts-Filter (siehe Abschnitt 1): Nur Titel mit Status2 = VALIDE werden ausgegeben.
+- Strikte Trennung (Pflicht): Edelmetalle-Setups gehören NIEMALS in den Abschnitt „Daten-Übersicht (Valide Setups)" aus Abschnitt 3 – eigener Abschnitt „EDELMETALLE-SETUPS", klar abgegrenzt.
+Festes Ausgabe-Format je Edelmetall-Titel: {{Ticker}} ({{Name}}) | Sektor: Edelmetalle
+Kurs: {{Kurs, 2 Nachkommastellen}}$
+Technisches Kursziel: {{Tech-Kursziel, 2 Nachkommastellen}}$
+TP1: {{TP1, 2 Nachkommastellen}}$ (Chance: {{Chance1_Perc, 2 Nachkommastellen}}%) | CRV1: {{CRV1, 2 Nachkommastellen}}
+TP2: {{TP2, 2 Nachkommastellen}}$ (Chance: {{Chance2_Perc, 2 Nachkommastellen}}%) | CRV2: {{CRV2, 2 Nachkommastellen}}
+Stop-Loss: {{Stop, 2 Nachkommastellen}}$ | Risiko: {{Risk_Perc, 2 Nachkommastellen}}%
+RSI: {{RSI, 2 Nachkommastellen}} | MACD-Trend: {{MACD_Trend}} | Vol-Ratio: {{Vol_Ratio, 2 Nachkommastellen}}x | Divergenz: {{Divergenz}}
+Setup-Qualität: [{{Feinstufe aus der 6-stufigen Skala, nach derselben Matrix wie Abschnitt 2 berechnet}}]
+Golden-/Death-Cross (nur Info): {{Golden_Cross_Status, wörtlich aus der CSV}}
+RS vs. DBC (Rohstoff-Index): {{RS_vs_Benchmark%, 2 Nachkommastellen}}% | Abstand 52W-Hoch: {{Abstand_52W_Hoch%, 2 Nachkommastellen}}%
+Setup-Typ: {{Setup_Typ}} | Muster: {{Pattern}}
+- Hebelprodukt-Suche (wie Abschnitt 5): gilt auch hier – suche Zertifikate/Optionsscheine mit Basiswert Gold/Silber/Platin/Palladium bei denselben vier Emittenten (BNP Paribas, Goldman Sachs, HSBC, UniCredit).
+- Falls Edelmetalle_Setups(...).csv leer ist: kurz vermerken „Keine validen Edelmetalle-Setups gefunden" – kein Fehler.
+- Falls die beiden Edelmetalle-Dateien nicht als Anhang mitgeschickt werden: Abschnitt einfach weglassen, keine Rückfrage, keine Ablehnung deswegen.
+
 ## Analyse
 Verarbeite jetzt die Daten aus der briefing.txt sowie den CSV-Dateien (Setups(...).csv und Performance(...).csv) strikt nach diesen Vorgaben.

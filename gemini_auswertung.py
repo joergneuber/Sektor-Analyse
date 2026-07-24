@@ -87,6 +87,8 @@ DATEIMUSTER = {
     # muessen nicht extra von Drive geholt werden (siehe sammle_eingabedateien).
     "Short_Setups(...).csv": ["Short_Setups(*).csv"],
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
+    "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
+    "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
 }
 # Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
 # Positionen und die beiden Trendwende-Dateien sind optional (siehe
