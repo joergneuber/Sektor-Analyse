@@ -54,6 +54,7 @@ from analyse import (
     sektoren_aktien,
     dax_aktien,
     check_kumo_breakout,
+    check_kijun_breakout,
     check_bullish_confirmation,
     get_fib_levels,
     clean_num,
@@ -315,12 +316,17 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
         return None
 
     # C - beide Bestaetigungen Pflicht, beide muessen frisch sein
+    # GEAENDERT (24.07.2026): Kijun-sen-Ausbruch statt vollem Kumo-Ausbruch -
+    # siehe check_kijun_breakout in analyse.py fuer die Begruendung (voller
+    # Kumo-Ausbruch war strukturell fast nie gleichzeitig mit "nah am
+    # 52W-Tief" erfuellbar, siehe Log-Auswertung 24.07.2026: 0 von 106
+    # Kandidaten ueber mehrere Tage).
     divergenz_ok = check_rsi_divergence_recent(data)
-    kumo_ausbruch, kumo_level = check_kumo_breakout(data)
+    kijun_ausbruch, kijun_level = check_kijun_breakout(data)
 
-    if not (divergenz_ok and kumo_ausbruch):
+    if not (divergenz_ok and kijun_ausbruch):
         print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Divergenz: {divergenz_ok} | "
-              f"Kumo-Ausbruch: {kumo_ausbruch} | Abstand 52W-Tief: {abstand_52w_tief}%")
+              f"Kijun-Ausbruch: {kijun_ausbruch} | Abstand 52W-Tief: {abstand_52w_tief}%")
         return None
 
     # Qualitaets-Bonus (NEU, optional - kein Ausschlusskriterium): zwei
