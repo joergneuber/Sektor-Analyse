@@ -77,9 +77,9 @@ sektoren_aktien = {
     "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR", "PWR", "MLM", "URI"],
     "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA", "DKS", "BURL", "FIVE"],
     "ITA": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HWM", "TDG", "HEI", "AXON", "TXT", "HII"],
-    "XME": ["FCX", "NUE", "STLD", "CLF", "AA", "X", "RS", "CMC", "ATI", "MP", "HL", "CRS"],
+    "XME": ["FCX", "NUE", "STLD", "CLF", "AA", "RS", "CMC", "ATI", "MP", "HL", "CRS"],
     "GDX": ["NEM", "GOLD", "AEM", "WPM", "FNV", "GFI", "KGC", "AU", "RGLD", "PAAS", "HMY", "EGO"],
-    "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "CHX", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
+    "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
     "TAN": ["FSLR", "ENPH", "SEDG", "RUN", "NXT", "ARRY", "SHLS", "CSIQ", "JKS", "DQ", "MAXN", "FLNC"]
 }
 
@@ -114,7 +114,7 @@ dax_aktien = {
     "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE", "TLX.DE", "CS.PA", "G.MI"],
     "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS"],
     "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS"],
-    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AL.PA", "PIA.MI"],
+    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AI.PA", "PIA.MI"],
     "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA"],
     "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI"],
 }
