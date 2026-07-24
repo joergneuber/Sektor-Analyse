@@ -81,6 +81,12 @@ DATEIMUSTER = {
     "Offene_Positionen.csv": ["Offene_Positionen.csv", "Offene_Positionen(*).csv"],
     "Trendwende_Setups(...).csv": ["Trendwende_Setups(*).csv"],
     "Trendwende_Briefing(...).txt": ["Trendwende_Briefing(*).txt"],
+    # NEU (24.07.2026): zuerst LOKAL suchen - falls short_scan_catchup.py in
+    # main.yml den Short-Scan gerade selbst nachgeholt hat (weil short_check.yml
+    # heute nicht gefeuert hat), liegen diese Dateien schon lokal vor und
+    # muessen nicht extra von Drive geholt werden (siehe sammle_eingabedateien).
+    "Short_Setups(...).csv": ["Short_Setups(*).csv"],
+    "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
 }
 # Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
 # Positionen und die beiden Trendwende-Dateien sind optional (siehe
@@ -198,10 +204,16 @@ def sammle_eingabedateien():
         print(f"FEHLER: Pflichtdateien nicht gefunden: {fehlend}")
         sys.exit(1)
 
-    # Short-Dateien (NEU) kommen nicht aus dem lokalen Verzeichnis, sondern
-    # werden bei Bedarf separat aus Drive nachgeladen (eigener, frueherer
-    # Workflow - siehe Modul-Docstring).
-    gefunden.update(lade_short_dateien_von_drive())
+    # Short-Dateien: DATEIMUSTER oben hat sie bereits lokal gesucht (Fall:
+    # short_scan_catchup.py hat sie in main.yml gerade selbst erzeugt). NUR
+    # falls lokal nichts gefunden wurde, zusaetzlich per Drive nachladen
+    # (Normalfall: separater frueher short_check.yml-Lauf war erfolgreich).
+    # Lokaler Fund hat Vorrang, damit ein frisch nachgeholter Lauf nicht
+    # versehentlich durch eine aeltere Drive-Version ersetzt wird.
+    if gefunden.get("Short_Setups(...).csv") is None or gefunden.get("Short_Briefing(...).txt") is None:
+        for key, pfad in lade_short_dateien_von_drive().items():
+            if gefunden.get(key) is None:
+                gefunden[key] = pfad
 
     print("Gefundene Eingabedateien:")
     for name, pfad in gefunden.items():
