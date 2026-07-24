@@ -55,7 +55,6 @@ from analyse import (
     eu_sektoren_etf,
     get_perf,
     get_perf_yf,
-    get_fib_levels,
     clean_num,
     get_benchmark_close,
     get_eu_benchmark_close,
@@ -287,6 +286,64 @@ def check_kumo_breakdown(data):
     return True, round(float(heute_unter), 2)
 
 
+def get_fib_levels_short(data):
+    """Abwaerts-Pendant zu get_fib_levels in analyse.py (dort: Extension-Level
+    UEBER dem Kurs fuer Long-Kursziele). Hier: Retracement/Extension-Level
+    UNTERHALB des aktuellen Kurses, gleiche Basis (Hoch/Tief der letzten 60
+    Tage)."""
+    recent_data = data.iloc[-60:]
+    swing_high = recent_data['High'].max()
+    swing_low = recent_data['Low'].min()
+    span = swing_high - swing_low
+
+    fib_0618 = swing_high - (span * 0.618)   # Retracement-Ziel nach unten
+    fib_1000 = swing_low - (span * 0.618)    # Extension unter das bisherige Tief
+
+    return fib_0618, fib_1000
+
+
+def get_swing_lows_below(data, entry, lookback=120, order=5, max_n=3):
+    """Echte Pivot-Tiefs (lokale Kurstiefs) aus der juengeren Kurshistorie als
+    zusaetzliche Abwaerts-Ziel-Kandidaten, gefiltert auf < entry. Gleiches
+    Fenster/Prinzip wie check_trendline_breakdown weiter unten."""
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < 10:
+        return []
+    lows = fenster['Low'].values
+    idx_swings = argrelextrema(lows, np.less_equal, order=order)[0]
+    kandidaten = sorted(
+        {round(float(lows[i]), 4) for i in idx_swings if pd.notna(lows[i]) and lows[i] < entry},
+        reverse=True,
+    )
+    return kandidaten[:max_n]
+
+
+def sammle_abwaerts_ziele(data, entry):
+    """NEU (24.07.2026): ersetzt die zuvor 1:1 aus analyse.py uebernommenen
+    Long-Zielfunktionen (EMA20/50/100/200/WMA200 + get_fib_levels), die bei
+    einem Short praktisch nutzlos waren: die Grundvoraussetzung fuer ein
+    Short-Setup ist entry < WMA200, d.h. der Kurs liegt bereits UNTER all
+    seinen eigenen EMAs/der WMA200 - diese Levels lagen damit fast immer
+    UEBER dem Einstieg statt darunter. targets_below blieb dadurch fast immer
+    leer und es griff staendig der generische 8%/12,6%-Fallback (sichtbar an
+    den durchgaengig identischen Chance1_Perc/Chance2_Perc-Werten in der
+    Short_Setups.csv), unabhaengig vom tatsaechlichen Titel.
+    Stattdessen: nur echte Kandidaten UNTER dem Kurs - Fib-Retracement/
+    Extension nach unten, 52-Wochen-Tief, echte Pivot-Tiefs und die
+    Ichimoku-Wolke (bei Kumo-Ausbruch-Setups oft bereits unterhalb)."""
+    fib1, fib2 = get_fib_levels_short(data)
+    kumo_werte = [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]]
+    tief_52w = float(data['Low'].min())
+    swing_lows = get_swing_lows_below(data, entry)
+
+    alle_kandidaten = [fib1, fib2, tief_52w] + kumo_werte + swing_lows
+    ziele = sorted(
+        {round(float(v), 4) for v in alle_kandidaten if pd.notna(v) and v < entry},
+        reverse=True,
+    )
+    return ziele
+
+
 def check_bearish_confirmation(df):
     """Spiegelbild zu check_bullish_confirmation in analyse.py: Shooting
     Star (langer oberer Docht, kleiner Koerper) oder Bearish Engulfing."""
@@ -400,16 +457,9 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     stop = juengstes_hoch
     risk_perc = round(((stop - entry) / entry) * 100, 2)
 
-    fib1, fib2 = get_fib_levels(data)
-    kumo_werte = [w for w in [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]] if pd.notna(w)]
-    potenzial_targets = sorted(
-        [v for v in [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1],
-                      data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2] + kumo_werte if pd.notna(v)],
-        reverse=True,
-    )
-    targets_below = [t for t in potenzial_targets if t < entry]
-    tp1 = targets_below[0] if targets_below else entry * 0.92
-    tp2 = targets_below[1] if len(targets_below) >= 2 else tp1 * 0.95
+    abwaerts_ziele = sammle_abwaerts_ziele(data, entry)
+    tp1 = abwaerts_ziele[0] if abwaerts_ziele else entry * 0.92
+    tp2 = abwaerts_ziele[1] if len(abwaerts_ziele) >= 2 else (tp1 * 0.95)
     tech_kursziel = tp1  # analog zu analyse.py, wo Tech-Kursziel = TP1 gesetzt wird
 
     crv1 = round((entry - tp1) / (stop - entry), 2) if stop > entry else 0
@@ -560,7 +610,7 @@ def main():
     # Fundamental-Ampel (NEU, wie bei Setups.csv): nur für die finale, kleine
     # Kandidatenliste berechnen (API-schonend, siehe analyse.py-Vorbild)
     for r in ergebnisse:
-        ampel, hinweis = berechne_fundamental_ampel(r["Ticker"], r["Sektor"], r["Markt"])
+        ampel, hinweis = berechne_fundamental_ampel(r["Ticker"], r["Sektor"], r["Markt"], richtung="short")
         r["Fundamental_Ampel"] = ampel
         r["Fundamental_Hinweis"] = hinweis
 

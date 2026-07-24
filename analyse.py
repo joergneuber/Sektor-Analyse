@@ -874,18 +874,28 @@ def _sektor_median_kgv(sektor, markt, eigener_ticker):
     return median
 
 
-def berechne_fundamental_ampel(ticker, sektor=None, markt=None):
+def berechne_fundamental_ampel(ticker, sektor=None, markt=None, richtung="long"):
     """GEAENDERT (23.07.2026): KGV wird jetzt relativ zum Sektor-Median bewertet
     statt an einer pauschalen 15/30-Grenze - Halbleiter/Software (strukturell
     hohe KGVs) und Minen/Banken (strukturell niedrige KGVs) waren bei der alten
     festen Grenze nicht fair vergleichbar (z.B. Broadcom vs. Freeport-McMoRan).
-    GUENSTIG: KGV < 80% des Sektor-Median | TEUER: KGV > 130% des Sektor-Median |
-    dazwischen NEUTRAL. Ohne sektor/markt-Angabe (oder falls kein Sektor-Median
-    ermittelbar, siehe _sektor_median_kgv) faellt die Funktion auf die alte feste
-    15/30-Grenze zurueck - reines Sicherheitsnetz, kein Funktionsverlust.
+    Ohne sektor/markt-Angabe (oder falls kein Sektor-Median ermittelbar, siehe
+    _sektor_median_kgv) faellt die Funktion auf die alte feste 15/30-Grenze
+    zurueck - reines Sicherheitsnetz, kein Funktionsverlust.
     Wird nur für die bereits gefilterte, kleine Setup-Liste aufgerufen
     (nicht für das ganze ~370er-Universum) - hält die zusätzliche API-Last
-    gering."""
+    gering.
+
+    GEAENDERT (24.07.2026): neuer Parameter `richtung` ("long"/"short").
+    Bei richtung="long" (Standard, unveraendertes Verhalten): GUENSTIG =
+    KGV < 80% des Sektor-Median (Kaufargument), TEUER = KGV > 130% des
+    Sektor-Median (Warnsignal), dazwischen NEUTRAL.
+    Bei richtung="short" ist die Bedeutung UMGEKEHRT: ein bereits guenstig
+    bewertetes Papier hat fundamental WENIGER Abwaertspotenzial (spricht
+    GEGEN den Short), waehrend eine teure Bewertung die Short-These STUETZT
+    (Korrekturpotenzial nach unten). Ohne diese Umkehr laese sich z.B. ein
+    A+-Short-Setup mit der Ampel GUENSTIG faelschlich wie ein Kaufargument
+    neben der Short-Einstufung."""
     try:
         info = yf.Ticker(ticker).info
         kgv = info.get("trailingPE")
@@ -894,6 +904,24 @@ def berechne_fundamental_ampel(ticker, sektor=None, markt=None):
 
         sektor_median = _sektor_median_kgv(sektor, markt, ticker) if sektor and markt else None
 
+        if richtung == "short":
+            if sektor_median is None:
+                if kgv < 15:
+                    return "GEGEN_SHORT", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer (kein Sektor-Vergleich möglich), spricht fundamental gegen die Short-These."
+                elif kgv > 30:
+                    return "STUETZT_SHORT", f"KGV {round(kgv, 1)} - oberhalb der groben 30er-Hausnummer (kein Sektor-Vergleich möglich), stützt fundamental die Short-These."
+                else:
+                    return "NEUTRAL", f"KGV {round(kgv, 1)} - im üblichen Rahmen (kein Sektor-Vergleich möglich)."
+
+            rel = kgv / sektor_median
+            if rel < 0.8:
+                return "GEGEN_SHORT", f"KGV {round(kgv, 1)} vs. Sektor-Median {sektor_median} ({sektor}) - {round((1 - rel) * 100)}% günstiger als der Sektor, spricht fundamental gegen die Short-These."
+            elif rel > 1.3:
+                return "STUETZT_SHORT", f"KGV {round(kgv, 1)} vs. Sektor-Median {sektor_median} ({sektor}) - {round((rel - 1) * 100)}% teurer als der Sektor, stützt fundamental die Short-These."
+            else:
+                return "NEUTRAL", f"KGV {round(kgv, 1)} vs. Sektor-Median {sektor_median} ({sektor}) - im üblichen Rahmen für den Sektor."
+
+        # richtung == "long" (Standard, unveraendertes Verhalten)
         if sektor_median is None:
             if kgv < 15:
                 return "GUENSTIG", f"KGV {round(kgv, 1)} - unterhalb der groben 15er-Hausnummer (kein Sektor-Vergleich möglich)."
