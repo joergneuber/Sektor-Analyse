@@ -733,6 +733,52 @@ def check_kumo_breakout(data):
     ausbruch = bool(ueber_wolke_heute) and frischer_ausbruch and bool(volumen_ok)
     return ausbruch, (float(heute_ober) if ausbruch else None)
 
+
+def check_kijun_breakout(data):
+    """NEU (24.07.2026): leichteres, frueheres Ichimoku-Bestaetigungssignal
+    fuer trendwende_scanner.py - Bruch ueber die Kijun-sen (Basislinie,
+    26-Perioden-Mittelpunkt aus Hoch/Tief, NICHT in die Zukunft verschoben)
+    statt des vollen Kumo-Ausbruchs (check_kumo_breakout oben). Grund: bei
+    stark gefallenen Titeln haengt die komplette Wolke (v.a. Senkou B, auf
+    52-Perioden-Basis) noch lange auf dem alten, hohen Kursniveau vor dem
+    Absturz - ein Titel, der noch nahe seinem 52-Wochen-Tief steht, hat die
+    komplette Wolke so gut wie nie schon durchbrochen (siehe Log-Auswertung
+    24.07.2026: 0 von 106 Kandidaten ueber mehrere Tage). Die Kijun-sen
+    reagiert deutlich schneller und ist als "erstes Anzeichen einer
+    Trendwende" chart-technisch passender als der volle Wolken-Ausbruch, der
+    eher eine bereits etablierte Erholung bestaetigt. Gleiche Logik wie
+    check_kumo_breakout ansonsten (frischer Ausbruch innerhalb 3 Tage,
+    Pflicht-Volumen), nur mit der Kijun-sen statt der Wolken-Obergrenze als
+    Schwelle. Gibt (ausbruch: bool, kijun_heute: float|None) zurueck.
+    """
+    if len(data) < 5 or 'Kijun' not in data.columns:
+        return False, None
+
+    kijun = data['Kijun']
+    kijun_heute = kijun.iloc[-1]
+    close_heute = data['Close'].iloc[-1]
+
+    if pd.isna(kijun_heute):
+        return False, None
+
+    ueber_kijun_heute = close_heute > kijun_heute
+    if not ueber_kijun_heute:
+        return False, None
+
+    frischer_ausbruch = any(
+        pd.notna(kijun.iloc[-1 - i]) and data['Close'].iloc[-1 - i] <= kijun.iloc[-1 - i]
+        for i in range(1, 4)
+    )
+
+    volumen_ok = any(
+        data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i]
+        for i in range(0, 3)
+    )
+
+    ausbruch = bool(ueber_kijun_heute) and frischer_ausbruch and bool(volumen_ok)
+    return ausbruch, (float(kijun_heute) if ausbruch else None)
+
+
 def get_fib_levels(data):
     """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
     recent_data = data.iloc[-60:]
