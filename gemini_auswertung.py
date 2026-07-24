@@ -41,6 +41,7 @@ muss - beide Skripte sind austauschbar, nicht gleichzeitig laufen lassen).
 import os
 import sys
 import glob
+import re
 import time
 import json
 import datetime
@@ -58,7 +59,7 @@ import io
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash"  # gemini-2.5-pro/-flash sind für NEUE API-Konten
+MODELL = "gemini-3.5-flash"  # gemini-2.5-pro/-flash sind fÃ¼r NEUE API-Konten
                               # bereits gesperrt (Auslaufen seit Juni/Okt. 2026).
                               # gemini-3.5-flash ist die aktuelle Generation mit
                               # echtem Gratis-Kontingent (Stand Juli 2026).
@@ -102,7 +103,7 @@ ABLEHNUNGS_MUSTER = [
     "als sprachmodell kann ich",
     "kann ich in diesem fall nicht helfen",
     "kann ich bei dieser sache nicht helfen",
-    "verfüge nicht über die möglichkeit",
+    "verfÃ¼ge nicht Ã¼ber die mÃ¶glichkeit",
     "verfuege nicht ueber die moeglichkeit",
 ]
 
@@ -179,6 +180,26 @@ def lade_short_dateien_von_drive():
             print(f"WARNUNG: Nachladen von {name_praefix} fehlgeschlagen ({e}) - wird uebersprungen.")
 
     return gefunden
+
+
+def analysiere_api_fehler(fehlertext):
+    """NEU (24.07.2026): unterscheidet, ob ein Retry ueberhaupt sinnvoll ist.
+    Bei einem TAGES-Kontingent (z. B. quotaId
+    'GenerateRequestsPerDayPerProjectPerModel-FreeTier') ist ein Retry am
+    selben Tag zwecklos - das Limit resettet erst am naechsten Tag, alle
+    weiteren Versuche wuerden nur denselben Fehler wiederholen und den Lauf
+    unnoetig in die Laenge ziehen. Bei anderen 429ern (z. B. Anfragen pro
+    Minute) oder 503 (kurzzeitige Ueberlastung) IST ein Retry sinnvoll -
+    Google liefert dafuer meist ein 'retryDelay' in der Fehlerantwort mit,
+    das genauer ist als unsere pauschale WARTEZEIT_SEKUNDEN-Formel.
+    Gibt (abbrechen: bool, empfohlene_wartezeit_sekunden: float|None) zurueck."""
+    ist_tages_kontingent = "PerDay" in fehlertext
+    if ist_tages_kontingent:
+        return True, None
+
+    treffer = re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", fehlertext)
+    empfohlene_wartezeit = float(treffer.group(1)) if treffer else None
+    return False, empfohlene_wartezeit
 
 
 def ist_ablehnung(text):
@@ -273,9 +294,26 @@ def gemini_auswertung_starten():
             text = antwort.text or ""
 
         except Exception as e:
+            fehlertext = str(e)
             print(f"  Technischer Fehler beim API-Call: {e}")
             letzte_antwort = f"[Technischer Fehler] {e}"
-            time.sleep(WARTEZEIT_SEKUNDEN + versuch * 5)
+
+            abbrechen, empfohlene_wartezeit = analysiere_api_fehler(fehlertext)
+            if abbrechen:
+                print(
+                    "  Tages-Kontingent des Gemini-Free-Tiers ist erschoepft "
+                    "(429 RESOURCE_EXHAUSTED, quotaId enthaelt 'PerDay') - ein "
+                    f"Retry am selben Tag bringt nichts, breche sofort ab statt "
+                    f"die restlichen {MAX_VERSUCHE - versuch} Versuche zu verbrennen. "
+                    "Entweder auf das taegliche Reset warten oder in der Google AI "
+                    "Studio / Cloud Console auf einen kostenpflichtigen Tier wechseln "
+                    "(https://ai.google.dev/gemini-api/docs/rate-limits)."
+                )
+                sys.exit(2)
+
+            wartezeit = empfohlene_wartezeit if empfohlene_wartezeit is not None else (WARTEZEIT_SEKUNDEN + versuch * 5)
+            print(f"  Warte {wartezeit:.0f}s vor dem naechsten Versuch...")
+            time.sleep(wartezeit)
             continue
 
         if ist_ablehnung(text):
