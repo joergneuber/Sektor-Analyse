@@ -1,8 +1,5 @@
 name: tägliche Analyse Sektoren
 on:
-  push:
-    branches:
-      - main
   # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
   workflow_dispatch: 
   schedule:
