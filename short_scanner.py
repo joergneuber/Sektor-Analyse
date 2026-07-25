@@ -32,7 +32,7 @@ analyze_a_setup). Hier daher eine eigenstaendige, funktional gleichwertige
 Umsetzung per linearer Regression durch die letzten lokalen Hochpunkte
 (scipy.signal.argrelextrema + linregress) - vermutlich nicht Zeile-fuer-
 Zeile identisch zur Original-Implementierung, aber nach demselben Prinzip
-(≥ 3 Punkte, Bruch nach unten mit Volumen-Bestaetigung).
+(â¥ 3 Punkte, Bruch nach unten mit Volumen-Bestaetigung).
 
 Voraussetzungen: dieselben Umgebungsvariablen wie analyse.py
 (ALPACA_KEY, ALPACA_SECRET, GROQ_API_KEY - Import von analyse.py fuehrt
@@ -41,6 +41,7 @@ Trendwende-Scanner). Muss im selben Verzeichnis wie analyse.py liegen.
 """
 
 import datetime
+import math
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -218,8 +219,8 @@ def check_pullback_zone_short(data):
 
 def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01):
     """Exaktes Spiegelbild von check_trendline_breakout in analyse.py: sucht
-    eine STEIGENDE Stütz-Trendlinie durch mindestens 3 Swing-Tiefs (Toleranz
-    1%) und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
+    eine STEIGENDE StÃ¼tz-Trendlinie durch mindestens 3 Swing-Tiefs (Toleranz
+    1%) und prÃ¼ft, ob der Kurs innerhalb der letzten 3 Kerzen mit Ã¼ber-
     durchschnittlichem Volumen darunter ausgebrochen ist."""
     fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
     if len(fenster) < 10:
@@ -237,7 +238,7 @@ def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01)
     y = lows[idx_swings]
     slope, intercept = np.polyfit(x, y, 1)
 
-    # Nur STEIGENDE Stützlinien relevant (Bruch nach unten = Short-Signal)
+    # Nur STEIGENDE StÃ¼tzlinien relevant (Bruch nach unten = Short-Signal)
     if slope <= 0:
         return False, None
 
@@ -318,29 +319,81 @@ def get_swing_lows_below(data, entry, lookback=120, order=5, max_n=3):
     return kandidaten[:max_n]
 
 
-def sammle_abwaerts_ziele(data, entry):
-    """NEU (24.07.2026): ersetzt die zuvor 1:1 aus analyse.py uebernommenen
-    Long-Zielfunktionen (EMA20/50/100/200/WMA200 + get_fib_levels), die bei
-    einem Short praktisch nutzlos waren: die Grundvoraussetzung fuer ein
-    Short-Setup ist entry < WMA200, d.h. der Kurs liegt bereits UNTER all
-    seinen eigenen EMAs/der WMA200 - diese Levels lagen damit fast immer
-    UEBER dem Einstieg statt darunter. targets_below blieb dadurch fast immer
-    leer und es griff staendig der generische 8%/12,6%-Fallback (sichtbar an
-    den durchgaengig identischen Chance1_Perc/Chance2_Perc-Werten in der
-    Short_Setups.csv), unabhaengig vom tatsaechlichen Titel.
-    Stattdessen: nur echte Kandidaten UNTER dem Kurs - Fib-Retracement/
-    Extension nach unten, 52-Wochen-Tief, echte Pivot-Tiefs und die
-    Ichimoku-Wolke (bei Kumo-Ausbruch-Setups oft bereits unterhalb)."""
+def get_round_number_targets(entry, anzahl=2):
+    """Psychologische runde Kursmarken UNTERHALB des Einstiegs als
+    zusaetzliche Ziel-Kandidaten - an runden Zahlen (glatte Euro-/Dollar-
+    Betraege) haeufen sich erfahrungsgemaess Limit-/Stop-Orders, was sie zu
+    plausiblen Unterstuetzungszonen macht. Die Rundungs-Schrittweite skaliert
+    mit der Kursgroessenordnung (z.B. 5$-Schritte bei einer 100$-Aktie,
+    0,1$-Schritte bei einer 3$-Aktie)."""
+    if entry >= 1000:
+        schritt = 50
+    elif entry >= 100:
+        schritt = 5
+    elif entry >= 10:
+        schritt = 1
+    elif entry >= 1:
+        schritt = 0.1
+    else:
+        schritt = 0.01
+
+    marken = []
+    naechste_runde = math.floor(entry / schritt) * schritt
+    if naechste_runde >= entry:
+        naechste_runde -= schritt
+    aktuell = naechste_runde
+    while len(marken) < anzahl and aktuell > 0:
+        marken.append(round(aktuell, 4))
+        aktuell -= schritt
+    return marken
+
+
+def sammle_abwaerts_ziele(data, entry, mindest_abstand_perc=1.0, dedupe_abstand_perc=1.5):
+    """NEU (24.07.2026, erweitert 25.07.2026): ersetzt die zuvor 1:1 aus
+    analyse.py uebernommenen Long-Zielfunktionen (EMA20/50/100/200/WMA200 +
+    get_fib_levels), die bei einem Short praktisch nutzlos waren: die
+    Grundvoraussetzung fuer ein Short-Setup ist entry < WMA200, d.h. der Kurs
+    liegt bereits UNTER all seinen eigenen EMAs/der WMA200 - diese Levels
+    lagen damit fast immer UEBER dem Einstieg statt darunter.
+    Sammelt jetzt alle plausiblen charttechnischen Abwaerts-Ziel-Kandidaten:
+    Fib-Retracement/Extension nach unten, 52-Wochen-Tief, echte Pivot-Tiefs,
+    die Ichimoku-Wolke, gleitende Durchschnitte (nur falls sie ausnahmsweise
+    doch unter dem Kurs liegen, z.B. bei einem besonders scharfen Einbruch)
+    und psychologische runde Kursmarken. Zwei Filter sorgen dafuer, dass
+    daraus verwertbare TP1/TP2 statt Rauschen werden:
+    - mindest_abstand_perc: Kandidaten, die weniger als X% unter dem Kurs
+      liegen, werden verworfen (sonst waere TP1 z.B. 0,1% unter dem Kurs -
+      kein sinnvolles erstes Kursziel).
+    - dedupe_abstand_perc: liegen zwei Kandidaten weniger als Y% auseinander,
+      wird nur der naeher am Kurs liegende behalten (sonst koennten TP1 und
+      TP2 praktisch identisch werden, z.B. eine runde Zahl direkt neben einem
+      Swing-Tief)."""
     fib1, fib2 = get_fib_levels_short(data)
     kumo_werte = [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]]
     tief_52w = float(data['Low'].min())
     swing_lows = get_swing_lows_below(data, entry)
+    ema_werte = [
+        data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1],
+        data['EMA200'].iloc[-1], data['WMA200'].iloc[-1],
+    ]
+    runde_zahlen = get_round_number_targets(entry)
 
-    alle_kandidaten = [fib1, fib2, tief_52w] + kumo_werte + swing_lows
-    ziele = sorted(
+    alle_kandidaten = [fib1, fib2, tief_52w] + kumo_werte + swing_lows + ema_werte + runde_zahlen
+    roh = sorted(
         {round(float(v), 4) for v in alle_kandidaten if pd.notna(v) and v < entry},
         reverse=True,
     )
+
+    # Mindestabstand zum Kurs (Rauschen direkt unter dem Einstieg raus)
+    mindest_wert = entry * (1 - mindest_abstand_perc / 100)
+    gefiltert = [v for v in roh if v <= mindest_wert]
+
+    # Dedupe: zu nah beieinander liegende Kandidaten zusammenfassen
+    ziele = []
+    for v in gefiltert:
+        if not ziele or (ziele[-1] - v) / entry * 100 >= dedupe_abstand_perc:
+            ziele.append(v)
+
     return ziele
 
 
@@ -403,13 +456,13 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     basis = "A" if ("Trendlinien-Bruch" in pfade or "Kumo-Ausbruch unten" in pfade or "Pullback-Zone short" in pfade) else "B"
 
     # Divergenz (NEU): echte check_rsi_divergence-Funktion wiederverwendet
-    # (deckt beide Richtungen ab). Bärische Divergenz validiert das Setup
-    # analog zur Long-Logik unabhängig von anderen ACHTUNG-Kriterien.
-    divergenz = check_rsi_divergence(data)  # "Bullisch"/"Bärisch"/None
-    divergenz_bearish = (divergenz == "Bärisch")
+    # (deckt beide Richtungen ab). BÃ¤rische Divergenz validiert das Setup
+    # analog zur Long-Logik unabhÃ¤ngig von anderen ACHTUNG-Kriterien.
+    divergenz = check_rsi_divergence(data)  # "Bullisch"/"BÃ¤risch"/None
+    divergenz_bearish = (divergenz == "BÃ¤risch")
 
     # NEU (23.07.2026): Bullischer MACD widerspricht der Short-These direkt
-    # und wird nur durch eine bärische Divergenz aufgehoben (die validiert
+    # und wird nur durch eine bÃ¤rische Divergenz aufgehoben (die validiert
     # staerker, als der MACD widerspricht) - vorher wurde das Setup nur mit
     # Status2=ACHTUNG markiert und trotzdem ausgegeben, jetzt wird es an
     # dieser Stelle komplett verworfen.
@@ -430,17 +483,17 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     idx = max(0, min(len(stufen) - 1, idx + verschiebung))
     feinstufe = stufen[idx]
 
-    # Status2/Status_Grund (GEÄNDERT 23.07.2026): der bullische-MACD-Fall
+    # Status2/Status_Grund (GEÃNDERT 23.07.2026): der bullische-MACD-Fall
     # wird jetzt schon weiter oben komplett verworfen (return None), taucht
-    # hier also nicht mehr auf - übrig bleibt nur noch schwaches Volumen als
-    # ACHTUNG-Grund, AUSSER bärische Divergenz validiert automatisch
+    # hier also nicht mehr auf - Ã¼brig bleibt nur noch schwaches Volumen als
+    # ACHTUNG-Grund, AUSSER bÃ¤rische Divergenz validiert automatisch
     # (gespiegelt zur Long-Logik in analyse.py).
     if divergenz_bearish:
         status2, status_grund = "VALIDE", "Alles ok"  # Divergenz steht separat in eigener Spalte (wie bei Setups.csv), nicht im Grund-Text
     elif data['Vol_Ratio'].iloc[-1] < 0.5:
         status2, status_grund = "ACHTUNG", "Schwaches Volumen"
     else:
-        status2, status_grund = "VALIDE", "Kein Störfaktor erkannt"
+        status2, status_grund = "VALIDE", "Kein StÃ¶rfaktor erkannt"
 
     rel_staerke = None
     if bench_close is not None and len(bench_close) > 60 and len(data) > 60:
@@ -467,9 +520,17 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     chance1_perc = round(((entry - tp1) / entry) * 100, 2)
     chance2_perc = round(((entry - tp2) / entry) * 100, 2)
 
+    # NEU (25.07.2026): Risiko-Filter, analog zur bestehenden Konvention bei
+    # Long-Setups und Edelmetalle-Setups ("CRV muss bei TP1 UND TP2 jeweils
+    # >= 1.0 sein") - vorher gab es diesen Filter bei Shorts noch nicht,
+    # wodurch auch Setups mit deutlich schlechterem Chance/Risiko-Verhaeltnis
+    # ausgegeben wurden.
+    if crv1 < 1.0 or crv2 < 1.0:
+        return None
+
     # Abstand_52W_Tief% (NEU, gespiegelt zu Abstand_52W_Hoch% bei Long):
-    # wie weit über dem 52-Wochen-Tief - Raum, den der Kurs noch fallen
-    # könnte, bevor der bisherige Tiefpunkt erreicht wird.
+    # wie weit Ã¼ber dem 52-Wochen-Tief - Raum, den der Kurs noch fallen
+    # kÃ¶nnte, bevor der bisherige Tiefpunkt erreicht wird.
     tief_52w = data['Low'].min()
     abstand_52w_tief = round(((entry / tief_52w) - 1) * 100, 2) if tief_52w > 0 else None
 
@@ -484,7 +545,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     return {
         "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Markt": markt,
         "Waehrung": "EUR" if markt == "EU" else "USD",
-        "Trend": "OK",  # Grundvoraussetzung (Kurs < WMA200) bereits weiter oben geprüft
+        "Trend": "OK",  # Grundvoraussetzung (Kurs < WMA200) bereits weiter oben geprÃ¼ft
         "Setup_Typ": setup_typ, "Pattern": muster or "Kein",
         "Tech-Kursziel": round(clean_num(tech_kursziel), 2),
         "Analysten-Kursziel": round(clean_num(analysten_kursziel), 2) if analysten_kursziel else None,
@@ -540,7 +601,7 @@ def bestimme_bottom_sektoren():
 
 
 def sammle_universum(bottom_us_sektoren, bottom_eu_sektoren):
-    # BUGFIX (21.07.2026): sektoren_aktien nutzt ETF-TICKER als Schlüssel
+    # BUGFIX (21.07.2026): sektoren_aktien nutzt ETF-TICKER als SchlÃ¼ssel
     # (z. B. "XLK", "SOXX"), waehrend bottom_us_sektoren LESBARE NAMEN
     # enthaelt (z. B. "Halbleiter" - kommt aus get_perf()). Ohne dieses
     # Mapping matcht kein einziger US-Sektor (0 US-Ticker im Testlauf vom
@@ -607,7 +668,7 @@ def main():
 
     print(f"DEBUG: {len(ergebnisse)} Short-Kandidaten gefunden.")
 
-    # Fundamental-Ampel (NEU, wie bei Setups.csv): nur für die finale, kleine
+    # Fundamental-Ampel (NEU, wie bei Setups.csv): nur fÃ¼r die finale, kleine
     # Kandidatenliste berechnen (API-schonend, siehe analyse.py-Vorbild)
     for r in ergebnisse:
         ampel, hinweis = berechne_fundamental_ampel(r["Ticker"], r["Sektor"], r["Markt"], richtung="short")
