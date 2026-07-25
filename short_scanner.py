@@ -32,7 +32,7 @@ analyze_a_setup). Hier daher eine eigenstaendige, funktional gleichwertige
 Umsetzung per linearer Regression durch die letzten lokalen Hochpunkte
 (scipy.signal.argrelextrema + linregress) - vermutlich nicht Zeile-fuer-
 Zeile identisch zur Original-Implementierung, aber nach demselben Prinzip
-(â¥ 3 Punkte, Bruch nach unten mit Volumen-Bestaetigung).
+(≥ 3 Punkte, Bruch nach unten mit Volumen-Bestaetigung).
 
 Voraussetzungen: dieselben Umgebungsvariablen wie analyse.py
 (ALPACA_KEY, ALPACA_SECRET, GROQ_API_KEY - Import von analyse.py fuehrt
@@ -219,8 +219,8 @@ def check_pullback_zone_short(data):
 
 def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01):
     """Exaktes Spiegelbild von check_trendline_breakout in analyse.py: sucht
-    eine STEIGENDE StÃ¼tz-Trendlinie durch mindestens 3 Swing-Tiefs (Toleranz
-    1%) und prÃ¼ft, ob der Kurs innerhalb der letzten 3 Kerzen mit Ã¼ber-
+    eine STEIGENDE Stütz-Trendlinie durch mindestens 3 Swing-Tiefs (Toleranz
+    1%) und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
     durchschnittlichem Volumen darunter ausgebrochen ist."""
     fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
     if len(fenster) < 10:
@@ -238,7 +238,7 @@ def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01)
     y = lows[idx_swings]
     slope, intercept = np.polyfit(x, y, 1)
 
-    # Nur STEIGENDE StÃ¼tzlinien relevant (Bruch nach unten = Short-Signal)
+    # Nur STEIGENDE Stützlinien relevant (Bruch nach unten = Short-Signal)
     if slope <= 0:
         return False, None
 
@@ -456,13 +456,13 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     basis = "A" if ("Trendlinien-Bruch" in pfade or "Kumo-Ausbruch unten" in pfade or "Pullback-Zone short" in pfade) else "B"
 
     # Divergenz (NEU): echte check_rsi_divergence-Funktion wiederverwendet
-    # (deckt beide Richtungen ab). BÃ¤rische Divergenz validiert das Setup
-    # analog zur Long-Logik unabhÃ¤ngig von anderen ACHTUNG-Kriterien.
-    divergenz = check_rsi_divergence(data)  # "Bullisch"/"BÃ¤risch"/None
-    divergenz_bearish = (divergenz == "BÃ¤risch")
+    # (deckt beide Richtungen ab). Bärische Divergenz validiert das Setup
+    # analog zur Long-Logik unabhängig von anderen ACHTUNG-Kriterien.
+    divergenz = check_rsi_divergence(data)  # "Bullisch"/"Bärisch"/None
+    divergenz_bearish = (divergenz == "Bärisch")
 
     # NEU (23.07.2026): Bullischer MACD widerspricht der Short-These direkt
-    # und wird nur durch eine bÃ¤rische Divergenz aufgehoben (die validiert
+    # und wird nur durch eine bärische Divergenz aufgehoben (die validiert
     # staerker, als der MACD widerspricht) - vorher wurde das Setup nur mit
     # Status2=ACHTUNG markiert und trotzdem ausgegeben, jetzt wird es an
     # dieser Stelle komplett verworfen.
@@ -483,17 +483,17 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     idx = max(0, min(len(stufen) - 1, idx + verschiebung))
     feinstufe = stufen[idx]
 
-    # Status2/Status_Grund (GEÃNDERT 23.07.2026): der bullische-MACD-Fall
+    # Status2/Status_Grund (GEÄNDERT 23.07.2026): der bullische-MACD-Fall
     # wird jetzt schon weiter oben komplett verworfen (return None), taucht
-    # hier also nicht mehr auf - Ã¼brig bleibt nur noch schwaches Volumen als
-    # ACHTUNG-Grund, AUSSER bÃ¤rische Divergenz validiert automatisch
+    # hier also nicht mehr auf - übrig bleibt nur noch schwaches Volumen als
+    # ACHTUNG-Grund, AUSSER bärische Divergenz validiert automatisch
     # (gespiegelt zur Long-Logik in analyse.py).
     if divergenz_bearish:
         status2, status_grund = "VALIDE", "Alles ok"  # Divergenz steht separat in eigener Spalte (wie bei Setups.csv), nicht im Grund-Text
     elif data['Vol_Ratio'].iloc[-1] < 0.5:
         status2, status_grund = "ACHTUNG", "Schwaches Volumen"
     else:
-        status2, status_grund = "VALIDE", "Kein StÃ¶rfaktor erkannt"
+        status2, status_grund = "VALIDE", "Kein Störfaktor erkannt"
 
     rel_staerke = None
     if bench_close is not None and len(bench_close) > 60 and len(data) > 60:
@@ -529,8 +529,8 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         return None
 
     # Abstand_52W_Tief% (NEU, gespiegelt zu Abstand_52W_Hoch% bei Long):
-    # wie weit Ã¼ber dem 52-Wochen-Tief - Raum, den der Kurs noch fallen
-    # kÃ¶nnte, bevor der bisherige Tiefpunkt erreicht wird.
+    # wie weit über dem 52-Wochen-Tief - Raum, den der Kurs noch fallen
+    # könnte, bevor der bisherige Tiefpunkt erreicht wird.
     tief_52w = data['Low'].min()
     abstand_52w_tief = round(((entry / tief_52w) - 1) * 100, 2) if tief_52w > 0 else None
 
@@ -545,7 +545,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     return {
         "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Markt": markt,
         "Waehrung": "EUR" if markt == "EU" else "USD",
-        "Trend": "OK",  # Grundvoraussetzung (Kurs < WMA200) bereits weiter oben geprÃ¼ft
+        "Trend": "OK",  # Grundvoraussetzung (Kurs < WMA200) bereits weiter oben geprüft
         "Setup_Typ": setup_typ, "Pattern": muster or "Kein",
         "Tech-Kursziel": round(clean_num(tech_kursziel), 2),
         "Analysten-Kursziel": round(clean_num(analysten_kursziel), 2) if analysten_kursziel else None,
@@ -601,7 +601,7 @@ def bestimme_bottom_sektoren():
 
 
 def sammle_universum(bottom_us_sektoren, bottom_eu_sektoren):
-    # BUGFIX (21.07.2026): sektoren_aktien nutzt ETF-TICKER als SchlÃ¼ssel
+    # BUGFIX (21.07.2026): sektoren_aktien nutzt ETF-TICKER als Schlüssel
     # (z. B. "XLK", "SOXX"), waehrend bottom_us_sektoren LESBARE NAMEN
     # enthaelt (z. B. "Halbleiter" - kommt aus get_perf()). Ohne dieses
     # Mapping matcht kein einziger US-Sektor (0 US-Ticker im Testlauf vom
@@ -668,12 +668,40 @@ def main():
 
     print(f"DEBUG: {len(ergebnisse)} Short-Kandidaten gefunden.")
 
-    # Fundamental-Ampel (NEU, wie bei Setups.csv): nur fÃ¼r die finale, kleine
+    # Fundamental-Ampel (NEU, wie bei Setups.csv): nur für die finale, kleine
     # Kandidatenliste berechnen (API-schonend, siehe analyse.py-Vorbild)
     for r in ergebnisse:
         ampel, hinweis = berechne_fundamental_ampel(r["Ticker"], r["Sektor"], r["Markt"], richtung="short")
         r["Fundamental_Ampel"] = ampel
         r["Fundamental_Hinweis"] = hinweis
+
+    # NEU (25.07.2026): Ticker-Deduplizierung - ein Ticker kann gleichzeitig
+    # in mehreren Bottom-Sektoren gelistet sein (z.B. HUBS unter "Software"
+    # UND "Cloud Computing"), wodurch derselbe Titel mit identischen
+    # Handelswerten (Kurs/Einstieg/Stop/TP1/TP2/CRV, da rein technisch
+    # ermittelt) aber unterschiedlichem Sektor-Label mehrfach im Ergebnis
+    # auftauchte - fuer die Auswertung redundant, da man denselben Titel
+    # nicht zweimal traden wuerde. Alle Sektor-Treffer werden jetzt zu einem
+    # Eintrag zusammengefasst (Sektor-Feld als Komma-Liste), der erste
+    # Treffer (samt seiner dort berechneten Fundamental-Ampel) bleibt
+    # bestehen - die Ampel wurde bewusst VOR dem Zusammenfassen berechnet,
+    # damit der Sektor-Median-Vergleich noch auf einem einzelnen, echten
+    # Sektornamen basiert statt auf der kombinierten Komma-Liste.
+    zusammengefasst = {}
+    for r in ergebnisse:
+        ticker = r["Ticker"]
+        if ticker not in zusammengefasst:
+            eintrag = dict(r)
+            eintrag["_sektoren"] = [r["Sektor"]]
+            zusammengefasst[ticker] = eintrag
+        else:
+            zusammengefasst[ticker]["_sektoren"].append(r["Sektor"])
+    for eintrag in zusammengefasst.values():
+        eintrag["Sektor"] = ", ".join(dict.fromkeys(eintrag.pop("_sektoren")))
+    vor_dedup = len(ergebnisse)
+    ergebnisse = list(zusammengefasst.values())
+    if len(ergebnisse) < vor_dedup:
+        print(f"DEBUG: {vor_dedup - len(ergebnisse)} doppelte Ticker zusammengefasst (mehrere Bottom-Sektoren) -> {len(ergebnisse)} Short-Kandidaten.")
 
     # Spaltenreihenfolge EXAKT wie Setups.csv (siehe analyse.py), Ticker
     # vorangestellt (fehlt dort, da index=False - hier bewusst behalten,

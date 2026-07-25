@@ -1832,6 +1832,26 @@ if __name__ == "__main__":
     else:
         df_clean['Fundamental_Ampel'] = []
         df_clean['Fundamental_Hinweis'] = []
+
+    # NEU (25.07.2026): Ticker-Deduplizierung - ein Ticker kann gleichzeitig
+    # in mehreren Top-Sektoren gelistet sein (z.B. ein Titel, der sowohl
+    # unter "Software" als auch "Cloud Computing" gefuehrt wird), wodurch
+    # derselbe Titel mit identischen Handelswerten aber unterschiedlichem
+    # Sektor-Label mehrfach auftauchen konnte (df_clean ist per Ticker
+    # indiziert, ein doppelter Ticker heisst hier: doppelter Index-Wert) -
+    # fuer die Auswertung redundant. Sektor-Treffer werden zu einem Eintrag
+    # zusammengefasst (Sektor-Feld als Komma-Liste), der erste Treffer
+    # (samt seiner dort berechneten Fundamental-Ampel) bleibt bestehen -
+    # die bestehende Sortierung (Status/Upside-Potenzial/CRV) bleibt dadurch
+    # unangetastet, es wird nur nachtraeglich das Sektor-Feld ersetzt.
+    if not df_clean.empty and df_clean.index.duplicated().any():
+        vor_dedup = len(df_clean)
+        sektoren_je_ticker = {}
+        for ticker, sektor in zip(df_clean.index, df_clean['Sektor']):
+            sektoren_je_ticker.setdefault(ticker, []).append(sektor)
+        df_clean = df_clean[~df_clean.index.duplicated(keep='first')].copy()
+        df_clean['Sektor'] = [", ".join(dict.fromkeys(sektoren_je_ticker[t])) for t in df_clean.index]
+        print(f"DEBUG: {vor_dedup - len(df_clean)} doppelte Ticker zusammengefasst (mehrere Top-Sektoren) -> {len(df_clean)} Setups.")
     
     # 4. Leere Spalte entfernen (falls nötig)
     if 'Ideales_Delta' in df_clean.columns:
