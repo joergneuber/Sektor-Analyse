@@ -79,7 +79,7 @@ sektoren_aktien = {
     "ITA": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HWM", "TDG", "HEI", "AXON", "TXT", "HII"],
     "XME": ["FCX", "NUE", "STLD", "CLF", "AA", "X", "RS", "CMC", "ATI", "MP", "HL", "CRS"],
     "GDX": ["NEM", "GOLD", "AEM", "WPM", "FNV", "GFI", "KGC", "AU", "RGLD", "PAAS", "HMY", "EGO"],
-    "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "CHX", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
+    "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
     "TAN": ["FSLR", "ENPH", "SEDG", "RUN", "NXT", "ARRY", "SHLS", "CSIQ", "JKS", "DQ", "MAXN", "FLNC"]
 }
 
