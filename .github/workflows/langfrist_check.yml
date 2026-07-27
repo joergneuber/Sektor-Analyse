@@ -4,11 +4,21 @@ on:
   # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
   workflow_dispatch:
   schedule:
-    # 03:41 UTC entspricht 05:41 Uhr MESZ (Sommerzeit), montags - bewusst
-    # NICHT zur vollen Stunde (siehe main.yml für dieselbe Begründung) und
-    # kurz nach dem regulären Morgenlauf, damit beide Läufe nicht parallel
-    # um dieselben API-Kontingente konkurrieren.
-    - cron: '41 3 * * 1'
+    # 02:50 UTC entspricht 04:50 Uhr MESZ (Sommerzeit), montags - bewusst
+    # DEUTLICH VOR main.yml (03:17 UTC) terminiert (GEÄNDERT 27.07.2026,
+    # vorher 03:41 UTC = NACH main.yml): main.yml enthält seit 27.07.2026
+    # einen wöchentlichen Nachhol-Schritt (langfrist_scan_catchup.py), der
+    # prüft, ob diese Woche schon ein Langfrist-Lauf stattgefunden hat.
+    # Läuft dieser reguläre Workflow NACH main.yml (wie vorher), würde der
+    # Nachhol-Check am Montag selbst fälschlich "nein" sagen und einen
+    # Doppel-Lauf auslösen. Mit ausreichendem zeitlichen Vorlauf (27 Minuten
+    # bis main.yml überhaupt startet, plus die Laufzeit von
+    # positionen_tracker.py/analyse.py/trendwende_scanner.py/
+    # edelmetalle_scanner.py/short_scan_catchup.py davor) sollte dieser
+    # Lauf beim Erreichen des Nachhol-Schritts in main.yml längst
+    # abgeschlossen sein - der Nachhol-Check muss dadurch keinen
+    # Montags-Sonderfall mehr behandeln (siehe langfrist_scan_catchup.py).
+    - cron: '50 2 * * 1'
 
 jobs:
   langfrist-bewertung:
