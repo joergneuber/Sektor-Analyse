@@ -197,37 +197,6 @@ def update_status_logic(row):
         return pd.Series(["VALIDE", "Alles ok"])
 
 # --- FUNKTIONEN ---
-def get_sp500_data():
-    try:
-        start_date = datetime.datetime.now() - datetime.timedelta(days=300)
-        request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day)
-        bars = alpaca_client.get_stock_bars(request)
-        hist = bars.df
-        
-        if hist.empty or len(hist) < 200:
-            return "S&P 500: Daten unvollständig"
-            
-        hist = hist.reset_index(level=0, drop=True)
-        if 'close' in hist.columns:
-            hist = hist.rename(columns={'close': 'Close'})
-            
-        close = hist['Close']
-        last_close = close.iloc[-1]
-        
-        # Indikatoren berechnen
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1] # Neu
-        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
-        weights = np.arange(1, 201)
-        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        
-        return (f"S&P 500: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA100: {e100:.0f} | EMA200: {e200:.0f} | WMA200: {w200:.0f}")
-                
-    except Exception as e:
-        return f"S&P 500: Fehler beim Abruf ({e})"
-
 def get_earnings_warnung(ticker, warn_tage=7):
     """Prüft per yfinance, ob der nächste Earnings-Termin innerhalb der
     nächsten warn_tage liegt. Gibt einen Warntext zurück (z.B.
@@ -354,9 +323,10 @@ def get_10j_rendite():
 
 
 def get_index_benchmark_yf(ticker, label):
-    """Generische Benchmark-Funktion für Indizes, die nicht über Alpaca verfügbar
-    sind (z.B. DAX, EuroStoxx50) - lädt Kursdaten via yfinance, identisches
-    Kennzahlen-Format wie get_sp500_data()."""
+    """Generische Benchmark-Funktion für Indizes/Futures via yfinance - u.a.
+    für S&P 500 (^GSPC) und Nasdaq (^IXIC) seit 27.07.2026 (vorher fälschlich
+    SPY-/QQQ-ETF-Kurse über Alpaca als Indexstand ausgegeben, siehe main unten),
+    außerdem DAX, EuroStoxx50 und alle weiteren Nicht-Alpaca-Benchmarks."""
     try:
         hist = yf.Ticker(ticker).history(period="300d")
 
@@ -466,52 +436,6 @@ def get_perf_yf(ticker, name):
     except Exception as e:
         print(f"FEHLER bei EU-Performance-Berechnung für {ticker}: {e}")
         return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
-
-def get_qqq_quote():
-    try:
-        # Zeitraum für 300 Tage
-        start_date = datetime.datetime.now() - datetime.timedelta(days=300)
-        
-        # Alpaca Anfrage für QQQ
-        request = StockBarsRequest(
-            symbol_or_symbols=["QQQ"],
-            start=start_date,
-            timeframe=TimeFrame.Day
-        )
-        
-        bars = alpaca_client.get_stock_bars(request)
-        hist = bars.df
-        
-        # Daten prüfen
-        if hist.empty or len(hist) < 200:
-            return "Nasdaq: Nicht bewertet (Daten unvollständig)"
-            
-        # Index bereinigen
-        hist = hist.reset_index(level=0, drop=True)
-        if 'close' in hist.columns:
-            hist = hist.rename(columns={'close': 'Close'})
-            
-        # Daten für Berechnungen extrahieren
-        close = hist['Close']
-        last_close = close.iloc[-1]
-        
-        # Indikatoren berechnen
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-        e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
-        e200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
-        
-        # WMA200 Berechnung
-        weights = np.arange(1, 201)
-        w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
-        
-        # Rückgabe des formatierten Strings
-        return (f"Nasdaq: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA100: {e100:.0f} | EMA200: {e200:.0f} | WMA200: {w200:.0f}")
-                
-    except Exception as e:
-        print(f"FEHLER beim Abruf von QQQ: {e}")
-        return f"Nasdaq: Fehler beim Datenabruf ({e})"
 
 def get_perf(ticker, name):
     try:
@@ -1593,8 +1517,15 @@ if __name__ == "__main__":
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     
     # 1. Benchmarks sicher abrufen
-    sp500_filter_text = get_sp500_data()
-    qqq_text = get_qqq_quote()
+    # S&P 500 / Nasdaq (GEÄNDERT 27.07.2026): vorher SPY-/QQQ-ETF-Kurse über
+    # Alpaca, aber faelschlich als "S&P 500"/"Nasdaq" INDEXSTAND beschriftet -
+    # SPY/QQQ folgen dem jeweiligen Index zwar in der Richtung, notieren aber
+    # auf einer voellig anderen Kursskala (SPY ca. 1/10 des S&P-500-Punkte-
+    # stands) - das ergab z.B. "S&P 500: 738,93 Punkte" statt real ca. 7473.
+    # Jetzt wie DAX/EuroStoxx & alle anderen Benchmarks ueber
+    # get_index_benchmark_yf mit dem echten Index-Ticker (^GSPC/^IXIC).
+    sp500_filter_text = get_index_benchmark_yf("^GSPC", "S&P 500")
+    qqq_text = get_index_benchmark_yf("^IXIC", "Nasdaq")
     dax_text = get_index_benchmark_yf("^GDAXI", "DAX")
     eurostoxx_text = get_index_benchmark_yf("^STOXX50E", "EuroStoxx50")
     # Globale Risiko-Benchmarks (NEU): keine Setup-Quellen, dienen nur der
