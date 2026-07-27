@@ -85,6 +85,20 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python short_scan_catchup.py
 
+      - name: Langfrist-Scan nachholen falls diese Woche nicht gelaufen
+        # NEU (27.07.2026): langfrist_check.yml (montags 02:50 UTC, eigener
+        # wöchentlicher Workflow, bewusst VOR main.yml terminiert) ist genau
+        # wie short_check.yml "best effort" und kann komplett ausfallen
+        # (beobachtet am 27.07.2026 - 7 Tage ohne Lauf). Dieser Schritt
+        # prüft, ob seit Montag dieser Woche schon eine Langfrist_Bewertung-
+        # Datei in Drive liegt, und holt langfrist_scanner.py nur bei Bedarf
+        # nach (normalerweise also ein no-op, an jedem Wochentag einheitlich
+        # geprüft - siehe langfrist_scan_catchup.py). Braucht kein
+        # GROQ/Alpaca, da langfrist_scanner.py kein analyse.py importiert.
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python langfrist_scan_catchup.py
+
       - name: Gemini-Auswertung erstellen
         # Ersetzt das manuelle Kopieren in das Gemini-Gem: liest die Master-
         # Anweisung (Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md,
