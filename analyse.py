@@ -267,6 +267,47 @@ def get_news_headlines(ticker, max_n=3):
         return []
 
 
+def get_fomc_countdown():
+    """NEU (27.07.2026, Nutzerwunsch): reiner Termin-Countdown zur naechsten
+    FOMC-Sitzung (Fed-Zinsentscheid) - analog zur Earnings-Warnung pro Aktie
+    (get_earnings_warnung), nur fuer den Gesamtmarkt. BEWUSST kein Versuch,
+    die "echten" CME-FedWatch-Markterwartungen (Wahrscheinlichkeit fuer
+    Zinserhoehung/-senkung) nachzubauen - das haette eine eigene Berechnung
+    ueber Fed-Funds-Futures (ZQ=F) noetig, mit unsicherer Genauigkeit
+    gegenueber der proprietaeren CME-Methodik. Stattdessen nur der reine
+    Termin, da FOMC-Sitzungen ein bekannter, terminierter Volatilitaets-
+    Treiber sind (Zinsentscheid + Pressekonferenz), unabhaengig von der
+    Richtung der Entscheidung.
+    Reiner Kontext-Indikator, KEINE Setup-Quelle, KEINE Abwertungsgrundlage.
+    WARTUNG (Pflicht, jaehrlich): FOMC_TERMINE unten muss jedes Jahr um die
+    neuen Termine ergaenzt werden, sobald die Fed sie veroeffentlicht (siehe
+    federalreserve.gov/monetarypolicy/fomccalendars.htm) - Datum jeweils der
+    ZWEITE Sitzungstag (Tag der Zinsentscheid-Veroeffentlichung, 14:00 Uhr
+    US-Ostkuestenzeit, entspricht ca. 20:00 Uhr MESZ/19:00 Uhr MEZ)."""
+    FOMC_TERMINE_2026 = [
+        datetime.date(2026, 1, 28),
+        datetime.date(2026, 3, 18),
+        datetime.date(2026, 4, 29),
+        datetime.date(2026, 6, 17),
+        datetime.date(2026, 7, 29),
+        datetime.date(2026, 9, 16),
+        datetime.date(2026, 10, 28),
+        datetime.date(2026, 12, 9),
+    ]
+    heute = datetime.date.today()
+    kommende_termine = [d for d in FOMC_TERMINE_2026 if d >= heute]
+    if not kommende_termine:
+        return "FOMC-Sitzung: kein bevorstehender Termin hinterlegt (FOMC_TERMINE_2026 in analyse.py fuer das naechste Jahr aktualisieren)"
+
+    naechster_termin = min(kommende_termine)
+    tage_bis = (naechster_termin - heute).days
+    datum_text = naechster_termin.strftime("%d.%m.%Y")
+
+    if tage_bis == 0:
+        return f"FOMC-Sitzung: HEUTE ({datum_text}) - Zinsentscheid ca. 20:00 Uhr MESZ"
+    return f"FOMC-Sitzung: in {tage_bis} Tag(en) ({datum_text})"
+
+
 def get_zins_warner():
     """NEU (22.07.2026): reiner Kontext-Indikator (wie VIX/Lithium-Proxy),
     KEINE Setup-Quelle, KEINE Abwertungsgrundlage. ^TYX = CBOE 30-Year
@@ -1548,6 +1589,9 @@ if __name__ == "__main__":
     # Zins-Warner (NEU): 30J-US-Staatsanleihenrendite als weiterer reiner
     # Kontext-Indikator, analog zu VIX/Lithium-Proxy - keine Setup-Quelle.
     zins_text = get_zins_warner()
+    # FOMC-Countdown (NEU, 27.07.2026): reiner Termin-Hinweis, siehe
+    # get_fomc_countdown fuer Begruendung/Wartungshinweis.
+    fomc_text = get_fomc_countdown()
     # NEU (24.07.2026): erweiterter Makro-/Rohstoff-Kontext fuer ein
     # eigenstaendiges Morgen-Briefing (unabhaengig von der Sektor-Rotation-
     # Auswahl) - alle rein informativ, keine Setup-Quelle, keine
@@ -1824,7 +1868,7 @@ if __name__ == "__main__":
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{rendite10j_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{rendite10j_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{btc_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
