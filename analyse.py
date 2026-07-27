@@ -1991,7 +1991,15 @@ if __name__ == "__main__":
                     aktueller_kurs = fmt_de(prow.get('Aktueller_Kurs', "n/a"))
                     performance = fmt_de(prow.get('Performance_Seit_Einstieg%', "n/a"))
                     richtung = str(prow.get('Richtung', '')).strip() or 'Long'
-                    f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} | Richtung: {richtung} <<<\n")
+                    # Ideen_Quelle (NEU, 27.07.2026): woher die Position kam
+                    # (Setups/Trendwende/Short/Langfrist/Edelmetalle/Manuell,
+                    # siehe positionen_tracker.py) - fehlt das Feld (aeltere
+                    # Zeile ohne diese Spalte), 'Manuell' als sicheren
+                    # Standard annehmen statt die Angabe wegzulassen.
+                    ideen_quelle = str(prow.get('Ideen_Quelle', '')).strip()
+                    if not ideen_quelle or ideen_quelle.lower() == 'nan':
+                        ideen_quelle = 'Manuell'
+                    f.write(f"\n>>> {prow['Ticker']} | {prow.get('Name', '')} | Markt: {prow.get('Markt', '')} | Richtung: {richtung} | Quelle: {ideen_quelle} <<<\n")
                     f.write(f"Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} ({prow.get('Einstiegsdatum', '')})\n")
                     f.write(f"Aktuell: {aktueller_kurs}{waehrungszeichen} / Performance: {performance}%\n")
                     f.write(f"Stop: {fmt_de(prow['Stop'])}{waehrungszeichen} / TP1: {fmt_de(prow['TP1'])}{waehrungszeichen} / TP2: {fmt_de(prow['TP2'])}{waehrungszeichen}\n")
@@ -2024,7 +2032,10 @@ if __name__ == "__main__":
                     f.write("\n--- HEUTE GESTOPPT ---\n")
                     for _, prow in gestoppt_heute.iterrows():
                         waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
-                        f.write(f"{prow['Ticker']} -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} (Stop erreicht)\n")
+                        ideen_quelle = str(prow.get('Ideen_Quelle', '')).strip()
+                        if not ideen_quelle or ideen_quelle.lower() == 'nan':
+                            ideen_quelle = 'Manuell'
+                        f.write(f"{prow['Ticker']} (Quelle: {ideen_quelle}) -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} (Stop erreicht)\n")
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
