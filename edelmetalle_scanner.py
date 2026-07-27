@@ -199,15 +199,18 @@ def analyze_edelmetall(ticker, name, bench_close=None):
             return nah_dran and war_ueber_ema_kuerzlich
 
         in_ema_zone_roh = any(ema_pullback_test(s) for s in [data['EMA20'], data['EMA50'], data['Kijun']])
-        # Pflicht-Volumen (GEÄNDERT 27.07.2026, analog zu analyse.py): Pullback-Zone
-        # war der einzige Setup-Typ ohne Volumen-Anforderung - jetzt vereinheitlicht,
-        # dieselbe volumen_kuerzlich-Prüfung von oben (EMA-Breakout) wiederverwendet.
-        in_ema_zone = in_ema_zone_roh and volumen_kuerzlich
+        # Mindest-Volumen (GEÄNDERT 27.07.2026, zweite Iteration, analog zu
+        # analyse.py): bewusst Mindest-Boden (>= 0.7x) statt Pflicht-Spitze -
+        # ein gesunder Pullback laeuft klassischerweise auf abnehmendem statt
+        # steigendem Volumen, eine Spitze waere hier fachlich unpassend.
+        volumen_ausreichend = bool(data['Vol_Ratio'].iloc[-1] >= 0.7)
+        in_ema_zone = in_ema_zone_roh and volumen_ausreichend
 
         trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
         kumo_ausbruch, kumo_level = check_kumo_breakout(data)
 
-        print(f"DEBUG-EDELMETALL: {ticker} ({name}) | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
+        in_zone_grund = "OK" if in_ema_zone else ("EMA-Zone nicht erfüllt" if not in_ema_zone_roh else f"Volumen zu duenn ({data['Vol_Ratio'].iloc[-1]:.2f}x < 0.7)")
+        print(f"DEBUG-EDELMETALL: {ticker} ({name}) | Breakout: {ema_breakout} | InZone: {in_ema_zone} (Grund: {in_zone_grund}) | "
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
         if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90:
