@@ -5,6 +5,8 @@ import datetime
 import time
 import sys
 import os
+import io
+import requests
 from scipy.signal import argrelextrema
 from groq import Groq
 
@@ -308,59 +310,80 @@ def get_fomc_countdown():
     return f"FOMC-Sitzung: in {tage_bis} Tag(en) ({datum_text})"
 
 
-def get_zins_warner():
-    """NEU (22.07.2026): reiner Kontext-Indikator (wie VIX/Lithium-Proxy),
-    KEINE Setup-Quelle, KEINE Abwertungsgrundlage. ^TYX = CBOE 30-Year
-    Treasury Yield Index (Rendite 30-jaehriger US-Staatsanleihen in Prozent,
-    z.B. 4.85 = 4,85%). Steigende Langfristrenditen gelten klassisch als
-    Belastung fuer Aktienbewertungen (v.a. Wachstums-/Tech-Werte) - anhaltend
-    hohe/steigende Werte (insbesondere neue Mehrjahres-Hochs) sind ein
-    Warnsignal fuer den Gesamtmarkt, sinkende Renditen eher entlastend.
-    2 Nachkommastellen (nicht .0f wie bei Index-Benchmarks), da Renditen im
-    niedrigen einstelligen Prozentbereich liegen - .0f wuerde die
-    Aussagekraft komplett zerstoeren."""
+def hole_fred_zinsreihe(serie_id, tage=400):
+    """Laedt eine taegliche Zinsreihe von FRED (St. Louis Fed) als reines CSV
+    ueber die oeffentliche graph/fredgraph.csv-Route - kein API-Key noetig,
+    keine zusaetzliche Bibliothek (nur requests, das ohnehin transitiv ueber
+    google-api-python-client/alpaca-py im Repo vorhanden ist). Gibt ein
+    DataFrame mit Spalten Datum/Wert zurueck (leer bei Fehler)."""
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={serie_id}"
+    antwort = requests.get(url, timeout=15)
+    antwort.raise_for_status()
+    df = pd.read_csv(io.StringIO(antwort.text))
+    df.columns = ["Datum", "Wert"]
+    df["Datum"] = pd.to_datetime(df["Datum"])
+    # FRED schreibt fehlende Handelstage (Feiertage) als "." statt einer Zahl
+    df["Wert"] = pd.to_numeric(df["Wert"], errors="coerce")
+    df = df.dropna(subset=["Wert"])
+    return df.tail(tage)
+
+
+def get_zinskurve_fred():
+    """NEU (27.07.2026, Nutzerwunsch): ersetzt die bisherigen get_zins_warner
+    (30J, ^TYX via yfinance) und get_10j_rendite (10J, ^TNX via yfinance) durch
+    eine konsolidierte Zinskurve ueber alle vier gewuenschten Laufzeiten
+    (2J/5J/10J/30J). Grund fuer FRED statt yfinance: Yahoo Finance hat fuer
+    5J/10J/30J brauchbare Index-Ticker (^FVX/^TNX/^TYX), aber KEINEN
+    verlaesslichen offiziellen Ticker fuer die 2-jaehrige Rendite (nur
+    Futures-Naeherungen mit abweichender Methodik) - FRED (St. Louis Fed,
+    Serien DGS2/DGS5/DGS10/DGS30) deckt alle vier einheitlich und offiziell ab.
+    Reiner Kontext-Indikator, KEINE Setup-Quelle, KEINE Abwertungsgrundlage.
+
+    Zinskurven-Inversion (2J-Rendite > 10J-Rendite, "2s10s") gilt als einer
+    der zuverlaessigsten historischen Rezessions-Fruehindikatoren ueberhaupt -
+    deshalb zusaetzlich zu den vier Einzelwerten der 10J-2J-Spread inkl.
+    Crossover-Erkennung (analog zum bestehenden Golden-/Death-Cross-Muster:
+    wann hat sich das Vorzeichen des Spreads zuletzt gedreht)."""
     try:
-        hist = yf.Ticker("^TYX").history(period="300d")
-        hist = hist.dropna(subset=['Close'])
-        if hist.empty or len(hist) < 200:
-            return "Zins-Warner (30J-US-Rendite): Daten unvollständig"
+        serien = {"2J": "DGS2", "5J": "DGS5", "10J": "DGS10", "30J": "DGS30"}
+        reihen = {}
+        for label, serie_id in serien.items():
+            df = hole_fred_zinsreihe(serie_id)
+            if df.empty:
+                return "Zinskurve (2J/5J/10J/30J, FRED): Daten unvollständig"
+            reihen[label] = df
 
-        close = hist['Close']
-        last_close = close.iloc[-1]
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        aktuelle_werte = {label: df["Wert"].iloc[-1] for label, df in reihen.items()}
 
-        return (f"Zins-Warner (30J-US-Staatsanleihenrendite, ^TYX): {last_close:.2f}% | "
-                f"EMA20: {e20:.2f}% | EMA50: {e50:.2f}%")
+        # 10J-2J-Spread ueber die Zeit (auf gemeinsame Handelstage gemerged,
+        # da FRED-Reihen unterschiedlicher Laufzeiten an einzelnen Tagen
+        # unterschiedliche Luecken haben koennen) + juengster Vorzeichenwechsel.
+        merge = pd.merge(
+            reihen["2J"][["Datum", "Wert"]], reihen["10J"][["Datum", "Wert"]],
+            on="Datum", suffixes=("_2J", "_10J"),
+        )
+        merge["Spread"] = merge["Wert_10J"] - merge["Wert_2J"]
+        aktueller_spread = merge["Spread"].iloc[-1]
+        status = "normal (nicht invertiert)" if aktueller_spread >= 0 else "INVERTIERT"
+
+        vorzeichen = np.sign(merge["Spread"])
+        wechsel = vorzeichen.diff().fillna(0) != 0
+        crossover_datum = merge.loc[wechsel, "Datum"].max() if wechsel.any() else None
+        crossover_text = (
+            f", letzter Crossover am {crossover_datum.strftime('%d.%m.%Y')}"
+            if pd.notna(crossover_datum) else ", kein Crossover in der Historie gefunden"
+        )
+
+        zeile1 = (
+            f"Zinskurve (2J/5J/10J/30J, FRED): 2J {aktuelle_werte['2J']:.2f}% | "
+            f"5J {aktuelle_werte['5J']:.2f}% | 10J {aktuelle_werte['10J']:.2f}% | "
+            f"30J {aktuelle_werte['30J']:.2f}%"
+        )
+        zeile2 = f"10J-2J-Spread: {aktueller_spread:+.2f} Prozentpunkte - {status}{crossover_text}"
+        return zeile1 + "\n" + zeile2
     except Exception as e:
-        print(f"DEBUG: Zins-Warner nicht verfügbar ({e}).")
-        return "Zins-Warner (30J-US-Rendite): Daten unvollständig"
-
-
-def get_10j_rendite():
-    """NEU (24.07.2026): Ergaenzung zu get_zins_warner (30J) - die 10-jaehrige
-    US-Staatsanleihenrendite (^TNX) ist die eigentliche Standard-Referenz, an
-    der Aktienbewertungen/KGVs ueblicherweise gemessen werden (anders als die
-    30J-Rendite, die eher als Langfrist-Warnsignal dient). Auf Yahoo Finance
-    wird ^TNX bereits direkt als Prozentwert gefuehrt (z.B. 4.66 = 4,66%),
-    keine Skalierung noetig - identisches Format wie get_zins_warner. Reiner
-    Kontext-Indikator, KEINE Setup-Quelle, KEINE Abwertungsgrundlage."""
-    try:
-        hist = yf.Ticker("^TNX").history(period="300d")
-        hist = hist.dropna(subset=['Close'])
-        if hist.empty or len(hist) < 200:
-            return "10J-US-Staatsanleihenrendite (^TNX): Daten unvollständig"
-
-        close = hist['Close']
-        last_close = close.iloc[-1]
-        e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-
-        return (f"10J-US-Staatsanleihenrendite (^TNX): {last_close:.2f}% | "
-                f"EMA20: {e20:.2f}% | EMA50: {e50:.2f}%")
-    except Exception as e:
-        print(f"DEBUG: 10J-Rendite nicht verfügbar ({e}).")
-        return "10J-US-Staatsanleihenrendite (^TNX): Daten unvollständig"
+        print(f"DEBUG: Zinskurve (FRED) nicht verfügbar ({e}).")
+        return "Zinskurve (2J/5J/10J/30J, FRED): Daten unvollständig"
 
 
 def get_index_benchmark_yf(ticker, label):
@@ -1586,9 +1609,11 @@ if __name__ == "__main__":
     # Indikator. Hoher VIX (>20) = nervoeser Markt, Setups riskanter. Nur
     # Kontext fuer die Risikoeinschaetzung, keine Setup-/Abwertungsquelle.
     vix_text = get_index_benchmark_yf("^VIX", "VIX (Volatilitaet)")
-    # Zins-Warner (NEU): 30J-US-Staatsanleihenrendite als weiterer reiner
-    # Kontext-Indikator, analog zu VIX/Lithium-Proxy - keine Setup-Quelle.
-    zins_text = get_zins_warner()
+    # Zinskurve (GEÄNDERT 27.07.2026, Nutzerwunsch): ersetzt die vorherigen
+    # get_zins_warner (30J)/get_10j_rendite (10J) durch eine konsolidierte
+    # Zinskurve ueber 2J/5J/10J/30J via FRED, inkl. 10J-2J-Inversions-Check -
+    # siehe get_zinskurve_fred fuer die ausfuehrliche Begruendung.
+    zins_text = get_zinskurve_fred()
     # FOMC-Countdown (NEU, 27.07.2026): reiner Termin-Hinweis, siehe
     # get_fomc_countdown fuer Begruendung/Wartungshinweis.
     fomc_text = get_fomc_countdown()
@@ -1598,8 +1623,7 @@ if __name__ == "__main__":
     # Abwertungsgrundlage. Oel/Gold/Silber/Kupfer als Futures-Kontrakte,
     # DXY als Dollar-Staerke-Indikator (treibt Rohstoffe invers + verzerrt
     # EU-Gewinne/-Kurse bei Waehrungsschwankungen), Bitcoin als zunehmend
-    # verbreiteter Liquiditaets-/Risikoappetit-Gauge, 10J-Rendite als
-    # Standard-Referenzzins (ergaenzend zur bestehenden 30J-Rendite oben).
+    # verbreiteter Liquiditaets-/Risikoappetit-Gauge.
     oel_text = get_index_benchmark_yf("CL=F", "Rohöl (WTI)")
     oel_brent_text = get_index_benchmark_yf("BZ=F", "Rohöl (Brent)")
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
@@ -1607,7 +1631,6 @@ if __name__ == "__main__":
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     dxy_text = get_index_benchmark_yf("DX-Y.NYB", "US-Dollar-Index")
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
-    rendite10j_text = get_10j_rendite()
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -1868,7 +1891,7 @@ if __name__ == "__main__":
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{rendite10j_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{btc_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
