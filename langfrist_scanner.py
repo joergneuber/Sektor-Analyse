@@ -194,12 +194,31 @@ def berechne_naeherungs_kgv(ticker_obj, aktueller_kurs, trailing_eps):
 # aussagekraeftig, obwohl die Naeherungs-Rechnung technisch "funktioniert").
 VERZERRUNGS_FAKTOR = 3.0
 
+# Zweites Verzerrungs-Kriterium (NEU, 27.07.2026, Nutzerfall BF-B): ein
+# starker JUENGSTER Gewinnrueckgang verzerrt die 5J-Naeherung auf eine Art,
+# die der obige Faktor-Check NICHT immer erwischt - BF-B hatte KGV_aktuell
+# 17.05 vs. KGV_forward 15.32 (Verhaeltnis 1.11, unauffaellig), aber
+# Gewinnwachstum -62.7%: die Naeherung teilt historische Kurse durch den
+# HEUTIGEN, frisch eingebrochenen Gewinn - das treibt den 5J-Schnitt
+# rechnerisch nach oben, ohne dass eine echte Unterbewertung vorliegt (der
+# nahezu identische KGV_forward zeigt, dass der Markt selbst keinen
+# grossen Rabatt einpreist). Schwelle bewusst konservativ (-40%), um echte,
+# aber moderate zyklische Gewinnschwankungen nicht faelschlich rauszuwerfen.
+GEWINNRUECKGANG_VERZERRUNGS_SCHWELLE = -0.40
+
 
 def ist_kgv_verzerrt(kgv_aktuell, kgv_forward):
     if kgv_aktuell is None or kgv_forward is None or kgv_aktuell <= 0 or kgv_forward <= 0:
         return False
     verhaeltnis = kgv_aktuell / kgv_forward
     return verhaeltnis > VERZERRUNGS_FAKTOR or verhaeltnis < (1 / VERZERRUNGS_FAKTOR)
+
+
+def ist_gewinnbasis_verzerrt(gewinnwachstum):
+    """Prueft das zweite Verzerrungs-Kriterium (siehe
+    GEWINNRUECKGANG_VERZERRUNGS_SCHWELLE oben). gewinnwachstum wird hier als
+    Bruch erwartet (z.B. -0.627 fuer -62.7%), nicht als Prozentzahl."""
+    return gewinnwachstum is not None and gewinnwachstum < GEWINNRUECKGANG_VERZERRUNGS_SCHWELLE
 
 
 def berechne_einstieg_stop_targets(ticker, aktueller_kurs, trailing_eps, kgv_naeherung_5j):
@@ -307,7 +326,7 @@ def analysiere_langfrist_titel(ticker, name, markt, sektor):
 
         kgv_naeherung = berechne_naeherungs_kgv(t, aktueller_kurs, trailing_eps)
 
-        verzerrt = ist_kgv_verzerrt(kgv_aktuell, kgv_forward)
+        verzerrt = ist_kgv_verzerrt(kgv_aktuell, kgv_forward) or ist_gewinnbasis_verzerrt(gewinnwachstum)
         rabatt_vs_5j_perc = None
         if verzerrt:
             # Trailing-Gewinn durch Einmaleffekt verzerrt (siehe
@@ -428,11 +447,15 @@ def main():
         f.write(f"- Rabatt_vs_5J_Perc (NEU): direkter Prozentwert, wie weit das aktuelle KGV unter\n")
         f.write(f"  (positiv) bzw. ueber (negativ) dem eigenen 5-Jahres-Schnitt liegt - macht die\n")
         f.write(f"  Bewertungs_Status-Kategorie konkret vergleichbar statt nur einzuteilen.\n")
-        f.write(f"- Verzerrungs-Filter (NEU): weichen aktuelles KGV und Forward-KGV um mehr als\n")
-        f.write(f"  Faktor {VERZERRUNGS_FAKTOR:g} voneinander ab, deutet das auf einen Einmaleffekt in den\n")
-        f.write(f"  Trailing-Earnings hin (Abschreibung, Sondergewinn o.ae.) - der Titel wird dann\n")
-        f.write("  als 'Nicht aussagekraeftig' markiert statt faelschlich Guenstig/Teuer einzustufen,\n")
-        f.write(f"  da der aktuelle Gewinn pro Aktie dann keine brauchbare Bewertungsgrundlage ist.\n")
+        f.write(f"- Verzerrungs-Filter (NEU, zwei Kriterien): der Titel wird als 'Nicht aussagekraeftig'\n")
+        f.write(f"  markiert statt faelschlich Guenstig/Teuer einzustufen, wenn (1) aktuelles KGV und\n")
+        f.write(f"  Forward-KGV um mehr als Faktor {VERZERRUNGS_FAKTOR:g} voneinander abweichen (deutet auf einen\n")
+        f.write(f"  Einmaleffekt in den Trailing-Earnings hin, z.B. Abschreibung/Sondergewinn), ODER\n")
+        f.write(f"  (2) das Gewinnwachstum unter {int(GEWINNRUECKGANG_VERZERRUNGS_SCHWELLE*100)}% liegt (ein juengster\n")
+        f.write(f"  Gewinneinbruch verzerrt die 5J-Naeherung nach oben, da historische Kurse durch den\n")
+        f.write(f"  heutigen, gedrueckten Gewinn geteilt werden - Beispielfall 27.07.2026: BF-B mit\n")
+        f.write(f"  KGV_aktuell nah am KGV_forward, aber -62.7% Gewinnwachstum). In beiden Faellen ist\n")
+        f.write(f"  der aktuelle Gewinn pro Aktie keine brauchbare Bewertungsgrundlage.\n")
         f.write(f"- Einstieg/Stop/TP1/TP2 (NEU, NUR fuer Guenstig-Kandidaten berechnet): grobe\n")
         f.write(f"  Orientierung aus dem 1-Jahres-Kursverlauf (EMA50/EMA200/WMA200 als Stuetzen,\n")
         f.write(f"  52-Wochen-Hoch als Chart-Ziel) - deutlich grober als bei den taeglichen Setups\n")
