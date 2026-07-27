@@ -202,6 +202,89 @@ def ist_kgv_verzerrt(kgv_aktuell, kgv_forward):
     return verhaeltnis > VERZERRUNGS_FAKTOR or verhaeltnis < (1 / VERZERRUNGS_FAKTOR)
 
 
+def berechne_einstieg_stop_targets(ticker, aktueller_kurs, trailing_eps, kgv_naeherung_5j):
+    """NEU (27.07.2026, Nutzerwunsch): ergaenzt die reine KGV-Bewertung um
+    eine grobe Einstiegs-/Stop-Orientierung samt zwei TP-Varianten - wird
+    NUR fuer Titel mit Bewertungs_Status = 'Guenstig' aufgerufen (siehe
+    main()), nicht fuer alle 79, um die zusaetzlichen yfinance-Abrufe gering
+    zu halten.
+
+    Zwei unabhaengige TP-Logiken, bewusst beide ausgegeben (Nutzerwunsch,
+    da beide Ansaetze unterschiedliche Fragen beantworten):
+    - TP1_Bewertung/TP2_Bewertung: rein rechnerisch aus der KGV-Naeherung -
+      TP1 = Kurs, bei dem das aktuelle KGV wieder dem eigenen 5J-Schnitt
+      entspricht (die Rabatt-Luecke schliesst sich vollstaendig), TP2 =
+      derselbe Kurs nochmal um die bestehende TEUER_SCHWELLE gestreckt
+      (Uebertreibung nach oben, analog zur bestehenden Guenstig/Teuer-
+      Logik). Setzt voraus, dass der heutige Gewinn pro Aktie halbwegs
+      stabil bleibt - KEINE Prognose, nur eine rechnerische Rueck-
+      Projektion derselben Naeherungs-Methodik wie das Rabatt-Feld.
+    - Einstieg/Stop/TP1_Chart/TP2_Chart: rein charttechnisch aus dem
+      1-Jahres-Kursverlauf (EMA50/EMA200/WMA200 als Unterstuetzungs-
+      Zonen, 52-Wochen-Hoch als erstes chartechnisches Ziel) - unabhaengig
+      von der Bewertung. Bewusst GROBER als bei den taeglichen Setups
+      (kein Ichimoku/RSI/Divergenz-Apparat), da es hier nur um eine
+      Orientierung fuer eine langfristige Position geht, nicht um ein
+      praezises Kurzfrist-Timing.
+
+    Gibt None zurueck, wenn nicht genug Kursdaten fuer die 200-Tage-
+    Durchschnitte vorliegen (z.B. sehr junge Notierung) - dann bleiben die
+    entsprechenden Felder in der Ausgabe leer, kein Fehler."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist.empty or "Close" not in hist.columns or len(hist) < 210:
+            return None
+
+        close = hist["Close"]
+        ema50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+        ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+        gewichte = list(range(1, len(close) + 1))[-200:]
+        wma200 = float((close.iloc[-200:] * gewichte).sum() / sum(gewichte))
+        hoch_52w = float(hist["High"].max())
+
+        # Einstieg (chartbasiert): naechste Unterstuetzung UNTERHALB des
+        # aktuellen Kurses unter den drei langfristigen Durchschnitten -
+        # liegt der Kurs schon nah dran (<= 5%), gilt der aktuelle Kurs
+        # selbst als guter Einstieg, sonst wird die Unterstuetzung als
+        # Ruecksetzer-Zone vorgeschlagen.
+        stuetzen_unten = [s for s in (ema50, ema200, wma200) if s <= aktueller_kurs]
+        naechste_stuetze = max(stuetzen_unten) if stuetzen_unten else None
+
+        if naechste_stuetze is not None and (aktueller_kurs - naechste_stuetze) / aktueller_kurs * 100 <= 5:
+            einstieg_hinweis = f"Jetzt ({round(aktueller_kurs, 2)}) - nah an Unterstuetzung"
+        elif naechste_stuetze is not None:
+            einstieg_hinweis = f"Ruecksetzer abwarten (~{round(naechste_stuetze, 2)})"
+        else:
+            einstieg_hinweis = "Kurs liegt unter allen langfristigen Durchschnitten - Vorsicht, moeglicher Trendbruch"
+
+        # Stop (chartbasiert): 5% unter der tieferen der beiden 200er-
+        # Durchschnitte - ein nachhaltiger Bruch des langfristigen Trends
+        # gilt hier als strukturelle Entwertung der These, nicht ein
+        # kurzfristiger Ruecksetzer.
+        stop_chart = round(min(ema200, wma200) * 0.95, 2)
+
+        tp1_chart = round(hoch_52w, 2)
+        tp2_chart = round(hoch_52w * 1.10, 2)
+
+        tp1_bewertung = None
+        tp2_bewertung = None
+        if trailing_eps and trailing_eps > 0 and kgv_naeherung_5j and kgv_naeherung_5j > 0:
+            tp1_bewertung = round(trailing_eps * kgv_naeherung_5j, 2)
+            tp2_bewertung = round(trailing_eps * kgv_naeherung_5j * TEUER_SCHWELLE, 2)
+
+        return {
+            "Einstieg_Hinweis": einstieg_hinweis,
+            "Stop_Chart": stop_chart,
+            "TP1_Chart": tp1_chart,
+            "TP2_Chart": tp2_chart,
+            "TP1_Bewertung": tp1_bewertung,
+            "TP2_Bewertung": tp2_bewertung,
+        }
+    except Exception as e:
+        print(f"WARNUNG: Einstieg/Stop/TP-Berechnung fuer {ticker} fehlgeschlagen ({e}) - Felder bleiben leer.")
+        return None
+
+
 def analysiere_langfrist_titel(ticker, name, markt, sektor):
     try:
         t = yf.Ticker(ticker)
@@ -251,6 +334,7 @@ def analysiere_langfrist_titel(ticker, name, markt, sektor):
             "KGV_aktuell": round(kgv_aktuell, 2),
             "KGV_Naeherung_5J": kgv_naeherung,
             "Rabatt_vs_5J_Perc": rabatt_vs_5j_perc,
+            "Trailing_EPS": trailing_eps,
             "KGV_forward": round(kgv_forward, 2) if kgv_forward else None,
             "KUV": round(kuv, 2) if kuv else None,
             "KBV": round(kbv, 2) if kbv else None,
@@ -284,12 +368,40 @@ def main():
         "KGV_Naeherung_5J", "Rabatt_vs_5J_Perc", "KGV_forward", "KUV", "KBV",
         "Dividendenrendite_Perc", "Verschuldung_DE", "Umsatzwachstum_Perc",
         "Gewinnwachstum_Perc", "Bewertungs_Status",
+        "Einstieg_Hinweis", "Stop_Chart", "TP1_Chart", "TP2_Chart",
+        "TP1_Bewertung", "TP2_Bewertung",
     ]
-    df = pd.DataFrame(ergebnisse, columns=SPALTEN)
+    # DataFrame zunaechst mit ALLEN Schluesseln aus ergebnisse aufbauen
+    # (inkl. Trailing_EPS, das intern fuer die Guenstig-Zielberechnung
+    # unten gebraucht wird, aber nicht in die finale CSV soll) - danach
+    # fehlende Ziel-Spalten (nur fuer Guenstig-Kandidaten befuellt)
+    # nachruesten.
+    df = pd.DataFrame(ergebnisse)
+    for spalte in SPALTEN + ["Trailing_EPS"]:
+        if spalte not in df.columns:
+            df[spalte] = None
+
     if not df.empty:
         rang = {"Guenstig": 0, "Neutral": 1, "Teuer": 2, "Nicht aussagekraeftig": 3}
         df["_rang"] = df["Bewertungs_Status"].map(rang).fillna(4)
         df = df.sort_values(by=["_rang", "Rabatt_vs_5J_Perc"], ascending=[True, False]).drop(columns=["_rang"])
+
+        # Einstieg/Stop/TP-Ziele (NEU, 27.07.2026): nur fuer die tatsaechlich
+        # interessanten Guenstig-Kandidaten berechnen (zusaetzlicher
+        # yfinance-Abruf pro Titel) statt fuer alle 79 - siehe
+        # berechne_einstieg_stop_targets fuer die Methodik.
+        guenstig_idx = df.index[df["Bewertungs_Status"] == "Guenstig"]
+        print(f"DEBUG: Berechne Einstieg/Stop/TP-Ziele fuer {len(guenstig_idx)} Guenstig-Kandidaten...")
+        for idx in guenstig_idx:
+            ticker = df.at[idx, "Ticker"]
+            targets = berechne_einstieg_stop_targets(
+                ticker, df.at[idx, "Kurs"], df.at[idx, "Trailing_EPS"], df.at[idx, "KGV_Naeherung_5J"]
+            )
+            if targets:
+                for feld, wert in targets.items():
+                    df.at[idx, feld] = wert
+
+    df = df[SPALTEN]
 
     dateiname_csv = f"Langfrist_Bewertung({today}).csv"
     df.to_csv(dateiname_csv, index=False, sep=';', encoding='utf-8-sig')
@@ -321,6 +433,16 @@ def main():
         f.write(f"  Trailing-Earnings hin (Abschreibung, Sondergewinn o.ae.) - der Titel wird dann\n")
         f.write("  als 'Nicht aussagekraeftig' markiert statt faelschlich Guenstig/Teuer einzustufen,\n")
         f.write(f"  da der aktuelle Gewinn pro Aktie dann keine brauchbare Bewertungsgrundlage ist.\n")
+        f.write(f"- Einstieg/Stop/TP1/TP2 (NEU, NUR fuer Guenstig-Kandidaten berechnet): grobe\n")
+        f.write(f"  Orientierung aus dem 1-Jahres-Kursverlauf (EMA50/EMA200/WMA200 als Stuetzen,\n")
+        f.write(f"  52-Wochen-Hoch als Chart-Ziel) - deutlich grober als bei den taeglichen Setups\n")
+        f.write(f"  (kein Ichimoku/RSI/Divergenz-Apparat), da es hier nur um eine Orientierung fuer\n")
+        f.write(f"  eine langfristige Position geht, nicht um praezises Kurzfrist-Timing. ZWEI\n")
+        f.write(f"  unabhaengige TP-Varianten: TP1/TP2_Bewertung = rechnerische Rueck-Projektion aus\n")
+        f.write(f"  der KGV-Naeherung (Kurs, bei dem sich die Rabatt-Luecke schliesst, bzw. leicht\n")
+        f.write(f"  darueber hinaus), TP1/TP2_Chart = charttechnisch aus dem 52-Wochen-Hoch. Beide\n")
+        f.write(f"  koennen stark auseinanderliegen - das ist normal, sie beantworten unterschiedliche\n")
+        f.write(f"  Fragen (Bewertungs-Normalisierung vs. Chart-Widerstand).\n")
         f.write("- Kein Stop, kein Kursziel, keine CRV-Angabe - das ist bewusst kein Trade-Setup,\n")
         f.write("  sondern eine Bewertungs-Uebersicht zur eigenen Weiterrecherche.\n\n")
 
@@ -336,8 +458,15 @@ def main():
                     f"KGV aktuell: {row['KGV_aktuell']} | KGV-Naeherung (5J): {row['KGV_Naeherung_5J']} | Rabatt vs. 5J-Schnitt: {rabatt_text} | Bewertung: {row['Bewertungs_Status']}\n"
                     f"KGV forward: {row['KGV_forward']} | KUV: {row['KUV']} | KBV: {row['KBV']}\n"
                     f"Dividendenrendite: {row['Dividendenrendite_Perc']}% | Verschuldung (D/E): {row['Verschuldung_DE']}\n"
-                    f"Umsatzwachstum: {row['Umsatzwachstum_Perc']}% | Gewinnwachstum: {row['Gewinnwachstum_Perc']}%\n\n"
+                    f"Umsatzwachstum: {row['Umsatzwachstum_Perc']}% | Gewinnwachstum: {row['Gewinnwachstum_Perc']}%\n"
                 )
+                if pd.notna(row['Einstieg_Hinweis']):
+                    f.write(
+                        f"Einstieg: {row['Einstieg_Hinweis']} | Stop (Chart): {row['Stop_Chart']}\n"
+                        f"TP1 (Bewertung): {row['TP1_Bewertung']} | TP2 (Bewertung): {row['TP2_Bewertung']}\n"
+                        f"TP1 (Chart): {row['TP1_Chart']} | TP2 (Chart): {row['TP2_Chart']}\n"
+                    )
+                f.write("\n")
 
     print(f"Gespeichert: {dateiname_briefing}")
     print("Langfrist-Bewertungs-Scanner abgeschlossen.")
