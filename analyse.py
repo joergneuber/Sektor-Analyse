@@ -1955,10 +1955,25 @@ if __name__ == "__main__":
         f.write("="*50 + "\n")
 
         positionen_datei = "Offene_Positionen.csv"
-        # Eigenes Format für den Vergleich mit Ausstiegsdatum, das
-        # positionen_tracker.py jetzt einheitlich als TT.MM.JJJJ schreibt -
-        # 'today' (oben, %Y-%m-%d) bleibt für Dateinamen unverändert
-        heute_de = datetime.datetime.now().strftime("%d.%m.%Y")
+        # GEÄNDERT (27.07.2026, Nutzerwunsch): vorher exakter Tages-Match
+        # (Ausstiegsdatum == heute) - eine gestoppte Position tauchte damit
+        # nur an genau dem einen Tag in der Auswertung auf und war beim
+        # kleinsten Ausfall (Kontingent, verpasster Workflow-Lauf, siehe
+        # bekannte GitHub-Actions-Scheduling-Problematik) fuer immer
+        # "verpasst". Jetzt stattdessen ein rollierendes 10-Werktage-Fenster
+        # (Kalenderwochenenden werden uebersprungen, echte Feiertage NICHT
+        # beruecksichtigt - reine Kalender-Naeherung) - danach verschwindet
+        # die Position automatisch aus der Auswertung, bleibt aber im Sheet
+        # bestehen (manuelles Loeschen weiterhin dem Nutzer ueberlassen).
+        werktage_grenze = pd.Timestamp.now().normalize() - pd.tseries.offsets.BDay(10)
+
+        def ist_kuerzlich_gestoppt(ausstiegsdatum_str):
+            try:
+                datum = pd.to_datetime(str(ausstiegsdatum_str).strip(), format="%d.%m.%Y")
+                return datum >= werktage_grenze
+            except Exception:
+                return False
+
         if os.path.exists(positionen_datei):
             try:
                 df_positionen = pd.read_csv(positionen_datei, sep=';', encoding='utf-8-sig')
@@ -1967,11 +1982,12 @@ if __name__ == "__main__":
                 f.write(f"(Fehler beim Lesen von {positionen_datei}: {e})\n")
 
             offene = df_positionen[df_positionen['Status'].astype(str).str.strip().str.lower() == 'offen'] if not df_positionen.empty else df_positionen
-            gestoppt_heute = df_positionen[
-                (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt') & (df_positionen['Ausstiegsdatum'].astype(str) == heute_de)
+            gestoppt_kuerzlich = df_positionen[
+                (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt')
+                & (df_positionen['Ausstiegsdatum'].apply(ist_kuerzlich_gestoppt))
             ] if not df_positionen.empty else df_positionen
 
-            if offene.empty and gestoppt_heute.empty:
+            if offene.empty and gestoppt_kuerzlich.empty:
                 f.write("Keine offenen Positionen erfasst.\n")
             else:
                 def fmt_de(wert):
@@ -2028,14 +2044,14 @@ if __name__ == "__main__":
                     for headline in get_news_headlines(prow['Ticker']):
                         f.write(f"News {headline}\n")
 
-                if not gestoppt_heute.empty:
-                    f.write("\n--- HEUTE GESTOPPT ---\n")
-                    for _, prow in gestoppt_heute.iterrows():
+                if not gestoppt_kuerzlich.empty:
+                    f.write("\n--- GESTOPPT (letzte 10 Werktage) ---\n")
+                    for _, prow in gestoppt_kuerzlich.iterrows():
                         waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
                         ideen_quelle = str(prow.get('Ideen_Quelle', '')).strip()
                         if not ideen_quelle or ideen_quelle.lower() == 'nan':
                             ideen_quelle = 'Manuell'
-                        f.write(f"{prow['Ticker']} (Quelle: {ideen_quelle}) -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} (Stop erreicht)\n")
+                        f.write(f"{prow['Ticker']} (Quelle: {ideen_quelle}) -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} am {prow.get('Ausstiegsdatum', '')} (Stop erreicht)\n")
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
