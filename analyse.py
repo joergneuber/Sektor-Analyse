@@ -1096,13 +1096,18 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             return nah_dran and war_ueber_ema_kuerzlich
 
         in_ema_zone_roh = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
-        # Pflicht-Volumen (GEÄNDERT 27.07.2026, Nutzerwunsch): Pullback-Zone war
-        # bisher der einzige der vier Setup-Typen OHNE jede Volumen-Anforderung
-        # (EMA-Breakout/Trendlinien-Ausbruch/Kumo-Ausbruch verlangen alle schon
-        # Volumen > Vol_SMA20 an einem der letzten 3 Tage) - jetzt vereinheitlicht,
-        # dieselbe volumen_kuerzlich-Prüfung von oben (EMA-Breakout) wiederverwendet,
-        # da identische Fensterlogik (Tag der Bestätigung muss nicht exakt heute sein).
-        in_ema_zone = in_ema_zone_roh and volumen_kuerzlich
+        # Mindest-Volumen (GEÄNDERT 27.07.2026, zweite Iteration nach Nutzer-
+        # feedback): Pullback-Zone war der einzige der vier Setup-Typen ohne
+        # jede Volumen-Anforderung. Eine echte Volumen-SPITZE (wie bei EMA-
+        # Breakout/Trendlinie/Kumo) passt hier aber fachlich nicht - ein
+        # gesunder Pullback zeichnet sich klassischerweise durch ABNEHMENDES
+        # Volumen aus (kein Verkaufsdruck), die Spitze gehört zum vorherigen
+        # Ausbruch, nicht zur Konsolidierung selbst. Deshalb bewusst nur ein
+        # Mindest-BODEN (heutiges Vol_Ratio >= 0.7) statt einer Pflicht-Spitze -
+        # schliesst nur die wirklich teilnahmslosen, duennen Tage aus, ohne
+        # saubere, ruhige Pullbacks faelschlich zu verwerfen.
+        volumen_ausreichend = bool(data['Vol_Ratio'].iloc[-1] >= 0.7)
+        in_ema_zone = in_ema_zone_roh and volumen_ausreichend
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1114,8 +1119,12 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
         # 5. Setup-Typ mit Pro-Check Filter
         # --- DEBUG-LOGGING ---
-        # Dieser Print zeigt dir im Log genau, warum ein Setup abgelehnt wird
-        print(f"DEBUG: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
+        # Dieser Print zeigt dir im Log genau, warum ein Setup abgelehnt wird.
+        # NEU (27.07.2026): InZone-Grund ergänzt (EMA-Naehe/Higher-Low
+        # gescheitert vs. Volumen unter 0,7x) - vorher war bei InZone=False
+        # nicht erkennbar, welcher der beiden Gruende zutraf.
+        in_zone_grund = "OK" if in_ema_zone else ("EMA-Zone nicht erfüllt" if not in_ema_zone_roh else f"Volumen zu duenn ({data['Vol_Ratio'].iloc[-1]:.2f}x < 0.7)")
+        print(f"DEBUG: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} (Grund: {in_zone_grund}) | "
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
         # --- Filter-Logik ---
@@ -1443,9 +1452,11 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             return nah_dran and war_ueber_ema_kuerzlich
 
         in_ema_zone_roh = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
-        # Pflicht-Volumen (GEÄNDERT 27.07.2026): siehe US-Funktion für Begründung -
-        # dieselbe volumen_kuerzlich-Prüfung von oben (EMA-Breakout) wiederverwendet.
-        in_ema_zone = in_ema_zone_roh and volumen_kuerzlich
+        # Mindest-Volumen (GEÄNDERT 27.07.2026): siehe US-Funktion für Begründung -
+        # bewusst Mindest-Boden (>= 0.7x) statt Pflicht-Spitze, da ein gesunder
+        # Pullback klassischerweise auf abnehmendem statt steigendem Volumen laeuft.
+        volumen_ausreichend = bool(data['Vol_Ratio'].iloc[-1] >= 0.7)
+        in_ema_zone = in_ema_zone_roh and volumen_ausreichend
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1455,7 +1466,9 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         # Wolke komplett von unten nach oben durchbrochen, Pflicht-Volumen)
         kumo_ausbruch, kumo_level = check_kumo_breakout(data)
 
-        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} | "
+        # NEU (27.07.2026): InZone-Grund ergänzt, siehe US-Funktion für Begründung.
+        in_zone_grund = "OK" if in_ema_zone else ("EMA-Zone nicht erfüllt" if not in_ema_zone_roh else f"Volumen zu duenn ({data['Vol_Ratio'].iloc[-1]:.2f}x < 0.7)")
+        print(f"DEBUG-EU: {ticker} | Breakout: {ema_breakout} | InZone: {in_ema_zone} (Grund: {in_zone_grund}) | "
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
         if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90:
@@ -1888,7 +1901,7 @@ if __name__ == "__main__":
         f.write("- Kandidaten: US-Sektoren (inkl. Themen-ETFs) + EU-Werte (DAX40/MDAX/Eurozonen-Large-Caps, EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
         f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch ODER Kumo-Ausbruch (Setup_Typ listet ALLE zutreffenden Pfade auf, z.B. \"Trendlinien-Ausbruch + Kumo-Ausbruch\")\n")
-        f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten), Pflicht-Volumen (NEU, 27.07.2026: an einem der letzten 3 Tage über SMA20 - vorher einziger Setup-Typ ohne Volumen-Anforderung)\n")
+        f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten), Mindest-Volumen (GEÄNDERT 27.07.2026: heutiges Vol_Ratio >= 0.7 statt einer Pflicht-Spitze - ein gesunder Pullback läuft klassischerweise auf abnehmendem statt steigendem Volumen)\n")
         f.write("- Trendlinien-Ausbruch: fallende Linie durch >= 3 Swing-Highs (120 Tage, 1% Toleranz), Pflicht-Volumen\n")
         f.write("- Momentum: Relative Stärke der Aktie > -10% vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
         f.write("- Momentum: Kurs max. 25% unter dem 52-Wochen-Hoch\n")
