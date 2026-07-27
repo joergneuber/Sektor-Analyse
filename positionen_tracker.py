@@ -26,7 +26,7 @@ ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
 SPALTEN = [
-    'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung',
+    'Ticker', 'Name', 'Sektor', 'Ideen_Quelle', 'Markt', 'Waehrung', 'Richtung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
     'Aktueller_Kurs', 'Performance_Seit_Einstieg%', 'TP_Hinweis',
@@ -176,6 +176,7 @@ def vervollstaendige_stammdaten(df):
         markt_leer = str(row['Markt']).strip() in ("", "nan")
         waehrung_leer = str(row['Waehrung']).strip() in ("", "nan")
         name_leer = str(row['Name']).strip() in ("", "nan")
+        quelle_leer = str(row.get('Ideen_Quelle', '')).strip() in ("", "nan")
 
         if markt_leer:
             df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
@@ -191,6 +192,15 @@ def vervollstaendige_stammdaten(df):
                 df.at[idx, 'Name'] = name
             except Exception:
                 df.at[idx, 'Name'] = ticker
+        if quelle_leer:
+            # Kein Scanner-Ursprung eingetragen -> als eigenstaendige,
+            # nicht-automatisierte Idee werten (siehe Anleitungszeile fuer
+            # die moeglichen Werte: Setups/Trendwende/Short/Langfrist/
+            # Edelmetalle/Manuell). Gilt auch fuer Bestandspositionen von
+            # vor Einfuehrung dieses Feldes (27.07.2026) - werden rueckwirkend
+            # als 'Manuell' markiert, da die urspruengliche Quelle nicht mehr
+            # rekonstruierbar ist.
+            df.at[idx, 'Ideen_Quelle'] = 'Manuell'
 
     return df
 
@@ -346,7 +356,10 @@ def stelle_anleitung_sicher(df):
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
         ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
-        "Sektor: optional, rein informativ."
+        "Sektor: optional, rein informativ. "
+        "Ideen_Quelle (NEU, optional): woher die Idee kam - Setups / Trendwende / Short / "
+        "Langfrist / Edelmetalle / Manuell. Leer lassen = wird automatisch als 'Manuell' "
+        "gewertet (also: nicht aus einem der Scanner, sondern eigenstaendig recherchiert)."
     )
     anleitung_sektor = (
         "OPTIONSSCHEIN (zusaetzlich zu Ticker/Einstieg/Stop): Produkt_Typ = 'Optionsschein', "
