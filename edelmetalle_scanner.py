@@ -198,7 +198,11 @@ def analyze_edelmetall(ticker, name, bench_close=None):
             )
             return nah_dran and war_ueber_ema_kuerzlich
 
-        in_ema_zone = any(ema_pullback_test(s) for s in [data['EMA20'], data['EMA50'], data['Kijun']])
+        in_ema_zone_roh = any(ema_pullback_test(s) for s in [data['EMA20'], data['EMA50'], data['Kijun']])
+        # Pflicht-Volumen (GEÄNDERT 27.07.2026, analog zu analyse.py): Pullback-Zone
+        # war der einzige Setup-Typ ohne Volumen-Anforderung - jetzt vereinheitlicht,
+        # dieselbe volumen_kuerzlich-Prüfung von oben (EMA-Breakout) wiederverwendet.
+        in_ema_zone = in_ema_zone_roh and volumen_kuerzlich
 
         trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
         kumo_ausbruch, kumo_level = check_kumo_breakout(data)
