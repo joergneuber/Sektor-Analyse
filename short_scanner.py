@@ -199,25 +199,35 @@ def check_ema_breakdown(data):
     return False
 
 
-def check_pullback_zone_short(data):
+def check_pullback_zone_short(data, ticker=None):
     """Spiegelbild zu Pullback-Zone: Kurs testet EMA20/50/Kijun von UNTEN
     (Widerstandstest im Abwaertstrend), Lower-High bestaetigt (statt
-    Higher-Low). Pflicht-Volumen (GEÄNDERT 27.07.2026, analog zu analyse.py/
-    edelmetalle_scanner.py): war der einzige Setup-Typ ohne Volumen-
-    Anforderung - jetzt an einem der letzten 3 Tage Vol_Ratio > 1.0 noetig,
-    konsistent mit EMA-Breakdown oben."""
+    Higher-Low). Mindest-Volumen (GEÄNDERT 27.07.2026, zweite Iteration nach
+    Nutzerfeedback, analog zu analyse.py/edelmetalle_scanner.py): bewusst nur
+    ein Mindest-BODEN (heutiges Vol_Ratio >= 0.7) statt einer Pflicht-Spitze -
+    ein gesunder Pullback/Widerstandstest laeuft klassischerweise auf
+    abnehmendem statt steigendem Volumen, eine Spitzen-Pflicht waere hier
+    fachlich unpassend. ticker (optional): nur fuers Debug-Logging, aendert
+    die Logik nicht."""
     if len(data) < 30:
         return False
     close = data['Close'].iloc[-1]
     zonen = [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['Kijun'].iloc[-1]]
     in_zone = any(pd.notna(z) and 0 <= (z - close) / close <= 0.02 for z in zonen)
     if not in_zone:
+        if ticker:
+            print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: EMA-Zone nicht erfüllt)")
         return False
-    volumen_ok = any(data['Vol_Ratio'].iloc[-1 - i] > 1.0 for i in range(0, 3))
-    if not volumen_ok:
+    vol_ratio_heute = data['Vol_Ratio'].iloc[-1]
+    volumen_ausreichend = bool(vol_ratio_heute >= 0.7)
+    if not volumen_ausreichend:
+        if ticker:
+            print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: Volumen zu duenn ({vol_ratio_heute:.2f}x < 0.7))")
         return False
     ilocs_max = argrelextrema(data['High'].tail(20).values, np.greater_equal, order=3)[0]
     if len(ilocs_max) < 2:
+        if ticker:
+            print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: zu wenig Swing-Hochs fuer Lower-High-Pruefung)")
         return False
     lower_high = data['High'].tail(20).iloc[ilocs_max[-1]] < data['High'].tail(20).iloc[ilocs_max[-2]]
     return bool(lower_high)
@@ -447,7 +457,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         pfade.append("Kumo-Ausbruch unten")
     if check_ema_breakdown(data):
         pfade.append("EMA-Breakdown")
-    pullback_short = check_pullback_zone_short(data)
+    pullback_short = check_pullback_zone_short(data, ticker=ticker)
     muster = check_bearish_confirmation(data)
     if pullback_short and muster:
         pfade.append("Pullback-Zone short")
