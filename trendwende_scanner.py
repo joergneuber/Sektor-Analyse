@@ -42,6 +42,7 @@ liegen (wird importiert).
 """
 
 import datetime
+import math
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -71,10 +72,10 @@ from alpaca.data.timeframe import TimeFrame
 # Wie nah am 52-Wochen-Tief ein Kandidat maximal noch sein darf, um als
 # "Trendwende-Kandidat" zu gelten (ausgewogen: nicht nur exakte Tiefs, aber
 # auch keine Werte, die schon weit vom Tief weggelaufen sind).
-ABSTAND_52W_TIEF_MAX = 20.0  # Prozent oberhalb des 52-Wochen-Tiefs (GEÄNDERT 23.07.2026, vorher 10.0 - siehe WMA200_LOOKBACK_TAGE-Kommentar unten für die Begründung)
+ABSTAND_52W_TIEF_MAX = 20.0  # Prozent oberhalb des 52-Wochen-Tiefs (GEÃNDERT 23.07.2026, vorher 10.0 - siehe WMA200_LOOKBACK_TAGE-Kommentar unten fÃ¼r die BegrÃ¼ndung)
 WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl Handelstage
                             # unter der WMA200 gelegen haben, nicht zwingend heute noch -
-                            # siehe Begründung bei _pruefe_trendwende
+                            # siehe BegrÃ¼ndung bei _pruefe_trendwende
 
 # Zeitfenster fuer "frisches" Signal (C - beide Bestaetigungen muessen
 # innerhalb dieser letzten N Handelstage aufgetreten sein)
@@ -145,6 +146,92 @@ def check_stochastik_crossover_recent(data, frische_tage=FRISCHE_TAGE, ueberverk
         if crossover and aus_ueberverkauft:
             return True
     return False
+
+
+def get_swing_highs_above(data, entry, lookback=120, order=5, max_n=3):
+    """Aufwaerts-Pendant zu get_swing_lows_below im short_scanner.py: echte
+    Pivot-Hochs (lokale Kurshochs) aus der juengeren Kurshistorie als
+    zusaetzliche Aufwaerts-Ziel-Kandidaten, gefiltert auf > entry."""
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < 10:
+        return []
+    highs = fenster['High'].values
+    idx_swings = argrelextrema(highs, np.greater_equal, order=order)[0]
+    kandidaten = sorted(
+        {round(float(highs[i]), 4) for i in idx_swings if pd.notna(highs[i]) and highs[i] > entry}
+    )
+    return kandidaten[:max_n]
+
+
+def get_round_number_targets_up(entry, anzahl=2):
+    """Aufwaerts-Pendant zu get_round_number_targets im short_scanner.py:
+    psychologische runde Kursmarken OBERHALB des Einstiegs. Gleiche
+    kursgroessen-skalierte Schrittweite wie beim Short-Pendant."""
+    if entry >= 1000:
+        schritt = 50
+    elif entry >= 100:
+        schritt = 5
+    elif entry >= 10:
+        schritt = 1
+    elif entry >= 1:
+        schritt = 0.1
+    else:
+        schritt = 0.01
+
+    marken = []
+    naechste_runde = math.ceil(entry / schritt) * schritt
+    if naechste_runde <= entry:
+        naechste_runde += schritt
+    aktuell = naechste_runde
+    while len(marken) < anzahl:
+        marken.append(round(aktuell, 4))
+        aktuell += schritt
+    return marken
+
+
+def sammle_aufwaerts_ziele(data, entry, mindest_abstand_perc=1.0, dedupe_abstand_perc=1.5):
+    """NEU (analog zu sammle_abwaerts_ziele in short_scanner.py, hier nach
+    oben gespiegelt): ersetzt die zuvor ungefilterte EMA/Fib/Kumo-Liste, aus
+    der TP1 haeufig ein technisch kaum aussagekraeftiger, viel zu naher Wert
+    war (bei einem gerade erst vom Boden abgedrehten Titel liegt z.B. die
+    EMA20 fast zwangslaeufig hauchduenn ueber dem Kurs). Sammelt alle
+    plausiblen charttechnischen Aufwaerts-Ziel-Kandidaten: Fib-Extension
+    (get_fib_levels aus analyse.py, bereits die Aufwaerts-Variante), 52-
+    Wochen-Hoch, echte Pivot-Hochs, die Ichimoku-Wolke, gleitende
+    Durchschnitte (nur falls sie oberhalb des Kurses liegen) und
+    psychologische runde Kursmarken. Zwei Filter sorgen fuer verwertbare
+    TP1/TP2 statt Rauschen:
+    - mindest_abstand_perc: Kandidaten, die weniger als X% ueber dem Kurs
+      liegen, werden verworfen (sonst waere TP1 z.B. 0,1% ueber dem Kurs -
+      kein sinnvolles erstes Kursziel).
+    - dedupe_abstand_perc: liegen zwei Kandidaten weniger als Y% auseinander,
+      wird nur der naeher am Kurs liegende behalten."""
+    fib1, fib2 = get_fib_levels(data)
+    kumo_werte = [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]]
+    hoch_52w = float(data['High'].max())
+    swing_highs = get_swing_highs_above(data, entry)
+    ema_werte = [
+        data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1],
+        data['EMA200'].iloc[-1], data['WMA200'].iloc[-1],
+    ]
+    runde_zahlen = get_round_number_targets_up(entry)
+
+    alle_kandidaten = [fib1, fib2, hoch_52w] + kumo_werte + swing_highs + ema_werte + runde_zahlen
+    roh = sorted(
+        {round(float(v), 4) for v in alle_kandidaten if pd.notna(v) and v > entry}
+    )
+
+    # Mindestabstand zum Kurs (Rauschen direkt ueber dem Einstieg raus)
+    mindest_wert = entry * (1 + mindest_abstand_perc / 100)
+    gefiltert = [v for v in roh if v >= mindest_wert]
+
+    # Dedupe: zu nah beieinander liegende Kandidaten zusammenfassen
+    ziele = []
+    for v in gefiltert:
+        if not ziele or (v - ziele[-1]) / entry * 100 >= dedupe_abstand_perc:
+            ziele.append(v)
+
+    return ziele
 
 
 def juengstes_verlaufstief(data, fenster=10):
@@ -349,9 +436,9 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     if anzahl_bonus == 0:
         qualitaets_bonus = "Basis"
     elif anzahl_bonus == 1:
-        qualitaets_bonus = "Bestätigt"
+        qualitaets_bonus = "BestÃ¤tigt"
     else:
-        qualitaets_bonus = "Stark bestätigt"
+        qualitaets_bonus = "Stark bestÃ¤tigt"
 
     setup_typ = "RSI-Divergenz + Kumo-Ausbruch"
     if bonus_komponenten:
@@ -370,23 +457,30 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     stop = juengstes_verlaufstief(data)
     risk_perc = round(((entry - stop) / entry) * 100, 2)
 
-    # TP-Kandidaten: naechste Widerstaende oberhalb (EMAs, Fib-Extension,
-    # Kumo-Obergrenze) - gleiche Logik wie im Hauptscanner, unabhaengig von
-    # der Trend-Richtung gueltig.
-    fib1, fib2 = get_fib_levels(data)
-    kumo_werte = [w for w in [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]] if pd.notna(w)]
-    potenzial_targets = sorted(
-        [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1],
-         data['EMA200'].iloc[-1], data['WMA200'].iloc[-1], fib1, fib2] + kumo_werte
-    )
-    targets_above = [t for t in potenzial_targets if t > entry]
-    tp1 = targets_above[0] if targets_above else entry * 1.08
-    tp2 = targets_above[1] if len(targets_above) >= 2 else tp1 * 1.05
+    # TP-Kandidaten (NEU - siehe sammle_aufwaerts_ziele): gefilterte/dedupte
+    # Liste aus Fib-Extension, 52W-Hoch, Swing-Hochs, EMAs/WMA200 (nur falls
+    # oberhalb des Kurses) und runden Zahlen - ersetzt die alte ungefilterte
+    # EMA/Fib-Liste, die TP1 haeufig auf einen technisch bedeutungslos nahen
+    # Wert (z.B. EMA20 hauchduenn ueber dem Kurs) gesetzt hat.
+    aufwaerts_ziele = sammle_aufwaerts_ziele(data, entry)
+    tp1 = aufwaerts_ziele[0] if aufwaerts_ziele else entry * 1.08
+    tp2 = aufwaerts_ziele[1] if len(aufwaerts_ziele) >= 2 else tp1 * 1.05
 
     crv1 = round((tp1 - entry) / (entry - stop), 2) if entry > stop else 0
     crv2 = round((tp2 - entry) / (entry - stop), 2) if entry > stop else 0
     chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
     chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
+
+    # NEU: Risiko-Filter, analog zur bestehenden Konvention bei Long-,
+    # Edelmetalle- und (seit 25.07.2026) Short-Setups - CRV muss bei TP1 UND
+    # TP2 jeweils >= 1.0 sein, sonst wird das Setup verworfen. Gerade bei
+    # Trendwende-Setups mit ihrem strukturell weiter entfernten Stop (juengstes
+    # Verlaufstief, siehe oben) faellt das haeufiger ins Gewicht als beim
+    # Hauptscanner - bewusste Entscheidung: lieber weniger, dafuer belastbare
+    # Kandidaten als ein TP1 mit z.B. CRV 0,12.
+    if crv1 < 1.0 or crv2 < 1.0:
+        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} -> CRV zu niedrig (CRV1={crv1}, CRV2={crv2})")
+        return None
 
     try:
         firma_name = yf.Ticker(ticker).info.get('longName', ticker) or ticker
@@ -526,7 +620,7 @@ def main():
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN_TRENDWENDE)
     if not df.empty:
-        bonus_rang = {"Stark bestätigt": 0, "Bestätigt": 1, "Basis": 2}
+        bonus_rang = {"Stark bestÃ¤tigt": 0, "BestÃ¤tigt": 1, "Basis": 2}
         df['_bonus_rang'] = df['Qualitaets_Bonus'].map(bonus_rang).fillna(3)
         df = df.sort_values(by=["_bonus_rang", "CRV1"], ascending=[True, False]).drop(columns=['_bonus_rang'])
 
@@ -592,7 +686,7 @@ def main():
                     f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']}\n"
                     f"Abstand 52W-Tief: {row['Abstand_52W_Tief%']}% | RS vs. Benchmark: {row['RS_vs_Benchmark%']}%\n"
                     f"Setup-Typ: {row['Setup_Typ']}\n"
-                    f"Qualitäts-Bonus: {row['Qualitaets_Bonus']}\n"
+                    f"QualitÃ¤ts-Bonus: {row['Qualitaets_Bonus']}\n"
                     f"Risikohinweis: {row['Risikohinweis']}\n\n"
                 )
 
