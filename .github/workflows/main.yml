@@ -25,7 +25,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
 
       - name: Offene Positionen aktualisieren
         # Läuft VOR der Analyse: lädt Offene_Positionen.csv aus Drive, prüft
