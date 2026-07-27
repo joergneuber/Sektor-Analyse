@@ -22,7 +22,7 @@ Architektur-Entscheidung (Stand 20.07.2026, siehe gemeinsame Abstimmung):
 
 WICHTIGE EINSCHRAENKUNG (unbedingt beim Lesen der Ausgabe beachten):
   Eine ECHTE historische KGV-Reihe braeuchte historische Gewinne pro
-  Quartal ueber Jahre - das ist Ã¼ber yfinance nicht zuverlaessig verfuegbar
+  Quartal ueber Jahre - das ist über yfinance nicht zuverlaessig verfuegbar
   (besonders bei EU-Titeln). Stattdessen wird eine NAEHERUNG berechnet:
   der heutige Gewinn pro Aktie (EPS) angewendet auf die historischen
   Kursverlaeufe der letzten 5 Jahre. Das zeigt, ob der aktuelle Kurs
@@ -121,7 +121,7 @@ LANGFRIST_UNIVERSUM = {
     "PNR": ("Pentair plc", "US", "Industrie"),
     "ALB": ("Albemarle Corporation", "US", "Grundstoffe"),
     # EU - Blue Chips (eigene Auswahl, kein offizieller Aristokraten-Index -
-    # sag Bescheid, falls hierfÃ¼r auch eine objektive europÃ¤ische Liste
+    # sag Bescheid, falls hierfür auch eine objektive europäische Liste
     # recherchiert werden soll)
     "SAP.DE": ("SAP SE", "EU", "Technologie"),
     "ASML.AS": ("ASML Holding N.V.", "EU", "Technologie"),
@@ -154,7 +154,7 @@ def sicheres_info_feld(info, feld, default=None):
 def normalisiere_dividendenrendite(wert):
     """Yahoo/yfinance hat das Feld 'dividendYield' im Lauf der Zeit von einem
     Bruch (0.0371 = 3,71%) auf bereits-Prozent (3.71 = 3,71%) umgestellt -
-    ohne AnkÃ¼ndigung, und je nach Ticker/Zeitpunkt inkonsistent beobachtet.
+    ohne Ankündigung, und je nach Ticker/Zeitpunkt inkonsistent beobachtet.
     Statt blind mit 100 zu multiplizieren (fuehrte zu Werten wie "371%"),
     wird hier anhand der Groessenordnung erkannt, welches Format vorliegt:
     Werte > 1 sind fuer eine Dividendenrendite unplausibel als Bruch (das
@@ -319,7 +319,7 @@ def main():
         f.write(f"- Verzerrungs-Filter (NEU): weichen aktuelles KGV und Forward-KGV um mehr als\n")
         f.write(f"  Faktor {VERZERRUNGS_FAKTOR:g} voneinander ab, deutet das auf einen Einmaleffekt in den\n")
         f.write(f"  Trailing-Earnings hin (Abschreibung, Sondergewinn o.ae.) - der Titel wird dann\n")
-        f.write(f"  als 'Nicht aussagekraeftig' markiert statt fÃ¤lschlich Guenstig/Teuer einzustufen,\n")
+        f.write("  als 'Nicht aussagekraeftig' markiert statt faelschlich Guenstig/Teuer einzustufen,\n")
         f.write(f"  da der aktuelle Gewinn pro Aktie dann keine brauchbare Bewertungsgrundlage ist.\n")
         f.write("- Kein Stop, kein Kursziel, keine CRV-Angabe - das ist bewusst kein Trade-Setup,\n")
         f.write("  sondern eine Bewertungs-Uebersicht zur eigenen Weiterrecherche.\n\n")
@@ -333,7 +333,7 @@ def main():
                 f.write(
                     f"{row['Ticker']} ({row['Name']}) | Markt: {row['Markt']} | Sektor: {row['Sektor']}\n"
                     f"Kurs: {row['Kurs']}\n"
-                    f"KGV aktuell: {row['KGV_aktuell']} | KGV-NÃ¤herung (5J): {row['KGV_Naeherung_5J']} | Rabatt vs. 5J-Schnitt: {rabatt_text} | Bewertung: {row['Bewertungs_Status']}\n"
+                    f"KGV aktuell: {row['KGV_aktuell']} | KGV-Naeherung (5J): {row['KGV_Naeherung_5J']} | Rabatt vs. 5J-Schnitt: {rabatt_text} | Bewertung: {row['Bewertungs_Status']}\n"
                     f"KGV forward: {row['KGV_forward']} | KUV: {row['KUV']} | KBV: {row['KBV']}\n"
                     f"Dividendenrendite: {row['Dividendenrendite_Perc']}% | Verschuldung (D/E): {row['Verschuldung_DE']}\n"
                     f"Umsatzwachstum: {row['Umsatzwachstum_Perc']}% | Gewinnwachstum: {row['Gewinnwachstum_Perc']}%\n\n"
