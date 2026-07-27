@@ -1,1 +1,1 @@
-# Sektor-Analyse Sektoren
+Sektor-Analyse Sektoren
