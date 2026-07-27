@@ -1095,7 +1095,14 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             )
             return nah_dran and war_ueber_ema_kuerzlich
 
-        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
+        in_ema_zone_roh = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
+        # Pflicht-Volumen (GEÄNDERT 27.07.2026, Nutzerwunsch): Pullback-Zone war
+        # bisher der einzige der vier Setup-Typen OHNE jede Volumen-Anforderung
+        # (EMA-Breakout/Trendlinien-Ausbruch/Kumo-Ausbruch verlangen alle schon
+        # Volumen > Vol_SMA20 an einem der letzten 3 Tage) - jetzt vereinheitlicht,
+        # dieselbe volumen_kuerzlich-Prüfung von oben (EMA-Breakout) wiederverwendet,
+        # da identische Fensterlogik (Tag der Bestätigung muss nicht exakt heute sein).
+        in_ema_zone = in_ema_zone_roh and volumen_kuerzlich
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1435,7 +1442,10 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             )
             return nah_dran and war_ueber_ema_kuerzlich
 
-        in_ema_zone = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
+        in_ema_zone_roh = any(ema_pullback_test(ema_series) for ema_series in [data['EMA20'], data['EMA50'], data['Kijun']])
+        # Pflicht-Volumen (GEÄNDERT 27.07.2026): siehe US-Funktion für Begründung -
+        # dieselbe volumen_kuerzlich-Prüfung von oben (EMA-Breakout) wiederverwendet.
+        in_ema_zone = in_ema_zone_roh and volumen_kuerzlich
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
         # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
@@ -1878,7 +1888,7 @@ if __name__ == "__main__":
         f.write("- Kandidaten: US-Sektoren (inkl. Themen-ETFs) + EU-Werte (DAX40/MDAX/Eurozonen-Large-Caps, EUR)\n")
         f.write("- Trend-Filter: Kurs muss über WMA200 und EMA200 liegen\n")
         f.write("- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-Ausbruch ODER Kumo-Ausbruch (Setup_Typ listet ALLE zutreffenden Pfade auf, z.B. \"Trendlinien-Ausbruch + Kumo-Ausbruch\")\n")
-        f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten)\n")
+        f.write("- Pullback-Zone: Kurs nah an EMA20/50 UND in den letzten 3 Tagen mind. einmal auf/über der EMA (kein reiner Bruch nach unten), Pflicht-Volumen (NEU, 27.07.2026: an einem der letzten 3 Tage über SMA20 - vorher einziger Setup-Typ ohne Volumen-Anforderung)\n")
         f.write("- Trendlinien-Ausbruch: fallende Linie durch >= 3 Swing-Highs (120 Tage, 1% Toleranz), Pflicht-Volumen\n")
         f.write("- Momentum: Relative Stärke der Aktie > -10% vs. Benchmark (SPY bzw. STOXX600, 60 Tage)\n")
         f.write("- Momentum: Kurs max. 25% unter dem 52-Wochen-Hoch\n")
