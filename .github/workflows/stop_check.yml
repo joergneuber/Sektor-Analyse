@@ -16,7 +16,21 @@ on:
     # "erholt" wären und sonst unbemerkt blieben (ein echter Stop-Loss-
     # Order beim Broker würde ja auch bei jeder Kursberührung sofort
     # auslösen, nicht erst am Tagesende).
+    #
+    # ZWEITER CRON (NEU, 27.07.2026): reine Redundanz gegen ausgefallene
+    # Scheduling-Trigger (beobachtet - Lauf ist an einzelnen Tagen komplett
+    # ausgeblieben, siehe main.yml/short_check.yml/langfrist_check.yml fuer
+    # dieselbe "best effort"-Problematik). Anders als bei Short/Langfrist
+    # gibt es hier KEIN tagesdatiertes Ergebnis in Drive, gegen das sich ein
+    # "ist das heute schon gelaufen?"-Check bauen liesse (positionen_tracker.py
+    # aktualisiert nur den bestehenden Sheet-Stand, erzeugt keine neue Datei) -
+    # deshalb hier bewusst KEIN Drive-Catchup-Skript wie short_scan_catchup.py,
+    # sondern schlicht ein zweiter, zeitlich getrennter Cron-Versuch 30 Minuten
+    # spaeter. Ein doppelter Lauf ist unschaedlich (aktualisiert nur denselben
+    # Kurs-Stand nochmal) - ein komplett fehlender Tag ist der eigentliche
+    # Fehlerfall, den wir vermeiden wollen.
     - cron: '23 16 * * 1-5'
+    - cron: '53 16 * * 1-5'
 
 jobs:
   stop-check:
