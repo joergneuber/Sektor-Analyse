@@ -22,7 +22,7 @@ Architektur-Entscheidung (Stand 20.07.2026, siehe gemeinsame Abstimmung):
 
 WICHTIGE EINSCHRAENKUNG (unbedingt beim Lesen der Ausgabe beachten):
   Eine ECHTE historische KGV-Reihe braeuchte historische Gewinne pro
-  Quartal ueber Jahre - das ist über yfinance nicht zuverlaessig verfuegbar
+  Quartal ueber Jahre - das ist Ã¼ber yfinance nicht zuverlaessig verfuegbar
   (besonders bei EU-Titeln). Stattdessen wird eine NAEHERUNG berechnet:
   der heutige Gewinn pro Aktie (EPS) angewendet auf die historischen
   Kursverlaeufe der letzten 5 Jahre. Das zeigt, ob der aktuelle Kurs
@@ -121,7 +121,7 @@ LANGFRIST_UNIVERSUM = {
     "PNR": ("Pentair plc", "US", "Industrie"),
     "ALB": ("Albemarle Corporation", "US", "Grundstoffe"),
     # EU - Blue Chips (eigene Auswahl, kein offizieller Aristokraten-Index -
-    # sag Bescheid, falls hierfür auch eine objektive europäische Liste
+    # sag Bescheid, falls hierfÃ¼r auch eine objektive europÃ¤ische Liste
     # recherchiert werden soll)
     "SAP.DE": ("SAP SE", "EU", "Technologie"),
     "ASML.AS": ("ASML Holding N.V.", "EU", "Technologie"),
@@ -154,7 +154,7 @@ def sicheres_info_feld(info, feld, default=None):
 def normalisiere_dividendenrendite(wert):
     """Yahoo/yfinance hat das Feld 'dividendYield' im Lauf der Zeit von einem
     Bruch (0.0371 = 3,71%) auf bereits-Prozent (3.71 = 3,71%) umgestellt -
-    ohne Ankündigung, und je nach Ticker/Zeitpunkt inkonsistent beobachtet.
+    ohne AnkÃ¼ndigung, und je nach Ticker/Zeitpunkt inkonsistent beobachtet.
     Statt blind mit 100 zu multiplizieren (fuehrte zu Werten wie "371%"),
     wird hier anhand der Groessenordnung erkannt, welches Format vorliegt:
     Werte > 1 sind fuer eine Dividendenrendite unplausibel als Bruch (das
@@ -184,6 +184,24 @@ def berechne_naeherungs_kgv(ticker_obj, aktueller_kurs, trailing_eps):
         return None
 
 
+# Schwelle fuer den Verzerrungs-Filter (NEU, 27.07.2026): weichen aktuelles
+# und Forward-KGV mehr als um diesen Faktor voneinander ab, deutet das auf
+# einen Einmaleffekt in den Trailing-Earnings hin (z.B. Abschreibung,
+# Sondergewinn) - der aktuelle Gewinn pro Aktie ist dann keine brauchbare
+# Bewertungsgrundlage, weder fuer das KGV selbst noch fuer die daraus
+# abgeleitete 5-Jahres-Naeherung (Beispiel 27.07.2026: GPC mit KGV_aktuell
+# 496.84 vs. KGV_forward 15.0 - beide Werte fuer sich genommen wenig
+# aussagekraeftig, obwohl die Naeherungs-Rechnung technisch "funktioniert").
+VERZERRUNGS_FAKTOR = 3.0
+
+
+def ist_kgv_verzerrt(kgv_aktuell, kgv_forward):
+    if kgv_aktuell is None or kgv_forward is None or kgv_aktuell <= 0 or kgv_forward <= 0:
+        return False
+    verhaeltnis = kgv_aktuell / kgv_forward
+    return verhaeltnis > VERZERRUNGS_FAKTOR or verhaeltnis < (1 / VERZERRUNGS_FAKTOR)
+
+
 def analysiere_langfrist_titel(ticker, name, markt, sektor):
     try:
         t = yf.Ticker(ticker)
@@ -206,13 +224,23 @@ def analysiere_langfrist_titel(ticker, name, markt, sektor):
 
         kgv_naeherung = berechne_naeherungs_kgv(t, aktueller_kurs, trailing_eps)
 
-        bewertungs_status = "Neutral"
-        if kgv_naeherung is not None and kgv_naeherung > 0:
-            verhaeltnis = kgv_aktuell / kgv_naeherung
-            if verhaeltnis < GUENSTIG_SCHWELLE:
-                bewertungs_status = "Guenstig"
-            elif verhaeltnis > TEUER_SCHWELLE:
-                bewertungs_status = "Teuer"
+        verzerrt = ist_kgv_verzerrt(kgv_aktuell, kgv_forward)
+        rabatt_vs_5j_perc = None
+        if verzerrt:
+            # Trailing-Gewinn durch Einmaleffekt verzerrt (siehe
+            # VERZERRUNGS_FAKTOR oben) - weder KGV_aktuell noch die daraus
+            # abgeleitete 5J-Naeherung sind dann eine brauchbare
+            # Bewertungsgrundlage, unabhaengig vom rechnerischen Verhaeltnis.
+            bewertungs_status = "Nicht aussagekraeftig"
+        else:
+            bewertungs_status = "Neutral"
+            if kgv_naeherung is not None and kgv_naeherung > 0:
+                verhaeltnis = kgv_aktuell / kgv_naeherung
+                rabatt_vs_5j_perc = round((1 - verhaeltnis) * 100, 2)
+                if verhaeltnis < GUENSTIG_SCHWELLE:
+                    bewertungs_status = "Guenstig"
+                elif verhaeltnis > TEUER_SCHWELLE:
+                    bewertungs_status = "Teuer"
 
         return {
             "Ticker": ticker,
@@ -222,6 +250,7 @@ def analysiere_langfrist_titel(ticker, name, markt, sektor):
             "Kurs": round(aktueller_kurs, 2),
             "KGV_aktuell": round(kgv_aktuell, 2),
             "KGV_Naeherung_5J": kgv_naeherung,
+            "Rabatt_vs_5J_Perc": rabatt_vs_5j_perc,
             "KGV_forward": round(kgv_forward, 2) if kgv_forward else None,
             "KUV": round(kuv, 2) if kuv else None,
             "KBV": round(kbv, 2) if kbv else None,
@@ -252,15 +281,15 @@ def main():
 
     SPALTEN = [
         "Ticker", "Name", "Markt", "Sektor", "Kurs", "KGV_aktuell",
-        "KGV_Naeherung_5J", "KGV_forward", "KUV", "KBV",
+        "KGV_Naeherung_5J", "Rabatt_vs_5J_Perc", "KGV_forward", "KUV", "KBV",
         "Dividendenrendite_Perc", "Verschuldung_DE", "Umsatzwachstum_Perc",
         "Gewinnwachstum_Perc", "Bewertungs_Status",
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)
     if not df.empty:
-        rang = {"Guenstig": 0, "Neutral": 1, "Teuer": 2}
-        df["_rang"] = df["Bewertungs_Status"].map(rang).fillna(3)
-        df = df.sort_values(by=["_rang", "KGV_aktuell"], ascending=[True, True]).drop(columns=["_rang"])
+        rang = {"Guenstig": 0, "Neutral": 1, "Teuer": 2, "Nicht aussagekraeftig": 3}
+        df["_rang"] = df["Bewertungs_Status"].map(rang).fillna(4)
+        df = df.sort_values(by=["_rang", "Rabatt_vs_5J_Perc"], ascending=[True, False]).drop(columns=["_rang"])
 
     dateiname_csv = f"Langfrist_Bewertung({today}).csv"
     df.to_csv(dateiname_csv, index=False, sep=';', encoding='utf-8-sig')
@@ -284,6 +313,14 @@ def main():
         f.write("  Handelsspanne ist (mit heutiger Ertragskraft gerechnet).\n")
         f.write(f"- Bewertungs_Status: 'Guenstig' wenn aktuelles KGV < {int(GUENSTIG_SCHWELLE*100)}% der Naeherung,\n")
         f.write(f"  'Teuer' wenn > {int(TEUER_SCHWELLE*100)}%, sonst 'Neutral'.\n")
+        f.write(f"- Rabatt_vs_5J_Perc (NEU): direkter Prozentwert, wie weit das aktuelle KGV unter\n")
+        f.write(f"  (positiv) bzw. ueber (negativ) dem eigenen 5-Jahres-Schnitt liegt - macht die\n")
+        f.write(f"  Bewertungs_Status-Kategorie konkret vergleichbar statt nur einzuteilen.\n")
+        f.write(f"- Verzerrungs-Filter (NEU): weichen aktuelles KGV und Forward-KGV um mehr als\n")
+        f.write(f"  Faktor {VERZERRUNGS_FAKTOR:g} voneinander ab, deutet das auf einen Einmaleffekt in den\n")
+        f.write(f"  Trailing-Earnings hin (Abschreibung, Sondergewinn o.ae.) - der Titel wird dann\n")
+        f.write(f"  als 'Nicht aussagekraeftig' markiert statt fÃ¤lschlich Guenstig/Teuer einzustufen,\n")
+        f.write(f"  da der aktuelle Gewinn pro Aktie dann keine brauchbare Bewertungsgrundlage ist.\n")
         f.write("- Kein Stop, kein Kursziel, keine CRV-Angabe - das ist bewusst kein Trade-Setup,\n")
         f.write("  sondern eine Bewertungs-Uebersicht zur eigenen Weiterrecherche.\n\n")
 
@@ -291,10 +328,12 @@ def main():
             f.write("Keine Titel erfolgreich ausgewertet.\n")
         else:
             for _, row in df.iterrows():
+                rabatt = row['Rabatt_vs_5J_Perc']
+                rabatt_text = f"{rabatt}%" if pd.notna(rabatt) else "N/A"
                 f.write(
                     f"{row['Ticker']} ({row['Name']}) | Markt: {row['Markt']} | Sektor: {row['Sektor']}\n"
                     f"Kurs: {row['Kurs']}\n"
-                    f"KGV aktuell: {row['KGV_aktuell']} | KGV-Näherung (5J): {row['KGV_Naeherung_5J']} | Bewertung: {row['Bewertungs_Status']}\n"
+                    f"KGV aktuell: {row['KGV_aktuell']} | KGV-NÃ¤herung (5J): {row['KGV_Naeherung_5J']} | Rabatt vs. 5J-Schnitt: {rabatt_text} | Bewertung: {row['Bewertungs_Status']}\n"
                     f"KGV forward: {row['KGV_forward']} | KUV: {row['KUV']} | KBV: {row['KBV']}\n"
                     f"Dividendenrendite: {row['Dividendenrendite_Perc']}% | Verschuldung (D/E): {row['Verschuldung_DE']}\n"
                     f"Umsatzwachstum: {row['Umsatzwachstum_Perc']}% | Gewinnwachstum: {row['Gewinnwachstum_Perc']}%\n\n"
