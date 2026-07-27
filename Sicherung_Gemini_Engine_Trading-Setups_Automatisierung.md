@@ -47,7 +47,7 @@ Mögliche Komponenten (0 bis 4 davon, plus optional ein Candlestick-Muster):
 - Trendlinien-Ausbruch – fallende Linie durch ≥ 3 Swing-Highs durchbrochen, Pflicht-Volumen
 - Kumo-Ausbruch – Ichimoku-Wolke komplett (über Senkou A UND B) durchbrochen, Pflicht-Volumen
 - EMA-Breakout – EMA8/20-Crossover mit Volumen-Bestätigung
-- Pullback-Zone – Kurs testet EMA20/50/Kijun-sen von oben, Higher-Low bestätigt
+- Pullback-Zone – Kurs testet EMA20/50/Kijun-sen von oben, Higher-Low bestätigt, Pflicht-Volumen (GEÄNDERT 27.07.2026: vorher einziger der vier Setup-Typen ohne Volumen-Anforderung – jetzt wie die anderen drei an einem der letzten 3 Tage Volumen über SMA20 nötig)
 - Optional zusätzlich: + Hammer oder + Engulfing (Candlestick-Muster)
 Beispiele: „EMA-Breakout“, „Pullback-Zone + Hammer“, „Trendlinien-Ausbruch“, „Trendlinien-Ausbruch + Kumo-Ausbruch“, „Kumo-Ausbruch + Engulfing“ usw. – jede Kombination der vier Komponenten (mind. eine ist immer vorhanden) plus optional ein Muster ist möglich.
 Einstufungsregel (prüfe in dieser Reihenfolge, ersten Treffer nehmen):
