@@ -1,0 +1,54 @@
+name: Benchmarks-Zwischenstand
+
+on:
+  # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
+  workflow_dispatch:
+  schedule:
+    # Drei Zusatzläufe zwischen dem main.yml-Morgenlauf (05:17 MESZ) und dem
+    # Handelsschluss - bewusst NICHT zu vollen Stunden (siehe main.yml für
+    # dieselbe Begründung zum GitHub-Actions-Scheduling).
+    #
+    # 09:53 UTC = 11:53 MESZ - EU-Markt laeuft schon eine Weile, US noch zu
+    - cron: '53 9 * * 1-5'
+    # 13:53 UTC = 15:53 MESZ - kurz nach US-Handelsstart (15:30 MESZ)
+    - cron: '53 13 * * 1-5'
+    # 17:53 UTC = 19:53 MESZ - kurz vor der ueblichen FOMC-Veroeffentlichungs-
+    # zeit (14:00 Uhr US-Ostkuestenzeit = 20:00 Uhr MESZ) - faengt an FOMC-
+    # Tagen die unmittelbare erste Marktreaktion noch am selben Tag ein
+    - cron: '53 17 * * 1-5'
+
+jobs:
+  benchmarks-snapshot:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--no-deprecation"
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Abhängigkeiten installieren
+        # Gleiche Liste wie main.yml, da benchmarks_snapshot.py analyse.py
+        # importiert (führt dessen kompletten Modul-Code aus - siehe
+        # Modul-Docstring von benchmarks_snapshot.py).
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
+
+      - name: Benchmarks-Snapshot erstellen
+        # Bewusst NUR dieser eine Schritt - kein Setup-Scan (analyse.py direkt),
+        # kein Trendwende-/Short-/Edelmetalle-Scan, keine Gemini-Auswertung.
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python benchmarks_snapshot.py
+
+      - name: Daten hochladen
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python upload_to_drive.py
