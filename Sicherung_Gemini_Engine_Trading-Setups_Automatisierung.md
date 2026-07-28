@@ -205,6 +205,20 @@ Häufung/Nähe als das, was sie ist.
     Setup-Karten, keine Bewertung, keine Empfehlung. Fehlt der Block,
     entfällt der Satz ersatzlos.
 
+-   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
+    Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
+    als Überschriften, wodurch die Nummerierung sprang: 1, 2, 5, 7, 8
+    ...): Die Abschnittsnummern DIESER ANWEISUNG (z. B. „Abschnitt 5 =
+    Trendwende", „Abschnitt 9 = Offene Positionen") sind rein INTERNE
+    Referenzen zum Nachschlagen. Nummeriere die Überschriften der
+    fertigen Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken (1.
+    Marktumfeld & Globale Risikolage, 2. Daten-Übersicht, 3.
+    Trendwende-Setups, 4. Short-Setups, 5. Edelmetalle-Setups, ggf.
+    Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen
+    und als letzter Abschnitt Gestoppte Positionen) - entfällt eine
+    Kategorie an einem Tag komplett (z. B. kein Langfrist-Lauf), rücken
+    die nachfolgenden Nummern auf.
+
 -   Keine Vermischung: Suche explizit nach den Werten für technisches
     Upside (Tech-Kursziel / Upside\_%\_vs_Aktuell) und fundamentale
     Analysten-Daten (Analysten-Kursziel). Übernimm diese exakt.
