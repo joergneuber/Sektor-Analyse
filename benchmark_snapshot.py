@@ -28,7 +28,7 @@ hochgeladen (Dateiname enthaelt "Briefing", passt damit ins bestehende
 """
 import datetime
 
-from analyse import get_index_benchmark_yf, get_zinskurve_fred, get_fomc_countdown
+from analyse import get_index_benchmark_yf, get_zinskurve_fred, get_fomc_countdown, get_eurusd_wechselkurs
 
 
 def erzeuge_snapshot():
@@ -51,6 +51,7 @@ def erzeuge_snapshot():
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     dxy_text = get_index_benchmark_yf("DX-Y.NYB", "US-Dollar-Index")
+    eurusd_text = get_eurusd_wechselkurs()
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
 
     zeitstempel_dateiname = jetzt.strftime("%Y-%m-%d_%H-%M")
@@ -65,7 +66,7 @@ def erzeuge_snapshot():
             f"{sp500_text}\n{nasdaq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n"
             f"{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n"
             f"{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n"
-            f"{kupfer_text}\n{dxy_text}\n{btc_text}\n"
+            f"{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n"
         )
 
     print(f"Gespeichert: {dateiname}")
