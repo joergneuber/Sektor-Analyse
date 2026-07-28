@@ -469,6 +469,26 @@ def main():
         f.write("- Kein Stop, kein Kursziel, keine CRV-Angabe - das ist bewusst kein Trade-Setup,\n")
         f.write("  sondern eine Bewertungs-Uebersicht zur eigenen Weiterrecherche.\n\n")
 
+        # BESTANDS-STATISTIK (NEU 28.07.2026, Pendant zur Funnel-Statistik
+        # der anderen Scanner): Der Langfrist-Scanner verwirft keine Titel
+        # (kein Ablehnungs-Trichter wie bei den Setup-Scannern), sondern
+        # klassifiziert das komplette Universum - die aussagekraeftige
+        # Statistik ist daher die VERTEILUNG auf die Bewertungsstufen plus
+        # die Zahl der Titel ohne verwertbare Daten. So ist sofort ablesbar,
+        # ob z. B. "nur 2 Guenstig-Titel" an einem teuren Gesamtmarkt liegt
+        # oder an vielen Datenluecken.
+        uebersprungen = len(LANGFRIST_UNIVERSUM) - len(ergebnisse)
+        f.write("BESTANDS-STATISTIK (Verteilung statt Ablehnungs-Funnel)\n")
+        f.write("-" * 50 + "\n")
+        f.write(f"Universum: {len(LANGFRIST_UNIVERSUM)} Titel | Keine Daten (Kurs/KGV fehlt oder Fehler): {uebersprungen} | Bewertet: {len(ergebnisse)}\n")
+        if not df.empty:
+            _verteilung = df["Bewertungs_Status"].value_counts()
+            _teile = [f"{_stufe}: {int(_verteilung.get(_stufe, 0))}"
+                      for _stufe in ["Guenstig", "Neutral", "Teuer", "Nicht aussagekraeftig"]]
+            f.write("Verteilung: " + " | ".join(_teile) + "\n")
+            f.write(f"=> In der Auswertung erscheinen nur die {int(_verteilung.get('Guenstig', 0))} Guenstig-Titel (siehe Master-Anweisung Abschnitt 6).\n")
+        f.write("\n")
+
         if df.empty:
             f.write("Keine Titel erfolgreich ausgewertet.\n")
         else:
