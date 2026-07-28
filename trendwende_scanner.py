@@ -82,7 +82,15 @@ WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl
 
 # Zeitfenster fuer "frisches" Signal (C - beide Bestaetigungen muessen
 # innerhalb dieser letzten N Handelstage aufgetreten sein)
-FRISCHE_TAGE = 3
+# GEAENDERT (28.07.2026, Nutzerwunsch): von 3 auf 5 Handelstage erweitert -
+# die urspruengliche 3-Tage-Kombination aus RSI-Divergenz + Kijun-Ausbruch
+# war praktisch nie gleichzeitig erfuellt (staendige 0-Kandidaten-Tage, siehe
+# Trendwende_Briefing ueber mehrere Wochen). Steuert jetzt sowohl RSI-
+# Divergenz/Stochastik-Crossover (Default-Parameter unten) als auch den
+# Kijun-Ausbruch (expliziter Parameter beim Aufruf, siehe unten - der Kijun-
+# Check selbst hat sein Fenster in analyse.py, standardmaessig 3, nicht an
+# diese Konstante gekoppelt).
+FRISCHE_TAGE = 5
 
 # Chunk-Groesse fuer Sammel-Abrufe (Alpaca/yfinance koennen mehrere Ticker in
 # einem Request abfragen - das ersetzt die 370-440 einzelnen API-Calls von
@@ -412,7 +420,7 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     # 52W-Tief" erfuellbar, siehe Log-Auswertung 24.07.2026: 0 von 106
     # Kandidaten ueber mehrere Tage).
     divergenz_ok = check_rsi_divergence_recent(data)
-    kijun_ausbruch, kijun_level = check_kijun_breakout(data)
+    kijun_ausbruch, kijun_level = check_kijun_breakout(data, frische_tage=FRISCHE_TAGE)
 
     if not (divergenz_ok and kijun_ausbruch):
         print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Divergenz: {divergenz_ok} | "
