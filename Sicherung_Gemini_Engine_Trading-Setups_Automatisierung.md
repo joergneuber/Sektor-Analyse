@@ -147,12 +147,19 @@ Häufung/Nähe als das, was sie ist.
 -   Validitäts-Filter (NEU, gilt global für ALLE Kategorien mit einem
     Status2-Feld -- normale Setups UND Short-Setups): Nur Titel mit
     Status2 = VALIDE werden in die Auswertung übernommen. ACHTUNG-Titel
-    werden NICHT ausgegeben -- sie bleiben ausschließlich in den
-    Rohdaten (CSV-Dateien, briefing.txt), die der Nutzer bei Bedarf
-    selbst einsieht. Das schließt insbesondere den Abschnitt „WATCHLIST
-    (ACHTUNG - Manuelle Prüfung erforderlich)" in der briefing.txt ein:
-    dieser Abschnitt wird komplett übersprungen, nicht in die Auswertung
-    übernommen und auch nicht in verkürzter Form erwähnt. Gilt NICHT für
+    erhalten KEINE Setup-Karten und zählen in der Executive Summary
+    NICHT als Setups. GEÄNDERT (28.07.2026, abends - die Auswertung soll
+    allein lesbar sein, ohne Blick in die Rohdaten): Der Abschnitt
+    „WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)" aus der
+    briefing.txt wird als kompakter Unterabschnitt „Watchlist (Achtung -
+    manuelle Prüfung)" am ENDE von Abschnitt 2 ausgegeben: JE TITEL
+    GENAU EINE ZEILE im Format Vollständiger Name \| Grund \| Kurs \|
+    technisches Potenzial. Den vollständigen Namen aus der Spalte Name
+    der Setups.csv bzw. Short_Setups.csv nachschlagen; nur falls dort
+    nicht auffindbar, den Ticker verwenden. Keine weiteren Kennzahlen,
+    keine Bewertung, keine Empfehlung; darunter EIN Satz, dass diese
+    Titel regelbasiert wegen des jeweils genannten Grundes kein valides
+    Setup sind und nur zur manuellen Prüfung dienen. Gilt NICHT für
     Trendwende-Setups und Langfrist-Bewertung (Abschnitte 5 und 6) --
     diese beiden Dateien haben gar kein Status2-Feld, dort entfällt der
     Filter ersatzlos.
@@ -184,6 +191,19 @@ Häufung/Nähe als das, was sie ist.
     Kandidaten scheiterten am CRV-Filter") -- das ersetzt Spekulationen
     darüber, warum nichts gefunden wurde. Fehlt der Block (älterer
     Lauf), entfällt der Satz ersatzlos.
+
+-   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
+    Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"
+    enthalten - Titel, deren Boden-Bedingung (intakte bullische
+    RSI-Divergenz) erfüllt ist und denen nur noch der frische
+    Kumo-Trigger fehlt (die Kandidaten-Pipeline der nächsten Tage). Gib
+    diese Liste im Abschnitt „Trendwende-Setups" in EINEM Satz
+    wieder, z. B. „Beobachtung: 11 Titel erfüllen die Boden-Bedingung
+    und warten auf den frischen Kumo-Trigger: ..." - die Tickerliste
+    dabei wörtlich übernehmen (hier ausnahmsweise Ticker statt Namen
+    zulässig, da das Briefing dort keine Namen enthält). Keine
+    Setup-Karten, keine Bewertung, keine Empfehlung. Fehlt der Block,
+    entfällt der Satz ersatzlos.
 
 -   Keine Vermischung: Suche explizit nach den Werten für technisches
     Upside (Tech-Kursziel / Upside\_%\_vs_Aktuell) und fundamentale
