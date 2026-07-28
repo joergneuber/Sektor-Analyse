@@ -697,26 +697,34 @@ def main():
     # Ab hier reine lokale Berechnung (Daten liegen bereits vor) - Threads
     # dienen hier nur noch der CPU-Parallelisierung, nicht mehr dem
     # Kaschieren von Netzwerk-Latenz wie vorher.
+    # DIVERGENZ-WATCHLIST (NEU 28.07.2026): Titel, die die Boden-Bedingung
+    # (intakte Divergenz) erfuellen und nur noch auf den frischen Kumo-
+    # Trigger warten - das ist die Kandidaten-Pipeline der naechsten Tage.
+    divergenz_watchlist = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
-            executor.submit(analyze_trendwende_us, t, s, us_daten[t], spy_close)
+            (t, executor.submit(analyze_trendwende_us, t, s, us_daten[t], spy_close))
             for t, s in us_tasks if t in us_daten
         ]
-        for f in futures:
+        for t, f in futures:
             r, grund = f.result()
             funnel[grund] += 1
+            if grund == "kein_frischer_kumo_ausbruch":
+                divergenz_watchlist.append(t)
             if r:
                 ergebnisse.append(r)
 
     print("Starte Trendwende-Analyse (EU)...")
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
-            executor.submit(analyze_trendwende_eu, t, s, eu_daten[t], eu_bench_close)
+            (t, executor.submit(analyze_trendwende_eu, t, s, eu_daten[t], eu_bench_close))
             for t, s in eu_tasks if t in eu_daten
         ]
-        for f in futures:
+        for t, f in futures:
             r, grund = f.result()
             funnel[grund] += 1
+            if grund == "kein_frischer_kumo_ausbruch":
+                divergenz_watchlist.append(t)
             if r:
                 ergebnisse.append(r)
 
@@ -835,6 +843,16 @@ def main():
         f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
         f.write("-" * 50 + "\n")
         f.write(funnel_text + "\n\n")
+
+        # DIVERGENZ-WATCHLIST (NEU 28.07.2026): die Titel der vorletzten
+        # Funnel-Stufe - Boden-Bedingung erfuellt, Trigger steht noch aus.
+        # Springt einer davon in den naechsten Tagen frisch ueber die Wolke,
+        # wird er zum Kandidaten. Bewusst NUR Beobachtung.
+        if divergenz_watchlist:
+            f.write("DIVERGENZ-WATCHLIST (Boden-Bedingung intakt, wartet auf frischen Kumo-Trigger)\n")
+            f.write("-" * 50 + "\n")
+            f.write("(nur Beobachtung, KEINE Setups - erscheint in der Auswertung nur als einzeiliger Beobachtungssatz)\n")
+            f.write(", ".join(sorted(divergenz_watchlist)) + "\n\n")
 
         if df.empty:
             f.write("Keine Trendwende-Kandidaten gefunden.\n")
