@@ -389,7 +389,10 @@ def stelle_anleitung_sicher(df):
     anleitung_markt = (
         "AUTOMATISCH BEFUELLT (nicht anfassen): Aktueller_Kurs, Performance_Seit_Einstieg%, "
         "OS_Performance%, OS_Quelle. Bei Stop-Beruehrung: Status -> 'Gestoppt' + Ausstiegsdatum/"
-        "-kurs automatisch. Position entfernen = Zeile loeschen. Wieder aktivieren = Status auf "
+        "-kurs automatisch. BREAKEVEN-REGEL (NEU 28.07.2026): erreicht eine Position TP1/TP2, "
+        "wird der Stop EINMALIG automatisch auf Breakeven (Einstiegskurs) nachgezogen - nur bei "
+        "Stop > 0, nie verschlechternd; manuelles Absenken danach wird respektiert. "
+        "Position entfernen = Zeile loeschen. Wieder aktivieren = Status auf "
         "'Offen', Ausstiegsdatum/-kurs leeren. Diese ANLEITUNG-Zeile bitte stehen lassen."
     )
 
@@ -577,6 +580,40 @@ def aktualisiere_positionen(df):
             elif tp1_erreicht:
                 print(f"DEBUG: {ticker} -> TP1 erreicht (Kurs={aktueller_kurs}, TP1={tp1}).")
                 df.at[idx, 'TP_Hinweis'] = f"TP1 erreicht am {heute}"
+
+        # --- BREAKEVEN-REGEL (NEU 28.07.2026, Nutzerwunsch) ---
+        # Sobald TP1 (oder TP2) erreicht wurde, wird der Stop EINMALIG auf
+        # Breakeven (= Einstiegskurs) nachgezogen: ein Trade, der sein erstes
+        # Kursziel bereits erreicht hat, soll nicht mehr in einen Verlust
+        # zurueckfallen koennen (Anlass: Ross Stores +10,9% nach TP1, Stop
+        # stand aber weiterhin 10% unter dem Kurs auf dem Einstiegs-Level).
+        # Bewusste Grenzen der Regel:
+        # - NUR EINMALIG: der Vermerk "Stop auf Breakeven nachgezogen" im
+        #   TP_Hinweis verhindert eine Wiederholung. Senkt der Nutzer den
+        #   Stop danach manuell wieder ab, wird das respektiert (die Automatik
+        #   zieht nicht erneut hoch).
+        # - NUR bei existierendem automatischem Stop (Stop > 0): die Stop=0-
+        #   Konvention ("kein automatischer Stop", manuelle Altbestaende)
+        #   bleibt unangetastet.
+        # - NUR VERBESSERN, nie verschlechtern: liegt der Stop bereits auf
+        #   oder ueber Breakeven (Long) bzw. auf/unter Breakeven (Short),
+        #   passiert nichts.
+        # - Greift auch rueckwirkend fuer Positionen, deren TP-Hinweis schon
+        #   an frueheren Tagen gesetzt wurde (z.B. Ross Stores 27.07., RWE
+        #   21.07.), da nur der Hinweis-Text als Bedingung dient.
+        aktueller_hinweis = str(df.at[idx, 'TP_Hinweis']).strip()
+        tp_wurde_erreicht = aktueller_hinweis not in ('', 'nan') and 'erreicht' in aktueller_hinweis
+        breakeven_schon_vermerkt = 'Breakeven' in aktueller_hinweis
+        if tp_wurde_erreicht and not breakeven_schon_vermerkt and stop > 0:
+            breakeven = round(einstieg, 2)
+            nachziehen = (stop > breakeven) if ist_short else (stop < breakeven)
+            if nachziehen:
+                df.at[idx, 'Stop'] = breakeven
+                df.at[idx, 'TP_Hinweis'] = (
+                    f"{aktueller_hinweis} | Stop auf Breakeven ({breakeven}) nachgezogen am {heute}"
+                )
+                print(f"DEBUG: {ticker} -> Kursziel erreicht, Stop auf Breakeven ({breakeven}) "
+                      f"nachgezogen (vorher {stop}).")
 
     return df
 
