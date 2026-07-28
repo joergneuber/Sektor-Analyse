@@ -746,7 +746,7 @@ def check_kumo_breakout(data):
     return ausbruch, (float(heute_ober) if ausbruch else None)
 
 
-def check_kijun_breakout(data):
+def check_kijun_breakout(data, frische_tage=3):
     """NEU (24.07.2026): leichteres, frueheres Ichimoku-Bestaetigungssignal
     fuer trendwende_scanner.py - Bruch ueber die Kijun-sen (Basislinie,
     26-Perioden-Mittelpunkt aus Hoch/Tief, NICHT in die Zukunft verschoben)
@@ -759,9 +759,16 @@ def check_kijun_breakout(data):
     reagiert deutlich schneller und ist als "erstes Anzeichen einer
     Trendwende" chart-technisch passender als der volle Wolken-Ausbruch, der
     eher eine bereits etablierte Erholung bestaetigt. Gleiche Logik wie
-    check_kumo_breakout ansonsten (frischer Ausbruch innerhalb 3 Tage,
-    Pflicht-Volumen), nur mit der Kijun-sen statt der Wolken-Obergrenze als
-    Schwelle. Gibt (ausbruch: bool, kijun_heute: float|None) zurueck.
+    check_kumo_breakout ansonsten (frischer Ausbruch innerhalb frische_tage
+    Tagen, Pflicht-Volumen), nur mit der Kijun-sen statt der Wolken-
+    Obergrenze als Schwelle. GEAENDERT (28.07.2026, Nutzerwunsch): Fenster
+    jetzt als Parameter statt hartcodierter 3 Tage - trendwende_scanner.py
+    ruft dies mit frische_tage=FRISCHE_TAGE (=5) auf, um die staendigen
+    0-Kandidaten-Tage zu adressieren (die urspruengliche 3-Tage-Kombination
+    aus RSI-Divergenz + Kijun-Ausbruch war zu selten gleichzeitig erfuellt).
+    Standardwert bleibt 3 fuer Abwaertskompatibilitaet, falls die Funktion
+    andernorts ohne expliziten Parameter aufgerufen wird.
+    Gibt (ausbruch: bool, kijun_heute: float|None) zurueck.
     """
     if len(data) < 5 or 'Kijun' not in data.columns:
         return False, None
@@ -779,7 +786,7 @@ def check_kijun_breakout(data):
 
     frischer_ausbruch = any(
         pd.notna(kijun.iloc[-1 - i]) and data['Close'].iloc[-1 - i] <= kijun.iloc[-1 - i]
-        for i in range(1, 4)
+        for i in range(1, frische_tage + 1)
     )
 
     volumen_ok = any(
