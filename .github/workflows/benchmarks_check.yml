@@ -34,10 +34,35 @@ jobs:
       - name: Abhängigkeiten installieren
         # Gleiche Liste wie main.yml, da benchmark_snapshot.py analyse.py
         # importiert (führt dessen kompletten Modul-Code aus - siehe
-        # Modul-Docstring von benchmark_snapshot.py).
+        # Modul-Docstring von benchmark_snapshot.py). Deckt damit auch alles
+        # ab, was positionen_tracker.py für den Huckepack-Stop-Check unten
+        # braucht (alpaca-py, yfinance, Google-Drive-Bibliotheken).
         run: |
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
+
+      - name: Stop-Check (Huckepack, NEU 28.07.2026)
+        # HINTERGRUND: stop_check.yml faellt trotz zweier redundanter Cron-
+        # Zeiten (16:23 + 16:53 UTC) wiederholt komplett aus - zuletzt am
+        # 28.07., waehrend dieser Workflow zuverlaessig laeuft. Plausible
+        # Ursache: die stop_check-Zeiten liegen im globalen CI-Lastfenster
+        # (US-Mittag), GitHub priorisiert schedule-Events am niedrigsten;
+        # die stabilen Crons dieses Repos laufen alle abseits davon.
+        # Deshalb laeuft der Positions-Tracker hier zusaetzlich mit - der
+        # 19:53-MESZ-Slot liegt sogar besser als der originale Stop-Check
+        # (EU-Schlusskurse sicher da, US-Markt mitten in der Session).
+        # stop_check.yml bleibt unveraendert als Redundanz bestehen:
+        # zusammen fuenf Zeitfenster pro Tag ueber zwei Workflows; Mehrfach-
+        # Laeufe sind unschaedlich (aktualisieren nur denselben Kurs-Stand,
+        # Stufenregel/TP-Hinweise sind per Vermerk-Text idempotent).
+        # positionen_tracker.py laedt das Sheet am Ende selbst zu Drive hoch
+        # (eigener hochladen()-Aufruf) - der upload_to_drive.py-Schritt
+        # unten betrifft nur den Benchmarks-Snapshot.
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python positionen_tracker.py
 
       - name: Benchmarks-Snapshot erstellen
         # Bewusst NUR dieser eine Schritt - kein Setup-Scan (analyse.py direkt),
