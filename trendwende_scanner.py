@@ -61,6 +61,9 @@ from analyse import (
     clean_num,
     get_benchmark_close,
     get_eu_benchmark_close,
+    berechne_fundamental_ampel,
+    get_earnings_warnung,
+    get_news_headlines,
 )
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -72,10 +75,10 @@ from alpaca.data.timeframe import TimeFrame
 # Wie nah am 52-Wochen-Tief ein Kandidat maximal noch sein darf, um als
 # "Trendwende-Kandidat" zu gelten (ausgewogen: nicht nur exakte Tiefs, aber
 # auch keine Werte, die schon weit vom Tief weggelaufen sind).
-ABSTAND_52W_TIEF_MAX = 20.0  # Prozent oberhalb des 52-Wochen-Tiefs (GEÃNDERT 23.07.2026, vorher 10.0 - siehe WMA200_LOOKBACK_TAGE-Kommentar unten fÃ¼r die BegrÃ¼ndung)
+ABSTAND_52W_TIEF_MAX = 20.0  # Prozent oberhalb des 52-Wochen-Tiefs (GEÄNDERT 23.07.2026, vorher 10.0 - siehe WMA200_LOOKBACK_TAGE-Kommentar unten für die Begründung)
 WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl Handelstage
                             # unter der WMA200 gelegen haben, nicht zwingend heute noch -
-                            # siehe BegrÃ¼ndung bei _pruefe_trendwende
+                            # siehe Begründung bei _pruefe_trendwende
 
 # Zeitfenster fuer "frisches" Signal (C - beide Bestaetigungen muessen
 # innerhalb dieser letzten N Handelstage aufgetreten sein)
@@ -436,9 +439,9 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     if anzahl_bonus == 0:
         qualitaets_bonus = "Basis"
     elif anzahl_bonus == 1:
-        qualitaets_bonus = "BestÃ¤tigt"
+        qualitaets_bonus = "Bestätigt"
     else:
-        qualitaets_bonus = "Stark bestÃ¤tigt"
+        qualitaets_bonus = "Stark bestätigt"
 
     setup_typ = "RSI-Divergenz + Kumo-Ausbruch"
     if bonus_komponenten:
@@ -487,6 +490,17 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     except Exception:
         firma_name = ticker
 
+    # Fundamental-Ampel (NEU, 28.07.2026, Nutzerwunsch): Trendwende war bisher
+    # rein technisch (nur RSI-Divergenz + Kijun-Ausbruch), ohne die fundamentale
+    # Bestaetigung, die einen echten Turnaround von einem fallenden Messer
+    # unterscheidet - genau die Kombination aus Charttechnik + verbesserten
+    # Fundamentaldaten macht eine Trendwende-Story erst wirklich ueberzeugend.
+    # Wiederverwendet dieselbe Funktion wie der Hauptscanner (richtung="long",
+    # da Trendwende immer auf einen Boden/Aufwaertswende setzt).
+    fundamental_ampel, fundamental_hinweis = berechne_fundamental_ampel(
+        ticker, sektor=sektor, markt=markt, richtung="long"
+    )
+
     return {
         "Ticker": ticker,
         "Name": firma_name,
@@ -508,6 +522,8 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
         "Abstand_52W_Tief%": abstand_52w_tief,
         "Setup_Typ": f"Trendwende ({setup_typ})",
         "Qualitaets_Bonus": qualitaets_bonus,
+        "Fundamental_Ampel": fundamental_ampel,
+        "Fundamental_Hinweis": fundamental_hinweis,
         "Risikohinweis": (
             "Trendwende-Setup - strukturell riskanter als Trendfolge-Setups "
             "(\u201eMesser-Gefahr\u201c). Enger, wende-spezifischer Stop - Positionsgroesse entsprechend anpassen."
@@ -616,11 +632,12 @@ def main():
         "Ticker", "Name", "Markt", "Sektor", "Kurs", "TP1", "CRV1", "Chance1_Perc",
         "TP2", "CRV2", "Chance2_Perc",
         "Stop", "Risk_Perc", "RSI", "MACD_Trend", "Vol_Ratio", "RS_vs_Benchmark%",
-        "Abstand_52W_Tief%", "Setup_Typ", "Qualitaets_Bonus", "Risikohinweis",
+        "Abstand_52W_Tief%", "Setup_Typ", "Qualitaets_Bonus",
+        "Fundamental_Ampel", "Fundamental_Hinweis", "Risikohinweis",
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN_TRENDWENDE)
     if not df.empty:
-        bonus_rang = {"Stark bestÃ¤tigt": 0, "BestÃ¤tigt": 1, "Basis": 2}
+        bonus_rang = {"Stark bestätigt": 0, "Bestätigt": 1, "Basis": 2}
         df['_bonus_rang'] = df['Qualitaets_Bonus'].map(bonus_rang).fillna(3)
         df = df.sort_values(by=["_bonus_rang", "CRV1"], ascending=[True, False]).drop(columns=['_bonus_rang'])
 
@@ -673,7 +690,14 @@ def main():
         f.write("- RISIKOKLASSE: Strukturell riskanter als die normalen Trendfolge-Setups\n")
         f.write("  (\"Messer-Gefahr\" - ein fallendes Messer kann trotz Divergenz/Ausbruch weiter\n")
         f.write("  fallen). Deshalb eigene Datei, eigener Abschnitt, eigenes Label - bewusst\n")
-        f.write("  NICHT mit den \"sicheren\" Trendfolge-Setups vermischt.\n\n")
+        f.write("  NICHT mit den \"sicheren\" Trendfolge-Setups vermischt.\n")
+        f.write("- Fundamentale Bestaetigung (NEU, 28.07.2026): zusaetzlich zu den rein\n")
+        f.write("  technischen Pflicht-Signalen oben liefert die Fundamental-Ampel (KGV vs.\n")
+        f.write("  Sektor-Median, identische Logik wie beim Hauptscanner) sowie eine Earnings-\n")
+        f.write("  Warnung (Ueber-Nacht-Gap-Risiko) und juengste Schlagzeilen zusaetzlichen\n")
+        f.write("  fundamentalen Kontext, der einen echten Turnaround von einem bloss\n")
+        f.write("  technischen Fehlsignal unterscheiden hilft - ersetzt keines der beiden\n")
+        f.write("  Pflicht-Signale, ist aber Teil jeder Ausgabe.\n\n")
 
         if df.empty:
             f.write("Keine Trendwende-Kandidaten gefunden.\n")
@@ -686,9 +710,20 @@ def main():
                     f"RSI: {row['RSI']} | MACD-Trend: {row['MACD_Trend']} | Vol-Ratio: {row['Vol_Ratio']}\n"
                     f"Abstand 52W-Tief: {row['Abstand_52W_Tief%']}% | RS vs. Benchmark: {row['RS_vs_Benchmark%']}%\n"
                     f"Setup-Typ: {row['Setup_Typ']}\n"
-                    f"QualitÃ¤ts-Bonus: {row['Qualitaets_Bonus']}\n"
-                    f"Risikohinweis: {row['Risikohinweis']}\n\n"
+                    f"Qualitäts-Bonus: {row['Qualitaets_Bonus']}\n"
+                    f"Fundamental-Ampel: {row['Fundamental_Ampel']} ({row['Fundamental_Hinweis']})\n"
+                    f"Risikohinweis: {row['Risikohinweis']}\n"
                 )
+                # Earnings-Warnung (Gap-Risiko) + juengste Schlagzeilen (NEU,
+                # 28.07.2026, analog zum Hauptscanner) - live berechnet statt
+                # in der CSV gespeichert, da beide Werte sich schnell aendern
+                # (identisches Vorgehen wie in analyse.py's Setups-Ausgabe).
+                earnings = get_earnings_warnung(row['Ticker'])
+                if earnings:
+                    f.write(f"{earnings}\n")
+                for headline in get_news_headlines(row['Ticker']):
+                    f.write(f"News {headline}\n")
+                f.write("\n")
 
     print(f"Gespeichert: {dateiname_briefing}")
     print("Trendwende-Scanner abgeschlossen.")
