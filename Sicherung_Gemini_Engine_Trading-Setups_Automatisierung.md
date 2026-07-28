@@ -322,21 +322,30 @@ Bestätigung als ein einzelnes A-Signal).
 Modifikatoren zur Setup-Qualität -- formalisiertes System
 
 Die Basis-Einstufung (A oder B) aus der Setup-Qualitäts-Matrix oben wird
-durch bis zu vier unabhängige Modifikatoren zu einer Feinstufe
+durch bis zu fünf unabhängige Modifikatoren zu einer Feinstufe
 verfeinert. Nutze diese 6-stufige Skala (aufsteigend): B-, B, B+, A-, A,
 A+. Die Basis-Einstufung landet in der Mitte ihrer Zweiergruppe (B bzw.
 A), jeder zutreffende Modifikator verschiebt um genau eine Stufe.
 Mehrere Modifikatoren addieren sich; das Ergebnis wird an den Rändern
 gekappt (nie unter B-, nie über A+).
 
-Vier Modifikatoren insgesamt (NEU -- Klarstellung): Die ersten drei
+Fünf Modifikatoren insgesamt (GEÄNDERT 28.07.2026): Die ersten drei
 stehen direkt hier unten. Der VIERTE ist die Marktumfeld-Abwertung aus
-Abschnitt 4 (bärisches Marktumfeld → -1 Stufe) -- sie ist kein separater
-Sonderfall, sondern zählt genauso zur Gesamtsumme und MUSS die in der
-eckigen Klammer angezeigte Feinstufe verschieben (z. B. Basis B ohne
-weitere Modifikatoren + bärisches Marktumfeld → \[B-\], nicht \[B\]).
-Rechne beim finalen Ausfüllen der Trade-Karte alle vier Modifikatoren
-gemeinsam gegen, nicht nur die drei aus diesem Abschnitt.
+Abschnitt 4 (bärisches Marktumfeld → -1 Stufe, seit 28.07.2026 NUR NOCH
+mit Sektor-Bestätigung, Details dort). Der FÜNFTE ist der
+SEKTOR-MODIFIKATOR (NEU 28.07.2026, Nutzerentscheidung - das Setup wird
+danach beurteilt, ob sein EIGENER Sektor Rückenwind hat, nicht nur ob
+der Gesamtmarkt schwächelt): Rotation-Score des Setup-Sektors (per
+Sektor-Name aus Performance.csv bzw. Performance_EU.csv nachschlagen,
+Spalte Rotation-Score - derselbe Wert, den du ohnehin in die Zeile
+„Sektor-Momentum" der Trade-Karte schreibst) ≥ 2,0 → +1 Stufe (klarer
+Sektor-Rückenwind) \| Score \< 0 → -1 Stufe (Sektor kippt, obwohl er
+formal in den Top-Sektoren steht) \| 0 bis \< 2,0 → 0 (neutral). Beide
+sind keine Sonderfälle, sondern zählen genauso zur Gesamtsumme und MUSS
+die in der eckigen Klammer angezeigte Feinstufe verschieben (z. B. Basis
+B ohne weitere Modifikatoren + bärisches Marktumfeld → \[B-\], nicht
+\[B\]). Rechne beim finalen Ausfüllen der Trade-Karte alle vier
+Modifikatoren gemeinsam gegen, nicht nur die drei aus diesem Abschnitt.
 
 Die ersten drei Modifikatoren:
 
@@ -510,10 +519,17 @@ Nachkommastellen}}% Divergenz: {{Divergenz}} Ereignis-Kontext:
 
 4\. Kontext-Regeln
 
--   Marktumfeld-Abwertung (marktbezogen, NEU): Bei bärischem Marktumfeld
-    ist die Setup-Qualität pauschal um eine Stufe abzuwerten (= vierter
-    Modifikator, siehe Abschnitt 2 -- verändert also aktiv die Feinstufe
-    in der eckigen Klammer der Trade-Karte) -- aber marktspezifisch:
+-   Marktumfeld-Abwertung (marktbezogen, GEÄNDERT 28.07.2026 - nur noch
+    mit Sektor-Bestätigung): Bei bärischem Marktumfeld ist die
+    Setup-Qualität um eine Stufe abzuwerten (= vierter Modifikator,
+    siehe Abschnitt 2 -- verändert also aktiv die Feinstufe in der
+    eckigen Klammer der Trade-Karte), aber NUR NOCH, wenn zusätzlich der
+    Rotation-Score des Setup-Sektors \< 1,0 ist (Bestätigung statt
+    Pauschale: ein starker Sektor in schwachem Gesamtmarkt wird nicht
+    mehr bestraft - dass Geld in schwachen Phasen in starke Sektoren
+    umschichtet, ist die Kernthese der Sektor-Rotation). Bei
+    Sektor-Score ≥ 1,0 entfällt die Abwertung ersatzlos. Und weiterhin
+    marktspezifisch:
 
 -   US-Setups (Markt = US) → Abwertung nur bei bärischem S&P 500 /
     Nasdaq (aus dem BENCHMARKS-Block im Briefing).
@@ -649,16 +665,22 @@ Nachkommastellen}}% Divergenz: {{Divergenz}} Ereignis-Kontext:
 
 Erstelle abschließend zwei kurze Fazits zum Marktumfeld: eines für die
 USA (S&P 500/Nasdaq) und eines für Europa (DAX/EuroStoxx50). GEÄNDERT
-(28.07.2026): Die briefing.txt enthält direkt nach dem BENCHMARKS-Block
-einen Block „MARKTUMFELD (regelbasiert, 3 Stufen)" mit fertigen
-Einstufungen je Region (Bullisch = Kurs über EMA20 \| Neutral = unter
-EMA20, aber über EMA50 und WMA200 \| Bärisch = unter EMA50 oder unter
-WMA200; je Region zählt der schwächere Leitindex). Übernimm diese
-Einstufungen WÖRTLICH als Fazit -- keine eigene, abweichende
-Interpretation der Benchmark-Zahlen mehr. Du darfst die Einstufung in je
+(28.07.2026 abends - Score-Modell, Nutzerentscheidung): Die briefing.txt
+enthält direkt nach dem BENCHMARKS-Block einen Block „MARKTUMFELD
+(Score-Modell)" mit festgeschriebener Definition, fertigen Einstufungen
+UND Scores je Region. Zum Verständnis (du rechnest NICHT selbst nach):
+jeder Index wird einzeln eingestuft (Bullisch = Kurs über EMA20 \|
+Neutral = unter EMA20, aber über EMA50 und WMA200 \| Bärisch = unter
+EMA50 oder unter WMA200) und bepunktet (Bullisch 2 \| Neutral 1 \|
+Bärisch 0); gewichteter Durchschnitt mit S&P 500 ×2, Nasdaq ×1, Russell
+2000 ×1 (USA) bzw. DAX ×2, EuroStoxx50 ×1, STOXX Europe 600 ×1 (Europa);
+Score ≥ 1,5 → Bullisch \| ≤ 0,5 → Bärisch \| dazwischen → Neutral. Der
+Dow Jones ist reine Info-Zeile in den BENCHMARKS und fließt bewusst
+nicht in den Score ein. Übernimm Einstufung UND Score WÖRTLICH als Fazit
+-- keine eigene, abweichende Interpretation. Du darfst das Fazit in je
 einem Satz mit den Einzel-Index-Stufen aus derselben Zeile begründen (z.
-B. „bärisch, da der Nasdaq unter seiner EMA50 notiert"). Nur falls der
-Block fehlt (älterer Lauf), gilt ersatzweise die bisherige freie
+B. „Neutral, da der Leitindex hält und nur der Nasdaq bärisch ist"). Nur
+falls der Block fehlt (älterer Lauf), gilt ersatzweise die freie
 Einordnung anhand Kurs vs. EMA20/EMA50/EMA200/WMA200. Ergänze danach
 einen Absatz zur globalen Risikolage auf Basis von Russell 2000, Nikkei,
 Hang Seng, Zinskurve (2J/5J/10J/30J inkl.
@@ -892,7 +914,12 @@ Workflow, ca. 04 Uhr). Diese Titel sind das Spiegelbild der normalen
 Trendfolge-Setups: Wette auf FALLENDE statt steigende Kurse
 (Put-Optionsschein/KO statt Call), Bottom- statt Top-Sektoren,
 invertierte Modifikatoren (bärisches Marktumfeld wertet HIER auf, nicht
-ab).
+ab - seit 28.07.2026 ebenfalls nur mit Sektor-Bestätigung,
+Rotation-Score des Setup-Sektors \< 1,0, und ergänzt um den gespiegelten
+Sektor-Modifikator: Score ≤ -2,0 → +1 Stufe \| Score \> 0 → -1 Stufe).
+WICHTIG: Bei Short-Setups ist die Feinstufe bereits fertig berechnet in
+der CSV-Spalte Setup_Qualitaet enthalten - übernimm sie wörtlich und
+rechne die Modifikatoren dort NICHT selbst nach.
 
 -   Strikte Trennung (Pflicht): Short-Setups gehören NIEMALS in den
     Abschnitt „Daten-Übersicht (Valide Setups)" -- eigener Abschnitt
