@@ -39,15 +39,25 @@ def funnel_zaehle(grund):
         FUNNEL_HAUPT[grund] += 1
 
 
-# --- MARKTUMFELD-KLASSIFIKATION (NEU 28.07.2026, Nutzerwunsch) ---
-# Vorher hat die Gemini-Auswertung das Marktumfeld frei aus den Benchmark-
-# Zahlen interpretiert ("bärisch, weil knapp unter EMA20") - sehr trigger-
-# empfindlich und nirgends als Regel definiert, obwohl z.B. der Short-Scanner-
-# Qualitäts-Modifikator davon abhängt. Jetzt feste, dokumentierte 3 Stufen:
-#   Bullisch: Kurs über EMA20 (und nicht unter EMA50/WMA200)
-#   Neutral:  Kurs unter EMA20, aber über EMA50 und WMA200
-#             (kurzfristige Konsolidierung im intakten Trend)
-#   Bärisch:  Kurs unter EMA50 ODER unter WMA200
+# --- MARKTUMFELD-KLASSIFIKATION (Score-Modell, GEÄNDERT 28.07.2026 abends,
+# Nutzerentscheidung - ersetzt "der schwächste Leitindex zählt") ---
+# Problem der alten Regel: ein einzelner Ausreißer (z.B. Nasdaq unter EMA50
+# wegen eines rein sektoralen Tech-Ausverkaufs) stempelte die GANZE Region
+# bärisch. Jetzt gewichtete Durchschnittsnote über drei Indizes je Region:
+#   Stufe je Index (unverändert):
+#     Bullisch: Kurs über EMA20 (und nicht unter EMA50/WMA200)
+#     Neutral:  Kurs unter EMA20, aber über EMA50 und WMA200
+#     Bärisch:  Kurs unter EMA50 ODER unter WMA200
+#   Punkte je Index: Bullisch 2 | Neutral 1 | Bärisch 0
+#   Gewichte USA:    S&P 500 x2 (Leitindex) | Nasdaq x1 (Tech-Frühwarnung)
+#                    | Russell 2000 x1 (Marktbreite)
+#   Gewichte Europa: DAX x2 (Leitindex) | EuroStoxx50 x1
+#                    | STOXX Europe 600 x1 (Marktbreite)
+#   Regionen-Score = gewichteter Durchschnitt der Punkte:
+#     >= 1.5 Bullisch | <= 0.5 Bärisch | dazwischen Neutral
+# Der Dow Jones ist bewusst NUR Info-Zeile in den BENCHMARKS und geht NICHT
+# in den Score ein (30 Titel, kursgewichtet, ~0,95 korreliert zum S&P 500 -
+# kein Informationsgewinn, würde aber das Nasdaq-Frühwarnsignal verwässern).
 # get_index_benchmark_yf legt die Levels je Label hier ab (Nebeneffekt).
 BENCHMARK_LEVELS = {}
 
@@ -64,16 +74,30 @@ def klassifiziere_index(label):
     return "Bullisch"
 
 
-def klassifiziere_marktumfeld(labels):
-    """Regionen-Einstufung über mehrere Leitindizes: es zählt der SCHWÄCHSTE
-    (konservativ - eine Region ist nur so stark wie ihr schwächster Leitindex).
-    Gibt (Regionen-Stufe, [Einzel-Stufen]) zurück."""
-    rang = {"Bärisch": 0, "Neutral": 1, "Bullisch": 2}
-    stufen = [klassifiziere_index(l) for l in labels]
-    gueltig = [s for s in stufen if s in rang]
-    if not gueltig:
-        return "N/A", stufen
-    return min(gueltig, key=lambda s: rang[s]), stufen
+def klassifiziere_marktumfeld(gewichtete_labels):
+    """Regionen-Einstufung als Score-Modell (GEÄNDERT 28.07.2026, siehe
+    Kommentarblock oben). Erwartet eine Liste von (Label, Gewicht)-Tupeln.
+    Fehlt ein Index (keine Levels), wird über die verbleibenden Gewichte
+    gemittelt; fehlen alle, kommt "N/A" zurück.
+    Gibt (Regionen-Stufe, [Detail-Strings], Score-oder-None) zurück."""
+    punkte = {"Bullisch": 2, "Neutral": 1, "Bärisch": 0}
+    details, summe, gewichtssumme = [], 0.0, 0.0
+    for label, gewicht in gewichtete_labels:
+        stufe = klassifiziere_index(label)
+        details.append(f"{label}: {stufe} (x{gewicht:g})")
+        if stufe in punkte:
+            summe += punkte[stufe] * gewicht
+            gewichtssumme += gewicht
+    if gewichtssumme == 0:
+        return "N/A", details, None
+    score = round(summe / gewichtssumme, 2)
+    if score >= 1.5:
+        regionen_stufe = "Bullisch"
+    elif score <= 0.5:
+        regionen_stufe = "Bärisch"
+    else:
+        regionen_stufe = "Neutral"
+    return regionen_stufe, details, score
 
 
 # Initialisierung des Clients direkt beim Start
@@ -98,9 +122,9 @@ sektoren_map = {
 }
 
 sektoren_aktien = {
-    "XLK": ["AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC",
+    "XLK": ["IBM", "AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC",
             "MRVL", "KLAC", "SNPS", "CDNS", "PYPL", "EA", "INTU", "NOW"],
-    "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB", "PNC", "TFC", "COF"],
+    "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB", "PNC", "TFC", "COF", "TRV", "V"],
     "XLV": ["UNH", "JNJ", "LLY", "MRK", "PFE", "ABBV", "TMO", "DHR", "AMGN", "GILD", "ISRG", "BMY", "CVS"],
     "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TGT", "GM", "F", "BKNG", "CMG", "ORLY"],
     "XLP": ["PG", "KO", "PEP", "COST", "WMT", "CL", "EL", "MDLZ", "GIS", "KLG", "KMB", "KHC", "SYY"],
@@ -1726,8 +1750,13 @@ if __name__ == "__main__":
     # get_index_benchmark_yf mit dem echten Index-Ticker (^GSPC/^IXIC).
     sp500_filter_text = get_index_benchmark_yf("^GSPC", "S&P 500")
     qqq_text = get_index_benchmark_yf("^IXIC", "Nasdaq")
+    # Dow Jones (NEU 28.07.2026, Nutzerwunsch): reine Info-Zeile,
+    # geht bewusst NICHT in den Marktumfeld-Score ein (siehe oben)
+    dow_text = get_index_benchmark_yf("^DJI", "Dow Jones")
     dax_text = get_index_benchmark_yf("^GDAXI", "DAX")
     eurostoxx_text = get_index_benchmark_yf("^STOXX50E", "EuroStoxx50")
+    # STOXX Europe 600 (NEU 28.07.2026): Breite-Index fuer den EU-Score
+    stoxx600_text = get_index_benchmark_yf("^STOXX", "STOXX Europe 600")
     # Globale Risiko-Benchmarks (NEU): keine Setup-Quellen, dienen nur der
     # Marktumfeld-/Risikoeinschätzung im Briefing (u.a. für Gemini).
     # Russell 2000 = US-Small-Cap-Risikobereitschaft, Nikkei = größter
@@ -2093,17 +2122,27 @@ if __name__ == "__main__":
         f.write("- Death-Cross-Regel (NEU 28.07.2026): frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10 Handelstage) stuft VALIDE auf ACHTUNG ab\n")
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n\n")
 
-        # MARKTUMFELD (NEU 28.07.2026, Nutzerwunsch): feste, regelbasierte
-        # 3-Stufen-Klassifikation statt freier Interpretation der Benchmark-
-        # Zahlen durch die Gemini-Auswertung - die Auswertung übernimmt diese
-        # Einstufung wörtlich (siehe Master-Anweisung).
-        us_stufe, us_detail = klassifiziere_marktumfeld(["S&P 500", "Nasdaq"])
-        eu_stufe, eu_detail = klassifiziere_marktumfeld(["DAX", "EuroStoxx50"])
-        f.write("MARKTUMFELD (regelbasiert, 3 Stufen: Bullisch = Kurs über EMA20 | Neutral = unter EMA20, aber über EMA50 und WMA200 | Bärisch = unter EMA50 oder unter WMA200; je Region zählt der schwächere Leitindex)\n")
-        f.write(f"Marktumfeld USA: {us_stufe} (S&P 500: {us_detail[0]} | Nasdaq: {us_detail[1]})\n")
-        f.write(f"Marktumfeld Europa: {eu_stufe} (DAX: {eu_detail[0]} | EuroStoxx50: {eu_detail[1]})\n\n")
+        # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
+        # entscheidung): Definition steht im Kommentarblock bei
+        # klassifiziere_marktumfeld und wird hier woertlich ins Briefing
+        # festgeschrieben - die Auswertung übernimmt Einstufung UND Score
+        # wörtlich (siehe Master-Anweisung).
+        us_stufe, us_detail, us_score = klassifiziere_marktumfeld(
+            [("S&P 500", 2), ("Nasdaq", 1), ("Russell 2000", 1)])
+        eu_stufe, eu_detail, eu_score = klassifiziere_marktumfeld(
+            [("DAX", 2), ("EuroStoxx50", 1), ("STOXX Europe 600", 1)])
+        f.write("MARKTUMFELD (Score-Modell, seit 28.07.2026 - ersetzt 'der schwächste Leitindex zählt')\n")
+        f.write("Definition (festgeschrieben):\n")
+        f.write("- Stufe je Index: Bullisch = Kurs über EMA20 | Neutral = unter EMA20, aber über EMA50 und WMA200 | Bärisch = unter EMA50 oder unter WMA200\n")
+        f.write("- Punkte je Index: Bullisch 2 | Neutral 1 | Bärisch 0\n")
+        f.write("- Gewichte USA: S&P 500 x2 (Leitindex) | Nasdaq x1 (Tech-Frühwarnung) | Russell 2000 x1 (Marktbreite)\n")
+        f.write("- Gewichte Europa: DAX x2 (Leitindex) | EuroStoxx50 x1 | STOXX Europe 600 x1 (Marktbreite)\n")
+        f.write("- Regionen-Score = gewichteter Durchschnitt; >= 1,5 Bullisch | <= 0,5 Bärisch | dazwischen Neutral\n")
+        f.write("- Dow Jones: reine Info-Zeile in den BENCHMARKS, fließt bewusst NICHT in den Score ein\n")
+        f.write(f"Marktumfeld USA: {us_stufe} (Score {us_score}) - {' | '.join(us_detail)}\n")
+        f.write(f"Marktumfeld Europa: {eu_stufe} (Score {eu_score}) - {' | '.join(eu_detail)}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
@@ -2280,8 +2319,22 @@ if __name__ == "__main__":
                 # sie nur noch woertlich uebernehmen, kein Kopfrechnen mehr.
                 if not offene.empty:
                     offene_perf = offene.copy()
+                    # GEAENDERT (28.07.2026, zweite Iteration): komma-tolerant.
+                    # Die Zeile fehlte im Nachmittagslauf komplett - wahrschein-
+                    # lichste Ursache: Performance-Werte lagen als deutsche
+                    # Komma-Strings vor, pd.to_numeric machte daraus still NaN
+                    # -> gueltig war leer -> Zeile wurde uebersprungen (fmt_de
+                    # in der Positions-Schleife ersetzt Kommas selbst und
+                    # zeigte die Werte trotzdem korrekt an, deshalb fiel es
+                    # dort nicht auf). Jetzt gleiche Komma-Toleranz wie fmt_de
+                    # plus laute Debug-Meldung statt stillem Wegfall.
+                    if 'Performance_Seit_Einstieg%' in offene_perf.columns:
+                        _perf_roh = offene_perf['Performance_Seit_Einstieg%']
+                    else:
+                        _perf_roh = pd.Series('', index=offene_perf.index)
                     offene_perf['_perf_num'] = pd.to_numeric(
-                        offene_perf.get('Performance_Seit_Einstieg%'), errors='coerce'
+                        _perf_roh.astype(str).str.replace(',', '.', regex=False),
+                        errors='coerce'
                     )
                     if 'Ideen_Quelle' in offene_perf.columns:
                         quelle_roh = offene_perf['Ideen_Quelle'].astype(str).str.strip()
@@ -2300,6 +2353,11 @@ if __name__ == "__main__":
                         gesamt_schnitt = gueltig['_perf_num'].mean()
                         teile.append(f"Gesamt ({len(gueltig)} Positionen): Ø {gesamt_schnitt:.2f}%".replace('.', ','))
                         f.write(f"\nPortfolio-Übersicht: {' | '.join(teile)}\n")
+                    else:
+                        print("WARNUNG: Portfolio-Übersicht übersprungen - keine "
+                              "numerisch lesbaren Performance-Werte in "
+                              "Offene_Positionen.csv (Spalte fehlt oder Format unlesbar).")
+                        f.write("\nPortfolio-Übersicht: nicht berechenbar (Performance-Werte heute nicht numerisch lesbar - siehe Lauf-Log).\n")
 
                 if not gestoppt_kuerzlich.empty:
                     f.write("\n--- GESTOPPT (letzte 10 Werktage) ---\n")
