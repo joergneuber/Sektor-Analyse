@@ -2104,6 +2104,39 @@ if __name__ == "__main__":
                     for headline in get_news_headlines(prow['Ticker']):
                         f.write(f"News {headline}\n")
 
+                # Portfolio-Übersicht (GEÄNDERT 28.07.2026, Nutzerwunsch):
+                # vorher liess die Master-Anweisung Gemini den Durchschnitt
+                # selbst aus bis zu 18 Einzelwerten im Kopf ausrechnen - ein
+                # bekannter Schwachpunkt von Sprachmodellen bei mentaler
+                # Arithmetik ueber viele Zahlen (nachweislicher Rechenfehler
+                # am 28.07.2026: Gemini kam auf Ø +0,56% fuer die Setups-
+                # Gruppe, korrekt waeren +0,95% gewesen - bei der Gesamtzahl
+                # ergab sich dieselbe Abweichung). Jetzt hier in Python vor-
+                # berechnet und als fertige Zeile geschrieben - Gemini muss
+                # sie nur noch woertlich uebernehmen, kein Kopfrechnen mehr.
+                if not offene.empty:
+                    offene_perf = offene.copy()
+                    offene_perf['_perf_num'] = pd.to_numeric(
+                        offene_perf.get('Performance_Seit_Einstieg%'), errors='coerce'
+                    )
+                    if 'Ideen_Quelle' in offene_perf.columns:
+                        quelle_roh = offene_perf['Ideen_Quelle'].astype(str).str.strip()
+                    else:
+                        quelle_roh = pd.Series('', index=offene_perf.index)
+                    offene_perf['_quelle_norm'] = quelle_roh.where(
+                        ~quelle_roh.str.lower().isin(['', 'nan']), 'Manuell'
+                    )
+                    gueltig = offene_perf.dropna(subset=['_perf_num'])
+
+                    if not gueltig.empty:
+                        teile = []
+                        for quelle, gruppe in gueltig.groupby('_quelle_norm'):
+                            schnitt = gruppe['_perf_num'].mean()
+                            teile.append(f"{quelle}: {len(gruppe)} Position(en), Ø {schnitt:.2f}%".replace('.', ','))
+                        gesamt_schnitt = gueltig['_perf_num'].mean()
+                        teile.append(f"Gesamt ({len(gueltig)} Positionen): Ø {gesamt_schnitt:.2f}%".replace('.', ','))
+                        f.write(f"\nPortfolio-Übersicht: {' | '.join(teile)}\n")
+
                 if not gestoppt_kuerzlich.empty:
                     f.write("\n--- GESTOPPT (letzte 10 Werktage) ---\n")
                     for _, prow in gestoppt_kuerzlich.iterrows():
