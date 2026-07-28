@@ -18,9 +18,18 @@ Kriterien (Stand 19.07.2026, aus gemeinsamer Abstimmung A-F):
       zum 52-Wochen-Tief.
   B - Strenge: ausgewogen (siehe ABSTAND_52W_TIEF_MAX unten - moderat, nicht
       nur exakte neue Tiefs).
-  C - Wende-Bestaetigung: bullische RSI-Divergenz UND Kumo-Ausbruch MUESSEN
-      beide vorliegen, UND beide muessen innerhalb der letzten 3 Handelstage
-      aufgetreten sein (kein "alter" Signalstand).
+  C - Wende-Bestaetigung (GEAENDERT 28.07.2026, zeitlich entkoppelte Sequenz):
+      bullische RSI-Divergenz UND Kumo-Ausbruch MUESSEN beide vorliegen,
+      aber mit UNTERSCHIEDLICHEN Zeitfenstern:
+        1) Boden-Bedingung: RSI-Divergenz innerhalb der letzten
+           DIVERGENZ_FENSTER_TAGE Handelstage, seitdem NICHT invalidiert
+           (kein tieferer Schlusskurs nach dem Divergenz-Tief).
+        2) Trigger: frischer Kumo-Ausbruch (komplette Wolke) innerhalb der
+           letzten FRISCHE_TAGE Handelstage.
+      Begruendung: Divergenz entsteht AM Boden, der Kumo-Ausbruch folgt
+      naturgemaess erst Tage/Wochen spaeter - ein gemeinsames 3-5-Tage-
+      Fenster war strukturell fast nie erfuellbar (Log 24./28.07.2026:
+      Divergenz- und Ausbruch-Gruppe ueber alle Ticker komplett disjunkt).
   D - Kennzeichnung: eigenes Label "Trendwende-Setup" + eigene Risikohinweis-
       Spalte, klar getrennt von den normalen Trendfolge-Setups.
   E - Workflow: taeglich, eigener Schritt NACH dem Hauptscanner (siehe
@@ -43,6 +52,7 @@ liegen (wird importiert).
 
 import datetime
 import math
+from collections import Counter
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -54,8 +64,6 @@ from analyse import (
     alpaca_client,
     sektoren_aktien,
     dax_aktien,
-    check_kumo_breakout,
-    check_kijun_breakout,
     check_bullish_confirmation,
     get_fib_levels,
     clean_num,
@@ -80,17 +88,23 @@ WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl
                             # unter der WMA200 gelegen haben, nicht zwingend heute noch -
                             # siehe Begründung bei _pruefe_trendwende
 
-# Zeitfenster fuer "frisches" Signal (C - beide Bestaetigungen muessen
-# innerhalb dieser letzten N Handelstage aufgetreten sein)
-# GEAENDERT (28.07.2026, Nutzerwunsch): von 3 auf 5 Handelstage erweitert -
-# die urspruengliche 3-Tage-Kombination aus RSI-Divergenz + Kijun-Ausbruch
-# war praktisch nie gleichzeitig erfuellt (staendige 0-Kandidaten-Tage, siehe
-# Trendwende_Briefing ueber mehrere Wochen). Steuert jetzt sowohl RSI-
-# Divergenz/Stochastik-Crossover (Default-Parameter unten) als auch den
-# Kijun-Ausbruch (expliziter Parameter beim Aufruf, siehe unten - der Kijun-
-# Check selbst hat sein Fenster in analyse.py, standardmaessig 3, nicht an
-# diese Konstante gekoppelt).
+# Zeitfenster fuer den frischen TRIGGER (C.2 - Kumo-Ausbruch) sowie den
+# optionalen Stochastik-Crossover-Bonus. GEAENDERT (28.07.2026): gilt NICHT
+# mehr fuer die RSI-Divergenz - die hat ihr eigenes, laengeres Fenster
+# (DIVERGENZ_FENSTER_TAGE unten). Grund: Divergenz (am Boden) und Kumo-
+# Ausbruch (Wochen spaeter) in EIN gemeinsames 3-5-Tage-Fenster zu zwingen
+# war strukturell fast nie erfuellbar - die beiden Signalgruppen waren im
+# Debug-Log vom 24./28.07.2026 ueber alle Ticker komplett disjunkt.
 FRISCHE_TAGE = 5
+
+# Zeitfenster fuer die BODEN-Bedingung (C.1 - bullische RSI-Divergenz):
+# die Divergenz darf bis zu N Handelstage zurueckliegen, MUSS aber seitdem
+# intakt sein (kein Schlusskurs unter dem Divergenz-Tief, sonst ist der
+# Boden gebrochen und die Divergenz invalidiert - siehe
+# check_rsi_divergence_recent). Bewusst deutlich laenger als FRISCHE_TAGE:
+# die typische Turnaround-Sequenz ist "erst Divergenz-Boden, dann Tage/
+# Wochen spaeter der Kumo-Ausbruch als Bestaetigung".
+DIVERGENZ_FENSTER_TAGE = 40
 
 # Chunk-Groesse fuer Sammel-Abrufe (Alpaca/yfinance koennen mehrere Ticker in
 # einem Request abfragen - das ersetzt die 370-440 einzelnen API-Calls von
@@ -107,30 +121,89 @@ STOP_PUFFER = 0.98  # 2% Puffer unter dem juengsten Verlaufstief
 # ZUSATZ-BAUSTEIN: RSI-Divergenz mit Frische-Pruefung
 # ---------------------------------------------------------------------------
 
-def check_rsi_divergence_recent(data, frische_tage=FRISCHE_TAGE):
-    """Wie check_rsi_divergence in analyse.py, aber zusaetzlich mit Pflicht,
-    dass der juengste lokale Tiefpunkt (der fuer die Divergenz herangezogene
-    Bodenpunkt) innerhalb der letzten `frische_tage` Handelstage liegt - sonst
-    waere die Divergenz schon "alt" und kein aktuelles Wende-Signal mehr.
+def check_rsi_divergence_recent(data, fenster_tage=DIVERGENZ_FENSTER_TAGE):
+    """BODEN-Bedingung (C.1) - GEAENDERT 28.07.2026: die bullische RSI-
+    Divergenz muss nicht mehr in denselben 5 Tagen wie der Kumo-Ausbruch
+    liegen, sondern darf bis zu `fenster_tage` Handelstage zurueckliegen.
+    Dafuer kommt eine INVALIDIERUNGS-Regel dazu: schliesst der Kurs nach dem
+    Divergenz-Tief noch einmal TIEFER, ist der Boden gebrochen und die
+    Divergenz zaehlt nicht mehr (klassische Divergenz-Regel - ein
+    unterschrittenes Divergenz-Tief ist ein gescheitertes Signal, kein
+    "immer noch gueltiges").
     Gibt True/False zurueck (nur bullische Divergenz relevant fuer diesen
     Scanner, da wir ausschliesslich nach Boeden suchen)."""
-    df = data.tail(40)
+    # Etwas Vorlauf vor dem Fenster mitnehmen, damit argrelextrema am linken
+    # Rand echte lokale Minima erkennen kann (order=5 braucht Nachbarn).
+    df = data.tail(fenster_tage + 15)
     ilocs_min = argrelextrema(df['Close'].values, np.less_equal, order=5)[0]
 
     if len(ilocs_min) < 2:
         return False
 
     letzter_tiefpunkt_idx = ilocs_min[-1]
-    ist_frisch = letzter_tiefpunkt_idx >= (len(df) - 1 - frische_tage)
-    if not ist_frisch:
+
+    # 1) Divergenz-Tief muss innerhalb des Fensters liegen (nicht "uralt")
+    im_fenster = letzter_tiefpunkt_idx >= (len(df) - 1 - fenster_tage)
+    if not im_fenster:
         return False
 
+    # 2) Divergenz selbst: Kurs macht tieferes Tief, RSI ein hoeheres Tief
     bullische_divergenz = (
-        df['Close'].iloc[ilocs_min[-1]] < df['Close'].iloc[ilocs_min[-2]]
+        df['Close'].iloc[letzter_tiefpunkt_idx] < df['Close'].iloc[ilocs_min[-2]]
     ) and (
-        df['RSI'].iloc[ilocs_min[-1]] > df['RSI'].iloc[ilocs_min[-2]]
+        df['RSI'].iloc[letzter_tiefpunkt_idx] > df['RSI'].iloc[ilocs_min[-2]]
     )
-    return bool(bullische_divergenz)
+    if not bullische_divergenz:
+        return False
+
+    # 3) Invalidierung: seit dem Divergenz-Tief darf KEIN tieferer
+    #    Schlusskurs aufgetreten sein (leerer Slice, falls das Tief die
+    #    letzte Kerze ist -> min() ist NaN -> Vergleich False -> ok).
+    tief_close = df['Close'].iloc[letzter_tiefpunkt_idx]
+    danach_min = df['Close'].iloc[letzter_tiefpunkt_idx + 1:].min()
+    if pd.notna(danach_min) and danach_min < tief_close:
+        return False
+
+    return True
+
+
+def check_kumo_breakout_recent(data, frische_tage=FRISCHE_TAGE):
+    """TRIGGER (C.2) - NEU 28.07.2026 (Nutzerwunsch): zurueck zum ECHTEN
+    Kumo-Ausbruch als Pflicht-Signal (statt des am 24.07. eingebauten
+    Kijun-Ausbruchs, der nur die Basislinie kreuzt und damit ein deutlich
+    schwaecheres Signal war als in Briefing/Doku beschrieben). Lokal
+    implementiert statt analyse.py's check_kumo_breakout, damit das
+    Frische-Fenster hier frei parametrierbar ist (analyse.py prueft fest
+    3 Tage) und kein Pflicht-Volumen verlangt wird - Trendwende-Boeden
+    entstehen haeufig in Desinteresse-Phasen mit duennem Volumen; Volumen
+    fliesst hier bewusst nur informativ (Vol_Ratio-Spalte) ein.
+    Bedingungen:
+      - HEUTE steht der Schlusskurs ueber der KOMPLETTEN Wolke
+        (ueber Senkou A UND B) - der Ausbruch ist also noch intakt.
+      - Innerhalb der letzten `frische_tage` Handelstage gab es den
+        eigentlichen Durchbruch: Vortag auf/unter der Wolken-Oberkante,
+        Folgetag darueber (frisches Signal, kein alter Zustand)."""
+    if len(data) < 60:
+        return False
+
+    kumo_ober = pd.concat([data['SenkouA'], data['SenkouB']], axis=1).max(axis=1)
+
+    # Ausbruch muss heute noch intakt sein
+    if pd.isna(kumo_ober.iloc[-1]) or data['Close'].iloc[-1] <= kumo_ober.iloc[-1]:
+        return False
+
+    for i in range(0, frische_tage):
+        idx = -1 - i
+        idx_prev = idx - 1
+        if abs(idx_prev) > len(data):
+            break
+        c_heute, k_heute = data['Close'].iloc[idx], kumo_ober.iloc[idx]
+        c_davor, k_davor = data['Close'].iloc[idx_prev], kumo_ober.iloc[idx_prev]
+        if pd.isna(c_heute) or pd.isna(k_heute) or pd.isna(c_davor) or pd.isna(k_davor):
+            continue
+        if c_davor <= k_davor and c_heute > k_heute:
+            return True
+    return False
 
 
 def check_stochastik_crossover_recent(data, frische_tage=FRISCHE_TAGE, ueberverkauft_schwelle=20):
@@ -366,7 +439,7 @@ def _indikatoren_berechnen(data):
     signal = macd.ewm(span=9, adjust=False).mean()
     data['MACD_Trend'] = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Baerisch"
 
-    # Ichimoku Kumo-Grenzen (fuer check_kumo_breakout)
+    # Ichimoku Kumo-Grenzen (fuer check_kumo_breakout_recent)
     data['Tenkan'] = (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2
     data['Kijun'] = (data['High'].rolling(26).max() + data['Low'].rolling(26).min()) / 2
     data['SenkouA'] = ((data['Tenkan'] + data['Kijun']) / 2).shift(26)
@@ -384,8 +457,11 @@ def _indikatoren_berechnen(data):
 
 
 def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
+    """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
+    speist die Funnel-Statistik (NEU 28.07.2026, Nutzerwunsch: '0 Kandidaten'
+    soll interpretierbar sein - an welcher Stufe faellt wie viel raus?)."""
     if len(data) < 60:
-        return None
+        return None, "zu_wenig_daten"
 
     data = _indikatoren_berechnen(data)
     entry = data['Close'].iloc[-1]
@@ -400,32 +476,37 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     # fast im Widerspruch zum Kumo-Ausbruch-Kriterium und war der Grund,
     # warum praktisch nie beide gleichzeitig erfuellt waren.
     if pd.isna(data['WMA200'].iloc[-1]):
-        return None
+        return None, "zu_wenig_daten"
     war_unter_wma200 = any(
         pd.notna(data['WMA200'].iloc[-1 - i]) and data['Close'].iloc[-1 - i] < data['WMA200'].iloc[-1 - i]
         for i in range(0, WMA200_LOOKBACK_TAGE) if (1 + i) <= len(data)
     )
     if not war_unter_wma200:
-        return None
+        return None, "nicht_unter_wma200"
 
     tief_52w = data['Low'].min()
     abstand_52w_tief = round(((entry / tief_52w) - 1) * 100, 2)
     if abstand_52w_tief > ABSTAND_52W_TIEF_MAX:
-        return None
+        return None, "zu_weit_vom_52w_tief"
 
-    # C - beide Bestaetigungen Pflicht, beide muessen frisch sein
-    # GEAENDERT (24.07.2026): Kijun-sen-Ausbruch statt vollem Kumo-Ausbruch -
-    # siehe check_kijun_breakout in analyse.py fuer die Begruendung (voller
-    # Kumo-Ausbruch war strukturell fast nie gleichzeitig mit "nah am
-    # 52W-Tief" erfuellbar, siehe Log-Auswertung 24.07.2026: 0 von 106
-    # Kandidaten ueber mehrere Tage).
+    # C - beide Bestaetigungen Pflicht, aber zeitlich ENTKOPPELT
+    # (GEAENDERT 28.07.2026, Nutzerwunsch: Pflicht-Signal soll wieder der
+    # ECHTE Kumo-Ausbruch sein, nicht der Kijun-Ausbruch vom 24.07. Damit
+    # das nicht erneut in dauerhafte 0-Kandidaten-Tage laeuft, wurde das
+    # eigentliche Problem behoben - nicht das UND, sondern das gemeinsame
+    # Zeitfenster: Divergenz entsteht am Boden, der Kumo-Ausbruch folgt
+    # erst Tage/Wochen spaeter. Deshalb jetzt Sequenz-Logik:
+    #   1) Divergenz im 40-Tage-Fenster, nicht invalidiert (Boden)
+    #   2) Kumo-Ausbruch frisch im 5-Tage-Fenster (Trigger)
     divergenz_ok = check_rsi_divergence_recent(data)
-    kijun_ausbruch, kijun_level = check_kijun_breakout(data, frische_tage=FRISCHE_TAGE)
+    if not divergenz_ok:
+        return None, "keine_divergenz"
 
-    if not (divergenz_ok and kijun_ausbruch):
-        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Divergenz: {divergenz_ok} | "
-              f"Kijun-Ausbruch: {kijun_ausbruch} | Abstand 52W-Tief: {abstand_52w_tief}%")
-        return None
+    kumo_ausbruch = check_kumo_breakout_recent(data)
+    if not kumo_ausbruch:
+        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Divergenz: True | "
+              f"Kumo-Ausbruch (frisch): False | Abstand 52W-Tief: {abstand_52w_tief}%")
+        return None, "kein_frischer_kumo_ausbruch"
 
     # Qualitaets-Bonus (NEU, optional - kein Ausschlusskriterium): zwei
     # zusaetzliche, unabhaengige Signale koennen die Einstufung anheben,
@@ -491,7 +572,7 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
     # Kandidaten als ein TP1 mit z.B. CRV 0,12.
     if crv1 < 1.0 or crv2 < 1.0:
         print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} -> CRV zu niedrig (CRV1={crv1}, CRV2={crv2})")
-        return None
+        return None, "crv_unter_1"
 
     try:
         firma_name = yf.Ticker(ticker).info.get('longName', ticker) or ticker
@@ -536,7 +617,7 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
             "Trendwende-Setup - strukturell riskanter als Trendfolge-Setups "
             "(\u201eMesser-Gefahr\u201c). Enger, wende-spezifischer Stop - Positionsgroesse entsprechend anpassen."
         ),
-    }
+    }, "valide"
 
 
 def analyze_trendwende_us(ticker, sektor, data, spy_close=None):
@@ -544,7 +625,7 @@ def analyze_trendwende_us(ticker, sektor, data, spy_close=None):
         return _pruefe_trendwende(ticker, sektor, "US", data, spy_close)
     except Exception as e:
         print(f"FEHLER Trendwende US {ticker}: {e}")
-        return None
+        return None, "fehler"
 
 
 def analyze_trendwende_eu(ticker, sektor, data, eu_bench_close=None):
@@ -552,7 +633,7 @@ def analyze_trendwende_eu(ticker, sektor, data, eu_bench_close=None):
         return _pruefe_trendwende(ticker, sektor, "EU", data, eu_bench_close)
     except Exception as e:
         print(f"FEHLER Trendwende EU {ticker}: {e}")
-        return None
+        return None, "fehler"
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +684,15 @@ def main():
     eu_daten = fetch_eu_batch(eu_tickers)
 
     ergebnisse = []
+    # Funnel-Statistik (NEU 28.07.2026): zaehlt je Ablehnungsstufe, wie viele
+    # Ticker dort rausfallen - macht "0 Kandidaten" interpretierbar (an
+    # welcher Stufe klemmt es?) statt nur das Endergebnis zu melden.
+    funnel = Counter()
+    funnel["keine_kursdaten"] = (
+        sum(1 for t, _ in us_tasks if t not in us_daten)
+        + sum(1 for t, _ in eu_tasks if t not in eu_daten)
+    )
+
     print("Starte Trendwende-Analyse (US)...")
     # Ab hier reine lokale Berechnung (Daten liegen bereits vor) - Threads
     # dienen hier nur noch der CPU-Parallelisierung, nicht mehr dem
@@ -613,7 +703,8 @@ def main():
             for t, s in us_tasks if t in us_daten
         ]
         for f in futures:
-            r = f.result()
+            r, grund = f.result()
+            funnel[grund] += 1
             if r:
                 ergebnisse.append(r)
 
@@ -624,11 +715,37 @@ def main():
             for t, s in eu_tasks if t in eu_daten
         ]
         for f in futures:
-            r = f.result()
+            r, grund = f.result()
+            funnel[grund] += 1
             if r:
                 ergebnisse.append(r)
 
     print(f"DEBUG: {len(ergebnisse)} Trendwende-Kandidaten gefunden.")
+
+    # Funnel fuer Konsole + Briefing aufbereiten (Reihenfolge = Pruefstufen)
+    gesamt_universum = len(us_tasks) + len(eu_tasks)
+    funnel_stufen = [
+        ("keine_kursdaten", "Keine Kursdaten geliefert (API)"),
+        ("zu_wenig_daten", "Zu wenig Historie / WMA200 nicht berechenbar"),
+        ("fehler", "Fehler bei der Berechnung"),
+        ("nicht_unter_wma200", f"Nicht (kuerzlich, {WMA200_LOOKBACK_TAGE}T-Lookback) unter der WMA200"),
+        ("zu_weit_vom_52w_tief", f"Mehr als {ABSTAND_52W_TIEF_MAX}% ueber dem 52W-Tief"),
+        ("keine_divergenz", f"Keine intakte bullische RSI-Divergenz ({DIVERGENZ_FENSTER_TAGE}T-Fenster)"),
+        ("kein_frischer_kumo_ausbruch", f"Kein frischer Kumo-Ausbruch (letzte {FRISCHE_TAGE} Handelstage)"),
+        ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+        ("valide", "VALIDE"),
+    ]
+    funnel_zeilen = [f"Universum gesamt: {gesamt_universum} Titel"]
+    verbleibend = gesamt_universum
+    for key, beschreibung in funnel_stufen:
+        anzahl = funnel.get(key, 0)
+        if key == "valide":
+            funnel_zeilen.append(f"=> VALIDE: {anzahl}")
+        else:
+            verbleibend -= anzahl
+            funnel_zeilen.append(f"- {beschreibung}: -{anzahl} (verbleiben {verbleibend})")
+    funnel_text = "\n".join(funnel_zeilen)
+    print("FUNNEL-STATISTIK:\n" + funnel_text)
 
     # Spalten fest vorgeben (NEU): bei 0 Treffern ist ergebnisse=[] - ohne
     # explizite Spaltenliste entsteht dann eine DataFrame KOMPLETT OHNE
@@ -677,11 +794,17 @@ def main():
         f.write(f"- Naehe zum Tief: Kurs darf max. {ABSTAND_52W_TIEF_MAX}% ueber seinem 52-Wochen-Tief\n")
         f.write("  liegen (ausgewogene Schwelle - nicht nur exakte neue Tiefs, aber auch keine\n")
         f.write("  Titel, die schon deutlich vom Tief weggelaufen sind).\n")
-        f.write(f"- Wende-Bestaetigung (BEIDE Pflicht, kein ODER): bullische RSI-Divergenz\n")
-        f.write("  (Kurs macht neues Tief, RSI aber nicht - Verkaufsdruck laesst nach) UND\n")
-        f.write("  Kumo-Ausbruch (Kurs durchbricht die komplette Ichimoku-Wolke nach oben -\n")
-        f.write(f"  erste technische Trendwechsel-Bestaetigung). Beide Signale muessen innerhalb\n")
-        f.write(f"  der letzten {FRISCHE_TAGE} Handelstage aufgetreten sein, sonst gilt das Signal als veraltet.\n")
+        f.write("- Wende-Bestaetigung (BEIDE Pflicht, kein ODER - seit 28.07.2026 zeitlich\n")
+        f.write("  entkoppelte SEQUENZ statt gemeinsamem Zeitfenster):\n")
+        f.write(f"  1) Boden-Bedingung: bullische RSI-Divergenz (Kurs macht neues Tief, RSI aber\n")
+        f.write(f"     nicht - Verkaufsdruck laesst nach) innerhalb der letzten {DIVERGENZ_FENSTER_TAGE} Handelstage,\n")
+        f.write("     die seitdem NICHT invalidiert wurde (kein Schlusskurs unter dem Divergenz-\n")
+        f.write("     Tief - sonst ist der Boden gebrochen und das Signal gescheitert).\n")
+        f.write(f"  2) Trigger: frischer Kumo-Ausbruch (Kurs durchbricht die komplette Ichimoku-\n")
+        f.write(f"     Wolke nach oben) innerhalb der letzten {FRISCHE_TAGE} Handelstage.\n")
+        f.write("  Begruendung der Entkopplung: die Divergenz entsteht AM Boden, der Kumo-\n")
+        f.write("  Ausbruch folgt naturgemaess erst Tage bis Wochen spaeter - beide in EIN\n")
+        f.write("  kurzes Fenster zu zwingen war strukturell fast nie erfuellbar.\n")
         f.write("- Qualitaets-Bonus (optional, NICHT Pflicht): zwei zusaetzliche Signale koennen\n")
         f.write("  die Einstufung anheben, sind aber kein Ausschlusskriterium wie die beiden\n")
         f.write("  Pflicht-Signale oben - Candlestick-Bestaetigung (Hammer/Engulfing auf der\n")
@@ -706,6 +829,12 @@ def main():
         f.write("  fundamentalen Kontext, der einen echten Turnaround von einem bloss\n")
         f.write("  technischen Fehlsignal unterscheiden hilft - ersetzt keines der beiden\n")
         f.write("  Pflicht-Signale, ist aber Teil jeder Ausgabe.\n\n")
+
+        # Funnel-Statistik (NEU 28.07.2026): macht insbesondere "0 Kandidaten"
+        # interpretierbar - an welcher Pruefstufe faellt wie viel raus?
+        f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
+        f.write("-" * 50 + "\n")
+        f.write(funnel_text + "\n\n")
 
         if df.empty:
             f.write("Keine Trendwende-Kandidaten gefunden.\n")
