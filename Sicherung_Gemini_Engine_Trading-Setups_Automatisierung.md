@@ -932,9 +932,9 @@ RS vs. Benchmark: {{RS_vs_Benchmark%, 2 Nachkommastellen}}% \| Abstand
 Fundamental-Ampel: {{Fundamental_Ampel, wörtlich aus der CSV}}
 ({{Fundamental_Hinweis, wörtlich aus der CSV}})
 
-Golden-/Death-Cross (Info -- ein frischer Death Cross wird seit
-28.07.2026 bereits im Scanner auf ACHTUNG abgestuft):
-{{Golden_Cross_Status, wörtlich aus der CSV}}
+Golden-/Death-Cross (nur Info -- bei Short-Setups STÜTZT ein frischer
+Death Cross die Short-These, hier gilt die ACHTUNG-Abstufung der
+Long-Scanner NICHT): {{Golden_Cross_Status, wörtlich aus der CSV}}
 
 Sektor-Momentum: {{5T aus Performance.csv}}% (5 Tage) / {{12T aus
 Performance.csv}}% (12 Tage), Rotation-Score {{Rotation-Score aus
