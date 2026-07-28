@@ -23,6 +23,58 @@ try:
 except Exception:
     NEWS_VERFUEGBAR = False
 from concurrent.futures import ThreadPoolExecutor
+import threading
+from collections import Counter
+
+# --- FUNNEL-STATISTIK (NEU 28.07.2026, Nutzerwunsch) ---
+# Zählt je Ablehnungsstufe, wie viele Ticker dort rausfallen - macht das
+# Tagesergebnis (insbesondere "wenige/keine Setups") interpretierbar, statt
+# nur das Endergebnis zu melden. Thread-sicher, da die Analyse parallel läuft.
+FUNNEL_HAUPT = Counter()
+_funnel_lock = threading.Lock()
+
+
+def funnel_zaehle(grund):
+    with _funnel_lock:
+        FUNNEL_HAUPT[grund] += 1
+
+
+# --- MARKTUMFELD-KLASSIFIKATION (NEU 28.07.2026, Nutzerwunsch) ---
+# Vorher hat die Gemini-Auswertung das Marktumfeld frei aus den Benchmark-
+# Zahlen interpretiert ("bärisch, weil knapp unter EMA20") - sehr trigger-
+# empfindlich und nirgends als Regel definiert, obwohl z.B. der Short-Scanner-
+# Qualitäts-Modifikator davon abhängt. Jetzt feste, dokumentierte 3 Stufen:
+#   Bullisch: Kurs über EMA20 (und nicht unter EMA50/WMA200)
+#   Neutral:  Kurs unter EMA20, aber über EMA50 und WMA200
+#             (kurzfristige Konsolidierung im intakten Trend)
+#   Bärisch:  Kurs unter EMA50 ODER unter WMA200
+# get_index_benchmark_yf legt die Levels je Label hier ab (Nebeneffekt).
+BENCHMARK_LEVELS = {}
+
+
+def klassifiziere_index(label):
+    w = BENCHMARK_LEVELS.get(label)
+    if not w:
+        return "N/A"
+    kurs, e20, e50, w200 = w["Kurs"], w["EMA20"], w["EMA50"], w["WMA200"]
+    if kurs < e50 or (not pd.isna(w200) and kurs < w200):
+        return "Bärisch"
+    if kurs < e20:
+        return "Neutral"
+    return "Bullisch"
+
+
+def klassifiziere_marktumfeld(labels):
+    """Regionen-Einstufung über mehrere Leitindizes: es zählt der SCHWÄCHSTE
+    (konservativ - eine Region ist nur so stark wie ihr schwächster Leitindex).
+    Gibt (Regionen-Stufe, [Einzel-Stufen]) zurück."""
+    rang = {"Bärisch": 0, "Neutral": 1, "Bullisch": 2}
+    stufen = [klassifiziere_index(l) for l in labels]
+    gueltig = [s for s in stufen if s in rang]
+    if not gueltig:
+        return "N/A", stufen
+    return min(gueltig, key=lambda s: rang[s]), stufen
+
 
 # Initialisierung des Clients direkt beim Start
 # Wir nutzen os.getenv, um die Keys sicher aus deinen GitHub-Secrets zu lesen
@@ -439,8 +491,17 @@ def get_index_benchmark_yf(ticker, label):
         weights = np.arange(1, 201)
         w200 = close.rolling(200).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).iloc[-1]
 
-        return (f"{label}: {last_close:.2f} | EMA20: {e20:.0f} | EMA50: {e50:.0f} | "
-                f"EMA100: {e100:.0f} | EMA200: {e200:.0f} | WMA200: {w200:.0f}")
+        # Levels für die regelbasierte Marktumfeld-Klassifikation merken
+        BENCHMARK_LEVELS[label] = {"Kurs": float(last_close), "EMA20": float(e20),
+                                   "EMA50": float(e50), "WMA200": float(w200)}
+
+        # Nachkommastellen (GEÄNDERT 28.07.2026, Nutzerwunsch): bei Werten
+        # unter 100 (Kupfer ~6, VIX ~19, Silber ~57, WTI ~81) sind ganzzahlig
+        # gerundete EMAs wertlos ("Kupfer EMA20: 6" bei Kurs 6,31) - dort
+        # jetzt 2 Nachkommastellen; große Indizes bleiben ganzzahlig.
+        nk = 2 if last_close < 100 else 0
+        return (f"{label}: {last_close:.2f} | EMA20: {e20:.{nk}f} | EMA50: {e50:.{nk}f} | "
+                f"EMA100: {e100:.{nk}f} | EMA200: {e200:.{nk}f} | WMA200: {w200:.{nk}f}")
 
     except Exception as e:
         return f"{label}: Fehler beim Abruf ({e})"
@@ -1004,6 +1065,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
         if data.empty:
             print(f"DEBUG: {ticker} -> Daten von Alpaca leer.")
+            funnel_zaehle("keine_kursdaten")
             return None
 
         # Index und Spalten bereinigen
@@ -1014,6 +1076,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         # Vor der Berechnung des RSI:
         if len(data) < 15: # Puffer für 14 Perioden + 1
             print(f"Zu wenig Daten für {ticker}: {len(data)} Zeilen")
+            funnel_zaehle("zu_wenig_daten")
             return None
             
         # RSI Berechnung
@@ -1061,6 +1124,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         # Danach direkt prüfen:
         if 'RSI' not in data.columns:
             print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
+            funnel_zaehle("zu_wenig_daten")
             return None
         
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
@@ -1180,6 +1244,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         # 2. Das 'else' MUSS genau unter dem 'if' stehen (gleiche Einrückung)
         else:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
+            funnel_zaehle("kein_setup_muster")
             return None
 
         # --- Momentum-Zusatzkriterien: Relative Stärke & 52-Wochen-Hoch-Nähe ---
@@ -1196,6 +1261,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
             if rel_staerke <= -10:
                 print(f"DEBUG-VERWORFEN: {ticker} | Grund: Relative Stärke vs. SPY <= -10% ({rel_staerke}%)")
+                funnel_zaehle("rel_staerke_zu_schwach")
                 return None
 
         # 52-Wochen-Hoch-Nähe (geladene Daten decken ca. 1 Jahr ab)
@@ -1204,6 +1270,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
         if abstand_52w_hoch < -25:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: Zu weit vom 52-Wochen-Hoch entfernt ({abstand_52w_hoch}%, Hoch={hoch_52w:.2f})")
+            funnel_zaehle("zu_weit_vom_52w_hoch")
             return None
 
         fib1, fib2 = get_fib_levels(data)
@@ -1273,6 +1340,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         risiko = entry - stop
         if risiko <= 0:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
+            funnel_zaehle("risiko_ungueltig")
             return None
         
         crv1 = round((tp1 - entry) / risiko, 2)
@@ -1281,6 +1349,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
+            funnel_zaehle("crv_unter_1")
             return None
         
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -1289,6 +1358,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         # Plausibilitäts-Check
         if last_row['EMA20'] > (last_row['Close'] * 2):
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: Plausibilitäts-Check fehlgeschlagen (EMA20={last_row['EMA20']:.2f} > 2x Close={last_row['Close']:.2f})")
+            funnel_zaehle("plausibilitaet")
             return None
         
         # --- Debug-Detektiv ---
@@ -1353,6 +1423,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
     except Exception as e:
         print(f"Fehler bei der Analyse von {ticker}: {e}")
+        funnel_zaehle("fehler")
         return None
 
 def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
@@ -1381,6 +1452,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         if data.empty:
             print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
+            funnel_zaehle("keine_kursdaten")
             return None
 
         # NaN-Platzhalterzeilen entfernen: yfinance legt vor Xetra-Handelsbeginn
@@ -1392,11 +1464,13 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         if data.empty:
             print(f"DEBUG: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
+            funnel_zaehle("keine_kursdaten")
             return None
 
         # yfinance liefert bereits 'Close','High','Low','Open','Volume' - keine Umbenennung nötig
         if len(data) < 15:
             print(f"Zu wenig Daten für {ticker}: {len(data)} Zeilen")
+            funnel_zaehle("zu_wenig_daten")
             return None
 
         delta = data['Close'].diff()
@@ -1433,6 +1507,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         if 'RSI' not in data.columns:
             print(f"RSI-Berechnung fehlgeschlagen für {ticker}")
+            funnel_zaehle("zu_wenig_daten")
             return None
 
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
@@ -1516,6 +1591,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             setup_typ = basis_label  # NEU: nur die Basis-Pfade, Pattern (Hammer/Engulfing) bleibt in eigener Spalte, wird NICHT mehr an Setup_Typ angehaengt
         else:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Haupt-Filter nicht erfüllt (Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
+            funnel_zaehle("kein_setup_muster")
             return None
 
         # Relative Stärke vs. STOXX Europe 600 (statt SPY)
@@ -1527,6 +1603,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
             if rel_staerke <= -10:
                 print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Relative Stärke vs. STOXX600 <= -10% ({rel_staerke}%)")
+                funnel_zaehle("rel_staerke_zu_schwach")
                 return None
 
         hoch_52w = data['High'].max()
@@ -1534,6 +1611,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         if abstand_52w_hoch < -25:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Zu weit vom 52-Wochen-Hoch entfernt ({abstand_52w_hoch}%, Hoch={hoch_52w:.2f})")
+            funnel_zaehle("zu_weit_vom_52w_hoch")
             return None
 
         fib1, fib2 = get_fib_levels(data)
@@ -1589,6 +1667,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         risiko = entry - stop
         if risiko <= 0:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
+            funnel_zaehle("risiko_ungueltig")
             return None
 
         crv1 = round((tp1 - entry) / risiko, 2)
@@ -1597,6 +1676,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
+            funnel_zaehle("crv_unter_1")
             return None
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -1604,6 +1684,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         if last_row['EMA20'] > (last_row['Close'] * 2):
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Plausibilitäts-Check fehlgeschlagen (EMA20={last_row['EMA20']:.2f} > 2x Close={last_row['Close']:.2f})")
+            funnel_zaehle("plausibilitaet")
             return None
 
         res = {
@@ -1629,6 +1710,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
     except Exception as e:
         print(f"Fehler bei der EU-Analyse von {ticker}: {e}")
+        funnel_zaehle("fehler")
         return None
 
 if __name__ == "__main__":
@@ -1822,6 +1904,7 @@ if __name__ == "__main__":
         # JETZT ist das DataFrame sauber und der Fehler beim Vergleich verschwindet
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
     
+    setups_vor_filter = len(df_s)  # für die Funnel-Statistik (NEU 28.07.2026)
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
         top_8_sektoren = df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
@@ -1918,6 +2001,59 @@ if __name__ == "__main__":
         # Hier optional noch Delta auf 2 Stellen runden, falls es eine Fließkommazahl ist
         pass
     
+    # --- NEUE STATUS-REGELN (28.07.2026, Nutzerwunsch, Review der Tagesdateien) ---
+    # 1) Duplikat-Check: liegt für einen Ticker bereits eine OFFENE Position im
+    #    Portfolio (Offene_Positionen.csv, vom Tracker vor diesem Skript
+    #    bereitgestellt), ist das Setup KEIN Neueinstieg -> eigener Status
+    #    "BEREITS IM PORTFOLIO" (Anlass: EXR am 28.07. als frisches VALIDE-Setup
+    #    gemeldet, während die Position schon offen war).
+    # 2) Earnings-Regel: Earnings HEUTE oder MORGEN = akutes Über-Nacht-Gap-
+    #    Risiko -> VALIDE wird auf ACHTUNG abgestuft (vorher nur Info-Zeile;
+    #    ein Stop schützt nicht vor einem Gap unter den Stop-Kurs).
+    # 3) Death-Cross-Regel: frischer Death Cross (EMA50 kreuzt EMA200 nach
+    #    unten, letzte 10 Handelstage) -> VALIDE wird auf ACHTUNG abgestuft
+    #    (vorher "nur Info, keine Bewertung" - Anlass: Ecolab am 28.07.).
+    offene_portfolio_ticker = set()
+    try:
+        if os.path.exists("Offene_Positionen.csv"):
+            _df_pos = pd.read_csv("Offene_Positionen.csv", sep=';', encoding='utf-8-sig')
+            if not _df_pos.empty and 'Status' in _df_pos.columns and 'Ticker' in _df_pos.columns:
+                _offen = _df_pos[_df_pos['Status'].astype(str).str.strip().str.lower() == 'offen']
+                offene_portfolio_ticker = {
+                    str(t).strip().upper() for t in _offen['Ticker']
+                    if str(t).strip() and str(t).strip().lower() != 'nan'
+                }
+    except Exception as e:
+        print(f"DEBUG: Offene_Positionen.csv für Duplikat-Check nicht lesbar ({e}) - Check entfällt heute.")
+
+    if not df_clean.empty:
+        for t in df_clean.index:
+            if str(t).strip().upper() in offene_portfolio_ticker:
+                df_clean.at[t, 'Status2'] = "BEREITS IM PORTFOLIO"
+                df_clean.at[t, 'Status_Grund'] = "Position bereits offen - Setup bestätigt den laufenden Trade, kein Neueinstieg"
+                print(f"DEBUG-STATUS: {t} -> BEREITS IM PORTFOLIO")
+                continue
+            if df_clean.at[t, 'Status2'] != "VALIDE":
+                continue
+            abstufungen = []
+            earnings_akut = get_earnings_warnung(t, warn_tage=1)
+            if earnings_akut:
+                abstufungen.append(f"Earnings-Gap-Risiko ({earnings_akut.replace('⚠ ', '')})")
+            if str(df_clean.at[t, 'Golden_Cross_Status']).startswith("DEATH CROSS"):
+                abstufungen.append("Frischer Death Cross (EMA50 unter EMA200)")
+            if abstufungen:
+                df_clean.at[t, 'Status2'] = "ACHTUNG"
+                df_clean.at[t, 'Status_Grund'] = " + ".join(abstufungen)
+                print(f"DEBUG-ABSTUFUNG: {t} -> ACHTUNG ({df_clean.at[t, 'Status_Grund']})")
+
+        # Neu sortieren, da sich Status-Werte geändert haben können
+        _status_rang = {'VALIDE': 0, 'ACHTUNG': 1, 'BEREITS IM PORTFOLIO': 2, 'GELAUFEN': 3}
+        df_clean['_status_rang'] = df_clean['Status2'].map(_status_rang).fillna(4)
+        df_clean = df_clean.sort_values(
+            by=['_status_rang', 'Upside_%_vs_Aktuell', 'CRV1'],
+            ascending=[True, False, False]
+        ).drop(columns=['_status_rang'])
+
     # 8. EXPORT
     df_perf.to_csv(f"Performance({today}).csv", index=False, sep=';', encoding='utf-8-sig')
     df_perf_eu.to_csv(f"Performance_EU({today}).csv", index=False, sep=';', encoding='utf-8-sig')
@@ -1929,6 +2065,7 @@ if __name__ == "__main__":
     relevante_setups = df_clean[df_clean['Status2'] != "GELAUFEN"]
     valide_setups = relevante_setups[relevante_setups['Status2'] == "VALIDE"]
     achtung_setups = relevante_setups[relevante_setups['Status2'] == "ACHTUNG"]
+    portfolio_setups = relevante_setups[relevante_setups['Status2'] == "BEREITS IM PORTFOLIO"]
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
@@ -1951,9 +2088,22 @@ if __name__ == "__main__":
         f.write("- Ticker-Budget: max. 180 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
         f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
-        f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
+        f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n")
+        f.write("- Earnings-Regel (NEU 28.07.2026): neue Setups mit Earnings HEUTE oder MORGEN werden von VALIDE auf ACHTUNG abgestuft (akutes Über-Nacht-Gap-Risiko)\n")
+        f.write("- Death-Cross-Regel (NEU 28.07.2026): frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10 Handelstage) stuft VALIDE auf ACHTUNG ab\n")
+        f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n\n")
+
+        # MARKTUMFELD (NEU 28.07.2026, Nutzerwunsch): feste, regelbasierte
+        # 3-Stufen-Klassifikation statt freier Interpretation der Benchmark-
+        # Zahlen durch die Gemini-Auswertung - die Auswertung übernimmt diese
+        # Einstufung wörtlich (siehe Master-Anweisung).
+        us_stufe, us_detail = klassifiziere_marktumfeld(["S&P 500", "Nasdaq"])
+        eu_stufe, eu_detail = klassifiziere_marktumfeld(["DAX", "EuroStoxx50"])
+        f.write("MARKTUMFELD (regelbasiert, 3 Stufen: Bullisch = Kurs über EMA20 | Neutral = unter EMA20, aber über EMA50 und WMA200 | Bärisch = unter EMA50 oder unter WMA200; je Region zählt der schwächere Leitindex)\n")
+        f.write(f"Marktumfeld USA: {us_stufe} (S&P 500: {us_detail[0]} | Nasdaq: {us_detail[1]})\n")
+        f.write(f"Marktumfeld Europa: {eu_stufe} (DAX: {eu_detail[0]} | EuroStoxx50: {eu_detail[1]})\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
@@ -1976,7 +2126,7 @@ if __name__ == "__main__":
             f.write(f"Vol-Ratio: {row['Vol_Ratio']}x | Ideales Delta: {row['Ideales_Delta']}\n")
             f.write(f"RelStärke vs Benchmark: {row.get('RS_vs_Benchmark%', 'n/a')}% | Abstand 52W-Hoch: {row.get('Abstand_52W_Hoch%', 'n/a')}%\n")
             f.write(f"Fundamental-Ampel: {row.get('Fundamental_Ampel', 'N/A')} ({row.get('Fundamental_Hinweis', '')})\n")
-            f.write(f"Golden-/Death-Cross (nur Info, keine Bewertung): {row.get('Golden_Cross_Status', 'N/A')}\n")
+            f.write(f"Golden-/Death-Cross (frischer Death Cross führt zu ACHTUNG): {row.get('Golden_Cross_Status', 'N/A')}\n")
 
             # Earnings-Warnung (Gap-Risiko) + jüngste Schlagzeilen (nur Kontext)
             earnings = get_earnings_warnung(ticker_val)
@@ -2004,6 +2154,20 @@ if __name__ == "__main__":
             f.write(f"Ticker: {ticker_val} | Markt: {row.get('Markt', 'US')} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}{waehrungszeichen}\n")
             f.write(f"Upside: Technisch {row['Tech-Kursziel']}{waehrungszeichen} / Potenzial: {upside_text}\n")
             f.write("-" * 30 + "\n")
+
+        # 2b. BEREITS IM PORTFOLIO (NEU 28.07.2026): Setups, die auf eine
+        # bereits offene Position treffen - kein Neueinstieg, aber wertvolle
+        # Info: die Systematik bestätigt den laufenden Trade erneut.
+        if not portfolio_setups.empty:
+            f.write("\n" + "="*50 + "\n")
+            f.write("BEREITS IM PORTFOLIO (Setup bestätigt offene Position - kein Neueinstieg)\n")
+            f.write("="*50 + "\n")
+            for ticker_val, row in portfolio_setups.iterrows():
+                waehrungszeichen = "€" if row.get('Waehrung') == 'EUR' else "$"
+                f.write(f"{ticker_val} ({row['Name']}) | Markt: {row.get('Markt', 'US')} | Sektor: {row['Sektor']}\n")
+                f.write(f"Setup-Typ: {row['Setup_Typ']} | Kurs: {row['Kurs']}{waehrungszeichen} | TP1: {row['TP1']}{waehrungszeichen} | TP2: {row['TP2']}{waehrungszeichen} | Stop (neu berechnet): {row['Stop']}{waehrungszeichen}\n")
+                f.write("Hinweis: Position bereits offen - Setup als Bestätigung des laufenden Trades werten, ggf. Stop-/Ziel-Anpassung prüfen, kein automatischer Nachkauf.\n")
+                f.write("-" * 30 + "\n")
 
         # 3. OFFENE POSITIONEN (manuell bestätigte, laufende Trades)
         # Wird von positionen_tracker.py als lokale Datei bereitgestellt (läuft
@@ -2155,3 +2319,26 @@ if __name__ == "__main__":
         us_universum = len({t for liste in sektoren_aktien.values() for t in liste})
         eu_universum = len({t for liste in dax_aktien.values() for t in liste})
         f.write(f"\nScan-Statistik: Aktien-Universum {us_universum + eu_universum} Titel (US: {us_universum} / EU: {eu_universum}, ohne ETFs/Benchmarks), heute {len(tasks) + len(tasks_eu)} in den Top-Sektoren analysiert, davon {len(valide_setups)} valide Setups.\n")
+
+        # FUNNEL-STATISTIK (NEU 28.07.2026, Nutzerwunsch): macht das Tages-
+        # ergebnis interpretierbar - an welcher Prüfstufe fällt wie viel raus?
+        funnel_reihenfolge = [
+            ("keine_kursdaten", "Keine Kursdaten geliefert (API/NaN-Bereinigung)"),
+            ("zu_wenig_daten", "Zu wenig Kurshistorie"),
+            ("fehler", "Fehler bei der Berechnung"),
+            ("kein_setup_muster", "Keines der 4 Setup-Muster erfüllt (oder Stochastik >= 90)"),
+            ("rel_staerke_zu_schwach", "Relative Stärke vs. Benchmark <= -10%"),
+            ("zu_weit_vom_52w_hoch", "Mehr als 25% unter dem 52W-Hoch"),
+            ("risiko_ungueltig", "Risiko <= 0 (Stop nicht unter dem Einstieg)"),
+            ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+            ("plausibilitaet", "Plausibilitäts-Check fehlgeschlagen"),
+        ]
+        f.write("\nFUNNEL-STATISTIK Hauptscanner (Ablehnungsgründe je Prüfstufe)\n")
+        f.write("-" * 50 + "\n")
+        f.write(f"Analysiert (Top-Sektoren): {len(tasks) + len(tasks_eu)} Titel\n")
+        with _funnel_lock:
+            for _key, _beschreibung in funnel_reihenfolge:
+                f.write(f"- {_beschreibung}: -{FUNNEL_HAUPT.get(_key, 0)}\n")
+        f.write(f"=> Setup-Muster gefunden (vor Sektor-/Trend-Filter): {setups_vor_filter}\n")
+        f.write(f"- Sektor-/Trend-Filter + Ticker-Dedupe (nicht in Top-Rotation, unter WMA200/EMA200 oder Mehrfach-Listung): -{setups_vor_filter - len(df_clean)}\n")
+        f.write(f"=> Nach allen Filtern: {len(df_clean)} | davon VALIDE: {len(valide_setups)} | ACHTUNG: {len(achtung_setups)} | BEREITS IM PORTFOLIO: {len(portfolio_setups)} | GELAUFEN: {len(df_clean[df_clean['Status2'] == 'GELAUFEN'])}\n")
