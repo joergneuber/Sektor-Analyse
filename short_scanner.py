@@ -65,7 +65,10 @@ from analyse import (
     get_ideal_delta,
     berechne_fundamental_ampel,
     get_golden_cross_status,
+    get_index_benchmark_yf,
+    klassifiziere_marktumfeld,
 )
+from collections import Counter
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
@@ -439,14 +442,17 @@ def check_bearish_confirmation(df):
 # ---------------------------------------------------------------------------
 
 def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfeld_baerisch=False, sektor_momentum=None):
+    """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
+    speist die Funnel-Statistik (NEU 28.07.2026, Nutzerwunsch: '0 Kandidaten'
+    soll interpretierbar sein)."""
     if len(data) < 60:
-        return None
+        return None, "zu_wenig_daten"
     data = _indikatoren_berechnen(data)
     entry = data['Close'].iloc[-1]
 
     # Grundvoraussetzung (gespiegelt): Kurs UNTER WMA200 (Abwaertstrend)
     if pd.isna(data['WMA200'].iloc[-1]) or entry >= data['WMA200'].iloc[-1]:
-        return None
+        return None, "kein_abwaertstrend"
 
     pfade = []
     trendlinien_bruch, _ = check_trendline_breakdown(data)
@@ -463,7 +469,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         pfade.append("Pullback-Zone short")
 
     if not pfade:
-        return None
+        return None, "kein_setup_muster"
     setup_typ = " + ".join(pfade)
 
     # Basis-Einstufung (gespiegelte Matrix aus Gemini-Anleitung Abschnitt 2):
@@ -483,7 +489,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     # Status2=ACHTUNG markiert und trotzdem ausgegeben, jetzt wird es an
     # dieser Stelle komplett verworfen.
     if data['MACD_Trend'].iloc[-1] == "Bullisch" and not divergenz_bearish:
-        return None
+        return None, "macd_bullisch_ohne_divergenz"
 
     stufen = ["B-", "B", "B+", "A-", "A", "A+"]
     idx = stufen.index("B" if basis == "B" else "A")
@@ -519,7 +525,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         # RS-Filter INVERTIERT: nur Nachzuegler shorten (siehe Modul-Docstring)
         if rel_staerke > RS_MAX:
             print(f"DEBUG-SHORT-VERWORFEN: {ticker} -> RS zu stark fuer Short ({rel_staerke}% > {RS_MAX}%)")
-            return None
+            return None, "rs_zu_stark"
 
     # Stop OBERHALB, Ziele UNTERHALB (Widerstaende von oben werden zu Zielen)
     juengstes_hoch = round(float(data['High'].iloc[-10:].max()) * 1.02, 2)
@@ -542,7 +548,8 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     # wodurch auch Setups mit deutlich schlechterem Chance/Risiko-Verhaeltnis
     # ausgegeben wurden.
     if crv1 < 1.0 or crv2 < 1.0:
-        return None
+        print(f"DEBUG-SHORT-VERWORFEN: {ticker} -> CRV zu niedrig (CRV1={crv1}, CRV2={crv2})")
+        return None, "crv_unter_1"
 
     # Abstand_52W_Tief% (NEU, gespiegelt zu Abstand_52W_Hoch% bei Long):
     # wie weit über dem 52-Wochen-Tief - Raum, den der Kurs noch fallen
@@ -589,7 +596,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
             "Theoretisch unbegrenztes Verlustrisiko bei Kursanstieg (anders als bei Long, "
             "wo maximal der Einsatz verloren geht) - Positionsgroesse entsprechend konservativ waehlen."
         ),
-    }
+    }, "kandidat"
 
 
 # ---------------------------------------------------------------------------
@@ -645,11 +652,33 @@ def main():
     spy_close = get_benchmark_close()
     eu_bench_close = get_eu_benchmark_close()
 
-    # Grobe Marktumfeld-Einschaetzung fuer den Modifikator: baerisch, wenn
-    # der Benchmark unter seinem eigenen EMA20 liegt (gleiche Logik wie im
-    # Long-Scanner-Marktumfeld-Fazit, nur hier fuer den Modifikator genutzt)
-    marktumfeld_baerisch_us = bool(len(spy_close) > 20 and spy_close.iloc[-1] < spy_close.ewm(span=20, adjust=False).mean().iloc[-1])
-    marktumfeld_baerisch_eu = bool(len(eu_bench_close) > 20 and eu_bench_close.iloc[-1] < eu_bench_close.ewm(span=20, adjust=False).mean().iloc[-1])
+    # Marktumfeld (GEAENDERT 28.07.2026, Nutzerwunsch): gleiche regelbasierte
+    # 3-Stufen-Klassifikation wie im Hauptscanner (Bullisch = Kurs ueber EMA20 |
+    # Neutral = unter EMA20, aber ueber EMA50 und WMA200 | Baerisch = unter
+    # EMA50 oder unter WMA200; je Region zaehlt der schwaechere Leitindex) -
+    # ersetzt die fruehere, deutlich grobere "unter EMA20 = baerisch"-Heuristik,
+    # damit Short-Modifikator und Marktumfeld-Fazit der Auswertung nie mehr
+    # auseinanderlaufen. get_index_benchmark_yf fuellt dabei BENCHMARK_LEVELS
+    # (identischer Mechanismus wie im Hauptscanner-Briefing).
+    for _tick, _label in [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"),
+                          ("^GDAXI", "DAX"), ("^STOXX50E", "EuroStoxx50")]:
+        get_index_benchmark_yf(_tick, _label)
+    us_stufe, us_detail = klassifiziere_marktumfeld(["S&P 500", "Nasdaq"])
+    eu_stufe, eu_detail = klassifiziere_marktumfeld(["DAX", "EuroStoxx50"])
+
+    # Defensiver Fallback: liefert die Index-Abfrage keine Levels (API-Fehler),
+    # greift die alte EMA20-Heuristik auf Basis der ohnehin geladenen
+    # Benchmark-Reihen - besser eine grobe Einstufung als gar keine.
+    if us_stufe == "N/A":
+        marktumfeld_baerisch_us = bool(len(spy_close) > 20 and spy_close.iloc[-1] < spy_close.ewm(span=20, adjust=False).mean().iloc[-1])
+        us_stufe = "Baerisch (Fallback EMA20)" if marktumfeld_baerisch_us else "Nicht baerisch (Fallback EMA20)"
+    else:
+        marktumfeld_baerisch_us = (us_stufe == "Bärisch")
+    if eu_stufe == "N/A":
+        marktumfeld_baerisch_eu = bool(len(eu_bench_close) > 20 and eu_bench_close.iloc[-1] < eu_bench_close.ewm(span=20, adjust=False).mean().iloc[-1])
+        eu_stufe = "Baerisch (Fallback EMA20)" if marktumfeld_baerisch_eu else "Nicht baerisch (Fallback EMA20)"
+    else:
+        marktumfeld_baerisch_eu = (eu_stufe == "Bärisch")
 
     bottom_us, bottom_eu, momentum_us, momentum_eu = bestimme_bottom_sektoren()
     us_tasks, eu_tasks = sammle_universum(bottom_us, bottom_eu)
@@ -662,13 +691,21 @@ def main():
     eu_daten = fetch_eu_batch(eu_tickers)
 
     ergebnisse = []
+    # Funnel-Statistik (NEU 28.07.2026): zaehlt je Ablehnungsstufe, wie viele
+    # Ticker dort rausfallen - macht "0 Kandidaten" interpretierbar.
+    funnel = Counter()
+    funnel["keine_kursdaten"] = (
+        sum(1 for t, _ in us_tasks if t not in us_daten)
+        + sum(1 for t, _ in eu_tasks if t not in eu_daten)
+    )
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
             executor.submit(_pruefe_short_setup, t, s, "US", us_daten[t], spy_close, marktumfeld_baerisch_us, momentum_us.get(s))
             for t, s in us_tasks if t in us_daten
         ]
         for f in futures:
-            r = f.result()
+            r, grund = f.result()
+            funnel[grund] += 1
             if r:
                 ergebnisse.append(r)
 
@@ -678,11 +715,36 @@ def main():
             for t, s in eu_tasks if t in eu_daten
         ]
         for f in futures:
-            r = f.result()
+            r, grund = f.result()
+            funnel[grund] += 1
             if r:
                 ergebnisse.append(r)
 
     print(f"DEBUG: {len(ergebnisse)} Short-Kandidaten gefunden.")
+
+    # Funnel für Konsole + Briefing aufbereiten (Reihenfolge = Pruefstufen)
+    gesamt_universum = len(us_tasks) + len(eu_tasks)
+    funnel_stufen = [
+        ("keine_kursdaten", "Keine Kursdaten geliefert (API)"),
+        ("zu_wenig_daten", "Zu wenig Kurshistorie"),
+        ("kein_abwaertstrend", "Kein Abwaertstrend (Kurs nicht unter WMA200)"),
+        ("kein_setup_muster", "Keines der 4 gespiegelten Setup-Muster erfuellt"),
+        ("macd_bullisch_ohne_divergenz", "Bullischer MACD ohne baerische Divergenz (widerspricht Short-These)"),
+        ("rs_zu_stark", f"Relative Staerke > +{RS_MAX}% (Marktfuehrer werden nicht geshortet)"),
+        ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+        ("kandidat", "KANDIDAT (vor Dedupe/Status-Split)"),
+    ]
+    funnel_zeilen = [f"Universum gesamt (Bottom-Sektoren): {gesamt_universum} Titel"]
+    verbleibend = gesamt_universum
+    for _key, _beschreibung in funnel_stufen:
+        _anzahl = funnel.get(_key, 0)
+        if _key == "kandidat":
+            funnel_zeilen.append(f"=> KANDIDATEN: {_anzahl}")
+        else:
+            verbleibend -= _anzahl
+            funnel_zeilen.append(f"- {_beschreibung}: -{_anzahl} (verbleiben {verbleibend})")
+    funnel_text = "\n".join(funnel_zeilen)
+    print("FUNNEL-STATISTIK:\n" + funnel_text)
 
     # Fundamental-Ampel (NEU, wie bei Setups.csv): nur für die finale, kleine
     # Kandidatenliste berechnen (API-schonend, siehe analyse.py-Vorbild)
@@ -761,8 +823,11 @@ def main():
         f.write("  (nur Nachzuegler shorten, keine Marktfuehrer).\n")
         f.write("- Marktumfeld-Modifikator invertiert: baerisches Marktumfeld wertet die Setup-\n")
         f.write("  Qualitaet AUF (+1 Stufe), nicht ab wie beim Long-Scanner.\n")
-        f.write(f"- Heutiges Marktumfeld: US {'baerisch' if marktumfeld_baerisch_us else 'nicht baerisch'}, "
-                f"EU {'baerisch' if marktumfeld_baerisch_eu else 'nicht baerisch'} (Basis fuer den Modifikator oben).\n")
+        f.write("- Heutiges Marktumfeld (GEAENDERT 28.07.2026: 3-Stufen-Regel wie Hauptscanner -\n")
+        f.write("  Bullisch = Kurs ueber EMA20 | Neutral = unter EMA20, ueber EMA50+WMA200 |\n")
+        f.write("  Baerisch = unter EMA50 oder WMA200; je Region zaehlt der schwaechere Leitindex):\n")
+        f.write(f"  US: {us_stufe} | EU: {eu_stufe} - fuer den Aufwertungs-Modifikator zaehlt nur\n")
+        f.write(f"  die Stufe 'Baerisch' (US: {'JA' if marktumfeld_baerisch_us else 'nein'}, EU: {'JA' if marktumfeld_baerisch_eu else 'nein'}).\n")
         f.write("- RISIKOHINWEIS: Short-Positionen haben ein theoretisch unbegrenztes Verlust-\n")
         f.write("  risiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht).\n")
         f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein (NEU,\n")
@@ -775,6 +840,15 @@ def main():
         f.write("  wird aus Performance.csv/Performance_EU.csv per Sektor-Name nachgeschlagen (dort\n")
         f.write("  stehen ALLE Sektoren, nicht nur die Top-Sektoren, die Bottom-Sektoren sind also\n")
         f.write("  ebenfalls vorhanden).\n\n")
+
+        # Funnel-Statistik (NEU 28.07.2026): macht insbesondere "0 Kandidaten"
+        # interpretierbar - an welcher Pruefstufe faellt wie viel raus?
+        f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
+        f.write("-" * 50 + "\n")
+        f.write(funnel_text + "\n")
+        if not df.empty:
+            f.write(f"=> Nach Dedupe: {len(df)} | davon VALIDE: {int((df['Status2'] == 'VALIDE').sum())} | ACHTUNG: {int((df['Status2'] == 'ACHTUNG').sum())}\n")
+        f.write("\n")
 
         if df.empty:
             f.write("Keine Short-Kandidaten gefunden.\n")
