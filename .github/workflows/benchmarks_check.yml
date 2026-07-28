@@ -32,9 +32,9 @@ jobs:
           python-version: '3.13'
 
       - name: Abhängigkeiten installieren
-        # Gleiche Liste wie main.yml, da benchmarks_snapshot.py analyse.py
+        # Gleiche Liste wie main.yml, da benchmark_snapshot.py analyse.py
         # importiert (führt dessen kompletten Modul-Code aus - siehe
-        # Modul-Docstring von benchmarks_snapshot.py).
+        # Modul-Docstring von benchmark_snapshot.py).
         run: |
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
@@ -46,7 +46,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
-        run: python benchmarks_snapshot.py
+        run: python benchmark_snapshot.py
 
       - name: Daten hochladen
         env:
