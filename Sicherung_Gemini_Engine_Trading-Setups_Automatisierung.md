@@ -1124,19 +1124,22 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
 -   Kursziel-Hinweis (NEU): Enthält eine Position eine Zeile „⚠
     Kursziel-Hinweis: TP1/TP2 erreicht am \...", übernimm sie wörtlich
     als letzte Zeile direkt unter dem TP1/TP2-Feld dieser Position.
-    BREAKEVEN-ZUSATZ (NEU, 28.07.2026): Der Hinweis kann um den Zusatz
-    „\| Stop auf Breakeven (X) nachgezogen am TT.MM.JJJJ" erweitert sein
-    -- der Tracker zieht nach erreichtem TP1/TP2 den Stop einmalig
-    automatisch auf den Einstiegskurs nach (nur bei Stop \> 0, nie
-    verschlechternd). Übernimm auch diesen Zusatz wörtlich und werte ihn
-    als positives Risikomanagement-Signal (Position kann nicht mehr in
-    die Verlustzone zurückfallen), ohne daraus eine Empfehlung
-    abzuleiten. WICHTIG -- Unterschied zu „Gestoppte Positionen"
-    (Abschnitt 10): Dieser Hinweis bedeutet NICHT, dass die Position
-    geschlossen ist -- anders als beim Stop bleibt sie weiterhin unter
-    „Offene Positionen" gelistet (Status bleibt offen, kein
-    automatischer Ausstieg bei Kurszielen). Erwähne das kurz mit, falls
-    der Hinweis auftaucht, damit das nicht mit einem Stop-Ereignis
+    STUFENREGEL-ZUSATZ (28.07.2026): Der Hinweis kann um die Zusätze „\|
+    TP2 erreicht am TT.MM.JJJJ", „\| Stop auf Breakeven (X) nachgezogen
+    am TT.MM.JJJJ" und/oder „\| Stop auf TP1 (X) nachgezogen am
+    TT.MM.JJJJ" erweitert sein -- der Tracker zieht den Stop nach
+    erreichtem TP1 einmalig auf den Einstiegskurs (Breakeven) und nach
+    erreichtem TP2 einmalig auf TP1 nach (jeweils nur bei Stop \> 0, nie
+    verschlechternd; manuelles Absenken durch den Nutzer wird danach
+    respektiert). Übernimm alle diese Zusätze wörtlich und werte sie als
+    positives Risikomanagement-Signal (nach TP1 kein Verlust mehr
+    möglich, nach TP2 mindestens der TP1-Gewinn gesichert), ohne daraus
+    eine Empfehlung abzuleiten. WICHTIG -- Unterschied zu „Gestoppte
+    Positionen" (Abschnitt 10): Dieser Hinweis bedeutet NICHT, dass die
+    Position geschlossen ist -- anders als beim Stop bleibt sie
+    weiterhin unter „Offene Positionen" gelistet (Status bleibt offen,
+    kein automatischer Ausstieg bei Kurszielen). Erwähne das kurz mit,
+    falls der Hinweis auftaucht, damit das nicht mit einem Stop-Ereignis
     verwechselt wird. Fehlt die Zeile bei einer Position, ist das kein
     Fehler -- dann wurde schlicht noch kein Kursziel erreicht.
 
