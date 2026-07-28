@@ -269,6 +269,30 @@ def get_news_headlines(ticker, max_n=3):
         return []
 
 
+def get_eurusd_wechselkurs():
+    """NEU (28.07.2026, Nutzerwunsch): reiner EUR/USD-Wechselkurs, ergaenzend
+    zum US-Dollar-Index (DXY) - der DXY ist ein Waehrungskorb gegen 6 grosse
+    Waehrungen (u.a. EUR, JPY, GBP), keine reine EUR/USD-Groesse, und damit
+    nicht direkt geeignet, um das Waehrungsrisiko im Portfolio (EUR-/USD-
+    Positionen gemischt) einzuschaetzen. Eigene, einfache Funktion statt
+    Wiederverwendung von get_index_benchmark_yf: ein Wechselkurs bewegt sich
+    typischerweise nur zwischen 0,85 und 1,15 - die dortige EMA-Rundung auf
+    ganze Zahlen (.0f) waere hier voellig unbrauchbar, deshalb 4 Nachkomma-
+    stellen und kein EMA-Trendkontext (fuer einen Wechselkurs im Rahmen
+    dieses Kontext-Blocks nicht der entscheidende Punkt - der aktuelle Kurs
+    selbst ist die relevante Information). Reiner Kontext-Indikator, KEINE
+    Setup-Quelle, KEINE Abwertungsgrundlage."""
+    try:
+        hist = yf.Ticker("EURUSD=X").history(period="5d")
+        if hist.empty:
+            return "EUR/USD-Wechselkurs: Daten unvollständig"
+        kurs = hist["Close"].iloc[-1]
+        return f"EUR/USD-Wechselkurs: {kurs:.4f}"
+    except Exception as e:
+        print(f"DEBUG: EUR/USD-Wechselkurs nicht verfügbar ({e}).")
+        return "EUR/USD-Wechselkurs: Daten unvollständig"
+
+
 def get_fomc_countdown():
     """NEU (27.07.2026, Nutzerwunsch): reiner Termin-Countdown zur naechsten
     FOMC-Sitzung (Fed-Zinsentscheid) - analog zur Earnings-Warnung pro Aktie
@@ -1653,6 +1677,14 @@ if __name__ == "__main__":
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     dxy_text = get_index_benchmark_yf("DX-Y.NYB", "US-Dollar-Index")
+    # EUR/USD-Wechselkurs (NEU, 28.07.2026, Nutzerwunsch): ergaenzt den DXY
+    # (Dollar-Basket gegen 6 Waehrungen, keine reine EUR/USD-Groesse) um den
+    # tatsaechlichen Wechselkurs - direkt relevant fuer das Waehrungsrisiko im
+    # Portfolio (EUR-/USD-Positionen gemischt, siehe Portfolio-Uebersicht in
+    # Abschnitt 9) und Vorarbeit fuer den noch offenen Waehrungsrisiko-To-Do-
+    # Punkt. Siehe get_eurusd_wechselkurs() fuer die Begruendung der eigenen,
+    # simplen Funktion statt Wiederverwendung von get_index_benchmark_yf.
+    eurusd_text = get_eurusd_wechselkurs()
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
@@ -1914,7 +1946,7 @@ if __name__ == "__main__":
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
