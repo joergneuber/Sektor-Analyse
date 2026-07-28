@@ -26,7 +26,7 @@ ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
 SPALTEN = [
-    'Ticker', 'Name', 'Sektor', 'Ideen_Quelle', 'Markt', 'Waehrung', 'Richtung',
+    'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
     'Aktueller_Kurs', 'Performance_Seit_Einstieg%', 'TP_Hinweis',
@@ -159,14 +159,30 @@ def normalisiere_zahlen(df):
 
 
 def vervollstaendige_stammdaten(df):
-    """Füllt fehlende Stammdaten (Markt, Waehrung, ggf. Name) für ALLE echten
-    Positionszeilen nach - auch für bereits aktive (Status Offen/Gestoppt).
-    Hintergrund: ergaenze_neue_zeilen greift nur bei leerem Status (Neuanlage);
-    korrigiert der Nutzer nachträglich einen Ticker und leert dabei die
-    Markt-/Waehrung-Felder, blieben diese sonst dauerhaft leer und das
-    Briefing zeigt 'Markt: nan' bzw. das falsche Währungssymbol ($ statt €).
+    """Füllt fehlende Stammdaten (Markt, Waehrung, ggf. Name, ggf. Sektor) für
+    ALLE echten Positionszeilen nach - auch für bereits aktive (Status Offen/
+    Gestoppt). Hintergrund: ergaenze_neue_zeilen greift nur bei leerem Status
+    (Neuanlage); korrigiert der Nutzer nachträglich einen Ticker und leert
+    dabei die Markt-/Waehrung-Felder, blieben diese sonst dauerhaft leer und
+    das Briefing zeigt 'Markt: nan' bzw. das falsche Währungssymbol ($ statt €).
     Ableitung wie bei der Neuanlage: Punkt-Suffix = EU/EUR (.L = GBP),
-    suffixlos = US/USD. Name nur nachschlagen, wenn komplett leer."""
+    suffixlos = US/USD. Name/Sektor nur nachschlagen, wenn komplett leer.
+
+    Sektor (NEU, 28.07.2026, Nutzerwunsch): per yfinance-Branchenfeld
+    (info['sector']) automatisch befüllt statt dauerhaft 'N/A' in der
+    Auswertung zu zeigen - bewusst NICHT die kuratierte deutsche Sektor-
+    Taxonomie aus analyse.py (sektoren_map/sektoren_aktien/dax_aktien)
+    wiederverwendet: ein Import von analyse.py würde dessen kompletten
+    Modul-Code ausführen (inkl. Groq-Client-Initialisierung), aber weder
+    main.yml's "Offene Positionen aktualisieren"-Schritt noch stop_check.yml
+    übergeben GROQ_API_KEY an dieses Skript - das hätte den bestehenden,
+    schlanken Lauf unnötig kompliziert/riskant gemacht. yfinance liefert
+    stattdessen einen englischen GICS-Sektornamen (z. B. 'Real Estate',
+    'Technology') - nicht identisch mit der deutschen Taxonomie der
+    Setups-Positionen, aber automatisch und ohne Zusatz-Abhängigkeit best
+    effort besser als das bisherige durchgängige 'N/A'. Bei ETFs (kein
+    'sector'-Feld, z. B. NRJ.PA) bleibt das Feld leer -> weiterhin 'N/A'
+    im Briefing, kein Fehler."""
     for idx, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
         if not ticker or ticker.lower() == 'nan' or ticker.upper() == ANLEITUNG_TICKER:
@@ -176,7 +192,7 @@ def vervollstaendige_stammdaten(df):
         markt_leer = str(row['Markt']).strip() in ("", "nan")
         waehrung_leer = str(row['Waehrung']).strip() in ("", "nan")
         name_leer = str(row['Name']).strip() in ("", "nan")
-        quelle_leer = str(row.get('Ideen_Quelle', '')).strip() in ("", "nan")
+        sektor_leer = str(row.get('Sektor', '')).strip() in ("", "nan")
 
         if markt_leer:
             df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
@@ -185,22 +201,17 @@ def vervollstaendige_stammdaten(df):
                 df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
             else:
                 df.at[idx, 'Waehrung'] = 'USD'
-        if name_leer:
+        if name_leer or sektor_leer:
             try:
                 info = yf.Ticker(ticker).info
-                name = info.get('longName') or ticker
-                df.at[idx, 'Name'] = name
             except Exception:
-                df.at[idx, 'Name'] = ticker
-        if quelle_leer:
-            # Kein Scanner-Ursprung eingetragen -> als eigenstaendige,
-            # nicht-automatisierte Idee werten (siehe Anleitungszeile fuer
-            # die moeglichen Werte: Setups/Trendwende/Short/Langfrist/
-            # Edelmetalle/Manuell). Gilt auch fuer Bestandspositionen von
-            # vor Einfuehrung dieses Feldes (27.07.2026) - werden rueckwirkend
-            # als 'Manuell' markiert, da die urspruengliche Quelle nicht mehr
-            # rekonstruierbar ist.
-            df.at[idx, 'Ideen_Quelle'] = 'Manuell'
+                info = {}
+            if name_leer:
+                df.at[idx, 'Name'] = info.get('longName') or ticker
+            if sektor_leer:
+                sektor = info.get('sector')
+                if sektor:
+                    df.at[idx, 'Sektor'] = sektor
 
     return df
 
@@ -356,10 +367,7 @@ def stelle_anleitung_sicher(df):
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
         ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
-        "Sektor: optional, rein informativ. "
-        "Ideen_Quelle (NEU, optional): woher die Idee kam - Setups / Trendwende / Short / "
-        "Langfrist / Edelmetalle / Manuell. Leer lassen = wird automatisch als 'Manuell' "
-        "gewertet (also: nicht aus einem der Scanner, sondern eigenstaendig recherchiert)."
+        "Sektor: optional, rein informativ."
     )
     anleitung_sektor = (
         "OPTIONSSCHEIN (zusaetzlich zu Ticker/Einstieg/Stop): Produkt_Typ = 'Optionsschein', "
