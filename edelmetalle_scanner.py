@@ -46,6 +46,8 @@ import pandas as pd
 import yfinance as yf
 
 # --- Bewaehrte Bausteine aus dem Hauptscanner wiederverwenden ---
+from collections import Counter
+
 from analyse import (
     check_rsi_divergence,
     check_trendline_breakout,
@@ -100,6 +102,10 @@ def analyze_edelmetall(ticker, name, bench_close=None):
     analyze_a_setup_eu() in analyse.py (yfinance-basiert, da Alpaca keine
     Rohstoff-Futures abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
     Rohstoffen) und ohne Analysten-Kursziel (nicht verfuegbar fuer Futures).
+    Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
+    speist die Funnel-Statistik (NEU 28.07.2026). Die Earnings-Regel des
+    Hauptscanners entfaellt hier bewusst (Futures haben keine Earnings),
+    die Death-Cross-Regel gilt dagegen identisch (siehe unten).
     """
     try:
         data = yf.Ticker(ticker).history(period="2y")  # 2 Jahre statt 1 -
@@ -109,16 +115,16 @@ def analyze_edelmetall(ticker, name, bench_close=None):
 
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
-            return None
+            return None, "keine_kursdaten"
 
         data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
-            return None
+            return None, "keine_kursdaten"
 
         if len(data) < 210:  # WMA200 braucht mind. 200 Zeilen, etwas Puffer
             print(f"DEBUG-EDELMETALL: {ticker} -> Zu wenig Daten ({len(data)} Zeilen) für WMA200.")
-            return None
+            return None, "zu_wenig_daten"
 
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -165,7 +171,7 @@ def analyze_edelmetall(ticker, name, bench_close=None):
         trend_ok = data['Close'].iloc[-1] >= data['WMA200'].iloc[-1] and data['Close'].iloc[-1] >= data['EMA200'].iloc[-1]
         if not trend_ok:
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Trend nicht OK (unter WMA200/EMA200)")
-            return None
+            return None, "kein_aufwaertstrend"
 
         c1, c2 = data.iloc[-1], data.iloc[-2]
         body = abs(c1['Close'] - c1['Open'])
@@ -228,7 +234,7 @@ def analyze_edelmetall(ticker, name, bench_close=None):
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt "
                   f"(Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, "
                   f"TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
-            return None
+            return None, "kein_setup_muster"
 
         # Relative Staerke vs. Rohstoff-Index (DBC) statt SPY/STOXX600
         rel_staerke = None
@@ -238,13 +244,13 @@ def analyze_edelmetall(ticker, name, bench_close=None):
             rel_staerke = round(metall_perf_60 - bench_perf_60, 2)
             if rel_staerke <= RS_MIN:
                 print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Relative Stärke vs. DBC <= {RS_MIN}% ({rel_staerke}%)")
-                return None
+                return None, "rel_staerke_zu_schwach"
 
         hoch_52w = data['High'].max()
         abstand_52w_hoch = round(((entry / hoch_52w) - 1) * 100, 2)
         if abstand_52w_hoch < ABSTAND_52W_HOCH_MAX:
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Zu weit vom 52-Wochen-Hoch entfernt ({abstand_52w_hoch}%, Hoch={hoch_52w:.2f})")
-            return None
+            return None, "zu_weit_vom_52w_hoch"
 
         fib1, fib2 = get_fib_levels(data)
         kumo_werte = [w for w in [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]] if pd.notna(w)]
@@ -284,7 +290,7 @@ def analyze_edelmetall(ticker, name, bench_close=None):
         risiko = entry - stop
         if risiko <= 0:
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
-            return None
+            return None, "risiko_ungueltig"
 
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
@@ -292,23 +298,34 @@ def analyze_edelmetall(ticker, name, bench_close=None):
         chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
-            return None
+            return None, "crv_unter_1"
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
         last_row = data.iloc[-1]
 
         if last_row['EMA20'] > (last_row['Close'] * 2):
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Plausibilitätscheck fehlgeschlagen")
-            return None
+            return None, "plausibilitaet"
+
+        # Death-Cross-Regel (NEU 28.07.2026, identisch zum Hauptscanner):
+        # frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10
+        # Handelstage) stuft VALIDE auf ACHTUNG ab. Die Earnings-Regel des
+        # Hauptscanners entfaellt bewusst - Futures haben keine Earnings.
+        gc_status = get_golden_cross_status(data)
+        if str(gc_status).startswith("DEATH CROSS"):
+            status2, status_grund = "ACHTUNG", "Frischer Death Cross (EMA50 unter EMA200)"
+            print(f"DEBUG-EDELMETALL-ABSTUFUNG: {ticker} -> ACHTUNG (frischer Death Cross)")
+        else:
+            status2, status_grund = "VALIDE", "Alles ok"
 
         return {
             "Ticker": str(ticker), "Name": str(name), "Sektor": "Edelmetalle",
             "Markt": "Global", "Waehrung": "USD", "Trend": "OK",
             "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
-            "Golden_Cross_Status": get_golden_cross_status(data),
+            "Golden_Cross_Status": gc_status,
             "Tech-Kursziel": clean_num(tp1), "Analysten-Kursziel": 0.0,
             "Upside_%_vs_Aktuell": clean_num(chance1_perc),
-            "Status2": "VALIDE", "Status_Grund": "Alles ok",
+            "Status2": status2, "Status_Grund": status_grund,
             "RSI": float(last_row['RSI']), "Divergenz": divergenz if divergenz else "Keine",
             "MACD_Trend": str(macd_trend), "CRV1": clean_num(crv1), "CRV2": clean_num(crv2),
             "Kurs": round(last_row['Close'], 2),
@@ -320,10 +337,10 @@ def analyze_edelmetall(ticker, name, bench_close=None):
             "Ideales_Delta": 0.0,
             "RS_vs_Benchmark%": clean_num(rel_staerke) if rel_staerke is not None else None,
             "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
-        }
+        }, "kandidat"
     except Exception as e:
         print(f"FEHLER bei {ticker} ({name}): {e}")
-        return None
+        return None, "fehler"
 
 
 def edelmetalle_scan_starten():
@@ -331,13 +348,40 @@ def edelmetalle_scan_starten():
     bench_close = get_commodity_benchmark_close()
 
     ergebnisse = []
+    funnel = Counter()
     for ticker, name in EDELMETALLE.items():
-        res = analyze_edelmetall(ticker, name, bench_close)
+        res, grund = analyze_edelmetall(ticker, name, bench_close)
+        funnel[grund] += 1
         if res is not None:
             ergebnisse.append(res)
 
-    print(f"DEBUG: {len(ergebnisse)} von {len(EDELMETALLE)} Edelmetallen mit validem Setup.")
-    return ergebnisse
+    print(f"DEBUG: {len(ergebnisse)} von {len(EDELMETALLE)} Edelmetallen mit Setup.")
+
+    # Funnel-Statistik (NEU 28.07.2026): bei nur 4 Kandidaten besonders
+    # nuetzlich, um sofort zu sehen, WORAN jedes Metall heute scheitert.
+    funnel_stufen = [
+        ("keine_kursdaten", "Keine Kursdaten geliefert (API/NaN-Bereinigung)"),
+        ("zu_wenig_daten", "Zu wenig Kurshistorie fuer WMA200"),
+        ("fehler", "Fehler bei der Berechnung"),
+        ("kein_aufwaertstrend", "Kein Aufwaertstrend (unter WMA200/EMA200)"),
+        ("kein_setup_muster", "Keines der 4 Setup-Muster erfuellt (oder Stochastik >= 90)"),
+        ("rel_staerke_zu_schwach", "Relative Staerke vs. DBC zu schwach"),
+        ("zu_weit_vom_52w_hoch", "Zu weit unter dem 52W-Hoch"),
+        ("risiko_ungueltig", "Risiko <= 0"),
+        ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+        ("plausibilitaet", "Plausibilitaets-Check fehlgeschlagen"),
+        ("kandidat", "SETUP (inkl. eventueller ACHTUNG-Abstufung)"),
+    ]
+    funnel_zeilen = [f"Universum: {len(EDELMETALLE)} Edelmetalle (feste Liste)"]
+    for _key, _beschreibung in funnel_stufen:
+        _anzahl = funnel.get(_key, 0)
+        if _anzahl == 0 and _key != "kandidat":
+            continue  # bei nur 4 Titeln lesbarer: leere Stufen weglassen
+        praefix = "=>" if _key == "kandidat" else "-"
+        funnel_zeilen.append(f"{praefix} {_beschreibung}: {_anzahl}")
+    funnel_text = "\n".join(funnel_zeilen)
+    print("FUNNEL-STATISTIK:\n" + funnel_text)
+    return ergebnisse, funnel_text
 
 
 SPALTEN = [
@@ -349,7 +393,7 @@ SPALTEN = [
 ]
 
 
-def speichere_ergebnisse(ergebnisse):
+def speichere_ergebnisse(ergebnisse, funnel_text=""):
     heute = datetime.date.today().isoformat()
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)  # feste Spaltenliste, auch bei 0 Zeilen
     # bewusst sortiert: bestes CRV1 zuerst (analog zur "Sortierung nach
@@ -386,6 +430,12 @@ def speichere_ergebnisse(ergebnisse):
             "  verfügbar für Futures) - Tech-Kursziel bleibt einzige Zielgröße.\n\n"
         )
 
+        # Funnel-Statistik (NEU 28.07.2026)
+        if funnel_text:
+            f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
+            f.write("-" * 50 + "\n")
+            f.write(funnel_text + "\n\n")
+
         if not ergebnisse:
             f.write("Keine validen Edelmetall-Setups gefunden.\n")
         else:
@@ -399,7 +449,7 @@ def speichere_ergebnisse(ergebnisse):
                 f.write(f"RSI: {r['RSI']:.2f} | MACD-Trend: {r['MACD_Trend']} | Vol-Ratio: {r['Vol_Ratio']:.2f}x | Divergenz: {r['Divergenz']}\n")
                 rs_txt = f"{r['RS_vs_Benchmark%']}%" if r['RS_vs_Benchmark%'] is not None else "n/a"
                 f.write(f"RS vs. DBC (Rohstoff-Index): {rs_txt} | Abstand 52W-Hoch: {r['Abstand_52W_Hoch%']}%\n")
-                f.write(f"Golden-/Death-Cross (nur Info, keine Bewertung): {r['Golden_Cross_Status']}\n")
+                f.write(f"Golden-/Death-Cross (frischer Death Cross führt zu ACHTUNG): {r['Golden_Cross_Status']}\n")
                 f.write(f"Setup-Typ: {r['Setup_Typ']} | Muster: {r['Pattern']}\n\n")
 
     print(f"Gespeichert: {dateiname_txt}")
@@ -407,6 +457,6 @@ def speichere_ergebnisse(ergebnisse):
 
 
 if __name__ == "__main__":
-    ergebnisse = edelmetalle_scan_starten()
-    speichere_ergebnisse(ergebnisse)
+    ergebnisse, funnel_text = edelmetalle_scan_starten()
+    speichere_ergebnisse(ergebnisse, funnel_text)
     print("Edelmetalle-Scanner abgeschlossen.")
