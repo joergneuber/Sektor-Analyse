@@ -26,7 +26,7 @@ ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
 SPALTEN = [
-    'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung',
+    'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung', 'Ideen_Quelle',
     'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
     'Aktueller_Kurs', 'Performance_Seit_Einstieg%', 'TP_Hinweis',
@@ -374,7 +374,9 @@ def stelle_anleitung_sicher(df):
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
         ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
-        "Sektor: optional, rein informativ."
+        "Sektor: optional, rein informativ. Ideen_Quelle: optional (Setups/Trendwende/"
+        "Short/Langfrist/Edelmetalle/Manuell) - leer wird als Manuell gewertet; wird nie "
+        "automatisch ueberschrieben."
     )
     anleitung_sektor = (
         "OPTIONSSCHEIN (zusaetzlich zu Ticker/Einstieg/Stop): Produkt_Typ = 'Optionsschein', "
@@ -389,8 +391,8 @@ def stelle_anleitung_sicher(df):
     anleitung_markt = (
         "AUTOMATISCH BEFUELLT (nicht anfassen): Aktueller_Kurs, Performance_Seit_Einstieg%, "
         "OS_Performance%, OS_Quelle. Bei Stop-Beruehrung: Status -> 'Gestoppt' + Ausstiegsdatum/"
-        "-kurs automatisch. BREAKEVEN-REGEL (NEU 28.07.2026): erreicht eine Position TP1/TP2, "
-        "wird der Stop EINMALIG automatisch auf Breakeven (Einstiegskurs) nachgezogen - nur bei "
+        "-kurs automatisch. STUFENREGEL (28.07.2026): nach TP1 wird der Stop EINMALIG auf "
+        "Breakeven (Einstiegskurs) nachgezogen, nach TP2 EINMALIG auf TP1 - jeweils nur bei "
         "Stop > 0, nie verschlechternd; manuelles Absenken danach wird respektiert. "
         "Position entfernen = Zeile loeschen. Wieder aktivieren = Status auf "
         "'Offen', Ausstiegsdatum/-kurs leeren. Diese ANLEITUNG-Zeile bitte stehen lassen."
@@ -560,59 +562,76 @@ def aktualisiere_positionen(df):
             df.at[idx, 'Ausstiegskurs'] = aktueller_kurs
             continue
 
-        # TP-Hinweis (NEU): nur setzen, wenn noch keiner vorhanden ist -
+        # TP-Hinweis: nur NEU setzen, wenn noch keiner vorhanden ist -
         # verhindert taegliches Ueberschreiben/erneutes "Aufploppen" im
-        # Briefing, sobald der Hinweis einmal gesetzt wurde. GESPIEGELT bei
-        # Short: TP liegt unterhalb, erreicht bei Kurs <= TP (nicht >=)
+        # Briefing. GESPIEGELT bei Short: TP liegt unterhalb, erreicht bei
+        # Kurs <= TP (nicht >=). GEAENDERT (28.07.2026, Stufenregel):
+        # Erreicht der Kurs spaeter auch TP2, wird der bestehende Hinweis
+        # um "| TP2 erreicht" ERGAENZT (nicht ueberschrieben) - vorher wurde
+        # TP2 nie mehr vermerkt, sobald der TP1-Hinweis stand; die Stufen-
+        # regel unten (Stop auf TP1 nach TP2) braucht diesen Vermerk aber.
         bestehender_hinweis = str(row.get('TP_Hinweis', '')).strip()
         hinweis_schon_gesetzt = bestehender_hinweis not in ('', 'nan')
-        if not hinweis_schon_gesetzt:
-            if ist_short:
-                tp2_erreicht = tp2 is not None and aktueller_kurs <= tp2
-                tp1_erreicht = tp1 is not None and aktueller_kurs <= tp1
-            else:
-                tp2_erreicht = tp2 is not None and aktueller_kurs >= tp2
-                tp1_erreicht = tp1 is not None and aktueller_kurs >= tp1
+        if ist_short:
+            tp2_erreicht = tp2 is not None and aktueller_kurs <= tp2
+            tp1_erreicht = tp1 is not None and aktueller_kurs <= tp1
+        else:
+            tp2_erreicht = tp2 is not None and aktueller_kurs >= tp2
+            tp1_erreicht = tp1 is not None and aktueller_kurs >= tp1
 
+        if not hinweis_schon_gesetzt:
             if tp2_erreicht:
                 print(f"DEBUG: {ticker} -> TP2 erreicht (Kurs={aktueller_kurs}, TP2={tp2}).")
                 df.at[idx, 'TP_Hinweis'] = f"TP2 erreicht am {heute}"
             elif tp1_erreicht:
                 print(f"DEBUG: {ticker} -> TP1 erreicht (Kurs={aktueller_kurs}, TP1={tp1}).")
                 df.at[idx, 'TP_Hinweis'] = f"TP1 erreicht am {heute}"
+        elif tp2_erreicht and 'TP2 erreicht' not in bestehender_hinweis:
+            print(f"DEBUG: {ticker} -> TP2 erreicht (Upgrade, Kurs={aktueller_kurs}, TP2={tp2}).")
+            df.at[idx, 'TP_Hinweis'] = f"{bestehender_hinweis} | TP2 erreicht am {heute}"
 
-        # --- BREAKEVEN-REGEL (NEU 28.07.2026, Nutzerwunsch) ---
-        # Sobald TP1 (oder TP2) erreicht wurde, wird der Stop EINMALIG auf
-        # Breakeven (= Einstiegskurs) nachgezogen: ein Trade, der sein erstes
-        # Kursziel bereits erreicht hat, soll nicht mehr in einen Verlust
-        # zurueckfallen koennen (Anlass: Ross Stores +10,9% nach TP1, Stop
-        # stand aber weiterhin 10% unter dem Kurs auf dem Einstiegs-Level).
-        # Bewusste Grenzen der Regel:
-        # - NUR EINMALIG: der Vermerk "Stop auf Breakeven nachgezogen" im
-        #   TP_Hinweis verhindert eine Wiederholung. Senkt der Nutzer den
-        #   Stop danach manuell wieder ab, wird das respektiert (die Automatik
-        #   zieht nicht erneut hoch).
+        # --- STUFENREGEL STOP-NACHZIEHEN (28.07.2026, Nutzerwunsch, zweistufig) ---
+        # Stufe 1: TP1 (oder TP2) erreicht -> Stop EINMALIG auf Breakeven
+        #          (= Einstiegskurs): der Trade kann nicht mehr in die
+        #          Verlustzone zurueckfallen (Anlass: Ross Stores +10,9% nach
+        #          TP1, Stop stand weiter 10% unterm Kurs).
+        # Stufe 2 (NEU, gleicher Tag): TP2 erreicht -> Stop EINMALIG auf TP1:
+        #          nach dem zweiten Ziel ist mindestens der TP1-Gewinn
+        #          gesichert - wird die Position danach ausgestoppt, ist das
+        #          Gewinnmitnahme oberhalb des ersten Ziels, kein Verlust.
+        # Bewusste Grenzen (gelten fuer BEIDE Stufen):
+        # - NUR EINMALIG je Stufe: die Vermerke "Stop auf Breakeven" bzw.
+        #   "Stop auf TP1" im TP_Hinweis verhindern Wiederholung. Senkt der
+        #   Nutzer den Stop danach manuell ab, wird das respektiert.
         # - NUR bei existierendem automatischem Stop (Stop > 0): die Stop=0-
-        #   Konvention ("kein automatischer Stop", manuelle Altbestaende)
-        #   bleibt unangetastet.
-        # - NUR VERBESSERN, nie verschlechtern: liegt der Stop bereits auf
-        #   oder ueber Breakeven (Long) bzw. auf/unter Breakeven (Short),
-        #   passiert nichts.
-        # - Greift auch rueckwirkend fuer Positionen, deren TP-Hinweis schon
-        #   an frueheren Tagen gesetzt wurde (z.B. Ross Stores 27.07., RWE
-        #   21.07.), da nur der Hinweis-Text als Bedingung dient.
+        #   Konvention ("kein automatischer Stop", Altbestaende) bleibt
+        #   unangetastet.
+        # - NUR VERBESSERN, nie verschlechtern (Long: nur anheben, Short:
+        #   nur absenken).
+        # - Greift auch rueckwirkend ueber den Hinweis-Text, unabhaengig vom
+        #   Tag des TP-Erreichens.
+        # Erreicht ein Kurs TP2 direkt (ohne TP1-Zwischenschritt), greift
+        # sofort Stufe 2 - der hoehere Schutz gewinnt.
         aktueller_hinweis = str(df.at[idx, 'TP_Hinweis']).strip()
-        tp_wurde_erreicht = aktueller_hinweis not in ('', 'nan') and 'erreicht' in aktueller_hinweis
-        breakeven_schon_vermerkt = 'Breakeven' in aktueller_hinweis
-        if tp_wurde_erreicht and not breakeven_schon_vermerkt and stop > 0:
-            breakeven = round(einstieg, 2)
-            nachziehen = (stop > breakeven) if ist_short else (stop < breakeven)
+        if aktueller_hinweis in ('', 'nan'):
+            aktueller_hinweis = ''
+        tp1_wurde_erreicht = 'erreicht' in aktueller_hinweis
+        tp2_wurde_erreicht = 'TP2 erreicht' in aktueller_hinweis
+
+        ziel_stop, ziel_label = None, None
+        if tp2_wurde_erreicht and tp1 is not None and tp1 > 0 and 'Stop auf TP1' not in aktueller_hinweis:
+            ziel_stop, ziel_label = round(tp1, 2), "TP1"
+        elif tp1_wurde_erreicht and 'Breakeven' not in aktueller_hinweis:
+            ziel_stop, ziel_label = round(einstieg, 2), "Breakeven"
+
+        if ziel_stop is not None and stop > 0:
+            nachziehen = (stop > ziel_stop) if ist_short else (stop < ziel_stop)
             if nachziehen:
-                df.at[idx, 'Stop'] = breakeven
+                df.at[idx, 'Stop'] = ziel_stop
                 df.at[idx, 'TP_Hinweis'] = (
-                    f"{aktueller_hinweis} | Stop auf Breakeven ({breakeven}) nachgezogen am {heute}"
+                    f"{aktueller_hinweis} | Stop auf {ziel_label} ({ziel_stop}) nachgezogen am {heute}"
                 )
-                print(f"DEBUG: {ticker} -> Kursziel erreicht, Stop auf Breakeven ({breakeven}) "
+                print(f"DEBUG: {ticker} -> Kursziel erreicht, Stop auf {ziel_label} ({ziel_stop}) "
                       f"nachgezogen (vorher {stop}).")
 
     return df
