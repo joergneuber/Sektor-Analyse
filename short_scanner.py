@@ -498,9 +498,34 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         verschiebung += 1
     elif data['Vol_Ratio'].iloc[-1] < 0.5:
         verschiebung -= 1
-    # Marktumfeld-Modifikator INVERTIERT (siehe Modul-Docstring): baerisches
-    # Umfeld werted Short-Setups AUF statt ab
-    if marktumfeld_baerisch:
+    # Sektor-Score des Setup-Sektors aus Performance.csv-Momentum ziehen
+    sektor_score = None
+    if sektor_momentum:
+        try:
+            sektor_score = float(sektor_momentum.get('Rotation-Score'))
+        except (TypeError, ValueError):
+            sektor_score = None
+
+    # SEKTOR-MODIFIKATOR (NEU 28.07.2026, Nutzerentscheidung, gespiegelt zum
+    # Long-Scanner): das Setup wird danach beurteilt, ob sein EIGENER Sektor
+    # Abwaerts-Rueckenwind hat - nicht nur, ob der Gesamtmarkt schwach ist.
+    #   Rotation-Score <= -2.0 -> +1 Stufe (klarer Abwaerts-Rueckenwind)
+    #   Rotation-Score >  0    -> -1 Stufe (Sektor dreht nach oben - Short
+    #                                       gegen den Sektortrend)
+    #   dazwischen             ->  0
+    if sektor_score is not None:
+        if sektor_score <= -2.0:
+            verschiebung += 1
+        elif sektor_score > 0:
+            verschiebung -= 1
+
+    # Marktumfeld-Modifikator INVERTIERT, seit 28.07.2026 NUR NOCH MIT
+    # SEKTOR-BESTAETIGUNG: baerisches Umfeld wertet Short-Setups auf, aber
+    # nur, wenn der Sektor-Score < 1.0 ist (Bestaetigung statt Pauschale -
+    # ein nach oben rotierender Sektor macht den globalen Rueckenwind fuer
+    # DIESEN Titel wertlos). Ohne Sektor-Score (None) greift die Aufwertung
+    # wie bisher (defensiv: keine Daten = keine Verschaerfung der Regel).
+    if marktumfeld_baerisch and (sektor_score is None or sektor_score < 1.0):
         verschiebung += 1
     idx = max(0, min(len(stufen) - 1, idx + verschiebung))
     feinstufe = stufen[idx]
@@ -661,10 +686,14 @@ def main():
     # auseinanderlaufen. get_index_benchmark_yf fuellt dabei BENCHMARK_LEVELS
     # (identischer Mechanismus wie im Hauptscanner-Briefing).
     for _tick, _label in [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"),
-                          ("^GDAXI", "DAX"), ("^STOXX50E", "EuroStoxx50")]:
+                          ("^RUT", "Russell 2000"),
+                          ("^GDAXI", "DAX"), ("^STOXX50E", "EuroStoxx50"),
+                          ("^STOXX", "STOXX Europe 600")]:
         get_index_benchmark_yf(_tick, _label)
-    us_stufe, us_detail = klassifiziere_marktumfeld(["S&P 500", "Nasdaq"])
-    eu_stufe, eu_detail = klassifiziere_marktumfeld(["DAX", "EuroStoxx50"])
+    us_stufe, us_detail, us_score = klassifiziere_marktumfeld(
+        [("S&P 500", 2), ("Nasdaq", 1), ("Russell 2000", 1)])
+    eu_stufe, eu_detail, eu_score = klassifiziere_marktumfeld(
+        [("DAX", 2), ("EuroStoxx50", 1), ("STOXX Europe 600", 1)])
 
     # Defensiver Fallback: liefert die Index-Abfrage keine Levels (API-Fehler),
     # greift die alte EMA20-Heuristik auf Basis der ohnehin geladenen
@@ -821,13 +850,18 @@ def main():
         f.write("  Bruch, Kumo-Ausbruch nach unten (Details: siehe Gemini-Anleitung Abschnitt 9).\n")
         f.write(f"- RS-Filter invertiert: Titel mit RS vs. Benchmark > +{RS_MAX}% werden verworfen\n")
         f.write("  (nur Nachzuegler shorten, keine Marktfuehrer).\n")
+        f.write("- Sektor-Modifikator (NEU 28.07.2026): Rotation-Score des Setup-Sektors <= -2,0\n")
+        f.write("  -> +1 Stufe (Abwaerts-Rueckenwind) | Score > 0 -> -1 Stufe (Short gegen drehenden\n")
+        f.write("  Sektor) | dazwischen neutral.\n")
         f.write("- Marktumfeld-Modifikator invertiert: baerisches Marktumfeld wertet die Setup-\n")
-        f.write("  Qualitaet AUF (+1 Stufe), nicht ab wie beim Long-Scanner.\n")
-        f.write("- Heutiges Marktumfeld (GEAENDERT 28.07.2026: 3-Stufen-Regel wie Hauptscanner -\n")
-        f.write("  Bullisch = Kurs ueber EMA20 | Neutral = unter EMA20, ueber EMA50+WMA200 |\n")
-        f.write("  Baerisch = unter EMA50 oder WMA200; je Region zaehlt der schwaechere Leitindex):\n")
-        f.write(f"  US: {us_stufe} | EU: {eu_stufe} - fuer den Aufwertungs-Modifikator zaehlt nur\n")
-        f.write(f"  die Stufe 'Baerisch' (US: {'JA' if marktumfeld_baerisch_us else 'nein'}, EU: {'JA' if marktumfeld_baerisch_eu else 'nein'}).\n")
+        f.write("  Qualitaet AUF (+1 Stufe), nicht ab wie beim Long-Scanner - seit 28.07.2026\n")
+        f.write("  NUR NOCH mit Sektor-Bestaetigung (Rotation-Score des Setup-Sektors < 1,0).\n")
+        f.write("- Heutiges Marktumfeld (Score-Modell wie Hauptscanner, seit 28.07.2026: Stufe je\n")
+        f.write("  Index ueber EMA20/50/WMA200, Punkte Bullisch 2/Neutral 1/Baerisch 0, Gewichte\n")
+        f.write("  S&P 500 x2/Nasdaq x1/Russell 2000 x1 bzw. DAX x2/EuroStoxx50 x1/STOXX 600 x1;\n")
+        f.write("  Score >= 1,5 Bullisch | <= 0,5 Baerisch | sonst Neutral):\n")
+        f.write(f"  US: {us_stufe} (Score {us_score}) | EU: {eu_stufe} (Score {eu_score}) - fuer den\n")
+        f.write(f"  Aufwertungs-Modifikator zaehlt nur 'Baerisch' (US: {'JA' if marktumfeld_baerisch_us else 'nein'}, EU: {'JA' if marktumfeld_baerisch_eu else 'nein'}).\n")
         f.write("- RISIKOHINWEIS: Short-Positionen haben ein theoretisch unbegrenztes Verlust-\n")
         f.write("  risiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht).\n")
         f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein (NEU,\n")
