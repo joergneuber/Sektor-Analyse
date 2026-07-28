@@ -212,6 +212,13 @@ def vervollstaendige_stammdaten(df):
                 sektor = info.get('sector')
                 if sektor:
                     df.at[idx, 'Sektor'] = sektor
+                elif str(info.get('quoteType', '')).strip().upper() == 'ETF':
+                    # ETFs haben kein 'sector'-Feld (kein Einzelunternehmen) -
+                    # NEU (28.07.2026, Nutzerwunsch): statt weiterhin leer zu
+                    # bleiben (-> 'N/A' im Briefing) wenigstens 'ETF' als
+                    # Kennzeichnung eintragen, klar erkennbar als Fonds statt
+                    # als "keine Daten verfügbar" misszuverstehen.
+                    df.at[idx, 'Sektor'] = 'ETF'
 
     return df
 
