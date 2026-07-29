@@ -507,8 +507,9 @@ Rotation-Score {{Rotation-Score}} Vol-Ratio: {{Vol_Ratio, 2
 Nachkommastellen}}x RS vs. Benchmark: {{RS_vs_Benchmark%, 2
 Nachkommastellen}}% Abstand 52W-Hoch: {{Abstand_52W_Hoch%, 2
 Nachkommastellen}}% Divergenz: {{Divergenz}} Ereignis-Kontext:
-{{Earnings-Warnung falls vorhanden}} \| {{ALLE News-Zeilen des Titels
-1:1 -- Pflicht sobald vorhanden}}
+{{Earnings-Warnung falls vorhanden}} \| {{Earnings-Rückblick „📊 Zahlen
+..." falls vorhanden, wörtlich}} \| {{ALLE News-Zeilen des Titels 1:1 --
+Pflicht sobald vorhanden}}
 
 -   Fundamental-Ampel (NEU): kommt bereits fertig berechnet aus der CSV
     als reiner Text (GUENSTIG / NEUTRAL / TEUER / N/A, grobe
@@ -670,6 +671,35 @@ Nachkommastellen}}% Divergenz: {{Divergenz}} Ereignis-Kontext:
     ändert die Setup-Qualitätsstufe NICHT, gehört aber zwingend in die
     Ausgabe des betroffenen Titels.
 
+-   EARNINGS-RÜCKBLICK (NEU 29.07.2026, Nutzerwunsch - Gegenstück zur
+    Warnung oben): Zeilen der Form „📊 Zahlen TT.MM.: ..." erscheinen
+    bei Setups, Watchlist-Titeln und offenen Positionen, wenn der Titel
+    in den letzten 5 Kalendertagen berichtet hat. Sie enthalten eine der
+    drei Einstufungen „Erwartungen übertroffen", „Erwartungen getroffen"
+    oder „Erwartungen verfehlt" (gemeldetes EPS gegen
+    Analystenerwartung) sowie die Kursreaktion am Berichtstag; laufen
+    beide auseinander (Zahlen über Erwartung, Kurs fällt trotzdem - oder
+    umgekehrt), unterscheidet der Scanner zusätzlich nach dem
+    KURSVORLAUF der 20 Handelstage vor dem Bericht: war der Kurs vorher
+    stark gelaufen, lautet die Einordnung „Muster Gewinnmitnahme/\'Sell
+    on good news\' nach starkem Vorlauf" (die guten Zahlen waren
+    eingepreist - kein Urteil gegen das Unternehmen); ohne auffälligen
+    Vorlauf bleibt es bei „geteilte Meinung" mit dem Zusatz, dass der
+    Grund eher im Ausblick als in den Zahlen liegt. Gespiegelt bei
+    verfehlten Zahlen mit steigendem Kurs: „Muster \'war bereits
+    eingepreist\' nach schwachem Vorlauf". Diese Muster-Einordnungen
+    sind BESCHREIBEND, kein Beweis - formuliere sie nie als feststehende
+    Ursache und leite keine Handlungsempfehlung daraus ab. Übernimm die
+    Zeile WÖRTLICH in den „Ereignis-Kontext" des betroffenen Titels und
+    greife sie bei offenen Positionen zusätzlich in einem Halbsatz auf,
+    wenn sie das Bild der Position verändert (z. B. „Zahlen verfehlt,
+    Position weiterhin über dem Stop"). WICHTIG: Der Rückblick ist
+    REINER KONTEXT - er verändert die Setup-Qualitätsstufe NICHT und ist
+    KEINE Kauf-/Verkaufs-empfehlung. Erfinde niemals Umsatz-, Margen-
+    oder Guidance-Aussagen dazu: die Datenbasis ist ausschließlich EPS
+    plus Kursreaktion, mehr steht nicht zur Verfügung. Fehlt die Zeile,
+    hat der Titel im Fenster nicht berichtet - dann keinerlei Erwähnung.
+
 -   News-Zeilen (NEU): Zeilen der Form „News TT.MM.: Schlagzeile" sind
     jüngste Agentur-Schlagzeilen (nur US-Titel verfügbar). Nutze sie
     ausschließlich als Risiko-/Ereignis-Kontext (z. B. laufende
@@ -808,8 +838,9 @@ Qualitäts-Bonus: {{Qualitaets_Bonus, wörtlich aus der CSV}}
 Fundamental-Ampel: {{Fundamental_Ampel, wörtlich aus der CSV}}
 ({{Fundamental_Hinweis, wörtlich aus der CSV}}) ⚠ Risikohinweis:
 {{Risikohinweis, wörtlich aus der CSV übernehmen}} Ereignis-Kontext:
-{{Earnings-Warnung falls vorhanden}} \| {{ALLE News-Zeilen des Titels
-1:1 -- Pflicht sobald vorhanden}}
+{{Earnings-Warnung falls vorhanden}} \| {{Earnings-Rückblick „📊 Zahlen
+..." falls vorhanden, wörtlich}} \| {{ALLE News-Zeilen des Titels 1:1 --
+Pflicht sobald vorhanden}}
 
 -   Falls Trendwende_Setups(\...).csv leer ist oder keine Zeilen
     enthält: kurz vermerken „Keine Trendwende-Kandidaten gefunden" --
@@ -1013,8 +1044,9 @@ Performance.csv}}
 Setup-Typ: {{Setup_Typ}} \| Setup-Qualität: \[{{Setup_Qualitaet}}\] \|
 Muster: {{Pattern}}
 
-Ereignis-Kontext: {{Earnings-Warnung falls vorhanden}} \| {{ALLE
-News-Zeilen des Titels 1:1 -- Pflicht sobald vorhanden}}
+Ereignis-Kontext: {{Earnings-Warnung falls vorhanden}} \|
+{{Earnings-Rückblick „📊 Zahlen ..." falls vorhanden, wörtlich}} \|
+{{ALLE News-Zeilen des Titels 1:1 -- Pflicht sobald vorhanden}}
 
 ⚠ Risikohinweis: {{Risikohinweis, wörtlich aus der CSV übernehmen}}
 
