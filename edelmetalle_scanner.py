@@ -33,6 +33,27 @@ Aktien-Setups gehandelt werden koennen. Architektur-Entscheidung vom
     hochgeladen (Dateiname-Muster "Setups"/"Briefing" bereits vorhanden,
     keine Anpassung an upload_to_drive.py noetig).
 
+DREI STRATEGIEN IN EINER DATEI (NEU 29.07.2026, Nutzerentscheidung):
+  - Trendfolge (Bestand): Fortsetzung eines Aufwaertstrends, Kurs UEBER
+    WMA200/EMA200 - das urspruengliche Metall-Setup.
+  - Trendwende (NEU): Bodenbildung nach einem Fall, Kurs UNTER WMA200, nah am
+    52-Wochen-Tief, Pflicht-Sequenz aus RSI-Divergenz (Boden) und frischem
+    Kumo-Ausbruch (Trigger). Anlass: Gold/Silber notieren seit Wochen unter
+    allen Durchschnitten - der Trendfolge-Filter meldet deshalb dauerhaft 0
+    Setups, obwohl sich charttechnisch eine Bodenbildung abzeichnet. Die
+    komplette Bodenbildung und die erste Erholung lagen bisher im blinden
+    Fleck des Scanners.
+  - Short (NEU): Spiegelbild der Trendfolge, setzt auf fallende Metallpreise.
+  Warum EINE Datei statt drei Scanner: alle drei brauchen exakt dieselben
+  Daten (4 Futures + DBC-Benchmark). Drei Dateien haetten drei Abrufe, drei
+  Workflow-Steps, drei Briefings und drei Drive-Uploads bedeutet - bei nur 4
+  Instrumenten unverhaeltnismaessig (bei Aktien lohnt die Trennung, weil dort
+  die Universen unterschiedlich sind: Top-Sektoren vs. alle Sektoren vs.
+  Bottom-Sektoren). Unterschieden wird ueber die CSV-Spalte "Strategie" und
+  drei getrennte Briefing-Abschnitte mit je eigener Funnel-Statistik.
+  Systematisch sauber: "Edelmetalle" ist die ANLAGEKLASSE, "Trendfolge/
+  Trendwende/Short" sind die STRATEGIEN darin - dieselben wie bei Aktien.
+
 Voraussetzungen: dieselben Umgebungsvariablen wie analyse.py (ALPACA_KEY,
 ALPACA_SECRET, GROQ_API_KEY - auch wenn dieses Skript selbst weder Alpaca
 noch Groq direkt nutzt: der Import von analyse.py fuehrt dessen kompletten
@@ -47,6 +68,14 @@ import yfinance as yf
 
 # --- Bewaehrte Bausteine aus dem Hauptscanner wiederverwenden ---
 from collections import Counter
+
+# Trendwende- und Short-Logik werden NICHT nachgebaut, sondern direkt aus
+# den Aktien-Scannern importiert (NEU 29.07.2026): identische Kriterien fuer
+# Aktien und Metalle, eine einzige Stelle zum Pflegen. Beide Module sind
+# durch `if __name__ == "__main__"` geschuetzt, der Import startet dort also
+# keinen Scan.
+from trendwende_scanner import _pruefe_trendwende
+from short_scanner import _pruefe_short_setup
 
 from analyse import (
     check_rsi_divergence,
@@ -97,7 +126,95 @@ def get_commodity_benchmark_close():
         return None
 
 
-def analyze_edelmetall(ticker, name, bench_close=None):
+def lade_kursdaten(ticker):
+    """Laedt die Kursreihe eines Metalls EINMAL pro Lauf (NEU 29.07.2026) -
+    vorher holte jede Strategie ihre Daten selbst, was bei drei Strategien
+    drei identische yfinance-Abrufe je Metall bedeutet haette.
+    Gibt (data, grund) zurueck; grund ist None bei Erfolg, sonst der
+    Funnel-Schluessel (fuer alle drei Strategien identisch)."""
+    try:
+        data = yf.Ticker(ticker).history(period="2y")  # 2 Jahre, siehe unten
+        if data.empty:
+            print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
+            return None, "keine_kursdaten"
+        data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+        if data.empty:
+            print(f"DEBUG-EDELMETALL: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
+            return None, "keine_kursdaten"
+        if len(data) < 210:
+            print(f"DEBUG-EDELMETALL: {ticker} -> Zu wenig Daten ({len(data)} Zeilen) für WMA200.")
+            return None, "zu_wenig_daten"
+        return data, None
+    except Exception as e:
+        print(f"FEHLER beim Laden von {ticker}: {e}")
+        return None, "fehler"
+
+
+def _metall_felder_setzen(ergebnis, ticker, name, strategie):
+    """Vereinheitlicht die Rueckgabe der importierten Aktien-Prueffunktionen
+    fuer Metalle: Name/Sektor/Markt/Waehrung korrekt setzen, Strategie-Spalte
+    ergaenzen und die bei Rohstoffen sinnlose Fundamental-Ampel eindeutig auf
+    N/A setzen (die Aktien-Funktion versucht dort ein KGV zu ziehen, das es
+    fuer Futures nicht gibt)."""
+    ergebnis["Ticker"] = ticker
+    ergebnis["Name"] = name
+    ergebnis["Sektor"] = "Edelmetalle"
+    ergebnis["Markt"] = "Global"
+    ergebnis["Waehrung"] = "USD"
+    ergebnis["Strategie"] = strategie
+    ergebnis["Fundamental_Ampel"] = "N/A"
+    ergebnis["Fundamental_Hinweis"] = (
+        "Rohstoff - keine Unternehmensgewinne, daher keine KGV-Bewertung möglich."
+    )
+    return ergebnis
+
+
+def analyze_edelmetall_trendwende(ticker, name, data, bench_close=None):
+    """Trendwende (Bodenbildung) fuer ein Metall - ruft die IDENTISCHE
+    Pruef-Funktion des Aktien-Trendwende-Scanners auf (Kurs unter WMA200,
+    max. 20% ueber dem 52W-Tief, RSI-Divergenz im 40-Tage-Fenster als Boden
+    UND frischer Kumo-Ausbruch als Trigger, CRV >= 1.0).
+    RISIKOKLASSE: wie bei Aktien strukturell riskanter als Trendfolge
+    ("fallendes Messer") - der Risikohinweis aus der Aktien-Funktion wird
+    unveraendert uebernommen und im Briefing separat ausgewiesen."""
+    try:
+        res, grund = _pruefe_trendwende(ticker, "Edelmetalle", "Global", data, bench_close)
+        if res is None:
+            return None, grund
+        return _metall_felder_setzen(res, ticker, name, "Trendwende"), grund
+    except Exception as e:
+        print(f"FEHLER Trendwende {ticker}: {e}")
+        return None, "fehler"
+
+
+def analyze_edelmetall_short(ticker, name, data, bench_close=None):
+    """Short fuer ein Metall - ruft die IDENTISCHE Pruef-Funktion des
+    Aktien-Short-Scanners auf (Kurs unter WMA200, vier gespiegelte Muster,
+    RS-Filter invertiert gegen DBC, CRV >= 1.0 aus echten Abwaerts-Levels).
+    ZWEI MODIFIKATOREN ENTFALLEN BEWUSST:
+      - Sektor-Modifikator: Metalle haben keine Sektor-Rotation und damit
+        keinen Rotation-Score (sektor_momentum=None -> Modifikator wird in
+        der Aktien-Funktion defensiv uebersprungen).
+      - Marktumfeld-Modifikator: das Aktien-Marktumfeld (S&P/Nasdaq/Russell)
+        ist fuer Gold/Silber kein sinnvoller Massstab - waere sogar irrefuehrend,
+        da Edelmetalle in Aktien-Schwaechephasen klassischerweise GEGENLAEUFIG
+        laufen (Krisenwaehrung). Deshalb marktumfeld_baerisch=False.
+    Die Setup-Qualitaet stuetzt sich hier also allein auf Muster und Volumen.
+    RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko (wie bei Aktien)."""
+    try:
+        res, grund = _pruefe_short_setup(
+            ticker, "Edelmetalle", "Global", data, bench_close,
+            marktumfeld_baerisch=False, sektor_momentum=None,
+        )
+        if res is None:
+            return None, grund
+        return _metall_felder_setzen(res, ticker, name, "Short"), grund
+    except Exception as e:
+        print(f"FEHLER Short {ticker}: {e}")
+        return None, "fehler"
+
+
+def analyze_edelmetall(ticker, name, bench_close=None, data=None):
     """Analysiert ein einzelnes Edelmetall - identische Kriterien wie
     analyze_a_setup_eu() in analyse.py (yfinance-basiert, da Alpaca keine
     Rohstoff-Futures abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
@@ -108,10 +225,12 @@ def analyze_edelmetall(ticker, name, bench_close=None):
     die Death-Cross-Regel gilt dagegen identisch (siehe unten).
     """
     try:
-        data = yf.Ticker(ticker).history(period="2y")  # 2 Jahre statt 1 -
-        # Futures haben teils luecken-behaftete Historie, mehr Puffer fuer
-        # eine zuverlaessige WMA200/EMA200-Berechnung (siehe Modul-Docstring:
-        # "viel Vergangenheit" war ausdruecklicher Wunsch).
+        if data is None:
+            # Fallback: Einzelaufruf wie frueher (2 Jahre statt 1 - Futures
+            # haben teils luecken-behaftete Historie, mehr Puffer fuer eine
+            # zuverlaessige WMA200/EMA200-Berechnung). Im regulaeren Lauf
+            # kommen die Daten seit 29.07.2026 vorgeladen aus lade_kursdaten().
+            data = yf.Ticker(ticker).history(period="2y")
 
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
@@ -320,6 +439,7 @@ def analyze_edelmetall(ticker, name, bench_close=None):
 
         return {
             "Ticker": str(ticker), "Name": str(name), "Sektor": "Edelmetalle",
+            "Strategie": "Trendfolge",  # NEU 29.07.2026 (Strategie-Spalte)
             "Markt": "Global", "Waehrung": "USD", "Trend": "OK",
             "Setup_Typ": str(setup_typ), "Pattern": str(pattern),
             "Golden_Cross_Status": gc_status,
@@ -343,64 +463,225 @@ def analyze_edelmetall(ticker, name, bench_close=None):
         return None, "fehler"
 
 
+def _funnel_text_bauen(funnel, stufen, kopfzeile):
+    """Baut den Funnel-Block einer Strategie. Bei nur 4 Instrumenten sind
+    leere Stufen reines Rauschen und werden weggelassen."""
+    zeilen = [kopfzeile]
+    for key, beschreibung in stufen:
+        anzahl = funnel.get(key, 0)
+        if anzahl == 0 and key != "kandidat":
+            continue
+        praefix = "=>" if key == "kandidat" else "-"
+        zeilen.append(f"{praefix} {beschreibung}: {anzahl}")
+    return "\n".join(zeilen)
+
+
+# Funnel-Stufen je Strategie (Reihenfolge = Pruefreihenfolge im Code)
+FUNNEL_STUFEN_TRENDFOLGE = [
+    ("keine_kursdaten", "Keine Kursdaten geliefert (API/NaN-Bereinigung)"),
+    ("zu_wenig_daten", "Zu wenig Kurshistorie fuer WMA200"),
+    ("fehler", "Fehler bei der Berechnung"),
+    ("kein_aufwaertstrend", "Kein Aufwaertstrend (unter WMA200/EMA200)"),
+    ("kein_setup_muster", "Keines der 4 Setup-Muster erfuellt (oder Stochastik >= 90)"),
+    ("rel_staerke_zu_schwach", "Relative Staerke vs. DBC zu schwach"),
+    ("zu_weit_vom_52w_hoch", "Zu weit unter dem 52W-Hoch"),
+    ("risiko_ungueltig", "Risiko <= 0"),
+    ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+    ("plausibilitaet", "Plausibilitaets-Check fehlgeschlagen"),
+    ("kandidat", "SETUP (inkl. eventueller ACHTUNG-Abstufung)"),
+]
+
+FUNNEL_STUFEN_TRENDWENDE = [
+    ("keine_kursdaten", "Keine Kursdaten geliefert (API/NaN-Bereinigung)"),
+    ("zu_wenig_daten", "Zu wenig Kurshistorie"),
+    ("fehler", "Fehler bei der Berechnung"),
+    ("nicht_unter_wma200", "Kein Abwaertstrend (nicht unter der WMA200)"),
+    ("zu_weit_vom_52w_tief", "Mehr als 20% ueber dem 52W-Tief"),
+    ("keine_divergenz", "Keine intakte bullische RSI-Divergenz (40T-Fenster)"),
+    ("kein_frischer_kumo_ausbruch", "Kein frischer Kumo-Ausbruch (letzte 5 Handelstage)"),
+    ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+    ("valide", "TRENDWENDE-KANDIDAT"),
+]
+
+FUNNEL_STUFEN_SHORT = [
+    ("keine_kursdaten", "Keine Kursdaten geliefert (API/NaN-Bereinigung)"),
+    ("zu_wenig_daten", "Zu wenig Kurshistorie"),
+    ("fehler", "Fehler bei der Berechnung"),
+    ("kein_abwaertstrend", "Kein Abwaertstrend (Kurs nicht unter WMA200)"),
+    ("kein_setup_muster", "Keines der 4 gespiegelten Setup-Muster erfuellt"),
+    ("macd_bullisch_ohne_divergenz", "Bullischer MACD ohne baerische Divergenz"),
+    ("rs_zu_stark", "Relative Staerke > +10% (kein Short auf Marktfuehrer)"),
+    ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+    ("kandidat", "SHORT-KANDIDAT"),
+]
+
+
 def edelmetalle_scan_starten():
-    print("Edelmetalle-Scanner gestartet...")
+    """Prueft alle 4 Metalle gegen ALLE DREI Strategien (GEAENDERT 29.07.2026).
+    Die Kursdaten werden je Metall genau einmal geladen und an alle drei
+    Pruefungen weitergereicht."""
+    print("Edelmetalle-Scanner gestartet (Trendfolge + Trendwende + Short)...")
     bench_close = get_commodity_benchmark_close()
 
     ergebnisse = []
-    funnel = Counter()
+    funnel_tf, funnel_tw, funnel_sh = Counter(), Counter(), Counter()
+
     for ticker, name in EDELMETALLE.items():
-        res, grund = analyze_edelmetall(ticker, name, bench_close)
-        funnel[grund] += 1
+        data, ladefehler = lade_kursdaten(ticker)
+        if data is None:
+            # Datenfehler betrifft alle drei Strategien gleichermassen
+            for f in (funnel_tf, funnel_tw, funnel_sh):
+                f[ladefehler] += 1
+            continue
+
+        # 1) Trendfolge (Bestand) - .copy(), damit die Indikator-Spalten der
+        #    einen Strategie die naechste nicht beeinflussen
+        res, grund = analyze_edelmetall(ticker, name, bench_close, data=data.copy())
+        funnel_tf[grund] += 1
         if res is not None:
             ergebnisse.append(res)
 
-    print(f"DEBUG: {len(ergebnisse)} von {len(EDELMETALLE)} Edelmetallen mit Setup.")
+        # 2) Trendwende (NEU)
+        res, grund = analyze_edelmetall_trendwende(ticker, name, data.copy(), bench_close)
+        funnel_tw[grund] += 1
+        if res is not None:
+            ergebnisse.append(res)
 
-    # Funnel-Statistik (NEU 28.07.2026): bei nur 4 Kandidaten besonders
-    # nuetzlich, um sofort zu sehen, WORAN jedes Metall heute scheitert.
-    funnel_stufen = [
-        ("keine_kursdaten", "Keine Kursdaten geliefert (API/NaN-Bereinigung)"),
-        ("zu_wenig_daten", "Zu wenig Kurshistorie fuer WMA200"),
-        ("fehler", "Fehler bei der Berechnung"),
-        ("kein_aufwaertstrend", "Kein Aufwaertstrend (unter WMA200/EMA200)"),
-        ("kein_setup_muster", "Keines der 4 Setup-Muster erfuellt (oder Stochastik >= 90)"),
-        ("rel_staerke_zu_schwach", "Relative Staerke vs. DBC zu schwach"),
-        ("zu_weit_vom_52w_hoch", "Zu weit unter dem 52W-Hoch"),
-        ("risiko_ungueltig", "Risiko <= 0"),
-        ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
-        ("plausibilitaet", "Plausibilitaets-Check fehlgeschlagen"),
-        ("kandidat", "SETUP (inkl. eventueller ACHTUNG-Abstufung)"),
-    ]
-    funnel_zeilen = [f"Universum: {len(EDELMETALLE)} Edelmetalle (feste Liste)"]
-    for _key, _beschreibung in funnel_stufen:
-        _anzahl = funnel.get(_key, 0)
-        if _anzahl == 0 and _key != "kandidat":
-            continue  # bei nur 4 Titeln lesbarer: leere Stufen weglassen
-        praefix = "=>" if _key == "kandidat" else "-"
-        funnel_zeilen.append(f"{praefix} {_beschreibung}: {_anzahl}")
-    funnel_text = "\n".join(funnel_zeilen)
-    print("FUNNEL-STATISTIK:\n" + funnel_text)
-    return ergebnisse, funnel_text
+        # 3) Short (NEU)
+        res, grund = analyze_edelmetall_short(ticker, name, data.copy(), bench_close)
+        funnel_sh[grund] += 1
+        if res is not None:
+            ergebnisse.append(res)
+
+    anzahl = lambda s: sum(1 for r in ergebnisse if r.get("Strategie") == s)
+    print(f"DEBUG: {len(ergebnisse)} Edelmetall-Setups gesamt "
+          f"(Trendfolge: {anzahl('Trendfolge')} | Trendwende: {anzahl('Trendwende')} | "
+          f"Short: {anzahl('Short')}).")
+
+    kopf = f"Universum: {len(EDELMETALLE)} Edelmetalle (feste Liste)"
+    funnel_texte = {
+        "Trendfolge": _funnel_text_bauen(funnel_tf, FUNNEL_STUFEN_TRENDFOLGE, kopf),
+        "Trendwende": _funnel_text_bauen(funnel_tw, FUNNEL_STUFEN_TRENDWENDE, kopf),
+        "Short": _funnel_text_bauen(funnel_sh, FUNNEL_STUFEN_SHORT, kopf),
+    }
+    for strategie, text in funnel_texte.items():
+        print(f"FUNNEL-STATISTIK ({strategie}):\n{text}")
+    return ergebnisse, funnel_texte
 
 
+# Vereinigungs-Schema aller drei Strategien (GEAENDERT 29.07.2026): Felder,
+# die eine Strategie nicht kennt, bleiben in ihrer Zeile leer - so bleibt es
+# EINE Datei mit stabiler Spaltenzahl, filterbar ueber die erste Spalte.
 SPALTEN = [
+    "Strategie",  # Trendfolge | Trendwende | Short
     "Ticker", "Name", "Sektor", "Markt", "Waehrung", "Trend", "Setup_Typ", "Pattern",
     "Tech-Kursziel", "Analysten-Kursziel", "Upside_%_vs_Aktuell", "Status2", "Status_Grund",
     "RSI", "MACD_Trend", "CRV1", "CRV2", "Chance1_Perc", "Chance2_Perc", "Kurs", "Einstieg",
     "Einstieg2(EMA 20)", "Stop", "Risk_Perc", "TP1", "TP2", "Stoch_K", "Vol_Ratio",
-    "Ideales_Delta", "RS_vs_Benchmark%", "Abstand_52W_Hoch%", "Divergenz", "Golden_Cross_Status",
+    "Ideales_Delta", "RS_vs_Benchmark%", "Abstand_52W_Hoch%", "Abstand_52W_Tief%",
+    "Divergenz", "Golden_Cross_Status", "Qualitaets_Bonus", "Setup_Qualitaet",
+    "Fundamental_Ampel", "Fundamental_Hinweis", "Risikohinweis",
 ]
 
 
-def speichere_ergebnisse(ergebnisse, funnel_text=""):
+def _schreibe_setup_block(f, r):
+    """Gibt einen Treffer aus - Felder, die die jeweilige Strategie nicht
+    kennt, werden uebersprungen (die drei Strategien liefern leicht
+    unterschiedliche Kennzahlen)."""
+    status = f" | Status: {r['Status2']} ({r['Status_Grund']})" if r.get('Status2') else ""
+    f.write(f"{r['Ticker']} ({r['Name']}){status}\n")
+    f.write(f"Kurs: {r['Kurs']}$\n")
+    if r.get('Tech-Kursziel'):
+        f.write(f"Technisches Kursziel: {r['Tech-Kursziel']}$\n")
+    f.write(f"Stop: {r['Stop']}$ | Risiko: {r['Risk_Perc']}%\n")
+    f.write(f"TP1: {r['TP1']}$ (Chance: {r['Chance1_Perc']}%) | CRV1: {r['CRV1']}\n")
+    f.write(f"TP2: {r['TP2']}$ (Chance: {r['Chance2_Perc']}%) | CRV2: {r['CRV2']}\n")
+    vol = r.get('Vol_Ratio')
+    vol_txt = f" | Vol-Ratio: {vol:.2f}x" if isinstance(vol, (int, float)) else ""
+    f.write(f"RSI: {r['RSI']:.2f} | MACD-Trend: {r['MACD_Trend']}{vol_txt}"
+            f" | Divergenz: {r.get('Divergenz', 'n/a')}\n")
+    rs = r.get('RS_vs_Benchmark%')
+    rs_txt = f"{rs}%" if rs is not None else "n/a"
+    if r.get('Abstand_52W_Tief%') is not None:
+        abstand = f"Abstand 52W-Tief: {r['Abstand_52W_Tief%']}%"
+    else:
+        abstand = f"Abstand 52W-Hoch: {r.get('Abstand_52W_Hoch%', 'n/a')}%"
+    f.write(f"RS vs. DBC (Rohstoff-Index): {rs_txt} | {abstand}\n")
+    if r.get('Golden_Cross_Status'):
+        f.write(f"Golden-/Death-Cross (frischer Death Cross führt zu ACHTUNG): {r['Golden_Cross_Status']}\n")
+    if r.get('Qualitaets_Bonus'):
+        f.write(f"Qualitaets-Bonus: {r['Qualitaets_Bonus']}\n")
+    if r.get('Setup_Qualitaet'):
+        f.write(f"Setup-Qualitaet: {r['Setup_Qualitaet']}\n")
+    f.write(f"Setup-Typ: {r['Setup_Typ']}")
+    if r.get('Pattern'):
+        f.write(f" | Muster: {r['Pattern']}")
+    f.write("\n")
+    if r.get('Risikohinweis'):
+        f.write(f"RISIKOHINWEIS: {r['Risikohinweis']}\n")
+    f.write("\n")
+
+
+# Strategie-Beschreibungen fuer das Briefing (je Abschnitt ein Block)
+STRATEGIE_TEXTE = {
+    "Trendfolge": (
+        "- Grundidee: identische Kriterien wie der Hauptscanner (Trendfolge/\n"
+        "  Fortsetzung), angewendet auf Gold/Silber/Platin/Palladium statt auf\n"
+        "  Aktien - damit handelbar wie ein normales Setup.\n"
+        "- Trend-Filter: Kurs muss über WMA200 UND EMA200 liegen (wie Hauptscanner).\n"
+        "- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-\n"
+        "  Ausbruch ODER Kumo-Ausbruch (Setup_Typ listet ALLE zutreffenden Pfade auf).\n"
+        "- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein.\n"
+    ),
+    "Trendwende": (
+        "- Grundidee (NEU 29.07.2026): Gegenteil der Trendfolge - sucht die\n"
+        "  Bodenbildung nach einem Fall. Anlass: Gold und Silber notieren seit\n"
+        "  Wochen unter allen Durchschnitten, der Trendfolge-Filter meldet deshalb\n"
+        "  dauerhaft 0 Setups - die komplette Bodenbildung und die erste Erholung\n"
+        "  lagen bisher im blinden Fleck des Scanners.\n"
+        "- Identische Kriterien wie der Aktien-Trendwende-Scanner (dieselbe\n"
+        "  Pruef-Funktion, nur auf Metalle angewendet):\n"
+        "  Trend-Filter umgekehrt (Kurs UNTER der WMA200), max. 20% über dem\n"
+        "  52-Wochen-Tief, und als Pflicht-SEQUENZ: bullische RSI-Divergenz\n"
+        "  (Boden, 40-Tage-Fenster, seitdem nicht invalidiert) UND frischer\n"
+        "  Kumo-Ausbruch (Trigger, letzte 5 Handelstage). CRV >= 1.0.\n"
+        "- RISIKOKLASSE: strukturell riskanter als Trendfolge ('fallendes Messer' -\n"
+        "  ein Boden kann trotz Divergenz und Ausbruch weiter fallen). Deshalb\n"
+        "  eigener Abschnitt, eigenes Label, NICHT mit der Trendfolge vermischt.\n"
+    ),
+    "Short": (
+        "- Grundidee (NEU 29.07.2026): Spiegelbild der Trendfolge - setzt auf\n"
+        "  FALLENDE Metallpreise (Put/KO statt Call).\n"
+        "- Identische Kriterien wie der Aktien-Short-Scanner (dieselbe Pruef-\n"
+        "  Funktion): Kurs unter WMA200, vier gespiegelte Muster (EMA-Breakdown,\n"
+        "  Pullback-Zone short, Trendlinien-Bruch, Kumo-Ausbruch nach unten),\n"
+        "  RS-Filter invertiert (kein Short auf Marktfuehrer), CRV >= 1.0 aus\n"
+        "  echten Abwaerts-Levels.\n"
+        "- ZWEI MODIFIKATOREN ENTFALLEN BEWUSST: der Sektor-Modifikator (Metalle\n"
+        "  haben keine Sektor-Rotation, also keinen Rotation-Score) und der\n"
+        "  Marktumfeld-Modifikator (das Aktien-Marktumfeld ist fuer Edelmetalle\n"
+        "  kein sinnvoller Massstab - Metalle laufen in Aktien-Schwaechephasen\n"
+        "  klassischerweise gegenlaeufig). Die Setup-Qualitaet stuetzt sich hier\n"
+        "  allein auf Muster und Volumen.\n"
+        "- RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko bei Kursanstieg.\n"
+    ),
+}
+
+
+def speichere_ergebnisse(ergebnisse, funnel_texte=None):
+    """Schreibt CSV (alle Strategien, Spalte 'Strategie') und Briefing mit
+    DREI getrennten Abschnitten (GEAENDERT 29.07.2026)."""
+    if funnel_texte is None:
+        funnel_texte = {}
     heute = datetime.date.today().isoformat()
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)  # feste Spaltenliste, auch bei 0 Zeilen
-    # bewusst sortiert: bestes CRV1 zuerst (analog zur "Sortierung nach
-    # Rotation-Score"-Logik anderswo im Projekt - hier gibt es keine
-    # Sektor-Rotation, daher CRV1 als naheliegendster Sortierschluessel)
     if not df.empty:
-        df = df.sort_values("CRV1", ascending=False)
+        # Sortierung: erst nach Strategie (feste Reihenfolge wie im Briefing),
+        # dann bestes CRV1 zuerst - es gibt hier keine Sektor-Rotation als
+        # Sortierschluessel.
+        reihenfolge = {"Trendfolge": 0, "Trendwende": 1, "Short": 2}
+        df["_rang"] = df["Strategie"].map(reihenfolge).fillna(9)
+        df = df.sort_values(["_rang", "CRV1"], ascending=[True, False]).drop(columns=["_rang"])
 
     dateiname_csv = f"Edelmetalle_Setups({heute}).csv"
     df.to_csv(dateiname_csv, index=False, sep=';', encoding='utf-8-sig')
@@ -410,53 +691,48 @@ def speichere_ergebnisse(ergebnisse, funnel_text=""):
     with open(dateiname_txt, "w", encoding="utf-8-sig") as f:
         f.write(f"EDELMETALLE-SCAN {heute}\n")
         f.write("=" * 50 + "\n\n")
-        f.write("STRATEGIE-ANSATZ (Edelmetalle, separat vom Hauptscanner)\n")
+        f.write("GEMEINSAME GRUNDLAGEN (gelten fuer alle drei Strategien)\n")
         f.write("-" * 50 + "\n")
         f.write(
-            "- Grundidee: identische Kriterien wie der Hauptscanner (Trendfolge/\n"
-            "  Fortsetzung), angewendet auf Gold/Silber/Platin/Palladium statt auf\n"
-            "  Aktien - damit handelbar wie ein normales Setup.\n"
             "- Universum: feste 4er-Liste (keine Sektor-Rotation, immer alle 4 geprüft).\n"
             "- Kursbasis: Futures (GC=F/SI=F/PL=F/PA=F) - reinste, längste, zeitnaheste\n"
             "  Kursreihe (kein ETF-Tracking-Fehler, kein Alpaca, das Rohstoffe nicht abdeckt).\n"
-            "- Trend-Filter: Kurs muss über WMA200 UND EMA200 liegen (wie Hauptscanner).\n"
-            "- Setup: EMA8/20-Breakout ODER Pullback (Zone/Higher-Low) ODER Trendlinien-\n"
-            "  Ausbruch ODER Kumo-Ausbruch (Setup_Typ listet ALLE zutreffenden Pfade auf).\n"
             "- Relative Stärke: gegen DBC (Rohstoff-Index-ETF) statt SPY/STOXX600 -\n"
             "  ein Aktienindex wäre als Vergleichsmaßstab für Edelmetalle nicht sinnvoll.\n"
-            "- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein.\n"
             "- Fundamental-Ampel (KGV) entfällt bewusst - Rohstoffe haben keine\n"
             "  Unternehmensgewinne. Analysten-Kursziel entfällt ebenfalls (nicht\n"
-            "  verfügbar für Futures) - Tech-Kursziel bleibt einzige Zielgröße.\n\n"
+            "  verfügbar für Futures) - Tech-Kursziel bleibt einzige Zielgröße.\n"
+            "- DREI STRATEGIEN (NEU 29.07.2026): Trendfolge, Trendwende und Short laufen\n"
+            "  in EINEM Scanner (gleiche Daten, ein Abruf), werden aber getrennt\n"
+            "  ausgewiesen - CSV-Spalte 'Strategie', hier je ein eigener Abschnitt mit\n"
+            "  eigener Funnel-Statistik. Die Pruef-Logik ist jeweils IDENTISCH mit dem\n"
+            "  entsprechenden Aktien-Scanner (dieselben Funktionen, nur auf Metalle\n"
+            "  angewendet) - Aktien- und Metall-Variante koennen nicht auseinanderlaufen.\n\n"
         )
 
-        # Funnel-Statistik (NEU 28.07.2026)
-        if funnel_text:
-            f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
-            f.write("-" * 50 + "\n")
-            f.write(funnel_text + "\n\n")
+        for strategie in ("Trendfolge", "Trendwende", "Short"):
+            treffer = [r for r in ergebnisse if r.get("Strategie") == strategie]
+            f.write("=" * 50 + "\n")
+            f.write(f"STRATEGIE: {strategie.upper()}\n")
+            f.write("=" * 50 + "\n")
+            f.write(STRATEGIE_TEXTE[strategie] + "\n")
 
-        if not ergebnisse:
-            f.write("Keine validen Edelmetall-Setups gefunden.\n")
-        else:
-            for r in sorted(ergebnisse, key=lambda x: x["CRV1"], reverse=True):
-                f.write(f"{r['Ticker']} ({r['Name']}) | Sektor: {r['Sektor']} | Status: {r['Status2']} ({r['Status_Grund']})\n")
-                f.write(f"Kurs: {r['Kurs']}$\n")
-                f.write(f"Technisches Kursziel: {r['Tech-Kursziel']}$\n")
-                f.write(f"Stop: {r['Stop']}$ | Risiko: {r['Risk_Perc']}%\n")
-                f.write(f"TP1: {r['TP1']}$ (Chance: {r['Chance1_Perc']}%) | CRV1: {r['CRV1']}\n")
-                f.write(f"TP2: {r['TP2']}$ (Chance: {r['Chance2_Perc']}%) | CRV2: {r['CRV2']}\n")
-                f.write(f"RSI: {r['RSI']:.2f} | MACD-Trend: {r['MACD_Trend']} | Vol-Ratio: {r['Vol_Ratio']:.2f}x | Divergenz: {r['Divergenz']}\n")
-                rs_txt = f"{r['RS_vs_Benchmark%']}%" if r['RS_vs_Benchmark%'] is not None else "n/a"
-                f.write(f"RS vs. DBC (Rohstoff-Index): {rs_txt} | Abstand 52W-Hoch: {r['Abstand_52W_Hoch%']}%\n")
-                f.write(f"Golden-/Death-Cross (frischer Death Cross führt zu ACHTUNG): {r['Golden_Cross_Status']}\n")
-                f.write(f"Setup-Typ: {r['Setup_Typ']} | Muster: {r['Pattern']}\n\n")
+            if funnel_texte.get(strategie):
+                f.write(f"FUNNEL-STATISTIK {strategie} (Ablehnungsgruende je Pruefstufe)\n")
+                f.write("-" * 50 + "\n")
+                f.write(funnel_texte[strategie] + "\n\n")
+
+            if not treffer:
+                f.write(f"Keine {strategie}-Kandidaten gefunden.\n\n")
+            else:
+                for r in sorted(treffer, key=lambda x: x.get("CRV1") or 0, reverse=True):
+                    _schreibe_setup_block(f, r)
 
     print(f"Gespeichert: {dateiname_txt}")
     return dateiname_csv, dateiname_txt
 
 
 if __name__ == "__main__":
-    ergebnisse, funnel_text = edelmetalle_scan_starten()
-    speichere_ergebnisse(ergebnisse, funnel_text)
+    ergebnisse, funnel_texte = edelmetalle_scan_starten()
+    speichere_ergebnisse(ergebnisse, funnel_texte)
     print("Edelmetalle-Scanner abgeschlossen.")
