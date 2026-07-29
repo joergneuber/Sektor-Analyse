@@ -467,11 +467,16 @@ def _funnel_text_bauen(funnel, stufen, kopfzeile):
     """Baut den Funnel-Block einer Strategie. Bei nur 4 Instrumenten sind
     leere Stufen reines Rauschen und werden weggelassen."""
     zeilen = [kopfzeile]
-    for key, beschreibung in stufen:
+    for i, (key, beschreibung) in enumerate(stufen):
+        # Die LETZTE Stufe ist immer die Treffer-Zeile - sie wird auch bei 0
+        # ausgegeben (Fix 29.07.2026: vorher haing das am Schluesselnamen
+        # "kandidat", weshalb die Trendwende-Ergebniszeile ["valide"] bei 0
+        # Treffern komplett fehlte).
+        ist_ergebniszeile = (i == len(stufen) - 1)
         anzahl = funnel.get(key, 0)
-        if anzahl == 0 and key != "kandidat":
+        if anzahl == 0 and not ist_ergebniszeile:
             continue
-        praefix = "=>" if key == "kandidat" else "-"
+        praefix = "=>" if ist_ergebniszeile else "-"
         zeilen.append(f"{praefix} {beschreibung}: {anzahl}")
     return "\n".join(zeilen)
 
@@ -541,14 +546,28 @@ def edelmetalle_scan_starten():
         if res is not None:
             ergebnisse.append(res)
 
+        # WICHTIG (Fix 29.07.2026, erster Echtlauf): Trendwende und Short
+        # bekommen nur die letzten ~252 Handelstage. Grund: beide importierten
+        # Aktien-Funktionen berechnen ihr 52-Wochen-Tief als data['Low'].min()
+        # ueber die GESAMTE uebergebene Reihe - die Aktien-Scanner fuettern
+        # 365 Tage, wir laden fuer die Metalle aber bewusst 2 Jahre (WMA200-
+        # Puffer bei luecken-behafteter Futures-Historie). Ungeschnitten war
+        # das "52W-Tief" faktisch das 2-JAHRES-Tief; bei Gold (grosse Rally
+        # 2025, danach Korrektur) lag der Kurs damit rechnerisch weit ueber
+        # 20% ueber dem "Tief" -> im ersten Echtlauf fielen ALLE VIER Metalle
+        # faelschlich durch diesen Filter. Die Trendfolge ist NICHT betroffen
+        # (sie nutzt das 52W-Hoch nur als Deckel und rechnete schon immer auf
+        # der 2-Jahres-Reihe).
+        data_1j = data.tail(252)
+
         # 2) Trendwende (NEU)
-        res, grund = analyze_edelmetall_trendwende(ticker, name, data.copy(), bench_close)
+        res, grund = analyze_edelmetall_trendwende(ticker, name, data_1j.copy(), bench_close)
         funnel_tw[grund] += 1
         if res is not None:
             ergebnisse.append(res)
 
         # 3) Short (NEU)
-        res, grund = analyze_edelmetall_short(ticker, name, data.copy(), bench_close)
+        res, grund = analyze_edelmetall_short(ticker, name, data_1j.copy(), bench_close)
         funnel_sh[grund] += 1
         if res is not None:
             ergebnisse.append(res)
