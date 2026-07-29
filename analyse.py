@@ -2218,6 +2218,26 @@ if __name__ == "__main__":
             if df_clean.at[t, 'Status2'] != "VALIDE":
                 continue
             abstufungen = []
+            # Mindest-Risiko-Regel (NEU 29.07.2026, Anlass: KLG/WK Kellogg
+            # kam mit Risiko 0,17% und CRV 8,75/37,94 als VALIDE durch - eine
+            # Aktie, die wegen einer laufenden Uebernahme praktisch am
+            # Angebotspreis klebt). Ein Stop 0,2% unter dem Einstieg wird von
+            # normalem Tagesrauschen ausgeloest, und die daraus errechneten
+            # CRV-Werte sind rechnerisch riesig, aber wertlos - der Nenner
+            # geht gegen null. Solche Setups sind kein Fehler der Berechnung,
+            # aber ohne manuelle Pruefung nicht handelbar.
+            try:
+                risk_wert = float(df_clean.at[t, 'Risk_Perc'])
+            except (TypeError, ValueError):
+                risk_wert = None
+            if risk_wert is not None and risk_wert < 1.0:
+                abstufungen.append(f"Stop zu eng (Risiko nur {risk_wert:.2f}% - "
+                                   f"CRV dadurch rechnerisch ueberhoeht)")
+            # Zu kurze Kurshistorie: ohne EMA200/WMA200-Historie sind Trend-
+            # aussage und Kursziele nicht belastbar (erkennbar am Golden-
+            # Cross-Status, der dann "N/A (zu wenig Kurshistorie)" meldet).
+            if "zu wenig Kurshistorie" in str(df_clean.at[t, 'Golden_Cross_Status']):
+                abstufungen.append("Zu wenig Kurshistorie fuer belastbare Trendaussage")
             earnings_akut = get_earnings_warnung(t, warn_tage=1)
             if earnings_akut:
                 abstufungen.append(f"Earnings-Gap-Risiko ({earnings_akut.replace('⚠ ', '')})")
