@@ -575,18 +575,37 @@ def edelmetalle_scan_starten():
             ergebnisse.append(res)
 
         # WICHTIG (Fix 29.07.2026, erster Echtlauf): Trendwende und Short
-        # bekommen nur die letzten ~252 Handelstage. Grund: beide importierten
-        # Aktien-Funktionen berechnen ihr 52-Wochen-Tief als data['Low'].min()
-        # ueber die GESAMTE uebergebene Reihe - die Aktien-Scanner fuettern
-        # 365 Tage, wir laden fuer die Metalle aber bewusst 2 Jahre (WMA200-
-        # Puffer bei luecken-behafteter Futures-Historie). Ungeschnitten war
-        # das "52W-Tief" faktisch das 2-JAHRES-Tief; bei Gold (grosse Rally
-        # 2025, danach Korrektur) lag der Kurs damit rechnerisch weit ueber
-        # 20% ueber dem "Tief" -> im ersten Echtlauf fielen ALLE VIER Metalle
-        # faelschlich durch diesen Filter. Die Trendfolge ist NICHT betroffen
-        # (sie nutzt das 52W-Hoch nur als Deckel und rechnete schon immer auf
-        # der 2-Jahres-Reihe).
-        data_1j = data.tail(252)
+        # bekommen nur das 52-WOCHEN-FENSTER. Grund: beide importierten
+        # Aktien-Funktionen berechnen 52W-Tief/-Hoch als min()/max() ueber die
+        # GESAMTE uebergebene Reihe - die Aktien-Scanner fuettern 365 Tage, wir
+        # laden fuer die Metalle aber bewusst 2 Jahre (WMA200-Puffer bei
+        # luecken-behafteter Futures-Historie). Ungeschnitten waere das
+        # "52W-Tief" faktisch das 2-JAHRES-Tief; im ersten Echtlauf fielen
+        # dadurch ALLE VIER Metalle faelschlich durch den Naehe-Filter.
+        # GEAENDERT (29.07.2026, Nutzerwunsch): Abgrenzung nach DATUM statt
+        # nach Zeilenzahl. tail(252) zaehlt Zeilen und unterstellt 252
+        # Handelstage pro Jahr - bei Luecken in der Futures-Historie (Feiertage,
+        # Ausfaelle, verkuerzte Reihen) reicht das Fenster dann still weiter
+        # als 12 Monate zurueck und verzerrt Tief/Hoch genau wie oben, nur
+        # schwaecher. Der Datumsschnitt trifft immer exakt 52 Wochen.
+        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+        try:
+            index_zeiten = data.index
+            if getattr(index_zeiten, 'tz', None) is not None:
+                # yfinance liefert je nach Instrument tz-bewusste Zeitstempel -
+                # der Vergleich mit einem naiven Stichtag wuerde dann werfen.
+                stichtag = stichtag.tz_localize(index_zeiten.tz)
+            data_1j = data[index_zeiten >= stichtag]
+        except Exception as e:
+            print(f"DEBUG-EDELMETALL: {ticker} -> Datums-Schnitt nicht moeglich "
+                  f"({type(e).__name__}), nutze Fallback tail(252).")
+            data_1j = data.tail(252)
+        # Sicherheitsnetz: bleibt zu wenig uebrig (kurze/luecken-behaftete
+        # Reihe), lieber die letzten 252 Zeilen als eine unbrauchbar kurze.
+        if len(data_1j) < 60:
+            print(f"DEBUG-EDELMETALL: {ticker} -> nur {len(data_1j)} Zeilen im "
+                  f"52-Wochen-Fenster, nutze Fallback tail(252).")
+            data_1j = data.tail(252)
 
         # Diagnose-Werte auf demselben 1-Jahres-Fenster wie die Pruefungen
         try:
@@ -621,7 +640,7 @@ def edelmetalle_scan_starten():
           f"Short: {anzahl('Short')}).")
 
     kopf = f"Universum: {len(EDELMETALLE)} Edelmetalle (feste Liste)"
-    diagnose_text = ("LAGE JE METALL (1-Jahres-Fenster, Basis aller Schwellen):\n"
+    diagnose_text = ("LAGE JE METALL (52-Wochen-Fenster nach Datum, Basis aller Schwellen):\n"
                      + "\n".join(diagnose_zeilen)) if diagnose_zeilen else ""
     funnel_texte = {
         "Trendfolge": _funnel_text_bauen(funnel_tf, FUNNEL_STUFEN_TRENDFOLGE, kopf),
