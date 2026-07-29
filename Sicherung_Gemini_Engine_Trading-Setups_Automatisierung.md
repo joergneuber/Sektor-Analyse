@@ -199,11 +199,13 @@ Häufung/Nähe als das, was sie ist.
     Kumo-Trigger fehlt (die Kandidaten-Pipeline der nächsten Tage). Gib
     diese Liste im Abschnitt „Trendwende-Setups" in EINEM Satz
     wieder, z. B. „Beobachtung: 11 Titel erfüllen die Boden-Bedingung
-    und warten auf den frischen Kumo-Trigger: ..." - die Tickerliste
-    dabei wörtlich übernehmen (hier ausnahmsweise Ticker statt Namen
-    zulässig, da das Briefing dort keine Namen enthält). Keine
-    Setup-Karten, keine Bewertung, keine Empfehlung. Fehlt der Block,
-    entfällt der Satz ersatzlos.
+    und warten auf den frischen Kumo-Trigger: ..." - GEÄNDERT
+    (29.07.2026): Das Briefing liefert die Watchlist jetzt als „Name
+    (Ticker)"-Liste. Übernimm in der Auswertung NUR DIE NAMEN
+    (vollständige Firmennamen, Ticker in Klammern weglassen - dieselbe
+    Namens-Regel wie überall sonst). Keine Setup-Karten, keine
+    Bewertung, keine Empfehlung. Fehlt der Block, entfällt der Satz
+    ersatzlos.
 
 -   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
     Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
@@ -218,6 +220,13 @@ Häufung/Nähe als das, was sie ist.
     und als letzter Abschnitt Gestoppte Positionen) - entfällt eine
     Kategorie an einem Tag komplett (z. B. kein Langfrist-Lauf), rücken
     die nachfolgenden Nummern auf.
+
+-   SORTIERUNG „GESTOPPTE POSITIONEN" (NEU 29.07.2026): Der Abschnitt
+    „Gestoppte Positionen (letzte 10 Werktage)" wird IMMER nach
+    Ausstiegsdatum ABSTEIGEND ausgegeben - der aktuellste Stop steht
+    oben, ältere folgen darunter. Das Briefing liefert die
+    GESTOPPT-Liste seit 29.07.2026 bereits in genau dieser Reihenfolge -
+    übernimm sie unverändert und sortiere nicht um.
 
 -   Keine Vermischung: Suche explizit nach den Werten für technisches
     Upside (Tech-Kursziel / Upside\_%\_vs_Aktuell) und fundamentale
@@ -619,14 +628,14 @@ Nachkommastellen}}% Divergenz: {{Divergenz}} Ereignis-Kontext:
     spricht für robustes globales Wachstum, fallender für Abschwächung.
     Nur Kontext, keine Abwertungsquelle.
 
--   US-Dollar-Index (NEU): Zeigt die Stärke des US-Dollar gegenüber
-    einem Währungskorb. Ein steigender Dollar wirkt tendenziell dämpfend
-    auf Rohstoffpreise (Öl/Gold/Silber/Kupfer, die in USD notieren) und
-    auf die Gewinne/Kurse von EU-Unternehmen bei Umrechnung -- bei
-    auffällig starker Dollar-Bewegung kurz als möglichen Gegenwind für
-    Rohstoff- oder EU-Setups erwähnen, aber NICHT als
-    Abwertungskriterium in die Setup-Qualität einrechnen (bleibt reiner
-    Fließtext-Kontext).
+-   US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung): Der
+    US-Dollar-Index wird seit 29.07.2026 nicht mehr im Briefing
+    geliefert und NICHT mehr ausgewertet - erwähne ihn nirgends, auch
+    nicht in der Globalen Risikolage. Als Währungs-Referenz dient allein
+    der EUR/USD-Wechselkurs aus dem BENCHMARKS-Block (die für
+    EU-Positionen und USD-Umrechnungen direkt relevante Größe) - er kann
+    bei auffälliger Bewegung kurz im Fließtext eingeordnet werden,
+    bleibt aber ohne Einfluss auf die Setup-Qualität.
 
 -   EUR/USD-Wechselkurs (NEU, 28.07.2026): ergänzt den US-Dollar-Index
     um den tatsächlichen Euro-Dollar-Kurs -- der Dollar-Index ist ein
