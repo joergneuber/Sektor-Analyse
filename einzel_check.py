@@ -41,7 +41,7 @@ from analyse import (
 from trendwende_scanner import _pruefe_trendwende
 from short_scanner import _pruefe_short_setup
 
-TICKER_DEFAULT = ["GM", "F", "CMI", "BWA", "PCAR"]
+TICKER_DEFAULT = ["SIX2.DE", "DRH.F", "ENR.DE", "ALB", "NEM", "BABA"]
 
 # Sektor-Zuordnung nur fuer die Anzeige des Rotation-Scores. Unbekannte
 # Ticker laufen mit "N/A" durch - die technische Pruefung braucht ihn nicht.
