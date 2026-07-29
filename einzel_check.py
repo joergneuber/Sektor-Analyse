@@ -16,8 +16,18 @@ Deshalb gibt das Skript den Rotation-Score des Sektors mit aus, sofern eine
 Performance-Datei des Tages daneben liegt.
 
 AUFRUF:
-    python einzel_check.py ALB BABA NEM
-    python einzel_check.py SIX2.DE DRH.F ENR.DE            (EU-Ticker mit Boersen-Suffix)
+    python einzel_check.py GM F CMI BWA PCAR
+    python einzel_check.py VOW3.DE            (EU-Ticker mit Boersen-Suffix)
+
+VERGLEICHSMESSUNG TRENDWENDE (NEU 29.07.2026): Die Trendwende wird ZWEIMAL
+geprueft - einmal mit der Aktien-Regel (max. 20% ueber dem 52W-Tief) und
+einmal mit der Metall-Regel (Position in der 52-Wochen-Spanne <=
+SPANNEN_POSITION_MAX). Zweck: ueber ein paar Wochen sichtbar machen, ob die
+Aktien-Regel systematisch Boden-Kandidaten wegfiltert - ohne am Tagesbetrieb
+etwas zu aendern. Anlass: am 29.07. scheiterten 5 von 6 geprueften Titeln
+(u.a. Albemarle mit Stochastik 8,2 und Draegerwerk mit 7,9 - beide klar
+ueberverkauft) an genau dieser Stufe. Der Tageslauf bleibt unveraendert bei
+der Aktien-Regel; hier ist es reine Messung.
 
 Ohne Argumente wird die TICKER_DEFAULT-Liste unten geprueft.
 Benoetigt dieselben Umgebungsvariablen wie analyse.py (ALPACA_KEY,
@@ -40,14 +50,45 @@ from analyse import (
 )
 from trendwende_scanner import _pruefe_trendwende
 from short_scanner import _pruefe_short_setup
+from edelmetalle_scanner import SPANNEN_POSITION_MAX
 
-TICKER_DEFAULT = ["SIX2.DE", "DRH.F", "ENR.DE", "ALB", "NEM", "BABA"]
+# Standard-Liste (GEAENDERT 29.07.2026): alle an diesem Tag geprueften Titel,
+# damit sich ein Wiederholungslauf ohne Tipparbeit starten laesst - fuer die
+# Vergleichsmessung Aktien-Regel vs. Metall-Regel (siehe Modul-Docstring) ist
+# genau das der Zweck: dieselben Titel ueber Wochen beobachten.
+# Ueber das workflow_dispatch-Eingabefeld jederzeit ueberschreibbar.
+TICKER_DEFAULT = [
+    # Runde 1 - Kandidaten aus dem Boersenbrief-Teaser ("Zykliker mit Umbau")
+    "GM", "F", "CMI", "BWA", "PCAR",
+    # Runde 2 - eigene Beobachtungsliste
+    "BABA", "NEM", "ALB", "SIX2.DE", "DRH.F", "ENR.DE",
+]
 
-# Sektor-Zuordnung nur fuer die Anzeige des Rotation-Scores. Unbekannte
-# Ticker laufen mit "N/A" durch - die technische Pruefung braucht ihn nicht.
+# Sektor-Zuordnung NUR fuer die Anzeige des Rotation-Scores - die technische
+# Pruefung braucht sie nicht, unbekannte Ticker laufen mit "N/A" durch.
+# Namen bewusst exakt wie in Performance(...).csv / Performance_EU(...).csv,
+# sonst findet der Nachschlag nichts.
 SEKTOR_HINWEIS = {
-    "GM": "Zyklischer Konsum", "F": "Zyklischer Konsum",
-    "CMI": "Infrastruktur", "BWA": "Zyklischer Konsum", "PCAR": "Industrie",
+    "GM": "Zyklischer Konsum",
+    "F": "Zyklischer Konsum",
+    "BWA": "Zyklischer Konsum",
+    "BABA": "Zyklischer Konsum",
+    "CMI": "Infrastruktur",
+    "PCAR": "Industrie",
+    "NEM": "Gold-Miner",
+    "ALB": "Rohstoffe",
+    "SIX2.DE": "Industrie",      # Sixt SE
+    "DRH.F": "Rüstung/Aerospace",  # DroneShield Ltd, Frankfurt-Notierung in EUR
+    "ENR.DE": "Industrie",       # Siemens Energy AG
+}
+
+# Klarnamen fuer die Ausgabe - macht das Log ohne Nachschlagen lesbar
+# (der Scanner selbst arbeitet weiterhin mit Tickern).
+NAME_HINWEIS = {
+    "GM": "General Motors", "F": "Ford Motor Company", "CMI": "Cummins",
+    "BWA": "BorgWarner", "PCAR": "Paccar", "BABA": "Alibaba",
+    "NEM": "Newmont", "ALB": "Albemarle", "SIX2.DE": "Sixt SE",
+    "DRH.F": "DroneShield (EUR, Frankfurt)", "ENR.DE": "Siemens Energy",
 }
 
 
@@ -82,8 +123,10 @@ def pruefe(ticker, spy_close, eu_close, scores):
     ist_eu = '.' in ticker
     sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
     score = scores.get(sektor)
+    klarname = NAME_HINWEIS.get(ticker)
+    kopf = f"{ticker}" + (f" - {klarname}" if klarname else "")
     print("=" * 62)
-    print(f"{ticker}   (Sektor laut Zuordnung: {sektor}"
+    print(f"{kopf}   (Sektor laut Zuordnung: {sektor}"
           + (f", Rotation-Score {score:+.3f}" if score is not None else "")
           + ")")
     print("=" * 62)
@@ -111,19 +154,57 @@ def pruefe(ticker, spy_close, eu_close, scores):
         print("  TRENDWENDE/SHORT: keine Kursdaten")
         return
 
-    # 2) Trendwende - greift auch bei Titeln unter der WMA200
-    try:
-        res, grund = _pruefe_trendwende(ticker, sektor, "EU" if ist_eu else "US",
-                                        data.copy(), eu_close if ist_eu else spy_close)
+    # 2) Trendwende - ZWEIMAL geprueft (siehe Modul-Docstring): einmal mit
+    #    der Aktien-Regel des Tageslaufs, einmal mit der Metall-Regel.
+    #    Beide Ergebnisse nebeneinander, damit ueber die Zeit sichtbar wird,
+    #    ob die Aktien-Regel Boden-Kandidaten systematisch verwirft.
+    def _trendwende(spannen_max=None):
+        return _pruefe_trendwende(ticker, sektor, "EU" if ist_eu else "US",
+                                  data.copy(), eu_close if ist_eu else spy_close,
+                                  spannen_position_max=spannen_max)
+
+    def _ausgabe(label, res, grund):
         if res:
-            print(f"  TRENDWENDE: TREFFER - {res.get('Setup_Typ')} | "
+            print(f"  {label}: TREFFER - {res.get('Setup_Typ')} | "
                   f"Kurs {res.get('Kurs')} | Stop {res.get('Stop')} | "
                   f"TP1 {res.get('TP1')} (CRV {res.get('CRV1')}) | "
                   f"Bonus: {res.get('Qualitaets_Bonus')}")
         else:
-            print(f"  TRENDWENDE: kein Kandidat (Stufe: {grund})")
-    except Exception as e:
-        print(f"  TRENDWENDE: Fehler ({type(e).__name__}: {e})")
+            print(f"  {label}: kein Kandidat (Stufe: {grund})")
+
+    ergebnisse_tw = {}
+    for label, spannen_max in (
+        ("TRENDWENDE (Aktien-Regel: max. 20% ueber 52W-Tief)", None),
+        (f"TRENDWENDE (Metall-Regel: Spannen-Position <= {SPANNEN_POSITION_MAX:.0%})",
+         SPANNEN_POSITION_MAX),
+    ):
+        try:
+            res, grund = _trendwende(spannen_max)
+            _ausgabe(label, res, grund)
+            ergebnisse_tw[spannen_max] = (res is not None, grund)
+        except Exception as e:
+            print(f"  {label}: Fehler ({type(e).__name__}: {e})")
+            ergebnisse_tw[spannen_max] = (None, "fehler")
+
+    # Abweichung ausdruecklich benennen - das ist der eigentliche Messwert
+    aktien_ok = ergebnisse_tw.get(None, (None, None))[0]
+    metall_ok = ergebnisse_tw.get(SPANNEN_POSITION_MAX, (None, None))[0]
+    if aktien_ok is False and metall_ok is True:
+        # Kennzahl mitliefern, damit die Abweichung nachvollziehbar ist
+        try:
+            kurs = float(data['Close'].iloc[-1])
+            tief = float(data['Low'].min())
+            hoch = float(data['High'].max())
+            print(f"  >>> ABWEICHUNG: nur die Metall-Regel laesst diesen Titel zu "
+                  f"({(kurs/tief-1)*100:.1f}% ueber 52W-Tief, aber Spannen-Position "
+                  f"{(kurs-tief)/(hoch-tief):.0%}) - Kandidat fuer die Frage, ob die "
+                  f"Aktien-Regel zu eng ist.")
+        except Exception:
+            print("  >>> ABWEICHUNG: nur die Metall-Regel laesst diesen Titel zu.")
+    elif aktien_ok is True and metall_ok is False:
+        print("  >>> ABWEICHUNG umgekehrt: nur die Aktien-Regel laesst diesen Titel zu "
+              "(Titel ist nah am Tief, sitzt aber hoch in der Jahresspanne - "
+              "typisch fuer eine enge Seitwaertsspanne).")
 
     # 3) Short - Marktumfeld-Modifikator bewusst neutral (Einzelpruefung
     #    ausserhalb des Tageslaufs, kein Rotations-Kontext)
