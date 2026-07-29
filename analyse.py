@@ -306,6 +306,157 @@ def get_earnings_warnung(ticker, warn_tage=7):
         return None
 
 
+def get_earnings_rueckblick(ticker, rueckblick_tage=5):
+    """Earnings-RÜCKBLICK (NEU 29.07.2026, Nutzerwunsch - Gegenstück zur
+    Warnung oben): Hat ein Titel in den letzten `rueckblick_tage` Kalender-
+    tagen berichtet, gibt diese Funktion eine kurze Einordnung zurück, z.B.
+    '📊 Zahlen 28.07.: Erwartungen übertroffen (EPS +6,2%), Markt bestätigt
+    (+2,4% am Berichtstag)'. Sonst None.
+
+    ZWEI DATENQUELLEN, bewusst kombiniert:
+      1) EPS-Überraschung (yfinance earnings_dates: 'Reported EPS' vs.
+         'EPS Estimate') - die harte Zahl gegen die Analystenerwartung.
+      2) Kursreaktion am Berichtstag (Schlusskurs vs. Vortagesschluss) -
+         das Urteil des Marktes.
+    Grund für die Kombination: die reine EPS-Zahl erklärt Kursreaktionen oft
+    NICHT (Ausblick/Guidance, Margen, Sondereffekte bewegen den Kurs, stehen
+    aber in keiner maschinell verfügbaren Kennzahl). Laufen beide Signale
+    auseinander - Zahlen über Erwartung, Kurs fällt trotzdem - ist genau das
+    die vom Nutzer gewünschte Kategorie "geteilte Meinung": der Markt hat
+    etwas anderes gesehen als die nackte Gewinnzahl.
+
+    Einstufung (Schwellen bewusst großzügig, um Rauschen auszublenden):
+      EPS-Abweichung  > +2%  = übertroffen | < -2% = verfehlt | sonst = im Rahmen
+      Kursreaktion    > +1,5% = positiv    | < -1,5% = negativ | sonst = neutral
+      Gegenläufig (übertroffen+negativ oder verfehlt+positiv) -> Vorlauf entscheidet:
+
+    VORLAUF-UNTERSCHEIDUNG (NEU 29.07.2026, Nutzer-Einwand): Ein Kursrutsch
+    trotz guter Zahlen hat ZWEI verschiedene Ursachen, die nicht dasselbe
+    bedeuten:
+      (a) "Sell on good news"/Gewinnmitnahme - der Kurs ist VOR dem Bericht
+          stark gelaufen, die guten Zahlen waren eingepreist, Anleger nehmen
+          Gewinne mit. Kein Urteil gegen das Unternehmen.
+      (b) Echte geteilte Meinung - kein auffälliger Vorlauf, der Markt sieht
+          also etwas Konkretes negativ (typisch: Ausblick/Guidance, Margen).
+    Unterschieden wird über die Kursentwicklung der 20 Handelstage VOR dem
+    Bericht: >= +8% = Vorlauf (a), sonst (b). Gespiegelt bei schlechten
+    Zahlen mit steigendem Kurs: <= -8% Vorlauf heißt "war bereits
+    eingepreist" statt geteilter Meinung.
+    Wichtig: Das ist eine MUSTER-Einordnung, kein Beweis - beide Ursachen
+    können zusammen auftreten. Die Formulierung bleibt deshalb bewusst
+    beschreibend ("Muster ... "), nicht behauptend.
+
+    GRENZEN (ehrlich benannt, gehören in die Bewertung): nur EPS, KEIN Umsatz
+    und KEINE Guidance - für beides liefert yfinance keine verlässlichen
+    Quartals-Erwartungswerte. Die Kursreaktion fängt diese Lücke indirekt auf,
+    ersetzt aber keine echte Bericht-Lektüre. Defensiv: jeder Fehler oder
+    fehlende Wert führt still zu None bzw. zum Weglassen des jeweiligen Teils.
+    """
+    try:
+        heute = datetime.date.today()
+        eps_df = yf.Ticker(ticker).get_earnings_dates(limit=8)
+        if eps_df is None or eps_df.empty:
+            print(f"DEBUG-EARNINGS-RUECKBLICK: {ticker} -> keine Earnings-Historie verfügbar")
+            return None
+
+        # Jüngsten BEREITS BERICHTETEN Termin im Rückblick-Fenster suchen
+        letzter_termin, eps_abweichung = None, None
+        for zeitpunkt, zeile in eps_df.iterrows():
+            termin = zeitpunkt.date() if hasattr(zeitpunkt, 'date') else zeitpunkt
+            delta = (heute - termin).days
+            if not (0 <= delta <= rueckblick_tage):
+                continue
+            gemeldet = zeile.get('Reported EPS')
+            erwartet = zeile.get('EPS Estimate')
+            if pd.isna(gemeldet):
+                continue  # Termin liegt zwar zurück, Zahlen aber noch nicht erfasst
+            if letzter_termin is None or termin > letzter_termin:
+                letzter_termin = termin
+                if pd.notna(erwartet) and abs(float(erwartet)) > 0.001:
+                    eps_abweichung = (float(gemeldet) - float(erwartet)) / abs(float(erwartet)) * 100
+
+        if letzter_termin is None:
+            return None
+
+        # EPS-Einstufung
+        if eps_abweichung is None:
+            eps_stufe, eps_text = "unbekannt", "EPS-Erwartung nicht verfügbar"
+        elif eps_abweichung > 2:
+            eps_stufe = "uebertroffen"
+            eps_text = f"Erwartungen übertroffen (EPS {eps_abweichung:+.1f}%)"
+        elif eps_abweichung < -2:
+            eps_stufe = "verfehlt"
+            eps_text = f"Erwartungen verfehlt (EPS {eps_abweichung:+.1f}%)"
+        else:
+            eps_stufe = "im_rahmen"
+            eps_text = f"Erwartungen getroffen (EPS {eps_abweichung:+.1f}%)"
+
+        # Kursreaktion am Berichtstag (Schlusskurs vs. Vortagesschluss)
+        reaktion, reaktion_text, vorlauf = None, "", None
+        try:
+            # 3 Monate statt 1: die Kursreaktion braucht nur den Vortag, der
+            # Vorlauf aber 20 Handelstage VOR dem Bericht (siehe Docstring).
+            hist = yf.Ticker(ticker).history(period="3mo")
+            if not hist.empty:
+                hist.index = [i.date() if hasattr(i, 'date') else i for i in hist.index]
+                tage = [d for d in hist.index if d >= letzter_termin]
+                if tage:
+                    bericht_tag = min(tage)
+                    pos = list(hist.index).index(bericht_tag)
+                    if pos > 0:
+                        vortag_kurs = float(hist['Close'].iloc[pos - 1])
+                        bericht_kurs = float(hist['Close'].iloc[pos])
+                        if vortag_kurs > 0:
+                            reaktion = (bericht_kurs / vortag_kurs - 1) * 100
+                            reaktion_text = f"{reaktion:+.1f}% am Berichtstag"
+                        # Vorlauf: 20 Handelstage vor dem Bericht bis Vortag
+                        if pos >= 21:
+                            start_kurs = float(hist['Close'].iloc[pos - 21])
+                            if start_kurs > 0:
+                                vorlauf = (vortag_kurs / start_kurs - 1) * 100
+        except Exception:
+            pass  # Kursreaktion ist optionaler Zusatz, nie ein Abbruchgrund
+
+        # Gesamturteil: Zahlen und Marktreaktion zusammenführen
+        if reaktion is None:
+            urteil = eps_text
+        else:
+            markt_positiv = reaktion > 1.5
+            markt_negativ = reaktion < -1.5
+            if eps_stufe == "uebertroffen" and markt_negativ:
+                if vorlauf is not None and vorlauf >= 8:
+                    urteil = (f"Erwartungen übertroffen (EPS {eps_abweichung:+.1f}%), Kurs fällt "
+                              f"dennoch ({reaktion_text}) - Muster Gewinnmitnahme/'Sell on good news' "
+                              f"nach starkem Vorlauf ({vorlauf:+.1f}% in den 20 Handelstagen davor)")
+                else:
+                    vorlauf_zusatz = (f", kein auffälliger Vorlauf ({vorlauf:+.1f}%)"
+                                      if vorlauf is not None else "")
+                    urteil = (f"geteilte Meinung - Zahlen über Erwartung "
+                              f"(EPS {eps_abweichung:+.1f}%), Markt reagiert negativ "
+                              f"({reaktion_text}){vorlauf_zusatz} - Grund eher im Ausblick als in den Zahlen")
+            elif eps_stufe == "verfehlt" and markt_positiv:
+                if vorlauf is not None and vorlauf <= -8:
+                    urteil = (f"Erwartungen verfehlt (EPS {eps_abweichung:+.1f}%), Kurs steigt dennoch "
+                              f"({reaktion_text}) - Muster 'war bereits eingepreist' nach schwachem "
+                              f"Vorlauf ({vorlauf:+.1f}% in den 20 Handelstagen davor)")
+                else:
+                    urteil = (f"geteilte Meinung - Zahlen unter Erwartung "
+                              f"(EPS {eps_abweichung:+.1f}%), Markt reagiert dennoch positiv ({reaktion_text})")
+            elif eps_stufe == "unbekannt":
+                urteil = f"Marktreaktion {reaktion_text} (EPS-Erwartung nicht verfügbar)"
+            else:
+                markt_wort = ("Markt bestätigt" if (markt_positiv and eps_stufe != "verfehlt")
+                              or (markt_negativ and eps_stufe == "verfehlt")
+                              else "Markt reagiert verhalten")
+                urteil = f"{eps_text}, {markt_wort} ({reaktion_text})"
+
+        print(f"DEBUG-EARNINGS-RUECKBLICK: {ticker} -> {letzter_termin.strftime('%d.%m.%Y')}: {urteil}")
+        return f"📊 Zahlen {letzter_termin.strftime('%d.%m.')}: {urteil}"
+    except Exception as e:
+        print(f"DEBUG-EARNINGS-RUECKBLICK: {ticker} -> nicht ermittelbar ({type(e).__name__})")
+        return None
+
+
 _news_client = None
 
 def get_news_headlines(ticker, max_n=3):
@@ -2122,7 +2273,8 @@ if __name__ == "__main__":
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n")
         f.write("- Earnings-Regel (NEU 28.07.2026): neue Setups mit Earnings HEUTE oder MORGEN werden von VALIDE auf ACHTUNG abgestuft (akutes Über-Nacht-Gap-Risiko)\n")
         f.write("- Death-Cross-Regel (NEU 28.07.2026): frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10 Handelstage) stuft VALIDE auf ACHTUNG ab\n")
-        f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n\n")
+        f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n")
+        f.write("- Earnings-Rückblick (NEU 29.07.2026): nach berichteten Zahlen (letzte 5 Kalendertage) erscheint eine Zeile '📊 Zahlen TT.MM.: ...' - EPS gemeldet vs. Analystenerwartung (yfinance) KOMBINIERT mit der Kursreaktion am Berichtstag; laufen beide auseinander (Zahlen gut, Kurs fällt), lautet das Urteil 'geteilte Meinung'. Nur EPS, kein Umsatz/keine Guidance verfügbar - reiner Kontext, keine Setup-Bewertung\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
@@ -2173,6 +2325,11 @@ if __name__ == "__main__":
             earnings = get_earnings_warnung(ticker_val)
             if earnings:
                 f.write(f"{earnings}\n")
+            # Earnings-Rückblick (NEU 29.07.2026): hat der Titel gerade
+            # berichtet, wie fielen die Zahlen aus und was sagte der Markt?
+            rueckblick = get_earnings_rueckblick(ticker_val)
+            if rueckblick:
+                f.write(f"{rueckblick}\n")
             for headline in get_news_headlines(ticker_val):
                 f.write(f"News {headline}\n")
 
@@ -2320,6 +2477,12 @@ if __name__ == "__main__":
                     earnings = get_earnings_warnung(prow['Ticker'])
                     if earnings:
                         f.write(f"{earnings}\n")
+                    # Earnings-Rückblick (NEU 29.07.2026): für laufende
+                    # Positionen die wichtigste Variante - die Zahlen sind
+                    # raus, die Position läuft weiter, wie war das Urteil?
+                    rueckblick = get_earnings_rueckblick(prow['Ticker'])
+                    if rueckblick:
+                        f.write(f"{rueckblick}\n")
                     for headline in get_news_headlines(prow['Ticker']):
                         f.write(f"News {headline}\n")
 
