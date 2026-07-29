@@ -1794,7 +1794,9 @@ if __name__ == "__main__":
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
-    dxy_text = get_index_benchmark_yf("DX-Y.NYB", "US-Dollar-Index")
+    # US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerwunsch): wird nicht mehr
+    # abgerufen/ausgewertet - EUR/USD bleibt als Waehrungs-Referenz im
+    # Briefing (fuer EU-Positionen die direkt relevante Groesse).
     # EUR/USD-Wechselkurs (NEU, 28.07.2026, Nutzerwunsch): ergaenzt den DXY
     # (Dollar-Basket gegen 6 Waehrungen, keine reine EUR/USD-Groesse) um den
     # tatsaechlichen Wechselkurs - direkt relevant fuer das Waehrungsrisiko im
@@ -2122,7 +2124,7 @@ if __name__ == "__main__":
         f.write("- Death-Cross-Regel (NEU 28.07.2026): frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10 Handelstage) stuft VALIDE auf ACHTUNG ab\n")
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
@@ -2249,6 +2251,20 @@ if __name__ == "__main__":
                 (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt')
                 & (df_positionen['Ausstiegsdatum'].apply(ist_kuerzlich_gestoppt))
             ] if not df_positionen.empty else df_positionen
+
+            # Sortierung (NEU 29.07.2026, Nutzerwunsch): nach Ausstiegsdatum
+            # ABSTEIGEND - der aktuellste Stop steht oben, aeltere folgen.
+            # Vorher galt die zufaellige Sheet-Zeilenreihenfolge; die
+            # Auswertung uebernimmt diese Reihenfolge laut Master-Anweisung.
+            if not gestoppt_kuerzlich.empty:
+                gestoppt_kuerzlich = gestoppt_kuerzlich.copy()
+                gestoppt_kuerzlich['_ausstieg_dt'] = pd.to_datetime(
+                    gestoppt_kuerzlich['Ausstiegsdatum'].astype(str).str.strip(),
+                    format='%d.%m.%Y', errors='coerce'
+                )
+                gestoppt_kuerzlich = gestoppt_kuerzlich.sort_values(
+                    by='_ausstieg_dt', ascending=False
+                ).drop(columns=['_ausstieg_dt'])
 
             if offene.empty and gestoppt_kuerzlich.empty:
                 f.write("Keine offenen Positionen erfasst.\n")
