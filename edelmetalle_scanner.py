@@ -74,7 +74,7 @@ from collections import Counter
 # Aktien und Metalle, eine einzige Stelle zum Pflegen. Beide Module sind
 # durch `if __name__ == "__main__"` geschuetzt, der Import startet dort also
 # keinen Scan.
-from trendwende_scanner import _pruefe_trendwende
+from trendwende_scanner import _pruefe_trendwende, SPANNEN_POSITION_MAX
 from short_scanner import _pruefe_short_setup
 
 from analyse import (
@@ -102,21 +102,18 @@ EDELMETALLE = {
 # Berechnung (statt SPY/STOXX600, siehe Modul-Docstring).
 COMMODITY_BENCHMARK_TICKER = "DBC"
 
-# Naehe-zum-Boden-Kriterium fuer die Metall-TRENDWENDE (NEU 29.07.2026,
-# Nutzerentscheidung): Position in der 52-Wochen-Spanne statt Prozentabstand
-# zum Tief. (Kurs - Tief) / (Hoch - Tief) muss <= diesem Wert sein.
-# Begruendung aus der Messreihe vom 29.07.2026 (Diagnose-Zeile im Briefing):
+# Naehe-zum-Boden-Kriterium fuer die Metall-TRENDWENDE: Position in der
+# 52-Wochen-Spanne statt Prozentabstand zum Tief (Nutzerentscheidung
+# 29.07.2026). Die Konstante wird bewusst NICHT hier definiert, sondern aus
+# trendwende_scanner importiert (siehe Import oben) - dort steht die
+# Pruef-Logik, dort laeuft die Schatten-Messung fuer Aktien, und so gibt es
+# garantiert nur EINEN Wert. Begruendung aus der Messreihe vom 29.07.2026:
 #   Gold      +25,1% ueber Tief | -26,9% zum Hoch -> Spannen-Position 35%
 #   Silber    +58,8% ueber Tief | -52,4% zum Hoch -> Spannen-Position 25%
 #   Platin    +25,0% ueber Tief | -44,1% zum Hoch -> Spannen-Position 20%
 #   Palladium +16,1% ueber Tief | -42,1% zum Hoch -> Spannen-Position 16%
 # Nach der alten Prozent-Regel fielen 3 von 4 raus - darunter Silber, das
-# mit -52% zum Hoch der eindeutigste Boden-Kandidat ueberhaupt war. Ursache:
-# die Metalle hatten sich im selben Jahresfenster erst mehr als verdoppelt.
-# Die Spannen-Position ist volatilitaetsunabhaengig; 0,35 laesst die untere
-# Drittel-Zone der Jahresspanne zu. Die eigentliche Selektion machen danach
-# weiterhin Divergenz und Kumo-Trigger.
-SPANNEN_POSITION_MAX = 0.35
+# mit -52% zum Hoch der eindeutigste Boden-Kandidat ueberhaupt war.
 
 RS_MIN = -10.0  # gleicher Schwellwert wie beim Hauptscanner
 ABSTAND_52W_HOCH_MAX = -25.0  # gleicher Schwellwert wie beim Hauptscanner
