@@ -102,6 +102,22 @@ EDELMETALLE = {
 # Berechnung (statt SPY/STOXX600, siehe Modul-Docstring).
 COMMODITY_BENCHMARK_TICKER = "DBC"
 
+# Naehe-zum-Boden-Kriterium fuer die Metall-TRENDWENDE (NEU 29.07.2026,
+# Nutzerentscheidung): Position in der 52-Wochen-Spanne statt Prozentabstand
+# zum Tief. (Kurs - Tief) / (Hoch - Tief) muss <= diesem Wert sein.
+# Begruendung aus der Messreihe vom 29.07.2026 (Diagnose-Zeile im Briefing):
+#   Gold      +25,1% ueber Tief | -26,9% zum Hoch -> Spannen-Position 35%
+#   Silber    +58,8% ueber Tief | -52,4% zum Hoch -> Spannen-Position 25%
+#   Platin    +25,0% ueber Tief | -44,1% zum Hoch -> Spannen-Position 20%
+#   Palladium +16,1% ueber Tief | -42,1% zum Hoch -> Spannen-Position 16%
+# Nach der alten Prozent-Regel fielen 3 von 4 raus - darunter Silber, das
+# mit -52% zum Hoch der eindeutigste Boden-Kandidat ueberhaupt war. Ursache:
+# die Metalle hatten sich im selben Jahresfenster erst mehr als verdoppelt.
+# Die Spannen-Position ist volatilitaetsunabhaengig; 0,35 laesst die untere
+# Drittel-Zone der Jahresspanne zu. Die eigentliche Selektion machen danach
+# weiterhin Divergenz und Kumo-Trigger.
+SPANNEN_POSITION_MAX = 0.35
+
 RS_MIN = -10.0  # gleicher Schwellwert wie beim Hauptscanner
 ABSTAND_52W_HOCH_MAX = -25.0  # gleicher Schwellwert wie beim Hauptscanner
 
@@ -172,13 +188,15 @@ def _metall_felder_setzen(ergebnis, ticker, name, strategie):
 def analyze_edelmetall_trendwende(ticker, name, data, bench_close=None):
     """Trendwende (Bodenbildung) fuer ein Metall - ruft die IDENTISCHE
     Pruef-Funktion des Aktien-Trendwende-Scanners auf (Kurs unter WMA200,
-    max. 20% ueber dem 52W-Tief, RSI-Divergenz im 40-Tage-Fenster als Boden
+    Naehe zum Boden ueber die Spannen-Position (siehe SPANNEN_POSITION_MAX -
+    hier ABWEICHEND von den Aktien), RSI-Divergenz im 40-Tage-Fenster als Boden
     UND frischer Kumo-Ausbruch als Trigger, CRV >= 1.0).
     RISIKOKLASSE: wie bei Aktien strukturell riskanter als Trendfolge
     ("fallendes Messer") - der Risikohinweis aus der Aktien-Funktion wird
     unveraendert uebernommen und im Briefing separat ausgewiesen."""
     try:
-        res, grund = _pruefe_trendwende(ticker, "Edelmetalle", "Global", data, bench_close)
+        res, grund = _pruefe_trendwende(ticker, "Edelmetalle", "Global", data, bench_close,
+                                        spannen_position_max=SPANNEN_POSITION_MAX)
         if res is None:
             return None, grund
         return _metall_felder_setzen(res, ticker, name, "Trendwende"), grund
@@ -501,7 +519,8 @@ FUNNEL_STUFEN_TRENDWENDE = [
     ("zu_wenig_daten", "Zu wenig Kurshistorie"),
     ("fehler", "Fehler bei der Berechnung"),
     ("nicht_unter_wma200", "Kein Abwaertstrend (nicht unter der WMA200)"),
-    ("zu_weit_vom_52w_tief", "Mehr als 20% ueber dem 52W-Tief"),
+    ("zu_weit_vom_52w_tief", f"Position in der 52W-Spanne ueber {SPANNEN_POSITION_MAX:.0%} "
+                             f"(zu weit vom Boden weggelaufen)"),
     ("keine_divergenz", "Keine intakte bullische RSI-Divergenz (40T-Fenster)"),
     ("kein_frischer_kumo_ausbruch", "Kein frischer Kumo-Ausbruch (letzte 5 Handelstage)"),
     ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
@@ -688,10 +707,17 @@ STRATEGIE_TEXTE = {
         "  lagen bisher im blinden Fleck des Scanners.\n"
         "- Identische Kriterien wie der Aktien-Trendwende-Scanner (dieselbe\n"
         "  Pruef-Funktion, nur auf Metalle angewendet):\n"
-        "  Trend-Filter umgekehrt (Kurs UNTER der WMA200), max. 20% über dem\n"
-        "  52-Wochen-Tief, und als Pflicht-SEQUENZ: bullische RSI-Divergenz\n"
+        "  Trend-Filter umgekehrt (Kurs UNTER der WMA200) und als Pflicht-SEQUENZ:\n"
+        "  bullische RSI-Divergenz\n"
         "  (Boden, 40-Tage-Fenster, seitdem nicht invalidiert) UND frischer\n"
         "  Kumo-Ausbruch (Trigger, letzte 5 Handelstage). CRV >= 1.0.\n"
+        "- ABWEICHUNG von den Aktien (NEU 29.07.2026): Die Naehe zum Boden wird ueber\n"
+        f"  die POSITION IN DER 52-WOCHEN-SPANNE gemessen - (Kurs-Tief)/(Hoch-Tief) muss\n"
+        f"  <= {SPANNEN_POSITION_MAX:.0%} sein - statt ueber den Prozentabstand zum Tief. Grund: bei\n"
+        "  Metallen haengt der Prozentabstand stark von der Jahresvolatilitaet ab.\n"
+        "  Silber lag am 29.07. 52% UNTER seinem Jahreshoch (klarer Boden), zugleich\n"
+        "  aber 59% UEBER seinem Jahrestief - die Aktien-Regel haette genau diesen\n"
+        "  Kandidaten aussortiert. Die Spannen-Position ist volatilitaetsunabhaengig.\n"
         "- RISIKOKLASSE: strukturell riskanter als Trendfolge ('fallendes Messer' -\n"
         "  ein Boden kann trotz Divergenz und Ausbruch weiter fallen). Deshalb\n"
         "  eigener Abschnitt, eigenes Label, NICHT mit der Trendfolge vermischt.\n"
