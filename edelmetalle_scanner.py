@@ -530,6 +530,15 @@ def edelmetalle_scan_starten():
 
     ergebnisse = []
     funnel_tf, funnel_tw, funnel_sh = Counter(), Counter(), Counter()
+    # DIAGNOSE je Metall (NEU 29.07.2026): bei nur 4 Instrumenten ist die
+    # blosse Funnel-Zahl ("3x zu weit vom Tief") zu grob - hier steht je
+    # Metall der konkrete Wert, an dem es haengt. Macht sofort sichtbar, ob
+    # eine Schwelle sinnvoll greift oder ob sie fuer Rohstoffe nachjustiert
+    # werden muss (Anlass: Gold zeigt lehrbuchmaessige Bodenbildung, liegt
+    # nach der grossen Vorjahres-Rally aber rechnerisch weit ueber seinem
+    # 52-Wochen-Tief - der fuer AKTIEN gedachte 20%-Filter trifft hier
+    # womoeglich das Falsche).
+    diagnose_zeilen = []
 
     for ticker, name in EDELMETALLE.items():
         data, ladefehler = lade_kursdaten(ticker)
@@ -560,6 +569,21 @@ def edelmetalle_scan_starten():
         # der 2-Jahres-Reihe).
         data_1j = data.tail(252)
 
+        # Diagnose-Werte auf demselben 1-Jahres-Fenster wie die Pruefungen
+        try:
+            kurs_akt = float(data_1j['Close'].iloc[-1])
+            tief_52w = float(data_1j['Low'].min())
+            hoch_52w = float(data_1j['High'].max())
+            abstand_tief = (kurs_akt / tief_52w - 1) * 100 if tief_52w > 0 else float('nan')
+            abstand_hoch = (kurs_akt / hoch_52w - 1) * 100 if hoch_52w > 0 else float('nan')
+            diagnose_zeilen.append(
+                f"  {name} ({ticker}): Kurs {kurs_akt:.2f} | "
+                f"{abstand_tief:+.1f}% ueber 52W-Tief ({tief_52w:.2f}) | "
+                f"{abstand_hoch:+.1f}% zum 52W-Hoch ({hoch_52w:.2f})"
+            )
+        except Exception:
+            diagnose_zeilen.append(f"  {name} ({ticker}): Diagnose nicht berechenbar")
+
         # 2) Trendwende (NEU)
         res, grund = analyze_edelmetall_trendwende(ticker, name, data_1j.copy(), bench_close)
         funnel_tw[grund] += 1
@@ -578,6 +602,8 @@ def edelmetalle_scan_starten():
           f"Short: {anzahl('Short')}).")
 
     kopf = f"Universum: {len(EDELMETALLE)} Edelmetalle (feste Liste)"
+    diagnose_text = ("LAGE JE METALL (1-Jahres-Fenster, Basis aller Schwellen):\n"
+                     + "\n".join(diagnose_zeilen)) if diagnose_zeilen else ""
     funnel_texte = {
         "Trendfolge": _funnel_text_bauen(funnel_tf, FUNNEL_STUFEN_TRENDFOLGE, kopf),
         "Trendwende": _funnel_text_bauen(funnel_tw, FUNNEL_STUFEN_TRENDWENDE, kopf),
@@ -585,7 +611,9 @@ def edelmetalle_scan_starten():
     }
     for strategie, text in funnel_texte.items():
         print(f"FUNNEL-STATISTIK ({strategie}):\n{text}")
-    return ergebnisse, funnel_texte
+    if diagnose_text:
+        print(diagnose_text)
+    return ergebnisse, funnel_texte, diagnose_text
 
 
 # Vereinigungs-Schema aller drei Strategien (GEAENDERT 29.07.2026): Felder,
@@ -687,7 +715,7 @@ STRATEGIE_TEXTE = {
 }
 
 
-def speichere_ergebnisse(ergebnisse, funnel_texte=None):
+def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
     """Schreibt CSV (alle Strategien, Spalte 'Strategie') und Briefing mit
     DREI getrennten Abschnitten (GEAENDERT 29.07.2026)."""
     if funnel_texte is None:
@@ -729,6 +757,9 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None):
             "  angewendet) - Aktien- und Metall-Variante koennen nicht auseinanderlaufen.\n\n"
         )
 
+        if diagnose_text:
+            f.write(diagnose_text + "\n\n")
+
         for strategie in ("Trendfolge", "Trendwende", "Short"):
             treffer = [r for r in ergebnisse if r.get("Strategie") == strategie]
             f.write("=" * 50 + "\n")
@@ -752,6 +783,6 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None):
 
 
 if __name__ == "__main__":
-    ergebnisse, funnel_texte = edelmetalle_scan_starten()
-    speichere_ergebnisse(ergebnisse, funnel_texte)
+    ergebnisse, funnel_texte, diagnose_text = edelmetalle_scan_starten()
+    speichere_ergebnisse(ergebnisse, funnel_texte, diagnose_text)
     print("Edelmetalle-Scanner abgeschlossen.")
