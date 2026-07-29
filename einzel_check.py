@@ -16,8 +16,8 @@ Deshalb gibt das Skript den Rotation-Score des Sektors mit aus, sofern eine
 Performance-Datei des Tages daneben liegt.
 
 AUFRUF:
-    python einzel_check.py GM F CMI BWA PCAR
-    python einzel_check.py VOW3.DE            (EU-Ticker mit Boersen-Suffix)
+    python einzel_check.py ALB BABA NEM
+    python einzel_check.py SIX2.DE DRH.F ENR.DE            (EU-Ticker mit Boersen-Suffix)
 
 Ohne Argumente wird die TICKER_DEFAULT-Liste unten geprueft.
 Benoetigt dieselben Umgebungsvariablen wie analyse.py (ALPACA_KEY,
