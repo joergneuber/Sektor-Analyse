@@ -52,6 +52,7 @@ liegen (wird importiert).
 
 import datetime
 import math
+import re
 from collections import Counter
 import numpy as np
 import pandas as pd
@@ -456,10 +457,24 @@ def _indikatoren_berechnen(data):
     return data
 
 
-def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
+def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
+                       spannen_position_max=None):
     """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
     speist die Funnel-Statistik (NEU 28.07.2026, Nutzerwunsch: '0 Kandidaten'
-    soll interpretierbar sein - an welcher Stufe faellt wie viel raus?)."""
+    soll interpretierbar sein - an welcher Stufe faellt wie viel raus?).
+
+    spannen_position_max (NEU 29.07.2026, fuer Edelmetalle): schaltet die
+    Naehe-zum-Boden-Pruefung von "max. X% ueber dem 52W-Tief" auf "Position
+    in der 52-Wochen-Spanne" um: (Kurs - Tief) / (Hoch - Tief) <= Wert.
+    Hintergrund (Messreihe 29.07.2026): der Prozentabstand zum Tief haengt
+    stark von der Jahresvolatilitaet ab. Silber lag 52% UNTER seinem
+    52W-Hoch - also klar am Boden - aber zugleich 59% UEBER seinem 52W-Tief,
+    weil sich der Preis im selben Jahr erst mehr als verdoppelt hatte. Der
+    20%-Filter warf damit genau die Titel raus, die der Scanner finden soll.
+    Die Spannen-Position ist volatilitaetsunabhaengig und misst direkt die
+    Absicht: "im unteren Bereich der Jahresspanne, aber nicht weggelaufen".
+    Bei None gilt unveraendert die Prozent-Regel (Aktien - dort liefert sie
+    taeglich ~80 Kandidaten und funktioniert)."""
     if len(data) < 60:
         return None, "zu_wenig_daten"
 
@@ -486,8 +501,22 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None):
 
     tief_52w = data['Low'].min()
     abstand_52w_tief = round(((entry / tief_52w) - 1) * 100, 2)
-    if abstand_52w_tief > ABSTAND_52W_TIEF_MAX:
-        return None, "zu_weit_vom_52w_tief"
+    if spannen_position_max is None:
+        # Aktien: unveraendert Prozentabstand zum Tief
+        if abstand_52w_tief > ABSTAND_52W_TIEF_MAX:
+            return None, "zu_weit_vom_52w_tief"
+    else:
+        # Edelmetalle: Position in der 52-Wochen-Spanne (siehe Docstring)
+        hoch_52w = data['High'].max()
+        spanne = hoch_52w - tief_52w
+        if spanne <= 0:
+            return None, "zu_weit_vom_52w_tief"
+        spannen_position = (entry - tief_52w) / spanne
+        if spannen_position > spannen_position_max:
+            print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Spannen-Position "
+                  f"{spannen_position:.0%} > {spannen_position_max:.0%} "
+                  f"(Tief {tief_52w:.2f} / Kurs {entry:.2f} / Hoch {hoch_52w:.2f})")
+            return None, "zu_weit_vom_52w_tief"
 
     # C - beide Bestaetigungen Pflicht, aber zeitlich ENTKOPPELT
     # (GEAENDERT 28.07.2026, Nutzerwunsch: Pflicht-Signal soll wieder der
@@ -855,9 +884,23 @@ def main():
             # Ticker-Fallback bei Fehlern - der Ticker bleibt in Klammern
             # fuer die eigene Zuordnung (Sheet/Log arbeiten mit Tickern).
             def _name_oder_ticker(t):
+                """GEAENDERT 29.07.2026: longName BEVORZUGT, shortName nur als
+                Fallback. Grund: yfinance kuerzt shortName hart auf ~30 Zeichen
+                und fuellt teils mit Leerzeichen auf - im Lauf vom 29.07.
+                standen deshalb "JinkoSolar Holding Company Limi" und
+                "VOLKSWAGEN AG                 V" im Briefing. longName ist
+                der vollstaendige Firmenname. Zusaetzlich: Mehrfach-Leerzeichen
+                zusammenziehen und ein abgeschnittenes Rest-Fragment am Ende
+                entfernen (einzelner Buchstabe oder ein Wortanfang direkt hinter
+                einem Leerzeichen, wie das "V" bei Volkswagen)."""
                 try:
                     info = yf.Ticker(t).info
-                    name = info.get('shortName') or info.get('longName')
+                    name = info.get('longName') or info.get('shortName')
+                    if not name:
+                        return t
+                    name = re.sub(r'\s+', ' ', str(name)).strip()
+                    # Einzelnen Rest-Buchstaben am Ende abschneiden ("... AG V")
+                    name = re.sub(r'\s+[A-Za-z]$', '', name).strip(' ,;-')
                     return f"{name} ({t})" if name else t
                 except Exception:
                     return t
