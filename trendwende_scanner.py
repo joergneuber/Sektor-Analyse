@@ -849,10 +849,23 @@ def main():
         # Springt einer davon in den naechsten Tagen frisch ueber die Wolke,
         # wird er zum Kandidaten. Bewusst NUR Beobachtung.
         if divergenz_watchlist:
+            # Namen statt Ticker (GEAENDERT 29.07.2026, Nutzerwunsch: die
+            # Auswertung soll ueberall Namen zeigen). Nur fuer die wenigen
+            # Watchlist-Titel je ein leichter yfinance-Info-Abruf mit
+            # Ticker-Fallback bei Fehlern - der Ticker bleibt in Klammern
+            # fuer die eigene Zuordnung (Sheet/Log arbeiten mit Tickern).
+            def _name_oder_ticker(t):
+                try:
+                    info = yf.Ticker(t).info
+                    name = info.get('shortName') or info.get('longName')
+                    return f"{name} ({t})" if name else t
+                except Exception:
+                    return t
+            watchlist_namen = [_name_oder_ticker(t) for t in sorted(divergenz_watchlist)]
             f.write("DIVERGENZ-WATCHLIST (Boden-Bedingung intakt, wartet auf frischen Kumo-Trigger)\n")
             f.write("-" * 50 + "\n")
-            f.write("(nur Beobachtung, KEINE Setups - erscheint in der Auswertung nur als einzeiliger Beobachtungssatz)\n")
-            f.write(", ".join(sorted(divergenz_watchlist)) + "\n\n")
+            f.write("(nur Beobachtung, KEINE Setups - erscheint in der Auswertung nur als einzeiliger Beobachtungssatz mit den NAMEN)\n")
+            f.write(", ".join(watchlist_namen) + "\n\n")
 
         if df.empty:
             f.write("Keine Trendwende-Kandidaten gefunden.\n")
