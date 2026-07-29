@@ -1090,7 +1090,30 @@ und zwei entfallende Felder:
     schreiben, einfach die Zeile auslassen).
 
 -   Validitäts-Filter (siehe Abschnitt 1): Nur Titel mit Status2 =
-    VALIDE werden ausgegeben.
+    VALIDE werden ausgegeben. Bei Trendwende-Kandidaten (siehe unten)
+    entfällt dieser Filter - sie haben wie ihre Aktien-Pendants kein
+    Status2-Feld.
+
+-   DREI STRATEGIEN JE ANLAGEKLASSE (NEU 29.07.2026,
+    Nutzerentscheidung): Der Edelmetall-Scanner prüft dieselben vier
+    Futures jetzt gegen DREI Strategien - Trendfolge (wie bisher),
+    Trendwende (Bodenbildung) und Short. Die CSV hat dafür als erste
+    Spalte „Strategie" (Werte: Trendfolge \| Trendwende \| Short), das
+    Briefing drei getrennte Abschnitte mit je eigener Funnel-Statistik.
+    GIB SIE IMMER GETRENNT AUS - als drei Unterabschnitte
+    „Edelmetalle-Setups (Trendfolge)", „(Trendwende)" und „(Short)"
+    innerhalb des Edelmetalle-Abschnitts; vermische die drei NIEMALS zu
+    einer Liste, auch nicht wenn nur eine Strategie Treffer hat. Für
+    Trendwende- und Short-Kandidaten gelten dieselben Regeln wie bei
+    ihren Aktien-Pendants (Abschnitte 5 bzw. 7), insbesondere die
+    jeweiligen Risikohinweise: bei Trendwende die „Messer-Gefahr" (ein
+    Boden kann trotz Divergenz und Ausbruch weiter fallen), bei Short
+    das theoretisch unbegrenzte Verlustrisiko - übernimm die
+    Risikohinweis-Zeile aus der Datei jeweils wörtlich. Hat eine
+    Strategie keine Treffer, schreibe für sie eine Zeile „Keine
+    Kandidaten gefunden" und nenne - wie bei allen anderen Kategorien -
+    in EINEM Satz die entscheidende Engstelle aus der zugehörigen
+    Funnel-Statistik.
 
 -   Strikte Trennung (Pflicht): Edelmetalle-Setups gehören NIEMALS in
     den Abschnitt „Daten-Übersicht (Valide Setups)\" aus Abschnitt 3 --
