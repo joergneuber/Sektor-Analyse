@@ -107,6 +107,19 @@ FRISCHE_TAGE = 5
 # Wochen spaeter der Kumo-Ausbruch als Bestaetigung".
 DIVERGENZ_FENSTER_TAGE = 40
 
+# Alternative Naehe-zum-Boden-Regel (NEU 29.07.2026): Position in der
+# 52-Wochen-Spanne, (Kurs - Tief) / (Hoch - Tief). Fuer die Edelmetalle ist
+# sie seit 29.07.2026 AKTIV (edelmetalle_scanner.py importiert diese
+# Konstante von hier - eine Quelle, kein zweiter Wert). Fuer AKTIEN laeuft
+# sie vorerst nur als SCHATTEN-MESSUNG mit: der Tageslauf entscheidet
+# weiterhin nach ABSTAND_52W_TIEF_MAX, zusaetzlich wird aber gezaehlt, was
+# die Spannen-Regel zulassen wuerde (siehe Briefing-Block "SCHATTEN-
+# MESSUNG"). Hintergrund: der Prozentabstand zum Tief bestraft volatile
+# Titel - DroneShield lag am 29.07. 69% unter dem Jahreshoch und damit klar
+# am Boden, aber rechnerisch 20,7% ueber dem Jahrestief und fiel dadurch um
+# 0,7 Prozentpunkte durch den Filter; die Spannen-Position betrug 7%.
+SPANNEN_POSITION_MAX = 0.35
+
 # Chunk-Groesse fuer Sammel-Abrufe (Alpaca/yfinance koennen mehrere Ticker in
 # einem Request abfragen - das ersetzt die 370-440 einzelnen API-Calls von
 # vorher durch nur eine Handvoll Sammel-Calls, siehe fetch_us_batch/
@@ -759,6 +772,78 @@ def main():
 
     print(f"DEBUG: {len(ergebnisse)} Trendwende-Kandidaten gefunden.")
 
+    # --- SCHATTEN-MESSUNG (NEU 29.07.2026, reine Beobachtung) ---
+    # Derselbe Durchlauf noch einmal mit der Spannen-Regel statt der
+    # Prozent-Regel. Aendert NICHTS am Ergebnis: weder CSV noch Kandidaten
+    # noch Watchlist werden beruehrt - es wird nur gezaehlt, was die andere
+    # Regel zulassen wuerde. Zweck: die Entscheidung "Regel auch fuer Aktien
+    # umstellen?" auf dem vollen Universum (statt an einzelnen handverlesenen
+    # Titeln) treffen zu koennen. Rein lokale Rechnung, keine zusaetzlichen
+    # API-Abrufe - die Kursdaten liegen bereits vor.
+    funnel_schatten = Counter()
+    nur_spannen_regel = []   # von der Spannen-Regel zugelassen, von der Prozent-Regel nicht
+    nur_prozent_regel = []   # umgekehrt
+    schatten_divergenz = []  # davon mit intakter Divergenz (die relevante Teilmenge)
+
+    # EIN Durchlauf je Regel (GEAENDERT: vorher lief die Schatten-Pruefung
+    # zweimal - einmal fuer die Zaehlung, einmal fuer den Titel-Vergleich.
+    # Beides wird hier in einer Schleife erledigt, das spart einen kompletten
+    # Analyse-Durchlauf ueber das Universum.)
+    for t, s, daten, bench, markt in (
+        [(t, s, us_daten[t], spy_close, "US") for t, s in us_tasks if t in us_daten]
+        + [(t, s, eu_daten[t], eu_bench_close, "EU") for t, s in eu_tasks if t in eu_daten]
+    ):
+        try:
+            grund_prozent = _pruefe_trendwende(t, s, markt, daten, bench)[1]
+            grund_spanne = _pruefe_trendwende(t, s, markt, daten, bench,
+                                              spannen_position_max=SPANNEN_POSITION_MAX)[1]
+        except Exception:
+            funnel_schatten["fehler"] += 1
+            continue
+        funnel_schatten[grund_spanne] += 1
+        # "kam ueber die Naehe-Stufe hinaus" = Grund ist NICHT zu_weit_vom_52w_tief
+        prozent_ok = grund_prozent != "zu_weit_vom_52w_tief"
+        spanne_ok = grund_spanne != "zu_weit_vom_52w_tief"
+        if spanne_ok and not prozent_ok:
+            nur_spannen_regel.append(t)
+            # Nur relevant, wenn danach auch die Boden-Bedingung haelt
+            if grund_spanne in ("kein_frischer_kumo_ausbruch", "crv_unter_1", "valide"):
+                schatten_divergenz.append(t)
+        elif prozent_ok and not spanne_ok:
+            nur_prozent_regel.append(t)
+
+    # gesamt_universum wird erst weiter unten (Funnel-Aufbereitung) gesetzt -
+    # hier lokal berechnen, damit die Schatten-Messung davor stehen kann.
+    universum_gesamt = len(us_tasks) + len(eu_tasks)
+    durch_prozent = universum_gesamt - funnel.get("keine_kursdaten", 0) \
+        - funnel.get("zu_wenig_daten", 0) - funnel.get("fehler", 0) \
+        - funnel.get("nicht_unter_wma200", 0) - funnel.get("zu_weit_vom_52w_tief", 0)
+    durch_spanne = universum_gesamt - funnel_schatten.get("keine_kursdaten", 0) \
+        - funnel_schatten.get("zu_wenig_daten", 0) - funnel_schatten.get("fehler", 0) \
+        - funnel_schatten.get("nicht_unter_wma200", 0) \
+        - funnel_schatten.get("zu_weit_vom_52w_tief", 0)
+
+    schatten_zeilen = [
+        "(reine Beobachtung - der Tageslauf oben entscheidet unveraendert nach der Aktien-Regel)",
+        f"Aktien-Regel  (AKTIV, max. {ABSTAND_52W_TIEF_MAX}% ueber 52W-Tief): "
+        f"{durch_prozent} Titel passieren die Naehe-Stufe",
+        f"Spannen-Regel (TEST, Position <= {SPANNEN_POSITION_MAX:.0%} der 52W-Spanne): "
+        f"{durch_spanne} Titel passieren die Naehe-Stufe",
+        f"- nur die Spannen-Regel laesst zu: {len(nur_spannen_regel)} Titel"
+        + (f" ({', '.join(sorted(nur_spannen_regel)[:15])}"
+           + (" ..." if len(nur_spannen_regel) > 15 else "") + ")" if nur_spannen_regel else ""),
+        f"  davon mit intakter RSI-Divergenz (die eigentlich relevante Teilmenge): "
+        f"{len(schatten_divergenz)}"
+        + (f" ({', '.join(sorted(schatten_divergenz))})" if schatten_divergenz else ""),
+        f"- nur die Aktien-Regel laesst zu: {len(nur_prozent_regel)} Titel"
+        + (f" ({', '.join(sorted(nur_prozent_regel)[:15])}"
+           + (" ..." if len(nur_prozent_regel) > 15 else "") + ")" if nur_prozent_regel else ""),
+        f"=> Kandidaten (nach ALLEN Stufen) mit Spannen-Regel: "
+        f"{funnel_schatten.get('valide', 0)} (aktiv heute: {len(ergebnisse)})",
+    ]
+    schatten_text = "\n".join(schatten_zeilen)
+    print("SCHATTEN-MESSUNG:\n" + schatten_text)
+
     # Funnel fuer Konsole + Briefing aufbereiten (Reihenfolge = Pruefstufen)
     gesamt_universum = len(us_tasks) + len(eu_tasks)
     funnel_stufen = [
@@ -872,6 +957,13 @@ def main():
         f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
         f.write("-" * 50 + "\n")
         f.write(funnel_text + "\n\n")
+
+        # SCHATTEN-MESSUNG (NEU 29.07.2026): Regel-Vergleich auf dem vollen
+        # Universum - Entscheidungsgrundlage, ob die Naehe-Regel auch fuer
+        # Aktien umgestellt wird. Aendert nichts am heutigen Ergebnis.
+        f.write("SCHATTEN-MESSUNG Naehe-Regel (Aktien-Regel vs. Spannen-Regel)\n")
+        f.write("-" * 50 + "\n")
+        f.write(schatten_text + "\n\n")
 
         # DIVERGENZ-WATCHLIST (NEU 28.07.2026): die Titel der vorletzten
         # Funnel-Stufe - Boden-Bedingung erfuellt, Trigger steht noch aus.
