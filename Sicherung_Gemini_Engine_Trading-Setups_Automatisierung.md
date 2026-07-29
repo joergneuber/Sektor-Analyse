@@ -389,7 +389,11 @@ in diesem Fall nicht zusätzlich angewendet, da es sich um denselben
 zugrundeliegenden Faktor handelt. Die ACHTUNG-Abwertung gilt nur bei
 anderen ACHTUNG-Gründen (z. B. bärischer MACD-Trend, überkaufter RSI,
 Earnings-Gap-Risiko \[Earnings heute/morgen, NEU 28.07.2026\], frischer
-Death Cross \[NEU 28.07.2026\]).
+Death Cross \[NEU 28.07.2026\], „Stop zu eng (Risiko nur X%)" und „Zu
+wenig Kurshistorie" \[beide NEU 29.07.2026 - bei sehr engem Stop sind
+die CRV-Werte rechnerisch riesig, aber wertlos, weil der Nenner gegen
+null geht; erwähne bei solchen Titeln ausdrücklich, dass das hohe CRV
+NICHT als Qualitätsmerkmal zu lesen ist\]).
 
 Durchgerechnete Beispiele:
 
