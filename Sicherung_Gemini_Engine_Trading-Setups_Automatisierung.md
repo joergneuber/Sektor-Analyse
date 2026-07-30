@@ -192,6 +192,26 @@ Häufung/Nähe als das, was sie ist.
     darüber, warum nichts gefunden wurde. Fehlt der Block (älterer
     Lauf), entfällt der Satz ersatzlos.
 
+-   BEINAHE-KANDIDATEN (NEU 30.07.2026, Nutzerwunsch - „bei 0 validen
+    Setups soll dastehen, an welchen Bedingungen sie gescheitert sind"):
+    Die Briefing-Dateien enthalten zusätzlich Blöcke
+    „BEINAHE-KANDIDATEN" mit den Titeln, die alle Muster-Prüfungen
+    bestanden haben und erst an einer SPÄTEN Stufe gescheitert sind - je
+    Titel mit dem konkreten Wert (z. B. „SIX2.DE: CRV-Filter -\> CRV1
+    0.56 / CRV2 2.32 (Mindestwert 1.0)"). PFLICHT, wenn die betreffende
+    Kategorie 0 valide Setups hat: Gib die Liste dann als kompakte
+    Aufzählung im jeweiligen Abschnitt aus, direkt unter dem
+    Engstellen-Satz, mit vollständigem Namen statt Ticker (Nachschlag in
+    der zugehörigen CSV) und dem Wert wörtlich. Bei Kategorien MIT
+    validen Setups nur ein zusammenfassender Halbsatz („daneben
+    scheiterten N Titel knapp am CRV-Filter"), damit die echten Setups
+    im Fokus bleiben. WICHTIG: Das sind ausdrücklich KEINE Setups, keine
+    Empfehlungen und keine Watchlist im Sinne von ACHTUNG - sie dienen
+    allein der Nachvollziehbarkeit, warum ein Tag leer ausging;
+    formuliere nüchtern und leite keine Handlung daraus ab. Beim
+    Trendwende-Scanner erfüllt die DIVERGENZ-WATCHLIST diese Funktion
+    bereits - dort nicht doppelt ausgeben.
+
 -   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
     Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"
     enthalten - Titel, deren Boden-Bedingung (intakte bullische
