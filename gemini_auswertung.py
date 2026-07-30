@@ -7,7 +7,9 @@ Alternative zu claude_auswertung.py, da die Gemini-API (anders als die
 Claude-API) eine dauerhafte kostenlose Nutzungsstufe bietet.
 
 Mit automatischem Retry bei den bekannten, nicht-deterministischen
-Sicherheitsfilter-Ablehnungen ("Ich bin nur ein Sprachmodell...", etc.).
+Sicherheitsfilter-Ablehnungen ("Ich bin nur ein Sprachmodell...", etc.)
+und - NEU 30.07.2026 - mit einer eigenen, deutlich laengeren Warte-Staffel
+fuer serverseitige Ueberlast (HTTP 503) und Netzwerk-Abbrueche.
 
 Voraussetzungen:
     pip install google-genai
@@ -59,12 +61,25 @@ import io
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash"  # gemini-2.5-pro/-flash sind fÃ¼r NEUE API-Konten
+MODELL = "gemini-3.5-flash"  # gemini-2.5-pro/-flash sind für NEUE API-Konten
                               # bereits gesperrt (Auslaufen seit Juni/Okt. 2026).
                               # gemini-3.5-flash ist die aktuelle Generation mit
                               # echtem Gratis-Kontingent (Stand Juli 2026).
 MAX_VERSUCHE = 5
-WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit zwischen Retries (steigt leicht an)
+WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
+
+# NEU (30.07.2026): eigene, deutlich laengere Staffel fuer SERVERSEITIGE
+# UEBERLAST (HTTP 503 "This model is currently experiencing high demand")
+# und fuer Netzwerk-Abbrueche. Anlass: der Morgenlauf am 30.07. verbrannte
+# alle fuenf Versuche in rund zwei Minuten (15/20/25/30/35 s), weil die alte
+# Formel WARTEZEIT_SEKUNDEN + versuch*5 fuer JEDEN Fehlertyp galt. Eine
+# Nachfragespitze bei einem Gratis-Modell dauert typischerweise laenger als
+# zwei Minuten - fuenf Versuche in diesem Fenster sind praktisch fuenf
+# Versuche im selben Moment. Exponentiell statt linear:
+UEBERLAST_WARTEZEITEN = [60, 120, 240, 480]  # Sekunden, ~15 Min. Gesamtbudget
+# Ein GitHub-Actions-Job darf 6 Stunden laufen, 15 Minuten sind also
+# unkritisch; laenger ist trotzdem nicht sinnvoll, weil der Lauf sonst den
+# ganzen Vormittag blockiert - dann lieber ein spaeterer Handstart.
 
 ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
 
@@ -103,7 +118,7 @@ ABLEHNUNGS_MUSTER = [
     "als sprachmodell kann ich",
     "kann ich in diesem fall nicht helfen",
     "kann ich bei dieser sache nicht helfen",
-    "verfÃ¼ge nicht Ã¼ber die mÃ¶glichkeit",
+    "verfüge nicht über die möglichkeit",
     "verfuege nicht ueber die moeglichkeit",
 ]
 
@@ -192,14 +207,28 @@ def analysiere_api_fehler(fehlertext):
     Minute) oder 503 (kurzzeitige Ueberlastung) IST ein Retry sinnvoll -
     Google liefert dafuer meist ein 'retryDelay' in der Fehlerantwort mit,
     das genauer ist als unsere pauschale WARTEZEIT_SEKUNDEN-Formel.
-    Gibt (abbrechen: bool, empfohlene_wartezeit_sekunden: float|None) zurueck."""
+
+    ERWEITERT (30.07.2026): unterscheidet zusaetzlich die serverseitige
+    UEBERLAST (503 UNAVAILABLE) und Netzwerk-Abbrueche von den uebrigen
+    Retry-Faellen, weil diese eine viel laengere Wartezeit brauchen (siehe
+    UEBERLAST_WARTEZEITEN oben).
+    Gibt (abbrechen: bool, empfohlene_wartezeit_sekunden: float|None,
+    kategorie: str) zurueck. Kategorien: "tageskontingent", "ueberlast",
+    "netzwerk", "sonstiges"."""
     ist_tages_kontingent = "PerDay" in fehlertext
     if ist_tages_kontingent:
-        return True, None
+        return True, None, "tageskontingent"
 
     treffer = re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", fehlertext)
     empfohlene_wartezeit = float(treffer.group(1)) if treffer else None
-    return False, empfohlene_wartezeit
+
+    text_klein = fehlertext.lower()
+    if "503" in fehlertext or "unavailable" in text_klein or "high demand" in text_klein:
+        return False, empfohlene_wartezeit, "ueberlast"
+    if ("connection reset" in text_klein or "connection aborted" in text_klein
+            or "timed out" in text_klein or "temporarily unavailable" in text_klein):
+        return False, empfohlene_wartezeit, "netzwerk"
+    return False, empfohlene_wartezeit, "sonstiges"
 
 
 def ist_ablehnung(text):
@@ -268,18 +297,23 @@ def gemini_auswertung_starten():
     eingabedateien = sammle_eingabedateien()
 
     letzte_antwort = None
+    hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
 
     for versuch in range(1, MAX_VERSUCHE + 1):
         print(f"\nVersuch {versuch}/{MAX_VERSUCHE}...")
 
         try:
-            # Dateien fuer diesen Versuch frisch hochladen (neue "Sitzung"
-            # ist Teil der Retry-Strategie - Wiederholung mit denselben
-            # Daten in neuem Kontext behebt die nicht-deterministische
-            # Ablehnung erfahrungsgemaess zuverlaessig).
-            hochgeladene_teile = []
-            for name, pfad in eingabedateien.items():
-                hochgeladene_teile.append(client.files.upload(file=pfad))
+            # GEAENDERT (30.07.2026): Dateien werden nur hochgeladen, wenn
+            # noch keine Upload-Referenzen vorliegen. Der frische Upload ist
+            # Teil der Retry-Strategie gegen die nicht-deterministischen
+            # SICHERHEITSFILTER-Ablehnungen (neue "Sitzung", neuer Kontext) -
+            # bei einem technischen Fehler wie 503 ist er dagegen sinnlos:
+            # die Anfrage hat das Modell nie erreicht. Vorher wurden bei
+            # jedem 503-Retry alle elf Dateien erneut hochgeladen, was den
+            # Lauf verlaengert hat, ohne etwas zu verbessern.
+            if hochgeladene_teile is None:
+                hochgeladene_teile = [client.files.upload(file=pfad)
+                                      for pfad in eingabedateien.values()]
 
             antwort = client.models.generate_content(
                 model=MODELL,
@@ -298,7 +332,7 @@ def gemini_auswertung_starten():
             print(f"  Technischer Fehler beim API-Call: {e}")
             letzte_antwort = f"[Technischer Fehler] {e}"
 
-            abbrechen, empfohlene_wartezeit = analysiere_api_fehler(fehlertext)
+            abbrechen, empfohlene_wartezeit, kategorie = analysiere_api_fehler(fehlertext)
             if abbrechen:
                 print(
                     "  Tages-Kontingent des Gemini-Free-Tiers ist erschoepft "
@@ -311,8 +345,23 @@ def gemini_auswertung_starten():
                 )
                 sys.exit(2)
 
-            wartezeit = empfohlene_wartezeit if empfohlene_wartezeit is not None else (WARTEZEIT_SEKUNDEN + versuch * 5)
-            print(f"  Warte {wartezeit:.0f}s vor dem naechsten Versuch...")
+            if kategorie in ("ueberlast", "netzwerk"):
+                # Serverseitige Ueberlast/Netzwerkabbruch: lange, exponentiell
+                # steigende Pause (siehe UEBERLAST_WARTEZEITEN). Ein von Google
+                # mitgeliefertes retryDelay wird beachtet, aber nur wenn es
+                # LAENGER ist - kuerzer waere hier kontraproduktiv.
+                staffel_index = min(versuch - 1, len(UEBERLAST_WARTEZEITEN) - 1)
+                wartezeit = UEBERLAST_WARTEZEITEN[staffel_index]
+                if empfohlene_wartezeit is not None:
+                    wartezeit = max(wartezeit, empfohlene_wartezeit)
+                grund = ("Modell ueberlastet (503)" if kategorie == "ueberlast"
+                         else "Netzwerk-Abbruch")
+                print(f"  {grund} - warte {wartezeit:.0f}s (lange Staffel, "
+                      f"Versuch {versuch}/{MAX_VERSUCHE})...")
+            else:
+                wartezeit = (empfohlene_wartezeit if empfohlene_wartezeit is not None
+                             else WARTEZEIT_SEKUNDEN + versuch * 5)
+                print(f"  Warte {wartezeit:.0f}s vor dem naechsten Versuch...")
             time.sleep(wartezeit)
             continue
 
@@ -320,6 +369,9 @@ def gemini_auswertung_starten():
             print("  Sicherheitsfilter-Ablehnung erkannt (oder leere Antwort) - neuer Versuch...")
             print(f"  Antwort war: {text[:200]!r}")
             letzte_antwort = text
+            # NUR hier neu hochladen: frischer Kontext ist genau das Mittel
+            # gegen diese Art von Ablehnung (siehe Kommentar oben).
+            hochgeladene_teile = None
             time.sleep(WARTEZEIT_SEKUNDEN + versuch * 5)
             continue
 
