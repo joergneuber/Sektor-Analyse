@@ -179,8 +179,8 @@ Häufung/Nähe als das, was sie ist.
     vergibt diesen Status, wenn für einen Titel bereits eine offene
     Position im Portfolio liegt -- das Setup ist dann KEIN Neueinstieg,
     sondern eine erneute Bestätigung des laufenden Trades durch die
-    Systematik. Behandlung: NICHT in die „Daten-Übersicht (Valide
-    Setups)" aufnehmen und NICHT wie ACHTUNG stillschweigend
+    Systematik. Behandlung: NICHT in die „Daten-Übersicht
+    (Trendfolge-Setups)" aufnehmen und NICHT wie ACHTUNG stillschweigend
     überspringen. Stattdessen: (1) Die briefing.txt enthält dafür einen
     eigenen Abschnitt „BEREITS IM PORTFOLIO" -- übernimm dessen Titel in
     einen eigenen, kurzen Unterabschnitt „Bereits im Portfolio
@@ -283,12 +283,15 @@ Häufung/Nähe als das, was sie ist.
     Trendwende", „Abschnitt 9 = Offene Positionen") sind rein INTERNE
     Referenzen zum Nachschlagen. Nummeriere die Überschriften der
     fertigen Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken (1.
-    Marktumfeld & Globale Risikolage, 2. Daten-Übersicht, 3.
-    Trendwende-Setups, 4. Short-Setups, 5. Edelmetalle-Setups, ggf.
-    Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen
-    und als letzter Abschnitt Gestoppte Positionen) - entfällt eine
-    Kategorie an einem Tag komplett (z. B. kein Langfrist-Lauf), rücken
-    die nachfolgenden Nummern auf.
+    Marktumfeld & Globale Risikolage, 2. Daten-Übersicht
+    (Trendfolge-Setups) \[GEÄNDERT 30.07.2026: Zusatz
+    „(Trendfolge-Setups)" statt „(Valide Setups)" - bei fünf parallelen
+    Kategorien ist „valide Setups" allein nicht mehr eindeutig, welche
+    Strategie gemeint ist\], 3. Trendwende-Setups, 4. Short-Setups, 5.
+    Edelmetalle-Setups, ggf. Langfrist-Bewertung als eigener Abschnitt,
+    dann Offene Positionen und als letzter Abschnitt Gestoppte
+    Positionen) - entfällt eine Kategorie an einem Tag komplett (z. B.
+    kein Langfrist-Lauf), rücken die nachfolgenden Nummern auf.
 
 -   GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
     jetzt „Geschlossene Positionen (letzte 10 Werktage)" und enthält
@@ -888,7 +891,7 @@ stehen im STRATEGIE-ANSATZ-Block des Trendwende-Briefings).
     B-/A-Skala ein.
 
 -   Strikte Trennung (Pflicht): Trendwende-Setups gehören NIEMALS in den
-    Abschnitt „Daten-Übersicht (Valide Setups)" aus Abschnitt 3.
+    Abschnitt „Daten-Übersicht (Trendfolge-Setups)" aus Abschnitt 3.
     Erstelle für sie einen eigenen, klar abgegrenzten Abschnitt
     „TRENDWENDE-SETUPS (separates Risiko)" -- vermische die beiden
     Kategorien unter keinen Umständen.
@@ -1075,7 +1078,7 @@ der CSV-Spalte Setup_Qualitaet enthalten - übernimm sie wörtlich und
 rechne die Modifikatoren dort NICHT selbst nach.
 
 -   Strikte Trennung (Pflicht): Short-Setups gehören NIEMALS in den
-    Abschnitt „Daten-Übersicht (Valide Setups)" -- eigener Abschnitt
+    Abschnitt „Daten-Übersicht (Trendfolge-Setups)" -- eigener Abschnitt
     „SHORT-SETUPS (fallende Kurse)", klar abgegrenzt.
 
 -   Validitäts-Filter (siehe Abschnitt 1): Nur Titel mit Status2 =
@@ -1201,8 +1204,11 @@ und zwei entfallende Felder:
     Briefing drei getrennte Abschnitte mit je eigener Funnel-Statistik.
     GIB SIE IMMER GETRENNT AUS - als drei Unterabschnitte
     „Edelmetalle-Setups (Trendfolge)", „(Trendwende)" und „(Short)"
-    innerhalb des Edelmetalle-Abschnitts; vermische die drei NIEMALS zu
-    einer Liste, auch nicht wenn nur eine Strategie Treffer hat. Für
+    innerhalb des Edelmetalle-Abschnitts, JEWEILS durch eine LEERZEILE
+    voneinander getrennt (Übersichtlichkeit, Nutzerwunsch 30.07.2026) -
+    keine Trennlinie, kein zusätzliches Symbol, nur eine leere Zeile
+    zwischen den Unterabschnitten. Vermische die drei NIEMALS zu einer
+    Liste, auch nicht wenn nur eine Strategie Treffer hat. Für
     Trendwende- und Short-Kandidaten gelten dieselben Regeln wie bei
     ihren Aktien-Pendants (Abschnitte 5 bzw. 7), insbesondere die
     jeweiligen Risikohinweise: bei Trendwende die „Messer-Gefahr" (ein
@@ -1215,8 +1221,8 @@ und zwei entfallende Felder:
     Funnel-Statistik.
 
 -   Strikte Trennung (Pflicht): Edelmetalle-Setups gehören NIEMALS in
-    den Abschnitt „Daten-Übersicht (Valide Setups)\" aus Abschnitt 3 --
-    eigener Abschnitt „EDELMETALLE-SETUPS\", klar abgegrenzt.
+    den Abschnitt „Daten-Übersicht (Trendfolge-Setups)\" aus Abschnitt 3
+    -- eigener Abschnitt „EDELMETALLE-SETUPS\", klar abgegrenzt.
 
 Festes Ausgabe-Format je Edelmetall-Titel: {{Name}} \| Sektor:
 Edelmetalle
@@ -1387,6 +1393,27 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
     ausnahmsweise nicht auf (z. B. weil offene Positionen ganz fehlen),
     lass diesen Block einfach weg, erfinde keine eigene Berechnung als
     Ersatz.
+
+-   ERFOLGSBILANZ (NEU 30.07.2026, Nutzerwunsch -- GEGENSTÜCK zur
+    Portfolio-Übersicht, direkt DARUNTER als eigene Zeile bzw.
+    Zeilengruppe im selben Block): Während die Portfolio-Übersicht nur
+    den aktuellen, OFFENEN Bestand zeigt, wertet die Erfolgsbilanz ALLE
+    jemals geschlossenen Positionen aus (Status Gestoppt oder manuell
+    Verkauft) -- auch solche, die schon länger als 10 Werktage
+    zurückliegen und deshalb nicht mehr im Abschnitt „Geschlossene
+    Positionen" auftauchen. Der Briefing-Text enthält dafür eine
+    fertige, in Python vorberechnete Zeilengruppe beginnend mit
+    „Erfolgsbilanz (gesamter Verlauf, ..." -- übernimm sie WÖRTLICH und
+    UNVERÄNDERT, aus demselben Grund wie bei der Portfolio-Übersicht
+    (keine eigene Mittelwertbildung über viele Einzelwerte). Enthält der
+    Text stattdessen den Hinweis „noch keine geschlossenen Positionen
+    erfasst" oder „nicht berechenbar", übernimm auch das wörtlich statt
+    eigene Zahlen zu erfinden. Die Aufschlüsselung nach „Stop erreicht"
+    vs. „Manuell verkauft" ist rein beschreibend -- leite daraus KEINE
+    Bewertung ab (z. B. nicht „manuelle Verkäufe waren erfolgreicher"
+    als kausale Aussage), da die Stichprobengröße meist klein ist und
+    die Gründe für einen manuellen Verkauf im System nicht erfasst
+    werden.
 
 Optionsschein-Positionen -- eigene Zeile „Optionsschein: \..."
 
