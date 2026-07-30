@@ -25,6 +25,16 @@ Auswertung(<Datum>).txt ueberschrieben - das bleibt ausschliesslich der
 volle main.yml-Lauf) und von upload_to_drive.py automatisch mit
 hochgeladen (Dateiname enthaelt "Briefing", passt damit ins bestehende
 .txt-Upload-Muster).
+
+GEAENDERT (30.07.2026, Nutzerwunsch): Dow Jones und STOXX Europe 600
+ergaenzt - beide wurden am 28.07.2026 in analyse.py als zusaetzliche
+BENCHMARKS-Zeilen eingefuehrt (Dow als reine Info-Zeile, STOXX Europe 600
+als Marktbreite-Input fuer den EU-Marktumfeld-Score), dieses Skript war
+seither nicht mehr synchron - der 11:43-Uhr-Zwischenstand vom 30.07.
+zeigte deshalb beide Zeilen nicht an, obwohl der volle main.yml-Lauf sie
+laengst hatte. Reihenfolge und Label bewusst identisch zu analyse.py
+gehalten, damit ein Vergleich zwischen Zwischenstand und Tageslauf nicht
+durch unterschiedliche Anordnung erschwert wird.
 """
 import datetime
 
@@ -36,8 +46,10 @@ def erzeuge_snapshot():
 
     sp500_text = get_index_benchmark_yf("^GSPC", "S&P 500")
     nasdaq_text = get_index_benchmark_yf("^IXIC", "Nasdaq")
+    dow_text = get_index_benchmark_yf("^DJI", "Dow Jones")
     dax_text = get_index_benchmark_yf("^GDAXI", "DAX")
     eurostoxx_text = get_index_benchmark_yf("^STOXX50E", "EuroStoxx50")
+    stoxx600_text = get_index_benchmark_yf("^STOXX", "STOXX Europe 600")
     russell_text = get_index_benchmark_yf("^RUT", "Russell 2000")
     nikkei_text = get_index_benchmark_yf("^N225", "Nikkei 225")
     hangseng_text = get_index_benchmark_yf("^HSI", "Hang Seng")
@@ -50,7 +62,9 @@ def erzeuge_snapshot():
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
-    dxy_text = get_index_benchmark_yf("DX-Y.NYB", "US-Dollar-Index")
+    # US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung - analog zu
+    # analyse.py): wird bewusst nicht mehr abgerufen/ausgewertet. EUR/USD
+    # bleibt als einzige Waehrungs-Referenz.
     eurusd_text = get_eurusd_wechselkurs()
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
 
@@ -63,10 +77,11 @@ def erzeuge_snapshot():
         f.write("Kontext, kein Setup-Scan, keine Gemini-Auswertung)\n")
         f.write("=" * 66 + "\n\n")
         f.write(
-            f"{sp500_text}\n{nasdaq_text}\n{dax_text}\n{eurostoxx_text}\n{russell_text}\n"
-            f"{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n"
-            f"{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n"
-            f"{kupfer_text}\n{dxy_text}\n{eurusd_text}\n{btc_text}\n"
+            f"{sp500_text}\n{nasdaq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n"
+            f"{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n"
+            f"{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n"
+            f"{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n"
+            f"{eurusd_text}\n{btc_text}\n"
         )
 
     print(f"Gespeichert: {dateiname}")
