@@ -1374,8 +1374,18 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
     try:
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
-        firma_name = info.get('longName', ticker)
-        if not firma_name or firma_name == "":
+        # GEAENDERT (30.07.2026): longName ODER shortName, erst dann der Ticker
+        # als Notnagel. Vorher fiel die Auswertung bei fehlendem longName
+        # direkt auf den Ticker zurueck - im Lauf vom 30.07. standen deshalb
+        # "APD", "CL", "SIE.DE" und "CON.DE" statt der Firmennamen in der
+        # Watchlist, obwohl die Namens-Pflicht gilt. shortName ist bei
+        # yfinance deutlich zuverlaessiger verfuegbar als longName.
+        firma_name = info.get('longName') or info.get('shortName') or ticker
+        firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
+        # abgeschnittenes Rest-Fragment am Ende entfernen (yfinance kuerzt
+        # shortName hart, z.B. "VOLKSWAGEN AG                 V")
+        firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
+        if not firma_name:
             firma_name = ticker
     except:
         firma_name = ticker
@@ -1773,8 +1783,18 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
     try:
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
-        firma_name = info.get('longName', ticker)
-        if not firma_name or firma_name == "":
+        # GEAENDERT (30.07.2026): longName ODER shortName, erst dann der Ticker
+        # als Notnagel. Vorher fiel die Auswertung bei fehlendem longName
+        # direkt auf den Ticker zurueck - im Lauf vom 30.07. standen deshalb
+        # "APD", "CL", "SIE.DE" und "CON.DE" statt der Firmennamen in der
+        # Watchlist, obwohl die Namens-Pflicht gilt. shortName ist bei
+        # yfinance deutlich zuverlaessiger verfuegbar als longName.
+        firma_name = info.get('longName') or info.get('shortName') or ticker
+        firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
+        # abgeschnittenes Rest-Fragment am Ende entfernen (yfinance kuerzt
+        # shortName hart, z.B. "VOLKSWAGEN AG                 V")
+        firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
+        if not firma_name:
             firma_name = ticker
     except:
         firma_name = ticker
