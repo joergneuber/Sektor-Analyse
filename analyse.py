@@ -551,6 +551,92 @@ FOMC_TERMINE_2026 = [
 ]
 
 
+def berechne_erfolgsbilanz(df_positionen):
+    """ERFOLGSBILANZ (NEU 30.07.2026, Nutzerwunsch): Kennzahl ueber ALLE
+    jemals geschlossenen Positionen (Status Gestoppt oder Verkauft) - im
+    Unterschied zur Portfolio-Uebersicht, die nur den aktuellen, OFFENEN
+    Bestand zeigt. Da positionen_tracker.py geschlossene Zeilen nie loescht
+    (nur die Anzeige im Abschnitt 'Geschlossene Positionen' ist auf ein
+    rollierendes 10-Werktage-Fenster begrenzt), steht die komplette
+    Historie weiterhin in Offene_Positionen.csv - diese Funktion wertet sie
+    unabhaengig vom Anzeige-Fenster vollstaendig aus.
+
+    WICHTIGER BUGFIX EN PASSANT: Performance_Seit_Einstieg% wird von
+    positionen_tracker.py nur fuer Status 'Offen' aktualisiert (die Schleife
+    dort ueberspringt jede Zeile, deren Status nicht 'offen' ist). Bei
+    'Gestoppt' ist der Wert korrekt eingefroren (er wurde im selben Moment
+    gesetzt, in dem Ausstiegskurs = aktueller_kurs war). Bei 'Verkauft'
+    dagegen traegt der Nutzer Ausstiegskurs von Hand ein, OHNE dass
+    Performance_Seit_Einstieg% dabei neu berechnet wird - die Spalte kann
+    also einen veralteten Stand von der letzten 'Offen'-Aktualisierung
+    zeigen, der nicht zum tatsaechlichen Verkaufskurs passt. Deshalb wird
+    die Performance hier fuer ALLE geschlossenen Zeilen frisch aus
+    Einstieg/Ausstiegskurs/Richtung berechnet statt der Spalte zu vertrauen.
+
+    Gibt einen fertigen Text zurueck (oder einen Hinweis, falls noch keine
+    Position geschlossen wurde) - wie bei der Portfolio-Uebersicht in
+    Python vorberechnet, damit Gemini nicht selbst ueber viele Zeilen
+    mitteln muss (bekannter Schwachpunkt, siehe Portfolio-Uebersicht-Fix
+    vom 28.07.2026)."""
+    if df_positionen.empty or 'Status' not in df_positionen.columns:
+        return "Erfolgsbilanz: noch keine geschlossenen Positionen erfasst."
+
+    status_norm = df_positionen['Status'].astype(str).str.strip().str.lower()
+    geschlossen = df_positionen[status_norm.isin(['gestoppt', 'verkauft'])].copy()
+    if geschlossen.empty:
+        return "Erfolgsbilanz: noch keine geschlossenen Positionen erfasst."
+
+    def _performance_frisch(row):
+        try:
+            einstieg = float(str(row['Einstieg']).replace(',', '.'))
+            ausstieg = float(str(row['Ausstiegskurs']).replace(',', '.'))
+            if einstieg <= 0:
+                return None
+            ist_short = str(row.get('Richtung', '')).strip().lower() == 'short'
+            if ist_short:
+                return round(((einstieg - ausstieg) / einstieg) * 100, 2)
+            return round(((ausstieg - einstieg) / einstieg) * 100, 2)
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    geschlossen['_perf'] = geschlossen.apply(_performance_frisch, axis=1)
+    gueltig = geschlossen[geschlossen['_perf'].notna()]
+    if gueltig.empty:
+        return ("Erfolgsbilanz: nicht berechenbar (Einstiegs-/Ausstiegskurse "
+                "der geschlossenen Positionen nicht numerisch lesbar).")
+
+    n_gesamt = len(gueltig)
+    ist_stop = gueltig['Status'].astype(str).str.strip().str.lower() == 'gestoppt'
+    n_stop, n_verkauft = int(ist_stop.sum()), int((~ist_stop).sum())
+
+    gewinner = gueltig[gueltig['_perf'] > 0]
+    verlierer = gueltig[gueltig['_perf'] < 0]
+    trefferquote = round(len(gewinner) / n_gesamt * 100, 1)
+    perf_gesamt = round(gueltig['_perf'].mean(), 2)
+    perf_gewinner = round(gewinner['_perf'].mean(), 2) if not gewinner.empty else None
+    perf_verlierer = round(verlierer['_perf'].mean(), 2) if not verlierer.empty else None
+
+    perf_stop = round(gueltig[ist_stop]['_perf'].mean(), 2) if n_stop else None
+    perf_verkauft = round(gueltig[~ist_stop]['_perf'].mean(), 2) if n_verkauft else None
+
+    zeilen = [
+        f"Erfolgsbilanz (gesamter Verlauf, {n_gesamt} geschlossene Positionen - "
+        f"{n_stop} durch Stop, {n_verkauft} manuell verkauft):",
+        f"- Trefferquote: {trefferquote}% ({len(gewinner)} von {n_gesamt} mit positivem Ergebnis)",
+        f"- Ø Performance gesamt: {perf_gesamt:+.2f}%" +
+        (f" | Ø Gewinner: {perf_gewinner:+.2f}% ({len(gewinner)} Titel)" if perf_gewinner is not None else "") +
+        (f" | Ø Verlierer: {perf_verlierer:+.2f}% ({len(verlierer)} Titel)" if perf_verlierer is not None else ""),
+    ]
+    aufschluesselung = []
+    if perf_stop is not None:
+        aufschluesselung.append(f"Stop erreicht: Ø {perf_stop:+.2f}% ({n_stop} Titel)")
+    if perf_verkauft is not None:
+        aufschluesselung.append(f"Manuell verkauft: Ø {perf_verkauft:+.2f}% ({n_verkauft} Titel)")
+    if aufschluesselung:
+        zeilen.append(f"- Aufschlüsselung: {' | '.join(aufschluesselung)}")
+    return "\n".join(zeilen)
+
+
 def get_fomc_rueckblick(rueckblick_tage=7):
     """FOMC-RUECKBLICK (NEU 30.07.2026, Nutzerwunsch): Gegenstueck zum
     Countdown - WAS hat die Fed entschieden? Bisher verschwand die Sitzung
@@ -2644,6 +2730,7 @@ if __name__ == "__main__":
 
             if offene.empty and gestoppt_kuerzlich.empty:
                 f.write("Keine offenen Positionen erfasst.\n")
+                f.write(f"\n{berechne_erfolgsbilanz(df_positionen)}\n")
             else:
                 def fmt_de(wert):
                     """Formatiert einen Kurs-/Prozentwert einheitlich mit genau
@@ -2751,11 +2838,13 @@ if __name__ == "__main__":
                         gesamt_schnitt = gueltig['_perf_num'].mean()
                         teile.append(f"Gesamt ({len(gueltig)} Positionen): Ø {gesamt_schnitt:.2f}%".replace('.', ','))
                         f.write(f"\nPortfolio-Übersicht: {' | '.join(teile)}\n")
+                        f.write(f"\n{berechne_erfolgsbilanz(df_positionen)}\n")
                     else:
                         print("WARNUNG: Portfolio-Übersicht übersprungen - keine "
                               "numerisch lesbaren Performance-Werte in "
                               "Offene_Positionen.csv (Spalte fehlt oder Format unlesbar).")
                         f.write("\nPortfolio-Übersicht: nicht berechenbar (Performance-Werte heute nicht numerisch lesbar - siehe Lauf-Log).\n")
+                        f.write(f"\n{berechne_erfolgsbilanz(df_positionen)}\n")
 
                 if not gestoppt_kuerzlich.empty:
                     f.write("\n--- GESCHLOSSEN (letzte 10 Werktage: Stop erreicht oder manuell verkauft) ---\n")
