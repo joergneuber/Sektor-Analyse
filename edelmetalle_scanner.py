@@ -75,7 +75,15 @@ from collections import Counter
 # durch `if __name__ == "__main__"` geschuetzt, der Import startet dort also
 # keinen Scan.
 from trendwende_scanner import _pruefe_trendwende, SPANNEN_POSITION_MAX
-from short_scanner import _pruefe_short_setup
+
+# BEINAHE-KANDIDATEN (NEU 30.07.2026, Nutzerwunsch - gilt auch hier): Titel,
+# die alle Muster-Pruefungen bestanden und erst am CRV-Filter scheiterten.
+# Bei nur 4 Instrumenten besonders aussagekraeftig - man sieht sofort, WIE
+# knapp ein Metall war. Die Short-Variante fuellt die Liste im importierten
+# short_scanner-Modul (BEINAHE_SHORT); sie wird unten mit ausgegeben, damit
+# die dort gesammelten Metall-Shorts nicht verloren gehen.
+BEINAHE_EDELMETALL = []
+from short_scanner import _pruefe_short_setup, BEINAHE_SHORT
 
 from analyse import (
     check_rsi_divergence,
@@ -432,6 +440,9 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
+            BEINAHE_EDELMETALL.append(
+                f"{name} ({ticker}) [Trendfolge]: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
+                f"(Mindestwert 1.0), Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
             return None, "crv_unter_1"
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -813,6 +824,19 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
                 f.write(f"FUNNEL-STATISTIK {strategie} (Ablehnungsgruende je Pruefstufe)\n")
                 f.write("-" * 50 + "\n")
                 f.write(funnel_texte[strategie] + "\n\n")
+
+            # Beinahe-Kandidaten dieser Strategie (NEU 30.07.2026)
+            if strategie == "Short":
+                beinahe = [z for z in BEINAHE_SHORT]
+            else:
+                beinahe = [z for z in BEINAHE_EDELMETALL if f"[{strategie}]" in z]
+            if beinahe:
+                f.write(f"BEINAHE-KANDIDATEN {strategie} (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
+                f.write("-" * 50 + "\n")
+                f.write("(nur Beobachtung, KEINE Setups)\n")
+                for zeile in sorted(beinahe):
+                    f.write(zeile + "\n")
+                f.write("\n")
 
             if not treffer:
                 f.write(f"Keine {strategie}-Kandidaten gefunden.\n\n")
