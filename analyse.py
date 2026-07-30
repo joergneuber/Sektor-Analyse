@@ -49,10 +49,15 @@ def funnel_zaehle(grund):
 FUNNEL_BEINAHE = []
 
 
-def funnel_beinahe(ticker, stufe, detail):
-    """Merkt sich einen spaeten Beinahe-Treffer (thread-sicher)."""
+def funnel_beinahe(ticker, stufe, detail, crv_sortier=None):
+    """Merkt sich einen spaeten Beinahe-Treffer (thread-sicher).
+    crv_sortier (NEU 30.07.2026, Nutzerwunsch): das kleinere der beiden CRVs
+    (der Wert, der die Ablehnung ausgeloest hat) - fuer eine absteigende
+    Sortierung in der Ausgabe, damit die Titel, die der 1.0-Schwelle am
+    naechsten kamen, oben stehen statt alphabetisch verstreut."""
     with _funnel_lock:
-        FUNNEL_BEINAHE.append({"Ticker": str(ticker), "Stufe": stufe, "Detail": detail})
+        FUNNEL_BEINAHE.append({"Ticker": str(ticker), "Stufe": stufe, "Detail": detail,
+                               "CRV_Sortier": crv_sortier})
 
 
 # --- MARKTUMFELD-KLASSIFIKATION (Score-Modell, GEÄNDERT 28.07.2026 abends,
@@ -1804,7 +1809,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             funnel_zaehle("crv_unter_1")
             funnel_beinahe(ticker, "CRV-Filter",
                            f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
-                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
+                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+                           crv_sortier=min(crv1, crv2))
             return None
         
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -2144,7 +2150,8 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             funnel_zaehle("crv_unter_1")
             funnel_beinahe(ticker, "CRV-Filter",
                            f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
-                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
+                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+                           crv_sortier=min(crv1, crv2))
             return None
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -2923,5 +2930,11 @@ if __name__ == "__main__":
             f.write("\nBEINAHE-KANDIDATEN Hauptscanner (Setup-Muster erfuellt, erst an einer spaeten Stufe gescheitert)\n")
             f.write("-" * 50 + "\n")
             f.write("(nur Beobachtung, KEINE Setups - zeigt, WORAN es im Einzelfall haengt)\n")
-            for b in sorted(beinahe, key=lambda x: x["Ticker"]):
+            # Sortierung (GEAENDERT 30.07.2026, Nutzerwunsch): absteigend nach dem
+            # bindenden CRV - die knappsten Beinahe-Treffer (naeher an der
+            # 1.0-Schwelle) stehen oben. Fehlt der Sortierwert ausnahmsweise
+            # (aeltere Aufrufstelle ohne crv_sortier), rutscht der Titel ans Ende
+            # statt den Sort mit einem Fehler abzubrechen.
+            for b in sorted(beinahe, key=lambda x: (x.get("CRV_Sortier") is None,
+                                                     -(x.get("CRV_Sortier") or 0))):
                 f.write(f"{b['Ticker']}: {b['Stufe']} -> {b['Detail']}\n")
