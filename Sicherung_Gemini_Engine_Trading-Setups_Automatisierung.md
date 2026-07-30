@@ -715,6 +715,37 @@ Pflicht sobald vorhanden}}
     spricht für robustes globales Wachstum, fallender für Abschwächung.
     Nur Kontext, keine Abwertungsquelle.
 
+-   52-WOCHEN-KONTEXT + REKORD-NÄHE für Öl/Edelmetalle (NEU 30.07.2026,
+    Nutzerwunsch -- ersetzt die bisherige rein EMA-basierte Beschreibung
+    von Gold/Silber/Öl in der Globalen Risikolage): Nutze für die
+    Einordnung von WTI, Brent, Gold und Silber PFLICHT die Jahresspanne
+    statt nur der EMA-Werte -- für WTI/Brent steht dafür je eine Zeile
+    „WTI/Brent (52W-Einordnung): Kurs ... \| X% über 52W-Tief ... \| Y%
+    zum 52W-Hoch ..." direkt im BENCHMARKS-Block (fehlt sie, war der
+    Abruf nicht möglich -- dann bei der bisherigen EMA-Beschreibung
+    bleiben); für Gold/Silber/Platin/Palladium liefert das
+    Edelmetalle-Briefing dieselbe Einordnung im Block „LAGE JE METALL"
+    (Abschnitt 8). Formuliere z. B. statt „Gold notiert bei 4.135,60\$"
+    eher „Gold notiert bei 4.135,60\$, 26,7% über seinem 52-Wochen-Tief
+    und 26,0% unter seinem 52-Wochen-Hoch" -- das ist aussagekräftiger
+    als der reine EMA-Vergleich und war bisher nur für die Edelmetalle
+    vorhanden, jetzt auch für Öl. Zusätzlich kann die briefing.txt einen
+    Block „REKORD-NÄHE" enthalten (nur wenn mindestens ein Instrument
+    betroffen ist, sonst entfällt er ersatzlos) bzw. steht dieselbe
+    Zeile als Zusatz unter dem jeweiligen Metall in „LAGE JE METALL"
+    (eingerückt mit „-\>"). PFLICHT: Ist eine solche Zeile vorhanden,
+    übernimm sie WÖRTLICH in die Globale Risikolage (nicht nur in
+    Abschnitt 8, sondern auch im Fließtext der Risikolage, da eine
+    Rekord-Nähe markterheblich ist) UND erwähne sie zusätzlich in der
+    Executive Summary, wenn ein exaktes neues Rekordhoch/-tief vorliegt
+    (nicht nur „in der Nähe"). Übernimm die Formulierung inklusive des
+    Hinweises „seit Datenbeginn (ca. Jahr)" wörtlich -- das ist kein
+    geprüftes echtes Allzeit-Rekord, sondern der höchste/tiefste Stand
+    seit Beginn der verfügbaren Kursreihe, und diese Einschränkung darf
+    nicht wegfallen. Rechne NICHTS selbst nach und erfinde keine
+    weiteren Rekord-Aussagen zu Instrumenten, für die keine solche Zeile
+    geliefert wird.
+
 -   US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung): Der
     US-Dollar-Index wird seit 29.07.2026 nicht mehr im Briefing
     geliefert und NICHT mehr ausgewertet - erwähne ihn nirgends, auch
