@@ -637,6 +637,81 @@ def get_zinskurve_fred():
         return "Zinskurve (2J/5J/10J/30J, FRED): Daten unvollständig"
 
 
+# --- REGIONEN-PERFORMANCE (NEU 29.07.2026, Nutzerwunsch) ---
+# Je Region die Veraenderung des letzten Handelstages und seit Jahresanfang.
+# Zweck: die Auswertung soll mit einer Zeile pro Region beginnen, damit auf
+# einen Blick klar ist, wo die Woche/das Jahr steht - vor allen Setups.
+#
+# Index-Zuordnung und Reihenfolge (GEAENDERT 29.07.2026, Nutzerwunsch):
+#   Europa = DAX, dann EuroStoxx50
+#   USA    = S&P 500, dann Nasdaq
+#   Asien  = Nikkei 225, Shanghai Composite, Hang Seng
+# KEIN Regionen-Mittelwert (ausdruecklicher Nutzerwunsch): jeder Index wird
+# mit seinem eigenen Wert ausgewiesen. Ein Mittel ueber Indizes mit sehr
+# unterschiedlicher Zusammensetzung und Waehrung wuerde ohnehin eine
+# Genauigkeit suggerieren, die es nicht gibt - besonders in Asien, wo Tokio,
+# Shanghai und Hongkong regelmaessig in verschiedene Richtungen laufen.
+# Ehrliche Einschraenkung, die auch im Briefing steht: "letzter Handelstag"
+# heisst bei Asien der heutige asiatische Schluss (Zeitzone), bei USA der
+# Schluss von gestern - der Lauf startet vor US-Handelsbeginn.
+REGIONEN = {
+    "Europa": [("^GDAXI", "DAX"), ("^STOXX50E", "EuroStoxx50")],
+    "USA": [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq")],
+    "Asien": [("^N225", "Nikkei 225"), ("000001.SS", "Shanghai Composite"),
+              ("^HSI", "Hang Seng")],
+}
+
+
+def _index_performance(ticker):
+    """Gibt (Vortagsveraenderung%, YTD%) fuer einen Index zurueck, oder
+    (None, None). Beides aus EINEM yfinance-Abruf (1 Jahr Historie)."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist.empty or len(hist) < 2:
+            return None, None
+        schluss = hist['Close'].dropna()
+        if len(schluss) < 2:
+            return None, None
+        letzter = float(schluss.iloc[-1])
+        vortag = float(schluss.iloc[-2])
+        tag_pct = (letzter / vortag - 1) * 100 if vortag else None
+
+        # YTD: letzter Schlusskurs des VORJAHRES als Basis (nicht der erste
+        # Kurs des neuen Jahres - sonst fehlt der Jahreswechsel-Gap).
+        jahr = datetime.date.today().year
+        idx = schluss.index
+        jahre = [d.year for d in idx]
+        vorjahr_positionen = [i for i, j in enumerate(jahre) if j < jahr]
+        if vorjahr_positionen:
+            basis = float(schluss.iloc[vorjahr_positionen[-1]])
+        else:
+            basis = float(schluss.iloc[0])  # Historie beginnt erst im laufenden Jahr
+        ytd_pct = (letzter / basis - 1) * 100 if basis else None
+        return tag_pct, ytd_pct
+    except Exception as e:
+        print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar ({type(e).__name__})")
+        return None, None
+
+
+def get_regionen_performance_text():
+    """Baut den Briefing-Block. Fehlende Werte werden als 'n/a' ausgewiesen,
+    nie stillschweigend weggelassen."""
+    zeilen = ["REGIONEN-PERFORMANCE (letzter Handelstag / seit Jahresanfang)"]
+    zeilen.append("(je Index einzeln ausgewiesen, kein Regionen-Mittelwert; Zeitzonen "
+                  "beachten: der Lauf startet vor US-Handelsbeginn, der US-Wert ist "
+                  "also der Schluss des Vortages, der asiatische der heutige Schluss)")
+    for region, indizes in REGIONEN.items():
+        zeilen.append(f"{region}:")
+        for ticker, label in indizes:
+            tag_pct, ytd_pct = _index_performance(ticker)
+            if tag_pct is None or ytd_pct is None:
+                zeilen.append(f"  {label:20s} n/a (Kursdaten nicht verfuegbar)")
+            else:
+                zeilen.append(f"  {label:20s} letzter Handelstag {tag_pct:+6.2f}% | "
+                              f"YTD {ytd_pct:+7.2f}%")
+    return "\n".join(zeilen)
+
+
 def get_index_benchmark_yf(ticker, label):
     """Generische Benchmark-Funktion für Indizes/Futures via yfinance - u.a.
     für S&P 500 (^GSPC) und Nasdaq (^IXIC) seit 27.07.2026 (vorher fälschlich
@@ -2296,6 +2371,10 @@ if __name__ == "__main__":
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n")
         f.write("- Earnings-Rückblick (NEU 29.07.2026): nach berichteten Zahlen (letzte 5 Kalendertage) erscheint eine Zeile '📊 Zahlen TT.MM.: ...' - EPS gemeldet vs. Analystenerwartung (yfinance) KOMBINIERT mit der Kursreaktion am Berichtstag; laufen beide auseinander (Zahlen gut, Kurs fällt), lautet das Urteil 'geteilte Meinung'. Nur EPS, kein Umsatz/keine Guidance verfügbar - reiner Kontext, keine Setup-Bewertung\n\n")
 
+        # REGIONEN-PERFORMANCE zuerst (NEU 29.07.2026): steht bewusst VOR den
+        # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
+        f.write(get_regionen_performance_text() + "\n\n")
+
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
@@ -2424,8 +2503,16 @@ if __name__ == "__main__":
                 f.write(f"(Fehler beim Lesen von {positionen_datei}: {e})\n")
 
             offene = df_positionen[df_positionen['Status'].astype(str).str.strip().str.lower() == 'offen'] if not df_positionen.empty else df_positionen
+            # GEAENDERT (29.07.2026, Nutzerwunsch): auch manuell verkaufte
+            # Positionen (Status 'Verkauft') gehoeren in diesen Abschnitt.
+            # Vorher wurde ausschliesslich 'Gestoppt' erkannt - wer eine
+            # Position vor TP1 oder Stop von Hand verkaufte, sah sie danach
+            # NIRGENDS mehr: nicht bei den offenen (Status != 'Offen') und
+            # nicht bei den geschlossenen. Die Historie verschwand still.
+            _status_norm = df_positionen['Status'].astype(str).str.strip().str.lower() \
+                if not df_positionen.empty else None
             gestoppt_kuerzlich = df_positionen[
-                (df_positionen['Status'].astype(str).str.strip().str.lower() == 'gestoppt')
+                _status_norm.isin(['gestoppt', 'verkauft'])
                 & (df_positionen['Ausstiegsdatum'].apply(ist_kuerzlich_gestoppt))
             ] if not df_positionen.empty else df_positionen
 
@@ -2559,13 +2646,16 @@ if __name__ == "__main__":
                         f.write("\nPortfolio-Übersicht: nicht berechenbar (Performance-Werte heute nicht numerisch lesbar - siehe Lauf-Log).\n")
 
                 if not gestoppt_kuerzlich.empty:
-                    f.write("\n--- GESTOPPT (letzte 10 Werktage) ---\n")
+                    f.write("\n--- GESCHLOSSEN (letzte 10 Werktage: Stop erreicht oder manuell verkauft) ---\n")
                     for _, prow in gestoppt_kuerzlich.iterrows():
                         waehrungszeichen = {"EUR": "€", "GBP": "£"}.get(str(prow.get("Waehrung", "")).strip(), "$")
                         ideen_quelle = str(prow.get('Ideen_Quelle', '')).strip()
                         if not ideen_quelle or ideen_quelle.lower() == 'nan':
                             ideen_quelle = 'Manuell'
-                        f.write(f"{prow['Ticker']} (Quelle: {ideen_quelle}) -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} am {prow.get('Ausstiegsdatum', '')} (Stop erreicht)\n")
+                        # Grund unterscheiden: automatischer Stop vs. manueller Verkauf
+                        _st = str(prow.get('Status', '')).strip().lower()
+                        grund_txt = "manuell verkauft" if _st == 'verkauft' else "Stop erreicht"
+                        f.write(f"{prow['Ticker']} (Quelle: {ideen_quelle}) -- Einstieg: {fmt_de(prow['Einstieg'])}{waehrungszeichen} / Ausstieg: {fmt_de(prow['Ausstiegskurs'])}{waehrungszeichen} am {prow.get('Ausstiegsdatum', '')} ({grund_txt})\n")
         else:
             f.write("(Positions-Tracker hat heute keine Datei bereitgestellt - Abschnitt übersprungen.)\n")
 
