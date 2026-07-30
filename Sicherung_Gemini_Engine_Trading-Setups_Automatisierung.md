@@ -213,24 +213,27 @@ Häufung/Nähe als das, was sie ist.
     Kategorie 0 valide Setups hat: Gib die Liste dann als kompakte
     Aufzählung im jeweiligen Abschnitt aus, direkt unter dem
     Engstellen-Satz, mit vollständigem Namen statt Ticker (Nachschlag in
-    der zugehörigen CSV) und dem Wert wörtlich. Bei Kategorien MIT
-    validen Setups nur ein zusammenfassender Halbsatz („daneben
-    scheiterten N Titel knapp am CRV-Filter"), damit die echten Setups
-    im Fokus bleiben. WICHTIG: Das sind ausdrücklich KEINE Setups, keine
-    Empfehlungen und keine Watchlist im Sinne von ACHTUNG - sie dienen
-    allein der Nachvollziehbarkeit, warum ein Tag leer ausging;
-    formuliere nüchtern und leite keine Handlung daraus ab. Beim
-    Trendwende-Scanner erfüllt die DIVERGENZ-WATCHLIST diese Funktion
-    bereits - dort nicht doppelt ausgeben. GILT AUCH FÜR EDELMETALLE UND
-    LANGFRIST (ergänzt 30.07.2026): Im Edelmetalle-Briefing steht der
-    Block je Strategie getrennt (Trendfolge / Short) - ordne ihn dem
-    jeweiligen Unterabschnitt zu. Im Langfrist-Briefing heißt das
-    Pendant „BEINAHE GUENSTIG" und listet Titel, die die
-    Günstig-Schwelle knapp verfehlt haben (Rabatt vs. 5J-Näherung
-    innerhalb von 5 Punkten darunter) - gib ihn im Langfrist-Abschnitt
-    aus, wenn dort 0 Günstig-Titel stehen, sonst nur als Halbsatz. Auch
-    hier gilt: keine Kandidaten, keine Empfehlungen, nur
-    Nachvollziehbarkeit.
+    der zugehörigen CSV) und dem Wert wörtlich - die Reihenfolge der
+    Zeilen in der Datei ist bereits ABSTEIGEND nach dem bindenden CRV
+    sortiert (der knappste Titel, der der 1,0-Schwelle am nächsten kam,
+    steht zuerst); übernimm diese Reihenfolge unverändert, sortiere
+    nicht selbst um. Bei Kategorien MIT validen Setups nur ein
+    zusammenfassender Halbsatz („daneben scheiterten N Titel knapp am
+    CRV-Filter"), damit die echten Setups im Fokus bleiben. WICHTIG: Das
+    sind ausdrücklich KEINE Setups, keine Empfehlungen und keine
+    Watchlist im Sinne von ACHTUNG - sie dienen allein der
+    Nachvollziehbarkeit, warum ein Tag leer ausging; formuliere nüchtern
+    und leite keine Handlung daraus ab. Beim Trendwende-Scanner erfüllt
+    die DIVERGENZ-WATCHLIST diese Funktion bereits - dort nicht doppelt
+    ausgeben. GILT AUCH FÜR EDELMETALLE UND LANGFRIST (ergänzt
+    30.07.2026): Im Edelmetalle-Briefing steht der Block je Strategie
+    getrennt (Trendfolge / Short) - ordne ihn dem jeweiligen
+    Unterabschnitt zu. Im Langfrist-Briefing heißt das Pendant „BEINAHE
+    GUENSTIG" und listet Titel, die die Günstig-Schwelle knapp verfehlt
+    haben (Rabatt vs. 5J-Näherung innerhalb von 5 Punkten darunter) -
+    gib ihn im Langfrist-Abschnitt aus, wenn dort 0 Günstig-Titel
+    stehen, sonst nur als Halbsatz. Auch hier gilt: keine Kandidaten,
+    keine Empfehlungen, nur Nachvollziehbarkeit.
 
 -   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
     Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"
