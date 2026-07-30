@@ -909,6 +909,102 @@ def get_regionen_performance_text():
     return "\n".join(zeilen)
 
 
+# --- 52-WOCHEN-KONTEXT + REKORD-NAEHE (NEU 30.07.2026, Nutzerwunsch) ---
+# Anlass: Oel (WTI/Brent) hatte bisher nur EMA-Vergleiche im Briefing, keine
+# Einordnung in die Jahresspanne wie die Edelmetalle ("LAGE JE METALL").
+# Zusaetzlich sollen Oel UND Edelmetalle gemeldet werden, wenn sie nahe an
+# ihrem Rekordhoch/-tief seit Datenbeginn stehen - nicht nur binaer
+# (erreicht/nicht erreicht), sondern auch die Naehe dazu (Nutzerwunsch:
+# "nicht nur das reine Erreichen des Hoechst-/Tiefpunkts mitteilen").
+REKORD_NAEHE_SCHWELLE_PROZENT = 10.0
+
+
+def get_52w_kontext_text(ticker, label):
+    """Wie die 'LAGE JE METALL'-Diagnose des Edelmetalle-Scanners, nur als
+    wiederverwendbare Funktion - Kurs, Abstand zum 52W-Tief und zum 52W-Hoch.
+    52-Wochen-Fenster per DATUMS-Schnitt (gleiche Methode wie im Edelmetalle-
+    Scanner seit 29.07.2026 - siehe dortige Begruendung: Zeilenzaehlung
+    verzerrt bei luecken-behafteter Historie). Gibt einen fertigen Text oder
+    None zurueck (bei Datenfehlern - dann bleibt die Zeile einfach weg)."""
+    try:
+        data = yf.Ticker(ticker).history(period="2y")
+        if data.empty:
+            return None
+        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+        if getattr(data.index, 'tz', None) is not None:
+            stichtag = stichtag.tz_localize(data.index.tz)
+        fenster = data[data.index >= stichtag]
+        if len(fenster) < 60:
+            fenster = data.tail(252)
+        kurs = float(fenster['Close'].iloc[-1])
+        tief_52w = float(fenster['Low'].min())
+        hoch_52w = float(fenster['High'].max())
+        if tief_52w <= 0 or hoch_52w <= 0:
+            return None
+        abstand_tief = (kurs / tief_52w - 1) * 100
+        abstand_hoch = (kurs / hoch_52w - 1) * 100
+        return (f"{label}: Kurs {kurs:.2f} | {abstand_tief:+.1f}% ueber 52W-Tief "
+               f"({tief_52w:.2f}) | {abstand_hoch:+.1f}% zum 52W-Hoch ({hoch_52w:.2f})")
+    except Exception as e:
+        print(f"DEBUG-52W-KONTEXT: {ticker} nicht ermittelbar ({type(e).__name__})")
+        return None
+
+
+def get_rekord_naehe_text(ticker, label, schwelle_prozent=REKORD_NAEHE_SCHWELLE_PROZENT):
+    """Prueft, ob ein Instrument auf oder nahe seinem Rekordhoch/-tief SEIT
+    DATENBEGINN steht (period='max' bei yfinance). EHRLICHE EINSCHRAENKUNG,
+    die auch im Text steht: bei Futures-Continuous-Kontrakten (Oel, Metalle)
+    reicht yfinance's 'max'-Historie in aller Regel nur bis ca. 2000 zurueck -
+    das ist also der hoechste/tiefste Stand SEIT DIESEM DATENBEGINN, kein
+    geprueftes echtes Allzeit-Rekord (z. B. Oel-Spitzen der 1980er waeren
+    darin nicht erfasst). Deshalb wird das Startdatum der Reihe IMMER mit
+    genannt statt "Rekord" unbelegt zu behaupten.
+
+    GEAENDERT (30.07.2026, Nutzerwunsch): meldet nicht nur das exakte
+    Erreichen, sondern auch die NAEHE dazu (Standard-Schwelle 10%) - z. B.
+    "bewegt sich in der Naehe seines Rekordhochs ... - aktuell 6,2% darunter".
+    Gibt eine fertige Textzeile zurueck, oder None wenn weder erreicht noch
+    in der Naehe (dann bleibt die Zeile in der Ausgabe einfach weg - das ist
+    der Normalfall, nur auffaellige Tage sollen ueberhaupt erscheinen)."""
+    try:
+        data = yf.Ticker(ticker).history(period="max")
+        if data.empty or len(data) < 60:
+            return None
+        rekord_hoch = float(data['High'].max())
+        rekord_tief = float(data['Low'].min())
+        kurs = float(data['Close'].iloc[-1])
+        start_jahr = data.index[0].year
+        if rekord_hoch <= 0 or rekord_tief <= 0:
+            return None
+
+        meldungen = []
+        # Naehe zum Rekordhoch (Toleranz 0.1% fuer "erreicht", wegen
+        # Rundungsdifferenzen zwischen Intraday-High und Schlusskurs)
+        abstand_hoch_pct = (rekord_hoch - kurs) / rekord_hoch * 100
+        if abstand_hoch_pct <= 0.1:
+            meldungen.append(f"{label} notiert auf einem neuen Rekordhoch seit "
+                             f"Datenbeginn (ca. {start_jahr}).")
+        elif abstand_hoch_pct <= schwelle_prozent:
+            meldungen.append(f"{label} bewegt sich in der Nähe seines Rekordhochs "
+                             f"seit Datenbeginn (ca. {start_jahr}) - aktuell "
+                             f"{abstand_hoch_pct:.1f}% darunter.")
+
+        # Naehe zum Rekordtief (gespiegelt)
+        abstand_tief_pct = (kurs - rekord_tief) / rekord_tief * 100
+        if abstand_tief_pct <= 0.1:
+            meldungen.append(f"{label} notiert auf einem neuen Rekordtief seit "
+                             f"Datenbeginn (ca. {start_jahr}).")
+        elif abstand_tief_pct <= schwelle_prozent:
+            meldungen.append(f"{label} bewegt sich in der Nähe seines Rekordtiefs "
+                             f"seit Datenbeginn (ca. {start_jahr}) - aktuell "
+                             f"{abstand_tief_pct:.1f}% darüber.")
+
+        return " ".join(meldungen) if meldungen else None
+    except Exception as e:
+        print(f"DEBUG-REKORD-NAEHE: {ticker} nicht ermittelbar ({type(e).__name__})")
+        return None
+
+
 def get_index_benchmark_yf(ticker, label):
     """Generische Benchmark-Funktion für Indizes/Futures via yfinance - u.a.
     für S&P 500 (^GSPC) und Nasdaq (^IXIC) seit 27.07.2026 (vorher fälschlich
@@ -2244,6 +2340,19 @@ if __name__ == "__main__":
     # verbreiteter Liquiditaets-/Risikoappetit-Gauge.
     oel_text = get_index_benchmark_yf("CL=F", "Rohöl (WTI)")
     oel_brent_text = get_index_benchmark_yf("BZ=F", "Rohöl (Brent)")
+    # 52-Wochen-Kontext + Rekord-Naehe fuer Oel (NEU 30.07.2026, Nutzerwunsch:
+    # dieselbe Einordnung, die die Edelmetalle schon haben ueber "LAGE JE
+    # METALL" im Edelmetalle-Briefing). None-Werte werden weiter unten beim
+    # Zusammenbau uebersprungen statt eine leere Zeile zu erzeugen.
+    wti_52w_text = get_52w_kontext_text("CL=F", "WTI (52W-Einordnung)")
+    brent_52w_text = get_52w_kontext_text("BZ=F", "Brent (52W-Einordnung)")
+    rekord_texte = []
+    for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),
+                          ("GC=F", "Gold"), ("SI=F", "Silber"),
+                          ("PL=F", "Platin"), ("PA=F", "Palladium")]:
+        _text = get_rekord_naehe_text(_tick, _label)
+        if _text:
+            rekord_texte.append(_text)
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
@@ -2602,7 +2711,7 @@ if __name__ == "__main__":
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
         f.write(get_regionen_performance_text() + "\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (f"{wti_52w_text}\n" if wti_52w_text else "") + (f"{brent_52w_text}\n" if brent_52w_text else "") + f"{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
@@ -2623,6 +2732,17 @@ if __name__ == "__main__":
         f.write("- Dow Jones: reine Info-Zeile in den BENCHMARKS, fließt bewusst NICHT in den Score ein\n")
         f.write(f"Marktumfeld USA: {us_stufe} (Score {us_score}) - {' | '.join(us_detail)}\n")
         f.write(f"Marktumfeld Europa: {eu_stufe} (Score {eu_score}) - {' | '.join(eu_detail)}\n\n")
+
+        # REKORD-NAEHE Oel + Edelmetalle (NEU 30.07.2026, Nutzerwunsch): nur
+        # ausgeben, wenn mindestens ein Instrument betroffen ist - der
+        # Normalfall (niemand nah am Rekord) bleibt bewusst stumm, damit der
+        # Block nicht taeglich mit "nichts zu melden" aufwartet.
+        if rekord_texte:
+            f.write("REKORD-NAEHE (Oel/Edelmetalle nahe/auf Hoch- oder Tiefstand seit "
+                    "Datenbeginn, Schwelle 10%)\n")
+            for _t in rekord_texte:
+                f.write(f"- {_t}\n")
+            f.write("\n")
 
         # 1. TOP-CHANCEN (VALIDE - PRO-CHECK AKTIV, US + EU gemeinsam nach Score sortiert)
         f.write("\n" + "="*50 + "\n")
