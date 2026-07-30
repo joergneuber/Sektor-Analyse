@@ -634,6 +634,28 @@ def berechne_erfolgsbilanz(df_positionen):
         aufschluesselung.append(f"Manuell verkauft: Ø {perf_verkauft:+.2f}% ({n_verkauft} Titel)")
     if aufschluesselung:
         zeilen.append(f"- Aufschlüsselung: {' | '.join(aufschluesselung)}")
+
+    # BESTER/SCHLECHTESTER TRADE (NEU 30.07.2026, Nutzerwunsch, Ergaenzung
+    # zur Erfolgsbilanz): einfache Max/Min-Bildung ueber dieselbe _perf-
+    # Spalte - kein zusaetzliches Kopfrechnen, daher risikolos im Gegensatz
+    # zur fruehreren Durchschnitts-Problematik. Bei GENAU EINER geschlossenen
+    # Position waeren Bester und Schlechtester identisch - dann wird nur
+    # EINE Zeile ausgegeben, um die Verdopplung derselben Aussage zu
+    # vermeiden. Name-Spalte kann fehlen/leer sein (aeltere Zeilen) -
+    # Fallback auf den Ticker, NIE einen Namen erfinden.
+    def _bezeichnung(row):
+        name = str(row.get('Name', '')).strip()
+        return name if name and name.lower() != 'nan' else str(row['Ticker'])
+
+    bester = gueltig.loc[gueltig['_perf'].idxmax()]
+    schlechtester = gueltig.loc[gueltig['_perf'].idxmin()]
+    if n_gesamt == 1:
+        zeilen.append(f"- Einziger geschlossener Trade: {_bezeichnung(bester)} "
+                      f"({bester['_perf']:+.2f}%)")
+    else:
+        zeilen.append(f"- Bester Trade: {_bezeichnung(bester)} ({bester['_perf']:+.2f}%) "
+                      f"| Schlechtester Trade: {_bezeichnung(schlechtester)} "
+                      f"({schlechtester['_perf']:+.2f}%)")
     return "\n".join(zeilen)
 
 
