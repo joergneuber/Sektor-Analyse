@@ -481,6 +481,29 @@ def main():
         f.write("BESTANDS-STATISTIK (Verteilung statt Ablehnungs-Funnel)\n")
         f.write("-" * 50 + "\n")
         f.write(f"Universum: {len(LANGFRIST_UNIVERSUM)} Titel | Keine Daten (Kurs/KGV fehlt oder Fehler): {uebersprungen} | Bewertet: {len(ergebnisse)}\n")
+        # BEINAHE-GUENSTIG (NEU 30.07.2026, Nutzerwunsch "bei 0 Treffern zeigen,
+        # woran es scheiterte" - hier sinngemaess uebertragen): Der Langfrist-
+        # Scanner verwirft nichts, aber in die Auswertung gehen nur die
+        # Guenstig-Titel. Das Pendant zum Beinahe-Kandidaten ist deshalb der
+        # Titel, der die Guenstig-Schwelle KNAPP verpasst hat - also im
+        # Neutral-Bereich, aber dicht an der Grenze. Ohne diese Liste bliebe
+        # an einem Tag ohne Guenstig-Titel voellig offen, ob der Markt weit
+        # entfernt oder haarscharf daneben war.
+        if not df.empty:
+            _grenze_perc = round((1 - GUENSTIG_SCHWELLE) * 100, 1)
+            _beinahe = df[(df["Bewertungs_Status"] == "Neutral")
+                          & (df["Rabatt_vs_5J_Perc"].notna())
+                          & (df["Rabatt_vs_5J_Perc"] >= _grenze_perc - 5)]
+            if not _beinahe.empty:
+                f.write(f"BEINAHE GUENSTIG (Rabatt vs. 5J-Naeherung innerhalb von 5 Punkten "
+                        f"unter der Guenstig-Schwelle von {_grenze_perc}%)\n")
+                f.write("-" * 50 + "\n")
+                f.write("(nur Beobachtung, KEINE Kandidaten - zeigt, wie knapp die Schwelle verfehlt wurde)\n")
+                for _, _z in _beinahe.sort_values("Rabatt_vs_5J_Perc", ascending=False).iterrows():
+                    f.write(f"{_z['Name']} ({_z['Ticker']}): Rabatt {_z['Rabatt_vs_5J_Perc']}% "
+                            f"(Schwelle {_grenze_perc}%)\n")
+                f.write("\n")
+
         if not df.empty:
             _verteilung = df["Bewertungs_Status"].value_counts()
             _teile = [f"{_stufe}: {int(_verteilung.get(_stufe, 0))}"
