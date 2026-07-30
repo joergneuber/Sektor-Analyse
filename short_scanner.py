@@ -581,9 +581,15 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         # BEINAHE-KANDIDAT (NEU 30.07.2026): beim Short faellt seit Wochen
         # praktisch alles an dieser Stufe - dann soll wenigstens sichtbar sein,
         # WIE knapp und bei welchen Titeln.
-        BEINAHE_SHORT.append(
-            f"{ticker}: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0), "
-            f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
+        # GEAENDERT (30.07.2026, Nutzerwunsch): Eintrag als Dict statt reinem
+        # String - crv_sortier haelt den BINDENDEN (kleineren) CRV fest, damit
+        # die Ausgabe absteigend danach sortiert werden kann (knappste
+        # Beinahe-Treffer zuerst, statt alphabetisch nach Ticker verstreut).
+        BEINAHE_SHORT.append({
+            "text": f"{ticker}: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0), "
+                   f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+            "crv_sortier": min(crv1, crv2),
+        })
         return None, "crv_unter_1"
 
     # Abstand_52W_Tief% (NEU, gespiegelt zu Abstand_52W_Hoch% bei Long):
@@ -894,8 +900,8 @@ def main():
             f.write("\nBEINAHE-KANDIDATEN (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
             f.write("-" * 50 + "\n")
             f.write("(nur Beobachtung, KEINE Setups)\n")
-            for zeile in sorted(BEINAHE_SHORT):
-                f.write(zeile + "\n")
+            for eintrag in sorted(BEINAHE_SHORT, key=lambda x: -x["crv_sortier"]):
+                f.write(eintrag["text"] + "\n")
         if not df.empty:
             f.write(f"=> Nach Dedupe: {len(df)} | davon VALIDE: {int((df['Status2'] == 'VALIDE').sum())} | ACHTUNG: {int((df['Status2'] == 'ACHTUNG').sum())}\n")
         f.write("\n")
