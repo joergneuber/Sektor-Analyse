@@ -39,6 +39,22 @@ def funnel_zaehle(grund):
         FUNNEL_HAUPT[grund] += 1
 
 
+# --- BEINAHE-KANDIDATEN (NEU 30.07.2026, Nutzerwunsch) ---
+# Wenn ein Scanner 0 valide Setups meldet, soll die Auswertung nicht nur die
+# Stufe nennen, an der es scheiterte, sondern die konkreten Titel MIT WERT.
+# Erfasst werden nur die SPAETEN Stufen: ein Titel, der schon ein Setup-Muster
+# hatte und erst am CRV/RS/52W-Filter hing, ist naechste Woche vielleicht ein
+# Kandidat - einer ohne Muster ist es nicht. Bewusst begrenzt, damit die
+# Ausgabe nicht zur zweiten Kandidatenliste wird.
+FUNNEL_BEINAHE = []
+
+
+def funnel_beinahe(ticker, stufe, detail):
+    """Merkt sich einen spaeten Beinahe-Treffer (thread-sicher)."""
+    with _funnel_lock:
+        FUNNEL_BEINAHE.append({"Ticker": str(ticker), "Stufe": stufe, "Detail": detail})
+
+
 # --- MARKTUMFELD-KLASSIFIKATION (Score-Modell, GEÄNDERT 28.07.2026 abends,
 # Nutzerentscheidung - ersetzt "der schwächste Leitindex zählt") ---
 # Problem der alten Regel: ein einzelner Ausreißer (z.B. Nasdaq unter EMA50
@@ -1600,6 +1616,9 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             funnel_zaehle("crv_unter_1")
+            funnel_beinahe(ticker, "CRV-Filter",
+                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
+                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
             return None
         
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -1927,6 +1946,9 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             funnel_zaehle("crv_unter_1")
+            funnel_beinahe(ticker, "CRV-Filter",
+                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
+                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
             return None
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -2689,3 +2711,16 @@ if __name__ == "__main__":
         f.write(f"=> Setup-Muster gefunden (vor Sektor-/Trend-Filter): {setups_vor_filter}\n")
         f.write(f"- Sektor-/Trend-Filter + Ticker-Dedupe (nicht in Top-Rotation, unter WMA200/EMA200 oder Mehrfach-Listung): -{setups_vor_filter - len(df_clean)}\n")
         f.write(f"=> Nach allen Filtern: {len(df_clean)} | davon VALIDE: {len(valide_setups)} | ACHTUNG: {len(achtung_setups)} | BEREITS IM PORTFOLIO: {len(portfolio_setups)} | GELAUFEN: {len(df_clean[df_clean['Status2'] == 'GELAUFEN'])}\n")
+
+        # BEINAHE-KANDIDATEN (NEU 30.07.2026): die Titel der spaeten Stufen mit
+        # konkretem Wert - beantwortet "woran genau ist es gescheitert?" auf
+        # Titel-Ebene, nicht nur als Zahl. Besonders relevant an Tagen ohne
+        # valide Setups.
+        with _funnel_lock:
+            beinahe = list(FUNNEL_BEINAHE)
+        if beinahe:
+            f.write("\nBEINAHE-KANDIDATEN Hauptscanner (Setup-Muster erfuellt, erst an einer spaeten Stufe gescheitert)\n")
+            f.write("-" * 50 + "\n")
+            f.write("(nur Beobachtung, KEINE Setups - zeigt, WORAN es im Einzelfall haengt)\n")
+            for b in sorted(beinahe, key=lambda x: x["Ticker"]):
+                f.write(f"{b['Ticker']}: {b['Stufe']} -> {b['Detail']}\n")
