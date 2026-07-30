@@ -1413,7 +1413,12 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
     Bewertung ab (z. B. nicht „manuelle Verkäufe waren erfolgreicher"
     als kausale Aussage), da die Stichprobengröße meist klein ist und
     die Gründe für einen manuellen Verkauf im System nicht erfasst
-    werden.
+    werden. Der Text kann zusätzlich eine Zeile „Bester Trade: ... \|
+    Schlechtester Trade: ..." enthalten (oder bei genau einer
+    geschlossenen Position „Einziger geschlossener Trade: ..." statt
+    beider) -- übernimm auch diese Zeile wörtlich als Teil derselben
+    Erfolgsbilanz-Zeilengruppe, in derselben Reihenfolge wie in der
+    Datei.
 
 Optionsschein-Positionen -- eigene Zeile „Optionsschein: \..."
 
