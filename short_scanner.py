@@ -69,6 +69,10 @@ from analyse import (
     klassifiziere_marktumfeld,
 )
 from collections import Counter
+
+# Beinahe-Treffer der letzten Stufe (NEU 30.07.2026) - siehe Kommentar
+# an der Sammelstelle in _pruefe_short_setup.
+BEINAHE_SHORT = []
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
@@ -574,6 +578,12 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     # ausgegeben wurden.
     if crv1 < 1.0 or crv2 < 1.0:
         print(f"DEBUG-SHORT-VERWORFEN: {ticker} -> CRV zu niedrig (CRV1={crv1}, CRV2={crv2})")
+        # BEINAHE-KANDIDAT (NEU 30.07.2026): beim Short faellt seit Wochen
+        # praktisch alles an dieser Stufe - dann soll wenigstens sichtbar sein,
+        # WIE knapp und bei welchen Titeln.
+        BEINAHE_SHORT.append(
+            f"{ticker}: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0), "
+            f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
         return None, "crv_unter_1"
 
     # Abstand_52W_Tief% (NEU, gespiegelt zu Abstand_52W_Hoch% bei Long):
@@ -880,6 +890,12 @@ def main():
         f.write("FUNNEL-STATISTIK (Ablehnungsgruende je Pruefstufe)\n")
         f.write("-" * 50 + "\n")
         f.write(funnel_text + "\n")
+        if BEINAHE_SHORT:
+            f.write("\nBEINAHE-KANDIDATEN (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
+            f.write("-" * 50 + "\n")
+            f.write("(nur Beobachtung, KEINE Setups)\n")
+            for zeile in sorted(BEINAHE_SHORT):
+                f.write(zeile + "\n")
         if not df.empty:
             f.write(f"=> Nach Dedupe: {len(df)} | davon VALIDE: {int((df['Status2'] == 'VALIDE').sum())} | ACHTUNG: {int((df['Status2'] == 'ACHTUNG').sum())}\n")
         f.write("\n")
