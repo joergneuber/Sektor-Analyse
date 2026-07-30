@@ -152,17 +152,28 @@ Häufung/Nähe als das, was sie ist.
     allein lesbar sein, ohne Blick in die Rohdaten): Der Abschnitt
     „WATCHLIST (ACHTUNG - Manuelle Prüfung erforderlich)" aus der
     briefing.txt wird als kompakter Unterabschnitt „Watchlist (Achtung -
-    manuelle Prüfung)" am ENDE von Abschnitt 2 ausgegeben: JE TITEL
-    GENAU EINE ZEILE im Format Vollständiger Name \| Grund \| Kurs \|
-    technisches Potenzial. Den vollständigen Namen aus der Spalte Name
-    der Setups.csv bzw. Short_Setups.csv nachschlagen; nur falls dort
-    nicht auffindbar, den Ticker verwenden. Keine weiteren Kennzahlen,
-    keine Bewertung, keine Empfehlung; darunter EIN Satz, dass diese
-    Titel regelbasiert wegen des jeweils genannten Grundes kein valides
-    Setup sind und nur zur manuellen Prüfung dienen. Gilt NICHT für
-    Trendwende-Setups und Langfrist-Bewertung (Abschnitte 5 und 6) --
-    diese beiden Dateien haben gar kein Status2-Feld, dort entfällt der
-    Filter ersatzlos.
+    manuelle Prüfung)" am ENDE von Abschnitt 2 ausgegeben. FORMAT
+    GEÄNDERT (30.07.2026, Nutzerwunsch „ein Wert je Zeile, um
+    übersichtlich zu sein"): NICHT mehr alles in eine Pipe-Zeile,
+    sondern je Titel ein kleiner Block - der vollständige Name als
+    Aufzählungspunkt, darunter eingerückt je EINE Zeile pro Wert, also
+    „Grund: ...", „Kurs: ..." und „Technisches Potenzial: ...
+    (Tech-Kursziel: ...)". Beispiel: • Align Technology, Inc. Grund:
+    Bärischer MACD-Trend Kurs: 180,08\$ Technisches Potenzial: 16,77%
+    (Tech-Kursziel: 210,29\$) Den vollständigen Namen aus der Spalte
+    Name der Setups.csv bzw. Short_Setups.csv nachschlagen - die
+    briefing.txt nennt in der Watchlist nur den Ticker, der Name steht
+    ausschließlich in der CSV. WICHTIG (30.07.2026): Steht in der
+    Name-Spalte selbst nur ein Kürzel (kommt vor, wenn der Namens-Abruf
+    beim Scan fehlschlug), gib dieses Kürzel unverändert aus und erfinde
+    KEINEN Firmennamen dazu - eine falsche Zuordnung wäre schlimmer als
+    ein Kürzel. Nur falls der Titel gar nicht in der CSV steht, den
+    Ticker verwenden. Keine weiteren Kennzahlen, keine Bewertung, keine
+    Empfehlung; darunter EIN Satz, dass diese Titel regelbasiert wegen
+    des jeweils genannten Grundes kein valides Setup sind und nur zur
+    manuellen Prüfung dienen. Gilt NICHT für Trendwende-Setups und
+    Langfrist-Bewertung (Abschnitte 5 und 6) -- diese beiden Dateien
+    haben gar kein Status2-Feld, dort entfällt der Filter ersatzlos.
 
 -   Status „BEREITS IM PORTFOLIO" (NEU, 28.07.2026): Der Hauptscanner
     vergibt diesen Status, wenn für einen Titel bereits eine offene
@@ -239,23 +250,31 @@ Häufung/Nähe als das, was sie ist.
 -   REGIONEN-PERFORMANCE ZUERST (NEU 29.07.2026, Nutzerwunsch): Die
     briefing.txt beginnt jetzt mit einem Block „REGIONEN-PERFORMANCE
     (letzter Handelstag / seit Jahresanfang)" mit je einer Zeile für
-    Europa, USA und Asien. Übernimm diesen Block als ERSTES in die
-    Auswertung - noch VOR der Executive Summary, direkt unter Titel und
-    Datum, als kompakte Liste mit den Werten wörtlich aus der Datei
-    (Format: „Europa: letzter Handelstag +0,38% \| YTD +12,43%"). Der
-    Block ist nach Regionen gegliedert und weist JEDEN INDEX EINZELN aus
-    (GEAENDERT 29.07.2026: Europa mit DAX und EuroStoxx50, USA mit S&P
-    500 und Nasdaq, Asien mit Nikkei 225, Shanghai Composite und Hang
-    Seng). Bilde AUSDRUECKLICH KEINE Regionen-Mittelwerte und fasse die
-    Indizes einer Region nicht zu einer Zahl zusammen - uebernimm die
-    Gliederung und alle Einzelwerte wie in der Datei. Setze den
-    Zeitzonen-Hinweis aus der Klammer-Zeile als kurze Anmerkung darunter
-    (US-Wert = Schluss des Vortages, asiatischer Wert = heutiger
-    Schluss). Keine eigene Interpretation in diesem Block, keine
-    Prognose; die Einordnung folgt später im Marktumfeld-Abschnitt.
-    Fehlt der Block (älterer Lauf), entfällt er ersatzlos. Stehen
-    einzelne Werte als „n/a" in der Datei, übernimm „n/a" - erfinde
-    keine Zahlen und rechne nichts selbst nach.
+    Europa, USA und Asien. REIHENFOLGE ZWINGEND (Klarstellung
+    30.07.2026 - der Block stand faelschlich ÜBER dem Titel): Die
+    Auswertung beginnt IMMER mit dem Dokumentenkopf, in genau dieser
+    Folge: (1) Titelzeile „Neuber Macro & Markets", (2) „Datum der
+    Auswertung: TT.MM.JJJJ", (3) Untertitel „Tägliche Markt- und
+    Setup-Auswertung". NICHTS steht darüber - kein Index-Block, kein
+    Resttext, keine Trennlinie. ERST DANACH folgt als erster
+    inhaltlicher Abschnitt die Regionen-Performance unter der
+    Überschrift „Blick auf wichtige Indizes", als kompakte Liste mit den
+    Werten wörtlich aus der Datei, nach Regionen gegliedert (Format:
+    „DAX: letzter Handelstag +0,38% \| YTD +12,43%"). Anschließend die
+    Executive Summary und der Rest der Gliederung. Der Block ist nach
+    Regionen gegliedert und weist JEDEN INDEX EINZELN aus (GEAENDERT
+    29.07.2026: Europa mit DAX und EuroStoxx50, USA mit S&P 500 und
+    Nasdaq, Asien mit Nikkei 225, Shanghai Composite und Hang Seng).
+    Bilde AUSDRUECKLICH KEINE Regionen-Mittelwerte und fasse die Indizes
+    einer Region nicht zu einer Zahl zusammen - uebernimm die Gliederung
+    und alle Einzelwerte wie in der Datei. Setze den Zeitzonen-Hinweis
+    aus der Klammer-Zeile als kurze Anmerkung darunter (US-Wert =
+    Schluss des Vortages, asiatischer Wert = heutiger Schluss). Keine
+    eigene Interpretation in diesem Block, keine Prognose; die
+    Einordnung folgt später im Marktumfeld-Abschnitt. Fehlt der Block
+    (älterer Lauf), entfällt er ersatzlos. Stehen einzelne Werte als
+    „n/a" in der Datei, übernimm „n/a" - erfinde keine Zahlen und rechne
+    nichts selbst nach.
 
 -   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
     Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
@@ -824,6 +843,25 @@ keine Setup-Bewertungsgrundlage. Liegt die Sitzung innerhalb der
 nächsten 5 Tage, hebe kurz hervor, dass dies ein bekannter
 Volatilitäts-Treiber für beide Marktseiten (US wie EU) ist -- ohne
 daraus abzuleiten, in welche Richtung sich der Markt bewegen wird.
+
+-   FOMC-RÜCKBLICK (NEU 30.07.2026, Nutzerwunsch - „muss hier nicht noch
+    rein, wie die Fed entschieden hat?"): Lag die letzte FOMC-Sitzung
+    höchstens 7 Tage zurück, enthält der BENCHMARKS-Block zusätzlich
+    eine Zeile „FOMC-Rückblick: Sitzung vom TT.MM.JJJJ - ..." mit der
+    harten Entscheidung (Zinssenkung/-erhöhung um X Basispunkte auf den
+    Zielkorridor Y, oder „Zielkorridor UNVERÄNDERT bei Y"; Quelle:
+    Fed-Funds-Zielkorridor aus FRED). PFLICHT: Übernimm die Zeile
+    wörtlich im Marktumfeld-Abschnitt UND nenne die Entscheidung
+    zusätzlich in EINEM Satz in der Executive Summary - eine
+    Zinsentscheidung ist der wichtigste Einzelfaktor für das Marktumfeld
+    und darf nicht nur als Countdown zum nächsten Termin erscheinen
+    (Anlass: am 30.07. stand in der Summary lediglich „nächste Sitzung
+    in 48 Tagen", die Entscheidung des Vortages fehlte komplett). Steht
+    in der Zeile, dass die Entscheidung in den Daten noch nicht
+    abgebildet ist, übernimm genau diesen Vorbehalt und behaupte KEINE
+    Nicht-Änderung. Interpretiere nicht über die Zahl hinaus - keine
+    Aussagen zur Pressekonferenz, zum Ausblick oder zu künftigen
+    Schritten, diese Daten liegen dem System nicht vor.
 
 5\. Trendwende-Setups (separater Scanner, eigenes Risiko)
 
