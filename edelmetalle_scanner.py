@@ -92,6 +92,7 @@ from analyse import (
     get_fib_levels,
     get_golden_cross_status,
     clean_num,
+    get_rekord_naehe_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -634,6 +635,12 @@ def edelmetalle_scan_starten():
                 f"{abstand_tief:+.1f}% ueber 52W-Tief ({tief_52w:.2f}) | "
                 f"{abstand_hoch:+.1f}% zum 52W-Hoch ({hoch_52w:.2f})"
             )
+            # Rekord-Naehe (NEU 30.07.2026, Nutzerwunsch): nur anhaengen, wenn
+            # ueberhaupt relevant (Funktion liefert sonst None) - haelt die
+            # taegliche Diagnose bei "nichts Besonderes" kompakt.
+            rekord_text = get_rekord_naehe_text(ticker, name)
+            if rekord_text:
+                diagnose_zeilen.append(f"    -> {rekord_text}")
         except Exception:
             diagnose_zeilen.append(f"  {name} ({ticker}): Diagnose nicht berechenbar")
 
