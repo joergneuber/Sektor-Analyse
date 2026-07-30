@@ -536,6 +536,83 @@ def get_eurusd_wechselkurs():
         return "EUR/USD-Wechselkurs: Daten unvollständig"
 
 
+# FOMC-Termine (WARTUNG jaehrlich, siehe Docstring get_fomc_countdown).
+# Auf Modulebene, weil sie seit 30.07.2026 von ZWEI Funktionen gebraucht wird:
+# dem Countdown (naechster Termin) und dem Rueckblick (letzter Termin).
+FOMC_TERMINE_2026 = [
+    datetime.date(2026, 1, 28),
+    datetime.date(2026, 3, 18),
+    datetime.date(2026, 4, 29),
+    datetime.date(2026, 6, 17),
+    datetime.date(2026, 7, 29),
+    datetime.date(2026, 9, 16),
+    datetime.date(2026, 10, 28),
+    datetime.date(2026, 12, 9),
+]
+
+
+def get_fomc_rueckblick(rueckblick_tage=7):
+    """FOMC-RUECKBLICK (NEU 30.07.2026, Nutzerwunsch): Gegenstueck zum
+    Countdown - WAS hat die Fed entschieden? Bisher verschwand die Sitzung
+    aus der Auswertung, sobald sie vorbei war: der Countdown sprang auf den
+    naechsten Termin, das Ergebnis stand nirgends (aufgefallen am 30.07.,
+    dem Tag nach der Sitzung vom 29.07.).
+
+    Datenquelle: FRED-Serien DFEDTARU/DFEDTARL (obere/untere Grenze des
+    Fed-Funds-Zielkorridors) - dieselbe schluessellose CSV-Route wie die
+    Zinskurve. Bewusst KEINE News-Auswertung und KEINE Interpretation der
+    Pressekonferenz: der Zielkorridor ist die harte, offizielle Zahl.
+    Verglichen wird der aktuelle Korridor mit dem letzten Wert VOR dem
+    Sitzungstag - daraus ergibt sich Senkung/Erhoehung in Basispunkten oder
+    "unveraendert".
+
+    Rueckgabe: Text oder None (wenn im Fenster keine Sitzung lag).
+    Ehrliche Einschraenkung: FRED aktualisiert die Serie mit bis zu einem
+    Werktag Verzoegerung. Ist der Datenstand aelter als der Sitzungstag,
+    wird genau das gemeldet statt eine Nicht-Aenderung zu behaupten."""
+    heute = datetime.date.today()
+    vergangene = [d for d in FOMC_TERMINE_2026 if 0 <= (heute - d).days <= rueckblick_tage]
+    if not vergangene:
+        return None
+    letzte_sitzung = max(vergangene)
+    datum_text = letzte_sitzung.strftime("%d.%m.%Y")
+
+    try:
+        oben = hole_fred_zinsreihe("DFEDTARU", tage=90)
+        unten = hole_fred_zinsreihe("DFEDTARL", tage=90)
+        if oben.empty or unten.empty:
+            return (f"FOMC-Rückblick: Sitzung vom {datum_text} - Zielkorridor aktuell "
+                    f"nicht abrufbar (FRED-Daten leer)")
+
+        stand_datum = oben["Datum"].iloc[-1].date()
+        akt_oben, akt_unten = float(oben["Wert"].iloc[-1]), float(unten["Wert"].iloc[-1])
+        korridor = f"{akt_unten:.2f}-{akt_oben:.2f}%"
+
+        if stand_datum < letzte_sitzung:
+            return (f"FOMC-Rückblick: Sitzung vom {datum_text} - Entscheidung in den "
+                    f"FRED-Daten noch nicht abgebildet (Datenstand {stand_datum.strftime('%d.%m.%Y')}, "
+                    f"Zielkorridor unverändert {korridor}); Aktualisierung folgt "
+                    f"typischerweise am naechsten Werktag")
+
+        vor_sitzung = oben[oben["Datum"].dt.date < letzte_sitzung]
+        if vor_sitzung.empty:
+            return f"FOMC-Rückblick: Sitzung vom {datum_text} - Zielkorridor aktuell {korridor}"
+        vor_oben = float(vor_sitzung["Wert"].iloc[-1])
+        delta_bp = round((akt_oben - vor_oben) * 100)
+
+        if abs(delta_bp) < 1:
+            entscheid = f"Zielkorridor UNVERAENDERT bei {korridor}"
+        elif delta_bp < 0:
+            entscheid = f"Zinssenkung um {abs(delta_bp)} Basispunkte auf {korridor}"
+        else:
+            entscheid = f"Zinserhoehung um {delta_bp} Basispunkte auf {korridor}"
+        return f"FOMC-Rückblick: Sitzung vom {datum_text} - {entscheid}"
+    except Exception as e:
+        print(f"DEBUG-FOMC-RUECKBLICK: nicht ermittelbar ({type(e).__name__})")
+        return (f"FOMC-Rückblick: Sitzung vom {datum_text} - Zielkorridor nicht "
+                f"abrufbar (Abruf-Fehler)")
+
+
 def get_fomc_countdown():
     """NEU (27.07.2026, Nutzerwunsch): reiner Termin-Countdown zur naechsten
     FOMC-Sitzung (Fed-Zinsentscheid) - analog zur Earnings-Warnung pro Aktie
@@ -553,16 +630,7 @@ def get_fomc_countdown():
     federalreserve.gov/monetarypolicy/fomccalendars.htm) - Datum jeweils der
     ZWEITE Sitzungstag (Tag der Zinsentscheid-Veroeffentlichung, 14:00 Uhr
     US-Ostkuestenzeit, entspricht ca. 20:00 Uhr MESZ/19:00 Uhr MEZ)."""
-    FOMC_TERMINE_2026 = [
-        datetime.date(2026, 1, 28),
-        datetime.date(2026, 3, 18),
-        datetime.date(2026, 4, 29),
-        datetime.date(2026, 6, 17),
-        datetime.date(2026, 7, 29),
-        datetime.date(2026, 9, 16),
-        datetime.date(2026, 10, 28),
-        datetime.date(2026, 12, 9),
-    ]
+    # Terminliste steht seit 30.07.2026 auf Modulebene (auch vom Rueckblick genutzt)
     heute = datetime.date.today()
     kommende_termine = [d for d in FOMC_TERMINE_2026 if d >= heute]
     if not kommende_termine:
@@ -2030,6 +2098,8 @@ if __name__ == "__main__":
     # FOMC-Countdown (NEU, 27.07.2026): reiner Termin-Hinweis, siehe
     # get_fomc_countdown fuer Begruendung/Wartungshinweis.
     fomc_text = get_fomc_countdown()
+    # FOMC-Rueckblick (NEU 30.07.2026): None, wenn im Fenster keine Sitzung lag
+    fomc_rueckblick_text = get_fomc_rueckblick()
     # NEU (24.07.2026): erweiterter Makro-/Rohstoff-Kontext fuer ein
     # eigenstaendiges Morgen-Briefing (unabhaengig von der Sektor-Rotation-
     # Auswahl) - alle rein informativ, keine Setup-Quelle, keine
@@ -2397,7 +2467,7 @@ if __name__ == "__main__":
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
         f.write(get_regionen_performance_text() + "\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
