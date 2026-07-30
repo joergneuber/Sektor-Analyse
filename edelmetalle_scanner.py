@@ -440,9 +440,16 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
-            BEINAHE_EDELMETALL.append(
-                f"{name} ({ticker}) [Trendfolge]: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
-                f"(Mindestwert 1.0), Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}")
+            # GEAENDERT (30.07.2026, Nutzerwunsch): Dict mit eigenem Strategie-
+            # Feld statt Substring-Marker "[Trendfolge]" im Text - vermeidet
+            # bruechiges String-Matching bei der Ausgabe weiter unten und
+            # traegt den CRV-Sortierwert fuer die absteigende Sortierung.
+            BEINAHE_EDELMETALL.append({
+                "text": f"{name} ({ticker}): CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
+                       f"(Mindestwert 1.0), Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+                "crv_sortier": min(crv1, crv2),
+                "strategie": "Trendfolge",
+            })
             return None, "crv_unter_1"
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -825,17 +832,19 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
                 f.write("-" * 50 + "\n")
                 f.write(funnel_texte[strategie] + "\n\n")
 
-            # Beinahe-Kandidaten dieser Strategie (NEU 30.07.2026)
+            # Beinahe-Kandidaten dieser Strategie (NEU 30.07.2026, seit dieser
+            # Aenderung als Dicts mit crv_sortier statt reiner String-Liste -
+            # ermoeglicht die absteigende CRV-Sortierung, Nutzerwunsch)
             if strategie == "Short":
-                beinahe = [z for z in BEINAHE_SHORT]
+                beinahe = list(BEINAHE_SHORT)
             else:
-                beinahe = [z for z in BEINAHE_EDELMETALL if f"[{strategie}]" in z]
+                beinahe = [z for z in BEINAHE_EDELMETALL if z["strategie"] == strategie]
             if beinahe:
                 f.write(f"BEINAHE-KANDIDATEN {strategie} (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
                 f.write("-" * 50 + "\n")
                 f.write("(nur Beobachtung, KEINE Setups)\n")
-                for zeile in sorted(beinahe):
-                    f.write(zeile + "\n")
+                for eintrag in sorted(beinahe, key=lambda x: -x["crv_sortier"]):
+                    f.write(eintrag["text"] + "\n")
                 f.write("\n")
 
             if not treffer:
