@@ -181,6 +181,38 @@ def check_rsi_divergence_recent(data, fenster_tage=DIVERGENZ_FENSTER_TAGE):
     return True
 
 
+def tage_seit_kumo_ausbruch(data, max_rueckblick=60):
+    """DIAGNOSE (NEU 30.07.2026, reine Beobachtung - KEIN Filter): Wie viele
+    Handelstage liegt der LETZTE Kumo-Ausbruch zurueck? Rueckgabe: Anzahl
+    (0 = heute), None wenn im Rueckblick keiner gefunden wurde, oder
+    "nicht_ueber_wolke" wenn der Kurs aktuell gar nicht ueber der Wolke steht.
+
+    Zweck: Die Schatten-Messung vom 30.07. zeigte, dass der frische
+    Kumo-Ausbruch die eigentliche Engstelle ist (12 Titel mit intakter
+    Divergenz, 0 mit Ausbruch). Bevor das Trigger-Fenster verbreitert wird
+    (5 -> 7 Tage), soll messbar sein, OB das ueberhaupt hilft: liegt der
+    letzte Ausbruch bei diesen Titeln 6-7 Tage zurueck, bringt eine
+    Verbreiterung sofort Kandidaten - steht der Kurs dagegen noch unter der
+    Wolke (Titel macht neue Tiefs), aendert auch ein 30-Tage-Fenster nichts."""
+    try:
+        if len(data) < 60:
+            return None
+        kumo_ober = pd.concat([data['SenkouA'], data['SenkouB']], axis=1).max(axis=1)
+        if pd.isna(kumo_ober.iloc[-1]) or data['Close'].iloc[-1] <= kumo_ober.iloc[-1]:
+            return "nicht_ueber_wolke"
+        for i in range(0, min(max_rueckblick, len(data) - 1)):
+            idx, idx_prev = -1 - i, -2 - i
+            c_h, k_h = data['Close'].iloc[idx], kumo_ober.iloc[idx]
+            c_v, k_v = data['Close'].iloc[idx_prev], kumo_ober.iloc[idx_prev]
+            if pd.isna(c_h) or pd.isna(k_h) or pd.isna(c_v) or pd.isna(k_v):
+                continue
+            if c_v <= k_v and c_h > k_h:
+                return i
+        return None
+    except Exception:
+        return None
+
+
 def check_kumo_breakout_recent(data, frische_tage=FRISCHE_TAGE):
     """TRIGGER (C.2) - NEU 28.07.2026 (Nutzerwunsch): zurueck zum ECHTEN
     Kumo-Ausbruch als Pflicht-Signal (statt des am 24.07. eingebauten
@@ -743,6 +775,8 @@ def main():
     # (intakte Divergenz) erfuellen und nur noch auf den frischen Kumo-
     # Trigger warten - das ist die Kandidaten-Pipeline der naechsten Tage.
     divergenz_watchlist = []
+    # Ticker -> Handelstage seit letztem Kumo-Ausbruch (Diagnose, NEU 30.07.2026)
+    kumo_diagnose = {}
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
             (t, executor.submit(analyze_trendwende_us, t, s, us_daten[t], spy_close))
@@ -753,6 +787,8 @@ def main():
             funnel[grund] += 1
             if grund == "kein_frischer_kumo_ausbruch":
                 divergenz_watchlist.append(t)
+                kumo_diagnose[t] = tage_seit_kumo_ausbruch(
+                    _indikatoren_berechnen(us_daten[t].copy()))
             if r:
                 ergebnisse.append(r)
 
@@ -767,6 +803,8 @@ def main():
             funnel[grund] += 1
             if grund == "kein_frischer_kumo_ausbruch":
                 divergenz_watchlist.append(t)
+                kumo_diagnose[t] = tage_seit_kumo_ausbruch(
+                    _indikatoren_berechnen(eu_daten[t].copy()))
             if r:
                 ergebnisse.append(r)
 
@@ -996,10 +1034,24 @@ def main():
                     return f"{name} ({t})" if name else t
                 except Exception:
                     return t
-            watchlist_namen = [_name_oder_ticker(t) for t in sorted(divergenz_watchlist)]
+            def _mit_diagnose(t):
+                d = kumo_diagnose.get(t)
+                if d == "nicht_ueber_wolke":
+                    zusatz = "Kurs noch unter/in der Wolke"
+                elif isinstance(d, int):
+                    zusatz = f"letzter Kumo-Ausbruch vor {d} Handelstagen"
+                else:
+                    zusatz = "kein Kumo-Ausbruch in 60 Tagen"
+                return f"{_name_oder_ticker(t)} [{zusatz}]"
+
+            watchlist_namen = [_mit_diagnose(t) for t in sorted(divergenz_watchlist)]
             f.write("DIVERGENZ-WATCHLIST (Boden-Bedingung intakt, wartet auf frischen Kumo-Trigger)\n")
             f.write("-" * 50 + "\n")
             f.write("(nur Beobachtung, KEINE Setups - erscheint in der Auswertung nur als einzeiliger Beobachtungssatz mit den NAMEN)\n")
+            f.write(f"Klammer-Diagnose (NEU 30.07.2026): wie weit der letzte Kumo-Ausbruch zurueckliegt.\n")
+            f.write(f"Aktuelles Trigger-Fenster: {FRISCHE_TAGE} Handelstage - Werte knapp darueber zeigen, ob eine\n")
+            f.write("Verbreiterung des Fensters ueberhaupt Kandidaten braechte; 'Kurs noch unter/in der Wolke'\n")
+            f.write("heisst: kein Fenster der Welt hilft, der Trigger ist noch nicht passiert.\n")
             f.write(", ".join(watchlist_namen) + "\n\n")
 
         if df.empty:
