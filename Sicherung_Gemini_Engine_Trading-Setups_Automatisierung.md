@@ -207,6 +207,27 @@ Häufung/Nähe als das, was sie ist.
     Bewertung, keine Empfehlung. Fehlt der Block, entfällt der Satz
     ersatzlos.
 
+-   REGIONEN-PERFORMANCE ZUERST (NEU 29.07.2026, Nutzerwunsch): Die
+    briefing.txt beginnt jetzt mit einem Block „REGIONEN-PERFORMANCE
+    (letzter Handelstag / seit Jahresanfang)" mit je einer Zeile für
+    Europa, USA und Asien. Übernimm diesen Block als ERSTES in die
+    Auswertung - noch VOR der Executive Summary, direkt unter Titel und
+    Datum, als kompakte Liste mit den Werten wörtlich aus der Datei
+    (Format: „Europa: letzter Handelstag +0,38% \| YTD +12,43%"). Der
+    Block ist nach Regionen gegliedert und weist JEDEN INDEX EINZELN aus
+    (GEAENDERT 29.07.2026: Europa mit DAX und EuroStoxx50, USA mit S&P
+    500 und Nasdaq, Asien mit Nikkei 225, Shanghai Composite und Hang
+    Seng). Bilde AUSDRUECKLICH KEINE Regionen-Mittelwerte und fasse die
+    Indizes einer Region nicht zu einer Zahl zusammen - uebernimm die
+    Gliederung und alle Einzelwerte wie in der Datei. Setze den
+    Zeitzonen-Hinweis aus der Klammer-Zeile als kurze Anmerkung darunter
+    (US-Wert = Schluss des Vortages, asiatischer Wert = heutiger
+    Schluss). Keine eigene Interpretation in diesem Block, keine
+    Prognose; die Einordnung folgt später im Marktumfeld-Abschnitt.
+    Fehlt der Block (älterer Lauf), entfällt er ersatzlos. Stehen
+    einzelne Werte als „n/a" in der Datei, übernimm „n/a" - erfinde
+    keine Zahlen und rechne nichts selbst nach.
+
 -   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
     Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
     als Überschriften, wodurch die Nummerierung sprang: 1, 2, 5, 7, 8
@@ -221,10 +242,17 @@ Häufung/Nähe als das, was sie ist.
     Kategorie an einem Tag komplett (z. B. kein Langfrist-Lauf), rücken
     die nachfolgenden Nummern auf.
 
--   SORTIERUNG „GESTOPPTE POSITIONEN" (NEU 29.07.2026): Der Abschnitt
-    „Gestoppte Positionen (letzte 10 Werktage)" wird IMMER nach
-    Ausstiegsdatum ABSTEIGEND ausgegeben - der aktuellste Stop steht
-    oben, ältere folgen darunter. Das Briefing liefert die
+-   GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
+    jetzt „Geschlossene Positionen (letzte 10 Werktage)" und enthält
+    ZWEI Arten von Abgängen - automatisch gestoppte UND manuell
+    verkaufte. Die briefing.txt nennt je Zeile den Grund in Klammern:
+    „(Stop erreicht)" oder „(manuell verkauft)". Übernimm diesen Grund
+    wörtlich je Position und vermische die beiden nicht: ein manueller
+    Verkauf ist KEIN Stop-Treffer und darf in der Executive Summary auch
+    nicht als solcher gezählt werden (dort getrennt nennen, z. B. „ein
+    Stop ausgelöst, eine Position manuell verkauft"). Der Abschnitt wird
+    IMMER nach Ausstiegsdatum ABSTEIGEND ausgegeben - der aktuellste
+    Stop steht oben, ältere folgen darunter. Das Briefing liefert die
     GESTOPPT-Liste seit 29.07.2026 bereits in genau dieser Reihenfolge -
     übernimm sie unverändert und sortiere nicht um.
 
