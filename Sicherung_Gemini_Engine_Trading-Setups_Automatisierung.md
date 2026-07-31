@@ -204,6 +204,21 @@ Häufung/Nähe als das, was sie ist.
     darüber, warum nichts gefunden wurde. Fehlt der Block (älterer
     Lauf), entfällt der Satz ersatzlos.
 
+-   ENGSTELLEN-SATZ BEI EDELMETALLEN MIT NAMEN (NEU 31.07.2026,
+    Nutzerwunsch „bei nur 4 Instrumenten alle vier direkt benennen"): Im
+    Edelmetalle-Briefing steht bei jeder Ablehnungsstufe mit Titeln in
+    Klammern bereits, WELCHE der vier Metalle betroffen sind (z. B.
+    „Position in der 52W-Spanne über 35%: 1 (Gold)", „Keine intakte
+    bullische RSI-Divergenz: 3 (Silber, Platin, Palladium)"). Nutze im
+    Engstellen-Satz für Edelmetalle IMMER diese Namen statt der reinen
+    Anzahl - schreibe also „Gold lag zu weit vom Jahrestief entfernt,
+    während Silber, Platin und Palladium keine intakte bullische
+    RSI-Divergenz aufwiesen" statt „1 Metall ... und 3 Metalle ...". Bei
+    den anderen Scannern (Aktien, mit üblicherweise Dutzenden Titeln je
+    Stufe) bleibt es bei der reinen Anzahl - das gilt ausdrücklich NUR
+    für die vier Edelmetalle, wo Namen statt Zahlen tatsächlich lesbar
+    bleiben.
+
 -   BEINAHE-KANDIDATEN (NEU 30.07.2026, Nutzerwunsch - „bei 0 validen
     Setups soll dastehen, an welchen Bedingungen sie gescheitert sind"):
     Die Briefing-Dateien enthalten zusätzlich Blöcke
