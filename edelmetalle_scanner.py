@@ -67,7 +67,7 @@ import pandas as pd
 import yfinance as yf
 
 # --- Bewaehrte Bausteine aus dem Hauptscanner wiederverwenden ---
-from collections import Counter
+from collections import Counter, defaultdict
 
 # Trendwende- und Short-Logik werden NICHT nachgebaut, sondern direkt aus
 # den Aktien-Scannern importiert (NEU 29.07.2026): identische Kriterien fuer
@@ -497,9 +497,17 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         return None, "fehler"
 
 
-def _funnel_text_bauen(funnel, stufen, kopfzeile):
+def _funnel_text_bauen(funnel, stufen, kopfzeile, funnel_namen=None):
     """Baut den Funnel-Block einer Strategie. Bei nur 4 Instrumenten sind
-    leere Stufen reines Rauschen und werden weggelassen."""
+    leere Stufen reines Rauschen und werden weggelassen.
+
+    funnel_namen (NEU 31.07.2026, Nutzerwunsch): optionales Dict
+    {stufen_key: [Metallname, ...]} - haengt bei nur 4 Instrumenten die
+    tatsaechlichen Namen direkt an die Zahl an (z. B. "...: 1 (Palladium)"
+    statt nur "...: 1"). Damit muss die Auswertung nicht mehr raten oder
+    umschreiben, WELCHES Metall gemeint ist - der Satz zur Engstelle kann es
+    direkt uebernehmen. Ohne das Dict (Rueckwaertskompatibilitaet) faellt
+    die Funktion auf die reine Zahl zurueck."""
     zeilen = [kopfzeile]
     for i, (key, beschreibung) in enumerate(stufen):
         # Die LETZTE Stufe ist immer die Treffer-Zeile - sie wird auch bei 0
@@ -511,7 +519,9 @@ def _funnel_text_bauen(funnel, stufen, kopfzeile):
         if anzahl == 0 and not ist_ergebniszeile:
             continue
         praefix = "=>" if ist_ergebniszeile else "-"
-        zeilen.append(f"{praefix} {beschreibung}: {anzahl}")
+        namen = (funnel_namen or {}).get(key)
+        namen_zusatz = f" ({', '.join(namen)})" if namen else ""
+        zeilen.append(f"{praefix} {beschreibung}: {anzahl}{namen_zusatz}")
     return "\n".join(zeilen)
 
 
@@ -565,6 +575,10 @@ def edelmetalle_scan_starten():
 
     ergebnisse = []
     funnel_tf, funnel_tw, funnel_sh = Counter(), Counter(), Counter()
+    # Metallnamen je Ablehnungsstufe (NEU 31.07.2026, Nutzerwunsch: "alle
+    # vier direkt benennen" statt nur "3 Metalle"/"1 Metall" zu zaehlen -
+    # bei nur 4 Instrumenten ist eine Zahl ohne Namen unnoetig vage).
+    namen_tf, namen_tw, namen_sh = (defaultdict(list) for _ in range(3))
     # DIAGNOSE je Metall (NEU 29.07.2026): bei nur 4 Instrumenten ist die
     # blosse Funnel-Zahl ("3x zu weit vom Tief") zu grob - hier steht je
     # Metall der konkrete Wert, an dem es haengt. Macht sofort sichtbar, ob
@@ -581,12 +595,15 @@ def edelmetalle_scan_starten():
             # Datenfehler betrifft alle drei Strategien gleichermassen
             for f in (funnel_tf, funnel_tw, funnel_sh):
                 f[ladefehler] += 1
+            for n in (namen_tf, namen_tw, namen_sh):
+                n[ladefehler].append(name)
             continue
 
         # 1) Trendfolge (Bestand) - .copy(), damit die Indikator-Spalten der
         #    einen Strategie die naechste nicht beeinflussen
         res, grund = analyze_edelmetall(ticker, name, bench_close, data=data.copy())
         funnel_tf[grund] += 1
+        namen_tf[grund].append(name)
         if res is not None:
             ergebnisse.append(res)
 
@@ -647,12 +664,14 @@ def edelmetalle_scan_starten():
         # 2) Trendwende (NEU)
         res, grund = analyze_edelmetall_trendwende(ticker, name, data_1j.copy(), bench_close)
         funnel_tw[grund] += 1
+        namen_tw[grund].append(name)
         if res is not None:
             ergebnisse.append(res)
 
         # 3) Short (NEU)
         res, grund = analyze_edelmetall_short(ticker, name, data_1j.copy(), bench_close)
         funnel_sh[grund] += 1
+        namen_sh[grund].append(name)
         if res is not None:
             ergebnisse.append(res)
 
@@ -665,9 +684,9 @@ def edelmetalle_scan_starten():
     diagnose_text = ("LAGE JE METALL (52-Wochen-Fenster nach Datum, Basis aller Schwellen):\n"
                      + "\n".join(diagnose_zeilen)) if diagnose_zeilen else ""
     funnel_texte = {
-        "Trendfolge": _funnel_text_bauen(funnel_tf, FUNNEL_STUFEN_TRENDFOLGE, kopf),
-        "Trendwende": _funnel_text_bauen(funnel_tw, FUNNEL_STUFEN_TRENDWENDE, kopf),
-        "Short": _funnel_text_bauen(funnel_sh, FUNNEL_STUFEN_SHORT, kopf),
+        "Trendfolge": _funnel_text_bauen(funnel_tf, FUNNEL_STUFEN_TRENDFOLGE, kopf, namen_tf),
+        "Trendwende": _funnel_text_bauen(funnel_tw, FUNNEL_STUFEN_TRENDWENDE, kopf, namen_tw),
+        "Short": _funnel_text_bauen(funnel_sh, FUNNEL_STUFEN_SHORT, kopf, namen_sh),
     }
     for strategie, text in funnel_texte.items():
         print(f"FUNNEL-STATISTIK ({strategie}):\n{text}")
