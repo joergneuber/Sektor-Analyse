@@ -850,9 +850,10 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
                 f.write(f"BEINAHE-KANDIDATEN {strategie} (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
                 f.write("-" * 50 + "\n")
                 f.write("(nur Beobachtung, KEINE Setups)\n")
+                # Leerzeile zwischen den Eintraegen (NEU 31.07.2026, Nutzerwunsch
+                # "Uebersichtlichkeit") - analog zum Hauptscanner/Short-Scanner.
                 for eintrag in sorted(beinahe, key=lambda x: -x["crv_sortier"]):
-                    f.write(eintrag["text"] + "\n")
-                f.write("\n")
+                    f.write(eintrag["text"] + "\n\n")
 
             if not treffer:
                 f.write(f"Keine {strategie}-Kandidaten gefunden.\n\n")
