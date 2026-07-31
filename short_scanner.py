@@ -41,6 +41,7 @@ Trendwende-Scanner). Muss im selben Verzeichnis wie analyse.py liegen.
 """
 
 import datetime
+import re
 import math
 import numpy as np
 import pandas as pd
@@ -451,6 +452,23 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     soll interpretierbar sein)."""
     if len(data) < 60:
         return None, "zu_wenig_daten"
+
+    # Namensaufloesung VORGEZOGEN (BUGFIX 31.07.2026, Nutzerwunsch: Beinahe-
+    # Kandidaten sollen wie ueberall sonst mit vollem Namen erscheinen, nicht
+    # nur Ticker). longName bevorzugt, shortName als Rueckfall, sonst Ticker -
+    # gleiche Logik wie in analyse.py.
+    try:
+        _info = yf.Ticker(ticker).info
+        firma_name = _info.get('longName') or _info.get('shortName') or ticker
+        firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
+        firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
+        if not firma_name:
+            firma_name = ticker
+        analysten_kursziel = _info.get('targetMeanPrice')
+    except Exception:
+        firma_name = ticker
+        analysten_kursziel = None
+
     data = _indikatoren_berechnen(data)
     entry = data['Close'].iloc[-1]
 
@@ -595,8 +613,9 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         # jeden Lauf, da CRV-Ablehnungen der Normalfall sind (siehe Funnel-
         # Statistik der letzten Tage).
         BEINAHE_SHORT.append({
-            "text": f"{ticker}: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0), "
-                   f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risk_perc:.2f}%",
+            "text": f"{firma_name} ({ticker}): CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
+                   f"(Mindestwert 1.0), Kurs {entry:.2f}, TP1 {tp1:.2f}, "
+                   f"Stop-Risiko {risk_perc:.2f}%",
             "crv_sortier": min(crv1, crv2),
         })
         return None, "crv_unter_1"
@@ -606,14 +625,6 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     # könnte, bevor der bisherige Tiefpunkt erreicht wird.
     tief_52w = data['Low'].min()
     abstand_52w_tief = round(((entry / tief_52w) - 1) * 100, 2) if tief_52w > 0 else None
-
-    try:
-        info = yf.Ticker(ticker).info
-        firma_name = info.get('longName', ticker) or ticker
-        analysten_kursziel = info.get('targetMeanPrice')
-    except Exception:
-        firma_name = ticker
-        analysten_kursziel = None
 
     return {
         "Ticker": ticker, "Name": firma_name, "Sektor": sektor, "Markt": markt,
@@ -909,8 +920,10 @@ def main():
             f.write("\nBEINAHE-KANDIDATEN (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
             f.write("-" * 50 + "\n")
             f.write("(nur Beobachtung, KEINE Setups)\n")
+            # Leerzeile zwischen den Eintraegen (NEU 31.07.2026, Nutzerwunsch
+            # "Uebersichtlichkeit") - analog zur Watchlist im Hauptscanner.
             for eintrag in sorted(BEINAHE_SHORT, key=lambda x: -x["crv_sortier"]):
-                f.write(eintrag["text"] + "\n")
+                f.write(eintrag["text"] + "\n\n")
         if not df.empty:
             f.write(f"=> Nach Dedupe: {len(df)} | davon VALIDE: {int((df['Status2'] == 'VALIDE').sum())} | ACHTUNG: {int((df['Status2'] == 'ACHTUNG').sum())}\n")
         f.write("\n")
