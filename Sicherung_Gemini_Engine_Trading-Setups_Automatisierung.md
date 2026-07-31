@@ -160,20 +160,21 @@ Häufung/Nähe als das, was sie ist.
     „Grund: ...", „Kurs: ..." und „Technisches Potenzial: ...
     (Tech-Kursziel: ...)". Beispiel: • Align Technology, Inc. Grund:
     Bärischer MACD-Trend Kurs: 180,08\$ Technisches Potenzial: 16,77%
-    (Tech-Kursziel: 210,29\$) Den vollständigen Namen aus der Spalte
-    Name der Setups.csv bzw. Short_Setups.csv nachschlagen - die
-    briefing.txt nennt in der Watchlist nur den Ticker, der Name steht
-    ausschließlich in der CSV. WICHTIG (30.07.2026): Steht in der
-    Name-Spalte selbst nur ein Kürzel (kommt vor, wenn der Namens-Abruf
-    beim Scan fehlschlug), gib dieses Kürzel unverändert aus und erfinde
-    KEINEN Firmennamen dazu - eine falsche Zuordnung wäre schlimmer als
-    ein Kürzel. Nur falls der Titel gar nicht in der CSV steht, den
-    Ticker verwenden. Keine weiteren Kennzahlen, keine Bewertung, keine
-    Empfehlung; darunter EIN Satz, dass diese Titel regelbasiert wegen
-    des jeweils genannten Grundes kein valides Setup sind und nur zur
-    manuellen Prüfung dienen. Gilt NICHT für Trendwende-Setups und
-    Langfrist-Bewertung (Abschnitte 5 und 6) -- diese beiden Dateien
-    haben gar kein Status2-Feld, dort entfällt der Filter ersatzlos.
+    (Tech-Kursziel: 210,29\$) BUGFIX (31.07.2026): Die briefing.txt
+    nennt in der Watchlist jetzt bereits den vollständigen Namen direkt
+    in der Zeile (Format „Name (Ticker) \| Markt: ... \| Grund: ... \|
+    Kurs: ...") sowie eine Leerzeile zwischen den Einträgen - kein
+    Nachschlagen in der CSV mehr nötig oder gewünscht. Übernimm Name,
+    Ticker und die Leerzeilen-Trennung wörtlich aus dieser Datei. War
+    der Namens-Abruf beim Scan ausnahmsweise nicht möglich, steht dort
+    automatisch der Ticker anstelle des Namens - übernimm auch das
+    unverändert, erfinde nie einen Namen dazu. Keine weiteren
+    Kennzahlen, keine Bewertung, keine Empfehlung; darunter EIN Satz,
+    dass diese Titel regelbasiert wegen des jeweils genannten Grundes
+    kein valides Setup sind und nur zur manuellen Prüfung dienen. Gilt
+    NICHT für Trendwende-Setups und Langfrist-Bewertung (Abschnitte 5
+    und 6) -- diese beiden Dateien haben gar kein Status2-Feld, dort
+    entfällt der Filter ersatzlos.
 
 -   Status „BEREITS IM PORTFOLIO" (NEU, 28.07.2026): Der Hauptscanner
     vergibt diesen Status, wenn für einen Titel bereits eine offene
@@ -212,15 +213,23 @@ Häufung/Nähe als das, was sie ist.
     0.56 / CRV2 2.32 (Mindestwert 1.0)"). PFLICHT, wenn die betreffende
     Kategorie 0 valide Setups hat: Gib die Liste dann als kompakte
     Aufzählung im jeweiligen Abschnitt aus, direkt unter dem
-    Engstellen-Satz, mit vollständigem Namen statt Ticker (Nachschlag in
-    der zugehörigen CSV) und dem Wert wörtlich - die Reihenfolge der
-    Zeilen in der Datei ist bereits ABSTEIGEND nach dem bindenden CRV
-    sortiert (der knappste Titel, der der 1,0-Schwelle am nächsten kam,
-    steht zuerst); übernimm diese Reihenfolge unverändert, sortiere
-    nicht selbst um. Bei Kategorien MIT validen Setups nur ein
-    zusammenfassender Halbsatz („daneben scheiterten N Titel knapp am
-    CRV-Filter"), damit die echten Setups im Fokus bleiben. WICHTIG: Das
-    sind ausdrücklich KEINE Setups, keine Empfehlungen und keine
+    Engstellen-Satz. BUGFIX (31.07.2026): Jede Zeile enthält bereits den
+    vollständigen Namen („Name (Ticker): ...") - kein Nachschlagen mehr
+    nötig, übernimm Name und Ticker wörtlich. Zwischen den Einträgen
+    steht in der Datei bereits eine Leerzeile - übernimm diese Absätze,
+    füge die Einträge nicht zu einer dichten Liste zusammen. Die
+    Reihenfolge ist bereits ABSTEIGEND nach dem bindenden CRV sortiert
+    (der knappste Titel, der der 1,0-Schwelle am nächsten kam, steht
+    zuerst); übernimm diese Reihenfolge unverändert, sortiere nicht
+    selbst um. NEU (31.07.2026, Nutzerwunsch): Ist ein Titel bereits
+    eine offene Portfolio-Position, steht in der Zeile der Zusatz
+    „\[bereits offene Position im Portfolio\]" - übernimm ihn wörtlich
+    und unübersehbar (z. B. fett), damit klar ist, dass dieser
+    Beinahe-Kandidat keine neue Idee, sondern eine Bestätigung/Warnung
+    zur laufenden Position ist. Bei Kategorien MIT validen Setups nur
+    ein zusammenfassender Halbsatz („daneben scheiterten N Titel knapp
+    am CRV-Filter"), damit die echten Setups im Fokus bleiben. WICHTIG:
+    Das sind ausdrücklich KEINE Setups, keine Empfehlungen und keine
     Watchlist im Sinne von ACHTUNG - sie dienen allein der
     Nachvollziehbarkeit, warum ein Tag leer ausging; formuliere nüchtern
     und leite keine Handlung daraus ab. Beim Trendwende-Scanner erfüllt
