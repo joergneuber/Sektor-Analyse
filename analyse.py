@@ -49,15 +49,19 @@ def funnel_zaehle(grund):
 FUNNEL_BEINAHE = []
 
 
-def funnel_beinahe(ticker, stufe, detail, crv_sortier=None):
+def funnel_beinahe(ticker, stufe, detail, crv_sortier=None, name=None):
     """Merkt sich einen spaeten Beinahe-Treffer (thread-sicher).
     crv_sortier (NEU 30.07.2026, Nutzerwunsch): das kleinere der beiden CRVs
     (der Wert, der die Ablehnung ausgeloest hat) - fuer eine absteigende
     Sortierung in der Ausgabe, damit die Titel, die der 1.0-Schwelle am
-    naechsten kamen, oben stehen statt alphabetisch verstreut."""
+    naechsten kamen, oben stehen statt alphabetisch verstreut.
+    name (NEU 31.07.2026, Bugfix/Nutzerwunsch): der aufgeloeste Firmenname -
+    ohne dieses Feld stand in der Ausgabe nur der Ticker (Inkonsistenz zur
+    Watchlist, die schon Namen zeigt). Faellt auf den Ticker zurueck, wenn
+    kein Name uebergeben wird."""
     with _funnel_lock:
         FUNNEL_BEINAHE.append({"Ticker": str(ticker), "Stufe": stufe, "Detail": detail,
-                               "CRV_Sortier": crv_sortier})
+                               "CRV_Sortier": crv_sortier, "Name": name or str(ticker)})
 
 
 # --- MARKTUMFELD-KLASSIFIKATION (Score-Modell, GEÄNDERT 28.07.2026 abends,
@@ -1906,7 +1910,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             funnel_beinahe(ticker, "CRV-Filter",
                            f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
                            f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
-                           crv_sortier=min(crv1, crv2))
+                           crv_sortier=min(crv1, crv2), name=firma_name)
             return None
         
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -2247,7 +2251,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             funnel_beinahe(ticker, "CRV-Filter",
                            f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
                            f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
-                           crv_sortier=min(crv1, crv2))
+                           crv_sortier=min(crv1, crv2), name=firma_name)
             return None
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
@@ -2795,9 +2799,12 @@ if __name__ == "__main__":
                 upside_text = "Kein Ziel"
             waehrungszeichen = "€" if row.get('Waehrung') == 'EUR' else "$"
 
-            f.write(f"Ticker: {ticker_val} | Markt: {row.get('Markt', 'US')} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}{waehrungszeichen}\n")
+            _watchlist_name = str(row.get('Name', '')).strip()
+            if not _watchlist_name or _watchlist_name.lower() == 'nan':
+                _watchlist_name = str(ticker_val)
+            f.write(f"{_watchlist_name} ({ticker_val}) | Markt: {row.get('Markt', 'US')} | Grund: {row['Status_Grund']} | Kurs: {row['Kurs']}{waehrungszeichen}\n")
             f.write(f"Upside: Technisch {row['Tech-Kursziel']}{waehrungszeichen} / Potenzial: {upside_text}\n")
-            f.write("-" * 30 + "\n")
+            f.write("-" * 30 + "\n\n")
 
         # 2b. BEREITS IM PORTFOLIO (NEU 28.07.2026): Setups, die auf eine
         # bereits offene Position treffen - kein Neueinstieg, aber wertvolle
@@ -3055,6 +3062,17 @@ if __name__ == "__main__":
             # 1.0-Schwelle) stehen oben. Fehlt der Sortierwert ausnahmsweise
             # (aeltere Aufrufstelle ohne crv_sortier), rutscht der Titel ans Ende
             # statt den Sort mit einem Fehler abzubrechen.
+            # Namen statt Ticker + Leerzeile zwischen Eintraegen (BUGFIX/NEU
+            # 31.07.2026, Nutzerwunsch) + Portfolio-Hinweis (NEU 31.07.2026,
+            # Nutzerwunsch "Hinweis ob Positionen vorhanden sind fehlt" -
+            # Anlass: Mondelez tauchte als Beinahe-Kandidat auf, obwohl es
+            # bereits eine offene Position ist, ohne dass das kenntlich war -
+            # nutzt dieselbe offene_portfolio_ticker-Menge wie der Duplikat-
+            # Check bei validen Setups oben, nur als Hinweis statt als
+            # Status-Aenderung, da ein Beinahe-Kandidat kein Setup ist).
             for b in sorted(beinahe, key=lambda x: (x.get("CRV_Sortier") is None,
                                                      -(x.get("CRV_Sortier") or 0))):
-                f.write(f"{b['Ticker']}: {b['Stufe']} -> {b['Detail']}\n")
+                _portfolio_hinweis = (" [bereits offene Position im Portfolio]"
+                                     if b['Ticker'].strip().upper() in offene_portfolio_ticker
+                                     else "")
+                f.write(f"{b['Name']} ({b['Ticker']}){_portfolio_hinweis}: {b['Stufe']} -> {b['Detail']}\n\n")
