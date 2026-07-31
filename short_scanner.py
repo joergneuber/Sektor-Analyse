@@ -585,9 +585,18 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         # String - crv_sortier haelt den BINDENDEN (kleineren) CRV fest, damit
         # die Ausgabe absteigend danach sortiert werden kann (knappste
         # Beinahe-Treffer zuerst, statt alphabetisch nach Ticker verstreut).
+        # BUGFIX (31.07.2026): 'risiko' existierte in dieser Funktion nicht -
+        # der Short-Scanner nennt die Kennzahl 'risk_perc' (Zeile oben, bereits
+        # berechnet) und sie ist ein PROZENTWERT (Groessenordnung ~0-20), nicht
+        # ein Kursbetrag wie 'entry'/'tp1' - deshalb hier .2f mit Prozentzeichen
+        # statt wie bei Kursen. Fehler brach den kompletten Lauf ab (NameError
+        # in einem ThreadPoolExecutor-Future reisst main() komplett mit), sobald
+        # der ERSTE Short-Titel am CRV-Filter scheiterte - traf also praktisch
+        # jeden Lauf, da CRV-Ablehnungen der Normalfall sind (siehe Funnel-
+        # Statistik der letzten Tage).
         BEINAHE_SHORT.append({
             "text": f"{ticker}: CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0), "
-                   f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+                   f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risk_perc:.2f}%",
             "crv_sortier": min(crv1, crv2),
         })
         return None, "crv_unter_1"
