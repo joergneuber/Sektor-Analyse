@@ -327,7 +327,7 @@ def get_earnings_warnung(ticker, warn_tage=7):
         print(f"DEBUG-EARNINGS: {ticker} -> nächster Termin {naechster.strftime('%d.%m.%Y')} (in {delta} Tagen, außerhalb Warnfenster)")
         return None
     except Exception as e:
-        print(f"DEBUG-EARNINGS: {ticker} -> kein Termin ermittelbar ({type(e).__name__})")
+        print(f"DEBUG-EARNINGS: {ticker} -> kein Termin ermittelbar ({type(e).__name__}: {e})")
         return None
 
 
@@ -478,7 +478,7 @@ def get_earnings_rueckblick(ticker, rueckblick_tage=5):
         print(f"DEBUG-EARNINGS-RUECKBLICK: {ticker} -> {letzter_termin.strftime('%d.%m.%Y')}: {urteil}")
         return f"📊 Zahlen {letzter_termin.strftime('%d.%m.')}: {urteil}"
     except Exception as e:
-        print(f"DEBUG-EARNINGS-RUECKBLICK: {ticker} -> nicht ermittelbar ({type(e).__name__})")
+        print(f"DEBUG-EARNINGS-RUECKBLICK: {ticker} -> nicht ermittelbar ({type(e).__name__}: {e})")
         return None
 
 
