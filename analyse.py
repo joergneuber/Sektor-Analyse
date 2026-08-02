@@ -954,6 +954,79 @@ def get_52w_kontext_text(ticker, label):
         return None
 
 
+# --- SAISONALITAET (NEU 02.08.2026, Nutzerwunsch) ---
+# Quelle: vom Nutzer bereitgestelltes PDF "Saisonalitaet Edelmetalle &
+# Rohstoffe" (RealMoneyTrader Research, 27-46 Jahre historische Daten je
+# Instrument). Rein KALENDERBASIERT - kein API-Aufruf noetig, nur ein
+# Abgleich des heutigen Datums gegen feste Zeitfenster. Bewusst reiner
+# Fliesstext-Kontext wie bei Kupfer ("Dr. Copper") - KEIN Signal, KEIN
+# Qualitaets-Modifikator, verwirft/bevorzugt keine Setups.
+#
+# EHRLICHE EINSCHRAENKUNGEN:
+# - Platin hatte im Quellmaterial kein eigenes Diagramm, nur den Hinweis
+#   "Palladiumpreise steigen, aehnlich wie Platin" - das Palladium-Fenster
+#   wird deshalb NAEHERUNGSWEISE auf Platin uebertragen, im Text markiert.
+# - Brent hatte ebenfalls kein eigenes Diagramm, nur WTI. Rohoel-Sorten
+#   korrelieren stark, aber nicht perfekt - das WTI-Fenster wird deshalb
+#   NAEHERUNGSWEISE auf Brent uebertragen, im Text markiert.
+# - Saisonalitaet ist ein bekanntes, aber auch umstrittenes Feld (Gefahr
+#   von Data-Mining bei einzelnen Quellen ueber viele Jahre) - deshalb
+#   ausdruecklich Kontext, nie Filter oder Bewertungsgrundlage.
+SAISONALITAET_FENSTER = {
+    "Gold": [
+        ((5, 1), (8, 31), "long", "Fenster (Mai bis August)", 43),
+        ((12, 15), (1, 15), "long", "Fenster um den Jahreswechsel (Mitte Dezember bis Mitte Januar)", 43),
+    ],
+    "Silber": [
+        ((12, 15), (2, 15), "long", "und saisonal stärkstes Fenster (Mitte Dezember bis Mitte Februar)", 46),
+        ((9, 1), (9, 30), "long", "Fenster (September)", 46),
+    ],
+    "Palladium": [
+        ((12, 15), (2, 15), "long", "besonders zuverlässiges saisonal long-günstiges Fenster (Mitte Dezember bis Mitte Februar)", 35),
+        ((2, 16), (5, 31), "long", "Fenster (Mitte Februar bis Ende Mai)", 35),
+    ],
+    "Platin": [
+        ((12, 15), (2, 15), "long", "besonders zuverlässiges saisonal long-günstiges Fenster (Mitte Dezember bis Mitte Februar, NÄHERUNGSWEISE vom Palladium-Muster übertragen, kein eigenes Diagramm in der Quelle)", 35),
+        ((2, 16), (5, 31), "long", "Fenster (Mitte Februar bis Ende Mai, NÄHERUNGSWEISE vom Palladium-Muster übertragen, kein eigenes Diagramm in der Quelle)", 35),
+    ],
+    "WTI": [
+        ((2, 15), (5, 5), "long", "stabilstes Fenster (Mitte Februar bis Anfang Mai)", 34),
+        ((10, 15), (12, 15), "short", "aussichtsreichstes Fenster (Mitte Oktober bis Mitte Dezember)", 34),
+    ],
+    "Brent": [
+        ((2, 15), (5, 5), "long", "stabilstes Fenster (Mitte Februar bis Anfang Mai, NÄHERUNGSWEISE von WTI übertragen, kein eigenes Diagramm in der Quelle)", 34),
+        ((10, 15), (12, 15), "short", "aussichtsreichstes Fenster (Mitte Oktober bis Mitte Dezember, NÄHERUNGSWEISE von WTI übertragen, kein eigenes Diagramm in der Quelle)", 34),
+    ],
+}
+
+
+def _in_saison_fenster(heute, start_md, ende_md):
+    """Prueft, ob (heute.month, heute.day) im Fenster [start_md, ende_md]
+    liegt - inklusive Jahreswechsel-Wrap (z.B. 15.12. bis 15.02.)."""
+    heute_md = (heute.month, heute.day)
+    if start_md <= ende_md:
+        return start_md <= heute_md <= ende_md
+    return heute_md >= start_md or heute_md <= ende_md
+
+
+def get_saisonalitaet_text(label):
+    """Gibt eine fertige Kontext-Zeile zurueck, wenn das heutige Datum in
+    einem der definierten saisonalen Fenster fuer `label` liegt, sonst
+    None (der Normalfall - die meiste Zeit des Jahres liegt kein Titel in
+    einem der eng definierten Fenster, dann bleibt die Zeile schlicht
+    weg, wie bei der Rekord-Naehe)."""
+    fenster_liste = SAISONALITAET_FENSTER.get(label)
+    if not fenster_liste:
+        return None
+    heute = datetime.date.today()
+    for start_md, ende_md, richtung, beschreibung, jahre in fenster_liste:
+        if _in_saison_fenster(heute, start_md, ende_md):
+            richtung_wort = "long-günstigen" if richtung == "long" else "short-günstigen"
+            return (f"Saisonalität {label} ({jahre} Jahre Historie, Quelle RealMoneyTrader "
+                   f"Research): aktuell in einem historisch {richtung_wort} {beschreibung}.")
+    return None
+
+
 def get_rekord_naehe_text(ticker, label, schwelle_prozent=REKORD_NAEHE_SCHWELLE_PROZENT):
     """Prueft, ob ein Instrument auf oder nahe seinem Rekordhoch/-tief SEIT
     DATENBEGINN steht (period='max' bei yfinance). EHRLICHE EINSCHRAENKUNG,
@@ -2351,12 +2424,20 @@ if __name__ == "__main__":
     wti_52w_text = get_52w_kontext_text("CL=F", "WTI (52W-Einordnung)")
     brent_52w_text = get_52w_kontext_text("BZ=F", "Brent (52W-Einordnung)")
     rekord_texte = []
+    saison_texte = []
     for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),
                           ("GC=F", "Gold"), ("SI=F", "Silber"),
                           ("PL=F", "Platin"), ("PA=F", "Palladium")]:
         _text = get_rekord_naehe_text(_tick, _label)
         if _text:
             rekord_texte.append(_text)
+    # Saisonalitaet (NEU 02.08.2026, Nutzerwunsch): nur WTI/Brent hier - Gold/
+    # Silber/Platin/Palladium werden im Edelmetalle-Briefing unter "LAGE JE
+    # METALL" mitgefuehrt (dort liegt der thematische Rahmen).
+    for _label in ["WTI", "Brent"]:
+        _text = get_saisonalitaet_text(_label)
+        if _text:
+            saison_texte.append(_text)
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
@@ -2745,6 +2826,17 @@ if __name__ == "__main__":
             f.write("REKORD-NAEHE (Oel/Edelmetalle nahe/auf Hoch- oder Tiefstand seit "
                     "Datenbeginn, Schwelle 10%)\n")
             for _t in rekord_texte:
+                f.write(f"- {_t}\n")
+            f.write("\n")
+
+        # SAISONALITAET (NEU 02.08.2026, Nutzerwunsch): rein kalenderbasierter
+        # Kontext fuer WTI/Brent - nur ausgeben, wenn heute in einem der
+        # definierten Fenster liegt (Normalfall: kein Block, Grossteil des
+        # Jahres liegt ausserhalb der eng gefassten Fenster).
+        if saison_texte:
+            f.write("SAISONALITAET (Quelle: RealMoneyTrader Research, reiner Kontext - "
+                    "kein Signal, kein Qualitaets-Modifikator)\n")
+            for _t in saison_texte:
                 f.write(f"- {_t}\n")
             f.write("\n")
 

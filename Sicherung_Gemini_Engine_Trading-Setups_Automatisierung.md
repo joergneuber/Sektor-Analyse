@@ -770,6 +770,29 @@ Pflicht sobald vorhanden}}
     weiteren Rekord-Aussagen zu Instrumenten, für die keine solche Zeile
     geliefert wird.
 
+-   SAISONALITÄT Öl/Edelmetalle (NEU 02.08.2026, Nutzerwunsch, Quelle:
+    RealMoneyTrader Research, 27--46 Jahre Historie je Instrument): Die
+    briefing.txt kann für WTI/Brent einen Block „SAISONALITÄT"
+    enthalten, das Edelmetalle-Briefing kann dieselbe Zeile als Zusatz
+    unter dem jeweiligen Metall in „LAGE JE METALL" enthalten
+    (eingerückt mit „-\>") - jeweils NUR wenn das heutige Datum in einem
+    der historisch definierten Fenster liegt (der Normalfall ist, dass
+    kein Instrument gerade in einem solchen Fenster steckt - dann
+    entfällt der Block/die Zeile ersatzlos, das ist kein Fehler und
+    keine fehlende Information). PFLICHT bei Vorhandensein: Übernimm die
+    Zeile(n) WÖRTLICH in den entsprechenden Abschnitt (Globale
+    Risikolage für WTI/Brent, Edelmetalle-Abschnitt für die Metalle).
+    WICHTIG - GENAU WIE BEI KUPFER („Dr. Copper"): Das ist
+    AUSSCHLIESSLICH Fließtext-Kontext, KEIN Signal und KEIN
+    Qualitäts-Modifikator - verändert weder die Setup-Qualitätsstufe
+    eines Trendfolge-/Trendwende-/Short-Kandidaten noch irgendeine
+    andere Bewertung. Enthält die Zeile den Zusatz „NÄHERUNGSWEISE ...
+    übertragen, kein eigenes Diagramm in der Quelle" (betrifft Platin
+    und Brent), übernimm diesen Vorbehalt zwingend mit - erwähne diese
+    beiden Instrumente nie ohne ihn. Rechne nichts selbst nach und
+    erfinde keine saisonalen Aussagen zu Instrumenten oder Zeiträumen,
+    für die keine Zeile geliefert wird.
+
 -   US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung): Der
     US-Dollar-Index wird seit 29.07.2026 nicht mehr im Briefing
     geliefert und NICHT mehr ausgewertet - erwähne ihn nirgends, auch
