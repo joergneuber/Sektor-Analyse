@@ -93,6 +93,7 @@ from analyse import (
     get_golden_cross_status,
     clean_num,
     get_rekord_naehe_text,
+    get_saisonalitaet_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -658,6 +659,12 @@ def edelmetalle_scan_starten():
             rekord_text = get_rekord_naehe_text(ticker, name)
             if rekord_text:
                 diagnose_zeilen.append(f"    -> {rekord_text}")
+            # Saisonalitaet (NEU 02.08.2026, Nutzerwunsch, Quelle: vom Nutzer
+            # bereitgestelltes PDF "RealMoneyTrader Research") - kalender-
+            # basierter Kontext, kein API-Aufruf, nur bei Treffer angehaengt.
+            saison_text = get_saisonalitaet_text(name)
+            if saison_text:
+                diagnose_zeilen.append(f"    -> {saison_text}")
         except Exception:
             diagnose_zeilen.append(f"  {name} ({ticker}): Diagnose nicht berechenbar")
 
