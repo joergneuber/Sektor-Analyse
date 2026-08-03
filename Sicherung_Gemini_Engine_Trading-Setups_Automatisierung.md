@@ -286,22 +286,24 @@ Häufung/Nähe als das, was sie ist.
     Resttext, keine Trennlinie. ERST DANACH folgt als erster
     inhaltlicher Abschnitt die Regionen-Performance unter der
     Überschrift „Blick auf wichtige Indizes", als kompakte Liste mit den
-    Werten wörtlich aus der Datei, nach Regionen gegliedert (Format:
-    „DAX: letzter Handelstag +0,38% \| YTD +12,43%"). Anschließend die
-    Executive Summary und der Rest der Gliederung. Der Block ist nach
-    Regionen gegliedert und weist JEDEN INDEX EINZELN aus (GEAENDERT
-    29.07.2026: Europa mit DAX und EuroStoxx50, USA mit S&P 500 und
-    Nasdaq, Asien mit Nikkei 225, Shanghai Composite und Hang Seng).
-    Bilde AUSDRUECKLICH KEINE Regionen-Mittelwerte und fasse die Indizes
-    einer Region nicht zu einer Zahl zusammen - uebernimm die Gliederung
-    und alle Einzelwerte wie in der Datei. Setze den Zeitzonen-Hinweis
-    aus der Klammer-Zeile als kurze Anmerkung darunter (US-Wert =
-    Schluss des Vortages, asiatischer Wert = heutiger Schluss). Keine
-    eigene Interpretation in diesem Block, keine Prognose; die
-    Einordnung folgt später im Marktumfeld-Abschnitt. Fehlt der Block
-    (älterer Lauf), entfällt er ersatzlos. Stehen einzelne Werte als
-    „n/a" in der Datei, übernimm „n/a" - erfinde keine Zahlen und rechne
-    nichts selbst nach.
+    Werten wörtlich aus der Datei, nach Regionen gegliedert (Format seit
+    03.08.2026 mit Punktestand in Klammern: „DAX: letzter Handelstag
+    +0,38% (25.580,30) \| YTD +12,43%") - der Punktestand in Klammern
+    ist PFLICHT und steht direkt in der Datei, nicht selbst nachschlagen
+    oder schätzen. Anschließend die Executive Summary und der Rest der
+    Gliederung. Der Block ist nach Regionen gegliedert und weist JEDEN
+    INDEX EINZELN aus (GEAENDERT 29.07.2026: Europa mit DAX und
+    EuroStoxx50, USA mit S&P 500 und Nasdaq, Asien mit Nikkei 225,
+    Shanghai Composite und Hang Seng). Bilde AUSDRUECKLICH KEINE
+    Regionen-Mittelwerte und fasse die Indizes einer Region nicht zu
+    einer Zahl zusammen - uebernimm die Gliederung und alle Einzelwerte
+    wie in der Datei. Setze den Zeitzonen-Hinweis aus der Klammer-Zeile
+    als kurze Anmerkung darunter (US-Wert = Schluss des Vortages,
+    asiatischer Wert = heutiger Schluss). Keine eigene Interpretation in
+    diesem Block, keine Prognose; die Einordnung folgt später im
+    Marktumfeld-Abschnitt. Fehlt der Block (älterer Lauf), entfällt er
+    ersatzlos. Stehen einzelne Werte als „n/a" in der Datei, übernimm
+    „n/a" - erfinde keine Zahlen und rechne nichts selbst nach.
 
 -   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
     Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
@@ -310,15 +312,14 @@ Häufung/Nähe als das, was sie ist.
     Trendwende", „Abschnitt 9 = Offene Positionen") sind rein INTERNE
     Referenzen zum Nachschlagen. Nummeriere die Überschriften der
     fertigen Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken (1.
-    Marktumfeld & Globale Risikolage, 2. Daten-Übersicht
-    (Trendfolge-Setups) \[GEÄNDERT 30.07.2026: Zusatz
-    „(Trendfolge-Setups)" statt „(Valide Setups)" - bei fünf parallelen
-    Kategorien ist „valide Setups" allein nicht mehr eindeutig, welche
-    Strategie gemeint ist\], 3. Trendwende-Setups, 4. Short-Setups, 5.
-    Edelmetalle-Setups, ggf. Langfrist-Bewertung als eigener Abschnitt,
-    dann Offene Positionen und als letzter Abschnitt Gestoppte
-    Positionen) - entfällt eine Kategorie an einem Tag komplett (z. B.
-    kein Langfrist-Lauf), rücken die nachfolgenden Nummern auf.
+    Marktumfeld & Globale Risikolage, 2. Trendfolge-Setups \[GEÄNDERT
+    03.08.2026: nur noch „Trendfolge-Setups" statt „Daten-Übersicht
+    (Trendfolge-Setups)" - kürzer und genauso eindeutig\], 3.
+    Trendwende-Setups, 4. Short-Setups, 5. Edelmetalle-Setups, ggf.
+    Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen
+    und als letzter Abschnitt Gestoppte Positionen) - entfällt eine
+    Kategorie an einem Tag komplett (z. B. kein Langfrist-Lauf), rücken
+    die nachfolgenden Nummern auf.
 
 -   GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
     jetzt „Geschlossene Positionen (letzte 10 Werktage)" und enthält
@@ -793,6 +794,24 @@ Pflicht sobald vorhanden}}
     erfinde keine saisonalen Aussagen zu Instrumenten oder Zeiträumen,
     für die keine Zeile geliefert wird.
 
+-   REKORDHOCH-HINWEIS INDIZES (NEU 03.08.2026, Nutzerwunsch, Anlass:
+    DAX erreichte am selben Tag ein neues Rekordhoch, das im Briefing
+    zunächst nicht auftauchte): Die briefing.txt kann einen Block
+    „REKORDHOCH-HINWEIS INDIZES" enthalten - ANDERS als bei
+    Öl/Edelmetallen gibt es hier AUSSCHLIESSLICH EINE Meldungsart
+    (tatsächlich erreichtes/überschrittenes Rekordhoch, Toleranz 3%),
+    KEINE separate schwächere „in der Nähe"-Vorstufe. PFLICHT bei
+    Vorhandensein: Übernimm die Zeile(n) WÖRTLICH in die Globale
+    Risikolage UND erwähne sie zusätzlich in einem Satz in der Executive
+    Summary - ein neues Rekordhoch bei einem Leitindex ist eine
+    markt-erhebliche Information. Wie bei Öl/Edelmetallen gilt: „seit
+    Datenbeginn" ist kein geprüftes echtes Allzeithoch, sondern der
+    höchste Stand seit Beginn der verfügbaren Kursreihe - diese
+    Einschränkung darf nicht wegfallen. Fehlt der Block (Normalfall -
+    kein Index gerade nah am Rekord), entfällt er ersatzlos; rechne
+    nichts selbst nach und erfinde keine Rekord-Aussagen zu Indizes, für
+    die keine Zeile geliefert wird.
+
 -   US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung): Der
     US-Dollar-Index wird seit 29.07.2026 nicht mehr im Briefing
     geliefert und NICHT mehr ausgewertet - erwähne ihn nirgends, auch
@@ -972,10 +991,10 @@ stehen im STRATEGIE-ANSATZ-Block des Trendwende-Briefings).
     B-/A-Skala ein.
 
 -   Strikte Trennung (Pflicht): Trendwende-Setups gehören NIEMALS in den
-    Abschnitt „Daten-Übersicht (Trendfolge-Setups)" aus Abschnitt 3.
-    Erstelle für sie einen eigenen, klar abgegrenzten Abschnitt
-    „TRENDWENDE-SETUPS (separates Risiko)" -- vermische die beiden
-    Kategorien unter keinen Umständen.
+    Abschnitt „Trendfolge-Setups" aus Abschnitt 2. Erstelle für sie
+    einen eigenen, klar abgegrenzten Abschnitt „TRENDWENDE-SETUPS
+    (separates Risiko)" -- vermische die beiden Kategorien unter keinen
+    Umständen.
 
 -   Risikohinweis Pflicht: Trendwende-Setups sind strukturell riskanter
     als die normalen Trendfolge-Setups („Messer-Gefahr" -- ein fallender
@@ -1159,8 +1178,8 @@ der CSV-Spalte Setup_Qualitaet enthalten - übernimm sie wörtlich und
 rechne die Modifikatoren dort NICHT selbst nach.
 
 -   Strikte Trennung (Pflicht): Short-Setups gehören NIEMALS in den
-    Abschnitt „Daten-Übersicht (Trendfolge-Setups)" -- eigener Abschnitt
-    „SHORT-SETUPS (fallende Kurse)", klar abgegrenzt.
+    Abschnitt „Trendfolge-Setups" -- eigener Abschnitt „SHORT-SETUPS
+    (fallende Kurse)", klar abgegrenzt.
 
 -   Validitäts-Filter (siehe Abschnitt 1): Nur Titel mit Status2 =
     VALIDE werden hier ausgegeben. ACHTUNG-Titel (z. B. bärischer
@@ -1302,8 +1321,8 @@ und zwei entfallende Felder:
     Funnel-Statistik.
 
 -   Strikte Trennung (Pflicht): Edelmetalle-Setups gehören NIEMALS in
-    den Abschnitt „Daten-Übersicht (Trendfolge-Setups)\" aus Abschnitt 3
-    -- eigener Abschnitt „EDELMETALLE-SETUPS\", klar abgegrenzt.
+    den Abschnitt „Trendfolge-Setups\" aus Abschnitt 2 -- eigener
+    Abschnitt „EDELMETALLE-SETUPS\", klar abgegrenzt.
 
 Festes Ausgabe-Format je Edelmetall-Titel: {{Name}} \| Sektor:
 Edelmetalle
