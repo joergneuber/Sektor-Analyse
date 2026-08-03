@@ -864,15 +864,18 @@ REGIONEN = {
 
 
 def _index_performance(ticker):
-    """Gibt (Vortagsveraenderung%, YTD%) fuer einen Index zurueck, oder
-    (None, None). Beides aus EINEM yfinance-Abruf (1 Jahr Historie)."""
+    """Gibt (Vortagsveraenderung%, YTD%, aktueller_Punktestand) fuer einen
+    Index zurueck, oder (None, None, None). Alles aus EINEM yfinance-Abruf
+    (1 Jahr Historie). Der Punktestand (NEU 03.08.2026, Nutzerwunsch) ist
+    der zuletzt bekannte Schlusskurs - dieselbe Zahl, die auch fuer die
+    Prozent-Berechnung genutzt wird, kein separater Abruf noetig."""
     try:
         hist = yf.Ticker(ticker).history(period="1y")
         if hist.empty or len(hist) < 2:
-            return None, None
+            return None, None, None
         schluss = hist['Close'].dropna()
         if len(schluss) < 2:
-            return None, None
+            return None, None, None
         letzter = float(schluss.iloc[-1])
         vortag = float(schluss.iloc[-2])
         tag_pct = (letzter / vortag - 1) * 100 if vortag else None
@@ -888,10 +891,10 @@ def _index_performance(ticker):
         else:
             basis = float(schluss.iloc[0])  # Historie beginnt erst im laufenden Jahr
         ytd_pct = (letzter / basis - 1) * 100 if basis else None
-        return tag_pct, ytd_pct
+        return tag_pct, ytd_pct, letzter
     except Exception as e:
         print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar ({type(e).__name__})")
-        return None, None
+        return None, None, None
 
 
 def get_regionen_performance_text():
@@ -900,15 +903,16 @@ def get_regionen_performance_text():
     zeilen = ["REGIONEN-PERFORMANCE (letzter Handelstag / seit Jahresanfang)"]
     zeilen.append("(je Index einzeln ausgewiesen, kein Regionen-Mittelwert; Zeitzonen "
                   "beachten: der Lauf startet vor US-Handelsbeginn, der US-Wert ist "
-                  "also der Schluss des Vortages, der asiatische der heutige Schluss)")
+                  "also der Schluss des Vortages, der asiatische der heutige Schluss; "
+                  "in Klammern der zugehoerige Punktestand)")
     for region, indizes in REGIONEN.items():
         zeilen.append(f"{region}:")
         for ticker, label in indizes:
-            tag_pct, ytd_pct = _index_performance(ticker)
+            tag_pct, ytd_pct, stand = _index_performance(ticker)
             if tag_pct is None or ytd_pct is None:
                 zeilen.append(f"  {label:20s} n/a (Kursdaten nicht verfuegbar)")
             else:
-                zeilen.append(f"  {label:20s} letzter Handelstag {tag_pct:+6.2f}% | "
+                zeilen.append(f"  {label:20s} letzter Handelstag {tag_pct:+6.2f}% ({stand:,.2f}) | "
                               f"YTD {ytd_pct:+7.2f}%")
     return "\n".join(zeilen)
 
@@ -1025,6 +1029,66 @@ def get_saisonalitaet_text(label):
             return (f"Saisonalität {label} ({jahre} Jahre Historie, Quelle RealMoneyTrader "
                    f"Research): aktuell in einem historisch {richtung_wort} {beschreibung}.")
     return None
+
+
+# --- REKORDHOCH-HINWEIS FUER AKTIENINDIZES (NEU 03.08.2026, Nutzerwunsch) ---
+# Anlass: DAX erreichte am 03.08.2026 ein neues Rekordhoch, tauchte im
+# Briefing aber nicht auf - get_rekord_naehe_text() deckt nur Oel/Edelmetalle
+# ab, keine Aktienindizes. Bewusst als EIGENSTAENDIGE, einfachere Funktion
+# gebaut statt die Oel/Edelmetall-Funktion wiederzuverwenden, weil die
+# Anforderung eine andere ist:
+#   - Schwelle 3% statt 10% (Nutzerwunsch) - enger gefasst, weil Aktien-
+#     indizes prozentual ruhiger schwanken als Rohstoff-Futures.
+#   - NUR EINE Meldungsart ("Rekordhoch erreicht/ueberschritten"), KEINE
+#     separate schwaechere "in der Naehe"-Vorstufe wie bei Oel/Edelmetallen
+#     (Nutzerwunsch: "nur Hinweis bei Ueberschreiten"). Die 3%-Schwelle
+#     dient dabei als TOLERANZBAND, nicht als eigene Meldestufe: Indizes
+#     setzen Rekorde oft INTRADAY, der Tagesschlusskurs kann leicht darunter
+#     liegen und zaehlt trotzdem praktisch als "Rekord erreicht" - deshalb
+#     wird bereits ab einem Abstand von <= 3% zum bisherigen Hoch gemeldet,
+#     nicht erst beim exakten UEbertreffen des Schlusskurs-Maximums.
+# EHRLICHE EINSCHRAENKUNG (wie bei Oel/Edelmetallen): "Rekord" bezieht sich
+# auf die verfuegbare yfinance-'max'-Historie (meist ab den 1990ern/2000ern
+# je nach Index), kein zwingend geprueftes Allzeithoch seit Index-Auflegung.
+INDEX_REKORD_SCHWELLE_PROZENT = 3.0
+
+# "Alle Indizes" (Nutzerwunsch) - jeder Aktienindex, der irgendwo im System
+# als Benchmark gefuehrt wird (BENCHMARKS-Block + Regionen-Performance).
+ALLE_INDIZES = [
+    ("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^DJI", "Dow Jones"),
+    ("^RUT", "Russell 2000"),
+    ("^GDAXI", "DAX"), ("^STOXX50E", "EuroStoxx50"), ("^STOXX", "STOXX Europe 600"),
+    ("^N225", "Nikkei 225"), ("000001.SS", "Shanghai Composite"), ("^HSI", "Hang Seng"),
+]
+
+
+def get_index_rekord_text(ticker, label, schwelle_prozent=INDEX_REKORD_SCHWELLE_PROZENT):
+    """Meldet NUR, wenn ein Aktienindex sein Rekordhoch seit Datenbeginn
+    erreicht/ueberschritten hat oder (Toleranzband 3%) knapp darunter liegt -
+    anders als get_rekord_naehe_text() gibt es HIER KEINE separate "in der
+    Naehe, aber noch weit entfernt"-Meldung (siehe Modul-Kommentar oben).
+    Gibt einen fertigen Text zurueck oder None (der Normalfall)."""
+    try:
+        data = yf.Ticker(ticker).history(period="max")
+        if data.empty or len(data) < 60:
+            return None
+        rekord_hoch = float(data['High'].max())
+        kurs = float(data['Close'].iloc[-1])
+        start_jahr = data.index[0].year
+        if rekord_hoch <= 0:
+            return None
+        abstand_pct = (rekord_hoch - kurs) / rekord_hoch * 100
+        if abstand_pct > schwelle_prozent:
+            return None
+        if kurs >= rekord_hoch:
+            return (f"{label} notiert auf einem neuen Rekordhoch seit Datenbeginn "
+                   f"(ca. {start_jahr}) - aktueller Stand {kurs:,.2f} Punkte.")
+        return (f"{label} hat sein bisheriges Rekordhoch seit Datenbeginn (ca. {start_jahr}, "
+               f"{rekord_hoch:,.2f} Punkte) im Tagesverlauf nahezu erreicht - aktueller "
+               f"Schlussstand {kurs:,.2f} Punkte ({abstand_pct:.1f}% darunter).")
+    except Exception as e:
+        print(f"DEBUG-INDEX-REKORD: {ticker} nicht ermittelbar ({type(e).__name__}: {e})")
+        return None
 
 
 def get_rekord_naehe_text(ticker, label, schwelle_prozent=REKORD_NAEHE_SCHWELLE_PROZENT):
@@ -2438,6 +2502,13 @@ if __name__ == "__main__":
         _text = get_saisonalitaet_text(_label)
         if _text:
             saison_texte.append(_text)
+    # Index-Rekordhoch-Hinweis (NEU 03.08.2026, Nutzerwunsch): alle Indizes,
+    # eigene 3%-Schwelle, nur bei tatsaechlichem Erreichen/Ueberschreiten.
+    index_rekord_texte = []
+    for _tick, _label in ALLE_INDIZES:
+        _text = get_index_rekord_text(_tick, _label)
+        if _text:
+            index_rekord_texte.append(_text)
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
@@ -2837,6 +2908,15 @@ if __name__ == "__main__":
             f.write("SAISONALITAET (Quelle: RealMoneyTrader Research, reiner Kontext - "
                     "kein Signal, kein Qualitaets-Modifikator)\n")
             for _t in saison_texte:
+                f.write(f"- {_t}\n")
+            f.write("\n")
+
+        # REKORDHOCH-HINWEIS INDIZES (NEU 03.08.2026, Nutzerwunsch): nur bei
+        # tatsaechlichem Erreichen/Ueberschreiten (Toleranz 3%), keine
+        # separate "Naehe"-Vorstufe wie bei Oel/Edelmetallen.
+        if index_rekord_texte:
+            f.write("REKORDHOCH-HINWEIS INDIZES (Schwelle 3%, nur bei Erreichen/Ueberschreiten)\n")
+            for _t in index_rekord_texte:
                 f.write(f"- {_t}\n")
             f.write("\n")
 
