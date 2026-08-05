@@ -41,49 +41,57 @@ zugehörigen CSV-Dateien (Setups(\...).csv und Performance(\...).csv) und
 erstelle eine strukturierte Daten-Übersicht basierend auf den folgenden
 Regeln.
 
-0\. Deckblatt, Executive Summary & Glossar (Pflicht, IMMER der
-allererste Teil der Auswertung)
+0\. Deckblatt & Kurz-Zusammenfassung (Pflicht, IMMER der allererste Teil
+der Auswertung - GEÄNDERT 05.08.2026: Glossar und Reichweiten-Hinweis
+wandern ans Dokumentende in einen eigenen Abschnitt „Methodik &
+Lesehilfe", siehe AUSGABE-GLIEDERUNG unten - hier vorn bleibt nur, was
+der Leser für den schnellen täglichen Blick sofort braucht)
 
 Bevor irgendein anderer Abschnitt beginnt (auch vor „Marktumfeld &
 Globale Risikolage"), erstelle IMMER zuerst dieses Deckblatt -- in genau
-dieser Reihenfolge:
+dieser Reihenfolge (GEÄNDERT 05.08.2026): Titelzeile, Datum, Untertitel
+→ „Blick auf wichtige Indizes" → „Kurz-Zusammenfassung" (Bullet-Punkte)
+→ „Risiko-Watch" → „Wochenausblick". Glossar und Reichweiten-Hinweis
+stehen NICHT mehr hier vorn, sondern im letzten Abschnitt „Methodik &
+Lesehilfe":
 
 -   Kopfzeile (Pflicht): „Neuber Macro & Markets" als Titel/Überschrift,
     darunter das Datum der Auswertung und der Untertitel „Tägliche
     Markt- und Setup-Auswertung".
 
--   Executive Summary (Pflicht, NEU, 5-7 Sätze): ein kompakter
-    Überblick, damit der Leser in 30 Sekunden weiß, was heute wichtig
-    ist, ohne den Rest lesen zu müssen. Nenne konkret: (1) wie viele
-    valide Titel in „Daten-Übersicht", Trendwende-, Short- und
-    Edelmetalle-Setups gefunden wurden (Zahl nennen, auch „0" ist eine
-    Aussage), (2) das Marktumfeld-Fazit USA und Europa in je einem
-    Halbsatz (Bullisch/Bärisch/Neutral), (3) einen Hinweis auf die
-    FOMC-Sitzung, falls sie laut BENCHMARKS-Block innerhalb der nächsten
-    5 Tage liegt, (4) Anzahl der offenen Positionen und ob heute eine
-    Position neu gestoppt wurde, (5) Sektor-Rotation (NEU): die jeweils
-    2-3 stärksten und 2-3 schwächsten Sektoren nach Rotation-Score,
-    GETRENNT für US (aus Performance(\...).csv) und EU (aus
-    Performance_EU(\...).csv) -- unabhängig davon, ob daraus ein
-    konkretes Setup entstanden ist. Das ist bewusst eine eigenständige
-    Aussage über die Marktbreite, nicht nur eine Ableitung aus den in
-    Abschnitt 2 gefundenen Setups: auch wenn heute z. B. kein
-    Short-Setup im schwächsten Sektor ausgelöst hat, gehört die Rotation
-    selbst trotzdem genannt (z. B. „stärkste US-Sektoren:
-    Rüstung/Aerospace, Industrie, Infrastruktur -- schwächste:
-    Halbleiter, Technologie, Solar/Clean Energy"). Reine
-    Fakten-Zusammenfassung, keine neuen Bewertungen oder Empfehlungen,
-    die nicht auch weiter unten im Dokument stehen.
+-   Kurz-Zusammenfassung (Pflicht, GEÄNDERT 05.08.2026, Nutzerwunsch
+    „Summary entzerren" -- ersetzt die frühere
+    5-7-Satz-Fließtext-Executive-Summary durch 4-6 knappe BULLET-PUNKTE,
+    damit der Leser in 15 Sekunden erfasst, was heute wichtig ist;
+    Risiko-Highlights und Sektor-Rotation im Detail wandern in die
+    eigenen Blöcke „Risiko-Watch" bzw. bleiben in Abschnitt 1 -- hier
+    nur je EIN Bullet pro Punkt): • Anzahl valider Setups je Kategorie
+    (Trendfolge/Trendwende/Short/Edelmetalle, Zahl nennen, auch „0"). •
+    Marktumfeld USA und Europa in je 2-4 Worten
+    (Bullisch/Bärisch/Neutral, Score). • FOMC-Hinweis NUR falls die
+    Sitzung laut BENCHMARKS-Block innerhalb der nächsten 5 Tage liegt
+    oder ein Rückblick vorliegt (sonst weglassen). • Portfolio in einem
+    Halbsatz: Anzahl offener Positionen, ob heute ein Stop ausgelöst
+    wurde. • Falls vorhanden: ein exaktes neues Rekordhoch (Index oder
+    Öl/Edelmetall) in einem Bullet. Reine Fakten, keine neuen
+    Bewertungen, die nicht auch weiter unten stehen.
 
--   Risiko-Zusammenfassung (Pflicht, NEU -- eigener kurzer Absatz DIREKT
-    nach der Executive Summary, VOR dem Reichweiten-Hinweis): Die
+-   \"Risiko-Watch\" (Pflicht, GEÄNDERT 05.08.2026, Nutzerwunsch
+    „eigener, visuell hervorgehobener Block" -- eigener Abschnitt mit
+    dieser Überschrift, DIREKT nach der Kurz-Zusammenfassung, VOR
+    „Wochenausblick" und vor Abschnitt 1; als klar abgesetzter Kasten
+    formatieren, z. B. mit vorangestelltem ⚠ oder als eigener
+    Rahmen/Absatz, damit er beim Überfliegen sofort auffällt): Die
     einzelnen Abschnitte dieser Auswertung enthalten schon jetzt alle
     nötigen Einzel-Informationen, aber sie werden nirgends aktiv
-    zusammengedacht. Genau das soll dieser Absatz leisten -- gehe dafür
+    zusammengedacht. Genau das soll dieser Block leisten -- gehe dafür
     explizit die folgenden vier Prüfungen durch und nenne JEDE
     zutreffende davon konkret (mit vollständigem Namen/Zahl, nicht nur
-    allgemein); trifft eine Prüfung an einem Tag nicht zu, lass genau
-    diesen Punkt weg, ohne ihn zu erwähnen:
+    allgemein) als eigenen Stichpunkt; trifft eine Prüfung an einem Tag
+    nicht zu, lass genau diesen Punkt weg, ohne ihn zu erwähnen. Trifft
+    KEINE der vier Prüfungen zu, schreibe einen einzeiligen Block
+    „Risiko-Watch: keine akuten Punkte" statt den Abschnitt ersatzlos
+    wegzulassen:
 
 1\. Sektorkonzentration: Teilen sich zwei oder mehr der heutigen validen
 Setups aus „Daten-Übersicht" denselben Sektor? Falls ja, benenne das
@@ -113,7 +121,26 @@ dem restlichen Dokument -- erfinde keine neuen Kennzahlen und leite
 daraus keine Kauf-/Verkaufsempfehlung ab, sondern benenne nur die
 Häufung/Nähe als das, was sie ist.
 
--   Reichweiten-Hinweis (Pflicht, NEU, sinngemäß, muss aber diese
+-   „Wochenausblick" (Pflicht, NEU 05.08.2026, Nutzerwunsch -- eigener
+    kurzer Abschnitt DIREKT nach „Risiko-Watch", VOR Abschnitt 1): 3-5
+    Stichpunkte zu den in den kommenden 5-7 Kalendertagen anstehenden
+    Terminen, die die Kurse der beobachteten Titel/Märkte bewegen
+    könnten -- ausschließlich aus bereits vorhandenen Daten der Dateien,
+    NICHTS recherchieren oder erfinden: (1) FOMC-Termin, falls er laut
+    BENCHMARKS-Block in diesem Fenster liegt, (2) alle
+    Earnings-Warnungen aus den Trade-Karten/offenen Positionen mit
+    Termin in diesem Fenster (vollständiger Name + Datum), (3) falls der
+    Reichweiten-Hinweis meldet, dass der Langfrist-Scan diese Woche noch
+    nicht lief, einen Hinweis, dass in den nächsten Tagen ein neuer Lauf
+    ansteht. Trifft in den nächsten 5-7 Tagen NICHTS davon zu, schreibe
+    einen einzeiligen Block „Wochenausblick: keine bekannten Termine im
+    Datenbestand" statt den Abschnitt ersatzlos wegzulassen. Keine
+    Markt-Prognosen, keine Wahrscheinlichkeitsaussagen -- reine
+    Terminübersicht.
+
+-   Reichweiten-Hinweis (Pflicht, POSITION GEÄNDERT 05.08.2026: steht
+    NICHT mehr im Deckblatt vorn, sondern im letzten Abschnitt „Methodik
+    & Lesehilfe", siehe AUSGABE-GLIEDERUNG; sinngemäß, muss aber diese
     Kerninformation enthalten): ein kurzer Satz, dass der
     Trendfolge-Scanner täglich nur die Top-8-US- und Top-5-EU-Sektoren
     abdeckt (der Short-Scanner spiegelbildlich die
@@ -138,7 +165,9 @@ Häufung/Nähe als das, was sie ist.
     Kurs- und Fundamentaldaten. Sie stellen keine Garantie für künftige
     Kursentwicklungen und keine Anlageberatung dar."
 
--   Glossar (Pflicht, NEU, kurz halten): die wichtigsten Fachbegriffe
+-   Glossar (Pflicht, POSITION GEÄNDERT 05.08.2026: steht NICHT mehr im
+    Deckblatt vorn, sondern im letzten Abschnitt „Methodik & Lesehilfe",
+    siehe AUSGABE-GLIEDERUNG; kurz halten): die wichtigsten Fachbegriffe
     aus der Auswertung, je maximal 1-2 Zeilen in einfacher Sprache,
     keine Wiederholung der ausführlichen Definitionen aus Abschnitt 2 --
     nur eine knappe Gedächtnisstütze für Leser, die mit der Terminologie
@@ -266,6 +295,34 @@ Häufung/Nähe als das, was sie ist.
     stehen, sonst nur als Halbsatz. Auch hier gilt: keine Kandidaten,
     keine Empfehlungen, nur Nachvollziehbarkeit.
 
+-   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- TABELLARISCH
+    (Pflicht, NEU 05.08.2026, Nutzerwunsch „einheitliche Benennung +
+    tabellarisch mit Grund und Kennzahlen" -- ÜBERSCHREIBT die separaten
+    Formatierungen aus den Bullets „Watchlist (Format)",
+    „BEINAHE-KANDIDATEN" und „DIVERGENZ-WATCHLIST" weiter oben, NICHT
+    deren inhaltliche Regeln zu Quelle/Sortierung/Portfolio-Hinweis --
+    die gelten unverändert weiter): Fasse ALLE manuell zu prüfenden
+    Titel -- die ACHTUNG-Watchlist aus Abschnitt 2, die
+    Beinahe-Kandidaten aus Abschnitt 2/4/5 (nur wenn dort PFLICHT gemäß
+    der jeweiligen 0-Setups-Regel) und die Divergenz-Watchlist aus
+    Abschnitt 3 -- in EINER gemeinsamen Tabelle mit der Überschrift
+    „Watchlist (manuelle Prüfung)" zusammen, eingeordnet direkt am Ende
+    des jeweils zugehörigen Abschnitts (nicht als separater
+    Gesamt-Abschnitt -- die Zuordnung zur Kategorie bleibt wichtig).
+    Tabellenspalten: „Name (Ticker)" \[voller Name, Ticker in
+    Klammern\], „Bereich" \[z. B. „Trendfolge -- ACHTUNG", „Short --
+    Beinahe-Kandidat", „Trendwende -- Divergenz-Watchlist"\], „Grund"
+    \[wörtlich aus der Datei, z. B. „Bärischer MACD-Trend" oder
+    „CRV-Filter (CRV1 0,56)"\], „Kurs", „Kennzahl" \[je nach Quelle das
+    aussagekräftigste vorhandene Datum -- Potenzial% bei der
+    ACHTUNG-Watchlist, CRV1/CRV2 bei Beinahe-Kandidaten, Kumo-Diagnose
+    bei der Divergenz-Watchlist\]. Fehlt für eine Zeile eine Spalte in
+    den Rohdaten, trage „--" ein statt zu erfinden. Der
+    Portfolio-Hinweis „\[bereits offene Position im Portfolio\]" bei
+    Beinahe-Kandidaten wandert in die Spalte „Bereich" oder als Zusatz
+    hinter den Namen, bleibt aber unübersehbar (z. B. fett). Bleibt in
+    jedem Fall reine Beobachtung -- keine Setups, keine Empfehlungen.
+
 -   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
     Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"
     enthalten - Titel, deren Boden-Bedingung (intakte bullische
@@ -323,10 +380,15 @@ Häufung/Nähe als das, was sie ist.
     03.08.2026: nur noch „Trendfolge-Setups" statt „Daten-Übersicht
     (Trendfolge-Setups)" - kürzer und genauso eindeutig\], 3.
     Trendwende-Setups, 4. Short-Setups, 5. Edelmetalle-Setups, ggf.
-    Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen
-    und als letzter Abschnitt Gestoppte Positionen) - entfällt eine
-    Kategorie an einem Tag komplett (z. B. kein Langfrist-Lauf), rücken
-    die nachfolgenden Nummern auf.
+    Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen,
+    dann Geschlossene Positionen, und GANZ ZULETZT (ERGÄNZT 05.08.2026,
+    Nutzerwunsch) als allerletzter Abschnitt „Methodik & Lesehilfe" mit
+    Reichweiten-Hinweis und Glossar (siehe deren Bullets weiter unten
+    für den Inhalt) - dieser Abschnitt bekommt KEINE fortlaufende
+    Nummer, da er kein inhaltlicher Analyse-Abschnitt ist, sondern reine
+    Nachschlagehilfe) - entfällt eine Kategorie an einem Tag komplett
+    (z. B. kein Langfrist-Lauf), rücken die nachfolgenden Nummern der
+    NUMERIERTEN Abschnitte auf.
 
 -   GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
     jetzt „Geschlossene Positionen (letzte 10 Werktage)" und enthält
@@ -807,7 +869,13 @@ Pflicht sobald vorhanden}}
     und Brent), übernimm diesen Vorbehalt zwingend mit - erwähne diese
     beiden Instrumente nie ohne ihn. Rechne nichts selbst nach und
     erfinde keine saisonalen Aussagen zu Instrumenten oder Zeiträumen,
-    für die keine Zeile geliefert wird.
+    für die keine Zeile geliefert wird. DARSTELLUNG (ERGÄNZT 05.08.2026,
+    Nutzerwunsch „kleiner Saisonalitäts-Kasten"): Formatiere die
+    Saisonalitäts-Zeile(n) als eigenen, klar abgesetzten Mini-Kasten mit
+    der Überschrift „📅 Saisonalität" statt sie in den Fließtext der
+    Globalen Risikolage einzuweben - z. B. als eigener Absatz mit
+    vorangestelltem Label. Bleibt weiterhin reiner Kontext ohne
+    Bewertung.
 
 -   REKORDHOCH-HINWEIS INDIZES (NEU 03.08.2026, Nutzerwunsch, Anlass:
     DAX erreichte am selben Tag ein neues Rekordhoch, das im Briefing
@@ -1492,22 +1560,34 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
     keine offenen Positionen vorhanden -- das ist kein Fehler, einfach
     so vermerken.
 
--   Portfolio-Übersicht (Pflicht, GEÄNDERT 28.07.2026 -- ALLERLETZTES
-    Element innerhalb „Offene Positionen", nach der letzten
-    Einzelposition und nach eventuellen Optionsschein-Zeilen, aber noch
-    VOR Abschnitt 10): Der Briefing-Text enthält bereits eine fertige
-    Zeile „Portfolio-Übersicht: \..." (in analyse.py per Python
-    vorberechnet -- Gruppendurchschnitte je Quelle plus
-    Gesamtdurchschnitt). Übernimm diese Zeile WÖRTLICH und UNVERÄNDERT
-    -- berechne NICHTS selbst nach, runde nichts um, fasse nichts weiter
-    zusammen. Grund (wichtig): Gemini hatte hier am 28.07.2026
-    nachweislich einen Rechenfehler produziert (mentale
-    Durchschnittsbildung über 13 Einzelwerte ergab +0,56% statt korrekt
-    +0,95%) -- genau deshalb wird seither in Python vorgerechnet statt
-    im Fließtext neu addiert. Taucht die Zeile in einem Lauf
-    ausnahmsweise nicht auf (z. B. weil offene Positionen ganz fehlen),
-    lass diesen Block einfach weg, erfinde keine eigene Berechnung als
-    Ersatz.
+-   PORTFOLIO-TABELLE (Pflicht, GEÄNDERT 05.08.2026, Nutzerwunsch „als
+    Tabelle, mit Kurzname UND Ticker, damit das Unternehmen klar
+    hervorgeht" -- ersetzt die bisherige Einzelkarten-Auflistung der
+    offenen Positionen durch eine kompakte Markdown-Tabelle, DIREKT VOR
+    der Portfolio-Übersicht-Zeile, ganz am Ende von „Offene Positionen",
+    nach eventuellen Optionsschein-Zeilen, aber noch vor Abschnitt 10):
+    Baue je offener Position eine Tabellenzeile mit den Spalten „Name
+    (Ticker)" \[Kurzname aus der Datei, in Klammern der Ticker -- z. B.
+    „Mondelez (MDLZ)", NIE nur der Ticker allein\], „Markt", „Richtung",
+    „Einstieg", „Aktuell", „Perf. %", „Stop", „TP1", „TP2", „Quelle",
+    „Ereignis" (Earnings-Warnung/-Rückblick oder Fast-Stop-Hinweis in
+    Kurzform, sonst leer/„--"). Alle Werte wörtlich aus den
+    bereitgestellten Daten, NICHTS selbst berechnen. Sortiere die
+    Tabelle nach Performance % absteigend, damit die größten Gewinner
+    oben und die größten Verlierer unten stehen. DIREKT DARUNTER folgt
+    weiterhin die Portfolio-Übersicht (Pflicht, unverändert seit
+    28.07.2026): Der Briefing-Text enthält bereits eine fertige Zeile
+    „Portfolio-Übersicht: \..." (in analyse.py per Python vorberechnet
+    -- Gruppendurchschnitte je Quelle plus Gesamtdurchschnitt). Übernimm
+    diese Zeile WÖRTLICH und UNVERÄNDERT -- berechne NICHTS selbst nach,
+    runde nichts um, fasse nichts weiter zusammen. Grund (wichtig):
+    Gemini hatte hier am 28.07.2026 nachweislich einen Rechenfehler
+    produziert (mentale Durchschnittsbildung über 13 Einzelwerte ergab
+    +0,56% statt korrekt +0,95%) -- genau deshalb wird seither in Python
+    vorgerechnet statt im Fließtext neu addiert. Taucht die Zeile in
+    einem Lauf ausnahmsweise nicht auf (z. B. weil offene Positionen
+    ganz fehlen), lass diesen Block einfach weg, erfinde keine eigene
+    Berechnung als Ersatz.
 
 -   ERFOLGSBILANZ (NEU 30.07.2026, Nutzerwunsch -- GEGENSTÜCK zur
     Portfolio-Übersicht, direkt DARUNTER als eigene Zeile bzw.

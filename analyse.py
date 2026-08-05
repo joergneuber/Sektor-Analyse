@@ -1447,12 +1447,68 @@ def check_rsi_divergence(data):
         
     return None
 
+def _robuste_trendlinie(x, y, max_iterationen=2, ausreisser_schwelle=2.5):
+    """Passt eine Ausgleichsgerade an und entfernt dabei iterativ Ausreißer
+    (Punkte mit ungewöhnlich großem Residuum), bevor neu angepasst wird -
+    eine einfache, nachvollziehbare Alternative zu RANSAC (kein sklearn in
+    den Abhängigkeiten dieses Projekts). BUGFIX 05.08.2026 (externe
+    Code-Review, Nutzerwunsch): eine einzelne Ausreißer-Kerze konnte die
+    Regression bisher spürbar verzerren - z.B. zieht eine Serie wie
+    100,98,97,96,85(Ausreißer),95,94 die Ausgleichsgerade klar nach unten,
+    obwohl ein Chart-Techniker die Linie über die relevanten Hochs legen
+    würde, nicht über den Ausreißer. Schwelle: 2.5x der mittlere absolute
+    Residualwert (Median-basiert, dadurch selbst robust gegen die
+    Ausreißer, die erkannt werden sollen).
+    Gibt (slope, intercept, anzahl_verwendeter_punkte) zurück."""
+    x_arr, y_arr = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    for _ in range(max_iterationen):
+        if len(x_arr) < 3:
+            break
+        slope, intercept = np.polyfit(x_arr, y_arr, 1)
+        residuen = np.abs(y_arr - (slope * x_arr + intercept))
+        mad = np.median(residuen)
+        if mad <= 0:
+            break  # perfekte Passung oder nur noch identische Residuen - fertig
+        maske = residuen <= (ausreisser_schwelle * mad)
+        if maske.all() or int(maske.sum()) < 3:
+            break  # keine Ausreißer mehr, oder Entfernen wuerde unter 3 Punkte druecken
+        x_arr, y_arr = x_arr[maske], y_arr[maske]
+    slope, intercept = np.polyfit(x_arr, y_arr, 1)
+    return slope, intercept, len(x_arr)
+
+
+def _kein_rueckfall_seit_ausbruch(closes, linie_werte, heute_pos, fenster_tage=3):
+    """Findet den juengsten Tag innerhalb der letzten `fenster_tage`, an dem
+    der Schlusskurs von unter auf ueber die Linie gewechselt ist, und prueft,
+    dass der Kurs SEIT DIESEM TAG (inklusive) an JEDEM Tag ueber der Linie
+    geschlossen hat. BUGFIX 05.08.2026 (externe Code-Review): die alte
+    Pruefung fragte nur "war irgendein Tag der letzten 3 unter der Linie?" -
+    das liess ein Wipsaw-Muster durch (Tag-3 unter, Tag-2 ueber, Tag-1
+    wieder unter, heute ueber) faelschlich als gueltigen Ausbruch gelten,
+    obwohl der Kurs zwischenzeitlich erneut unter die Linie gefallen war.
+    `closes` und `linie_werte` sind gleich lange, index-synchrone Arrays
+    (Schlusskurs bzw. Linienwert an jeder Position)."""
+    for i in range(1, fenster_tage + 1):
+        pos = heute_pos - i
+        pos_davor = pos - 1
+        if pos_davor < 0:
+            break
+        if closes[pos_davor] <= linie_werte[pos_davor] and closes[pos] > linie_werte[pos]:
+            seitdem_close = closes[pos:heute_pos + 1]
+            seitdem_linie = linie_werte[pos:heute_pos + 1]
+            return bool(np.all(np.asarray(seitdem_close) > np.asarray(seitdem_linie)))
+    return False
+
+
 def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
     """
     Sucht eine fallende Widerstands-Trendlinie durch mindestens 3 Swing-Highs
     (Toleranz: 1% Abstand zur Linie) in den letzten `lookback` Handelstagen
     und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
-    durchschnittlichem Volumen darüber ausgebrochen ist.
+    durchschnittlichem Volumen darüber ausgebrochen ist UND seitdem nicht
+    wieder darunter gefallen ist (BUGFIX 05.08.2026, siehe
+    _kein_rueckfall_seit_ausbruch). Die Trendlinie selbst wird ausreißer-
+    robust angepasst (siehe _robuste_trendlinie, BUGFIX 05.08.2026).
     Nur Long-Ausbrüche (fallende Linie nach oben durchbrochen) - ein Bruch
     einer STEIGENDEN Linie nach unten wird bewusst nicht erfasst, da die
     Strategie ausschließlich Long-Setups handelt.
@@ -1476,41 +1532,42 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
 
     x = idx_swings.astype(float)
     y = highs[idx_swings]
-    slope, intercept = np.polyfit(x, y, 1)
+    slope, intercept, verwendete_punkte = _robuste_trendlinie(x, y)
 
     # Nur fallende Trendlinien relevant (Ausbruch nach oben = Long-Signal)
     if slope >= 0:
         return False, None
+    if verwendete_punkte < 3:
+        return False, None
 
-    # Berührungspunkte innerhalb der Toleranz zählen (mind. 3 gefordert)
+    # Berührungspunkte innerhalb der Toleranz zählen (mind. 3 gefordert) -
+    # gegen ALLE urspruenglichen Swing-Highs, nicht nur die nach Ausreißer-
+    # Filterung verbliebenen (die Linie soll trotzdem an mindestens 3 echten
+    # Punkten "anliegen", nur die Anpassung selbst ist ausreißer-robust)
     linie_bei_punkten = slope * x + intercept
     beruehrungen = int(np.sum(np.abs(y - linie_bei_punkten) <= (linie_bei_punkten * touch_tolerance)))
     if beruehrungen < 3:
         return False, None
 
-    # Linie bis heute projizieren und Ausbruch prüfen: Kreuzung innerhalb der
-    # letzten 3 Kerzen (analog zum EMA-Breakout-Fenster), aktuell darüber,
-    # plus Volumen-Bestätigung an einem der letzten 3 Tage (nicht zwingend heute -
-    # der eigentliche Ausbruchstag mit dem Volumen-Spike kann auch 1-2 Tage
-    # zurückliegen, während der Kurs seitdem über der Linie hält)
+    # Linie bis heute projizieren und Ausbruch pruefen
     heute_pos = len(fenster) - 1
     linie_heute = slope * heute_pos + intercept
     close_heute = fenster['Close'].iloc[-1]
 
-    crossover_kuerzlich = any(
-        fenster['Close'].iloc[-1 - i] <= (slope * (heute_pos - i) + intercept)
-        for i in range(1, 4)
-    )
+    alle_positionen = np.arange(len(fenster))
+    linie_werte_alle = slope * alle_positionen + intercept
+    kein_rueckfall = _kein_rueckfall_seit_ausbruch(
+        fenster['Close'].values, linie_werte_alle, heute_pos)
 
     volumen_ok = any(
         fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
         for i in range(0, 3)
     )
 
-    ausbruch = bool(close_heute > linie_heute) and crossover_kuerzlich and bool(volumen_ok)
+    ausbruch = bool(close_heute > linie_heute) and kein_rueckfall and bool(volumen_ok)
     return ausbruch, (float(linie_heute) if ausbruch else None)
 
-def check_kumo_breakout(data):
+def check_kumo_breakout(data, toleranz_prozent=0.2):
     """
     Prüft einen echten Kumo-Ausbruch (Ichimoku-Wolke): Der Kurs muss die
     KOMPLETTE Wolke von unten nach oben durchbrochen haben - also über BEIDEN
@@ -1521,6 +1578,13 @@ def check_kumo_breakout(data):
     weiterhin oberhalb stehen. Pflicht-Volumen an einem der letzten 3 Tage
     (nicht zwingend heute - der Ausbruchstag mit Volumen-Spike kann auch
     1-2 Tage zurückliegen, während der Kurs seitdem über der Wolke hält).
+    TOLERANZBAND (NEU 05.08.2026, externe Code-Review, Nutzerwunsch): die
+    reine Ungleichung "Close > obere Wolke" reagierte bisher schon auf einen
+    hauchduennen Vorsprung (0,05% ueber der Wolke reichte fuer ein Signal) -
+    das ist bei Tagesschluss-Rundungsrauschen kein belastbarer Ausbruch.
+    `toleranz_prozent` verlangt jetzt mindestens 0,2% Abstand ueber der
+    oberen Wolkengrenze, macht den Scanner also etwas robuster gegen
+    hauchduenne Scheinausbrueche.
     Gibt (ausbruch: bool, wolken_obergrenze_heute: float|None) zurück.
     """
     if len(data) < 5 or 'SenkouA' not in data.columns or 'SenkouB' not in data.columns:
@@ -1533,7 +1597,7 @@ def check_kumo_breakout(data):
     if pd.isna(heute_ober):
         return False, None
 
-    ueber_wolke_heute = close_heute > heute_ober
+    ueber_wolke_heute = close_heute > heute_ober * (1 + toleranz_prozent / 100)
     if not ueber_wolke_heute:
         return False, None
 
@@ -1605,17 +1669,45 @@ def check_kijun_breakout(data, frische_tage=3):
     return ausbruch, (float(kijun_heute) if ausbruch else None)
 
 
-def get_fib_levels(data):
-    """Berechnet die 0.618 und 1.618 Extension Level basierend auf den letzten 60 Tagen."""
-    recent_data = data.iloc[-60:]
-    swing_high = recent_data['High'].max()
-    swing_low = recent_data['Low'].min()
+def get_fib_levels(data, lookback=60, order=5):
+    """Berechnet die 0.618 und 1.618 Extension Level basierend auf dem
+    letzten BESTAETIGTEN Swing-Tief und Swing-Hoch (BUGFIX 05.08.2026,
+    externe Code-Review, Nutzerwunsch).
+
+    Vorher: reines High/Low ueber ein starres 60-Tage-Fenster. Problem
+    (Review-Beispiel): Trend A, dazwischen eine Seitwaertsphase, dann
+    Trend B - dann koennen Hoch und Tief aus zwei voellig unabhaengigen
+    Bewegungen stammen, deren Spanne charttechnisch keine sinnvolle
+    Fibonacci-Basis ist. Jetzt: argrelextrema (dieselbe Swing-Erkennung wie
+    bei der Trendlinien-Funktion) findet echte lokale Hoch-/Tiefpunkte im
+    Fenster, verwendet werden das JUENGSTE bestaetigte Swing-Tief und das
+    JUENGSTE bestaetigte Swing-Hoch - das nähert die "letzte abgeschlossene
+    Bewegung" an, wie es institutionelle Chart-Technik nutzt.
+    FALLBACK: liefert das Fenster zu wenige Swing-Punkte (sehr ruhiger,
+    trendloser Kursverlauf ohne klare Zacken), faellt die Funktion auf das
+    alte, robuste Verhalten zurueck (rohes Hoch/Tief des Fensters) - lieber
+    ein grobes Ergebnis als gar keins."""
+    recent_data = data.iloc[-lookback:]
+    highs = recent_data['High'].values
+    lows = recent_data['Low'].values
+
+    idx_swing_hochs = argrelextrema(highs, np.greater_equal, order=order)[0]
+    idx_swing_tiefs = argrelextrema(lows, np.less_equal, order=order)[0]
+
+    if len(idx_swing_hochs) > 0 and len(idx_swing_tiefs) > 0:
+        swing_high = float(highs[idx_swing_hochs[-1]])
+        swing_low = float(lows[idx_swing_tiefs[-1]])
+    else:
+        # Fallback: altes Verhalten (rohes Fenster-Hoch/-Tief)
+        swing_high = float(recent_data['High'].max())
+        swing_low = float(recent_data['Low'].min())
+
     span = swing_high - swing_low
-    
+
     # Extension-Level für techn. Kursziele (über dem aktuellen Kurs)
     fib_0618 = swing_low + (span * 1.618)
     fib_1000 = swing_low + (span * 2.0)
-    
+
     return fib_0618, fib_1000
 
 def clean_num(val, default=0.0):
