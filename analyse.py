@@ -872,13 +872,27 @@ def _index_performance(ticker):
     try:
         hist = yf.Ticker(ticker).history(period="1y")
         if hist.empty or len(hist) < 2:
-            return None, None, None
+            return None, None, None, ""
         schluss = hist['Close'].dropna()
         if len(schluss) < 2:
-            return None, None, None
+            return None, None, None, ""
         letzter = float(schluss.iloc[-1])
         vortag = float(schluss.iloc[-2])
         tag_pct = (letzter / vortag - 1) * 100 if vortag else None
+
+        # Staleness-Pruefung (NEU 04.08.2026, siehe get_index_benchmark_yf fuer
+        # die vollstaendige Begruendung - gleicher Bug kann hier unabhaengig
+        # auftreten, da dies ein separater yfinance-Abruf ist).
+        letztes_datum = schluss.index[-1].date()
+        heute = datetime.date.today()
+        tage_alt = (heute - letztes_datum).days
+        max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
+        staleness_hinweis = ""
+        if tage_alt > max_alter_tage:
+            staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')}, "
+                                 f"{tage_alt} Tage alt - moeglicherweise veraltet]")
+            print(f"DEBUG-STALENESS: {ticker} -> letzter Datenpunkt "
+                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt")
 
         # YTD: letzter Schlusskurs des VORJAHRES als Basis (nicht der erste
         # Kurs des neuen Jahres - sonst fehlt der Jahreswechsel-Gap).
@@ -891,10 +905,10 @@ def _index_performance(ticker):
         else:
             basis = float(schluss.iloc[0])  # Historie beginnt erst im laufenden Jahr
         ytd_pct = (letzter / basis - 1) * 100 if basis else None
-        return tag_pct, ytd_pct, letzter
+        return tag_pct, ytd_pct, letzter, staleness_hinweis
     except Exception as e:
         print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar ({type(e).__name__})")
-        return None, None, None
+        return None, None, None, ""
 
 
 def get_regionen_performance_text():
@@ -908,12 +922,12 @@ def get_regionen_performance_text():
     for region, indizes in REGIONEN.items():
         zeilen.append(f"{region}:")
         for ticker, label in indizes:
-            tag_pct, ytd_pct, stand = _index_performance(ticker)
+            tag_pct, ytd_pct, stand, staleness = _index_performance(ticker)
             if tag_pct is None or ytd_pct is None:
                 zeilen.append(f"  {label:20s} n/a (Kursdaten nicht verfuegbar)")
             else:
                 zeilen.append(f"  {label:20s} letzter Handelstag {tag_pct:+6.2f}% ({stand:,.2f}) | "
-                              f"YTD {ytd_pct:+7.2f}%")
+                              f"YTD {ytd_pct:+7.2f}%{staleness}")
     return "\n".join(zeilen)
 
 
@@ -927,34 +941,56 @@ def get_regionen_performance_text():
 REKORD_NAEHE_SCHWELLE_PROZENT = 10.0
 
 
-def get_52w_kontext_text(ticker, label):
-    """Wie die 'LAGE JE METALL'-Diagnose des Edelmetalle-Scanners, nur als
-    wiederverwendbare Funktion - Kurs, Abstand zum 52W-Tief und zum 52W-Hoch.
-    52-Wochen-Fenster per DATUMS-Schnitt (gleiche Methode wie im Edelmetalle-
-    Scanner seit 29.07.2026 - siehe dortige Begruendung: Zeilenzaehlung
-    verzerrt bei luecken-behafteter Historie). Gibt einen fertigen Text oder
-    None zurueck (bei Datenfehlern - dann bleibt die Zeile einfach weg)."""
+def get_kurzfrist_kontext_text(ticker, label, wochen=4, naehe_schwelle_prozent=10.0):
+    """GEAENDERT 04.08.2026, Nutzerwunsch: ersetzt den vorherigen, IMMER
+    angezeigten 52-Wochen-Vergleich (Abstand zu Tief UND Hoch, ganzjaehrig)
+    durch eine kompaktere Darstellung:
+      1) Kursverlauf der letzten `wochen` Wochen - kurzfristiger und direkter
+         lesbar als ein Jahresvergleich, der bei ruhigen Phasen wenig aussagt.
+      2) Ein Jahreshoch-/Jahrestief-Hinweis NUR WENN der Kurs tatsaechlich
+         nahe dran ist (Schwelle 10%, dieselbe Konvention wie beim Rekord-
+         Naehe-Hinweis) - der Normalfall (Kurs mittig in der Jahresspanne)
+         bleibt ohne diesen Zusatz.
+    Bewusst nur fuer Oel (WTI/Brent) und Gold (Nutzerwunsch, 04.08.2026) -
+    Silber/Platin/Palladium behalten die volle 52W-Spannen-Anzeige in
+    "LAGE JE METALL" (edelmetalle_scanner.py), da dort die Naehe zum Tief
+    Teil der Trendwende-Filterlogik ist (Spannen-Position), nicht blosser
+    Kontext wie hier."""
     try:
         data = yf.Ticker(ticker).history(period="2y")
         if data.empty:
             return None
+
+        kurzfrist = data.tail(wochen * 5)
+        if len(kurzfrist) < 2:
+            return None
+        kurs = float(kurzfrist['Close'].iloc[-1])
+        kurs_vor_wochen = float(kurzfrist['Close'].iloc[0])
+        veraenderung = (kurs / kurs_vor_wochen - 1) * 100 if kurs_vor_wochen else None
+
         stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
         if getattr(data.index, 'tz', None) is not None:
             stichtag = stichtag.tz_localize(data.index.tz)
-        fenster = data[data.index >= stichtag]
-        if len(fenster) < 60:
-            fenster = data.tail(252)
-        kurs = float(fenster['Close'].iloc[-1])
-        tief_52w = float(fenster['Low'].min())
-        hoch_52w = float(fenster['High'].max())
-        if tief_52w <= 0 or hoch_52w <= 0:
-            return None
-        abstand_tief = (kurs / tief_52w - 1) * 100
-        abstand_hoch = (kurs / hoch_52w - 1) * 100
-        return (f"{label}: Kurs {kurs:.2f} | {abstand_tief:+.1f}% ueber 52W-Tief "
-               f"({tief_52w:.2f}) | {abstand_hoch:+.1f}% zum 52W-Hoch ({hoch_52w:.2f})")
+        fenster_52w = data[data.index >= stichtag]
+        if len(fenster_52w) < 60:
+            fenster_52w = data.tail(252)
+        tief_52w = float(fenster_52w['Low'].min())
+        hoch_52w = float(fenster_52w['High'].max())
+
+        text = f"{label}: Kurs {kurs:.2f}"
+        if veraenderung is not None:
+            text += f" | {veraenderung:+.1f}% in den letzten {wochen} Wochen"
+
+        if tief_52w > 0 and hoch_52w > 0:
+            abstand_hoch = (hoch_52w - kurs) / hoch_52w * 100
+            abstand_tief = (kurs - tief_52w) / tief_52w * 100
+            if abstand_hoch <= naehe_schwelle_prozent:
+                text += f" - nahe seinem 52-Wochen-Hoch ({hoch_52w:.2f}, {abstand_hoch:.1f}% darunter)"
+            elif abstand_tief <= naehe_schwelle_prozent:
+                text += f" - nahe seinem 52-Wochen-Tief ({tief_52w:.2f}, {abstand_tief:.1f}% darüber)"
+        return text
     except Exception as e:
-        print(f"DEBUG-52W-KONTEXT: {ticker} nicht ermittelbar ({type(e).__name__})")
+        print(f"DEBUG-KURZFRIST-KONTEXT: {ticker} nicht ermittelbar ({type(e).__name__})")
         return None
 
 
@@ -1168,6 +1204,31 @@ def get_index_benchmark_yf(ticker, label):
         close = hist['Close']
         last_close = close.iloc[-1]
 
+        # STALENESS-PRUEFUNG (NEU 04.08.2026, BUGFIX - Nutzer-Verdacht bestaetigt):
+        # Am 04.08.2026 lieferte yfinance fuer den DAX einen Schlusskurs vom
+        # VORVORTAG (Freitag 31.07. statt Montag 03.08., an dem der DAX real
+        # erstmals ueber 26.000 Punkte stieg - via Websuche verifiziert). Der
+        # Fehler war unsichtbar: kein Absturz, keine Exception, einfach ein
+        # veralteter Wert, der wie ein aktueller aussah. Deshalb: das Datum der
+        # letzten Zeile pruefen. Bei einem WOCHENTAG-Datum, das mehr als 1 Tag
+        # zurueckliegt (Toleranz fuer Wochenenden: bis zu 3 Kalendertage), wird
+        # das im Text sichtbar markiert statt den Wert kommentarlos als aktuell
+        # auszugeben - besser eine sichtbare Warnung als ein unbemerkt falscher
+        # Marktstand in der Auswertung.
+        letztes_datum = hist.index[-1].date()
+        heute = datetime.date.today()
+        tage_alt = (heute - letztes_datum).days
+        # Wochenende grosszuegig tolerieren (Freitagsschluss am Montag/Sonntag
+        # ist normal), Feiertage nicht extra beruecksichtigt (seltener Fall,
+        # dann greift die Warnung einmal zusaetzlich - unschaedlich).
+        max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
+        staleness_hinweis = ""
+        if tage_alt > max_alter_tage:
+            staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')} "
+                                 f"({tage_alt} Tage alt - moeglicherweise veraltet]")
+            print(f"DEBUG-STALENESS: {label} ({ticker}) -> letzter Datenpunkt "
+                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt")
+
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
         e100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
@@ -1185,7 +1246,8 @@ def get_index_benchmark_yf(ticker, label):
         # jetzt 2 Nachkommastellen; große Indizes bleiben ganzzahlig.
         nk = 2 if last_close < 100 else 0
         return (f"{label}: {last_close:.2f} | EMA20: {e20:.{nk}f} | EMA50: {e50:.{nk}f} | "
-                f"EMA100: {e100:.{nk}f} | EMA200: {e200:.{nk}f} | WMA200: {w200:.{nk}f}")
+                f"EMA100: {e100:.{nk}f} | EMA200: {e200:.{nk}f} | WMA200: {w200:.{nk}f}"
+                f"{staleness_hinweis}")
 
     except Exception as e:
         return f"{label}: Fehler beim Abruf ({e})"
@@ -2485,8 +2547,8 @@ if __name__ == "__main__":
     # dieselbe Einordnung, die die Edelmetalle schon haben ueber "LAGE JE
     # METALL" im Edelmetalle-Briefing). None-Werte werden weiter unten beim
     # Zusammenbau uebersprungen statt eine leere Zeile zu erzeugen.
-    wti_52w_text = get_52w_kontext_text("CL=F", "WTI (52W-Einordnung)")
-    brent_52w_text = get_52w_kontext_text("BZ=F", "Brent (52W-Einordnung)")
+    wti_52w_text = get_kurzfrist_kontext_text("CL=F", "WTI")
+    brent_52w_text = get_kurzfrist_kontext_text("BZ=F", "Brent")
     rekord_texte = []
     saison_texte = []
     for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),

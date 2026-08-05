@@ -122,7 +122,14 @@ Häufung/Nähe als das, was sie ist.
     werden an diesem Tag nicht erfasst, auch wenn dort valide Setups
     möglich wären. Trendwende-, Langfrist- und Edelmetalle-Scan sind
     davon ausgenommen (eigenes, umfassenderes bzw. festes Universum,
-    siehe deren Abschnitte).
+    siehe deren Abschnitte). WICHTIG (ergänzt 04.08.2026, Klarstellung):
+    Der Langfrist-Scan läuft NUR WÖCHENTLICH (nicht täglich) -- fehlt an
+    einem Tag ein eigener Langfrist-Abschnitt in den Dateien, ergänze
+    den Reichweiten-Hinweis um einen kurzen Zusatz wie „(der
+    Langfrist-Scan lief diese Woche noch nicht neu bzw. lieferte keine
+    neuen Günstig-Titel)" -- sonst entsteht der falsche Eindruck, der
+    Scan liefe taeglich mit und heute sei bloss zufaellig nichts dabei
+    herausgekommen.
 
 -   Risikohinweis (Pflicht, NEU, wörtlich übernehmen, nicht
     umformulieren oder kürzen): „Alle in dieser Auswertung genannten
@@ -750,12 +757,20 @@ Pflicht sobald vorhanden}}
     Abruf nicht möglich -- dann bei der bisherigen EMA-Beschreibung
     bleiben); für Gold/Silber/Platin/Palladium liefert das
     Edelmetalle-Briefing dieselbe Einordnung im Block „LAGE JE METALL"
-    (Abschnitt 8). Formuliere z. B. statt „Gold notiert bei 4.135,60\$"
-    eher „Gold notiert bei 4.135,60\$, 26,7% über seinem 52-Wochen-Tief
-    und 26,0% unter seinem 52-Wochen-Hoch" -- das ist aussagekräftiger
-    als der reine EMA-Vergleich und war bisher nur für die Edelmetalle
-    vorhanden, jetzt auch für Öl. Zusätzlich kann die briefing.txt einen
-    Block „REKORD-NÄHE" enthalten (nur wenn mindestens ein Instrument
+    (Abschnitt 8). GEÄNDERT (04.08.2026, Nutzerwunsch -- kompaktere
+    Darstellung statt ganzjährigem Vergleich): Für WTI, Brent UND Gold
+    zeigt die Zeile jetzt die Kursveränderung der letzten 4 Wochen, PLUS
+    einen Jahreshoch-/Jahrestief-Hinweis NUR wenn der Kurs tatsächlich
+    nahe dran ist (Format: „WTI: Kurs 78,00 \| +4,0% in den letzten 4
+    Wochen" bzw. bei Nähe zusätzlich „- nahe seinem 52-Wochen-Hoch (...,
+    X% darunter)"). Formuliere entsprechend, z. B. „Gold notiert bei
+    98,00\$, in den letzten 4 Wochen um 2,1% gestiegen und nahe seinem
+    52-Wochen-Hoch bei 100,50\$" -- fehlt der Zusatz, befindet sich der
+    Kurs NICHT in Hoch-/Tief-Nähe, dann NICHTS dazu erfinden.
+    Silber/Platin/Palladium zeigen weiterhin die volle 52-Wochen-Spanne
+    (dort ist die Nähe zum Tief Teil der Trendwende-Filterlogik, kein
+    reiner Kontext). Zusätzlich kann die briefing.txt einen Block
+    „REKORD-NÄHE" enthalten (nur wenn mindestens ein Instrument
     betroffen ist, sonst entfällt er ersatzlos) bzw. steht dieselbe
     Zeile als Zusatz unter dem jeweiligen Metall in „LAGE JE METALL"
     (eingerückt mit „-\>"). PFLICHT: Ist eine solche Zeile vorhanden,

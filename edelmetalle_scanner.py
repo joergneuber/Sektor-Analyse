@@ -94,6 +94,7 @@ from analyse import (
     clean_num,
     get_rekord_naehe_text,
     get_saisonalitaet_text,
+    get_kurzfrist_kontext_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -648,11 +649,24 @@ def edelmetalle_scan_starten():
             hoch_52w = float(data_1j['High'].max())
             abstand_tief = (kurs_akt / tief_52w - 1) * 100 if tief_52w > 0 else float('nan')
             abstand_hoch = (kurs_akt / hoch_52w - 1) * 100 if hoch_52w > 0 else float('nan')
-            diagnose_zeilen.append(
-                f"  {name} ({ticker}): Kurs {kurs_akt:.2f} | "
-                f"{abstand_tief:+.1f}% ueber 52W-Tief ({tief_52w:.2f}) | "
-                f"{abstand_hoch:+.1f}% zum 52W-Hoch ({hoch_52w:.2f})"
-            )
+            # GEAENDERT (04.08.2026, Nutzerwunsch): fuer GOLD (nicht Silber/
+            # Platin/Palladium - dort ist die 52W-Spanne Teil der Trendwende-
+            # Filterlogik, kein reiner Kontext) kompaktere Kurzfrist-Zeile
+            # statt der vollen Jahresspanne, mit bedingtem Jahreshoch-/-tief-
+            # Hinweis nur bei tatsaechlicher Naehe (siehe get_kurzfrist_
+            # kontext_text in analyse.py fuer die volle Begruendung).
+            if name == "Gold":
+                gold_zeile = get_kurzfrist_kontext_text(ticker, name)
+                if gold_zeile:
+                    diagnose_zeilen.append(f"  {gold_zeile}")
+                else:
+                    diagnose_zeilen.append(f"  {name} ({ticker}): Diagnose nicht berechenbar")
+            else:
+                diagnose_zeilen.append(
+                    f"  {name} ({ticker}): Kurs {kurs_akt:.2f} | "
+                    f"{abstand_tief:+.1f}% ueber 52W-Tief ({tief_52w:.2f}) | "
+                    f"{abstand_hoch:+.1f}% zum 52W-Hoch ({hoch_52w:.2f})"
+                )
             # Rekord-Naehe (NEU 30.07.2026, Nutzerwunsch): nur anhaengen, wenn
             # ueberhaupt relevant (Funktion liefert sonst None) - haelt die
             # taegliche Diagnose bei "nichts Besonderes" kompakt.
