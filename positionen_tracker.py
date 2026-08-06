@@ -27,9 +27,9 @@ ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # als sichtbarer Hinweistext im Sheet selbst
 SPALTEN = [
     'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung', 'Ideen_Quelle',
-    'Einstiegsdatum', 'Einstieg', 'Stop', 'TP1', 'TP2',
+    'Einstiegsdatum', 'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
-    'Aktueller_Kurs', 'Performance_Seit_Einstieg%', 'TP_Hinweis',
+    'Performance_Seit_Einstieg%', 'TP_Hinweis',
     'Produkt_Typ', 'Emittent', 'Hebel',
     'OS_Einstiegskurs', 'OS_Manueller_Kurs',
     'OS_Performance%', 'OS_Quelle', 'OS_WKN'
