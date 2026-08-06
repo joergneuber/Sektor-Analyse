@@ -118,13 +118,16 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
         if len(fenster_3m) < 40:
             fenster_3m = df.tail(63)
         hoch_3m = float(fenster_3m['High'].max())
-        neues_3m_hoch = kurs >= hoch_3m * 0.999  # 0.1% Toleranz (Rundung/Intraday)
+        # GEAENDERT (08.08.2026, Nutzerwunsch "realistischer bewerten"): 0.1%
+        # -> 1% Toleranz, Konsistenz mit derselben Aenderung in analyse.py's
+        # _hebeltrader_teilkriterien (siehe dortige Begruendung).
+        neues_3m_hoch = kurs >= hoch_3m * 0.99
 
         punkte = []
         p1 = stoch > 80
         punkte.append(("Stochastik > 80", p1, f"{stoch:.1f}"))
         p2 = neues_3m_hoch
-        punkte.append(("Neues 3-Monats-Hoch", p2, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f}"))
+        punkte.append(("Neues 3-Monats-Hoch (Toleranz 1%)", p2, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f} ({kurs/hoch_3m*100:.1f}%)"))
         p3 = vol_ratio > MOMENTUM_VOL_SCHWELLE
         punkte.append((f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)", p3, f"{vol_ratio:.2f}x"))
         p4 = abstand_ema50 >= MOMENTUM_EMA50_ABSTAND_PROZENT

@@ -337,22 +337,30 @@ Häufung/Nähe als das, was sie ist.
     Chartmuster - ein Titel kann hier auftauchen, OBWOHL er als
     Trendfolge-Setup in Abschnitt 2 verworfen wurde (typischerweise
     wegen Überhitzung/Stochastik zu hoch, was hier gerade das gesuchte
-    Signal ist). Format: gib je Treffer den vollständigen Namen, Ticker,
-    Score (z. B. „4/5") und ALLE fünf Kriterien mit
-    Erfüllt/Nicht-erfüllt UND dem jeweiligen Wert wörtlich aus der Datei
-    wieder (kein Kriterium weglassen, auch nicht erfüllte). PFLICHT bei
-    0 Treffern: ein Satz wie „Keine Hebeltrader-Kandidaten oberhalb der
-    Schwelle gefunden" statt den Abschnitt kommentarlos wegzulassen -
-    Nutze dafür KEIN CRV, KEIN Stop/TP-Format wie bei den anderen
-    Kategorien, da diese Kategorie kein Stop/TP berechnet. WICHTIG: Das
-    sind AUSDRÜCKLICH KEINE Kaufempfehlungen und KEINE regulären
-    Setups - eine hohe Punktzahl bedeutet \'zeigt Symptome eines
-    explosiven Ausbruchs\', nicht \'ist ein geprüftes, abgesichertes
-    Setup wie in den anderen Abschnitten\'. Weise auf dieses höhere
-    Risiko in maximal einem Satz hin, ohne die Zahlen weiter zu
-    interpretieren oder eine Handlungsempfehlung abzuleiten. Rechne
-    nichts selbst nach, erfinde keine Kriterien oder Werte für Titel,
-    die nicht in der Datei stehen.
+    Signal ist). FORMAT (GEÄNDERT 08.08.2026, Nutzerwunsch „CRV,
+    Stop-Loss, TP1/TP2 ermitteln, gleiche Gliederung wie alle anderen
+    Kategorien"): gib je Treffer den vollständigen Namen, Ticker, Markt,
+    Score (z. B. „4/5"), Kurs, TP1 (Chance %, CRV1), TP2 (Chance %,
+    CRV2) und Stop (Risiko %) im SELBEN Zeilenformat wie bei den anderen
+    Kategorien wörtlich aus der Datei wieder, DANACH alle fünf
+    Score-Kriterien mit Erfüllt/Nicht-erfüllt UND dem jeweiligen Wert
+    (kein Kriterium weglassen, auch nicht erfüllte). PFLICHT bei 0
+    Treffern: ein Satz wie „Keine Hebeltrader-Kandidaten oberhalb der
+    Schwelle gefunden" statt den Abschnitt kommentarlos wegzulassen.
+    WICHTIG: TP1/TP2/CRV/Stop werden hier EIGENSTÄNDIG berechnet (nicht
+    identisch mit einem eventuellen Trendfolge-Setup desselben Titels)
+    und es gibt AUSDRÜCKLICH KEINEN CRV-Mindestwert als
+    Ausschlusskriterium wie bei den anderen Kategorien - ein niedriges
+    CRV hier ist normal und erwartbar (der Kurs ist ja per Definition
+    bereits weit gelaufen), rechne es nicht klein und kommentiere es
+    nicht als Fehler. WICHTIG: Das sind AUSDRÜCKLICH KEINE
+    Kaufempfehlungen und KEINE regulären Setups - eine hohe Punktzahl
+    bedeutet \'zeigt Symptome eines explosiven Ausbruchs\', nicht \'ist
+    ein geprüftes, abgesichertes Setup wie in den anderen Abschnitten\'.
+    Weise auf dieses höhere Risiko in maximal einem Satz hin, ohne die
+    Zahlen weiter zu interpretieren oder eine Handlungsempfehlung
+    abzuleiten. Rechne nichts selbst nach, erfinde keine Kriterien oder
+    Werte für Titel, die nicht in der Datei stehen.
 
 -   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- KOMPAKTZEILEN, KEINE
     MARKDOWN-TABELLE (Pflicht, KORRIGIERT 06.08.2026 -- die
@@ -434,6 +442,21 @@ Häufung/Nähe als das, was sie ist.
     Marktumfeld-Abschnitt. Fehlt der Block (älterer Lauf), entfällt er
     ersatzlos. Stehen einzelne Werte als „n/a" in der Datei, übernimm
     „n/a" - erfinde keine Zahlen und rechne nichts selbst nach.
+
+-   HANDELSTAG-ZEILE (Pflicht, NEU 08.08.2026, Nutzerwunsch - Anlass:
+    der DAX-Staleness-Bug vom 04.08.2026 blieb tagelang unbemerkt, weil
+    nirgends explizit stand, auf welchen Tag sich die Zahlen beziehen):
+    Ganz am Anfang des inhaltlichen Briefings, NOCH VOR „Blick auf
+    wichtige Indizes", kann eine Zeile „Handelstag (Datenstand dieser
+    Auswertung): \..." stehen. PFLICHT bei Vorhandensein: Übernimm sie
+    WÖRTLICH als ersten Satz direkt nach dem Deckblatt-Kopf
+    (Titel/Datum/Untertitel), noch vor der Kurz-Zusammenfassung. Steht
+    dort „läuft noch / Zwischenstand" statt „abgeschlossen" (kann bei
+    einem manuellen Lauf während laufender Handelszeit vorkommen), weise
+    zusätzlich in einem Satz der Kurz-Zusammenfassung darauf hin, dass
+    Kurse und Kennzahlen dieser Auswertung einen unfertigen Handelstag
+    abbilden können. Fehlt die Zeile (Datenfehler bei der
+    Referenz-Abfrage), entfällt sie ersatzlos, erfinde kein Datum.
 
 -   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
     Auswertung übernahm die internen Abschnittsnummern dieser Anweisung

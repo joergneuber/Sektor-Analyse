@@ -75,13 +75,20 @@ MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0
 HEBELTRADER_KANDIDATEN = []
 
 
-def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data):
+def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entry, stop):
     """Kriterien 1-4 (alles, was OHNE Sektor-Rotation auskommt) plus die
-    rohe 5-Tage-Eigenperformance der Aktie. Wird direkt aus analyze_a_setup/
-    analyze_a_setup_eu heraus aufgerufen, NACH Stoch_K/EMA50/Vol_Ratio,
-    VOR jedem moeglichen fruehen Abbruch der Funktion - damit werden auch
-    Titel erfasst, die als Trendfolge-Setup spaeter verworfen werden
-    (genau die Faelle, die diese Kategorie zusaetzlich abdecken soll)."""
+    rohe 5-Tage-Eigenperformance der Aktie, PLUS (NEU 08.08.2026, Nutzerwunsch
+    "CRV, Stop-Loss, TP1/TP2 ermitteln, gleiche Gliederung wie alle anderen
+    Kategorien") ein eigenstaendiges TP1/TP2/CRV/Risk_Perc - unabhaengig von
+    der normalen Trendfolge-Zielberechnung weiter unten in der Funktion, da
+    diese bei einem spaeteren fruehen Abbruch (Pattern nicht erfuellt) nie
+    erreicht wuerde - genau der Fall, den Hebeltrader zusaetzlich abdecken
+    soll. Nutzt dieselben Zutaten (EMAs/Kumo/Fibonacci, Realitaets-Deckel)
+    wie die normale TP-Auswahl, nur als eigener, kompakter Rechenweg.
+    Wird direkt aus analyze_a_setup/analyze_a_setup_eu heraus aufgerufen,
+    NACH Stoch_K/EMA50/Vol_Ratio, VOR jedem moeglichen fruehen Abbruch der
+    Funktion - damit werden auch Titel erfasst, die als Trendfolge-Setup
+    spaeter verworfen werden."""
     try:
         if len(data) < 60 or 'Stoch_K' not in data.columns or 'EMA50' not in data.columns:
             return
@@ -99,7 +106,14 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data):
         if len(fenster_3m) < 40:
             fenster_3m = data.tail(63)
         hoch_3m = float(fenster_3m['High'].max())
-        neues_3m_hoch = kurs >= hoch_3m * 0.999
+        # GEAENDERT (08.08.2026, Nutzerwunsch "realistischer bewerten"):
+        # Toleranz von 0,1% auf 1% aufgeweitet - Titel, die praktisch am
+        # Ausbruch stehen (>=99% des 3-Monats-Hochs), zaehlen jetzt als
+        # erfuellt statt nur ein exaktes/fast-exaktes neues Hoch. Bewusst
+        # EIN Punkt fuer die ganze 99-100%-Zone (keine 0,5-Punkte-Zwischen-
+        # stufe) - Bruchteilspunkte haetten die gesamte Score-/Schwellen-
+        # Logik verkompliziert, fuer wenig zusaetzliche Aussagekraft.
+        neues_3m_hoch = kurs >= hoch_3m * 0.99
 
         eigene_5t = None
         if len(data) >= 6:
@@ -109,15 +123,57 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data):
 
         kriterien = {
             "Stochastik > 80": (stoch > 80, f"{stoch:.1f}"),
-            "Neues 3-Monats-Hoch": (neues_3m_hoch, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f}"),
+            "Neues 3-Monats-Hoch (Toleranz 1%)": (neues_3m_hoch, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f} ({kurs/hoch_3m*100:.1f}%)"),
             f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)": (vol_ratio > MOMENTUM_VOL_SCHWELLE, f"{vol_ratio:.2f}x"),
             f"Abstand EMA50 (>={MOMENTUM_EMA50_ABSTAND_PROZENT:.0f}%)": (abstand_ema50 >= MOMENTUM_EMA50_ABSTAND_PROZENT, f"{abstand_ema50:+.1f}%"),
         }
+
+        # --- Eigenstaendige TP1/TP2/CRV-Berechnung (NEU 08.08.2026) ---
+        try:
+            kumo_kandidaten = []
+            if 'SenkouA' in data.columns and 'SenkouB' in data.columns:
+                a, b = data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]
+                if pd.notna(a) and pd.notna(b):
+                    kumo_kandidaten.append(max(float(a), float(b)))
+            fib1, fib2 = get_fib_levels(data)
+            ziel_kandidaten = [data['EMA20'].iloc[-1], data['EMA50'].iloc[-1],
+                               data['EMA100'].iloc[-1], data['EMA200'].iloc[-1],
+                               data['WMA200'].iloc[-1], fib1, fib2] + kumo_kandidaten
+            ziel_kandidaten = sorted(float(t) for t in ziel_kandidaten if pd.notna(t) and float(t) > entry)
+            tp1 = ziel_kandidaten[0] if ziel_kandidaten else entry * 1.08
+            tp2 = ziel_kandidaten[1] if len(ziel_kandidaten) >= 2 else tp1 * 1.05
+
+            realer_deckel_120 = float(data['High'].iloc[-120:].max())
+            if realer_deckel_120 > entry and tp1 > realer_deckel_120:
+                tp1 = realer_deckel_120
+            realer_deckel_250 = float(data['High'].iloc[-250:].max())
+            if realer_deckel_250 > entry and tp2 > realer_deckel_250:
+                tp2 = realer_deckel_250
+                if tp2 <= tp1:
+                    tp2 = tp1 * 1.05
+
+            risiko = entry - float(stop)
+            if risiko <= 0:
+                risiko = entry * 0.02
+            chance1 = (tp1 - entry) / entry * 100
+            chance2 = (tp2 - entry) / entry * 100
+            ziele = {
+                "TP1": round(tp1, 2), "TP2": round(tp2, 2),
+                "Stop": round(float(stop), 2), "Risk_Perc": round(risiko / entry * 100, 2),
+                "Chance1_Perc": round(chance1, 2), "Chance2_Perc": round(chance2, 2),
+                "CRV1": round((tp1 - entry) / risiko, 2) if risiko > 0 else None,
+                "CRV2": round((tp2 - entry) / risiko, 2) if risiko > 0 else None,
+            }
+        except Exception as e:
+            print(f"DEBUG-HEBELTRADER-ZIELE: {ticker} -> TP/CRV nicht berechenbar ({type(e).__name__}: {e})")
+            ziele = {"TP1": None, "TP2": None, "Stop": round(float(stop), 2) if pd.notna(stop) else None,
+                    "Risk_Perc": None, "Chance1_Perc": None, "Chance2_Perc": None, "CRV1": None, "CRV2": None}
+
         with _funnel_lock:
             HEBELTRADER_KANDIDATEN.append({
                 "Ticker": str(ticker), "Name": str(name), "Sektor": str(sektor),
                 "Markt": str(markt), "Waehrung": str(waehrung), "Kurs": kurs,
-                "Kriterien": kriterien, "Eigene_5T": eigene_5t,
+                "Kriterien": kriterien, "Eigene_5T": eigene_5t, **ziele,
             })
     except Exception as e:
         print(f"DEBUG-HEBELTRADER: {ticker} -> Teilkriterien nicht berechenbar ({type(e).__name__}: {e})")
@@ -1076,6 +1132,44 @@ def _index_performance(ticker):
     except Exception as e:
         print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar ({type(e).__name__})")
         return None, None, None, ""
+
+
+def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
+    """NEU (08.08.2026, Nutzerwunsch): eine klare, immer sichtbare Zeile,
+    auf welchen Handelstag sich die gesamte Auswertung bezieht - und ob
+    dieser abgeschlossen ist. Anlass: der DAX-Staleness-Bug vom 04.08.2026
+    zeigte, dass ein veralteter Datenstand unbemerkt bleiben kann, wenn
+    nirgends explizit steht, WELCHER Tag eigentlich gemeint ist.
+    Nutzt EINEN Referenz-Index (Standard S&P 500, global anerkannter
+    Leitindex) statt alle Benchmarks einzeln zu pruefen - das Datum des
+    letzten Balkens dort gilt als Datenstand fuer die gesamte Auswertung.
+    LOGIK: main.yml laeuft planmaessig um 03:17 UTC (05:17 MESZ), lange vor
+    Eroeffnung jeder relevanten Boerse - der Datenstand ist bei planmaessigen
+    Laeufen deshalb IMMER ein abgeschlossener, vergangener Handelstag. Bei
+    einem manuellen Lauf waehrend laufender Handelszeit (workflow_dispatch)
+    kann yfinance aber einen unfertigen "heutigen" Balken liefern - genau
+    das faengt der Datums-Vergleich ab (letzter Balken == heute -> als
+    Zwischenstand markiert, nicht als abgeschlossen)."""
+    try:
+        hist = yf.Ticker(referenz_ticker).history(period="5d")
+        if hist.empty:
+            return None
+        letztes_datum = hist.index[-1].date()
+        heute = datetime.date.today()
+        wochentage = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
+                     "Samstag", "Sonntag"]
+        wochentag_text = wochentage[letztes_datum.weekday()]
+        if letztes_datum < heute:
+            status = "abgeschlossen"
+        elif letztes_datum == heute:
+            status = "läuft noch / Zwischenstand (Lauf während laufender Handelszeit)"
+        else:
+            status = "Datum in der Zukunft - unplausibel, bitte prüfen"
+        return (f"Handelstag (Datenstand dieser Auswertung): {wochentag_text}, "
+               f"{letztes_datum.strftime('%d.%m.%Y')} - {status} (Referenz: {referenz_label})")
+    except Exception as e:
+        print(f"DEBUG-HANDELSTAG: nicht ermittelbar ({type(e).__name__}: {e})")
+        return None
 
 
 def get_regionen_performance_text():
@@ -2151,7 +2245,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
         # Hebeltrader-Kriterien 1-4 (NEU 07.08.2026) - vor jedem moeglichen
         # fruehen Abbruch, damit auch spaeter verworfene Titel erfasst werden
-        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "US", "USD", data)
+        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "US", "USD", data, entry, stop)
 
         # MACD Berechnung
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
@@ -2556,7 +2650,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         # Hebeltrader-Kriterien 1-4 (NEU 07.08.2026) - EU-Pipeline nutzt
         # durchgaengig EUR (siehe dax_aktien-Definition weiter oben)
-        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "EU", "EUR", data)
+        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "EU", "EUR", data, entry, stop)
 
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = data['Close'].ewm(span=26, adjust=False).mean()
@@ -3210,6 +3304,14 @@ if __name__ == "__main__":
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n")
         f.write("- Earnings-Rückblick (NEU 29.07.2026): nach berichteten Zahlen (letzte 5 Kalendertage) erscheint eine Zeile '📊 Zahlen TT.MM.: ...' - EPS gemeldet vs. Analystenerwartung (yfinance) KOMBINIERT mit der Kursreaktion am Berichtstag; laufen beide auseinander (Zahlen gut, Kurs fällt), lautet das Urteil 'geteilte Meinung'. Nur EPS, kein Umsatz/keine Guidance verfügbar - reiner Kontext, keine Setup-Bewertung\n\n")
 
+        # HANDELSTAG (NEU 08.08.2026, Nutzerwunsch): steht bewusst als
+        # ALLERERSTE Zeile des inhaltlichen Briefings - noch vor Regionen-
+        # Performance - damit von Anfang an klar ist, auf welchen Tag sich
+        # die komplette Auswertung bezieht.
+        handelstag_text = get_handelstag_text()
+        if handelstag_text:
+            f.write(handelstag_text + "\n\n")
+
         # REGIONEN-PERFORMANCE zuerst (NEU 29.07.2026): steht bewusst VOR den
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
         f.write(get_regionen_performance_text() + "\n\n")
@@ -3610,13 +3712,24 @@ if __name__ == "__main__":
             f.write("-" * 50 + "\n")
             f.write("(Explosive Ausbruchs-Setups, die von den anderen Kategorien eher als "
                     "'noch nicht ausgeloest' oder 'ueberhitzt' abgelehnt werden - siehe Score "
-                    "unten. KEIN CRV, KEIN Stop/TP wie bei den anderen Kategorien, da diese "
-                    "Kategorie bewusst NICHT auf ein abgeschlossenes Chartmuster wartet.)\n\n")
+                    "unten. TP1/TP2/CRV/Stop werden EIGENSTAENDIG berechnet, unabhaengig davon, "
+                    "ob ein Trendfolge-Setup fuer denselben Titel ueberhaupt zustande kam - "
+                    "gleiches Format wie bei den anderen Kategorien, aber KEIN CRV-Mindestwert "
+                    "als Ausschlusskriterium, da diese Kategorie bewusst NICHT auf ein "
+                    "abgeschlossenes Chartmuster wartet.)\n\n")
             for t in hebeltrader_treffer:
                 waehrungszeichen = {"EUR": "€"}.get(t["Waehrung"], "$")
                 f.write(f"{t['Name']} ({t['Ticker']}) | Markt: {t['Markt']} | "
                        f"Score: {t['Score']}/{t['Max_Punkte']}\n")
                 f.write(f"Kurs: {t['Kurs']:.2f}{waehrungszeichen}\n")
+                if t.get("TP1") is not None:
+                    f.write(f"TP1: {t['TP1']:.2f}{waehrungszeichen} (Chance: {t['Chance1_Perc']:.2f}%) | "
+                           f"CRV1: {t['CRV1']:.2f}\n")
+                    f.write(f"TP2: {t['TP2']:.2f}{waehrungszeichen} (Chance: {t['Chance2_Perc']:.2f}%) | "
+                           f"CRV2: {t['CRV2']:.2f}\n")
+                    f.write(f"Stop: {t['Stop']:.2f}{waehrungszeichen} (Risiko: {t['Risk_Perc']:.2f}%)\n")
+                else:
+                    f.write("TP1/TP2/Stop/CRV: nicht berechenbar (siehe DEBUG-Zeilen im Lauf-Log)\n")
                 for name, (ok, detail) in t["Kriterien_final"].items():
                     f.write(f"  {'✓' if ok else '–'} {name}: {detail}\n")
                 f.write("\n")
