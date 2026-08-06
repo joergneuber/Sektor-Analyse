@@ -374,7 +374,7 @@ def stelle_anleitung_sicher(df):
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
         ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
-        "Sektor: optional, rein informativ. Ideen_Quelle: optional (Setups/Trendwende/"
+        "Sektor: optional, rein informativ. Ideen_Quelle: optional (Trendfolge/Trendwende/"
         "Short/Langfrist/Edelmetalle/Manuell) - leer wird als Manuell gewertet; wird nie "
         "automatisch ueberschrieben."
     )
@@ -391,6 +391,10 @@ def stelle_anleitung_sicher(df):
     anleitung_markt = (
         "AUTOMATISCH BEFUELLT (nicht anfassen): Aktueller_Kurs, Performance_Seit_Einstieg%, "
         "OS_Performance%, OS_Quelle. Bei Stop-Beruehrung: Status -> 'Gestoppt' + Ausstiegsdatum/"
+        "-kurs automatisch. POSITION SELBST VERKAUFT (vor TP1 oder Stop): Status auf "
+        "'Verkauft' setzen und Ausstiegsdatum + Ausstiegskurs von Hand eintragen - dann "
+        "erscheint sie 10 Werktage lang im Abschnitt 'Geschlossene Positionen' mit dem "
+        "Vermerk 'manuell verkauft' und wird nicht mehr gegen den Stop geprueft. "
         "-kurs automatisch. STUFENREGEL (28.07.2026): nach TP1 wird der Stop EINMALIG auf "
         "Breakeven (Einstiegskurs) nachgezogen, nach TP2 EINMALIG auf TP1 - jeweils nur bei "
         "Stop > 0, nie verschlechternd; manuelles Absenken danach wird respektiert. "

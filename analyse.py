@@ -298,18 +298,52 @@ def get_safe_rsi(df, period=14):
 
 
 # --- FUNKTIONEN ---
-# HINWEIS (05.08.2026, externe Code-Review): Hier stand bis zu diesem Datum
-# eine Funktion update_status_logic(row) mit einer fehlerhaften Prioritaeten-
-# Reihenfolge (RSI < 30 gab sofort "VALIDE" zurueck und ueberschrieb damit
-# nachfolgende MACD-/Volumen-/TP1-Pruefungen). ENTFERNT statt repariert:
-# die Funktion wurde nirgends im Projekt aufgerufen (projektweite Suche
-# bestaetigt keine einzige Aufrufstelle) - die tatsaechliche VALIDE/ACHTUNG-
-# Logik laeuft ueber die Funnel-/Abstufungs-Mechanik weiter unten (Death
-# Cross, Earnings, Risk_Perc, Sektor-Modifikator). Reine Codehygiene, kein
-# Verhaltensfix - der tote Code haette sonst als Falle liegen bleiben
-# koennen, falls ihn spaeter mal jemand versehentlich verdrahtet.
+def update_status_logic(row):
+    """Bestimmt Status2 (VALIDE/ACHTUNG/GELAUFEN) und die Begruendung fuer
+    ein bereits gefundenes Setup (df_s hat den Haupt-Pattern-Filter schon
+    durchlaufen) - via df_s.apply(update_status_logic, axis=1).
 
-# --- FUNKTIONEN ---
+    KRITISCHER BUGFIX (06.08.2026): Diese Funktion wurde am 05.08.2026
+    faelschlich als "toter Code" identifiziert und geloescht - eigener
+    Fehler: die damalige projektweite Suche nach "update_status_logic("
+    (mit Klammer) fand die tatsaechliche Aufrufstelle nicht, weil sie die
+    Funktion OHNE Klammer als Referenz an df_s.apply() uebergibt, statt sie
+    direkt aufzurufen. main.yml stuerzte seither bei jedem Lauf mit
+    mindestens einem gefundenen Setup mit NameError ab. Hier wiederhergestellt
+    UND gleich mit der urspruenglich (05.08., externe Code-Review) korrekt
+    beanstandeten Prioritaeten-Reihenfolge:
+    ALT: RSI < 30 gab sofort "VALIDE" zurueck und ueberschrieb damit
+    nachfolgende MACD-/Volumen-/TP1-Pruefungen - ein ueberverkaufter Titel
+    mit gleichzeitig baerischem MACD wurde faelschlich trotzdem VALIDE.
+    NEU: TP1-Erreichen hat oberste Prioritaet (Trade ist dann bereits
+    gelaufen, unabhaengig vom RSI), danach die ACHTUNG-Kriterien (RSI>70,
+    schwaches Volumen, baerischer MACD) - erst danach der Oversold-Hinweis,
+    der jetzt keine ACHTUNG-Einstufung mehr ueberschreiben kann, sondern nur
+    noch greift, wenn keines der Warnkriterien zutrifft."""
+    rsi = row.get('RSI', 50)  # Standard 50, falls was schiefgeht
+    pattern = row.get('Pattern', "Kein")
+    vol_ratio = row.get('Vol_Ratio', 1.0)  # Standard 1.0, damit kein Fehler bei < 0.5
+    macd_trend = row.get('MACD_Trend', "Neutral")
+    kurs = row.get('Kurs', 0)
+    tp1 = row.get('TP1', float('inf'))  # Unendlich, falls kein TP1 existiert
+    divergenz = row.get('Divergenz', "Keine")
+
+    if kurs >= tp1:
+        return pd.Series(["GELAUFEN", "Kursziel erreicht"])
+    elif rsi > 70:
+        return pd.Series(["ACHTUNG", "RSI überkauft (>70)"])
+    elif pattern != "Kein" and vol_ratio < 0.5:
+        return pd.Series(["ACHTUNG", f"Schwaches Volumen ({round(float(vol_ratio), 2)}x SMA20)"])
+    elif macd_trend == "Bärisch":
+        return pd.Series(["ACHTUNG", "Bärischer MACD-Trend"])
+    elif rsi < 30:
+        return pd.Series(["VALIDE", "RSI überverkauft (<30) - zusätzliches Kaufsignal"])
+    elif divergenz == "Bullisch":
+        return pd.Series(["VALIDE", "Bullische Divergenz (Signal)"])
+    else:
+        return pd.Series(["VALIDE", "Alles ok"])
+
+
 def get_earnings_warnung(ticker, warn_tage=7):
     """Prüft per yfinance, ob der nächste Earnings-Termin innerhalb der
     nächsten warn_tage liegt. Gibt einen Warntext zurück (z.B.
@@ -3264,7 +3298,7 @@ if __name__ == "__main__":
                     performance = fmt_de(prow.get('Performance_Seit_Einstieg%', "n/a"))
                     richtung = str(prow.get('Richtung', '')).strip() or 'Long'
                     # Ideen_Quelle (NEU, 27.07.2026): woher die Position kam
-                    # (Setups/Trendwende/Short/Langfrist/Edelmetalle/Manuell,
+                    # (Trendfolge/Trendwende/Short/Langfrist/Edelmetalle/Manuell,
                     # siehe positionen_tracker.py) - fehlt das Feld (aeltere
                     # Zeile ohne diese Spalte), 'Manuell' als sicheren
                     # Standard annehmen statt die Angabe wegzulassen.
