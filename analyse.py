@@ -380,13 +380,32 @@ dax_aktien = {
     # Bewusst NUR Börsen mit EUR-Notierung (.DE Xetra, .PA Paris, .AS Amsterdam,
     # .MI Mailand, .MC Madrid) - keine .CO/.SW/.L-Titel, da die EU-Pipeline
     # durchgängig EUR als Währung annimmt.
-    "Banken": ["DBK.DE", "CBK.DE", "BNP.PA", "ACA.PA", "GLE.PA", "INGA.AS", "ISP.MI", "UCG.MI", "SAN.MC", "BBVA.MC"],
+    #
+    # MDAX-ERWEITERUNG (NEU 08.08.2026, Nutzerwunsch): ~39 zusätzliche MDAX-
+    # Werte ergänzt. EHRLICHE EINSCHRÄNKUNG: Liste basiert auf Trainingswissen
+    # (Stand ca. Anfang 2026), NICHT taggenau gegen eine aktuelle Quelle
+    # verifiziert - MDAX wird vierteljährlich überprüft (März/Juni/September/
+    # Dezember), einzelne Namen können inzwischen rotiert sein. Das ist hier
+    # bewusst unkritisch: ein falscher/veralteter Ticker liefert schlicht
+    # keine Kursdaten und wird vom bestehenden Fehler-Handling übersprungen
+    # (siehe z.B. "ABB -> Daten von Alpaca leer" / HTTP-404-Faelle in den
+    # Logs) - kein Absturz, keine Verunreinigung der Ergebnisse. Vier neue
+    # Sektor-Buckets ergänzt, die es bisher fuer EU gar nicht gab (Immobilien/
+    # Chemie/Konsum/Telekommunikation) - Deutsche Telekom (DTG.DE) dabei aus
+    # "Industrie" nach "Telekommunikation" verschoben, passt dort inhaltlich
+    # besser (siehe Chat-Diskussion 08.08.2026).
+    "Banken": ["DBK.DE", "CBK.DE", "BNP.PA", "ACA.PA", "GLE.PA", "INGA.AS", "ISP.MI", "UCG.MI", "SAN.MC", "BBVA.MC", "PBB.DE"],
     "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE", "TLX.DE", "CS.PA", "G.MI"],
-    "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS"],
-    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS"],
-    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "DTG.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AI.PA", "PIA.MI"],
+    "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS", "WAF.DE", "HYQ.DE"],
+    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS", "COP.DE"],
+    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AI.PA", "PIA.MI",
+                 "GXI.DE", "JUN3.DE", "KRN.DE", "DUE.DE", "HAG.DE", "R3NK.DE", "FRA.DE", "GBF.DE", "S92.DE", "ECV.DE"],
     "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA"],
-    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI"],
+    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI", "SIX2.DE"],
+    "Immobilien": ["VNA.DE", "LEG.DE", "AT1.DE", "GYC.DE", "TEG.DE"],
+    "Chemie/Rohstoffe": ["SY1.DE", "LXS.DE", "EVK.DE", "WCH.DE", "SDF.DE", "TKA.DE", "SZG.DE", "NDA.DE"],
+    "Konsum/Handel": ["PUM.DE", "BOSS.DE", "ZAL.DE", "HFG.DE", "FIE.DE", "DHER.DE", "AG1.DE"],
+    "Telekommunikation": ["UTDI.DE", "FNTN.DE", "MOB.DE", "DTG.DE"],
 }
 
 def berechne_indikatoren(df):
