@@ -47,6 +47,27 @@ wandern ans Dokumentende in einen eigenen Abschnitt „Methodik &
 Lesehilfe", siehe AUSGABE-GLIEDERUNG unten - hier vorn bleibt nur, was
 der Leser für den schnellen täglichen Blick sofort braucht)
 
+-   KEINE MARKDOWN-SYNTAX IN DER GESAMTEN AUSWERTUNG (Pflicht, NEU
+    07.08.2026, Nutzerwunsch „die ganzen Sterne nerven beim Lesen" --
+    gilt für JEDEN Abschnitt des Dokuments, nicht nur für die bereits
+    einzeln korrigierten
+    Watchlist-/Portfolio-/Geschlossene-Positionen-Blöcke): Die
+    Auswertung ist eine PLAIN-TEXT-Datei (.txt) OHNE Markdown-Renderer.
+    Verwende deshalb NIRGENDS im Dokument: kein \*\*fett\*\* (doppelte
+    Sternchen), kein \*kursiv\* (einfache Sternchen), keine \#
+    Überschriften-Rauten, keine Aufzählungspunkte mit \* oder - am
+    Zeilenanfang, keine „\| Tabelle \|"-Syntax. Das betrifft
+    AUSDRÜCKLICH auch die Trade-Karten (Abschnitte
+    Trendfolge/Trendwende/Short/Hebeltrader/Edelmetalle) -- die
+    Feldvorlage weiter unten („Name: {{Name}} \| Markt: {{Markt}} \|
+    \...") ist bereits als reines Label:-Wert-Format ohne Sternchen zu
+    lesen; füge dort keine eigene Fett- oder Aufzählungs-Formatierung
+    hinzu, auch wenn das stilistisch naheliegend erscheint. Gliedere
+    stattdessen ausschließlich über GROSSSCHREIBUNG von
+    Abschnittstiteln, Leerzeilen und einfache „Label: Wert"-Zeilen --
+    genau wie es die bereits korrigierten Abschnitte „Offene Positionen"
+    und „Geschlossene Positionen" vormachen.
+
 Bevor irgendein anderer Abschnitt beginnt (auch vor „Marktumfeld &
 Globale Risikolage"), erstelle IMMER zuerst dieses Deckblatt -- in genau
 dieser Reihenfolge (GEÄNDERT 05.08.2026): Titelzeile, Datum, Untertitel
