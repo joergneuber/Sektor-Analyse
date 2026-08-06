@@ -153,3 +153,21 @@ jobs:
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python upload_to_drive.py
+
+      - name: Auswertung per E-Mail versenden
+        # NEU (08.08.2026, Nutzerwunsch - analog zum bestehenden E-Mail-
+        # Versand im Mini-Daily-Gold-Projekt, gleiche Secret-Namen/Aufbau).
+        # Bewusst OHNE continue-on-error/if:always() - schlaegt der Gemini-
+        # Schritt fehl (dessen eigenes continue-on-error laesst main.yml
+        # trotzdem weiterlaufen), gibt es an diesem Tag schlicht keine
+        # Auswertung(*).txt zum Verschicken; send_mail.py wirft dann bewusst
+        # einen klaren Fehler, statt eine alte/leere Mail zu verschicken -
+        # das soll in der Actions-Oberfluche sichtbar bleiben, nicht
+        # stillschweigend uebersprungen werden.
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
+        run: python send_mail.py
