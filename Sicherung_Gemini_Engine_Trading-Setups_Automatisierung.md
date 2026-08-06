@@ -129,14 +129,16 @@ Häufung/Nähe als das, was sie ist.
     NICHTS recherchieren oder erfinden: (1) FOMC-Termin, falls er laut
     BENCHMARKS-Block in diesem Fenster liegt, (2) alle
     Earnings-Warnungen aus den Trade-Karten/offenen Positionen mit
-    Termin in diesem Fenster (vollständiger Name + Datum), (3) falls der
-    Reichweiten-Hinweis meldet, dass der Langfrist-Scan diese Woche noch
-    nicht lief, einen Hinweis, dass in den nächsten Tagen ein neuer Lauf
-    ansteht. Trifft in den nächsten 5-7 Tagen NICHTS davon zu, schreibe
-    einen einzeiligen Block „Wochenausblick: keine bekannten Termine im
-    Datenbestand" statt den Abschnitt ersatzlos wegzulassen. Keine
-    Markt-Prognosen, keine Wahrscheinlichkeitsaussagen -- reine
-    Terminübersicht.
+    Termin in diesem Fenster (vollständiger Name + Datum), (3) einen
+    Hinweis auf den Langfrist-Scan NUR, wenn ein Abschnitt
+    „Langfrist-Bewertung" heute tatsächlich vorliegt (dann in Kurzform,
+    was er brachte) -- gibt es diesen Abschnitt heute nicht, erwähne
+    Langfrist HIER GAR NICHT (kein Datum/keine Häufigkeit erfinden,
+    siehe Korrektur 06.08.2026 beim Reichweiten-Hinweis). Trifft in den
+    nächsten 5-7 Tagen NICHTS davon zu, schreibe einen einzeiligen Block
+    „Wochenausblick: keine bekannten Termine im Datenbestand" statt den
+    Abschnitt ersatzlos wegzulassen. Keine Markt-Prognosen, keine
+    Wahrscheinlichkeitsaussagen -- reine Terminübersicht.
 
 -   Reichweiten-Hinweis (Pflicht, POSITION GEÄNDERT 05.08.2026: steht
     NICHT mehr im Deckblatt vorn, sondern im letzten Abschnitt „Methodik
@@ -149,14 +151,19 @@ Häufung/Nähe als das, was sie ist.
     werden an diesem Tag nicht erfasst, auch wenn dort valide Setups
     möglich wären. Trendwende-, Langfrist- und Edelmetalle-Scan sind
     davon ausgenommen (eigenes, umfassenderes bzw. festes Universum,
-    siehe deren Abschnitte). WICHTIG (ergänzt 04.08.2026, Klarstellung):
-    Der Langfrist-Scan läuft NUR WÖCHENTLICH (nicht täglich) -- fehlt an
-    einem Tag ein eigener Langfrist-Abschnitt in den Dateien, ergänze
-    den Reichweiten-Hinweis um einen kurzen Zusatz wie „(der
-    Langfrist-Scan lief diese Woche noch nicht neu bzw. lieferte keine
-    neuen Günstig-Titel)" -- sonst entsteht der falsche Eindruck, der
-    Scan liefe taeglich mit und heute sei bloss zufaellig nichts dabei
-    herausgekommen.
+    siehe deren Abschnitte). WICHTIG (KORRIGIERT 06.08.2026 -- die
+    Version vom 04.08. führte zu einer erfundenen Aussage: Gemini
+    behauptete an einem Tag, der Scan sei „diese Woche noch nicht
+    durchgeführt" worden, obwohl er tatsächlich 3 Tage zuvor lief;
+    Gemini hat KEINE Möglichkeit, das echte letzte Lauf-Datum zu kennen,
+    wenn heute kein Langfrist-Abschnitt vorliegt): Der Langfrist-Scan
+    läuft NUR WÖCHENTLICH (nicht täglich). Fehlt an einem Tag ein
+    eigener Langfrist-Abschnitt in den Dateien, ERGÄNZE NICHTS über
+    Zeitpunkt oder Häufigkeit des letzten Laufs -- weder „noch nicht
+    diese Woche" noch ein Datum, sofern kein solches Datum WÖRTLICH in
+    einer der Dateien steht. Erwähne Langfrist in diesem Fall im
+    Reichweiten-Hinweis und im Wochenausblick GAR NICHT, statt eine
+    ungeprüfte Vermutung als Fakt zu formulieren.
 
 -   Risikohinweis (Pflicht, NEU, wörtlich übernehmen, nicht
     umformulieren oder kürzen): „Alle in dieser Auswertung genannten
@@ -295,33 +302,40 @@ Häufung/Nähe als das, was sie ist.
     stehen, sonst nur als Halbsatz. Auch hier gilt: keine Kandidaten,
     keine Empfehlungen, nur Nachvollziehbarkeit.
 
--   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- TABELLARISCH
-    (Pflicht, NEU 05.08.2026, Nutzerwunsch „einheitliche Benennung +
-    tabellarisch mit Grund und Kennzahlen" -- ÜBERSCHREIBT die separaten
-    Formatierungen aus den Bullets „Watchlist (Format)",
-    „BEINAHE-KANDIDATEN" und „DIVERGENZ-WATCHLIST" weiter oben, NICHT
-    deren inhaltliche Regeln zu Quelle/Sortierung/Portfolio-Hinweis --
-    die gelten unverändert weiter): Fasse ALLE manuell zu prüfenden
-    Titel -- die ACHTUNG-Watchlist aus Abschnitt 2, die
-    Beinahe-Kandidaten aus Abschnitt 2/4/5 (nur wenn dort PFLICHT gemäß
-    der jeweiligen 0-Setups-Regel) und die Divergenz-Watchlist aus
-    Abschnitt 3 -- in EINER gemeinsamen Tabelle mit der Überschrift
-    „Watchlist (manuelle Prüfung)" zusammen, eingeordnet direkt am Ende
-    des jeweils zugehörigen Abschnitts (nicht als separater
-    Gesamt-Abschnitt -- die Zuordnung zur Kategorie bleibt wichtig).
-    Tabellenspalten: „Name (Ticker)" \[voller Name, Ticker in
-    Klammern\], „Bereich" \[z. B. „Trendfolge -- ACHTUNG", „Short --
-    Beinahe-Kandidat", „Trendwende -- Divergenz-Watchlist"\], „Grund"
-    \[wörtlich aus der Datei, z. B. „Bärischer MACD-Trend" oder
-    „CRV-Filter (CRV1 0,56)"\], „Kurs", „Kennzahl" \[je nach Quelle das
-    aussagekräftigste vorhandene Datum -- Potenzial% bei der
-    ACHTUNG-Watchlist, CRV1/CRV2 bei Beinahe-Kandidaten, Kumo-Diagnose
-    bei der Divergenz-Watchlist\]. Fehlt für eine Zeile eine Spalte in
-    den Rohdaten, trage „--" ein statt zu erfinden. Der
+-   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- KOMPAKTZEILEN, KEINE
+    MARKDOWN-TABELLE (Pflicht, KORRIGIERT 06.08.2026 -- die
+    Markdown-Tabellen-Version vom 05.08. erschien in der
+    PLAIN-TEXT-Auswertung als roher Pipe-Zeichenwust „\| :\-\-- \|
+    :\-\-- \|" statt als lesbare Tabelle, da kein Markdown-Renderer zum
+    Einsatz kommt; die zugrunde liegenden inhaltlichen Regeln zu
+    Quelle/Sortierung/Portfolio-Hinweis aus den Bullets „Watchlist
+    (Format)", „BEINAHE-KANDIDATEN" und „DIVERGENZ-WATCHLIST" weiter
+    oben gelten unverändert weiter, NUR die Darstellung ändert sich):
+    Fasse ALLE manuell zu prüfenden Titel -- die ACHTUNG-Watchlist aus
+    Abschnitt 2, die Beinahe-Kandidaten aus Abschnitt 2/4/5 (nur wenn
+    dort PFLICHT gemäß der jeweiligen 0-Setups-Regel) und die
+    Divergenz-Watchlist aus Abschnitt 3 -- unter der Überschrift
+    „Watchlist (manuelle Prüfung)" zusammen, direkt am Ende des jeweils
+    zugehörigen Abschnitts (nicht als separater Gesamt-Abschnitt -- die
+    Zuordnung zur Kategorie bleibt wichtig). Format je Titel: GENAU EINE
+    ZEILE, KEINE Tabelle, KEINE „\|"-Trennzeichen, KEINE
+    „:\-\--"-Ausrichtungszeile -- Felder durch „ --- " (Gedankenstrich)
+    getrennt: „Name (Ticker) --- Bereich --- Grund --- Kurs ---
+    Kennzahl", wobei „Bereich" z. B. „Trendfolge -- ACHTUNG" oder „Short
+    -- Beinahe-Kandidat" ist, „Grund" wörtlich aus der Datei stammt
+    (z. B. „Bärischer MACD-Trend" oder „CRV-Filter (CRV1 0,56)"), und
+    „Kennzahl" je nach Quelle das aussagekräftigste vorhandene Datum ist
+    (Potenzial% bei der ACHTUNG-Watchlist, CRV1/CRV2 bei
+    Beinahe-Kandidaten, Kumo-Diagnose bei der Divergenz-Watchlist).
+    Beispiel: „Continental AG (CON.DE) --- Trendfolge -- ACHTUNG ---
+    Bärischer MACD-Trend --- 71,24€ --- Potenzial 7,73% (Tech-Ziel
+    77,50€)". Fehlt ein Wert in den Rohdaten, „--" eintragen statt zu
+    erfinden. Zwischen den Zeilen steht eine Leerzeile
+    (Übersichtlichkeit, wie an anderer Stelle bereits etabliert). Der
     Portfolio-Hinweis „\[bereits offene Position im Portfolio\]" bei
-    Beinahe-Kandidaten wandert in die Spalte „Bereich" oder als Zusatz
-    hinter den Namen, bleibt aber unübersehbar (z. B. fett). Bleibt in
-    jedem Fall reine Beobachtung -- keine Setups, keine Empfehlungen.
+    Beinahe-Kandidaten bleibt unübersehbar (z. B. fett) direkt hinter
+    dem Namen. Bleibt in jedem Fall reine Beobachtung -- keine Setups,
+    keine Empfehlungen.
 
 -   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
     Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"
@@ -1560,34 +1574,35 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
     keine offenen Positionen vorhanden -- das ist kein Fehler, einfach
     so vermerken.
 
--   PORTFOLIO-TABELLE (Pflicht, GEÄNDERT 05.08.2026, Nutzerwunsch „als
-    Tabelle, mit Kurzname UND Ticker, damit das Unternehmen klar
-    hervorgeht" -- ersetzt die bisherige Einzelkarten-Auflistung der
-    offenen Positionen durch eine kompakte Markdown-Tabelle, DIREKT VOR
-    der Portfolio-Übersicht-Zeile, ganz am Ende von „Offene Positionen",
-    nach eventuellen Optionsschein-Zeilen, aber noch vor Abschnitt 10):
-    Baue je offener Position eine Tabellenzeile mit den Spalten „Name
-    (Ticker)" \[Kurzname aus der Datei, in Klammern der Ticker -- z. B.
-    „Mondelez (MDLZ)", NIE nur der Ticker allein\], „Markt", „Richtung",
-    „Einstieg", „Aktuell", „Perf. %", „Stop", „TP1", „TP2", „Quelle",
-    „Ereignis" (Earnings-Warnung/-Rückblick oder Fast-Stop-Hinweis in
-    Kurzform, sonst leer/„--"). Alle Werte wörtlich aus den
-    bereitgestellten Daten, NICHTS selbst berechnen. Sortiere die
-    Tabelle nach Performance % absteigend, damit die größten Gewinner
-    oben und die größten Verlierer unten stehen. DIREKT DARUNTER folgt
-    weiterhin die Portfolio-Übersicht (Pflicht, unverändert seit
-    28.07.2026): Der Briefing-Text enthält bereits eine fertige Zeile
-    „Portfolio-Übersicht: \..." (in analyse.py per Python vorberechnet
-    -- Gruppendurchschnitte je Quelle plus Gesamtdurchschnitt). Übernimm
-    diese Zeile WÖRTLICH und UNVERÄNDERT -- berechne NICHTS selbst nach,
-    runde nichts um, fasse nichts weiter zusammen. Grund (wichtig):
-    Gemini hatte hier am 28.07.2026 nachweislich einen Rechenfehler
-    produziert (mentale Durchschnittsbildung über 13 Einzelwerte ergab
-    +0,56% statt korrekt +0,95%) -- genau deshalb wird seither in Python
-    vorgerechnet statt im Fließtext neu addiert. Taucht die Zeile in
-    einem Lauf ausnahmsweise nicht auf (z. B. weil offene Positionen
-    ganz fehlen), lass diesen Block einfach weg, erfinde keine eigene
-    Berechnung als Ersatz.
+-   OFFENE POSITIONEN - KOMPAKTFORMAT (Pflicht, KORRIGIERT 06.08.2026 --
+    die Markdown-Tabellen-Version vom 05.08. war ein Fehlgriff: die
+    Auswertung ist eine PLAIN-TEXT-Datei ohne Markdown-Renderer, rohe
+    Pipe-Zeichen „\| :\-\-- \|" erscheinen dort als Zeichenwust statt
+    als Tabelle, und zusätzlich erschien am 06.08. die Tabelle NEBEN den
+    einzelnen Positionskarten statt an deren Stelle -- dieselben
+    Positionen standen doppelt im Dokument): Gib JEDE offene Position
+    als GENAU EINE ZEILE aus, KEINE Markdown-Tabelle (keine
+    „\|"-Trennzeichen, keine „:\-\--"-Ausrichtungszeile) und KEINE
+    mehrzeiligen Einzelkarten mehr daneben oder zusätzlich -- dieses
+    Kompaktformat ist die EINZIGE Darstellung der offenen Positionen im
+    Dokument, es ersetzt jede andere Formatierung für „Offene
+    Positionen" vollständig. Format je Zeile, Felder durch „ --- "
+    (Gedankenstrich) getrennt: „Name (Ticker) --- Markt/Richtung/Quelle
+    --- Perf.% (Einstieg → Aktuell) --- Stop X / TP1 Y / TP2 Z", plus
+    einen angehängten Ereignis-Hinweis (Earnings-Warnung/-Rückblick,
+    Fast-Stop) NUR wenn vorhanden, sonst nichts anhängen. Beispiel:
+    „Mondelez (MDLZ) --- US/Long/Setups --- +2,49% (63,08\$ → 64,65\$)
+    --- Stop 60,50\$ / TP1 66,65\$ / TP2 70,00\$". Name IMMER der
+    Kurzname aus der Datei mit Ticker in Klammern, NIE nur der Ticker.
+    Alle Werte wörtlich aus den Daten, NICHTS selbst berechnen. Sortiere
+    absteigend nach Performance %, größte Gewinner zuerst. Direkt
+    darunter (Pflicht, unverändert seit 28.07.2026) folgt weiterhin
+    wörtlich die vorberechnete Zeile „Portfolio-Übersicht: \..." aus der
+    Datei -- berechne NICHTS selbst nach, runde nichts um. Grund: Gemini
+    hatte hier am 28.07.2026 einen Rechenfehler produziert (+0,56% statt
+    korrekt +0,95%) -- seither wird in Python vorgerechnet. Taucht die
+    Zeile ausnahmsweise nicht auf, lass den Block weg, erfinde keine
+    eigene Berechnung als Ersatz.
 
 -   ERFOLGSBILANZ (NEU 30.07.2026, Nutzerwunsch -- GEGENSTÜCK zur
     Portfolio-Übersicht, direkt DARUNTER als eigene Zeile bzw.

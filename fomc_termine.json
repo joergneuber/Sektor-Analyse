@@ -1,0 +1,13 @@
+{
+  "_hinweis": "FOMC-Sitzungstermine des US-Notenbank-Offenmarktausschusses. WARTUNG: einmal jährlich (üblicherweise im Dezember, sobald die Fed den Kalender für das Folgejahr veröffentlicht) diese Liste um die neuen Termine ergänzen oder ersetzen - siehe get_fomc_countdown()/get_fomc_rueckblick() in analyse.py, die diese Datei einlesen. Kein Python-Code-Änderung mehr nötig (externe Code-Review, 05.08.2026).",
+  "termine": [
+    "2026-01-28",
+    "2026-03-18",
+    "2026-04-29",
+    "2026-06-17",
+    "2026-07-29",
+    "2026-09-16",
+    "2026-10-28",
+    "2026-12-09"
+  ]
+}

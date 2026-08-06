@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import datetime
+import json
 import time
 import sys
 import os
@@ -264,6 +265,12 @@ def get_analyst_target(ticker, retries=2):
     return None
 
 def get_safe_rsi(df, period=14):
+    # GEAENDERT (05.08.2026, externe Code-Review, Punkt 4): df.diff()
+    # verliert die erste Zeile (NaN), ewm(min_periods=period) braucht
+    # also period+1 Rohwerte, um wirklich period gueltige Delta-Werte zu
+    # bekommen - vorher liess die Pruefung `len(df) < period` einen Fall
+    # mit genau `period` Zeilen durch, der aber intern schon in den
+    # NaN->50.0-Fallback gelaufen waere. Mathematisch konsistenter jetzt.
     """Berechnet RSI und gibt immer eine saubere Series zurück.
     GEAENDERT (05.08.2026, externe Code-Review): Wilder's Glaettung
     (exponentiell, alpha=1/period) statt eines einfachen gleitenden
@@ -273,7 +280,7 @@ def get_safe_rsi(df, period=14):
     & Co. ab, obwohl beide "RSI(14)" hiessen. `adjust=False` ist Pflicht -
     sonst gewichtet pandas die juengsten Punkte staerker als Wilder's
     Definition es vorsieht."""
-    if 'Close' not in df.columns or len(df) < period:
+    if 'Close' not in df.columns or len(df) < period + 1:
         return pd.Series([50.0] * len(df), index=df.index)
     
     delta = df['Close'].diff()
@@ -281,7 +288,11 @@ def get_safe_rsi(df, period=14):
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     
     # Division durch Null verhindern
-    rs = gain / loss.replace(0, 1e-9) 
+    # GEAENDERT (05.08.2026, externe Code-Review, Punkt 2): clip() statt
+    # replace(0, ...) - faengt auch extrem kleine, aber nicht exakt-null
+    # Verlustwerte ab (replace(0, ...) liesse z.B. 1e-15 unveraendert
+    # durch und wuerde einen unnoetig riesigen RS-Wert erzeugen).
+    rs = gain / loss.clip(lower=1e-9)
     rsi = 100 - (100 / (1 + rs))
     return rsi.fillna(50.0)
 
@@ -544,19 +555,33 @@ def get_eurusd_wechselkurs():
         return "EUR/USD-Wechselkurs: Daten unvollständig"
 
 
-# FOMC-Termine (WARTUNG jaehrlich, siehe Docstring get_fomc_countdown).
-# Auf Modulebene, weil sie seit 30.07.2026 von ZWEI Funktionen gebraucht wird:
+# FOMC-Termine (NEU 06.08.2026, externe Code-Review, Punkt 3: Termine liegen
+# jetzt in fomc_termine.json statt hartkodiert im Python-Code - die jaehrliche
+# Wartung ist damit ein reiner Daten-Edit, kein Code-Change mehr. Auf
+# Modulebene, weil sie seit 30.07.2026 von ZWEI Funktionen gebraucht wird:
 # dem Countdown (naechster Termin) und dem Rueckblick (letzter Termin).
-FOMC_TERMINE_2026 = [
-    datetime.date(2026, 1, 28),
-    datetime.date(2026, 3, 18),
-    datetime.date(2026, 4, 29),
-    datetime.date(2026, 6, 17),
-    datetime.date(2026, 7, 29),
-    datetime.date(2026, 9, 16),
-    datetime.date(2026, 10, 28),
-    datetime.date(2026, 12, 9),
-]
+# DEFENSIV geladen: dieses Modul wird von trendwende_scanner.py,
+# short_scanner.py und edelmetalle_scanner.py per `from analyse import (...)`
+# importiert - ein Fehler beim Laden darf NICHT den kompletten Import (und
+# damit alle vier Scanner) zum Absturz bringen. Bei fehlender/kaputter Datei:
+# leere Liste + einmalige Warnung, get_fomc_countdown()/get_fomc_rueckblick()
+# behandeln eine leere Liste bereits als "kein Termin hinterlegt" bzw.
+# "keine Sitzung im Fenster" - kein Absturz, nur ein fehlender Hinweis.
+def _lade_fomc_termine(dateiname="fomc_termine.json"):
+    try:
+        with open(dateiname, "r", encoding="utf-8") as f:
+            daten = json.load(f)
+        termine = [datetime.date.fromisoformat(t) for t in daten["termine"]]
+        if not termine:
+            print(f"WARNUNG: {dateiname} enthaelt keine Termine.")
+        return termine
+    except Exception as e:
+        print(f"WARNUNG: FOMC-Termine nicht ladbar ({dateiname}, {type(e).__name__}: {e}) - "
+              f"FOMC-Countdown/-Rueckblick liefern bis zur Behebung 'kein Termin hinterlegt'.")
+        return []
+
+
+FOMC_TERMINE_2026 = _lade_fomc_termine()
 
 
 def berechne_erfolgsbilanz(df_positionen):
@@ -1933,7 +1958,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         # siehe dortige Begruendung.
         gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        rs = gain / loss.replace(0, 0.000001)
+        # GEAENDERT (05.08.2026, siehe get_safe_rsi fuer die Begruendung)
+        rs = gain / loss.clip(lower=1e-9)
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
         divergenz = check_rsi_divergence(data)
@@ -2343,7 +2369,8 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
         # siehe dortige Begruendung.
         gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        rs = gain / loss.replace(0, 0.000001)
+        # GEAENDERT (05.08.2026, siehe get_safe_rsi fuer die Begruendung)
+        rs = gain / loss.clip(lower=1e-9)
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
         divergenz = check_rsi_divergence(data)
