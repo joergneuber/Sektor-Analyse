@@ -457,6 +457,13 @@ Häufung/Nähe als das, was sie ist.
     Kurse und Kennzahlen dieser Auswertung einen unfertigen Handelstag
     abbilden können. Fehlt die Zeile (Datenfehler bei der
     Referenz-Abfrage), entfällt sie ersatzlos, erfinde kein Datum.
+    ERGÄNZT (08.08.2026, Nutzerwunsch „Datum/Uhrzeit ergänzen"): Direkt
+    darunter kann eine zweite Zeile „Erstellt am: TT.MM.JJJJ, HH:MM Uhr
+    (MESZ/MEZ)" stehen - ANDERE Information als der Handelstag: diese
+    Zeile sagt, WANN das Skript tatsächlich gelaufen ist (inklusive
+    Uhrzeit), nicht auf welchen Handelstag sich die Kurse beziehen.
+    PFLICHT bei Vorhandensein: wörtlich übernehmen, direkt unter der
+    Handelstag-Zeile.
 
 -   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
     Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
@@ -496,7 +503,22 @@ Häufung/Nähe als das, was sie ist.
     IMMER nach Ausstiegsdatum ABSTEIGEND ausgegeben - der aktuellste
     Stop steht oben, ältere folgen darunter. Das Briefing liefert die
     GESTOPPT-Liste seit 29.07.2026 bereits in genau dieser Reihenfolge -
-    übernimm sie unverändert und sortiere nicht um.
+    übernimm sie unverändert und sortiere nicht um. FESTE FELD-VORLAGE
+    (NEU 08.08.2026, Nutzerwunsch „exakte Gliederung festschreiben" -
+    formalisiert, was bisher nur implizit aus der Rohdatei abgeleitet
+    wurde): Baue je Position GENAU diese Zeilen, alle Werte wörtlich aus
+    Offene_Positionen.csv nachgeschlagen (Ticker als Schlüssel), NICHTS
+    selbst berechnen, keine Markdown-Syntax (siehe globale Regel oben):
+    Name \| Markt: {{Markt}} \| Richtung: {{Richtung}} Sektor:
+    {{Sektor}} Quelle: {{Ideen_Quelle, Fallback „Manuell" falls leer}}
+    Einstieg: {{Einstieg, 2 Nachkommastellen}}{{Waehrungssymbol}}
+    Ausstieg: {{Ausstiegskurs, 2 Nachkommastellen}}{{Waehrungssymbol}}
+    ({{Ausstiegsdatum}} - {{Stop erreicht/manuell verkauft}})
+    Performance: {{Wert aus derselben Zeile im Briefing-Text oder frisch
+    aus Einstieg/Ausstiegskurs berechnet, 2 Nachkommastellen}}% Stop:
+    {{Stop, 2 Nachkommastellen}}{{Waehrungssymbol}} TP1: {{TP1, 2
+    Nachkommastellen}}{{Waehrungssymbol}} \| TP2: {{TP2, 2
+    Nachkommastellen}}{{Waehrungssymbol}}
 
 -   Keine Vermischung: Suche explizit nach den Werten für technisches
     Upside (Tech-Kursziel / Upside\_%\_vs_Aktuell) und fundamentale
@@ -1654,35 +1676,37 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
     keine offenen Positionen vorhanden -- das ist kein Fehler, einfach
     so vermerken.
 
--   OFFENE POSITIONEN - KOMPAKTFORMAT (Pflicht, KORRIGIERT 06.08.2026 --
-    die Markdown-Tabellen-Version vom 05.08. war ein Fehlgriff: die
-    Auswertung ist eine PLAIN-TEXT-Datei ohne Markdown-Renderer, rohe
-    Pipe-Zeichen „\| :\-\-- \|" erscheinen dort als Zeichenwust statt
-    als Tabelle, und zusätzlich erschien am 06.08. die Tabelle NEBEN den
-    einzelnen Positionskarten statt an deren Stelle -- dieselben
-    Positionen standen doppelt im Dokument): Gib JEDE offene Position
-    als GENAU EINE ZEILE aus, KEINE Markdown-Tabelle (keine
-    „\|"-Trennzeichen, keine „:\-\--"-Ausrichtungszeile) und KEINE
-    mehrzeiligen Einzelkarten mehr daneben oder zusätzlich -- dieses
-    Kompaktformat ist die EINZIGE Darstellung der offenen Positionen im
-    Dokument, es ersetzt jede andere Formatierung für „Offene
-    Positionen" vollständig. Format je Zeile, Felder durch „ --- "
-    (Gedankenstrich) getrennt: „Name (Ticker) --- Markt/Richtung/Quelle
-    --- Perf.% (Einstieg → Aktuell) --- Stop X / TP1 Y / TP2 Z", plus
-    einen angehängten Ereignis-Hinweis (Earnings-Warnung/-Rückblick,
-    Fast-Stop) NUR wenn vorhanden, sonst nichts anhängen. Beispiel:
-    „Mondelez (MDLZ) --- US/Long/Setups --- +2,49% (63,08\$ → 64,65\$)
-    --- Stop 60,50\$ / TP1 66,65\$ / TP2 70,00\$". Name IMMER der
-    Kurzname aus der Datei mit Ticker in Klammern, NIE nur der Ticker.
-    Alle Werte wörtlich aus den Daten, NICHTS selbst berechnen. Sortiere
-    absteigend nach Performance %, größte Gewinner zuerst. Direkt
-    darunter (Pflicht, unverändert seit 28.07.2026) folgt weiterhin
-    wörtlich die vorberechnete Zeile „Portfolio-Übersicht: \..." aus der
-    Datei -- berechne NICHTS selbst nach, runde nichts um. Grund: Gemini
-    hatte hier am 28.07.2026 einen Rechenfehler produziert (+0,56% statt
-    korrekt +0,95%) -- seither wird in Python vorgerechnet. Taucht die
-    Zeile ausnahmsweise nicht auf, lass den Block weg, erfinde keine
-    eigene Berechnung als Ersatz.
+-   OFFENE POSITIONEN - FELD-VORLAGE (Pflicht, KORRIGIERT 08.08.2026,
+    Nutzerwunsch „exakt gleiche Gliederung wie Geschlossene Positionen"
+    -- ersetzt das Kompaktzeilen-Format vom 06.08.2026: das war eine
+    Reaktion auf einen damaligen Markdown-Tabellen-Fehlgriff, hat aber
+    inzwischen zu einer Uneinheitlichkeit gegenüber „Geschlossene
+    Positionen" geführt, die der Nutzer nicht wollte): Gib JEDE offene
+    Position in der IDENTISCHEN Feld-Vorlage aus wie „Geschlossene
+    Positionen" (siehe dortiger Bullet) -- KEINE Markdown-Tabelle, KEINE
+    Kompaktzeile mehr, sondern dieselben mehrzeiligen „Label:
+    Wert"-Blöcke, KEINE Markdown-Syntax (siehe globale Regel oben). Alle
+    Werte wörtlich aus Offene_Positionen.csv, NICHTS selbst berechnen:
+    Name \| Markt: {{Markt}} \| Richtung: {{Richtung}} Sektor:
+    {{Sektor}} Quelle: {{Ideen_Quelle, Fallback „Manuell" falls leer}}
+    Einstieg: {{Einstieg, 2 Nachkommastellen}}{{Waehrungssymbol}}
+    Aktuell: {{Aktueller_Kurs, 2 Nachkommastellen}}{{Waehrungssymbol}}
+    Performance: {{Performance_Seit_Einstieg%, 2 Nachkommastellen}}%
+    Stop: {{Stop, 2 Nachkommastellen}}{{Waehrungssymbol}} TP1: {{TP1, 2
+    Nachkommastellen}}{{Waehrungssymbol}} \| TP2: {{TP2, 2
+    Nachkommastellen}}{{Waehrungssymbol}} Direkt danach, NUR wenn in der
+    Datei vorhanden, je eine weitere Zeile für Ereignis-Hinweise
+    (Earnings-Warnung/-Rückblick, Fast-Stop-Hinweis,
+    Kursziel-Hinweis/Stufenregel-Zusatz - siehe dortige Bullets). Name
+    IMMER der vollständige Name aus der Datei, NIE nur der Ticker.
+    Sortiere absteigend nach Performance %, größte Gewinner zuerst.
+    Direkt darunter (Pflicht, unverändert seit 28.07.2026) folgt
+    weiterhin wörtlich die vorberechnete Zeile „Portfolio-Übersicht:
+    \..." aus der Datei -- berechne NICHTS selbst nach, runde nichts um.
+    Grund: Gemini hatte hier am 28.07.2026 einen Rechenfehler produziert
+    (+0,56% statt korrekt +0,95%) -- seither wird in Python
+    vorgerechnet. Taucht die Zeile ausnahmsweise nicht auf, lass den
+    Block weg, erfinde keine eigene Berechnung als Ersatz.
 
 -   ERFOLGSBILANZ (NEU 30.07.2026, Nutzerwunsch -- GEGENSTÜCK zur
     Portfolio-Übersicht, direkt DARUNTER als eigene Zeile bzw.

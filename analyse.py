@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import datetime
+from zoneinfo import ZoneInfo
 import json
 import time
 import sys
@@ -3310,7 +3311,22 @@ if __name__ == "__main__":
         # die komplette Auswertung bezieht.
         handelstag_text = get_handelstag_text()
         if handelstag_text:
-            f.write(handelstag_text + "\n\n")
+            f.write(handelstag_text + "\n")
+
+        # ERSTELLT AM (NEU 08.08.2026, Nutzerwunsch "Datum/Uhrzeit ergänzen"):
+        # ANDERE Information als Handelstag - Handelstag sagt, auf welchen
+        # TRADING-TAG sich die Kurse beziehen, diese Zeile sagt, WANN das
+        # Skript tatsaechlich gelaufen ist (Uhrzeit inklusive). Relevant, da
+        # main.yml als "best effort"-Cron bekanntermassen gelegentlich um
+        # Stunden verspaetet oder als nachtraeglicher "Geister-Lauf" feuert
+        # (siehe Chat-Historie) - eine sichtbare Uhrzeit macht so einen Fall
+        # sofort erkennbar, statt sich nur auf den Handelstag zu verlassen.
+        # zoneinfo statt fixem UTC+2-Offset, damit MEZ/MESZ automatisch
+        # korrekt umgerechnet wird (Winterzeit waere sonst falsch).
+        jetzt_mesz = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
+        zeitzone_kuerzel = jetzt_mesz.tzname()  # "CET" oder "CEST" je nach Jahreszeit
+        f.write(f"Erstellt am: {jetzt_mesz.strftime('%d.%m.%Y, %H:%M')} Uhr "
+                f"({'MESZ' if zeitzone_kuerzel == 'CEST' else 'MEZ'})\n\n")
 
         # REGIONEN-PERFORMANCE zuerst (NEU 29.07.2026): steht bewusst VOR den
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
