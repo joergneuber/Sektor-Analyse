@@ -49,6 +49,115 @@ def funnel_zaehle(grund):
 # Ausgabe nicht zur zweiten Kandidatenliste wird.
 FUNNEL_BEINAHE = []
 
+# --- HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch) ---
+# Zusaetzliche, sechste Kategorie neben Trendfolge/Trendwende/Short/Langfrist/
+# Edelmetalle - findet explosive Ausbruchs-Setups (Momentum-Ausbruch-Score),
+# die die anderen fuenf Kategorien eher als "noch nicht ausgeloest" oder
+# "ueberhitzt" ablehnen wuerden. Bewusst als "Bauweise B" gebaut (siehe
+# Chat-Diskussion 07.08.2026): KEIN eigener Scan mit eigenem Kursabruf,
+# sondern eine Zusatzberechnung INNERHALB des bestehenden Trendfolge-
+# Durchlaufs - Stoch_K/EMA50/Vol_Ratio werden dort ohnehin fuer JEDEN Ticker
+# berechnet (sichtbar an den DEBUG-Zeilen, die fuer jeden Ticker Stoch
+# ausgeben, auch abgelehnte). Dadurch: KEINE zusaetzlichen API-Aufrufe,
+# nur ein paar zusaetzliche Pandas-Operationen auf bereits geladenen Daten.
+#
+# ZWEISTUFIG, weil die Sektor-Rotation (Kriterium 5) erst NACH der Ticker-
+# Schleife vollstaendig vorliegt (df_perf/df_perf_eu werden erst danach
+# gebaut): Stufe 1 (_hebeltrader_teilkriterien, innerhalb der Schleife)
+# sammelt die Kriterien 1-4 plus die rohe Eigen-Performance der Aktie in
+# HEBELTRADER_KANDIDATEN. Stufe 2 (_hebeltrader_finalisieren, nach dem Bau
+# von df_perf/df_perf_eu) traegt den Sektor-Vergleich nach, berechnet den
+# finalen Score und filtert auf die Schwelle.
+HEBELTRADER_SCHWELLE = 5  # Standard 5/5 (Nutzerwunsch) - bei zu wenig
+                          # Treffern leicht auf 4 senkbar, eine Konstante.
+MOMENTUM_VOL_SCHWELLE = 1.5
+MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0
+HEBELTRADER_KANDIDATEN = []
+
+
+def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data):
+    """Kriterien 1-4 (alles, was OHNE Sektor-Rotation auskommt) plus die
+    rohe 5-Tage-Eigenperformance der Aktie. Wird direkt aus analyze_a_setup/
+    analyze_a_setup_eu heraus aufgerufen, NACH Stoch_K/EMA50/Vol_Ratio,
+    VOR jedem moeglichen fruehen Abbruch der Funktion - damit werden auch
+    Titel erfasst, die als Trendfolge-Setup spaeter verworfen werden
+    (genau die Faelle, die diese Kategorie zusaetzlich abdecken soll)."""
+    try:
+        if len(data) < 60 or 'Stoch_K' not in data.columns or 'EMA50' not in data.columns:
+            return
+        kurs = float(data['Close'].iloc[-1])
+        stoch = float(data['Stoch_K'].iloc[-1])
+        vol_ratio = float(data['Vol_Ratio'].iloc[-1]) if pd.notna(data['Vol_Ratio'].iloc[-1]) else 0.0
+        ema50 = float(data['EMA50'].iloc[-1])
+        abstand_ema50 = (kurs - ema50) / ema50 * 100 if ema50 > 0 else float('nan')
+
+        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=90))
+        idx = data.index
+        if getattr(idx, 'tz', None) is not None:
+            stichtag = stichtag.tz_localize(idx.tz)
+        fenster_3m = data[idx >= stichtag]
+        if len(fenster_3m) < 40:
+            fenster_3m = data.tail(63)
+        hoch_3m = float(fenster_3m['High'].max())
+        neues_3m_hoch = kurs >= hoch_3m * 0.999
+
+        eigene_5t = None
+        if len(data) >= 6:
+            basis = float(data['Close'].iloc[-6])
+            if basis > 0:
+                eigene_5t = (kurs / basis - 1) * 100
+
+        kriterien = {
+            "Stochastik > 80": (stoch > 80, f"{stoch:.1f}"),
+            "Neues 3-Monats-Hoch": (neues_3m_hoch, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f}"),
+            f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)": (vol_ratio > MOMENTUM_VOL_SCHWELLE, f"{vol_ratio:.2f}x"),
+            f"Abstand EMA50 (>={MOMENTUM_EMA50_ABSTAND_PROZENT:.0f}%)": (abstand_ema50 >= MOMENTUM_EMA50_ABSTAND_PROZENT, f"{abstand_ema50:+.1f}%"),
+        }
+        with _funnel_lock:
+            HEBELTRADER_KANDIDATEN.append({
+                "Ticker": str(ticker), "Name": str(name), "Sektor": str(sektor),
+                "Markt": str(markt), "Waehrung": str(waehrung), "Kurs": kurs,
+                "Kriterien": kriterien, "Eigene_5T": eigene_5t,
+            })
+    except Exception as e:
+        print(f"DEBUG-HEBELTRADER: {ticker} -> Teilkriterien nicht berechenbar ({type(e).__name__}: {e})")
+
+
+def _hebeltrader_finalisieren(df_perf, df_perf_eu):
+    """Stufe 2: traegt bei jedem Kandidaten Kriterium 5 (Relative Staerke
+    ZUM SEKTOR, nicht zum Gesamtmarkt) nach und filtert auf die Schwelle.
+    Sektor-5T-Werte kommen aus df_perf/df_perf_eu (Spalte '5T', wird fuer
+    ALLE Sektoren berechnet, nicht nur Top-8/Top-5 - daher hier ohne
+    zusaetzlichen Aufwand verfuegbar)."""
+    sektor_5t = {}
+    try:
+        for _, z in df_perf.iterrows():
+            sektor_5t[str(z['Sektor'])] = float(z['5T'])
+    except Exception:
+        pass
+    try:
+        for _, z in df_perf_eu.iterrows():
+            sektor_5t[str(z['Sektor'])] = float(z['5T'])
+    except Exception:
+        pass
+
+    treffer = []
+    for kand in HEBELTRADER_KANDIDATEN:
+        kriterien = dict(kand["Kriterien"])
+        max_punkte = 4
+        if kand["Eigene_5T"] is not None and kand["Sektor"] in sektor_5t:
+            sektor_wert = sektor_5t[kand["Sektor"]]
+            ok = kand["Eigene_5T"] > sektor_wert
+            kriterien["Relative Stärke zum Sektor (5T)"] = (
+                ok, f"Aktie {kand['Eigene_5T']:+.1f}% vs. Sektor {sektor_wert:+.1f}% (5 Tage)")
+            max_punkte = 5
+        score = sum(1 for ok, _ in kriterien.values() if ok)
+        if score >= min(HEBELTRADER_SCHWELLE, max_punkte):
+            treffer.append({**kand, "Kriterien_final": kriterien, "Score": score, "Max_Punkte": max_punkte})
+    treffer.sort(key=lambda t: -t["Score"])
+    return treffer
+
+
 
 def funnel_beinahe(ticker, stufe, detail, crv_sortier=None, name=None):
     """Merkt sich einen spaeten Beinahe-Treffer (thread-sicher).
@@ -2040,6 +2149,10 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
         data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
 
+        # Hebeltrader-Kriterien 1-4 (NEU 07.08.2026) - vor jedem moeglichen
+        # fruehen Abbruch, damit auch spaeter verworfene Titel erfasst werden
+        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "US", "USD", data)
+
         # MACD Berechnung
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = data['Close'].ewm(span=26, adjust=False).mean()
@@ -2440,6 +2553,10 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
 
         data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
         data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
+
+        # Hebeltrader-Kriterien 1-4 (NEU 07.08.2026) - EU-Pipeline nutzt
+        # durchgaengig EUR (siehe dax_aktien-Definition weiter oben)
+        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "EU", "EUR", data)
 
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = data['Close'].ewm(span=26, adjust=False).mean()
@@ -2874,6 +2991,16 @@ if __name__ == "__main__":
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
     
     setups_vor_filter = len(df_s)  # für die Funnel-Statistik (NEU 28.07.2026)
+
+    # Hebeltrader-Finalisierung (NEU 07.08.2026) - Stufe 2: df_perf/df_perf_eu
+    # liegen jetzt vollstaendig vor, Kriterium 5 (Sektor-Vergleich) kann
+    # nachgetragen werden. Unabhaengig von df_s/setups_vor_filter oben -
+    # Hebeltrader-Kandidaten kommen aus ALLEN geprueften Tickern, nicht nur
+    # den als Trendfolge-Setup erkannten.
+    hebeltrader_treffer = _hebeltrader_finalisieren(df_perf, df_perf_eu)
+    print(f"DEBUG: {len(hebeltrader_treffer)} Hebeltrader-Treffer (Schwelle "
+          f"{HEBELTRADER_SCHWELLE}/5) von {len(HEBELTRADER_KANDIDATEN)} geprueften Titeln.")
+
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
         top_8_sektoren = df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
@@ -3468,3 +3595,28 @@ if __name__ == "__main__":
                                      if b['Ticker'].strip().upper() in offene_portfolio_ticker
                                      else "")
                 f.write(f"{b['Name']} ({b['Ticker']}){_portfolio_hinweis}: {b['Stufe']} -> {b['Detail']}\n\n")
+
+        # HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch): eigenstaendiger
+        # Block, unabhaengig davon, ob ueberhaupt ein Trendfolge-Setup
+        # gefunden wurde - Titel koennen hier auftauchen, obwohl sie oben
+        # als Trendfolge VERWORFEN wurden (Ueberhitzung ist hier ja gerade
+        # das gesuchte Muster, kein Ablehnungsgrund). Nur ausgeben, wenn
+        # mindestens ein Treffer vorliegt (Normalfall bei Schwelle 5/5:
+        # meist kein oder nur wenige Treffer).
+        if hebeltrader_treffer:
+            f.write("\nHEBELTRADER-SETUPS (Momentum-Ausbruch-Score, Schwelle "
+                    f"{HEBELTRADER_SCHWELLE}/5 - reine Zusatzkategorie neben Trendfolge/"
+                    "Trendwende/Short/Langfrist/Edelmetalle)\n")
+            f.write("-" * 50 + "\n")
+            f.write("(Explosive Ausbruchs-Setups, die von den anderen Kategorien eher als "
+                    "'noch nicht ausgeloest' oder 'ueberhitzt' abgelehnt werden - siehe Score "
+                    "unten. KEIN CRV, KEIN Stop/TP wie bei den anderen Kategorien, da diese "
+                    "Kategorie bewusst NICHT auf ein abgeschlossenes Chartmuster wartet.)\n\n")
+            for t in hebeltrader_treffer:
+                waehrungszeichen = {"EUR": "€"}.get(t["Waehrung"], "$")
+                f.write(f"{t['Name']} ({t['Ticker']}) | Markt: {t['Markt']} | "
+                       f"Score: {t['Score']}/{t['Max_Punkte']}\n")
+                f.write(f"Kurs: {t['Kurs']:.2f}{waehrungszeichen}\n")
+                for name, (ok, detail) in t["Kriterien_final"].items():
+                    f.write(f"  {'✓' if ok else '–'} {name}: {detail}\n")
+                f.write("\n")

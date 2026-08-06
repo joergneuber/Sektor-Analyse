@@ -302,6 +302,37 @@ Häufung/Nähe als das, was sie ist.
     stehen, sonst nur als Halbsatz. Auch hier gilt: keine Kandidaten,
     keine Empfehlungen, nur Nachvollziehbarkeit.
 
+-   4\. HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch - sechste
+    Kategorie neben Trendfolge/Trendwende/Short/Langfrist/Edelmetalle):
+    Die briefing.txt kann einen Block „HEBELTRADER-SETUPS" enthalten -
+    Titel mit einem Momentum-Ausbruch-Score von mindestens 5/5
+    (Standard-Schwelle, in analyse.py als HEBELTRADER_SCHWELLE
+    anpassbar - steht dann als andere Zahl in der Datei, übernimm die
+    tatsächlich in der Datei genannte Schwelle, nicht zwingend 5)
+    (Stochastik\>80, neues 3-Monats-Hoch, Volumenanstieg, Abstand EMA50,
+    relative Stärke zum SEKTOR). WICHTIG - GRUNDLEGEND ANDERE LOGIK als
+    die übrigen fünf Kategorien: Diese Titel wollen bewusst EXPLOSIVE,
+    noch laufende Ausbrüche abbilden, keine abgeschlossenen
+    Chartmuster - ein Titel kann hier auftauchen, OBWOHL er als
+    Trendfolge-Setup in Abschnitt 2 verworfen wurde (typischerweise
+    wegen Überhitzung/Stochastik zu hoch, was hier gerade das gesuchte
+    Signal ist). Format: gib je Treffer den vollständigen Namen, Ticker,
+    Score (z. B. „4/5") und ALLE fünf Kriterien mit
+    Erfüllt/Nicht-erfüllt UND dem jeweiligen Wert wörtlich aus der Datei
+    wieder (kein Kriterium weglassen, auch nicht erfüllte). PFLICHT bei
+    0 Treffern: ein Satz wie „Keine Hebeltrader-Kandidaten oberhalb der
+    Schwelle gefunden" statt den Abschnitt kommentarlos wegzulassen -
+    Nutze dafür KEIN CRV, KEIN Stop/TP-Format wie bei den anderen
+    Kategorien, da diese Kategorie kein Stop/TP berechnet. WICHTIG: Das
+    sind AUSDRÜCKLICH KEINE Kaufempfehlungen und KEINE regulären
+    Setups - eine hohe Punktzahl bedeutet \'zeigt Symptome eines
+    explosiven Ausbruchs\', nicht \'ist ein geprüftes, abgesichertes
+    Setup wie in den anderen Abschnitten\'. Weise auf dieses höhere
+    Risiko in maximal einem Satz hin, ohne die Zahlen weiter zu
+    interpretieren oder eine Handlungsempfehlung abzuleiten. Rechne
+    nichts selbst nach, erfinde keine Kriterien oder Werte für Titel,
+    die nicht in der Datei stehen.
+
 -   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- KOMPAKTZEILEN, KEINE
     MARKDOWN-TABELLE (Pflicht, KORRIGIERT 06.08.2026 -- die
     Markdown-Tabellen-Version vom 05.08. erschien in der
@@ -393,7 +424,12 @@ Häufung/Nähe als das, was sie ist.
     Marktumfeld & Globale Risikolage, 2. Trendfolge-Setups \[GEÄNDERT
     03.08.2026: nur noch „Trendfolge-Setups" statt „Daten-Übersicht
     (Trendfolge-Setups)" - kürzer und genauso eindeutig\], 3.
-    Trendwende-Setups, 4. Short-Setups, 5. Edelmetalle-Setups, ggf.
+    Trendwende-Setups, 4. Hebeltrader-Setups \[NEU 07.08.2026,
+    Nutzerwunsch - sechste Kategorie neben
+    Trendfolge/Trendwende/Short/Langfrist/Edelmetalle, siehe eigener
+    Bullet weiter unten für Inhalt/Format\], 5. Short-Setups \[GEÄNDERT
+    07.08.2026: rückt durch Hebeltrader von 4 auf 5\], 6.
+    Edelmetalle-Setups \[GEÄNDERT 07.08.2026: rückt von 5 auf 6\], ggf.
     Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen,
     dann Geschlossene Positionen, und GANZ ZULETZT (ERGÄNZT 05.08.2026,
     Nutzerwunsch) als allerletzter Abschnitt „Methodik & Lesehilfe" mit
@@ -401,8 +437,8 @@ Häufung/Nähe als das, was sie ist.
     für den Inhalt) - dieser Abschnitt bekommt KEINE fortlaufende
     Nummer, da er kein inhaltlicher Analyse-Abschnitt ist, sondern reine
     Nachschlagehilfe) - entfällt eine Kategorie an einem Tag komplett
-    (z. B. kein Langfrist-Lauf), rücken die nachfolgenden Nummern der
-    NUMERIERTEN Abschnitte auf.
+    (z. B. kein Langfrist-Lauf ODER keine Hebeltrader-Treffer), rücken
+    die nachfolgenden Nummern der NUMERIERTEN Abschnitte auf.
 
 -   GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
     jetzt „Geschlossene Positionen (letzte 10 Werktage)" und enthält
