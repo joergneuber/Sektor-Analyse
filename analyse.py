@@ -237,8 +237,17 @@ def berechne_indikatoren(df):
     
     return df
     
-def get_analyst_target(ticker, retries=3):
-    """Holt Analysten-Daten mit Retry-Logik."""
+def get_analyst_target(ticker, retries=2):
+    """Holt Analysten-Daten mit Retry-Logik.
+    GEAENDERT (05.08.2026, externe Code-Review): retries 3->2, Wartezeit
+    2s->1s. Grund: stock.info-Instabilitaet ist meist ein strukturelles
+    Problem (fehlendes Feld beim jeweiligen Ticker), kein kurzer Netzwerk-
+    Ruckler, den ein Retry-mit-Pause zuverlaessig behebt - der ausfuehr-
+    lichere Retry kostete bei ausbleibenden Daten bis zu 6s PRO TICKER,
+    was sich bei potenziell hunderten Titeln im Tagesuniversum spuerbar
+    summiert (siehe auch die Beobachtung zu vielen Netzwerkaufrufen/
+    Yahoo-Rate-Limits weiter oben) - kuerzere Retries begrenzen den
+    Schaden, ohne die Erfolgsquote bei echten kurzen Rucklern zu verlieren."""
     for i in range(retries):
         try:
             stock = yf.Ticker(ticker)
@@ -250,18 +259,26 @@ def get_analyst_target(ticker, retries=3):
             return None
             
         except Exception as e:
-            print(f"Versuch {i+1} für {ticker} fehlgeschlagen: {e}. Warte 2s...")
-            time.sleep(2)
+            print(f"Versuch {i+1} für {ticker} fehlgeschlagen: {e}. Warte 1s...")
+            time.sleep(1)
     return None
 
 def get_safe_rsi(df, period=14):
-    """Berechnet RSI und gibt immer eine saubere Series zurück."""
+    """Berechnet RSI und gibt immer eine saubere Series zurück.
+    GEAENDERT (05.08.2026, externe Code-Review): Wilder's Glaettung
+    (exponentiell, alpha=1/period) statt eines einfachen gleitenden
+    Durchschnitts - das ist der Branchenstandard (TradingView, TA-Lib) und
+    macht den angezeigten RSI-Wert direkt mit anderen Plattformen
+    vergleichbar. Vorher wich der eigene RSI-Wert sichtbar von TradingView
+    & Co. ab, obwohl beide "RSI(14)" hiessen. `adjust=False` ist Pflicht -
+    sonst gewichtet pandas die juengsten Punkte staerker als Wilder's
+    Definition es vorsieht."""
     if 'Close' not in df.columns or len(df) < period:
         return pd.Series([50.0] * len(df), index=df.index)
     
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     
     # Division durch Null verhindern
     rs = gain / loss.replace(0, 1e-9) 
@@ -270,34 +287,16 @@ def get_safe_rsi(df, period=14):
 
 
 # --- FUNKTIONEN ---
-def update_status_logic(row):
-    # ... (deine Variablen-Extraktion bleibt gleich)
-    rsi = row.get('RSI', 50) # Standard 50, falls was schiefgeht
-    pattern = row.get('Pattern', "Kein")
-    vol_ratio = row.get('Vol_Ratio', 1.0) # Standard 1.0, damit kein Fehler bei < 0.5
-    macd_trend = row.get('MACD_Trend', "Neutral")
-    kurs = row.get('Kurs', 0)
-    tp1 = row.get('TP1', float('inf')) # Unendlich, falls kein TP1 existiert
-    divergenz = row.get('Divergenz', "Keine")
-
-    # Logik mit den sicheren Variablen
-    if rsi > 70:
-        return pd.Series(["ACHTUNG", "RSI überkauft (>70)"])
-    # NEU: Dein RSI-Check für unter 30
-    elif rsi < 30:
-        return pd.Series(["VALIDE", "RSI überverkauft (<30) - Kaufsignal"])   
-    elif pattern != "Kein" and vol_ratio < 0.5:
-        return pd.Series(["ACHTUNG", f"Schwaches Volumen ({round(float(vol_ratio), 2)}x SMA20)"])
-    elif macd_trend == "Bärisch":
-        return pd.Series(["ACHTUNG", "Bärischer MACD-Trend"])
-    elif kurs >= tp1:
-        return pd.Series(["GELAUFEN", "Kursziel erreicht"])
-    elif divergenz == "Bullisch":
-        return pd.Series(["VALIDE", "Bullische Divergenz (Signal)"])
-    
-    # 3. STANDARDFALL
-    else:
-        return pd.Series(["VALIDE", "Alles ok"])
+# HINWEIS (05.08.2026, externe Code-Review): Hier stand bis zu diesem Datum
+# eine Funktion update_status_logic(row) mit einer fehlerhaften Prioritaeten-
+# Reihenfolge (RSI < 30 gab sofort "VALIDE" zurueck und ueberschrieb damit
+# nachfolgende MACD-/Volumen-/TP1-Pruefungen). ENTFERNT statt repariert:
+# die Funktion wurde nirgends im Projekt aufgerufen (projektweite Suche
+# bestaetigt keine einzige Aufrufstelle) - die tatsaechliche VALIDE/ACHTUNG-
+# Logik laeuft ueber die Funnel-/Abstufungs-Mechanik weiter unten (Death
+# Cross, Earnings, Risk_Perc, Sektor-Modifikator). Reine Codehygiene, kein
+# Verhaltensfix - der tote Code haette sonst als Falle liegen bleiben
+# koennen, falls ihn spaeter mal jemand versehentlich verdrahtet.
 
 # --- FUNKTIONEN ---
 def get_earnings_warnung(ticker, warn_tage=7):
@@ -1929,8 +1928,11 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             
         # RSI Berechnung
         delta = data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        # GEAENDERT (05.08.2026): Wilder's Glaettung statt einfachem
+        # rollierendem Mittel - Konsistenz mit get_safe_rsi() weiter oben,
+        # siehe dortige Begruendung.
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
         rs = gain / loss.replace(0, 0.000001)
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
@@ -2336,8 +2338,11 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             return None
 
         delta = data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        # GEAENDERT (05.08.2026): Wilder's Glaettung statt einfachem
+        # rollierendem Mittel - Konsistenz mit get_safe_rsi() weiter oben,
+        # siehe dortige Begruendung.
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
         rs = gain / loss.replace(0, 0.000001)
         data['RSI'] = 100 - (100 / (1 + rs))
         data['RSI'] = data['RSI'].fillna(50)
