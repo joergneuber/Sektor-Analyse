@@ -1113,6 +1113,45 @@ REGIONEN = {
 }
 
 
+# --- GEMEINSAMER YFINANCE-CACHE (NEU 09.08.2026, Nutzerwunsch "Requests
+# einsparen, da Daten schon vorliegen") ---
+# Vorher riefen FUENF Funktionen (_index_performance, get_index_benchmark_yf,
+# get_kurzfrist_kontext_text, get_index_rekord_text, get_rekord_naehe_text)
+# JEDE FUER SICH yf.Ticker(ticker).history(...) auf - mit unterschiedlichen
+# period-Werten (300d/1y/2y/max), aber oft fuer DIESELBEN Ticker. Konkret
+# ueberschnitten sich: DAX/EuroStoxx50/S&P500/Nasdaq/Nikkei/HangSeng liefen
+# bis zu DREIFACH, WTI/Brent DREIFACH, Gold/Silber/Dow/Russell/STOXX600/
+# Shanghai je ZWEIFACH - macht 42 Einzelabrufe fuer nur 20 tatsaechlich
+# unterschiedliche Ticker. "max" ist eine Obermenge jeder kuerzeren Periode,
+# die die einzelnen Funktionen brauchen - deshalb genuegt EIN Abruf mit
+# period="max" pro Ticker, aus dem sich jede Funktion ihr eigenes Fenster
+# schneidet (Slicing passiert weiterhin in der jeweiligen Funktion selbst,
+# unveraendert). EMA-Berechnungen (z.B. in get_index_benchmark_yf) sind
+# davon nicht negativ betroffen: der Einfluss sehr alter Daten auf eine
+# EMA200 ist nach wenigen hundert Tagen bereits vernachlaessigbar klein -
+# mehr Historie im Fenster macht das Ergebnis wenn ueberhaupt marginal
+# stabiler, nicht anders. Rollierende Fenster (z.B. WMA200) sind ohnehin
+# unabhaengig von zusaetzlicher Vorgeschichte.
+_YF_HISTORY_CACHE = {}
+
+
+def _hole_kursdaten_gecached(ticker):
+    """Fetcht period="max" fuer `ticker` HOECHSTENS EINMAL pro Lauf und haelt
+    das Ergebnis im Modul-Cache vor. Gibt eine KOPIE zurueck (nicht die im
+    Cache gehaltene Referenz), damit keine aufrufende Funktion versehentlich
+    die fuer alle anderen Aufrufer gecachten Daten veraendert. Liefert bei
+    Fehlern ein leeres DataFrame (wie zuvor die einzelnen Funktionen es bei
+    einer Exception implizit auch getan haetten) statt selbst zu crashen -
+    die aufrufenden Funktionen pruefen ohnehin bereits auf .empty."""
+    if ticker not in _YF_HISTORY_CACHE:
+        try:
+            _YF_HISTORY_CACHE[ticker] = yf.Ticker(ticker).history(period="max")
+        except Exception as e:
+            print(f"DEBUG-CACHE: {ticker} nicht abrufbar ({type(e).__name__}: {e})")
+            _YF_HISTORY_CACHE[ticker] = pd.DataFrame()
+    return _YF_HISTORY_CACHE[ticker].copy()
+
+
 def _index_performance(ticker):
     """Gibt (Vortagsveraenderung%, YTD%, aktueller_Punktestand) fuer einen
     Index zurueck, oder (None, None, None). Alles aus EINEM yfinance-Abruf
@@ -1120,7 +1159,7 @@ def _index_performance(ticker):
     der zuletzt bekannte Schlusskurs - dieselbe Zahl, die auch fuer die
     Prozent-Berechnung genutzt wird, kein separater Abruf noetig."""
     try:
-        hist = yf.Ticker(ticker).history(period="1y")
+        hist = _hole_kursdaten_gecached(ticker)
         if hist.empty or len(hist) < 2:
             return None, None, None, "", None
         schluss = hist['Close'].dropna()
@@ -1252,7 +1291,7 @@ def get_kurzfrist_kontext_text(ticker, label, wochen=4, naehe_schwelle_prozent=1
     Teil der Trendwende-Filterlogik ist (Spannen-Position), nicht blosser
     Kontext wie hier."""
     try:
-        data = yf.Ticker(ticker).history(period="2y")
+        data = _hole_kursdaten_gecached(ticker)
         if data.empty:
             return None
 
@@ -1400,7 +1439,7 @@ def get_index_rekord_text(ticker, label, schwelle_prozent=INDEX_REKORD_SCHWELLE_
     Naehe, aber noch weit entfernt"-Meldung (siehe Modul-Kommentar oben).
     Gibt einen fertigen Text zurueck oder None (der Normalfall)."""
     try:
-        data = yf.Ticker(ticker).history(period="max")
+        data = _hole_kursdaten_gecached(ticker)
         if data.empty or len(data) < 60:
             return None
         rekord_hoch = float(data['High'].max())
@@ -1439,7 +1478,7 @@ def get_rekord_naehe_text(ticker, label, schwelle_prozent=REKORD_NAEHE_SCHWELLE_
     in der Naehe (dann bleibt die Zeile in der Ausgabe einfach weg - das ist
     der Normalfall, nur auffaellige Tage sollen ueberhaupt erscheinen)."""
     try:
-        data = yf.Ticker(ticker).history(period="max")
+        data = _hole_kursdaten_gecached(ticker)
         if data.empty or len(data) < 60:
             return None
         rekord_hoch = float(data['High'].max())
@@ -1483,7 +1522,7 @@ def get_index_benchmark_yf(ticker, label):
     SPY-/QQQ-ETF-Kurse über Alpaca als Indexstand ausgegeben, siehe main unten),
     außerdem DAX, EuroStoxx50 und alle weiteren Nicht-Alpaca-Benchmarks."""
     try:
-        hist = yf.Ticker(ticker).history(period="300d")
+        hist = _hole_kursdaten_gecached(ticker)
 
         if hist.empty:
             return f"{label}: Daten unvollständig"
