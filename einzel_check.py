@@ -70,6 +70,155 @@ from edelmetalle_scanner import SPANNEN_POSITION_MAX
 MOMENTUM_VOL_SCHWELLE = 1.5       # Vol_Ratio > 1.5x SMA20 = deutlicher Anstieg
 MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0  # Kurs mind. 5% ueber EMA50
 
+# ==============================================================
+# KAUFKANDIDATEN-SYSTEM (NEU 07.08.2026)
+# ==============================================================
+#
+# Ziel:
+# Der Einzelcheck soll nicht nur technische Treffer anzeigen,
+# sondern aus allen Signalen echte Kaufkandidaten herausfiltern.
+#
+# Unterschied zum Tages-Scanner:
+# Tages-Scanner = bestätigte Setups
+# Einzelcheck   = frühzeitige Chancen / Hebeltrader-Logik
+#
+# Bewertung:
+#
+# Momentum:
+#   bis 5 Punkte
+#
+# Trendfolge:
+#   +3 Punkte
+#
+# Trendwende:
+#   +1 Punkt
+#
+# Rotation:
+#   +1 Punkt wenn Sektor Rückenwind hat
+#
+# Einstufung:
+#
+# >=7 Punkte  -> Kaufkandidat A
+# 5-6 Punkte  -> Kaufkandidat B
+# <5 Punkte   -> kein Kauf
+#
+
+KAUF_SCORE_A = 7
+KAUF_SCORE_B = 5
+KAUFKANDIDATEN_ERGEBNISSE = []
+
+
+def bewerte_kaufkandidat(
+        ticker,
+        momentum_score,
+        momentum_max,
+        trendfolge_treffer,
+        trendwende_treffer,
+        rotations_score=None,
+        momentum_details=None
+):
+    """
+    Erstellt eine Kaufkandidaten-Bewertung.
+
+    Rückgabe:
+        dict mit Score, Status und Begründung
+    """
+
+    score = 0
+    gruende = []
+    risiken = []
+
+    # -------------------------
+    # Momentum
+    # -------------------------
+    if momentum_score is not None:
+
+        # Normierung:
+        # 4/4 oder 5/5 zählt voll
+        momentum_punkte = min(
+            int(round(momentum_score)),
+            5
+        )
+
+        score += momentum_punkte
+
+        if momentum_score >= 4:
+            gruende.append(
+                f"starkes Momentum ({momentum_score}/{momentum_max})"
+            )
+        elif momentum_score >= 3:
+            gruende.append(
+                f"positives Momentum ({momentum_score}/{momentum_max})"
+            )
+
+
+    # -------------------------
+    # Trendfolge
+    # -------------------------
+    if trendfolge_treffer:
+
+        score += 3
+        gruende.append(
+            "Trendfolge-Setup bestätigt"
+        )
+
+
+    # -------------------------
+    # Trendwende
+    # -------------------------
+    if trendwende_treffer:
+
+        score += 1
+        gruende.append(
+            "Trendwende-Signal vorhanden"
+        )
+
+
+    # -------------------------
+    # Rotation
+    # -------------------------
+    if rotations_score is not None:
+
+        if rotations_score > 0:
+            score += 1
+            gruende.append(
+                "Sektor mit Rückenwind"
+            )
+        else:
+            risiken.append(
+                "Sektor ohne Rückenwind"
+            )
+
+    else:
+
+        risiken.append(
+            "Sektor-Rotation unbekannt"
+        )
+
+
+    # -------------------------
+    # Einstufung
+    # -------------------------
+    if score >= KAU_SCORE_A:
+
+        status = "KAUFKANDIDAT A"
+
+    elif score >= KAU_SCORE_B:
+
+        status = "KAUFKANDIDAT B"
+
+    else:
+
+        status = "KEIN KAUF"
+
+
+    return {
+        "Ticker": ticker,
+        "Score": score,
+        "Status": status,
+        "Gruende": gruende,
+        "Risiken": risiken,
+    }
 
 def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
     """Berechnet den 5-Kriterien-Score direkt aus den bereits geladenen
@@ -100,7 +249,11 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
     try:
         df = _indikatoren_berechnen(data.copy())
         if len(df) < 60:
-            return "  MOMENTUM-AUSBRUCH-SCORE: zu wenig Kurshistorie"
+            return {
+                "score": 0,
+                "max_score": 0,
+                "text": "  MOMENTUM-AUSBRUCH-SCORE: zu wenig Kurshistorie"
+}
 
         kurs = float(df['Close'].iloc[-1])
         stoch = float(df['Stoch_K'].iloc[-1])
@@ -144,15 +297,42 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
             punkte.append(("Relative Stärke zum Sektor (5T)", p5, rs_sektor_text))
             max_punkte = 5
 
-        score = sum(1 for _, ok, _ in punkte if ok)
-        zeilen = [f"  MOMENTUM-AUSBRUCH-SCORE: {score}/{max_punkte}"
-                 + (" (Sektor-Kriterium nicht verfügbar)" if max_punkte == 4 else "")]
-        for name, ok, detail in punkte:
-            zeilen.append(f"    {'✓' if ok else '–'} {name}: {detail}")
-        return "\n".join(zeilen)
-    except Exception as e:
-        return f"  MOMENTUM-AUSBRUCH-SCORE: Fehler ({type(e).__name__}: {e})"
+        score = sum(
+            1 for _, ok, _ in punkte if ok
+        )
 
+        zeilen = [
+            f"  MOMENTUM-AUSBRUCH-SCORE: {score}/{max_punkte}"
+            + (
+                " (Sektor-Kriterium nicht verfügbar)"
+                if max_punkte == 4
+                else ""
+            )
+        ]
+
+        for name, ok, detail in punkte:
+            zeilen.append(
+                f"    {'✓' if ok else '–'} {name}: {detail}"
+            )
+
+
+        return {
+            "score": score,
+            "max_score": max_punkte,
+            "details": punkte,
+            "text": "\n".join(zeilen)
+        }
+
+    except Exception as e:
+
+    return {
+        "score": 0,
+        "max_score": 0,
+        "details": [],
+        "text":
+            f"  MOMENTUM-AUSBRUCH-SCORE: Fehler "
+            f"({type(e).__name__}: {e})"
+    }
 
 # Standard-Liste (GEAENDERT 29.07.2026): alle an diesem Tag geprueften Titel,
 # damit sich ein Wiederholungslauf ohne Tipparbeit starten laesst - fuer die
@@ -230,6 +410,11 @@ def hole_kursdaten(ticker):
 
 
 def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
+    trendfolge_treffer = False
+    trendwende_treffer = False
+    trendwende_ergebnis = None
+    momentum_ergebnis = None
+   
     ist_eu = '.' in ticker
     sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
     score = scores.get(sektor)
@@ -247,6 +432,7 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
                else analyze_a_setup(ticker, sektor, spy_close))
         if res:
             print(f"  TRENDFOLGE: TREFFER - Status {res.get('Status2')} "
+                   trendfolge_treffer = True
                   f"({res.get('Status_Grund')})")
             print(f"    Setup: {res.get('Setup_Typ')} | Kurs {res.get('Kurs')} | "
                   f"Stop {res.get('Stop')} (Risiko {res.get('Risk_Perc')}%)")
@@ -267,7 +453,14 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
     # 1b) Momentum-Ausbruch-Score (NEU 07.08.2026) - reine Zusatzbeobachtung,
     # unabhaengig von den drei Strategie-Pruefungen, siehe Modul-Docstring
     # der Funktion fuer die Begruendung.
-    print(momentum_ausbruch_score(ticker, data, sektor, sektor_5t))
+    momentum_ergebnis = momentum_ausbruch_score(
+    ticker,
+    data,
+    sektor,
+    sektor_5t
+    )
+
+    print(momentum_ergebnis["text"])
     print()
 
     # 2) Trendwende - ZWEIMAL geprueft (siehe Modul-Docstring): einmal mit
@@ -280,7 +473,10 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
                                   spannen_position_max=spannen_max)
 
     def _ausgabe(label, res, grund):
+
+    nonlocal trendwende_treffer
         if res:
+            trendwende_treffer = True    
             print(f"  {label}: TREFFER - {res.get('Setup_Typ')} | "
                   f"Kurs {res.get('Kurs')} | Stop {res.get('Stop')} | "
                   f"TP1 {res.get('TP1')} (CRV {res.get('CRV1')}) | "
@@ -321,6 +517,46 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
         print("  >>> ABWEICHUNG umgekehrt: nur die Aktien-Regel laesst diesen Titel zu "
               "(Titel ist nah am Tief, sitzt aber hoch in der Jahresspanne - "
               "typisch fuer eine enge Seitwaertsspanne).")
+
+       # ==========================================================
+       # KAUFKANDIDATEN-BEWERTUNG
+       # ==========================================================
+
+       if momentum_ergebnis:
+
+           rotation = scores.get(sektor)
+
+           kauf = bewerte_kaufkandidat(
+               ticker=ticker,
+               momentum_score=momentum_ergebnis.get("score",0),
+               momentum_max=momentum_ergebnis.get("max_score",0),
+               trendfolge_treffer=trendfolge_treffer,
+               trendwende_treffer=trendwende_treffer,
+               rotations_score=rotation
+           )
+
+
+           print()
+           print("  KAUFKANDIDATEN-BEWERTUNG")
+           print("  " + "-" * 45)
+
+           print(
+               f"  Ergebnis: {kauf['Status']} "
+               f"({kauf['Score']}/10)"
+           )
+
+
+           for g in kauf["Gruende"]:
+               print(f"    ✓ {g}")
+
+           for r in kauf["Risiken"]:
+               print(f"    ⚠ {r}")
+
+
+           if kauf["Status"] != "KEIN KAUF":
+
+               KAUFKANDIDATEN_ERGEBNISSE.append(kauf) 
+
 
     # 3) Short - Marktumfeld-Modifikator bewusst neutral (Einzelpruefung
     #    ausserhalb des Tageslaufs, kein Rotations-Kontext)
@@ -373,5 +609,32 @@ if __name__ == "__main__":
     scores, sektor_5t = lade_rotation_scores()
 
     for t in ticker_liste:
-        pruefe(t, spy_close, eu_close, scores, sektor_5t)
-        print()
+    pruefe(t, spy_close, eu_close, scores, sektor_5t)
+    print()
+
+
+    print("\n")
+    print("=" * 62)
+    print("KAUFKANDIDATEN DES CHECKS")
+    print("=" * 62)
+
+
+    if not KAUFKANDIDATEN_ERGEBNISSE:
+
+        print("Keine Kaufkandidaten gefunden.")
+
+    else:
+
+        sortiert = sorted(
+            KAUFKANDIDATEN_ERGEBNISSE,
+            key=lambda x: x["Score"],
+            reverse=True
+        )
+
+        for k in sortiert:
+
+            print(
+                f"{k['Ticker']:8} "
+                f"{k['Status']:20} "
+                f"{k['Score']}/10"
+            )
