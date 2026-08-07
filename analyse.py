@@ -381,6 +381,8 @@ dax_aktien = {
     # .MI Mailand, .MC Madrid) - keine .CO/.SW/.L-Titel, da die EU-Pipeline
     # durchgängig EUR als Währung annimmt.
     #
+    # SDAX-ERWEITERUNG (NEU 09.08.2026, Nutzerwunsch, nach MDAX-Erweiterung einen Tag zuvor): 49 zusaetzliche SDAX-Werte ergaenzt, gleiches Vorgehen und dieselbe Einschraenkung wie bei MDAX unten - Trainingswissen, nicht taggenau verifiziert, unkritisch dank bestehendem Fehler-Handling. Zwei Namen (Amadeus FiRe, CTS Eventim/ProSiebenSat.1) passen inhaltlich nicht perfekt zu Technologie/Konsum-Handel, wurden aber dort einsortiert statt eigene Ein-Werte-Sektoren anzulegen (wuerde die Top-5-Rotation unnoetig fragmentieren).
+    #
     # MDAX-ERWEITERUNG (NEU 08.08.2026, Nutzerwunsch): ~39 zusätzliche MDAX-
     # Werte ergänzt. EHRLICHE EINSCHRÄNKUNG: Liste basiert auf Trainingswissen
     # (Stand ca. Anfang 2026), NICHT taggenau gegen eine aktuelle Quelle
@@ -394,18 +396,23 @@ dax_aktien = {
     # Chemie/Konsum/Telekommunikation) - Deutsche Telekom (DTG.DE) dabei aus
     # "Industrie" nach "Telekommunikation" verschoben, passt dort inhaltlich
     # besser (siehe Chat-Diskussion 08.08.2026).
-    "Banken": ["DBK.DE", "CBK.DE", "BNP.PA", "ACA.PA", "GLE.PA", "INGA.AS", "ISP.MI", "UCG.MI", "SAN.MC", "BBVA.MC", "PBB.DE"],
+    "Banken": ["DBK.DE", "CBK.DE", "BNP.PA", "ACA.PA", "GLE.PA", "INGA.AS", "ISP.MI", "UCG.MI", "SAN.MC", "BBVA.MC", "PBB.DE",
+              "GLJ.DE", "WUW.DE", "DBAN.DE"],
     "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE", "TLX.DE", "CS.PA", "G.MI"],
-    "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS", "WAF.DE", "HYQ.DE"],
-    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS", "COP.DE"],
+    "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS", "WAF.DE", "HYQ.DE",
+                   "NA9.DE", "BSL.DE", "FTK.DE", "SUSE.DE", "TMV.DE", "GFT.DE", "AAD.DE"],
+    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS", "COP.DE",
+                  "DMP.DE", "EUZ.DE", "FYB.DE", "SBS.DE", "SYAB.DE"],
     "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AI.PA", "PIA.MI",
-                 "GXI.DE", "JUN3.DE", "KRN.DE", "DUE.DE", "HAG.DE", "R3NK.DE", "FRA.DE", "GBF.DE", "S92.DE", "ECV.DE"],
-    "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA"],
-    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI", "SIX2.DE"],
-    "Immobilien": ["VNA.DE", "LEG.DE", "AT1.DE", "GYC.DE", "TEG.DE"],
-    "Chemie/Rohstoffe": ["SY1.DE", "LXS.DE", "EVK.DE", "WCH.DE", "SDF.DE", "TKA.DE", "SZG.DE", "NDA.DE"],
-    "Konsum/Handel": ["PUM.DE", "BOSS.DE", "ZAL.DE", "HFG.DE", "FIE.DE", "DHER.DE", "AG1.DE"],
-    "Telekommunikation": ["UTDI.DE", "FNTN.DE", "MOB.DE", "DTG.DE"],
+                 "GXI.DE", "JUN3.DE", "KRN.DE", "DUE.DE", "HAG.DE", "R3NK.DE", "FRA.DE", "GBF.DE", "S92.DE", "ECV.DE",
+                 "DEZ.DE", "GIL.DE", "SKB.DE", "LPK.DE", "NOEJ.DE", "TPE.DE", "VOS.DE", "WAC.DE", "HHFA.DE", "VH2.DE", "8TRA.DE", "HLAG.DE"],
+    "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA", "EKT.DE"],
+    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI", "SIX2.DE", "SHA.DE", "STM.DE"],
+    "Immobilien": ["VNA.DE", "LEG.DE", "AT1.DE", "GYC.DE", "TEG.DE", "DIC.DE", "DKG.DE", "INS.DE", "P1Z.DE"],
+    "Chemie/Rohstoffe": ["SY1.DE", "LXS.DE", "EVK.DE", "WCH.DE", "SDF.DE", "TKA.DE", "SZG.DE", "NDA.DE", "SGL.DE", "NTG.DE", "SZU.DE", "VBK.DE"],
+    "Konsum/Handel": ["PUM.DE", "BOSS.DE", "ZAL.DE", "HFG.DE", "FIE.DE", "DHER.DE", "AG1.DE",
+                      "CEC.DE", "CWC.DE", "B4B.DE", "HBH.DE", "TTK.DE", "SAE.DE", "KCO.DE", "EVD.DE", "PSM.DE"],
+    "Telekommunikation": ["UTDI.DE", "FNTN.DE", "MOB.DE", "DTG.DE", "ADV.DE", "IOS.DE"],
 }
 
 def berechne_indikatoren(df):
