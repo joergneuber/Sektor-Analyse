@@ -1115,10 +1115,10 @@ def _index_performance(ticker):
     try:
         hist = yf.Ticker(ticker).history(period="1y")
         if hist.empty or len(hist) < 2:
-            return None, None, None, ""
+            return None, None, None, "", None
         schluss = hist['Close'].dropna()
         if len(schluss) < 2:
-            return None, None, None, ""
+            return None, None, None, "", None
         letzter = float(schluss.iloc[-1])
         vortag = float(schluss.iloc[-2])
         tag_pct = (letzter / vortag - 1) * 100 if vortag else None
@@ -1148,10 +1148,10 @@ def _index_performance(ticker):
         else:
             basis = float(schluss.iloc[0])  # Historie beginnt erst im laufenden Jahr
         ytd_pct = (letzter / basis - 1) * 100 if basis else None
-        return tag_pct, ytd_pct, letzter, staleness_hinweis
+        return tag_pct, ytd_pct, letzter, staleness_hinweis, letztes_datum
     except Exception as e:
         print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar ({type(e).__name__})")
-        return None, None, None, ""
+        return None, None, None, "", None
 
 
 def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
@@ -1203,12 +1203,19 @@ def get_regionen_performance_text():
     for region, indizes in REGIONEN.items():
         zeilen.append(f"{region}:")
         for ticker, label in indizes:
-            tag_pct, ytd_pct, stand, staleness = _index_performance(ticker)
+            tag_pct, ytd_pct, stand, staleness, letztes_datum = _index_performance(ticker)
+            # Datenstand DIREKT HINTER DEM NAMEN in Klammern (GEAENDERT
+            # 08.08.2026, Nutzerwunsch - vorher stand nur EIN globaler
+            # Referenz-Datenstand ganz oben im Dokument; jetzt zeigt JEDER
+            # Index sein EIGENES Datum - praeziser, weil einzelne Indizes
+            # (siehe DAX-Staleness-Bug vom 04.08.2026) durchaus unter-
+            # schiedliche letzte Datenpunkte haben koennen.
+            datenstand = f" (Datenstand: {letztes_datum.strftime('%d.%m.%Y')})" if letztes_datum else ""
             if tag_pct is None or ytd_pct is None:
-                zeilen.append(f"  {label:20s} n/a (Kursdaten nicht verfuegbar)")
+                zeilen.append(f"  {label}{datenstand}: n/a (Kursdaten nicht verfuegbar)")
             else:
-                zeilen.append(f"  {label:20s} letzter Handelstag {tag_pct:+6.2f}% ({stand:,.2f}) | "
-                              f"YTD {ytd_pct:+7.2f}%{staleness}")
+                zeilen.append(f"  {label}{datenstand}: letzter Handelstag {tag_pct:+.2f}% ({stand:,.2f}) | "
+                              f"YTD {ytd_pct:+.2f}%{staleness}")
     return "\n".join(zeilen)
 
 
@@ -3324,28 +3331,14 @@ if __name__ == "__main__":
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n")
         f.write("- Earnings-Rückblick (NEU 29.07.2026): nach berichteten Zahlen (letzte 5 Kalendertage) erscheint eine Zeile '📊 Zahlen TT.MM.: ...' - EPS gemeldet vs. Analystenerwartung (yfinance) KOMBINIERT mit der Kursreaktion am Berichtstag; laufen beide auseinander (Zahlen gut, Kurs fällt), lautet das Urteil 'geteilte Meinung'. Nur EPS, kein Umsatz/keine Guidance verfügbar - reiner Kontext, keine Setup-Bewertung\n\n")
 
-        # HANDELSTAG (NEU 08.08.2026, Nutzerwunsch): steht bewusst als
-        # ALLERERSTE Zeile des inhaltlichen Briefings - noch vor Regionen-
-        # Performance - damit von Anfang an klar ist, auf welchen Tag sich
-        # die komplette Auswertung bezieht.
-        handelstag_text = get_handelstag_text()
-        if handelstag_text:
-            f.write(handelstag_text + "\n")
-
-        # ERSTELLT AM (NEU 08.08.2026, Nutzerwunsch "Datum/Uhrzeit ergänzen"):
-        # ANDERE Information als Handelstag - Handelstag sagt, auf welchen
-        # TRADING-TAG sich die Kurse beziehen, diese Zeile sagt, WANN das
-        # Skript tatsaechlich gelaufen ist (Uhrzeit inklusive). Relevant, da
-        # main.yml als "best effort"-Cron bekanntermassen gelegentlich um
-        # Stunden verspaetet oder als nachtraeglicher "Geister-Lauf" feuert
-        # (siehe Chat-Historie) - eine sichtbare Uhrzeit macht so einen Fall
-        # sofort erkennbar, statt sich nur auf den Handelstag zu verlassen.
-        # zoneinfo statt fixem UTC+2-Offset, damit MEZ/MESZ automatisch
-        # korrekt umgerechnet wird (Winterzeit waere sonst falsch).
-        jetzt_mesz = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
-        zeitzone_kuerzel = jetzt_mesz.tzname()  # "CET" oder "CEST" je nach Jahreszeit
-        f.write(f"Erstellt am: {jetzt_mesz.strftime('%d.%m.%Y, %H:%M')} Uhr "
-                f"({'MESZ' if zeitzone_kuerzel == 'CEST' else 'MEZ'})\n\n")
+        # HANDELSTAG/ERSTELLT-AM (ENTFERNT 08.08.2026, Nutzerwunsch): standen
+        # bis dahin hier als eigene Zeilen - der Nutzer wollte den Datenstand
+        # stattdessen direkt in Klammern hinter jedem einzelnen Index in der
+        # Regionen-Performance sehen (siehe get_regionen_performance_text),
+        # das ist praeziser, weil jeder Index sein EIGENES Datum zeigt statt
+        # eines einzelnen globalen Referenzwerts. get_handelstag_text() bleibt
+        # als Funktion bestehen (harmlos, aktuell nirgends mehr aufgerufen),
+        # falls sie spaeter an anderer Stelle nochmal gebraucht wird.
 
         # REGIONEN-PERFORMANCE zuerst (NEU 29.07.2026): steht bewusst VOR den
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
