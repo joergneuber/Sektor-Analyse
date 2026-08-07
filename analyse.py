@@ -69,8 +69,15 @@ FUNNEL_BEINAHE = []
 # HEBELTRADER_KANDIDATEN. Stufe 2 (_hebeltrader_finalisieren, nach dem Bau
 # von df_perf/df_perf_eu) traegt den Sektor-Vergleich nach, berechnet den
 # finalen Score und filtert auf die Schwelle.
-HEBELTRADER_SCHWELLE = 5  # Standard 5/5 (Nutzerwunsch) - bei zu wenig
-                          # Treffern leicht auf 4 senkbar, eine Konstante.
+HEBELTRADER_SCHWELLE = 4  # GEAENDERT (09.08.2026, Nutzerwunsch): 5 -> 4,
+                          # da der Live-Lauf vom 07.08. bei Schwelle 5/5
+                          # 0 Treffer aus 167 geprueften Titeln lieferte -
+                          # die Kategorie war zwar korrekt implementiert
+                          # (siehe Log), aber praktisch nie sichtbar. 4/5
+                          # soll erste echte Treffer in der Auswertung
+                          # zeigen, um die Kategorie inhaltlich bewerten
+                          # zu koennen. Bei Bedarf wieder auf 5 anhebbar,
+                          # eine einzige Konstante.
 MOMENTUM_VOL_SCHWELLE = 1.5
 MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0
 HEBELTRADER_KANDIDATEN = []
