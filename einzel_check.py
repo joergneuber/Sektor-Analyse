@@ -340,16 +340,38 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
 
 
 if __name__ == "__main__":
-    ticker_liste = sys.argv[1:] or TICKER_DEFAULT
-    print(f"EINZEL-CHECK {datetime.date.today().isoformat()} - "
-          f"{len(ticker_liste)} Titel: {', '.join(ticker_liste)}")
-    print("Hinweis: Rotations-Filter bewusst umgangen - ein Treffer heisst "
-          "'technisch erfuellt', nicht 'Sektor hat Rueckenwind'.\n")
+    if len(sys.argv) > 1:
+        ticker_liste = []
+
+        for arg in sys.argv[1:]:
+            # erlaubt:
+            # GM,F,NEM
+            # GM, F, NEM
+            # GM F NEM
+            teile = arg.split(",")
+
+            for t in teile:
+                t = t.strip().rstrip(",").upper()
+                if t:
+                    ticker_liste.append(t)
+    else:
+        ticker_liste = TICKER_DEFAULT
+
+    print(
+        f"EINZEL-CHECK {datetime.date.today().isoformat()} - "
+        f"{len(ticker_liste)} Titel: {', '.join(ticker_liste)}"
+    )
+
+    print(
+        "Hinweis: Rotations-Filter bewusst umgangen - "
+        "ein Treffer heisst 'technisch erfuellt', "
+        "nicht 'Sektor hat Rueckenwind'.\n"
+    )
 
     spy_close = get_benchmark_close()
     eu_close = get_eu_benchmark_close()
     scores, sektor_5t = lade_rotation_scores()
 
     for t in ticker_liste:
-        pruefe(t.strip(), spy_close, eu_close, scores, sektor_5t)
+        pruefe(t, spy_close, eu_close, scores, sektor_5t)
         print()
