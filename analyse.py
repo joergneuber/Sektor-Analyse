@@ -1278,20 +1278,27 @@ def get_regionen_performance_text():
                   "also der Schluss des Vortages, der asiatische der heutige Schluss; "
                   "in Klammern der zugehoerige Punktestand)")
     for region, indizes in REGIONEN.items():
-        zeilen.append(f"{region}:")
+        # Datenstand PRO REGION statt pro Index (GEAENDERT 09.08.2026,
+        # Nutzerwunsch "optisch pro Region gruppiert") - nur das DATUM, KEINE
+        # Uhrzeit: yfinance liefert Tagesbalken ohne exakten Handelsschluss-
+        # Zeitstempel, eine erfundene Uhrzeit waere nicht belastbar. Nimmt das
+        # Datum des ERSTEN erfolgreich abgerufenen Index der Region als
+        # repraesentativ - Indizes derselben Region teilen sich praktisch
+        # immer denselben Handelskalender.
+        region_datum = None
+        ergebnisse = []
         for ticker, label in indizes:
             tag_pct, ytd_pct, stand, staleness, letztes_datum = _index_performance(ticker)
-            # Datenstand DIREKT HINTER DEM NAMEN in Klammern (GEAENDERT
-            # 08.08.2026, Nutzerwunsch - vorher stand nur EIN globaler
-            # Referenz-Datenstand ganz oben im Dokument; jetzt zeigt JEDER
-            # Index sein EIGENES Datum - praeziser, weil einzelne Indizes
-            # (siehe DAX-Staleness-Bug vom 04.08.2026) durchaus unter-
-            # schiedliche letzte Datenpunkte haben koennen.
-            datenstand = f" (Datenstand: {letztes_datum.strftime('%d.%m.%Y')})" if letztes_datum else ""
+            ergebnisse.append((label, tag_pct, ytd_pct, stand, staleness))
+            if region_datum is None and letztes_datum:
+                region_datum = letztes_datum
+        datenstand_kopf = f" (Datenstand: {region_datum.strftime('%d.%m.%Y')})" if region_datum else ""
+        zeilen.append(f"{region}{datenstand_kopf}:")
+        for label, tag_pct, ytd_pct, stand, staleness in ergebnisse:
             if tag_pct is None or ytd_pct is None:
-                zeilen.append(f"  {label}{datenstand}: n/a (Kursdaten nicht verfuegbar)")
+                zeilen.append(f"  • {label}: n/a (Kursdaten nicht verfuegbar)")
             else:
-                zeilen.append(f"  {label}{datenstand}: letzter Handelstag {tag_pct:+.2f}% ({stand:,.2f}) | "
+                zeilen.append(f"  • {label}: letzter Handelstag {tag_pct:+.2f}% ({stand:,.2f}) | "
                               f"YTD {ytd_pct:+.2f}%{staleness}")
     return "\n".join(zeilen)
 

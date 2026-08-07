@@ -354,58 +354,63 @@ Häufung/Nähe als das, was sie ist.
     Treffern: ein Satz wie „Keine Hebeltrader-Kandidaten oberhalb der
     Schwelle gefunden" statt den Abschnitt kommentarlos wegzulassen.
     WICHTIG: TP1/TP2/CRV/Stop werden hier EIGENSTÄNDIG berechnet (nicht
-    identisch mit einem eventuellen Trendfolge-Setup desselben Titels)
-    und es gibt AUSDRÜCKLICH KEINEN CRV-Mindestwert als
-    Ausschlusskriterium wie bei den anderen Kategorien - ein niedriges
-    CRV hier ist normal und erwartbar (der Kurs ist ja per Definition
-    bereits weit gelaufen), rechne es nicht klein und kommentiere es
-    nicht als Fehler. WICHTIG: Das sind AUSDRÜCKLICH KEINE
-    Kaufempfehlungen und KEINE regulären Setups - eine hohe Punktzahl
-    bedeutet \'zeigt Symptome eines explosiven Ausbruchs\', nicht \'ist
-    ein geprüftes, abgesichertes Setup wie in den anderen Abschnitten\'.
-    Weise auf dieses höhere Risiko in maximal einem Satz hin, ohne die
-    Zahlen weiter zu interpretieren oder eine Handlungsempfehlung
-    abzuleiten. Rechne nichts selbst nach, erfinde keine Kriterien oder
-    Werte für Titel, die nicht in der Datei stehen.
+    identisch mit einem eventuellen Trendfolge-Setup desselben Titels).
+    GEÄNDERT (09.08.2026, Nutzerwunsch „nur valide Aktien sehen, aus
+    denen auch das Momentum hervorgeht" - korrigiert die gegenteilige
+    Vorgabe vom 08.08.2026): Es MUSS mindestens CRV1 ODER CRV2 über 1,0
+    liegen, sonst erscheint der Titel gar nicht erst in dieser
+    Kategorie - anders als bei den anderen Kategorien reicht hier EIN
+    ausreichendes CRV (ODER-Logik, nicht UND), da ein starkes TP2 nicht
+    an einem schwachen TP1 scheitern soll. Zusätzlich (NEU 09.08.2026)
+    steht je Treffer eine Zeile „Sektor-Rotation: \..." mit dem
+    Rotation-Score des Sektors und ob er zu den aktuellen Top-8-US- bzw.
+    Top-5-EU-Sektoren gehört - übernimm diese Zeile wörtlich, wenn
+    vorhanden, direkt nach Stop/CRV und vor den fünf Kriterien. WICHTIG:
+    Das sind AUSDRÜCKLICH KEINE Kaufempfehlungen und KEINE regulären
+    Setups - eine hohe Punktzahl bedeutet \'zeigt Symptome eines
+    explosiven Ausbruchs\', nicht \'ist ein geprüftes, abgesichertes
+    Setup wie in den anderen Abschnitten\'. Weise auf dieses höhere
+    Risiko in maximal einem Satz hin, ohne die Zahlen weiter zu
+    interpretieren oder eine Handlungsempfehlung abzuleiten. Rechne
+    nichts selbst nach, erfinde keine Kriterien oder Werte für Titel,
+    die nicht in der Datei stehen.
 
--   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- KOMPAKTZEILEN, KEINE
-    MARKDOWN-TABELLE (Pflicht, KORRIGIERT 06.08.2026 -- die
-    Markdown-Tabellen-Version vom 05.08. erschien in der
-    PLAIN-TEXT-Auswertung als roher Pipe-Zeichenwust „\| :\-\-- \|
-    :\-\-- \|" statt als lesbare Tabelle, da kein Markdown-Renderer zum
-    Einsatz kommt; die zugrunde liegenden inhaltlichen Regeln zu
-    Quelle/Sortierung/Portfolio-Hinweis aus den Bullets „Watchlist
-    (Format)", „BEINAHE-KANDIDATEN" und „DIVERGENZ-WATCHLIST" weiter
-    oben gelten unverändert weiter, NUR die Darstellung ändert sich):
-    Fasse ALLE manuell zu prüfenden Titel -- die ACHTUNG-Watchlist aus
-    Abschnitt 2, die Beinahe-Kandidaten aus Abschnitt 2/4/5 (nur wenn
-    dort PFLICHT gemäß der jeweiligen 0-Setups-Regel) und die
-    Divergenz-Watchlist aus Abschnitt 3 -- unter der Überschrift
-    „Watchlist (manuelle Prüfung)" zusammen, direkt am Ende des jeweils
-    zugehörigen Abschnitts (nicht als separater Gesamt-Abschnitt -- die
-    Zuordnung zur Kategorie bleibt wichtig). Format je Titel: GENAU EINE
-    ZEILE, KEINE Tabelle, KEINE „\|"-Trennzeichen, KEINE
-    „:\-\--"-Ausrichtungszeile -- Felder durch „ --- " (Gedankenstrich)
-    getrennt: „Name (Ticker) --- Sektor --- Bereich --- Grund --- Kurs
-    --- Kennzahl" (ERGÄNZT 08.08.2026, Nutzerwunsch - Sektor war die
-    einzige durchgängig fehlende Spalte, obwohl in den Rohdaten immer
-    vorhanden), wobei „Sektor" wörtlich aus der Datei stammt (bei
-    fehlender Zuordnung „N/A" eintragen statt zu erfinden),
-    „Bereich" z. B. „Trendfolge -- ACHTUNG" oder „Short --
-    Beinahe-Kandidat" ist, „Grund" wörtlich aus der Datei stammt (z. B.
-    „Bärischer MACD-Trend" oder „CRV-Filter (CRV1 0,56)"), und
-    „Kennzahl" je nach Quelle das aussagekräftigste vorhandene Datum ist
-    (Potenzial% bei der ACHTUNG-Watchlist, CRV1/CRV2 bei
-    Beinahe-Kandidaten, Kumo-Diagnose bei der Divergenz-Watchlist).
-    Beispiel: „Continental AG (CON.DE) --- Industrie --- Trendfolge --
-    ACHTUNG --- Bärischer MACD-Trend --- 71,24€ --- Potenzial 7,73%
-    (Tech-Ziel 77,50€)". Fehlt ein Wert in den Rohdaten, „--" eintragen
-    statt zu erfinden. Zwischen den Zeilen steht eine Leerzeile
-    (Übersichtlichkeit, wie an anderer Stelle bereits etabliert). Der
-    Portfolio-Hinweis „\[bereits offene Position im Portfolio\]" bei
-    Beinahe-Kandidaten bleibt unübersehbar (z. B. fett) direkt hinter
-    dem Namen. Bleibt in jedem Fall reine Beobachtung -- keine Setups,
-    keine Empfehlungen.
+-   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- MEHRZEILEN-VORLAGE
+    (Pflicht, GEÄNDERT 09.08.2026, Nutzerwunsch -- ersetzt die
+    Kompaktzeile vom 06.08.2026 vollständig; die zugrunde liegenden
+    inhaltlichen Regeln zu Quelle/Sortierung/Portfolio-Hinweis aus den
+    Bullets „Watchlist (Format)", „BEINAHE-KANDIDATEN" und
+    „DIVERGENZ-WATCHLIST" weiter oben gelten unverändert weiter, NUR die
+    Darstellung ändert sich): Fasse ALLE manuell zu prüfenden Titel --
+    die ACHTUNG-Watchlist aus Abschnitt 2, die Beinahe-Kandidaten aus
+    Abschnitt 2/4/5 (nur wenn dort PFLICHT gemäß der jeweiligen
+    0-Setups-Regel) und die Divergenz-Watchlist aus Abschnitt 3 -- unter
+    der Überschrift „Watchlist (manuelle Prüfung)" zusammen, direkt am
+    Ende des jeweils zugehörigen Abschnitts (nicht als separater
+    Gesamt-Abschnitt -- die Zuordnung zur Kategorie bleibt wichtig).
+    KEINE Markdown-Syntax, KEINE Tabelle (siehe globale Regel oben).
+    ZWEI VERSCHIEDENE FORMATE je nach Quelle: (1) ACHTUNG-Watchlist UND
+    Beinahe-Kandidaten (haben beide TP1/TP2/CRV/Stop in den Rohdaten):
+    Name: {{Name}} \| Ticker: {{Ticker}} \| Markt: {{Markt}} Kurs:
+    {{Kurs}}{{Waehrungssymbol}} TP1: {{TP1}}{{Waehrungssymbol}} (Chance:
+    {{Chance1_Perc}}%) \| CRV1: {{CRV1}} TP2: {{TP2}}{{Waehrungssymbol}}
+    (Chance: {{Chance2_Perc}}%) \| CRV2: {{CRV2}} Stop:
+    {{Stop}}{{Waehrungssymbol}} (Risiko: {{Risk_Perc}}%) Alle Werte
+    wörtlich aus den Rohdaten (Beinahe-Kandidaten-Texte enthalten seit
+    09.08.2026 alle diese Felder explizit) -- NICHTS selbst berechnen.
+    Der Portfolio-Hinweis „\[bereits offene Position im Portfolio\]" bei
+    Beinahe-Kandidaten bleibt unübersehbar (z. B. GROSS-SCHREIBUNG statt
+    Fett, da kein Markdown) direkt hinter dem Namen. (2)
+    Divergenz-Watchlist (Trendwende -- hat KEINE TP1/TP2/CRV/Stop in den
+    Rohdaten, da der Kumo-Trigger noch nicht ausgelöst hat, also keine
+    Ziele berechnet werden): NUR Name: {{Name}} \| Ticker: {{Ticker}} \|
+    Markt: {{Markt}} Diagnose: {{Kumo-Klammer-Text, z. B. „Kurs noch
+    unter/in der Wolke" oder „letzter Kumo-Ausbruch vor X
+    Handelstagen"}} Erfinde für die Divergenz-Watchlist KEINE
+    Kurs-/TP-/Stop-Werte, auch wenn das Format der anderen Kategorie
+    mehr Felder hat -- diese Titel haben strukturell keine. Zwischen den
+    Titeln steht in beiden Formaten eine Leerzeile. Bleibt in jedem Fall
+    reine Beobachtung -- keine Setups, keine Empfehlungen.
 
 -   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
     Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"
@@ -442,7 +447,15 @@ Häufung/Nähe als das, was sie ist.
     Gliederung. Der Block ist nach Regionen gegliedert und weist JEDEN
     INDEX EINZELN aus (GEAENDERT 29.07.2026: Europa mit DAX und
     EuroStoxx50, USA mit S&P 500 und Nasdaq, Asien mit Nikkei 225,
-    Shanghai Composite und Hang Seng). Bilde AUSDRUECKLICH KEINE
+    Shanghai Composite und Hang Seng). PFLICHT (ERGÄNZT 09.08.2026,
+    Nutzerwunsch): Direkt hinter dem Regionsnamen steht in Klammern ein
+    Datenstand, z. B. „Europa (Datenstand: 07.08.2026):" - EIN Datum pro
+    Region (nicht je Index), wörtlich aus der Datei übernehmen, kein
+    eigenes Datum einsetzen oder schätzen. Je Index darunter steht ein
+    Aufzählungspunkt „• Name: \..." statt einer reinen Einrückung.
+    Bewusst NUR das Datum, KEINE Uhrzeit - die zugrunde liegenden
+    Kursdaten haben keinen exakten Handelsschluss-Zeitstempel, eine
+    Uhrzeit wäre erfunden. Bilde AUSDRUECKLICH KEINE
     Regionen-Mittelwerte und fasse die Indizes einer Region nicht zu
     einer Zahl zusammen - uebernimm die Gliederung und alle Einzelwerte
     wie in der Datei. Setze den Zeitzonen-Hinweis aus der Klammer-Zeile
