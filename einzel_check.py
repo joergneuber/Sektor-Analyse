@@ -323,8 +323,7 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
             "text": "\n".join(zeilen)
         }
 
-        except Exception as e:
-
+    except Exception as e:
         return {
             "score": 0,
             "max_score": 0,
