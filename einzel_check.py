@@ -323,16 +323,16 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
             "text": "\n".join(zeilen)
         }
 
-    except Exception as e:
+        except Exception as e:
 
-    return {
-        "score": 0,
-        "max_score": 0,
-        "details": [],
-        "text":
-            f"  MOMENTUM-AUSBRUCH-SCORE: Fehler "
-            f"({type(e).__name__}: {e})"
-    }
+        return {
+            "score": 0,
+            "max_score": 0,
+            "details": [],
+            "text":
+                f"  MOMENTUM-AUSBRUCH-SCORE: Fehler "
+                f"({type(e).__name__}: {e})"
+        }
 
 # Standard-Liste (GEAENDERT 29.07.2026): alle an diesem Tag geprueften Titel,
 # damit sich ein Wiederholungslauf ohne Tipparbeit starten laesst - fuer die
