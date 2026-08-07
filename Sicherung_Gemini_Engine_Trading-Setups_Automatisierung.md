@@ -311,17 +311,23 @@ Häufung/Nähe als das, was sie ist.
     Das sind ausdrücklich KEINE Setups, keine Empfehlungen und keine
     Watchlist im Sinne von ACHTUNG - sie dienen allein der
     Nachvollziehbarkeit, warum ein Tag leer ausging; formuliere nüchtern
-    und leite keine Handlung daraus ab. Beim Trendwende-Scanner erfüllt
-    die DIVERGENZ-WATCHLIST diese Funktion bereits - dort nicht doppelt
-    ausgeben. GILT AUCH FÜR EDELMETALLE UND LANGFRIST (ergänzt
-    30.07.2026): Im Edelmetalle-Briefing steht der Block je Strategie
-    getrennt (Trendfolge / Short) - ordne ihn dem jeweiligen
-    Unterabschnitt zu. Im Langfrist-Briefing heißt das Pendant „BEINAHE
-    GUENSTIG" und listet Titel, die die Günstig-Schwelle knapp verfehlt
-    haben (Rabatt vs. 5J-Näherung innerhalb von 5 Punkten darunter) -
-    gib ihn im Langfrist-Abschnitt aus, wenn dort 0 Günstig-Titel
-    stehen, sonst nur als Halbsatz. Auch hier gilt: keine Kandidaten,
-    keine Empfehlungen, nur Nachvollziehbarkeit.
+    und leite keine Handlung daraus ab. GEÄNDERT (09.08.2026, Korrektur
+    einer Fehleinschätzung vom 30.07.2026): Beim Trendwende-Scanner gibt
+    es ZWEI unterschiedliche, NICHT redundante Blöcke - die
+    DIVERGENZ-WATCHLIST (Boden-Bedingung erfüllt, wartet noch auf den
+    Kumo-Trigger) UND „BEINAHE-KANDIDATEN CRV-Filter" (Boden-Bedingung
+    UND Kumo-Trigger bereits erfüllt, erst am CRV gescheitert) - BEIDE
+    gehören in den Trendwende-Abschnitt, das ist keine Doppelung,
+    sondern zwei verschiedene Stufen. GILT AUCH FÜR EDELMETALLE UND
+    LANGFRIST (ergänzt 30.07.2026): Im Edelmetalle-Briefing steht der
+    Block je Strategie getrennt (Trendfolge / Short) - ordne ihn dem
+    jeweiligen Unterabschnitt zu. Im Langfrist-Briefing heißt das
+    Pendant „BEINAHE GUENSTIG" und listet Titel, die die
+    Günstig-Schwelle knapp verfehlt haben (Rabatt vs. 5J-Näherung
+    innerhalb von 5 Punkten darunter) - gib ihn im Langfrist-Abschnitt
+    aus, wenn dort 0 Günstig-Titel stehen, sonst nur als Halbsatz. Auch
+    hier gilt: keine Kandidaten, keine Empfehlungen, nur
+    Nachvollziehbarkeit.
 
 -   4\. HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch - sechste
     Kategorie neben Trendfolge/Trendwende/Short/Langfrist/Edelmetalle):

@@ -120,6 +120,17 @@ DIVERGENZ_FENSTER_TAGE = 40
 # 0,7 Prozentpunkte durch den Filter; die Spannen-Position betrug 7%.
 SPANNEN_POSITION_MAX = 0.35
 
+# BEINAHE-KANDIDATEN CRV-Filter (NEU 09.08.2026, Nutzerwunsch): analog zu
+# FUNNEL_BEINAHE (analyse.py) und BEINAHE_SHORT (short_scanner.py) - Titel,
+# die BEIDE Pflicht-Signale (intakte Divergenz + frischer Kumo-Ausbruch)
+# erfuellt haben und ausschliesslich am CRV-Filter gescheitert sind. Anlass:
+# 6-Tage-Auswertung (01.-07.08.2026) zeigte an 5 von 6 Tagen mindestens einen
+# Titel, der die letzte Pflicht-Stufe erreichte, aber IMMER am CRV scheiterte -
+# ohne diese Diagnose war nicht erkennbar, ob das knapp (CRV 0,95) oder weit
+# (CRV 0,3) daneben lag. Kein Lock noetig (list.append() ist dank GIL atomar,
+# gleiches Muster wie BEINAHE_SHORT in short_scanner.py).
+BEINAHE_TRENDWENDE = []
+
 # Chunk-Groesse fuer Sammel-Abrufe (Alpaca/yfinance koennen mehrere Ticker in
 # einem Request abfragen - das ersetzt die 370-440 einzelnen API-Calls von
 # vorher durch nur eine Handvoll Sammel-Calls, siehe fetch_us_batch/
@@ -646,6 +657,16 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
     # Kandidaten als ein TP1 mit z.B. CRV 0,12.
     if crv1 < 1.0 or crv2 < 1.0:
         print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} -> CRV zu niedrig (CRV1={crv1}, CRV2={crv2})")
+        try:
+            firma_name_beinahe = yf.Ticker(ticker).info.get('longName', ticker) or ticker
+        except Exception:
+            firma_name_beinahe = ticker
+        BEINAHE_TRENDWENDE.append({
+            "text": f"{firma_name_beinahe} ({ticker}): CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
+                   f"(Mindestwert 1.0 je TP), Kurs {entry:.2f}, TP1 {tp1:.2f}, TP2 {tp2:.2f}, "
+                   f"Stop-Risiko {risk_perc:.2f}%",
+            "crv_sortier": min(crv1, crv2),
+        })
         return None, "crv_unter_1"
 
     try:
@@ -1002,6 +1023,27 @@ def main():
         f.write("SCHATTEN-MESSUNG Naehe-Regel (Aktien-Regel vs. Spannen-Regel)\n")
         f.write("-" * 50 + "\n")
         f.write(schatten_text + "\n\n")
+
+        # BEINAHE-KANDIDATEN CRV-Filter (NEU 09.08.2026, Nutzerwunsch nach der
+        # 6-Tage-Schatten-Messung): BEINAHE_TRENDWENDE wurde bereits seit
+        # Einfuehrung des CRV-Filters gesammelt (siehe _pruefe_trendwende),
+        # aber NIE ausgegeben - eine Luecke, keine bewusste Auslassung. Die
+        # DIVERGENZ-WATCHLIST deckt eine ANDERE, FRUEHERE Stufe ab (wartet
+        # noch auf den Kumo-Trigger) - dieser Block hier zeigt Titel, die
+        # BEIDE Pflicht-Signale UND den Kumo-Trigger bereits geschafft haben
+        # und erst am letzten Schritt (CRV) scheitern. Beide Bloecke sind
+        # NICHT redundant, auch wenn das am 30.07.2026 zunaechst so
+        # eingeschaetzt wurde. Bewusst UNABHAENGIG vom divergenz_watchlist-
+        # Block platziert (eigene Bedingung), Format/Sortierung analog zu
+        # FUNNEL_BEINAHE in analyse.py (BEINAHE-KANDIDATEN Hauptscanner).
+        if BEINAHE_TRENDWENDE:
+            f.write("BEINAHE-KANDIDATEN CRV-Filter (Boden-Bedingung + frischer Kumo-Ausbruch "
+                    "erfuellt, erst am CRV gescheitert)\n")
+            f.write("-" * 50 + "\n")
+            f.write("(nur Beobachtung, KEINE Setups - zeigt, wie knapp CRV verfehlt wurde)\n")
+            for b in sorted(BEINAHE_TRENDWENDE,
+                            key=lambda x: (x.get("crv_sortier") is None, -(x.get("crv_sortier") or 0))):
+                f.write(b["text"] + "\n\n")
 
         # DIVERGENZ-WATCHLIST (NEU 28.07.2026): die Titel der vorletzten
         # Funnel-Stufe - Boden-Bedingung erfuellt, Trigger steht noch aus.
