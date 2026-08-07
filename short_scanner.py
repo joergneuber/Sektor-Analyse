@@ -614,8 +614,9 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         # Statistik der letzten Tage).
         BEINAHE_SHORT.append({
             "text": f"{firma_name} ({ticker}): CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
-                   f"(Mindestwert 1.0), Kurs {entry:.2f}, TP1 {tp1:.2f}, "
-                   f"Stop-Risiko {risk_perc:.2f}%",
+                   f"(Mindestwert 1.0), Kurs {entry:.2f}, TP1 {tp1:.2f} (Chance {chance1_perc:.2f}%), "
+                   f"TP2 {tp2:.2f} (Chance {chance2_perc:.2f}%), Stop {stop:.2f} "
+                   f"(Risiko {risk_perc:.2f}%)",
             "crv_sortier": min(crv1, crv2),
         })
         return None, "crv_unter_1"

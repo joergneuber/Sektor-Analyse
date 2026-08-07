@@ -189,24 +189,46 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
 
 def _hebeltrader_finalisieren(df_perf, df_perf_eu):
     """Stufe 2: traegt bei jedem Kandidaten Kriterium 5 (Relative Staerke
-    ZUM SEKTOR, nicht zum Gesamtmarkt) nach und filtert auf die Schwelle.
-    Sektor-5T-Werte kommen aus df_perf/df_perf_eu (Spalte '5T', wird fuer
+    ZUM SEKTOR, nicht zum Gesamtmarkt) nach, ergaenzt den Sektor-Rotation-
+    Score (NEU 09.08.2026, Nutzerwunsch "Hebeltrader um Momentum/Rotation
+    ergaenzen") und filtert auf die Schwelle UND (NEU 09.08.2026,
+    Nutzerwunsch "nur valide Aktien sehen, aus denen auch das Momentum
+    hervorgeht - CRV1 ODER CRV2 MUSS ueber 1 liegen") auf ein Mindest-CRV.
+    GEAENDERT ggue. der urspruenglichen Design-Entscheidung vom 08.08.2026
+    ("KEIN CRV-Mindestwert als Ausschlusskriterium") - der Nutzer wollte das
+    nach Betrachtung realer Laeufe bewusst umdrehen: lieber weniger, aber
+    handelbare Kandidaten als viele mit unattraktivem CRV. ODER-Logik
+    (nicht UND wie bei den anderen Kategorien) - bewusst gewaehlt, siehe
+    Chat 09.08.2026 (NVDA-Fund: ein starkes TP2 soll nicht an einem
+    schwachen TP1 scheitern).
+    Sektor-5T/Rotation-Score kommen aus df_perf/df_perf_eu (werden fuer
     ALLE Sektoren berechnet, nicht nur Top-8/Top-5 - daher hier ohne
     zusaetzlichen Aufwand verfuegbar)."""
     sektor_5t = {}
+    sektor_rotation = {}
     try:
+        top_8 = set(df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist())
         for _, z in df_perf.iterrows():
             sektor_5t[str(z['Sektor'])] = float(z['5T'])
+            sektor_rotation[str(z['Sektor'])] = (float(z['Rotation-Score']), str(z['Sektor']) in top_8)
     except Exception:
-        pass
+        top_8 = set()
     try:
+        top_5_eu = set(df_perf_eu.nlargest(5, 'Rotation-Score')['Sektor'].tolist())
         for _, z in df_perf_eu.iterrows():
             sektor_5t[str(z['Sektor'])] = float(z['5T'])
+            sektor_rotation[str(z['Sektor'])] = (float(z['Rotation-Score']), str(z['Sektor']) in top_5_eu)
     except Exception:
         pass
 
     treffer = []
     for kand in HEBELTRADER_KANDIDATEN:
+        # CRV-Pflichtfilter (NEU 09.08.2026): VOR der Score-Pruefung, da ohne
+        # handelbares CRV keine "valide Aktie" im Sinne des Nutzerwunsches.
+        crv1, crv2 = kand.get("CRV1"), kand.get("CRV2")
+        if (crv1 is None or crv1 < 1.0) and (crv2 is None or crv2 < 1.0):
+            continue
+
         kriterien = dict(kand["Kriterien"])
         max_punkte = 4
         if kand["Eigene_5T"] is not None and kand["Sektor"] in sektor_5t:
@@ -217,7 +239,9 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
             max_punkte = 5
         score = sum(1 for ok, _ in kriterien.values() if ok)
         if score >= min(HEBELTRADER_SCHWELLE, max_punkte):
-            treffer.append({**kand, "Kriterien_final": kriterien, "Score": score, "Max_Punkte": max_punkte})
+            rot_score, in_top = sektor_rotation.get(kand["Sektor"], (None, None))
+            treffer.append({**kand, "Kriterien_final": kriterien, "Score": score, "Max_Punkte": max_punkte,
+                            "Rotation_Score": rot_score, "Sektor_In_Top": in_top})
     treffer.sort(key=lambda t: -t["Score"])
     return treffer
 
@@ -2548,8 +2572,10 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             funnel_zaehle("crv_unter_1")
             funnel_beinahe(ticker, "CRV-Filter",
-                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
-                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - Kurs {entry:.2f}, "
+                           f"TP1 {tp1:.2f} (Chance {chance1_perc:.2f}%), TP2 {tp2:.2f} "
+                           f"(Chance {chance2_perc:.2f}%), Stop {stop:.2f} "
+                           f"(Risiko {risiko/entry*100:.2f}%)",
                            crv_sortier=min(crv1, crv2), name=firma_name)
             return None
         
@@ -2897,8 +2923,10 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             funnel_zaehle("crv_unter_1")
             funnel_beinahe(ticker, "CRV-Filter",
-                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - "
-                           f"Kurs {entry:.2f}, TP1 {tp1:.2f}, Stop-Risiko {risiko:.2f}",
+                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - Kurs {entry:.2f}, "
+                           f"TP1 {tp1:.2f} (Chance {chance1_perc:.2f}%), TP2 {tp2:.2f} "
+                           f"(Chance {chance2_perc:.2f}%), Stop {stop:.2f} "
+                           f"(Risiko {risiko/entry*100:.2f}%)",
                            crv_sortier=min(crv1, crv2), name=firma_name)
             return None
 
@@ -3811,6 +3839,15 @@ if __name__ == "__main__":
                     f.write(f"Stop: {t['Stop']:.2f}{waehrungszeichen} (Risiko: {t['Risk_Perc']:.2f}%)\n")
                 else:
                     f.write("TP1/TP2/Stop/CRV: nicht berechenbar (siehe DEBUG-Zeilen im Lauf-Log)\n")
+                # Sektor-Rotation (NEU 09.08.2026, Nutzerwunsch): Momentum-
+                # Kriterium 5 vergleicht die Aktie bereits GEGEN ihren Sektor -
+                # diese Zeile zeigt zusaetzlich, ob der SEKTOR SELBST gerade
+                # Rueckenwind hat (derselbe Rotation-Score, der auch die
+                # taegliche Top-8/Top-5-Auswahl bestimmt).
+                if t.get("Rotation_Score") is not None:
+                    top_text = "Ja" if t["Sektor_In_Top"] else "Nein"
+                    f.write(f"Sektor-Rotation: {t['Rotation_Score']:+.2f} "
+                           f"(Top-{'8' if t['Markt'] == 'US' else '5'}-Sektor: {top_text})\n")
                 for name, (ok, detail) in t["Kriterien_final"].items():
                     f.write(f"  {'✓' if ok else '–'} {name}: {detail}\n")
                 f.write("\n")
