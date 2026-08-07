@@ -46,7 +46,31 @@ def finde_neueste_auswertung():
     return treffer[-1]
 
 
+def pruefe_smtp_secrets():
+    """NEU (09.08.2026, Anlass: main.yml scheiterte am 07.08. mit einem
+    kryptischen `ValueError: invalid literal for int() with base 10: ''`
+    mitten in smtplib - die eigentliche Ursache (alle 5 SMTP_*-Secrets
+    fehlten schlicht im Sektor-Analyse-Repo, GitHub-Secrets sind repo-
+    spezifisch und wurden nur im Mini-Daily-Gold-Repo angelegt) war aus
+    dem Fehler selbst nicht ersichtlich - `${{ secrets.SMTP_HOST }}` etc.
+    loesen sich bei fehlendem Secret zu einem LEEREN String auf, nicht zu
+    einem Fehler, deshalb kam der Absturz erst spaeter bei int('').
+    Prueft alle benoetigten Variablen VOR dem eigentlichen Mail-Versand
+    und nennt fehlende Namen konkret, statt einen einzelnen kryptischen
+    Fehler tief im smtplib-Aufruf zu produzieren."""
+    benoetigt = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "MAIL_EMPFAENGER"]
+    fehlend = [name for name in benoetigt if not os.environ.get(name)]
+    if fehlend:
+        raise EnvironmentError(
+            "Folgende SMTP-Secrets fehlen oder sind leer: " + ", ".join(fehlend) + ". "
+            "GitHub-Secrets sind repo-spezifisch - im Sektor-Analyse-Repo unter "
+            "Settings > Secrets and variables > Actions neu anlegen, auch wenn "
+            "dieselben Secrets im Mini-Daily-Gold-Repo bereits existieren."
+        )
+
+
 def main():
+    pruefe_smtp_secrets()
     dateipfad = finde_neueste_auswertung()
     with open(dateipfad, "r", encoding="utf-8") as f:
         text = f.read()
