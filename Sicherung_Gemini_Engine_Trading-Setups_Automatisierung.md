@@ -380,17 +380,21 @@ Häufung/Nähe als das, was sie ist.
     Zuordnung zur Kategorie bleibt wichtig). Format je Titel: GENAU EINE
     ZEILE, KEINE Tabelle, KEINE „\|"-Trennzeichen, KEINE
     „:\-\--"-Ausrichtungszeile -- Felder durch „ --- " (Gedankenstrich)
-    getrennt: „Name (Ticker) --- Bereich --- Grund --- Kurs ---
-    Kennzahl", wobei „Bereich" z. B. „Trendfolge -- ACHTUNG" oder „Short
-    -- Beinahe-Kandidat" ist, „Grund" wörtlich aus der Datei stammt
-    (z. B. „Bärischer MACD-Trend" oder „CRV-Filter (CRV1 0,56)"), und
+    getrennt: „Name (Ticker) --- Sektor --- Bereich --- Grund --- Kurs
+    --- Kennzahl" (ERGÄNZT 08.08.2026, Nutzerwunsch - Sektor war die
+    einzige durchgängig fehlende Spalte, obwohl in den Rohdaten immer
+    vorhanden), wobei „Sektor" wörtlich aus der Datei stammt (bei
+    fehlender Zuordnung „N/A" eintragen statt zu erfinden),
+    „Bereich" z. B. „Trendfolge -- ACHTUNG" oder „Short --
+    Beinahe-Kandidat" ist, „Grund" wörtlich aus der Datei stammt (z. B.
+    „Bärischer MACD-Trend" oder „CRV-Filter (CRV1 0,56)"), und
     „Kennzahl" je nach Quelle das aussagekräftigste vorhandene Datum ist
     (Potenzial% bei der ACHTUNG-Watchlist, CRV1/CRV2 bei
     Beinahe-Kandidaten, Kumo-Diagnose bei der Divergenz-Watchlist).
-    Beispiel: „Continental AG (CON.DE) --- Trendfolge -- ACHTUNG ---
-    Bärischer MACD-Trend --- 71,24€ --- Potenzial 7,73% (Tech-Ziel
-    77,50€)". Fehlt ein Wert in den Rohdaten, „--" eintragen statt zu
-    erfinden. Zwischen den Zeilen steht eine Leerzeile
+    Beispiel: „Continental AG (CON.DE) --- Industrie --- Trendfolge --
+    ACHTUNG --- Bärischer MACD-Trend --- 71,24€ --- Potenzial 7,73%
+    (Tech-Ziel 77,50€)". Fehlt ein Wert in den Rohdaten, „--" eintragen
+    statt zu erfinden. Zwischen den Zeilen steht eine Leerzeile
     (Übersichtlichkeit, wie an anderer Stelle bereits etabliert). Der
     Portfolio-Hinweis „\[bereits offene Position im Portfolio\]" bei
     Beinahe-Kandidaten bleibt unübersehbar (z. B. fett) direkt hinter
@@ -779,9 +783,9 @@ Nachkommastellen (z. B. 50,63 \| 0,98x).
 
 Erstelle für jeden „VALIDE" Titel diese Zusammenfassung:
 
-Name: {{Name}} \| Markt: {{Markt}} \| Sektor: {{Sektor}} Aktueller Kurs:
-{{Kurs, IMMER 2 Nachkommastellen, z. B. 61,00}}{{Waehrungssymbol}}
-Technisches Kursziel: {{Tech-Kursziel, 2
+Name: {{Name}} ({{Ticker}}) \| Markt: {{Markt}} \| Sektor: {{Sektor}}
+Aktueller Kurs: {{Kurs, IMMER 2 Nachkommastellen, z. B.
+61,00}}{{Waehrungssymbol}} Technisches Kursziel: {{Tech-Kursziel, 2
 Nachkommastellen}}{{Waehrungssymbol}} Analysten-Kursziel:
 {{Analysten-Kursziel, 2 Nachkommastellen, oder
 \"N/A\"}}{{Waehrungssymbol}} TP1: {{TP1, 2
@@ -925,44 +929,44 @@ Pflicht sobald vorhanden}}
     spricht für robustes globales Wachstum, fallender für Abschwächung.
     Nur Kontext, keine Abwertungsquelle.
 
--   52-WOCHEN-KONTEXT + REKORD-NÄHE für Öl/Edelmetalle (NEU 30.07.2026,
-    Nutzerwunsch -- ersetzt die bisherige rein EMA-basierte Beschreibung
-    von Gold/Silber/Öl in der Globalen Risikolage): Nutze für die
-    Einordnung von WTI, Brent, Gold und Silber PFLICHT die Jahresspanne
-    statt nur der EMA-Werte -- für WTI/Brent steht dafür je eine Zeile
-    „WTI/Brent (52W-Einordnung): Kurs ... \| X% über 52W-Tief ... \| Y%
-    zum 52W-Hoch ..." direkt im BENCHMARKS-Block (fehlt sie, war der
-    Abruf nicht möglich -- dann bei der bisherigen EMA-Beschreibung
-    bleiben); für Gold/Silber/Platin/Palladium liefert das
-    Edelmetalle-Briefing dieselbe Einordnung im Block „LAGE JE METALL"
-    (Abschnitt 8). GEÄNDERT (04.08.2026, Nutzerwunsch -- kompaktere
-    Darstellung statt ganzjährigem Vergleich): Für WTI, Brent UND Gold
-    zeigt die Zeile jetzt die Kursveränderung der letzten 4 Wochen, PLUS
-    einen Jahreshoch-/Jahrestief-Hinweis NUR wenn der Kurs tatsächlich
-    nahe dran ist (Format: „WTI: Kurs 78,00 \| +4,0% in den letzten 4
-    Wochen" bzw. bei Nähe zusätzlich „- nahe seinem 52-Wochen-Hoch (...,
-    X% darunter)"). Formuliere entsprechend, z. B. „Gold notiert bei
-    98,00\$, in den letzten 4 Wochen um 2,1% gestiegen und nahe seinem
-    52-Wochen-Hoch bei 100,50\$" -- fehlt der Zusatz, befindet sich der
-    Kurs NICHT in Hoch-/Tief-Nähe, dann NICHTS dazu erfinden.
-    Silber/Platin/Palladium zeigen weiterhin die volle 52-Wochen-Spanne
-    (dort ist die Nähe zum Tief Teil der Trendwende-Filterlogik, kein
-    reiner Kontext). Zusätzlich kann die briefing.txt einen Block
-    „REKORD-NÄHE" enthalten (nur wenn mindestens ein Instrument
-    betroffen ist, sonst entfällt er ersatzlos) bzw. steht dieselbe
-    Zeile als Zusatz unter dem jeweiligen Metall in „LAGE JE METALL"
-    (eingerückt mit „-\>"). PFLICHT: Ist eine solche Zeile vorhanden,
-    übernimm sie WÖRTLICH in die Globale Risikolage (nicht nur in
-    Abschnitt 8, sondern auch im Fließtext der Risikolage, da eine
-    Rekord-Nähe markterheblich ist) UND erwähne sie zusätzlich in der
-    Executive Summary, wenn ein exaktes neues Rekordhoch/-tief vorliegt
-    (nicht nur „in der Nähe"). Übernimm die Formulierung inklusive des
-    Hinweises „seit Datenbeginn (ca. Jahr)" wörtlich -- das ist kein
-    geprüftes echtes Allzeit-Rekord, sondern der höchste/tiefste Stand
-    seit Beginn der verfügbaren Kursreihe, und diese Einschränkung darf
-    nicht wegfallen. Rechne NICHTS selbst nach und erfinde keine
-    weiteren Rekord-Aussagen zu Instrumenten, für die keine solche Zeile
-    geliefert wird.
+-   KURZFRIST-KONTEXT + REKORD-NÄHE für Öl/Edelmetalle (GEÄNDERT
+    08.08.2026 -- ersetzt die vorherige Version, die noch von einer
+    52-Wochen-Jahresspanne für Gold/Silber und einer Sonderrolle nur für
+    Gold ausging; beides ist überholt, siehe unten): Für WTI, Brent UND
+    ALLE VIER Edelmetalle (Gold, Silber, Platin, Palladium -- GEÄNDERT
+    08.08.2026, Nutzerwunsch, gilt jetzt einheitlich für alle vier,
+    nicht mehr nur Gold) zeigt die jeweilige Zeile die Kursveränderung
+    der letzten 4 Wochen, PLUS einen Jahreshoch-/Jahrestief-Hinweis NUR
+    wenn der Kurs tatsächlich nahe dran ist (Format: „WTI: Kurs 78,00 \|
+    +4,0% in den letzten 4 Wochen" bzw. bei Nähe zusätzlich „- nahe
+    seinem 52-Wochen-Hoch (..., X% darunter)"). Formuliere
+    entsprechend, z. B. „Gold notiert bei 98,00\$, in den letzten 4
+    Wochen um 2,1% gestiegen und nahe seinem 52-Wochen-Hoch bei
+    100,50\$" -- fehlt der Zusatz, befindet sich der Kurs NICHT in
+    Hoch-/Tief-Nähe, dann NICHTS dazu erfinden. Für WTI/Brent steht die
+    Zeile im BENCHMARKS-Block der briefing.txt, für die vier Edelmetalle
+    im Block „LAGE JE METALL" des Edelmetalle-Briefings. PFLICHT
+    (ERGÄNZT 08.08.2026 -- bisher fehlte diese Vorgabe komplett, wodurch
+    „LAGE JE METALL" in der fertigen Auswertung oft GAR NICHT
+    auftauchte, außer einer isoliert herausgezogenen
+    Saisonalitäts-Zeile): Gib „LAGE JE METALL" als EIGENEN, sichtbaren
+    Absatz innerhalb von „6. EDELMETALLE-SETUPS" aus -- je Metall EINE
+    Zeile mit Kurs/4-Wochen-Veränderung(/Hoch-Tief-Nähe), plus etwaige
+    eingerückte Zusatzzeilen (Rekord-Nähe, Saisonalität, jeweils mit
+    „-\>" eingerückt) DIREKT darunter, nicht nur als isolierte
+    Einzelsätze an anderer Stelle. Zusätzlich kann die briefing.txt
+    einen eigenen Block „REKORD-NÄHE" enthalten (nur wenn mindestens ein
+    Instrument betroffen ist, sonst entfällt er ersatzlos). PFLICHT: Ist
+    eine Rekord-Nähe-Zeile vorhanden, übernimm sie WÖRTLICH zusätzlich
+    auch im Fließtext der Globalen Risikolage (da markterheblich) UND
+    erwähne sie in der Executive Summary, wenn ein exaktes neues
+    Rekordhoch/-tief vorliegt (nicht nur „in der Nähe"). Übernimm die
+    Formulierung inklusive des Hinweises „seit Datenbeginn (ca. Jahr)"
+    wörtlich -- das ist kein geprüftes echtes Allzeit-Rekord, sondern
+    der höchste/tiefste Stand seit Beginn der verfügbaren Kursreihe, und
+    diese Einschränkung darf nicht wegfallen. Rechne NICHTS selbst nach
+    und erfinde keine weiteren Rekord-Aussagen zu Instrumenten, für die
+    keine solche Zeile geliefert wird.
 
 -   SAISONALITÄT Öl/Edelmetalle (NEU 02.08.2026, Nutzerwunsch, Quelle:
     RealMoneyTrader Research, 27--46 Jahre Historie je Instrument): Die
