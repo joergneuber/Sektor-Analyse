@@ -23,6 +23,11 @@ def get_drive_service():
 
     try:
         token_data = json.loads(token_str)
+        # NEU (09.08.2026): zeigt den im Token gespeicherten Scope im Log an -
+        # Google speichert ihn beim Erstellen mit ab, wird nirgends im Code selbst
+        # festgelegt. Damit muss niemand mehr in alten Dateien danach suchen -
+        # steht beim naechsten Lauf einfach direkt im GitHub-Actions-Log.
+        print(f"DEBUG: Im GDRIVE_TOKEN gespeicherter Scope: {token_data.get('scope', token_data.get('scopes', 'NICHT GEFUNDEN'))}")
     except Exception as e:
         print(f"FEHLER beim Parsen des Tokens (kein gültiges JSON): {e}")
         raise
