@@ -2244,7 +2244,65 @@ def get_ideal_delta(upside_prozent):
     else:
         return 0.40  # Mehr Hebel, weniger Delta-Risiko
 
-def analyze_a_setup(ticker, sektor, spy_close=None):
+CHUNK_SIZE_US = 100
+
+
+def _chunks(liste, groesse):
+    for i in range(0, len(liste), groesse):
+        yield liste[i:i + groesse]
+
+
+def fetch_us_batch(ticker_liste):
+    """NEU (09.08.2026, Nutzerwunsch "auf dieselbe Sammel-Methode wie
+    trendwende_scanner.py umstellen"): holt Kursdaten fuer ALLE US-Ticker
+    in wenigen Sammel-Requests statt einem Request pro Ticker (Alpaca
+    unterstuetzt mehrere Symbole pro StockBarsRequest - trendwende_scanner.py
+    nutzt das bereits ueber die eigene fetch_us_batch, analyse.py bisher
+    NICHT: analyze_a_setup machte fuer JEDEN der ~334 US-Ticker einen
+    EIGENEN Alpaca-Request, obwohl Alpacas Free-Tier hart bei 200 Requests/
+    Minute pro Account limitiert ist (dokumentiert, HTTP 429 bei
+    Ueberschreitung) - eine echte, harte Grenze im Unterschied zu yfinances
+    informeller Drosselung. Direkter Code-Import aus trendwende_scanner.py
+    war nicht moeglich (wuerde einen Zirkelbezug erzeugen, da
+    trendwende_scanner.py bereits von analyse.py importiert), deshalb hier
+    eigenstaendig nach demselben Vorbild nachgebaut.
+    Gibt {ticker: DataFrame} zurueck - fehlende/leere Ticker werden
+    einfach ausgelassen (kein Fehler)."""
+    ergebnis = {}
+    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+
+    for chunk in _chunks(ticker_liste, CHUNK_SIZE_US):
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day
+            )
+            bars = alpaca_client.get_stock_bars(request)
+            df_alle = bars.df
+        except Exception as e:
+            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
+            continue
+
+        if df_alle.empty:
+            continue
+
+        # MultiIndex (symbol, timestamp) bei mehreren Symbolen - pro Ticker
+        # aufsplitten, Spalten wie beim bisherigen Einzelabruf umbenennen.
+        for ticker in chunk:
+            try:
+                data = df_alle.loc[ticker].copy()
+            except KeyError:
+                continue
+            if data.empty:
+                continue
+            if 'close' in data.columns:
+                data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
+            ergebnis[ticker] = data
+
+    print(f"DEBUG: US-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
+    return ergebnis
+
+
+def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
     upside_potenzial = None
     # Firmennamen abrufen
     try:
@@ -2273,25 +2331,36 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
 
     # Start des Haupt-Blocks
     try:
-        # Kursdaten über Alpaca laden
-        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-        request = StockBarsRequest(
-            symbol_or_symbols=[ticker],
-            start=start_date,
-            timeframe=TimeFrame.Day
-        )
-        bars = alpaca_client.get_stock_bars(request)
-        data = bars.df
+        if data is None:
+            # Fallback: Einzelabruf (GEAENDERT 09.08.2026 - der Normalfall
+            # im Tageslauf uebergibt jetzt vorab gebuendelt geholte Daten
+            # ueber fetch_us_batch, siehe dortige Begruendung. Dieser Zweig
+            # greift nur noch, wenn KEIN data uebergeben wurde - z.B. bei
+            # einzel_check.py's Ad-hoc-Einzeltickerpruefung, wo ein
+            # Sammel-Abruf fuer nur einen Ticker keinen Sinn ergibt).
+            start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+            request = StockBarsRequest(
+                symbol_or_symbols=[ticker],
+                start=start_date,
+                timeframe=TimeFrame.Day
+            )
+            bars = alpaca_client.get_stock_bars(request)
+            data = bars.df
 
-        if data.empty:
+            if data.empty:
+                print(f"DEBUG: {ticker} -> Daten von Alpaca leer.")
+                funnel_zaehle("keine_kursdaten")
+                return None
+
+            # Index und Spalten bereinigen (fetch_us_batch liefert das schon
+            # in dieser Form, deshalb nur im Fallback-Zweig noetig)
+            data = data.reset_index(level=0, drop=True)
+            if 'close' in data.columns:
+                data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
+        elif data.empty:
             print(f"DEBUG: {ticker} -> Daten von Alpaca leer.")
             funnel_zaehle("keine_kursdaten")
             return None
-
-        # Index und Spalten bereinigen
-        data = data.reset_index(level=0, drop=True)
-        if 'close' in data.columns:
-            data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
        
         # Vor der Berechnung des RSI:
         if len(data) < 15: # Puffer für 14 Perioden + 1
@@ -2660,7 +2729,49 @@ def analyze_a_setup(ticker, sektor, spy_close=None):
         funnel_zaehle("fehler")
         return None
 
-def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
+def fetch_eu_batch(ticker_liste):
+    """NEU (09.08.2026, dieselbe Begruendung wie fetch_us_batch oben, hier
+    fuer die EU-Seite): holt Kursdaten fuer ALLE EU-Ticker in wenigen
+    Sammel-Requests statt einem Request pro Ticker (yf.download akzeptiert
+    mehrere Ticker auf einmal) - trendwende_scanner.py nutzt das bereits,
+    analyze_a_setup_eu bisher NICHT. Eigenstaendig nachgebaut (Zirkelimport-
+    Grund wie bei fetch_us_batch). Gibt {ticker: DataFrame} zurueck."""
+    ergebnis = {}
+
+    for chunk in _chunks(ticker_liste, CHUNK_SIZE_US):
+        try:
+            df_alle = yf.download(
+                tickers=" ".join(chunk), period="1y", group_by='ticker',
+                threads=True, auto_adjust=False, progress=False
+            )
+        except Exception as e:
+            print(f"FEHLER beim Sammel-Abruf EU-Chunk ({len(chunk)} Ticker): {e}")
+            continue
+
+        if df_alle.empty:
+            continue
+
+        for ticker in chunk:
+            try:
+                # Bei mehreren Tickern liefert yfinance ein MultiIndex-
+                # Spaltenformat (Ticker, Feld) - bei genau einem Ticker im
+                # letzten Chunk waere es flach, daher der Fallback.
+                if isinstance(df_alle.columns, pd.MultiIndex):
+                    data = df_alle[ticker].copy()
+                else:
+                    data = df_alle.copy()
+            except KeyError:
+                continue
+            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+            if data.empty:
+                continue
+            ergebnis[ticker] = data
+
+    print(f"DEBUG: EU-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
+    return ergebnis
+
+
+def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
     """EU-Variante von analyze_a_setup: identische Analyse-Logik (RSI, EMAs, MACD,
     Stochastik, Breakout/Pullback-Filter, Momentum-Kriterien, CRV, setup-spezifische
     Stop/TP-Logik), aber Kursdaten via yfinance statt Alpaca, da Alpaca DAX-Werte
@@ -2691,23 +2802,30 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None):
     tp1 = 0
 
     try:
-        # Kursdaten über yfinance laden (Alpaca deckt DAX-Werte nicht ab)
-        data = yf.Ticker(ticker).history(period="1y")
+        if data is None:
+            # Fallback: Einzelabruf (siehe analyze_a_setup US-Version fuer
+            # die volle Begruendung - greift nur bei einzel_check.py's
+            # Ad-hoc-Einzeltickerpruefung, wo kein Sammel-Abruf stattfindet)
+            data = yf.Ticker(ticker).history(period="1y")
 
-        if data.empty:
+            if data.empty:
+                print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
+                funnel_zaehle("keine_kursdaten")
+                return None
+
+            # NaN-Platzhalterzeilen entfernen: yfinance legt vor Xetra-Handelsbeginn
+            # teils schon eine leere Zeile für den aktuellen Tag an (NaN in Close/High/
+            # Low/Volume). Ohne diese Bereinigung würde iloc[-1] auf diese Platzhalter-
+            # Zeile zeigen statt auf den letzten echten Schlusskurs, was RSI, Stochastik,
+            # EMAs etc. komplett auf NaN kippen lässt (siehe Log vom 2026-07-14).
+            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+
+            if data.empty:
+                print(f"DEBUG: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
+                funnel_zaehle("keine_kursdaten")
+                return None
+        elif data.empty:
             print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
-            funnel_zaehle("keine_kursdaten")
-            return None
-
-        # NaN-Platzhalterzeilen entfernen: yfinance legt vor Xetra-Handelsbeginn
-        # teils schon eine leere Zeile für den aktuellen Tag an (NaN in Close/High/
-        # Low/Volume). Ohne diese Bereinigung würde iloc[-1] auf diese Platzhalter-
-        # Zeile zeigen statt auf den letzten echten Schlusskurs, was RSI, Stochastik,
-        # EMAs etc. komplett auf NaN kippen lässt (siehe Log vom 2026-07-14).
-        data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-
-        if data.empty:
-            print(f"DEBUG: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
             funnel_zaehle("keine_kursdaten")
             return None
 
@@ -3120,18 +3238,48 @@ if __name__ == "__main__":
             tasks = tasks[:len(tasks) - rest_ueberschuss]
 
     print(f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | Gesamt: {len(tasks) + len(tasks_eu)}")
-    
+
+    # SAMMEL-ABRUF (NEU 09.08.2026, Nutzerwunsch): vorher machte jeder der
+    # bis zu 10 parallelen Worker unten einen EIGENEN Alpaca-Request pro
+    # Ticker - bei 334 US-Tickern also bis zu 334 Einzel-Requests, bei
+    # Alpacas hartem 200-Requests/Minute-Limit ein echtes Risiko. Jetzt:
+    # EIN Sammel-Abruf VOR der parallelen Verarbeitung, dieselbe Methode
+    # wie trendwende_scanner.py's fetch_us_batch (siehe dortige Funktion,
+    # hier eigenstaendig nachgebaut wg. drohendem Zirkelimport).
+    us_ticker_liste = sorted({t for t, _ in tasks})
+    us_daten = fetch_us_batch(us_ticker_liste)
+
     # Parallel mit max_workers=10 ausführen (US)
     all_setups = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        # Führt analyze_a_setup für alle Tasks gleichzeitig aus
-        results = list(executor.map(lambda p: analyze_a_setup(*p, spy_close=spy_close), tasks))
+        # Führt analyze_a_setup für alle Tasks gleichzeitig aus. .copy() PFLICHT:
+        # derselbe Ticker kann ueber mehrere Sektor-ETFs mehrfach in tasks stehen
+        # (z.B. NVDA in XLK+SOXX+SMH+AIQ) und dann in ZWEI Threads gleichzeitig
+        # laufen - ohne eigene Kopie wuerde ein Thread Indikator-Spalten in die
+        # DataFrame schreiben, waehrend der andere noch daraus liest (Race
+        # Condition). Fehlt ein Ticker im Sammel-Abruf (z.B. delistet), bleibt
+        # data=None und analyze_a_setup faellt sauber auf den Einzelabruf-
+        # Fallback zurueck statt zu crashen.
+        results = list(executor.map(
+            lambda p: analyze_a_setup(*p, spy_close=spy_close,
+                                      data=us_daten[p[0]].copy() if p[0] in us_daten else None),
+            tasks))
 
     # Parallel mit max_workers=10 ausführen (EU)
     results_eu = []
     if tasks_eu:
+        # SAMMEL-ABRUF (NEU 09.08.2026): gleiche Begruendung wie beim US-Teil
+        # oben - vorher ein yfinance-Request pro EU-Ticker, jetzt EIN
+        # Sammel-Abruf vorab.
+        eu_ticker_liste = sorted({t for t, _ in tasks_eu})
+        eu_daten = fetch_eu_batch(eu_ticker_liste)
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results_eu = list(executor.map(lambda p: analyze_a_setup_eu(*p, eu_bench_close=eu_bench_close), tasks_eu))
+            # .copy() aus demselben Grund wie beim US-Teil (Race Condition bei
+            # mehrfach vorkommendem Ticker ueber mehrere Sektoren)
+            results_eu = list(executor.map(
+                lambda p: analyze_a_setup_eu(*p, eu_bench_close=eu_bench_close,
+                                             data=eu_daten[p[0]].copy() if p[0] in eu_daten else None),
+                tasks_eu))
         
     # Ergebnisse filtern (None-Werte entfernen) und US+EU zusammenführen
     all_setups = [r for r in results if r is not None] + [r for r in results_eu if r is not None]
