@@ -444,34 +444,37 @@ sektoren_aktien = {
 # --- STOXX EUROPE 600 / DAX (Xetra, via yfinance) ---
 # Sektor-Rotation läuft über STOXX-Europe-600-Sektor-ETFs (breiterer Referenzrahmen),
 # die Kandidaten stammen aus DAX40, MDAX und Eurozonen-Large-Caps (nur EUR-Börsen).
-# Hinweis: Nur 3 der 7 ETF-Ticker (Banken, Versicherungen, Versorger) wurden einzeln
-# verifiziert; die übrigen folgen dem etablierten iShares-Namensschema, sollten aber
-# einmalig gegengeprüft werden. Falls ein Ticker falsch ist, liefert get_perf_yf()
-# einfach eine Performance von 0 für diesen Sektor (kein Absturz, siehe Try/Except).
+# GEAENDERT 09.08.2026 (Nutzerwunsch, nach Fund im echten Performance_EU.csv-Log): von
+# 7 auf alle 13 dax_aktien-Kategorien erweitert, komplett per Websuche gegengeprueft
+# (mehrfach ueber unabhaengige Quellen bestaetigt: Yahoo Finance, TradingView, Bloomberg,
+# justETF, iShares-Produktseiten). DABEI ECHTEN BUG GEFUNDEN UND BEHOBEN: EXV6.DE stand
+# bisher fuer "Industrie", trackt aber tatsaechlich "Basic Resources" - der korrekte
+# Industrie-ETF (Industrial Goods & Services) ist EXH4.DE. EXV6.DE passt stattdessen
+# zur neuen Kategorie "Grundstoffe". War vermutlich seit Anlage des Blocks falsch (der
+# alte Kommentar warnte selbst, dass nur 3 von 7 Tickern verifiziert wurden - EXV6 war
+# eine der unverifizierten). "Kommunikation" (EXV2, Telecommunications) und "Konsum"
+# (EXH7, Personal & Household Goods) sind KEINE perfekten 1:1-Entsprechungen, da beide
+# dax_aktien-Buckets breiter gemischt sind (Konsum z.B. auch E-Commerce/Retail) - nächstliegende
+# Einzel-ETF-Naeherung, kein Kompositindex. Falls ein Ticker falsch ist, liefert
+# get_perf_yf() einfach eine Performance von 0 fuer diesen Sektor (kein Absturz).
 eu_sektoren_etf = {
-    "EXV1.DE": "Finanzen",  # GEAENDERT 09.08.2026: hiess "Banken", passte NIE zu einem
-                             # dax_aktien-Key (der hiess "Finanzen") - ein bereits laenger
-                             # bestehender Bug, nicht durch die heutige Aenderung verursacht.
-                             # dax_aktien.get("Banken") lief bisher IMMER leer, wenn "Banken"
-                             # in den Top-5 landete - Finanzen-Titel waren dadurch vermutlich
-                             # nie ueber die taegliche Rotation erreichbar. Named-Fix behebt das.
-    "EXH5.DE": "Versicherungen",
-    "EXV3.DE": "Technologie",
-    "EXV4.DE": "Gesundheitswesen",  # GEAENDERT 09.08.2026: hiess "Gesundheit", an den neuen
-                                     # dax_aktien-Key angeglichen (siehe Nutzer-Excel).
-    "EXV6.DE": "Industrie",
-    "EXH9.DE": "Versorger",
-    "EXV5.DE": "Automobil",
+    "EXV1.DE": "Finanzen",  # Banks (Name 09.08.2026 korrigiert, siehe unten)
+    "EXH5.DE": "Versicherungen",  # Insurance
+    "EXV3.DE": "Technologie",  # Technology
+    "EXV4.DE": "Gesundheitswesen",  # Health Care (Name 09.08.2026 korrigiert)
+    "EXH4.DE": "Industrie",  # Industrial Goods & Services - NEU 09.08.2026, ersetzt fehlerhaftes EXV6.DE
+    "EXH9.DE": "Versorger",  # Utilities
+    "EXV5.DE": "Automobil",  # Automobiles & Parts
+    "EXV6.DE": "Grundstoffe",  # Basic Resources - NEU 09.08.2026 (war faelschlich "Industrie")
+    "EXV7.DE": "Chemie",  # Chemicals - NEU 09.08.2026
+    "EXH1.DE": "Energie",  # Oil & Gas - NEU 09.08.2026
+    "EXV2.DE": "Kommunikation",  # Telecommunications - NEU 09.08.2026
+    "EXI5.DE": "Immobilien",  # Real Estate - NEU 09.08.2026
+    "EXH7.DE": "Konsum",  # Personal & Household Goods - NEU 09.08.2026
 }
-# WICHTIGE EINSCHRAENKUNG (09.08.2026): Nur diese 7 von inzwischen 13 dax_aktien-Kategorien
-# haben ueberhaupt eine Rotation-ETF hinterlegt. Konsum, Immobilien, Kommunikation, Chemie,
-# Grundstoffe und Energie fehlen - Titel aus diesen Buckets koennen NIE ueber die taegliche
-# Top-5-EU-Rotation ausgewaehlt werden (df_perf_eu kennt diese Sektornamen gar nicht). Das ist
-# keine neue Einschraenkung durch die heutige Erweiterung, sondern bestand vorher genauso
+# Alle 13 dax_aktien-Kategorien haben jetzt eine Rotation-ETF (vorher nur 7) - die
+# Einschraenkung von weiter oben ("6 Kategorien ohne ETF") ist damit behoben.
 # (als "Chemie/Rohstoffe", "Konsum/Handel", "Immobilien", "Telekommunikation" ohne ETF) -
-# jetzt nur sichtbarer, weil es mehr Kategorien sind. Offener Punkt: fehlende ETF-Ticker
-# fuer diese 6 Kategorien recherchieren, statt sie zu raten (siehe Warnhinweis oben zu den
-# bereits bestehenden Tickern - nur 3 von 7 je verifiziert).
 
 eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-Referenzindex für RS
 
@@ -3300,9 +3303,8 @@ if __name__ == "__main__":
             if s not in blacklist:
                 tasks.append((s, row['Sektor']))
 
-    # EU-Aufgabenliste erstellen (Top 5 von 7 ETF-Sektoren - GEAENDERT 09.08.2026:
-    # dax_aktien hat inzwischen 13 Kategorien, aber nur diese 7 haben eine Rotation-ETF
-    # in eu_sektoren_etf hinterlegt, siehe dortige Einschraenkung - unveraendert Top 5 von 7)
+    # EU-Aufgabenliste erstellen (Top 5 von 13 ETF-Sektoren - GEAENDERT 09.08.2026:
+    # eu_sektoren_etf deckt jetzt alle 13 dax_aktien-Kategorien ab, siehe dortige Historie)
     tasks_eu = []
     for _, row in df_perf_eu.head(5).iterrows():
         aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
