@@ -113,7 +113,14 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
         fenster_3m = data[idx >= stichtag]
         if len(fenster_3m) < 40:
             fenster_3m = data.tail(63)
-        hoch_3m = float(fenster_3m['High'].max())
+        # KORREKTUR (09.08.2026, derselbe Bug wie in trendwende_scanner.py's
+        # check_multiwochen_ausbruch, dort vom Nutzer per Code-Review gefunden):
+        # fenster_3m enthielt bisher den AKTUELLEN Handelstag mit - dadurch
+        # konnte sich der Tag teilweise mit seinem eigenen Intraday-Hoch
+        # vergleichen statt mit einem echten vorherigen 3-Monats-Hoch. iloc[:-1]
+        # nimmt das Fenster OHNE die letzte (heutige) Zeile.
+        fenster_3m_ohne_heute = fenster_3m.iloc[:-1] if len(fenster_3m) > 1 else fenster_3m
+        hoch_3m = float(fenster_3m_ohne_heute['High'].max())
         # GEAENDERT (08.08.2026, Nutzerwunsch "realistischer bewerten"):
         # Toleranz von 0,1% auf 1% aufgeweitet - Titel, die praktisch am
         # Ausbruch stehen (>=99% des 3-Monats-Hochs), zaehlen jetzt als
