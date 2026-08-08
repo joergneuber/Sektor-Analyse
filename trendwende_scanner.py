@@ -293,7 +293,14 @@ def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
     if len(data) < lookback_tage + 20 or 'Vol_Ratio' not in data.columns:
         return False, "zu wenig Historie fuer Pfad 2"
     kurs = float(data['Close'].iloc[-1])
-    hoch_lookback = float(data['High'].iloc[-lookback_tage:].max())
+    # KORREKTUR (09.08.2026, Nutzerfund): das Referenzhoch darf den AKTUELLEN
+    # Handelstag nicht enthalten, sonst vergleicht sich der Tag teilweise mit
+    # seinem eigenen Hoch statt mit einem echten, vorher bestehenden Widerstand
+    # (Beispiel: altes 20T-Hoch 100, heutiges Intraday-Hoch 105, Schlusskurs
+    # 104,90 - vorher wurde das ALS "neues Hoch" gewertet, weil 105 selbst ins
+    # Referenzfenster einging). -(lookback_tage+1):-1 nimmt genau die
+    # `lookback_tage` Handelstage VOR heute, der aktuelle Tag bleibt aussen vor.
+    hoch_lookback = float(data['High'].iloc[-(lookback_tage + 1):-1].max())
     neues_hoch = kurs >= hoch_lookback * 0.999
     vol_ratio = float(data['Vol_Ratio'].iloc[-1]) if pd.notna(data['Vol_Ratio'].iloc[-1]) else 0.0
     volumen_ok = vol_ratio >= volumen_schwelle
