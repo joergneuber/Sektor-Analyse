@@ -345,43 +345,100 @@ sektoren_map = {
 }
 
 sektoren_aktien = {
-    "XLK": ["IBM", "AAPL", "MSFT", "ORCL", "ADBE", "CRM", "AVGO", "TXN", "NVDA", "CSCO", "INTC",
-            "MRVL", "KLAC", "SNPS", "CDNS", "PYPL", "EA", "INTU", "NOW"],
-    "XLF": ["JPM", "BAC", "GS", "MS", "C", "AXP", "WFC", "SCHW", "BLK", "USB", "PNC", "TFC", "COF", "TRV", "V"],
-    "XLV": ["UNH", "JNJ", "LLY", "MRK", "PFE", "ABBV", "TMO", "DHR", "AMGN", "GILD", "ISRG", "BMY", "CVS"],
-    "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TGT", "GM", "F", "BKNG", "CMG", "ORLY"],
-    "XLP": ["PG", "KO", "PEP", "COST", "WMT", "CL", "EL", "MDLZ", "GIS", "KLG", "KMB", "KHC", "SYY"],
-    "XLE": ["XOM", "CVX", "SLB", "COP", "EOG", "MPC", "PSX", "VLO", "HAL", "OXY", "DVN", "FANG", "WMB"],
-    "XLI": ["CAT", "GE", "HON", "BA", "UPS", "LMT", "DE", "MMM", "RTX", "UNP", "ETN", "CSX", "WM"],
-    "XLB": ["LIN", "APD", "ECL", "SHW", "FCX", "NEM", "DD", "DOW", "PPG", "VMC", "NUE", "MLM", "IFF"],
-    "XLU": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PEG", "ED", "XEL", "WEC", "ES", "AWK"],
-    "XLRE": ["PLD", "AMT", "EQIX", "PSA", "SPG", "O", "DLR", "WELL", "AVB", "CCI", "VICI", "EXR", "IRM"],
-    "XLC": ["META", "GOOGL", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR", "EA", "TTWO", "LYV", "OMC"],
-    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT",
-             "KLAC", "MRVL", "MPWR", "SWKS", "ON", "MCHP", "TER", "ENTG"],
-    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU",
-            "KLAC", "MRVL", "MPWR", "ON", "MCHP"],
-    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK",
-            "CRWD", "ZS", "DDOG", "TEAM", "HUBS", "VEEV", "PTC", "BSY"],
-    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB",
-            "INCY", "EXEL", "NBIX", "BMRN", "UTHR"],
-    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "WBS", "EWBC", "PNFP", "WAL"],
-    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN",
-             "S", "NET", "RPD", "VRNS", "FFIV"],
-    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU",
-             "TWLO", "HUBS", "BILL", "PATH", "FSLY", "ESTC"],
+    "XLK": [
+        "AAPL", "ACN", "ADBE", "ADI", "ADSK", "AKAM", "ALAB", "AMAT", "AMD", "ANET", "ANSS", "APH",
+        "ARM", "ASML", "AVGO", "BR", "CDNS", "CDW", "CIEN", "COHR", "CRM", "CRWD", "CRWV", "CSCO",
+        "CTSH", "DDOG", "FFIV", "FLEX", "FSLR", "FTNT", "GDDY", "GEN", "GLW", "HPE", "HPQ", "IBM",
+        "INTC", "INTU", "IT", "JBL", "JNPR", "KEYS", "KLAC", "LITE", "LRCX", "MCHP", "MDB", "MPWR",
+        "MRVL", "MSFT", "MSI", "MSTR", "MU", "NBIS", "NOW", "NTAP", "NVDA", "NXPI", "ON", "ORCL",
+        "PANW", "PLTR", "PTC", "Q", "QCOM", "QRVO", "ROP", "SHOP", "SMCI", "SNDK", "SNPS", "STX",
+        "SWKS", "TDY", "TEL", "TER", "TRMB", "TXN", "TYL", "VRSN", "WDAY", "WDC", "ZBRA"
+    ],
+    "XLF": [
+        "ACGL", "AFL", "AIG", "AIZ", "AJG", "ALL", "AMP", "AON", "APO", "ARES", "AXP", "BAC",
+        "BEN", "BLK", "BNY", "BRK-B", "BRO", "BX", "C", "CB", "CBOE", "CFG", "CINF", "CME", "COF",
+        "COIN", "CPAY", "DFS", "EFX", "EG", "ERIE", "FIS", "FISV", "FITB", "GL", "GPN", "GS",
+        "HBAN", "HIG", "HOOD", "IBKR", "ICE", "IVZ", "JKHY", "JPM", "KEY", "KKR", "L", "MA", "MCO",
+        "MET", "MRSH", "MS", "MSCI", "MTB", "NDAQ", "NTRS", "PFG", "PGR", "PNC", "PRU", "PYPL",
+        "RF", "RJF", "SCHW", "SPGI", "STT", "SYF", "TFC", "TROW", "TRV", "USB", "V", "WFC", "WRB",
+        "WTW", "XYZ"
+    ],
+    "XLV": [
+        "A", "ABBV", "ABT", "ALGN", "ALNY", "AMGN", "BAX", "BDX", "BIIB", "BMY", "BSX", "CAH",
+        "CI", "CNC", "COO", "COR", "CRL", "CVS", "DGX", "DHR", "DVA", "DXCM", "ELV", "EW", "GEHC",
+        "GILD", "HCA", "HSIC", "HUM", "IDXX", "INCY", "IQV", "ISRG", "JNJ", "LH", "LLY", "MCK",
+        "MDT", "MRK", "MRNA", "MTD", "PFE", "PODD", "REGN", "RMD", "RVTY", "SOLV", "STE", "SYK",
+        "TECH", "TFX", "TMO", "UHS", "UNH", "VEEV", "VRTX", "VTRS", "WAT", "WST", "ZBH", "ZTS"
+    ],
+    "XLY": [
+        "ABNB", "AMZN", "APTV", "AZO", "BBWI", "BBY", "BKNG", "BURL", "BWA", "CCL", "CMG", "CVNA",
+        "DASH", "DECK", "DHI", "DPZ", "DRI", "EBAY", "EXPE", "F", "GM", "GPC", "GRMN", "HAS", "HD",
+        "HLT", "LEN", "LKQ", "LOW", "LULU", "LVS", "MAR", "MCD", "MELI", "MGM", "MHK", "NCLH",
+        "NKE", "NVR", "ORLY", "PDD", "PHM", "RCL", "RL", "ROST", "SBUX", "TJX", "TPR", "TSCO",
+        "TSLA", "ULTA", "WYNN", "YUM"
+    ],
+    "XLP": [
+        "ADM", "BF-B", "BG", "CASY", "CCEP", "CHD", "CL", "CLX", "COST", "DG", "DLTR", "EL", "GIS",
+        "HRL", "HSY", "KDP", "KHC", "KMB", "KO", "KR", "KVUE", "MDLZ", "MKC", "MNST", "MO", "PEP",
+        "PG", "PM", "SJM", "STZ", "SYY", "TAP", "TGT", "TSN", "WMT"
+    ],
+    "XLE": [
+        "APA", "BKR", "COP", "CVX", "DVN", "EOG", "EQT", "FANG", "HAL", "HES", "KMI", "MPC", "MRO",
+        "OKE", "OXY", "PSX", "SLB", "TRGP", "VLO", "WMB", "XOM"
+    ],
+    "XLI": [
+        "ADP", "ALLE", "AME", "AOS", "AXON", "BA", "BLDR", "CARR", "CAT", "CMI", "CPRT", "CSX",
+        "CTAS", "DAL", "DE", "DOV", "EME", "EMR", "ETN", "EXPD", "FAST", "FDX", "FDXF", "FER",
+        "FERG", "FIX", "FTV", "GD", "GE", "GEV", "GNRC", "GWW", "HII", "HON", "HONA", "HUBB",
+        "HWM", "IEX", "IR", "ITW", "J", "JBHT", "JCI", "LDOS", "LHX", "LMT", "LUV", "MAS", "MMM",
+        "NDSN", "NOC", "NSC", "ODFL", "OTIS", "PAYX", "PCAR", "PH", "PNR", "PWR", "RKLB", "ROK",
+        "ROL", "RSG", "RTX", "SNA", "SPCX", "SWK", "TDG", "TRI", "TT", "TXT", "UAL", "UBER", "UNP",
+        "UPS", "URI", "VLTO", "VRSK", "VRT", "WAB", "WM", "XYL"
+    ],
+    "XLB": [
+        "ALB", "AMCR", "APD", "AVY", "BALL", "CE", "CF", "CRH", "CTVA", "DD", "DOW", "ECL", "FCX",
+        "FMC", "IFF", "IP", "LIN", "LYB", "MLM", "MOS", "NEM", "NUE", "PKG", "PPG", "SHW", "STLD",
+        "VMC", "WRK"
+    ],
+    "XLU": [
+        "AEE", "AEP", "AES", "ATO", "AWK", "CEG", "CMS", "CNP", "D", "DTE", "DUK", "ED", "EIX",
+        "ES", "EVRG", "EXC", "FE", "LNT", "NEE", "NI", "NRG", "PCG", "PEG", "PNW", "PPL", "SO",
+        "SRE", "VST", "WEC", "XEL"
+    ],
+    "XLRE": [
+        "AMT", "ARE", "AVB", "CBRE", "CCI", "CPT", "CSGP", "DLR", "DOC", "EQIX", "EQR", "ESS",
+        "EXR", "FRT", "HST", "INVH", "IRM", "KIM", "MAA", "O", "PLD", "PSA", "REG", "SBAC", "SPG",
+        "UDR", "VICI", "VTR", "WELL", "WY"
+    ],
+    "XLC": [
+        "APP", "CHTR", "CMCSA", "DIS", "EA", "ECHO", "FOX", "FOXA", "GOOG", "GOOGL", "LYV", "META",
+        "NFLX", "NWS", "NWSA", "OMC", "PSKY", "T", "TMUS", "TTD", "TTWO", "VZ", "WBD"
+    ],
     "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM",
             "PLTR", "SNOW", "NOW", "CRWD", "MRVL"],
     "BOTZ": ["NVDA", "ABB", "ISRG", "ROK", "TER", "ITW", "PTC", "FLIR", "TYL", "AMRC",
              "CGNX", "SYM"],
-    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN", "PODD", "DXCM", "GEHC"],
-    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR", "PWR", "MLM", "URI"],
-    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA", "DKS", "BURL", "FIVE"],
-    "ITA": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HWM", "TDG", "HEI", "AXON", "TXT", "HII"],
-    "XME": ["FCX", "NUE", "STLD", "CLF", "AA", "X", "RS", "CMC", "ATI", "MP", "HL", "CRS"],
+    "CLOU": ["SNOW", "CRWD", "OKTA", "ZS", "DDOG", "NET", "MDB", "TEAM", "DOCU",
+             "TWLO", "HUBS", "BILL", "PATH", "FSLY", "ESTC"],
     "GDX": ["NEM", "GOLD", "AEM", "WPM", "FNV", "GFI", "KGC", "AU", "RGLD", "PAAS", "HMY", "EGO"],
+    "HACK": ["PANW", "CRWD", "FTNT", "OKTA", "ZS", "CHKP", "QLYS", "TENB", "VRSN",
+             "S", "NET", "RPD", "VRNS", "FFIV"],
+    "IGV": ["MSFT", "ADBE", "CRM", "ORCL", "SNOW", "PANW", "WDAY", "INTU", "NOW", "ADSK",
+            "CRWD", "ZS", "DDOG", "TEAM", "HUBS", "VEEV", "PTC", "BSY"],
+    "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN", "PODD", "DXCM", "GEHC"],
+    "ITA": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HWM", "TDG", "HEI", "AXON", "TXT", "HII"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "WBS", "EWBC", "PNFP", "WAL"],
     "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
-    "TAN": ["FSLR", "ENPH", "SEDG", "RUN", "NXT", "ARRY", "SHLS", "CSIQ", "JKS", "DQ", "MAXN", "FLNC"]
+    "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR", "PWR", "MLM", "URI"],
+    "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU",
+            "KLAC", "MRVL", "MPWR", "ON", "MCHP"],
+    "SOXX": ["NVDA", "AVGO", "TXN", "QCOM", "INTC", "AMD", "MU", "ADI", "LRCX", "AMAT",
+             "KLAC", "MRVL", "MPWR", "SWKS", "ON", "MCHP", "TER", "ENTG"],
+    "TAN": ["FSLR", "ENPH", "SEDG", "RUN", "NXT", "ARRY", "SHLS", "CSIQ", "JKS", "DQ", "MAXN", "FLNC"],
+    "XBI": ["AMGN", "GILD", "BIIB", "VRTX", "REGN", "ILMN", "TECH", "MRNA", "IBB",
+            "INCY", "EXEL", "NBIX", "BMRN", "UTHR"],
+    "XME": ["FCX", "NUE", "STLD", "CLF", "AA", "X", "RS", "CMC", "ATI", "MP", "HL", "CRS"],
+    "XRT": ["AMZN", "HD", "LOW", "TGT", "COST", "WMT", "BBY", "TJX", "ROST", "ULTA", "DKS", "BURL", "FIVE"],
 }
 
 # --- STOXX EUROPE 600 / DAX (Xetra, via yfinance) ---
@@ -392,14 +449,29 @@ sektoren_aktien = {
 # einmalig gegengeprüft werden. Falls ein Ticker falsch ist, liefert get_perf_yf()
 # einfach eine Performance von 0 für diesen Sektor (kein Absturz, siehe Try/Except).
 eu_sektoren_etf = {
-    "EXV1.DE": "Banken",
+    "EXV1.DE": "Finanzen",  # GEAENDERT 09.08.2026: hiess "Banken", passte NIE zu einem
+                             # dax_aktien-Key (der hiess "Finanzen") - ein bereits laenger
+                             # bestehender Bug, nicht durch die heutige Aenderung verursacht.
+                             # dax_aktien.get("Banken") lief bisher IMMER leer, wenn "Banken"
+                             # in den Top-5 landete - Finanzen-Titel waren dadurch vermutlich
+                             # nie ueber die taegliche Rotation erreichbar. Named-Fix behebt das.
     "EXH5.DE": "Versicherungen",
     "EXV3.DE": "Technologie",
-    "EXV4.DE": "Gesundheit",
+    "EXV4.DE": "Gesundheitswesen",  # GEAENDERT 09.08.2026: hiess "Gesundheit", an den neuen
+                                     # dax_aktien-Key angeglichen (siehe Nutzer-Excel).
     "EXV6.DE": "Industrie",
     "EXH9.DE": "Versorger",
     "EXV5.DE": "Automobil",
 }
+# WICHTIGE EINSCHRAENKUNG (09.08.2026): Nur diese 7 von inzwischen 13 dax_aktien-Kategorien
+# haben ueberhaupt eine Rotation-ETF hinterlegt. Konsum, Immobilien, Kommunikation, Chemie,
+# Grundstoffe und Energie fehlen - Titel aus diesen Buckets koennen NIE ueber die taegliche
+# Top-5-EU-Rotation ausgewaehlt werden (df_perf_eu kennt diese Sektornamen gar nicht). Das ist
+# keine neue Einschraenkung durch die heutige Erweiterung, sondern bestand vorher genauso
+# (als "Chemie/Rohstoffe", "Konsum/Handel", "Immobilien", "Telekommunikation" ohne ETF) -
+# jetzt nur sichtbarer, weil es mehr Kategorien sind. Offener Punkt: fehlende ETF-Ticker
+# fuer diese 6 Kategorien recherchieren, statt sie zu raten (siehe Warnhinweis oben zu den
+# bereits bestehenden Tickern - nur 3 von 7 je verifiziert).
 
 eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-Referenzindex für RS
 
@@ -407,43 +479,58 @@ eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-
 # die Zusammensetzung wird von der Deutschen Börse zweimal jährlich überprüft, daher
 # gelegentlich gegenchecken)
 dax_aktien = {
-    # EU-Kandidaten (nicht mehr nur DAX): DAX40 + MDAX + Eurozonen-Large-Caps.
-    # Bewusst NUR Börsen mit EUR-Notierung (.DE Xetra, .PA Paris, .AS Amsterdam,
-    # .MI Mailand, .MC Madrid) - keine .CO/.SW/.L-Titel, da die EU-Pipeline
-    # durchgängig EUR als Währung annimmt.
-    #
-    # SDAX-ERWEITERUNG (NEU 09.08.2026, Nutzerwunsch, nach MDAX-Erweiterung einen Tag zuvor): 49 zusaetzliche SDAX-Werte ergaenzt, gleiches Vorgehen und dieselbe Einschraenkung wie bei MDAX unten - Trainingswissen, nicht taggenau verifiziert, unkritisch dank bestehendem Fehler-Handling. Zwei Namen (Amadeus FiRe, CTS Eventim/ProSiebenSat.1) passen inhaltlich nicht perfekt zu Technologie/Konsum-Handel, wurden aber dort einsortiert statt eigene Ein-Werte-Sektoren anzulegen (wuerde die Top-5-Rotation unnoetig fragmentieren).
-    #
-    # MDAX-ERWEITERUNG (NEU 08.08.2026, Nutzerwunsch): ~39 zusätzliche MDAX-
-    # Werte ergänzt. EHRLICHE EINSCHRÄNKUNG: Liste basiert auf Trainingswissen
-    # (Stand ca. Anfang 2026), NICHT taggenau gegen eine aktuelle Quelle
-    # verifiziert - MDAX wird vierteljährlich überprüft (März/Juni/September/
-    # Dezember), einzelne Namen können inzwischen rotiert sein. Das ist hier
-    # bewusst unkritisch: ein falscher/veralteter Ticker liefert schlicht
-    # keine Kursdaten und wird vom bestehenden Fehler-Handling übersprungen
-    # (siehe z.B. "ABB -> Daten von Alpaca leer" / HTTP-404-Faelle in den
-    # Logs) - kein Absturz, keine Verunreinigung der Ergebnisse. Vier neue
-    # Sektor-Buckets ergänzt, die es bisher fuer EU gar nicht gab (Immobilien/
-    # Chemie/Konsum/Telekommunikation) - Deutsche Telekom (DTG.DE) dabei aus
-    # "Industrie" nach "Telekommunikation" verschoben, passt dort inhaltlich
-    # besser (siehe Chat-Diskussion 08.08.2026).
-    "Banken": ["DBK.DE", "CBK.DE", "BNP.PA", "ACA.PA", "GLE.PA", "INGA.AS", "ISP.MI", "UCG.MI", "SAN.MC", "BBVA.MC", "PBB.DE",
-              "GLJ.DE", "WUW.DE", "DBAN.DE"],
-    "Versicherungen": ["ALV.DE", "MUV2.DE", "HNR1.DE", "TLX.DE", "CS.PA", "G.MI"],
-    "Technologie": ["SAP.DE", "IFX.DE", "NEM.DE", "AIXA.DE", "BC8.DE", "ASML.AS", "ADYEN.AS", "BESI.AS", "CAP.PA", "STMPA.PA", "PRX.AS", "WAF.DE", "HYQ.DE",
-                   "NA9.DE", "BSL.DE", "FTK.DE", "SUSE.DE", "TMV.DE", "GFT.DE", "AAD.DE"],
-    "Gesundheit": ["BAYN.DE", "MRK.DE", "FRE.DE", "FME.DE", "SRT3.DE", "QIA.DE", "SHL.DE", "EVT.DE", "SAN.PA", "PHIA.AS", "COP.DE",
-                  "DMP.DE", "EUZ.DE", "FYB.DE", "SBS.DE", "SYAB.DE"],
-    "Industrie": ["SIE.DE", "AIR.DE", "MTX.DE", "RHM.DE", "CON.DE", "DHL.DE", "G1A.DE", "BAS.DE", "KGX.DE", "NDX1.DE", "SU.PA", "SAF.PA", "AI.PA", "PIA.MI",
-                 "GXI.DE", "JUN3.DE", "KRN.DE", "DUE.DE", "HAG.DE", "R3NK.DE", "FRA.DE", "GBF.DE", "S92.DE", "ECV.DE",
-                 "DEZ.DE", "GIL.DE", "SKB.DE", "LPK.DE", "NOEJ.DE", "TPE.DE", "VOS.DE", "WAC.DE", "HHFA.DE", "VH2.DE", "8TRA.DE", "HLAG.DE"],
-    "Versorger": ["EOAN.DE", "RWE.DE", "ENEL.MI", "IBE.MC", "ENGI.PA", "VIE.PA", "EKT.DE"],
-    "Automobil": ["VOW3.DE", "BMW.DE", "MBG.DE", "P911.DE", "RNO.PA", "STLAM.MI", "ML.PA", "PIRC.MI", "SIX2.DE", "SHA.DE", "STM.DE"],
-    "Immobilien": ["VNA.DE", "LEG.DE", "AT1.DE", "GYC.DE", "TEG.DE", "DIC.DE", "DKG.DE", "INS.DE", "P1Z.DE"],
-    "Chemie/Rohstoffe": ["SY1.DE", "LXS.DE", "EVK.DE", "WCH.DE", "SDF.DE", "TKA.DE", "SZG.DE", "NDA.DE", "SGL.DE", "NTG.DE", "SZU.DE", "VBK.DE"],
-    "Konsum/Handel": ["PUM.DE", "BOSS.DE", "ZAL.DE", "HFG.DE", "FIE.DE", "DHER.DE", "AG1.DE",
-                      "CEC.DE", "CWC.DE", "B4B.DE", "HBH.DE", "TTK.DE", "SAE.DE", "KCO.DE", "EVD.DE", "PSM.DE"],
-    "Telekommunikation": ["UTDI.DE", "FNTN.DE", "MOB.DE", "DTG.DE", "ADV.DE", "IOS.DE"],
+    "Automobil": [
+        "10O.DE", "1TRA.DE", "AUM.DE", "BMW.DE", "CON.DE", "DTG.DE", "JST.DE", "KBX.DE", "MBG.DE",
+        "PAH3.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "STM1.DE", "VOW3.DE"
+    ],
+    "Chemie": [
+        "ACT.DE", "BAS.DE", "EVK.DE", "FPE3.DE", "LXS.DE", "SY1.DE", "WCH.DE"
+    ],
+    "Energie": [
+        "VBK.DE"
+    ],
+    "Finanzen": [
+        "ALV.DE", "CBK.DE", "DB1.DE", "DBAN.DE", "DBK.DE", "DWS.DE", "FTK.DE", "GLJ.DE", "HNR1.DE",
+        "HYQ.DE", "INH.DE", "MLP.DE", "MUV2.DE", "MUX.DE", "PAH3.DE", "PBB.DE", "TLX.DE", "WUW.DE"
+    ],
+    "Gesundheitswesen": [
+        "1SXP.DE", "AFX.DE", "BAYN.DE", "DMP.DE", "DRW3.DE", "EUZ.DE", "EVT.DE", "FME.DE",
+        "FRE.DE", "GXI.DE", "ILM1.DE", "MRK.DE", "QIA.DE", "RDC.DE", "SHL.DE", "SRT3.DE"
+    ],
+    "Grundstoffe": [
+        "KCOG.DE", "NAFG.DE", "SDF.DE", "SZG.DE"
+    ],
+    "Immobilien": [
+        "ARND.DE", "DEQ.DE", "DWNI.DE", "GYC.DE", "HABA.DE", "LEG.DE", "PAT.DE", "TEG.DE",
+        "VNA.DE"
+    ],
+    "Industrie": [
+        "10O.DE", "1TRA.DE", "AIR.DE", "ASTA.DE", "AUM.DE", "BFSA.DE", "BMW.DE", "BNR.DE",
+        "CON.DE", "DEZ.DE", "DHL.DE", "DTG.DE", "DUE.DE", "FRAG.DE", "G1A.DE", "GBF.DE", "HAG.DE",
+        "HDD.DE", "HEI.DE", "HOT.DE", "JST.DE", "JUN3.DE", "KBX.DE", "KGX.DE", "KRN.DE", "KSB3.DE",
+        "LHA.DE", "MBB.DE", "MBG.DE", "MTX.DE", "NDX1.DE", "NOEJ.DE", "P911.DE", "R3NK.DE",
+        "RAA.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "SIE.DE", "STM1.DE", "STO3.DE", "TKA.DE", "VH2.DE",
+        "VOS.DE", "VOW3.DE", "WAC.DE"
+    ],
+    "Kommunikation": [
+        "1U1.DE", "DTE.DE", "FNTN.DE", "PSM.DE", "RTL.DE", "SAX.DE", "SPG.DE", "UTDI.DE"
+    ],
+    "Konsum": [
+        "ADS.DE", "AG1.DE", "BEI.DE", "BOSS.DE", "BVB.DE", "CWC.DE", "DHER.DE", "DOU.DE", "EVD.DE",
+        "HBH.DE", "HEN3.DE", "HFG.DE", "KWS.DE", "PUM.DE", "SIX2.DE", "SZU.DE", "TNIE.DE",
+        "TUI1.DE", "ZAL.DE"
+    ],
+    "Technologie": [
+        "ADN1.DE", "ADV.DE", "AIXA.DE", "AOF.DE", "BC8.DE", "COK.DE", "ELG.DE", "F3C.DE", "G24.DE",
+        "GFT.DE", "IFX.DE", "IOS.DE", "JEN.DE", "KTN.DE", "NA9.DE", "NEM.DE", "PSAG.DE", "S92.DE",
+        "SAP.DE", "SHELL.SO", "SMHN.DE", "TMV.DE", "TPE.DE", "VRV.DE", "WAF.DE", "YSN.DE"
+    ],
+    "Versicherungen": [
+        "ALV.DE", "HNR1.DE", "MUV2.DE", "TLX.DE", "WUW.DE"
+    ],
+    "Versorger": [
+        "EKT.DE", "ENR.DE", "EOAN.DE", "PNE.DE", "RWE.DE"
+    ],
 }
 
 def berechne_indikatoren(df):
@@ -3213,7 +3300,9 @@ if __name__ == "__main__":
             if s not in blacklist:
                 tasks.append((s, row['Sektor']))
 
-    # EU-Aufgabenliste erstellen (Top 5 von 7 EU-Sektoren, eigene, unabhängige Rotation)
+    # EU-Aufgabenliste erstellen (Top 5 von 7 ETF-Sektoren - GEAENDERT 09.08.2026:
+    # dax_aktien hat inzwischen 13 Kategorien, aber nur diese 7 haben eine Rotation-ETF
+    # in eu_sektoren_etf hinterlegt, siehe dortige Einschraenkung - unveraendert Top 5 von 7)
     tasks_eu = []
     for _, row in df_perf_eu.head(5).iterrows():
         aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
