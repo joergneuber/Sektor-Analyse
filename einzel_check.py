@@ -47,6 +47,9 @@ from analyse import (
     analyze_a_setup_eu,
     get_benchmark_close,
     get_eu_benchmark_close,
+    sektoren_aktien,
+    dax_aktien,
+    sektoren_map,
 )
 from trendwende_scanner import _pruefe_trendwende, _indikatoren_berechnen
 from short_scanner import _pruefe_short_setup
@@ -184,6 +187,34 @@ SEKTOR_HINWEIS = {
     "ENR.DE": "Industrie",       # Siemens Energy AG
 }
 
+
+def _baue_ticker_sektor_index():
+    """REPARATUR (09.08.2026, Nutzerwunsch - vorher schaute pruefe() NIE in
+    das Hauptuniversum, nur in das winzige 11-Ticker-Fallback-Dict
+    SEKTOR_HINWEIS, selbst wenn der geprüfte Ticker laengst korrekt im
+    Hauptuniversum einsortiert war). Baut ein Ticker -> [Sektoren]-Mapping
+    aus sektoren_aktien (US, ETF-Schluessel via sektoren_map in Klartext
+    uebersetzt) und dax_aktien (EU, bereits Klartext-Sektornamen).
+    WICHTIG: ein Ticker kann in MEHREREN Sektor-ETFs gleichzeitig stehen
+    (z.B. NVDA in XLK/SOXX/SMH/AIQ) - der Hauptscanner selbst hat deshalb
+    KEINEN einzigen "wahren" Sektor pro Ticker, sondern verwendet je nach
+    Tageslauf das/die ETF(s), die an dem Tag in den Top-8/Top-5 stehen.
+    Fuer den Ad-hoc-Check gibt es keine solche Tagesauswahl - deshalb
+    liefert diese Funktion ALLE gefundenen Sektoren, nicht nur einen, und
+    pruefe() macht die Mehrdeutigkeit sichtbar statt sie zu verstecken."""
+    index = {}
+    for etf, ticker_liste in sektoren_aktien.items():
+        name = sektoren_map.get(etf, etf)
+        for t in ticker_liste:
+            index.setdefault(t, []).append(name)
+    for sektor_name, ticker_liste in dax_aktien.items():
+        for t in ticker_liste:
+            index.setdefault(t, []).append(sektor_name)
+    return index
+
+
+TICKER_SEKTOR_INDEX = _baue_ticker_sektor_index()
+
 # Klarnamen fuer die Ausgabe - macht das Log ohne Nachschlagen lesbar
 # (der Scanner selbst arbeitet weiterhin mit Tickern).
 NAME_HINWEIS = {
@@ -231,7 +262,16 @@ def hole_kursdaten(ticker):
 
 def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
     ist_eu = '.' in ticker
-    sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
+    # REPARATUR (09.08.2026): erst im Hauptuniversum nachschauen, SEKTOR_HINWEIS
+    # nur noch fuer Ticker AUSSERHALB davon (z.B. DroneShield/DRH.F).
+    sektor_kandidaten = TICKER_SEKTOR_INDEX.get(ticker)
+    if sektor_kandidaten:
+        sektor = sektor_kandidaten[0]
+        if len(sektor_kandidaten) > 1:
+            print(f"  Hinweis: {ticker} steht im Hauptuniversum unter mehreren Sektoren "
+                  f"({', '.join(sektor_kandidaten)}) - verwende '{sektor}' (erster Treffer).")
+    else:
+        sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
     score = scores.get(sektor)
     klarname = NAME_HINWEIS.get(ticker)
     kopf = f"{ticker}" + (f" - {klarname}" if klarname else "")
