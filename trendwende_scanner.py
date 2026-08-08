@@ -98,6 +98,14 @@ WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl
 # Debug-Log vom 24./28.07.2026 ueber alle Ticker komplett disjunkt.
 FRISCHE_TAGE = 5
 
+# Pfad 2 (NEU 09.08.2026, Nutzerwunsch "RSI-Divergenz lockern - zwei
+# moegliche Trigger-Pfade statt einer Pflichtbedingung"): faengt kraftvolle
+# Bodenformationen (Doppel-Boeden, V-Reversals) ein, die KEINE RSI-Divergenz
+# ausgebildet haben - Multi-Wochen-Hoch bei ueberdurchschnittlichem Volumen
+# als alternativer Trigger zu Divergenz+Kumo-Ausbruch.
+MULTIWOCHEN_LOOKBACK_TAGE = 50
+MULTIWOCHEN_VOLUMEN_SCHWELLE = 1.5
+
 # Zeitfenster fuer die BODEN-Bedingung (C.1 - bullische RSI-Divergenz):
 # die Divergenz darf bis zu N Handelstage zurueckliegen, MUSS aber seitdem
 # intakt sein (kein Schlusskurs unter dem Divergenz-Tief, sonst ist der
@@ -261,6 +269,39 @@ def check_kumo_breakout_recent(data, frische_tage=FRISCHE_TAGE):
         if c_davor <= k_davor and c_heute > k_heute:
             return True
     return False
+
+
+def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
+                               volumen_schwelle=MULTIWOCHEN_VOLUMEN_SCHWELLE):
+    """PFAD 2 (NEU 09.08.2026, Nutzerwunsch): alternativer Trigger zu Pfad 1
+    (RSI-Divergenz + Kumo-Ausbruch). Faengt kraftvolle Bodenformationen
+    (Doppel-Boeden, V-Reversals) ein, die keine RSI-Divergenz ausgebildet
+    haben, weil der Kursverlauf davor zu unruhig/uneindeutig fuer eine
+    saubere Divergenz-Erkennung war - aber trotzdem mit sichtbarer
+    Marktueberzeugung (Volumen) aus der Baisse ausbrechen.
+    Bedingungen (BEIDE Pflicht fuer Pfad 2):
+      1) Kurs erreicht ein neues Hoch der letzten `lookback_tage` Handelstage
+         (0,1% Toleranz, gleiche Konvention wie an anderer Stelle im Projekt
+         etabliert - vermeidet, dass Rundungsdifferenzen ein Hoch verfehlen).
+      2) Das aktuelle Handelsvolumen liegt bei mindestens `volumen_schwelle`x
+         des 20-Tage-Durchschnitts (Vol_Ratio, bereits in _indikatoren_
+         berechnen vorhanden - keine Neuberechnung noetig). Ohne diese
+         Bestaetigung waere ein blosser Ausbruch auf ein Mehrwochenhoch zu
+         schwach/beliebig als Trendwende-Signal.
+    Gibt (bool, detail_text) zurueck - der Text dient der Diagnose in
+    DEBUG-Zeilen und im Beinahe-Kandidaten-Kontext."""
+    if len(data) < lookback_tage + 20 or 'Vol_Ratio' not in data.columns:
+        return False, "zu wenig Historie fuer Pfad 2"
+    kurs = float(data['Close'].iloc[-1])
+    hoch_lookback = float(data['High'].iloc[-lookback_tage:].max())
+    neues_hoch = kurs >= hoch_lookback * 0.999
+    vol_ratio = float(data['Vol_Ratio'].iloc[-1]) if pd.notna(data['Vol_Ratio'].iloc[-1]) else 0.0
+    volumen_ok = vol_ratio >= volumen_schwelle
+    detail = (f"{lookback_tage}T-Hoch: {'ja' if neues_hoch else 'nein'} "
+             f"(Kurs {kurs:.2f} vs. Hoch {hoch_lookback:.2f}) | "
+             f"Volumen: {vol_ratio:.2f}x ({'ja' if volumen_ok else 'nein'}, "
+             f"Schwelle {volumen_schwelle:.1f}x)")
+    return (neues_hoch and volumen_ok), detail
 
 
 def check_stochastik_crossover_recent(data, frische_tage=FRISCHE_TAGE, ueberverkauft_schwelle=20):
@@ -574,24 +615,40 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
                   f"(Tief {tief_52w:.2f} / Kurs {entry:.2f} / Hoch {hoch_52w:.2f})")
             return None, "zu_weit_vom_52w_tief"
 
-    # C - beide Bestaetigungen Pflicht, aber zeitlich ENTKOPPELT
-    # (GEAENDERT 28.07.2026, Nutzerwunsch: Pflicht-Signal soll wieder der
-    # ECHTE Kumo-Ausbruch sein, nicht der Kijun-Ausbruch vom 24.07. Damit
-    # das nicht erneut in dauerhafte 0-Kandidaten-Tage laeuft, wurde das
-    # eigentliche Problem behoben - nicht das UND, sondern das gemeinsame
-    # Zeitfenster: Divergenz entsteht am Boden, der Kumo-Ausbruch folgt
-    # erst Tage/Wochen spaeter. Deshalb jetzt Sequenz-Logik:
-    #   1) Divergenz im 40-Tage-Fenster, nicht invalidiert (Boden)
-    #   2) Kumo-Ausbruch frisch im 5-Tage-Fenster (Trigger)
+    # C - ZWEI MOEGLICHE TRIGGER-PFADE (GEAENDERT 09.08.2026, Nutzerwunsch
+    # "RSI-Divergenz lockern"): vorher war Divergenz+Kumo-Ausbruch eine
+    # einzige Pflichtbedingung (BEIDE UND) - jetzt ODER-verknuepft mit einem
+    # zweiten, unabhaengigen Pfad. Pfad 1 bleibt unveraendert (Sequenz-Logik
+    # seit 28.07.2026: Divergenz im 40-Tage-Fenster als Boden, Kumo-Ausbruch
+    # im 5-Tage-Fenster als Trigger). Pfad 2 ist NEU: faengt kraftvolle
+    # Bodenformationen (Doppel-Boeden, V-Reversals) ein, die keine RSI-
+    # Divergenz ausgebildet haben, aber mit sichtbarer Marktueberzeugung
+    # (Volumen-Spritze) aus der Baisse ausbrechen. EIN erfuellter Pfad
+    # genuegt - beide gleichzeitig sind moeglich, aber nicht noetig.
     divergenz_ok = check_rsi_divergence_recent(data)
-    if not divergenz_ok:
-        return None, "keine_divergenz"
-
     kumo_ausbruch = check_kumo_breakout_recent(data)
-    if not kumo_ausbruch:
-        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Divergenz: True | "
-              f"Kumo-Ausbruch (frisch): False | Abstand 52W-Tief: {abstand_52w_tief}%")
-        return None, "kein_frischer_kumo_ausbruch"
+    pfad1_ok = divergenz_ok and kumo_ausbruch
+
+    pfad2_ok, pfad2_detail = check_multiwochen_ausbruch(data)
+
+    if not pfad1_ok and not pfad2_ok:
+        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Pfad 1 (Divergenz+Kumo): "
+              f"Divergenz={divergenz_ok}, Kumo-Ausbruch={kumo_ausbruch} | "
+              f"Pfad 2 (Multi-Wochen-Hoch+Volumen): {pfad2_detail}")
+        # Granularer Ablehnungsgrund (NEU 09.08.2026): die Divergenz-Watchlist
+        # (siehe unten im Hauptlauf) braucht weiterhin die Unterscheidung
+        # "Divergenz intakt, wartet nur auf den Kumo-Trigger" - das darf bei
+        # der Umstellung auf zwei Pfade nicht in einem generischen Grund
+        # untergehen, sonst verliert die Watchlist ihre Grundlage.
+        if divergenz_ok:
+            return None, "divergenz_da_aber_kein_trigger"
+        return None, "keine_bestaetigung"
+
+    trigger_pfad = []
+    if pfad1_ok:
+        trigger_pfad.append("Pfad 1 (RSI-Divergenz + Kumo-Ausbruch)")
+    if pfad2_ok:
+        trigger_pfad.append("Pfad 2 (Multi-Wochen-Hoch + Volumen-Spritze)")
 
     # Qualitaets-Bonus (NEU, optional - kein Ausschlusskriterium): zwei
     # zusaetzliche, unabhaengige Signale koennen die Einstufung anheben,
@@ -617,7 +674,7 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
     else:
         qualitaets_bonus = "Stark bestätigt"
 
-    setup_typ = "RSI-Divergenz + Kumo-Ausbruch"
+    setup_typ = " + ".join(trigger_pfad)
     if bonus_komponenten:
         setup_typ += " + " + " + ".join(bonus_komponenten)
 
@@ -807,7 +864,7 @@ def main():
         for t, f in futures:
             r, grund = f.result()
             funnel[grund] += 1
-            if grund == "kein_frischer_kumo_ausbruch":
+            if grund == "divergenz_da_aber_kein_trigger":
                 divergenz_watchlist.append(t)
                 kumo_diagnose[t] = tage_seit_kumo_ausbruch(
                     _indikatoren_berechnen(us_daten[t].copy()))
@@ -823,7 +880,7 @@ def main():
         for t, f in futures:
             r, grund = f.result()
             funnel[grund] += 1
-            if grund == "kein_frischer_kumo_ausbruch":
+            if grund == "divergenz_da_aber_kein_trigger":
                 divergenz_watchlist.append(t)
                 kumo_diagnose[t] = tage_seit_kumo_ausbruch(
                     _indikatoren_berechnen(eu_daten[t].copy()))
@@ -867,7 +924,7 @@ def main():
         if spanne_ok and not prozent_ok:
             nur_spannen_regel.append(t)
             # Nur relevant, wenn danach auch die Boden-Bedingung haelt
-            if grund_spanne in ("kein_frischer_kumo_ausbruch", "crv_unter_1", "valide"):
+            if grund_spanne in ("divergenz_da_aber_kein_trigger", "crv_unter_1", "valide"):
                 schatten_divergenz.append(t)
         elif prozent_ok and not spanne_ok:
             nur_prozent_regel.append(t)
@@ -912,8 +969,11 @@ def main():
         ("fehler", "Fehler bei der Berechnung"),
         ("nicht_unter_wma200", f"Nicht (kuerzlich, {WMA200_LOOKBACK_TAGE}T-Lookback) unter der WMA200"),
         ("zu_weit_vom_52w_tief", f"Mehr als {ABSTAND_52W_TIEF_MAX}% ueber dem 52W-Tief"),
-        ("keine_divergenz", f"Keine intakte bullische RSI-Divergenz ({DIVERGENZ_FENSTER_TAGE}T-Fenster)"),
-        ("kein_frischer_kumo_ausbruch", f"Kein frischer Kumo-Ausbruch (letzte {FRISCHE_TAGE} Handelstage)"),
+        ("divergenz_da_aber_kein_trigger", f"Divergenz intakt ({DIVERGENZ_FENSTER_TAGE}T), aber weder "
+                                           f"Kumo-Ausbruch ({FRISCHE_TAGE}T) noch Pfad 2 erfuellt"),
+        ("keine_bestaetigung", f"Weder Pfad 1 (Divergenz {DIVERGENZ_FENSTER_TAGE}T + Kumo-Ausbruch "
+                               f"{FRISCHE_TAGE}T) noch Pfad 2 ({MULTIWOCHEN_LOOKBACK_TAGE}T-Hoch + "
+                               f"Volumen >={MULTIWOCHEN_VOLUMEN_SCHWELLE:.1f}x) erfuellt"),
         ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
         ("valide", "VALIDE"),
     ]
@@ -976,8 +1036,10 @@ def main():
         f.write(f"- Naehe zum Tief: Kurs darf max. {ABSTAND_52W_TIEF_MAX}% ueber seinem 52-Wochen-Tief\n")
         f.write("  liegen (ausgewogene Schwelle - nicht nur exakte neue Tiefs, aber auch keine\n")
         f.write("  Titel, die schon deutlich vom Tief weggelaufen sind).\n")
-        f.write("- Wende-Bestaetigung (BEIDE Pflicht, kein ODER - seit 28.07.2026 zeitlich\n")
-        f.write("  entkoppelte SEQUENZ statt gemeinsamem Zeitfenster):\n")
+        f.write("- Wende-Bestaetigung (GEAENDERT 09.08.2026: ZWEI moegliche Trigger-Pfade,\n")
+        f.write("  EINER von beiden genuegt - vorher war Pfad 1 alleinige Pflichtbedingung):\n")
+        f.write("  PFAD 1 (Divergenz + Kumo-Ausbruch, seit 28.07.2026 zeitlich entkoppelte\n")
+        f.write("  SEQUENZ statt gemeinsamem Zeitfenster):\n")
         f.write(f"  1) Boden-Bedingung: bullische RSI-Divergenz (Kurs macht neues Tief, RSI aber\n")
         f.write(f"     nicht - Verkaufsdruck laesst nach) innerhalb der letzten {DIVERGENZ_FENSTER_TAGE} Handelstage,\n")
         f.write("     die seitdem NICHT invalidiert wurde (kein Schlusskurs unter dem Divergenz-\n")
@@ -987,6 +1049,11 @@ def main():
         f.write("  Begruendung der Entkopplung: die Divergenz entsteht AM Boden, der Kumo-\n")
         f.write("  Ausbruch folgt naturgemaess erst Tage bis Wochen spaeter - beide in EIN\n")
         f.write("  kurzes Fenster zu zwingen war strukturell fast nie erfuellbar.\n")
+        f.write("  PFAD 2 (NEU 09.08.2026, Nutzerwunsch): faengt kraftvolle Bodenformationen\n")
+        f.write("  (Doppel-Boeden, V-Reversals) ein, die KEINE RSI-Divergenz ausgebildet haben:\n")
+        f.write(f"  Kurs bricht auf ein {MULTIWOCHEN_LOOKBACK_TAGE}-Tage-Hoch aus BEI Volumen\n")
+        f.write(f"  >= {MULTIWOCHEN_VOLUMEN_SCHWELLE:.1f}x des 20-Tage-Durchschnitts (Marktueberzeugung\n")
+        f.write("  statt duennem Ausbruch ohne Rueckendeckung).\n")
         f.write("- Qualitaets-Bonus (optional, NICHT Pflicht): zwei zusaetzliche Signale koennen\n")
         f.write("  die Einstufung anheben, sind aber kein Ausschlusskriterium wie die beiden\n")
         f.write("  Pflicht-Signale oben - Candlestick-Bestaetigung (Hammer/Engulfing auf der\n")
