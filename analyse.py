@@ -490,12 +490,9 @@ eu_sektoren_etf = {
 
 eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-Referenzindex für RS
 
-# EU-UNIVERSUM: DAX40 + MDAX + SDAX + EURO STOXX 50.
-# Mehrfachzuordnungen sind bewusst erlaubt. Die Sektorzuordnung folgt ausschließlich
-# der zentralen Sektorrotationslogik dieses Moduls.
-# EURO-STOXX-50-Erweiterung: 09.08.2026.
-# Referenz-Snapshot: veröffentlichte vollständige Komponentenliste Stand März 2026;
-# der Index wird jährlich im September überprüft.
+# EU-Ticker nach Sektor (Stand: Juli 2026;
+# die Zusammensetzung wird von der Deutschen Börse zweimal jährlich überprüft, daher
+# gelegentlich gegenchecken)
 dax_aktien = {
     "Automobil": [
         "10O.DE", "1TRA.DE", "AUM.DE", "BMW.DE", "CON.DE", "DTG.DE", "JST.DE", "KBX.DE", "MBG.DE",
@@ -550,36 +547,6 @@ dax_aktien = {
         "EKT.DE", "ENR.DE", "EOAN.DE", "PNE.DE", "RWE.DE"
     ],
 }
-
-# --- EURO STOXX 50: Eurozonen-Large-Caps ergänzen ---
-# Bereits im DAX/MDAX/SDAX-Universum vorhandene Titel werden durch die Listenlogik
-# automatisch dedupliziert. Mehrfach-Sektorzuordnungen bleiben zulässig.
-# Quelle der Referenzliste: EURO STOXX 50 Zusammensetzung Stand März 2026;
-# öffentlich auffindbare vollständige Liste, gegengeprüft am 09.08.2026.
-EURO_STOXX_50_ERGAENZUNGEN = {
-    "Automobil": ["RACE.MI"],
-    "Chemie": ["AI.PA"],
-    "Energie": ["ENI.MI", "TTE.PA"],
-    "Finanzen": [
-        "ADYEN.AS", "CS.PA", "BBVA.MC", "BNP.PA", "INGA.AS", "ISP.MI",
-        "NDA-FI.HE", "UCG.MI"
-    ],
-    "Gesundheitswesen": ["ARGX.AS", "EL.PA", "SAN.PA"],
-    "Industrie": ["SAF.PA", "SGO.PA", "SU.PA", "DG.PA"],
-    "Konsum": ["AD.AS", "ABI.BR", "BN.PA", "RMS.PA", "ITX.MC", "OR.PA", "MC.PA"],
-    "Technologie": ["ASML.AS", "PRX.AS", "WKL.AS"],
-    "Versorger": ["ENEL.MI", "IBE.MC"],
-}
-
-for _eu_sektor, _eu_ticker_liste in EURO_STOXX_50_ERGAENZUNGEN.items():
-    for _eu_ticker in _eu_ticker_liste:
-        if _eu_ticker not in dax_aktien[_eu_sektor]:
-            dax_aktien[_eu_sektor].append(_eu_ticker)
-
-# SHELL.SO ist kein Eurozonen-Titel und gehört nicht in das definierte EU-Universum.
-# Es war zuvor irrtümlich unter Technologie gelistet.
-if "SHELL.SO" in dax_aktien.get("Technologie", []):
-    dax_aktien["Technologie"].remove("SHELL.SO")
 
 def berechne_indikatoren(df):
     # 1. MultiIndex entfernen (wichtig für yfinance-Struktur)
@@ -3354,41 +3321,18 @@ if __name__ == "__main__":
         for s in aktien_liste_eu:
             tasks_eu.append((s, row['Sektor']))
 
-    # Rate-Limit-Budget: max. 180 Tasks insgesamt (US + EU) pro Lauf.
-    # US und EU werden proportional zum vorhandenen Universum begrenzt.
-    # Wichtig: EU darf nicht mehr vollständig auf 0 gekürzt werden.
-    MAX_TICKER_BUDGET = 180
-    gesamt_anzahl = len(tasks) + len(tasks_eu)
-
-    if gesamt_anzahl > MAX_TICKER_BUDGET:
-        us_anteil = len(tasks) / gesamt_anzahl if gesamt_anzahl else 0.5
-        us_budget = int(round(MAX_TICKER_BUDGET * us_anteil))
-        eu_budget = MAX_TICKER_BUDGET - us_budget
-
-        us_budget = min(us_budget, len(tasks))
-        eu_budget = min(eu_budget, len(tasks_eu))
-        rest_budget = MAX_TICKER_BUDGET - us_budget - eu_budget
-
-        # Freie Plätze aus einer Region gehen an die andere Region.
-        if rest_budget > 0:
-            freie_us = len(tasks) - us_budget
-            freie_eu = len(tasks_eu) - eu_budget
-            zusatz_us = min(rest_budget, freie_us)
-            us_budget += zusatz_us
-            rest_budget -= zusatz_us
-            if rest_budget > 0:
-                zusatz_eu = min(rest_budget, freie_eu)
-                eu_budget += zusatz_eu
-                rest_budget -= zusatz_eu
-
-        print(
-            f"DEBUG: Ticker-Budget überschritten ({gesamt_anzahl} > {MAX_TICKER_BUDGET}) - "
-            f"proportionale Verteilung: US {us_budget}, EU {eu_budget}."
-        )
-        tasks = tasks[:us_budget]
-        tasks_eu = tasks_eu[:eu_budget]
-
-    print(f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | Gesamt: {len(tasks) + len(tasks_eu)}")
+    # KEIN kuenstliches Ticker-Budget mehr (GEAENDERT 09.08.2026):
+    # Das fruehere Limit von 180 Tasks hat bei einem gewachsenen Universum
+    # Kandidaten bereits VOR der eigentlichen Analyse abgeschnitten.
+    # Das war keine Alpaca-/Yahoo-Limitierung, sondern eine eigene
+    # Schutzbegrenzung. Die Kursdaten werden bereits in Sammelabrufen mit
+    # CHUNK_SIZE_US = 100 geladen. Deshalb werden jetzt ALLE Tasks aus den
+    # Top-Sektoren analysiert. Einzelne API-/Datenfehler bleiben weiterhin
+    # auf Ticker-Ebene isoliert und duerfen den Gesamtlauf nicht stoppen.
+    print(
+        f"DEBUG: Keine Ticker-Budgetbegrenzung - alle Tasks werden analysiert: "
+        f"US {len(tasks)} | EU {len(tasks_eu)} | Gesamt {len(tasks) + len(tasks_eu)}."
+    )
 
     # SAMMEL-ABRUF (NEU 09.08.2026, Nutzerwunsch): vorher machte jeder der
     # bis zu 10 parallelen Worker unten einen EIGENEN Alpaca-Request pro
@@ -3709,7 +3653,7 @@ if __name__ == "__main__":
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
-        f.write("- Ticker-Budget: max. 180 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
+        f.write("- Ticker-Budget: keine kuenstliche Begrenzung; US/EU-Kursdaten werden in Sammelabrufen/Chunks geladen\n")
         f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n")
