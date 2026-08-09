@@ -558,6 +558,45 @@ def berechne_indikatoren(df):
     
     return df
     
+def _hole_firma_name(ticker, retries=2):
+    """NEU (09.08.2026, Nutzerfund: seit dem Universum-Neubau vom selben Tag
+    zeigte die Auswertung bei manchen sonst unproblematischen Titeln (z.B.
+    FNV, CDW, TWLO) nur den Ticker statt des Firmennamens). URSACHE: der
+    Namens-Lookup lief bisher OHNE Retry und OHNE Buendelung - ein eigener
+    yf.Ticker(ticker).info-Request PRO Ticker im Tagesuniversum, direkt am
+    Funktionsanfang von analyze_a_setup/_eu, unabhaengig davon ob der Titel
+    spaeter ueberhaupt angezeigt wird. Mit dem gewachsenen Universum (605 US
+    + 159 EU statt vorher 334) steigt die Zahl dieser Einzel-Requests
+    entsprechend, und yfinance drosselt .info informell - ein einzelner
+    fehlgeschlagener Call fiel bisher sofort auf den Ticker als Namen zurueck.
+    Gleiche, bewusst zurueckhaltende Retry-Konvention wie get_analyst_target
+    (2 Versuche, 1s Pause - mehr Versuche wuerden sich bei hunderten Tickern
+    spuerbar summieren, siehe dortige Begruendung). Batching wie bei den
+    Kursdaten (fetch_us_batch/fetch_eu_batch) ist hier NICHT moeglich -
+    yfinance bietet fuer .info keinen Sammel-Endpunkt, nur fuer .history()."""
+    for i in range(retries):
+        try:
+            info = yf.Ticker(ticker).info
+            # GEAENDERT (30.07.2026): longName ODER shortName, erst dann der
+            # Ticker als Notnagel. Vorher fiel die Auswertung bei fehlendem
+            # longName direkt auf den Ticker zurueck - im Lauf vom 30.07.
+            # standen deshalb "APD", "CL", "SIE.DE" und "CON.DE" statt der
+            # Firmennamen in der Watchlist. shortName ist bei yfinance
+            # deutlich zuverlaessiger verfuegbar als longName.
+            firma_name = info.get('longName') or info.get('shortName') or ticker
+            firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
+            # abgeschnittenes Rest-Fragment am Ende entfernen (yfinance
+            # kuerzt shortName hart, z.B. "VOLKSWAGEN AG                 V")
+            firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
+            return firma_name if firma_name else ticker
+        except Exception as e:
+            if i < retries - 1:
+                print(f"DEBUG: Namens-Lookup für {ticker} fehlgeschlagen (Versuch {i+1}/{retries}): {e}. Warte 1s...")
+                time.sleep(1)
+    print(f"DEBUG: Namens-Lookup für {ticker} nach {retries} Versuchen endgueltig fehlgeschlagen - nutze Ticker als Name.")
+    return ticker
+
+
 def get_analyst_target(ticker, retries=2):
     """Holt Analysten-Daten mit Retry-Logik.
     GEAENDERT (05.08.2026, externe Code-Review): retries 3->2, Wartezeit
@@ -2401,25 +2440,8 @@ def fetch_us_batch(ticker_liste):
 
 def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
     upside_potenzial = None
-    # Firmennamen abrufen
-    try:
-        ticker_obj = yf.Ticker(ticker)
-        info = ticker_obj.info
-        # GEAENDERT (30.07.2026): longName ODER shortName, erst dann der Ticker
-        # als Notnagel. Vorher fiel die Auswertung bei fehlendem longName
-        # direkt auf den Ticker zurueck - im Lauf vom 30.07. standen deshalb
-        # "APD", "CL", "SIE.DE" und "CON.DE" statt der Firmennamen in der
-        # Watchlist, obwohl die Namens-Pflicht gilt. shortName ist bei
-        # yfinance deutlich zuverlaessiger verfuegbar als longName.
-        firma_name = info.get('longName') or info.get('shortName') or ticker
-        firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
-        # abgeschnittenes Rest-Fragment am Ende entfernen (yfinance kuerzt
-        # shortName hart, z.B. "VOLKSWAGEN AG                 V")
-        firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
-        if not firma_name:
-            firma_name = ticker
-    except:
-        firma_name = ticker
+    # Firmennamen abrufen (mit Retry, siehe _hole_firma_name)
+    firma_name = _hole_firma_name(ticker)
 
     # 0. Initialisierung
     setup_typ = "Kein"
@@ -2745,10 +2767,9 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
             print(f"DEBUG-VERWORFEN: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             funnel_zaehle("crv_unter_1")
             funnel_beinahe(ticker, "CRV-Filter",
-                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - Kurs {entry:.2f}, "
-                           f"TP1 {tp1:.2f} (Chance {chance1_perc:.2f}%), TP2 {tp2:.2f} "
-                           f"(Chance {chance2_perc:.2f}%), Stop {stop:.2f} "
-                           f"(Risiko {risiko/entry*100:.2f}%)",
+                           f"Kurs={entry:.2f} | TP1={tp1:.2f} | Chance1={chance1_perc:.2f}% | "
+                           f"CRV1={crv1} | TP2={tp2:.2f} | Chance2={chance2_perc:.2f}% | "
+                           f"CRV2={crv2} | Stop={stop:.2f} | Risiko={risiko/entry*100:.2f}%",
                            crv_sortier=min(crv1, crv2), name=firma_name)
             return None
         
@@ -2875,24 +2896,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
     nicht abdeckt. Relative Stärke wird gegen den STOXX-Europe-600-ETF statt SPY
     berechnet, sonst laufen die Kriterien 1:1 identisch zur US-Funktion."""
     upside_potenzial = None
-    try:
-        ticker_obj = yf.Ticker(ticker)
-        info = ticker_obj.info
-        # GEAENDERT (30.07.2026): longName ODER shortName, erst dann der Ticker
-        # als Notnagel. Vorher fiel die Auswertung bei fehlendem longName
-        # direkt auf den Ticker zurueck - im Lauf vom 30.07. standen deshalb
-        # "APD", "CL", "SIE.DE" und "CON.DE" statt der Firmennamen in der
-        # Watchlist, obwohl die Namens-Pflicht gilt. shortName ist bei
-        # yfinance deutlich zuverlaessiger verfuegbar als longName.
-        firma_name = info.get('longName') or info.get('shortName') or ticker
-        firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
-        # abgeschnittenes Rest-Fragment am Ende entfernen (yfinance kuerzt
-        # shortName hart, z.B. "VOLKSWAGEN AG                 V")
-        firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
-        if not firma_name:
-            firma_name = ticker
-    except:
-        firma_name = ticker
+    firma_name = _hole_firma_name(ticker)
 
     setup_typ = "Kein"
     pattern = "Kein"
@@ -3145,10 +3149,9 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
             print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: CRV zu niedrig (CRV1={crv1}, CRV2={crv2}, TP1={tp1:.2f}, TP2={tp2:.2f}, Entry={entry:.2f}, Risiko={risiko:.2f})")
             funnel_zaehle("crv_unter_1")
             funnel_beinahe(ticker, "CRV-Filter",
-                           f"CRV1 {crv1} / CRV2 {crv2} (Mindestwert 1.0) - Kurs {entry:.2f}, "
-                           f"TP1 {tp1:.2f} (Chance {chance1_perc:.2f}%), TP2 {tp2:.2f} "
-                           f"(Chance {chance2_perc:.2f}%), Stop {stop:.2f} "
-                           f"(Risiko {risiko/entry*100:.2f}%)",
+                           f"Kurs={entry:.2f} | TP1={tp1:.2f} | Chance1={chance1_perc:.2f}% | "
+                           f"CRV1={crv1} | TP2={tp2:.2f} | Chance2={chance2_perc:.2f}% | "
+                           f"CRV2={crv2} | Stop={stop:.2f} | Risiko={risiko/entry*100:.2f}%",
                            crv_sortier=min(crv1, crv2), name=firma_name)
             return None
 

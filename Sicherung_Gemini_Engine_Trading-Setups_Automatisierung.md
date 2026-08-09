@@ -396,21 +396,30 @@ Häufung/Nähe als das, was sie ist.
     {{Chance1_Perc}}%) \| CRV1: {{CRV1}} TP2: {{TP2}}{{Waehrungssymbol}}
     (Chance: {{Chance2_Perc}}%) \| CRV2: {{CRV2}} Stop:
     {{Stop}}{{Waehrungssymbol}} (Risiko: {{Risk_Perc}}%) Alle Werte
-    wörtlich aus den Rohdaten (Beinahe-Kandidaten-Texte enthalten seit
-    09.08.2026 alle diese Felder explizit) -- NICHTS selbst berechnen.
-    Der Portfolio-Hinweis „\[bereits offene Position im Portfolio\]" bei
-    Beinahe-Kandidaten bleibt unübersehbar (z. B. GROSS-SCHREIBUNG statt
-    Fett, da kein Markdown) direkt hinter dem Namen. (2)
-    Divergenz-Watchlist (Trendwende -- hat KEINE TP1/TP2/CRV/Stop in den
-    Rohdaten, da der Kumo-Trigger noch nicht ausgelöst hat, also keine
-    Ziele berechnet werden): NUR Name: {{Name}} \| Ticker: {{Ticker}} \|
-    Markt: {{Markt}} Diagnose: {{Kumo-Klammer-Text, z. B. „Kurs noch
-    unter/in der Wolke" oder „letzter Kumo-Ausbruch vor X
-    Handelstagen"}} Erfinde für die Divergenz-Watchlist KEINE
-    Kurs-/TP-/Stop-Werte, auch wenn das Format der anderen Kategorie
-    mehr Felder hat -- diese Titel haben strukturell keine. Zwischen den
-    Titeln steht in beiden Formaten eine Leerzeile. Bleibt in jedem Fall
-    reine Beobachtung -- keine Setups, keine Empfehlungen.
+    wörtlich aus den Rohdaten -- NICHTS selbst berechnen. WICHTIG
+    (ERGÄNZT 09.08.2026, behebt beobachtete N/A-Fehler beim
+    Zusammenbauen): Die Beinahe-Kandidaten-Rohdaten stehen als
+    eindeutige „Label=Wert"-Paare, getrennt durch „ \| ", z. B.
+    „Kurs=55.28 \| TP1=54.00 \| Chance1=-2.31% \| CRV1=0.23 \| TP2=58.90
+    \| Chance2=6.55% \| CRV2=0.52 \| Stop=49.71 \| Risiko=10.11%" --
+    jedes Label kommt GENAU EINMAL vor, ordne die Werte anhand des
+    Labels zu, nicht anhand der Position im Text. Fehlt ein Label
+    komplett, „--" eintragen; ist ein Label vorhanden, den Wert
+    übernehmen, niemals „N/A" für einen tatsächlich vorhandenen Wert
+    eintragen. Der Portfolio-Hinweis „\[bereits offene Position im
+    Portfolio\]" bei Beinahe-Kandidaten bleibt unübersehbar (z. B.
+    GROSS-SCHREIBUNG statt Fett, da kein Markdown) direkt hinter dem
+    Namen. (2) Divergenz-Watchlist (Trendwende -- hat KEINE
+    TP1/TP2/CRV/Stop in den Rohdaten, da der Kumo-Trigger noch nicht
+    ausgelöst hat, also keine Ziele berechnet werden): NUR Name:
+    {{Name}} \| Ticker: {{Ticker}} \| Markt: {{Markt}} Diagnose:
+    {{Kumo-Klammer-Text, z. B. „Kurs noch unter/in der Wolke" oder
+    „letzter Kumo-Ausbruch vor X Handelstagen"}} Erfinde für die
+    Divergenz-Watchlist KEINE Kurs-/TP-/Stop-Werte, auch wenn das Format
+    der anderen Kategorie mehr Felder hat -- diese Titel haben
+    strukturell keine. Zwischen den Titeln steht in beiden Formaten eine
+    Leerzeile. Bleibt in jedem Fall reine Beobachtung -- keine Setups,
+    keine Empfehlungen.
 
 -   DIVERGENZ-WATCHLIST (Trendwende, NEU 28.07.2026 abends): Das
     Trendwende-Briefing kann einen Block „DIVERGENZ-WATCHLIST"

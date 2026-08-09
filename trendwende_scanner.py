@@ -726,10 +726,10 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
         except Exception:
             firma_name_beinahe = ticker
         BEINAHE_TRENDWENDE.append({
-            "text": f"{firma_name_beinahe} ({ticker}): CRV-Filter -> CRV1 {crv1} / CRV2 {crv2} "
-                   f"(Mindestwert 1.0 je TP), Kurs {entry:.2f}, TP1 {tp1:.2f} "
-                   f"(Chance {chance1_perc:.2f}%), TP2 {tp2:.2f} (Chance {chance2_perc:.2f}%), "
-                   f"Stop {stop:.2f} (Risiko {risk_perc:.2f}%)",
+            "text": f"{firma_name_beinahe} ({ticker}): CRV-Filter -> Kurs={entry:.2f} | "
+                   f"TP1={tp1:.2f} | Chance1={chance1_perc:.2f}% | CRV1={crv1} | "
+                   f"TP2={tp2:.2f} | Chance2={chance2_perc:.2f}% | CRV2={crv2} | "
+                   f"Stop={stop:.2f} | Risiko={risk_perc:.2f}%",
             "crv_sortier": min(crv1, crv2),
         })
         return None, "crv_unter_1"
