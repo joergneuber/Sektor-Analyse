@@ -61,6 +61,8 @@ from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
 
 # --- Bewaehrte Bausteine aus dem Hauptscanner wiederverwenden ---
+from market_data import fetch_us_batch_robust
+
 from analyse import (
     alpaca_client,
     sektoren_aktien,
@@ -442,43 +444,13 @@ def _chunks(liste, groesse):
 
 
 def fetch_us_batch(ticker_liste):
-    """Holt Kursdaten fuer ALLE US-Ticker in wenigen Sammel-Requests statt
-    einem Request pro Ticker (Alpaca unterstuetzt mehrere Symbole pro
-    StockBarsRequest). Gibt {ticker: DataFrame} zurueck - fehlende/leere
-    Ticker werden einfach ausgelassen (kein Fehler)."""
-    ergebnis = {}
-    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-
-    for chunk in _chunks(ticker_liste, CHUNK_SIZE):
-        try:
-            request = StockBarsRequest(
-                symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day
-            )
-            bars = alpaca_client.get_stock_bars(request)
-            df_alle = bars.df
-        except Exception as e:
-            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
-            continue
-
-        if df_alle.empty:
-            continue
-
-        # MultiIndex (symbol, timestamp) bei mehreren Symbolen - pro Ticker
-        # aufsplitten, Spalten wie beim Hauptscanner umbenennen.
-        for ticker in chunk:
-            try:
-                data = df_alle.loc[ticker].copy()
-            except KeyError:
-                continue
-            if data.empty:
-                continue
-            if 'close' in data.columns:
-                data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
-            ergebnis[ticker] = data
-
-    print(f"DEBUG: US-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
-    return ergebnis
-
+    """Robuster US-Sammelabruf: ein ungültiges Symbol darf keinen ganzen Chunk verlieren."""
+    return fetch_us_batch_robust(
+        alpaca_client,
+        ticker_liste,
+        chunk_size=CHUNK_SIZE_US if 'CHUNK_SIZE_US' in globals() else CHUNK_SIZE,
+        days=365,
+    )
 
 def fetch_eu_batch(ticker_liste):
     """Holt Kursdaten fuer ALLE EU-Ticker in wenigen Sammel-Requests statt

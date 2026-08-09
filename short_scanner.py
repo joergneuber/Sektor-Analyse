@@ -49,6 +49,8 @@ import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
 
+from market_data import fetch_us_batch_robust
+
 from analyse import (
     alpaca_client,
     sektoren_aktien,
@@ -99,29 +101,13 @@ def _chunks(liste, groesse):
 # ---------------------------------------------------------------------------
 
 def fetch_us_batch(ticker_liste):
-    ergebnis = {}
-    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-    for chunk in _chunks(ticker_liste, CHUNK_SIZE):
-        try:
-            request = StockBarsRequest(symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day)
-            df_alle = alpaca_client.get_stock_bars(request).df
-        except Exception as e:
-            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
-            continue
-        if df_alle.empty:
-            continue
-        for ticker in chunk:
-            try:
-                data = df_alle.loc[ticker].copy()
-            except KeyError:
-                continue
-            if data.empty:
-                continue
-            data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
-            ergebnis[ticker] = data
-    print(f"DEBUG: US-Sammel-Abruf (Short) lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
-    return ergebnis
-
+    """Robuster US-Sammelabruf: ein ungültiges Symbol darf keinen ganzen Chunk verlieren."""
+    return fetch_us_batch_robust(
+        alpaca_client,
+        ticker_liste,
+        chunk_size=CHUNK_SIZE_US if 'CHUNK_SIZE_US' in globals() else CHUNK_SIZE,
+        days=365,
+    )
 
 def fetch_eu_batch(ticker_liste):
     ergebnis = {}
