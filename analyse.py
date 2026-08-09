@@ -3305,6 +3305,9 @@ if __name__ == "__main__":
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
+    # STRATEGISCHE AUSWAHL (bewusst beibehalten):
+    # Hauptscanner fokussiert auf die staerksten Sektoren der aktuellen Rotation.
+    # Das ist keine technische Begrenzung der Datenanbieter.
     # Aufgabenliste erstellen (Top 8 Sektoren, konsistent zum finalen Sektor-Filter unten)
     tasks = []
     for _, row in df_perf.head(8).iterrows():
@@ -3322,15 +3325,23 @@ if __name__ == "__main__":
             tasks_eu.append((s, row['Sektor']))
 
     # KEIN kuenstliches Ticker-Budget mehr (GEAENDERT 09.08.2026):
-    # Das fruehere Limit von 180 Tasks hat bei einem gewachsenen Universum
-    # Kandidaten bereits VOR der eigentlichen Analyse abgeschnitten.
-    # Das war keine Alpaca-/Yahoo-Limitierung, sondern eine eigene
-    # Schutzbegrenzung. Die Kursdaten werden bereits in Sammelabrufen mit
-    # CHUNK_SIZE_US = 100 geladen. Deshalb werden jetzt ALLE Tasks aus den
-    # Top-Sektoren analysiert. Einzelne API-/Datenfehler bleiben weiterhin
-    # auf Ticker-Ebene isoliert und duerfen den Gesamtlauf nicht stoppen.
+    # Das fruehere Limit von 180 Tasks war eine eigene Schutzbegrenzung und
+    # KEINE Alpaca-/Yahoo-Limitierung. Es wurde entfernt.
+    #
+    # WICHTIG: Die strategische Sektor-Auswahl bleibt bewusst bestehen:
+    #   US = Top 8 Sektoren der aktuellen US-Sektorrotation
+    #   EU = Top 5 Sektoren der aktuellen EU-Sektorrotation
+    #
+    # Damit werden alle Aktien innerhalb der aktuell priorisierten
+    # Rotationssektoren analysiert, aber nicht automatisch das komplette
+    # Aktienuniversum. Das ist eine STRATEGIEREGEL und keine API-Begrenzung.
+    #
+    # Die Kursdaten werden bereits in Sammelabrufen geladen. Einzelne
+    # API-/Datenfehler bleiben auf Ticker-Ebene isoliert und duerfen den
+    # Gesamtlauf nicht stoppen.
     print(
-        f"DEBUG: Keine Ticker-Budgetbegrenzung - alle Tasks werden analysiert: "
+        f"DEBUG: Keine Ticker-Budgetbegrenzung. "
+        f"Analysiert werden alle Tasks der Top-8-US- und Top-5-EU-Sektoren: "
         f"US {len(tasks)} | EU {len(tasks_eu)} | Gesamt {len(tasks) + len(tasks_eu)}."
     )
 
