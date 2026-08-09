@@ -65,6 +65,7 @@ import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from market_cache import get_yf_history
 
 # --- Bewaehrte Bausteine aus dem Hauptscanner wiederverwenden ---
 from collections import Counter, defaultdict
@@ -92,6 +93,7 @@ from analyse import (
     get_fib_levels,
     get_golden_cross_status,
     clean_num,
+    _begrenze_tp2_realitaetsdeckel,
     get_rekord_naehe_text,
     get_saisonalitaet_text,
     get_kurzfrist_kontext_text,
@@ -136,7 +138,12 @@ def get_commodity_benchmark_close():
     Index - analog zu get_benchmark_close()/get_eu_benchmark_close() in
     analyse.py, nur mit einem Rohstoff- statt einem Aktien-Index."""
     try:
-        hist = yf.Ticker(COMMODITY_BENCHMARK_TICKER).history(period="1y")
+        hist = get_yf_history(COMMODITY_BENCHMARK_TICKER)
+        if not hist.empty:
+            stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+            if getattr(hist.index, 'tz', None) is not None:
+                stichtag = stichtag.tz_localize(hist.index.tz)
+            hist = hist[hist.index >= stichtag]
         if hist.empty:
             print("DEBUG: Rohstoff-Benchmark (DBC) leer, Relative Stärke wird übersprungen.")
             return None
@@ -157,7 +164,14 @@ def lade_kursdaten(ticker):
     Gibt (data, grund) zurueck; grund ist None bei Erfolg, sonst der
     Funnel-Schluessel (fuer alle drei Strategien identisch)."""
     try:
-        data = yf.Ticker(ticker).history(period="2y")  # 2 Jahre, siehe unten
+        data = get_yf_history(ticker)
+        if not data.empty:
+            # Der gemeinsame Cache haelt die Obermenge. Fuer den Scanner
+            # verwenden wir weiterhin exakt das bisherige 2-Jahres-Fenster.
+            stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=730))
+            if getattr(data.index, 'tz', None) is not None:
+                stichtag = stichtag.tz_localize(data.index.tz)
+            data = data[data.index >= stichtag]
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
             return None, "keine_kursdaten"
@@ -256,7 +270,12 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             # haben teils luecken-behaftete Historie, mehr Puffer fuer eine
             # zuverlaessige WMA200/EMA200-Berechnung). Im regulaeren Lauf
             # kommen die Daten seit 29.07.2026 vorgeladen aus lade_kursdaten().
-            data = yf.Ticker(ticker).history(period="2y")
+            data = get_yf_history(ticker)
+            if not data.empty:
+                stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=730))
+                if getattr(data.index, 'tz', None) is not None:
+                    stichtag = stichtag.tz_localize(data.index.tz)
+                data = data[data.index >= stichtag]
 
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
@@ -426,11 +445,7 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             hoehere_ziele = [t for t in targets_above if t > tp1]
             tp2 = hoehere_ziele[0] if hoehere_ziele else tp1 * 1.05
 
-        realer_deckel_250 = data['High'].iloc[-250:].max()
-        if realer_deckel_250 > entry and tp2 > realer_deckel_250:
-            tp2 = realer_deckel_250
-            if tp2 <= tp1:
-                tp2 = tp1 * 1.05
+        tp2 = _begrenze_tp2_realitaetsdeckel(tp1, tp2, entry, data)
 
         risiko = entry - stop
         if risiko <= 0:

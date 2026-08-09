@@ -98,7 +98,11 @@ WMA200_LOOKBACK_TAGE = 15  # NEU (23.07.2026): Kurs muss innerhalb dieser Anzahl
 # Debug-Log vom 24./28.07.2026 ueber alle Ticker komplett disjunkt.
 FRISCHE_TAGE = 5
 
-# Pfad 2 (NEU 09.08.2026, Nutzerwunsch "RSI-Divergenz lockern - zwei
+# STABILE AUSGABELABELS fuer die zwei alternativen Trendwende-Trigger.
+TRENDWENDE_1_LABEL = "Trendwende-1 (RSI-Divergenz + Kumo-Ausbruch)"
+TRENDWENDE_2_LABEL = "Trendwende-2 (Multi-Wochen-Hoch + Volumen-Spritze)"
+
+# Trendwende-2 (NEU 09.08.2026, Nutzerwunsch "RSI-Divergenz lockern - zwei
 # moegliche Trigger-Pfade statt einer Pflichtbedingung"): faengt kraftvolle
 # Bodenformationen (Doppel-Boeden, V-Reversals) ein, die KEINE RSI-Divergenz
 # ausgebildet haben - Multi-Wochen-Hoch bei ueberdurchschnittlichem Volumen
@@ -273,13 +277,13 @@ def check_kumo_breakout_recent(data, frische_tage=FRISCHE_TAGE):
 
 def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
                                volumen_schwelle=MULTIWOCHEN_VOLUMEN_SCHWELLE):
-    """PFAD 2 (NEU 09.08.2026, Nutzerwunsch): alternativer Trigger zu Pfad 1
+    """TRENDWENDE-2 (NEU 09.08.2026, Nutzerwunsch): alternativer Trigger zu Trendwende-1
     (RSI-Divergenz + Kumo-Ausbruch). Faengt kraftvolle Bodenformationen
     (Doppel-Boeden, V-Reversals) ein, die keine RSI-Divergenz ausgebildet
     haben, weil der Kursverlauf davor zu unruhig/uneindeutig fuer eine
     saubere Divergenz-Erkennung war - aber trotzdem mit sichtbarer
     Marktueberzeugung (Volumen) aus der Baisse ausbrechen.
-    Bedingungen (BEIDE Pflicht fuer Pfad 2):
+    Bedingungen (BEIDE Pflicht fuer Trendwende-2):
       1) Kurs erreicht ein neues Hoch der letzten `lookback_tage` Handelstage
          (0,1% Toleranz, gleiche Konvention wie an anderer Stelle im Projekt
          etabliert - vermeidet, dass Rundungsdifferenzen ein Hoch verfehlen).
@@ -291,7 +295,7 @@ def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
     Gibt (bool, detail_text) zurueck - der Text dient der Diagnose in
     DEBUG-Zeilen und im Beinahe-Kandidaten-Kontext."""
     if len(data) < lookback_tage + 20 or 'Vol_Ratio' not in data.columns:
-        return False, "zu wenig Historie fuer Pfad 2"
+        return False, "zu wenig Historie fuer Trendwende-2"
     kurs = float(data['Close'].iloc[-1])
     # KORREKTUR (09.08.2026, Nutzerfund): das Referenzhoch darf den AKTUELLEN
     # Handelstag nicht enthalten, sonst vergleicht sich der Tag teilweise mit
@@ -625,9 +629,9 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
     # C - ZWEI MOEGLICHE TRIGGER-PFADE (GEAENDERT 09.08.2026, Nutzerwunsch
     # "RSI-Divergenz lockern"): vorher war Divergenz+Kumo-Ausbruch eine
     # einzige Pflichtbedingung (BEIDE UND) - jetzt ODER-verknuepft mit einem
-    # zweiten, unabhaengigen Pfad. Pfad 1 bleibt unveraendert (Sequenz-Logik
+    # zweiten, unabhaengigen Pfad. Trendwende-1 bleibt unveraendert (Sequenz-Logik
     # seit 28.07.2026: Divergenz im 40-Tage-Fenster als Boden, Kumo-Ausbruch
-    # im 5-Tage-Fenster als Trigger). Pfad 2 ist NEU: faengt kraftvolle
+    # im 5-Tage-Fenster als Trigger). Trendwende-2 ist NEU: faengt kraftvolle
     # Bodenformationen (Doppel-Boeden, V-Reversals) ein, die keine RSI-
     # Divergenz ausgebildet haben, aber mit sichtbarer Marktueberzeugung
     # (Volumen-Spritze) aus der Baisse ausbrechen. EIN erfuellter Pfad
@@ -639,9 +643,9 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
     pfad2_ok, pfad2_detail = check_multiwochen_ausbruch(data)
 
     if not pfad1_ok and not pfad2_ok:
-        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Pfad 1 (Divergenz+Kumo): "
+        print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Trendwende-1 (Divergenz+Kumo): "
               f"Divergenz={divergenz_ok}, Kumo-Ausbruch={kumo_ausbruch} | "
-              f"Pfad 2 (Multi-Wochen-Hoch+Volumen): {pfad2_detail}")
+              f"Trendwende-2 (Multi-Wochen-Hoch+Volumen): {pfad2_detail}")
         # Granularer Ablehnungsgrund (NEU 09.08.2026): die Divergenz-Watchlist
         # (siehe unten im Hauptlauf) braucht weiterhin die Unterscheidung
         # "Divergenz intakt, wartet nur auf den Kumo-Trigger" - das darf bei
@@ -653,9 +657,9 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
 
     trigger_pfad = []
     if pfad1_ok:
-        trigger_pfad.append("Pfad 1 (RSI-Divergenz + Kumo-Ausbruch)")
+        trigger_pfad.append(TRENDWENDE_1_LABEL)
     if pfad2_ok:
-        trigger_pfad.append("Pfad 2 (Multi-Wochen-Hoch + Volumen-Spritze)")
+        trigger_pfad.append(TRENDWENDE_2_LABEL)
 
     # Qualitaets-Bonus (NEU, optional - kein Ausschlusskriterium): zwei
     # zusaetzliche, unabhaengige Signale koennen die Einstufung anheben,
@@ -769,7 +773,7 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
         "Vol_Ratio": round(clean_num(data['Vol_Ratio'].iloc[-1]), 2),
         "RS_vs_Benchmark%": rel_staerke,
         "Abstand_52W_Tief%": abstand_52w_tief,
-        "Setup_Typ": f"Trendwende ({setup_typ})",
+        "Setup_Typ": setup_typ,
         "Qualitaets_Bonus": qualitaets_bonus,
         "Fundamental_Ampel": fundamental_ampel,
         "Fundamental_Hinweis": fundamental_hinweis,
@@ -977,9 +981,9 @@ def main():
         ("nicht_unter_wma200", f"Nicht (kuerzlich, {WMA200_LOOKBACK_TAGE}T-Lookback) unter der WMA200"),
         ("zu_weit_vom_52w_tief", f"Mehr als {ABSTAND_52W_TIEF_MAX}% ueber dem 52W-Tief"),
         ("divergenz_da_aber_kein_trigger", f"Divergenz intakt ({DIVERGENZ_FENSTER_TAGE}T), aber weder "
-                                           f"Kumo-Ausbruch ({FRISCHE_TAGE}T) noch Pfad 2 erfuellt"),
-        ("keine_bestaetigung", f"Weder Pfad 1 (Divergenz {DIVERGENZ_FENSTER_TAGE}T + Kumo-Ausbruch "
-                               f"{FRISCHE_TAGE}T) noch Pfad 2 ({MULTIWOCHEN_LOOKBACK_TAGE}T-Hoch + "
+                                           f"Kumo-Ausbruch ({FRISCHE_TAGE}T) noch Trendwende-2 erfuellt"),
+        ("keine_bestaetigung", f"Weder Trendwende-1 (Divergenz {DIVERGENZ_FENSTER_TAGE}T + Kumo-Ausbruch "
+                               f"{FRISCHE_TAGE}T) noch Trendwende-2 ({MULTIWOCHEN_LOOKBACK_TAGE}T-Hoch + "
                                f"Volumen >={MULTIWOCHEN_VOLUMEN_SCHWELLE:.1f}x) erfuellt"),
         ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
         ("valide", "VALIDE"),
@@ -1044,8 +1048,8 @@ def main():
         f.write("  liegen (ausgewogene Schwelle - nicht nur exakte neue Tiefs, aber auch keine\n")
         f.write("  Titel, die schon deutlich vom Tief weggelaufen sind).\n")
         f.write("- Wende-Bestaetigung (GEAENDERT 09.08.2026: ZWEI moegliche Trigger-Pfade,\n")
-        f.write("  EINER von beiden genuegt - vorher war Pfad 1 alleinige Pflichtbedingung):\n")
-        f.write("  PFAD 1 (Divergenz + Kumo-Ausbruch, seit 28.07.2026 zeitlich entkoppelte\n")
+        f.write("  EINER von beiden genuegt - vorher war Trendwende-1 alleinige Pflichtbedingung):\n")
+        f.write("  TRENDWENDE-1 (Divergenz + Kumo-Ausbruch, seit 28.07.2026 zeitlich entkoppelte\n")
         f.write("  SEQUENZ statt gemeinsamem Zeitfenster):\n")
         f.write(f"  1) Boden-Bedingung: bullische RSI-Divergenz (Kurs macht neues Tief, RSI aber\n")
         f.write(f"     nicht - Verkaufsdruck laesst nach) innerhalb der letzten {DIVERGENZ_FENSTER_TAGE} Handelstage,\n")
@@ -1056,7 +1060,7 @@ def main():
         f.write("  Begruendung der Entkopplung: die Divergenz entsteht AM Boden, der Kumo-\n")
         f.write("  Ausbruch folgt naturgemaess erst Tage bis Wochen spaeter - beide in EIN\n")
         f.write("  kurzes Fenster zu zwingen war strukturell fast nie erfuellbar.\n")
-        f.write("  PFAD 2 (NEU 09.08.2026, Nutzerwunsch): faengt kraftvolle Bodenformationen\n")
+        f.write("  TRENDWENDE-2 (NEU 09.08.2026, Nutzerwunsch): faengt kraftvolle Bodenformationen\n")
         f.write("  (Doppel-Boeden, V-Reversals) ein, die KEINE RSI-Divergenz ausgebildet haben:\n")
         f.write(f"  Kurs bricht auf ein {MULTIWOCHEN_LOOKBACK_TAGE}-Tage-Hoch aus BEI Volumen\n")
         f.write(f"  >= {MULTIWOCHEN_VOLUMEN_SCHWELLE:.1f}x des 20-Tage-Durchschnitts (Marktueberzeugung\n")

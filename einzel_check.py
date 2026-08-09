@@ -37,10 +37,12 @@ ALPACA_SECRET, GROQ_API_KEY) und muss im selben Verzeichnis liegen.
 import datetime
 import glob
 import os
+from pathlib import Path
 import sys
 
 import pandas as pd
 import yfinance as yf
+from market_cache import get_yf_history
 
 from analyse import (
     analyze_a_setup,
@@ -71,7 +73,8 @@ from edelmetalle_scanner import SPANNEN_POSITION_MAX
 # bestehenden Pruefungen, kein Filter, keine Kaufempfehlung. 5 Kriterien,
 # je 1 Punkt, Score 0-5.
 MOMENTUM_VOL_SCHWELLE = 1.5       # Vol_Ratio > 1.5x SMA20 = deutlicher Anstieg
-MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0  # Kurs mind. 5% ueber EMA50
+MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0  # untere Grenze des EMA50-Momentum-Korridors
+MOMENTUM_EMA50_MAX_ABSTAND_PROZENT = 15.0  # Kurs max. 15% ueber EMA50
 
 
 def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
@@ -89,9 +92,8 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
          Fenster bei Oel/Edelmetallen)
       3. Volumenanstieg: Vol_Ratio > 1.5x (deutlich ueber dem 20-Tage-
          Durchschnitt - typisch fuer den Tag, an dem eine Story "zieht")
-      4. Abstand EMA50: Kurs mindestens 5% ueber der EMA50 (starke
-         Ausdehnung vom mittelfristigen Mittelwert - genau das, was ein
-         Einstiegsfilter oft als "zu weit gelaufen" ablehnt)
+      4. Abstand EMA50: Kurs 5-15% ueber der EMA50 (Momentum-Korridor;
+         ueber 15% gilt der Titel als potenziell zu weit gelaufen)
       5. Relative Staerke ZUM SEKTOR (nicht zum Gesamtmarkt wie beim
          bestehenden RS_vs_Benchmark%): eigene 5-Tage-Performance versus
          die 5-Tage-Performance des Sektors aus Performance(...).csv -
@@ -120,10 +122,12 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
         fenster_3m = df[idx >= stichtag]
         if len(fenster_3m) < 40:
             fenster_3m = df.tail(63)
-        hoch_3m = float(fenster_3m['High'].max())
-        # GEAENDERT (08.08.2026, Nutzerwunsch "realistischer bewerten"): 0.1%
-        # -> 1% Toleranz, Konsistenz mit derselben Aenderung in analyse.py's
-        # _hebeltrader_teilkriterien (siehe dortige Begruendung).
+        # Der aktuelle Handelstag darf nicht sein eigenes Referenzhoch liefern.
+        # Verglichen wird der aktuelle Schlusskurs mit dem vorherigen 3-Monats-Hoch.
+        fenster_3m_ohne_heute = fenster_3m.iloc[:-1] if len(fenster_3m) > 1 else fenster_3m
+        hoch_3m = float(fenster_3m_ohne_heute['High'].max())
+        # 1% Toleranz: >=99% des vorherigen 3-Monats-Hochs gilt als
+        # "praktisch am Ausbruch".
         neues_3m_hoch = kurs >= hoch_3m * 0.99
 
         punkte = []
@@ -133,8 +137,8 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
         punkte.append(("Neues 3-Monats-Hoch (Toleranz 1%)", p2, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f} ({kurs/hoch_3m*100:.1f}%)"))
         p3 = vol_ratio > MOMENTUM_VOL_SCHWELLE
         punkte.append((f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)", p3, f"{vol_ratio:.2f}x"))
-        p4 = abstand_ema50 >= MOMENTUM_EMA50_ABSTAND_PROZENT
-        punkte.append((f"Abstand EMA50 (>={MOMENTUM_EMA50_ABSTAND_PROZENT:.0f}%)", p4, f"{abstand_ema50:+.1f}%"))
+        p4 = MOMENTUM_EMA50_ABSTAND_PROZENT <= abstand_ema50 <= MOMENTUM_EMA50_MAX_ABSTAND_PROZENT
+        punkte.append((f"Abstand EMA50 ({MOMENTUM_EMA50_ABSTAND_PROZENT:.0f}-{MOMENTUM_EMA50_MAX_ABSTAND_PROZENT:.0f}%)", p4, f"{abstand_ema50:+.1f}%"))
 
         rs_sektor_text = "Sektor unbekannt/nicht in Performance-Datei - Kriterium entfällt"
         p5 = False
@@ -226,30 +230,50 @@ NAME_HINWEIS = {
 
 
 def lade_rotation_scores():
-    """Liest die neueste Performance-Datei im Verzeichnis, falls vorhanden.
-    GEAENDERT (07.08.2026, Momentum-Ausbruch-Score): erfasst zusaetzlich die
-    5-Tage-Sektor-Performance ("5T"-Spalte, von analyse.py's get_perf()
-    ermittelt) - Grundlage fuer eine ECHTE Aktie-vs-Sektor-Relative-Staerke
-    statt nur Aktie-vs-Gesamtmarkt (SPY/STOXX600, das war bisher der einzige
-    RS-Wert im System). Rueckgabe jetzt zwei Dicts statt einem."""
-    scores = {}
-    sektor_5t = {}
-    for muster in ("Performance(*).csv", "Performance_EU(*).csv"):
-        for pfad in sorted(glob.glob(muster)):
-            try:
-                df = pd.read_csv(pfad, sep=';', encoding='utf-8-sig')
-                for _, z in df.iterrows():
-                    scores[str(z['Sektor'])] = float(z['Rotation-Score'])
-                    if '5T' in df.columns:
-                        sektor_5t[str(z['Sektor'])] = float(z['5T'])
-            except Exception:
-                pass
-    return scores, sektor_5t
+    """Liest jeweils die AKTUELLSTE Performance-Datei fuer US und EU.
+
+    US und EU werden bewusst getrennt gehalten, damit ein gleichnamiger
+    Sektor in Performance(*).csv nicht versehentlich durch die EU-Datei
+    ueberschrieben wird (oder umgekehrt). Die Auswahl der neuesten Datei
+    erfolgt explizit ueber die Dateiaenderungszeit statt ueber die zufaellige
+    Reihenfolge mehrerer historischer Dateien im Verzeichnis.
+
+    Rueckgabe: (scores_us, sektor_5t_us, scores_eu, sektor_5t_eu).
+    """
+    def _neueste(muster):
+        kandidaten = glob.glob(muster)
+        if not kandidaten:
+            return None
+        return max(kandidaten, key=lambda p: Path(p).stat().st_mtime)
+
+    def _lese(pfad):
+        scores, sektor_5t = {}, {}
+        if not pfad:
+            return scores, sektor_5t
+        try:
+            df = pd.read_csv(pfad, sep=';', encoding='utf-8-sig')
+            for _, z in df.iterrows():
+                sektor = str(z['Sektor'])
+                scores[sektor] = float(z['Rotation-Score'])
+                if '5T' in df.columns and pd.notna(z['5T']):
+                    sektor_5t[sektor] = float(z['5T'])
+        except Exception as e:
+            print(f"WARNUNG: Performance-Datei {pfad} konnte nicht gelesen werden: {e}")
+        return scores, sektor_5t
+
+    us_scores, us_5t = _lese(_neueste("Performance(*).csv"))
+    eu_scores, eu_5t = _lese(_neueste("Performance_EU(*).csv"))
+    return us_scores, us_5t, eu_scores, eu_5t
 
 
 def hole_kursdaten(ticker):
     """52 Wochen + Puffer, wie die regulaeren Scanner (Datums-Schnitt)."""
-    data = yf.Ticker(ticker).history(period="2y")
+    data = get_yf_history(ticker)
+    if not data.empty:
+        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=730))
+        if getattr(data.index, 'tz', None) is not None:
+            stichtag = stichtag.tz_localize(data.index.tz)
+        data = data[data.index >= stichtag]
     if data.empty:
         return None
     data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
@@ -260,8 +284,10 @@ def hole_kursdaten(ticker):
     return fenster if len(fenster) >= 60 else data.tail(252)
 
 
-def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
+def pruefe(ticker, spy_close, eu_close, scores_us, sektor_5t_us, scores_eu, sektor_5t_eu):
     ist_eu = '.' in ticker
+    scores = scores_eu if ist_eu else scores_us
+    sektor_5t = sektor_5t_eu if ist_eu else sektor_5t_us
     # REPARATUR (09.08.2026): erst im Hauptuniversum nachschauen, SEKTOR_HINWEIS
     # nur noch fuer Ticker AUSSERHALB davon (z.B. DroneShield/DRH.F).
     sektor_kandidaten = TICKER_SEKTOR_INDEX.get(ticker)
@@ -388,8 +414,8 @@ if __name__ == "__main__":
 
     spy_close = get_benchmark_close()
     eu_close = get_eu_benchmark_close()
-    scores, sektor_5t = lade_rotation_scores()
+    scores_us, sektor_5t_us, scores_eu, sektor_5t_eu = lade_rotation_scores()
 
     for t in ticker_liste:
-        pruefe(t.strip(), spy_close, eu_close, scores, sektor_5t)
+        pruefe(t.strip(), spy_close, eu_close, scores_us, sektor_5t_us, scores_eu, sektor_5t_eu)
         print()

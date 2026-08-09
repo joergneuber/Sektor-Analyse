@@ -58,6 +58,21 @@ def sicheres_float(val, ticker="?", feldname="?"):
         return None
 
 
+def ermittle_richtung(row, stop, einstieg):
+    """Ermittelt die Positionsrichtung einheitlich fuer alle Tracker-Stufen.
+
+    Explizite Spalte 'Richtung' hat Vorrang. Ist sie leer oder enthaelt
+    einen anderen Wert, wird aus der Stop-Seite abgeleitet:
+    Stop oberhalb Einstieg = Short, sonst Long.
+    """
+    richtung = str(row.get('Richtung', '')).strip().lower()
+    if richtung == 'short':
+        return True
+    if richtung == 'long':
+        return False
+    return stop > einstieg
+
+
 def get_drive_service():
     """Baut den Drive-Service auf und erneuert den Access-Token aktiv,
     falls abgelaufen (siehe upload_to_drive.py für ausführliche Begründung)."""
@@ -521,11 +536,9 @@ def aktualisiere_positionen(df):
 
         ticker = row['Ticker']
         markt = row['Markt']
-        richtung = str(row.get('Richtung', '')).strip().lower()
-        ist_short = richtung == 'short'  # alles andere (leer, 'long', Tippfehler) -> Long-Logik als sicherer Standard
-
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
+        ist_short = ermittle_richtung(row, stop, einstieg) if stop is not None and einstieg is not None else False
         tp1 = sicheres_float(row['TP1'], ticker, 'TP1')
         tp2 = sicheres_float(row['TP2'], ticker, 'TP2')
 

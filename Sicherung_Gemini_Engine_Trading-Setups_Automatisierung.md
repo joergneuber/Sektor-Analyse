@@ -332,10 +332,9 @@ Häufung/Nähe als das, was sie ist.
 -   4\. HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch - sechste
     Kategorie neben Trendfolge/Trendwende/Short/Langfrist/Edelmetalle):
     Die briefing.txt kann einen Block „HEBELTRADER-SETUPS" enthalten -
-    Titel mit einem Momentum-Ausbruch-Score von mindestens 5/5
-    (Standard-Schwelle, in analyse.py als HEBELTRADER_SCHWELLE
-    anpassbar - steht dann als andere Zahl in der Datei, übernimm die
-    tatsächlich in der Datei genannte Schwelle, nicht zwingend 5)
+    Titel mit einem Momentum-Ausbruch-Score von 5/5. Alle fünf Kriterien
+    müssen erfüllt sein; fehlt das Sektor-Kriterium, gibt es keinen 4/4-Fallback.
+    In analyse.py ist die Schwelle als HEBELTRADER_SCHWELLE = 5 festgelegt.
     (Stochastik\>80, neues 3-Monats-Hoch, Volumenanstieg, Abstand EMA50,
     relative Stärke zum SEKTOR). WICHTIG - GRUNDLEGEND ANDERE LOGIK als
     die übrigen fünf Kategorien: Diese Titel wollen bewusst EXPLOSIVE,
@@ -346,7 +345,7 @@ Häufung/Nähe als das, was sie ist.
     Signal ist). FORMAT (GEÄNDERT 08.08.2026, Nutzerwunsch „CRV,
     Stop-Loss, TP1/TP2 ermitteln, gleiche Gliederung wie alle anderen
     Kategorien"): gib je Treffer den vollständigen Namen, Ticker, Markt,
-    Score (z. B. „4/5"), Kurs, TP1 (Chance %, CRV1), TP2 (Chance %,
+    Score „5/5", Kurs, TP1 (Chance %, CRV1), TP2 (Chance %,
     CRV2) und Stop (Risiko %) im SELBEN Zeilenformat wie bei den anderen
     Kategorien wörtlich aus der Datei wieder, DANACH alle fünf
     Score-Kriterien mit Erfüllt/Nicht-erfüllt UND dem jeweiligen Wert

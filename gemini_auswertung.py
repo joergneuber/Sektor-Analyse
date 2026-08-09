@@ -1,7 +1,7 @@
 """
 gemini_auswertung.py
 
-Automatisierte Auswertung der Sektor-Analyse-Ergebnisse durch Gemini
+Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
 (Ersatz fuer das manuelle Kopieren in den Gem-Chat) - kostenlose
 Alternative zu claude_auswertung.py, da die Gemini-API (anders als die
 Claude-API) eine dauerhafte kostenlose Nutzungsstufe bietet.

@@ -3,7 +3,7 @@ benchmarks_snapshot.py
 
 NEU (27.07.2026, Nutzerwunsch): schlanker Zusatzlauf zu main.yml - aktualisiert
 NUR den BENCHMARKS-Block (Marktumfeld-/Risikolage-Kontext: Indizes, Zinskurve,
-FOMC-Countdown, Rohstoffe, Dollar-Index, Bitcoin) zu zusaetzlichen Tageszeiten
+FOMC-Countdown, Rohstoffe (WTI, Brent, Gold, Silber, Platin, Palladium, Kupfer), EUR/USD, Bitcoin) zu zusaetzlichen Tageszeiten
 (12/16/20 Uhr MESZ, siehe benchmarks_check.yml), OHNE den vollen Setup-Scan
 (~180 Ticker ueber Alpaca/yfinance) oder einen Gemini-Aufruf - bleibt dadurch
 guenstig (kein Gemini-Kontingent-Verbrauch, kein Alpaca-Sektor-Scan).
@@ -61,6 +61,8 @@ def erzeuge_snapshot():
     oel_brent_text = get_index_benchmark_yf("BZ=F", "Rohöl (Brent)")
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
+    platin_text = get_index_benchmark_yf("PL=F", "Platin")
+    palladium_text = get_index_benchmark_yf("PA=F", "Palladium")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     # US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung - analog zu
     # analyse.py): wird bewusst nicht mehr abgerufen/ausgewertet. EUR/USD
@@ -80,7 +82,7 @@ def erzeuge_snapshot():
             f"{sp500_text}\n{nasdaq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n"
             f"{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n"
             f"{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n"
-            f"{oel_brent_text}\n{gold_text}\n{silber_text}\n{kupfer_text}\n"
+            f"{oel_brent_text}\n{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n"
             f"{eurusd_text}\n{btc_text}\n"
         )
 

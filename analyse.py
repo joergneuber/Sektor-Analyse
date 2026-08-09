@@ -7,10 +7,12 @@ import json
 import time
 import sys
 import os
+import re
 import io
 import requests
 from scipy.signal import argrelextrema
 from groq import Groq
+from market_cache import get_yf_history, get_or_fetch_series
 
 # Importe für Alpaca
 from alpaca.data.historical import StockHistoricalDataClient
@@ -69,17 +71,12 @@ FUNNEL_BEINAHE = []
 # HEBELTRADER_KANDIDATEN. Stufe 2 (_hebeltrader_finalisieren, nach dem Bau
 # von df_perf/df_perf_eu) traegt den Sektor-Vergleich nach, berechnet den
 # finalen Score und filtert auf die Schwelle.
-HEBELTRADER_SCHWELLE = 4  # GEAENDERT (09.08.2026, Nutzerwunsch): 5 -> 4,
-                          # da der Live-Lauf vom 07.08. bei Schwelle 5/5
-                          # 0 Treffer aus 167 geprueften Titeln lieferte -
-                          # die Kategorie war zwar korrekt implementiert
-                          # (siehe Log), aber praktisch nie sichtbar. 4/5
-                          # soll erste echte Treffer in der Auswertung
-                          # zeigen, um die Kategorie inhaltlich bewerten
-                          # zu koennen. Bei Bedarf wieder auf 5 anhebbar,
-                          # eine einzige Konstante.
+# HEBELTRADER bewusst streng: nur echte Top-Setups mit ALLEN 5 Kriterien.
+# 5/5 bedeutet auch: Das Sektor-Kriterium MUSS verfuegbar sein und erfuellt sein.
+HEBELTRADER_SCHWELLE = 5
 MOMENTUM_VOL_SCHWELLE = 1.5
 MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0
+MOMENTUM_EMA50_MAX_ABSTAND_PROZENT = 15.0
 HEBELTRADER_KANDIDATEN = []
 
 
@@ -140,7 +137,7 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
             "Stochastik > 80": (stoch > 80, f"{stoch:.1f}"),
             "Neues 3-Monats-Hoch (Toleranz 1%)": (neues_3m_hoch, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f} ({kurs/hoch_3m*100:.1f}%)"),
             f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)": (vol_ratio > MOMENTUM_VOL_SCHWELLE, f"{vol_ratio:.2f}x"),
-            f"Abstand EMA50 (>={MOMENTUM_EMA50_ABSTAND_PROZENT:.0f}%)": (abstand_ema50 >= MOMENTUM_EMA50_ABSTAND_PROZENT, f"{abstand_ema50:+.1f}%"),
+            f"Abstand EMA50 (5-15%)": (MOMENTUM_EMA50_ABSTAND_PROZENT <= abstand_ema50 <= MOMENTUM_EMA50_MAX_ABSTAND_PROZENT, f"{abstand_ema50:+.1f}%"),
         }
 
         # --- Eigenstaendige TP1/TP2/CRV-Berechnung (NEU 08.08.2026) ---
@@ -161,15 +158,16 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
             realer_deckel_120 = float(data['High'].iloc[-120:].max())
             if realer_deckel_120 > entry and tp1 > realer_deckel_120:
                 tp1 = realer_deckel_120
-            realer_deckel_250 = float(data['High'].iloc[-250:].max())
-            if realer_deckel_250 > entry and tp2 > realer_deckel_250:
-                tp2 = realer_deckel_250
-                if tp2 <= tp1:
-                    tp2 = tp1 * 1.05
+            tp2 = _begrenze_tp2_realitaetsdeckel(tp1, tp2, entry, data)
 
             risiko = entry - float(stop)
             if risiko <= 0:
-                risiko = entry * 0.02
+                print(
+                    f"DEBUG-HEBELTRADER-ZIELE: {ticker} -> ungültiges Risiko "
+                    f"(Entry={entry:.2f}, Stop={float(stop):.2f}) - "
+                    f"Titel nicht als HebelTrader-Kandidat übernommen."
+                )
+                return
             chance1 = (tp1 - entry) / entry * 100
             chance2 = (tp2 - entry) / entry * 100
             ziele = {
@@ -237,15 +235,20 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
             continue
 
         kriterien = dict(kand["Kriterien"])
-        max_punkte = 4
-        if kand["Eigene_5T"] is not None and kand["Sektor"] in sektor_5t:
+
+        # Seit 09.08.2026 gilt bewusst 5/5: Ein HebelTrader-Treffer ist nur
+        # dann valide, wenn ALLE fuenf Kriterien vorliegen und erfuellt sind.
+        # Fehlt die Sektor-Performance, gibt es deshalb KEINEN 4/4-Fallback.
+        sektor_verfuegbar = kand["Eigene_5T"] is not None and kand["Sektor"] in sektor_5t
+        if sektor_verfuegbar:
             sektor_wert = sektor_5t[kand["Sektor"]]
             ok = kand["Eigene_5T"] > sektor_wert
             kriterien["Relative Stärke zum Sektor (5T)"] = (
                 ok, f"Aktie {kand['Eigene_5T']:+.1f}% vs. Sektor {sektor_wert:+.1f}% (5 Tage)")
-            max_punkte = 5
+
         score = sum(1 for ok, _ in kriterien.values() if ok)
-        if score >= min(HEBELTRADER_SCHWELLE, max_punkte):
+        max_punkte = len(kriterien)
+        if sektor_verfuegbar and score >= HEBELTRADER_SCHWELLE and max_punkte == 5:
             rot_score, in_top = sektor_rotation.get(kand["Sektor"], (None, None))
             treffer.append({**kand, "Kriterien_final": kriterien, "Score": score, "Max_Punkte": max_punkte,
                             "Rotation_Score": rot_score, "Sektor_In_Top": in_top})
@@ -1312,7 +1315,12 @@ def _hole_kursdaten_gecached(ticker):
     die aufrufenden Funktionen pruefen ohnehin bereits auf .empty."""
     if ticker not in _YF_HISTORY_CACHE:
         try:
-            _YF_HISTORY_CACHE[ticker] = yf.Ticker(ticker).history(period="max")
+            # Zuerst der prozessuebergreifende Dateicache, danach erst Yahoo.
+            # Der bestehende RAM-Cache bleibt als schnellste zweite Ebene
+            # erhalten. Dadurch koennen analyse.py, trendwende_scanner.py,
+            # short_scanner.py und edelmetalle_scanner.py im selben Workflow
+            # gemeinsame Benchmarkdaten wiederverwenden.
+            _YF_HISTORY_CACHE[ticker] = get_yf_history(ticker)
         except Exception as e:
             print(f"DEBUG-CACHE: {ticker} nicht abrufbar ({type(e).__name__}: {e})")
             _YF_HISTORY_CACHE[ticker] = pd.DataFrame()
@@ -1761,23 +1769,31 @@ def get_index_benchmark_yf(ticker, label):
         return f"{label}: Fehler beim Abruf ({e})"
 
 def get_benchmark_close():
-    """Lädt die rohen SPY-Schlusskurse (ca. 1 Jahr) als Series für die
-    Relative-Stärke-Berechnung einzelner Aktien gegenüber dem Gesamtmarkt."""
-    try:
-        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-        request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day)
-        bars = alpaca_client.get_stock_bars(request)
-        hist = bars.df
+    """Lädt die rohen SPY-Schlusskurse (ca. 1 Jahr) als Series.
 
-        if hist.empty:
+    SPY wird pro Workflow nur einmal aus Alpaca geladen und anschließend
+    prozessuebergreifend aus market_cache.json wiederverwendet. Damit holen
+    Hauptscanner, Trendwende-, Short- und Einzel-Check nicht jeweils dieselbe
+    Benchmark erneut ab.
+    """
+    try:
+        def _fetch():
+            start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+            request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day)
+            bars = alpaca_client.get_stock_bars(request)
+            hist = bars.df
+            if hist.empty:
+                return pd.Series(dtype=float)
+            hist = hist.reset_index(level=0, drop=True)
+            if 'close' in hist.columns:
+                hist = hist.rename(columns={'close': 'Close'})
+            return hist['Close']
+
+        series = get_or_fetch_series("alpaca:SPY:close", _fetch)
+        if series is None or series.empty:
             print("DEBUG: SPY-Benchmark leer, Relative Stärke wird übersprungen.")
             return None
-
-        hist = hist.reset_index(level=0, drop=True)
-        if 'close' in hist.columns:
-            hist = hist.rename(columns={'close': 'Close'})
-
-        return hist['Close']
+        return series
 
     except Exception as e:
         print(f"FEHLER beim Laden der SPY-Benchmark: {e}")
@@ -1786,18 +1802,20 @@ def get_benchmark_close():
 # --- EU-SPEZIFISCHE DATENFUNKTIONEN (yfinance, da Alpaca keine STOXX-600-Werte abdeckt) ---
 
 def get_eu_benchmark_close():
-    """Lädt die rohen Schlusskurse des STOXX-Europe-600-ETF (EXSA.DE) für die
-    Relative-Stärke-Berechnung der DAX-Werte gegenüber dem europäischen Markt."""
+    """Lädt die rohen Schlusskurse von EXSA.DE aus dem gemeinsamen Cache."""
     try:
-        hist = yf.Ticker(eu_benchmark_ticker).history(period="1y")
+        hist = get_yf_history(eu_benchmark_ticker)
         if hist.empty:
             print("DEBUG: EU-Benchmark (EXSA.DE) leer, Relative Stärke EU wird übersprungen.")
             return None
-        # NaN-Platzhalterzeilen entfernen (siehe get_index_benchmark_yf)
         hist = hist.dropna(subset=['Close'])
         if hist.empty:
             print("DEBUG: EU-Benchmark (EXSA.DE) nach NaN-Bereinigung leer, Relative Stärke EU wird übersprungen.")
             return None
+        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+        if getattr(hist.index, 'tz', None) is not None:
+            stichtag = stichtag.tz_localize(hist.index.tz)
+        hist = hist[hist.index >= stichtag]
         return hist['Close']
     except Exception as e:
         print(f"FEHLER beim Laden der EU-Benchmark: {e}")
@@ -1807,7 +1825,12 @@ def get_perf_yf(ticker, name):
     """yfinance-Äquivalent zu get_perf() für die STOXX-Europe-600-Sektor-ETFs,
     da diese nicht über Alpaca verfügbar sind. Gleiche Kennzahlen/Formel wie US-Version."""
     try:
-        hist = yf.Ticker(ticker).history(period="1y")
+        hist = get_yf_history(ticker)
+        if not hist.empty:
+            stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+            if getattr(hist.index, 'tz', None) is not None:
+                stichtag = stichtag.tz_localize(hist.index.tz)
+            hist = hist[hist.index >= stichtag]
 
         if hist.empty:
             return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
@@ -2227,6 +2250,23 @@ def clean_num(val, default=0.0):
     except Exception as e:
         print(f"DEBUG: Konvertierungsfehler bei Wert: {val} | Fehler: {e}")
         return default
+
+def _begrenze_tp2_realitaetsdeckel(tp1, tp2, entry, data):
+    """Begrenzt TP2 auf das hoechste tatsaechlich erreichte Kursniveau
+    der letzten 250 Handelstage.
+
+    Der Deckel ist ein oberes Limit. Wenn TP2 dadurch auf TP1 faellt,
+    wird TP2 nicht kuenstlich wieder um 5% angehoben; ein solches Niveau
+    liefert kein zusaetzliches hoeheres Ziel.
+    """
+    try:
+        deckel_250 = float(data['High'].iloc[-250:].max())
+        if deckel_250 > entry:
+            tp2 = min(float(tp2), deckel_250)
+        return max(float(tp1), float(tp2))
+    except Exception as e:
+        print(f"DEBUG: TP2-Realitaetsdeckel nicht berechenbar ({e}) - verwende bisheriges TP2.")
+        return float(tp2)
 
 def get_golden_cross_status(data, tage=10):
     """NEU (21.07.2026): rein informativer Kommentar, KEIN Filter- oder
@@ -2741,11 +2781,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
         # --- TP2-Realitäts-Deckel: großzügigeres 250-Tage-Fenster (statt 120
         # bei TP1), da TP2 bewusst ambitionierter sein darf - aber auch hier
         # keine reine Fib-Extension ohne jemals real erreichtes Kursniveau.
-        realer_deckel_250 = data['High'].iloc[-250:].max()
-        if realer_deckel_250 > entry and tp2 > realer_deckel_250:
-            tp2 = realer_deckel_250
-            if tp2 <= tp1:
-                tp2 = tp1 * 1.05
+        tp2 = _begrenze_tp2_realitaetsdeckel(tp1, tp2, entry, data)
 
         analysten_ziel = get_analyst_target(ticker)
         if analysten_ziel is None: analysten_ziel = 0.0
@@ -2907,7 +2943,12 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
             # Fallback: Einzelabruf (siehe analyze_a_setup US-Version fuer
             # die volle Begruendung - greift nur bei einzel_check.py's
             # Ad-hoc-Einzeltickerpruefung, wo kein Sammel-Abruf stattfindet)
-            data = yf.Ticker(ticker).history(period="1y")
+            data = get_yf_history(ticker)
+            if not data.empty:
+                stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+                if getattr(data.index, 'tz', None) is not None:
+                    stichtag = stichtag.tz_localize(data.index.tz)
+                data = data[data.index >= stichtag]
 
             if data.empty:
                 print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
@@ -3121,11 +3162,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
 
         # --- TP2-Realitäts-Deckel: großzügigeres 250-Tage-Fenster (siehe
         # US-Funktion für ausführliche Begründung).
-        realer_deckel_250 = data['High'].iloc[-250:].max()
-        if realer_deckel_250 > entry and tp2 > realer_deckel_250:
-            tp2 = realer_deckel_250
-            if tp2 <= tp1:
-                tp2 = tp1 * 1.05
+        tp2 = _begrenze_tp2_realitaetsdeckel(tp1, tp2, entry, data)
 
         # Kein Analysten-Kursziel für EU-Werte (get_analyst_target ist auf US-Info-Feld
         # ausgelegt; yf liefert targetMeanPrice aber grundsätzlich auch für DAX-Werte)
@@ -3239,7 +3276,7 @@ if __name__ == "__main__":
     # NEU (24.07.2026): erweiterter Makro-/Rohstoff-Kontext fuer ein
     # eigenstaendiges Morgen-Briefing (unabhaengig von der Sektor-Rotation-
     # Auswahl) - alle rein informativ, keine Setup-Quelle, keine
-    # Abwertungsgrundlage. Oel/Gold/Silber/Kupfer als Futures-Kontrakte,
+    # Abwertungsgrundlage. Oel/Gold/Silber/Platin/Palladium/Kupfer als Futures-Kontrakte,
     # DXY als Dollar-Staerke-Indikator (treibt Rohstoffe invers + verzerrt
     # EU-Gewinne/-Kurse bei Waehrungsschwankungen), Bitcoin als zunehmend
     # verbreiteter Liquiditaets-/Risikoappetit-Gauge.
@@ -3275,6 +3312,8 @@ if __name__ == "__main__":
             index_rekord_texte.append(_text)
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
+    platin_text = get_index_benchmark_yf("PL=F", "Platin")
+    palladium_text = get_index_benchmark_yf("PA=F", "Palladium")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     # US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerwunsch): wird nicht mehr
     # abgerufen/ausgewertet - EUR/USD bleibt als Waehrungs-Referenz im
@@ -3321,22 +3360,39 @@ if __name__ == "__main__":
         for s in aktien_liste_eu:
             tasks_eu.append((s, row['Sektor']))
 
-    # Rate-Limit-Budget: max. 180 Ticker insgesamt (US + EU) pro Lauf, da sowohl
-    # yfinance (Analysten-Ziele + alle EU-Kursdaten) als auch die Alpaca-Anfragen
-    # sonst zu viele Requests in kurzer Zeit auslösen könnten. Bei Überschreitung
-    # werden zuerst EU-Tasks (kleineres Volumen, geringere Priorität) gekürzt.
+    # Rate-Limit-Budget: max. 180 Tasks insgesamt (US + EU) pro Lauf.
+    # US und EU werden proportional zum vorhandenen Universum begrenzt.
+    # Wichtig: EU darf nicht mehr vollständig auf 0 gekürzt werden.
     MAX_TICKER_BUDGET = 180
     gesamt_anzahl = len(tasks) + len(tasks_eu)
+
     if gesamt_anzahl > MAX_TICKER_BUDGET:
-        ueberschuss = gesamt_anzahl - MAX_TICKER_BUDGET
-        kuerzung_eu = min(ueberschuss, len(tasks_eu))
-        if kuerzung_eu > 0:
-            print(f"DEBUG: Ticker-Budget überschritten ({gesamt_anzahl} > {MAX_TICKER_BUDGET}) - kürze {kuerzung_eu} EU-Tasks.")
-            tasks_eu = tasks_eu[:len(tasks_eu) - kuerzung_eu]
-        rest_ueberschuss = (len(tasks) + len(tasks_eu)) - MAX_TICKER_BUDGET
-        if rest_ueberschuss > 0:
-            print(f"DEBUG: Budget weiterhin überschritten - kürze zusätzlich {rest_ueberschuss} US-Tasks.")
-            tasks = tasks[:len(tasks) - rest_ueberschuss]
+        us_anteil = len(tasks) / gesamt_anzahl if gesamt_anzahl else 0.5
+        us_budget = int(round(MAX_TICKER_BUDGET * us_anteil))
+        eu_budget = MAX_TICKER_BUDGET - us_budget
+
+        us_budget = min(us_budget, len(tasks))
+        eu_budget = min(eu_budget, len(tasks_eu))
+        rest_budget = MAX_TICKER_BUDGET - us_budget - eu_budget
+
+        # Freie Plätze aus einer Region gehen an die andere Region.
+        if rest_budget > 0:
+            freie_us = len(tasks) - us_budget
+            freie_eu = len(tasks_eu) - eu_budget
+            zusatz_us = min(rest_budget, freie_us)
+            us_budget += zusatz_us
+            rest_budget -= zusatz_us
+            if rest_budget > 0:
+                zusatz_eu = min(rest_budget, freie_eu)
+                eu_budget += zusatz_eu
+                rest_budget -= zusatz_eu
+
+        print(
+            f"DEBUG: Ticker-Budget überschritten ({gesamt_anzahl} > {MAX_TICKER_BUDGET}) - "
+            f"proportionale Verteilung: US {us_budget}, EU {eu_budget}."
+        )
+        tasks = tasks[:us_budget]
+        tasks_eu = tasks_eu[:eu_budget]
 
     print(f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | Gesamt: {len(tasks) + len(tasks_eu)}")
 
@@ -3681,7 +3737,7 @@ if __name__ == "__main__":
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
         f.write(get_regionen_performance_text() + "\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (f"{wti_52w_text}\n" if wti_52w_text else "") + (f"{brent_52w_text}\n" if brent_52w_text else "") + f"{gold_text}\n{silber_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (f"{wti_52w_text}\n" if wti_52w_text else "") + (f"{brent_52w_text}\n" if brent_52w_text else "") + f"{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
@@ -4078,10 +4134,9 @@ if __name__ == "__main__":
             f.write("(Explosive Ausbruchs-Setups, die von den anderen Kategorien eher als "
                     "'noch nicht ausgeloest' oder 'ueberhitzt' abgelehnt werden - siehe Score "
                     "unten. TP1/TP2/CRV/Stop werden EIGENSTAENDIG berechnet, unabhaengig davon, "
-                    "ob ein Trendfolge-Setup fuer denselben Titel ueberhaupt zustande kam - "
-                    "gleiches Format wie bei den anderen Kategorien, aber KEIN CRV-Mindestwert "
-                    "als Ausschlusskriterium, da diese Kategorie bewusst NICHT auf ein "
-                    "abgeschlossenes Chartmuster wartet.)\n\n")
+                    "ob ein Trendfolge-Setup fuer denselben Titel ueberhaupt zustande kam. "
+                    "Fuer einen finalen HebelTrader-Treffer muessen alle 5 Kriterien (5/5) "
+                    "erfuellt sein und mindestens eines von CRV1/CRV2 muss >= 1.0 sein.)\n\n")
             for t in hebeltrader_treffer:
                 waehrungszeichen = {"EUR": "€"}.get(t["Waehrung"], "$")
                 f.write(f"{t['Name']} ({t['Ticker']}) | Markt: {t['Markt']} | "

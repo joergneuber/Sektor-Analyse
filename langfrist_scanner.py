@@ -38,6 +38,7 @@ Voraussetzungen: pip install yfinance pandas
 import datetime
 import pandas as pd
 import yfinance as yf
+from market_cache import get_yf_history
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +251,12 @@ def berechne_einstieg_stop_targets(ticker, aktueller_kurs, trailing_eps, kgv_nae
     Durchschnitte vorliegen (z.B. sehr junge Notierung) - dann bleiben die
     entsprechenden Felder in der Ausgabe leer, kein Fehler."""
     try:
-        hist = yf.Ticker(ticker).history(period="1y")
+        hist = get_yf_history(ticker)
+        if not hist.empty:
+            stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+            if getattr(hist.index, 'tz', None) is not None:
+                stichtag = stichtag.tz_localize(hist.index.tz)
+            hist = hist[hist.index >= stichtag]
         if hist.empty or "Close" not in hist.columns or len(hist) < 210:
             return None
 

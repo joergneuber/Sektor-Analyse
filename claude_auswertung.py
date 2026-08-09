@@ -1,7 +1,7 @@
 """
 claude_auswertung.py
 
-Automatisierte Auswertung der Sektor-Analyse-Ergebnisse durch Claude
+Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Claude
 (Ersatz fuer das manuelle Kopieren in das Gemini-Gem). Liest die Master-
 Anweisung sowie alle Tagesdateien lokal ein und schickt sie in EINER
 Anfrage an die Claude-API; das Ergebnis wird als Auswertung(<Datum>).txt

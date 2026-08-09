@@ -11,7 +11,7 @@ als E-Mail-Body.
 
 Benoetigte Secrets (dieselben NAMEN wie im Mini-Daily-Gold-Repo, aber
 GitHub-Secrets sind repo-spezifisch - selbst bei identischem Wert muessen
-sie hier im Sektor-Analyse-Repo separat eingetragen werden):
+sie hier im Neuber Macro & Markets-Repo separat eingetragen werden):
 - SMTP_HOST (z.B. smtp.gmail.com)
 - SMTP_PORT (z.B. 587)
 - SMTP_USER (Absender-Adresse)
@@ -50,7 +50,7 @@ def pruefe_smtp_secrets():
     """NEU (09.08.2026, Anlass: main.yml scheiterte am 07.08. mit einem
     kryptischen `ValueError: invalid literal for int() with base 10: ''`
     mitten in smtplib - die eigentliche Ursache (alle 5 SMTP_*-Secrets
-    fehlten schlicht im Sektor-Analyse-Repo, GitHub-Secrets sind repo-
+    fehlten schlicht im Neuber Macro & Markets-Repo, GitHub-Secrets sind repo-
     spezifisch und wurden nur im Mini-Daily-Gold-Repo angelegt) war aus
     dem Fehler selbst nicht ersichtlich - `${{ secrets.SMTP_HOST }}` etc.
     loesen sich bei fehlendem Secret zu einem LEEREN String auf, nicht zu
@@ -63,7 +63,7 @@ def pruefe_smtp_secrets():
     if fehlend:
         raise EnvironmentError(
             "Folgende SMTP-Secrets fehlen oder sind leer: " + ", ".join(fehlend) + ". "
-            "GitHub-Secrets sind repo-spezifisch - im Sektor-Analyse-Repo unter "
+            "GitHub-Secrets sind repo-spezifisch - im Neuber Macro & Markets-Repo unter "
             "Settings > Secrets and variables > Actions neu anlegen, auch wenn "
             "dieselben Secrets im Mini-Daily-Gold-Repo bereits existieren."
         )
