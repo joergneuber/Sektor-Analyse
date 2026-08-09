@@ -490,9 +490,12 @@ eu_sektoren_etf = {
 
 eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-Referenzindex für RS
 
-# EU-Ticker nach Sektor (Stand: Juli 2026;
-# die Zusammensetzung wird von der Deutschen Börse zweimal jährlich überprüft, daher
-# gelegentlich gegenchecken)
+# EU-UNIVERSUM: DAX40 + MDAX + SDAX + EURO STOXX 50.
+# Mehrfachzuordnungen sind bewusst erlaubt. Die Sektorzuordnung folgt ausschließlich
+# der zentralen Sektorrotationslogik dieses Moduls.
+# EURO-STOXX-50-Erweiterung: 09.08.2026.
+# Referenz-Snapshot: veröffentlichte vollständige Komponentenliste Stand März 2026;
+# der Index wird jährlich im September überprüft.
 dax_aktien = {
     "Automobil": [
         "10O.DE", "1TRA.DE", "AUM.DE", "BMW.DE", "CON.DE", "DTG.DE", "JST.DE", "KBX.DE", "MBG.DE",
@@ -547,6 +550,36 @@ dax_aktien = {
         "EKT.DE", "ENR.DE", "EOAN.DE", "PNE.DE", "RWE.DE"
     ],
 }
+
+# --- EURO STOXX 50: Eurozonen-Large-Caps ergänzen ---
+# Bereits im DAX/MDAX/SDAX-Universum vorhandene Titel werden durch die Listenlogik
+# automatisch dedupliziert. Mehrfach-Sektorzuordnungen bleiben zulässig.
+# Quelle der Referenzliste: EURO STOXX 50 Zusammensetzung Stand März 2026;
+# öffentlich auffindbare vollständige Liste, gegengeprüft am 09.08.2026.
+EURO_STOXX_50_ERGAENZUNGEN = {
+    "Automobil": ["RACE.MI"],
+    "Chemie": ["AI.PA"],
+    "Energie": ["ENI.MI", "TTE.PA"],
+    "Finanzen": [
+        "ADYEN.AS", "CS.PA", "BBVA.MC", "BNP.PA", "INGA.AS", "ISP.MI",
+        "NDA-FI.HE", "UCG.MI"
+    ],
+    "Gesundheitswesen": ["ARGX.AS", "EL.PA", "SAN.PA"],
+    "Industrie": ["SAF.PA", "SGO.PA", "SU.PA", "DG.PA"],
+    "Konsum": ["AD.AS", "ABI.BR", "BN.PA", "RMS.PA", "ITX.MC", "OR.PA", "MC.PA"],
+    "Technologie": ["ASML.AS", "PRX.AS", "WKL.AS"],
+    "Versorger": ["ENEL.MI", "IBE.MC"],
+}
+
+for _eu_sektor, _eu_ticker_liste in EURO_STOXX_50_ERGAENZUNGEN.items():
+    for _eu_ticker in _eu_ticker_liste:
+        if _eu_ticker not in dax_aktien[_eu_sektor]:
+            dax_aktien[_eu_sektor].append(_eu_ticker)
+
+# SHELL.SO ist kein Eurozonen-Titel und gehört nicht in das definierte EU-Universum.
+# Es war zuvor irrtümlich unter Technologie gelistet.
+if "SHELL.SO" in dax_aktien.get("Technologie", []):
+    dax_aktien["Technologie"].remove("SHELL.SO")
 
 def berechne_indikatoren(df):
     # 1. MultiIndex entfernen (wichtig für yfinance-Struktur)
