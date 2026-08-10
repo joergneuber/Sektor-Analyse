@@ -724,7 +724,7 @@ def get_earnings_warnung(ticker, warn_tage=7):
             print(f"DEBUG-EARNINGS: {ticker} -> kein Termin im Kalender hinterlegt")
             return None
         naechster = termine[0] if isinstance(termine, (list, tuple)) else termine
-        heute = datetime.date.today()
+        heute = datetime.datetime.now(ZoneInfo("Europe/Berlin")).date()
         if hasattr(naechster, 'date'):
             naechster = naechster.date()
         delta = (naechster - heute).days
@@ -3188,7 +3188,11 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
         return None
 
 if __name__ == "__main__":
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    # Lokale Projektzeit: Europe/Berlin (automatisch MEZ/MESZ)
+    # NICHT UTC und NICHT eine feste Uhrzeit. Dadurch entsprechen
+    # Handelstag/Dateiname und Erstellzeit der lokalen Projektzeit.
+    now_local = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
+    today = now_local.strftime("%Y-%m-%d")
     
     # 1. Benchmarks sicher abrufen
     # S&P 500 / Nasdaq (GEÄNDERT 27.07.2026): vorher SPY-/QQQ-ETF-Kurse über
@@ -3647,7 +3651,18 @@ if __name__ == "__main__":
     portfolio_setups = relevante_setups[relevante_setups['Status2'] == "BEREITS IM PORTFOLIO"]
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
+        # AUTORITATIVE ERSTELLZEIT (FIX 10.08.2026): Die Uhrzeit wird hier
+        # technisch aus der echten lokalen Laufzeit erzeugt. Gemini darf sie
+        # spaeter nur woertlich uebernehmen und niemals selbst berechnen oder
+        # schaetzen. ZoneInfo Europe/Berlin handles MEZ/MESZ automatisch.
+        erstellzeitpunkt = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
+        erstellt_am_text = erstellzeitpunkt.strftime("%d.%m.%Y, %H:%M Uhr")
+        zeitzone_text = "MESZ" if erstellzeitpunkt.dst() else "MEZ"
+        handelstag_text = get_handelstag_text()
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
+        if handelstag_text:
+            f.write(f"{handelstag_text}\n")
+        f.write(f"Erstellt am: {erstellt_am_text} ({zeitzone_text})\n\n")
 
         # Kurzüberblick über den zugrunde liegenden Trading-Ansatz
         f.write("STRATEGIE-ANSATZ\n")
@@ -3673,14 +3688,11 @@ if __name__ == "__main__":
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n")
         f.write("- Earnings-Rückblick (NEU 29.07.2026): nach berichteten Zahlen (letzte 5 Kalendertage) erscheint eine Zeile '📊 Zahlen TT.MM.: ...' - EPS gemeldet vs. Analystenerwartung (yfinance) KOMBINIERT mit der Kursreaktion am Berichtstag; laufen beide auseinander (Zahlen gut, Kurs fällt), lautet das Urteil 'geteilte Meinung'. Nur EPS, kein Umsatz/keine Guidance verfügbar - reiner Kontext, keine Setup-Bewertung\n\n")
 
-        # HANDELSTAG/ERSTELLT-AM (ENTFERNT 08.08.2026, Nutzerwunsch): standen
-        # bis dahin hier als eigene Zeilen - der Nutzer wollte den Datenstand
-        # stattdessen direkt in Klammern hinter jedem einzelnen Index in der
-        # Regionen-Performance sehen (siehe get_regionen_performance_text),
-        # das ist praeziser, weil jeder Index sein EIGENES Datum zeigt statt
-        # eines einzelnen globalen Referenzwerts. get_handelstag_text() bleibt
-        # als Funktion bestehen (harmlos, aktuell nirgends mehr aufgerufen),
-        # falls sie spaeter an anderer Stelle nochmal gebraucht wird.
+        # ZEITSTEMPEL / HANDELSTAG: Die Erstellzeit wurde oben technisch aus
+        # der echten Europe/Berlin-Laufzeit erzeugt. Die Gemini-Master-Anweisung
+        # schreibt diese Zeile anschliessend woertlich in die Auswertung.
+        # Der Handelstag wird weiterhin separat ueber die Datenstaende der
+        # Referenz-/Regionenfunktionen ausgewiesen.
 
         # REGIONEN-PERFORMANCE zuerst (NEU 29.07.2026): steht bewusst VOR den
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
