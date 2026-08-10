@@ -11,7 +11,6 @@ import re
 import io
 import requests
 from scipy.signal import argrelextrema
-from trendline_utils import check_trendline_breakout
 from groq import Groq
 from market_data import fetch_us_batch_robust
 
@@ -81,6 +80,7 @@ MOMENTUM_VOL_SCHWELLE = 1.5
 MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0
 MOMENTUM_EMA50_MAX_ABSTAND_PROZENT = 15.0
 HEBELTRADER_KANDIDATEN = []
+HEBELTRADER_TRENDFOLGE_BESTAETIGT = set()
 
 
 def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entry, stop):
@@ -190,6 +190,7 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
                 "Ticker": str(ticker), "Name": str(name), "Sektor": str(sektor),
                 "Markt": str(markt), "Waehrung": str(waehrung), "Kurs": kurs,
                 "Kriterien": kriterien, "Eigene_5T": eigene_5t, **ziele,
+                "Trendfolge_bestaetigt": False,
             })
     except Exception as e:
         print(f"DEBUG-HEBELTRADER: {ticker} -> Teilkriterien nicht berechenbar ({type(e).__name__}: {e})")
@@ -252,9 +253,31 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
         score = sum(1 for ok, _ in kriterien.values() if ok)
         max_punkte = len(kriterien)
         if sektor_verfuegbar and score >= HEBELTRADER_SCHWELLE and max_punkte == 5:
+            # DETAIL-/QUALITAETSPRUEFUNG aus einzel_check:
+            # 5/5 bleibt die notwendige HebelTrader-Grundvoraussetzung.
+            # Danach muss ein bestaetigtes Trendfolge-Setup vorliegen.
+            # CRV >= 1.0 wurde bereits oben als Pflichtfilter geprueft.
+            # Trendwende wird bewusst NICHT hier erzwungen, weil der separate
+            # Trendwende-Scanner erst nach analyse.py laeuft. Dadurch vermeiden
+            # wir einen zusaetzlichen API-/Workflow-Kopplungseffekt.
+            detail_status = (
+                "A" if str(kand.get("Ticker")) in HEBELTRADER_TRENDFOLGE_BESTAETIGT else "B"
+            )
+            if detail_status != "A":
+                continue
+
             rot_score, in_top = sektor_rotation.get(kand["Sektor"], (None, None))
-            treffer.append({**kand, "Kriterien_final": kriterien, "Score": score, "Max_Punkte": max_punkte,
-                            "Rotation_Score": rot_score, "Sektor_In_Top": in_top})
+            treffer.append({
+                **kand,
+                "Kriterien_final": kriterien,
+                "Score": score,
+                "Max_Punkte": max_punkte,
+                "Rotation_Score": rot_score,
+                "Sektor_In_Top": in_top,
+                "Trendfolge_bestaetigt": True,
+                "Detailstatus": "KAUFKANDIDAT A",
+                "Detailpruefung": "5/5 + bestaetigtes Trendfolge-Setup + CRV >= 1.0",
+            })
     treffer.sort(key=lambda t: -t["Score"])
     return treffer
 
@@ -1981,6 +2004,126 @@ def check_rsi_divergence(data):
         
     return None
 
+def _robuste_trendlinie(x, y, max_iterationen=2, ausreisser_schwelle=2.5):
+    """Passt eine Ausgleichsgerade an und entfernt dabei iterativ Ausreißer
+    (Punkte mit ungewöhnlich großem Residuum), bevor neu angepasst wird -
+    eine einfache, nachvollziehbare Alternative zu RANSAC (kein sklearn in
+    den Abhängigkeiten dieses Projekts). BUGFIX 05.08.2026 (externe
+    Code-Review, Nutzerwunsch): eine einzelne Ausreißer-Kerze konnte die
+    Regression bisher spürbar verzerren - z.B. zieht eine Serie wie
+    100,98,97,96,85(Ausreißer),95,94 die Ausgleichsgerade klar nach unten,
+    obwohl ein Chart-Techniker die Linie über die relevanten Hochs legen
+    würde, nicht über den Ausreißer. Schwelle: 2.5x der mittlere absolute
+    Residualwert (Median-basiert, dadurch selbst robust gegen die
+    Ausreißer, die erkannt werden sollen).
+    Gibt (slope, intercept, anzahl_verwendeter_punkte) zurück."""
+    x_arr, y_arr = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    for _ in range(max_iterationen):
+        if len(x_arr) < 3:
+            break
+        slope, intercept = np.polyfit(x_arr, y_arr, 1)
+        residuen = np.abs(y_arr - (slope * x_arr + intercept))
+        mad = np.median(residuen)
+        if mad <= 0:
+            break  # perfekte Passung oder nur noch identische Residuen - fertig
+        maske = residuen <= (ausreisser_schwelle * mad)
+        if maske.all() or int(maske.sum()) < 3:
+            break  # keine Ausreißer mehr, oder Entfernen wuerde unter 3 Punkte druecken
+        x_arr, y_arr = x_arr[maske], y_arr[maske]
+    slope, intercept = np.polyfit(x_arr, y_arr, 1)
+    return slope, intercept, len(x_arr)
+
+
+def _kein_rueckfall_seit_ausbruch(closes, linie_werte, heute_pos, fenster_tage=3):
+    """Findet den juengsten Tag innerhalb der letzten `fenster_tage`, an dem
+    der Schlusskurs von unter auf ueber die Linie gewechselt ist, und prueft,
+    dass der Kurs SEIT DIESEM TAG (inklusive) an JEDEM Tag ueber der Linie
+    geschlossen hat. BUGFIX 05.08.2026 (externe Code-Review): die alte
+    Pruefung fragte nur "war irgendein Tag der letzten 3 unter der Linie?" -
+    das liess ein Wipsaw-Muster durch (Tag-3 unter, Tag-2 ueber, Tag-1
+    wieder unter, heute ueber) faelschlich als gueltigen Ausbruch gelten,
+    obwohl der Kurs zwischenzeitlich erneut unter die Linie gefallen war.
+    `closes` und `linie_werte` sind gleich lange, index-synchrone Arrays
+    (Schlusskurs bzw. Linienwert an jeder Position)."""
+    for i in range(1, fenster_tage + 1):
+        pos = heute_pos - i
+        pos_davor = pos - 1
+        if pos_davor < 0:
+            break
+        if closes[pos_davor] <= linie_werte[pos_davor] and closes[pos] > linie_werte[pos]:
+            seitdem_close = closes[pos:heute_pos + 1]
+            seitdem_linie = linie_werte[pos:heute_pos + 1]
+            return bool(np.all(np.asarray(seitdem_close) > np.asarray(seitdem_linie)))
+    return False
+
+
+def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
+    """
+    Sucht eine fallende Widerstands-Trendlinie durch mindestens 3 Swing-Highs
+    (Toleranz: 1% Abstand zur Linie) in den letzten `lookback` Handelstagen
+    und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
+    durchschnittlichem Volumen darüber ausgebrochen ist UND seitdem nicht
+    wieder darunter gefallen ist (BUGFIX 05.08.2026, siehe
+    _kein_rueckfall_seit_ausbruch). Die Trendlinie selbst wird ausreißer-
+    robust angepasst (siehe _robuste_trendlinie, BUGFIX 05.08.2026).
+    Nur Long-Ausbrüche (fallende Linie nach oben durchbrochen) - ein Bruch
+    einer STEIGENDEN Linie nach unten wird bewusst nicht erfasst, da die
+    Strategie ausschließlich Long-Setups handelt.
+    Gibt (ausbruch: bool, linien_level_heute: float|None) zurück.
+    """
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < 10:
+        return False, None
+
+    # Ausbruchskerzen selbst (letzte 3) von der Linienbildung ausschließen,
+    # damit die Linie nicht durch den möglichen Ausbruch selbst verzerrt wird
+    suchbereich = fenster.iloc[:-3]
+    if len(suchbereich) < 10:
+        return False, None
+
+    highs = suchbereich['High'].values
+    idx_swings = argrelextrema(highs, np.greater_equal, order=order)[0]
+
+    if len(idx_swings) < 3:
+        return False, None
+
+    x = idx_swings.astype(float)
+    y = highs[idx_swings]
+    slope, intercept, verwendete_punkte = _robuste_trendlinie(x, y)
+
+    # Nur fallende Trendlinien relevant (Ausbruch nach oben = Long-Signal)
+    if slope >= 0:
+        return False, None
+    if verwendete_punkte < 3:
+        return False, None
+
+    # Berührungspunkte innerhalb der Toleranz zählen (mind. 3 gefordert) -
+    # gegen ALLE urspruenglichen Swing-Highs, nicht nur die nach Ausreißer-
+    # Filterung verbliebenen (die Linie soll trotzdem an mindestens 3 echten
+    # Punkten "anliegen", nur die Anpassung selbst ist ausreißer-robust)
+    linie_bei_punkten = slope * x + intercept
+    beruehrungen = int(np.sum(np.abs(y - linie_bei_punkten) <= (linie_bei_punkten * touch_tolerance)))
+    if beruehrungen < 3:
+        return False, None
+
+    # Linie bis heute projizieren und Ausbruch pruefen
+    heute_pos = len(fenster) - 1
+    linie_heute = slope * heute_pos + intercept
+    close_heute = fenster['Close'].iloc[-1]
+
+    alle_positionen = np.arange(len(fenster))
+    linie_werte_alle = slope * alle_positionen + intercept
+    kein_rueckfall = _kein_rueckfall_seit_ausbruch(
+        fenster['Close'].values, linie_werte_alle, heute_pos)
+
+    volumen_ok = any(
+        fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
+        for i in range(0, 3)
+    )
+
+    ausbruch = bool(close_heute > linie_heute) and kein_rueckfall and bool(volumen_ok)
+    return ausbruch, (float(linie_heute) if ausbruch else None)
+
 def check_kumo_breakout(data, toleranz_prozent=0.2):
     """
     Prüft einen echten Kumo-Ausbruch (Ichimoku-Wolke): Der Kurs muss die
@@ -2758,6 +2901,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
                 "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
                 "Markt": "US", "Waehrung": "USD"
             }
+            with _funnel_lock:
+                HEBELTRADER_TRENDFOLGE_BESTAETIGT.add(str(ticker))
             return res
         
         return None
@@ -3061,6 +3206,8 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
             "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
             "Markt": "EU", "Waehrung": "EUR"
         }
+        with _funnel_lock:
+            HEBELTRADER_TRENDFOLGE_BESTAETIGT.add(str(ticker))
         return res
 
     except Exception as e:
@@ -4001,6 +4148,7 @@ if __name__ == "__main__":
                     top_text = "Ja" if t["Sektor_In_Top"] else "Nein"
                     f.write(f"Sektor-Rotation: {t['Rotation_Score']:+.2f} "
                            f"(Top-{'8' if t['Markt'] == 'US' else '5'}-Sektor: {top_text})\n")
+                f.write(f"Detailprüfung: {t.get('Detailstatus', 'n/a')} | {t.get('Detailpruefung', 'n/a')}\n")
                 for name, (ok, detail) in t["Kriterien_final"].items():
                     f.write(f"  {'✓' if ok else '–'} {name}: {detail}\n")
                 f.write("\n")
