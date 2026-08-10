@@ -1,182 +1,68 @@
 """
-einzel_check.py  (NEU 29.07.2026)
+einzel_check.py
+Version 10.08.2026
 
-Prueft BELIEBIGE Ticker gegen die eigenen Filter - unabhaengig von der
-taeglichen Sektor-Rotation. Anlass: eine externe Empfehlung (Boersenbrief,
-Forum, Bekannter) soll durch die eigene Systematik geschickt werden, bevor
-gekauft wird. Der regulaere Lauf kann das nicht beantworten, weil der
-Hauptscanner taeglich nur die Top-8-US-/Top-5-EU-Sektoren abdeckt - liegt der
-Titel in einem anderen Sektor, taucht er schlicht nirgends auf.
+Einzelprüfung beliebiger Ticker gegen die bestehenden Strategien.
 
-WICHTIG - was dieses Skript NICHT tut: Es umgeht den Rotations-Filter
-bewusst. Ein Treffer hier bedeutet also "erfuellt die technischen Kriterien",
-NICHT "der Sektor hat Rueckenwind". Der Rotations-Gedanke ist Teil der
-Strategie - fehlt er, ist das Setup schwaecher als eines aus dem Tageslauf.
-Deshalb gibt das Skript den Rotation-Score des Sektors mit aus, sofern eine
-Performance-Datei des Tages daneben liegt.
+WICHTIG:
+- Trendfolge, Trendwende und Short werden NICHT verändert.
+- Der Kaufkandidaten-Algorithmus ist bewusst strenger als die frühere
+  Momentum-Punktesumme.
+- Momentum allein ist KEIN Kauf.
+- KAUFKANDIDAT A = bestätigtes technisches Setup.
+- KAUFKANDIDAT B = starke Vorbereitung / Trigger-Nähe, aber noch KEIN Kauf.
+- Alles andere = KEIN KAUF.
 
-AUFRUF:
+Aufruf:
     python einzel_check.py GM F CMI BWA PCAR
-    python einzel_check.py VOW3.DE            (EU-Ticker mit Boersen-Suffix)
-
-VERGLEICHSMESSUNG TRENDWENDE (NEU 29.07.2026): Die Trendwende wird ZWEIMAL
-geprueft - einmal mit der Aktien-Regel (max. 20% ueber dem 52W-Tief) und
-einmal mit der Metall-Regel (Position in der 52-Wochen-Spanne <=
-SPANNEN_POSITION_MAX). Zweck: ueber ein paar Wochen sichtbar machen, ob die
-Aktien-Regel systematisch Boden-Kandidaten wegfiltert - ohne am Tagesbetrieb
-etwas zu aendern. Anlass: am 29.07. scheiterten 5 von 6 geprueften Titeln
-(u.a. Albemarle mit Stochastik 8,2 und Draegerwerk mit 7,9 - beide klar
-ueberverkauft) an genau dieser Stufe. Der Tageslauf bleibt unveraendert bei
-der Aktien-Regel; hier ist es reine Messung.
-
-Ohne Argumente wird die TICKER_DEFAULT-Liste unten geprueft.
-Benoetigt dieselben Umgebungsvariablen wie analyse.py (ALPACA_KEY,
-ALPACA_SECRET, GROQ_API_KEY) und muss im selben Verzeichnis liegen.
+    python einzel_check.py AVGO,ANET,VRT,DELL
 """
 
 import datetime
 import glob
-import os
-from pathlib import Path
 import sys
 
 import pandas as pd
 import yfinance as yf
-from market_cache import get_yf_history
 
 from analyse import (
     analyze_a_setup,
     analyze_a_setup_eu,
     get_benchmark_close,
     get_eu_benchmark_close,
-    sektoren_aktien,
-    dax_aktien,
-    sektoren_map,
 )
 from trendwende_scanner import _pruefe_trendwende, _indikatoren_berechnen
 from short_scanner import _pruefe_short_setup
 from edelmetalle_scanner import SPANNEN_POSITION_MAX
 
-# --- MOMENTUM-AUSBRUCH-SCORE (NEU 07.08.2026, Nutzerwunsch) ---
-# Anlass: die drei bestehenden Strategien (Trendfolge/Trendwende/Short) sind
-# als EINSTIEGSFILTER gebaut - sie suchen ein bereits abgeschlossenes,
-# bestaetigtes Muster (Breakout+Volumen, Divergenz+Kumo-Trigger, CRV>=1.0
-# aus echten Kurszielen). Explosive "Hebeltrader"-Ausbruchsstorys wollen
-# aber oft GENAU DEN MOMENT erwischen, in dem sich eine Bewegung erst
-# aufbaut oder gerade beschleunigt - und werden vom bestehenden System
-# entweder noch VOR dem Trigger abgelehnt (Kumo/Trendlinie noch nicht
-# durchbrochen) oder NACH dem Trigger wegen Ueberhitzung (Stochastik>90,
-# CRV durch den bereits gelaufenen Kurs zu niedrig). Der Momentum-Ausbruch-
-# Score bildet das bewusst ANDERSHERUM ab: er belohnt genau die Symptome
-# einer explosiven Bewegung, statt sie als "ueberhitzt" abzuwerten.
-# AUSDRUECKLICH NUR ZUSAETZLICHE BEOBACHTUNG - beeinflusst KEINE der drei
-# bestehenden Pruefungen, kein Filter, keine Kaufempfehlung. 5 Kriterien,
-# je 1 Punkt, Score 0-5.
-MOMENTUM_VOL_SCHWELLE = 1.5       # Vol_Ratio > 1.5x SMA20 = deutlicher Anstieg
-MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0  # untere Grenze des EMA50-Momentum-Korridors
-MOMENTUM_EMA50_MAX_ABSTAND_PROZENT = 15.0  # Kurs max. 15% ueber EMA50
+
+# ============================================================
+# KONFIGURATION
+# ============================================================
+
+MOMENTUM_VOL_SCHWELLE = 1.5
+MOMENTUM_EMA50_MIN = 5.0
+MOMENTUM_STOCH_MIN = 80.0
+
+# B-Kandidat: starke Vorbereitung, aber noch kein bestätigter Kauf
+KAUF_B_MOMENTUM_MIN = 3
+
+# A-Kandidat:
+# Mindestens ein bestätigtes Setup ist zwingend.
+KAUF_A_MIN_CRV = 1.0
+
+# Bei Momentum 5/5 darf der Titel als starke Vorbereitung gelten.
+# Das ersetzt aber weiterhin KEIN bestätigtes Setup.
+KAUF_B_STARKES_MOMENTUM = 4
 
 
-def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
-    """Berechnet den 5-Kriterien-Score direkt aus den bereits geladenen
-    Kursdaten (`data`, via hole_kursdaten) - kein zusaetzlicher API-Aufruf.
-    Nutzt _indikatoren_berechnen aus trendwende_scanner.py fuer Stoch_K/
-    Vol_Ratio/EMA50 - dieselbe Funktion, die auch der Trendwende-Scanner
-    nutzt, damit die Werte 1:1 mit dem Rest des Systems uebereinstimmen.
-
-    Kriterien (je 1 Punkt):
-      1. Stochastik > 80 (kurzfristig ueberkauft = im Ausbruchsmodus, wird
-         von den bestehenden Strategien eher als Warnsignal gewertet)
-      2. Neues 3-Monats-Hoch (Datums-Fenster ~90 Tage, Fallback letzte 63
-         Handelstage bei Datenluecken - gleiches Muster wie das 52-Wochen-
-         Fenster bei Oel/Edelmetallen)
-      3. Volumenanstieg: Vol_Ratio > 1.5x (deutlich ueber dem 20-Tage-
-         Durchschnitt - typisch fuer den Tag, an dem eine Story "zieht")
-      4. Abstand EMA50: Kurs 5-15% ueber der EMA50 (Momentum-Korridor;
-         ueber 15% gilt der Titel als potenziell zu weit gelaufen)
-      5. Relative Staerke ZUM SEKTOR (nicht zum Gesamtmarkt wie beim
-         bestehenden RS_vs_Benchmark%): eigene 5-Tage-Performance versus
-         die 5-Tage-Performance des Sektors aus Performance(...).csv -
-         nur verfuegbar, wenn der Sektor dort gefunden wird, sonst entfaellt
-         dieses eine Kriterium (Score dann nur aus den uebrigen 4 Punkten,
-         deutlich gekennzeichnet).
-
-    Gibt einen fertigen Text zurueck oder einen Fehlertext bei Datenproblemen."""
-    try:
-        df = _indikatoren_berechnen(data.copy())
-        if len(df) < 60:
-            return "  MOMENTUM-AUSBRUCH-SCORE: zu wenig Kurshistorie"
-
-        kurs = float(df['Close'].iloc[-1])
-        stoch = float(df['Stoch_K'].iloc[-1])
-        vol_ratio = float(df['Vol_Ratio'].iloc[-1])
-        ema50 = float(df['EMA50'].iloc[-1])
-        abstand_ema50 = (kurs - ema50) / ema50 * 100 if ema50 > 0 else float('nan')
-
-        # 3-Monats-Hoch: Datums-Fenster (gleiche Konvention wie bei den
-        # 52-Wochen-Fenstern) mit Fallback auf Zeilenzahl bei Datenluecken
-        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=90))
-        idx = df.index
-        if getattr(idx, 'tz', None) is not None:
-            stichtag = stichtag.tz_localize(idx.tz)
-        fenster_3m = df[idx >= stichtag]
-        if len(fenster_3m) < 40:
-            fenster_3m = df.tail(63)
-        # Der aktuelle Handelstag darf nicht sein eigenes Referenzhoch liefern.
-        # Verglichen wird der aktuelle Schlusskurs mit dem vorherigen 3-Monats-Hoch.
-        fenster_3m_ohne_heute = fenster_3m.iloc[:-1] if len(fenster_3m) > 1 else fenster_3m
-        hoch_3m = float(fenster_3m_ohne_heute['High'].max())
-        # 1% Toleranz: >=99% des vorherigen 3-Monats-Hochs gilt als
-        # "praktisch am Ausbruch".
-        neues_3m_hoch = kurs >= hoch_3m * 0.99
-
-        punkte = []
-        p1 = stoch > 80
-        punkte.append(("Stochastik > 80", p1, f"{stoch:.1f}"))
-        p2 = neues_3m_hoch
-        punkte.append(("Neues 3-Monats-Hoch (Toleranz 1%)", p2, f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f} ({kurs/hoch_3m*100:.1f}%)"))
-        p3 = vol_ratio > MOMENTUM_VOL_SCHWELLE
-        punkte.append((f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)", p3, f"{vol_ratio:.2f}x"))
-        p4 = MOMENTUM_EMA50_ABSTAND_PROZENT <= abstand_ema50 <= MOMENTUM_EMA50_MAX_ABSTAND_PROZENT
-        punkte.append((f"Abstand EMA50 ({MOMENTUM_EMA50_ABSTAND_PROZENT:.0f}-{MOMENTUM_EMA50_MAX_ABSTAND_PROZENT:.0f}%)", p4, f"{abstand_ema50:+.1f}%"))
-
-        rs_sektor_text = "Sektor unbekannt/nicht in Performance-Datei - Kriterium entfällt"
-        p5 = False
-        max_punkte = 4
-        if sektor in sektor_5t and len(df) >= 6:
-            eigene_5t = (kurs / float(df['Close'].iloc[-6]) - 1) * 100
-            sektor_wert = sektor_5t[sektor]
-            p5 = eigene_5t > sektor_wert
-            rs_sektor_text = f"Aktie {eigene_5t:+.1f}% vs. Sektor {sektor_wert:+.1f}% (5 Tage)"
-            punkte.append(("Relative Stärke zum Sektor (5T)", p5, rs_sektor_text))
-            max_punkte = 5
-
-        score = sum(1 for _, ok, _ in punkte if ok)
-        zeilen = [f"  MOMENTUM-AUSBRUCH-SCORE: {score}/{max_punkte}"
-                 + (" (Sektor-Kriterium nicht verfügbar)" if max_punkte == 4 else "")]
-        for name, ok, detail in punkte:
-            zeilen.append(f"    {'✓' if ok else '–'} {name}: {detail}")
-        return "\n".join(zeilen)
-    except Exception as e:
-        return f"  MOMENTUM-AUSBRUCH-SCORE: Fehler ({type(e).__name__}: {e})"
-
-
-# Standard-Liste (GEAENDERT 29.07.2026): alle an diesem Tag geprueften Titel,
-# damit sich ein Wiederholungslauf ohne Tipparbeit starten laesst - fuer die
-# Vergleichsmessung Aktien-Regel vs. Metall-Regel (siehe Modul-Docstring) ist
-# genau das der Zweck: dieselben Titel ueber Wochen beobachten.
-# Ueber das workflow_dispatch-Eingabefeld jederzeit ueberschreibbar.
+# Standardliste
 TICKER_DEFAULT = [
-    # Runde 1 - Kandidaten aus dem Boersenbrief-Teaser ("Zykliker mit Umbau")
     "GM", "F", "CMI", "BWA", "PCAR",
-    # Runde 2 - eigene Beobachtungsliste
     "BABA", "NEM", "ALB", "SIX2.DE", "DRH.F", "ENR.DE",
 ]
 
-# Sektor-Zuordnung NUR fuer die Anzeige des Rotation-Scores - die technische
-# Pruefung braucht sie nicht, unbekannte Ticker laufen mit "N/A" durch.
-# Namen bewusst exakt wie in Performance(...).csv / Performance_EU(...).csv,
-# sonst findet der Nachschlag nichts.
+
 SEKTOR_HINWEIS = {
     "GM": "Zyklischer Konsum",
     "F": "Zyklischer Konsum",
@@ -186,236 +72,871 @@ SEKTOR_HINWEIS = {
     "PCAR": "Industrie",
     "NEM": "Gold-Miner",
     "ALB": "Rohstoffe",
-    "SIX2.DE": "Industrie",      # Sixt SE
-    "DRH.F": "Rüstung/Aerospace",  # DroneShield Ltd, Frankfurt-Notierung in EUR
-    "ENR.DE": "Industrie",       # Siemens Energy AG
+    "SIX2.DE": "Industrie",
+    "DRH.F": "Rüstung/Aerospace",
+    "ENR.DE": "Industrie",
+
+    # Hightech / digitale Infrastruktur
+    "AVGO": "Technologie",
+    "ANET": "Technologie",
+    "VRT": "Industrie",
+    "DELL": "Technologie",
+    "MRVL": "Technologie",
+    "MU": "Technologie",
+    "AMD": "Technologie",
+    "CSCO": "Technologie",
 }
 
 
-def _baue_ticker_sektor_index():
-    """REPARATUR (09.08.2026, Nutzerwunsch - vorher schaute pruefe() NIE in
-    das Hauptuniversum, nur in das winzige 11-Ticker-Fallback-Dict
-    SEKTOR_HINWEIS, selbst wenn der geprüfte Ticker laengst korrekt im
-    Hauptuniversum einsortiert war). Baut ein Ticker -> [Sektoren]-Mapping
-    aus sektoren_aktien (US, ETF-Schluessel via sektoren_map in Klartext
-    uebersetzt) und dax_aktien (EU, bereits Klartext-Sektornamen).
-    WICHTIG: ein Ticker kann in MEHREREN Sektor-ETFs gleichzeitig stehen
-    (z.B. NVDA in XLK/SOXX/SMH/AIQ) - der Hauptscanner selbst hat deshalb
-    KEINEN einzigen "wahren" Sektor pro Ticker, sondern verwendet je nach
-    Tageslauf das/die ETF(s), die an dem Tag in den Top-8/Top-5 stehen.
-    Fuer den Ad-hoc-Check gibt es keine solche Tagesauswahl - deshalb
-    liefert diese Funktion ALLE gefundenen Sektoren, nicht nur einen, und
-    pruefe() macht die Mehrdeutigkeit sichtbar statt sie zu verstecken."""
-    index = {}
-    for etf, ticker_liste in sektoren_aktien.items():
-        name = sektoren_map.get(etf, etf)
-        for t in ticker_liste:
-            index.setdefault(t, []).append(name)
-    for sektor_name, ticker_liste in dax_aktien.items():
-        for t in ticker_liste:
-            index.setdefault(t, []).append(sektor_name)
-    return index
-
-
-TICKER_SEKTOR_INDEX = _baue_ticker_sektor_index()
-
-# Klarnamen fuer die Ausgabe - macht das Log ohne Nachschlagen lesbar
-# (der Scanner selbst arbeitet weiterhin mit Tickern).
 NAME_HINWEIS = {
-    "GM": "General Motors", "F": "Ford Motor Company", "CMI": "Cummins",
-    "BWA": "BorgWarner", "PCAR": "Paccar", "BABA": "Alibaba",
-    "NEM": "Newmont", "ALB": "Albemarle", "SIX2.DE": "Sixt SE",
-    "DRH.F": "DroneShield (EUR, Frankfurt)", "ENR.DE": "Siemens Energy",
+    "GM": "General Motors",
+    "F": "Ford Motor Company",
+    "CMI": "Cummins",
+    "BWA": "BorgWarner",
+    "PCAR": "Paccar",
+    "BABA": "Alibaba",
+    "NEM": "Newmont",
+    "ALB": "Albemarle",
+    "SIX2.DE": "Sixt SE",
+    "DRH.F": "DroneShield (EUR, Frankfurt)",
+    "ENR.DE": "Siemens Energy",
+    "AVGO": "Broadcom",
+    "ANET": "Arista Networks",
+    "VRT": "Vertiv",
+    "DELL": "Dell Technologies",
+    "MRVL": "Marvell Technology",
+    "MU": "Micron Technology",
+    "AMD": "AMD",
+    "CSCO": "Cisco Systems",
 }
 
+
+# ============================================================
+# DATEN / ROTATION
+# ============================================================
 
 def lade_rotation_scores():
-    """Liest jeweils die AKTUELLSTE Performance-Datei fuer US und EU.
+    """Liest vorhandene Performance-Dateien.
 
-    US und EU werden bewusst getrennt gehalten, damit ein gleichnamiger
-    Sektor in Performance(*).csv nicht versehentlich durch die EU-Datei
-    ueberschrieben wird (oder umgekehrt). Die Auswahl der neuesten Datei
-    erfolgt explizit ueber die Dateiaenderungszeit statt ueber die zufaellige
-    Reihenfolge mehrerer historischer Dateien im Verzeichnis.
-
-    Rueckgabe: (scores_us, sektor_5t_us, scores_eu, sektor_5t_eu).
+    Rückgabe:
+        rotation_scores: Sektor -> Rotation-Score
+        sektor_5t:       Sektor -> 5-Tage-Performance
     """
-    def _neueste(muster):
-        kandidaten = glob.glob(muster)
-        if not kandidaten:
-            return None
-        return max(kandidaten, key=lambda p: Path(p).stat().st_mtime)
+    scores = {}
+    sektor_5t = {}
 
-    def _lese(pfad):
-        scores, sektor_5t = {}, {}
-        if not pfad:
-            return scores, sektor_5t
-        try:
-            df = pd.read_csv(pfad, sep=';', encoding='utf-8-sig')
-            for _, z in df.iterrows():
-                sektor = str(z['Sektor'])
-                scores[sektor] = float(z['Rotation-Score'])
-                if '5T' in df.columns and pd.notna(z['5T']):
-                    sektor_5t[sektor] = float(z['5T'])
-        except Exception as e:
-            print(f"WARNUNG: Performance-Datei {pfad} konnte nicht gelesen werden: {e}")
-        return scores, sektor_5t
+    muster_liste = (
+        "Performance(*).csv",
+        "Performance_EU(*).csv",
+    )
 
-    us_scores, us_5t = _lese(_neueste("Performance(*).csv"))
-    eu_scores, eu_5t = _lese(_neueste("Performance_EU(*).csv"))
-    return us_scores, us_5t, eu_scores, eu_5t
+    for muster in muster_liste:
+        for pfad in sorted(glob.glob(muster)):
+            try:
+                df = pd.read_csv(
+                    pfad,
+                    sep=";",
+                    encoding="utf-8-sig",
+                )
+
+                if "Sektor" not in df.columns:
+                    continue
+
+                for _, z in df.iterrows():
+                    sektor = str(z["Sektor"])
+
+                    if "Rotation-Score" in df.columns:
+                        try:
+                            scores[sektor] = float(z["Rotation-Score"])
+                        except (TypeError, ValueError):
+                            pass
+
+                    if "5T" in df.columns:
+                        try:
+                            sektor_5t[sektor] = float(z["5T"])
+                        except (TypeError, ValueError):
+                            pass
+
+            except Exception:
+                pass
+
+    return scores, sektor_5t
 
 
 def hole_kursdaten(ticker):
-    """52 Wochen + Puffer, wie die regulaeren Scanner (Datums-Schnitt)."""
-    data = get_yf_history(ticker)
-    if not data.empty:
-        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=730))
-        if getattr(data.index, 'tz', None) is not None:
-            stichtag = stichtag.tz_localize(data.index.tz)
-        data = data[data.index >= stichtag]
+    """Lädt zwei Jahre Daten und verwendet anschließend ca. 52 Wochen."""
+    try:
+        data = yf.Ticker(ticker).history(period="2y")
+    except Exception:
+        return None
+
     if data.empty:
         return None
-    data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-    stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
-    if getattr(data.index, 'tz', None) is not None:
+
+    required = ["Close", "High", "Low", "Volume"]
+    data = data.dropna(subset=required)
+
+    if data.empty:
+        return None
+
+    stichtag = pd.Timestamp(
+        datetime.date.today() - datetime.timedelta(days=365)
+    )
+
+    if getattr(data.index, "tz", None) is not None:
         stichtag = stichtag.tz_localize(data.index.tz)
+
     fenster = data[data.index >= stichtag]
-    return fenster if len(fenster) >= 60 else data.tail(252)
+
+    if len(fenster) >= 60:
+        return fenster
+
+    return data.tail(252)
 
 
-def pruefe(ticker, spy_close, eu_close, scores_us, sektor_5t_us, scores_eu, sektor_5t_eu):
-    ist_eu = '.' in ticker
-    scores = scores_eu if ist_eu else scores_us
-    sektor_5t = sektor_5t_eu if ist_eu else sektor_5t_us
-    # REPARATUR (09.08.2026): erst im Hauptuniversum nachschauen, SEKTOR_HINWEIS
-    # nur noch fuer Ticker AUSSERHALB davon (z.B. DroneShield/DRH.F).
-    sektor_kandidaten = TICKER_SEKTOR_INDEX.get(ticker)
-    if sektor_kandidaten:
-        sektor = sektor_kandidaten[0]
-        if len(sektor_kandidaten) > 1:
-            print(f"  Hinweis: {ticker} steht im Hauptuniversum unter mehreren Sektoren "
-                  f"({', '.join(sektor_kandidaten)}) - verwende '{sektor}' (erster Treffer).")
-    else:
-        sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
-    score = scores.get(sektor)
-    klarname = NAME_HINWEIS.get(ticker)
-    kopf = f"{ticker}" + (f" - {klarname}" if klarname else "")
-    print("=" * 62)
-    print(f"{kopf}   (Sektor laut Zuordnung: {sektor}"
-          + (f", Rotation-Score {score:+.3f}" if score is not None else "")
-          + ")")
-    print("=" * 62)
+# ============================================================
+# MOMENTUM
+# ============================================================
 
-    # 1) Trendfolge - der Weg, auf dem der Titel normalerweise ins Briefing kaeme
+def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
+    """Berechnet den Momentum-Ausbruch-Score.
+
+    Die vier Kernkriterien bleiben:
+      1. Stochastik > 80
+      2. Kurs nahe am 3-Monats-Hoch (1 % Toleranz)
+      3. Volumen > 1.5x SMA20
+      4. Kurs mindestens 5 % über EMA50
+
+    Relative Stärke zum Sektor wird separat als Zusatzinformation ausgegeben.
+    Sie reduziert nicht den Kernscore, wenn keine Sektorperformance vorliegt.
+    """
     try:
-        res = (analyze_a_setup_eu(ticker, sektor, eu_close) if ist_eu
-               else analyze_a_setup(ticker, sektor, spy_close))
-        if res:
-            print(f"  TRENDFOLGE: TREFFER - Status {res.get('Status2')} "
-                  f"({res.get('Status_Grund')})")
-            print(f"    Setup: {res.get('Setup_Typ')} | Kurs {res.get('Kurs')} | "
-                  f"Stop {res.get('Stop')} (Risiko {res.get('Risk_Perc')}%)")
-            print(f"    TP1 {res.get('TP1')} (CRV {res.get('CRV1')}) | "
-                  f"TP2 {res.get('TP2')} (CRV {res.get('CRV2')})")
-            print(f"    RSI {res.get('RSI')} | MACD {res.get('MACD_Trend')} | "
-                  f"Ampel {res.get('Fundamental_Ampel')}")
-        else:
-            print("  TRENDFOLGE: kein Setup (Grund siehe DEBUG-Zeilen oben)")
+        df = _indikatoren_berechnen(data.copy())
+
+        if len(df) < 60:
+            return {
+                "score": 0,
+                "max_score": 4,
+                "core_score": 0,
+                "details": [],
+                "stoch": None,
+                "vol_ratio": None,
+                "ema50_distance": None,
+                "near_high": False,
+                "sector_rs": None,
+                "text": "  MOMENTUM-AUSBRUCH-SCORE: zu wenig Kurshistorie",
+            }
+
+        kurs = float(df["Close"].iloc[-1])
+        stoch = float(df["Stoch_K"].iloc[-1])
+        vol_ratio = float(df["Vol_Ratio"].iloc[-1])
+        ema50 = float(df["EMA50"].iloc[-1])
+
+        ema_distance = (
+            (kurs - ema50) / ema50 * 100
+            if ema50 > 0
+            else float("nan")
+        )
+
+        stichtag = pd.Timestamp(
+            datetime.date.today() - datetime.timedelta(days=90)
+        )
+
+        idx = df.index
+
+        if getattr(idx, "tz", None) is not None:
+            stichtag = stichtag.tz_localize(idx.tz)
+
+        fenster_3m = df[idx >= stichtag]
+
+        if len(fenster_3m) < 40:
+            fenster_3m = df.tail(63)
+
+        hoch_3m = float(fenster_3m["High"].max())
+
+        # 1 % Toleranz: Kurs gilt als nahe am 3-Monats-Hoch.
+        near_high = kurs >= hoch_3m * 0.99
+
+        p1 = stoch > MOMENTUM_STOCH_MIN
+        p2 = near_high
+        p3 = vol_ratio > MOMENTUM_VOL_SCHWELLE
+        p4 = ema_distance >= MOMENTUM_EMA50_MIN
+
+        punkte = [
+            (
+                "Stochastik > 80",
+                p1,
+                f"{stoch:.1f}",
+            ),
+            (
+                "Neues 3-Monats-Hoch (Toleranz 1%)",
+                p2,
+                f"Kurs {kurs:.2f} vs. Hoch {hoch_3m:.2f} "
+                f"({kurs / hoch_3m * 100:.1f}%)",
+            ),
+            (
+                f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)",
+                p3,
+                f"{vol_ratio:.2f}x",
+            ),
+            (
+                f"Abstand EMA50 (>={MOMENTUM_EMA50_MIN:.0f}%)",
+                p4,
+                f"{ema_distance:+.1f}%",
+            ),
+        ]
+
+        core_score = sum(1 for _, ok, _ in punkte if ok)
+
+        sector_rs = None
+        sector_rs_text = (
+            "Sektor-Relative-Stärke nicht verfügbar"
+        )
+
+        if sektor in sektor_5t and len(df) >= 6:
+            eigene_5t = (
+                kurs / float(df["Close"].iloc[-6]) - 1
+            ) * 100
+
+            sektor_wert = float(sektor_5t[sektor])
+
+            sector_rs = eigene_5t > sektor_wert
+
+            sector_rs_text = (
+                f"Aktie {eigene_5t:+.1f}% "
+                f"vs. Sektor {sektor_wert:+.1f}% (5 Tage)"
+            )
+
+        zeilen = [
+            f"  MOMENTUM-AUSBRUCH-SCORE: {core_score}/4"
+        ]
+
+        for name, ok, detail in punkte:
+            zeilen.append(
+                f"    {'✓' if ok else '–'} {name}: {detail}"
+            )
+
+        zeilen.append(
+            f"    • Sektor-RS: {sector_rs_text}"
+        )
+
+        return {
+            "score": core_score,
+            "max_score": 4,
+            "core_score": core_score,
+            "details": punkte,
+            "stoch": stoch,
+            "vol_ratio": vol_ratio,
+            "ema50_distance": ema_distance,
+            "near_high": near_high,
+            "sector_rs": sector_rs,
+            "text": "\n".join(zeilen),
+        }
+
     except Exception as e:
-        print(f"  TRENDFOLGE: Fehler ({type(e).__name__}: {e})")
+        return {
+            "score": 0,
+            "max_score": 4,
+            "core_score": 0,
+            "details": [],
+            "stoch": None,
+            "vol_ratio": None,
+            "ema50_distance": None,
+            "near_high": False,
+            "sector_rs": None,
+            "text": (
+                "  MOMENTUM-AUSBRUCH-SCORE: Fehler "
+                f"({type(e).__name__}: {e})"
+            ),
+        }
+
+
+# ============================================================
+# KAUFKANDIDATEN-ALGORITHMUS
+# ============================================================
+
+def _crv_ok(res):
+    """Prüft, ob mindestens ein vorhandenes Kursziel CRV >= 1.0 besitzt."""
+    if not res:
+        return False
+
+    for key in ("CRV1", "CRV2"):
+        value = res.get(key)
+
+        try:
+            if value is not None and float(value) >= KAUF_A_MIN_CRV:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    return False
+
+
+def bewerte_kaufkandidat(
+    ticker,
+    momentum_ergebnis,
+    trendfolge_res,
+    trendwende_res,
+    rotation_score,
+):
+    """Entscheidet, ob ein Titel wirklich kaufbar ist.
+
+    NEUE GRUNDREGEL:
+        Momentum allein -> niemals Kauf.
+
+    A:
+        Trendfolge ODER Trendwende bestätigt
+        UND mindestens ein CRV >= 1.0.
+
+    B:
+        Noch kein bestätigtes Setup,
+        aber starkes Momentum >= 3/4
+        und mindestens ein zusätzlicher Trigger-Indikator.
+
+    B bedeutet ausdrücklich: "Trigger abwarten", nicht kaufen.
+    """
+
+    momentum = momentum_ergebnis.get("score", 0)
+    momentum_max = momentum_ergebnis.get("max_score", 4)
+
+    tf_ok = trendfolge_res is not None and _crv_ok(trendfolge_res)
+    tw_ok = trendwende_res is not None and _crv_ok(trendwende_res)
+
+    near_high = bool(momentum_ergebnis.get("near_high"))
+    vol_ratio = momentum_ergebnis.get("vol_ratio")
+    ema_distance = momentum_ergebnis.get("ema50_distance")
+    sector_rs = momentum_ergebnis.get("sector_rs")
+
+    gruende = []
+    risiken = []
+
+    # --------------------------------------------------------
+    # A: bestätigter Kauf
+    # --------------------------------------------------------
+
+    if tf_ok or tw_ok:
+        if tf_ok:
+            gruende.append("Trendfolge-Setup bestätigt, CRV >= 1.0")
+
+        if tw_ok:
+            gruende.append("Trendwende-Setup bestätigt, CRV >= 1.0")
+
+        if momentum >= 3:
+            gruende.append(
+                f"Momentum unterstützt das Setup ({momentum}/{momentum_max})"
+            )
+
+        if sector_rs is True:
+            gruende.append("Relative Stärke zum Sektor positiv")
+        elif sector_rs is False:
+            risiken.append("Relative Stärke zum Sektor nicht besser")
+
+        if rotation_score is not None and rotation_score <= 0:
+            risiken.append("Sektor-Rotation ohne positiven Rückenwind")
+
+        return {
+            "Ticker": ticker,
+            "Status": "KAUFKANDIDAT A",
+            "Score": momentum,
+            "Momentum": f"{momentum}/{momentum_max}",
+            "Gruende": gruende,
+            "Risiken": risiken,
+        }
+
+    # --------------------------------------------------------
+    # B: Vorbereitung / Trigger abwarten
+    # --------------------------------------------------------
+
+    b_trigger = False
+
+    if near_high:
+        b_trigger = True
+
+    if vol_ratio is not None:
+        try:
+            if float(vol_ratio) > MOMENTUM_VOL_SCHWELLE:
+                b_trigger = True
+        except (TypeError, ValueError):
+            pass
+
+    if momentum >= KAUF_B_MOMENTUM_MIN and b_trigger:
+        gruende.append(
+            f"starkes Momentum ({momentum}/{momentum_max})"
+        )
+
+        if near_high:
+            gruende.append("Kurs nahe am 3-Monats-Hoch")
+
+        if vol_ratio is not None:
+            try:
+                if float(vol_ratio) > MOMENTUM_VOL_SCHWELLE:
+                    gruende.append(
+                        f"Volumen bestätigt ({float(vol_ratio):.2f}x SMA20)"
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        if ema_distance is not None:
+            try:
+                if float(ema_distance) >= MOMENTUM_EMA50_MIN:
+                    gruende.append(
+                        f"über EMA50 (+{float(ema_distance):.1f}%)"
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        risiken.append(
+            "Noch kein bestätigtes Trendfolge-/Trendwende-Setup"
+        )
+        risiken.append(
+            "KEIN Sofortkauf – Trigger/CRV abwarten"
+        )
+
+        if sector_rs is False:
+            risiken.append("Relative Stärke zum Sektor negativ")
+
+        return {
+            "Ticker": ticker,
+            "Status": "KAUFKANDIDAT B",
+            "Score": momentum,
+            "Momentum": f"{momentum}/{momentum_max}",
+            "Gruende": gruende,
+            "Risiken": risiken,
+        }
+
+    # --------------------------------------------------------
+    # Kein Kauf
+    # --------------------------------------------------------
+
+    if momentum < KAUF_B_MOMENTUM_MIN:
+        risiken.append(
+            f"Momentum zu schwach ({momentum}/{momentum_max})"
+        )
+
+    if not tf_ok and not tw_ok:
+        risiken.append("kein bestätigtes Einstiegssignal")
+
+    if not near_high:
+        risiken.append("kein Ausbruch in Nähe des 3-Monats-Hochs")
+
+    if vol_ratio is not None:
+        try:
+            if float(vol_ratio) <= MOMENTUM_VOL_SCHWELLE:
+                risiken.append(
+                    f"Volumen nicht bestätigt ({float(vol_ratio):.2f}x SMA20)"
+                )
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        "Ticker": ticker,
+        "Status": "KEIN KAUF",
+        "Score": momentum,
+        "Momentum": f"{momentum}/{momentum_max}",
+        "Gruende": gruende,
+        "Risiken": risiken,
+    }
+
+
+# ============================================================
+# EINZELPRÜFUNG
+# ============================================================
+
+KAUFKANDIDATEN_ERGEBNISSE = []
+
+
+def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
+    trendfolge_res = None
+    trendwende_res = None
+
+    ist_eu = "." in ticker
+
+    sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
+    rotation_score = scores.get(sektor)
+
+    klarname = NAME_HINWEIS.get(ticker)
+
+    kopf = ticker
+    if klarname:
+        kopf += f" - {klarname}"
+
+    print("=" * 62)
+    print(
+        f"{kopf}   (Sektor laut Zuordnung: {sektor}"
+        + (
+            f", Rotation-Score {rotation_score:+.3f}"
+            if rotation_score is not None
+            else ""
+        )
+        + ")"
+    )
+    print("=" * 62)
+
+    # --------------------------------------------------------
+    # 1) Trendfolge
+    # --------------------------------------------------------
+
+    try:
+        trendfolge_res = (
+            analyze_a_setup_eu(
+                ticker,
+                sektor,
+                eu_close,
+            )
+            if ist_eu
+            else analyze_a_setup(
+                ticker,
+                sektor,
+                spy_close,
+            )
+        )
+
+        if trendfolge_res:
+            print(
+                f"  TRENDFOLGE: TREFFER - "
+                f"Status {trendfolge_res.get('Status2')} "
+                f"({trendfolge_res.get('Status_Grund')})"
+            )
+
+            print(
+                f"    Setup: {trendfolge_res.get('Setup_Typ')} | "
+                f"Kurs {trendfolge_res.get('Kurs')} | "
+                f"Stop {trendfolge_res.get('Stop')} "
+                f"(Risiko {trendfolge_res.get('Risk_Perc')}%)"
+            )
+
+            print(
+                f"    TP1 {trendfolge_res.get('TP1')} "
+                f"(CRV {trendfolge_res.get('CRV1')}) | "
+                f"TP2 {trendfolge_res.get('TP2')} "
+                f"(CRV {trendfolge_res.get('CRV2')})"
+            )
+
+            print(
+                f"    RSI {trendfolge_res.get('RSI')} | "
+                f"MACD {trendfolge_res.get('MACD_Trend')} | "
+                f"Ampel {trendfolge_res.get('Fundamental_Ampel')}"
+            )
+
+        else:
+            print(
+                "  TRENDFOLGE: kein Setup "
+                "(Grund siehe DEBUG-Zeilen oben)"
+            )
+
+    except Exception as e:
+        print(
+            f"  TRENDFOLGE: Fehler "
+            f"({type(e).__name__}: {e})"
+        )
+
+    # --------------------------------------------------------
+    # Kursdaten
+    # --------------------------------------------------------
 
     data = hole_kursdaten(ticker)
+
     if data is None or data.empty:
         print("  TRENDWENDE/SHORT: keine Kursdaten")
         return
 
-    # 1b) Momentum-Ausbruch-Score (NEU 07.08.2026) - reine Zusatzbeobachtung,
-    # unabhaengig von den drei Strategie-Pruefungen, siehe Modul-Docstring
-    # der Funktion fuer die Begruendung.
-    print(momentum_ausbruch_score(ticker, data, sektor, sektor_5t))
+    # --------------------------------------------------------
+    # 2) Momentum
+    # --------------------------------------------------------
+
+    momentum_ergebnis = momentum_ausbruch_score(
+        ticker,
+        data,
+        sektor,
+        sektor_5t,
+    )
+
+    print(momentum_ergebnis["text"])
     print()
 
-    # 2) Trendwende - ZWEIMAL geprueft (siehe Modul-Docstring): einmal mit
-    #    der Aktien-Regel des Tageslaufs, einmal mit der Metall-Regel.
-    #    Beide Ergebnisse nebeneinander, damit ueber die Zeit sichtbar wird,
-    #    ob die Aktien-Regel Boden-Kandidaten systematisch verwirft.
-    def _trendwende(spannen_max=None):
-        return _pruefe_trendwende(ticker, sektor, "EU" if ist_eu else "US",
-                                  data.copy(), eu_close if ist_eu else spy_close,
-                                  spannen_position_max=spannen_max)
+    # --------------------------------------------------------
+    # 3) Trendwende
+    # --------------------------------------------------------
 
-    def _ausgabe(label, res, grund):
-        if res:
-            print(f"  {label}: TREFFER - {res.get('Setup_Typ')} | "
-                  f"Kurs {res.get('Kurs')} | Stop {res.get('Stop')} | "
-                  f"TP1 {res.get('TP1')} (CRV {res.get('CRV1')}) | "
-                  f"Bonus: {res.get('Qualitaets_Bonus')}")
-        else:
-            print(f"  {label}: kein Kandidat (Stufe: {grund})")
+    def _trendwende(spannen_max=None):
+        return _pruefe_trendwende(
+            ticker,
+            sektor,
+            "EU" if ist_eu else "US",
+            data.copy(),
+            eu_close if ist_eu else spy_close,
+            spannen_position_max=spannen_max,
+        )
 
     ergebnisse_tw = {}
+
     for label, spannen_max in (
-        ("TRENDWENDE (Aktien-Regel: max. 20% ueber 52W-Tief)", None),
-        (f"TRENDWENDE (Metall-Regel: Spannen-Position <= {SPANNEN_POSITION_MAX:.0%})",
-         SPANNEN_POSITION_MAX),
+        (
+            "TRENDWENDE "
+            "(Aktien-Regel: max. 20% ueber 52W-Tief)",
+            None,
+        ),
+        (
+            f"TRENDWENDE "
+            f"(Metall-Regel: Spannen-Position <= "
+            f"{SPANNEN_POSITION_MAX:.0%})",
+            SPANNEN_POSITION_MAX,
+        ),
     ):
         try:
             res, grund = _trendwende(spannen_max)
-            _ausgabe(label, res, grund)
-            ergebnisse_tw[spannen_max] = (res is not None, grund)
+
+            if res:
+                print(
+                    f"  {label}: TREFFER - "
+                    f"{res.get('Setup_Typ')} | "
+                    f"Kurs {res.get('Kurs')} | "
+                    f"Stop {res.get('Stop')} | "
+                    f"TP1 {res.get('TP1')} "
+                    f"(CRV {res.get('CRV1')}) | "
+                    f"Bonus: {res.get('Qualitaets_Bonus')}"
+                )
+
+                # Für die Kaufentscheidung verwenden wir den ersten
+                # tatsächlich bestätigten Trendwende-Treffer.
+                if trendwende_res is None:
+                    trendwende_res = res
+
+            else:
+                print(
+                    f"  {label}: kein Kandidat "
+                    f"(Stufe: {grund})"
+                )
+
+            ergebnisse_tw[spannen_max] = (
+                res is not None,
+                grund,
+            )
+
         except Exception as e:
-            print(f"  {label}: Fehler ({type(e).__name__}: {e})")
-            ergebnisse_tw[spannen_max] = (None, "fehler")
+            print(
+                f"  {label}: Fehler "
+                f"({type(e).__name__}: {e})"
+            )
 
-    # Abweichung ausdruecklich benennen - das ist der eigentliche Messwert
-    aktien_ok = ergebnisse_tw.get(None, (None, None))[0]
-    metall_ok = ergebnisse_tw.get(SPANNEN_POSITION_MAX, (None, None))[0]
+            ergebnisse_tw[spannen_max] = (
+                None,
+                "fehler",
+            )
+
+    # --------------------------------------------------------
+    # Abweichung Aktien-/Metallregel
+    # --------------------------------------------------------
+
+    aktien_ok = ergebnisse_tw.get(
+        None,
+        (None, None),
+    )[0]
+
+    metall_ok = ergebnisse_tw.get(
+        SPANNEN_POSITION_MAX,
+        (None, None),
+    )[0]
+
     if aktien_ok is False and metall_ok is True:
-        # Kennzahl mitliefern, damit die Abweichung nachvollziehbar ist
         try:
-            kurs = float(data['Close'].iloc[-1])
-            tief = float(data['Low'].min())
-            hoch = float(data['High'].max())
-            print(f"  >>> ABWEICHUNG: nur die Metall-Regel laesst diesen Titel zu "
-                  f"({(kurs/tief-1)*100:.1f}% ueber 52W-Tief, aber Spannen-Position "
-                  f"{(kurs-tief)/(hoch-tief):.0%}) - Kandidat fuer die Frage, ob die "
-                  f"Aktien-Regel zu eng ist.")
-        except Exception:
-            print("  >>> ABWEICHUNG: nur die Metall-Regel laesst diesen Titel zu.")
-    elif aktien_ok is True and metall_ok is False:
-        print("  >>> ABWEICHUNG umgekehrt: nur die Aktien-Regel laesst diesen Titel zu "
-              "(Titel ist nah am Tief, sitzt aber hoch in der Jahresspanne - "
-              "typisch fuer eine enge Seitwaertsspanne).")
+            kurs = float(data["Close"].iloc[-1])
+            tief = float(data["Low"].min())
+            hoch = float(data["High"].max())
 
-    # 3) Short - Marktumfeld-Modifikator bewusst neutral (Einzelpruefung
-    #    ausserhalb des Tageslaufs, kein Rotations-Kontext)
+            print(
+                "  >>> ABWEICHUNG: nur die Metall-Regel "
+                "laesst diesen Titel zu "
+                f"({(kurs / tief - 1) * 100:.1f}% "
+                "ueber 52W-Tief, "
+                f"Spannen-Position "
+                f"{(kurs - tief) / (hoch - tief):.0%})"
+            )
+
+        except Exception:
+            print(
+                "  >>> ABWEICHUNG: nur die Metall-Regel "
+                "laesst diesen Titel zu."
+            )
+
+    elif aktien_ok is True and metall_ok is False:
+        print(
+            "  >>> ABWEICHUNG umgekehrt: nur die Aktien-Regel "
+            "laesst diesen Titel zu."
+        )
+
+    # --------------------------------------------------------
+    # 4) KAUFKANDIDATEN-BEWERTUNG
+    # --------------------------------------------------------
+
+    kauf = bewerte_kaufkandidat(
+        ticker=ticker,
+        momentum_ergebnis=momentum_ergebnis,
+        trendfolge_res=trendfolge_res,
+        trendwende_res=trendwende_res,
+        rotation_score=rotation_score,
+    )
+
+    print()
+    print("  KAUFKANDIDATEN-BEWERTUNG")
+    print("  " + "-" * 45)
+    print(
+        f"  Ergebnis: {kauf['Status']} "
+        f"(Momentum {kauf['Momentum']})"
+    )
+
+    for grund in kauf["Gruende"]:
+        print(f"    ✓ {grund}")
+
+    for risiko in kauf["Risiken"]:
+        print(f"    ⚠ {risiko}")
+
+    if kauf["Status"] != "KEIN KAUF":
+        KAUFKANDIDATEN_ERGEBNISSE.append(kauf)
+
+    # --------------------------------------------------------
+    # 5) Short
+    # --------------------------------------------------------
+
     try:
-        res, grund = _pruefe_short_setup(ticker, sektor, "EU" if ist_eu else "US",
-                                         data.copy(), eu_close if ist_eu else spy_close,
-                                         marktumfeld_baerisch=False, sektor_momentum=None)
+        res, grund = _pruefe_short_setup(
+            ticker,
+            sektor,
+            "EU" if ist_eu else "US",
+            data.copy(),
+            eu_close if ist_eu else spy_close,
+            marktumfeld_baerisch=False,
+            sektor_momentum=None,
+        )
+
         if res:
-            print(f"  SHORT: TREFFER - {res.get('Setup_Typ')} | "
-                  f"Kurs {res.get('Kurs')} | Stop {res.get('Stop')} | "
-                  f"TP1 {res.get('TP1')} (CRV {res.get('CRV1')}) | "
-                  f"Qualitaet {res.get('Setup_Qualitaet')}")
+            print(
+                f"  SHORT: TREFFER - "
+                f"{res.get('Setup_Typ')} | "
+                f"Kurs {res.get('Kurs')} | "
+                f"Stop {res.get('Stop')} | "
+                f"TP1 {res.get('TP1')} "
+                f"(CRV {res.get('CRV1')}) | "
+                f"Qualitaet {res.get('Setup_Qualitaet')}"
+            )
         else:
-            print(f"  SHORT: kein Kandidat (Stufe: {grund})")
+            print(
+                f"  SHORT: kein Kandidat "
+                f"(Stufe: {grund})"
+            )
+
     except Exception as e:
-        print(f"  SHORT: Fehler ({type(e).__name__}: {e})")
+        print(
+            f"  SHORT: Fehler "
+            f"({type(e).__name__}: {e})"
+        )
+
+
+# ============================================================
+# HAUPTPROGRAMM
+# ============================================================
+
+def parse_ticker_args(args):
+    """Akzeptiert sowohl Leerzeichen als auch Kommas.
+
+    Beispiele:
+        AVGO ANET VRT
+        AVGO,ANET,VRT
+        AVGO, ANET, VRT
+    """
+    ticker_liste = []
+
+    for arg in args:
+        teile = arg.split(",")
+
+        for ticker in teile:
+            ticker = ticker.strip().rstrip(",").upper()
+
+            if ticker:
+                ticker_liste.append(ticker)
+
+    return ticker_liste
 
 
 if __name__ == "__main__":
-    ticker_liste = sys.argv[1:] or TICKER_DEFAULT
-    print(f"EINZEL-CHECK {datetime.date.today().isoformat()} - "
-          f"{len(ticker_liste)} Titel: {', '.join(ticker_liste)}")
-    print("Hinweis: Rotations-Filter bewusst umgangen - ein Treffer heisst "
-          "'technisch erfuellt', nicht 'Sektor hat Rueckenwind'.\n")
+    if len(sys.argv) > 1:
+        ticker_liste = parse_ticker_args(sys.argv[1:])
+    else:
+        ticker_liste = TICKER_DEFAULT
+
+    # Doppelte Ticker entfernen, Reihenfolge behalten.
+    ticker_liste = list(dict.fromkeys(ticker_liste))
+
+    print(
+        f"EINZEL-CHECK {datetime.date.today().isoformat()} - "
+        f"{len(ticker_liste)} Titel: "
+        f"{', '.join(ticker_liste)}"
+    )
+
+    print(
+        "Hinweis: Rotations-Filter bewusst umgangen. "
+        "Die Kaufkandidatenlogik verwendet Rotation nur als "
+        "Zusatzinformation; Momentum allein ist KEIN Kauf.\n"
+    )
 
     spy_close = get_benchmark_close()
     eu_close = get_eu_benchmark_close()
-    scores_us, sektor_5t_us, scores_eu, sektor_5t_eu = lade_rotation_scores()
 
-    for t in ticker_liste:
-        pruefe(t.strip(), spy_close, eu_close, scores_us, sektor_5t_us, scores_eu, sektor_5t_eu)
+    scores, sektor_5t = lade_rotation_scores()
+
+    for ticker in ticker_liste:
+        try:
+            pruefe(
+                ticker,
+                spy_close,
+                eu_close,
+                scores,
+                sektor_5t,
+            )
+        except Exception as e:
+            print(
+                f"\nFEHLER BEI {ticker}: "
+                f"{type(e).__name__}: {e}"
+            )
+
         print()
+
+    # ========================================================
+    # GESAMTERGEBNIS
+    # ========================================================
+
+    print()
+    print("=" * 62)
+    print("KAUFKANDIDATEN DES CHECKS")
+    print("=" * 62)
+
+    if not KAUFKANDIDATEN_ERGEBNISSE:
+        print("Keine Kaufkandidaten gefunden.")
+
+    else:
+        sortiert = sorted(
+            KAUFKANDIDATEN_ERGEBNISSE,
+            key=lambda x: (
+                0 if x["Status"] == "KAUFKANDIDAT A" else 1,
+                -x["Score"],
+            ),
+        )
+
+        for kandidat in sortiert:
+            print(
+                f"{kandidat['Ticker']:8} "
+                f"{kandidat['Status']:18} "
+                f"Momentum {kandidat['Momentum']}"
+            )
+
+            for grund in kandidat["Gruende"]:
+                print(f"    ✓ {grund}")
+
+            for risiko in kandidat["Risiken"]:
+                print(f"    ⚠ {risiko}")
+
+            print()
+
+    print("=" * 62)
+    print("ENDE EINZEL-CHECK")
+    print("=" * 62)
