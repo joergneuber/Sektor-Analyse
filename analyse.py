@@ -54,7 +54,7 @@ def funnel_zaehle(grund):
 # Ausgabe nicht zur zweiten Kandidatenliste wird.
 FUNNEL_BEINAHE = []
 
-# --- HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch) ---
+# --- HEBELTRADER-SETUPS + FUNNEL (NEU 10.08.2026, Nutzerwunsch) ---
 # Zusaetzliche, sechste Kategorie neben Trendfolge/Trendwende/Short/Langfrist/
 # Edelmetalle - findet explosive Ausbruchs-Setups (Momentum-Ausbruch-Score),
 # die die anderen fuenf Kategorien eher als "noch nicht ausgeloest" oder
@@ -80,7 +80,7 @@ MOMENTUM_VOL_SCHWELLE = 1.5
 MOMENTUM_EMA50_ABSTAND_PROZENT = 5.0
 MOMENTUM_EMA50_MAX_ABSTAND_PROZENT = 15.0
 HEBELTRADER_KANDIDATEN = []
-HEBELTRADER_TRENDFOLGE_BESTAETIGT = set()
+HEBELTRADER_FUNNEL = {}
 
 
 def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entry, stop):
@@ -190,29 +190,23 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
                 "Ticker": str(ticker), "Name": str(name), "Sektor": str(sektor),
                 "Markt": str(markt), "Waehrung": str(waehrung), "Kurs": kurs,
                 "Kriterien": kriterien, "Eigene_5T": eigene_5t, **ziele,
-                "Trendfolge_bestaetigt": False,
             })
     except Exception as e:
         print(f"DEBUG-HEBELTRADER: {ticker} -> Teilkriterien nicht berechenbar ({type(e).__name__}: {e})")
 
 
 def _hebeltrader_finalisieren(df_perf, df_perf_eu):
-    """Stufe 2: traegt bei jedem Kandidaten Kriterium 5 (Relative Staerke
-    ZUM SEKTOR, nicht zum Gesamtmarkt) nach, ergaenzt den Sektor-Rotation-
-    Score (NEU 09.08.2026, Nutzerwunsch "Hebeltrader um Momentum/Rotation
-    ergaenzen") und filtert auf die Schwelle UND (NEU 09.08.2026,
-    Nutzerwunsch "nur valide Aktien sehen, aus denen auch das Momentum
-    hervorgeht - CRV1 ODER CRV2 MUSS ueber 1 liegen") auf ein Mindest-CRV.
-    GEAENDERT ggue. der urspruenglichen Design-Entscheidung vom 08.08.2026
-    ("KEIN CRV-Mindestwert als Ausschlusskriterium") - der Nutzer wollte das
-    nach Betrachtung realer Laeufe bewusst umdrehen: lieber weniger, aber
-    handelbare Kandidaten als viele mit unattraktivem CRV. ODER-Logik
-    (nicht UND wie bei den anderen Kategorien) - bewusst gewaehlt, siehe
-    Chat 09.08.2026 (NVDA-Fund: ein starkes TP2 soll nicht an einem
-    schwachen TP1 scheitern).
-    Sektor-5T/Rotation-Score kommen aus df_perf/df_perf_eu (werden fuer
-    ALLE Sektoren berechnet, nicht nur Top-8/Top-5 - daher hier ohne
-    zusaetzlichen Aufwand verfuegbar)."""
+    """Stufe 2: finalisiert den HebelTrader-Score und baut parallel einen
+    transparenten Funnel auf.
+
+    Der Funnel zeigt nicht nur die Zahl der 5/5-Treffer, sondern fuer jeden
+    Ausschlussschritt, wie viele Titel dort verloren gehen. Wichtig: Ein
+    Titel wird fuer die Funnel-Statistik jeweils nur einmal je Stufe gezählt;
+    bei den vier Momentum-Kriterien werden zusaetzlich die Einzel-Ausfaelle
+    ausgewiesen. Die bestehende 5/5- und CRV-Logik bleibt unveraendert.
+    """
+    global HEBELTRADER_FUNNEL
+
     sektor_5t = {}
     sektor_rotation = {}
     try:
@@ -228,57 +222,119 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
             sektor_5t[str(z['Sektor'])] = float(z['5T'])
             sektor_rotation[str(z['Sektor'])] = (float(z['Rotation-Score']), str(z['Sektor']) in top_5_eu)
     except Exception:
-        pass
+        top_5_eu = set()
+
+    funnel = {
+        'gesamt': len(HEBELTRADER_KANDIDATEN),
+        'crv_ok': 0,
+        'crv_nicht_ok': 0,
+        'nach_crv': 0,
+        'drop_kriterium_1': 0,
+        'drop_kriterium_2': 0,
+        'drop_kriterium_3': 0,
+        'drop_kriterium_4': 0,
+        'nach_kriterium_1': 0,
+        'nach_kriterium_2': 0,
+        'nach_kriterium_3': 0,
+        'nach_kriterium_4': 0,
+        'drop_sektor_verfuegbarkeit': 0,
+        'nach_sektor_verfuegbarkeit': 0,
+        'drop_sektor_rs': 0,
+        'kriterium_1_ok': 0,
+        'kriterium_1_nicht_ok': 0,
+        'kriterium_2_ok': 0,
+        'kriterium_2_nicht_ok': 0,
+        'kriterium_3_ok': 0,
+        'kriterium_3_nicht_ok': 0,
+        'kriterium_4_ok': 0,
+        'kriterium_4_nicht_ok': 0,
+        'sektor_verfuegbar': 0,
+        'sektor_nicht_verfuegbar': 0,
+        'sektor_rs_ok': 0,
+        'sektor_rs_nicht_ok': 0,
+        'score_5': 0,
+        'score_4': 0,
+        'score_3': 0,
+        'score_2': 0,
+        'score_1': 0,
+        'score_0': 0,
+        'finale_treffer': 0,
+    }
 
     treffer = []
     for kand in HEBELTRADER_KANDIDATEN:
-        # CRV-Pflichtfilter (NEU 09.08.2026): VOR der Score-Pruefung, da ohne
-        # handelbares CRV keine "valide Aktie" im Sinne des Nutzerwunsches.
-        crv1, crv2 = kand.get("CRV1"), kand.get("CRV2")
-        if (crv1 is None or crv1 < 1.0) and (crv2 is None or crv2 < 1.0):
+        crv1, crv2 = kand.get('CRV1'), kand.get('CRV2')
+        crv_ok = ((crv1 is not None and crv1 >= 1.0) or
+                  (crv2 is not None and crv2 >= 1.0))
+        if not crv_ok:
+            funnel['crv_nicht_ok'] += 1
+            continue
+        funnel['crv_ok'] += 1
+        funnel['nach_crv'] += 1
+
+        kriterien = dict(kand['Kriterien'])
+        kriterium_namen = list(kand['Kriterien'].keys())
+
+        # ECHTER sequenzieller Funnel: Jeder Titel kann hier pro Stufe nur
+        # einmal ausscheiden. Zusaetzlich bleiben die Einzelzaehlungen als
+        # Diagnose erhalten, damit sichtbar ist, welche Kriterien insgesamt
+        # besonders selten erfuellt werden.
+        _funnel_verbleibend = True
+        for i, key in enumerate(kriterium_namen[:4], start=1):
+            ok = bool(kand['Kriterien'][key][0])
+            funnel[f'kriterium_{i}_' + ('ok' if ok else 'nicht_ok')] += 1
+            if _funnel_verbleibend:
+                if ok:
+                    funnel[f'nach_kriterium_{i}'] += 1
+                else:
+                    funnel[f'drop_kriterium_{i}'] += 1
+                    _funnel_verbleibend = False
+
+        # Nur Titel, die alle vier Momentum-Kriterien passiert haben, erreichen
+        # im echten Funnel den Sektorvergleich.
+        if not _funnel_verbleibend:
             continue
 
-        kriterien = dict(kand["Kriterien"])
+        sektor_verfuegbar = kand['Eigene_5T'] is not None and kand['Sektor'] in sektor_5t
+        if not sektor_verfuegbar:
+            funnel['sektor_nicht_verfuegbar'] += 1
+            funnel['drop_sektor_verfuegbarkeit'] += 1
+            continue
 
-        # Seit 09.08.2026 gilt bewusst 5/5: Ein HebelTrader-Treffer ist nur
-        # dann valide, wenn ALLE fuenf Kriterien vorliegen und erfuellt sind.
-        # Fehlt die Sektor-Performance, gibt es deshalb KEINEN 4/4-Fallback.
-        sektor_verfuegbar = kand["Eigene_5T"] is not None and kand["Sektor"] in sektor_5t
-        if sektor_verfuegbar:
-            sektor_wert = sektor_5t[kand["Sektor"]]
-            ok = kand["Eigene_5T"] > sektor_wert
-            kriterien["Relative Stärke zum Sektor (5T)"] = (
-                ok, f"Aktie {kand['Eigene_5T']:+.1f}% vs. Sektor {sektor_wert:+.1f}% (5 Tage)")
+        funnel['sektor_verfuegbar'] += 1
+        funnel['nach_sektor_verfuegbarkeit'] += 1
+        sektor_wert = sektor_5t[kand['Sektor']]
+        ok = kand['Eigene_5T'] > sektor_wert
+        kriterien['Relative Stärke zum Sektor (5T)'] = (
+            ok, f"Aktie {kand['Eigene_5T']:+.1f}% vs. Sektor {sektor_wert:+.1f}% (5 Tage)")
+        funnel['sektor_rs_' + ('ok' if ok else 'nicht_ok')] += 1
+        if not ok:
+            funnel['drop_sektor_rs'] += 1
+            continue
 
         score = sum(1 for ok, _ in kriterien.values() if ok)
+        if score >= 5:
+            funnel['score_5'] += 1
+        elif score == 4:
+            funnel['score_4'] += 1
+        elif score == 3:
+            funnel['score_3'] += 1
+        elif score == 2:
+            funnel['score_2'] += 1
+        elif score == 1:
+            funnel['score_1'] += 1
+        else:
+            funnel['score_0'] += 1
+
         max_punkte = len(kriterien)
         if sektor_verfuegbar and score >= HEBELTRADER_SCHWELLE and max_punkte == 5:
-            # DETAIL-/QUALITAETSPRUEFUNG aus einzel_check:
-            # 5/5 bleibt die notwendige HebelTrader-Grundvoraussetzung.
-            # Danach muss ein bestaetigtes Trendfolge-Setup vorliegen.
-            # CRV >= 1.0 wurde bereits oben als Pflichtfilter geprueft.
-            # Trendwende wird bewusst NICHT hier erzwungen, weil der separate
-            # Trendwende-Scanner erst nach analyse.py laeuft. Dadurch vermeiden
-            # wir einen zusaetzlichen API-/Workflow-Kopplungseffekt.
-            detail_status = (
-                "A" if str(kand.get("Ticker")) in HEBELTRADER_TRENDFOLGE_BESTAETIGT else "B"
-            )
-            if detail_status != "A":
-                continue
+            rot_score, in_top = sektor_rotation.get(kand['Sektor'], (None, None))
+            treffer.append({**kand, 'Kriterien_final': kriterien, 'Score': score, 'Max_Punkte': max_punkte,
+                            'Rotation_Score': rot_score, 'Sektor_In_Top': in_top})
+            funnel['finale_treffer'] += 1
 
-            rot_score, in_top = sektor_rotation.get(kand["Sektor"], (None, None))
-            treffer.append({
-                **kand,
-                "Kriterien_final": kriterien,
-                "Score": score,
-                "Max_Punkte": max_punkte,
-                "Rotation_Score": rot_score,
-                "Sektor_In_Top": in_top,
-                "Trendfolge_bestaetigt": True,
-                "Detailstatus": "KAUFKANDIDAT A",
-                "Detailpruefung": "5/5 + bestaetigtes Trendfolge-Setup + CRV >= 1.0",
-            })
-    treffer.sort(key=lambda t: -t["Score"])
+    HEBELTRADER_FUNNEL = funnel
+    treffer.sort(key=lambda t: -t['Score'])
     return treffer
 
 
@@ -748,7 +804,7 @@ def get_earnings_warnung(ticker, warn_tage=7):
             print(f"DEBUG-EARNINGS: {ticker} -> kein Termin im Kalender hinterlegt")
             return None
         naechster = termine[0] if isinstance(termine, (list, tuple)) else termine
-        heute = datetime.datetime.now(ZoneInfo("Europe/Berlin")).date()
+        heute = datetime.date.today()
         if hasattr(naechster, 'date'):
             naechster = naechster.date()
         delta = (naechster - heute).days
@@ -2901,8 +2957,6 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
                 "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
                 "Markt": "US", "Waehrung": "USD"
             }
-            with _funnel_lock:
-                HEBELTRADER_TRENDFOLGE_BESTAETIGT.add(str(ticker))
             return res
         
         return None
@@ -3206,8 +3260,6 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
             "Abstand_52W_Hoch%": clean_num(abstand_52w_hoch),
             "Markt": "EU", "Waehrung": "EUR"
         }
-        with _funnel_lock:
-            HEBELTRADER_TRENDFOLGE_BESTAETIGT.add(str(ticker))
         return res
 
     except Exception as e:
@@ -3216,11 +3268,7 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
         return None
 
 if __name__ == "__main__":
-    # Lokale Projektzeit: Europe/Berlin (automatisch MEZ/MESZ)
-    # NICHT UTC und NICHT eine feste Uhrzeit. Dadurch entsprechen
-    # Handelstag/Dateiname und Erstellzeit der lokalen Projektzeit.
-    now_local = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
-    today = now_local.strftime("%Y-%m-%d")
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
     
     # 1. Benchmarks sicher abrufen
     # S&P 500 / Nasdaq (GEÄNDERT 27.07.2026): vorher SPY-/QQQ-ETF-Kurse über
@@ -3337,9 +3385,6 @@ if __name__ == "__main__":
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
-    # STRATEGISCHE AUSWAHL (bewusst beibehalten):
-    # Hauptscanner fokussiert auf die staerksten Sektoren der aktuellen Rotation.
-    # Das ist keine technische Begrenzung der Datenanbieter.
     # Aufgabenliste erstellen (Top 8 Sektoren, konsistent zum finalen Sektor-Filter unten)
     tasks = []
     for _, row in df_perf.head(8).iterrows():
@@ -3356,26 +3401,41 @@ if __name__ == "__main__":
         for s in aktien_liste_eu:
             tasks_eu.append((s, row['Sektor']))
 
-    # KEIN kuenstliches Ticker-Budget mehr (GEAENDERT 09.08.2026):
-    # Das fruehere Limit von 180 Tasks war eine eigene Schutzbegrenzung und
-    # KEINE Alpaca-/Yahoo-Limitierung. Es wurde entfernt.
-    #
-    # WICHTIG: Die strategische Sektor-Auswahl bleibt bewusst bestehen:
-    #   US = Top 8 Sektoren der aktuellen US-Sektorrotation
-    #   EU = Top 5 Sektoren der aktuellen EU-Sektorrotation
-    #
-    # Damit werden alle Aktien innerhalb der aktuell priorisierten
-    # Rotationssektoren analysiert, aber nicht automatisch das komplette
-    # Aktienuniversum. Das ist eine STRATEGIEREGEL und keine API-Begrenzung.
-    #
-    # Die Kursdaten werden bereits in Sammelabrufen geladen. Einzelne
-    # API-/Datenfehler bleiben auf Ticker-Ebene isoliert und duerfen den
-    # Gesamtlauf nicht stoppen.
-    print(
-        f"DEBUG: Keine Ticker-Budgetbegrenzung. "
-        f"Analysiert werden alle Tasks der Top-8-US- und Top-5-EU-Sektoren: "
-        f"US {len(tasks)} | EU {len(tasks_eu)} | Gesamt {len(tasks) + len(tasks_eu)}."
-    )
+    # Rate-Limit-Budget: max. 180 Tasks insgesamt (US + EU) pro Lauf.
+    # US und EU werden proportional zum vorhandenen Universum begrenzt.
+    # Wichtig: EU darf nicht mehr vollständig auf 0 gekürzt werden.
+    MAX_TICKER_BUDGET = 180
+    gesamt_anzahl = len(tasks) + len(tasks_eu)
+
+    if gesamt_anzahl > MAX_TICKER_BUDGET:
+        us_anteil = len(tasks) / gesamt_anzahl if gesamt_anzahl else 0.5
+        us_budget = int(round(MAX_TICKER_BUDGET * us_anteil))
+        eu_budget = MAX_TICKER_BUDGET - us_budget
+
+        us_budget = min(us_budget, len(tasks))
+        eu_budget = min(eu_budget, len(tasks_eu))
+        rest_budget = MAX_TICKER_BUDGET - us_budget - eu_budget
+
+        # Freie Plätze aus einer Region gehen an die andere Region.
+        if rest_budget > 0:
+            freie_us = len(tasks) - us_budget
+            freie_eu = len(tasks_eu) - eu_budget
+            zusatz_us = min(rest_budget, freie_us)
+            us_budget += zusatz_us
+            rest_budget -= zusatz_us
+            if rest_budget > 0:
+                zusatz_eu = min(rest_budget, freie_eu)
+                eu_budget += zusatz_eu
+                rest_budget -= zusatz_eu
+
+        print(
+            f"DEBUG: Ticker-Budget überschritten ({gesamt_anzahl} > {MAX_TICKER_BUDGET}) - "
+            f"proportionale Verteilung: US {us_budget}, EU {eu_budget}."
+        )
+        tasks = tasks[:us_budget]
+        tasks_eu = tasks_eu[:eu_budget]
+
+    print(f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | Gesamt: {len(tasks) + len(tasks_eu)}")
 
     # SAMMEL-ABRUF (NEU 09.08.2026, Nutzerwunsch): vorher machte jeder der
     # bis zu 10 parallelen Worker unten einen EIGENEN Alpaca-Request pro
@@ -3495,6 +3555,23 @@ if __name__ == "__main__":
     hebeltrader_treffer = _hebeltrader_finalisieren(df_perf, df_perf_eu)
     print(f"DEBUG: {len(hebeltrader_treffer)} Hebeltrader-Treffer (Schwelle "
           f"{HEBELTRADER_SCHWELLE}/5) von {len(HEBELTRADER_KANDIDATEN)} geprueften Titeln.")
+    print("HEBELTRADER-FUNNEL:")
+    print(f"  Universum: {HEBELTRADER_FUNNEL.get('gesamt', 0)}")
+    print(f"  - CRV < 1.0 bei TP1 UND TP2: -{HEBELTRADER_FUNNEL.get('crv_nicht_ok', 0)}")
+    print(f"  => CRV >= 1.0 bei mindestens einem TP: {HEBELTRADER_FUNNEL.get('crv_ok', 0)}")
+    print(f"  - Kriterium 1 Stochastik > 80: -{HEBELTRADER_FUNNEL.get('drop_kriterium_1', 0)}")
+    print(f"    => nach K1: {HEBELTRADER_FUNNEL.get('nach_kriterium_1', 0)}")
+    print(f"  - Kriterium 2 3M-Hoch (Toleranz 1%): -{HEBELTRADER_FUNNEL.get('drop_kriterium_2', 0)}")
+    print(f"    => nach K2: {HEBELTRADER_FUNNEL.get('nach_kriterium_2', 0)}")
+    print(f"  - Kriterium 3 Volumen > {MOMENTUM_VOL_SCHWELLE:.1f}x SMA20: -{HEBELTRADER_FUNNEL.get('drop_kriterium_3', 0)}")
+    print(f"    => nach K3: {HEBELTRADER_FUNNEL.get('nach_kriterium_3', 0)}")
+    print(f"  - Kriterium 4 EMA50-Abstand 5-15%: -{HEBELTRADER_FUNNEL.get('drop_kriterium_4', 0)}")
+    print(f"    => nach K4: {HEBELTRADER_FUNNEL.get('nach_kriterium_4', 0)}")
+    print(f"  - Sektor-5T nicht verfuegbar: -{HEBELTRADER_FUNNEL.get('drop_sektor_verfuegbarkeit', 0)}")
+    print(f"    => nach Sektor-Verfuegbarkeit: {HEBELTRADER_FUNNEL.get('nach_sektor_verfuegbarkeit', 0)}")
+    print(f"  - Relative Staerke zum Sektor nicht erfuellt: -{HEBELTRADER_FUNNEL.get('drop_sektor_rs', 0)}")
+    print(f"  SCORE-VERTEILUNG: 5/5={HEBELTRADER_FUNNEL.get('score_5', 0)} | 4/5={HEBELTRADER_FUNNEL.get('score_4', 0)} | 3/5={HEBELTRADER_FUNNEL.get('score_3', 0)} | 2/5={HEBELTRADER_FUNNEL.get('score_2', 0)} | 1/5={HEBELTRADER_FUNNEL.get('score_1', 0)} | 0/5={HEBELTRADER_FUNNEL.get('score_0', 0)}")
+    print(f"  => FINALE HEBELTRADER-TREFFER: {HEBELTRADER_FUNNEL.get('finale_treffer', 0)}")
 
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
@@ -3679,18 +3756,7 @@ if __name__ == "__main__":
     portfolio_setups = relevante_setups[relevante_setups['Status2'] == "BEREITS IM PORTFOLIO"]
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
-        # AUTORITATIVE ERSTELLZEIT (FIX 10.08.2026): Die Uhrzeit wird hier
-        # technisch aus der echten lokalen Laufzeit erzeugt. Gemini darf sie
-        # spaeter nur woertlich uebernehmen und niemals selbst berechnen oder
-        # schaetzen. ZoneInfo Europe/Berlin handles MEZ/MESZ automatisch.
-        erstellzeitpunkt = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
-        erstellt_am_text = erstellzeitpunkt.strftime("%d.%m.%Y, %H:%M Uhr")
-        zeitzone_text = "MESZ" if erstellzeitpunkt.dst() else "MEZ"
-        handelstag_text = get_handelstag_text()
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
-        if handelstag_text:
-            f.write(f"{handelstag_text}\n")
-        f.write(f"Erstellt am: {erstellt_am_text} ({zeitzone_text})\n\n")
 
         # Kurzüberblick über den zugrunde liegenden Trading-Ansatz
         f.write("STRATEGIE-ANSATZ\n")
@@ -3707,7 +3773,7 @@ if __name__ == "__main__":
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
-        f.write("- Ticker-Budget: keine kuenstliche Begrenzung; US/EU-Kursdaten werden in Sammelabrufen/Chunks geladen\n")
+        f.write("- Ticker-Budget: max. 180 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
         f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n")
@@ -3716,11 +3782,14 @@ if __name__ == "__main__":
         f.write("- Duplikat-Check (NEU 28.07.2026): Setups für Titel mit bereits offener Portfolio-Position erhalten den Status BEREITS IM PORTFOLIO (kein Neueinstieg, Bestätigung des laufenden Trades)\n")
         f.write("- Earnings-Rückblick (NEU 29.07.2026): nach berichteten Zahlen (letzte 5 Kalendertage) erscheint eine Zeile '📊 Zahlen TT.MM.: ...' - EPS gemeldet vs. Analystenerwartung (yfinance) KOMBINIERT mit der Kursreaktion am Berichtstag; laufen beide auseinander (Zahlen gut, Kurs fällt), lautet das Urteil 'geteilte Meinung'. Nur EPS, kein Umsatz/keine Guidance verfügbar - reiner Kontext, keine Setup-Bewertung\n\n")
 
-        # ZEITSTEMPEL / HANDELSTAG: Die Erstellzeit wurde oben technisch aus
-        # der echten Europe/Berlin-Laufzeit erzeugt. Die Gemini-Master-Anweisung
-        # schreibt diese Zeile anschliessend woertlich in die Auswertung.
-        # Der Handelstag wird weiterhin separat ueber die Datenstaende der
-        # Referenz-/Regionenfunktionen ausgewiesen.
+        # HANDELSTAG/ERSTELLT-AM (ENTFERNT 08.08.2026, Nutzerwunsch): standen
+        # bis dahin hier als eigene Zeilen - der Nutzer wollte den Datenstand
+        # stattdessen direkt in Klammern hinter jedem einzelnen Index in der
+        # Regionen-Performance sehen (siehe get_regionen_performance_text),
+        # das ist praeziser, weil jeder Index sein EIGENES Datum zeigt statt
+        # eines einzelnen globalen Referenzwerts. get_handelstag_text() bleibt
+        # als Funktion bestehen (harmlos, aktuell nirgends mehr aufgerufen),
+        # falls sie spaeter an anderer Stelle nochmal gebraucht wird.
 
         # REGIONEN-PERFORMANCE zuerst (NEU 29.07.2026): steht bewusst VOR den
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
@@ -4108,6 +4177,25 @@ if __name__ == "__main__":
                                      else "")
                 f.write(f"{b['Name']} ({b['Ticker']}){_portfolio_hinweis}: {b['Stufe']} -> {b['Detail']}\n\n")
 
+        # HEBELTRADER-FUNNEL (NEU 10.08.2026): transparent machen, an welcher
+        # Stufe die 5/5-Kandidaten verloren gehen. Die bestehende Auswahl wird
+        # dadurch nicht veraendert.
+        hf = HEBELTRADER_FUNNEL
+        f.write("\nHEBELTRADER-FUNNEL (5/5-Transparenz)\n")
+        f.write("-" * 50 + "\n")
+        f.write(f"Universum: {hf.get('gesamt', 0)} Titel\n")
+        f.write(f"- CRV < 1.0 bei TP1 UND TP2: -{hf.get('crv_nicht_ok', 0)}\n")
+        f.write(f"=> CRV >= 1.0 bei mindestens einem TP: {hf.get('crv_ok', 0)}\n")
+        f.write(f"- Kriterium 1 Stochastik > 80: -{hf.get('drop_kriterium_1', 0)} | danach: {hf.get('nach_kriterium_1', 0)}\n")
+        f.write(f"- Kriterium 2 3M-Hoch (Toleranz 1%): -{hf.get('drop_kriterium_2', 0)} | danach: {hf.get('nach_kriterium_2', 0)}\n")
+        f.write(f"- Kriterium 3 Volumen > {MOMENTUM_VOL_SCHWELLE:.1f}x SMA20: -{hf.get('drop_kriterium_3', 0)} | danach: {hf.get('nach_kriterium_3', 0)}\n")
+        f.write(f"- Kriterium 4 EMA50-Abstand 5-15%: -{hf.get('drop_kriterium_4', 0)} | danach: {hf.get('nach_kriterium_4', 0)}\n")
+        f.write(f"- Sektor-5T nicht verfuegbar: -{hf.get('drop_sektor_verfuegbarkeit', 0)} | danach: {hf.get('nach_sektor_verfuegbarkeit', 0)}\n")
+        f.write(f"- Relative Staerke zum Sektor nicht erfuellt: -{hf.get('drop_sektor_rs', 0)}\n")
+        f.write(f"SCORE-VERTEILUNG: 5/5={hf.get('score_5', 0)} | 4/5={hf.get('score_4', 0)} | 3/5={hf.get('score_3', 0)} | 2/5={hf.get('score_2', 0)} | 1/5={hf.get('score_1', 0)} | 0/5={hf.get('score_0', 0)}\n")
+        f.write(f"=> FINALE HEBELTRADER-TREFFER: {hf.get('finale_treffer', 0)}\n")
+        f.write("(Reine Diagnose; die bestehende 5/5- und CRV-Logik bleibt unveraendert.)\n")
+
         # HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch): eigenstaendiger
         # Block, unabhaengig davon, ob ueberhaupt ein Trendfolge-Setup
         # gefunden wurde - Titel koennen hier auftauchen, obwohl sie oben
@@ -4148,7 +4236,6 @@ if __name__ == "__main__":
                     top_text = "Ja" if t["Sektor_In_Top"] else "Nein"
                     f.write(f"Sektor-Rotation: {t['Rotation_Score']:+.2f} "
                            f"(Top-{'8' if t['Markt'] == 'US' else '5'}-Sektor: {top_text})\n")
-                f.write(f"Detailprüfung: {t.get('Detailstatus', 'n/a')} | {t.get('Detailpruefung', 'n/a')}\n")
                 for name, (ok, detail) in t["Kriterien_final"].items():
                     f.write(f"  {'✓' if ok else '–'} {name}: {detail}\n")
                 f.write("\n")
