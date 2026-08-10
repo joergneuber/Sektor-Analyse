@@ -25,14 +25,12 @@ Architektur-Entscheidung (Stand 21.07.2026):
   - Stop OBERHALB des Einstiegs, Kursziele UNTERHALB (Widerstaende von oben
     werden zu Zielen, siehe potenzial_targets_unterhalb).
 
-WICHTIGER HINWEIS ZUR TRENDLINIEN-BRUCH-ERKENNUNG: Die exakte Methodik der
-Trendlinien-Erkennung im Original-Long-Scanner (analyse.py) ist dort nicht
-als eigenstaendige, wiederverwendbare Funktion ausgelagert (liegt inline in
-analyze_a_setup). Hier daher eine eigenstaendige, funktional gleichwertige
-Umsetzung per linearer Regression durch die letzten lokalen Hochpunkte
-(scipy.signal.argrelextrema + linregress) - vermutlich nicht Zeile-fuer-
-Zeile identisch zur Original-Implementierung, aber nach demselben Prinzip
-(≥ 3 Punkte, Bruch nach unten mit Volumen-Bestaetigung).
+TRENDLINIEN-ARCHITEKTUR (GEAENDERT 10.08.2026):
+Die Long- und Short-Erkennung verwendet jetzt dieselbe zentrale Implementierung
+aus trendline_utils.py. Nur die Richtung ist gespiegelt:
+Long = fallende Widerstandslinie / Ausbruch nach oben,
+Short = steigende Stuetzlinie / Ausbruch nach unten.
+Dadurch gibt es keine driftenden Doppelimplementierungen mehr.
 
 Voraussetzungen: dieselben Umgebungsvariablen wie analyse.py
 (ALPACA_KEY, ALPACA_SECRET, GROQ_API_KEY - Import von analyse.py fuehrt
@@ -48,8 +46,7 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
-
-from market_data import fetch_us_batch_robust
+from trendline_utils import check_trendline_breakdown
 
 from analyse import (
     alpaca_client,
@@ -101,13 +98,29 @@ def _chunks(liste, groesse):
 # ---------------------------------------------------------------------------
 
 def fetch_us_batch(ticker_liste):
-    """Robuster US-Sammelabruf: ein ungültiges Symbol darf keinen ganzen Chunk verlieren."""
-    return fetch_us_batch_robust(
-        alpaca_client,
-        ticker_liste,
-        chunk_size=CHUNK_SIZE_US if 'CHUNK_SIZE_US' in globals() else CHUNK_SIZE,
-        days=365,
-    )
+    ergebnis = {}
+    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+    for chunk in _chunks(ticker_liste, CHUNK_SIZE):
+        try:
+            request = StockBarsRequest(symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day)
+            df_alle = alpaca_client.get_stock_bars(request).df
+        except Exception as e:
+            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
+            continue
+        if df_alle.empty:
+            continue
+        for ticker in chunk:
+            try:
+                data = df_alle.loc[ticker].copy()
+            except KeyError:
+                continue
+            if data.empty:
+                continue
+            data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
+            ergebnis[ticker] = data
+    print(f"DEBUG: US-Sammel-Abruf (Short) lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
+    return ergebnis
+
 
 def fetch_eu_batch(ticker_liste):
     ergebnis = {}
@@ -225,53 +238,6 @@ def check_pullback_zone_short(data, ticker=None):
         return False
     lower_high = data['High'].tail(20).iloc[ilocs_max[-1]] < data['High'].tail(20).iloc[ilocs_max[-2]]
     return bool(lower_high)
-
-
-def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01):
-    """Exaktes Spiegelbild von check_trendline_breakout in analyse.py: sucht
-    eine STEIGENDE Stütz-Trendlinie durch mindestens 3 Swing-Tiefs (Toleranz
-    1%) und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
-    durchschnittlichem Volumen darunter ausgebrochen ist."""
-    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
-    if len(fenster) < 10:
-        return False, None
-    suchbereich = fenster.iloc[:-3]
-    if len(suchbereich) < 10:
-        return False, None
-
-    lows = suchbereich['Low'].values
-    idx_swings = argrelextrema(lows, np.less_equal, order=order)[0]
-    if len(idx_swings) < 3:
-        return False, None
-
-    x = idx_swings.astype(float)
-    y = lows[idx_swings]
-    slope, intercept = np.polyfit(x, y, 1)
-
-    # Nur STEIGENDE Stützlinien relevant (Bruch nach unten = Short-Signal)
-    if slope <= 0:
-        return False, None
-
-    linie_bei_punkten = slope * x + intercept
-    beruehrungen = int(np.sum(np.abs(y - linie_bei_punkten) <= (linie_bei_punkten * touch_tolerance)))
-    if beruehrungen < 3:
-        return False, None
-
-    heute_pos = len(fenster) - 1
-    linie_heute = slope * heute_pos + intercept
-    close_heute = fenster['Close'].iloc[-1]
-
-    crossunder_kuerzlich = any(
-        fenster['Close'].iloc[-1 - i] >= (slope * (heute_pos - i) + intercept)
-        for i in range(1, 4)
-    )
-    volumen_ok = any(
-        fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
-        for i in range(0, 3)
-    )
-
-    bruch = bool(close_heute < linie_heute) and crossunder_kuerzlich and bool(volumen_ok)
-    return bruch, (float(linie_heute) if bruch else None)
 
 
 def check_kumo_breakdown(data):
