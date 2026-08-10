@@ -3401,41 +3401,15 @@ if __name__ == "__main__":
         for s in aktien_liste_eu:
             tasks_eu.append((s, row['Sektor']))
 
-    # Rate-Limit-Budget: max. 180 Tasks insgesamt (US + EU) pro Lauf.
-    # US und EU werden proportional zum vorhandenen Universum begrenzt.
-    # Wichtig: EU darf nicht mehr vollständig auf 0 gekürzt werden.
-    MAX_TICKER_BUDGET = 180
-    gesamt_anzahl = len(tasks) + len(tasks_eu)
-
-    if gesamt_anzahl > MAX_TICKER_BUDGET:
-        us_anteil = len(tasks) / gesamt_anzahl if gesamt_anzahl else 0.5
-        us_budget = int(round(MAX_TICKER_BUDGET * us_anteil))
-        eu_budget = MAX_TICKER_BUDGET - us_budget
-
-        us_budget = min(us_budget, len(tasks))
-        eu_budget = min(eu_budget, len(tasks_eu))
-        rest_budget = MAX_TICKER_BUDGET - us_budget - eu_budget
-
-        # Freie Plätze aus einer Region gehen an die andere Region.
-        if rest_budget > 0:
-            freie_us = len(tasks) - us_budget
-            freie_eu = len(tasks_eu) - eu_budget
-            zusatz_us = min(rest_budget, freie_us)
-            us_budget += zusatz_us
-            rest_budget -= zusatz_us
-            if rest_budget > 0:
-                zusatz_eu = min(rest_budget, freie_eu)
-                eu_budget += zusatz_eu
-                rest_budget -= zusatz_eu
-
-        print(
-            f"DEBUG: Ticker-Budget überschritten ({gesamt_anzahl} > {MAX_TICKER_BUDGET}) - "
-            f"proportionale Verteilung: US {us_budget}, EU {eu_budget}."
-        )
-        tasks = tasks[:us_budget]
-        tasks_eu = tasks_eu[:eu_budget]
-
-    print(f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | Gesamt: {len(tasks) + len(tasks_eu)}")
+    # KEIN künstliches Ticker-Budget mehr.
+    # Seit dem 09.08.2026 werden die Kursdaten über robuste Sammelabrufe
+    # (inkl. Chunking/Fehlerisolierung) geladen. Ein globales Limit von 180
+    # würde Teile des bewusst erweiterten Universums abschneiden und ist daher
+    # fachlich nicht mehr gewollt.
+    print(
+        f"DEBUG: Finale Task-Anzahl -> US: {len(tasks)} | EU: {len(tasks_eu)} | "
+        f"Gesamt: {len(tasks) + len(tasks_eu)} (kein künstliches Ticker-Limit)"
+    )
 
     # SAMMEL-ABRUF (NEU 09.08.2026, Nutzerwunsch): vorher machte jeder der
     # bis zu 10 parallelen Worker unten einen EIGENEN Alpaca-Request pro
@@ -3773,7 +3747,7 @@ if __name__ == "__main__":
         f.write("- Stop: Pullback-Setups = Tief der letzten 5 Kerzen, sonst 10-Tage-Tief\n")
         f.write("- Ziel: Pullback-Setups = letzter Swing-High, sonst nächstes EMA/Fib-Level\n")
         f.write("- Realitäts-Deckel: TP1 <= reales 120-Tage-Hoch, TP2 <= reales 250-Tage-Hoch (keine reinen Fib-Extensions ohne Kursdeckung)\n")
-        f.write("- Ticker-Budget: max. 180 Werte gesamt pro Lauf (Rate-Limit-Schutz)\n")
+        f.write("- Ticker-Budget: kein künstliches Gesamtlimit; robuste Sammelabrufe mit Chunking/Fehlerisolierung schützen vor API-/Rate-Limit-Problemen\n")
         f.write("- Positions-Tracking: manuell in Offene_Positionen.csv (Drive) bestätigte Trades, täglich gegen Stop geprüft\n")
         f.write("- Ichimoku, intern: Kumo-Grenzen (Senkou A/B) als zusätzliche TP-Kandidaten, Kijun-sen als zusätzliches Pullback-Level\n")
         f.write("- Kumo-Ausbruch: Kurs durchbricht komplette Wolke (über Senkou A UND B) innerhalb der letzten 3 Tage, Pflicht-Volumen\n")
