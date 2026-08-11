@@ -1,6 +1,6 @@
 """
 einzel_check.py
-Version 10.08.2026
+Version 11.08.2026
 
 Einzelprüfung beliebiger Ticker gegen die bestehenden Strategien.
 
@@ -50,10 +50,6 @@ KAUF_B_MOMENTUM_MIN = 3
 # A-Kandidat:
 # Mindestens ein bestätigtes Setup ist zwingend.
 KAUF_A_MIN_CRV = 1.0
-
-# Bei Momentum 5/5 darf der Titel als starke Vorbereitung gelten.
-# Das ersetzt aber weiterhin KEIN bestätigtes Setup.
-KAUF_B_STARKES_MOMENTUM = 4
 
 
 # Standardliste
@@ -390,8 +386,8 @@ def bewerte_kaufkandidat(
 
     B:
         Noch kein bestätigtes Setup,
-        aber starkes Momentum >= 3/4
-        und mindestens ein zusätzlicher Trigger-Indikator.
+        aber Momentum >= 3/4
+        UND Trigger-Nähe (3M-Hoch ODER Volumen-Ausbruch).
 
     B bedeutet ausdrücklich: "Trigger abwarten", nicht kaufen.
     """
@@ -434,10 +430,26 @@ def bewerte_kaufkandidat(
         if rotation_score is not None and rotation_score <= 0:
             risiken.append("Sektor-Rotation ohne positiven Rückenwind")
 
+        crvs = []
+        for setup_res in (trendfolge_res, trendwende_res):
+            if setup_res:
+                for key in ("CRV1", "CRV2"):
+                    try:
+                        value = setup_res.get(key)
+                        if value is not None:
+                            crvs.append(float(value))
+                    except (TypeError, ValueError):
+                        pass
+
+        if crvs:
+            gruende.append(
+                f"bestes vorhandenes CRV {max(crvs):.2f}"
+            )
+
         return {
             "Ticker": ticker,
             "Status": "KAUFKANDIDAT A",
-            "Score": momentum,
+            "MomentumScore": momentum,
             "Momentum": f"{momentum}/{momentum_max}",
             "Gruende": gruende,
             "Risiken": risiken,
@@ -498,7 +510,7 @@ def bewerte_kaufkandidat(
         return {
             "Ticker": ticker,
             "Status": "KAUFKANDIDAT B",
-            "Score": momentum,
+            "MomentumScore": momentum,
             "Momentum": f"{momentum}/{momentum_max}",
             "Gruende": gruende,
             "Risiken": risiken,
@@ -531,7 +543,7 @@ def bewerte_kaufkandidat(
     return {
         "Ticker": ticker,
         "Status": "KEIN KAUF",
-        "Score": momentum,
+        "MomentumScore": momentum,
         "Momentum": f"{momentum}/{momentum_max}",
         "Gruende": gruende,
         "Risiken": risiken,
@@ -548,6 +560,7 @@ KAUFKANDIDATEN_ERGEBNISSE = []
 def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
     trendfolge_res = None
     trendwende_res = None
+    trendwende_aktien_res = None
 
     ist_eu = "." in ticker
 
@@ -697,10 +710,11 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
                     f"Bonus: {res.get('Qualitaets_Bonus')}"
                 )
 
-                # Für die Kaufentscheidung verwenden wir den ersten
-                # tatsächlich bestätigten Trendwende-Treffer.
-                if trendwende_res is None:
-                    trendwende_res = res
+                # WICHTIG: Für einen echten Kaufkandidaten A darf nur
+                # die reguläre Aktien-Regel des Tageslaufs zählen.
+                # Der Metall-Ansatz bleibt reine Vergleichsmessung.
+                if spannen_max is None and trendwende_aktien_res is None:
+                    trendwende_aktien_res = res
 
             else:
                 print(
@@ -773,7 +787,7 @@ def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
         ticker=ticker,
         momentum_ergebnis=momentum_ergebnis,
         trendfolge_res=trendfolge_res,
-        trendwende_res=trendwende_res,
+        trendwende_res=trendwende_aktien_res,
         rotation_score=rotation_score,
     )
 
@@ -908,6 +922,7 @@ if __name__ == "__main__":
     print()
     print("=" * 62)
     print("KAUFKANDIDATEN DES CHECKS")
+    print("A = bestätigtes Setup + CRV >= 1.0 | B = Trigger-Kandidat, kein Sofortkauf")
     print("=" * 62)
 
     if not KAUFKANDIDATEN_ERGEBNISSE:
@@ -918,7 +933,7 @@ if __name__ == "__main__":
             KAUFKANDIDATEN_ERGEBNISSE,
             key=lambda x: (
                 0 if x["Status"] == "KAUFKANDIDAT A" else 1,
-                -x["Score"],
+                -x["MomentumScore"],
             ),
         )
 
