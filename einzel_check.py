@@ -51,6 +51,10 @@ KAUF_B_MOMENTUM_MIN = 3
 # Mindestens ein bestätigtes Setup ist zwingend.
 KAUF_A_MIN_CRV = 1.0
 
+# Bei Momentum 5/5 darf der Titel als starke Vorbereitung gelten.
+# Das ersetzt aber weiterhin KEIN bestätigtes Setup.
+KAUF_B_STARKES_MOMENTUM = 4
+
 
 # Standardliste
 TICKER_DEFAULT = [
@@ -449,7 +453,7 @@ def bewerte_kaufkandidat(
         return {
             "Ticker": ticker,
             "Status": "KAUFKANDIDAT A",
-            "MomentumScore": momentum,
+            "Score": momentum,
             "Momentum": f"{momentum}/{momentum_max}",
             "Gruende": gruende,
             "Risiken": risiken,
@@ -510,7 +514,7 @@ def bewerte_kaufkandidat(
         return {
             "Ticker": ticker,
             "Status": "KAUFKANDIDAT B",
-            "MomentumScore": momentum,
+            "Score": momentum,
             "Momentum": f"{momentum}/{momentum_max}",
             "Gruende": gruende,
             "Risiken": risiken,
@@ -543,7 +547,7 @@ def bewerte_kaufkandidat(
     return {
         "Ticker": ticker,
         "Status": "KEIN KAUF",
-        "MomentumScore": momentum,
+        "Score": momentum,
         "Momentum": f"{momentum}/{momentum_max}",
         "Gruende": gruende,
         "Risiken": risiken,
@@ -933,7 +937,7 @@ if __name__ == "__main__":
             KAUFKANDIDATEN_ERGEBNISSE,
             key=lambda x: (
                 0 if x["Status"] == "KAUFKANDIDAT A" else 1,
-                -x["MomentumScore"],
+                -x["Score"],
             ),
         )
 
