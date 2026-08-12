@@ -120,6 +120,12 @@ if __name__ == '__main__':
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
+        elif filename == "einzel_check_beobachtung.json":
+            # Persistente Beobachtungsliste des manuellen Einzel-Checks:
+            # A/KEIN KANDIDAT werden dort bereits entfernt, B/C bleiben erhalten.
+            print(f"Lade '{filename}' hoch...")
+            upload_file(filename, FOLDER_ID, drive_service)
+            found = True
         elif ("Briefing" in filename or "Auswertung" in filename) and filename.endswith(".txt"):
             # "Auswertung" (NEU): die von claude_auswertung.py erzeugte fertige
             # Daten-Übersicht, landet genau wie die anderen Text-Dateien direkt

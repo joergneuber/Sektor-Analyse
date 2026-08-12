@@ -377,6 +377,22 @@ Häufung/Nähe als das, was sie ist.
     nichts selbst nach, erfinde keine Kriterien oder Werte für Titel,
     die nicht in der Datei stehen.
 
+-   EINZEL-CHECK-BEOBACHTUNGSLISTE (NEU 12.08.2026, Nutzerwunsch): Unter
+    Punkt „4. Hebeltrader-Setups" ist zusätzlich ein eigener Unterabschnitt
+    „Einzel-Check-Beobachtungsliste" auszugeben. Grundlage ist ausschließlich
+    die bereitgestellte Datei „einzel_check_beobachtung.json", die aus dem
+    separaten manuellen Einzel-Check-Workflow stammt. Diese Liste ist NICHT
+    die Sektor-Rotations-Watchlist und NICHT aus dem täglichen Hebeltrader-
+    Scanner abzuleiten. Übernimm alle aktuell enthaltenen Titel mit Ticker,
+    Status und „letzter_check" wörtlich aus der JSON-Datei. Die Bedeutung der
+    Statuswerte ist: KAUFKANDIDAT B = starke Trigger-Nähe, KAUFKANDIDAT C =
+    frühe technische Vorbereitung. A und KEIN KANDIDAT stehen dort nicht, weil
+    sie vom Einzel-Check automatisch entfernt werden. Wenn die JSON leer ist
+    oder keine Datei bereitgestellt wurde, schreibe „Keine Titel in der
+    Einzel-Check-Beobachtungsliste." Nichts selbst berechnen, keine Titel aus
+    anderen Dateien ergänzen und die Liste nicht mit der bestehenden
+    „Watchlist (manuelle Prüfung)" vermischen.
+
 -   EINHEITLICHE „WATCHLIST (manuelle Prüfung)" -- MEHRZEILEN-VORLAGE
     (Pflicht, GEÄNDERT 09.08.2026, Nutzerwunsch -- ersetzt die
     Kompaktzeile vom 06.08.2026 vollständig; die zugrunde liegenden

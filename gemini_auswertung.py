@@ -86,6 +86,7 @@ ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
 # Gleicher Drive-Ordner wie in upload_to_drive.py - dort landen alle
 # Scanner-Ausgaben, von dort werden ggf. die Short-Dateien nachgeladen.
 DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
+BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -238,6 +239,64 @@ def ist_ablehnung(text):
     return any(muster in text_klein for muster in ABLEHNUNGS_MUSTER)
 
 
+def lade_beobachtungsliste_von_drive():
+    """Lädt die persistente Beobachtungsliste des Einzel-Checks aus Drive.
+
+    Die Liste wird vom separaten manuellen einzel_check.yml-Workflow
+    aktualisiert. Fehlt die Datei oder ist Drive nicht erreichbar, wird
+    bewusst eine leere Liste geliefert: Die Tagesauswertung darf dadurch
+    nicht ausfallen.
+    """
+    service = get_drive_service()
+    if service is None:
+        return None
+
+    try:
+        query = (
+            f"name = '{BEOBACHTUNGSLISTE_DATEI}' "
+            f"and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+        )
+        ergebnis = service.files().list(
+            q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc"
+        ).execute()
+        treffer = ergebnis.get("files", [])
+        if not treffer:
+            print(
+                "INFO: Keine Einzel-Check-Beobachtungsliste in Drive gefunden "
+                "- Abschnitt wird als leer ausgegeben."
+            )
+            return {}
+
+        datei_id = treffer[0]["id"]
+        request = service.files().get_media(fileId=datei_id)
+        lokaler_pfad = BEOBACHTUNGSLISTE_DATEI
+        with io.FileIO(lokaler_pfad, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            fertig = False
+            while not fertig:
+                _, fertig = downloader.next_chunk()
+
+        with open(lokaler_pfad, "r", encoding="utf-8") as f:
+            daten = json.load(f)
+
+        if not isinstance(daten, dict):
+            print("WARNUNG: Einzel-Check-Beobachtungsliste ist kein JSON-Objekt - leer verwendet.")
+            return {}
+
+        print(
+            f"INFO: {BEOBACHTUNGSLISTE_DATEI} aus Drive geladen "
+            f"({len(daten)} beobachtete Titel)."
+        )
+        return daten
+
+    except Exception as e:
+        print(
+            f"WARNUNG: Einzel-Check-Beobachtungsliste konnte nicht aus Drive "
+            f"geladen werden ({e}) - Abschnitt wird als leer ausgegeben."
+        )
+        return None
+
+
 def finde_datei(muster_liste):
     for muster in muster_liste:
         treffer = sorted(glob.glob(muster))
@@ -250,6 +309,17 @@ def sammle_eingabedateien():
     gefunden = {}
     for name, muster_liste in DATEIMUSTER.items():
         gefunden[name] = finde_datei(muster_liste)
+
+    # Die Einzel-Check-Beobachtungsliste gehört nicht zu den Pflichtdateien.
+    # Falls sie im frischen main.yml-Runner noch nicht lokal liegt, wird sie
+    # aus Drive nachgeladen und als normale Gemini-Eingabedatei bereitgestellt.
+    if gefunden.get("Einzel-Check-Beobachtungsliste") is None:
+        daten = lade_beobachtungsliste_von_drive()
+        if daten is not None:
+            gefunden["Einzel-Check-Beobachtungsliste"] = BEOBACHTUNGSLISTE_DATEI
+
+    if "Einzel-Check-Beobachtungsliste" not in gefunden:
+        gefunden["Einzel-Check-Beobachtungsliste"] = None
 
     fehlend = [n for n in PFLICHT_DATEIEN if gefunden.get(n) is None]
     if fehlend:
@@ -312,8 +382,11 @@ def gemini_auswertung_starten():
             # jedem 503-Retry alle elf Dateien erneut hochgeladen, was den
             # Lauf verlaengert hat, ohne etwas zu verbessern.
             if hochgeladene_teile is None:
-                hochgeladene_teile = [client.files.upload(file=pfad)
-                                      for pfad in eingabedateien.values()]
+                hochgeladene_teile = [
+                    client.files.upload(file=pfad)
+                    for pfad in eingabedateien.values()
+                    if pfad
+                ]
 
             antwort = client.models.generate_content(
                 model=MODELL,
