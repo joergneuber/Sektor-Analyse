@@ -1,6 +1,6 @@
 """
 einzel_check.py
-Version 11.08.2026
+Version 12.08.2026
 
 Einzelprüfung beliebiger Ticker gegen die bestehenden Strategien.
 
@@ -224,21 +224,46 @@ def finde_us_sektor(ticker):
 
 def finde_eu_sektor(ticker):
     """
-    Ermittelt den EU-Sektor direkt aus dax_aktien in analyse.py.
+    Ermittelt die EU-Sektorzuordnung direkt aus ``dax_aktien`` in
+    ``analyse.py`` – analog zur bestehenden US-Logik.
 
-    Der passende Sektor-ETF wird anschließend über eu_sektoren_etf gesucht.
+    WICHTIG:
+    - Mehrfachzuordnungen sind ausdrücklich erlaubt.
+    - Alle Treffer werden gesammelt.
+    - Der erste Treffer bleibt der primäre Sektor, damit sich die
+      bestehende Bewertungslogik nicht ungewollt ändert.
+    - Die vollständige Trefferliste steht zusätzlich für Transparenz
+      und spätere Sektorvergleiche zur Verfügung.
+
+    Beispiel (wenn P911.DE zusätzlich unter "Automobil" geführt wird):
+        P911.DE -> Industrie / EXH4.DE
+                 -> Automobil / EXV5.DE
+
+    Rückgabe:
+        (erster_sektor, erster_etf, alle_treffer)
     """
+    treffer = []
+
     for sektor, ticker_liste in dax_aktien.items():
-        if ticker in ticker_liste:
-            etfs = [
-                etf
-                for etf, etf_sektor in eu_sektoren_etf.items()
-                if etf_sektor == sektor
-            ]
+        if ticker not in ticker_liste:
+            continue
 
-            return sektor, (etfs[0] if etfs else None)
+        etfs = [
+            etf
+            for etf, etf_sektor in eu_sektoren_etf.items()
+            if etf_sektor == sektor
+        ]
 
-    return None, None
+        # Genau wie bei der US-Logik: Nur eine verwertbare Kombination
+        # aus Sektor und ETF kommt in die Trefferliste.
+        if etfs:
+            treffer.append((etfs[0], sektor))
+
+    if not treffer:
+        return None, None, []
+
+    erster_etf, erster_sektor = treffer[0]
+    return erster_sektor, erster_etf, treffer
 
 
 def finde_sektor_information(ticker):
@@ -259,13 +284,13 @@ def finde_sektor_information(ticker):
     ist_eu = "." in ticker
 
     if ist_eu:
-        sektor, etf = finde_eu_sektor(ticker)
+        sektor, etf, treffer = finde_eu_sektor(ticker)
 
         return {
             "sektor": sektor or "N/A",
             "etf": etf,
             "eu": True,
-            "alle_treffer": [(etf, sektor)] if etf and sektor else [],
+            "alle_treffer": treffer,
         }
 
     sektor, etf, treffer = finde_us_sektor(ticker)
