@@ -1354,9 +1354,10 @@ def get_zinskurve_fred():
 # unterschiedlicher Zusammensetzung und Waehrung wuerde ohnehin eine
 # Genauigkeit suggerieren, die es nicht gibt - besonders in Asien, wo Tokio,
 # Shanghai und Hongkong regelmaessig in verschiedene Richtungen laufen.
-# Ehrliche Einschraenkung, die auch im Briefing steht: "letzter Handelstag"
-# heisst bei Asien der heutige asiatische Schluss (Zeitzone), bei USA der
-# Schluss von gestern - der Lauf startet vor US-Handelsbeginn.
+# Ehrliche Einschraenkung: "letzter Handelstag" bedeutet hier immer der
+# letzte VOLLSTAENDIG ABGESCHLOSSENE Tagesbalken je Index. Bei einem Morgenlauf
+# liegen die asiatischen Maerkte oft noch im laufenden Handel; dann bleibt der
+# Datenstand bewusst beim Vortag.
 REGIONEN = {
     "Europa": [("^GDAXI", "DAX"), ("^STOXX50E", "EuroStoxx50")],
     "USA": [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq")],
@@ -1385,6 +1386,48 @@ REGIONEN = {
 # stabiler, nicht anders. Rollierende Fenster (z.B. WMA200) sind ohnehin
 # unabhaengig von zusaetzlicher Vorgeschichte.
 _YF_HISTORY_CACHE = {}
+
+
+# --- ABGESCHLOSSENE TAGESKERZEN (NEU 12.08.2026) ---
+_ABGESCHLOSSENE_TAGESMAERKTE = {
+    "^N225": ("Asia/Tokyo", datetime.time(15, 30)),
+    "000001.SS": ("Asia/Shanghai", datetime.time(15, 0)),
+    "^HSI": ("Asia/Hong_Kong", datetime.time(16, 0)),
+    "^GDAXI": ("Europe/Berlin", datetime.time(17, 30)),
+    "^STOXX50E": ("Europe/Paris", datetime.time(17, 30)),
+    "^STOXX": ("Europe/Paris", datetime.time(17, 30)),
+    "^GSPC": ("America/New_York", datetime.time(16, 0)),
+    "^IXIC": ("America/New_York", datetime.time(16, 0)),
+    "^DJI": ("America/New_York", datetime.time(16, 0)),
+    "^RUT": ("America/New_York", datetime.time(16, 0)),
+    "^VIX": ("America/New_York", datetime.time(16, 0)),
+}
+
+
+def _markt_heutiges_datum(ticker):
+    regel = _ABGESCHLOSSENE_TAGESMAERKTE.get(ticker)
+    if regel:
+        return datetime.datetime.now(ZoneInfo(regel[0])).date()
+    return datetime.date.today()
+
+
+def _nur_abgeschlossene_tagesbalken(hist, ticker):
+    """Verwendet fuer bekannte Boersen nur vollstaendig abgeschlossene Tageskerzen."""
+    if hist is None or hist.empty:
+        return hist, None
+    data = hist.dropna(subset=["Close"]).copy()
+    if data.empty:
+        return data, None
+    regel = _ABGESCHLOSSENE_TAGESMAERKTE.get(ticker)
+    if regel:
+        tz_name, schlusszeit = regel
+        jetzt_lokal = datetime.datetime.now(ZoneInfo(tz_name))
+        letzter_datum = data.index[-1].date()
+        if letzter_datum == jetzt_lokal.date() and jetzt_lokal.time() < schlusszeit:
+            data = data.iloc[:-1]
+    if data.empty:
+        return data, None
+    return data, data.index[-1].date()
 
 
 def _hole_kursdaten_gecached(ticker):
@@ -1417,9 +1460,10 @@ def _index_performance(ticker):
     Prozent-Berechnung genutzt wird, kein separater Abruf noetig."""
     try:
         hist = _hole_kursdaten_gecached(ticker)
+        hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, ticker)
         if hist.empty or len(hist) < 2:
             return None, None, None, "", None
-        schluss = hist['Close'].dropna()
+        schluss = hist['Close']
         if len(schluss) < 2:
             return None, None, None, "", None
         letzter = float(schluss.iloc[-1])
@@ -1429,8 +1473,7 @@ def _index_performance(ticker):
         # Staleness-Pruefung (NEU 04.08.2026, siehe get_index_benchmark_yf fuer
         # die vollstaendige Begruendung - gleicher Bug kann hier unabhaengig
         # auftreten, da dies ein separater yfinance-Abruf ist).
-        letztes_datum = schluss.index[-1].date()
-        heute = datetime.date.today()
+        heute = _markt_heutiges_datum(ticker)
         tage_alt = (heute - letztes_datum).days
         max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
         staleness_hinweis = ""
@@ -1466,18 +1509,18 @@ def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
     Nutzt EINEN Referenz-Index (Standard S&P 500, global anerkannter
     Leitindex) statt alle Benchmarks einzeln zu pruefen - das Datum des
     letzten Balkens dort gilt als Datenstand fuer die gesamte Auswertung.
-    LOGIK: main.yml laeuft planmaessig um 03:17 UTC (05:17 MESZ), lange vor
-    Eroeffnung jeder relevanten Boerse - der Datenstand ist bei planmaessigen
-    Laeufen deshalb IMMER ein abgeschlossener, vergangener Handelstag. Bei
+    LOGIK: Der Referenzwert wird ebenfalls auf die letzte vollstaendig
+    abgeschlossene Tageskerze reduziert. Damit bleibt der Handelstag auch bei
+    manuellen Laeufen waehrend laufender Handelszeiten eindeutig. Bei
     einem manuellen Lauf waehrend laufender Handelszeit (workflow_dispatch)
     kann yfinance aber einen unfertigen "heutigen" Balken liefern - genau
     das faengt der Datums-Vergleich ab (letzter Balken == heute -> als
     Zwischenstand markiert, nicht als abgeschlossen)."""
     try:
-        hist = yf.Ticker(referenz_ticker).history(period="5d")
-        if hist.empty:
+        hist = _hole_kursdaten_gecached(referenz_ticker)
+        hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, referenz_ticker)
+        if hist.empty or letztes_datum is None:
             return None
-        letztes_datum = hist.index[-1].date()
         heute = datetime.date.today()
         wochentage = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
                      "Samstag", "Sonntag"]
@@ -1498,34 +1541,22 @@ def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
 def get_regionen_performance_text():
     """Baut den Briefing-Block. Fehlende Werte werden als 'n/a' ausgewiesen,
     nie stillschweigend weggelassen."""
-    zeilen = ["REGIONEN-PERFORMANCE (letzter Handelstag / seit Jahresanfang)"]
-    zeilen.append("(je Index einzeln ausgewiesen, kein Regionen-Mittelwert; Zeitzonen "
-                  "beachten: der Lauf startet vor US-Handelsbeginn, der US-Wert ist "
-                  "also der Schluss des Vortages, der asiatische der heutige Schluss; "
-                  "in Klammern der zugehoerige Punktestand)")
+    zeilen = ["REGIONEN-PERFORMANCE (letzter abgeschlossener Handelstag / seit Jahresanfang)"]
+    zeilen.append("(je Index einzeln ausgewiesen, kein Regionen-Mittelwert; nur vollstaendig "
+                  "abgeschlossene Tageskerzen werden verwendet. Datenstand je Index.)")
     for region, indizes in REGIONEN.items():
-        # Datenstand PRO REGION statt pro Index (GEAENDERT 09.08.2026,
-        # Nutzerwunsch "optisch pro Region gruppiert") - nur das DATUM, KEINE
-        # Uhrzeit: yfinance liefert Tagesbalken ohne exakten Handelsschluss-
-        # Zeitstempel, eine erfundene Uhrzeit waere nicht belastbar. Nimmt das
-        # Datum des ERSTEN erfolgreich abgerufenen Index der Region als
-        # repraesentativ - Indizes derselben Region teilen sich praktisch
-        # immer denselben Handelskalender.
-        region_datum = None
         ergebnisse = []
         for ticker, label in indizes:
             tag_pct, ytd_pct, stand, staleness, letztes_datum = _index_performance(ticker)
-            ergebnisse.append((label, tag_pct, ytd_pct, stand, staleness))
-            if region_datum is None and letztes_datum:
-                region_datum = letztes_datum
-        datenstand_kopf = f" (Datenstand: {region_datum.strftime('%d.%m.%Y')})" if region_datum else ""
-        zeilen.append(f"{region}{datenstand_kopf}:")
-        for label, tag_pct, ytd_pct, stand, staleness in ergebnisse:
+            ergebnisse.append((label, tag_pct, ytd_pct, stand, staleness, letztes_datum))
+        zeilen.append(f"{region}:")
+        for label, tag_pct, ytd_pct, stand, staleness, letztes_datum in ergebnisse:
             if tag_pct is None or ytd_pct is None:
                 zeilen.append(f"  • {label}: n/a (Kursdaten nicht verfuegbar)")
             else:
-                zeilen.append(f"  • {label}: letzter Handelstag {tag_pct:+.2f}% ({stand:,.2f}) | "
-                              f"YTD {ytd_pct:+.2f}%{staleness}")
+                datenstand = letztes_datum.strftime('%d.%m.%Y') if letztes_datum else "n/a"
+                zeilen.append(f"  • {label}: letzter abgeschlossener Handelstag {tag_pct:+.2f}% ({stand:,.2f}) | "
+                              f"YTD {ytd_pct:+.2f}% | Datenstand {datenstand}{staleness}")
     return "\n".join(zeilen)
 
 
@@ -1791,10 +1822,9 @@ def get_index_benchmark_yf(ticker, label):
         if hist.empty:
             return f"{label}: Daten unvollständig"
 
-        # NaN-Platzhalterzeilen entfernen (yfinance legt vor Börsenöffnung teils
-        # eine leere Zeile für den aktuellen Tag an - sonst zeigt iloc[-1] auf NaN
-        # statt auf den letzten echten Schlusskurs)
-        hist = hist.dropna(subset=['Close'])
+        # Nur vollstaendig abgeschlossene Tageskerzen verwenden. Das verhindert
+        # insbesondere im Morgenlauf laufende Asien-Tagesstaende.
+        hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, ticker)
 
         if hist.empty or len(hist) < 200:
             return f"{label}: Daten unvollständig"
@@ -1813,8 +1843,7 @@ def get_index_benchmark_yf(ticker, label):
         # das im Text sichtbar markiert statt den Wert kommentarlos als aktuell
         # auszugeben - besser eine sichtbare Warnung als ein unbemerkt falscher
         # Marktstand in der Auswertung.
-        letztes_datum = hist.index[-1].date()
-        heute = datetime.date.today()
+        heute = _markt_heutiges_datum(ticker)
         tage_alt = (heute - letztes_datum).days
         # Wochenende grosszuegig tolerieren (Freitagsschluss am Montag/Sonntag
         # ist normal), Feiertage nicht extra beruecksichtigt (seltener Fall,
@@ -1844,7 +1873,8 @@ def get_index_benchmark_yf(ticker, label):
         # jetzt 2 Nachkommastellen; große Indizes bleiben ganzzahlig.
         nk = 2 if last_close < 100 else 0
         return (f"{label}: {last_close:.2f} | EMA20: {e20:.{nk}f} | EMA50: {e50:.{nk}f} | "
-                f"EMA100: {e100:.{nk}f} | EMA200: {e200:.{nk}f} | WMA200: {w200:.{nk}f}"
+                f"EMA100: {e100:.{nk}f} | EMA200: {e200:.{nk}f} | WMA200: {w200:.{nk}f} | "
+                f"Datenstand: {letztes_datum.strftime('%d.%m.%Y')}"
                 f"{staleness_hinweis}")
 
     except Exception as e:
