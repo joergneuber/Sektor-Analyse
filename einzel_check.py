@@ -9,9 +9,10 @@ WICHTIG:
 - Der Kaufkandidaten-Algorithmus ist bewusst strenger als die frühere
   Momentum-Punktesumme.
 - Momentum allein ist KEIN Kauf.
-- KAUFKANDIDAT A = bestätigtes technisches Setup.
-- KAUFKANDIDAT B = starke Vorbereitung / Trigger-Nähe, aber noch KEIN Kauf.
-- Alles andere = KEIN KAUF.
+- KAUFKANDIDAT A = bestätigtes technisches Setup + CRV >= 1.0.
+- KAUFKANDIDAT B = starke Vorbereitung / Trigger-Nähe, aber noch KEIN Sofortkauf.
+- KAUFKANDIDAT C = frühe technische Vorbereitung, noch weiter vom Trigger entfernt.
+- Alles andere = KEIN KANDIDAT.
 - Dieser Einzelcheck ist KEIN Sektor-Rotationsscanner.
 - Die Sektorzuordnung erfolgt automatisch aus analyse.py.
 - Die Sektor-Relative-Stärke wird direkt gegen den passenden Sektor-ETF
@@ -552,28 +553,31 @@ def bewerte_kaufkandidat(
     trendwende_res,
 ):
     """
-    Entscheidet, ob ein Titel wirklich kaufbar ist.
+    Klassifiziert den einzelnen Titel in A / B / C.
 
-    NEUE GRUNDREGEL:
-        Momentum allein -> niemals Kauf.
-
-    A:
-        Trendfolge ODER Trendwende bestätigt
+    A = bestätigtes technisches Setup:
+        Trendfolge ODER reguläre Aktien-Trendwende
         UND mindestens ein CRV >= 1.0.
 
-    B:
-        Noch kein bestätigtes Setup,
-        aber Momentum >= 3/4
-        UND Trigger-Nähe (3M-Hoch ODER Volumen-Ausbruch).
+    B = starke Vorbereitung / Trigger-Nähe:
+        kein bestätigtes Setup,
+        Momentum >= 3/4
+        UND 3M-Hoch-Nähe ODER Volumen-Ausbruch.
+        B ist ausdrücklich KEIN Sofortkauf.
 
-    B bedeutet ausdrücklich:
-        "Trigger abwarten", nicht kaufen.
+    C = früher technischer Kandidat:
+        kein bestätigtes Setup,
+        Momentum >= 2/4,
+        aber noch keine ausreichende B-Trigger-Konstellation.
 
-    Der Sektor-RS wird nur als Zusatzinformation ausgegeben.
-    Er ist KEIN Rotationsfilter und verändert die Einstufung nicht.
+    Sektor-RS:
+        Der Titel wird direkt mit seinem Sektor-ETF verglichen.
+        Positive Relative Stärke bestätigt die Einstufung,
+        negative Relative Stärke erzeugt eine Warnung.
+        Der Sektor-RS ist KEIN Rotationsfilter und ersetzt kein Setup.
     """
-    momentum = momentum_ergebnis.get("score", 0)
-    momentum_max = momentum_ergebnis.get("max_score", 4)
+    momentum = int(momentum_ergebnis.get("score", 0))
+    momentum_max = int(momentum_ergebnis.get("max_score", 4))
 
     tf_ok = (
         trendfolge_res is not None
@@ -585,20 +589,43 @@ def bewerte_kaufkandidat(
         and _crv_ok(trendwende_res)
     )
 
-    near_high = bool(
-        momentum_ergebnis.get("near_high")
-    )
+    near_high = bool(momentum_ergebnis.get("near_high"))
 
     vol_ratio = momentum_ergebnis.get("vol_ratio")
     ema_distance = momentum_ergebnis.get("ema50_distance")
 
     sector_rs = momentum_ergebnis.get("sector_rs")
+    sector_rs_info = momentum_ergebnis.get("sector_rs_info") or {}
+    sector_rs_diff = sector_rs_info.get("outperformance")
 
     gruende = []
     risiken = []
 
     # --------------------------------------------------------
-    # A: bestätigter Kauf
+    # Sektor-RS als Bestätigung / Warnung
+    # --------------------------------------------------------
+
+    if sector_rs is True:
+        if sector_rs_diff is not None:
+            gruende.append(
+                f"Sektor-RS positiv ({float(sector_rs_diff):+.1f} %-Pkt.)"
+            )
+        else:
+            gruende.append("Sektor-RS positiv")
+
+    elif sector_rs is False:
+        if sector_rs_diff is not None:
+            risiken.append(
+                f"Sektor-RS negativ ({float(sector_rs_diff):+.1f} %-Pkt.)"
+            )
+        else:
+            risiken.append("Sektor-RS negativ")
+
+    else:
+        risiken.append("Sektor-RS nicht verfügbar")
+
+    # --------------------------------------------------------
+    # A: bestätigtes Setup
     # --------------------------------------------------------
 
     if tf_ok or tw_ok:
@@ -614,33 +641,18 @@ def bewerte_kaufkandidat(
 
         if momentum >= 3:
             gruende.append(
-                f"Momentum unterstützt das Setup "
-                f"({momentum}/{momentum_max})"
-            )
-
-        if sector_rs is True:
-            gruende.append(
-                "Relative Stärke zum Sektor positiv"
-            )
-        elif sector_rs is False:
-            risiken.append(
-                "Relative Stärke zum Sektor nicht besser"
+                f"Momentum unterstützt das Setup ({momentum}/{momentum_max})"
             )
 
         crvs = []
 
-        for setup_res in (
-            trendfolge_res,
-            trendwende_res,
-        ):
+        for setup_res in (trendfolge_res, trendwende_res):
             if setup_res:
                 for key in ("CRV1", "CRV2"):
                     try:
                         value = setup_res.get(key)
-
                         if value is not None:
                             crvs.append(float(value))
-
                     except (TypeError, ValueError):
                         pass
 
@@ -659,13 +671,10 @@ def bewerte_kaufkandidat(
         }
 
     # --------------------------------------------------------
-    # B: Vorbereitung / Trigger abwarten
+    # B: starke Vorbereitung / Trigger abwarten
     # --------------------------------------------------------
 
-    b_trigger = False
-
-    if near_high:
-        b_trigger = True
+    b_trigger = near_high
 
     if vol_ratio is not None:
         try:
@@ -674,26 +683,19 @@ def bewerte_kaufkandidat(
         except (TypeError, ValueError):
             pass
 
-    if (
-        momentum >= KAUF_B_MOMENTUM_MIN
-        and b_trigger
-    ):
+    if momentum >= KAUF_B_MOMENTUM_MIN and b_trigger:
         gruende.append(
-            f"starkes Momentum "
-            f"({momentum}/{momentum_max})"
+            f"starkes Momentum ({momentum}/{momentum_max})"
         )
 
         if near_high:
-            gruende.append(
-                "Kurs nahe am 3-Monats-Hoch"
-            )
+            gruende.append("Kurs nahe am 3-Monats-Hoch")
 
         if vol_ratio is not None:
             try:
                 if float(vol_ratio) > MOMENTUM_VOL_SCHWELLE:
                     gruende.append(
-                        f"Volumen bestätigt "
-                        f"({float(vol_ratio):.2f}x SMA20)"
+                        f"Volumen bestätigt ({float(vol_ratio):.2f}x SMA20)"
                     )
             except (TypeError, ValueError):
                 pass
@@ -702,25 +704,17 @@ def bewerte_kaufkandidat(
             try:
                 if float(ema_distance) >= MOMENTUM_EMA50_MIN:
                     gruende.append(
-                        f"über EMA50 "
-                        f"(+{float(ema_distance):.1f}%)"
+                        f"über EMA50 (+{float(ema_distance):.1f}%)"
                     )
             except (TypeError, ValueError):
                 pass
 
         risiken.append(
-            "Noch kein bestätigtes "
-            "Trendfolge-/Trendwende-Setup"
+            "noch kein bestätigtes Trendfolge-/Trendwende-Setup"
         )
         risiken.append(
-            "KEIN Sofortkauf – "
-            "Trigger/CRV abwarten"
+            "KEIN Sofortkauf – Trigger und CRV abwarten"
         )
-
-        if sector_rs is False:
-            risiken.append(
-                "Relative Stärke zum Sektor negativ"
-            )
 
         return {
             "Ticker": ticker,
@@ -732,39 +726,77 @@ def bewerte_kaufkandidat(
         }
 
     # --------------------------------------------------------
-    # Kein Kauf
+    # C: frühe technische Vorbereitung
     # --------------------------------------------------------
 
-    if momentum < KAUF_B_MOMENTUM_MIN:
-        risiken.append(
-            f"Momentum zu schwach "
-            f"({momentum}/{momentum_max})"
+    if momentum >= 2:
+        gruende.append(
+            f"technische Vorbereitung vorhanden ({momentum}/{momentum_max})"
         )
 
-    if not tf_ok and not tw_ok:
+        if near_high:
+            gruende.append(
+                "Kurs bereits in Richtung 3-Monats-Hoch"
+            )
+
+        if vol_ratio is not None:
+            try:
+                if float(vol_ratio) > 1.0:
+                    gruende.append(
+                        f"erhöhte Volumenaktivität ({float(vol_ratio):.2f}x SMA20)"
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        if ema_distance is not None:
+            try:
+                if float(ema_distance) >= MOMENTUM_EMA50_MIN:
+                    gruende.append(
+                        f"über EMA50 (+{float(ema_distance):.1f}%)"
+                    )
+            except (TypeError, ValueError):
+                pass
+
         risiken.append(
-            "kein bestätigtes Einstiegssignal"
+            "noch kein bestätigtes Einstiegssignal"
         )
+        risiken.append(
+            "noch keine ausreichende B-Trigger-Konstellation"
+        )
+
+        return {
+            "Ticker": ticker,
+            "Status": "KAUFKANDIDAT C",
+            "Score": momentum,
+            "Momentum": f"{momentum}/{momentum_max}",
+            "Gruende": gruende,
+            "Risiken": risiken,
+        }
+
+    # --------------------------------------------------------
+    # Kein Kandidat
+    # --------------------------------------------------------
+
+    risiken.append(
+        f"Momentum zu schwach ({momentum}/{momentum_max})"
+    )
+    risiken.append("kein bestätigtes Einstiegssignal")
 
     if not near_high:
-        risiken.append(
-            "kein Ausbruch in Nähe des "
-            "3-Monats-Hochs"
-        )
+        risiken.append("kein Ausbruch in Nähe des 3-Monats-Hochs")
 
     if vol_ratio is not None:
         try:
             if float(vol_ratio) <= MOMENTUM_VOL_SCHWELLE:
                 risiken.append(
-                    f"Volumen nicht bestätigt "
-                    f"({float(vol_ratio):.2f}x SMA20)"
+                    f"Volumen nicht bestätigt ({float(vol_ratio):.2f}x SMA20)"
                 )
         except (TypeError, ValueError):
             pass
 
     return {
         "Ticker": ticker,
-        "Status": "KEIN KAUF",
+        "Status": "KEIN KANDIDAT",
         "Score": momentum,
         "Momentum": f"{momentum}/{momentum_max}",
         "Gruende": gruende,
@@ -1229,7 +1261,7 @@ if __name__ == "__main__":
     )
     print(
         "A = bestätigtes Setup + CRV >= 1.0 | "
-        "B = Trigger-Kandidat, kein Sofortkauf"
+        "B = starke Trigger-Nähe | C = frühe technische Vorbereitung"
     )
     print("=" * 62)
 
@@ -1239,13 +1271,16 @@ if __name__ == "__main__":
         )
 
     else:
+        rangfolge = {
+            "KAUFKANDIDAT A": 0,
+            "KAUFKANDIDAT B": 1,
+            "KAUFKANDIDAT C": 2,
+        }
+
         sortiert = sorted(
             KAUFKANDIDATEN_ERGEBNISSE,
             key=lambda x: (
-                0
-                if x["Status"]
-                == "KAUFKANDIDAT A"
-                else 1,
+                rangfolge.get(x["Status"], 9),
                 -x["Score"],
             ),
         )
