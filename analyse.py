@@ -1623,6 +1623,54 @@ def get_kurzfrist_kontext_text(ticker, label, wochen=4, naehe_schwelle_prozent=1
         return None
 
 
+
+# --- KURZFRIST-KONTEXT ÖL/EDELMETALLE (NEU 12.08.2026) ---
+def get_markt_kurzfrist_kontext_text(ticker, label):
+    """Aktueller Kurs + 5 Handelstage + 4 Wochen + optionale 52W-Nähe.
+    Ausschließlich abgeschlossene Tageskerzen."""
+    try:
+        data = _hole_kursdaten_gecached(ticker)
+        data, letztes_datum = _nur_abgeschlossene_tagesbalken(data, ticker)
+        if data.empty or len(data) < 25:
+            return None
+
+        close = data["Close"].dropna()
+        kurs = float(close.iloc[-1])
+
+        v5 = None
+        if len(close) >= 6 and float(close.iloc[-6]):
+            v5 = (kurs / float(close.iloc[-6]) - 1) * 100
+
+        v4 = None
+        if len(close) >= 21 and float(close.iloc[-21]):
+            v4 = (kurs / float(close.iloc[-21]) - 1) * 100
+
+        fenster = data.tail(252)
+        hoch = float(fenster["High"].max())
+        tief = float(fenster["Low"].min())
+
+        teile = [f"{label}: Kurs {kurs:.2f}"]
+        if v5 is not None:
+            teile.append(f"{v5:+.1f}% 5T")
+        if v4 is not None:
+            teile.append(f"{v4:+.1f}% 4W")
+
+        if hoch > 0:
+            abstand_hoch = (hoch - kurs) / hoch * 100
+            if abstand_hoch <= 10.0:
+                teile.append(f"nahe 52W-Hoch ({hoch:.2f}, {abstand_hoch:.1f}% darunter)")
+        if tief > 0:
+            abstand_tief = (kurs - tief) / tief * 100
+            if abstand_tief <= 10.0 and not any("nahe 52W-Hoch" in x for x in teile):
+                teile.append(f"nahe 52W-Tief ({tief:.2f}, {abstand_tief:.1f}% darüber)")
+
+        if letztes_datum is not None:
+            teile.append(f"Datenstand {letztes_datum.strftime('%d.%m.%Y')}")
+        return " | ".join(teile)
+    except Exception as e:
+        print(f"DEBUG-KURZFRIST-MARKTKONTEXT: {ticker} nicht ermittelbar ({type(e).__name__})")
+        return None
+
 # --- SAISONALITAET (NEU 02.08.2026, Nutzerwunsch) ---
 # Quelle: vom Nutzer bereitgestelltes PDF "Saisonalitaet Edelmetalle &
 # Rohstoffe" (RealMoneyTrader Research, 27-46 Jahre historische Daten je
@@ -1715,7 +1763,7 @@ def get_saisonalitaet_text(label):
 # EHRLICHE EINSCHRAENKUNG (wie bei Oel/Edelmetallen): "Rekord" bezieht sich
 # auf die verfuegbare yfinance-'max'-Historie (meist ab den 1990ern/2000ern
 # je nach Index), kein zwingend geprueftes Allzeithoch seit Index-Auflegung.
-INDEX_REKORD_SCHWELLE_PROZENT = 3.0
+INDEX_REKORD_SCHWELLE_PROZENT = 1.0
 
 # "Alle Indizes" (Nutzerwunsch) - jeder Aktienindex, der irgendwo im System
 # als Benchmark gefuehrt wird (BENCHMARKS-Block + Regionen-Performance).
@@ -1735,6 +1783,7 @@ def get_index_rekord_text(ticker, label, schwelle_prozent=INDEX_REKORD_SCHWELLE_
     Gibt einen fertigen Text zurueck oder None (der Normalfall)."""
     try:
         data = _hole_kursdaten_gecached(ticker)
+        data, letztes_datum = _nur_abgeschlossene_tagesbalken(data, ticker)
         if data.empty or len(data) < 60:
             return None
         rekord_hoch = float(data['High'].max())
@@ -3357,8 +3406,13 @@ if __name__ == "__main__":
     # dieselbe Einordnung, die die Edelmetalle schon haben ueber "LAGE JE
     # METALL" im Edelmetalle-Briefing). None-Werte werden weiter unten beim
     # Zusammenbau uebersprungen statt eine leere Zeile zu erzeugen.
-    wti_52w_text = get_kurzfrist_kontext_text("CL=F", "WTI")
-    brent_52w_text = get_kurzfrist_kontext_text("BZ=F", "Brent")
+    markt_kontext_texte = []
+    for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),
+                          ("GC=F", "Gold"), ("SI=F", "Silber"),
+                          ("PL=F", "Platin"), ("PA=F", "Palladium")]:
+        _text = get_markt_kurzfrist_kontext_text(_tick, _label)
+        if _text:
+            markt_kontext_texte.append(_text)
     rekord_texte = []
     saison_texte = []
     for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),
@@ -3799,7 +3853,7 @@ if __name__ == "__main__":
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
         f.write(get_regionen_performance_text() + "\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (f"{wti_52w_text}\n" if wti_52w_text else "") + (f"{brent_52w_text}\n" if brent_52w_text else "") + f"{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (("KURZFRIST-KONTEXT ÖL/EDELMETALLE\n" + "\n".join(f"- {_t}" for _t in markt_kontext_texte) + "\n") if markt_kontext_texte else "") + f"{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
@@ -3844,10 +3898,10 @@ if __name__ == "__main__":
             f.write("\n")
 
         # REKORDHOCH-HINWEIS INDIZES (NEU 03.08.2026, Nutzerwunsch): nur bei
-        # tatsaechlichem Erreichen/Ueberschreiten (Toleranz 3%), keine
+        # tatsaechlichem Erreichen/Ueberschreiten (Toleranz 1%), keine
         # separate "Naehe"-Vorstufe wie bei Oel/Edelmetallen.
         if index_rekord_texte:
-            f.write("REKORDHOCH-HINWEIS INDIZES (Schwelle 3%, nur bei Erreichen/Ueberschreiten)\n")
+            f.write("REKORDHOCH-HINWEIS INDIZES (Schwelle 1%, nur bei echter Rekordnähe/neuem Rekord)\n")
             for _t in index_rekord_texte:
                 f.write(f"- {_t}\n")
             f.write("\n")

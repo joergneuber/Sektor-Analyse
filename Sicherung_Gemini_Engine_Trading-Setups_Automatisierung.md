@@ -1027,23 +1027,25 @@ Pflicht sobald vorhanden}}
     vorangestelltem Label. Bleibt weiterhin reiner Kontext ohne
     Bewertung.
 
--   REKORDHOCH-HINWEIS INDIZES (NEU 03.08.2026, Nutzerwunsch, Anlass:
-    DAX erreichte am selben Tag ein neues Rekordhoch, das im Briefing
-    zunächst nicht auftauchte): Die briefing.txt kann einen Block
-    „REKORDHOCH-HINWEIS INDIZES" enthalten - ANDERS als bei
-    Öl/Edelmetallen gibt es hier AUSSCHLIESSLICH EINE Meldungsart
-    (tatsächlich erreichtes/überschrittenes Rekordhoch, Toleranz 3%),
-    KEINE separate schwächere „in der Nähe"-Vorstufe. PFLICHT bei
-    Vorhandensein: Übernimm die Zeile(n) WÖRTLICH in die Globale
-    Risikolage UND erwähne sie zusätzlich in einem Satz in der Executive
-    Summary - ein neues Rekordhoch bei einem Leitindex ist eine
-    markt-erhebliche Information. Wie bei Öl/Edelmetallen gilt: „seit
-    Datenbeginn" ist kein geprüftes echtes Allzeithoch, sondern der
-    höchste Stand seit Beginn der verfügbaren Kursreihe - diese
-    Einschränkung darf nicht wegfallen. Fehlt der Block (Normalfall -
-    kein Index gerade nah am Rekord), entfällt er ersatzlos; rechne
-    nichts selbst nach und erfinde keine Rekord-Aussagen zu Indizes, für
-    die keine Zeile geliefert wird.
+-   REKORDHOCH-HINWEIS INDIZES (gezielte Darstellung): Die briefing.txt
+kann einen Block „REKORDHOCH-HINWEIS INDIZES" enthalten. Er darf NUR erscheinen,
+wenn mindestens ein Index die definierte enge Rekordnähe-Schwelle erfüllt.
+Standardschwelle: 1,00% unter dem bisherigen Rekordhoch im verfügbaren
+Datenbestand. Werte zwischen 1,00% und 3,00% darunter gelten NICHT als
+Rekordnähe und werden nicht aufgeführt. Ein tatsächlich neues oder
+überschrittenes Rekordhoch darf immer gemeldet werden.
+
+Liste NUR die Indizes auf, die die Schwelle tatsächlich erfüllen. Keine
+Sammelformulierung wie „fast alle Leitindizes“, wenn nur einzelne Indizes
+betroffen sind. Wenn kein Index die Schwelle erfüllt, entfällt der gesamte
+Abschnitt ersatzlos. Keine Rekord-Aussagen selbst nachrechnen oder erfinden.
+„Seit Datenbeginn“ ist kein geprüftes echtes Allzeithoch, sondern der höchste
+Stand seit Beginn der verfügbaren Kursreihe; diese Einschränkung muss erhalten
+bleiben.
+
+Wenn der Block vorhanden ist, übernimm nur die tatsächlich gelieferten Zeilen
+in die Globale Risikolage. In der Executive Summary genügt ein kurzer Satz mit
+genau den tatsächlich gemeldeten Indizes.
 
 -   US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung): Der
     US-Dollar-Index wird seit 29.07.2026 nicht mehr im Briefing
@@ -1151,23 +1153,32 @@ einem Satz mit den Einzel-Index-Stufen aus derselben Zeile begründen (z.
 B. „Neutral, da der Leitindex hält und nur der Nasdaq bärisch ist"). Nur
 falls der Block fehlt (älterer Lauf), gilt ersatzweise die freie
 Einordnung anhand Kurs vs. EMA20/EMA50/EMA200/WMA200. Ergänze danach
-einen Absatz zur globalen Risikolage auf Basis von Russell 2000, Nikkei,
-Hang Seng, Zinskurve (2J/5J/10J/30J inkl.
-10J-2J-Spread/Inversionsstatus), Rohöl (WTI/Brent), Gold, Silber,
-Kupfer, US-Dollar-Index, EUR/USD-Wechselkurs und Bitcoin -- als Kontext,
-ohne daraus Setup-Bewertungen abzuleiten. Vollständigkeits-Pflicht
-(NEU): JEDER der zwölf genannten Indikatoren (Russell 2000, Nikkei, Hang
-Seng, Zinskurve/10J-2J-Spread, WTI, Brent, Gold, Silber, Kupfer,
-US-Dollar-Index, EUR/USD-Wechselkurs, Bitcoin) muss im Absatz vorkommen,
-und sei es nur mit einem kurzen Halbsatz und Wert -- keiner darf beim
-Verdichten stillschweigend wegfallen, auch nicht wegen scheinbar
-geringerer Relevanz. Bevor du den Absatz ausgibst, prüfe selbst gegen:
-sind alle zwölf Namen im Text wiederzufinden? Fehlt einer, ergänze ihn,
-bevor du fortfährst. Dafür darf der Absatz gerne 4-6 Sätze umfassen
-(kein festes Sätze-Limit mehr, Vollständigkeit geht vor Kürze) -- bündle
-inhaltlich verwandte Indikatoren in einem Satz (z. B. Edelmetalle
-gemeinsam, Öl-Sorten gemeinsam, US-Dollar-Index+EUR/USD gemeinsam), aber
-lass keinen einzelnen ersatzlos weg.
+den Abschnitt „Globale Risikolage und Indikatoren“ als KOMPAKTE
+STICHPUNKT-LISTE, NICHT als langen Fließtext. Verwende höchstens 8 Bulletpoints.
+Decke die aktuell gelieferten Indikatoren vollständig ab: Russell 2000, Nikkei,
+Hang Seng, VIX, Zinskurve (2J/5J/10J/30J inkl. 10J-2J-Spread/Inversionsstatus),
+WTI, Brent, Gold, Silber, Platin, Palladium, Kupfer, EUR/USD und Bitcoin.
+Der US-Dollar-Index wird nicht mehr geliefert und darf nicht künstlich ergänzt.
+
+Empfohlene Struktur:
+• Marktbreite/Risk-On: Russell 2000 + EMA20.
+• Asien: Nikkei + Hang Seng + EMA20-Einordnung.
+• Volatilität/Zinsen: VIX + Zinskurve + 10J-2J-Spread/Inversionsstatus.
+• Öl: WTI + Brent mit aktuellem Kurs, 5-Handelstage-Veränderung,
+  4-Wochen-Veränderung und optionaler 52W-Hoch-/Tief-Nähe.
+• Edelmetalle: Gold, Silber, Platin und Palladium jeweils mit aktuellem Kurs,
+  5-Handelstage-Veränderung, 4-Wochen-Veränderung und optionaler
+  52W-Hoch-/Tief-Nähe.
+• Konjunktur/FX: Kupfer + EUR/USD.
+• Krypto: Bitcoin + EMA20-Einordnung.
+
+Für Öl und Edelmetalle ist die reine 4-Wochen-Performance nicht mehr
+ausreichend. Aktueller Kurs + 5T + 4W + optionale 52W-Position sollen den
+aktuellen Kurs kurzfristig und mittelfristig einordnen. Fehlt ein Vergleichswert
+in den gelieferten Rohdaten, darf nichts erfunden werden. Jeder Bullet bleibt
+reiner Markt-/Risikokontext und darf keine Setup-Qualität oder Kauf-/Verkaufs-
+entscheidung verändern. Werte zuerst, kurze Einordnung danach; keine lange
+erzählerische Risikogeschichte.
 
 FOMC-Sitzung (NEU): Der BENCHMARKS-Block enthält eine Zeile
 „FOMC-Sitzung: in X Tag(en) (Datum)" bzw. „FOMC-Sitzung: HEUTE (Datum)
@@ -1840,3 +1851,8 @@ Analyse
 Verarbeite jetzt die Daten aus der briefing.txt sowie den CSV-Dateien
 (Setups(\...).csv und Performance(\...).csv) strikt nach diesen
 Vorgaben.
+
+-   AUSWERTUNG – GLOBALE RISIKOLAGE (NEU 12.08.2026): Die Überschrift
+    „Globale Risikolage und Indikatoren“ wird als kompakte Bullet-Liste
+    ausgegeben. Keine lange Fließtextwand. Die Bulletpoints dürfen logisch
+    gruppiert werden, müssen aber alle gelieferten Werte abdecken.
