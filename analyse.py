@@ -576,7 +576,7 @@ eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-
 dax_aktien = {
     "Automobil": [
         "10O.DE", "1TRA.DE", "AUM.DE", "BMW.DE", "CON.DE", "DTG.DE", "JST.DE", "KBX.DE", "MBG.DE",
-        "PAH3.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "STM1.DE", "VOW3.DE"
+        "PAH3.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "STM1.DE", "VOW3.DE", "P911.DE"
     ],
     "Chemie": [
         "ACT.DE", "BAS.DE", "EVK.DE", "FPE3.DE", "LXS.DE", "SY1.DE", "WCH.DE"
