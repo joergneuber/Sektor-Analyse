@@ -25,6 +25,8 @@ Aufruf:
 """
 
 import datetime
+import json
+import os
 import sys
 
 import pandas as pd
@@ -65,6 +67,92 @@ KAUF_A_MIN_CRV = 1.0
 # Wichtig: Bei mehreren Titeln desselben Sektors wird der ETF nur einmal
 # geladen.
 SEKTOR_ETF_CACHE = {}
+
+# Persistente Beobachtungsliste im gleichen Verzeichnis wie dieses Skript.
+# Regel:
+#   A -> entfernen
+#   B -> aufnehmen / aktualisieren
+#   C -> aufnehmen / aktualisieren
+#   KEIN KANDIDAT -> entfernen
+BEOBACHTUNGS_DATEI = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "einzel_check_beobachtung.json",
+)
+
+
+def lade_beobachtungsliste():
+    """Lädt die aktuell persistierte Einzel-Check-Beobachtungsliste."""
+    if not os.path.exists(BEOBACHTUNGS_DATEI):
+        return {}
+
+    try:
+        with open(BEOBACHTUNGS_DATEI, "r", encoding="utf-8") as f:
+            daten = json.load(f)
+        return daten if isinstance(daten, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError):
+        print(
+            "  WARNUNG: Beobachtungsliste konnte nicht gelesen werden - "
+            "starte mit leerer Liste."
+        )
+        return {}
+
+
+def speichere_beobachtungsliste(liste):
+    """Speichert die Beobachtungsliste atomar."""
+    temp_datei = BEOBACHTUNGS_DATEI + ".tmp"
+
+    with open(temp_datei, "w", encoding="utf-8") as f:
+        json.dump(liste, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    os.replace(temp_datei, BEOBACHTUNGS_DATEI)
+
+
+def aktualisiere_beobachtungsliste(ticker, status):
+    """
+    Pflegt die persistente Beobachtungsliste nach der vereinbarten Regel:
+
+      A -> entfernen
+      B -> aufnehmen / aktualisieren
+      C -> aufnehmen / aktualisieren
+      KEIN KANDIDAT -> entfernen
+    """
+    liste = lade_beobachtungsliste()
+    heute = datetime.date.today().isoformat()
+
+    if status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C"):
+        war_bereits_drin = ticker in liste
+        liste[ticker] = {
+            "status": status,
+            "letzter_check": heute,
+        }
+        speichere_beobachtungsliste(liste)
+
+        if war_bereits_drin:
+            print(
+                f"  BEOBACHTUNGSLISTE: {ticker} aktualisiert -> {status}"
+            )
+        else:
+            print(
+                f"  BEOBACHTUNGSLISTE: {ticker} aufgenommen -> {status}"
+            )
+
+    else:
+        war_bereits_drin = ticker in liste
+        if war_bereits_drin:
+            del liste[ticker]
+            speichere_beobachtungsliste(liste)
+            print(
+                f"  BEOBACHTUNGSLISTE: {ticker} entfernt -> {status}"
+            )
+        else:
+            # Datei trotzdem anlegen/aktualisieren, damit nach einem Lauf
+            # mit ausschließlich A/kein Kandidat eine gültige leere Liste
+            # existiert.
+            speichere_beobachtungsliste(liste)
+            print(
+                f"  BEOBACHTUNGSLISTE: {ticker} nicht enthalten -> {status}"
+            )
 
 
 # ============================================================
@@ -1133,7 +1221,14 @@ def pruefe(
             f"    ⚠ {risiko}"
         )
 
-    if kauf["Status"] != "KEIN KAUF":
+    # Persistente Beobachtungsliste:
+    # A entfernt, B/C aufnehmen bzw. aktualisieren, KEIN KANDIDAT entfernen.
+    aktualisiere_beobachtungsliste(
+        ticker,
+        kauf["Status"],
+    )
+
+    if kauf["Status"] != "KEIN KANDIDAT":
         KAUFKANDIDATEN_ERGEBNISSE.append(
             kauf
         )
@@ -1303,6 +1398,28 @@ if __name__ == "__main__":
                 )
 
             print()
+
+    # ========================================================
+    # BEOBACHTUNGSLISTE
+    # ========================================================
+
+    beobachtung = lade_beobachtungsliste()
+
+    print()
+    print("=" * 62)
+    print("AKTUELLE EINZEL-CHECK-BEOBACHTUNGSLISTE")
+    print("B/C = beobachten | A/KEIN KANDIDAT = automatisch entfernt")
+    print("=" * 62)
+
+    if not beobachtung:
+        print("Beobachtungsliste ist leer.")
+    else:
+        for ticker, eintrag in sorted(beobachtung.items()):
+            print(
+                f"{ticker:8} "
+                f"{eintrag.get('status', 'UNBEKANNT'):18} "
+                f"letzter Check {eintrag.get('letzter_check', '?')}"
+            )
 
     print("=" * 62)
     print(
