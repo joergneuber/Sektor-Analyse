@@ -33,10 +33,16 @@ jobs:
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
 
       - name: Ticker gegen alle drei Strategien prüfen
-        # Kein Drive-Upload: das Ergebnis steht komplett im Lauf-Log, es
-        # entsteht keine Datei, die eine Tagesdatei ueberschreiben koennte.
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python einzel_check.py ${{ github.event.inputs.ticker }}
+
+      - name: Einzel-Check-Beobachtungsliste in Drive sichern
+        # Die JSON ist die persistente Quelle für die B/C-Beobachtungsliste.
+        # Sie wird nach jedem manuellen Einzel-Check aktualisiert und hier
+        # in denselben Drive-Ordner wie die übrigen Trading-Dateien gespiegelt.
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python upload_to_drive.py
