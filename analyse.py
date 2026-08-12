@@ -574,6 +574,14 @@ eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-
 # die Zusammensetzung wird von der Deutschen Börse zweimal jährlich überprüft, daher
 # gelegentlich gegenchecken)
 dax_aktien = {
+    "Industrie": [
+        "10O.DE", "1TRA.DE", "AIR.DE", "ASTA.DE", "AUM.DE", "BFSA.DE", "BMW.DE", "BNR.DE",
+        "CON.DE", "DEZ.DE", "DHL.DE", "DTG.DE", "DUE.DE", "FRAG.DE", "G1A.DE", "GBF.DE", "HAG.DE",
+        "HDD.DE", "HEI.DE", "HOT.DE", "JST.DE", "JUN3.DE", "KBX.DE", "KGX.DE", "KRN.DE", "KSB3.DE",
+        "LHA.DE", "MBB.DE", "MBG.DE", "MTX.DE", "NDX1.DE", "NOEJ.DE", "P911.DE", "R3NK.DE",
+        "RAA.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "SIE.DE", "STM1.DE", "STO3.DE", "TKA.DE", "VH2.DE",
+        "VOS.DE", "VOW3.DE", "WAC.DE"
+    ],
     "Automobil": [
         "10O.DE", "1TRA.DE", "AUM.DE", "BMW.DE", "CON.DE", "DTG.DE", "JST.DE", "KBX.DE", "MBG.DE",
         "PAH3.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "STM1.DE", "VOW3.DE", "P911.DE"
@@ -598,14 +606,6 @@ dax_aktien = {
     "Immobilien": [
         "ARND.DE", "DEQ.DE", "DWNI.DE", "GYC.DE", "HABA.DE", "LEG.DE", "PAT.DE", "TEG.DE",
         "VNA.DE"
-    ],
-    "Industrie": [
-        "10O.DE", "1TRA.DE", "AIR.DE", "ASTA.DE", "AUM.DE", "BFSA.DE", "BMW.DE", "BNR.DE",
-        "CON.DE", "DEZ.DE", "DHL.DE", "DTG.DE", "DUE.DE", "FRAG.DE", "G1A.DE", "GBF.DE", "HAG.DE",
-        "HDD.DE", "HEI.DE", "HOT.DE", "JST.DE", "JUN3.DE", "KBX.DE", "KGX.DE", "KRN.DE", "KSB3.DE",
-        "LHA.DE", "MBB.DE", "MBG.DE", "MTX.DE", "NDX1.DE", "NOEJ.DE", "P911.DE", "R3NK.DE",
-        "RAA.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "SIE.DE", "STM1.DE", "STO3.DE", "TKA.DE", "VH2.DE",
-        "VOS.DE", "VOW3.DE", "WAC.DE"
     ],
     "Kommunikation": [
         "1U1.DE", "DTE.DE", "FNTN.DE", "PSM.DE", "RTL.DE", "SAX.DE", "SPG.DE", "UTDI.DE"
