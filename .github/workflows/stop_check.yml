@@ -1,36 +1,21 @@
-name: Stop-Check nachmittags
+name: Positions-Alert Check
 
 on:
-  # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
+  # Manueller Lauf: prueft sofort, unabhaengig vom Zeitfenster.
   workflow_dispatch:
   schedule:
-    # 16:23 UTC entspricht 18:23 Uhr MESZ (Sommerzeit). Bewusst NICHT zur
-    # vollen Stunde (16:00), da GitHub Actions Cron-Läufe zu vollen Stunden/
-    # Mitternacht UTC nachweislich häufiger verzögert oder komplett
-    # übersprungen werden (siehe main.yml für dieselbe Begründung).
+    # GitHub Actions Cron arbeitet in UTC. Deshalb wird stundenweise zwischen
+    # 06:00 und 21:00 UTC gestartet und im folgenden Schritt auf Europe/Berlin
+    # geprueft. Dadurch bleibt das gewuenschte 2-Stunden-Raster auch bei der
+    # Umstellung MEZ/MESZ korrekt:
     #
-    # Zweck: EU-Börsen sind um diese Zeit frisch geschlossen (heutiger
-    # Schlusskurs, den der Morgenlauf sonst erst am nächsten Tag sähe),
-    # US-Börse läuft seit ca. 2,5 Stunden (Intraday-Kurs) - fängt Stop-
-    # Treffer ab, die intraday ausgelöst und bis zum nächsten Morgen wieder
-    # "erholt" wären und sonst unbemerkt blieben (ein echter Stop-Loss-
-    # Order beim Broker würde ja auch bei jeder Kursberührung sofort
-    # auslösen, nicht erst am Tagesende).
+    # Sommerzeit: 08,10,12,14,16,18,20,22 Uhr Berlin
+    # Winterzeit: 08,10,12,14,16,18,20,22 Uhr Berlin
     #
-    # ZWEITER CRON (NEU, 27.07.2026): reine Redundanz gegen ausgefallene
-    # Scheduling-Trigger (beobachtet - Lauf ist an einzelnen Tagen komplett
-    # ausgeblieben, siehe main.yml/short_check.yml/langfrist_check.yml fuer
-    # dieselbe "best effort"-Problematik). Anders als bei Short/Langfrist
-    # gibt es hier KEIN tagesdatiertes Ergebnis in Drive, gegen das sich ein
-    # "ist das heute schon gelaufen?"-Check bauen liesse (positionen_tracker.py
-    # aktualisiert nur den bestehenden Sheet-Stand, erzeugt keine neue Datei) -
-    # deshalb hier bewusst KEIN Drive-Catchup-Skript wie short_scan_catchup.py,
-    # sondern schlicht ein zweiter, zeitlich getrennter Cron-Versuch 30 Minuten
-    # spaeter. Ein doppelter Lauf ist unschaedlich (aktualisiert nur denselben
-    # Kurs-Stand nochmal) - ein komplett fehlender Tag ist der eigentliche
-    # Fehlerfall, den wir vermeiden wollen.
-    - cron: '23 16 * * 1-5'
-    - cron: '53 16 * * 1-5'
+    # Nur jeder zweite Berliner Stundenlauf wird tatsaechlich ausgefuehrt.
+    # Die ungeraden Zwischenlaeufe beenden sich nach dem Zeitcheck ohne
+    # positionen_tracker.py aufzurufen.
+    - cron: '17 6-21 * * 1-5'
 
 jobs:
   stop-check:
@@ -41,25 +26,41 @@ jobs:
       - name: Code auschecken
         uses: actions/checkout@v4
 
+      - name: Berliner Zeitfenster pruefen
+        id: zeitfenster
+        shell: bash
+        run: |
+          berlin_stunde=$(TZ=Europe/Berlin date +%H)
+          echo "Berliner Uhrzeit: ${berlin_stunde}:17"
+          if (( 10#$berlin_stunde >= 8 && 10#$berlin_stunde <= 22 && 10#$berlin_stunde % 2 == 0 )); then
+            echo "run_tracker=true" >> "$GITHUB_OUTPUT"
+            echo "Positionspruefung wird ausgefuehrt."
+          else
+            echo "run_tracker=false" >> "$GITHUB_OUTPUT"
+            echo "Kein planmaessiger Lauf in diesem Zwischenfenster."
+          fi
+
       - name: Python einrichten
+        if: steps.zeitfenster.outputs.run_tracker == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
       - name: Abhängigkeiten installieren
+        if: steps.zeitfenster.outputs.run_tracker == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 yfinance
 
-      - name: Offene Positionen gegen aktuellen Kurs prüfen
-        # Bewusst NUR dieser eine Schritt - kein kompletter Scan (analyse.py/
-        # trendwende_scanner.py/gemini_auswertung.py), da es hier ausschließlich
-        # um zeitnahe Stop-Erkennung geht, nicht um eine zweite vollständige
-        # Analyse. positionen_tracker.py lädt das Ergebnis am Ende selbst zu
-        # Drive hoch (eigener hochladen()-Aufruf) - kein separater
-        # upload_to_drive.py-Schritt nötig.
+      - name: Offene Positionen prüfen und bei Stop/TP alerten
+        if: steps.zeitfenster.outputs.run_tracker == 'true'
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
         run: python positionen_tracker.py
