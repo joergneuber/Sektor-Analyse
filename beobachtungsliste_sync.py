@@ -22,9 +22,69 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from upload_to_drive import get_drive_service
 
+# Die letzte Auswertung ist nur Fallback, wenn die persistente JSON in Drive
+# noch nicht vorhanden ist.
+AUSWERTUNG_PREFIX = "Auswertung("
+
 
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
 DATEINAME = "einzel_check_beobachtung.json"
+
+
+def lade_letzte_auswertung_als_fallback(service):
+    """Lädt die letzte Auswertung und extrahiert Punkt 4 (B/C-Titel)."""
+    import re
+
+    query = (
+        f"name contains '{AUSWERTUNG_PREFIX}' and '{FOLDER_ID}' in parents "
+        "and trashed = false"
+    )
+    antwort = service.files().list(
+        q=query, spaces="drive",
+        fields="files(id,name,modifiedTime)",
+        orderBy="modifiedTime desc", pageSize=20,
+    ).execute()
+    treffer = antwort.get("files", [])
+    if not treffer:
+        return {}
+
+    datei = treffer[0]
+    request = service.files().get_media(fileId=datei["id"])
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    fertig = False
+    while not fertig:
+        _, fertig = downloader.next_chunk()
+    text = buffer.getvalue().decode("utf-8-sig", errors="replace")
+
+    marker = "Einzel-Check-Beobachtungsliste:"
+    start = text.find(marker)
+    if start < 0:
+        return {}
+    block = text[start + len(marker):]
+    ende = re.search(r"\n\s*\d+\.\s+", block)
+    if ende:
+        block = block[:ende.start()]
+
+    muster = re.compile(
+        r"Ticker:\s*([A-Za-z0-9.\-]+)\s*\|\s*"
+        r"Status:\s*(KAUFKANDIDAT\s+[BC])", re.IGNORECASE
+    )
+    ergebnis = {}
+    for match in muster.finditer(block):
+        ticker = match.group(1).strip().upper()
+        status = re.sub(r"\s+", " ", match.group(2).strip().upper())
+        ergebnis[ticker] = {
+            "status": status,
+            "letzter_check": "aus letzter Auswertung",
+        }
+
+    if ergebnis:
+        print(
+            f"INFO: Keine Watchlist-JSON in Drive gefunden. "
+            f"Übernehme {len(ergebnis)} B/C-Titel aus {datei["name"]}."
+        )
+    return ergebnis
 
 
 def lade_aus_drive():
@@ -46,13 +106,15 @@ def lade_aus_drive():
     treffer = antwort.get("files", [])
 
     if not treffer:
+        fallback = lade_letzte_auswertung_als_fallback(service)
         with open(DATEINAME, "w", encoding="utf-8") as f:
-            json.dump({}, f, ensure_ascii=False, indent=2)
+            json.dump(fallback, f, ensure_ascii=False, indent=2)
             f.write("\n")
-        print(
-            f"INFO: {DATEINAME} wurde in Drive noch nicht gefunden - "
-            "leere Beobachtungsliste lokal angelegt."
-        )
+        if not fallback:
+            print(
+                f"INFO: {DATEINAME} wurde in Drive nicht gefunden und "
+                "auch in der letzten Auswertung keine B/C-Watchlist gefunden."
+            )
         return
 
     datei_id = treffer[0]["id"]
