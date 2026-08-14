@@ -383,8 +383,10 @@ Häufung/Nähe als das, was sie ist.
     die bereitgestellte Datei „einzel_check_beobachtung.json", die aus dem
     separaten manuellen Einzel-Check-Workflow stammt. Diese Liste ist NICHT
     die Sektor-Rotations-Watchlist und NICHT aus dem täglichen Hebeltrader-
-    Scanner abzuleiten. Übernimm alle aktuell enthaltenen Titel mit Ticker,
-    Status und „letzter_check" wörtlich aus der JSON-Datei. Die Bedeutung der
+    Scanner abzuleiten. Übernimm alle aktuell enthaltenen Titel mit
+    Unternehmensname, Ticker, Status und „letzter_check". Da die JSON-Datei
+    nur den Ticker enthält, darf der eindeutige Unternehmensname aus dem
+    Ticker abgeleitet werden; keine weiteren Werte oder Kandidaten ergänzen. Die Bedeutung der
     Statuswerte ist: KAUFKANDIDAT B = starke Trigger-Nähe, KAUFKANDIDAT C =
     frühe technische Vorbereitung. A und KEIN KANDIDAT stehen dort nicht, weil
     sie vom Einzel-Check automatisch entfernt werden. Wenn die JSON leer ist
