@@ -1,6 +1,6 @@
 """
 einzel_check.py
-Version 12.08.2026
+Version 11.08.2026
 
 Einzelprüfung beliebiger Ticker gegen die bestehenden Strategien.
 
@@ -9,15 +9,9 @@ WICHTIG:
 - Der Kaufkandidaten-Algorithmus ist bewusst strenger als die frühere
   Momentum-Punktesumme.
 - Momentum allein ist KEIN Kauf.
-- KAUFKANDIDAT A = bestätigtes technisches Setup + CRV >= 1.0.
-- KAUFKANDIDAT B = starke Vorbereitung / Trigger-Nähe, aber noch KEIN Sofortkauf.
-- KAUFKANDIDAT C = frühe technische Vorbereitung, noch weiter vom Trigger entfernt.
-- Alles andere = KEIN KANDIDAT.
-- Dieser Einzelcheck ist KEIN Sektor-Rotationsscanner.
-- Die Sektorzuordnung erfolgt automatisch aus analyse.py.
-- Die Sektor-Relative-Stärke wird direkt gegen den passenden Sektor-ETF
-  berechnet und ist NICHT davon abhängig, ob der Sektor in einer
-  Performance-/Rotationsdatei vorhanden ist.
+- KAUFKANDIDAT A = bestätigtes technisches Setup.
+- KAUFKANDIDAT B = starke Vorbereitung / Trigger-Nähe, aber noch KEIN Kauf.
+- Alles andere = KEIN KAUF.
 
 Aufruf:
     python einzel_check.py GM F CMI BWA PCAR
@@ -25,8 +19,7 @@ Aufruf:
 """
 
 import datetime
-import json
-import os
+import glob
 import sys
 
 import pandas as pd
@@ -37,10 +30,6 @@ from analyse import (
     analyze_a_setup_eu,
     get_benchmark_close,
     get_eu_benchmark_close,
-    sektoren_map,
-    sektoren_aktien,
-    dax_aktien,
-    eu_sektoren_etf,
 )
 from trendwende_scanner import _pruefe_trendwende, _indikatoren_berechnen
 from short_scanner import _pruefe_short_setup
@@ -62,107 +51,42 @@ KAUF_B_MOMENTUM_MIN = 3
 # Mindestens ein bestätigtes Setup ist zwingend.
 KAUF_A_MIN_CRV = 1.0
 
-
-# Cache für Sektor-ETF-Kurse.
-# Wichtig: Bei mehreren Titeln desselben Sektors wird der ETF nur einmal
-# geladen.
-SEKTOR_ETF_CACHE = {}
-
-# Persistente Beobachtungsliste im gleichen Verzeichnis wie dieses Skript.
-# Regel:
-#   A -> entfernen
-#   B -> aufnehmen / aktualisieren
-#   C -> aufnehmen / aktualisieren
-#   KEIN KANDIDAT -> entfernen
-BEOBACHTUNGS_DATEI = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "einzel_check_beobachtung.json",
-)
+# Bei Momentum 5/5 darf der Titel als starke Vorbereitung gelten.
+# Das ersetzt aber weiterhin KEIN bestätigtes Setup.
+KAUF_B_STARKES_MOMENTUM = 4
 
 
-def lade_beobachtungsliste():
-    """Lädt die aktuell persistierte Einzel-Check-Beobachtungsliste."""
-    if not os.path.exists(BEOBACHTUNGS_DATEI):
-        return {}
-
-    try:
-        with open(BEOBACHTUNGS_DATEI, "r", encoding="utf-8") as f:
-            daten = json.load(f)
-        return daten if isinstance(daten, dict) else {}
-    except (OSError, json.JSONDecodeError, TypeError):
-        print(
-            "  WARNUNG: Beobachtungsliste konnte nicht gelesen werden - "
-            "starte mit leerer Liste."
-        )
-        return {}
-
-
-def speichere_beobachtungsliste(liste):
-    """Speichert die Beobachtungsliste atomar."""
-    temp_datei = BEOBACHTUNGS_DATEI + ".tmp"
-
-    with open(temp_datei, "w", encoding="utf-8") as f:
-        json.dump(liste, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-
-    os.replace(temp_datei, BEOBACHTUNGS_DATEI)
-
-
-def aktualisiere_beobachtungsliste(ticker, status):
-    """
-    Pflegt die persistente Beobachtungsliste nach der vereinbarten Regel:
-
-      A -> entfernen
-      B -> aufnehmen / aktualisieren
-      C -> aufnehmen / aktualisieren
-      KEIN KANDIDAT -> entfernen
-    """
-    liste = lade_beobachtungsliste()
-    heute = datetime.date.today().isoformat()
-
-    if status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C"):
-        war_bereits_drin = ticker in liste
-        liste[ticker] = {
-            "status": status,
-            "letzter_check": heute,
-        }
-        speichere_beobachtungsliste(liste)
-
-        if war_bereits_drin:
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} aktualisiert -> {status}"
-            )
-        else:
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} aufgenommen -> {status}"
-            )
-
-    else:
-        war_bereits_drin = ticker in liste
-        if war_bereits_drin:
-            del liste[ticker]
-            speichere_beobachtungsliste(liste)
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} entfernt -> {status}"
-            )
-        else:
-            # Datei trotzdem anlegen/aktualisieren, damit nach einem Lauf
-            # mit ausschließlich A/kein Kandidat eine gültige leere Liste
-            # existiert.
-            speichere_beobachtungsliste(liste)
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} nicht enthalten -> {status}"
-            )
-
-
-# ============================================================
-# TICKER / NAMEN
-# ============================================================
-
+# Standardliste
 TICKER_DEFAULT = [
     "GM", "F", "CMI", "BWA", "PCAR",
     "BABA", "NEM", "ALB", "SIX2.DE", "DRH.F", "ENR.DE",
 ]
+
+
+SEKTOR_HINWEIS = {
+    "GM": "Zyklischer Konsum",
+    "F": "Zyklischer Konsum",
+    "BWA": "Zyklischer Konsum",
+    "BABA": "Zyklischer Konsum",
+    "CMI": "Infrastruktur",
+    "PCAR": "Industrie",
+    "NEM": "Gold-Miner",
+    "ALB": "Rohstoffe",
+    "SIX2.DE": "Industrie",
+    "DRH.F": "Rüstung/Aerospace",
+    "ENR.DE": "Industrie",
+
+    # Hightech / digitale Infrastruktur
+    "AVGO": "Technologie",
+    "ANET": "Technologie",
+    "VRT": "Industrie",
+    "DELL": "Technologie",
+    "MRVL": "Technologie",
+    "MU": "Technologie",
+    "AMD": "Technologie",
+    "CSCO": "Technologie",
+}
+
 
 NAME_HINWEIS = {
     "GM": "General Motors",
@@ -184,128 +108,60 @@ NAME_HINWEIS = {
     "MU": "Micron Technology",
     "AMD": "AMD",
     "CSCO": "Cisco Systems",
-    "GILD": "Gilead Sciences",
 }
 
 
 # ============================================================
-# AUTOMATISCHE SEKTORZUORDNUNG
+# DATEN / ROTATION
 # ============================================================
 
-def finde_us_sektor(ticker):
-    """
-    Ermittelt den US-Sektor direkt aus analyse.py.
-
-    sektoren_aktien ist absichtlich die Quelle der Wahrheit.
-    Falls ein Titel mehreren ETFs zugeordnet ist, wird der erste Treffer
-    gemäß der Reihenfolge in analyse.py verwendet.
-
-    Beispiel:
-        GILD -> XLV -> Gesundheit
-
-    Das ist ausdrücklich KEINE Top-Sektor-/Rotationsprüfung.
-    """
-    treffer = []
-
-    for etf, ticker_liste in sektoren_aktien.items():
-        if ticker in ticker_liste:
-            sektor = sektoren_map.get(etf)
-
-            if sektor:
-                treffer.append((etf, sektor))
-
-    if not treffer:
-        return None, None, []
-
-    erster_etf, erster_sektor = treffer[0]
-
-    return erster_sektor, erster_etf, treffer
-
-
-def finde_eu_sektor(ticker):
-    """
-    Ermittelt die EU-Sektorzuordnung direkt aus ``dax_aktien`` in
-    ``analyse.py`` – analog zur bestehenden US-Logik.
-
-    WICHTIG:
-    - Mehrfachzuordnungen sind ausdrücklich erlaubt.
-    - Alle Treffer werden gesammelt.
-    - Der erste Treffer bleibt der primäre Sektor, damit sich die
-      bestehende Bewertungslogik nicht ungewollt ändert.
-    - Die vollständige Trefferliste steht zusätzlich für Transparenz
-      und spätere Sektorvergleiche zur Verfügung.
-
-    Beispiel (wenn P911.DE zusätzlich unter "Automobil" geführt wird):
-        P911.DE -> Industrie / EXH4.DE
-                 -> Automobil / EXV5.DE
+def lade_rotation_scores():
+    """Liest vorhandene Performance-Dateien.
 
     Rückgabe:
-        (erster_sektor, erster_etf, alle_treffer)
+        rotation_scores: Sektor -> Rotation-Score
+        sektor_5t:       Sektor -> 5-Tage-Performance
     """
-    treffer = []
+    scores = {}
+    sektor_5t = {}
 
-    for sektor, ticker_liste in dax_aktien.items():
-        if ticker not in ticker_liste:
-            continue
+    muster_liste = (
+        "Performance(*).csv",
+        "Performance_EU(*).csv",
+    )
 
-        etfs = [
-            etf
-            for etf, etf_sektor in eu_sektoren_etf.items()
-            if etf_sektor == sektor
-        ]
+    for muster in muster_liste:
+        for pfad in sorted(glob.glob(muster)):
+            try:
+                df = pd.read_csv(
+                    pfad,
+                    sep=";",
+                    encoding="utf-8-sig",
+                )
 
-        # Genau wie bei der US-Logik: Nur eine verwertbare Kombination
-        # aus Sektor und ETF kommt in die Trefferliste.
-        if etfs:
-            treffer.append((etfs[0], sektor))
+                if "Sektor" not in df.columns:
+                    continue
 
-    if not treffer:
-        return None, None, []
+                for _, z in df.iterrows():
+                    sektor = str(z["Sektor"])
 
-    erster_etf, erster_sektor = treffer[0]
-    return erster_sektor, erster_etf, treffer
+                    if "Rotation-Score" in df.columns:
+                        try:
+                            scores[sektor] = float(z["Rotation-Score"])
+                        except (TypeError, ValueError):
+                            pass
 
+                    if "5T" in df.columns:
+                        try:
+                            sektor_5t[sektor] = float(z["5T"])
+                        except (TypeError, ValueError):
+                            pass
 
-def finde_sektor_information(ticker):
-    """
-    Einheitliche automatische Sektorermittlung.
+            except Exception:
+                pass
 
-    Rückgabe:
-        {
-            "sektor": ...,
-            "etf": ...,
-            "eu": bool,
-            "alle_treffer": [...]
-        }
+    return scores, sektor_5t
 
-    Keine Performance-Datei notwendig.
-    Keine Rotationsdatei notwendig.
-    """
-    ist_eu = "." in ticker
-
-    if ist_eu:
-        sektor, etf, treffer = finde_eu_sektor(ticker)
-
-        return {
-            "sektor": sektor or "N/A",
-            "etf": etf,
-            "eu": True,
-            "alle_treffer": treffer,
-        }
-
-    sektor, etf, treffer = finde_us_sektor(ticker)
-
-    return {
-        "sektor": sektor or "N/A",
-        "etf": etf,
-        "eu": False,
-        "alle_treffer": treffer,
-    }
-
-
-# ============================================================
-# KURSDATEN
-# ============================================================
 
 def hole_kursdaten(ticker):
     """Lädt zwei Jahre Daten und verwendet anschließend ca. 52 Wochen."""
@@ -338,157 +194,21 @@ def hole_kursdaten(ticker):
     return data.tail(252)
 
 
-def berechne_5t_performance_aus_daten(data):
-    """Berechnet die 5-Tage-Performance aus bereits geladenen Kursdaten."""
-    try:
-        if data is None or len(data) < 6:
-            return None
-
-        close_aktuell = float(data["Close"].iloc[-1])
-        close_vor_5 = float(data["Close"].iloc[-6])
-
-        if close_vor_5 <= 0:
-            return None
-
-        return (close_aktuell / close_vor_5 - 1.0) * 100.0
-
-    except Exception:
-        return None
-
-
-# ============================================================
-# SEKTOR-RELATIVE-STÄRKE
-# ============================================================
-
-def hole_sektor_etf_5t(etf):
-    """
-    Lädt die 5-Tage-Performance eines Sektor-ETFs direkt über yfinance.
-
-    Kein Zugriff auf Performance(*).csv und kein Zugriff auf
-    Performance_EU(*).csv.
-
-    Dadurch funktioniert der Sektor-RS auch dann, wenn der Sektor im
-    normalen Rotationslauf nicht unter den Top-Sektoren steht.
-    """
-    if not etf:
-        return None
-
-    if etf in SEKTOR_ETF_CACHE:
-        return SEKTOR_ETF_CACHE[etf]
-
-    try:
-        hist = yf.Ticker(etf).history(period="3mo")
-
-        if hist.empty or "Close" not in hist.columns:
-            SEKTOR_ETF_CACHE[etf] = None
-            return None
-
-        hist = hist.dropna(subset=["Close"])
-
-        if len(hist) < 6:
-            SEKTOR_ETF_CACHE[etf] = None
-            return None
-
-        aktuell = float(hist["Close"].iloc[-1])
-        vor_5 = float(hist["Close"].iloc[-6])
-
-        if vor_5 <= 0:
-            SEKTOR_ETF_CACHE[etf] = None
-            return None
-
-        wert = (aktuell / vor_5 - 1.0) * 100.0
-
-        SEKTOR_ETF_CACHE[etf] = wert
-        return wert
-
-    except Exception:
-        SEKTOR_ETF_CACHE[etf] = None
-        return None
-
-
-def berechne_sektor_rs(ticker_5t, sektor_etf, sektor):
-    """
-    Aktie vs. zugehöriger Sektor-ETF.
-
-    Rückgabe:
-        {
-            "verfuegbar": bool,
-            "aktie_5t": float | None,
-            "sektor_5t": float | None,
-            "outperformance": float | None,
-            "positiv": bool | None,
-            "text": str
-        }
-
-    Wichtig:
-    Das Ergebnis ist reine Zusatzinformation für den Einzelcheck.
-    Es ist KEIN Rotationsfilter.
-    """
-    if ticker_5t is None:
-        return {
-            "verfuegbar": False,
-            "aktie_5t": None,
-            "sektor_5t": None,
-            "outperformance": None,
-            "positiv": None,
-            "text": "Aktien-5T-Performance nicht verfügbar",
-        }
-
-    if not sektor_etf:
-        return {
-            "verfuegbar": False,
-            "aktie_5t": ticker_5t,
-            "sektor_5t": None,
-            "outperformance": None,
-            "positiv": None,
-            "text": f"Kein Sektor-ETF für '{sektor}' hinterlegt",
-        }
-
-    sektor_5t = hole_sektor_etf_5t(sektor_etf)
-
-    if sektor_5t is None:
-        return {
-            "verfuegbar": False,
-            "aktie_5t": ticker_5t,
-            "sektor_5t": None,
-            "outperformance": None,
-            "positiv": None,
-            "text": f"{sektor_etf}: 5T-Daten nicht verfügbar",
-        }
-
-    outperformance = ticker_5t - sektor_5t
-    positiv = outperformance > 0
-
-    return {
-        "verfuegbar": True,
-        "aktie_5t": ticker_5t,
-        "sektor_5t": sektor_5t,
-        "outperformance": outperformance,
-        "positiv": positiv,
-        "text": (
-            f"Aktie {ticker_5t:+.1f}% vs. "
-            f"{sektor} ({sektor_etf}) {sektor_5t:+.1f}% "
-            f"= {outperformance:+.1f} %-Pkt."
-        ),
-    }
-
-
 # ============================================================
 # MOMENTUM
 # ============================================================
 
-def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
-    """
-    Berechnet den Momentum-Ausbruch-Score.
+def momentum_ausbruch_score(ticker, data, sektor, sektor_5t):
+    """Berechnet den Momentum-Ausbruch-Score.
 
-    Vier Kernkriterien:
+    Die vier Kernkriterien bleiben:
       1. Stochastik > 80
       2. Kurs nahe am 3-Monats-Hoch (1 % Toleranz)
       3. Volumen > 1.5x SMA20
       4. Kurs mindestens 5 % über EMA50
 
-    Der Sektor-RS wird separat direkt gegen den passenden Sektor-ETF
-    berechnet. Er gehört NICHT zum 4-Punkte-Kernscore.
+    Relative Stärke zum Sektor wird separat als Zusatzinformation ausgegeben.
+    Sie reduziert nicht den Kernscore, wenn keine Sektorperformance vorliegt.
     """
     try:
         df = _indikatoren_berechnen(data.copy())
@@ -504,14 +224,7 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
                 "ema50_distance": None,
                 "near_high": False,
                 "sector_rs": None,
-                "sector_rs_info": {
-                    "verfuegbar": False,
-                    "text": "zu wenig Kurshistorie",
-                },
-                "text": (
-                    "  MOMENTUM-AUSBRUCH-SCORE: "
-                    "zu wenig Kurshistorie"
-                ),
+                "text": "  MOMENTUM-AUSBRUCH-SCORE: zu wenig Kurshistorie",
             }
 
         kurs = float(df["Close"].iloc[-1])
@@ -520,7 +233,7 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
         ema50 = float(df["EMA50"].iloc[-1])
 
         ema_distance = (
-            (kurs - ema50) / ema50 * 100.0
+            (kurs - ema50) / ema50 * 100
             if ema50 > 0
             else float("nan")
         )
@@ -541,6 +254,7 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
 
         hoch_3m = float(fenster_3m["High"].max())
 
+        # 1 % Toleranz: Kurs gilt als nahe am 3-Monats-Hoch.
         near_high = kurs >= hoch_3m * 0.99
 
         p1 = stoch > MOMENTUM_STOCH_MIN
@@ -561,45 +275,49 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
                 f"({kurs / hoch_3m * 100:.1f}%)",
             ),
             (
-                f"Volumenanstieg "
-                f"(>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)",
+                f"Volumenanstieg (>{MOMENTUM_VOL_SCHWELLE:.1f}x SMA20)",
                 p3,
                 f"{vol_ratio:.2f}x",
             ),
             (
-                f"Abstand EMA50 "
-                f"(>={MOMENTUM_EMA50_MIN:.0f}%)",
+                f"Abstand EMA50 (>={MOMENTUM_EMA50_MIN:.0f}%)",
                 p4,
                 f"{ema_distance:+.1f}%",
             ),
         ]
 
-        core_score = sum(
-            1 for _, ok, _ in punkte if ok
+        core_score = sum(1 for _, ok, _ in punkte if ok)
+
+        sector_rs = None
+        sector_rs_text = (
+            "Sektor-Relative-Stärke nicht verfügbar"
         )
 
-        aktie_5t = berechne_5t_performance_aus_daten(df)
+        if sektor in sektor_5t and len(df) >= 6:
+            eigene_5t = (
+                kurs / float(df["Close"].iloc[-6]) - 1
+            ) * 100
 
-        sector_rs_info = berechne_sektor_rs(
-            aktie_5t,
-            sektor_etf,
-            sektor,
-        )
+            sektor_wert = float(sektor_5t[sektor])
+
+            sector_rs = eigene_5t > sektor_wert
+
+            sector_rs_text = (
+                f"Aktie {eigene_5t:+.1f}% "
+                f"vs. Sektor {sektor_wert:+.1f}% (5 Tage)"
+            )
 
         zeilen = [
-            f"  MOMENTUM-AUSBRUCH-SCORE: "
-            f"{core_score}/4"
+            f"  MOMENTUM-AUSBRUCH-SCORE: {core_score}/4"
         ]
 
         for name, ok, detail in punkte:
             zeilen.append(
-                f"    {'✓' if ok else '–'} "
-                f"{name}: {detail}"
+                f"    {'✓' if ok else '–'} {name}: {detail}"
             )
 
         zeilen.append(
-            f"    • Sektor-RS: "
-            f"{sector_rs_info['text']}"
+            f"    • Sektor-RS: {sector_rs_text}"
         )
 
         return {
@@ -611,8 +329,7 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
             "vol_ratio": vol_ratio,
             "ema50_distance": ema_distance,
             "near_high": near_high,
-            "sector_rs": sector_rs_info.get("positiv"),
-            "sector_rs_info": sector_rs_info,
+            "sector_rs": sector_rs,
             "text": "\n".join(zeilen),
         }
 
@@ -627,10 +344,6 @@ def momentum_ausbruch_score(ticker, data, sektor, sektor_etf):
             "ema50_distance": None,
             "near_high": False,
             "sector_rs": None,
-            "sector_rs_info": {
-                "verfuegbar": False,
-                "text": "Fehler bei Sektor-RS",
-            },
             "text": (
                 "  MOMENTUM-AUSBRUCH-SCORE: Fehler "
                 f"({type(e).__name__}: {e})"
@@ -664,101 +377,64 @@ def bewerte_kaufkandidat(
     momentum_ergebnis,
     trendfolge_res,
     trendwende_res,
+    rotation_score,
 ):
-    """
-    Klassifiziert den einzelnen Titel in A / B / C.
+    """Entscheidet, ob ein Titel wirklich kaufbar ist.
 
-    A = bestätigtes technisches Setup:
-        Trendfolge ODER reguläre Aktien-Trendwende
+    NEUE GRUNDREGEL:
+        Momentum allein -> niemals Kauf.
+
+    A:
+        Trendfolge ODER Trendwende bestätigt
         UND mindestens ein CRV >= 1.0.
 
-    B = starke Vorbereitung / Trigger-Nähe:
-        kein bestätigtes Setup,
-        Momentum >= 3/4
-        UND 3M-Hoch-Nähe ODER Volumen-Ausbruch.
-        B ist ausdrücklich KEIN Sofortkauf.
+    B:
+        Noch kein bestätigtes Setup,
+        aber Momentum >= 3/4
+        UND Trigger-Nähe (3M-Hoch ODER Volumen-Ausbruch).
 
-    C = früher technischer Kandidat:
-        kein bestätigtes Setup,
-        Momentum >= 2/4,
-        aber noch keine ausreichende B-Trigger-Konstellation.
-
-    Sektor-RS:
-        Der Titel wird direkt mit seinem Sektor-ETF verglichen.
-        Positive Relative Stärke bestätigt die Einstufung,
-        negative Relative Stärke erzeugt eine Warnung.
-        Der Sektor-RS ist KEIN Rotationsfilter und ersetzt kein Setup.
+    B bedeutet ausdrücklich: "Trigger abwarten", nicht kaufen.
     """
-    momentum = int(momentum_ergebnis.get("score", 0))
-    momentum_max = int(momentum_ergebnis.get("max_score", 4))
 
-    tf_ok = (
-        trendfolge_res is not None
-        and _crv_ok(trendfolge_res)
-    )
+    momentum = momentum_ergebnis.get("score", 0)
+    momentum_max = momentum_ergebnis.get("max_score", 4)
 
-    tw_ok = (
-        trendwende_res is not None
-        and _crv_ok(trendwende_res)
-    )
+    tf_ok = trendfolge_res is not None and _crv_ok(trendfolge_res)
+    tw_ok = trendwende_res is not None and _crv_ok(trendwende_res)
 
     near_high = bool(momentum_ergebnis.get("near_high"))
-
     vol_ratio = momentum_ergebnis.get("vol_ratio")
     ema_distance = momentum_ergebnis.get("ema50_distance")
-
     sector_rs = momentum_ergebnis.get("sector_rs")
-    sector_rs_info = momentum_ergebnis.get("sector_rs_info") or {}
-    sector_rs_diff = sector_rs_info.get("outperformance")
 
     gruende = []
     risiken = []
 
     # --------------------------------------------------------
-    # Sektor-RS als Bestätigung / Warnung
-    # --------------------------------------------------------
-
-    if sector_rs is True:
-        if sector_rs_diff is not None:
-            gruende.append(
-                f"Sektor-RS positiv ({float(sector_rs_diff):+.1f} %-Pkt.)"
-            )
-        else:
-            gruende.append("Sektor-RS positiv")
-
-    elif sector_rs is False:
-        if sector_rs_diff is not None:
-            risiken.append(
-                f"Sektor-RS negativ ({float(sector_rs_diff):+.1f} %-Pkt.)"
-            )
-        else:
-            risiken.append("Sektor-RS negativ")
-
-    else:
-        risiken.append("Sektor-RS nicht verfügbar")
-
-    # --------------------------------------------------------
-    # A: bestätigtes Setup
+    # A: bestätigter Kauf
     # --------------------------------------------------------
 
     if tf_ok or tw_ok:
         if tf_ok:
-            gruende.append(
-                "Trendfolge-Setup bestätigt, CRV >= 1.0"
-            )
+            gruende.append("Trendfolge-Setup bestätigt, CRV >= 1.0")
 
         if tw_ok:
-            gruende.append(
-                "Trendwende-Setup bestätigt, CRV >= 1.0"
-            )
+            gruende.append("Trendwende-Setup bestätigt, CRV >= 1.0")
 
         if momentum >= 3:
             gruende.append(
                 f"Momentum unterstützt das Setup ({momentum}/{momentum_max})"
             )
 
-        crvs = []
+        if sector_rs is True:
+            gruende.append("Relative Stärke zum Sektor positiv")
+        elif sector_rs is False:
+            risiken.append("Relative Stärke zum Sektor nicht besser")
 
+        if rotation_score is not None and rotation_score <= 0:
+            risiken.append("Sektor-Rotation ohne positiven Rückenwind")
+
+        crvs = []
         for setup_res in (trendfolge_res, trendwende_res):
             if setup_res:
                 for key in ("CRV1", "CRV2"):
@@ -784,10 +460,13 @@ def bewerte_kaufkandidat(
         }
 
     # --------------------------------------------------------
-    # B: starke Vorbereitung / Trigger abwarten
+    # B: Vorbereitung / Trigger abwarten
     # --------------------------------------------------------
 
-    b_trigger = near_high
+    b_trigger = False
+
+    if near_high:
+        b_trigger = True
 
     if vol_ratio is not None:
         try:
@@ -823,11 +502,14 @@ def bewerte_kaufkandidat(
                 pass
 
         risiken.append(
-            "noch kein bestätigtes Trendfolge-/Trendwende-Setup"
+            "Noch kein bestätigtes Trendfolge-/Trendwende-Setup"
         )
         risiken.append(
-            "KEIN Sofortkauf – Trigger und CRV abwarten"
+            "KEIN Sofortkauf – Trigger/CRV abwarten"
         )
+
+        if sector_rs is False:
+            risiken.append("Relative Stärke zum Sektor negativ")
 
         return {
             "Ticker": ticker,
@@ -839,61 +521,16 @@ def bewerte_kaufkandidat(
         }
 
     # --------------------------------------------------------
-    # C: frühe technische Vorbereitung
+    # Kein Kauf
     # --------------------------------------------------------
 
-    if momentum >= 2:
-        gruende.append(
-            f"technische Vorbereitung vorhanden ({momentum}/{momentum_max})"
-        )
-
-        if near_high:
-            gruende.append(
-                "Kurs bereits in Richtung 3-Monats-Hoch"
-            )
-
-        if vol_ratio is not None:
-            try:
-                if float(vol_ratio) > 1.0:
-                    gruende.append(
-                        f"erhöhte Volumenaktivität ({float(vol_ratio):.2f}x SMA20)"
-                    )
-            except (TypeError, ValueError):
-                pass
-
-        if ema_distance is not None:
-            try:
-                if float(ema_distance) >= MOMENTUM_EMA50_MIN:
-                    gruende.append(
-                        f"über EMA50 (+{float(ema_distance):.1f}%)"
-                    )
-            except (TypeError, ValueError):
-                pass
-
+    if momentum < KAUF_B_MOMENTUM_MIN:
         risiken.append(
-            "noch kein bestätigtes Einstiegssignal"
-        )
-        risiken.append(
-            "noch keine ausreichende B-Trigger-Konstellation"
+            f"Momentum zu schwach ({momentum}/{momentum_max})"
         )
 
-        return {
-            "Ticker": ticker,
-            "Status": "KAUFKANDIDAT C",
-            "Score": momentum,
-            "Momentum": f"{momentum}/{momentum_max}",
-            "Gruende": gruende,
-            "Risiken": risiken,
-        }
-
-    # --------------------------------------------------------
-    # Kein Kandidat
-    # --------------------------------------------------------
-
-    risiken.append(
-        f"Momentum zu schwach ({momentum}/{momentum_max})"
-    )
-    risiken.append("kein bestätigtes Einstiegssignal")
+    if not tf_ok and not tw_ok:
+        risiken.append("kein bestätigtes Einstiegssignal")
 
     if not near_high:
         risiken.append("kein Ausbruch in Nähe des 3-Monats-Hochs")
@@ -909,7 +546,7 @@ def bewerte_kaufkandidat(
 
     return {
         "Ticker": ticker,
-        "Status": "KEIN KANDIDAT",
+        "Status": "KEIN KAUF",
         "Score": momentum,
         "Momentum": f"{momentum}/{momentum_max}",
         "Gruende": gruende,
@@ -924,67 +561,28 @@ def bewerte_kaufkandidat(
 KAUFKANDIDATEN_ERGEBNISSE = []
 
 
-def pruefe(
-    ticker,
-    spy_close,
-    eu_close,
-):
+def pruefe(ticker, spy_close, eu_close, scores, sektor_5t):
     trendfolge_res = None
+    trendwende_res = None
     trendwende_aktien_res = None
 
-    sektor_info = finde_sektor_information(ticker)
+    ist_eu = "." in ticker
 
-    sektor = sektor_info["sektor"]
-    sektor_etf = sektor_info["etf"]
-    ist_eu = sektor_info["eu"]
+    sektor = SEKTOR_HINWEIS.get(ticker, "N/A")
+    rotation_score = scores.get(sektor)
 
     klarname = NAME_HINWEIS.get(ticker)
 
     kopf = ticker
-
     if klarname:
         kopf += f" - {klarname}"
 
-    # --------------------------------------------------------
-    # Sektor-Hinweis
-    # --------------------------------------------------------
-
-    if len(sektor_info["alle_treffer"]) > 1:
-        treffer_text = ", ".join(
-            f"{etf}={sec}"
-            for etf, sec in sektor_info["alle_treffer"]
-        )
-
-        print(
-            f"  Hinweis: {ticker} ist mehreren Sektoren "
-            f"zugeordnet ({treffer_text}) - "
-            f"verwende '{sektor}' / {sektor_etf} "
-            f"(erster Treffer aus analyse.py)."
-        )
-
-    elif sektor != "N/A":
-        print(
-            f"  Sektor automatisch aus analyse.py: "
-            f"{sektor}"
-            + (
-                f" | Sektor-ETF: {sektor_etf}"
-                if sektor_etf
-                else " | kein Sektor-ETF gefunden"
-            )
-        )
-
-    else:
-        print(
-            f"  Hinweis: {ticker} konnte in der "
-            f"automatischen Sektorzuordnung nicht gefunden werden."
-        )
-
     print("=" * 62)
     print(
-        f"{kopf}   (Sektor: {sektor}"
+        f"{kopf}   (Sektor laut Zuordnung: {sektor}"
         + (
-            f" | Sektor-ETF: {sektor_etf}"
-            if sektor_etf
+            f", Rotation-Score {rotation_score:+.3f}"
+            if rotation_score is not None
             else ""
         )
         + ")"
@@ -1056,21 +654,18 @@ def pruefe(
     data = hole_kursdaten(ticker)
 
     if data is None or data.empty:
-        print(
-            "  TRENDWENDE/SHORT: "
-            "keine Kursdaten"
-        )
+        print("  TRENDWENDE/SHORT: keine Kursdaten")
         return
 
     # --------------------------------------------------------
-    # 2) Momentum + direkter Sektor-RS
+    # 2) Momentum
     # --------------------------------------------------------
 
     momentum_ergebnis = momentum_ausbruch_score(
         ticker,
         data,
         sektor,
-        sektor_etf,
+        sektor_5t,
     )
 
     print(momentum_ergebnis["text"])
@@ -1106,9 +701,7 @@ def pruefe(
         ),
     ):
         try:
-            res, grund = _trendwende(
-                spannen_max
-            )
+            res, grund = _trendwende(spannen_max)
 
             if res:
                 print(
@@ -1121,12 +714,10 @@ def pruefe(
                     f"Bonus: {res.get('Qualitaets_Bonus')}"
                 )
 
-                # Für einen echten A-Kandidaten darf nur die reguläre
-                # Aktien-Regel zählen. Metall-Regel bleibt Messung.
-                if (
-                    spannen_max is None
-                    and trendwende_aktien_res is None
-                ):
+                # WICHTIG: Für einen echten Kaufkandidaten A darf nur
+                # die reguläre Aktien-Regel des Tageslaufs zählen.
+                # Der Metall-Ansatz bleibt reine Vergleichsmessung.
+                if spannen_max is None and trendwende_aktien_res is None:
                     trendwende_aktien_res = res
 
             else:
@@ -1165,52 +756,31 @@ def pruefe(
         (None, None),
     )[0]
 
-    if (
-        aktien_ok is False
-        and metall_ok is True
-    ):
+    if aktien_ok is False and metall_ok is True:
         try:
-            kurs = float(
-                data["Close"].iloc[-1]
-            )
-            tief = float(
-                data["Low"].min()
-            )
-            hoch = float(
-                data["High"].max()
-            )
-
-            if hoch > tief:
-                spannen_position = (
-                    (kurs - tief)
-                    / (hoch - tief)
-                )
-            else:
-                spannen_position = 0.0
+            kurs = float(data["Close"].iloc[-1])
+            tief = float(data["Low"].min())
+            hoch = float(data["High"].max())
 
             print(
-                "  >>> ABWEICHUNG: nur die "
-                "Metall-Regel laesst diesen Titel zu "
+                "  >>> ABWEICHUNG: nur die Metall-Regel "
+                "laesst diesen Titel zu "
                 f"({(kurs / tief - 1) * 100:.1f}% "
                 "ueber 52W-Tief, "
                 f"Spannen-Position "
-                f"{spannen_position:.0%})"
+                f"{(kurs - tief) / (hoch - tief):.0%})"
             )
 
         except Exception:
             print(
-                "  >>> ABWEICHUNG: nur die "
-                "Metall-Regel laesst diesen Titel zu."
+                "  >>> ABWEICHUNG: nur die Metall-Regel "
+                "laesst diesen Titel zu."
             )
 
-    elif (
-        aktien_ok is True
-        and metall_ok is False
-    ):
+    elif aktien_ok is True and metall_ok is False:
         print(
-            "  >>> ABWEICHUNG umgekehrt: "
-            "nur die Aktien-Regel laesst "
-            "diesen Titel zu."
+            "  >>> ABWEICHUNG umgekehrt: nur die Aktien-Regel "
+            "laesst diesen Titel zu."
         )
 
     # --------------------------------------------------------
@@ -1222,41 +792,25 @@ def pruefe(
         momentum_ergebnis=momentum_ergebnis,
         trendfolge_res=trendfolge_res,
         trendwende_res=trendwende_aktien_res,
+        rotation_score=rotation_score,
     )
 
     print()
-    print(
-        "  KAUFKANDIDATEN-BEWERTUNG"
-    )
-    print(
-        "  " + "-" * 45
-    )
+    print("  KAUFKANDIDATEN-BEWERTUNG")
+    print("  " + "-" * 45)
     print(
         f"  Ergebnis: {kauf['Status']} "
         f"(Momentum {kauf['Momentum']})"
     )
 
     for grund in kauf["Gruende"]:
-        print(
-            f"    ✓ {grund}"
-        )
+        print(f"    ✓ {grund}")
 
     for risiko in kauf["Risiken"]:
-        print(
-            f"    ⚠ {risiko}"
-        )
+        print(f"    ⚠ {risiko}")
 
-    # Persistente Beobachtungsliste:
-    # A entfernt, B/C aufnehmen bzw. aktualisieren, KEIN KANDIDAT entfernen.
-    aktualisiere_beobachtungsliste(
-        ticker,
-        kauf["Status"],
-    )
-
-    if kauf["Status"] != "KEIN KANDIDAT":
-        KAUFKANDIDATEN_ERGEBNISSE.append(
-            kauf
-        )
+    if kauf["Status"] != "KEIN KAUF":
+        KAUFKANDIDATEN_ERGEBNISSE.append(kauf)
 
     # --------------------------------------------------------
     # 5) Short
@@ -1301,8 +855,7 @@ def pruefe(
 # ============================================================
 
 def parse_ticker_args(args):
-    """
-    Akzeptiert sowohl Leerzeichen als auch Kommas.
+    """Akzeptiert sowohl Leerzeichen als auch Kommas.
 
     Beispiele:
         AVGO ANET VRT
@@ -1325,35 +878,29 @@ def parse_ticker_args(args):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        ticker_liste = parse_ticker_args(
-            sys.argv[1:]
-        )
+        ticker_liste = parse_ticker_args(sys.argv[1:])
     else:
         ticker_liste = TICKER_DEFAULT
 
     # Doppelte Ticker entfernen, Reihenfolge behalten.
-    ticker_liste = list(
-        dict.fromkeys(ticker_liste)
-    )
+    ticker_liste = list(dict.fromkeys(ticker_liste))
 
     print(
-        f"EINZEL-CHECK "
-        f"{datetime.date.today().isoformat()} - "
+        f"EINZEL-CHECK {datetime.date.today().isoformat()} - "
         f"{len(ticker_liste)} Titel: "
         f"{', '.join(ticker_liste)}"
     )
 
     print(
-        "Hinweis: Dieser Einzel-Check ist KEIN "
-        "Sektor-Rotationsscanner. "
-        "Die Sektorzuordnung erfolgt automatisch aus "
-        "analyse.py. Der Sektor-RS wird direkt gegen "
-        "den zugehörigen Sektor-ETF berechnet. "
-        "Momentum allein ist KEIN Kauf.\n"
+        "Hinweis: Rotations-Filter bewusst umgangen. "
+        "Die Kaufkandidatenlogik verwendet Rotation nur als "
+        "Zusatzinformation; Momentum allein ist KEIN Kauf.\n"
     )
 
     spy_close = get_benchmark_close()
     eu_close = get_eu_benchmark_close()
+
+    scores, sektor_5t = lade_rotation_scores()
 
     for ticker in ticker_liste:
         try:
@@ -1361,6 +908,8 @@ if __name__ == "__main__":
                 ticker,
                 spy_close,
                 eu_close,
+                scores,
+                sektor_5t,
             )
         except Exception as e:
             print(
@@ -1376,31 +925,18 @@ if __name__ == "__main__":
 
     print()
     print("=" * 62)
-    print(
-        "KAUFKANDIDATEN DES CHECKS"
-    )
-    print(
-        "A = bestätigtes Setup + CRV >= 1.0 | "
-        "B = starke Trigger-Nähe | C = frühe technische Vorbereitung"
-    )
+    print("KAUFKANDIDATEN DES CHECKS")
+    print("A = bestätigtes Setup + CRV >= 1.0 | B = Trigger-Kandidat, kein Sofortkauf")
     print("=" * 62)
 
     if not KAUFKANDIDATEN_ERGEBNISSE:
-        print(
-            "Keine Kaufkandidaten gefunden."
-        )
+        print("Keine Kaufkandidaten gefunden.")
 
     else:
-        rangfolge = {
-            "KAUFKANDIDAT A": 0,
-            "KAUFKANDIDAT B": 1,
-            "KAUFKANDIDAT C": 2,
-        }
-
         sortiert = sorted(
             KAUFKANDIDATEN_ERGEBNISSE,
             key=lambda x: (
-                rangfolge.get(x["Status"], 9),
+                0 if x["Status"] == "KAUFKANDIDAT A" else 1,
                 -x["Score"],
             ),
         )
@@ -1413,41 +949,13 @@ if __name__ == "__main__":
             )
 
             for grund in kandidat["Gruende"]:
-                print(
-                    f"    ✓ {grund}"
-                )
+                print(f"    ✓ {grund}")
 
             for risiko in kandidat["Risiken"]:
-                print(
-                    f"    ⚠ {risiko}"
-                )
+                print(f"    ⚠ {risiko}")
 
             print()
 
-    # ========================================================
-    # BEOBACHTUNGSLISTE
-    # ========================================================
-
-    beobachtung = lade_beobachtungsliste()
-
-    print()
     print("=" * 62)
-    print("AKTUELLE EINZEL-CHECK-BEOBACHTUNGSLISTE")
-    print("B/C = beobachten | A/KEIN KANDIDAT = automatisch entfernt")
-    print("=" * 62)
-
-    if not beobachtung:
-        print("Beobachtungsliste ist leer.")
-    else:
-        for ticker, eintrag in sorted(beobachtung.items()):
-            print(
-                f"{ticker:8} "
-                f"{eintrag.get('status', 'UNBEKANNT'):18} "
-                f"letzter Check {eintrag.get('letzter_check', '?')}"
-            )
-
-    print("=" * 62)
-    print(
-        "ENDE EINZEL-CHECK"
-    )
+    print("ENDE EINZEL-CHECK")
     print("=" * 62)
