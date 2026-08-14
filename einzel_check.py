@@ -1426,15 +1426,22 @@ if __name__ == "__main__":
 
     beobachtung = lade_beobachtungsliste()
 
-    # Falls keine JSON-Watchlist vorhanden ist, dient die letzte Auswertung
-    # (Punkt 4) als Rückfallebene. So geht z. B. NVDA nicht verloren, wenn
-    # der separate Einzel-Check-Lauf vor dem nächsten JSON-Sync startet.
+    # Die synchronisierte JSON ist die maßgebliche aktuelle Watchlist.
+    # Nur wenn sie wirklich nicht vorhanden/leer ist, wird Punkt 4 der
+    # letzten Auswertung als Fallback verwendet. So werden Titel, die im
+    # selben Tag bereits als A/KEIN KANDIDAT entfernt wurden, nicht durch
+    # eine ältere Auswertung wieder auferweckt.
     if not beobachtung:
         beobachtung = lade_beobachtung_aus_letzter_auswertung()
         if beobachtung:
             speichere_beobachtungsliste(beobachtung)
 
     beobachtete_ticker = list(beobachtung.keys())
+    if beobachtete_ticker:
+        print(
+            "INFO: Aktive Beobachtungsliste für diesen Lauf: "
+            + ", ".join(beobachtete_ticker)
+        )
 
     if argumente:
         ticker_liste = parse_ticker_args(argumente)
