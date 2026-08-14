@@ -49,6 +49,25 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python positionen_tracker.py
 
+      - name: Einzel-Check-Beobachtungsliste aus Drive laden
+        # GitHub Actions startet mit einem frischen Checkout. Die persistente
+        # B/C-Watchlist liegt deshalb in Drive und wird vor der täglichen
+        # Wiederprüfung lokal synchronisiert. Bei Drive-Fehlern bricht der
+        # Schritt bewusst ab, damit die Watchlist nicht versehentlich geleert wird.
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python beobachtungsliste_sync.py
+
+      - name: Beobachtungsliste täglich erneut prüfen
+        # Alle bereits beobachteten B/C-Titel werden jeden regulären Lauf
+        # erneut durch exakt dieselbe Einzel-Check-Logik geschickt.
+        # A/KEIN KANDIDAT werden entfernt, B/C aktualisiert.
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python einzel_check.py --beobachtungsliste
+
       - name: Analyse ausführen
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
