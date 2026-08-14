@@ -2,6 +2,9 @@ import os
 import io
 import json
 import datetime
+import smtplib
+from email.message import EmailMessage
+from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 from google.oauth2.credentials import Credentials
@@ -29,7 +32,7 @@ SPALTEN = [
     'Ticker', 'Name', 'Sektor', 'Markt', 'Waehrung', 'Richtung', 'Ideen_Quelle',
     'Einstiegsdatum', 'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
-    'Performance_Seit_Einstieg%', 'TP_Hinweis',
+    'Performance_Seit_Einstieg%', 'TP_Hinweis', 'Alert_Hinweis',
     'Produkt_Typ', 'Emittent', 'Hebel',
     'OS_Einstiegskurs', 'OS_Manueller_Kurs',
     'OS_Performance%', 'OS_Quelle', 'OS_WKN'
@@ -254,6 +257,7 @@ def ergaenze_neue_zeilen(df):
     Zuordnung ohne Duplizierung der kompletten Sektor-Listen aus analyse.py).
     Die Anleitungszeile (Ticker == ANLEITUNG_TICKER) wird dabei ignoriert."""
     heute = datetime.datetime.now().strftime("%d.%m.%Y")
+    alert_events = []
 
     for idx, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
@@ -506,6 +510,74 @@ def hole_aktuellen_kurs(ticker, markt):
         return None
 
 
+def sende_alert_mail(ereignis, row, aktueller_kurs, performance, stop, tp1, tp2):
+    """Versendet genau eine Trigger-Mail fuer STOP/TP1/TP2.
+
+    Die SMTP-Secrets sind identisch mit dem normalen Tagesbriefing.
+    Der Betreff bleibt bewusst immer gleich: "Alert - NEUBER MACRO & MARKETS".
+    """
+    benoetigt = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "MAIL_EMPFAENGER"]
+    fehlend = [name for name in benoetigt if not os.environ.get(name)]
+    if fehlend:
+        raise EnvironmentError(
+            "Alert-Mail nicht moeglich - fehlende SMTP-Secrets: " + ", ".join(fehlend)
+        )
+
+    ticker = str(row.get('Ticker', '')).strip()
+    name = str(row.get('Name', '')).strip()
+    richtung = str(row.get('Richtung', '')).strip() or 'Long'
+    einstieg = sicheres_float(row.get('Einstieg'), ticker, 'Einstieg')
+    waehrung = str(row.get('Waehrung', '')).strip()
+    produkt_typ = str(row.get('Produkt_Typ', '')).strip()
+
+    jetzt = datetime.datetime.now(ZoneInfo('Europe/Berlin'))
+    kurs_text = f"{aktueller_kurs:.2f}"
+    perf_text = f"{performance:+.2f}%"
+
+    ziel = ''
+    if ereignis == 'STOP':
+        ziel = f"Stop: {stop:.2f}"
+    elif ereignis == 'TP1':
+        ziel = f"TP1: {tp1:.2f}" if tp1 is not None else "TP1: -"
+    elif ereignis == 'TP2':
+        ziel = f"TP2: {tp2:.2f}" if tp2 is not None else "TP2: -"
+
+    zeilen = [
+        f"{ereignis} erreicht",
+        "",
+        f"Ticker: {ticker}",
+        f"Name: {name}" if name and name.lower() != 'nan' else None,
+        f"Richtung: {richtung}",
+        f"Einstieg: {einstieg:.2f}" + (f" {waehrung}" if waehrung and waehrung.lower() != 'nan' else '') if einstieg is not None else "Einstieg: -",
+        f"Aktueller Kurs: {kurs_text}",
+        ziel,
+        f"Performance seit Einstieg: {perf_text}",
+        f"Produkt: {produkt_typ}" if produkt_typ and produkt_typ.lower() != 'nan' else None,
+        "",
+        f"Zeitpunkt: {jetzt.strftime('%d.%m.%Y %H:%M')} Uhr (Berlin)",
+    ]
+
+    # Nach TP1/TP2 kann der Tracker den Stop in demselben Lauf nachziehen.
+    # Deshalb die finalen Werte direkt aus der Zeile verwenden, falls vorhanden.
+    finaler_stop = sicheres_float(row.get('Stop'), ticker, 'Stop')
+    if ereignis in ('TP1', 'TP2') and finaler_stop is not None:
+        zeilen.insert(-2, f"Aktueller Stop: {finaler_stop:.2f}")
+
+    body = "\n".join(z for z in zeilen if z is not None)
+    msg = EmailMessage()
+    msg['Subject'] = 'Alert - NEUBER MACRO & MARKETS'
+    msg['From'] = os.environ['SMTP_USER']
+    msg['To'] = os.environ['MAIL_EMPFAENGER']
+    msg.set_content(body)
+
+    with smtplib.SMTP(os.environ['SMTP_HOST'], int(os.environ['SMTP_PORT'])) as server:
+        server.starttls()
+        server.login(os.environ['SMTP_USER'], os.environ['SMTP_PASSWORD'])
+        server.send_message(msg)
+
+    print(f"ALERT-MAIL versendet: {ticker} -> {ereignis}")
+
+
 def aktualisiere_positionen(df):
     """Prüft jede offene Position gegen den aktuellen Kurs, den Stop und die
     Kursziele TP1/TP2. Wird der Stop erreicht oder unterschritten, wechselt
@@ -577,6 +649,13 @@ def aktualisiere_positionen(df):
             df.at[idx, 'Status'] = 'Gestoppt'
             df.at[idx, 'Ausstiegsdatum'] = heute
             df.at[idx, 'Ausstiegskurs'] = aktueller_kurs
+            alert_hinweis = str(row.get('Alert_Hinweis', '')).strip()
+            if 'STOP' not in alert_hinweis.upper():
+                alert_events.append({
+                    'event': 'STOP', 'idx': idx, 'ticker': ticker,
+                    'kurs': aktueller_kurs, 'performance': performance,
+                    'stop': stop, 'tp1': tp1, 'tp2': tp2,
+                })
             continue
 
         # TP-Hinweis: nur NEU setzen, wenn noch keiner vorhanden ist -
@@ -595,6 +674,24 @@ def aktualisiere_positionen(df):
         else:
             tp2_erreicht = tp2 is not None and aktueller_kurs >= tp2
             tp1_erreicht = tp1 is not None and aktueller_kurs >= tp1
+
+        alert_hinweis = str(row.get('Alert_Hinweis', '')).strip()
+        alert_hinweis_upper = alert_hinweis.upper()
+        # Bei einem 2-Stunden-Intervall kann der Kurs zwischen zwei Checks
+        # direkt von unter TP1 auf ueber TP2 springen. Dann werden beide
+        # noch nicht bestaetigten Stufen als Ereignis gemeldet.
+        if tp1_erreicht and 'TP1' not in alert_hinweis_upper:
+            alert_events.append({
+                'event': 'TP1', 'idx': idx, 'ticker': ticker,
+                'kurs': aktueller_kurs, 'performance': performance,
+                'stop': stop, 'tp1': tp1, 'tp2': tp2,
+            })
+        if tp2_erreicht and 'TP2' not in alert_hinweis_upper:
+            alert_events.append({
+                'event': 'TP2', 'idx': idx, 'ticker': ticker,
+                'kurs': aktueller_kurs, 'performance': performance,
+                'stop': stop, 'tp1': tp1, 'tp2': tp2,
+            })
 
         if not hinweis_schon_gesetzt:
             if tp2_erreicht:
@@ -651,7 +748,7 @@ def aktualisiere_positionen(df):
                 print(f"DEBUG: {ticker} -> Kursziel erreicht, Stop auf {ziel_label} ({ziel_stop}) "
                       f"nachgezogen (vorher {stop}).")
 
-    return df
+    return df, alert_events
 
 
 def berechne_optionsschein_performance(df):
@@ -751,8 +848,9 @@ if __name__ == '__main__':
     anzahl_offen = len(df[df['Status'].astype(str).str.strip().str.lower() == 'offen']) if not df.empty else 0
     print(f"DEBUG: {anzahl_offen} offene Position(en) zur Prüfung gefunden.")
 
+    alert_events = []
     if anzahl_offen > 0:
-        df = aktualisiere_positionen(df)
+        df, alert_events = aktualisiere_positionen(df)
         df = berechne_optionsschein_performance(df)
 
     # Immer lokal speichern (auch bei 0 offenen Positionen), damit
@@ -764,5 +862,40 @@ if __name__ == '__main__':
     # normalisiere_zahlen die Kommas wieder zurück in Punkte fuer Python.
     df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig', decimal=',')
     hochladen(service, LOKALE_DATEI, FOLDER_ID, file_id)
+
+    # Trigger-Mails erst nach dem erfolgreichen ersten Sheet-Upload senden.
+    # So bleibt der Positionsstand auch bei einem SMTP-Problem gespeichert.
+    # Der Alert-Hinweis wird erst NACH erfolgreichem Versand gesetzt; dadurch
+    # wird ein fehlgeschlagener Versand beim naechsten Lauf erneut versucht.
+    if alert_events:
+        heute = datetime.datetime.now().strftime("%d.%m.%Y")
+        print(f"DEBUG: {len(alert_events)} neue Alert-Ereignis(se) gefunden.")
+        erfolgreich_gesendet = []
+        for event in alert_events:
+            idx = event['idx']
+            try:
+                sende_alert_mail(
+                    event['event'], df.loc[idx], event['kurs'], event['performance'],
+                    event['stop'], event['tp1'], event['tp2']
+                )
+                erfolgreich_gesendet.append(event)
+            except Exception as e:
+                print(f"FEHLER beim Alert-Mailversand {event['ticker']} / {event['event']}: {e}")
+
+        # Erfolgreich gemeldete Ereignisse dauerhaft markieren.
+        for event in erfolgreich_gesendet:
+            idx = event['idx']
+            bisher = str(df.at[idx, 'Alert_Hinweis']).strip()
+            if bisher in ('', 'nan'):
+                bisher = ''
+            marker = event['event']
+            df.at[idx, 'Alert_Hinweis'] = f"{bisher} | {marker} gemeldet am {heute}".strip(' |')
+
+        # Zweiter Upload nur wenn mindestens eine Mail erfolgreich war.
+        # Damit bleibt ein nicht versendeter Alert bewusst wiederholbar.
+        if erfolgreich_gesendet:
+            df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig', decimal=',')
+            file_id2, mime_type2 = finde_datei(service, FOLDER_ID)
+            hochladen(service, LOKALE_DATEI, FOLDER_ID, file_id2)
 
     print("Positions-Tracker abgeschlossen.")
