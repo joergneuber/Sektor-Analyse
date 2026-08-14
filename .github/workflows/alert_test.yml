@@ -1,0 +1,49 @@
+name: Alert Mail Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  send-test-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test-Mail senden
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
+        run: |
+          python - <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "MAIL_EMPFAENGER"]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Fehlende SMTP-Secrets: " + ", ".join(missing))
+
+          now = datetime.now(ZoneInfo("Europe/Berlin"))
+          msg = EmailMessage()
+          msg["Subject"] = "Alert - NEUBER MACRO & MARKETS"
+          msg["From"] = os.environ["SMTP_USER"]
+          msg["To"] = os.environ["MAIL_EMPFAENGER"]
+          msg.set_content(
+              "TEST-ALERT\n\n"
+              "Dies ist ein kontrollierter Test des STOP/TP1/TP2-Mailversands.\n"
+              "Es wurde KEINE reale Position geprüft oder verändert.\n\n"
+              f"Testzeit: {now.strftime('%d.%m.%Y %H:%M:%S')} Uhr (Berlin)\n"
+              "Betreff: Alert - NEUBER MACRO & MARKETS\n"
+          )
+
+          with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:
+              server.starttls()
+              server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
+              server.send_message(msg)
+
+          print("TEST-ALERT erfolgreich versendet an", os.environ["MAIL_EMPFAENGER"])
+          PY
