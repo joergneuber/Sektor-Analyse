@@ -15,6 +15,7 @@ from groq import Groq
 from market_data import fetch_us_batch_robust
 
 from market_cache import get_yf_history, get_or_fetch_series
+from pi_cycle_bottom import get_pi_cycle_bottom_text, calculate_pi_cycle_bottom
 
 # Importe für Alpaca
 from alpaca.data.historical import StockHistoricalDataClient
@@ -3452,6 +3453,13 @@ if __name__ == "__main__":
     # simplen Funktion statt Wiederverwendung von get_index_benchmark_yf.
     eurusd_text = get_eurusd_wechselkurs()
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
+    # BITCOIN PI-CYCLE BOTTOM (NEU): reine Info. Nutzt dieselben bereits
+    # gecachten BTC-Tagesdaten wie der Benchmark; keine Auswirkung auf
+    # Setup-Score, CRV, Filter, Marktumfeld oder Intraday. Signal nur bei
+    # bestaetigtem Tages-Cross: 150-EMA von unten ueber 471-SMA x 0.745.
+    btc_hist = _hole_kursdaten_gecached("BTC-USD")
+    pi_cycle_result = calculate_pi_cycle_bottom(btc_hist)
+    pi_cycle_text = pi_cycle_result.get("message", "Bitcoin Pi-Cycle Bottom: nicht verfuegbar")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -3853,7 +3861,7 @@ if __name__ == "__main__":
         # Benchmarks, weil die Auswertung mit diesem Block beginnen soll.
         f.write(get_regionen_performance_text() + "\n\n")
 
-        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (("KURZFRIST-KONTEXT ÖL/EDELMETALLE\n" + "\n".join(f"- {_t}" for _t in markt_kontext_texte) + "\n") if markt_kontext_texte else "") + f"{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n\n")
+        f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (("KURZFRIST-KONTEXT ÖL/EDELMETALLE\n" + "\n".join(f"- {_t}" for _t in markt_kontext_texte) + "\n") if markt_kontext_texte else "") + f"{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n" + (f"{pi_cycle_text}\n" if pi_cycle_result.get("signal") else "") + "\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
