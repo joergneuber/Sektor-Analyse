@@ -17,6 +17,12 @@ import datetime as dt
 import calendar
 import math
 import re
+import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from pathlib import Path
 from io import StringIO
 
 import pandas as pd
@@ -85,16 +91,76 @@ MARKET_DATA = {
     "Kupfer": ("HG=F", "REAL_FUTURES"),
     "Aluminium": ("ALI=F", "REAL_FUTURES"),
     "Zink": ("ZNC=F", "REAL_FUTURES"),
-    "Nickel": ("NICKEL.L", "PROXY"),
-    "Blei": ("LEAD.L", "PROXY"),
-    "Zinn": ("TIN.L", "PROXY"),
-    "Kobalt": ("COBALT.L", "PROXY"),
+    # Yahoo liefert fuer diese drei London-Symbole keine belastbaren Kursdaten.
+    # Deshalb kein Fake-Ticker und kein 404-Netzwerkaufruf: bewusst UNAVAILABLE,
+    # bis eine reale kostenlose Quelle technisch eingebunden ist.
+    "Nickel": (None, "UNAVAILABLE"),
+    "Blei": (None, "UNAVAILABLE"),
+    "Zinn": (None, "UNAVAILABLE"),
+    "Kobalt": (None, "UNAVAILABLE"),
     "Lithium": ("LIT", "PROXY"),
     "Eisenerz": ("TIO=F", "REAL_FUTURES"),
 }
 
 MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M", 7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; NeuberMacro/1.0)"}
+MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
+MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
+FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
+MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
+CACHE_VERSION = 1
+CACHE_WRITE_LOCK = Lock()
+
+# Maximale Zeit, die ein gespeicherter REAL-Wert als verwendbar gilt, wenn die
+# Quelle beim aktuellen Lauf nicht erreichbar ist. Die Gültigkeit richtet sich
+# bewusst nach der Veröffentlichungsfrequenz des Datenpunkts, nicht nach dem
+# Abrufzeitpunkt. Ein echter Monatswert bleibt also gültig, bis ein neuer
+# veröffentlichter Monatswert vorliegt; tägliche Markt-/Zinswerte dürfen nur
+# wenige Handelstage alt sein.
+FRED_MAX_AGE_DAYS = {
+    "DFF": 7, "DFEDTARU": 45, "DFEDTARL": 45, "ECBDFR": 45, "M2SL": 45,
+    "DFII10": 7, "DGS2": 7, "DGS5": 7, "DGS10": 7, "DGS30": 7,
+    "CPIAUCSL": 60, "CPILFESL": 60, "PCEPI": 60, "PCEPILFE": 60, "PPIACO": 60,
+    "CES0500000003": 60, "GDPC1": 120, "UNRATE": 60, "PAYEMS": 60,
+    "JTSJOL": 90, "ICSA": 14, "INDPRO": 60, "TCU": 60, "UMCSENT": 60,
+    "DRTSCILM": 120, "BAMLH0A0HYM2": 7, "BAMLC0A0CM": 7, "NFCI": 14,
+    "GSCPI": 60, "GEPUCURRENT": 120, "GFDEGDQ188S": 120,
+}
+
+
+def _cache_load():
+    if not MACRO_CACHE_FILE.exists():
+        return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}}
+    try:
+        with MACRO_CACHE_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("version") != CACHE_VERSION:
+            return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}}
+        return data
+    except Exception as exc:
+        print(f"WARNUNG-MAKRO-CACHE: Cache nicht lesbar ({exc}) - starte leer.")
+        return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}}
+
+
+def _cache_save(data):
+    MACRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = MACRO_CACHE_FILE.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, MACRO_CACHE_FILE)
+
+
+def _cache_valid(data_date, max_age_days, today=None):
+    if not data_date:
+        return False
+    try:
+        d = dt.date.fromisoformat(data_date)
+        ref = today or dt.date.today()
+        return (ref - d).days <= max_age_days
+    except Exception:
+        return False
 
 
 def _clean_num(value):
@@ -111,8 +177,24 @@ def _fmt(value, decimals=4):
 
 
 def fred_series(series_id, limit_days=5000):
+    cache = _cache_load()
+    entry = cache.get("fred", {}).get(series_id)
+    if entry and entry.get("payload"):
+        try:
+            df = pd.read_json(StringIO(entry["payload"]), orient="split")
+            df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+            df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
+            df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+            if not df.empty:
+                latest = df["DATE"].iloc[-1].date().isoformat()
+                max_age = FRED_MAX_AGE_DAYS.get(series_id, 60)
+                if _cache_valid(latest, max_age):
+                    return df
+        except Exception as exc:
+            print(f"WARNUNG-MAKRO-CACHE: FRED {series_id} unlesbar ({exc}) - lade neu.")
+
     try:
-        r = requests.get(FRED_BASE.format(series_id), timeout=20, headers=REQUEST_HEADERS)
+        r = requests.get(FRED_BASE.format(series_id), timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
         r.raise_for_status()
         df = pd.read_csv(StringIO(r.text))
         if "DATE" not in df.columns or series_id not in df.columns:
@@ -123,9 +205,33 @@ def fred_series(series_id, limit_days=5000):
         if limit_days:
             cutoff = pd.Timestamp.today() - pd.Timedelta(days=limit_days)
             df = df[df["DATE"] >= cutoff]
+        if not df.empty:
+            with CACHE_WRITE_LOCK:
+                cache = _cache_load()
+                cache.setdefault("fred", {})[series_id] = {
+                    "saved_at": time.time(),
+                    "data_date": df["DATE"].iloc[-1].date().isoformat(),
+                    "payload": df.to_json(orient="split", date_format="iso"),
+                    "status": "REAL",
+                    "source": FRED_URL.format(series_id),
+                }
+                _cache_save(cache)
         return df
     except Exception as exc:
         print(f"WARNUNG: FRED {series_id} nicht verfuegbar: {exc}")
+        # Ein echter, noch gueltiger Cache-Wert darf als REAL_CACHED weiter
+        # verwendet werden. Es wird niemals ein Wert aus dem Nichts erzeugt.
+        if entry and entry.get("payload"):
+            try:
+                df = pd.read_json(StringIO(entry["payload"]), orient="split")
+                df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+                df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
+                df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+                latest = df["DATE"].iloc[-1].date().isoformat() if not df.empty else None
+                if _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60)):
+                    return df
+            except Exception:
+                pass
         return pd.DataFrame()
 
 
@@ -135,28 +241,68 @@ def fred_snapshot(name, series_id):
         return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
     value = _clean_num(df[series_id].iloc[-1])
     date = df["DATE"].iloc[-1].strftime("%Y-%m-%d")
+    cache = _cache_load()
+    entry = cache.get("fred", {}).get(series_id, {})
+    status = "REAL_CACHED" if entry and entry.get("data_date") == date and entry.get("saved_at", 0) < time.time() - 1 else "REAL"
     return (
-        f"{name}: {_fmt(value, 4)} | Datenstand={date} | STATUS=REAL | "
+        f"{name}: {_fmt(value, 4)} | Datenstand={date} | STATUS={status} | "
         f"SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
     )
 
 
 def _market_history(ticker):
+    cache = _cache_load()
+    entry = cache.get("market", {}).get(ticker)
+    if entry and entry.get("payload"):
+        try:
+            series = pd.read_json(StringIO(entry["payload"]), orient="split")
+            series.index = pd.to_datetime(series.index)
+            close = pd.to_numeric(series.iloc[:, 0], errors="coerce").dropna()
+            latest = close.index[-1].date().isoformat() if not close.empty else None
+            # Tages-/Futuresdaten: am Wochenende darf der letzte Handelstag
+            # verwendet werden; nach sieben Kalendertagen ist der Cache zu alt.
+            if latest and _cache_valid(latest, 7):
+                return close
+        except Exception:
+            pass
     try:
         hist = yf.download(ticker, period="2y", interval="1d", auto_adjust=False, progress=False, threads=False)
         if hist is None or hist.empty:
-            return pd.Series(dtype=float)
+            raise ValueError("keine Daten")
         if isinstance(hist.columns, pd.MultiIndex):
             close = hist["Close"].iloc[:, 0]
         else:
             close = hist["Close"]
-        return pd.to_numeric(close, errors="coerce").dropna()
+        close = pd.to_numeric(close, errors="coerce").dropna()
+        if close.empty:
+            raise ValueError("keine Close-Daten")
+        with CACHE_WRITE_LOCK:
+            cache = _cache_load()
+            cache.setdefault("market", {})[ticker] = {
+                "saved_at": time.time(),
+                "data_date": pd.Timestamp(close.index[-1]).date().isoformat(),
+                "payload": close.to_frame("Close").to_json(orient="split", date_format="iso"),
+                "status": "REAL",
+            }
+            _cache_save(cache)
+        return close
     except Exception as exc:
         print(f"WARNUNG: Marktdaten {ticker} nicht verfuegbar: {exc}")
+        if entry and entry.get("payload"):
+            try:
+                series = pd.read_json(StringIO(entry["payload"]), orient="split")
+                series.index = pd.to_datetime(series.index)
+                close = pd.to_numeric(series.iloc[:, 0], errors="coerce").dropna()
+                if not close.empty and _cache_valid(close.index[-1].date().isoformat(), 7):
+                    return close
+            except Exception:
+                pass
         return pd.Series(dtype=float)
 
 
 def market_snapshot(name, ticker, data_type):
+    if not ticker or data_type == "UNAVAILABLE":
+        return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | DATENTYP=UNAVAILABLE | SOURCE=keine belastbare kostenlose Quelle im aktuellen Projektstand"
     close = _market_history(ticker)
     status = "REAL" if data_type != "PROXY" else "PROXY"
     if close.empty:
@@ -232,13 +378,33 @@ def _extract_fed_futures_from_html(html):
 
 
 def get_public_fed_futures():
+    cache = _cache_load()
+    entry = cache.get("fed_futures", {}).get("quotes")
+    if entry and entry.get("quotes"):
+        # Futureskurse sind intraday marktabhaengig. Ein gespeicherter Stand
+        # darf nur innerhalb desselben Handelstags als Fallback verwendet werden.
+        if entry.get("data_date") == dt.date.today().isoformat():
+            return entry["quotes"]
     try:
-        r = requests.get(FED_FUTURES_PUBLIC_URL, timeout=20, headers=REQUEST_HEADERS)
+        r = requests.get(FED_FUTURES_PUBLIC_URL, timeout=10, headers=REQUEST_HEADERS)
         r.raise_for_status()
         quotes = _extract_fed_futures_from_html(r.text)
+        if quotes:
+            with CACHE_WRITE_LOCK:
+                cache = _cache_load()
+                cache.setdefault("fed_futures", {})["quotes"] = {
+                    "saved_at": time.time(),
+                    "data_date": dt.date.today().isoformat(),
+                    "quotes": quotes,
+                    "status": "REAL",
+                    "source": FED_FUTURES_PUBLIC_URL,
+                }
+                _cache_save(cache)
         return quotes
     except Exception as exc:
         print(f"WARNUNG: oeffentliche Fed-Futures-Seite nicht verfuegbar: {exc}")
+        # Kein alter Tagesstand: die Fed-Wahrscheinlichkeit ist sonst potentiell
+        # veraendert und darf nicht aus einem alten Kurs fortgeschrieben werden.
         return {}
 
 
@@ -456,6 +622,42 @@ def ism_snapshot(today):
     return lines
 
 
+
+
+def market_snapshots_parallel():
+    """Laedt Markt-/Rohstoffhistorien parallel und nutzt den persistenten Cache."""
+    results = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(market_snapshot, name, ticker, data_type): name
+            for name, (ticker, data_type) in MARKET_DATA.items()
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:
+                ticker, data_type = MARKET_DATA[name]
+                results[name] = f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE={ticker or 'keine'} | DATENTYP={data_type} | FEHLER={exc}"
+    return [results[name] for name in MARKET_DATA]
+
+def fred_snapshots_parallel(names):
+    """Laedt FRED-Serien parallel. Cache-Treffer erzeugen keinen Netzwerkaufruf.
+
+    Das reduziert die Laufzeit bei einem FRED-Ausfall von vielen seriellen
+    Timeouts auf ungefaehr ein Timeout-Fenster, ohne Datenregeln zu lockern.
+    """
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(12, max(1, len(names)))) as pool:
+        futures = {pool.submit(fred_snapshot, name, FRED_SERIES[name]): name for name in names}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:
+                results[name] = f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=FRED {FRED_SERIES[name]} | FEHLER={exc}"
+    return [results[name] for name in names]
+
 def data_quality_gate(lines):
     critical_labels = [
         "Fed Target Range Upper",
@@ -493,43 +695,38 @@ def main():
         "NEUBER MACRO & MARKETS",
         f"MAKRO-DATENPAKET | Datenabruf={today.isoformat()}",
         "HARTE DATENREGEL: Keine Zahl wird geschaetzt. Fehlende Werte bleiben NICHT VERFUEGBAR.",
-        "STATUS: REAL = Originalwert | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
+        "STATUS: REAL = Originalwert | REAL_CACHED = echter gespeicherter Originalwert, Quelle im Lauf nicht neu erreichbar | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
         "",
         "1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET",
     ]
-    for name in [
+    lines.extend(fred_snapshots_parallel([
         "Fed Funds Effective Rate", "Fed Target Range Lower", "Fed Target Range Upper",
         "ECB Deposit Facility Rate", "M2", "Realzins 10Y TIPS",
         "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury",
-    ]:
-        lines.append(fred_snapshot(name, FRED_SERIES[name]))
+    ]))
     lines.extend(fed_expectation_snapshot(today))
     lines.append("")
 
     lines.append("2. INFLATION, ARBEIT & KONJUNKTUR")
-    for name in [
+    lines.extend(fred_snapshots_parallel([
         "CPI", "Core CPI", "PCE", "Core PCE", "PPI", "Durchschnittlicher Stundenlohn",
         "Reales BIP", "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "JOLTS Job Openings",
         "Initial Jobless Claims", "Industrieproduktion", "Kapazitaetsauslastung", "Consumer Sentiment",
-    ]:
-        lines.append(fred_snapshot(name, FRED_SERIES[name]))
+    ]))
     lines.extend(ism_snapshot(today))
     lines.append("")
 
     lines.append("3. KREDIT, FINANCIAL CONDITIONS & RISIKO")
-    for name in ["SLOOS C&I Tightening", "US High Yield OAS", "US Investment Grade OAS", "Chicago Fed NFCI"]:
-        lines.append(fred_snapshot(name, FRED_SERIES[name]))
+    lines.extend(fred_snapshots_parallel(["SLOOS C&I Tightening", "US High Yield OAS", "US Investment Grade OAS", "Chicago Fed NFCI"]))
     lines.append("")
 
     lines.append("4. EXOGENE FAKTOREN, LIEFERKETTEN & FISKAL")
-    for name in ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP"]:
-        lines.append(fred_snapshot(name, FRED_SERIES[name]))
+    lines.extend(fred_snapshots_parallel(["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP"]))
     lines.append("Geopolitik: kein kuenstlicher Tages-Score. Nur konkret belegte Ereignisse aus den bereitgestellten Quellen duerfen interpretiert werden.")
     lines.append("")
 
     lines.append("5. MARKT, FX, KRYPTO & ROHSTOFFE")
-    for name, (ticker, data_type) in MARKET_DATA.items():
-        lines.append(market_snapshot(name, ticker, data_type))
+    lines.extend(market_snapshots_parallel())
     lines.append("")
 
     gate, missing = data_quality_gate(lines)
@@ -537,6 +734,7 @@ def main():
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"KRITISCHE DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
     lines.append("REGEL: Bei GESPERRT darf keine Base/Bull/Bear-Prognose mit Zahlen ausgegeben werden. Die Tagesauswertung darf die bestehende regelbasierte Analyse trotzdem weiter ausgeben.")
+    lines.append("CACHE-REGEL: REAL_CACHED darf nur verwendet werden, wenn der gespeicherte Originalwert innerhalb seiner definierten Datenaltersgrenze liegt. Es werden keine Werte fortgeschrieben oder geschaetzt.")
     lines.append("")
 
     lines.append("7. INTERPRETATIONSREGELN FUER GEMINI")

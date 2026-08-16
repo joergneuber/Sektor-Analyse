@@ -139,16 +139,17 @@ def claude_auswertung_starten():
     client = Anthropic(api_key=api_key)
     anweisung = lade_anweisung()
     eingabedateien = sammle_eingabedateien()
-    makro_gate = None
+    # Fehlendes oder nicht verifizierbares Makro-Paket = harte Sperre.
+    makro_gate = "GESPERRT"
     makro_pfad = eingabedateien.get("Makro_Briefing(...).txt")
     if makro_pfad:
         try:
             with open(makro_pfad, "r", encoding="utf-8-sig") as f:
                 makro_text = f.read()
             m = re.search(r"MAKRO-SZENARIO-GATE:\s*(FREIGEGEBEN|GESPERRT)", makro_text)
-            makro_gate = m.group(1) if m else None
+            makro_gate = m.group(1) if m else "GESPERRT"
         except Exception:
-            makro_gate = None
+            makro_gate = "GESPERRT"
     nachricht = baue_nachricht(eingabedateien)
 
     print(f"\nSende Anfrage an {MODELL}...")

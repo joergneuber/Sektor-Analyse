@@ -376,17 +376,30 @@ def gemini_auswertung_starten():
     # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
     # makro_szenario.py den Gatekeeper freigegeben hat. Die restliche
     # Tagesauswertung bleibt davon unabhaengig.
-    makro_gate = None
+    # Ausfall oder fehlende Makro-Datei = harte Sperre. Das verhindert, dass
+    # Gemini aus den übrigen Markt-/Setup-Dateien trotzdem ein scheinbar
+    # quantitatives Makro-Szenario konstruiert.
+    makro_gate = "GESPERRT"
+    makro_gate_grund = "Makro-Datenpaket fehlt oder konnte nicht verifiziert werden."
     makro_pfad = eingabedateien.get("Makro_Briefing(...).txt")
     if makro_pfad:
         try:
             with open(makro_pfad, "r", encoding="utf-8-sig") as f:
                 makro_text = f.read()
             m = re.search(r"MAKRO-SZENARIO-GATE:\s*(FREIGEGEBEN|GESPERRT)", makro_text)
-            makro_gate = m.group(1) if m else None
-            print(f"Makro-Szenario-Gate: {makro_gate or 'UNBEKANNT'}")
+            if m:
+                makro_gate = m.group(1)
+                makro_gate_grund = "Gate aus Makro-Datenpaket übernommen."
+            else:
+                makro_gate = "GESPERRT"
+                makro_gate_grund = "Makro-Datei vorhanden, aber Gate nicht eindeutig verifiziert."
+            print(f"Makro-Szenario-Gate: {makro_gate} | Grund: {makro_gate_grund}")
         except Exception as exc:
-            print(f"WARNUNG: Makro-Gate konnte nicht gelesen werden: {exc}")
+            makro_gate = "GESPERRT"
+            makro_gate_grund = f"Makro-Gate konnte nicht gelesen werden: {exc}"
+            print(f"WARNUNG: {makro_gate_grund}")
+    else:
+        print(f"WARNUNG: {makro_gate_grund}")
 
     for versuch in range(1, MAX_VERSUCHE + 1):
         print(f"\nVersuch {versuch}/{MAX_VERSUCHE}...")
@@ -413,10 +426,10 @@ def gemini_auswertung_starten():
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht.",
                     (
-                        "HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. "
+                        f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
                         "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
                         "keine geschaetzten Ersatzwerte und keine numerischen Makro-Prognosen. "
-                        "Benenne stattdessen die konkreten kritischen Datenluecken. "
+                        "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
                         if makro_gate == "GESPERRT" else
                         "HARTE MAKRO-DATENREGEL: Verwende ausschliesslich REAL- oder "
                         "CALCULATED-Werte aus dem Makro-Datenpaket. PROXY-Werte muessen als "
