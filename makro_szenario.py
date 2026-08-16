@@ -1035,26 +1035,45 @@ def _ism_official_get(url):
 
 
 
-def _ism_public_secondary_forexfactory(year, month):
-    """Kostenloser Sekundaer-Fallback fuer ISM Services.
-    'year/month' bezeichnet den Berichtsmonat. Der Release erfolgt im
-    Folgemonat; deshalb wird ausschliesslich der Folgemonat durchsucht.
-    Es wird nur das ACTUAL-Feld des USD-ISM-Services-PMI-Events akzeptiert.
-    Forecast und Previous werden niemals verwendet.
+def _ism_public_secondary_forexfactory(year, month, kind):
+    """
+    Kostenloser öffentlicher Sekundär-Fallback für ISM Manufacturing und
+    ISM Services.
+
+    HARTE DATENREGELN:
+    - Ausschließlich ACTUAL.
+    - Forecast wird niemals verwendet.
+    - Previous wird niemals verwendet.
+    - Keine Berechnung, Interpolation oder Schätzung.
+    - Nur das exakt passende USD-ISM-Event wird akzeptiert.
+    - Der Release-Monat muss zum Berichtsmonat passen.
     """
     if month < 1 or month > 12:
         return None
 
+    if kind not in {"manufacturing", "services"}:
+        return None
+
+    event_name = (
+        "ISM Manufacturing PMI"
+        if kind == "manufacturing"
+        else "ISM Services PMI"
+    )
+
     release_year = year + 1 if month == 12 else year
     release_month = 1 if month == 12 else month + 1
 
-    # ISM publishes on the third business day of the following month.
-    # Search only a narrow window around the expected release date.
-    for day in range(1, min(12, calendar.monthrange(release_year, release_month)[1]) + 1):
+    max_day = min(
+        12,
+        calendar.monthrange(release_year, release_month)[1]
+    )
+
+    for day in range(1, max_day + 1):
         url = (
             f"https://www.forexfactory.com/calendar?day="
             f"{calendar.month_abbr[release_month].lower()}{day}.{release_year}"
         )
+
         try:
             r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
             r.raise_for_status()
@@ -1070,18 +1089,14 @@ def _ism_public_secondary_forexfactory(year, month):
                 row_text = " ".join(
                     t.strip() for t in row.xpath(".//text()") if t.strip()
                 )
-                normalized = re.sub(r"\s+", " ", row_text)
+                normalized = re.sub(r"\s+", " ", row_text).strip()
 
-                # Require the exact USD event. This prevents a generic
-                # "Services PMI" event from being mistaken for ISM.
                 if "USD" not in normalized:
                     continue
-                if "ISM Services PMI" not in normalized:
+                if event_name not in normalized:
                     continue
 
-                # ForexFactory table columns are: Actual | Forecast | Previous.
-                # Take only the first numeric field after the event label.
-                tail = normalized.split("ISM Services PMI", 1)[1]
+                tail = normalized.split(event_name, 1)[1]
                 nums = re.findall(r"(?<![\d.])\d+(?:\.\d+)?", tail)
                 if not nums:
                     continue
@@ -1092,11 +1107,21 @@ def _ism_public_secondary_forexfactory(year, month):
 
                 release_date = dt.date(release_year, release_month, day)
 
+                expected_release_year = year + 1 if month == 12 else year
+                expected_release_month = 1 if month == 12 else month + 1
+                if (release_date.year != expected_release_year or
+                        release_date.month != expected_release_month):
+                    print(
+                        f"WARNUNG: {event_name}-Fallback verworfen: "
+                        f"report_month={year}-{month:02d} | "
+                        f"release_date={release_date.isoformat()}"
+                    )
+                    continue
+
                 print(
                     f"INFO: ForexFactory ISM-Event gefunden: "
-                    f"report_month={year}-{month:02d} "
-                    f"release_date={release_date.isoformat()} "
-                    f"actual={actual}"
+                    f"kind={kind} report_month={year}-{month:02d} "
+                    f"release_date={release_date.isoformat()} actual={actual}"
                 )
 
                 return {
@@ -1113,17 +1138,16 @@ def _ism_public_secondary_forexfactory(year, month):
 
         except Exception as exc:
             print(
-                f"WARNUNG: ForexFactory ISM-Fallback fuer "
+                f"WARNUNG: ForexFactory ISM-Fallback fuer {kind} "
                 f"release_date={release_year}-{release_month:02d}-{day:02d} "
                 f"nicht verfuegbar: {type(exc).__name__}: {exc}"
             )
 
     print(
-        f"WARNUNG: Kein passender USD ISM Services PMI Release gefunden fuer "
-        f"report_month={year}-{month:02d}"
+        f"WARNUNG: Kein passender USD {event_name} Release gefunden "
+        f"fuer report_month={year}-{month:02d}"
     )
     return None
-
 
 
 def _ism_fetch(kind, year, month):
@@ -1141,9 +1165,7 @@ def _ism_fetch(kind, year, month):
             final_url = r.url.lower()
             # A 200 SSO/login page is not the report.
             if "login.aspx" in final_url or "sso" in final_url:
-                print(
-                    f"WARNUNG: ISM official redirected to SSO/login: {r.url}"
-                )
+                print(f"WARNUNG: ISM official redirected to SSO/login: {r.url}")
             else:
                 text = re.sub(r"<[^>]+>", " ", r.text)
                 text = re.sub(r"\s+", " ", text)
@@ -1190,33 +1212,33 @@ def _ism_fetch(kind, year, month):
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
     # Secondary: public calendar. Actual only; no forecast/previous.
-    if kind == "services":
-        secondary = _ism_public_secondary_forexfactory(year, month)
-        if secondary:
-            # Defensive release-month validation: a report for July must have
-            # a release date in August, not in July.
-            release_date = secondary.get("release_date")
-            if release_date:
+    secondary = _ism_public_secondary_forexfactory(year, month, kind)
+    if secondary:
+        release_date = secondary.get("release_date")
+        if release_date:
+            try:
                 rd = dt.date.fromisoformat(release_date)
-                expected_y = year + 1 if month == 12 else year
-                expected_m = 1 if month == 12 else month + 1
-                if rd.year != expected_y or rd.month != expected_m:
-                    print(
-                        f"WARNUNG: ISM-Fallback verworfen: "
-                        f"report_month={year}-{month:02d}, "
-                        f"release_date={release_date}"
-                    )
-                    return None
+            except Exception:
+                print(f"WARNUNG: ISM-Fallback verworfen: ungueltiges release_date={release_date}")
+                return None
 
-            print(
-                f"INFO: ISM Services Fallback erfolgreich: "
-                f"Actual={secondary['pmi']} | release_date={secondary.get('release_date')} | "
-                f"source={secondary['url']}"
-            )
-            return secondary
+            expected_y = year + 1 if month == 12 else year
+            expected_m = 1 if month == 12 else month + 1
+            if rd.year != expected_y or rd.month != expected_m:
+                print(
+                    f"WARNUNG: ISM-Fallback verworfen: kind={kind} "
+                    f"report_month={year}-{month:02d}, release_date={release_date}"
+                )
+                return None
+
+        print(
+            f"INFO: ISM {kind.title()} Fallback erfolgreich: "
+            f"Actual={secondary['pmi']} | release_date={secondary.get('release_date')} | "
+            f"source={secondary['url']}"
+        )
+        return secondary
 
     return None
-
 
 def ism_snapshot(today):
     cache=_cache_load()
