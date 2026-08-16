@@ -1000,89 +1000,34 @@ def _latest_ism_month(today):
     return None
 
 
-def _ism_public_secondary_fallback(kind, year, month):
-    """Kostenloser Sekundaerabruf aus dem oeffentlichen Trading-Economics-Kalender.
-    Es wird ausschliesslich das bereits veroeffentlichte ACTUAL-Feld akzeptiert.
-    Forecast/Consensus/Previous werden niemals als Ersatz verwendet.
+
+
+def _ism_official_get(url):
+    """Abruf der offiziellen ISM-Seite mit kurzen Retries.
+    Gibt nur eine HTTP-Antwort zurueck; es werden keine Ersatzwerte erzeugt.
     """
-    if kind != "services":
-        return None
-
-    url = (
-        "https://api.tradingeconomics.com/calendar/country/united%20states/"
-        f"{year:04d}-{month:02d}-01/"
-        f"{year:04d}-{month:02d}-28?c=guest:guest&f=json"
-    )
-
-    # Der Monatsendtag ist nicht immer 28; deshalb zusätzlich ein sicherer 31-Tage-Versuch.
-    urls = [
-        url,
-        (
-            "https://api.tradingeconomics.com/calendar/country/united%20states/"
-            f"{year:04d}-{month:02d}-01/"
-            f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
-            "?c=guest:guest&f=json"
-        ),
-    ]
-
-    for candidate_url in urls:
+    last_exc = None
+    for attempt in range(3):
         try:
-            r = requests.get(candidate_url, timeout=12, headers=REQUEST_HEADERS)
-            r.raise_for_status()
-            payload = r.json()
-            if not isinstance(payload, list):
-                continue
-
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-
-                event = str(
-                    item.get("Event")
-                    or item.get("event")
-                    or item.get("Category")
-                    or ""
-                )
-                country = str(item.get("Country") or item.get("country") or "")
-
-                if country and country.upper() not in {"UNITED STATES", "US", "USA"}:
-                    continue
-
-                if "ISM" not in event.upper() or "SERVICE" not in event.upper():
-                    continue
-
-                # Critical rule: ONLY Actual. Empty/null/non-numeric means unavailable.
-                actual = item.get("Actual")
-                if actual in (None, "", "-", "N/A", "NA"):
-                    continue
-
-                value = _clean_num(str(actual).replace("%", "").replace(",", ""))
-                if value is None:
-                    continue
-
-                event_date = item.get("Date") or item.get("date")
-                if event_date:
-                    parsed_date = pd.to_datetime(event_date, errors="coerce")
-                    if not pd.isna(parsed_date):
-                        if parsed_date.year != year or parsed_date.month != month:
-                            continue
-
-                return {
-                    "pmi": value,
-                    "url": candidate_url,
-                    "year": year,
-                    "month": month,
-                    "status": "REAL_PUBLIC_SECONDARY",
-                    "new_orders": None,
-                    "employment": None,
-                    "prices": None,
-                }
-
+            response = requests.get(
+                url,
+                timeout=10,
+                headers=REQUEST_HEADERS,
+                allow_redirects=True,
+            )
+            print(
+                f"INFO: ISM official HTTP attempt={attempt + 1} "
+                f"status={response.status_code} final_url={response.url}"
+            )
+            response.raise_for_status()
+            return response
         except Exception as exc:
-            print(f"WARNUNG: Trading-Economics-ISM-Fallback nicht verfuegbar: {exc}")
-
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    if last_exc:
+        raise last_exc
     return None
-
 
 
 def _ism_fetch(kind, year, month):
@@ -1141,8 +1086,9 @@ def _ism_fetch(kind, year, month):
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-    # Secondary: public reporting of the official release, ACTUAL only.
-    return _ism_public_secondary_fallback(kind, year, month)
+    # No unverified secondary source is used. If official ISM is unavailable,
+    # the macro gate remains locked rather than substituting estimates/forecasts.
+    return None
 
 
 def ism_snapshot(today):
@@ -1163,7 +1109,16 @@ def ism_snapshot(today):
             # Cache verwenden. Ein alter Juni-Wert darf im August niemals den Juli-Wert ersetzen.
             latest_y, latest_m = candidates[0]
             if d.get("year") == latest_y and d.get("month") == latest_m:
+                print(
+                    f"INFO: ISM-Cache-Hit fuer {key} "
+                    f"(Datenstand={latest_y}-{latest_m:02d}, status={d.get('status')})"
+                )
                 return d
+            print(
+                f"INFO: ISM-Cache vorhanden, aber nicht aktuell: "
+                f"cached={d.get('year')}-{d.get('month')} "
+                f"required={latest_y}-{latest_m}"
+            )
         for y,m in candidates:
             d=_ism_fetch(kind,y,m)
             if d:
