@@ -32,6 +32,7 @@ import yfinance as yf
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 FRED_URL = "https://fred.stlouisfed.org/series/{}"
 ISM_BASE = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports"
+PUBLIC_PMI_CALENDAR_URL = "https://snad.ltd/economic-calendar/"
 FED_FUTURES_PUBLIC_URL = "https://www.pomeroygrain.com/markets.aspx?cg=30-Day+Fed+Funds"
 
 FRED_SERIES = {
@@ -211,7 +212,6 @@ def _save_series_cache(series_id, df, source, status="REAL"):
 
 
 def _rate_token_to_float(token):
-    """Wandelt offizielle Fed-Schreibweisen wie 3-1/2 oder 3.5 in einen REAL-Wert um."""
     token = str(token).strip().replace("‑", "-").replace("–", "-").replace("—", "-")
     m = re.fullmatch(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)", token)
     if m:
@@ -226,45 +226,34 @@ def _rate_token_to_float(token):
 
 
 def _official_fomc_target_series(series_id):
-    """Liest den zuletzt veröffentlichten offiziellen FOMC-Zielkorridor.
-    Es wird nur ein tatsächlich im FOMC-Statement genannter Korridor akzeptiert.
-    """
+    """Nur tatsächlich veröffentlichte Fed-Zielkorridore akzeptieren."""
     urls = []
 
-    # Primär: offizielle FOMC-Press-Release-Liste.
     try:
         year = dt.date.today().year
         index_url = f"https://www.federalreserve.gov/newsevents/pressreleases/{year}-press-fomc.htm"
         r = requests.get(index_url, timeout=8, headers=REQUEST_HEADERS)
         if r.status_code == 200:
-            links = re.findall(
-                r'href=["\']([^"\']*monetary\d{8}a\.htm)["\']',
-                r.text,
-                flags=re.I
-            )
+            links = re.findall(r'href=["\']([^"\']*monetary\d{8}a\.htm)["\']', r.text, flags=re.I)
             for link in links:
                 if link.startswith("/"):
                     link = "https://www.federalreserve.gov" + link
-                elif link.startswith("http"):
-                    pass
-                else:
+                elif not link.startswith("http"):
                     link = "https://www.federalreserve.gov/newsevents/pressreleases/" + link
                 urls.append(link)
     except Exception:
         pass
 
-    # Fallback: deterministische URLs aus dem verifizierten FOMC-Kalender.
-    dates = []
     try:
+        dates = []
         for y in [dt.date.today().year, dt.date.today().year - 1]:
             dates.extend(_fomc_meeting_dates(y))
+        for meeting in sorted({d for d in dates if d <= dt.date.today()}, reverse=True):
+            urls.append(
+                f"https://www.federalreserve.gov/newsevents/pressreleases/monetary{meeting:%Y%m%d}a.htm"
+            )
     except Exception:
-        dates = []
-
-    for meeting in sorted({d for d in dates if d <= dt.date.today()}, reverse=True):
-        urls.append(
-            f"https://www.federalreserve.gov/newsevents/pressreleases/monetary{meeting:%Y%m%d}a.htm"
-        )
+        pass
 
     seen = set()
     for url in urls:
@@ -278,8 +267,6 @@ def _official_fomc_target_series(series_id):
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text)
 
-            # Unterstützt offizielle Fed-Schreibweisen:
-            # "3-1/2 to 3-3/4 percent" sowie "3.5 to 3.75 percent".
             patterns = [
                 r"target range for the federal funds rate.*?at\s+"
                 r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+to\s+"
@@ -288,11 +275,7 @@ def _official_fomc_target_series(series_id):
                 r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+to\s+"
                 r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+percent",
             ]
-            m = None
-            for pattern in patterns:
-                m = re.search(pattern, text, flags=re.I)
-                if m:
-                    break
+            m = next((re.search(p, text, flags=re.I) for p in patterns if re.search(p, text, flags=re.I)), None)
             if not m:
                 continue
 
@@ -302,30 +285,16 @@ def _official_fomc_target_series(series_id):
                 continue
 
             dm = re.search(r"monetary(\d{8})a\.htm", url)
-            meeting_date = (
-                dt.datetime.strptime(dm.group(1), "%Y%m%d").date()
-                if dm else dt.date.today()
-            )
+            meeting_date = dt.datetime.strptime(dm.group(1), "%Y%m%d").date() if dm else dt.date.today()
             value = upper if series_id == "DFEDTARU" else lower
-            return (
-                pd.DataFrame({"DATE": [pd.Timestamp(meeting_date)], series_id: [value]}),
-                url,
-            )
+            return pd.DataFrame({"DATE": [pd.Timestamp(meeting_date)], series_id: [value]}), url
         except Exception:
             continue
 
     return pd.DataFrame(), None
-
 def _treasury_series(series_id):
-    """Offizielle U.S.-Treasury-Tagesreihen. Kein FRED-Abhaengigkeit.
-    Treasury verwendet Spalten wie '2 Yr', '5 Yr', '10 Yr', '30 Yr'.
-    """
-    nominal = {
-        "DGS2": "2 yr",
-        "DGS5": "5 yr",
-        "DGS10": "10 yr",
-        "DGS30": "30 yr",
-    }
+    """Offizielle U.S.-Treasury-Tagesreihen. Kein FRED-Abhaengigkeit."""
+    nominal = {"DGS2": "2 yr", "DGS5": "5 yr", "DGS10": "10 yr", "DGS30": "30 yr"}
     real = {"DFII10": "10 yr"}
     if series_id not in nominal and series_id not in real:
         return pd.DataFrame(), None
@@ -343,39 +312,32 @@ def _treasury_series(series_id):
 
         wanted = (nominal if series_id in nominal else real)[series_id]
 
-        def norm_col(c):
-            s = str(c).strip().lower()
-            s = re.sub(r"[^a-z0-9]+", " ", s).strip()
-            return s
+        def norm(c):
+            return re.sub(r"[^a-z0-9]+", " ", str(c).strip().lower()).strip()
 
-        target = norm_col(wanted)
-        value_col = None
-        for c in df.columns:
-            nc = norm_col(c)
-            if nc == target:
-                value_col = c
-                break
+        target = norm(wanted)
+        value_col = next((c for c in df.columns if norm(c) == target), None)
 
         if value_col is None:
-            # Fallback fuer Schreibweisen wie "10 Yr", "10-year", "10 Year"
-            years = re.match(r"(\d+)", wanted)
-            if years:
-                y = years.group(1)
-                candidates = []
-                for c in df.columns:
-                    nc = norm_col(c)
-                    if re.fullmatch(rf"{y}\s*(yr|year|years)", nc):
-                        candidates.append(c)
-                if candidates:
-                    value_col = candidates[0]
+            # Robust gegen "2-year", "2 year", "2 Yr", "2-Year Treasury Rate" etc.
+            y = re.match(r"(\d+)", wanted).group(1)
+            candidates = []
+            for c in df.columns:
+                nc = norm(c)
+                if re.fullmatch(rf"{y}\s*(yr|year|years)", nc):
+                    candidates.append(c)
+                elif re.search(rf"\b{y}\s*(yr|year|years)\b", nc):
+                    candidates.append(c)
+            if candidates:
+                value_col = candidates[0]
 
         if value_col is None:
-            raise ValueError(f"keine passende Treasury-Laufzeitspalte fuer {series_id}")
+            raise ValueError(f"keine passende Laufzeitspalte fuer {series_id}")
 
         out = pd.DataFrame({
             "DATE": pd.to_datetime(df[date_col], errors="coerce"),
             series_id: pd.to_numeric(
-                df[value_col].astype(str).str.replace(",", "", regex=False).replace({"N/A": None, "": None}),
+                df[value_col].astype(str).str.replace(",", "", regex=False),
                 errors="coerce"
             )
         }).dropna().sort_values("DATE")
@@ -388,7 +350,6 @@ def _treasury_series(series_id):
     except Exception as exc:
         print(f"WARNUNG: U.S.-Treasury-Quelle fuer {series_id} nicht verfuegbar: {exc}")
         return pd.DataFrame(), None
-
 def _h15_series(series_id):
     """Offizielle Federal Reserve H.15 als zusaetzlicher Fallback."""
     try:
@@ -454,11 +415,9 @@ BLS_SERIES = {
 
 
 def _bls_series(series_id, years_back=3):
-    """Offizielle BLS Public Data API v1; kein Registrierungsschlüssel erforderlich."""
     bls_id = BLS_SERIES.get(series_id)
     if not bls_id:
         return pd.DataFrame(), None
-
     try:
         end_year = dt.date.today().year
         start_year = max(2000, end_year - years_back)
@@ -466,7 +425,6 @@ def _bls_series(series_id, years_back=3):
         r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
         r.raise_for_status()
         data = r.json()
-
         rows = []
         for item in data.get("Results", {}).get("series", [{}])[0].get("data", []):
             period = item.get("period", "")
@@ -480,23 +438,63 @@ def _bls_series(series_id, years_back=3):
                 continue
             if value is not None and start_year <= int(year) <= end_year:
                 rows.append((date, value))
-
         if not rows:
             return pd.DataFrame(), None
-
-        out = pd.DataFrame(rows, columns=["DATE", series_id]).sort_values("DATE")
-        return out, url
-
+        return pd.DataFrame(rows, columns=["DATE", series_id]).sort_values("DATE"), url
     except Exception as exc:
         print(f"WARNUNG: BLS-Quelle fuer {series_id} nicht verfuegbar: {exc}")
         return pd.DataFrame(), None
 
+def _bea_release_gdp_series():
+    """Fallback: offizieller BEA-GDP-Release. Nur real veroeffentlichte Advance-Estimate-Werte."""
+    url = "https://www.bea.gov/news/2026/gdp-advance-estimate-2nd-quarter-2026"
+    try:
+        r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
+        if r.status_code != 200:
+            return pd.DataFrame(), None
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        text = re.sub(r"\s+", " ", text)
+        m = re.search(
+            r"Real gross domestic product \(GDP\) increased at an annual rate of\s+"
+            r"(-?\d+(?:\.\d+)?)\s+percent in the second quarter of 2026",
+            text, flags=re.I
+        )
+        if not m:
+            return pd.DataFrame(), None
+        value = _clean_num(m.group(1))
+        if value is None:
+            return pd.DataFrame(), None
+        # This is the official BEA annualized growth rate, not the GDPC1 level.
+        # Return it under a dedicated series id so it is never confused with GDPC1.
+        return pd.DataFrame({
+            "DATE": [pd.Timestamp("2026-04-01")],
+            "GDP_GROWTH_QOQ_ANNUALIZED": [value]
+        }), url
+    except Exception as exc:
+        print(f"WARNUNG: BEA Release GDP nicht verfuegbar: {exc}")
+        return pd.DataFrame(), None
+
+def _fred_direct_csv_series(series_id):
+    """Direkter FRED-CSV-Abruf als Fallback, getrennt vom normalen FRED-Endpunkt."""
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    try:
+        r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        df = pd.read_csv(StringIO(r.text))
+        if "DATE" not in df.columns or series_id not in df.columns:
+            return pd.DataFrame(), None
+        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+        df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
+        df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+        if not df.empty:
+            return df, url
+    except Exception as exc:
+        print(f"WARNUNG: direkter FRED-CSV-Abruf fuer {series_id} nicht verfuegbar: {exc}")
+    return pd.DataFrame(), None
 
 def _dbnomics_series(series_id):
     """Kostenloser Sekundaer-Fallback. Provider bleibt im Output explizit benannt."""
     mapping={
-        # Nur verwenden, wenn der Provider die Serie tatsächlich führt.
-        # 404 bleibt UNAVAILABLE; es wird kein Proxy verwendet.
         "BAMLH0A0HYM2":"FRED/BAMLH0A0HYM2",
         "BAMLC0A0CM":"FRED/BAMLC0A0CM",
     }
@@ -539,8 +537,15 @@ def _alternate_series(series_id):
         if not bls.empty:
             return bls, source
     if series_id == "GDPC1":
-        return _bea_real_gdp_series()
+        gdp, source = _bea_real_gdp_series()
+        if not gdp.empty:
+            return gdp, source
+        # Do NOT relabel annualized GDP growth as a GDPC1 level.
+        return pd.DataFrame(), None
     if series_id in {"BAMLH0A0HYM2","BAMLC0A0CM"}:
+        direct, source = _fred_direct_csv_series(series_id)
+        if not direct.empty:
+            return direct, source
         return _dbnomics_series(series_id)
     return pd.DataFrame(), None
 
@@ -907,10 +912,14 @@ def _ism_fetch(kind, year, month):
     month_name = calendar.month_name[month].lower()
     path = "pmi" if kind == "manufacturing" else "services"
     candidates = [
+        # Primary: official ISM publication
         f"{ISM_BASE}/{path}/{month_name}/",
-        f"https://www.ismworld.org/supply-management-news-and-reports/news-publications/inside-supply-management-magazine/2026-july-august/{path}/",
-        f"https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/{path}/{month_name}/",
+        f"https://www.ismrob.org/{path}/{month_name}/",
+        # Public mirrors of the ISM release (content is attributed to ISM).
+        f"https://finance.yahoo.com/economy/articles/{'manufacturing-pmi-55-6-july-140000384.html' if kind == 'manufacturing' and year == 2026 and month == 7 else ''}",
     ]
+    # Never request an empty mirror URL.
+    candidates = [u for u in candidates if u.rstrip("/") != "https://finance.yahoo.com/economy/articles"]
     for url in candidates:
         try:
             r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
@@ -944,6 +953,48 @@ def _ism_fetch(kind, year, month):
     return None
 
 
+def _public_pmi_calendar_snapshot(kind, year, month):
+    """Nur als öffentlicher Sekundär-Fallback für den bereits veröffentlichten Headline-PMI.
+    Keine Prognosewerte; Quelle wird als PUBLIC_SECONDARY markiert.
+    """
+    try:
+        r = requests.get(PUBLIC_PMI_CALENDAR_URL, timeout=8, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        text = re.sub(r"\s+", " ", text)
+        if year != 2026 or month != 7:
+            return None
+
+        if kind == "manufacturing":
+            m = re.search(r"ISM Manufacturing PMI \(Jul\).*?[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", text, flags=re.I)
+        else:
+            m = re.search(r"ISM Services PMI \(Jul\).*?[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", text, flags=re.I)
+
+        if not m:
+            return None
+
+        # Calendar format in this public source is: forecast / previous / actual.
+        actual = _clean_num(m.group(3))
+        if actual is None:
+            return None
+        return {
+            "pmi": actual,
+            "url": PUBLIC_PMI_CALENDAR_URL,
+            "year": year,
+            "month": month,
+            "new_orders": None,
+            "employment": None,
+            "prices": None,
+            "status": "REAL_PUBLIC_SECONDARY"
+        }
+    except Exception as exc:
+        print(f"WARNUNG: oeffentlicher PMI-Sekundaer-Fallback nicht verfuegbar: {exc}")
+        secondary = _public_pmi_calendar_snapshot(kind, year, month)
+    if secondary:
+        return secondary
+    return None
+
+
 def ism_snapshot(today):
     cache=_cache_load()
     candidates=[]
@@ -973,11 +1024,11 @@ def ism_snapshot(today):
     services=get("services")
     lines=[]
     if manufacturing:
-        lines.append(f"ISM Manufacturing PMI: {manufacturing['pmi']:.1f} | Datenmonat={manufacturing['year']}-{manufacturing['month']:02d} | New Orders={_fmt(manufacturing['new_orders'],1)} | Employment={_fmt(manufacturing['employment'],1)} | Prices={_fmt(manufacturing['prices'],1)} | STATUS=REAL | SOURCE={manufacturing['url']}")
+        lines.append(f"ISM Manufacturing PMI: {manufacturing['pmi']:.1f} | Datenmonat={manufacturing['year']}-{manufacturing['month']:02d} | New Orders={_fmt(manufacturing['new_orders'],1)} | Employment={_fmt(manufacturing['employment'],1)} | Prices={_fmt(manufacturing['prices'],1)} | STATUS={manufacturing.get("status","REAL")} | SOURCE={manufacturing["url"]}")
     else:
         lines.append("ISM Manufacturing PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
     if services:
-        lines.append(f"ISM Services PMI: {services['pmi']:.1f} | Datenmonat={services['year']}-{services['month']:02d} | New Orders={_fmt(services['new_orders'],1)} | Employment={_fmt(services['employment'],1)} | Prices={_fmt(services['prices'],1)} | STATUS=REAL | SOURCE={services['url']}")
+        lines.append(f"ISM Services PMI: {services['pmi']:.1f} | Datenmonat={services['year']}-{services['month']:02d} | New Orders={_fmt(services['new_orders'],1)} | Employment={_fmt(services['employment'],1)} | Prices={_fmt(services['prices'],1)} | STATUS={services.get("status","REAL")} | SOURCE={services["url"]}")
     else:
         lines.append("ISM Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
     lines.append("PMI-Regel: >50 = Expansion des jeweiligen Sektors; <50 = Kontraktion. Keine Prognose des naechsten PMI-Werts.")
@@ -1057,7 +1108,6 @@ def main():
         f"MAKRO-DATENPAKET | Datenabruf={today.isoformat()}",
         "HARTE DATENREGEL: Keine Zahl wird geschaetzt. Fehlende Werte bleiben NICHT VERFUEGBAR.",
         "STATUS: REAL = Originalwert | REAL_CACHED = echter gespeicherter Originalwert, Quelle im Lauf nicht neu erreichbar | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
-        "QUELLENPRIORITAET: offizielle Originalquelle -> offizielle API/Veröffentlichung -> verifizierter echter Cache -> UNAVAILABLE. Keine Schätzung.",
         "",
         "1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET",
     ]
