@@ -106,6 +106,9 @@ DATEIMUSTER = {
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
     "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
     "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
+    # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
+    # Zukunftsszenarioanalyse; rein informativ, keine bestehende Trading-Logik.
+    "Makro_Briefing(...).txt": ["Makro_Briefing(*).txt"],
 }
 # Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
 # Positionen und die beiden Trendwende-Dateien sind optional (siehe

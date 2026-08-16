@@ -517,31 +517,21 @@ Häufung/Nähe als das, was sie ist.
     PFLICHT bei Vorhandensein: wörtlich übernehmen, direkt unter der
     Handelstag-Zeile.
 
--   AUSGABE-GLIEDERUNG (Klarstellung, 28.07.2026 - Anlass: die
-    Auswertung übernahm die internen Abschnittsnummern dieser Anweisung
-    als Überschriften, wodurch die Nummerierung sprang: 1, 2, 5, 7, 8
-    ...): Die Abschnittsnummern DIESER ANWEISUNG (z. B. „Abschnitt 5 =
+-   AUSGABE-GLIEDERUNG (ERWEITERT 16.08.2026 - Makro-Szenario als Punkt 2):
+    Die Abschnittsnummern DIESER ANWEISUNG (z. B. „Abschnitt 5 =
     Trendwende", „Abschnitt 9 = Offene Positionen") sind rein INTERNE
-    Referenzen zum Nachschlagen. Nummeriere die Überschriften der
-    fertigen Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken (1.
-    Marktumfeld & Globale Risikolage, 2. Trendfolge-Setups \[GEÄNDERT
-    03.08.2026: nur noch „Trendfolge-Setups" statt „Daten-Übersicht
-    (Trendfolge-Setups)" - kürzer und genauso eindeutig\], 3.
-    Trendwende-Setups, 4. Hebeltrader-Setups \[NEU 07.08.2026,
-    Nutzerwunsch - sechste Kategorie neben
-    Trendfolge/Trendwende/Short/Langfrist/Edelmetalle, siehe eigener
-    Bullet weiter unten für Inhalt/Format\], 5. Short-Setups \[GEÄNDERT
-    07.08.2026: rückt durch Hebeltrader von 4 auf 5\], 6.
-    Edelmetalle-Setups \[GEÄNDERT 07.08.2026: rückt von 5 auf 6\], ggf.
-    Langfrist-Bewertung als eigener Abschnitt, dann Offene Positionen,
-    dann Geschlossene Positionen, und GANZ ZULETZT (ERGÄNZT 05.08.2026,
-    Nutzerwunsch) als allerletzter Abschnitt „Methodik & Lesehilfe" mit
-    Reichweiten-Hinweis und Glossar (siehe deren Bullets weiter unten
-    für den Inhalt) - dieser Abschnitt bekommt KEINE fortlaufende
-    Nummer, da er kein inhaltlicher Analyse-Abschnitt ist, sondern reine
-    Nachschlagehilfe) - entfällt eine Kategorie an einem Tag komplett
-    (z. B. kein Langfrist-Lauf ODER keine Hebeltrader-Treffer), rücken
-    die nachfolgenden Nummern der NUMERIERTEN Abschnitte auf.
+    Referenzen zum Nachschlagen. Nummeriere die Überschriften der fertigen
+    Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken. Die verbindliche
+    Ausgabereihenfolge lautet: 1. Marktumfeld & Globale Risikolage,
+    2. Makro-Zukunftsszenario, 3. Trendfolge-Setups, 4. Trendwende-Setups,
+    5. Hebeltrader-Setups, 6. Short-Setups, 7. Edelmetalle-Setups,
+    ggf. 8. Langfrist-Bewertung, danach Offene Positionen und anschließend
+    Geschlossene Positionen (letzte 10 Werktage). Falls die optionale
+    Langfrist-Bewertung an einem Tag fehlt, rücken Offene und Geschlossene
+    Positionen entsprechend auf 8 und 9 auf. „Methodik & Lesehilfe" bleibt
+    der letzte, unnummerierte Nachschlageabschnitt. Das Makro-Szenario ist
+    damit AUSDRÜCKLICH Punkt 2 der fertigen Auswertung und steht unmittelbar
+    nach dem Marktumfeld, nicht am Ende der Auswertung.
 
 -   GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
     jetzt „Geschlossene Positionen (letzte 10 Werktage)" und enthält
@@ -1874,3 +1864,86 @@ Vorgaben.
     „Globale Risikolage und Indikatoren“ wird als kompakte Bullet-Liste
     ausgegeben. Keine lange Fließtextwand. Die Bulletpoints dürfen logisch
     gruppiert werden, müssen aber alle gelieferten Werte abdecken.
+
+
+NEU 16.08.2026: MAKRO-ZUKUNFTSSZENARIO
+
+Die Datei Makro_Briefing(<Datum>).txt ist ein separates, automatisch erzeugtes Makro-Datenpaket. Sie muss als eigenstaendige Datengrundlage gelesen werden. Der Makro-Block ist KEIN Ersatz fuer die bestehende regelbasierte Setup-Auswertung und darf KEINE bestehende Trade-, CRV-, Score-, Filter-, Portfolio- oder Intraday-Logik veraendern.
+
+Ziel des Makro-Blocks ist nicht die Auflistung einzelner Kennzahlen, sondern die Interpretation der Zusammenhaenge fuer perspektivische Trades ueber mehrere Zeithorizonte. Die Rohdaten stammen aus dem Makro-Datenpaket und den bereits vorhandenen Benchmark-/Marktdaten der Tagesauswertung. Wenn eine Datenreihe fehlt oder als Proxy gekennzeichnet ist, muss dies in der Interpretation beruecksichtigt werden; nichts erfinden.
+
+Der Makro-Block wird unmittelbar NACH „Marktumfeld & Globale Risikolage“
+und VOR „Trendfolge-Setups“ als neuer Abschnitt 2 eingefuegt. Er ist damit
+der zweite inhaltliche Analyseabschnitt der fertigen Auswertung.
+
+2. MAKRO-ZUKUNFTSSZENARIO
+
+Zuerst eine kompakte Gesamtdiagnose:
+Makro-Regime: RISK-ON / NEUTRAL / RISK-OFF / RISK-ON MIT UEBERDEHNUNG / RISK-OFF-WARNUNG
+Dominante Makro-Treiber: maximal 3
+Wichtigste Gegentreiber: maximal 3
+Makro-Fazit: 2-4 Saetze, die die Daten zusammenfuehren
+
+Danach vier Prognosehorizonte:
+
+2.1 KURZFRISTIG: 1-4 WOCHEN
+Bewerte die wahrscheinliche Richtung von S&P 500, Nasdaq, Russell 2000, DAX, EuroStoxx 50, US-Renditen, EUR/USD, USD/JPY, Gold, Silber, Platin, Palladium, WTI, Brent, Kupfer, Lithium, Bitcoin und Ethereum. Nicht fuer jeden Markt einen separaten Roman schreiben; nur relevante Richtungen und die wichtigsten Zusammenhaenge nennen.
+
+2.2 MITTELFRISTIG: 1-3 MONATE
+Verknuepfe Geldpolitik, Inflation, Arbeitsmarkt, Konjunktur, Kredit, Marktbreite, Bewertungen, Unternehmensgewinne soweit im Datenbestand vorhanden, Rohstoffe, FX und Krypto. Leite daraus die wahrscheinlichsten Marktregime und Trading-Themen ab.
+
+2.3 WEITERER HORIZONT: 3-6 MONATE
+Beurteile insbesondere Zins-/Liquiditaetszyklus, Konjunkturtrend, Credit-Spreads, Gewinntrend, Rohstoff-/Energiezyklus und moegliche Rotation zwischen Growth, Industrials, Financials, Energy, Materials, defensiven Sektoren, Edelmetallen und Krypto.
+
+2.4 STRUKTURELL: >6 MONATE
+Beurteile strukturelle Investitionszyklen und langfristige Treiber. Lithium ist hier ausdruecklich als Speicher-/Batterie-/Netzausbau-Indikator zu behandeln. Gemeinsam mit Kupfer, Aluminium, Nickel, Kobalt, Zinn, Zink, Blei und Eisenerz kann ein moeglicher Infrastruktur-/Capex-Zyklus beschrieben werden. Ein einzelner Rohstoffpreis darf NICHT isoliert als globales Konjunktursignal interpretiert werden. Angebots-/Nachfrageeffekte sind auseinanderzuhalten, soweit die Daten das erlauben.
+
+SZENARIO-MATRIX
+Erstelle drei Szenarien: BASE CASE, BULL CASE, BEAR CASE.
+Fuer jedes Szenario nennen:
+Wahrscheinlichkeit: xx %
+Makroannahme: 1-2 Saetze
+Aktien: Richtung/Regime
+Zinsen: Richtung
+Gold/Edelmetalle: Richtung
+Energie: Richtung
+Industriemetalle: Richtung
+FX: Richtung
+Krypto: Richtung
+Bevorzugte Trading-Themen: 2-5 konkrete Themen/Sektoren/Assetklassen
+Regime-Killer: die 2-4 Datenveraenderungen, die das Szenario deutlich schwaechen oder kippen wuerden
+Die drei Wahrscheinlichkeiten muessen zusammen 100 % ergeben. Sie sind Modellurteile und keine statistisch exakten Wahrscheinlichkeiten.
+
+PERSPEKTIVISCHE TRADE-IDEEN
+Aus dem Makrobild maximal 5 perspektivische Themen ableiten. Fuer jedes Thema:
+Thema / Assetklasse
+Zeithorizont: Wochen / Monate / >6 Monate
+Makro-Treiber
+Bestaetigende Daten
+Gegentreiber / Risiko
+Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt?
+WICHTIG: Der Makro-Block erzeugt selbst KEIN Handelssignal und darf keine bestehenden Filter umgehen. Er liefert nur einen strategischen Vorlauf bzw. eine Watchlist fuer spaetere regelbasierte Setups.
+
+MAKRO-ACHSEN
+Ordne die Gesamtlage qualitativ ein:
+Wachstum: staerker / stabil / abschwaechend
+Inflation: fallend / stabil / steigend
+Geldpolitik: locker / neutral / restriktiv
+Liquiditaet: steigend / stabil / sinkend
+Kredit: locker / neutral / restriktiv
+Risk Appetite: Risk-On / neutral / Risk-Off
+Bewertung: guenstig / neutral / teuer
+Angebotsschock: niedrig / mittel / hoch
+Struktureller Capex-Zyklus: schwach / neutral / stark
+
+WICHTIGE INTERPRETATIONSREGELN
+Gold/Silber/Platin/Palladium gemeinsam beurteilen, aber nicht gleichsetzen.
+Kupfer, Aluminium und Eisenerz haben hoehere Bedeutung fuer den breiten Industriezyklus; Lithium hat zusaetzlich eine strukturelle Speicher-/Batterie-/Netzfunktion.
+Oel und Gas koennen gleichzeitig Wachstums- und Inflationssignale sein. Steigende Energiepreise sind deshalb nicht automatisch bullish.
+BTC und ETH als Liquiditaets-/Risk-Appetite-Komponente interpretieren; nicht als eigenstaendigen Konjunkturbeweis.
+DXY, EUR/USD und USD/JPY auf Zinsdifferenzen, Risk Appetite und Rohstoffwirkung beziehen.
+Credit-Spreads und SLOOS haben bei einer drohenden Rezession besonderes Gewicht.
+Niedriger VIX bei extrem hoher Indexbewertung kann als „bullisch, aber fragil/ueberdehnt“ interpretiert werden.
+Wenn Daten widersprechen, den Widerspruch ausdruecklich nennen statt einen kuenstlich eindeutigen Score zu erzeugen.
+Keine Kursziele ausdenken, wenn keine belastbare technische Kursbasis vorliegt.
+Keine neuen Kennzahlen erfinden.
