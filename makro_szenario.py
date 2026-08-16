@@ -109,6 +109,7 @@ TREASURY_YIELD_URL = "https://home.treasury.gov/resource-center/data-chart-cente
 TREASURY_REAL_YIELD_URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_real_yield_curve&field_tdr_date_value={year}&page&_format=csv"
 BEA_NIPA_Q_URL = "https://apps.bea.gov/national/Release/TXT/NipaDataQ.txt"
 DBNOMICS_BASE = "https://api.db.nomics.world/v22/series"
+BLS_API_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 
 MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
@@ -209,89 +210,184 @@ def _save_series_cache(series_id, df, source, status="REAL"):
         _cache_save(cache)
 
 
+def _rate_token_to_float(token):
+    """Wandelt offizielle Fed-Schreibweisen wie 3-1/2 oder 3.5 in einen REAL-Wert um."""
+    token = str(token).strip().replace("‑", "-").replace("–", "-").replace("—", "-")
+    m = re.fullmatch(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)", token)
+    if m:
+        den = int(m.group(3))
+        if den == 0:
+            return None
+        return int(m.group(1)) + int(m.group(2)) / den
+    try:
+        return float(token)
+    except Exception:
+        return None
+
+
 def _official_fomc_target_series(series_id):
-    """Liest den zuletzt veroeffentlichten offiziellen FOMC-Zielkorridor.
-    Es wird nur ein tatsaechlich im FOMC-Statement genannter Korridor akzeptiert.
+    """Liest den zuletzt veröffentlichten offiziellen FOMC-Zielkorridor.
+    Es wird nur ein tatsächlich im FOMC-Statement genannter Korridor akzeptiert.
     """
+    urls = []
+
+    # Primär: offizielle FOMC-Press-Release-Liste.
+    try:
+        year = dt.date.today().year
+        index_url = f"https://www.federalreserve.gov/newsevents/pressreleases/{year}-press-fomc.htm"
+        r = requests.get(index_url, timeout=8, headers=REQUEST_HEADERS)
+        if r.status_code == 200:
+            links = re.findall(
+                r'href=["\']([^"\']*monetary\d{8}a\.htm)["\']',
+                r.text,
+                flags=re.I
+            )
+            for link in links:
+                if link.startswith("/"):
+                    link = "https://www.federalreserve.gov" + link
+                elif link.startswith("http"):
+                    pass
+                else:
+                    link = "https://www.federalreserve.gov/newsevents/pressreleases/" + link
+                urls.append(link)
+    except Exception:
+        pass
+
+    # Fallback: deterministische URLs aus dem verifizierten FOMC-Kalender.
     dates = []
     try:
-        years = [dt.date.today().year, dt.date.today().year - 1]
-        for y in years:
+        for y in [dt.date.today().year, dt.date.today().year - 1]:
             dates.extend(_fomc_meeting_dates(y))
     except Exception:
         dates = []
-    dates = sorted({d for d in dates if d <= dt.date.today()}, reverse=True)
-    for meeting in dates:
-        # FOMC statement is normally dated on the final meeting day.
-        url = f"https://www.federalreserve.gov/newsevents/pressreleases/monetary{meeting:%Y%m%d}a.htm"
+
+    for meeting in sorted({d for d in dates if d <= dt.date.today()}, reverse=True):
+        urls.append(
+            f"https://www.federalreserve.gov/newsevents/pressreleases/monetary{meeting:%Y%m%d}a.htm"
+        )
+
+    seen = set()
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
         try:
-            r = requests.get(url, timeout=6, headers=REQUEST_HEADERS)
+            r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
             if r.status_code != 200:
                 continue
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text)
-            m = re.search(r"target range for the federal funds rate at\s+(\d+(?:\.\d+)?)\s+to\s+(\d+(?:\.\d+)?)\s+percent", text, re.I)
-            if not m:
-                m = re.search(r"target range.*?at\s+(\d+(?:\.\d+)?)\s+to\s+(\d+(?:\.\d+)?)\s+percent", text, re.I)
+
+            # Unterstützt offizielle Fed-Schreibweisen:
+            # "3-1/2 to 3-3/4 percent" sowie "3.5 to 3.75 percent".
+            patterns = [
+                r"target range for the federal funds rate.*?at\s+"
+                r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+to\s+"
+                r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+percent",
+                r"target range.*?at\s+"
+                r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+to\s+"
+                r"((?:\d+(?:\.\d+)?|\d+\s*-\s*\d+\s*/\s*\d+))\s+percent",
+            ]
+            m = None
+            for pattern in patterns:
+                m = re.search(pattern, text, flags=re.I)
+                if m:
+                    break
             if not m:
                 continue
-            lower, upper = float(m.group(1)), float(m.group(2))
+
+            lower = _rate_token_to_float(m.group(1))
+            upper = _rate_token_to_float(m.group(2))
+            if lower is None or upper is None or upper < lower:
+                continue
+
+            dm = re.search(r"monetary(\d{8})a\.htm", url)
+            meeting_date = (
+                dt.datetime.strptime(dm.group(1), "%Y%m%d").date()
+                if dm else dt.date.today()
+            )
             value = upper if series_id == "DFEDTARU" else lower
-            return pd.DataFrame({"DATE": [pd.Timestamp(meeting)], series_id: [value]}), url
+            return (
+                pd.DataFrame({"DATE": [pd.Timestamp(meeting_date)], series_id: [value]}),
+                url,
+            )
         except Exception:
             continue
+
     return pd.DataFrame(), None
 
-
 def _treasury_series(series_id):
-    """Offizielle U.S.-Treasury-Tagesreihen. Kein FRED-Abhaengigkeit."""
+    """Offizielle U.S.-Treasury-Tagesreihen. Kein FRED-Abhaengigkeit.
+    Treasury verwendet Spalten wie '2 Yr', '5 Yr', '10 Yr', '30 Yr'.
+    """
     nominal = {
-        "DGS2": "2-year Treasury Rate",
-        "DGS5": "5-year Treasury Rate",
-        "DGS10": "10-year Treasury Rate",
-        "DGS30": "30-year Treasury Rate",
+        "DGS2": "2 yr",
+        "DGS5": "5 yr",
+        "DGS10": "10 yr",
+        "DGS30": "30 yr",
     }
-    real = {"DFII10": "10-year TIPS Real Rate"}
+    real = {"DFII10": "10 yr"}
     if series_id not in nominal and series_id not in real:
         return pd.DataFrame(), None
+
     try:
         year = dt.date.today().year
         url = (TREASURY_YIELD_URL if series_id in nominal else TREASURY_REAL_YIELD_URL).format(year=year)
         r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
         r.raise_for_status()
         df = pd.read_csv(StringIO(r.text))
+
         date_col = next((c for c in df.columns if str(c).strip().lower() == "date"), None)
         if not date_col:
-            return pd.DataFrame(), None
-        wanted = {
-            "DGS2": "2-year",
-            "DGS5": "5-year",
-            "DGS10": "10-year",
-            "DGS30": "30-year",
-            "DFII10": "10-year",
-        }[series_id]
+            raise ValueError("Treasury-Spalte 'Date' fehlt")
+
+        wanted = (nominal if series_id in nominal else real)[series_id]
+
+        def norm_col(c):
+            s = str(c).strip().lower()
+            s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+            return s
+
+        target = norm_col(wanted)
         value_col = None
         for c in df.columns:
-            cl = str(c).strip().lower()
-            if wanted in cl and "1-month" not in cl and "3-month" not in cl and "6-month" not in cl and "1-year" not in cl and "20-year" not in cl:
-                if "2-year" in cl or "5-year" in cl or "10-year" in cl or "30-year" in cl:
-                    value_col = c
-                    break
+            nc = norm_col(c)
+            if nc == target:
+                value_col = c
+                break
+
         if value_col is None:
-            # Treasury's TIPS file uses a dedicated 10-year real-rate column.
-            candidates = [c for c in df.columns if "10-year" in str(c).lower()]
-            if candidates:
-                value_col = candidates[0]
+            # Fallback fuer Schreibweisen wie "10 Yr", "10-year", "10 Year"
+            years = re.match(r"(\d+)", wanted)
+            if years:
+                y = years.group(1)
+                candidates = []
+                for c in df.columns:
+                    nc = norm_col(c)
+                    if re.fullmatch(rf"{y}\s*(yr|year|years)", nc):
+                        candidates.append(c)
+                if candidates:
+                    value_col = candidates[0]
+
         if value_col is None:
-            return pd.DataFrame(), None
-        out = pd.DataFrame({"DATE": pd.to_datetime(df[date_col], errors="coerce"), series_id: pd.to_numeric(df[value_col], errors="coerce")})
-        out = out.dropna().sort_values("DATE")
-        if not out.empty:
-            return out, url
+            raise ValueError(f"keine passende Treasury-Laufzeitspalte fuer {series_id}")
+
+        out = pd.DataFrame({
+            "DATE": pd.to_datetime(df[date_col], errors="coerce"),
+            series_id: pd.to_numeric(
+                df[value_col].astype(str).str.replace(",", "", regex=False).replace({"N/A": None, "": None}),
+                errors="coerce"
+            )
+        }).dropna().sort_values("DATE")
+
+        if out.empty:
+            raise ValueError(f"keine numerischen Treasury-Werte fuer {series_id}")
+
+        return out, url
+
     except Exception as exc:
         print(f"WARNUNG: U.S.-Treasury-Quelle fuer {series_id} nicht verfuegbar: {exc}")
-    return pd.DataFrame(), None
-
+        return pd.DataFrame(), None
 
 def _h15_series(series_id):
     """Offizielle Federal Reserve H.15 als zusaetzlicher Fallback."""
@@ -303,7 +399,7 @@ def _h15_series(series_id):
         for table in tables:
             flat = table.astype(str)
             for _, row in flat.iterrows():
-                txt = " | ".join(row.tolist())
+                txt = " | ".join(str(x) for x in row.tolist())
                 nums = re.findall(r"(?<![A-Za-z])(-?\d+(?:\.\d+)?)(?![A-Za-z])", txt)
                 vals = [_clean_num(x) for x in nums]
                 vals = [x for x in vals if x is not None]
@@ -347,9 +443,60 @@ def _bea_real_gdp_series():
     return pd.DataFrame(), None
 
 
+BLS_SERIES = {
+    "CPIAUCSL": "CUSR0000SA0",
+    "CPILFESL": "CUSR0000SA0L1E",
+    "UNRATE": "LNS14000000",
+    "PAYEMS": "CES0000000001",
+    "CES0500000003": "CES0500000003",
+    "PPIACO": "WPSFD4",
+}
+
+
+def _bls_series(series_id, years_back=3):
+    """Offizielle BLS Public Data API v1; kein Registrierungsschlüssel erforderlich."""
+    bls_id = BLS_SERIES.get(series_id)
+    if not bls_id:
+        return pd.DataFrame(), None
+
+    try:
+        end_year = dt.date.today().year
+        start_year = max(2000, end_year - years_back)
+        url = BLS_API_URL + bls_id
+        r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        data = r.json()
+
+        rows = []
+        for item in data.get("Results", {}).get("series", [{}])[0].get("data", []):
+            period = item.get("period", "")
+            year = item.get("year", "")
+            if not re.fullmatch(r"M(0[1-9]|1[0-2])", period):
+                continue
+            try:
+                date = pd.Timestamp(year=int(year), month=int(period[1:]), day=1)
+                value = _clean_num(item.get("value"))
+            except Exception:
+                continue
+            if value is not None and start_year <= int(year) <= end_year:
+                rows.append((date, value))
+
+        if not rows:
+            return pd.DataFrame(), None
+
+        out = pd.DataFrame(rows, columns=["DATE", series_id]).sort_values("DATE")
+        return out, url
+
+    except Exception as exc:
+        print(f"WARNUNG: BLS-Quelle fuer {series_id} nicht verfuegbar: {exc}")
+        return pd.DataFrame(), None
+
+
 def _dbnomics_series(series_id):
     """Kostenloser Sekundaer-Fallback. Provider bleibt im Output explizit benannt."""
     mapping={
+        # Nur verwenden, wenn der Provider die Serie tatsächlich führt.
+        # 404 bleibt UNAVAILABLE; es wird kein Proxy verwendet.
         "BAMLH0A0HYM2":"FRED/BAMLH0A0HYM2",
         "BAMLC0A0CM":"FRED/BAMLC0A0CM",
     }
@@ -387,6 +534,10 @@ def _alternate_series(series_id):
         if not treasury.empty:
             return treasury, source
         return _h15_series(series_id)
+    if series_id in BLS_SERIES:
+        bls, source = _bls_series(series_id)
+        if not bls.empty:
+            return bls, source
     if series_id == "GDPC1":
         return _bea_real_gdp_series()
     if series_id in {"BAMLH0A0HYM2","BAMLC0A0CM"}:
@@ -906,6 +1057,7 @@ def main():
         f"MAKRO-DATENPAKET | Datenabruf={today.isoformat()}",
         "HARTE DATENREGEL: Keine Zahl wird geschaetzt. Fehlende Werte bleiben NICHT VERFUEGBAR.",
         "STATUS: REAL = Originalwert | REAL_CACHED = echter gespeicherter Originalwert, Quelle im Lauf nicht neu erreichbar | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
+        "QUELLENPRIORITAET: offizielle Originalquelle -> offizielle API/Veröffentlichung -> verifizierter echter Cache -> UNAVAILABLE. Keine Schätzung.",
         "",
         "1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET",
     ]
