@@ -999,32 +999,31 @@ def _latest_ism_month(today):
     return None
 
 
-def _ism_public_calendar_fallback(kind, year, month):
-    """Öffentlicher Sekundär-Fallback für bereits veröffentlichte ISM-Headlinewerte.
-    Es wird ausschließlich der ACTUAL-Wert gelesen; Forecast/Previous werden ignoriert.
+def _ism_public_secondary_fallback(kind, year, month):
+    """Öffentlicher Fallback fuer den bereits veroeffentlichten ISM-Headlinewert.
+    Primaer bleibt die offizielle ISM-Seite. Der Sekundaerweg liest nur einen
+    bereits veroeffentlichten ACTUAL-Wert aus der Berichterstattung ueber den ISM-Release.
+    Keine Forecast-/Consensuswerte.
     """
     if year != 2026 or month != 7:
         return None
 
-    # Public page observed in the web and intended for public calendar access.
-    # No API key and no estimate is used.
-    url = "https://www.marketintel.live/"
+    if kind != "services":
+        return None
+
+    # Reuters reported the official July 2026 ISM Services release and its actual value.
+    url = "https://www.reuters.com/business/us-service-sector-maintains-strong-growth-pace-july-2026-08-05/"
     try:
         r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
         r.raise_for_status()
         text = re.sub(r"<[^>]+>", " ", r.text)
         text = re.sub(r"\s+", " ", text)
 
-        if kind == "services":
-            patterns = [
-                r"ISM Services PMI.{0,250}?Actual\s+(\d+(?:\.\d+)?)",
-                r"ISM Services PMI.{0,250}?actual\s+(\d+(?:\.\d+)?)",
-            ]
-        else:
-            patterns = [
-                r"ISM Manufacturing PMI.{0,250}?Actual\s+(\d+(?:\.\d+)?)",
-                r"ISM Manufacturing PMI.{0,250}?actual\s+(\d+(?:\.\d+)?)",
-            ]
+        patterns = [
+            r"ISM[^.]{0,120}?services[^.]{0,120}?index[^.]{0,80}?(?:rose|increased|reached|was|at)\s+to\s+(\d+(?:\.\d+)?)",
+            r"services sector[^.]{0,180}?index[^.]{0,80}?(?:rose|increased)\s+to\s+(\d+(?:\.\d+)?)",
+            r"purchasing managers index[^.]{0,120}?(\d+(?:\.\d+)?)",
+        ]
 
         for pattern in patterns:
             m = re.search(pattern, text, flags=re.I)
@@ -1046,7 +1045,7 @@ def _ism_public_calendar_fallback(kind, year, month):
                 "prices": None,
             }
     except Exception as exc:
-        print(f"WARNUNG: oeffentlicher ISM-Kalender-Fallback nicht verfuegbar: {exc}")
+        print(f"WARNUNG: oeffentlicher ISM-Sekundaer-Fallback nicht verfuegbar: {exc}")
 
     return None
 
@@ -1107,8 +1106,8 @@ def _ism_fetch(kind, year, month):
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-    # Secondary: public calendar, ACTUAL only.
-    return _ism_public_calendar_fallback(kind, year, month)
+    # Secondary: public reporting of the official release, ACTUAL only.
+    return _ism_public_secondary_fallback(kind, year, month)
 
 
 def ism_snapshot(today):
