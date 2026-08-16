@@ -128,6 +128,16 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python langfrist_scan_catchup.py
 
+      - name: Makro-Datenpaket erstellen
+        # NEU 16.08.2026: baut vor Gemini ein separates Makro-Datenpaket
+        # aus FRED und Markt-/Rohstoffdaten. Es ist rein informativ und
+        # greift NICHT in Setup-, CRV-, Score- oder Portfolio-Logik ein.
+        # CME_FEDWATCH_BEARER_TOKEN ist optional; ohne dieses Secret bleibt
+        # FedWatch sauber als nicht automatisch abgerufen gekennzeichnet.
+        env:
+          CME_FEDWATCH_BEARER_TOKEN: ${{ secrets.CME_FEDWATCH_BEARER_TOKEN }}
+        run: python makro_szenario.py
+
       - name: Gemini-Auswertung erstellen
         # Ersetzt das manuelle Kopieren in das Gemini-Gem: liest die Master-
         # Anweisung (Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md,
