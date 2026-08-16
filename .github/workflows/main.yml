@@ -129,18 +129,16 @@ jobs:
         run: python langfrist_scan_catchup.py
 
       - name: Persistenten Makro-Cache wiederherstellen
-        # Der GitHub-Runner ist zwischen zwei Läufen flüchtig. Dieser Cache
-        # überlebt den Runner und enthält ausschließlich bereits real
-        # abgerufene/gespeicherte Makrodaten. Ein Cache-Treffer ersetzt keine
-        # neue Veröffentlichung: makro_szenario.py prüft für jede Datenart
-        # separat, ob der gespeicherte Datenstand noch innerhalb seiner
-        # zulässigen Datenaltersgrenze liegt.
-        uses: actions/cache@v4
+        # Expliziter Restore: der Cache lebt über den flüchtigen GitHub-Runner hinaus.
+        # Die Cache-Keys sind absichtlich pro Lauf eindeutig; restore-keys holt den
+        # zuletzt verfügbaren Stand. So kann ein späterer Lauf einen neuen Snapshot speichern.
+        id: macro-cache-restore
+        uses: actions/cache/restore@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v2-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v3-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            nmm-macro-cache-v2-${{ runner.os }}-
+            nmm-macro-cache-v3-${{ runner.os }}-
 
       - name: Makro-Datenpaket erstellen
         # NEU 16.08.2026: baut vor Gemini ein separates Makro-Datenpaket
@@ -154,6 +152,15 @@ jobs:
         # Falls das Skript hart abbricht, laufen Gemini/Upload trotzdem weiter.
         continue-on-error: true
         run: python makro_szenario.py
+
+      - name: Persistenten Makro-Cache explizit speichern
+        # Bewusst VOR Gemini: auch ein späterer Gemini-Fehler darf einen erfolgreichen
+        # Makro-Cache nicht verlieren. always() speichert auch Teilfortschritte.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .macro_cache
+          key: nmm-macro-cache-v3-${{ runner.os }}-${{ github.run_id }}
 
       - name: Gemini-Auswertung erstellen
         # Ersetzt das manuelle Kopieren in das Gemini-Gem: liest die Master-
