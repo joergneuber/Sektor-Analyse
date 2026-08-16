@@ -132,10 +132,10 @@ jobs:
         # NEU 16.08.2026: baut vor Gemini ein separates Makro-Datenpaket
         # aus FRED und Markt-/Rohstoffdaten. Es ist rein informativ und
         # greift NICHT in Setup-, CRV-, Score- oder Portfolio-Logik ein.
-        # CME_FEDWATCH_BEARER_TOKEN ist optional; ohne dieses Secret bleibt
-        # FedWatch sauber als nicht automatisch abgerufen gekennzeichnet.
-        env:
-          CME_FEDWATCH_BEARER_TOKEN: ${{ secrets.CME_FEDWATCH_BEARER_TOKEN }}
+        # Fed-Erwartung wird kostenlos und transparent aus oeffentlichen
+        # 30-Day-Fed-Funds-Futures selbst berechnet. Es gibt KEINE kostenpflichtige
+        # CME-FedWatch-API und kein CME-Secret. PMI kommt aus oeffentlichen
+        # offiziellen ISM-Releases. Fehlende Werte bleiben UNAVAILABLE.
         run: python makro_szenario.py
 
       - name: Gemini-Auswertung erstellen
