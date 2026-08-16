@@ -999,22 +999,70 @@ def _latest_ism_month(today):
     return None
 
 
+def _ism_public_calendar_fallback(kind, year, month):
+    """Öffentlicher Sekundär-Fallback für bereits veröffentlichte ISM-Headlinewerte.
+    Es wird ausschließlich der ACTUAL-Wert gelesen; Forecast/Previous werden ignoriert.
+    """
+    if year != 2026 or month != 7:
+        return None
+
+    # Public page observed in the web and intended for public calendar access.
+    # No API key and no estimate is used.
+    url = "https://www.marketintel.live/"
+    try:
+        r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        text = re.sub(r"\s+", " ", text)
+
+        if kind == "services":
+            patterns = [
+                r"ISM Services PMI.{0,250}?Actual\s+(\d+(?:\.\d+)?)",
+                r"ISM Services PMI.{0,250}?actual\s+(\d+(?:\.\d+)?)",
+            ]
+        else:
+            patterns = [
+                r"ISM Manufacturing PMI.{0,250}?Actual\s+(\d+(?:\.\d+)?)",
+                r"ISM Manufacturing PMI.{0,250}?actual\s+(\d+(?:\.\d+)?)",
+            ]
+
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.I)
+            if not m:
+                continue
+
+            value = _clean_num(m.group(1))
+            if value is None:
+                continue
+
+            return {
+                "pmi": value,
+                "url": url,
+                "year": year,
+                "month": month,
+                "status": "REAL_PUBLIC_SECONDARY",
+                "new_orders": None,
+                "employment": None,
+                "prices": None,
+            }
+    except Exception as exc:
+        print(f"WARNUNG: oeffentlicher ISM-Kalender-Fallback nicht verfuegbar: {exc}")
+
+    return None
+
+
 def _ism_fetch(kind, year, month):
     month_name = calendar.month_name[month].lower()
 
-    # Official ISM report URL. For July 2026 this is the published
-    # "Services PMI at 54.1%" report; no forecast/consensus value is used.
+    # Primary: official ISM release.
     official = (
         f"https://www.ismworld.org/supply-management-news-and-reports/"
         f"reports/ism-pmi-reports/{'pmi' if kind == 'manufacturing' else 'services'}/{month_name}/"
     )
 
-    for url in [official]:
-        try:
-            r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
-            if r.status_code != 200:
-                continue
-
+    try:
+        r = requests.get(official, timeout=10, headers=REQUEST_HEADERS)
+        if r.status_code == 200:
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text)
 
@@ -1036,33 +1084,32 @@ def _ism_fetch(kind, year, month):
                     value = _clean_num(m.group(1))
                     break
 
-            if value is None:
-                continue
+            if value is not None:
+                data = {
+                    "pmi": value,
+                    "url": official,
+                    "year": year,
+                    "month": month,
+                    "status": "REAL",
+                }
 
-            data = {
-                "pmi": value,
-                "url": url,
-                "year": year,
-                "month": month,
-                "status": "REAL",
-            }
+                patterns = {
+                    "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                    "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                    "prices": r"Prices(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                }
+                for key, pattern in patterns.items():
+                    mm = re.search(pattern, text, flags=re.I)
+                    data[key] = _clean_num(mm.group(1)) if mm else None
 
-            # Only parse subindexes that are actually present in the official report.
-            patterns = {
-                "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                "prices": r"Prices(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-            }
-            for key, pattern in patterns.items():
-                mm = re.search(pattern, text, flags=re.I)
-                data[key] = _clean_num(mm.group(1)) if mm else None
+                return data
 
-            return data
+    except Exception as exc:
+        print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-        except Exception as exc:
-            print(f"WARNUNG: ISM {kind} {year}-{month:02d} nicht verfuegbar: {exc}")
+    # Secondary: public calendar, ACTUAL only.
+    return _ism_public_calendar_fallback(kind, year, month)
 
-    return None
 
 def ism_snapshot(today):
     cache=_cache_load()
