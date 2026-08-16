@@ -430,6 +430,7 @@ def gemini_auswertung_starten():
                         "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
                         "keine geschaetzten Ersatzwerte und keine numerischen Makro-Prognosen. "
                         "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
+                         "Verwende dabei NICHT die Bezeichnungen Base Case, Bull Case oder Bear Case, gib KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose aus. "
                         if makro_gate == "GESPERRT" else
                         "HARTE MAKRO-DATENREGEL: Verwende ausschliesslich REAL- oder "
                         "CALCULATED-Werte aus dem Makro-Datenpaket. PROXY-Werte muessen als "

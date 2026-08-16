@@ -19,6 +19,7 @@ import math
 import re
 import json
 import os
+from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -104,6 +105,23 @@ MARKET_DATA = {
 
 MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M", 7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; NeuberMacro/1.0)"}
+
+# Offizielle, kostenfreie Alternativquellen fuer kritische US-Daten.
+# Sie werden nur verwendet, wenn FRED im aktuellen Lauf nicht erreichbar ist.
+# BLS Public Data API v1 ist ohne Registrierung nutzbar. Treasury H.15 ist
+# eine offizielle Federal-Reserve-Veröffentlichung.
+BLS_API_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_SERIES = {
+    "CPI": "CUUR0000SA0",
+    "Core CPI": "CUUR0000SA0L1E",
+    "Durchschnittlicher Stundenlohn": "CES0500000003",
+    "Arbeitslosenquote": "LNS14000000",
+    "NFP / Nonfarm Payrolls": "CES0000000001",
+    "PPI": "WPSFD4",
+}
+BLS_URL = "https://www.bls.gov/data/"
+H15_URL = "https://www.federalreserve.gov/releases/h15/"
+FED_FOMC_RELEASE_INDEX = "https://www.federalreserve.gov/newsevents/pressreleases/2026-press-fomc.htm"
 MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
@@ -176,6 +194,191 @@ def _fmt(value, decimals=4):
     return "NICHT VERFUEGBAR" if value is None else f"{value:.{decimals}f}"
 
 
+def _bls_cache_key(series_id):
+    return f"BLS:{series_id}"
+
+
+def _bls_fetch(series_ids):
+    """Liest mehrere BLS-Serien in einem echten API-Aufruf. Keine Schätzung."""
+    if not series_ids:
+        return {}
+    today = dt.date.today()
+    start_year = str(today.year - 3)
+    end_year = str(today.year)
+    payload = {"seriesid": series_ids, "startyear": start_year, "endyear": end_year}
+    try:
+        r = requests.post(BLS_API_URL, json=payload, timeout=8, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("status") != "REQUEST_SUCCEEDED":
+            return {}
+        out = {}
+        for series in data.get("Results", {}).get("series", []):
+            rows = []
+            for item in series.get("data", []):
+                period = item.get("period", "")
+                if not period.startswith("M") or period in ("M13",):
+                    continue
+                try:
+                    value = float(item["value"].replace(",", ""))
+                except Exception:
+                    continue
+                rows.append({
+                    "date": f"{item['year']}-{int(period[1:]):02d}-01",
+                    "value": value,
+                })
+            if rows:
+                rows.sort(key=lambda x: x["date"])
+                out[series.get("seriesID")] = rows
+        return out
+    except Exception as exc:
+        print(f"WARNUNG: BLS nicht verfuegbar: {exc}")
+        return {}
+
+
+def _official_bls_snapshot(name):
+    series_id = BLS_SERIES.get(name)
+    if not series_id:
+        return None
+    cache = _cache_load()
+    entry = cache.get("bls", {}).get(series_id)
+    data = _bls_fetch([series_id])
+    rows = data.get(series_id, [])
+    status = "REAL"
+    if not rows and entry and entry.get("rows"):
+        cached_date = entry.get("data_date")
+        if cached_date and _cache_valid(cached_date, 60):
+            rows = entry["rows"]
+            status = "REAL_CACHED"
+    if not rows:
+        return None
+    latest = rows[-1]
+    # BLS-Monatsdaten sind echte Originalwerte. Keine Fortschreibung.
+    with CACHE_WRITE_LOCK:
+        cache = _cache_load()
+        cache.setdefault("bls", {})[series_id] = {
+            "saved_at": time.time(),
+            "data_date": latest["date"],
+            "rows": rows,
+            "status": "REAL",
+            "source": f"{BLS_API_URL}{series_id}",
+        }
+        _cache_save(cache)
+    return (
+        f"{name}: {_fmt(latest['value'], 4)} | Datenstand={latest['date']} | STATUS={status} | "
+        f"SOURCE=BLS {series_id} | {BLS_API_URL}{series_id}"
+    )
+
+
+def _parse_h15_row(table, label):
+    for _, row in table.iterrows():
+        values = [str(x).strip() for x in row.tolist()]
+        if values and values[0].lower() == label.lower():
+            nums = []
+            for x in values[1:]:
+                x = x.replace(",", "")
+                if re.fullmatch(r"\d+(?:\.\d+)?", x):
+                    nums.append(float(x))
+            if nums:
+                return nums[-1]
+    return None
+
+
+def _official_h15_snapshot(name):
+    label_map = {
+        "US 2Y Treasury": ("2-year", False),
+        "US 5Y Treasury": ("5-year", False),
+        "US 10Y Treasury": ("10-year", False),
+        "US 30Y Treasury": ("30-year", False),
+        "Realzins 10Y TIPS": ("10-year", True),
+    }
+    spec = label_map.get(name)
+    if not spec:
+        return None
+    label, real = spec
+    try:
+        r = requests.get(H15_URL, timeout=8, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        tables = pd.read_html(StringIO(r.text))
+        value = None
+        for table in tables:
+            text = table.astype(str).to_string()
+            if real and "Inflation indexed" not in text:
+                continue
+            if not real and "Inflation indexed" in text:
+                continue
+            value = _parse_h15_row(table, label)
+            if value is not None:
+                break
+        if value is None:
+            return None
+        m = re.search(r"Release date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", r.text)
+        data_date = dt.datetime.strptime(m.group(1), "%B %d, %Y").date().isoformat() if m else None
+        if not data_date:
+            return None
+        return (
+            f"{name}: {_fmt(value, 4)} | Datenstand={data_date} | STATUS=REAL | "
+            f"SOURCE=Federal Reserve H.15 | {H15_URL}"
+        )
+    except Exception as exc:
+        print(f"WARNUNG: Fed H.15 fuer {name} nicht verfuegbar: {exc}")
+        return None
+
+
+def _parse_rate_token(token):
+    token = token.strip().replace("‑", "-").replace("–", "-")
+    if re.fullmatch(r"\d+(?:\.\d+)?", token):
+        return float(token)
+    m = re.fullmatch(r"(\d+)-(\d+)/(\d+)", token)
+    if m:
+        return float(m.group(1)) + float(m.group(2)) / float(m.group(3))
+    return None
+
+
+def _official_fed_target_snapshot(name):
+    if name not in ("Fed Target Range Upper", "Fed Target Range Lower"):
+        return None
+    try:
+        idx = requests.get(FED_FOMC_RELEASE_INDEX, timeout=8, headers=REQUEST_HEADERS)
+        idx.raise_for_status()
+        matches = re.findall(r'href=["\']([^"\']*monetary2026\d{4}a\.htm)["\'][^>]*>\s*Federal Reserve issues FOMC statement', idx.text, flags=re.I)
+        if not matches:
+            return None
+        href = matches[0]
+        url = href if href.startswith("http") else "https://www.federalreserve.gov" + href
+        r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        text = re.sub(r"\s+", " ", r.text)
+        m = re.search(r"target range for the federal funds rate(?: at| of)?\s+(\d+(?:-\d+/\d+|\.\d+)?)\s+to\s+(\d+(?:-\d+/\d+|\.\d+)?)\s+percent", text, flags=re.I)
+        if not m:
+            return None
+        lower = _parse_rate_token(m.group(1)); upper = _parse_rate_token(m.group(2))
+        if lower is None or upper is None:
+            return None
+        value = upper if name.endswith("Upper") else lower
+        dm = re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+2026", text)
+        data_date = dt.datetime.strptime(dm.group(0), "%B %d, %Y").date().isoformat() if dm else None
+        if not data_date:
+            return None
+        return f"{name}: {value:.4f} | Datenstand={data_date} | STATUS=REAL | SOURCE=Federal Reserve FOMC statement | {url}"
+    except Exception as exc:
+        print(f"WARNUNG: Fed Zielkorridor offizielle Quelle nicht verfuegbar: {exc}")
+        return None
+
+
+def official_fallback_snapshot(name):
+    # Fed-Zielkorridor zuerst aus dem aktuellen offiziellen FOMC-Statement.
+    line = _official_fed_target_snapshot(name)
+    if line:
+        return line
+    # BLS zuerst fuer Arbeitsmarkt/Inflation/PPI.
+    line = _official_bls_snapshot(name)
+    if line:
+        return line
+    # Federal Reserve H.15 fuer Treasury-Renditen und TIPS.
+    return _official_h15_snapshot(name)
+
+
 def fred_series(series_id, limit_days=5000):
     cache = _cache_load()
     entry = cache.get("fred", {}).get(series_id)
@@ -238,6 +441,9 @@ def fred_series(series_id, limit_days=5000):
 def fred_snapshot(name, series_id):
     df = fred_series(series_id)
     if df.empty:
+        fallback = official_fallback_snapshot(name)
+        if fallback:
+            return fallback
         return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
     value = _clean_num(df[series_id].iloc[-1])
     date = df["DATE"].iloc[-1].strftime("%Y-%m-%d")
@@ -687,6 +893,18 @@ def data_quality_gate(lines):
     return gate, missing
 
 
+def cache_stats():
+    cache = _cache_load()
+    return {
+        "fred": len(cache.get("fred", {})),
+        "bls": len(cache.get("bls", {})),
+        "market": len(cache.get("market", {})),
+        "fed_futures": len(cache.get("fed_futures", {})),
+        "ism": len(cache.get("ism", {})),
+        "file": str(MACRO_CACHE_FILE),
+    }
+
+
 def main():
     today = dt.date.today()
     output = f"Makro_Briefing({today.isoformat()}).txt"
@@ -697,6 +915,7 @@ def main():
         "HARTE DATENREGEL: Keine Zahl wird geschaetzt. Fehlende Werte bleiben NICHT VERFUEGBAR.",
         "STATUS: REAL = Originalwert | REAL_CACHED = echter gespeicherter Originalwert, Quelle im Lauf nicht neu erreichbar | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
         "",
+        "CACHE-STATUS VOR ABRUF: " + json.dumps(cache_stats(), ensure_ascii=False),
         "1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET",
     ]
     lines.extend(fred_snapshots_parallel([
@@ -750,6 +969,7 @@ def main():
     print(f"MAKRO-SZENARIO-GATE={gate}")
     if missing:
         print("KRITISCHE_DATENLUECKEN=" + ", ".join(missing))
+    print("CACHE-STATUS NACH ABRUF=" + json.dumps(cache_stats(), ensure_ascii=False))
 
 
 if __name__ == "__main__":

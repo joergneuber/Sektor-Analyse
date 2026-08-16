@@ -36,6 +36,7 @@ import os
 import sys
 import glob
 import datetime
+import re
 
 from anthropic import Anthropic
 
@@ -151,6 +152,20 @@ def claude_auswertung_starten():
         except Exception:
             makro_gate = "GESPERRT"
     nachricht = baue_nachricht(eingabedateien)
+    if makro_gate == "GESPERRT":
+        nachricht += (
+            "\n\nHARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. "
+            "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Szenarien, KEINE Wahrscheinlichkeiten, "
+            "KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose. "
+            "Benenne ausschließlich die konkreten kritischen Datenlücken bzw. den Ausfall des Makro-Datenpakets. "
+            "Keine geschaetzten Ersatzwerte.\n"
+        )
+    else:
+        nachricht += (
+            "\n\nHARTE MAKRO-DATENREGEL: Verwende in Punkt 2 ausschließlich REAL- oder CALCULATED-Werte. "
+            "PROXY muss als Proxy bezeichnet werden; MODEL_DERIVED ist nur für Szenarioergebnisse erlaubt. "
+            "Keine Eingangsdaten schätzen.\n"
+        )
 
     print(f"\nSende Anfrage an {MODELL}...")
     try:
