@@ -78,14 +78,20 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python langfrist_scan_catchup.py
 
+      # ============================================================
+      # MAKRO-DATENPAKET
+      # Cache-Version bewusst auf v5 erhöht.
+      # Dadurch wird der bisherige v4-Cache NICHT übernommen.
+      # ============================================================
+
       - name: Persistenten Makro-Cache wiederherstellen
         id: macro-cache-restore
         uses: actions/cache/restore@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v5-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            nmm-macro-cache-v4-${{ runner.os }}-
+            nmm-macro-cache-v5-${{ runner.os }}-
 
       - name: Makro-Datenpaket erstellen
         continue-on-error: true
@@ -96,7 +102,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v5-${{ runner.os }}-${{ github.run_id }}
 
       - name: Cache-Diagnose
         if: always()
@@ -105,6 +111,14 @@ jobs:
           echo "MACRO_CACHE_DIR_EXISTS=$(test -d .macro_cache && echo YES || echo NO)"
           echo "MACRO_CACHE_FILE_EXISTS=$(test -f .macro_cache/macro_cache.json && echo YES || echo NO)"
 
+          if [ -f .macro_cache/macro_cache.json ]; then
+            echo "MACRO_CACHE_SIZE=$(wc -c < .macro_cache/macro_cache.json)"
+          fi
+
+      # ============================================================
+      # GEMINI-AUSWERTUNG
+      # ============================================================
+
       - name: Gemini-Auswertung erstellen
         continue-on-error: true
         env:
@@ -112,11 +126,19 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
 
+      # ============================================================
+      # GOOGLE DRIVE
+      # ============================================================
+
       - name: Daten hochladen
         if: always()
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python upload_to_drive.py
+
+      # ============================================================
+      # E-MAIL
+      # ============================================================
 
       - name: Auswertung per E-Mail versenden
         env:
