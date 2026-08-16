@@ -136,9 +136,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v3-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            nmm-macro-cache-v3-${{ runner.os }}-
+            nmm-macro-cache-v4-${{ runner.os }}-
 
       - name: Makro-Datenpaket erstellen
         # NEU 16.08.2026: baut vor Gemini ein separates Makro-Datenpaket
@@ -160,7 +160,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v3-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_id }}
 
       - name: Gemini-Auswertung erstellen
         # Ersetzt das manuelle Kopieren in das Gemini-Gem: liest die Master-
