@@ -3,12 +3,12 @@ on:
   # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
   workflow_dispatch: 
   schedule:
-    # 02:17 UTC entspricht 04:17 Uhr MESZ (Sommerzeit). Bewusst NICHT zur vollen
-    # Stunde (04:00), da GitHub Actions Cron-Läufe zu vollen Stunden/Mitternacht
+    # 03:17 UTC entspricht 05:17 Uhr MESZ (Sommerzeit). Bewusst NICHT zur vollen
+    # Stunde (03:00), da GitHub Actions Cron-Läufe zu vollen Stunden/Mitternacht
     # UTC nachweislich häufiger verzögert oder komplett überspringt (Best-Effort-
     # Scheduling, siehe GitHub-Community-Diskussionen zu Backend-Zuverlässigkeit
     # seit Februar 2026).
-    - cron: '17 2 * * 1-5'
+    - cron: '17 3 * * 1-5'
 jobs:
   run-scripts:
     runs-on: ubuntu-latest
@@ -128,6 +128,20 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python langfrist_scan_catchup.py
 
+      - name: Persistenten Makro-Cache wiederherstellen
+        # Der GitHub-Runner ist zwischen zwei Läufen flüchtig. Dieser Cache
+        # überlebt den Runner und enthält ausschließlich bereits real
+        # abgerufene/gespeicherte Makrodaten. Ein Cache-Treffer ersetzt keine
+        # neue Veröffentlichung: makro_szenario.py prüft für jede Datenart
+        # separat, ob der gespeicherte Datenstand noch innerhalb seiner
+        # zulässigen Datenaltersgrenze liegt.
+        uses: actions/cache@v4
+        with:
+          path: .macro_cache
+          key: nmm-macro-cache-v2-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            nmm-macro-cache-v2-${{ runner.os }}-
+
       - name: Makro-Datenpaket erstellen
         # NEU 16.08.2026: baut vor Gemini ein separates Makro-Datenpaket
         # aus FRED und Markt-/Rohstoffdaten. Es ist rein informativ und
@@ -136,6 +150,9 @@ jobs:
         # 30-Day-Fed-Funds-Futures selbst berechnet. Es gibt KEINE kostenpflichtige
         # CME-FedWatch-API und kein CME-Secret. PMI kommt aus oeffentlichen
         # offiziellen ISM-Releases. Fehlende Werte bleiben UNAVAILABLE.
+        # Ein Makro-Ausfall darf den restlichen Tageslauf NICHT blockieren.
+        # Falls das Skript hart abbricht, laufen Gemini/Upload trotzdem weiter.
+        continue-on-error: true
         run: python makro_szenario.py
 
       - name: Gemini-Auswertung erstellen
