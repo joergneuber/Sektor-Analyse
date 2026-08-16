@@ -136,7 +136,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_number }}
           restore-keys: |
             nmm-macro-cache-v4-${{ runner.os }}-
 
@@ -160,7 +160,14 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v4-${{ runner.os }}-${{ github.run_number }}
+
+      - name: Cache-Diagnose
+        if: always()
+        run: |
+          echo "MACRO_CACHE_RESTORE_HIT=${{ steps.macro-cache-restore.outputs.cache-hit }}"
+          echo "MACRO_CACHE_DIR_EXISTS=$(test -d .macro_cache && echo YES || echo NO)"
+          echo "MACRO_CACHE_FILE_EXISTS=$(test -f .macro_cache/macro_cache.json && echo YES || echo NO)"
 
       - name: Gemini-Auswertung erstellen
         # Ersetzt das manuelle Kopieren in das Gemini-Gem: liest die Master-
