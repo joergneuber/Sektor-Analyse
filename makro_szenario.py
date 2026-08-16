@@ -1023,6 +1023,10 @@ def _ism_official_get(url):
             return response
         except Exception as exc:
             last_exc = exc
+            print(
+                f"WARNUNG: ISM official HTTP attempt={attempt + 1} "
+                f"fehlgeschlagen: {type(exc).__name__}: {exc}"
+            )
             if attempt < 2:
                 time.sleep(1.5 * (attempt + 1))
     if last_exc:
@@ -1040,7 +1044,7 @@ def _ism_fetch(kind, year, month):
     )
 
     try:
-        r = requests.get(official, timeout=10, headers=REQUEST_HEADERS)
+        r = _ism_official_get(official)
         if r.status_code == 200:
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text)
