@@ -3,8 +3,8 @@ on:
   # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
   workflow_dispatch: 
   schedule:
-    # 03:17 UTC entspricht 05:17 Uhr MESZ (Sommerzeit). Bewusst NICHT zur vollen
-    # Stunde (03:00), da GitHub Actions Cron-Läufe zu vollen Stunden/Mitternacht
+    # 02:17 UTC entspricht 04:17 Uhr MESZ (Sommerzeit). Bewusst NICHT zur vollen
+    # Stunde (04:00), da GitHub Actions Cron-Läufe zu vollen Stunden/Mitternacht
     # UTC nachweislich häufiger verzögert oder komplett überspringt (Best-Effort-
     # Scheduling, siehe GitHub-Community-Diskussionen zu Backend-Zuverlässigkeit
     # seit Februar 2026).
