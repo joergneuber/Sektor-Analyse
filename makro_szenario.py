@@ -32,7 +32,6 @@ import yfinance as yf
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 FRED_URL = "https://fred.stlouisfed.org/series/{}"
 ISM_BASE = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports"
-PUBLIC_PMI_CALENDAR_URL = "https://snad.ltd/economic-calendar/"
 FED_FUTURES_PUBLIC_URL = "https://www.pomeroygrain.com/markets.aspx?cg=30-Day+Fed+Funds"
 
 FRED_SERIES = {
@@ -475,38 +474,59 @@ def _bea_release_gdp_series():
         return pd.DataFrame(), None
 
 def _public_hy_oas_series(series_id):
-    """Kostenloser öffentlicher Sekundärabruf der exakt gleichen ICE-BofA/FRED-Reihe.
-    Quelle wird als PUBLIC_SECONDARY markiert; kein Proxy und keine Schätzung.
+    """Öffentlicher Sekundärabruf der exakt gleichen FRED/ICE-BofA-Reihe.
+    Autario stellt die Reihe BAMLH0A0HYM2 ohne API-Key als JSON bereit.
     """
     if series_id != "BAMLH0A0HYM2":
         return pd.DataFrame(), None
-    url = "https://equibles.com/economicdata/bamlh0a0hym2"
+
+    dataset_id = "e4a3e9e1-0e3f-4bc3-8b6f-bd8f0eb8c8c9"
+    url = f"https://autario.com/api/v1/public/datasets/{dataset_id}/data?limit=1000"
+
     try:
-        r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
+        r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
         r.raise_for_status()
-        text = re.sub(r"<[^>]+>", " ", r.text)
-        # Equibles renders a table with ISO date followed by the value.
-        rows = re.findall(
-            r"(20\d{2}-\d{2}-\d{2})\s*</?[^>]*>\s*([0-9]+(?:\.[0-9]+)?)",
-            r.text, flags=re.I
-        )
-        if not rows:
-            rows = re.findall(
-                r"(20\d{2}-\d{2}-\d{2}).{0,120}?([0-9]+(?:\.[0-9]+)?)",
-                text, flags=re.I
-            )
+        payload = r.json()
+        rows = payload.get("data", [])
+
         parsed = []
-        for d, v in rows:
-            value = _clean_num(v)
-            if value is not None:
-                parsed.append((pd.Timestamp(d), value))
-        if parsed:
-            out = pd.DataFrame(parsed, columns=["DATE", series_id]).drop_duplicates("DATE").sort_values("DATE")
-            return out, url
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            date_raw = row.get("date") or row.get("DATE")
+            value_raw = row.get("value")
+            if value_raw is None:
+                value_raw = row.get(series_id)
+
+            if date_raw is None or value_raw is None:
+                continue
+
+            try:
+                date = pd.to_datetime(date_raw, errors="coerce")
+                value = _clean_num(value_raw)
+            except Exception:
+                continue
+
+            if pd.isna(date) or value is None:
+                continue
+
+            parsed.append((date, value))
+
+        if not parsed:
+            raise ValueError("API lieferte keine verwertbaren Beobachtungen")
+
+        out = (
+            pd.DataFrame(parsed, columns=["DATE", series_id])
+            .drop_duplicates("DATE")
+            .sort_values("DATE")
+        )
+
+        return out, url
+
     except Exception as exc:
         print(f"WARNUNG: oeffentlicher HY-OAS-Abruf nicht verfuegbar: {exc}")
-    return pd.DataFrame(), None
-
+        return pd.DataFrame(), None
 
 def _fred_direct_csv_series(series_id):
     """Direkter FRED-CSV-Abruf als Fallback, getrennt vom normalen FRED-Endpunkt."""
@@ -982,27 +1002,19 @@ def _latest_ism_month(today):
 def _ism_fetch(kind, year, month):
     month_name = calendar.month_name[month].lower()
 
-    # The official ISM pages use these stable paths.
+    # Official ISM report URL. For July 2026 this is the published
+    # "Services PMI at 54.1%" report; no forecast/consensus value is used.
     official = (
         f"https://www.ismworld.org/supply-management-news-and-reports/"
-        f"reports/ism-pmi-reports/{'pmi' if kind == 'manufacturing' else 'services'}/{month_name}"
+        f"reports/ism-pmi-reports/{'pmi' if kind == 'manufacturing' else 'services'}/{month_name}/"
     )
-    # Public release mirrors reproduce the ISM release and identify ISM as source.
-    # They are used only when the official site blocks automated GitHub requests.
-    mirrors = []
-    if year == 2026 and month == 7 and kind == "manufacturing":
-        mirrors.append("https://finance.yahoo.com/economy/articles/manufacturing-pmi-55-6-july-140000384.html")
-    if year == 2026 and month == 7 and kind == "services":
-        # PNC explicitly reports the July ISM Services result and identifies ISM as source.
-        mirrors.append("https://www.pnc.com/en/about-pnc/media/economic-reports.html")
 
-    candidates = [official] + mirrors
-
-    for url in candidates:
+    for url in [official]:
         try:
             r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
             if r.status_code != 200:
                 continue
+
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text)
 
@@ -1015,7 +1027,6 @@ def _ism_fetch(kind, year, month):
                 patterns = [
                     r"Services PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
                     r"Services PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
-                    r"ISM Services.*?(?:Actual|actual)\s+(\d+(?:\.\d+)?)",
                 ]
 
             value = None
@@ -1024,6 +1035,7 @@ def _ism_fetch(kind, year, month):
                 if m:
                     value = _clean_num(m.group(1))
                     break
+
             if value is None:
                 continue
 
@@ -1032,10 +1044,10 @@ def _ism_fetch(kind, year, month):
                 "url": url,
                 "year": year,
                 "month": month,
-                "status": "REAL" if url == official else "REAL_PUBLIC_SECONDARY",
+                "status": "REAL",
             }
 
-            # Parse subindexes only when the source contains them.
+            # Only parse subindexes that are actually present in the official report.
             patterns = {
                 "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
                 "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
