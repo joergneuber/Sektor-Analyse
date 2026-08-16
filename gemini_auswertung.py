@@ -372,6 +372,22 @@ def gemini_auswertung_starten():
     letzte_antwort = None
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
 
+    # Harte Datenqualitaetskontrolle fuer Punkt 2: Der Makro-Block darf nur
+    # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
+    # makro_szenario.py den Gatekeeper freigegeben hat. Die restliche
+    # Tagesauswertung bleibt davon unabhaengig.
+    makro_gate = None
+    makro_pfad = eingabedateien.get("Makro_Briefing(...).txt")
+    if makro_pfad:
+        try:
+            with open(makro_pfad, "r", encoding="utf-8-sig") as f:
+                makro_text = f.read()
+            m = re.search(r"MAKRO-SZENARIO-GATE:\s*(FREIGEGEBEN|GESPERRT)", makro_text)
+            makro_gate = m.group(1) if m else None
+            print(f"Makro-Szenario-Gate: {makro_gate or 'UNBEKANNT'}")
+        except Exception as exc:
+            print(f"WARNUNG: Makro-Gate konnte nicht gelesen werden: {exc}")
+
     for versuch in range(1, MAX_VERSUCHE + 1):
         print(f"\nVersuch {versuch}/{MAX_VERSUCHE}...")
 
@@ -395,7 +411,18 @@ def gemini_auswertung_starten():
                 model=MODELL,
                 contents=hochgeladene_teile + [
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
-                    "und erstelle die vollstaendige Daten-Uebersicht."
+                    "und erstelle die vollstaendige Daten-Uebersicht.",
+                    (
+                        "HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. "
+                        "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
+                        "keine geschaetzten Ersatzwerte und keine numerischen Makro-Prognosen. "
+                        "Benenne stattdessen die konkreten kritischen Datenluecken. "
+                        if makro_gate == "GESPERRT" else
+                        "HARTE MAKRO-DATENREGEL: Verwende ausschliesslich REAL- oder "
+                        "CALCULATED-Werte aus dem Makro-Datenpaket. PROXY-Werte muessen als "
+                        "Proxy bezeichnet werden. MODEL_DERIVED-Wahrscheinlichkeiten sind "
+                        "nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
+                    ),
                 ],
                 config=types.GenerateContentConfig(
                     system_instruction=anweisung,

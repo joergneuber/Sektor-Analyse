@@ -1,42 +1,46 @@
-"""
-Makro-Szenario-Daten fuer Neuber Macro & Markets.
+"""Makro-Szenario-Datenpaket fuer Neuber Macro & Markets.
 
-Zweck:
-  Liefert einen separaten, taeglich aktualisierten Datensatz fuer die
-  spaetere Makro-Interpretation durch Gemini. Dieses Modul ist rein
-  informativ und greift NICHT in Setup-, CRV-, Score- oder Portfolio-Logik ein.
+HARTE DATENREGELN
+-----------------
+- Keine geschaetzten/erfundenen Datenwerte.
+- Fehlende Daten bleiben UNAVAILABLE.
+- REAL = veroeffentlichter Originalwert.
+- CALCULATED = deterministisch aus REAL-Werten berechnet.
+- PROXY = beobachteter Proxy, niemals als Originalpreis ausgeben.
+- MODEL_DERIVED = nur fuer die spaetere Szenario-/Wahrscheinlichkeitslogik.
+- Ein fehlender kritischer Datenbaustein sperrt die Makro-Szenariofreigabe.
 
-Datenquellen:
-  FRED (oeffentliche CSV-Route, kein API-Key), yfinance fuer Markt-/Rohstoff-
-  preise. Wo ein einzelner Rohstoff keinen stabilen Yahoo-Futures-Ticker hat,
-  wird ein klar gekennzeichneter Proxy verwendet oder der Wert als nicht
-  verfuegbar ausgegeben.
+Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 """
 
 import datetime as dt
-import os
+import calendar
 import math
-import json
-import requests
+import re
+from io import StringIO
+
 import pandas as pd
+import requests
 import yfinance as yf
 
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
+FRED_URL = "https://fred.stlouisfed.org/series/{}"
+ISM_BASE = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports"
+FED_FUTURES_PUBLIC_URL = "https://www.pomeroygrain.com/markets.aspx?cg=30-Day+Fed+Funds"
 
 FRED_SERIES = {
-    # Geldpolitik / Liquiditaet
     "Fed Funds Effective Rate": "DFF",
+    "Fed Target Range Upper": "DFEDTARU",
+    "Fed Target Range Lower": "DFEDTARL",
     "ECB Deposit Facility Rate": "ECBDFR",
     "M2": "M2SL",
     "Realzins 10Y TIPS": "DFII10",
-    # Inflation / Preise
     "CPI": "CPIAUCSL",
     "Core CPI": "CPILFESL",
     "PCE": "PCEPI",
     "Core PCE": "PCEPILFE",
     "PPI": "PPIACO",
     "Durchschnittlicher Stundenlohn": "CES0500000003",
-    # Konjunktur / Arbeit
     "Reales BIP": "GDPC1",
     "Arbeitslosenquote": "UNRATE",
     "NFP / Nonfarm Payrolls": "PAYEMS",
@@ -45,54 +49,52 @@ FRED_SERIES = {
     "Industrieproduktion": "INDPRO",
     "Kapazitaetsauslastung": "TCU",
     "Consumer Sentiment": "UMCSENT",
-    # Kredit / Financial Conditions
     "SLOOS C&I Tightening": "DRTSCILM",
     "US High Yield OAS": "BAMLH0A0HYM2",
     "US Investment Grade OAS": "BAMLC0A0CM",
     "Chicago Fed NFCI": "NFCI",
-    # Exogen / Unsicherheit / Fiskal
     "GSCPI": "GSCPI",
     "Global Economic Policy Uncertainty": "GEPUCURRENT",
     "US Federal Debt/GDP": "GFDEGDQ188S",
+    "US 2Y Treasury": "DGS2",
+    "US 5Y Treasury": "DGS5",
+    "US 10Y Treasury": "DGS10",
+    "US 30Y Treasury": "DGS30",
 }
 
 MARKET_DATA = {
-    # Aktien
-    "S&P 500": ("^GSPC", "Markt"),
-    "Nasdaq Composite": ("^IXIC", "Markt"),
-    "Russell 2000": ("^RUT", "Markt"),
-    "DAX": ("^GDAXI", "Markt"),
-    "EuroStoxx 50": ("^STOXX50E", "Markt"),
-    "Nikkei 225": ("^N225", "Markt"),
-    # Volatilitaet / FX / Krypto
-    "VIX": ("^VIX", "Risiko"),
-    "DXY": ("DX-Y.NYB", "FX"),
-    "EUR/USD": ("EURUSD=X", "FX"),
-    "USD/JPY": ("JPY=X", "FX"),
-    "Bitcoin": ("BTC-USD", "Krypto"),
-    "Ethereum": ("ETH-USD", "Krypto"),
-    # Energie
-    "WTI": ("CL=F", "Energie"),
-    "Brent": ("BZ=F", "Energie"),
-    "Erdgas": ("NG=F", "Energie"),
-    # Edelmetalle
-    "Gold": ("GC=F", "Edelmetall"),
-    "Silber": ("SI=F", "Edelmetall"),
-    "Platin": ("PL=F", "Edelmetall"),
-    "Palladium": ("PA=F", "Edelmetall"),
-    # Industriemetalle / Zukunftsinfrastruktur
-    "Kupfer": ("HG=F", "Industrie"),
-    "Aluminium": ("ALI=F", "Industrie"),
-    # Bei diesen drei Yahoo-Tickern ist die Verfuegbarkeit wechselhaft;
-    # deshalb stehen robuste ETF-Proxies als Fallback bereit.
-    "Zink": ("ZNC=F", "Industrie"),
-    "Nickel": ("NICKEL.L", "Industrie-Proxy"),
-    "Blei": ("LEAD.L", "Industrie-Proxy"),
-    "Zinn": ("TIN.L", "Industrie-Proxy"),
-    "Kobalt": ("COBALT.L", "Industrie-Proxy"),
-    "Lithium": ("LIT", "Industrie-Proxy"),
-    "Eisenerz": ("TIO=F", "Industrie"),
+    "S&P 500": ("^GSPC", "REAL_MARKET"),
+    "Nasdaq Composite": ("^IXIC", "REAL_MARKET"),
+    "Russell 2000": ("^RUT", "REAL_MARKET"),
+    "DAX": ("^GDAXI", "REAL_MARKET"),
+    "EuroStoxx 50": ("^STOXX50E", "REAL_MARKET"),
+    "Nikkei 225": ("^N225", "REAL_MARKET"),
+    "VIX": ("^VIX", "REAL_MARKET"),
+    "DXY": ("DX-Y.NYB", "REAL_MARKET"),
+    "EUR/USD": ("EURUSD=X", "REAL_MARKET"),
+    "USD/JPY": ("JPY=X", "REAL_MARKET"),
+    "Bitcoin": ("BTC-USD", "REAL_MARKET"),
+    "Ethereum": ("ETH-USD", "REAL_MARKET"),
+    "WTI": ("CL=F", "REAL_FUTURES"),
+    "Brent": ("BZ=F", "REAL_FUTURES"),
+    "Erdgas": ("NG=F", "REAL_FUTURES"),
+    "Gold": ("GC=F", "REAL_FUTURES"),
+    "Silber": ("SI=F", "REAL_FUTURES"),
+    "Platin": ("PL=F", "REAL_FUTURES"),
+    "Palladium": ("PA=F", "REAL_FUTURES"),
+    "Kupfer": ("HG=F", "REAL_FUTURES"),
+    "Aluminium": ("ALI=F", "REAL_FUTURES"),
+    "Zink": ("ZNC=F", "REAL_FUTURES"),
+    "Nickel": ("NICKEL.L", "PROXY"),
+    "Blei": ("LEAD.L", "PROXY"),
+    "Zinn": ("TIN.L", "PROXY"),
+    "Kobalt": ("COBALT.L", "PROXY"),
+    "Lithium": ("LIT", "PROXY"),
+    "Eisenerz": ("TIO=F", "REAL_FUTURES"),
 }
+
+MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M", 7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; NeuberMacro/1.0)"}
 
 
 def _clean_num(value):
@@ -103,12 +105,15 @@ def _clean_num(value):
         return None
 
 
+def _fmt(value, decimals=4):
+    value = _clean_num(value)
+    return "NICHT VERFUEGBAR" if value is None else f"{value:.{decimals}f}"
+
+
 def fred_series(series_id, limit_days=5000):
-    url = FRED_BASE.format(series_id)
     try:
-        r = requests.get(url, timeout=20)
+        r = requests.get(FRED_BASE.format(series_id), timeout=20, headers=REQUEST_HEADERS)
         r.raise_for_status()
-        from io import StringIO
         df = pd.read_csv(StringIO(r.text))
         if "DATE" not in df.columns or series_id not in df.columns:
             return pd.DataFrame()
@@ -119,127 +124,396 @@ def fred_series(series_id, limit_days=5000):
             cutoff = pd.Timestamp.today() - pd.Timedelta(days=limit_days)
             df = df[df["DATE"] >= cutoff]
         return df
-    except Exception as e:
-        print(f"WARNUNG: FRED {series_id} nicht verfuegbar: {e}")
+    except Exception as exc:
+        print(f"WARNUNG: FRED {series_id} nicht verfuegbar: {exc}")
         return pd.DataFrame()
 
 
 def fred_snapshot(name, series_id):
     df = fred_series(series_id)
     if df.empty:
-        return f"{name}: Daten nicht verfuegbar (FRED {series_id})"
-    vals = df[series_id].tolist()
-    dates = df["DATE"].tolist()
-    current = _clean_num(vals[-1])
-    current_date = dates[-1].strftime("%Y-%m-%d")
-    def ago(n):
-        if len(vals) <= n:
-            return None
-        return _clean_num(vals[-1-n])
-    p1 = ago(1)
-    # FRED-Reihen haben unterschiedliche Frequenzen; deshalb werden zusaetzlich
-    # 30/90/365 Kalendertage ueber den letzten verfuegbaren Punkt gesucht.
-    def nearest_days(days):
-        target = dates[-1] - pd.Timedelta(days=days)
-        candidates = df[df["DATE"] <= target]
-        return _clean_num(candidates[series_id].iloc[-1]) if not candidates.empty else None
-    p30, p90, p365 = nearest_days(30), nearest_days(90), nearest_days(365)
-    def pct(a, b):
-        if a is None or b in (None, 0): return None
-        return (a/b - 1.0) * 100.0
-    changes = []
-    for label, old in (("30T", p30), ("90T", p90), ("1J", p365)):
-        ch = pct(current, old)
-        if ch is not None:
-            changes.append(f"{label} {ch:+.2f}%")
-    # Rohwert kompakt, ohne eine scheinbare Praezision fuer alle Reihen zu erzwingen.
-    if abs(current) >= 1000:
-        value_text = f"{current:,.1f}"
-    elif abs(current) >= 10:
-        value_text = f"{current:.2f}"
-    else:
-        value_text = f"{current:.3f}"
-    return f"{name}: {value_text} | Datenstand {current_date} | " + (" | ".join(changes) if changes else "keine Vergleichswerte") + f" | FRED {series_id}"
+        return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
+    value = _clean_num(df[series_id].iloc[-1])
+    date = df["DATE"].iloc[-1].strftime("%Y-%m-%d")
+    return (
+        f"{name}: {_fmt(value, 4)} | Datenstand={date} | STATUS=REAL | "
+        f"SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
+    )
 
 
-def fedwatch_snapshot():
-    """Optionaler CME-FedWatch-Hook.
-
-    Die offizielle CME-FedWatch-API ist entgeltpflichtig/entitled. Deshalb
-    wird ohne Secret bewusst NICHT versucht, eine instabile Webseiten-
-    Darstellung zu scrapen. Mit CME_FEDWATCH_BEARER_TOKEN kann die offizielle
-    REST-Route genutzt werden.
-    """
-    token = os.environ.get("CME_FEDWATCH_BEARER_TOKEN")
-    if not token:
-        return ("CME FedWatch: aktuell nicht automatisch abgerufen | "
-                "offizielle CME-API optional ueber CME_FEDWATCH_BEARER_TOKEN; "
-                "keine ersatzweise erfundene Wahrscheinlichkeit")
-    url = "https://markets.api.cmegroup.com/fedwatch_rt/v1/forecasts/latest"
-    try:
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        return "CME FedWatch: " + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    except Exception as e:
-        return f"CME FedWatch: API nicht verfuegbar ({type(e).__name__})"
-
-
-def market_snapshot(name, ticker, category):
+def _market_history(ticker):
     try:
         hist = yf.download(ticker, period="2y", interval="1d", auto_adjust=False, progress=False, threads=False)
         if hist is None or hist.empty:
-            return f"{name}: Daten nicht verfuegbar ({ticker})"
+            return pd.Series(dtype=float)
         if isinstance(hist.columns, pd.MultiIndex):
             close = hist["Close"].iloc[:, 0]
         else:
             close = hist["Close"]
-        close = pd.to_numeric(close, errors="coerce").dropna()
-        if close.empty:
-            return f"{name}: Daten nicht verfuegbar ({ticker})"
-        current = float(close.iloc[-1])
-        date = close.index[-1]
-        def old(days):
-            if len(close) < 2: return None
-            target = date - pd.Timedelta(days=days)
-            c = close[close.index <= target]
-            return float(c.iloc[-1]) if not c.empty else None
-        vals = []
-        for label, days in (("5T",5), ("1M",30), ("3M",90), ("6M",180), ("1J",365)):
-            o = old(days)
-            if o not in (None, 0):
-                vals.append(f"{label} {(current/o-1)*100:+.2f}%")
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1] if len(close) >= 20 else None
-        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1] if len(close) >= 50 else None
-        trend = []
-        if ema20 is not None: trend.append(f"EMA20 {'darueber' if current > ema20 else 'darunter'}")
-        if ema50 is not None: trend.append(f"EMA50 {'darueber' if current > ema50 else 'darunter'}")
-        return f"{name}: {current:.4f} | Datenstand {date.strftime('%Y-%m-%d')} | {' | '.join(vals)} | {' | '.join(trend)} | Quelle {ticker} ({category})"
-    except Exception as e:
-        return f"{name}: Daten nicht verfuegbar ({ticker}, {type(e).__name__})"
+        return pd.to_numeric(close, errors="coerce").dropna()
+    except Exception as exc:
+        print(f"WARNUNG: Marktdaten {ticker} nicht verfuegbar: {exc}")
+        return pd.Series(dtype=float)
+
+
+def market_snapshot(name, ticker, data_type):
+    close = _market_history(ticker)
+    status = "REAL" if data_type != "PROXY" else "PROXY"
+    if close.empty:
+        return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE={ticker} | DATENTYP={data_type}"
+    current = float(close.iloc[-1])
+    date = close.index[-1]
+    parts = []
+    for label, days in (("5T", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1J", 365)):
+        target = date - pd.Timedelta(days=days)
+        old = close[close.index <= target]
+        if not old.empty and float(old.iloc[-1]) != 0:
+            parts.append(f"{label}={(current / float(old.iloc[-1]) - 1) * 100:+.2f}%")
+    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1] if len(close) >= 20 else None
+    ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1] if len(close) >= 50 else None
+    trend = []
+    if ema20 is not None:
+        trend.append(f"EMA20={'DARUEBER' if current > ema20 else 'DARUNTER'}")
+    if ema50 is not None:
+        trend.append(f"EMA50={'DARUEBER' if current > ema50 else 'DARUNTER'}")
+    return (
+        f"{name}: {current:.6f} | Datenstand={date.strftime('%Y-%m-%d')} | "
+        f"STATUS={status} | DATENTYP={data_type} | "
+        f"{' | '.join(parts) if parts else 'keine Vergleichswerte'} | "
+        f"{' | '.join(trend) if trend else 'keine Trendwerte'} | SOURCE={ticker}"
+    )
+
+
+def _month_contract(year, month):
+    return f"ZQ{MONTH_CODES[month]}{str(year)[-2:]}"
+
+
+def _extract_fed_futures_from_html(html):
+    """Liest die oeffentliche Tabelle einer freien Marktseite.
+
+    Es werden ausschliesslich tatsaechlich angezeigte Kontraktpreise uebernommen.
+    Keine Preisinterpolation oder Schätzung.
+    """
+    found = {}
+    try:
+        tables = pd.read_html(StringIO(html))
+        for table in tables:
+            text = table.astype(str).to_string()
+            if "ZQU26" not in text and "30-Day Fed Funds" not in text:
+                continue
+            for _, row in table.iterrows():
+                row_text = " ".join(str(x) for x in row.tolist())
+                m = re.search(r"\b(ZQ[A-Z]\d{2})\b", row_text)
+                if not m:
+                    continue
+                symbol = m.group(1)
+                nums = re.findall(r"(?<!\d)(9[0-9]\.\d{1,4})(?!\d)", row_text)
+                if not nums:
+                    continue
+                # Tabellen sind Contract / High / Low / Last / Change / Time.
+                # Fuer den Futures-Preis verwenden wir ausschliesslich die dritte
+                # reale 96.xx-Zahl nach dem Kontrakt (= Last), nie High/Low/Change.
+                price = _clean_num(nums[2] if len(nums) >= 3 else nums[-1])
+                if price is not None:
+                    found[symbol] = price
+    except Exception:
+        pass
+
+    # Robuster Fallback: direkte Zeilen-/Textsuche. Auch hier nur reale angezeigte Zahlen.
+    for symbol in re.findall(r"\bZQ[A-Z]\d{2}\b", html):
+        if symbol in found:
+            continue
+        pos = html.find(symbol)
+        snippet = re.sub(r"<[^>]+>", " ", html[max(0, pos - 100):pos + 500])
+        nums = re.findall(r"(?<!\d)(9[0-9]\.\d{1,4})(?!\d)", snippet)
+        if nums:
+            found[symbol] = _clean_num(nums[2] if len(nums) >= 3 else nums[-1])
+    return found
+
+
+def get_public_fed_futures():
+    try:
+        r = requests.get(FED_FUTURES_PUBLIC_URL, timeout=20, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        quotes = _extract_fed_futures_from_html(r.text)
+        return quotes
+    except Exception as exc:
+        print(f"WARNUNG: oeffentliche Fed-Futures-Seite nicht verfuegbar: {exc}")
+        return {}
+
+
+def _fomc_meeting_dates(year):
+    # Quelle/Terminplan: lokale JSON-Datei aus dem Repository. Die Datei wird
+    # jaehrlich gepflegt und entspricht dem offiziellen Fed-Kalender.
+    try:
+        import json
+        with open("fomc_termine.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [dt.date.fromisoformat(x) for x in data.get("termine", []) if x.startswith(str(year))]
+    except Exception:
+        return []
+
+
+def _next_fomc_date(today):
+    dates = [d for d in _fomc_meeting_dates(today.year) + _fomc_meeting_dates(today.year + 1) if d >= today]
+    return min(dates) if dates else None
+
+
+def fed_expectation_snapshot(today):
+    meeting = _next_fomc_date(today)
+    if meeting is None:
+        return [
+            "FED-MARKTERWARTUNG: NICHT BERECHENBAR | STATUS=UNAVAILABLE | Grund: kein verifizierter FOMC-Termin im Repository",
+            "FED-FUTURES-DATEN: NICHT BERECHENBAR",
+        ]
+
+    # Die FOMC-Termine sind offiziell auf federalreserve.gov veroeffentlicht.
+    # Die Berechnung orientiert sich an der von CME publizierten Methodik:
+    # ZQ-Preis = 100 - erwarteter Monatsdurchschnitt EFFR; Nicht-FOMC-Ankermonat
+    # dient zur Fortpflanzung des Start-/Endsatzes.
+    year, month = meeting.year, meeting.month
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    next_month = month + 1 if month < 12 else 1
+    next_year = year if month < 12 else year + 1
+    # Folgemonat nach dem FOMC-Monat. Falls dieser ebenfalls einen FOMC-Termin
+    # hat, suchen wir den naechsten vollstaendigen Monat ohne FOMC-Termin.
+    anchor_year, anchor_month = next_year, next_month
+    meetings = set(_fomc_meeting_dates(anchor_year) + _fomc_meeting_dates(year))
+    while dt.date(anchor_year, anchor_month, 1) <= dt.date(year + 1, 12, 1):
+        if not any(d.year == anchor_year and d.month == anchor_month for d in meetings):
+            break
+        if anchor_month == 12:
+            anchor_month, anchor_year = 1, anchor_year + 1
+        else:
+            anchor_month += 1
+    # Wir brauchen mindestens Prev, Meeting, Next und Anchor-Kontrakte.
+    required = [
+        (prev_year, prev_month),
+        (year, month),
+        (next_year, next_month),
+        (anchor_year, anchor_month),
+    ]
+    quotes = get_public_fed_futures()
+    prices = {}
+    for y, m in required:
+        symbol = _month_contract(y, m)
+        prices[(y, m)] = quotes.get(symbol)
+
+    missing = [f"{_month_contract(y, m)}" for y, m in required if prices[(y, m)] is None]
+    if missing:
+        return [
+            f"FED-MARKTERWARTUNG: NICHT BERECHENBAR | STATUS=UNAVAILABLE | Fehlende reale Futures-Quotes: {', '.join(missing)}",
+            f"FOMC naechster Termin: {meeting.isoformat()} | Quelle Terminplan: fomc_termine.json / Federal Reserve",
+        ]
+
+    def avg(y, m):
+        return 100.0 - prices[(y, m)]
+
+    # Nicht-FOMC-Anker: EFFR Avg(anchor) = EFFR End(next).
+    anchor_avg = avg(anchor_year, anchor_month)
+    next_days = calendar.monthrange(next_year, next_month)[1]
+    # Wenn der naechste Monat ein FOMC-Monat ist, wird sein Endsatz aus dem
+    # naechsten Nicht-FOMC-Anker rekonstruiert.
+    next_start = None
+    next_end = anchor_avg
+    next_meeting = next((d for d in _fomc_meeting_dates(next_year) if d.month == next_month), None)
+    if next_meeting:
+        n = next_meeting.day - 1
+        m = next_days - n
+        next_avg = avg(next_year, next_month)
+        if n <= 0 or m <= 0:
+            return ["FED-MARKTERWARTUNG: NICHT BERECHENBAR | STATUS=UNAVAILABLE | ungueltige FOMC-Tagesgewichtung"]
+        next_start = (next_avg - (m / next_days) * next_end) / (n / next_days)
+    else:
+        next_start = anchor_avg
+
+    # Meeting-Monat: Start = Ende des vorherigen Nicht-FOMC-Monats, sofern der
+    # Vormonat kein FOMC hatte. Sonst waere eine weitere Rekursion erforderlich.
+    prev_meeting = any(d.year == prev_year and d.month == prev_month for d in _fomc_meeting_dates(prev_year))
+    if prev_meeting:
+        return ["FED-MARKTERWARTUNG: NICHT BERECHENBAR | STATUS=UNAVAILABLE | Vormonat ist ebenfalls FOMC-Monat; Rekursion erforderlich"]
+    start = avg(prev_year, prev_month)
+    end = next_start
+    delta = end - start
+    expected_moves = delta / 0.25
+    direction = "HIKE" if delta > 0 else "CUT" if delta < 0 else "HOLD"
+    magnitude = abs(expected_moves)
+
+    if magnitude < 1.0:
+        move_prob = magnitude
+        hold_prob = 1.0 - magnitude
+        move_text = f"{direction}_25BP={move_prob * 100:.2f}% | HOLD={hold_prob * 100:.2f}%"
+    else:
+        whole = int(math.floor(magnitude))
+        remainder = magnitude - whole
+        base_bp = whole * 25
+        next_bp = (whole + 1) * 25
+        p_base = 1.0 - remainder
+        p_next = remainder
+        move_text = f"{direction}_{base_bp}BP={p_base * 100:.2f}% | {direction}_{next_bp}BP={p_next * 100:.2f}%"
+
+    upper_df = fred_series("DFEDTARU")
+    lower_df = fred_series("DFEDTARL")
+    upper = _clean_num(upper_df["DFEDTARU"].iloc[-1]) if not upper_df.empty else None
+    lower = _clean_num(lower_df["DFEDTARL"].iloc[-1]) if not lower_df.empty else None
+
+    return [
+        f"FED-MARKTERWARTUNG: FOMC={meeting.isoformat()} | STATUS=CALCULATED | {move_text}",
+        f"Implizierter EFFR-Start={start:.4f}% | Implizierter EFFR-Ende={end:.4f}% | Erwartete EFFR-Aenderung={delta:+.4f} Prozentpunkte | Erwartete 25bp-Schritte={expected_moves:+.4f}",
+        f"Aktueller Fed-Zielkorridor aus FRED: Untergrenze={_fmt(lower,4)}% | Obergrenze={_fmt(upper,4)}% | STATUS={'REAL' if lower is not None and upper is not None else 'UNAVAILABLE'}",
+        f"Reale Futures: {', '.join(f'{_month_contract(y,m)}={prices[(y,m)]:.4f}' for y,m in required)} | SOURCE={FED_FUTURES_PUBLIC_URL}",
+        "Berechnungsmethodik: CME-publizierte FedWatch-Methodik (monatlicher ZQ-Preis = 100 - durchschnittlich erwarteter EFFR; Nicht-FOMC-Ankermonat zur Start-/Endsatz-Rekonstruktion).",
+        "WICHTIG: Die Wahrscheinlichkeiten sind MODEL_DERIVED aus realen Futurespreisen; sie sind keine geschaetzten Marktdatenwerte.",
+    ]
+
+
+def _latest_ism_month(today):
+    # Wir pruefen den Vormonat und, falls die Seite noch nicht veroeffentlicht ist,
+    # den Monat davor. Es wird nie ein zukuenftiger oder geschaetzter PMI eingesetzt.
+    for offset in (1, 2, 3):
+        first = today.replace(day=1)
+        y, m = first.year, first.month - offset
+        while m <= 0:
+            y -= 1
+            m += 12
+        return y, m
+    return None
+
+
+def _ism_fetch(kind, year, month):
+    month_name = calendar.month_name[month].lower()
+    path = "pmi" if kind == "manufacturing" else "services"
+    url = f"{ISM_BASE}/{path}/{month_name}/"
+    try:
+        r = requests.get(url, timeout=20, headers=REQUEST_HEADERS)
+        if r.status_code != 200:
+            return None
+        text = re.sub(r"\s+", " ", r.text)
+        title_pattern = r"(?:Manufacturing|Services) PMI.{0,80}?at\s+(\d+(?:\.\d+)?)%"
+        m = re.search(title_pattern, text, flags=re.I)
+        if not m:
+            return None
+        value = _clean_num(m.group(1))
+        if value is None:
+            return None
+        data = {"pmi": value, "url": url, "year": year, "month": month}
+        # Die naechsten Kernkomponenten werden nur erfasst, wenn sie im Original
+        # eindeutig vorhanden sind. Kein Wert wird aus Kontext geschaetzt.
+        patterns = {
+            "new_orders": r"New Orders Index(?:[^\d]{0,80})(\d+(?:\.\d+)?)",
+            "employment": r"Employment Index(?:[^\d]{0,80})(\d+(?:\.\d+)?)",
+            "prices": r"Prices Index(?:[^\d]{0,80})(\d+(?:\.\d+)?)",
+        }
+        for key, pattern in patterns.items():
+            mm = re.search(pattern, text, flags=re.I)
+            data[key] = _clean_num(mm.group(1)) if mm else None
+        return data
+    except Exception as exc:
+        print(f"WARNUNG: ISM {kind} {year}-{month:02d} nicht verfuegbar: {exc}")
+        return None
+
+
+def ism_snapshot(today):
+    # Vormonat ist der erwartete letzte vollstaendig veroeffentlichte Monat.
+    first = today.replace(day=1)
+    candidates = []
+    for offset in range(1, 4):
+        y, m = first.year, first.month - offset
+        while m <= 0:
+            y -= 1
+            m += 12
+        candidates.append((y, m))
+
+    manufacturing = services = None
+    for y, m in candidates:
+        manufacturing = _ism_fetch("manufacturing", y, m)
+        if manufacturing:
+            break
+    for y, m in candidates:
+        services = _ism_fetch("services", y, m)
+        if services:
+            break
+
+    lines = []
+    if manufacturing:
+        lines.append(
+            f"ISM Manufacturing PMI: {manufacturing['pmi']:.1f} | Datenmonat={manufacturing['year']}-{manufacturing['month']:02d} | "
+            f"New Orders={_fmt(manufacturing['new_orders'],1)} | Employment={_fmt(manufacturing['employment'],1)} | Prices={_fmt(manufacturing['prices'],1)} | "
+            f"STATUS=REAL | SOURCE={manufacturing['url']}"
+        )
+    else:
+        lines.append("ISM Manufacturing PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
+    if services:
+        lines.append(
+            f"ISM Services PMI: {services['pmi']:.1f} | Datenmonat={services['year']}-{services['month']:02d} | "
+            f"New Orders={_fmt(services['new_orders'],1)} | Employment={_fmt(services['employment'],1)} | Prices={_fmt(services['prices'],1)} | "
+            f"STATUS=REAL | SOURCE={services['url']}"
+        )
+    else:
+        lines.append("ISM Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
+    lines.append("PMI-Regel: >50 = Expansion des jeweiligen Sektors; <50 = Kontraktion. Keine Prognose des naechsten PMI-Werts.")
+    return lines
+
+
+def data_quality_gate(lines):
+    critical_labels = [
+        "Fed Target Range Upper",
+        "Fed Target Range Lower",
+        "US 2Y Treasury",
+        "US 10Y Treasury",
+        "CPI",
+        "Arbeitslosenquote",
+        "Reales BIP",
+        "US High Yield OAS",
+        "VIX",
+        "S&P 500",
+        "DXY",
+        "Gold",
+        "WTI",
+        "Kupfer",
+        "Bitcoin",
+        "Ethereum",
+        "ISM Manufacturing PMI",
+        "ISM Services PMI",
+    ]
+    missing = [label for label in critical_labels if any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)]
+    # Fed-Markterwartung ist kritisch; sie darf nicht ausfallen oder geschaetzt werden.
+    if any(line.startswith("FED-MARKTERWARTUNG: NICHT BERECHENBAR") for line in lines):
+        missing.append("FED-MARKTERWARTUNG")
+    gate = "FREIGEGEBEN" if not missing else "GESPERRT"
+    return gate, missing
 
 
 def main():
-    today = dt.date.today().isoformat()
-    output = f"Makro_Briefing({today}).txt"
+    today = dt.date.today()
+    output = f"Makro_Briefing({today.isoformat()}).txt"
     lines = []
-    lines.append("NEUBER MACRO & MARKETS")
-    lines.append(f"MAKRO-DATENPAKET | Datenabruf: {today}")
-    lines.append("Zweck: Rohdaten fuer Makro-Interpretation und Zukunftsszenarien; keine Veraenderung bestehender Trading-Logik.")
-    lines.append("")
-
-    lines.append("1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET")
-    for name in ["Fed Funds Effective Rate", "ECB Deposit Facility Rate", "M2", "Realzins 10Y TIPS"]:
+    lines += [
+        "NEUBER MACRO & MARKETS",
+        f"MAKRO-DATENPAKET | Datenabruf={today.isoformat()}",
+        "HARTE DATENREGEL: Keine Zahl wird geschaetzt. Fehlende Werte bleiben NICHT VERFUEGBAR.",
+        "STATUS: REAL = Originalwert | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
+        "",
+        "1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET",
+    ]
+    for name in [
+        "Fed Funds Effective Rate", "Fed Target Range Lower", "Fed Target Range Upper",
+        "ECB Deposit Facility Rate", "M2", "Realzins 10Y TIPS",
+        "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury",
+    ]:
         lines.append(fred_snapshot(name, FRED_SERIES[name]))
-    lines.append(fedwatch_snapshot())
-    for name, sid in [("US 2Y Treasury", "DGS2"), ("US 5Y Treasury", "DGS5"), ("US 10Y Treasury", "DGS10"), ("US 30Y Treasury", "DGS30")]:
-        lines.append(fred_snapshot(name, sid))
+    lines.extend(fed_expectation_snapshot(today))
     lines.append("")
 
     lines.append("2. INFLATION, ARBEIT & KONJUNKTUR")
-    for name in ["CPI", "Core CPI", "PCE", "Core PCE", "PPI", "Durchschnittlicher Stundenlohn", "Reales BIP", "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "JOLTS Job Openings", "Initial Jobless Claims", "Industrieproduktion", "Kapazitaetsauslastung", "Consumer Sentiment"]:
+    for name in [
+        "CPI", "Core CPI", "PCE", "Core PCE", "PPI", "Durchschnittlicher Stundenlohn",
+        "Reales BIP", "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "JOLTS Job Openings",
+        "Initial Jobless Claims", "Industrieproduktion", "Kapazitaetsauslastung", "Consumer Sentiment",
+    ]:
         lines.append(fred_snapshot(name, FRED_SERIES[name]))
-    lines.append("PMI: nicht als feste FRED-Reihe erzwungen; bis zur Auswahl einer belastbaren, automatisierbaren Quelle wird die Konjunkturdiagnose ueber BIP, Industrieproduktion, Arbeitsmarkt, NY-Fed-/andere Fruehindikatoren und Marktpreise bestaetigt.")
+    lines.extend(ism_snapshot(today))
     lines.append("")
 
     lines.append("3. KREDIT, FINANCIAL CONDITIONS & RISIKO")
@@ -250,25 +524,34 @@ def main():
     lines.append("4. EXOGENE FAKTOREN, LIEFERKETTEN & FISKAL")
     for name in ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP"]:
         lines.append(fred_snapshot(name, FRED_SERIES[name]))
-    lines.append("Geopolitik: kein kuenstlicher Tages-Score. Ereignisse werden nur dann in die Szenariointerpretation aufgenommen, wenn sie in den bereitgestellten Daten/News konkret belegt sind.")
+    lines.append("Geopolitik: kein kuenstlicher Tages-Score. Nur konkret belegte Ereignisse aus den bereitgestellten Quellen duerfen interpretiert werden.")
     lines.append("")
 
     lines.append("5. MARKT, FX, KRYPTO & ROHSTOFFE")
-    for name, (ticker, category) in MARKET_DATA.items():
-        lines.append(market_snapshot(name, ticker, category))
+    for name, (ticker, data_type) in MARKET_DATA.items():
+        lines.append(market_snapshot(name, ticker, data_type))
     lines.append("")
 
-    lines.append("6. INTERPRETATIONSREGELN FUER GEMINI")
-    lines.append("Die Makroanalyse soll die Daten nicht einzeln kommentieren, sondern widerspruchsfrei zu einem Gesamtbild verbinden.")
+    gate, missing = data_quality_gate(lines)
+    lines.append("6. DATENQUALITAETS-GATEKEEPER")
+    lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
+    lines.append(f"KRITISCHE DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
+    lines.append("REGEL: Bei GESPERRT darf keine Base/Bull/Bear-Prognose mit Zahlen ausgegeben werden. Die Tagesauswertung darf die bestehende regelbasierte Analyse trotzdem weiter ausgeben.")
+    lines.append("")
+
+    lines.append("7. INTERPRETATIONSREGELN FUER GEMINI")
     lines.append("Makroachsen: Wachstum | Inflation | Geldpolitik | Liquiditaet | Kredit | Risk Appetite | Bewertung | Angebotsschock | struktureller Capex-Zyklus.")
     lines.append("Horizonte: 1-4 Wochen | 1-3 Monate | 3-6 Monate | >6 Monate.")
-    lines.append("Szenarien: Base Case | Bull Case | Bear Case. Wahrscheinlichkeiten muessen zusammen 100% ergeben und sind Modellurteile, keine statistisch exakten Wahrscheinlichkeiten.")
-    lines.append("Fuer perspektivische Trades: Asset-/Sektor-Richtung, Treiber, Gegentreiber, bevorzugte Themen und klare Regime-Killer nennen. Keine automatische Veraenderung von Setup-, CRV-, Score- oder Portfolio-Logik.")
-    lines.append("Lithium ist als struktureller Speicher-/Batterie-/Netzausbau-Indikator zu interpretieren, nicht isoliert als Konjunktursignal. Bei Proxy-Daten immer die Proxy-Natur beruecksichtigen.")
+    lines.append("Szenarien: Base Case | Bull Case | Bear Case. Szenario-Wahrscheinlichkeiten sind MODEL_DERIVED, niemals reale Marktdaten und niemals geschaetzte Eingangsdaten.")
+    lines.append("Wenn der Makro-Szenario-Gate GESPERRT ist: KEINE Szenario-Wahrscheinlichkeiten und KEINE erfundenen Ersatzwerte. Stattdessen Datenluecke benennen.")
+    lines.append("Lithium ist als struktureller Speicher-/Batterie-/Netzausbau-Indikator zu interpretieren. PROXY-Daten duerfen niemals als Original-Rohstoffpreise bezeichnet werden.")
 
     with open(output, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(lines) + "\n")
     print(f"Makro-Datenpaket gespeichert: {output}")
+    print(f"MAKRO-SZENARIO-GATE={gate}")
+    if missing:
+        print("KRITISCHE_DATENLUECKEN=" + ", ".join(missing))
 
 
 if __name__ == "__main__":

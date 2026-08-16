@@ -1872,6 +1872,17 @@ Die Datei Makro_Briefing(<Datum>).txt ist ein separates, automatisch erzeugtes M
 
 Ziel des Makro-Blocks ist nicht die Auflistung einzelner Kennzahlen, sondern die Interpretation der Zusammenhaenge fuer perspektivische Trades ueber mehrere Zeithorizonte. Die Rohdaten stammen aus dem Makro-Datenpaket und den bereits vorhandenen Benchmark-/Marktdaten der Tagesauswertung. Wenn eine Datenreihe fehlt oder als Proxy gekennzeichnet ist, muss dies in der Interpretation beruecksichtigt werden; nichts erfinden.
 
+HARTE MAKRO-DATENREGELN (VERBINDLICH)
+- Keine Zahl raten, schaetzen oder aus Plausibilitaet ergaenzen.
+- REAL darf nur fuer tatsaechlich veroeffentlichte/abgerufene Originalwerte verwendet werden.
+- CALCULATED darf nur fuer deterministisch aus REAL-Werten berechnete Werte verwendet werden.
+- PROXY muss immer ausdruecklich als Proxy bezeichnet werden und darf niemals als Originalpreis des zugrunde liegenden Assets ausgegeben werden.
+- MODEL_DERIVED ist ausschliesslich fuer die spaetere Szenario-/Wahrscheinlichkeitslogik zulaessig. Eine MODEL_DERIVED-Wahrscheinlichkeit ist kein realer Datenwert und darf niemals als Markterwartung aus einer Quelle dargestellt werden.
+- UNAVAILABLE bleibt UNAVAILABLE. Kein letzter Wert, keine Null und kein Proxy darf stillschweigend als Ersatz eingesetzt werden.
+- Das Makro-Datenpaket enthaelt einen MAKRO-SZENARIO-GATE. Bei GESPERRT duerfen in Punkt 2 KEINE numerischen Base/Bull/Bear-Wahrscheinlichkeiten und KEINE geschaetzten Makro-Prognosewerte ausgegeben werden. Stattdessen sind die konkreten kritischen Datenluecken zu nennen.
+- Fed-Erwartung: keine kostenpflichtige CME-FedWatch-API. Die eigene marktimplizierte Erwartung wird aus realen 30-Day-Fed-Funds-Futures berechnet; die Berechnungsmethodik muss nachvollziehbar bleiben.
+- PMI: keine geschaetzten PMI-Werte. Fuer die USA sind offizielle oeffentliche ISM-Manufacturing-/Services-Releases die Primaerquelle. Nicht verfuegbare weitere PMI-Reihen bleiben UNAVAILABLE.
+
 Der Makro-Block wird unmittelbar NACH „Marktumfeld & Globale Risikolage“
 und VOR „Trendfolge-Setups“ als neuer Abschnitt 2 eingefuegt. Er ist damit
 der zweite inhaltliche Analyseabschnitt der fertigen Auswertung.
@@ -1947,3 +1958,5 @@ Niedriger VIX bei extrem hoher Indexbewertung kann als „bullisch, aber fragil/
 Wenn Daten widersprechen, den Widerspruch ausdruecklich nennen statt einen kuenstlich eindeutigen Score zu erzeugen.
 Keine Kursziele ausdenken, wenn keine belastbare technische Kursbasis vorliegt.
 Keine neuen Kennzahlen erfinden.
+Jede auffaellige Zahl im Makro-Block muss auf eine reale Quelle oder eine klar gekennzeichnete deterministische Berechnung zurueckfuehrbar sein.
+Wenn eine Quelle fehlt, schreibe „NICHT VERFUEGBAR“ statt einen Ersatzwert zu bilden.
