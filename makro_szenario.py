@@ -1034,6 +1034,79 @@ def _ism_official_get(url):
     return None
 
 
+
+def _ism_public_secondary_forexfactory(year, month):
+    """Kostenloser Sekundaer-Fallback fuer ISM Services.
+    Liest ausschliesslich das ACTUAL-Feld eines bereits veroeffentlichten
+    ForexFactory-Kalendereintrags. Forecast/Previous werden ignoriert.
+    """
+    if month < 1 or month > 12:
+        return None
+
+    # ISM Services is normally released on the third business day.
+    # Search the first 10 calendar days without assuming an exact release date.
+    for day in range(1, min(10, calendar.monthrange(year, month)[1]) + 1):
+        url = (
+            f"https://www.forexfactory.com/calendar?day="
+            f"{calendar.month_abbr[month].lower()}{day}.{year}"
+        )
+        try:
+            r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+
+            # Keep the extraction structural: find the event label and inspect
+            # the same table row only.
+            try:
+                from lxml import html as lxml_html
+                tree = lxml_html.fromstring(r.content)
+                rows = tree.xpath("//tr")
+            except Exception:
+                rows = []
+
+            for row in rows:
+                row_text = " ".join(
+                    t.strip() for t in row.xpath(".//text()") if t.strip()
+                )
+                normalized = re.sub(r"\s+", " ", row_text)
+
+                if "ISM Services PMI" not in normalized:
+                    continue
+                if "USD" not in normalized and "ISM Services PMI" not in normalized:
+                    continue
+
+                # ForexFactory rows present Actual / Forecast / Previous in this order.
+                # Extract only the first numeric value following the event label.
+                tail = normalized.split("ISM Services PMI", 1)[1]
+                nums = re.findall(r"(?<![\d.])\d+(?:\.\d+)?", tail)
+                if not nums:
+                    continue
+
+                actual = _clean_num(nums[0])
+                if actual is None:
+                    continue
+
+                event_date = dt.date(year, month, day)
+                return {
+                    "pmi": actual,
+                    "url": url,
+                    "year": year,
+                    "month": month,
+                    "status": "REAL_PUBLIC_SECONDARY",
+                    "new_orders": None,
+                    "employment": None,
+                    "prices": None,
+                    "release_date": event_date.isoformat(),
+                }
+
+        except Exception as exc:
+            print(
+                f"WARNUNG: ForexFactory ISM-Fallback fuer "
+                f"{year}-{month:02d}-{day:02d} nicht verfuegbar: {exc}"
+            )
+
+    return None
+
+
 def _ism_fetch(kind, year, month):
     month_name = calendar.month_name[month].lower()
 
@@ -1046,52 +1119,68 @@ def _ism_fetch(kind, year, month):
     try:
         r = _ism_official_get(official)
         if r.status_code == 200:
-            text = re.sub(r"<[^>]+>", " ", r.text)
-            text = re.sub(r"\s+", " ", text)
-
-            if kind == "manufacturing":
-                patterns = [
-                    r"Manufacturing PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
-                    r"Manufacturing PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
-                ]
+            final_url = r.url.lower()
+            # A 200 SSO/login page is not the report.
+            if "login.aspx" in final_url or "sso" in final_url:
+                print(
+                    f"WARNUNG: ISM official redirected to SSO/login: {r.url}"
+                )
             else:
-                patterns = [
-                    r"Services PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
-                    r"Services PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
-                ]
+                text = re.sub(r"<[^>]+>", " ", r.text)
+                text = re.sub(r"\s+", " ", text)
 
-            value = None
-            for pattern in patterns:
-                m = re.search(pattern, text, flags=re.I)
-                if m:
-                    value = _clean_num(m.group(1))
-                    break
+                if kind == "manufacturing":
+                    patterns = [
+                        r"Manufacturing PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
+                        r"Manufacturing PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
+                    ]
+                else:
+                    patterns = [
+                        r"Services PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
+                        r"Services PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
+                    ]
 
-            if value is not None:
-                data = {
-                    "pmi": value,
-                    "url": official,
-                    "year": year,
-                    "month": month,
-                    "status": "REAL",
-                }
+                value = None
+                for pattern in patterns:
+                    m = re.search(pattern, text, flags=re.I)
+                    if m:
+                        value = _clean_num(m.group(1))
+                        break
 
-                patterns = {
-                    "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                    "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                    "prices": r"Prices(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                }
-                for key, pattern in patterns.items():
-                    mm = re.search(pattern, text, flags=re.I)
-                    data[key] = _clean_num(mm.group(1)) if mm else None
+                if value is not None:
+                    data = {
+                        "pmi": value,
+                        "url": official,
+                        "year": year,
+                        "month": month,
+                        "status": "REAL",
+                    }
 
-                return data
+                    patterns = {
+                        "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                        "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                        "prices": r"Prices(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                    }
+                    for key, pattern in patterns.items():
+                        mm = re.search(pattern, text, flags=re.I)
+                        data[key] = _clean_num(mm.group(1)) if mm else None
+
+                    return data
 
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-    # No unverified secondary source is used. If official ISM is unavailable,
-    # the macro gate remains locked rather than substituting estimates/forecasts.
+    # Secondary: public calendar. Actual only; no forecast/previous.
+    if kind == "services":
+        secondary = _ism_public_secondary_forexfactory(year, month)
+        if secondary:
+            print(
+                f"INFO: ISM Services Fallback erfolgreich: "
+                f"Actual={secondary['pmi']} | release_date={secondary.get('release_date')} | "
+                f"source={secondary['url']}"
+            )
+            return secondary
+
     return None
 
 
