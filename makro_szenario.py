@@ -474,6 +474,40 @@ def _bea_release_gdp_series():
         print(f"WARNUNG: BEA Release GDP nicht verfuegbar: {exc}")
         return pd.DataFrame(), None
 
+def _public_hy_oas_series(series_id):
+    """Kostenloser öffentlicher Sekundärabruf der exakt gleichen ICE-BofA/FRED-Reihe.
+    Quelle wird als PUBLIC_SECONDARY markiert; kein Proxy und keine Schätzung.
+    """
+    if series_id != "BAMLH0A0HYM2":
+        return pd.DataFrame(), None
+    url = "https://equibles.com/economicdata/bamlh0a0hym2"
+    try:
+        r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        # Equibles renders a table with ISO date followed by the value.
+        rows = re.findall(
+            r"(20\d{2}-\d{2}-\d{2})\s*</?[^>]*>\s*([0-9]+(?:\.[0-9]+)?)",
+            r.text, flags=re.I
+        )
+        if not rows:
+            rows = re.findall(
+                r"(20\d{2}-\d{2}-\d{2}).{0,120}?([0-9]+(?:\.[0-9]+)?)",
+                text, flags=re.I
+            )
+        parsed = []
+        for d, v in rows:
+            value = _clean_num(v)
+            if value is not None:
+                parsed.append((pd.Timestamp(d), value))
+        if parsed:
+            out = pd.DataFrame(parsed, columns=["DATE", series_id]).drop_duplicates("DATE").sort_values("DATE")
+            return out, url
+    except Exception as exc:
+        print(f"WARNUNG: oeffentlicher HY-OAS-Abruf nicht verfuegbar: {exc}")
+    return pd.DataFrame(), None
+
+
 def _fred_direct_csv_series(series_id):
     """Direkter FRED-CSV-Abruf als Fallback, getrennt vom normalen FRED-Endpunkt."""
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
@@ -491,6 +525,35 @@ def _fred_direct_csv_series(series_id):
     except Exception as exc:
         print(f"WARNUNG: direkter FRED-CSV-Abruf fuer {series_id} nicht verfuegbar: {exc}")
     return pd.DataFrame(), None
+
+def bea_gdp_snapshot():
+    """Official BEA GDP release. Uses the published annualized QoQ growth rate.
+    This is deliberately NOT mislabeled as the GDPC1 level series.
+    """
+    url = "https://www.bea.gov/news/2026/gdp-advance-estimate-2nd-quarter-2026"
+    try:
+        r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        text = re.sub(r"\s+", " ", text)
+        m = re.search(
+            r"Real gross domestic product \(GDP\) increased at an annual rate of\s+"
+            r"(-?\d+(?:\.\d+)?)\s+percent in the second quarter of 2026",
+            text, flags=re.I
+        )
+        if not m:
+            return "Reales BIP-Wachstum: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=BEA"
+        value = _clean_num(m.group(1))
+        if value is None:
+            return "Reales BIP-Wachstum: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=BEA"
+        return (
+            f"Reales BIP-Wachstum: {_fmt(value,1)}% annualisiert | "
+            f"Datenstand=2026-Q2 | STATUS=REAL | SOURCE={url}"
+        )
+    except Exception as exc:
+        print(f"WARNUNG: BEA GDP Release nicht verfuegbar: {exc}")
+        return "Reales BIP-Wachstum: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=BEA"
+
 
 def _dbnomics_series(series_id):
     """Kostenloser Sekundaer-Fallback. Provider bleibt im Output explizit benannt."""
@@ -542,7 +605,15 @@ def _alternate_series(series_id):
             return gdp, source
         # Do NOT relabel annualized GDP growth as a GDPC1 level.
         return pd.DataFrame(), None
-    if series_id in {"BAMLH0A0HYM2","BAMLC0A0CM"}:
+    if series_id == "BAMLH0A0HYM2":
+        public, source = _public_hy_oas_series(series_id)
+        if not public.empty:
+            return public, source
+        direct, source = _fred_direct_csv_series(series_id)
+        if not direct.empty:
+            return direct, source
+        return _dbnomics_series(series_id)
+    if series_id == "BAMLC0A0CM":
         direct, source = _fred_direct_csv_series(series_id)
         if not direct.empty:
             return direct, source
@@ -581,7 +652,7 @@ def fred_series(series_id, limit_days=5000):
     # Offizielle bzw. klar dokumentierte kostenlose Fallbacks.
     alt, source = _alternate_series(series_id)
     if alt is not None and not alt.empty:
-        _save_series_cache(series_id, alt, source, "REAL")
+        _save_series_cache(series_id, alt, source, "REAL_PUBLIC_SECONDARY" if series_id == "BAMLH0A0HYM2" and "equibles.com" in str(source) else "REAL")
         print(f"INFO: Fallback erfolgreich fuer {series_id}: {source}")
         return alt
 
@@ -910,16 +981,23 @@ def _latest_ism_month(today):
 
 def _ism_fetch(kind, year, month):
     month_name = calendar.month_name[month].lower()
-    path = "pmi" if kind == "manufacturing" else "services"
-    candidates = [
-        # Primary: official ISM publication
-        f"{ISM_BASE}/{path}/{month_name}/",
-        f"https://www.ismrob.org/{path}/{month_name}/",
-        # Public mirrors of the ISM release (content is attributed to ISM).
-        f"https://finance.yahoo.com/economy/articles/{'manufacturing-pmi-55-6-july-140000384.html' if kind == 'manufacturing' and year == 2026 and month == 7 else ''}",
-    ]
-    # Never request an empty mirror URL.
-    candidates = [u for u in candidates if u.rstrip("/") != "https://finance.yahoo.com/economy/articles"]
+
+    # The official ISM pages use these stable paths.
+    official = (
+        f"https://www.ismworld.org/supply-management-news-and-reports/"
+        f"reports/ism-pmi-reports/{'pmi' if kind == 'manufacturing' else 'services'}/{month_name}"
+    )
+    # Public release mirrors reproduce the ISM release and identify ISM as source.
+    # They are used only when the official site blocks automated GitHub requests.
+    mirrors = []
+    if year == 2026 and month == 7 and kind == "manufacturing":
+        mirrors.append("https://finance.yahoo.com/economy/articles/manufacturing-pmi-55-6-july-140000384.html")
+    if year == 2026 and month == 7 and kind == "services":
+        # PNC explicitly reports the July ISM Services result and identifies ISM as source.
+        mirrors.append("https://www.pnc.com/en/about-pnc/media/economic-reports.html")
+
+    candidates = [official] + mirrors
+
     for url in candidates:
         try:
             r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
@@ -927,73 +1005,52 @@ def _ism_fetch(kind, year, month):
                 continue
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text)
+
             if kind == "manufacturing":
-                patterns=[r"Manufacturing PMI.{0,120}?registered\s+(\d+(?:\.\d+)?)", r"Manufacturing PMI.{0,80}?at\s+(\d+(?:\.\d+)?)"]
+                patterns = [
+                    r"Manufacturing PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
+                    r"Manufacturing PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
+                ]
             else:
-                patterns=[r"Services PMI.{0,120}?registered\s+(\d+(?:\.\d+)?)", r"Services PMI.{0,80}?at\s+(\d+(?:\.\d+)?)"]
-            value=None
+                patterns = [
+                    r"Services PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
+                    r"Services PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
+                    r"ISM Services.*?(?:Actual|actual)\s+(\d+(?:\.\d+)?)",
+                ]
+
+            value = None
             for pattern in patterns:
-                m=re.search(pattern,text,flags=re.I)
+                m = re.search(pattern, text, flags=re.I)
                 if m:
-                    value=_clean_num(m.group(1)); break
+                    value = _clean_num(m.group(1))
+                    break
             if value is None:
                 continue
-            data={"pmi":value,"url":url,"year":year,"month":month}
-            patterns={
-                "new_orders":r"New Orders(?: Index)?.{0,80}?(\d+(?:\.\d+)?)",
-                "employment":r"Employment(?: Index)?.{0,80}?(\d+(?:\.\d+)?)",
-                "prices":r"Prices(?: Index)?.{0,80}?(\d+(?:\.\d+)?)",
+
+            data = {
+                "pmi": value,
+                "url": url,
+                "year": year,
+                "month": month,
+                "status": "REAL" if url == official else "REAL_PUBLIC_SECONDARY",
             }
-            for key,pattern in patterns.items():
-                mm=re.search(pattern,text,flags=re.I)
-                data[key]=_clean_num(mm.group(1)) if mm else None
+
+            # Parse subindexes only when the source contains them.
+            patterns = {
+                "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+                "prices": r"Prices(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
+            }
+            for key, pattern in patterns.items():
+                mm = re.search(pattern, text, flags=re.I)
+                data[key] = _clean_num(mm.group(1)) if mm else None
+
             return data
+
         except Exception as exc:
             print(f"WARNUNG: ISM {kind} {year}-{month:02d} nicht verfuegbar: {exc}")
+
     return None
-
-
-def _public_pmi_calendar_snapshot(kind, year, month):
-    """Nur als öffentlicher Sekundär-Fallback für den bereits veröffentlichten Headline-PMI.
-    Keine Prognosewerte; Quelle wird als PUBLIC_SECONDARY markiert.
-    """
-    try:
-        r = requests.get(PUBLIC_PMI_CALENDAR_URL, timeout=8, headers=REQUEST_HEADERS)
-        r.raise_for_status()
-        text = re.sub(r"<[^>]+>", " ", r.text)
-        text = re.sub(r"\s+", " ", text)
-        if year != 2026 or month != 7:
-            return None
-
-        if kind == "manufacturing":
-            m = re.search(r"ISM Manufacturing PMI \(Jul\).*?[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", text, flags=re.I)
-        else:
-            m = re.search(r"ISM Services PMI \(Jul\).*?[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", text, flags=re.I)
-
-        if not m:
-            return None
-
-        # Calendar format in this public source is: forecast / previous / actual.
-        actual = _clean_num(m.group(3))
-        if actual is None:
-            return None
-        return {
-            "pmi": actual,
-            "url": PUBLIC_PMI_CALENDAR_URL,
-            "year": year,
-            "month": month,
-            "new_orders": None,
-            "employment": None,
-            "prices": None,
-            "status": "REAL_PUBLIC_SECONDARY"
-        }
-    except Exception as exc:
-        print(f"WARNUNG: oeffentlicher PMI-Sekundaer-Fallback nicht verfuegbar: {exc}")
-        secondary = _public_pmi_calendar_snapshot(kind, year, month)
-    if secondary:
-        return secondary
-    return None
-
 
 def ism_snapshot(today):
     cache=_cache_load()
@@ -1078,7 +1135,7 @@ def data_quality_gate(lines):
         "US 10Y Treasury",
         "CPI",
         "Arbeitslosenquote",
-        "Reales BIP",
+        "Reales BIP-Wachstum",
         "US High Yield OAS",
         "VIX",
         "S&P 500",
@@ -1122,9 +1179,10 @@ def main():
     lines.append("2. INFLATION, ARBEIT & KONJUNKTUR")
     lines.extend(fred_snapshots_parallel([
         "CPI", "Core CPI", "PCE", "Core PCE", "PPI", "Durchschnittlicher Stundenlohn",
-        "Reales BIP", "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "JOLTS Job Openings",
+        "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "JOLTS Job Openings",
         "Initial Jobless Claims", "Industrieproduktion", "Kapazitaetsauslastung", "Consumer Sentiment",
     ]))
+    lines.append(bea_gdp_snapshot())
     lines.extend(ism_snapshot(today))
     lines.append("")
 
