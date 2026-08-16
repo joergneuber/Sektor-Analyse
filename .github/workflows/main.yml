@@ -1,4 +1,5 @@
 name: tägliche Analyse Sektoren
+
 on:
   workflow_dispatch:
   schedule:
