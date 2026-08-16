@@ -649,6 +649,7 @@ def fred_series(series_id, limit_days=5000):
         if not df.empty:
             latest = df["DATE"].iloc[-1].date().isoformat()
             if _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60)):
+                print(f"INFO: FRED-Cache-Hit fuer {series_id} (Datenstand={latest})")
                 return df
 
     try:
@@ -672,7 +673,7 @@ def fred_series(series_id, limit_days=5000):
     # Offizielle bzw. klar dokumentierte kostenlose Fallbacks.
     alt, source = _alternate_series(series_id)
     if alt is not None and not alt.empty:
-        _save_series_cache(series_id, alt, source, "REAL_PUBLIC_SECONDARY" if series_id == "BAMLH0A0HYM2" and "equibles.com" in str(source) else "REAL")
+        _save_series_cache(series_id, alt, source, "REAL_PUBLIC_SECONDARY" if series_id == "BAMLH0A0HYM2" and "autario.com" in str(source) else "REAL")
         print(f"INFO: Fallback erfolgreich fuer {series_id}: {source}")
         return alt
 
@@ -1000,54 +1001,88 @@ def _latest_ism_month(today):
 
 
 def _ism_public_secondary_fallback(kind, year, month):
-    """Öffentlicher Fallback fuer den bereits veroeffentlichten ISM-Headlinewert.
-    Primaer bleibt die offizielle ISM-Seite. Der Sekundaerweg liest nur einen
-    bereits veroeffentlichten ACTUAL-Wert aus der Berichterstattung ueber den ISM-Release.
-    Keine Forecast-/Consensuswerte.
+    """Kostenloser Sekundaerabruf aus dem oeffentlichen Trading-Economics-Kalender.
+    Es wird ausschliesslich das bereits veroeffentlichte ACTUAL-Feld akzeptiert.
+    Forecast/Consensus/Previous werden niemals als Ersatz verwendet.
     """
-    if year != 2026 or month != 7:
-        return None
-
     if kind != "services":
         return None
 
-    # Reuters reported the official July 2026 ISM Services release and its actual value.
-    url = "https://www.reuters.com/business/us-service-sector-maintains-strong-growth-pace-july-2026-08-05/"
-    try:
-        r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
-        r.raise_for_status()
-        text = re.sub(r"<[^>]+>", " ", r.text)
-        text = re.sub(r"\s+", " ", text)
+    url = (
+        "https://api.tradingeconomics.com/calendar/country/united%20states/"
+        f"{year:04d}-{month:02d}-01/"
+        f"{year:04d}-{month:02d}-28?c=guest:guest&f=json"
+    )
 
-        patterns = [
-            r"ISM[^.]{0,120}?services[^.]{0,120}?index[^.]{0,80}?(?:rose|increased|reached|was|at)\s+to\s+(\d+(?:\.\d+)?)",
-            r"services sector[^.]{0,180}?index[^.]{0,80}?(?:rose|increased)\s+to\s+(\d+(?:\.\d+)?)",
-            r"purchasing managers index[^.]{0,120}?(\d+(?:\.\d+)?)",
-        ]
+    # Der Monatsendtag ist nicht immer 28; deshalb zusätzlich ein sicherer 31-Tage-Versuch.
+    urls = [
+        url,
+        (
+            "https://api.tradingeconomics.com/calendar/country/united%20states/"
+            f"{year:04d}-{month:02d}-01/"
+            f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+            "?c=guest:guest&f=json"
+        ),
+    ]
 
-        for pattern in patterns:
-            m = re.search(pattern, text, flags=re.I)
-            if not m:
+    for candidate_url in urls:
+        try:
+            r = requests.get(candidate_url, timeout=12, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            payload = r.json()
+            if not isinstance(payload, list):
                 continue
 
-            value = _clean_num(m.group(1))
-            if value is None:
-                continue
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
 
-            return {
-                "pmi": value,
-                "url": url,
-                "year": year,
-                "month": month,
-                "status": "REAL_PUBLIC_SECONDARY",
-                "new_orders": None,
-                "employment": None,
-                "prices": None,
-            }
-    except Exception as exc:
-        print(f"WARNUNG: oeffentlicher ISM-Sekundaer-Fallback nicht verfuegbar: {exc}")
+                event = str(
+                    item.get("Event")
+                    or item.get("event")
+                    or item.get("Category")
+                    or ""
+                )
+                country = str(item.get("Country") or item.get("country") or "")
+
+                if country and country.upper() not in {"UNITED STATES", "US", "USA"}:
+                    continue
+
+                if "ISM" not in event.upper() or "SERVICE" not in event.upper():
+                    continue
+
+                # Critical rule: ONLY Actual. Empty/null/non-numeric means unavailable.
+                actual = item.get("Actual")
+                if actual in (None, "", "-", "N/A", "NA"):
+                    continue
+
+                value = _clean_num(str(actual).replace("%", "").replace(",", ""))
+                if value is None:
+                    continue
+
+                event_date = item.get("Date") or item.get("date")
+                if event_date:
+                    parsed_date = pd.to_datetime(event_date, errors="coerce")
+                    if not pd.isna(parsed_date):
+                        if parsed_date.year != year or parsed_date.month != month:
+                            continue
+
+                return {
+                    "pmi": value,
+                    "url": candidate_url,
+                    "year": year,
+                    "month": month,
+                    "status": "REAL_PUBLIC_SECONDARY",
+                    "new_orders": None,
+                    "employment": None,
+                    "prices": None,
+                }
+
+        except Exception as exc:
+            print(f"WARNUNG: Trading-Economics-ISM-Fallback nicht verfuegbar: {exc}")
 
     return None
+
 
 
 def _ism_fetch(kind, year, month):
@@ -1124,14 +1159,16 @@ def ism_snapshot(today):
         entry=cache.get("ism",{}).get(key)
         if entry and entry.get("data"):
             d=entry["data"]
-            # Ein PMI bleibt bis zur naechsten offiziellen Monatsveroeffentlichung gueltig.
-            if _cache_valid(f"{d['year']}-{d['month']:02d}-01",60):
+            # Nur den aktuell faelligen, bereits veroeffentlichten Berichtsmonat aus dem
+            # Cache verwenden. Ein alter Juni-Wert darf im August niemals den Juli-Wert ersetzen.
+            latest_y, latest_m = candidates[0]
+            if d.get("year") == latest_y and d.get("month") == latest_m:
                 return d
         for y,m in candidates:
             d=_ism_fetch(kind,y,m)
             if d:
                 with CACHE_WRITE_LOCK:
-                    c=_cache_load(); c.setdefault("ism",{})[key]={"saved_at":time.time(),"data":d,"status":"REAL","source":d["url"]}; _cache_save(c)
+                    c=_cache_load(); c.setdefault("ism",{})[key]={"saved_at":time.time(),"data":d,"status":d.get("status","REAL"),"source":d["url"]}; _cache_save(c)
                 return d
         return None
 
@@ -1216,6 +1253,15 @@ def data_quality_gate(lines):
 
 def main():
     today = dt.date.today()
+    cache = _cache_load()
+    fred_cache_count = sum(1 for e in cache.get("fred", {}).values() if e.get("payload"))
+    ism_cache_count = sum(1 for e in cache.get("ism", {}).values() if e.get("data"))
+    market_cache_count = sum(1 for e in cache.get("market", {}).values() if e.get("payload"))
+    print(
+        f"MAKRO-CACHE: version={cache.get('version')} | "
+        f"FRED_ENTRIES={fred_cache_count} | ISM_ENTRIES={ism_cache_count} | "
+        f"MARKET_ENTRIES={market_cache_count} | FILE={MACRO_CACHE_FILE}"
+    )
     output = f"Makro_Briefing({today.isoformat()}).txt"
     lines = []
     lines += [
