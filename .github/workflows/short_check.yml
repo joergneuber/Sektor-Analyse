@@ -4,12 +4,12 @@ on:
   # Ermöglicht dir, den Job jederzeit manuell per Klick im Browser zu starten
   workflow_dispatch:
   schedule:
-    # 01:53 UTC entspricht 03:53 Uhr MESZ (Sommerzeit) - nicht exakt 04:00
+    # 00:53 UTC entspricht 02:53 Uhr MESZ (Sommerzeit) - nicht exakt 04:00
     # Uhr (bewusst keine volle Stunde, siehe main.yml für dieselbe
     # Begründung), aber nah genug am gewünschten ~4-Uhr-Fenster. Läuft
-    # deutlich vor main.yml (05:17 MESZ), damit gemini_auswertung.py dort
+    # deutlich vor main.yml (04:17 MESZ), damit gemini_auswertung.py dort
     # die Short-Dateien schon fertig aus Drive nachladen kann.
-    - cron: '53 1 * * 1-5'
+    - cron: '53 0 * * 1-5'
 
 jobs:
   short-scan:
