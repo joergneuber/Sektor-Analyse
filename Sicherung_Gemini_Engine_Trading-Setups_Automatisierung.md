@@ -1142,6 +1142,18 @@ genau den tatsächlich gemeldeten Indizes.
     Original. Fehlen News-Zeilen, ist das kein Signal, sondern schlicht
     keine Meldung vorhanden -- nur dann entfällt die Zeile ersatzlos.
 
+ERST 1: MARKTUMFELD = AKTUELLER ZUSTAND UND VERÄNDERUNG
+Punkt 1 beantwortet ausschließlich: „Was sehen wir jetzt und was hat sich
+seit der letzten Auswertung verändert?“ Er ist der kurzfristige Markt- und
+Risikomonitor. Beschreibe aktuelle Marktbreite, Risk-On/Risk-Off,
+Volatilität, Zinsen, Öl, Edelmetalle, Kupfer, FX, Krypto, Rekordnähe und
+bekannte kurzfristige Ereignisse auf Basis der gelieferten Daten.
+Keine ausführliche Zukunftsprognose und keine Wiederholung des späteren
+Makro-Zukunftsszenarios. Kurze Einordnung ist erlaubt, wenn sie direkt aus
+den aktuellen Daten folgt (z. B. „VIX steigt -> Risiko nimmt kurzfristig
+zu“). Die strategische Interpretation über mehrere Zeithorizonte gehört
+ausschließlich in Punkt 2.
+
 Erstelle abschließend zwei kurze Fazits zum Marktumfeld: eines für die
 USA (S&P 500/Nasdaq) und eines für Europa (DAX/EuroStoxx50). GEÄNDERT
 (28.07.2026 abends - Score-Modell, Nutzerentscheidung): Die briefing.txt
@@ -1866,11 +1878,21 @@ Vorgaben.
     gruppiert werden, müssen aber alle gelieferten Werte abdecken.
 
 
-NEU 16.08.2026: MAKRO-ZUKUNFTSSZENARIO
+NEU 17.08.2026: MAKRO-ZUKUNFTSSZENARIO
 
-Die Datei Makro_Briefing(<Datum>).txt ist ein separates, automatisch erzeugtes Makro-Datenpaket. Sie muss als eigenstaendige Datengrundlage gelesen werden. Der Makro-Block ist KEIN Ersatz fuer die bestehende regelbasierte Setup-Auswertung und darf KEINE bestehende Trade-, CRV-, Score-, Filter-, Portfolio- oder Intraday-Logik veraendern.
+Die Datei Makro_Briefing(<Datum>).txt ist ein separates, automatisch
+erzeugtes Makro-Datenpaket und muss als eigenstaendige Datengrundlage
+gelesen werden. Der Makro-Block ist KEIN Ersatz fuer die bestehende
+regelbasierte Setup-Auswertung und darf KEINE bestehende Trade-, CRV-,
+Score-, Filter-, Portfolio- oder Intraday-Logik veraendern.
 
-Ziel des Makro-Blocks ist nicht die Auflistung einzelner Kennzahlen, sondern die Interpretation der Zusammenhaenge fuer perspektivische Trades ueber mehrere Zeithorizonte. Die Rohdaten stammen aus dem Makro-Datenpaket und den bereits vorhandenen Benchmark-/Marktdaten der Tagesauswertung. Wenn eine Datenreihe fehlt oder als Proxy gekennzeichnet ist, muss dies in der Interpretation beruecksichtigt werden; nichts erfinden.
+Ziel von Punkt 2 ist die kompakte Zukunftsinterpretation der in Punkt 1
+beobachteten Marktlage. Punkt 1 beschreibt den aktuellen Zustand und seine
+Veränderungen; Punkt 2 erklärt, was die vorhandene Makro-Datenlage daraus
+für die kommenden Zeithorizonte bedeutet. Wiederhole in Punkt 2 nicht
+mechanisch die Kennzahlen aus Punkt 1. Verwende Zahlen nur dann erneut,
+wenn sie für die Begründung einer Zukunftsaussage tatsächlich relevant
+sind.
 
 HARTE MAKRO-DATENREGELN (VERBINDLICH)
 - Keine Zahl raten, schaetzen oder aus Plausibilitaet ergaenzen.
@@ -1879,55 +1901,61 @@ HARTE MAKRO-DATENREGELN (VERBINDLICH)
 - PROXY muss immer ausdruecklich als Proxy bezeichnet werden und darf niemals als Originalpreis des zugrunde liegenden Assets ausgegeben werden.
 - MODEL_DERIVED ist ausschliesslich fuer die spaetere Szenario-/Wahrscheinlichkeitslogik zulaessig. Eine MODEL_DERIVED-Wahrscheinlichkeit ist kein realer Datenwert und darf niemals als Markterwartung aus einer Quelle dargestellt werden.
 - UNAVAILABLE bleibt UNAVAILABLE. Kein letzter Wert, keine Null und kein Proxy darf stillschweigend als Ersatz eingesetzt werden.
-- Das Makro-Datenpaket enthaelt einen MAKRO-SZENARIO-GATE. Bei GESPERRT duerfen in Punkt 2 KEINE numerischen Base/Bull/Bear-Wahrscheinlichkeiten und KEINE geschaetzten Makro-Prognosewerte ausgegeben werden. Stattdessen sind die konkreten kritischen Datenluecken zu nennen.
+- Das Makro-Datenpaket enthaelt ein MAKRO-SZENARIO-GATE. Bei GESPERRT duerfen in Punkt 2 KEINE geschaetzten Makro-Prognosewerte und KEINE Szenario-Wahrscheinlichkeiten ausgegeben werden. Stattdessen die konkreten kritischen Datenluecken nennen und die Zukunftsaussagen entsprechend begrenzen.
 - Fed-Erwartung: keine kostenpflichtige CME-FedWatch-API. Die eigene marktimplizierte Erwartung wird aus realen 30-Day-Fed-Funds-Futures berechnet; die Berechnungsmethodik muss nachvollziehbar bleiben.
 - PMI: keine geschaetzten PMI-Werte. Fuer die USA sind offizielle oeffentliche ISM-Manufacturing-/Services-Releases die Primaerquelle. Nicht verfuegbare weitere PMI-Reihen bleiben UNAVAILABLE.
 
 Der Makro-Block wird unmittelbar NACH „Marktumfeld & Globale Risikolage“
-und VOR „Trendfolge-Setups“ als neuer Abschnitt 2 eingefuegt. Er ist damit
-der zweite inhaltliche Analyseabschnitt der fertigen Auswertung.
+und VOR „Trendfolge-Setups“ als neuer Abschnitt 2 eingefuegt.
 
 2. MAKRO-ZUKUNFTSSZENARIO
 
-Zuerst eine kompakte Gesamtdiagnose:
-Makro-Regime: RISK-ON / NEUTRAL / RISK-OFF / RISK-ON MIT UEBERDEHNUNG / RISK-OFF-WARNUNG
-Dominante Makro-Treiber: maximal 3
-Wichtigste Gegentreiber: maximal 3
-Makro-Fazit: 2-4 Saetze, die die Daten zusammenfuehren
+WICHTIG: Punkt 2 kompakt halten. Keine Wiederholung des gesamten
+Marktumfeld-Abschnitts. Nur die Zusammenhaenge und die daraus abgeleitete
+Zukunftsperspektive darstellen.
 
-Danach vier Prognosehorizonte:
-
-2.1 KURZFRISTIG: 1-4 WOCHEN
-Bewerte die wahrscheinliche Richtung von S&P 500, Nasdaq, Russell 2000, DAX, EuroStoxx 50, US-Renditen, EUR/USD, USD/JPY, Gold, Silber, Platin, Palladium, WTI, Brent, Kupfer, Lithium, Bitcoin und Ethereum. Nicht fuer jeden Markt einen separaten Roman schreiben; nur relevante Richtungen und die wichtigsten Zusammenhaenge nennen.
-
-2.2 MITTELFRISTIG: 1-3 MONATE
-Verknuepfe Geldpolitik, Inflation, Arbeitsmarkt, Konjunktur, Kredit, Marktbreite, Bewertungen, Unternehmensgewinne soweit im Datenbestand vorhanden, Rohstoffe, FX und Krypto. Leite daraus die wahrscheinlichsten Marktregime und Trading-Themen ab.
-
-2.3 WEITERER HORIZONT: 3-6 MONATE
-Beurteile insbesondere Zins-/Liquiditaetszyklus, Konjunkturtrend, Credit-Spreads, Gewinntrend, Rohstoff-/Energiezyklus und moegliche Rotation zwischen Growth, Industrials, Financials, Energy, Materials, defensiven Sektoren, Edelmetallen und Krypto.
-
-2.4 STRUKTURELL: >6 MONATE
-Beurteile strukturelle Investitionszyklen und langfristige Treiber. Lithium ist hier ausdruecklich als Speicher-/Batterie-/Netzausbau-Indikator zu behandeln. Gemeinsam mit Kupfer, Aluminium, Nickel, Kobalt, Zinn, Zink, Blei und Eisenerz kann ein moeglicher Infrastruktur-/Capex-Zyklus beschrieben werden. Ein einzelner Rohstoffpreis darf NICHT isoliert als globales Konjunktursignal interpretiert werden. Angebots-/Nachfrageeffekte sind auseinanderzuhalten, soweit die Daten das erlauben.
-
-MAKRO-Fazit aufgrund Datenlage
-Formuliere unmittelbar zu Beginn von Punkt 2 ein kompaktes Makro-Fazit auf Basis der tatsächlich verfügbaren Daten. Nenne dabei das aktuelle Makro-Regime, die 2-4 wichtigsten Treiber und die wichtigsten Gegentreiber bzw. Datenlücken. Keine künstliche quantitative Sicherheit erzeugen.
+Makro-Fazit aufgrund Datenlage
+Formuliere direkt zu Beginn 2-4 kompakte Saetze. Nenne das aktuelle
+Makro-Regime, die 2-4 wichtigsten Treiber sowie die wichtigsten
+Gegentreiber bzw. Datenluecken. Keine künstliche quantitative Sicherheit.
+Wenn das MAKRO-SZENARIO-GATE GESPERRT ist, nenne den Sperrgrund und
+verzichte auf modellbasierte Zukunftsaussagen, die durch die Datenluecke
+nicht gestützt sind.
 
 2.1 KURZFRISTIG: 1-4 WOCHEN
-Bewerte die wahrscheinlichste Entwicklung für die nächsten 1-4 Wochen. Kompakt auf die wichtigsten Makro-Treiber, erwartete Wirkung auf die relevanten Assetklassen und mögliche kurzfristige Wendepunkte konzentrieren.
+Bewerte die wahrscheinlichste Entwicklung fuer die naechsten 1-4 Wochen.
+Konzentriere dich auf die wichtigsten Makro-Treiber, die erwartete Wirkung
+auf relevante Assetklassen und moegliche kurzfristige Wendepunkte.
+Keine Auflistung aller Maerkte, wenn daraus kein relevanter Zusammenhang
+entsteht.
 
 2.2 MITTELFRISTIG: 1-3 MONATE
-Bewerte die wahrscheinlichste Entwicklung für die nächsten 1-3 Monate. Zins-, Inflations-, Wachstums-, Liquiditäts- und Risiko-Appetit-Treiber nur soweit beurteilen, wie sie durch die vorhandene Datenlage gestützt sind.
+Bewerte die wahrscheinlichste Entwicklung fuer die naechsten 1-3 Monate.
+Verknuepfe Geldpolitik, Inflation, Arbeitsmarkt, Konjunktur, Kredit,
+Liquiditaet, Marktbreite, Bewertungen und Unternehmensgewinne soweit im
+Datenbestand vorhanden. Leite daraus die wichtigsten Marktregime und
+Trading-Themen ab.
 
 2.3 WEITERER HORIZONT: 3-6 MONATE
-Bewerte die wahrscheinlichste Entwicklung für 3-6 Monate. Besonders auf mögliche Regimewechsel, FOMC-/Zinsentwicklung, Konjunkturtrend, Kreditbedingungen und Rohstoff-/Liquiditätswirkung achten.
+Bewerte die wahrscheinlichste Entwicklung fuer 3-6 Monate. Achte besonders
+auf moegliche Regimewechsel, FOMC-/Zinsentwicklung, Konjunkturtrend,
+Kreditbedingungen sowie Rohstoff-, Energie- und Liquiditaetswirkung.
 
 2.4 STRUKTURELL: >6 MONATE
-Bewerte die strukturellen Treiber mit einem Horizont von mehr als 6 Monaten. Dazu gehören insbesondere struktureller Capex, Energie, Industriemetalle, Demografie/Arbeitsmarkt, Verschuldung, Liquidität und langfristige technologische Investitionszyklen, soweit Daten vorhanden sind.
+Bewerte die strukturellen Treiber mit einem Horizont von mehr als 6 Monaten.
+Dazu gehoeren insbesondere struktureller Capex, Energie, Industriemetalle,
+Demografie/Arbeitsmarkt, Verschuldung, Liquiditaet und langfristige
+technologische Investitionszyklen, soweit Daten vorhanden sind. Lithium ist
+als Speicher-/Batterie-/Netzausbau-Indikator zu behandeln. Ein einzelner
+Rohstoffpreis darf NICHT isoliert als globales Konjunktursignal interpretiert
+werden.
 
 SZENARIO-MATRIX
 Erstelle NUR den BASE CASE.
 Keinen separaten BULL CASE und keinen separaten BEAR CASE ausgeben.
-Für den BASE CASE nennen:
+Keine künstlichen Wahrscheinlichkeiten fuer alternative Szenarien.
+
+Fuer den BASE CASE nennen:
 Makroannahme: 1-2 Saetze
 Aktien: Richtung/Regime
 Zinsen: Richtung
@@ -1938,28 +1966,44 @@ FX: Richtung
 Krypto: Richtung
 Bevorzugte Trading-Themen: 2-5 konkrete Themen/Sektoren/Assetklassen
 Regime-Killer: die 2-4 Datenveraenderungen, die den BASE CASE deutlich schwaechen oder kippen wuerden
-Keine künstliche Wahrscheinlichkeit für alternative Szenarien ausgeben.
 
 PERSPEKTIVISCHE TRADE-IDEEN
-Aus dem Makrobild maximal 5 perspektivische Themen ableiten. Fuer jedes Thema:
+Aus dem Makrobild maximal 5 perspektivische Themen ableiten. Fuer jedes
+Thema immer einen eigenen kleinen Block verwenden. Zwischen zwei Themen
+muss jeweils eine Leerzeile stehen.
+
 Thema / Assetklasse
 Zeithorizont: Wochen / Monate / >6 Monate
 Makro-Treiber
 Bestaetigende Daten
 Gegentreiber / Risiko
 Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt?
-WICHTIG: Der Makro-Block erzeugt selbst KEIN Handelssignal und darf keine bestehenden Filter umgehen. Er liefert nur einen strategischen Vorlauf bzw. eine Watchlist fuer spaetere regelbasierte Setups.
+
+WICHTIG: Der Makro-Block erzeugt selbst KEIN Handelssignal und darf keine
+bestehenden Filter umgehen. Er liefert nur einen strategischen Vorlauf bzw.
+eine Watchlist fuer spaetere regelbasierte Setups.
 
 WICHTIGE INTERPRETATIONSREGELN
 Gold/Silber/Platin/Palladium gemeinsam beurteilen, aber nicht gleichsetzen.
-Kupfer, Aluminium und Eisenerz haben hoehere Bedeutung fuer den breiten Industriezyklus; Lithium hat zusaetzlich eine strukturelle Speicher-/Batterie-/Netzfunktion.
-Oel und Gas koennen gleichzeitig Wachstums- und Inflationssignale sein. Steigende Energiepreise sind deshalb nicht automatisch bullish.
-BTC und ETH als Liquiditaets-/Risk-Appetite-Komponente interpretieren; nicht als eigenstaendigen Konjunkturbeweis.
-DXY, EUR/USD und USD/JPY auf Zinsdifferenzen, Risk Appetite und Rohstoffwirkung beziehen.
-Credit-Spreads und SLOOS haben bei einer drohenden Rezession besonderes Gewicht.
-Niedriger VIX bei extrem hoher Indexbewertung kann als „bullisch, aber fragil/ueberdehnt“ interpretiert werden.
-Wenn Daten widersprechen, den Widerspruch ausdruecklich nennen statt einen kuenstlich eindeutigen Score zu erzeugen.
-Keine Kursziele ausdenken, wenn keine belastbare technische Kursbasis vorliegt.
+Kupfer, Aluminium und Eisenerz haben hoehere Bedeutung fuer den breiten
+Industriezyklus; Lithium hat zusaetzlich eine strukturelle
+Speicher-/Batterie-/Netzfunktion.
+Oel und Gas koennen gleichzeitig Wachstums- und Inflationssignale sein.
+Steigende Energiepreise sind deshalb nicht automatisch bullish.
+BTC und ETH als Liquiditaets-/Risk-Appetite-Komponente interpretieren;
+nicht als eigenstaendigen Konjunkturbeweis.
+DXY, EUR/USD und USD/JPY auf Zinsdifferenzen, Risk Appetite und
+Rohstoffwirkung beziehen.
+Credit-Spreads und SLOOS haben bei einer drohenden Rezession besonderes
+Gewicht.
+Niedriger VIX bei extrem hoher Indexbewertung kann als „bullisch, aber
+fragil/ueberdehnt“ interpretiert werden.
+Wenn Daten widersprechen, den Widerspruch ausdruecklich nennen statt einen
+kuenstlich eindeutigen Score zu erzeugen.
+Keine Kursziele ausdenken, wenn keine belastbare technische Kursbasis
+vorliegt.
 Keine neuen Kennzahlen erfinden.
-Jede auffaellige Zahl im Makro-Block muss auf eine reale Quelle oder eine klar gekennzeichnete deterministische Berechnung zurueckfuehrbar sein.
-Wenn eine Quelle fehlt, schreibe „NICHT VERFUEGBAR“ statt einen Ersatzwert zu bilden.
+Jede auffaellige Zahl im Makro-Block muss auf eine reale Quelle oder eine
+klar gekennzeichnete deterministische Berechnung zurueckfuehrbar sein.
+Wenn eine Quelle fehlt, schreibe „NICHT VERFUEGBAR“ statt einen Ersatzwert
+zu bilden.
