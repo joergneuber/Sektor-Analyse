@@ -1909,10 +1909,25 @@ Beurteile insbesondere Zins-/Liquiditaetszyklus, Konjunkturtrend, Credit-Spreads
 2.4 STRUKTURELL: >6 MONATE
 Beurteile strukturelle Investitionszyklen und langfristige Treiber. Lithium ist hier ausdruecklich als Speicher-/Batterie-/Netzausbau-Indikator zu behandeln. Gemeinsam mit Kupfer, Aluminium, Nickel, Kobalt, Zinn, Zink, Blei und Eisenerz kann ein moeglicher Infrastruktur-/Capex-Zyklus beschrieben werden. Ein einzelner Rohstoffpreis darf NICHT isoliert als globales Konjunktursignal interpretiert werden. Angebots-/Nachfrageeffekte sind auseinanderzuhalten, soweit die Daten das erlauben.
 
+MAKRO-Fazit aufgrund Datenlage
+Formuliere unmittelbar zu Beginn von Punkt 2 ein kompaktes Makro-Fazit auf Basis der tatsächlich verfügbaren Daten. Nenne dabei das aktuelle Makro-Regime, die 2-4 wichtigsten Treiber und die wichtigsten Gegentreiber bzw. Datenlücken. Keine künstliche quantitative Sicherheit erzeugen.
+
+2.1 KURZFRISTIG: 1-4 WOCHEN
+Bewerte die wahrscheinlichste Entwicklung für die nächsten 1-4 Wochen. Kompakt auf die wichtigsten Makro-Treiber, erwartete Wirkung auf die relevanten Assetklassen und mögliche kurzfristige Wendepunkte konzentrieren.
+
+2.2 MITTELFRISTIG: 1-3 MONATE
+Bewerte die wahrscheinlichste Entwicklung für die nächsten 1-3 Monate. Zins-, Inflations-, Wachstums-, Liquiditäts- und Risiko-Appetit-Treiber nur soweit beurteilen, wie sie durch die vorhandene Datenlage gestützt sind.
+
+2.3 WEITERER HORIZONT: 3-6 MONATE
+Bewerte die wahrscheinlichste Entwicklung für 3-6 Monate. Besonders auf mögliche Regimewechsel, FOMC-/Zinsentwicklung, Konjunkturtrend, Kreditbedingungen und Rohstoff-/Liquiditätswirkung achten.
+
+2.4 STRUKTURELL: >6 MONATE
+Bewerte die strukturellen Treiber mit einem Horizont von mehr als 6 Monaten. Dazu gehören insbesondere struktureller Capex, Energie, Industriemetalle, Demografie/Arbeitsmarkt, Verschuldung, Liquidität und langfristige technologische Investitionszyklen, soweit Daten vorhanden sind.
+
 SZENARIO-MATRIX
-Erstelle drei Szenarien: BASE CASE, BULL CASE, BEAR CASE.
-Fuer jedes Szenario nennen:
-Wahrscheinlichkeit: xx %
+Erstelle NUR den BASE CASE.
+Keinen separaten BULL CASE und keinen separaten BEAR CASE ausgeben.
+Für den BASE CASE nennen:
 Makroannahme: 1-2 Saetze
 Aktien: Richtung/Regime
 Zinsen: Richtung
@@ -1922,8 +1937,8 @@ Industriemetalle: Richtung
 FX: Richtung
 Krypto: Richtung
 Bevorzugte Trading-Themen: 2-5 konkrete Themen/Sektoren/Assetklassen
-Regime-Killer: die 2-4 Datenveraenderungen, die das Szenario deutlich schwaechen oder kippen wuerden
-Die drei Wahrscheinlichkeiten muessen zusammen 100 % ergeben. Sie sind Modellurteile und keine statistisch exakten Wahrscheinlichkeiten.
+Regime-Killer: die 2-4 Datenveraenderungen, die den BASE CASE deutlich schwaechen oder kippen wuerden
+Keine künstliche Wahrscheinlichkeit für alternative Szenarien ausgeben.
 
 PERSPEKTIVISCHE TRADE-IDEEN
 Aus dem Makrobild maximal 5 perspektivische Themen ableiten. Fuer jedes Thema:
@@ -1934,18 +1949,6 @@ Bestaetigende Daten
 Gegentreiber / Risiko
 Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt?
 WICHTIG: Der Makro-Block erzeugt selbst KEIN Handelssignal und darf keine bestehenden Filter umgehen. Er liefert nur einen strategischen Vorlauf bzw. eine Watchlist fuer spaetere regelbasierte Setups.
-
-MAKRO-ACHSEN
-Ordne die Gesamtlage qualitativ ein:
-Wachstum: staerker / stabil / abschwaechend
-Inflation: fallend / stabil / steigend
-Geldpolitik: locker / neutral / restriktiv
-Liquiditaet: steigend / stabil / sinkend
-Kredit: locker / neutral / restriktiv
-Risk Appetite: Risk-On / neutral / Risk-Off
-Bewertung: guenstig / neutral / teuer
-Angebotsschock: niedrig / mittel / hoch
-Struktureller Capex-Zyklus: schwach / neutral / stark
 
 WICHTIGE INTERPRETATIONSREGELN
 Gold/Silber/Platin/Palladium gemeinsam beurteilen, aber nicht gleichsetzen.
