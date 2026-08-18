@@ -1387,7 +1387,6 @@ REGIONEN = {
 # stabiler, nicht anders. Rollierende Fenster (z.B. WMA200) sind ohnehin
 # unabhaengig von zusaetzlicher Vorgeschichte.
 _YF_HISTORY_CACHE = {}
-_YF_INDEX_FRESH_CACHE = {}
 
 
 # --- ABGESCHLOSSENE TAGESKERZEN (NEU 12.08.2026) ---
@@ -1432,178 +1431,21 @@ def _nur_abgeschlossene_tagesbalken(hist, ticker):
     return data, data.index[-1].date()
 
 
-def _erwarteter_letzter_werktag(ticker):
-    """Liefert den letzten erwarteten abgeschlossenen Wochentag fuer bekannte
-    Index-/Marktdaten. Feiertage werden bewusst nicht erraten; sie werden beim
-    Abruf als sichtbare Stale-Warnung behandelt statt einen alten Wert
-    stillschweigend als aktuell auszugeben."""
-    heute = _markt_heutiges_datum(ticker)
-    datum = heute - datetime.timedelta(days=1)
-    while datum.weekday() >= 5:
-        datum -= datetime.timedelta(days=1)
-    return datum
-
-
-def _index_datenstand_veraltet(hist, ticker):
-    """Prueft den letzten Tagesbalken gegen den erwarteten letzten Werktag.
-    Nur fuer Ticker mit bekannter Markt-Schlusszeit wird strikt geprueft; fuer
-    andere yfinance-Instrumente bleibt das bisherige Verhalten unveraendert."""
-    if hist is None or hist.empty or ticker not in _ABGESCHLOSSENE_TAGESMAERKTE:
-        return False, None, None
-    data = hist.dropna(subset=["Close"])
-    if data.empty:
-        return False, None, None
-    letzter_datum = pd.Timestamp(data.index[-1]).date()
-    erwartet = _erwarteter_letzter_werktag(ticker)
-    return letzter_datum < erwartet,
-def _hole_indexdaten_direkt_yahoo(ticker):
-    """Frischer Indexabruf direkt ueber Yahoo Chart API.
-    Bewusst ohne yfinance und ohne market_cache: damit wird der aktuelle
-    Index-Tagesstand unabhaengig von einem evtl. veralteten lokalen Cache
-    bestimmt. Liefert ca. 400 Tage fuer EMA200 und verbindet sich spaeter
-    mit der Langzeithistorie."""
-    if ticker not in _ABGESCHLOSSENE_TAGESMAERKTE:
-        return None
-
-    ende = datetime.datetime.now(datetime.timezone.utc)
-    start_dt = ende - datetime.timedelta(days=420)
-    period1 = int(start_dt.timestamp())
-    period2 = int((ende + datetime.timedelta(days=1)).timestamp())
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 Chrome/139 Safari/537.36"
-    }
-
-    letzter_fehler = None
-    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
-        url = f"https://{host}/v8/finance/chart/{requests.utils.quote(ticker, safe='')}"
-        try:
-            r = requests.get(
-                url,
-                params={
-                    "period1": period1,
-                    "period2": period2,
-                    "interval": "1d",
-                    "events": "history",
-                    "includeAdjustedClose": "true",
-                    "_": str(int(time.time() * 1000)),
-                },
-                headers=headers,
-                timeout=20,
-            )
-            r.raise_for_status()
-            payload = r.json()
-            result = (payload.get("chart") or {}).get("result")
-            if not result:
-                raise RuntimeError("Yahoo Chart API: kein result")
-            result = result[0]
-            timestamps = result.get("timestamp") or []
-            quote = ((result.get("indicators") or {}).get("quote") or [])
-            if not timestamps or not quote:
-                raise RuntimeError("Yahoo Chart API: keine Tagesdaten")
-            q = quote[0]
-            n = min(len(timestamps), len(q.get("open", [])),
-                    len(q.get("high", [])), len(q.get("low", [])),
-                    len(q.get("close", [])))
-            if n < 2:
-                raise RuntimeError("Yahoo Chart API: zu wenige Tagesdaten")
-
-            idx = pd.to_datetime(timestamps[:n], unit="s", utc=True)
-            df = pd.DataFrame({
-                "Open": q["open"][:n],
-                "High": q["high"][:n],
-                "Low": q["low"][:n],
-                "Close": q["close"][:n],
-            }, index=idx)
-
-            volume = q.get("volume")
-            if volume:
-                df["Volume"] = volume[:n]
-
-            for col in ("Open", "High", "Low", "Close", "Volume"):
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.dropna(subset=["Close"]).sort_index()
-            if df.empty:
-                raise RuntimeError("Yahoo Chart API: nur leere Schlusskurse")
-
-            # Harte Plausibilitaetspruefung: ein frischer Abruf, der fuer
-            # einen bekannten Markt hinter dem erwarteten letzten Handelstag
-            # liegt, darf niemals als aktueller Datenbestand verwendet werden.
-            letzter = pd.Timestamp(df.index[-1]).date()
-            erwartet = _erwarteter_letzter_werktag(ticker)
-            if letzter < erwartet:
-                raise RuntimeError(
-                    f"Yahoo liefert veraltet: {letzter.strftime('%d.%m.%Y')} "
-                    f"statt mindestens {erwartet.strftime('%d.%m.%Y')}"
-                )
-
-            print(
-                f"DEBUG-FRESH-INDEX: {ticker} -> Yahoo Chart API {host} | "
-                f"letzter Datenpunkt {letzter.strftime('%d.%m.%Y')} | "
-                f"erwartet mindestens {erwartet.strftime('%d.%m.%Y')}"
-            )
-            return df
-
-        except Exception as exc:
-            letzter_fehler = exc
-            print(f"DEBUG-FRESH-INDEX: {ticker} -> {host} fehlgeschlagen: "
-                  f"{type(exc).__name__}: {exc}")
-
-    if letzter_fehler:
-        print(f"DEBUG-FRESH-INDEX: {ticker} -> beide Yahoo Chart API-Endpunkte "
-              f"fehlgeschlagen")
-    return None
-
-
 def _hole_kursdaten_gecached(ticker):
-    """Liefert fuer bekannte Indizes zuerst einen echten direkten Yahoo-
-    Tagesabruf. Die bestehende Langzeithistorie bleibt fuer historische
-    Berechnungen erhalten; die frischen Tageskerzen ueberschreiben gleiche
-    Daten und werden nur akzeptiert, wenn ihr Datenstand aktuell genug ist.
-    Fällt der direkte Abruf aus, wird fuer bekannte Indizes NICHT stillschweigend
-    ein alter Cache als aktueller Tagesstand verwendet."""
-    if ticker in _ABGESCHLOSSENE_TAGESMAERKTE:
-        if ticker in _YF_HISTORY_CACHE and ticker in _YF_INDEX_FRESH_CACHE:
-            return _YF_HISTORY_CACHE[ticker].copy()
-
-        frisch = _hole_indexdaten_direkt_yahoo(ticker)
-        if frisch is None or frisch.empty:
-            # Kein Fallback auf einen alten Cache fuer aktuelle Indexstaende.
-            _YF_INDEX_FRESH_CACHE[ticker] = False
-            _YF_HISTORY_CACHE[ticker] = pd.DataFrame()
-            return pd.DataFrame()
-
-        try:
-            lang = get_yf_history(ticker)
-        except Exception as e:
-            print(f"DEBUG-CACHE: historische Reihe {ticker} nicht abrufbar "
-                  f"({type(e).__name__}: {e})")
-            lang = pd.DataFrame()
-
-        if lang is not None and not lang.empty:
-            lang = lang.copy()
-            frisch = frisch.copy()
-            lang.index = pd.to_datetime(lang.index, utc=True)
-            frisch.index = pd.to_datetime(frisch.index, utc=True)
-            kombiniert = pd.concat([
-                lang[~lang.index.isin(frisch.index)],
-                frisch
-            ])
-            kombiniert = kombiniert[
-                ~kombiniert.index.duplicated(keep="last")
-            ].sort_index()
-        else:
-            kombiniert = frisch.copy()
-
-        _YF_HISTORY_CACHE[ticker] = kombiniert
-        _YF_INDEX_FRESH_CACHE[ticker] = True
-        return kombiniert.copy()
-
-    # Nicht-Index-Ticker: bestehende Cache-Logik unveraendert.
+    """Fetcht period="max" fuer `ticker` HOECHSTENS EINMAL pro Lauf und haelt
+    das Ergebnis im Modul-Cache vor. Gibt eine KOPIE zurueck (nicht die im
+    Cache gehaltene Referenz), damit keine aufrufende Funktion versehentlich
+    die fuer alle anderen Aufrufer gecachten Daten veraendert. Liefert bei
+    Fehlern ein leeres DataFrame (wie zuvor die einzelnen Funktionen es bei
+    einer Exception implizit auch getan haetten) statt selbst zu crashen -
+    die aufrufenden Funktionen pruefen ohnehin bereits auf .empty."""
     if ticker not in _YF_HISTORY_CACHE:
         try:
+            # Zuerst der prozessuebergreifende Dateicache, danach erst Yahoo.
+            # Der bestehende RAM-Cache bleibt als schnellste zweite Ebene
+            # erhalten. Dadurch koennen analyse.py, trendwende_scanner.py,
+            # short_scanner.py und edelmetalle_scanner.py im selben Workflow
+            # gemeinsame Benchmarkdaten wiederverwenden.
             _YF_HISTORY_CACHE[ticker] = get_yf_history(ticker)
         except Exception as e:
             print(f"DEBUG-CACHE: {ticker} nicht abrufbar ({type(e).__name__}: {e})")
@@ -2074,10 +1916,29 @@ def get_index_benchmark_yf(ticker, label):
         close = hist['Close']
         last_close = close.iloc[-1]
 
-        # Der Datenstand wird bereits zentral in _hole_kursdaten_gecached()
-        # validiert. Ein veralteter bekannter Index wird dort verworfen, statt
-        # hier nur mit einer Warnung weiterverarbeitet zu werden.
+        # STALENESS-PRUEFUNG (NEU 04.08.2026, BUGFIX - Nutzer-Verdacht bestaetigt):
+        # Am 04.08.2026 lieferte yfinance fuer den DAX einen Schlusskurs vom
+        # VORVORTAG (Freitag 31.07. statt Montag 03.08., an dem der DAX real
+        # erstmals ueber 26.000 Punkte stieg - via Websuche verifiziert). Der
+        # Fehler war unsichtbar: kein Absturz, keine Exception, einfach ein
+        # veralteter Wert, der wie ein aktueller aussah. Deshalb: das Datum der
+        # letzten Zeile pruefen. Bei einem WOCHENTAG-Datum, das mehr als 1 Tag
+        # zurueckliegt (Toleranz fuer Wochenenden: bis zu 3 Kalendertage), wird
+        # das im Text sichtbar markiert statt den Wert kommentarlos als aktuell
+        # auszugeben - besser eine sichtbare Warnung als ein unbemerkt falscher
+        # Marktstand in der Auswertung.
+        heute = _markt_heutiges_datum(ticker)
+        tage_alt = (heute - letztes_datum).days
+        # Wochenende grosszuegig tolerieren (Freitagsschluss am Montag/Sonntag
+        # ist normal), Feiertage nicht extra beruecksichtigt (seltener Fall,
+        # dann greift die Warnung einmal zusaetzlich - unschaedlich).
+        max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
         staleness_hinweis = ""
+        if tage_alt > max_alter_tage:
+            staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')} "
+                                 f"({tage_alt} Tage alt - moeglicherweise veraltet]")
+            print(f"DEBUG-STALENESS: {label} ({ticker}) -> letzter Datenpunkt "
+                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt")
 
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
