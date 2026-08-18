@@ -290,6 +290,25 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     kombiniert = pd.concat([df_max, recent_valid])
     kombiniert = kombiniert[~kombiniert.index.duplicated(keep="last")]
     kombiniert = kombiniert.sort_index()
+
+    # DIAGNOSE-ONLY: letzte 5 Kalendertage mit Close ausgeben.
+    # Keine Daten-/Cache-Logik wird hier veraendert.
+    try:
+        _dbg = kombiniert.copy()
+        if "Close" in _dbg.columns:
+            _dbg["Close"] = pd.to_numeric(_dbg["Close"], errors="coerce")
+            _dbg = _dbg.tail(5)
+            _parts = []
+            for _idx, _row in _dbg.iterrows():
+                _date = pd.Timestamp(_idx).strftime("%d.%m.%Y")
+                _close = _row.get("Close")
+                _parts.append(f"{_date}={_close!r}")
+            print(f"DEBUG-INDEX-RAW: {ticker} -> " + " | ".join(_parts))
+        else:
+            print(f"DEBUG-INDEX-RAW: {ticker} -> KEINE-CLOSE-SPALTE")
+    except Exception as _dbg_exc:
+        print(f"DEBUG-INDEX-RAW: {ticker} -> Diagnosefehler: {_dbg_exc}")
+
     return kombiniert
 
 
