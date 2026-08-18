@@ -66,6 +66,8 @@ KAUF_B_MOMENTUM_MIN = 3
 # A-Kandidat:
 # Mindestens ein bestätigtes Setup ist zwingend.
 KAUF_A_MIN_CRV = 1.0
+# Extrem überkaufte Titel dürfen trotz bestätigtem Setup nicht A werden.
+KAUF_A_MAX_STOCH = 95.0
 
 
 # Cache für Sektor-ETF-Kurse.
@@ -835,7 +837,13 @@ def bewerte_kaufkandidat(
     # A: bestätigtes Setup
     # --------------------------------------------------------
 
-    if tf_ok or tw_ok:
+    stoch = momentum_ergebnis.get("stoch")
+    stoch_a_ok = (
+        stoch is not None
+        and float(stoch) <= KAUF_A_MAX_STOCH
+    )
+
+    if (tf_ok or tw_ok) and stoch_a_ok:
         if tf_ok:
             gruende.append(
                 "Trendfolge-Setup bestätigt, CRV >= 1.0"
