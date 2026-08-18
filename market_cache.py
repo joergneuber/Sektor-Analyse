@@ -237,6 +237,8 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
         return df_max
 
     if df_recent is None or df_recent.empty:
+        print(f"DEBUG-YF-FALLBACK: {ticker} -> period='5d'-Kurzabruf lief, "
+              f"lieferte aber leere Daten - bleibe bei 'max'-Historie.")
         return df_max
     if df_max is None or df_max.empty:
         return df_recent
@@ -244,7 +246,9 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     max_letztes_datum = df_max.index.max()
     recent_letztes_datum = df_recent.index.max()
     if recent_letztes_datum <= max_letztes_datum:
-        # Kurzabruf liefert nichts Neueres - 'max'-Historie unveraendert lassen.
+        print(f"DEBUG-YF-FALLBACK: {ticker} -> period='5d' liefert nichts Neueres "
+              f"als 'max' (beide enden bei {max_letztes_datum.date()}) - "
+              f"bleibe bei 'max'-Historie.")
         return df_max
 
     print(f"DEBUG-YF-FALLBACK: {ticker} -> period='max' endete bei "
