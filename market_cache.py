@@ -254,6 +254,32 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
             return None
         return close.index.max()
 
+    # DIAGNOSE-ONLY: Vor jeder Return-Stelle die letzten 5 Zeilen beider
+    # Abrufe zeigen. Damit sehen wir auch die Faelle, in denen der Fallback
+    # wegen "nicht neuer" Daten vor dem bisherigen Diagnosepunkt zurueckkehrt.
+    def _debug_letzte_zeilen(label, df):
+        try:
+            if df is None or df.empty:
+                print(f"DEBUG-INDEX-RAW: {ticker} / {label} -> LEER")
+                return
+            if "Close" not in df.columns:
+                print(f"DEBUG-INDEX-RAW: {ticker} / {label} -> KEINE-CLOSE-SPALTE; "
+                      f"columns={list(df.columns)!r}")
+                return
+            _tmp = df.copy()
+            _tmp["Close"] = pd.to_numeric(_tmp["Close"], errors="coerce")
+            _tmp = _tmp.tail(5)
+            _parts = []
+            for _idx, _row in _tmp.iterrows():
+                _date = pd.Timestamp(_idx).strftime("%d.%m.%Y")
+                _parts.append(f"{_date} Close={_row['Close']!r}")
+            print(f"DEBUG-INDEX-RAW: {ticker} / {label} -> " + " | ".join(_parts))
+        except Exception as _dbg_exc:
+            print(f"DEBUG-INDEX-RAW: {ticker} / {label} -> Diagnosefehler: {_dbg_exc}")
+
+    _debug_letzte_zeilen("max", df_max)
+    _debug_letzte_zeilen("5d", df_recent)
+
     max_letztes_datum = _letzter_gueltiger_close_index(df_max)
     recent_letztes_datum = _letzter_gueltiger_close_index(df_recent)
 
@@ -290,24 +316,6 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     kombiniert = pd.concat([df_max, recent_valid])
     kombiniert = kombiniert[~kombiniert.index.duplicated(keep="last")]
     kombiniert = kombiniert.sort_index()
-
-    # DIAGNOSE-ONLY: letzte 5 Kalendertage mit Close ausgeben.
-    # Keine Daten-/Cache-Logik wird hier veraendert.
-    try:
-        _dbg = kombiniert.copy()
-        if "Close" in _dbg.columns:
-            _dbg["Close"] = pd.to_numeric(_dbg["Close"], errors="coerce")
-            _dbg = _dbg.tail(5)
-            _parts = []
-            for _idx, _row in _dbg.iterrows():
-                _date = pd.Timestamp(_idx).strftime("%d.%m.%Y")
-                _close = _row.get("Close")
-                _parts.append(f"{_date}={_close!r}")
-            print(f"DEBUG-INDEX-RAW: {ticker} -> " + " | ".join(_parts))
-        else:
-            print(f"DEBUG-INDEX-RAW: {ticker} -> KEINE-CLOSE-SPALTE")
-    except Exception as _dbg_exc:
-        print(f"DEBUG-INDEX-RAW: {ticker} -> Diagnosefehler: {_dbg_exc}")
 
     return kombiniert
 
