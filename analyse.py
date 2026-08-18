@@ -14,7 +14,7 @@ from scipy.signal import argrelextrema
 from groq import Groq
 from market_data import fetch_us_batch_robust
 
-from market_cache import get_yf_history, get_or_fetch_series, refresh_yf_history
+from market_cache import get_yf_history, get_or_fetch_series
 from pi_cycle_bottom import get_pi_cycle_bottom_text, calculate_pi_cycle_bottom
 
 # Importe für Alpaca
@@ -1451,6 +1451,28 @@ def _hole_kursdaten_gecached(ticker):
             print(f"DEBUG-CACHE: {ticker} nicht abrufbar ({type(e).__name__}: {e})")
             _YF_HISTORY_CACHE[ticker] = pd.DataFrame()
     return _YF_HISTORY_CACHE[ticker].copy()
+
+
+def refresh_yf_history(ticker):
+    """Direkter Yahoo-Abruf zur Staleness-Aktualisierung.
+    Bewusst NICHT ueber den gemeinsamen market_cache: Dieser Abruf soll
+    einen veralteten Prozess-/Dateicache gezielt umgehen.
+    """
+    try:
+        hist = yf.Ticker(ticker).history(
+            period="max",
+            auto_adjust=False,
+            actions=False
+        )
+        if hist is None:
+            return pd.DataFrame()
+        return hist.copy()
+    except Exception as e:
+        print(
+            f"DEBUG-YF-REFRESH: {ticker} direkter Yahoo-Abruf fehlgeschlagen "
+            f"({type(e).__name__}: {e})"
+        )
+        return pd.DataFrame()
 
 
 def _index_performance(ticker):
