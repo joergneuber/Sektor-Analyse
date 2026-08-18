@@ -18,7 +18,7 @@ TARGETS = [
     ("S&P 500", ["GSPC", "SPX", "SP500"], ["S&P 500", "S&P 500 Index"]),
     ("Nasdaq", ["IXIC", "COMP", "NASDAQ"], ["Nasdaq Composite", "NASDAQ Composite"]),
     ("Dow Jones", ["DJI"], ["Dow Jones Industrial Average"]),
-    ("Russell 2000", ["RUT"], ["Russell 2000", "Russell 2000 Index"]),
+    ("Russell 2000", ["RUT.INDX"], ["Russell 2000", "Russell 2000 Index"]),
     ("DAX", ["GDAXI"], ["DAX Index"]),
     ("EuroStoxx 50", ["STOXX50E", "SX5E"], ["Euro Stoxx 50"]),
     ("STOXX Europe 600", ["STOXX"], ["Stoxx Europe 600", "STOXX Europe 600"]),
