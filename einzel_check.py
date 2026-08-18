@@ -1016,6 +1016,11 @@ def bewerte_kaufkandidat(
 # ============================================================
 
 KAUFKANDIDATEN_ERGEBNISSE = []
+A_AUFSTIEGE = []
+A_AUFSTIEGE_DATEI = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    f"Einzel_Check_Aufstiege({datetime.date.today().isoformat()}).txt",
+)
 
 
 def pruefe(
@@ -1342,6 +1347,25 @@ def pruefe(
 
     # Persistente Beobachtungsliste:
     # A entfernt, B/C aufnehmen bzw. aktualisieren, KEIN KANDIDAT entfernen.
+    # Vor dem Update den alten Status lesen, damit nur echte B/C -> A-Aufstiege
+    # aus der Beobachtungsliste gemeldet werden.
+    vorherige_liste = lade_beobachtungsliste()
+    vorheriger_status = vorherige_liste.get(ticker, {}).get("status")
+    if kauf["Status"] == "KAUFKANDIDAT A" and vorheriger_status in (
+        "KAUFKANDIDAT B", "KAUFKANDIDAT C"
+    ):
+        A_AUFSTIEGE.append({
+            "Ticker": ticker,
+            "Name": klarname or ticker,
+            "von": vorheriger_status,
+            "Datum": datetime.date.today().isoformat(),
+            "Momentum": kauf.get("Momentum", "n/a"),
+        })
+        print(
+            f"  >>> AUFSTIEG AUS BEOBACHTUNGSLISTE: {klarname or ticker} "
+            f"({ticker}) {vorheriger_status} -> KAUFKANDIDAT A"
+        )
+
     aktualisiere_beobachtungsliste(
         ticker,
         kauf["Status"],
@@ -1497,6 +1521,27 @@ if __name__ == "__main__":
 
     print()
     print("=" * 62)
+    # Tagesdatei fuer die fertige Auswertung: Nur echte B/C -> A-Aufstiege.
+    try:
+        if A_AUFSTIEGE:
+            with open(A_AUFSTIEGE_DATEI, "w", encoding="utf-8") as f:
+                f.write("EINZEL-CHECK: NEUE KAUFKANDIDAT-A-AUFSTIEGE\n")
+                f.write("===========================================\n\n")
+                for eintrag in A_AUFSTIEGE:
+                    f.write(
+                        f"Name: {eintrag['Name']} | Ticker: {eintrag['Ticker']} | "
+                        f"Aufstieg: {eintrag['von']} -> KAUFKANDIDAT A | "
+                        f"Datum: {eintrag['Datum']} | Momentum: {eintrag['Momentum']}\n\n"
+                    )
+            print(f"A-AUFSTIEGE_DATEI={A_AUFSTIEGE_DATEI}")
+        else:
+            try:
+                os.remove(A_AUFSTIEGE_DATEI)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        print(f"WARNUNG: A-Aufstiegsdatei konnte nicht geschrieben werden: {exc}")
+
     print(
         "KAUFKANDIDATEN DES CHECKS"
     )

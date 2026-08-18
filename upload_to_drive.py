@@ -120,6 +120,11 @@ if __name__ == '__main__':
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
+        elif filename.startswith("Einzel_Check_Aufstiege(") and filename.endswith(".txt"):
+            # Tagesprotokoll echter B/C -> A-Aufstiege aus der Beobachtungsliste.
+            print(f"Lade '{filename}' hoch...")
+            upload_file(filename, FOLDER_ID, drive_service)
+            found = True
         elif filename == "einzel_check_beobachtung.json":
             # Persistente Beobachtungsliste des manuellen Einzel-Checks:
             # A/KEIN KANDIDAT werden dort bereits entfernt, B/C bleiben erhalten.

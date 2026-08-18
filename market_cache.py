@@ -213,6 +213,28 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     )
 
 
+def refresh_yf_history(ticker: str) -> pd.DataFrame:
+    """Erzwingt einen frischen Yahoo-Abruf und ersetzt den Cache-Eintrag."""
+    import yfinance as yf
+    df = yf.Ticker(ticker).history(period="max")
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    payload = df.to_json(orient="split", date_format="iso")
+    if _acquire_lock():
+        try:
+            data = _load_cache()
+            data.setdefault("entries", {})[f"yf:{ticker}"] = {
+                "saved_at": time.time(), "kind": "dataframe", "payload": payload,
+            }
+            _save_cache(data)
+        except Exception as exc:
+            print(f"WARNUNG-MARKET-CACHE: Refresh von {ticker} konnte nicht gespeichert werden: {exc}")
+        finally:
+            _release_lock()
+    return df.copy()
+
+
 def clear_stale_cache() -> None:
     """Entfernt abgelaufene Eintraege; Fehler werden bewusst ignoriert."""
     if not CACHE_FILE.exists():

@@ -104,6 +104,7 @@ DATEIMUSTER = {
     # muessen nicht extra von Drive geholt werden (siehe sammle_eingabedateien).
     "Short_Setups(...).csv": ["Short_Setups(*).csv"],
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
+    "Einzel_Check_Aufstiege(...).txt": ["Einzel_Check_Aufstiege(*).txt"],
     "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
     "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
@@ -500,9 +501,25 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
+def normalisiere_ausgabe(text):
+    """Erzwingt zwei kleine, rein formale Layoutregeln nach Gemini.
+
+    Inhalt und Werte werden nicht veraendert: Vor jeder Zeile "Was muesste..."
+    in den Perspektivischen Trade-Ideen wird genau eine Leerzeile gesetzt.
+    Dadurch bleibt das gewuenschte Layout auch bei leicht variierender Gemini-
+    Formatierung stabil.
+    """
+    if not text:
+        return text
+    text = re.sub(r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", r"\n\1", text)
+    text = re.sub(r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", "\n\n", text)
+    return text
+
+
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
+    text = normalisiere_ausgabe(text)
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
