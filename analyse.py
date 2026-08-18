@@ -14,7 +14,7 @@ from scipy.signal import argrelextrema
 from groq import Groq
 from market_data import fetch_us_batch_robust
 
-from market_cache import get_yf_history, get_or_fetch_series, refresh_yf_history
+from market_cache import get_yf_history, get_or_fetch_series
 from pi_cycle_bottom import get_pi_cycle_bottom_text, calculate_pi_cycle_bottom
 
 # Importe für Alpaca
@@ -1463,44 +1463,31 @@ def _index_performance(ticker):
         hist = _hole_kursdaten_gecached(ticker)
         hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, ticker)
         if hist.empty or len(hist) < 2:
+            print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar "
+                  f"(zu wenig Kursdaten nach Filterung: {len(hist)} Zeile(n), "
+                  f"letzter Datenpunkt: {letztes_datum})")
             return None, None, None, "", None
         schluss = hist['Close']
         if len(schluss) < 2:
+            print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar "
+                  f"(zu wenig Close-Werte: {len(schluss)})")
             return None, None, None, "", None
         letzter = float(schluss.iloc[-1])
         vortag = float(schluss.iloc[-2])
         tag_pct = (letzter / vortag - 1) * 100 if vortag else None
 
-        # Staleness-Pruefung: Ein deutlich zu alter Indexstand darf nicht
-        # stillschweigend in die Tagesauswertung gelangen. Wenn Yahoo einen
-        # unplausibel alten Stand liefert, wird einmal ein frischer Direktabruf
-        # erzwungen. Bleibt der Stand danach zu alt, wird er als n/a behandelt.
+        # Staleness-Pruefung (NEU 04.08.2026, siehe get_index_benchmark_yf fuer
+        # die vollstaendige Begruendung - gleicher Bug kann hier unabhaengig
+        # auftreten, da dies ein separater yfinance-Abruf ist).
         heute = _markt_heutiges_datum(ticker)
         tage_alt = (heute - letztes_datum).days
         max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
         staleness_hinweis = ""
         if tage_alt > max_alter_tage:
+            staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')}, "
+                                 f"{tage_alt} Tage alt - moeglicherweise veraltet]")
             print(f"DEBUG-STALENESS: {ticker} -> letzter Datenpunkt "
-                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt - erzwinge frischen Yahoo-Abruf")
-            try:
-                frisch = refresh_yf_history(ticker)
-                frisch, frisch_datum = _nur_abgeschlossene_tagesbalken(frisch, ticker)
-                if frisch is not None and not frisch.empty and frisch_datum is not None:
-                    hist = frisch
-                    schluss = hist['Close']
-                    letzter = float(schluss.iloc[-1])
-                    vortag = float(schluss.iloc[-2])
-                    tag_pct = (letzter / vortag - 1) * 100 if vortag else None
-                    letztes_datum = frisch_datum
-                    tage_alt = (heute - letztes_datum).days
-            except Exception as refresh_exc:
-                print(f"DEBUG-STALENESS-REFRESH: {ticker} fehlgeschlagen ({type(refresh_exc).__name__}: {refresh_exc})")
-            if tage_alt > max_alter_tage:
-                staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')}, "
-                                     f"{tage_alt} Tage alt - nicht aktuell genug]")
-                print(f"DEBUG-STALENESS: {ticker} bleibt veraltet - Wert wird nicht als aktuell ausgegeben")
-                return None, None, None, staleness_hinweis, None
-
+                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt")
 
         # YTD: letzter Schlusskurs des VORJAHRES als Basis (nicht der erste
         # Kurs des neuen Jahres - sonst fehlt der Jahreswechsel-Gap).
@@ -1557,22 +1544,6 @@ def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
         return None
 
 
-def get_handelstage_je_region_text():
-    """Liefert den Datenstand je Region aus den abgeschlossenen Tageskerzen."""
-    datenstaende = {}
-    for region, indizes in REGIONEN.items():
-        datum = None
-        for ticker, _label in indizes:
-            _tag, _ytd, _stand, _stale, letztes_datum = _index_performance(ticker)
-            if letztes_datum is not None:
-                datum = letztes_datum
-                break
-        datenstaende[region] = datum.strftime('%d.%m.%Y') if datum else 'n/a'
-    return ("Handelstag (Datenstand dieser Auswertung): "
-            f"USA {datenstaende['USA']} / Europa {datenstaende['Europa']} / "
-            f"Asien {datenstaende['Asien']}")
-
-
 def get_regionen_performance_text():
     """Baut den Briefing-Block. Fehlende Werte werden als 'n/a' ausgewiesen,
     nie stillschweigend weggelassen."""
@@ -1584,7 +1555,20 @@ def get_regionen_performance_text():
         for ticker, label in indizes:
             tag_pct, ytd_pct, stand, staleness, letztes_datum = _index_performance(ticker)
             ergebnisse.append((label, tag_pct, ytd_pct, stand, staleness, letztes_datum))
-        zeilen.append(f"{region}:")
+
+        # Region-Datenstand (PFLICHT laut Master-Anweisung, ERGAENZT 09.08.2026):
+        # EIN Datum pro Region, direkt hinter dem Regionsnamen in Klammern -
+        # das juengste vorhandene Datum unter den Indizes dieser Region, damit
+        # die KI beim Zusammenbau kein eigenes Datum schaetzen/erfinden muss.
+        # Fehlen ALLE Datenstaende der Region (kompletter Ausfall), bleibt die
+        # Klammer bewusst weg statt ein Datum vorzutaeuschen.
+        vorhandene_daten = [d for (_, _, _, _, _, d) in ergebnisse if d is not None]
+        if vorhandene_daten:
+            region_datenstand = max(vorhandene_daten).strftime('%d.%m.%Y')
+            zeilen.append(f"{region} (Datenstand: {region_datenstand}):")
+        else:
+            zeilen.append(f"{region}:")
+
         for label, tag_pct, ytd_pct, stand, staleness, letztes_datum in ergebnisse:
             if tag_pct is None or ytd_pct is None:
                 zeilen.append(f"  • {label}: n/a (Kursdaten nicht verfuegbar)")
@@ -3857,8 +3841,6 @@ if __name__ == "__main__":
     
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
-        f.write(get_handelstage_je_region_text() + "\n")
-        f.write(f"Erstellt am: {datetime.datetime.now().strftime('%d.%m.%Y, %H:%M')} Uhr (MESZ/MEZ)\n\n")
 
         # Kurzüberblick über den zugrunde liegenden Trading-Ansatz
         f.write("STRATEGIE-ANSATZ\n")
