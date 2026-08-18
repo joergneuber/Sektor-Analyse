@@ -1,0 +1,23 @@
+name: Profit RUT Direct Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rut-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run direct RUT.INDX test
+        env:
+          PROFIT_API_KEY: ${{ secrets.PROFIT_API_KEY }}
+        run: |
+          python profit_rut_direct_test.py
