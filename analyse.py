@@ -14,7 +14,8 @@ from scipy.signal import argrelextrema
 from groq import Groq
 from market_data import fetch_us_batch_robust
 
-from market_cache import get_yf_history, get_or_fetch_series, refresh_yf_history
+from market_cache import (get_yf_history, get_or_fetch_series, fetch_yf_history_uncached,
+                          refresh_yf_history_direct, store_yf_history, invalidate_yf_history)
 from pi_cycle_bottom import get_pi_cycle_bottom_text, calculate_pi_cycle_bottom
 
 # Importe für Alpaca
@@ -1453,57 +1454,108 @@ def _hole_kursdaten_gecached(ticker):
     return _YF_HISTORY_CACHE[ticker].copy()
 
 
-def _index_performance(ticker):
-    """Gibt (Vortagsveraenderung%, YTD%, aktueller_Punktestand) fuer einen
-    Index zurueck, oder (None, None, None). Alles aus EINEM yfinance-Abruf
-    (1 Jahr Historie). Der Punktestand (NEU 03.08.2026, Nutzerwunsch) ist
-    der zuletzt bekannte Schlusskurs - dieselbe Zahl, die auch fuer die
-    Prozent-Berechnung genutzt wird, kein separater Abruf noetig."""
+def _hole_indexdaten_aktuell(ticker):
+    """Liefert fuer einen Index ausschliesslich eine ausreichend aktuelle Historie.
+
+    Ablauf: gemeinsamer Cache -> Staleness-Pruefung -> yfinance-Refresh ->
+    bei weiterhin altem Stand Yahoo-Chart-Direktabruf. Ein veralteter Stand
+    wird niemals als aktueller Index weitergereicht. Nur eine nachweislich
+    aktuelle Historie wird wieder in den gemeinsamen Cache geschrieben.
+    """
+    hist = _hole_kursdaten_gecached(ticker)
+    hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, ticker)
+    if hist is None or hist.empty or letztes_datum is None:
+        return pd.DataFrame(), None, ""
+
+    heute = _markt_heutiges_datum(ticker)
+    max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
+    tage_alt = (heute - letztes_datum).days
+    if tage_alt <= max_alter_tage:
+        return hist, letztes_datum, ""
+
+    print(
+        f"DEBUG-STALENESS: {ticker} -> letzter Datenpunkt "
+        f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt - "
+        f"erzwinge frischen Yahoo-Abruf"
+    )
+
+    # 1. Versuch: yfinance. Dessen Ergebnis wird erst nach der Validierung
+    # in den RAM-/Dateicache uebernommen.
     try:
-        hist = _hole_kursdaten_gecached(ticker)
-        hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, ticker)
+        frisch = fetch_yf_history_uncached(ticker)
+        frisch, frisch_datum = _nur_abgeschlossene_tagesbalken(frisch, ticker)
+        if frisch is not None and not frisch.empty and frisch_datum is not None:
+            tage_alt = (heute - frisch_datum).days
+            if tage_alt <= max_alter_tage:
+                _YF_HISTORY_CACHE[ticker] = frisch.copy()
+                store_yf_history(ticker, frisch)
+                print(
+                    f"DEBUG-STALENESS-REFRESH: {ticker} -> yfinance aktualisiert "
+                    f"auf {frisch_datum.strftime('%d.%m.%Y')}"
+                )
+                return frisch, frisch_datum, ""
+            print(
+                f"DEBUG-STALENESS-REFRESH: {ticker} -> yfinance liefert weiterhin "
+                f"{frisch_datum.strftime('%d.%m.%Y')}, wechsle auf direkten Yahoo-Chart-Abruf"
+            )
+    except Exception as refresh_exc:
+        print(
+            f"DEBUG-STALENESS-REFRESH: {ticker} yfinance fehlgeschlagen "
+            f"({type(refresh_exc).__name__}: {refresh_exc}) - direkter Yahoo-Chart-Abruf folgt"
+        )
+
+    # 2. Versuch: Yahoo Chart direkt. Dieser Weg umgeht einen moeglicherweise
+    # veralteten yfinance-Datenpfad. Auch hier wird nur bei Erfolg mit einem
+    # aktuellen Datenstand gecacht.
+    try:
+        frisch = refresh_yf_history_direct(ticker)
+        frisch, frisch_datum = _nur_abgeschlossene_tagesbalken(frisch, ticker)
+        if frisch is not None and not frisch.empty and frisch_datum is not None:
+            tage_alt = (heute - frisch_datum).days
+            if tage_alt <= max_alter_tage:
+                _YF_HISTORY_CACHE[ticker] = frisch.copy()
+                store_yf_history(ticker, frisch)
+                print(
+                    f"DEBUG-STALENESS-DIRECT: {ticker} -> Yahoo-Chart akzeptiert "
+                    f"{frisch_datum.strftime('%d.%m.%Y')}"
+                )
+                return frisch, frisch_datum, ""
+            print(
+                f"DEBUG-STALENESS-DIRECT: {ticker} -> auch Direktabruf nur "
+                f"{frisch_datum.strftime('%d.%m.%Y')} - Daten bleiben veraltet"
+            )
+    except Exception as direct_exc:
+        print(
+            f"DEBUG-STALENESS-DIRECT: {ticker} fehlgeschlagen "
+            f"({type(direct_exc).__name__}: {direct_exc})"
+        )
+
+    # Ein veralteter Cache darf nicht mit einem neuen TTL-Zeitstempel als
+    # scheinbar frischer Marktstand weitergereicht werden. Deshalb invalidieren.
+    invalidate_yf_history(ticker)
+    _YF_HISTORY_CACHE.pop(ticker, None)
+    hinweis = (
+        f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')} "
+        f"({tage_alt} Tage alt - nicht aktuell genug)]"
+    )
+    print(
+        f"DEBUG-STALENESS: {ticker} bleibt veraltet - "
+        f"Wert wird NICHT als aktueller Index ausgegeben"
+    )
+    return pd.DataFrame(), None, hinweis
+
+def _index_performance(ticker):
+    """Gibt (Vortagsveraenderung%, YTD%, Punktestand, Hinweis, Datenstand) zurueck."""
+    try:
+        hist, letztes_datum, staleness_hinweis = _hole_indexdaten_aktuell(ticker)
         if hist.empty or len(hist) < 2:
-            return None, None, None, "", None
+            return None, None, None, staleness_hinweis, None
+
         schluss = hist['Close']
-        if len(schluss) < 2:
-            return None, None, None, "", None
         letzter = float(schluss.iloc[-1])
         vortag = float(schluss.iloc[-2])
         tag_pct = (letzter / vortag - 1) * 100 if vortag else None
 
-        # Staleness-Pruefung: Ein deutlich zu alter Indexstand darf nicht
-        # stillschweigend in die Tagesauswertung gelangen. Wenn Yahoo einen
-        # unplausibel alten Stand liefert, wird einmal ein frischer Direktabruf
-        # erzwungen. Bleibt der Stand danach zu alt, wird er als n/a behandelt.
-        heute = _markt_heutiges_datum(ticker)
-        tage_alt = (heute - letztes_datum).days
-        max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
-        staleness_hinweis = ""
-        if tage_alt > max_alter_tage:
-            print(f"DEBUG-STALENESS: {ticker} -> letzter Datenpunkt "
-                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt - erzwinge frischen Yahoo-Abruf")
-            try:
-                frisch = refresh_yf_history(ticker)
-                frisch, frisch_datum = _nur_abgeschlossene_tagesbalken(frisch, ticker)
-                if frisch is not None and not frisch.empty and frisch_datum is not None:
-                    hist = frisch
-                    schluss = hist['Close']
-                    letzter = float(schluss.iloc[-1])
-                    vortag = float(schluss.iloc[-2])
-                    tag_pct = (letzter / vortag - 1) * 100 if vortag else None
-                    letztes_datum = frisch_datum
-                    tage_alt = (heute - letztes_datum).days
-            except Exception as refresh_exc:
-                print(f"DEBUG-STALENESS-REFRESH: {ticker} fehlgeschlagen ({type(refresh_exc).__name__}: {refresh_exc})")
-            if tage_alt > max_alter_tage:
-                staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')}, "
-                                     f"{tage_alt} Tage alt - nicht aktuell genug]")
-                print(f"DEBUG-STALENESS: {ticker} bleibt veraltet - Wert wird nicht als aktuell ausgegeben")
-                return None, None, None, staleness_hinweis, None
-
-
-        # YTD: letzter Schlusskurs des VORJAHRES als Basis (nicht der erste
-        # Kurs des neuen Jahres - sonst fehlt der Jahreswechsel-Gap).
         jahr = datetime.date.today().year
         idx = schluss.index
         jahre = [d.year for d in idx]
@@ -1511,13 +1563,12 @@ def _index_performance(ticker):
         if vorjahr_positionen:
             basis = float(schluss.iloc[vorjahr_positionen[-1]])
         else:
-            basis = float(schluss.iloc[0])  # Historie beginnt erst im laufenden Jahr
+            basis = float(schluss.iloc[0])
         ytd_pct = (letzter / basis - 1) * 100 if basis else None
         return tag_pct, ytd_pct, letzter, staleness_hinweis, letztes_datum
     except Exception as e:
         print(f"DEBUG-REGIONEN-PERFORMANCE: {ticker} nicht ermittelbar ({type(e).__name__})")
         return None, None, None, "", None
-
 
 def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
     """NEU (08.08.2026, Nutzerwunsch): eine klare, immer sichtbare Zeile,
@@ -1536,8 +1587,7 @@ def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
     das faengt der Datums-Vergleich ab (letzter Balken == heute -> als
     Zwischenstand markiert, nicht als abgeschlossen)."""
     try:
-        hist = _hole_kursdaten_gecached(referenz_ticker)
-        hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, referenz_ticker)
+        hist, letztes_datum, _stale = _hole_indexdaten_aktuell(referenz_ticker)
         if hist.empty or letztes_datum is None:
             return None
         heute = datetime.date.today()
@@ -1896,49 +1946,15 @@ def get_rekord_naehe_text(ticker, label, schwelle_prozent=REKORD_NAEHE_SCHWELLE_
 
 
 def get_index_benchmark_yf(ticker, label):
-    """Generische Benchmark-Funktion für Indizes/Futures via yfinance - u.a.
-    für S&P 500 (^GSPC) und Nasdaq (^IXIC) seit 27.07.2026 (vorher fälschlich
-    SPY-/QQQ-ETF-Kurse über Alpaca als Indexstand ausgegeben, siehe main unten),
-    außerdem DAX, EuroStoxx50 und alle weiteren Nicht-Alpaca-Benchmarks."""
+    """Benchmark aus validiertem, abgeschlossenem und ausreichend aktuellem Indexstand."""
     try:
-        hist = _hole_kursdaten_gecached(ticker)
-
-        if hist.empty:
-            return f"{label}: Daten unvollständig"
-
-        # Nur vollstaendig abgeschlossene Tageskerzen verwenden. Das verhindert
-        # insbesondere im Morgenlauf laufende Asien-Tagesstaende.
-        hist, letztes_datum = _nur_abgeschlossene_tagesbalken(hist, ticker)
+        hist, letztes_datum, staleness_hinweis = _hole_indexdaten_aktuell(ticker)
 
         if hist.empty or len(hist) < 200:
-            return f"{label}: Daten unvollständig"
+            return f"{label}: Daten unvollständig{staleness_hinweis}"
 
         close = hist['Close']
         last_close = close.iloc[-1]
-
-        # STALENESS-PRUEFUNG (NEU 04.08.2026, BUGFIX - Nutzer-Verdacht bestaetigt):
-        # Am 04.08.2026 lieferte yfinance fuer den DAX einen Schlusskurs vom
-        # VORVORTAG (Freitag 31.07. statt Montag 03.08., an dem der DAX real
-        # erstmals ueber 26.000 Punkte stieg - via Websuche verifiziert). Der
-        # Fehler war unsichtbar: kein Absturz, keine Exception, einfach ein
-        # veralteter Wert, der wie ein aktueller aussah. Deshalb: das Datum der
-        # letzten Zeile pruefen. Bei einem WOCHENTAG-Datum, das mehr als 1 Tag
-        # zurueckliegt (Toleranz fuer Wochenenden: bis zu 3 Kalendertage), wird
-        # das im Text sichtbar markiert statt den Wert kommentarlos als aktuell
-        # auszugeben - besser eine sichtbare Warnung als ein unbemerkt falscher
-        # Marktstand in der Auswertung.
-        heute = _markt_heutiges_datum(ticker)
-        tage_alt = (heute - letztes_datum).days
-        # Wochenende grosszuegig tolerieren (Freitagsschluss am Montag/Sonntag
-        # ist normal), Feiertage nicht extra beruecksichtigt (seltener Fall,
-        # dann greift die Warnung einmal zusaetzlich - unschaedlich).
-        max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
-        staleness_hinweis = ""
-        if tage_alt > max_alter_tage:
-            staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')} "
-                                 f"({tage_alt} Tage alt - moeglicherweise veraltet]")
-            print(f"DEBUG-STALENESS: {label} ({ticker}) -> letzter Datenpunkt "
-                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt")
 
         e20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         e50 = close.ewm(span=50, adjust=False).mean().iloc[-1]

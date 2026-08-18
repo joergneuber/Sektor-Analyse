@@ -235,6 +235,112 @@ def refresh_yf_history(ticker: str) -> pd.DataFrame:
     return df.copy()
 
 
+
+def fetch_yf_history_uncached(ticker: str) -> pd.DataFrame:
+    """Laedt yfinance direkt, ohne den gemeinsamen Cache zu veraendern."""
+    import yfinance as yf
+    df = yf.Ticker(ticker).history(period="max")
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.copy()
+
+def store_yf_history(ticker: str, df: pd.DataFrame) -> None:
+    """Schreibt eine bereits validierte yfinance-Historie in den gemeinsamen Cache."""
+    if df is None or df.empty:
+        return
+    payload = df.to_json(orient="split", date_format="iso")
+    if _acquire_lock():
+        try:
+            data = _load_cache()
+            data.setdefault("entries", {})[f"yf:{ticker}"] = {
+                "saved_at": time.time(),
+                "kind": "dataframe",
+                "payload": payload,
+            }
+            _save_cache(data)
+        except Exception as exc:
+            print(f"WARNUNG-MARKET-CACHE: Speichern von {ticker} fehlgeschlagen: {exc}")
+        finally:
+            _release_lock()
+
+
+def invalidate_yf_history(ticker: str) -> None:
+    """Entfernt einen als veraltet erkannten yfinance-Cacheeintrag."""
+    if not _acquire_lock():
+        return
+    try:
+        data = _load_cache()
+        data.setdefault("entries", {}).pop(f"yf:{ticker}", None)
+        _save_cache(data)
+    except Exception as exc:
+        print(f"WARNUNG-MARKET-CACHE: Ungueltiger Cacheeintrag {ticker} konnte nicht entfernt werden: {exc}")
+    finally:
+        _release_lock()
+
+
+def refresh_yf_history_direct(ticker: str) -> pd.DataFrame:
+    """
+    Erzwungener Direktabruf ueber die Yahoo-Chart-Route.
+
+    Wichtig: Der Abruf wird hier bewusst NOCH NICHT gecacht. Erst der Aufrufer
+    kann nach der Handelsschluss-/Staleness-Pruefung entscheiden, ob die
+    gelieferte Historie valide genug ist. So kann ein erneut veralteter
+    Yahoo-Stand keinen frischen Cache-Zeitstempel bekommen.
+    """
+    import requests
+
+    letzte_fehlermeldung = None
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        url = f"https://{host}/v8/finance/chart/{ticker}"
+        params = {
+            "period1": 0,
+            "period2": int(time.time()) + 86400,
+            "interval": "1d",
+            "events": "history",
+            "includeAdjustedClose": "true",
+        }
+        try:
+            antwort = requests.get(
+                url,
+                params=params,
+                timeout=20,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            antwort.raise_for_status()
+            payload_json = antwort.json()
+            result = (payload_json.get("chart") or {}).get("result")
+            if not result:
+                raise RuntimeError("Yahoo Chart lieferte kein result")
+
+            result = result[0]
+            timestamps = result.get("timestamp") or []
+            quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+            if not timestamps or not quote:
+                raise RuntimeError("Yahoo Chart lieferte keine Tagesdaten")
+
+            index = pd.to_datetime(timestamps, unit="s", utc=True)
+            data = pd.DataFrame(
+                {
+                    "Open": quote.get("open", []),
+                    "High": quote.get("high", []),
+                    "Low": quote.get("low", []),
+                    "Close": quote.get("close", []),
+                    "Volume": quote.get("volume", []),
+                },
+                index=index,
+            )
+            data = data.dropna(subset=["Close"])
+            if data.empty:
+                raise RuntimeError("Yahoo Chart lieferte nur leere Schlusskurse")
+            return data.copy()
+        except Exception as exc:
+            letzte_fehlermeldung = exc
+            continue
+
+    if letzte_fehlermeldung is not None:
+        raise letzte_fehlermeldung
+    return pd.DataFrame()
+
 def clear_stale_cache() -> None:
     """Entfernt abgelaufene Eintraege; Fehler werden bewusst ignoriert."""
     if not CACHE_FILE.exists():
