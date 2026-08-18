@@ -243,22 +243,52 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     if df_max is None or df_max.empty:
         return df_recent
 
-    max_letztes_datum = df_max.index.max()
-    recent_letztes_datum = df_recent.index.max()
-    if recent_letztes_datum <= max_letztes_datum:
-        print(f"DEBUG-YF-FALLBACK: {ticker} -> period='5d' liefert nichts Neueres "
-              f"als 'max' (beide enden bei {max_letztes_datum.date()}) - "
-              f"bleibe bei 'max'-Historie.")
+    # Fuer den Frischevergleich zaehlt ausschliesslich der letzte gueltige
+    # Close-Wert. index.max() allein kann taeuschen, wenn Yahoo fuer neuere
+    # Datumszeilen zwar Index-Eintraege, aber nur NaN in Close liefert.
+    def _letzter_gueltiger_close_index(df):
+        if df is None or df.empty or "Close" not in df.columns:
+            return None
+        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+        if close.empty:
+            return None
+        return close.index.max()
+
+    max_letztes_datum = _letzter_gueltiger_close_index(df_max)
+    recent_letztes_datum = _letzter_gueltiger_close_index(df_recent)
+
+    if max_letztes_datum is None:
+        if recent_letztes_datum is None:
+            print(f"DEBUG-YF-FALLBACK: {ticker} -> weder 'max' noch '5d' "
+                  f"enthaelt einen gueltigen Close - gebe leeres Ergebnis zurueck.")
+            return pd.DataFrame()
+        print(f"DEBUG-YF-FALLBACK: {ticker} -> 'max' hat keinen gueltigen Close; "
+              f"verwende '5d' bis {recent_letztes_datum.date()}.")
+        return df_recent
+
+    if recent_letztes_datum is None or recent_letztes_datum <= max_letztes_datum:
+        recent_text = recent_letztes_datum.date() if recent_letztes_datum is not None else "n/a"
+        print(f"DEBUG-YF-FALLBACK: {ticker} -> letzter gueltiger Close: "
+              f"'max'={max_letztes_datum.date()}, '5d'={recent_text} - "
+              f"keine neueren Kursdaten, bleibe bei 'max'-Historie.")
         return df_max
 
-    print(f"DEBUG-YF-FALLBACK: {ticker} -> period='max' endete bei "
-          f"{max_letztes_datum.date()}, period='5d' liefert bis "
-          f"{recent_letztes_datum.date()} - fuehre zusammen.")
+    print(f"DEBUG-YF-FALLBACK: {ticker} -> letzter gueltiger Close: "
+          f"'max'={max_letztes_datum.date()}, '5d'={recent_letztes_datum.date()} - "
+          f"fuehre nur echte neuere Kursdaten zusammen.")
 
-    kombiniert = pd.concat([df_max, df_recent])
-    # Bei ueberlappenden Datumswerten die Zeile aus dem frischeren 5d-Abruf
-    # behalten (keep='last', da df_recent nach df_max angehaengt wurde).
-    kombiniert = kombiniert[~kombiniert.index.duplicated(keep='last')]
+    # Nur gueltige Close-Zeilen aus dem 5d-Abruf koennen die max-Historie
+    # ergaenzen/ueberschreiben. Leere NaN-Zeilen duerfen niemals einen
+    # vorhandenen gueltigen Kurs aus der langen Historie ersetzen.
+    recent_valid = df_recent.copy()
+    recent_valid["Close"] = pd.to_numeric(recent_valid["Close"], errors="coerce")
+    recent_valid = recent_valid.dropna(subset=["Close"])
+
+    if recent_valid.empty:
+        return df_max
+
+    kombiniert = pd.concat([df_max, recent_valid])
+    kombiniert = kombiniert[~kombiniert.index.duplicated(keep="last")]
     kombiniert = kombiniert.sort_index()
     return kombiniert
 
