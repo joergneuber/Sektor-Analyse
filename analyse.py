@@ -1453,28 +1453,6 @@ def _hole_kursdaten_gecached(ticker):
     return _YF_HISTORY_CACHE[ticker].copy()
 
 
-def refresh_yf_history(ticker):
-    """Direkter Yahoo-Abruf zur Staleness-Aktualisierung.
-    Bewusst NICHT ueber den gemeinsamen market_cache: Dieser Abruf soll
-    einen veralteten Prozess-/Dateicache gezielt umgehen.
-    """
-    try:
-        hist = yf.Ticker(ticker).history(
-            period="max",
-            auto_adjust=False,
-            actions=False
-        )
-        if hist is None:
-            return pd.DataFrame()
-        return hist.copy()
-    except Exception as e:
-        print(
-            f"DEBUG-YF-REFRESH: {ticker} direkter Yahoo-Abruf fehlgeschlagen "
-            f"({type(e).__name__}: {e})"
-        )
-        return pd.DataFrame()
-
-
 def _index_performance(ticker):
     """Gibt (Vortagsveraenderung%, YTD%, aktueller_Punktestand) fuer einen
     Index zurueck, oder (None, None, None). Alles aus EINEM yfinance-Abruf
@@ -1493,35 +1471,22 @@ def _index_performance(ticker):
         vortag = float(schluss.iloc[-2])
         tag_pct = (letzter / vortag - 1) * 100 if vortag else None
 
-        # Staleness-Pruefung: Ein deutlich zu alter Indexstand darf nicht
-        # stillschweigend in die Tagesauswertung gelangen. Wenn Yahoo einen
-        # unplausibel alten Stand liefert, wird einmal ein frischer Direktabruf
-        # erzwungen. Bleibt der Stand danach zu alt, wird er als n/a behandelt.
+        # STALENESS NUR TRANSPARENT AUSWEISEN:
+        # Wenn Yahoo voruebergehend einen alten, aber gueltigen abgeschlossenen
+        # Tagesstand liefert, wird dieser NICHT in n/a verwandelt. Der reale
+        # Datenstand bleibt sichtbar und die Auswertung kann ihn transparent
+        # kennzeichnen. Dadurch bleibt die Auswertung belastbar, sobald Yahoo
+        # wieder aktuelle Tagesdaten liefert, ohne dass hier weitere Datenquellen
+        # oder zusaetzliche API-Abfragen erforderlich sind.
         heute = _markt_heutiges_datum(ticker)
         tage_alt = (heute - letztes_datum).days
         max_alter_tage = 3 if heute.weekday() in (0, 6) else 1
         staleness_hinweis = ""
         if tage_alt > max_alter_tage:
+            staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')}, "
+                                 f"{tage_alt} Tage alt - moeglicherweise veraltet]")
             print(f"DEBUG-STALENESS: {ticker} -> letzter Datenpunkt "
-                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt - erzwinge frischen Yahoo-Abruf")
-            try:
-                frisch = refresh_yf_history(ticker)
-                frisch, frisch_datum = _nur_abgeschlossene_tagesbalken(frisch, ticker)
-                if frisch is not None and not frisch.empty and frisch_datum is not None:
-                    hist = frisch
-                    schluss = hist['Close']
-                    letzter = float(schluss.iloc[-1])
-                    vortag = float(schluss.iloc[-2])
-                    tag_pct = (letzter / vortag - 1) * 100 if vortag else None
-                    letztes_datum = frisch_datum
-                    tage_alt = (heute - letztes_datum).days
-            except Exception as refresh_exc:
-                print(f"DEBUG-STALENESS-REFRESH: {ticker} fehlgeschlagen ({type(refresh_exc).__name__}: {refresh_exc})")
-            if tage_alt > max_alter_tage:
-                staleness_hinweis = (f" [WARNUNG: Datenstand vom {letztes_datum.strftime('%d.%m.%Y')}, "
-                                     f"{tage_alt} Tage alt - nicht aktuell genug]")
-                print(f"DEBUG-STALENESS: {ticker} bleibt veraltet - Wert wird nicht als aktuell ausgegeben")
-                return None, None, None, staleness_hinweis, None
+                  f"{letztes_datum.strftime('%d.%m.%Y')}, {tage_alt} Tage alt - Wert bleibt sichtbar")
 
 
         # YTD: letzter Schlusskurs des VORJAHRES als Basis (nicht der erste
@@ -1580,17 +1545,21 @@ def get_handelstag_text(referenz_ticker="^GSPC", referenz_label="S&P 500"):
 
 
 def get_handelstage_je_region_text():
-    """Liefert den Datenstand je Region aus den abgeschlossenen Tageskerzen."""
+    """Liefert den tatsaechlichen Datenstand je Region, ohne ein einzelnes
+    Referenzinstrument stillschweigend auf die gesamte Region zu uebertragen.
+    Wenn sich die Indizes einer Region auf unterschiedliche letzte Handelstage
+    beziehen, werden alle vorhandenen Datenstaende genannt."""
     datenstaende = {}
     for region, indizes in REGIONEN.items():
-        datum = None
+        daten = []
         for ticker, _label in indizes:
             _tag, _ytd, _stand, _stale, letztes_datum = _index_performance(ticker)
             if letztes_datum is not None:
-                datum = letztes_datum
-                break
-        datenstaende[region] = datum.strftime('%d.%m.%Y') if datum else 'n/a'
-    return ("Handelstag (Datenstand dieser Auswertung): "
+                text = letztes_datum.strftime('%d.%m.%Y')
+                if text not in daten:
+                    daten.append(text)
+        datenstaende[region] = ' / '.join(daten) if daten else 'n/a'
+    return ("Datenstaende dieser Auswertung: "
             f"USA {datenstaende['USA']} / Europa {datenstaende['Europa']} / "
             f"Asien {datenstaende['Asien']}")
 
@@ -1606,7 +1575,19 @@ def get_regionen_performance_text():
         for ticker, label in indizes:
             tag_pct, ytd_pct, stand, staleness, letztes_datum = _index_performance(ticker)
             ergebnisse.append((label, tag_pct, ytd_pct, stand, staleness, letztes_datum))
-        zeilen.append(f"{region}:")
+        region_daten = []
+        for _label, _tag_pct, _ytd_pct, _stand, _staleness, _letztes_datum in ergebnisse:
+            if _letztes_datum is not None:
+                _datum_text = _letztes_datum.strftime('%d.%m.%Y')
+                if _datum_text not in region_daten:
+                    region_daten.append(_datum_text)
+        if not region_daten:
+            region_kopf = f"{region} (Datenstand: n/a):"
+        elif len(region_daten) == 1:
+            region_kopf = f"{region} (Datenstand: {region_daten[0]}):"
+        else:
+            region_kopf = f"{region} (Datenstände: {' / '.join(region_daten)}):"
+        zeilen.append(region_kopf)
         for label, tag_pct, ytd_pct, stand, staleness, letztes_datum in ergebnisse:
             if tag_pct is None or ytd_pct is None:
                 zeilen.append(f"  • {label}: n/a (Kursdaten nicht verfuegbar)")
