@@ -79,24 +79,12 @@ Lesehilfe”:
 - Kopfzeile \(Pflicht\): „Neuber Macro & Markets” als Titel/Überschrift,
   darunter das Datum der Auswertung und der Untertitel „Tägliche
   Markt\- und Setup\-Auswertung”\.
-- Kurz\-Zusammenfassung \(Pflicht, GEÄNDERT 05\.08\.2026, Nutzerwunsch
-  „Summary entzerren” – ersetzt die frühere
-  5\-7\-Satz\-Fließtext\-Executive\-Summary durch 4\-6 knappe BULLET\-PUNKTE,
-  damit der Leser in 15 Sekunden erfasst, was heute wichtig ist;
-  Risiko\-Highlights und Sektor\-Rotation im Detail wandern in die
-  eigenen Blöcke „Risiko\-Watch” bzw\. bleiben in Abschnitt 1 – hier
-  nur je EIN Bullet pro Punkt\): • Anzahl NEUER valider Setups je Kategorie
-  \(Trendfolge/Trendwende/Short/Edelmetalle/Hebeltrader, Zahl nennen, auch „0”\)\.
-  Bereits offene Positionen mit bestätigtem laufendem Setup zählen NICHT als
-  neue valide Setups und müssen sprachlich klar davon getrennt werden\. •
-  Marktumfeld USA und Europa in je 2\-4 Worten
-  \(Bullisch/Bärisch/Neutral, Score\)\. • FOMC\-Hinweis NUR falls die
-  Sitzung laut BENCHMARKS\-Block innerhalb der nächsten 5 Tage liegt
-  oder ein Rückblick vorliegt \(sonst weglassen\)\. • Portfolio in einem
-  Halbsatz: Anzahl offener Positionen, ob heute ein Stop ausgelöst
-  wurde\. • Falls vorhanden: ein exaktes neues Rekordhoch \(Index oder
-  Öl/Edelmetall\) in einem Bullet\. Reine Fakten, keine neuen
-  Bewertungen, die nicht auch weiter unten stehen\.
+- Kurz\-Zusammenfassung \(Pflicht, GEÄNDERT 19\.08\.2026, Nutzerwunsch „Prioritäten klarer sichtbar”\): Die bisherige 4\-6\-Bullet\-Summary wird in vier klar benannte Prioritätsblöcke gegliedert, damit der Leser die tägliche Auswertung schneller erfassen kann\. Die vier Blöcke sind immer in dieser Reihenfolge auszugeben:
+  SOFORT BEACHTEN: Nur unmittelbar relevante Fakten aus dem Datenbestand – Positionen weniger als 2% vom Stop entfernt, erreichte Stop\-Losses, erreichte TP1/TP2, Earnings bei bestehenden Positionen/Setups und außergewöhnliche Marktbewegungen bzw\. exakte neue Rekordhochs, sofern vorhanden\. Bei Earnings einer offenen Position Ereignis und Positionsrisiko direkt miteinander verknüpfen\. Keine Handlungsempfehlung\.
+  WATCHLIST: Nur die interessantesten Grenzfälle aus den vorhandenen manuellen Watchlists und beinahe\-Kandidaten, maximal 5 Titel je Kategorie bzw\. zugehörigem Watchlist\-Block\. Wenn die Quelldatei eine Reihenfolge vorgibt, übernimm diese Reihenfolge und die ersten maximal 5 Einträge; wenn keine Reihenfolge vorgegeben ist, übernimm die vorhandene Reihenfolge und erfinde keine eigene Rangliste\. Keine neuen Kennzahlen und keine Empfehlungen\.
+  MARKTDATEN: USA, Europa, Asien, Zinsen, VIX und Rohstoffe nur als kompakte Datenübersicht mit den vorhandenen letzten Schlussständen und dem jeweiligen Datenstand\. Keine neue Interpretation in diesem Block\.
+  PERSPEKTIVE: Die vorhandenen Makro\-Zeithorizonte 1\-4 Wochen, 1\-3 Monate und 3\-6 Monate jeweils in maximal einem kurzen Satz; strukturelle Perspektive >6 Monate nur wenn im Makro\-Datenpaket tatsächlich vorhanden\. Keine neuen Prognosewerte und keine Wiederholung des gesamten Makro\-Abschnitts\.
+  Die frühere Executive\-Summary\-Logik zu Setup\-Anzahlen bleibt erhalten: neue valide Setups je Kategorie nennen, auch „0”; bereits offene Positionen mit bestätigtem laufendem Setup zählen NICHT als neue valide Setups\. FOMC nur nennen, wenn er laut BENCHMARKS\-Block innerhalb der nächsten 5 Tage liegt oder ein Rückblick vorliegt\. Reine Fakten aus den Dateien, keine zusätzlichen Bewertungen\.
 - "Risiko\-Watch" \(Pflicht, GEÄNDERT 05\.08\.2026, Nutzerwunsch
   „eigener, visuell hervorgehobener Block” – eigener Abschnitt mit
   dieser Überschrift, DIREKT nach der Kurz\-Zusammenfassung, VOR
@@ -160,6 +148,8 @@ Häufung/Nähe als das, was sie ist\.
   „Wochenausblick: keine bekannten Termine im Datenbestand” statt den
   Abschnitt ersatzlos wegzulassen\. Keine Markt\-Prognosen, keine
   Wahrscheinlichkeitsaussagen – reine Terminübersicht\.
+- TAGESPRIORITÄTEN \(NEU 19\.08\.2026, Nutzerwunsch „schneller erfassbar”\): Direkt nach „Wochenausblick” wird ein kompakter Block „TAGESPRIORITÄTEN” ausgegeben, sofern die Informationen vorhanden sind\. Reihenfolge zwingend: SOFORT BEACHTEN, WATCHLIST, MARKTDATEN, PERSPEKTIVE\. SOFORT BEACHTEN enthält nur unmittelbar relevante Fakten; WATCHLIST maximal 5 interessante Grenzfälle je vorhandener Watchlist\-Kategorie; MARKTDATEN enthält die aktuellen, konsistenten letzten Schlussstände samt Datenstand; PERSPEKTIVE fasst die bereits vorhandenen Makro\-Horizonte zusammen\. Wenn ein Unterpunkt keine relevanten Daten hat, darf er entfallen, ohne Platzhalter oder erfundene Werte\. Der Block darf keine Kauf\-/Verkaufsempfehlung formulieren und darf die detaillierten Folgeabschnitte nicht widersprechen\.
+- EREIGNIS\-POSITION VERKNÜPFUNG \(NEU 19\.08\.2026\): Wenn ein Earnings\-Termin oder anderes unmittelbar bevorstehendes Ereignis eine offene Position betrifft, muss die Auswertung Ereignis und Position im Bereich „SOFORT BEACHTEN” direkt verknüpfen, z\. B\. „Alibaba Group Holding Limited – Earnings am 20\.08\.2026; offene Position aktuell -9,11%”\. Ergänze nur bereits vorhandene Werte wie Kurs, Performance, Stop und TP1/TP2, wenn sie in den Quelldateien vorliegen\. Keine neue Risikoquantifizierung und keine Handlungsempfehlung\.
 - Reichweiten\-Hinweis \(Pflicht, POSITION GEÄNDERT 05\.08\.2026: steht
   NICHT mehr im Deckblatt vorn, sondern im letzten Abschnitt „Methodik
   & Lesehilfe”, siehe AUSGABE\-GLIEDERUNG; sinngemäß, muss aber diese
@@ -390,19 +380,20 @@ Häufung/Nähe als das, was sie ist\.
   Einzel\-Check\-Beobachtungsliste\.” Nichts selbst berechnen, keine Titel aus
   anderen Dateien ergänzen und die Liste nicht mit der bestehenden
   „Watchlist \(manuelle Prüfung\)” vermischen\.
+- WATCHLIST\-UMFANG \(NEU 19\.08\.2026, Nutzerwunsch „höchstens 2–5 interessanteste Grenzfälle”\): Die ausführlichen Roh\-Watchlists dürfen vollständig gelesen und zur internen Nachvollziehbarkeit verwendet werden, aber in der fertigen Auswertung werden je Watchlist\-Block höchstens 5 Titel ausgegeben\. Bei BEINAHE\-KANDIDATEN ist die bestehende Reihenfolge nach dem bindenden CRV verbindlich und es werden die ersten maximal 5 Titel übernommen\. Bei einer ACHTUNG\-Watchlist oder DIVERGENZ\-Watchlist ohne vorgegebene Rangfolge wird die vorhandene Reihenfolge übernommen; keine eigene Rangfolge, kein neues Scoring und keine Berechnung eines „Interesse\-Scores”\. Die Zusammenfassung muss klar sagen, dass weitere Titel vorhanden sein können, aber aus Gründen der Lesbarkeit nicht einzeln ausgegeben werden\. Die zugrunde liegenden Filter und Statuswerte bleiben unverändert\.
 - EINHEITLICHE „WATCHLIST \(manuelle Prüfung\)” – MEHRZEILEN\-VORLAGE
   \(Pflicht, GEÄNDERT 09\.08\.2026, Nutzerwunsch – ersetzt die
   Kompaktzeile vom 06\.08\.2026 vollständig; die zugrunde liegenden
   inhaltlichen Regeln zu Quelle/Sortierung/Portfolio\-Hinweis aus den
   Bullets „Watchlist \(Format\)”, „BEINAHE\-KANDIDATEN” und
   „DIVERGENZ\-WATCHLIST” weiter oben gelten unverändert weiter, NUR die
-  Darstellung ändert sich\): Fasse ALLE manuell zu prüfenden Titel –
+  Darstellung ändert sich\): Fasse die manuell zu prüfenden Titel –
   die ACHTUNG\-Watchlist aus Abschnitt 2, die Beinahe\-Kandidaten aus
   Abschnitt 2/4/5 \(nur wenn dort PFLICHT gemäß der jeweiligen
   0\-Setups\-Regel\) und die Divergenz\-Watchlist aus Abschnitt 3 – unter
   der Überschrift „Watchlist \(manuelle Prüfung\)” zusammen, direkt am
   Ende des jeweils zugehörigen Abschnitts \(nicht als separater
-  Gesamt\-Abschnitt – die Zuordnung zur Kategorie bleibt wichtig\)\.
+  Gesamt\-Abschnitt – die Zuordnung zur Kategorie bleibt wichtig\)\. WICHTIG: Trotz vollständiger Prüfung der Rohdaten werden je zugehörigem Watchlist\-Block höchstens 5 Titel ausgegeben; weitere Titel werden nicht einzeln aufgelistet\.
   KEINE Markdown\-Syntax, KEINE Tabelle \(siehe globale Regel oben\)\.
   ZWEI VERSCHIEDENE FORMATE je nach Quelle: \(1\) ACHTUNG\-Watchlist UND
   Beinahe\-Kandidaten \(haben beide TP1/TP2/CRV/Stop in den Rohdaten\):
@@ -440,9 +431,7 @@ Häufung/Nähe als das, was sie ist\.
   enthalten \- Titel, deren Boden\-Bedingung \(intakte bullische
   RSI\-Divergenz\) erfüllt ist und denen nur noch der frische
   Kumo\-Trigger fehlt \(die Kandidaten\-Pipeline der nächsten Tage\)\. Gib
-  diese Liste im Abschnitt „Trendwende\-Setups” in EINEM Satz
-  wieder, z\. B\. „Beobachtung: 11 Titel erfüllen die Boden\-Bedingung
-  und warten auf den frischen Kumo\-Trigger: …” \- GEÄNDERT
+  diese Liste im Abschnitt „Trendwende\-Setups” in einem kompakten Satz wieder, maximal 5 Namen; wenn die Quelldatei eine Reihenfolge vorgibt, übernimm die ersten maximal 5 Einträge unverändert\. Formuliere z\. B\. „Beobachtung: 11 Titel erfüllen die Boden\-Bedingung und warten auf den frischen Kumo\-Trigger; ausgegeben werden die relevantesten 5: …”
   \(29\.07\.2026\): Das Briefing liefert die Watchlist jetzt als „Name
   \(Ticker\)”\-Liste\. Übernimm in der Auswertung NUR DIE NAMEN
   \(vollständige Firmennamen, Ticker in Klammern weglassen \- dieselbe
@@ -512,6 +501,8 @@ Häufung/Nähe als das, was sie ist\.
   den einzelnen Regionen selbst konstruieren oder Datenstände ergänzen\.
   Steht keine solche Zeile im Briefing, darf auch in der fertigen Auswertung
   keine erzeugt werden\.
+- EINHEITLICHER DATENSTAND / LETZTER SCHLUSSKURS \(NEU 19\.08\.2026, Nutzerwunsch „Zahlen konsistent – letzter Schlussstand”\): Für alle aktuellen Markt\-, Index\-, Rohstoff\-, Edelmetall\-, FX\-, VIX\-, Zins\- und sonstigen Kursangaben innerhalb derselben täglichen Auswertung gilt grundsätzlich der jeweils letzte ABGESCHLOSSENE Handelstag bzw\. der im Datenpaket ausdrücklich als letzter Schlussstand ausgewiesene Wert\. Keine Vermischung von Intraday\-, Zwischenstands\- und Schlusskursen\. Wenn mehrere Werte für dasselbe Instrument vorhanden sind, verwende den Wert des letzten abgeschlossenen Handelstags; ältere Werte dürfen nur erscheinen, wenn sie ausdrücklich als Vergleichs\-, Vorperioden\- oder Rückblickwert gekennzeichnet sind\. Bei unterschiedlichen regionalen Schlusszeiten bleibt die bestehende Regionen\-Logik erhalten: US = Schluss des Vortages, Asien = heutiger Schluss, sofern dies so in der Quelldatei angegeben ist\. Einen fehlenden oder nicht abgeschlossenen Schlussstand niemals durch einen geschätzten oder selbst recherchierten Wert ersetzen\. Wenn die Quelle ausdrücklich „Zwischenstand” oder „läuft noch” meldet, diesen Zustand wörtlich kennzeichnen und die betroffenen Werte nicht als abgeschlossene Schlussstände darstellen\. Datenstände dürfen niemals aus unterschiedlichen Abschnitten stillschweigend zusammengezogen werden\.
+- DATENSTAND SICHTBARKEIT \(NEU 19\.08\.2026\): Der Datenstand muss für den Leser unmittelbar erkennbar sein\. Übernimm eine vorhandene Zeile „Handelstag (Datenstand dieser Auswertung): …” wörtlich\. Zusätzlich müssen die vorhandenen Datenstände der Regionen wörtlich hinter Europa, USA und Asien stehen\. Bei anderen Datenpaketen mit eigenem Datenstand darf dieser ebenfalls kurz und eindeutig benannt werden, sofern er in der Quelldatei ausdrücklich vorhanden ist\. Kein Datum und keine Uhrzeit aus Kurswerten ableiten oder selbst ergänzen\. Ein „Erstellt am” ist ausschließlich der Laufzeitstempel des Skripts und darf niemals als Kurs-Datenstand ausgegeben werden\.
 - AUSGABE\-GLIEDERUNG \(ERWEITERT 16\.08\.2026 \- Makro\-Szenario als Punkt 2\):
   Die Abschnittsnummern DIESER ANWEISUNG \(z\. B\. „Abschnitt 5 =
   Trendwende”, „Abschnitt 9 = Offene Positionen”\) sind rein INTERNE
@@ -780,6 +771,7 @@ Spalte mitliefert, wird er beim Formulieren schlicht übersprungen\.
 Grund: bessere Lesbarkeit für den Empfänger, der nicht zwingend alle
 Kürzel auswendig kennt\.
 
+KURS\- UND MARKTDATEN IN TRADE\-KARTEN \(NEU 19\.08\.2026\): Für „Aktueller Kurs” und alle daraus im Datenbestand abgeleiteten aktuellen technischen Werte verwende den letzten abgeschlossenen Schlussstand, sofern die Quelldatei diesen als aktuellsten Wert liefert\. Wenn die Quelldatei ausdrücklich einen anderen Datenstand kennzeichnet, übernimm genau diesen Datenstand und vermische ihn nicht mit einem anderen Abschnitt\. Historische Werte dürfen nur mit ihrer historischen Bezeichnung erscheinen\. Keine Intraday\-Werte aus älteren oder parallelen Datenpaketen in aktuelle Trade\-Karten übernehmen\.
 Formatierung: Gib Zahlen, Prozentwerte und Trennstriche als schlichten
 Fließtext aus, mit normalem deutschen Komma \(z\. B\. 56,00€, \-1,46%\) und
 einfachem senkrechten Strich als Trenner\. Keine Formatierungsbefehle um
@@ -1596,6 +1588,7 @@ Setups\-CSV\)\.
 - Statusfelder: Aktuell \(aktueller Kurs\), Performance \(% seit
   Einstieg\) – Stop/TP1/TP2 sind die ursprünglich beim Einstieg
   festgelegten Werte, nicht neu berechnet\.
+- EVENT\-RISIKO BEI OFFENEN POSITIONEN \(NEU 19\.08\.2026\): Wenn für eine offene Position im Datenbestand eine Earnings\-Warnung oder ein anderer unmittelbar bevorstehender Termin vorhanden ist, muss dieser Termin in der Positionsdarstellung direkt als Ereignis\-Hinweis übernommen werden und zusätzlich im Block „SOFORT BEACHTEN” mit der bestehenden Position verknüpft werden\. Verwende dafür ausschließlich bereits vorhandene Angaben aus den Dateien; keine eigene Berechnung des Gap\- oder Volatilitätsrisikos\.
 - Sortierung \(NEU\): Alle offenen Positionen absteigend nach
   Performance sortieren – die Position mit der höchsten \(positivsten\)
   Performance zuerst, die schwächste \(negativste\) zuletzt\. Nicht nach
@@ -1706,6 +1699,7 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr\.
   \(\+0,56% statt korrekt \+0,95%\) – seither wird in Python
   vorgerechnet\. Taucht die Zeile ausnahmsweise nicht auf, lass den
   Block weg, erfinde keine eigene Berechnung als Ersatz\.
+- PORTFOLIO\-FAZIT \(NEU 19\.08\.2026, Nutzerwunsch „Mehrwert aus vorhandenen Daten”\): Direkt nach „Portfolio\-Übersicht” wird ein kurzer Unterabschnitt „Portfolio\-Fazit” ausgegeben, sofern offene Positionen vorhanden sind\. Er verdichtet ausschließlich die vorhandenen Positionsdaten und darf einfache Bestandszählungen und Extremwerte aus diesen Daten ableiten, aber KEINE neuen Markt\- oder Prognosekennzahlen erzeugen\. Wenn die Daten es hergeben, nenne: Anzahl Positionen weniger als 2% vom Stop entfernt; Anzahl ungeschützter Positionen mit Stop = 0,00; Anzahl negativer Positionen; Anzahl Positionen mit mehr als +10% Performance; größte Gewinner; größte Verlierer; Positionen mit erreichtem TP1/TP2; Positionen ohne ausreichenden Stop\-Abstand\. Schließe mit 1–2 nüchternen Sätzen zum aktuellen Portfoliozustand, ohne Kauf\-/Verkaufsempfehlung und ohne neue Bewertungsskala\. Wenn eine der Informationen nicht aus den vorhandenen Daten ableitbar ist, lasse genau diesen Punkt weg statt zu schätzen\.
 - ERFOLGSBILANZ \(NEU 30\.07\.2026, Nutzerwunsch – GEGENSTÜCK zur
   Portfolio\-Übersicht, direkt DARUNTER als eigene Zeile bzw\.
   Zeilengruppe im selben Block\): Während die Portfolio\-Übersicht nur
@@ -1897,8 +1891,9 @@ Zeithorizont: Wochen / Monate / \>6 Monate
 Makro\-Treiber
 Bestaetigende Daten
 Gegentreiber / Risiko
-Was muesste technisch passieren, damit das bestehende Setup\-System einen konkreten Einstieg bestaetigt?
-
+Bestehender Kandidat / Bezug: Nur nennen, wenn ein passender Titel bereits in den bereitgestellten Setups, Watchlists oder offenen Positionen vorkommt; sonst „Kein bestehender Kandidat im Datenbestand”
+Konkreter technischer Trigger: Was muesste technisch passieren, damit das bestehende Setup\-System einen konkreten Einstieg bestaetigt?
+WICHTIG: Diese Ideen bleiben Perspektiven und sind KEINE konkreten Setups, KEINE Empfehlungen und KEINE Umgehung bestehender Filter\. Kein Titel darf allein wegen des Makrobildes als Einstieg dargestellt werden\.
 WICHTIG: Der Makro\-Block erzeugt selbst KEIN Handelssignal und darf keine
 bestehenden Filter umgehen\. Er liefert nur einen strategischen Vorlauf bzw\.
 eine Watchlist fuer spaetere regelbasierte Setups\.
@@ -1927,3 +1922,4 @@ Jede auffaellige Zahl im Makro\-Block muss auf eine reale Quelle oder eine
 klar gekennzeichnete deterministische Berechnung zurueckfuehrbar sein\.
 Wenn eine Quelle fehlt, schreibe „NICHT VERFUEGBAR“ statt einen Ersatzwert
 zu bilden\.
+
