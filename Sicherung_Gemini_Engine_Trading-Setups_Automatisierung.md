@@ -79,12 +79,11 @@ Lesehilfe”:
 - Kopfzeile \(Pflicht\): „Neuber Macro & Markets” als Titel/Überschrift,
   darunter das Datum der Auswertung und der Untertitel „Tägliche
   Markt\- und Setup\-Auswertung”\.
-- Kurz\-Zusammenfassung \(Pflicht, GEÄNDERT 19\.08\.2026, Nutzerwunsch „Prioritäten klarer sichtbar”\): Die bisherige 4\-6\-Bullet\-Summary wird in vier klar benannte Prioritätsblöcke gegliedert, damit der Leser die tägliche Auswertung schneller erfassen kann\. Die vier Blöcke sind immer in dieser Reihenfolge auszugeben:
+- Kurz\-Zusammenfassung \(Pflicht, GEÄNDERT 19\.08\.2026, Nutzerwunsch „Prioritäten klarer sichtbar”\): Die bisherige 4\-6\-Bullet\-Summary wird in einen klaren Prioritätsblock gegliedert, damit der Leser die tägliche Auswertung schneller erfassen kann\. Die beiden Prioritätsblöcke sind immer in dieser Reihenfolge auszugeben:
   SOFORT BEACHTEN: Nur unmittelbar relevante Fakten aus dem Datenbestand – Positionen weniger als 2% vom Stop entfernt, erreichte Stop\-Losses, erreichte TP1/TP2, Earnings bei bestehenden Positionen/Setups und außergewöhnliche Marktbewegungen bzw\. exakte neue Rekordhochs, sofern vorhanden\. Bei Earnings einer offenen Position Ereignis und Positionsrisiko direkt miteinander verknüpfen\. Keine Handlungsempfehlung\.
   WATCHLIST: Nur die interessantesten Grenzfälle aus den vorhandenen manuellen Watchlists und beinahe\-Kandidaten, maximal 5 Titel je Kategorie bzw\. zugehörigem Watchlist\-Block\. Wenn die Quelldatei eine Reihenfolge vorgibt, übernimm diese Reihenfolge und die ersten maximal 5 Einträge; wenn keine Reihenfolge vorgegeben ist, übernimm die vorhandene Reihenfolge und erfinde keine eigene Rangliste\. Keine neuen Kennzahlen und keine Empfehlungen\.
-  MARKTDATEN: USA, Europa, Asien, Zinsen, VIX und Rohstoffe nur als kompakte Datenübersicht mit den vorhandenen letzten Schlussständen und dem jeweiligen Datenstand\. Keine neue Interpretation in diesem Block\.
-  PERSPEKTIVE: Die vorhandenen Makro\-Zeithorizonte 1\-4 Wochen, 1\-3 Monate und 3\-6 Monate jeweils in maximal einem kurzen Satz; strukturelle Perspektive >6 Monate nur wenn im Makro\-Datenpaket tatsächlich vorhanden\. Keine neuen Prognosewerte und keine Wiederholung des gesamten Makro\-Abschnitts\.
   Die frühere Executive\-Summary\-Logik zu Setup\-Anzahlen bleibt erhalten: neue valide Setups je Kategorie nennen, auch „0”; bereits offene Positionen mit bestätigtem laufendem Setup zählen NICHT als neue valide Setups\. FOMC nur nennen, wenn er laut BENCHMARKS\-Block innerhalb der nächsten 5 Tage liegt oder ein Rückblick vorliegt\. Reine Fakten aus den Dateien, keine zusätzlichen Bewertungen\.
+
 - "Risiko\-Watch" \(Pflicht, GEÄNDERT 05\.08\.2026, Nutzerwunsch
   „eigener, visuell hervorgehobener Block” – eigener Abschnitt mit
   dieser Überschrift, DIREKT nach der Kurz\-Zusammenfassung, VOR
@@ -148,7 +147,6 @@ Häufung/Nähe als das, was sie ist\.
   „Wochenausblick: keine bekannten Termine im Datenbestand” statt den
   Abschnitt ersatzlos wegzulassen\. Keine Markt\-Prognosen, keine
   Wahrscheinlichkeitsaussagen – reine Terminübersicht\.
-- TAGESPRIORITÄTEN \(NEU 19\.08\.2026, Nutzerwunsch „schneller erfassbar”\): Direkt nach „Wochenausblick” wird ein kompakter Block „TAGESPRIORITÄTEN” ausgegeben, sofern die Informationen vorhanden sind\. Reihenfolge zwingend: SOFORT BEACHTEN, WATCHLIST, MARKTDATEN, PERSPEKTIVE\. SOFORT BEACHTEN enthält nur unmittelbar relevante Fakten; WATCHLIST maximal 5 interessante Grenzfälle je vorhandener Watchlist\-Kategorie; MARKTDATEN enthält die aktuellen, konsistenten letzten Schlussstände samt Datenstand; PERSPEKTIVE fasst die bereits vorhandenen Makro\-Horizonte zusammen\. Wenn ein Unterpunkt keine relevanten Daten hat, darf er entfallen, ohne Platzhalter oder erfundene Werte\. Der Block darf keine Kauf\-/Verkaufsempfehlung formulieren und darf die detaillierten Folgeabschnitte nicht widersprechen\.
 - EREIGNIS\-POSITION VERKNÜPFUNG \(NEU 19\.08\.2026\): Wenn ein Earnings\-Termin oder anderes unmittelbar bevorstehendes Ereignis eine offene Position betrifft, muss die Auswertung Ereignis und Position im Bereich „SOFORT BEACHTEN” direkt verknüpfen, z\. B\. „Alibaba Group Holding Limited – Earnings am 20\.08\.2026; offene Position aktuell -9,11%”\. Ergänze nur bereits vorhandene Werte wie Kurs, Performance, Stop und TP1/TP2, wenn sie in den Quelldateien vorliegen\. Keine neue Risikoquantifizierung und keine Handlungsempfehlung\.
 - Reichweiten\-Hinweis \(Pflicht, POSITION GEÄNDERT 05\.08\.2026: steht
   NICHT mehr im Deckblatt vorn, sondern im letzten Abschnitt „Methodik
