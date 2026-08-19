@@ -61,10 +61,10 @@ import io
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash"  # gemini-2.5-pro/-flash sind für NEUE API-Konten
-                              # bereits gesperrt (Auslaufen seit Juni/Okt. 2026).
-                              # gemini-3.5-flash ist die aktuelle Generation mit
-                              # echtem Gratis-Kontingent (Stand Juli 2026).
+MODELL = "gemini-3.5-flash"  # Primaer-Modell
+FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Fallback bei Tagesquota des Primaermodells
+                              # Das Fallback hat im Free Tier ein separates, hoeheres RPD-Limit.
+
 MAX_VERSUCHE = 5
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
 
@@ -372,6 +372,7 @@ def gemini_auswertung_starten():
 
     letzte_antwort = None
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
+    aktuelles_modell = MODELL
 
     # Harte Datenqualitaetskontrolle fuer Punkt 2: Der Makro-Block darf nur
     # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
@@ -422,7 +423,7 @@ def gemini_auswertung_starten():
                 ]
 
             antwort = client.models.generate_content(
-                model=MODELL,
+                model=aktuelles_modell,
                 contents=hochgeladene_teile + [
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht.",
@@ -452,14 +453,26 @@ def gemini_auswertung_starten():
 
             abbrechen, empfohlene_wartezeit, kategorie = analysiere_api_fehler(fehlertext)
             if abbrechen:
+                # Das RPD-Free-Tier-Limit ist modellbezogen. Wenn das
+                # Primaermodell sein Tageskontingent erreicht hat, wechseln
+                # wir genau einmal auf das definierte Fallback-Modell.
+                # Ist auch dessen Tageskontingent erschoepft, gibt es keinen
+                # weiteren sinnvollen Retry am selben Tag.
+                if aktuelles_modell == MODELL and FALLBACK_MODELL and FALLBACK_MODELL != MODELL:
+                    aktuelles_modell = FALLBACK_MODELL
+                    print(
+                        f"  Tages-Kontingent von {MODELL} erschoepft "
+                        "(429 RESOURCE_EXHAUSTED, PerDay). "
+                        f"Wechsle fuer diesen Lauf auf Fallback-Modell {FALLBACK_MODELL}."
+                    )
+                    continue
+
                 print(
-                    "  Tages-Kontingent des Gemini-Free-Tiers ist erschoepft "
-                    "(429 RESOURCE_EXHAUSTED, quotaId enthaelt 'PerDay') - ein "
-                    f"Retry am selben Tag bringt nichts, breche sofort ab statt "
-                    f"die restlichen {MAX_VERSUCHE - versuch} Versuche zu verbrennen. "
-                    "Entweder auf das taegliche Reset warten oder in der Google AI "
-                    "Studio / Cloud Console auf einen kostenpflichtigen Tier wechseln "
-                    "(https://ai.google.dev/gemini-api/docs/rate-limits)."
+                    f"  Tages-Kontingent des Gemini-Free-Tiers fuer {aktuelles_modell} ist erschoepft "
+                    "(429 RESOURCE_EXHAUSTED, quotaId enthaelt 'PerDay'). "
+                    f"Auch das Fallback-Modell kann heute nicht weiter verwendet werden; "
+                    f"breche ab statt die restlichen {MAX_VERSUCHE - versuch} Versuche zu verbrennen. "
+                    "Naechster sinnvoller Versuch nach dem taeglichen Reset oder mit erweitertem Tier."
                 )
                 sys.exit(2)
 
@@ -493,7 +506,7 @@ def gemini_auswertung_starten():
             time.sleep(WARTEZEIT_SEKUNDEN + versuch * 5)
             continue
 
-        print("  Erfolgreich!")
+        print(f"  Erfolgreich mit {aktuelles_modell}!")
         return text
 
     print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
