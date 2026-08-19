@@ -467,9 +467,7 @@ Häufung/Nähe als das, was sie ist\.
   Uhrzeit wäre erfunden\. Bilde AUSDRUECKLICH KEINE
   Regionen\-Mittelwerte und fasse die Indizes einer Region nicht zu
   einer Zahl zusammen \- uebernimm die Gliederung und alle Einzelwerte
-  wie in der Datei\. Setze den Zeitzonen\-Hinweis aus der Klammer\-Zeile
-  als kurze Anmerkung darunter \(US\-Wert = Schluss des Vortages,
-  asiatischer Wert = heutiger Schluss\)\. Keine eigene Interpretation in
+  wie in der Datei\. Keine eigene Interpretation in
   diesem Block, keine Prognose; die Einordnung folgt später im
   Marktumfeld\-Abschnitt\. Fehlt der Block \(älterer Lauf\), entfällt er
   ersatzlos\. Stehen einzelne Werte als „n/a” in der Datei, übernimm
@@ -1698,6 +1696,7 @@ kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr\.
   vorgerechnet\. Taucht die Zeile ausnahmsweise nicht auf, lass den
   Block weg, erfinde keine eigene Berechnung als Ersatz\.
 - PORTFOLIO\-FAZIT \(NEU 19\.08\.2026, Nutzerwunsch „Mehrwert aus vorhandenen Daten”\): Direkt nach „Portfolio\-Übersicht” wird ein kurzer Unterabschnitt „Portfolio\-Fazit” ausgegeben, sofern offene Positionen vorhanden sind\. Er verdichtet ausschließlich die vorhandenen Positionsdaten und darf einfache Bestandszählungen und Extremwerte aus diesen Daten ableiten, aber KEINE neuen Markt\- oder Prognosekennzahlen erzeugen\. Wenn die Daten es hergeben, nenne: Anzahl Positionen weniger als 2% vom Stop entfernt; Anzahl ungeschützter Positionen mit Stop = 0,00; Anzahl negativer Positionen; Anzahl Positionen mit mehr als +10% Performance; größte Gewinner; größte Verlierer; Positionen mit erreichtem TP1/TP2; Positionen ohne ausreichenden Stop\-Abstand\. Schließe mit 1–2 nüchternen Sätzen zum aktuellen Portfoliozustand, ohne Kauf\-/Verkaufsempfehlung und ohne neue Bewertungsskala\. Wenn eine der Informationen nicht aus den vorhandenen Daten ableitbar ist, lasse genau diesen Punkt weg statt zu schätzen\.
+- ERFOLGSBILANZ NACH STRATEGIE (GEÄNDERT 19.08.2026, Nutzerwunsch): Die Erfolgsbilanz ist nach den im Datenbestand vorhandenen Strategien getrennt auszuweisen, mindestens „Langfrist“, „Hebeltrader-Setup“, „Trendfolge“ und „Short“, sofern für die jeweilige Strategie abgeschlossene Positionen vorhanden sind. Pro Strategie ausweisen: Anzahl geschlossene Positionen, Trefferquote, Ø Performance gesamt, Ø Gewinner, Ø Verlierer und – soweit im Datenbestand vorhanden – Aufschlüsselung nach „Stop erreicht“ bzw. „manuell verkauft“. Zusätzlich bleibt die bisherige Gesamt-Erfolgsbilanz über alle Strategien erhalten. Keine Werte erfinden; wenn eine Strategie keine abgeschlossenen Positionen hat, nicht künstlich mit 0-Werten auffüllen.
 - ERFOLGSBILANZ \(NEU 30\.07\.2026, Nutzerwunsch – GEGENSTÜCK zur
   Portfolio\-Übersicht, direkt DARUNTER als eigene Zeile bzw\.
   Zeilengruppe im selben Block\): Während die Portfolio\-Übersicht nur
@@ -1890,6 +1889,7 @@ Makro\-Treiber
 Bestaetigende Daten
 Gegentreiber / Risiko
 Bestehender Kandidat / Bezug: Nur nennen, wenn ein passender Titel bereits in den bereitgestellten Setups, Watchlists oder offenen Positionen vorkommt; sonst „Kein bestehender Kandidat im Datenbestand”
+
 Konkreter technischer Trigger: Was muesste technisch passieren, damit das bestehende Setup\-System einen konkreten Einstieg bestaetigt?
 WICHTIG: Diese Ideen bleiben Perspektiven und sind KEINE konkreten Setups, KEINE Empfehlungen und KEINE Umgehung bestehender Filter\. Kein Titel darf allein wegen des Makrobildes als Einstieg dargestellt werden\.
 WICHTIG: Der Makro\-Block erzeugt selbst KEIN Handelssignal und darf keine
