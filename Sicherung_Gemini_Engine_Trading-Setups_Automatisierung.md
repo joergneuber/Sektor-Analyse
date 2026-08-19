@@ -1890,6 +1890,7 @@ Bestaetigende Daten
 Gegentreiber / Risiko
 Bestehender Kandidat / Bezug: Nur nennen, wenn ein passender Titel bereits in den bereitgestellten Setups, Watchlists oder offenen Positionen vorkommt; sonst „Kein bestehender Kandidat im Datenbestand”
 
+
 Konkreter technischer Trigger: Was muesste technisch passieren, damit das bestehende Setup\-System einen konkreten Einstieg bestaetigt?
 WICHTIG: Diese Ideen bleiben Perspektiven und sind KEINE konkreten Setups, KEINE Empfehlungen und KEINE Umgehung bestehender Filter\. Kein Titel darf allein wegen des Makrobildes als Einstieg dargestellt werden\.
 WICHTIG: Der Makro\-Block erzeugt selbst KEIN Handelssignal und darf keine
