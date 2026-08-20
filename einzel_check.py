@@ -90,6 +90,154 @@ BEOBACHTUNGS_DATEI = os.path.join(
 # benötigt; die eigentliche Watchlist bleibt die JSON-Datei.
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
 
+# Historische Zeitreihe des Einzel-Checks.
+# Pro Ticker und Check-Tag wird genau ein Snapshot gespeichert.
+# Die Datei ist append-or-update (dedupliziert nach Datum + Ticker) und
+# veraendert weder die A/B/C-Logik noch die bestehende Beobachtungsliste.
+HISTORIE_DATEI = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "einzel_check_historie.jsonl",
+)
+
+
+def _historie_normalisiere_wert(value):
+    """Macht pandas/numpy-Werte JSON-sicher; unbekannte Werte werden None."""
+    try:
+        if value is None:
+            return None
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def lade_historie_snapshot_map():
+    """Laedt vorhandene Snapshots und dedupliziert nach Datum + Ticker."""
+    snapshots = {}
+    if not os.path.exists(HISTORIE_DATEI):
+        return snapshots
+
+    try:
+        with open(HISTORIE_DATEI, "r", encoding="utf-8") as f:
+            for zeile in f:
+                zeile = zeile.strip()
+                if not zeile:
+                    continue
+                try:
+                    eintrag = json.loads(zeile)
+                except json.JSONDecodeError:
+                    continue
+                key = (eintrag.get("Datum"), eintrag.get("Ticker"))
+                if key[0] and key[1]:
+                    snapshots[key] = eintrag
+    except OSError:
+        pass
+
+    return snapshots
+
+
+def speichere_historie_snapshot(snapshot):
+    """Speichert einen Tages-Snapshot atomar und dedupliziert ihn."""
+    snapshots = lade_historie_snapshot_map()
+    key = (snapshot.get("Datum"), snapshot.get("Ticker"))
+    if not key[0] or not key[1]:
+        return
+
+    snapshots[key] = snapshot
+    sortiert = sorted(
+        snapshots.values(),
+        key=lambda x: (x.get("Datum", ""), x.get("Ticker", "")),
+    )
+
+    temp_datei = HISTORIE_DATEI + ".tmp"
+    with open(temp_datei, "w", encoding="utf-8") as f:
+        for eintrag in sortiert:
+            f.write(json.dumps(eintrag, ensure_ascii=False, sort_keys=True) + "\n")
+
+    os.replace(temp_datei, HISTORIE_DATEI)
+
+
+def _crv_aus_resultat(res):
+    """Gibt CRV1/CRV2/max CRV fuer die Historie zurueck."""
+    if not res:
+        return None, None, None
+    werte = []
+    result = []
+    for key in ("CRV1", "CRV2"):
+        value = _historie_normalisiere_wert(res.get(key))
+        result.append(value)
+        if isinstance(value, (int, float)):
+            werte.append(float(value))
+    return result[0], result[1], (max(werte) if werte else None)
+
+
+def schreibe_historie_snapshot(
+    ticker,
+    data,
+    sektor_info,
+    momentum_ergebnis,
+    trendfolge_res,
+    trendwende_res,
+    kauf,
+    vorheriger_status,
+):
+    """Persistiert alle fuer die spaetere B->A-/B->C-Analyse relevanten Werte."""
+    datum = datetime.date.today().isoformat()
+    close = high = low = None
+    try:
+        close = float(data["Close"].iloc[-1])
+        high = float(data["High"].iloc[-1])
+        low = float(data["Low"].iloc[-1])
+    except Exception:
+        pass
+
+    tf_crv1, tf_crv2, tf_crv_max = _crv_aus_resultat(trendfolge_res)
+    tw_crv1, tw_crv2, tw_crv_max = _crv_aus_resultat(trendwende_res)
+    sector_rs_info = momentum_ergebnis.get("sector_rs_info") or {}
+
+    snapshot = {
+        "Schema": 1,
+        "Datum": datum,
+        "Ticker": ticker,
+        "Name": NAME_HINWEIS.get(ticker, ticker),
+        "Status": kauf.get("Status"),
+        "Vorheriger_Status": vorheriger_status,
+        "Momentum": kauf.get("Momentum"),
+        "Momentum_Score": momentum_ergebnis.get("score"),
+        "Momentum_Max": momentum_ergebnis.get("max_score"),
+        "Stoch": _historie_normalisiere_wert(momentum_ergebnis.get("stoch")),
+        "Vol_Ratio": _historie_normalisiere_wert(momentum_ergebnis.get("vol_ratio")),
+        "EMA50_Distance": _historie_normalisiere_wert(momentum_ergebnis.get("ema50_distance")),
+        "Near_High": bool(momentum_ergebnis.get("near_high", False)),
+        "Kurs": _historie_normalisiere_wert(close),
+        "High": _historie_normalisiere_wert(high),
+        "Low": _historie_normalisiere_wert(low),
+        "Sektor": sektor_info.get("sektor"),
+        "Sektor_ETF": sektor_info.get("etf"),
+        "Sektor_RS": _historie_normalisiere_wert(sector_rs_info.get("outperformance")),
+        "Sektor_RS_verfuegbar": bool(sector_rs_info.get("verfuegbar", False)),
+        "Trendfolge_Setup": trendfolge_res.get("Setup_Typ") if trendfolge_res else None,
+        "Trendfolge_Status": trendfolge_res.get("Status2") if trendfolge_res else None,
+        "Trendfolge_CRV1": tf_crv1,
+        "Trendfolge_CRV2": tf_crv2,
+        "Trendfolge_CRV_Max": tf_crv_max,
+        "Trendwende_Setup": trendwende_res.get("Setup_Typ") if trendwende_res else None,
+        "Trendwende_CRV1": tw_crv1,
+        "Trendwende_CRV2": tw_crv2,
+        "Trendwende_CRV_Max": tw_crv_max,
+        "Gruende": kauf.get("Gruende", []),
+        "Risiken": kauf.get("Risiken", []),
+    }
+
+    try:
+        speichere_historie_snapshot(snapshot)
+    except OSError as exc:
+        print(f"  WARNUNG: Historien-Snapshot konnte nicht gespeichert werden: {exc}")
+
 
 def lade_beobachtungsliste():
     """Lädt die aktuell persistierte Einzel-Check-Beobachtungsliste."""
@@ -1359,6 +1507,21 @@ def pruefe(
     # aus der Beobachtungsliste gemeldet werden.
     vorherige_liste = lade_beobachtungsliste()
     vorheriger_status = vorherige_liste.get(ticker, {}).get("status")
+
+    # Historien-Snapshot: unabhaengig davon, ob der Titel A/B/C/kein Kandidat ist.
+    # Dadurch koennen spaeter echte B-Episoden, Rueckfaelle und A-Aufstiege
+    # zeitlich rekonstruiert werden, ohne die bestehende Klassifikation zu veraendern.
+    schreibe_historie_snapshot(
+        ticker=ticker,
+        data=data,
+        sektor_info=sektor_info,
+        momentum_ergebnis=momentum_ergebnis,
+        trendfolge_res=trendfolge_res,
+        trendwende_res=trendwende_aktien_res,
+        kauf=kauf,
+        vorheriger_status=vorheriger_status,
+    )
+
     if kauf["Status"] == "KAUFKANDIDAT A" and vorheriger_status in (
         "KAUFKANDIDAT B", "KAUFKANDIDAT C"
     ):
@@ -1503,6 +1666,10 @@ if __name__ == "__main__":
         "analyse.py. Der Sektor-RS wird direkt gegen "
         "den zugehörigen Sektor-ETF berechnet. "
         "Momentum allein ist KEIN Kauf.\n"
+    )
+    print(
+        f"Historie: {HISTORIE_DATEI} "
+        "(1 Snapshot pro Ticker/Tag, ohne A/B/C-Logikaenderung)\n"
     )
 
     spy_close = get_benchmark_close()
