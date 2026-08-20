@@ -1132,7 +1132,13 @@ def main():
                 if d == "nicht_ueber_wolke":
                     zusatz = "Kurs noch unter/in der Wolke"
                 elif isinstance(d, int):
-                    zusatz = f"letzter Kumo-Ausbruch vor {d} Handelstagen"
+                    if d < FRISCHE_TAGE:
+                        zusatz = f"Kumo-Ausbruch vor {d} Handelstagen (noch im Frischefenster)"
+                    else:
+                        zusatz = (
+                            f"Kumo-Ausbruch erkannt, aber vor {d} Handelstagen "
+                            f"(nicht mehr frisch; Triggerfenster umfasst 0-{FRISCHE_TAGE - 1} Tage)"
+                        )
                 else:
                     zusatz = "kein Kumo-Ausbruch in 60 Tagen"
                 return f"{_name_oder_ticker(t)} [{zusatz}]"
