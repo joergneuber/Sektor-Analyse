@@ -3861,7 +3861,7 @@ if __name__ == "__main__":
     with open(f"Briefing({today}).txt", "w", encoding="utf-8") as f:
         f.write(f"MARKT-UPDATE {today}\n==============================\n\n")
         f.write(get_handelstage_je_region_text() + "\n")
-        f.write(f"Erstellt am: {datetime.datetime.now().strftime('%d.%m.%Y, %H:%M')} Uhr (MESZ/MEZ)\n\n")
+        f.write(f"Erstellt am: {datetime.datetime.now(ZoneInfo("Europe/Berlin")).strftime('%d.%m.%Y, %H:%M')} Uhr (MESZ/MEZ)\n\n")
 
         # Kurzüberblick über den zugrunde liegenden Trading-Ansatz
         f.write("STRATEGIE-ANSATZ\n")
