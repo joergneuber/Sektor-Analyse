@@ -114,13 +114,25 @@ def friere_erste_zwei_zeilen_ein(creds, spreadsheet_id):
     """Fixiert im neu angelegten Google Sheet die obersten zwei Zeilen."""
     try:
         sheets_service = build('sheets', 'v4', credentials=creds)
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields='sheets.properties.sheetId,sheets.properties.title'
+        ).execute()
+
+        sheets = spreadsheet.get('sheets', [])
+        if not sheets:
+            raise RuntimeError("Google Sheet enthält kein Tabellenblatt.")
+
+        sheet_id = sheets[0]['properties']['sheetId']
+        sheet_title = sheets[0]['properties'].get('title', 'unbekannt')
+
         sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
             body={
                 'requests': [{
                     'updateSheetProperties': {
                         'properties': {
-                            'sheetId': 0,
+                            'sheetId': sheet_id,
                             'gridProperties': {
                                 'frozenRowCount': 2
                             }
@@ -130,7 +142,7 @@ def friere_erste_zwei_zeilen_ein(creds, spreadsheet_id):
                 }]
             }
         ).execute()
-        print("DEBUG: Google Sheet: oberste 2 Zeilen erfolgreich fixiert.")
+        print(f"DEBUG: Google Sheet: oberste 2 Zeilen erfolgreich fixiert (Tab: {sheet_title}, ID: {sheet_id}).")
     except Exception as e:
         print(f"WARNUNG: Oberste 2 Zeilen konnten nicht fixiert werden: {e}")
 
