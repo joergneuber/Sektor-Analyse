@@ -946,6 +946,17 @@ Zeile mit Kurs/4-Wochen-Veränderung(/Hoch-Tief-Nähe), plus etwaige
 eingerückte Zusatzzeilen (Rekord-Nähe, Saisonalität, jeweils mit
 „->” eingerückt) DIREKT darunter, nicht nur als isolierte
 Einzelsätze an anderer Stelle. Zusätzlich kann die briefing.txt
+• TECHNISCHE LAGE JE METALL (NEU 21.08.2026, reine AUSGABE-ERGAENZUNG): Innerhalb von
+„LAGE JE METALL” gib fuer ALLE vier Edelmetalle (Gold, Silber, Platin, Palladium) zusaetzlich
+eine kurze technische Lage aus den bereits bereitgestellten Daten aus, AUCH wenn kein
+gueltiges Setup gefunden wurde. Wenn die entsprechenden Werte im Datenpaket vorhanden
+sind, nenne je Metall: Kurs, EMA20, EMA50, EMA200, WMA200, RSI, MACD-Trend, Kumo-Status
+und Position innerhalb der 52-Wochen-Spanne. Schließe mit einem kurzen Satz, welche
+konkrete bestehende Setup-Bedingung bzw. welcher technische Trigger fuer ein gueltiges
+Trendfolge-, Trendwende- oder Short-Setup noch fehlt. Verwende AUSSCHLIESSLICH die
+bereitgestellten Scanner-/Setup-Daten; fehlende Werte nicht berechnen oder erfinden.
+Diese Zusatzinformation ist REINE AUSGABE und darf die bestehende Setup-Auswahl,
+CRV-Logik, Filter, Schwellenwerte, Setup-Qualitaet oder Signale in KEINER Weise veraendern.
 einen eigenen Block „REKORD-NÄHE” enthalten (nur wenn mindestens ein
 Instrument betroffen ist, sonst entfällt er ersatzlos). PFLICHT: Ist
 eine Rekord-Nähe-Zeile vorhanden, übernimm sie WÖRTLICH zusätzlich
