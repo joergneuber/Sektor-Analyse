@@ -985,6 +985,35 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
             if not neue_file_id:
                 raise RuntimeError("Google Drive meldete keine Datei-ID nach erfolgreichem Upload.")
 
+            # NUR DARSTELLUNG: Die fünf Kursfelder als echte Zahlen mit exakt
+            # zwei Dezimalstellen formatieren. Die Werte selbst bleiben numerisch.
+            sheets_service = build('sheets', 'v4', credentials=service._http.credentials)
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=neue_file_id,
+                body={
+                    'requests': [{
+                        'repeatCell': {
+                            'range': {
+                                'sheetId': 0,
+                                'startColumnIndex': 8,   # Einstieg
+                                'endColumnIndex': 13    # bis einschließlich TP2
+                            },
+                            'cell': {
+                                'userEnteredFormat': {
+                                    'numberFormat': {
+                                        'type': 'NUMBER',
+                                        'pattern': '0.00'
+                                    }
+                                }
+                            },
+                            'fields': 'userEnteredFormat.numberFormat'
+                        }
+                    }]
+                }
+            ).execute()
+
+            print("DEBUG: Google-Sheets-Zahlenformat 0,00 für Einstieg/Aktueller_Kurs/Stop/TP1/TP2 gesetzt.")
+
             print(
                 f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt "
                 f"(ID: {neue_file_id}, Versuch {versuch}/3)."
