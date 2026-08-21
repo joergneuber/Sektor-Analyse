@@ -172,7 +172,10 @@ def normalisiere_zahlen(df):
     for spalte in NUMERISCHE_SPALTEN:
         if spalte in df.columns:
             df[spalte] = df[spalte].apply(
-                lambda v: str(v).replace(',', '.') if isinstance(v, str) and v.strip() != "" else v
+                lambda v: (
+                    str(v).replace('%', '').replace(',', '.').strip()
+                    if isinstance(v, str) and v.strip() != "" else v
+                )
             )
     return df
 
@@ -886,36 +889,42 @@ def berechne_optionsschein_performance(df):
 
 
 def _normalisiere_csv_fuer_google_sheets(lokale_datei):
-    """Erzeugt eine temporäre Upload-CSV mit Punkt-Dezimaltrennzeichen.
-    Dadurch werden Kurswerte wie 2.5 nicht als Datum (02.05.2026) interpretiert.
-    Die Arbeitsdatei im Repository bleibt unverändert.
+    """Erzeugt die temporäre Upload-CSV für Google Sheets.
+    Kurs-/Zahlenfelder behalten das deutsche Dezimalkomma, damit Werte wie
+    2,5 als Zahl und nicht als Datum interpretiert werden.
+    Prozentfelder erhalten ein explizites '%' und werden dadurch als
+    Prozentwert statt als Datum importiert.
+    Die eigentliche Arbeitsdatei bleibt unverändert.
     """
     numerische_spalten = [
         'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
-        'Ausstiegskurs', 'Performance_Seit_Einstieg%',
-        'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs',
-        'OS_Performance%'
+        'Ausstiegskurs', 'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs'
+    ]
+    prozent_spalten = [
+        'Performance_Seit_Einstieg%', 'OS_Performance%'
     ]
 
     df = pd.read_csv(lokale_datei, sep=';', encoding='utf-8-sig', dtype=str)
 
     for spalte in numerische_spalten:
         if spalte in df.columns:
+            df[spalte] = df[spalte].fillna('').astype(str).str.strip()
+
+    for spalte in prozent_spalten:
+        if spalte in df.columns:
             serie = df[spalte].fillna('').astype(str).str.strip()
-            # Deutsches Dezimal-Komma -> Punkt; Tausenderpunkte bleiben
-            # hier unberührt, weil die vorhandene CSV keine Tausenderpunkte
-            # in diesen Kursfeldern verwendet.
-            df[spalte] = serie.str.replace(',', '.', regex=False)
+            # Bereits vorhandenes % nicht doppelt anhängen.
+            serie = serie.str.replace('%', '', regex=False).str.strip()
+            df[spalte] = serie.where(
+                serie.eq('') | serie.str.lower().eq('nan'),
+                serie + '%'
+            )
 
     upload_datei = lokale_datei + '.google_upload.csv'
-    # Für den Google-Drive-Import bewusst KOMMA-getrennt schreiben.
-    # Die lokale Arbeitsdatei bleibt weiterhin semikolon-getrennt.
-    # Dadurch entspricht die temporäre Upload-CSV dem Format, das der
-    # native Google-Sheets-CSV-Import erwartet.
     df.to_csv(
         upload_datei,
         index=False,
-        sep=',',
+        sep=';',
         encoding='utf-8-sig'
     )
     return upload_datei
@@ -957,7 +966,7 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
                 body=file_metadata,
                 media_body=media,
                 fields='id'
-            ).execute()
+            ).execute(num_retries=3)
 
             neue_file_id = neue_datei.get('id')
             if not neue_file_id:
