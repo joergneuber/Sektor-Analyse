@@ -908,10 +908,14 @@ def _normalisiere_csv_fuer_google_sheets(lokale_datei):
             df[spalte] = serie.str.replace(',', '.', regex=False)
 
     upload_datei = lokale_datei + '.google_upload.csv'
+    # Für den Google-Drive-Import bewusst KOMMA-getrennt schreiben.
+    # Die lokale Arbeitsdatei bleibt weiterhin semikolon-getrennt.
+    # Dadurch entspricht die temporäre Upload-CSV dem Format, das der
+    # native Google-Sheets-CSV-Import erwartet.
     df.to_csv(
         upload_datei,
         index=False,
-        sep=';',
+        sep=',',
         encoding='utf-8-sig'
     )
     return upload_datei
