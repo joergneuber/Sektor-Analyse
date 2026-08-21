@@ -107,7 +107,32 @@ def get_drive_service():
         else:
             raise EnvironmentError("GDRIVE_TOKEN: Credentials ungültig, kein Refresh möglich.")
 
-    return build('drive', 'v3', credentials=creds)
+    return build('drive', 'v3', credentials=creds), creds
+
+
+def friere_erste_zwei_zeilen_ein(creds, spreadsheet_id):
+    """Fixiert im neu angelegten Google Sheet die obersten zwei Zeilen."""
+    try:
+        sheets_service = build('sheets', 'v4', credentials=creds)
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                'requests': [{
+                    'updateSheetProperties': {
+                        'properties': {
+                            'sheetId': 0,
+                            'gridProperties': {
+                                'frozenRowCount': 2
+                            }
+                        },
+                        'fields': 'gridProperties.frozenRowCount'
+                    }
+                }]
+            }
+        ).execute()
+        print("DEBUG: Google Sheet: oberste 2 Zeilen erfolgreich fixiert.")
+    except Exception as e:
+        print(f"WARNUNG: Oberste 2 Zeilen konnten nicht fixiert werden: {e}")
 
 
 def finde_datei(service, folder_id):
@@ -854,11 +879,12 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
     file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
     neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
     print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
+    friere_erste_zwei_zeilen_ein(creds, neue_datei.get('id'))
 
 
 if __name__ == '__main__':
     print("Positions-Tracker gestartet...")
-    service = get_drive_service()
+    service, creds = get_drive_service()
 
     file_id, mime_type = finde_datei(service, FOLDER_ID)
     df = lade_positionen_herunter(service, file_id, mime_type)
