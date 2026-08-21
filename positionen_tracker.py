@@ -900,9 +900,6 @@ def _normalisiere_csv_fuer_google_sheets(lokale_datei):
         'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
         'Ausstiegskurs', 'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs'
     ]
-    kurs_spalten_zwei_dezimalen = [
-        'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2'
-    ]
     prozent_spalten = [
         'Performance_Seit_Einstieg%', 'OS_Performance%'
     ]
@@ -911,17 +908,7 @@ def _normalisiere_csv_fuer_google_sheets(lokale_datei):
 
     for spalte in numerische_spalten:
         if spalte in df.columns:
-            serie = df[spalte].fillna('').astype(str).str.strip()
-            if spalte in kurs_spalten_zwei_dezimalen:
-                def _zwei_dezimalen(v):
-                    if not v or v.lower() == 'nan':
-                        return ''
-                    try:
-                        return f"{float(v.replace(',', '.')):.2f}".replace('.', ',')
-                    except (ValueError, TypeError):
-                        return v
-                serie = serie.apply(_zwei_dezimalen)
-            df[spalte] = serie
+            df[spalte] = df[spalte].fillna('').astype(str).str.strip()
 
     for spalte in prozent_spalten:
         if spalte in df.columns:
