@@ -6,7 +6,6 @@ import smtplib
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 import pandas as pd
-from openpyxl import load_workbook
 import yfinance as yf
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -890,55 +889,57 @@ def berechne_optionsschein_performance(df):
 
 
 def _normalisiere_csv_fuer_google_sheets(lokale_datei):
-    """Erzeugt eine temporäre XLSX-Uploaddatei mit echtem Zahlenformat.
-    Die fünf Kursfelder werden als echte Zahlen gespeichert und mit 0.00
-    formatiert. Dadurch bleiben z.B. 72,00 / 2,50 / 69,50 numerisch und
-    werden in Google Sheets mit zwei Dezimalstellen angezeigt.
-    Prozentwerte bleiben numerisch und erhalten ein zweistelliges
-    Prozentformat. Die eigentliche Arbeitsdatei bleibt unverändert.
+    """Erzeugt die temporäre Upload-CSV für Google Sheets.
+    Kurs-/Zahlenfelder behalten das deutsche Dezimalkomma, damit Werte wie
+    2,5 als Zahl und nicht als Datum interpretiert werden.
+    Prozentfelder erhalten ein explizites '%' und werden dadurch als
+    Prozentwert statt als Datum importiert.
+    Die eigentliche Arbeitsdatei bleibt unverändert.
     """
-    df = pd.read_csv(lokale_datei, sep=';', encoding='utf-8-sig')
-
-    kurs_spalten = [
+    numerische_spalten = [
+        'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
+        'Ausstiegskurs', 'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs'
+    ]
+    kurs_spalten_zwei_dezimalen = [
         'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2'
     ]
     prozent_spalten = [
         'Performance_Seit_Einstieg%', 'OS_Performance%'
     ]
-    numerische_spalten = [
-        'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
-        'Ausstiegskurs', 'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs',
-        'Performance_Seit_Einstieg%', 'OS_Performance%'
-    ]
+
+    df = pd.read_csv(lokale_datei, sep=';', encoding='utf-8-sig', dtype=str)
 
     for spalte in numerische_spalten:
         if spalte in df.columns:
-            df[spalte] = pd.to_numeric(
-                df[spalte].astype(str).str.replace('%', '', regex=False).str.replace(',', '.', regex=False),
-                errors='coerce'
-            )
-
-    upload_datei = lokale_datei + '.google_upload.xlsx'
-    df.to_excel(upload_datei, index=False, engine='openpyxl')
-
-    wb = load_workbook(upload_datei)
-    ws = wb.active
-
-    header_map = {cell.value: cell.column for cell in ws[1]}
-
-    for spalte in kurs_spalten:
-        col = header_map.get(spalte)
-        if col:
-            for row in range(2, ws.max_row + 1):
-                ws.cell(row=row, column=col).number_format = '0.00'
+            serie = df[spalte].fillna('').astype(str).str.strip()
+            if spalte in kurs_spalten_zwei_dezimalen:
+                def _zwei_dezimalen(v):
+                    if not v or v.lower() == 'nan':
+                        return ''
+                    try:
+                        return f"{float(v.replace(',', '.')):.2f}".replace('.', ',')
+                    except (ValueError, TypeError):
+                        return v
+                serie = serie.apply(_zwei_dezimalen)
+            df[spalte] = serie
 
     for spalte in prozent_spalten:
-        col = header_map.get(spalte)
-        if col:
-            for row in range(2, ws.max_row + 1):
-                ws.cell(row=row, column=col).number_format = '0.00"%"'
+        if spalte in df.columns:
+            serie = df[spalte].fillna('').astype(str).str.strip()
+            # Bereits vorhandenes % nicht doppelt anhängen.
+            serie = serie.str.replace('%', '', regex=False).str.strip()
+            df[spalte] = serie.where(
+                serie.eq('') | serie.str.lower().eq('nan'),
+                serie + '%'
+            )
 
-    wb.save(upload_datei)
+    upload_datei = lokale_datei + '.google_upload.csv'
+    df.to_csv(
+        upload_datei,
+        index=False,
+        sep=';',
+        encoding='utf-8-sig'
+    )
     return upload_datei
 
 def hochladen(service, lokale_datei, folder_id, alte_file_id):
@@ -964,14 +965,14 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
     }
 
     upload_datei = _normalisiere_csv_fuer_google_sheets(lokale_datei)
-    print(f"DEBUG: Google-Sheets-Upload verwendet formatierte XLSX: {upload_datei}")
+    print(f"DEBUG: Google-Sheets-Upload verwendet normalisierte CSV: {upload_datei}")
 
     letzter_fehler = None
     for versuch in range(1, 4):
         try:
             media = MediaIoBaseUpload(
                 io.FileIO(upload_datei, 'rb'),
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                mimetype='text/csv',
                 resumable=False
             )
             neue_datei = service.files().create(
