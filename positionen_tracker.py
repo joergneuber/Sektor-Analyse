@@ -504,7 +504,41 @@ def lade_positionen_herunter(service, file_id, mime_type):
         for spalte in SPALTEN:
             if spalte not in df.columns:
                 df[spalte] = ""
-        return df[SPALTEN]
+        df = df[SPALTEN]
+
+        # Zusätzliche Recovery-Prüfung:
+        # Wenn das vorhandene Drive-Sheet zwar existiert, aber keine einzige
+        # echte Positionszeile enthält (z. B. nur die ANLEITUNG-Zeile), darf
+        # dieser leere Bestand die lokale Wiederherstellungsdatei nicht
+        # überschreiben. In diesem Fall wird die lokale CSV verwendet.
+        echte_positionen = df[
+            df['Ticker'].astype(str).str.strip().ne('') &
+            df['Ticker'].astype(str).str.strip().ne(ANLEITUNG_TICKER)
+        ] if 'Ticker' in df.columns else pd.DataFrame()
+
+        if echte_positionen.empty and os.path.exists(LOKALE_DATEI):
+            try:
+                lokal = pd.read_csv(LOKALE_DATEI, sep=';', encoding='utf-8-sig')
+                for spalte in SPALTEN:
+                    if spalte not in lokal.columns:
+                        lokal[spalte] = ""
+                lokal = lokal[SPALTEN]
+                echte_lokale_positionen = lokal[
+                    lokal['Ticker'].astype(str).str.strip().ne('') &
+                    lokal['Ticker'].astype(str).str.strip().ne(ANLEITUNG_TICKER)
+                ] if 'Ticker' in lokal.columns else pd.DataFrame()
+
+                if not echte_lokale_positionen.empty:
+                    print(
+                        f"DEBUG: Drive-Datei enthält keine echten Positionen - "
+                        f"verwende lokale {LOKALE_DATEI} mit "
+                        f"{len(echte_lokale_positionen)} Position(en) als Wiederherstellung."
+                    )
+                    return lokal
+            except Exception as e:
+                print(f"WARNUNG: Lokale Wiederherstellungsdatei konnte nicht gelesen werden: {e}")
+
+        return df
     except Exception as e:
         print(f"FEHLER beim Herunterladen/Parsen von {DRIVE_NAME}: {e}. Starte mit leerer Liste.")
         return pd.DataFrame(columns=SPALTEN)
