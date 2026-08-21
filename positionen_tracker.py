@@ -25,6 +25,7 @@ DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native G
                                                  # Kopie mehr, wie es bei einer echten .csv-Datei passiert)
 DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
 SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
+GOLD_SPOT_TICKER = 'XAUUSD=X'  # Yahoo Finance: Gold Spot / USD
 ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
@@ -212,14 +213,24 @@ def vervollstaendige_stammdaten(df):
         name_leer = str(row['Name']).strip() in ("", "nan")
         sektor_leer = str(row.get('Sektor', '')).strip() in ("", "nan")
 
-        if markt_leer:
-            df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
-        if waehrung_leer:
-            if '.' in ticker_upper:
-                df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
-            else:
+        if ticker_upper == GOLD_SPOT_TICKER:
+            if markt_leer:
+                df.at[idx, 'Markt'] = 'SPOT'
+            if waehrung_leer:
                 df.at[idx, 'Waehrung'] = 'USD'
-        if name_leer or sektor_leer:
+            if name_leer:
+                df.at[idx, 'Name'] = 'Gold Spot'
+            if str(row.get('Produkt_Typ', '')).strip() in ("", "nan"):
+                df.at[idx, 'Produkt_Typ'] = 'Gold Spot'
+        else:
+            if markt_leer:
+                df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
+            if waehrung_leer:
+                if '.' in ticker_upper:
+                    df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
+                else:
+                    df.at[idx, 'Waehrung'] = 'USD'
+        if (name_leer or sektor_leer) and ticker_upper != GOLD_SPOT_TICKER:
             try:
                 info = yf.Ticker(ticker).info
             except Exception:
@@ -281,21 +292,28 @@ def ergaenze_neue_zeilen(df):
         # Ticker gelten als US-Titel (Alpaca). Die Waehrung wird grob aus dem
         # Suffix abgeleitet (.L = GBP-Sonderfall, sonst EUR fuer EU-Boersen).
         ticker_upper = ticker.upper()
-        if '.' in ticker_upper:
-            markt = 'EU'
-            waehrung = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
-        else:
-            markt = 'US'
+        if ticker_upper == GOLD_SPOT_TICKER:
+            markt = 'SPOT'
             waehrung = 'USD'
+            name = 'Gold Spot'
+            if str(row.get('Produkt_Typ', '')).strip() in ("", "nan"):
+                df.at[idx, 'Produkt_Typ'] = 'Gold Spot'
+        else:
+            if '.' in ticker_upper:
+                markt = 'EU'
+                waehrung = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
+            else:
+                markt = 'US'
+                waehrung = 'USD'
 
-        try:
-            info = yf.Ticker(ticker).info
-            name = info.get('longName', ticker)
-            if not name:
+            try:
+                info = yf.Ticker(ticker).info
+                name = info.get('longName', ticker)
+                if not name:
+                    name = ticker
+            except Exception as e:
+                print(f"DEBUG: Firmenname für {ticker} konnte nicht ermittelt werden ({e}) - nutze Ticker als Name.")
                 name = ticker
-        except Exception as e:
-            print(f"DEBUG: Firmenname für {ticker} konnte nicht ermittelt werden ({e}) - nutze Ticker als Name.")
-            name = ticker
 
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
@@ -392,7 +410,7 @@ def stelle_anleitung_sicher(df):
         "Einstiegsdatum und Status=Offen selbst ergaenzt. "
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
-        ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert! "
+        ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert. GOLD SPOT: fuer einen Spot-Goldkauf Ticker 'XAUUSD=X' verwenden; Produkt_Typ='Gold Spot' wird automatisch gesetzt und der Kurs via yfinance aktualisiert. "
         "Sektor: optional, rein informativ. Ideen_Quelle: optional (Trendfolge/Trendwende/"
         "Short/Langfrist/Edelmetalle/Manuell) - leer wird als Manuell gewertet; wird nie "
         "automatisch ueberschrieben."
@@ -481,11 +499,17 @@ def lade_positionen_herunter(service, file_id, mime_type):
 
 def hole_aktuellen_kurs(ticker, markt):
     """Holt den letzten verfügbaren Schlusskurs - via Alpaca für US-Werte
-    (suffixlose Ticker), via yfinance für alle europäischen Titel (Ticker mit
-    Punkt-Suffix: .DE, .PA, .AS, .MI, .L, ...), inkl. NaN-Bereinigung.
-    Sicherheitsnetz: Ein Ticker MIT Suffix läuft immer über yfinance, selbst
-    wenn im Markt-Feld (manuell) US steht - Alpaca kennt keine EU-Ticker."""
+    (suffixlose Ticker), via yfinance für europäische Titel und Gold Spot
+    (XAUUSD=X), inkl. NaN-Bereinigung."""
     try:
+        if str(ticker).upper() == GOLD_SPOT_TICKER:
+            hist = yf.Ticker(ticker).history(period="10d")
+            if hist.empty:
+                return None
+            hist = hist.dropna(subset=['Close'])
+            if hist.empty:
+                return None
+            return float(hist['Close'].iloc[-1])
         if markt == 'US' and '.' not in str(ticker):
             start_date = datetime.datetime.now() - datetime.timedelta(days=10)
             request = StockBarsRequest(symbol_or_symbols=[ticker], start=start_date, timeframe=TimeFrame.Day)
