@@ -468,7 +468,34 @@ def lade_positionen_herunter(service, file_id, mime_type):
     stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
     Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
     if file_id is None:
-        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
+        # Wiederherstellungs-/Erstinitialisierungsfall:
+        # Wenn das native Google Sheet in Drive fehlt, aber die lokale
+        # Offene_Positionen.csv vorhanden ist, diese als Ausgangsbasis laden.
+        # So geht der komplette lokale Positionsbestand (offen + geschlossen)
+        # bei einem verlorenen/neu anzulegenden Drive-Sheet nicht verloren.
+        if os.path.exists(LOKALE_DATEI):
+            try:
+                print(
+                    f"DEBUG: {DRIVE_NAME} existiert nicht in Drive - "
+                    f"verwende lokale {LOKALE_DATEI} als Wiederherstellungsquelle."
+                )
+                df = pd.read_csv(LOKALE_DATEI, sep=';', encoding='utf-8-sig')
+                for spalte in SPALTEN:
+                    if spalte not in df.columns:
+                        df[spalte] = ""
+                df = df[SPALTEN]
+                print(f"DEBUG: Lokale Wiederherstellungsdatei mit {len(df)} Zeile(n) geladen.")
+                return df
+            except Exception as e:
+                print(
+                    f"WARNUNG: Lokale Wiederherstellungsdatei {LOKALE_DATEI} "
+                    f"konnte nicht gelesen werden: {e}. Starte mit leerer Liste."
+                )
+        else:
+            print(
+                f"DEBUG: {DRIVE_NAME} existiert nicht in Drive und {LOKALE_DATEI} "
+                f"ist lokal nicht vorhanden - starte mit leerer Liste."
+            )
         return pd.DataFrame(columns=SPALTEN)
 
     try:
