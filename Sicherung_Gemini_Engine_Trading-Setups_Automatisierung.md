@@ -1810,7 +1810,6 @@ HARTE MAKRO-DATENREGELN (VERBINDLICH)
 • PROXY muss immer ausdruecklich als Proxy bezeichnet werden und darf niemals als Originalpreis des zugrunde liegenden Assets ausgegeben werden.
 • MODEL_DERIVED ist ausschliesslich fuer die spaetere Szenario-/Wahrscheinlichkeitslogik zulaessig. Eine MODEL_DERIVED-Wahrscheinlichkeit ist kein realer Datenwert und darf niemals als Markterwartung aus einer Quelle dargestellt werden.
 • UNAVAILABLE bleibt UNAVAILABLE. Kein letzter Wert, keine Null und kein Proxy darf stillschweigend als Ersatz eingesetzt werden.
-• MAKRO-ZEITBEZUG (NEU 21.08.2026): Ein gespeicherter/älterer Makro-Wert darf niemals wie ein zweiter aktueller Kurs wirken. Wenn ein aktueller Wert und ein älterer Makro-Basiswert genannt werden, müssen beide eindeutig getrennt und mit Datenstand/Datum gekennzeichnet werden (z. B. „Bitcoin aktuell: …“ und „Makro-Basiswert (Stand: …): …“). Den Begriff „älterer Makro-Stand“ nicht ohne Datum/Zeitbezug verwenden.
 • Das Makro-Datenpaket enthaelt ein MAKRO-SZENARIO-GATE. Bei GESPERRT duerfen in Punkt 2 KEINE geschaetzten Makro-Prognosewerte und KEINE Szenario-Wahrscheinlichkeiten ausgegeben werden. Stattdessen die konkreten kritischen Datenluecken nennen und die Zukunftsaussagen entsprechend begrenzen.
 • Fed-Erwartung: keine kostenpflichtige CME-FedWatch-API. Die eigene marktimplizierte Erwartung wird aus realen 30-Day-Fed-Funds-Futures berechnet; die Berechnungsmethodik muss nachvollziehbar bleiben.
 • PMI: keine geschaetzten PMI-Werte. Fuer die USA sind offizielle oeffentliche ISM-Manufacturing-/Services-Releases die Primaerquelle. Nicht verfuegbare weitere PMI-Reihen bleiben UNAVAILABLE.
@@ -1887,11 +1886,20 @@ Zeithorizont: Wochen / Monate / >6 Monate
 Makro-Treiber
 Bestaetigende Daten
 Gegentreiber / Risiko
-NAMENSREGEL FUER DIE GESAMTE AUSWERTUNG (NEU 21.08.2026): Bei jedem Unternehmen/Aktientitel immer vollständigen Firmennamen zuerst und Ticker ergänzend in Klammern ausgeben, also „Firmenname (TICKER)“. Diese Regel gilt in allen Abschnitten, nicht nur bei „Bestehender Kandidat / Bezug“. Keine Darstellung wie „FCX (FCX)“.
-
 Bestehender Kandidat / Bezug: Nur nennen, wenn ein passender Titel bereits in den bereitgestellten Setups, Watchlists oder offenen Positionen vorkommt; sonst „Kein bestehender Kandidat im Datenbestand”. Wenn ein bestehender Kandidat genannt wird, immer den vollständigen Namen zuerst und den Ticker ergänzend in Klammern nennen (z. B. „Freeport-McMoRan Inc. (FCX)”), niemals nur den Ticker.
 
 Konkreter technischer Trigger: Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt?
+
+ZUSAETZLICHE EINSTIEGSREIFE-INTERPRETATION
+Wenn bei einem bestehenden Kandidaten die technische Einstiegsreife beurteilt wird, ordne den Zustand – soweit die bereitgestellten Scanner-/Setup-Daten dies belegen – in genau eine der folgenden Kategorien ein:
+• KONSOLIDIERUNG LAEUFT – nur verwenden, wenn die vorhandenen Daten eine laufende Pullback-/Konsolidierungsphase nachvollziehbar belegen.
+• TRIGGER STEHT NOCH AUS – Konsolidierung/Pullback ist erkennbar, aber ein frischer bestaetigter EMA8/20-Breakout oder Kumo-Ausbruch ist noch nicht vorhanden.
+• EINSTIEG BESTAETIGT – nur wenn das bestehende Setup-System bereits einen gueltigen frischen Trigger bestaetigt und seine vorhandenen Filter erfuellt sind.
+• BREAKOUT BEREITS GELAUFEN – wenn ein Trigger zwar bereits erfolgt ist, die Daten aber keinen frischen Einstieg mehr nahelegen.
+Wenn keiner dieser Zustaende aus den bereitgestellten Daten belastbar ableitbar ist, NICHT erfinden, sondern ausdruecklich „Einstiegsreife nicht eindeutig beurteilbar“ schreiben.
+
+WICHTIG: Diese Interpretation darf KEINE neue technische Regel, keinen neuen Schwellenwert und keinen neuen Filter erfinden. Verwende ausschliesslich bereits vorhandene Scanner-/Setup-Signale wie EMA-Breakout, Kumo-Ausbruch, Pullback-Zone, Higher-Low, Volumenbestaetigung, CRV und Setup-Qualitaet. Ein EMA-Breakout oder Kumo-Ausbruch darf nicht nachtraeglich als „nach gesunder Konsolidierung“ bezeichnet werden, wenn die bereitgestellten Daten diese vorherige Konsolidierung nicht belegen. Die bestehende Setup-Logik wird durch diese Interpretation NICHT veraendert.
+
 WICHTIG: Diese Ideen bleiben Perspektiven und sind KEINE konkreten Setups, KEINE Empfehlungen und KEINE Umgehung bestehender Filter. Kein Titel darf allein wegen des Makrobildes als Einstieg dargestellt werden.
 WICHTIG: Der Makro-Block erzeugt selbst KEIN Handelssignal und darf keine
 bestehenden Filter umgehen. Er liefert nur einen strategischen Vorlauf bzw.
