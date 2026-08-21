@@ -1,5 +1,4 @@
 import os
-import time
 import io
 import json
 import datetime
@@ -11,7 +10,6 @@ import yfinance as yf
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from alpaca.data.historical import StockHistoricalDataClient
@@ -468,34 +466,7 @@ def lade_positionen_herunter(service, file_id, mime_type):
     stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
     Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
     if file_id is None:
-        # Wiederherstellungs-/Erstinitialisierungsfall:
-        # Wenn das native Google Sheet in Drive fehlt, aber die lokale
-        # Offene_Positionen.csv vorhanden ist, diese als Ausgangsbasis laden.
-        # So geht der komplette lokale Positionsbestand (offen + geschlossen)
-        # bei einem verlorenen/neu anzulegenden Drive-Sheet nicht verloren.
-        if os.path.exists(LOKALE_DATEI):
-            try:
-                print(
-                    f"DEBUG: {DRIVE_NAME} existiert nicht in Drive - "
-                    f"verwende lokale {LOKALE_DATEI} als Wiederherstellungsquelle."
-                )
-                df = pd.read_csv(LOKALE_DATEI, sep=';', encoding='utf-8-sig')
-                for spalte in SPALTEN:
-                    if spalte not in df.columns:
-                        df[spalte] = ""
-                df = df[SPALTEN]
-                print(f"DEBUG: Lokale Wiederherstellungsdatei mit {len(df)} Zeile(n) geladen.")
-                return df
-            except Exception as e:
-                print(
-                    f"WARNUNG: Lokale Wiederherstellungsdatei {LOKALE_DATEI} "
-                    f"konnte nicht gelesen werden: {e}. Starte mit leerer Liste."
-                )
-        else:
-            print(
-                f"DEBUG: {DRIVE_NAME} existiert nicht in Drive und {LOKALE_DATEI} "
-                f"ist lokal nicht vorhanden - starte mit leerer Liste."
-            )
+        print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
         return pd.DataFrame(columns=SPALTEN)
 
     try:
@@ -867,83 +838,22 @@ def berechne_optionsschein_performance(df):
 
 
 def hochladen(service, lokale_datei, folder_id, alte_file_id):
-    """Lädt die aktualisierte Datei als natives Google Sheet hoch.
+    """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive
+    hoch - dafür wird die alte Datei (falls vorhanden) gelöscht und komplett
+    neu angelegt, mit CSV-Inhalt als Upload-Medium und Sheets-Ziel-MIME-Typ.
+    Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein natives
+    Sheet zu konvertieren (ein reines In-Place-Update per media_body auf eine
+    bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert). Der
+    Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
+    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv."""
+    if alte_file_id:
+        service.files().delete(fileId=alte_file_id).execute()
+        print(f"Alte Datei (ID: {alte_file_id}) gelöscht, wird neu angelegt.")
 
-    Sicherheitsreihenfolge:
-    1. Neue Datei zuerst hochladen.
-    2. Bei transienten Google-5xx-Fehlern den Upload mit Backoff wiederholen.
-    3. Erst nach bestätigtem erfolgreichem Upload die alte Datei löschen.
-
-    So kann ein temporärer Drive-Fehler nicht mehr den letzten funktionierenden
-    Positionsstand durch vorheriges Löschen vernichten.
-    """
-    file_metadata = {
-        'name': DRIVE_NAME,
-        'parents': [folder_id],
-        'mimeType': SHEET_MIME
-    }
-
-    max_versuche = 3
-    neue_datei = None
-    letzter_fehler = None
-
-    for versuch in range(1, max_versuche + 1):
-        try:
-            # Pro Versuch einen frischen Upload-Stream erzeugen.
-            media = MediaIoBaseUpload(
-                io.FileIO(lokale_datei, 'rb'),
-                mimetype='text/csv',
-                resumable=True
-            )
-            neue_datei = service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id'
-            ).execute()
-            print(f"Upload erfolgreich (Versuch {versuch}/{max_versuche}).")
-            break
-
-        except HttpError as e:
-            letzter_fehler = e
-            status = getattr(e.resp, 'status', None)
-
-            if status is not None and 500 <= status < 600 and versuch < max_versuche:
-                wartezeit = 2 ** (versuch - 1)
-                print(
-                    f"Google-Drive-Fehler HTTP {status} beim Upload. "
-                    f"Retry {versuch + 1}/{max_versuche} in {wartezeit}s..."
-                )
-                time.sleep(wartezeit)
-                continue
-
-            raise
-
-    if not neue_datei or not neue_datei.get('id'):
-        raise RuntimeError(
-            "Google-Drive-Upload wurde nicht erfolgreich bestätigt."
-        ) from letzter_fehler
-
-    neue_file_id = neue_datei['id']
-    print(
-        f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt "
-        f"(ID: {neue_file_id})."
-    )
-
-    # Erst jetzt darf die alte Datei gelöscht werden.
-    if alte_file_id and alte_file_id != neue_file_id:
-        try:
-            service.files().delete(fileId=alte_file_id).execute()
-            print(
-                f"Alte Datei (ID: {alte_file_id}) "
-                f"nach erfolgreichem Upload gelöscht."
-            )
-        except HttpError as e:
-            # Der neue Stand ist bereits sicher gespeichert.
-            print(
-                f"WARNUNG: Neue Datei wurde erfolgreich angelegt, "
-                f"aber die alte Datei (ID: {alte_file_id}) konnte nicht "
-                f"gelöscht werden: {e}"
-            )
+    media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
+    file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
+    neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
 
 
 if __name__ == '__main__':
