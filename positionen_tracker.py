@@ -884,6 +884,38 @@ def berechne_optionsschein_performance(df):
     return df
 
 
+
+def _normalisiere_csv_fuer_google_sheets(lokale_datei):
+    """Erzeugt eine temporäre Upload-CSV mit Punkt-Dezimaltrennzeichen.
+    Dadurch werden Kurswerte wie 2.5 nicht als Datum (02.05.2026) interpretiert.
+    Die Arbeitsdatei im Repository bleibt unverändert.
+    """
+    numerische_spalten = [
+        'Einstieg', 'Aktueller_Kurs', 'Stop', 'TP1', 'TP2',
+        'Ausstiegskurs', 'Performance_Seit_Einstieg%',
+        'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs',
+        'OS_Performance%'
+    ]
+
+    df = pd.read_csv(lokale_datei, sep=';', encoding='utf-8-sig', dtype=str)
+
+    for spalte in numerische_spalten:
+        if spalte in df.columns:
+            serie = df[spalte].fillna('').astype(str).str.strip()
+            # Deutsches Dezimal-Komma -> Punkt; Tausenderpunkte bleiben
+            # hier unberührt, weil die vorhandene CSV keine Tausenderpunkte
+            # in diesen Kursfeldern verwendet.
+            df[spalte] = serie.str.replace(',', '.', regex=False)
+
+    upload_datei = lokale_datei + '.google_upload.csv'
+    df.to_csv(
+        upload_datei,
+        index=False,
+        sep=';',
+        encoding='utf-8-sig'
+    )
+    return upload_datei
+
 def hochladen(service, lokale_datei, folder_id, alte_file_id):
     """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive.
     Die neue Datei wird zuerst erfolgreich angelegt; erst danach wird eine
@@ -906,11 +938,14 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
         'mimeType': SHEET_MIME
     }
 
+    upload_datei = _normalisiere_csv_fuer_google_sheets(lokale_datei)
+    print(f"DEBUG: Google-Sheets-Upload verwendet normalisierte CSV: {upload_datei}")
+
     letzter_fehler = None
     for versuch in range(1, 4):
         try:
             media = MediaIoBaseUpload(
-                io.FileIO(lokale_datei, 'rb'),
+                io.FileIO(upload_datei, 'rb'),
                 mimetype='text/csv',
                 resumable=False
             )
@@ -933,6 +968,11 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
                 service.files().delete(fileId=alte_file_id).execute()
                 print(f"Alte Datei (ID: {alte_file_id}) nach erfolgreichem Upload gelöscht.")
 
+            try:
+                os.remove(upload_datei)
+            except OSError:
+                pass
+
             return neue_file_id
 
         except Exception as e:
@@ -949,6 +989,10 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
                 continue
             raise
 
+    try:
+        os.remove(upload_datei)
+    except OSError:
+        pass
     raise letzter_fehler
 
 
