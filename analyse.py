@@ -3912,6 +3912,52 @@ if __name__ == "__main__":
         f.write(get_regionen_performance_text() + "\n\n")
 
         f.write(f"BENCHMARKS\n{sp500_filter_text}\n{qqq_text}\n{dow_text}\n{dax_text}\n{eurostoxx_text}\n{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n" + (f"{fomc_rueckblick_text}\n" if fomc_rueckblick_text else "") + f"{oel_text}\n{oel_brent_text}\n" + (("KURZFRIST-KONTEXT ÖL/EDELMETALLE\n" + "\n".join(f"- {_t}" for _t in markt_kontext_texte) + "\n") if markt_kontext_texte else "") + f"{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n{eurusd_text}\n{btc_text}\n" + (f"{pi_cycle_text}\n" if pi_cycle_result.get("signal") else "") + f"{btc_50w_sma_text}\n" + "\n")
+        # LIVE-BENCHMARK (NEU 22.08.2026): Ergebnis wird vor analyse.py
+        # im Workflow aus der echten Offene_Positionen.csv berechnet.
+        # Reine Anzeige; keine Trading-Logik.
+        benchmark_text = None
+        try:
+            if os.path.exists("Benchmark_Live.txt"):
+                with open("Benchmark_Live.txt", "r", encoding="utf-8") as _bf:
+                    benchmark_text = _bf.read().strip()
+        except Exception as _e:
+            print(f"WARNUNG: Benchmark_Live.txt konnte nicht gelesen werden: {_e}")
+        # LIVE-BENCHMARK-KURZÜBERSICHT: Aggregierte Kennzahlen direkt nach
+        # den BENCHMARKS. Die vollständigen Trade-Details bleiben weiter
+        # unten im bestehenden Benchmark-Block erhalten.
+        if benchmark_text:
+            _bm_lines = benchmark_text.splitlines()
+            _bm_start = next((i for i, _line in enumerate(_bm_lines)
+                              if _line.strip() == "AKTUELLER OFFENER KORB"), None)
+            _bm_live = next((i for i, _line in enumerate(_bm_lines)
+                             if _line.strip() == "LIVE-SYSTEM SEIT 07.08.2026"), None)
+            if _bm_start is not None and _bm_live is not None and _bm_live > _bm_start:
+                _bm_summary = [
+                    "LIVE-PERFORMANCE vs. MSCI WORLD",
+                    "-" * 50,
+                    next((x for x in _bm_lines if x.startswith("Stichtag:")), None),
+                    next((x for x in _bm_lines if x.startswith("Benchmark:")), None),
+                    next((x for x in _bm_lines[_bm_start + 2:_bm_live]
+                          if x.startswith("Ø Performance aktuell offener Positionen")), None),
+                    next((x for x in _bm_lines[_bm_start + 2:_bm_live]
+                          if x.startswith("Anzahl berücksichtigter offener Positionen")), None),
+                    "",
+                    next((x for x in _bm_lines[_bm_live + 2:]
+                          if x.startswith("Ø System-Performance")), None),
+                    next((x for x in _bm_lines[_bm_live + 2:]
+                          if x.startswith("Ø MSCI-World-Performance")), None),
+                    next((x for x in _bm_lines[_bm_live + 2:]
+                          if x.startswith("Out-/Underperformance")), None),
+                    next((x for x in _bm_lines[_bm_live + 2:]
+                          if x.startswith("Positionen besser als MSCI World")), None),
+                    next((x for x in _bm_lines[_bm_live + 2:]
+                          if x.startswith("Positionen schlechter als MSCI World")), None),
+                    next((x for x in _bm_lines[_bm_live + 2:]
+                          if x.startswith("Positionen gleichauf")), None),
+                ]
+                _bm_summary = [x for x in _bm_summary if x is not None]
+                if len(_bm_summary) > 2:
+                    f.write("\n" + "\n".join(_bm_summary) + "\n")
 
         # MARKTUMFELD (Score-Modell, GEÄNDERT 28.07.2026 abends, Nutzer-
         # entscheidung): Definition steht im Kommentarblock bei
@@ -4036,17 +4082,9 @@ if __name__ == "__main__":
                 f.write("Hinweis: Position bereits offen - Setup als Bestätigung des laufenden Trades werten, ggf. Stop-/Ziel-Anpassung prüfen, kein automatischer Nachkauf.\n")
                 f.write("-" * 30 + "\n")
 
-        # LIVE-BENCHMARK (NEU 22.08.2026): Ergebnis wird vor analyse.py
-        # im Workflow aus der echten Offene_Positionen.csv berechnet.
-        # Der Block ist rein informativ und verändert keine Trading-Logik.
-        benchmark_text = None
-        try:
-            if os.path.exists("Benchmark_Live.txt"):
-                with open("Benchmark_Live.txt", "r", encoding="utf-8") as _bf:
-                    benchmark_text = _bf.read().strip()
-        except Exception as _e:
-            print(f"WARNUNG: Benchmark_Live.txt konnte nicht gelesen werden: {_e}")
 
+        # Vollständiger Benchmark-Block bleibt an der bisherigen Position erhalten.
+        # Die Kurzübersicht steht zusätzlich oben direkt nach BENCHMARKS.
         if benchmark_text:
             f.write("\n" + "="*50 + "\n")
             f.write(benchmark_text + "\n")
