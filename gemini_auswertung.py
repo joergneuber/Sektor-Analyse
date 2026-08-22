@@ -48,12 +48,6 @@ import time
 import json
 import datetime
 
-try:
-    from bitcoin_youtube import prepare_bitcoin_youtube_context, mark_bitcoin_youtube_processed
-except Exception:
-    prepare_bitcoin_youtube_context = None
-    mark_bitcoin_youtube_processed = None
-
 from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
@@ -116,8 +110,9 @@ DATEIMUSTER = {
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
     # Zukunftsszenarioanalyse; rein informativ, keine bestehende Trading-Logik.
     "Makro_Briefing(...).txt": ["Makro_Briefing(*).txt"],
-    # NEU: externe qualitative BTC-Quelle Bitcoin Trading DE.
-    "Bitcoin_Trading_DE_Briefing.txt": ["Bitcoin_Trading_DE_Briefing.txt"],
+    # NEU: Live-Benchmark gegen MSCI World; wird als verbindlicher
+    # Datenblock an Gemini uebergeben.
+    "Benchmark_Live.txt": ["Benchmark_Live.txt"],
 }
 # Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
 # Positionen und die beiden Trendwende-Dateien sind optional (siehe
@@ -376,21 +371,6 @@ def gemini_auswertung_starten():
 
     client = genai.Client(api_key=api_key)
     anweisung = lade_anweisung()
-
-    # Bitcoin Trading DE: neue relevante Videos/Transcripts vorbereiten.
-    # Ein Fehler dieser rein qualitativen Zusatzquelle darf die Hauptanalyse
-    # niemals stoppen. Der State wird erst nach erfolgreicher Gemini-Ausgabe
-    # als verarbeitet markiert (siehe speichere_ergebnis()).
-    global YOUTUBE_PENDING_IDS
-    YOUTUBE_PENDING_IDS = []
-    if prepare_bitcoin_youtube_context is not None:
-        try:
-            YOUTUBE_PENDING_IDS = prepare_bitcoin_youtube_context()
-        except Exception as exc:
-            print(f"WARNUNG: Bitcoin Trading DE konnte nicht eingebunden werden: {exc}")
-    else:
-        print("INFO: Bitcoin Trading DE Modul nicht verfügbar - Zusatzquelle wird übersprungen.")
-
     eingabedateien = sammle_eingabedateien()
 
     letzte_antwort = None
@@ -450,19 +430,6 @@ def gemini_auswertung_starten():
                 contents=hochgeladene_teile + [
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht.",
-                    (
-                        "ZUSAETZLICHE BTC-INFORMATIONSQUELLE: Die Datei "
-                        "'Bitcoin_Trading_DE_Briefing.txt' stammt vom YouTube-Kanal Bitcoin Trading DE. "
-                        "Sie ist ausschließlich qualitative externe Information. Verwende sie nur zur Einordnung "
-                        "der aktuellen BTC-Situation und zum Abgleich mit dem objektiven BTC/USD-50W-SMA-Status. "
-                        "Aussagen des Kanals dürfen niemals Kursdaten, die 50W-SMA-Berechnung, CRV, Setup-Scores, "
-                        "Filter oder Handelsentscheidungen überschreiben. Wenn mindestens ein relevantes neues "
-                        "Video vorhanden ist, ergänze in der BTC-Auswertung einen kurzen Abschnitt "
-                        "'EXTERNE BTC-EINSCHÄTZUNG – BITCOIN TRADING DE' mit Titel/Datum, einer knappen "
-                        "Kernaussage und einem klaren Abgleich: BESTÄTIGT, WIDERSPRICHT oder ERGÄNZT das aktuelle "
-                        "50W-SMA-Signal. Wenn keine relevanten neuen Videos vorhanden sind, keinen Abschnitt "
-                        "erfinden. Behandle Transcript-Aussagen als Aussagen des Kanals, nicht als verifizierte Fakten."
-                    ),
                     (
                         f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
                         "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
@@ -550,9 +517,6 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
-YOUTUBE_PENDING_IDS = []
-
-
 def normalisiere_ausgabe(text):
     """Erzwingt zwei kleine, rein formale Layoutregeln nach Gemini.
 
@@ -574,16 +538,6 @@ def speichere_ergebnis(text):
     text = normalisiere_ausgabe(text)
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
-
-    # Erst jetzt als verarbeitet markieren: Wenn Gemini oder das Schreiben
-    # der Auswertung vorher scheitert, bleibt das Video für den nächsten Lauf
-    # pending und geht nicht verloren.
-    if YOUTUBE_PENDING_IDS and mark_bitcoin_youtube_processed is not None:
-        try:
-            mark_bitcoin_youtube_processed(YOUTUBE_PENDING_IDS)
-        except Exception as exc:
-            print(f"WARNUNG: Bitcoin-Trading-DE-State konnte nicht finalisiert werden: {exc}")
-
     print(f"\nGespeichert: {ausgabe_datei}")
     return ausgabe_datei
 
