@@ -144,12 +144,34 @@ jobs:
       # GEMINI-AUSWERTUNG
       # ============================================================
 
+      # Bitcoin Trading DE: State nur für den regulären Hauptlauf.
+      # Die Benchmark-Workflows lesen diesen State nicht schreibend.
+      - name: Bitcoin Trading DE State wiederherstellen
+        id: btc-youtube-state-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .bitcoin_youtube_state
+          key: btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-
+
       - name: Gemini-Auswertung erstellen
+        id: gemini-auswertung
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
+
+      # YouTube-State erst sichern, wenn die Gemini-Auswertung tatsächlich
+      # erfolgreich erstellt wurde. Bei einem Fehler bleiben neue Videos
+      # pending und werden beim nächsten Lauf erneut versucht.
+      - name: Bitcoin Trading DE State speichern
+        if: steps.gemini-auswertung.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .bitcoin_youtube_state
+          key: btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       # ============================================================
       # GOOGLE DRIVE
