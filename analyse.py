@@ -4036,6 +4036,22 @@ if __name__ == "__main__":
                 f.write("Hinweis: Position bereits offen - Setup als Bestätigung des laufenden Trades werten, ggf. Stop-/Ziel-Anpassung prüfen, kein automatischer Nachkauf.\n")
                 f.write("-" * 30 + "\n")
 
+        # LIVE-BENCHMARK (NEU 22.08.2026): Ergebnis wird vor analyse.py
+        # im Workflow aus der echten Offene_Positionen.csv berechnet.
+        # Der Block ist rein informativ und verändert keine Trading-Logik.
+        benchmark_text = None
+        try:
+            if os.path.exists("Benchmark_Live.txt"):
+                with open("Benchmark_Live.txt", "r", encoding="utf-8") as _bf:
+                    benchmark_text = _bf.read().strip()
+        except Exception as _e:
+            print(f"WARNUNG: Benchmark_Live.txt konnte nicht gelesen werden: {_e}")
+
+        if benchmark_text:
+            f.write("\n" + "="*50 + "\n")
+            f.write(benchmark_text + "\n")
+            f.write("="*50 + "\n")
+
         # 3. OFFENE POSITIONEN (manuell bestätigte, laufende Trades)
         # Wird von positionen_tracker.py als lokale Datei bereitgestellt (läuft
         # als eigener Workflow-Schritt vor analyse.py). Getrennt von den oben
