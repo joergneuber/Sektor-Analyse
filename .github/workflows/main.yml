@@ -47,6 +47,12 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python positionen_tracker.py
 
+      # Live-Benchmark gegen iShares Core MSCI World (EUNL.DE),
+      # Stichtag 07.08.2026. Kein Backtest: verarbeitet ausschließlich
+      # die echte Positionen-Historie aus Offene_Positionen.csv.
+      - name: Live-Benchmark gegen MSCI World aktualisieren
+        run: python performance_benchmark.py
+
       - name: Einzel-Check-Beobachtungsliste aus Drive laden
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
