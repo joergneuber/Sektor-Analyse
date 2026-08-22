@@ -31,6 +31,17 @@ jobs:
         with:
           python-version: '3.13'
 
+      # BTC 50W-SMA: persistent state so a weekend cross is delivered by
+      # the first regular Monday analysis and is not re-reported later.
+      - name: BTC 50W-SMA State wiederherstellen
+        id: btc-50w-state-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .btc_50w_sma_state
+          key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-
+
       - name: Abhängigkeiten installieren
         # Gleiche Liste wie main.yml, da benchmark_snapshot.py analyse.py
         # importiert (führt dessen kompletten Modul-Code aus - siehe
@@ -72,6 +83,9 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python benchmark_snapshot.py
+
+      # Benchmark-Snapshots sind strikt read-only: Sie dürfen den BTC-50W-SMA
+      # State weder als Cross noch als Prealert verändern oder speichern.
 
       - name: Daten hochladen
         env:

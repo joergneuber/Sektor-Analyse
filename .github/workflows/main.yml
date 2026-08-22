@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: '17 3 * * 1-5'
 
+concurrency:
+  group: btc-50w-main-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run-scripts:
     runs-on: ubuntu-latest
@@ -19,6 +23,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+
+      # BTC 50W-SMA: persistent state so a weekend cross is delivered by
+      # the first regular Monday analysis and is not re-reported later.
+      - name: BTC 50W-SMA State wiederherstellen
+        id: btc-50w-state-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .btc_50w_sma_state
+          key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Abhängigkeiten installieren
         run: |
@@ -50,6 +65,16 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python analyse.py
+
+      # State erst NACH erfolgreicher analyse.py sichern. So kann ein
+      # Cross nicht als "gemeldet" verloren gehen, falls die Analyse vorher
+      # abbricht. Benchmark-Snapshots konsumieren den Cross ausdrücklich nicht.
+      - name: BTC 50W-SMA State speichern
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: .btc_50w_sma_state
+          key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Trendwende-Scan ausführen
         env:
