@@ -38,7 +38,8 @@ durch unterschiedliche Anordnung erschwert wird.
 """
 import datetime
 
-from analyse import get_index_benchmark_yf, get_zinskurve_fred, get_fomc_countdown, get_eurusd_wechselkurs
+from analyse import get_index_benchmark_yf, get_zinskurve_fred, get_fomc_countdown, get_eurusd_wechselkurs, _hole_kursdaten_gecached
+from bitcoin_50w_sma import calculate_bitcoin_50w_sma
 
 
 def erzeuge_snapshot():
@@ -69,6 +70,12 @@ def erzeuge_snapshot():
     # bleibt als einzige Waehrungs-Referenz.
     eurusd_text = get_eurusd_wechselkurs()
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
+    btc_50w_sma_result = calculate_bitcoin_50w_sma(
+        _hole_kursdaten_gecached("BTC-USD"), consume_cross=False
+    )
+    btc_50w_sma_text = btc_50w_sma_result.get(
+        "message", "Bitcoin 50W-SMA: nicht verfuegbar"
+    )
 
     zeitstempel_dateiname = jetzt.strftime("%Y-%m-%d_%H-%M")
     dateiname = f"Benchmarks_Briefing({zeitstempel_dateiname}).txt"
@@ -83,7 +90,7 @@ def erzeuge_snapshot():
             f"{stoxx600_text}\n{russell_text}\n{nikkei_text}\n{hangseng_text}\n"
             f"{lithium_text}\n{vix_text}\n{zins_text}\n{fomc_text}\n{oel_text}\n"
             f"{oel_brent_text}\n{gold_text}\n{silber_text}\n{platin_text}\n{palladium_text}\n{kupfer_text}\n"
-            f"{eurusd_text}\n{btc_text}\n"
+            f"{eurusd_text}\n{btc_text}\n{btc_50w_sma_text}\n"
         )
 
     print(f"Gespeichert: {dateiname}")
