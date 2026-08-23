@@ -1019,7 +1019,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     return sheet_id
 
 
-def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str]) -> list[int]:
+def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str], legacy_title: Optional[str] = None) -> list[int]:
     """Tauscht vollständig vorbereitete temporäre Tabs gegen Produktivtabs.
 
     Der Austausch erfolgt in EINEM batchUpdate. Bei einem Fehler vor diesem
@@ -1034,6 +1034,17 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
     props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
     requests = []
     old_ids = []
+
+    # Falls der bisherige Haupttab noch einen alten Namen trägt, wird auch er
+    # im selben atomaren Batch als Backup umbenannt. Dadurch bleibt bis zum
+    # erfolgreichen Swap alles unverändert.
+    if legacy_title and legacy_title in props:
+        legacy_backup_title = f"_BACKUP_{legacy_title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        requests.append({"updateSheetProperties": {
+            "properties": {"sheetId": props[legacy_title]["sheetId"], "title": legacy_backup_title},
+            "fields": "title"
+        }})
+        old_ids.append(props[legacy_title]["sheetId"])
 
     for temp_title, target_title in temp_to_target.items():
         temp = props.get(temp_title)
@@ -1112,6 +1123,19 @@ def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
         body={"name": f"{DRIVE_NAME} - Backup {stamp}", "parents": [FOLDER_ID]}
     ).execute()
     return copied.get("id")
+
+
+def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
+    """Liest Tab 2 vor dem Überschreiben. Fehlt der Tab, kommt eine leere Historie."""
+    try:
+        response = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="'Geschlossene Positionen'!A:AA",
+        ).execute()
+        return response.get("values", [])
+    except Exception as exc:
+        print(f"WARNUNG: Bestehende Historie konnte nicht gelesen werden: {exc}")
+        return []
 
 
 def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
@@ -1199,7 +1223,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             temp_closed: "Geschlossene Positionen",
         }
         # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
-        _swap_temp_tabs(sheets, spreadsheet_id, targets)
+        _swap_temp_tabs(sheets, spreadsheet_id, targets, old_main_title)
 
         # Nur nach erfolgreichem Swap werden alte Backup-Tabs entfernt.
         # Scheitert die Bereinigung, bleiben sie als zusätzliche Sicherheitskopie.
