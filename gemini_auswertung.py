@@ -23,7 +23,7 @@ Erwartet im Arbeitsverzeichnis (Pfade/Muster unten in KONFIGURATION anpassen):
     Setups(<Datum>).csv
     Performance(<Datum>).csv
     Performance_EU(<Datum>).csv
-    Offene_Positionen.csv (optional)
+    Offene Positionen+Check.csv (verbindlich)
     Trendwende_Setups(<Datum>).csv (optional)
     Trendwende_Briefing(<Datum>).txt (optional)
 
@@ -95,6 +95,11 @@ DATEIMUSTER = {
     "Setups(...).csv": ["Setups(*).csv"],
     "Performance(...).csv": ["Performance(*).csv"],
     "Performance_EU(...).csv": ["Performance_EU(*).csv"],
+    "Offene Positionen+Check.csv": ["Offene Positionen+Check.csv"],
+    # Backend-Fallback: Der Tracker benötigt die alte Rohdatei weiterhin für
+    # Positionsfelder, die bewusst NICHT Teil der festgelegten Check-Struktur
+    # sind (z.B. Stop/TP/Richtung/Ideen_Quelle). Sie ist keine technische
+    # Quelle; die technische Wahrheit kommt ausschließlich aus der Check-Datei.
     "Offene_Positionen.csv": ["Offene_Positionen.csv", "Offene_Positionen(*).csv"],
     "Trendwende_Setups(...).csv": ["Trendwende_Setups(*).csv"],
     "Trendwende_Briefing(...).txt": ["Trendwende_Briefing(*).txt"],
@@ -117,7 +122,13 @@ DATEIMUSTER = {
 # Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
 # Positionen und die beiden Trendwende-Dateien sind optional (siehe
 # Abschnitt 7 der Anleitung, die genau diesen Fall vorsieht).
-PFLICHT_DATEIEN = {"briefing.txt", "Setups(...).csv", "Performance(...).csv", "Performance_EU(...).csv"}
+PFLICHT_DATEIEN = {
+    "briefing.txt",
+    "Setups(...).csv",
+    "Performance(...).csv",
+    "Performance_EU(...).csv",
+    "Offene Positionen+Check.csv",
+}
 
 # Ablehnungs-Muster, die einen automatischen Retry ausloesen
 # (Kleinschreibung, Substring-Suche im Antworttext)
@@ -429,7 +440,19 @@ def gemini_auswertung_starten():
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
-                    "und erstelle die vollstaendige Daten-Uebersicht.",
+                    "und erstelle die vollstaendige Daten-Uebersicht. "
+                    "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
+                    "Offene Positionen ausschliesslich die Datei 'Offene Positionen+Check.csv'. "
+                    "Ihre technischen Check-Felder sind die verbindliche Quelle fuer "
+                    "Technischer_Zustand, Trendrichtung, Support/Widerstand, Breakout_Status, "
+                    "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
+                    "Round Number, Major Resistance, Ueberdehnung, Relative Staerke_Sektor, "
+                    "Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. "
+                    "Eine alte Offene_Positionen.csv-Datei darf ausschließlich als "
+                    "Backend-Fallback für Positionsfelder verwendet werden, die in der "
+                    "festgelegten Check-Struktur nicht enthalten sind (z.B. Stop, TP1, TP2, "
+                    "Richtung, Ideen_Quelle, Einstiegsdatum). Sie darf niemals technische "
+                    "Check-Werte ersetzen oder widersprechen.",
                     (
                         f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
                         "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "

@@ -55,7 +55,7 @@ OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
 GOLD_SPOT_TICKER = "XAUUSD=X"
-
+# Eine historische Resistance gilt als unmittelbare/entscheidende Sperrzone\n# fuer die Fibonacci-Freigabe, wenn sie hoechstens 10% ueber dem aktuellen\n# Schlusskurs liegt. Weiter entfernte Major-Levels/ATHs bleiben Referenzen,\n# blockieren Fibonacci aber nicht.\nIMMEDIATE_RESISTANCE_MAX_DISTANCE = 0.10\n
 HEADERS = [
     "Ticker", "Name", "Steuerungsart", "Sektor", "Markt", "Waehrung",
     "Status", "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
@@ -277,6 +277,32 @@ def detect_abc(data: pd.DataFrame, close: float, direction: str) -> tuple[bool, 
                     status = "Bestätigt" if confirmed else "Struktur vorhanden – noch kein A-B-C-Breakdown"
                     return confirmed, status, (a[2], b[2]), (a[2], b[2], c[2])
     return False, "Keine qualifizierte A-B-C-Struktur", None, None
+
+
+def fibonacci_breakout_allowed(
+    abc_ok: bool,
+    abc_points,
+    close: float,
+    resistances: list[float],
+    prior_resistance: Optional[float],
+) -> bool:
+    """Zentrale, deterministische Fibonacci-Freigabe fuer unsere Fall-A/Fall-B-Regel."""
+    if not abc_ok or not abc_points or close is None or close <= 0:
+        return False
+
+    immediate_resistances = [
+        value for value in resistances
+        if value > close and value <= close * (1.0 + IMMEDIATE_RESISTANCE_MAX_DISTANCE)
+    ]
+    if immediate_resistances:
+        # Eine unmittelbare historische Resistance oberhalb ist noch nicht
+        # gebrochen -> Fibonacci bleibt gesperrt.
+        return False
+
+    # Keine unmittelbare Resistance oberhalb: das bestaetigte A-B-C ist
+    # ausreichend. Ein bereits gebrochener Widerstand unterhalb darf den
+    # Zustand nicht mehr blockieren.
+    return prior_resistance is None or close > prior_resistance * 1.002
 
 
 def fibonacci_extension(data: pd.DataFrame, abc: tuple[float, float, float], direction: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
@@ -595,15 +621,29 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     # letzte markante Widerstandszone VOR dem aktuellen Kurs und wird deshalb
     # zusaetzlich abgesichert. `resistances` oberhalb bleiben Ziel-/Kontextzonen,
     # blockieren Fibonacci aber nicht.
-    breakout_for_fib = bool(
-        abc_ok and abc_points and
-        (prior_resistance is None or close > prior_resistance * 1.002)
+    # Fibonacci-Freigabe ist zustandsabhängig:
+    # Fall A: keine relevante historische Resistance oberhalb -> bestätigtes
+    # A-B-C (inkl. B-Bruch) reicht.
+    # Fall B: relevante Resistance oberhalb -> Fibonacci bleibt AUS, bis diese
+    # Resistance tatsächlich per Schlusskurs gebrochen wurde. Nach dem Bruch
+    # wandert die Zone aus `resistances` in `prior_resistance`; dann ist der
+    # Breakout bestätigt und Fibonacci darf aktiv werden.
+    immediate_resistances = [
+        value for value in resistances
+        if value > close and value <= close * (1.0 + IMMEDIATE_RESISTANCE_MAX_DISTANCE)
+    ]
+    resistance_above_unbroken = bool(immediate_resistances)
+    breakout_for_fib = fibonacci_breakout_allowed(
+        abc_ok, abc_points, close, resistances, prior_resistance
     )
     if breakout_for_fib:
         result.fib1, result.fib2, result.fib3 = fibonacci_extension(data, abc_points, direction)
         result.fib_status = "Aktiv – Breakout + A-B-C bestätigt"
     elif abc_ok and abc_points:
-        result.fib_status = "Nicht aktiv – A-B-C vorhanden, Breakout-Bestätigung fehlt"
+        if resistance_above_unbroken:
+            result.fib_status = "Nicht aktiv – historische Resistance oberhalb noch nicht gebrochen"
+        else:
+            result.fib_status = "Nicht aktiv – A-B-C vorhanden, Breakout-Bestätigung fehlt"
     else:
         result.fib_status = "Nicht aktiv – bestätigte A-B-C-Struktur fehlt"
 
@@ -685,10 +725,11 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     #    Extensions als primäre Projektion verwendet;
     # 3) parallel bleiben Kanal, Formation und Round Number als Bestätigung;
     # 4) Major-Level bleibt immer separat.
-    if resistances:
-        primary = [(v, "Historischer Widerstand") for v in resistances if v > close]
-    else:
-        primary = []
+    primary = [
+        (v, "Historischer Widerstand")
+        for v in resistances
+        if v > close and v <= close * (1.0 + IMMEDIATE_RESISTANCE_MAX_DISTANCE)
+    ]
 
     if not primary and result.fib_status.startswith("Aktiv"):
         primary = [(v, label) for v, label in [
@@ -774,7 +815,11 @@ def make_row(row, tech: TechnicalResult) -> dict:
     # Konfluenz.
     if tech.confluence and "Keine Mehrfach-Konfluenz" not in tech.confluence and "Keine" not in tech.confluence:
         target_zone = tech.confluence
-    elif tech.resistance1 is not None and tech.close is not None and tech.resistance1 > tech.close:
+    elif (
+        tech.resistance1 is not None and tech.close is not None
+        and tech.resistance1 > tech.close
+        and tech.resistance1 <= tech.close * (1.0 + IMMEDIATE_RESISTANCE_MAX_DISTANCE)
+    ):
         target_zone = f"{tech.resistance1:.2f} (Historischer Widerstand)"
     elif tech.fib_status.startswith("Aktiv"):
         fibs = [(v, label) for v, label in [
@@ -888,11 +933,32 @@ def upsert_google_sheet(df: pd.DataFrame, creds) -> Optional[str]:
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
     q = f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
-    files = drive.files().list(q=q, fields="files(id,name,mimeType)").execute().get("files", [])
+    files = drive.files().list(
+        q=q, fields="files(id,name,mimeType,modifiedTime)"
+    ).execute().get("files", [])
 
-    if files:
-        spreadsheet_id = files[0]["id"]
+    # Es darf genau eine aktive Ausgabe geben. Falls eine alte gleichnamige
+    # CSV/Excel-Datei existiert, wird sie entfernt und durch das native
+    # Google Sheet ersetzt. Ein bereits vorhandenes natives Sheet wird dagegen
+    # nur aktualisiert.
+    native = [f for f in files if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"]
+    if native:
+        spreadsheet_id = native[0]["id"]
+        # Eventuelle gleichnamige Dubletten bereinigen.
+        for duplicate in files:
+            if duplicate["id"] != spreadsheet_id:
+                try:
+                    drive.files().delete(fileId=duplicate["id"]).execute()
+                    print(f"  (gleichnamige alte/doppelte Check-Datei gelöscht, ID: {duplicate['id']})")
+                except Exception as exc:
+                    print(f"  WARNUNG: Dublette {duplicate['id']} konnte nicht gelöscht werden: {exc}")
     else:
+        for old_file in files:
+            try:
+                drive.files().delete(fileId=old_file["id"]).execute()
+                print(f"  (gleichnamige Nicht-Sheets-Datei gelöscht, ID: {old_file['id']})")
+            except Exception as exc:
+                print(f"  WARNUNG: Alte gleichnamige Datei konnte nicht gelöscht werden: {exc}")
         created = drive.files().create(body={
             "name": DRIVE_NAME,
             "mimeType": "application/vnd.google-apps.spreadsheet",

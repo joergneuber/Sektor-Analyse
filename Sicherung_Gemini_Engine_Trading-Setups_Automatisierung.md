@@ -18,7 +18,7 @@ ohne Web-Zugriff), überspringst du kommentarlos – sie sind optional und
 kein Grund, die Aufgabe abzulehnen.
 
 Datei-Anhänge (NEU): Die Dateien (briefing.txt, Setups(...).csv,
-Performance(...).csv, ggf. Offene_Positionen.csv, ggf.
+Performance(...).csv, Offene Positionen+Check.csv, ggf.
 Trendwende_Setups(...).csv und Trendwende_Briefing(...).txt, ggf.
 wöchentlich Langfrist_Bewertung(...).csv und
 Langfrist_Briefing(...).txt, ggf. Short_Setups(...).csv und
@@ -542,7 +542,7 @@ GESTOPPT-Liste seit 29.07.2026 bereits in genau dieser Reihenfolge -
 (NEU 08.08.2026, Nutzerwunsch „exakte Gliederung festschreiben” -
 formalisiert, was bisher nur implizit aus der Rohdatei abgeleitet
 wurde): Baue je Position GENAU diese Zeilen, alle Werte wörtlich aus
-Offene_Positionen.csv nachgeschlagen (Ticker als Schlüssel), NICHTS
+Offene Positionen+Check.csv nachgeschlagen (Ticker als Schlüssel), NICHTS
 selbst berechnen, keine Markdown-Syntax (siehe globale Regel oben):
 Name | Markt: {{Markt}} | Richtung: {{Richtung}} Sektor:
 {{Sektor}} Quelle: {{Ideen_Quelle, Fallback „Manuell” falls leer}}
@@ -1573,11 +1573,12 @@ werden: Abschnitt einfach weglassen, keine Rückfrage, keine
 Ablehnung deswegen.
 
 9. Offene Positionen
+TECHNISCHE CHECK-DATENQUELLE (VERBINDLICH): Für die offenen Positionen ist ab sofort ausschließlich die Datei „Offene Positionen+Check.csv“ die maßgebliche Quelle. Sie enthält die bereits aufbereiteten Positionsinformationen plus die zustandsabhängige technische Analyse. Die technischen Felder sind wörtlich zu übernehmen und nicht aus anderen Kursdaten-Dateien neu zu berechnen. Dazu gehören insbesondere Technischer_Zustand, Trendrichtung, Technische_Lage, Support_1/2, Widerstand_1/2, Breakout_Status, A-B-C_Status, Fibonacci_Status/Ziel_1/2/3, Trendkanal_Obergrenze, Measured_Move_Ziel, Formation, Round_Number_Zone, Major_Resistance, Ueberdehnung, Relative_Staerke_Sektor, Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. Eine alte „Offene_Positionen.csv“ darf für diesen Abschnitt nicht als konkurrierende technische Quelle verwendet werden. Sie darf ausschließlich als Backend-Fallback für Positionsfelder dienen, die bewusst nicht Teil der festgelegten Check-Struktur sind (z. B. Stop, TP1, TP2, Richtung, Ideen_Quelle, Einstiegsdatum).
 
 Das Briefing enthält einen zusätzlichen Abschnitt „OFFENE POSITIONEN
 (manuell bestätigt)” – das sind keine neuen Setup-Kandidaten, sondern
 Trades, die der Nutzer eigenständig als tatsächlich eingegangen
-bestätigt hat (separate Datei Offene_Positionen.csv, außerhalb der
+bestätigt hat (separate Datei Offene Positionen+Check.csv, außerhalb der
 Setups-CSV).
 
 • Position in der Auswertung (Pflicht, NEU): Dieser Abschnitt steht
@@ -1686,7 +1687,7 @@ Position in der IDENTISCHEN Feld-Vorlage aus wie „Geschlossene
 Positionen” (siehe dortiger Bullet) – KEINE Markdown-Tabelle, KEINE
 Kompaktzeile mehr, sondern dieselben mehrzeiligen „Label:
 Wert”-Blöcke, KEINE Markdown-Syntax (siehe globale Regel oben). Alle
-Werte wörtlich aus Offene_Positionen.csv, NICHTS selbst berechnen:
+Werte wörtlich aus Offene Positionen+Check.csv, NICHTS selbst berechnen:
 Name | Markt: {{Markt}} | Richtung: {{Richtung}} Sektor:
 {{Sektor}} Quelle: {{Ideen_Quelle, Fallback „Manuell” falls leer}}
 Einstieg: {{Einstieg, 2 Nachkommastellen}}{{Waehrungssymbol}}
