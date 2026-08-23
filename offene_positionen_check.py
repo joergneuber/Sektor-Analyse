@@ -1059,21 +1059,23 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
 
 
 def _cleanup_backups(sheets, spreadsheet_id: str):
-    """Löscht alte Backup-Tabs erst NACH erfolgreichem Produktiv-Swap.
+    """Bereinigt alte Backup-Tabs und das unbenutzte Standardblatt.
 
-    Scheitert die Bereinigung, bleiben die Backups absichtlich erhalten.
-    Datenverlust hat Vorrang vor einer kosmetisch perfekten Tab-Anzahl.
+    Diese Bereinigung läuft erst NACH erfolgreichem Produktiv-Swap. Das
+    Standardblatt "Tabellenblatt1" wird nur dann entfernt, wenn es exakt so
+    heißt; andere vorhandene Tabs bleiben unangetastet.
     """
     ss = sheets.spreadsheets().get(
         spreadsheetId=spreadsheet_id, fields="sheets.properties"
     ).execute()
-    backup_ids = [
+    delete_ids = [
         s["properties"]["sheetId"] for s in ss["sheets"]
         if str(s["properties"]["title"]).startswith("_BACKUP_")
+        or str(s["properties"]["title"]) == "Tabellenblatt1"
     ]
-    if not backup_ids:
+    if not delete_ids:
         return
-    requests = [{"deleteSheet": {"sheetId": sid}} for sid in backup_ids]
+    requests = [{"deleteSheet": {"sheetId": sid}} for sid in delete_ids]
     sheets.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id, body={"requests": requests}
     ).execute()
@@ -1168,12 +1170,24 @@ def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame)
 
 
 def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
-    """Liest Tab 2 vor dem Überschreiben.
+    """Liest den Historien-Tab nur, wenn er tatsächlich vorhanden ist.
 
-    Fehlt der Tab oder ist er noch nicht vorhanden, wird eine leere Historie
-    zurückgegeben. Ein solcher Erstlauf darf nicht am fehlenden Tab scheitern.
+    Beim Erstlauf existiert der produktive Tab ggf. noch nicht. In diesem Fall
+    wird bewusst keine ungültige A1-Range abgefragt, damit Google Sheets keinen
+    400-Fehler wegen eines nicht vorhandenen Tabs erzeugt.
     """
     try:
+        existing = sheets.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties",
+        ).execute().get("sheets", [])
+        titles = {
+            str(s.get("properties", {}).get("title", "")).strip()
+            for s in existing
+        }
+        if "Geschlossene Positionen" not in titles:
+            return []
+
         response = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range="'Geschlossene Positionen'!A:AA",
