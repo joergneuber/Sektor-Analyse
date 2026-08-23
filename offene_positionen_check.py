@@ -1115,6 +1115,19 @@ def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
 
 
 
+def _history_key(row) -> tuple[str, str, str, str]:
+    """Stabiler Schlüssel für einen historischen Trade.
+    Primär Ticker + Einstiegsdatum + Ausstiegsdatum + Status.
+    Dadurch werden alte Trades beim nächsten Lauf nicht dupliziert.
+    """
+    return (
+        str(row.get("Ticker", "")).strip().upper(),
+        str(row.get("Einstiegsdatum", "")).strip(),
+        str(row.get("Ausstiegsdatum", "")).strip(),
+        str(row.get("Status", "")).strip().lower(),
+    )
+
+
 def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame) -> pd.DataFrame:
     """Führt bestehende Google-Sheet-Historie und neu geschlossene Trades zusammen.
 
