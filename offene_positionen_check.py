@@ -1019,7 +1019,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     return sheet_id
 
 
-def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str], legacy_title: Optional[str] = None) -> list[int]:
+def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str]) -> list[int]:
     """Tauscht vollständig vorbereitete temporäre Tabs gegen Produktivtabs.
 
     Der Austausch erfolgt in EINEM batchUpdate. Bei einem Fehler vor diesem
@@ -1034,17 +1034,6 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str],
     props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
     requests = []
     old_ids = []
-
-    # Falls der bisherige Haupttab noch einen alten Namen trägt, wird auch er
-    # im selben atomaren Batch als Backup umbenannt. Dadurch bleibt bis zum
-    # erfolgreichen Swap alles unverändert.
-    if legacy_title and legacy_title in props:
-        legacy_backup_title = f"_BACKUP_{legacy_title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
-        requests.append({"updateSheetProperties": {
-            "properties": {"sheetId": props[legacy_title]["sheetId"], "title": legacy_backup_title},
-            "fields": "title"
-        }})
-        old_ids.append(props[legacy_title]["sheetId"])
 
     for temp_title, target_title in temp_to_target.items():
         temp = props.get(temp_title)
@@ -1125,8 +1114,52 @@ def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
     return copied.get("id")
 
 
+
+def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame) -> pd.DataFrame:
+    """Führt bestehende Google-Sheet-Historie und neu geschlossene Trades zusammen.
+
+    Die bestehende Historie ist die dauerhafte Faktenbasis. Neue Gestoppt/Verkauft-
+    Datensätze werden ergänzt; bestehende historische Datensätze werden nicht
+    durch eine aktuelle technische Neuberechnung überschrieben.
+    """
+    rows = []
+    if existing_rows:
+        old_headers = [str(x).strip() for x in existing_rows[0]]
+        for raw in existing_rows[1:]:
+            if not any(str(x).strip() for x in raw):
+                continue
+            item = {}
+            for i, col in enumerate(old_headers):
+                if col in HISTORY_HEADERS:
+                    item[col] = raw[i] if i < len(raw) else ""
+            if str(item.get("Ticker", "")).strip():
+                rows.append(item)
+
+    for _, r in new_closed_df.iterrows():
+        rows.append({c: r.get(c, "") for c in HISTORY_HEADERS})
+
+    merged = pd.DataFrame(rows, columns=HISTORY_HEADERS)
+    if merged.empty:
+        return pd.DataFrame(columns=HISTORY_HEADERS)
+
+    seen = set()
+    keep = []
+    for _, r in merged.iterrows():
+        key = _history_key(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        keep.append(r.to_dict())
+
+    return pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
+
+
 def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
-    """Liest Tab 2 vor dem Überschreiben. Fehlt der Tab, kommt eine leere Historie."""
+    """Liest Tab 2 vor dem Überschreiben.
+
+    Fehlt der Tab oder ist er noch nicht vorhanden, wird eine leere Historie
+    zurückgegeben. Ein solcher Erstlauf darf nicht am fehlenden Tab scheitern.
+    """
     try:
         response = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
@@ -1223,7 +1256,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             temp_closed: "Geschlossene Positionen",
         }
         # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
-        _swap_temp_tabs(sheets, spreadsheet_id, targets, old_main_title)
+        _swap_temp_tabs(sheets, spreadsheet_id, targets)
 
         # Nur nach erfolgreichem Swap werden alte Backup-Tabs entfernt.
         # Scheitert die Bereinigung, bleiben sie als zusätzliche Sicherheitskopie.
