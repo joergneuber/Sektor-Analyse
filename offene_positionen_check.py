@@ -885,24 +885,29 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV) -> pd.
 
 
 def google_credentials():
+    """Verwendet exakt den bestehenden Projekt-OAuth-Mechanismus.
+
+    Der im GDRIVE_TOKEN gespeicherte Scope wird übernommen; es werden KEINE
+    eigenen Scopes erzwungen. Der Token wird einmal geladen und fuer den
+    gesamten Drive/Sheets-Lauf wiederverwendet.
+    """
     if not GOOGLE_AVAILABLE:
-        return None
+        raise RuntimeError("Google-Credentials/Client-Bibliotheken sind nicht verfügbar.")
+
     token = os.getenv("GDRIVE_TOKEN")
     if not token:
-        return None
+        raise RuntimeError("GDRIVE_TOKEN fehlt.")
+
     try:
         info = json.loads(token)
-        creds = Credentials.from_authorized_user_info(info, scopes=[
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/spreadsheets",
-        ])
+        creds = Credentials.from_authorized_user_info(info)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
+        if not creds.valid:
+            raise RuntimeError("GDRIVE_TOKEN ist nach Laden/Refresh nicht gültig.")
         return creds
     except Exception as exc:
-        print(f"WARNUNG: GDRIVE_TOKEN konnte nicht verwendet werden: {exc}")
-        return None
-
+        raise RuntimeError(f"GDRIVE_TOKEN konnte nicht verwendet werden: {exc}") from exc
 
 def upsert_google_sheet(df: pd.DataFrame, creds) -> Optional[str]:
     if creds is None:
@@ -983,9 +988,14 @@ def upsert_google_sheet(df: pd.DataFrame, creds) -> Optional[str]:
 
 def main():
     output = run_local(INPUT_FILE, OUTPUT_CSV)
-    creds = google_credentials()
-    if creds is not None:
+    try:
+        creds = google_credentials()
         upsert_google_sheet(output, creds)
+    except Exception as exc:
+        print(f"FEHLER: Google Drive/Sheets konnte nicht aktualisiert werden: {exc}")
+        print("ABBRUCH: Die lokale CSV wurde erstellt, aber die neue Check-Datei wurde nicht erfolgreich nach Google Drive übertragen.")
+        raise
+    print("GOOGLE DRIVE: Offene Positionen+Check erfolgreich erstellt/aktualisiert.")
     print("FERTIG: Offene Positionen + Check erstellt. Originaldatei unverändert.")
 
 
