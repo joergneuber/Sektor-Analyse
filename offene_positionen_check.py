@@ -80,6 +80,15 @@ NUMERIC_COLUMNS = {
     "Measured_Move_Ziel", "Round_Number_Zone", "Major_Resistance",
 }
 
+HISTORY_HEADERS = [
+    "Ticker", "Name", "Sektor", "Markt", "Waehrung", "Richtung",
+    "Ideen_Quelle", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs",
+    "Stop", "TP1", "TP2", "Status", "Ausstiegsdatum", "Ausstiegskurs",
+    "Performance_Seit_Einstieg%", "TP_Hinweis", "Alert_Hinweis",
+    "Produkt_Typ", "Emittent", "Hebel", "OS_Einstiegskurs",
+    "OS_Manueller_Kurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+]
+
 
 @dataclass
 class TechnicalResult:
@@ -511,6 +520,21 @@ def determine_state(data: pd.DataFrame, close: float, resistances: list[float], 
     return trend, state, lage
 
 
+def immediate_resistance_within_10pct(future_highs: Iterable[float], close: float) -> Optional[float]:
+    """Naechster historischer Widerstand <= 10 % oberhalb des Kurses.
+    Genau 10,0 % blockiert Fibonacci; >10 % ist ein entferntes Major-Level.
+    """
+    if close is None or close <= 0:
+        return None
+    upper = close * (1.0 + IMMEDIATE_RESISTANCE_MAX_DISTANCE)
+    candidates = [
+        float(level) for level in future_highs
+        if level > close * 1.002
+        and level <= upper + max(1e-12, abs(upper) * 1e-10)
+    ]
+    return min(candidates) if candidates else None
+
+
 def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     result = TechnicalResult()
     if data.empty:
@@ -605,10 +629,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     # Fall B: Eine unmittelbare historische Resistance oberhalb des Kurses
     # existiert noch -> sie muss zuerst gebrochen sein. Weiter entfernte
     # Major-Level/ATH (>10 %) blockieren Fibonacci nicht.
-    immediate_resistance = None
-    for level in future_highs:
-        if level > close * 1.002 and level <= close * (1 + IMMEDIATE_RESISTANCE_MAX_DISTANCE):
-            immediate_resistance = level if immediate_resistance is None else min(immediate_resistance, level)
+    immediate_resistance = immediate_resistance_within_10pct(future_highs, close)
 
     breakout_for_fib = bool(
         abc_ok and abc_points and immediate_resistance is None
@@ -856,12 +877,26 @@ def make_row(row, tech: TechnicalResult) -> dict:
     }
 
 
-def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV) -> pd.DataFrame:
+def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
+    """Uebernimmt Gestoppt/Verkauft als historische Faktenbasis.
+    Keine aktuelle technische Neuberechnung fuer geschlossene Positionen.
+    """
+    closed = df[df["Status"].astype(str).str.strip().str.lower().isin({"gestoppt", "verkauft"})].copy()
+    for col in HISTORY_HEADERS:
+        if col not in closed.columns:
+            closed[col] = ""
+    return closed[HISTORY_HEADERS].copy()
+
+
+def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
+              history_csv: str = "Geschlossene Positionen.csv"):
     df = read_positions(input_file)
     open_df = df[df.apply(is_open, axis=1)].copy()
+    closed_df = extract_closed_history(df)
     results = []
     print(f"OFFENE POSITIONEN + CHECK: {len(open_df)} offene Positionen gefunden.")
-    print("Gestoppte/verkaufte Positionen werden vollständig ausgeschlossen.")
+    print(f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen.")
+    print("Gestoppte/verkaufte Positionen werden NICHT technisch neu berechnet.")
 
     for _, row in open_df.iterrows():
         ticker = str(row.get("Ticker", "")).strip()
@@ -870,8 +905,6 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV) -> pd.
         print(f"CHECK: {ticker} | {row.get('Name','')}")
         hist = fetch_history(ticker)
         tech = analyze_technical(hist, row)
-        # Major Resistance erst hier aus dem Analyseergebnis nachtragen; wird nicht
-        # aus TP1/TP2 übernommen.
         if not hist.empty and tech.close is not None:
             ath = float(hist["High"].max())
             if ath > tech.close * 1.01:
@@ -880,8 +913,10 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV) -> pd.
 
     out = pd.DataFrame(results, columns=HEADERS)
     out.to_csv(output_csv, sep=";", decimal=",", index=False, encoding="utf-8-sig")
-    print(f"LOKAL ERSTELLT: {output_csv} | {len(out)} Positionen")
-    return out
+    closed_df.to_csv(history_csv, sep=";", decimal=",", index=False, encoding="utf-8-sig")
+    print(f"LOKAL ERSTELLT: {output_csv} | {len(out)} offene Positionen")
+    print(f"HISTORIE ERSTELLT: {history_csv} | {len(closed_df)} geschlossene Positionen")
+    return out, closed_df
 
 
 def google_credentials():
@@ -909,64 +944,213 @@ def google_credentials():
     except Exception as exc:
         raise RuntimeError(f"GDRIVE_TOKEN konnte nicht verwendet werden: {exc}") from exc
 
-def upsert_google_sheet(df: pd.DataFrame, creds) -> Optional[str]:
-    if creds is None:
-        print("INFO: Keine Google-Credentials – lokale CSV bleibt die Ausgabe.")
-        return None
-    drive = build("drive", "v3", credentials=creds)
-    sheets = build("sheets", "v4", credentials=creds)
-    q = f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
-    files = drive.files().list(q=q, fields="files(id,name,mimeType)").execute().get("files", [])
+def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
+                 widths: dict[str, int], freeze_rows: int = 2,
+                 target_title: Optional[str] = None):
+    """Schreibt in einen Ziel- oder temporären Tab.
 
-    if files:
-        spreadsheet_id = files[0]["id"]
+    Sicherheitsregel:
+    - Für produktive Updates wird zunächst in einen temporären Tab geschrieben.
+    - Der bestehende produktive Tab wird erst nach erfolgreichem vollständigem
+      Schreiben/Formatieren per Batch-Rename ausgetauscht.
+    - Schlägt das Schreiben vorher fehl, bleibt der bestehende Tab unverändert.
+    """
+    actual_title = target_title or title
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
+
+    if actual_title not in props:
+        created = sheets.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": title}}}]}
+        ).execute()
+        sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
     else:
-        created = drive.files().create(body={
-            "name": DRIVE_NAME,
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-            "parents": [FOLDER_ID],
-        }, fields="id,name").execute()
-        spreadsheet_id = created["id"]
+        sheet_id = props[actual_title]["sheetId"]
 
-    ss = sheets.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets.properties").execute()
-    sheet = ss["sheets"][0]
-    sheet_id = sheet["properties"]["sheetId"]
-    title = sheet["properties"]["title"]
+    # Bei einem temporären Tab ist `title` der tatsächliche Tabname.
+    write_title = title
 
-    values = [
-        [f"Offene Positionen + Check | Stand {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"] + [""] * (len(HEADERS)-1),
-        HEADERS,
-    ]
-    for _, r in df.iterrows():
-        values.append([r.get(c, "") for c in HEADERS])
+    # Ein vorhandener Zieltab wird hier NICHT geleert. Nur der temporäre Tab
+    # wird beschrieben. Das ist der zentrale Datenverlustschutz.
+    if write_title != actual_title:
+        if write_title in props:
+            # Kollision mit einem alten temporären Rest -> neuen eindeutigen Namen
+            # erzeugen; der alte Rest bleibt unangetastet.
+            write_title = f"{title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+            created = sheets.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": write_title}}}]}
+            ).execute()
+            sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
+        else:
+            created = sheets.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": write_title}}}]}
+            ).execute()
+            sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
 
+    # Nur der temporäre Tab wird geleert; ein eventueller produktiver Tab bleibt
+    # bis zum erfolgreichen Austausch unangetastet.
     sheets.spreadsheets().values().clear(
-        spreadsheetId=spreadsheet_id, range=f"'{title}'!A:AZ", body={}
+        spreadsheetId=spreadsheet_id, range=f"'{write_title}'!A:AZ", body={}
     ).execute()
     sheets.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{title}'!A1",
-        valueInputOption="USER_ENTERED",
-        body={"values": values},
+        spreadsheetId=spreadsheet_id, range=f"'{write_title}'!A1",
+        valueInputOption="USER_ENTERED", body={"values": values}
     ).execute()
 
+    ncols = len(values[0])
     requests = [
-        {"updateSheetProperties": {"properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 2}}, "fields": "gridProperties.frozenRowCount"}},
-        {"mergeCells": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": len(HEADERS)}, "mergeType": "MERGE_ALL"}},
-        {"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": len(HEADERS)}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 14}}}, "fields": "userEnteredFormat.textFormat"}},
-        {"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": len(HEADERS)}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True}, "wrapStrategy": "WRAP"}}, "fields": "userEnteredFormat.textFormat,userEnteredFormat.wrapStrategy"}},
-        {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 2}, "properties": {"pixelSize": 34}, "fields": "pixelSize"}},
-        {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": len(values), "startColumnIndex": 0, "endColumnIndex": len(HEADERS)}}}},
+        {"updateSheetProperties":{"properties":{"sheetId":sheet_id,"gridProperties":{"frozenRowCount":freeze_rows}},"fields":"gridProperties.frozenRowCount"}},
+        {"mergeCells":{"range":{"sheetId":sheet_id,"startRowIndex":0,"endRowIndex":1,"startColumnIndex":0,"endColumnIndex":ncols},"mergeType":"MERGE_ALL"}},
+        {"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":0,"endRowIndex":1,"startColumnIndex":0,"endColumnIndex":ncols},"cell":{"userEnteredFormat":{"textFormat":{"bold":True,"fontSize":14}}},"fields":"userEnteredFormat.textFormat"}},
+        {"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":1,"endRowIndex":2,"startColumnIndex":0,"endColumnIndex":ncols},"cell":{"userEnteredFormat":{"textFormat":{"bold":True},"wrapStrategy":"WRAP"}},"fields":"userEnteredFormat.textFormat,userEnteredFormat.wrapStrategy"}},
+        {"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"ROWS","startIndex":0,"endIndex":2},"properties":{"pixelSize":34},"fields":"pixelSize"}},
+        {"setBasicFilter":{"filter":{"range":{"sheetId":sheet_id,"startRowIndex":1,"endRowIndex":len(values),"startColumnIndex":0,"endColumnIndex":ncols}}}},
     ]
+    for i,col in enumerate(values[1]):
+        if col in NUMERIC_COLUMNS or col.endswith("%"):
+            requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":"0.00"}}},"fields":"userEnteredFormat.numberFormat"}})
+        requests.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":widths.get(col,120)},"fields":"pixelSize"}})
+    sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests":requests}).execute()
+    return sheet_id
 
-    # Zahlenformate: 2 Dezimalstellen, Performance mit 2 Dezimalstellen.
-    for col_idx, col in enumerate(HEADERS):
-        if col in NUMERIC_COLUMNS:
-            requests.append({"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": len(values), "startColumnIndex": col_idx, "endColumnIndex": col_idx+1}, "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}}}, "fields": "userEnteredFormat.numberFormat"}})
-        elif col.endswith("%"):
-            requests.append({"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": len(values), "startColumnIndex": col_idx, "endColumnIndex": col_idx+1}, "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}}}, "fields": "userEnteredFormat.numberFormat"}})
 
-    # Sinnvolle Spaltenbreiten fuer iPhone und PC; Textfelder breiter.
+def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str]) -> list[int]:
+    """Tauscht vollständig vorbereitete temporäre Tabs gegen Produktivtabs.
+
+    Der Austausch erfolgt in EINEM batchUpdate. Bei einem Fehler vor diesem
+    Punkt bleiben die bisherigen Produktivtabs unverändert.
+    Die alten Tabs werden zunächst nur in Backup-Namen umbenannt; sie werden
+    bewusst NICHT sofort gelöscht. So bleibt im Fehlerfall ein Wiederherstellungs-
+    stand innerhalb desselben Google Sheets erhalten.
+    """
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
+    requests = []
+    old_ids = []
+
+    for temp_title, target_title in temp_to_target.items():
+        temp = props.get(temp_title)
+        if temp is None:
+            raise RuntimeError(f"Temporärer Tab fehlt vor dem Austausch: {temp_title}")
+        old = props.get(target_title)
+        if old is not None:
+            backup_title = f"_BACKUP_{target_title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            requests.append({"updateSheetProperties": {
+                "properties": {"sheetId": old["sheetId"], "title": backup_title},
+                "fields": "title"
+            }})
+            old_ids.append(old["sheetId"])
+        requests.append({"updateSheetProperties": {
+            "properties": {"sheetId": temp["sheetId"], "title": target_title},
+            "fields": "title"
+        }})
+
+    sheets.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
+    return old_ids
+
+
+def _cleanup_backups(sheets, spreadsheet_id: str):
+    """Löscht alte Backup-Tabs erst NACH erfolgreichem Produktiv-Swap.
+
+    Scheitert die Bereinigung, bleiben die Backups absichtlich erhalten.
+    Datenverlust hat Vorrang vor einer kosmetisch perfekten Tab-Anzahl.
+    """
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    backup_ids = [
+        s["properties"]["sheetId"] for s in ss["sheets"]
+        if str(s["properties"]["title"]).startswith("_BACKUP_")
+    ]
+    if not backup_ids:
+        return
+    requests = [{"deleteSheet": {"sheetId": sid}} for sid in backup_ids]
+    sheets.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
+
+
+def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
+    """Lokale Plausibilitätsprüfung als letzte Schranke vor Google-Änderungen."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise RuntimeError("Offene Check-Ausgabe ist keine gültige Tabelle.")
+    if closed_df is None or not isinstance(closed_df, pd.DataFrame):
+        raise RuntimeError("Historien-Ausgabe ist keine gültige Tabelle.")
+    if len(df) == 0:
+        raise RuntimeError("Sicherheitsabbruch: 0 offene Positionen würden hochgeladen.")
+    required_open = {"Ticker", "Status"}
+    if not required_open.issubset(df.columns):
+        raise RuntimeError("Sicherheitsabbruch: offene Check-Ausgabe hat Pflichtspalten nicht.")
+    if not (df["Status"].astype(str).str.strip().str.lower() == "offen").all():
+        raise RuntimeError("Sicherheitsabbruch: Tab 1 enthält eine Position, die nicht 'Offen' ist.")
+    required_hist = {"Ticker", "Status"}
+    if not required_hist.issubset(closed_df.columns):
+        raise RuntimeError("Sicherheitsabbruch: Historien-Ausgabe hat Pflichtspalten nicht.")
+    if closed_df["Ticker"].astype(str).str.strip().eq("").any():
+        raise RuntimeError("Sicherheitsabbruch: Historie enthält einen leeren Ticker.")
+
+
+def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
+    """Erstellt vor dem produktiven Austausch eine dauerhafte Drive-Kopie.
+
+    Die Kopie wird NICHT automatisch gelöscht. Sie dient als zusätzlicher
+    Notfallstand, falls nach einem API-/Netzwerkfehler eine Wiederherstellung
+    nötig wird.
+    """
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    copied = drive.files().copy(
+        fileId=spreadsheet_id,
+        body={"name": f"{DRIVE_NAME} - Backup {stamp}", "parents": [FOLDER_ID]}
+    ).execute()
+    return copied.get("id")
+
+
+def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
+    if creds is None:
+        print("INFO: Keine Google-Credentials – lokale CSVs bleiben die Ausgabe.")
+        return None
+
+    _validate_output_before_upload(df, closed_df)
+
+    drive=build("drive","v3",credentials=creds)
+    sheets=build("sheets","v4",credentials=creds)
+    q=f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
+    files=drive.files().list(q=q,fields="files(id,name,mimeType)").execute().get("files",[])
+    if files:
+        spreadsheet_id=files[0]["id"]
+    else:
+        created=drive.files().create(
+            body={"name":DRIVE_NAME,"mimeType":"application/vnd.google-apps.spreadsheet","parents":[FOLDER_ID]},
+            fields="id,name"
+        ).execute()
+        spreadsheet_id=created["id"]
+
+    existing = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute().get("sheets", [])
+    existing_titles = [s["properties"]["title"] for s in existing]
+
+    # Bestehende Historie VOR jedem Überschreiben sichern.
+    existing_history_rows = read_existing_history(sheets, spreadsheet_id)
+
+    # Falls das alte Sheet einen anders benannten ersten Tab hat, wird dessen
+    # Name erst nach erfolgreicher Vorbereitung der neuen Tabs geändert.
+    old_main_title = None
+    if "Offene Positionen + Check" not in existing_titles and existing:
+        old_main_title = existing[0]["properties"]["title"]
+
+    now=dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+    values=[[f"Offene Positionen + Check | Stand {now}"]+[""]*(len(HEADERS)-1),HEADERS]
+    for _,r in df.iterrows(): values.append([r.get(c,"") for c in HEADERS])
     widths = {
         "Ticker": 95, "Name": 240, "Steuerungsart": 125, "Sektor": 150,
         "Markt": 65, "Waehrung": 75, "Status": 75, "Einstieg": 85,
@@ -974,29 +1158,76 @@ def upsert_google_sheet(df: pd.DataFrame, creds) -> Optional[str]:
         "Technischer_Zustand": 190, "Trendrichtung": 125, "Technische_Lage": 220,
         "Support_1": 90, "Support_2": 90, "Widerstand_1": 100, "Widerstand_2": 100,
         "Breakout_Status": 180, "A-B-C_Status": 260, "Fibonacci_Status": 260,
-        "Fibonacci_Ziel_1": 120, "Fibonacci_Ziel_2": 120, "Major_Resistance": 120,
-        "Konfluenz": 300, "Retest_Support": 120, "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
-        "Formation": 220, "Relative_Staerke_Sektor": 300, "Ueberdehnung": 300,
+        "Fibonacci_Ziel_1": 120, "Fibonacci_Ziel_2": 120,
+        "Fibonacci_Ziel_3": 120, "Trendkanal_Obergrenze": 130,
+        "Measured_Move_Ziel": 130, "Formation": 220, "Round_Number_Zone": 130,
+        "Major_Resistance": 120, "Ueberdehnung": 300,
+        "Relative_Staerke_Sektor": 300, "Konfluenz": 300, "Retest_Support": 120,
+        "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
     }
-    for i, col in enumerate(HEADERS):
-        requests.append({"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i+1}, "properties": {"pixelSize": widths.get(col, 120)}, "fields": "pixelSize"}})
 
-    sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
-    print(f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | ID={spreadsheet_id} | 2 Kopfzeilen fixiert")
-    return spreadsheet_id
+    merged_history = merge_closed_history(existing_history_rows, closed_df)
+    hvalues=[[f"Geschlossene Positionen | historische Faktenbasis | Stand {now}"]+[""]*(len(HISTORY_HEADERS)-1),HISTORY_HEADERS]
+    for _,r in merged_history.iterrows(): hvalues.append([r.get(c,"") for c in HISTORY_HEADERS])
+    hwidths={c:140 for c in HISTORY_HEADERS}
+    hwidths.update({"Ticker":95,"Name":260,"TP_Hinweis":260,"Alert_Hinweis":260})
 
+    # Datenverlustschutz:
+    # 1) bestehende Historie lesen
+    # 2) beide neuen Tabs vollständig lokal/temporär schreiben
+    # 3) produktiven Stand erst danach per Batch-Rename austauschen
+    # 4) zusätzliche Drive-Sicherung des bisherigen Sheets vor dem Swap
+    temp_suffix = f"__TMP_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    temp_open = f"__TMP_OFFEN_{temp_suffix}"
+    temp_closed = f"__TMP_GESCHLOSSEN_{temp_suffix}"
+
+    backup_id = None
+    try:
+        # Wenn das Sheet bereits existiert, vor dem ersten produktiven Austausch
+        # eine separate Drive-Sicherung erstellen. Diese bleibt bewusst erhalten.
+        if existing:
+            backup_id = _snapshot_google_sheet(drive, spreadsheet_id)
+            print(f"DATENSCHUTZ: Backup des bisherigen Google Sheets erstellt | ID={backup_id}")
+
+        _write_sheet(sheets, spreadsheet_id, temp_open, values, widths, 2, target_title=temp_open)
+        _write_sheet(sheets, spreadsheet_id, temp_closed, hvalues, hwidths, 2, target_title=temp_closed)
+
+        # Beide neuen Tabs sind vollständig beschrieben und formatiert. Erst jetzt
+        # werden sie gegen die produktiven Tabs getauscht.
+        targets = {
+            temp_open: "Offene Positionen + Check",
+            temp_closed: "Geschlossene Positionen",
+        }
+        # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
+        _swap_temp_tabs(sheets, spreadsheet_id, targets)
+
+        # Nur nach erfolgreichem Swap werden alte Backup-Tabs entfernt.
+        # Scheitert die Bereinigung, bleiben sie als zusätzliche Sicherheitskopie.
+        try:
+            _cleanup_backups(sheets, spreadsheet_id)
+        except Exception as cleanup_exc:
+            print(f"WARNUNG: Backup-Tabs konnten nicht bereinigt werden; sie bleiben absichtlich erhalten: {cleanup_exc}")
+
+        print(f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | historisch={len(merged_history)} | 2 produktive Tabs")
+        return spreadsheet_id
+    except Exception as exc:
+        print("DATENSCHUTZ: Produktiver Swap NICHT erfolgreich abgeschlossen.")
+        print("DATENSCHUTZ: Bestehende produktive Tabs wurden vor dem Swap nicht verändert.")
+        if backup_id:
+            print(f"DATENSCHUTZ: Notfall-Backup bleibt erhalten | ID={backup_id}")
+        raise RuntimeError(f"Google-Upload sicher abgebrochen: {exc}") from exc
 
 def main():
-    output = run_local(INPUT_FILE, OUTPUT_CSV)
+    output, closed_history = run_local(INPUT_FILE, OUTPUT_CSV)
     try:
         creds = google_credentials()
-        upsert_google_sheet(output, creds)
+        upsert_google_sheet(output, closed_history, creds)
     except Exception as exc:
         print(f"FEHLER: Google Drive/Sheets konnte nicht aktualisiert werden: {exc}")
-        print("ABBRUCH: Die lokale CSV wurde erstellt, aber die neue Check-Datei wurde nicht erfolgreich nach Google Drive übertragen.")
+        print("ABBRUCH: Lokale Dateien erstellt, Google Sheet nicht erfolgreich aktualisiert.")
         raise
     print("GOOGLE DRIVE: Offene Positionen+Check erfolgreich erstellt/aktualisiert.")
-    print("FERTIG: Offene Positionen + Check erstellt. Originaldatei unverändert.")
+    print(f"FERTIG: Offen={len(output)} | Historie={len(closed_history)} | Originaldatei unverändert.")
 
 
 if __name__ == "__main__":
