@@ -47,6 +47,17 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python positionen_tracker.py
 
+      # ============================================================
+      # OFFENE POSITIONEN + TECHNISCHER CHECK
+      # Die alte Offene_Positionen.csv bleibt Backend-Datenquelle des
+      # Trackers. Fuer die Nutzer-/Gemini-Ausgabe ist ab hier
+      # ausschliesslich die neue Check-Datei massgeblich.
+      # ============================================================
+      - name: Offene Positionen + Check erstellen und in Drive aktualisieren
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python offene_positionen_check.py
+
       # Live-Benchmark gegen iShares Core MSCI World (EUNL.DE),
       # Stichtag 07.08.2026. Kein Backtest: verarbeitet ausschließlich
       # die echte Positionen-Historie aus Offene_Positionen.csv.
