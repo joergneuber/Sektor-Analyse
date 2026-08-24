@@ -10,11 +10,11 @@ Aktien-Setups gehandelt werden koennen. Architektur-Entscheidung vom
   - Eigener, kleiner Scanner statt Integration in analyse.py: feste
     4er-Liste statt Sektor-Rotation, kein Risiko fuer das 180-Ticker-Budget
     des Hauptscanners, unabhaengig testbar/abschaltbar.
-  - Kursdaten via yfinance-Futures (GC=F/SI=F/PL=F/PA=F), NICHT Alpaca (deckt
-    keine Rohstoff-Futures ab) und NICHT ETFs (GLD/SLV/PPLT/PALL haben
-    Tracking-Differenz zum echten Metallpreis und kuerzere/luecken-behaftete
-    Historie fuer EMA200/WMA200) - Futures liefern die reinste, laengste und
-    zeitnaheste Kursreihe (nahezu 23/5-Handel statt nur US-Boersenzeiten).
+  - Kursdaten via yfinance-Spotdaten (XAUUSD=X/XAGUSD=X/XPTUSD=X/XPDUSD=X),
+    NICHT Alpaca und NICHT ETFs (GLD/SLV/PPLT/PALL haben Tracking-Differenzen
+    zum Metallpreis). Die Spotreihe bildet fuer diesen Scanner den
+    zugrunde liegenden Metallpreis direkt ab; die verwendete Historie muss
+    fuer EMA200/WMA200 und die weiteren technischen Kriterien ausreichend sein.
   - Alle Haupt-Kriterien 1:1 uebernommen (EMA-Breakout, Pullback-Zone,
     Trendlinien-Ausbruch, Kumo-Ausbruch, CRV>=1.0, Abstand-52W-Hoch<=-25%,
     Plausibilitaets-Check) - "alles was wichtig ist muss rein".
@@ -105,10 +105,10 @@ from analyse import (
 
 # Feste 4er-Liste statt Sektor-Rotation - Ticker -> Anzeige-Name.
 EDELMETALLE = {
-    "GC=F": "Gold",
-    "SI=F": "Silber",
-    "PL=F": "Platin",
-    "PA=F": "Palladium",
+    "XAUUSD=X": "Gold",
+    "XAGUSD=X": "Silber",
+    "XPTUSD=X": "Platin",
+    "XPDUSD=X": "Palladium",
 }
 
 # Rohstoff-Index-ETF als Vergleichsmassstab fuer die Relative-Staerke-
@@ -851,7 +851,7 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
         f.write("-" * 50 + "\n")
         f.write(
             "- Universum: feste 4er-Liste (keine Sektor-Rotation, immer alle 4 geprüft).\n"
-            "- Kursbasis: Futures (GC=F/SI=F/PL=F/PA=F) - reinste, längste, zeitnaheste\n"
+            "- Kursbasis: Spot (XAUUSD=X/XAGUSD=X/XPTUSD=X/XPDUSD=X) - direkter Metallpreis\n"
             "  Kursreihe (kein ETF-Tracking-Fehler, kein Alpaca, das Rohstoffe nicht abdeckt).\n"
             "- Relative Stärke: gegen DBC (Rohstoff-Index-ETF) statt SPY/STOXX600 -\n"
             "  ein Aktienindex wäre als Vergleichsmaßstab für Edelmetalle nicht sinnvoll.\n"
