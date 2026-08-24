@@ -1089,16 +1089,16 @@ jüngste Agentur-Schlagzeilen (nur US-Titel verfügbar). Nutze sie
 ausschließlich als Risiko-/Ereignis-Kontext (z. B. laufende
 Übernahme, Analysten-Herabstufung, Rechtsstreit) – keine
 Sentiment-Bewertung, keine Auf- oder Abwertung der Setup-Qualität,
-keine Kursprognosen daraus ableiten. Ausgabepflicht: Stehen im
-Briefing News-Zeilen zu einem Titel, übernimm ALLE 1:1 (mit Datum,
-ungekürzt) in die Zeile Ereignis-Kontext dieses Titels – bei
-offenen Positionen als eigene Zeile unter der Position. Keine eigene
-Relevanz-Auswahl, kein Weglassen wegen vermeintlicher
-Belanglosigkeit. Sprache: Übersetze die (englischen) Schlagzeilen
-bei der Ausgabe ins Deutsche – Eigennamen, Firmennamen,
-Ticker-Symbole und Kurszahlen/Währungen bleiben unverändert im
-Original. Fehlen News-Zeilen, ist das kein Signal, sondern schlicht
-keine Meldung vorhanden – nur dann entfällt die Zeile ersatzlos.
+keine Kursprognosen daraus ableiten. Ausgabepflicht: Stehen im Briefing News-Zeilen zu einem Titel, übernimm
+sie 1:1 (mit Datum, ungekürzt) in die Zeile Ereignis-Kontext dieses
+Titels. Für den Abschnitt „Offene Positionen” gilt abweichend die dort
+festgelegte Begrenzung auf maximal drei der jüngsten vorhandenen News.
+Keine eigene Relevanz-Auswahl außerhalb dieser ausdrücklich festgelegten
+Begrenzung. Sprache: Übersetze die (englischen) Schlagzeilen bei der
+Ausgabe ins Deutsche – Eigennamen, Firmennamen, Ticker-Symbole und
+Kurszahlen/Währungen bleiben unverändert im Original. Fehlen News-Zeilen,
+ist das kein Signal, sondern schlicht keine Meldung vorhanden – nur
+dann entfällt die Zeile ersatzlos.
 
 ERST 1: MARKTUMFELD = AKTUELLER ZUSTAND UND VERÄNDERUNG
 Punkt 1 beantwortet ausschließlich: „Was sehen wir jetzt und was hat sich
@@ -1624,8 +1624,8 @@ Einstieg. Bei Short fällt der Kurs im Gewinnfall
 Performance/Stop/TP-Werte sind in der CSV bereits korrekt
 richtungsabhängig berechnet – übernimm sie direkt, rechne nichts
 selbst um.
-• Festes Ausgabe-Format je Position (NEU – jedes Feld eigene Zeile,
-nicht als eine lange Pipe-Zeile):
+• Festes Ausgabe-Format je Position (NEU – Basisblock unverändert,
+technischer Block ergänzt):
 
 {{Firmenname}} | Markt: {{Markt}} | Richtung: {{Richtung}}
 
@@ -1644,10 +1644,57 @@ Stop: {{Stop, 2 Nachkommastellen}}{{Waehrungssymbol}}
 TP1: {{TP1, 2 Nachkommastellen}}{{Waehrungssymbol}} | TP2: {{TP2, 2
 Nachkommastellen}}{{Waehrungssymbol}}
 
-Jedes Feld (Namens-Zeile inkl. Richtung, Sektor, Quelle, Einstieg,
-Aktuell/Performance, Stop, TP1/TP2) auf einer EIGENEN Zeile, in genau
-dieser Reihenfolge, für JEDE Position identisch – keine Abweichungen,
-kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
+Danach folgt für JEDE offene Position der technische Block. Die Werte
+kommen wörtlich aus „Offene Positionen+Check.csv”; NICHTS technisch
+neuberechnen, umdeuten oder mit anderen Kursdaten ersetzen:
+
+Technischer Zustand: {{Technischer_Zustand}}
+Trendrichtung: {{Trendrichtung}}
+Technische Lage: {{Technische_Lage}}
+
+Support: {{Support_1}} | {{Support_2, falls vorhanden}}
+Widerstand: {{Widerstand_1}} | {{Widerstand_2, falls vorhanden}}
+
+Breakout: {{Breakout_Status}}
+A-B-C: {{A-B-C_Status}}
+Fibonacci: {{Fibonacci_Status}} – falls im Check Fibonacci-Ziele
+vorhanden sind, übernimm sie in derselben Zeile als „Ziel 1: … | Ziel 2: … |
+Ziel 3: …”. Sind keine Fibonacci-Ziele vorhanden, keine Werte erfinden.
+Technische Zielzone: {{Technische_Zielzone}}
+Überdehnung: {{Ueberdehnung}}
+Relative Stärke Sektor: {{Relative_Staerke_Sektor}}
+Konfluenz: {{Konfluenz}}
+Analysehinweis: {{Analysehinweis}}
+
+WICHTIG: A-B-C bleibt ein eigenes Pflichtfeld. Ein bestätigter
+Breakout aktiviert NICHT automatisch Fibonacci. Fibonacci/Fibonacci-
+Extension darf nur entsprechend dem bereits berechneten
+Fibonacci_Status der Check-Datei als aktiv dargestellt werden; die
+bestehende A-B-C-/Fibonacci-Logik wird NICHT verändert. Diese Änderung
+betrifft ausschließlich die Darstellung/Übergabe der bereits berechneten
+Werte in die Auswertung.
+
+Widerstandsbezeichnungen: Es werden in der Ausgabe ausschließlich
+„Widerstand” und „Historischer Widerstand” verwendet. „Längerfristiger
+Widerstand” oder andere Zwischenbezeichnungen sind nicht zulässig.
+„Historischer Widerstand” darf nur für einen relevanten Hochpunkt
+verwendet werden, dessen zugrunde liegender Hochpunkt mindestens
+52 Wochen (364 Tage) zurückliegt. Jüngere Widerstände werden immer
+als „Widerstand” bezeichnet. Diese Regel ändert nicht den berechneten
+Wert des Widerstands, sondern ausschließlich seine Bezeichnung.
+
+News
+Wenn für die Position News-Zeilen vorhanden sind, übernimm maximal
+drei der jüngsten vorhandenen „News TT.MM.: Schlagzeile”-Zeilen. Die
+Überschrift lautet ausschließlich „News” – niemals „News (max 3 Stück)”.
+Die Schlagzeilen werden bei der Ausgabe ins Deutsche übersetzt;
+Eigennamen, Firmennamen, Ticker-Symbole und Kurszahlen/Währungen
+bleiben unverändert. Keine News erfinden. Sind keine News vorhanden,
+entfällt der komplette News-Block.
+
+Jedes Feld des Basisblocks und des technischen Blocks steht auf einer
+eigenen Zeile in genau dieser Reihenfolge. Zwischen den Positionen
+steht eine leere Zeile.
 
 • Sektor (NEU, steht auf eigener Zeile 3, zwischen Namens-Zeile und
 Quelle): wörtlich aus dem Feld übernehmen. Ist das Feld leer (Sektor
@@ -1694,27 +1741,14 @@ keine offenen Positionen vorhanden – das ist kein Fehler, einfach
 so vermerken.
 • OFFENE POSITIONEN - FELD-VORLAGE (Pflicht, KORRIGIERT 08.08.2026,
 Nutzerwunsch „exakt gleiche Gliederung wie Geschlossene Positionen”
-– ersetzt das Kompaktzeilen-Format vom 06.08.2026: das war eine
-Reaktion auf einen damaligen Markdown-Tabellen-Fehlgriff, hat aber
-inzwischen zu einer Uneinheitlichkeit gegenüber „Geschlossene
-Positionen” geführt, die der Nutzer nicht wollte): Gib JEDE offene
-Position in der IDENTISCHEN Feld-Vorlage aus wie „Geschlossene
+– technische Ergänzung gemäß obigem festen Ausgabe-Format): Gib JEDE
+offene Position in der IDENTISCHEN Feld-Vorlage aus wie „Geschlossene
 Positionen” (siehe dortiger Bullet) – KEINE Markdown-Tabelle, KEINE
 Kompaktzeile mehr, sondern dieselben mehrzeiligen „Label:
 Wert”-Blöcke, KEINE Markdown-Syntax (siehe globale Regel oben). Alle
 Werte wörtlich aus Offene Positionen+Check.csv, NICHTS selbst berechnen:
-Name | Markt: {{Markt}} | Richtung: {{Richtung}} Sektor:
-{{Sektor}} Quelle: {{Ideen_Quelle, Fallback „Manuell” falls leer}}
-Einstieg: {{Einstieg, 2 Nachkommastellen}}{{Waehrungssymbol}}
-Aktuell: {{Aktueller_Kurs, 2 Nachkommastellen}}{{Waehrungssymbol}}
-Performance: {{Performance_Seit_Einstieg%, 2 Nachkommastellen}}%
-Stop: {{Stop, 2 Nachkommastellen}}{{Waehrungssymbol}} TP1: {{TP1, 2
-Nachkommastellen}}{{Waehrungssymbol}} | TP2: {{TP2, 2
-Nachkommastellen}}{{Waehrungssymbol}} Direkt danach, NUR wenn in der
-Datei vorhanden, je eine weitere Zeile für Ereignis-Hinweise
-(Earnings-Warnung/-Rückblick, Fast-Stop-Hinweis,
-Kursziel-Hinweis/Stufenregel-Zusatz - siehe dortige Bullets). Name
-IMMER der vollständige Name aus der Datei, NIE nur der Ticker.
+Basisblock und technischer Block in der oben festgelegten Reihenfolge.
+Name IMMER der vollständige Name aus der Datei, NIE nur der Ticker.
 Sortiere absteigend nach Performance %, größte Gewinner zuerst.
 Direkt darunter (Pflicht, unverändert seit 28.07.2026) folgt
 weiterhin wörtlich die vorberechnete Zeile „Portfolio-Übersicht:
