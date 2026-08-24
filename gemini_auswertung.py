@@ -540,18 +540,86 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
-def normalisiere_ausgabe(text):
-    """Erzwingt zwei kleine, rein formale Layoutregeln nach Gemini.
+def _a_aufstiege_block():
+    """Liest das tagesaktuelle A-Aufstiegsprotokoll und baut den
+    sichtbaren Unterabschnitt fuer Auswertung.txt deterministisch auf.
 
-    Inhalt und Werte werden nicht veraendert: Vor jeder Zeile "Was muesste..."
-    in den Perspektivischen Trade-Ideen wird genau eine Leerzeile gesetzt.
-    Dadurch bleibt das gewuenschte Layout auch bei leicht variierender Gemini-
-    Formatierung stabil.
+    Wichtig: Die separate Einzel_Check_Aufstiege-Datei bleibt die Quelle
+    fuer das Ereignis. Hier wird sie nur zusaetzlich in die zentrale
+    Tagesauswertung gespiegelt; es werden keine historischen Daten geloescht.
+    """
+    pfad = finde_datei(["Einzel_Check_Aufstiege(*).txt"])
+    if not pfad or not os.path.isfile(pfad):
+        return ""
+
+    try:
+        with open(pfad, "r", encoding="utf-8-sig") as f:
+            inhalt = f.read().strip()
+    except OSError:
+        return ""
+
+    if not inhalt:
+        return ""
+
+    zeilen = inhalt.splitlines()
+    # Kopfzeilen des Ereignisprotokolls nicht doppelt ausgeben.
+    eintraege = []
+    for zeile in zeilen:
+        z = zeile.strip()
+        if not z or z.upper().startswith("EINZEL-CHECK:") or set(z) <= {"="}:
+            continue
+        eintraege.append(z)
+
+    if not eintraege:
+        return ""
+
+    block = [
+        "EINZEL-CHECK – A-AUFSTIEGE",
+        "",
+        "🟢 NEUE KAUFKANDIDAT-A-AUFSTIEGE",
+        "",
+    ]
+    for eintrag in eintraege:
+        block.append(f"• {eintrag}")
+        block.append("")
+    return "\n".join(block).rstrip() + "\n"
+
+
+def normalisiere_ausgabe(text):
+    """Erzwingt formale Layoutregeln und spiegelt echte B/C -> A-Aufstiege
+    direkt unter die Einzel-Check-Beobachtungsliste.
+
+    Die A-Aufstiegsdatei bleibt dabei unveraendert als separate Ereignisquelle.
+    Wenn Gemini den Abschnitt bereits erzeugt hat, wird er nicht dupliziert.
     """
     if not text:
         return text
     text = re.sub(r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", r"\n\1", text)
     text = re.sub(r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", "\n\n", text)
+
+    # Gemini ist weiterhin fuer die inhaltliche Auswertung verantwortlich.
+    # Der bereits separat erzeugte A-Aufstiegs-Report wird hier zusaetzlich
+    # deterministisch an der gewuenschten Stelle eingeblendet, damit ein
+    # einzelnes Auslassen durch das Sprachmodell nicht zu einer unsichtbaren
+    # Meldung in der zentralen Auswertung fuehrt.
+    if "Neue KAUFKANDIDAT-A-Aufstiege" not in text and "EINZEL-CHECK – A-AUFSTIEGE" not in text:
+        block = _a_aufstiege_block()
+        if block:
+            marker = re.search(r"(?m)^6\. SHORT-SETUPS\s*$", text)
+            if marker:
+                text = text[:marker.start()].rstrip() + "\n\n" + block + "\n\n" + text[marker.start():]
+            else:
+                # Fallback: direkt nach dem Beobachtungslisten-Block.
+                marker = re.search(r"(?m)^Einzel-Check-Beobachtungsliste\s*$", text)
+                if marker:
+                    naechster = re.search(r"(?m)^\d+\. ", text[marker.end():])
+                    pos = marker.end() + (naechster.start() if naechster else len(text[marker.end():]))
+                    text = text[:pos].rstrip() + "\n\n" + block + "\n\n" + text[pos:].lstrip()
+                else:
+                    # Sicherheits-Fallback: nichts einfuegen, wenn die
+                    # erwartete Struktur nicht erkennbar ist.
+                    pass
+
     return text
 
 
