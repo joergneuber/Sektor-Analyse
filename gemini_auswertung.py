@@ -47,6 +47,7 @@ import re
 import time
 import json
 import datetime
+import csv
 
 from google import genai
 from google.genai import types
@@ -533,11 +534,172 @@ def gemini_auswertung_starten():
             continue
 
         print(f"  Erfolgreich mit {aktuelles_modell}!")
+        # Strukturelle Vollstaendigkeitspruefung vor dem Speichern. Wenn
+        # Punkt 8 unvollstaendig ist, wird NUR dieser Abschnitt einmalig
+        # repariert; der restliche Gemini-Output bleibt unveraendert.
+        erwartete_namen = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
+        text, vollstaendig, fehlend = _sichere_regionen_und_offene_positionen(text, eingabedateien)
+        if not vollstaendig and erwartete_namen:
+            print("STRUKTUR-FIX: Offene-Positionen-Block unvollstaendig – einmalige Reparatur nur fuer Punkt 8.")
+            text = _repariere_offene_positionen_mit_gemini(
+                client, aktuelles_modell, hochgeladene_teile, anweisung, text, erwartete_namen
+            )
+            text, vollstaendig, fehlend = _sichere_regionen_und_offene_positionen(text, eingabedateien)
+        if not vollstaendig and erwartete_namen:
+            raise RuntimeError(
+                "Auswertung strukturell unvollstaendig: fehlende/duplizierte offene Positionen: "
+                + ", ".join(fehlend or ["unvollstaendiger Offene-Positionen-Block"])
+            )
         return text
 
     print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
     print(f"Letzte Antwort/Fehler:\n{letzte_antwort}")
     sys.exit(1)
+
+
+
+
+def _lese_offene_positionen_namen(csv_pfad):
+    """Liest nur die Namen offener Positionen fuer einen strukturellen
+    Vollstaendigkeitscheck. Keine technischen Werte werden hier berechnet."""
+    if not csv_pfad or not os.path.isfile(csv_pfad):
+        return []
+    try:
+        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
+            sample = f.read(8192)
+            f.seek(0)
+            dialect = csv.Sniffer().sniff(sample, delimiters=";,\t,")
+            reader = csv.DictReader(f, dialect=dialect)
+            fields = reader.fieldnames or []
+            name_key = next((k for k in fields if str(k).strip().lower() in
+                             {"firmenname", "name", "unternehmen", "company", "titel"}), None)
+            status_key = next((k for k in fields if str(k).strip().lower() in
+                              {"status", "position_status"}), None)
+            ticker_key = next((k for k in fields if str(k).strip().lower() == "ticker"), None)
+            result = []
+            for row in reader:
+                status = str(row.get(status_key, "") if status_key else "").strip().lower()
+                if status and status not in {"offen", "open"}:
+                    continue
+                name = str(row.get(name_key, "") if name_key else "").strip()
+                ticker = str(row.get(ticker_key, "") if ticker_key else "").strip()
+                key = name or ticker
+                if key and key not in result:
+                    result.append(key)
+            return result
+    except Exception as exc:
+        print(f"WARNUNG: Offene-Positionen-Vollstaendigkeitscheck nicht lesbar: {exc}")
+        return []
+
+
+def _finde_offene_positionen_abschnitt(text):
+    """Findet den kompletten offenen-Positionen-Abschnitt ohne andere
+    Auswertungsteile anzutasten."""
+    m = re.search(r"(?ims)^(?P<head>\s*(?:\d+\.\s*)?offene positionen\s*)$", text)
+    if not m:
+        return None
+    start = m.start()
+    tail = text[m.end():]
+    nxt = re.search(r"(?im)^\s*(?:\d+\.\s*)?(?:geschlossene positionen|gestoppte positionen|methodik(?: &| und)? lesehilfe)\s*$", tail)
+    end = m.end() + (nxt.start() if nxt else len(tail))
+    return start, end, m.group('head').strip()
+
+
+def _offene_positionen_vollstaendig(text, erwartete_namen):
+    """Struktureller Check: alle erwarteten Namen muessen im Punkt 8/Offene-
+    Positionen-Abschnitt vorkommen; Platzhalter fuer weitere Positionen sind
+    unzulaessig."""
+    if not erwartete_namen:
+        return True, []
+    abschnitt = _finde_offene_positionen_abschnitt(text)
+    if not abschnitt:
+        return False, list(erwartete_namen)
+    block = text[abschnitt[0]:abschnitt[1]]
+    fehlend = []
+    for name in erwartete_namen:
+        # Nur eine echte Positions-Kopfzeile zaehlt; News/Portfolio-Fazit mit
+        # demselben Firmennamen duerfen keine Vollstaendigkeit vortaeuschen.
+        pattern = rf"(?im)^\s*{re.escape(name)}\s*\|\s*Markt:"
+        if len(re.findall(pattern, block)) != 1:
+            fehlend.append(name)
+    if re.search(r"(?i)weitere positionen|weitere offene positionen", block):
+        return False, fehlend
+    return not fehlend, fehlend
+
+
+def _extrahiere_regionen_block(briefing_pfad):
+    """Uebernimmt den vom analyse.py erzeugten REGIONEN-PERFORMANCE-Block
+    wörtlich und macht daraus den sichtbaren Abschnitt 'Blick auf wichtige Indizes'."""
+    if not briefing_pfad or not os.path.isfile(briefing_pfad):
+        return ""
+    try:
+        with open(briefing_pfad, "r", encoding="utf-8-sig") as f:
+            text = f.read()
+    except Exception as exc:
+        print(f"WARNUNG: Regionenblock konnte nicht gelesen werden: {exc}")
+        return ""
+    m = re.search(r"(?ms)^REGIONEN-PERFORMANCE.*?(?=^BENCHMARKS\s*$)", text)
+    if not m:
+        return ""
+    block = m.group(0).strip()
+    block = re.sub(r"^REGIONEN-PERFORMANCE[^\n]*$", "Blick auf wichtige Indizes", block, count=1, flags=re.M)
+    return block.strip() + "\n"
+
+
+def _sichere_regionen_und_offene_positionen(text, eingabedateien):
+    """Repariert ausschliesslich strukturelle Auslassungen. Markt-/Technik-
+    Inhalte werden nicht neu berechnet oder umformuliert."""
+    regionen = _extrahiere_regionen_block(eingabedateien.get("briefing.txt"))
+    if regionen and not re.search(r"(?im)^\s*Blick auf wichtige Indizes\s*$", text):
+        # Direkt nach dem Deckblatt, niemals vor Titel/Datum/Untertitel.
+        head = re.search(r"(?ms)^(Neuber Macro & Markets\s*\nDatum der Auswertung:.*?\nTägliche Markt- und Setup-Auswertung\s*\n?)", text)
+        if head:
+            text = text[:head.end()] + "\n" + regionen + "\n" + text[head.end():].lstrip("\n")
+            print("STRUKTUR-FIX: 'Blick auf wichtige Indizes' aus briefing.txt wiederhergestellt.")
+
+    erwartete = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
+    ok, fehlend = _offene_positionen_vollstaendig(text, erwartete)
+    return text, ok, fehlend
+
+
+def _repariere_offene_positionen_mit_gemini(client, modell, hochgeladene_teile, anweisung, text, erwartete_namen):
+    """Einmaliger, lokaler Reparaturlauf nur fuer Punkt 'Offene Positionen'.
+    Der restliche Output wird nicht neu generiert."""
+    if not erwartete_namen:
+        return text
+    abschnitt = _finde_offene_positionen_abschnitt(text)
+    aktueller_block = text[abschnitt[0]:abschnitt[1]] if abschnitt else "(Abschnitt fehlt)"
+    prompt = (
+        "REPARATURAUFTRAG – NUR ABSCHNITT OFFENE POSITIONEN.\n"
+        "Gib ausschliesslich den vollständigen Abschnitt 'Offene Positionen' aus. "
+        "Verändere keinen anderen Teil der Auswertung. Jede erwartete Position muss "
+        "einmal vorkommen; niemals 'Weitere Positionen' oder eine Kürzung verwenden. "
+        "Übernimm technische Felder ausschließlich wörtlich aus Offene Positionen+Check.csv. "
+        "Erfinde keine News. Behalte vorhandene korrekte Positionsblöcke unverändert, "
+        "ergänze nur fehlende Positionen anhand der Quelldateien. Sortierung absteigend nach Performance.\n\n"
+        "ERWARTETE POSITIONEN:\n- " + "\n- ".join(erwartete_namen) + "\n\n"
+        "BISHERIGER OFFENE-POSITIONEN-BLOCK:\n" + aktueller_block
+    )
+    try:
+        antwort = client.models.generate_content(
+            model=modell,
+            contents=hochgeladene_teile + [prompt],
+            config=types.GenerateContentConfig(system_instruction=anweisung),
+        )
+        repariert = antwort.text or ""
+        if not repariert.strip():
+            return text
+        # Reparatur darf nur den bereits vorhandenen Abschnitt ersetzen.
+        if abschnitt:
+            return text[:abschnitt[0]] + repariert.strip() + "\n\n" + text[abschnitt[1]:].lstrip("\n")
+        # Falls der Abschnitt komplett fehlt: vor Geschlossene/Methodik einfuegen.
+        marker = re.search(r"(?im)^\s*(?:\d+\.\s*)?(?:geschlossene positionen|gestoppte positionen|methodik(?: &| und)? lesehilfe)\s*$", text)
+        if marker:
+            return text[:marker.start()] + repariert.strip() + "\n\n" + text[marker.start():]
+        return text + "\n\n" + repariert.strip() + "\n"
+    except Exception as exc:
+        print(f"WARNUNG: Offene-Positionen-Reparatur fehlgeschlagen: {exc}")
+        return text
 
 
 def _a_aufstiege_block():
