@@ -87,7 +87,7 @@ jobs:
       # Cross nicht als "gemeldet" verloren gehen, falls die Analyse vorher
       # abbricht. Benchmark-Snapshots konsumieren den Cross ausdrücklich nicht.
       - name: BTC 50W-SMA State speichern
-        if: success()
+        if: ${{ success() && hashFiles('.btc_50w_sma_state/state.json') != '' }}
         uses: actions/cache/save@v4
         with:
           path: .btc_50w_sma_state
