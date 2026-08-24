@@ -651,7 +651,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     high_52w = float(data["High"].iloc[-252:].max())
     major = high_52w if high_52w > close * 1.01 else None
     # Für lange Historien: echtes historisches Hoch zusätzlich prüfen. Beim Gold-
-    # Spot ist das entscheidend, damit das bekannte ATH nicht verloren geht.
+    # Beim Gold-Future ist das entscheidend, damit das bekannte ATH nicht verloren geht.
     all_time_high = float(data["High"].max())
     if all_time_high > close * 1.01:
         major = max(major or 0, all_time_high)

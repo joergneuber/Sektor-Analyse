@@ -2231,7 +2231,7 @@ def _kein_rueckfall_seit_ausbruch(closes, linie_werte, heute_pos, fenster_tage=3
     return False
 
 
-def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
+def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01, require_volume=True):
     """
     Sucht eine fallende Widerstands-Trendlinie durch mindestens 3 Swing-Highs
     (Toleranz: 1% Abstand zur Linie) in den letzten `lookback` Handelstagen
@@ -2290,10 +2290,14 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
     kein_rueckfall = _kein_rueckfall_seit_ausbruch(
         fenster['Close'].values, linie_werte_alle, heute_pos)
 
-    volumen_ok = any(
-        fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
-        for i in range(0, 3)
-    )
+    if require_volume:
+        volumen_ok = any(
+            fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
+            for i in range(0, 3)
+        )
+    else:
+        # Edelmetalle: kein belastbares Handelsvolumen als Pflichtbedingung.
+        volumen_ok = True
 
     ausbruch = bool(close_heute > linie_heute) and kein_rueckfall and bool(volumen_ok)
     return ausbruch, (float(linie_heute) if ausbruch else None)
@@ -2345,7 +2349,7 @@ def check_kumo_breakout(data, toleranz_prozent=0.2, require_volume=True):
             for i in range(0, 3)
         )
     else:
-        # Spot-Metalle: kein belastbares Handelsvolumen erforderlich.
+        # Edelmetalle: kein belastbares Handelsvolumen als Pflichtbedingung.
         volumen_ok = True
 
     ausbruch = bool(ueber_wolke_heute) and frischer_ausbruch and bool(volumen_ok)

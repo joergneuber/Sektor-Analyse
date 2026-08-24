@@ -251,14 +251,13 @@ def vervollstaendige_stammdaten(df):
         sektor_leer = str(row.get('Sektor', '')).strip() in ("", "nan")
 
         if ticker_upper == GOLD_FUTURES_TICKER:
-            if markt_leer:
-                df.at[idx, 'Markt'] = 'FUTURES'
-            if waehrung_leer:
-                df.at[idx, 'Waehrung'] = 'USD'
-            if name_leer:
-                df.at[idx, 'Name'] = 'Gold Future'
-            if str(row.get('Produkt_Typ', '')).strip() in ("", "nan"):
-                df.at[idx, 'Produkt_Typ'] = 'Gold Future'
+            # GC=F definiert eindeutig einen Gold-Future. Diese Metadaten
+            # werden deshalb auch bei einer bereits vorhandenen Position
+            # auf den aktuellen Instrumententyp synchronisiert.
+            df.at[idx, 'Markt'] = 'FUTURES'
+            df.at[idx, 'Waehrung'] = 'USD'
+            df.at[idx, 'Name'] = 'Gold Future'
+            df.at[idx, 'Produkt_Typ'] = 'Gold Future'
         else:
             if markt_leer:
                 df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'

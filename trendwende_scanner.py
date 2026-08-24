@@ -316,9 +316,9 @@ def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
         volumen_ok = vol_ratio >= volumen_schwelle
         volumen_text = f"{vol_ratio:.2f}x ({'ja' if volumen_ok else 'nein'}, Schwelle {volumen_schwelle:.1f}x)"
     else:
-        # Spot-Metalle: Volumen ist keine Pflichtbedingung.
+        # Edelmetalle: Volumen ist keine Pflichtbedingung.
         volumen_ok = True
-        volumen_text = "nicht erforderlich (Spot)"
+        volumen_text = "nicht erforderlich (Edelmetalle)"
     detail = (f"{lookback_tage}T-Hoch: {'ja' if neues_hoch else 'nein'} "
              f"(Kurs {kurs:.2f} vs. Hoch {hoch_lookback:.2f}) | "
              f"Volumen: {volumen_text}")
@@ -517,7 +517,7 @@ def _indikatoren_berechnen(data):
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).replace([np.inf, -np.inf], np.nan)
     else:
-        # Kein Volumen bei Spot-Metallen: neutraler Wert fuer optionale
+        # Kein Volumen bei Edelmetallen: neutraler Wert fuer optionale
         # Anzeige-/Qualitaetsfelder; Volumen darf keine Preislogik blockieren.
         data['Vol_SMA20'] = np.nan
         data['Vol_Ratio'] = 1.0

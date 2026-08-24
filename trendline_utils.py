@@ -79,7 +79,7 @@ def _kein_rueckfall_seit_ausbruch(closes, linie_werte, heute_pos, richtung,
 def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01, require_volume=True):
     """Long: fallende Widerstandslinie wird nach oben durchbrochen.
 
-    require_volume=False erlaubt Spot-/Marktdaten ohne verwertbares Volumen.
+    require_volume=False erlaubt Marktdaten ohne verwertbares Volumen.
     """
     return _check_trendline(data, "long", lookback, order, touch_tolerance, require_volume=require_volume)
 
@@ -87,7 +87,7 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01, 
 def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01, require_volume=True):
     """Short: steigende Stuetzlinie wird nach unten durchbrochen.
 
-    require_volume=False erlaubt Spot-/Marktdaten ohne verwertbares Volumen.
+    require_volume=False erlaubt Marktdaten ohne verwertbares Volumen.
     """
     return _check_trendline(data, "short", lookback, order, touch_tolerance, require_volume=require_volume)
 
@@ -152,7 +152,7 @@ def _check_trendline(data, richtung, lookback, order, touch_tolerance, require_v
     )
 
     if not require_volume:
-        # Spot-Metalle liefern je nach Quelle kein belastbares Handelsvolumen.
+        # Edelmetalle liefern je nach Quelle kein belastbares Handelsvolumen.
         # Fehlendes Volume darf den reinen Preis-/Trendlinienausbruch daher
         # nicht blockieren.
         volumen_ok = True

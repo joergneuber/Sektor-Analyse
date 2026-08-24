@@ -162,7 +162,7 @@ def _indikatoren_berechnen(data):
         data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
         data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).replace([np.inf, -np.inf], np.nan)
     else:
-        # Spot-Metalle: fehlendes Handelsvolumen ist neutral und darf keine
+        # Edelmetalle: fehlendes Handelsvolumen ist neutral und darf keine
         # preisbasierte Short-Logik blockieren.
         data['Vol_SMA20'] = np.nan
         data['Vol_Ratio'] = 1.0

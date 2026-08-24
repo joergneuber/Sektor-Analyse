@@ -26,7 +26,7 @@ Aktien-Setups gehandelt werden koennen. Architektur-Entscheidung vom
   - Fundamental-Ampel (KGV) entfaellt bewusst - Rohstoffe haben keine
     Unternehmensgewinne, eine KGV-Kennzahl ergibt hier keinen Sinn.
   - Analysten-Kursziel entfaellt bewusst (kein Analysten-Konsens fuer
-    Rohstoff-Spotdaten via yfinance verfuegbar) - Tech-Kursziel bleibt einzige
+    Rohstoff-Futuresdaten via yfinance verfuegbar) - Tech-Kursziel bleibt einzige
     Zielgroesse, wie bei den meisten EU-Setups ohne Kursziel auch.
   - Eigene Datei (Edelmetalle_Setups.csv) + eigener Briefing-Abschnitt
     (Edelmetalle_Briefing.txt) - wird von upload_to_drive.py automatisch mit
@@ -353,7 +353,7 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         crossover_kuerzlich = any(
             data['EMA8'].iloc[-1 - i] <= data['EMA20'].iloc[-1 - i] for i in range(1, 4)
         )
-        # Spot-Metalle haben kein belastbares Handelsvolumen; der EMA-Breakout
+        # Edelmetalle haben kein belastbares Handelsvolumen als Pflichtkriterium; der EMA-Breakout
         # ist deshalb rein preis-/trendbasiert.
         volumen_kuerzlich = True
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
@@ -820,7 +820,7 @@ STRATEGIE_TEXTE = {
         "  Marktumfeld-Modifikator (das Aktien-Marktumfeld ist fuer Edelmetalle\n"
         "  kein sinnvoller Massstab - Metalle laufen in Aktien-Schwaechephasen\n"
         "  klassischerweise gegenlaeufig). Die Setup-Qualitaet stuetzt sich hier\n"
-        "  allein auf Preis-/Musterlogik; Volumen ist bei Spot-Metallen nicht erforderlich.\n"
+        "  allein auf Preis-/Musterlogik; Volumen ist bei Edelmetall-Futures nicht erforderlich.\n"
         "- RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko bei Kursanstieg.\n"
     ),
 }
@@ -861,7 +861,7 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
             "  ein Aktienindex wäre als Vergleichsmaßstab für Edelmetalle nicht sinnvoll.\n"
             "- Fundamental-Ampel (KGV) entfällt bewusst - Rohstoffe haben keine\n"
             "  Unternehmensgewinne. Analysten-Kursziel entfällt ebenfalls (nicht\n"
-            "  verfügbar für Spot-Metalle) - Tech-Kursziel bleibt einzige Zielgröße.\n"
+            "  verfügbar für Edelmetalle) - Tech-Kursziel bleibt einzige Zielgröße.\n"
             "- DREI STRATEGIEN (NEU 29.07.2026): Trendfolge, Trendwende und Short laufen\n"
             "  in EINEM Scanner (gleiche Daten, ein Abruf), werden aber getrennt\n"
             "  ausgewiesen - CSV-Spalte 'Strategie', hier je ein eigener Abschnitt mit\n"
