@@ -790,13 +790,28 @@ def update_status_logic(row):
         return pd.Series(["VALIDE", "Alles ok"])
 
 
+
+# Unternehmensbezogene Datenabfragen nicht auf Futures anwenden.
+# Insbesondere GC=F (Gold Future) hat keine Earnings/Fundamentals.
+NON_EQUITY_TICKERS = {
+    "GC=F", "SI=F", "PL=F", "PA=F", "HG=F", "CL=F", "BZ=F",
+    "NG=F", "ZC=F", "ZS=F", "ZW=F", "KC=F", "SB=F", "CT=F",
+    "CC=F", "LE=F", "HE=F",
+}
+
+def ist_nicht_aktien_instrument(ticker):
+    return str(ticker or "").strip().upper() in NON_EQUITY_TICKERS
+
 def get_earnings_warnung(ticker, warn_tage=7):
     """Prüft per yfinance, ob der nächste Earnings-Termin innerhalb der
     nächsten warn_tage liegt. Gibt einen Warntext zurück (z.B.
     '⚠ Earnings in 3 Tagen (21.07.2026)') oder None. Earnings-Gaps sind
     das größte Über-Nacht-Risiko für Swing-Positionen - ein Stop schützt
     nicht vor einem Gap unter den Stop-Kurs. Defensiv: jeder Fehler
-    (kein Termin verfügbar, API-Aussetzer) führt still zu None."""
+    (kein Termin verfügbar, API-Aussetzer) führt still zu None.
+    Futures/Commodities werden bewusst übersprungen."""
+    if ist_nicht_aktien_instrument(ticker):
+        return None
     try:
         kalender = yf.Ticker(ticker).calendar
         termine = None
@@ -866,7 +881,10 @@ def get_earnings_rueckblick(ticker, rueckblick_tage=5):
     Quartals-Erwartungswerte. Die Kursreaktion fängt diese Lücke indirekt auf,
     ersetzt aber keine echte Bericht-Lektüre. Defensiv: jeder Fehler oder
     fehlende Wert führt still zu None bzw. zum Weglassen des jeweiligen Teils.
+    Für Futures/Commodities wird die Abfrage bewusst übersprungen.
     """
+    if ist_nicht_aktien_instrument(ticker):
+        return None
     try:
         heute = datetime.date.today()
         eps_df = yf.Ticker(ticker).get_earnings_dates(limit=8)
@@ -981,6 +999,8 @@ def get_news_headlines(ticker, max_n=3):
     für EU-Titel liefert der Feed nichts, dann leere Liste. Defensiv: jeder
     Fehler führt still zu leerer Liste, News sind reiner Zusatz-Kontext."""
     global _news_client
+    if ist_nicht_aktien_instrument(ticker):
+        return []
     if not NEWS_VERFUEGBAR:
         print(f"DEBUG-NEWS: {ticker} -> übersprungen (News-API in alpaca-py nicht verfügbar)")
         return []
@@ -2235,8 +2255,9 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01, 
     """
     Sucht eine fallende Widerstands-Trendlinie durch mindestens 3 Swing-Highs
     (Toleranz: 1% Abstand zur Linie) in den letzten `lookback` Handelstagen
-    und prüft, ob der Kurs innerhalb der letzten 3 Kerzen mit über-
-    durchschnittlichem Volumen darüber ausgebrochen ist UND seitdem nicht
+    und prüft, ob der Kurs innerhalb der letzten 3 Kerzen darüber
+    ausgebrochen ist und - sofern `require_volume=True` - dabei mit über-
+    durchschnittlichem Volumen bestätigt wurde, UND seitdem nicht
     wieder darunter gefallen ist (BUGFIX 05.08.2026, siehe
     _kein_rueckfall_seit_ausbruch). Die Trendlinie selbst wird ausreißer-
     robust angepasst (siehe _robuste_trendlinie, BUGFIX 05.08.2026).
@@ -2290,14 +2311,12 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01, 
     kein_rueckfall = _kein_rueckfall_seit_ausbruch(
         fenster['Close'].values, linie_werte_alle, heute_pos)
 
+    volumen_ok = True
     if require_volume:
         volumen_ok = any(
             fenster['Volume'].iloc[-1 - i] > fenster['Vol_SMA20'].iloc[-1 - i]
             for i in range(0, 3)
         )
-    else:
-        # Edelmetalle: kein belastbares Handelsvolumen als Pflichtbedingung.
-        volumen_ok = True
 
     ausbruch = bool(close_heute > linie_heute) and kein_rueckfall and bool(volumen_ok)
     return ausbruch, (float(linie_heute) if ausbruch else None)
@@ -2349,7 +2368,7 @@ def check_kumo_breakout(data, toleranz_prozent=0.2, require_volume=True):
             for i in range(0, 3)
         )
     else:
-        # Edelmetalle: kein belastbares Handelsvolumen als Pflichtbedingung.
+        # Spot-Metalle: kein belastbares Handelsvolumen erforderlich.
         volumen_ok = True
 
     ausbruch = bool(ueber_wolke_heute) and frischer_ausbruch and bool(volumen_ok)
@@ -2570,6 +2589,9 @@ def berechne_fundamental_ampel(ticker, sektor=None, markt=None, richtung="long")
     (Korrekturpotenzial nach unten). Ohne diese Umkehr laese sich z.B. ein
     A+-Short-Setup mit der Ampel GUENSTIG faelschlich wie ein Kaufargument
     neben der Short-Einstufung."""
+    if ist_nicht_aktien_instrument(ticker):
+        return "N/A", "Keine Unternehmens-Fundamentaldaten fuer Futures/Commodities."
+
     try:
         info = yf.Ticker(ticker).info
         kgv = info.get("trailingPE")
@@ -2870,8 +2892,10 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
         in_ema_zone = in_ema_zone_roh and volumen_ausreichend
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
-        # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
-        trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
+        # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz; Volumen nur bei Aktien)
+        trendlinien_ausbruch, tl_level = check_trendline_breakout(
+            data, require_volume=not ist_nicht_aktien_instrument(ticker)
+        )
 
         # Vierter, eigenständiger Setup-Typ: echter Kumo-Ausbruch (Ichimoku-
         # Wolke komplett von unten nach oben durchbrochen, Pflicht-Volumen)
@@ -3244,8 +3268,10 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
         in_ema_zone = in_ema_zone_roh and volumen_ausreichend
 
         # Dritter, eigenständiger Setup-Typ: Ausbruch aus einer fallenden
-        # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz, Pflicht-Volumen)
-        trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
+        # Trendlinie (mind. 3 Berührungspunkte, 1% Toleranz; Volumen nur bei Aktien)
+        trendlinien_ausbruch, tl_level = check_trendline_breakout(
+            data, require_volume=not ist_nicht_aktien_instrument(ticker)
+        )
 
         # Vierter, eigenständiger Setup-Typ: echter Kumo-Ausbruch (Ichimoku-
         # Wolke komplett von unten nach oben durchbrochen, Pflicht-Volumen)
