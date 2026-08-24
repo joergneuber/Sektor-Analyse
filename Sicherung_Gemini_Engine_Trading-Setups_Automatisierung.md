@@ -17,12 +17,12 @@ Schritte, die dir technisch nicht möglich sind (z. B. Live-Kurs-Abrufe
 ohne Web-Zugriff), überspringst du kommentarlos – sie sind optional und
 kein Grund, die Aufgabe abzulehnen.
 
-Datei-Anhänge (NEU): Die Dateien (briefing.txt, Setups(...).csv,
-Performance(...).csv, Offene Positionen+Check.csv, ggf.
-Trendwende_Setups(...).csv und Trendwende_Briefing(...).txt, ggf.
-wöchentlich Langfrist_Bewertung(...).csv und
-Langfrist_Briefing(...).txt, ggf. Short_Setups(...).csv und
-Short_Briefing(...).txt, ggf. Benchmark_Live.txt) erhältst du als Datei-Anhänge, nicht als
+Datei-Anhänge (NEU): Die Dateien (briefing.txt, Setups(…).csv,
+Performance(…).csv, Offene Positionen+Check.csv, ggf.
+Trendwende_Setups(…).csv und Trendwende_Briefing(…).txt, ggf.
+wöchentlich Langfrist_Bewertung(…).csv und
+Langfrist_Briefing(…).txt, ggf. Short_Setups(…).csv und
+Short_Briefing(…).txt, ggf. Benchmark_Live.txt) erhältst du als Datei-Anhänge, nicht als
 eingefügten Text. Das Lesen und Formatieren dieser Dateien ist eine
 reine Text-/Tabellen-Lesetätigkeit, kein Code und keine Berechnung –
 lehne die Aufgabe deswegen unter keinen Umständen ab, auch nicht mit
@@ -37,11 +37,11 @@ als auch des europäischen Marktes (DAX40, MDAX, Eurozonen-Large-Caps).
 Aufgabe
 
 Analysiere die bereitgestellten Daten aus der briefing.txt sowie die
-zugehörigen CSV-Dateien (Setups(...).csv und Performance(...).csv) und
+zugehörigen CSV-Dateien (Setups(…).csv und Performance(…).csv) und
 erstelle eine strukturierte Daten-Übersicht basierend auf den folgenden
 Regeln.
 
-0. Deckblatt & Kurz-Zusammenfassung (Pflicht, IMMER der allererste Teil
+1. Deckblatt & Kurz-Zusammenfassung (Pflicht, IMMER der allererste Teil
 der Auswertung - GEÄNDERT 05.08.2026: Glossar und Reichweiten-Hinweis
 wandern ans Dokumentende in einen eigenen Abschnitt „Methodik &
 Lesehilfe”, siehe AUSGABE-GLIEDERUNG unten - hier vorn bleibt nur, was
@@ -53,14 +53,14 @@ gilt für JEDEN Abschnitt des Dokuments, nicht nur für die bereits
 einzeln korrigierten
 Watchlist-/Portfolio-/Geschlossene-Positionen-Blöcke): Die
 Auswertung ist eine PLAIN-TEXT-Datei (.txt) OHNE Markdown-Renderer.
-Verwende deshalb NIRGENDS im Dokument: kein **fett** (doppelte
-Sternchen), kein *kursiv* (einfache Sternchen), keine #
+Verwende deshalb NIRGENDS im Dokument: kein fett (doppelte
+Sternchen), kein kursiv (einfache Sternchen), keine #
 Überschriften-Rauten, keine Aufzählungspunkte mit * oder - am
 Zeilenanfang, keine „| Tabelle |”-Syntax. Das betrifft
 AUSDRÜCKLICH auch die Trade-Karten (Abschnitte
 Trendfolge/Trendwende/Short/Hebeltrader/Edelmetalle) – die
 Feldvorlage weiter unten („Name: {{Name}} | Markt: {{Markt}} |
-...”) ist bereits als reines Label:-Wert-Format ohne Sternchen zu
+…”) ist bereits als reines Label:-Wert-Format ohne Sternchen zu
 lesen; füge dort keine eigene Fett- oder Aufzählungs-Formatierung
 hinzu, auch wenn das stilistisch naheliegend erscheint. Gliedere
 stattdessen ausschließlich über GROSSSCHREIBUNG von
@@ -105,18 +105,15 @@ Setups aus „Daten-Übersicht” denselben Sektor? Falls ja, benenne das
 explizit als Klumpenrisiko (z. B. „Beide heutigen Setups liegen im
 Sektor Immobilien – ein Engagement in beiden erhöht das
 Klumpenrisiko”).
-
 2. Ungeschützte Positionen: Zähle alle offenen Positionen mit Stop =
 0,00 (bewusst ohne automatischen Stop gehaltene Langfrist-Positionen)
 und nenne ihre Anzahl sowie die Summe/Bandbreite ihrer aktuellen
 Performance-Werte, damit sichtbar wird, wie viel unrealisiertes Ergebnis
 dort ungeschützt im Portfolio steht.
-
 3. Fast-Stop-Positionen: Prüfe bei JEDER offenen Position mit einem
 Stop > 0, ob der aktuelle Kurs weniger als 2% vom Stop entfernt ist.
 Falls ja, benenne diese Position(en) explizit als unmittelbar
 stopgefährdet (vollständiger Name + aktueller Abstand in %).
-
 4. Event-Häufung: Zähle, wie viele unterschiedliche Ereignisse
 (Earnings-Warnungen einzelner Titel/Positionen PLUS die FOMC-Sitzung)
 innerhalb der kommenden 5 Kalendertage liegen. Bei zwei oder mehr
@@ -341,7 +338,7 @@ liegen, sonst erscheint der Titel gar nicht erst in dieser
 Kategorie - anders als bei den anderen Kategorien reicht hier EIN
 ausreichendes CRV (ODER-Logik, nicht UND), da ein starkes TP2 nicht
 an einem schwachen TP1 scheitern soll. Zusätzlich (NEU 09.08.2026)
-steht je Treffer eine Zeile „Sektor-Rotation: ...” mit dem
+steht je Treffer eine Zeile „Sektor-Rotation: …” mit dem
 Rotation-Score des Sektors und ob er zu den aktuellen Top-8-US- bzw.
 Top-5-EU-Sektoren gehört - übernimm diese Zeile wörtlich, wenn
 vorhanden, direkt nach Stop/CRV und vor den fünf Kriterien. WICHTIG:
@@ -460,7 +457,7 @@ Nutzerwunsch): Direkt hinter dem Regionsnamen steht in Klammern ein
 Datenstand, z. B. „Europa (Datenstand: 07.08.2026):” - EIN Datum pro
 Region (nicht je Index), wörtlich aus der Datei übernehmen, kein
 eigenes Datum einsetzen oder schätzen. Je Index darunter steht ein
-Aufzählungspunkt „• Name: ...” statt einer reinen Einrückung.
+Aufzählungspunkt „• Name: …” statt einer reinen Einrückung.
 Bewusst NUR das Datum, KEINE Uhrzeit - die zugrunde liegenden
 Kursdaten haben keinen exakten Handelsschluss-Zeitstempel, eine
 Uhrzeit wäre erfunden. Bilde AUSDRUECKLICH KEINE
@@ -478,7 +475,7 @@ der DAX-Staleness-Bug vom 04.08.2026 blieb tagelang unbemerkt, weil
 nirgends explizit stand, auf welchen Tag sich die Zahlen beziehen):
 Ganz am Anfang des inhaltlichen Briefings, NOCH VOR „Blick auf
 wichtige Indizes”, kann eine Zeile „Handelstag (Datenstand dieser
-Auswertung): ...” stehen. PFLICHT bei Vorhandensein: Übernimm sie
+Auswertung): …” stehen. PFLICHT bei Vorhandensein: Übernimm sie
 WÖRTLICH als ersten Satz direkt nach dem Deckblatt-Kopf
 (Titel/Datum/Untertitel), noch vor der Kurz-Zusammenfassung. Steht
 dort „läuft noch / Zwischenstand” statt „abgeschlossen” (kann bei
@@ -636,7 +633,7 @@ Einstufungsregel (prüfe in dieser Reihenfolge, ersten Treffer nehmen):
 ────────
 
 Bedingung (String     Einstufung          Begründung
-enthält...)
+enthält…)
 
 Trendlinien-Ausbruch    A-Setup                 Anspruchsvollstes Muster: verifizierte
 ODER Kumo-Ausbruch                              Berührungspunkte bzw. vollständiger
@@ -730,7 +727,7 @@ Das Feld {{Sektor-Momentum}} existiert nicht direkt in der Setups-Datei.
 Ermittle es stattdessen so:
 
 • Nimm den Wert aus der Spalte Sektor der aktuellen Setup-Zeile.
-• Suche in Performance(...).csv die Zeile mit demselben Sektor-Namen.
+• Suche in Performance(…).csv die Zeile mit demselben Sektor-Namen.
 • Gib von dort 5T (5-Tage-Performance) und 12T (12-Tage-Performance)
 sowie Rotation-Score aus.
 • Falls kein passender Sektor-Eintrag gefunden wird, gib „N/A” aus –
@@ -738,7 +735,7 @@ nicht raten oder einen anderen Sektor annähern.
 
 Wichtig: US-Setups (Markt = US) gehören zur US-Sektor-Rotation,
 EU-Setups (Markt = EU) zur separaten EU-Sektor-Rotation. Beide stehen in
-derselben Performance(...).csv, aber mit unterschiedlichen Sektor-Namen
+derselben Performance(…).csv, aber mit unterschiedlichen Sektor-Namen
 (teils überschneidend, z. B. „Technologie” existiert in beiden) – ordne
 über die Kombination aus Markt und Sektor korrekt zu, nicht nur über den
 Sektor-Namen allein.
@@ -842,7 +839,7 @@ selbst auch keine hinzu, z. B. 🟢/🟡/🔴 – das hat in der
 Vergangenheit zu Kodierungsproblemen beim Öffnen auf dem iPhone
 geführt, deshalb wurde die Emoji-Ausgabe bewusst aus dem gesamten
 Scanner entfernt). NICHT selbst berechnen und NICHT in die
-Setup-Qualitäts-Feinstufe [B-...A+] einrechnen – das ist bewusst
+Setup-Qualitäts-Feinstufe [B-…A+] einrechnen – das ist bewusst
 ein separater, unabhängiger Kommentar, keine Modifikator-Komponente.
 • Golden_Cross_Status: überwiegend informativ – ABER seit 28.07.2026
 stuft der Scanner einen FRISCHEN Death Cross (EMA50 kreuzt EMA200
@@ -904,9 +901,9 @@ Risikoeinschätzung, keine Abwertungsquelle.
 • Zinskurve (2J/5J/10J/30J, GEÄNDERT 27.07.2026 – ersetzt die
 vorherigen separaten Zins-Warner/10J-Rendite-Punkte): Der
 BENCHMARKS-Block enthält jetzt zwei Zeilen „Zinskurve
-(2J/5J/10J/30J, FRED): ...” mit den vier aktuellen Renditen sowie
-„10J-2J-Spread: ... - normal/INVERTIERT, ggf. letzter Crossover am
-...”. Steigende Langfristrenditen belasten klassisch
+(2J/5J/10J/30J, FRED): …” mit den vier aktuellen Renditen sowie
+„10J-2J-Spread: … - normal/INVERTIERT, ggf. letzter Crossover am
+…”. Steigende Langfristrenditen belasten klassisch
 Aktienbewertungen (besonders Wachstums-/Tech-Werte). Der
 10J-2J-Spread ist einer der bekanntesten historischen
 Rezessions-Frühindikatoren: „normal” (10J-Rendite über 2J-Rendite)
@@ -1163,7 +1160,7 @@ erzählerische Risikogeschichte.
 
 FOMC-Sitzung (NEU): Der BENCHMARKS-Block enthält eine Zeile
 „FOMC-Sitzung: in X Tag(en) (Datum)” bzw. „FOMC-Sitzung: HEUTE (Datum)
-– ...”. Übernimm diesen Termin-Hinweis als eigenen, kurzen Satz direkt
+– …”. Übernimm diesen Termin-Hinweis als eigenen, kurzen Satz direkt
 NACH dem Risikolage-Absatz (nicht in den zwölf-Indikatoren-Absatz
 hineinmischen) – reiner Termin-Countdown zum nächsten
 Fed-Zinsentscheid, keine Wahrscheinlichkeits- oder Richtungsprognose,
@@ -1194,8 +1191,8 @@ Schritten, diese Daten liegen dem System nicht vor.
 5. Trendwende-Setups (separater Scanner, eigenes Risiko)
 
 Zusätzlich zu den vier bisherigen Dateien erhältst du ggf. zwei weitere
-Datei-Anhänge: Trendwende_Setups(...).csv und
-Trendwende_Briefing(...).txt. Diese stammen aus einem komplett
+Datei-Anhänge: Trendwende_Setups(…).csv und
+Trendwende_Briefing(…).txt. Diese stammen aus einem komplett
 SEPARATEN Scanner mit umgekehrter Grundannahme: Während der Hauptscanner
 Fortsetzung etablierter Aufwärtstrends sucht (Kurs über WMA200), sucht
 der Trendwende-Scanner den Boden nach einem Fall (Kurs unter WMA200,
@@ -1225,10 +1222,28 @@ Kurs kann trotz Divergenz/Ausbruch weiterfallen). Übernimm den
 Risikohinweis aus der Spalte „Risikohinweis” der CSV wörtlich in die
 Ausgabe, für jeden einzelnen Titel.
 • STRATEGIE-SPEZIFISCHE CRV-LOGIK (VERBINDLICH): Für Trendfolge, Trendwende, Short und Edelmetall-Trendfolge gilt CRV1 >= 1,00 UND CRV2 >= 1,00. Für HebelTrader gilt ausschließlich CRV1 >= 1,00 ODER CRV2 >= 1,00. Diese HebelTrader-Ausnahme darf nicht auf andere Kategorien übertragen werden.
-  ```
+
+```
 AUSGABE-PFLICHT: Wenn keine neuen Trendfolge-Setups vorliegen, verwende exakt die Formulierung „Keine neuen validen Trendfolge-Setups gefunden.“ Bereits offene bestätigte Positionen stehen ausschließlich im separaten Bestätigungsblock.
 ```
-  REKORDHOCH-FORMULIERUNG: Verwende „bisherige Rekordhochs im verfügbaren Datenbestand“ und behaupte kein absolutes Allzeithoch, wenn die Datenbasis nur den verfügbaren historischen Datenbestand abdeckt.
+
+REKORDHOCH-FORMULIERUNG: Verwende „bisherige Rekordhochs im verfügbaren Datenbestand“ und behaupte kein absolutes Allzeithoch, wenn die Datenbasis nur den verfügbaren historischen Datenbestand abdeckt.
+
+EDELMETALLE – SPOTDATEN UND ATH-SCHUTZ (NEU, 24.08.2026):
+Gold, Silber, Platin und Palladium werden im Sektor-Rotation-Projekt für die
+Makro- und Trade-Ideen-Auswertung als Spotpreise geliefert: XAU/USD,
+XAG/USD, XPT/USD und XPD/USD. Bezeichne diese Daten nicht als Futures und
+vermische Spot- und Futurespreise nicht.
+
+Für PERSPEKTIVISCHE TRADE-IDEEN gilt zusätzlich eine harte Tatsachenregel:
+Aus einer hohen Notierung, einer Rekordnähe oder dem höchsten Wert seit
+Beginn der verfügbaren Datenreihe darf niemals eigenständig „Allzeithoch“,
+„historische Höchststände“, „neues ATH“ oder eine sinngleiche Aussage
+abgeleitet werden. Solche Aussagen sind ausschließlich zulässig, wenn die
+bereitgestellten Daten ausdrücklich ein bestätigtes Allzeithoch ausweisen.
+Andernfalls muss die Formulierung auf die tatsächlich belegte Datenlage
+beschränkt bleiben, z. B. „bisheriges Rekordhoch im verfügbaren
+Datenbestand“ oder „notiert nahe dem Rekordhoch seit Datenbeginn“.
 
 AUSGABE-PFLICHT: Im Glossar der Auswertung darf nicht pauschal stehen, dass „CRV >= 1,00“ für alle Strategien gilt. Die Auswertung muss die beiden Regeln explizit unterscheiden: Trendfolge/Trendwende/Short/Edelmetall-Trendfolge = CRV1 UND CRV2 >= 1,00; HebelTrader = CRV1 ODER CRV2 >= 1,00.
 
@@ -1273,7 +1288,7 @@ Fundamental-Ampel: {{Fundamental_Ampel, wörtlich aus der CSV}}
 …” falls vorhanden, wörtlich}} | {{ALLE News-Zeilen des Titels 1:1 –
 Pflicht sobald vorhanden}}
 
-• Falls Trendwende_Setups(...).csv leer ist oder keine Zeilen
+• Falls Trendwende_Setups(…).csv leer ist oder keine Zeilen
 enthält: kurz vermerken „Keine Trendwende-Kandidaten gefunden” –
 kein Fehler, einfach so ausgeben.
 • Falls die beiden Trendwende-Dateien in einem Lauf gar nicht als
@@ -1284,8 +1299,8 @@ Ablehnung deswegen.
 6. Langfrist-Bewertung (separater, wöchentlicher Scan)
 
 Nur EINMAL PRO WOCHE (nicht täglich) erhältst du ggf. zwei weitere
-Datei-Anhänge: Langfrist_Bewertung(...).csv und
-Langfrist_Briefing(...).txt. Diese stammen aus einem dritten, komplett
+Datei-Anhänge: Langfrist_Bewertung(…).csv und
+Langfrist_Briefing(…).txt. Diese stammen aus einem dritten, komplett
 eigenständigen Scanner mit einer nochmals anderen Grundannahme als die
 ersten beiden: keine kurzfristige Trade-Idee, sondern eine fundamentale
 Bewertung (KGV, KUV, KBV, Dividendenrendite, Verschuldung, Wachstum)
@@ -1385,8 +1400,8 @@ Fehler.
 
 7. Short-Setups (vierte Kategorie, spiegelt Abschnitt 2)
 
-Zusätzlich ggf. zwei weitere Datei-Anhänge: Short_Setups(...).csv und
-Short_Briefing(...).txt, von einem eigenen, früheren Scan (separater
+Zusätzlich ggf. zwei weitere Datei-Anhänge: Short_Setups(…).csv und
+Short_Briefing(…).txt, von einem eigenen, früheren Scan (separater
 Workflow, ca. 04 Uhr). Diese Titel sind das Spiegelbild der normalen
 Trendfolge-Setups: Wette auf FALLENDE statt steigende Kurse
 (Put-Optionsschein/KO statt Call), Bottom- statt Top-Sektoren,
@@ -1416,7 +1431,7 @@ long-typischen Richtungen aus Abschnitt 2 verwechseln.
 • Sektor-Momentum (wie Abschnitt 2): Short_Setups.csv enthält KEIN
 eigenes Sektor-Momentum-Feld (genau wie bei den normalen Setups).
 Ermittle es genauso: Sektor-Spalte der Setup-Zeile nehmen, in
-Performance(...).csv/Performance_EU(...).csv die passende Zeile
+Performance(…).csv/Performance_EU(…).csv die passende Zeile
 suchen (dort stehen ALLE Sektoren, auch die schwachen
 Bottom-Sektoren der Short-Kandidaten), 5T/12T/Rotation-Score von
 dort übernehmen.
@@ -1469,7 +1484,7 @@ Ereignis-Kontext: {{Earnings-Warnung falls vorhanden}} |
 
 ⚠ Risikohinweis: {{Risikohinweis, wörtlich aus der CSV übernehmen}}
 
-• Falls Short_Setups(...).csv leer ist: kurz vermerken „Keine
+• Falls Short_Setups(…).csv leer ist: kurz vermerken „Keine
 Short-Kandidaten gefunden” – kein Fehler.
 • Falls die beiden Short-Dateien nicht als Anhang mitgeschickt werden:
 Abschnitt einfach weglassen, keine Rückfrage, keine Ablehnung
@@ -1478,8 +1493,8 @@ deswegen.
 8. Edelmetalle-Setups (fünfte Kategorie, spiegelt Abschnitt
 2/Hauptscanner)
 
-Zusätzlich ggf. zwei weitere Datei-Anhänge: Edelmetalle_Setups(...).csv
-und Edelmetalle_Briefing(...).txt, von einem eigenen Scanner (feste
+Zusätzlich ggf. zwei weitere Datei-Anhänge: Edelmetalle_Setups(…).csv
+und Edelmetalle_Briefing(…).txt, von einem eigenen Scanner (feste
 4er-Liste: Gold, Silber, Platin, Palladium – keine Sektor-Rotation,
 immer alle 4 geprüft). Diese Titel folgen den IDENTISCHEN Kriterien wie
 die normalen Trendfolge-Setups aus Abschnitt 2/3 (gleiche Setup-Typen,
@@ -1499,7 +1514,7 @@ SPY/STOXX600 – beschrifte die Zeile entsprechend („RS vs. DBC”
 statt „RS vs. Benchmark”).
 • Kein Sektor-Momentum: Die Sektor-Spalte enthält immer den festen
 Wert „Edelmetalle” – dafür existiert KEIN passender Eintrag in
-Performance(...).csv/Performance_EU(...).csv. Versuche NICHT,
+Performance(…).csv/Performance_EU(…).csv. Versuche NICHT,
 einen Sektor-Eintrag zu suchen oder zu erfinden – lasse
 Sektor-Momentum für diese Kategorie komplett weg (auch nicht „N/A”
 schreiben, einfach die Zeile auslassen).
@@ -1566,7 +1581,7 @@ RS vs. DBC (Rohstoff-Index): {{RS_vs_Benchmark%, 2 Nachkommastellen}}%
 
 Setup-Typ: {{Setup_Typ}} | Muster: {{Pattern}}
 
-• Falls Edelmetalle_Setups(...).csv leer ist: kurz vermerken „Keine
+• Falls Edelmetalle_Setups(…).csv leer ist: kurz vermerken „Keine
 validen Edelmetalle-Setups gefunden” – kein Fehler.
 • Falls die beiden Edelmetalle-Dateien nicht als Anhang mitgeschickt
 werden: Abschnitt einfach weglassen, keine Rückfrage, keine
@@ -1654,7 +1669,7 @@ zwischen thematischen Abschnitten, sondern zwischen jeder einzelnen
 offenen Position, auch wenn nur zwei oder drei Positionen vorhanden
 sind.
 • Kursziel-Hinweis (NEU): Enthält eine Position eine Zeile „⚠
-Kursziel-Hinweis: TP1/TP2 erreicht am ...”, übernimm sie wörtlich
+Kursziel-Hinweis: TP1/TP2 erreicht am …”, übernimm sie wörtlich
 als letzte Zeile direkt unter dem TP1/TP2-Feld dieser Position.
 STUFENREGEL-ZUSATZ (28.07.2026): Der Hinweis kann um die Zusätze „|
 TP2 erreicht am TT.MM.JJJJ”, „| Stop auf Breakeven (X) nachgezogen
@@ -1703,7 +1718,7 @@ IMMER der vollständige Name aus der Datei, NIE nur der Ticker.
 Sortiere absteigend nach Performance %, größte Gewinner zuerst.
 Direkt darunter (Pflicht, unverändert seit 28.07.2026) folgt
 weiterhin wörtlich die vorberechnete Zeile „Portfolio-Übersicht:
-...” aus der Datei – berechne NICHTS selbst nach, runde nichts um.
+…” aus der Datei – berechne NICHTS selbst nach, runde nichts um.
 Grund: Gemini hatte hier am 28.07.2026 einen Rechenfehler produziert
 (+0,56% statt korrekt +0,95%) – seither wird in Python
 vorgerechnet. Taucht die Zeile ausnahmsweise nicht auf, lass den
@@ -1735,7 +1750,7 @@ beider) – übernimm auch diese Zeile wörtlich als Teil derselben
 Erfolgsbilanz-Zeilengruppe, in derselben Reihenfolge wie in der
 Datei.
 
-Optionsschein-Positionen – eigene Zeile „Optionsschein: ...”
+Optionsschein-Positionen – eigene Zeile „Optionsschein: …”
 
 Manche offenen Positionen sind keine direkten Aktienkäufe, sondern
 Optionsscheine/Zertifikate auf den genannten Basiswert. Erkennbar an
@@ -1758,7 +1773,7 @@ Näherung handelt, nicht den tatsächlichen Marktpreis des Scheins.
 • Stop/TP1/TP2 beziehen sich weiterhin auf den Basiswert (die Aktie),
 nicht auf den Optionsschein selbst – dieser hat keine im Datensatz
 hinterlegte eigene Knock-Out-Schwelle.
-• Enthält eine Position keine „Optionsschein: ...”-Zeile, handelt es
+• Enthält eine Position keine „Optionsschein: …”-Zeile, handelt es
 sich um einen direkten Aktienkauf – dann gilt nur die normale
 Performance-Zeile, kein Zusatzhinweis nötig.
 
@@ -1792,7 +1807,7 @@ Werktagen gestoppt.” – kein Fehler, kein Weglassen des Abschnitts.
 Analyse
 
 Verarbeite jetzt die Daten aus der briefing.txt sowie den CSV-Dateien
-(Setups(...).csv und Performance(...).csv) strikt nach diesen
+(Setups(…).csv und Performance(…).csv) strikt nach diesen
 Vorgaben.
 
 • AUSWERTUNG – GLOBALE RISIKOLAGE (NEU 12.08.2026): Die Überschrift
