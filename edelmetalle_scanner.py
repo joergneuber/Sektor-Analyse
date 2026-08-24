@@ -26,7 +26,7 @@ Aktien-Setups gehandelt werden koennen. Architektur-Entscheidung vom
   - Fundamental-Ampel (KGV) entfaellt bewusst - Rohstoffe haben keine
     Unternehmensgewinne, eine KGV-Kennzahl ergibt hier keinen Sinn.
   - Analysten-Kursziel entfaellt bewusst (kein Analysten-Konsens fuer
-    Rohstoff-Futures via yfinance verfuegbar) - Tech-Kursziel bleibt einzige
+    Rohstoff-Spotdaten via yfinance verfuegbar) - Tech-Kursziel bleibt einzige
     Zielgroesse, wie bei den meisten EU-Setups ohne Kursziel auch.
   - Eigene Datei (Edelmetalle_Setups.csv) + eigener Briefing-Abschnitt
     (Edelmetalle_Briefing.txt) - wird von upload_to_drive.py automatisch mit
@@ -45,7 +45,7 @@ DREI STRATEGIEN IN EINER DATEI (NEU 29.07.2026, Nutzerentscheidung):
     Fleck des Scanners.
   - Short (NEU): Spiegelbild der Trendfolge, setzt auf fallende Metallpreise.
   Warum EINE Datei statt drei Scanner: alle drei brauchen exakt dieselben
-  Daten (4 Futures + DBC-Benchmark). Drei Dateien haetten drei Abrufe, drei
+  Daten (4 Spot-Metalle + DBC-Benchmark). Drei Dateien haetten drei Abrufe, drei
   Workflow-Steps, drei Briefings und drei Drive-Uploads bedeutet - bei nur 4
   Instrumenten unverhaeltnismaessig (bei Aktien lohnt die Trennung, weil dort
   die Universen unterschiedlich sind: Top-Sektoren vs. alle Sektoren vs.
@@ -175,7 +175,7 @@ def lade_kursdaten(ticker):
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
             return None, "keine_kursdaten"
-        data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+        data = data.dropna(subset=['Close', 'High', 'Low'])
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
             return None, "keine_kursdaten"
@@ -193,7 +193,7 @@ def _metall_felder_setzen(ergebnis, ticker, name, strategie):
     fuer Metalle: Name/Sektor/Markt/Waehrung korrekt setzen, Strategie-Spalte
     ergaenzen und die bei Rohstoffen sinnlose Fundamental-Ampel eindeutig auf
     N/A setzen (die Aktien-Funktion versucht dort ein KGV zu ziehen, das es
-    fuer Futures nicht gibt)."""
+    fuer Spot-Metalle nicht gibt)."""
     ergebnis["Ticker"] = ticker
     ergebnis["Name"] = name
     ergebnis["Sektor"] = "Edelmetalle"
@@ -218,7 +218,7 @@ def analyze_edelmetall_trendwende(ticker, name, data, bench_close=None):
     unveraendert uebernommen und im Briefing separat ausgewiesen."""
     try:
         res, grund = _pruefe_trendwende(ticker, "Edelmetalle", "Global", data, bench_close,
-                                        spannen_position_max=SPANNEN_POSITION_MAX)
+                                        spannen_position_max=SPANNEN_POSITION_MAX, require_volume=False)
         if res is None:
             return None, grund
         return _metall_felder_setzen(res, ticker, name, "Trendwende"), grund
@@ -239,12 +239,13 @@ def analyze_edelmetall_short(ticker, name, data, bench_close=None):
         ist fuer Gold/Silber kein sinnvoller Massstab - waere sogar irrefuehrend,
         da Edelmetalle in Aktien-Schwaechephasen klassischerweise GEGENLAEUFIG
         laufen (Krisenwaehrung). Deshalb marktumfeld_baerisch=False.
-    Die Setup-Qualitaet stuetzt sich hier also allein auf Muster und Volumen.
+    Die Setup-Qualitaet stuetzt sich hier allein auf Preis-/Musterlogik; Volumen ist bei Spot-Metallen nicht erforderlich.
     RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko (wie bei Aktien)."""
     try:
         res, grund = _pruefe_short_setup(
             ticker, "Edelmetalle", "Global", data, bench_close,
             marktumfeld_baerisch=False, sektor_momentum=None,
+            require_volume=False,
         )
         if res is None:
             return None, grund
@@ -257,16 +258,16 @@ def analyze_edelmetall_short(ticker, name, data, bench_close=None):
 def analyze_edelmetall(ticker, name, bench_close=None, data=None):
     """Analysiert ein einzelnes Edelmetall - identische Kriterien wie
     analyze_a_setup_eu() in analyse.py (yfinance-basiert, da Alpaca keine
-    Rohstoff-Futures abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
-    Rohstoffen) und ohne Analysten-Kursziel (nicht verfuegbar fuer Futures).
+    Rohstoff-Spot-Metalle abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
+    Rohstoffen) und ohne Analysten-Kursziel (nicht verfuegbar fuer Spot-Metalle).
     Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
     speist die Funnel-Statistik (NEU 28.07.2026). Die Earnings-Regel des
-    Hauptscanners entfaellt hier bewusst (Futures haben keine Earnings),
+    Hauptscanners entfaellt hier bewusst (Spot-Metalle haben keine Earnings),
     die Death-Cross-Regel gilt dagegen identisch (siehe unten).
     """
     try:
         if data is None:
-            # Fallback: Einzelaufruf wie frueher (2 Jahre statt 1 - Futures
+            # Fallback: Einzelaufruf wie frueher (2 Jahre statt 1 - Spot-Historien
             # haben teils luecken-behaftete Historie, mehr Puffer fuer eine
             # zuverlaessige WMA200/EMA200-Berechnung). Im regulaeren Lauf
             # kommen die Daten seit 29.07.2026 vorgeladen aus lade_kursdaten().
@@ -281,7 +282,7 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
             return None, "keine_kursdaten"
 
-        data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
+        data = data.dropna(subset=['Close', 'High', 'Low'])
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
             return None, "keine_kursdaten"
@@ -304,7 +305,12 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         data['EMA100'] = data['Close'].ewm(span=100, adjust=False).mean()
         data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
         data['WMA200'] = data['Close'].rolling(200).apply(lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True)
-        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+        if 'Volume' in data.columns and data['Volume'].notna().any():
+            data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+            data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).replace([np.inf, -np.inf], np.nan)
+        else:
+            data['Vol_SMA20'] = np.nan
+            data['Vol_Ratio'] = 1.0
 
         data['Tenkan'] = (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2
         data['Kijun'] = (data['High'].rolling(26).max() + data['Low'].rolling(26).min()) / 2
@@ -319,8 +325,6 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         data['Stoch_K'] = 100 * ((data['Close'] - low_min) / (high_max - low_min + 1e-9))
         data['Stoch_D'] = data['Stoch_K'].rolling(3).mean()
 
-        data['Vol_Ratio'] = data['Volume'] / data['Vol_SMA20']
-        data['Vol_Ratio'] = data['Vol_Ratio'].fillna(0)
 
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = data['Close'].ewm(span=26, adjust=False).mean()
@@ -349,9 +353,9 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         crossover_kuerzlich = any(
             data['EMA8'].iloc[-1 - i] <= data['EMA20'].iloc[-1 - i] for i in range(1, 4)
         )
-        volumen_kuerzlich = any(
-            data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i] for i in range(0, 3)
-        )
+        # Spot-Metalle haben kein belastbares Handelsvolumen; der EMA-Breakout
+        # ist deshalb rein preis-/trendbasiert.
+        volumen_kuerzlich = True
         ema_breakout = (data['EMA8'].iloc[-1] > data['EMA20'].iloc[-1]) and \
                        crossover_kuerzlich and volumen_kuerzlich
 
@@ -369,17 +373,15 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             return nah_dran and war_ueber_ema_kuerzlich
 
         in_ema_zone_roh = any(ema_pullback_test(s) for s in [data['EMA20'], data['EMA50'], data['Kijun']])
-        # Mindest-Volumen (GEÄNDERT 27.07.2026, zweite Iteration, analog zu
-        # analyse.py): bewusst Mindest-Boden (>= 0.7x) statt Pflicht-Spitze -
-        # ein gesunder Pullback laeuft klassischerweise auf abnehmendem statt
-        # steigendem Volumen, eine Spitze waere hier fachlich unpassend.
-        volumen_ausreichend = bool(data['Vol_Ratio'].iloc[-1] >= 0.7)
-        in_ema_zone = in_ema_zone_roh and volumen_ausreichend
+        # Bei Spot-Metallen ist Volumen keine Pflichtbedingung; die EMA-Zone
+        # wird ausschließlich über Preisnähe und Preisstruktur bewertet.
+        volumen_ausreichend = True
+        in_ema_zone = in_ema_zone_roh
 
-        trendlinien_ausbruch, tl_level = check_trendline_breakout(data)
-        kumo_ausbruch, kumo_level = check_kumo_breakout(data)
+        trendlinien_ausbruch, tl_level = check_trendline_breakout(data, require_volume=False)
+        kumo_ausbruch, kumo_level = check_kumo_breakout(data, require_volume=False)
 
-        in_zone_grund = "OK" if in_ema_zone else ("EMA-Zone nicht erfüllt" if not in_ema_zone_roh else f"Volumen zu duenn ({data['Vol_Ratio'].iloc[-1]:.2f}x < 0.7)")
+        in_zone_grund = "OK" if in_ema_zone else ("EMA-Zone nicht erfüllt" if not in_ema_zone_roh else "Preiszone nicht erfüllt")
         print(f"DEBUG-EDELMETALL: {ticker} ({name}) | Breakout: {ema_breakout} | InZone: {in_ema_zone} (Grund: {in_zone_grund}) | "
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
@@ -480,7 +482,7 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         # Death-Cross-Regel (NEU 28.07.2026, identisch zum Hauptscanner):
         # frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10
         # Handelstage) stuft VALIDE auf ACHTUNG ab. Die Earnings-Regel des
-        # Hauptscanners entfaellt bewusst - Futures haben keine Earnings.
+        # Hauptscanners entfaellt bewusst - Spot-Metalle haben keine Earnings.
         gc_status = get_golden_cross_status(data)
         if str(gc_status).startswith("DEATH CROSS"):
             status2, status_grund = "ACHTUNG", "Frischer Death Cross (EMA50 unter EMA200)"
@@ -629,12 +631,12 @@ def edelmetalle_scan_starten():
         # Aktien-Funktionen berechnen 52W-Tief/-Hoch als min()/max() ueber die
         # GESAMTE uebergebene Reihe - die Aktien-Scanner fuettern 365 Tage, wir
         # laden fuer die Metalle aber bewusst 2 Jahre (WMA200-Puffer bei
-        # luecken-behafteter Futures-Historie). Ungeschnitten waere das
+        # luecken-behafteter Spot-Historie). Ungeschnitten waere das
         # "52W-Tief" faktisch das 2-JAHRES-Tief; im ersten Echtlauf fielen
         # dadurch ALLE VIER Metalle faelschlich durch den Naehe-Filter.
         # GEAENDERT (29.07.2026, Nutzerwunsch): Abgrenzung nach DATUM statt
         # nach Zeilenzahl. tail(252) zaehlt Zeilen und unterstellt 252
-        # Handelstage pro Jahr - bei Luecken in der Futures-Historie (Feiertage,
+        # Handelstage pro Jahr - bei Luecken in der Spot-Historie (Feiertage,
         # Ausfaelle, verkuerzte Reihen) reicht das Fenster dann still weiter
         # als 12 Monate zurueck und verzerrt Tief/Hoch genau wie oben, nur
         # schwaecher. Der Datumsschnitt trifft immer exakt 52 Wochen.
@@ -818,7 +820,7 @@ STRATEGIE_TEXTE = {
         "  Marktumfeld-Modifikator (das Aktien-Marktumfeld ist fuer Edelmetalle\n"
         "  kein sinnvoller Massstab - Metalle laufen in Aktien-Schwaechephasen\n"
         "  klassischerweise gegenlaeufig). Die Setup-Qualitaet stuetzt sich hier\n"
-        "  allein auf Muster und Volumen.\n"
+        "  allein auf Preis-/Musterlogik; Volumen ist bei Spot-Metallen nicht erforderlich.\n"
         "- RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko bei Kursanstieg.\n"
     ),
 }
@@ -853,11 +855,13 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
             "- Universum: feste 4er-Liste (keine Sektor-Rotation, immer alle 4 geprüft).\n"
             "- Kursbasis: Spot (XAUUSD=X/XAGUSD=X/XPTUSD=X/XPDUSD=X) - direkter Metallpreis\n"
             "  Kursreihe (kein ETF-Tracking-Fehler, kein Alpaca, das Rohstoffe nicht abdeckt).\n"
+  "  Volumen: fuer Spot-Metalle nicht erforderlich; fehlendes Handelsvolumen blockiert\n"
+  "  keine preis-/trendbasierte Setup-Pruefung.\n"
             "- Relative Stärke: gegen DBC (Rohstoff-Index-ETF) statt SPY/STOXX600 -\n"
             "  ein Aktienindex wäre als Vergleichsmaßstab für Edelmetalle nicht sinnvoll.\n"
             "- Fundamental-Ampel (KGV) entfällt bewusst - Rohstoffe haben keine\n"
             "  Unternehmensgewinne. Analysten-Kursziel entfällt ebenfalls (nicht\n"
-            "  verfügbar für Futures) - Tech-Kursziel bleibt einzige Zielgröße.\n"
+            "  verfügbar für Spot-Metalle) - Tech-Kursziel bleibt einzige Zielgröße.\n"
             "- DREI STRATEGIEN (NEU 29.07.2026): Trendfolge, Trendwende und Short laufen\n"
             "  in EINEM Scanner (gleiche Daten, ein Abruf), werden aber getrennt\n"
             "  ausgewiesen - CSV-Spalte 'Strategie', hier je ein eigener Abschnitt mit\n"

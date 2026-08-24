@@ -158,8 +158,14 @@ def _indikatoren_berechnen(data):
     data['WMA200'] = data['Close'].rolling(200).apply(
         lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True
     )
-    data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
-    data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).fillna(0)
+    if 'Volume' in data.columns and data['Volume'].notna().any():
+        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+        data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).replace([np.inf, -np.inf], np.nan)
+    else:
+        # Spot-Metalle: fehlendes Handelsvolumen ist neutral und darf keine
+        # preisbasierte Short-Logik blockieren.
+        data['Vol_SMA20'] = np.nan
+        data['Vol_Ratio'] = 1.0
 
     delta = data['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -190,7 +196,7 @@ def _indikatoren_berechnen(data):
 # GESPIEGELTE SETUP-MUSTER (baerische Varianten der 4 Long-Muster)
 # ---------------------------------------------------------------------------
 
-def check_ema_breakdown(data):
+def check_ema_breakdown(data, require_volume=True):
     """Spiegelbild zu EMA-Breakout: EMA8 kreuzt EMA20 von oben nach unten,
     mit Volumen-Bestaetigung, Ausbruch innerhalb der letzten FRISCHE_TAGE."""
     if len(data) < 25:
@@ -200,13 +206,13 @@ def check_ema_breakdown(data):
         if abs(idx_prev) > len(data):
             break
         crossover = data['EMA8'].iloc[idx] < data['EMA20'].iloc[idx] and data['EMA8'].iloc[idx_prev] >= data['EMA20'].iloc[idx_prev]
-        vol_ok = data['Vol_Ratio'].iloc[idx] > 1.0
+        vol_ok = (data['Vol_Ratio'].iloc[idx] > 1.0) if require_volume else True
         if crossover and vol_ok and data['EMA8'].iloc[-1] < data['EMA20'].iloc[-1]:
             return True
     return False
 
 
-def check_pullback_zone_short(data, ticker=None):
+def check_pullback_zone_short(data, ticker=None, require_volume=True):
     """Spiegelbild zu Pullback-Zone: Kurs testet EMA20/50/Kijun von UNTEN
     (Widerstandstest im Abwaertstrend), Lower-High bestaetigt (statt
     Higher-Low). Mindest-Volumen (GEÄNDERT 27.07.2026, zweite Iteration nach
@@ -226,7 +232,7 @@ def check_pullback_zone_short(data, ticker=None):
             print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: EMA-Zone nicht erfüllt)")
         return False
     vol_ratio_heute = data['Vol_Ratio'].iloc[-1]
-    volumen_ausreichend = bool(vol_ratio_heute >= 0.7)
+    volumen_ausreichend = bool(vol_ratio_heute >= 0.7) if require_volume else True
     if not volumen_ausreichend:
         if ticker:
             print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: Volumen zu duenn ({vol_ratio_heute:.2f}x < 0.7))")
@@ -240,7 +246,7 @@ def check_pullback_zone_short(data, ticker=None):
     return bool(lower_high)
 
 
-def check_kumo_breakdown(data):
+def check_kumo_breakdown(data, require_volume=True):
     """Spiegelbild zu check_kumo_breakout in analyse.py: Kurs muss die
     KOMPLETTE Wolke von oben nach unten durchbrochen haben (unter BEIDEN
     Grenzen), Bruch innerhalb der letzten FRISCHE_TAGE, Pflicht-Volumen."""
@@ -257,7 +263,10 @@ def check_kumo_breakdown(data):
     )
     if not frischer_bruch:
         return False, None
-    vol_ok = any(data['Vol_Ratio'].iloc[-1 - i] > 1.0 for i in range(0, FRISCHE_TAGE) if abs(-1 - i) <= len(data))
+    vol_ok = (
+        any(data['Vol_Ratio'].iloc[-1 - i] > 1.0 for i in range(0, FRISCHE_TAGE) if abs(-1 - i) <= len(data))
+        if require_volume else True
+    )
     if not vol_ok:
         return False, None
     return True, round(float(heute_unter), 2)
@@ -398,7 +407,7 @@ def check_bearish_confirmation(df):
 # SETUP-QUALITAETS-MATRIX (gespiegelt, siehe Modul-Docstring)
 # ---------------------------------------------------------------------------
 
-def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfeld_baerisch=False, sektor_momentum=None):
+def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfeld_baerisch=False, sektor_momentum=None, require_volume=True):
     """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
     speist die Funnel-Statistik (NEU 28.07.2026, Nutzerwunsch: '0 Kandidaten'
     soll interpretierbar sein)."""
@@ -429,15 +438,15 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
         return None, "kein_abwaertstrend"
 
     pfade = []
-    trendlinien_bruch, _ = check_trendline_breakdown(data)
+    trendlinien_bruch, _ = check_trendline_breakdown(data, require_volume=require_volume)
     if trendlinien_bruch:
         pfade.append("Trendlinien-Bruch")
-    kumo_bruch, kumo_level = check_kumo_breakdown(data)
+    kumo_bruch, kumo_level = check_kumo_breakdown(data, require_volume=require_volume)
     if kumo_bruch:
         pfade.append("Kumo-Ausbruch unten")
-    if check_ema_breakdown(data):
+    if check_ema_breakdown(data, require_volume=require_volume):
         pfade.append("EMA-Breakdown")
-    pullback_short = check_pullback_zone_short(data, ticker=ticker)
+    pullback_short = check_pullback_zone_short(data, ticker=ticker, require_volume=require_volume)
     muster = check_bearish_confirmation(data)
     if pullback_short and muster:
         pfade.append("Pullback-Zone short")
@@ -468,10 +477,11 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     stufen = ["B-", "B", "B+", "A-", "A", "A+"]
     idx = stufen.index("B" if basis == "B" else "A")
     verschiebung = 0
-    if data['Vol_Ratio'].iloc[-1] > 1.0:
-        verschiebung += 1
-    elif data['Vol_Ratio'].iloc[-1] < 0.5:
-        verschiebung -= 1
+    if require_volume:
+        if data['Vol_Ratio'].iloc[-1] > 1.0:
+            verschiebung += 1
+        elif data['Vol_Ratio'].iloc[-1] < 0.5:
+            verschiebung -= 1
     # Sektor-Score des Setup-Sektors aus Performance.csv-Momentum ziehen
     sektor_score = None
     if sektor_momentum:
@@ -511,7 +521,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, marktumfe
     # (gespiegelt zur Long-Logik in analyse.py).
     if divergenz_bearish:
         status2, status_grund = "VALIDE", "Alles ok"  # Divergenz steht separat in eigener Spalte (wie bei Setups.csv), nicht im Grund-Text
-    elif data['Vol_Ratio'].iloc[-1] < 0.5:
+    elif require_volume and data['Vol_Ratio'].iloc[-1] < 0.5:
         status2, status_grund = "ACHTUNG", "Schwaches Volumen"
     else:
         status2, status_grund = "VALIDE", "Kein Störfaktor erkannt"

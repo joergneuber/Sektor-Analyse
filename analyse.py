@@ -2298,7 +2298,7 @@ def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
     ausbruch = bool(close_heute > linie_heute) and kein_rueckfall and bool(volumen_ok)
     return ausbruch, (float(linie_heute) if ausbruch else None)
 
-def check_kumo_breakout(data, toleranz_prozent=0.2):
+def check_kumo_breakout(data, toleranz_prozent=0.2, require_volume=True):
     """
     Prüft einen echten Kumo-Ausbruch (Ichimoku-Wolke): Der Kurs muss die
     KOMPLETTE Wolke von unten nach oben durchbrochen haben - also über BEIDEN
@@ -2339,10 +2339,14 @@ def check_kumo_breakout(data, toleranz_prozent=0.2):
         for i in range(1, 4)
     )
 
-    volumen_ok = any(
-        data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i]
-        for i in range(0, 3)
-    )
+    if require_volume:
+        volumen_ok = any(
+            data['Volume'].iloc[-1 - i] > data['Vol_SMA20'].iloc[-1 - i]
+            for i in range(0, 3)
+        )
+    else:
+        # Spot-Metalle: kein belastbares Handelsvolumen erforderlich.
+        volumen_ok = True
 
     ausbruch = bool(ueber_wolke_heute) and frischer_ausbruch and bool(volumen_ok)
     return ausbruch, (float(heute_ober) if ausbruch else None)

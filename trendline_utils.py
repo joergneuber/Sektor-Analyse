@@ -76,17 +76,23 @@ def _kein_rueckfall_seit_ausbruch(closes, linie_werte, heute_pos, richtung,
     return False
 
 
-def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01):
-    """Long: fallende Widerstandslinie wird nach oben durchbrochen."""
-    return _check_trendline(data, "long", lookback, order, touch_tolerance)
+def check_trendline_breakout(data, lookback=120, order=5, touch_tolerance=0.01, require_volume=True):
+    """Long: fallende Widerstandslinie wird nach oben durchbrochen.
+
+    require_volume=False erlaubt Spot-/Marktdaten ohne verwertbares Volumen.
+    """
+    return _check_trendline(data, "long", lookback, order, touch_tolerance, require_volume=require_volume)
 
 
-def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01):
-    """Short: steigende Stuetzlinie wird nach unten durchbrochen."""
-    return _check_trendline(data, "short", lookback, order, touch_tolerance)
+def check_trendline_breakdown(data, lookback=120, order=5, touch_tolerance=0.01, require_volume=True):
+    """Short: steigende Stuetzlinie wird nach unten durchbrochen.
+
+    require_volume=False erlaubt Spot-/Marktdaten ohne verwertbares Volumen.
+    """
+    return _check_trendline(data, "short", lookback, order, touch_tolerance, require_volume=require_volume)
 
 
-def _check_trendline(data, richtung, lookback, order, touch_tolerance):
+def _check_trendline(data, richtung, lookback, order, touch_tolerance, require_volume=True):
     fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
     if len(fenster) < 10:
         return False, None
@@ -145,7 +151,12 @@ def _check_trendline(data, richtung, lookback, order, touch_tolerance):
         fenster_tage=3,
     )
 
-    if "Vol_SMA20" in fenster.columns:
+    if not require_volume:
+        # Spot-Metalle liefern je nach Quelle kein belastbares Handelsvolumen.
+        # Fehlendes Volume darf den reinen Preis-/Trendlinienausbruch daher
+        # nicht blockieren.
+        volumen_ok = True
+    elif "Vol_SMA20" in fenster.columns:
         volumen_ok = any(
             fenster["Volume"].iloc[-1 - i] > fenster["Vol_SMA20"].iloc[-1 - i]
             for i in range(0, 3)

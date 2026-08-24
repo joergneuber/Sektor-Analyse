@@ -278,7 +278,8 @@ def check_kumo_breakout_recent(data, frische_tage=FRISCHE_TAGE):
 
 
 def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
-                               volumen_schwelle=MULTIWOCHEN_VOLUMEN_SCHWELLE):
+                               volumen_schwelle=MULTIWOCHEN_VOLUMEN_SCHWELLE,
+                               require_volume=True):
     """TRENDWENDE-2 (NEU 09.08.2026, Nutzerwunsch): alternativer Trigger zu Trendwende-1
     (RSI-Divergenz + Kumo-Ausbruch). Faengt kraftvolle Bodenformationen
     (Doppel-Boeden, V-Reversals) ein, die keine RSI-Divergenz ausgebildet
@@ -296,8 +297,10 @@ def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
          schwach/beliebig als Trendwende-Signal.
     Gibt (bool, detail_text) zurueck - der Text dient der Diagnose in
     DEBUG-Zeilen und im Beinahe-Kandidaten-Kontext."""
-    if len(data) < lookback_tage + 20 or 'Vol_Ratio' not in data.columns:
+    if len(data) < lookback_tage + 20:
         return False, "zu wenig Historie fuer Trendwende-2"
+    if require_volume and 'Vol_Ratio' not in data.columns:
+        return False, "Volumen nicht verfuegbar fuer Trendwende-2"
     kurs = float(data['Close'].iloc[-1])
     # KORREKTUR (09.08.2026, Nutzerfund): das Referenzhoch darf den AKTUELLEN
     # Handelstag nicht enthalten, sonst vergleicht sich der Tag teilweise mit
@@ -308,12 +311,17 @@ def check_multiwochen_ausbruch(data, lookback_tage=MULTIWOCHEN_LOOKBACK_TAGE,
     # `lookback_tage` Handelstage VOR heute, der aktuelle Tag bleibt aussen vor.
     hoch_lookback = float(data['High'].iloc[-(lookback_tage + 1):-1].max())
     neues_hoch = kurs >= hoch_lookback * 0.999
-    vol_ratio = float(data['Vol_Ratio'].iloc[-1]) if pd.notna(data['Vol_Ratio'].iloc[-1]) else 0.0
-    volumen_ok = vol_ratio >= volumen_schwelle
+    if require_volume:
+        vol_ratio = float(data['Vol_Ratio'].iloc[-1]) if pd.notna(data['Vol_Ratio'].iloc[-1]) else 0.0
+        volumen_ok = vol_ratio >= volumen_schwelle
+        volumen_text = f"{vol_ratio:.2f}x ({'ja' if volumen_ok else 'nein'}, Schwelle {volumen_schwelle:.1f}x)"
+    else:
+        # Spot-Metalle: Volumen ist keine Pflichtbedingung.
+        volumen_ok = True
+        volumen_text = "nicht erforderlich (Spot)"
     detail = (f"{lookback_tage}T-Hoch: {'ja' if neues_hoch else 'nein'} "
              f"(Kurs {kurs:.2f} vs. Hoch {hoch_lookback:.2f}) | "
-             f"Volumen: {vol_ratio:.2f}x ({'ja' if volumen_ok else 'nein'}, "
-             f"Schwelle {volumen_schwelle:.1f}x)")
+             f"Volumen: {volumen_text}")
     return (neues_hoch and volumen_ok), detail
 
 
@@ -505,8 +513,14 @@ def _indikatoren_berechnen(data):
     data['WMA200'] = data['Close'].rolling(200).apply(
         lambda p: np.dot(p, np.arange(1, 201)) / np.sum(np.arange(1, 201)), raw=True
     )
-    data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
-    data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).fillna(0)
+    if 'Volume' in data.columns and data['Volume'].notna().any():
+        data['Vol_SMA20'] = data['Volume'].rolling(20).mean()
+        data['Vol_Ratio'] = (data['Volume'] / data['Vol_SMA20']).replace([np.inf, -np.inf], np.nan)
+    else:
+        # Kein Volumen bei Spot-Metallen: neutraler Wert fuer optionale
+        # Anzeige-/Qualitaetsfelder; Volumen darf keine Preislogik blockieren.
+        data['Vol_SMA20'] = np.nan
+        data['Vol_Ratio'] = 1.0
 
     delta = data['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -538,7 +552,7 @@ def _indikatoren_berechnen(data):
 
 
 def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
-                       spannen_position_max=None):
+                       spannen_position_max=None, require_volume=True):
     """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
     speist die Funnel-Statistik (NEU 28.07.2026, Nutzerwunsch: '0 Kandidaten'
     soll interpretierbar sein - an welcher Stufe faellt wie viel raus?).
@@ -612,7 +626,7 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
     kumo_ausbruch = check_kumo_breakout_recent(data)
     pfad1_ok = divergenz_ok and kumo_ausbruch
 
-    pfad2_ok, pfad2_detail = check_multiwochen_ausbruch(data)
+    pfad2_ok, pfad2_detail = check_multiwochen_ausbruch(data, require_volume=require_volume)
 
     if not pfad1_ok and not pfad2_ok:
         print(f"DEBUG-TRENDWENDE-VERWORFEN: {ticker} | Trendwende-1 (Divergenz+Kumo): "
@@ -631,7 +645,10 @@ def _pruefe_trendwende(ticker, sektor, markt, data, bench_close=None,
     if pfad1_ok:
         trigger_pfad.append(TRENDWENDE_1_LABEL)
     if pfad2_ok:
-        trigger_pfad.append(TRENDWENDE_2_LABEL)
+        trigger_pfad.append(
+            "Trendwende-2 (Multi-Wochen-Hoch)"
+            if not require_volume else TRENDWENDE_2_LABEL
+        )
 
     # Qualitaets-Bonus (NEU, optional - kein Ausschlusskriterium): zwei
     # zusaetzliche, unabhaengige Signale koennen die Einstufung anheben,
