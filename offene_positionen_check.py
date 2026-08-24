@@ -11,7 +11,7 @@ Feste Regeln:
 - Technische Analyse nur bei Status == "Offen".
 - Breakout aktiviert NICHT automatisch Fibonacci.
 - Fibonacci/Fibonacci-Extension erst nach bestaetigter A-B-C-Struktur.
-- Historische Major-Level (insbesondere ATH) bleiben unabhaengig erhalten.
+- Historische Widerstaende (insbesondere Mehrjahreshochs/ATH) bleiben unabhaengig erhalten.
 - Ein gebrochener Widerstand wird als moegliche Retest-/Supportzone weitergefuehrt.
 - Keine technischen Zielwerte werden in TP1/TP2 der Originaldatei geschrieben.
 - Letzter abgeschlossener Tages-Schluss wird fuer aktuelle technische Werte verwendet.
@@ -55,10 +55,10 @@ OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
 GOLD_SPOT_TICKER = "XAUUSD=X"
-# Historischer Widerstand gilt fuer die Fibonacci-Sperre nur dann als
-# "unmittelbar", wenn er maximal 10 % oberhalb des aktuellen Kurses liegt.
-# Weiter entfernte Major-Level/ATH bleiben eigenstaendige Referenzen und
-# blockieren Fibonacci nicht.
+# Ein Widerstand kann die Fibonacci-Sperre nur dann beeinflussen, wenn er
+# maximal 10 % oberhalb des aktuellen Kurses liegt. Weiter entfernte
+# laengerfristige/historische Widerstaende bleiben eigenstaendige Referenzen
+# und blockieren Fibonacci nicht.
 IMMEDIATE_RESISTANCE_MAX_DISTANCE = 0.10
 
 HEADERS = [
@@ -103,6 +103,8 @@ class TechnicalResult:
     support2: Optional[float] = None
     resistance1: Optional[float] = None
     resistance2: Optional[float] = None
+    resistance1_label: str = "Widerstand"
+    resistance2_label: str = "Widerstand"
     breakout_status: str = "Kein bestätigter Breakout"
     abc_status: str = "Nicht bestätigt"
     fib_status: str = "Nicht aktiv"
@@ -229,6 +231,68 @@ def swing_levels(data: pd.DataFrame, order: int = 5) -> tuple[list[float], list[
     hi_idx = argrelextrema(highs, np.greater_equal, order=order)[0]
     lo_idx = argrelextrema(lows, np.less_equal, order=order)[0]
     return [float(highs[i]) for i in hi_idx], [float(lows[i]) for i in lo_idx]
+
+
+def long_term_resistance_levels(data: pd.DataFrame, close: float) -> list[float]:
+    """Findet längerfristige Widerstände.
+
+    Ein Level gilt hier nur dann als längerfristiger Widerstand, wenn:
+    - sein Ursprung mindestens 12 Monate zurückliegt,
+    - es ein markantes Swing-High ist und
+    - mindestens zwei zeitlich getrennte Swing-Highs in derselben Preiszone
+      (1,5 % Toleranz, mindestens 30 Tage Abstand) liegen.
+    """
+    if data.empty or len(data) < 300:
+        return []
+
+    try:
+        idx = pd.to_datetime(data.index)
+        cutoff = idx[-1] - pd.Timedelta(days=365)
+        recent = data.loc[idx <= cutoff].copy()
+    except Exception:
+        return []
+
+    if len(recent) < 60:
+        return []
+
+    highs = recent["High"].to_numpy(dtype=float)
+    hi_idx = argrelextrema(highs, np.greater_equal, order=5)[0]
+    if len(hi_idx) == 0:
+        return []
+
+    pivots = [(recent.index[i], float(highs[i])) for i in hi_idx if float(highs[i]) > close * 1.002]
+    if not pivots:
+        return []
+
+    qualified = []
+    for date_i, value_i in pivots:
+        matches = [(d, v) for d, v in pivots if abs(v - value_i) / value_i <= 0.015]
+        distinct_dates = []
+        for d, _ in sorted(matches, key=lambda x: x[0]):
+            if not distinct_dates or (d - distinct_dates[-1]).days >= 30:
+                distinct_dates.append(d)
+        if len(distinct_dates) >= 2:
+            qualified.append(value_i)
+
+    return sorted(cluster_levels(qualified))
+
+
+def resistance_label(value: Optional[float], data: pd.DataFrame, close: Optional[float]) -> str:
+    """Klassifiziert einen Widerstand fuer die Ausgabe.
+
+    Widerstand = aktuelles/lokales Swing-High.
+    Laengerfristiger Widerstand = markantes Swing-High mit Ursprung
+    mindestens 12 Monate zurueck und mindestens zwei bestaetigten,
+    zeitlich getrennten Reaktionen.
+    Historischer Widerstand = besonders bedeutendes Mehrjahreshoch/ATH;
+    dieses wird separat ueber ``major_resistance`` gefuehrt.
+    """
+    if value is None or close is None:
+        return "Widerstand"
+    long_term = long_term_resistance_levels(data, close)
+    if any(abs(float(value) - x) / x <= 0.015 for x in long_term):
+        return "Längerfristiger Widerstand"
+    return "Widerstand"
 
 
 def find_nearest(levels: Iterable[float], close: float, above: bool, count: int = 2) -> list[float]:
@@ -521,8 +585,8 @@ def determine_state(data: pd.DataFrame, close: float, resistances: list[float], 
 
 
 def immediate_resistance_within_10pct(future_highs: Iterable[float], close: float) -> Optional[float]:
-    """Naechster historischer Widerstand <= 10 % oberhalb des Kurses.
-    Genau 10,0 % blockiert Fibonacci; >10 % ist ein entferntes Major-Level.
+    """Naechster relevanter Widerstand <= 10 % oberhalb des Kurses.
+    Genau 10,0 % blockiert Fibonacci; >10 % ist ein entfernter langfristiger/historischer Referenzlevel.
     """
     if close is None or close <= 0:
         return None
@@ -572,7 +636,9 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     future_highs = [x for x in swing_hi if x > close * 1.002]
     prior_resistance = max(prior_highs) if prior_highs else None
     supports = cluster_levels(find_nearest(swing_lo, close, above=False, count=8))
-    resistances = cluster_levels(find_nearest(future_highs, close, above=True, count=8))
+    current_resistances = cluster_levels(find_nearest(future_highs, close, above=True, count=8))
+    long_term_resistances = long_term_resistance_levels(data, close)
+    resistances = cluster_levels(current_resistances + long_term_resistances)
     # Direkte EMA-Supports werden nur aufgenommen, wenn sie unter dem Kurs liegen.
     if result.ema20 < close * 0.998:
         supports.append(result.ema20)
@@ -581,7 +647,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     supports = sorted(cluster_levels(supports), reverse=True)
     resistances = sorted(cluster_levels(resistances))
 
-    # 52W-Hoch ist immer ein Major-Kandidat, wenn es oberhalb des Kurses liegt.
+    # 52W-Hoch ist immer ein Kandidat fuer einen historischen Widerstand, wenn es oberhalb des Kurses liegt.
     high_52w = float(data["High"].iloc[-252:].max())
     major = high_52w if high_52w > close * 1.01 else None
     # Für lange Historien: echtes historisches Hoch zusätzlich prüfen. Beim Gold-
@@ -607,28 +673,28 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     # V2 Zielzonen: Fibonacci wird NUR nach Breakout + bestätigter A-B-C-Struktur
     # aktiviert. Ein Breakout allein reicht ausdrücklich nicht.
     # Ein bestätigtes A-B-C enthält bereits den strukturellen Break über B.
-    # Falls kein historischer Widerstand oberhalb vorhanden ist, darf dieser
+    # Falls kein relevanter Widerstand oberhalb vorhanden ist, darf dieser
     # Fall ausdrücklich NICHT Fibonacci blockieren. Existiert ein relevanter
-    # historischer Widerstand, muss dieser zusätzlich überwunden sein.
+    # Widerstand, muss dieser zusätzlich überwunden sein.
     # Fibonacci wird NUR nach bestaetigtem A-B-C + strukturellem Breakout
-    # aktiviert. Ein weiter oben liegendes Major-Level/ATH blockiert Fibonacci
-    # NICHT: es bleibt als Major Resistance separat bestehen. Damit bleiben
+    # aktiviert. Ein weiter oben liegendes historischer Widerstand/ATH blockiert Fibonacci
+    # NICHT: es bleibt als Historischer Widerstand separat bestehen. Damit bleiben
     # unsere beiden Faelle konsistent:
-    #   Fall A: keine unmittelbare historische Resistance oberhalb ->
+    #   Fall A: kein unmittelbarer Widerstand oberhalb ->
     #           bestaetigtes A-B-C reicht fuer Fibonacci.
-    #   Fall B: eine unmittelbare historische Resistance wurde gerade getestet
+    #   Fall B: ein unmittelbarer Widerstand wurde gerade getestet
     #           bzw. gebrochen -> erst deren Breakout muss bestaetigt sein;
     #           danach darf Fibonacci aktiv werden, auch wenn ein weiter
-    #           entferntes Major-Level/ATH noch oberhalb liegt.
+    #           entfernter historischer Widerstand/ATH noch oberhalb liegt.
     # `abc_ok` bestaetigt bereits den Break ueber B. `prior_resistance` ist die
     # letzte markante Widerstandszone VOR dem aktuellen Kurs und wird deshalb
     # zusaetzlich abgesichert. `resistances` oberhalb bleiben Ziel-/Kontextzonen,
     # blockieren Fibonacci aber nicht.
-    # Fall A: Keine unmittelbare historische Resistance oberhalb -> ein
+    # Fall A: Kein unmittelbarer Widerstand oberhalb -> ein
     # bestaetigtes A-B-C mit B-Bruch reicht fuer Fibonacci.
-    # Fall B: Eine unmittelbare historische Resistance oberhalb des Kurses
+    # Fall B: Ein unmittelbarer Widerstand oberhalb des Kurses
     # existiert noch -> sie muss zuerst gebrochen sein. Weiter entfernte
-    # Major-Level/ATH (>10 %) blockieren Fibonacci nicht.
+    # historischer Widerstand/ATH (>10 %) blockieren Fibonacci nicht.
     immediate_resistance = immediate_resistance_within_10pct(future_highs, close)
 
     breakout_for_fib = bool(
@@ -639,7 +705,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         result.fib_status = "Aktiv – Breakout + A-B-C bestätigt"
     elif abc_ok and abc_points and immediate_resistance is not None:
         result.fib_status = (
-            f"Nicht aktiv – unmittelbarer historischer Widerstand "
+            f"Nicht aktiv – unmittelbarer Widerstand "
             f"bei {immediate_resistance:.2f} noch nicht gebrochen"
         )
     elif abc_ok and abc_points:
@@ -660,6 +726,8 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     result.support2 = supports[1] if len(supports) > 1 else None
     result.resistance1 = resistances[0] if len(resistances) > 0 else None
     result.resistance2 = resistances[1] if len(resistances) > 1 else None
+    result.resistance1_label = resistance_label(result.resistance1, data, close)
+    result.resistance2_label = resistance_label(result.resistance2, data, close)
 
     # Breakout: gegen die letzte markante Widerstandszone VOR dem aktuellen
     # Kurs pruefen. Nach dem Breakout wird genau diese Zone als Retest-Support
@@ -678,7 +746,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     if result.breakout_status == "Bestätigter Breakout":
         result.state = "Breakout / Aufwaertszustand" + (" + A-B-C bestätigt" if result.abc_status == "Bestätigt" else "")
 
-    # Major-Level vor der Konfluenz festlegen. Das historische ATH/52W-Hoch bleibt
+    # Historischen Widerstand vor der Konfluenz festlegen. Das ATH/52W-Hoch bleibt
     # unabhängig erhalten und darf nie durch eine Fibonacci-Projektion überschrieben werden.
     result.major_resistance = major
 
@@ -692,7 +760,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         ("Trendkanal", result.channel_upper),
         ("Measured Move", result.measured_move),
         ("Round Number", result.round_number),
-        ("Major", result.major_resistance),
+        ("Historischer Widerstand", result.major_resistance),
     ]:
         if value is not None and value > close:
             refs.append((label, float(value)))
@@ -720,13 +788,13 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         result.confluence = "Keine Mehrfach-Konfluenz; Referenzen: " + ", ".join(label for label, _ in refs[:6])
 
     # Primärlogik der Zielzone:
-    # 1) historische Widerstände oberhalb haben Vorrang, wenn vorhanden;
-    # 2) fehlt ein relevanter historischer Widerstand, werden aktive Fibonacci-
+    # 1) technische Widerstände oberhalb haben Vorrang, wenn vorhanden;
+    # 2) fehlt ein relevanter Widerstand, werden aktive Fibonacci-
     #    Extensions als primäre Projektion verwendet;
     # 3) parallel bleiben Kanal, Formation und Round Number als Bestätigung;
-    # 4) Major-Level bleibt immer separat.
+    # 4) Historischer Widerstand bleibt immer separat.
     if resistances:
-        primary = [(v, "Historischer Widerstand") for v in resistances if v > close]
+        primary = [(v, resistance_label(v, data, close)) for v in resistances if v > close]
     else:
         primary = []
 
@@ -738,10 +806,10 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         ] if v is not None and v > close]
 
     # Konfluenzzone hat Vorrang vor einer einzelnen Referenz, sofern sie nicht
-    # ausschließlich aus dem Major-Level besteht.
+    # ausschließlich aus dem historischen Widerstand besteht.
     if strong:
         g = min(strong, key=lambda group: min(v for _, v in group))
-        non_major = [(label, value) for label, value in g if label != "Major"]
+        non_major = [(label, value) for label, value in g if label != "Historischer Widerstand"]
         if len(non_major) >= 2:
             lo = min(v for _, v in non_major)
             hi = max(v for _, v in non_major)
@@ -753,7 +821,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         value, label = min(primary, key=lambda x: x[0])
         result.note = f"Nächste technische Referenz: {value:.2f} ({label})."
     else:
-        # Kein historischer Widerstand: Kanal/Formation/Round Number dienen als
+        # Kein relevanter Widerstand: Kanal/Formation/Round Number dienen als
         # sekundäre Referenzen. Das ist ausdrücklich kein erzwungenes Kursziel.
         secondary = [(v, label) for v, label in [
             (result.channel_upper, "Trendkanal"),
@@ -762,7 +830,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         ] if v is not None and v > close]
         if secondary:
             value, label = min(secondary, key=lambda x: x[0])
-            result.note = f"Keine relevante historische Resistance oberhalb; nächste Referenz: {value:.2f} ({label})."
+            result.note = f"Keine relevante Resistance oberhalb; nächste Referenz: {value:.2f} ({label})."
         else:
             result.note = "Keine belastbare Zielreferenz oberhalb des aktuellen Kurses."
 
@@ -782,7 +850,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         result.note = (
             "Breakout aktiviert Fibonacci nicht automatisch. "
             "Fibonacci nur bei bestätigter A-B-C-Struktur. "
-            "Major-Level bleibt separat erhalten."
+            "historischer Widerstand bleibt separat erhalten."
         )
     return result
 
@@ -814,12 +882,12 @@ def make_row(row, tech: TechnicalResult) -> dict:
     target_zone = ""
     # Die Zielzone folgt der bereits berechneten V2-Hierarchie. Die Konfluenz
     # darf nur dann die primäre Darstellung übernehmen, wenn mindestens zwei
-    # unabhängige Referenzen zusammenfallen; ein Major-Level allein ist keine
+    # unabhängige Referenzen zusammenfallen; ein historischer Widerstand allein ist keine
     # Konfluenz.
     if tech.confluence and "Keine Mehrfach-Konfluenz" not in tech.confluence and "Keine" not in tech.confluence:
         target_zone = tech.confluence
     elif tech.resistance1 is not None and tech.close is not None and tech.resistance1 > tech.close:
-        target_zone = f"{tech.resistance1:.2f} (Historischer Widerstand)"
+        target_zone = f"{tech.resistance1:.2f} ({tech.resistance1_label})"
     elif tech.fib_status.startswith("Aktiv"):
         fibs = [(v, label) for v, label in [
             (tech.fib1, "Fibonacci 127,2%"), (tech.fib2, "Fibonacci 161,8%"),
@@ -837,7 +905,7 @@ def make_row(row, tech: TechnicalResult) -> dict:
             value, label = min(secondary, key=lambda x: x[0])
             target_zone = f"{value:.2f} ({label})"
     if tech.major_resistance is not None:
-        target_zone = (target_zone + " | Major Resistance " + f"{tech.major_resistance:.2f}").strip(" |") if target_zone else f"Major Resistance {tech.major_resistance:.2f}"
+        target_zone = (target_zone + " | Historischer Widerstand " + f"{tech.major_resistance:.2f}").strip(" |") if target_zone else f"Historischer Widerstand {tech.major_resistance:.2f}"
     return {
         "Ticker": ticker,
         "Name": name,
