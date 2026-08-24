@@ -118,6 +118,7 @@ class TechnicalResult:
     overextension: str = "Nicht bestimmbar"
     sector_rs: str = "Nicht bestimmbar"
     major_resistance: Optional[float] = None
+    major_resistance_label: str = "Widerstand"
     confluence: str = "Keine"
     retest_support: Optional[float] = None
     data_quality: str = ""
@@ -277,22 +278,35 @@ def long_term_resistance_levels(data: pd.DataFrame, close: float) -> list[float]
     return sorted(cluster_levels(qualified))
 
 
-def resistance_label(value: Optional[float], data: pd.DataFrame, close: Optional[float]) -> str:
-    """Klassifiziert einen Widerstand fuer die Ausgabe.
+HISTORICAL_RESISTANCE_DAYS = 364  # 52 Wochen; erst ab diesem Alter historisch
 
-    Widerstand = aktuelles/lokales Swing-High.
-    Laengerfristiger Widerstand = markantes Swing-High mit Ursprung
-    mindestens 12 Monate zurueck und mindestens zwei bestaetigten,
-    zeitlich getrennten Reaktionen.
-    Historischer Widerstand = besonders bedeutendes Mehrjahreshoch/ATH;
-    dieses wird separat ueber ``major_resistance`` gefuehrt.
+
+def resistance_is_historical(value: Optional[float], data: pd.DataFrame) -> bool:
+    """True, wenn der Widerstand mindestens 52 Wochen alt ist.
+
+    Die Bezeichnung ist bewusst strikt: Ein aktuelles bzw. juengeres
+    Swing-High bleibt schlicht ein "Widerstand". Fuer "Historischer
+    Widerstand" muss ein preislich passender Hochpunkt mindestens 364 Tage
+    vor dem letzten verfuegbaren Handelstag liegen.
     """
+    if value is None or data.empty:
+        return False
+    try:
+        idx = pd.to_datetime(data.index)
+        last_date = pd.Timestamp(idx[-1])
+        cutoff = last_date - pd.Timedelta(days=HISTORICAL_RESISTANCE_DAYS)
+        highs = pd.to_numeric(data["High"], errors="coerce")
+        matches = highs.notna() & (abs(highs.astype(float) - float(value)) / float(value) <= 0.015)
+        return bool((idx[matches] <= cutoff).any())
+    except Exception:
+        return False
+
+
+def resistance_label(value: Optional[float], data: pd.DataFrame, close: Optional[float]) -> str:
+    """Gibt ausschliesslich "Widerstand" oder "Historischer Widerstand" aus."""
     if value is None or close is None:
         return "Widerstand"
-    long_term = long_term_resistance_levels(data, close)
-    if any(abs(float(value) - x) / x <= 0.015 for x in long_term):
-        return "Längerfristiger Widerstand"
-    return "Widerstand"
+    return "Historischer Widerstand" if resistance_is_historical(value, data) else "Widerstand"
 
 
 def find_nearest(levels: Iterable[float], close: float, above: bool, count: int = 2) -> list[float]:
@@ -647,7 +661,8 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     supports = sorted(cluster_levels(supports), reverse=True)
     resistances = sorted(cluster_levels(resistances))
 
-    # 52W-Hoch ist immer ein Kandidat fuer einen historischen Widerstand, wenn es oberhalb des Kurses liegt.
+    # 52W-Hoch ist ein Widerstand; historisch wird er nur benannt, wenn
+    # der zugrunde liegende Hochpunkt mindestens 52 Wochen alt ist.
     high_52w = float(data["High"].iloc[-252:].max())
     major = high_52w if high_52w > close * 1.01 else None
     # Für lange Historien: echtes historisches Hoch zusätzlich prüfen. Beim Gold-
@@ -746,9 +761,10 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     if result.breakout_status == "Bestätigter Breakout":
         result.state = "Breakout / Aufwaertszustand" + (" + A-B-C bestätigt" if result.abc_status == "Bestätigt" else "")
 
-    # Historischen Widerstand vor der Konfluenz festlegen. Das ATH/52W-Hoch bleibt
-    # unabhängig erhalten und darf nie durch eine Fibonacci-Projektion überschrieben werden.
+    # Major Resistance bleibt als Referenz erhalten. Die Bezeichnung ist streng
+    # altersabhängig: unter 52 Wochen = Widerstand, ab 52 Wochen = Historischer Widerstand.
     result.major_resistance = major
+    result.major_resistance_label = resistance_label(major, data, close)
 
     # Konfluenzanalyse: mehrere unabhängige Referenzen in einer Zone bündeln.
     # Fibonacci ist dabei nur aktiv, wenn Breakout + A-B-C bestätigt wurden.
@@ -760,7 +776,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
         ("Trendkanal", result.channel_upper),
         ("Measured Move", result.measured_move),
         ("Round Number", result.round_number),
-        ("Historischer Widerstand", result.major_resistance),
+        (resistance_label(result.major_resistance, data, close), result.major_resistance),
     ]:
         if value is not None and value > close:
             refs.append((label, float(value)))
@@ -905,7 +921,8 @@ def make_row(row, tech: TechnicalResult) -> dict:
             value, label = min(secondary, key=lambda x: x[0])
             target_zone = f"{value:.2f} ({label})"
     if tech.major_resistance is not None:
-        target_zone = (target_zone + " | Historischer Widerstand " + f"{tech.major_resistance:.2f}").strip(" |") if target_zone else f"Historischer Widerstand {tech.major_resistance:.2f}"
+        major_label = tech.major_resistance_label
+        target_zone = (target_zone + f" | {major_label} " + f"{tech.major_resistance:.2f}").strip(" |") if target_zone else f"{major_label} {tech.major_resistance:.2f}"
     return {
         "Ticker": ticker,
         "Name": name,
