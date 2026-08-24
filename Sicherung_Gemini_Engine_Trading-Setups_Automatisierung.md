@@ -1089,16 +1089,16 @@ jüngste Agentur-Schlagzeilen (nur US-Titel verfügbar). Nutze sie
 ausschließlich als Risiko-/Ereignis-Kontext (z. B. laufende
 Übernahme, Analysten-Herabstufung, Rechtsstreit) – keine
 Sentiment-Bewertung, keine Auf- oder Abwertung der Setup-Qualität,
-keine Kursprognosen daraus ableiten. Ausgabepflicht: Stehen im Briefing News-Zeilen zu einem Titel, übernimm
-sie 1:1 (mit Datum, ungekürzt) in die Zeile Ereignis-Kontext dieses
-Titels. Für den Abschnitt „Offene Positionen” gilt abweichend die dort
-festgelegte Begrenzung auf maximal drei der jüngsten vorhandenen News.
-Keine eigene Relevanz-Auswahl außerhalb dieser ausdrücklich festgelegten
-Begrenzung. Sprache: Übersetze die (englischen) Schlagzeilen bei der
-Ausgabe ins Deutsche – Eigennamen, Firmennamen, Ticker-Symbole und
-Kurszahlen/Währungen bleiben unverändert im Original. Fehlen News-Zeilen,
-ist das kein Signal, sondern schlicht keine Meldung vorhanden – nur
-dann entfällt die Zeile ersatzlos.
+keine Kursprognosen daraus ableiten. Ausgabepflicht: Stehen im
+Briefing News-Zeilen zu einem Titel, übernimm sie 1:1 (mit Datum,
+ungekürzt) in die Zeile Ereignis-Kontext dieses Titels. Für OFFENE
+POSITIONEN gilt jedoch die separate Regel in Abschnitt 9: ausschließlich
+die dort unmittelbar zur Position gelieferten News, maximal drei, niemals
+News aus anderen Positionen oder Abschnitten. Sprache: Übersetze die (englischen) Schlagzeilen
+bei der Ausgabe ins Deutsche – Eigennamen, Firmennamen,
+Ticker-Symbole und Kurszahlen/Währungen bleiben unverändert im
+Original. Fehlen News-Zeilen, ist das kein Signal, sondern schlicht
+keine Meldung vorhanden – nur dann entfällt die Zeile ersatzlos.
 
 ERST 1: MARKTUMFELD = AKTUELLER ZUSTAND UND VERÄNDERUNG
 Punkt 1 beantwortet ausschließlich: „Was sehen wir jetzt und was hat sich
@@ -1588,7 +1588,7 @@ werden: Abschnitt einfach weglassen, keine Rückfrage, keine
 Ablehnung deswegen.
 
 9. Offene Positionen
-TECHNISCHE CHECK-DATENQUELLE (VERBINDLICH): Für die offenen Positionen ist ab sofort ausschließlich die Datei „Offene Positionen+Check.csv“ die maßgebliche Quelle. Sie enthält die bereits aufbereiteten Positionsinformationen plus die zustandsabhängige technische Analyse. Die technischen Felder sind wörtlich zu übernehmen und nicht aus anderen Kursdaten-Dateien neu zu berechnen. Dazu gehören insbesondere Technischer_Zustand, Trendrichtung, Technische_Lage, Support_1/2, Widerstand_1/2, Breakout_Status, A-B-C_Status, Fibonacci_Status/Ziel_1/2/3, Trendkanal_Obergrenze, Measured_Move_Ziel, Formation, Round_Number_Zone, Major_Resistance, Ueberdehnung, Relative_Staerke_Sektor, Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. Eine alte „Offene_Positionen.csv“ darf für diesen Abschnitt nicht als konkurrierende technische Quelle verwendet werden. Sie darf ausschließlich als Backend-Fallback für Positionsfelder dienen, die bewusst nicht Teil der festgelegten Check-Struktur sind (z. B. Stop, TP1, TP2, Richtung, Ideen_Quelle, Einstiegsdatum).
+TECHNISCHE CHECK-DATENQUELLE (VERBINDLICH): Für die offenen Positionen ist ab sofort ausschließlich die Datei „Offene Positionen+Check.csv“ die maßgebliche Quelle. Sie enthält die bereits aufbereiteten Positionsinformationen plus die zustandsabhängige technische Analyse. Die technischen Felder sind wörtlich zu übernehmen und nicht aus anderen Kursdaten-Dateien neu zu berechnen. Dazu gehören insbesondere Technischer_Zustand, Trendrichtung, Technische_Lage, Support_1/2, Widerstand_1/2 plus Widerstand_1_Label/Widerstand_2_Label, Breakout_Status, A-B-C_Status, Fibonacci_Status/Ziel_1/2/3, Trendkanal_Obergrenze, Measured_Move_Ziel, Formation, Round_Number_Zone, Uebergeordneter_Widerstand plus Uebergeordneter_Widerstand_Label, Ueberdehnung, Relative_Staerke_Sektor, Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. Eine alte „Offene_Positionen.csv“ darf für diesen Abschnitt nicht als konkurrierende technische Quelle verwendet werden. Sie darf ausschließlich als Backend-Fallback für Positionsfelder dienen, die bewusst nicht Teil der festgelegten Check-Struktur sind (z. B. Stop, TP1, TP2, Richtung, Ideen_Quelle, Einstiegsdatum).
 
 Das Briefing enthält einen zusätzlichen Abschnitt „OFFENE POSITIONEN
 (manuell bestätigt)” – das sind keine neuen Setup-Kandidaten, sondern
@@ -1604,6 +1604,30 @@ Short, Edelmetalle) und unmittelbar VOR „Gestoppte Positionen”
 TRADE-ZUSAMMENFASSUNG. Ticker aus OFFENE POSITIONEN sind bereits
 gekaufte Positionen, keine Einstiegsempfehlungen – schlage für sie
 keine erneute Einstiegsempfehlung vor.
+• WIDERSTANDS-BENENNUNG (VERBINDLICH): Für jedes Widerstandsfeld gilt
+ausschliesslich die vom Check gelieferte Bezeichnung „Widerstand“,
+„Historischer Widerstand“ oder „ATH / Historischer Widerstand“. Niemals
+selbst umbenennen, interpretieren oder „Längerfristiger Widerstand“
+verwenden. ATH bedeutet ausschließlich das All-Time High, also den höchsten
+je erreichten Kurs der gesamten verfügbaren historischen Kursreihe. Wenn der
+zugrunde liegende Referenzwert das echte ATH ist, hat diese Klassifizierung
+Vorrang und lautet immer „ATH / Historischer Widerstand“ – unabhängig vom
+Alter des ATH. Ist der Referenzwert kein ATH, darf „Historischer Widerstand“
+nur verwendet werden, wenn der zugrunde liegende Referenzpunkt mindestens
+51 Wochen alt ist. Ein aktueller oder juengerer Nicht-ATH-Wert bleibt
+„Widerstand“. Die Labels Widerstand_1_Label, Widerstand_2_Label und
+Uebergeordneter_Widerstand_Label sind wörtlich zu übernehmen. Auch in
+Technische_Zielzone, Konfluenz und Analysehinweis darf kein anderes Label
+erzeugt werden.
+• NEWS-ZUORDNUNG (VERBINDLICH): News dürfen ausschließlich aus dem
+News-Block stammen, der unmittelbar zur jeweiligen offenen Position im
+Abschnitt OFFENE POSITIONEN gehört. News aus einer anderen Position, aus
+anderen Abschnitten oder aus einem anderen Ticker dürfen niemals
+übernommen oder umsortiert werden. Wenn für die konkrete Position keine
+News-Zeilen geliefert wurden, darf keine News-Zeile erzeugt, ergänzt oder
+vermutet werden. Für offene Positionen werden höchstens die drei bereits
+bereitgestellten News-Zeilen dieser Position ausgegeben. Keine globale
+News-Suche und keine eigene Relevanz-Auswahl.
 • Überschneidung: Falls ein Ticker in beiden Abschnitten auftaucht
 (offene Position UND heute erneut als valides/ACHTUNG-Setup
 erkannt), weise explizit darauf hin, dass hierfür bereits eine
@@ -1624,8 +1648,8 @@ Einstieg. Bei Short fällt der Kurs im Gewinnfall
 Performance/Stop/TP-Werte sind in der CSV bereits korrekt
 richtungsabhängig berechnet – übernimm sie direkt, rechne nichts
 selbst um.
-• Festes Ausgabe-Format je Position (NEU – Basisblock unverändert,
-technischer Block ergänzt):
+• Festes Ausgabe-Format je Position (NEU – jedes Feld eigene Zeile,
+nicht als eine lange Pipe-Zeile):
 
 {{Firmenname}} | Markt: {{Markt}} | Richtung: {{Richtung}}
 
@@ -1644,57 +1668,26 @@ Stop: {{Stop, 2 Nachkommastellen}}{{Waehrungssymbol}}
 TP1: {{TP1, 2 Nachkommastellen}}{{Waehrungssymbol}} | TP2: {{TP2, 2
 Nachkommastellen}}{{Waehrungssymbol}}
 
-Danach folgt für JEDE offene Position der technische Block. Die Werte
-kommen wörtlich aus „Offene Positionen+Check.csv”; NICHTS technisch
-neuberechnen, umdeuten oder mit anderen Kursdaten ersetzen:
-
 Technischer Zustand: {{Technischer_Zustand}}
 Trendrichtung: {{Trendrichtung}}
 Technische Lage: {{Technische_Lage}}
 
-Support: {{Support_1}} | {{Support_2, falls vorhanden}}
-Widerstand: {{Widerstand_1}} | {{Widerstand_2, falls vorhanden}}
+Support: {{Support_1}} | {{Support_2}}
+Widerstand: {{Widerstand_1}} | {{Widerstand_2}}
 
 Breakout: {{Breakout_Status}}
 A-B-C: {{A-B-C_Status}}
-Fibonacci: {{Fibonacci_Status}} – falls im Check Fibonacci-Ziele
-vorhanden sind, übernimm sie in derselben Zeile als „Ziel 1: … | Ziel 2: … |
-Ziel 3: …”. Sind keine Fibonacci-Ziele vorhanden, keine Werte erfinden.
+Fibonacci: {{Fibonacci_Status}}
 Technische Zielzone: {{Technische_Zielzone}}
 Überdehnung: {{Ueberdehnung}}
 Relative Stärke Sektor: {{Relative_Staerke_Sektor}}
 Konfluenz: {{Konfluenz}}
 Analysehinweis: {{Analysehinweis}}
 
-WICHTIG: A-B-C bleibt ein eigenes Pflichtfeld. Ein bestätigter
-Breakout aktiviert NICHT automatisch Fibonacci. Fibonacci/Fibonacci-
-Extension darf nur entsprechend dem bereits berechneten
-Fibonacci_Status der Check-Datei als aktiv dargestellt werden; die
-bestehende A-B-C-/Fibonacci-Logik wird NICHT verändert. Diese Änderung
-betrifft ausschließlich die Darstellung/Übergabe der bereits berechneten
-Werte in die Auswertung.
-
-Widerstandsbezeichnungen: Es werden in der Ausgabe ausschließlich
-„Widerstand” und „Historischer Widerstand” verwendet. „Längerfristiger
-Widerstand” oder andere Zwischenbezeichnungen sind nicht zulässig.
-„Historischer Widerstand” darf nur für einen relevanten Hochpunkt
-verwendet werden, dessen zugrunde liegender Hochpunkt mindestens
-52 Wochen (364 Tage) zurückliegt. Jüngere Widerstände werden immer
-als „Widerstand” bezeichnet. Diese Regel ändert nicht den berechneten
-Wert des Widerstands, sondern ausschließlich seine Bezeichnung.
-
-News
-Wenn für die Position News-Zeilen vorhanden sind, übernimm maximal
-drei der jüngsten vorhandenen „News TT.MM.: Schlagzeile”-Zeilen. Die
-Überschrift lautet ausschließlich „News” – niemals „News (max 3 Stück)”.
-Die Schlagzeilen werden bei der Ausgabe ins Deutsche übersetzt;
-Eigennamen, Firmennamen, Ticker-Symbole und Kurszahlen/Währungen
-bleiben unverändert. Keine News erfinden. Sind keine News vorhanden,
-entfällt der komplette News-Block.
-
-Jedes Feld des Basisblocks und des technischen Blocks steht auf einer
-eigenen Zeile in genau dieser Reihenfolge. Zwischen den Positionen
-steht eine leere Zeile.
+Jedes Feld (Namens-Zeile inkl. Richtung, Sektor, Quelle, Einstieg,
+Aktuell/Performance, Stop, TP1/TP2) auf einer EIGENEN Zeile, in genau
+dieser Reihenfolge, für JEDE Position identisch – keine Abweichungen,
+kein Zusammenfassen mehrerer Felder in eine lange Zeile mehr.
 
 • Sektor (NEU, steht auf eigener Zeile 3, zwischen Namens-Zeile und
 Quelle): wörtlich aus dem Feld übernehmen. Ist das Feld leer (Sektor
@@ -1709,6 +1702,12 @@ recherchiert, nicht aus einem der Scanner). Wörtlich aus dem Feld
 übernehmen, nicht interpretieren oder umbenennen. Fehlt das Feld
 ganz (ältere Zeile ohne diese Angabe), schreibe „Quelle: Manuell”
 als sicheren Standard statt die Zeile wegzulassen.
+• NEWS-AUSGABE JE OFFENE POSITION (VERBINDLICH): Nach dem technischen Block folgt nur dann
+eine Zeile „News“, wenn im Datenblock dieser konkreten Position News-Zeilen vorhanden sind.
+Darunter stehen maximal drei dieser bereits gelieferten News-Zeilen, 1:1 und mit ihrem Datum.
+Die Überschrift lautet ausschließlich „News“ – niemals „News (max 3 Stück)“. Fehlen News für
+diese Position, entfällt der gesamte News-Block. Es ist verboten, News einer anderen Position,
+einer anderen Kategorie oder aus allgemeinem Markt-/Sektor-Kontext einzusetzen.
 • Abstand zwischen Positionen (NEU): Zwischen JEDER einzelnen Position
 (also nach dem vollständigen mehrzeiligen Block einer Position,
 bevor der nächste beginnt) eine LEERE Zeile einfügen – nicht nur
@@ -1741,13 +1740,19 @@ keine offenen Positionen vorhanden – das ist kein Fehler, einfach
 so vermerken.
 • OFFENE POSITIONEN - FELD-VORLAGE (Pflicht, KORRIGIERT 08.08.2026,
 Nutzerwunsch „exakt gleiche Gliederung wie Geschlossene Positionen”
-– technische Ergänzung gemäß obigem festen Ausgabe-Format): Gib JEDE
-offene Position in der IDENTISCHEN Feld-Vorlage aus wie „Geschlossene
+– ersetzt das Kompaktzeilen-Format vom 06.08.2026: das war eine
+Reaktion auf einen damaligen Markdown-Tabellen-Fehlgriff, hat aber
+inzwischen zu einer Uneinheitlichkeit gegenüber „Geschlossene
+Positionen” geführt, die der Nutzer nicht wollte): Gib JEDE offene
+Position in der IDENTISCHEN Feld-Vorlage aus wie „Geschlossene
 Positionen” (siehe dortiger Bullet) – KEINE Markdown-Tabelle, KEINE
 Kompaktzeile mehr, sondern dieselben mehrzeiligen „Label:
 Wert”-Blöcke, KEINE Markdown-Syntax (siehe globale Regel oben). Alle
-Werte wörtlich aus Offene Positionen+Check.csv, NICHTS selbst berechnen:
-Basisblock und technischer Block in der oben festgelegten Reihenfolge.
+Werte wörtlich aus Offene Positionen+Check.csv, NICHTS selbst berechnen.
+Verwende dafür exakt das oben festgelegte mehrzeilige Ausgabeformat inklusive
+des technischen Blocks. Die technischen Felder sind wörtlich zu übernehmen;
+insbesondere dürfen Widerstandslabels, A-B-C-Status, Fibonacci-Status,
+Technische_Zielzone, Konfluenz und Analysehinweis nicht neu interpretiert werden.
 Name IMMER der vollständige Name aus der Datei, NIE nur der Ticker.
 Sortiere absteigend nach Performance %, größte Gewinner zuerst.
 Direkt darunter (Pflicht, unverändert seit 28.07.2026) folgt
