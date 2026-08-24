@@ -3451,16 +3451,16 @@ if __name__ == "__main__":
     # Zusammenbau uebersprungen statt eine leere Zeile zu erzeugen.
     markt_kontext_texte = []
     for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),
-                          ("XAUUSD=X", "Gold"), ("XAGUSD=X", "Silber"),
-                          ("XPTUSD=X", "Platin"), ("XPDUSD=X", "Palladium")]:
+                          ("GC=F", "Gold"), ("SI=F", "Silber"),
+                          ("PL=F", "Platin"), ("PA=F", "Palladium")]:
         _text = get_markt_kurzfrist_kontext_text(_tick, _label)
         if _text:
             markt_kontext_texte.append(_text)
     rekord_texte = []
     saison_texte = []
     for _tick, _label in [("CL=F", "WTI"), ("BZ=F", "Brent"),
-                          ("XAUUSD=X", "Gold"), ("XAGUSD=X", "Silber"),
-                          ("XPTUSD=X", "Platin"), ("XPDUSD=X", "Palladium")]:
+                          ("GC=F", "Gold"), ("SI=F", "Silber"),
+                          ("PL=F", "Platin"), ("PA=F", "Palladium")]:
         _text = get_rekord_naehe_text(_tick, _label)
         if _text:
             rekord_texte.append(_text)
@@ -3478,10 +3478,10 @@ if __name__ == "__main__":
         _text = get_index_rekord_text(_tick, _label)
         if _text:
             index_rekord_texte.append(_text)
-    gold_text = get_index_benchmark_yf("XAUUSD=X", "Gold")
-    silber_text = get_index_benchmark_yf("XAGUSD=X", "Silber")
-    platin_text = get_index_benchmark_yf("XPTUSD=X", "Platin")
-    palladium_text = get_index_benchmark_yf("XPDUSD=X", "Palladium")
+    gold_text = get_index_benchmark_yf("GC=F", "Gold")
+    silber_text = get_index_benchmark_yf("SI=F", "Silber")
+    platin_text = get_index_benchmark_yf("PL=F", "Platin")
+    palladium_text = get_index_benchmark_yf("PA=F", "Palladium")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     # US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerwunsch): wird nicht mehr
     # abgerufen/ausgewertet - EUR/USD bleibt als Waehrungs-Referenz im

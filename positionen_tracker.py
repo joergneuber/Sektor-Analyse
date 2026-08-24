@@ -25,7 +25,7 @@ DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native G
                                                  # Kopie mehr, wie es bei einer echten .csv-Datei passiert)
 DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
 SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
-GOLD_SPOT_TICKER = 'XAUUSD=X'  # Yahoo Finance: Gold Spot / USD
+GOLD_FUTURES_TICKER = 'GC=F'  # Yahoo Finance: Gold Future (COMEX) / USD
 ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
@@ -250,15 +250,15 @@ def vervollstaendige_stammdaten(df):
         name_leer = str(row['Name']).strip() in ("", "nan")
         sektor_leer = str(row.get('Sektor', '')).strip() in ("", "nan")
 
-        if ticker_upper == GOLD_SPOT_TICKER:
+        if ticker_upper == GOLD_FUTURES_TICKER:
             if markt_leer:
-                df.at[idx, 'Markt'] = 'SPOT'
+                df.at[idx, 'Markt'] = 'FUTURES'
             if waehrung_leer:
                 df.at[idx, 'Waehrung'] = 'USD'
             if name_leer:
-                df.at[idx, 'Name'] = 'Gold Spot'
+                df.at[idx, 'Name'] = 'Gold Future'
             if str(row.get('Produkt_Typ', '')).strip() in ("", "nan"):
-                df.at[idx, 'Produkt_Typ'] = 'Gold Spot'
+                df.at[idx, 'Produkt_Typ'] = 'Gold Future'
         else:
             if markt_leer:
                 df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
@@ -267,7 +267,7 @@ def vervollstaendige_stammdaten(df):
                     df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
                 else:
                     df.at[idx, 'Waehrung'] = 'USD'
-        if (name_leer or sektor_leer) and ticker_upper != GOLD_SPOT_TICKER:
+        if (name_leer or sektor_leer) and ticker_upper != GOLD_FUTURES_TICKER:
             try:
                 info = yf.Ticker(ticker).info
             except Exception:
@@ -329,12 +329,12 @@ def ergaenze_neue_zeilen(df):
         # Ticker gelten als US-Titel (Alpaca). Die Waehrung wird grob aus dem
         # Suffix abgeleitet (.L = GBP-Sonderfall, sonst EUR fuer EU-Boersen).
         ticker_upper = ticker.upper()
-        if ticker_upper == GOLD_SPOT_TICKER:
-            markt = 'SPOT'
+        if ticker_upper == GOLD_FUTURES_TICKER:
+            markt = 'FUTURES'
             waehrung = 'USD'
-            name = 'Gold Spot'
+            name = 'Gold Future'
             if str(row.get('Produkt_Typ', '')).strip() in ("", "nan"):
-                df.at[idx, 'Produkt_Typ'] = 'Gold Spot'
+                df.at[idx, 'Produkt_Typ'] = 'Gold Future'
         else:
             if '.' in ticker_upper:
                 markt = 'EU'
@@ -447,7 +447,7 @@ def stelle_anleitung_sicher(df):
         "Einstiegsdatum und Status=Offen selbst ergaenzt. "
         "TICKER-FORMAT: US-Aktien ohne Zusatz (z.B. NVDA, OXY) - europaeische Aktien IMMER "
         "mit Boersen-Suffix: .DE Xetra (RWE.DE), .PA Paris (AI.PA), .F Frankfurt (5LA1.F), "
-        ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert. GOLD SPOT: fuer einen Spot-Goldkauf Ticker 'XAUUSD=X' verwenden; Produkt_Typ='Gold Spot' wird automatisch gesetzt und der Kurs via yfinance aktualisiert. "
+        ".AS Amsterdam, .MI Mailand. Ohne Suffix wird der Ticker als US-Wert interpretiert. GOLD FUTURE: fuer eine Gold-Future-Position Ticker 'GC=F' verwenden; Produkt_Typ='Gold Future' wird automatisch gesetzt und der Kurs via yfinance aktualisiert. "
         "Sektor: optional, rein informativ. Ideen_Quelle: optional (Trendfolge/Trendwende/"
         "Short/Langfrist/Edelmetalle/Manuell) - leer wird als Manuell gewertet; wird nie "
         "automatisch ueberschrieben."
@@ -536,10 +536,10 @@ def lade_positionen_herunter(service, file_id, mime_type):
 
 def hole_aktuellen_kurs(ticker, markt):
     """Holt den letzten verfügbaren Schlusskurs - via Alpaca für US-Werte
-    (suffixlose Ticker), via yfinance für europäische Titel und Gold Spot
-    (XAUUSD=X), inkl. NaN-Bereinigung."""
+    (suffixlose Ticker), via yfinance für europäische Titel und Gold Future
+    (GC=F), inkl. NaN-Bereinigung."""
     try:
-        if str(ticker).upper() == GOLD_SPOT_TICKER:
+        if str(ticker).upper() == GOLD_FUTURES_TICKER:
             hist = yf.Ticker(ticker).history(period="10d")
             if hist.empty:
                 return None

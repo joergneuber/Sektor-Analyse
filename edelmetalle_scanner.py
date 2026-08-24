@@ -10,9 +10,9 @@ Aktien-Setups gehandelt werden koennen. Architektur-Entscheidung vom
   - Eigener, kleiner Scanner statt Integration in analyse.py: feste
     4er-Liste statt Sektor-Rotation, kein Risiko fuer das 180-Ticker-Budget
     des Hauptscanners, unabhaengig testbar/abschaltbar.
-  - Kursdaten via yfinance-Spotdaten (XAUUSD=X/XAGUSD=X/XPTUSD=X/XPDUSD=X),
+  - Kursdaten via yfinance-Futuresdaten (GC=F/SI=F/PL=F/PA=F),
     NICHT Alpaca und NICHT ETFs (GLD/SLV/PPLT/PALL haben Tracking-Differenzen
-    zum Metallpreis). Die Spotreihe bildet fuer diesen Scanner den
+    zum Metallpreis). Die Futuresreihe bildet fuer diesen Scanner den
     zugrunde liegenden Metallpreis direkt ab; die verwendete Historie muss
     fuer EMA200/WMA200 und die weiteren technischen Kriterien ausreichend sein.
   - Alle Haupt-Kriterien 1:1 uebernommen (EMA-Breakout, Pullback-Zone,
@@ -45,7 +45,7 @@ DREI STRATEGIEN IN EINER DATEI (NEU 29.07.2026, Nutzerentscheidung):
     Fleck des Scanners.
   - Short (NEU): Spiegelbild der Trendfolge, setzt auf fallende Metallpreise.
   Warum EINE Datei statt drei Scanner: alle drei brauchen exakt dieselben
-  Daten (4 Spot-Metalle + DBC-Benchmark). Drei Dateien haetten drei Abrufe, drei
+  Daten (4 Edelmetall-Futures + DBC-Benchmark). Drei Dateien haetten drei Abrufe, drei
   Workflow-Steps, drei Briefings und drei Drive-Uploads bedeutet - bei nur 4
   Instrumenten unverhaeltnismaessig (bei Aktien lohnt die Trennung, weil dort
   die Universen unterschiedlich sind: Top-Sektoren vs. alle Sektoren vs.
@@ -105,10 +105,10 @@ from analyse import (
 
 # Feste 4er-Liste statt Sektor-Rotation - Ticker -> Anzeige-Name.
 EDELMETALLE = {
-    "XAUUSD=X": "Gold",
-    "XAGUSD=X": "Silber",
-    "XPTUSD=X": "Platin",
-    "XPDUSD=X": "Palladium",
+    "GC=F": "Gold",
+    "SI=F": "Silber",
+    "PL=F": "Platin",
+    "PA=F": "Palladium",
 }
 
 # Rohstoff-Index-ETF als Vergleichsmassstab fuer die Relative-Staerke-
@@ -193,7 +193,7 @@ def _metall_felder_setzen(ergebnis, ticker, name, strategie):
     fuer Metalle: Name/Sektor/Markt/Waehrung korrekt setzen, Strategie-Spalte
     ergaenzen und die bei Rohstoffen sinnlose Fundamental-Ampel eindeutig auf
     N/A setzen (die Aktien-Funktion versucht dort ein KGV zu ziehen, das es
-    fuer Spot-Metalle nicht gibt)."""
+    fuer Edelmetall-Futures nicht gibt)."""
     ergebnis["Ticker"] = ticker
     ergebnis["Name"] = name
     ergebnis["Sektor"] = "Edelmetalle"
@@ -239,7 +239,7 @@ def analyze_edelmetall_short(ticker, name, data, bench_close=None):
         ist fuer Gold/Silber kein sinnvoller Massstab - waere sogar irrefuehrend,
         da Edelmetalle in Aktien-Schwaechephasen klassischerweise GEGENLAEUFIG
         laufen (Krisenwaehrung). Deshalb marktumfeld_baerisch=False.
-    Die Setup-Qualitaet stuetzt sich hier allein auf Preis-/Musterlogik; Volumen ist bei Spot-Metallen nicht erforderlich.
+    Die Setup-Qualitaet stuetzt sich hier allein auf Preis-/Musterlogik; Volumen ist bei Edelmetall-Futures nicht erforderlich.
     RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko (wie bei Aktien)."""
     try:
         res, grund = _pruefe_short_setup(
@@ -258,16 +258,16 @@ def analyze_edelmetall_short(ticker, name, data, bench_close=None):
 def analyze_edelmetall(ticker, name, bench_close=None, data=None):
     """Analysiert ein einzelnes Edelmetall - identische Kriterien wie
     analyze_a_setup_eu() in analyse.py (yfinance-basiert, da Alpaca keine
-    Rohstoff-Spot-Metalle abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
-    Rohstoffen) und ohne Analysten-Kursziel (nicht verfuegbar fuer Spot-Metalle).
+    Rohstoff-Edelmetalle abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
+    Rohstoffen) und ohne Analysten-Kursziel (nicht verfuegbar fuer Edelmetall-Futures).
     Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
     speist die Funnel-Statistik (NEU 28.07.2026). Die Earnings-Regel des
-    Hauptscanners entfaellt hier bewusst (Spot-Metalle haben keine Earnings),
+    Hauptscanners entfaellt hier bewusst (Edelmetall-Futures haben keine Earnings),
     die Death-Cross-Regel gilt dagegen identisch (siehe unten).
     """
     try:
         if data is None:
-            # Fallback: Einzelaufruf wie frueher (2 Jahre statt 1 - Spot-Historien
+            # Fallback: Einzelaufruf wie frueher (2 Jahre statt 1 - Futures-Historien
             # haben teils luecken-behaftete Historie, mehr Puffer fuer eine
             # zuverlaessige WMA200/EMA200-Berechnung). Im regulaeren Lauf
             # kommen die Daten seit 29.07.2026 vorgeladen aus lade_kursdaten().
@@ -373,7 +373,7 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             return nah_dran and war_ueber_ema_kuerzlich
 
         in_ema_zone_roh = any(ema_pullback_test(s) for s in [data['EMA20'], data['EMA50'], data['Kijun']])
-        # Bei Spot-Metallen ist Volumen keine Pflichtbedingung; die EMA-Zone
+        # Bei Edelmetall-Futures ist Volumen keine Pflichtbedingung; die EMA-Zone
         # wird ausschließlich über Preisnähe und Preisstruktur bewertet.
         volumen_ausreichend = True
         in_ema_zone = in_ema_zone_roh
@@ -482,7 +482,7 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         # Death-Cross-Regel (NEU 28.07.2026, identisch zum Hauptscanner):
         # frischer Death Cross (EMA50 kreuzt EMA200 nach unten, letzte 10
         # Handelstage) stuft VALIDE auf ACHTUNG ab. Die Earnings-Regel des
-        # Hauptscanners entfaellt bewusst - Spot-Metalle haben keine Earnings.
+        # Hauptscanners entfaellt bewusst - Edelmetall-Futures haben keine Earnings.
         gc_status = get_golden_cross_status(data)
         if str(gc_status).startswith("DEATH CROSS"):
             status2, status_grund = "ACHTUNG", "Frischer Death Cross (EMA50 unter EMA200)"
@@ -631,12 +631,12 @@ def edelmetalle_scan_starten():
         # Aktien-Funktionen berechnen 52W-Tief/-Hoch als min()/max() ueber die
         # GESAMTE uebergebene Reihe - die Aktien-Scanner fuettern 365 Tage, wir
         # laden fuer die Metalle aber bewusst 2 Jahre (WMA200-Puffer bei
-        # luecken-behafteter Spot-Historie). Ungeschnitten waere das
+        # luecken-behafteter Futures-Historie). Ungeschnitten waere das
         # "52W-Tief" faktisch das 2-JAHRES-Tief; im ersten Echtlauf fielen
         # dadurch ALLE VIER Metalle faelschlich durch den Naehe-Filter.
         # GEAENDERT (29.07.2026, Nutzerwunsch): Abgrenzung nach DATUM statt
         # nach Zeilenzahl. tail(252) zaehlt Zeilen und unterstellt 252
-        # Handelstage pro Jahr - bei Luecken in der Spot-Historie (Feiertage,
+        # Handelstage pro Jahr - bei Luecken in der Futures-Historie (Feiertage,
         # Ausfaelle, verkuerzte Reihen) reicht das Fenster dann still weiter
         # als 12 Monate zurueck und verzerrt Tief/Hoch genau wie oben, nur
         # schwaecher. Der Datumsschnitt trifft immer exakt 52 Wochen.
@@ -853,9 +853,9 @@ def speichere_ergebnisse(ergebnisse, funnel_texte=None, diagnose_text=""):
         f.write("-" * 50 + "\n")
         f.write(
             "- Universum: feste 4er-Liste (keine Sektor-Rotation, immer alle 4 geprüft).\n"
-            "- Kursbasis: Spot (XAUUSD=X/XAGUSD=X/XPTUSD=X/XPDUSD=X) - direkter Metallpreis\n"
+            "- Kursbasis: Futures (GC=F/SI=F/PL=F/PA=F) - Yahoo-Futures als Datenbasis\n"
             "  Kursreihe (kein ETF-Tracking-Fehler, kein Alpaca, das Rohstoffe nicht abdeckt).\n"
-  "  Volumen: fuer Spot-Metalle nicht erforderlich; fehlendes Handelsvolumen blockiert\n"
+  "  Volumen: fuer Edelmetall-Futures nicht erforderlich; fehlendes Handelsvolumen blockiert\n"
   "  keine preis-/trendbasierte Setup-Pruefung.\n"
             "- Relative Stärke: gegen DBC (Rohstoff-Index-ETF) statt SPY/STOXX600 -\n"
             "  ein Aktienindex wäre als Vergleichsmaßstab für Edelmetalle nicht sinnvoll.\n"

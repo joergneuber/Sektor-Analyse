@@ -60,10 +60,10 @@ def erzeuge_snapshot():
     fomc_text = get_fomc_countdown()
     oel_text = get_index_benchmark_yf("CL=F", "Rohöl (WTI)")
     oel_brent_text = get_index_benchmark_yf("BZ=F", "Rohöl (Brent)")
-    gold_text = get_index_benchmark_yf("XAUUSD=X", "Gold")
-    silber_text = get_index_benchmark_yf("XAGUSD=X", "Silber")
-    platin_text = get_index_benchmark_yf("XPTUSD=X", "Platin")
-    palladium_text = get_index_benchmark_yf("XPDUSD=X", "Palladium")
+    gold_text = get_index_benchmark_yf("GC=F", "Gold")
+    silber_text = get_index_benchmark_yf("SI=F", "Silber")
+    platin_text = get_index_benchmark_yf("PL=F", "Platin")
+    palladium_text = get_index_benchmark_yf("PA=F", "Palladium")
     kupfer_text = get_index_benchmark_yf("HG=F", "Kupfer")
     # US-Dollar-Index (ENTFERNT 29.07.2026, Nutzerentscheidung - analog zu
     # analyse.py): wird bewusst nicht mehr abgerufen/ausgewertet. EUR/USD

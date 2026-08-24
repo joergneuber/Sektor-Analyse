@@ -54,7 +54,7 @@ INPUT_FILE = "Offene_Positionen.csv"
 OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
-GOLD_SPOT_TICKER = "XAUUSD=X"
+GOLD_FUTURES_TICKER = "GC=F"
 # Ein Widerstand kann die Fibonacci-Sperre nur dann beeinflussen, wenn er
 # maximal 10 % oberhalb des aktuellen Kurses liegt. Weiter entfernte
 # laengerfristige/historische Widerstaende bleiben eigenstaendige Referenzen
@@ -876,8 +876,8 @@ def make_row(row, tech: TechnicalResult) -> dict:
     sector = str(row.get("Sektor", "")).strip()
     if ticker.upper() == "PPFD.SG":
         sector = "Edelmetalle / Silber"
-    elif ticker.upper() == GOLD_SPOT_TICKER:
-        sector = "Edelmetalle / Gold"
+    elif ticker.upper() == GOLD_FUTURES_TICKER:
+        sector = "Edelmetalle / Gold (Future)"
 
     target_zone = ""
     # Die Zielzone folgt der bereits berechneten V2-Hierarchie. Die Konfluenz
