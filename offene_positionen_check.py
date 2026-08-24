@@ -66,9 +66,11 @@ HEADERS = [
     "Status", "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
     "Technischer_Zustand", "Trendrichtung", "Technische_Lage",
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
+    "Widerstand_1_Label", "Widerstand_2_Label",
     "Breakout_Status", "A-B-C_Status", "Fibonacci_Status",
     "Fibonacci_Ziel_1", "Fibonacci_Ziel_2", "Fibonacci_Ziel_3", "Trendkanal_Obergrenze",
-    "Measured_Move_Ziel", "Formation", "Round_Number_Zone", "Major_Resistance",
+    "Measured_Move_Ziel", "Formation", "Round_Number_Zone", "Uebergeordneter_Widerstand",
+    "Uebergeordneter_Widerstand_Label",
     "Ueberdehnung", "Relative_Staerke_Sektor", "Konfluenz", "Retest_Support",
     "Technische_Zielzone", "Datenqualitaet", "Analysehinweis",
 ]
@@ -93,7 +95,7 @@ NUMERIC_COLUMNS = {
     "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
     "Fibonacci_Ziel_1", "Fibonacci_Ziel_2", "Fibonacci_Ziel_3", "Trendkanal_Obergrenze",
-    "Measured_Move_Ziel", "Round_Number_Zone", "Major_Resistance",
+    "Measured_Move_Ziel", "Round_Number_Zone", "Uebergeordneter_Widerstand",
 }
 
 HISTORY_HEADERS = [
@@ -119,6 +121,8 @@ class TechnicalResult:
     support2: Optional[float] = None
     resistance1: Optional[float] = None
     resistance2: Optional[float] = None
+    resistance1_label: str = ""
+    resistance2_label: str = ""
     breakout_status: str = "Kein bestätigter Breakout"
     abc_status: str = "Nicht bestätigt"
     fib_status: str = "Nicht aktiv"
@@ -132,6 +136,7 @@ class TechnicalResult:
     overextension: str = "Nicht bestimmbar"
     sector_rs: str = "Nicht bestimmbar"
     major_resistance: Optional[float] = None
+    major_resistance_label: str = ""
     confluence: str = "Keine"
     retest_support: Optional[float] = None
     data_quality: str = ""
@@ -551,6 +556,39 @@ def immediate_resistance_within_10pct(future_highs: Iterable[float], close: floa
     return min(candidates) if candidates else None
 
 
+def resistance_label(level: Optional[float], data: pd.DataFrame, close: Optional[float]) -> str:
+    """Klassifiziert einen bereits berechneten Widerstand, ohne seinen Wert zu verändern.
+
+    ATH hat Vorrang: Wenn der aktuelle Schlusskurs das echte ATH erreicht und das
+    Widerstandsniveau diesem ATH entspricht, lautet das Label ``ATH / Historischer
+    Widerstand``. Für Nicht-ATH-Widerstände entscheidet ausschließlich das Alter
+    eines passenden Swing-Hochs: mindestens 51 Wochen = historisch, sonst normal.
+    """
+    if level is None or data is None or data.empty:
+        return ""
+    level = float(level)
+    highs = data["High"].astype(float)
+    ath = float(highs.max())
+    if close is not None and math.isclose(float(close), ath, rel_tol=1e-10, abs_tol=1e-10) and math.isclose(level, ath, rel_tol=0.015, abs_tol=1e-9):
+        return "ATH / Historischer Widerstand"
+
+    if not isinstance(data.index, pd.DatetimeIndex):
+        return "Widerstand"
+    cutoff = data.index[-1] - pd.Timedelta(weeks=51)
+    # Für die Altersklassifizierung muss die gesamte Historie betrachtet werden;
+    # swing_levels() ist bewusst auf die letzten 252 Handelstage begrenzt und darf
+    # daher hier nicht als historische Quelle verwendet werden.
+    h = highs.to_numpy(dtype=float)
+    if len(h) >= 11:
+        idx = argrelextrema(h, np.greater_equal, order=5)[0]
+        tolerance = 0.015
+        for i in idx:
+            value = float(h[i])
+            if abs(value - level) / max(abs(level), 1e-9) <= tolerance and data.index[i] <= cutoff:
+                return "Historischer Widerstand"
+    return "Widerstand"
+
+
 def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     result = TechnicalResult()
     if data.empty:
@@ -678,6 +716,8 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     result.support2 = supports[1] if len(supports) > 1 else None
     result.resistance1 = resistances[0] if len(resistances) > 0 else None
     result.resistance2 = resistances[1] if len(resistances) > 1 else None
+    result.resistance1_label = resistance_label(result.resistance1, data, close)
+    result.resistance2_label = resistance_label(result.resistance2, data, close)
 
     # Breakout: gegen die letzte markante Widerstandszone VOR dem aktuellen
     # Kurs pruefen. Nach dem Breakout wird genau diese Zone als Retest-Support
@@ -699,6 +739,7 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     # Major-Level vor der Konfluenz festlegen. Das historische ATH/52W-Hoch bleibt
     # unabhängig erhalten und darf nie durch eine Fibonacci-Projektion überschrieben werden.
     result.major_resistance = major
+    result.major_resistance_label = resistance_label(result.major_resistance, data, close)
 
     # Konfluenzanalyse: mehrere unabhängige Referenzen in einer Zone bündeln.
     # Fibonacci ist dabei nur aktiv, wenn Breakout + A-B-C bestätigt wurden.
@@ -837,7 +878,7 @@ def make_row(row, tech: TechnicalResult) -> dict:
     if tech.confluence and "Keine Mehrfach-Konfluenz" not in tech.confluence and "Keine" not in tech.confluence:
         target_zone = tech.confluence
     elif tech.resistance1 is not None and tech.close is not None and tech.resistance1 > tech.close:
-        target_zone = f"{tech.resistance1:.2f} (Historischer Widerstand)"
+        target_zone = f"{tech.resistance1:.2f} ({tech.resistance1_label or 'Widerstand'})"
     elif tech.fib_status.startswith("Aktiv"):
         fibs = [(v, label) for v, label in [
             (tech.fib1, "Fibonacci 127,2%"), (tech.fib2, "Fibonacci 161,8%"),
@@ -855,7 +896,7 @@ def make_row(row, tech: TechnicalResult) -> dict:
             value, label = min(secondary, key=lambda x: x[0])
             target_zone = f"{value:.2f} ({label})"
     if tech.major_resistance is not None:
-        target_zone = (target_zone + " | Major Resistance " + f"{tech.major_resistance:.2f}").strip(" |") if target_zone else f"Major Resistance {tech.major_resistance:.2f}"
+        target_zone = (target_zone + " | " + f"{tech.major_resistance:.2f} ({tech.major_resistance_label or 'Widerstand'})").strip(" |") if target_zone else f"{tech.major_resistance:.2f} ({tech.major_resistance_label or 'Widerstand'})"
     return {
         "Ticker": ticker,
         "Name": name,
@@ -874,6 +915,8 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Support_2": fmt_num(tech.support2),
         "Widerstand_1": fmt_num(tech.resistance1),
         "Widerstand_2": fmt_num(tech.resistance2),
+        "Widerstand_1_Label": tech.resistance1_label,
+        "Widerstand_2_Label": tech.resistance2_label,
         "Breakout_Status": tech.breakout_status,
         "A-B-C_Status": tech.abc_status,
         "Fibonacci_Status": tech.fib_status,
@@ -884,7 +927,8 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Measured_Move_Ziel": fmt_num(tech.measured_move),
         "Formation": tech.formation,
         "Round_Number_Zone": fmt_num(tech.round_number),
-        "Major_Resistance": fmt_num(tech.major_resistance),
+        "Uebergeordneter_Widerstand": fmt_num(tech.major_resistance),
+        "Uebergeordneter_Widerstand_Label": tech.major_resistance_label,
         "Ueberdehnung": tech.overextension,
         "Relative_Staerke_Sektor": tech.sector_rs,
         "Konfluenz": tech.confluence,
@@ -1263,11 +1307,12 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         "Aktueller_Kurs": 105, "Performance_Seit_Einstieg%": 120,
         "Technischer_Zustand": 190, "Trendrichtung": 125, "Technische_Lage": 220,
         "Support_1": 90, "Support_2": 90, "Widerstand_1": 100, "Widerstand_2": 100,
+        "Widerstand_1_Label": 150, "Widerstand_2_Label": 170,
         "Breakout_Status": 180, "A-B-C_Status": 260, "Fibonacci_Status": 260,
         "Fibonacci_Ziel_1": 120, "Fibonacci_Ziel_2": 120,
         "Fibonacci_Ziel_3": 120, "Trendkanal_Obergrenze": 130,
         "Measured_Move_Ziel": 130, "Formation": 220, "Round_Number_Zone": 130,
-        "Major_Resistance": 120, "Ueberdehnung": 300,
+        "Uebergeordneter_Widerstand": 130, "Uebergeordneter_Widerstand_Label": 210, "Ueberdehnung": 300,
         "Relative_Staerke_Sektor": 300, "Konfluenz": 300, "Retest_Support": 120,
         "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
     }
