@@ -442,6 +442,12 @@ def gemini_auswertung_starten():
                 contents=hochgeladene_teile + [
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht. "
+                    "HARTE REGEL FUER OFFENE POSITIONEN: Niemals Namen, Ticker, Einstiegsdatum, "
+                    "Einstiegskurs oder technische Check-Werte erfinden oder aus dem Sprachmodell "
+                    "ableiten. Diese Werte muessen aus den bereitgestellten Quelldateien "
+                    "uebernommen werden. Jede offene Position MUSS im Kopf exakt als "
+                    "'Name (Ticker) | Markt: ...' ausgegeben werden. Keine Alternative wie "
+                    "'Ticker | Name', kein Name ohne Ticker und kein selbst erfundener Ticker. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
                     "Offene Positionen ausschliesslich die Datei 'Offene Positionen+Check.csv'. "
                     "Ihre technischen Check-Felder sind die verbindliche Quelle fuer "
@@ -628,9 +634,8 @@ def _offene_positionen_vollstaendig(text, erwartete_positionen):
 
     Mehrere offene Positionen desselben Tickers sind ausdruecklich erlaubt.
     Die technische Basis ist ausschliesslich Offene Positionen+Check.csv.
-    Der Parser akzeptiert:
-      1) Firmenname (TICKER) | Markt: ...
-      2) TICKER | Firmenname | Markt: ...
+    Der Parser akzeptiert ausschließlich:
+      Firmenname (TICKER) | Markt: ...
 
     Fuer jeden ausgegebenen Block werden Einstieg und Datum aus dem jeweiligen
     Positionsblock gelesen; Gemini liefert keine technischen Berechnungen.
@@ -717,11 +722,7 @@ def _offene_positionen_vollstaendig(text, erwartete_positionen):
             visible_name = norm_name(re.sub(r"\([^()]+\)", " ", raw, count=1))
             return visible_name, ticker
 
-        parts = [x.strip() for x in raw.split("|") if x.strip()]
-        if len(parts) >= 2:
-            ticker = norm_ticker(parts[0])
-            visible_name = norm_name(parts[1])
-            return visible_name, ticker
+        # Ausschließlich Name (Ticker) ist zulässig.
         return norm_name(raw), ""
 
     def extract_entry_date(body):
@@ -819,6 +820,113 @@ def _extrahiere_regionen_block(briefing_pfad):
     return block.strip() + "\n"
 
 
+def _kanonisiere_offene_positionen_aus_quelle(text, csv_pfad):
+    """Erzwingt Name/Ticker/Einstieg/Einstiegsdatum aus der Check-Datei.
+
+    Gemini darf diese Werte weder erfinden noch variieren. Fehlende Ticker werden
+    ausschließlich aus der eindeutigen Quellposition ergänzt. Unbekannte
+    Positionsnamen bleiben ein Fehler und werden nicht durch Modellwissen ersetzt.
+    """
+    if not text or not csv_pfad or not os.path.isfile(csv_pfad):
+        return text
+
+    erwartete = _lese_offene_positionen_namen(csv_pfad)
+    if not erwartete:
+        return text
+
+    def norm_name(value):
+        value = str(value or "").lower().strip()
+        value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
+        value = re.sub(
+            r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|"
+            r"holding|holdings|company|co|group)\b", " ", value
+        )
+        return re.sub(r"\s+", " ", value).strip()
+
+    def norm_ticker(value):
+        return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").lower())
+
+    def source_key(pos):
+        return (norm_name(pos.get("name")), norm_ticker(pos.get("ticker")))
+
+    source_by_key = {}
+    for pos in erwartete:
+        source_by_key.setdefault(source_key(pos), []).append(pos)
+
+    abschnitt = _finde_offene_positionen_abschnitt(text)
+    if not abschnitt:
+        return text
+
+    start, end, _ = abschnitt
+    block = text[start:end]
+    headers = list(re.finditer(r"(?im)^\s*(.*?)\s*\|\s*Markt\s*:", block))
+    if not headers:
+        return text
+
+    replacements = []
+    used = {key: 0 for key in source_by_key}
+
+    for idx, h in enumerate(headers):
+        raw_head = h.group(1).strip()
+        m = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", raw_head)
+        if m:
+            name = m.group(1).strip()
+            ticker = norm_ticker(m.group(2))
+        else:
+            name = raw_head
+            ticker = ""
+
+        name_key = norm_name(name)
+        candidates = []
+        if ticker:
+            candidates = source_by_key.get((name_key, ticker), [])
+        else:
+            # Nur eindeutige Namen dürfen den Ticker aus der Quelle erhalten.
+            candidates = [
+                pos for key, vals in source_by_key.items()
+                if key[0] == name_key
+                for pos in vals
+            ]
+            if len({norm_ticker(pos.get("ticker")) for pos in candidates}) != 1:
+                candidates = []
+
+        if not candidates:
+            continue
+
+        key = source_key(candidates[0])
+        n = used.get(key, 0)
+        pos = candidates[min(n, len(candidates) - 1)]
+        used[key] = n + 1
+
+        canonical = f"{pos.get('name', '').strip()} ({pos.get('ticker', '').strip()})"
+        replacements.append((start + h.start(1), start + h.end(1), canonical))
+
+        body_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
+        body = block[h.start():body_end]
+
+        src_entry = str(pos.get("entry", "")).strip()
+        src_date = str(pos.get("entry_date", "")).strip()
+
+        if src_entry:
+            em = re.search(r"(?im)^([ \t]*Einstieg(?:skurs)?\s*:\s*)[^\n]+", body)
+            if em:
+                # Replace only the value, keeping Gemini's label/format.
+                value_start = start + h.start() + em.start(0) + em.group(1).__len__()
+                value_end = start + h.start() + em.end(0)
+                replacements[-1] = (value_start, value_end, src_entry)
+
+        if src_date:
+            dm = re.search(r"(?im)^([ \t]*Einstiegsdatum\s*:\s*)[^\n]+", body)
+            if dm:
+                value_start = start + h.start() + dm.start(0) + dm.group(1).__len__()
+                value_end = start + h.start() + dm.end(0)
+                replacements.append((value_start, value_end, src_date))
+
+    for a, b, value in sorted(replacements, reverse=True):
+        text = text[:a] + value + text[b:]
+    return text
+
+
 def _sichere_regionen_und_offene_positionen(text, eingabedateien):
     """Repariert ausschliesslich strukturelle Auslassungen. Markt-/Technik-
     Inhalte werden nicht neu berechnet oder umformuliert."""
@@ -830,6 +938,10 @@ def _sichere_regionen_und_offene_positionen(text, eingabedateien):
             text = text[:head.end()] + "\n" + regionen + "\n" + text[head.end():].lstrip("\n")
             print("STRUKTUR-FIX: 'Blick auf wichtige Indizes' aus briefing.txt wiederhergestellt.")
 
+    # Name/Ticker/Einstieg/Einstiegsdatum kommen deterministisch aus der Check-Datei.
+    text = _kanonisiere_offene_positionen_aus_quelle(
+        text, eingabedateien.get("Offene Positionen+Check.csv")
+    )
     erwartete = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
     ok, fehlend = _offene_positionen_vollstaendig(text, erwartete)
     return text, ok, fehlend
