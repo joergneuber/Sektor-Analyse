@@ -577,16 +577,17 @@ def _lese_offene_positionen_namen(csv_pfad):
             status_key = key_for("status", "position_status")
             ticker_key = key_for("ticker")
             result = []
-            seen = set()
+            # WICHTIG: Kein Dedup nach Ticker oder Name. Derselbe Ticker kann
+            # gleichzeitig mehrfach offen sein (unterschiedliche Kaufdaten,
+            # Einstiegspreise/Lots). Jeder CSV-Datensatz mit Status Offen ist
+            # eine eigene Position und muss separat ausgegeben werden.
             for row in reader:
                 status = str(row.get(status_key, "") if status_key else "").strip().lower()
                 if status and status not in {"offen", "open"}:
                     continue
                 name = str(row.get(name_key, "") if name_key else "").strip()
                 ticker = str(row.get(ticker_key, "") if ticker_key else "").strip()
-                key = (name.lower(), ticker.upper())
-                if (name or ticker) and key not in seen:
-                    seen.add(key)
+                if name or ticker:
                     result.append({"name": name, "ticker": ticker})
             return result
     except Exception as exc:
@@ -627,23 +628,43 @@ def _offene_positionen_vollstaendig(text, erwartete_positionen):
         return re.sub(r"\s+", " ", value).strip()
     normalized_heads = [norm(h) for h in kopfzeilen]
     fehlend = []
+    erwartete_schluessel = []
     for pos in erwartete_positionen:
         name = norm(pos.get("name"))
         ticker = norm(pos.get("ticker"))
         if not name or not ticker:
             fehlend.append((pos.get("name") or pos.get("ticker") or "Unbekannte Position") + " (Name/Ticker-Quelle unvollständig)")
             continue
-        matches = []
-        for idx, head in enumerate(normalized_heads):
-            name_match = (head == name or head.startswith(name + " ") or name.startswith(head + " ")
-                          or (len(name) >= 4 and name in head) or (len(head) >= 4 and head in name))
-            ticker_match = (head == ticker or ticker in head.split() or f" {ticker} " in f" {head} ")
-            if name_match and ticker_match:
-                matches.append(idx)
-        if len(set(matches)) == 0:
-            fehlend.append((pos.get("name") or "Unbekannt") + (f" ({pos.get('ticker')})" if pos.get("ticker") else "") )
-        elif len(set(matches)) > 1:
-            fehlend.append((pos.get("name") or "Unbekannt") + (f" ({pos.get('ticker')})" if pos.get("ticker") else "") + " (doppelt)")
+        erwartete_schluessel.append((name, ticker, pos))
+
+    # NICHT einzelne CSV-Zeilen mit gleichem Ticker gegeneinander als Duplikat
+    # markieren. Mehrere Lots desselben Tickers sind ausdrücklich separate
+    # offene Positionen. Geprüft wird deshalb die erwartete HÄUFIGKEIT je
+    # Name/Ticker-Kombination gegen die Anzahl entsprechender Ausgabe-Blöcke.
+    def passt(head, name, ticker):
+        name_match = (head == name or head.startswith(name + " ") or name.startswith(head + " ")
+                      or (len(name) >= 4 and name in head) or (len(head) >= 4 and head in name))
+        ticker_match = (head == ticker or ticker in head.split() or f" {ticker} " in f" {head} ")
+        return name_match and ticker_match
+
+    erwartete_counts = {}
+    for name, ticker, pos in erwartete_schluessel:
+        erwartete_counts[(name, ticker)] = erwartete_counts.get((name, ticker), 0) + 1
+
+    vorhandene_counts = {}
+    for head in normalized_heads:
+        for name, ticker in erwartete_counts:
+            if passt(head, name, ticker):
+                vorhandene_counts[(name, ticker)] = vorhandene_counts.get((name, ticker), 0) + 1
+                break
+
+    for (name, ticker), erwartet in erwartete_counts.items():
+        vorhanden = vorhandene_counts.get((name, ticker), 0)
+        label = name + (f" ({ticker})" if ticker else "")
+        if vorhanden < erwartet:
+            fehlend.extend([label] * (erwartet - vorhanden))
+        elif vorhanden > erwartet:
+            fehlend.append(f"{label} (zu viele Ausgabe-Blöcke: {vorhanden} statt {erwartet})")
     if re.search(r"(?i)weitere positionen|weitere offene positionen", block):
         return False, fehlend or ["Platzhalter 'Weitere Positionen'"]
     return not fehlend, fehlend
