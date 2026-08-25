@@ -4,7 +4,7 @@
 Offene Positionen + Check
 
 Eigenstaendiger technischer Check fuer AUSSCHLIESSLICH offene Positionen.
-Die bestehende Offene_Positionen.csv wird nur gelesen und niemals veraendert.
+Geschlossene Positionen werden erst nach erfolgreicher Historien-/Google-Uebergabe aus Offene_Positionen.csv entfernt.
 
 Feste Regeln:
 - Steuerungsart kennt nur "Aktiver Trade" und "Buy & Hold".
@@ -1399,6 +1399,283 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             print(f"DATENSCHUTZ: Notfall-Backup bleibt erhalten | ID={backup_id}")
         raise RuntimeError(f"Google-Upload sicher abgebrochen: {exc}") from exc
 
+
+def _position_key(row) -> tuple:
+    """Eindeutiger Positionsschlüssel für das sichere Entfernen geschlossener Trades."""
+    required = ("Name", "Ticker", "Einstieg", "Einstiegsdatum")
+    missing = [c for c in required if c not in row]
+    if missing:
+        raise RuntimeError(
+            "Positionsschlüssel nicht bildbar; fehlende Spalten: " + ", ".join(missing)
+        )
+
+    name = re.sub(r"\s+", " ", str(row.get("Name", "")).strip()).casefold()
+    ticker = str(row.get("Ticker", "")).strip().upper()
+    entry_raw = str(row.get("Einstieg", "")).strip()
+    date = str(row.get("Einstiegsdatum", "")).strip()
+
+    if not name or not ticker or not entry_raw or not date:
+        raise RuntimeError(
+            "Positionsschlüssel nicht bildbar: Name, Ticker, Einstieg und "
+            "Einstiegsdatum müssen vorhanden sein."
+        )
+
+    entry = parse_number(entry_raw)
+    if entry is None:
+        raise RuntimeError(f"Positionsschlüssel: Einstieg ist nicht numerisch: {entry_raw!r}")
+
+    return (name, ticker, round(float(entry), 10), date)
+
+
+def _closed_position_keys(closed_df: pd.DataFrame) -> list[tuple]:
+    """Liefert eindeutige Schlüssel der aktuell zu archivierenden Positionen."""
+    if closed_df is None or closed_df.empty:
+        return []
+
+    required = {"Name", "Ticker", "Einstieg", "Einstiegsdatum"}
+    if not required.issubset(closed_df.columns):
+        raise RuntimeError(
+            "Geschlossene Positionen enthalten nicht alle Felder für die eindeutige "
+            "Identifikation."
+        )
+
+    keys = [_position_key(row) for _, row in closed_df.iterrows()]
+    if len(keys) != len(set(keys)):
+        duplicates = []
+        seen = set()
+        for key in keys:
+            if key in seen and key not in duplicates:
+                duplicates.append(key)
+            seen.add(key)
+        raise RuntimeError(
+            "Doppelte identische geschlossene Position in der Eingabemenge: "
+            + "; ".join(map(str, duplicates))
+        )
+    return keys
+
+
+def _remove_closed_from_source(
+    source_file: str,
+    closed_df: pd.DataFrame,
+) -> int:
+    """Entfernt geschlossene Positionen atomar aus der Quelldatei.
+
+    Die Originaldatei wird erst ersetzt, wenn alle Vorprüfungen bestanden haben.
+    Bei jedem Fehler wird der bisherige Stand wiederhergestellt.
+    """
+    if closed_df is None or closed_df.empty:
+        return 0
+
+    source = read_positions(source_file)
+    if "Name" not in source.columns or "Einstieg" not in source.columns or "Einstiegsdatum" not in source.columns:
+        raise RuntimeError(
+            "Offene_Positionen.csv enthält nicht alle Felder für den sicheren Positionsschlüssel."
+        )
+
+    closed_keys = _closed_position_keys(closed_df)
+    if not closed_keys:
+        return 0
+
+    source_keys = [_position_key(row) for _, row in source.iterrows()]
+    if len(source_keys) != len(set(source_keys)):
+        raise RuntimeError(
+            "Offene_Positionen.csv enthält doppelte identische Positionsschlüssel; "
+            "kein automatisches Entfernen wird durchgeführt."
+        )
+
+    key_set = set(closed_keys)
+    matches = [key in key_set for key in source_keys]
+    match_count = sum(matches)
+
+    if match_count != len(closed_keys):
+        missing = [k for k in closed_keys if k not in set(source_keys)]
+        raise RuntimeError(
+            "Nicht alle geschlossenen Positionen konnten in Offene_Positionen.csv "
+            f"eindeutig gefunden werden. Gefunden={match_count}, erwartet={len(closed_keys)}; "
+            f"fehlend={missing}"
+        )
+
+    # Nur Status "gestoppt"/"verkauft" darf automatisiert entfernt werden.
+    for idx, (row, is_match) in enumerate(zip(source.to_dict("records"), matches)):
+        if is_match and str(row.get("Status", "")).strip().lower() not in {"gestoppt", "verkauft"}:
+            raise RuntimeError(
+                "Sicherheitsabbruch: eine zu entfernende Position hat keinen "
+                f"Status 'gestoppt'/'verkauft': {row}"
+            )
+
+    remaining = source.loc[[not x for x in matches]].copy()
+
+    # Vor dem atomaren Austausch muss bewiesen sein, dass:
+    # - genau die geschlossenen Positionen entfernt werden,
+    # - alle offenen Positionen byte-/wertseitig unverändert bleiben.
+    expected_open = source[
+        source["Status"].astype(str).str.strip().str.lower() == "offen"
+    ].copy()
+    actual_open = remaining[
+        remaining["Status"].astype(str).str.strip().str.lower() == "offen"
+    ].copy()
+
+    if len(remaining) != len(source) - len(closed_keys):
+        raise RuntimeError("Sicherheitsabbruch: Anzahl der verbleibenden Zeilen stimmt nicht.")
+    if not expected_open.reset_index(drop=True).equals(actual_open.reset_index(drop=True)):
+        raise RuntimeError(
+            "Sicherheitsabbruch: Mindestens eine offene Position würde verändert."
+        )
+
+    # Noch einmal prüfen: Jede geschlossene Position ist tatsächlich verschwunden.
+    remaining_keys = {_position_key(row) for _, row in remaining.iterrows()}
+    if remaining_keys.intersection(key_set):
+        raise RuntimeError(
+            "Sicherheitsabbruch: Mindestens eine geschlossene Position wäre weiterhin vorhanden."
+        )
+
+    directory = os.path.dirname(os.path.abspath(source_file)) or "."
+    stem = os.path.basename(source_file)
+    temp_path = os.path.join(
+        directory, f".{stem}.tmp_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    )
+    backup_path = os.path.join(
+        directory, f".{stem}.bak_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    )
+
+    try:
+        # Temporär schreiben und sofort wieder einlesen.
+        remaining.to_csv(
+            temp_path, sep=";", decimal=",", index=False, encoding="utf-8-sig"
+        )
+        written = read_positions(temp_path)
+
+        if not expected_open.reset_index(drop=True).equals(
+            written[written["Status"].astype(str).str.strip().str.lower() == "offen"]
+            .reset_index(drop=True)
+        ):
+            raise RuntimeError(
+                "Sicherheitsabbruch: temporär geschriebene Datei verändert offene Positionen."
+            )
+
+        written_keys = {_position_key(row) for _, row in written.iterrows()}
+        if written_keys.intersection(key_set):
+            raise RuntimeError(
+                "Sicherheitsabbruch: temporäre Datei enthält weiterhin geschlossene Position."
+            )
+
+        if len(written) != len(source) - len(closed_keys):
+            raise RuntimeError("Sicherheitsabbruch: temporäre Datei hat falsche Zeilenanzahl.")
+
+        # Sicherung der Originaldatei im selben Dateisystem.
+        import shutil
+        shutil.copy2(source_file, backup_path)
+
+        # Erst jetzt erfolgt der atomare Austausch.
+        os.replace(temp_path, source_file)
+
+        # Nachkontrolle des tatsächlich ersetzten Originals.
+        verified = read_positions(source_file)
+        verified_keys = [_position_key(row) for _, row in verified.iterrows()]
+        if set(verified_keys).intersection(key_set):
+            raise RuntimeError(
+                "Nachkontrolle fehlgeschlagen: geschlossene Position weiterhin in Quelle."
+            )
+        verified_open = verified[
+            verified["Status"].astype(str).str.strip().str.lower() == "offen"
+        ].reset_index(drop=True)
+        if not expected_open.reset_index(drop=True).equals(verified_open):
+            raise RuntimeError(
+                "Nachkontrolle fehlgeschlagen: offene Positionen wurden verändert."
+            )
+        if len(source) - len(verified) != len(closed_keys):
+            raise RuntimeError(
+                "Nachkontrolle fehlgeschlagen: Anzahl entfernter Positionen stimmt nicht."
+            )
+
+        os.remove(backup_path)
+        print(
+            f"QUELLDATEI BEREINIGT: {len(closed_keys)} gestoppte/verkaufte Position(en) "
+            "nach erfolgreicher Historien-/Google-Übergabe entfernt."
+        )
+        return len(closed_keys)
+
+    except Exception:
+        # Vor dem atomaren Austausch bleibt source ohnehin unverändert.
+        # Falls der Austausch bereits erfolgt ist, stellt die Sicherung den
+        # vorherigen Stand atomar wieder her.
+        if os.path.exists(backup_path):
+            try:
+                os.replace(backup_path, source_file)
+                print("SICHERHEIT: Offene_Positionen.csv auf den vorherigen Stand zurückgesetzt.")
+            except Exception as restore_exc:
+                raise RuntimeError(
+                    f"Fehler beim Zurücksetzen von Offene_Positionen.csv: {restore_exc}"
+                ) from restore_exc
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _selftest_closed_position_removal():
+    """Schneller Selbsttest ausschließlich für die neue Archivierungslogik."""
+    import tempfile
+
+    columns = ["Ticker", "Name", "Einstiegsdatum", "Einstieg", "Status"]
+    rows = [
+        ["NEM", "Newmont Corporation", "01.08.2026", "45,20", "gestoppt"],
+        ["NEM", "Newmont Corporation", "19.08.2026", "52,10", "Offen"],
+        ["FCX", "Freeport-McMoRan", "10.08.2026", "66,32", "verkauft"],
+        ["FCX", "Freeport-McMoRan", "20.08.2026", "70,00", "Offen"],
+        ["AEM", "Agnico Eagle Mines Limited", "01.08.2026", "100,00", "Offen"],
+    ]
+    source_df = pd.DataFrame(rows, columns=columns)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source_path = os.path.join(tmp, INPUT_FILE)
+        source_df.to_csv(source_path, sep=";", index=False, encoding="utf-8-sig")
+
+        closed = source_df[
+            source_df["Status"].str.lower().isin({"gestoppt", "verkauft"})
+        ].copy()
+        assert _remove_closed_from_source(source_path, closed) == 2
+
+        after = read_positions(source_path)
+        assert len(after) == 3
+        assert set(after["Ticker"]) == {"NEM", "FCX", "AEM"}
+        assert len(after[after["Status"].str.lower() == "offen"]) == 3
+
+        # Fehlende Position muss hart scheitern und die Quelle unverändert lassen.
+        missing = pd.DataFrame(
+            [["XYZ", "Nicht vorhanden", "01.01.2026", "1,00", "verkauft"]],
+            columns=columns,
+        )
+        before = open(source_path, "rb").read()
+        try:
+            _remove_closed_from_source(source_path, missing)
+            raise AssertionError("Fehlende Position wurde nicht abgewiesen.")
+        except RuntimeError:
+            pass
+        assert open(source_path, "rb").read() == before
+
+        # Doppelte identische Position muss hart scheitern.
+        duplicate = pd.concat([closed.iloc[[0]], closed.iloc[[0]]], ignore_index=True)
+        try:
+            _remove_closed_from_source(source_path, duplicate)
+            raise AssertionError("Doppelte Position wurde nicht abgewiesen.")
+        except RuntimeError:
+            pass
+
+        # Alle Offen: nichts darf verändert werden.
+        open_only = source_df[source_df["Status"].str.lower() == "offen"].copy()
+        before = open_only.to_csv(sep=";", index=False)
+        temp_open_path = os.path.join(tmp, "open_only.csv")
+        open_only.to_csv(temp_open_path, sep=";", index=False, encoding="utf-8-sig")
+        empty_closed = source_df.iloc[0:0].copy()
+        assert _remove_closed_from_source(temp_open_path, empty_closed) == 0
+        assert read_positions(temp_open_path).to_csv(sep=";", index=False) == before
+
+    print("SELFTEST Archivierung geschlossener Positionen: PASS")
+
+
 def main():
     output, closed_history = run_local(INPUT_FILE, OUTPUT_CSV)
     try:
@@ -1408,8 +1685,16 @@ def main():
         print(f"FEHLER: Google Drive/Sheets konnte nicht aktualisiert werden: {exc}")
         print("ABBRUCH: Lokale Dateien erstellt, Google Sheet nicht erfolgreich aktualisiert.")
         raise
+
+    # Erst nach erfolgreicher lokaler Historienerzeugung UND erfolgreichem
+    # Google-Sheet-Update darf die Quelldatei bereinigt werden.
+    removed = _remove_closed_from_source(INPUT_FILE, closed_history)
+
     print("GOOGLE DRIVE: Offene Positionen+Check erfolgreich erstellt/aktualisiert.")
-    print(f"FERTIG: Offen={len(output)} | Historie={len(closed_history)} | Originaldatei unverändert.")
+    print(
+        f"FERTIG: Offen={len(output)} | Historie={len(closed_history)} | "
+        f"Geschlossen aus Quelle entfernt={removed}"
+    )
 
 
 if __name__ == "__main__":
