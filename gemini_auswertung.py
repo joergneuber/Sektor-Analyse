@@ -634,6 +634,45 @@ def _finde_quellposition(ziel_key, quellpositionen):
 # HAUPTLOGIK
 # ---------------------------------------------------------------------------
 
+def _enthaelt_abschnitt_8(text):
+    """Prüft strikt, ob Gemini den vollständigen Abschnitt 8 begonnen hat."""
+    return bool(re.search(r"(?im)^\s*8\. OFFENE POSITIONEN\s*$", text or ""))
+
+
+def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
+    """Fügt einen ausschließlich für Punkt 8 angeforderten Gemini-Block ein.
+
+    Der Reparatur-Call darf nur Punkt 8 liefern. Der Block wird deshalb nicht
+    als komplette neue Auswertung verwendet, sondern deterministisch in die
+    bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
+    """
+    if not _enthaelt_abschnitt_8(abschnitt_8):
+        raise RuntimeError(
+            "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
+            "'8. OFFENE POSITIONEN'."
+        )
+
+    block_match = re.search(
+        r"(?ims)^\s*8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        abschnitt_8,
+    )
+    if not block_match:
+        raise RuntimeError(
+            "Gezielter Reparaturversuch lieferte keinen verwertbaren "
+            "Abschnitt '8. OFFENE POSITIONEN'."
+        )
+
+    block = block_match.group(0).strip("\n")
+    # Falls Gemini trotz der harten Vorgabe noch Text davor/danach liefert,
+    # wird ausschließlich der erkannte Punkt-8-Block übernommen.
+    naechster_abschnitt = re.search(r"(?im)^\s*9\.\s+", original_text)
+    if naechster_abschnitt:
+        pos = naechster_abschnitt.start()
+        return original_text[:pos].rstrip() + "\n\n" + block + "\n\n" + original_text[pos:]
+    return original_text.rstrip() + "\n\n" + block + "\n"
+
+
+
 def gemini_auswertung_starten():
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -750,6 +789,75 @@ def gemini_auswertung_starten():
                 ),
             )
             text = antwort.text or ""
+
+            # KONTROLLIERTER REPARATURVERSUCH:
+            # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
+            # aber Punkt 8 auslassen. In diesem Fall wird NICHT aus anderen Dateien
+            # geraten und NICHT der Parser gelockert. Stattdessen erhält Gemini genau
+            # einen gezielten zweiten Versuch, ausschließlich Punkt 8 vollständig
+            # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
+            # anwenden.
+            if not _enthaelt_abschnitt_8(text):
+                print(
+                    "  Abschnitt '8. OFFENE POSITIONEN' fehlt - "
+                    "starte gezielten Reparaturversuch fuer Punkt 8..."
+                )
+                reparatur_prompt = (
+                    "REPARATURVERSUCH - NUR ABSCHNITT 8 NACHLIEFERN.\n"
+                    "Deine vorherige Antwort enthielt den erforderlichen Abschnitt "
+                    "'8. OFFENE POSITIONEN' nicht. Erstelle deshalb jetzt "
+                    "AUSSCHLIESSLICH den vollständigen Abschnitt 8.\n\n"
+                    "Beginne zwingend mit exakt:\n"
+                    "8. OFFENE POSITIONEN\n\n"
+                    "Gib danach ALLE offenen Positionen aus der verbindlichen Datei "
+                    "'Offene Positionen+Check.csv' vollständig und genau einmal aus. "
+                    "Verwende ausschließlich diese Datei für Firmenname, Ticker, "
+                    "Einstiegskurs und Einstiegsdatum. Die Kombination aus Name + "
+                    "Ticker + Einstiegskurs + Einstiegsdatum identifiziert eine "
+                    "Position eindeutig; mehrere Positionen mit demselben Ticker "
+                    "sind zulässig.\n\n"
+                    "Jeder Positionskopf muss exakt dem Format "
+                    "'Firmenname (Ticker) | Markt: ...' entsprechen. "
+                    "Für jede Position müssen die in der Hauptanweisung geforderten "
+                    "Positionsdaten und technischen Check-Felder ausgegeben werden. "
+                    "Übernimm technische Check-Felder aus 'Offene Positionen+Check.csv' "
+                    "und erfinde, berechne, kürze oder interpretiere sie nicht. "
+                    "Insbesondere 'Technische Zielzone' darf ausschließlich als "
+                    "bereits vorhandener CSV-Wert übernommen werden.\n\n"
+                    "WICHTIG: Antworte ausschließlich mit Abschnitt 8 und dessen "
+                    "vollständigem Inhalt. Keine Einleitung, keine Erklärung, "
+                    "keine Abschnitte 1-7 oder 9 ff."
+                )
+                reparatur_antwort = client.models.generate_content(
+                    model=aktuelles_modell,
+                    contents=hochgeladene_teile + [
+                        reparatur_prompt,
+                        "VERBINDLICHE OFFENE-POSITIONEN-LISTE AUS "
+                        "'Offene Positionen+Check.csv':\n"
+                        + (offene_quelle or "(keine offenen Positionen gefunden)")
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction=anweisung,
+                    ),
+                )
+                reparatur_text = reparatur_antwort.text or ""
+
+                if _enthaelt_abschnitt_8(reparatur_text):
+                    text = _fuege_abschnitt_8_ein(text, reparatur_text)
+                    print(
+                        "  Reparatur erfolgreich: Abschnitt "
+                        "'8. OFFENE POSITIONEN' nachgeliefert."
+                    )
+                else:
+                    print(
+                        "  Reparatur fehlgeschlagen: Abschnitt "
+                        "'8. OFFENE POSITIONEN' weiterhin nicht vorhanden."
+                    )
+                    letzte_antwort = reparatur_text or text
+                    # Kein Parser-Fallback. Der äußere Retry startet eine neue
+                    # vollständige Gemini-Anfrage.
+                    hochgeladene_teile = None
+                    continue
 
         except Exception as e:
             fehlertext = str(e)
