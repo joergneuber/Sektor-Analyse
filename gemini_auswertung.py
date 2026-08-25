@@ -560,37 +560,38 @@ def gemini_auswertung_starten():
 
 
 def _lese_offene_positionen_namen(csv_pfad):
-    """Liest nur die Namen offener Positionen fuer einen strukturellen
-    Vollstaendigkeitscheck. Keine technischen Werte werden hier berechnet."""
+    """Liest Name und Ticker offener Positionen fuer den Strukturcheck.
+    Keine technischen Werte werden berechnet."""
     if not csv_pfad or not os.path.isfile(csv_pfad):
         return []
     try:
         with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
             sample = f.read(8192)
             f.seek(0)
-            dialect = csv.Sniffer().sniff(sample, delimiters=";,\t,")
+            dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
             reader = csv.DictReader(f, dialect=dialect)
             fields = reader.fieldnames or []
-            name_key = next((k for k in fields if str(k).strip().lower() in
-                             {"firmenname", "name", "unternehmen", "company", "titel"}), None)
-            status_key = next((k for k in fields if str(k).strip().lower() in
-                              {"status", "position_status"}), None)
-            ticker_key = next((k for k in fields if str(k).strip().lower() == "ticker"), None)
+            def key_for(*candidates):
+                return next((k for k in fields if str(k).strip().lower() in candidates), None)
+            name_key = key_for("name", "firmenname", "unternehmen", "company", "titel")
+            status_key = key_for("status", "position_status")
+            ticker_key = key_for("ticker")
             result = []
+            seen = set()
             for row in reader:
                 status = str(row.get(status_key, "") if status_key else "").strip().lower()
                 if status and status not in {"offen", "open"}:
                     continue
                 name = str(row.get(name_key, "") if name_key else "").strip()
                 ticker = str(row.get(ticker_key, "") if ticker_key else "").strip()
-                key = name or ticker
-                if key and key not in result:
-                    result.append(key)
+                key = (name.lower(), ticker.upper())
+                if (name or ticker) and key not in seen:
+                    seen.add(key)
+                    result.append({"name": name, "ticker": ticker})
             return result
     except Exception as exc:
         print(f"WARNUNG: Offene-Positionen-Vollstaendigkeitscheck nicht lesbar: {exc}")
         return []
-
 
 def _finde_offene_positionen_abschnitt(text):
     """Findet den kompletten offenen-Positionen-Abschnitt ohne andere
@@ -605,27 +606,47 @@ def _finde_offene_positionen_abschnitt(text):
     return start, end, m.group('head').strip()
 
 
-def _offene_positionen_vollstaendig(text, erwartete_namen):
-    """Struktureller Check: alle erwarteten Namen muessen im Punkt 8/Offene-
-    Positionen-Abschnitt vorkommen; Platzhalter fuer weitere Positionen sind
-    unzulaessig."""
-    if not erwartete_namen:
+def _offene_positionen_vollstaendig(text, erwartete_positionen):
+    """Prueft offene Positionen strukturell.
+
+    Jede Position muss in ihrer Kopfzeile sowohl den Firmennamen als auch den
+    Ticker enthalten und mit '| Markt:' beginnen. Verkürzte Firmennamen werden
+    weiterhin toleriert, aber der Ticker muss zusätzlich in derselben Kopfzeile
+    vorhanden sein. Die Ausgabevorgabe bleibt damit immer: Firmenname (Ticker)."""
+    if not erwartete_positionen:
         return True, []
     abschnitt = _finde_offene_positionen_abschnitt(text)
     if not abschnitt:
-        return False, list(erwartete_namen)
+        return False, [p.get("name") or p.get("ticker") for p in erwartete_positionen]
     block = text[abschnitt[0]:abschnitt[1]]
+    kopfzeilen = re.findall(r"(?im)^\s*(.*?)\s*\|\s*Markt:", block)
+    def norm(value):
+        value = str(value or "").lower()
+        value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
+        value = re.sub(r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|holding|holdings|company|co|group)\b", " ", value)
+        return re.sub(r"\s+", " ", value).strip()
+    normalized_heads = [norm(h) for h in kopfzeilen]
     fehlend = []
-    for name in erwartete_namen:
-        # Nur eine echte Positions-Kopfzeile zaehlt; News/Portfolio-Fazit mit
-        # demselben Firmennamen duerfen keine Vollstaendigkeit vortaeuschen.
-        pattern = rf"(?im)^\s*{re.escape(name)}\s*\|\s*Markt:"
-        if len(re.findall(pattern, block)) != 1:
-            fehlend.append(name)
+    for pos in erwartete_positionen:
+        name = norm(pos.get("name"))
+        ticker = norm(pos.get("ticker"))
+        if not name or not ticker:
+            fehlend.append((pos.get("name") or pos.get("ticker") or "Unbekannte Position") + " (Name/Ticker-Quelle unvollständig)")
+            continue
+        matches = []
+        for idx, head in enumerate(normalized_heads):
+            name_match = (head == name or head.startswith(name + " ") or name.startswith(head + " ")
+                          or (len(name) >= 4 and name in head) or (len(head) >= 4 and head in name))
+            ticker_match = (head == ticker or ticker in head.split() or f" {ticker} " in f" {head} ")
+            if name_match and ticker_match:
+                matches.append(idx)
+        if len(set(matches)) == 0:
+            fehlend.append((pos.get("name") or "Unbekannt") + (f" ({pos.get('ticker')})" if pos.get("ticker") else "") )
+        elif len(set(matches)) > 1:
+            fehlend.append((pos.get("name") or "Unbekannt") + (f" ({pos.get('ticker')})" if pos.get("ticker") else "") + " (doppelt)")
     if re.search(r"(?i)weitere positionen|weitere offene positionen", block):
-        return False, fehlend
+        return False, fehlend or ["Platzhalter 'Weitere Positionen'"]
     return not fehlend, fehlend
-
 
 def _extrahiere_regionen_block(briefing_pfad):
     """Uebernimmt den vom analyse.py erzeugten REGIONEN-PERFORMANCE-Block
@@ -676,8 +697,10 @@ def _repariere_offene_positionen_mit_gemini(client, modell, hochgeladene_teile, 
         "einmal vorkommen; niemals 'Weitere Positionen' oder eine Kürzung verwenden. "
         "Übernimm technische Felder ausschließlich wörtlich aus Offene Positionen+Check.csv. "
         "Erfinde keine News. Behalte vorhandene korrekte Positionsblöcke unverändert, "
-        "ergänze nur fehlende Positionen anhand der Quelldateien. Sortierung absteigend nach Performance.\n\n"
-        "ERWARTETE POSITIONEN:\n- " + "\n- ".join(erwartete_namen) + "\n\n"
+        "ergänze nur fehlende Positionen anhand der Quelldateien. Jede Kopfzeile muss zwingend "
+        "Firmenname UND Ticker enthalten, im Format 'Firmenname (Ticker) | Markt: ...'. "
+        "Nur Firmenname oder nur Ticker ist nicht zulässig. Sortierung absteigend nach Performance.\n\n"
+        "ERWARTETE POSITIONEN:\n- " + "\n- ".join((p.get("name") or p.get("ticker")) + (f" [{p.get("ticker")}]" if p.get("ticker") and p.get("name") else "") for p in erwartete_namen) + "\n\n"
         "BISHERIGER OFFENE-POSITIONEN-BLOCK:\n" + aktueller_block
     )
     try:
