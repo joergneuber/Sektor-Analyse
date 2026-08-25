@@ -540,12 +540,6 @@ def gemini_auswertung_starten():
         erwartete_namen = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
         text, vollstaendig, fehlend = _sichere_regionen_und_offene_positionen(text, eingabedateien)
         if not vollstaendig and erwartete_namen:
-            print("STRUKTUR-FIX: Offene-Positionen-Block unvollstaendig – einmalige Reparatur nur fuer Punkt 8.")
-            text = _repariere_offene_positionen_mit_gemini(
-                client, aktuelles_modell, hochgeladene_teile, anweisung, text, erwartete_namen
-            )
-            text, vollstaendig, fehlend = _sichere_regionen_und_offene_positionen(text, eingabedateien)
-        if not vollstaendig and erwartete_namen:
             raise RuntimeError(
                 "Auswertung strukturell unvollstaendig: fehlende/duplizierte offene Positionen: "
                 + ", ".join(fehlend or ["unvollstaendiger Offene-Positionen-Block"])
@@ -560,8 +554,9 @@ def gemini_auswertung_starten():
 
 
 def _lese_offene_positionen_namen(csv_pfad):
-    """Liest Name und Ticker offener Positionen fuer den Strukturcheck.
-    Keine technischen Werte werden berechnet."""
+    """Liest alle offenen Positionslots aus Offene Positionen+Check.csv.
+    Die Positionsidentitaet besteht aus Name + Ticker + Einstieg + Einstiegsdatum.
+    Es wird niemals nach Ticker oder Name dedupliziert."""
     if not csv_pfad or not os.path.isfile(csv_pfad):
         return []
     try:
@@ -571,28 +566,44 @@ def _lese_offene_positionen_namen(csv_pfad):
             dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
             reader = csv.DictReader(f, dialect=dialect)
             fields = reader.fieldnames or []
+
             def key_for(*candidates):
                 return next((k for k in fields if str(k).strip().lower() in candidates), None)
+
             name_key = key_for("name", "firmenname", "unternehmen", "company", "titel")
             status_key = key_for("status", "position_status")
             ticker_key = key_for("ticker")
+            entry_key = key_for("einstieg", "einstiegskurs", "entry", "entry_price")
+            date_key = key_for("einstiegsdatum", "kaufdatum", "einstiegsdatum_utc", "entry_date", "date")
+
+            if not entry_key or not date_key:
+                raise ValueError(
+                    "Offene Positionen+Check.csv muss 'Einstieg' und 'Einstiegsdatum' enthalten."
+                )
+
             result = []
-            # WICHTIG: Kein Dedup nach Ticker oder Name. Derselbe Ticker kann
-            # gleichzeitig mehrfach offen sein (unterschiedliche Kaufdaten,
-            # Einstiegspreise/Lots). Jeder CSV-Datensatz mit Status Offen ist
-            # eine eigene Position und muss separat ausgegeben werden.
             for row in reader:
                 status = str(row.get(status_key, "") if status_key else "").strip().lower()
                 if status and status not in {"offen", "open"}:
                     continue
+
                 name = str(row.get(name_key, "") if name_key else "").strip()
                 ticker = str(row.get(ticker_key, "") if ticker_key else "").strip()
+                entry = str(row.get(entry_key, "") or "").strip()
+                entry_date = str(row.get(date_key, "") or "").strip()
+
                 if name or ticker:
-                    result.append({"name": name, "ticker": ticker})
+                    result.append({
+                        "name": name,
+                        "ticker": ticker,
+                        "entry": entry,
+                        "entry_date": entry_date,
+                    })
             return result
     except Exception as exc:
         print(f"WARNUNG: Offene-Positionen-Vollstaendigkeitscheck nicht lesbar: {exc}")
         return []
+
 
 def _finde_offene_positionen_abschnitt(text):
     """Findet den kompletten offenen-Positionen-Abschnitt ohne andere
@@ -608,66 +619,184 @@ def _finde_offene_positionen_abschnitt(text):
 
 
 def _offene_positionen_vollstaendig(text, erwartete_positionen):
-    """Prueft offene Positionen strukturell.
+    """Prueft die offenen Positionen anhand eindeutiger Positionslots.
 
-    Jede Position muss in ihrer Kopfzeile sowohl den Firmennamen als auch den
-    Ticker enthalten und mit '| Markt:' beginnen. Verkürzte Firmennamen werden
-    weiterhin toleriert, aber der Ticker muss zusätzlich in derselben Kopfzeile
-    vorhanden sein. Die Ausgabevorgabe bleibt damit immer: Firmenname (Ticker)."""
+    Positionsschluessel:
+      Name + Ticker + Einstiegskurs + Einstiegsdatum
+
+    Mehrere offene Positionen desselben Tickers sind ausdruecklich erlaubt.
+    Die technische Basis ist ausschliesslich Offene Positionen+Check.csv.
+    Der Parser akzeptiert:
+      1) Firmenname (TICKER) | Markt: ...
+      2) TICKER | Firmenname | Markt: ...
+
+    Fuer jeden ausgegebenen Block werden Einstieg und Datum aus dem jeweiligen
+    Positionsblock gelesen; Gemini liefert keine technischen Berechnungen.
+    """
     if not erwartete_positionen:
         return True, []
+
     abschnitt = _finde_offene_positionen_abschnitt(text)
     if not abschnitt:
-        return False, [p.get("name") or p.get("ticker") for p in erwartete_positionen]
+        return False, [
+            (p.get("name") or p.get("ticker") or "Unbekannte Position")
+            for p in erwartete_positionen
+        ]
+
     block = text[abschnitt[0]:abschnitt[1]]
-    kopfzeilen = re.findall(r"(?im)^\s*(.*?)\s*\|\s*Markt:", block)
-    def norm(value):
-        value = str(value or "").lower()
+
+    def norm_name(value):
+        value = str(value or "").lower().strip()
         value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
-        value = re.sub(r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|holding|holdings|company|co|group)\b", " ", value)
+        value = re.sub(
+            r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|"
+            r"holding|holdings|company|co|group)\b", " ", value
+        )
         return re.sub(r"\s+", " ", value).strip()
-    normalized_heads = [norm(h) for h in kopfzeilen]
-    fehlend = []
-    erwartete_schluessel = []
+
+    def norm_ticker(value):
+        return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").lower())
+
+    def norm_price(value):
+        s = str(value or "").strip()
+        s = re.sub(r"[^0-9,.\-]+", "", s)
+        if not s:
+            return ""
+        # Deutsche Schreibweise 1.234,56; US-Schreibweise 1234.56
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(",", ".")
+        try:
+            return f"{float(s):.8f}".rstrip("0").rstrip(".")
+        except ValueError:
+            return s
+
+    def norm_date(value):
+        s = str(value or "").strip()
+        if not s:
+            return ""
+        m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", s)
+        if m:
+            return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+        m = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", s)
+        if m:
+            return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        return s.lower()
+
+    def name_match(head, name):
+        if not name:
+            return False
+        return (
+            head == name
+            or head.startswith(name + " ")
+            or name.startswith(head + " ")
+            or (len(name) >= 4 and name in head)
+            or (len(head) >= 4 and head in name)
+        )
+
+    # Positionskoepfe und ihre kompletten Bloecke bestimmen.
+    header_matches = list(re.finditer(r"(?im)^\s*(.*?)\s*\|\s*Markt\s*:", block))
+    parsed_blocks = []
+    for idx, match in enumerate(header_matches):
+        end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(block)
+        raw_head = match.group(1).strip()
+        body = block[match.start():end]
+        parsed_blocks.append((raw_head, body))
+
+    def parse_head(raw_head):
+        raw = str(raw_head).strip()
+        paren = [norm_ticker(x) for x in re.findall(r"\(([^()]+)\)", raw) if norm_ticker(x)]
+        if paren:
+            ticker = paren[0]
+            visible_name = norm_name(re.sub(r"\([^()]+\)", " ", raw, count=1))
+            return visible_name, ticker
+
+        parts = [x.strip() for x in raw.split("|") if x.strip()]
+        if len(parts) >= 2:
+            ticker = norm_ticker(parts[0])
+            visible_name = norm_name(parts[1])
+            return visible_name, ticker
+        return norm_name(raw), ""
+
+    def extract_entry_date(body):
+        # Unterstützt z.B. "Einstieg: 131,58 $ (19.08.2026)" sowie
+        # getrennte Angaben "Einstieg: ..." und "Einstiegsdatum: ...".
+        entry = ""
+        date = ""
+        m = re.search(r"(?im)\bEinstieg(?:skurs)?\s*:\s*([^\n|;()]+)", body)
+        if m:
+            entry = m.group(1).strip()
+        m = re.search(r"(?im)\bEinstiegsdatum\b\s*:\s*([^\n|;]+)", body)
+        if m:
+            date = m.group(1).strip()
+        if not date:
+            # Datum in Klammern direkt hinter dem Einstiegskurs.
+            m = re.search(
+                r"(?im)\bEinstieg(?:skurs)?\s*:\s*[^\n|]*?\(\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}-\d{1,2}-\d{1,2})\s*\)",
+                body,
+            )
+            if m:
+                date = m.group(1)
+        return norm_price(entry), norm_date(date)
+
+    expected_keys = []
+    labels = {}
     for pos in erwartete_positionen:
-        name = norm(pos.get("name"))
-        ticker = norm(pos.get("ticker"))
-        if not name or not ticker:
-            fehlend.append((pos.get("name") or pos.get("ticker") or "Unbekannte Position") + " (Name/Ticker-Quelle unvollständig)")
-            continue
-        erwartete_schluessel.append((name, ticker, pos))
+        key = (
+            norm_name(pos.get("name")),
+            norm_ticker(pos.get("ticker")),
+            norm_price(pos.get("entry")),
+            norm_date(pos.get("entry_date")),
+        )
+        expected_keys.append(key)
+        labels[key] = (
+            f"{pos.get('name') or pos.get('ticker') or 'Unbekannte Position'} "
+            f"({str(pos.get('ticker') or '').upper()})"
+        )
 
-    # NICHT einzelne CSV-Zeilen mit gleichem Ticker gegeneinander als Duplikat
-    # markieren. Mehrere Lots desselben Tickers sind ausdrücklich separate
-    # offene Positionen. Geprüft wird deshalb die erwartete HÄUFIGKEIT je
-    # Name/Ticker-Kombination gegen die Anzahl entsprechender Ausgabe-Blöcke.
-    def passt(head, name, ticker):
-        name_match = (head == name or head.startswith(name + " ") or name.startswith(head + " ")
-                      or (len(name) >= 4 and name in head) or (len(head) >= 4 and head in name))
-        ticker_match = (head == ticker or ticker in head.split() or f" {ticker} " in f" {head} ")
-        return name_match and ticker_match
-
-    erwartete_counts = {}
-    for name, ticker, pos in erwartete_schluessel:
-        erwartete_counts[(name, ticker)] = erwartete_counts.get((name, ticker), 0) + 1
-
-    vorhandene_counts = {}
-    for head in normalized_heads:
-        for name, ticker in erwartete_counts:
-            if passt(head, name, ticker):
-                vorhandene_counts[(name, ticker)] = vorhandene_counts.get((name, ticker), 0) + 1
+    actual_keys = []
+    unmatched_headers = []
+    for raw_head, body in parsed_blocks:
+        name, ticker = parse_head(raw_head)
+        entry, date = extract_entry_date(body)
+        matched = False
+        for expected in expected_keys:
+            ename, eticker, eentry, edate = expected
+            if ticker == eticker and name_match(name, ename):
+                actual_keys.append((ename, eticker, entry, date))
+                matched = True
                 break
+        if not matched:
+            unmatched_headers.append(raw_head)
 
-    for (name, ticker), erwartet in erwartete_counts.items():
-        vorhanden = vorhandene_counts.get((name, ticker), 0)
-        label = name + (f" ({ticker})" if ticker else "")
-        if vorhanden < erwartet:
-            fehlend.extend([label] * (erwartet - vorhanden))
-        elif vorhanden > erwartet:
-            fehlend.append(f"{label} (zu viele Ausgabe-Blöcke: {vorhanden} statt {erwartet})")
+    from collections import Counter
+    expected_counts = Counter(expected_keys)
+    actual_counts = Counter(actual_keys)
+
+    fehlend = []
+    for key, count in expected_counts.items():
+        have = actual_counts.get(key, 0)
+        if have < count:
+            fehlend.extend([labels.get(key, key[0] or key[1] or "Unbekannte Position")] * (count - have))
+        elif have > count:
+            fehlend.append(
+                f"{labels.get(key, key[0] or key[1] or 'Unbekannte Position')} "
+                f"(zu viele Ausgabe-Blöcke: {have} statt {count})"
+            )
+
+    # Ein nicht zuordenbarer Positionskopf ist ebenfalls ein Strukturfehler.
+    if unmatched_headers:
+        fehlend.extend([f"Nicht zuordenbarer Positionsblock: {h}" for h in unmatched_headers])
+
     if re.search(r"(?i)weitere positionen|weitere offene positionen", block):
         return False, fehlend or ["Platzhalter 'Weitere Positionen'"]
+
     return not fehlend, fehlend
+
 
 def _extrahiere_regionen_block(briefing_pfad):
     """Uebernimmt den vom analyse.py erzeugten REGIONEN-PERFORMANCE-Block
@@ -702,48 +831,6 @@ def _sichere_regionen_und_offene_positionen(text, eingabedateien):
     erwartete = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
     ok, fehlend = _offene_positionen_vollstaendig(text, erwartete)
     return text, ok, fehlend
-
-
-def _repariere_offene_positionen_mit_gemini(client, modell, hochgeladene_teile, anweisung, text, erwartete_namen):
-    """Einmaliger, lokaler Reparaturlauf nur fuer Punkt 'Offene Positionen'.
-    Der restliche Output wird nicht neu generiert."""
-    if not erwartete_namen:
-        return text
-    abschnitt = _finde_offene_positionen_abschnitt(text)
-    aktueller_block = text[abschnitt[0]:abschnitt[1]] if abschnitt else "(Abschnitt fehlt)"
-    prompt = (
-        "REPARATURAUFTRAG – NUR ABSCHNITT OFFENE POSITIONEN.\n"
-        "Gib ausschliesslich den vollständigen Abschnitt 'Offene Positionen' aus. "
-        "Verändere keinen anderen Teil der Auswertung. Jede erwartete Position muss "
-        "einmal vorkommen; niemals 'Weitere Positionen' oder eine Kürzung verwenden. "
-        "Übernimm technische Felder ausschließlich wörtlich aus Offene Positionen+Check.csv. "
-        "Erfinde keine News. Behalte vorhandene korrekte Positionsblöcke unverändert, "
-        "ergänze nur fehlende Positionen anhand der Quelldateien. Jede Kopfzeile muss zwingend "
-        "Firmenname UND Ticker enthalten, im Format 'Firmenname (Ticker) | Markt: ...'. "
-        "Nur Firmenname oder nur Ticker ist nicht zulässig. Sortierung absteigend nach Performance.\n\n"
-        "ERWARTETE POSITIONEN:\n- " + "\n- ".join((p.get("name") or p.get("ticker")) + (f" [{p.get("ticker")}]" if p.get("ticker") and p.get("name") else "") for p in erwartete_namen) + "\n\n"
-        "BISHERIGER OFFENE-POSITIONEN-BLOCK:\n" + aktueller_block
-    )
-    try:
-        antwort = client.models.generate_content(
-            model=modell,
-            contents=hochgeladene_teile + [prompt],
-            config=types.GenerateContentConfig(system_instruction=anweisung),
-        )
-        repariert = antwort.text or ""
-        if not repariert.strip():
-            return text
-        # Reparatur darf nur den bereits vorhandenen Abschnitt ersetzen.
-        if abschnitt:
-            return text[:abschnitt[0]] + repariert.strip() + "\n\n" + text[abschnitt[1]:].lstrip("\n")
-        # Falls der Abschnitt komplett fehlt: vor Geschlossene/Methodik einfuegen.
-        marker = re.search(r"(?im)^\s*(?:\d+\.\s*)?(?:geschlossene positionen|gestoppte positionen|methodik(?: &| und)? lesehilfe)\s*$", text)
-        if marker:
-            return text[:marker.start()] + repariert.strip() + "\n\n" + text[marker.start():]
-        return text + "\n\n" + repariert.strip() + "\n"
-    except Exception as exc:
-        print(f"WARNUNG: Offene-Positionen-Reparatur fehlgeschlagen: {exc}")
-        return text
 
 
 def _a_aufstiege_block():
