@@ -1476,7 +1476,12 @@ def _remove_closed_from_source(
     if not closed_keys:
         return 0
 
-    source_keys = [_position_key(row) for _, row in source.iterrows()]
+    # Die erste Datenzeile ist die feste ANLEITUNG-Zeile (CSV-Zeile 2).
+    # Positionsprüfung und automatisches Entfernen beginnen deshalb erst ab CSV-Zeile 3.
+    position_source = source.iloc[1:].copy()
+    prefix = source.iloc[:1].copy()
+
+    source_keys = [_position_key(row) for _, row in position_source.iterrows()]
     if len(source_keys) != len(set(source_keys)):
         raise RuntimeError(
             "Offene_Positionen.csv enthält doppelte identische Positionsschlüssel; "
@@ -1496,23 +1501,24 @@ def _remove_closed_from_source(
         )
 
     # Nur Status "gestoppt"/"verkauft" darf automatisiert entfernt werden.
-    for idx, (row, is_match) in enumerate(zip(source.to_dict("records"), matches)):
+    for row, is_match in zip(position_source.to_dict("records"), matches):
         if is_match and str(row.get("Status", "")).strip().lower() not in {"gestoppt", "verkauft"}:
             raise RuntimeError(
                 "Sicherheitsabbruch: eine zu entfernende Position hat keinen "
                 f"Status 'gestoppt'/'verkauft': {row}"
             )
 
-    remaining = source.loc[[not x for x in matches]].copy()
+    remaining_positions = position_source.loc[[not x for x in matches]].copy()
+    remaining = pd.concat([prefix, remaining_positions], ignore_index=True)
 
     # Vor dem atomaren Austausch muss bewiesen sein, dass:
     # - genau die geschlossenen Positionen entfernt werden,
     # - alle offenen Positionen byte-/wertseitig unverändert bleiben.
-    expected_open = source[
-        source["Status"].astype(str).str.strip().str.lower() == "offen"
+    expected_open = position_source[
+        position_source["Status"].astype(str).str.strip().str.lower() == "offen"
     ].copy()
-    actual_open = remaining[
-        remaining["Status"].astype(str).str.strip().str.lower() == "offen"
+    actual_open = remaining_positions[
+        remaining_positions["Status"].astype(str).str.strip().str.lower() == "offen"
     ].copy()
 
     if len(remaining) != len(source) - len(closed_keys):
@@ -1523,7 +1529,7 @@ def _remove_closed_from_source(
         )
 
     # Noch einmal prüfen: Jede geschlossene Position ist tatsächlich verschwunden.
-    remaining_keys = {_position_key(row) for _, row in remaining.iterrows()}
+    remaining_keys = {_position_key(row) for _, row in remaining_positions.iterrows()}
     if remaining_keys.intersection(key_set):
         raise RuntimeError(
             "Sicherheitsabbruch: Mindestens eine geschlossene Position wäre weiterhin vorhanden."
@@ -1553,7 +1559,8 @@ def _remove_closed_from_source(
                 "Sicherheitsabbruch: temporär geschriebene Datei verändert offene Positionen."
             )
 
-        written_keys = {_position_key(row) for _, row in written.iterrows()}
+        written_positions = written.iloc[1:].copy()
+        written_keys = {_position_key(row) for _, row in written_positions.iterrows()}
         if written_keys.intersection(key_set):
             raise RuntimeError(
                 "Sicherheitsabbruch: temporäre Datei enthält weiterhin geschlossene Position."
@@ -1571,13 +1578,14 @@ def _remove_closed_from_source(
 
         # Nachkontrolle des tatsächlich ersetzten Originals.
         verified = read_positions(source_file)
-        verified_keys = [_position_key(row) for _, row in verified.iterrows()]
+        verified_positions = verified.iloc[1:].copy()
+        verified_keys = [_position_key(row) for _, row in verified_positions.iterrows()]
         if set(verified_keys).intersection(key_set):
             raise RuntimeError(
                 "Nachkontrolle fehlgeschlagen: geschlossene Position weiterhin in Quelle."
             )
-        verified_open = verified[
-            verified["Status"].astype(str).str.strip().str.lower() == "offen"
+        verified_open = verified_positions[
+            verified_positions["Status"].astype(str).str.strip().str.lower() == "offen"
         ].reset_index(drop=True)
         if not expected_open.reset_index(drop=True).equals(verified_open):
             raise RuntimeError(
@@ -1621,6 +1629,7 @@ def _selftest_closed_position_removal():
 
     columns = ["Ticker", "Name", "Einstiegsdatum", "Einstieg", "Status"]
     rows = [
+        ["ANLEITUNG", "NEUE POSITION - Pflichtfelder ...", "", "", ""],
         ["NEM", "Newmont Corporation", "01.08.2026", "45,20", "gestoppt"],
         ["NEM", "Newmont Corporation", "19.08.2026", "52,10", "Offen"],
         ["FCX", "Freeport-McMoRan", "10.08.2026", "66,32", "verkauft"],
@@ -1639,9 +1648,11 @@ def _selftest_closed_position_removal():
         assert _remove_closed_from_source(source_path, closed) == 2
 
         after = read_positions(source_path)
-        assert len(after) == 3
-        assert set(after["Ticker"]) == {"NEM", "FCX", "AEM"}
-        assert len(after[after["Status"].str.lower() == "offen"]) == 3
+        assert len(after) == 4
+        assert after.iloc[0]["Ticker"] == "ANLEITUNG"
+        assert after.iloc[0]["Name"].startswith("NEUE POSITION")
+        assert set(after.iloc[1:]["Ticker"]) == {"NEM", "FCX", "AEM"}
+        assert len(after.iloc[1:][after.iloc[1:]["Status"].str.lower() == "offen"]) == 3
 
         # Fehlende Position muss hart scheitern und die Quelle unverändert lassen.
         missing = pd.DataFrame(
