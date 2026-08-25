@@ -433,19 +433,50 @@ def _offene_positionen_quellblock(csv_pfad):
         raise RuntimeError(f"Offene Positionen+Check.csv konnte nicht als verbindliche Quelle gelesen werden: {exc}")
 
 def _technische_zielzonen_quelle(csv_pfad):
-    """Liest die bereits berechnete Technische_Zielzone verbindlich aus
-    Offene Positionen+Check.csv. Gemini darf diesen Wert weder berechnen
-    noch verändern."""
+    """Liest die technischen Check-Felder verbindlich aus der Check-Datei.
+
+    Die Positionsidentitaet ist ausschließlich:
+        Name + Ticker + Einstiegskurs + Einstiegsdatum
+
+    Die Check-Datei ist Master. Insbesondere Technische_Zielzone wird
+    ausschließlich als bereits vorhandener CSV-String übernommen.
+    """
     if not csv_pfad or not os.path.isfile(csv_pfad):
-        return {}
+        raise RuntimeError(
+            "Offene Positionen+Check.csv fehlt; technische Werte koennen "
+            "nicht verbindlich aus der Master-Datei uebernommen werden."
+        )
+
+    technische_felder = [
+        "Technischer_Zustand",
+        "Trendrichtung",
+        "Support/Widerstand",
+        "Breakout_Status",
+        "A-B-C_Status",
+        "Fibonacci_Status/Ziele",
+        "Trendkanal",
+        "Measured Move",
+        "Formation",
+        "Round Number",
+        "Major Resistance",
+        "Ueberdehnung",
+        "Relative Staerke_Sektor",
+        "Konfluenz",
+        "Retest_Support",
+        "Technische_Zielzone",
+        "Datenqualitaet",
+        "Analysehinweis",
+    ]
+
     try:
         with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f, delimiter=";")
             fields = reader.fieldnames or []
 
             def key(name):
+                wanted = name.strip().lower()
                 return next(
-                    (k for k in fields if str(k).strip().lower() == name.lower()),
+                    (k for k in fields if str(k).strip().lower() == wanted),
                     None,
                 )
 
@@ -454,12 +485,21 @@ def _technische_zielzonen_quelle(csv_pfad):
             status_k = key("Status")
             entry_k = key("Einstieg")
             date_k = key("Einstiegsdatum")
-            target_k = key("Technische_Zielzone")
+            technical_keys = {field: key(field) for field in technische_felder}
 
-            if not all((name_k, ticker_k, entry_k, date_k, target_k)):
+            missing = [
+                field for field, column in [
+                    ("Name", name_k),
+                    ("Ticker", ticker_k),
+                    ("Einstieg", entry_k),
+                    ("Einstiegsdatum", date_k),
+                    ("Technische_Zielzone", technical_keys["Technische_Zielzone"]),
+                ]
+                if not column
+            ]
+            if missing:
                 raise ValueError(
-                    "Check-Datei benötigt Name, Ticker, Einstieg, Einstiegsdatum "
-                    "und Technische_Zielzone."
+                    "Check-Datei benoetigt folgende Felder: " + ", ".join(missing)
                 )
 
             result = {}
@@ -468,29 +508,127 @@ def _technische_zielzonen_quelle(csv_pfad):
                 if status and status not in {"offen", "open"}:
                     continue
 
-                name = str(row.get(name_k, "")).strip()
-                ticker = str(row.get(ticker_k, "")).strip()
-                entry = str(row.get(entry_k, "")).strip()
-                date = str(row.get(date_k, "")).strip()
-                target = str(row.get(target_k, "")).strip()
+                name = str(row.get(name_k, "") or "").strip()
+                ticker = str(row.get(ticker_k, "") or "").strip()
+                entry = str(row.get(entry_k, "") or "").strip()
+                date = str(row.get(date_k, "") or "").strip()
 
                 if not (name or ticker):
                     continue
 
-                key_tuple = (name, ticker, _positionsfeld_schluessel(entry), _positionsfeld_schluessel(date))
-                if key_tuple in result:
+                # Wichtig: Der Wert der Zielzone wird NICHT normalisiert.
+                # Er wird exakt so gespeichert, wie er in der CSV steht.
+                technical_values = {
+                    field: (
+                        str(row.get(column, "") or "").strip()
+                        if column else None
+                    )
+                    for field, column in technical_keys.items()
+                }
+
+                pos_key = (
+                    _normalisiere_positionsname(name),
+                    _normalisiere_ticker(ticker),
+                    _positionsfeld_schluessel(entry),
+                    _positionsfeld_schluessel(date),
+                )
+
+                if pos_key in result:
                     raise ValueError(
                         "Doppelter Positionsschlüssel in Offene Positionen+Check.csv: "
                         f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
                     )
-                result[key_tuple] = target
+
+                result[pos_key] = {
+                    "name": name,
+                    "ticker": ticker,
+                    "entry": entry,
+                    "date": date,
+                    "technical": technical_values,
+                }
 
             return result
+
+    except RuntimeError:
+        raise
     except Exception as exc:
         raise RuntimeError(
-            "Technische_Zielzone konnte nicht verbindlich aus "
+            "Technische Check-Werte konnten nicht verbindlich aus "
             f"Offene Positionen+Check.csv gelesen werden: {exc}"
         )
+
+
+def _normalisiere_positionsname(value):
+    """Robuste Namensnormalisierung fuer die Zuordnung Gemini -> CSV."""
+    value = str(value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
+    value = re.sub(
+        r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|"
+        r"holding|holdings|company|co|group)\b",
+        " ",
+        value,
+    )
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalisiere_ticker(value):
+    return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").strip().lower())
+
+
+def _finde_quellposition(ziel_key, quellpositionen):
+    """Findet genau eine CSV-Position.
+
+    Primär wird der vollständige Schlüssel verwendet. Wenn Gemini den
+    Firmennamen leicht anders schreibt, wird ausschließlich über
+    Ticker + Einstieg + Datum aufgelöst. Das ist bei mehreren gleichen
+    Tickern sicher, weil Einstieg und Datum Bestandteil des Schlüssels sind.
+    """
+    if ziel_key in quellpositionen:
+        return quellpositionen[ziel_key]
+
+    name, ticker, entry, date = ziel_key
+
+    # 1. Vollständiger Schlüssel mit Ticker + Einstieg + Datum.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[1] == ticker and key[2] == entry and key[3] == date
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+    if len(kandidaten) > 1:
+        raise RuntimeError(
+            "Position nicht eindeutig zuordenbar: "
+            f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+        )
+
+    # 2. CSV ist Master: Wenn Name+Ticker in der CSV eindeutig sind, darf
+    # der Gemini-Block auch bei abweichendem/fehlendem Einstieg oder Datum
+    # dieser eindeutigen CSV-Position zugeordnet werden. Anschließend werden
+    # Einstieg und Datum aus der CSV eingesetzt.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[0] == name and key[1] == ticker
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+
+    # 3. Falls der Firmenname durch Gemini leicht abweicht, ist ein eindeutiger
+    # Ticker ebenfalls ausreichend. Bei mehreren gleichen Tickern wird ohne
+    # Einstieg+Datum niemals geraten.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[1] == ticker
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+
+    if len(kandidaten) > 1:
+        raise RuntimeError(
+            "Position nicht eindeutig zuordenbar; gleicher Ticker mehrfach "
+            "vorhanden, Einstieg und Einstiegsdatum fehlen oder passen nicht: "
+            f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+        )
+    return None
 
 # ---------------------------------------------------------------------------
 # HAUPTLOGIK
@@ -575,7 +713,10 @@ def gemini_auswertung_starten():
                     "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
                     "Round Number, Major Resistance, Ueberdehnung, Relative Staerke_Sektor, "
                     "Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. "
-                    "Technische_Zielzone ist ein bereits berechnetes Feld: Uebernimm den Wert "
+                    "ALLE technischen Check-Felder sind bereits berechnete Quellwerte. "
+                    "Uebernimm sie aus Offene Positionen+Check.csv und berechne, interpretiere, "
+                    "priorisiere, kuerze, ergaenze oder ersetze keinen technischen Wert selbst. "
+                    "Technische_Zielzone ist dabei besonders streng: Uebernimm den Wert "
                     "aus Offene Positionen+Check.csv exakt 1:1. Berechne, priorisiere, kuerze, "
                     "ergaenze oder ersetze die Technische_Zielzone niemals selbst. Auch wenn "
                     "Widerstand_1, Fibonacci, Trendkanal, Measured Move, Round Number oder "
@@ -679,94 +820,257 @@ def gemini_auswertung_starten():
 
 
 def normalisiere_ausgabe(text, zielzonen=None):
-    """Erzwingt zwei kleine, rein formale Layoutregeln nach Gemini.
+    """Erzwingt formale Regeln und macht die Check-Datei zum Master.
 
-    Zusaetzlich wird Technische_Zielzone fuer offene Positionen deterministisch
-    aus Offene Positionen+Check.csv uebernommen. Gemini darf diesen Wert nicht
-    berechnen, priorisieren, kuerzen, ergaenzen oder veraendern.
+    Gemini liefert die Analyse, aber offene Positions-Stammdaten und
+    technische Check-Felder werden deterministisch aus
+    Offene Positionen+Check.csv übernommen. Keine technische Berechnung
+    findet hier statt.
     """
     if not text:
         return text
-    text = re.sub(r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", r"\n\1", text)
-    text = re.sub(r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", "\n\n", text)
 
-    if zielzonen:
-        match = re.search(
-            r"(?ms)^8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
-            text,
+    text = re.sub(
+        r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
+        r"Setup-System einen konkreten Einstieg bestaetigt\?:)",
+        r"\n\1",
+        text,
+    )
+    text = re.sub(
+        r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende "
+        r"Setup-System einen konkreten Einstieg bestaetigt\?:)",
+        "\n\n",
+        text,
+    )
+
+    if not zielzonen:
+        raise RuntimeError(
+            "Keine verbindlichen technischen Positionsdaten aus "
+            "Offene Positionen+Check.csv vorhanden."
         )
-        if match:
-            block = match.group(0)
-            header_re = re.compile(
-                r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+
+    match = re.search(
+        r"(?ims)^8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        text,
+    )
+    if not match:
+        raise RuntimeError(
+            "Abschnitt '8. OFFENE POSITIONEN' fehlt; "
+            "CSV-Masterwerte koennen nicht verbindlich eingesetzt werden."
+        )
+
+    block = match.group(0)
+    header_re = re.compile(
+        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+    )
+    headers = list(header_re.finditer(block))
+    if not headers:
+        raise RuntimeError(
+            "Keine gueltigen Positionskoepfe im Abschnitt "
+            "'8. OFFENE POSITIONEN' gefunden."
+        )
+
+    expected = dict(zielzonen)
+    seen = {}
+    errors = []
+
+    # Gemini darf die technischen Werte nur darstellen; die CSV ersetzt sie
+    # nach der Zuordnung. Die Zielzone ist dabei besonders streng: 1:1.
+    technical_labels = {
+        "Technischer_Zustand": re.compile(r"(?im)^(\s*Technischer Zustand\s*:\s*)[^\n]*$"),
+        "Trendrichtung": re.compile(r"(?im)^(\s*Trendrichtung\s*:\s*)[^\n]*$"),
+        "Support/Widerstand": re.compile(r"(?im)^(\s*Support/Widerstand\s*:\s*)[^\n]*$"),
+        "Breakout_Status": re.compile(r"(?im)^(\s*Breakout Status\s*:\s*)[^\n]*$"),
+        "A-B-C_Status": re.compile(r"(?im)^(\s*A-B-C Status\s*:\s*)[^\n]*$"),
+        "Fibonacci_Status/Ziele": re.compile(r"(?im)^(\s*Fibonacci(?: Status/Ziele)?\s*:\s*)[^\n]*$"),
+        "Trendkanal": re.compile(r"(?im)^(\s*Trendkanal\s*:\s*)[^\n]*$"),
+        "Measured Move": re.compile(r"(?im)^(\s*Measured Move\s*:\s*)[^\n]*$"),
+        "Formation": re.compile(r"(?im)^(\s*Formation\s*:\s*)[^\n]*$"),
+        "Round Number": re.compile(r"(?im)^(\s*Round Number\s*:\s*)[^\n]*$"),
+        "Major Resistance": re.compile(r"(?im)^(\s*Major Resistance\s*:\s*)[^\n]*$"),
+        "Ueberdehnung": re.compile(r"(?im)^(\s*(?:Ueberdehnung|Überdehnung)\s*:\s*)[^\n]*$"),
+        "Relative Staerke_Sektor": re.compile(r"(?im)^(\s*Relative Staerke(?:_Sektor)?\s*:\s*)[^\n]*$"),
+        "Konfluenz": re.compile(r"(?im)^(\s*Konfluenz\s*:\s*)[^\n]*$"),
+        "Retest_Support": re.compile(r"(?im)^(\s*Retest_Support\s*:\s*)[^\n]*$"),
+        "Technische_Zielzone": re.compile(r"(?im)^(\s*Technische Zielzone\s*:\s*)[^\n]*$"),
+        "Datenqualitaet": re.compile(r"(?im)^(\s*Datenqualitaet\s*:\s*)[^\n]*$"),
+        "Analysehinweis": re.compile(r"(?im)^(\s*Analysehinweis\s*:\s*)[^\n]*$"),
+    }
+
+    replacements = []
+
+    for idx, header in reversed(list(enumerate(headers))):
+        start = header.start()
+        end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
+        pos_block = block[start:end]
+
+        name = header.group(1).strip()
+        ticker = header.group(2).strip()
+
+        # Unterstützt sowohl "Einstieg: 108,04€ (02.02.2022)" als auch
+        # getrennte Einstieg/Einstiegsdatum-Zeilen.
+        entry_match = re.search(
+            r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*([^\n(]+?)(?:\s*\(([^)]+)\))?\s*$",
+            pos_block,
+        )
+        if not entry_match:
+            errors.append(f"{name} ({ticker}): Einstiegszeile fehlt")
+            continue
+
+        entry = entry_match.group(1).strip()
+        inline_entry_date = bool(entry_match.group(2))
+        date = entry_match.group(2).strip() if inline_entry_date else ""
+        if not date:
+            date_match = re.search(
+                r"(?im)^\s*Einstiegsdatum\s*:\s*([^\n|]+?)\s*$",
+                pos_block,
             )
-            headers = list(header_re.finditer(block))
-            errors = []
+            if date_match:
+                date = date_match.group(1).strip()
 
-            for idx, header in reversed(list(enumerate(headers))):
-                start = header.start()
-                end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
-                pos_block = block[start:end]
+        pos_key = (
+            _normalisiere_positionsname(name),
+            _normalisiere_ticker(ticker),
+            _positionsfeld_schluessel(entry),
+            _positionsfeld_schluessel(date),
+        )
 
-                name = header.group(1).strip()
-                ticker = header.group(2).strip()
-                entry_match = re.search(
-                    r"(?m)^\s*Einstieg:\s*([^\n(]+?)\s*\(([^)]+)\)\s*$",
-                    pos_block,
-                )
-                if not entry_match:
-                    errors.append(f"{name} ({ticker}): Einstiegszeile fehlt")
-                    continue
+        try:
+            source = _finde_quellposition(pos_key, expected)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            continue
 
-                entry = entry_match.group(1).strip()
-                date = entry_match.group(2).strip()
-                pos_key = (
-                    name,
-                    ticker,
-                    _positionsfeld_schluessel(entry),
-                    _positionsfeld_schluessel(date),
-                )
-                if pos_key not in zielzonen:
-                    errors.append(
-                        f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
-                        "kein passender Positionsschluessel in Offene Positionen+Check.csv"
-                    )
-                    continue
+        if source is None:
+            errors.append(
+                f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
+                "kein passender Positionsschluessel in Offene Positionen+Check.csv"
+            )
+            continue
 
-                target_line = f"Technische Zielzone: {zielzonen[pos_key]}"
-                pos_block_new, count = re.subn(
-                    r"(?m)^\s*Technische Zielzone:\s*[^\n]*$",
-                    target_line,
-                    pos_block,
-                    count=1,
-                )
+        source_key = (
+            _normalisiere_positionsname(source["name"]),
+            _normalisiere_ticker(source["ticker"]),
+            _positionsfeld_schluessel(source["entry"]),
+            _positionsfeld_schluessel(source["date"]),
+        )
+        seen[source_key] = seen.get(source_key, 0) + 1
+        if seen[source_key] > 1:
+            errors.append(
+                f"{source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | "
+                f"Einstiegsdatum: {source['date']}: doppelte Position im Gemini-Output"
+            )
+            continue
 
+        # Stammdaten aus CSV: Gemini-Ausgabe wird nicht als Quelle akzeptiert.
+        # Nur der Wert wird ersetzt, das Label/Format bleibt erhalten.
+        src_entry = source["entry"]
+        src_date = source["date"]
+
+        em = re.search(
+            r"(?im)^([ \t]*Einstieg(?:skurs)?\s*:\s*)[^\n]+$",
+            pos_block,
+        )
+        if em:
+            # Wenn Gemini das Datum in Klammern an die Einstiegszeile
+            # geschrieben hat, bleibt diese Darstellung erhalten; nur der
+            # Einstiegskurs wird durch den CSV-Masterwert ersetzt.
+            date_suffix = f" ({src_date})" if inline_entry_date else ""
+            pos_block = (
+                pos_block[:em.start(0)]
+                + em.group(1)
+                + src_entry
+                + date_suffix
+                + pos_block[em.end(0):]
+            )
+        else:
+            errors.append(
+                f"{source['name']} ({source['ticker']}): "
+                "Einstiegszeile konnte nicht kanonisiert werden"
+            )
+            continue
+
+        dm = re.search(
+            r"(?im)^([ \t]*Einstiegsdatum\s*:\s*)[^\n]+$",
+            pos_block,
+        )
+        if dm:
+            pos_block = (
+                pos_block[:dm.start(0)]
+                + dm.group(1)
+                + src_date
+                + pos_block[dm.end(0):]
+            )
+
+        technical = source["technical"]
+
+        for field, value in technical.items():
+            if value is None:
+                continue
+
+            pattern = technical_labels.get(field)
+            if pattern is None:
+                continue
+
+            # Zielzone: vorhandenen Gemini-Wert vollständig verwerfen und
+            # den CSV-String 1:1 einsetzen. Keine Berechnung/Normalisierung.
+            if field == "Technische_Zielzone":
+                replacement = f"Technische Zielzone: {value}"
+                pos_block, count = pattern.subn(replacement, pos_block, count=1)
                 if count == 0:
-                    pos_block_new, count = re.subn(
-                        r"(?m)^\s*Ueberdehnung:",
-                        target_line + "\\nUeberdehnung:",
+                    # Fehlende Zielzone ist erlaubt: sie wird deterministisch
+                    # unmittelbar vor Ueberdehnung eingefügt.
+                    anchor = re.search(
+                        r"(?im)^\s*(?:Ueberdehnung|Überdehnung)\s*:",
                         pos_block,
-                        count=1,
                     )
-
+                    if anchor:
+                        pos_block = (
+                            pos_block[:anchor.start()]
+                            + replacement + "\n"
+                            + pos_block[anchor.start():]
+                        )
+                        count = 1
                 if count == 0:
-                    errors.append(
-                        f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
-                        "Technische-Zielzone-Zeile konnte nicht gesetzt werden"
-                    )
-                    continue
+                    # Falls auch kein Ueberdehnung/Überdehnung-Anker vorhanden
+                    # ist, wird die verbindliche CSV-Zielzone am Ende des
+                    # Positionsblocks eingesetzt. Der CSV-Wert bleibt 1:1.
+                    pos_block = pos_block.rstrip() + "\n" + replacement + "\n"
+                    count = 1
+                continue
 
-                block = block[:start] + pos_block_new + block[end:]
+            # Alle anderen technischen Check-Felder werden ebenfalls aus der
+            # CSV übernommen, sofern Gemini die entsprechende Zeile ausgegeben
+            # hat. Fehlende technische Zeilen werden nicht erfunden.
+            pos_block, _ = pattern.subn(
+                lambda m, v=value: m.group(1) + v,
+                pos_block,
+                count=1,
+            )
 
-            if errors:
-                raise RuntimeError(
-                    "Technische_Zielzone konnte fuer offene Positionen nicht "
-                    "verbindlich aus Offene Positionen+Check.csv uebernommen werden: "
-                    + " | ".join(errors)
-                )
+        replacements.append((start, end, pos_block))
 
-            text = text[:match.start()] + block + text[match.end():]
+    # Jede offene CSV-Position muss genau einmal im Gemini-Block auftauchen.
+    for source_key in expected:
+        if seen.get(source_key, 0) == 0:
+            source = expected[source_key]
+            errors.append(
+                f"{source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | "
+                f"Einstiegsdatum: {source['date']}: fehlt im Gemini-Output"
+            )
 
+    if errors:
+        raise RuntimeError(
+            "Offene Positionen konnten nicht verbindlich gegen "
+            "Offene Positionen+Check.csv abgeglichen werden: "
+            + " | ".join(errors)
+        )
+
+    # Ersetzungen rückwärts anwenden, damit Positionen ihre Original-Indizes behalten.
+    for start, end, pos_block in sorted(replacements, reverse=True):
+        block = block[:start] + pos_block + block[end:]
+
+    text = text[:match.start()] + block + text[match.end():]
     return text
 
 
