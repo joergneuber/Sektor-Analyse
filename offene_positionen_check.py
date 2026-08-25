@@ -902,10 +902,14 @@ def make_row(row, tech: TechnicalResult) -> dict:
         sector = "Edelmetalle / Gold (Future)"
 
     target_zone = ""
-    # Die Zielzone folgt der bereits berechneten V2-Hierarchie. Die Konfluenz
-    # darf nur dann die primäre Darstellung übernehmen, wenn mindestens zwei
-    # unabhängige Referenzen zusammenfallen; ein historischer Widerstand allein ist keine
-    # Konfluenz.
+    # Feste Zielzonen-Hierarchie:
+    # 1. bestaetigte Mehrfach-Konfluenz
+    # 2. naechster Widerstand 1
+    # 3. aktives Fibonacci-Ziel
+    # 4. Trendkanal-Obergrenze
+    # 5. Measured Move
+    # 6. Round Number
+    # Uebergeordneter Widerstand / ATH bleibt separat und wird NICHT angehaengt.
     if tech.confluence and "Keine Mehrfach-Konfluenz" not in tech.confluence and "Keine" not in tech.confluence:
         target_zone = tech.confluence
     elif tech.resistance1 is not None and tech.close is not None and tech.resistance1 > tech.close:
@@ -918,17 +922,13 @@ def make_row(row, tech: TechnicalResult) -> dict:
         if fibs:
             value, label = min(fibs, key=lambda x: x[0])
             target_zone = f"{value:.2f} ({label})"
-    else:
-        secondary = [(v, label) for v, label in [
-            (tech.channel_upper, "Trendkanal"), (tech.measured_move, "Measured Move"),
-            (tech.round_number, "Round Number"),
-        ] if v is not None and tech.close is not None and v > tech.close]
-        if secondary:
-            value, label = min(secondary, key=lambda x: x[0])
-            target_zone = f"{value:.2f} ({label})"
-    if tech.major_resistance is not None:
-        major_text = f"{tech.major_resistance:.2f} ({tech.major_resistance_label or 'Widerstand'})"
-        target_zone = (target_zone + " | " + major_text).strip(" |") if target_zone else major_text
+    elif tech.channel_upper is not None and tech.close is not None and tech.channel_upper > tech.close:
+        target_zone = f"{tech.channel_upper:.2f} (Trendkanal)"
+    elif tech.measured_move is not None and tech.close is not None and tech.measured_move > tech.close:
+        target_zone = f"{tech.measured_move:.2f} (Measured Move)"
+    elif tech.round_number is not None and tech.close is not None and tech.round_number > tech.close:
+        target_zone = f"{tech.round_number:.2f} (Round Number)"
+
     return {
         "Ticker": ticker,
         "Name": name,
