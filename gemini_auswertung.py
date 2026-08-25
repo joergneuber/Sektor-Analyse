@@ -449,11 +449,13 @@ def gemini_auswertung_starten():
                     "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
                     "Round Number, Major Resistance, Ueberdehnung, Relative Staerke_Sektor, "
                     "Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. "
-                    "Eine alte Offene_Positionen.csv-Datei darf ausschließlich als "
+                    "Einstiegsdatum ist ebenfalls ein verbindliches Feld der Check-Datei "
+                    "und muss für jede offene Position aus 'Offene Positionen+Check.csv' übernommen "
+                    "werden. Eine alte Offene_Positionen.csv-Datei darf ausschließlich als "
                     "Backend-Fallback für Positionsfelder verwendet werden, die in der "
                     "festgelegten Check-Struktur nicht enthalten sind (z.B. Stop, TP1, TP2, "
-                    "Richtung, Ideen_Quelle, Einstiegsdatum). Sie darf niemals technische "
-                    "Check-Werte ersetzen oder widersprechen.",
+                    "Richtung, Ideen_Quelle). Sie darf niemals technische oder sonstige "
+                    "verbindliche Check-Felder ersetzen oder widersprechen.",
                     (
                         f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
                         "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "

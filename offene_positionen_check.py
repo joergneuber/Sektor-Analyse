@@ -63,7 +63,7 @@ IMMEDIATE_RESISTANCE_MAX_DISTANCE = 0.10
 
 HEADERS = [
     "Ticker", "Name", "Steuerungsart", "Sektor", "Markt", "Waehrung",
-    "Status", "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
+    "Status", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
     "Technischer_Zustand", "Trendrichtung", "Technische_Lage",
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
     "Widerstand_1_Label", "Widerstand_2_Label",
@@ -937,6 +937,7 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Markt": str(row.get("Markt", "")).strip(),
         "Waehrung": str(row.get("Waehrung", "")).strip(),
         "Status": "Offen",
+        "Einstiegsdatum": str(row.get("Einstiegsdatum", "")).strip(),
         "Einstieg": fmt_num(entry),
         "Aktueller_Kurs": fmt_num(close),
         "Performance_Seit_Einstieg%": fmt_num(perf),
@@ -985,6 +986,8 @@ def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
 def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
               history_csv: str = "Geschlossene Positionen.csv"):
     df = read_positions(input_file)
+    if "Einstiegsdatum" not in df.columns:
+        raise ValueError("Offene_Positionen.csv enthält keine Spalte 'Einstiegsdatum'.")
     open_df = df[df.apply(is_open, axis=1)].copy()
     closed_df = extract_closed_history(df)
     results = []
