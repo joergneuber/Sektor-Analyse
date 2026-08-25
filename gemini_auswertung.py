@@ -372,6 +372,33 @@ def lade_anweisung():
 
 
 
+def _positionsfeld_schluessel(value):
+    """Normalisiert nur die vier Felder des eindeutigen Positionsschluessels,
+    damit z.B. 66,32 und 66,32$ dieselbe Position referenzieren."""
+    text = str(value or "").strip()
+    text = text.replace("€", "").replace("$", "").replace("£", "")
+    date_match = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", text)
+    if date_match:
+        a, b, y = date_match.groups()
+        if len(a) == 4:
+            return f"{a}-{b.zfill(2)}-{y.zfill(2)}"
+        return f"{y}-{b.zfill(2)}-{a.zfill(2)}"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", text):
+        return text[:10]
+    text = text.replace(" ", "")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    else:
+        text = text.replace(",", ".")
+    try:
+        return f"{float(text):.12g}"
+    except Exception:
+        return text.lower()
+
+
 def _offene_positionen_quellblock(csv_pfad):
     """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
     Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
@@ -404,6 +431,66 @@ def _offene_positionen_quellblock(csv_pfad):
             return "\n".join(rows)
     except Exception as exc:
         raise RuntimeError(f"Offene Positionen+Check.csv konnte nicht als verbindliche Quelle gelesen werden: {exc}")
+
+def _technische_zielzonen_quelle(csv_pfad):
+    """Liest die bereits berechnete Technische_Zielzone verbindlich aus
+    Offene Positionen+Check.csv. Gemini darf diesen Wert weder berechnen
+    noch verändern."""
+    if not csv_pfad or not os.path.isfile(csv_pfad):
+        return {}
+    try:
+        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f, delimiter=";")
+            fields = reader.fieldnames or []
+
+            def key(name):
+                return next(
+                    (k for k in fields if str(k).strip().lower() == name.lower()),
+                    None,
+                )
+
+            name_k = key("Name")
+            ticker_k = key("Ticker")
+            status_k = key("Status")
+            entry_k = key("Einstieg")
+            date_k = key("Einstiegsdatum")
+            target_k = key("Technische_Zielzone")
+
+            if not all((name_k, ticker_k, entry_k, date_k, target_k)):
+                raise ValueError(
+                    "Check-Datei benötigt Name, Ticker, Einstieg, Einstiegsdatum "
+                    "und Technische_Zielzone."
+                )
+
+            result = {}
+            for row in reader:
+                status = str(row.get(status_k, "")).strip().lower() if status_k else ""
+                if status and status not in {"offen", "open"}:
+                    continue
+
+                name = str(row.get(name_k, "")).strip()
+                ticker = str(row.get(ticker_k, "")).strip()
+                entry = str(row.get(entry_k, "")).strip()
+                date = str(row.get(date_k, "")).strip()
+                target = str(row.get(target_k, "")).strip()
+
+                if not (name or ticker):
+                    continue
+
+                key_tuple = (name, ticker, _positionsfeld_schluessel(entry), _positionsfeld_schluessel(date))
+                if key_tuple in result:
+                    raise ValueError(
+                        "Doppelter Positionsschlüssel in Offene Positionen+Check.csv: "
+                        f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+                    )
+                result[key_tuple] = target
+
+            return result
+    except Exception as exc:
+        raise RuntimeError(
+            "Technische_Zielzone konnte nicht verbindlich aus "
+            f"Offene Positionen+Check.csv gelesen werden: {exc}"
+        )
 
 # ---------------------------------------------------------------------------
 # HAUPTLOGIK
@@ -488,6 +575,12 @@ def gemini_auswertung_starten():
                     "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
                     "Round Number, Major Resistance, Ueberdehnung, Relative Staerke_Sektor, "
                     "Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. "
+                    "Technische_Zielzone ist ein bereits berechnetes Feld: Uebernimm den Wert "
+                    "aus Offene Positionen+Check.csv exakt 1:1. Berechne, priorisiere, kuerze, "
+                    "ergaenze oder ersetze die Technische_Zielzone niemals selbst. Auch wenn "
+                    "Widerstand_1, Fibonacci, Trendkanal, Measured Move, Round Number oder "
+                    "Major Resistance andere Werte enthalten, hat der bereits berechnete Wert "
+                    "in Technische_Zielzone Vorrang und muss unveraendert ausgegeben werden. "
                     "Für offene Positionen sind Firmenname, Ticker, Einstiegskurs und Einstiegsdatum "
                     "ausschließlich aus 'Offene Positionen+Check.csv' zu übernehmen. "
                     "Die alte Offene_Positionen.csv darf für diese vier Felder niemals als "
@@ -585,25 +678,105 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
-def normalisiere_ausgabe(text):
+def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt zwei kleine, rein formale Layoutregeln nach Gemini.
 
-    Inhalt und Werte werden nicht veraendert: Vor jeder Zeile "Was muesste..."
-    in den Perspektivischen Trade-Ideen wird genau eine Leerzeile gesetzt.
-    Dadurch bleibt das gewuenschte Layout auch bei leicht variierender Gemini-
-    Formatierung stabil.
+    Zusaetzlich wird Technische_Zielzone fuer offene Positionen deterministisch
+    aus Offene Positionen+Check.csv uebernommen. Gemini darf diesen Wert nicht
+    berechnen, priorisieren, kuerzen, ergaenzen oder veraendern.
     """
     if not text:
         return text
     text = re.sub(r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", r"\n\1", text)
     text = re.sub(r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", "\n\n", text)
+
+    if zielzonen:
+        match = re.search(
+            r"(?ms)^8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+            text,
+        )
+        if match:
+            block = match.group(0)
+            header_re = re.compile(
+                r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+            )
+            headers = list(header_re.finditer(block))
+            errors = []
+
+            for idx, header in reversed(list(enumerate(headers))):
+                start = header.start()
+                end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
+                pos_block = block[start:end]
+
+                name = header.group(1).strip()
+                ticker = header.group(2).strip()
+                entry_match = re.search(
+                    r"(?m)^\s*Einstieg:\s*([^\n(]+?)\s*\(([^)]+)\)\s*$",
+                    pos_block,
+                )
+                if not entry_match:
+                    errors.append(f"{name} ({ticker}): Einstiegszeile fehlt")
+                    continue
+
+                entry = entry_match.group(1).strip()
+                date = entry_match.group(2).strip()
+                pos_key = (
+                    name,
+                    ticker,
+                    _positionsfeld_schluessel(entry),
+                    _positionsfeld_schluessel(date),
+                )
+                if pos_key not in zielzonen:
+                    errors.append(
+                        f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
+                        "kein passender Positionsschluessel in Offene Positionen+Check.csv"
+                    )
+                    continue
+
+                target_line = f"Technische Zielzone: {zielzonen[pos_key]}"
+                pos_block_new, count = re.subn(
+                    r"(?m)^\s*Technische Zielzone:\s*[^\n]*$",
+                    target_line,
+                    pos_block,
+                    count=1,
+                )
+
+                if count == 0:
+                    pos_block_new, count = re.subn(
+                        r"(?m)^\s*Ueberdehnung:",
+                        target_line + "\\nUeberdehnung:",
+                        pos_block,
+                        count=1,
+                    )
+
+                if count == 0:
+                    errors.append(
+                        f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
+                        "Technische-Zielzone-Zeile konnte nicht gesetzt werden"
+                    )
+                    continue
+
+                block = block[:start] + pos_block_new + block[end:]
+
+            if errors:
+                raise RuntimeError(
+                    "Technische_Zielzone konnte fuer offene Positionen nicht "
+                    "verbindlich aus Offene Positionen+Check.csv uebernommen werden: "
+                    + " | ".join(errors)
+                )
+
+            text = text[:match.start()] + block + text[match.end():]
+
     return text
 
 
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
-    text = normalisiere_ausgabe(text)
+    text = normalisiere_ausgabe(
+        text,
+        zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
+    )
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
