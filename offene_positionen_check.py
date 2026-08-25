@@ -1454,9 +1454,196 @@ def _closed_position_keys(closed_df: pd.DataFrame) -> list[tuple]:
     return keys
 
 
+def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
+    """Persistiert die bereits lokal bereinigte Quelle sicher im Drive-Master.
+
+    Die neue Google-Sheet-Datei wird zunächst unter einem temporären Namen
+    erstellt und vollständig verifiziert. Erst danach wird die bisherige
+    Quelldatei auf einen Backup-Namen verschoben und die verifizierte neue
+    Datei auf den produktiven Namen 'Offene_Positionen' gesetzt. Bei einem
+    Fehler bleibt die bisherige Drive-Quelldatei erhalten bzw. wird auf ihren
+    ursprünglichen Namen zurückgesetzt.
+    """
+    if creds is None:
+        raise RuntimeError(
+            "Bereinigte Offene_Positionen.csv kann nicht nach Google Drive "
+            "synchronisiert werden: keine Google-Credentials vorhanden."
+        )
+
+    drive = build("drive", "v3", credentials=creds)
+    sheets = build("sheets", "v4", credentials=creds)
+
+    q = (
+        "(name='Offene_Positionen' or name='Offene_Positionen.csv') "
+        f"and '{FOLDER_ID}' in parents and trashed=false"
+    )
+    files = drive.files().list(
+        q=q,
+        fields="files(id,name,mimeType,parents)",
+    ).execute().get("files", [])
+
+    old_file = next(
+        (f for f in files if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"),
+        None,
+    )
+    if old_file is None and files:
+        old_file = files[0]
+
+    # Die exakt bereinigte CSV als Zellmatrix lesen.
+    with open(source_file, "r", encoding="utf-8-sig", newline="") as fh:
+        values = list(csv.reader(fh, delimiter=";"))
+    if not values:
+        raise RuntimeError(
+            "Bereinigte Offene_Positionen.csv ist leer; Drive-Synchronisierung abgebrochen."
+        )
+
+    stamp = dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    temp_name = f"Offene_Positionen.__SYNC_{stamp}"
+    backup_name = f"Offene_Positionen.__BACKUP_{stamp}"
+
+    temp_id = None
+    backup_id = None
+    swapped = False
+
+    try:
+        created = drive.files().create(
+            body={
+                "name": temp_name,
+                "mimeType": "application/vnd.google-apps.spreadsheet",
+                "parents": [FOLDER_ID],
+            },
+            fields="id,name,mimeType",
+        ).execute()
+        temp_id = created["id"]
+
+        temp_meta = sheets.spreadsheets().get(
+            spreadsheetId=temp_id,
+            fields="sheets.properties",
+        ).execute()
+        temp_sheets = temp_meta.get("sheets", [])
+        if not temp_sheets:
+            raise RuntimeError("Temporäre Drive-Quelldatei enthält keinen Tabellen-Tab.")
+        temp_title = temp_sheets[0]["properties"]["title"]
+
+        sheets.spreadsheets().values().update(
+            spreadsheetId=temp_id,
+            range=f"'{temp_title}'!A1",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
+
+        verified_temp = sheets.spreadsheets().values().get(
+            spreadsheetId=temp_id,
+            range=f"'{temp_title}'!A:ZZZ",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute().get("values", [])
+
+        def _trim(row):
+            row = list(row)
+            while row and str(row[-1]).strip() == "":
+                row.pop()
+            return row
+
+        if [_trim(r) for r in values] != [_trim(r) for r in verified_temp]:
+            raise RuntimeError(
+                "Temporäre Google-Drive-Quelldatei stimmt nicht mit der "
+                "bereinigten CSV überein."
+            )
+
+        # Erst jetzt den produktiven Namen freimachen. Die alte Quelle bleibt
+        # unter einem Backup-Namen erhalten, bis der neue Stand verifiziert ist.
+        if old_file is not None:
+            old_id = old_file["id"]
+            drive.files().update(
+                fileId=old_id,
+                body={"name": backup_name},
+                fields="id,name",
+            ).execute()
+            backup_id = old_id
+
+        drive.files().update(
+            fileId=temp_id,
+            body={"name": "Offene_Positionen"},
+            fields="id,name",
+        ).execute()
+        swapped = True
+
+        # Produktiven Namen und Inhalt nach dem Swap erneut verifizieren.
+        q_final = (
+            "name='Offene_Positionen' "
+            f"and '{FOLDER_ID}' in parents and trashed=false"
+        )
+        final_files = drive.files().list(
+            q=q_final,
+            fields="files(id,name,mimeType)",
+        ).execute().get("files", [])
+        final_file = next(
+            (f for f in final_files if f["id"] == temp_id),
+            None,
+        )
+        if final_file is None:
+            raise RuntimeError(
+                "Nach dem Drive-Swap wurde die neue Quelldatei "
+                "'Offene_Positionen' nicht gefunden."
+            )
+
+        final_meta = sheets.spreadsheets().get(
+            spreadsheetId=temp_id,
+            fields="sheets.properties",
+        ).execute()
+        final_title = final_meta["sheets"][0]["properties"]["title"]
+        verified_final = sheets.spreadsheets().values().get(
+            spreadsheetId=temp_id,
+            range=f"'{final_title}'!A:ZZZ",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute().get("values", [])
+
+        if [_trim(r) for r in values] != [_trim(r) for r in verified_final]:
+            raise RuntimeError(
+                "Nachkontrolle der produktiven Drive-Quelldatei fehlgeschlagen."
+            )
+
+        # Erst jetzt darf die alte Quelle endgültig gelöscht werden.
+        if backup_id:
+            drive.files().delete(fileId=backup_id).execute()
+
+        print(
+            "GOOGLE DRIVE QUELLE AKTUALISIERT: Offene_Positionen | "
+            f"Datei-ID={temp_id} | Zeilen={len(values)}"
+        )
+
+    except Exception:
+        # Die neue Datei darf bei einem Fehler nie als zusätzlicher produktiver
+        # Stand zurückbleiben – unabhängig davon, ob der Namens-Swap bereits
+        # erfolgt ist.
+        if temp_id:
+            try:
+                drive.files().delete(fileId=temp_id).execute()
+            except Exception:
+                pass
+
+        # Wenn die alte Datei bereits auf Backup umbenannt wurde, den
+        # produktiven Namen zurücksetzen.
+        if backup_id:
+            try:
+                drive.files().update(
+                    fileId=backup_id,
+                    body={"name": "Offene_Positionen"},
+                    fields="id,name",
+                ).execute()
+            except Exception as restore_exc:
+                raise RuntimeError(
+                    "Drive-Synchronisierung fehlgeschlagen und die alte "
+                    f"Quelldatei konnte nicht zurückbenannt werden: {restore_exc}"
+                ) from restore_exc
+
+        raise
+
+
 def _remove_closed_from_source(
     source_file: str,
     closed_df: pd.DataFrame,
+    drive_creds=None,
 ) -> int:
     """Entfernt geschlossene Positionen atomar aus der Quelldatei.
 
@@ -1596,6 +1783,13 @@ def _remove_closed_from_source(
                 "Nachkontrolle fehlgeschlagen: Anzahl entfernter Positionen stimmt nicht."
             )
 
+        # Die lokale Quelle ist jetzt atomar ersetzt und nachkontrolliert.
+        # Erst danach wird genau diese bereinigte Quelle in den Drive-Master
+        # 'Offene_Positionen' synchronisiert. Scheitert die Synchronisierung,
+        # greift der bestehende Except-Block und stellt die lokale Quelle aus
+        # dem Backup wieder her.
+        _sync_cleaned_source_to_drive(source_file, drive_creds)
+
         os.remove(backup_path)
         print(
             f"QUELLDATEI BEREINIGT: {len(closed_keys)} gestoppte/verkaufte Position(en) "
@@ -1699,7 +1893,7 @@ def main():
 
     # Erst nach erfolgreicher lokaler Historienerzeugung UND erfolgreichem
     # Google-Sheet-Update darf die Quelldatei bereinigt werden.
-    removed = _remove_closed_from_source(INPUT_FILE, closed_history)
+    removed = _remove_closed_from_source(INPUT_FILE, closed_history, drive_creds=creds)
 
     print("GOOGLE DRIVE: Offene Positionen+Check erfolgreich erstellt/aktualisiert.")
     print(
