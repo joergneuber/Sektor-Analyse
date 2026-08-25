@@ -47,7 +47,6 @@ import re
 import time
 import json
 import datetime
-import csv
 
 from google import genai
 from google.genai import types
@@ -371,6 +370,40 @@ def lade_anweisung():
         return f.read()
 
 
+
+def _offene_positionen_quellblock(csv_pfad):
+    """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
+    Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
+    if not csv_pfad or not os.path.isfile(csv_pfad):
+        return ""
+    try:
+        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f, delimiter=";")
+            fields = reader.fieldnames or []
+            def key(name):
+                return next((k for k in fields if str(k).strip().lower() == name.lower()), None)
+            name_k = key("Name")
+            ticker_k = key("Ticker")
+            status_k = key("Status")
+            entry_k = key("Einstieg")
+            date_k = key("Einstiegsdatum")
+            if not all((name_k, ticker_k, entry_k, date_k)):
+                raise ValueError("Check-Datei benötigt Name, Ticker, Einstieg und Einstiegsdatum.")
+            rows = []
+            for row in reader:
+                status = str(row.get(status_k, "")).strip().lower() if status_k else ""
+                if status and status not in {"offen", "open"}:
+                    continue
+                name = str(row.get(name_k, "")).strip()
+                ticker = str(row.get(ticker_k, "")).strip()
+                entry = str(row.get(entry_k, "")).strip()
+                date = str(row.get(date_k, "")).strip()
+                if name or ticker:
+                    rows.append(f"- {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}")
+            return "\n".join(rows)
+    except Exception as exc:
+        raise RuntimeError(f"Offene Positionen+Check.csv konnte nicht als verbindliche Quelle gelesen werden: {exc}")
+
 # ---------------------------------------------------------------------------
 # HAUPTLOGIK
 # ---------------------------------------------------------------------------
@@ -437,17 +470,16 @@ def gemini_auswertung_starten():
                     if pfad
                 ]
 
+            offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht. "
-                    "HARTE REGEL FUER OFFENE POSITIONEN: Niemals Namen, Ticker, Einstiegsdatum, "
-                    "Einstiegskurs oder technische Check-Werte erfinden oder aus dem Sprachmodell "
-                    "ableiten. Diese Werte muessen aus den bereitgestellten Quelldateien "
-                    "uebernommen werden. Jede offene Position MUSS im Kopf exakt als "
-                    "'Name (Ticker) | Markt: ...' ausgegeben werden. Keine Alternative wie "
-                    "'Ticker | Name', kein Name ohne Ticker und kein selbst erfundener Ticker. "
+                    "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
+                    + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
+                    "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
+                    "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
                     "Offene Positionen ausschliesslich die Datei 'Offene Positionen+Check.csv'. "
                     "Ihre technischen Check-Felder sind die verbindliche Quelle fuer "
@@ -455,13 +487,16 @@ def gemini_auswertung_starten():
                     "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
                     "Round Number, Major Resistance, Ueberdehnung, Relative Staerke_Sektor, "
                     "Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. "
-                    "Einstiegsdatum ist ebenfalls ein verbindliches Feld der Check-Datei "
-                    "und muss für jede offene Position aus 'Offene Positionen+Check.csv' übernommen "
-                    "werden. Eine alte Offene_Positionen.csv-Datei darf ausschließlich als "
-                    "Backend-Fallback für Positionsfelder verwendet werden, die in der "
-                    "festgelegten Check-Struktur nicht enthalten sind (z.B. Stop, TP1, TP2, "
-                    "Richtung, Ideen_Quelle). Sie darf niemals technische oder sonstige "
-                    "verbindliche Check-Felder ersetzen oder widersprechen.",
+                    "Für offene Positionen sind Firmenname, Ticker, Einstiegskurs und Einstiegsdatum "
+                    "ausschließlich aus 'Offene Positionen+Check.csv' zu übernehmen. "
+                    "Die alte Offene_Positionen.csv darf für diese vier Felder niemals als "
+                    "Quelle oder Fallback verwendet werden. Gemini darf diese Werte nicht "
+                    "erfinden, schätzen oder verändern. Mehrere offene Positionen desselben "
+                    "Tickers sind ausdrücklich zulässig; jede Kombination aus Name + Ticker + "
+                    "Einstiegskurs + Einstiegsdatum ist eine eigene Position. "
+                    "Jeder offene Positionskopf muss ausschließlich im Format "
+                    "'Firmenname (Ticker) | Markt: ...' ausgegeben werden. "
+                    "Keine alternativen Kopfzeilenformate und keine Positionsköpfe ohne Ticker.",
                     (
                         f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
                         "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
@@ -542,16 +577,6 @@ def gemini_auswertung_starten():
             continue
 
         print(f"  Erfolgreich mit {aktuelles_modell}!")
-        # Strukturelle Vollstaendigkeitspruefung vor dem Speichern. Wenn
-        # Punkt 8 unvollstaendig ist, wird NUR dieser Abschnitt einmalig
-        # repariert; der restliche Gemini-Output bleibt unveraendert.
-        erwartete_namen = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
-        text, vollstaendig, fehlend = _sichere_regionen_und_offene_positionen(text, eingabedateien)
-        if not vollstaendig and erwartete_namen:
-            raise RuntimeError(
-                "Auswertung strukturell unvollstaendig: fehlende/duplizierte offene Positionen: "
-                + ", ".join(fehlend or ["unvollstaendiger Offene-Positionen-Block"])
-            )
         return text
 
     print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
@@ -559,474 +584,18 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
-
-
-def _lese_offene_positionen_namen(csv_pfad):
-    """Liest alle offenen Positionslots aus Offene Positionen+Check.csv.
-    Die Positionsidentitaet besteht aus Name + Ticker + Einstieg + Einstiegsdatum.
-    Es wird niemals nach Ticker oder Name dedupliziert."""
-    if not csv_pfad or not os.path.isfile(csv_pfad):
-        return []
-    try:
-        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
-            sample = f.read(8192)
-            f.seek(0)
-            dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
-            reader = csv.DictReader(f, dialect=dialect)
-            fields = reader.fieldnames or []
-
-            def key_for(*candidates):
-                return next((k for k in fields if str(k).strip().lower() in candidates), None)
-
-            name_key = key_for("name", "firmenname", "unternehmen", "company", "titel")
-            status_key = key_for("status", "position_status")
-            ticker_key = key_for("ticker")
-            entry_key = key_for("einstieg", "einstiegskurs", "entry", "entry_price")
-            date_key = key_for("einstiegsdatum", "kaufdatum", "einstiegsdatum_utc", "entry_date", "date")
-
-            if not entry_key or not date_key:
-                raise ValueError(
-                    "Offene Positionen+Check.csv muss 'Einstieg' und 'Einstiegsdatum' enthalten."
-                )
-
-            result = []
-            for row in reader:
-                status = str(row.get(status_key, "") if status_key else "").strip().lower()
-                if status and status not in {"offen", "open"}:
-                    continue
-
-                name = str(row.get(name_key, "") if name_key else "").strip()
-                ticker = str(row.get(ticker_key, "") if ticker_key else "").strip()
-                entry = str(row.get(entry_key, "") or "").strip()
-                entry_date = str(row.get(date_key, "") or "").strip()
-
-                if name or ticker:
-                    result.append({
-                        "name": name,
-                        "ticker": ticker,
-                        "entry": entry,
-                        "entry_date": entry_date,
-                    })
-            return result
-    except Exception as exc:
-        print(f"WARNUNG: Offene-Positionen-Vollstaendigkeitscheck nicht lesbar: {exc}")
-        return []
-
-
-def _finde_offene_positionen_abschnitt(text):
-    """Findet den kompletten offenen-Positionen-Abschnitt ohne andere
-    Auswertungsteile anzutasten."""
-    m = re.search(r"(?ims)^(?P<head>\s*(?:\d+\.\s*)?offene positionen\s*)$", text)
-    if not m:
-        return None
-    start = m.start()
-    tail = text[m.end():]
-    nxt = re.search(r"(?im)^\s*(?:\d+\.\s*)?(?:geschlossene positionen|gestoppte positionen|methodik(?: &| und)? lesehilfe)\s*$", tail)
-    end = m.end() + (nxt.start() if nxt else len(tail))
-    return start, end, m.group('head').strip()
-
-
-def _offene_positionen_vollstaendig(text, erwartete_positionen):
-    """Prueft die offenen Positionen anhand eindeutiger Positionslots.
-
-    Positionsschluessel:
-      Name + Ticker + Einstiegskurs + Einstiegsdatum
-
-    Mehrere offene Positionen desselben Tickers sind ausdruecklich erlaubt.
-    Die technische Basis ist ausschliesslich Offene Positionen+Check.csv.
-    Der Parser akzeptiert ausschließlich:
-      Firmenname (TICKER) | Markt: ...
-
-    Fuer jeden ausgegebenen Block werden Einstieg und Datum aus dem jeweiligen
-    Positionsblock gelesen; Gemini liefert keine technischen Berechnungen.
-    """
-    if not erwartete_positionen:
-        return True, []
-
-    abschnitt = _finde_offene_positionen_abschnitt(text)
-    if not abschnitt:
-        return False, [
-            (p.get("name") or p.get("ticker") or "Unbekannte Position")
-            for p in erwartete_positionen
-        ]
-
-    block = text[abschnitt[0]:abschnitt[1]]
-
-    def norm_name(value):
-        value = str(value or "").lower().strip()
-        value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
-        value = re.sub(
-            r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|"
-            r"holding|holdings|company|co|group)\b", " ", value
-        )
-        return re.sub(r"\s+", " ", value).strip()
-
-    def norm_ticker(value):
-        return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").lower())
-
-    def norm_price(value):
-        s = str(value or "").strip()
-        s = re.sub(r"[^0-9,.\-]+", "", s)
-        if not s:
-            return ""
-        # Deutsche Schreibweise 1.234,56; US-Schreibweise 1234.56
-        if "," in s and "." in s:
-            if s.rfind(",") > s.rfind("."):
-                s = s.replace(".", "").replace(",", ".")
-            else:
-                s = s.replace(",", "")
-        elif "," in s:
-            s = s.replace(",", ".")
-        try:
-            return f"{float(s):.8f}".rstrip("0").rstrip(".")
-        except ValueError:
-            return s
-
-    def norm_date(value):
-        s = str(value or "").strip()
-        if not s:
-            return ""
-        m = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", s)
-        if m:
-            return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
-        m = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", s)
-        if m:
-            return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-        return s.lower()
-
-    def name_match(head, name):
-        if not name:
-            return False
-        return (
-            head == name
-            or head.startswith(name + " ")
-            or name.startswith(head + " ")
-            or (len(name) >= 4 and name in head)
-            or (len(head) >= 4 and head in name)
-        )
-
-    # Positionskoepfe und ihre kompletten Bloecke bestimmen.
-    header_matches = list(re.finditer(r"(?im)^\s*(.*?)\s*\|\s*Markt\s*:", block))
-    parsed_blocks = []
-    for idx, match in enumerate(header_matches):
-        end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(block)
-        raw_head = match.group(1).strip()
-        body = block[match.start():end]
-        parsed_blocks.append((raw_head, body))
-
-    def parse_head(raw_head):
-        raw = str(raw_head).strip()
-        paren = [norm_ticker(x) for x in re.findall(r"\(([^()]+)\)", raw) if norm_ticker(x)]
-        if paren:
-            ticker = paren[0]
-            visible_name = norm_name(re.sub(r"\([^()]+\)", " ", raw, count=1))
-            return visible_name, ticker
-
-        # Ausschließlich Name (Ticker) ist zulässig.
-        return norm_name(raw), ""
-
-    def extract_entry_date(body):
-        # Unterstützt z.B. "Einstieg: 131,58 $ (19.08.2026)" sowie
-        # getrennte Angaben "Einstieg: ..." und "Einstiegsdatum: ...".
-        entry = ""
-        date = ""
-        m = re.search(r"(?im)\bEinstieg(?:skurs)?\s*:\s*([^\n|;()]+)", body)
-        if m:
-            entry = m.group(1).strip()
-        m = re.search(r"(?im)\bEinstiegsdatum\b\s*:\s*([^\n|;]+)", body)
-        if m:
-            date = m.group(1).strip()
-        if not date:
-            # Datum in Klammern direkt hinter dem Einstiegskurs.
-            m = re.search(
-                r"(?im)\bEinstieg(?:skurs)?\s*:\s*[^\n|]*?\(\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}-\d{1,2}-\d{1,2})\s*\)",
-                body,
-            )
-            if m:
-                date = m.group(1)
-        return norm_price(entry), norm_date(date)
-
-    expected_keys = []
-    labels = {}
-    for pos in erwartete_positionen:
-        key = (
-            norm_name(pos.get("name")),
-            norm_ticker(pos.get("ticker")),
-            norm_price(pos.get("entry")),
-            norm_date(pos.get("entry_date")),
-        )
-        expected_keys.append(key)
-        labels[key] = (
-            f"{pos.get('name') or pos.get('ticker') or 'Unbekannte Position'} "
-            f"({str(pos.get('ticker') or '').upper()})"
-        )
-
-    actual_keys = []
-    unmatched_headers = []
-    for raw_head, body in parsed_blocks:
-        name, ticker = parse_head(raw_head)
-        entry, date = extract_entry_date(body)
-        matched = False
-        for expected in expected_keys:
-            ename, eticker, eentry, edate = expected
-            if ticker == eticker and name_match(name, ename):
-                actual_keys.append((ename, eticker, entry, date))
-                matched = True
-                break
-        if not matched:
-            unmatched_headers.append(raw_head)
-
-    from collections import Counter
-    expected_counts = Counter(expected_keys)
-    actual_counts = Counter(actual_keys)
-
-    fehlend = []
-    for key, count in expected_counts.items():
-        have = actual_counts.get(key, 0)
-        if have < count:
-            fehlend.extend([labels.get(key, key[0] or key[1] or "Unbekannte Position")] * (count - have))
-        elif have > count:
-            fehlend.append(
-                f"{labels.get(key, key[0] or key[1] or 'Unbekannte Position')} "
-                f"(zu viele Ausgabe-Blöcke: {have} statt {count})"
-            )
-
-    # Ein nicht zuordenbarer Positionskopf ist ebenfalls ein Strukturfehler.
-    if unmatched_headers:
-        fehlend.extend([f"Nicht zuordenbarer Positionsblock: {h}" for h in unmatched_headers])
-
-    if re.search(r"(?i)weitere positionen|weitere offene positionen", block):
-        return False, fehlend or ["Platzhalter 'Weitere Positionen'"]
-
-    return not fehlend, fehlend
-
-
-def _extrahiere_regionen_block(briefing_pfad):
-    """Uebernimmt den vom analyse.py erzeugten REGIONEN-PERFORMANCE-Block
-    wörtlich und macht daraus den sichtbaren Abschnitt 'Blick auf wichtige Indizes'."""
-    if not briefing_pfad or not os.path.isfile(briefing_pfad):
-        return ""
-    try:
-        with open(briefing_pfad, "r", encoding="utf-8-sig") as f:
-            text = f.read()
-    except Exception as exc:
-        print(f"WARNUNG: Regionenblock konnte nicht gelesen werden: {exc}")
-        return ""
-    m = re.search(r"(?ms)^REGIONEN-PERFORMANCE.*?(?=^BENCHMARKS\s*$)", text)
-    if not m:
-        return ""
-    block = m.group(0).strip()
-    block = re.sub(r"^REGIONEN-PERFORMANCE[^\n]*$", "Blick auf wichtige Indizes", block, count=1, flags=re.M)
-    return block.strip() + "\n"
-
-
-def _kanonisiere_offene_positionen_aus_quelle(text, csv_pfad):
-    """Erzwingt Name/Ticker/Einstieg/Einstiegsdatum aus der Check-Datei.
-
-    Gemini darf diese Werte weder erfinden noch variieren. Fehlende Ticker werden
-    ausschließlich aus der eindeutigen Quellposition ergänzt. Unbekannte
-    Positionsnamen bleiben ein Fehler und werden nicht durch Modellwissen ersetzt.
-    """
-    if not text or not csv_pfad or not os.path.isfile(csv_pfad):
-        return text
-
-    erwartete = _lese_offene_positionen_namen(csv_pfad)
-    if not erwartete:
-        return text
-
-    def norm_name(value):
-        value = str(value or "").lower().strip()
-        value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
-        value = re.sub(
-            r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|"
-            r"holding|holdings|company|co|group)\b", " ", value
-        )
-        return re.sub(r"\s+", " ", value).strip()
-
-    def norm_ticker(value):
-        return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").lower())
-
-    def source_key(pos):
-        return (norm_name(pos.get("name")), norm_ticker(pos.get("ticker")))
-
-    source_by_key = {}
-    for pos in erwartete:
-        source_by_key.setdefault(source_key(pos), []).append(pos)
-
-    abschnitt = _finde_offene_positionen_abschnitt(text)
-    if not abschnitt:
-        return text
-
-    start, end, _ = abschnitt
-    block = text[start:end]
-    headers = list(re.finditer(r"(?im)^\s*(.*?)\s*\|\s*Markt\s*:", block))
-    if not headers:
-        return text
-
-    replacements = []
-    used = {key: 0 for key in source_by_key}
-
-    for idx, h in enumerate(headers):
-        raw_head = h.group(1).strip()
-        m = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", raw_head)
-        if m:
-            name = m.group(1).strip()
-            ticker = norm_ticker(m.group(2))
-        else:
-            name = raw_head
-            ticker = ""
-
-        name_key = norm_name(name)
-        candidates = []
-        if ticker:
-            candidates = source_by_key.get((name_key, ticker), [])
-        else:
-            # Nur eindeutige Namen dürfen den Ticker aus der Quelle erhalten.
-            candidates = [
-                pos for key, vals in source_by_key.items()
-                if key[0] == name_key
-                for pos in vals
-            ]
-            if len({norm_ticker(pos.get("ticker")) for pos in candidates}) != 1:
-                candidates = []
-
-        if not candidates:
-            continue
-
-        key = source_key(candidates[0])
-        n = used.get(key, 0)
-        pos = candidates[min(n, len(candidates) - 1)]
-        used[key] = n + 1
-
-        canonical = f"{pos.get('name', '').strip()} ({pos.get('ticker', '').strip()})"
-        replacements.append((start + h.start(1), start + h.end(1), canonical))
-
-        body_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
-        body = block[h.start():body_end]
-
-        src_entry = str(pos.get("entry", "")).strip()
-        src_date = str(pos.get("entry_date", "")).strip()
-
-        if src_entry:
-            em = re.search(r"(?im)^([ \t]*Einstieg(?:skurs)?\s*:\s*)[^\n]+", body)
-            if em:
-                # Replace only the value, keeping Gemini's label/format.
-                value_start = start + h.start() + em.start(0) + em.group(1).__len__()
-                value_end = start + h.start() + em.end(0)
-                replacements[-1] = (value_start, value_end, src_entry)
-
-        if src_date:
-            dm = re.search(r"(?im)^([ \t]*Einstiegsdatum\s*:\s*)[^\n]+", body)
-            if dm:
-                value_start = start + h.start() + dm.start(0) + dm.group(1).__len__()
-                value_end = start + h.start() + dm.end(0)
-                replacements.append((value_start, value_end, src_date))
-
-    for a, b, value in sorted(replacements, reverse=True):
-        text = text[:a] + value + text[b:]
-    return text
-
-
-def _sichere_regionen_und_offene_positionen(text, eingabedateien):
-    """Repariert ausschliesslich strukturelle Auslassungen. Markt-/Technik-
-    Inhalte werden nicht neu berechnet oder umformuliert."""
-    regionen = _extrahiere_regionen_block(eingabedateien.get("briefing.txt"))
-    if regionen and not re.search(r"(?im)^\s*Blick auf wichtige Indizes\s*$", text):
-        # Direkt nach dem Deckblatt, niemals vor Titel/Datum/Untertitel.
-        head = re.search(r"(?ms)^(Neuber Macro & Markets\s*\nDatum der Auswertung:.*?\nTägliche Markt- und Setup-Auswertung\s*\n?)", text)
-        if head:
-            text = text[:head.end()] + "\n" + regionen + "\n" + text[head.end():].lstrip("\n")
-            print("STRUKTUR-FIX: 'Blick auf wichtige Indizes' aus briefing.txt wiederhergestellt.")
-
-    # Name/Ticker/Einstieg/Einstiegsdatum kommen deterministisch aus der Check-Datei.
-    text = _kanonisiere_offene_positionen_aus_quelle(
-        text, eingabedateien.get("Offene Positionen+Check.csv")
-    )
-    erwartete = _lese_offene_positionen_namen(eingabedateien.get("Offene Positionen+Check.csv"))
-    ok, fehlend = _offene_positionen_vollstaendig(text, erwartete)
-    return text, ok, fehlend
-
-
-def _a_aufstiege_block():
-    """Liest das tagesaktuelle A-Aufstiegsprotokoll und baut den
-    sichtbaren Unterabschnitt fuer Auswertung.txt deterministisch auf.
-
-    Wichtig: Die separate Einzel_Check_Aufstiege-Datei bleibt die Quelle
-    fuer das Ereignis. Hier wird sie nur zusaetzlich in die zentrale
-    Tagesauswertung gespiegelt; es werden keine historischen Daten geloescht.
-    """
-    pfad = finde_datei(["Einzel_Check_Aufstiege(*).txt"])
-    if not pfad or not os.path.isfile(pfad):
-        return ""
-
-    try:
-        with open(pfad, "r", encoding="utf-8-sig") as f:
-            inhalt = f.read().strip()
-    except OSError:
-        return ""
-
-    if not inhalt:
-        return ""
-
-    zeilen = inhalt.splitlines()
-    # Kopfzeilen des Ereignisprotokolls nicht doppelt ausgeben.
-    eintraege = []
-    for zeile in zeilen:
-        z = zeile.strip()
-        if not z or z.upper().startswith("EINZEL-CHECK:") or set(z) <= {"="}:
-            continue
-        eintraege.append(z)
-
-    if not eintraege:
-        return ""
-
-    block = [
-        "EINZEL-CHECK – A-AUFSTIEGE",
-        "",
-        "🟢 NEUE KAUFKANDIDAT-A-AUFSTIEGE",
-        "",
-    ]
-    for eintrag in eintraege:
-        block.append(f"• {eintrag}")
-        block.append("")
-    return "\n".join(block).rstrip() + "\n"
-
-
 def normalisiere_ausgabe(text):
-    """Erzwingt formale Layoutregeln und spiegelt echte B/C -> A-Aufstiege
-    direkt unter die Einzel-Check-Beobachtungsliste.
+    """Erzwingt zwei kleine, rein formale Layoutregeln nach Gemini.
 
-    Die A-Aufstiegsdatei bleibt dabei unveraendert als separate Ereignisquelle.
-    Wenn Gemini den Abschnitt bereits erzeugt hat, wird er nicht dupliziert.
+    Inhalt und Werte werden nicht veraendert: Vor jeder Zeile "Was muesste..."
+    in den Perspektivischen Trade-Ideen wird genau eine Leerzeile gesetzt.
+    Dadurch bleibt das gewuenschte Layout auch bei leicht variierender Gemini-
+    Formatierung stabil.
     """
     if not text:
         return text
     text = re.sub(r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", r"\n\1", text)
     text = re.sub(r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende Setup-System einen konkreten Einstieg bestaetigt\?:)", "\n\n", text)
-
-    # Gemini ist weiterhin fuer die inhaltliche Auswertung verantwortlich.
-    # Der bereits separat erzeugte A-Aufstiegs-Report wird hier zusaetzlich
-    # deterministisch an der gewuenschten Stelle eingeblendet, damit ein
-    # einzelnes Auslassen durch das Sprachmodell nicht zu einer unsichtbaren
-    # Meldung in der zentralen Auswertung fuehrt.
-    if "Neue KAUFKANDIDAT-A-Aufstiege" not in text and "EINZEL-CHECK – A-AUFSTIEGE" not in text:
-        block = _a_aufstiege_block()
-        if block:
-            marker = re.search(r"(?m)^6\. SHORT-SETUPS\s*$", text)
-            if marker:
-                text = text[:marker.start()].rstrip() + "\n\n" + block + "\n\n" + text[marker.start():]
-            else:
-                # Fallback: direkt nach dem Beobachtungslisten-Block.
-                marker = re.search(r"(?m)^Einzel-Check-Beobachtungsliste\s*$", text)
-                if marker:
-                    naechster = re.search(r"(?m)^\d+\. ", text[marker.end():])
-                    pos = marker.end() + (naechster.start() if naechster else len(text[marker.end():]))
-                    text = text[:pos].rstrip() + "\n\n" + block + "\n\n" + text[pos:].lstrip()
-                else:
-                    # Sicherheits-Fallback: nichts einfuegen, wenn die
-                    # erwartete Struktur nicht erkennbar ist.
-                    pass
-
     return text
 
 
