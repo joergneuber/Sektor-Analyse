@@ -558,6 +558,11 @@ def _technische_zielzonen_quelle(csv_pfad):
         )
 
 
+def _normalisiere_datum(value):
+    """Normalisiert ein Datum fuer den Positionsschluessel."""
+    return _positionsfeld_schluessel(value)
+
+
 def _normalisiere_positionsname(value):
     """Robuste Namensnormalisierung fuer die Zuordnung Gemini -> CSV."""
     value = str(value or "").strip().lower()
