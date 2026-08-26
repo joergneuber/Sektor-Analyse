@@ -399,6 +399,16 @@ def _positionsfeld_schluessel(value):
         return text.lower()
 
 
+def _normalisiere_einstieg(value):
+    """Kompatibilitaetsfunktion fuer Einstiegskurse.
+
+    Verwendet dieselbe Normalisierungslogik wie _positionsfeld_schluessel(),
+    damit bestehende Aufrufe von _normalisiere_einstieg nicht mit
+    NameError abbrechen.
+    """
+    return _positionsfeld_schluessel(value)
+
+
 def _offene_positionen_quellblock(csv_pfad):
     """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
     Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
@@ -558,6 +568,11 @@ def _technische_zielzonen_quelle(csv_pfad):
         )
 
 
+def _normalisiere_datum(value):
+    """Normalisiert ein Datum fuer den Positionsschluessel."""
+    return _positionsfeld_schluessel(value)
+
+
 def _normalisiere_positionsname(value):
     """Robuste Namensnormalisierung fuer die Zuordnung Gemini -> CSV."""
     value = str(value or "").strip().lower()
@@ -694,7 +709,7 @@ def _abschnitt_8_vollstaendig(text, csv_pfad):
         if not entry_match:
             return False
 
-        entry = _normalisiere_einstieg(entry_match.group(1).strip())
+        entry = _positionsfeld_schluessel(entry_match.group(1).strip())
         if entry_match.group(2):
             date = _normalisiere_datum(entry_match.group(2).strip())
         else:
