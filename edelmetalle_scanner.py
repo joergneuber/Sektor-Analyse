@@ -111,6 +111,91 @@ EDELMETALLE = {
     "PA=F": "Palladium",
 }
 
+# DIAGNOSE (NEU 25.08.2026): Die bestehende Entscheidungslogik bleibt
+# unveraendert. Dieses Dictionary sammelt nur die bereits berechneten Werte
+# der Trendfolge, damit im Briefing fuer jedes Metall der exakte Engpass
+# sichtbar wird (insbesondere EMA200/WMA200, alle 4 Setup-Pfade,
+# Stochastik sowie die nachgelagerten Filter).
+TREND_FOLGE_DIAGNOSE = {}
+
+
+def _trendfolge_diagnose_speichern(ticker, name, **werte):
+    """Speichert nur Diagnosewerte; veraendert keine Handelsentscheidung."""
+    eintrag = TREND_FOLGE_DIAGNOSE.setdefault(str(ticker), {"Ticker": str(ticker), "Name": str(name)})
+    eintrag.update(werte)
+
+
+def _trendfolge_diagnose_text():
+    """Formatiert die bereits berechnete Trendfolge-Diagnose kompakt."""
+    zeilen = ["TRENDFOLGE-DIAGNOSE JE METALL (GC=F etc. = operative Datenbasis):"]
+    for ticker, name in EDELMETALLE.items():
+        d = TREND_FOLGE_DIAGNOSE.get(ticker)
+        if not d:
+            zeilen.append(f"- {name} ({ticker}): keine Diagnose verfügbar")
+            continue
+
+        def mark(v):
+            return "OK" if v else "NEIN"
+
+        trend = d.get("trend_ok")
+        setup_ok = d.get("setup_gate_ok")
+        stoch_ok = d.get("stoch_ok")
+        paths = d.get("setup_pfade") or []
+        gründe = d.get("ausschlussgründe") or []
+
+        zeilen.append(f"- {name} ({ticker})")
+        if d.get("kurs") is not None:
+            zeilen.append(
+                f"  200er-Trend: Kurs {d['kurs']:.2f} | EMA200 {d.get('ema200', float('nan')):.2f} "
+                f"({mark(d.get('ueber_ema200'))}) | WMA200 {d.get('wma200', float('nan')):.2f} "
+                f"({mark(d.get('ueber_wma200'))}) | Gesamt {mark(trend)}"
+            )
+        if d.get("trend_ok") is False:
+            zeilen.append(f"  Ergebnis: BLOCKIERT – {d.get('ausschlussgrund', 'kein_aufwaertstrend')}")
+            continue
+
+        zeilen.append(
+            "  4 Setup-Pfade: "
+            f"EMA8/20-Breakout={mark(d.get('ema_breakout'))} | "
+            f"Pullback-Zone={mark(d.get('in_ema_zone'))} | "
+            f"Higher-Low={mark(d.get('higher_low'))} | "
+            f"Trendlinien-Breakout={mark(d.get('trendlinien_ausbruch'))} | "
+            f"Kumo-Breakout={mark(d.get('kumo_ausbruch'))}"
+        )
+        zeilen.append(
+            f"  Setup-Gate: {mark(setup_ok)} | "
+            f"Stoch_K={d.get('stoch_k', float('nan')):.2f} | Stoch < 90={mark(stoch_ok)}"
+        )
+        if paths:
+            zeilen.append(f"  Aktivierte Setup-Pfade: {', '.join(paths)}")
+        if gründe:
+            zeilen.append(f"  Blockierungsgrund: {'; '.join(gründe)}")
+        elif setup_ok:
+            zeilen.append("  Blockierungsgrund: keiner – Setup-Hauptfilter bestanden")
+
+        # Nachgelagerte Werte nur ausgeben, wenn sie bereits berechnet wurden.
+        if "rs_vs_dbc" in d:
+            zeilen.append(
+                f"  Nachgelagerte Filter: RS vs DBC={d['rs_vs_dbc']:.2f}% "
+                f"(Grenze > {RS_MIN:.2f}%)"
+            )
+        if "abstand_52w_hoch" in d:
+            zeilen.append(
+                f"  52W-Hoch: Abstand {d['abstand_52w_hoch']:.2f}% "
+                f"(Grenze >= {ABSTAND_52W_HOCH_MAX:.2f}%)"
+            )
+        if "crv1" in d or "crv2" in d:
+            zeilen.append(
+                f"  CRV: CRV1={d.get('crv1', float('nan'))} | CRV2={d.get('crv2', float('nan'))} "
+                f"(jeweils >= 1.00 erforderlich)"
+            )
+        if d.get("final_status"):
+            zeilen.append(f"  Endergebnis: {d['final_status']}")
+        elif d.get("ausschlussgrund"):
+            zeilen.append(f"  Endergebnis: BLOCKIERT – {d['ausschlussgrund']}")
+
+    return "\n".join(zeilen)
+
 # Rohstoff-Index-ETF als Vergleichsmassstab fuer die Relative-Staerke-
 # Berechnung (statt SPY/STOXX600, siehe Modul-Docstring).
 COMMODITY_BENCHMARK_TICKER = "DBC"
@@ -260,8 +345,10 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
     analyze_a_setup_eu() in analyse.py (yfinance-basiert, da Alpaca keine
     Rohstoff-Edelmetalle abdeckt), aber ohne Fundamental-Ampel (kein KGV bei
     Rohstoffen) und ohne Analysten-Kursziel (nicht verfuegbar fuer Edelmetall-Futures).
-    Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
-    speist die Funnel-Statistik (NEU 28.07.2026). Die Earnings-Regel des
+    Gibt weiterhin (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
+    speist die Funnel-Statistik. Zusaetzlich werden bereits berechnete Werte
+    rein diagnostisch in TREND_FOLGE_DIAGNOSE gesammelt; Handelslogik und
+    Schwellenwerte werden dadurch nicht veraendert. Die Earnings-Regel des
     Hauptscanners entfaellt hier bewusst (Edelmetall-Futures haben keine Earnings),
     die Death-Cross-Regel gilt dagegen identisch (siehe unten).
     """
@@ -336,8 +423,27 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         # WMA200 UND EMA200 liegen - hier direkt geprueft statt per
         # nachgelagertem DataFrame-Filter (keine Sektor-Stufe bei nur 4
         # festen Tickern).
-        trend_ok = data['Close'].iloc[-1] >= data['WMA200'].iloc[-1] and data['Close'].iloc[-1] >= data['EMA200'].iloc[-1]
+        kurs_aktuell = float(data['Close'].iloc[-1])
+        ema200_aktuell = float(data['EMA200'].iloc[-1])
+        wma200_aktuell = float(data['WMA200'].iloc[-1])
+        ueber_ema200 = kurs_aktuell >= ema200_aktuell
+        ueber_wma200 = kurs_aktuell >= wma200_aktuell
+        trend_ok = ueber_wma200 and ueber_ema200
+        _trendfolge_diagnose_speichern(
+            ticker, name,
+            kurs=kurs_aktuell,
+            ema200=ema200_aktuell,
+            wma200=wma200_aktuell,
+            ueber_ema200=ueber_ema200,
+            ueber_wma200=ueber_wma200,
+            trend_ok=trend_ok,
+        )
         if not trend_ok:
+            _trendfolge_diagnose_speichern(
+                ticker, name,
+                ausschlussgrund="Kein Aufwaertstrend (unter WMA200/EMA200)",
+                final_status="BLOCKIERT – kein_aufwaertstrend",
+            )
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Trend nicht OK (unter WMA200/EMA200)")
             return None, "kein_aufwaertstrend"
 
@@ -381,23 +487,58 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         trendlinien_ausbruch, tl_level = check_trendline_breakout(data, require_volume=False)
         kumo_ausbruch, kumo_level = check_kumo_breakout(data, require_volume=False)
 
+        setup_pfade = []
+        if trendlinien_ausbruch:
+            setup_pfade.append("Trendlinien-Ausbruch")
+        if kumo_ausbruch:
+            setup_pfade.append("Kumo-Ausbruch")
+        if ema_breakout:
+            setup_pfade.append("EMA-Breakout")
+        if in_ema_zone and is_higher_low:
+            setup_pfade.append("Pullback-Zone")
+
+        setup_gate_ok = (
+            ema_breakout
+            or (in_ema_zone and is_higher_low)
+            or trendlinien_ausbruch
+            or kumo_ausbruch
+        )
+        stoch_ok = bool(pd.notna(stoch_k) and stoch_k < 90)
+        _trendfolge_diagnose_speichern(
+            ticker, name,
+            ema_breakout=bool(ema_breakout),
+            in_ema_zone=bool(in_ema_zone),
+            higher_low=bool(is_higher_low),
+            trendlinien_ausbruch=bool(trendlinien_ausbruch),
+            kumo_ausbruch=bool(kumo_ausbruch),
+            stoch_k=float(stoch_k) if pd.notna(stoch_k) else float("nan"),
+            stoch_ok=stoch_ok,
+            setup_gate_ok=bool(setup_gate_ok),
+            setup_pfade=setup_pfade,
+        )
+
         in_zone_grund = "OK" if in_ema_zone else ("EMA-Zone nicht erfüllt" if not in_ema_zone_roh else "Preiszone nicht erfüllt")
         print(f"DEBUG-EDELMETALL: {ticker} ({name}) | Breakout: {ema_breakout} | InZone: {in_ema_zone} (Grund: {in_zone_grund}) | "
               f"HL: {is_higher_low} | Stoch: {stoch_k:.1f} | TL-Ausbruch: {trendlinien_ausbruch} | Kumo-Ausbruch: {kumo_ausbruch}")
 
-        if (ema_breakout or (in_ema_zone and is_higher_low) or trendlinien_ausbruch or kumo_ausbruch) and stoch_k < 90:
-            pfade = []
-            if trendlinien_ausbruch:
-                pfade.append("Trendlinien-Ausbruch")
-            if kumo_ausbruch:
-                pfade.append("Kumo-Ausbruch")
-            if ema_breakout:
-                pfade.append("EMA-Breakout")
-            if in_ema_zone and is_higher_low:
-                pfade.append("Pullback-Zone")
-            setup_typ = " + ".join(pfade)
+        if setup_gate_ok and stoch_ok:
+            setup_typ = " + ".join(setup_pfade)
         else:
-            print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Haupt-Filter nicht erfüllt "
+            ausschlussgründe = []
+            if not setup_gate_ok:
+                ausschlussgründe.append("kein Setup-Pfad aktiv")
+            if not stoch_ok:
+                ausschlussgründe.append(f"Stochastik zu heiß (Stoch_K={stoch_k:.2f}, Grenze < 90)")
+            if not ausschlussgründe:
+                ausschlussgründe.append("Hauptfilter nicht erfüllt")
+
+            _trendfolge_diagnose_speichern(
+                ticker, name,
+                ausschlussgründe=ausschlussgründe,
+                ausschlussgrund="; ".join(ausschlussgründe),
+                final_status="BLOCKIERT – kein_setup_muster",
+            )
+            print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: {'; '.join(ausschlussgründe)} "
                   f"(Breakout={ema_breakout}, InZone={in_ema_zone}, HL={is_higher_low}, "
                   f"TL-Ausbruch={trendlinien_ausbruch}, Kumo-Ausbruch={kumo_ausbruch}, Stoch={stoch_k:.1f})")
             return None, "kein_setup_muster"
@@ -408,13 +549,25 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             metall_perf_60 = ((data['Close'].iloc[-1] / data['Close'].iloc[-60]) - 1) * 100
             bench_perf_60 = ((bench_close.iloc[-1] / bench_close.iloc[-60]) - 1) * 100
             rel_staerke = round(metall_perf_60 - bench_perf_60, 2)
+            _trendfolge_diagnose_speichern(ticker, name, rs_vs_dbc=float(rel_staerke))
             if rel_staerke <= RS_MIN:
+                _trendfolge_diagnose_speichern(
+                    ticker, name,
+                    ausschlussgrund=f"Relative Staerke vs. DBC zu schwach ({rel_staerke:.2f}%)",
+                    final_status="BLOCKIERT – rel_staerke_zu_schwach",
+                )
                 print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Relative Stärke vs. DBC <= {RS_MIN}% ({rel_staerke}%)")
                 return None, "rel_staerke_zu_schwach"
 
         hoch_52w = data['High'].max()
         abstand_52w_hoch = round(((entry / hoch_52w) - 1) * 100, 2)
+        _trendfolge_diagnose_speichern(ticker, name, abstand_52w_hoch=float(abstand_52w_hoch))
         if abstand_52w_hoch < ABSTAND_52W_HOCH_MAX:
+            _trendfolge_diagnose_speichern(
+                ticker, name,
+                ausschlussgrund=f"Zu weit unter dem 52W-Hoch ({abstand_52w_hoch:.2f}%)",
+                final_status="BLOCKIERT – zu_weit_vom_52w_hoch",
+            )
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Zu weit vom 52-Wochen-Hoch entfernt ({abstand_52w_hoch}%, Hoch={hoch_52w:.2f})")
             return None, "zu_weit_vom_52w_hoch"
 
@@ -451,11 +604,17 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
 
         risiko = entry - stop
         if risiko <= 0:
+            _trendfolge_diagnose_speichern(
+                ticker, name,
+                ausschlussgrund=f"Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})",
+                final_status="BLOCKIERT – risiko_ungueltig",
+            )
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
             return None, "risiko_ungueltig"
 
         crv1 = round((tp1 - entry) / risiko, 2)
         crv2 = round((tp2 - entry) / risiko, 2)
+        _trendfolge_diagnose_speichern(ticker, name, crv1=float(crv1), crv2=float(crv2))
         chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
         chance2_perc = round(((tp2 - entry) / entry) * 100, 2)
         if crv1 < 1.0 or crv2 < 1.0:
@@ -470,12 +629,22 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
                 "crv_sortier": min(crv1, crv2),
                 "strategie": "Trendfolge",
             })
+            _trendfolge_diagnose_speichern(
+                ticker, name,
+                ausschlussgrund=f"CRV-Filter (CRV1={crv1:.2f}, CRV2={crv2:.2f}; jeweils >= 1.00 erforderlich)",
+                final_status="BLOCKIERT – crv_unter_1",
+            )
             return None, "crv_unter_1"
 
         risk_perc = round(((entry - stop) / entry) * 100, 2)
         last_row = data.iloc[-1]
 
         if last_row['EMA20'] > (last_row['Close'] * 2):
+            _trendfolge_diagnose_speichern(
+                ticker, name,
+                ausschlussgrund="Plausibilitaetscheck fehlgeschlagen",
+                final_status="BLOCKIERT – plausibilitaet",
+            )
             print(f"DEBUG-EDELMETALL-VERWORFEN: {ticker} | Grund: Plausibilitätscheck fehlgeschlagen")
             return None, "plausibilitaet"
 
@@ -490,6 +659,11 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
         else:
             status2, status_grund = "VALIDE", "Alles ok"
 
+        _trendfolge_diagnose_speichern(
+            ticker, name,
+            final_status="KANDIDAT",
+            ausschlussgrund="keiner",
+        )
         return {
             "Ticker": str(ticker), "Name": str(name), "Sektor": "Edelmetalle",
             "Strategie": "Trendfolge",  # NEU 29.07.2026 (Strategie-Spalte)
@@ -550,7 +724,7 @@ FUNNEL_STUFEN_TRENDFOLGE = [
     ("zu_wenig_daten", "Zu wenig Kurshistorie fuer WMA200"),
     ("fehler", "Fehler bei der Berechnung"),
     ("kein_aufwaertstrend", "Kein Aufwaertstrend (unter WMA200/EMA200)"),
-    ("kein_setup_muster", "Keines der 4 Setup-Muster erfuellt (oder Stochastik >= 90)"),
+    ("kein_setup_muster", "Haupt-Setupfilter blockiert – Detaildiagnose je Metall unten"),
     ("rel_staerke_zu_schwach", "Relative Staerke vs. DBC zu schwach"),
     ("zu_weit_vom_52w_hoch", "Zu weit unter dem 52W-Hoch"),
     ("risiko_ungueltig", "Risiko <= 0"),
@@ -593,6 +767,7 @@ def edelmetalle_scan_starten():
     bench_close = get_commodity_benchmark_close()
 
     ergebnisse = []
+    TREND_FOLGE_DIAGNOSE.clear()
     funnel_tf, funnel_tw, funnel_sh = Counter(), Counter(), Counter()
     # Metallnamen je Ablehnungsstufe (NEU 31.07.2026, Nutzerwunsch: "alle
     # vier direkt benennen" statt nur "3 Metalle"/"1 Metall" zu zaehlen -
@@ -708,6 +883,11 @@ def edelmetalle_scan_starten():
     kopf = f"Universum: {len(EDELMETALLE)} Edelmetalle (feste Liste)"
     diagnose_text = ("LAGE JE METALL (52-Wochen-Fenster nach Datum, Basis aller Schwellen):\n"
                      + "\n".join(diagnose_zeilen)) if diagnose_zeilen else ""
+    trendfolge_diagnose_text = _trendfolge_diagnose_text()
+    if diagnose_text:
+        diagnose_text += "\n\n" + trendfolge_diagnose_text
+    else:
+        diagnose_text = trendfolge_diagnose_text
     funnel_texte = {
         "Trendfolge": _funnel_text_bauen(funnel_tf, FUNNEL_STUFEN_TRENDFOLGE, kopf, namen_tf),
         "Trendwende": _funnel_text_bauen(funnel_tw, FUNNEL_STUFEN_TRENDWENDE, kopf, namen_tw),
