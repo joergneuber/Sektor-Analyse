@@ -116,6 +116,10 @@ DATEIMUSTER = {
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
     # Zukunftsszenarioanalyse; rein informativ, keine bestehende Trading-Logik.
     "Makro_Briefing(...).txt": ["Makro_Briefing(*).txt"],
+    # Qualitative externe YouTube-Marktquellen; niemals technische/CRV-Werte ersetzen.
+    "Bitcoin_Trading_DE_Briefing.txt": ["Bitcoin_Trading_DE_Briefing.txt"],
+    "Gold_Trading_DE_Briefing.txt": ["Gold_Trading_DE_Briefing.txt"],
+    "Silber_Trading_DE_Briefing.txt": ["Silber_Trading_DE_Briefing.txt"],
     # NEU: Live-Benchmark gegen MSCI World; wird als verbindlicher
     # Datenblock an Gemini uebergeben.
     "Benchmark_Live.txt": ["Benchmark_Live.txt"],
@@ -845,6 +849,7 @@ def gemini_auswertung_starten():
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
+                    "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. Die Dateien Bitcoin_Trading_DE_Briefing.txt, Gold_Trading_DE_Briefing.txt und Silber_Trading_DE_Briefing.txt sind ausschließlich qualitative externe YouTube-Quellen. Nutze sie nur als Kontext/Abgleich; sie dürfen niemals objektive Kursdaten, technische Check-Felder, CRV, Setup-Scores, Filter, Setup-Qualität oder Handelsentscheidungen verändern. Wenn eine solche Datei fehlt, ist das kein Fehler und es darf nichts daraus erfunden werden. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
