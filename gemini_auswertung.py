@@ -399,16 +399,6 @@ def _positionsfeld_schluessel(value):
         return text.lower()
 
 
-def _normalisiere_einstieg(value):
-    """Kompatibilitaetsfunktion fuer Einstiegskurse.
-
-    Verwendet dieselbe Normalisierungslogik wie _positionsfeld_schluessel(),
-    damit bestehende Aufrufe von _normalisiere_einstieg nicht mit
-    NameError abbrechen.
-    """
-    return _positionsfeld_schluessel(value)
-
-
 def _offene_positionen_quellblock(csv_pfad):
     """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
     Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
@@ -566,11 +556,6 @@ def _technische_zielzonen_quelle(csv_pfad):
             "Technische Check-Werte konnten nicht verbindlich aus "
             f"Offene Positionen+Check.csv gelesen werden: {exc}"
         )
-
-
-def _normalisiere_datum(value):
-    """Normalisiert ein Datum fuer den Positionsschluessel."""
-    return _positionsfeld_schluessel(value)
 
 
 def _normalisiere_positionsname(value):
@@ -771,12 +756,20 @@ def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
         )
 
     block = block_match.group(0).strip("\n")
-    # Falls Gemini trotz der harten Vorgabe noch Text davor/danach liefert,
-    # wird ausschließlich der erkannte Punkt-8-Block übernommen.
-    naechster_abschnitt = re.search(r"(?im)^\s*9\.\s+", original_text)
-    if naechster_abschnitt:
-        pos = naechster_abschnitt.start()
-        return original_text[:pos].rstrip() + "\n\n" + block + "\n\n" + original_text[pos:]
+    # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
+    # den erfolgreich reparierten Punkt-8-Block.
+    vorhandener_abschnitt = re.search(
+        r"(?ims)^\s*8\. OFFENE POSITIONEN\s*$.*?(?=^\s*9\.\s+|\Z)",
+        original_text,
+    )
+    if vorhandener_abschnitt:
+        return (
+            original_text[:vorhandener_abschnitt.start()].rstrip()
+            + "\n\n"
+            + block
+            + "\n\n"
+            + original_text[vorhandener_abschnitt.end():].lstrip()
+        )
     return original_text.rstrip() + "\n\n" + block + "\n"
 
 
