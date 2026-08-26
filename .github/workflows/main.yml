@@ -172,6 +172,19 @@ jobs:
           restore-keys: |
             btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-
 
+      # Zusätzlicher State ausschließlich für die Gold-/Silber-Erweiterung.
+      - name: Gold/Silber YouTube State wiederherstellen
+        id: metals-youtube-state-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .youtube_market_sources_state
+          key: metals-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            metals-youtube-state-${{ runner.os }}-${{ github.ref_name }}-
+
+      - name: Externe YouTube-Marktquellen vorbereiten
+        run: python youtube_market_sources.py
+
       - name: Gemini-Auswertung erstellen
         id: gemini-auswertung
         continue-on-error: true
@@ -180,15 +193,26 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
 
-      # YouTube-State erst sichern, wenn die Gemini-Auswertung tatsächlich
+      # YouTube-States erst sichern, wenn die Gemini-Auswertung tatsächlich
       # erfolgreich erstellt wurde. Bei einem Fehler bleiben neue Videos
       # pending und werden beim nächsten Lauf erneut versucht.
+      - name: YouTube-Marktquellen State bestätigen
+        if: steps.gemini-auswertung.outcome == 'success'
+        run: python -c "from youtube_market_sources import mark_youtube_market_context_processed; mark_youtube_market_context_processed()"
+
       - name: Bitcoin Trading DE State speichern
         if: steps.gemini-auswertung.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: .bitcoin_youtube_state
           key: btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Gold/Silber YouTube State speichern
+        if: steps.gemini-auswertung.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .youtube_market_sources_state
+          key: metals-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       # ============================================================
       # GOOGLE DRIVE
