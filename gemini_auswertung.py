@@ -639,6 +639,99 @@ def _enthaelt_abschnitt_8(text):
     return bool(re.search(r"(?im)^\s*8\. OFFENE POSITIONEN\s*$", text or ""))
 
 
+def _gemini_finish_reason(antwort):
+    """Liest den Finish-Reason robust aus der Gemini-Antwort."""
+    try:
+        candidates = getattr(antwort, "candidates", None) or []
+        if not candidates:
+            return "UNBEKANNT"
+        reason = getattr(candidates[0], "finish_reason", None)
+        if reason is None:
+            return "UNBEKANNT"
+        return str(reason)
+    except Exception:
+        return "UNBEKANNT"
+
+
+def _abschnitt_8_vollstaendig(text, csv_pfad):
+    """Prüft, ob Punkt 8 alle offenen CSV-Positionen eindeutig enthält.
+
+    Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
+    harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
+    unverändert und ist weiterhin die letzte Instanz.
+    """
+    if not _enthaelt_abschnitt_8(text):
+        return False
+
+    expected = _technische_zielzonen_quelle(csv_pfad)
+    match = re.search(
+        r"(?ims)^\s*8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        text,
+    )
+    if not match:
+        return False
+
+    block = match.group(0)
+    header_re = re.compile(
+        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+    )
+    headers = list(header_re.finditer(block))
+    if not headers:
+        return False
+
+    seen = set()
+    for idx, header in enumerate(headers):
+        start = header.start()
+        end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
+        pos_block = block[start:end]
+
+        name = header.group(1).strip()
+        ticker = header.group(2).strip()
+        entry_match = re.search(
+            r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*([^\n(]+?)(?:\s*\(([^)]+)\))?\s*$",
+            pos_block,
+        )
+        if not entry_match:
+            return False
+
+        entry = _normalisiere_einstieg(entry_match.group(1).strip())
+        if entry_match.group(2):
+            date = _normalisiere_datum(entry_match.group(2).strip())
+        else:
+            date_match = re.search(
+                r"(?im)^\s*Einstiegsdatum\s*:\s*([^\n]+)\s*$",
+                pos_block,
+            )
+            if not date_match:
+                return False
+            date = _normalisiere_datum(date_match.group(1).strip())
+
+        key = (
+            _normalisiere_positionsname(name),
+            _normalisiere_ticker(ticker),
+            entry,
+            date,
+        )
+        try:
+            source = _finde_quellposition(key, expected)
+        except Exception:
+            return False
+        if source is None:
+            return False
+
+        source_key = (
+            _normalisiere_positionsname(source["name"]),
+            _normalisiere_ticker(source["ticker"]),
+            source["entry"],
+            source["date"],
+        )
+        if source_key in seen:
+            return False
+        seen.add(source_key)
+
+    return len(seen) == len(expected)
+
+
 def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
     """Fügt einen ausschließlich für Punkt 8 angeforderten Gemini-Block ein.
 
@@ -789,6 +882,7 @@ def gemini_auswertung_starten():
                 ),
             )
             text = antwort.text or ""
+            print(f"  Gemini finish_reason (Hauptantwort): {_gemini_finish_reason(antwort)}")
 
             # KONTROLLIERTER REPARATURVERSUCH:
             # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
@@ -797,11 +891,20 @@ def gemini_auswertung_starten():
             # einen gezielten zweiten Versuch, ausschließlich Punkt 8 vollständig
             # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
             # anwenden.
-            if not _enthaelt_abschnitt_8(text):
-                print(
-                    "  Abschnitt '8. OFFENE POSITIONEN' fehlt - "
-                    "starte gezielten Reparaturversuch fuer Punkt 8..."
-                )
+            if not _abschnitt_8_vollstaendig(
+                text, eingabedateien.get("Offene Positionen+Check.csv")
+            ):
+                if _enthaelt_abschnitt_8(text):
+                    print(
+                        "  Abschnitt '8. OFFENE POSITIONEN' ist vorhanden, "
+                        "aber unvollstaendig - starte gezielten Reparaturversuch "
+                        "fuer Punkt 8..."
+                    )
+                else:
+                    print(
+                        "  Abschnitt '8. OFFENE POSITIONEN' fehlt - "
+                        "starte gezielten Reparaturversuch fuer Punkt 8..."
+                    )
                 reparatur_prompt = (
                     "REPARATURVERSUCH - NUR ABSCHNITT 8 NACHLIEFERN.\n"
                     "Deine vorherige Antwort enthielt den erforderlichen Abschnitt "
@@ -841,8 +944,14 @@ def gemini_auswertung_starten():
                     ),
                 )
                 reparatur_text = reparatur_antwort.text or ""
+                print(
+                    f"  Gemini finish_reason (Punkt-8-Reparatur): "
+                    f"{_gemini_finish_reason(reparatur_antwort)}"
+                )
 
-                if _enthaelt_abschnitt_8(reparatur_text):
+                if _abschnitt_8_vollstaendig(
+                    reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
+                ):
                     text = _fuege_abschnitt_8_ein(text, reparatur_text)
                     print(
                         "  Reparatur erfolgreich: Abschnitt "
@@ -851,7 +960,7 @@ def gemini_auswertung_starten():
                 else:
                     print(
                         "  Reparatur fehlgeschlagen: Abschnitt "
-                        "'8. OFFENE POSITIONEN' weiterhin nicht vorhanden."
+                        "'8. OFFENE POSITIONEN' weiterhin unvollstaendig."
                     )
                     letzte_antwort = reparatur_text or text
                     # Kein Parser-Fallback. Der äußere Retry startet eine neue
