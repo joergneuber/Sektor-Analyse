@@ -1,0 +1,5 @@
+workflow_dispatch
+→ Checkout
+→ Python
+→ FRED_API_KEY setzen
+→ python test_fred_gscpi.py
