@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,90 @@ MARKETS: dict[str, dict[str, Any]] = {
         "rule": "Sie darf Silber-Kursdaten, technische Berechnungen, CRV, Setup-Scores, Filter oder Handelsentscheidungen nicht ersetzen.",
     },
 }
+
+
+
+def _fetch_channel_entries() -> list[dict[str, Any]]:
+    """Fetch the shared Bitcoin Trading DE channel page without the RSS endpoint."""
+    url = f"{btc.CHANNEL_URL.rstrip('/')}/videos"
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        page = response.read().decode("utf-8", errors="replace")
+
+    marker = "var ytInitialData = "
+    start = page.find(marker)
+    if start < 0:
+        marker = "ytInitialData = "
+        start = page.find(marker)
+    if start < 0:
+        raise RuntimeError("ytInitialData auf der YouTube-Kanalseite nicht gefunden.")
+
+    start += len(marker)
+    depth = 0
+    in_string = False
+    escaped = False
+    end = None
+    for pos in range(start, len(page)):
+        char = page[pos]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = pos + 1
+                break
+    if end is None:
+        raise RuntimeError("ytInitialData konnte nicht vollständig gelesen werden.")
+
+    data = json.loads(page[start:end])
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _runs_text(value: Any) -> str:
+        if not isinstance(value, dict):
+            return ""
+        if isinstance(value.get("simpleText"), str):
+            return value["simpleText"]
+        runs = value.get("runs")
+        if isinstance(runs, list):
+            return "".join(
+                run.get("text", "")
+                for run in runs
+                if isinstance(run, dict) and isinstance(run.get("text"), str)
+            )
+        return ""
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            video_id = value.get("videoId")
+            title = _runs_text(value.get("title"))
+            if isinstance(video_id, str) and video_id and video_id not in seen and title:
+                published = _runs_text(value.get("publishedTimeText"))
+                entries.append({
+                    "video_id": video_id,
+                    "title": btc.html.unescape(title),
+                    "published": published,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                })
+                seen.add(video_id)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(data)
+    return entries
 
 
 def _load_state() -> dict[str, Any]:
@@ -156,7 +241,7 @@ def _write_briefings(items_by_market: dict[str, list[dict[str, Any]]]) -> None:
             "",
         ]
         if not items:
-            lines.append("Keine neuen relevanten Videos seit dem letzten Lauf.")
+            lines.append("Keine neuen relevanten Videos verarbeitet")
         else:
             for item in items:
                 lines += [
@@ -174,12 +259,19 @@ def _write_briefings(items_by_market: dict[str, list[dict[str, Any]]]) -> None:
 
 
 def prepare_youtube_market_context() -> dict[str, list[str]]:
-    """Keep Bitcoin processing unchanged and prepare additional Gold/Silver context."""
-    # Preserve the existing Bitcoin Trading DE implementation byte-for-byte.
-    btc_ids = btc.prepare_bitcoin_youtube_context()
+    """Fetch the shared channel once and independently classify videos for Gold/Silver."""
+    entries = _fetch_channel_entries()
+
+    # Reuse the existing Bitcoin relevance/state/briefing logic unchanged.
+    # Only its feed lookup is supplied by the shared channel fetch above.
+    original_fetch_feed = btc._fetch_feed
+    try:
+        btc._fetch_feed = lambda _channel_id: entries
+        btc_ids = btc.prepare_bitcoin_youtube_context()
+    finally:
+        btc._fetch_feed = original_fetch_feed
 
     state = _load_state()
-    entries = btc._fetch_feed(btc._resolve_channel_id())
     processed = set(state.get("processed_video_ids", []))
     pending_by_market = {k: set(v) for k, v in state.get("pending_by_market", {}).items()}
     pending_by_market = {k: pending_by_market.get(k, set()) for k in MARKETS}
