@@ -17,7 +17,7 @@ jobs:
           python-version: "3.x"
 
       - name: Python-Abhängigkeiten installieren
-        run: pip install requests pandas openpyxl
+        run: pip install requests pandas xlrd
 
       - name: GSCPI Test
         run: python test_gscpi_nyfed.py
