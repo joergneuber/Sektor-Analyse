@@ -16,6 +16,9 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Python-Abhängigkeiten installieren
+        run: pip install requests
+
       - name: FRED API Test
         run: python test_fred_gscpi.py
         env:
