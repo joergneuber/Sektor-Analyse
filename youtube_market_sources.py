@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
+import requests
 import bitcoin_youtube as btc
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,158 +59,114 @@ MARKETS: dict[str, dict[str, Any]] = {
 
 
 def _fetch_channel_entries() -> list[dict[str, Any]]:
-    """Fetch the shared Bitcoin Trading DE channel page without the RSS endpoint."""
-    # Use the stable UC... channel URL resolved by the existing BTC module.
-    # The handle-page request is only used to resolve the channel ID; the
-    # video listing itself is fetched from the canonical /channel/UC... URL.
-    channel_id = btc._resolve_channel_id()
-    url = f"https://www.youtube.com/channel/{channel_id}/videos?view=0&sort=dd&flow=grid"
-    response = btc._http_get(url)
-    response.raise_for_status()
-    page = response.text
+    """Fetch recent uploads from the public channel via YouTube Data API v3."""
+    api_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "YOUTUBE_API_KEY ist nicht gesetzt. Bitte als GitHub Secret bereitstellen."
+        )
+
+    # Resolve the public channel by its handle. This avoids scraping YouTube
+    # HTML and avoids the deprecated/broken RSS feed used by the old BTC path.
+    handle_match = re.search(r"/@([^/?#]+)", btc.CHANNEL_URL)
+    if not handle_match:
+        raise RuntimeError(
+            f"YouTube-Handle konnte aus CHANNEL_URL nicht ermittelt werden: {btc.CHANNEL_URL}"
+        )
+    handle = handle_match.group(1)
+
+    base_url = "https://www.googleapis.com/youtube/v3"
+
+    try:
+        channel_response = requests.get(
+            f"{base_url}/channels",
+            params={
+                "part": "contentDetails",
+                "forHandle": f"@{handle}",
+                "key": api_key,
+            },
+            timeout=20,
+        )
+        channel_response.raise_for_status()
+        channel_data = channel_response.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"YouTube Data API channels.list fehlgeschlagen: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError("YouTube Data API lieferte keine gültige JSON-Antwort für channels.list.") from exc
+
+    channels = channel_data.get("items") or []
+    if not channels:
+        raise RuntimeError(
+            f"YouTube Data API hat keinen Kanal für @{handle} zurückgegeben."
+        )
+
+    channel = channels[0]
+    channel_id = channel.get("id")
+    uploads_playlist_id = (
+        channel.get("contentDetails", {})
+        .get("relatedPlaylists", {})
+        .get("uploads")
+    )
+    if not channel_id or not uploads_playlist_id:
+        raise RuntimeError(
+            "YouTube Data API lieferte keine gültige Channel-ID bzw. Uploads-Playlist-ID."
+        )
+
+    try:
+        playlist_response = requests.get(
+            f"{base_url}/playlistItems",
+            params={
+                "part": "snippet,contentDetails",
+                "playlistId": uploads_playlist_id,
+                "maxResults": 10,
+                "key": api_key,
+            },
+            timeout=20,
+        )
+        playlist_response.raise_for_status()
+        playlist_data = playlist_response.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"YouTube Data API playlistItems.list fehlgeschlagen: {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise RuntimeError(
+            "YouTube Data API lieferte keine gültige JSON-Antwort für playlistItems.list."
+        ) from exc
 
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def _runs_text(value: Any) -> str:
-        if not isinstance(value, dict):
-            return ""
-        if isinstance(value.get("simpleText"), str):
-            return value["simpleText"]
-        runs = value.get("runs")
-        if isinstance(runs, list):
-            return "".join(
-                run.get("text", "")
-                for run in runs
-                if isinstance(run, dict) and isinstance(run.get("text"), str)
-            )
-        return ""
+    for item in playlist_data.get("items", []):
+        snippet = item.get("snippet") or {}
+        content = item.get("contentDetails") or {}
+        resource = snippet.get("resourceId") or {}
 
-    def _published_text(value: dict[str, Any]) -> str:
-        for key in ("publishedTimeText", "publishedTime"):
-            text = _runs_text(value.get(key))
-            if text:
-                return text
-        return ""
+        video_id = content.get("videoId") or resource.get("videoId")
+        title = snippet.get("title")
+        published = content.get("videoPublishedAt") or snippet.get("publishedAt") or ""
 
-    def _add_entry(video_id: str, title: str, published: str = "") -> None:
-        if not video_id or video_id in seen or not title:
-            return
+        if not video_id or not title or video_id in seen:
+            continue
+
         entries.append({
             "video_id": video_id,
-            "title": btc.html.unescape(title),
-            "published": published,
+            "title": btc.html.unescape(str(title)),
+            "published": str(published),
             "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_id": channel_id,
         })
         seen.add(video_id)
 
-    # Preferred path: parse YouTube's embedded initial data when available.
-    markers = (
-        "var ytInitialData = ",
-        "ytInitialData = ",
-        '"ytInitialData":',
-    )
-    start = -1
-    marker = ""
-    for candidate in markers:
-        start = page.find(candidate)
-        if start >= 0:
-            marker = candidate
-            break
-
-    if start >= 0:
-        start += len(marker)
-        depth = 0
-        in_string = False
-        escaped = False
-        end = None
-        for pos in range(start, len(page)):
-            char = page[pos]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    end = pos + 1
-                    break
-
-        if end is not None:
-            try:
-                data = json.loads(page[start:end])
-
-                def walk(value: Any) -> None:
-                    if isinstance(value, dict):
-                        video_id = value.get("videoId")
-                        title = _runs_text(value.get("title"))
-                        if isinstance(video_id, str) and title:
-                            _add_entry(video_id, title, _published_text(value))
-                        for child in value.values():
-                            walk(child)
-                    elif isinstance(value, list):
-                        for child in value:
-                            walk(child)
-
-                walk(data)
-            except json.JSONDecodeError:
-                pass
-
-    # Fallback for current YouTube page variants where no usable
-    # ytInitialData/video renderer tree is embedded in the response.
-    if not entries:
-        video_matches = list(re.finditer(r'"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"', page))
-        for match in video_matches:
-            video_id = match.group(1)
-            window_start = max(0, match.start() - 3500)
-            window_end = min(len(page), match.end() + 3500)
-            window = page[window_start:window_end]
-
-            title_match = re.search(
-                r'"title"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"((?:\\.|[^"\\])*)"',
-                window,
-            )
-            if not title_match:
-                title_match = re.search(
-                    r'"title"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:\\.|[^"\\])*)"',
-                    window,
-                )
-            if not title_match:
-                continue
-
-            try:
-                title = json.loads(f'"{title_match.group(1)}"')
-            except json.JSONDecodeError:
-                title = title_match.group(1)
-
-            published = ""
-            published_match = re.search(
-                r'"publishedTimeText"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:\\.|[^"\\])*)"',
-                window,
-            )
-            if published_match:
-                try:
-                    published = json.loads(f'"{published_match.group(1)}"')
-                except json.JSONDecodeError:
-                    published = published_match.group(1)
-
-            _add_entry(video_id, title, published)
-
     if not entries:
         raise RuntimeError(
-            "YouTube-Kanalseite wurde abgerufen, aber es konnten keine Videos "
-            "aus der aktuellen Seitenstruktur extrahiert werden."
+            "YouTube Data API hat die Uploads-Playlist erreicht, aber keine Videos geliefert."
         )
 
-    print(f"YouTube-Kanal abgerufen: {len(entries)} Videos gefunden.")
+    print(
+        f"YouTube Data API: Kanal @{handle}, "
+        f"Channel-ID {channel_id}, {len(entries)} aktuelle Uploads gefunden."
+    )
     return entries
 
 
@@ -337,11 +295,20 @@ def prepare_youtube_market_context() -> dict[str, list[str]]:
     # Reuse the existing Bitcoin relevance/state/briefing logic unchanged.
     # Only its feed lookup is supplied by the shared channel fetch above.
     original_fetch_feed = btc._fetch_feed
+    original_resolve_channel_id = btc._resolve_channel_id
+    api_channel_id = None
     try:
+        # The shared API fetch already resolved the channel. Reuse that ID so
+        # the existing BTC processor does not perform another web/RSS lookup.
+        api_channel_id = None
         btc._fetch_feed = lambda _channel_id: entries
+        btc._resolve_channel_id = lambda: (
+            entries[0].get("channel_id") if entries and entries[0].get("channel_id") else original_resolve_channel_id()
+        )
         btc_ids = btc.prepare_bitcoin_youtube_context()
     finally:
         btc._fetch_feed = original_fetch_feed
+        btc._resolve_channel_id = original_resolve_channel_id
 
     state = _load_state()
     processed = set(state.get("processed_video_ids", []))
