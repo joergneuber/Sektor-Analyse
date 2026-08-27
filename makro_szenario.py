@@ -23,13 +23,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from pathlib import Path
-from io import StringIO
+from io import StringIO, BytesIO
 
 import pandas as pd
 import requests
 import yfinance as yf
 
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
+NYFED_GSCPI_URL = "https://www.newyorkfed.org/medialibrary/research/interactives/gscpi/downloads/gscpi_data.xlsx"
 FRED_URL = "https://fred.stlouisfed.org/series/{}"
 ISM_BASE = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports"
 FED_FUTURES_PUBLIC_URL = "https://www.pomeroygrain.com/markets.aspx?cg=30-Day+Fed+Funds"
@@ -59,7 +60,6 @@ FRED_SERIES = {
     "US High Yield OAS": "BAMLH0A0HYM2",
     "US Investment Grade OAS": "BAMLC0A0CM",
     "Chicago Fed NFCI": "NFCI",
-    "GSCPI": "GSCPI",
     "Global Economic Policy Uncertainty": "GEPUCURRENT",
     "US Federal Debt/GDP": "GFDEGDQ188S",
     "US 2Y Treasury": "DGS2",
@@ -131,7 +131,7 @@ FRED_MAX_AGE_DAYS = {
     "CES0500000003": 60, "GDPC1": 120, "UNRATE": 60, "PAYEMS": 60,
     "JTSJOL": 90, "ICSA": 14, "INDPRO": 60, "TCU": 60, "UMCSENT": 60,
     "DRTSCILM": 120, "BAMLH0A0HYM2": 7, "BAMLC0A0CM": 7, "NFCI": 14,
-    "GSCPI": 60, "GEPUCURRENT": 120, "GFDEGDQ188S": 120,
+    "GEPUCURRENT": 120, "GFDEGDQ188S": 120,
 }
 
 
@@ -208,6 +208,39 @@ def _save_series_cache(series_id, df, source, status="REAL"):
             "source": source,
         }
         _cache_save(cache)
+
+
+def gscpi_series():
+    """Offizielle GSCPI-Monatsreihe der Federal Reserve Bank of New York."""
+    try:
+        r = requests.get(NYFED_GSCPI_URL, timeout=20, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        df = pd.read_excel(
+            BytesIO(r.content),
+            sheet_name="GSCPI Monthly Data",
+        )
+        date_col = next((c for c in df.columns if str(c).strip().lower() == "date"), None)
+        value_col = next((c for c in df.columns if str(c).strip().lower() == "gscpi"), None)
+        if date_col is None or value_col is None:
+            raise ValueError("GSCPI Monthly Data enthaelt nicht die erwarteten Spalten Date/GSCPI")
+        df["DATE"] = pd.to_datetime(df[date_col], errors="coerce")
+        df["GSCPI"] = pd.to_numeric(df[value_col], errors="coerce")
+        df = df.dropna(subset=["DATE", "GSCPI"]).sort_values("DATE")
+        if df.empty:
+            raise ValueError("GSCPI Monthly Data enthaelt keine verwertbaren Beobachtungen")
+        return df[["DATE", "GSCPI"]], NYFED_GSCPI_URL
+    except Exception as exc:
+        print(f"WARNUNG: GSCPI New-York-Fed-Abruf nicht verfuegbar: {exc}")
+        return pd.DataFrame(), None
+
+
+def gscpi_snapshot():
+    df, source = gscpi_series()
+    if df.empty:
+        return f"GSCPI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=New York Fed | {NYFED_GSCPI_URL}"
+    value = _clean_num(df["GSCPI"].iloc[-1])
+    date = df["DATE"].iloc[-1].strftime("%Y-%m-%d")
+    return f"GSCPI: {_fmt(value,4)} | Datenstand={date} | STATUS=REAL | SOURCE={source}"
 
 
 def _rate_token_to_float(token):
@@ -1440,7 +1473,8 @@ def main():
     lines.append("")
 
     lines.append("4. EXOGENE FAKTOREN, LIEFERKETTEN & FISKAL")
-    lines.extend(fred_snapshots_parallel(["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP"]))
+    lines.append(gscpi_snapshot())
+    lines.extend(fred_snapshots_parallel(["Global Economic Policy Uncertainty", "US Federal Debt/GDP"]))
     lines.append("Geopolitik: kein kuenstlicher Tages-Score. Nur konkret belegte Ereignisse aus den bereitgestellten Quellen duerfen interpretiert werden.")
     lines.append("")
 
