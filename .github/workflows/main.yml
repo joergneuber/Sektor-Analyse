@@ -125,6 +125,11 @@ jobs:
       # Cache-Version bewusst auf v5 erhöht.
       # Dadurch wird der bisherige v4-Cache NICHT übernommen.
       # ============================================================
+      
+      - name: FRED API Test DFF
+        run: python test_fred_dff.py
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}  
 
       - name: Persistenten Makro-Cache wiederherstellen
         id: macro-cache-restore
