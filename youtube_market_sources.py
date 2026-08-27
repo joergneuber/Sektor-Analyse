@@ -60,15 +60,32 @@ MARKETS: dict[str, dict[str, Any]] = {
 def _fetch_channel_entries() -> list[dict[str, Any]]:
     """Fetch the shared Bitcoin Trading DE channel page without the RSS endpoint."""
     url = f"{btc.CHANNEL_URL.rstrip('/')}/videos"
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0 Safari/537.36"
+            ),
+            "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+        },
+    )
     with urllib.request.urlopen(request, timeout=20) as response:
         page = response.read().decode("utf-8", errors="replace")
 
-    marker = "var ytInitialData = "
-    start = page.find(marker)
-    if start < 0:
-        marker = "ytInitialData = "
-        start = page.find(marker)
+    markers = (
+        "var ytInitialData = ",
+        "ytInitialData = ",
+        '"ytInitialData":',
+    )
+    start = -1
+    marker = ""
+    for candidate in markers:
+        start = page.find(candidate)
+        if start >= 0:
+            marker = candidate
+            break
     if start < 0:
         raise RuntimeError("ytInitialData auf der YouTube-Kanalseite nicht gefunden.")
 
@@ -99,7 +116,11 @@ def _fetch_channel_entries() -> list[dict[str, Any]]:
     if end is None:
         raise RuntimeError("ytInitialData konnte nicht vollständig gelesen werden.")
 
-    data = json.loads(page[start:end])
+    try:
+        data = json.loads(page[start:end])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ytInitialData konnte nicht als JSON gelesen werden: {exc}") from exc
+
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -117,16 +138,22 @@ def _fetch_channel_entries() -> list[dict[str, Any]]:
             )
         return ""
 
+    def _published_text(value: dict[str, Any]) -> str:
+        for key in ("publishedTimeText", "publishedTime"):
+            text = _runs_text(value.get(key))
+            if text:
+                return text
+        return ""
+
     def walk(value: Any) -> None:
         if isinstance(value, dict):
             video_id = value.get("videoId")
             title = _runs_text(value.get("title"))
             if isinstance(video_id, str) and video_id and video_id not in seen and title:
-                published = _runs_text(value.get("publishedTimeText"))
                 entries.append({
                     "video_id": video_id,
                     "title": btc.html.unescape(title),
-                    "published": published,
+                    "published": _published_text(value),
                     "url": f"https://www.youtube.com/watch?v={video_id}",
                 })
                 seen.add(video_id)
@@ -137,6 +164,14 @@ def _fetch_channel_entries() -> list[dict[str, Any]]:
                 walk(child)
 
     walk(data)
+
+    if not entries:
+        raise RuntimeError(
+            "YouTube-Kanalseite wurde abgerufen, aber es konnten keine Videos "
+            "aus ytInitialData extrahiert werden."
+        )
+
+    print(f"YouTube-Kanal abgerufen: {len(entries)} Videos gefunden.")
     return entries
 
 
@@ -310,6 +345,11 @@ def prepare_youtube_market_context() -> dict[str, list[str]]:
 
     state["processed_video_ids"] = sorted(processed)[-200:]
     state["pending_by_market"] = {k: sorted(v) for k, v in pending_by_market.items()}
+    print(
+        "YouTube-Marktquellen: "
+        f"neu/geprüft={len(candidates)}, "
+        + ", ".join(f"{k}={len(items_by_market[k])}" for k in MARKETS)
+    )
     _save_state(state)
     _write_briefings(items_by_market)
 
