@@ -1,3 +1,18 @@
+"""Makro-Szenario-Datenpaket fuer Neuber Macro & Markets.
+
+HARTE DATENREGELN
+-----------------
+- Keine geschaetzten/erfundenen Datenwerte.
+- Fehlende Daten bleiben UNAVAILABLE.
+- REAL = veroeffentlichter Originalwert.
+- CALCULATED = deterministisch aus REAL-Werten berechnet.
+- PROXY = beobachteter Proxy, niemals als Originalpreis ausgeben.
+- MODEL_DERIVED = nur fuer die spaetere Szenario-/Wahrscheinlichkeitslogik.
+- Ein fehlender kritischer Datenbaustein sperrt die Makro-Szenariofreigabe.
+
+Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
+"""
+
 HARTE DATENREGELN
 -----------------
 - Keine geschaetzten/erfundenen Datenwerte.
