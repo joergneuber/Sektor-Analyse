@@ -80,25 +80,74 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
 def upload_file(filename, folder_id, service):
-    # NEU (21.07.2026): vor dem Hochladen alte gleichnamige Dateien im
-    # selben Ordner löschen - verhindert Dubletten wie "Short_Briefing(...)
-    # (1).txt", die bei mehrfachen Testläufen am selben Tag entstehen und
-    # in Google Sheets/Drive zu Verwirrung führen (falsche/alte Kopie
-    # geöffnet). Fehler beim Löschen (z. B. Datei existierte noch nicht)
-    # werden bewusst ignoriert, das ist kein Grund den Upload abzubrechen.
+    # Sicherheitsreihenfolge: Die bestehende Datei wird NICHT vor dem Upload
+    # gelöscht. Ein transienter Drive-/SSL-Timeout darf niemals dazu führen,
+    # dass der letzte erfolgreiche Stand verloren geht. Erst nach bestätigtem
+    # Upload werden vorhandene gleichnamige Altdateien entfernt.
     try:
         query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
-        alte_dateien = service.files().list(q=query, fields="files(id)").execute().get("files", [])
-        for alt in alte_dateien:
-            service.files().delete(fileId=alt["id"]).execute()
-            print(f"  (alte Version von '{filename}' gelöscht, ID: {alt['id']})")
+        alte_dateien = service.files().list(
+            q=query, fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc"
+        ).execute().get("files", [])
     except Exception as e:
-        print(f"  WARNUNG: Konnte alte Version von '{filename}' nicht prüfen/löschen ({e}) - fahre trotzdem fort.")
+        alte_dateien = []
+        print(f"  WARNUNG: Konnte vorhandene Versionen von '{filename}' nicht prüfen ({e}) - Upload wird trotzdem versucht.")
 
     file_metadata = {'name': filename, 'parents': [folder_id]}
-    media = MediaFileUpload(filename, resumable=True)
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"Datei '{filename}' erfolgreich hochgeladen. ID: {file.get('id')}")
+    letzter_fehler = None
+    neue_datei = None
+
+    for versuch in range(1, 4):
+        try:
+            # Pro Versuch einen frischen Upload-Stream erzeugen.
+            media = MediaFileUpload(filename, resumable=True)
+            neue_datei = service.files().create(
+                body=file_metadata, media_body=media, fields='id'
+            ).execute(num_retries=3)
+            if not neue_datei.get('id'):
+                raise RuntimeError("Google Drive meldete keine Datei-ID nach dem Upload.")
+            print(f"Datei '{filename}' erfolgreich hochgeladen. ID: {neue_datei['id']} (Versuch {versuch}/3)")
+            break
+        except Exception as e:
+            letzter_fehler = e
+            # Bei einem Timeout kann Google den Upload bereits angenommen haben,
+            # bevor die Antwort den Runner erreicht. Vor einem erneuten Upload
+            # deshalb prüfen, ob bereits eine neue gleichnamige Datei entstanden ist.
+            try:
+                aktuelle_dateien = service.files().list(
+                    q=query, fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc"
+                ).execute().get("files", [])
+                alte_ids = {alt.get('id') for alt in alte_dateien}
+                neue_kandidaten = [f for f in aktuelle_dateien if f.get('id') not in alte_ids]
+                if neue_kandidaten:
+                    neue_datei = neue_kandidaten[0]
+                    print(f"  INFO: Upload wurde trotz Fehlermeldung offenbar bereits angenommen. Verwende neue Datei-ID {neue_datei['id']}.")
+                    break
+            except Exception as pruef_fehler:
+                print(f"  DEBUG: Prüfung auf bereits angenommenen Upload nicht möglich ({pruef_fehler}).")
+
+            if versuch < 3:
+                wartezeit = 2 ** (versuch - 1)
+                print(f"  WARNUNG: Upload von '{filename}' fehlgeschlagen ({e}). Retry {versuch + 1}/3 in {wartezeit}s...")
+                import time
+                time.sleep(wartezeit)
+            else:
+                raise
+
+    neue_id = neue_datei['id']
+
+    # Erst jetzt die alten gleichnamigen Dateien löschen. Dadurch bleibt der
+    # letzte funktionierende Stand bei einem Upload-Timeout erhalten.
+    for alt in alte_dateien:
+        if alt.get('id') == neue_id:
+            continue
+        try:
+            service.files().delete(fileId=alt['id']).execute(num_retries=3)
+            print(f"  (alte Version von '{filename}' gelöscht, ID: {alt['id']})")
+        except Exception as e:
+            # Ein Aufräumfehler darf einen bereits erfolgreichen Upload nicht
+            # nachträglich zum Workflow-Abbruch machen.
+            print(f"  WARNUNG: Alte Version von '{filename}' konnte nicht gelöscht werden ({e}).")
 
 
 if __name__ == '__main__':
