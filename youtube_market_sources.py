@@ -9,7 +9,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -59,20 +58,14 @@ MARKETS: dict[str, dict[str, Any]] = {
 
 def _fetch_channel_entries() -> list[dict[str, Any]]:
     """Fetch the shared Bitcoin Trading DE channel page without the RSS endpoint."""
-    url = f"{btc.CHANNEL_URL.rstrip('/')}/videos"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0 Safari/537.36"
-            ),
-            "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        page = response.read().decode("utf-8", errors="replace")
+    # Use the stable UC... channel URL resolved by the existing BTC module.
+    # The handle-page request is only used to resolve the channel ID; the
+    # video listing itself is fetched from the canonical /channel/UC... URL.
+    channel_id = btc._resolve_channel_id()
+    url = f"https://www.youtube.com/channel/{channel_id}/videos?view=0&sort=dd&flow=grid"
+    response = btc._http_get(url)
+    response.raise_for_status()
+    page = response.text
 
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
