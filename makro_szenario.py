@@ -13,19 +13,6 @@ HARTE DATENREGELN
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 """
 
-HARTE DATENREGELN
------------------
-- Keine geschaetzten/erfundenen Datenwerte.
-- Fehlende Daten bleiben UNAVAILABLE.
-- REAL = veroeffentlichter Originalwert.
-- CALCULATED = deterministisch aus REAL-Werten berechnet.
-- PROXY = beobachteter Proxy, niemals als Originalpreis ausgeben.
-- MODEL_DERIVED = nur fuer die spaetere Szenario-/Wahrscheinlichkeitslogik.
-- Ein fehlender kritischer Datenbaustein sperrt die Makro-Szenariofreigabe.
-
-Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
-"""
-
 import datetime as dt
 import calendar
 import math
@@ -666,14 +653,38 @@ def fred_series(series_id, limit_days=5000):
                 return df
 
     try:
-        r = requests.get(FRED_BASE.format(series_id), timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
-        r.raise_for_status()
-        df = pd.read_csv(StringIO(r.text))
-        if "DATE" not in df.columns or series_id not in df.columns:
-            raise ValueError("FRED-Spalten fehlen")
-        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
-        df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
-        df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+        if series_id == "DFF":
+            api_key = os.environ.get("FRED_API_KEY")
+            if not api_key:
+                raise RuntimeError("FRED_API_KEY ist nicht gesetzt")
+            api_url = "https://api.stlouisfed.org/fred/series/observations"
+            params = {
+                "api_key": api_key,
+                "file_type": "json",
+                "series_id": series_id,
+                "sort_order": "asc",
+            }
+            r = requests.get(api_url, params=params, timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            observations = r.json().get("observations", [])
+            parsed = []
+            for observation in observations:
+                date = pd.to_datetime(observation.get("date"), errors="coerce")
+                value = _clean_num(observation.get("value"))
+                if pd.notna(date) and value is not None:
+                    parsed.append((date, value))
+            if not parsed:
+                raise ValueError("FRED API lieferte keine verwertbaren DFF-Beobachtungen")
+            df = pd.DataFrame(parsed, columns=["DATE", series_id]).drop_duplicates("DATE").sort_values("DATE")
+        else:
+            r = requests.get(FRED_BASE.format(series_id), timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            df = pd.read_csv(StringIO(r.text))
+            if "DATE" not in df.columns or series_id not in df.columns:
+                raise ValueError("FRED-Spalten fehlen")
+            df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+            df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
+            df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
         if limit_days:
             cutoff = pd.Timestamp.today() - pd.Timedelta(days=limit_days)
             df = df[df["DATE"] >= cutoff]
