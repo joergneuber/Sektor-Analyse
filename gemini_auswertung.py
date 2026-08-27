@@ -789,7 +789,7 @@ def gemini_auswertung_starten():
         print("FEHLER: Umgebungsvariable GEMINI_API_KEY nicht gesetzt.")
         sys.exit(1)
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=600000))
     anweisung = lade_anweisung()
     eingabedateien = sammle_eingabedateien()
 
