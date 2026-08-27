@@ -74,53 +74,6 @@ def _fetch_channel_entries() -> list[dict[str, Any]]:
     with urllib.request.urlopen(request, timeout=20) as response:
         page = response.read().decode("utf-8", errors="replace")
 
-    markers = (
-        "var ytInitialData = ",
-        "ytInitialData = ",
-        '"ytInitialData":',
-    )
-    start = -1
-    marker = ""
-    for candidate in markers:
-        start = page.find(candidate)
-        if start >= 0:
-            marker = candidate
-            break
-    if start < 0:
-        raise RuntimeError("ytInitialData auf der YouTube-Kanalseite nicht gefunden.")
-
-    start += len(marker)
-    depth = 0
-    in_string = False
-    escaped = False
-    end = None
-    for pos in range(start, len(page)):
-        char = page[pos]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                end = pos + 1
-                break
-    if end is None:
-        raise RuntimeError("ytInitialData konnte nicht vollständig gelesen werden.")
-
-    try:
-        data = json.loads(page[start:end])
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"ytInitialData konnte nicht als JSON gelesen werden: {exc}") from exc
-
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -145,30 +98,121 @@ def _fetch_channel_entries() -> list[dict[str, Any]]:
                 return text
         return ""
 
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            video_id = value.get("videoId")
-            title = _runs_text(value.get("title"))
-            if isinstance(video_id, str) and video_id and video_id not in seen and title:
-                entries.append({
-                    "video_id": video_id,
-                    "title": btc.html.unescape(title),
-                    "published": _published_text(value),
-                    "url": f"https://www.youtube.com/watch?v={video_id}",
-                })
-                seen.add(video_id)
-            for child in value.values():
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
+    def _add_entry(video_id: str, title: str, published: str = "") -> None:
+        if not video_id or video_id in seen or not title:
+            return
+        entries.append({
+            "video_id": video_id,
+            "title": btc.html.unescape(title),
+            "published": published,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+        })
+        seen.add(video_id)
 
-    walk(data)
+    # Preferred path: parse YouTube's embedded initial data when available.
+    markers = (
+        "var ytInitialData = ",
+        "ytInitialData = ",
+        '"ytInitialData":',
+    )
+    start = -1
+    marker = ""
+    for candidate in markers:
+        start = page.find(candidate)
+        if start >= 0:
+            marker = candidate
+            break
+
+    if start >= 0:
+        start += len(marker)
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for pos in range(start, len(page)):
+            char = page[pos]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = pos + 1
+                    break
+
+        if end is not None:
+            try:
+                data = json.loads(page[start:end])
+
+                def walk(value: Any) -> None:
+                    if isinstance(value, dict):
+                        video_id = value.get("videoId")
+                        title = _runs_text(value.get("title"))
+                        if isinstance(video_id, str) and title:
+                            _add_entry(video_id, title, _published_text(value))
+                        for child in value.values():
+                            walk(child)
+                    elif isinstance(value, list):
+                        for child in value:
+                            walk(child)
+
+                walk(data)
+            except json.JSONDecodeError:
+                pass
+
+    # Fallback for current YouTube page variants where no usable
+    # ytInitialData/video renderer tree is embedded in the response.
+    if not entries:
+        video_matches = list(re.finditer(r'"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"', page))
+        for match in video_matches:
+            video_id = match.group(1)
+            window_start = max(0, match.start() - 3500)
+            window_end = min(len(page), match.end() + 3500)
+            window = page[window_start:window_end]
+
+            title_match = re.search(
+                r'"title"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"((?:\\.|[^"\\])*)"',
+                window,
+            )
+            if not title_match:
+                title_match = re.search(
+                    r'"title"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:\\.|[^"\\])*)"',
+                    window,
+                )
+            if not title_match:
+                continue
+
+            try:
+                title = json.loads(f'"{title_match.group(1)}"')
+            except json.JSONDecodeError:
+                title = title_match.group(1)
+
+            published = ""
+            published_match = re.search(
+                r'"publishedTimeText"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:\\.|[^"\\])*)"',
+                window,
+            )
+            if published_match:
+                try:
+                    published = json.loads(f'"{published_match.group(1)}"')
+                except json.JSONDecodeError:
+                    published = published_match.group(1)
+
+            _add_entry(video_id, title, published)
 
     if not entries:
         raise RuntimeError(
             "YouTube-Kanalseite wurde abgerufen, aber es konnten keine Videos "
-            "aus ytInitialData extrahiert werden."
+            "aus der aktuellen Seitenstruktur extrahiert werden."
         )
 
     print(f"YouTube-Kanal abgerufen: {len(entries)} Videos gefunden.")
