@@ -1,9 +1,3 @@
-- name: Test FRED API DFF
-  run: python test_fred_dff.py
-  env:
-    FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-"""Makro-Szenario-Datenpaket fuer Neuber Macro & Markets.
-
 HARTE DATENREGELN
 -----------------
 - Keine geschaetzten/erfundenen Datenwerte.
