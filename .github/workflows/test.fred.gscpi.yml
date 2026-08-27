@@ -1,4 +1,4 @@
-name: Test FRED GSCPI
+name: Test GSCPI New York Fed
 
 on:
   workflow_dispatch:
@@ -17,9 +17,7 @@ jobs:
           python-version: "3.x"
 
       - name: Python-Abhängigkeiten installieren
-        run: pip install requests
+        run: pip install requests pandas openpyxl
 
-      - name: FRED API Test
-        run: python test_fred_gscpi.py
-        env:
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      - name: GSCPI Test
+        run: python test_gscpi_nyfed.py
