@@ -183,6 +183,8 @@ jobs:
             metals-youtube-state-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Externe YouTube-Marktquellen vorbereiten
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: python youtube_market_sources.py
 
       - name: Gemini-Auswertung erstellen
