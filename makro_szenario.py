@@ -33,6 +33,7 @@ FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 NYFED_GSCPI_URL = "https://www.newyorkfed.org/medialibrary/research/interactives/gscpi/downloads/gscpi_data.xlsx"
 FRED_URL = "https://fred.stlouisfed.org/series/{}"
 ISM_BASE = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports"
+LME_OFFICIAL_PRICES_URL = "https://www.lme.com/market-data/reports-and-data/lme-official-prices"
 FED_FUTURES_PUBLIC_URL = "https://www.pomeroygrain.com/markets.aspx?cg=30-Day+Fed+Funds"
 
 FRED_SERIES = {
@@ -91,16 +92,18 @@ MARKET_DATA = {
     "Kupfer": ("HG=F", "REAL_FUTURES"),
     "Aluminium": ("ALI=F", "REAL_FUTURES"),
     "Zink": ("ZNC=F", "REAL_FUTURES"),
-    # Yahoo liefert fuer diese drei London-Symbole keine belastbaren Kursdaten.
-    # Deshalb kein Fake-Ticker und kein 404-Netzwerkaufruf: bewusst UNAVAILABLE,
-    # bis eine reale kostenlose Quelle technisch eingebunden ist.
-    "Nickel": (None, "UNAVAILABLE"),
-    "Blei": (None, "UNAVAILABLE"),
-    "Zinn": (None, "UNAVAILABLE"),
-    "Kobalt": (None, "UNAVAILABLE"),
+    # LME ist fuer diese vier Metalle die primaere kostenlose Quelle fuer
+    # den day-delayed aktuellen Official Price. Historische LME-Reihen
+    # werden hier bewusst NICHT erfunden oder kostenpflichtig bezogen.
+    "Nickel": ("LME:Nickel", "REAL_LME"),
+    "Blei": ("LME:Lead", "REAL_LME"),
+    "Zinn": ("LME:Tin", "REAL_LME"),
+    "Kobalt": ("LME:Cobalt", "REAL_LME"),
     "Lithium": ("LIT", "PROXY"),
     "Eisenerz": ("TIO=F", "REAL_FUTURES"),
 }
+
+LME_METALS = {"Nickel": "Nickel", "Blei": "Lead", "Zinn": "Tin", "Kobalt": "Cobalt"}
 
 MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M", 7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; NeuberMacro/1.0)"}
@@ -117,6 +120,8 @@ FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
 CACHE_VERSION = 3
 CACHE_WRITE_LOCK = Lock()
+LME_PRICE_CACHE = None
+LME_PRICE_CACHE_TIME = 0.0
 
 # Maximale Zeit, die ein gespeicherter REAL-Wert als verwendbar gilt, wenn die
 # Quelle beim aktuellen Lauf nicht erreichbar ist. Die Gültigkeit richtet sich
@@ -750,6 +755,139 @@ def fred_snapshot(name, series_id):
     return f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
 
 
+
+def _lme_official_prices():
+    """Fetch LME official prices and return Cash Bid/Offer keyed by LME metal name."""
+    result = {}
+
+    try:
+        response = requests.get(
+            LME_OFFICIAL_PRICES_URL,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"WARNUNG: LME-Abruf fehlgeschlagen: {exc}")
+        return result
+
+    try:
+        tables = pd.read_html(StringIO(response.text))
+    except Exception as exc:
+        print(f"WARNUNG: LME-Tabelle konnte nicht gelesen werden: {exc}")
+        return result
+
+    # Extract an explicit page/report date if the LME page exposes one.
+    # No date is fabricated when the source does not provide one.
+    page_date = None
+    date_matches = re.findall(
+        r"(?i)(?:data\s+valid\s+for|date|dated|pricing date|trade date)\s*[:\-]?\s*"
+        r"(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|"
+        r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|"
+        r"\d{4}[./-]\d{1,2}[./-]\d{1,2})",
+        response.text,
+    )
+    if date_matches:
+        for raw_date in date_matches:
+            parsed_date = pd.to_datetime(raw_date, errors="coerce", dayfirst=True)
+            if pd.notna(parsed_date):
+                page_date = parsed_date.strftime("%Y-%m-%d")
+                break
+
+    for internal_name, lme_name in LME_METALS.items():
+        found = None
+
+        for table in tables:
+            parsed = _lme_find_cash_bid_offer(table, lme_name)
+            if parsed is not None:
+                found = parsed
+                break
+
+        if found is not None:
+            # lme_snapshot() looks up the LME contract name (Lead/Tin/Cobalt),
+            # not the German/internal display name (Blei/Zinn/Kobalt).
+            found["date"] = page_date
+            result[lme_name] = found
+
+    return result
+
+def _lme_find_cash_bid_offer(table, metal):
+    """Liest ausschliesslich eindeutig benannte LME-Cash-Bid/Cash-Offer-Spalten.
+
+    Keine Positionsheuristik. Eine Tabelle wird nur akzeptiert, wenn die
+    Spaltenheader explizit Cash + Bid bzw. Cash + Offer/Ask enthalten und die
+    Metallzeile eindeutig gefunden wird.
+    """
+    df = table.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        flattened = []
+        for col in df.columns:
+            parts = [str(x).strip() for x in col if str(x).strip().lower() not in {"nan", "none", ""}]
+            flattened.append(" ".join(parts))
+        df.columns = flattened
+    else:
+        df.columns = [str(c).strip() for c in df.columns]
+
+    def norm(x):
+        return re.sub(r"[^a-z0-9]+", " ", str(x).lower()).strip()
+
+    def header_tokens(x):
+        return set(norm(x).split())
+
+    bid_candidates = []
+    offer_candidates = []
+    for col in df.columns:
+        tokens = header_tokens(col)
+        if "cash" not in tokens:
+            continue
+        if "bid" in tokens:
+            bid_candidates.append(col)
+        if "offer" in tokens or "ask" in tokens:
+            offer_candidates.append(col)
+
+    # Genau eine eindeutige Spalte pro Richtung; bei Ambiguitaet kein Raten.
+    if len(bid_candidates) != 1 or len(offer_candidates) != 1:
+        return None
+    cash_bid_col = bid_candidates[0]
+    cash_offer_col = offer_candidates[0]
+
+    metal_norm = norm(metal)
+    metal_columns = [c for c in df.columns if norm(c) in {"metal", "name", "commodity", "contract"}]
+    candidate_rows = []
+    for idx, row in df.iterrows():
+        if metal_columns:
+            names = [norm(row[c]) for c in metal_columns]
+        else:
+            # Nur wenn es keine erkennbare Metallspalte gibt, darf die komplette
+            # Zeile nach dem exakten Metallnamen durchsucht werden.
+            names = [norm(v) for v in row.tolist()]
+        if metal_norm in names:
+            candidate_rows.append(idx)
+
+    if len(candidate_rows) != 1:
+        return None
+
+    row = df.loc[candidate_rows[0]]
+    bid = _clean_num(str(row[cash_bid_col]).replace(",", ""))
+    offer = _clean_num(str(row[cash_offer_col]).replace(",", ""))
+    if bid is None or offer is None or bid <= 0 or offer <= 0:
+        return None
+    return {"cash_bid": bid, "cash_ask": offer}
+
+def lme_snapshot(name, ticker):
+    metal = ticker.split(":", 1)[1] if ticker and ":" in ticker else name
+    lme_name = LME_METALS.get(name, metal)
+    data = _lme_official_prices().get(lme_name)
+    if not data:
+        return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | DATENTYP=REAL_LME | SOURCE={LME_OFFICIAL_PRICES_URL}"
+    value = (data["cash_bid"] + data["cash_ask"]) / 2.0
+    return (
+        f"{name}: {_fmt(value,2)} USD/t | Datenstand={data.get('date')} | "
+        f"STATUS=REAL | DATENTYP=REAL_LME | SOURCE={LME_OFFICIAL_PRICES_URL} | "
+        f"CASH_BID={data['cash_bid']:.2f} | CASH_ASK={data['cash_ask']:.2f}"
+    )
+
+
 def _market_history(ticker):
     cache = _cache_load()
     entry = cache.get("market", {}).get(ticker)
@@ -801,6 +939,8 @@ def _market_history(ticker):
 
 
 def market_snapshot(name, ticker, data_type):
+    if data_type == "REAL_LME":
+        return lme_snapshot(name, ticker)
     if not ticker or data_type == "UNAVAILABLE":
         return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | DATENTYP=UNAVAILABLE | SOURCE=keine belastbare kostenlose Quelle im aktuellen Projektstand"
     close = _market_history(ticker)
@@ -1082,119 +1222,258 @@ def _ism_official_get(url):
 
 
 
+def _tradingeconomics_ism_indicator(url, expected_year, expected_month):
+    """Liest einen TradingEconomics-Actual-Wert nur bei eindeutiger Monatszuordnung.
+
+    Akzeptiert wird ausschliesslich eine Kalenderzeile, deren:
+      1. Release-Datum im erwarteten Release-Monat/-Jahr liegt und
+      2. Reference explizit dem erwarteten ISM-Berichtsmonat entspricht.
+
+    Forecast, Consensus und Previous werden nie verwendet. Fehlt eine der
+    beiden Monatsinformationen, wird der Wert verworfen. Es gibt keinen
+    textuellen Fallback ohne Referenzmonat.
+    """
+    try:
+        r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        tables = pd.read_html(StringIO(r.text))
+
+        expected_ref_short = calendar.month_abbr[expected_month].lower()
+        expected_ref_long = calendar.month_name[expected_month].lower()
+        expected_release_year = expected_year + 1 if expected_month == 12 else expected_year
+        expected_release_month = 1 if expected_month == 12 else expected_month + 1
+
+        def norm_text(value):
+            return re.sub(r"\s+", " ", str(value)).strip()
+
+        def parse_release_date(value):
+            text = norm_text(value)
+            # TradingEconomics-Kalender: YYYY-MM-DD [time ...]
+            m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+            if not m:
+                return None
+            try:
+                return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                return None
+
+        def ref_matches(value):
+            text = norm_text(value).lower()
+            # Erlaubt sind z.B. "Jul", "Jul 2026", "July", "July 2026".
+            if not text:
+                return False
+            tokens = re.sub(r"[^a-z0-9]+", " ", text).split()
+            if expected_ref_short not in tokens and expected_ref_long not in tokens:
+                return False
+            # Falls ein Jahr vorhanden ist, muss es das erwartete Berichtsjahr sein.
+            years = {t for t in tokens if re.fullmatch(r"\d{4}", t)}
+            return not years or str(expected_year) in years
+
+        for table in tables:
+            columns = [norm_text(c) for c in table.columns]
+            actual_col = next((c for c in table.columns if norm_text(c).lower() in {"actual", "aktuell"}), None)
+            ref_col = next((c for c in table.columns if norm_text(c).lower() in {"reference", "referenz"}), None)
+            date_col = next((c for c in table.columns if norm_text(c).lower() in {"calendar", "date", "datum"}), None)
+            if actual_col is None or ref_col is None or date_col is None:
+                continue
+
+            for _, row in table.iterrows():
+                release_date = parse_release_date(row.get(date_col, ""))
+                if release_date is None:
+                    continue
+                if release_date.year != expected_release_year or release_date.month != expected_release_month:
+                    continue
+                if not ref_matches(row.get(ref_col, "")):
+                    continue
+
+                raw_actual = norm_text(row.get(actual_col, ""))
+                # Keine leeren/Forecast-artigen Platzhalter akzeptieren.
+                if not raw_actual or raw_actual in {"-", "--", "n/a", "na"}:
+                    continue
+                actual = _clean_num(raw_actual.replace(",", "."))
+                if actual is not None:
+                    return actual
+
+    except Exception as exc:
+        print(f"WARNUNG: TradingEconomics-ISM-Secondary nicht verfuegbar: {url} | {type(exc).__name__}: {exc}")
+    return None
+
+def _ism_public_secondary_tradingeconomics(year, month, kind):
+    """Kostenloser Sekundaer-Fallback mit PMI + New Orders + Employment + Prices.
+
+    TradingEconomics ist hier ausschliesslich Sekundaerquelle; als Status wird
+    deshalb immer REAL_PUBLIC_SECONDARY gesetzt. Fehlt eine einzelne Reihe,
+    bleibt nur diese Komponente UNAVAILABLE. Es werden niemals Werte aus
+    Forecast, Previous oder einem anderen Monat uebernommen.
+    """
+    if kind not in {"manufacturing", "services"} or not (1 <= month <= 12):
+        return None
+
+    if kind == "manufacturing":
+        urls = {
+            "pmi": "https://tradingeconomics.com/united-states/manufacturing-pmi",
+            "new_orders": "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders",
+            "employment": "https://tradingeconomics.com/united-states/ism-manufacturing-employment",
+            "prices": "https://tradingeconomics.com/united-states/ism-manufacturing-prices",
+        }
+    else:
+        urls = {
+            "pmi": "https://tradingeconomics.com/united-states/non-manufacturing-pmi",
+            "new_orders": "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders",
+            "employment": "https://tradingeconomics.com/united-states/ism-non-manufacturing-employment",
+            "prices": "https://tradingeconomics.com/united-states/ism-non-manufacturing-prices",
+        }
+
+    data = {
+        "pmi": None, "new_orders": None, "employment": None, "prices": None,
+        "url": " | ".join(urls.values()), "year": year, "month": month,
+        "status": "REAL_PUBLIC_SECONDARY",
+    }
+    for key, url in urls.items():
+        data[key] = _tradingeconomics_ism_indicator(url, year, month)
+
+    if data["pmi"] is None and all(data[k] is None for k in ("new_orders", "employment", "prices")):
+        print(f"WARNUNG: TradingEconomics-ISM-Secondary komplett ohne verwertbaren Wert: {kind} {year}-{month:02d}")
+        return None
+
+    missing = [k for k in ("new_orders", "employment", "prices") if data[k] is None]
+    if missing:
+        print(f"WARNUNG: ISM {kind} Secondary: einzelne Unterkomponenten fehlen: {', '.join(missing)}")
+    else:
+        print(f"INFO: ISM {kind.title()} Secondary vollstaendig: PMI={data['pmi']} NewOrders={data['new_orders']} Employment={data['employment']} Prices={data['prices']}")
+    return data
+
+
 def _ism_public_secondary_forexfactory(year, month, kind):
+    """Legacy-Secondary-Fallback fuer ISM PMI.
+
+    Wird nur noch als letzter Fallback nach TradingEconomics verwendet. Die
+    drei Unterkomponenten bleiben dabei bewusst UNAVAILABLE statt erfunden.
     """
-    Kostenloser öffentlicher Sekundär-Fallback für ISM Manufacturing und
-    ISM Services.
-
-    HARTE DATENREGELN:
-    - Ausschließlich ACTUAL.
-    - Forecast wird niemals verwendet.
-    - Previous wird niemals verwendet.
-    - Keine Berechnung, Interpolation oder Schätzung.
-    - Nur das exakt passende USD-ISM-Event wird akzeptiert.
-    - Der Release-Monat muss zum Berichtsmonat passen.
-    """
-    if month < 1 or month > 12:
+    if month < 1 or month > 12 or kind not in {"manufacturing", "services"}:
         return None
-
-    if kind not in {"manufacturing", "services"}:
-        return None
-
-    event_name = (
-        "ISM Manufacturing PMI"
-        if kind == "manufacturing"
-        else "ISM Services PMI"
-    )
-
+    event_name = "ISM Manufacturing PMI" if kind == "manufacturing" else "ISM Services PMI"
     release_year = year + 1 if month == 12 else year
     release_month = 1 if month == 12 else month + 1
-
-    max_day = min(
-        12,
-        calendar.monthrange(release_year, release_month)[1]
-    )
-
+    max_day = min(12, calendar.monthrange(release_year, release_month)[1])
     for day in range(1, max_day + 1):
-        url = (
-            f"https://www.forexfactory.com/calendar?day="
-            f"{calendar.month_abbr[release_month].lower()}{day}.{release_year}"
-        )
-
+        url = f"https://www.forexfactory.com/calendar?day={calendar.month_abbr[release_month].lower()}{day}.{release_year}"
         try:
             r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
             r.raise_for_status()
-
             try:
                 from lxml import html as lxml_html
                 tree = lxml_html.fromstring(r.content)
                 rows = tree.xpath("//tr")
             except Exception:
                 rows = []
-
             for row in rows:
-                row_text = " ".join(
-                    t.strip() for t in row.xpath(".//text()") if t.strip()
-                )
-                normalized = re.sub(r"\s+", " ", row_text).strip()
-
-                if "USD" not in normalized:
+                normalized = re.sub(r"\s+", " ", " ".join(t.strip() for t in row.xpath(".//text()") if t.strip())).strip()
+                if "USD" not in normalized or event_name not in normalized:
                     continue
-                if event_name not in normalized:
-                    continue
-
                 tail = normalized.split(event_name, 1)[1]
                 nums = re.findall(r"(?<![\d.])\d+(?:\.\d+)?", tail)
                 if not nums:
                     continue
-
                 actual = _clean_num(nums[0])
                 if actual is None:
                     continue
-
                 release_date = dt.date(release_year, release_month, day)
-
-                expected_release_year = year + 1 if month == 12 else year
-                expected_release_month = 1 if month == 12 else month + 1
-                if (release_date.year != expected_release_year or
-                        release_date.month != expected_release_month):
-                    print(
-                        f"WARNUNG: {event_name}-Fallback verworfen: "
-                        f"report_month={year}-{month:02d} | "
-                        f"release_date={release_date.isoformat()}"
-                    )
-                    continue
-
-                print(
-                    f"INFO: ForexFactory ISM-Event gefunden: "
-                    f"kind={kind} report_month={year}-{month:02d} "
-                    f"release_date={release_date.isoformat()} actual={actual}"
-                )
-
                 return {
-                    "pmi": actual,
-                    "url": url,
-                    "year": year,
-                    "month": month,
-                    "status": "REAL_PUBLIC_SECONDARY",
-                    "new_orders": None,
-                    "employment": None,
-                    "prices": None,
+                    "pmi": actual, "url": url, "year": year, "month": month,
+                    "status": "REAL_PUBLIC_SECONDARY", "new_orders": None,
+                    "employment": None, "prices": None,
                     "release_date": release_date.isoformat(),
                 }
-
-        except Exception as exc:
-            print(
-                f"WARNUNG: ForexFactory ISM-Fallback fuer {kind} "
-                f"release_date={release_year}-{release_month:02d}-{day:02d} "
-                f"nicht verfuegbar: {type(exc).__name__}: {exc}"
-            )
-
-    print(
-        f"WARNUNG: Kein passender USD {event_name} Release gefunden "
-        f"fuer report_month={year}-{month:02d}"
-    )
+        except Exception:
+            continue
     return None
+
+def _ism_extract_official(text, kind):
+    """Extrahiert PMI und die drei geforderten ISM-Unterkomponenten aus der
+    offiziellen ISM-Seite. Die Suche arbeitet auf bereinigtem Seitentext und
+    bevorzugt explizite 'Index at X'/'Index registered X'-Formulierungen."""
+    raw_html = text
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", text, flags=re.I|re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    pmi_label = "Manufacturing PMI" if kind == "manufacturing" else "Services PMI"
+    pmi = None
+    for pat in [
+        rf"{re.escape(pmi_label)}(?:\^?®)?\s+(?:at|registered)\s+(\d+(?:\.\d+)?)",
+        rf"{re.escape(pmi_label)}(?:\^?®)?[^0-9]{{0,120}}?(\d+(?:\.\d+)?)\s*%",
+    ]:
+        m = re.search(pat, text, re.I)
+        if m:
+            pmi = _clean_num(m.group(1)); break
+    if pmi is None:
+        return None
+    data = {"pmi": pmi, "new_orders": None, "employment": None, "prices": None}
+
+    # Die aktuelle offizielle ISM-Seite stellt die Unterkomponenten in
+    # HTML-Tabellen bereit, z.B.:
+    #   New Orders | 56.7 | 56.0 | +0.7 | ...
+    #   Employment | 52.8 | 49.7 | +3.1 | ...
+    #   Prices     | 71.1 | 73.0 | -1.9 | ...
+    # Deshalb nicht nur auf Fliesstext-Formulierungen verlassen. Die erste
+    # numerische Zelle nach der eindeutigen Zeilenbezeichnung ist der aktuelle
+    # Berichtsmonat; Folgewerte (Previous/Change) werden nicht verwendet.
+    try:
+        # Tabellen muessen aus dem unveraenderten HTML gelesen werden; der
+        # bereinigte Fliesstext oben enthaelt bewusst keine HTML-Struktur mehr.
+        tables = pd.read_html(StringIO(raw_html))
+    except Exception:
+        tables = []
+
+    def _table_value(label):
+        target = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+        for table in tables:
+            df = table.copy()
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [
+                    " ".join(
+                        str(x).strip() for x in col
+                        if str(x).strip().lower() not in {"nan", "none", ""}
+                    ).strip()
+                    for col in df.columns
+                ]
+            for _, row in df.iterrows():
+                cells = [str(v).strip() for v in row.tolist()]
+                if not cells:
+                    continue
+                first = re.sub(r"[^a-z0-9]+", " ", cells[0].lower()).strip()
+                if first != target:
+                    continue
+                for raw in cells[1:]:
+                    # Tabellenwerte wie 56.7 / 52.8 / 71.1; keine Prozent-
+                    # Zeichen erforderlich, da die ISM-Tabelle bereits den
+                    # Indexwert als Zahl liefert.
+                    value = _clean_num(raw.replace(",", ""))
+                    if value is not None:
+                        return value
+        return None
+
+    for key, label in (("new_orders", "New Orders"),
+                       ("employment", "Employment"),
+                       ("prices", "Prices")):
+        # Zuerst die explizite Tabellenstruktur der offiziellen ISM-Seite.
+        value = _table_value(label)
+        if value is not None:
+            data[key] = value
+            continue
+
+        # Fallback fuer alternative offizielle Textdarstellung.
+        patterns = [
+            rf"{re.escape(label)}(?: Index)?\s+(?:at|registered)\s+(\d+(?:\.\d+)?)",
+            rf"{re.escape(label)}(?: Index)?[^0-9]{{0,120}}?(\d+(?:\.\d+)?)\s*%",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.I)
+            if m:
+                data[key] = _clean_num(m.group(1))
+                break
+
+    return data
 
 
 def _ism_fetch(kind, year, month):
@@ -1214,52 +1493,40 @@ def _ism_fetch(kind, year, month):
             if "login.aspx" in final_url or "sso" in final_url:
                 print(f"WARNUNG: ISM official redirected to SSO/login: {r.url}")
             else:
-                text = re.sub(r"<[^>]+>", " ", r.text)
-                text = re.sub(r"\s+", " ", text)
-
-                if kind == "manufacturing":
-                    patterns = [
-                        r"Manufacturing PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
-                        r"Manufacturing PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
-                    ]
-                else:
-                    patterns = [
-                        r"Services PMI.{0,180}?registered\s+(\d+(?:\.\d+)?)",
-                        r"Services PMI.{0,180}?at\s+(\d+(?:\.\d+)?)",
-                    ]
-
-                value = None
-                for pattern in patterns:
-                    m = re.search(pattern, text, flags=re.I)
-                    if m:
-                        value = _clean_num(m.group(1))
-                        break
-
-                if value is not None:
+                parsed = _ism_extract_official(r.text, kind)
+                if parsed is not None:
                     data = {
-                        "pmi": value,
+                        **parsed,
                         "url": official,
                         "year": year,
                         "month": month,
                         "status": "REAL",
                     }
-
-                    patterns = {
-                        "new_orders": r"New Orders(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                        "employment": r"Employment(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                        "prices": r"Prices(?: Index)?.{0,100}?(\d+(?:\.\d+)?)",
-                    }
-                    for key, pattern in patterns.items():
-                        mm = re.search(pattern, text, flags=re.I)
-                        data[key] = _clean_num(mm.group(1)) if mm else None
-
-                    return data
+                    missing_fields = [k for k in ("new_orders", "employment", "prices") if data[k] is None]
+                    if missing_fields:
+                        # Ein partieller Primary-Datensatz darf nicht als REAL
+                        # abgeschlossen werden. Der Secondary-Fallback muss die
+                        # fehlenden Komponenten noch beschaffen.
+                        print(
+                            f"WARNUNG: ISM {kind} official PMI erkannt, aber Unterkomponenten fehlen: "
+                            f"{', '.join(missing_fields)}; Secondary-Fallback wird versucht"
+                        )
+                    else:
+                        print(
+                            f"INFO: ISM {kind.title()} official vollstaendig: "
+                            f"PMI={data['pmi']} NewOrders={data['new_orders']} "
+                            f"Employment={data['employment']} Prices={data['prices']}"
+                        )
+                        return data
 
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-    # Secondary: public calendar. Actual only; no forecast/previous.
-    secondary = _ism_public_secondary_forexfactory(year, month, kind)
+    # Secondary: TradingEconomics public pages. Actual only; no forecast/previous.
+    secondary = _ism_public_secondary_tradingeconomics(year, month, kind)
+    # Letzter Fallback: ForexFactory liefert notfalls nur den PMI.
+    if secondary is None:
+        secondary = _ism_public_secondary_forexfactory(year, month, kind)
     if secondary:
         release_date = secondary.get("release_date")
         if release_date:
@@ -1305,11 +1572,20 @@ def ism_snapshot(today):
             # Cache verwenden. Ein alter Juni-Wert darf im August niemals den Juli-Wert ersetzen.
             latest_y, latest_m = candidates[0]
             if d.get("year") == latest_y and d.get("month") == latest_m:
+                # Secondary darf den Primary nicht dauerhaft ueberdecken.
+                # Bei REAL_PUBLIC_SECONDARY wird der offizielle ISM-Abruf in
+                # jedem Hauptlauf erneut versucht; erst bei dessen Ausfall
+                # bleibt der sekundare Wert als Fallback bestehen.
+                if d.get("status") != "REAL_PUBLIC_SECONDARY":
+                    print(
+                        f"INFO: ISM-Cache-Hit fuer {key} "
+                        f"(Datenstand={latest_y}-{latest_m:02d}, status={d.get('status')})"
+                    )
+                    return d
                 print(
-                    f"INFO: ISM-Cache-Hit fuer {key} "
-                    f"(Datenstand={latest_y}-{latest_m:02d}, status={d.get('status')})"
+                    f"INFO: ISM-Secondary-Cache wird nicht blind uebernommen fuer {key}; "
+                    f"Primary wird erneut versucht."
                 )
-                return d
             print(
                 f"INFO: ISM-Cache vorhanden, aber nicht aktuell: "
                 f"cached={d.get('year')}-{d.get('month')} "
@@ -1446,7 +1722,7 @@ def main():
         "NEUBER MACRO & MARKETS",
         f"MAKRO-DATENPAKET | Datenabruf={today.isoformat()}",
         "HARTE DATENREGEL: Keine Zahl wird geschaetzt. Fehlende Werte bleiben NICHT VERFUEGBAR.",
-        "STATUS: REAL = Originalwert | REAL_CACHED = echter gespeicherter Originalwert, Quelle im Lauf nicht neu erreichbar | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
+        "STATUS: REAL = Originalwert/Primaerquelle | REAL_PUBLIC_SECONDARY = echter Wert aus oeffentlicher Sekundaerquelle | REAL_CACHED = echter gespeicherter Originalwert, Quelle im Lauf nicht neu erreichbar | CALCULATED = deterministisch berechnet | PROXY = Proxy | MODEL_DERIVED = Modellresultat | UNAVAILABLE = keine belastbare Zahl",
         "",
         "1. MONETAERES UMFELD, ZINSEN & LIQUIDITAET",
     ]

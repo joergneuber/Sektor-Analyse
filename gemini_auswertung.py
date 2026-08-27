@@ -154,6 +154,12 @@ MAKRO_SERIEN_ALIAS = {
     "SLOOS C&I Tightening": "DRTSCILM",
     "US Investment Grade OAS": "BAMLC0A0CM",
     "GSCPI": "GSCPI",
+    "Nickel": "Nickel",
+    "Blei": "Blei",
+    "Zinn": "Zinn",
+    "Kobalt": "Kobalt",
+    "Lithium (ETF-Proxy)": "Lithium",
+    "Lithium": "Lithium",
 }
 
 
@@ -266,6 +272,307 @@ def _zeile_hat_numerischen_reihenwert(line, terms):
     escaped = "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
     pattern = rf"^\s*(?:{escaped})\s*[:=]\s*(?:Wert\s*[:=]\s*)?[-+]?\d+(?:[.,]\d+)?(?:\s*%|\s*(?:bp|bps|Mrd\.?|Bio\.?))?(?:\s*(?:\||$))"
     return bool(re.search(pattern, line, re.I))
+
+
+
+def _extrahiere_makro_quellfakten(makro_text):
+    """Extrahiert konservativ prüfbare Fakten direkt aus Makro-Datenzeilen.
+
+    Erfasst nur:
+      - numerischen Hauptwert direkt hinter dem Reihenlabel,
+      - expliziten STATUS,
+      - EMA20/EMA50 DARUEBER bzw. DARUNTER.
+
+    Keine freien Interpretationssätze werden als Quelle behandelt.
+    """
+    fakten = []
+    status_re = re.compile(
+        r"(?:^|\|)\s*STATUS\s*=\s*"
+        r"(REAL_PUBLIC_SECONDARY|REAL_CACHED|REAL|PROXY|UNAVAILABLE|CALCULATED|MODEL_DERIVED)"
+        r"(?:\s*\||$)", re.I
+    )
+    ema_re = re.compile(r"\b(EMA20|EMA50)\s*=\s*(DARUEBER|DARUNTER)\b", re.I)
+    value_re = re.compile(
+        r"^\s*([-+]?\d+(?:[.,]\d+)?)(?:\s*(%|bp|bps|Mrd\.?|Bio\.?))?"
+        r"\s*(?:\||$)", re.I
+    )
+
+    for raw_line in makro_text.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        m = re.match(r"^([^:|]+?)\s*:\s*(.*)$", line)
+        if not m:
+            continue
+
+        name = m.group(1).strip()
+        rest = m.group(2).strip()
+
+        # WICHTIG: Der Markt-/Rohstoffblock in Makro_Briefing ist ein
+        # separater Snapshot mit eigenem Datenstand und darf nicht gegen
+        # aktuellere Markt-/Setup-Daten in der Gesamtauswertung verglichen
+        # werden. Die Source-Fidelity-Prüfung gilt hier ausschließlich für
+        # echte Makro-Reihen ohne DATENTYP=REAL_MARKET/REAL_FUTURES/PROXY.
+        # Damit wird z.B. ein aktuellerer Russell-2000-Stand nicht fälschlich
+        # als Dateninkontinenz gewertet.
+        if re.search(r"(?:^|\|)\s*DATENTYP\s*=", rest, re.I):
+            continue
+
+        status_match = status_re.search(rest)
+        status = status_match.group(1).upper() if status_match else None
+
+        value_match = value_re.match(rest)
+        value = None
+        unit = ""
+        if value_match:
+            value = float(value_match.group(1).replace(",", "."))
+            unit = (value_match.group(2) or "").lower()
+
+        # ISM-Unterkomponenten sind eigenstaendige Quellfakten innerhalb
+        # derselben Datenzeile. Sie muessen deshalb separat pruefbar sein.
+        subfields = {}
+        for field in ("New Orders", "Employment", "Prices"):
+            sm = re.search(
+                rf"\b{re.escape(field)}\s*=\s*(NICHT\s+VERFUEGBAR|[-+]?\d+(?:[.,]\d+)?)",
+                rest, re.I
+            )
+            if sm:
+                raw = sm.group(1)
+                subfields[field] = None if re.match(r"NICHT", raw, re.I) else float(raw.replace(",", "."))
+
+        ema_states = {
+            ema.group(1).upper(): ema.group(2).upper()
+            for ema in ema_re.finditer(rest)
+        }
+
+        if value is None and status is None and not ema_states:
+            continue
+
+        series_id = MAKRO_SERIEN_ALIAS.get(name, "")
+        fakten.append({
+            "name": name,
+            "aliases": _makro_alias_terme(name, series_id),
+            "value": value,
+            "unit": unit,
+            "status": status,
+            "ema_states": ema_states,
+            "subfields": subfields,
+        })
+
+        # ISM-Unterkomponenten werden als eigene Fakten mit dem jeweiligen
+        # Parent-Alias verknuepft. So ist z.B. "ISM Services ... New Orders"
+        # lokal gegen 57.2 pruefbar, ohne freie Interpretation zu blockieren.
+        for field, subvalue in subfields.items():
+            fakten.append({
+                "name": f"{name} / {field}",
+                "aliases": _makro_alias_terme(name, series_id) + [field],
+                "value": subvalue,
+                "unit": "",
+                "status": status if subvalue is not None else "UNAVAILABLE",
+                "ema_states": {},
+                "subfields": {},
+            })
+    return fakten
+
+
+def _source_fidelity_alias_regex(aliases):
+    aliases = sorted(
+        {a.strip() for a in aliases if a and a.strip()},
+        key=len, reverse=True
+    )
+    if not aliases:
+        return None
+    return re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(a) for a in aliases) + r")(?!\w)",
+        re.I
+    )
+
+
+def _source_fidelity_numbers(text):
+    """Extrahiert einfache Zahlen aus lokalem Kontext."""
+    pattern = re.compile(
+        r"(?<![A-Za-z])[-+]?\d{1,3}(?:[.\s]\d{3})*(?:[.,]\d+)?%?"
+        r"|(?<![A-Za-z])[-+]?\d+(?:[.,]\d+)?%?"
+    )
+    values = []
+    for m in pattern.finditer(text):
+        raw = m.group(0).strip()
+        percent = raw.endswith("%")
+        raw = raw[:-1] if percent else raw
+        raw = raw.replace(" ", "")
+        if "," in raw and "." in raw:
+            raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
+        elif "," in raw:
+            raw = raw.replace(",", ".")
+        try:
+            values.append((float(raw), percent))
+        except ValueError:
+            pass
+    return values
+
+
+def _source_fidelity_value_close(a, b):
+    """Erlaubt nur Rundungsabweichungen, keine inhaltlichen Abweichungen."""
+    if a is None or b is None:
+        return False
+    tolerance = min(0.02, max(abs(b) * 0.000005, 0.000001))
+    return abs(a - b) <= tolerance
+
+
+def _source_fidelity_value_context(context):
+    """Eine Zahl gilt nur bei explizitem Wertkontext als Reihenwert."""
+    return bool(re.search(
+        r"(?:\bbei\b|\bauf\b|\bvon\b|\bbeträgt\b|\bbetrug\b|\bliegt\b|"
+        r"\bstand\b|\baktuell\b|[:=])\s*[-+]?\d",
+        context, re.I
+    ))
+
+
+def _source_fidelity_state_opposite(source_state):
+    return "DARUNTER" if source_state == "DARUEBER" else "DARUEBER"
+
+
+def pruefe_makro_ausgabe_auf_source_fidelity(text, makro_text):
+    """Prüft ausschließlich Widersprüche gegen vorhandene Makro-Quellfakten.
+
+    - Vorhandener Zahlenwert falsch -> Fehler.
+    - Vorhandener STATUS widersprochen -> Fehler.
+    - Vorhandener EMA20/EMA50-Zustand umgedreht -> Fehler.
+    - Nicht erwähnter Quellwert -> kein Fehler.
+    - Freie qualitative Interpretation -> weiterhin erlaubt.
+    """
+    fakten = _extrahiere_makro_quellfakten(makro_text)
+    fehler = []
+
+    for fakt in fakten:
+        alias_re = _source_fidelity_alias_regex(fakt["aliases"])
+        if not alias_re:
+            continue
+
+        for raw_line in (text or "").splitlines():
+            matches = list(alias_re.finditer(raw_line))
+            if not matches:
+                continue
+
+            # Numerischer Hauptwert: nur Zahlen in engem, explizitem
+            # Wertkontext direkt am Reihenlabel prüfen.
+            if fakt["value"] is not None:
+                for am in matches:
+                    context = (
+                        raw_line[max(0, am.start() - 35):am.start()]
+                        + " "
+                        + raw_line[am.end():am.end() + 120]
+                    )
+                    # Unterkomponenten (ISM New Orders/Employment/Prices):
+                    # nur die Zahl direkt hinter dem Feldnamen pruefen.
+                    if " / " in fakt["name"]:
+                        field_name = fakt["name"].split(" / ", 1)[1]
+                        field_match = re.search(
+                            rf"\b{re.escape(field_name)}\s*(?:=|:|at|is|was|liegt\s+bei)?\s*([-+]?\d+(?:[.,]\d+)?)",
+                            context, re.I
+                        )
+                        if not field_match:
+                            continue
+                        candidate = float(field_match.group(1).replace(",", "."))
+                        if not _source_fidelity_value_close(candidate, fakt["value"]):
+                            fehler.append(
+                                f"{fakt['name']}: Quellwert {fakt['value']:g} "
+                                f"wurde als {candidate:g} ausgegeben ({raw_line.strip()})"
+                            )
+                        continue
+                    if not _source_fidelity_value_context(context):
+                        continue
+                    for candidate, is_percent in _source_fidelity_numbers(context):
+                        if is_percent:
+                            continue
+                        if 1900 <= candidate <= 2100 and candidate.is_integer():
+                            continue
+                        if not _source_fidelity_value_close(candidate, fakt["value"]):
+                            fehler.append(
+                                f"{fakt['name']}: Quellwert {fakt['value']:g} "
+                                f"wurde als {candidate:g} ausgegeben "
+                                f"({raw_line.strip()})"
+                            )
+                            break
+                    if fehler and fehler[-1].startswith(f"{fakt['name']}:"):
+                        break
+
+            # Status: nur explizite Statuswoerter im relevanten Kontext.
+            # Bei ISM-Unterkomponenten darf der Parent-Status nicht als
+            # Status der Unterkomponente fehlinterpretiert werden.
+            if fakt["status"]:
+                status_context = raw_line
+                if " / " in fakt["name"]:
+                    field_name = fakt["name"].split(" / ", 1)[1]
+                    fm = re.search(rf"\b{re.escape(field_name)}\s*(?:=|:|at|is|was|liegt\s+bei)?\s*([^|,;.]+)", raw_line, re.I)
+                    status_context = fm.group(1) if fm else ""
+                found = {
+                    x.upper()
+                    for x in re.findall(
+                        r"\b(REAL_PUBLIC_SECONDARY|REAL_CACHED|REAL|PROXY|UNAVAILABLE|CALCULATED|MODEL_DERIVED)\b",
+                        status_context, re.I
+                    )
+                }
+                opposites = {
+                    "UNAVAILABLE": {"REAL", "REAL_CACHED", "REAL_PUBLIC_SECONDARY", "PROXY", "CALCULATED"},
+                    "PROXY": {"REAL", "REAL_CACHED", "REAL_PUBLIC_SECONDARY"},
+                    "REAL": {"UNAVAILABLE", "PROXY", "REAL_PUBLIC_SECONDARY"},
+                    "REAL_CACHED": {"UNAVAILABLE", "PROXY", "REAL_PUBLIC_SECONDARY"},
+                    "REAL_PUBLIC_SECONDARY": {"UNAVAILABLE", "PROXY", "REAL", "REAL_CACHED"},
+                    "CALCULATED": {"REAL", "REAL_CACHED", "REAL_PUBLIC_SECONDARY", "PROXY", "UNAVAILABLE"},
+                    "MODEL_DERIVED": {"REAL", "REAL_CACHED", "REAL_PUBLIC_SECONDARY", "PROXY", "UNAVAILABLE"},
+                }.get(fakt["status"], set())
+
+                wrong = found & opposites
+                if wrong:
+                    fehler.append(
+                        f"{fakt['name']}: Quellstatus {fakt['status']} "
+                        f"widersprochen durch {sorted(wrong)[0]} "
+                        f"({raw_line.strip()})"
+                    )
+
+                if fakt["status"] == "UNAVAILABLE" and re.search(
+                    r"\b(?:real|proxy|berechnet|calculated)\b", raw_line, re.I
+                ):
+                    fehler.append(
+                        f"{fakt['name']}: Quellstatus UNAVAILABLE widersprochen "
+                        f"({raw_line.strip()})"
+                    )
+
+            # EMA20/EMA50: auch natürliche deutsche Formulierungen prüfen.
+            for ema_name, source_state in fakt["ema_states"].items():
+                em = re.search(rf"\b{ema_name}\b", raw_line, re.I)
+                if not em:
+                    continue
+                local = raw_line[
+                    max(0, em.start() - 45):min(len(raw_line), em.end() + 70)
+                ].lower()
+
+                opposite = _source_fidelity_state_opposite(source_state)
+                opposite_words = (
+                    {"darunter", "darünter", "unter", "unterhalb", "below", "under"}
+                    if opposite == "DARUNTER"
+                    else {"darueber", "darüber", "über", "oberhalb", "above", "over"}
+                )
+                if any(word in local for word in opposite_words):
+                    fehler.append(
+                        f"{fakt['name']}: {ema_name} ist laut Quelle "
+                        f"{source_state}, Gemini schreibt den gegenteiligen Zustand "
+                        f"({raw_line.strip()})"
+                    )
+
+    dedup = list(dict.fromkeys(fehler))
+    if dedup:
+        raise RuntimeError(
+            "SOURCE-FIDELITY-FEHLER: Gemini widerspricht vorhandenen "
+            "Makro-Quellwerten: " + " | ".join(dedup)
+        )
+
+    print(
+        f"INFO: SOURCE-FIDELITY-CHECK OK - "
+        f"{len(fakten)} prüfbare Makro-Quellfakten kontrolliert."
+    )
+    return True
 
 
 def pruefe_makro_ausgabe_auf_dateninkontinenz(text, makro_text):
@@ -1011,9 +1318,10 @@ def gemini_auswertung_starten():
                     "Uebernimm Zahlen, Einheiten, Datenstaende und Quellen exakt aus diesem Dokument. Erfinde, aktualisiere, "
                     "schaetze oder ersetze keine fehlenden Werte. Eine im Makro-Briefing als NICHT VERFUEGBAR bezeichnete Reihe "
                     "bleibt auch in der fertigen Auswertung NICHT VERFUEGBAR und darf nicht durch Wissen des Modells oder Werte "
-                    "aus anderen Dateien ersetzt werden. REAL/REAL_CACHED/CALCULATED/PROXY/MODEL_DERIVED sind strikt nach ihrem "
+                    "aus anderen Dateien ersetzt werden. REAL/REAL_PUBLIC_SECONDARY/REAL_CACHED/CALCULATED/PROXY/MODEL_DERIVED/UNAVAILABLE sind strikt nach ihrem "
                     "Status zu behandeln. HEALTHY ist ein Gate-Status und keine Aussage ueber die Aktualitaet jeder Einzelreihe. "
-                    "GSCPI ist New-York-Fed-Datenmaterial und keine FRED-Serie. "
+                    "SOURCE-FIDELITY-REGEL: Wenn du einen im Makro_Briefing vorhandenen numerischen Wert, STATUS-Wert oder EMA20/EMA50-Zustand konkret nennst, muss er exakt mit dem Makro_Briefing uebereinstimmen. DARUEBER darf niemals als DARUNTER und DARUNTER niemals als DARUEBER beschrieben werden. Nicht genannte Quellwerte sind kein Fehler. Freie qualitative Schlussfolgerungen bleiben erlaubt, solange sie keinen vorhandenen Quellwert widersprechen. "
+                    "REAL bedeutet Primaerquelle/Originalwert. REAL_PUBLIC_SECONDARY bedeutet echter Wert aus einer oeffentlichen Sekundaerquelle und darf niemals als REAL/Primaerquelle bezeichnet werden. PROXY ist ein beobachteter Ersatzindikator und darf niemals als Originalpreis bezeichnet werden. Lithium wird im aktuellen kostenlosen Projektstand ausschließlich über den ETF-Proxy LIT geführt und muss im Briefing/Gemini-Text ausdruecklich als \"Lithium (ETF-Proxy)\" bezeichnet werden; daraus darf niemals ein REAL-Lithium-Rohstoffpreis abgeleitet werden. UNAVAILABLE bleibt ohne Wert; niemals schaetzen, interpolieren oder durch Modellwissen ersetzen. Kritische Datenluecke nur bei einem fuer das Makro-Gate erforderlichen fehlenden Datenpunkt; sekundaere Datenluecke fuer optionale Kontext-/Unterkomponenten. GSCPI ist New-York-Fed-Datenmaterial und keine FRED-Serie. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. Die Dateien Bitcoin_Trading_DE_Briefing.txt, Gold_Trading_DE_Briefing.txt und Silber_Trading_DE_Briefing.txt sind ausschließlich qualitative externe YouTube-Quellen. Nutze sie nur als Kontext/Abgleich; sie dürfen niemals objektive Kursdaten, technische Check-Felder, CRV, Setup-Scores, Filter, Setup-Qualität oder Handelsentscheidungen verändern. Wenn eine solche Datei fehlt, ist das kein Fehler und es darf nichts daraus erfunden werden. "
                     "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
@@ -1082,6 +1390,7 @@ def gemini_auswertung_starten():
             # bestehende Retry-Logik entscheidet ueber den naechsten Versuch.
             if makro_pfad and os.path.exists(makro_pfad):
                 pruefe_makro_ausgabe_auf_dateninkontinenz(text, makro_text)
+                pruefe_makro_ausgabe_auf_source_fidelity(text, makro_text)
 
             # KONTROLLIERTER REPARATURVERSUCH:
             # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
