@@ -135,6 +135,163 @@ PFLICHT_DATEIEN = {
     "Offene Positionen+Check.csv",
 }
 
+# ---------------------------------------------------------------------------
+# MAKRO-DATENINTEGRITAET
+# ---------------------------------------------------------------------------
+# Das Makro-Briefing ist fuer Gemini die autoritative Quelle fuer Makro-Fakten.
+# Diese Regeln werden bewusst sowohl lokal als auch im Gemini-Prompt abgesichert,
+# damit ein fehlender/alter Wert nicht stillschweigend durch Modellwissen, eine
+# andere Eingabedatei oder eine Schaetzung ersetzt wird.
+MAKRO_SERIEN_ALIAS = {
+    "PCE": "PCEPI",
+    "Core PCE": "PCEPILFE",
+    "Chicago Fed NFCI": "NFCI",
+    "M2": "M2SL",
+    "JOLTS Job Openings": "JTSJOL",
+    "Industrieproduktion": "INDPRO",
+    "Consumer Sentiment": "UMCSENT",
+    "Kapazitaetsauslastung": "TCU",
+    "SLOOS C&I Tightening": "DRTSCILM",
+    "US Investment Grade OAS": "BAMLC0A0CM",
+    "GSCPI": "GSCPI",
+}
+
+
+def _normalisiere_makro_bezeichnung(text):
+    """Normalisiert nur die Bezeichnung einer Makro-Reihe."""
+    return re.sub(r"\s+", " ", (text or "").strip()).casefold()
+
+
+def _makro_alias_terme(name, series_id):
+    """Liefert Suchbegriffe fuer eine Reihe, ohne Werte zu interpretieren."""
+    terms = [name]
+    if series_id and series_id != name:
+        terms.append(series_id)
+    if name == "GSCPI":
+        # GSCPI kommt von der New York Fed, nicht aus einer FRED-Serie.
+        terms.append("Global Supply Chain Pressure Index")
+    return [t for t in terms if t]
+
+
+def _extrahiere_unavailable_reihen(makro_text):
+    """Ermittelt ALLE im Makro-Briefing explizit als UNAVAILABLE markierten
+    Reihen direkt aus deren Datenzeilen.
+
+    Es gibt bewusst keine feste Liste der nur aktuell bekannten Luecken:
+    Jede neue Makro-Zeile mit 'NICHT VERFUEGBAR' oder
+    'STATUS=UNAVAILABLE' wird automatisch erfasst. Unterfelder innerhalb
+    einer verfuegbaren Zeile (z.B. ISM New Orders) werden nicht als komplette
+    Makro-Reihe behandelt.
+    """
+    reihen = []
+    for raw_line in makro_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Eine Datenreihe beginnt im Briefing mit "Bezeichnung: ...".
+        # Nur wenn DIESE Zeile die Reihe selbst als unavailable markiert,
+        # wird sie aufgenommen. Dadurch werden z.B. "New Orders=..." innerhalb
+        # einer verfuegbaren ISM-Zeile nicht faelschlich zur eigenen Reihe.
+        match = re.match(r"^([^:|]+?)\s*:\s*(.*)$", line)
+        if not match:
+            continue
+
+        name = match.group(1).strip()
+        rest = match.group(2)
+        # Nur der eigentliche Reihenwert direkt nach ":" oder ein expliziter
+        # Gesamtstatus darf die komplette Reihe als unavailable markieren.
+        # Ein Unterfeld wie "New Orders=NICHT VERFUEGBAR" innerhalb einer
+        # ansonsten REAL_PUBLIC_SECONDARY-Zeile darf NICHT die ganze Reihe
+        # als unavailable kennzeichnen.
+        wert_unavailable = bool(re.match(r"^NICHT\s+VERFUEGBAR(?:\s*\||$)", rest, re.I))
+        status_unavailable = bool(re.search(r"(?:^|\|)\s*STATUS\s*=\s*UNAVAILABLE(?:\s*\||$)", rest, re.I))
+        if not (wert_unavailable or status_unavailable):
+            continue
+
+        # Serien-ID, falls sie in SOURCE oder explizit in der Bezeichnung
+        # auftaucht, wird nur als Alias verwendet; es wird nichts berechnet.
+        series_id = ""
+        for known_name, known_series_id in MAKRO_SERIEN_ALIAS.items():
+            if _normalisiere_makro_bezeichnung(name) == _normalisiere_makro_bezeichnung(known_name):
+                series_id = known_series_id
+                name = known_name
+                break
+        if not any(_normalisiere_makro_bezeichnung(name) == _normalisiere_makro_bezeichnung(x["name"])
+                   for x in reihen):
+            reihen.append({"name": name, "series_id": series_id})
+
+    return reihen
+
+
+def lese_makro_datenvertrag(makro_text):
+    """Liest Gate/Qualitaet und erkennt ALLE explizit als nicht verfuegbar
+    markierten Makro-Reihen direkt aus dem Briefing. Es werden keine Werte
+    berechnet oder ergaenzt."""
+    gate = re.search(r"MAKRO-SZENARIO-GATE:\s*(FREIGEGEBEN|GESPERRT)", makro_text)
+    qualitaet = re.search(r"MAKRO-DATENQUALITAET:\s*([A-Z_]+)", makro_text)
+    unavailable = _extrahiere_unavailable_reihen(makro_text)
+    return {
+        "gate": gate.group(1) if gate else "GESPERRT",
+        "qualitaet": qualitaet.group(1) if qualitaet else "UNKNOWN",
+        "unavailable": sorted(
+            [item["name"] for item in unavailable],
+            key=str.casefold,
+        ),
+        "unavailable_details": unavailable,
+    }
+
+
+def pruefe_makro_datenvertrag(makro_text):
+    """Harte Vorabpruefung: Gate muss eindeutig sein. Bei freigegebenem Gate
+    muss die Datenqualitaet vorhanden sein. Ein fehlendes Gate sperrt die
+    Makro-Szenariologik; die restliche Gemini-Auswertung bleibt unabhaengig."""
+    vertrag = lese_makro_datenvertrag(makro_text)
+    if vertrag["gate"] not in {"FREIGEGEBEN", "GESPERRT"}:
+        raise RuntimeError("Makro-Datenvertrag ungueltig: Gate nicht eindeutig.")
+    if vertrag["qualitaet"] == "UNKNOWN":
+        print("WARNUNG: Makro-Datenqualitaet fehlt - Makro-Szenario wird vorsichtshalber gesperrt.")
+        vertrag["gate"] = "GESPERRT"
+    if vertrag["unavailable"]:
+        print("INFO: Makro-Datenvertrag - explizit nicht verfuegbar: " + ", ".join(vertrag["unavailable"]))
+    return vertrag
+
+
+def _zeile_hat_numerischen_reihenwert(line, terms):
+    """Prueft nur den eigentlichen Wert direkt hinter einer Reihenbezeichnung.
+
+    Datenstaende wie 2026-08-27, Quellen-URLs oder andere spaeter in derselben
+    Zeile stehende Zahlen werden dadurch nicht als Reihenwert interpretiert.
+    """
+    escaped = "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
+    pattern = rf"^\s*(?:{escaped})\s*[:=]\s*(?:Wert\s*[:=]\s*)?[-+]?\d+(?:[.,]\d+)?(?:\s*%|\s*(?:bp|bps|Mrd\.?|Bio\.?))?(?:\s*(?:\||$))"
+    return bool(re.search(pattern, line, re.I))
+
+
+def pruefe_makro_ausgabe_auf_dateninkontinenz(text, makro_text):
+    """Blockiert nur dann, wenn Gemini eine im Briefing als UNAVAILABLE
+    markierte Reihe am Anfang einer eigenen Datenzeile mit einem numerischen
+    Wert versieht. Datenstand-/Quellenzahlen werden nicht als Wert gewertet."""
+    vertrag = lese_makro_datenvertrag(makro_text)
+    fehler = []
+
+    for item in vertrag.get("unavailable_details", []):
+        terms = _makro_alias_terme(item["name"], item.get("series_id", ""))
+        for line in (text or "").splitlines():
+            if _zeile_hat_numerischen_reihenwert(line, terms):
+                fehler.append(
+                    f"{item['name']}: numerischer Wert trotz NICHT VERFUEGBAR ({line.strip()})"
+                )
+                break
+
+    if fehler:
+        raise RuntimeError(
+            "MAKRO-DATENINKONTINENZ: Gemini hat nicht verfuegbare Makro-Reihen numerisch ausgegeben: "
+            + " | ".join(fehler)
+        )
+    return True
+
+
 # Ablehnungs-Muster, die einen automatischen Retry ausloesen
 # (Kleinschreibung, Substring-Suche im Antworttext)
 ABLEHNUNGS_MUSTER = [
@@ -811,14 +968,15 @@ def gemini_auswertung_starten():
         try:
             with open(makro_pfad, "r", encoding="utf-8-sig") as f:
                 makro_text = f.read()
-            m = re.search(r"MAKRO-SZENARIO-GATE:\s*(FREIGEGEBEN|GESPERRT)", makro_text)
-            if m:
-                makro_gate = m.group(1)
-                makro_gate_grund = "Gate aus Makro-Datenpaket übernommen."
-            else:
-                makro_gate = "GESPERRT"
-                makro_gate_grund = "Makro-Datei vorhanden, aber Gate nicht eindeutig verifiziert."
-            print(f"Makro-Szenario-Gate: {makro_gate} | Grund: {makro_gate_grund}")
+            vertrag = pruefe_makro_datenvertrag(makro_text)
+            makro_gate = vertrag["gate"]
+            makro_gate_grund = "Gate aus Makro-Datenpaket übernommen."
+            if vertrag["qualitaet"] == "UNKNOWN":
+                makro_gate_grund = "Makro-Datenqualitaet fehlt; vorsichtshalber gesperrt."
+            print(
+                f"Makro-Szenario-Gate: {makro_gate} | "
+                f"Datenqualitaet: {vertrag['qualitaet']} | Grund: {makro_gate_grund}"
+            )
         except Exception as exc:
             makro_gate = "GESPERRT"
             makro_gate_grund = f"Makro-Gate konnte nicht gelesen werden: {exc}"
@@ -849,6 +1007,13 @@ def gemini_auswertung_starten():
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
+                    "MAKRO-DATENINTEGRITAETSVERTRAG: Fuer alle Makro-Fakten ist ausschliesslich Makro_Briefing(...).txt autoritativ. "
+                    "Uebernimm Zahlen, Einheiten, Datenstaende und Quellen exakt aus diesem Dokument. Erfinde, aktualisiere, "
+                    "schaetze oder ersetze keine fehlenden Werte. Eine im Makro-Briefing als NICHT VERFUEGBAR bezeichnete Reihe "
+                    "bleibt auch in der fertigen Auswertung NICHT VERFUEGBAR und darf nicht durch Wissen des Modells oder Werte "
+                    "aus anderen Dateien ersetzt werden. REAL/REAL_CACHED/CALCULATED/PROXY/MODEL_DERIVED sind strikt nach ihrem "
+                    "Status zu behandeln. HEALTHY ist ein Gate-Status und keine Aussage ueber die Aktualitaet jeder Einzelreihe. "
+                    "GSCPI ist New-York-Fed-Datenmaterial und keine FRED-Serie. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. Die Dateien Bitcoin_Trading_DE_Briefing.txt, Gold_Trading_DE_Briefing.txt und Silber_Trading_DE_Briefing.txt sind ausschließlich qualitative externe YouTube-Quellen. Nutze sie nur als Kontext/Abgleich; sie dürfen niemals objektive Kursdaten, technische Check-Felder, CRV, Setup-Scores, Filter, Setup-Qualität oder Handelsentscheidungen verändern. Wenn eine solche Datei fehlt, ist das kein Fehler und es darf nichts daraus erfunden werden. "
                     "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
@@ -890,10 +1055,18 @@ def gemini_auswertung_starten():
                         "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
                          "Verwende dabei NICHT die Bezeichnungen Base Case, Bull Case oder Bear Case, gib KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose aus. "
                         if makro_gate == "GESPERRT" else
-                        "HARTE MAKRO-DATENREGEL: Verwende ausschliesslich REAL- oder "
-                        "CALCULATED-Werte aus dem Makro-Datenpaket. PROXY-Werte muessen als "
-                        "Proxy bezeichnet werden. MODEL_DERIVED-Wahrscheinlichkeiten sind "
-                        "nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
+                        "HARTE MAKRO-DATENREGEL: Das Makro_Briefing ist die einzige autoritative Quelle fuer Makro-Fakten. "
+                        "Verwende ausschliesslich dort vorhandene Werte und deren angegebenen Datenstand. "
+                        "REAL und REAL_CACHED duerfen als beobachtete Quellwerte verwendet werden; CALCULATED nur als "
+                        "berechneter Quellwert; PROXY muss ausdruecklich als Proxy bezeichnet werden; MODEL_DERIVED darf "
+                        "nur als von der Szenariologik abgeleitetes Ergebnis bezeichnet werden. Niemals einen fehlenden, "
+                        "nicht verfuegbaren oder veralteten Wert durch allgemeines Modellwissen, eine andere Datei, eine "
+                        "Schaetzung oder eine stille Interpolation ersetzen. Wenn eine Reihe im Makro_Briefing NICHT VERFUEGBAR "
+                        "ist, darf Gemini dafuer keine konkrete Zahl nennen. HEALTHY bedeutet nur, dass die Gate-Regeln erfuellt "
+                        "sind; es bedeutet NICHT, dass alle Einzelreihen tagesaktuell sind. GSCPI stammt ausschliesslich von der "
+                        "New York Fed (gscpi_data.xlsx) und darf nicht als FRED-Serie bezeichnet werden. "
+                        "MODEL_DERIVED-Szenariowahrscheinlichkeiten sind zulaessig, wenn die Szenariologik dies erlaubt, muessen "
+                        "aber eindeutig als Modellableitung und nicht als beobachtete Marktdaten gekennzeichnet werden."
                     ),
                 ],
                 config=types.GenerateContentConfig(
@@ -902,6 +1075,13 @@ def gemini_auswertung_starten():
             )
             text = antwort.text or ""
             print(f"  Gemini finish_reason (Hauptantwort): {_gemini_finish_reason(antwort)}")
+
+            # HARTE NACHKONTROLLE: Eine explizit nicht verfuegbare Makro-Reihe
+            # darf niemals durch Gemini mit einem scheinbar realen Zahlenwert
+            # aufgefuellt werden. Bei Treffer wird der Versuch verworfen; die
+            # bestehende Retry-Logik entscheidet ueber den naechsten Versuch.
+            if makro_pfad and os.path.exists(makro_pfad):
+                pruefe_makro_ausgabe_auf_dateninkontinenz(text, makro_text)
 
             # KONTROLLIERTER REPARATURVERSUCH:
             # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
