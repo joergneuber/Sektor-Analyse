@@ -1327,32 +1327,59 @@ def fred_snapshots_parallel(names):
     return [results[name] for name in names]
 
 def data_quality_gate(lines):
-    critical_labels = [
-        "Fed Target Range Upper",
-        "Fed Target Range Lower",
+    # Tier 1: Core-/Gate-Daten. Fehlt eine dieser Datenreihen bzw. ist sie
+    # aufgrund der bestehenden Daten-/Cache-Logik nicht belastbar verfuegbar,
+    # wird das Makro-Szenario gesperrt.
+    tier1_labels = [
+        "Fed Funds Effective Rate",
         "US 2Y Treasury",
         "US 10Y Treasury",
-        "CPI",
+        "Core CPI",
+        "NFP / Nonfarm Payrolls",
         "Arbeitslosenquote",
-        "Reales BIP-Wachstum",
-        "US High Yield OAS",
-        "VIX",
-        "S&P 500",
-        "DXY",
-        "Gold",
-        "WTI",
-        "Kupfer",
-        "Bitcoin",
-        "Ethereum",
         "ISM Manufacturing PMI",
         "ISM Services PMI",
+        "S&P 500",
     ]
-    missing = [label for label in critical_labels if any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)]
-    # Fed-Markterwartung ist kritisch; sie darf nicht ausfallen oder geschaetzt werden.
-    if any(line.startswith("FED-MARKTERWARTUNG: NICHT BERECHENBAR") for line in lines):
-        missing.append("FED-MARKTERWARTUNG")
-    gate = "FREIGEGEBEN" if not missing else "GESPERRT"
-    return gate, missing
+
+    # Tier 2: Sekundaere Kontextdaten. Fehlende/zu alte Daten verschlechtern
+    # die Datenqualitaet, sperren das Szenario aber nicht.
+    tier2_labels = [
+        "PCE",
+        "Core PCE",
+        "Realzins 10Y TIPS",
+        "US High Yield OAS",
+        "Chicago Fed NFCI",
+        "VIX",
+        "DXY",
+        "Reales BIP-Wachstum",
+        "M2",
+        "JOLTS Job Openings",
+        "Industrieproduktion",
+        "Consumer Sentiment",
+        "Kapazitaetsauslastung",
+        "SLOOS C&I Tightening",
+        "US Investment Grade OAS",
+    ]
+
+    # Tier 3: Optionale Anreicherungsdaten. Sie haben keinen Einfluss auf
+    # Gate oder Datenqualitaetsstatus.
+    tier3_labels = [
+        "GSCPI",
+        "Global Economic Policy Uncertainty",
+        "US Federal Debt/GDP",
+    ]
+
+    def _unavailable(label):
+        return any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)
+
+    critical_missing = [label for label in tier1_labels if _unavailable(label)]
+    secondary_missing = [label for label in tier2_labels if _unavailable(label)]
+
+    gate = "GESPERRT" if critical_missing else "FREIGEGEBEN"
+    data_quality = "BLOCKED" if critical_missing else ("DEGRADED" if secondary_missing else "HEALTHY")
+    missing = critical_missing
+    return gate, missing, data_quality, secondary_missing
 
 
 def main():
@@ -1407,9 +1434,11 @@ def main():
     lines.extend(market_snapshots_parallel())
     lines.append("")
 
-    gate, missing = data_quality_gate(lines)
+    gate, missing, data_quality, secondary_missing = data_quality_gate(lines)
     lines.append("6. DATENQUALITAETS-GATEKEEPER")
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
+    lines.append(f"DATENQUALITAET: {data_quality}")
+    lines.append(f"SEKUNDAERE DATENLUECKEN: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
     lines.append(f"KRITISCHE DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
     lines.append("REGEL: Bei GESPERRT darf keine Base/Bull/Bear-Prognose mit Zahlen ausgegeben werden. Die Tagesauswertung darf die bestehende regelbasierte Analyse trotzdem weiter ausgeben.")
     lines.append("CACHE-REGEL: REAL_CACHED darf nur verwendet werden, wenn der gespeicherte Originalwert innerhalb seiner definierten Datenaltersgrenze liegt. Es werden keine Werte fortgeschrieben oder geschaetzt.")
@@ -1426,6 +1455,9 @@ def main():
         f.write("\n".join(lines) + "\n")
     print(f"Makro-Datenpaket gespeichert: {output}")
     print(f"MAKRO-SZENARIO-GATE={gate}")
+    print(f"MAKRO-DATENQUALITAET={data_quality}")
+    if secondary_missing:
+        print("SEKUNDAERE_DATENLUECKEN=" + ", ".join(secondary_missing))
     if missing:
         print("KRITISCHE_DATENLUECKEN=" + ", ".join(missing))
 
