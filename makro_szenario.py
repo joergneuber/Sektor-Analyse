@@ -653,43 +653,33 @@ def fred_series(series_id, limit_days=5000):
                 return df
 
     try:
-        if series_id == "DFF":
-            api_key = os.environ.get("FRED_API_KEY")
-            if not api_key:
-                raise RuntimeError("FRED_API_KEY ist nicht gesetzt")
-            api_url = "https://api.stlouisfed.org/fred/series/observations"
-            params = {
-                "api_key": api_key,
-                "file_type": "json",
-                "series_id": series_id,
-                "sort_order": "asc",
-            }
-            r = requests.get(api_url, params=params, timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
-            r.raise_for_status()
-            observations = r.json().get("observations", [])
-            parsed = []
-            for observation in observations:
-                date = pd.to_datetime(observation.get("date"), errors="coerce")
-                value = _clean_num(observation.get("value"))
-                if pd.notna(date) and value is not None:
-                    parsed.append((date, value))
-            if not parsed:
-                raise ValueError("FRED API lieferte keine verwertbaren DFF-Beobachtungen")
-            df = pd.DataFrame(parsed, columns=["DATE", series_id]).drop_duplicates("DATE").sort_values("DATE")
-        else:
-            r = requests.get(FRED_BASE.format(series_id), timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
-            r.raise_for_status()
-            df = pd.read_csv(StringIO(r.text))
-            if "DATE" not in df.columns or series_id not in df.columns:
-                raise ValueError("FRED-Spalten fehlen")
-            df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
-            df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
-            df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+        api_key = os.environ.get("FRED_API_KEY")
+        if not api_key:
+            raise RuntimeError("FRED_API_KEY ist nicht gesetzt")
+        api_url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "api_key": api_key,
+            "file_type": "json",
+            "series_id": series_id,
+            "sort_order": "asc",
+        }
         if limit_days:
-            cutoff = pd.Timestamp.today() - pd.Timedelta(days=limit_days)
-            df = df[df["DATE"] >= cutoff]
+            observation_start = (dt.date.today() - dt.timedelta(days=limit_days)).isoformat()
+            params["observation_start"] = observation_start
+        r = requests.get(api_url, params=params, timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        observations = r.json().get("observations", [])
+        parsed = []
+        for observation in observations:
+            date = pd.to_datetime(observation.get("date"), errors="coerce")
+            value = _clean_num(observation.get("value"))
+            if pd.notna(date) and value is not None:
+                parsed.append((date, value))
+        if not parsed:
+            raise ValueError(f"FRED API lieferte keine verwertbaren {series_id}-Beobachtungen")
+        df = pd.DataFrame(parsed, columns=["DATE", series_id]).drop_duplicates("DATE").sort_values("DATE")
         if not df.empty:
-            _save_series_cache(series_id, df, FRED_URL.format(series_id), "REAL")
+            _save_series_cache(series_id, df, api_url, "REAL")
         return df
     except Exception as exc:
         print(f"WARNUNG: FRED {series_id} nicht verfuegbar: {exc}")
