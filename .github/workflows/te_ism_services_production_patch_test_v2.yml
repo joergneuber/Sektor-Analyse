@@ -1,0 +1,39 @@
+name: TE ISM Services Production Patch Test v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install production dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check \
+            yfinance \
+            requests \
+            pandas \
+            numpy \
+            lxml \
+            beautifulsoup4
+
+      - name: Verify files
+        run: |
+          test -f makro_szenario_v5_9_6_te_pmi_fix.py
+          test -f test_te_ism_services_production_patch_v1.py
+          python -m py_compile makro_szenario_v5_9_6_te_pmi_fix.py
+          python -m py_compile test_te_ism_services_production_patch_v1.py
+
+      - name: Run real TE Services PMI test
+        run: |
+          python test_te_ism_services_production_patch_v1.py
