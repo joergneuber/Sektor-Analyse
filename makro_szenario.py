@@ -1778,34 +1778,95 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
         row_end = events[target_idx + 1].start() if target_idx + 1 < len(events) else len(history)
         row = history[events[target_idx].end():row_end]
 
-        # 1) Strict explicit Actual signal. Accept the labels used by FX Blue
-        # and common machine-readable variants, but never infer Actual from an
-        # arbitrary numeric token. Percent signs/whitespace are harmless; N/A
-        # and similar markers remain terminal invalid values.
-        invalid_actual = {"-", "–", "—", "n/a", "na", "null", "none", "previous", "forecast", "actual", ""}
+        # 1) Strict explicit Actual signal. Accept only values explicitly
+        # associated with Actual; never infer Actual from arbitrary numbers.
+        invalid_actual = {"-", "–", "—", "n/a", "na", "null", "none", "", "previous", "forecast", "actual"}
+
+        def _extract_explicit_actual(raw_value):
+            if raw_value is None:
+                return None, None
+            if isinstance(raw_value, dict):
+                for k in ("actual", "actualValue", "actual_value", "outcome"):
+                    if k in raw_value:
+                        return _extract_explicit_actual(raw_value[k])
+                return None, None
+            raw = str(raw_value).strip().strip('"\'')
+            if raw.casefold() in invalid_actual:
+                return None, raw
+            if not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?%?", raw):
+                return None, raw
+            value = _clean_num(raw.rstrip("%").replace(",", "."))
+            return (value, raw) if value is not None else (None, raw)
+
         actual_patterns = (
-            r"\bActual(?:\s+(?:Value|Value/Outcome))?\b\s*[:=]?\s*([^\s|;,<]+)",
-            r"\bactualValue\b\s*[:=]?\s*([^\s|;,<}]+)",
-            r"\boutcome\b\s*[:=]?\s*([^\s|;,<}]+)",
+            r"\bActual(?:\s+(?:Value|Value/Outcome))?\b\s*[:=]\s*([^\s|;,<}]+)",
+            r"\bactualValue\b\s*[:=]\s*([^\s|;,<}]+)",
+            r"\bactual_value\b\s*[:=]\s*([^\s|;,<}]+)",
+            r"\boutcome\b\s*[:=]\s*([^\s|;,<}]+)",
         )
         for pattern in actual_patterns:
-            actual_matches = list(re.finditer(pattern, row, flags=re.I))
-            if not actual_matches:
+            matches = list(re.finditer(pattern, row, flags=re.I))
+            if matches:
+                raw_actual = matches[-1].group(1)
+                value, raw = _extract_explicit_actual(raw_actual)
+                if value is not None:
+                    print(f"INFO: FXBlue ISM services {key}: Actual={value} fuer Reference={year}-{month:02d}")
+                    return target_date, value
+                print(f"WARNUNG: FXBlue ISM services {key}: explizites Actual ungueltig raw={raw!r}")
+                return target_date, None
+
+        # FX Blue may expose Actual inside JSON embedded in <script>.
+        # Inspect raw HTML because script blocks are removed from visible text.
+        for sm in re.finditer(r"<script\b[^>]*>(.*?)</script\s*>", raw_text, flags=re.I | re.S):
+            body = sm.group(1)
+            if not re.search(r"\b(?:actual|actualValue|actual_value|outcome)\b", body, re.I):
                 continue
-            raw_actual = actual_matches[-1].group(1).strip().strip('\"\'')
-            if raw_actual.casefold() in invalid_actual:
-                print(f"WARNUNG: FXBlue ISM services {key}: explizites Actual ist ungueltig ({raw_actual!r})")
-                return target_date, None
-            # Accept ordinary numeric formatting such as 54.1, 54,1 or 54.1%.
-            numeric = re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?%?", raw_actual)
-            if not numeric:
-                print(f"WARNUNG: FXBlue ISM services {key}: Actual nicht numerisch ({raw_actual!r})")
-                return target_date, None
-            value = _clean_num(raw_actual.rstrip('%').replace(',', '.'))
-            if value is None:
-                print(f"WARNUNG: FXBlue ISM services {key}: Actual nicht verwertbar ({raw_actual!r})")
-                return target_date, None
-            return target_date, value
+            objects = []
+            try:
+                objects.append(json.loads(body))
+            except Exception:
+                for jm in re.finditer(r"\{.*?\}", body, flags=re.S):
+                    try:
+                        objects.append(json.loads(jm.group(0)))
+                    except Exception:
+                        pass
+
+            def walk(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if str(k).casefold() in {"actual", "actualvalue", "actual_value", "outcome"}:
+                            value, raw = _extract_explicit_actual(v)
+                            return value, raw
+                        value, raw = walk(v)
+                        if value is not None or raw is not None:
+                            return value, raw
+                elif isinstance(obj, list):
+                    for item in obj:
+                        value, raw = walk(item)
+                        if value is not None or raw is not None:
+                            return value, raw
+                return None, None
+
+            for obj in objects:
+                value, raw = walk(obj)
+                if value is not None:
+                    print(f"INFO: FXBlue ISM services {key}: Actual={value} aus JSON fuer Reference={year}-{month:02d}")
+                    return target_date, value
+                if raw is not None:
+                    print(f"WARNUNG: FXBlue ISM services {key}: JSON-Actual ungueltig raw={raw!r}")
+                    return target_date, None
+
+        # Explicit HTML attributes only; generic data-value remains forbidden.
+        for raw_actual in re.findall(
+            r"data-(?:actual|actual-value|actualvalue|outcome)\s*=\s*[\"']([^\"']*)",
+            row, flags=re.I
+        ):
+            value, raw = _extract_explicit_actual(raw_actual)
+            if value is not None:
+                print(f"INFO: FXBlue ISM services {key}: Actual={value} aus HTML-Attribut fuer Reference={year}-{month:02d}")
+                return target_date, value
+            print(f"WARNUNG: FXBlue ISM services {key}: HTML-Actual ungueltig raw={raw!r}")
+            return target_date, None
 
         # 2) Machine-readable HTML attributes. Only explicit Actual attributes
         # are accepted; generic data-value is deliberately NOT accepted.
