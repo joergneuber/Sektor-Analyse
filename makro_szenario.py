@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v6.2"
+VERSION = "v6.5"
 """
 
 import datetime as dt
@@ -1320,19 +1320,42 @@ def _extract_te_release_date(text):
     return None
 
 def _te_calendar_actual(html, expected_ref):
-    """Liest Actual-Wert und Release-Datum aus der TE-Kalendertabelle."""
+    """Liest Actual-Wert und Release-Datum aus der TE-Kalendertabelle.
+
+    Trading Economics hat die Kalenderstruktur mehrfach variiert. Die robuste
+    Regel ist deshalb: finde eine Tabelle mit einer expliziten Actual-Spalte,
+    finde darin ein Release-Datum im Monat nach dem angeforderten Reference-
+    Monat und nimm ausschließlich den Actual-Wert derselben Zeile.
+    Forecast/Previous/Consensus werden niemals verwendet.
+    """
     try:
         tables = pd.read_html(StringIO(html))
     except Exception:
         return None, None
 
-    month_abbr, year = expected_ref.split()
-    month_abbr = month_abbr.casefold()
-    month_num = next(
-        i for i in range(1, 13)
-        if calendar.month_abbr[i].casefold() == month_abbr
-    )
-    month_full = calendar.month_name[month_num].casefold()
+    try:
+        month_abbr, year = expected_ref.split()
+        month_num = next(
+            i for i in range(1, 13)
+            if calendar.month_abbr[i].casefold() == month_abbr.casefold()
+        )
+        next_year = int(year) + (1 if month_num == 12 else 0)
+        next_month = 1 if month_num == 12 else month_num + 1
+    except Exception:
+        return None, None
+
+    def parse_date(value):
+        raw = str(value).strip()
+        for fmt in (
+            "%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d/%m/%Y",
+            "%d-%m-%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y",
+        ):
+            try:
+                return datetime.strptime(raw, fmt).date()
+            except ValueError:
+                pass
+        parsed = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+        return parsed.date() if pd.notna(parsed) else None
 
     for table in tables:
         df = table.copy()
@@ -1342,43 +1365,29 @@ def _te_calendar_actual(html, expected_ref):
                          if str(x).strip().lower() not in {"nan", "none", ""}).strip()
                 for col in df.columns
             ]
-        cols = [str(c).strip().casefold() for c in df.columns]
+        else:
+            df.columns = [str(c).strip() for c in df.columns]
+        cols = [str(c).casefold() for c in df.columns]
         if "actual" not in cols:
             continue
         actual_idx = cols.index("actual")
 
         for _, row in df.iterrows():
             cells = [str(v).strip() for v in row.tolist()]
-            ref_idx = next(
-                (i for i, cell in enumerate(cells)
-                 if cell.casefold() in {month_abbr, month_full, expected_ref.casefold()}),
-                None,
-            )
-            if ref_idx is None:
-                continue
-
             release_date = None
-            for cell in cells[:max(ref_idx + 1, 2)]:
-                m = re.fullmatch(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", cell)
-                if m:
-                    release_date = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            for cell in cells:
+                d = parse_date(cell)
+                if d is not None and d.year == next_year and d.month == next_month:
+                    release_date = d
                     break
-
-            value = None
-            if actual_idx < len(cells):
-                value = _clean_num(cells[actual_idx].replace(",", ""))
-            if value is None:
-                for cell in cells[ref_idx + 1:]:
-                    candidate = _clean_num(cell.replace(",", ""))
-                    if candidate is not None:
-                        value = candidate
-                        break
-
-            if value is not None:
-                return value, release_date
+            if release_date is None or actual_idx >= len(cells):
+                continue
+            value = _clean_num(cells[actual_idx].replace(",", ""))
+            if value is None or not 0.0 <= value <= 100.0:
+                continue
+            return value, release_date.isoformat()
 
     return None, None
-
 
 def _te_text_actual(html, expected_ref, series_label):
     """Fallback bei geänderter TE-Tabellenstruktur; nur expliziter Istwert."""
@@ -1683,6 +1692,148 @@ def _ism_public_secondary_tradingeconomics(year, month, kind):
 
 
 
+
+def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
+    """Robuster Services-only FX Blue fallback.
+
+    Jede der vier ISM-Services-Reihen wird auf ihrer eigenen FX-Blue-Seite
+    gelesen. Es wird ausschliesslich das Event im Folgemonat des angeforderten
+    Reference-Monats akzeptiert. Der Actual-Wert wird aus der zu diesem Event
+    gehoerenden "Past events"-Zeile gelesen; Forecast/Previous werden niemals
+    als Actual verwendet. Alle vier Reihen muessen denselben Release-Tag haben.
+    """
+    base = "https://publisher2.fxblue.com/calendar/item"
+    urls = {
+        "pmi": f"{base}/ISM_Services_PMI_US",
+        "new_orders": f"{base}/ISM_Services_New_Orders_Index_US",
+        "employment": f"{base}/ISM_Services_Employment_Index_US",
+        "prices": f"{base}/ISM_Services_Prices_Paid_US",
+    }
+
+    next_year = year + (1 if month == 12 else 0)
+    next_month = 1 if month == 12 else month + 1
+    found = {}
+    release_dates = {}
+
+    date_re = re.compile(
+        r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+"
+        r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+\d{1,2}:\d{2}",
+        re.I,
+    )
+
+    def parse_page(text):
+        # Work only on the event-history section. This prevents the unrelated
+        # headline "Actual" value or other calendar entries from being used.
+        low = text.casefold()
+        marker = low.find("past events")
+        history = text[marker:] if marker >= 0 else text
+
+        events = list(date_re.finditer(history))
+        target = None
+        for m in events:
+            try:
+                d = datetime.strptime(
+                    f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %B %Y"
+                ).date()
+            except ValueError:
+                continue
+            if d.year == next_year and d.month == next_month:
+                target = m
+                break
+
+        if target is None:
+            return None, None
+
+        # Limit parsing to this event row only, i.e. up to the next event date.
+        row_end = events[events.index(target) + 1].start() if target != events[-1] else len(history)
+        row = history[target.end():row_end]
+
+        # FX Blue's row is: Forecast Actual. The first numeric token can be
+        # the forecast; the second numeric token is the Actual. A '-' forecast
+        # is also valid (common for Employment/Prices).
+        token_re = re.compile(r"(?<![A-Za-z])(?:-?\d+(?:\.\d+)?|-)(?![A-Za-z])")
+        tokens = token_re.findall(row)
+        if len(tokens) < 2:
+            return None, None
+
+        # If the first token is the forecast, the second is Actual. If the
+        # source has no forecast value, it explicitly uses '-' as the first
+        # token, so the same rule remains deterministic.
+        actual_token = tokens[1]
+        if actual_token == "-":
+            return None, None
+        value = _clean_num(actual_token)
+        return target, value
+
+    for key, url in urls.items():
+        try:
+            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            text = re.sub(r"<[^>]+>", " ", r.text)
+            text = re.sub(r"\s+", " ", text).strip()
+
+            match, value = parse_page(text)
+            if match is None:
+                print(
+                    f"WARNUNG: FXBlue ISM services {key} kein passendes Event "
+                    f"fuer Reference={year}-{month:02d}"
+                )
+                continue
+
+            release_date = datetime.strptime(
+                f"{match.group(1)} {match.group(2)} {match.group(3)}", "%d %B %Y"
+            ).date()
+            if value is None or not 0.0 <= value <= 100.0:
+                print(f"WARNUNG: FXBlue ISM services {key} ungueltiger Actual-Wert")
+                continue
+
+            found[key] = value
+            release_dates[key] = release_date.isoformat()
+        except Exception as exc:
+            print(
+                f"WARNUNG: FXBlue ISM services {key} nicht verfuegbar: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    required = ("pmi", "new_orders", "employment", "prices")
+    missing = [key for key in required if key not in found]
+    if missing:
+        print(
+            f"WARNUNG: FXBlue ISM services unvollstaendig fuer {year}-{month:02d}; "
+            f"fehlend={','.join(missing)}"
+        )
+        return None
+
+    if len(set(release_dates.values())) != 1:
+        print(
+            f"WARNUNG: FXBlue ISM services unterschiedliche Release-Dates; "
+            f"Secondary-Datensatz verworfen."
+        )
+        return None
+
+    release_date = next(iter(release_dates.values()))
+    print(
+        f"INFO: FXBlue ISM Services vollstaendig: "
+        f"report_month={year}-{month:02d} PMI={found['pmi']} "
+        f"NewOrders={found['new_orders']} Employment={found['employment']} "
+        f"Prices={found['prices']} release_date={release_date}"
+    )
+    return {
+        "pmi": found["pmi"],
+        "new_orders": found["new_orders"],
+        "employment": found["employment"],
+        "prices": found["prices"],
+        "url": " | ".join(urls.values()),
+        "year": year,
+        "month": month,
+        "reference": f"{year}-{month:02d}",
+        "release_date": release_date,
+        "source": "FXBLUE_ISM_SERVICES",
+        "status": "REAL_PUBLIC_SECONDARY",
+        "kind": "services",
+    }
+
+
 def _ism_extract_official(text, kind):
     """Extrahiert den offiziellen ISM-Monatsbericht.
     Primär wird die HTML-Tabelle verwendet, weil dort aktueller Wert,
@@ -1777,13 +1928,22 @@ def _ism_cache_entry_valid(entry, kind, year, month):
         except (TypeError, ValueError):
             return False
 
-    for key in ("pmi", "new_orders", "employment", "prices"):
-        value = entry.get(key)
+    # Cache generations used several equivalent field names and sometimes
+    # stored numeric values as strings containing a percent sign. Normalize
+    # aliases here; the four Tier-1 values still remain mandatory.
+    aliases = {
+        "pmi": ("pmi", "PMI", "services_pmi", "manufacturing_pmi"),
+        "new_orders": ("new_orders", "newOrders", "New Orders", "new_orders_index"),
+        "employment": ("employment", "Employment", "employment_index"),
+        "prices": ("prices", "Prices", "prices_index", "prices_paid"),
+    }
+    for key, names in aliases.items():
+        value = next((entry.get(name) for name in names if entry.get(name) is not None), None)
         try:
-            value=float(value)
-        except (TypeError, ValueError):
-            return False
-        if not (0.0 <= value <= 100.0):
+            value = _clean_num(str(value).replace("%", ""))
+        except Exception:
+            value = None
+        if value is None or not (0.0 <= float(value) <= 100.0):
             return False
     return True
 
@@ -1826,7 +1986,20 @@ def _ism_cache_get_valid(kind, year, month):
         else:
             candidate = payload
         if _ism_cache_entry_valid(candidate,kind,year,month):
+            # Return a canonical schema so downstream code never depends on
+            # which legacy alias happened to be stored in the cache.
+            alias_map = {
+                "pmi": ("pmi", "PMI", "services_pmi", "manufacturing_pmi"),
+                "new_orders": ("new_orders", "newOrders", "New Orders", "new_orders_index"),
+                "employment": ("employment", "Employment", "employment_index"),
+                "prices": ("prices", "Prices", "prices_index", "prices_paid"),
+            }
             result = dict(candidate)
+            for canonical, names in alias_map.items():
+                result[canonical] = next(
+                    candidate.get(name) for name in names if candidate.get(name) is not None
+                )
+                result[canonical] = _clean_num(str(result[canonical]).replace("%", ""))
             if isinstance(entry, dict):
                 result.setdefault("status", entry.get("status", "REAL_CACHED"))
                 result.setdefault("source", entry.get("source", "ISM_SECONDARY_CACHE"))
@@ -1898,6 +2071,13 @@ def _ism_fetch(kind, year, month):
     secondary = _ism_public_secondary_tradingeconomics(year, month, kind)
     if secondary:
         return secondary
+
+    # Tertiary public fallback: independent event calendar. It is used only
+    # after the official report and Trading Economics have failed validation.
+    if kind == "services":
+        secondary = _ism_public_secondary_fxblue_services(year, month)
+        if secondary:
+            return secondary
     return None
 
 def ism_snapshot(today):
@@ -2068,8 +2248,11 @@ def data_quality_gate(lines):
     lme_missing = [
         metal for metal in ("Nickel", "Blei", "Zinn", "Kobalt")
         if any(
-            line.startswith(metal + ": NICHT VERFUEGBAR")
-            or (line.startswith(metal + ":") and re.search(r"STATUS=(?:DEGRADED|UNAVAILABLE)\b", line, flags=re.I))
+            (line.startswith(metal + ":") or line.startswith("LME " + metal + ":"))
+            and (
+                "NICHT VERFUEGBAR" in line.upper()
+                or re.search(r"STATUS=(?:DEGRADED|UNAVAILABLE)\b", line, flags=re.I)
+            )
             for line in lines
         )
     ]
