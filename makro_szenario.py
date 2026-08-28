@@ -1389,103 +1389,6 @@ def _te_calendar_actual(html, expected_ref):
 
     return None, None
 
-def _te_component_last(html, expected_ref, component_label):
-    """Liest einen ISM-Unterindex aus der TE-Components-Tabelle.
-
-    TE stellt die ISM-Services-Unterkomponenten auf der gemeinsamen
-    Services-PMI-Seite als Tabelle ``Components | Last | Previous | Unit |
-    Reference`` bereit. Für den Produktionspfad ist ausschließlich ``Last``
-    des exakt passenden ``Reference``-Monats zulässig. Previous, Forecast,
-    Consensus oder andere Spalten werden nie als Istwert verwendet.
-    """
-    try:
-        tables = pd.read_html(StringIO(html))
-    except Exception:
-        return None
-
-    target = re.sub(r"\s+", " ", str(component_label).strip()).casefold()
-    expected = str(expected_ref).strip().casefold()
-
-    def norm(v):
-        return re.sub(r"\s+", " ", str(v).strip()).casefold()
-
-    for table in tables:
-        df = table.copy()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [
-                " ".join(
-                    str(x).strip()
-                    for x in col
-                    if str(x).strip().lower() not in {"nan", "none", ""}
-                ).strip()
-                for col in df.columns
-            ]
-        else:
-            df.columns = [str(c).strip() for c in df.columns]
-
-        cols = [norm(c) for c in df.columns]
-        component_idx = next(
-            (i for i, c in enumerate(cols) if c in {"components", "component"}),
-            None,
-        )
-        last_idx = next((i for i, c in enumerate(cols) if c == "last"), None)
-        reference_idx = next(
-            (i for i, c in enumerate(cols) if c == "reference"),
-            None,
-        )
-        if component_idx is None or last_idx is None or reference_idx is None:
-            continue
-
-        for _, row in df.iterrows():
-            cells = [str(v).strip() for v in row.tolist()]
-            if max(component_idx, last_idx, reference_idx) >= len(cells):
-                continue
-            if norm(cells[component_idx]) != target:
-                continue
-            if norm(cells[reference_idx]) != expected:
-                continue
-
-            value = _clean_num(cells[last_idx].replace(",", ""))
-            if value is not None and 0.0 <= value <= 100.0:
-                return value
-
-    return None
-
-
-def _te_release_date_from_page(html, expected_ref):
-    """Ermittelt ausschließlich das tatsächliche Release-Datum für Reference."""
-    try:
-        month_abbr, year = expected_ref.split()
-        month_num = next(
-            i for i in range(1, 13)
-            if calendar.month_abbr[i].casefold() == month_abbr.casefold()
-        )
-        expected_year = int(year) + (1 if month_num == 12 else 0)
-        expected_month = 1 if month_num == 12 else month_num + 1
-    except Exception:
-        return None
-
-    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    date_patterns = (
-        r"\b\d{4}-\d{2}-\d{2}\b",
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\.?\s+\d{1,2},\s+\d{4}\b",
-        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\.?\s+\d{4}\b",
-    )
-    for pattern in date_patterns:
-        for raw in re.findall(pattern, text, flags=re.I):
-            for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y"):
-                try:
-                    d = datetime.strptime(raw, fmt).date()
-                    if d.year == expected_year and d.month == expected_month:
-                        return d.isoformat()
-                except ValueError:
-                    pass
-    return None
-
-
 def _te_text_actual(html, expected_ref, series_label):
     """Fallback bei geänderter TE-Tabellenstruktur; nur expliziter Istwert."""
     text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
@@ -1715,19 +1618,7 @@ def _ism_public_secondary_tradingeconomics(year, month, kind):
         try:
             r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
             r.raise_for_status()
-            # ISM-Unterkomponenten liegen auf der TE-Services-Seite
-            # nachweislich in der Components-Tabelle. Dort ist ``Last`` der
-            # veröffentlichte Wert des angegebenen Reference-Monats. Diese
-            # Logik wird vor den allgemeinen Kalender-/Text-Fallbacks
-            # verwendet und akzeptiert weder Previous noch Forecast.
-            value = _te_component_last(r.text, expected_ref, labels[key])
-            release_date = _te_release_date_from_page(r.text, expected_ref)
-
-            # Der Haupt-PMI kann weiterhin aus der allgemeinen TE-Kalender-
-            # struktur gelesen werden. Für die Unterkomponenten darf die
-            # Components/Last-Logik nicht durch andere Zahlen ersetzt werden.
-            if value is None:
-                value, release_date = _te_calendar_actual(r.text, expected_ref)
+            value, release_date = _te_calendar_actual(r.text, expected_ref)
             if value is None:
                 value = _te_text_actual(r.text, expected_ref, labels[key])
             if value is None:
