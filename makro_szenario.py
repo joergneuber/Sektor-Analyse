@@ -1778,23 +1778,52 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
         row_end = events[target_idx + 1].start() if target_idx + 1 < len(events) else len(history)
         row = history[events[target_idx].end():row_end]
 
-        # 1) Strict explicit Actual signal. Invalid markers are terminal for
-        # this event; do not reinterpret Forecast/Previous as Actual.
-        actual_matches = list(re.finditer(
-            r"\bActual\b\s*[:\-]?\s*([^\s|;,<]+)", row, flags=re.I
-        ))
-        if actual_matches:
-            raw_actual = actual_matches[-1].group(1).strip()
-            if raw_actual.casefold() in {"-", "–", "—", "n/a", "na", "null", "none", "previous", "forecast", "actual"}:
+        # 1) Strict explicit Actual signal. Accept the labels used by FX Blue
+        # and common machine-readable variants, but never infer Actual from an
+        # arbitrary numeric token. Percent signs/whitespace are harmless; N/A
+        # and similar markers remain terminal invalid values.
+        invalid_actual = {"-", "–", "—", "n/a", "na", "null", "none", "previous", "forecast", "actual", ""}
+        actual_patterns = (
+            r"\bActual(?:\s+(?:Value|Value/Outcome))?\b\s*[:=]?\s*([^\s|;,<]+)",
+            r"\bactualValue\b\s*[:=]?\s*([^\s|;,<}]+)",
+            r"\boutcome\b\s*[:=]?\s*([^\s|;,<}]+)",
+        )
+        for pattern in actual_patterns:
+            actual_matches = list(re.finditer(pattern, row, flags=re.I))
+            if not actual_matches:
+                continue
+            raw_actual = actual_matches[-1].group(1).strip().strip('\"\'')
+            if raw_actual.casefold() in invalid_actual:
                 print(f"WARNUNG: FXBlue ISM services {key}: explizites Actual ist ungueltig ({raw_actual!r})")
                 return target_date, None
-            value = _clean_num(raw_actual)
-            if value is None:
+            # Accept ordinary numeric formatting such as 54.1, 54,1 or 54.1%.
+            numeric = re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?%?", raw_actual)
+            if not numeric:
                 print(f"WARNUNG: FXBlue ISM services {key}: Actual nicht numerisch ({raw_actual!r})")
+                return target_date, None
+            value = _clean_num(raw_actual.rstrip('%').replace(',', '.'))
+            if value is None:
+                print(f"WARNUNG: FXBlue ISM services {key}: Actual nicht verwertbar ({raw_actual!r})")
                 return target_date, None
             return target_date, value
 
-        # 2) Strict three-column fallback only: Forecast | Actual | Previous.
+        # 2) Machine-readable HTML attributes. Only explicit Actual attributes
+        # are accepted; generic data-value is deliberately NOT accepted.
+        attr_matches = re.findall(
+            r"data-(?:actual|actual-value|actualvalue|outcome)\s*=\s*[\"\']([^\"\']*)",
+            row, flags=re.I
+        )
+        for raw_actual in attr_matches:
+            raw_actual = raw_actual.strip()
+            if raw_actual.casefold() in invalid_actual:
+                return target_date, None
+            if not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?%?", raw_actual):
+                continue
+            value = _clean_num(raw_actual.rstrip('%').replace(',', '.'))
+            if value is not None:
+                return target_date, value
+
+        # 3) Strict three-column fallback only: Forecast | Actual | Previous.
         # The second cell must itself be numeric; '-' / N/A / blank is invalid.
         try:
             tables = pd.read_html(StringIO(raw_text))
@@ -1811,15 +1840,31 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
             else:
                 cols = [str(c).strip() for c in df.columns]
             norm_cols = [re.sub(r"[^a-z]+", " ", c.casefold()).strip() for c in cols]
-            if len(cols) != 3 or norm_cols != ["forecast", "actual", "previous"]:
-                continue
-            for _, values in df.iterrows():
-                cells = [str(v).strip() for v in values.tolist()]
-                if len(cells) != 3:
-                    continue
-                value = _clean_num(cells[1])
-                if value is not None:
-                    return target_date, value
+            if len(cols) == 3 and norm_cols == ["forecast", "actual", "previous"]:
+                for _, values in df.iterrows():
+                    cells = [str(v).strip() for v in values.tolist()]
+                    if len(cells) != 3:
+                        continue
+                    value = _clean_num(cells[1].rstrip('%').replace(',', '.'))
+                    if value is not None:
+                        return target_date, value
+
+            # Some FX Blue renderings expose the three headers as the first
+            # table row rather than dataframe column names. Accept that only
+            # when the table is exactly three columns and the row is literally
+            # Forecast | Actual | Previous.
+            if len(df.columns) == 3:
+                for ridx, values in df.iterrows():
+                    header = [re.sub(r"[^a-z]+", " ", str(v).casefold()).strip() for v in values.tolist()]
+                    if header != ["forecast", "actual", "previous"]:
+                        continue
+                    for _, data_values in df.iloc[ridx + 1:].iterrows():
+                        cells = [str(v).strip() for v in data_values.tolist()]
+                        if len(cells) != 3:
+                            continue
+                        value = _clean_num(cells[1].rstrip('%').replace(',', '.'))
+                        if value is not None:
+                            return target_date, value
 
         print(f"WARNUNG: FXBlue ISM services {key}: Event gefunden, aber kein valides Actual")
         return target_date, None
