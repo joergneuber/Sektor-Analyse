@@ -158,7 +158,6 @@ MAKRO_SERIEN_ALIAS = {
     "Blei": "Blei",
     "Zinn": "Zinn",
     "Kobalt": "Kobalt",
-    "Lithium (ETF-Proxy)": "Lithium",
     "Lithium": "Lithium",
 }
 
@@ -249,15 +248,62 @@ def lese_makro_datenvertrag(makro_text):
 
 
 def pruefe_makro_datenvertrag(makro_text):
-    """Harte Vorabpruefung: Gate muss eindeutig sein. Bei freigegebenem Gate
-    muss die Datenqualitaet vorhanden sein. Ein fehlendes Gate sperrt die
-    Makro-Szenariologik; die restliche Gemini-Auswertung bleibt unabhaengig."""
+    """Harte Doppelpruefung des Makro-Datenvertrags.
+
+    Bei FREIGEGEBEN wird unabhaengig vom primaeren Gatekeeper nochmals
+    verifiziert, dass alle sechs kritischen ISM-Unterkomponenten
+    (Manufacturing/Services x New Orders/Employment/Prices) als numerische
+    Werte im Makro-Briefing vorhanden sind. Fehlt eine davon, wird
+    vorsichtshalber GESPERRT.
+
+    LME ist bewusst NICHT Teil dieser kritischen Doppelpruefung. Ein LME-
+    Ausfall darf niemals allein eine Gate-Sperre ausloesen.
+    """
     vertrag = lese_makro_datenvertrag(makro_text)
     if vertrag["gate"] not in {"FREIGEGEBEN", "GESPERRT"}:
         raise RuntimeError("Makro-Datenvertrag ungueltig: Gate nicht eindeutig.")
+
     if vertrag["qualitaet"] == "UNKNOWN":
         print("WARNUNG: Makro-Datenqualitaet fehlt - Makro-Szenario wird vorsichtshalber gesperrt.")
         vertrag["gate"] = "GESPERRT"
+
+    if vertrag["gate"] == "FREIGEGEBEN":
+        ism_required = (
+            ("ISM Manufacturing PMI", "New Orders"),
+            ("ISM Manufacturing PMI", "Employment"),
+            ("ISM Manufacturing PMI", "Prices"),
+            ("ISM Services PMI", "New Orders"),
+            ("ISM Services PMI", "Employment"),
+            ("ISM Services PMI", "Prices"),
+        )
+        ism_missing = []
+        for parent, field in ism_required:
+            m = re.search(
+                rf"(?im)^{re.escape(parent)}\s*:\s*[^\n]*$",
+                makro_text,
+            )
+            if not m:
+                ism_missing.append(f"{parent} / {field}")
+                continue
+            line = m.group(0)
+            fm = re.search(
+                rf"\b{re.escape(field)}\s*=\s*(NICHT\s+VERFUEGBAR|[-+]?\d+(?:[.,]\d+)?)\b",
+                line,
+                re.I,
+            )
+            if not fm or re.match(r"NICHT\s+VERFUEGBAR", fm.group(1), re.I):
+                ism_missing.append(f"{parent} / {field}")
+
+        vertrag["ism_missing"] = ism_missing
+        if ism_missing:
+            print(
+                "WARNUNG: ISM-Doppelpruefung fehlgeschlagen - "
+                "kritische Unterkomponenten fehlen: " + ", ".join(ism_missing)
+            )
+            vertrag["gate"] = "GESPERRT"
+    else:
+        vertrag["ism_missing"] = []
+
     if vertrag["unavailable"]:
         print("INFO: Makro-Datenvertrag - explizit nicht verfuegbar: " + ", ".join(vertrag["unavailable"]))
     return vertrag
@@ -1321,7 +1367,7 @@ def gemini_auswertung_starten():
                     "aus anderen Dateien ersetzt werden. REAL/REAL_PUBLIC_SECONDARY/REAL_CACHED/CALCULATED/PROXY/MODEL_DERIVED/UNAVAILABLE sind strikt nach ihrem "
                     "Status zu behandeln. HEALTHY ist ein Gate-Status und keine Aussage ueber die Aktualitaet jeder Einzelreihe. "
                     "SOURCE-FIDELITY-REGEL: Wenn du einen im Makro_Briefing vorhandenen numerischen Wert, STATUS-Wert oder EMA20/EMA50-Zustand konkret nennst, muss er exakt mit dem Makro_Briefing uebereinstimmen. DARUEBER darf niemals als DARUNTER und DARUNTER niemals als DARUEBER beschrieben werden. Nicht genannte Quellwerte sind kein Fehler. Freie qualitative Schlussfolgerungen bleiben erlaubt, solange sie keinen vorhandenen Quellwert widersprechen. "
-                    "REAL bedeutet Primaerquelle/Originalwert. REAL_PUBLIC_SECONDARY bedeutet echter Wert aus einer oeffentlichen Sekundaerquelle und darf niemals als REAL/Primaerquelle bezeichnet werden. PROXY ist ein beobachteter Ersatzindikator und darf niemals als Originalpreis bezeichnet werden. Lithium wird im aktuellen kostenlosen Projektstand ausschließlich über den ETF-Proxy LIT geführt und muss im Briefing/Gemini-Text ausdruecklich als \"Lithium (ETF-Proxy)\" bezeichnet werden; daraus darf niemals ein REAL-Lithium-Rohstoffpreis abgeleitet werden. UNAVAILABLE bleibt ohne Wert; niemals schaetzen, interpolieren oder durch Modellwissen ersetzen. Kritische Datenluecke nur bei einem fuer das Makro-Gate erforderlichen fehlenden Datenpunkt; sekundaere Datenluecke fuer optionale Kontext-/Unterkomponenten. GSCPI ist New-York-Fed-Datenmaterial und keine FRED-Serie. "
+                    "REAL bedeutet Primaerquelle/Originalwert. REAL_PUBLIC_SECONDARY bedeutet echter Wert aus einer oeffentlichen Sekundaerquelle und darf niemals als REAL/Primaerquelle bezeichnet werden. PROXY ist ein beobachteter Ersatzindikator und darf niemals als Originalpreis bezeichnet werden. UNAVAILABLE bleibt ohne Wert; niemals schaetzen, interpolieren oder durch Modellwissen ersetzen. Kritische Datenluecke nur bei einem fuer das Makro-Gate erforderlichen fehlenden Datenpunkt; sekundaere Datenluecke fuer optionale Kontext-/Unterkomponenten. GSCPI ist New-York-Fed-Datenmaterial und keine FRED-Serie. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. Die Dateien Bitcoin_Trading_DE_Briefing.txt, Gold_Trading_DE_Briefing.txt und Silber_Trading_DE_Briefing.txt sind ausschließlich qualitative externe YouTube-Quellen. Nutze sie nur als Kontext/Abgleich; sie dürfen niemals objektive Kursdaten, technische Check-Felder, CRV, Setup-Scores, Filter, Setup-Qualität oder Handelsentscheidungen verändern. Wenn eine solche Datei fehlt, ist das kein Fehler und es darf nichts daraus erfunden werden. "
                     "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
