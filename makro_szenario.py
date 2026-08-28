@@ -1852,6 +1852,51 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
         "release_date": release_date,
     }
 
+def _ism_cache_get_valid(kind, target_year, target_month):
+    """Liest einen ISM-Cache-Eintrag nur bei vollstaendiger Monats-/Wertevalidierung.
+
+    Fuer beide ISM-Berichte sind PMI sowie New Orders, Employment und Prices
+    Tier-1-relevant. Ein vorhandener, aber unvollstaendiger Cache-Eintrag ist
+    daher kein Erfolg und zwingt den normalen Fallback-Pfad.
+    """
+    try:
+        cache = _cache_load()
+        entry = cache.get("ism", {}).get(kind)
+        if not isinstance(entry, dict):
+            return None
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            return None
+
+        if data.get("year") != target_year or data.get("month") != target_month:
+            return None
+
+        required = ("pmi", "new_orders", "employment", "prices")
+        for key in required:
+            value = data.get(key)
+            if value is None or isinstance(value, bool):
+                return None
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(value) or not 0.0 <= value <= 100.0:
+                return None
+
+        result = dict(data)
+        result["pmi"] = float(result["pmi"])
+        result["new_orders"] = float(result["new_orders"])
+        result["employment"] = float(result["employment"])
+        result["prices"] = float(result["prices"])
+        result["status"] = result.get("status", entry.get("status", "REAL_CACHED"))
+        result["url"] = result.get("url", entry.get("source", "ISM_SECONDARY_CACHE"))
+        return result
+    except Exception as exc:
+        print(f"WARNUNG: ISM-Cache-Validierung fehlgeschlagen fuer {kind}: {type(exc).__name__}: {exc}")
+        return None
+
+
+
 def _ism_fetch(kind, year, month):
     # A complete, month-matching cache entry is a valid resilience path.
     # It is explicitly validated; it is never accepted merely because it exists.
