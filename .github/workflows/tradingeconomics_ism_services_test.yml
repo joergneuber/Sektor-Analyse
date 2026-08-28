@@ -1,0 +1,26 @@
+name: Trading Economics ISM Services Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tradingeconomics-ism-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Verify test file
+        run: |
+          test -f tradingeconomics_ism_services_isolated_test_v1.py
+          python -m py_compile tradingeconomics_ism_services_isolated_test_v1.py
+
+      - name: Run isolated Trading Economics test
+        run: |
+          python tradingeconomics_ism_services_isolated_test_v1.py
