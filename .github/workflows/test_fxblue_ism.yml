@@ -1,0 +1,134 @@
+name: FXBlue ISM Services Diagnose
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fxblue-diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml pandas
+
+      - name: Prüfe Testdatei
+        run: |
+          test -f makro_szenario_v6_9_fxblue_attr_fix.py
+          python -m py_compile makro_szenario_v6_9_fxblue_attr_fix.py
+
+      - name: FXBlue Services Diagnose
+        run: |
+          python - <<'PY'
+          import requests
+          from bs4 import BeautifulSoup
+
+          url = "https://www.fxblue.com/market-data/economic-calendar"
+
+          headers = {
+              "User-Agent": (
+                  "Mozilla/5.0 (X11; Linux x86_64) "
+                  "AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) "
+                  "Chrome/131.0.0.0 Safari/537.36"
+              ),
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.9",
+          }
+
+          print("=== FXBLUE REAL-WORLD DIAGNOSE ===")
+          print(f"URL={url}")
+
+          try:
+              r = requests.get(url, headers=headers, timeout=20)
+
+              print(f"HTTP_STATUS={r.status_code}")
+              print(f"FINAL_URL={r.url}")
+              print(f"CONTENT_LENGTH={len(r.text)}")
+
+              if r.status_code != 200:
+                  raise SystemExit(
+                      f"FXBLUE HTTP FEHLER: {r.status_code}"
+                  )
+
+              html = r.text
+              soup = BeautifulSoup(html, "html.parser")
+
+              text = soup.get_text(" ", strip=True)
+
+              print()
+              print("=== EVENT-SUCHE ===")
+
+              keywords = [
+                  "ISM",
+                  "Non-Manufacturing",
+                  "Services",
+                  "New Orders",
+                  "Employment",
+                  "Prices",
+              ]
+
+              lines = []
+
+              for element in soup.find_all(["tr", "div", "li", "td"]):
+                  value = element.get_text(" ", strip=True)
+
+                  if not value:
+                      continue
+
+                  low = value.lower()
+
+                  if any(k.lower() in low for k in keywords):
+                      lines.append(value)
+
+              seen = set()
+
+              for line in lines:
+                  if line not in seen:
+                      seen.add(line)
+                      print("CANDIDATE:", line[:1000])
+
+              print()
+              print(f"CANDIDATES={len(seen)}")
+
+              print()
+              print("=== ATTRIBUTE-DIAGNOSE ===")
+
+              for element in soup.find_all(True):
+                  attrs = element.attrs
+
+                  interesting = {
+                      k: v
+                      for k, v in attrs.items()
+                      if "actual" in k.lower()
+                      or "value" in k.lower()
+                      or "forecast" in k.lower()
+                      or "previous" in k.lower()
+                  }
+
+                  if interesting:
+                      print(
+                          "TAG=",
+                          element.name,
+                          "ATTRS=",
+                          interesting,
+                          "TEXT=",
+                          element.get_text(" ", strip=True)[:300],
+                      )
+
+              print()
+              print("=== END DIAGNOSE ===")
+
+          except Exception as e:
+              print(f"FXBLUE_DIAGNOSE_FEHLER={type(e).__name__}: {e}")
+              raise
+          PY
