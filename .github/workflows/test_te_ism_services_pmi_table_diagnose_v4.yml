@@ -1,0 +1,33 @@
+name: TEST - TE ISM Services PMI Table Diagnose v4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check requests pandas lxml
+
+      - name: Verify files and syntax
+        run: |
+          test -f makro_szenario.py
+          test -f test_te_ism_services_pmi_table_diagnose_v4.py
+          python -m py_compile makro_szenario.py
+          python -m py_compile test_te_ism_services_pmi_table_diagnose_v4.py
+
+      - name: Run TE table diagnosis
+        run: |
+          python test_te_ism_services_pmi_table_diagnose_v4.py
