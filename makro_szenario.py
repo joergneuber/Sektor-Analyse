@@ -11,6 +11,8 @@ HARTE DATENREGELN
 - Ein fehlender kritischer Datenbaustein sperrt die Makro-Szenariofreigabe.
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
+
+VERSION = "v5.9.1"
 """
 
 import datetime as dt
@@ -118,7 +120,7 @@ MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
-CACHE_VERSION = 3
+CACHE_VERSION = 5
 CACHE_WRITE_LOCK = Lock()
 LME_PRICE_CACHE = None
 LME_PRICE_CACHE_TIME = 0.0
@@ -735,8 +737,6 @@ def fred_series(series_id, limit_days=5000):
         if not df.empty and _cache_valid(df["DATE"].iloc[-1].date().isoformat(), FRED_MAX_AGE_DAYS.get(series_id,60)):
             return df
     return pd.DataFrame()
-
-
 def fred_snapshot(name, series_id):
     df = fred_series(series_id)
     if df.empty:
@@ -753,7 +753,6 @@ def fred_snapshot(name, series_id):
         # Nicht automatisch als cached markieren, weil der Abrufstatus unbekannt ist.
         status = "REAL"
     return f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
-
 
 
 def _lme_official_prices():
@@ -1222,172 +1221,120 @@ def _ism_official_get(url):
 
 
 
-def _tradingeconomics_ism_indicator(url, expected_year, expected_month):
-    """Liest einen TradingEconomics-Actual-Wert nur bei eindeutiger Monatszuordnung.
-
-    Akzeptiert wird ausschliesslich eine Kalenderzeile, deren:
-      1. Release-Datum im erwarteten Release-Monat/-Jahr liegt und
-      2. Reference explizit dem erwarteten ISM-Berichtsmonat entspricht.
-
-    Forecast, Consensus und Previous werden nie verwendet. Fehlt eine der
-    beiden Monatsinformationen, wird der Wert verworfen. Es gibt keinen
-    textuellen Fallback ohne Referenzmonat.
-    """
-    try:
-        r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
-        r.raise_for_status()
-        tables = pd.read_html(StringIO(r.text))
-
-        expected_ref_short = calendar.month_abbr[expected_month].lower()
-        expected_ref_long = calendar.month_name[expected_month].lower()
-        expected_release_year = expected_year + 1 if expected_month == 12 else expected_year
-        expected_release_month = 1 if expected_month == 12 else expected_month + 1
-
-        def norm_text(value):
-            return re.sub(r"\s+", " ", str(value)).strip()
-
-        def parse_release_date(value):
-            text = norm_text(value)
-            # TradingEconomics-Kalender: YYYY-MM-DD [time ...]
-            m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
-            if not m:
-                return None
-            try:
-                return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-            except ValueError:
-                return None
-
-        def ref_matches(value):
-            text = norm_text(value).lower()
-            # Erlaubt sind z.B. "Jul", "Jul 2026", "July", "July 2026".
-            if not text:
-                return False
-            tokens = re.sub(r"[^a-z0-9]+", " ", text).split()
-            if expected_ref_short not in tokens and expected_ref_long not in tokens:
-                return False
-            # Falls ein Jahr vorhanden ist, muss es das erwartete Berichtsjahr sein.
-            years = {t for t in tokens if re.fullmatch(r"\d{4}", t)}
-            return not years or str(expected_year) in years
-
-        for table in tables:
-            columns = [norm_text(c) for c in table.columns]
-            actual_col = next((c for c in table.columns if norm_text(c).lower() in {"actual", "aktuell"}), None)
-            ref_col = next((c for c in table.columns if norm_text(c).lower() in {"reference", "referenz"}), None)
-            date_col = next((c for c in table.columns if norm_text(c).lower() in {"calendar", "date", "datum"}), None)
-            if actual_col is None or ref_col is None or date_col is None:
-                continue
-
-            for _, row in table.iterrows():
-                release_date = parse_release_date(row.get(date_col, ""))
-                if release_date is None:
-                    continue
-                if release_date.year != expected_release_year or release_date.month != expected_release_month:
-                    continue
-                if not ref_matches(row.get(ref_col, "")):
-                    continue
-
-                raw_actual = norm_text(row.get(actual_col, ""))
-                # Keine leeren/Forecast-artigen Platzhalter akzeptieren.
-                if not raw_actual or raw_actual in {"-", "--", "n/a", "na"}:
-                    continue
-                actual = _clean_num(raw_actual.replace(",", "."))
-                if actual is not None:
-                    return actual
-
-    except Exception as exc:
-        print(f"WARNUNG: TradingEconomics-ISM-Secondary nicht verfuegbar: {url} | {type(exc).__name__}: {exc}")
-    return None
-
-def _ism_public_secondary_tradingeconomics(year, month, kind):
-    """Kostenloser Sekundaer-Fallback mit PMI + New Orders + Employment + Prices.
-
-    TradingEconomics ist hier ausschliesslich Sekundaerquelle; als Status wird
-    deshalb immer REAL_PUBLIC_SECONDARY gesetzt. Fehlt eine einzelne Reihe,
-    bleibt nur diese Komponente UNAVAILABLE. Es werden niemals Werte aus
-    Forecast, Previous oder einem anderen Monat uebernommen.
-    """
-    if kind not in {"manufacturing", "services"} or not (1 <= month <= 12):
-        return None
-
-    if kind == "manufacturing":
-        urls = {
-            "pmi": "https://tradingeconomics.com/united-states/manufacturing-pmi",
-            "new_orders": "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders",
-            "employment": "https://tradingeconomics.com/united-states/ism-manufacturing-employment",
-            "prices": "https://tradingeconomics.com/united-states/ism-manufacturing-prices",
-        }
-    else:
-        urls = {
-            "pmi": "https://tradingeconomics.com/united-states/non-manufacturing-pmi",
-            "new_orders": "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders",
-            "employment": "https://tradingeconomics.com/united-states/ism-non-manufacturing-employment",
-            "prices": "https://tradingeconomics.com/united-states/ism-non-manufacturing-prices",
-        }
-
-    data = {
-        "pmi": None, "new_orders": None, "employment": None, "prices": None,
-        "url": " | ".join(urls.values()), "year": year, "month": month,
-        "status": "REAL_PUBLIC_SECONDARY",
-    }
-    for key, url in urls.items():
-        data[key] = _tradingeconomics_ism_indicator(url, year, month)
-
-    if data["pmi"] is None and all(data[k] is None for k in ("new_orders", "employment", "prices")):
-        print(f"WARNUNG: TradingEconomics-ISM-Secondary komplett ohne verwertbaren Wert: {kind} {year}-{month:02d}")
-        return None
-
-    missing = [k for k in ("new_orders", "employment", "prices") if data[k] is None]
-    if missing:
-        print(f"WARNUNG: ISM {kind} Secondary: einzelne Unterkomponenten fehlen: {', '.join(missing)}")
-    else:
-        print(f"INFO: ISM {kind.title()} Secondary vollstaendig: PMI={data['pmi']} NewOrders={data['new_orders']} Employment={data['employment']} Prices={data['prices']}")
-    return data
-
-
 def _ism_public_secondary_forexfactory(year, month, kind):
-    """Legacy-Secondary-Fallback fuer ISM PMI.
-
-    Wird nur noch als letzter Fallback nach TradingEconomics verwendet. Die
-    drei Unterkomponenten bleiben dabei bewusst UNAVAILABLE statt erfunden.
     """
-    if month < 1 or month > 12 or kind not in {"manufacturing", "services"}:
+    Kostenloser öffentlicher Sekundär-Fallback für ISM Manufacturing und
+    ISM Services.
+
+    HARTE DATENREGELN:
+    - Ausschließlich ACTUAL.
+    - Forecast wird niemals verwendet.
+    - Previous wird niemals verwendet.
+    - Keine Berechnung, Interpolation oder Schätzung.
+    - Nur das exakt passende USD-ISM-Event wird akzeptiert.
+    - Der Release-Monat muss zum Berichtsmonat passen.
+    """
+    if month < 1 or month > 12:
         return None
-    event_name = "ISM Manufacturing PMI" if kind == "manufacturing" else "ISM Services PMI"
+
+    if kind not in {"manufacturing", "services"}:
+        return None
+
+    event_name = (
+        "ISM Manufacturing PMI"
+        if kind == "manufacturing"
+        else "ISM Services PMI"
+    )
+
     release_year = year + 1 if month == 12 else year
     release_month = 1 if month == 12 else month + 1
-    max_day = min(12, calendar.monthrange(release_year, release_month)[1])
+
+    max_day = min(
+        12,
+        calendar.monthrange(release_year, release_month)[1]
+    )
+
     for day in range(1, max_day + 1):
-        url = f"https://www.forexfactory.com/calendar?day={calendar.month_abbr[release_month].lower()}{day}.{release_year}"
+        url = (
+            f"https://www.forexfactory.com/calendar?day="
+            f"{calendar.month_abbr[release_month].lower()}{day}.{release_year}"
+        )
+
         try:
             r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
             r.raise_for_status()
+
             try:
                 from lxml import html as lxml_html
                 tree = lxml_html.fromstring(r.content)
                 rows = tree.xpath("//tr")
             except Exception:
                 rows = []
+
             for row in rows:
-                normalized = re.sub(r"\s+", " ", " ".join(t.strip() for t in row.xpath(".//text()") if t.strip())).strip()
-                if "USD" not in normalized or event_name not in normalized:
+                row_text = " ".join(
+                    t.strip() for t in row.xpath(".//text()") if t.strip()
+                )
+                normalized = re.sub(r"\s+", " ", row_text).strip()
+
+                if "USD" not in normalized:
                     continue
+                if event_name not in normalized:
+                    continue
+
                 tail = normalized.split(event_name, 1)[1]
                 nums = re.findall(r"(?<![\d.])\d+(?:\.\d+)?", tail)
                 if not nums:
                     continue
+
                 actual = _clean_num(nums[0])
                 if actual is None:
                     continue
+
                 release_date = dt.date(release_year, release_month, day)
+
+                expected_release_year = year + 1 if month == 12 else year
+                expected_release_month = 1 if month == 12 else month + 1
+                if (release_date.year != expected_release_year or
+                        release_date.month != expected_release_month):
+                    print(
+                        f"WARNUNG: {event_name}-Fallback verworfen: "
+                        f"report_month={year}-{month:02d} | "
+                        f"release_date={release_date.isoformat()}"
+                    )
+                    continue
+
+                print(
+                    f"INFO: ForexFactory ISM-Event gefunden: "
+                    f"kind={kind} report_month={year}-{month:02d} "
+                    f"release_date={release_date.isoformat()} actual={actual}"
+                )
+
                 return {
-                    "pmi": actual, "url": url, "year": year, "month": month,
-                    "status": "REAL_PUBLIC_SECONDARY", "new_orders": None,
-                    "employment": None, "prices": None,
+                    "pmi": actual,
+                    "url": url,
+                    "year": year,
+                    "month": month,
+                    "status": "REAL_PUBLIC_SECONDARY",
+                    "new_orders": None,
+                    "employment": None,
+                    "prices": None,
                     "release_date": release_date.isoformat(),
                 }
-        except Exception:
-            continue
+
+        except Exception as exc:
+            print(
+                f"WARNUNG: ForexFactory ISM-Fallback fuer {kind} "
+                f"release_date={release_year}-{release_month:02d}-{day:02d} "
+                f"nicht verfuegbar: {type(exc).__name__}: {exc}"
+            )
+
+    print(
+        f"WARNUNG: Kein passender USD {event_name} Release gefunden "
+        f"fuer report_month={year}-{month:02d}"
+    )
     return None
+
 
 def _ism_extract_official(text, kind):
     """Extrahiert PMI und die drei geforderten ISM-Unterkomponenten aus der
@@ -1489,7 +1436,6 @@ def _ism_fetch(kind, year, month):
         r = _ism_official_get(official)
         if r.status_code == 200:
             final_url = r.url.lower()
-            # A 200 SSO/login page is not the report.
             if "login.aspx" in final_url or "sso" in final_url:
                 print(f"WARNUNG: ISM official redirected to SSO/login: {r.url}")
             else:
@@ -1504,9 +1450,6 @@ def _ism_fetch(kind, year, month):
                     }
                     missing_fields = [k for k in ("new_orders", "employment", "prices") if data[k] is None]
                     if missing_fields:
-                        # Ein partieller Primary-Datensatz darf nicht als REAL
-                        # abgeschlossen werden. Der Secondary-Fallback muss die
-                        # fehlenden Komponenten noch beschaffen.
                         print(
                             f"WARNUNG: ISM {kind} official PMI erkannt, aber Unterkomponenten fehlen: "
                             f"{', '.join(missing_fields)}; Secondary-Fallback wird versucht"
@@ -1522,11 +1465,8 @@ def _ism_fetch(kind, year, month):
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-    # Secondary: TradingEconomics public pages. Actual only; no forecast/previous.
-    secondary = _ism_public_secondary_tradingeconomics(year, month, kind)
-    # Letzter Fallback: ForexFactory liefert notfalls nur den PMI.
-    if secondary is None:
-        secondary = _ism_public_secondary_forexfactory(year, month, kind)
+    # Secondary: public calendar. Actual only; no forecast/previous.
+    secondary = _ism_public_secondary_forexfactory(year, month, kind)
     if secondary:
         release_date = secondary.get("release_date")
         if release_date:
@@ -1535,7 +1475,6 @@ def _ism_fetch(kind, year, month):
             except Exception:
                 print(f"WARNUNG: ISM-Fallback verworfen: ungueltiges release_date={release_date}")
                 return None
-
             expected_y = year + 1 if month == 12 else year
             expected_m = 1 if month == 12 else month + 1
             if rd.year != expected_y or rd.month != expected_m:
@@ -1544,14 +1483,12 @@ def _ism_fetch(kind, year, month):
                     f"report_month={year}-{month:02d}, release_date={release_date}"
                 )
                 return None
-
         print(
             f"INFO: ISM {kind.title()} Fallback erfolgreich: "
             f"Actual={secondary['pmi']} | release_date={secondary.get('release_date')} | "
             f"source={secondary['url']}"
         )
         return secondary
-
     return None
 
 def ism_snapshot(today):
@@ -1572,10 +1509,6 @@ def ism_snapshot(today):
             # Cache verwenden. Ein alter Juni-Wert darf im August niemals den Juli-Wert ersetzen.
             latest_y, latest_m = candidates[0]
             if d.get("year") == latest_y and d.get("month") == latest_m:
-                # Secondary darf den Primary nicht dauerhaft ueberdecken.
-                # Bei REAL_PUBLIC_SECONDARY wird der offizielle ISM-Abruf in
-                # jedem Hauptlauf erneut versucht; erst bei dessen Ausfall
-                # bleibt der sekundare Wert als Fallback bestehen.
                 if d.get("status") != "REAL_PUBLIC_SECONDARY":
                     print(
                         f"INFO: ISM-Cache-Hit fuer {key} "
@@ -1654,16 +1587,20 @@ def data_quality_gate(lines):
     # aufgrund der bestehenden Daten-/Cache-Logik nicht belastbar verfuegbar,
     # wird das Makro-Szenario gesperrt.
     tier1_labels = [
-        "Fed Funds Effective Rate",
-        "US 2Y Treasury",
-        "US 10Y Treasury",
-        "Core CPI",
-        "NFP / Nonfarm Payrolls",
-        "Arbeitslosenquote",
-        "ISM Manufacturing PMI",
-        "ISM Services PMI",
-        "S&P 500",
+        "Fed Funds Effective Rate", "US 2Y Treasury", "US 10Y Treasury",
+        "Core CPI", "NFP / Nonfarm Payrolls", "Arbeitslosenquote",
+        "ISM Manufacturing PMI", "ISM Services PMI", "S&P 500",
     ]
+
+    # ISM-Unterkomponenten stehen als Felder innerhalb der PMI-Zeile.
+    ism_component_fields = (
+        ("ISM Manufacturing PMI", "New Orders"),
+        ("ISM Manufacturing PMI", "Employment"),
+        ("ISM Manufacturing PMI", "Prices"),
+        ("ISM Services PMI", "New Orders"),
+        ("ISM Services PMI", "Employment"),
+        ("ISM Services PMI", "Prices"),
+    )
 
     # Tier 2: Sekundaere Kontextdaten. Fehlende/zu alte Daten verschlechtern
     # die Datenqualitaet, sperren das Szenario aber nicht.
@@ -1697,7 +1634,26 @@ def data_quality_gate(lines):
         return any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)
 
     critical_missing = [label for label in tier1_labels if _unavailable(label)]
+
+    # Komponenten aus den tatsaechlich erzeugten PMI-Zeilen pruefen.
+    for pmi_label, field in ism_component_fields:
+        matching = [line for line in lines if line.startswith(pmi_label + ":")]
+        if not matching:
+            critical_missing.append(f"{pmi_label} {field}")
+            continue
+        m = re.search(rf"(?:^|\|)\s*{re.escape(field)}\s*=\s*([^|]+)", matching[0], flags=re.I)
+        if not m or m.group(1).strip().upper() in {"NICHT VERFUEGBAR", "UNAVAILABLE", "NONE", "N/A"}:
+            critical_missing.append(f"{pmi_label} {field}")
+
     secondary_missing = [label for label in tier2_labels if _unavailable(label)]
+
+    # LME is secondary/quality-relevant, never gate-critical.
+    # LME outages may degrade data quality, but can NEVER block the macro scenario.
+    lme_missing = [
+        metal for metal in ("Nickel", "Blei", "Zinn", "Kobalt")
+        if _unavailable(metal)
+    ]
+    secondary_missing.extend(f"LME {metal}" for metal in lme_missing)
 
     gate = "GESPERRT" if critical_missing else "FREIGEGEBEN"
     data_quality = "BLOCKED" if critical_missing else ("DEGRADED" if secondary_missing else "HEALTHY")
@@ -1763,6 +1719,12 @@ def main():
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"DATENQUALITAET: {data_quality}")
     lines.append(f"SEKUNDAERE DATENLUECKEN: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
+    lme_missing_report = [m for m in ("Nickel", "Blei", "Zinn", "Kobalt")
+                           if f"LME {m}" in secondary_missing]
+    lines.append(
+        f"LME-QUALITAET: {'DEGRADED' if lme_missing_report else 'HEALTHY'}"
+        + (f" ({', '.join(lme_missing_report)})" if lme_missing_report else "")
+    )
     lines.append(f"KRITISCHE DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
     lines.append("REGEL: Bei GESPERRT darf keine Base/Bull/Bear-Prognose mit Zahlen ausgegeben werden. Die Tagesauswertung darf die bestehende regelbasierte Analyse trotzdem weiter ausgeben.")
     lines.append("CACHE-REGEL: REAL_CACHED darf nur verwendet werden, wenn der gespeicherte Originalwert innerhalb seiner definierten Datenaltersgrenze liegt. Es werden keine Werte fortgeschrieben oder geschaetzt.")
