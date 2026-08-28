@@ -1,3 +1,0 @@
-- name: Run isolated FRED test
-  run: |
-    python fred_ism_services_isolated_test_v2.py
