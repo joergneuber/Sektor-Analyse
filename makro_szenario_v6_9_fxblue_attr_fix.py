@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v6.9"
+VERSION = "v6.11"
 """
 
 import datetime as dt
@@ -30,6 +30,7 @@ from io import StringIO, BytesIO
 
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 import yfinance as yf
 
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
@@ -1876,6 +1877,62 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
                 print(f"INFO: FXBlue ISM services {key}: Actual={value} aus HTML-Attribut fuer Reference={year}-{month:02d}")
                 return target_date, value
 
+
+        # 2b) Real FX Blue HTML structure. The GitHub diagnostic showed that
+        # FX Blue publishes the historical value as a PastEventRow with an
+        # explicit PastEventActual node, and the most-recent box as
+        # MetricsBoxActual -> MetricsBoxValue[title="Actual"]. Use the
+        # target release date to bind the Actual to the correct event.
+        # Generic data-value attributes and arbitrary numeric tokens remain
+        # forbidden.
+        try:
+            page_soup = BeautifulSoup(raw_text, "html.parser")
+            target_long = target_date.strftime("%-d %B %Y")
+            target_short = target_date.strftime("%-d %b %Y")
+
+            def date_matches(text_value):
+                low_value = str(text_value or "").casefold()
+                return (
+                    target_long.casefold() in low_value
+                    or target_short.casefold() in low_value
+                    or target_date.strftime("%Y-%m-%d") in low_value
+                )
+
+            # Historical FX Blue row: date + explicit Actual sibling.
+            for event_row in page_soup.select(".PastEventRow"):
+                date_node = event_row.select_one(".PastEventDate")
+                if date_node is None or not date_matches(date_node.get_text(" ", strip=True)):
+                    continue
+                actual_nodes = event_row.select(
+                    '.PastEventActual[title="Actual"], .PastEventActual'
+                )
+                for marker in actual_nodes:
+                    raw_actual = marker.get_text(" ", strip=True)
+                    value, raw = _extract_explicit_actual(raw_actual)
+                    if value is not None:
+                        print(f"INFO: FXBlue ISM services {key}: Actual={value} aus PastEventActual fuer Reference={year}-{month:02d}")
+                        return target_date, value
+                    print(f"WARNUNG: FXBlue ISM services {key}: PastEventActual ungueltig raw={raw!r}; Tabellen-Fallback wird versucht")
+
+            # Most-recent FX Blue box: bind MetricsBoxActual to a containing
+            # section whose heading/date identifies the target release.
+            for section in page_soup.select(".StripedPageSection"):
+                section_text = section.get_text(" ", strip=True)
+                if not date_matches(section_text):
+                    continue
+                for marker in section.select(".MetricsBoxActual"):
+                    value_node = marker.select_one('.MetricsBoxValue[title="Actual"]')
+                    if value_node is None:
+                        continue
+                    raw_actual = value_node.get_text(" ", strip=True)
+                    value, raw = _extract_explicit_actual(raw_actual)
+                    if value is not None:
+                        print(f"INFO: FXBlue ISM services {key}: Actual={value} aus MetricsBoxActual fuer Reference={year}-{month:02d}")
+                        return target_date, value
+                    print(f"WARNUNG: FXBlue ISM services {key}: MetricsBoxActual ungueltig raw={raw!r}; Tabellen-Fallback wird versucht")
+
+        except Exception as exc:
+            print(f"WARNUNG: FXBlue ISM services {key}: HTML-Actual-Parsing fehlgeschlagen: {type(exc).__name__}: {exc}")
 
         # 3) Strict three-column fallback only: Forecast | Actual | Previous.
         # The second cell must itself be numeric; '-' / N/A / blank is invalid.
