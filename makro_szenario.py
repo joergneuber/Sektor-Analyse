@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v6.1-final"
+VERSION = "v6.2"
 """
 
 import datetime as dt
@@ -1813,8 +1813,20 @@ def _ism_cache_get_valid(kind, year, month):
         # {"saved_at": ..., "data": {...}, "status": ..., "source": ...}
         # Validate the actual data payload, not the wrapper.
         payload = entry.get("data") if isinstance(entry, dict) and isinstance(entry.get("data"), dict) else entry
-        if _ism_cache_entry_valid(payload,kind,year,month):
-            result = dict(payload)
+        if isinstance(payload, dict):
+            # Some cache generations stored year/month/reference on the wrapper
+            # while the actual four values lived below data. Preserve that
+            # metadata for validation instead of rejecting an otherwise complete
+            # current-month cache.
+            candidate = dict(payload)
+            if isinstance(entry, dict):
+                for meta_key in ("reference", "period", "year", "month"):
+                    if meta_key not in candidate and meta_key in entry:
+                        candidate[meta_key] = entry[meta_key]
+        else:
+            candidate = payload
+        if _ism_cache_entry_valid(candidate,kind,year,month):
+            result = dict(candidate)
             if isinstance(entry, dict):
                 result.setdefault("status", entry.get("status", "REAL_CACHED"))
                 result.setdefault("source", entry.get("source", "ISM_SECONDARY_CACHE"))
@@ -1898,34 +1910,41 @@ def ism_snapshot(today):
         candidates.append((y,m))
 
     def get(kind):
-        key=kind
-        entry=cache.get("ism",{}).get(key)
-        if entry and entry.get("data"):
-            d=entry["data"]
-            # Nur den aktuell faelligen, bereits veroeffentlichten Berichtsmonat aus dem
-            # Cache verwenden. Ein alter Juni-Wert darf im August niemals den Juli-Wert ersetzen.
-            latest_y, latest_m = candidates[0]
-            if d.get("year") == latest_y and d.get("month") == latest_m:
-                if d.get("status") != "REAL_PUBLIC_SECONDARY":
-                    print(
-                        f"INFO: ISM-Cache-Hit fuer {key} "
-                        f"(Datenstand={latest_y}-{latest_m:02d}, status={d.get('status')})"
-                    )
-                    return d
-                print(
-                    f"INFO: ISM-Secondary-Cache wird nicht blind uebernommen fuer {key}; "
-                    f"Primary wird erneut versucht."
-                )
+        key = kind
+        latest_y, latest_m = candidates[0]
+
+        # EIN autoritativer Cachepfad: zuerst den aktuell faelligen Monat
+        # validieren. Statusnamen wie REAL_PUBLIC_SECONDARY duerfen einen
+        # vollstaendig validierten Cache niemals erneut zurueckweisen.
+        cached = _ism_cache_get_valid(kind, latest_y, latest_m)
+        if cached is not None:
             print(
-                f"INFO: ISM-Cache vorhanden, aber nicht aktuell: "
-                f"cached={d.get('year')}-{d.get('month')} "
-                f"required={latest_y}-{latest_m}"
+                f"INFO: ISM-Secondary-Cache validiert und uebernommen fuer {kind}: "
+                f"reference={latest_y}-{latest_m:02d} (PMI + 3 Unterpunkte vorhanden)."
             )
-        for y,m in candidates:
-            d=_ism_fetch(kind,y,m)
+            return cached
+
+        entry = cache.get("ism", {}).get(key)
+        if entry and entry.get("data"):
+            d = entry["data"]
+            print(
+                f"INFO: ISM-Cache vorhanden, aber nicht verwendbar fuer {key}: "
+                f"cached={d.get('year')}-{d.get('month')} required={latest_y}-{latest_m}; "
+                f"validierung fehlgeschlagen."
+            )
+
+        for y, m in candidates:
+            d = _ism_fetch(kind, y, m)
             if d:
                 with CACHE_WRITE_LOCK:
-                    c=_cache_load(); c.setdefault("ism",{})[key]={"saved_at":time.time(),"data":d,"status":d.get("status","REAL"),"source":d["url"]}; _cache_save(c)
+                    c = _cache_load()
+                    c.setdefault("ism", {})[key] = {
+                        "saved_at": time.time(),
+                        "data": d,
+                        "status": d.get("status", "REAL"),
+                        "source": d.get("url", d.get("source", "ISM")),
+                    }
+                    _cache_save(c)
                 return d
         return None
 
@@ -2048,7 +2067,11 @@ def data_quality_gate(lines):
     # LME outages may degrade data quality, but can NEVER block the macro scenario.
     lme_missing = [
         metal for metal in ("Nickel", "Blei", "Zinn", "Kobalt")
-        if _unavailable(metal)
+        if any(
+            line.startswith(metal + ": NICHT VERFUEGBAR")
+            or (line.startswith(metal + ":") and re.search(r"STATUS=(?:DEGRADED|UNAVAILABLE)\b", line, flags=re.I))
+            for line in lines
+        )
     ]
     secondary_missing.extend(f"LME {metal}" for metal in lme_missing)
 
