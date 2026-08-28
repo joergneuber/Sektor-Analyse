@@ -1,0 +1,26 @@
+name: FRED Connectivity Test v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fred-connectivity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Verify test file
+        run: |
+          test -f fred_connectivity_test_v2.py
+          python -m py_compile fred_connectivity_test_v2.py
+
+      - name: Run FRED connectivity test
+        run: |
+          python fred_connectivity_test_v2.py
