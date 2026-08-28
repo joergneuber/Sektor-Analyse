@@ -25,10 +25,10 @@ jobs:
       - name: Verify files and syntax
         run: |
           test -f makro_szenario_v6_3_te_pmi_release_fix_v3.py
-          test -f test_te_ism_services_pmi_release_fix_v3.py
+          test -f test_te_ism_services_pmi_release_fix_v4.py
           python -m py_compile makro_szenario_v6_3_te_pmi_release_fix_v3.py
-          python -m py_compile test_te_ism_services_pmi_release_fix_v3.py
+          python -m py_compile test_te_ism_services_pmi_release_fix_v4.py
 
       - name: Run real TE Services test
         run: |
-          python test_te_ism_services_pmi_release_fix_v3.py
+          python test_te_ism_services_pmi_release_fix_v4.py
