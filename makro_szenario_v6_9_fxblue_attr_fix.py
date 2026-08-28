@@ -1,35 +1,42 @@
 #!/usr/bin/env python3
 """
-Isolierter GitHub-Test:
-ISM Services Official – Prüfung des offiziellen ISM-Reports.
+FX Blue – isolierter Event-Discovery-Test v1
 
-Zweck:
-- NUR die offizielle ISM-Services-Seite testen.
+ZWECK
+-----
+Dieser Test beantwortet ausschließlich eine Frage:
+
+    Liefert FX Blue im aktuell erreichbaren HTML überhaupt Events,
+    die als ISM Services / ISM Non-Manufacturing erkennbar sind?
+
+WICHTIG
+-------
+- Keine Wertinterpretation.
+- Kein Actual-/Forecast-/Previous-Parsing.
+- Keine Änderung an makro_szenario.py.
 - Keine Änderung an Cache, Gate, LME, FRED oder Manufacturing.
-- Für den Zielmonat werden genau vier Actual-Werte verlangt:
-  PMI, New Orders, Employment, Prices.
-- Fail-closed: Forecast/Previous/N/A/fehlende Werte dürfen nicht als Actual
-  verwendet werden.
+- Kein "Raten" anhand numerischer Tokens.
+- Ein gefundenes Manufacturing-Event wird NICHT als Services akzeptiert.
 
-Exit codes:
-  0 = GREEN: offizieller Report gefunden und alle 4 Actuals valide
-  1 = RED: kein vollständiger Datensatz
+Exit:
+  0 = SERVICES_EVENT_FOUND
+  1 = NO_SERVICES_EVENT_FOUND / Quelle nicht verwertbar
 """
 
 import re
 import sys
-import calendar
-from datetime import date
+from collections import Counter
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 
-TARGET_YEAR = 2026
-TARGET_MONTH = 7
+URLS = [
+    "https://www.fxblue.com/market-data/economic-calendar",
+    "https://publisher2.fxblue.com/",
+]
 
-BASE_URL = "https://www.ismworld.org"
 TIMEOUT = 20
 
 HEADERS = {
@@ -46,263 +53,285 @@ HEADERS = {
 }
 
 
-def month_names(month: int) -> tuple[str, str]:
-    return calendar.month_name[month].lower(), calendar.month_abbr[month].lower()
+SERVICE_TERMS = (
+    "ism services",
+    "ism non-manufacturing",
+    "ism non manufacturing",
+    "non-manufacturing pmi",
+    "non manufacturing pmi",
+    "services pmi",
+    "services business activity",
+)
+
+COMPONENT_TERMS = (
+    "services new orders",
+    "services employment",
+    "services prices",
+    "services prices paid",
+    "non-manufacturing new orders",
+    "non-manufacturing employment",
+    "non-manufacturing prices",
+)
+
+MANUFACTURING_TERMS = (
+    "ism manufacturing",
+    "manufacturing pmi",
+    "manufacturing prices paid",
+    "manufacturing new orders",
+    "manufacturing employment",
+)
 
 
-def clean_actual(value):
-    """Fail-closed: nur ein expliziter numerischer Actual-Wert ist gültig."""
-    if value is None:
-        return None
-
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-
-    text = str(value).strip()
-    if not text or text.lower() in {"n/a", "na", "null", "none", "-", "--"}:
-        return None
-
-    # Keine Zahl aus einem beliebigen Forecast/Previous-String herausziehen.
-    # Zulässig sind nur reine numerische Werte mit optionalem Vorzeichen
-    # und optionalem Prozentzeichen.
-    if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?\s*%?", text):
-        return None
-
-    text = text.replace("%", "").strip()
-    try:
-        return float(text)
-    except ValueError:
-        return None
+def normalize(text):
+    text = text or ""
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def find_actual_in_table(table):
-    """
-    Sucht explizit nach einer Actual-Spalte.
-    Niemals Position 2 verwenden, wenn die Spaltenüberschrift nicht
-    eindeutig Actual ist.
-    """
-    rows = table.find_all("tr")
-    if not rows:
-        return None
+def classify(text):
+    low = normalize(text).lower()
 
-    headers = []
-    for cell in rows[0].find_all(["th", "td"]):
-        headers.append(cell.get_text(" ", strip=True).lower())
+    if any(term in low for term in SERVICE_TERMS):
+        return "SERVICES"
 
-    actual_index = None
-    for i, header in enumerate(headers):
-        if re.search(r"\bactual\b", header):
-            actual_index = i
-            break
+    if any(term in low for term in COMPONENT_TERMS):
+        return "SERVICES_COMPONENT"
 
-    if actual_index is None:
-        return None
+    if any(term in low for term in MANUFACTURING_TERMS):
+        return "MANUFACTURING"
 
-    if len(rows) < 2:
-        return None
+    if "ism" in low:
+        return "ISM_OTHER"
 
-    values = rows[1].find_all(["td", "th"])
-    if actual_index >= len(values):
-        return None
-
-    return clean_actual(values[actual_index].get_text(" ", strip=True))
-
-
-def extract_metric_from_text(text, patterns):
-    """
-    Nur für explizite 'Metric: value'-Darstellungen.
-    Kein Herauspicken beliebiger Zahlen aus dem Umfeld.
-    """
-    for pattern in patterns:
-        match = re.search(pattern, text, re.I)
-        if match:
-            return clean_actual(match.group(1))
     return None
 
 
-def parse_services(html):
-    soup = BeautifulSoup(html, "html.parser")
-    full_text = soup.get_text(" ", strip=True)
+def collect_event_like_strings(soup):
+    """
+    Sammelt nur Text aus typischen Event-/Tabellen-Containern.
+    Keine Zahlenextraktion.
+    """
+    candidates = []
 
-    result = {
-        "pmi": None,
-        "new_orders": None,
-        "employment": None,
-        "prices": None,
-    }
+    for element in soup.find_all(
+        ["tr", "td", "th", "li", "div", "span", "a"]
+    ):
+        text = normalize(element.get_text(" ", strip=True))
+        if not text:
+            continue
 
-    # Diagnose: Tabellenstruktur
-    tables = soup.find_all("table")
-    print(f"TABLE_COUNT={len(tables)}")
-
-    for idx, table in enumerate(tables, 1):
-        value = find_actual_in_table(table)
-        if value is not None:
-            print(f"TABLE_{idx}_EXPLICIT_ACTUAL={value}")
-
-    # Offizielle ISM-Seiten verwenden je nach Layout unterschiedliche
-    # Text-/HTML-Strukturen. Die Muster bleiben bewusst explizit.
-    patterns = {
-        "pmi": [
-            r"(?:Services\s+PMI|PMI)\s*[:\-]\s*([+-]?\d+(?:\.\d+)?)",
-            r"(?:Services\s+PMI)\s+([+-]?\d+(?:\.\d+)?)",
-        ],
-        "new_orders": [
-            r"(?:New\s+Orders)\s*[:\-]\s*([+-]?\d+(?:\.\d+)?)",
-        ],
-        "employment": [
-            r"(?:Employment)\s*[:\-]\s*([+-]?\d+(?:\.\d+)?)",
-        ],
-        "prices": [
-            r"(?:Prices(?:\s+Paid)?)\s*[:\-]\s*([+-]?\d+(?:\.\d+)?)",
-        ],
-    }
-
-    for key, key_patterns in patterns.items():
-        result[key] = extract_metric_from_text(full_text, key_patterns)
-
-    # Zusätzliche Diagnose: relevante Textstellen ausgeben, aber keine
-    # beliebigen numerischen Tokens als Actual interpretieren.
-    print("RELEVANT_TEXT_LINES=")
-    seen = set()
-    for element in soup.find_all(["tr", "p", "li", "div"]):
-        text = element.get_text(" ", strip=True)
         low = text.lower()
-        if any(
-            token in low
-            for token in (
-                "services pmi",
-                "new orders",
-                "employment",
-                "prices paid",
-            )
+
+        if (
+            "ism" in low
+            or "non-manufacturing" in low
+            or "non manufacturing" in low
+            or "services" in low
+            or "manufacturing" in low
         ):
-            if text and text not in seen:
-                seen.add(text)
-                print(f"  {text[:500]}")
+            candidates.append(text)
+
+    # Deduplicate, aber Reihenfolge erhalten.
+    seen = set()
+    result = []
+    for item in candidates:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
 
     return result
 
 
-def candidate_urls(year, month):
-    long_name, short_name = month_names(month)
-    # Offizielles ISM-Muster; Varianten werden diagnostisch getestet.
-    return [
-        f"{BASE_URL}/supply-management-news-and-reports/reports/ism-pmi-reports/services/{long_name}/",
-        f"{BASE_URL}/supply-management-news-and-reports/reports/ism-pmi-reports/services/{short_name}/",
-        f"{BASE_URL}/supply-management-news-and-reports/reports/ism-pmi-reports/services/{year}/{long_name}/",
-    ]
+def collect_script_hints(soup, base_url):
+    """
+    Sucht ausschließlich nach textuellen Hinweisen in Script-/Inline-Inhalten.
+    Keine Ausführung von JavaScript.
+    """
+    hits = []
+
+    for script in soup.find_all("script"):
+        content = script.string or script.get_text() or ""
+        low = content.lower()
+
+        if any(
+            term in low
+            for term in (
+                "calendar",
+                "ism services",
+                "non-manufacturing",
+                "services pmi",
+                "eventtype",
+                "calendarws",
+                "getitems",
+            )
+        ):
+            hits.append(normalize(content)[:3000])
+
+    # Zusätzlich externe JS-Dateien nur auflisten, nicht laden.
+    scripts = []
+    for tag in soup.find_all("script", src=True):
+        scripts.append(urljoin(base_url, tag.get("src")))
+
+    return hits, scripts
 
 
-def main():
-    target = date(TARGET_YEAR, TARGET_MONTH, 1)
-    long_name, short_name = month_names(TARGET_MONTH)
-
-    print("=== ISM OFFICIAL SERVICES DIAGNOSE ===")
-    print(f"TARGET={target.isoformat()}")
-    print(f"TARGET_MONTH_LONG={long_name}")
-    print(f"TARGET_MONTH_SHORT={short_name}")
+def run():
+    print("=== FXBLUE ISM SERVICES EVENT DISCOVERY ===")
+    print("MODE=READ_ONLY_EVENT_NAME_DISCOVERY")
+    print("VALUE_PARSING=False")
+    print("ACTUAL_PARSING=False")
     print()
 
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    successful_pages = []
+    all_event_strings = []
+    script_hints = []
+    external_scripts = []
+    successful_pages = 0
 
-    for url in candidate_urls(TARGET_YEAR, TARGET_MONTH):
+    for url in URLS:
         print(f"REQUEST={url}")
+
         try:
-            response = session.get(url, timeout=TIMEOUT, allow_redirects=True)
+            response = session.get(
+                url,
+                timeout=TIMEOUT,
+                allow_redirects=True,
+            )
+
             print(f"HTTP_STATUS={response.status_code}")
             print(f"FINAL_URL={response.url}")
             print(f"CONTENT_LENGTH={len(response.text)}")
 
             if response.history:
-                print(
-                    "REDIRECT_CHAIN="
-                    + " -> ".join(
-                        [str(r.status_code) for r in response.history]
-                        + [str(response.status_code)]
-                    )
-                )
+                chain = [
+                    str(item.status_code)
+                    for item in response.history
+                ]
+                chain.append(str(response.status_code))
+                print("REDIRECT_CHAIN=" + " -> ".join(chain))
 
-            if response.status_code == 200:
-                successful_pages.append((url, response.text))
+            if response.status_code != 200:
+                print("PAGE_RESULT=NOT_USABLE")
+                print()
+                continue
+
+            successful_pages += 1
+
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            events = collect_event_like_strings(soup)
+            all_event_strings.extend(events)
+
+            hints, scripts = collect_script_hints(
+                soup,
+                response.url,
+            )
+            script_hints.extend(hints)
+            external_scripts.extend(scripts)
+
+            print(f"EVENT_LIKE_TEXT_COUNT={len(events)}")
             print()
+
         except requests.RequestException as exc:
             print(f"REQUEST_ERROR={type(exc).__name__}: {exc}")
             print()
 
-    if not successful_pages:
-        print("RESULT=RED_NO_OFFICIAL_SERVICES_PAGE")
-        return 1
+    # Globale Deduplication.
+    seen = set()
+    unique_events = []
 
-    # Zuerst die Seiten mit dem stärksten Monatsbezug prüfen.
-    selected = None
-    for requested_url, html in successful_pages:
-        low_url = requested_url.lower()
-        if long_name in low_url or short_name in low_url:
-            selected = (requested_url, html)
-            break
+    for item in all_event_strings:
+        if item not in seen:
+            seen.add(item)
+            unique_events.append(item)
 
-    if selected is None:
-        selected = successful_pages[0]
+    print("=== CLASSIFIED EVENT NAMES ===")
 
-    requested_url, html = selected
-    print(f"SELECTED_URL={requested_url}")
+    counts = Counter()
+    service_hits = []
+    component_hits = []
+    manufacturing_hits = []
+    ism_other_hits = []
+
+    for item in unique_events:
+        category = classify(item)
+
+        if category:
+            counts[category] += 1
+
+        if category == "SERVICES":
+            service_hits.append(item)
+        elif category == "SERVICES_COMPONENT":
+            component_hits.append(item)
+        elif category == "MANUFACTURING":
+            manufacturing_hits.append(item)
+        elif category == "ISM_OTHER":
+            ism_other_hits.append(item)
+
+    print(f"TOTAL_UNIQUE_EVENT_LIKE_TEXT={len(unique_events)}")
+    print(f"SERVICES_MATCHES={len(service_hits)}")
+    print(f"SERVICES_COMPONENT_MATCHES={len(component_hits)}")
+    print(f"MANUFACTURING_MATCHES={len(manufacturing_hits)}")
+    print(f"ISM_OTHER_MATCHES={len(ism_other_hits)}")
     print()
 
-    # SSO/Paywall explizit diagnostizieren.
-    low_html = html.lower()
-    final_low = requested_url.lower()
-
-    sso_markers = (
-        "sso/login.aspx",
-        "login.aspx",
-        "sign in",
-        "log in",
-        "authentication",
-    )
-    sso_detected = any(marker in final_low or marker in low_html for marker in sso_markers)
-    print(f"SSO_MARKER_DETECTED={sso_detected}")
-
-    # Report-Monat nicht nur anhand der URL akzeptieren.
-    month_evidence = (
-        f"{long_name} {TARGET_YEAR}",
-        f"{short_name} {TARGET_YEAR}",
-        f"{long_name.capitalize()} {TARGET_YEAR}",
-    )
-    report_month_detected = any(item.lower() in low_html for item in month_evidence)
-    print(f"REPORT_MONTH_TEXT_DETECTED={report_month_detected}")
-    print()
-
-    data = parse_services(html)
+    print("--- SERVICES ---")
+    for item in service_hits:
+        print("SERVICES_EVENT:", item[:1000])
 
     print()
-    print("=== EXTRACTED ACTUALS ===")
-    for key in ("pmi", "new_orders", "employment", "prices"):
-        print(f"{key.upper()}={data[key]}")
-
-    complete = all(data[key] is not None for key in data)
+    print("--- SERVICES COMPONENTS ---")
+    for item in component_hits:
+        print("SERVICES_COMPONENT_EVENT:", item[:1000])
 
     print()
-    if sso_detected:
-        print("RESULT=RED_OFFICIAL_SSO")
+    print("--- MANUFACTURING (CONTROL GROUP) ---")
+    for item in manufacturing_hits:
+        print("MANUFACTURING_EVENT:", item[:1000])
+
+    print()
+    print("--- OTHER ISM ---")
+    for item in ism_other_hits:
+        print("ISM_OTHER_EVENT:", item[:1000])
+
+    print()
+    print("=== STATIC SCRIPT HINTS ===")
+    print(f"INLINE_SCRIPT_HINTS={len(script_hints)}")
+
+    for index, hint in enumerate(script_hints[:20], 1):
+        print(f"SCRIPT_HINT_{index}={hint}")
+
+    print()
+    unique_scripts = []
+    seen_scripts = set()
+
+    for script in external_scripts:
+        if script not in seen_scripts:
+            seen_scripts.add(script)
+            unique_scripts.append(script)
+
+    print(f"EXTERNAL_SCRIPT_COUNT={len(unique_scripts)}")
+
+    for script in unique_scripts[:50]:
+        print("SCRIPT_SRC:", script)
+
+    print()
+    print("=== DECISION ===")
+
+    if successful_pages == 0:
+        print("RESULT=RED_NO_USABLE_FXBLUE_PAGE")
         return 1
 
-    if not report_month_detected:
-        print("RESULT=RED_OFFICIAL_MONTH_NOT_PROVEN")
-        return 1
+    if service_hits or component_hits:
+        print("RESULT=GREEN_SERVICES_EVENT_FOUND")
+        print("NEXT_STEP=INSPECT_EXACT_EVENT_STRUCTURE_BEFORE_ANY_VALUE_PARSING")
+        return 0
 
-    if not complete:
-        missing = [key for key, value in data.items() if value is None]
-        print(f"MISSING={','.join(missing)}")
-        print("RESULT=RED_OFFICIAL_SERVICES_INCOMPLETE")
-        return 1
-
-    print("RESULT=GREEN_OFFICIAL_SERVICES_COMPLETE")
-    return 0
+    print("RESULT=RED_NO_SERVICES_EVENT_FOUND")
+    print("NEXT_STEP=DO_NOT_MODIFY_PRODUCTIVE_PARSER")
+    return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
