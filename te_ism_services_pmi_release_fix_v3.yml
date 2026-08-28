@@ -1,0 +1,34 @@
+name: TE ISM Services PMI Release Fix v3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check \
+            yfinance requests pandas numpy lxml beautifulsoup4
+
+      - name: Verify files and syntax
+        run: |
+          test -f makro_szenario_v6_3_te_pmi_release_fix_v3.py
+          test -f test_te_ism_services_pmi_release_fix_v3.py
+          python -m py_compile makro_szenario_v6_3_te_pmi_release_fix_v3.py
+          python -m py_compile test_te_ism_services_pmi_release_fix_v3.py
+
+      - name: Run real TE Services test
+        run: |
+          python test_te_ism_services_pmi_release_fix_v3.py
