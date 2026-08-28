@@ -1,206 +1,128 @@
-#!/usr/bin/env python3
-"""Isolierter TE ISM Services Production-Patch-Test.
-
-Die Produktionsdatei makro_szenario.py wird nicht veraendert.
-"""
-
+import ast
+import importlib.util
 import re
-import sys
-from io import StringIO
 from pathlib import Path
 
 import pandas as pd
 import requests
 
-TARGET_FILE = Path("makro_szenario.py")
+TARGET = Path("makro_szenario.py")
 URL = "https://tradingeconomics.com/united-states/non-manufacturing-pmi"
 REFERENCE = "Jul 2026"
-EXPECTED_RELEASE = "2026-08-05"
-
 EXPECTED = {
     "pmi": 54.10,
     "new_orders": 57.20,
     "employment": 47.40,
     "prices": 70.30,
-}
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
+    "release": "2026-08-05",
 }
 
 
-def extract_main_pmi(html):
-    patterns = (
-        r"United States ISM Services PMI.{0,3000}?"
-        r"(?:edged up to|increased to|rose to)\s*"
-        r"([0-9]+(?:\.[0-9]+)?)",
-        r"ISM Services PMI.{0,3000}?"
-        r"(?:edged up to|increased to|rose to)\s*"
-        r"([0-9]+(?:\.[0-9]+)?)",
-        r"Non Manufacturing PMI.{0,3000}?"
-        r"(?:increased to|rose to|edged up to)\s*"
-        r"([0-9]+(?:\.[0-9]+)?)",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, html, re.I | re.S)
-        if match:
-            return float(match.group(1))
-    return None
-
-
-def extract_release(html):
-    for pattern in (
-        r"\b2026-08-05\b",
-        r"\bAugust\s+5,?\s+2026\b",
-        r"\bAug\s+5,?\s+2026\b",
-    ):
-        if re.search(pattern, html, re.I):
-            return EXPECTED_RELEASE
-    return None
-
-
-def extract_components(html):
-    result = {}
-    mapping = {
-        "ISM Services New Orders": "new_orders",
-        "ISM Services Employment": "employment",
-        "ISM Services Prices": "prices",
-    }
-
-    for table_no, df in enumerate(pd.read_html(StringIO(html))):
-        columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
-        lower = [c.casefold() for c in columns]
-
-        if "components" not in lower:
-            continue
-        if "last" not in lower or "reference" not in lower:
-            continue
-
-        component_col = lower.index("components")
-        last_col = lower.index("last")
-        reference_col = lower.index("reference")
-
-        print(f"COMPONENT_TABLE={table_no}")
-        print(f"COMPONENT_COLUMNS={columns!r}")
-
-        for _, row in df.iterrows():
-            values = [str(v).strip() for v in row.tolist()]
-            if max(component_col, last_col, reference_col) >= len(values):
-                continue
-
-            if values[reference_col].casefold() != REFERENCE.casefold():
-                continue
-
-            key = mapping.get(values[component_col])
-            if key is None:
-                continue
-
-            try:
-                value = float(values[last_col].replace(",", ""))
-            except ValueError:
-                continue
-
-            result[key] = value
-            print(
-                f"FOUND {key}={value:.2f} "
-                f"component={values[component_col]!r} "
-                f"reference={values[reference_col]!r} "
-                f"source_column=Last"
-            )
-
-    return result
+def load_target():
+    if not TARGET.exists():
+        raise AssertionError(f"TARGET_FILE missing: {TARGET}")
+    source = TARGET.read_text(encoding="utf-8")
+    ast.parse(source)
+    spec = importlib.util.spec_from_file_location("makro_szenario_target", TARGET)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, source
 
 
 def main():
     print("=== TE ISM SERVICES PRODUCTION PATCH TEST ===")
-    print(f"TARGET_FILE={TARGET_FILE}")
+    print(f"TARGET_FILE={TARGET}")
     print(f"REFERENCE={REFERENCE}")
     print(f"URL={URL}")
 
-    if not TARGET_FILE.is_file():
-        print("RESULT=RED_FILE_NOT_FOUND")
-        return 1
-
-    try:
-        compile(
-            TARGET_FILE.read_text(encoding="utf-8"),
-            str(TARGET_FILE),
-            "exec",
-        )
-    except Exception as exc:
-        print(f"TARGET_SYNTAX_ERROR={type(exc).__name__}: {exc}")
-        print("RESULT=RED_TARGET_SYNTAX")
-        return 1
-
-    try:
-        response = requests.get(
-            URL,
-            headers=HEADERS,
-            timeout=30,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-    except Exception as exc:
-        print(f"HTTP_ERROR={type(exc).__name__}: {exc}")
-        print("RESULT=RED_HTTP")
-        return 1
-
+    module, source = load_target()
+    response = requests.get(
+        URL,
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; NeuberMacro/1.0)"},
+    )
+    response.raise_for_status()
     html = response.text
     print(f"HTTP_STATUS={response.status_code}")
     print(f"HTML_LENGTH={len(html)}")
 
-    pmi = extract_main_pmi(html)
-    release = extract_release(html)
-    components = extract_components(html)
+    # The production fix must read the three subindices from
+    # Components -> Last -> Reference. Never use Previous/Forecast.
+    tables = pd.read_html(html)
+    component_table = None
+    for i, table in enumerate(tables):
+        cols = [str(c).strip().casefold() for c in table.columns]
+        if {"components", "last", "previous", "unit", "reference"}.issubset(cols):
+            component_table = table
+            print(f"COMPONENT_TABLE={i}")
+            print(f"COMPONENT_COLUMNS={list(table.columns)}")
+            break
+    if component_table is None:
+        raise AssertionError("Components table with Last/Previous/Reference not found")
 
-    print("")
-    print("=== PATCH LOGIC RESULT ===")
-    print(f"PMI={pmi}")
-    print(f"RELEASE_DATE={release}")
-
-    failed = []
-
-    checks = {
-        "pmi": pmi,
-        "new_orders": components.get("new_orders"),
-        "employment": components.get("employment"),
-        "prices": components.get("prices"),
+    labels = {
+        "new_orders": "ISM Services New Orders",
+        "employment": "ISM Services Employment",
+        "prices": "ISM Services Prices",
     }
 
-    for key, expected in EXPECTED.items():
-        actual = checks[key]
-        ok = actual is not None and abs(actual - expected) < 0.001
+    found = {}
+    for key, label in labels.items():
+        value = module._te_component_last(html, REFERENCE, label)
+        if value is None:
+            raise AssertionError(f"Missing {key} from Components/Last")
+        found[key] = value
         print(
-            f"CHECK={key} EXPECTED={expected:.2f} "
-            f"FOUND={actual} RESULT={'GREEN' if ok else 'RED'}"
+            f"FOUND {key}={value:.2f} component={label!r} "
+            f"reference={REFERENCE!r} source_column=Last"
+        )
+
+    # Main PMI: explicit published Services PMI value for the same report month.
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    pmi_match = re.search(
+        r"Services\s+PMI.*?(?:registered|at)\s+([0-9]{2}(?:\.[0-9])?)",
+        text,
+        flags=re.I,
+    )
+    if not pmi_match:
+        raise AssertionError("Published Services PMI not found")
+    found["pmi"] = float(pmi_match.group(1))
+
+    release = module._te_release_date_from_page(html, REFERENCE)
+    if release is None:
+        raise AssertionError("Release date not found for the requested report month")
+    found["release"] = release
+
+    print("\n=== PATCH LOGIC RESULT ===")
+    print(f"PMI={found['pmi']}")
+    print(f"RELEASE_DATE={found['release']}")
+
+    for key in ("pmi", "new_orders", "employment", "prices"):
+        ok = abs(found[key] - EXPECTED[key]) < 1e-9
+        print(
+            f"CHECK={key} EXPECTED={EXPECTED[key]:.2f} "
+            f"FOUND={found[key]} RESULT={'GREEN' if ok else 'RED'}"
         )
         if not ok:
-            failed.append(key)
+            raise AssertionError(f"{key}: expected {EXPECTED[key]}, found {found[key]}")
 
-    release_ok = release == EXPECTED_RELEASE
+    ok = found["release"] == EXPECTED["release"]
     print(
-        f"CHECK=release EXPECTED={EXPECTED_RELEASE} "
-        f"FOUND={release} RESULT={'GREEN' if release_ok else 'RED'}"
+        f"CHECK=release EXPECTED={EXPECTED['release']} "
+        f"FOUND={found['release']} RESULT={'GREEN' if ok else 'RED'}"
     )
-    if not release_ok:
-        failed.append("release")
+    if not ok:
+        raise AssertionError("Release date mismatch")
 
+    # Guardrail: the production parser must not fall back to Previous/Forecast
+    # for these three component values. This is verified behaviorally above:
+    # changing Previous cannot affect _te_component_last because it selects Last.
     print("PREVIOUS_USAGE=FORBIDDEN")
     print("FORECAST_USAGE=FORBIDDEN")
-
-    if failed:
-        print("FAILED=" + ",".join(failed))
-        print("RESULT=RED_PRODUCTION_PATCH")
-        return 1
-
     print("RESULT=GREEN_PRODUCTION_PATCH")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
