@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v6.5"
+VERSION = "v6.6"
 """
 
 import datetime as dt
@@ -1696,11 +1696,11 @@ def _ism_public_secondary_tradingeconomics(year, month, kind):
 def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
     """Robuster Services-only FX Blue fallback.
 
-    Jede der vier ISM-Services-Reihen wird auf ihrer eigenen FX-Blue-Seite
-    gelesen. Es wird ausschliesslich das Event im Folgemonat des angeforderten
-    Reference-Monats akzeptiert. Der Actual-Wert wird aus der zu diesem Event
-    gehoerenden "Past events"-Zeile gelesen; Forecast/Previous werden niemals
-    als Actual verwendet. Alle vier Reihen muessen denselben Release-Tag haben.
+    FX Blue fuehrt die vier ISM-Services-Reihen als eigene Kalenderseiten.
+    Gelesen wird ausschliesslich das historische Event im Folgemonat des
+    angeforderten Reference-Monats. Der Actual-Wert wird aus derselben
+    Event-Zeile gelesen; Forecast/Previous werden niemals als Actual
+    verwendet. Alle vier Reihen muessen denselben Release-Tag liefern.
     """
     base = "https://publisher2.fxblue.com/calendar/item"
     urls = {
@@ -1712,8 +1712,8 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
 
     next_year = year + (1 if month == 12 else 0)
     next_month = 1 if month == 12 else month + 1
-    found = {}
-    release_dates = {}
+    found: dict[str, float] = {}
+    release_dates: dict[str, str] = {}
 
     date_re = re.compile(
         r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+"
@@ -1721,16 +1721,20 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
         re.I,
     )
 
-    def parse_page(text):
-        # Work only on the event-history section. This prevents the unrelated
-        # headline "Actual" value or other calendar entries from being used.
+    def parse_page(raw_text: str):
+        # Fuer Event-/Datumsuche bereinigter Text; fuer den streng begrenzten
+        # 3-Spalten-Fallback bleibt das Original-HTML separat erhalten.
+        text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", raw_text, flags=re.I | re.S)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
         low = text.casefold()
         marker = low.find("past events")
         history = text[marker:] if marker >= 0 else text
-
         events = list(date_re.finditer(history))
-        target = None
-        for m in events:
+
+        target_idx = None
+        target_date = None
+        for idx, m in enumerate(events):
             try:
                 d = datetime.strptime(
                     f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %B %Y"
@@ -1738,51 +1742,83 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
             except ValueError:
                 continue
             if d.year == next_year and d.month == next_month:
-                target = m
+                target_idx = idx
+                target_date = d
                 break
 
-        if target is None:
+        if target_idx is None:
             return None, None
 
-        # Limit parsing to this event row only, i.e. up to the next event date.
-        row_end = events[events.index(target) + 1].start() if target != events[-1] else len(history)
-        row = history[target.end():row_end]
+        row_end = events[target_idx + 1].start() if target_idx + 1 < len(events) else len(history)
+        row = history[events[target_idx].end():row_end]
 
-        # FX Blue's row is: Forecast Actual. The first numeric token can be
-        # the forecast; the second numeric token is the Actual. A '-' forecast
-        # is also valid (common for Employment/Prices).
-        token_re = re.compile(r"(?<![A-Za-z])(?:-?\d+(?:\.\d+)?|-)(?![A-Za-z])")
-        tokens = token_re.findall(row)
-        if len(tokens) < 2:
-            return None, None
+        # 1) Bevorzugt: explizites Actual-Signal innerhalb derselben Event-Zeile.
+        # Ein vorhandenes Actual-Feld wird strikt als solches ausgewertet.
+        # N/A, -, leer bzw. Sonderzeichen werden nicht in andere Zahlen
+        # umgedeutet. Forecast/Previous werden niemals als Actual verwendet.
+        actual_matches = list(re.finditer(
+            r"\bActual\b\s*[:\-]?\s*([^\s|;\n]+)",
+            row,
+            flags=re.I,
+        ))
+        if actual_matches:
+            raw_actual = actual_matches[-1].group(1).strip()
+            # In einer reinen Kopfzeile folgt auf "Actual" typischerweise
+            # "Previous"/"Forecast". Das ist noch kein Wert; dann darf nur
+            # der nachfolgende, streng begrenzte 3-Spalten-Tabellenpfad greifen.
+            if raw_actual.casefold() not in {"previous", "forecast", "actual"}:
+                value = _clean_num(raw_actual)
+                return target_date, value
 
-        # If the first token is the forecast, the second is Actual. If the
-        # source has no forecast value, it explicitly uses '-' as the first
-        # token, so the same rule remains deterministic.
-        actual_token = tokens[1]
-        if actual_token == "-":
-            return None, None
-        value = _clean_num(actual_token)
-        return target, value
+        # 2) Positions-Fallback nur bei einer *exakt* dreispaltigen Tabelle
+        # Forecast | Actual | Previous. Das ist bewusst streng: sobald die
+        # zweite Spalte leer, "-" oder "N/A" ist, wird das Event verworfen.
+        try:
+            tables = pd.read_html(StringIO(raw_text))
+        except Exception:
+            tables = []
+        for table in tables:
+            df = table.copy()
+            if isinstance(df.columns, pd.MultiIndex):
+                cols = [
+                    " ".join(str(x).strip() for x in col
+                             if str(x).strip().lower() not in {"nan", "none", ""}).strip()
+                    for col in df.columns
+                ]
+            else:
+                cols = [str(c).strip() for c in df.columns]
+            norm_cols = [re.sub(r"[^a-z]+", " ", c.casefold()).strip() for c in cols]
+            if len(cols) != 3 or norm_cols != ["forecast", "actual", "previous"]:
+                continue
+            for _, values in df.iterrows():
+                cells = [str(v).strip() for v in values.tolist()]
+                if len(cells) != 3:
+                    continue
+                # Nur eine numerische zweite Spalte ist ein valides Actual.
+                # -, N/A, leere oder sonstige Texte bedeuten: kein Actual.
+                value = _clean_num(cells[1])
+                if value is None:
+                    continue
+                return target_date, value
+
+        # Kein explizites Actual und keine exakt passende 3-Spalten-Tabelle.
+        return None, None
 
     for key, url in urls.items():
         try:
             r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
             r.raise_for_status()
-            text = re.sub(r"<[^>]+>", " ", r.text)
+            text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", r.text, flags=re.I | re.S)
+            text = re.sub(r"<[^>]+>", " ", text)
             text = re.sub(r"\s+", " ", text).strip()
 
-            match, value = parse_page(text)
-            if match is None:
+            release_date, value = parse_page(r.text)
+            if release_date is None:
                 print(
                     f"WARNUNG: FXBlue ISM services {key} kein passendes Event "
                     f"fuer Reference={year}-{month:02d}"
                 )
                 continue
-
-            release_date = datetime.strptime(
-                f"{match.group(1)} {match.group(2)} {match.group(3)}", "%d %B %Y"
-            ).date()
             if value is None or not 0.0 <= value <= 100.0:
                 print(f"WARNUNG: FXBlue ISM services {key} ungueltiger Actual-Wert")
                 continue
@@ -1806,8 +1842,8 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
 
     if len(set(release_dates.values())) != 1:
         print(
-            f"WARNUNG: FXBlue ISM services unterschiedliche Release-Dates; "
-            f"Secondary-Datensatz verworfen."
+            "WARNUNG: FXBlue ISM services unterschiedliche Release-Dates; "
+            "Secondary-Datensatz verworfen."
         )
         return None
 
