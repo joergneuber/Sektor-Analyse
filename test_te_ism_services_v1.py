@@ -13,7 +13,7 @@ from pathlib import Path
 import importlib.util
 import sys
 
-TARGET_FILE = Path("makro_szenario_v6_7.py")
+TARGET_FILE = Path("makro_szenario_.py")
 
 EXPECTED = {
     "pmi": 54.10,
