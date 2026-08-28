@@ -1,0 +1,26 @@
+name: TE ISM PMI Raw Structure Diagnostic v4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pmi-raw-diagnostic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Verify diagnostic
+        run: |
+          test -f te_ism_pmi_raw_structure_diagnostic_v4.py
+          python -m py_compile te_ism_pmi_raw_structure_diagnostic_v4.py
+
+      - name: Run raw structure diagnostic
+        run: |
+          python te_ism_pmi_raw_structure_diagnostic_v4.py
