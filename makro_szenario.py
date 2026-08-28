@@ -1221,119 +1221,127 @@ def _ism_official_get(url):
 
 
 
-def _ism_public_secondary_forexfactory(year, month, kind):
+def _extract_te_release_date(text):
+    """Extrahiert ein explizites Veröffentlichungsdatum aus einer TE-Seite.
+    Gibt YYYY-MM-DD zurück; Reference-Monat bleibt die Datenmonatsprüfung.
     """
-    Kostenloser öffentlicher Sekundär-Fallback für ISM Manufacturing und
-    ISM Services.
-
-    HARTE DATENREGELN:
-    - Ausschließlich ACTUAL.
-    - Forecast wird niemals verwendet.
-    - Previous wird niemals verwendet.
-    - Keine Berechnung, Interpolation oder Schätzung.
-    - Nur das exakt passende USD-ISM-Event wird akzeptiert.
-    - Der Release-Monat muss zum Berichtsmonat passen.
-    """
-    if month < 1 or month > 12:
-        return None
-
-    if kind not in {"manufacturing", "services"}:
-        return None
-
-    event_name = (
-        "ISM Manufacturing PMI"
-        if kind == "manufacturing"
-        else "ISM Services PMI"
+    from datetime import datetime
+    patterns = (
+        r"(?i)\b(?:released?|release date|published|publication date)\b\s*[:\-]?\s*"
+        r"(\d{1,2}[./-]\d{1,2}[./-]\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4})",
+        r"(?i)\b(\d{4}-\d{2}-\d{2})\b",
     )
-
-    release_year = year + 1 if month == 12 else year
-    release_month = 1 if month == 12 else month + 1
-
-    max_day = min(
-        12,
-        calendar.monthrange(release_year, release_month)[1]
-    )
-
-    for day in range(1, max_day + 1):
-        url = (
-            f"https://www.forexfactory.com/calendar?day="
-            f"{calendar.month_abbr[release_month].lower()}{day}.{release_year}"
-        )
-
-        try:
-            r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
-            r.raise_for_status()
-
+    for pat in patterns:
+        m = re.search(pat, text)
+        if not m:
+            continue
+        raw = m.group(1)
+        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%B %d, %Y"):
             try:
-                from lxml import html as lxml_html
-                tree = lxml_html.fromstring(r.content)
-                rows = tree.xpath("//tr")
-            except Exception:
-                rows = []
+                return datetime.strptime(raw, fmt).date().isoformat()
+            except ValueError:
+                pass
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return raw
+    return None
 
-            for row in rows:
-                row_text = " ".join(
-                    t.strip() for t in row.xpath(".//text()") if t.strip()
-                )
-                normalized = re.sub(r"\s+", " ", row_text).strip()
+def _ism_public_secondary_tradingeconomics(year, month, kind):
+    """Oeffentliche Sekundaerquelle fuer die sechs ISM-Tier-1-Unterpunkte.
 
-                if "USD" not in normalized:
+    Trading Economics fuehrt die einzelnen ISM-Serien mit der Quelle
+    "Institute for Supply Management". Es werden ausschliesslich die
+    veroeffentlichten "Last"-Werte des exakt passenden Berichtsmonats aus
+    der Related-Tabelle akzeptiert. Forecast und Previous werden niemals
+    verwendet. Fehlt eine der sechs Komponenten, gilt der komplette
+    Sekundaerabruf als ungueltig.
+    """
+    if month < 1 or month > 12 or kind not in {"manufacturing", "services"}:
+        return None
+
+    if kind == "manufacturing":
+        url = "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders"
+        prefix = "ISM Manufacturing"
+    else:
+        url = "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders"
+        prefix = "ISM Services"
+
+    labels = {
+        "pmi": f"{prefix} PMI",
+        "new_orders": f"{prefix} New Orders",
+        "employment": f"{prefix} Employment",
+        "prices": f"{prefix} Prices",
+    }
+    expected_ref = f"{calendar.month_abbr[month]} {year}"
+
+    try:
+        r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        release_date = _extract_te_release_date(r.text)
+        tables = pd.read_html(StringIO(r.text))
+    except Exception as exc:
+        print(
+            f"WARNUNG: TradingEconomics ISM-Fallback fuer {kind} "
+            f"report_month={year}-{month:02d} nicht verfuegbar: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return None
+
+    found = {}
+    for table in tables:
+        df = table.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [
+                " ".join(str(x).strip() for x in col if str(x).strip().lower() not in {"nan", "none", ""}).strip()
+                for col in df.columns
+            ]
+        cols = [str(c).strip() for c in df.columns]
+        lower_cols = [c.casefold() for c in cols]
+        if "last" not in lower_cols or "reference" not in lower_cols:
+            continue
+        last_idx = lower_cols.index("last")
+        ref_idx = lower_cols.index("reference")
+        for _, row in df.iterrows():
+            cells = [str(v).strip() for v in row.tolist()]
+            if not cells:
+                continue
+            row_label = re.sub(r"\s+", " ", cells[0]).strip()
+            for key, wanted in labels.items():
+                if row_label.casefold() != wanted.casefold():
                     continue
-                if event_name not in normalized:
+                if len(cells) <= max(last_idx, ref_idx):
                     continue
-
-                tail = normalized.split(event_name, 1)[1]
-                nums = re.findall(r"(?<![\d.])\d+(?:\.\d+)?", tail)
-                if not nums:
+                ref = cells[ref_idx]
+                if ref.casefold() != expected_ref.casefold():
                     continue
+                value = _clean_num(cells[last_idx].replace(",", ""))
+                if value is not None:
+                    found[key] = value
 
-                actual = _clean_num(nums[0])
-                if actual is None:
-                    continue
-
-                release_date = dt.date(release_year, release_month, day)
-
-                expected_release_year = year + 1 if month == 12 else year
-                expected_release_month = 1 if month == 12 else month + 1
-                if (release_date.year != expected_release_year or
-                        release_date.month != expected_release_month):
-                    print(
-                        f"WARNUNG: {event_name}-Fallback verworfen: "
-                        f"report_month={year}-{month:02d} | "
-                        f"release_date={release_date.isoformat()}"
-                    )
-                    continue
-
-                print(
-                    f"INFO: ForexFactory ISM-Event gefunden: "
-                    f"kind={kind} report_month={year}-{month:02d} "
-                    f"release_date={release_date.isoformat()} actual={actual}"
-                )
-
-                return {
-                    "pmi": actual,
-                    "url": url,
-                    "year": year,
-                    "month": month,
-                    "status": "REAL_PUBLIC_SECONDARY",
-                    "new_orders": None,
-                    "employment": None,
-                    "prices": None,
-                    "release_date": release_date.isoformat(),
-                }
-
-        except Exception as exc:
-            print(
-                f"WARNUNG: ForexFactory ISM-Fallback fuer {kind} "
-                f"release_date={release_year}-{release_month:02d}-{day:02d} "
-                f"nicht verfuegbar: {type(exc).__name__}: {exc}"
-            )
+    if len(found) != 4:
+        missing = [k for k in labels if k not in found]
+        print(
+            f"WARNUNG: TradingEconomics ISM {kind} unvollstaendig fuer "
+            f"{year}-{month:02d}; fehlend={','.join(missing)}"
+        )
+        return None
 
     print(
-        f"WARNUNG: Kein passender USD {event_name} Release gefunden "
-        f"fuer report_month={year}-{month:02d}"
+        f"INFO: TradingEconomics ISM {kind.title()} vollstaendig: "
+        f"report_month={year}-{month:02d} "
+        f"PMI={found['pmi']} NewOrders={found['new_orders']} "
+        f"Employment={found['employment']} Prices={found['prices']}"
     )
-    return None
+    return {
+        "pmi": found["pmi"],
+        "url": url,
+        "year": year,
+        "month": month,
+        "status": "REAL_PUBLIC_SECONDARY",
+        "new_orders": found["new_orders"],
+        "employment": found["employment"],
+        "prices": found["prices"],
+        "release_date": release_date,
+    }
 
 
 def _ism_extract_official(text, kind):
@@ -1465,29 +1473,10 @@ def _ism_fetch(kind, year, month):
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} {year}-{month:02d} official nicht verfuegbar: {exc}")
 
-    # Secondary: public calendar. Actual only; no forecast/previous.
-    secondary = _ism_public_secondary_forexfactory(year, month, kind)
+    # Secondary: Trading Economics. Nur reale, bereits veroeffentlichte
+    # "Last"-Werte des exakt passenden Berichtsmonats; niemals Forecast oder Previous.
+    secondary = _ism_public_secondary_tradingeconomics(year, month, kind)
     if secondary:
-        release_date = secondary.get("release_date")
-        if release_date:
-            try:
-                rd = dt.date.fromisoformat(release_date)
-            except Exception:
-                print(f"WARNUNG: ISM-Fallback verworfen: ungueltiges release_date={release_date}")
-                return None
-            expected_y = year + 1 if month == 12 else year
-            expected_m = 1 if month == 12 else month + 1
-            if rd.year != expected_y or rd.month != expected_m:
-                print(
-                    f"WARNUNG: ISM-Fallback verworfen: kind={kind} "
-                    f"report_month={year}-{month:02d}, release_date={release_date}"
-                )
-                return None
-        print(
-            f"INFO: ISM {kind.title()} Fallback erfolgreich: "
-            f"Actual={secondary['pmi']} | release_date={secondary.get('release_date')} | "
-            f"source={secondary['url']}"
-        )
         return secondary
     return None
 
