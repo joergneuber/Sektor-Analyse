@@ -1799,10 +1799,10 @@ def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
             return (value, raw) if value is not None else (None, raw)
 
         actual_patterns = (
-            r"\bActual(?:\s+(?:Value|Value/Outcome))?\b\s*[:=]\s*([^\s|;,<}]+)",
-            r"\bactualValue\b\s*[:=]\s*([^\s|;,<}]+)",
-            r"\bactual_value\b\s*[:=]\s*([^\s|;,<}]+)",
-            r"\boutcome\b\s*[:=]\s*([^\s|;,<}]+)",
+            r"\bActual(?:\s+(?:Value|Value/Outcome))?\b\s*[:=]\s*([^\s|;<}]+)",
+            r"\bactualValue\b\s*[:=]\s*([^\s|;<}]+)",
+            r"\bactual_value\b\s*[:=]\s*([^\s|;<}]+)",
+            r"\boutcome\b\s*[:=]\s*([^\s|;<}]+)",
         )
         for pattern in actual_patterns:
             matches = list(re.finditer(pattern, row, flags=re.I))
