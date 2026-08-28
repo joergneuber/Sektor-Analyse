@@ -1320,19 +1320,19 @@ def _extract_te_release_date(text):
     return None
 
 def _te_calendar_actual(html, expected_ref):
-    """Liest Actual-Wert und Release-Datum aus der TE-Kalendertabelle.
+    """Liest den echten Actual-Wert und das Release-Datum aus der TE-Kalenderzeile.
 
-    Trading Economics hat die Kalenderstruktur mehrfach variiert. Die robuste
-    Regel ist deshalb: finde eine Tabelle mit einer expliziten Actual-Spalte,
-    finde darin ein Release-Datum im Monat nach dem angeforderten Reference-
-    Monat und nimm ausschließlich den Actual-Wert derselben Zeile.
-    Forecast/Previous/Consensus werden niemals verwendet.
+    Primär wird die vorhandene Tabellenlogik verwendet. Falls Trading
+    Economics die Seite so ausliefert, dass pandas.read_html() die Tabelle
+    nicht erkennt, wird als robuster Fallback die sichtbare Kalenderzeile
+    direkt aus dem bereinigten Text gelesen.
+
+    Die Fallback-Regel ist strikt:
+    - exakter Reference-Monat
+    - Release im erwarteten Folgemonat
+    - erster numerischer Wert nach dem Reference-Token = Actual
+    - Previous/Consensus/TEForecast werden niemals als Quelle verwendet
     """
-    try:
-        tables = pd.read_html(StringIO(html))
-    except Exception:
-        return None, None
-
     try:
         month_abbr, year = expected_ref.split()
         month_num = next(
@@ -1348,7 +1348,8 @@ def _te_calendar_actual(html, expected_ref):
         raw = str(value).strip()
         for fmt in (
             "%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d/%m/%Y",
-            "%d-%m-%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y",
+            "%d-%m-%Y", "%B %d, %Y", "%b %d, %Y",
+            "%d %B %Y", "%d %b %Y",
         ):
             try:
                 return datetime.strptime(raw, fmt).date()
@@ -1357,16 +1358,26 @@ def _te_calendar_actual(html, expected_ref):
         parsed = pd.to_datetime(raw, errors="coerce", dayfirst=True)
         return parsed.date() if pd.notna(parsed) else None
 
+    # 1) Bestehende strukturierte Tabellenlogik.
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception:
+        tables = []
+
     for table in tables:
         df = table.copy()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [
-                " ".join(str(x).strip() for x in col
-                         if str(x).strip().lower() not in {"nan", "none", ""}).strip()
+                " ".join(
+                    str(x).strip()
+                    for x in col
+                    if str(x).strip().lower() not in {"nan", "none", ""}
+                ).strip()
                 for col in df.columns
             ]
         else:
             df.columns = [str(c).strip() for c in df.columns]
+
         cols = [str(c).casefold() for c in df.columns]
         if "actual" not in cols:
             continue
@@ -1382,10 +1393,59 @@ def _te_calendar_actual(html, expected_ref):
                     break
             if release_date is None or actual_idx >= len(cells):
                 continue
+
             value = _clean_num(cells[actual_idx].replace(",", ""))
             if value is None or not 0.0 <= value <= 100.0:
                 continue
             return value, release_date.isoformat()
+
+    # 2) Robuster Fallback für die sichtbare TE-Kalenderzeile.
+    #    Beispiel:
+    #    2026-08-05 ... Jul ... 57.2 ... 55.1 ... 57 ... 55.3
+    #    Nach "Jul" steht zuerst der Actual-Wert; danach folgen Previous,
+    #    Consensus und TEForecast. Wir lesen ausschließlich den ersten Wert.
+    clean = re.sub(
+        r"<script.*?</script>|<style.*?</style>",
+        " ",
+        html,
+        flags=re.I | re.S,
+    )
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+
+    date_row = re.compile(
+        r"(?P<date>\d{4}-\d{2}-\d{2})"
+        r"(?P<row>.{0,500}?)"
+        r"(?=\d{4}-\d{2}-\d{2}|\Z)",
+        flags=re.I | re.S,
+    )
+
+    reference_token = re.escape(month_abbr)
+    for match in date_row.finditer(clean):
+        release_date = parse_date(match.group("date"))
+        if release_date is None:
+            continue
+        if release_date.year != next_year or release_date.month != next_month:
+            continue
+
+        row = match.group("row")
+        ref_match = re.search(rf"\b{reference_token}\b", row, flags=re.I)
+        if not ref_match:
+            continue
+
+        after_reference = row[ref_match.end():]
+        number_match = re.search(
+            r"(?<![A-Za-z])(-?\d+(?:\.\d+)?)(?![A-Za-z])",
+            after_reference,
+        )
+        if not number_match:
+            continue
+
+        value = _clean_num(number_match.group(1))
+        if value is None or not 0.0 <= value <= 100.0:
+            continue
+
+        return value, release_date.isoformat()
 
     return None, None
 
