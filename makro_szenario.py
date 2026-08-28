@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v6"
+VERSION = "v6.1-final"
 """
 
 import datetime as dt
@@ -125,6 +125,7 @@ CACHE_VERSION = 5
 CACHE_WRITE_LOCK = Lock()
 LME_PRICE_CACHE = None
 LME_PRICE_CACHE_TIME = 0.0
+LME_REQUEST_ATTEMPTED = False
 
 # Maximale Zeit, die ein gespeicherter REAL-Wert als verwendbar gilt, wenn die
 # Quelle beim aktuellen Lauf nicht erreichbar ist. Die Gültigkeit richtet sich
@@ -757,15 +758,24 @@ def fred_snapshot(name, series_id):
 
 
 def _lme_official_prices():
-    """Offizielle LME-Preise mit persistentem Fallback auf den letzten
-    tatsächlich veröffentlichten offiziellen Wert. Fallback = DEGRADED,
-    niemals gate-kritisch; kein Fortschreiben/Schätzen."""
-    result={}
+    """LME Official Prices mit einem Abruf pro Prozess und sicherem Fallback.
+
+    Primaer: oeffentliche LME Official Prices (day-delayed).
+    Bei Ausfall: letzter tatsaechlich gespeicherter offizieller LME-Wert.
+    Der Fallback ist immer DEGRADED und niemals gate-kritisch.
+    """
+    global LME_PRICE_CACHE, LME_PRICE_CACHE_TIME, LME_REQUEST_ATTEMPTED
+
+    # Ein Lauf darf die LME-Seite nur einmal anfragen. Alle vier Metalle
+    # verwenden danach exakt denselben Snapshot.
+    if LME_REQUEST_ATTEMPTED:
+        return LME_PRICE_CACHE or {}
+    LME_REQUEST_ATTEMPTED = True
 
     def cache_get():
         try:
-            entry=_cache_load().get("lme",{})
-            return entry if isinstance(entry,dict) else {}
+            entry = _cache_load().get("lme", {})
+            return entry if isinstance(entry, dict) else {}
         except Exception:
             return {}
 
@@ -773,62 +783,105 @@ def _lme_official_prices():
         if not data:
             return
         with CACHE_WRITE_LOCK:
-            cache=_cache_load()
-            cache["lme"]={"saved_at":time.time(),"data":data}
+            cache = _cache_load()
+            cache["lme"] = {"saved_at": time.time(), "data": data}
             _cache_save(cache)
 
     try:
-        response=requests.get(
-            LME_OFFICIAL_PRICES_URL,timeout=20,
-            headers={"User-Agent":"Mozilla/5.0"}
+        response = requests.get(
+            LME_OFFICIAL_PRICES_URL,
+            timeout=20,
+            headers={
+                **REQUEST_HEADERS,
+                "Accept": "text/html,application/xhtml+xml",
+            },
         )
         response.raise_for_status()
-        html=response.text
+        html = response.text
     except Exception as exc:
         print(f"WARNUNG: LME-Abruf fehlgeschlagen: {exc}")
-        cached=cache_get().get("data",{})
-        for metal,data in cached.items():
-            if isinstance(data,dict):
-                d=dict(data); d["fallback"]=True; d["status"]="DEGRADED"
-                result[metal]=d
+        cached = cache_get().get("data", {})
+        result = {}
+        for metal, data in cached.items():
+            if not isinstance(data, dict):
+                continue
+            # Nur echte, bereits veröffentlichte LME-Werte dürfen als Fallback
+            # dienen. Das ursprüngliche LME-Datum bleibt unverändert.
+            bid = _clean_num(data.get("cash_bid"))
+            ask = _clean_num(data.get("cash_ask"))
+            if bid is None or ask is None or bid <= 0 or ask <= 0:
+                continue
+            d = dict(data)
+            d["cash_bid"] = bid
+            d["cash_ask"] = ask
+            d["fallback"] = True
+            d["status"] = "DEGRADED"
+            result[metal] = d
         if result:
-            print("INFO: LME-Cache-Fallback verwendet; letzter offizieller LME-Datenstand bleibt unverändert.")
+            print(
+                "INFO: LME-Cache-Fallback verwendet; letzter offizieller "
+                "LME-Datenstand bleibt unveraendert."
+            )
+        LME_PRICE_CACHE = result
+        LME_PRICE_CACHE_TIME = time.time()
         return result
 
     try:
-        tables=pd.read_html(StringIO(html))
+        tables = pd.read_html(StringIO(html))
     except Exception as exc:
         print(f"WARNUNG: LME-Tabelle konnte nicht gelesen werden: {exc}")
-        tables=[]
+        tables = []
 
-    page_date=None
-    date_matches=re.findall(
+    page_date = None
+    date_matches = re.findall(
         r"(?i)(?:data\s+valid\s+for|date|dated|pricing date|trade date)\s*[:\-]?"
         r"(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2})",
-        html)
+        html,
+    )
     for raw_date in date_matches:
-        parsed_date=pd.to_datetime(raw_date,errors="coerce",dayfirst=True)
+        parsed_date = pd.to_datetime(raw_date, errors="coerce", dayfirst=True)
         if pd.notna(parsed_date):
-            page_date=parsed_date.strftime("%Y-%m-%d"); break
+            page_date = parsed_date.strftime("%Y-%m-%d")
+            break
 
-    for _,lme_name in LME_METALS.items():
+    result = {}
+    for _, lme_name in LME_METALS.items():
         for table in tables:
-            found=_lme_find_cash_bid_offer(table,lme_name)
+            found = _lme_find_cash_bid_offer(table, lme_name)
             if found is not None:
-                found["date"]=page_date; found["fallback"]=False; found["status"]="REAL"
-                result[lme_name]=found; break
+                found["date"] = page_date
+                found["fallback"] = False
+                found["status"] = "REAL"
+                result[lme_name] = found
+                break
 
     if result:
         cache_put(result)
     else:
-        cached=cache_get().get("data",{})
-        for metal,data in cached.items():
-            if isinstance(data,dict):
-                d=dict(data); d["fallback"]=True; d["status"]="DEGRADED"
-                result[metal]=d
+        cached = cache_get().get("data", {})
+        for metal, data in cached.items():
+            if not isinstance(data, dict):
+                continue
+            bid = _clean_num(data.get("cash_bid"))
+            ask = _clean_num(data.get("cash_ask"))
+            if bid is None or ask is None or bid <= 0 or ask <= 0:
+                continue
+            d = dict(data)
+            d["cash_bid"] = bid
+            d["cash_ask"] = ask
+            d["fallback"] = True
+            d["status"] = "DEGRADED"
+            result[metal] = d
         if result:
-            print("INFO: LME-Seite erreichbar, aber keine verwertbare Tabelle; LME-Cache-Fallback verwendet.")
+            print(
+                "INFO: LME-Seite erreichbar, aber keine verwertbare Tabelle; "
+                "LME-Cache-Fallback verwendet."
+            )
+
+    LME_PRICE_CACHE = result
+    LME_PRICE_CACHE_TIME = time.time()
     return result
+
 
 def _lme_find_cash_bid_offer(table, metal):
     """Liest ausschliesslich eindeutig benannte LME-Cash-Bid/Cash-Offer-Spalten.
@@ -900,9 +953,10 @@ def lme_snapshot(name, ticker):
     if not data:
         return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | DATENTYP=REAL_LME | SOURCE={LME_OFFICIAL_PRICES_URL}"
     value = (data["cash_bid"] + data["cash_ask"]) / 2.0
+    status = data.get("status", "REAL")
     return (
-        f"{name}: {_fmt(value,2)} USD/t | Datenstand={data.get('date')} | "
-        f"STATUS=REAL | DATENTYP=REAL_LME | SOURCE={LME_OFFICIAL_PRICES_URL} | "
+        f"{name}: {_fmt(value,2)} USD/t | Datenstand={data.get('date') or 'unbekannt'} | "
+        f"STATUS={status} | DATENTYP=REAL_LME | SOURCE={LME_OFFICIAL_PRICES_URL} | "
         f"CASH_BID={data['cash_bid']:.2f} | CASH_ASK={data['cash_ask']:.2f}"
     )
 
@@ -1708,7 +1762,80 @@ def _ism_extract_official(text, kind):
                 data[key]=num(m.group(1)); break
     return data
 
+
+def _ism_cache_entry_valid(entry, kind, year, month):
+    """Accept cache only when reference month and all four Tier-1 values match."""
+    if not isinstance(entry, dict):
+        return False
+    ref = str(entry.get("reference", entry.get("period", ""))).strip()
+    expected = f"{year}-{month:02d}"
+    if ref not in {expected, f"{year}-{month}"}:
+        # Legacy cache format may store year/month separately.
+        try:
+            if int(entry.get("year")) != int(year) or int(entry.get("month")) != int(month):
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    for key in ("pmi", "new_orders", "employment", "prices"):
+        value = entry.get(key)
+        try:
+            value=float(value)
+        except (TypeError, ValueError):
+            return False
+        if not (0.0 <= value <= 100.0):
+            return False
+    return True
+
+
+def _ism_cache_get_valid(kind, year, month):
+    try:
+        cache=_cache_load()
+    except Exception:
+        return None
+    root=cache.get("ism", cache.get("ISM", {})) if isinstance(cache,dict) else {}
+    candidates=[]
+    if isinstance(root,dict):
+        candidates += [
+            root.get(kind),
+            root.get(f"{kind}_{year}_{month:02d}"),
+            root.get(f"{kind}_{year}_{month}"),
+            root.get(f"{kind}_{year}_{month:d}"),
+        ]
+        # Some legacy/current cache files use keys like
+        # "manufacturing" / "services" whose payload carries year/month.
+    # Also support the project's known list-style cache entries.
+    entries=cache.get("ism_entries", []) if isinstance(cache,dict) else []
+    if isinstance(entries,list):
+        candidates += [e for e in entries if isinstance(e,dict) and e.get("kind")==kind]
+    for entry in candidates:
+        # ISM cache entries are stored as a wrapper:
+        # {"saved_at": ..., "data": {...}, "status": ..., "source": ...}
+        # Validate the actual data payload, not the wrapper.
+        payload = entry.get("data") if isinstance(entry, dict) and isinstance(entry.get("data"), dict) else entry
+        if _ism_cache_entry_valid(payload,kind,year,month):
+            result = dict(payload)
+            if isinstance(entry, dict):
+                result.setdefault("status", entry.get("status", "REAL_CACHED"))
+                result.setdefault("source", entry.get("source", "ISM_SECONDARY_CACHE"))
+            return result
+    return None
 def _ism_fetch(kind, year, month):
+    # A complete, month-matching cache entry is a valid resilience path.
+    # It is explicitly validated; it is never accepted merely because it exists.
+    cached = _ism_cache_get_valid(kind, year, month)
+    if cached is not None:
+        print(
+            f"INFO: ISM-Secondary-Cache validiert und uebernommen fuer {kind}: "
+            f"reference={year}-{month:02d} (PMI + 3 Unterpunkte vorhanden)."
+        )
+        result = dict(cached)
+        result["year"] = year
+        result["month"] = month
+        result["status"] = result.get("status", "REAL_CACHED")
+        result["source"] = result.get("source", "ISM_SECONDARY_CACHE")
+        return result
+
     month_name = calendar.month_name[month].lower()
 
     # Primary: official ISM release.
