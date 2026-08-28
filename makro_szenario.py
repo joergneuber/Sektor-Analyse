@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v5.9.1"
+VERSION = "v5.9.5"
 """
 
 import datetime as dt
@@ -1245,95 +1245,223 @@ def _extract_te_release_date(text):
             return raw
     return None
 
-def _ism_public_secondary_tradingeconomics(year, month, kind):
-    """Oeffentliche Sekundaerquelle fuer die sechs ISM-Tier-1-Unterpunkte.
+def _te_calendar_actual(html, expected_ref):
+    """Liest Actual-Wert und Release-Datum aus der TE-Kalendertabelle."""
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception:
+        return None, None
 
-    Trading Economics fuehrt die einzelnen ISM-Serien mit der Quelle
-    "Institute for Supply Management". Es werden ausschliesslich die
-    veroeffentlichten "Last"-Werte des exakt passenden Berichtsmonats aus
-    der Related-Tabelle akzeptiert. Forecast und Previous werden niemals
-    verwendet. Fehlt eine der sechs Komponenten, gilt der komplette
-    Sekundaerabruf als ungueltig.
+    month_abbr, year = expected_ref.split()
+    month_abbr = month_abbr.casefold()
+    month_num = next(
+        i for i in range(1, 13)
+        if calendar.month_abbr[i].casefold() == month_abbr
+    )
+    month_full = calendar.month_name[month_num].casefold()
+
+    for table in tables:
+        df = table.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [
+                " ".join(str(x).strip() for x in col
+                         if str(x).strip().lower() not in {"nan", "none", ""}).strip()
+                for col in df.columns
+            ]
+        cols = [str(c).strip().casefold() for c in df.columns]
+        if "actual" not in cols:
+            continue
+        actual_idx = cols.index("actual")
+
+        for _, row in df.iterrows():
+            cells = [str(v).strip() for v in row.tolist()]
+            ref_idx = next(
+                (i for i, cell in enumerate(cells)
+                 if cell.casefold() in {month_abbr, month_full, expected_ref.casefold()}),
+                None,
+            )
+            if ref_idx is None:
+                continue
+
+            release_date = None
+            for cell in cells[:max(ref_idx + 1, 2)]:
+                m = re.fullmatch(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", cell)
+                if m:
+                    release_date = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    break
+
+            value = None
+            if actual_idx < len(cells):
+                value = _clean_num(cells[actual_idx].replace(",", ""))
+            if value is None:
+                for cell in cells[ref_idx + 1:]:
+                    candidate = _clean_num(cell.replace(",", ""))
+                    if candidate is not None:
+                        value = candidate
+                        break
+
+            if value is not None:
+                return value, release_date
+
+    return None, None
+
+
+def _te_text_actual(html, expected_ref, series_label):
+    """Fallback bei geänderter TE-Tabellenstruktur; nur expliziter Istwert."""
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    month_abbr, year = expected_ref.split()
+    month_num = next(
+        i for i in range(1, 13)
+        if calendar.month_abbr[i].casefold() == month_abbr.casefold()
+    )
+    month_name = calendar.month_name[month_num]
+
+    pattern = (
+        rf"{re.escape(series_label)}.*?"
+        rf"(?:increased|decreased|rose|fell|edged up|edged down|"
+        rf"climbed|dropped|advanced|declined|remained|was unchanged)"
+        rf"\s+to\s+(\d+(?:\.\d+)?)"
+        rf"(?:\s+points?)?"
+        rf"\s+in\s+{re.escape(month_name)}\s+{re.escape(year)}"
+    )
+    m = re.search(pattern, text, flags=re.I)
+    return _clean_num(m.group(1)) if m else None
+
+
+
+def _te_release_month_matches_reference(release_date, year, month):
+    """Prueft hart, ob das Release-Date im erwarteten Folgemonat liegt.
+
+    ISM-Werte werden typischerweise im Folgemonat veroeffentlicht. Ein
+    unbekanntes Release-Date wird NICHT als bestaetigt behandelt.
+    """
+    if not release_date:
+        return False
+    try:
+        rd = datetime.strptime(release_date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+
+    expected_month = month + 1
+    expected_year = year
+    if expected_month == 13:
+        expected_month = 1
+        expected_year += 1
+
+    return rd.year == expected_year and rd.month == expected_month
+
+
+def _ism_public_secondary_tradingeconomics(year, month, kind):
+    """Robuster oeffentlicher ISM-Secondary-Fallback.
+
+    Vier eigenstaendige TE-Indikatorseiten werden abgefragt. Akzeptiert wird
+    nur der Actual-Wert des exakt passenden Reference-Monats. Forecast,
+    Consensus und Previous werden niemals als Istwert verwendet.
     """
     if month < 1 or month > 12 or kind not in {"manufacturing", "services"}:
         return None
 
     if kind == "manufacturing":
-        url = "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders"
-        prefix = "ISM Manufacturing"
+        urls = {
+            "pmi": "https://tradingeconomics.com/united-states/manufacturing-pmi",
+            "new_orders": "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders",
+            "employment": "https://tradingeconomics.com/united-states/ism-manufacturing-employment",
+            "prices": "https://tradingeconomics.com/united-states/ism-manufacturing-prices",
+        }
+        labels = {
+            "pmi": "Manufacturing PMI",
+            "new_orders": "ISM Manufacturing New Orders",
+            "employment": "ISM Manufacturing Employment",
+            "prices": "ISM Manufacturing Prices",
+        }
     else:
-        url = "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders"
-        prefix = "ISM Services"
+        urls = {
+            "pmi": "https://tradingeconomics.com/united-states/non-manufacturing-pmi",
+            "new_orders": "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders",
+            "employment": "https://tradingeconomics.com/united-states/ism-non-manufacturing-employment",
+            "prices": "https://tradingeconomics.com/united-states/ism-non-manufacturing-prices",
+        }
+        labels = {
+            "pmi": "ISM Services PMI",
+            "new_orders": "ISM Services New Orders",
+            "employment": "ISM Services Employment",
+            "prices": "ISM Services Prices",
+        }
 
-    labels = {
-        "pmi": f"{prefix} PMI",
-        "new_orders": f"{prefix} New Orders",
-        "employment": f"{prefix} Employment",
-        "prices": f"{prefix} Prices",
-    }
     expected_ref = f"{calendar.month_abbr[month]} {year}"
-
-    try:
-        r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
-        r.raise_for_status()
-        release_date = _extract_te_release_date(r.text)
-        tables = pd.read_html(StringIO(r.text))
-    except Exception as exc:
-        print(
-            f"WARNUNG: TradingEconomics ISM-Fallback fuer {kind} "
-            f"report_month={year}-{month:02d} nicht verfuegbar: "
-            f"{type(exc).__name__}: {exc}"
-        )
-        return None
-
     found = {}
-    for table in tables:
-        df = table.copy()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [
-                " ".join(str(x).strip() for x in col if str(x).strip().lower() not in {"nan", "none", ""}).strip()
-                for col in df.columns
-            ]
-        cols = [str(c).strip() for c in df.columns]
-        lower_cols = [c.casefold() for c in cols]
-        if "last" not in lower_cols or "reference" not in lower_cols:
-            continue
-        last_idx = lower_cols.index("last")
-        ref_idx = lower_cols.index("reference")
-        for _, row in df.iterrows():
-            cells = [str(v).strip() for v in row.tolist()]
-            if not cells:
-                continue
-            row_label = re.sub(r"\s+", " ", cells[0]).strip()
-            for key, wanted in labels.items():
-                if row_label.casefold() != wanted.casefold():
-                    continue
-                if len(cells) <= max(last_idx, ref_idx):
-                    continue
-                ref = cells[ref_idx]
-                if ref.casefold() != expected_ref.casefold():
-                    continue
-                value = _clean_num(cells[last_idx].replace(",", ""))
-                if value is not None:
-                    found[key] = value
+    release_dates = {}
 
-    if len(found) != 4:
-        missing = [k for k in labels if k not in found]
+    for key, url in urls.items():
+        try:
+            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            value, release_date = _te_calendar_actual(r.text, expected_ref)
+            if value is None:
+                value = _te_text_actual(r.text, expected_ref, labels[key])
+            if value is None:
+                print(
+                    f"WARNUNG: TradingEconomics ISM {kind} {key} ohne "
+                    f"Actual-Wert fuer Reference={expected_ref}"
+                )
+                continue
+            found[key] = value
+            if release_date:
+                release_dates[key] = release_date
+        except Exception as exc:
+            print(
+                f"WARNUNG: TradingEconomics ISM {kind} {key} nicht verfuegbar: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    required = ("pmi", "new_orders", "employment", "prices")
+    missing = [key for key in required if key not in found]
+    if missing:
         print(
             f"WARNUNG: TradingEconomics ISM {kind} unvollstaendig fuer "
             f"{year}-{month:02d}; fehlend={','.join(missing)}"
         )
         return None
 
+    # Sicherheitsregel: Ein Secondary-Datensatz darf nur freigegeben
+    # werden, wenn JEDE der vier Serien ein explizites Release-Date liefert
+    # und jedes Release-Date im erwarteten Folgemonat des Reference-Monats liegt.
+    invalid_release_dates = [
+        key for key in required
+        if key not in release_dates
+        or not _te_release_month_matches_reference(release_dates[key], year, month)
+    ]
+    if invalid_release_dates:
+        print(
+            f"WARNUNG: TradingEconomics ISM {kind} Release-Date-Pruefung "
+            f"fehlgeschlagen fuer Reference={expected_ref}; "
+            f"ungueltig/fehlend={','.join(invalid_release_dates)}"
+        )
+        return None
+
+    if len(set(release_dates.values())) != 1:
+        print(
+            f"WARNUNG: TradingEconomics ISM {kind} hat unterschiedliche "
+            f"Release-Dates fuer Reference={expected_ref}; kein Secondary-Gate."
+        )
+        return None
+
+    release_date = next(iter(release_dates.values()))
+
     print(
         f"INFO: TradingEconomics ISM {kind.title()} vollstaendig: "
         f"report_month={year}-{month:02d} "
         f"PMI={found['pmi']} NewOrders={found['new_orders']} "
-        f"Employment={found['employment']} Prices={found['prices']}"
+        f"Employment={found['employment']} Prices={found['prices']} "
+        f"release_date={release_date}"
     )
+
     return {
         "pmi": found["pmi"],
-        "url": url,
+        "url": " | ".join(urls.values()),
         "year": year,
         "month": month,
         "status": "REAL_PUBLIC_SECONDARY",
@@ -1342,6 +1470,7 @@ def _ism_public_secondary_tradingeconomics(year, month, kind):
         "prices": found["prices"],
         "release_date": release_date,
     }
+
 
 
 def _ism_extract_official(text, kind):
