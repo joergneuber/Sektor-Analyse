@@ -1,6 +1,7 @@
-import ast
+
 import importlib.util
 import re
+from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -48,7 +49,7 @@ def main():
 
     # The production fix must read the three subindices from
     # Components -> Last -> Reference. Never use Previous/Forecast.
-    tables = pd.read_html(html)
+    tables = pd.read_html(StringIO(html))
     component_table = None
     for i, table in enumerate(tables):
         cols = [str(c).strip().casefold() for c in table.columns]
