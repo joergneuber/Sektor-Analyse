@@ -1,4 +1,4 @@
-name: FXBlue ISM Services Diagnose
+name: FXBlue ISM Services Real Diagnose
 
 on:
   workflow_dispatch:
@@ -21,114 +21,351 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml pandas
 
-      - name: Prüfe Testdatei
-        run: |
-          test -f makro_szenario_v6_9_fxblue_attr_fix.py
-          python -m py_compile makro_szenario_v6_9_fxblue_attr_fix.py
-
-      - name: FXBlue Services Diagnose
+      - name: FXBlue vier Services Endpunkte diagnostizieren
         run: |
           python - <<'PY'
+          import re
           import requests
           from bs4 import BeautifulSoup
 
-          url = "https://www.fxblue.com/market-data/economic-calendar"
+          URLS = {
+              "pmi":
+                  "https://publisher2.fxblue.com/calendar/item/"
+                  "ISM_Services_PMI_US",
 
-          headers = {
+              "new_orders":
+                  "https://publisher2.fxblue.com/calendar/item/"
+                  "ISM_Services_New_Orders_Index_US",
+
+              "employment":
+                  "https://publisher2.fxblue.com/calendar/item/"
+                  "ISM_Services_Employment_Index_US",
+
+              "prices":
+                  "https://publisher2.fxblue.com/calendar/item/"
+                  "ISM_Services_Prices_Paid_US",
+          }
+
+          HEADERS = {
               "User-Agent": (
                   "Mozilla/5.0 (X11; Linux x86_64) "
                   "AppleWebKit/537.36 "
                   "(KHTML, like Gecko) "
                   "Chrome/131.0.0.0 Safari/537.36"
               ),
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept": (
+                  "text/html,application/xhtml+xml,"
+                  "application/xml;q=0.9,*/*;q=0.8"
+              ),
               "Accept-Language": "en-US,en;q=0.9",
+              "Referer": "https://publisher2.fxblue.com/",
           }
 
-          print("=== FXBLUE REAL-WORLD DIAGNOSE ===")
-          print(f"URL={url}")
+          session = requests.Session()
+          session.headers.update(HEADERS)
 
-          try:
-              r = requests.get(url, headers=headers, timeout=20)
+          TARGET = "2026-07"
 
-              print(f"HTTP_STATUS={r.status_code}")
-              print(f"FINAL_URL={r.url}")
-              print(f"CONTENT_LENGTH={len(r.text)}")
+          def clean(value):
+              if value is None:
+                  return None
 
-              if r.status_code != 200:
-                  raise SystemExit(
-                      f"FXBLUE HTTP FEHLER: {r.status_code}"
+              if isinstance(value, (dict, list)):
+                  value = str(value)
+
+              s = str(value).strip()
+
+              if not s:
+                  return None
+
+              if s.lower() in {
+                  "n/a", "na", "null", "none",
+                  "-", "--", "—", "–"
+              }:
+                  return None
+
+              # Strikt: nur eine echte Zahl.
+              # Keine Zahlen aus beliebigem Begleittext ziehen.
+              m = re.fullmatch(
+                  r"[-+]?\s*\d+(?:[.,]\d+)?%?",
+                  s
+              )
+
+              if not m:
+                  return None
+
+              s = s.replace(" ", "").replace("%", "")
+              s = s.replace(",", ".")
+
+              try:
+                  return float(s)
+              except ValueError:
+                  return None
+
+          print("=" * 80)
+          print("FXBLUE REAL-WORLD ISM SERVICES DIAGNOSE")
+          print(f"TARGET_REFERENCE={TARGET}")
+          print("=" * 80)
+
+          failures = 0
+
+          for kind, url in URLS.items():
+
+              print()
+              print("=" * 80)
+              print(f"KIND={kind}")
+              print(f"URL={url}")
+              print("=" * 80)
+
+              try:
+                  response = session.get(
+                      url,
+                      timeout=30,
+                      allow_redirects=True
                   )
 
-              html = r.text
-              soup = BeautifulSoup(html, "html.parser")
+                  print(f"HTTP_STATUS={response.status_code}")
+                  print(f"FINAL_URL={response.url}")
+                  print(f"CONTENT_LENGTH={len(response.text)}")
+                  print(
+                      f"CONTENT_TYPE="
+                      f"{response.headers.get('content-type', '')}"
+                  )
 
-              text = soup.get_text(" ", strip=True)
-
-              print()
-              print("=== EVENT-SUCHE ===")
-
-              keywords = [
-                  "ISM",
-                  "Non-Manufacturing",
-                  "Services",
-                  "New Orders",
-                  "Employment",
-                  "Prices",
-              ]
-
-              lines = []
-
-              for element in soup.find_all(["tr", "div", "li", "td"]):
-                  value = element.get_text(" ", strip=True)
-
-                  if not value:
+                  if response.status_code != 200:
+                      print("RESULT=HTTP_ERROR")
+                      failures += 1
                       continue
 
-                  low = value.lower()
+                  html = response.text
+                  soup = BeautifulSoup(html, "html.parser")
 
-                  if any(k.lower() in low for k in keywords):
-                      lines.append(value)
+                  title = soup.title.get_text(
+                      " ",
+                      strip=True
+                  ) if soup.title else ""
 
-              seen = set()
+                  print(f"PAGE_TITLE={title}")
 
-              for line in lines:
-                  if line not in seen:
-                      seen.add(line)
-                      print("CANDIDATE:", line[:1000])
+                  print()
+                  print("--- TEXT HITS ---")
 
-              print()
-              print(f"CANDIDATES={len(seen)}")
+                  page_text = soup.get_text(
+                      " ",
+                      strip=True
+                  )
 
-              print()
-              print("=== ATTRIBUTE-DIAGNOSE ===")
+                  patterns = [
+                      "ISM",
+                      "Services",
+                      "Non-Manufacturing",
+                      "New Orders",
+                      "Employment",
+                      "Prices",
+                      "Actual",
+                      "Forecast",
+                      "Previous",
+                      "2026",
+                      "Jul",
+                      "July",
+                  ]
 
-              for element in soup.find_all(True):
-                  attrs = element.attrs
+                  hit_count = 0
 
-                  interesting = {
-                      k: v
-                      for k, v in attrs.items()
-                      if "actual" in k.lower()
-                      or "value" in k.lower()
-                      or "forecast" in k.lower()
-                      or "previous" in k.lower()
-                  }
+                  for pattern in patterns:
+                      count = page_text.lower().count(
+                          pattern.lower()
+                      )
+                      if count:
+                          print(
+                              f"TEXT_PATTERN={pattern} "
+                              f"COUNT={count}"
+                          )
+                          hit_count += count
 
-                  if interesting:
-                      print(
-                          "TAG=",
-                          element.name,
-                          "ATTRS=",
-                          interesting,
-                          "TEXT=",
-                          element.get_text(" ", strip=True)[:300],
+                  print(f"TEXT_HIT_TOTAL={hit_count}")
+
+                  print()
+                  print("--- TABLES ---")
+
+                  try:
+                      import pandas as pd
+
+                      tables = pd.read_html(
+                          response.text
                       )
 
-              print()
-              print("=== END DIAGNOSE ===")
+                      print(f"TABLE_COUNT={len(tables)}")
 
-          except Exception as e:
-              print(f"FXBLUE_DIAGNOSE_FEHLER={type(e).__name__}: {e}")
-              raise
+                      for index, table in enumerate(tables):
+                          print()
+                          print(
+                              f"TABLE_INDEX={index} "
+                              f"SHAPE={table.shape}"
+                          )
+                          print(table.to_string(
+                              index=False,
+                              max_rows=30
+                          ))
+
+                  except Exception as exc:
+                      print(
+                          "TABLE_PARSE_ERROR="
+                          f"{type(exc).__name__}: {exc}"
+                      )
+
+                  print()
+                  print("--- ACTUAL-RELATED HTML ---")
+
+                  actual_hits = 0
+
+                  for element in soup.find_all(True):
+
+                      attrs = {}
+
+                      for key, value in element.attrs.items():
+                          key_lower = str(key).lower()
+
+                          if (
+                              "actual" in key_lower
+                              or "forecast" in key_lower
+                              or "previous" in key_lower
+                              or key_lower == "value"
+                              or "value" in key_lower
+                          ):
+                              attrs[key] = value
+
+                      if attrs:
+                          text = element.get_text(
+                              " ",
+                              strip=True
+                          )
+
+                          print(
+                              f"TAG={element.name} "
+                              f"ATTRS={attrs} "
+                              f"TEXT={text[:500]}"
+                          )
+
+                          actual_hits += 1
+
+                  print(
+                      f"ACTUAL_ATTRIBUTE_HITS={actual_hits}"
+                  )
+
+                  print()
+                  print("--- POSSIBLE DATE / VALUE ROWS ---")
+
+                  rows = soup.find_all("tr")
+
+                  candidate_rows = 0
+
+                  for row in rows:
+
+                      text = row.get_text(
+                          " ",
+                          strip=True
+                      )
+
+                      low = text.lower()
+
+                      if any(
+                          x in low
+                          for x in [
+                              "ism",
+                              "services",
+                              "non-manufacturing",
+                              "new orders",
+                              "employment",
+                              "prices",
+                              "actual",
+                              "forecast",
+                              "previous",
+                              "jul",
+                              "july",
+                          ]
+                      ):
+                          print(
+                              f"ROW={text[:1500]}"
+                          )
+                          candidate_rows += 1
+
+                  print(
+                      f"CANDIDATE_ROW_COUNT="
+                      f"{candidate_rows}"
+                  )
+
+                  print()
+                  print("--- RAW ACTUAL CANDIDATES ---")
+
+                  # Nur explizite Actual-Felder untersuchen.
+                  explicit_actuals = []
+
+                  for element in soup.find_all(True):
+
+                      for key, value in element.attrs.items():
+
+                          key_lower = str(key).lower()
+
+                          if (
+                              key_lower == "data-actual"
+                              or key_lower == "data-actual-value"
+                              or key_lower == "actual"
+                              or key_lower == "actualvalue"
+                          ):
+                              cleaned = clean(value)
+
+                              print(
+                                  f"RAW_ACTUAL "
+                                  f"ATTRIBUTE={key} "
+                                  f"RAW={value!r} "
+                                  f"CLEANED={cleaned!r}"
+                              )
+
+                              if cleaned is not None:
+                                  explicit_actuals.append(
+                                      cleaned
+                                  )
+
+                  print(
+                      "EXPLICIT_ACTUAL_VALUES="
+                      f"{explicit_actuals}"
+                  )
+
+                  print()
+                  print(
+                      "--- DIAGNOSE ERGEBNIS ---"
+                  )
+
+                  if explicit_actuals:
+                      print(
+                          f"RESULT=EXPLICIT_ACTUAL_FOUND "
+                          f"VALUES={explicit_actuals}"
+                      )
+                  else:
+                      print(
+                          "RESULT=NO_EXPLICIT_ACTUAL_FOUND"
+                      )
+
+              except Exception as exc:
+
+                  failures += 1
+
+                  print(
+                      "REQUEST_ERROR="
+                      f"{type(exc).__name__}: {exc}"
+                  )
+
+          print()
+          print("=" * 80)
+          print(
+              f"DIAGNOSE_COMPLETED "
+              f"FAILURES={failures}"
+          )
+          print("=" * 80)
+
+          # Der Diagnosejob soll nicht künstlich "grün" sein,
+          # wenn ein Endpoint technisch nicht erreichbar ist.
+          if failures:
+              raise SystemExit(1)
           PY
