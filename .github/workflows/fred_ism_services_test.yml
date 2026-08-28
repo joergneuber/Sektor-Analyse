@@ -1,0 +1,26 @@
+name: FRED ISM Services Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fred-ism-services-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Run isolated FRED test
+        run: |
+          python fred_ism_services_isolated_test_v2.py
