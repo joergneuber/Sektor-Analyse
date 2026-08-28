@@ -1,0 +1,33 @@
+name: TEST - TE ISM Services Production Patch 1787941269
+
+on:
+  workflow_dispatch:
+
+jobs:
+  isolated-patch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check requests pandas lxml
+
+      - name: Verify files and syntax
+        run: |
+          test -f makro_szenario.py
+          test -f test_te_ism_services_production_patch_1787941269.py
+          python -m py_compile makro_szenario.py
+          python -m py_compile test_te_ism_services_production_patch_1787941269.py
+
+      - name: Run isolated production patch test
+        run: |
+          python test_te_ism_services_production_patch_1787941269.py
