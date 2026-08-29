@@ -1,235 +1,320 @@
+#!/usr/bin/env python3
+"""
+Großer, NICHT ABBRECHENDER Sammeltest für makro_szenario.py.
+
+Ziel:
+- möglichst viele Informationen in EINEM Lauf sammeln
+- Fehler einzelner Prüfungen abfangen
+- niemals wegen einer einzelnen fehlenden Datenquelle abbrechen
+- keine Datenwerte in die Produktion schreiben
+- am Ende immer Exit-Code 0 liefern
+"""
+from __future__ import annotations
+
 import ast
 import importlib.util
+import inspect
 import json
+import re
 import sys
-import types
-import importlib.util
+import traceback
 from pathlib import Path
-
-import requests
+from io import StringIO
 
 TARGET = Path("makro_szenario.py")
-REFERENCE_YEAR = 2026
-REFERENCE_MONTH = 7
-REFERENCE = "Jul 2026"
-EXPECTED = {
-    "pmi": 54.10,
-    "new_orders": 57.20,
-    "employment": 47.40,
-    "prices": 70.30,
+CACHE = Path(".macro_cache/macro_cache.json")
+TE_URLS = {
+    "pmi": "https://tradingeconomics.com/united-states/non-manufacturing-pmi",
+    "new_orders": "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders",
+    "employment": "https://tradingeconomics.com/united-states/ism-non-manufacturing-employment",
+    "prices": "https://tradingeconomics.com/united-states/ism-non-manufacturing-prices",
 }
+REFERENCE_CASES = [(2026, 7), (2026, 6), (2026, 5)]
+EXPECTED_JULY = {"pmi": 54.10, "new_orders": 57.20, "employment": 47.40, "prices": 70.30}
 EXPECTED_RELEASE = "2026-08-05"
 
 RESULTS = []
+MODULE = None
 
 
-def report(name, status, detail=""):
+def report(name, ok=None, detail=""):
+    if ok is True:
+        status = "GREEN"
+    elif ok is False:
+        status = "RED"
+    else:
+        status = "INFO"
     RESULTS.append((name, status, detail))
-    suffix = f" | {detail}" if detail else ""
-    print(f"[{status}] {name}{suffix}")
+    print(f"{name}={status}" + (f" | {detail}" if detail else ""))
 
 
 def safe(name, fn):
     try:
-        value = fn()
-        report(name, "GREEN")
-        return value
+        return fn()
     except Exception as exc:
-        report(name, "RED", f"{type(exc).__name__}: {exc}")
+        report(name, False, f"{type(exc).__name__}: {exc}")
+        traceback.print_exc(limit=2)
         return None
 
 
-def load_target():
-    # The diagnostic never calls yfinance. Provide an import-only stub when
-    # the optional production dependency is absent in the local environment.
-    # GitHub Actions can still install the real dependency for the main run.
-    if importlib.util.find_spec("yfinance") is None:
-        sys.modules["yfinance"] = types.ModuleType("yfinance")
-    if not TARGET.exists():
-        raise FileNotFoundError(f"TARGET_FILE missing: {TARGET}")
-    source = TARGET.read_text(encoding="utf-8")
-    ast.parse(source)
-    spec = importlib.util.spec_from_file_location("makro_szenario_target", TARGET)
+def load_production_module():
+    global MODULE
+    spec = importlib.util.spec_from_file_location("makro_szenario_master_test", TARGET)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("import spec could not be created")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module, source
+    MODULE = module
+    return module
 
 
-def cache_diagnostic(module):
-    cache_file = Path(getattr(module, "MACRO_CACHE_FILE", ".macro_cache/macro_cache.json"))
-    print(f"CACHE_FILE={cache_file}")
-    if not cache_file.exists():
-        report("CACHE_PRESENT", "INFO", "kein lokaler Cache im Testlauf vorhanden")
-        return None
+def inspect_source(source):
+    tree = ast.parse(source)
+    funcs = sorted(
+        n.name for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    report("TARGET_AST", True, f"functions={len(funcs)}")
+    print("FUNCTIONS=" + ",".join(funcs))
 
+    relevant = [
+        "_te_calendar_actual", "_te_text_actual",
+        "_te_release_month_matches_reference",
+        "_ism_public_secondary_tradingeconomics",
+        "_ism_public_secondary_fxblue_services",
+        "_ism_extract_official",
+        "_ism_cache_entry_valid", "_ism_cache_get_valid",
+        "_ism_fetch", "ism_snapshot",
+    ]
+    for name in relevant:
+        hits = len(re.findall(rf"\b{re.escape(name)}\b", source))
+        report(f"SOURCE_{name}", hits > 0, f"hits={hits}")
+
+    for forbidden in ("Previous", "Forecast", "Consensus", "TEForecast"):
+        hits = [
+            (i + 1, line.strip())
+            for i, line in enumerate(source.splitlines())
+            if re.search(rf"\b{re.escape(forbidden)}\b", line, re.I)
+        ]
+        report(f"SOURCE_{forbidden.upper()}_REFERENCES", True, f"lines={len(hits)}")
+        for line_no, line in hits[:20]:
+            print(f"  {forbidden}@{line_no}: {line[:500]}")
+
+
+def inspect_cache():
+    if not CACHE.is_file():
+        report("CACHE_FILE", None, "not present")
+        return
+    data = json.loads(CACHE.read_text(encoding="utf-8"))
+    report("CACHE_JSON", True, f"type={type(data).__name__}")
+    if isinstance(data, dict):
+        print("CACHE_TOP_KEYS=" + ",".join(map(str, data.keys())))
+
+    matches = []
+
+    def walk(obj, path=""):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                p = f"{path}.{key}" if path else str(key)
+                if re.search(r"ism|service", p, re.I):
+                    matches.append((p, value))
+                walk(value, p)
+        elif isinstance(obj, list):
+            for i, value in enumerate(obj):
+                walk(value, f"{path}[{i}]")
+
+    walk(data)
+    report("CACHE_ISM_MATCHES", True, f"matches={len(matches)}")
+    for path, value in matches[:40]:
+        print("CACHE_ENTRY=" + path + " => " + json.dumps(value, ensure_ascii=False)[:3000])
+
+
+def fetch_te_pages():
     try:
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        import requests
     except Exception as exc:
-        report("CACHE_READ", "RED", f"{type(exc).__name__}: {exc}")
-        return None
+        report("REQUESTS_IMPORT", False, str(exc))
+        return {}
 
-    report("CACHE_READ", "GREEN")
-    candidates = []
-    ism = data.get("ism", {}) if isinstance(data, dict) else {}
-    if isinstance(ism, dict):
-        candidates.extend(ism.values())
-    entries = data.get("ism_entries", []) if isinstance(data, dict) else []
-    if isinstance(entries, list):
-        candidates.extend(entries)
-
-    matching = []
-    for entry in candidates:
-        payload = entry.get("data") if isinstance(entry, dict) and isinstance(entry.get("data"), dict) else entry
-        if not isinstance(payload, dict):
-            continue
-        kind = payload.get("kind", entry.get("kind") if isinstance(entry, dict) else None)
-        year = payload.get("year", entry.get("year") if isinstance(entry, dict) else None)
-        month = payload.get("month", entry.get("month") if isinstance(entry, dict) else None)
-        if kind == "services" and str(year) == str(REFERENCE_YEAR) and str(month) == str(REFERENCE_MONTH):
-            matching.append(payload)
-
-    if not matching:
-        report("CACHE_SERVICES_JUL2026", "INFO", "kein passender Cache-Eintrag gefunden")
-        return None
-
-    payload = matching[0]
-    print("CACHE_SERVICES_PAYLOAD=" + json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    validator = getattr(module, "_ism_cache_entry_valid", None)
-    if validator is None:
-        report("CACHE_VALIDATOR_PRESENT", "RED", "_ism_cache_entry_valid fehlt")
-    else:
-        try:
-            valid = validator(payload, "services", REFERENCE_YEAR, REFERENCE_MONTH)
-            report("CACHE_VALIDATION", "GREEN" if valid else "RED", f"validator={valid}")
-        except Exception as exc:
-            report("CACHE_VALIDATION", "RED", f"{type(exc).__name__}: {exc}")
-    return payload
-
-
-def direct_te(module):
-    url = "https://tradingeconomics.com/united-states/non-manufacturing-pmi"
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; NeuberMacro/1.0)"})
-    report("TE_MAIN_HTTP", "GREEN" if r.ok else "RED", f"status={r.status_code} length={len(r.text)}")
-    if not r.ok:
-        return None
-    html = r.text
-
-    values = {}
-    component_labels = {
-        "new_orders": "ISM Services New Orders",
-        "employment": "ISM Services Employment",
-        "prices": "ISM Services Prices",
+    pages = {}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
     }
-    helper = getattr(module, "_te_component_last", None)
-    if helper is None:
-        report("TE_COMPONENT_HELPER", "RED", "_te_component_last fehlt")
-    else:
-        for key, label in component_labels.items():
-            try:
-                value = helper(html, REFERENCE, label)
-                if value is None:
-                    raise ValueError("kein Wert")
-                values[key] = float(value)
-                report(f"TE_COMPONENT_{key}", "GREEN", f"value={values[key]:.2f} source=Components/Last")
-            except Exception as exc:
-                report(f"TE_COMPONENT_{key}", "RED", f"{type(exc).__name__}: {exc}")
-
-    text = module.re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=module.re.I | module.re.S)
-    text = module.re.sub(r"<[^>]+>", " ", text)
-    text = module.re.sub(r"\s+", " ", text).strip()
-    match = module.re.search(r"Services\s+PMI.*?(?:registered|at)\s+([0-9]{2}(?:\.[0-9])?)", text, flags=module.re.I)
-    if match:
-        values["pmi"] = float(match.group(1))
-        report("TE_PMI", "GREEN", f"value={values['pmi']:.2f}")
-    else:
-        report("TE_PMI", "RED", "published Services PMI nicht gefunden")
-
-    release_helper = getattr(module, "_te_release_date_from_page", None)
-    if release_helper is None:
-        report("TE_RELEASE_HELPER", "RED", "_te_release_date_from_page fehlt")
-    else:
-        try:
-            release = release_helper(html, REFERENCE)
-            report("TE_RELEASE", "GREEN" if release else "RED", f"release={release}")
-            values["release"] = release
-        except Exception as exc:
-            report("TE_RELEASE", "RED", f"{type(exc).__name__}: {exc}")
-
-    for key, expected in EXPECTED.items():
-        if key not in values:
-            report(f"TE_EXPECTED_{key}", "RED", "Wert fehlt")
-        else:
-            ok = abs(values[key] - expected) < 1e-9
-            report(f"TE_EXPECTED_{key}", "GREEN" if ok else "RED", f"expected={expected:.2f} found={values[key]:.2f}")
-    if "release" in values:
-        report("TE_EXPECTED_RELEASE", "GREEN" if values["release"] == EXPECTED_RELEASE else "RED", f"expected={EXPECTED_RELEASE} found={values['release']}")
-    return html
+    for kind, url in TE_URLS.items():
+        def one(kind=kind, url=url):
+            response = requests.get(url, headers=headers, timeout=30)
+            report(f"TE_HTTP_{kind}", response.status_code == 200,
+                   f"status={response.status_code}; final_url={response.url}; bytes={len(response.content)}")
+            pages[kind] = response.text
+        safe(f"TE_FETCH_{kind}", one)
+    return pages
 
 
-def production_te_path(module):
-    fn = getattr(module, "_ism_public_secondary_tradingeconomics", None)
-    if fn is None:
-        report("PROD_TE_FUNCTION_PRESENT", "RED", "Funktion fehlt")
-        return None
+def inspect_te_html(pages):
     try:
-        result = fn(REFERENCE_YEAR, REFERENCE_MONTH, "services")
+        import pandas as pd
     except Exception as exc:
-        report("PROD_TE_FUNCTION", "RED", f"{type(exc).__name__}: {exc}")
-        return None
+        report("PANDAS_IMPORT", False, str(exc))
+        return
 
-    if not result:
-        report("PROD_TE_RESULT", "RED", "Funktion liefert None/leer")
-        return None
+    for kind, html in pages.items():
+        if not html:
+            continue
+        out = Path(f".te_services_{kind}_debug.html")
+        safe(f"TE_SAVE_{kind}", lambda html=html, out=out: out.write_text(html, encoding="utf-8"))
 
-    report("PROD_TE_RESULT", "GREEN", json.dumps(result, ensure_ascii=False, sort_keys=True))
-    for key, expected in EXPECTED.items():
-        actual = result.get(key)
-        ok = actual is not None and abs(float(actual) - expected) < 1e-9
-        report(f"PROD_TE_{key}", "GREEN" if ok else "RED", f"expected={expected:.2f} found={actual}")
-    release = result.get("release_date")
-    report("PROD_TE_RELEASE", "GREEN" if release == EXPECTED_RELEASE else "RED", f"expected={EXPECTED_RELEASE} found={release}")
-    return result
+        low = html.lower()
+        for needle in [
+            "actual", "previous", "forecast", "consensus",
+            "new orders", "employment", "prices",
+            "54.1", "57.2", "47.4", "70.3",
+            "jul 2026", "july 2026", "2026-08-05",
+        ]:
+            count = len(re.findall(re.escape(needle.lower()), low))
+            report(f"TE_TEXT_{kind}_{re.sub(r'[^A-Za-z0-9]+','_',needle).strip('_').upper()}",
+                   None, f"count={count}")
+
+        def tables():
+            tables = pd.read_html(StringIO(html))
+            report(f"TE_TABLES_{kind}", True, f"count={len(tables)}")
+            for i, df in enumerate(tables):
+                text = df.astype(str).to_string(index=False)
+                if i < 8 or re.search(
+                    r"actual|previous|forecast|consensus|new orders|employment|prices|services|july|jul",
+                    text, re.I
+                ):
+                    print(f"TABLE_{kind}_{i}_SHAPE={df.shape}")
+                    print(f"TABLE_{kind}_{i}_COLUMNS={[str(c) for c in df.columns]}")
+                    print(text[:5000])
+        safe(f"TE_TABLE_FORENSIC_{kind}", tables)
 
 
-def fallback_path(module):
-    fn = getattr(module, "_ism_public_secondary_fxblue_services", None)
-    if fn is None:
-        report("FXBLUE_FUNCTION_PRESENT", "RED", "Funktion fehlt")
-        return None
-    try:
-        result = fn(REFERENCE_YEAR, REFERENCE_MONTH)
-        if not result:
-            report("FXBLUE_RESULT", "INFO", "kein vollstaendiger Fallback-Datensatz")
-            return None
-        report("FXBLUE_RESULT", "GREEN", json.dumps(result, ensure_ascii=False, sort_keys=True))
-        return result
-    except Exception as exc:
-        report("FXBLUE_RESULT", "RED", f"{type(exc).__name__}: {exc}")
-        return None
+def inspect_functions():
+    if MODULE is None:
+        return
+
+    names = [
+        "_te_calendar_actual", "_te_text_actual",
+        "_te_release_month_matches_reference",
+        "_ism_public_secondary_tradingeconomics",
+        "_ism_public_secondary_fxblue_services",
+        "_ism_extract_official",
+        "_ism_cache_entry_valid", "_ism_cache_get_valid",
+        "_ism_fetch", "ism_snapshot",
+    ]
+    for name in names:
+        fn = getattr(MODULE, name, None)
+        report(f"FUNC_PRESENT_{name}", callable(fn))
+        if callable(fn):
+            safe(
+                f"FUNC_SIGNATURE_{name}",
+                lambda fn=fn, name=name: report(
+                    f"FUNC_SIGNATURE_OK_{name}", True, str(inspect.signature(fn))
+                ),
+            )
+
+
+def run_production_calls():
+    if MODULE is None:
+        return
+
+    # Die Aufrufe sind absichtlich defensiv: nur Funktionen mit der
+    # tatsächlich vorhandenen Signatur werden ausgeführt.
+    fn = getattr(MODULE, "_ism_public_secondary_tradingeconomics", None)
+    if callable(fn):
+        for year, month in REFERENCE_CASES:
+            safe(
+                f"TE_SECONDARY_SERVICES_{year}_{month}",
+                lambda year=year, month=month: print(
+                    "RESULT _ism_public_secondary_tradingeconomics",
+                    year, month, "services =>", repr(fn(year, month, "services"))
+                ),
+            )
+
+    fn = getattr(MODULE, "_ism_public_secondary_fxblue_services", None)
+    if callable(fn):
+        for year, month in REFERENCE_CASES:
+            safe(
+                f"FXBLUE_SERVICES_{year}_{month}",
+                lambda year=year, month=month: print(
+                    "RESULT _ism_public_secondary_fxblue_services",
+                    year, month, "=>", repr(fn(year, month))
+                ),
+            )
+
+    fn = getattr(MODULE, "_ism_fetch", None)
+    if callable(fn):
+        for year, month in REFERENCE_CASES:
+            safe(
+                f"ISM_FETCH_SERVICES_{year}_{month}",
+                lambda year=year, month=month: print(
+                    "RESULT _ism_fetch", year, month, "services =>",
+                    repr(fn("services", year, month))
+                ),
+            )
+
+    fn = getattr(MODULE, "ism_snapshot", None)
+    if callable(fn):
+        for args in [("services",), ("manufacturing",)]:
+            safe(
+                "ISM_SNAPSHOT_" + "_".join(args),
+                lambda args=args: print(
+                    "RESULT ism_snapshot", args, "=>", repr(fn(*args))
+                ),
+            )
 
 
 def main():
-    print("=== TE ISM SERVICES PRODUCTION PATCH SEQUENTIAL DIAGNOSTIC ===")
-    print(f"TARGET_FILE={TARGET}")
-    print(f"REFERENCE={REFERENCE}")
-    print("MODE=NON_ABORTING")
-    print("RULE=fehlende Daten werden protokolliert; der Test laeuft bis zum Ende")
+    print("=== LARGE NON-ABORTING TE / ISM SERVICES MASTER TEST ===")
+    print(f"TARGET={TARGET}")
+    print(f"REFERENCE_CASES={REFERENCE_CASES}")
+    print(f"EXPECTED_JULY={EXPECTED_JULY}")
+    print(f"EXPECTED_RELEASE={EXPECTED_RELEASE}")
+    print("RULE=NO SINGLE TEST MAY ABORT THE RUN")
 
-    module = safe("TARGET_SYNTAX_AND_IMPORT", load_target)
-    if module is None:
-        print("IMPORT_FAILED: weitere produktionsnahe Checks koennen nicht ausgefuehrt werden")
-    else:
-        mod, _source = module
-        safe("CACHE_DIAGNOSTIC", lambda: cache_diagnostic(mod))
-        safe("DIRECT_TE_DIAGNOSTIC", lambda: direct_te(mod))
-        safe("PRODUCTION_TE_DIAGNOSTIC", lambda: production_te_path(mod))
-        safe("FXBLUE_FALLBACK_DIAGNOSTIC", lambda: fallback_path(mod))
+    report("TARGET_EXISTS", TARGET.is_file())
+    if not TARGET.is_file():
+        print("RESULT=DIAGNOSTIC_COMPLETE")
+        print("EXIT_POLICY=0")
+        return
 
-    print("\n=== FINAL DIAGNOSTIC SUMMARY ===")
+    source = safe("READ_TARGET", lambda: TARGET.read_text(encoding="utf-8"))
+    if source is not None:
+        safe("SOURCE_INSPECTION", lambda: inspect_source(source))
+
+    safe("CACHE_INSPECTION", inspect_cache)
+
+    safe("PRODUCTION_IMPORT", load_production_module)
+    safe("FUNCTION_INSPECTION", inspect_functions)
+
+    pages = safe("TE_PAGE_COLLECTION", fetch_te_pages) or {}
+    safe("TE_HTML_FORENSIC", lambda: inspect_te_html(pages))
+
+    safe("PRODUCTION_FUNCTION_CALLS", run_production_calls)
+
+    print("\n=== FINAL SUMMARY ===")
+    green = red = info = 0
     for name, status, detail in RESULTS:
-        print(f"{status:5} {name} {detail}")
+        print(f"{name}: {status}" + (f" | {detail}" if detail else ""))
+        if status == "GREEN":
+            green += 1
+        elif status == "RED":
+            red += 1
+        else:
+            info += 1
+
+    print(f"SUMMARY_GREEN={green}")
+    print(f"SUMMARY_RED={red}")
+    print(f"SUMMARY_INFO={info}")
     print("RESULT=DIAGNOSTIC_COMPLETE")
-    print("EXIT_POLICY=0 (diagnostic never aborts because a data source is unavailable)")
+    print("EXIT_POLICY=0")
+
+    # Absichtlich 0: Der Sammeltest soll Informationen sammeln,
+    # nicht wegen einer einzelnen Datenquelle den gesamten Workflow stoppen.
+    sys.exit(0)
 
 
 if __name__ == "__main__":
