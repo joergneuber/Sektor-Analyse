@@ -9,7 +9,7 @@ permissions:
 jobs:
   ism-lme-v9:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -35,24 +35,26 @@ jobs:
           print("V9_SYNTAX=GREEN")
           PY
 
-      - name: Run V9
+      - name: Run V9 value-level deep extraction
         shell: bash
         run: |
           set +e
           python test_ism_lme_provenance_v9.py
           rc=$?
           echo "V9_TEST_EXIT=$rc"
-          # Individual probes are non-fatal and the collector always reports.
+          # Deliberately non-aborting: source/parser failures are evidence.
           exit 0
 
       - name: Show compact result
         if: always()
         shell: bash
         run: |
-          echo "=== V9 MATRIX ==="
+          echo "=== VALUE MATRIX ==="
           cat ism_lme_provenance_v9/provenance_matrix.csv 2>/dev/null || true
-          echo "=== V9 REPORT TAIL ==="
-          tail -n 80 ism_lme_provenance_v9/report.txt 2>/dev/null || true
+          echo "=== SUMMARY ==="
+          cat ism_lme_provenance_v9/summary.json 2>/dev/null || true
+          echo "=== REPORT TAIL ==="
+          tail -n 120 ism_lme_provenance_v9/report.txt 2>/dev/null || true
 
       - name: Upload V9 evidence
         if: always()
