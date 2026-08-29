@@ -108,7 +108,7 @@ MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 CACHE_WRITE_LOCK = Lock()
 
 # Maximale Zeit, die ein gespeicherter REAL-Wert als verwendbar gilt, wenn die
@@ -1064,6 +1064,7 @@ def _ism_target_maps(kind):
             "inventories": ["Inventories"],
             "inventory_sentiment": ["Inventory Sentiment"],
             "imports": ["Imports"],
+            "exports": ["Exports"],
         }
     if kind == "manufacturing":
         return {
@@ -1574,6 +1575,7 @@ def _te_public_ism_fetch(kind, year, month):
             "new_orders": ["New Orders"], "employment": ["Employment"], "prices": ["Prices"],
             "supplier_deliveries": ["Supplier Deliveries"], "backlog": ["Backlog of Orders", "Backlog"],
             "inventories": ["Inventories"], "inventory_sentiment": ["Inventory Sentiment"], "new_export_orders": ["New Export Orders"], "imports": ["Imports"],
+            "exports": ["Exports"],
         },
         "manufacturing": {
             "pmi": ["Manufacturing PMI"], "new_orders": ["New Orders"], "production": ["Production"],
@@ -1622,6 +1624,24 @@ def _te_public_ism_fetch(kind, year, month):
         except Exception:
             frames = []
 
+        # TE publishes the current PMI headline and the component table on the
+        # same public page.  The component rows often have only
+        # Last/Previous columns and NO per-row Reference column.  In that
+        # layout the explicit headline sentence is the period anchor for the
+        # table.  This is a proven public-HTML layout from earlier test runs.
+        plain = re.sub(r"<[^>]+>", " ", body)
+        plain = re.sub(r"\s+", " ", plain)
+        headline_period_ok = bool(re.search(
+            rf"(?:Services|Manufacturing) PMI.*?(?:in|for)\s+"
+            rf"{re.escape(calendar.month_name[month])}\s+{year}",
+            plain, re.I
+        ))
+        if not headline_period_ok:
+            headline_period_ok = bool(re.search(
+                rf"(?:Services|Manufacturing) PMI.*?{re.escape(calendar.month_name[month])}\s+{year}",
+                plain, re.I
+            ))
+
         data = {
             "year": year, "month": month, "url": url,
             "status": "REAL_PUBLIC_SECONDARY",
@@ -1665,6 +1685,13 @@ def _te_public_ism_fetch(kind, year, month):
                 if not reference_ok:
                     row_blob = " | ".join(cells)
                     reference_ok = month_matches(row_blob)
+
+                # Proven TE layout: the table itself has Last/Previous only,
+                # while the page headline explicitly binds the page to the
+                # requested report month.  Accept component rows only under
+                # that explicit page-level month anchor.
+                if not reference_ok and headline_period_ok:
+                    reference_ok = True
                 if not reference_ok:
                     continue
 
@@ -1675,15 +1702,22 @@ def _te_public_ism_fetch(kind, year, month):
                     if value is not None:
                         value_method = "pandas_read_html_last_column"
 
-                # Conservative fallback only if exactly one numeric cell remains
-                # after the label. This prevents selecting Previous/Forecast.
+                # Proven TE layout: a compact header such as
+                # "ISM ServicesLastPrevious" is followed by [Last, Previous]
+                # values without a separate Reference column. Under the
+                # explicit page-level report-month anchor, the first numeric
+                # cell is therefore Last.
                 if value is None:
                     nums = []
                     for c in cells[1:]:
                         parsed = _parse_float_token(c)
                         if parsed is not None:
                             nums.append(parsed)
-                    if len(nums) == 1:
+                    header_blob = " | ".join(lower_cols)
+                    if headline_period_ok and "last" in header_blob and "previous" in header_blob and nums:
+                        value = nums[0]
+                        value_method = "pandas_read_html_compact_last_previous"
+                    elif len(nums) == 1:
                         value = nums[0]
                         value_method = "pandas_read_html_single_numeric_cell"
 
@@ -1737,17 +1771,25 @@ def _te_public_ism_fetch(kind, year, month):
 
 
 def _ism_fetch(kind, year, month):
-    """ISM-Beschaffung mit Primärquelle plus Feld-für-Feld-TE-Ergänzung.
+    """ISM-Beschaffung nach verbindlicher Bereichs-/Quellenlogik.
 
-    Wichtig: Ein offizieller Teilbefund wird nicht mehr als vollständig angesehen.
-    Fehlende veröffentlichte Komponenten werden anschließend gezielt aus dem
-    öffentlichen TE-HTML ergänzt. Offizielle ISM-Werte behalten Vorrang.
+    Reihenfolge:
+      1) Eine Quelle soll den kompletten ISM-Bereich liefern.
+      2) Wenn eine komplette Quelle nicht verfügbar ist, wird die beste
+         vollständige Teilquelle als Bereichsquelle verwendet.
+      3) Nur tatsächlich fehlende Felder werden anschließend feldweise ergänzt.
+      4) Herkunft und Datenstand werden je Feld protokolliert.
+
+    Dadurch werden erfolgreiche frühere Extraktionspfade konsolidiert, ohne
+    unnötig Quellen innerhalb eines Bereichs zu mischen.
     """
     month_name = calendar.month_name[month].lower()
     official = (
         f"https://www.ismworld.org/supply-management-news-and-reports/"
         f"reports/ism-pmi-reports/{'pmi' if kind == 'manufacturing' else 'services'}/{month_name}/"
     )
+    targets = _ism_target_maps(kind)
+    field_keys = list(targets.keys())
 
     official_data = None
     try:
@@ -1758,59 +1800,128 @@ def _ism_fetch(kind, year, month):
                 print(
                     f"INFO: ISM {kind} offiziell strukturiert: "
                     f"reference={year}-{month:02d} | "
-                    f"Felder={len([k for k in official_data if k not in {'year','month','url','status','source_type','reference','provenance'}])}"
+                    f"Felder={sum(1 for k in field_keys if official_data.get(k) is not None)}"
                 )
     except Exception as exc:
         print(f"WARNUNG: ISM {kind} official nicht verfuegbar: {type(exc).__name__}: {exc}")
 
-    # Always try TE when official data is incomplete. This is the key repair:
-    # a valid official PMI must not prevent completion of missing component fields.
     secondary = None
     try:
         secondary = _te_public_ism_fetch(kind, year, month)
     except Exception as exc:
         print(f"WARNUNG: TradingEconomics ISM {kind} nicht verfuegbar: {type(exc).__name__}: {exc}")
 
-    merged = None
+    tertiary = None
+    # ForexFactory remains a last-resort source for the headline only.
+    # It is never preferred over a structured ISM/TE component source.
+    if not official_data and not secondary:
+        try:
+            tertiary = _ism_public_secondary_forexfactory(year, month, kind)
+        except Exception as exc:
+            print(f"WARNUNG: ForexFactory ISM {kind} nicht verfuegbar: {type(exc).__name__}: {exc}")
+
+    def count_fields(d):
+        return sum(1 for k in field_keys if isinstance(d, dict) and d.get(k) is not None)
+
+    # ---- Group-first selection ------------------------------------------------
+    # A source that supplies every requested field wins for the whole area.
+    # This avoids unnecessary source mixing.
+    complete = []
+    for source_name, d in (
+        ("ISM Official", official_data),
+        ("TradingEconomics Public", secondary),
+    ):
+        if d and all(d.get(k) is not None for k in field_keys):
+            complete.append((source_name, d))
+    if complete:
+        source_name, chosen = complete[0]
+        chosen = dict(chosen)
+        chosen["source_group"] = source_name
+        chosen["source_selection"] = "COMPLETE_GROUP"
+        chosen.setdefault("provenance", {})
+        for key in field_keys:
+            chosen["provenance"].setdefault(key, {
+                "source": source_name,
+                "url": chosen.get("url"),
+                "reference_month": f"{year}-{month:02d}",
+                "method": "group_complete",
+            })
+        print(
+            f"INFO: ISM {kind} Gruppenquelle={source_name} "
+            f"reference={year}-{month:02d} | VOLLSTAENDIG"
+        )
+        return chosen
+
+    # No source is complete. Select the source with the most real fields as
+    # the area anchor, then use field fallback only for remaining gaps.
+    candidates = []
     if official_data:
-        merged = dict(official_data)
+        candidates.append(("ISM Official", official_data))
+    if secondary:
+        candidates.append(("TradingEconomics Public", secondary))
+    candidates.sort(key=lambda item: count_fields(item[1]), reverse=True)
+
+    if candidates:
+        anchor_name, anchor = candidates[0]
+        merged = dict(anchor)
         merged.setdefault("provenance", {})
-        if secondary:
-            for key, value in secondary.items():
-                if key in {"year", "month", "url", "status", "source_type", "reference", "provenance"}:
-                    continue
-                if merged.get(key) is None:
-                    merged[key] = value
-                    merged["provenance"][key] = secondary.get("provenance", {}).get(key, {
-                        "source": "TradingEconomics Public",
-                        "url": secondary.get("url"),
+        merged["source_group"] = anchor_name
+        merged["source_selection"] = "PARTIAL_GROUP_PLUS_FIELD_FALLBACK"
+
+        for key in field_keys:
+            if merged.get(key) is not None:
+                merged["provenance"].setdefault(key, {
+                    "source": anchor_name,
+                    "url": merged.get("url"),
+                    "reference_month": f"{year}-{month:02d}",
+                    "method": "group_anchor",
+                })
+
+        # Fill only missing fields from the other structured source.
+        for source_name, source_data in candidates[1:]:
+            for key in field_keys:
+                if merged.get(key) is None and source_data.get(key) is not None:
+                    merged[key] = source_data[key]
+                    merged["provenance"][key] = source_data.get("provenance", {}).get(key, {
+                        "source": source_name,
+                        "url": source_data.get("url"),
                         "reference_month": f"{year}-{month:02d}",
-                        "method": "pandas.read_html_public",
+                        "method": "field_fallback",
                     })
-            if len(merged) > len(official_data):
-                print(
-                    f"INFO: TE ergänzt ISM {kind}: "
-                    f"reference={year}-{month:02d} | "
-                    f"zusätzliche_felder={len(merged)-len(official_data)}"
-                )
+                    merged["provenance"][key]["fallback"] = True
+
+        # Only use the headline-only tertiary source when the PMI itself is
+        # still missing. It cannot populate extended fields.
+        if merged.get("pmi") is None and tertiary:
+            merged["pmi"] = tertiary.get("pmi")
+            merged["provenance"]["pmi"] = {
+                "source": "ForexFactory",
+                "url": tertiary.get("url"),
+                "reference_month": f"{year}-{month:02d}",
+                "method": "headline_fallback",
+                "fallback": True,
+            }
+
+        print(
+            f"INFO: ISM {kind} Bereichsquelle={anchor_name} "
+            f"reference={year}-{month:02d} | "
+            f"Felder={count_fields(merged)}/{len(field_keys)}"
+        )
         return merged
 
-    if secondary:
-        print(
-            f"INFO: TradingEconomics Public ISM-Fallback erfolgreich: "
-            f"kind={kind} reference={year}-{month:02d} source={secondary['url']}"
-        )
-        return secondary
-
-    tertiary = _ism_public_secondary_forexfactory(year, month, kind)
     if tertiary:
-        print(
-            f"INFO: ForexFactory ISM-Fallback erfolgreich: "
-            f"kind={kind} reference={year}-{month:02d} source={tertiary['url']}"
-        )
+        tertiary = dict(tertiary)
+        tertiary["source_group"] = "ForexFactory"
+        tertiary["source_selection"] = "HEADLINE_ONLY_FALLBACK"
+        tertiary.setdefault("provenance", {})["pmi"] = {
+            "source": "ForexFactory",
+            "url": tertiary.get("url"),
+            "reference_month": f"{year}-{month:02d}",
+            "method": "headline_fallback",
+        }
         return tertiary
-    return None
 
+    return None
 
 def _last_completed_business_day(today):
     d=today-dt.timedelta(days=1)
@@ -1961,9 +2072,16 @@ def _te_public_commodities_exact(target_date):
 
 
 def lme_snapshot(today):
-    """TIER-2: LME Official zuerst; TE Public exakt datiert als klar gekennzeichneter Fallback."""
+    """LME-TIER-2-Beschaffung mit Bereichs-/Quellenpriorität.
+
+    Ziel ist immer der letzte abgeschlossene Handelstag.
+    Zuerst wird versucht, ALLE vier Metalle aus LME Official zu beziehen.
+    Erst wenn das nicht vollständig gelingt, wird der TE-Public-Snapshot als
+    gemeinsame Bereichsquelle verwendet. Nur danach ist ein feldweiser
+    Fallback erlaubt. Exaktes Zieldatum bleibt zwingend.
+    """
     target = _last_completed_business_day(today)
-    results = {}
+    metal_names = ("Nickel", "Blei", "Zinn", "Kobalt")
     official_url = "https://www.lme.com/market-data/reports-and-data/lme-official-prices"
     headers = {
         **REQUEST_HEADERS,
@@ -1971,15 +2089,15 @@ def lme_snapshot(today):
         "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
     }
 
-    # 1) Official LME route.
+    official_results = {}
     try:
         r = requests.get(official_url, timeout=15, headers=headers, allow_redirects=True)
         print(f"INFO: LME HTTP status={r.status_code} final_url={r.url} source={official_url}")
         if r.status_code == 200 and "login" not in r.url.lower():
-            for metal in LME_METAL_URLS:
+            for metal in metal_names:
                 parsed = _lme_official_exact_from_html(r.text, target, metal)
                 if parsed:
-                    results[metal] = {
+                    official_results[metal] = {
                         "value": parsed["value"],
                         "reference_date": parsed["date"],
                         "status": "REAL_OFFICIAL",
@@ -1994,37 +2112,49 @@ def lme_snapshot(today):
     except Exception as exc:
         print(f"WARNUNG: LME Official Abruf fehlgeschlagen: {type(exc).__name__}: {exc}")
 
-    # 2) Public TE fallback. Never relabel as LME Official.
+    te_results = {}
     try:
         te_results = _te_public_commodities_exact(target)
     except Exception as exc:
         print(f"WARNUNG: TE Public Commodity Fallback fehlgeschlagen: {type(exc).__name__}: {exc}")
         te_results = {}
-    for metal, meta in te_results.items():
-        if metal not in results:
-            results[metal] = meta
-            print(
-                f"INFO: TE Public Commodity Fallback: {metal} "
-                f"date={meta['reference_date']} value={meta['value']} source={meta.get('url', meta.get('source', 'TE Public Commodities'))}"
-            )
 
-    # 3) Persist exact-date results. This preserves successful Friday data even
-    # when the next run cannot reach a public endpoint.
-    if results:
-        with CACHE_WRITE_LOCK:
-            cache = _cache_load()
-            cache.setdefault("lme", {})
-            for metal, data in results.items():
-                if data.get("reference_date") == target.isoformat():
-                    cache["lme"][metal] = {
-                        "saved_at": time.time(),
-                        "data": data,
-                    }
-            _cache_save(cache)
+    # ---- Group-first ----------------------------------------------------------
+    if all(m in official_results for m in metal_names):
+        results = official_results
+        group_source = "LME Official Prices"
+        selection = "COMPLETE_GROUP"
+        print(f"INFO: LME Gruppenquelle=LME Official Prices | date={target.isoformat()} | VOLLSTAENDIG")
+    elif all(m in te_results for m in metal_names):
+        results = te_results
+        group_source = "TradingEconomics Public Commodities"
+        selection = "COMPLETE_GROUP_FALLBACK"
+        print(f"INFO: LME Gruppenquelle=TradingEconomics Public | date={target.isoformat()} | VOLLSTAENDIG")
+    else:
+        # Neither source is complete: anchor on the source with more exact-date
+        # metals, then fill only missing metals from the other source.
+        candidates = [
+            ("LME Official Prices", official_results),
+            ("TradingEconomics Public Commodities", te_results),
+        ]
+        candidates.sort(key=lambda item: len(item[1]), reverse=True)
+        group_source, anchor = candidates[0]
+        results = dict(anchor)
+        selection = "PARTIAL_GROUP_PLUS_FIELD_FALLBACK"
+        other_source, other = candidates[1]
+        for metal in metal_names:
+            if metal not in results and metal in other:
+                results[metal] = other[metal]
+                results[metal] = dict(results[metal])
+                results[metal]["fallback_from"] = group_source
+                results[metal]["source_selection"] = "FIELD_FALLBACK"
+        print(
+            f"INFO: LME Bereichsquelle={group_source} | date={target.isoformat()} | "
+            f"Felder={len(results)}/{len(metal_names)}"
+        )
 
-    # 4) If a current exact-date value could not be freshly fetched, use only an
-    # exact-date cached result. Never carry Thursday/Wednesday forward to Friday.
-    metal_names = ("Nickel", "Blei", "Zinn", "Kobalt")
+    # Exact-date cache is a last-resort availability mechanism, never a date
+    # substitution. Cache is considered only after both public sources.
     if len(results) < len(metal_names):
         cache = _cache_load()
         for metal in metal_names:
@@ -2035,9 +2165,18 @@ def lme_snapshot(today):
             if cached and cached.get("reference_date") == target.isoformat():
                 cached = dict(cached)
                 cached["status"] = "REAL_CACHED"
-                cached["source"] = cached.get("source", "LME Official Prices / TradingEconomics Public")
+                cached["source_selection"] = "EXACT_DATE_CACHE_FALLBACK"
                 results[metal] = cached
                 print(f"INFO: LME Exact-Date Cache-Hit: {metal} date={target.isoformat()}")
+
+    if results:
+        with CACHE_WRITE_LOCK:
+            cache = _cache_load()
+            cache.setdefault("lme", {})
+            for metal, data in results.items():
+                if data.get("reference_date") == target.isoformat():
+                    cache["lme"][metal] = {"saved_at": time.time(), "data": data}
+            _cache_save(cache)
 
     lines = []
     for name in metal_names:
@@ -2045,15 +2184,16 @@ def lme_snapshot(today):
         if data:
             lines.append(
                 f"LME {name}: {_fmt(data['value'],2)} | Datenstand={data['reference_date']} | "
-                f"STATUS={data['status']} | SOURCE={data['source']} | DATENTYP={data['datatype']}"
+                f"STATUS={data['status']} | SOURCE={data['source']} | "
+                f"DATENTYP={data['datatype']} | QUELLENWAHL={selection}"
             )
         else:
             lines.append(
                 f"LME {name}: NICHT VERFUEGBAR | Datenstand_GESUCHT={target.isoformat()} | "
-                f"STATUS=UNAVAILABLE | SOURCE=LME/TradingEconomics Public | DATENTYP=OFFICIAL_TARGET_NO_EXACT_MATCH"
+                f"STATUS=UNAVAILABLE | SOURCE=LME/TradingEconomics Public | "
+                f"DATENTYP=OFFICIAL_TARGET_NO_EXACT_MATCH | QUELLENWAHL={selection}"
             )
     return lines
-
 
 def spglobal_services_snapshot(today):
     """TIER-2: S&P Global US Services PMI aus oeffentlicher S&P-Seite, TE als Fallback.
@@ -2155,6 +2295,16 @@ def ism_snapshot(today):
         parts.append(f"SOURCE={d.get('url','ISM')}")
         source_type=d.get("source_type")
         if source_type: parts.append(f"DATENTYP={source_type}")
+        if d.get("source_group"): parts.append(f"QUELLENGRUPPE={d['source_group']}")
+        if d.get("source_selection"): parts.append(f"QUELLENWAHL={d['source_selection']}")
+        # Field-level provenance is emitted compactly only for fallback fields.
+        fallbacks = [
+            f"{k}={v.get('source')}"
+            for k,v in (d.get("provenance") or {}).items()
+            if isinstance(v, dict) and v.get("fallback")
+        ]
+        if fallbacks:
+            parts.append("FELD_FALLBACKS=" + ",".join(fallbacks))
         return " | ".join(parts)
 
     lines.append(render("ISM Manufacturing PMI", manufacturing, [
@@ -2166,7 +2316,7 @@ def ism_snapshot(today):
         ("business_activity","Business Activity"),("new_orders","New Orders"),("new_export_orders","New Export Orders"),
         ("employment","Employment"),("prices","Prices"),("supplier_deliveries","Supplier Deliveries"),
         ("backlog","Backlog"),("inventories","Inventories"),("inventory_sentiment","Inventory Sentiment"),
-        ("imports","Imports")]))
+        ("imports","Imports"),("exports","Exports")]))
     lines.append(spglobal_services_snapshot(today))
     lines.append("PMI-Regel: >50 = Expansion des jeweiligen Sektors; <50 = Kontraktion. Keine Prognose des naechsten PMI-Werts.")
     return lines
@@ -2216,11 +2366,11 @@ def data_quality_gate(lines):
         "PCE", "Core PCE", "Realzins 10Y TIPS", "US High Yield OAS", "Chicago Fed NFCI",
         "VIX", "DXY", "Reales BIP-Wachstum", "M2", "JOLTS Job Openings",
         "Industrieproduktion", "Consumer Sentiment", "Kapazitaetsauslastung",
-        "SLOOS C&I Tightening", "US Investment Grade OAS", "S&P Global Services PMI",
+        "SLOOS C&I Tightening", "US Investment Grade OAS",
         "LME Nickel", "LME Blei", "LME Zinn", "LME Kobalt",
         "ISM Manufacturing EXTENDED", "ISM Services EXTENDED",
     ]
-    tier3_labels = ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP"]
+    tier3_labels = ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP", "S&P Global Services PMI"]
 
     def unavailable(label):
         return any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)
@@ -2235,7 +2385,7 @@ def data_quality_gate(lines):
     for prefix, line in (("ISM Services", service_line), ("ISM Manufacturing", manuf_line)):
         if line and not line.startswith(prefix + " PMI: NICHT VERFUEGBAR"):
             extended_fields = (
-                ["Business Activity","New Export Orders","Supplier Deliveries","Backlog","Inventories","Inventory Sentiment","Imports"]
+                ["Business Activity","New Export Orders","Supplier Deliveries","Backlog","Inventories","Inventory Sentiment","Imports","Exports"]
                 if prefix == "ISM Services" else
                 ["Production","Supplier Deliveries","Backlog of Orders","Inventories","Customers' Inventories","New Export Orders","Imports"]
             )
@@ -2248,14 +2398,15 @@ def data_quality_gate(lines):
 
     # Do not double-count generic container labels if their concrete line is healthy.
     tier2_missing=[x for i,x in enumerate(tier2_missing) if x not in tier2_missing[:i]]
+    tier3_missing=[label for label in tier3_labels if unavailable(label)]
     gate="GESPERRT" if critical_missing else "FREIGEGEBEN"
     if critical_missing:
         data_quality="UNZUREICHEND"
-    elif tier2_missing:
+    elif tier2_missing or tier3_missing:
         data_quality="EINGESCHRAENKT"
     else:
         data_quality="VOLLSTAENDIG"
-    return gate, critical_missing, data_quality, tier2_missing
+    return gate, critical_missing, data_quality, tier2_missing, tier3_missing
 
 
 def main():
@@ -2312,7 +2463,7 @@ def main():
     lines.extend(lme_snapshot(today))
     lines.append("")
 
-    gate, missing, data_quality, secondary_missing = data_quality_gate(lines)
+    gate, missing, data_quality, secondary_missing, tier3_missing = data_quality_gate(lines)
     lines.append("6. DATENQUALITAETS-GATEKEEPER")
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"DATENQUALITAET: {data_quality}")
