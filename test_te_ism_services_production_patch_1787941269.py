@@ -209,7 +209,7 @@ def fallback_path(module):
 
 
 def main():
-    print("=== TE ISM SERVICES SEQUENTIAL DIAGNOSTIC ===")
+    print("=== TE ISM SERVICES PRODUCTION PATCH SEQUENTIAL DIAGNOSTIC ===")
     print(f"TARGET_FILE={TARGET}")
     print(f"REFERENCE={REFERENCE}")
     print("MODE=NON_ABORTING")
