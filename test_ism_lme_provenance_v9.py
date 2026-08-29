@@ -1,76 +1,22 @@
 #!/usr/bin/env python3
 """
-V9 (VALUE-LEVEL DEEP EXTRACTION REVISION)
-=========================================
+V9 broad public-data extraction probe
+Same workflow / filename as previous V9, revised content.
 
-Same GitHub workflow / same filenames as the previous V9, but the test logic
-is deliberately broadened and made VALUE-LEVEL rather than mention-level.
+Focus:
+- ISM Services + Manufacturing July 2026
+- LME/commodity prices for 2026-08-28
+- TradingEconomics public commodity table as an ADDITIONAL public fallback
+- multiple independent extraction methods
+- no TE API
+- no recursive crawling
+- no production changes
+- never declare a value valid merely because the word or a number was found
 
-Purpose
--------
-Find and validate as many real, date-linked ISM and LME values as possible in
-one run, without recursive crawling and without aborting on individual
-failures.
-
-ISM target month
-----------------
-July 2026
-
-ISM targets
------------
-Services:
-  PMI, Business Activity, New Orders, New Export Orders, Employment, Prices,
-  Supplier Deliveries, Backlog, Inventories, Inventory Sentiment, Imports,
-  Exports
-
-Manufacturing:
-  PMI, New Orders, Production, Employment, Prices, Supplier Deliveries,
-  Backlog of Orders, Inventories, Customers' Inventories, Imports, Exports,
-  New Export Orders
-
-LME target date
---------------
-2026-08-28 (Friday, immediately preceding the 2026-08-29 briefing)
-
-LME targets
------------
-Nickel, Lead, Tin, Cobalt
-
-Extraction methods per fixed page
----------------------------------
-1. Visible text
-2. HTML tables
-3. pandas.read_html
-4. embedded JSON / JSON-LD
-5. HTML/data attributes
-6. source regex + context windows
-7. meta tags / OpenGraph / itemprop
-8. value/date context windows
-9. link inventory (NO following)
-10. raw response saved for manual inspection
-
-Value-level validation
-----------------------
-A candidate only becomes VALID when the method can associate:
-  * target indicator,
-  * numeric value,
-  * target reference date/month,
-  * and a source page
-within the same evidence object / local context.
-
-"FOUND" is retained as a weaker state for evidence presence.
-VALIDATED_VALUE is the state needed for production consideration.
-
-Safety
-------
-- no TE API key
-- no production file modification
-- fixed page list only
-- no recursive crawler
-- hard per-request timeout
-- every probe is non-fatal
-- exit 0 regardless of individual HTTP/parser failures
-- never invents or derives values
+Important distinction:
+TradingEconomics commodity prices are NOT automatically treated as LME Official
+Prices. They are recorded as TE_PUBLIC_COMMODITY and must not overwrite an LME
+OFFICIAL_CASH value without a separate provenance decision.
 """
 
 import csv
@@ -81,7 +27,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -95,7 +41,7 @@ try:
 except Exception:
     pd = None
 
-VERSION = "V9-VALUE-LEVEL"
+VERSION = "V9-TE-COMMODITIES-BROAD"
 OUT = Path("ism_lme_provenance_v9")
 RAW = OUT / "raw"
 OUT.mkdir(exist_ok=True)
@@ -103,35 +49,28 @@ RAW.mkdir(exist_ok=True)
 
 EVIDENCE = OUT / "evidence.jsonl"
 MATRIX = OUT / "provenance_matrix.csv"
+CANDIDATES = OUT / "value_candidates.csv"
 ATTEMPTS = OUT / "http_attempts.csv"
 SUMMARY = OUT / "summary.json"
 REPORT = OUT / "report.txt"
 
-TARGET_MONTH = "2026-07"
-TARGET_MONTH_WORDS = [
-    "july 2026", "jul 2026", "2026-07", "2026/07", "2026-7",
-    "july", "jul"
-]
-TARGET_LME_DATE = "2026-08-28"
-TARGET_LME_DATE_VARIANTS = [
-    "2026-08-28", "2026/08/28", "28.08.2026", "28/08/2026",
-    "08/28/2026", "august 28, 2026", "aug 28, 2026", "28 aug 2026",
-    "28 august 2026"
-]
+ISM_MONTH = "2026-07"
+LME_DATE = "2026-08-28"
 
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.7",
 })
 TIMEOUT = (8, 15)
-MAX_BYTES = 6_000_000
+MAX_BYTES = 7_000_000
 
-ISM_TARGETS = {
+ISM = {
     "SERVICES": [
         "PMI", "Business Activity", "New Orders", "New Export Orders",
         "Employment", "Prices", "Supplier Deliveries", "Backlog",
@@ -143,52 +82,44 @@ ISM_TARGETS = {
         "Customers' Inventories", "Imports", "Exports", "New Export Orders",
     ],
 }
+LME = ["Nickel", "Lead", "Tin", "Cobalt"]
 
-LME_TARGETS = ["Nickel", "Lead", "Tin", "Cobalt"]
-
-FIXED_PAGES = [
-    # Official ISM July 2026 pages
+# Fixed pages only. No discovered links are followed.
+PAGES = [
     ("ISM_SERVICES_JULY", "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/services/july/"),
     ("ISM_MANUFACTURING_JULY", "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/pmi/july/"),
-    # Public ISM index/report pages
-    ("ISM_SERVICES_INDEX", "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/services/"),
-    ("ISM_MANUFACTURING_INDEX", "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/pmi/"),
-
-    # TradingEconomics public pages
-    ("TE_SERVICES", "https://tradingeconomics.com/united-states/non-manufacturing-pmi"),
-    ("TE_SERVICES_ALT", "https://tradingeconomics.com/united-states/services-pmi"),
+    ("TE_SERVICES_NONMAN", "https://tradingeconomics.com/united-states/non-manufacturing-pmi"),
+    ("TE_SERVICES", "https://tradingeconomics.com/united-states/services-pmi"),
     ("TE_MANUFACTURING", "https://tradingeconomics.com/united-states/manufacturing-pmi"),
-    ("TE_MANUFACTURING_NEW_ORDERS", "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders"),
     ("TE_SERVICES_DE", "https://de.tradingeconomics.com/united-states/non-manufacturing-pmi"),
-    ("TE_MANUFACTURING_DE", "https://de.tradingeconomics.com/united-states/manufacturing-pmi"),
-
-    # S&P Global public pages
-    ("SPG_PUBLIC_DE", "https://www.pmi.spglobal.com/Public?language=de"),
-    ("SPG_PUBLIC_EN", "https://www.pmi.spglobal.com/Public?language=en"),
-    ("SPG_PRESS_RELEASE", "https://www.pmi.spglobal.com/Public/Home/PressRelease"),
-
-    # LME
-    ("LME_OFFICIAL_PRICES", "https://www.lme.com/market-data/reports-and-data/lme-official-prices"),
+    ("TE_COMMODITIES_EN", "https://tradingeconomics.com/commodities"),
+    ("TE_COMMODITIES_DE", "https://de.tradingeconomics.com/commodities"),
+    ("TE_COBALT", "https://tradingeconomics.com/commodity/cobalt"),
+    ("TE_NICKEL", "https://tradingeconomics.com/commodity/nickel"),
+    ("TE_LEAD", "https://tradingeconomics.com/commodity/lead"),
+    ("TE_TIN", "https://tradingeconomics.com/commodity/tin"),
+    ("TE_COBALT_DE", "https://de.tradingeconomics.com/commodity/cobalt"),
+    ("LME_OFFICIAL", "https://www.lme.com/market-data/reports-and-data/lme-official-prices"),
     ("LME_NICKEL", "https://www.lme.com/Metals/Non-ferrous/LME-Nickel"),
     ("LME_LEAD", "https://www.lme.com/Metals/Non-ferrous/LME-Lead"),
     ("LME_TIN", "https://www.lme.com/Metals/Non-ferrous/LME-Tin"),
     ("LME_COBALT", "https://www.lme.com/Metals/Minor-metals/LME-Cobalt"),
+    ("SPG_PUBLIC_DE", "https://www.pmi.spglobal.com/Public?language=de"),
+    ("SPG_PUBLIC_EN", "https://www.pmi.spglobal.com/Public?language=en"),
 ]
 
-records = []
-attempts = []
-errors = []
+records, attempts, errors = [], [], []
 
 
 def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def log_record(**data):
-    data["timestamp_utc"] = now()
-    records.append(data)
+def log(route, **data):
+    rec = {"route": route, "timestamp_utc": now(), **data}
+    records.append(rec)
     with EVIDENCE.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False, default=str) + "\n")
+        f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
 
 
 def safe(label, fn):
@@ -200,522 +131,442 @@ def safe(label, fn):
         return None
 
 
-def normalize(value):
-    return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
+def norm(v):
+    return re.sub(r"\s+", " ", html.unescape(str(v or ""))).strip()
 
 
 def fetch(label, url):
-    started = time.monotonic()
+    t0 = time.monotonic()
     try:
         r = SESSION.get(url, timeout=TIMEOUT, allow_redirects=True)
         body = r.content[:MAX_BYTES]
         row = {
-            "label": label,
-            "url": url,
-            "final_url": r.url,
-            "status": r.status_code,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "bytes": len(body),
-            "content_type": r.headers.get("content-type", ""),
-            "redirected": r.url != url,
-            "error": "",
+            "label": label, "url": url, "final_url": r.url,
+            "status": r.status_code, "elapsed_s": round(time.monotonic() - t0, 3),
+            "bytes": len(body), "content_type": r.headers.get("content-type", ""),
+            "redirected": r.url != url, "error": "",
         }
-        attempts.append(row)
-        log_record(route="HTTP", **row)
-        return r, body
     except Exception as exc:
         row = {
-            "label": label,
-            "url": url,
-            "final_url": "",
-            "status": "ERROR",
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "bytes": 0,
-            "content_type": "",
-            "redirected": False,
+            "label": label, "url": url, "final_url": "",
+            "status": "ERROR", "elapsed_s": round(time.monotonic() - t0, 3),
+            "bytes": 0, "content_type": "", "redirected": False,
             "error": repr(exc),
         }
-        attempts.append(row)
-        log_record(route="HTTP", **row)
-        print(f"WARNUNG: HTTP {label}: {type(exc).__name__}: {exc}")
-        return None, b""
+        print(f"WARNUNG: {label}: {type(exc).__name__}: {exc}")
+    attempts.append(row)
+    log("HTTP", **row)
+    return (r, body) if row["status"] != "ERROR" else (None, b"")
 
 
-def visible_text(raw):
-    if BeautifulSoup:
-        soup = BeautifulSoup(raw, "html.parser")
-        for tag in soup(["script", "style", "noscript", "svg"]):
-            tag.decompose()
-        return normalize(soup.get_text(" ", strip=True))
-    return normalize(re.sub(r"<[^>]+>", " ", raw.decode("utf-8", "ignore")))
-
-
-def soup_of(raw):
+def soup(raw):
     return BeautifulSoup(raw, "html.parser") if BeautifulSoup else None
 
 
-def extract_dates(text):
-    patterns = [
-        r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b",
-        r"\b20\d{2}[-/]\d{1,2}\b",
-        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+20\d{2}\b",
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+20\d{2}\b",
-        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+20\d{4}\b",
-    ]
+def text(raw):
+    s = soup(raw)
+    if s:
+        for t in s(["script", "style", "noscript", "svg"]):
+            t.decompose()
+        return norm(s.get_text(" ", strip=True))
+    return norm(re.sub(r"<[^>]+>", " ", raw.decode("utf-8", "ignore")))
+
+
+def nums(s):
     out = []
-    for p in patterns:
-        out.extend(re.findall(p, text, re.I))
-    return list(dict.fromkeys(out))[:500]
+    for tok in re.findall(r"(?<![\w])[-+]?\d{1,6}(?:[.,]\d{1,4})?(?![\w])", s):
+        try:
+            x = float(tok.replace(",", "."))
+        except Exception:
+            continue
+        if 1900 <= abs(x) <= 2100:
+            continue
+        out.append((tok, x))
+    return out
 
 
-def date_strength(text, target):
-    low = text.lower()
-    variants = TARGET_MONTH_WORDS if target == "ISM" else TARGET_LME_DATE_VARIANTS
-    if target == "ISM":
-        if "july 2026" in low or "jul 2026" in low or "2026-07" in low:
-            return "STRONG"
-        if re.search(r"\bjuly\b|\bjul\b", low):
-            return "WEAK"
-        return "NONE"
-    for v in variants:
-        if v.lower() in low:
-            return "STRONG"
-    return "NONE"
+def date_strength(s, domain):
+    low = s.lower()
+    if domain == "ISM":
+        strong = ["july 2026", "jul 2026", "2026-07", "2026/07"]
+        weak = ["july", "jul"]
+        return "STRONG" if any(x in low for x in strong) else ("WEAK" if any(x in low for x in weak) else "NONE")
+    strong = [
+        "2026-08-28", "2026/08/28", "28.08.2026", "28/08/2026",
+        "08/28/2026", "august 28, 2026", "aug 28, 2026", "28 aug 2026",
+    ]
+    return "STRONG" if any(x in low for x in strong) else "NONE"
 
 
-def numeric_tokens(text):
-    # Values such as 54.1, 54,1, 5,280.00, 2.63, 52.5
-    return re.findall(r"(?<![\w])[-+]?\d{1,4}(?:[.,]\d{1,3})?(?![\w])", text)
-
-
-def target_kind(indicator):
-    low = indicator.lower()
-    if indicator in LME_TARGETS:
-        return "LME"
-    if indicator in ISM_TARGETS["SERVICES"]:
-        return "ISM_SERVICES"
-    return "ISM_MANUFACTURING"
-
-
-def candidate_contexts(text, indicator, target="ISM"):
-    contexts = []
-    for m in list(re.finditer(re.escape(indicator), text, re.I))[:60]:
-        start = max(0, m.start() - 350)
-        end = min(len(text), m.end() + 900)
-        ctx = normalize(text[start:end])
-        if date_strength(ctx, target) != "NONE" or target == "LME":
-            contexts.append(ctx)
-    return contexts[:40]
+def target_contexts(txt, term, domain):
+    out = []
+    for m in list(re.finditer(re.escape(term), txt, re.I))[:50]:
+        c = norm(txt[max(0, m.start()-450):min(len(txt), m.end()+1100)])
+        ds = date_strength(c, domain)
+        if ds != "NONE" or domain == "TE_PUBLIC":
+            out.append((c, ds))
+    return out[:25]
 
 
 def extract_visible(label, url, raw):
-    text = visible_text(raw)
-    hits = {}
-    for group, names in ISM_TARGETS.items():
-        hits[group] = {n: len(re.findall(re.escape(n), text, re.I)) for n in names}
-    hits["LME"] = {n: len(re.findall(re.escape(n), text, re.I)) for n in LME_TARGETS}
+    txt = text(raw)
+    groups = {g: {n: txt.lower().count(n.lower()) for n in ns} for g, ns in ISM.items()}
+    groups["LME"] = {n: txt.lower().count(n.lower()) for n in LME}
 
-    value_windows = {}
-    for indicator in list(sum(ISM_TARGETS.values(), [])) + LME_TARGETS:
-        cw = candidate_contexts(text, indicator, "LME" if indicator in LME_TARGETS else "ISM")
-        if cw:
-            value_windows[indicator] = [
-                {
-                    "context": c,
-                    "numbers": numeric_tokens(c),
-                    "target_date_strength": date_strength(
-                        c, "LME" if indicator in LME_TARGETS else "ISM"
-                    ),
-                }
-                for c in cw[:12]
+    contexts = {}
+    all_terms = list(sum(ISM.values(), [])) + LME
+    domain = "LME" if label.startswith("LME") else ("ISM" if label.startswith("ISM_") else "TE_PUBLIC")
+    for term in all_terms:
+        cs = target_contexts(txt, term, domain)
+        if cs:
+            contexts[term] = [
+                {"context": c, "date_strength": ds, "numbers": nums(c)}
+                for c, ds in cs
             ]
-    log_record(
-        route="VISIBLE_VALUE_CONTEXT",
-        label=label,
-        url=url,
-        chars=len(text),
-        dates=extract_dates(text),
-        target_hits=hits,
-        value_windows=value_windows,
-    )
+    log("VISIBLE_CONTEXT", label=label, url=url, chars=len(txt),
+        dates=re.findall(r"\b(?:2026[-/]\d{1,2}(?:[-/]\d{1,2})?|July 2026|August 28, 2026)\b", txt, re.I)[:300],
+        target_counts=groups, contexts=contexts)
 
 
-def extract_html_tables(label, url, raw):
-    if not BeautifulSoup:
+def extract_tables(label, url, raw):
+    s = soup(raw)
+    if not s:
         return
-    soup = soup_of(raw)
-    tables = soup.find_all("table")
-    normalized_tables = []
-    for idx, table in enumerate(tables[:80]):
+    data = []
+    for i, table in enumerate(s.find_all("table")[:100]):
+        table_txt = norm(table.get_text(" ", strip=True))
         rows = []
-        for tr in table.find_all("tr")[:80]:
-            cells = [normalize(c.get_text(" ", strip=True)) for c in tr.find_all(["th", "td"])]
+        for tr in table.find_all("tr")[:100]:
+            cells = [norm(c.get_text(" ", strip=True)) for c in tr.find_all(["th", "td"])]
             if cells:
                 rows.append(cells)
-        table_text = normalize(table.get_text(" ", strip=True))
-        normalized_tables.append({
-            "index": idx,
-            "date_strength_ism": date_strength(table_text, "ISM"),
-            "date_strength_lme": date_strength(table_text, "LME"),
+        data.append({
+            "index": i,
+            "ism_date_strength": date_strength(table_txt, "ISM"),
+            "lme_date_strength": date_strength(table_txt, "LME"),
             "rows": rows,
         })
-    log_record(route="HTML_TABLES_VALUE_SCAN", label=label, url=url,
-               table_count=len(tables), tables=normalized_tables)
+    log("HTML_TABLES", label=label, url=url, table_count=len(data), tables=data)
 
 
 def extract_pandas(label, url, raw):
     if pd is None:
-        log_record(route="PANDAS_TABLES_VALUE_SCAN", label=label, url=url,
-                   status="UNAVAILABLE")
+        log("PANDAS_TABLES", label=label, url=url, status="UNAVAILABLE")
         return
     try:
         frames = pd.read_html(raw)
-        out = []
-        for idx, df in enumerate(frames[:80]):
+        rows = []
+        for i, df in enumerate(frames[:100]):
             clean = df.fillna("").astype(str)
-            blob = normalize(" ".join(clean.astype(str).stack().tolist()))
-            out.append({
-                "index": idx,
-                "shape": list(df.shape),
+            blob = norm(" ".join(clean.astype(str).stack().tolist()))
+            rows.append({
+                "index": i, "shape": list(df.shape),
                 "columns": [str(c) for c in df.columns],
-                "date_strength_ism": date_strength(blob, "ISM"),
-                "date_strength_lme": date_strength(blob, "LME"),
-                "rows": clean.head(40).to_dict("records"),
+                "ism_date_strength": date_strength(blob, "ISM"),
+                "lme_date_strength": date_strength(blob, "LME"),
+                "sample": clean.head(50).to_dict("records"),
             })
-        log_record(route="PANDAS_TABLES_VALUE_SCAN", label=label, url=url,
-                   status="OK", table_count=len(frames), tables=out)
+        log("PANDAS_TABLES", label=label, url=url, status="OK",
+            table_count=len(rows), tables=rows)
     except Exception as exc:
-        log_record(route="PANDAS_TABLES_VALUE_SCAN", label=label, url=url,
-                   status="ERROR", error=repr(exc))
+        log("PANDAS_TABLES", label=label, url=url, status="ERROR", error=repr(exc))
 
 
 def extract_json(label, url, raw):
     blobs = []
-    text = raw.decode("utf-8", "ignore")
-    soup = soup_of(raw) if BeautifulSoup else None
-
-    if soup:
-        for script in soup.find_all("script"):
-            content = (script.string or script.get_text()).strip()
+    rawtxt = raw.decode("utf-8", "ignore")
+    s = soup(raw)
+    if s:
+        for tag in s.find_all("script"):
+            content = (tag.string or tag.get_text()).strip()
             if not content:
                 continue
-            typ = (script.get("type") or "").lower()
+            typ = (tag.get("type") or "").lower()
             if typ == "application/ld+json" or content.startswith("{") or content.startswith("["):
                 try:
                     blobs.append(json.loads(content))
                 except Exception:
                     pass
-
-    for candidate in re.findall(
-        r"(?s)(?:var|let|const)\s+\w+\s*=\s*(\{.*?\}|\[.*?\]);",
-        text
-    )[:100]:
+    for x in re.findall(r"(?s)(?:var|let|const)\s+\w+\s*=\s*(\{.*?\}|\[.*?\]);", rawtxt)[:100]:
         try:
-            blobs.append(json.loads(candidate))
+            blobs.append(json.loads(x))
         except Exception:
             pass
-
-    interesting = []
-    for blob in blobs[:100]:
-        s = json.dumps(blob, ensure_ascii=False)
+    interesting = [
+        b for b in blobs
         if re.search(
-            r"PMI|Business Activity|New Orders|Employment|Prices|Nickel|Lead|Tin|Cobalt|"
-            r"Actual|Previous|Forecast|Reference|Release|2026-08-28|July 2026",
-            s, re.I
-        ):
-            interesting.append(blob)
-
-    log_record(route="EMBEDDED_JSON_VALUE_SCAN", label=label, url=url,
-               blob_count=len(blobs), interesting_blobs=interesting[:60])
+            r"PMI|Business Activity|New Orders|Employment|Prices|Backlog|"
+            r"Inventory|Exports|Imports|Nickel|Lead|Tin|Cobalt|"
+            r"56290|16806|54827|1919|2026-08-28|August 28, 2026",
+            json.dumps(b, ensure_ascii=False), re.I
+        )
+    ]
+    log("EMBEDDED_JSON", label=label, url=url,
+        blob_count=len(blobs), interesting_blobs=interesting[:80])
 
 
 def extract_attributes(label, url, raw):
-    soup = soup_of(raw)
-    if not soup:
+    s = soup(raw)
+    if not s:
         return
-    wanted = re.compile(
-        r"pmi|services|manufacturing|nickel|lead|tin|cobalt|actual|previous|forecast|"
-        r"consensus|reference|release|date|price|order|employment|inventory|backlog|"
-        r"export|import|supplier",
-        re.I
+    pat = re.compile(
+        r"pmi|services|manufacturing|nickel|lead|tin|cobalt|"
+        r"actual|previous|forecast|reference|release|date|price|"
+        r"order|employment|inventory|backlog|export|import|supplier|symbol",
+        re.I,
     )
-    matches = []
-    for tag in soup.find_all(True):
+    rows = []
+    for tag in s.find_all(True):
         attrs = []
-        for key, value in tag.attrs.items():
-            val = normalize(value if isinstance(value, str) else " ".join(map(str, value)))
-            if wanted.search(f"{key} {val}"):
-                attrs.append({"attribute": key, "value": val[:1800]})
+        for k, v in tag.attrs.items():
+            val = norm(v if isinstance(v, str) else " ".join(map(str, v)))
+            if pat.search(f"{k} {val}"):
+                attrs.append({"name": k, "value": val[:1800]})
         if attrs:
-            matches.append({
-                "tag": tag.name,
-                "text": normalize(tag.get_text(" ", strip=True))[:1800],
-                "attrs": attrs,
-            })
-        if len(matches) >= 1200:
+            rows.append({"tag": tag.name, "text": norm(tag.get_text(" ", strip=True))[:1800], "attrs": attrs})
+        if len(rows) >= 1500:
             break
-    log_record(route="HTML_ATTRIBUTES_VALUE_SCAN", label=label, url=url,
-               matches=matches)
+    log("HTML_ATTRIBUTES", label=label, url=url, rows=rows)
 
 
 def extract_meta(label, url, raw):
-    soup = soup_of(raw)
-    if not soup:
+    s = soup(raw)
+    if not s:
         return
     rows = []
-    for tag in soup.find_all(["meta", "time"]):
-        if tag.name == "meta":
-            rows.append({
-                "name": tag.get("name"),
-                "property": tag.get("property"),
-                "itemprop": tag.get("itemprop"),
-                "content": normalize(tag.get("content")),
-            })
-        else:
-            rows.append({
-                "datetime": tag.get("datetime"),
-                "text": normalize(tag.get_text(" ", strip=True)),
-            })
-    log_record(route="META_AND_TIME_TAGS", label=label, url=url, rows=rows[:1000])
+    for tag in s.find_all(["meta", "time"]):
+        rows.append({
+            "tag": tag.name,
+            "name": tag.get("name"),
+            "property": tag.get("property"),
+            "itemprop": tag.get("itemprop"),
+            "datetime": tag.get("datetime"),
+            "content": norm(tag.get("content")),
+            "text": norm(tag.get_text(" ", strip=True)),
+        })
+    log("META_TIME", label=label, url=url, rows=rows[:1500])
 
 
-def extract_source_regex(label, url, raw):
-    text = raw.decode("utf-8", "ignore")
+def extract_source(label, url, raw):
+    rawtxt = raw.decode("utf-8", "ignore")
     patterns = {
         "target_dates": (
-            re.findall(r"2026[-/]\d{1,2}[-/]\d{1,2}", text)[:400]
-            + re.findall(r"\b(?:July|Jul|August|Aug)\s+\d{1,2},?\s+2026\b", text, re.I)[:400]
-            + re.findall(r"\b(?:July|Jul|August|Aug)\s+2026\b", text, re.I)[:400]
+            re.findall(r"2026[-/]\d{1,2}[-/]\d{1,2}", rawtxt)[:500]
+            + re.findall(r"\b(?:July|Jul|August|Aug)\s+\d{1,2},?\s+2026\b", rawtxt, re.I)[:500]
+            + re.findall(r"\b(?:July|Jul|August|Aug)\s+2026\b", rawtxt, re.I)[:500]
         ),
-        "pmi_context": re.findall(
-            r"(?is).{0,500}(?:services pmi|non-manufacturing pmi|manufacturing pmi|composite pmi).{0,1400}",
-            text
-        )[:300],
-        "ism_component_context": re.findall(
-            r"(?is).{0,450}(?:Business Activity|New Orders|New Export Orders|Employment|Prices|"
-            r"Supplier Deliveries|Backlog(?: of Orders)?|Inventories|Inventory Sentiment|"
-            r"Customers' Inventories|Imports|Exports|Production).{0,1200}",
-            text
+        "te_data_symbols": re.findall(r'data-(?:symbol|code|id)\s*=\s*["\']([^"\']+)["\']', rawtxt, re.I)[:800],
+        "te_rows_with_metals": re.findall(
+            r"(?is)<tr[^>]*>.*?(?:Cobalt|Nickel|Lead|Tin).*?</tr>",
+            rawtxt
+        )[:200],
+        "price_context": re.findall(
+            r"(?is).{0,500}(?:Cobalt|Nickel|Lead|Tin).{0,1000}",
+            rawtxt
         )[:500],
-        "lme_context": re.findall(
-            r"(?is).{0,600}(?:Nickel|Lead|Tin|Cobalt).{0,1400}",
-            text
+        "official_context": re.findall(
+            r"(?is).{0,500}(?:Official Price|Official Cash|Cash Bid|Cash Offer|"
+            r"Actual|Previous|Reference|Release Date).{0,1200}",
+            rawtxt
         )[:500],
-        "field_context": re.findall(
-            r"(?is).{0,350}(?:Actual|Previous|Forecast|Consensus|Reference|Release Date|Last|Value|Official Price).{0,900}",
-            text
-        )[:400],
+        "ism_context": re.findall(
+            r"(?is).{0,450}(?:Business Activity|New Orders|New Export Orders|"
+            r"Employment|Prices|Supplier Deliveries|Backlog(?: of Orders)?|"
+            r"Inventories|Inventory Sentiment|Customers' Inventories|Imports|"
+            r"Exports|Production).{0,1300}",
+            rawtxt
+        )[:700],
     }
-    log_record(route="SOURCE_REGEX_CONTEXT", label=label, url=url, matches=patterns)
+    log("SOURCE_REGEX", label=label, url=url, matches=patterns)
 
 
 def extract_links(label, url, raw):
-    soup = soup_of(raw)
-    if not soup:
+    s = soup(raw)
+    if not s:
         return
-    links = []
-    for a in soup.find_all("a", href=True):
+    rows = []
+    for a in s.find_all("a", href=True):
         href = urljoin(url, a["href"])
-        anchor = normalize(a.get_text(" ", strip=True))
+        anchor = norm(a.get_text(" ", strip=True))
         if re.search(
-            r"pmi|services|manufacturing|composite|historical|forecast|release|"
-            r"official|nickel|lead|tin|cobalt|july|august",
-            f"{anchor} {href}",
-            re.I,
+            r"pmi|services|manufacturing|commodity|cobalt|nickel|lead|tin|"
+            r"historical|forecast|release|official|price",
+            f"{anchor} {href}", re.I
         ):
-            links.append({"anchor": anchor, "url": href})
-    # IMPORTANT: links are only listed; never followed.
-    log_record(route="LINK_INVENTORY_NO_FOLLOW", label=label, url=url,
-               count=len(links), links=links[:500])
+            rows.append({"anchor": anchor, "url": href})
+    # Deliberately not followed.
+    log("LINKS_NO_FOLLOW", label=label, url=url, count=len(rows), links=rows[:700])
 
 
-def build_value_candidates():
+def inspect(label, url):
+    r, raw = fetch(label, url)
+    if not r or not raw:
+        return
+    try:
+        (RAW / (re.sub(r"[^A-Za-z0-9_.-]+", "_", label) + ".html")).write_bytes(raw)
+    except Exception as exc:
+        log("RAW_SAVE", label=label, url=url, status="ERROR", error=repr(exc))
+    safe(label + ":visible", lambda: extract_visible(label, url, raw))
+    safe(label + ":tables", lambda: extract_tables(label, url, raw))
+    safe(label + ":pandas", lambda: extract_pandas(label, url, raw))
+    safe(label + ":json", lambda: extract_json(label, url, raw))
+    safe(label + ":attrs", lambda: extract_attributes(label, url, raw))
+    safe(label + ":meta", lambda: extract_meta(label, url, raw))
+    safe(label + ":source", lambda: extract_source(label, url, raw))
+    safe(label + ":links", lambda: extract_links(label, url, raw))
+
+
+def build_candidates():
     """
-    Build a second, more stringent candidate layer from the evidence objects.
-    Each candidate stores the exact local context from which it came.
-
-    We do not guess which of several numbers is the correct value:
-    candidate_number is only recorded when the local context contains exactly
-    one plausible numeric token after excluding years/dates.
+    Conservative candidate builder.
+    We intentionally do NOT call a candidate "VALIDATED_VALUE" across arbitrary
+    pages. A candidate is VALIDATED_VALUE only when its local context has:
+      - exact target indicator,
+      - exactly one plausible number,
+      - strong matching target date/month,
+      - and a page whose declared domain is compatible with the target.
+    TE commodity values stay TE_PUBLIC_COMMODITY, never LME_OFFICIAL_CASH.
     """
-    candidates = []
+    cands = []
 
     for rec in records:
-        route = rec.get("route")
-        label = rec.get("label")
-        url = rec.get("url")
-
-        if route == "VISIBLE_VALUE_CONTEXT":
-            for indicator, windows in rec.get("value_windows", {}).items():
-                target = "LME" if indicator in LME_TARGETS else "ISM"
-                ref = TARGET_LME_DATE if target == "LME" else TARGET_MONTH
+        if rec.get("route") == "VISIBLE_CONTEXT":
+            label = rec.get("label", "")
+            domain_page = "ISM" if label.startswith("ISM_") else (
+                "LME" if label.startswith("LME_") else "TE"
+            )
+            for indicator, windows in rec.get("contexts", {}).items():
+                target_domain = "LME" if indicator in LME else (
+                    "ISM" if any(indicator in v for v in ISM.values()) else "TE"
+                )
                 for w in windows:
-                    nums = []
-                    for token in w.get("numbers", []):
-                        try:
-                            v = float(token.replace(",", "."))
-                        except Exception:
-                            continue
-                        # Exclude obvious years and date fragments.
-                        if 1900 <= abs(v) <= 2100:
-                            continue
-                        nums.append((token, v))
-                    # A local context is a strong candidate only if there is exactly
-                    # one numeric token that can reasonably be the requested field.
-                    status = "VALIDATED_VALUE" if (
-                        w.get("target_date_strength") == "STRONG" and len(nums) == 1
-                    ) else "CANDIDATE"
-                    for token, value in nums[:5]:
-                        candidates.append({
+                    ns = w.get("numbers", [])
+                    ds = w.get("date_strength")
+                    # Avoid false validation from TE general pages: only strong date
+                    # + exactly one plausible number in a local context.
+                    valid = (
+                        len(ns) == 1
+                        and ds == "STRONG"
+                        and (
+                            (target_domain == "LME" and domain_page == "LME")
+                            or (target_domain == "ISM" and domain_page == "ISM")
+                            or (target_domain == "TE" and domain_page == "TE")
+                        )
+                    )
+                    status = "VALIDATED_VALUE" if valid else "CANDIDATE"
+                    if target_domain == "LME" and domain_page == "TE":
+                        # TE commodity data is useful fallback evidence but not
+                        # evidence for LME Official Cash.
+                        status = "TE_PUBLIC_COMMODITY_CANDIDATE"
+                    for tok, value in ns[:5]:
+                        cands.append({
                             "source": label,
-                            "url": url,
+                            "url": rec.get("url", ""),
                             "indicator": indicator,
-                            "reference": ref,
-                            "method": route,
-                            "raw_token": token,
+                            "reference": LME_DATE if target_domain == "LME" else ISM_MONTH,
+                            "domain": "TE_PUBLIC_COMMODITY" if (
+                                target_domain == "LME" and domain_page == "TE"
+                            ) else target_domain,
+                            "method": rec["route"],
+                            "token": tok,
                             "value": value,
-                            "date_strength": w.get("target_date_strength"),
+                            "date_strength": ds,
                             "status": status,
-                            "context": w.get("context", "")[:1800],
+                            "context": w["context"][:2200],
                         })
 
-        elif route == "HTML_TABLES_VALUE_SCAN":
-            for table in rec.get("tables", []):
-                rows = table.get("rows", [])
-                for row in rows:
-                    line = normalize(" | ".join(row))
-                    for indicator in (
-                        (LME_TARGETS if label.startswith("LME") else
-                         sum(ISM_TARGETS.values(), []))
-                    ):
-                        if re.search(re.escape(indicator), line, re.I):
-                            nums = []
-                            for token in numeric_tokens(line):
-                                try:
-                                    v = float(token.replace(",", "."))
-                                except Exception:
-                                    continue
-                                if 1900 <= abs(v) <= 2100:
-                                    continue
-                                nums.append((token, v))
-                            target = "LME" if indicator in LME_TARGETS else "ISM"
-                            strength = (
-                                table.get("date_strength_lme") if target == "LME"
-                                else table.get("date_strength_ism")
-                            )
-                            for token, value in nums[:12]:
-                                status = (
-                                    "VALIDATED_VALUE"
-                                    if strength == "STRONG" else "CANDIDATE"
-                                )
-                                candidates.append({
-                                    "source": label,
-                                    "url": url,
-                                    "indicator": indicator,
-                                    "reference": TARGET_LME_DATE if target == "LME" else TARGET_MONTH,
-                                    "method": route,
-                                    "raw_token": token,
-                                    "value": value,
-                                    "date_strength": strength,
-                                    "status": status,
-                                    "context": line[:1800],
-                                })
-    return candidates
+    return cands
 
 
 def write_outputs():
-    candidates = build_value_candidates()
-
-    # Keep the raw candidate file compact enough to be practical.
-    candidate_path = OUT / "value_candidates.csv"
-    with candidate_path.open("w", newline="", encoding="utf-8") as f:
+    cands = build_candidates()
+    with CANDIDATES.open("w", newline="", encoding="utf-8") as f:
         fields = [
-            "source", "url", "indicator", "reference", "method",
-            "raw_token", "value", "date_strength", "status", "context"
+            "source", "url", "indicator", "reference", "domain", "method",
+            "token", "value", "date_strength", "status", "context"
         ]
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(candidates)
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(cands)
 
-    # Group by exact target field.
     targets = []
-    for group, names in ISM_TARGETS.items():
-        for name in names:
-            targets.append(("ISM", group, name, TARGET_MONTH))
-    for name in LME_TARGETS:
-        targets.append(("LME", "OFFICIAL_CASH", name, TARGET_LME_DATE))
+    for group, names in ISM.items():
+        for n in names:
+            targets.append(("ISM", group, n, ISM_MONTH))
+    for n in LME:
+        targets.append(("LME", "OFFICIAL_CASH", n, LME_DATE))
 
-    matrix_rows = []
-    for domain, group, indicator, reference in targets:
-        matching = [
-            c for c in candidates
+    rows = []
+    for domain, group, indicator, ref in targets:
+        matches = [
+            c for c in cands
             if c["indicator"].lower() == indicator.lower()
-            and c["reference"] == reference
+            and c["reference"] == ref
         ]
-        valid = [c for c in matching if c["status"] == "VALIDATED_VALUE"]
-        if valid:
-            state = "VALIDATED_VALUE"
-        elif matching:
-            state = "CANDIDATE"
-        else:
-            state = "NOT_FOUND"
-        # Multiple distinct candidate values are intentionally flagged rather than
-        # silently choosing one.
-        unique_values = sorted(set(round(float(c["value"]), 8) for c in matching))
-        ambiguity = "YES" if len(unique_values) > 1 else "NO"
-        matrix_rows.append({
+        exact_valid = [c for c in matches if c["status"] == "VALIDATED_VALUE"]
+        te_public = [c for c in matches if c["status"] == "TE_PUBLIC_COMMODITY_CANDIDATE"]
+        state = (
+            "VALIDATED_VALUE" if exact_valid
+            else "TE_PUBLIC_COMMODITY_CANDIDATE" if te_public
+            else "CANDIDATE" if matches
+            else "NOT_FOUND"
+        )
+        values = sorted(set(round(float(c["value"]), 8) for c in matches))
+        rows.append({
             "domain": domain,
             "group": group,
             "indicator": indicator,
-            "reference_target": reference,
+            "reference_target": ref,
             "state": state,
-            "candidate_count": len(matching),
-            "validated_count": len(valid),
-            "distinct_candidate_values": ";".join(map(str, unique_values[:20])),
-            "ambiguous": ambiguity,
-            "best_source": valid[0]["source"] if valid else (matching[0]["source"] if matching else ""),
-            "best_method": valid[0]["method"] if valid else (matching[0]["method"] if matching else ""),
+            "candidate_count": len(matches),
+            "validated_count": len(exact_valid),
+            "distinct_values": ";".join(map(str, values[:30])),
+            "ambiguous": "YES" if len(values) > 1 else "NO",
+            "sources": ";".join(sorted(set(c["source"] for c in matches))[:30]),
+            "methods": ";".join(sorted(set(c["method"] for c in matches))),
         })
 
     with MATRIX.open("w", newline="", encoding="utf-8") as f:
         fields = [
-            "domain", "group", "indicator", "reference_target", "state",
-            "candidate_count", "validated_count", "distinct_candidate_values",
-            "ambiguous", "best_source", "best_method"
+            "domain","group","indicator","reference_target","state",
+            "candidate_count","validated_count","distinct_values",
+            "ambiguous","sources","methods"
         ]
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(matrix_rows)
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
 
     with ATTEMPTS.open("w", newline="", encoding="utf-8") as f:
-        fields = [
-            "label", "url", "final_url", "status", "elapsed_s", "bytes",
-            "content_type", "redirected", "error"
-        ]
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(attempts)
+        fields = ["label","url","final_url","status","elapsed_s","bytes",
+                  "content_type","redirected","error"]
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(attempts)
 
     counts = defaultdict(int)
-    for row in matrix_rows:
-        counts[row["state"]] += 1
+    for r in rows:
+        counts[r["state"]] += 1
 
     summary = {
         "version": VERSION,
         "finished": True,
         "non_aborting": True,
-        "fixed_pages": len(FIXED_PAGES),
+        "fixed_pages": len(PAGES),
         "recursive_crawl": False,
         "te_api_used": False,
         "production_file_modified": False,
         "actual_value_inference": False,
-        "ism_reference_month": TARGET_MONTH,
-        "lme_target_date": TARGET_LME_DATE,
+        "ism_month": ISM_MONTH,
+        "lme_target_date": LME_DATE,
         "http_attempts": len(attempts),
         "evidence_records": len(records),
-        "value_candidates": len(candidates),
+        "value_candidates": len(cands),
         "errors": len(errors),
         "matrix_counts": dict(counts),
+        "important_note": (
+            "Trading Economics commodity values are public fallback evidence and "
+            "are not labeled as LME Official Prices."
+        ),
     }
     SUMMARY.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -727,49 +578,44 @@ def write_outputs():
         "TE_API_USED=False",
         "PRODUCTION_FILE_MODIFIED=False",
         "ACTUAL_VALUE_INFERENCE=False",
-        f"ISM_REFERENCE_MONTH={TARGET_MONTH}",
-        f"LME_TARGET_DATE={TARGET_LME_DATE}",
-        f"FIXED_PAGES={len(FIXED_PAGES)}",
+        f"ISM_MONTH={ISM_MONTH}",
+        f"LME_TARGET_DATE={LME_DATE}",
+        f"FIXED_PAGES={len(PAGES)}",
         f"HTTP_ATTEMPTS={len(attempts)}",
         f"EVIDENCE_RECORDS={len(records)}",
-        f"VALUE_CANDIDATES={len(candidates)}",
+        f"VALUE_CANDIDATES={len(cands)}",
         f"ERRORS={len(errors)}",
         "",
         "MATRIX COUNTS:",
     ]
-    for k, v in sorted(counts.items()):
-        lines.append(f"{k}={v}")
-
+    lines += [f"{k}={v}" for k, v in sorted(counts.items())]
     lines += ["", "VALUE MATRIX:"]
-    for row in matrix_rows:
+    for r in rows:
         lines.append(
-            f'{row["domain"]} | {row["group"]} | {row["indicator"]} | '
-            f'target={row["reference_target"]} | state={row["state"]} | '
-            f'candidates={row["candidate_count"]} | validated={row["validated_count"]} | '
-            f'values={row["distinct_candidate_values"]} | ambiguous={row["ambiguous"]} | '
-            f'source={row["best_source"]} | method={row["best_method"]}'
+            f'{r["domain"]} | {r["group"]} | {r["indicator"]} | '
+            f'target={r["reference_target"]} | state={r["state"]} | '
+            f'candidates={r["candidate_count"]} | validated={r["validated_count"]} | '
+            f'values={r["distinct_values"]} | ambiguous={r["ambiguous"]} | '
+            f'sources={r["sources"]} | methods={r["methods"]}'
         )
-
     if errors:
         lines += ["", "NON-FATAL ERRORS:"]
         lines += [f'{e["label"]}: {e["error"]}' for e in errors]
-
     REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main():
     print(f"=== {VERSION} ===")
     print("MODE=FIXED_PAGES|MULTI_EXTRACTION|VALUE_LEVEL|NON_ABORTING|READ_ONLY")
-    print("NO_RECURSIVE_CRAWL=True")
+    print(f"ISM_MONTH={ISM_MONTH}")
+    print(f"LME_TARGET_DATE={LME_DATE}")
     print("TE_API_USED=False")
-    print(f"ISM_TARGET_MONTH={TARGET_MONTH}")
-    print(f"LME_TARGET_DATE={TARGET_LME_DATE}")
-    print(f"FIXED_PAGE_COUNT={len(FIXED_PAGES)}")
+    print("NO_RECURSIVE_CRAWL=True")
+    print(f"FIXED_PAGE_COUNT={len(PAGES)}")
 
-    for label, url in FIXED_PAGES:
-        safe(f"PAGE:{label}", lambda label=label, url=url: inspect_page(label, url))
+    for label, url in PAGES:
+        safe(f"PAGE:{label}", lambda label=label, url=url: inspect(label, url))
 
-    # Always write evidence, even after individual source failures.
     safe("WRITE_OUTPUTS", write_outputs)
 
     print(f"V9_HTTP_ATTEMPTS={len(attempts)}")
@@ -779,25 +625,6 @@ def main():
     print("V9_PRODUCTION_FILE_MODIFIED=False")
     print("V9_EXIT_POLICY=0")
     return 0
-
-
-def inspect_page(label, url):
-    response, raw = fetch(label, url)
-    if not response or not raw:
-        return
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", label)[:120] + ".html"
-    try:
-        (RAW / safe_name).write_bytes(raw)
-    except Exception as exc:
-        log_record(route="RAW_SAVE", label=label, url=url, error=repr(exc))
-    safe(f"{label}:visible", lambda: extract_visible(label, url, raw))
-    safe(f"{label}:html_tables", lambda: extract_html_tables(label, url, raw))
-    safe(f"{label}:pandas", lambda: extract_pandas(label, url, raw))
-    safe(f"{label}:json", lambda: extract_json(label, url, raw))
-    safe(f"{label}:attributes", lambda: extract_attributes(label, url, raw))
-    safe(f"{label}:meta", lambda: extract_meta(label, url, raw))
-    safe(f"{label}:regex", lambda: extract_source_regex(label, url, raw))
-    safe(f"{label}:links", lambda: extract_links(label, url, raw))
 
 
 if __name__ == "__main__":
