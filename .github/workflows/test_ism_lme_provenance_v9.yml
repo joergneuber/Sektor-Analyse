@@ -35,17 +35,16 @@ jobs:
           print("V9_SYNTAX=GREEN")
           PY
 
-      - name: Run V9 value-level deep extraction
+      - name: Run V9 broad value extraction
         shell: bash
         run: |
           set +e
           python test_ism_lme_provenance_v9.py
           rc=$?
           echo "V9_TEST_EXIT=$rc"
-          # Deliberately non-aborting: source/parser failures are evidence.
           exit 0
 
-      - name: Show compact result
+      - name: Show result matrix
         if: always()
         shell: bash
         run: |
