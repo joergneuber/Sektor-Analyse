@@ -1,0 +1,53 @@
+name: TE + S&P Global Services Extended Collection
+
+on:
+  workflow_dispatch:
+
+jobs:
+  collect-te-sp-services:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify test file is present
+        run: |
+          test -f makro_szenario.py
+          test -f test_te_ism_services_extended_collection.py
+          echo "FILES=GREEN"
+          ls -l makro_szenario.py test_te_ism_services_extended_collection.py
+
+      - name: Install collection dependencies
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            pandas \
+            lxml \
+            requests
+
+      - name: Verify production syntax
+        run: |
+          python -m py_compile makro_szenario.py
+
+      - name: Verify collection test syntax
+        run: |
+          python -m py_compile \
+            test_te_ism_services_extended_collection.py
+
+      - name: Run very large non-aborting collection
+        run: |
+          python test_te_ism_services_extended_collection.py
+
+      - name: Upload complete source captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: te-sp-services-extended-collection
+          path: .te_services_extended/
+          if-no-files-found: ignore
