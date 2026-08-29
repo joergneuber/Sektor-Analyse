@@ -1878,7 +1878,8 @@ HARTE MAKRO-DATENREGELN (VERBINDLICH)
 • PROXY muss immer ausdruecklich als Proxy bezeichnet werden und darf niemals als Originalpreis des zugrunde liegenden Assets ausgegeben werden.
 • MODEL_DERIVED ist ausschliesslich fuer die spaetere Szenario-/Wahrscheinlichkeitslogik zulaessig. Eine MODEL_DERIVED-Wahrscheinlichkeit ist kein realer Datenwert und darf niemals als Markterwartung aus einer Quelle dargestellt werden.
 • UNAVAILABLE bleibt UNAVAILABLE. Kein letzter Wert, keine Null und kein Proxy darf stillschweigend als Ersatz eingesetzt werden.
-• Das Makro-Datenpaket enthaelt ein MAKRO-SZENARIO-GATE. Bei GESPERRT duerfen in Punkt 2 KEINE geschaetzten Makro-Prognosewerte und KEINE Szenario-Wahrscheinlichkeiten ausgegeben werden. Stattdessen die konkreten kritischen Datenluecken nennen und die Zukunftsaussagen entsprechend begrenzen.
+• Das Makro-Datenpaket enthaelt ein MAKRO-SZENARIO-GATE. Dieses Gate ist fuer Punkt 2 autoritativ und darf von Gemini NICHT neu bewertet oder wegen sekundärer Datenluecken ueberschrieben werden. Bei FREIGEGEBEN ist Punkt 2 freigegeben. TIER-2- und TIER-3-Luecken, insbesondere fehlende ISM-EXTENDED-Unterkomponenten oder LME-Preise, duerfen das Gate nicht nachtraeglich sperren; sie duerfen lediglich die Datenqualitaet bzw. die Staerke der Bestaetigung reduzieren. Bei GESPERRT duerfen in Punkt 2 KEINE geschaetzten Makro-Prognosewerte und KEINE Szenario-Wahrscheinlichkeiten ausgegeben werden. Stattdessen die konkreten kritischen TIER-1-Datenluecken nennen und die Zukunftsaussagen entsprechend begrenzen.
+• TIER-1 CORE = gate-relevante Daten. TIER-2 CONFIRMATION = Szenarioverstaerkung und niemals alleiniger Gate-Blocker. TIER-3 CONTEXT = zusaetzliche Information ohne Gate-Einfluss.
 • Fed-Erwartung: keine kostenpflichtige CME-FedWatch-API. Die eigene marktimplizierte Erwartung wird aus realen 30-Day-Fed-Funds-Futures berechnet; die Berechnungsmethodik muss nachvollziehbar bleiben.
 • PMI: keine geschaetzten PMI-Werte. Fuer die USA sind offizielle oeffentliche ISM-Manufacturing-/Services-Releases die Primaerquelle. Nicht verfuegbare weitere PMI-Reihen bleiben UNAVAILABLE.
 
@@ -1896,8 +1897,9 @@ Formuliere direkt zu Beginn 2-4 kompakte Saetze. Nenne das aktuelle
 Makro-Regime, die 2-4 wichtigsten Treiber sowie die wichtigsten
 Gegentreiber bzw. Datenluecken. Keine künstliche quantitative Sicherheit.
 Wenn das MAKRO-SZENARIO-GATE GESPERRT ist, nenne den Sperrgrund und
-verzichte auf modellbasierte Zukunftsaussagen, die durch die Datenluecke
-nicht gestützt sind.
+verzichte auf modellbasierte Zukunftsaussagen, die durch die TIER-1-Datenluecke
+nicht gestützt sind. Wenn das Gate FREIGEGEBEN ist, MUSS Punkt 2 als freigegeben
+behandelt werden; TIER-2-/TIER-3-Luecken duerfen daraus keine Sperrung machen.
 
 2.1 KURZFRISTIG: 1-4 WOCHEN
 Bewerte die wahrscheinlichste Entwicklung fuer die naechsten 1-4 Wochen.
