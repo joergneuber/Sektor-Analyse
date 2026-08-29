@@ -1,4 +1,4 @@
-name: TE ISM Services Production Patch - Sequential Diagnostic
+name: TE ISM Services Production Patch
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
 jobs:
   test-te-ism-services-production-patch:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,14 +16,27 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install production-patch diagnostic dependencies
-        run: python -m pip install --disable-pip-version-check pandas lxml requests yfinance
+      - name: Install diagnostic dependencies
+        run: python -m pip install --disable-pip-version-check pandas lxml requests
 
-      - name: Verify target exists
+      - name: Verify production file exists
         run: test -f makro_szenario.py
 
-      - name: Verify production-patch diagnostic syntax
+      - name: Verify production syntax
+        run: python -m py_compile makro_szenario.py
+
+      - name: Verify master test syntax
         run: python -m py_compile test_te_ism_services_production_patch_1787941269.py
 
-      - name: Run complete non-aborting production-patch diagnostic
+      - name: Run large non-aborting master test
         run: python test_te_ism_services_production_patch_1787941269.py
+
+      - name: Upload diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: te-ism-services-master-diagnostic
+          path: |
+            .te_services_*_debug.html
+            .macro_cache/macro_cache.json
+          if-no-files-found: ignore
