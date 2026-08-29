@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v6.7"
+VERSION = "v6.8"
 """
 
 import datetime as dt
@@ -1320,19 +1320,19 @@ def _extract_te_release_date(text):
     return None
 
 def _te_calendar_actual(html, expected_ref):
-    """Liest den echten Actual-Wert und das Release-Datum aus der TE-Kalenderzeile.
+    """Liest Actual-Wert und Release-Datum aus der TE-Kalendertabelle.
 
-    Primär wird die vorhandene Tabellenlogik verwendet. Falls Trading
-    Economics die Seite so ausliefert, dass pandas.read_html() die Tabelle
-    nicht erkennt, wird als robuster Fallback die sichtbare Kalenderzeile
-    direkt aus dem bereinigten Text gelesen.
-
-    Die Fallback-Regel ist strikt:
-    - exakter Reference-Monat
-    - Release im erwarteten Folgemonat
-    - erster numerischer Wert nach dem Reference-Token = Actual
-    - Previous/Consensus/TEForecast werden niemals als Quelle verwendet
+    Trading Economics hat die Kalenderstruktur mehrfach variiert. Die robuste
+    Regel ist deshalb: finde eine Tabelle mit einer expliziten Actual-Spalte,
+    finde darin ein Release-Datum im Monat nach dem angeforderten Reference-
+    Monat und nimm ausschließlich den Actual-Wert derselben Zeile.
+    Forecast/Previous/Consensus werden niemals verwendet.
     """
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception:
+        return None, None
+
     try:
         month_abbr, year = expected_ref.split()
         month_num = next(
@@ -1348,8 +1348,7 @@ def _te_calendar_actual(html, expected_ref):
         raw = str(value).strip()
         for fmt in (
             "%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d/%m/%Y",
-            "%d-%m-%Y", "%B %d, %Y", "%b %d, %Y",
-            "%d %B %Y", "%d %b %Y",
+            "%d-%m-%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y",
         ):
             try:
                 return datetime.strptime(raw, fmt).date()
@@ -1358,26 +1357,16 @@ def _te_calendar_actual(html, expected_ref):
         parsed = pd.to_datetime(raw, errors="coerce", dayfirst=True)
         return parsed.date() if pd.notna(parsed) else None
 
-    # 1) Bestehende strukturierte Tabellenlogik.
-    try:
-        tables = pd.read_html(StringIO(html))
-    except Exception:
-        tables = []
-
     for table in tables:
         df = table.copy()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [
-                " ".join(
-                    str(x).strip()
-                    for x in col
-                    if str(x).strip().lower() not in {"nan", "none", ""}
-                ).strip()
+                " ".join(str(x).strip() for x in col
+                         if str(x).strip().lower() not in {"nan", "none", ""}).strip()
                 for col in df.columns
             ]
         else:
             df.columns = [str(c).strip() for c in df.columns]
-
         cols = [str(c).casefold() for c in df.columns]
         if "actual" not in cols:
             continue
@@ -1393,64 +1382,15 @@ def _te_calendar_actual(html, expected_ref):
                     break
             if release_date is None or actual_idx >= len(cells):
                 continue
-
             value = _clean_num(cells[actual_idx].replace(",", ""))
             if value is None or not 0.0 <= value <= 100.0:
                 continue
             return value, release_date.isoformat()
 
-    # 2) Robuster Fallback für die sichtbare TE-Kalenderzeile.
-    #    Beispiel:
-    #    2026-08-05 ... Jul ... 57.2 ... 55.1 ... 57 ... 55.3
-    #    Nach "Jul" steht zuerst der Actual-Wert; danach folgen Previous,
-    #    Consensus und TEForecast. Wir lesen ausschließlich den ersten Wert.
-    clean = re.sub(
-        r"<script.*?</script>|<style.*?</style>",
-        " ",
-        html,
-        flags=re.I | re.S,
-    )
-    clean = re.sub(r"<[^>]+>", " ", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-
-    date_row = re.compile(
-        r"(?P<date>\d{4}-\d{2}-\d{2})"
-        r"(?P<row>.{0,500}?)"
-        r"(?=\d{4}-\d{2}-\d{2}|\Z)",
-        flags=re.I | re.S,
-    )
-
-    reference_token = re.escape(month_abbr)
-    for match in date_row.finditer(clean):
-        release_date = parse_date(match.group("date"))
-        if release_date is None:
-            continue
-        if release_date.year != next_year or release_date.month != next_month:
-            continue
-
-        row = match.group("row")
-        ref_match = re.search(rf"\b{reference_token}\b", row, flags=re.I)
-        if not ref_match:
-            continue
-
-        after_reference = row[ref_match.end():]
-        number_match = re.search(
-            r"(?<![A-Za-z])(-?\d+(?:\.\d+)?)(?![A-Za-z])",
-            after_reference,
-        )
-        if not number_match:
-            continue
-
-        value = _clean_num(number_match.group(1))
-        if value is None or not 0.0 <= value <= 100.0:
-            continue
-
-        return value, release_date.isoformat()
-
     return None, None
 
 def _te_text_actual(html, expected_ref, series_label):
-    """Fallback bei geänderter TE-Tabellenstruktur; nur expliziter Istwert."""
+    """Fallback bei geaenderter TE-Struktur; nur expliziter Istwert."""
     text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -1462,17 +1402,238 @@ def _te_text_actual(html, expected_ref, series_label):
     )
     month_name = calendar.month_name[month_num]
 
-    pattern = (
-        rf"{re.escape(series_label)}.*?"
-        rf"(?:increased|decreased|rose|fell|edged up|edged down|"
+    # TE's public indicator pages contain a narrative sentence such as
+    # "... rose to 54.1 in July 2026 ...". This is an actual observation,
+    # not a forecast. Keep the month binding strict.
+    label = re.escape(series_label)
+    patterns = (
+        rf"\b{label}\b.*?(?:increased|decreased|rose|fell|edged up|edged down|"
         rf"climbed|dropped|advanced|declined|remained|was unchanged)"
         rf"\s+to\s+(\d+(?:\.\d+)?)"
-        rf"(?:\s+points?)?"
-        rf"\s+in\s+{re.escape(month_name)}\s+{re.escape(year)}"
+        rf"(?:\s+points?)?\s+in\s+{re.escape(month_name)}\s+{re.escape(year)}",
+        rf"\b{label}\b[^.]{0,500}?to\s+(\d+(?:\.\d+)?)"
+        rf"[^.]{0,500}?{re.escape(month_name)}\s+{re.escape(year)}",
     )
-    m = re.search(pattern, text, flags=re.I)
-    return _clean_num(m.group(1)) if m else None
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            value = _clean_num(m.group(1))
+            if value is not None and 0.0 <= value <= 100.0:
+                return value
+    return None
 
+
+def _te_public_ism_snapshot(year, month, kind):
+    """Read the public Trading Economics indicator page without an API key.
+
+    This is deliberately a page-level public-data route, not an API route.
+    The page contains the current Last/Previous/Reference table and a narrative
+    sentence binding the headline value to the reference month. For Services,
+    TE exposes four component rows directly. Additional ISM components are
+    extracted from the public narrative only when an explicit numeric value is
+    present. No Forecast/Consensus/Previous value is ever promoted to Actual.
+    """
+    if kind not in {"services", "manufacturing"}:
+        return None
+
+    if kind == "services":
+        url = "https://tradingeconomics.com/united-states/non-manufacturing-pmi"
+        pmi_label = "ISM Services PMI"
+        component_prefix = "ISM Services "
+        component_names = {
+            "business_activity": "Business Activity",
+            "employment": "Employment",
+            "new_orders": "New Orders",
+            "prices": "Prices",
+        }
+        extra_names = {
+            "new_export_orders": "New Export Orders",
+            "supplier_deliveries": "Supplier Deliveries",
+            "backlog": "Backlog of Orders",
+            "inventories": "Inventories",
+            "inventory_sentiment": "Inventory Sentiment",
+            "imports": "Imports",
+            "exports": "Exports",
+        }
+    else:
+        url = "https://tradingeconomics.com/united-states/manufacturing-pmi"
+        pmi_label = "ISM Manufacturing PMI"
+        component_prefix = "ISM Manufacturing "
+        component_names = {
+            "production": "Production",
+            "employment": "Employment",
+            "new_orders": "New Orders",
+            "prices": "Prices",
+        }
+        extra_names = {
+            "new_export_orders": "New Export Orders",
+            "supplier_deliveries": "Supplier Deliveries",
+            "backlog": "Backlog of Orders",
+            "inventories": "Inventories",
+            "customers_inventories": "Customers' Inventories",
+            "imports": "Imports",
+            "exports": "Exports",
+        }
+
+    expected_ref = f"{calendar.month_abbr[month]} {year}"
+    try:
+        r = requests.get(url, timeout=15, headers=REQUEST_HEADERS, allow_redirects=True)
+        r.raise_for_status()
+    except Exception as exc:
+        print(f"WARNUNG: TradingEconomics Public ISM {kind} nicht verfuegbar: {type(exc).__name__}: {exc}")
+        return None
+
+    html = r.text
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Exact reference binding from the public table/narrative.
+    if expected_ref.casefold() not in text.casefold():
+        print(f"WARNUNG: TradingEconomics Public ISM {kind}: Reference={expected_ref} nicht auf Seite belegt")
+        return None
+
+    pmi = None
+    # First choice: explicit public narrative sentence.
+    pmi = _te_text_actual(html, expected_ref, pmi_label)
+    # Second choice: the public page may call the same series Non-Manufacturing PMI.
+    if pmi is None and kind == "services":
+        pmi = _te_text_actual(html, expected_ref, "Non Manufacturing PMI")
+
+    # Public HTML table: Components | Last | Previous | Unit | Reference.
+    table_values = {}
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception:
+        tables = []
+    for table in tables:
+        df = table.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [" ".join(str(x) for x in col if str(x).lower() not in {"nan", "none"}).strip() for col in df.columns]
+        else:
+            df.columns = [str(c).strip() for c in df.columns]
+        colmap = {str(c).casefold(): c for c in df.columns}
+        last_col = next((colmap[k] for k in ("last", "letzte", "zuletzt") if k in colmap), None)
+        ref_col = next((colmap[k] for k in ("reference", "referenz") if k in colmap), None)
+        if not last_col or not ref_col:
+            continue
+        for _, row in df.iterrows():
+            ref = str(row.get(ref_col, "")).strip()
+            if ref.casefold() != expected_ref.casefold():
+                continue
+            first = str(row.iloc[0]).strip()
+            val = _clean_num(str(row.get(last_col, "")).replace(",", ""))
+            if val is None or not 0.0 <= val <= 100.0:
+                continue
+            key = first.casefold()
+            table_values[key] = val
+
+    def component_value(label):
+        wanted = f"{component_prefix}{label}".casefold()
+        for key, value in table_values.items():
+            if key == wanted or key.endswith(wanted):
+                return value
+        # Narrative fallback, still tied to the exact reference month.
+        return _extract_te_narrative_component(text, label, year, month)
+
+    if pmi is None:
+        pmi = component_value("PMI")
+    if pmi is None:
+        print(f"WARNUNG: TradingEconomics Public ISM {kind}: PMI nicht als Actual fuer {expected_ref} erkannt")
+        return None
+
+    data = {
+        "pmi": pmi,
+        "year": year,
+        "month": month,
+        "reference": f"{year}-{month:02d}",
+        "release_date": _extract_te_release_date(text),
+        "source": "TRADING_ECONOMICS_PUBLIC_HTML",
+        "url": url,
+        "status": "REAL_PUBLIC_SECONDARY",
+        "kind": kind,
+    }
+    for key, label in component_names.items():
+        data[key] = component_value(label)
+    for key, label in extra_names.items():
+        data[key] = component_value(label)
+
+    # Release-date validation is optional for the public page itself. If an
+    # explicit date is present, it must be in the month following the reference
+    # month; an absent date is retained as unknown rather than guessed.
+    release_date = data.get("release_date")
+    if release_date and not _te_release_month_matches_reference(release_date, year, month):
+        print(f"WARNUNG: TradingEconomics Public ISM {kind}: Release-Date {release_date} passt nicht zu {expected_ref}; Datum wird verworfen")
+        data["release_date"] = None
+
+    print(
+        f"INFO: TradingEconomics Public ISM {kind.title()}: "
+        f"report_month={year}-{month:02d} PMI={data['pmi']} "
+        f"NewOrders={data.get('new_orders')} Employment={data.get('employment')} "
+        f"Prices={data.get('prices')} source=PUBLIC_HTML"
+    )
+    return data
+
+
+def _extract_te_narrative_component(text, label, year, month):
+    """Extract a numeric ISM component from TE's current report narrative.
+
+    TE currently publishes a short current-report paragraph followed by older
+    news items. We deliberately restrict parsing to the first current-report
+    paragraph after the headline, so an older article cannot overwrite the
+    requested reference month.
+    """
+    month_name = calendar.month_name[month]
+    # Find the first current-report sentence containing the headline.
+    start_markers = (
+        f"The ISM Services PMI in the US" if label != "Manufacturing" else f"The ISM Manufacturing PMI in the US",
+        f"The ISM Manufacturing PMI in the US",
+    )
+    start_pos = -1
+    for marker in start_markers:
+        pos = text.lower().find(marker.lower())
+        if pos >= 0:
+            start_pos = pos
+            break
+    if start_pos < 0:
+        return None
+    chunk = text[start_pos:start_pos + 3500]
+    # Stop before the next source/news section when possible.
+    for stop in ("source: Institute for Supply Management", "source:"):
+        pos = chunk.lower().find(stop.lower(), 500)
+        if pos > 0:
+            chunk = chunk[:pos]
+            break
+
+    # The current paragraph is itself bound to the page's reference month.
+    # Require that month/year appears in the chunk as an additional guard.
+    if str(year) not in chunk or month_name.casefold() not in chunk.casefold():
+        return None
+
+    aliases = {
+        "Business Activity": ("business activity",),
+        "New Orders": ("new orders",),
+        "Employment": ("employment",),
+        "Prices": ("price pressures", "prices"),
+        "Inventories": ("inventories",),
+        "Backlog of Orders": ("backlog of orders",),
+        "Supplier Deliveries": ("supplier deliveries",),
+        "New Export Orders": ("new export orders",),
+        "Inventory Sentiment": ("inventory sentiment",),
+        "Imports": ("imports",),
+        "Exports": ("exports",),
+        "Production": ("production",),
+    }
+    phrases = aliases.get(label, (label.lower(),))
+    for phrase in phrases:
+        # Current-report wording is normally ``label (59.1 vs 55.4)``.
+        pat = re.compile(rf"\b{re.escape(phrase)}\b[^.]{{0,180}}?\(\s*(\d+(?:\.\d+)?)\s+vs\.?\s*(\d+(?:\.\d+)?)\s*\)", re.I)
+        m = pat.search(chunk)
+        if m:
+            value = _clean_num(m.group(1))
+            if value is not None and 0.0 <= value <= 100.0:
+                return value
+    return None
 
 
 def _te_release_month_matches_reference(release_date, year, month):
@@ -1634,123 +1795,14 @@ def _ism_official_report_secondary(year, month, kind):
     return values
 
 def _ism_public_secondary_tradingeconomics(year, month, kind):
-    """Robuster oeffentlicher ISM-Secondary-Fallback.
+    """Public TradingEconomics HTML route; no API key required.
 
-    Vier eigenstaendige TE-Indikatorseiten werden abgefragt. Akzeptiert wird
-    nur der Actual-Wert des exakt passenden Reference-Monats. Forecast,
-    Consensus und Previous werden niemals als Istwert verwendet.
+    One indicator page is sufficient for the Services/Manufacturing headline
+    and the public component table. The returned data is still marked
+    REAL_PUBLIC_SECONDARY and remains subject to the normal four-field Tier-1
+    validation in _ism_fetch/data_quality_gate.
     """
-    if month < 1 or month > 12 or kind not in {"manufacturing", "services"}:
-        return None
-
-    if kind == "manufacturing":
-        urls = {
-            "pmi": "https://tradingeconomics.com/united-states/manufacturing-pmi",
-            "new_orders": "https://tradingeconomics.com/united-states/ism-manufacturing-new-orders",
-            "employment": "https://tradingeconomics.com/united-states/ism-manufacturing-employment",
-            "prices": "https://tradingeconomics.com/united-states/ism-manufacturing-prices",
-        }
-        labels = {
-            "pmi": "Manufacturing PMI",
-            "new_orders": "ISM Manufacturing New Orders",
-            "employment": "ISM Manufacturing Employment",
-            "prices": "ISM Manufacturing Prices",
-        }
-    else:
-        urls = {
-            "pmi": "https://tradingeconomics.com/united-states/non-manufacturing-pmi",
-            "new_orders": "https://tradingeconomics.com/united-states/ism-non-manufacturing-new-orders",
-            "employment": "https://tradingeconomics.com/united-states/ism-non-manufacturing-employment",
-            "prices": "https://tradingeconomics.com/united-states/ism-non-manufacturing-prices",
-        }
-        labels = {
-            "pmi": "ISM Services PMI",
-            "new_orders": "ISM Services New Orders",
-            "employment": "ISM Services Employment",
-            "prices": "ISM Services Prices",
-        }
-
-    expected_ref = f"{calendar.month_abbr[month]} {year}"
-    found = {}
-    release_dates = {}
-
-    for key, url in urls.items():
-        try:
-            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
-            r.raise_for_status()
-            value, release_date = _te_calendar_actual(r.text, expected_ref)
-            if value is None:
-                value = _te_text_actual(r.text, expected_ref, labels[key])
-            if value is None:
-                print(
-                    f"WARNUNG: TradingEconomics ISM {kind} {key} ohne "
-                    f"Actual-Wert fuer Reference={expected_ref}"
-                )
-                continue
-            found[key] = value
-            if release_date:
-                release_dates[key] = release_date
-        except Exception as exc:
-            print(
-                f"WARNUNG: TradingEconomics ISM {kind} {key} nicht verfuegbar: "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-    required = ("pmi", "new_orders", "employment", "prices")
-    missing = [key for key in required if key not in found]
-    if missing:
-        print(
-            f"WARNUNG: TradingEconomics ISM {kind} unvollstaendig fuer "
-            f"{year}-{month:02d}; fehlend={','.join(missing)}"
-        )
-        return None
-
-    # Sicherheitsregel: Ein Secondary-Datensatz darf nur freigegeben
-    # werden, wenn JEDE der vier Serien ein explizites Release-Date liefert
-    # und jedes Release-Date im erwarteten Folgemonat des Reference-Monats liegt.
-    invalid_release_dates = [
-        key for key in required
-        if key not in release_dates
-        or not _te_release_month_matches_reference(release_dates[key], year, month)
-    ]
-    if invalid_release_dates:
-        print(
-            f"WARNUNG: TradingEconomics ISM {kind} Release-Date-Pruefung "
-            f"fehlgeschlagen fuer Reference={expected_ref}; "
-            f"ungueltig/fehlend={','.join(invalid_release_dates)}"
-        )
-        return None
-
-    if len(set(release_dates.values())) != 1:
-        print(
-            f"WARNUNG: TradingEconomics ISM {kind} hat unterschiedliche "
-            f"Release-Dates fuer Reference={expected_ref}; kein Secondary-Gate."
-        )
-        return None
-
-    release_date = next(iter(release_dates.values()))
-
-    print(
-        f"INFO: TradingEconomics ISM {kind.title()} vollstaendig: "
-        f"report_month={year}-{month:02d} "
-        f"PMI={found['pmi']} NewOrders={found['new_orders']} "
-        f"Employment={found['employment']} Prices={found['prices']} "
-        f"release_date={release_date}"
-    )
-
-    return {
-        "pmi": found["pmi"],
-        "url": " | ".join(urls.values()),
-        "year": year,
-        "month": month,
-        "status": "REAL_PUBLIC_SECONDARY",
-        "new_orders": found["new_orders"],
-        "employment": found["employment"],
-        "prices": found["prices"],
-        "release_date": release_date,
-    }
-
-
+    return _te_public_ism_snapshot(year, month, kind)
 
 
 def _ism_public_secondary_fxblue_services(year: int, month: int) -> dict | None:
@@ -2276,13 +2328,24 @@ def _ism_fetch(kind, year, month):
 
     # Secondary: Trading Economics. Nur reale, bereits veroeffentlichte
     # "Last"-Werte des exakt passenden Berichtsmonats; niemals Forecast oder Previous.
+    # Public ISM report page (when reachable without SSO) is the first
+    # independent secondary route.
     secondary = _ism_official_report_secondary(year, month, kind)
     if secondary:
         return secondary
 
+    # TradingEconomics PUBLIC HTML is the next independent route. This route
+    # does not require an API key and reads the current Last/Reference values
+    # and the public Services component table directly.
     secondary = _ism_public_secondary_tradingeconomics(year, month, kind)
     if secondary:
-        return secondary
+        required_core = ("pmi", "new_orders", "employment", "prices")
+        if all(secondary.get(k) is not None for k in required_core):
+            return secondary
+        print(
+            f"WARNUNG: TradingEconomics Public ISM {kind} erkannt, aber Tier-1-Core "
+            f"nicht vollstaendig; fehlend=" + ",".join(k for k in required_core if secondary.get(k) is None)
+        )
 
     # Tertiary public fallback: independent event calendar. It is used only
     # after the official report and Trading Economics have failed validation.
@@ -2293,21 +2356,31 @@ def _ism_fetch(kind, year, month):
     return None
 
 def ism_snapshot(today):
-    cache=_cache_load()
-    candidates=[]
-    first=today.replace(day=1)
-    for offset in range(1,4):
-        y,m=first.year,first.month-offset
-        while m<=0: y-=1; m+=12
-        candidates.append((y,m))
+    """Build the complete PMI block for the macro tier system.
+
+    Tier 1 CORE / gate-relevant:
+      ISM Manufacturing PMI + New Orders + Employment + Prices
+      ISM Services PMI + New Orders + Employment + Prices
+
+    Tier 2 CONFIRMATION / scenario reinforcement:
+      remaining public ISM Services/Manufacturing components when numeric
+      values are actually available, plus S&P Global Services PMI/context.
+
+    Tier 3 CONTEXT:
+      qualitative PMI context and source diagnostics; never gate-critical.
+    """
+    cache = _cache_load()
+    candidates = []
+    first = today.replace(day=1)
+    for offset in range(1, 4):
+        y, m = first.year, first.month - offset
+        while m <= 0:
+            y -= 1
+            m += 12
+        candidates.append((y, m))
 
     def get(kind):
-        key = kind
         latest_y, latest_m = candidates[0]
-
-        # EIN autoritativer Cachepfad: zuerst den aktuell faelligen Monat
-        # validieren. Statusnamen wie REAL_PUBLIC_SECONDARY duerfen einen
-        # vollstaendig validierten Cache niemals erneut zurueckweisen.
         cached = _ism_cache_get_valid(kind, latest_y, latest_m)
         if cached is not None:
             print(
@@ -2315,22 +2388,12 @@ def ism_snapshot(today):
                 f"reference={latest_y}-{latest_m:02d} (PMI + 3 Unterpunkte vorhanden)."
             )
             return cached
-
-        entry = cache.get("ism", {}).get(key)
-        if entry and entry.get("data"):
-            d = entry["data"]
-            print(
-                f"INFO: ISM-Cache vorhanden, aber nicht verwendbar fuer {key}: "
-                f"cached={d.get('year')}-{d.get('month')} required={latest_y}-{latest_m}; "
-                f"validierung fehlgeschlagen."
-            )
-
         for y, m in candidates:
             d = _ism_fetch(kind, y, m)
             if d:
                 with CACHE_WRITE_LOCK:
                     c = _cache_load()
-                    c.setdefault("ism", {})[key] = {
+                    c.setdefault("ism", {})[kind] = {
                         "saved_at": time.time(),
                         "data": d,
                         "status": d.get("status", "REAL"),
@@ -2340,20 +2403,82 @@ def ism_snapshot(today):
                 return d
         return None
 
-    manufacturing=get("manufacturing")
-    services=get("services")
-    lines=[]
-    if manufacturing:
-        lines.append(f"ISM Manufacturing PMI: {manufacturing['pmi']:.1f} | Datenmonat={manufacturing['year']}-{manufacturing['month']:02d} | New Orders={_fmt(manufacturing['new_orders'],1)} | Employment={_fmt(manufacturing['employment'],1)} | Prices={_fmt(manufacturing['prices'],1)} | STATUS={manufacturing.get("status","REAL")} | SOURCE={manufacturing["url"]}")
-    else:
-        lines.append("ISM Manufacturing PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
-    if services:
-        lines.append(f"ISM Services PMI: {services['pmi']:.1f} | Datenmonat={services['year']}-{services['month']:02d} | New Orders={_fmt(services['new_orders'],1)} | Employment={_fmt(services['employment'],1)} | Prices={_fmt(services['prices'],1)} | STATUS={services.get("status","REAL")} | SOURCE={services["url"]}")
-    else:
-        lines.append("ISM Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
-    lines.append("PMI-Regel: >50 = Expansion des jeweiligen Sektors; <50 = Kontraktion. Keine Prognose des naechsten PMI-Werts.")
-    return lines
+    manufacturing = get("manufacturing")
+    services = get("services")
+    lines = []
 
+    def emit_core(label, data, required_fields):
+        if not data:
+            lines.append(f"{label}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | TIER=TIER1_CORE | SOURCE=ISM/TE")
+            return
+        fields = [f"Datenmonat={data['year']}-{data['month']:02d}", f"STATUS={data.get('status','REAL')}", f"SOURCE={data.get('url', data.get('source','ISM'))}"]
+        for key, display in required_fields:
+            value = data.get(key)
+            fields.insert(0, f"{display}={_fmt(value,1) if value is not None else 'NICHT VERFUEGBAR'}")
+        fields.insert(0, f"PMI={_fmt(data.get('pmi'),1) if data.get('pmi') is not None else 'NICHT VERFUEGBAR'}")
+        lines.append(f"{label}: " + " | ".join(fields) + " | TIER=TIER1_CORE")
+
+    emit_core("ISM Manufacturing PMI", manufacturing, (("new_orders", "New Orders"), ("employment", "Employment"), ("prices", "Prices")))
+    emit_core("ISM Services PMI", services, (("new_orders", "New Orders"), ("employment", "Employment"), ("prices", "Prices")))
+
+    extended = (
+        ("ISM Manufacturing", manufacturing, (
+            ("production", "Production"), ("new_export_orders", "New Export Orders"),
+            ("supplier_deliveries", "Supplier Deliveries"), ("backlog", "Backlog"),
+            ("inventories", "Inventories"), ("customers_inventories", "Customers' Inventories"),
+            ("imports", "Imports"), ("exports", "Exports"),
+        )),
+        ("ISM Services", services, (
+            ("business_activity", "Business Activity"), ("new_export_orders", "New Export Orders"),
+            ("supplier_deliveries", "Supplier Deliveries"), ("backlog", "Backlog"),
+            ("inventories", "Inventories"), ("inventory_sentiment", "Inventory Sentiment"),
+            ("imports", "Imports"), ("exports", "Exports"),
+        )),
+    )
+    for label, data, fields in extended:
+        vals = []
+        for key, display in fields:
+            value = data.get(key) if data else None
+            vals.append(f"{display}={_fmt(value,1) if value is not None else 'NICHT VERFUEGBAR'}")
+        lines.append(f"{label} EXTENDED | " + " | ".join(vals) + " | TIER=TIER2_CONFIRMATION")
+
+    # S&P Global Services is deliberately a confirmation/context block. The
+    # public TE page provides the headline PMI and qualitative descriptions of
+    # New Business, Backlogs, Employment, Input Costs, Output Charges and
+    # Future Activity; full sub-index histories may require S&P subscription.
+    spg_url = "https://tradingeconomics.com/united-states/services-pmi"
+    try:
+        r = requests.get(spg_url, timeout=15, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        txt = re.sub(r"<script.*?</script>|<style.*?</style>", " ", r.text, flags=re.I | re.S)
+        txt = re.sub(r"<[^>]+>", " ", txt)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        m = re.search(r"The S&P Global US Services PMI .*? to (\d+(?:\.\d+)?) in ([A-Za-z]+) of (\d{4})", txt, re.I)
+        if m:
+            spg_pmi = _clean_num(m.group(1))
+            spg_month = m.group(2)
+            spg_year = int(m.group(3))
+            qualitative = []
+            for phrase in (
+                "New business", "backlogs", "staffing levels", "input costs",
+                "output charge inflation", "confidence",
+            ):
+                if re.search(re.escape(phrase), txt, re.I):
+                    qualitative.append(phrase)
+            lines.append(
+                f"S&P Global Services PMI: PMI={spg_pmi:.1f} | Datenmonat={spg_year}-{next((i for i in range(1,13) if calendar.month_name[i].casefold()==spg_month.casefold()), 0):02d} | "
+                f"STATUS=REAL_PUBLIC_SECONDARY | SOURCE={spg_url} | TIER=TIER2_CONFIRMATION | "
+                f"QUALITATIVE_COMPONENTEN={', '.join(qualitative) if qualitative else 'keine'} | "
+                f"SUBINDEXE_PUBLIC_NUMERISCH=NICHT_VOLLSTAENDIG_VERFUEGBAR"
+            )
+        else:
+            lines.append(f"S&P Global Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE={spg_url} | TIER=TIER2_CONFIRMATION")
+    except Exception as exc:
+        print(f"WARNUNG: S&P Global Services Public-Abruf fehlgeschlagen: {type(exc).__name__}: {exc}")
+        lines.append(f"S&P Global Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE={spg_url} | TIER=TIER2_CONFIRMATION")
+
+    lines.append("PMI-TIER-REGEL: TIER1=Gate-relevant; TIER2=Confirmation/Szenario-Verstaerkung; TIER3=Context. Keine Zahl wird aus Forecast/Consensus/Previous abgeleitet.")
+    return lines
 
 
 def market_snapshots_parallel():
@@ -2391,17 +2516,18 @@ def fred_snapshots_parallel(names):
     return [results[name] for name in names]
 
 def data_quality_gate(lines):
-    # Tier 1: Core-/Gate-Daten. Fehlt eine dieser Datenreihen bzw. ist sie
-    # aufgrund der bestehenden Daten-/Cache-Logik nicht belastbar verfuegbar,
-    # wird das Makro-Szenario gesperrt.
+    """Tier-aware gatekeeper.
+
+    Tier 1 is the only blocking layer. Tier 2/3 can degrade quality but must
+    never block a scenario merely because a secondary public sub-index is not
+    exposed.
+    """
     tier1_labels = [
         "Fed Funds Effective Rate", "US 2Y Treasury", "US 10Y Treasury",
         "Core CPI", "NFP / Nonfarm Payrolls", "Arbeitslosenquote",
         "ISM Manufacturing PMI", "ISM Services PMI", "S&P 500",
     ]
-
-    # ISM-Unterkomponenten stehen als Felder innerhalb der PMI-Zeile.
-    ism_component_fields = (
+    ism_core_fields = (
         ("ISM Manufacturing PMI", "New Orders"),
         ("ISM Manufacturing PMI", "Employment"),
         ("ISM Manufacturing PMI", "Prices"),
@@ -2409,42 +2535,20 @@ def data_quality_gate(lines):
         ("ISM Services PMI", "Employment"),
         ("ISM Services PMI", "Prices"),
     )
-
-    # Tier 2: Sekundaere Kontextdaten. Fehlende/zu alte Daten verschlechtern
-    # die Datenqualitaet, sperren das Szenario aber nicht.
     tier2_labels = [
-        "PCE",
-        "Core PCE",
-        "Realzins 10Y TIPS",
-        "US High Yield OAS",
-        "Chicago Fed NFCI",
-        "VIX",
-        "DXY",
-        "Reales BIP-Wachstum",
-        "M2",
-        "JOLTS Job Openings",
-        "Industrieproduktion",
-        "Consumer Sentiment",
-        "Kapazitaetsauslastung",
-        "SLOOS C&I Tightening",
-        "US Investment Grade OAS",
+        "PCE", "Core PCE", "Realzins 10Y TIPS", "US High Yield OAS",
+        "Chicago Fed NFCI", "VIX", "DXY", "Reales BIP-Wachstum", "M2",
+        "JOLTS Job Openings", "Industrieproduktion", "Consumer Sentiment",
+        "Kapazitaetsauslastung", "SLOOS C&I Tightening", "US Investment Grade OAS",
+        "S&P Global Services PMI",
     ]
+    tier3_labels = ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP"]
 
-    # Tier 3: Optionale Anreicherungsdaten. Sie haben keinen Einfluss auf
-    # Gate oder Datenqualitaetsstatus.
-    tier3_labels = [
-        "GSCPI",
-        "Global Economic Policy Uncertainty",
-        "US Federal Debt/GDP",
-    ]
-
-    def _unavailable(label):
+    def unavailable(label):
         return any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)
 
-    critical_missing = [label for label in tier1_labels if _unavailable(label)]
-
-    # Komponenten aus den tatsaechlich erzeugten PMI-Zeilen pruefen.
-    for pmi_label, field in ism_component_fields:
+    critical_missing = [label for label in tier1_labels if unavailable(label)]
+    for pmi_label, field in ism_core_fields:
         matching = [line for line in lines if line.startswith(pmi_label + ":")]
         if not matching:
             critical_missing.append(f"{pmi_label} {field}")
@@ -2453,18 +2557,19 @@ def data_quality_gate(lines):
         if not m or m.group(1).strip().upper() in {"NICHT VERFUEGBAR", "UNAVAILABLE", "NONE", "N/A"}:
             critical_missing.append(f"{pmi_label} {field}")
 
-    secondary_missing = [label for label in tier2_labels if _unavailable(label)]
+    secondary_missing = [label for label in tier2_labels if unavailable(label)]
+    # Extended PMI fields are Tier 2. A missing numeric sub-index is explicitly
+    # reported but never promoted to a Tier-1 gate failure.
+    for label in ("ISM Manufacturing EXTENDED", "ISM Services EXTENDED"):
+        matching = [line for line in lines if line.startswith(label + " |")]
+        if matching and "NICHT VERFUEGBAR" in matching[0]:
+            secondary_missing.append(label)
 
-    # LME is secondary/quality-relevant, never gate-critical.
-    # LME outages may degrade data quality, but can NEVER block the macro scenario.
     lme_missing = [
         metal for metal in ("Nickel", "Blei", "Zinn", "Kobalt")
         if any(
             (line.startswith(metal + ":") or line.startswith("LME " + metal + ":"))
-            and (
-                "NICHT VERFUEGBAR" in line.upper()
-                or re.search(r"STATUS=(?:DEGRADED|UNAVAILABLE)\b", line, flags=re.I)
-            )
+            and ("NICHT VERFUEGBAR" in line.upper() or re.search(r"STATUS=(?:DEGRADED|UNAVAILABLE)\b", line, flags=re.I))
             for line in lines
         )
     ]
@@ -2472,8 +2577,7 @@ def data_quality_gate(lines):
 
     gate = "GESPERRT" if critical_missing else "FREIGEGEBEN"
     data_quality = "BLOCKED" if critical_missing else ("DEGRADED" if secondary_missing else "HEALTHY")
-    missing = critical_missing
-    return gate, missing, data_quality, secondary_missing
+    return gate, critical_missing, data_quality, secondary_missing
 
 
 def main():
@@ -2529,8 +2633,14 @@ def main():
     lines.extend(market_snapshots_parallel())
     lines.append("")
 
+    lines.append("6. MAKRO-DATEN TIER-SYSTEM")
+    lines.append("TIER 1 CORE | Gate-relevant | Wachstum | Inflation | Arbeitsmarkt | Monetär | Financial Conditions | PMI-Core | Marktbestätigung")
+    lines.append("TIER 2 CONFIRMATION | Szenario-Verstärkung | erweiterte ISM-Unterkomponenten | S&P Global Services | Kredit-/Risk-Confirmation")
+    lines.append("TIER 3 CONTEXT | zusätzliche Information | Lieferketten | Fiskal | geopolitischer Kontext | sonstige Anreicherung")
+    lines.append("Szenariofluss: MAKRO-DATEN -> TIER 1/2/3 -> MAKRO-SZENARIO -> Szenario-Score -> Expansion / Soft Landing / Stagflation / Recession etc.")
+    lines.append("")
     gate, missing, data_quality, secondary_missing = data_quality_gate(lines)
-    lines.append("6. DATENQUALITAETS-GATEKEEPER")
+    lines.append("7. DATENQUALITAETS-GATEKEEPER")
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"DATENQUALITAET: {data_quality}")
     lines.append(f"SEKUNDAERE DATENLUECKEN: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
@@ -2545,8 +2655,12 @@ def main():
     lines.append("CACHE-REGEL: REAL_CACHED darf nur verwendet werden, wenn der gespeicherte Originalwert innerhalb seiner definierten Datenaltersgrenze liegt. Es werden keine Werte fortgeschrieben oder geschaetzt.")
     lines.append("")
 
-    lines.append("7. INTERPRETATIONSREGELN FUER GEMINI")
-    lines.append("Makroachsen: Wachstum | Inflation | Geldpolitik | Liquiditaet | Kredit | Risk Appetite | Bewertung | Angebotsschock | struktureller Capex-Zyklus.")
+    lines.append("8. INTERPRETATIONSREGELN FUER GEMINI")
+    lines.append("Makroachsen: Wachstum | Inflation | Arbeitsmarkt | Monetär | Financial Conditions | PMI | Marktbestätigung.")
+    lines.append("Tier-Logik: TIER 1 CORE bestimmt die Gate-Freigabe; TIER 2 CONFIRMATION verstärkt oder schwächt das Szenario; TIER 3 CONTEXT liefert zusätzliche Einordnung ohne Gate-Einfluss.")
+    lines.append("ISM SERVICES TIER2: Business Activity | New Export Orders | Supplier Deliveries | Backlog | Inventories | Inventory Sentiment | Imports | Exports")
+    lines.append("S&P GLOBAL SERVICES TIER2: Business Activity | New Business | New Export Business | Employment | Backlogs | Input Prices | Prices Charged | Future Activity")
+    lines.append("S&P GLOBAL REGEL: Nur numerisch tatsächlich öffentlich belegte Subindexwerte werden als Zahlen übernommen; rein qualitative Hinweise bleiben als Kontext gekennzeichnet.")
     lines.append("Horizonte: 1-4 Wochen | 1-3 Monate | 3-6 Monate | >6 Monate.")
     lines.append("Szenarien: Base Case | Bull Case | Bear Case. Szenario-Wahrscheinlichkeiten sind MODEL_DERIVED, niemals reale Marktdaten und niemals geschaetzte Eingangsdaten.")
     lines.append("Wenn der Makro-Szenario-Gate GESPERRT ist: KEINE Szenario-Wahrscheinlichkeiten und KEINE erfundenen Ersatzwerte. Stattdessen Datenluecke benennen.")
