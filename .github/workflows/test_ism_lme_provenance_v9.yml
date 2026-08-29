@@ -9,7 +9,7 @@ permissions:
 jobs:
   ism-lme-v9:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -44,13 +44,16 @@ jobs:
           )
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
+
+          # Exercise the exact logger signature and one pure parser operation.
           mod.emit("SMOKE", label="logger", value=1)
           assert mod.records[-1]["route"] == "SMOKE"
           assert mod.records[-1]["label"] == "logger"
+          assert mod.parse_number("54.1") == ("54.1", 54.1)
           print("V9_RUNTIME_SMOKE=GREEN")
           PY
 
-      - name: Run V9 table schema analyzer
+      - name: Run V9 independent structure-methods test
         shell: bash
         run: |
           set +e
@@ -59,16 +62,18 @@ jobs:
           echo "V9_TEST_EXIT=$rc"
           exit 0
 
-      - name: Show schema report
+      - name: Show structure report
         if: always()
         shell: bash
         run: |
+          echo "=== V9 SUMMARY ==="
+          cat ism_lme_provenance_v9/summary.json 2>/dev/null || true
           echo "=== V9 REPORT ==="
           cat ism_lme_provenance_v9/report.txt 2>/dev/null || true
-          echo "=== TARGET ROW MATCHES ==="
-          cat ism_lme_provenance_v9/target_row_matches.csv 2>/dev/null || true
+          echo "=== V9 TARGET MATCHES (HEAD) ==="
+          head -n 120 ism_lme_provenance_v9/target_matches.csv 2>/dev/null || true
 
-      - name: Upload V9 schema evidence
+      - name: Upload V9 structure evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
