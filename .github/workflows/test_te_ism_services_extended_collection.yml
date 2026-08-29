@@ -1,10 +1,10 @@
-name: TE + S&P Global Services Extended Collection
+name: Macro Structure Full Collection Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  collect-te-sp-services:
+  macro-structure-full-collection:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,38 +16,31 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Verify test file is present
+      - name: Verify files
         run: |
           test -f makro_szenario.py
-          test -f test_te_ism_services_extended_collection.py
+          test -f test_macro_structure_full_collection.py
           echo "FILES=GREEN"
-          ls -l makro_szenario.py test_te_ism_services_extended_collection.py
+          ls -lh makro_szenario.py test_macro_structure_full_collection.py
 
-      - name: Install collection dependencies
+      - name: Install dependencies
         run: |
-          python -m pip install \
-            --disable-pip-version-check \
-            pandas \
-            lxml \
-            requests
+          python -m pip install --disable-pip-version-check \
+            pandas lxml requests yfinance openpyxl
 
-      - name: Verify production syntax
+      - name: Verify syntax
         run: |
           python -m py_compile makro_szenario.py
+          python -m py_compile test_macro_structure_full_collection.py
 
-      - name: Verify collection test syntax
+      - name: Run complete macro collection
         run: |
-          python -m py_compile \
-            test_te_ism_services_extended_collection.py
+          python test_macro_structure_full_collection.py
 
-      - name: Run very large non-aborting collection
-        run: |
-          python test_te_ism_services_extended_collection.py
-
-      - name: Upload complete source captures
+      - name: Upload complete collection report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: te-sp-services-extended-collection
-          path: .te_services_extended/
+          name: macro-structure-full-collection
+          path: .macro_structure_test/
           if-no-files-found: ignore
