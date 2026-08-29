@@ -783,21 +783,18 @@ def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
 
 
 
-def pruefe_makro_gate_konsistenz(text, quell_gate):
-    """Der Gate-Status des Makro-Datenpakets ist autoritativ.
-
-    Bei FREIGEGEBEN darf Gemini das Szenario nicht wegen TIER-2/TIER-3-Luecken
-    nachtraeglich als GESPERRT darstellen. Bei GESPERRT greift weiterhin die
-    bestehende harte Sperrlogik.
-    """
-    if quell_gate != "FREIGEGEBEN":
+def pruefe_makro_gate_konsistenz(text, makro_gate):
+    """Verhindert einen Widerspruch zwischen autoritativem Makro-Gate und Gemini-Punkt 2."""
+    if not text:
+        return False
+    if makro_gate != "FREIGEGEBEN":
         return True
-    t = text or ""
-    if re.search(r"(?is)MAKRO[- ]?SZENARIO[- ]?GATE\s*[:=]?\s*(?:ist\s+)?GESPERRT", t):
-        raise RuntimeError(
-            "MAKRO-GATE-KONSISTENZFEHLER: Quelldatei meldet FREIGEGEBEN, "
-            "Gemini-Ausgabe meldet GESPERRT."
-        )
+    m = re.search(r"2\.\s*MAKRO-ZUKUNFTSSZENARIO(?P<body>.*?)(?=\n\s*3\.|\Z)", text, flags=re.I | re.S)
+    body = m.group("body") if m else text
+    if re.search(r"\bMAKRO-SZENARIO-GATE\s*[:=]?\s*GESPERRT\b", body, flags=re.I):
+        return False
+    if re.search(r"\bGate\s+ist\s+(?:heute\s+)?gesperrt\b", body, flags=re.I):
+        return False
     return True
 
 
@@ -908,20 +905,17 @@ def gemini_auswertung_starten():
                         "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
                          "Verwende dabei NICHT die Bezeichnungen Base Case, Bull Case oder Bear Case, gib KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose aus. "
                         if makro_gate == "GESPERRT" else
-                        "HARTE MAKRO-GATE-VORGABE: Das Makro-Datenpaket ist autoritativ. "
-                        "Sein MAKRO-SZENARIO-GATE hat Vorrang vor jeder eigenen Bewertung der "
-                        "Datenvollstaendigkeit. Das Gate lautet FREIGEGEBEN. Punkt 2 MUSS daher "
-                        "als freigegeben behandelt werden. TIER-2- oder TIER-3-Luecken, insbesondere "
-                        "fehlende ISM-EXTENDED-Unterkomponenten oder fehlende LME-Preise, duerfen das "
-                        "Gate NICHT nachtraeglich sperren. Sie duerfen hoechstens die DATENQUALITAET "
-                        "auf DEGRADED halten bzw. die Staerke der Bestaetigung reduzieren. Schreibe "
-                        "NICHT, das Makro-Szenario sei gesperrt, wenn die Quelldatei FREIGEGEBEN meldet. "
-                        "TIER 1 CORE = gate-relevant; TIER 2 CONFIRMATION = Szenarioverstaerkung, "
-                        "niemals alleiniger Gate-Blocker; TIER 3 CONTEXT = zusaetzliche Information "
-                        "ohne Gate-Einfluss. Verwende ausschliesslich REAL-, REAL_CACHED-, "
-                        "REAL_PUBLIC_SECONDARY- oder zulaessige CALCULATED-Werte aus dem Makro-Datenpaket. "
-                        "PROXY-Werte muessen als Proxy bezeichnet werden. MODEL_DERIVED-Wahrscheinlichkeiten "
-                        "sind nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
+                        "HARTE MAKRO-DATENREGEL: Das Makro-Datenpaket ist fuer den Gate-Status autoritativ. "
+                        "Wenn MAKRO-SZENARIO-GATE=FREIGEGEBEN, darf Punkt 2 das Gate NICHT selbst wieder sperren. "
+                        "TIER 1 KERN ist gate-relevant. TIER 2 BESTAETIGUNG und TIER 3 KONTEXT koennen die Datenlage "
+                        "einschraenken, aber niemals allein das Gate sperren. Verwende ausschliesslich REAL-, REAL_CACHED- "
+                        "oder CALCULATED-Werte aus dem Makro-Datenpaket. PROXY-Werte muessen als Proxy bezeichnet werden. "
+                        "MODEL_DERIVED-Wahrscheinlichkeiten sind nur als Ergebnis der Szenariologik zulaessig; niemals "
+                        "Eingangsdaten schaetzen. Verwende die deutsche Qualitaetsterminologie VOLLSTAENDIG, EINGESCHRAENKT "
+                        "und UNZUREICHEND sowie TIER-2-DATENLUECKEN und TIER-3-DATENLUECKEN. "
+                        "Bei fehlenden ISM-EXTENDED-Komponenten keine Sammelaussage 'ISM Extended fehlt', sondern jede "
+                        "Komponente einzeln als vorhanden oder NICHT VERFUEGBAR behandeln. LME-Metalle sind anhand des "
+                        "letzten abgeschlossenen Handelstages vor dem Briefing zu verwenden und muessen Datenstand und Quelle nennen."
                     ),
                 ],
                 config=types.GenerateContentConfig(
@@ -931,13 +925,26 @@ def gemini_auswertung_starten():
             text = antwort.text or ""
             print(f"  Gemini finish_reason (Hauptantwort): {_gemini_finish_reason(antwort)}")
 
-            try:
-                pruefe_makro_gate_konsistenz(text, makro_gate)
-            except RuntimeError as gate_exc:
-                print(f"  WARNUNG: {gate_exc}")
-                letzte_antwort = text
-                hochgeladene_teile = None
-                continue
+            if not pruefe_makro_gate_konsistenz(text, makro_gate):
+                print("WARNUNG: Gemini widerspricht dem autoritativen Makro-Gate - starte gezielte Makro-Reparatur.")
+                reparatur = client.models.generate_content(
+                    model=aktuelles_modell,
+                    contents=hochgeladene_teile + [
+                        "REPARATUR NUR FÜR PUNKT 2: Das Makro-Datenpaket meldet MAKRO-SZENARIO-GATE=FREIGEGEBEN. "
+                        "Überarbeite ausschließlich Punkt 2. Eine Sperrung ist unzulässig, wenn nur TIER-2- oder TIER-3-Daten fehlen. "
+                        "TIER 1 KERN entscheidet über das Gate; TIER 2 BESTAETIGUNG und TIER 3 KONTEXT sind Ergänzungen. "
+                        "Verwende die deutsche Terminologie VOLLSTAENDIG/EINGESCHRAENKT/UNZUREICHEND und nenne "
+                        "TIER-2-DATENLUECKEN bzw. TIER-3-DATENLUECKEN. Erhalte alle übrigen Abschnitte unverändert soweit möglich. "
+                        "Gib die vollständige Auswertung erneut aus."
+                    ],
+                    config=types.GenerateContentConfig(system_instruction=anweisung),
+                )
+                reparatur_text = reparatur.text or ""
+                if pruefe_makro_gate_konsistenz(reparatur_text, makro_gate):
+                    text = reparatur_text
+                    print("INFO: Makro-Gate-Konsistenz nach Reparatur hergestellt.")
+                else:
+                    raise RuntimeError("Gemini widerspricht weiterhin dem autoritativen MAKRO-SZENARIO-GATE=FREIGEGEBEN.")
 
             # KONTROLLIERTER REPARATURVERSUCH:
             # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,

@@ -110,6 +110,14 @@ TREASURY_REAL_YIELD_URL = "https://home.treasury.gov/resource-center/data-chart-
 BEA_NIPA_Q_URL = "https://apps.bea.gov/national/Release/TXT/NipaDataQ.txt"
 DBNOMICS_BASE = "https://api.db.nomics.world/v22/series"
 BLS_API_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+LME_OFFICIAL_URL = "https://www.lme.com/market-data/reports-and-data/lme-official-prices"
+LME_METAL_URLS = {
+    "Nickel": "https://www.lme.com/en/metals/non-ferrous/lme-nickel",
+    "Blei": "https://www.lme.com/en/metals/non-ferrous/lme-lead",
+    "Zinn": "https://www.lme.com/en/metals/non-ferrous/lme-tin",
+    "Kobalt": "https://www.lme.com/en/metals/non-ferrous/lme-cobalt",
+}
+LME_LOOKBACK_DAYS = 7
 
 MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
@@ -137,16 +145,16 @@ FRED_MAX_AGE_DAYS = {
 
 def _cache_load():
     if not MACRO_CACHE_FILE.exists():
-        return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}}
+        return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}, "lme": {}}
     try:
         with MACRO_CACHE_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
         if data.get("version") != CACHE_VERSION:
-            return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}}
+            return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}, "lme": {}}
         return data
     except Exception as exc:
         print(f"WARNUNG-MAKRO-CACHE: Cache nicht lesbar ({exc}) - starte leer.")
-        return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}}
+        return {"version": CACHE_VERSION, "fred": {}, "market": {}, "fed_futures": {}, "ism": {}, "lme": {}}
 
 
 def _cache_save(data):
@@ -1180,6 +1188,10 @@ def _ism_public_secondary_forexfactory(year, month, kind):
                     "new_orders": None,
                     "employment": None,
                     "prices": None,
+                    "business_activity": None, "new_export_orders": None,
+                    "supplier_deliveries": None, "backlog": None,
+                    "inventories": None, "inventory_sentiment": None,
+                    "imports": None, "exports": None,
                     "release_date": release_date.isoformat(),
                 }
 
@@ -1252,6 +1264,24 @@ def _ism_fetch(kind, year, month):
                     for key, pattern in patterns.items():
                         mm = re.search(pattern, text, flags=re.I)
                         data[key] = _clean_num(mm.group(1)) if mm else None
+
+                    extended_patterns = {
+                        "business_activity": [r"Business Activity(?: Index)?.{0,120}?(\d+(?:\.\d+)?)", r"Business Activity.{0,120}?(\d+(?:\.\d+)?)"],
+                        "new_export_orders": [r"New Export Orders(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                        "supplier_deliveries": [r"Supplier Deliveries(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                        "backlog": [r"Backlog(?:s)?(?: Index)?.{0,120}?(\d+(?:\.\d+)?)", r"Backlogs(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                        "inventories": [r"Inventories(?: Index)?.{0,120}?(\d+(?:\.\d+)?)", r"Inventory(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                        "inventory_sentiment": [r"Inventory Sentiment(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                        "imports": [r"Imports(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                        "exports": [r"Exports(?: Index)?.{0,120}?(\d+(?:\.\d+)?)"],
+                    }
+                    for key, patterns_ext in extended_patterns.items():
+                        data[key] = None
+                        for pattern in patterns_ext:
+                            mm = re.search(pattern, text, flags=re.I)
+                            if mm:
+                                data[key] = _clean_num(mm.group(1))
+                                break
 
                     return data
 
@@ -1326,17 +1356,221 @@ def ism_snapshot(today):
     manufacturing=get("manufacturing")
     services=get("services")
     lines=[]
-    if manufacturing:
-        lines.append(f"ISM Manufacturing PMI: {manufacturing['pmi']:.1f} | Datenmonat={manufacturing['year']}-{manufacturing['month']:02d} | New Orders={_fmt(manufacturing['new_orders'],1)} | Employment={_fmt(manufacturing['employment'],1)} | Prices={_fmt(manufacturing['prices'],1)} | STATUS={manufacturing.get("status","REAL")} | SOURCE={manufacturing["url"]}")
-    else:
-        lines.append("ISM Manufacturing PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
-    if services:
-        lines.append(f"ISM Services PMI: {services['pmi']:.1f} | Datenmonat={services['year']}-{services['month']:02d} | New Orders={_fmt(services['new_orders'],1)} | Employment={_fmt(services['employment'],1)} | Prices={_fmt(services['prices'],1)} | STATUS={services.get("status","REAL")} | SOURCE={services["url"]}")
-    else:
-        lines.append("ISM Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=ISM")
+    def _ism_lines(label, data):
+        if not data:
+            return [
+                f"ISM {label} CORE - PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | DATENMONAT=unbekannt | SOURCE=ISM",
+                f"ISM {label} EXTENDED - alle Unterkomponenten: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | DATENMONAT=unbekannt | SOURCE=ISM",
+            ]
+        core = [
+            ("PMI", data.get("pmi")), ("New Orders", data.get("new_orders")),
+            ("Employment", data.get("employment")), ("Prices", data.get("prices")),
+        ]
+        ext = [
+            ("Business Activity", data.get("business_activity")),
+            ("New Export Orders", data.get("new_export_orders")),
+            ("Supplier Deliveries", data.get("supplier_deliveries")),
+            ("Backlog", data.get("backlog")),
+            ("Inventories", data.get("inventories")),
+            ("Inventory Sentiment", data.get("inventory_sentiment")),
+            ("Imports", data.get("imports")),
+            ("Exports", data.get("exports")),
+        ]
+        source = data.get("url", "ISM")
+        ref = f"{data.get('year')}-{int(data.get('month')):02d}"
+        out = [f"ISM {label} | TIER=1 CORE | Datenstand={ref} | SOURCE={source}"]
+        for name, value in core:
+            out.append(f"ISM {label} CORE - {name}: {_fmt(value,1) if value is not None else 'NICHT VERFUEGBAR'} | STATUS={data.get('status','REAL')} | DATENSTAND={ref} | SOURCE={source}")
+        for name, value in ext:
+            out.append(f"ISM {label} EXTENDED - {name}: {_fmt(value,1) if value is not None else 'NICHT VERFUEGBAR'} | STATUS={data.get('status','REAL') if value is not None else 'UNAVAILABLE'} | DATENSTAND={ref} | SOURCE={source}")
+        return out
+
+    lines.extend(_ism_lines("Manufacturing", manufacturing))
+    lines.extend(_ism_lines("Services", services))
     lines.append("PMI-Regel: >50 = Expansion des jeweiligen Sektors; <50 = Kontraktion. Keine Prognose des naechsten PMI-Werts.")
     return lines
 
+
+
+
+def _previous_business_day(today):
+    """Letzten Kalendertag vor dem Briefing bestimmen; Wochenenden ueberspringen."""
+    d = today - dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def _lme_parse_official_html(html, target_date, metal):
+    """Mehrere rein lokale Extraktionswege fuer die oeffentliche LME-Seite.
+
+    Rueckgabe nur bei eindeutigem Metalldatensatz und eindeutigem Zieltag.
+    Kein Forecast, keine Schaetzung, kein aktueller Wert ohne passenden Datenstand.
+    """
+    target_iso = target_date.isoformat()
+    target_texts = {
+        target_iso,
+        target_date.strftime("%d %b %Y"),
+        target_date.strftime("%d %B %Y"),
+        target_date.strftime("%d.%m.%Y"),
+    }
+    plain = re.sub(r"<[^>]+>", " ", html or "")
+    plain = re.sub(r"&nbsp;", " ", plain, flags=re.I)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    if not any(x.lower() in plain.lower() for x in target_texts):
+        return None
+
+    # 1) HTML tables: official page has a metal row and Cash Bid/Ask columns.
+    try:
+        for table in pd.read_html(StringIO(html)):
+            cols = [str(c).strip().lower() for c in table.columns]
+            for _, row in table.iterrows():
+                row_text = " | ".join(str(x).strip() for x in row.tolist())
+                if metal.lower() not in row_text.lower():
+                    continue
+                nums = []
+                for value in row.tolist():
+                    nums.extend(re.findall(r"(?<![\d.])\d{2,7}(?:\.\d+)?", str(value)))
+                nums = [_clean_num(x) for x in nums]
+                nums = [x for x in nums if x is not None]
+                if len(nums) >= 2:
+                    # Erste Cash-Bid/Ask-Paarung = offizieller Cash-Preis.
+                    return {"cash_bid": nums[0], "cash_ask": nums[1]}
+    except Exception:
+        pass
+
+    # 2) Text fallback: Metal row followed by Cash bid/offer values.
+    m = re.search(
+        rf"{re.escape(metal)}\s+(?:Cash\s+)?(?:Bid\s+)?([0-9]{{3,7}}(?:\.\d+)?)\s+(?:Ask|Offer)?\s*([0-9]{{3,7}}(?:\.\d+)?)",
+        plain,
+        flags=re.I,
+    )
+    if m:
+        bid, ask = _clean_num(m.group(1)), _clean_num(m.group(2))
+        if bid is not None and ask is not None:
+            return {"cash_bid": bid, "cash_ask": ask}
+
+    # 3) Individual metal pages can expose the row without a table parser.
+    idx = plain.lower().find(metal.lower())
+    if idx >= 0:
+        window = plain[idx:idx + 2500]
+        cash = re.search(
+            r"Cash\s+([0-9]{3,7}(?:\.\d+)?)\s+([0-9]{3,7}(?:\.\d+)?)",
+            window,
+            flags=re.I,
+        )
+        if cash:
+            bid, ask = _clean_num(cash.group(1)), _clean_num(cash.group(2))
+            if bid is not None and ask is not None:
+                return {"cash_bid": bid, "cash_ask": ask}
+    return None
+
+
+def lme_official_snapshots(today):
+    """Beschafft LME Official Cash Preise fuer den letzten abgeschlossenen Handelstag.
+
+    Reihenfolge: zentrale LME-Official-Prices-Seite, danach die vier offiziellen
+    Metallseiten. Mehrere Tage werden rueckwaerts versucht, damit Feiertage/Fehltage
+    nicht als "gestern" missverstanden werden. Nur ein explizit passender Datenstand
+    wird akzeptiert.
+    """
+    target = _previous_business_day(today)
+    targets = []
+    d = target
+    for _ in range(LME_LOOKBACK_DAYS):
+        if d.weekday() < 5:
+            targets.append(d)
+        d -= dt.timedelta(days=1)
+
+    result = {}
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.lme.com/market-data/reports-and-data",
+    })
+
+    pages = [(LME_OFFICIAL_URL, "LME Official Prices")] + list(LME_METAL_URLS.items())
+    for url_or_name, label_or_url in pages:
+        if isinstance(label_or_url, str) and label_or_url.startswith("http"):
+            metal = url_or_name
+            url = label_or_url
+        else:
+            metal = None
+            url = url_or_name
+        try:
+            r = session.get(url, timeout=15, allow_redirects=True)
+            print(f"INFO: LME HTTP status={r.status_code} final_url={r.url} source={url}")
+            r.raise_for_status()
+        except Exception as exc:
+            print(f"WARNUNG: LME Quelle nicht erreichbar source={url}: {type(exc).__name__}: {exc}")
+            continue
+
+        for target_date in targets:
+            metals = [metal] if metal else list(LME_METAL_URLS.keys())
+            for metal_name in metals:
+                if metal_name in result:
+                    continue
+                parsed = _lme_parse_official_html(r.text, target_date, metal_name)
+                if not parsed:
+                    continue
+                mid = (parsed["cash_bid"] + parsed["cash_ask"]) / 2.0
+                result[metal_name] = {
+                    "value": mid,
+                    "cash_bid": parsed["cash_bid"],
+                    "cash_ask": parsed["cash_ask"],
+                    "date": target_date.isoformat(),
+                    "status": "REAL_PUBLIC",
+                    "source": url,
+                }
+                print(
+                    f"INFO: LME Official Price gefunden: {metal_name} "
+                    f"date={target_date.isoformat()} bid={parsed['cash_bid']} ask={parsed['cash_ask']} source={url}"
+                )
+
+    # Cache nur fuer echte, explizit datierte Werte.
+    if result:
+        with CACHE_WRITE_LOCK:
+            cache = _cache_load()
+            cache.setdefault("lme", {})
+            for metal, data in result.items():
+                cache["lme"][metal] = {"saved_at": time.time(), "data": data}
+            _cache_save(cache)
+
+    # Innerhalb der definierten Altersgrenze echten Cachewert als Fallback nutzen.
+    cache = _cache_load()
+    for metal in LME_METAL_URLS:
+        if metal in result:
+            continue
+        entry = cache.get("lme", {}).get(metal, {})
+        data = entry.get("data")
+        if data and data.get("date"):
+            try:
+                age = (today - dt.date.fromisoformat(data["date"])).days
+                if 0 <= age <= LME_LOOKBACK_DAYS:
+                    data = dict(data)
+                    data["status"] = "REAL_CACHED"
+                    result[metal] = data
+                    print(f"INFO: LME-Cache-Hit fuer {metal} (Datenstand={data['date']})")
+            except Exception:
+                pass
+
+    lines = []
+    for metal in LME_METAL_URLS:
+        data = result.get(metal)
+        if data:
+            lines.append(
+                f"LME {metal}: Cash Bid={data['cash_bid']:.2f} USD/t | Cash Ask={data['cash_ask']:.2f} USD/t | "
+                f"Datenstand={data['date']} | STATUS={data['status']} | "
+                f"DATENTYP=OFFICIAL_CASH | SOURCE={data['source']}"
+            )
+        else:
+            lines.append(
+                f"LME {metal}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | "
+                f"DATENSTAND_GESUCHT={target.isoformat()} | DATENTYP=OFFICIAL_CASH | SOURCE={LME_OFFICIAL_URL}"
+            )
+    return lines
 
 
 def market_snapshots_parallel():
@@ -1374,59 +1608,50 @@ def fred_snapshots_parallel(names):
     return [results[name] for name in names]
 
 def data_quality_gate(lines):
-    # Tier 1: Core-/Gate-Daten. Fehlt eine dieser Datenreihen bzw. ist sie
-    # aufgrund der bestehenden Daten-/Cache-Logik nicht belastbar verfuegbar,
-    # wird das Makro-Szenario gesperrt.
+    # TIER 1: Nur diese Daten duerfen das Makro-Gate sperren.
     tier1_labels = [
-        "Fed Funds Effective Rate",
-        "US 2Y Treasury",
-        "US 10Y Treasury",
-        "Core CPI",
-        "NFP / Nonfarm Payrolls",
-        "Arbeitslosenquote",
-        "ISM Manufacturing PMI",
-        "ISM Services PMI",
-        "S&P 500",
+        "Fed Funds Effective Rate", "US 2Y Treasury", "US 10Y Treasury",
+        "Core CPI", "NFP / Nonfarm Payrolls", "Arbeitslosenquote",
+        "ISM Manufacturing CORE - PMI", "ISM Services CORE - PMI", "S&P 500",
     ]
 
-    # Tier 2: Sekundaere Kontextdaten. Fehlende/zu alte Daten verschlechtern
-    # die Datenqualitaet, sperren das Szenario aber nicht.
+    # TIER 2: Bestaetigungsdaten. Fehlende Einzelreihen verschlechtern die
+    # Qualitaet, sperren das Gate aber niemals.
     tier2_labels = [
-        "PCE",
-        "Core PCE",
-        "Realzins 10Y TIPS",
-        "US High Yield OAS",
-        "Chicago Fed NFCI",
-        "VIX",
-        "DXY",
-        "Reales BIP-Wachstum",
-        "M2",
-        "JOLTS Job Openings",
-        "Industrieproduktion",
-        "Consumer Sentiment",
-        "Kapazitaetsauslastung",
-        "SLOOS C&I Tightening",
-        "US Investment Grade OAS",
+        "PCE", "Core PCE", "Realzins 10Y TIPS", "US High Yield OAS", "Chicago Fed NFCI",
+        "VIX", "DXY", "Reales BIP-Wachstum", "M2", "JOLTS Job Openings",
+        "Industrieproduktion", "Consumer Sentiment", "Kapazitaetsauslastung",
+        "SLOOS C&I Tightening", "US Investment Grade OAS",
+        "LME Nickel", "LME Blei", "LME Zinn", "LME Kobalt",
     ]
 
-    # Tier 3: Optionale Anreicherungsdaten. Sie haben keinen Einfluss auf
-    # Gate oder Datenqualitaetsstatus.
-    tier3_labels = [
-        "GSCPI",
-        "Global Economic Policy Uncertainty",
-        "US Federal Debt/GDP",
-    ]
+    def _missing_exact(label):
+        for line in lines:
+            if line.startswith(label + ": NICHT VERFUEGBAR"):
+                return True
+            if line.startswith(label) and "NICHT VERFUEGBAR" in line:
+                return True
+        return False
 
-    def _unavailable(label):
-        return any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)
+    critical_missing = [label for label in tier1_labels if _missing_exact(label)]
+    secondary_missing = [label for label in tier2_labels if _missing_exact(label)]
+    tier3_missing = []
 
-    critical_missing = [label for label in tier1_labels if _unavailable(label)]
-    secondary_missing = [label for label in tier2_labels if _unavailable(label)]
+    # Extended-Komponenten werden einzeln als TIER-2-Luecken ausgewiesen.
+    for line in lines:
+        m = re.match(r"ISM (Manufacturing|Services) EXTENDED - ([^:]+): NICHT VERFUEGBAR", line)
+        if m:
+            secondary_missing.append(f"ISM {m.group(1)} {m.group(2)}")
 
+    secondary_missing = list(dict.fromkeys(secondary_missing))
     gate = "GESPERRT" if critical_missing else "FREIGEGEBEN"
-    data_quality = "BLOCKED" if critical_missing else ("DEGRADED" if secondary_missing else "HEALTHY")
-    missing = critical_missing
-    return gate, missing, data_quality, secondary_missing
+    if critical_missing:
+        data_quality = "UNZUREICHEND"
+    elif secondary_missing:
+        data_quality = "EINGESCHRAENKT"
+    else:
+        data_quality = "VOLLSTAENDIG"
+    return gate, critical_missing, data_quality, secondary_missing, tier3_missing
 
 
 def main():
@@ -1479,16 +1704,20 @@ def main():
     lines.append("")
 
     lines.append("5. MARKT, FX, KRYPTO & ROHSTOFFE")
+    lines.extend(lme_official_snapshots(today))
     lines.extend(market_snapshots_parallel())
     lines.append("")
 
-    gate, missing, data_quality, secondary_missing = data_quality_gate(lines)
+    gate, missing, data_quality, secondary_missing, tier3_missing = data_quality_gate(lines)
     lines.append("6. DATENQUALITAETS-GATEKEEPER")
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"DATENQUALITAET: {data_quality}")
-    lines.append(f"SEKUNDAERE DATENLUECKEN: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
-    lines.append(f"KRITISCHE DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
+    lines.append(f"TIER-2-DATENLUECKEN: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
+    lines.append(f"TIER-3-DATENLUECKEN: {', '.join(tier3_missing) if tier3_missing else 'KEINE'}")
+    lines.append(f"KRITISCHE TIER-1-DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
     lines.append("REGEL: Bei GESPERRT darf keine Base/Bull/Bear-Prognose mit Zahlen ausgegeben werden. Die Tagesauswertung darf die bestehende regelbasierte Analyse trotzdem weiter ausgeben.")
+    lines.append("TIER-REGEL: TIER 1 KERN entscheidet ueber das Gate. TIER 2 BESTAETIGUNG und TIER 3 KONTEXT koennen die Datenqualitaet mindern, aber niemals allein das Gate sperren.")
+    lines.append("DATENHERKUNFT-REGEL: Jede verfuegbare Reihe muss Quelle und Datenstand ausweisen. Extended-Komponenten werden einzeln bewertet; fehlende Einzelkomponenten bleiben NICHT VERFUEGBAR.")
     lines.append("CACHE-REGEL: REAL_CACHED darf nur verwendet werden, wenn der gespeicherte Originalwert innerhalb seiner definierten Datenaltersgrenze liegt. Es werden keine Werte fortgeschrieben oder geschaetzt.")
     lines.append("")
 
@@ -1505,7 +1734,9 @@ def main():
     print(f"MAKRO-SZENARIO-GATE={gate}")
     print(f"MAKRO-DATENQUALITAET={data_quality}")
     if secondary_missing:
-        print("SEKUNDAERE_DATENLUECKEN=" + ", ".join(secondary_missing))
+        print("TIER-2-DATENLUECKEN=" + ", ".join(secondary_missing))
+    if tier3_missing:
+        print("TIER-3-DATENLUECKEN=" + ", ".join(tier3_missing))
     if missing:
         print("KRITISCHE_DATENLUECKEN=" + ", ".join(missing))
 

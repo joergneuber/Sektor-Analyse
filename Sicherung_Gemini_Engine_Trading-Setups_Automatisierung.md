@@ -1878,8 +1878,11 @@ HARTE MAKRO-DATENREGELN (VERBINDLICH)
 • PROXY muss immer ausdruecklich als Proxy bezeichnet werden und darf niemals als Originalpreis des zugrunde liegenden Assets ausgegeben werden.
 • MODEL_DERIVED ist ausschliesslich fuer die spaetere Szenario-/Wahrscheinlichkeitslogik zulaessig. Eine MODEL_DERIVED-Wahrscheinlichkeit ist kein realer Datenwert und darf niemals als Markterwartung aus einer Quelle dargestellt werden.
 • UNAVAILABLE bleibt UNAVAILABLE. Kein letzter Wert, keine Null und kein Proxy darf stillschweigend als Ersatz eingesetzt werden.
-• Das Makro-Datenpaket enthaelt ein MAKRO-SZENARIO-GATE. Dieses Gate ist fuer Punkt 2 autoritativ und darf von Gemini NICHT neu bewertet oder wegen sekundärer Datenluecken ueberschrieben werden. Bei FREIGEGEBEN ist Punkt 2 freigegeben. TIER-2- und TIER-3-Luecken, insbesondere fehlende ISM-EXTENDED-Unterkomponenten oder LME-Preise, duerfen das Gate nicht nachtraeglich sperren; sie duerfen lediglich die Datenqualitaet bzw. die Staerke der Bestaetigung reduzieren. Bei GESPERRT duerfen in Punkt 2 KEINE geschaetzten Makro-Prognosewerte und KEINE Szenario-Wahrscheinlichkeiten ausgegeben werden. Stattdessen die konkreten kritischen TIER-1-Datenluecken nennen und die Zukunftsaussagen entsprechend begrenzen.
-• TIER-1 CORE = gate-relevante Daten. TIER-2 CONFIRMATION = Szenarioverstaerkung und niemals alleiniger Gate-Blocker. TIER-3 CONTEXT = zusaetzliche Information ohne Gate-Einfluss.
+• Das Makro-Datenpaket enthaelt ein MAKRO-SZENARIO-GATE. Der Gate-Status des Makro-Datenpakets ist autoritativ und darf von Gemini nicht neu bewertet oder ueberschrieben werden. Bei FREIGEGEBEN darf Punkt 2 nicht wegen TIER-2- oder TIER-3-Datenluecken nachtraeglich gesperrt werden. Bei GESPERRT duerfen in Punkt 2 KEINE geschaetzten Makro-Prognosewerte und KEINE Szenario-Wahrscheinlichkeiten ausgegeben werden. Stattdessen die konkreten kritischen TIER-1-Datenluecken nennen und die Zukunftsaussagen entsprechend begrenzen.
+• Verbindliche Makro-Tier-Struktur: TIER 1 KERN = gate-relevant; TIER 2 BESTAETIGUNG = Szenario-Verstaerkung, niemals alleiniger Gate-Blocker; TIER 3 KONTEXT = zusaetzliche Einordnung, niemals Gate-Blocker.
+• Verbindliche deutsche Qualitaetsterminologie: VOLLSTAENDIG = keine relevanten Luecken; EINGESCHRAENKT = TIER-2-/TIER-3-Luecken bei vollstaendigem TIER 1; UNZUREICHEND = kritische TIER-1-Luecke. Nicht die englischen Statusbegriffe HEALTHY/DEGRADED/BLOCKED in der sichtbaren Makro-Auswertung verwenden.
+• TIER-2-DATENLUECKEN und TIER-3-DATENLUECKEN immer getrennt ausweisen. ISM-EXTENDED-Komponenten einzeln ausweisen; keine Sammelaussage, dass ein kompletter Extended-Block fehle, wenn einzelne Komponenten vorhanden sind. Jede verfuegbare Reihe muss Herkunft und Datenstand erkennen lassen.
+• LME-Industriemetalle Nickel, Blei, Zinn und Kobalt sind als TIER-2-Bestaetigungsdaten anhand des letzten abgeschlossenen Handelstages vor dem Briefing zu beschaffen. Fuer ein Samstag-/Montag-Briefing ist daher grundsaetzlich der Freitag zu pruefen. Nur tatsaechlich veroeffentlichte LME Official Prices verwenden; Datenstand und Quelle ausweisen.
 • Fed-Erwartung: keine kostenpflichtige CME-FedWatch-API. Die eigene marktimplizierte Erwartung wird aus realen 30-Day-Fed-Funds-Futures berechnet; die Berechnungsmethodik muss nachvollziehbar bleiben.
 • PMI: keine geschaetzten PMI-Werte. Fuer die USA sind offizielle oeffentliche ISM-Manufacturing-/Services-Releases die Primaerquelle. Nicht verfuegbare weitere PMI-Reihen bleiben UNAVAILABLE.
 
@@ -1897,9 +1900,11 @@ Formuliere direkt zu Beginn 2-4 kompakte Saetze. Nenne das aktuelle
 Makro-Regime, die 2-4 wichtigsten Treiber sowie die wichtigsten
 Gegentreiber bzw. Datenluecken. Keine künstliche quantitative Sicherheit.
 Wenn das MAKRO-SZENARIO-GATE GESPERRT ist, nenne den Sperrgrund und
-verzichte auf modellbasierte Zukunftsaussagen, die durch die TIER-1-Datenluecke
-nicht gestützt sind. Wenn das Gate FREIGEGEBEN ist, MUSS Punkt 2 als freigegeben
-behandelt werden; TIER-2-/TIER-3-Luecken duerfen daraus keine Sperrung machen.
+verzichte auf modellbasierte Zukunftsaussagen, die durch die Datenluecke
+nicht gestützt sind. Wenn das MAKRO-SZENARIO-GATE FREIGEGEBEN ist, behandle
+den Status als verbindlich. TIER-2-/TIER-3-Luecken sind dann nur als
+Einschraenkung der Datenqualitaet bzw. Szenario-Bestaetigung zu nennen und
+duerfen das Gate nicht nachtraeglich sperren.
 
 2.1 KURZFRISTIG: 1-4 WOCHEN
 Bewerte die wahrscheinlichste Entwicklung fuer die naechsten 1-4 Wochen.
