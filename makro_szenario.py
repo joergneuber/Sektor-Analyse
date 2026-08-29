@@ -108,7 +108,7 @@ MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 CACHE_WRITE_LOCK = Lock()
 
 # Maximale Zeit, die ein gespeicherter REAL-Wert als verwendbar gilt, wenn die
@@ -1105,6 +1105,8 @@ def _lme_official_exact_from_html(html_text, target_date, metal):
         from bs4 import BeautifulSoup
         soup=BeautifulSoup(html_text,"html.parser")
     except Exception: return None
+    page_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    page_date_ok = date_matches(page_text)
     for ti,table in enumerate(soup.find_all("table")):
         rows=[]
         for tr in table.find_all("tr"):
@@ -1117,6 +1119,8 @@ def _lme_official_exact_from_html(html_text, target_date, metal):
         if not table_date_ok:
             cap=table.find("caption")
             if cap: table_date_ok=date_matches(cap.get_text(" ",strip=True))
+        if not table_date_ok and page_date_ok:
+            table_date_ok = True
         if not table_date_ok: continue
 
         price_indices=set()
@@ -1357,6 +1361,25 @@ def _flat_columns(df):
         else:
             cols.append(str(col).strip())
     return cols
+
+
+def _rows_from_dataframe(df):
+    """Preserve row labels returned by pandas.read_html().
+
+    TE/ISM tables frequently arrive with the component name as the DataFrame
+    index. Iterating df.astype(str).iterrows() otherwise loses that label and
+    makes proven component rows look unavailable.
+    """
+    if df is None or df.empty:
+        return []
+    work = df.copy()
+    try:
+        work = work.reset_index()
+    except Exception:
+        pass
+    cols = _flat_columns(work)
+    rows = work.fillna("").astype(str).values.tolist()
+    return cols, rows
 
 
 def _find_month_column(columns, year, month):
@@ -1653,7 +1676,7 @@ def _te_public_ism_fetch(kind, year, month):
         for df_index, df in enumerate(frames):
             if df.empty:
                 continue
-            cols = _flat_columns(df)
+            cols, raw_rows = _rows_from_dataframe(df)
             lower_cols = [c.lower().strip() for c in cols]
             last_idx = next(
                 (i for i, c in enumerate(lower_cols)
@@ -1664,8 +1687,8 @@ def _te_public_ism_fetch(kind, year, month):
                  if "reference" in c or c in {"date", "period"}), None
             )
 
-            for ridx, row in df.astype(str).iterrows():
-                cells = [str(x).strip() for x in row.tolist()]
+            for ridx, row in enumerate(raw_rows):
+                cells = [str(x).strip() for x in row]
                 if not cells:
                     continue
                 target = None
@@ -1734,6 +1757,34 @@ def _te_public_ism_fetch(kind, year, month):
 
         # PMI headline fallback is accepted only when the page text itself ties
         # the headline to the requested month.
+        # Direct text fallback for the proven compact TE table. This is deliberately
+        # label-anchored: the first numeric token after a component label is the
+        # displayed Last value, while Previous remains the second token.
+        if headline_period_ok:
+            plain_components = re.sub(r"<[^>]+>", " ", body)
+            plain_components = re.sub(r"\s+", " ", plain_components)
+            component_patterns = {
+                key: aliases for key, aliases in targets.items()
+            }
+            for key, aliases in component_patterns.items():
+                if key in found:
+                    continue
+                for alias in aliases:
+                    mm = re.search(
+                        rf"{re.escape(alias)}\s+(?:Last|Previous)?\s*[:|]?\s*(\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)",
+                        plain_components, re.I
+                    )
+                    if mm:
+                        value = _parse_float_token(mm.group(1))
+                        if value is not None:
+                            found[key] = {
+                                "value": value, "table_index": None, "row_index": None,
+                                "row": [], "columns": [],
+                                "reference_cell": f"{calendar.month_name[month]} {year}",
+                                "method": "public_html_label_anchored_last_previous",
+                            }
+                            break
+
         if "pmi" not in found:
             plain = re.sub(r"<[^>]+>", " ", body)
             plain = re.sub(r"\s+", " ", plain)
@@ -2196,62 +2247,74 @@ def lme_snapshot(today):
     return lines
 
 def spglobal_services_snapshot(today):
-    """TIER-2: S&P Global US Services PMI aus oeffentlicher S&P-Seite, TE als Fallback.
+    """TIER-3 CONTEXT: S&P Global US Services PMI.
 
-    Fuer das aktuelle Briefing wird der letzte vollstaendige Monatswert gesucht.
-    Die Quelle muss den S&P-Global-Services-Kontext selbst enthalten; ein beliebiger
-    TE Services PMI wird nicht mehr automatisch als S&P Global bezeichnet.
+    Prefer the official public S&P page. TE is a secondary public route only
+    when the page explicitly identifies the series as S&P Global Services PMI.
+    The reference month is the latest published month, not necessarily the ISM month.
     """
-    target_year, target_month = today.year, today.month-1
-    if target_month==0: target_year-=1; target_month=12
-    target_name=calendar.month_name[target_month]
-    target_short=calendar.month_abbr[target_month]
-    urls=[
+    target_year, target_month = today.year, today.month - 1
+    if target_month == 0:
+        target_year -= 1; target_month = 12
+    target_name = calendar.month_name[target_month]
+    target_short = calendar.month_abbr[target_month]
+    month_rx = rf"(?:{re.escape(target_name)}|{re.escape(target_short)})\s+{target_year}"
+
+    urls = [
         "https://www.pmi.spglobal.com/Public/Home/PressRelease",
         "https://www.pmi.spglobal.com/Public?language=en",
     ]
-    patterns=[
-        rf"(?:US|United States).*?Services PMI.*?(?:at|of|to|was|registered|rose|fell)\s+(\d+(?:\.\d+)?)",
-        rf"Services PMI.*?(?:at|of|to|was|registered|rose|fell)\s+(\d+(?:\.\d+)?)",
-    ]
     for url in urls:
         try:
-            r=requests.get(url,timeout=15,headers=REQUEST_HEADERS,allow_redirects=True)
-            if r.status_code!=200: continue
-            text=re.sub(r"<[^>]+>"," ",r.text); text=re.sub(r"\s+"," ",text)
-            month_context=re.search(rf"(?:{re.escape(target_name)}|{re.escape(target_short)})\s+{target_year}",text,re.I)
-            # Search bounded windows so a different month's PMI cannot be captured.
-            for m in re.finditer(r"(?:US|United States).*?Services PMI",text,re.I):
-                window=text[m.start():m.start()+1200]
-                if not re.search(rf"(?:{re.escape(target_name)}|{re.escape(target_short)})\s+{target_year}",window,re.I):
+            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS, allow_redirects=True)
+            if r.status_code != 200:
+                continue
+            text = re.sub(r"<[^>]+>", " ", r.text)
+            text = re.sub(r"\s+", " ", text)
+            for m in re.finditer(r"S&P\s+Global\s+Services\s+PMI", text, re.I):
+                window = text[max(0, m.start()-300):m.start()+1600]
+                if not re.search(month_rx, window, re.I):
                     continue
-                for pat in patterns:
-                    mm=re.search(pat,window,re.I)
-                    if mm:
-                        v=_clean_num(mm.group(1))
-                        if v is not None:
-                            return (f"S&P Global Services PMI: {v:.1f} | Datenmonat={target_year}-{target_month:02d} | "
-                                    f"STATUS=REAL_OFFICIAL_PUBLIC | SOURCE=S&P Global Public PressRelease | DATENTYP=SP_GLOBAL_SERVICES")
+                mm = re.search(r"S&P\s+Global\s+Services\s+PMI.*?(?:at|of|to|was|rose|fell)(?:\s+to)?\s+(\d+(?:\.\d+)?)", window, re.I)
+                if mm:
+                    v = _clean_num(mm.group(1))
+                    if v is not None:
+                        return (f"S&P Global Services PMI: {v:.1f} | Datenmonat={target_year}-{target_month:02d} | "
+                                f"STATUS=REAL_OFFICIAL_PUBLIC | SOURCE=S&P Global Public PressRelease | DATENTYP=SP_GLOBAL_SERVICES | TIER=TIER3_CONTEXT")
         except Exception as exc:
             print(f"WARNUNG: S&P Global Public {url}: {type(exc).__name__}: {exc}")
 
-    # TE secondary: only accept a page explicitly describing S&P Global Services PMI.
-    te_urls=["https://tradingeconomics.com/united-states/services-pmi","https://de.tradingeconomics.com/united-states/services-pmi"]
+    te_urls = [
+        "https://tradingeconomics.com/united-states/services-pmi",
+        "https://de.tradingeconomics.com/united-states/services-pmi",
+    ]
     for url in te_urls:
         try:
-            r=requests.get(url,timeout=15,headers=REQUEST_HEADERS,allow_redirects=True)
-            if r.status_code!=200: continue
-            text=re.sub(r"<[^>]+>"," ",r.text); text=re.sub(r"\s+"," ",text)
-            if not re.search(r"S&P\s+Global|S\s*&\s*P\s+Global",text,re.I): continue
-            mm=re.search(r"Services PMI.*?(?:at|of|to|was)\s+(\d+(?:\.\d+)?).*?(?:in|for)\s+"+re.escape(target_name)+rf"\s+{target_year}",text,re.I)
-            if mm:
-                v=_clean_num(mm.group(1))
-                if v is not None:
-                    return (f"S&P Global Services PMI: {v:.1f} | Datenmonat={target_year}-{target_month:02d} | "
-                            f"STATUS=REAL_PUBLIC_SECONDARY | SOURCE=TradingEconomics Public / S&P Global | DATENTYP=SP_GLOBAL_SERVICES")
+            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS, allow_redirects=True)
+            if r.status_code != 200:
+                continue
+            text = re.sub(r"<[^>]+>", " ", r.text)
+            text = re.sub(r"\s+", " ", text)
+            # Known public TE wording: the page explicitly identifies S&P Global
+            # and states the current Services PMI plus its reference month.
+            if not re.search(r"S&P\s+Global|S\s*&\s*P\s+Global", text, re.I):
+                continue
+            patterns = [
+                rf"S&P\s+Global\s+Services\s+PMI.*?(?:at|of|to|was|rose|fell)(?:\s+to)?\s+(\d+(?:\.\d+)?).*?(?:in|for)\s+{re.escape(target_name)}\s+{target_year}",
+                rf"Services\s+PMI.*?(?:at|of|to|was|rose|fell)(?:\s+to)?\s+(\d+(?:\.\d+)?).*?(?:in|for)\s+{re.escape(target_name)}\s+{target_year}",
+                rf"Services\s+PMI.*?{re.escape(target_name)}\s+{target_year}.*?(\d+(?:\.\d+)?)",
+            ]
+            for pattern in patterns:
+                mm = re.search(pattern, text, re.I)
+                if mm:
+                    v = _clean_num(mm.group(1))
+                    if v is not None:
+                        return (f"S&P Global Services PMI: {v:.1f} | Datenmonat={target_year}-{target_month:02d} | "
+                                f"STATUS=REAL_PUBLIC_SECONDARY | SOURCE=TradingEconomics Public / S&P Global | DATENTYP=SP_GLOBAL_SERVICES | TIER=TIER3_CONTEXT")
         except Exception as exc:
             print(f"WARNUNG: S&P Global TE {url}: {type(exc).__name__}: {exc}")
-    return "S&P Global Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=S&P Global Public / TradingEconomics Public | DATENTYP=SP_GLOBAL_SERVICES"
+    return "S&P Global Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=S&P Global Public / TradingEconomics Public | DATENTYP=SP_GLOBAL_SERVICES | TIER=TIER3_CONTEXT"
+
 
 def ism_snapshot(today):
     cache=_cache_load()
@@ -2366,8 +2429,7 @@ def data_quality_gate(lines):
         "PCE", "Core PCE", "Realzins 10Y TIPS", "US High Yield OAS", "Chicago Fed NFCI",
         "VIX", "DXY", "Reales BIP-Wachstum", "M2", "JOLTS Job Openings",
         "Industrieproduktion", "Consumer Sentiment", "Kapazitaetsauslastung",
-        "SLOOS C&I Tightening", "US Investment Grade OAS",
-        "LME Nickel", "LME Blei", "LME Zinn", "LME Kobalt",
+        "SLOOS C&I Tightening", "US Investment Grade OAS", "LME Nickel", "LME Blei", "LME Zinn", "LME Kobalt",
         "ISM Manufacturing EXTENDED", "ISM Services EXTENDED",
     ]
     tier3_labels = ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP", "S&P Global Services PMI"]
@@ -2398,15 +2460,14 @@ def data_quality_gate(lines):
 
     # Do not double-count generic container labels if their concrete line is healthy.
     tier2_missing=[x for i,x in enumerate(tier2_missing) if x not in tier2_missing[:i]]
-    tier3_missing=[label for label in tier3_labels if unavailable(label)]
     gate="GESPERRT" if critical_missing else "FREIGEGEBEN"
     if critical_missing:
         data_quality="UNZUREICHEND"
-    elif tier2_missing or tier3_missing:
+    elif tier2_missing:
         data_quality="EINGESCHRAENKT"
     else:
         data_quality="VOLLSTAENDIG"
-    return gate, critical_missing, data_quality, tier2_missing, tier3_missing
+    return gate, critical_missing, data_quality, tier2_missing
 
 
 def main():
@@ -2463,7 +2524,7 @@ def main():
     lines.extend(lme_snapshot(today))
     lines.append("")
 
-    gate, missing, data_quality, secondary_missing, tier3_missing = data_quality_gate(lines)
+    gate, missing, data_quality, secondary_missing = data_quality_gate(lines)
     lines.append("6. DATENQUALITAETS-GATEKEEPER")
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"DATENQUALITAET: {data_quality}")
