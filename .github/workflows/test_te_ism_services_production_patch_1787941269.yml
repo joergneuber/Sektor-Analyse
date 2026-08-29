@@ -1,11 +1,12 @@
-name: TE ISM Services Extended Collection
+name: Macro Structure Full Collection Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  collect-te-ism-services:
+  macro-structure-full-collection:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,25 +16,31 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install collection dependencies
-        run: python -m pip install --disable-pip-version-check pandas lxml requests
+      - name: Verify files
+        run: |
+          test -f makro_szenario.py
+          test -f test_macro_structure_full_collection.py
+          echo "FILES=GREEN"
+          ls -lh makro_szenario.py test_macro_structure_full_collection.py
 
-      - name: Verify production file
-        run: test -f makro_szenario.py
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            pandas lxml requests yfinance openpyxl
 
-      - name: Verify production syntax
-        run: python -m py_compile makro_szenario.py
+      - name: Verify syntax
+        run: |
+          python -m py_compile makro_szenario.py
+          python -m py_compile test_macro_structure_full_collection.py
 
-      - name: Verify collection test syntax
-        run: python -m py_compile test_te_ism_services_extended_collection.py
+      - name: Run complete macro collection
+        run: |
+          python test_macro_structure_full_collection.py
 
-      - name: Run extended non-aborting collection
-        run: python test_te_ism_services_extended_collection.py
-
-      - name: Upload collected TE data
+      - name: Upload complete collection report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: te-ism-services-extended-collection
-          path: .te_services_extended/
+          name: macro-structure-full-collection
+          path: .macro_structure_test/
           if-no-files-found: ignore
