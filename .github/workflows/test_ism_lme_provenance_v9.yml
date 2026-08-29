@@ -25,33 +25,32 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests beautifulsoup4 pandas lxml selenium
 
-      - name: Validate test code
+      - name: Syntax validation
         run: |
           python -m py_compile test_ism_lme_provenance_v9.py
           python - <<'PY'
           import ast
           from pathlib import Path
-          p = Path("test_ism_lme_provenance_v9.py")
-          ast.parse(p.read_text(encoding="utf-8"))
+          ast.parse(Path("test_ism_lme_provenance_v9.py").read_text(encoding="utf-8"))
           print("V9_SYNTAX=GREEN")
           PY
 
       - name: Runtime smoke test
-        shell: bash
         run: |
           python - <<'PY'
           import importlib.util
-          spec = importlib.util.spec_from_file_location("v9", "test_ism_lme_provenance_v9.py")
+          spec = importlib.util.spec_from_file_location(
+              "v9", "test_ism_lme_provenance_v9.py"
+          )
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
-          assert mod.record.__name__ == "record"
-          mod.record("SMOKE", label="logger", value=1)
+          mod.emit("SMOKE", label="logger", value=1)
           assert mod.records[-1]["route"] == "SMOKE"
           assert mod.records[-1]["label"] == "logger"
           print("V9_RUNTIME_SMOKE=GREEN")
           PY
 
-      - name: Run V9 broad known-source extraction
+      - name: Run V9 table schema analyzer
         shell: bash
         run: |
           set +e
@@ -60,18 +59,16 @@ jobs:
           echo "V9_TEST_EXIT=$rc"
           exit 0
 
-      - name: Show result matrix
+      - name: Show schema report
         if: always()
         shell: bash
         run: |
-          echo "=== PROVENANCE MATRIX ==="
-          cat ism_lme_provenance_v9/provenance_matrix.csv 2>/dev/null || true
-          echo "=== SUMMARY ==="
-          cat ism_lme_provenance_v9/summary.json 2>/dev/null || true
-          echo "=== REPORT TAIL ==="
-          tail -n 180 ism_lme_provenance_v9/report.txt 2>/dev/null || true
+          echo "=== V9 REPORT ==="
+          cat ism_lme_provenance_v9/report.txt 2>/dev/null || true
+          echo "=== TARGET ROW MATCHES ==="
+          cat ism_lme_provenance_v9/target_row_matches.csv 2>/dev/null || true
 
-      - name: Upload V9 evidence
+      - name: Upload V9 schema evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
