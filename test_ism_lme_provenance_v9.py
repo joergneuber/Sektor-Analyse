@@ -1,52 +1,55 @@
 #!/usr/bin/env python3
 """
-V9 - TABLE / HTML SCHEMA ANALYZER
-Same workflow and filenames as the previous V9; content revised only.
+V9 - STRUCTURE METHODS TEST (INDEPENDENT DIAGNOSTIC RUN)
 
-Purpose
+Same GitHub workflow name and same filenames as the previous V9, but this is a
+separate diagnostic design. It does NOT try to change or validate production
+data. Its sole purpose is to determine which extraction method can see the real
+table/DOM structure on our already-known sources.
+
+KNOWN SOURCES ONLY
+------------------
+1. Official ISM
+2. Trading Economics public
+3. LME official
+4. S&P Global public
+
+PRIMARY METHODS
+---------------
+A) pandas.read_html(URL) directly
+B) requests -> pandas.read_html(StringIO(html))
+C) BeautifulSoup <table>/<tr>/<th>/<td>
+D) lxml XPath over the raw HTML
+E) DOM/parent-chain inspection with BeautifulSoup
+F) Selenium rendered DOM fallback for dynamic/blocked pages
+
+NO NEW SOURCE FAMILIES
+----------------------
+No Investing, MarketWatch, ForexFactory, etc. are introduced here.
+
+TARGETS
 -------
-Do NOT try to validate production values yet.
+ISM Services + Manufacturing: July 2026
+LME: 2026-08-28
+TE Commodities: inspect public table rows and column names
+S&P: inspect public HTML structure
 
-Instead, inspect the HTML/DOM/table schema of our already known sources so we
-can see EXACTLY how the useful values are represented and build the production
-parser from the real structure.
+NON-ABORTING
+------------
+Every page/method is isolated. A method failure is recorded and the run
+continues. The workflow always exits 0.
 
-Known sources only:
-- official ISM
-- Trading Economics public
-- LME official
-- S&P Global public
-
-Focus:
-- ISM Services July 2026
-- ISM Manufacturing July 2026
-- TE US ISM/PMI pages
-- TE public commodities table and individual commodity pages
-- LME Official Prices + known metal pages
-- S&P Global public page
-
-The analyzer records:
-- page title / final URL / status
-- every HTML table (bounded, but structurally complete for normal tables)
-- every header row and row cell with indexes
-- normalized multi-row headers
-- target-row matches
-- parent/child DOM structure around target labels
-- relevant data-* / itemprop / meta / time attributes
-- embedded JSON snippets
-- source-code patterns / endpoint-looking strings (discovery only)
-- links (inventory only, never followed)
-- optional Selenium-rendered DOM for pages that look dynamic or blocked
-
-IMPORTANT:
-  This is a diagnostic schema test, NOT a production parser.
-  No value is automatically promoted to production.
-  No new source family is introduced.
-  Every individual probe is non-fatal and the workflow always exits 0.
+CRITICAL
+--------
+This script deliberately does NOT infer or promote any value. It saves the
+actual table schema, headers, rows, XPath matches, DOM context and method
+availability so that the production parser can later be written against the
+real structure.
 """
 
 import csv
 import html
+import io
 import json
 import re
 import time
@@ -67,6 +70,11 @@ except Exception:
     pd = None
 
 try:
+    from lxml import html as lxml_html
+except Exception:
+    lxml_html = None
+
+try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
 except Exception:
@@ -74,17 +82,16 @@ except Exception:
     Options = None
 
 
-VERSION = "V9-TABLE-SCHEMA"
-
+VERSION = "V9-STRUCTURE-METHODS-INDEPENDENT"
 OUT = Path("ism_lme_provenance_v9")
 RAW = OUT / "raw"
 OUT.mkdir(exist_ok=True)
 RAW.mkdir(exist_ok=True)
 
-SCHEMA_JSONL = OUT / "table_schema.jsonl"
-ROWS_CSV = OUT / "table_rows.csv"
-TARGET_CSV = OUT / "target_row_matches.csv"
-DOM_JSONL = OUT / "dom_target_context.jsonl"
+METHODS_JSONL = OUT / "methods.jsonl"
+TABLES_JSONL = OUT / "tables.jsonl"
+TARGETS_JSONL = OUT / "target_matches.jsonl"
+DOM_JSONL = OUT / "dom_matches.jsonl"
 HTTP_CSV = OUT / "http_attempts.csv"
 SUMMARY = OUT / "summary.json"
 REPORT = OUT / "report.txt"
@@ -92,29 +99,8 @@ REPORT = OUT / "report.txt"
 ISM_MONTH = "2026-07"
 LME_DATE = "2026-08-28"
 
-ISM_SERVICES = [
-    "PMI", "Business Activity", "New Orders", "New Export Orders",
-    "Employment", "Prices", "Supplier Deliveries", "Backlog",
-    "Inventories", "Inventory Sentiment", "Imports", "Exports",
-]
-ISM_MANUFACTURING = [
-    "PMI", "New Orders", "Production", "Employment", "Prices",
-    "Supplier Deliveries", "Backlog of Orders", "Inventories",
-    "Customers' Inventories", "Imports", "Exports", "New Export Orders",
-]
-LME_TARGETS = ["Nickel", "Lead", "Tin", "Cobalt"]
-
-TARGETS_BY_PAGE = {
-    "ISM_SERVICES": ISM_SERVICES,
-    "ISM_MANUFACTURING": ISM_MANUFACTURING,
-    "TE_SERVICES": ["Services PMI", "Business Activity", "New Orders", "Employment", "Prices"],
-    "TE_MANUFACTURING": ["Manufacturing PMI", "New Orders", "Production", "Employment", "Prices"],
-    "TE_COMMODITIES": LME_TARGETS,
-    "TE_COMMODITY": LME_TARGETS,
-    "LME": LME_TARGETS,
-}
-
 PAGES = [
+    # ISM official
     ("ISM_SERVICES_JULY", "ISM_SERVICES",
      "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/services/july/"),
     ("ISM_MANUFACTURING_JULY", "ISM_MANUFACTURING",
@@ -123,14 +109,22 @@ PAGES = [
      "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/services/"),
     ("ISM_MANUFACTURING_INDEX", "ISM_MANUFACTURING",
      "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/pmi/"),
+
+    # Trading Economics public PMI
     ("TE_SERVICES_NONMAN", "TE_SERVICES",
      "https://tradingeconomics.com/united-states/non-manufacturing-pmi"),
     ("TE_SERVICES", "TE_SERVICES",
      "https://tradingeconomics.com/united-states/services-pmi"),
     ("TE_MANUFACTURING", "TE_MANUFACTURING",
      "https://tradingeconomics.com/united-states/manufacturing-pmi"),
+    ("TE_SERVICES_DE", "TE_SERVICES",
+     "https://de.tradingeconomics.com/united-states/non-manufacturing-pmi"),
+
+    # Trading Economics public commodities
     ("TE_COMMODITIES_EN", "TE_COMMODITIES",
      "https://tradingeconomics.com/commodities"),
+    ("TE_COMMODITIES_DE", "TE_COMMODITIES",
+     "https://de.tradingeconomics.com/commodities"),
     ("TE_COBALT", "TE_COMMODITY",
      "https://tradingeconomics.com/commodity/cobalt"),
     ("TE_NICKEL", "TE_COMMODITY",
@@ -139,6 +133,8 @@ PAGES = [
      "https://tradingeconomics.com/commodity/lead"),
     ("TE_TIN", "TE_COMMODITY",
      "https://tradingeconomics.com/commodity/tin"),
+
+    # LME official
     ("LME_OFFICIAL", "LME",
      "https://www.lme.com/market-data/reports-and-data/lme-official-prices"),
     ("LME_NICKEL", "LME",
@@ -149,11 +145,64 @@ PAGES = [
      "https://www.lme.com/Metals/Non-ferrous/LME-Tin"),
     ("LME_COBALT", "LME",
      "https://www.lme.com/Metals/Minor-metals/LME-Cobalt"),
+
+    # S&P Global public
     ("SPG_PUBLIC_DE", "SPG",
      "https://www.pmi.spglobal.com/Public?language=de"),
     ("SPG_PUBLIC_EN", "SPG",
      "https://www.pmi.spglobal.com/Public?language=en"),
 ]
+
+TARGETS = {
+    "ISM_SERVICES": [
+        "PMI", "Business Activity", "New Orders", "New Export Orders",
+        "Employment", "Prices", "Supplier Deliveries", "Backlog",
+        "Inventories", "Inventory Sentiment", "Imports", "Exports",
+    ],
+    "ISM_MANUFACTURING": [
+        "PMI", "New Orders", "Production", "Employment", "Prices",
+        "Supplier Deliveries", "Backlog of Orders", "Inventories",
+        "Customers' Inventories", "Imports", "Exports", "New Export Orders",
+    ],
+    "TE_SERVICES": [
+        "Services PMI", "Business Activity", "New Orders", "Employment", "Prices",
+        "Backlog of Orders", "Supplier Deliveries",
+    ],
+    "TE_MANUFACTURING": [
+        "Manufacturing PMI", "New Orders", "Production", "Employment", "Prices",
+    ],
+    "TE_COMMODITIES": ["Nickel", "Lead", "Tin", "Cobalt"],
+    "TE_COMMODITY": ["Nickel", "Lead", "Tin", "Cobalt"],
+    "LME": ["Nickel", "Lead", "Tin", "Cobalt"],
+    "SPG": ["Services PMI", "Business Activity", "New Business",
+            "New Export Business", "Employment", "Backlogs",
+            "Input Prices", "Prices Charged", "Future Activity"],
+}
+
+ISM_ALIASES = {
+    "PMI": ["PMI", "Services PMI", "Manufacturing PMI", "ISM Services PMI", "ISM Manufacturing PMI"],
+    "Business Activity": ["Business Activity"],
+    "New Orders": ["New Orders"],
+    "New Export Orders": ["New Export Orders"],
+    "Employment": ["Employment"],
+    "Prices": ["Prices"],
+    "Supplier Deliveries": ["Supplier Deliveries"],
+    "Backlog": ["Backlog", "Backlog of Orders"],
+    "Backlog of Orders": ["Backlog of Orders", "Backlog"],
+    "Inventories": ["Inventories"],
+    "Inventory Sentiment": ["Inventory Sentiment"],
+    "Imports": ["Imports"],
+    "Exports": ["Exports"],
+    "Production": ["Production"],
+    "Customers' Inventories": ["Customers' Inventories", "Customers Inventories"],
+}
+
+LME_ALIASES = {
+    "Nickel": ["Nickel", "LME Nickel"],
+    "Lead": ["Lead", "LME Lead"],
+    "Tin": ["Tin", "LME Tin"],
+    "Cobalt": ["Cobalt", "LME Cobalt"],
+}
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -167,7 +216,7 @@ SESSION.headers.update({
 })
 TIMEOUT = (8, 15)
 BROWSER_TIMEOUT = 25
-MAX_BYTES = 8_000_000
+MAX_BYTES = 10_000_000
 
 records = []
 attempts = []
@@ -182,10 +231,34 @@ def normalize(value):
     return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
 
 
+
+def parse_number(value):
+    s = normalize(value)
+    pattern = r"[-+]?\d+(?:[.,]\d+)?"
+    for token in re.findall(pattern, s):
+        try:
+            if token.count(",") == 1 and token.count(".") == 0:
+                num = float(token.replace(",", "."))
+            elif token.count(",") == 1 and token.count(".") == 1:
+                # In this diagnostic helper, the rightmost separator is treated
+                # as the decimal separator.
+                if token.rfind(",") > token.rfind("."):
+                    num = float(token.replace(".", "").replace(",", "."))
+                else:
+                    num = float(token.replace(",", ""))
+            else:
+                num = float(token)
+        except Exception:
+            continue
+        if 1900 <= abs(num) <= 2100:
+            continue
+        return token, num
+    return None, None
+
 def emit(route_name, **data):
     rec = {"route": route_name, "timestamp_utc": now(), **data}
     records.append(rec)
-    with SCHEMA_JSONL.open("a", encoding="utf-8") as f:
+    with METHODS_JSONL.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
 
 
@@ -211,7 +284,7 @@ def fetch_requests(label, domain, url):
             "redirected": r.url != url, "error": "",
         }
         attempts.append(row)
-        emit("HTTP_REQUESTS", **row)
+        emit("HTTP", **row)
         return r, body
     except Exception as exc:
         row = {
@@ -222,7 +295,7 @@ def fetch_requests(label, domain, url):
             "error": repr(exc),
         }
         attempts.append(row)
-        emit("HTTP_REQUESTS", **row)
+        emit("HTTP", **row)
         print(f"WARNUNG: requests {label}: {type(exc).__name__}: {exc}")
         return None, b""
 
@@ -248,12 +321,11 @@ def fetch_browser(label, domain, url):
         driver = webdriver.Chrome(options=opts)
         driver.set_page_load_timeout(BROWSER_TIMEOUT)
         driver.get(url)
-        time.sleep(2.5)
+        time.sleep(3)
         body = driver.page_source.encode("utf-8", "ignore")[:MAX_BYTES]
         emit("SELENIUM", label=label, domain=domain, url=url,
              final_url=driver.current_url,
-             status=200 if body else "EMPTY",
-             bytes=len(body),
+             status=200 if body else "EMPTY", bytes=len(body),
              elapsed_s=round(time.monotonic() - started, 3))
         return body
     except Exception as exc:
@@ -270,386 +342,323 @@ def fetch_browser(label, domain, url):
                 pass
 
 
-def header_matrix(rows):
-    """
-    Return a conservative normalized header representation.
-    We preserve every original header row and also produce a simple combined
-    label for inspection. No value is inferred from this function.
-    """
-    if not rows:
-        return {"raw_header_rows": [], "combined": []}
-
-    # Treat first up to 3 rows as possible headers only if they contain no target
-    # row labels and are reasonably header-like.
-    head_count = min(3, len(rows))
-    header_rows = rows[:head_count]
-    width = max(len(r) for r in header_rows)
-    combined = []
-
-    for col in range(width):
-        parts = []
-        for row in header_rows:
-            cell = normalize(row[col] if col < len(row) else "")
-            if cell and cell not in parts:
-                parts.append(cell)
-        combined.append(" | ".join(parts))
-
-    return {"raw_header_rows": header_rows, "combined": combined}
-
-
-def parse_table(table):
-    rows = []
-    row_meta = []
-    for tr_idx, tr in enumerate(table.find_all("tr")):
-        cells = []
-        for cell_idx, cell in enumerate(tr.find_all(["th", "td"])):
-            text = normalize(cell.get_text(" ", strip=True))
-            cells.append(text)
-        if cells:
-            rows.append(cells)
-            row_meta.append({
-                "row_index": tr_idx,
-                "cell_count": len(cells),
-                "cell_types": [
-                    c.name for c in tr.find_all(["th", "td"])
-                ],
-            })
-    return rows, row_meta
-
-
-def target_match(row_label, target):
-    low = normalize(row_label).lower()
-    t = normalize(target).lower()
-    if low == t:
-        return True
-    if low.startswith(t + " ") or low.startswith(t + ":") or low.startswith(t + "-"):
-        return True
-    return False
-
-
-def table_schema_scan(label, domain, url, raw):
-    soup = BeautifulSoup(raw, "html.parser") if BeautifulSoup else None
-    if soup is None:
+def schema_from_soup(label, domain, url, raw, method):
+    if BeautifulSoup is None:
+        emit("METHOD_UNAVAILABLE", method=method, label=label, domain=domain,
+             url=url, reason="beautifulsoup_unavailable")
         return
 
-    targets = TARGETS_BY_PAGE.get(domain, [])
+    soup = BeautifulSoup(raw, "html.parser")
     tables = soup.find_all("table")
-    emit("TABLE_SCHEMA",
-         label=label, domain=domain, url=url,
-         table_count=len(tables))
+    table_count = len(tables)
+    emit("METHOD_START", method=method, label=label, domain=domain,
+         url=url, table_count=table_count)
 
-    row_csv_records = []
-    target_records = []
+    for idx, table in enumerate(tables):
+        rows = []
+        for tr_idx, tr in enumerate(table.find_all("tr")):
+            cells = [
+                {
+                    "tag": c.name,
+                    "text": normalize(c.get_text(" ", strip=True)),
+                    "attrs": {
+                        k: normalize(v if isinstance(v, str) else " ".join(map(str, v)))
+                        for k, v in c.attrs.items()
+                    },
+                }
+                for c in tr.find_all(["th", "td"])
+            ]
+            if cells:
+                rows.append({"row_index": tr_idx, "cells": cells})
 
-    for table_idx, table in enumerate(tables):
-        rows, row_meta = parse_table(table)
-        hm = header_matrix(rows)
-        table_text = normalize(table.get_text(" ", strip=True))
-
-        table_record = {
+        text_blob = normalize(table.get_text(" ", strip=True))
+        payload = {
+            "method": method,
             "label": label,
             "domain": domain,
             "url": url,
-            "table_index": table_idx,
+            "table_index": idx,
+            "table_attrs": {
+                k: normalize(v if isinstance(v, str) else " ".join(map(str, v)))
+                for k, v in table.attrs.items()
+            },
+            "table_text": text_blob[:5000],
             "row_count": len(rows),
-            "max_columns": max((len(r) for r in rows), default=0),
-            "month_mentions": [
-                x for x in re.findall(
-                    r"July\s+2026|Jul\s+2026|2026[-/]07",
-                    table_text, re.I
-                )
-            ][:30],
-            "lme_date_mentions": [
-                x for x in re.findall(
-                    r"2026[-/]08[-/]28|28\.08\.2026|08/28/2026|August\s+28,\s+2026",
-                    table_text, re.I
-                )
-            ][:30],
-            "header": hm,
-            "row_meta": row_meta[:200],
+            "max_columns": max((len(r["cells"]) for r in rows), default=0),
+            "rows": rows[:250],
         }
-        emit("TABLE_SCHEMA_DETAIL", **table_record)
+        with TABLES_JSONL.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
-        # Write every table row into CSV for direct inspection.
-        for row_idx, row in enumerate(rows):
-            row_csv_records.append({
-                "label": label,
-                "domain": domain,
-                "url": url,
-                "table_index": table_idx,
-                "row_index": row_idx,
-                "row": json.dumps(row, ensure_ascii=False),
-                "header_combined": json.dumps(hm["combined"], ensure_ascii=False),
-            })
-
+        targets = TARGETS.get(domain, [])
+        matched = []
+        for row in rows:
+            if not row["cells"]:
+                continue
+            first = row["cells"][0]["text"]
             for target in targets:
-                if row and target_match(row[0], target):
-                    target_records.append({
-                        "label": label,
-                        "domain": domain,
-                        "url": url,
-                        "table_index": table_idx,
-                        "row_index": row_idx,
+                aliases = ISM_ALIASES.get(target, [target]) + LME_ALIASES.get(target, [])
+                if any(normalize(first).lower() == normalize(a).lower() for a in aliases):
+                    matched.append({
                         "target": target,
-                        "row": row,
-                        "header_combined": hm["combined"],
-                        "target_month_present_in_table": bool(
-                            re.search(r"July\s+2026|Jul\s+2026|2026[-/]07",
-                                      table_text, re.I)
-                        ),
-                        "target_lme_date_present_in_table": bool(
-                            re.search(
-                                r"2026[-/]08[-/]28|28\.08\.2026|08/28/2026|August\s+28,\s+2026",
-                                table_text, re.I
-                            )
-                        ),
+                        "row_index": row["row_index"],
+                        "row_cells": row["cells"],
                     })
 
-    with ROWS_CSV.open("a", newline="", encoding="utf-8") as f:
-        fields = ["label","domain","url","table_index","row_index","row","header_combined"]
-        w = csv.DictWriter(f, fieldnames=fields)
-        if f.tell() == 0:
-            w.writeheader()
-        w.writerows(row_csv_records)
-
-    with TARGET_CSV.open("a", newline="", encoding="utf-8") as f:
-        fields = [
-            "label","domain","url","table_index","row_index","target",
-            "row","header_combined","target_month_present_in_table",
-            "target_lme_date_present_in_table"
-        ]
-        w = csv.DictWriter(f, fieldnames=fields)
-        if f.tell() == 0:
-            w.writeheader()
-        for rec in target_records:
-            out = dict(rec)
-            out["row"] = json.dumps(rec["row"], ensure_ascii=False)
-            out["header_combined"] = json.dumps(rec["header_combined"], ensure_ascii=False)
-            w.writerow(out)
-
-    emit("TARGET_ROW_SUMMARY", label=label, domain=domain, url=url,
-         target_matches=target_records)
+        if matched:
+            emit("TARGET_TABLE_MATCH",
+                 method=method, label=label, domain=domain, url=url,
+                 table_index=idx, table_text=text_blob[:5000],
+                 target_matches=matched[:150])
 
 
-def dom_context_scan(label, domain, url, raw):
-    soup = BeautifulSoup(raw, "html.parser") if BeautifulSoup else None
-    if soup is None:
+def pandas_direct_url(label, domain, url):
+    if pd is None:
+        emit("METHOD_UNAVAILABLE", method="pandas_direct_url",
+             label=label, domain=domain, url=url, reason="pandas_unavailable")
         return
-    targets = TARGETS_BY_PAGE.get(domain, [])
+    started = time.monotonic()
+    try:
+        frames = pd.read_html(url)
+        emit("PANDAS_DIRECT_URL", label=label, domain=domain, url=url,
+             status="OK", table_count=len(frames),
+             elapsed_s=round(time.monotonic() - started, 3),
+             tables=[
+                 {
+                     "index": i,
+                     "shape": list(df.shape),
+                     "columns": [str(c) for c in df.columns],
+                     "rows": df.fillna("").astype(str).head(120).to_dict("records"),
+                 }
+                 for i, df in enumerate(frames[:120])
+             ])
+    except Exception as exc:
+        emit("PANDAS_DIRECT_URL", label=label, domain=domain, url=url,
+             status="ERROR", error=repr(exc),
+             elapsed_s=round(time.monotonic() - started, 3))
+
+
+def pandas_loaded_html(label, domain, raw):
+    if pd is None:
+        emit("METHOD_UNAVAILABLE", method="pandas_loaded_html",
+             label=label, domain=domain, reason="pandas_unavailable")
+        return
+    started = time.monotonic()
+    try:
+        frames = pd.read_html(io.StringIO(raw.decode("utf-8", "ignore")))
+        emit("PANDAS_LOADED_HTML", label=label, domain=domain,
+             status="OK", table_count=len(frames),
+             elapsed_s=round(time.monotonic() - started, 3),
+             tables=[
+                 {
+                     "index": i,
+                     "shape": list(df.shape),
+                     "columns": [str(c) for c in df.columns],
+                     "dtypes": {str(c): str(t) for c, t in df.dtypes.items()},
+                     "rows": df.fillna("").astype(str).head(120).to_dict("records"),
+                 }
+                 for i, df in enumerate(frames[:120])
+             ])
+    except Exception as exc:
+        emit("PANDAS_LOADED_HTML", label=label, domain=domain,
+             status="ERROR", error=repr(exc),
+             elapsed_s=round(time.monotonic() - started, 3))
+
+
+def lxml_scan(label, domain, url, raw):
+    if lxml_html is None:
+        emit("METHOD_UNAVAILABLE", method="lxml_xpath",
+             label=label, domain=domain, url=url, reason="lxml_unavailable")
+        return
+
+    try:
+        root = lxml_html.fromstring(raw)
+    except Exception as exc:
+        emit("LXML_XPATH", label=label, domain=domain, url=url,
+             status="ERROR", error=repr(exc))
+        return
+
+    tables = root.xpath("//table")
+    rows = root.xpath("//table//tr")
+    cells = root.xpath("//table//th | //table//td")
+    table_ids = []
+    for i, table in enumerate(tables[:150]):
+        attrs = dict(table.attrib)
+        text_blob = normalize(" ".join(table.xpath(".//text()")))
+        table_ids.append({
+            "index": i,
+            "attrs": attrs,
+            "text_preview": text_blob[:5000],
+            "rows": len(table.xpath(".//tr")),
+            "cells": len(table.xpath(".//th | .//td")),
+        })
+
+    target_hits = {}
+    targets = TARGETS.get(domain, [])
+    for target in targets:
+        # Case-insensitive XPath contains via lower-case translation.
+        xpath = (
+            "//tr[td or th]"
+            "[contains(translate(normalize-space(string(.)), "
+            "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), "
+            f"'{target.lower()}')]"
+        )
+        found = root.xpath(xpath)
+        target_hits[target] = [
+            normalize(" ".join(node.xpath(".//text()")))[:2500]
+            for node in found[:80]
+        ]
+
+    emit("LXML_XPATH", label=label, domain=domain, url=url,
+         status="OK", table_count=len(tables), row_count=len(rows),
+         cell_count=len(cells), tables=table_ids, target_hits=target_hits)
+
+
+def dom_parent_scan(label, domain, url, raw):
+    if BeautifulSoup is None:
+        return
+    soup = BeautifulSoup(raw, "html.parser")
+    targets = TARGETS.get(domain, [])
     matches = []
 
     for target in targets:
-        # Find exact/near text nodes and capture parent chain structure.
-        for text_node in soup.find_all(string=re.compile(re.escape(target), re.I))[:40]:
-            node = text_node.parent
+        pattern = re.compile(re.escape(target), re.I)
+        for text_node in soup.find_all(string=pattern)[:80]:
+            current = text_node.parent
             chain = []
-            current = node
-            for _ in range(6):
+            for _ in range(7):
                 if current is None:
                     break
                 chain.append({
                     "tag": current.name,
                     "id": current.get("id"),
                     "class": current.get("class"),
-                    "data_attrs": {
+                    "attrs": {
                         k: normalize(v if isinstance(v, str) else " ".join(map(str, v)))
                         for k, v in current.attrs.items()
                         if str(k).lower().startswith("data-")
+                        or str(k).lower() in {"id", "class", "data-symbol", "data-code", "data-value"}
                     },
-                    "text": normalize(current.get_text(" ", strip=True))[:2200],
+                    "text": normalize(current.get_text(" ", strip=True))[:2500],
                 })
                 current = current.parent
-
-            matches.append({
-                "target": target,
-                "chain": chain,
-            })
+            matches.append({"target": target, "chain": chain})
 
     with DOM_JSONL.open("a", encoding="utf-8") as f:
         f.write(json.dumps({
-            "label": label,
-            "domain": domain,
-            "url": url,
-            "matches": matches[:500],
+            "label": label, "domain": domain, "url": url,
+            "matches": matches[:800]
         }, ensure_ascii=False, default=str) + "\n")
 
-    emit("DOM_TARGET_CONTEXT", label=label, domain=domain, url=url,
-         match_count=len(matches), matches=matches[:500])
+    emit("DOM_PARENT_SCAN", label=label, domain=domain, url=url,
+         match_count=len(matches), matches=matches[:800])
 
 
-def json_scan(label, domain, raw):
-    soup = BeautifulSoup(raw, "html.parser") if BeautifulSoup else None
-    if soup is None:
-        return
-    blobs = []
-    for script_tag in soup.find_all("script"):
-        content = (script_tag.string or script_tag.get_text()).strip()
-        if not content:
-            continue
-        typ = (script_tag.get("type") or "").lower()
-        if typ == "application/ld+json" or content.startswith("{") or content.startswith("["):
-            try:
-                blobs.append(json.loads(content))
-            except Exception:
-                pass
-
-    interesting = []
-    for blob in blobs[:200]:
-        s = json.dumps(blob, ensure_ascii=False)
-        if re.search(
-            r"PMI|Business Activity|New Orders|Employment|Prices|Backlog|"
-            r"Inventor|Imports|Exports|Production|Nickel|Lead|Tin|Cobalt|"
-            r"Official Price|Cash Bid|2026-08-28|July 2026",
-            s, re.I
-        ):
-            interesting.append(blob)
-
-    emit("JSON_SCAN", label=label, domain=domain,
-         blob_count=len(blobs), interesting=interesting[:100])
-
-
-def attr_meta_scan(label, domain, raw):
-    soup = BeautifulSoup(raw, "html.parser") if BeautifulSoup else None
-    if soup is None:
-        return
-
-    interest = re.compile(
-        r"symbol|code|id|date|time|price|value|pmi|actual|previous|forecast|"
-        r"reference|release|official|cash|nickel|lead|tin|cobalt|order|"
-        r"employment|backlog|inventory|export|import",
-        re.I
-    )
-    attrs = []
-    for tag in soup.find_all(True):
-        good = []
-        for k, v in tag.attrs.items():
-            val = normalize(v if isinstance(v, str) else " ".join(map(str, v)))
-            if interest.search(f"{k} {val}"):
-                good.append({"name": k, "value": val[:1800]})
-        if good:
-            attrs.append({
-                "tag": tag.name,
-                "text": normalize(tag.get_text(" ", strip=True))[:1800],
-                "attrs": good,
-            })
-        if len(attrs) >= 1800:
-            break
-
-    meta = []
-    for tag in soup.find_all(["meta", "time"]):
-        meta.append({
-            "tag": tag.name,
-            "name": tag.get("name"),
-            "property": tag.get("property"),
-            "itemprop": tag.get("itemprop"),
-            "datetime": tag.get("datetime"),
-            "content": normalize(tag.get("content")),
-            "text": normalize(tag.get_text(" ", strip=True)),
-        })
-
-    emit("ATTR_META_SCAN", label=label, domain=domain,
-         attrs=attrs, meta=meta[:1800])
-
-
-def source_pattern_scan(label, domain, raw):
+def source_scan(label, domain, raw):
     txt = raw.decode("utf-8", "ignore")
-    emit("SOURCE_PATTERN_SCAN", label=label, domain=domain,
-         july_tokens=re.findall(r"July\s+2026|Jul\s+2026|2026[-/]07", txt, re.I)[:800],
-         lme_tokens=re.findall(
+    emit("SOURCE_SCAN",
+         label=label, domain=domain,
+         july_hits=re.findall(r"July\s+2026|Jul\s+2026|2026[-/]07", txt, re.I)[:1000],
+         lme_hits=re.findall(
              r"2026[-/]08[-/]28|28\.08\.2026|08/28/2026|August\s+28,\s+2026",
              txt, re.I
-         )[:800],
-         symbols=re.findall(
-             r'data-(?:symbol|code|id)\s*=\s*["\']([^"\']+)["\']',
+         )[:1000],
+         symbol_hits=re.findall(
+             r'data-(?:symbol|code|id|value)\s*=\s*["\']([^"\']+)["\']',
              txt, re.I
-         )[:2000],
-         endpoint_like=re.findall(
-             r'https?://[^"\'>\s]+|/(?:api|ajax|data|chart|historical|forecast)[^"\'>\s]+',
+         )[:2500],
+         url_like=re.findall(
+             r'https?://[^"\'>\s]+|/(?:api|ajax|chart|data|historical|forecast)[^"\'>\s]+',
              txt, re.I
-         )[:1500],
-         official_price_context=re.findall(
-             r"(?is).{0,450}(?:Official Price|Official Cash|Cash Bid|Cash Offer).{0,1600}",
+         )[:2500],
+         price_terms=re.findall(
+             r"(?is).{0,500}(?:Official Price|Official Cash|Cash Bid|Cash Offer|Price|Date).{0,1800}",
              txt
-         )[:500])
+         )[:800])
 
 
-def links_inventory(label, domain, url, raw):
-    soup = BeautifulSoup(raw, "html.parser") if BeautifulSoup else None
-    if soup is None:
-        return
-    links = []
-    for a in soup.find_all("a", href=True):
-        href = urljoin(url, a["href"])
-        anchor = normalize(a.get_text(" ", strip=True))
-        if re.search(
-            r"pmi|services|manufacturing|commodity|nickel|lead|tin|cobalt|"
-            r"official|historical|forecast|release|july|august",
-            f"{anchor} {href}", re.I
-        ):
-            links.append({"anchor": anchor, "url": href})
-    emit("LINKS_NO_FOLLOW", label=label, domain=domain,
-         count=len(links), links=links[:1500])
+def inspect(label, domain, url):
+    response, raw = fetch_requests(label, domain, url)
 
-
-def inspect_page(label, domain, url):
-    response, raw = safe(
-        f"REQUEST:{label}",
-        lambda: fetch_requests(label, domain, url)
-    ) or (None, b"")
-
-    # Browser fallback is diagnostic only and only for likely dynamic/blocking
-    # pages. It does not follow any discovered links.
     need_browser = (
         not raw
         or response is None
         or response.status_code in {403, 429, 451}
+        or len(raw) < 5000
         or (domain.startswith("ISM_") and (
             "SSO/Login" in (response.url if response else "")
-            or len(raw) < 5000
+            or b"<table" not in raw.lower()
         ))
-        or (domain == "LME" and response is not None and response.status_code >= 400)
-        or (domain == "SPG" and len(raw) < 5000)
     )
+
     if need_browser:
         browser_raw = safe(
-            f"BROWSER:{label}",
+            f"browser:{label}",
             lambda: fetch_browser(label, domain, url)
         )
         if browser_raw:
-            # For diagnostics, prefer browser DOM if requests is blocked/too sparse.
-            raw = browser_raw
+            # Browser-rendered DOM is always archived separately.
+            raw_browser_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", label) + "_browser.html"
+            (RAW / raw_browser_name).write_bytes(browser_raw)
 
     if not raw:
-        emit("PAGE_SKIPPED", label=label, domain=domain, url=url,
-             reason="no usable response body")
+        emit("PAGE_SKIPPED", label=label, domain=domain, url=url)
         return
 
-    try:
-        filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", label) + ".html"
-        (RAW / filename).write_bytes(raw)
-    except Exception as exc:
-        emit("RAW_SAVE", label=label, domain=domain, error=repr(exc))
+    raw_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", label) + ".html"
+    (RAW / raw_name).write_bytes(raw)
 
-    safe(f"TABLES:{label}", lambda: table_schema_scan(label, domain, url, raw))
-    safe(f"DOM:{label}", lambda: dom_context_scan(label, domain, url, raw))
-    safe(f"JSON:{label}", lambda: json_scan(label, domain, raw))
-    safe(f"ATTR:{label}", lambda: attr_meta_scan(label, domain, raw))
-    safe(f"SOURCE:{label}", lambda: source_pattern_scan(label, domain, raw))
-    safe(f"LINKS:{label}", lambda: links_inventory(label, domain, url, raw))
+    # Independent methods. Failures never abort other methods.
+    safe(f"bs4:{label}", lambda: schema_from_soup(
+        label, domain, url, raw, "beautifulsoup"
+    ))
+    safe(f"pandas-url:{label}", lambda: pandas_direct_url(
+        label, domain, url
+    ))
+    safe(f"pandas-html:{label}", lambda: pandas_loaded_html(
+        label, domain, raw
+    ))
+    safe(f"lxml:{label}", lambda: lxml_scan(
+        label, domain, url, raw
+    ))
+    safe(f"dom:{label}", lambda: dom_parent_scan(
+        label, domain, url, raw
+    ))
+    safe(f"source:{label}", lambda: source_scan(
+        label, domain, raw
+    ))
 
 
-def write_outputs():
-    if not ROWS_CSV.exists():
-        ROWS_CSV.write_text(
-            "label,domain,url,table_index,row_index,row,header_combined\n",
-            encoding="utf-8"
-        )
-    if not TARGET_CSV.exists():
-        TARGET_CSV.write_text(
-            "label,domain,url,table_index,row_index,target,row,header_combined,"
-            "target_month_present_in_table,target_lme_date_present_in_table\n",
-            encoding="utf-8"
-        )
+def initialize_outputs():
+    # CSV headers are created before network activity, so outputs exist even if
+    # every page fails.
+    if not HTTP_CSV.exists():
+        with HTTP_CSV.open("w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(
+                f,
+                fieldnames=[
+                    "label", "domain", "route", "url", "final_url", "status",
+                    "elapsed_s", "bytes", "content_type", "redirected", "error"
+                ],
+            ).writeheader()
+
+
+def write_summary():
+    initialize_outputs()
+
+    with HTTP_CSV.open("w", newline="", encoding="utf-8") as f:
+        fields = [
+            "label", "domain", "route", "url", "final_url", "status",
+            "elapsed_s", "bytes", "content_type", "redirected", "error"
+        ]
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(attempts)
+
+    method_counts = {}
+    for rec in records:
+        route = rec.get("route", "UNKNOWN")
+        method_counts[route] = method_counts.get(route, 0) + 1
 
     summary = {
         "version": VERSION,
@@ -665,12 +674,15 @@ def write_outputs():
         "http_attempts": len(attempts),
         "evidence_records": len(records),
         "errors": len(errors),
+        "method_record_counts": method_counts,
+        "purpose": "HTML/table/DOM structure discovery only",
     }
     SUMMARY.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Compact console/report digest: page/table counts + target row count.
-    table_details = [r for r in records if r.get("route") == "TABLE_SCHEMA_DETAIL"]
-    target_summaries = [r for r in records if r.get("route") == "TARGET_ROW_SUMMARY"]
+    table_details = [r for r in records if r.get("route") == "TABLE_SCHEMA"]
+    lxml_details = [r for r in records if r.get("route") == "LXML_XPATH"]
+    pandas_details = [r for r in records if r.get("route") in {"PANDAS_DIRECT_URL", "PANDAS_LOADED_HTML"}]
+    target_rows = [r for r in records if r.get("route") == "TARGET_TABLE_MATCH"]
 
     lines = [
         f"=== {VERSION} ===",
@@ -685,18 +697,17 @@ def write_outputs():
         f"FIXED_PAGES={len(PAGES)}",
         f"HTTP_ATTEMPTS={len(attempts)}",
         f"EVIDENCE_RECORDS={len(records)}",
-        f"TABLES_ANALYZED={len(table_details)}",
-        f"TARGET_ROW_SUMMARIES={len(target_summaries)}",
+        f"TABLE_RECORDS={len(table_details)}",
+        f"LXML_RECORDS={len(lxml_details)}",
+        f"PANDAS_RECORDS={len(pandas_details)}",
+        f"TARGET_TABLE_MATCH_RECORDS={len(target_rows)}",
         f"ERRORS={len(errors)}",
         "",
-        "PAGE/TABLE DIGEST:",
+        "METHOD COUNTS:",
     ]
-    for rec in table_details:
-        lines.append(
-            f'{rec.get("label")} | table={rec.get("table_index")} | '
-            f'rows={rec.get("row_count")} | max_cols={rec.get("max_columns")} | '
-            f'July2026={rec.get("month_mentions")} | LME28Aug={rec.get("lme_date_mentions")}'
-        )
+    for k, v in sorted(method_counts.items()):
+        lines.append(f"{k}={v}")
+
     if errors:
         lines += ["", "NON-FATAL ERRORS:"]
         lines.extend(f'{e["label"]}: {e["error"]}' for e in errors)
@@ -705,27 +716,26 @@ def write_outputs():
 
 
 def main():
+    initialize_outputs()
+
     print(f"=== {VERSION} ===")
-    print("MODE=KNOWN_SOURCES|HTML_SCHEMA|TABLE_STRUCTURE|DOM|JSON|BROWSER_FALLBACK|NON_ABORTING")
-    print("RECURSIVE_CRAWL=False")
+    print("MODE=KNOWN_SOURCES_ONLY|HTML_TABLE_SCHEMA|PANDAS_URL|PANDAS_HTML|LXML_XPATH|BS4_DOM|SELENIUM")
+    print("NO_RECURSIVE_CRAWL=True")
     print("TE_API_USED=False")
     print(f"ISM_REFERENCE_MONTH={ISM_MONTH}")
     print(f"LME_TARGET_DATE={LME_DATE}")
     print(f"FIXED_PAGE_COUNT={len(PAGES)}")
 
-    # Validate output headers at startup so files are usable even if every page fails.
-    write_outputs()
-
     for label, domain, url in PAGES:
         safe(f"PAGE:{label}", lambda label=label, domain=domain, url=url:
-             inspect_page(label, domain, url))
+             inspect(label, domain, url))
 
-    safe("FINAL_WRITE", write_outputs)
+    safe("WRITE_SUMMARY", write_summary)
 
     print(f"V9_HTTP_ATTEMPTS={len(attempts)}")
     print(f"V9_EVIDENCE_RECORDS={len(records)}")
     print(f"V9_ERRORS={len(errors)}")
-    print("V9_RESULT=SCHEMA_COLLECTION_COMPLETE")
+    print("V9_RESULT=SCHEMA_ANALYSIS_COMPLETE")
     print("V9_PRODUCTION_FILE_MODIFIED=False")
     print("V9_EXIT_POLICY=0")
     return 0
