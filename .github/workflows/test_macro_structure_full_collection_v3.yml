@@ -1,0 +1,43 @@
+name: Macro Structure Full Discovery Test V3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  full-discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify required files
+        run: |
+          test -f makro_szenario.py
+          test -f test_macro_structure_full_collection_v3.py
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas lxml requests
+
+      - name: Syntax checks
+        run: |
+          python -m py_compile makro_szenario.py
+          python -m py_compile test_macro_structure_full_collection_v3.py
+
+      - name: Run maximum-information discovery
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python test_macro_structure_full_collection_v3.py
+
+      - name: Upload all discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macro-structure-full-discovery-v3
+          path: macro_structure_test_v3/
+          if-no-files-found: warn
+          include-hidden-files: true
