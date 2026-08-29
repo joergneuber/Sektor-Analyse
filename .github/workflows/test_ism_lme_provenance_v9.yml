@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests beautifulsoup4 pandas lxml
+          python -m pip install requests beautifulsoup4 pandas lxml selenium
 
       - name: Validate test code
         run: |
@@ -35,7 +35,7 @@ jobs:
           print("V9_SYNTAX=GREEN")
           PY
 
-      - name: Run V9 broad value extraction
+      - name: Run V9 final structured extraction
         shell: bash
         run: |
           set +e
@@ -48,12 +48,12 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "=== VALUE MATRIX ==="
+          echo "=== PROVENANCE MATRIX ==="
           cat ism_lme_provenance_v9/provenance_matrix.csv 2>/dev/null || true
           echo "=== SUMMARY ==="
           cat ism_lme_provenance_v9/summary.json 2>/dev/null || true
           echo "=== REPORT TAIL ==="
-          tail -n 120 ism_lme_provenance_v9/report.txt 2>/dev/null || true
+          tail -n 160 ism_lme_provenance_v9/report.txt 2>/dev/null || true
 
       - name: Upload V9 evidence
         if: always()
