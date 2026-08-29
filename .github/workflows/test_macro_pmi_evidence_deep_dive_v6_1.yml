@@ -1,0 +1,43 @@
+name: PMI Evidence Deep Dive V6.1
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pmi-evidence-deep-dive-v6-1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify files
+        run: |
+          test -f makro_szenario.py
+          test -f test_macro_pmi_evidence_deep_dive_v6_1.py
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check lxml requests
+
+      - name: Syntax checks
+        run: |
+          python -m py_compile makro_szenario.py
+          python -m py_compile test_macro_pmi_evidence_deep_dive_v6_1.py
+
+      - name: Run V6 deep dive - never abort
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python test_macro_pmi_evidence_deep_dive_v6_1.py
+
+      - name: Upload all V6.1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmi-evidence-deep-dive-v6-1
+          path: macro_pmi_evidence_v6_1/
+          if-no-files-found: warn
+          include-hidden-files: true
