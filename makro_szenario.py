@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v7.4-reduced-final-verified-r3"
+VERSION = "v7.4-reduced-final-verified"
 """
 
 import datetime as dt
@@ -757,7 +757,7 @@ def fred_snapshot(name, series_id):
     return f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
 
 
-def _lme_official_prices():
+def _lme_official_prices(target_date=None):
     """LME Official Prices mit einem Abruf pro Prozess und sicherem Fallback.
 
     Primaer: oeffentliche LME Official Prices (day-delayed).
@@ -765,6 +765,9 @@ def _lme_official_prices():
     Der Fallback ist immer DEGRADED und niemals gate-kritisch.
     """
     global LME_PRICE_CACHE, LME_PRICE_CACHE_TIME, LME_REQUEST_ATTEMPTED
+
+    if target_date is None:
+        target_date = _last_completed_business_day(dt.date.today())
 
     # Ein Lauf darf die LME-Seite nur einmal anfragen. Alle vier Metalle
     # verwenden danach exakt denselben Snapshot.
@@ -1688,7 +1691,7 @@ def _ism_official_report_secondary(year, month, kind):
                 business_days.append(d)
             if len(business_days) >= 3:
                 break
-            d = d + __import__("datetime").timedelta(days=1)
+            d = d + dt.timedelta(days=1)
         idx = 0 if kind == "manufacturing" else 2
         if len(business_days) <= idx:
             print(f"WARNUNG: ISM release schedule calculation failed kind={kind}")
@@ -2010,7 +2013,7 @@ def _ism_structured_from_html(kind, year, month, html_text, source_url):
 
             header_blob=" | ".join(" | ".join(r) for r in rows[:6])
             table_blob=" | ".join(" | ".join(r) for r in rows)
-            month_ok=month_in_text(header_blob) or month_in_text(table_blob) or "/" + calendar.month_name[month].lower() + "/" in source_url.lower()
+            month_ok=month_in_text(header_blob) or month_in_text(table_blob) or "/" + calendar.month_name[month].lower() + "/" in (source_url or "").lower()
             if not month_ok:
                 continue
 
@@ -2201,7 +2204,6 @@ def _te_public_ism_fetch(kind, year, month):
     expected_ref = f"{calendar.month_abbr[month]} {year}"
     expected_full = f"{calendar.month_name[month]} {year}"
     expected_iso = f"{year}-{month:02d}"
-    month_phrase = calendar.month_name[month]
     found = {}
 
     def parse_plain(html):
@@ -2222,123 +2224,46 @@ def _te_public_ism_fetch(kind, year, month):
         return "(?:" + "|".join(re.escape(x) for x in aliases[key]) + ")"
 
     def narrative_value(text, key):
-        """Extract a field value from a month-bound local TE narrative window.
+        """Extract the value belonging to the requested reference month.
 
-        TE often states the reference month once at the beginning of a
-        paragraph and then lists several components in subsequent sentences.
-        Therefore the month need not be in the *same sentence* as the field,
-        but it must be present in a tight local window around that field label.
-        The numeric candidate is always taken AFTER the field label.
+        TE prose uses several real-world forms, e.g.:
+        'increased to 57.2 points in July from 55.1 ...'
+        'reading of 56.7 percent ... July'
+        'edged up to 54.1 in July 2026 from 54 ...'
         """
         lp = label_pattern(key)
-        month_rx = rf"\b(?:{re.escape(calendar.month_name[month])}|{re.escape(calendar.month_abbr[month])})\s+{year}\b"
-        # Plain-text TE pages may use a single long paragraph. Search each
-        # explicit field-label occurrence independently.
-        for lm in re.finditer(lp, text, re.I):
-            start = lm.start()
-            end = min(len(text), lm.end() + 700)
-            window_before = text[max(0, start - 500):start]
-            window_after = text[lm.end():end]
-            if not (re.search(month_rx, window_before, re.I) or re.search(month_rx, window_after, re.I)):
+        month_phrase = rf"{re.escape(calendar.month_name[month])}(?:\s+{year})?"
+        # Keep the search local to a sentence/short clause containing the target
+        # month. This avoids accidentally taking Previous/Forecast values.
+        chunks = re.split(r"(?<=[.!?])\s+", text)
+        for chunk in chunks:
+            if not re.search(lp, chunk, re.I) or not re.search(
+                rf"\b{month_phrase}\b", chunk, re.I
+            ):
                 continue
-
-            # Prefer explicit current-value wording after the label.
+            # Preferred explicit-current-value constructions.
             pats = [
-                rf"(?:to|at|was|is|of|reading of)\s*(\d+(?:[.,]\d+)?)\s*(?:points?|percent|%)?",
-                rf"(?:\(|:)\s*(\d+(?:[.,]\d+)?)\s*(?:vs\.?|versus)\b",
+                rf"(?:to|at|was|is|of|reading of)\s*(\d+(?:[.,]\d+)?)\s*(?:points?|percent|%)?\s*(?:in|for)\s+{month_phrase}",
+                rf"reading\s+of\s+(\d+(?:[.,]\d+)?)\s*(?:points?|percent|%)?.*?\b{month_phrase}\b",
+                rf"(\d+(?:[.,]\d+)?)\s*(?:points?|percent|%)?\s+(?:in|for)\s+{month_phrase}",
             ]
             for pat in pats:
-                m = re.search(pat, window_after, re.I)
+                m = re.search(pat, chunk, re.I)
                 if m:
-                    v = _clean_num(m.group(1))
-                    if v is not None and 0.0 <= v <= 100.0 and not 1900 <= v <= 2100:
+                    return _clean_num(m.group(1))
+            # If the sentence says 'X vs Y' and the target month is explicit,
+            # the first numeric value following the field label is the current
+            # observation; Previous is the second value.
+            tail = re.split(lp, chunk, maxsplit=1, flags=re.I)
+            tail = tail[1] if len(tail) == 2 else chunk
+            nums = re.findall(r"(?<![\w.])\d+(?:[.,]\d+)?", tail)
+            if nums:
+                # Exclude years; choose the first index-like number.
+                for token in nums:
+                    v = _clean_num(token)
+                    if v is not None and 0.0 <= v <= 100.0 and not token.startswith(("20", "19")):
                         return v
-
-            # Last resort: first index-like number after the label. This is
-            # safe here because the label itself identifies the requested
-            # series and the surrounding window proves the reference month.
-            for token in re.findall(r"(?<![\w.])\d+(?:[.,]\d+)?", window_after):
-                v = _clean_num(token)
-                if v is not None and 0.0 <= v <= 100.0 and not 1900 <= v <= 2100:
-                    return v
         return None
-
-    def calendar_actual_value(frames, key):
-        """Read TE's date-oriented Calendar table for the requested reference month.
-
-        On individual TradingEconomics series pages the first column is normally
-        the release date, not the series name. Therefore table_value() cannot find
-        the row by label. We identify the Calendar table structurally, locate the
-        Actual column, and select the row whose Reference/period/date maps to the
-        requested observation month. No Forecast/Consensus/Previous value is used.
-        """
-        target = {x.casefold() for x in aliases[key]}
-        for table_i, df in enumerate(frames):
-            if df.empty:
-                continue
-            cols = _flat_columns(df)
-            lowcols = [str(c).casefold().strip() for c in cols]
-            actual_idx = next((i for i,c in enumerate(lowcols) if c == "actual" or c.endswith(" actual")), None)
-            if actual_idx is None:
-                continue
-            # A genuine Calendar table is date-oriented and normally contains
-            # Date/GMT plus Actual/Previous. Reject component tables that merely
-            # happen to have an Actual column.
-            date_idx = next((i for i,c in enumerate(lowcols)
-                             if c in {"date", "calendar", "date gmt", "gmt", "release date"}
-                             or c.startswith("date ")), None)
-            prev_idx = next((i for i,c in enumerate(lowcols)
-                             if c == "previous" or c.endswith(" previous")), None)
-            ref_idx = next((i for i,c in enumerate(lowcols)
-                            if "reference" in c or c in {"period", "month"}), None)
-            if date_idx is None and ref_idx is None:
-                continue
-
-            for ri, row in df.fillna("").astype(str).iterrows():
-                cells = [str(x).strip() for x in row.tolist()]
-                if actual_idx >= len(cells):
-                    continue
-
-                # Reference may be explicit (best). Otherwise infer the
-                # observation month from the release date only when the row's
-                # period is known to correspond to the requested month.
-                ref_ok = False
-                ref_cell = ""
-                if ref_idx is not None and ref_idx < len(cells):
-                    ref_cell = cells[ref_idx]
-                    ref_ok = exact_reference(ref_cell)
-                if not ref_ok and date_idx is not None and date_idx < len(cells):
-                    raw_date = cells[date_idx]
-                    # Calendar release dates are NOT the reference month.
-                    # TE commonly renders the observation month as a bare
-                    # token (e.g. "Jul") in a separate, unlabeled column.
-                    # Accept that token only when the release date is in the
-                    # requested year; never infer the month from release date.
-                    release_year_ok = bool(re.search(rf"\b{year}\b", raw_date))
-                    month_tokens = {calendar.month_abbr[month].casefold(), calendar.month_name[month].casefold()}
-                    for j, cell in enumerate(cells):
-                        if j == date_idx:
-                            continue
-                        if exact_reference(cell):
-                            ref_ok = True
-                            ref_cell = cell
-                            break
-                        if release_year_ok and cell.casefold().strip() in month_tokens:
-                            ref_ok = True
-                            ref_cell = cell
-                            break
-                if not ref_ok:
-                    continue
-
-                v = _parse_float_token(cells[actual_idx])
-                if v is None or not (0.0 <= v <= 100.0):
-                    continue
-
-                return v, {"method":"TE_CALENDAR_ACTUAL_REFERENCE",
-                           "table_index":table_i,"row_index":int(ri),
-                           "row":cells,"columns":cols,
-                           "reference_cell":ref_cell or expected_ref}
-        return None, None
 
     def table_value(frames, key):
         target = {x.casefold() for x in aliases[key]}
@@ -2431,21 +2356,6 @@ def _te_public_ism_fetch(kind, year, month):
             body=r.text
             plain=parse_plain(body)
             first_window = plain[:5000]
-            try:
-                frames=pd.read_html(StringIO(body))
-            except Exception:
-                frames=[]
-
-            # IMPORTANT: a TE Calendar page may prove the observation month only
-            # as a bare token (e.g. "Jul") in the date-oriented table. Therefore
-            # do the structural Calendar->Actual->Reference extraction BEFORE the
-            # old page-wide month-context gate. The old gate was the reason the
-            # known Manufacturing values were rejected despite being present.
-            calendar_value, calendar_meta = calendar_actual_value(frames,key)
-            if calendar_value is not None:
-                found[key]={"value":calendar_value,"url":url,"meta":calendar_meta or {}}
-                continue
-
             month_context_ok = bool(
                 re.search(rf"\b{re.escape(calendar.month_name[month])}\s+{year}\b", plain, re.I)
                 or re.search(
@@ -2463,11 +2373,12 @@ def _te_public_ism_fetch(kind, year, month):
                 continue
 
             value=None; meta={}
+            try:
+                frames=pd.read_html(StringIO(body))
+            except Exception:
+                frames=[]
 
             value, meta = table_value(frames,key)
-
-            if value is None:
-                value, meta = calendar_actual_value(frames,key)
 
             if value is None:
                 value=narrative_value(plain,key)
@@ -2475,10 +2386,29 @@ def _te_public_ism_fetch(kind, year, month):
                     meta={"method":"TE_PUBLIC_NARRATIVE_EXACT_MONTH",
                           "reference_month":expected_iso}
 
-            # Do NOT use a page-wide numeric fallback for non-PMI fields.
-            # The overview/narrative parser already requires the field label in
-            # the same sentence. A generic movement sentence could otherwise
-            # assign the headline PMI to an unrelated component.
+            # Individual TE field pages are field-specific. If the page's
+            # narrative uses a different label (notably the Prices page, which
+            # can say "ISM Services PMI index"), accept the first explicitly
+            # current-value construction in the month-bound sentence. The URL
+            # itself is the field identity; no page-wide arbitrary number is used.
+            if value is None and key != "pmi":
+                month_phrase = rf"{re.escape(calendar.month_name[month])}(?:\s+{year})?"
+                for chunk in re.split(r"(?<=[.!?])\s+", plain):
+                    if not re.search(rf"\b{month_phrase}\b", chunk, re.I):
+                        continue
+                    mm = re.search(
+                        rf"(?:increased|decreased|rose|fell|edged|advanced|declined|remained|moved|jumped|dropped).*?"
+                        rf"(?:to|at|was|is|of|reading of)\s*(\d+(?:[.,]\d+)?)"
+                        rf"\s*(?:points?|percent|%)?.*?\b{month_phrase}\b",
+                        chunk, re.I
+                    )
+                    if mm:
+                        candidate=_clean_num(mm.group(1))
+                        if candidate is not None and 0.0 <= candidate <= 100.0:
+                            value=candidate
+                            meta={"method":"TE_PUBLIC_FIELD_PAGE_NARRATIVE_EXACT_MONTH",
+                                  "reference_month":expected_iso}
+                            break
 
             # PMI pages may not repeat the label in the same sentence in all
             # variants. Use the page-level headline only as a final exact-month
@@ -2551,36 +2481,6 @@ def _lme_official_exact_from_html(html_text, target_date, metal):
         soup=BeautifulSoup(html_text,"html.parser")
     except Exception: return None
     page_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-
-    # Some LME report variants render the Cash Bid/Cash Offer values as a
-    # responsive card rather than a conventional HTML table. The prior probe
-    # demonstrated the exact form: Tin | Cash Bid | 55354 | Cash Offer | 55355
-    # with the report date 28 Aug 2026. Accept only when metal, both explicit
-    # price labels, both numeric values and the exact target date occur in one
-    # tight text window.
-    metal_pat = re.escape(metal)
-    date_variants = [
-        target_date.strftime("%d %b %Y"), target_date.strftime("%d %B %Y"),
-        target_date.strftime("%b %d, %Y"), target_date.strftime("%B %d, %Y"),
-        target_date.isoformat(), target_date.strftime("%d.%m.%Y"),
-    ]
-    date_pat = "(?:" + "|".join(re.escape(x) for x in date_variants) + ")"
-    card_pat = rf"(?i)\b{metal_pat}\b.{{0,900}}?cash\s+bid\s*[:|]?\s*([0-9][0-9,]*(?:\.[0-9]+)?).{{0,250}}?cash\s+(?:offer|ask)\s*[:|]?\s*([0-9][0-9,]*(?:\.[0-9]+)?).{{0,900}}?{date_pat}"
-    cm = re.search(card_pat, page_text, re.I|re.S)
-    if not cm:
-        # Date can precede the card in some responsive layouts.
-        card_pat2 = rf"(?i){date_pat}.{{0,900}}?\b{metal_pat}\b.{{0,900}}?cash\s+bid\s*[:|]?\s*([0-9][0-9,]*(?:\.[0-9]+)?).{{0,250}}?cash\s+(?:offer|ask)\s*[:|]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)"
-        cm = re.search(card_pat2, page_text, re.I|re.S)
-    if cm:
-        # card_pat2 and card_pat have the same two numeric capture groups;
-        # use the last two numeric captures defensively.
-        nums = [x for x in cm.groups() if x is not None]
-        if len(nums) >= 2:
-            bid = _parse_float_token(nums[-2]); offer = _parse_float_token(nums[-1])
-            if bid is not None and offer is not None and bid > 0 and offer > 0:
-                return {"value": bid, "date": target_date.isoformat(),
-                        "method":"lme_public_card_cash_bid_exact_date",
-                        "table_index":None,"row_index":None,"row":[]}
     page_date_ok = date_matches(page_text)
     for ti,table in enumerate(soup.find_all("table")):
         rows=[]
@@ -2855,239 +2755,62 @@ def _te_public_commodities_exact(target_date):
     return found
 
 
-def _ism_public_report_full(kind, year, month, html_text, source_url):
-    """Parse the public ISM monthly report's 'at a glance' table.
-
-    The public report contains the complete monthly ISM component set even
-    when TradingEconomics exposes only a subset in its Components table.
-    This is a public HTML fallback, not the ISM SSO/e-commerce route.
-    """
-    if not html_text:
-        return None
-    target_month = calendar.month_abbr[month]
-    target_full = calendar.month_name[month]
-    targets = _ism_target_maps(kind)
-    alias_map = {}
-    for key, aliases in targets.items():
-        alias_map[key] = {re.sub(r"\s+", " ", a).strip().casefold() for a in aliases}
-    if kind == "services":
-        alias_map["business_activity"] |= {"business activity/production", "business activity"}
-    if kind == "manufacturing":
-        alias_map["customers_inventories"] |= {"customers' inventories", "customers’ inventories", "customers inventories"}
-
-    try:
-        frames = pd.read_html(StringIO(html_text))
-    except Exception:
-        frames = []
-
-    found = {}
-    for frame_index, df in enumerate(frames):
-        if df is None or df.empty:
-            continue
-        df = df.copy()
-        df.columns = _flat_columns(df)
-        rows = df.fillna("").astype(str).values.tolist()
-        blob = " | ".join(df.columns) + " | " + " | ".join(" | ".join(r) for r in rows)
-        if not (re.search(rf"\b{re.escape(target_month)}\b", blob, re.I) or re.search(rf"\b{re.escape(target_full)}\b", blob, re.I)):
-            continue
-        if not re.search(rf"\b{year}\b", blob) and not re.search(rf"\b{target_full}\s+{year}\b", re.sub(r"<[^>]+>", " ", html_text), re.I):
-            continue
-        # Locate the July/August reference column by header. The ISM table has
-        # two common forms: 'Jul' and a multi-level 'Series Index / Jul'.
-        current_col = _find_month_column(df.columns, year, month)
-        for ri, row in enumerate(rows):
-            if not row:
-                continue
-            first = re.sub(r"\\s+", " ", row[0]).strip().casefold()
-            key = None
-            for candidate, aliases in alias_map.items():
-                if first in aliases:
-                    key = candidate
-                    break
-            if key is None:
-                continue
-
-            value = None
-            if current_col is not None and current_col < len(row):
-                value = _parse_float_token(row[current_col])
-            if value is None:
-                # Typical at-a-glance table: [Index, Jul, Jun, Change, ...].
-                nums = [_parse_float_token(x) for x in row[1:]]
-                nums = [x for x in nums if x is not None]
-                if nums:
-                    value = nums[0]
-            if value is None:
-                continue
-            found[key] = {
-                "value": value,
-                "table_index": frame_index,
-                "row_index": ri,
-                "columns": list(df.columns),
-                "row": row,
-                "method": "ISM_PUBLIC_AT_A_GLANCE_TABLE",
-                "reference_month": f"{year}-{month:02d}",
-            }
-
-    # Explicit prose fallback for the four fields that are sometimes rendered
-    # outside the table by the CMS. Never use a page-wide numeric fallback.
-    plain = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html_text, flags=re.I|re.S)
-    plain = re.sub(r"<[^>]+>", " ", plain)
-    plain = re.sub(r"\\s+", " ", plain).strip()
-    if re.search(rf"\\b{target_full}\\s+{year}\\b", plain, re.I):
-        prose_patterns = {
-            "inventories": rf"Inventories Index registered\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-            "customers_inventories": rf"Customers[’']?\\s+Inventories Index reading of\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-            "new_export_orders": rf"New Export Orders Index.*?reading of\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-            "imports": rf"Imports Index registered\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-        }
-        for key, pattern in prose_patterns.items():
-            if key in found:
-                continue
-            m = re.search(pattern, plain, re.I|re.S)
-            if m:
-                v = _clean_num(m.group(1))
-                if v is not None:
-                    found[key] = {"value":v,"table_index":None,"row_index":None,
-                                  "columns":[],"row":[],"method":"ISM_PUBLIC_REPORT_NARRATIVE",
-                                  "reference_month":f"{year}-{month:02d}"}
-
-    if not found:
-        return None
-    data = {"year":year,"month":month,"url":source_url,
-            "status":"REAL_PUBLIC_SECONDARY","source_type":"REAL_PUBLIC_SECONDARY",
-            "reference":f"{year}-{month:02d}","provenance":{}}
-    for key, meta in found.items():
-        data[key] = meta["value"]
-        data["provenance"][key] = {"source":"ISM Public Report","url":source_url, **meta}
-    return data
-
-
 def _ism_fetch(kind, year, month):
-    """ISM acquisition: TE Public first, then public ISM report field fallback."""
-    required = _ism_required_fields(kind)
-    te_data = None
+    """ISM-Beschaffung: bewiesene Extraktionspfade, Bereich zuerst, Fallback feldweise."""
+    required=_ism_required_fields(kind)
+    official=(
+        f"https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/"
+        f"{'pmi' if kind=='manufacturing' else 'services'}/{calendar.month_name[month].lower()}/"
+    )
+    official_data=None
+    # Public report route first. If ISM redirects to SSO, stop immediately and
+    # use the already proven public TE routes; do not waste three long retries.
     try:
-        te_data = _te_public_ism_fetch(kind, year, month)
+        r=requests.get(official,timeout=20,headers=REQUEST_HEADERS,allow_redirects=True)
+        if r.status_code==200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
+            official_data=_ism_structured_from_html(kind,year,month,r.text,official)
+            if official_data:
+                official_data["source_group"]="ISM Official"
+                official_data["source_selection"]="COMPLETE_GROUP" if all(official_data.get(k) is not None for k in required) else "PARTIAL_GROUP"
+                print(f"INFO: ISM {kind} Official HTML Felder={sum(official_data.get(k) is not None for k in required)}/{len(required)} reference={year}-{month:02d}")
+        else:
+            print(f"INFO: ISM official report nicht direkt oeffentlich erreichbar (final_url={r.url}); TE Public wird verwendet.")
+    except Exception as exc:
+        print(f"WARNUNG: ISM {kind} official report nicht verfuegbar: {type(exc).__name__}: {exc}")
+
+    te_data=None
+    try:
+        te_data=_te_public_ism_fetch(kind,year,month)
     except Exception as exc:
         print(f"WARNUNG: TradingEconomics ISM {kind} nicht verfuegbar: {type(exc).__name__}: {exc}")
 
-    # Public ISM report is an allowed secondary route. It is NOT the SSO route.
-    # It is used to fill only fields still missing from TE.
-    official_data = None
-    official_url = (
-        f"https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/"
-        f"{'pmi' if kind == 'manufacturing' else 'services'}/{calendar.month_name[month].lower()}/"
-    )
-    try:
-        r = requests.get(official_url, timeout=20, headers=REQUEST_HEADERS, allow_redirects=True)
-        if r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
-            official_data = _ism_public_report_full(kind, year, month, r.text, official_url)
-            if official_data:
-                print(f"INFO: ISM Public Report {kind}: {sum(official_data.get(k) is not None for k in required)}/{len(required)} reference={year}-{month:02d}")
-        else:
-            print(f"INFO: ISM Public Report {kind} nicht direkt erreichbar (final_url={r.url})")
-    except Exception as exc:
-        print(f"WARNUNG: ISM Public Report {kind}: {type(exc).__name__}: {exc}")
+    def count(d): return sum(1 for k in required if isinstance(d,dict) and d.get(k) is not None)
 
-    def count(d):
-        return sum(1 for k in required if isinstance(d, dict) and d.get(k) is not None)
-
-    # TE remains the primary public route. If complete, do not overwrite it.
-    if te_data and count(te_data) == len(required):
-        te_data["source_group"] = "TradingEconomics Public"
-        te_data["source_selection"] = "COMPLETE_GROUP"
+    # Group-first: prefer a complete official group, otherwise complete TE group.
+    if official_data and all(official_data.get(k) is not None for k in required):
+        return official_data
+    if te_data and all(te_data.get(k) is not None for k in required):
+        te_data["source_group"]="TradingEconomics Public"
+        te_data["source_selection"]="COMPLETE_GROUP"
         return te_data
 
-    # Merge field-wise. TE wins where it has a valid value; the public ISM
-    # report fills only missing fields. Every imported field gets provenance.
-    candidates = [d for d in (te_data, official_data) if d]
-    if not candidates:
-        return None
-    anchor = dict(te_data or official_data)
-    anchor["provenance"] = dict(anchor.get("provenance") or {})
-    anchor["source_group"] = "TradingEconomics Public" if te_data else "ISM Public Report"
-    anchor["source_selection"] = "PARTIAL_GROUP_PLUS_FIELD_FALLBACK"
-    if official_data:
-        for key in required:
-            if anchor.get(key) is None and official_data.get(key) is not None:
-                anchor[key] = official_data[key]
-                anchor["provenance"][key] = dict((official_data.get("provenance") or {}).get(key) or {
-                    "source":"ISM Public Report","url":official_url,"reference_month":f"{year}-{month:02d}"
-                })
-                anchor["provenance"][key]["fallback"] = True
-    print(f"INFO: ISM {kind} Bereichsquelle=TradingEconomics Public/ISM Public Report Felder={count(anchor)}/{len(required)} reference={year}-{month:02d}")
-    return anchor
-
-def spglobal_services_snapshot(today):
-    """TIER-3 CONTEXT: S&P Global US Services PMI.
-
-    Prefer the official public S&P page. TE is a secondary public route only
-    when the page explicitly identifies the series as S&P Global Services PMI.
-    The reference month is the latest published month, not necessarily the ISM month.
-    """
-    target_year, target_month = today.year, today.month - 1
-    if target_month == 0:
-        target_year -= 1; target_month = 12
-    target_name = calendar.month_name[target_month]
-    target_short = calendar.month_abbr[target_month]
-    month_rx = rf"(?:{re.escape(target_name)}|{re.escape(target_short)})\s+{target_year}"
-
-    urls = [
-        "https://www.pmi.spglobal.com/Public/Home/PressRelease",
-        "https://www.pmi.spglobal.com/Public?language=en",
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS, allow_redirects=True)
-            if r.status_code != 200:
-                continue
-            text = re.sub(r"<[^>]+>", " ", r.text)
-            text = re.sub(r"\s+", " ", text)
-            for m in re.finditer(r"S&P\s+Global\s+Services\s+PMI", text, re.I):
-                window = text[max(0, m.start()-300):m.start()+1600]
-                if not re.search(month_rx, window, re.I):
-                    continue
-                mm = re.search(r"S&P\s+Global\s+Services\s+PMI.*?(?:at|of|to|was|rose|fell)(?:\s+to)?\s+(\d+(?:\.\d+)?)", window, re.I)
-                if mm:
-                    v = _clean_num(mm.group(1))
-                    if v is not None:
-                        return (f"S&P Global Services PMI: {v:.1f} | Datenmonat={target_year}-{target_month:02d} | "
-                                f"STATUS=REAL_OFFICIAL_PUBLIC | SOURCE=S&P Global Public PressRelease | DATENTYP=SP_GLOBAL_SERVICES | TIER=TIER3_CONTEXT")
-        except Exception as exc:
-            print(f"WARNUNG: S&P Global Public {url}: {type(exc).__name__}: {exc}")
-
-    te_urls = [
-        "https://tradingeconomics.com/united-states/services-pmi",
-        "https://de.tradingeconomics.com/united-states/services-pmi",
-    ]
-    for url in te_urls:
-        try:
-            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS, allow_redirects=True)
-            if r.status_code != 200:
-                continue
-            text = re.sub(r"<[^>]+>", " ", r.text)
-            text = re.sub(r"\s+", " ", text)
-            # Known public TE wording: the page explicitly identifies S&P Global
-            # and states the current Services PMI plus its reference month.
-            if not re.search(r"S&P\s+Global|S\s*&\s*P\s+Global", text, re.I):
-                continue
-            patterns = [
-                rf"S&P\s+Global\s+Services\s+PMI.*?(?:at|of|to|was|rose|fell)(?:\s+to)?\s+(\d+(?:\.\d+)?).*?(?:in|for)\s+{re.escape(target_name)}\s+{target_year}",
-                rf"Services\s+PMI.*?(?:at|of|to|was|rose|fell)(?:\s+to)?\s+(\d+(?:\.\d+)?).*?(?:in|for)\s+{re.escape(target_name)}\s+{target_year}",
-                rf"Services\s+PMI.*?{re.escape(target_name)}\s+{target_year}.*?(\d+(?:\.\d+)?)",
-            ]
-            for pattern in patterns:
-                mm = re.search(pattern, text, re.I)
-                if mm:
-                    v = _clean_num(mm.group(1))
-                    if v is not None:
-                        return (f"S&P Global Services PMI: {v:.1f} | Datenmonat={target_year}-{target_month:02d} | "
-                                f"STATUS=REAL_PUBLIC_SECONDARY | SOURCE=TradingEconomics Public / S&P Global | DATENTYP=SP_GLOBAL_SERVICES | TIER=TIER3_CONTEXT")
-        except Exception as exc:
-            print(f"WARNUNG: S&P Global TE {url}: {type(exc).__name__}: {exc}")
-    return "S&P Global Services PMI: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=S&P Global Public / TradingEconomics Public | DATENTYP=SP_GLOBAL_SERVICES | TIER=TIER3_CONTEXT"
-
-
+    # Partial-group anchor + field fallback. The source with more fields wins;
+    # only missing fields are imported from the other source.
+    candidates=[x for x in (("ISM Official",official_data),("TradingEconomics Public",te_data)) if x[1]]
+    if candidates:
+        candidates.sort(key=lambda x:count(x[1]),reverse=True)
+        anchor_name,anchor=candidates[0]
+        merged=dict(anchor); merged["provenance"]=dict(merged.get("provenance") or {})
+        merged["source_group"]=anchor_name; merged["source_selection"]="PARTIAL_GROUP_PLUS_FIELD_FALLBACK"
+        for name,data in candidates[1:]:
+            for key in required:
+                if merged.get(key) is None and data.get(key) is not None:
+                    merged[key]=data[key]
+                    merged["provenance"][key]=dict((data.get("provenance") or {}).get(key) or {"source":name,"reference_month":f"{year}-{month:02d}"})
+                    merged["provenance"][key]["fallback"]=True
+        print(f"INFO: ISM {kind} Bereichsquelle={anchor_name} Felder={count(merged)}/{len(required)} reference={year}-{month:02d}")
+        return merged
+    return None
 
 def ism_snapshot(today):
     cache=_cache_load()
@@ -3274,7 +2997,6 @@ def main():
     ]))
     lines.append(bea_gdp_snapshot())
     lines.extend(ism_snapshot(today))
-    lines.append(spglobal_services_snapshot(today))
     lines.append("")
 
     lines.append("3. KREDIT, FINANCIAL CONDITIONS & RISIKO")
