@@ -874,23 +874,79 @@ def berechne_optionsschein_performance(df):
 
 
 def hochladen(service, lokale_datei, folder_id, alte_file_id):
-    """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive
-    hoch - dafür wird die alte Datei (falls vorhanden) gelöscht und komplett
-    neu angelegt, mit CSV-Inhalt als Upload-Medium und Sheets-Ziel-MIME-Typ.
-    Das ist der zuverlässigste Weg laut Drive-API, eine CSV in ein natives
-    Sheet zu konvertieren (ein reines In-Place-Update per media_body auf eine
-    bestehende Sheets-Datei ist laut Drive-API-Doku nicht garantiert). Der
-    Nutzer kann die entstehende Datei direkt in Google Sheets öffnen und
-    bearbeiten - keine separate Kopie mehr wie bei einer rohen .csv."""
-    if alte_file_id:
-        service.files().delete(fileId=alte_file_id).execute()
-        print(f"Alte Datei (ID: {alte_file_id}) gelöscht, wird neu angelegt.")
+    """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive.
 
-    media = MediaIoBaseUpload(io.FileIO(lokale_datei, 'rb'), mimetype='text/csv', resumable=True)
-    file_metadata = {'name': DRIVE_NAME, 'parents': [folder_id], 'mimeType': SHEET_MIME}
-    neue_datei = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt (ID: {neue_datei.get('id')}).")
-    friere_erste_zwei_zeilen_ein(creds, neue_datei.get('id'))
+    Sicherheitsreihenfolge:
+    1. Neue Datei zuerst hochladen.
+    2. Upload/Datei-ID bestätigen.
+    3. Bei temporären Google-5xx-Fehlern Upload mit Backoff wiederholen.
+    4. Erst nach bestätigtem erfolgreichem Upload die alte Datei löschen.
+
+    Ansonsten bleibt die bestehende Positionslogik unverändert.
+    """
+    file_metadata = {
+        'name': DRIVE_NAME,
+        'parents': [folder_id],
+        'mimeType': SHEET_MIME
+    }
+
+    letzter_fehler = None
+    neue_datei = None
+
+    for versuch in range(1, 4):
+        try:
+            media = MediaIoBaseUpload(
+                io.FileIO(lokale_datei, 'rb'),
+                mimetype='text/csv',
+                resumable=True
+            )
+            neue_datei = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute(num_retries=3)
+
+            neue_file_id = neue_datei.get('id') if neue_datei else None
+            if not neue_file_id:
+                raise RuntimeError(
+                    "Google Drive meldete keine Datei-ID nach dem Upload."
+                )
+
+            print(
+                f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt "
+                f"(ID: {neue_file_id}, Versuch {versuch}/3)."
+            )
+
+            # Erst jetzt ist der neue Produktionsstand bestätigt.
+            if alte_file_id and alte_file_id != neue_file_id:
+                service.files().delete(
+                    fileId=alte_file_id
+                ).execute(num_retries=3)
+                print(
+                    f"Alte Datei (ID: {alte_file_id}) "
+                    f"nach erfolgreichem Upload gelöscht."
+                )
+
+            friere_erste_zwei_zeilen_ein(creds, neue_file_id)
+            return neue_file_id
+
+        except Exception as e:
+            letzter_fehler = e
+            status = getattr(getattr(e, 'resp', None), 'status', None)
+
+            # Nur temporäre Google-5xx-Fehler bekommen den zusätzlichen
+            # Upload-Retry mit Backoff. Andere Fehler bleiben unverändert.
+            if status is not None and 500 <= status < 600 and versuch < 3:
+                wartezeit = 2 ** (versuch - 1)
+                print(
+                    f"Google-Drive-Fehler HTTP {status} beim Upload. "
+                    f"Retry {versuch + 1}/3 in {wartezeit}s..."
+                )
+                __import__('time').sleep(wartezeit)
+                continue
+            raise
+
+    raise letzter_fehler
 
 
 if __name__ == '__main__':
