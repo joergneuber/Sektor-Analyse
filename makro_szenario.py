@@ -2201,6 +2201,7 @@ def _te_public_ism_fetch(kind, year, month):
     expected_ref = f"{calendar.month_abbr[month]} {year}"
     expected_full = f"{calendar.month_name[month]} {year}"
     expected_iso = f"{year}-{month:02d}"
+    month_phrase = expected_full
     found = {}
 
     def parse_plain(html):
@@ -2220,46 +2221,57 @@ def _te_public_ism_fetch(kind, year, month):
     def label_pattern(key):
         return "(?:" + "|".join(re.escape(x) for x in aliases[key]) + ")"
 
-    def narrative_value(text, key):
-        """Extract a field value from a month-bound local TE narrative window.
-
-        TE often states the reference month once at the beginning of a
-        paragraph and then lists several components in subsequent sentences.
-        Therefore the month need not be in the *same sentence* as the field,
-        but it must be present in a tight local window around that field label.
-        The numeric candidate is always taken AFTER the field label.
-        """
+    def narrative_value(text, key, page_month_authorized=False):
+        """Extract one TE component without borrowing a number from another field."""
         lp = label_pattern(key)
         month_rx = rf"\b(?:{re.escape(calendar.month_name[month])}|{re.escape(calendar.month_abbr[month])})\s+{year}\b"
-        # Plain-text TE pages may use a single long paragraph. Search each
-        # explicit field-label occurrence independently.
+        all_labels = []
+        for k in aliases:
+            all_labels.extend(aliases[k])
+        boundary_rx = r"(?:" + "|".join(re.escape(x) for x in sorted(set(all_labels), key=len, reverse=True)) + r")"
+
         for lm in re.finditer(lp, text, re.I):
             start = lm.start()
-            end = min(len(text), lm.end() + 700)
-            window_before = text[max(0, start - 500):start]
-            window_after = text[lm.end():end]
-            if not (re.search(month_rx, window_before, re.I) or re.search(month_rx, window_after, re.I)):
+            # Establish a tight textual clause around the requested label.
+            # Do not use a large paragraph-wide numeric window.
+            # A decimal point is not a sentence boundary (e.g. 54.1).
+            # Use punctuation that is followed by whitespace/new text, so
+            # numeric decimals cannot truncate the candidate segment.
+            left_candidates = [m.start() for m in re.finditer(r'[.;:\n](?=\s+[A-Za-z])', text[:start])]
+            left = (left_candidates[-1] + 1) if left_candidates else 0
+            right_matches = [m.start() for m in re.finditer(r'[.;](?=\s+[A-Za-z])|\n', text[lm.end():])]
+            right = lm.end() + (min(right_matches) if right_matches else len(text) - lm.end())
+            segment = text[left:right]
+            rel_label_end = lm.end() - left
+
+            # Component labels are hard boundaries even if TE separates them
+            # with commas inside one long paragraph.
+            next_label = None
+            for nm in re.finditer(boundary_rx, segment, re.I):
+                if nm.start() > rel_label_end:
+                    next_label = nm.start()
+                    break
+            if next_label is not None:
+                segment = segment[:next_label]
+
+            after = segment[rel_label_end:]
+            before = text[max(0, left - 350):start]
+            if not (re.search(month_rx, before, re.I) or re.search(month_rx, segment, re.I) or
+                    (page_month_authorized and re.search(month_rx, text, re.I))):
                 continue
 
-            # Prefer explicit current-value wording after the label.
+            # Only accept an immediately associated numeric form.  There is
+            # intentionally no generic "first number in 700 chars" fallback.
             pats = [
-                rf"(?:to|at|was|is|of|reading of)\s*(\d+(?:[.,]\d+)?)\s*(?:points?|percent|%)?",
-                rf"(?:\(|:)\s*(\d+(?:[.,]\d+)?)\s*(?:vs\.?|versus)\b",
+                rf"^\s*(?:\(|:|=)?\s*(\d+(?:[.,]\d+)?)\s*(?:vs\.?|versus|\))?\b",
+                rf"(?:to|at|was|is|of|reading of|index of)\s*(\d+(?:[.,]\d+)?)\b",
             ]
             for pat in pats:
-                m = re.search(pat, window_after, re.I)
+                m = re.search(pat, after, re.I)
                 if m:
                     v = _clean_num(m.group(1))
                     if v is not None and 0.0 <= v <= 100.0 and not 1900 <= v <= 2100:
                         return v
-
-            # Last resort: first index-like number after the label. This is
-            # safe here because the label itself identifies the requested
-            # series and the surrounding window proves the reference month.
-            for token in re.findall(r"(?<![\w.])\d+(?:[.,]\d+)?", window_after):
-                v = _clean_num(token)
-                if v is not None and 0.0 <= v <= 100.0 and not 1900 <= v <= 2100:
-                    return v
         return None
 
     def table_value(frames, key):
@@ -2331,7 +2343,7 @@ def _te_public_ism_fetch(kind, year, month):
                         continue
                     value, meta = table_value(overview_frames, key)
                     if value is None:
-                        value = narrative_value(overview_plain, key)
+                        value = narrative_value(overview_plain, key, page_month_authorized=True)
                         if value is not None:
                             meta = {"method":"TE_PUBLIC_OVERVIEW_NARRATIVE_EXACT_MONTH",
                                     "reference_month":expected_iso}
@@ -2468,7 +2480,7 @@ def _lme_official_exact_from_html(html_text, target_date, metal):
         if len(rows)<2: continue
         table_context=" | ".join(" | ".join(r) for r in rows[:8])
         # Accept exact date in table headers/caption/context; not arbitrary page numbers.
-        table_date_ok=date_matches(table_context)
+        table_date_ok=page_date_ok or date_matches(table_context)
         if not table_date_ok:
             cap=table.find("caption")
             if cap: table_date_ok=date_matches(cap.get_text(" ",strip=True))
