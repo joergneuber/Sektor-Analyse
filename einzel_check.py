@@ -328,6 +328,10 @@ def _alter_seit_letztem_kandidaten(eintrag, heute=None):
     return (heute - datum).days
 
 
+class TechnischUngueltigerTickerError(ValueError):
+    """Belastbarer technischer Ausschluss: Symbol ist eindeutig ungültig/Delisting."""
+
+
 def _ist_eindeutig_technisch_ungueltig(exc):
     """Erkennt nur belastbare Symbol-/Delisting-Faelle.
 
@@ -336,6 +340,12 @@ def _ist_eindeutig_technisch_ungueltig(exc):
     """
     if exc is None:
         return False
+
+    # Unser eigener, bereits eindeutig klassifizierter Fehler hat Vorrang.
+    # Damit kann die ursprüngliche Yahoo-Ausnahme sicher verpackt werden,
+    # ohne dass die technische Klassifikation verloren geht.
+    if isinstance(exc, TechnischUngueltigerTickerError):
+        return True
 
     # Bekannte yfinance-Klassen sind staerker als freie Fehlermeldungen.
     cls_name = type(exc).__name__.lower()
@@ -726,7 +736,9 @@ def hole_kursdaten(ticker):
         data = yf.Ticker(ticker).history(period="2y")
     except Exception as exc:
         if _ist_eindeutig_technisch_ungueltig(exc):
-            raise ValueError(f"Technisch ungültiger Ticker / mögliches Delisting: {exc}") from exc
+            raise TechnischUngueltigerTickerError(
+                f"Technisch ungültiger Ticker / mögliches Delisting: {exc}"
+            ) from exc
         raise RuntimeError(f"Yahoo-Kursdatenabruf vorübergehend fehlgeschlagen: {exc}") from exc
 
     if data.empty:
