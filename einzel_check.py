@@ -76,11 +76,14 @@ KAUF_A_MAX_STOCH = 95.0
 SEKTOR_ETF_CACHE = {}
 
 # Persistente Beobachtungsliste im gleichen Verzeichnis wie dieses Skript.
-# Regel:
-#   A -> entfernen
-#   B -> aufnehmen / aktualisieren
-#   C -> aufnehmen / aktualisieren
-#   KEIN KANDIDAT -> entfernen
+# Verbindliche Regel:
+#   A -> Liste behalten + separate A-Meldung
+#   B -> Liste behalten + last_candidate_date aktualisieren
+#   C -> Liste behalten + last_candidate_date aktualisieren
+#   KEIN KANDIDAT -> Liste behalten + last_candidate_date NICHT aktualisieren
+#   >45 Tage ohne A/B/C -> entfernen
+#   technische/strukturelle Ungültigkeit -> entfernen
+BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT = 45
 BEOBACHTUNGS_DATEI = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "einzel_check_beobachtung.json",
@@ -256,32 +259,125 @@ def lade_beobachtungsliste():
         return {}
 
 
+def _normalisiere_beobachtungseintrag(ticker, eintrag):
+    """Migriert alte Watchlist-Einträge auf das persistente Datumsfeld."""
+    if not isinstance(eintrag, dict):
+        eintrag = {}
+
+    status = str(eintrag.get("status", "")).strip().upper()
+    letzter_check = eintrag.get("letzter_check")
+    last_candidate_date = eintrag.get("last_candidate_date")
+
+    if not last_candidate_date:
+        # Alte Versionen speicherten das letzte A/B/C-Datum in
+        # ``letzter_check``. Dieses Datum wird einmalig übernommen.
+        if isinstance(letzter_check, str):
+            match = re.search(r"(20\d{2}-\d{2}-\d{2})", letzter_check)
+            if match:
+                last_candidate_date = match.group(1)
+
+    return {
+        "status": status or "UNBEKANNT",
+        "letzter_check": letzter_check or "?",
+        "last_candidate_date": last_candidate_date,
+    }
+
+
+def _normalisiere_watchlist(liste):
+    """Normalisiert alte Watchlist-Einträge ohne deren Alter vor der heutigen Prüfung zu bewerten."""
+    normalisiert = {}
+    for ticker, eintrag in liste.items():
+        ticker = str(ticker).strip().upper()
+        if not ticker:
+            continue
+        normalisiert[ticker] = _normalisiere_beobachtungseintrag(ticker, eintrag)
+    return normalisiert
+
+
+def _alter_seit_letztem_kandidaten(eintrag, heute=None):
+    """Liefert die Anzahl Tage seit dem letzten A/B/C-Status oder None."""
+    heute = heute or datetime.date.today()
+    datum_text = eintrag.get("last_candidate_date") if isinstance(eintrag, dict) else None
+    if not datum_text:
+        return None
+    try:
+        datum = datetime.date.fromisoformat(str(datum_text))
+    except ValueError:
+        return None
+    return (heute - datum).days
+
+
+def _ist_eindeutig_technisch_ungueltig(exc):
+    """Erkennt nur belastbare Symbol-/Delisting-Faelle.
+
+    Transport-, Rate-Limit-, Timeout-, HTTP- und sonstige temporaere
+    Abruffehler duerfen niemals als Delisting gewertet werden.
+    """
+    if exc is None:
+        return False
+
+    # Bekannte yfinance-Klassen sind staerker als freie Fehlermeldungen.
+    cls_name = type(exc).__name__.lower()
+    if cls_name in {
+        "yftickermissingerror",
+        "yfpricesmissingerror",
+    }:
+        text = str(exc).lower()
+        # Auch bei YFPricesMissingError nur dann entfernen, wenn der
+        # Fehlertext tatsaechlich auf fehlendes/Delisting-Symbol hindeutet.
+        return any(marker in text for marker in (
+            "delisted",
+            "symbol may be delisted",
+            "quote not found",
+            "no price data found",
+            "possibly delisted",
+        ))
+
+    text = str(exc).lower()
+
+    # Temporäre/technische Transportfehler haben Vorrang: niemals löschen.
+    temporaer = (
+        "timeout", "timed out", "rate limit", "too many requests",
+        "429", "connection", "connect", "connection reset",
+        "connection aborted", "ssl", "proxy", "502", "503", "504",
+        "bad gateway", "service unavailable", "temporarily",
+        "temporary", "remote end closed",
+    )
+    if any(marker in text for marker in temporaer):
+        return False
+
+    # Freitext-Fallback nur fuer eindeutige Symbol-/Delisting-Hinweise.
+    eindeutige_marker = (
+        "quote not found for symbol",
+        "no data found, symbol may be delisted",
+        "symbol may be delisted",
+        "possibly delisted",
+        "invalid ticker",
+        "invalid symbol",
+        "delisted",
+    )
+    return any(marker in text for marker in eindeutige_marker)
+
+
+
 def lade_beobachtung_aus_letzter_auswertung():
     """
-    Fallback-Quelle für die Wiedervorlage:
-    liest die letzte Auswertung*.txt aus Google Drive und extrahiert
-    ausschließlich B/C-Titel aus Abschnitt 4
-    ``Einzel-Check-Beobachtungsliste``.
-
-    Die Auswertung ist damit nur eine Rückfallebene, wenn keine lokale
-    bzw. synchronisierte JSON-Beobachtungsliste vorhanden ist.
+    Konservativer Fallback nur bei fehlender JSON-Watchlist.
+    Es werden ausschließlich explizit als B/C ausgewiesene Titel übernommen.
+    Eine vorhandene, aber leere JSON-Datei ist ein gültiger Zustand und löst
+    diesen Fallback NICHT aus.
     """
     try:
         service = get_drive_service()
-
         query = (
             f"name contains 'Auswertung(' and '{FOLDER_ID}' in parents "
             "and trashed = false"
         )
-
         antwort = service.files().list(
-            q=query,
-            spaces="drive",
+            q=query, spaces="drive",
             fields="files(id,name,modifiedTime)",
-            orderBy="modifiedTime desc",
-            pageSize=20,
+            orderBy="modifiedTime desc", pageSize=20,
         ).execute()
-
         treffer = antwort.get("files", [])
         if not treffer:
             return {}
@@ -290,47 +386,60 @@ def lade_beobachtung_aus_letzter_auswertung():
         request = service.files().get_media(fileId=datei["id"])
         buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(buffer, request)
-
         fertig = False
         while not fertig:
             _, fertig = downloader.next_chunk()
 
         text = buffer.getvalue().decode("utf-8-sig", errors="replace")
-
-        marker = "Einzel-Check-Beobachtungsliste:"
+        marker = "Einzel-Check-Beobachtungsliste"
         start = text.find(marker)
         if start < 0:
             return {}
-
-        block = text[start + len(marker):]
-
-        # Abschnitt 4 endet beim nächsten nummerierten Hauptabschnitt.
+        block = text[start:]
         ende = re.search(r"\n\s*\d+\.\s+", block)
         if ende:
             block = block[:ende.start()]
 
-        muster = re.compile(
-            r"Ticker:\s*([A-Za-z0-9.\-]+)\s*\|\s*"
-            r"Status:\s*(KAUFKANDIDAT\s+[BC])",
+        # Nur B/C als konservativer Fallback. A und KEIN KANDIDAT dürfen
+        # aus einer alten Auswertung nicht wieder in die Watchlist gelangen.
+        ergebnis = {}
+        muster_zeile = re.compile(
+            r"^\s*([A-Za-z0-9.\-]+)\s+(KAUFKANDIDAT\s+[BC])\s+letzter Check\s+(20\d{2}-\d{2}-\d{2})\s*$",
+            re.IGNORECASE,
+        )
+        muster_inline = re.compile(
+            r"Ticker:\s*([A-Za-z0-9.\-]+)\s*\|\s*Status:\s*(KAUFKANDIDAT\s+[BC])",
             re.IGNORECASE,
         )
 
-        ergebnis = {}
-        for match in muster.finditer(block):
-            ticker = match.group(1).strip().upper()
-            status = re.sub(r"\s+", " ", match.group(2).strip().upper())
-            ergebnis[ticker] = {
-                "status": status,
-                "letzter_check": "aus letzter Auswertung",
-            }
+        for zeile in block.splitlines():
+            match = muster_zeile.match(zeile)
+            if match:
+                ticker, status, datum = match.groups()
+                ergebnis[ticker.strip().upper()] = {
+                    "status": re.sub(r"\s+", " ", status.strip().upper()),
+                    "letzter_check": datum,
+                    "last_candidate_date": datum,
+                }
+                continue
+
+            match = muster_inline.search(zeile)
+            if match:
+                ticker, status = match.groups()
+                ergebnis[ticker.strip().upper()] = {
+                    "status": re.sub(r"\s+", " ", status.strip().upper()),
+                    # Inline-Fallback ohne Datum wird bewusst nicht auf
+                    # "heute" datiert: unbekanntes Alter darf die 45-Tage-
+                    # Frist nicht künstlich zurücksetzen.
+                    "letzter_check": "aus letzter Auswertung",
+                    "last_candidate_date": None,
+                }
 
         if ergebnis:
             print(
-                f"INFO: Beobachtungsliste aus letzter Auswertung "
-                f"({datei['name']}) übernommen: "
-                f"{len(ergebnis)} B/C-Titel."
+                f"INFO: Konservativer Fallback aus letzter Auswertung "
+                f"({datei['name']}) übernommen: {len(ergebnis)} B/C-Titel."
             )
-
         return ergebnis
 
     except Exception as e:
@@ -352,51 +461,83 @@ def speichere_beobachtungsliste(liste):
     os.replace(temp_datei, BEOBACHTUNGS_DATEI)
 
 
-def aktualisiere_beobachtungsliste(ticker, status):
-    """
-    Pflegt die persistente Beobachtungsliste nach der vereinbarten Regel:
-
-      A -> entfernen
-      B -> aufnehmen / aktualisieren
-      C -> aufnehmen / aktualisieren
-      KEIN KANDIDAT -> entfernen
-    """
-    liste = lade_beobachtungsliste()
+def aktualisiere_beobachtungsliste(ticker, status, grund=None):
+    """Pflegt die persistente Watchlist nach der verbindlichen Zielregel."""
+    liste = _normalisiere_watchlist(lade_beobachtungsliste())
     heute = datetime.date.today().isoformat()
+    war_bereits_drin = ticker in liste
 
-    if status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C"):
-        war_bereits_drin = ticker in liste
+    if status == "KAUFKANDIDAT A":
         liste[ticker] = {
             "status": status,
             "letzter_check": heute,
+            "last_candidate_date": heute,
         }
         speichere_beobachtungsliste(liste)
+        print(
+            f"  BEOBACHTUNGSLISTE: {ticker} "
+            f"{'beibehalten' if war_bereits_drin else 'aufgenommen'} -> {status}"
+        )
+        return
 
+    if status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C"):
+        liste[ticker] = {
+            "status": status,
+            "letzter_check": heute,
+            "last_candidate_date": heute,
+        }
+        speichere_beobachtungsliste(liste)
+        print(
+            f"  BEOBACHTUNGSLISTE: {ticker} "
+            f"{'aktualisiert' if war_bereits_drin else 'aufgenommen'} -> {status}"
+        )
+        return
+
+    if status == "KEIN KANDIDAT":
         if war_bereits_drin:
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} aktualisiert -> {status}"
-            )
-        else:
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} aufgenommen -> {status}"
-            )
+            eintrag = liste[ticker]
+            eintrag["status"] = status
+            eintrag["letzter_check"] = heute
+            alter = _alter_seit_letztem_kandidaten(eintrag)
 
-    else:
-        war_bereits_drin = ticker in liste
+            if alter is not None and alter > BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT:
+                del liste[ticker]
+                speichere_beobachtungsliste(liste)
+                print(
+                    f"  BEOBACHTUNGSLISTE: {ticker} entfernt -> {alter} Tage "
+                    f"ohne A/B/C (> {BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT} Tage)"
+                )
+            else:
+                liste[ticker] = eintrag
+                speichere_beobachtungsliste(liste)
+                print(
+                    f"  BEOBACHTUNGSLISTE: {ticker} beibehalten -> {status} "
+                    f"(last_candidate_date bleibt {eintrag.get('last_candidate_date', '?')})"
+                )
+        else:
+            speichere_beobachtungsliste(liste)
+            print(
+                f"  BEOBACHTUNGSLISTE: {ticker} nicht enthalten -> {status}"
+            )
+        return
+
+    # Technischer/struktureller Ausschluss darf einen vorhandenen Titel
+    # entfernen. Ein temporärer Kursdaten-/Yahoo-Fehler wird niemals mit
+    # diesem Status aufgerufen.
+    if grund or status == "TECHNISCH UNGÜLTIG":
         if war_bereits_drin:
             del liste[ticker]
             speichere_beobachtungsliste(liste)
             print(
                 f"  BEOBACHTUNGSLISTE: {ticker} entfernt -> {status}"
+                + (f" ({grund})" if grund else "")
             )
-        else:
-            # Datei trotzdem anlegen/aktualisieren, damit nach einem Lauf
-            # mit ausschließlich A/kein Kandidat eine gültige leere Liste
-            # existiert.
-            speichere_beobachtungsliste(liste)
-            print(
-                f"  BEOBACHTUNGSLISTE: {ticker} nicht enthalten -> {status}"
-            )
+        return
+
+    print(
+        f"  WARNUNG: Unbekannter Status für {ticker}: {status} - "
+        "Watchlist-Eintrag bleibt unverändert."
+    )
 
 
 # ============================================================
@@ -555,11 +696,14 @@ def hole_kursdaten(ticker):
     """Lädt zwei Jahre Daten und verwendet anschließend ca. 52 Wochen."""
     try:
         data = yf.Ticker(ticker).history(period="2y")
-    except Exception:
-        return None
+    except Exception as exc:
+        if _ist_eindeutig_technisch_ungueltig(exc):
+            raise ValueError(f"Technisch ungültiger Ticker / mögliches Delisting: {exc}") from exc
+        raise RuntimeError(f"Yahoo-Kursdatenabruf vorübergehend fehlgeschlagen: {exc}") from exc
 
     if data.empty:
-        return None
+        # Leere Antwort allein ist kein sicherer Delisting-Nachweis.
+        raise RuntimeError("Yahoo lieferte vorübergehend keine Kursdaten")
 
     required = ["Close", "High", "Low", "Volume"]
     data = data.dropna(subset=required)
@@ -1173,9 +1317,14 @@ def bewerte_kaufkandidat(
 
 KAUFKANDIDATEN_ERGEBNISSE = []
 A_AUFSTIEGE = []
+A_MELDUNGEN = []
 A_AUFSTIEGE_DATEI = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     f"Einzel_Check_Aufstiege({datetime.date.today().isoformat()}).txt",
+)
+A_MELDUNGEN_DATEI = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    f"Einzel_Check_A_Meldungen({datetime.date.today().isoformat()}).txt",
 )
 
 
@@ -1308,12 +1457,21 @@ def pruefe(
     # Kursdaten
     # --------------------------------------------------------
 
-    data = hole_kursdaten(ticker)
+    try:
+        data = hole_kursdaten(ticker)
+    except Exception as exc:
+        # Temporärer Yahoo-/Netzwerk-/Datenfehler: NICHT als Delisting oder
+        # technische Ungültigkeit behandeln und daher niemals die Watchlist löschen.
+        print(
+            f"  TRENDWENDE/SHORT: Kursdaten vorübergehend nicht verfügbar "
+            f"({type(exc).__name__}: {exc}) - Watchlist unverändert"
+        )
+        return
 
     if data is None or data.empty:
         print(
-            "  TRENDWENDE/SHORT: "
-            "keine Kursdaten"
+            "  TRENDWENDE/SHORT: Kursdaten nicht verfügbar "
+            "- Watchlist unverändert"
         )
         return
 
@@ -1501,10 +1659,9 @@ def pruefe(
             f"    ⚠ {risiko}"
         )
 
-    # Persistente Beobachtungsliste:
-    # A entfernt, B/C aufnehmen bzw. aktualisieren, KEIN KANDIDAT entfernen.
-    # Vor dem Update den alten Status lesen, damit nur echte B/C -> A-Aufstiege
-    # aus der Beobachtungsliste gemeldet werden.
+    # Persistente Beobachtungsliste nach der verbindlichen Watchlist-Regel.
+    # Vor dem Update den alten Status lesen, damit echte B/C -> A-Aufstiege
+    # separat von den allgemeinen aktuellen A-Meldungen erkannt werden.
     vorherige_liste = lade_beobachtungsliste()
     vorheriger_status = vorherige_liste.get(ticker, {}).get("status")
 
@@ -1521,6 +1678,15 @@ def pruefe(
         kauf=kauf,
         vorheriger_status=vorheriger_status,
     )
+
+    if kauf["Status"] == "KAUFKANDIDAT A":
+        A_MELDUNGEN.append({
+            "Ticker": ticker,
+            "Name": klarname or ticker,
+            "Vorheriger_Status": vorheriger_status or "nicht in Watchlist",
+            "Datum": datetime.date.today().isoformat(),
+            "Momentum": kauf.get("Momentum", "n/a"),
+        })
 
     if kauf["Status"] == "KAUFKANDIDAT A" and vorheriger_status in (
         "KAUFKANDIDAT B", "KAUFKANDIDAT C"
@@ -1621,12 +1787,11 @@ if __name__ == "__main__":
 
     beobachtung = lade_beobachtungsliste()
 
-    # Die synchronisierte JSON ist die maßgebliche aktuelle Watchlist.
-    # Nur wenn sie wirklich nicht vorhanden/leer ist, wird Punkt 4 der
-    # letzten Auswertung als Fallback verwendet. So werden Titel, die im
-    # selben Tag bereits als A/KEIN KANDIDAT entfernt wurden, nicht durch
-    # eine ältere Auswertung wieder auferweckt.
-    if not beobachtung:
+    # Die JSON ist die alleinige maßgebliche Watchlist, sobald sie existiert.
+    # Ein Fallback aus der letzten Auswertung darf NUR bei fehlender JSON-Datei
+    # greifen. Eine vorhandene leere JSON-Datei ist ein bewusst gültiger Zustand
+    # und darf nicht durch alte B/C-Einträge wieder aufgefüllt werden.
+    if not os.path.exists(BEOBACHTUNGS_DATEI):
         beobachtung = lade_beobachtung_aus_letzter_auswertung()
         if beobachtung:
             speichere_beobachtungsliste(beobachtung)
@@ -1682,10 +1847,19 @@ if __name__ == "__main__":
                 spy_close,
                 eu_close,
             )
+        except ValueError as e:
+            if _ist_eindeutig_technisch_ungueltig(e):
+                aktualisiere_beobachtungsliste(
+                    ticker,
+                    "TECHNISCH UNGÜLTIG",
+                    grund=str(e),
+                )
+            else:
+                print(f"\nDATENFEHLER BEI {ticker}: {type(e).__name__}: {e} - Watchlist unverändert.")
         except Exception as e:
             print(
-                f"\nFEHLER BEI {ticker}: "
-                f"{type(e).__name__}: {e}"
+                f"\nDATENFEHLER BEI {ticker}: "
+                f"{type(e).__name__}: {e} - Watchlist unverändert."
             )
 
         print()
@@ -1696,7 +1870,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 62)
-    # Tagesdatei fuer die fertige Auswertung: Nur echte B/C -> A-Aufstiege.
+    # Tagesdatei 1: echte B/C -> A-Aufstiege.
     try:
         if A_AUFSTIEGE:
             with open(A_AUFSTIEGE_DATEI, "w", encoding="utf-8") as f:
@@ -1716,6 +1890,28 @@ if __name__ == "__main__":
                 pass
     except OSError as exc:
         print(f"WARNUNG: A-Aufstiegsdatei konnte nicht geschrieben werden: {exc}")
+
+    # Tagesdatei 2: alle aktuellen A-Kandidaten. Diese Information ist bewusst
+    # getrennt von den echten B/C -> A-Aufstiegen.
+    try:
+        if A_MELDUNGEN:
+            with open(A_MELDUNGEN_DATEI, "w", encoding="utf-8") as f:
+                f.write("EINZEL-CHECK: AKTUELLE KAUFKANDIDAT-A-MELDUNGEN\n")
+                f.write("==============================================\n\n")
+                for eintrag in A_MELDUNGEN:
+                    f.write(
+                        f"Name: {eintrag['Name']} | Ticker: {eintrag['Ticker']} | "
+                        f"Vorheriger Status: {eintrag['Vorheriger_Status']} | "
+                        f"Datum: {eintrag['Datum']} | Momentum: {eintrag['Momentum']}\n\n"
+                    )
+            print(f"A-MELDUNGEN_DATEI={A_MELDUNGEN_DATEI}")
+        else:
+            try:
+                os.remove(A_MELDUNGEN_DATEI)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        print(f"WARNUNG: A-Meldungsdatei konnte nicht geschrieben werden: {exc}")
 
     print(
         "KAUFKANDIDATEN DES CHECKS"
@@ -1774,7 +1970,10 @@ if __name__ == "__main__":
     print()
     print("=" * 62)
     print("AKTUELLE EINZEL-CHECK-BEOBACHTUNGSLISTE")
-    print("B/C = beobachten | A/KEIN KANDIDAT = automatisch entfernt")
+    print(
+        "A/B/C = beobachten | KEIN KANDIDAT = bleibt in der Liste | "
+        ">45 Tage ohne A/B/C = entfernen"
+    )
     print("=" * 62)
 
     if not beobachtung:

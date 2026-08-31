@@ -5,8 +5,8 @@ Lädt die persistente Einzel-Check-Beobachtungsliste aus Google Drive in das
 Arbeitsverzeichnis des aktuellen GitHub-Actions-Laufs.
 
 Die Datei ist bewusst eine kleine Synchronisationsstufe vor dem täglichen
-Einzel-Check. So kann einzel_check.py die bereits beobachteten B/C-Titel jeden
-Tag erneut prüfen, obwohl GitHub Actions mit einem frischen Checkout startet.
+Einzel-Check. So kann einzel_check.py die persistent beobachteten A/B/C- und bereits
+beobachteten KEIN-KANDIDAT-Titel jeden Tag erneut prüfen, obwohl GitHub Actions mit einem frischen Checkout startet.
 
 Wenn die Datei in Drive nicht gefunden wird, bricht der Sync bewusst mit einem
 Fehler ab. Es wird KEINE leere JSON-Datei angelegt. Dadurch kann ein nachfolgender
