@@ -1471,6 +1471,86 @@ def fed_expectation_snapshot(today):
     ]
 
 
+
+def fedwatch_ab_snapshot(today, legacy_lines):
+    """Nicht-produktiver A/B-Test: vergleicht die bestehende Berechnung mit
+    cme-fedwatch. Der bestehende FedWatch-Wert bleibt unveraendert autoritativ.
+    Fehler/Unavailable im neuen Adapter duerfen den Makro-Lauf nicht blockieren.
+    """
+    try:
+        from cme_fedwatch import get_probabilities
+    except Exception as exc:
+        return [
+            f"FEDWATCH-A/B: NEUE BERECHNUNG NICHT VERFUEGBAR | STATUS=UNAVAILABLE | "
+            f"Grund: cme-fedwatch nicht installiert/importierbar | FEHLER={exc}"
+        ]
+
+    try:
+        data = get_probabilities("next")
+        meetings = data.get("meetings") if isinstance(data, dict) else None
+        if not meetings:
+            return ["FEDWATCH-A/B: NEUE BERECHNUNG NICHT VERFUEGBAR | STATUS=UNAVAILABLE | keine Meeting-Daten"]
+        meeting = meetings[0]
+        # Der FOMC-Termin bleibt im bestehenden System autoritativ.
+        # cme-fedwatch liefert fuer den A/B-Test ausschliesslich
+        # Wahrscheinlichkeiten; sein eigener Meeting-Termin wird
+        # bewusst nicht als zweite Terminquelle verwendet.
+        authoritative_meeting = _next_fomc_date(today)
+        new_date = authoritative_meeting.isoformat() if authoritative_meeting else "UNBEKANNT"
+        probs = meeting.get("probabilities") or {}
+        if not probs:
+            return [f"FEDWATCH-A/B: NEUE BERECHNUNG NICHT VERFUEGBAR | STATUS=UNAVAILABLE | Meeting={new_date} | keine Wahrscheinlichkeiten"]
+
+        # Bestehende Berechnung aus ihrer eigenen Ausgabe lesen.
+        legacy = next((x for x in legacy_lines if x.startswith("FED-MARKTERWARTUNG: FOMC=")), "")
+        old_probs = {}
+        for m in re.finditer(r"([A-Z]+)_(\d+)BP=([0-9.]+)%", legacy):
+            old_probs[f"{m.group(1)}_{m.group(2)}BP"] = float(m.group(3))
+        hold = re.search(r"HOLD=([0-9.]+)%", legacy)
+        if hold:
+            old_probs["HOLD"] = float(hold.group(1))
+
+        new_parts = [f"{k}={float(v):.2f}%" for k, v in probs.items()]
+        comparison = []
+        current_target = str(data.get("current_target") or "").replace(" ", "")
+        try:
+            lower_txt, upper_txt = current_target.split("%-")
+            upper_rate = float(upper_txt.rstrip("%"))
+            lower_rate = float(lower_txt.rstrip("%"))
+        except Exception:
+            lower_rate = upper_rate = None
+
+        for rate, new_value in probs.items():
+            try:
+                nv = float(new_value)
+            except (TypeError, ValueError):
+                continue
+            normalized_rate = str(rate).replace(" ", "")
+            old_value = None
+            # Dynamische Zuordnung: aktuelle Zielspanne = HOLD; +25bp bzw.
+            # -25bp wird aus der Zielspanne abgeleitet. Keine hardcodierten
+            # 2026er Zinsspannen.
+            if current_target and normalized_rate == current_target:
+                old_value = old_probs.get("HOLD")
+            elif upper_rate is not None and normalized_rate == f"{upper_rate:.2f}%-{upper_rate + 0.25:.2f}%":
+                old_value = old_probs.get("HIKE_25BP")
+            elif lower_rate is not None and normalized_rate == f"{lower_rate - 0.25:.2f}%-{lower_rate:.2f}%":
+                old_value = old_probs.get("CUT_25BP")
+            if old_value is not None:
+                comparison.append(f"{rate}: ALT={old_value:.2f}% | NEU={nv:.2f}% | DIFF={nv-old_value:+.2f}pp")
+
+        return [
+            f"FEDWATCH-A/B: CME-FEDWATCH-ADAPTER | STATUS=CALCULATED | FOMC={new_date}",
+            f"NEU (cme-fedwatch): {', '.join(new_parts)} | EFFR={data.get('effr')}% | TARGET={data.get('current_target')}",
+            f"VERGLEICH: {' | '.join(comparison) if comparison else 'keine direkte Alt/Neu-Zuordnung moeglich'}",
+            "A/B-REGEL: Die bestehende FED-MARKTERWARTUNG bleibt unveraendert; cme-fedwatch dient ausschliesslich dem Vergleich.",
+        ]
+    except Exception as exc:
+        return [
+            f"FEDWATCH-A/B: NEUE BERECHNUNG FEHLGESCHLAGEN | STATUS=ERROR | FEHLER={exc}",
+            "A/B-REGEL: Die bestehende FED-MARKTERWARTUNG bleibt unveraendert; cme-fedwatch-Fehler blockieren den Makro-Lauf nicht.",
+        ]
+
 def _latest_ism_month(today):
     # Wir pruefen den Vormonat und, falls die Seite noch nicht veroeffentlicht ist,
     # den Monat davor. Es wird nie ein zukuenftiger oder geschaetzter PMI eingesetzt.
@@ -3390,7 +3470,9 @@ def main():
         "ECB Deposit Facility Rate", "M2", "Realzins 10Y TIPS",
         "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury",
     ]))
-    lines.extend(fed_expectation_snapshot(today))
+    legacy_fedwatch_lines = fed_expectation_snapshot(today)
+    lines.extend(legacy_fedwatch_lines)
+    lines.extend(fedwatch_ab_snapshot(today, legacy_fedwatch_lines))
     lines.append("")
 
     lines.append("2. INFLATION, ARBEIT & KONJUNKTUR")
