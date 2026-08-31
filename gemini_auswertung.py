@@ -63,8 +63,10 @@ import io
 # ---------------------------------------------------------------------------
 
 MODELL = "gemini-3.5-flash"  # Primaer-Modell
-FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Fallback bei Tagesquota des Primaermodells
-                              # Das Fallback hat im Free Tier ein separates, hoeheres RPD-Limit.
+FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback
+DRITTER_FALLBACK_MODELL = "gemini-2.5-flash"  # Zweiter Fallback bei 503-Ueberlast
+                              # Das dritte Modell wird nur verwendet, wenn auch der erste
+                              # Fallback weiterhin serverseitig ueberlastet ist.
 
 MAX_VERSUCHE = 5
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
@@ -1075,16 +1077,27 @@ def gemini_auswertung_starten():
                 # am selben Modell verbrauchen: Nach drei erfolglosen 503-
                 # Versuchen wird auf das definierte Fallback-Modell gewechselt.
                 # Netzwerk-Abbrueche behalten die bisherige Retry-Logik.
-                if (kategorie == "ueberlast" and versuch >= 3 and
-                        aktuelles_modell == MODELL and
-                        FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
-                    aktuelles_modell = FALLBACK_MODELL
-                    print(
-                        f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
-                        f"Wechsle fuer den naechsten Versuch von {MODELL} "
-                        f"auf Fallback-Modell {FALLBACK_MODELL}."
-                    )
-                    continue
+                if kategorie == "ueberlast":
+                    if (aktuelles_modell == MODELL and
+                            FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
+                        aktuelles_modell = FALLBACK_MODELL
+                        print(
+                            f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                            f"Wechsle fuer den naechsten Versuch von {MODELL} "
+                            f"auf Fallback-Modell {FALLBACK_MODELL}."
+                        )
+                        continue
+
+                    if (aktuelles_modell == FALLBACK_MODELL and
+                            DRITTER_FALLBACK_MODELL and
+                            DRITTER_FALLBACK_MODELL not in (MODELL, FALLBACK_MODELL)):
+                        aktuelles_modell = DRITTER_FALLBACK_MODELL
+                        print(
+                            f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                            f"Wechsle fuer den naechsten Versuch von {FALLBACK_MODELL} "
+                            f"auf dritten Fallback {DRITTER_FALLBACK_MODELL}."
+                        )
+                        continue
 
                 # Serverseitige Ueberlast/Netzwerkabbruch: lange, exponentiell
                 # steigende Pause (siehe UEBERLAST_WARTEZEITEN). Ein von Google
