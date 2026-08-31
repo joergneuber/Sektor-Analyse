@@ -972,6 +972,8 @@ def _westmetall_tin_exact(target_date):
         target_date.strftime("%d.%m.%y"),
         target_date.strftime("%d %B %Y"),
         target_date.strftime("%d %b %Y"),
+        target_date.strftime("%d. %B %Y"),
+        target_date.strftime("%-d. %B %Y"),
     }
     for url in urls:
         try:
@@ -2091,7 +2093,7 @@ def _ism_structured_from_html(kind, year, month, html_text, source_url):
 
             header_blob=" | ".join(" | ".join(r) for r in rows[:6])
             table_blob=" | ".join(" | ".join(r) for r in rows)
-            month_ok=month_in_text(header_blob) or month_in_text(table_blob) or "/" + calendar.month_name[month].lower() + "/" in source_url.lower()
+            month_ok=(month_in_text(header_blob) or month_in_text(table_blob) or "/" + calendar.month_name[month].lower() + "/" in (source_url or "").lower())
             if not month_ok:
                 continue
 
@@ -2335,13 +2337,10 @@ def _te_public_ism_fetch(kind, year, month):
                     if v is not None and 0.0 <= v <= 100.0 and not 1900 <= v <= 2100:
                         return v
 
-            # Last resort: first index-like number after the label. This is
-            # safe here because the label itself identifies the requested
-            # series and the surrounding window proves the reference month.
-            for token in re.findall(r"(?<![\w.])\d+(?:[.,]\d+)?", window_after):
-                v = _clean_num(token)
-                if v is not None and 0.0 <= v <= 100.0 and not 1900 <= v <= 2100:
-                    return v
+            # Never fall back to the first arbitrary number after a label.
+            # TE pages can place the headline PMI or another component nearby;
+            # accepting the first numeric token would silently create false
+            # component values. Only explicit value wording above is accepted.
         return None
 
     def calendar_actual_value(frames, key):
@@ -3026,7 +3025,7 @@ def _ism_public_report_full(kind, year, month, html_text, source_url):
         for ri, row in enumerate(rows):
             if not row:
                 continue
-            first = re.sub(r"\\s+", " ", row[0]).strip().casefold()
+            first = re.sub(r"\s+", " ", row[0]).strip().casefold()
             key = None
             for candidate, aliases in alias_map.items():
                 if first in aliases:
@@ -3060,13 +3059,13 @@ def _ism_public_report_full(kind, year, month, html_text, source_url):
     # outside the table by the CMS. Never use a page-wide numeric fallback.
     plain = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html_text, flags=re.I|re.S)
     plain = re.sub(r"<[^>]+>", " ", plain)
-    plain = re.sub(r"\\s+", " ", plain).strip()
-    if re.search(rf"\\b{target_full}\\s+{year}\\b", plain, re.I):
+    plain = re.sub(r"\s+", " ", plain).strip()
+    if re.search(rf"\b{target_full}\s+{year}\b", plain, re.I):
         prose_patterns = {
-            "inventories": rf"Inventories Index registered\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-            "customers_inventories": rf"Customers[’']?\\s+Inventories Index reading of\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-            "new_export_orders": rf"New Export Orders Index.*?reading of\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
-            "imports": rf"Imports Index registered\\s+([0-9]+(?:\\.[0-9])?)\\s+percent",
+            "inventories": rf"Inventories Index registered\s+([0-9]+(?:\.[0-9])?)\s+percent",
+            "customers_inventories": rf"Customers[’']?\s+Inventories Index reading of\s+([0-9]+(?:\.[0-9])?)\s+percent",
+            "new_export_orders": rf"New Export Orders Index.*?reading of\s+([0-9]+(?:\.[0-9])?)\s+percent",
+            "imports": rf"Imports Index registered\s+([0-9]+(?:\.[0-9])?)\s+percent",
         }
         for key, pattern in prose_patterns.items():
             if key in found:
