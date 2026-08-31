@@ -1771,7 +1771,7 @@ def _ism_official_report_secondary(year, month, kind):
                 business_days.append(d)
             if len(business_days) >= 3:
                 break
-            d = d + __import__("datetime").timedelta(days=1)
+            d = d + dt.timedelta(days=1)
         idx = 0 if kind == "manufacturing" else 2
         if len(business_days) <= idx:
             print(f"WARNUNG: ISM release schedule calculation failed kind={kind}")
