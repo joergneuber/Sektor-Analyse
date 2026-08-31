@@ -80,7 +80,7 @@ SEKTOR_ETF_CACHE = {}
 #   A -> Liste behalten + separate A-Meldung
 #   B -> Liste behalten + last_candidate_date aktualisieren
 #   C -> Liste behalten + last_candidate_date aktualisieren
-#   KEIN KANDIDAT -> Liste behalten + last_candidate_date NICHT aktualisieren
+#   KEIN KANDIDAT -> Liste aufnehmen/behalten + last_candidate_date NICHT aktualisieren
 #   >45 Tage ohne A/B/C -> entfernen
 #   technische/strukturelle Ungültigkeit -> entfernen
 BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT = 45
@@ -267,19 +267,31 @@ def _normalisiere_beobachtungseintrag(ticker, eintrag):
     status = str(eintrag.get("status", "")).strip().upper()
     letzter_check = eintrag.get("letzter_check")
     last_candidate_date = eintrag.get("last_candidate_date")
+    beobachtung_start_date = eintrag.get("beobachtung_start_date")
 
-    if not last_candidate_date:
+    if not last_candidate_date and status in ("KAUFKANDIDAT A", "KAUFKANDIDAT B", "KAUFKANDIDAT C"):
         # Alte Versionen speicherten das letzte A/B/C-Datum in
         # ``letzter_check``. Dieses Datum wird einmalig übernommen.
+        # Bei KEIN KANDIDAT darf ``letzter_check`` NICHT als A/B/C-Datum
+        # interpretiert werden.
         if isinstance(letzter_check, str):
             match = re.search(r"(20\d{2}-\d{2}-\d{2})", letzter_check)
             if match:
                 last_candidate_date = match.group(1)
 
+    if not beobachtung_start_date and status == "KEIN KANDIDAT":
+        # Alte Watchlist-Einträge ohne Startdatum können ihren bekannten
+        # letzten Check als konservativen Beobachtungsbeginn verwenden.
+        if isinstance(letzter_check, str):
+            match = re.search(r"(20\d{2}-\d{2}-\d{2})", letzter_check)
+            if match:
+                beobachtung_start_date = match.group(1)
+
     return {
         "status": status or "UNBEKANNT",
         "letzter_check": letzter_check or "?",
         "last_candidate_date": last_candidate_date,
+        "beobachtung_start_date": beobachtung_start_date,
     }
 
 
@@ -295,11 +307,20 @@ def _normalisiere_watchlist(liste):
 
 
 def _alter_seit_letztem_kandidaten(eintrag, heute=None):
-    """Liefert die Anzahl Tage seit dem letzten A/B/C-Status oder None."""
+    """Liefert Tage seit letztem A/B/C, sonst seit Beobachtungsbeginn."""
     heute = heute or datetime.date.today()
-    datum_text = eintrag.get("last_candidate_date") if isinstance(eintrag, dict) else None
+    if not isinstance(eintrag, dict):
+        return None
+
+    # Nach einem A/B/C zählt die Frist ab diesem letzten Kandidatenstatus.
+    datum_text = eintrag.get("last_candidate_date")
+    # Bei einem neu aufgenommenen KEIN-KANDIDAT ohne bisherigen A/B/C-Status
+    # zählt die Frist ab dem ersten Beobachtungstag.
+    if not datum_text:
+        datum_text = eintrag.get("beobachtung_start_date")
     if not datum_text:
         return None
+
     try:
         datum = datetime.date.fromisoformat(str(datum_text))
     except ValueError:
@@ -498,26 +519,33 @@ def aktualisiere_beobachtungsliste(ticker, status, grund=None):
             eintrag = liste[ticker]
             eintrag["status"] = status
             eintrag["letzter_check"] = heute
-            alter = _alter_seit_letztem_kandidaten(eintrag)
-
-            if alter is not None and alter > BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT:
-                del liste[ticker]
-                speichere_beobachtungsliste(liste)
-                print(
-                    f"  BEOBACHTUNGSLISTE: {ticker} entfernt -> {alter} Tage "
-                    f"ohne A/B/C (> {BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT} Tage)"
-                )
-            else:
-                liste[ticker] = eintrag
-                speichere_beobachtungsliste(liste)
-                print(
-                    f"  BEOBACHTUNGSLISTE: {ticker} beibehalten -> {status} "
-                    f"(last_candidate_date bleibt {eintrag.get('last_candidate_date', '?')})"
-                )
         else:
+            # Variante B: Jeder technisch gültige, tatsächlich geprüfte Titel
+            # wird auch bei KEIN KANDIDAT neu in die Beobachtungsliste aufgenommen.
+            eintrag = {
+                "status": status,
+                "letzter_check": heute,
+                "last_candidate_date": None,
+                "beobachtung_start_date": heute,
+            }
+            liste[ticker] = eintrag
+
+        alter = _alter_seit_letztem_kandidaten(eintrag)
+
+        if alter is not None and alter > BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT:
+            del liste[ticker]
             speichere_beobachtungsliste(liste)
             print(
-                f"  BEOBACHTUNGSLISTE: {ticker} nicht enthalten -> {status}"
+                f"  BEOBACHTUNGSLISTE: {ticker} entfernt -> {alter} Tage "
+                f"ohne A/B/C (> {BEOBACHTUNG_MAX_TAGE_OHNE_KANDIDAT} Tage)"
+            )
+        else:
+            speichere_beobachtungsliste(liste)
+            quelle = "beibehalten" if war_bereits_drin else "aufgenommen"
+            print(
+                f"  BEOBACHTUNGSLISTE: {ticker} {quelle} -> {status} "
+                f"(last_candidate_date bleibt {eintrag.get('last_candidate_date', '?')}, "
+                f"Start {eintrag.get('beobachtung_start_date', '?')})"
             )
         return
 
@@ -1971,8 +1999,8 @@ if __name__ == "__main__":
     print("=" * 62)
     print("AKTUELLE EINZEL-CHECK-BEOBACHTUNGSLISTE")
     print(
-        "A/B/C = beobachten | KEIN KANDIDAT = bleibt in der Liste | "
-        ">45 Tage ohne A/B/C = entfernen"
+        "A/B/C = aufnehmen/behalten | KEIN KANDIDAT = aufnehmen/behalten | "
+        ">45 Tage ohne A/B/C = entfernen | technisch ungültig/Delisting = entfernen"
     )
     print("=" * 62)
 
