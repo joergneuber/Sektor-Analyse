@@ -77,7 +77,7 @@ WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt
 # Nachfragespitze bei einem Gratis-Modell dauert typischerweise laenger als
 # zwei Minuten - fuenf Versuche in diesem Fenster sind praktisch fuenf
 # Versuche im selben Moment. Exponentiell statt linear:
-UEBERLAST_WARTEZEITEN = [60, 120, 240, 480]  # Sekunden, ~15 Min. Gesamtbudget
+UEBERLAST_WARTEZEITEN = [30, 60, 60, 60]  # Sekunden; kurze Staffel vor dem Fallback
 # Ein GitHub-Actions-Job darf 6 Stunden laufen, 15 Minuten sind also
 # unkritisch; laenger ist trotzdem nicht sinnvoll, weil der Lauf sonst den
 # ganzen Vormittag blockiert - dann lieber ein spaeterer Handstart.
@@ -1071,6 +1071,21 @@ def gemini_auswertung_starten():
                 sys.exit(2)
 
             if kategorie in ("ueberlast", "netzwerk"):
+                # Bei serverseitiger Ueberlast (503) nicht alle fuenf Versuche
+                # am selben Modell verbrauchen: Nach drei erfolglosen 503-
+                # Versuchen wird auf das definierte Fallback-Modell gewechselt.
+                # Netzwerk-Abbrueche behalten die bisherige Retry-Logik.
+                if (kategorie == "ueberlast" and versuch >= 3 and
+                        aktuelles_modell == MODELL and
+                        FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
+                    aktuelles_modell = FALLBACK_MODELL
+                    print(
+                        f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                        f"Wechsle fuer den naechsten Versuch von {MODELL} "
+                        f"auf Fallback-Modell {FALLBACK_MODELL}."
+                    )
+                    continue
+
                 # Serverseitige Ueberlast/Netzwerkabbruch: lange, exponentiell
                 # steigende Pause (siehe UEBERLAST_WARTEZEITEN). Ein von Google
                 # mitgeliefertes retryDelay wird beachtet, aber nur wenn es
@@ -1081,7 +1096,7 @@ def gemini_auswertung_starten():
                     wartezeit = max(wartezeit, empfohlene_wartezeit)
                 grund = ("Modell ueberlastet (503)" if kategorie == "ueberlast"
                          else "Netzwerk-Abbruch")
-                print(f"  {grund} - warte {wartezeit:.0f}s (lange Staffel, "
+                print(f"  {grund} - warte {wartezeit:.0f}s (kurze Staffel, "
                       f"Versuch {versuch}/{MAX_VERSUCHE})...")
             else:
                 wartezeit = (empfohlene_wartezeit if empfohlene_wartezeit is not None
