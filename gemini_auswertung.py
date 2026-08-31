@@ -847,6 +847,10 @@ def gemini_auswertung_starten():
     else:
         print(f"WARNUNG: {makro_gate_grund}")
 
+    makro_datenqualitaet = _lese_makro_datenqualitaet(makro_text if makro_pfad else "")
+    if makro_datenqualitaet:
+        print(f"Makro-Datenqualitaet: {makro_datenqualitaet} | Quelle: Makro-Datenpaket")
+
     for versuch in range(1, MAX_VERSUCHE + 1):
         print(f"\nVersuch {versuch}/{MAX_VERSUCHE}...")
 
@@ -928,6 +932,14 @@ def gemini_auswertung_starten():
                         "REAL_PUBLIC_SECONDARY- oder zulaessige CALCULATED-Werte aus dem Makro-Datenpaket. "
                         "PROXY-Werte muessen als Proxy bezeichnet werden. MODEL_DERIVED-Wahrscheinlichkeiten "
                         "sind nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
+                        + (
+                            f" ZUSAETZLICHE HARTE DATENQUALITAETS-VORGABE: Das Makro-Datenpaket meldet "
+                            f"MAKRO-DATENQUALITAET={makro_datenqualitaet}. Uebernimm diesen Wert in Punkt 2 "
+                            f"exakt. Wenn der Wert VOLLSTAENDIG ist, darf Punkt 2 nicht auf EINGESCHRAENKT "
+                            f"oder UNZUREICHEND herabgestuft werden und darf keine TIER-2-DATENLUECKE als "
+                            f"Grund fuer eine Herabstufung nennen."
+                            if makro_datenqualitaet else ""
+                        )
                     ),
                 ],
                 config=types.GenerateContentConfig(
@@ -1129,6 +1141,7 @@ def gemini_auswertung_starten():
             continue
 
         print(f"  Erfolgreich mit {aktuelles_modell}!")
+        text = _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet)
         return text
 
     print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
@@ -1389,6 +1402,40 @@ def normalisiere_ausgabe(text, zielzonen=None):
 
     text = text[:match.start()] + block + text[match.end():]
     return text
+
+
+def _lese_makro_datenqualitaet(makro_text):
+    """Liest die autoritative Gesamt-Datenqualitaet aus dem Makro-Datenpaket."""
+    if not makro_text:
+        return None
+    for pattern in (
+        r"MAKRO-DATENQUALITAET\s*[:=]\s*(VOLLSTAENDIG|EINGESCHRAENKT|UNZUREICHEND)",
+        r"DATENQUALITAET\s*[:=]\s*(VOLLSTAENDIG|EINGESCHRAENKT|UNZUREICHEND)",
+    ):
+        m = re.search(pattern, makro_text, re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
+def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
+    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 2."""
+    if not text or not makro_datenqualitaet:
+        return text
+    start = text.find("2. MAKRO-ZUKUNFTSSZENARIO")
+    if start < 0:
+        return text
+    end = text.find("\n3.", start)
+    if end < 0:
+        end = len(text)
+    section = text[start:end]
+    section = re.sub(
+        r"(?im)^[^\n]*(?:MAKRO-DATENQUALITAET|Datenqualitaet)\s*[:=][^\n]*\n?",
+        "",
+        section,
+    )
+    section = section.rstrip() + f"\nDatenqualitaet: {makro_datenqualitaet}\n"
+    return text[:start] + section + text[end:]
 
 
 def speichere_ergebnis(text):
