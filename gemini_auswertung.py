@@ -646,8 +646,8 @@ def _finde_quellposition(ziel_key, quellpositionen):
 # ---------------------------------------------------------------------------
 
 def _enthaelt_abschnitt_8(text):
-    """Prüft strikt, ob Gemini den vollständigen Abschnitt 8 begonnen hat."""
-    return bool(re.search(r"(?im)^\s*8\. OFFENE POSITIONEN\s*$", text or ""))
+    """Prüft strikt, ob Gemini den vollständigen Abschnitt 7 begonnen hat."""
+    return bool(re.search(r"(?im)^\s*7\. OFFENE POSITIONEN\s*$", text or ""))
 
 
 def _gemini_finish_reason(antwort):
@@ -665,7 +665,7 @@ def _gemini_finish_reason(antwort):
 
 
 def _abschnitt_8_vollstaendig(text, csv_pfad):
-    """Prüft, ob Punkt 8 alle offenen CSV-Positionen eindeutig enthält.
+    """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
 
     Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
     harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
@@ -676,7 +676,7 @@ def _abschnitt_8_vollstaendig(text, csv_pfad):
 
     expected = _technische_zielzonen_quelle(csv_pfad)
     match = re.search(
-        r"(?ims)^\s*8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
         text,
     )
     if not match:
@@ -744,33 +744,33 @@ def _abschnitt_8_vollstaendig(text, csv_pfad):
 
 
 def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
-    """Fügt einen ausschließlich für Punkt 8 angeforderten Gemini-Block ein.
+    """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
 
-    Der Reparatur-Call darf nur Punkt 8 liefern. Der Block wird deshalb nicht
+    Der Reparatur-Call darf nur Punkt 7 liefern. Der Block wird deshalb nicht
     als komplette neue Auswertung verwendet, sondern deterministisch in die
     bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
     """
     if not _enthaelt_abschnitt_8(abschnitt_8):
         raise RuntimeError(
             "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
-            "'8. OFFENE POSITIONEN'."
+            "'7. OFFENE POSITIONEN'."
         )
 
     block_match = re.search(
-        r"(?ims)^\s*8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
         abschnitt_8,
     )
     if not block_match:
         raise RuntimeError(
             "Gezielter Reparaturversuch lieferte keinen verwertbaren "
-            "Abschnitt '8. OFFENE POSITIONEN'."
+            "Abschnitt '7. OFFENE POSITIONEN'."
         )
 
     block = block_match.group(0).strip("\n")
     # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
     # den erfolgreich reparierten Punkt-8-Block.
     vorhandener_abschnitt = re.search(
-        r"(?ims)^\s*8\. OFFENE POSITIONEN\s*$.*?(?=^\s*9\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*9\.\s+|\Z)",
         original_text,
     )
     if vorhandener_abschnitt:
@@ -818,7 +818,7 @@ def gemini_auswertung_starten():
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
     aktuelles_modell = MODELL
 
-    # Harte Datenqualitaetskontrolle fuer Punkt 2: Der Makro-Block darf nur
+    # Harte Datenqualitaetskontrolle fuer Punkt 4: Der Makro-Block darf nur
     # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
     # makro_szenario.py den Gatekeeper freigegeben hat. Die restliche
     # Tagesauswertung bleibt davon unabhaengig.
@@ -910,14 +910,14 @@ def gemini_auswertung_starten():
                     "Keine alternativen Kopfzeilenformate und keine Positionsköpfe ohne Ticker.",
                     (
                         f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
-                        "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
+                        "Erzeuge in Punkt 4 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
                         "keine geschaetzten Ersatzwerte und keine numerischen Makro-Prognosen. "
                         "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
                          "Verwende dabei NICHT die Bezeichnungen Base Case, Bull Case oder Bear Case, gib KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose aus. "
                         if makro_gate == "GESPERRT" else
                         "HARTE MAKRO-GATE-VORGABE: Das Makro-Datenpaket ist autoritativ. "
                         "Sein MAKRO-SZENARIO-GATE hat Vorrang vor jeder eigenen Bewertung der "
-                        "Datenvollstaendigkeit. Das Gate lautet FREIGEGEBEN. Punkt 2 MUSS daher "
+                        "Datenvollstaendigkeit. Das Gate lautet FREIGEGEBEN. Punkt 4 MUSS daher "
                         "als freigegeben behandelt werden. TIER-2- oder TIER-3-Luecken, insbesondere "
                         "fehlende ISM-EXTENDED-Unterkomponenten oder fehlende LME-Preise, duerfen das "
                         "Gate NICHT nachtraeglich sperren. Sie duerfen hoechstens die DATENQUALITAET "
@@ -934,7 +934,7 @@ def gemini_auswertung_starten():
                         "sind nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
                         + (
                             f" ZUSAETZLICHE HARTE DATENQUALITAETS-VORGABE: Das Makro-Datenpaket meldet "
-                            f"MAKRO-DATENQUALITAET={makro_datenqualitaet}. Uebernimm diesen Wert in Punkt 2 "
+                            f"MAKRO-DATENQUALITAET={makro_datenqualitaet}. Uebernimm diesen Wert in Punkt 4 "
                             f"exakt. Wenn der Wert VOLLSTAENDIG ist, darf Punkt 2 nicht auf EINGESCHRAENKT "
                             f"oder UNZUREICHEND herabgestuft werden und darf keine TIER-2-DATENLUECKE als "
                             f"Grund fuer eine Herabstufung nennen."
@@ -955,7 +955,7 @@ def gemini_auswertung_starten():
                     model=aktuelles_modell,
                     contents=hochgeladene_teile + [
                         "REPARATUR NUR FÜR PUNKT 2: Das Makro-Datenpaket meldet MAKRO-SZENARIO-GATE=FREIGEGEBEN. "
-                        "Überarbeite ausschließlich Punkt 2. Eine Sperrung ist unzulässig, wenn nur TIER-2- oder TIER-3-Daten fehlen. "
+                        "Überarbeite ausschließlich Punkt 4. Eine Sperrung ist unzulässig, wenn nur TIER-2- oder TIER-3-Daten fehlen. "
                         "TIER 1 KERN entscheidet über das Gate; TIER 2 BESTAETIGUNG und TIER 3 KONTEXT sind Ergänzungen. "
                         "Verwende die deutsche Terminologie VOLLSTAENDIG/EINGESCHRAENKT/UNZUREICHEND und nenne "
                         "TIER-2-DATENLUECKEN bzw. TIER-3-DATENLUECKEN. Erhalte alle übrigen Abschnitte unverändert soweit möglich. "
@@ -972,9 +972,9 @@ def gemini_auswertung_starten():
 
             # KONTROLLIERTER REPARATURVERSUCH:
             # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
-            # aber Punkt 8 auslassen. In diesem Fall wird NICHT aus anderen Dateien
+            # aber Punkt 7 auslassen. In diesem Fall wird NICHT aus anderen Dateien
             # geraten und NICHT der Parser gelockert. Stattdessen erhält Gemini genau
-            # einen gezielten zweiten Versuch, ausschließlich Punkt 8 vollständig
+            # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
             # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
             # anwenden.
             if not _abschnitt_8_vollstaendig(
@@ -982,22 +982,22 @@ def gemini_auswertung_starten():
             ):
                 if _enthaelt_abschnitt_8(text):
                     print(
-                        "  Abschnitt '8. OFFENE POSITIONEN' ist vorhanden, "
+                        "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
                         "aber unvollstaendig - starte gezielten Reparaturversuch "
-                        "fuer Punkt 8..."
+                        "fuer Punkt 7..."
                     )
                 else:
                     print(
-                        "  Abschnitt '8. OFFENE POSITIONEN' fehlt - "
-                        "starte gezielten Reparaturversuch fuer Punkt 8..."
+                        "  Abschnitt '7. OFFENE POSITIONEN' fehlt - "
+                        "starte gezielten Reparaturversuch fuer Punkt 7..."
                     )
                 reparatur_prompt = (
-                    "REPARATURVERSUCH - NUR ABSCHNITT 8 NACHLIEFERN.\n"
+                    "REPARATURVERSUCH - NUR ABSCHNITT 7 NACHLIEFERN.\n"
                     "Deine vorherige Antwort enthielt den erforderlichen Abschnitt "
-                    "'8. OFFENE POSITIONEN' nicht. Erstelle deshalb jetzt "
-                    "AUSSCHLIESSLICH den vollständigen Abschnitt 8.\n\n"
+                    "'7. OFFENE POSITIONEN' nicht. Erstelle deshalb jetzt "
+                    "AUSSCHLIESSLICH den vollständigen Abschnitt 7.\n\n"
                     "Beginne zwingend mit exakt:\n"
-                    "8. OFFENE POSITIONEN\n\n"
+                    "7. OFFENE POSITIONEN\n\n"
                     "Gib danach ALLE offenen Positionen aus der verbindlichen Datei "
                     "'Offene Positionen+Check.csv' vollständig und genau einmal aus. "
                     "Verwende ausschließlich diese Datei für Firmenname, Ticker, "
@@ -1013,7 +1013,7 @@ def gemini_auswertung_starten():
                     "und erfinde, berechne, kürze oder interpretiere sie nicht. "
                     "Insbesondere 'Technische Zielzone' darf ausschließlich als "
                     "bereits vorhandener CSV-Wert übernommen werden.\n\n"
-                    "WICHTIG: Antworte ausschließlich mit Abschnitt 8 und dessen "
+                    "WICHTIG: Antworte ausschließlich mit Abschnitt 7 und dessen "
                     "vollständigem Inhalt. Keine Einleitung, keine Erklärung, "
                     "keine Abschnitte 1-7 oder 9 ff."
                 )
@@ -1041,12 +1041,12 @@ def gemini_auswertung_starten():
                     text = _fuege_abschnitt_8_ein(text, reparatur_text)
                     print(
                         "  Reparatur erfolgreich: Abschnitt "
-                        "'8. OFFENE POSITIONEN' nachgeliefert."
+                        "'7. OFFENE POSITIONEN' nachgeliefert."
                     )
                 else:
                     print(
                         "  Reparatur fehlgeschlagen: Abschnitt "
-                        "'8. OFFENE POSITIONEN' weiterhin unvollstaendig."
+                        "'7. OFFENE POSITIONEN' weiterhin unvollstaendig."
                     )
                     letzte_antwort = reparatur_text or text
                     # Kein Parser-Fallback. Der äußere Retry startet eine neue
@@ -1180,12 +1180,12 @@ def normalisiere_ausgabe(text, zielzonen=None):
         )
 
     match = re.search(
-        r"(?ims)^8\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        r"(?ims)^7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
         text,
     )
     if not match:
         raise RuntimeError(
-            "Abschnitt '8. OFFENE POSITIONEN' fehlt; "
+            "Abschnitt '7. OFFENE POSITIONEN' fehlt; "
             "CSV-Masterwerte koennen nicht verbindlich eingesetzt werden."
         )
 
@@ -1197,7 +1197,7 @@ def normalisiere_ausgabe(text, zielzonen=None):
     if not headers:
         raise RuntimeError(
             "Keine gueltigen Positionskoepfe im Abschnitt "
-            "'8. OFFENE POSITIONEN' gefunden."
+            "'7. OFFENE POSITIONEN' gefunden."
         )
 
     expected = dict(zielzonen)
@@ -1419,10 +1419,10 @@ def _lese_makro_datenqualitaet(makro_text):
 
 
 def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
-    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 2."""
+    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 4."""
     if not text or not makro_datenqualitaet:
         return text
-    start = text.find("2. MAKRO-ZUKUNFTSSZENARIO")
+    start = text.find("4. DATEN- & SZENARIOSTATUS")
     if start < 0:
         return text
     end = text.find("\n3.", start)
