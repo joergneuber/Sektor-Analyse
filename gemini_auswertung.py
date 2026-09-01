@@ -115,9 +115,6 @@ DATEIMUSTER = {
     "Short_Setups(...).csv": ["Short_Setups(*).csv"],
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
     "Einzel_Check_Aufstiege(...).txt": ["Einzel_Check_Aufstiege(*).txt"],
-    "Einzel_Check_A_Meldungen(...).txt": ["Einzel_Check_A_Meldungen(*).txt"],
-    "Langfrist_Bewertung(...).csv": ["Langfrist_Bewertung(*).csv"],
-    "Langfrist_Briefing(...).txt": ["Langfrist_Briefing(*).txt"],
     "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
     "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
@@ -224,74 +221,6 @@ def lade_short_dateien_von_drive():
             gefunden[ziel_key] = lokaler_name
         except Exception as e:
             print(f"WARNUNG: Nachladen von {name_praefix} fehlgeschlagen ({e}) - wird uebersprungen.")
-
-    return gefunden
-
-
-def _drive_download_datei(service, datei_id, lokaler_name):
-    request = service.files().get_media(fileId=datei_id)
-    with io.FileIO(lokaler_name, "wb") as f:
-        downloader = MediaIoBaseDownload(f, request)
-        fertig = False
-        while not fertig:
-            _, fertig = downloader.next_chunk()
-    return lokaler_name
-
-
-def lade_zusatzdateien_von_drive():
-    """Lädt ausschließlich bereits vorhandene Zusatzdateien aus dem Projekt-Drive.
-
-    Darstellung/Datenübergabe only: keine Analyse oder Berechnung. Lokale Dateien
-    haben Vorrang. Dazu gehören 7.4-Faktenbasis, A-Meldungen und der vorhandene
-    wöchentliche Langfrist-Scan.
-    """
-    service = get_drive_service()
-    if service is None:
-        return {}
-    heute = datetime.date.today().isoformat()
-    gefunden = {}
-
-    # 7.4: die bereits vorhandene Excel-Datei ist autoritative Faktenbasis.
-    try:
-        q = (f"name contains 'Offene Positionen+Check' and "
-             f"name contains '.xlsx' and '{DRIVE_FOLDER_ID}' in parents and trashed = false")
-        files = service.files().list(q=q, fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc").execute().get("files", [])
-        if files and not os.path.isfile("Offene Positionen+Check.xlsx"):
-            _drive_download_datei(service, files[0]["id"], "Offene Positionen+Check.xlsx")
-            gefunden["Offene Positionen+Check.xlsx"] = "Offene Positionen+Check.xlsx"
-            print(f"INFO: {files[0]['name']} von Drive nachgeladen -> Offene Positionen+Check.xlsx")
-    except Exception as e:
-        print(f"WARNUNG: Nachladen der 7.4-XLSX fehlgeschlagen ({e}) - wird uebersprungen.")
-
-    # 6.5.3: heutige A-Meldungen, nur wenn die Datei existiert und Inhalt hat.
-    try:
-        q = (f"name contains 'Einzel_Check_A_Meldungen' and name contains '{heute}' "
-             f"and '{DRIVE_FOLDER_ID}' in parents and trashed = false")
-        files = service.files().list(q=q, fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc").execute().get("files", [])
-        if files:
-            local = f"Einzel_Check_A_Meldungen({heute}).txt"
-            _drive_download_datei(service, files[0]["id"], local)
-            if os.path.getsize(local) > 0 and open(local, "r", encoding="utf-8-sig").read().strip():
-                gefunden["Einzel_Check_A_Meldungen(...).txt"] = local
-                print(f"INFO: {files[0]['name']} von Drive nachgeladen -> {local}")
-    except Exception as e:
-        print(f"WARNUNG: Nachladen der A-Meldungen fehlgeschlagen ({e}) - wird uebersprungen.")
-
-    # 6.4: vorhandenen wöchentlichen Langfrist-Scan aus Drive laden.
-    for prefix, key, pattern in [
-        ("Langfrist_Bewertung", "Langfrist_Bewertung(...).csv", f"Langfrist_Bewertung({heute}).csv"),
-        ("Langfrist_Briefing", "Langfrist_Briefing(...).txt", f"Langfrist_Briefing({heute}).txt"),
-    ]:
-        try:
-            q = (f"name contains '{prefix}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false")
-            files = service.files().list(q=q, fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc").execute().get("files", [])
-            if files:
-                local = files[0]["name"]
-                _drive_download_datei(service, files[0]["id"], local)
-                gefunden[key] = local
-                print(f"INFO: {files[0]['name']} von Drive nachgeladen -> {local}")
-        except Exception as e:
-            print(f"WARNUNG: Nachladen von {prefix} fehlgeschlagen ({e}) - wird uebersprungen.")
 
     return gefunden
 
@@ -434,11 +363,6 @@ def sammle_eingabedateien():
         for key, pfad in lade_short_dateien_von_drive().items():
             if gefunden.get(key) is None:
                 gefunden[key] = pfad
-
-    # Weitere bereits vorhandene Dateien nur für die vereinbarte Ausgabe-/Datenebene.
-    for key, pfad in lade_zusatzdateien_von_drive().items():
-        if gefunden.get(key) is None:
-            gefunden[key] = pfad
 
     print("Gefundene Eingabedateien:")
     for name, pfad in gefunden.items():
@@ -841,15 +765,15 @@ def _gemini_finish_reason(antwort):
         return "UNBEKANNT"
 
 
-def _abschnitt_7_vollstaendig(text, csv_pfad):
-    """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
+def _abschnitt_7_pruefdiagnose(text, csv_pfad):
+    """Prueft Punkt 7 wie bisher und liefert bei FAIL die konkreten Gruende.
 
-    Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
-    harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
-    unverändert und ist weiterhin die letzte Instanz.
+    Reine Diagnoseebene: Die Zuordnungslogik und der Positionsschluessel
+    Name + Ticker + Einstieg + Einstiegsdatum bleiben unveraendert.
     """
+    errors = []
     if not _enthaelt_abschnitt_7(text):
-        return False
+        return False, ["Abschnitt '7. OFFENE POSITIONEN' fehlt"]
 
     expected = _technische_zielzonen_quelle(csv_pfad)
     match = re.search(
@@ -857,7 +781,7 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
         text,
     )
     if not match:
-        return False
+        return False, ["Abschnitt '7. OFFENE POSITIONEN' konnte nicht abgegrenzt werden"]
 
     block = match.group(0)
     header_re = re.compile(
@@ -865,9 +789,10 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
     )
     headers = list(header_re.finditer(block))
     if not headers:
-        return False
+        return False, ["Keine gueltigen Positionskoepfe in Punkt 7"]
 
     seen = set()
+    matched_keys = set()
     for idx, header in enumerate(headers):
         start = header.start()
         end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
@@ -880,7 +805,8 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
             pos_block,
         )
         if not entry_match:
-            return False
+            errors.append(f"Einstieg fehlt: {name} ({ticker})")
+            continue
 
         entry = _positionsfeld_schluessel(entry_match.group(1).strip())
         if entry_match.group(2):
@@ -891,7 +817,8 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
                 pos_block,
             )
             if not date_match:
-                return False
+                errors.append(f"Einstiegsdatum fehlt: {name} ({ticker}) | Einstieg: {entry}")
+                continue
             date = _normalisiere_datum(date_match.group(1).strip())
 
         key = (
@@ -902,22 +829,40 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
         )
         try:
             source = _finde_quellposition(key, expected)
-        except Exception:
-            return False
+        except Exception as exc:
+            errors.append(f"Nicht eindeutig zuordenbar: {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date} | {exc}")
+            continue
         if source is None:
-            return False
+            errors.append(f"Keine passende CSV-Position: {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}")
+            continue
 
         source_key = (
             _normalisiere_positionsname(source["name"]),
             _normalisiere_ticker(source["ticker"]),
-            source["entry"],
-            source["date"],
+            _positionsfeld_schluessel(source["entry"]),
+            _normalisiere_datum(source["date"]),
         )
         if source_key in seen:
-            return False
+            errors.append(f"CSV-Position mehrfach ausgegeben: {source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | Einstiegsdatum: {source['date']}")
+            continue
         seen.add(source_key)
+        matched_keys.add(source_key)
 
-    return len(seen) == len(expected)
+    missing = set(expected) - matched_keys
+    for key in sorted(missing):
+        source = expected[key]
+        errors.append(f"CSV-Position fehlt in Gemini-Block: {source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | Einstiegsdatum: {source['date']}")
+
+    if len(matched_keys) != len(expected):
+        errors.append(f"Positionsanzahl nicht vollstaendig: erkannt {len(matched_keys)}, erwartet {len(expected)}")
+
+    return not errors, errors
+
+
+def _abschnitt_7_vollstaendig(text, csv_pfad):
+    """Bestehender boolescher Validator; Diagnose bleibt separat."""
+    ok, _ = _abschnitt_7_pruefdiagnose(text, csv_pfad)
+    return ok
 
 
 def _fuege_abschnitt_7_ein(original_text, abschnitt_8):
@@ -1158,9 +1103,12 @@ def gemini_auswertung_starten():
             # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
             # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
             # anwenden.
-            if not _abschnitt_7_vollstaendig(
+            _punkt7_ok, _punkt7_fehler = _abschnitt_7_pruefdiagnose(
                 text, eingabedateien.get("Offene Positionen+Check.csv")
-            ):
+            )
+            if not _punkt7_ok:
+                for _fehler in _punkt7_fehler:
+                    print(f"  Punkt-7-Diagnose: {_fehler}")
                 if _enthaelt_abschnitt_7(text):
                     print(
                         "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
@@ -1216,9 +1164,10 @@ def gemini_auswertung_starten():
                     f"{_gemini_finish_reason(reparatur_antwort)}"
                 )
 
-                if _abschnitt_7_vollstaendig(
+                _reparatur_ok, _reparatur_fehler = _abschnitt_7_pruefdiagnose(
                     reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
-                ):
+                )
+                if _reparatur_ok:
                     text = _fuege_abschnitt_7_ein(text, reparatur_text)
                     print(
                         "  Reparatur erfolgreich: Abschnitt "
@@ -1229,6 +1178,8 @@ def gemini_auswertung_starten():
                         "  Reparatur fehlgeschlagen: Abschnitt "
                         "'7. OFFENE POSITIONEN' weiterhin unvollstaendig."
                     )
+                    for _fehler in _reparatur_fehler:
+                        print(f"  Punkt-7-Reparatur-Diagnose: {_fehler}")
                     letzte_antwort = reparatur_text or text
                     # Kein Parser-Fallback. Der äußere Retry startet eine neue
                     # vollständige Gemini-Anfrage.
@@ -1408,93 +1359,13 @@ def _kanonisiere_6_5(text):
     return text[:m.start()] + block + text[m.end():]
 
 
-def _lese_a_meldungen(pfad):
-    if not pfad or not os.path.isfile(pfad):
-        return ""
-    try:
-        with open(pfad, "r", encoding="utf-8-sig") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
-
-
-def _kanonisiere_6_5_3(text, a_meldungen):
-    """6.5.3 wird nur bei real vorhandener, nicht-leerer A-Meldungsdatei ausgegeben."""
-    if not text:
-        return text
-    text = re.sub(r"(?ims)^6\.5\.3\s+.*?(?=^6\.6\s+SHORT\s*$)", "", text)
-    if not a_meldungen:
-        return text
-    m = re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^6\.6\s+SHORT\s*$)", text)
-    if not m:
-        return text
-    block=m.group(0).rstrip()
-    insert = "\n\n6.5.3 HEBELTRADER A-MELDUNGEN\n\n" + a_meldungen + "\n"
-    return text[:m.start()] + block + insert + text[m.end():]
-
-
-def _normalisiere_markt_datenstaende(text, briefing_text):
-    """Entfernt Asien aus der kompakten Indexdarstellung und synchronisiert den Datenstand."""
-    if not text:
-        return text
-    # Asien-Block und den alten Zeitzonen-Hinweis vollständig aus der Darstellung entfernen.
-    text = re.sub(r"(?ims)^Asien \(Datenstand:[^\n]*\):\s*.*?(?=^Zeitzonen-Hinweis:|^Marktumfeld Fazit|\Z)", "", text)
-    text = re.sub(r"(?im)^Zeitzonen-Hinweis:.*$\n?", "", text)
-
-    # Autoritativen Handelstag aus dem vorhandenen Briefing übernehmen, falls vorhanden.
-    if briefing_text:
-        m = re.search(r"(?im)^Datenstaende? dieser Auswertung:\s*([^\n]+)$", briefing_text)
-        if m:
-            datenstand = m.group(1).strip()
-            text = re.sub(r"(?im)^Handelstag \(Datenstand dieser Auswertung\):.*$",
-                          "Handelstag (Datenstand dieser Auswertung): " + datenstand, text, count=1)
-    return text
-
-
-def _kanonisiere_6_7(text, edelmetalle_text):
-    """Erweitert 6.7 deterministisch mit den vorhandenen Detaildaten des Edelmetalle-Briefings."""
-    if not text or not edelmetalle_text:
-        return text
-    start = re.search(r"(?im)^6\.7\s+EDELMETALLE\s*$", text)
-    if not start:
-        return text
-    end = re.search(r"(?im)^6\.8\s+EXTERNE QUELLEN", text[start.end():])
-    if not end:
-        return text
-    a=start.end(); b=start.end()+end.start()
-    block=text[a:b]
-    # Nur operative Detaildaten übernehmen; keine Scannerregeln/Funnelstatistiken.
-    details=[]
-    m=re.search(r"(?ims)^LAGE JE METALL.*?(?=^TRENDFOLGE-DIAGNOSE JE METALL)", edelmetalle_text)
-    if m:
-        details.append(m.group(0).strip())
-    m=re.search(r"(?ims)^TRENDFOLGE-DIAGNOSE JE METALL.*?(?=^={3,}|^STRATEGIE:)", edelmetalle_text)
-    if m:
-        details.append(m.group(0).strip())
-    if not details:
-        return text
-    # Vorhandenen Gemini-Lageblock entfernen, damit keine widersprüchlichen Doppelwerte bleiben.
-    block=re.sub(r"(?ims)^LAGE JE METALL:?\s*.*?(?=^Edelmetalle-Setups \(Trendfolge\):|^Edelmetalle-Setups \(Trendwende\):|^Edelmetalle-Setups \(Short\):)", "", block)
-    insert_text="\n\n"+"\n\n".join(details)+"\n\n"
-    block=insert_text+block.lstrip()
-    return text[:a]+block+text[b:]
-
-
-def _entferne_unnoetige_sofort_beachten(text):
-    if not text:
-        return text
-    text = re.sub(r"(?im)^- Keine erreichten Stop-Losses in den letzten 3 Tagen\.?\s*$\n?", "", text)
-    text = re.sub(r"(?im)^- Keine anstehenden Earnings-Termine bei offenen Positionen im Datenbestand innerhalb der kommenden 5 Tage\.?\s*$\n?", "", text)
-    return text
-
-
 def _kanonisiere_ausgabestruktur(text):
     text = _entferne_unerwuenschte_watchlists(text)
     text = _kanonisiere_6_5(text)
     return text
 
 
-def normalisiere_ausgabe(text, zielzonen=None, a_meldungen=None, briefing_text=None, edelmetalle_text=None):
+def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt formale Regeln und macht die Check-Datei zum Master.
 
     Gemini liefert die Analyse, aber offene Positions-Stammdaten und
@@ -1506,10 +1377,6 @@ def normalisiere_ausgabe(text, zielzonen=None, a_meldungen=None, briefing_text=N
         return text
 
     text = _kanonisiere_ausgabestruktur(text)
-    text = _kanonisiere_6_5_3(text, a_meldungen)
-    text = _entferne_unnoetige_sofort_beachten(text)
-    text = _normalisiere_markt_datenstaende(text, briefing_text)
-    text = _kanonisiere_6_7(text, edelmetalle_text)
 
     text = re.sub(
         r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
@@ -1789,7 +1656,7 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
     return text[:start] + section + text[end:]
 
 
-def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None, a_meldungen=None, geschlossene_7_4=None):
+def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
     """Harte Endpruefung der Darstellung gegen die vereinbarte 1-9-Struktur.
     Diese Funktion prueft nur Ausgabeform, keine Trading-/Analyseberechnung.
     """
@@ -1822,18 +1689,6 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None, a_meldungen=
         if not re.search(r"(?im)^6\.5\.1\s+",b): errors.append("6.5.1 fehlt")
         if not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.2 fehlt")
         if re.search(r"(?im)^6\.5\.3\s+",b) and not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.3 falsch eingeordnet")
-        if re.search(r"(?im)^6\.5\.3\s+",b) and not a_meldungen: errors.append("6.5.3 ohne A-Meldungsdatei")
-
-    # Edelmetalle: die vier operativen Metalle und die technischen Detaildaten müssen
-    # sichtbar bleiben, wenn der Edelmetall-Briefing-Block vorhanden ist.
-    p67 = re.search(r"(?ims)^6\.7\s+EDELMETALLE\s*$.*?(?=^6\.8\s+EXTERNE QUELLEN|\Z)", text)
-    if p67:
-        eb=p67.group(0)
-        for metal in ("Gold", "Silber", "Platin", "Palladium"):
-            if not re.search(r"(?im)^\s*"+metal+r"\s*:", eb):
-                errors.append(f"6.7 {metal} fehlt")
-        if not re.search(r"(?i)EMA200", eb) or not re.search(r"(?i)WMA200", eb):
-            errors.append("6.7 technische Detaildaten (EMA200/WMA200) fehlen")
 
     # Offene Positionen: 7.1-7.3 Pflicht. 7.4 ist konditional und darf bei
     # fehlenden 3-Tage-Abgaengen nicht als "keine Position" erscheinen.
@@ -1846,13 +1701,6 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None, a_meldungen=
             if not re.search(r"(?im)^"+re.escape(sub)+r"\s+",b): errors.append(f"{sub} fehlt")
         if re.search(r"(?im)^7\.4\s+",b) and re.search(r"(?i)Keine Position in den letzten 3 (?:Kalender)?tagen geschlossen",b):
             errors.append("7.4 darf bei 0 Abschluessen nicht als Leerhinweis erscheinen")
-        if geschlossene_7_4:
-            if not re.search(r"(?im)^7\.4\s+GESCHLOSSENE POSITIONEN",b):
-                errors.append("7.4 fehlt trotz vorhandener Tab-2-Abschluesse")
-            else:
-                for pos in geschlossene_7_4:
-                    if not re.search(r"(?i)"+re.escape(pos["ticker"])+r"", b):
-                        errors.append(f"7.4: {pos['ticker']} fehlt trotz Tab-2-Abschluss")
 
     # KI-Positionsfazit unmittelbar unter jeder Position; maximal 2 Saetze.
     if p7:
@@ -1874,36 +1722,14 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None, a_meldungen=
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
-    a_pfad = finde_datei(DATEIMUSTER.get("Einzel_Check_A_Meldungen(...).txt", []))
-    briefing_pfad = finde_datei(DATEIMUSTER.get("briefing.txt", []))
-    a_meldungen = _lese_a_meldungen(a_pfad)
-    briefing_text = ""
-    if briefing_pfad:
-        try:
-            with open(briefing_pfad, "r", encoding="utf-8-sig") as f:
-                briefing_text = f.read()
-        except OSError:
-            pass
-    edel_pfad = finde_datei(DATEIMUSTER.get("Edelmetalle_Briefing(...).txt", []))
-    edelmetalle_text = ""
-    if edel_pfad:
-        try:
-            with open(edel_pfad, "r", encoding="utf-8-sig") as f:
-                edelmetalle_text = f.read()
-        except OSError:
-            pass
     text = normalisiere_ausgabe(
         text,
         zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
-        a_meldungen=a_meldungen,
-        briefing_text=briefing_text,
-        edelmetalle_text=edelmetalle_text,
     )
     xlsx_kandidaten = glob.glob("Offene Positionen+Check.xlsx") + glob.glob("Offene Positionen+Check(*).xlsx")
     xlsx_pfad = sorted(xlsx_kandidaten)[-1] if xlsx_kandidaten else None
     text = _normalisiere_geschlossene_positionen_7_4(text, xlsx_pfad)
-    geschlossene_7_4 = _lese_geschlossene_positionen_tab2(xlsx_pfad)
-    strukturfehler = _validiere_finale_ausgabestruktur(text, a_meldungen=a_meldungen, geschlossene_7_4=geschlossene_7_4)
+    strukturfehler = _validiere_finale_ausgabestruktur(text)
     if strukturfehler:
         raise RuntimeError("Finale Ausgabestruktur ungueltig: " + " | ".join(strukturfehler))
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
