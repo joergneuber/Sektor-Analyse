@@ -1991,24 +1991,26 @@ zu bilden.
 
 # AUSGABESTRUKTUR-OVERRIDE – VERBINDLICH FÜR DIE AUSWERTUNG.TXT
 
-DIESER BLOCK HAT FÜR DIE DARSTELLUNG DER AUSWERTUNG.TXT VORRANG VOR ALLEN
-FRÜHEREN AUSGABEREGELN DIESES MASTER-PROMPTS. Fachliche Analyse-, Scanner-,
-Filter-, CRV-, Positions-, Daten- und Berechnungsregeln bleiben unverändert.
-Nur die Darstellung wird durch diesen Block festgelegt.
+Die nachfolgende Struktur ersetzt AUSSCHLIESSLICH die bisherige Reihenfolge und
+Nummerierung der AUSGABE. Alle vorherigen fachlichen, analytischen, Trading-,
+Filter-, CRV-, Daten- und Quellenregeln bleiben unverändert gültig.
+
+ENDGÜLTIGE AUSGABESTRUKTUR:
 
 1. DAS WICHTIGSTE AUF EINEN BLICK
-Keine WATCHLIST und kein RISIKO-WATCH-Block. Nur die wichtigsten Fakten und
-Prioritäten der Auswertung.
 
 2. MAKRO & MARKT
 
 3. SYSTEMPERFORMANCE & BENCHMARK
-Der Vergleich Trading-System/offene Positionen gegen MSCI World bleibt hier.
 
 4. DATEN- & SZENARIOSTATUS
-Die Statusinformationen aus Makro_Briefing.txt werden wortgetreu übernommen.
-Nichts ergänzen, interpretieren oder umformulieren. Wenn eine der drei Zeilen
-in der Quelle nicht vorhanden ist, darf sie nicht erfunden werden.
+
+In diesem Abschnitt die autoritativen Statuszeilen aus Makro_Briefing.txt
+wortgetreu übernehmen:
+MAKRO-SZENARIO-GATE=...
+MAKRO-DATENQUALITAET=...
+SEKUNDAERE_DATENLUECKEN=...
+Keine Interpretation, Umformulierung oder eigene Bewertung dieser drei Werte.
 
 5. MARKTPERSPEKTIVE
 5.1 Kurzfristig
@@ -2019,54 +2021,44 @@ in der Quelle nicht vorhanden ist, darf sie nicht erfunden werden.
 
 6. TRADING-IDEEN & SETUPS
 6.1 PERSPEKTIVISCHE TRADE-IDEEN
-Makro-/Marktdaten dürfen hier ausdrücklich neue perspektivische Trade-Ideen
-ableiten. Diese sind keine bereits validierten Setups und umgehen keine Filter.
-
 6.2 TRENDFOLGE
-Nur valide Trendfolge-Setups. Keine Watchlist, keine Beinahe-Kandidaten.
-
 6.3 TRENDWENDE
-Nur valide Trendwende-Setups. Keine Divergenz-Watchlist.
-
 6.4 LANGFRIST
-Nur die vorhandene Langfrist-Auswertung, sofern im Datenbestand vorhanden.
-
 6.5 HEBELTRADER
-6.5.1 Valide HEBELTRADER-Setups
-Nur tatsächlich valide HEBELTRADER-Setups nach der bestehenden Logik.
-
-6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste
-Die Kandidaten aus einzel_check_beobachtung.json vollständig übernehmen.
-Keine zusätzliche Filterung oder Kürzung der Kandidatenliste. KEIN KANDIDAT
-ist kein KAUFKANDIDAT und muss nicht als Kandidat ausgegeben werden.
-
-6.5.3 A-Kandidaten / Einzel-Check-Meldungen
-Nur wenn Einzel_Check_A_Meldungen(YYYY-MM-DD).txt vorhanden UND nicht leer ist.
-Dann deren Inhalt ausgeben; bei fehlender/leer­er Datei den Unterpunkt vollständig
-weglassen. Die Erstellung dieser Datei durch den Einzel-Check bleibt unverändert.
-
 6.6 SHORT
-Nur valide Short-Setups. Keine Short-Beinahe-Kandidaten und keine Watchlist.
-
 6.7 EDELMETALLE
-Relevante Lageinformationen aus Edelmetalle_Briefing und valide Edelmetall-Setups.
-Interne Ablehnungs-/Funnelstatistiken nicht als Setups darstellen.
-
 6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
+
+Nur valide konkrete Setups in den Setup-Unterpunkten ausgeben. Verworfene
+Kandidaten, Filter-Engstellen und Nicht-Setups nicht als Trading-Setups
+darstellen. Die zugrunde liegenden Scanner- und Filterregeln werden dadurch
+NICHT verändert.
+
+6.7 EDELMETALLE darf die relevanten Informationen aus dem vollständigen
+Edelmetalle_Briefing nutzen. Interne Funnel-/Ablehnungsstatistiken sind keine
+Trading-Setups und werden nicht als solche ausgegeben.
 
 7. OFFENE POSITIONEN
 7.1 Portfolio-Übersicht
 7.2 Handlungsbedarf
 7.3 Einzelpositionen
-Unter jeder einzelnen Position unmittelbar ein KI-Positionsfazit mit maximal 2 Sätzen.
+
+Unter jeder einzelnen offenen Position unmittelbar:
+KI-Positionsfazit: maximal 2 Sätze.
+Das Fazit darf nur die bereitgestellten Daten und deren aktuelle Lage bewerten.
 
 7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE
-Nur tatsächlich innerhalb der letzten 3 Kalendertage geschlossene Positionen.
-Wenn keine vorhanden sind, 7.4 vollständig weglassen. Keine Ersatzzeile „keine Position“.
+Die autoritative Faktenbasis für diesen Unterpunkt ist ausschließlich Tab 2
+„Geschlossene Positionen“ der Datei „Offene Positionen+Check.xlsx“. Nur
+geschlossene Positionen mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage
+bezogen auf den Auswertungstag ausgeben. Wenn keine vorhanden sind, den
+Unterpunkt vollständig weglassen. Keine geschlossenen Positionen aus anderen
+Dateien rekonstruieren, ergänzen oder erfinden.
 
 8. AUSBLICK & KEY EVENTS
 
 9. METHODIK & DATENHINWEISE
 
-KEINE andere Nummerierung, keine zusätzlichen Hauptabschnitte und keine Rückkehr zu
-einer älteren Ausgabestruktur. Diese Vorgabe verändert ausschließlich die Darstellung.
+WICHTIG: Diese Anweisung ist ausschließlich eine AUSGABEVORGABE. Sie darf
+keine bestehende Analyse-, Scanner-, Filter-, CRV-, Positions-, Daten- oder
+Berechnungslogik verändern. Keine Watchlist unter Punkt 1.

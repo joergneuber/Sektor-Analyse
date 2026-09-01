@@ -48,8 +48,8 @@ import csv
 import time
 import json
 import datetime
-
-from openpyxl import load_workbook
+import zipfile
+import xml.etree.ElementTree as ET
 
 from google import genai
 from google.genai import types
@@ -101,9 +101,6 @@ DATEIMUSTER = {
     "Performance(...).csv": ["Performance(*).csv"],
     "Performance_EU(...).csv": ["Performance_EU(*).csv"],
     "Offene Positionen+Check.csv": ["Offene Positionen+Check.csv"],
-    # Tab 2 der bestehenden Arbeitsmappe ist die autoritative historische
-    # Faktenbasis fuer geschlossene Positionen (ausschliesslich 7.4).
-    "Offene Positionen+Check.xlsx": ["Offene Positionen+Check.xlsx"],
     # Backend-Fallback: Der Tracker benötigt die alte Rohdatei weiterhin für
     # Positionsfelder, die bewusst NICHT Teil der festgelegten Check-Struktur
     # sind (z.B. Stop/TP/Richtung/Ideen_Quelle). Sie ist keine technische
@@ -410,89 +407,103 @@ def _positionsfeld_schluessel(value):
         return text.lower()
 
 
-def _geschlossene_positionen_quellblock(xlsx_pfad, referenzdatum=None):
-    """Liest ausschliesslich Tab 2 'Geschlossene Positionen' der bestehenden
-    Offene Positionen+Check.xlsx und liefert nur Abschluesse der letzten
-    drei Kalendertage als autoritative Faktenbasis fuer Punkt 7.4.
+def _excel_seriennummer_datum(value):
+    """Wandelt Excel-Seriendaten (1900-System) ohne externe Abhaengigkeit um."""
+    try:
+        seriennummer = float(str(value).strip())
+    except (TypeError, ValueError):
+        return str(value or "").strip()
+    basis = datetime.datetime(1899, 12, 30)
+    return (basis + datetime.timedelta(days=seriennummer)).date().isoformat()
 
-    Diese Funktion aendert keine Positions-/Trading-Logik. Sie dient nur der
-    Darstellungsebene und filtert historische Fakten nach Ausstiegsdatum.
-    """
+
+def _lese_geschlossene_positionen_tab2(xlsx_pfad, referenzdatum=None):
+    """Liest ausschliesslich Tab 2 'Geschlossene Positionen' aus der XLSX."""
     if not xlsx_pfad or not os.path.isfile(xlsx_pfad):
-        return ""
+        return []
     if referenzdatum is None:
         referenzdatum = datetime.date.today()
-    elif isinstance(referenzdatum, datetime.datetime):
-        referenzdatum = referenzdatum.date()
     elif isinstance(referenzdatum, str):
-        referenzdatum = datetime.date.fromisoformat(referenzdatum[:10])
-
+        referenzdatum = datetime.date.fromisoformat(referenzdatum)
+    grenze = referenzdatum - datetime.timedelta(days=2)
+    ns = {"m":"http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+          "r":"http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
     try:
-        wb = load_workbook(xlsx_pfad, read_only=True, data_only=True)
-        if "Geschlossene Positionen" not in wb.sheetnames:
-            raise RuntimeError("Tab 2 'Geschlossene Positionen' nicht gefunden.")
-        ws = wb["Geschlossene Positionen"]
-        rows = ws.iter_rows(values_only=True)
-        next(rows, None)  # Titelzeile
-        header = next(rows, None)
-        if not header:
-            return ""
-        fields = [str(v).strip() if v is not None else "" for v in header]
-        idx = {name.lower(): i for i, name in enumerate(fields) if name}
-        required = ["ticker", "name", "status", "ausstiegsdatum", "ausstiegskurs", "performance_seit_einstieg%"]
-        missing = [name for name in required if name not in idx]
-        if missing:
-            raise RuntimeError("Tab 2 benötigt Felder: " + ", ".join(missing))
+        with zipfile.ZipFile(xlsx_pfad, "r") as z:
+            try:
+                ssroot=ET.fromstring(z.read("xl/sharedStrings.xml"))
+                strings=["".join(t.text or "" for t in si.iter("{%s}t"%ns["m"])) for si in ssroot.findall("m:si",ns)]
+            except KeyError:
+                strings=[]
+            wb=ET.fromstring(z.read("xl/workbook.xml"))
+            rels=ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+            relmap={rel.get("Id"):rel.get("Target") for rel in rels}
+            target=None
+            for sh in wb.findall("m:sheets/m:sheet",ns):
+                if sh.get("name","").strip().lower()=="geschlossene positionen":
+                    target=relmap.get(sh.get("{%s}id"%ns["r"]))
+                    break
+            if not target: return []
+            target=target.lstrip("/")
+            if not target.startswith("xl/"): target="xl/"+target
+            root=ET.fromstring(z.read(target))
+            rows=[]
+            for row in root.findall(".//m:row",ns):
+                vals={}
+                for cell in row.findall("m:c",ns):
+                    ref=cell.get("r",""); m=re.match(r"[A-Z]+",ref)
+                    if not m: continue
+                    v=cell.find("m:v",ns)
+                    if cell.get("t")=="inlineStr": value="".join(t.text or "" for t in cell.iter("{%s}t"%ns["m"]))
+                    elif v is None: value=""
+                    else:
+                        value=v.text or ""
+                        if cell.get("t")=="s":
+                            try: value=strings[int(value)]
+                            except (ValueError,IndexError): value=""
+                    vals[m.group(0)]=value
+                rows.append(vals)
+            if len(rows)<3: return []
+            headers=rows[1]; hm={str(v).strip():k for k,v in headers.items()}
+            required=["Ticker","Name","Status","Ausstiegsdatum","Ausstiegskurs","Performance_Seit_Einstieg%"]
+            if any(x not in hm for x in required): return []
+            out=[]
+            for row in rows[2:]:
+                status=str(row.get(hm["Status"],"")).strip()
+                if status.lower() not in {"gestoppt","geschlossen","verkauft","manuell verkauft"}: continue
+                d=_excel_seriennummer_datum(row.get(hm["Ausstiegsdatum"],""))
+                try: ed=datetime.date.fromisoformat(d)
+                except ValueError: continue
+                if not (grenze <= ed <= referenzdatum): continue
+                def val(k): return str(row.get(hm[k],"") or "").strip()
+                out.append({"ticker":val("Ticker"),"name":val("Name"),"status":status,
+                            "ausstiegsdatum":d,"ausstiegskurs":val("Ausstiegskurs"),
+                            "performance":val("Performance_Seit_Einstieg%")})
+            return out
+    except (OSError,zipfile.BadZipFile,ET.ParseError):
+        return []
 
-        grenze = referenzdatum - datetime.timedelta(days=2)
-        treffer = []
-        for row in rows:
-            if not row or len(row) <= max(idx.values()):
-                continue
-            raw_date = row[idx["ausstiegsdatum"]]
-            if raw_date is None or str(raw_date).strip() == "":
-                continue
-            if isinstance(raw_date, datetime.datetime):
-                ausstieg = raw_date.date()
-            elif isinstance(raw_date, datetime.date):
-                ausstieg = raw_date
-            else:
-                try:
-                    ausstieg = datetime.date.fromisoformat(str(raw_date).strip()[:10])
-                except ValueError:
-                    continue
-            if grenze <= ausstieg <= referenzdatum:
-                def val(name):
-                    v = row[idx[name]]
-                    return "" if v is None else str(v).strip()
-                treffer.append(
-                    {
-                        "ticker": val("ticker"),
-                        "name": val("name"),
-                        "status": val("status"),
-                        "ausstiegsdatum": ausstieg.isoformat(),
-                        "ausstiegskurs": val("ausstiegskurs"),
-                        "performance": val("performance_seit_einstieg%"),
-                    }
-                )
-        wb.close()
 
-        if not treffer:
-            return ""
-        lines = ["GESCHLOSSENE POSITIONEN – LETZTE 3 KALENDERTAGE"]
-        for pos in treffer:
-            lines.append(
-                f"{pos['name']} ({pos['ticker']}) | Status: {pos['status']} | "
-                f"Ausstiegsdatum: {pos['ausstiegsdatum']} | "
-                f"Ausstiegskurs: {pos['ausstiegskurs']} | "
-                f"Performance seit Einstieg: {pos['performance']}"
-            )
-        return "\n".join(lines)
-    except Exception as exc:
-        raise RuntimeError(
-            "Geschlossene Positionen konnten nicht verbindlich aus Tab 2 "
-            f"von Offene Positionen+Check.xlsx gelesen werden: {exc}"
-        )
+def _geschlossene_positionen_7_4_block(xlsx_pfad, referenzdatum=None):
+    positionen=_lese_geschlossene_positionen_tab2(xlsx_pfad,referenzdatum)
+    if not positionen: return ""
+    lines=["7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE",""]
+    for p in positionen:
+        detail=f"Status: {p['status']} | Ausstiegsdatum: {p['ausstiegsdatum']}"
+        if p["ausstiegskurs"]: detail+=f" | Ausstiegskurs: {p['ausstiegskurs']}"
+        if p["performance"]: detail+=f" | Performance seit Einstieg: {p['performance']}%"
+        lines.append(f"{p['name']} ({p['ticker']}) | {detail}"); lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _normalisiere_geschlossene_positionen_7_4(text,xlsx_pfad,referenzdatum=None):
+    if not text: return text
+    text=re.sub(r"(?ims)^7\.4\s+GESCHLOSSENE POSITIONEN\s*[–-]\s*LETZTE 3 TAGE\s*$.*?(?=^8\.\s+|\Z)","",text)
+    block=_geschlossene_positionen_7_4_block(xlsx_pfad,referenzdatum)
+    if not block: return text
+    anchor=re.search(r"(?im)^8\.\s+",text)
+    if not anchor: return text.rstrip()+"\n\n"+block+"\n"
+    return text[:anchor.start()].rstrip()+"\n\n"+block+"\n\n"+text[anchor.start():].lstrip()
 
 
 def _offene_positionen_quellblock(csv_pfad):
@@ -735,7 +746,7 @@ def _finde_quellposition(ziel_key, quellpositionen):
 # HAUPTLOGIK
 # ---------------------------------------------------------------------------
 
-def _enthaelt_abschnitt_8(text):
+def _enthaelt_abschnitt_7(text):
     """Prüft strikt, ob Gemini den vollständigen Abschnitt 7 begonnen hat."""
     return bool(re.search(r"(?im)^\s*7\. OFFENE POSITIONEN\s*$", text or ""))
 
@@ -754,14 +765,14 @@ def _gemini_finish_reason(antwort):
         return "UNBEKANNT"
 
 
-def _abschnitt_8_vollstaendig(text, csv_pfad):
+def _abschnitt_7_vollstaendig(text, csv_pfad):
     """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
 
     Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
     harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
     unverändert und ist weiterhin die letzte Instanz.
     """
-    if not _enthaelt_abschnitt_8(text):
+    if not _enthaelt_abschnitt_7(text):
         return False
 
     expected = _technische_zielzonen_quelle(csv_pfad)
@@ -833,14 +844,14 @@ def _abschnitt_8_vollstaendig(text, csv_pfad):
     return len(seen) == len(expected)
 
 
-def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
+def _fuege_abschnitt_7_ein(original_text, abschnitt_8):
     """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
 
     Der Reparatur-Call darf nur Punkt 7 liefern. Der Block wird deshalb nicht
     als komplette neue Auswertung verwendet, sondern deterministisch in die
     bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
     """
-    if not _enthaelt_abschnitt_8(abschnitt_8):
+    if not _enthaelt_abschnitt_7(abschnitt_8):
         raise RuntimeError(
             "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
             "'7. OFFENE POSITIONEN'."
@@ -961,9 +972,8 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
-            geschlossene_quelle = _geschlossene_positionen_quellblock(
-                eingabedateien.get("Offene Positionen+Check.xlsx")
-            )
+            geschlossene_xlsx = next((p for p in (glob.glob("Offene Positionen+Check.xlsx") + glob.glob("Offene Positionen+Check(*).xlsx")) if os.path.isfile(p)), None)
+            geschlossene_7_4 = _geschlossene_positionen_7_4_block(geschlossene_xlsx)
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
@@ -973,12 +983,8 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
-                    "\nAUTORITATIVE HISTORISCHE FAKTENBASIS FUER 7.4 (ausschliesslich Tab 2\n"
-                    "Geschlossene Positionen der Datei Offene Positionen+Check.xlsx):\n"
-                    + (geschlossene_quelle or "(keine geschlossenen Positionen innerhalb der letzten 3 Kalendertage)") + "\n"
-                    "Diese historische Faktenbasis darf ausschliesslich fuer Punkt 7.4 verwendet werden. "
-                    "Wenn sie leer ist, darf 7.4 nicht ausgegeben werden. Wenn sie Eintraege enthaelt, "
-                    "muessen diese in 7.4 vollstaendig und ohne Erfindungen ausgegeben werden. "
+                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON Offene Positionen+Check.xlsx:\n"
+                    + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
                     "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
@@ -1076,10 +1082,10 @@ def gemini_auswertung_starten():
             # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
             # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
             # anwenden.
-            if not _abschnitt_8_vollstaendig(
+            if not _abschnitt_7_vollstaendig(
                 text, eingabedateien.get("Offene Positionen+Check.csv")
             ):
-                if _enthaelt_abschnitt_8(text):
+                if _enthaelt_abschnitt_7(text):
                     print(
                         "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
                         "aber unvollstaendig - starte gezielten Reparaturversuch "
@@ -1130,14 +1136,14 @@ def gemini_auswertung_starten():
                 )
                 reparatur_text = reparatur_antwort.text or ""
                 print(
-                    f"  Gemini finish_reason (Punkt-8-Reparatur): "
+                    f"  Gemini finish_reason (Punkt-7-Reparatur): "
                     f"{_gemini_finish_reason(reparatur_antwort)}"
                 )
 
-                if _abschnitt_8_vollstaendig(
+                if _abschnitt_7_vollstaendig(
                     reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
                 ):
-                    text = _fuege_abschnitt_8_ein(text, reparatur_text)
+                    text = _fuege_abschnitt_7_ein(text, reparatur_text)
                     print(
                         "  Reparatur erfolgreich: Abschnitt "
                         "'7. OFFENE POSITIONEN' nachgeliefert."
@@ -1248,6 +1254,71 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
+def _entferne_unerwuenschte_watchlists(text):
+    """Entfernt ausschliesslich Watchlist-Bloecke, die laut finaler
+    Ausgabestruktur nicht in der Auswertung erscheinen duerfen.
+
+    Die HEBELTRADER-Watchlist unter 6.5.2 ist ausdruecklich ausgenommen.
+    Keine Analyse-/Scannerlogik wird hier veraendert.
+    """
+    if not text:
+        return text
+
+    # Punkt 1: Risiko-Watch/Watchlist ist in der finalen Darstellung nicht vorgesehen.
+    m = re.search(r"(?ims)^1\. DAS WICHTIGSTE AUF EINEN BLICK\s*$.*?(?=^2\.\s+)", text)
+    if m:
+        block = m.group(0)
+        block = re.sub(r"(?ims)^\s*RISIKO-WATCH\s*$.*?(?=^\s*2\.\s+|\Z)", "", block)
+        block = re.sub(r"(?ims)^\s*WATCHLIST\s*$.*?(?=^\s*2\.\s+|\Z)", "", block)
+        text = text[:m.start()] + block + text[m.end():]
+
+    # In 6.2, 6.3 und 6.6 sind nur valide Setups gewuenscht.
+    for section, next_sections in (
+        ("6.2 TRENDFOLGE", ["6.3 TRENDWENDE"]),
+        ("6.3 TRENDWENDE", ["6.4 LANGFRIST"]),
+        ("6.6 SHORT", ["6.7 EDELMETALLE"]),
+    ):
+        start = re.search(r"(?im)^\s*" + re.escape(section) + r"\s*$", text)
+        if not start:
+            continue
+        end_pattern = r"(?im)^\s*(?:" + "|".join(re.escape(x) for x in next_sections) + r")\s*$"
+        end = re.search(end_pattern, text[start.end():])
+        end_pos = start.end() + end.start() if end else len(text)
+        block = text[start.start():end_pos]
+        # Alle manuellen Watchlist-Bloecke bis zum naechsten Hauptabschnitt entfernen.
+        block = re.sub(
+            r"(?ims)\n+\s*WATCHLIST\s*\(MANUELLE PRÜFUNG\)[^\n]*\n.*?(?=\n\s*(?:6\.[3-9]\s+|7\.\s+)|\Z)",
+            "\n",
+            block,
+        )
+        text = text[:start.start()] + block + text[end_pos:]
+
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
+def _kanonisiere_6_5(text):
+    """Stellt die HEBELTRADER-Unterstruktur dar, ohne Kandidaten zu filtern."""
+    if not text:
+        return text
+    m = re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^\s*6\.6\s+SHORT\s*$|\Z)", text)
+    if not m:
+        return text
+    block = m.group(0)
+    # Falls Gemini die Watchlist ohne Unterueberschrift geliefert hat, markiere
+    # genau deren Beginn. Inhalte werden nicht geaendert.
+    if re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist", block) is None:
+        w = re.search(r"(?im)^\s*(?:WATCHLIST\s*\(MANUELLE PRÜFUNG\)|HEBELTRADER-WATCHLIST[^\n]*)\s*$", block)
+        if w:
+            block = block[:w.start()] + "6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste\n\n" + block[w.end():]
+    return text[:m.start()] + block + text[m.end():]
+
+
+def _kanonisiere_ausgabestruktur(text):
+    text = _entferne_unerwuenschte_watchlists(text)
+    text = _kanonisiere_6_5(text)
+    return text
+
+
 def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt formale Regeln und macht die Check-Datei zum Master.
 
@@ -1258,6 +1329,8 @@ def normalisiere_ausgabe(text, zielzonen=None):
     """
     if not text:
         return text
+
+    text = _kanonisiere_ausgabestruktur(text)
 
     text = re.sub(
         r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
@@ -1537,6 +1610,69 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
     return text[:start] + section + text[end:]
 
 
+def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
+    """Harte Endpruefung der Darstellung gegen die vereinbarte 1-9-Struktur.
+    Diese Funktion prueft nur Ausgabeform, keine Trading-/Analyseberechnung.
+    """
+    errors = []
+    if not text:
+        return ["Leere Auswertung"]
+
+    # Hauptabschnitte exakt 1..9 und in Reihenfolge.
+    heads = re.findall(r"(?im)^\s*([1-9])\.\s+([^\n]+)$", text)
+    nums = [int(n) for n, _ in heads]
+    if nums != list(range(1, 10)):
+        errors.append(f"Hauptstruktur ungueltig: {nums}")
+
+    # Verbotene Watchlists ausserhalb HEBELTRADER.
+    p1 = re.search(r"(?ims)^1\. DAS WICHTIGSTE AUF EINEN BLICK\s*$.*?(?=^2\.\s+)", text)
+    if p1 and re.search(r"(?i)WATCHLIST|RISIKO-WATCH", p1.group(0)):
+        errors.append("Punkt 1 enthaelt Watchlist/Risiko-Watch")
+    for a,b in [("6.2 TRENDFOLGE","6.3 TRENDWENDE"),("6.3 TRENDWENDE","6.4 LANGFRIST"),("6.6 SHORT","6.7 EDELMETALLE")]:
+        m=re.search(r"(?ims)^"+re.escape(a)+r"\s*$.*?(?=^"+re.escape(b)+r"\s*$)",text)
+        if m and re.search(r"(?i)WATCHLIST|BEINAHE-KANDIDAT|DIVERGENZ-WATCHLIST",m.group(0)):
+            errors.append(f"{a} enthaelt unzulaessige Watchlist/Beinahe-Kandidaten")
+
+    # HEBELTRADER-Unterstruktur: 6.5.1 und 6.5.2 sind Pflicht; 6.5.3 nur bei
+    # vorhandener nicht-leerer A-Meldungsdatei (die eigentliche Datei wird separat gesucht).
+    m65=re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^6\.6\s+SHORT\s*$)",text)
+    if not m65:
+        errors.append("6.5 fehlt")
+    else:
+        b=m65.group(0)
+        if not re.search(r"(?im)^6\.5\.1\s+",b): errors.append("6.5.1 fehlt")
+        if not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.2 fehlt")
+        if re.search(r"(?im)^6\.5\.3\s+",b) and not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.3 falsch eingeordnet")
+
+    # Offene Positionen: 7.1-7.3 Pflicht. 7.4 ist konditional und darf bei
+    # fehlenden 3-Tage-Abgaengen nicht als "keine Position" erscheinen.
+    p7=re.search(r"(?ims)^7\. OFFENE POSITIONEN\s*$.*?(?=^8\.\s+)",text)
+    if not p7:
+        errors.append("7. OFFENE POSITIONEN fehlt")
+    else:
+        b=p7.group(0)
+        for sub in ("7.1", "7.2", "7.3"):
+            if not re.search(r"(?im)^"+re.escape(sub)+r"\s+",b): errors.append(f"{sub} fehlt")
+        if re.search(r"(?im)^7\.4\s+",b) and re.search(r"(?i)Keine Position in den letzten 3 (?:Kalender)?tagen geschlossen",b):
+            errors.append("7.4 darf bei 0 Abschluessen nicht als Leerhinweis erscheinen")
+
+    # KI-Positionsfazit unmittelbar unter jeder Position; maximal 2 Saetze.
+    if p7:
+        b=p7.group(0)
+        parts=list(re.finditer(r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:",b))
+        for i,h in enumerate(parts):
+            end=parts[i+1].start() if i+1<len(parts) else len(b)
+            pb=b[h.start():end]
+            fm=re.search(r"(?im)^KI-Positionsfazit\s*:\s*(.+)$",pb)
+            if not fm:
+                errors.append(f"KI-Positionsfazit fehlt bei {h.group(1).strip()} ({h.group(2).strip()})")
+            else:
+                sentence_count=len(re.findall(r"(?<=[.!?])(?:\s|$)",fm.group(1).strip()))
+                if sentence_count>2: errors.append(f"KI-Positionsfazit >2 Saetze bei {h.group(1).strip()} ({h.group(2).strip()})")
+
+    return errors
+
+
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -1544,6 +1680,12 @@ def speichere_ergebnis(text):
         text,
         zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
     )
+    xlsx_kandidaten = glob.glob("Offene Positionen+Check.xlsx") + glob.glob("Offene Positionen+Check(*).xlsx")
+    xlsx_pfad = sorted(xlsx_kandidaten)[-1] if xlsx_kandidaten else None
+    text = _normalisiere_geschlossene_positionen_7_4(text, xlsx_pfad)
+    strukturfehler = _validiere_finale_ausgabestruktur(text)
+    if strukturfehler:
+        raise RuntimeError("Finale Ausgabestruktur ungueltig: " + " | ".join(strukturfehler))
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
