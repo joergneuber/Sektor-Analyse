@@ -1248,6 +1248,42 @@ def _metals_information_block():
     return raw[start:end].strip()
 
 
+
+def _hebeltrader_watchlist_block():
+    """Gibt die vollstaendige HEBELTRADER-Beobachtungsliste aus der JSON-Quelle aus.
+
+    Darstellungsebene: Die JSON-Statuswerte werden weder bewertet noch
+    gefiltert. Alle Kandidaten bleiben erhalten.
+    """
+    pfad = finde_datei(["einzel_check_beobachtung*.json", "einzel_check_beobachtung.json"])
+    if not pfad:
+        return ""
+    try:
+        daten = json.loads(Path(pfad).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return ""
+    if not isinstance(daten, dict) or not daten:
+        return ""
+    zeilen = ["6.5.2 HEBELTRADER-WATCHLIST / BEOBACHTUNGSLISTE", ""]
+    for ticker, info in daten.items():
+        if not isinstance(info, dict):
+            info = {}
+        status = str(info.get("status", "")).strip()
+        letzter = str(info.get("letzter_check", "")).strip()
+        last_candidate = str(info.get("last_candidate_date", "")).strip()
+        start_date = str(info.get("beobachtung_start_date", "")).strip()
+        zeilen.append(f"• {ticker}")
+        if status:
+            zeilen.append(f"  Status: {status}")
+        if letzter:
+            zeilen.append(f"  Letzter Check: {letzter}")
+        if last_candidate:
+            zeilen.append(f"  Letzter Kandidat: {last_candidate}")
+        if start_date:
+            zeilen.append(f"  Beobachtungsstart: {start_date}")
+        zeilen.append("")
+    return "\n".join(zeilen).rstrip()
+
 def _a_meldungen_block():
     pfad = finde_datei(["Einzel_Check_A_Meldungen(*).txt"])
     if not pfad:
@@ -1390,12 +1426,18 @@ def _kanonisiere_ausgabestruktur(text):
         if "LANGFRIST" in k and "POSITIONEN" not in k:
             long_block = v
             break
-    if long_block:
-        p6_parts.append(setup_block("6.4 LANGFRIST", long_block))
-    p6_parts.append(setup_block("6.5 HEBELTRADER", leverage.replace("5. HEBELTRADER-SETUPS", "", 1).strip()))
+    p6_parts.append(setup_block("6.4 LANGFRIST", long_block) if long_block else "6.4 LANGFRIST\n\nKeine validen Langfrist-Setups vorhanden.")
+    ht_setup = setup_block("6.5.1 VALIDE HEBELTRADER-SETUPS", leverage.replace("5. HEBELTRADER-SETUPS", "", 1).strip())
+    ht_watch = _hebeltrader_watchlist_block()
     a_block = _a_meldungen_block()
+    ht_parts = ["6.5 HEBELTRADER"]
+    if ht_setup:
+        ht_parts.append(ht_setup)
+    if ht_watch:
+        ht_parts.append(ht_watch)
     if a_block:
-        p6_parts.append("6.5.1 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN\n\n" + a_block)
+        ht_parts.append("6.5.3 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN\n\n" + a_block)
+    p6_parts.append("\n\n".join(ht_parts))
     p6_parts.append(setup_block("6.6 SHORT", short.replace("6. SHORT-SETUPS (fallende Kurse)", "", 1).strip()))
     metals_body = _metals_information_block()
     metals_setup = _strip_watchlists(metals.replace("7. EDELMETALLE-SETUPS", "", 1).strip())
@@ -1738,14 +1780,58 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
     """
     return text
 
+def _validiere_darstellung(text):
+    """Harter Ausgabevertrag: Fehler fuehren zu keinem falschen Output.
+
+    Nur Struktur-/Darstellungspruefungen; keine Trading- oder Analyseberechnung.
+    """
+    required = [
+        "1. DAS WICHTIGSTE AUF EINEN BLICK", "2. MAKRO & MARKT",
+        "3. SYSTEMPERFORMANCE & BENCHMARK", "4. DATEN- & SZENARIOSTATUS",
+        "5. MARKTPERSPEKTIVE", "6. TRADING-IDEEN & SETUPS",
+        "7. OFFENE POSITIONEN", "8. AUSBLICK & KEY EVENTS",
+        "9. METHODIK & DATENHINWEISE",
+    ]
+    positions = [text.find("\n" + x) if text.find("\n" + x) >= 0 else text.find(x) for x in required]
+    if any(i < 0 for i in positions) or positions != sorted(positions):
+        raise RuntimeError("Finale Ausgabestruktur 1-9 ist unvollstaendig oder falsch sortiert.")
+    if re.search(r"(?im)^\s*(?:1\. DAS WICHTIGSTE AUF EINEN BLICK[\s\S]*?)?(?:WATCHLIST|DIVERGENZ-WATCHLIST)", text):
+        # Nur Punkt 1 isoliert pruefen, damit die gewollte HEBELTRADER-Watchlist nicht anschlaegt.
+        p1 = text[text.find("1. DAS WICHTIGSTE AUF EINEN BLICK"):text.find("2. MAKRO & MARKT")]
+        if re.search(r"(?i)WATCHLIST", p1):
+            raise RuntimeError("Watchlist ist unzulaessig unter Punkt 1.")
+    h6 = text[text.find("6. TRADING-IDEEN & SETUPS"):text.find("7. OFFENE POSITIONEN")]
+    if "6.5 HEBELTRADER" in h6:
+        if "6.5.1 VALIDE HEBELTRADER-SETUPS" not in h6 or "6.5.2 HEBELTRADER-WATCHLIST / BEOBACHTUNGSLISTE" not in h6:
+            raise RuntimeError("HEBELTRADER-Unterstruktur 6.5.1/6.5.2 fehlt.")
+    p7 = text[text.find("7. OFFENE POSITIONEN"):text.find("8. AUSBLICK & KEY EVENTS")]
+    # Wenn Einzelpositionen vorhanden sind, braucht jede Position ihr unmittelbar folgendes KI-Fazit.
+    if "7.3 EINZELPOSITIONEN" in p7:
+        body = p7[p7.find("7.3 EINZELPOSITIONEN"):p7.find("7.4 GESCHLOSSENE POSITIONEN") if "7.4 GESCHLOSSENE POSITIONEN" in p7 else len(p7)]
+        npos = len(re.findall(r"(?m)^[^\n|]+\s*\([^()]+\) \| Markt:", body))
+        nfazit = len(re.findall(r"(?im)^KI-Positionsfazit\s*:", body))
+        if npos and npos != nfazit:
+            raise RuntimeError(f"KI-Positionsfazit fehlt bei offenen Positionen ({nfazit}/{npos}).")
+    # Alte Hauptnummerierung darf nicht durchrutschen.
+    forbidden = ["1. MARKTUMFELD & GLOBALE RISIKOLAGE", "2. MAKRO-ZUKUNFTSSZENARIO",
+                 "3. TRENDFOLGE-SETUPS", "4. TRENDWENDE-SETUPS", "5. HEBELTRADER-SETUPS",
+                 "6. SHORT-SETUPS", "7. EDELMETALLE-SETUPS", "8. OFFENE POSITIONEN",
+                 "9. GESCHLOSSENE POSITIONEN"]
+    for old in forbidden:
+        if old in text:
+            raise RuntimeError(f"Alte Hauptnummerierung gefunden: {old}")
+    return text
+
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
     text = _kanonisiere_ausgabestruktur(text)
+    text = _validiere_darstellung(text)
     text = normalisiere_ausgabe(
         text,
         zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
     )
+    text = _validiere_darstellung(text)
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")

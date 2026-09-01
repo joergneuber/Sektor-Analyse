@@ -2090,7 +2090,11 @@ Dieser Block ist ausschließlich für die Darstellung der AUSWERTUNG.TXT maßgeb
 6.3 TRENDWENDE
 6.4 LANGFRIST
 6.5 HEBELTRADER
-6.5.1 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN
+6.5.1 VALIDE HEBELTRADER-SETUPS
+- Nur bereits validierte HEBELTRADER-Setups.
+6.5.2 HEBELTRADER-WATCHLIST / BEOBACHTUNGSLISTE
+- Vollständige Watchlist/Beobachtungsliste aus der bereitgestellten JSON-Datei. ALLE Kandidaten aus der bereitgestellten JSON-Datei ausgeben, unabhängig von ihrem Status. Keine Filterung, keine Bewertung und keine Umwandlung in valide Setups.
+6.5.3 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN
 - Nur aus der bereits erzeugten Datei Einzel_Check_A_Meldungen(YYYY-MM-DD).txt.
 - Nur ausgeben, wenn diese Datei mindestens eine A-Meldung enthält; sonst den Unterpunkt vollständig weglassen.
 6.6 SHORT
@@ -2098,7 +2102,8 @@ Dieser Block ist ausschließlich für die Darstellung der AUSWERTUNG.TXT maßgeb
 - Neben validen Setups die relevanten Markt-/Lageinformationen aus Edelmetalle_Briefing berücksichtigen.
 6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
 
-Für 6.2 bis 6.7 gilt weiterhin: ausschließlich valide konkrete Setups aus den bereitgestellten Setup-Dateien ausgeben. Abgelehnte Kandidaten, Beinahe-Kandidaten, Filter-Engstellen und Watchlists sind keine validen Setups und werden dort nicht ausgegeben.
+Für 6.2 bis 6.4 sowie 6.6 bis 6.7 gilt weiterhin: ausschließlich valide konkrete Setups aus den bereitgestellten Setup-Dateien ausgeben. Abgelehnte Kandidaten, Beinahe-Kandidaten und Filter-Engstellen werden dort nicht ausgegeben.
+Für 6.5 gilt die gesonderte Unterteilung oben: 6.5.1 enthält nur valide HEBELTRADER-Setups; 6.5.2 enthält ausdrücklich die vollständige JSON-Watchlist mit ALLEN Kandidaten; 6.5.3 enthält die A-Meldungsdatei nur bei vorhandenem Inhalt.
 
 7. OFFENE POSITIONEN
 7.1 Portfolio-Übersicht
