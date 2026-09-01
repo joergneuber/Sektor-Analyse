@@ -1297,19 +1297,38 @@ def _entferne_unerwuenschte_watchlists(text):
 
 
 def _kanonisiere_6_5(text):
-    """Stellt die HEBELTRADER-Unterstruktur dar, ohne Kandidaten zu filtern."""
+    """Stellt die HEBELTRADER-Unterstruktur rein auf Darstellungsebene her.
+
+    6.5.1 umfasst den bereits von Gemini gelieferten validen HEBELTRADER-
+    Setup-Inhalt. 6.5.2 umfasst die bereits gelieferte Beobachtungsliste.
+    Es werden keine Kandidaten geprueft, gefiltert oder neu berechnet.
+    """
     if not text:
         return text
     m = re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^\s*6\.6\s+SHORT\s*$|\Z)", text)
     if not m:
         return text
     block = m.group(0)
-    # Falls Gemini die Watchlist ohne Unterueberschrift geliefert hat, markiere
-    # genau deren Beginn. Inhalte werden nicht geaendert.
-    if re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist", block) is None:
-        w = re.search(r"(?im)^\s*(?:WATCHLIST\s*\(MANUELLE PRÜFUNG\)|HEBELTRADER-WATCHLIST[^\n]*)\s*$", block)
+    watch_re = r"(?im)^\s*(?:6\.5\.2\s+HEBELTRADER-Watchlist[^\n]*|WATCHLIST\s*\(MANUELLE PRÜFUNG\)|HE[Bb]ELTRADER-WATCHLIST[^\n]*|Einzel-Check-Beobachtungsliste\s*:?)\s*$"
+
+    if not re.search(r"(?im)^6\.5\.1\s+", block):
+        watch = re.search(watch_re, block)
+        if watch:
+            prefix = block[:watch.start()].rstrip()
+            suffix = block[watch.start():]
+            block = prefix + "\n\n6.5.1 VALIDE HEBELTRADER-SETUPS\n\n" + suffix.lstrip()
+        else:
+            header = re.search(r"(?im)^6\.5\s+HEBELTRADER\s*$", block)
+            insert_at = header.end() if header else 0
+            block = block[:insert_at] + "\n\n6.5.1 VALIDE HEBELTRADER-SETUPS\n" + block[insert_at:]
+
+    if not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist", block):
+        w = re.search(watch_re, block)
         if w:
             block = block[:w.start()] + "6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste\n\n" + block[w.end():]
+        else:
+            block = block.rstrip() + "\n\n6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste\n"
+
     return text[:m.start()] + block + text[m.end():]
 
 

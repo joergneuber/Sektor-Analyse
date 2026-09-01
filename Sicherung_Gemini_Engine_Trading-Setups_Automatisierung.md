@@ -2025,6 +2025,17 @@ Keine Interpretation, Umformulierung oder eigene Bewertung dieser drei Werte.
 6.3 TRENDWENDE
 6.4 LANGFRIST
 6.5 HEBELTRADER
+6.5.1 VALIDE HEBELTRADER-SETUPS
+Nur valide HEBELTRADER-Setups ausgeben. Verworfene Kandidaten, Filter-
+Engstellen und Nicht-Setups gehören nicht in diesen Unterpunkt.
+6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste
+Grundlage ist ausschließlich die bereitgestellte einzel_check_beobachtung.json.
+Übernimm alle darin aktuell enthaltenen Kandidaten mit Unternehmensname, Ticker,
+Status und letztem Check; diese Beobachtungsliste ist von den validen Setups
+getrennt und darf nicht als Setup dargestellt werden. Die vollständige Liste der
+aktuellen Kandidaten ist aus der JSON zu übernehmen; keine Auswahl oder Kürzung
+auf 2–5 Titel. Wenn die JSON keine Kandidaten enthält, den Unterpunkt mit dem
+entsprechenden Leerhinweis ausgeben.
 6.6 SHORT
 6.7 EDELMETALLE
 6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
