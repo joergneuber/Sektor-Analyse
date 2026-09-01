@@ -49,6 +49,8 @@ import time
 import json
 import datetime
 
+from openpyxl import load_workbook
+
 from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
@@ -99,6 +101,9 @@ DATEIMUSTER = {
     "Performance(...).csv": ["Performance(*).csv"],
     "Performance_EU(...).csv": ["Performance_EU(*).csv"],
     "Offene Positionen+Check.csv": ["Offene Positionen+Check.csv"],
+    # Tab 2 der bestehenden Arbeitsmappe ist die autoritative historische
+    # Faktenbasis fuer geschlossene Positionen (ausschliesslich 7.4).
+    "Offene Positionen+Check.xlsx": ["Offene Positionen+Check.xlsx"],
     # Backend-Fallback: Der Tracker benötigt die alte Rohdatei weiterhin für
     # Positionsfelder, die bewusst NICHT Teil der festgelegten Check-Struktur
     # sind (z.B. Stop/TP/Richtung/Ideen_Quelle). Sie ist keine technische
@@ -113,7 +118,6 @@ DATEIMUSTER = {
     "Short_Setups(...).csv": ["Short_Setups(*).csv"],
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
     "Einzel_Check_Aufstiege(...).txt": ["Einzel_Check_Aufstiege(*).txt"],
-    "Einzel_Check_A_Meldungen(...).txt": ["Einzel_Check_A_Meldungen(*).txt"],
     "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
     "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
@@ -406,6 +410,91 @@ def _positionsfeld_schluessel(value):
         return text.lower()
 
 
+def _geschlossene_positionen_quellblock(xlsx_pfad, referenzdatum=None):
+    """Liest ausschliesslich Tab 2 'Geschlossene Positionen' der bestehenden
+    Offene Positionen+Check.xlsx und liefert nur Abschluesse der letzten
+    drei Kalendertage als autoritative Faktenbasis fuer Punkt 7.4.
+
+    Diese Funktion aendert keine Positions-/Trading-Logik. Sie dient nur der
+    Darstellungsebene und filtert historische Fakten nach Ausstiegsdatum.
+    """
+    if not xlsx_pfad or not os.path.isfile(xlsx_pfad):
+        return ""
+    if referenzdatum is None:
+        referenzdatum = datetime.date.today()
+    elif isinstance(referenzdatum, datetime.datetime):
+        referenzdatum = referenzdatum.date()
+    elif isinstance(referenzdatum, str):
+        referenzdatum = datetime.date.fromisoformat(referenzdatum[:10])
+
+    try:
+        wb = load_workbook(xlsx_pfad, read_only=True, data_only=True)
+        if "Geschlossene Positionen" not in wb.sheetnames:
+            raise RuntimeError("Tab 2 'Geschlossene Positionen' nicht gefunden.")
+        ws = wb["Geschlossene Positionen"]
+        rows = ws.iter_rows(values_only=True)
+        next(rows, None)  # Titelzeile
+        header = next(rows, None)
+        if not header:
+            return ""
+        fields = [str(v).strip() if v is not None else "" for v in header]
+        idx = {name.lower(): i for i, name in enumerate(fields) if name}
+        required = ["ticker", "name", "status", "ausstiegsdatum", "ausstiegskurs", "performance_seit_einstieg%"]
+        missing = [name for name in required if name not in idx]
+        if missing:
+            raise RuntimeError("Tab 2 benötigt Felder: " + ", ".join(missing))
+
+        grenze = referenzdatum - datetime.timedelta(days=2)
+        treffer = []
+        for row in rows:
+            if not row or len(row) <= max(idx.values()):
+                continue
+            raw_date = row[idx["ausstiegsdatum"]]
+            if raw_date is None or str(raw_date).strip() == "":
+                continue
+            if isinstance(raw_date, datetime.datetime):
+                ausstieg = raw_date.date()
+            elif isinstance(raw_date, datetime.date):
+                ausstieg = raw_date
+            else:
+                try:
+                    ausstieg = datetime.date.fromisoformat(str(raw_date).strip()[:10])
+                except ValueError:
+                    continue
+            if grenze <= ausstieg <= referenzdatum:
+                def val(name):
+                    v = row[idx[name]]
+                    return "" if v is None else str(v).strip()
+                treffer.append(
+                    {
+                        "ticker": val("ticker"),
+                        "name": val("name"),
+                        "status": val("status"),
+                        "ausstiegsdatum": ausstieg.isoformat(),
+                        "ausstiegskurs": val("ausstiegskurs"),
+                        "performance": val("performance_seit_einstieg%"),
+                    }
+                )
+        wb.close()
+
+        if not treffer:
+            return ""
+        lines = ["GESCHLOSSENE POSITIONEN – LETZTE 3 KALENDERTAGE"]
+        for pos in treffer:
+            lines.append(
+                f"{pos['name']} ({pos['ticker']}) | Status: {pos['status']} | "
+                f"Ausstiegsdatum: {pos['ausstiegsdatum']} | "
+                f"Ausstiegskurs: {pos['ausstiegskurs']} | "
+                f"Performance seit Einstieg: {pos['performance']}"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        raise RuntimeError(
+            "Geschlossene Positionen konnten nicht verbindlich aus Tab 2 "
+            f"von Offene Positionen+Check.xlsx gelesen werden: {exc}"
+        )
+
+
 def _offene_positionen_quellblock(csv_pfad):
     """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
     Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
@@ -646,7 +735,7 @@ def _finde_quellposition(ziel_key, quellpositionen):
 # HAUPTLOGIK
 # ---------------------------------------------------------------------------
 
-def _enthaelt_abschnitt_7(text):
+def _enthaelt_abschnitt_8(text):
     """Prüft strikt, ob Gemini den vollständigen Abschnitt 7 begonnen hat."""
     return bool(re.search(r"(?im)^\s*7\. OFFENE POSITIONEN\s*$", text or ""))
 
@@ -665,19 +754,19 @@ def _gemini_finish_reason(antwort):
         return "UNBEKANNT"
 
 
-def _abschnitt_7_vollstaendig(text, csv_pfad):
+def _abschnitt_8_vollstaendig(text, csv_pfad):
     """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
 
     Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
     harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
     unverändert und ist weiterhin die letzte Instanz.
     """
-    if not _enthaelt_abschnitt_7(text):
+    if not _enthaelt_abschnitt_8(text):
         return False
 
     expected = _technische_zielzonen_quelle(csv_pfad)
     match = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d\.\s+[A-Za-zÄÖÜäöü]|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
         text,
     )
     if not match:
@@ -744,22 +833,22 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
     return len(seen) == len(expected)
 
 
-def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
+def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
     """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
 
     Der Reparatur-Call darf nur Punkt 7 liefern. Der Block wird deshalb nicht
     als komplette neue Auswertung verwendet, sondern deterministisch in die
     bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
     """
-    if not _enthaelt_abschnitt_7(abschnitt_7):
+    if not _enthaelt_abschnitt_8(abschnitt_8):
         raise RuntimeError(
             "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
             "'7. OFFENE POSITIONEN'."
         )
 
     block_match = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d\.\s+[A-Za-zÄÖÜäöü]|\Z)",
-        abschnitt_7,
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        abschnitt_8,
     )
     if not block_match:
         raise RuntimeError(
@@ -768,10 +857,10 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
         )
 
     block = block_match.group(0).strip("\n")
-    # Ersetze den bereits vorhandenen Punkt-7-Block vollständig durch
-    # den erfolgreich reparierten Punkt-7-Block.
+    # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
+    # den erfolgreich reparierten Punkt-8-Block.
     vorhandener_abschnitt = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*9\.\s+|\Z)",
         original_text,
     )
     if vorhandener_abschnitt:
@@ -872,6 +961,9 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
+            geschlossene_quelle = _geschlossene_positionen_quellblock(
+                eingabedateien.get("Offene Positionen+Check.xlsx")
+            )
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
@@ -881,6 +973,12 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
+                    "\nAUTORITATIVE HISTORISCHE FAKTENBASIS FUER 7.4 (ausschliesslich Tab 2\n"
+                    "Geschlossene Positionen der Datei Offene Positionen+Check.xlsx):\n"
+                    + (geschlossene_quelle or "(keine geschlossenen Positionen innerhalb der letzten 3 Kalendertage)") + "\n"
+                    "Diese historische Faktenbasis darf ausschliesslich fuer Punkt 7.4 verwendet werden. "
+                    "Wenn sie leer ist, darf 7.4 nicht ausgegeben werden. Wenn sie Eintraege enthaelt, "
+                    "muessen diese in 7.4 vollstaendig und ohne Erfindungen ausgegeben werden. "
                     "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
@@ -978,10 +1076,10 @@ def gemini_auswertung_starten():
             # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
             # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
             # anwenden.
-            if not _abschnitt_7_vollstaendig(
+            if not _abschnitt_8_vollstaendig(
                 text, eingabedateien.get("Offene Positionen+Check.csv")
             ):
-                if _enthaelt_abschnitt_7(text):
+                if _enthaelt_abschnitt_8(text):
                     print(
                         "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
                         "aber unvollstaendig - starte gezielten Reparaturversuch "
@@ -1032,14 +1130,14 @@ def gemini_auswertung_starten():
                 )
                 reparatur_text = reparatur_antwort.text or ""
                 print(
-                    f"  Gemini finish_reason (Punkt-7-Reparatur): "
+                    f"  Gemini finish_reason (Punkt-8-Reparatur): "
                     f"{_gemini_finish_reason(reparatur_antwort)}"
                 )
 
-                if _abschnitt_7_vollstaendig(
+                if _abschnitt_8_vollstaendig(
                     reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
                 ):
-                    text = _fuege_abschnitt_7_ein(text, reparatur_text)
+                    text = _fuege_abschnitt_8_ein(text, reparatur_text)
                     print(
                         "  Reparatur erfolgreich: Abschnitt "
                         "'7. OFFENE POSITIONEN' nachgeliefert."
