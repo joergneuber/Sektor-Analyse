@@ -2059,64 +2059,71 @@ WICHTIG: Diese Anweisung ist ausschließlich eine AUSGABEVORGABE. Sie darf
 keine bestehende Analyse-, Scanner-, Filter-, CRV-, Positions-, Daten- oder
 Berechnungslogik verändern. Keine Watchlist unter Punkt 1.
 
-# FINALER AUSGABE-CONTRACT – HÖCHSTE PRIORITÄT
+# FINALER AUSGABE-OVERRIDE – HÖCHSTE PRIORITÄT
 
-Dieser Block ist ausschließlich für die Darstellung der AUSWERTUNG.TXT maßgeblich und überschreibt bei Widersprüchen alle früheren Angaben zur Reihenfolge, Nummerierung oder Ausgabeform. Keine fachliche Analyse-, Scanner-, Filter-, CRV-, Positions- oder Berechnungslogik wird dadurch verändert.
+Dieser Block hat für die fertige AUSWERTUNG.TXT Vorrang vor allen älteren
+Ausgabe-Reihenfolgen und historischen Nummerierungsangaben in dieser Anweisung.
+Fachliche Analyse-, Scanner-, Filter-, CRV-, Positions- und Berechnungslogik
+wird dadurch NICHT verändert.
 
+VERBINDLICHE REIHENFOLGE:
 1. DAS WICHTIGSTE AUF EINEN BLICK
-- Keine WATCHLIST unter Punkt 1.
-
 2. MAKRO & MARKT
-- Nur kompakte aktuelle Marktinformation. Keine Kurz-/Mittel-/Langfrist-Unterkapitel.
-
 3. SYSTEMPERFORMANCE & BENCHMARK
-
 4. DATEN- & SZENARIOSTATUS
-- Die drei Statuszeilen aus Makro_Briefing.txt exakt und unverändert übernehmen.
-- Keine Interpretation dieser drei Zeilen.
-
 5. MARKTPERSPEKTIVE
-5.1 Kurzfristig
-5.2 Mittelfristig
-5.3 Langfristig / strukturell
-5.4 Szenario-Matrix
-5.5 Chancen & Risiken
-
+   5.1 Kurzfristig
+   5.2 Mittelfristig
+   5.3 Langfristig / strukturell
+   5.4 Szenario-Matrix
+   5.5 Chancen & Risiken
 6. TRADING-IDEEN & SETUPS
-6.1 PERSPEKTIVISCHE TRADE-IDEEN
-- HIER ausdrücklich Trading-Ideen aus den bereitgestellten Makro-, Markt-, Branchen-, Rohstoff-, Währungs-, geopolitischen und externen Informationen ableiten.
-- Diese Ideen sind KI-abgeleitete Perspektiven und keine regelbasierten Scanner-Setups.
-6.2 TRENDFOLGE
-6.3 TRENDWENDE
-6.4 LANGFRIST
-6.5 HEBELTRADER
-6.5.1 VALIDE HEBELTRADER-SETUPS
-- Nur bereits validierte HEBELTRADER-Setups.
-6.5.2 HEBELTRADER-WATCHLIST / BEOBACHTUNGSLISTE
-- Vollständige Watchlist/Beobachtungsliste aus der bereitgestellten JSON-Datei. ALLE Kandidaten aus der bereitgestellten JSON-Datei ausgeben, unabhängig von ihrem Status. Keine Filterung, keine Bewertung und keine Umwandlung in valide Setups.
-6.5.3 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN
-- Nur aus der bereits erzeugten Datei Einzel_Check_A_Meldungen(YYYY-MM-DD).txt.
-- Nur ausgeben, wenn diese Datei mindestens eine A-Meldung enthält; sonst den Unterpunkt vollständig weglassen.
-6.6 SHORT
-6.7 EDELMETALLE
-- Neben validen Setups die relevanten Markt-/Lageinformationen aus Edelmetalle_Briefing berücksichtigen.
-6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
-
-Für 6.2 bis 6.4 sowie 6.6 bis 6.7 gilt weiterhin: ausschließlich valide konkrete Setups aus den bereitgestellten Setup-Dateien ausgeben. Abgelehnte Kandidaten, Beinahe-Kandidaten und Filter-Engstellen werden dort nicht ausgegeben.
-Für 6.5 gilt die gesonderte Unterteilung oben: 6.5.1 enthält nur valide HEBELTRADER-Setups; 6.5.2 enthält ausdrücklich die vollständige JSON-Watchlist mit ALLEN Kandidaten; 6.5.3 enthält die A-Meldungsdatei nur bei vorhandenem Inhalt.
-
+   6.1 PERSPEKTIVISCHE TRADE-IDEEN
+   6.2 TRENDFOLGE
+   6.3 TRENDWENDE
+   6.4 LANGFRIST
+   6.5 HEBELTRADER
+       6.5.1 Valide HEBELTRADER-Setups
+       6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste
+       6.5.3 A-Kandidaten / Einzel-Check-Meldungen
+   6.6 SHORT
+   6.7 EDELMETALLE
+   6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
 7. OFFENE POSITIONEN
-7.1 Portfolio-Übersicht
-7.2 Handlungsbedarf
-7.3 Einzelpositionen
-- Unter JEDE einzelne offene Position unmittelbar ein "KI-Positionsfazit:" setzen.
-- Maximal 2 Sätze.
-- Urteil ausschließlich KAUFEN, HALTEN oder VERKAUFEN und kurz begründen.
-7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE
-- Nur tatsächlich in den letzten 3 Kalendertagen geschlossene Positionen. Wenn keine vorhanden sind, Unterpunkt vollständig weglassen.
-
+   7.1 Portfolio-Übersicht
+   7.2 Handlungsbedarf
+   7.3 Einzelpositionen
+   7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE (nur bedingt)
 8. AUSBLICK & KEY EVENTS
-
 9. METHODIK & DATENHINWEISE
 
-Keine alte Hauptnummerierung (1 Marktumfeld, 2 Makro-Zukunftsszenario, 3 Trendfolge, 4 Trendwende, 5 Hebeltrader, 6 Short, 7 Edelmetalle, 8 Offene Positionen, 9 Geschlossene Positionen) darf in der finalen AUSWERTUNG.TXT stehen.
+HARTREGELN:
+- Unter Punkt 1 KEINE Watchlist und KEINE separate Wochen-/Key-Events-Sektion.
+- 6.1 darf ausdrücklich aus Makro-, Markt- und externen Informationen
+  perspektivische Trade-Ideen ableiten. Diese sind keine bereits validierten
+  Setups und müssen als perspektivisch gekennzeichnet bleiben.
+- 6.2, 6.3, 6.4, 6.6 und die konkreten Setup-Teile von 6.7 enthalten nur
+  tatsächlich valide Setups. Verworfene Kandidaten, Filter-Engstellen und
+  Beinahe-Setups werden dort nicht als Setups ausgegeben.
+- 6.5.2 MUSS die vollständige Watchlist/Beobachtungsliste aus der bereitgestellten
+  JSON-Datei mit ALLEN darin enthaltenen Kandidaten ausgeben. Diese Liste wird
+  nicht auf valide Setups reduziert und nicht mit der Setup-Validierung vermischt.
+- 6.5.3 darf NUR erscheinen, wenn
+  Einzel_Check_A_Meldungen(YYYY-MM-DD).txt tatsächlich Inhalt enthält. Bei
+  leerer oder fehlender Datei entfällt 6.5.3 vollständig. Die Erstellung dieser
+  Datei durch den bestehenden Einzel-Check wird nicht verändert.
+-  Punkt 4 übernimmt die drei autoritativen Makro-Statuszeilen aus
+  Makro_Briefing.txt wortgetreu. Keine Interpretation, Umformulierung oder
+  eigene Bewertung dieser drei Zeilen.
+- Unter jeder offenen Position in 7.3 unmittelbar danach genau ein
+  „KI-Positionsfazit:“ mit maximal 2 Sätzen.
+- 7.4 wird NUR ausgegeben, wenn mindestens eine Position innerhalb der letzten
+  3 Kalendertage geschlossen wurde. Wenn keine vorhanden ist, wird 7.4
+  vollständig weggelassen. Insbesondere darf dann kein Satz wie „Keine Position
+  in den letzten 3 Kalendertagen geschlossen“ ausgegeben werden.
+- Alle älteren historischen Vorgaben zur Darstellung „letzte 10 Werktage“ werden für die fertige AUSWERTUNG.TXT durch diese Regel vollständig ersetzt: Es gilt ausschließlich die 3-Kalendertage-Regel für 7.4.
+- Die Nummerierung der fertigen Ausgabe ist ausschließlich die oben definierte
+  Nummerierung; historische Nummern in älteren Teilen dieser Anweisung sind
+  keine Ausgabevorgabe.
+- Keine bestehenden Analyse-, Scanner-, Filter-, CRV-, Positions-, Reparatur-
+  oder Berechnungsfunktionen verändern.

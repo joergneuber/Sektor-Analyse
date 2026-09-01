@@ -113,6 +113,7 @@ DATEIMUSTER = {
     "Short_Setups(...).csv": ["Short_Setups(*).csv"],
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
     "Einzel_Check_Aufstiege(...).txt": ["Einzel_Check_Aufstiege(*).txt"],
+    "Einzel_Check_A_Meldungen(...).txt": ["Einzel_Check_A_Meldungen(*).txt"],
     "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
     "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
@@ -645,7 +646,7 @@ def _finde_quellposition(ziel_key, quellpositionen):
 # HAUPTLOGIK
 # ---------------------------------------------------------------------------
 
-def _enthaelt_abschnitt_8(text):
+def _enthaelt_abschnitt_7(text):
     """Prüft strikt, ob Gemini den vollständigen Abschnitt 7 begonnen hat."""
     return bool(re.search(r"(?im)^\s*7\. OFFENE POSITIONEN\s*$", text or ""))
 
@@ -664,19 +665,19 @@ def _gemini_finish_reason(antwort):
         return "UNBEKANNT"
 
 
-def _abschnitt_8_vollstaendig(text, csv_pfad):
+def _abschnitt_7_vollstaendig(text, csv_pfad):
     """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
 
     Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
     harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
     unverändert und ist weiterhin die letzte Instanz.
     """
-    if not _enthaelt_abschnitt_8(text):
+    if not _enthaelt_abschnitt_7(text):
         return False
 
     expected = _technische_zielzonen_quelle(csv_pfad)
     match = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d\.\s+[A-Za-zÄÖÜäöü]|\Z)",
         text,
     )
     if not match:
@@ -743,22 +744,22 @@ def _abschnitt_8_vollstaendig(text, csv_pfad):
     return len(seen) == len(expected)
 
 
-def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
+def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
     """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
 
     Der Reparatur-Call darf nur Punkt 7 liefern. Der Block wird deshalb nicht
     als komplette neue Auswertung verwendet, sondern deterministisch in die
     bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
     """
-    if not _enthaelt_abschnitt_8(abschnitt_8):
+    if not _enthaelt_abschnitt_7(abschnitt_7):
         raise RuntimeError(
             "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
             "'7. OFFENE POSITIONEN'."
         )
 
     block_match = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
-        abschnitt_8,
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d\.\s+[A-Za-zÄÖÜäöü]|\Z)",
+        abschnitt_7,
     )
     if not block_match:
         raise RuntimeError(
@@ -770,7 +771,7 @@ def _fuege_abschnitt_8_ein(original_text, abschnitt_8):
     # Ersetze den bereits vorhandenen Punkt-7-Block vollständig durch
     # den erfolgreich reparierten Punkt-7-Block.
     vorhandener_abschnitt = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*9\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
         original_text,
     )
     if vorhandener_abschnitt:
@@ -977,10 +978,10 @@ def gemini_auswertung_starten():
             # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
             # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
             # anwenden.
-            if not _abschnitt_8_vollstaendig(
+            if not _abschnitt_7_vollstaendig(
                 text, eingabedateien.get("Offene Positionen+Check.csv")
             ):
-                if _enthaelt_abschnitt_8(text):
+                if _enthaelt_abschnitt_7(text):
                     print(
                         "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
                         "aber unvollstaendig - starte gezielten Reparaturversuch "
@@ -1035,10 +1036,10 @@ def gemini_auswertung_starten():
                     f"{_gemini_finish_reason(reparatur_antwort)}"
                 )
 
-                if _abschnitt_8_vollstaendig(
+                if _abschnitt_7_vollstaendig(
                     reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
                 ):
-                    text = _fuege_abschnitt_8_ein(text, reparatur_text)
+                    text = _fuege_abschnitt_7_ein(text, reparatur_text)
                     print(
                         "  Reparatur erfolgreich: Abschnitt "
                         "'7. OFFENE POSITIONEN' nachgeliefert."
@@ -1148,358 +1149,6 @@ def gemini_auswertung_starten():
     print(f"Letzte Antwort/Fehler:\n{letzte_antwort}")
     sys.exit(1)
 
-
-
-def _read_latest_local(patterns):
-    """Liest eine bereits vorhandene Ausgabedatei fuer die Darstellungsebene."""
-    pfad = finde_datei(patterns)
-    if not pfad:
-        return None
-    try:
-        return Path(pfad).read_text(encoding="utf-8-sig")
-    except Exception:
-        return None
-
-
-def _legacy_sections(text):
-    """Zerlegt Gemini-Ausgabe anhand ihrer Hauptueberschriften.
-
-    Nur Darstellung: Es werden keine Scannerwerte berechnet oder bewertet.
-    """
-    headings = list(re.finditer(r"(?m)^(?:\ufeff)?(?:1\. MARKTUMFELD & GLOBALE RISIKOLAGE|2\. MAKRO-ZUKUNFTSSZENARIO|3\. TRENDFOLGE-SETUPS|4\. TRENDWENDE-SETUPS[^\n]*|5\. HEBELTRADER-SETUPS|6\. SHORT-SETUPS[^\n]*|7\. EDELMETALLE-SETUPS|8\. OFFENE POSITIONEN[^\n]*|9\. GESCHLOSSENE POSITIONEN[^\n]*|METHODIK & LESEHILFE|EXTERNE MARKTQUELLEN|PERSPEKTIVISCHE TRADE-IDEEN|LIVE-PERFORMANCE vs\. MSCI WORLD|KURZ-ZUSAMMENFASSUNG|RISIKO-WATCH|WOCHENAUSBLICK|SYSTEM-STATISTIK)\s*$", text, re.I))
-    result = {}
-    for i, m in enumerate(headings):
-        key = m.group(0).strip().upper()
-        end = headings[i+1].start() if i+1 < len(headings) else len(text)
-        result[key] = text[m.start():end].strip()
-    return result
-
-
-def _strip_watchlists(block):
-    if not block:
-        return ""
-    patterns = [
-        r"(?ims)^\s*WATCHLIST(?:\s*\([^\n]*\))?\s*$.*?(?=^\s*(?:[A-ZÄÖÜ][^\n]*:|$)|\Z)",
-        r"(?ims)^\s*DIVERGENZ-WATCHLIST[^\n]*\s*$.*?(?=^\s*(?:[A-ZÄÖÜ][^\n]*:|$)|\Z)",
-        r"(?ims)^\s*Beinahe-Kandidaten[^\n]*\s*$.*?(?=^\s*(?:[A-ZÄÖÜ][^\n]*:|$)|\Z)",
-    ]
-    for pat in patterns:
-        block = re.sub(pat, "", block)
-    # Scanner-Ablehnungsbegruendungen sind ebenfalls keine validen Setups.
-    block = re.sub(r"(?im)^\s*Engstelle des Filters:[^\n]*\n?", "", block)
-    block = re.sub(r"\n{3,}", "\n\n", block)
-    return block.strip()
-
-
-def _extract_summary_without_watchlist(text):
-    m = re.search(r"(?ims)^KURZ-ZUSAMMENFASSUNG\s*$.*?(?=^\s*WATCHLIST\s*$|^\s*SYSTEM-STATISTIK\s*$)", text)
-    if not m:
-        return ""
-    return m.group(0).strip()
-
-
-def _extract_between(text, start_pat, end_pats):
-    m = re.search(start_pat, text, re.I | re.M)
-    if not m:
-        return ""
-    start = m.start()
-    end = len(text)
-    for ep in end_pats:
-        em = re.search(ep, text[m.end():], re.I | re.M)
-        if em:
-            end = min(end, m.end() + em.start())
-    return text[start:end].strip()
-
-
-def _macro_status_block():
-    """Uebernimmt die drei autoritativen Statuszeilen 1:1 aus Makro_Briefing."""
-    raw = _read_latest_local(["Makro_Briefing(*).txt"])
-    if not raw:
-        return ""
-    lines = raw.splitlines()
-    wanted = []
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r"^(MAKRO-SZENARIO-GATE|MAKRO-DATENQUALITAET|DATENQUALITAET|SEKUNDAERE DATENLUECKEN|SEKUNDAERE_DATENLUECKEN)\s*[:=]", stripped, re.I):
-            # Genau die Originalzeile, ohne inhaltliche Umformulierung.
-            wanted.append(stripped)
-    # Quelle kann DATENQUALITAET statt MAKRO-DATENQUALITAET verwenden.
-    gate = next((x for x in wanted if x.upper().startswith("MAKRO-SZENARIO-GATE")), None)
-    quality = next((x for x in wanted if x.upper().startswith("MAKRO-DATENQUALITAET")), None)
-    if quality is None:
-        quality = next((x for x in wanted if x.upper().startswith("DATENQUALITAET")), None)
-    gaps = next((x for x in wanted if x.upper().startswith("SEKUNDAERE DATENLUECKEN") or x.upper().startswith("SEKUNDAERE_DATENLUECKEN")), None)
-    return "\n".join(x for x in (gate, quality, gaps) if x)
-
-
-def _metals_information_block():
-    raw = _read_latest_local(["Edelmetalle_Briefing(*).txt"])
-    if not raw:
-        return ""
-    # Vollstaendige Markt-/Diagnoseinformationen, aber ohne die drei
-    # Strategie-Funnel als vermeintliche Setups. Die Quelle selbst bleibt
-    # unveraendert; hier wird nur der relevante Lageblock uebernommen.
-    start = raw.find("LAGE JE METALL")
-    end = raw.find("==================================================\nSTRATEGIE: TRENDFOLGE")
-    if start < 0:
-        return raw.strip()
-    if end < 0:
-        end = len(raw)
-    return raw[start:end].strip()
-
-
-
-def _hebeltrader_watchlist_block():
-    """Gibt die vollstaendige HEBELTRADER-Beobachtungsliste aus der JSON-Quelle aus.
-
-    Darstellungsebene: Die JSON-Statuswerte werden weder bewertet noch
-    gefiltert. Alle Kandidaten bleiben erhalten.
-    """
-    pfad = finde_datei(["einzel_check_beobachtung*.json", "einzel_check_beobachtung.json"])
-    if not pfad:
-        return ""
-    try:
-        daten = json.loads(Path(pfad).read_text(encoding="utf-8-sig"))
-    except Exception:
-        return ""
-    if not isinstance(daten, dict) or not daten:
-        return ""
-    zeilen = ["6.5.2 HEBELTRADER-WATCHLIST / BEOBACHTUNGSLISTE", ""]
-    for ticker, info in daten.items():
-        if not isinstance(info, dict):
-            info = {}
-        status = str(info.get("status", "")).strip()
-        letzter = str(info.get("letzter_check", "")).strip()
-        last_candidate = str(info.get("last_candidate_date", "")).strip()
-        start_date = str(info.get("beobachtung_start_date", "")).strip()
-        zeilen.append(f"• {ticker}")
-        if status:
-            zeilen.append(f"  Status: {status}")
-        if letzter:
-            zeilen.append(f"  Letzter Check: {letzter}")
-        if last_candidate:
-            zeilen.append(f"  Letzter Kandidat: {last_candidate}")
-        if start_date:
-            zeilen.append(f"  Beobachtungsstart: {start_date}")
-        zeilen.append("")
-    return "\n".join(zeilen).rstrip()
-
-def _a_meldungen_block():
-    pfad = finde_datei(["Einzel_Check_A_Meldungen(*).txt"])
-    if not pfad:
-        return ""
-    try:
-        raw = Path(pfad).read_text(encoding="utf-8-sig").strip()
-    except Exception:
-        return ""
-    if not raw:
-        return ""
-    # Nur dann sichtbar, wenn nach dem Kopf mindestens eine Meldung existiert.
-    lines = [x.strip() for x in raw.splitlines() if x.strip()]
-    if len(lines) <= 2:
-        return ""
-    return raw
-
-
-def _remove_duplicate_open_position_blocks(text):
-    matches = list(re.finditer(r"(?ims)^\s*(?:7|8)\. OFFENE POSITIONEN[^\n]*\s*$", text))
-    if len(matches) <= 1:
-        return text
-    first = matches[0]
-    # Der erste Block ist der vollstaendige, aus der Hauptantwort stammende
-    # Positionsblock. Spaetere 7/8-Bloecke sind Reparaturduplikate.
-    second = matches[1]
-    next_main = re.search(r"(?m)^\s*9\.\s+|^\s*METHODIK & LESEHILFE\s*$", text[second.end():], re.I)
-    end = second.end() + next_main.start() if next_main else len(text)
-    return text[:second.start()].rstrip() + "\n\n" + text[end:].lstrip()
-
-
-def _ensure_ki_position_fazit_instruction(text):
-    """Kein Inhalt wird erfunden; vorhandene KI-Fazits bleiben unveraendert."""
-    return text
-
-
-def _kanonisiere_ausgabestruktur(text):
-    """Kanonisiert ausschliesslich die Newsletter-Darstellung 1-9."""
-    if not text:
-        return text
-    # Bereits kanonisierte Ausgaben werden nicht ein zweites Mal zerlegt.
-    if re.search(r"(?m)^1\. DAS WICHTIGSTE AUF EINEN BLICK$", text) and re.search(
-        r"(?m)^7\. OFFENE POSITIONEN$", text
-    ) and re.search(r"(?m)^9\. METHODIK & DATENHINWEISE$", text):
-        return text
-    text = _remove_duplicate_open_position_blocks(text)
-    sec = _legacy_sections(text)
-
-    header = text[: min([m.start() for m in re.finditer(r"(?m)^(?:LIVE-PERFORMANCE vs\. MSCI WORLD|KURZ-ZUSAMMENFASSUNG|1\. MARKTUMFELD)", text)] or [len(text)])].strip()
-    if not header:
-        header = re.search(r"(?s)^.*?(?=^LIVE-PERFORMANCE vs\. MSCI WORLD|^KURZ-ZUSAMMENFASSUNG|^1\. MARKTUMFELD)", text, re.M).group(0).strip() if re.search(r"(?m)^LIVE-PERFORMANCE vs\. MSCI WORLD|^KURZ-ZUSAMMENFASSUNG|^1\. MARKTUMFELD", text) else ""
-
-    summary = _extract_summary_without_watchlist(text)
-    system = sec.get("SYSTEM-STATISTIK", "")
-    risk = sec.get("RISIKO-WATCH", "")
-    handlungsbedarf = sec.get("KURZ-ZUSAMMENFASSUNG", "")
-    if handlungsbedarf:
-        hm = re.search(r"(?ims)^SOFORT BEACHTEN\s*$.*?(?=^\s*WATCHLIST\s*$|^\s*SYSTEM-STATISTIK\s*$)", handlungsbedarf)
-        handlungsbedarf = hm.group(0).strip() if hm else ""
-
-    live = sec.get("LIVE-PERFORMANCE VS. MSCI WORLD", "")
-    market = sec.get("1. MARKTUMFELD & GLOBALE RISIKOLAGE", "")
-    macro = sec.get("2. MAKRO-ZUKUNFTSSZENARIO", "")
-    perspective = sec.get("PERSPEKTIVISCHE TRADE-IDEEN", "")
-    trend = sec.get("3. TRENDFOLGE-SETUPS", "")
-    reversal = sec.get("4. TRENDWENDE-SETUPS (SEPARATES RISIKO)", "")
-    leverage = sec.get("5. HEBELTRADER-SETUPS", "")
-    short = sec.get("6. SHORT-SETUPS (FALLENDE KURSE)", "")
-    metals = sec.get("7. EDELMETALLE-SETUPS", "")
-    openpos = sec.get("8. OFFENE POSITIONEN (MANUELL BESTÄTIGT)", "")
-    closed = sec.get("9. GESCHLOSSENE POSITIONEN (LETZTE 10 WERKTAGE)", "")
-    external = sec.get("EXTERNE MARKTQUELLEN", "")
-    method = sec.get("METHODIK & LESEHILFE", "")
-    outlook = sec.get("WOCHENAUSBLICK", "")
-
-    # Punkt 1: keine Watchlist.
-    p1_parts = [summary, system, risk]
-    p1 = "\n\n".join(x for x in p1_parts if x)
-
-    # Punkt 2: Marktinformation aus dem alten Marktblock, ohne die
-    # zeitlichen Zukunftsunterpunkte, die unter Punkt 5 gehoeren.
-    p2 = re.sub(r"(?m)^1\. MARKTUMFELD & GLOBALE RISIKOLAGE\s*$", "", market, count=1).strip()
-    # Punkt 2 ist bewusst kurz: nur Index-/Regionenlage und das vorhandene
-    # Score-Fazit. Die ausfuehrlichen Risikoindikatoren bleiben aus der
-    # kompakten Marktinformation heraus.
-    risk_start = p2.find("GLOBALE RISIKO-BENCHMARKS UND INDIKATOREN")
-    if risk_start >= 0:
-        p2 = p2[:risk_start].rstrip()
-
-    # Punkt 5: alte Makro-Zukunftssektion als Perspektive.
-    p5 = macro
-    p5 = re.sub(r"(?m)^2\. MAKRO-ZUKUNFTSSZENARIO\s*$", "5. MARKTPERSPEKTIVE", p5)
-    p5 = re.sub(r"(?m)^2\.1\s+", "5.1 ", p5)
-    p5 = re.sub(r"(?m)^2\.2\s+", "5.2 ", p5)
-    p5 = re.sub(r"(?m)^2\.3\s+", "5.3 ", p5)
-    p5 = re.sub(r"(?m)^2\.4\s+", "5.3 ", p5)
-    # Beide langfristigen Horizonte werden unter einem gemeinsamen 5.3-Kopf gefuehrt.
-    p5 = re.sub(r"(?m)^5\.3 WEITERER HORIZONT:[^\n]*\n", "5.3 LANGFRISTIG / STRUKTURELL\n\n", p5, count=1)
-    p5 = re.sub(r"(?m)^5\.3 STRUKTURELL:[^\n]*\n", "", p5, count=1)
-    # Falls keine explizite Matrix/Chancen-Risiken vorhanden sind, werden sie
-    # nicht erfunden; die vorhandenen Matrixdaten bleiben im Block erhalten.
-    p5 = re.sub(r"(?m)^SZENARIO-MATRIX", "5.4 Szenario-Matrix", p5)
-    p5 = re.sub(r"(?m)^CHANCEN & RISIKEN", "5.5 Chancen & Risiken", p5)
-    if "5.5 Chancen & Risiken" not in p5:
-        chance = re.search(r"(?im)^Bevorzugte Trading-Themen:.*$", p5)
-        riskline = re.search(r"(?im)^Regime-Killer:.*$", p5)
-        if chance or riskline:
-            cr = ["5.5 Chancen & Risiken", ""]
-            if chance:
-                cr.append("Chancen: " + chance.group(0).split(":", 1)[1].strip())
-            if riskline:
-                cr.append("Risiken: " + riskline.group(0).split(":", 1)[1].strip())
-            p5 = p5.rstrip() + "\n\n" + "\n".join(cr)
-
-    # Setup-Bloecke: nur valide Inhalte; Watchlists/Filterengstellen werden entfernt.
-    def setup_block(title, body):
-        body = _strip_watchlists(body)
-        # Manche Gemini-Antworten verlieren die Watchlist-Ueberschrift, lassen
-        # aber deren Kandidaten stehen. In einem einzelnen Setup-Block ist
-        # alles ab dem ersten Watchlist-/Beinahe-Kandidaten-Marker nicht mehr
-        # Teil der validen Setup-Ausgabe.
-        cut = re.search(r"(?im)^\s*(?:WATCHLIST|Beinahe-Kandidaten|DIVERGENZ-WATCHLIST)\b", body)
-        if cut:
-            body = body[:cut.start()].rstrip()
-        # Wenn der Scanner ausdruecklich 0 valide Kandidaten meldet, duerfen
-        # danach verbliebene alte Beinahe-Kandidaten nicht in den Setup-Block
-        # hineinrutschen. Die Nullmeldung selbst bleibt erhalten.
-        zero = re.search(r"(?im)^\s*Keine (?:neuen )?(?:valide[n]?|validen)?\s*(?:Trendfolge|Trendwende|Short|Edelmetalle)[^\n]*gefunden\.\s*$", body)
-        if zero:
-            body = body[:zero.end()].rstrip()
-        return (title + "\n\n" + body.strip()).strip() if body.strip() else ""
-
-    p6_parts = []
-    if perspective:
-        p6_parts.append(setup_block("6.1 PERSPEKTIVISCHE TRADE-IDEEN", perspective.replace("PERSPEKTIVISCHE TRADE-IDEEN", "", 1).strip()))
-    p6_parts.append(setup_block("6.2 TRENDFOLGE", trend.replace("3. TRENDFOLGE-SETUPS", "", 1).strip()))
-    p6_parts.append(setup_block("6.3 TRENDWENDE", reversal.replace(reversal.splitlines()[0], "", 1).strip() if reversal else ""))
-    # Langfrist wird nur ausgegeben, wenn im Gemini-Ergebnis ein eigener Block existiert.
-    long_block = ""
-    for k,v in sec.items():
-        if "LANGFRIST" in k and "POSITIONEN" not in k:
-            long_block = v
-            break
-    p6_parts.append(setup_block("6.4 LANGFRIST", long_block) if long_block else "6.4 LANGFRIST\n\nKeine validen Langfrist-Setups vorhanden.")
-    ht_setup = setup_block("6.5.1 VALIDE HEBELTRADER-SETUPS", leverage.replace("5. HEBELTRADER-SETUPS", "", 1).strip())
-    ht_watch = _hebeltrader_watchlist_block()
-    a_block = _a_meldungen_block()
-    ht_parts = ["6.5 HEBELTRADER"]
-    if ht_setup:
-        ht_parts.append(ht_setup)
-    if ht_watch:
-        ht_parts.append(ht_watch)
-    if a_block:
-        ht_parts.append("6.5.3 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN\n\n" + a_block)
-    p6_parts.append("\n\n".join(ht_parts))
-    p6_parts.append(setup_block("6.6 SHORT", short.replace("6. SHORT-SETUPS (fallende Kurse)", "", 1).strip()))
-    metals_body = _metals_information_block()
-    metals_setup = _strip_watchlists(metals.replace("7. EDELMETALLE-SETUPS", "", 1).strip())
-    p6_parts.append("6.7 EDELMETALLE\n\n" + "\n\n".join(x for x in (metals_body, metals_setup) if x).strip())
-    if external:
-        p6_parts.append(setup_block("6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE", external.replace("EXTERNE MARKTQUELLEN", "", 1).strip()))
-    p6 = "\n\n".join(x for x in p6_parts if x)
-
-    # Punkt 7: erster vollstaendiger Positionsblock; keine zweite Reparaturkopie.
-    p7_body = openpos
-    p7_body = re.sub(r"(?m)^8\. OFFENE POSITIONEN[^\n]*\s*$", "", p7_body, count=1).strip()
-    # Portfolio-Uebersicht wird nach 7.1 verschoben; Handlungsbedarf kommt aus
-    # dem bereits vorhandenen SOFORT-BEACHTEN-Block.
-    po = re.search(r"(?im)^Portfolio[- ]Übersicht:.*$", p7_body)
-    portfolio = po.group(0).strip() if po else ""
-    if po:
-        p7_body = p7_body[:po.start()] + p7_body[po.end():]
-    p7 = "7. OFFENE POSITIONEN\n\n"
-    p7 += "7.1 PORTFOLIO-ÜBERSICHT\n\n" + (portfolio or "Keine Portfolio-Übersicht im bereitgestellten Positionsblock.")
-    p7 += "\n\n7.2 HANDLUNGSBEDARF\n\n" + (handlungsbedarf or "Kein separater Handlungsbedarf im bereitgestellten Output ausgewiesen.")
-    p7 += "\n\n7.3 EINZELPOSITIONEN\n\n" + p7_body.strip()
-
-    # Geschlossene Positionen: nur die letzten 3 Tage. Die alte 10-Tage-Formulierung
-    # wird nicht als Quelle verwendet; wenn der Block konkrete ältere Daten enthaelt,
-    # wird er nicht blind uebernommen.
-    p74 = ""
-    if closed:
-        content = re.sub(r"(?m)^9\. GESCHLOSSENE POSITIONEN[^\n]*\s*$", "", closed, count=1).strip()
-        if re.search(r"(?i)keine position|keine geschlossene", content):
-            p74 = ""
-        else:
-            p74 = "7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE\n\n" + content
-    if p74:
-        p7 += "\n\n" + p74
-
-    # Punkt 8: Ausblick/Events.
-    p8 = outlook
-    if p8:
-        p8 = re.sub(r"(?m)^WOCHENAUSBLICK\s*$", "8. AUSBLICK & KEY EVENTS", p8, count=1)
-    else:
-        p8 = "8. AUSBLICK & KEY EVENTS"
-
-    # Punkt 9.
-    p9 = method
-    if p9:
-        p9 = re.sub(r"(?m)^METHODIK & LESEHILFE\s*$", "9. METHODIK & DATENHINWEISE", p9, count=1)
-    else:
-        p9 = "9. METHODIK & DATENHINWEISE"
-
-    p3 = live
-    p3 = re.sub(r"(?m)^LIVE-PERFORMANCE vs\. MSCI WORLD\s*$", "3. SYSTEMPERFORMANCE & BENCHMARK", p3, count=1)
-
-    p4 = _macro_status_block()
-    if not p4:
-        p4 = "4. DATEN- & SZENARIOSTATUS"
-    else:
-        p4 = "4. DATEN- & SZENARIOSTATUS\n\n" + p4
-
-    parts = [header, "1. DAS WICHTIGSTE AUF EINEN BLICK\n\n" + p1, "2. MAKRO & MARKT\n\n" + p2,
-             p3, p4, p5, "6. TRADING-IDEEN & SETUPS\n\n" + p6, p7, p8, p9]
-    result = "\n\n".join(x.strip() for x in parts if x and x.strip())
-    return result.strip() + "\n"
 
 def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt formale Regeln und macht die Check-Datei zum Master.
@@ -1771,67 +1420,32 @@ def _lese_makro_datenqualitaet(makro_text):
 
 
 def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
-    """Belasst den autoritativen Makro-Status ausschliesslich in Abschnitt 4.
+    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 4."""
+    if not text or not makro_datenqualitaet:
+        return text
+    start = text.find("4. DATEN- & SZENARIOSTATUS")
+    if start < 0:
+        return text
+    end = text.find("\n3.", start)
+    if end < 0:
+        end = len(text)
+    section = text[start:end]
+    section = re.sub(
+        r"(?im)^[^\n]*(?:MAKRO-DATENQUALITAET|Datenqualitaet)\s*[:=][^\n]*\n?",
+        "",
+        section,
+    )
+    section = section.rstrip() + f"\nDatenqualitaet: {makro_datenqualitaet}\n"
+    return text[:start] + section + text[end:]
 
-    Die drei Statuszeilen werden bereits von _kanonisiere_ausgabestruktur()
-    1:1 aus Makro_Briefing uebernommen. Diese Funktion greift daher nicht
-    mehr in andere Abschnitte ein und kann insbesondere keine Positionsfelder
-    oder Glossartexte versehentlich veraendern.
-    """
-    return text
-
-def _validiere_darstellung(text):
-    """Harter Ausgabevertrag: Fehler fuehren zu keinem falschen Output.
-
-    Nur Struktur-/Darstellungspruefungen; keine Trading- oder Analyseberechnung.
-    """
-    required = [
-        "1. DAS WICHTIGSTE AUF EINEN BLICK", "2. MAKRO & MARKT",
-        "3. SYSTEMPERFORMANCE & BENCHMARK", "4. DATEN- & SZENARIOSTATUS",
-        "5. MARKTPERSPEKTIVE", "6. TRADING-IDEEN & SETUPS",
-        "7. OFFENE POSITIONEN", "8. AUSBLICK & KEY EVENTS",
-        "9. METHODIK & DATENHINWEISE",
-    ]
-    positions = [text.find("\n" + x) if text.find("\n" + x) >= 0 else text.find(x) for x in required]
-    if any(i < 0 for i in positions) or positions != sorted(positions):
-        raise RuntimeError("Finale Ausgabestruktur 1-9 ist unvollstaendig oder falsch sortiert.")
-    if re.search(r"(?im)^\s*(?:1\. DAS WICHTIGSTE AUF EINEN BLICK[\s\S]*?)?(?:WATCHLIST|DIVERGENZ-WATCHLIST)", text):
-        # Nur Punkt 1 isoliert pruefen, damit die gewollte HEBELTRADER-Watchlist nicht anschlaegt.
-        p1 = text[text.find("1. DAS WICHTIGSTE AUF EINEN BLICK"):text.find("2. MAKRO & MARKT")]
-        if re.search(r"(?i)WATCHLIST", p1):
-            raise RuntimeError("Watchlist ist unzulaessig unter Punkt 1.")
-    h6 = text[text.find("6. TRADING-IDEEN & SETUPS"):text.find("7. OFFENE POSITIONEN")]
-    if "6.5 HEBELTRADER" in h6:
-        if "6.5.1 VALIDE HEBELTRADER-SETUPS" not in h6 or "6.5.2 HEBELTRADER-WATCHLIST / BEOBACHTUNGSLISTE" not in h6:
-            raise RuntimeError("HEBELTRADER-Unterstruktur 6.5.1/6.5.2 fehlt.")
-    p7 = text[text.find("7. OFFENE POSITIONEN"):text.find("8. AUSBLICK & KEY EVENTS")]
-    # Wenn Einzelpositionen vorhanden sind, braucht jede Position ihr unmittelbar folgendes KI-Fazit.
-    if "7.3 EINZELPOSITIONEN" in p7:
-        body = p7[p7.find("7.3 EINZELPOSITIONEN"):p7.find("7.4 GESCHLOSSENE POSITIONEN") if "7.4 GESCHLOSSENE POSITIONEN" in p7 else len(p7)]
-        npos = len(re.findall(r"(?m)^[^\n|]+\s*\([^()]+\) \| Markt:", body))
-        nfazit = len(re.findall(r"(?im)^KI-Positionsfazit\s*:", body))
-        if npos and npos != nfazit:
-            raise RuntimeError(f"KI-Positionsfazit fehlt bei offenen Positionen ({nfazit}/{npos}).")
-    # Alte Hauptnummerierung darf nicht durchrutschen.
-    forbidden = ["1. MARKTUMFELD & GLOBALE RISIKOLAGE", "2. MAKRO-ZUKUNFTSSZENARIO",
-                 "3. TRENDFOLGE-SETUPS", "4. TRENDWENDE-SETUPS", "5. HEBELTRADER-SETUPS",
-                 "6. SHORT-SETUPS", "7. EDELMETALLE-SETUPS", "8. OFFENE POSITIONEN",
-                 "9. GESCHLOSSENE POSITIONEN"]
-    for old in forbidden:
-        if old in text:
-            raise RuntimeError(f"Alte Hauptnummerierung gefunden: {old}")
-    return text
 
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
-    text = _kanonisiere_ausgabestruktur(text)
-    text = _validiere_darstellung(text)
     text = normalisiere_ausgabe(
         text,
         zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
     )
-    text = _validiere_darstellung(text)
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
