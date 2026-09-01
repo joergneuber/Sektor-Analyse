@@ -1022,16 +1022,16 @@ def _westmetall_tin_exact(target_date):
     return None
 
 
-def lme_snapshot(today):
+def lme_snapshot(today, _target_override=None, _allow_previous_fallback=True):
     """LME-TIER-2-Beschaffung mit Bereichs-/Quellenpriorität.
 
-    Ziel ist immer der letzte abgeschlossene Handelstag.
+    Ziel ist standardmäßig der letzte abgeschlossene Handelstag.
     Zuerst wird versucht, ALLE vier Metalle aus LME Official zu beziehen.
     Erst wenn das nicht vollständig gelingt, wird der TE-Public-Snapshot als
     gemeinsame Bereichsquelle verwendet. Nur danach ist ein feldweiser
     Fallback erlaubt. Exaktes Zieldatum bleibt zwingend.
     """
-    target = _last_completed_business_day(today)
+    target = _target_override or _last_completed_business_day(today)
     metal_names = ("Nickel", "Blei", "Zinn", "Kobalt")
     official_url = "https://www.lme.com/market-data/reports-and-data/lme-official-prices"
     headers = {
@@ -1084,7 +1084,7 @@ def lme_snapshot(today):
         te_results = {}
 
     # Westmetall is the exact-date final fallback for Tin. It is only consulted
-    # after LME Official and TE Public and never substitutes the previous day.
+    # after LME Official and TE Public for the current target date.
     westmetall_tin = None
     if "Zinn" not in official_results and "Zinn" not in te_results:
         westmetall_tin = _westmetall_tin_exact(target)
@@ -1148,12 +1148,77 @@ def lme_snapshot(today):
                     candidate = aggregate.get(metal)
                     if isinstance(candidate, dict):
                         cached = candidate
-            if cached and cached.get("reference_date", cached.get("date")) == target.isoformat():
+            cached_date = cached.get("reference_date", cached.get("date")) if isinstance(cached, dict) else None
+            if cached and cached_date == target.isoformat():
                 cached = dict(cached)
                 cached["status"] = "REAL_CACHED"
                 cached["source_selection"] = "EXACT_DATE_CACHE_FALLBACK"
                 results[metal] = cached
                 print(f"INFO: LME Exact-Date Cache-Hit: {metal} date={target.isoformat()}")
+
+    # If an individual metal is still missing on the target date, walk backwards
+    # over completed business days and use the latest real observation found.
+    # This is a bounded availability fallback, never a calculated/forward-filled value.
+    if _allow_previous_fallback and len(results) < len(metal_names):
+        previous_day = target - dt.timedelta(days=1)
+        checked_days = 0
+        max_previous_business_days = 7
+        missing_before = [m for m in metal_names if m not in results]
+        while missing_before and checked_days < max_previous_business_days:
+            while previous_day.weekday() >= 5:
+                previous_day -= dt.timedelta(days=1)
+            checked_days += 1
+            print(
+                f"INFO: LME Previous-Day-Fallback prueft {previous_day.isoformat()} "
+                f"fuer fehlende Metalle={','.join(missing_before)}"
+            )
+            try:
+                previous_lines = lme_snapshot(
+                    today,
+                    _target_override=previous_day,
+                    _allow_previous_fallback=False,
+                )
+            except Exception as exc:
+                print(f"WARNUNG: LME Previous-Day-Fallback {previous_day.isoformat()}: {type(exc).__name__}: {exc}")
+                previous_lines = []
+
+            previous_found = {}
+            for line in previous_lines:
+                m = re.match(
+                    r"^LME (Nickel|Blei|Zinn|Kobalt): (?!NICHT VERFUEGBAR)([0-9][0-9.,]*) "
+                    r"\| Datenstand=([0-9]{4}-[0-9]{2}-[0-9]{2}) \| STATUS=([^|]+) "
+                    r"\| SOURCE=([^|]+) \| DATENTYP=([^|]+)",
+                    line,
+                )
+                if m:
+                    name, value_text, ref_date, status, source, datatype = m.groups()
+                    value = _parse_float_token(value_text)
+                    if value is not None:
+                        previous_found[name] = {
+                            "value": value,
+                            "reference_date": ref_date,
+                            "status": "REAL_PREVIOUS_DAY",
+                            "source": source.strip(),
+                            "datatype": datatype.strip(),
+                            "source_selection": "PREVIOUS_AVAILABLE_DAY",
+                        }
+
+            for metal in list(missing_before):
+                if metal in previous_found:
+                    results[metal] = previous_found[metal]
+                    print(
+                        f"INFO: LME Vortageswert uebernommen: {metal} "
+                        f"Datenstand={previous_found[metal]['reference_date']}"
+                    )
+
+            missing_before = [m for m in metal_names if m not in results]
+            previous_day -= dt.timedelta(days=1)
+
+        if missing_before:
+            print(
+                f"INFO: LME Previous-Day-Fallback ohne Treffer fuer "
+                f"{','.join(missing_before)} (gepruefte Handelstage={checked_days})"
+            )
 
     if results:
         with CACHE_WRITE_LOCK:
@@ -1171,7 +1236,7 @@ def lme_snapshot(today):
             lines.append(
                 f"LME {name}: {_fmt(data['value'],2)} | Datenstand={data['reference_date']} | "
                 f"STATUS={data['status']} | SOURCE={data['source']} | "
-                f"DATENTYP={data['datatype']} | QUELLENWAHL={selection}"
+                f"DATENTYP={data['datatype']} | QUELLENWAHL={data.get('source_selection', selection)}"
             )
         else:
             lines.append(
@@ -3222,8 +3287,19 @@ def _ism_fetch(kind, year, month):
                     "source":"ISM Public Report","url":official_url,"reference_month":f"{year}-{month:02d}"
                 })
                 anchor["provenance"][key]["fallback"] = True
-    print(f"INFO: ISM {kind} Bereichsquelle=TradingEconomics Public/ISM Public Report Felder={count(anchor)}/{len(required)} reference={year}-{month:02d}")
-    return anchor
+    merged_count = count(anchor)
+    print(f"INFO: ISM {kind} Bereichsquelle=TradingEconomics Public/ISM Public Report Felder={merged_count}/{len(required)} reference={year}-{month:02d}")
+    if merged_count == len(required):
+        anchor["source_selection"] = "COMPLETE_GROUP_PLUS_FIELD_FALLBACK"
+        return anchor
+
+    # A partial month must NOT be returned as a successful snapshot: doing so
+    # would prevent ism_snapshot() from trying the next (older) complete month.
+    print(
+        f"INFO: ISM {kind} Zielmonat {year}-{month:02d} bleibt unvollstaendig "
+        f"({merged_count}/{len(required)}); naechster Monatskandidat wird geprueft."
+    )
+    return None
 
 def spglobal_services_snapshot(today):
     """TIER-3 CONTEXT: S&P Global US Services PMI.
