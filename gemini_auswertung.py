@@ -911,7 +911,7 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_8):
     # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
     # den erfolgreich reparierten Punkt-8-Block.
     vorhandener_abschnitt = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*9\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
         original_text,
     )
     if vorhandener_abschnitt:
@@ -1120,9 +1120,55 @@ def gemini_auswertung_starten():
                 else:
                     raise RuntimeError("Gemini widerspricht weiterhin dem autoritativen MAKRO-SZENARIO-GATE=FREIGEGEBEN.")
 
-            # Punkt 7 ist KEIN Gemini-Vollstaendigkeits-Gate mehr.
-            # Der Master-Neuaufbau erfolgt deterministisch in normalisiere_ausgabe()
-            # und erzeugt dort aus jeder offenen Masterposition genau einen 7.3-Block.
+            # LEGACY-FEHLERKORREKTUR fuer die neue Zielstruktur: Punkt 7
+            # wird wie der fruehere Punkt 8 gezielt nachgefordert, wenn Gemini
+            # ihn unvollstaendig liefert. Danach baut Python 7.3 zusaetzlich
+            # deterministisch aus ALLEN Masterpositionen neu auf.
+            offene_pfad = eingabedateien.get("Offene Positionen+Check.csv")
+            if offene_pfad and not _abschnitt_7_vollstaendig(text, offene_pfad):
+                ok, diagnose = _abschnitt_7_pruefdiagnose(text, offene_pfad)
+                print("  Punkt 7 ist unvollstaendig - starte gezielten Legacy-Reparaturversuch...")
+                if diagnose:
+                    for item in diagnose[:10]:
+                        print(f"    - {item}")
+                reparatur_prompt = (
+                    "REPARATURVERSUCH - NUR ABSCHNITT 7 NACHLIEFERN.\n"
+                    "Deine vorherige Antwort enthielt den Abschnitt '7. OFFENE POSITIONEN' "
+                    "nicht vollstaendig. Erstelle deshalb jetzt AUSSCHLIESSLICH den vollstaendigen Abschnitt 7.\n\n"
+                    "Beginne zwingend mit exakt:\n"
+                    "7. OFFENE POSITIONEN\n\n"
+                    "Danach muessen 7.1 PORTFOLIO-UEBERSICHT, 7.2 HANDLUNGSBEDARF und "
+                    "7.3 EINZELPOSITIONEN enthalten sein.\n"
+                    "Fuer 7.3 uebernimm JEDE Position aus der verbindlichen Masterliste "
+                    "Offene Positionen+Check.csv. Keine Position weglassen, zusammenfassen "
+                    "oder erfinden. Mehrere Positionen desselben Tickers bleiben getrennt.\n"
+                    "Die Positionsidentitaet ist immer: Name + Ticker + Einstieg + Einstiegsdatum.\n"
+                    "Fuer technische Check-Felder ist Offene Positionen+Check.csv die verbindliche Quelle. "
+                    "Technische Zielzone muss exakt 1:1 aus der CSV uebernommen werden.\n"
+                    "Wenn eine Masterposition nicht qualitativ analysiert werden kann, lasse die "
+                    "qualitativen Felder leer bzw. kennzeichne dies, aber lasse die Position selbst "
+                    "NIEMALS weg. Erfinde keine qualitativen Aussagen.\n\n"
+                    "AUTORITATIVE MASTERLISTE:\n"
+                    + (_offene_positionen_quellblock(offene_pfad) or "(keine offenen Positionen gefunden)")
+                )
+                reparatur = client.models.generate_content(
+                    model=aktuelles_modell,
+                    contents=hochgeladene_teile + [reparatur_prompt],
+                    config=types.GenerateContentConfig(system_instruction=anweisung),
+                )
+                reparatur_text = reparatur.text or ""
+                print(f"  Gemini finish_reason (Punkt-7-Reparatur): {_gemini_finish_reason(reparatur)}")
+                if not _abschnitt_7_vollstaendig(reparatur_text, offene_pfad):
+                    _, diagnose2 = _abschnitt_7_pruefdiagnose(reparatur_text, offene_pfad)
+                    raise RuntimeError(
+                        "Punkt-7-Reparatur weiterhin unvollstaendig: "
+                        + " | ".join(diagnose2[:20])
+                    )
+                text = _fuege_abschnitt_7_ein(text, reparatur_text)
+                print("  Punkt-7-Legacy-Reparatur erfolgreich.")
+
+            # Unabhaengig davon bleibt der Master-Neuaufbau die letzte Instanz:
+            # Python uebernimmt spaeter ALLE offenen Positionen aus der CSV.
 
         except Exception as e:
             fehlertext = str(e)
@@ -1256,6 +1302,69 @@ def _entferne_unerwuenschte_watchlists(text):
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+
+def _read_latest_local(patterns):
+    """Liest eine bereits vorhandene Ausgabedatei fuer die Darstellungsebene."""
+    pfad = finde_datei(patterns)
+    if not pfad:
+        return None
+    try:
+        return Path(pfad).read_text(encoding="utf-8-sig")
+    except Exception:
+        return None
+
+
+
+
+def _macro_status_block():
+    """Uebernimmt die drei autoritativen Statuszeilen 1:1 aus Makro_Briefing."""
+    raw = _read_latest_local(["Makro_Briefing(*).txt"])
+    if not raw:
+        return ""
+    lines = raw.splitlines()
+    wanted = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^(MAKRO-SZENARIO-GATE|MAKRO-DATENQUALITAET|DATENQUALITAET|SEKUNDAERE DATENLUECKEN|SEKUNDAERE_DATENLUECKEN)\s*[:=]", stripped, re.I):
+            # Genau die Originalzeile, ohne inhaltliche Umformulierung.
+            wanted.append(stripped)
+    # Quelle kann DATENQUALITAET statt MAKRO-DATENQUALITAET verwenden.
+    gate = next((x for x in wanted if x.upper().startswith("MAKRO-SZENARIO-GATE")), None)
+    quality = next((x for x in wanted if x.upper().startswith("MAKRO-DATENQUALITAET")), None)
+    if quality is None:
+        quality = next((x for x in wanted if x.upper().startswith("DATENQUALITAET")), None)
+    gaps = next((x for x in wanted if x.upper().startswith("SEKUNDAERE DATENLUECKEN") or x.upper().startswith("SEKUNDAERE_DATENLUECKEN")), None)
+    return "\n".join(x for x in (gate, quality, gaps) if x)
+
+def _metals_information_block():
+    raw = _read_latest_local(["Edelmetalle_Briefing(*).txt"])
+    if not raw:
+        return ""
+    # Vollstaendige Markt-/Diagnoseinformationen, aber ohne die drei
+    # Strategie-Funnel als vermeintliche Setups. Die Quelle selbst bleibt
+    # unveraendert; hier wird nur der relevante Lageblock uebernommen.
+    start = raw.find("LAGE JE METALL")
+    end = raw.find("==================================================\nSTRATEGIE: TRENDFOLGE")
+    if start < 0:
+        return raw.strip()
+    if end < 0:
+        end = len(raw)
+    return raw[start:end].strip()
+
+def _begrenze_ki_positionsfazits(text):
+    """Begrenzt jedes KI-Positionsfazit deterministisch auf maximal 2 Saetze."""
+    if not text:
+        return text
+    splitter = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜÀ-ÖØ-Þ])")
+    result = []
+    for line in text.splitlines():
+        m = re.match(r"^(\s*KI-Positionsfazit\s*:\s*)(.*)$", line, re.IGNORECASE)
+        if not m:
+            result.append(line)
+            continue
+        sentences = splitter.split(m.group(2).strip())
+        result.append(m.group(1) + " ".join(sentences[:2]).strip())
+    return "\n".join(result)
 
 def _legacy_sections(text):
     """Zerlegt Gemini ausschließlich anhand der bekannten Legacy-Quellüberschriften."""
