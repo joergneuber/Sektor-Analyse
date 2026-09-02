@@ -1,0 +1,27 @@
+﻿Ticker;Name;Sektor;Markt;Waehrung;Richtung;Ideen_Quelle;Einstiegsdatum;Einstieg;Aktueller_Kurs;Stop;TP1;TP2;Status;Ausstiegsdatum;Ausstiegskurs;Performance_Seit_Einstieg%;TP_Hinweis;Alert_Hinweis;Produkt_Typ;Emittent;Hebel;OS_Einstiegskurs;OS_Manueller_Kurs;OS_Performance%;OS_Quelle;OS_WKN
+MDLZ;Mondelez International, Inc.;Consumer Defensive;US;USD;Long;Trendfolge;17.07.2026;61.00;62.66;61.00;64.35;69.64;Verkauft;05.08.2026;62.66;2.72;;;;;;;;;;
+DUK;Duke Energy Corporation;Utilities;US;USD;Long;Trendfolge;24.07.2026;129.26;124.03;124.10;134.49;141.25;Gestoppt;03.08.2026;124.03;-4.05;;;;;;;;;;
+AI.PA;L'Air Liquide S.A.;Basic Materials;EU;EUR;Long;Trendfolge;03.07.2026;179.00;171.48;168.50;190.00;200.00;Verkauft;31.07.2026;171.48;-4.63;;;;;;;;;;
+IRM;Iron Mountain Incorporated;Real Estate;US;USD;Long;Trendfolge;17.07.2026;123.82;124.64;118.66;134.68;141.41;Verkauft;31.07.2026;124.64;0.66;;;;;;;;;;
+ROST;Ross Stores, Inc.;Consumer Cyclical;US;USD;Long;Trendfolge;16.07.2026;219.46;251.96;219.46;242.81;254.95;Verkauft;30.07.2026;251.96;14.81;;;;;;;;;;
+AVGO;Broadcom Inc.;Technology;US;USD;Long;Trendfolge;24.07.2026;392.47;370.32;357.80;495.00;519.75;Verkauft;30.07.2026;370.32;-5.64;;;;;;;;;;
+EXR;Extra Space Storage Inc.;Real Estate;US;USD;Long;Trendfolge;28.07.2026;148.29;146.80;148.29;155.19;162.95;Gestoppt;30.07.2026;146.80;-1.00;;;;;;;;;;
+TXT;Textron Inc.;Industrials;US;USD;Long;Trendfolge;24.07.2026;93.19;86.11;88.25;101.57;106.65;Gestoppt;29.07.2026;86.11;-7.60;;;;;;;;;;
+RWE.DE;RWE AG;Utilities;EU;EUR;Long;Trendfolge;13.07.2026;56.24;56.22;56.24;58.04;60.08;Gestoppt;28.07.2026;56.22;-0.04;;;;;;;;;;
+NVDA;NVIDIA Corporation;Technology;US;USD;Long;Trendfolge;16.07.2026;203.53;193.96;195.70;236.54;248.37;Gestoppt;28.07.2026;193.96;-4.70;;;;;;;;;;
+SRT3.DE;Sartorius Aktiengesellschaft;Healthcare;EU;EUR;Long;Trendfolge;13.07.2026;247.00;216.40;232.50;290.00;310.00;Gestoppt;21.07.2026;216.40;-12.39;;;;;;;;;;
+OXY;Occidental Petroleum Corporation;Energy;US;USD;Long;Trendfolge;15.07.2026;54.57;57.77;58.00;67.45;70.82;Gestoppt;13.08.2026;57.77;5.86;;;;;;;;;;
+BAS.DE;BASF SE;Basic Materials;EU;EUR;Long;Trendfolge;16.07.2026;49.42;50.02;50.50;52.60;54.32;Gestoppt;13.08.2026;50.02;1.21;;;;;;;;;;
+DEZ.DE;DEUTZ Aktiengesellschaft;Industrials;EU;EUR;Long;Trendfolge;09.08.2026;10.31;10.30;10.31;11.56;12.10;Gestoppt;13.08.2026;10.30;-0.10;;;;;;;;;;
+STLD;Steel Dynamics, Inc.;Basic Materials;US;USD;Long;Trendfolge;23.07.2026;238.64;256.86;258.00;270.08;288.71;Gestoppt;14.08.2026;256.86;7.63;;;;;;;;;;
+VRTX;Vertex Pharmaceuticals Incorporated;Healthcare;US;USD;Long;Hebeltrader-Setup;07.08.2026;484.03;505.50;515.00;533.67;560.35;Gestoppt;14.08.2026;505.50;4.44;;;;;;;;;;
+GEN;Gen Digital Inc.;Technology;US;USD;Long;Hebeltrader-Setup;09.08.2026;29.17;27.81;28.25;29.70;32.22;Gestoppt;17.08.2026;27.81;-4.66;;;;;;;;;;
+TSM;Taiwan Semiconductor Manufacturing Company Limited;Technology;US;USD;Long;Trendfolge;06.08.2026;414.00;413.57;414.00;479.00;502.95;Gestoppt;18.08.2026;413.57;-1.54;;;;;;;;;;
+TXN;Texas Instruments Incorporated;Technology;US;USD;Long;Trendfolge;17.08.2026;282.92;271.05;272.51;334.03;334.03;Gestoppt;18.08.2026;271.05;-4.20;;;;;;;;;;
+LIN;Linde plc;Basic Materials;US;USD;Short;Short;18.08.2026;478.20;480.43;478.20;471.14;416.63;Gestoppt;18.08.2026;480.43;-0.46;;;;;;;;;;
+MTX.DE;MTU Aero Engines;Industrials;EU;EUR;Long;Trendfolge;04.08.2026;361.80;366.70;370.00;400.21;420.22;Gestoppt;19.08.2026;366.70;-1.11;;;;;;;;;;
+SDF.DE;K+S Aktiengesellschaft;Basic Materials;EU;EUR;Long;Trendfolge;14.08.2026;14.83;14.69;14.70;16.82;17.82;Gestoppt;20.08.2026;14.69;-0.94;;;;;;;;;;
+GC=F;Gold Future;Edelmetalle / Gold (Future);FUTURES;USD;Long;Manuell;20.08.2026;4516.00;4706.00;4530.00;4705.00;4774.00;Verkauft;24.08.2026;4706.00;4.47;;;;;;;;;;
+ARGX;argenx SE;Healthcare;US;USD;Long;Hebeltrader-Setup;07.08.2026;875.30;1011.37;1015.00;1100.00;1200.00;Gestoppt;24.08.2026;1011.37;15.55;;;;;;;;;;
+ADM;Archer-Daniels-Midland Company;Consumer Defensive;US;USD;Long;Trendfolge;20.08.2026;80.76;77.83;78.00;88.46;91.00;Gestoppt;24.08.2026;77.83;-3.63;;;;;;;;;;
+NEM;Newmont Corporation;Basic Materials;US;USD;Long;Manuell;12.05.2026;120.00;131.58;122.50;140.00;150.00;Verkauft;24.08.2026;131.58;9.87;;;;;;;;;;
