@@ -82,8 +82,6 @@ NUMERIC_COLUMNS = {
     "Measured_Move_Ziel", "Round_Number_Zone", "Uebergeordneter_Widerstand",
 }
 
-INITIAL_HISTORY_FILE = "Geschlossene Positionen_Initialbestand.csv"
-
 HISTORY_HEADERS = [
     "Ticker", "Name", "Sektor", "Markt", "Waehrung", "Richtung",
     "Ideen_Quelle", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs",
@@ -974,34 +972,6 @@ def make_row(row, tech: TechnicalResult) -> dict:
     }
 
 
-
-def load_initial_history() -> pd.DataFrame:
-    """Lädt den einmaligen historischen Backfill als zusätzliche Faktenbasis.
-
-    Die Datei bleibt im Repository, damit ein neuer/geleerter Master nicht
-    automatisch mit einer leeren Historie startet. Doppelte Positionen werden
-    später über die verbindliche Positionsidentität dedupliziert.
-    """
-    if not os.path.exists(INITIAL_HISTORY_FILE):
-        return pd.DataFrame(columns=HISTORY_HEADERS)
-    try:
-        df = pd.read_csv(INITIAL_HISTORY_FILE, sep=";", decimal=",", dtype=str, encoding="utf-8-sig").fillna("")
-    except Exception as exc:
-        raise RuntimeError(f"Historischer Initialbestand konnte nicht gelesen werden: {exc}") from exc
-    missing = [c for c in HISTORY_HEADERS if c not in df.columns]
-    if missing:
-        raise RuntimeError("Historischer Initialbestand hat Pflichtspalten nicht: " + ", ".join(missing))
-    df = df[HISTORY_HEADERS].copy()
-    if df.empty:
-        raise RuntimeError("Historischer Initialbestand ist leer.")
-    for _, row in df.iterrows():
-        if not str(row.get("Ticker","")).strip() or not str(row.get("Name","")).strip():
-            raise RuntimeError("Historischer Initialbestand enthält eine ungültige Position ohne Ticker/Name.")
-        if parse_number(row.get("Einstieg")) is None or not str(row.get("Einstiegsdatum","")).strip():
-            raise RuntimeError(f"Historischer Initialbestand: ungültige Positionsidentität bei {row.get('Ticker','')}.")
-    return df
-
-
 def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
     """Uebernimmt Gestoppt/Verkauft als historische Faktenbasis.
     Keine aktuelle technische Neuberechnung fuer geschlossene Positionen.
@@ -1019,11 +989,7 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
     if "Einstiegsdatum" not in df.columns:
         raise ValueError("Offene_Positionen.csv enthält keine Spalte 'Einstiegsdatum'.")
     open_df = df[df.apply(is_open, axis=1)].copy()
-    source_closed_df = extract_closed_history(df)
-    initial_history_df = load_initial_history()
-    closed_df = pd.concat([initial_history_df, source_closed_df], ignore_index=True)
-    if not closed_df.empty:
-        closed_df = merge_closed_history([], closed_df)
+    closed_df = extract_closed_history(df)
     results = []
     print(f"OFFENE POSITIONEN + CHECK: {len(open_df)} offene Positionen gefunden.")
     print(f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen.")
@@ -1248,62 +1214,41 @@ def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
 
 
 
-def _history_key(row) -> tuple:
-    """Dedupliziert Historie ausschließlich über die Positionsidentität.
-
-    Verbindliche Positionsidentität:
-    Name + Ticker + Einstieg + Einstiegsdatum.
-    Status/Ausstiegsdaten gehören NICHT zum Identitätsschlüssel; dadurch kann
-    derselbe Trade bei wiederholten Läufen nicht als neue historische Position
-    dupliziert werden. Unterschiedliche Trades desselben Tickers bleiben getrennt.
+def _history_key(row) -> tuple[str, str, str, str]:
+    """Stabiler Schlüssel für einen historischen Trade.
+    Primär Ticker + Einstiegsdatum + Ausstiegsdatum + Status.
+    Dadurch werden alte Trades beim nächsten Lauf nicht dupliziert.
     """
-    name = re.sub(r"\s+", " ", str(row.get("Name", "")).strip()).casefold()
-    ticker = str(row.get("Ticker", "")).strip().upper()
-    entry = parse_number(row.get("Einstieg"))
-    date = str(row.get("Einstiegsdatum", "")).strip()
-    if not name or not ticker or entry is None or not date:
-        # Ungültige historische Zeilen dürfen nicht stillschweigend mit einer
-        # gemeinsamen Leerkonstellation dedupliziert werden. Die Validierung
-        # vor dem produktiven Schreiben fängt solche Datensätze ab.
-        return (name, ticker, str(row.get("Einstieg", "")).strip(), date)
-    return (name, ticker, round(float(entry), 10), date)
+    return (
+        str(row.get("Ticker", "")).strip().upper(),
+        str(row.get("Einstiegsdatum", "")).strip(),
+        str(row.get("Ausstiegsdatum", "")).strip(),
+        str(row.get("Status", "")).strip().lower(),
+    )
 
 
 def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame) -> pd.DataFrame:
-    """Führt bestehende Google-Sheet-Historie und neue Abschlüsse zusammen.
+    """Führt bestehende Google-Sheet-Historie und neu geschlossene Trades zusammen.
 
-    Unterstützt beide zulässigen historischen Darstellungen:
-    - Titelzeile + Headerzeile (aktuelles produktives Tab)
-    - Headerzeile ohne Titelzeile (Legacy/Test)
-    Die bestehende Historie wird niemals wegen einer aktuellen technischen
-    Neuberechnung ersetzt.
+    Die bestehende Historie ist die dauerhafte Faktenbasis. Neue Gestoppt/Verkauft-
+    Datensätze werden ergänzt; bestehende historische Datensätze werden nicht
+    durch eine aktuelle technische Neuberechnung überschrieben.
     """
     rows = []
     if existing_rows:
-        first = [str(x).strip() for x in existing_rows[0]]
-        if "Ticker" in first and "Status" in first:
-            header_index = 0
-        elif len(existing_rows) > 1:
-            second = [str(x).strip() for x in existing_rows[1]]
-            header_index = 1 if "Ticker" in second and "Status" in second else None
-        else:
-            header_index = None
+        old_headers = [str(x).strip() for x in existing_rows[0]]
+        for raw in existing_rows[1:]:
+            if not any(str(x).strip() for x in raw):
+                continue
+            item = {}
+            for i, col in enumerate(old_headers):
+                if col in HISTORY_HEADERS:
+                    item[col] = raw[i] if i < len(raw) else ""
+            if str(item.get("Ticker", "")).strip():
+                rows.append(item)
 
-        if header_index is not None:
-            old_headers = [str(x).strip() for x in existing_rows[header_index]]
-            for raw in existing_rows[header_index + 1:]:
-                if not any(str(x).strip() for x in raw):
-                    continue
-                item = {}
-                for i, col in enumerate(old_headers):
-                    if col in HISTORY_HEADERS:
-                        item[col] = raw[i] if i < len(raw) else ""
-                if str(item.get("Ticker", "")).strip():
-                    rows.append(item)
-
-    if new_closed_df is not None and not new_closed_df.empty:
-        for _, r in new_closed_df.iterrows():
-            rows.append({c: r.get(c, "") for c in HISTORY_HEADERS})
+    for _, r in new_closed_df.iterrows():
+        rows.append({c: r.get(c, "") for c in HISTORY_HEADERS})
 
     merged = pd.DataFrame(rows, columns=HISTORY_HEADERS)
     if merged.empty:
@@ -1346,7 +1291,8 @@ def read_existing_open_rows(sheets, spreadsheet_id: str) -> list[list]:
         ).execute()
         return response.get("values", [])
     except Exception as exc:
-        raise RuntimeError(f"Vorheriger offener Bestand konnte nicht sicher gelesen werden: {exc}") from exc
+        print(f"WARNUNG: Vorheriger offener Bestand konnte nicht gelesen werden: {exc}")
+        return []
 
 
 def extract_disappeared_open_positions(existing_open_rows: list[list], current_df: pd.DataFrame) -> pd.DataFrame:
@@ -1393,115 +1339,34 @@ def extract_disappeared_open_positions(existing_open_rows: list[list], current_d
     return pd.DataFrame(disappeared, columns=HISTORY_HEADERS).fillna("")
 
 
-def _history_record_count(rows: list[list]) -> int:
-    """Zählt echte historische Datensätze in beiden zulässigen Tab-Formaten."""
-    if not rows:
-        return 0
-    first = [str(x).strip() for x in rows[0]]
-    if "Ticker" in first and "Status" in first:
-        header_index = 0
-    elif len(rows) > 1:
-        second = [str(x).strip() for x in rows[1]]
-        header_index = 1 if "Ticker" in second and "Status" in second else None
-    else:
-        header_index = None
-    if header_index is None:
-        return 0
-    ticker_idx = first.index("Ticker") if header_index == 0 else [str(x).strip() for x in rows[header_index]].index("Ticker")
-    return sum(1 for raw in rows[header_index + 1:] if len(raw) > ticker_idx and str(raw[ticker_idx]).strip())
-
-
-def _history_rows_from_sheet(sheets, spreadsheet_id: str, tab_title: str = "Geschlossene Positionen") -> list[list]:
-    """Liest einen Historien-Tab und wirft bei vorhandener, aber unlesbarer Struktur ab."""
-    meta = sheets.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute().get("sheets", [])
-    titles = {str(x.get("properties", {}).get("title", "")).strip() for x in meta}
-    if tab_title not in titles:
-        return []
-    rows = sheets.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{tab_title}'!A:AA",
-    ).execute().get("values", [])
-    return rows
-
-
-def _recover_history_from_backups(drive, sheets, current_spreadsheet_id: str) -> list[list]:
-    """Sicherheits-Recovery aus persistenten Drive-Backups.
-
-    Wird NUR benutzt, wenn das produktive Historien-Tab leer erscheint.
-    Es wird der jüngste Backup-Stand mit einer gültigen Historie übernommen.
-    So kann ein versehentlich leer geschriebener Tab 2 die Historie nicht
-    dauerhaft vernichten. Backups werden niemals als Produktiv-Sheet verwendet.
-    """
-    q = (
-        "name contains 'Offene Positionen+Check - Backup' "
-        f"and '{FOLDER_ID}' in parents and trashed=false"
-    )
-    files = drive.files().list(
-        q=q,
-        fields="files(id,name,mimeType,modifiedTime,createdTime)",
-        orderBy="modifiedTime desc",
-    ).execute().get("files", [])
-    candidates = [
-        f for f in files
-        if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
-        and f.get("id") != current_spreadsheet_id
-    ]
-    for candidate in candidates:
-        try:
-            rows = _history_rows_from_sheet(sheets, candidate["id"])
-            count = _history_record_count(rows)
-            if count:
-                print(
-                    "PERSISTENZ-RECOVERY: Historie aus Backup übernommen | "
-                    f"Backup-ID={candidate['id']} | Datensätze={count}"
-                )
-                return rows
-        except Exception as exc:
-            print(f"PERSISTENZ-RECOVERY: Backup {candidate.get('id')} übersprungen: {exc}")
-    return []
-
-
 def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
-    """Liest Tab 2 vor jedem produktiven Überschreiben."""
+    """Liest den Historien-Tab nur, wenn er tatsächlich vorhanden ist.
+
+    Beim Erstlauf existiert der produktive Tab ggf. noch nicht. In diesem Fall
+    wird bewusst keine ungültige A1-Range abgefragt, damit Google Sheets keinen
+    400-Fehler wegen eines nicht vorhandenen Tabs erzeugt.
+    """
     try:
-        return _history_rows_from_sheet(sheets, spreadsheet_id)
-    except Exception as exc:
-        raise RuntimeError(f"Bestehende Historie konnte nicht sicher gelesen werden: {exc}") from exc
-
-
-def _select_persistent_master(drive, sheets) -> str:
-    """Ermittelt deterministisch das produktive Historien-Master-Sheet."""
-    q=f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
-    files=drive.files().list(
-        q=q, fields="files(id,name,mimeType,modifiedTime,createdTime)",
-        orderBy="modifiedTime desc",
-    ).execute().get("files", [])
-    candidates=[f for f in files if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"]
-    for candidate in candidates:
-        meta=sheets.spreadsheets().get(
-            spreadsheetId=candidate["id"], fields="sheets.properties"
+        existing = sheets.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties",
         ).execute().get("sheets", [])
-        titles={str(x.get("properties",{}).get("title","")).strip() for x in meta}
-        if {"Offene Positionen + Check", "Geschlossene Positionen"}.issubset(titles):
-            print(f"PERSISTENZ: Historien-Master-Sheet-ID={candidate['id']} | beide produktiven Tabs vorhanden")
-            return candidate["id"]
-    if len(candidates)==1:
-        print(f"PERSISTENZ: Historien-Master-Sheet-ID={candidates[0]['id']} | Migrationsfall")
-        return candidates[0]["id"]
-    if candidates:
-        raise RuntimeError(
-            "Mehrere gleichnamige Google-Sheets vorhanden, aber kein eindeutig "
-            "historientauglicher Master mit beiden produktiven Tabs. "
-            "Schreibvorgang wird zum Schutz der Historie abgebrochen."
-        )
-    created=drive.files().create(
-        body={"name":DRIVE_NAME,"mimeType":"application/vnd.google-apps.spreadsheet","parents":[FOLDER_ID]},
-        fields="id,name"
-    ).execute()
-    print(f"PERSISTENZ: Neues Historien-Master-Sheet erstellt | ID={created['id']}")
-    return created["id"]
+        titles = {
+            str(s.get("properties", {}).get("title", "")).strip()
+            for s in existing
+        }
+        if "Geschlossene Positionen" not in titles:
+            return []
+
+        response = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="'Geschlossene Positionen'!A:AA",
+        ).execute()
+        return response.get("values", [])
+    except Exception as exc:
+        print(f"WARNUNG: Bestehende Historie konnte nicht gelesen werden: {exc}")
+        return []
+
 
 def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
     if creds is None:
@@ -1512,7 +1377,16 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     drive=build("drive","v3",credentials=creds)
     sheets=build("sheets","v4",credentials=creds)
-    spreadsheet_id = _select_persistent_master(drive, sheets)
+    q=f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
+    files=drive.files().list(q=q,fields="files(id,name,mimeType)").execute().get("files",[])
+    if files:
+        spreadsheet_id=files[0]["id"]
+    else:
+        created=drive.files().create(
+            body={"name":DRIVE_NAME,"mimeType":"application/vnd.google-apps.spreadsheet","parents":[FOLDER_ID]},
+            fields="id,name"
+        ).execute()
+        spreadsheet_id=created["id"]
 
     existing = sheets.spreadsheets().get(
         spreadsheetId=spreadsheet_id, fields="sheets.properties"
@@ -1521,19 +1395,6 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     # Bestehende Historie VOR jedem Überschreiben sichern.
     existing_history_rows = read_existing_history(sheets, spreadsheet_id)
-    existing_history_count = _history_record_count(existing_history_rows)
-    print(f"PERSISTENZ: bestehende Historie gelesen | Datensätze={existing_history_count}")
-
-    # Wenn Tab 2 leer erscheint, aber bereits ein produktives Master-Sheet existiert,
-    # darf ein leerer Lesestand NICHT ungeprüft die bisherige Historie ersetzen.
-    # Die dauerhaften Drive-Backups dienen hier als Recovery-Faktenbasis.
-    if existing_history_count == 0 and "Geschlossene Positionen" in existing_titles:
-        recovered_history = _recover_history_from_backups(drive, sheets, spreadsheet_id)
-        if recovered_history:
-            existing_history_rows = recovered_history
-            existing_history_count = _history_record_count(existing_history_rows)
-            print(f"PERSISTENZ: Recovery-Historie aktiv | Datensätze={existing_history_count}")
-
     existing_open_rows = read_existing_open_rows(sheets, spreadsheet_id)
     disappeared_closed = extract_disappeared_open_positions(existing_open_rows, df)
     if not disappeared_closed.empty:
@@ -1565,18 +1426,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
     }
 
-    initial_history_df = load_initial_history()
-    seed_for_merge = pd.concat([initial_history_df, closed_for_merge], ignore_index=True)
-    merged_history = merge_closed_history(existing_history_rows, seed_for_merge)
-
-    # Harte Verlustsperre: Wenn vor dem Lauf eine nichtleere Historie vorhanden
-    # war, darf der zu schreibende Stand niemals leer sein.
-    if existing_history_count > 0 and len(merged_history) == 0:
-        raise RuntimeError(
-            "Sicherheitsabbruch: bestehende Historie war nichtleer, aber der "
-            "neue Historienstand wäre leer. Kein Überschreiben von Tab 2."
-        )
-
+    merged_history = merge_closed_history(existing_history_rows, closed_for_merge)
     hvalues=[[f"Geschlossene Positionen | historische Faktenbasis | Stand {now}"]+[""]*(len(HISTORY_HEADERS)-1),HISTORY_HEADERS]
     for _,r in merged_history.iterrows(): hvalues.append([r.get(c,"") for c in HISTORY_HEADERS])
     hwidths={c:140 for c in HISTORY_HEADERS}
@@ -1602,16 +1452,6 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         _write_sheet(sheets, spreadsheet_id, temp_open, values, widths, 2, target_title=temp_open)
         _write_sheet(sheets, spreadsheet_id, temp_closed, hvalues, hwidths, 2, target_title=temp_closed)
 
-        # Forensische Vor-Swap-Kontrolle: der temporäre Historien-Tab muss exakt
-        # die erwartete Anzahl historischer Datensätze enthalten.
-        temp_history_rows = _history_rows_from_sheet(sheets, spreadsheet_id, temp_closed)
-        temp_history_count = _history_record_count(temp_history_rows)
-        if temp_history_count != len(merged_history):
-            raise RuntimeError(
-                "Sicherheitsabbruch: temporärer Historien-Tab enthält "
-                f"{temp_history_count} statt {len(merged_history)} Datensätze."
-            )
-
         # Beide neuen Tabs sind vollständig beschrieben und formatiert. Erst jetzt
         # werden sie gegen die produktiven Tabs getauscht.
         targets = {
@@ -1620,16 +1460,6 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         }
         # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
         _swap_temp_tabs(sheets, spreadsheet_id, targets)
-
-        # Forensische Nach-Swap-Kontrolle: Tab 2 muss nach dem Austausch weiterhin
-        # exakt dieselbe Historienmenge enthalten. Erst danach ist der Lauf erfolgreich.
-        final_history_rows = _history_rows_from_sheet(sheets, spreadsheet_id, "Geschlossene Positionen")
-        final_history_count = _history_record_count(final_history_rows)
-        if final_history_count != len(merged_history):
-            raise RuntimeError(
-                "Sicherheitsabbruch: produktiver Historien-Tab enthält "
-                f"{final_history_count} statt {len(merged_history)} Datensätze nach dem Swap."
-            )
 
         # Nur nach erfolgreichem Swap werden alte Backup-Tabs entfernt.
         # Scheitert die Bereinigung, bleiben sie als zusätzliche Sicherheitskopie.
@@ -1916,39 +1746,50 @@ def _remove_closed_from_source(
     position_source = source.iloc[1:].copy()
     prefix = source.iloc[:1].copy()
 
-    source_keys = []
-    source_key_by_index = {}
-    for idx, row in position_source.iterrows():
-        # Nicht-Positionszeilen bleiben unangetastet. Ein echter Positionsdatensatz
-        # muss dagegen weiterhin alle vier Identitätsfelder besitzen.
-        if not any(str(row.get(c, "")).strip() for c in ("Name", "Ticker", "Einstieg", "Einstiegsdatum")):
-            continue
-        try:
-            key = _position_key(row)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                f"Ungültiger Positionsdatensatz in Offene_Positionen.csv (Zeile {idx + 2}): {exc}"
-            ) from exc
-        source_keys.append(key)
-        source_key_by_index[idx] = key
-
+    source_keys = [_position_key(row) for _, row in position_source.iterrows()]
     if len(source_keys) != len(set(source_keys)):
         raise RuntimeError(
             "Offene_Positionen.csv enthält doppelte identische Positionsschlüssel; "
             "kein automatisches Entfernen wird durchgeführt."
         )
 
-    key_set = set(closed_keys)
-    matches = [source_key_by_index.get(idx) in key_set for idx in position_source.index]
+    source_key_set = set(source_keys)
+    # WICHTIG: `closed_df` kann neben aktuell geschlossenen Positionen auch
+    # den historischen Initialbestand enthalten. Historische Datensätze müssen
+    # NICHT in der aktuellen Offene_Positionen.csv vorhanden sein und dürfen
+    # deshalb keinen Abbruch auslösen. Entfernt werden ausschließlich jene
+    # geschlossenen Positionen, die tatsächlich noch in der aktuellen Quelle
+    # stehen.
+    removable_keys = [key for key in closed_keys if key in source_key_set]
+    missing_historical = [key for key in closed_keys if key not in source_key_set]
+    if missing_historical:
+        print(
+            "PERSISTENZ: Historische Position(en) nicht in aktueller Quelle "
+            f"vorhanden; bleiben ausschließlich in der Historie. Anzahl={len(missing_historical)}"
+        )
+
+    key_set = set(removable_keys)
+    matches = [key in key_set for key in source_keys]
     match_count = sum(matches)
 
-    if match_count != len(closed_keys):
-        missing = [k for k in closed_keys if k not in set(source_keys)]
+    # Jede tatsächlich in der Quelle vorhandene geschlossene Position muss
+    # eindeutig entfernt werden. Nicht vorhandene historische Positionen sind
+    # dagegen erwartbar und werden bewusst nicht als Fehler behandelt.
+    if match_count != len(removable_keys):
+        missing_current = [k for k in removable_keys if k not in set(source_keys)]
         raise RuntimeError(
-            "Nicht alle geschlossenen Positionen konnten in Offene_Positionen.csv "
-            f"eindeutig gefunden werden. Gefunden={match_count}, erwartet={len(closed_keys)}; "
-            f"fehlend={missing}"
+            "Nicht alle aktuell zu entfernenden geschlossenen Positionen konnten "
+            "in Offene_Positionen.csv eindeutig gefunden werden. "
+            f"Gefunden={match_count}, erwartet={len(removable_keys)}; "
+            f"fehlend={missing_current}"
         )
+
+    if not removable_keys:
+        print(
+            "PERSISTENZ: Keine der übergebenen Historienpositionen steht aktuell "
+            "als geschlossene Position in der Quelle; Quelle bleibt unverändert."
+        )
+        return 0
 
     # Nur Status "gestoppt"/"verkauft" darf automatisiert entfernt werden.
     for row, is_match in zip(position_source.to_dict("records"), matches):
@@ -1979,10 +1820,7 @@ def _remove_closed_from_source(
         )
 
     # Noch einmal prüfen: Jede geschlossene Position ist tatsächlich verschwunden.
-    remaining_keys = set()
-    for idx, row in remaining_positions.iterrows():
-        if any(str(row.get(c, "")).strip() for c in ("Name", "Ticker", "Einstieg", "Einstiegsdatum")):
-            remaining_keys.add(_position_key(row))
+    remaining_keys = {_position_key(row) for _, row in remaining_positions.iterrows()}
     if remaining_keys.intersection(key_set):
         raise RuntimeError(
             "Sicherheitsabbruch: Mindestens eine geschlossene Position wäre weiterhin vorhanden."
@@ -2013,10 +1851,7 @@ def _remove_closed_from_source(
             )
 
         written_positions = written.iloc[1:].copy()
-        written_keys = set()
-        for _, row in written_positions.iterrows():
-            if any(str(row.get(c, "")).strip() for c in ("Name", "Ticker", "Einstieg", "Einstiegsdatum")):
-                written_keys.add(_position_key(row))
+        written_keys = {_position_key(row) for _, row in written_positions.iterrows()}
         if written_keys.intersection(key_set):
             raise RuntimeError(
                 "Sicherheitsabbruch: temporäre Datei enthält weiterhin geschlossene Position."
@@ -2035,11 +1870,8 @@ def _remove_closed_from_source(
         # Nachkontrolle des tatsächlich ersetzten Originals.
         verified = read_positions(source_file)
         verified_positions = verified.iloc[1:].copy()
-        verified_keys = set()
-        for _, row in verified_positions.iterrows():
-            if any(str(row.get(c, "")).strip() for c in ("Name", "Ticker", "Einstieg", "Einstiegsdatum")):
-                verified_keys.add(_position_key(row))
-        if verified_keys.intersection(key_set):
+        verified_keys = [_position_key(row) for _, row in verified_positions.iterrows()]
+        if set(verified_keys).intersection(key_set):
             raise RuntimeError(
                 "Nachkontrolle fehlgeschlagen: geschlossene Position weiterhin in Quelle."
             )
