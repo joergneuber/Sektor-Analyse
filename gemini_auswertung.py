@@ -1,140 +1,397 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Offene Positionen + Check
+gemini_auswertung.py
 
-Eigenstaendiger technischer Check fuer AUSSCHLIESSLICH offene Positionen.
-Die bestehende Offene_Positionen.csv wird nur gelesen und niemals veraendert.
+Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
+(Ersatz fuer das manuelle Kopieren in den Gem-Chat) - kostenlose
+Alternative zu claude_auswertung.py, da die Gemini-API (anders als die
+Claude-API) eine dauerhafte kostenlose Nutzungsstufe bietet.
 
-Feste Regeln:
-- Steuerungsart kennt nur "Aktiver Trade" und "Buy & Hold".
-- Technische Analyse nur bei Status == "Offen".
-- Breakout aktiviert NICHT automatisch Fibonacci.
-- Fibonacci/Fibonacci-Extension erst nach bestaetigter A-B-C-Struktur.
-- Historische Major-Level (insbesondere ATH) bleiben unabhaengig erhalten.
-- Ein gebrochener Widerstand wird als moegliche Retest-/Supportzone weitergefuehrt.
-- Keine technischen Zielwerte werden in TP1/TP2 der Originaldatei geschrieben.
-- Letzter abgeschlossener Tages-Schluss wird fuer aktuelle technische Werte verwendet.
-- Fehlende/duenne Daten fuehren zu einer expliziten Datenqualitaetsmeldung statt
-  zu erfundenen Zielzonen.
-- Die Ausgabe ist eine neue Datei / ein neues Google Sheet "Offene Positionen+Check".
+Mit automatischem Retry bei den bekannten, nicht-deterministischen
+Sicherheitsfilter-Ablehnungen ("Ich bin nur ein Sprachmodell...", etc.)
+und - NEU 30.07.2026 - mit einer eigenen, deutlich laengeren Warte-Staffel
+fuer serverseitige Ueberlast (HTTP 503) und Netzwerk-Abbrueche.
+
+Voraussetzungen:
+    pip install google-genai
+
+Erwartet folgende Umgebungsvariable (z. B. als GitHub Actions Secret):
+    GEMINI_API_KEY
+
+Erwartet im Arbeitsverzeichnis (Pfade/Muster unten in KONFIGURATION anpassen):
+    Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md   (Master-Anweisung, reiner Text)
+    briefing.txt (oder Briefing(<Datum>).txt)
+    Setups(<Datum>).csv
+    Performance(<Datum>).csv
+    Performance_EU(<Datum>).csv
+    Offene Positionen+Check.csv (verbindlich)
+    Trendwende_Setups(<Datum>).csv (optional)
+    Trendwende_Briefing(<Datum>).txt (optional)
+
+Short_Setups(<Datum>).csv und Short_Briefing(<Datum>).txt (NEU, optional)
+werden NICHT lokal erwartet, sondern bei Bedarf automatisch aus Google
+Drive nachgeladen (siehe lade_short_dateien_von_drive) - der Short-Scanner
+laeuft als eigener, frueherer Workflow (z. B. 04:00 Uhr MESZ) und teilt
+sich kein lokales Dateisystem mit diesem Lauf, laedt sein Ergebnis aber
+wie die anderen Scanner nach Drive hoch. Dafuer wird zusaetzlich
+GDRIVE_TOKEN benoetigt (dasselbe Secret wie bei upload_to_drive.py).
+
+Ergebnis wird nach Auswertung(<Datum>).txt geschrieben (gleicher Dateiname
+wie bei claude_auswertung.py, damit upload_to_drive.py nichts anpassen
+muss - beide Skripte sind austauschbar, nicht gleichzeitig laufen lassen).
 """
 
-from __future__ import annotations
-
-import csv
-import datetime as dt
-import io
-import json
-import math
 import os
+import sys
+import glob
 import re
-import ast
-from dataclasses import dataclass
-from typing import Iterable, Optional
+import csv
+import time
+import json
+import datetime
 
-import numpy as np
-import pandas as pd
-import yfinance as yf
-from scipy.signal import argrelextrema
-
-# Optional: Google Sheets/Drive nur fuer die Ausgabe. Der lokale Check funktioniert
-# auch ohne Google-Credentials und erzeugt dann die CSV-Ausgabe.
-try:
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaIoBaseUpload
-    GOOGLE_AVAILABLE = True
-except Exception:
-    GOOGLE_AVAILABLE = False
+from google import genai
+from google.genai import types
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
 
 
-INPUT_FILE = "Offene_Positionen.csv"
-OUTPUT_CSV = "Offene Positionen+Check.csv"
-DRIVE_NAME = "Offene Positionen+Check"
-FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
-GOLD_SPOT_TICKER = "XAUUSD=X"
-# Historischer Widerstand gilt fuer die Fibonacci-Sperre nur dann als
-# "unmittelbar", wenn er maximal 10 % oberhalb des aktuellen Kurses liegt.
-# Weiter entfernte Major-Level/ATH bleiben eigenstaendige Referenzen und
-# blockieren Fibonacci nicht.
-IMMEDIATE_RESISTANCE_MAX_DISTANCE = 0.10
+# ---------------------------------------------------------------------------
+# KONFIGURATION
+# ---------------------------------------------------------------------------
 
-HEADERS = [
-    "Ticker", "Name", "Steuerungsart", "Sektor", "Markt", "Waehrung",
-    "Status", "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
-    "Technischer_Zustand", "Trendrichtung", "Technische_Lage",
-    "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
-    "Breakout_Status", "A-B-C_Status", "Fibonacci_Status",
-    "Fibonacci_Ziel_1", "Fibonacci_Ziel_2", "Fibonacci_Ziel_3", "Trendkanal_Obergrenze",
-    "Measured_Move_Ziel", "Formation", "Round_Number_Zone", "Major_Resistance",
-    "Ueberdehnung", "Relative_Staerke_Sektor", "Konfluenz", "Retest_Support",
-    "Technische_Zielzone", "Datenqualitaet", "Analysehinweis",
-]
+MODELL = "gemini-3.5-flash"  # Primaer-Modell
+FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback
+DRITTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Zweiter Fallback bei 503-Ueberlast
+                              # Das dritte Modell wird nur verwendet, wenn auch der erste
+                              # Fallback weiterhin serverseitig ueberlastet ist.
 
-NUMERIC_COLUMNS = {
-    "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
-    "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
-    "Fibonacci_Ziel_1", "Fibonacci_Ziel_2", "Fibonacci_Ziel_3", "Trendkanal_Obergrenze",
-    "Measured_Move_Ziel", "Round_Number_Zone", "Major_Resistance",
+MAX_VERSUCHE = 5
+WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
+
+# NEU (30.07.2026): eigene, deutlich laengere Staffel fuer SERVERSEITIGE
+# UEBERLAST (HTTP 503 "This model is currently experiencing high demand")
+# und fuer Netzwerk-Abbrueche. Anlass: der Morgenlauf am 30.07. verbrannte
+# alle fuenf Versuche in rund zwei Minuten (15/20/25/30/35 s), weil die alte
+# Formel WARTEZEIT_SEKUNDEN + versuch*5 fuer JEDEN Fehlertyp galt. Eine
+# Nachfragespitze bei einem Gratis-Modell dauert typischerweise laenger als
+# zwei Minuten - fuenf Versuche in diesem Fenster sind praktisch fuenf
+# Versuche im selben Moment. Exponentiell statt linear:
+UEBERLAST_WARTEZEITEN = [30, 60, 60, 60]  # Sekunden; kurze Staffel vor dem Fallback
+# Ein GitHub-Actions-Job darf 6 Stunden laufen, 15 Minuten sind also
+# unkritisch; laenger ist trotzdem nicht sinnvoll, weil der Lauf sonst den
+# ganzen Vormittag blockiert - dann lieber ein spaeterer Handstart.
+
+ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
+
+# Gleicher Drive-Ordner wie in upload_to_drive.py - dort landen alle
+# Scanner-Ausgaben, von dort werden ggf. die Short-Dateien nachgeladen.
+DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
+BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
+
+# Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
+# alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
+DATEIMUSTER = {
+    "briefing.txt": ["briefing.txt", "Briefing(*).txt"],
+    "Setups(...).csv": ["Setups(*).csv"],
+    "Performance(...).csv": ["Performance(*).csv"],
+    "Performance_EU(...).csv": ["Performance_EU(*).csv"],
+    "Offene Positionen+Check.csv": ["Offene Positionen+Check.csv"],
+    # Backend-Fallback: Der Tracker benötigt die alte Rohdatei weiterhin für
+    # Positionsfelder, die bewusst NICHT Teil der festgelegten Check-Struktur
+    # sind (z.B. Stop/TP/Richtung/Ideen_Quelle). Sie ist keine technische
+    # Quelle; die technische Wahrheit kommt ausschließlich aus der Check-Datei.
+    "Offene_Positionen.csv": ["Offene_Positionen.csv", "Offene_Positionen(*).csv"],
+    "Trendwende_Setups(...).csv": ["Trendwende_Setups(*).csv"],
+    "Trendwende_Briefing(...).txt": ["Trendwende_Briefing(*).txt"],
+    # NEU (24.07.2026): zuerst LOKAL suchen - falls short_scan_catchup.py in
+    # main.yml den Short-Scan gerade selbst nachgeholt hat (weil short_check.yml
+    # heute nicht gefeuert hat), liegen diese Dateien schon lokal vor und
+    # muessen nicht extra von Drive geholt werden (siehe sammle_eingabedateien).
+    "Short_Setups(...).csv": ["Short_Setups(*).csv"],
+    "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
+    "Einzel_Check_Aufstiege(...).txt": ["Einzel_Check_Aufstiege(*).txt"],
+    "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
+    "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
+    # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
+    # Zukunftsszenarioanalyse; rein informativ, keine bestehende Trading-Logik.
+    "Makro_Briefing(...).txt": ["Makro_Briefing(*).txt"],
+    # Qualitative externe YouTube-Marktquellen; niemals technische/CRV-Werte ersetzen.
+    "Bitcoin_Trading_DE_Briefing.txt": ["Bitcoin_Trading_DE_Briefing.txt"],
+    "Gold_Trading_DE_Briefing.txt": ["Gold_Trading_DE_Briefing.txt"],
+    "Silber_Trading_DE_Briefing.txt": ["Silber_Trading_DE_Briefing.txt"],
+    # NEU: Live-Benchmark gegen MSCI World; wird als verbindlicher
+    # Datenblock an Gemini uebergeben.
+    "Benchmark_Live.txt": ["Benchmark_Live.txt"],
+}
+# Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
+# Positionen und die beiden Trendwende-Dateien sind optional (siehe
+# Abschnitt 7 der Anleitung, die genau diesen Fall vorsieht).
+PFLICHT_DATEIEN = {
+    "briefing.txt",
+    "Setups(...).csv",
+    "Performance(...).csv",
+    "Performance_EU(...).csv",
+    "Offene Positionen+Check.csv",
 }
 
-HISTORY_HEADERS = [
-    "Ticker", "Name", "Sektor", "Markt", "Waehrung", "Richtung",
-    "Ideen_Quelle", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs",
-    "Stop", "TP1", "TP2", "Status", "Ausstiegsdatum", "Ausstiegskurs",
-    "Performance_Seit_Einstieg%", "TP_Hinweis", "Alert_Hinweis",
-    "Produkt_Typ", "Emittent", "Hebel", "OS_Einstiegskurs",
-    "OS_Manueller_Kurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+# Ablehnungs-Muster, die einen automatischen Retry ausloesen
+# (Kleinschreibung, Substring-Suche im Antworttext)
+ABLEHNUNGS_MUSTER = [
+    "ich bin nur ein sprachmodell",
+    "als sprachmodell kann ich",
+    "kann ich in diesem fall nicht helfen",
+    "kann ich bei dieser sache nicht helfen",
+    "verfüge nicht über die möglichkeit",
+    "verfuege nicht ueber die moeglichkeit",
 ]
 
 
-@dataclass
-class TechnicalResult:
-    close: Optional[float] = None
-    ema20: Optional[float] = None
-    ema50: Optional[float] = None
-    ema200: Optional[float] = None
-    rsi: Optional[float] = None
-    trend: str = "Nicht bestimmbar"
-    state: str = "Nicht bestimmbar"
-    support1: Optional[float] = None
-    support2: Optional[float] = None
-    resistance1: Optional[float] = None
-    resistance2: Optional[float] = None
-    breakout_status: str = "Kein bestätigter Breakout"
-    abc_status: str = "Nicht bestätigt"
-    fib_status: str = "Nicht aktiv"
-    fib1: Optional[float] = None
-    fib2: Optional[float] = None
-    fib3: Optional[float] = None
-    channel_upper: Optional[float] = None
-    measured_move: Optional[float] = None
-    formation: str = "Keine belastbare Formation"
-    round_number: Optional[float] = None
-    overextension: str = "Nicht bestimmbar"
-    sector_rs: str = "Nicht bestimmbar"
-    major_resistance: Optional[float] = None
-    confluence: str = "Keine"
-    retest_support: Optional[float] = None
-    data_quality: str = ""
-    note: str = ""
+# ---------------------------------------------------------------------------
+# HILFSFUNKTIONEN
+# ---------------------------------------------------------------------------
 
-
-def parse_number(value) -> Optional[float]:
-    if value is None:
+def get_drive_service():
+    """Baut den Drive-Service auf (lesender Zugriff) - identische Auth-Logik
+    wie in upload_to_drive.py, damit Refresh-Fehler konsistent behandelt
+    werden. Gibt None zurueck (statt zu crashen), falls GDRIVE_TOKEN fehlt
+    oder ungueltig ist - das Nachladen der Short-Dateien ist optional, ein
+    fehlendes/kaputtes Token darf die eigentliche Gemini-Auswertung nicht
+    verhindern."""
+    token_str = os.environ.get("GDRIVE_TOKEN")
+    if not token_str:
+        print("INFO: GDRIVE_TOKEN nicht gesetzt - Short-Dateien werden nicht nachgeladen.")
         return None
-    if isinstance(value, (int, float, np.number)):
+
+    try:
+        token_data = json.loads(token_str)
+        creds = Credentials.from_authorized_user_info(token_data)
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                print("WARNUNG: GDRIVE_TOKEN ungueltig, kein Refresh moeglich - Short-Dateien werden uebersprungen.")
+                return None
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"WARNUNG: Drive-Verbindung fuer Short-Dateien fehlgeschlagen ({e}) - wird uebersprungen.")
+        return None
+
+
+def lade_short_dateien_von_drive():
+    """Sucht im Drive-Ordner nach den heutigen Short_Setups(...).csv und
+    Short_Briefing(...).txt (vom separaten, frueheren Short-Scan-Workflow
+    hochgeladen) und laedt sie lokal herunter, falls vorhanden. Gibt ein
+    Dict {name: lokaler_pfad} zurueck - leer, wenn nichts gefunden wurde
+    oder Drive nicht erreichbar ist (kein Fehler, einfach optional)."""
+    service = get_drive_service()
+    if service is None:
+        return {}
+
+    heute = datetime.date.today().isoformat()
+    gefunden = {}
+
+    for name_praefix, ziel_key, lokaler_name in [
+        ("Short_Setups", "Short_Setups(...).csv", f"Short_Setups({heute}).csv"),
+        ("Short_Briefing", "Short_Briefing(...).txt", f"Short_Briefing({heute}).txt"),
+    ]:
         try:
-            return float(value) if math.isfinite(float(value)) else None
-        except Exception:
-            return None
-    text = str(value).strip()
-    if not text or text.lower() in {"nan", "none", "nat"}:
+            query = (
+                f"name contains '{name_praefix}' and name contains '{heute}' "
+                f"and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+            )
+            ergebnis = service.files().list(q=query, fields="files(id, name)").execute()
+            treffer = ergebnis.get("files", [])
+            if not treffer:
+                print(f"INFO: Keine {name_praefix}-Datei fuer heute ({heute}) in Drive gefunden - Short-Kategorie entfaellt heute.")
+                continue
+
+            datei_id = treffer[0]["id"]
+            request = service.files().get_media(fileId=datei_id)
+            with io.FileIO(lokaler_name, "wb") as f:
+                downloader = MediaIoBaseDownload(f, request)
+                fertig = False
+                while not fertig:
+                    _, fertig = downloader.next_chunk()
+            print(f"INFO: {treffer[0]['name']} von Drive nachgeladen -> {lokaler_name}")
+            gefunden[ziel_key] = lokaler_name
+        except Exception as e:
+            print(f"WARNUNG: Nachladen von {name_praefix} fehlgeschlagen ({e}) - wird uebersprungen.")
+
+    return gefunden
+
+
+def analysiere_api_fehler(fehlertext):
+    """NEU (24.07.2026): unterscheidet, ob ein Retry ueberhaupt sinnvoll ist.
+    Bei einem TAGES-Kontingent (z. B. quotaId
+    'GenerateRequestsPerDayPerProjectPerModel-FreeTier') ist ein Retry am
+    selben Tag zwecklos - das Limit resettet erst am naechsten Tag, alle
+    weiteren Versuche wuerden nur denselben Fehler wiederholen und den Lauf
+    unnoetig in die Laenge ziehen. Bei anderen 429ern (z. B. Anfragen pro
+    Minute) oder 503 (kurzzeitige Ueberlastung) IST ein Retry sinnvoll -
+    Google liefert dafuer meist ein 'retryDelay' in der Fehlerantwort mit,
+    das genauer ist als unsere pauschale WARTEZEIT_SEKUNDEN-Formel.
+
+    ERWEITERT (30.07.2026): unterscheidet zusaetzlich die serverseitige
+    UEBERLAST (503 UNAVAILABLE) und Netzwerk-Abbrueche von den uebrigen
+    Retry-Faellen, weil diese eine viel laengere Wartezeit brauchen (siehe
+    UEBERLAST_WARTEZEITEN oben).
+    Gibt (abbrechen: bool, empfohlene_wartezeit_sekunden: float|None,
+    kategorie: str) zurueck. Kategorien: "tageskontingent", "ueberlast",
+    "netzwerk", "sonstiges"."""
+    ist_tages_kontingent = "PerDay" in fehlertext
+    if ist_tages_kontingent:
+        return True, None, "tageskontingent"
+
+    treffer = re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", fehlertext)
+    empfohlene_wartezeit = float(treffer.group(1)) if treffer else None
+
+    text_klein = fehlertext.lower()
+    if "503" in fehlertext or "unavailable" in text_klein or "high demand" in text_klein:
+        return False, empfohlene_wartezeit, "ueberlast"
+    if ("connection reset" in text_klein or "connection aborted" in text_klein
+            or "timed out" in text_klein or "temporarily unavailable" in text_klein):
+        return False, empfohlene_wartezeit, "netzwerk"
+    return False, empfohlene_wartezeit, "sonstiges"
+
+
+def ist_ablehnung(text):
+    if not text or not text.strip():
+        return True  # leere Antwort werten wir vorsichtshalber auch als Fehlschlag
+    text_klein = text.lower()
+    return any(muster in text_klein for muster in ABLEHNUNGS_MUSTER)
+
+
+def lade_beobachtungsliste_von_drive():
+    """Lädt die persistente Beobachtungsliste des Einzel-Checks aus Drive.
+
+    Die Liste wird vom separaten manuellen einzel_check.yml-Workflow
+    aktualisiert. Fehlt die Datei oder ist Drive nicht erreichbar, wird
+    bewusst eine leere Liste geliefert: Die Tagesauswertung darf dadurch
+    nicht ausfallen.
+    """
+    service = get_drive_service()
+    if service is None:
         return None
-    text = text.replace("%", "").replace("€", "").replace("$", "").strip()
-    # Projektdateien verwenden deutsche Dezimal-Kommas.
+
+    try:
+        query = (
+            f"name = '{BEOBACHTUNGSLISTE_DATEI}' "
+            f"and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+        )
+        ergebnis = service.files().list(
+            q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc"
+        ).execute()
+        treffer = ergebnis.get("files", [])
+        if not treffer:
+            print(
+                "INFO: Keine Einzel-Check-Beobachtungsliste in Drive gefunden "
+                "- Abschnitt wird als leer ausgegeben."
+            )
+            return {}
+
+        datei_id = treffer[0]["id"]
+        request = service.files().get_media(fileId=datei_id)
+        lokaler_pfad = BEOBACHTUNGSLISTE_DATEI
+        with io.FileIO(lokaler_pfad, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            fertig = False
+            while not fertig:
+                _, fertig = downloader.next_chunk()
+
+        with open(lokaler_pfad, "r", encoding="utf-8") as f:
+            daten = json.load(f)
+
+        if not isinstance(daten, dict):
+            print("WARNUNG: Einzel-Check-Beobachtungsliste ist kein JSON-Objekt - leer verwendet.")
+            return {}
+
+        print(
+            f"INFO: {BEOBACHTUNGSLISTE_DATEI} aus Drive geladen "
+            f"({len(daten)} beobachtete Titel)."
+        )
+        return daten
+
+    except Exception as e:
+        print(
+            f"WARNUNG: Einzel-Check-Beobachtungsliste konnte nicht aus Drive "
+            f"geladen werden ({e}) - Abschnitt wird als leer ausgegeben."
+        )
+        return None
+
+
+def finde_datei(muster_liste):
+    for muster in muster_liste:
+        treffer = sorted(glob.glob(muster))
+        if treffer:
+            return treffer[-1]
+    return None
+
+
+def sammle_eingabedateien():
+    gefunden = {}
+    for name, muster_liste in DATEIMUSTER.items():
+        gefunden[name] = finde_datei(muster_liste)
+
+    # Die Einzel-Check-Beobachtungsliste gehört nicht zu den Pflichtdateien.
+    # Falls sie im frischen main.yml-Runner noch nicht lokal liegt, wird sie
+    # aus Drive nachgeladen und als normale Gemini-Eingabedatei bereitgestellt.
+    if gefunden.get("Einzel-Check-Beobachtungsliste") is None:
+        daten = lade_beobachtungsliste_von_drive()
+        if daten is not None:
+            gefunden["Einzel-Check-Beobachtungsliste"] = BEOBACHTUNGSLISTE_DATEI
+
+    if "Einzel-Check-Beobachtungsliste" not in gefunden:
+        gefunden["Einzel-Check-Beobachtungsliste"] = None
+
+    fehlend = [n for n in PFLICHT_DATEIEN if gefunden.get(n) is None]
+    if fehlend:
+        print(f"FEHLER: Pflichtdateien nicht gefunden: {fehlend}")
+        sys.exit(1)
+
+    # Short-Dateien: DATEIMUSTER oben hat sie bereits lokal gesucht (Fall:
+    # short_scan_catchup.py hat sie in main.yml gerade selbst erzeugt). NUR
+    # falls lokal nichts gefunden wurde, zusaetzlich per Drive nachladen
+    # (Normalfall: separater frueher short_check.yml-Lauf war erfolgreich).
+    # Lokaler Fund hat Vorrang, damit ein frisch nachgeholter Lauf nicht
+    # versehentlich durch eine aeltere Drive-Version ersetzt wird.
+    if gefunden.get("Short_Setups(...).csv") is None or gefunden.get("Short_Briefing(...).txt") is None:
+        for key, pfad in lade_short_dateien_von_drive().items():
+            if gefunden.get(key) is None:
+                gefunden[key] = pfad
+
+    print("Gefundene Eingabedateien:")
+    for name, pfad in gefunden.items():
+        print(f"  - {name}: {pfad if pfad else '(nicht vorhanden, wird uebersprungen)'}")
+
+    return {k: v for k, v in gefunden.items() if v is not None}
+
+
+def lade_anweisung():
+    if not os.path.isfile(ANWEISUNG_DATEI):
+        print(f"FEHLER: Anweisungs-Datei nicht gefunden: {ANWEISUNG_DATEI}")
+        sys.exit(1)
+    with open(ANWEISUNG_DATEI, "r", encoding="utf-8-sig") as f:
+        return f.read()
+
+
+
+def _positionsfeld_schluessel(value):
+    """Normalisiert nur die vier Felder des eindeutigen Positionsschluessels,
+    damit z.B. 66,32 und 66,32$ dieselbe Position referenzieren."""
+    text = str(value or "").strip()
+    text = text.replace("€", "").replace("$", "").replace("£", "")
+    date_match = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", text)
+    if date_match:
+        a, b, y = date_match.groups()
+        if len(a) == 4:
+            return f"{a}-{b.zfill(2)}-{y.zfill(2)}"
+        return f"{y}-{b.zfill(2)}-{a.zfill(2)}"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", text):
+        return text[:10]
+    text = text.replace(" ", "")
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
             text = text.replace(".", "").replace(",", ".")
@@ -143,1014 +400,1059 @@ def parse_number(value) -> Optional[float]:
     else:
         text = text.replace(",", ".")
     try:
-        return float(text)
+        return f"{float(text):.12g}"
     except Exception:
-        return None
+        return text.lower()
 
 
-def fmt_num(value, decimals: int = 2):
-    if value is None or not math.isfinite(float(value)):
+def _offene_positionen_quellblock(csv_pfad):
+    """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
+    Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
+    if not csv_pfad or not os.path.isfile(csv_pfad):
         return ""
-    return round(float(value), decimals)
-
-
-def steuerungsart(ideen_quelle: str) -> str:
-    # "Zielorientiert" ist bewusst KEINE eigene Steuerungsart mehr.
-    # Langfrist = Buy & Hold; alle aktiven Setup-Quellen = Aktiver Trade.
-    return "Buy & Hold" if str(ideen_quelle or "").strip().lower() == "langfrist" else "Aktiver Trade"
-
-
-def read_positions(path: str) -> pd.DataFrame:
-    # Bewusst exakt das bestehende Projektformat: Semikolon + deutsches Dezimal-Komma.
-    df = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
-    if "Status" not in df.columns or "Ticker" not in df.columns:
-        raise ValueError("Offene_Positionen.csv hat nicht das erwartete Positionsschema.")
-    df.columns = [str(c).strip() for c in df.columns]
-    df["Status"] = df["Status"].astype(str).str.strip()
-    return df
-
-
-def is_open(row) -> bool:
-    return str(row.get("Status", "")).strip().lower() == "offen"
-
-
-def clean_history(hist: pd.DataFrame) -> pd.DataFrame:
-    if hist is None or hist.empty:
-        return pd.DataFrame()
-    data = hist.copy()
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    required = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in data.columns]
-    if "Close" not in required or "High" not in required or "Low" not in required:
-        return pd.DataFrame()
-    data = data.dropna(subset=["Close", "High", "Low"]).copy()
-    if data.empty:
-        return data
-    data.index = pd.to_datetime(data.index)
-    data = data[~data.index.duplicated(keep="last")].sort_index()
-    return data
-
-
-def fetch_history(ticker: str) -> pd.DataFrame:
     try:
-        hist = yf.Ticker(ticker).history(period="max", auto_adjust=False, actions=False)
-        return clean_history(hist)
+        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f, delimiter=";")
+            fields = reader.fieldnames or []
+            def key(name):
+                return next((k for k in fields if str(k).strip().lower() == name.lower()), None)
+            name_k = key("Name")
+            ticker_k = key("Ticker")
+            status_k = key("Status")
+            entry_k = key("Einstieg")
+            date_k = key("Einstiegsdatum")
+            if not all((name_k, ticker_k, entry_k, date_k)):
+                raise ValueError("Check-Datei benötigt Name, Ticker, Einstieg und Einstiegsdatum.")
+            rows = []
+            for row in reader:
+                status = str(row.get(status_k, "")).strip().lower() if status_k else ""
+                if status and status not in {"offen", "open"}:
+                    continue
+                name = str(row.get(name_k, "")).strip()
+                ticker = str(row.get(ticker_k, "")).strip()
+                entry = str(row.get(entry_k, "")).strip()
+                date = str(row.get(date_k, "")).strip()
+                if name or ticker:
+                    rows.append(f"- {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}")
+            return "\n".join(rows)
     except Exception as exc:
-        print(f"WARNUNG: {ticker}: Kursdaten nicht abrufbar: {exc}")
-        return pd.DataFrame()
+        raise RuntimeError(f"Offene Positionen+Check.csv konnte nicht als verbindliche Quelle gelesen werden: {exc}")
 
+def _technische_zielzonen_quelle(csv_pfad):
+    """Liest die technischen Check-Felder verbindlich aus der Check-Datei.
 
-def last_completed_close(data: pd.DataFrame) -> Optional[float]:
-    if data.empty:
-        return None
-    return parse_number(data["Close"].iloc[-1])
+    Die Positionsidentitaet ist ausschließlich:
+        Name + Ticker + Einstiegskurs + Einstiegsdatum
 
-
-def cluster_levels(levels: Iterable[float], tolerance: float = 0.015) -> list[float]:
-    vals = sorted({round(float(x), 8) for x in levels if x is not None and math.isfinite(float(x)) and float(x) > 0})
-    if not vals:
-        return []
-    clusters: list[list[float]] = [[vals[0]]]
-    for val in vals[1:]:
-        center = float(np.mean(clusters[-1]))
-        if abs(val - center) / center <= tolerance:
-            clusters[-1].append(val)
-        else:
-            clusters.append([val])
-    return [float(np.mean(c)) for c in clusters]
-
-
-def swing_levels(data: pd.DataFrame, order: int = 5) -> tuple[list[float], list[float]]:
-    recent = data.iloc[-252:].copy()
-    if len(recent) < max(30, order * 3):
-        return [], []
-    highs = recent["High"].to_numpy(dtype=float)
-    lows = recent["Low"].to_numpy(dtype=float)
-    hi_idx = argrelextrema(highs, np.greater_equal, order=order)[0]
-    lo_idx = argrelextrema(lows, np.less_equal, order=order)[0]
-    return [float(highs[i]) for i in hi_idx], [float(lows[i]) for i in lo_idx]
-
-
-def find_nearest(levels: Iterable[float], close: float, above: bool, count: int = 2) -> list[float]:
-    vals = [float(x) for x in levels if x is not None]
-    if above:
-        vals = [x for x in vals if x > close * 1.002]
-        vals.sort()
-    else:
-        vals = [x for x in vals if x < close * 0.998]
-        vals.sort(reverse=True)
-    return vals[:count]
-
-
-def detect_abc(data: pd.DataFrame, close: float, direction: str) -> tuple[bool, str, Optional[tuple[float, float]], Optional[tuple[float, float, float]]]:
-    """A-B-C nur fuer eine klar erkennbare letzte Swing-Struktur.
-
-    Long: A = Swing-Low, B = nachfolgendes Swing-High, C = hoeheres Swing-Low.
-    Fuer eine aktive Extension wird zusaetzlich verlangt, dass der aktuelle
-    Schlusskurs B ueberwunden hat. Ein einfacher Breakout allein reicht nicht.
-    Short wird spiegelbildlich behandelt.
+    Die Check-Datei ist Master. Insbesondere Technische_Zielzone wird
+    ausschließlich als bereits vorhandener CSV-String übernommen.
     """
-    if len(data) < 60:
-        return False, "Zu wenig Daten fuer A-B-C", None, None
-    d = data.iloc[-180:].copy()
-    h = d["High"].to_numpy(dtype=float)
-    l = d["Low"].to_numpy(dtype=float)
-    order = 5
-    hi_idx = list(argrelextrema(h, np.greater_equal, order=order)[0])
-    lo_idx = list(argrelextrema(l, np.less_equal, order=order)[0])
-    pivots = [(i, "H", float(h[i])) for i in hi_idx] + [(i, "L", float(l[i])) for i in lo_idx]
-    pivots.sort(key=lambda x: x[0])
-    # Komprimiere auf alternierende Pivottypen, behalte den extremeren Punkt.
-    alt = []
-    for p in pivots:
-        if alt and alt[-1][1] == p[1]:
-            if (p[2] > alt[-1][2]) if p[1] == "H" else (p[2] < alt[-1][2]):
-                alt[-1] = p
+    if not csv_pfad or not os.path.isfile(csv_pfad):
+        raise RuntimeError(
+            "Offene Positionen+Check.csv fehlt; technische Werte koennen "
+            "nicht verbindlich aus der Master-Datei uebernommen werden."
+        )
+
+    technische_felder = [
+        "Technischer_Zustand",
+        "Trendrichtung",
+        "Support/Widerstand",
+        "Breakout_Status",
+        "A-B-C_Status",
+        "Fibonacci_Status/Ziele",
+        "Trendkanal",
+        "Measured Move",
+        "Formation",
+        "Round Number",
+        "Major Resistance",
+        "Ueberdehnung",
+        "Relative Staerke_Sektor",
+        "Konfluenz",
+        "Retest_Support",
+        "Technische_Zielzone",
+        "Datenqualitaet",
+        "Analysehinweis",
+    ]
+
+    try:
+        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f, delimiter=";")
+            fields = reader.fieldnames or []
+
+            def key(name):
+                wanted = name.strip().lower()
+                return next(
+                    (k for k in fields if str(k).strip().lower() == wanted),
+                    None,
+                )
+
+            name_k = key("Name")
+            ticker_k = key("Ticker")
+            status_k = key("Status")
+            entry_k = key("Einstieg")
+            date_k = key("Einstiegsdatum")
+            technical_keys = {field: key(field) for field in technische_felder}
+
+            missing = [
+                field for field, column in [
+                    ("Name", name_k),
+                    ("Ticker", ticker_k),
+                    ("Einstieg", entry_k),
+                    ("Einstiegsdatum", date_k),
+                    ("Technische_Zielzone", technical_keys["Technische_Zielzone"]),
+                ]
+                if not column
+            ]
+            if missing:
+                raise ValueError(
+                    "Check-Datei benoetigt folgende Felder: " + ", ".join(missing)
+                )
+
+            result = {}
+            for row in reader:
+                status = str(row.get(status_k, "")).strip().lower() if status_k else ""
+                if status and status not in {"offen", "open"}:
+                    continue
+
+                name = str(row.get(name_k, "") or "").strip()
+                ticker = str(row.get(ticker_k, "") or "").strip()
+                entry = str(row.get(entry_k, "") or "").strip()
+                date = str(row.get(date_k, "") or "").strip()
+
+                if not (name or ticker):
+                    continue
+
+                # Wichtig: Der Wert der Zielzone wird NICHT normalisiert.
+                # Er wird exakt so gespeichert, wie er in der CSV steht.
+                technical_values = {
+                    field: (
+                        str(row.get(column, "") or "").strip()
+                        if column else None
+                    )
+                    for field, column in technical_keys.items()
+                }
+
+                pos_key = (
+                    _normalisiere_positionsname(name),
+                    _normalisiere_ticker(ticker),
+                    _positionsfeld_schluessel(entry),
+                    _positionsfeld_schluessel(date),
+                )
+
+                if pos_key in result:
+                    raise ValueError(
+                        "Doppelter Positionsschlüssel in Offene Positionen+Check.csv: "
+                        f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+                    )
+
+                result[pos_key] = {
+                    "name": name,
+                    "ticker": ticker,
+                    "entry": entry,
+                    "date": date,
+                    "technical": technical_values,
+                }
+
+            return result
+
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "Technische Check-Werte konnten nicht verbindlich aus "
+            f"Offene Positionen+Check.csv gelesen werden: {exc}"
+        )
+
+
+def _normalisiere_datum(value):
+    """Normalisiert ein Datum fuer den Positionsschluessel."""
+    return _positionsfeld_schluessel(value)
+
+
+def _normalisiere_positionsname(value):
+    """Robuste Namensnormalisierung fuer die Zuordnung Gemini -> CSV."""
+    value = str(value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9äöüß]+", " ", value)
+    value = re.sub(
+        r"\b(ag|se|sa|plc|inc|corp|corporation|limited|ltd|nv|spa|srl|"
+        r"holding|holdings|company|co|group)\b",
+        " ",
+        value,
+    )
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalisiere_ticker(value):
+    return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").strip().lower())
+
+
+def _finde_quellposition(ziel_key, quellpositionen):
+    """Findet genau eine CSV-Position.
+
+    Primär wird der vollständige Schlüssel verwendet. Wenn Gemini den
+    Firmennamen leicht anders schreibt, wird ausschließlich über
+    Ticker + Einstieg + Datum aufgelöst. Das ist bei mehreren gleichen
+    Tickern sicher, weil Einstieg und Datum Bestandteil des Schlüssels sind.
+    """
+    if ziel_key in quellpositionen:
+        return quellpositionen[ziel_key]
+
+    name, ticker, entry, date = ziel_key
+
+    # 1. Vollständiger Schlüssel mit Ticker + Einstieg + Datum.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[1] == ticker and key[2] == entry and key[3] == date
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+    if len(kandidaten) > 1:
+        raise RuntimeError(
+            "Position nicht eindeutig zuordenbar: "
+            f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+        )
+
+    # 2. CSV ist Master: Wenn Name+Ticker in der CSV eindeutig sind, darf
+    # der Gemini-Block auch bei abweichendem/fehlendem Einstieg oder Datum
+    # dieser eindeutigen CSV-Position zugeordnet werden. Anschließend werden
+    # Einstieg und Datum aus der CSV eingesetzt.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[0] == name and key[1] == ticker
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+
+    # 3. Falls der Firmenname durch Gemini leicht abweicht, ist ein eindeutiger
+    # Ticker ebenfalls ausreichend. Bei mehreren gleichen Tickern wird ohne
+    # Einstieg+Datum niemals geraten.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[1] == ticker
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+
+    if len(kandidaten) > 1:
+        raise RuntimeError(
+            "Position nicht eindeutig zuordenbar; gleicher Ticker mehrfach "
+            "vorhanden, Einstieg und Einstiegsdatum fehlen oder passen nicht: "
+            f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+        )
+    return None
+
+# ---------------------------------------------------------------------------
+# HAUPTLOGIK
+# ---------------------------------------------------------------------------
+
+def _enthaelt_abschnitt_7(text):
+    """Prüft strikt, ob Gemini den vollständigen Abschnitt 7 begonnen hat."""
+    return bool(re.search(r"(?im)^\s*7\. OFFENE POSITIONEN\s*$", text or ""))
+
+
+def _gemini_finish_reason(antwort):
+    """Liest den Finish-Reason robust aus der Gemini-Antwort."""
+    try:
+        candidates = getattr(antwort, "candidates", None) or []
+        if not candidates:
+            return "UNBEKANNT"
+        reason = getattr(candidates[0], "finish_reason", None)
+        if reason is None:
+            return "UNBEKANNT"
+        return str(reason)
+    except Exception:
+        return "UNBEKANNT"
+
+
+def _abschnitt_7_vollstaendig(text, csv_pfad):
+    """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
+
+    Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
+    harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
+    unverändert und ist weiterhin die letzte Instanz.
+    """
+    if not _enthaelt_abschnitt_7(text):
+        return False
+
+    expected = _technische_zielzonen_quelle(csv_pfad)
+    match = re.search(
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        text,
+    )
+    if not match:
+        return False
+
+    block = match.group(0)
+    header_re = re.compile(
+        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+    )
+    headers = list(header_re.finditer(block))
+    if not headers:
+        return False
+
+    seen = set()
+    for idx, header in enumerate(headers):
+        start = header.start()
+        end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
+        pos_block = block[start:end]
+
+        name = header.group(1).strip()
+        ticker = header.group(2).strip()
+        entry_match = re.search(
+            r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*([^\n(]+?)(?:\s*\(([^)]+)\))?\s*$",
+            pos_block,
+        )
+        if not entry_match:
+            return False
+
+        entry = _positionsfeld_schluessel(entry_match.group(1).strip())
+        if entry_match.group(2):
+            date = _normalisiere_datum(entry_match.group(2).strip())
         else:
-            alt.append(p)
-    # Immer die JÜNGSTE qualifizierte A-B-C-Struktur verwenden.
-    # Wichtig: Eine ältere bereits bestätigte Struktur darf eine jüngere,
-    # noch nicht bestätigte Struktur niemals überstimmen (Look-ahead-/
-    # Zustandsfehler). Deshalb rückwärts durch die Kandidaten suchen und
-    # beim ersten qualifizierten Kandidaten stoppen.
-    if direction == "bullisch":
-        for i in range(len(alt) - 3, -1, -1):
-            a, b, c = alt[i:i+3]
-            if (a[1], b[1], c[1]) == ("L", "H", "L") and c[2] > a[2] and b[2] > a[2]:
-                # C muss abgeschlossen sein und der Kurs darf noch nicht unter C liegen.
-                if c[0] < len(d) - 1 and close >= c[2] * 0.995:
-                    confirmed = close > b[2] * 1.002
-                    status = "Bestätigt" if confirmed else "Struktur vorhanden – noch kein A-B-C-Breakout"
-                    return confirmed, status, (a[2], b[2]), (a[2], b[2], c[2])
-    elif direction == "baerisch":
-        for i in range(len(alt) - 3, -1, -1):
-            a, b, c = alt[i:i+3]
-            if (a[1], b[1], c[1]) == ("H", "L", "H") and c[2] < a[2] and b[2] < a[2]:
-                if c[0] < len(d) - 1 and close <= c[2] * 1.005:
-                    confirmed = close < b[2] * 0.998
-                    status = "Bestätigt" if confirmed else "Struktur vorhanden – noch kein A-B-C-Breakdown"
-                    return confirmed, status, (a[2], b[2]), (a[2], b[2], c[2])
-    return False, "Keine qualifizierte A-B-C-Struktur", None, None
+            date_match = re.search(
+                r"(?im)^\s*Einstiegsdatum\s*:\s*([^\n]+)\s*$",
+                pos_block,
+            )
+            if not date_match:
+                return False
+            date = _normalisiere_datum(date_match.group(1).strip())
+
+        key = (
+            _normalisiere_positionsname(name),
+            _normalisiere_ticker(ticker),
+            entry,
+            date,
+        )
+        try:
+            source = _finde_quellposition(key, expected)
+        except Exception:
+            return False
+        if source is None:
+            return False
+
+        source_key = (
+            _normalisiere_positionsname(source["name"]),
+            _normalisiere_ticker(source["ticker"]),
+            source["entry"],
+            source["date"],
+        )
+        if source_key in seen:
+            return False
+        seen.add(source_key)
+
+    return len(seen) == len(expected)
 
 
-def fibonacci_extension(data: pd.DataFrame, abc: tuple[float, float, float], direction: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """A-B-C-Extension: 127,2 / 161,8 / 261,8 Prozent des AB-Impulses."""
-    a, b, c = abc
-    if direction == "bullisch":
-        move = b - a
-        if move <= 0:
-            return None, None, None
-        return c + move * 1.272, c + move * 1.618, c + move * 2.618
-    if direction == "baerisch":
-        move = a - b
-        if move <= 0:
-            return None, None, None
-        return c - move * 1.272, c - move * 1.618, c - move * 2.618
-    return None, None, None
+def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
+    """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
+
+    Der Reparatur-Call darf nur Punkt 7 liefern. Der Block wird deshalb nicht
+    als komplette neue Auswertung verwendet, sondern deterministisch in die
+    bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
+    """
+    if not _enthaelt_abschnitt_7(abschnitt_7):
+        raise RuntimeError(
+            "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
+            "'7. OFFENE POSITIONEN'."
+        )
+
+    block_match = re.search(
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        abschnitt_7,
+    )
+    if not block_match:
+        raise RuntimeError(
+            "Gezielter Reparaturversuch lieferte keinen verwertbaren "
+            "Abschnitt '7. OFFENE POSITIONEN'."
+        )
+
+    block = block_match.group(0).strip("\n")
+    # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
+    # den erfolgreich reparierten Punkt-8-Block.
+    vorhandener_abschnitt = re.search(
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
+        original_text,
+    )
+    if vorhandener_abschnitt:
+        return (
+            original_text[:vorhandener_abschnitt.start()].rstrip()
+            + "\n\n"
+            + block
+            + "\n\n"
+            + original_text[vorhandener_abschnitt.end():].lstrip()
+        )
+    return original_text.rstrip() + "\n\n" + block + "\n"
 
 
-def trend_channel_upper(data: pd.DataFrame, close: float) -> Optional[float]:
-    """Robuste obere Trendkanal-Projektion aus mindestens drei Swing-Hochs.
-    Es wird bewusst nur projiziert, wenn die Hochpunkte eine steigende Geometrie
-    bilden; bei zu wenig/instabilen Punkten bleibt das Feld leer."""
-    d = data.iloc[-180:].copy()
-    if len(d) < 60:
+
+def pruefe_makro_gate_konsistenz(text, quell_gate):
+    """Der Gate-Status des Makro-Datenpakets ist autoritativ.
+
+    Bei FREIGEGEBEN darf Gemini das Szenario nicht wegen TIER-2/TIER-3-Luecken
+    nachtraeglich als GESPERRT darstellen. Bei GESPERRT greift weiterhin die
+    bestehende harte Sperrlogik.
+    """
+    if quell_gate != "FREIGEGEBEN":
+        return True
+    t = text or ""
+    if re.search(r"(?is)MAKRO[- ]?SZENARIO[- ]?GATE\s*[:=]?\s*(?:ist\s+)?GESPERRT", t):
+        print(
+            "WARNUNG: MAKRO-GATE-KONSISTENZFEHLER: Quelldatei meldet FREIGEGEBEN, "
+            "Gemini-Ausgabe meldet GESPERRT."
+        )
+        return False
+    return True
+
+
+def gemini_auswertung_starten():
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("FEHLER: Umgebungsvariable GEMINI_API_KEY nicht gesetzt.")
+        sys.exit(1)
+
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=600000))
+    anweisung = lade_anweisung()
+    eingabedateien = sammle_eingabedateien()
+
+    letzte_antwort = None
+    hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
+    aktuelles_modell = MODELL
+
+    # Harte Datenqualitaetskontrolle fuer Punkt 2: Der Makro-Block darf nur
+    # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
+    # makro_szenario.py den Gatekeeper freigegeben hat. Die restliche
+    # Tagesauswertung bleibt davon unabhaengig.
+    # Ausfall oder fehlende Makro-Datei = harte Sperre. Das verhindert, dass
+    # Gemini aus den übrigen Markt-/Setup-Dateien trotzdem ein scheinbar
+    # quantitatives Makro-Szenario konstruiert.
+    makro_gate = "GESPERRT"
+    makro_gate_grund = "Makro-Datenpaket fehlt oder konnte nicht verifiziert werden."
+    makro_pfad = eingabedateien.get("Makro_Briefing(...).txt")
+    if makro_pfad:
+        try:
+            with open(makro_pfad, "r", encoding="utf-8-sig") as f:
+                makro_text = f.read()
+            m = re.search(r"MAKRO-SZENARIO-GATE:\s*(FREIGEGEBEN|GESPERRT)", makro_text)
+            if m:
+                makro_gate = m.group(1)
+                makro_gate_grund = "Gate aus Makro-Datenpaket übernommen."
+            else:
+                makro_gate = "GESPERRT"
+                makro_gate_grund = "Makro-Datei vorhanden, aber Gate nicht eindeutig verifiziert."
+            print(f"Makro-Szenario-Gate: {makro_gate} | Grund: {makro_gate_grund}")
+        except Exception as exc:
+            makro_gate = "GESPERRT"
+            makro_gate_grund = f"Makro-Gate konnte nicht gelesen werden: {exc}"
+            print(f"WARNUNG: {makro_gate_grund}")
+    else:
+        print(f"WARNUNG: {makro_gate_grund}")
+
+    makro_datenqualitaet = _lese_makro_datenqualitaet(makro_text if makro_pfad else "")
+    if makro_datenqualitaet:
+        print(f"Makro-Datenqualitaet: {makro_datenqualitaet} | Quelle: Makro-Datenpaket")
+
+    for versuch in range(1, MAX_VERSUCHE + 1):
+        print(f"\nVersuch {versuch}/{MAX_VERSUCHE}...")
+
+        try:
+            # GEAENDERT (30.07.2026): Dateien werden nur hochgeladen, wenn
+            # noch keine Upload-Referenzen vorliegen. Der frische Upload ist
+            # Teil der Retry-Strategie gegen die nicht-deterministischen
+            # SICHERHEITSFILTER-Ablehnungen (neue "Sitzung", neuer Kontext) -
+            # bei einem technischen Fehler wie 503 ist er dagegen sinnlos:
+            # die Anfrage hat das Modell nie erreicht. Vorher wurden bei
+            # jedem 503-Retry alle elf Dateien erneut hochgeladen, was den
+            # Lauf verlaengert hat, ohne etwas zu verbessern.
+            if hochgeladene_teile is None:
+                hochgeladene_teile = [
+                    client.files.upload(file=pfad)
+                    for pfad in eingabedateien.values()
+                    if pfad
+                ]
+
+            offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
+            antwort = client.models.generate_content(
+                model=aktuelles_modell,
+                contents=hochgeladene_teile + [
+                    "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. Die Dateien Bitcoin_Trading_DE_Briefing.txt, Gold_Trading_DE_Briefing.txt und Silber_Trading_DE_Briefing.txt sind ausschließlich qualitative externe YouTube-Quellen. Nutze sie nur als Kontext/Abgleich; sie dürfen niemals objektive Kursdaten, technische Check-Felder, CRV, Setup-Scores, Filter, Setup-Qualität oder Handelsentscheidungen verändern. Wenn eine solche Datei fehlt, ist das kein Fehler und es darf nichts daraus erfunden werden. "
+                    "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
+                    "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
+                    "und erstelle die vollstaendige Daten-Uebersicht. "
+                    "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
+                    + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
+                    "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
+                    "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
+                    "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
+                    "Offene Positionen ausschliesslich die Datei 'Offene Positionen+Check.csv'. "
+                    "Ihre technischen Check-Felder sind die verbindliche Quelle fuer "
+                    "Technischer_Zustand, Trendrichtung, Support/Widerstand, Breakout_Status, "
+                    "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
+                    "Round Number, Major Resistance, Ueberdehnung, Relative Staerke_Sektor, "
+                    "Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. "
+                    "ALLE technischen Check-Felder sind bereits berechnete Quellwerte. "
+                    "Uebernimm sie aus Offene Positionen+Check.csv und berechne, interpretiere, "
+                    "priorisiere, kuerze, ergaenze oder ersetze keinen technischen Wert selbst. "
+                    "Technische_Zielzone ist dabei besonders streng: Uebernimm den Wert "
+                    "aus Offene Positionen+Check.csv exakt 1:1. Berechne, priorisiere, kuerze, "
+                    "ergaenze oder ersetze die Technische_Zielzone niemals selbst. Auch wenn "
+                    "Widerstand_1, Fibonacci, Trendkanal, Measured Move, Round Number oder "
+                    "Major Resistance andere Werte enthalten, hat der bereits berechnete Wert "
+                    "in Technische_Zielzone Vorrang und muss unveraendert ausgegeben werden. "
+                    "Für offene Positionen sind Firmenname, Ticker, Einstiegskurs und Einstiegsdatum "
+                    "ausschließlich aus 'Offene Positionen+Check.csv' zu übernehmen. "
+                    "Die alte Offene_Positionen.csv darf für diese vier Felder niemals als "
+                    "Quelle oder Fallback verwendet werden. Gemini darf diese Werte nicht "
+                    "erfinden, schätzen oder verändern. Mehrere offene Positionen desselben "
+                    "Tickers sind ausdrücklich zulässig; jede Kombination aus Name + Ticker + "
+                    "Einstiegskurs + Einstiegsdatum ist eine eigene Position. "
+                    "Jeder offene Positionskopf muss ausschließlich im Format "
+                    "'Firmenname (Ticker) | Markt: ...' ausgegeben werden. "
+                    "Keine alternativen Kopfzeilenformate und keine Positionsköpfe ohne Ticker.",
+                    (
+                        f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
+                        "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
+                        "keine geschaetzten Ersatzwerte und keine numerischen Makro-Prognosen. "
+                        "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
+                         "Verwende dabei NICHT die Bezeichnungen Base Case, Bull Case oder Bear Case, gib KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose aus. "
+                        if makro_gate == "GESPERRT" else
+                        "HARTE MAKRO-GATE-VORGABE: Das Makro-Datenpaket ist autoritativ. "
+                        "Sein MAKRO-SZENARIO-GATE hat Vorrang vor jeder eigenen Bewertung der "
+                        "Datenvollstaendigkeit. Das Gate lautet FREIGEGEBEN. Punkt 2 MUSS daher "
+                        "als freigegeben behandelt werden. TIER-2- oder TIER-3-Luecken, insbesondere "
+                        "fehlende ISM-EXTENDED-Unterkomponenten oder fehlende LME-Preise, duerfen das "
+                        "Gate NICHT nachtraeglich sperren. Sie duerfen hoechstens die DATENQUALITAET "
+                        "auf EINGESCHRAENKT halten bzw. die Staerke der Bestaetigung reduzieren. Schreibe "
+                        "NICHT, das Makro-Szenario sei gesperrt, wenn die Quelldatei FREIGEGEBEN meldet. "
+                        "TIER 1 CORE = gate-relevant; TIER 2 CONFIRMATION = Szenarioverstaerkung, "
+                        "niemals alleiniger Gate-Blocker; TIER 3 CONTEXT = zusaetzliche Information "
+                        "ohne Gate-Einfluss. Verwende fuer sichtbare Datenqualitaet ausschliesslich VOLLSTAENDIG, "
+                        "EINGESCHRAENKT oder UNZUREICHEND sowie die Bezeichnungen TIER-2-DATENLUECKEN "
+                        "und TIER-3-DATENLUECKEN. "
+                        "Verwende ausschliesslich REAL-, REAL_CACHED-, "
+                        "REAL_PUBLIC_SECONDARY- oder zulaessige CALCULATED-Werte aus dem Makro-Datenpaket. "
+                        "PROXY-Werte muessen als Proxy bezeichnet werden. MODEL_DERIVED-Wahrscheinlichkeiten "
+                        "sind nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
+                        + (
+                            f" ZUSAETZLICHE HARTE DATENQUALITAETS-VORGABE: Das Makro-Datenpaket meldet "
+                            f"MAKRO-DATENQUALITAET={makro_datenqualitaet}. Uebernimm diesen Wert in Punkt 2 "
+                            f"exakt. Wenn der Wert VOLLSTAENDIG ist, darf Punkt 2 nicht auf EINGESCHRAENKT "
+                            f"oder UNZUREICHEND herabgestuft werden und darf keine TIER-2-DATENLUECKE als "
+                            f"Grund fuer eine Herabstufung nennen."
+                            if makro_datenqualitaet else ""
+                        )
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=anweisung,
+                ),
+            )
+            text = antwort.text or ""
+            print(f"  Gemini finish_reason (Hauptantwort): {_gemini_finish_reason(antwort)}")
+
+            if not pruefe_makro_gate_konsistenz(text, makro_gate):
+                print("WARNUNG: Gemini widerspricht dem autoritativen Makro-Gate - starte gezielte Makro-Reparatur.")
+                reparatur = client.models.generate_content(
+                    model=aktuelles_modell,
+                    contents=hochgeladene_teile + [
+                        "REPARATUR NUR FÜR PUNKT 2: Das Makro-Datenpaket meldet MAKRO-SZENARIO-GATE=FREIGEGEBEN. "
+                        "Überarbeite ausschließlich Punkt 2. Eine Sperrung ist unzulässig, wenn nur TIER-2- oder TIER-3-Daten fehlen. "
+                        "TIER 1 KERN entscheidet über das Gate; TIER 2 BESTAETIGUNG und TIER 3 KONTEXT sind Ergänzungen. "
+                        "Verwende die deutsche Terminologie VOLLSTAENDIG/EINGESCHRAENKT/UNZUREICHEND und nenne "
+                        "TIER-2-DATENLUECKEN bzw. TIER-3-DATENLUECKEN. Erhalte alle übrigen Abschnitte unverändert soweit möglich. "
+                        "Gib die vollständige Auswertung erneut aus."
+                    ],
+                    config=types.GenerateContentConfig(system_instruction=anweisung),
+                )
+                reparatur_text = reparatur.text or ""
+                if pruefe_makro_gate_konsistenz(reparatur_text, makro_gate):
+                    text = reparatur_text
+                    print("INFO: Makro-Gate-Konsistenz nach Reparatur hergestellt.")
+                else:
+                    raise RuntimeError("Gemini widerspricht weiterhin dem autoritativen MAKRO-SZENARIO-GATE=FREIGEGEBEN.")
+
+            # KONTROLLIERTER REPARATURVERSUCH:
+            # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
+            # aber Punkt 7 auslassen. In diesem Fall wird NICHT aus anderen Dateien
+            # geraten und NICHT der Parser gelockert. Stattdessen erhält Gemini genau
+            # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
+            # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
+            # anwenden.
+            if not _abschnitt_7_vollstaendig(
+                text, eingabedateien.get("Offene Positionen+Check.csv")
+            ):
+                if _enthaelt_abschnitt_7(text):
+                    print(
+                        "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
+                        "aber unvollstaendig - starte gezielten Reparaturversuch "
+                        "fuer Punkt 7..."
+                    )
+                else:
+                    print(
+                        "  Abschnitt '7. OFFENE POSITIONEN' fehlt - "
+                        "starte gezielten Reparaturversuch fuer Punkt 7..."
+                    )
+                reparatur_prompt = (
+                    "REPARATURVERSUCH - NUR ABSCHNITT 8 NACHLIEFERN.\n"
+                    "Deine vorherige Antwort enthielt den erforderlichen Abschnitt "
+                    "'7. OFFENE POSITIONEN' nicht. Erstelle deshalb jetzt "
+                    "AUSSCHLIESSLICH den vollständigen Abschnitt 7.\n\n"
+                    "Beginne zwingend mit exakt:\n"
+                    "7. OFFENE POSITIONEN\n\n"
+                    "Gib danach ALLE offenen Positionen aus der verbindlichen Datei "
+                    "'Offene Positionen+Check.csv' vollständig und genau einmal aus. "
+                    "Verwende ausschließlich diese Datei für Firmenname, Ticker, "
+                    "Einstiegskurs und Einstiegsdatum. Die Kombination aus Name + "
+                    "Ticker + Einstiegskurs + Einstiegsdatum identifiziert eine "
+                    "Position eindeutig; mehrere Positionen mit demselben Ticker "
+                    "sind zulässig.\n\n"
+                    "Jeder Positionskopf muss exakt dem Format "
+                    "'Firmenname (Ticker) | Markt: ...' entsprechen. "
+                    "Für jede Position müssen die in der Hauptanweisung geforderten "
+                    "Positionsdaten und technischen Check-Felder ausgegeben werden. "
+                    "Übernimm technische Check-Felder aus 'Offene Positionen+Check.csv' "
+                    "und erfinde, berechne, kürze oder interpretiere sie nicht. "
+                    "Insbesondere 'Technische Zielzone' darf ausschließlich als "
+                    "bereits vorhandener CSV-Wert übernommen werden.\n\n"
+                    "WICHTIG: Antworte ausschließlich mit Abschnitt 7 und dessen "
+                    "vollständigem Inhalt. Keine Einleitung, keine Erklärung, "
+                    "keine Abschnitte 1-7 oder 9 ff."
+                )
+                reparatur_antwort = client.models.generate_content(
+                    model=aktuelles_modell,
+                    contents=hochgeladene_teile + [
+                        reparatur_prompt,
+                        "VERBINDLICHE OFFENE-POSITIONEN-LISTE AUS "
+                        "'Offene Positionen+Check.csv':\n"
+                        + (offene_quelle or "(keine offenen Positionen gefunden)")
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction=anweisung,
+                    ),
+                )
+                reparatur_text = reparatur_antwort.text or ""
+                print(
+                    f"  Gemini finish_reason (Punkt-8-Reparatur): "
+                    f"{_gemini_finish_reason(reparatur_antwort)}"
+                )
+
+                if _abschnitt_7_vollstaendig(
+                    reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
+                ):
+                    text = _fuege_abschnitt_7_ein(text, reparatur_text)
+                    print(
+                        "  Reparatur erfolgreich: Abschnitt "
+                        "'7. OFFENE POSITIONEN' nachgeliefert."
+                    )
+                else:
+                    print(
+                        "  Reparatur fehlgeschlagen: Abschnitt "
+                        "'7. OFFENE POSITIONEN' weiterhin unvollstaendig."
+                    )
+                    letzte_antwort = reparatur_text or text
+                    # Kein Parser-Fallback. Der äußere Retry startet eine neue
+                    # vollständige Gemini-Anfrage.
+                    hochgeladene_teile = None
+                    continue
+
+        except Exception as e:
+            fehlertext = str(e)
+            print(f"  Technischer Fehler beim API-Call: {e}")
+            letzte_antwort = f"[Technischer Fehler] {e}"
+
+            abbrechen, empfohlene_wartezeit, kategorie = analysiere_api_fehler(fehlertext)
+            if abbrechen:
+                # Das RPD-Free-Tier-Limit ist modellbezogen. Wenn das
+                # Primaermodell sein Tageskontingent erreicht hat, wechseln
+                # wir genau einmal auf das definierte Fallback-Modell.
+                # Ist auch dessen Tageskontingent erschoepft, gibt es keinen
+                # weiteren sinnvollen Retry am selben Tag.
+                if aktuelles_modell == MODELL and FALLBACK_MODELL and FALLBACK_MODELL != MODELL:
+                    aktuelles_modell = FALLBACK_MODELL
+                    print(
+                        f"  Tages-Kontingent von {MODELL} erschoepft "
+                        "(429 RESOURCE_EXHAUSTED, PerDay). "
+                        f"Wechsle fuer diesen Lauf auf Fallback-Modell {FALLBACK_MODELL}."
+                    )
+                    continue
+
+                print(
+                    f"  Tages-Kontingent des Gemini-Free-Tiers fuer {aktuelles_modell} ist erschoepft "
+                    "(429 RESOURCE_EXHAUSTED, quotaId enthaelt 'PerDay'). "
+                    f"Auch das Fallback-Modell kann heute nicht weiter verwendet werden; "
+                    f"breche ab statt die restlichen {MAX_VERSUCHE - versuch} Versuche zu verbrennen. "
+                    "Naechster sinnvoller Versuch nach dem taeglichen Reset oder mit erweitertem Tier."
+                )
+                sys.exit(2)
+
+            if kategorie in ("ueberlast", "netzwerk"):
+                # Bei serverseitiger Ueberlast (503) nicht alle fuenf Versuche
+                # am selben Modell verbrauchen: Nach drei erfolglosen 503-
+                # Versuchen wird auf das definierte Fallback-Modell gewechselt.
+                # Netzwerk-Abbrueche behalten die bisherige Retry-Logik.
+                if kategorie == "ueberlast":
+                    if (aktuelles_modell == MODELL and
+                            FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
+                        aktuelles_modell = FALLBACK_MODELL
+                        print(
+                            f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                            f"Wechsle fuer den naechsten Versuch von {MODELL} "
+                            f"auf Fallback-Modell {FALLBACK_MODELL}."
+                        )
+                        continue
+
+                    if (aktuelles_modell == FALLBACK_MODELL and
+                            DRITTER_FALLBACK_MODELL and
+                            DRITTER_FALLBACK_MODELL not in (MODELL, FALLBACK_MODELL)):
+                        aktuelles_modell = DRITTER_FALLBACK_MODELL
+                        print(
+                            f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                            f"Wechsle fuer den naechsten Versuch von {FALLBACK_MODELL} "
+                            f"auf dritten Fallback {DRITTER_FALLBACK_MODELL}."
+                        )
+                        continue
+
+                # Serverseitige Ueberlast/Netzwerkabbruch: lange, exponentiell
+                # steigende Pause (siehe UEBERLAST_WARTEZEITEN). Ein von Google
+                # mitgeliefertes retryDelay wird beachtet, aber nur wenn es
+                # LAENGER ist - kuerzer waere hier kontraproduktiv.
+                staffel_index = min(versuch - 1, len(UEBERLAST_WARTEZEITEN) - 1)
+                wartezeit = UEBERLAST_WARTEZEITEN[staffel_index]
+                if empfohlene_wartezeit is not None:
+                    wartezeit = max(wartezeit, empfohlene_wartezeit)
+                grund = ("Modell ueberlastet (503)" if kategorie == "ueberlast"
+                         else "Netzwerk-Abbruch")
+                print(f"  {grund} - warte {wartezeit:.0f}s (kurze Staffel, "
+                      f"Versuch {versuch}/{MAX_VERSUCHE})...")
+            else:
+                wartezeit = (empfohlene_wartezeit if empfohlene_wartezeit is not None
+                             else WARTEZEIT_SEKUNDEN + versuch * 5)
+                print(f"  Warte {wartezeit:.0f}s vor dem naechsten Versuch...")
+            time.sleep(wartezeit)
+            continue
+
+        if ist_ablehnung(text):
+            print("  Sicherheitsfilter-Ablehnung erkannt (oder leere Antwort) - neuer Versuch...")
+            print(f"  Antwort war: {text[:200]!r}")
+            letzte_antwort = text
+            # NUR hier neu hochladen: frischer Kontext ist genau das Mittel
+            # gegen diese Art von Ablehnung (siehe Kommentar oben).
+            hochgeladene_teile = None
+            time.sleep(WARTEZEIT_SEKUNDEN + versuch * 5)
+            continue
+
+        print(f"  Erfolgreich mit {aktuelles_modell}!")
+        text = _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet)
+        return text
+
+    print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
+    print(f"Letzte Antwort/Fehler:\n{letzte_antwort}")
+    sys.exit(1)
+
+
+def normalisiere_ausgabe(text, zielzonen=None):
+    """Erzwingt formale Regeln und macht die Check-Datei zum Master.
+
+    Gemini liefert die Analyse, aber offene Positions-Stammdaten und
+    technische Check-Felder werden deterministisch aus
+    Offene Positionen+Check.csv übernommen. Keine technische Berechnung
+    findet hier statt.
+    """
+    if not text:
+        return text
+
+    text = re.sub(
+        r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
+        r"Setup-System einen konkreten Einstieg bestaetigt\?:)",
+        r"\n\1",
+        text,
+    )
+    text = re.sub(
+        r"\n{3,}(?=Was muesste technisch passieren, damit das bestehende "
+        r"Setup-System einen konkreten Einstieg bestaetigt\?:)",
+        "\n\n",
+        text,
+    )
+
+    if not zielzonen:
+        raise RuntimeError(
+            "Keine verbindlichen technischen Positionsdaten aus "
+            "Offene Positionen+Check.csv vorhanden."
+        )
+
+    match = re.search(
+        r"(?ims)^7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        text,
+    )
+    if not match:
+        raise RuntimeError(
+            "Abschnitt '7. OFFENE POSITIONEN' fehlt; "
+            "CSV-Masterwerte koennen nicht verbindlich eingesetzt werden."
+        )
+
+    block = match.group(0)
+    header_re = re.compile(
+        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+    )
+    headers = list(header_re.finditer(block))
+    if not headers:
+        raise RuntimeError(
+            "Keine gueltigen Positionskoepfe im Abschnitt "
+            "'7. OFFENE POSITIONEN' gefunden."
+        )
+
+    expected = dict(zielzonen)
+    seen = {}
+    errors = []
+
+    # Gemini darf die technischen Werte nur darstellen; die CSV ersetzt sie
+    # nach der Zuordnung. Die Zielzone ist dabei besonders streng: 1:1.
+    technical_labels = {
+        "Technischer_Zustand": re.compile(r"(?im)^(\s*Technischer Zustand\s*:\s*)[^\n]*$"),
+        "Trendrichtung": re.compile(r"(?im)^(\s*Trendrichtung\s*:\s*)[^\n]*$"),
+        "Support/Widerstand": re.compile(r"(?im)^(\s*Support/Widerstand\s*:\s*)[^\n]*$"),
+        "Breakout_Status": re.compile(r"(?im)^(\s*Breakout Status\s*:\s*)[^\n]*$"),
+        "A-B-C_Status": re.compile(r"(?im)^(\s*A-B-C Status\s*:\s*)[^\n]*$"),
+        "Fibonacci_Status/Ziele": re.compile(r"(?im)^(\s*Fibonacci(?: Status/Ziele)?\s*:\s*)[^\n]*$"),
+        "Trendkanal": re.compile(r"(?im)^(\s*Trendkanal\s*:\s*)[^\n]*$"),
+        "Measured Move": re.compile(r"(?im)^(\s*Measured Move\s*:\s*)[^\n]*$"),
+        "Formation": re.compile(r"(?im)^(\s*Formation\s*:\s*)[^\n]*$"),
+        "Round Number": re.compile(r"(?im)^(\s*Round Number\s*:\s*)[^\n]*$"),
+        "Major Resistance": re.compile(r"(?im)^(\s*Major Resistance\s*:\s*)[^\n]*$"),
+        "Ueberdehnung": re.compile(r"(?im)^(\s*(?:Ueberdehnung|Überdehnung)\s*:\s*)[^\n]*$"),
+        "Relative Staerke_Sektor": re.compile(r"(?im)^(\s*Relative Staerke(?:_Sektor)?\s*:\s*)[^\n]*$"),
+        "Konfluenz": re.compile(r"(?im)^(\s*Konfluenz\s*:\s*)[^\n]*$"),
+        "Retest_Support": re.compile(r"(?im)^(\s*Retest_Support\s*:\s*)[^\n]*$"),
+        "Technische_Zielzone": re.compile(r"(?im)^(\s*Technische Zielzone\s*:\s*)[^\n]*$"),
+        "Datenqualitaet": re.compile(r"(?im)^(\s*Datenqualitaet\s*:\s*)[^\n]*$"),
+        "Analysehinweis": re.compile(r"(?im)^(\s*Analysehinweis\s*:\s*)[^\n]*$"),
+    }
+
+    replacements = []
+
+    for idx, header in reversed(list(enumerate(headers))):
+        start = header.start()
+        end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
+        pos_block = block[start:end]
+
+        name = header.group(1).strip()
+        ticker = header.group(2).strip()
+
+        # Unterstützt sowohl "Einstieg: 108,04€ (02.02.2022)" als auch
+        # getrennte Einstieg/Einstiegsdatum-Zeilen.
+        entry_match = re.search(
+            r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*([^\n(]+?)(?:\s*\(([^)]+)\))?\s*$",
+            pos_block,
+        )
+        if not entry_match:
+            errors.append(f"{name} ({ticker}): Einstiegszeile fehlt")
+            continue
+
+        entry = entry_match.group(1).strip()
+        inline_entry_date = bool(entry_match.group(2))
+        date = entry_match.group(2).strip() if inline_entry_date else ""
+        if not date:
+            date_match = re.search(
+                r"(?im)^\s*Einstiegsdatum\s*:\s*([^\n|]+?)\s*$",
+                pos_block,
+            )
+            if date_match:
+                date = date_match.group(1).strip()
+
+        pos_key = (
+            _normalisiere_positionsname(name),
+            _normalisiere_ticker(ticker),
+            _positionsfeld_schluessel(entry),
+            _positionsfeld_schluessel(date),
+        )
+
+        try:
+            source = _finde_quellposition(pos_key, expected)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            continue
+
+        if source is None:
+            errors.append(
+                f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
+                "kein passender Positionsschluessel in Offene Positionen+Check.csv"
+            )
+            continue
+
+        source_key = (
+            _normalisiere_positionsname(source["name"]),
+            _normalisiere_ticker(source["ticker"]),
+            _positionsfeld_schluessel(source["entry"]),
+            _positionsfeld_schluessel(source["date"]),
+        )
+        seen[source_key] = seen.get(source_key, 0) + 1
+        if seen[source_key] > 1:
+            errors.append(
+                f"{source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | "
+                f"Einstiegsdatum: {source['date']}: doppelte Position im Gemini-Output"
+            )
+            continue
+
+        # Stammdaten aus CSV: Gemini-Ausgabe wird nicht als Quelle akzeptiert.
+        # Nur der Wert wird ersetzt, das Label/Format bleibt erhalten.
+        src_entry = source["entry"]
+        src_date = source["date"]
+
+        em = re.search(
+            r"(?im)^([ \t]*Einstieg(?:skurs)?\s*:\s*)[^\n]+$",
+            pos_block,
+        )
+        if em:
+            # Wenn Gemini das Datum in Klammern an die Einstiegszeile
+            # geschrieben hat, bleibt diese Darstellung erhalten; nur der
+            # Einstiegskurs wird durch den CSV-Masterwert ersetzt.
+            date_suffix = f" ({src_date})" if inline_entry_date else ""
+            pos_block = (
+                pos_block[:em.start(0)]
+                + em.group(1)
+                + src_entry
+                + date_suffix
+                + pos_block[em.end(0):]
+            )
+        else:
+            errors.append(
+                f"{source['name']} ({source['ticker']}): "
+                "Einstiegszeile konnte nicht kanonisiert werden"
+            )
+            continue
+
+        dm = re.search(
+            r"(?im)^([ \t]*Einstiegsdatum\s*:\s*)[^\n]+$",
+            pos_block,
+        )
+        if dm:
+            pos_block = (
+                pos_block[:dm.start(0)]
+                + dm.group(1)
+                + src_date
+                + pos_block[dm.end(0):]
+            )
+
+        technical = source["technical"]
+
+        for field, value in technical.items():
+            if value is None:
+                continue
+
+            pattern = technical_labels.get(field)
+            if pattern is None:
+                continue
+
+            # Zielzone: vorhandenen Gemini-Wert vollständig verwerfen und
+            # den CSV-String 1:1 einsetzen. Keine Berechnung/Normalisierung.
+            if field == "Technische_Zielzone":
+                replacement = f"Technische Zielzone: {value}"
+                pos_block, count = pattern.subn(replacement, pos_block, count=1)
+                if count == 0:
+                    # Fehlende Zielzone ist erlaubt: sie wird deterministisch
+                    # unmittelbar vor Ueberdehnung eingefügt.
+                    anchor = re.search(
+                        r"(?im)^\s*(?:Ueberdehnung|Überdehnung)\s*:",
+                        pos_block,
+                    )
+                    if anchor:
+                        pos_block = (
+                            pos_block[:anchor.start()]
+                            + replacement + "\n"
+                            + pos_block[anchor.start():]
+                        )
+                        count = 1
+                if count == 0:
+                    # Falls auch kein Ueberdehnung/Überdehnung-Anker vorhanden
+                    # ist, wird die verbindliche CSV-Zielzone am Ende des
+                    # Positionsblocks eingesetzt. Der CSV-Wert bleibt 1:1.
+                    pos_block = pos_block.rstrip() + "\n" + replacement + "\n"
+                    count = 1
+                continue
+
+            # Alle anderen technischen Check-Felder werden ebenfalls aus der
+            # CSV übernommen, sofern Gemini die entsprechende Zeile ausgegeben
+            # hat. Fehlende technische Zeilen werden nicht erfunden.
+            pos_block, _ = pattern.subn(
+                lambda m, v=value: m.group(1) + v,
+                pos_block,
+                count=1,
+            )
+
+        replacements.append((start, end, pos_block))
+
+    # Jede offene CSV-Position muss genau einmal im Gemini-Block auftauchen.
+    for source_key in expected:
+        if seen.get(source_key, 0) == 0:
+            source = expected[source_key]
+            errors.append(
+                f"{source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | "
+                f"Einstiegsdatum: {source['date']}: fehlt im Gemini-Output"
+            )
+
+    if errors:
+        raise RuntimeError(
+            "Offene Positionen konnten nicht verbindlich gegen "
+            "Offene Positionen+Check.csv abgeglichen werden: "
+            + " | ".join(errors)
+        )
+
+    # Ersetzungen rückwärts anwenden, damit Positionen ihre Original-Indizes behalten.
+    for start, end, pos_block in sorted(replacements, reverse=True):
+        block = block[:start] + pos_block + block[end:]
+
+    text = text[:match.start()] + block + text[match.end():]
+    return text
+
+
+def _lese_makro_datenqualitaet(makro_text):
+    """Liest die autoritative Gesamt-Datenqualitaet aus dem Makro-Datenpaket."""
+    if not makro_text:
         return None
-    hi = d["High"].to_numpy(float)
-    idx = argrelextrema(hi, np.greater_equal, order=5)[0]
-    if len(idx) < 3:
-        return None
-    idx = idx[-6:]
-    y = hi[idx]
-    x = idx.astype(float)
-    slope, intercept = np.polyfit(x, y, 1)
-    if slope <= 0:
-        return None
-    fitted = slope * x + intercept
-    if np.max(np.abs(y - fitted) / np.maximum(y, 1e-9)) > 0.04:
-        return None
-    proj = slope * (len(d) - 1) + intercept
-    return float(proj) if proj > close * 1.005 else None
-
-
-def detect_formation(data: pd.DataFrame, close: float, direction: str) -> tuple[str, Optional[float]]:
-    """Konservative Measured-Move-Erkennung für Range/Dreieck/Flaggen-ähnliche
-    Konsolidierungen. Keine Formation wird erzwungen."""
-    d = data.iloc[-80:].copy()
-    if len(d) < 40:
-        return "Keine belastbare Formation", None
-    hi = float(d["High"].max()); lo = float(d["Low"].min())
-    width = hi - lo
-    if width <= 0 or close <= 0:
-        return "Keine belastbare Formation", None
-    recent = d.iloc[-20:]
-    recent_width = float(recent["High"].max() - recent["Low"].min())
-    # Kompakte Konsolidierung nach vorheriger Bewegung -> konservativer Range measured move.
-    if recent_width <= width * 0.55:
-        prior = d.iloc[:-20]
-        if len(prior) >= 15:
-            ph = float(prior["High"].max()); pl = float(prior["Low"].min())
-            impulse = ph - pl
-            if impulse > close * 0.08:
-                if direction == "bullisch" and close >= float(recent["Low"].min()):
-                    return "Konsolidierung / Flaggen-ähnlich", float(close + impulse)
-                if direction == "baerisch":
-                    return "Konsolidierung / Flaggen-ähnlich", float(close - impulse)
-    # Dreieck: schrumpfende Bandbreite in der zweiten Hälfte.
-    first = d.iloc[:40]; second = d.iloc[-40:]
-    w1 = float(first["High"].max() - first["Low"].min())
-    w2 = float(second["High"].max() - second["Low"].min())
-    if w1 > 0 and w2 < w1 * 0.65:
-        return "Dreieck/Konsolidierung", float(close + w1 if direction == "bullisch" else close - w1)
-    return "Keine belastbare Formation", None
-
-
-def round_number_zone(close: float) -> Optional[float]:
-    if close <= 0:
-        return None
-    # Psychologische Marken passend zur Größenordnung des Instruments.
-    step = 0.01 if close < 1 else 0.05 if close < 10 else 1 if close < 100 else 5 if close < 1000 else 50
-    candidate = round(close / step) * step
-    if abs(candidate - close) / close <= 0.025:
-        return float(candidate)
+    for pattern in (
+        r"MAKRO-DATENQUALITAET\s*[:=]\s*(VOLLSTAENDIG|EINGESCHRAENKT|UNZUREICHEND)",
+        r"DATENQUALITAET\s*[:=]\s*(VOLLSTAENDIG|EINGESCHRAENKT|UNZUREICHEND)",
+    ):
+        m = re.search(pattern, makro_text, re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
     return None
 
 
-def overextension_signal(data: pd.DataFrame, close: float, ema200: Optional[float]) -> str:
-    if ema200 is None or ema200 <= 0:
-        return "Nicht bestimmbar – GD200 fehlt"
-    dist = abs(close - ema200) / ema200 * 100
-    bb_mid = data["Close"].rolling(20).mean().iloc[-1]
-    bb_std = data["Close"].rolling(20).std(ddof=0).iloc[-1]
-    if pd.notna(bb_mid) and pd.notna(bb_std) and bb_std > 0:
-        z = abs(close - bb_mid) / (2 * bb_std)
-        if dist >= 25 or z >= 1.8:
-            return f"Hoch – GD200-Abstand {dist:.1f}% / BB-Ausdehnung {z:.1f}x"
-        if dist >= 15 or z >= 1.3:
-            return f"Moderat – GD200-Abstand {dist:.1f}% / BB-Ausdehnung {z:.1f}x"
-    if dist >= 15:
-        return f"Moderat – GD200-Abstand {dist:.1f}%"
-    return f"Keine markante Überdehnung – GD200-Abstand {dist:.1f}%"
-
-
-_SECTOR_MAP_CACHE = None
-
-def _load_sector_maps() -> tuple[dict, dict, dict, dict]:
-    """Liest die bereits im Projekt vorhandenen Sektor-Mappings aus analyse.py,
-    ohne analyse.py zu importieren/auszuführen. Damit bleibt die Check-Datei
-    unabhängig von API-Keys und übernimmt trotzdem die Projektquelle der Wahrheit."""
-    global _SECTOR_MAP_CACHE
-    if _SECTOR_MAP_CACHE is not None:
-        return _SECTOR_MAP_CACHE
-    maps = ({}, {}, {}, {})
-    path = os.path.join(os.path.dirname(__file__), "analyse.py")
-    try:
-        tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
-        names = {"sektoren_map": 0, "sektoren_aktien": 1, "eu_sektoren_etf": 2, "dax_aktien": 3}
-        values = [None] * 4
-        for node in tree.body:
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                idx = names.get(node.targets[0].id)
-                if idx is not None:
-                    try:
-                        values[idx] = ast.literal_eval(node.value)
-                    except Exception:
-                        pass
-        maps = tuple(v if isinstance(v, dict) else {} for v in values)
-    except Exception:
-        pass
-    _SECTOR_MAP_CACHE = maps
-    return maps
-
-
-def _sector_etf_for_row(row) -> tuple[Optional[str], Optional[str]]:
-    ticker = str(row.get("Ticker", "")).strip()
-    sector = str(row.get("Sektor", "")).strip()
-    sector_map, us_stocks, eu_etfs, eu_stocks = _load_sector_maps()
-    if "." in ticker:
-        for sec, tickers in eu_stocks.items():
-            if ticker in tickers:
-                for etf, etf_sector in eu_etfs.items():
-                    if etf_sector == sec:
-                        return etf, sec
-    else:
-        for etf, tickers in us_stocks.items():
-            if ticker in tickers:
-                return etf, sector_map.get(etf, sector)
-
-    # Robuster Fallback: Wenn der Ticker noch nicht explizit im Projekt-Mapping
-    # steht, verwenden wir das bereits in Offene_Positionen.csv vorhandene
-    # Sektor-Feld und suchen dazu den passenden Sektor-ETF. Dadurch gehen
-    # vorhandene Sektordaten nicht verloren, nur weil ein neuer Titel noch
-    # nicht in der Ticker-Liste des Scanners hinterlegt wurde.
-    if sector:
-        for etf, etf_sector in eu_etfs.items():
-            if str(etf_sector).strip().lower() == sector.lower():
-                return etf, sector
-        for etf, mapped_sector in sector_map.items():
-            if str(mapped_sector).strip().lower() == sector.lower():
-                return etf, sector
-
-    return None, sector or None
-
-
-def sector_relative_strength(row, close: float, data: pd.DataFrame) -> str:
-    """Berechnet die bestehende Projektdefinition der Sektor-RS: 5T-Aktie
-    gegen den passenden Sektor-ETF. Keine neue Rotationslogik, sondern die
-    bereits vorhandene Projektlogik als Kontextsignal."""
-    if row is None or data.empty or len(data) < 6:
-        return "Nicht verfügbar – zu wenig Daten"
-    etf, sector = _sector_etf_for_row(row)
-    if not etf:
-        return "Nicht verfügbar – kein Sektor-ETF im Projekt-Mapping"
-    try:
-        stock_5d = (float(data["Close"].iloc[-1]) / float(data["Close"].iloc[-6]) - 1) * 100
-        etf_data = fetch_history(etf)
-        if etf_data.empty or len(etf_data) < 6:
-            return f"Nicht verfügbar – {etf}: keine ausreichenden ETF-Daten"
-        etf_5d = (float(etf_data["Close"].iloc[-1]) / float(etf_data["Close"].iloc[-6]) - 1) * 100
-        diff = stock_5d - etf_5d
-        if diff >= 3:
-            label = "Stark positiv"
-        elif diff > 0:
-            label = "Positiv"
-        elif diff <= -3:
-            label = "Negativ"
-        else:
-            label = "Leicht negativ"
-        return f"{label} ({diff:+.1f} %-Pkt.; Aktie {stock_5d:+.1f}% vs. {sector or 'Sektor'} {etf_5d:+.1f}%)"
-    except Exception as exc:
-        return f"Nicht verfügbar – Berechnung fehlgeschlagen ({type(exc).__name__})"
-
-def determine_state(data: pd.DataFrame, close: float, resistances: list[float], supports: list[float], abc_status: str) -> tuple[str, str, str]:
-    ema20 = data["Close"].ewm(span=20, adjust=False).mean().iloc[-1]
-    ema50 = data["Close"].ewm(span=50, adjust=False).mean().iloc[-1]
-    ema200 = data["Close"].ewm(span=200, adjust=False).mean().iloc[-1] if len(data) >= 200 else None
-    ema50_prev = data["Close"].ewm(span=50, adjust=False).mean().iloc[-6] if len(data) >= 205 else data["Close"].ewm(span=50, adjust=False).mean().iloc[max(0, len(data)-6)]
-    slope_up = ema50 > ema50_prev
-    slope_down = ema50 < ema50_prev
-    if ema200 is not None and close > ema50 > ema200 and slope_up:
-        trend = "Bullisch"
-    elif ema200 is not None and close < ema50 < ema200 and slope_down:
-        trend = "Baerisch"
-    elif close > ema50 and slope_up:
-        trend = "Leicht bullisch"
-    elif close < ema50 and slope_down:
-        trend = "Leicht baerisch"
-    else:
-        trend = "Seitwaerts/neutral"
-
-    if resistances and close >= resistances[0] * 0.995:
-        state = "Widerstandstest"
-        # bestätigter Breakout = Schluss über der nächsten markanten Zone.
-        if close > resistances[0] * 1.002:
-            state = "Breakout / Aufwaertszustand"
-    elif supports and close <= supports[0] * 1.005:
-        state = "Supporttest"
-    elif trend in {"Bullisch", "Leicht bullisch"}:
-        state = "Aufwaertstrend"
-    elif trend in {"Baerisch", "Leicht baerisch"}:
-        state = "Abwaertstrend"
-    else:
-        state = "Seitwaerts/neutral"
-
-    if abc_status == "Bestätigt":
-        state += " + A-B-C bestätigt"
-    lage = f"{state}; Trend={trend}"
-    return trend, state, lage
-
-
-def immediate_resistance_within_10pct(future_highs: Iterable[float], close: float) -> Optional[float]:
-    """Naechster historischer Widerstand <= 10 % oberhalb des Kurses.
-    Genau 10,0 % blockiert Fibonacci; >10 % ist ein entferntes Major-Level.
-    """
-    if close is None or close <= 0:
-        return None
-    upper = close * (1.0 + IMMEDIATE_RESISTANCE_MAX_DISTANCE)
-    candidates = [
-        float(level) for level in future_highs
-        if level > close * 1.002
-        and level <= upper + max(1e-12, abs(upper) * 1e-10)
-    ]
-    return min(candidates) if candidates else None
-
-
-def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
-    result = TechnicalResult()
-    if data.empty:
-        result.data_quality = "Keine Kursdaten"
-        result.note = "Technische Analyse nicht möglich; keine belastbare Kursreihe verfügbar."
-        return result
-    if len(data) < 60:
-        result.data_quality = f"Zu wenig Kursdaten ({len(data)} Handelstage)"
-        result.close = last_completed_close(data)
-        result.note = "Für eine vollständige technische Zustandsanalyse sind mindestens 60 Handelstage erforderlich."
-        return result
-
-    close = last_completed_close(data)
-    result.close = close
-    if close is None or close <= 0:
-        result.data_quality = "Ungültiger Schlusskurs"
-        return result
-
-    closes = data["Close"].astype(float)
-    result.ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
-    result.ema50 = float(closes.ewm(span=50, adjust=False).mean().iloc[-1])
-    result.ema200 = float(closes.ewm(span=200, adjust=False).mean().iloc[-1]) if len(data) >= 200 else None
-    delta = closes.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-    rs = gain / loss.clip(lower=1e-9)
-    result.rsi = float((100 - 100/(1+rs)).iloc[-1])
-
-    swing_hi, swing_lo = swing_levels(data)
-    # Zwei getrennte Ebenen: aktuelle Zonen oberhalb des Kurses UND die
-    # zuletzt gebrochene Widerstandszone. Dadurch kann ein echter Breakout
-    # erkannt werden, ohne den gebrochenen Widerstand aus dem Datenmodell
-    # zu verlieren.
-    prior_highs = [x for x in swing_hi if x < close * 1.002]
-    future_highs = [x for x in swing_hi if x > close * 1.002]
-    prior_resistance = max(prior_highs) if prior_highs else None
-    supports = cluster_levels(find_nearest(swing_lo, close, above=False, count=8))
-    resistances = cluster_levels(find_nearest(future_highs, close, above=True, count=8))
-    # Direkte EMA-Supports werden nur aufgenommen, wenn sie unter dem Kurs liegen.
-    if result.ema20 < close * 0.998:
-        supports.append(result.ema20)
-    if result.ema50 < close * 0.998:
-        supports.append(result.ema50)
-    supports = sorted(cluster_levels(supports), reverse=True)
-    resistances = sorted(cluster_levels(resistances))
-
-    # 52W-Hoch ist immer ein Major-Kandidat, wenn es oberhalb des Kurses liegt.
-    high_52w = float(data["High"].iloc[-252:].max())
-    major = high_52w if high_52w > close * 1.01 else None
-    # Für lange Historien: echtes historisches Hoch zusätzlich prüfen. Beim Gold-
-    # Spot ist das entscheidend, damit das bekannte ATH nicht verloren geht.
-    all_time_high = float(data["High"].max())
-    if all_time_high > close * 1.01:
-        major = max(major or 0, all_time_high)
-
-    # Vorläufige Trendrichtung fuer A-B-C.
-    ema50_prev = float(closes.ewm(span=50, adjust=False).mean().iloc[-6])
-    if result.ema200 is not None and close > result.ema50 > result.ema200 and result.ema50 > ema50_prev:
-        direction = "bullisch"
-    elif result.ema200 is not None and close < result.ema50 < result.ema200 and result.ema50 < ema50_prev:
-        direction = "baerisch"
-    elif close >= result.ema50:
-        direction = "bullisch"
-    else:
-        direction = "baerisch"
-
-    abc_ok, abc_status, abc_range, abc_points = detect_abc(data, close, direction)
-    result.abc_status = abc_status
-
-    # V2 Zielzonen: Fibonacci wird NUR nach Breakout + bestätigter A-B-C-Struktur
-    # aktiviert. Ein Breakout allein reicht ausdrücklich nicht.
-    # Ein bestätigtes A-B-C enthält bereits den strukturellen Break über B.
-    # Falls kein historischer Widerstand oberhalb vorhanden ist, darf dieser
-    # Fall ausdrücklich NICHT Fibonacci blockieren. Existiert ein relevanter
-    # historischer Widerstand, muss dieser zusätzlich überwunden sein.
-    # Fibonacci wird NUR nach bestaetigtem A-B-C + strukturellem Breakout
-    # aktiviert. Ein weiter oben liegendes Major-Level/ATH blockiert Fibonacci
-    # NICHT: es bleibt als Major Resistance separat bestehen. Damit bleiben
-    # unsere beiden Faelle konsistent:
-    #   Fall A: keine unmittelbare historische Resistance oberhalb ->
-    #           bestaetigtes A-B-C reicht fuer Fibonacci.
-    #   Fall B: eine unmittelbare historische Resistance wurde gerade getestet
-    #           bzw. gebrochen -> erst deren Breakout muss bestaetigt sein;
-    #           danach darf Fibonacci aktiv werden, auch wenn ein weiter
-    #           entferntes Major-Level/ATH noch oberhalb liegt.
-    # `abc_ok` bestaetigt bereits den Break ueber B. `prior_resistance` ist die
-    # letzte markante Widerstandszone VOR dem aktuellen Kurs und wird deshalb
-    # zusaetzlich abgesichert. `resistances` oberhalb bleiben Ziel-/Kontextzonen,
-    # blockieren Fibonacci aber nicht.
-    # Fall A: Keine unmittelbare historische Resistance oberhalb -> ein
-    # bestaetigtes A-B-C mit B-Bruch reicht fuer Fibonacci.
-    # Fall B: Eine unmittelbare historische Resistance oberhalb des Kurses
-    # existiert noch -> sie muss zuerst gebrochen sein. Weiter entfernte
-    # Major-Level/ATH (>10 %) blockieren Fibonacci nicht.
-    immediate_resistance = immediate_resistance_within_10pct(future_highs, close)
-
-    breakout_for_fib = bool(
-        abc_ok and abc_points and immediate_resistance is None
+def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
+    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 2."""
+    if not text or not makro_datenqualitaet:
+        return text
+    start = text.find("2. MAKRO-ZUKUNFTSSZENARIO")
+    if start < 0:
+        return text
+    end = text.find("\n3.", start)
+    if end < 0:
+        end = len(text)
+    section = text[start:end]
+    section = re.sub(
+        r"(?im)^[^\n]*(?:MAKRO-DATENQUALITAET|Datenqualitaet)\s*[:=][^\n]*\n?",
+        "",
+        section,
     )
-    if breakout_for_fib:
-        result.fib1, result.fib2, result.fib3 = fibonacci_extension(data, abc_points, direction)
-        result.fib_status = "Aktiv – Breakout + A-B-C bestätigt"
-    elif abc_ok and abc_points and immediate_resistance is not None:
-        result.fib_status = (
-            f"Nicht aktiv – unmittelbarer historischer Widerstand "
-            f"bei {immediate_resistance:.2f} noch nicht gebrochen"
-        )
-    elif abc_ok and abc_points:
-        result.fib_status = "Nicht aktiv – A-B-C-Breakout nicht bestätigt"
-    else:
-        result.fib_status = "Nicht aktiv – bestätigte A-B-C-Struktur fehlt"
-
-    # V2 parallel: dynamische Referenzen und Kontextsignale werden unabhängig
-    # von Fibonacci berechnet. Sie sind keine automatischen Kursziele, wenn die
-    # Datenqualität/Struktur sie nicht belastbar hergibt.
-    result.channel_upper = trend_channel_upper(data, close)
-    result.formation, result.measured_move = detect_formation(data, close, direction)
-    result.round_number = round_number_zone(close)
-    result.overextension = overextension_signal(data, close, result.ema200)
-    result.sector_rs = sector_relative_strength(row, close, data)
-
-    result.support1 = supports[0] if len(supports) > 0 else None
-    result.support2 = supports[1] if len(supports) > 1 else None
-    result.resistance1 = resistances[0] if len(resistances) > 0 else None
-    result.resistance2 = resistances[1] if len(resistances) > 1 else None
-
-    # Breakout: gegen die letzte markante Widerstandszone VOR dem aktuellen
-    # Kurs pruefen. Nach dem Breakout wird genau diese Zone als Retest-Support
-    # erhalten. Ein Widerstand oberhalb des aktuellen Kurses bleibt dagegen
-    # ein kommendes Ziel und ist kein bereits bestaetigter Breakout.
-    if prior_resistance is not None and close > prior_resistance * 1.002:
-        result.breakout_status = "Bestätigter Breakout"
-        result.retest_support = prior_resistance
-    elif prior_resistance is not None and close >= prior_resistance * 0.995:
-        result.breakout_status = "Widerstand wird getestet"
-    else:
-        result.breakout_status = "Kein bestätigter Breakout"
-
-    state_resistances = resistances if resistances else ([prior_resistance] if prior_resistance is not None else [])
-    result.trend, result.state, _ = determine_state(data, close, state_resistances, supports, result.abc_status)
-    if result.breakout_status == "Bestätigter Breakout":
-        result.state = "Breakout / Aufwaertszustand" + (" + A-B-C bestätigt" if result.abc_status == "Bestätigt" else "")
-
-    # Major-Level vor der Konfluenz festlegen. Das historische ATH/52W-Hoch bleibt
-    # unabhängig erhalten und darf nie durch eine Fibonacci-Projektion überschrieben werden.
-    result.major_resistance = major
-
-    # Konfluenzanalyse: mehrere unabhängige Referenzen in einer Zone bündeln.
-    # Fibonacci ist dabei nur aktiv, wenn Breakout + A-B-C bestätigt wurden.
-    refs = []
-    for label, value in [
-        ("Fibonacci 127,2%", result.fib1),
-        ("Fibonacci 161,8%", result.fib2),
-        ("Fibonacci 261,8%", result.fib3),
-        ("Trendkanal", result.channel_upper),
-        ("Measured Move", result.measured_move),
-        ("Round Number", result.round_number),
-        ("Major", result.major_resistance),
-    ]:
-        if value is not None and value > close:
-            refs.append((label, float(value)))
-
-    groups = []
-    for label, value in refs:
-        placed = False
-        for group in groups:
-            center = float(np.mean([v for _, v in group]))
-            if abs(value - center) / center <= 0.02:
-                group.append((label, value))
-                placed = True
-                break
-        if not placed:
-            groups.append([(label, value)])
-
-    strong = [g for g in groups if len(g) >= 2]
-    if strong:
-        g = max(strong, key=len)
-        lo = min(v for _, v in g)
-        hi = max(v for _, v in g)
-        result.confluence = (f"{lo:.2f}-{hi:.2f}: " +
-                             ", ".join(label for label, _ in g))
-    elif refs:
-        result.confluence = "Keine Mehrfach-Konfluenz; Referenzen: " + ", ".join(label for label, _ in refs[:6])
-
-    # Primärlogik der Zielzone:
-    # 1) historische Widerstände oberhalb haben Vorrang, wenn vorhanden;
-    # 2) fehlt ein relevanter historischer Widerstand, werden aktive Fibonacci-
-    #    Extensions als primäre Projektion verwendet;
-    # 3) parallel bleiben Kanal, Formation und Round Number als Bestätigung;
-    # 4) Major-Level bleibt immer separat.
-    if resistances:
-        primary = [(v, "Historischer Widerstand") for v in resistances if v > close]
-    else:
-        primary = []
-
-    if not primary and result.fib_status.startswith("Aktiv"):
-        primary = [(v, label) for v, label in [
-            (result.fib1, "Fibonacci 127,2%"),
-            (result.fib2, "Fibonacci 161,8%"),
-            (result.fib3, "Fibonacci 261,8%"),
-        ] if v is not None and v > close]
-
-    # Konfluenzzone hat Vorrang vor einer einzelnen Referenz, sofern sie nicht
-    # ausschließlich aus dem Major-Level besteht.
-    if strong:
-        g = min(strong, key=lambda group: min(v for _, v in group))
-        non_major = [(label, value) for label, value in g if label != "Major"]
-        if len(non_major) >= 2:
-            lo = min(v for _, v in non_major)
-            hi = max(v for _, v in non_major)
-            result.note = f"Konfluenzzone {lo:.2f}-{hi:.2f}: " + ", ".join(label for label, _ in non_major)
-        elif primary:
-            value, label = min(primary, key=lambda x: x[0])
-            result.note = f"Nächste technische Referenz: {value:.2f} ({label})."
-    elif primary:
-        value, label = min(primary, key=lambda x: x[0])
-        result.note = f"Nächste technische Referenz: {value:.2f} ({label})."
-    else:
-        # Kein historischer Widerstand: Kanal/Formation/Round Number dienen als
-        # sekundäre Referenzen. Das ist ausdrücklich kein erzwungenes Kursziel.
-        secondary = [(v, label) for v, label in [
-            (result.channel_upper, "Trendkanal"),
-            (result.measured_move, "Measured Move"),
-            (result.round_number, "Round Number"),
-        ] if v is not None and v > close]
-        if secondary:
-            value, label = min(secondary, key=lambda x: x[0])
-            result.note = f"Keine relevante historische Resistance oberhalb; nächste Referenz: {value:.2f} ({label})."
-        else:
-            result.note = "Keine belastbare Zielreferenz oberhalb des aktuellen Kurses."
-
-    quality = "hoch" if len(data) >= 200 else "mittel"
-    # yfinance liefert einen DatetimeIndex; Offline-/Testreihen können jedoch
-    # auch einen numerischen Index haben. Die Datenqualitaetsmeldung darf
-    # deshalb niemals am Index-Typ scheitern.
-    try:
-        last_date = pd.Timestamp(data.index[-1]).date().isoformat()
-    except Exception:
-        last_date = str(data.index[-1])
-    result.data_quality = f"{quality}; {len(data)} Handelstage; letzter Schluss {last_date}"
-    # Der bereits berechnete Zielzonen-/Konfluenzhinweis bleibt erhalten.
-    # Nur wenn noch kein spezifischer Hinweis gesetzt wurde, verwenden wir
-    # die allgemeine Regelmeldung.
-    if not result.note:
-        result.note = (
-            "Breakout aktiviert Fibonacci nicht automatisch. "
-            "Fibonacci nur bei bestätigter A-B-C-Struktur. "
-            "Major-Level bleibt separat erhalten."
-        )
-    return result
+    section = section.rstrip() + f"\nDatenqualitaet: {makro_datenqualitaet}\n"
+    return text[:start] + section + text[end:]
 
 
-def performance(entry: Optional[float], close: Optional[float], direction: str) -> Optional[float]:
-    if entry is None or close is None or entry == 0:
-        return None
-    raw = (close - entry) / entry * 100
-    return -raw if str(direction).strip().lower() == "short" else raw
-
-
-def make_row(row, tech: TechnicalResult) -> dict:
-    ticker = str(row.get("Ticker", "")).strip()
-    name = str(row.get("Name", "")).strip() or ticker
-    entry = parse_number(row.get("Einstieg"))
-    close = tech.close
-    perf = performance(entry, close, str(row.get("Richtung", "Long")))
-    if tech.close is None:
-        quality = tech.data_quality
-    else:
-        quality = tech.data_quality
-
-    sector = str(row.get("Sektor", "")).strip()
-    if ticker.upper() == "PPFD.SG":
-        sector = "Edelmetalle / Silber"
-    elif ticker.upper() == GOLD_SPOT_TICKER:
-        sector = "Edelmetalle / Gold"
-
-    target_zone = ""
-    # Die Zielzone folgt der bereits berechneten V2-Hierarchie. Die Konfluenz
-    # darf nur dann die primäre Darstellung übernehmen, wenn mindestens zwei
-    # unabhängige Referenzen zusammenfallen; ein Major-Level allein ist keine
-    # Konfluenz.
-    if tech.confluence and "Keine Mehrfach-Konfluenz" not in tech.confluence and "Keine" not in tech.confluence:
-        target_zone = tech.confluence
-    elif tech.resistance1 is not None and tech.close is not None and tech.resistance1 > tech.close:
-        target_zone = f"{tech.resistance1:.2f} (Historischer Widerstand)"
-    elif tech.fib_status.startswith("Aktiv"):
-        fibs = [(v, label) for v, label in [
-            (tech.fib1, "Fibonacci 127,2%"), (tech.fib2, "Fibonacci 161,8%"),
-            (tech.fib3, "Fibonacci 261,8%"),
-        ] if v is not None and tech.close is not None and v > tech.close]
-        if fibs:
-            value, label = min(fibs, key=lambda x: x[0])
-            target_zone = f"{value:.2f} ({label})"
-    else:
-        secondary = [(v, label) for v, label in [
-            (tech.channel_upper, "Trendkanal"), (tech.measured_move, "Measured Move"),
-            (tech.round_number, "Round Number"),
-        ] if v is not None and tech.close is not None and v > tech.close]
-        if secondary:
-            value, label = min(secondary, key=lambda x: x[0])
-            target_zone = f"{value:.2f} ({label})"
-    if tech.major_resistance is not None:
-        target_zone = (target_zone + " | Major Resistance " + f"{tech.major_resistance:.2f}").strip(" |") if target_zone else f"Major Resistance {tech.major_resistance:.2f}"
-    return {
-        "Ticker": ticker,
-        "Name": name,
-        "Steuerungsart": steuerungsart(row.get("Ideen_Quelle", "")),
-        "Sektor": sector,
-        "Markt": str(row.get("Markt", "")).strip(),
-        "Waehrung": str(row.get("Waehrung", "")).strip(),
-        "Status": "Offen",
-        "Einstieg": fmt_num(entry),
-        "Aktueller_Kurs": fmt_num(close),
-        "Performance_Seit_Einstieg%": fmt_num(perf),
-        "Technischer_Zustand": tech.state,
-        "Trendrichtung": tech.trend,
-        "Technische_Lage": tech.state,
-        "Support_1": fmt_num(tech.support1),
-        "Support_2": fmt_num(tech.support2),
-        "Widerstand_1": fmt_num(tech.resistance1),
-        "Widerstand_2": fmt_num(tech.resistance2),
-        "Breakout_Status": tech.breakout_status,
-        "A-B-C_Status": tech.abc_status,
-        "Fibonacci_Status": tech.fib_status,
-        "Fibonacci_Ziel_1": fmt_num(tech.fib1),
-        "Fibonacci_Ziel_2": fmt_num(tech.fib2),
-        "Fibonacci_Ziel_3": fmt_num(tech.fib3),
-        "Trendkanal_Obergrenze": fmt_num(tech.channel_upper),
-        "Measured_Move_Ziel": fmt_num(tech.measured_move),
-        "Formation": tech.formation,
-        "Round_Number_Zone": fmt_num(tech.round_number),
-        "Major_Resistance": fmt_num(tech.major_resistance),
-        "Ueberdehnung": tech.overextension,
-        "Relative_Staerke_Sektor": tech.sector_rs,
-        "Konfluenz": tech.confluence,
-        "Retest_Support": fmt_num(tech.retest_support),
-        "Technische_Zielzone": target_zone,
-        "Datenqualitaet": quality,
-        "Analysehinweis": tech.note,
-    }
-
-
-def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
-    """Uebernimmt Gestoppt/Verkauft als historische Faktenbasis.
-    Keine aktuelle technische Neuberechnung fuer geschlossene Positionen.
-    """
-    closed = df[df["Status"].astype(str).str.strip().str.lower().isin({"gestoppt", "geschlossen", "verkauft", "manuell verkauft"})].copy()
-    for col in HISTORY_HEADERS:
-        if col not in closed.columns:
-            closed[col] = ""
-    return closed[HISTORY_HEADERS].copy()
-
-
-def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
-              history_csv: str = "Geschlossene Positionen.csv"):
-    df = read_positions(input_file)
-    open_df = df[df.apply(is_open, axis=1)].copy()
-    closed_df = extract_closed_history(df)
-    results = []
-    print(f"OFFENE POSITIONEN + CHECK: {len(open_df)} offene Positionen gefunden.")
-    print(f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen.")
-    print("Gestoppte/verkaufte Positionen werden NICHT technisch neu berechnet.")
-
-    for _, row in open_df.iterrows():
-        ticker = str(row.get("Ticker", "")).strip()
-        if not ticker or ticker.upper() == "ANLEITUNG":
-            continue
-        print(f"CHECK: {ticker} | {row.get('Name','')}")
-        hist = fetch_history(ticker)
-        tech = analyze_technical(hist, row)
-        if not hist.empty and tech.close is not None:
-            ath = float(hist["High"].max())
-            if ath > tech.close * 1.01:
-                tech.major_resistance = ath
-        results.append(make_row(row, tech))
-
-    out = pd.DataFrame(results, columns=HEADERS)
-    out.to_csv(output_csv, sep=";", decimal=",", index=False, encoding="utf-8-sig")
-    closed_df.to_csv(history_csv, sep=";", decimal=",", index=False, encoding="utf-8-sig")
-    print(f"LOKAL ERSTELLT: {output_csv} | {len(out)} offene Positionen")
-    print(f"HISTORIE ERSTELLT: {history_csv} | {len(closed_df)} geschlossene Positionen")
-    return out, closed_df
-
-
-def google_credentials():
-    """Verwendet exakt den bestehenden Projekt-OAuth-Mechanismus.
-
-    Der im GDRIVE_TOKEN gespeicherte Scope wird übernommen; es werden KEINE
-    eigenen Scopes erzwungen. Der Token wird einmal geladen und fuer den
-    gesamten Drive/Sheets-Lauf wiederverwendet.
-    """
-    if not GOOGLE_AVAILABLE:
-        raise RuntimeError("Google-Credentials/Client-Bibliotheken sind nicht verfügbar.")
-
-    token = os.getenv("GDRIVE_TOKEN")
-    if not token:
-        raise RuntimeError("GDRIVE_TOKEN fehlt.")
-
-    try:
-        info = json.loads(token)
-        creds = Credentials.from_authorized_user_info(info)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        if not creds.valid:
-            raise RuntimeError("GDRIVE_TOKEN ist nach Laden/Refresh nicht gültig.")
-        return creds
-    except Exception as exc:
-        raise RuntimeError(f"GDRIVE_TOKEN konnte nicht verwendet werden: {exc}") from exc
-
-def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
-                 widths: dict[str, int], freeze_rows: int = 2):
-    ss = sheets.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute()
-    props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
-    if title not in props:
-        created = sheets.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": [{"addSheet": {"properties": {"title": title}}}]}
-        ).execute()
-        sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
-    else:
-        sheet_id = props[title]["sheetId"]
-
-    sheets.spreadsheets().values().clear(
-        spreadsheetId=spreadsheet_id, range=f"'{title}'!A:AZ", body={}
-    ).execute()
-    sheets.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id, range=f"'{title}'!A1",
-        valueInputOption="USER_ENTERED", body={"values": values}
-    ).execute()
-
-    ncols=len(values[0])
-    requests=[
-        {"updateSheetProperties":{"properties":{"sheetId":sheet_id,"gridProperties":{"frozenRowCount":freeze_rows}},"fields":"gridProperties.frozenRowCount"}},
-        {"mergeCells":{"range":{"sheetId":sheet_id,"startRowIndex":0,"endRowIndex":1,"startColumnIndex":0,"endColumnIndex":ncols},"mergeType":"MERGE_ALL"}},
-        {"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":0,"endRowIndex":1,"startColumnIndex":0,"endColumnIndex":ncols},"cell":{"userEnteredFormat":{"textFormat":{"bold":True,"fontSize":14}}},"fields":"userEnteredFormat.textFormat"}},
-        {"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":1,"endRowIndex":2,"startColumnIndex":0,"endColumnIndex":ncols},"cell":{"userEnteredFormat":{"textFormat":{"bold":True},"wrapStrategy":"WRAP"}},"fields":"userEnteredFormat.textFormat,userEnteredFormat.wrapStrategy"}},
-        {"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"ROWS","startIndex":0,"endIndex":2},"properties":{"pixelSize":34},"fields":"pixelSize"}},
-        {"setBasicFilter":{"filter":{"range":{"sheetId":sheet_id,"startRowIndex":1,"endRowIndex":len(values),"startColumnIndex":0,"endColumnIndex":ncols}}}},
-    ]
-    for i,col in enumerate(values[1]):
-        if col in NUMERIC_COLUMNS or col.endswith("%"):
-            requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":"0.00"}}},"fields":"userEnteredFormat.numberFormat"}})
-        requests.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":widths.get(col,120)},"fields":"pixelSize"}})
-    sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests":requests}).execute()
-
-
-
-def _history_key(row) -> tuple[str, str, str, str]:
-    """Stabiler Schlüssel für einen historischen Trade.
-    Die Positionsidentitaet bleibt Name + Ticker + Einstieg + Einstiegsdatum;
-    Ausstiegsdatum und Status unterscheiden denselben Trade bei Historienpflege.
-    Dadurch werden alte Trades beim nächsten Lauf nicht dupliziert und mehrere
-    Positionen desselben Tickers bleiben getrennt.
-    """
-    return (
-        str(row.get("Name", "")).strip().lower(),
-        str(row.get("Ticker", "")).strip().upper(),
-        str(row.get("Einstiegsdatum", "")).strip(),
-        str(row.get("Einstieg", "")).strip(),
-        str(row.get("Ausstiegsdatum", "")).strip(),
-        str(row.get("Status", "")).strip().lower(),
+def speichere_ergebnis(text):
+    heute = datetime.date.today().isoformat()
+    ausgabe_datei = f"Auswertung({heute}).txt"
+    text = normalisiere_ausgabe(
+        text,
+        zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
     )
-
-
-def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame) -> pd.DataFrame:
-    """Fuehrt bestehende Tab-2-Historie und neue Abschluesse verlustfrei zusammen.
-
-    WICHTIG: _write_sheet() schreibt in Tab 2 zuerst eine Titelzeile und erst
-    danach HISTORY_HEADERS. Die alte Implementierung behandelte faelschlich
-    die Titelzeile als Header und verlor dadurch bei jedem Lauf die bestehende
-    Historie. Hier wird der echte Header anhand der bekannten Spalten gesucht.
-    """
-    rows = []
-    if existing_rows:
-        header_idx = None
-        old_headers = []
-        for idx, raw in enumerate(existing_rows):
-            normalized = [str(x).strip() for x in raw]
-            if "Ticker" in normalized and "Status" in normalized and \
-                    "Ausstiegsdatum" in normalized:
-                header_idx = idx
-                old_headers = normalized
-                break
-
-        if header_idx is not None:
-            for raw in existing_rows[header_idx + 1:]:
-                if not any(str(x).strip() for x in raw):
-                    continue
-                item = {c: "" for c in HISTORY_HEADERS}
-                for i, col in enumerate(old_headers):
-                    if col in item and i < len(raw):
-                        item[col] = raw[i]
-                if str(item.get("Ticker", "")).strip():
-                    rows.append(item)
-
-    # Neue geschlossene Positionen aus der aktuellen Positionsquelle ergaenzen.
-    if new_closed_df is not None and not new_closed_df.empty:
-        for _, r in new_closed_df.iterrows():
-            rows.append({c: r.get(c, "") for c in HISTORY_HEADERS})
-
-    merged = pd.DataFrame(rows, columns=HISTORY_HEADERS)
-    if merged.empty:
-        return pd.DataFrame(columns=HISTORY_HEADERS)
-
-    # Deduplizierung darf historische Datensaetze nicht vernichten.
-    # Bei identischem Ticker + Einstiegsdatum + Ausstiegsdatum + Status bleibt
-    # der erste Datensatz erhalten. Unterschiedliche Einstiegs-/Ausstiegsdaten
-    # bleiben daher bewusst getrennt.
-    seen = set()
-    keep = []
-    for _, r in merged.iterrows():
-        key = _history_key(r)
-        if key in seen:
-            continue
-        seen.add(key)
-        keep.append(r.to_dict())
-
-    return pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
-
-
-def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
-    """Liest Tab 2 vor dem Überschreiben. Fehlt der Tab, kommt eine leere Historie."""
-    try:
-        response = sheets.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range="'Geschlossene Positionen'!A:AA",
-        ).execute()
-        return response.get("values", [])
-    except Exception as exc:
-        print(f"WARNUNG: Bestehende Historie konnte nicht gelesen werden: {exc}")
-        return []
-
-
-def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
-    if creds is None:
-        print("INFO: Keine Google-Credentials – lokale CSVs bleiben die Ausgabe.")
-        return None
-    drive=build("drive","v3",credentials=creds)
-    sheets=build("sheets","v4",credentials=creds)
-    q=f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
-    files=drive.files().list(q=q,fields="files(id,name,mimeType)").execute().get("files",[])
-    if files:
-        spreadsheet_id=files[0]["id"]
-    else:
-        created=drive.files().create(body={"name":DRIVE_NAME,"mimeType":"application/vnd.google-apps.spreadsheet","parents":[FOLDER_ID]},fields="id,name").execute()
-        spreadsheet_id=created["id"]
-
-    # Bei einem bereits vorhandenen alten Sheet wird der erste bestehende Tab
-    # als neuer Haupttab weiterverwendet, statt einen veralteten dritten Tab
-    # stehen zu lassen. Die alte Datei ausserhalb dieses Sheets bleibt unberührt.
-    existing = sheets.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute().get("sheets", [])
-    existing_titles = [s["properties"]["title"] for s in existing]
-
-    # Bestehende Historie VOR jedem Überschreiben sichern.
-    existing_history_rows = read_existing_history(sheets, spreadsheet_id)
-
-    if "Offene Positionen + Check" not in existing_titles and existing:
-        first_id = existing[0]["properties"]["sheetId"]
-        sheets.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": [{"updateSheetProperties": {
-                "properties": {"sheetId": first_id, "title": "Offene Positionen + Check"},
-                "fields": "title"
-            }}]}
-        ).execute()
-
-    now=dt.datetime.now().strftime("%d.%m.%Y %H:%M")
-    values=[[f"Offene Positionen + Check | Stand {now}"]+[""]*(len(HEADERS)-1),HEADERS]
-    for _,r in df.iterrows(): values.append([r.get(c,"") for c in HEADERS])
-    # Bestehende V2.6-Spaltenbreiten unverändert beibehalten.
-    widths = {
-        "Ticker": 95, "Name": 240, "Steuerungsart": 125, "Sektor": 150,
-        "Markt": 65, "Waehrung": 75, "Status": 75, "Einstieg": 85,
-        "Aktueller_Kurs": 105, "Performance_Seit_Einstieg%": 120,
-        "Technischer_Zustand": 190, "Trendrichtung": 125, "Technische_Lage": 220,
-        "Support_1": 90, "Support_2": 90, "Widerstand_1": 100, "Widerstand_2": 100,
-        "Breakout_Status": 180, "A-B-C_Status": 260, "Fibonacci_Status": 260,
-        "Fibonacci_Ziel_1": 120, "Fibonacci_Ziel_2": 120,
-        "Fibonacci_Ziel_3": 120, "Trendkanal_Obergrenze": 130,
-        "Measured_Move_Ziel": 130, "Formation": 220, "Round_Number_Zone": 130,
-        "Major_Resistance": 120, "Ueberdehnung": 300,
-        "Relative_Staerke_Sektor": 300, "Konfluenz": 300, "Retest_Support": 120,
-        "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
-    }
-    _write_sheet(sheets,spreadsheet_id,"Offene Positionen + Check",values,widths,2)
-
-    # Historie dauerhaft fortführen: bestehende Google-Historie + neu geschlossene
-    # Positionen aus der aktuellen Positionsquelle. Der Tab wird danach vollständig
-    # neu geschrieben, aber historische Datensätze werden nicht verloren.
-    merged_history = merge_closed_history(existing_history_rows, closed_df)
-    hvalues=[[f"Geschlossene Positionen | historische Faktenbasis | Stand {now}"]+[""]*(len(HISTORY_HEADERS)-1),HISTORY_HEADERS]
-    for _,r in merged_history.iterrows(): hvalues.append([r.get(c,"") for c in HISTORY_HEADERS])
-    hwidths={c:140 for c in HISTORY_HEADERS}
-    hwidths.update({"Ticker":95,"Name":260,"TP_Hinweis":260,"Alert_Hinweis":260})
-    _write_sheet(sheets,spreadsheet_id,"Geschlossene Positionen",hvalues,hwidths,2)
-
-    print(f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | historisch={len(merged_history)} | 2 Tabs")
-    return spreadsheet_id
-
-
-def main():
-    output, closed_history = run_local(INPUT_FILE, OUTPUT_CSV)
-    try:
-        creds = google_credentials()
-        upsert_google_sheet(output, closed_history, creds)
-    except Exception as exc:
-        print(f"FEHLER: Google Drive/Sheets konnte nicht aktualisiert werden: {exc}")
-        print("ABBRUCH: Lokale Dateien erstellt, Google Sheet nicht erfolgreich aktualisiert.")
-        raise
-    print("GOOGLE DRIVE: Offene Positionen+Check erfolgreich erstellt/aktualisiert.")
-    print(f"FERTIG: Offen={len(output)} | Historie={len(closed_history)} | Originaldatei unverändert.")
+    with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
+        f.write(text)
+    print(f"\nGespeichert: {ausgabe_datei}")
+    return ausgabe_datei
 
 
 if __name__ == "__main__":
-    main()
+    print("Gemini-Auswertung gestartet...")
+    ergebnis_text = gemini_auswertung_starten()
+    ausgabe_pfad = speichere_ergebnis(ergebnis_text)
+    print(f"AUSWERTUNG_DATEI={ausgabe_pfad}")
