@@ -947,9 +947,17 @@ def google_credentials():
 def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
                  widths: dict[str, int], freeze_rows: int = 2):
     ss = sheets.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+        spreadsheetId=spreadsheet_id, fields="sheets.properties,sheets.merges"
     ).execute()
     props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
+    # Google Sheets keeps cell merges when values are cleared. Therefore a
+    # subsequent merge of the title row can fail with HTTP 400 if the target
+    # range overlaps an existing merge. Read and remove every existing merge
+    # on the target tab before creating the new title merge.
+    merges_by_id = {
+        x["properties"]["sheetId"]: x.get("merges", [])
+        for x in ss["sheets"]
+    }
     if title not in props:
         created = sheets.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
@@ -969,6 +977,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
 
     ncols=len(values[0])
     requests=[
+        *[{"unmergeCells":{"range":merge}} for merge in merges_by_id.get(sheet_id, [])],
         {"updateSheetProperties":{"properties":{"sheetId":sheet_id,"gridProperties":{"frozenRowCount":freeze_rows}},"fields":"gridProperties.frozenRowCount"}},
         {"mergeCells":{"range":{"sheetId":sheet_id,"startRowIndex":0,"endRowIndex":1,"startColumnIndex":0,"endColumnIndex":ncols},"mergeType":"MERGE_ALL"}},
         {"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":0,"endRowIndex":1,"startColumnIndex":0,"endColumnIndex":ncols},"cell":{"userEnteredFormat":{"textFormat":{"bold":True,"fontSize":14}}},"fields":"userEnteredFormat.textFormat"}},
