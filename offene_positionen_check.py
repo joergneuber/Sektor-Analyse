@@ -983,16 +983,49 @@ def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
     return closed[HISTORY_HEADERS].copy()
 
 
+def load_initial_history(initial_csv: str = "Geschlossene Positionen_Initialbestand.csv") -> pd.DataFrame:
+    """Lädt den versionierten historischen Initialbestand als Faktenbasis."""
+    if not os.path.exists(initial_csv):
+        print(f"HISTORIE: Initialbestand nicht vorhanden: {initial_csv}")
+        return pd.DataFrame(columns=HISTORY_HEADERS)
+    initial = read_positions(initial_csv)
+    for col in HISTORY_HEADERS:
+        if col not in initial.columns:
+            initial[col] = ""
+    initial = initial[HISTORY_HEADERS].copy()
+    initial = initial[
+        initial["Status"].astype(str).str.strip().str.lower().isin({"gestoppt", "verkauft"})
+    ].copy()
+    print(f"HISTORIE: Initialbestand geladen | {len(initial)} geschlossene Positionen")
+    return initial
+
+
 def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
               history_csv: str = "Geschlossene Positionen.csv"):
     df = read_positions(input_file)
     if "Einstiegsdatum" not in df.columns:
         raise ValueError("Offene_Positionen.csv enthält keine Spalte 'Einstiegsdatum'.")
     open_df = df[df.apply(is_open, axis=1)].copy()
-    closed_df = extract_closed_history(df)
+    current_closed_df = extract_closed_history(df)
+    initial_closed_df = load_initial_history()
+    closed_df = pd.concat([initial_closed_df, current_closed_df], ignore_index=True)
+
+    if not closed_df.empty:
+        keep, seen = [], set()
+        for _, row in closed_df.iterrows():
+            key = _history_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            keep.append(row.to_dict())
+        closed_df = pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
+
     results = []
     print(f"OFFENE POSITIONEN + CHECK: {len(open_df)} offene Positionen gefunden.")
-    print(f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen.")
+    print(
+        f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen "
+        f"(Initialbestand={len(initial_closed_df)}, aktuell={len(current_closed_df)})."
+    )
     print("Gestoppte/verkaufte Positionen werden NICHT technisch neu berechnet.")
 
     for _, row in open_df.iterrows():
@@ -1214,17 +1247,12 @@ def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
 
 
 
-def _history_key(row) -> tuple[str, str, str, str]:
-    """Stabiler Schlüssel für einen historischen Trade.
-    Primär Ticker + Einstiegsdatum + Ausstiegsdatum + Status.
-    Dadurch werden alte Trades beim nächsten Lauf nicht dupliziert.
+def _history_key(row) -> tuple:
+    """Verbindlicher Positionsschlüssel der historischen Faktenbasis.
+    Name + Ticker + Einstieg + Einstiegsdatum identifizieren einen Trade.
+    Ausstiegsdatum/Status dürfen NICHT zur Identität gehören.
     """
-    return (
-        str(row.get("Ticker", "")).strip().upper(),
-        str(row.get("Einstiegsdatum", "")).strip(),
-        str(row.get("Ausstiegsdatum", "")).strip(),
-        str(row.get("Status", "")).strip().lower(),
-    )
+    return _position_key(row)
 
 
 def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame) -> pd.DataFrame:
