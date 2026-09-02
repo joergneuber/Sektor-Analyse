@@ -1282,46 +1282,56 @@ def gemini_auswertung_starten():
 
 
 def _entferne_unerwuenschte_watchlists(text):
-    """Entfernt ausschliesslich Watchlist-Bloecke, die laut finaler
-    Ausgabestruktur nicht in der Auswertung erscheinen duerfen.
-
-    Die HEBELTRADER-Watchlist unter 6.5.2 ist ausdruecklich ausgenommen.
-    Keine Analyse-/Scannerlogik wird hier veraendert.
+    """Entfernt unerwuenschte Watchlist-/Beinahe-Kandidaten-Bloecke.
+    Die HEBELTRADER-Watchlist unter 6.5.2 bleibt vollstaendig erhalten.
+    Keine Scanner-, Filter- oder Berechnungslogik wird veraendert.
     """
     if not text:
         return text
 
-    # Punkt 1: Risiko-Watch/Watchlist ist in der finalen Darstellung nicht vorgesehen.
-    m = re.search(r"(?ims)^1\. DAS WICHTIGSTE AUF EINEN BLICK\s*$.*?(?=^2\.\s+)", text)
-    if m:
-        block = m.group(0)
-        block = re.sub(r"(?ims)^\s*RISIKO-WATCH\s*$.*?(?=^\s*2\.\s+|\Z)", "", block)
-        block = re.sub(r"(?ims)^\s*WATCHLIST\s*$.*?(?=^\s*2\.\s+|\Z)", "", block)
-        text = text[:m.start()] + block + text[m.end():]
-
-    # In 6.2, 6.3 und 6.6 sind nur valide Setups gewuenscht.
-    for section, next_sections in (
-        ("6.2 TRENDFOLGE", ["6.3 TRENDWENDE"]),
-        ("6.3 TRENDWENDE", ["6.4 LANGFRIST"]),
-        ("6.6 SHORT", ["6.7 EDELMETALLE"]),
-    ):
-        start = re.search(r"(?im)^\s*" + re.escape(section) + r"\s*$", text)
+    def _bereinige_abschnitt(text, start_heading, end_heading):
+        start = re.search(r"(?ims)^\ufeff?\s*" + re.escape(start_heading) + r"\s*$", text)
         if not start:
-            continue
-        end_pattern = r"(?im)^\s*(?:" + "|".join(re.escape(x) for x in next_sections) + r")\s*$"
-        end = re.search(end_pattern, text[start.end():])
+            return text
+        end = re.search(r"(?ims)^\s*" + re.escape(end_heading) + r"\s*$", text[start.end():])
         end_pos = start.end() + end.start() if end else len(text)
         block = text[start.start():end_pos]
-        # Alle manuellen Watchlist-Bloecke bis zum naechsten Hauptabschnitt entfernen.
-        block = re.sub(
-            r"(?ims)\n+\s*WATCHLIST\s*\(MANUELLE PRÜFUNG\)[^\n]*\n.*?(?=\n\s*(?:6\.[3-9]\s+|7\.\s+)|\Z)",
-            "\n",
+
+        # Einen erkannten unerwuenschten Block bis zur naechsten
+        # Abschnittsgrenze entfernen. Dadurch bleiben auch Eintragszeilen
+        # erhalten, die nach der Watchlist-Ueberschrift ohne eigene
+        # Watchlist-Markierung folgen.
+        marker = re.search(
+            r"(?i)(?:WATCHLIST|RISIKO-WATCH|BEINAHE[- ]KANDIDAT|DIVERGENZ-WATCHLIST)",
             block,
         )
-        text = text[:start.start()] + block + text[end_pos:]
+        if marker:
+            line_start = block.rfind("\n", 0, marker.start()) + 1
+            prefix = block[:line_start].rstrip()
+            block = prefix + "\n"
+        return text[:start.start()] + block + text[end_pos:]
 
+    text = _bereinige_abschnitt(text, "1. DAS WICHTIGSTE AUF EINEN BLICK", "2. MAKRO & MARKT")
+    text = _bereinige_abschnitt(text, "6.2 TRENDFOLGE", "6.3 TRENDWENDE")
+    text = _bereinige_abschnitt(text, "6.3 TRENDWENDE", "6.4 LANGFRIST")
+    text = _bereinige_abschnitt(text, "6.6 SHORT", "6.7 EDELMETALLE")
     return re.sub(r"\n{3,}", "\n\n", text)
 
+
+def _begrenze_ki_positionsfazits(text):
+    """Begrenzt jedes KI-Positionsfazit deterministisch auf maximal 2 Saetze."""
+    if not text:
+        return text
+    splitter = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜÀ-ÖØ-Þ])")
+    result = []
+    for line in text.splitlines():
+        m = re.match(r"^(\s*KI-Positionsfazit\s*:\s*)(.*)$", line, re.IGNORECASE)
+        if not m:
+            result.append(line)
+            continue
+        sentences = splitter.split(m.group(2).strip())
+        result.append(m.group(1) + " ".join(sentences[:2]).strip())
+    return "\n".join(result)
 
 def _kanonisiere_6_5(text):
     """Stellt die HEBELTRADER-Unterstruktur rein auf Darstellungsebene her.
@@ -1377,6 +1387,7 @@ def normalisiere_ausgabe(text, zielzonen=None):
         return text
 
     text = _kanonisiere_ausgabestruktur(text)
+    text = _begrenze_ki_positionsfazits(text)
 
     text = re.sub(
         r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
@@ -1665,7 +1676,8 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
         return ["Leere Auswertung"]
 
     # Hauptabschnitte exakt 1..9 und in Reihenfolge.
-    heads_all = re.findall(r"(?im)^[ 	]*([1-9])\.[ 	]+([^\n]+)$", text)
+    text = text.lstrip("\ufeff")
+    heads_all = re.findall(r"(?im)^\ufeff?[ \t]*([1-9])\.[ \t]+([^\n]+)$", text)
     # Hauptstruktur ausschließlich über die neun kanonischen Überschriften
     # der aktuellen Master-Prompt-Zielarchitektur bestimmen.
     _haupttitel = {
@@ -1730,7 +1742,10 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
             if not fm:
                 errors.append(f"KI-Positionsfazit fehlt bei {h.group(1).strip()} ({h.group(2).strip()})")
             else:
-                sentence_count=len(re.findall(r"(?<=[.!?])(?:\s|$)",fm.group(1).strip()))
+                sentence_count = len(re.split(
+                    r"(?<=[.!?])\s+(?=[A-ZÄÖÜÀ-ÖØ-Þ])",
+                    fm.group(1).strip(),
+                ))
                 if sentence_count>2: errors.append(f"KI-Positionsfazit >2 Saetze bei {h.group(1).strip()} ({h.group(2).strip()})")
 
     return errors
