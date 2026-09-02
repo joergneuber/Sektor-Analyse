@@ -67,7 +67,7 @@ import io
 
 MODELL = "gemini-3.5-flash"  # Primaer-Modell
 FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback
-DRITTER_FALLBACK_MODELL = "gemini-2.5-flash"  # Zweiter Fallback bei 503-Ueberlast
+DRITTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Dritter Fallback bei 503-Ueberlast
 
 MAX_VERSUCHE = 5
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
@@ -802,7 +802,7 @@ def _abschnitt_7_pruefdiagnose(text, csv_pfad):
 
     block = match.group(0)
     header_re = re.compile(
-        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+        r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$"
     )
     headers = list(header_re.finditer(block))
     if not headers:
@@ -1602,7 +1602,7 @@ def _master_position_key(source):
 def _gemini_positionsbloecke(block):
     """Zerlegt 7.3 in Positionsbloecke, ohne deren Vollstaendigkeit vorauszusetzen."""
     header_re = re.compile(
-        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+        r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$"
     )
     headers = list(header_re.finditer(block))
     result = []
@@ -1925,7 +1925,7 @@ def normalisiere_ausgabe(text, zielzonen=None):
 
     block = match.group(0)
     header_re = re.compile(
-        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
+        r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$"
     )
     headers = list(header_re.finditer(block))
     if not headers:
@@ -2262,7 +2262,7 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
     # KI-Positionsfazit unmittelbar unter jeder Position; maximal 2 Saetze.
     if p7:
         b=p7.group(0)
-        parts=list(re.finditer(r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:",b))
+        parts=list(re.finditer(r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$",b))
         for i,h in enumerate(parts):
             end=parts[i+1].start() if i+1<len(parts) else len(b)
             pb=b[h.start():end]
