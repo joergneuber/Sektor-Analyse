@@ -41,7 +41,6 @@ muss - beide Skripte sind austauschbar, nicht gleichzeitig laufen lassen).
 """
 
 import os
-from pathlib import Path
 import sys
 import glob
 import re
@@ -49,8 +48,6 @@ import csv
 import time
 import json
 import datetime
-import zipfile
-import xml.etree.ElementTree as ET
 
 from google import genai
 from google.genai import types
@@ -67,7 +64,9 @@ import io
 
 MODELL = "gemini-3.5-flash"  # Primaer-Modell
 FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback
-DRITTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Dritter Fallback bei 503-Ueberlast
+DRITTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Zweiter Fallback bei 503-Ueberlast
+                              # Das dritte Modell wird nur verwendet, wenn auch der erste
+                              # Fallback weiterhin serverseitig ueberlastet ist.
 
 MAX_VERSUCHE = 5
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
@@ -406,105 +405,6 @@ def _positionsfeld_schluessel(value):
         return text.lower()
 
 
-def _excel_seriennummer_datum(value):
-    """Wandelt Excel-Seriendaten (1900-System) ohne externe Abhaengigkeit um."""
-    try:
-        seriennummer = float(str(value).strip())
-    except (TypeError, ValueError):
-        return str(value or "").strip()
-    basis = datetime.datetime(1899, 12, 30)
-    return (basis + datetime.timedelta(days=seriennummer)).date().isoformat()
-
-
-def _lese_geschlossene_positionen_tab2(xlsx_pfad, referenzdatum=None):
-    """Liest ausschliesslich Tab 2 'Geschlossene Positionen' aus der XLSX."""
-    if not xlsx_pfad or not os.path.isfile(xlsx_pfad):
-        return []
-    if referenzdatum is None:
-        referenzdatum = datetime.date.today()
-    elif isinstance(referenzdatum, str):
-        referenzdatum = datetime.date.fromisoformat(referenzdatum)
-    grenze = referenzdatum - datetime.timedelta(days=2)
-    ns = {"m":"http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-          "r":"http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
-    try:
-        with zipfile.ZipFile(xlsx_pfad, "r") as z:
-            try:
-                ssroot=ET.fromstring(z.read("xl/sharedStrings.xml"))
-                strings=["".join(t.text or "" for t in si.iter("{%s}t"%ns["m"])) for si in ssroot.findall("m:si",ns)]
-            except KeyError:
-                strings=[]
-            wb=ET.fromstring(z.read("xl/workbook.xml"))
-            rels=ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-            relmap={rel.get("Id"):rel.get("Target") for rel in rels}
-            target=None
-            for sh in wb.findall("m:sheets/m:sheet",ns):
-                if sh.get("name","").strip().lower()=="geschlossene positionen":
-                    target=relmap.get(sh.get("{%s}id"%ns["r"]))
-                    break
-            if not target: return []
-            target=target.lstrip("/")
-            if not target.startswith("xl/"): target="xl/"+target
-            root=ET.fromstring(z.read(target))
-            rows=[]
-            for row in root.findall(".//m:row",ns):
-                vals={}
-                for cell in row.findall("m:c",ns):
-                    ref=cell.get("r",""); m=re.match(r"[A-Z]+",ref)
-                    if not m: continue
-                    v=cell.find("m:v",ns)
-                    if cell.get("t")=="inlineStr": value="".join(t.text or "" for t in cell.iter("{%s}t"%ns["m"]))
-                    elif v is None: value=""
-                    else:
-                        value=v.text or ""
-                        if cell.get("t")=="s":
-                            try: value=strings[int(value)]
-                            except (ValueError,IndexError): value=""
-                    vals[m.group(0)]=value
-                rows.append(vals)
-            if len(rows)<3: return []
-            headers=rows[1]; hm={str(v).strip():k for k,v in headers.items()}
-            required=["Ticker","Name","Status","Ausstiegsdatum","Ausstiegskurs","Performance_Seit_Einstieg%"]
-            if any(x not in hm for x in required): return []
-            out=[]
-            for row in rows[2:]:
-                status=str(row.get(hm["Status"],"")).strip()
-                if status.lower() not in {"gestoppt","geschlossen","verkauft","manuell verkauft"}: continue
-                d=_excel_seriennummer_datum(row.get(hm["Ausstiegsdatum"],""))
-                try: ed=datetime.date.fromisoformat(d)
-                except ValueError: continue
-                if not (grenze <= ed <= referenzdatum): continue
-                def val(k): return str(row.get(hm[k],"") or "").strip()
-                out.append({"ticker":val("Ticker"),"name":val("Name"),"status":status,
-                            "ausstiegsdatum":d,"ausstiegskurs":val("Ausstiegskurs"),
-                            "performance":val("Performance_Seit_Einstieg%")})
-            return out
-    except (OSError,zipfile.BadZipFile,ET.ParseError):
-        return []
-
-
-def _geschlossene_positionen_7_4_block(xlsx_pfad, referenzdatum=None):
-    positionen=_lese_geschlossene_positionen_tab2(xlsx_pfad,referenzdatum)
-    if not positionen: return ""
-    lines=["7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE",""]
-    for p in positionen:
-        detail=f"Status: {p['status']} | Ausstiegsdatum: {p['ausstiegsdatum']}"
-        if p["ausstiegskurs"]: detail+=f" | Ausstiegskurs: {p['ausstiegskurs']}"
-        if p["performance"]: detail+=f" | Performance seit Einstieg: {p['performance']}%"
-        lines.append(f"{p['name']} ({p['ticker']}) | {detail}"); lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def _normalisiere_geschlossene_positionen_7_4(text,xlsx_pfad,referenzdatum=None):
-    if not text: return text
-    text=re.sub(r"(?ims)^7\.4\s+GESCHLOSSENE POSITIONEN\s*[–-]\s*LETZTE 3 TAGE\s*$.*?(?=^8\.\s+|\Z)","",text)
-    block=_geschlossene_positionen_7_4_block(xlsx_pfad,referenzdatum)
-    if not block: return text
-    anchor=re.search(r"(?im)^8\.\s+",text)
-    if not anchor: return text.rstrip()+"\n\n"+block+"\n"
-    return text[:anchor.start()].rstrip()+"\n\n"+block+"\n\n"+text[anchor.start():].lstrip()
-
-
 def _offene_positionen_quellblock(csv_pfad):
     """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
     Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
@@ -645,30 +545,12 @@ def _technische_zielzonen_quelle(csv_pfad):
                         f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
                     )
 
-                # Zusaetzliche Stammdaten werden nur zur Darstellung verwendet.
-                # Sie veraendern keine Analyse-/Tradinglogik.
-                meta_fields = [
-                    "Sektor", "Markt", "Waehrung", "Richtung", "Ideen_Quelle",
-                    "Instrumentart", "Zeithorizont", "Steuerungsart", "Aktueller_Kurs",
-                    "Performance_Seit_Einstieg%", "Stop_Aktuell", "TP1_Original",
-                    "TP2_Original", "Abstand_Stop_%", "Gesicherter_Gewinn_%",
-                    "Potenzial_TP1_%", "Potenzial_TP2_%", "Potenzial_Analyst_%",
-                    "Analysten_Ziel", "Analysten_Ziel_Stand", "WKN",
-                    "Zertifikat_Einstieg", "Zertifikat_Ausstieg", "TP_Hinweis",
-                    "Alert_Hinweis", "Ereignis_Kontext",
-                ]
-                meta = {
-                    field: (str(row.get(key(field), "") or "").strip() if key(field) else "")
-                    for field in meta_fields
-                }
-
                 result[pos_key] = {
                     "name": name,
                     "ticker": ticker,
                     "entry": entry,
                     "date": date,
                     "technical": technical_values,
-                    "meta": meta,
                 }
 
             return result
@@ -782,15 +664,15 @@ def _gemini_finish_reason(antwort):
         return "UNBEKANNT"
 
 
-def _abschnitt_7_pruefdiagnose(text, csv_pfad):
-    """Prueft Punkt 7 wie bisher und liefert bei FAIL die konkreten Gruende.
+def _abschnitt_7_vollstaendig(text, csv_pfad):
+    """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
 
-    Reine Diagnoseebene: Die Zuordnungslogik und der Positionsschluessel
-    Name + Ticker + Einstieg + Einstiegsdatum bleiben unveraendert.
+    Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
+    harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
+    unverändert und ist weiterhin die letzte Instanz.
     """
-    errors = []
     if not _enthaelt_abschnitt_7(text):
-        return False, ["Abschnitt '7. OFFENE POSITIONEN' fehlt"]
+        return False
 
     expected = _technische_zielzonen_quelle(csv_pfad)
     match = re.search(
@@ -798,18 +680,17 @@ def _abschnitt_7_pruefdiagnose(text, csv_pfad):
         text,
     )
     if not match:
-        return False, ["Abschnitt '7. OFFENE POSITIONEN' konnte nicht abgegrenzt werden"]
+        return False
 
     block = match.group(0)
     header_re = re.compile(
-        r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$"
+        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
     )
     headers = list(header_re.finditer(block))
     if not headers:
-        return False, ["Keine gueltigen Positionskoepfe in Punkt 7"]
+        return False
 
     seen = set()
-    matched_keys = set()
     for idx, header in enumerate(headers):
         start = header.start()
         end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
@@ -822,8 +703,7 @@ def _abschnitt_7_pruefdiagnose(text, csv_pfad):
             pos_block,
         )
         if not entry_match:
-            errors.append(f"Einstieg fehlt: {name} ({ticker})")
-            continue
+            return False
 
         entry = _positionsfeld_schluessel(entry_match.group(1).strip())
         if entry_match.group(2):
@@ -834,8 +714,7 @@ def _abschnitt_7_pruefdiagnose(text, csv_pfad):
                 pos_block,
             )
             if not date_match:
-                errors.append(f"Einstiegsdatum fehlt: {name} ({ticker}) | Einstieg: {entry}")
-                continue
+                return False
             date = _normalisiere_datum(date_match.group(1).strip())
 
         key = (
@@ -846,50 +725,32 @@ def _abschnitt_7_pruefdiagnose(text, csv_pfad):
         )
         try:
             source = _finde_quellposition(key, expected)
-        except Exception as exc:
-            errors.append(f"Nicht eindeutig zuordenbar: {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date} | {exc}")
-            continue
+        except Exception:
+            return False
         if source is None:
-            errors.append(f"Keine passende CSV-Position: {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}")
-            continue
+            return False
 
         source_key = (
             _normalisiere_positionsname(source["name"]),
             _normalisiere_ticker(source["ticker"]),
-            _positionsfeld_schluessel(source["entry"]),
-            _normalisiere_datum(source["date"]),
+            source["entry"],
+            source["date"],
         )
         if source_key in seen:
-            errors.append(f"CSV-Position mehrfach ausgegeben: {source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | Einstiegsdatum: {source['date']}")
-            continue
+            return False
         seen.add(source_key)
-        matched_keys.add(source_key)
 
-    missing = set(expected) - matched_keys
-    for key in sorted(missing):
-        source = expected[key]
-        errors.append(f"CSV-Position fehlt in Gemini-Block: {source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | Einstiegsdatum: {source['date']}")
-
-    if len(matched_keys) != len(expected):
-        errors.append(f"Positionsanzahl nicht vollstaendig: erkannt {len(matched_keys)}, erwartet {len(expected)}")
-
-    return not errors, errors
+    return len(seen) == len(expected)
 
 
-def _abschnitt_7_vollstaendig(text, csv_pfad):
-    """Bestehender boolescher Validator; Diagnose bleibt separat."""
-    ok, _ = _abschnitt_7_pruefdiagnose(text, csv_pfad)
-    return ok
-
-
-def _fuege_abschnitt_7_ein(original_text, abschnitt_8):
+def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
     """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
 
     Der Reparatur-Call darf nur Punkt 7 liefern. Der Block wird deshalb nicht
     als komplette neue Auswertung verwendet, sondern deterministisch in die
     bestehende Antwort vor den nächsten nummerierten Hauptabschnitt eingesetzt.
     """
-    if not _enthaelt_abschnitt_7(abschnitt_8):
+    if not _enthaelt_abschnitt_7(abschnitt_7):
         raise RuntimeError(
             "Gezielter Reparaturversuch lieferte ebenfalls keinen Abschnitt "
             "'7. OFFENE POSITIONEN'."
@@ -897,7 +758,7 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_8):
 
     block_match = re.search(
         r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
-        abschnitt_8,
+        abschnitt_7,
     )
     if not block_match:
         raise RuntimeError(
@@ -957,7 +818,7 @@ def gemini_auswertung_starten():
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
     aktuelles_modell = MODELL
 
-    # Harte Datenqualitaetskontrolle fuer Punkt 4: Der Makro-Block darf nur
+    # Harte Datenqualitaetskontrolle fuer Punkt 2: Der Makro-Block darf nur
     # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
     # makro_szenario.py den Gatekeeper freigegeben hat. Die restliche
     # Tagesauswertung bleibt davon unabhaengig.
@@ -1010,8 +871,6 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
-            geschlossene_xlsx = next((p for p in (glob.glob("Offene Positionen+Check.xlsx") + glob.glob("Offene Positionen+Check(*).xlsx")) if os.path.isfile(p)), None)
-            geschlossene_7_4 = _geschlossene_positionen_7_4_block(geschlossene_xlsx)
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
@@ -1021,8 +880,6 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
-                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON Offene Positionen+Check.xlsx:\n"
-                    + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
                     "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
@@ -1050,22 +907,17 @@ def gemini_auswertung_starten():
                     "Einstiegskurs + Einstiegsdatum ist eine eigene Position. "
                     "Jeder offene Positionskopf muss ausschließlich im Format "
                     "'Firmenname (Ticker) | Markt: ...' ausgegeben werden. "
-                    "Keine alternativen Kopfzeilenformate und keine Positionsköpfe ohne Ticker. "
-                    "WICHTIG FUER DIE ARCHITEKTUR: Gemini bestimmt NICHT die Vollstaendigkeit von 7.3. "
-                    "Python baut 7.3 nach der Gemini-Antwort deterministisch aus ALLEN offenen Masterpositionen neu auf. "
-                    "Eine im Master vorhandene Position muss deshalb auch dann in 7.3 erscheinen, wenn Gemini sie nicht analysiert. "
-                    "Fuer eine nicht analysierte Masterposition darf keine qualitative Analyse erfunden werden. "
-                    "Eine Position, die nicht im Master vorhanden ist, darf niemals in 7.3 aufgenommen werden.",
+                    "Keine alternativen Kopfzeilenformate und keine Positionsköpfe ohne Ticker.",
                     (
                         f"HARTE MAKRO-GATE-VORGABE: Das Makro-Szenario-Gate ist GESPERRT. Grund: {makro_gate_grund} "
-                        "Erzeuge in Punkt 4 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
+                        "Erzeuge in Punkt 2 KEINE Base/Bull/Bear-Wahrscheinlichkeiten, "
                         "keine geschaetzten Ersatzwerte und keine numerischen Makro-Prognosen. "
                         "Benenne stattdessen die konkreten kritischen Datenluecken bzw. den Ausfall des Makro-Datenpakets. "
                          "Verwende dabei NICHT die Bezeichnungen Base Case, Bull Case oder Bear Case, gib KEINE Makro-Trade-Ideen und KEINE qualitative Richtungsprognose aus. "
                         if makro_gate == "GESPERRT" else
                         "HARTE MAKRO-GATE-VORGABE: Das Makro-Datenpaket ist autoritativ. "
                         "Sein MAKRO-SZENARIO-GATE hat Vorrang vor jeder eigenen Bewertung der "
-                        "Datenvollstaendigkeit. Das Gate lautet FREIGEGEBEN. Punkt 4 MUSS daher "
+                        "Datenvollstaendigkeit. Das Gate lautet FREIGEGEBEN. Punkt 2 MUSS daher "
                         "als freigegeben behandelt werden. TIER-2- oder TIER-3-Luecken, insbesondere "
                         "fehlende ISM-EXTENDED-Unterkomponenten oder fehlende LME-Preise, duerfen das "
                         "Gate NICHT nachtraeglich sperren. Sie duerfen hoechstens die DATENQUALITAET "
@@ -1082,7 +934,7 @@ def gemini_auswertung_starten():
                         "sind nur als Ergebnis der Szenariologik zulaessig; niemals Eingangsdaten schaetzen."
                         + (
                             f" ZUSAETZLICHE HARTE DATENQUALITAETS-VORGABE: Das Makro-Datenpaket meldet "
-                            f"MAKRO-DATENQUALITAET={makro_datenqualitaet}. Uebernimm diesen Wert in Punkt 4 "
+                            f"MAKRO-DATENQUALITAET={makro_datenqualitaet}. Uebernimm diesen Wert in Punkt 2 "
                             f"exakt. Wenn der Wert VOLLSTAENDIG ist, darf Punkt 2 nicht auf EINGESCHRAENKT "
                             f"oder UNZUREICHEND herabgestuft werden und darf keine TIER-2-DATENLUECKE als "
                             f"Grund fuer eine Herabstufung nennen."
@@ -1103,7 +955,7 @@ def gemini_auswertung_starten():
                     model=aktuelles_modell,
                     contents=hochgeladene_teile + [
                         "REPARATUR NUR FÜR PUNKT 2: Das Makro-Datenpaket meldet MAKRO-SZENARIO-GATE=FREIGEGEBEN. "
-                        "Überarbeite ausschließlich Punkt 4. Eine Sperrung ist unzulässig, wenn nur TIER-2- oder TIER-3-Daten fehlen. "
+                        "Überarbeite ausschließlich Punkt 2. Eine Sperrung ist unzulässig, wenn nur TIER-2- oder TIER-3-Daten fehlen. "
                         "TIER 1 KERN entscheidet über das Gate; TIER 2 BESTAETIGUNG und TIER 3 KONTEXT sind Ergänzungen. "
                         "Verwende die deutsche Terminologie VOLLSTAENDIG/EINGESCHRAENKT/UNZUREICHEND und nenne "
                         "TIER-2-DATENLUECKEN bzw. TIER-3-DATENLUECKEN. Erhalte alle übrigen Abschnitte unverändert soweit möglich. "
@@ -1118,55 +970,89 @@ def gemini_auswertung_starten():
                 else:
                     raise RuntimeError("Gemini widerspricht weiterhin dem autoritativen MAKRO-SZENARIO-GATE=FREIGEGEBEN.")
 
-            # LEGACY-FEHLERKORREKTUR fuer die neue Zielstruktur: Punkt 7
-            # wird wie der fruehere Punkt 8 gezielt nachgefordert, wenn Gemini
-            # ihn unvollstaendig liefert. Danach baut Python 7.3 zusaetzlich
-            # deterministisch aus ALLEN Masterpositionen neu auf.
-            offene_pfad = eingabedateien.get("Offene Positionen+Check.csv")
-            if offene_pfad and not _abschnitt_7_vollstaendig(text, offene_pfad):
-                ok, diagnose = _abschnitt_7_pruefdiagnose(text, offene_pfad)
-                print("  Punkt 7 ist unvollstaendig - starte gezielten Legacy-Reparaturversuch...")
-                if diagnose:
-                    for item in diagnose[:10]:
-                        print(f"    - {item}")
+            # KONTROLLIERTER REPARATURVERSUCH:
+            # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
+            # aber Punkt 7 auslassen. In diesem Fall wird NICHT aus anderen Dateien
+            # geraten und NICHT der Parser gelockert. Stattdessen erhält Gemini genau
+            # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
+            # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
+            # anwenden.
+            if not _abschnitt_7_vollstaendig(
+                text, eingabedateien.get("Offene Positionen+Check.csv")
+            ):
+                if _enthaelt_abschnitt_7(text):
+                    print(
+                        "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
+                        "aber unvollstaendig - starte gezielten Reparaturversuch "
+                        "fuer Punkt 7..."
+                    )
+                else:
+                    print(
+                        "  Abschnitt '7. OFFENE POSITIONEN' fehlt - "
+                        "starte gezielten Reparaturversuch fuer Punkt 7..."
+                    )
                 reparatur_prompt = (
-                    "REPARATURVERSUCH - NUR ABSCHNITT 7 NACHLIEFERN.\n"
-                    "Deine vorherige Antwort enthielt den Abschnitt '7. OFFENE POSITIONEN' "
-                    "nicht vollstaendig. Erstelle deshalb jetzt AUSSCHLIESSLICH den vollstaendigen Abschnitt 7.\n\n"
+                    "REPARATURVERSUCH - NUR ABSCHNITT 8 NACHLIEFERN.\n"
+                    "Deine vorherige Antwort enthielt den erforderlichen Abschnitt "
+                    "'7. OFFENE POSITIONEN' nicht. Erstelle deshalb jetzt "
+                    "AUSSCHLIESSLICH den vollständigen Abschnitt 7.\n\n"
                     "Beginne zwingend mit exakt:\n"
                     "7. OFFENE POSITIONEN\n\n"
-                    "Danach muessen 7.1 PORTFOLIO-UEBERSICHT, 7.2 HANDLUNGSBEDARF und "
-                    "7.3 EINZELPOSITIONEN enthalten sein.\n"
-                    "Fuer 7.3 uebernimm JEDE Position aus der verbindlichen Masterliste "
-                    "Offene Positionen+Check.csv. Keine Position weglassen, zusammenfassen "
-                    "oder erfinden. Mehrere Positionen desselben Tickers bleiben getrennt.\n"
-                    "Die Positionsidentitaet ist immer: Name + Ticker + Einstieg + Einstiegsdatum.\n"
-                    "Fuer technische Check-Felder ist Offene Positionen+Check.csv die verbindliche Quelle. "
-                    "Technische Zielzone muss exakt 1:1 aus der CSV uebernommen werden.\n"
-                    "Wenn eine Masterposition nicht qualitativ analysiert werden kann, lasse die "
-                    "qualitativen Felder leer bzw. kennzeichne dies, aber lasse die Position selbst "
-                    "NIEMALS weg. Erfinde keine qualitativen Aussagen.\n\n"
-                    "AUTORITATIVE MASTERLISTE:\n"
-                    + (_offene_positionen_quellblock(offene_pfad) or "(keine offenen Positionen gefunden)")
+                    "Gib danach ALLE offenen Positionen aus der verbindlichen Datei "
+                    "'Offene Positionen+Check.csv' vollständig und genau einmal aus. "
+                    "Verwende ausschließlich diese Datei für Firmenname, Ticker, "
+                    "Einstiegskurs und Einstiegsdatum. Die Kombination aus Name + "
+                    "Ticker + Einstiegskurs + Einstiegsdatum identifiziert eine "
+                    "Position eindeutig; mehrere Positionen mit demselben Ticker "
+                    "sind zulässig.\n\n"
+                    "Jeder Positionskopf muss exakt dem Format "
+                    "'Firmenname (Ticker) | Markt: ...' entsprechen. "
+                    "Für jede Position müssen die in der Hauptanweisung geforderten "
+                    "Positionsdaten und technischen Check-Felder ausgegeben werden. "
+                    "Übernimm technische Check-Felder aus 'Offene Positionen+Check.csv' "
+                    "und erfinde, berechne, kürze oder interpretiere sie nicht. "
+                    "Insbesondere 'Technische Zielzone' darf ausschließlich als "
+                    "bereits vorhandener CSV-Wert übernommen werden.\n\n"
+                    "WICHTIG: Antworte ausschließlich mit Abschnitt 7 und dessen "
+                    "vollständigem Inhalt. Keine Einleitung, keine Erklärung, "
+                    "keine Abschnitte 1-7 oder 9 ff."
                 )
-                reparatur = client.models.generate_content(
+                reparatur_antwort = client.models.generate_content(
                     model=aktuelles_modell,
-                    contents=hochgeladene_teile + [reparatur_prompt],
-                    config=types.GenerateContentConfig(system_instruction=anweisung),
+                    contents=hochgeladene_teile + [
+                        reparatur_prompt,
+                        "VERBINDLICHE OFFENE-POSITIONEN-LISTE AUS "
+                        "'Offene Positionen+Check.csv':\n"
+                        + (offene_quelle or "(keine offenen Positionen gefunden)")
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction=anweisung,
+                    ),
                 )
-                reparatur_text = reparatur.text or ""
-                print(f"  Gemini finish_reason (Punkt-7-Reparatur): {_gemini_finish_reason(reparatur)}")
-                if not _abschnitt_7_vollstaendig(reparatur_text, offene_pfad):
-                    _, diagnose2 = _abschnitt_7_pruefdiagnose(reparatur_text, offene_pfad)
-                    raise RuntimeError(
-                        "Punkt-7-Reparatur weiterhin unvollstaendig: "
-                        + " | ".join(diagnose2[:20])
-                    )
-                text = _fuege_abschnitt_7_ein(text, reparatur_text)
-                print("  Punkt-7-Legacy-Reparatur erfolgreich.")
+                reparatur_text = reparatur_antwort.text or ""
+                print(
+                    f"  Gemini finish_reason (Punkt-8-Reparatur): "
+                    f"{_gemini_finish_reason(reparatur_antwort)}"
+                )
 
-            # Unabhaengig davon bleibt der Master-Neuaufbau die letzte Instanz:
-            # Python uebernimmt spaeter ALLE offenen Positionen aus der CSV.
+                if _abschnitt_7_vollstaendig(
+                    reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
+                ):
+                    text = _fuege_abschnitt_7_ein(text, reparatur_text)
+                    print(
+                        "  Reparatur erfolgreich: Abschnitt "
+                        "'7. OFFENE POSITIONEN' nachgeliefert."
+                    )
+                else:
+                    print(
+                        "  Reparatur fehlgeschlagen: Abschnitt "
+                        "'7. OFFENE POSITIONEN' weiterhin unvollstaendig."
+                    )
+                    letzte_antwort = reparatur_text or text
+                    # Kein Parser-Fallback. Der äußere Retry startet eine neue
+                    # vollständige Gemini-Anfrage.
+                    hochgeladene_teile = None
+                    continue
 
         except Exception as e:
             fehlertext = str(e)
@@ -1263,618 +1149,6 @@ def gemini_auswertung_starten():
     sys.exit(1)
 
 
-def _entferne_unerwuenschte_watchlists(text):
-    """Entfernt unerwuenschte Watchlist-/Beinahe-Kandidaten-Bloecke.
-    Die HEBELTRADER-Watchlist unter 6.5.2 bleibt vollstaendig erhalten.
-    Keine Scanner-, Filter- oder Berechnungslogik wird veraendert.
-    """
-    if not text:
-        return text
-
-    def _bereinige_abschnitt(text, start_heading, end_heading):
-        start = re.search(r"(?ims)^\ufeff?\s*" + re.escape(start_heading) + r"\s*$", text)
-        if not start:
-            return text
-        end = re.search(r"(?ims)^\s*" + re.escape(end_heading) + r"\s*$", text[start.end():])
-        end_pos = start.end() + end.start() if end else len(text)
-        block = text[start.start():end_pos]
-
-        # Einen erkannten unerwuenschten Block bis zur naechsten
-        # Abschnittsgrenze entfernen. Dadurch bleiben auch Eintragszeilen
-        # erhalten, die nach der Watchlist-Ueberschrift ohne eigene
-        # Watchlist-Markierung folgen.
-        marker = re.search(
-            r"(?i)(?:WATCHLIST|RISIKO-WATCH|BEINAHE[- ]KANDIDAT|DIVERGENZ-WATCHLIST)",
-            block,
-        )
-        if marker:
-            line_start = block.rfind("\n", 0, marker.start()) + 1
-            prefix = block[:line_start].rstrip()
-            block = prefix + "\n"
-        return text[:start.start()] + block + text[end_pos:]
-
-    text = _bereinige_abschnitt(text, "1. DAS WICHTIGSTE AUF EINEN BLICK", "2. MAKRO & MARKT")
-    text = _bereinige_abschnitt(text, "6.2 TRENDFOLGE", "6.3 TRENDWENDE")
-    text = _bereinige_abschnitt(text, "6.3 TRENDWENDE", "6.4 LANGFRIST")
-    text = _bereinige_abschnitt(text, "6.6 SHORT", "6.7 EDELMETALLE")
-    return re.sub(r"\n{3,}", "\n\n", text)
-
-
-
-def _read_latest_local(patterns):
-    """Liest eine bereits vorhandene Ausgabedatei fuer die Darstellungsebene."""
-    pfad = finde_datei(patterns)
-    if not pfad:
-        return None
-    try:
-        return Path(pfad).read_text(encoding="utf-8-sig")
-    except Exception:
-        return None
-
-
-
-
-def _macro_status_block():
-    """Uebernimmt die drei autoritativen Statuszeilen 1:1 aus Makro_Briefing."""
-    raw = _read_latest_local(["Makro_Briefing(*).txt"])
-    if not raw:
-        return ""
-    lines = raw.splitlines()
-    wanted = []
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r"^(MAKRO-SZENARIO-GATE|MAKRO-DATENQUALITAET|DATENQUALITAET|SEKUNDAERE DATENLUECKEN|SEKUNDAERE_DATENLUECKEN)\s*[:=]", stripped, re.I):
-            # Genau die Originalzeile, ohne inhaltliche Umformulierung.
-            wanted.append(stripped)
-    # Quelle kann DATENQUALITAET statt MAKRO-DATENQUALITAET verwenden.
-    gate = next((x for x in wanted if x.upper().startswith("MAKRO-SZENARIO-GATE")), None)
-    quality = next((x for x in wanted if x.upper().startswith("MAKRO-DATENQUALITAET")), None)
-    if quality is None:
-        quality = next((x for x in wanted if x.upper().startswith("DATENQUALITAET")), None)
-    gaps = next((x for x in wanted if x.upper().startswith("SEKUNDAERE DATENLUECKEN") or x.upper().startswith("SEKUNDAERE_DATENLUECKEN")), None)
-    return "\n".join(x for x in (gate, quality, gaps) if x)
-
-def _metals_information_block():
-    raw = _read_latest_local(["Edelmetalle_Briefing(*).txt"])
-    if not raw:
-        return ""
-    # Vollstaendige Markt-/Diagnoseinformationen, aber ohne die drei
-    # Strategie-Funnel als vermeintliche Setups. Die Quelle selbst bleibt
-    # unveraendert; hier wird nur der relevante Lageblock uebernommen.
-    start = raw.find("LAGE JE METALL")
-    end = raw.find("==================================================\nSTRATEGIE: TRENDFOLGE")
-    if start < 0:
-        return raw.strip()
-    if end < 0:
-        end = len(raw)
-    return raw[start:end].strip()
-
-def _begrenze_ki_positionsfazits(text):
-    """Begrenzt jedes KI-Positionsfazit deterministisch auf maximal 2 Saetze."""
-    if not text:
-        return text
-    splitter = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜÀ-ÖØ-Þ])")
-    result = []
-    for line in text.splitlines():
-        m = re.match(r"^(\s*KI-Positionsfazit\s*:\s*)(.*)$", line, re.IGNORECASE)
-        if not m:
-            result.append(line)
-            continue
-        sentences = splitter.split(m.group(2).strip())
-        result.append(m.group(1) + " ".join(sentences[:2]).strip())
-    return "\n".join(result)
-
-def _legacy_sections(text):
-    """Zerlegt Gemini ausschließlich anhand der bekannten Legacy-Quellüberschriften."""
-    if not text:
-        return {}
-    rx = re.compile(
-        r"(?im)^(?:\ufeff)?\s*("
-        r"1\.\s*MARKTUMFELD & GLOBALE RISIKOLAGE|"
-        r"2\.\s*MAKRO-ZUKUNFTSSZENARIO|"
-        r"3\.\s*TRENDFOLGE-SETUPS|"
-        r"4\.\s*TRENDWENDE-SETUPS[^\n]*|"
-        r"5\.\s*HEBELTRADER-SETUPS|"
-        r"6\.\s*SHORT-SETUPS[^\n]*|"
-        r"7\.\s*EDELMETALLE-SETUPS|"
-        r"8\.\s*OFFENE POSITIONEN[^\n]*|"
-        r"9\.\s*GESCHLOSSENE POSITIONEN[^\n]*|"
-        r"METHODIK & LESEHILFE|EXTERNE MARKTQUELLEN|"
-        r"PERSPEKTIVISCHE TRADE-IDEEN|LIVE-PERFORMANCE vs\. MSCI WORLD|"
-        r"KURZ-ZUSAMMENFASSUNG|RISIKO-WATCH|WOCHENAUSBLICK|SYSTEM-STATISTIK"
-        r")\s*$"
-    )
-    ms = list(rx.finditer(text))
-    out = {}
-    for i,m in enumerate(ms):
-        key = re.sub(r"\s+", " ", m.group(1).strip()).upper()
-        end = ms[i+1].start() if i+1 < len(ms) else len(text)
-        out[key] = text[m.start():end].strip()
-    return out
-
-
-def _strip_watchlists(block):
-    """Entfernt komplette unerwünschte Watchlist-/Beinahe-Blöcke."""
-    if not block:
-        return ""
-    m = re.search(
-        r"(?im)^\s*(?:WATCHLIST(?:\s*\([^\n]*\))?|RISIKO-WATCH|"
-        r"DIVERGENZ-WATCHLIST|BEINAHE-KANDIDATEN?)\s*$",
-        block,
-    )
-    if m:
-        block = block[:m.start()].rstrip()
-    block = re.sub(r"(?im)^\s*Engstelle des Filters:[^\n]*\n?", "", block)
-    return re.sub(r"\n{3,}", "\n\n", block).strip()
-
-
-def _extract_summary_without_watchlist(text):
-    raw = _legacy_sections(text).get("KURZ-ZUSAMMENFASSUNG", "")
-    raw = re.sub(r"(?im)^KURZ-ZUSAMMENFASSUNG\s*$", "", raw, count=1).strip()
-    return re.split(r"(?im)^\s*(?:WATCHLIST|RISIKO-WATCH)\s*$", raw, maxsplit=1)[0].strip()
-
-
-def _legacy_source(sec, *names):
-    for name in names:
-        if name in sec:
-            return sec[name]
-    return ""
-
-
-def _langfrist_ausgabe_block():
-    """Übernimmt vorhandene wöchentliche Langfrist-Dateien ohne Neuberechnung."""
-    files = sorted(glob.glob("Langfrist_Bewertung(*).csv"))
-    briefs = sorted(glob.glob("Langfrist_Briefing(*).txt"))
-    parts = []
-    if files:
-        try:
-            raw = Path(files[-1]).read_text(encoding="utf-8-sig").strip()
-            if raw:
-                parts.append(f"Quelle: {Path(files[-1]).name}\n{raw}")
-        except OSError:
-            pass
-    if briefs:
-        try:
-            raw = Path(briefs[-1]).read_text(encoding="utf-8-sig").strip()
-            if raw:
-                parts.append(f"Quelle: {Path(briefs[-1]).name}\n{raw}")
-        except OSError:
-            pass
-    return "\n\n".join(parts).strip()
-
-
-def _a_meldungen_ausgabe_block():
-    files = sorted(glob.glob("Einzel_Check_A_Meldungen(*).txt"))
-    if not files:
-        return ""
-    try:
-        raw = Path(files[-1]).read_text(encoding="utf-8-sig").strip()
-    except OSError:
-        return ""
-    return raw
-
-
-def _hebeltrader_watchlist_ausgabe_block():
-    """Vollständige JSON-Watchlist; keine Auswahl/Filterung."""
-    pfad = finde_datei([BEOBACHTUNGSLISTE_DATEI, "einzel_check_beobachtung*.json"])
-    if not pfad:
-        return ""
-    try:
-        daten = json.loads(Path(pfad).read_text(encoding="utf-8-sig"))
-    except Exception:
-        return ""
-    if not isinstance(daten, dict):
-        return ""
-    lines = ["6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste", ""]
-    for ticker, info in daten.items():
-        info = info if isinstance(info, dict) else {}
-        name = str(info.get("name") or info.get("unternehmen") or "").strip()
-        status = str(info.get("status") or "").strip()
-        check = str(info.get("letzter_check") or "").strip()
-        label = f"{name} ({ticker})" if name else str(ticker)
-        lines.append(f"- {label}")
-        if status:
-            lines.append(f"  Status: {status}")
-        if check:
-            lines.append(f"  Letzter Check: {check}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def _kanonisiere_ausgabestruktur(text):
-    """Legacy-Architektur: Rohsektionen -> p1...p9 -> endgültige Zielstruktur."""
-    if not text:
-        return text
-
-    sec = _legacy_sections(text)
-
-    summary = _extract_summary_without_watchlist(text)
-    system = sec.get("SYSTEM-STATISTIK", "")
-    # Punkt 1 bekommt bewusst KEINEN RISIKO-WATCH-/WATCHLIST-Block.
-    p1_body = "\n\n".join(x for x in (summary, system) if x.strip()).strip()
-
-    market = _legacy_source(sec, "1. MARKTUMFELD & GLOBALE RISIKOLAGE")
-    market = re.sub(r"(?im)^1\.\s*MARKTUMFELD & GLOBALE RISIKOLAGE\s*$", "", market, count=1).strip()
-
-    live = _legacy_source(sec, "LIVE-PERFORMANCE VS. MSCI WORLD")
-    live = re.sub(r"(?im)^LIVE-PERFORMANCE vs\. MSCI WORLD\s*$", "", live, count=1).strip()
-
-    macro = _legacy_source(sec, "2. MAKRO-ZUKUNFTSSZENARIO")
-    macro = re.sub(r"(?im)^2\.\s*MAKRO-ZUKUNFTSSZENARIO\s*$", "", macro, count=1).strip()
-    macro = re.sub(r"(?m)^2\.1\s+", "5.1 ", macro)
-    macro = re.sub(r"(?m)^2\.2\s+", "5.2 ", macro)
-    macro = re.sub(r"(?m)^2\.[34]\s+", "5.3 ", macro)
-
-    perspective = sec.get("PERSPEKTIVISCHE TRADE-IDEEN", "")
-    trend = sec.get("3. TRENDFOLGE-SETUPS", "")
-    reversal = next((v for k,v in sec.items() if k.startswith("4. TRENDWENDE-SETUPS")), "")
-    leverage = sec.get("5. HEBELTRADER-SETUPS", "")
-    short = next((v for k,v in sec.items() if k.startswith("6. SHORT-SETUPS")), "")
-    metals = sec.get("7. EDELMETALLE-SETUPS", "")
-    external = sec.get("EXTERNE MARKTQUELLEN", "")
-
-    def setup(title, body):
-        body = re.sub(
-            r"(?im)^\s*\d+\.\s*(?:TRENDFOLGE|TRENDWENDE|HEBELTRADER|SHORT|EDELMETALLE)-SETUPS[^\n]*\s*$",
-            "", body or ""
-        )
-        body = _strip_watchlists(body)
-        return f"{title}\n\n{body.strip()}".strip() if body.strip() else ""
-
-    p6_parts = [
-        setup("6.1 PERSPEKTIVISCHE TRADE-IDEEN", re.sub(r"(?im)^PERSPEKTIVISCHE TRADE-IDEEN\s*$", "", perspective, count=1)),
-        setup("6.2 TRENDFOLGE", trend),
-        setup("6.3 TRENDWENDE", reversal),
-        ("6.4 LANGFRIST\n\n" + _langfrist_ausgabe_block()).strip()
-        if _langfrist_ausgabe_block() else "6.4 LANGFRIST",
-    ]
-
-    ht = ["6.5 HEBELTRADER"]
-    valid_ht = setup("6.5.1 VALIDE HEBELTRADER-SETUPS", leverage)
-    if valid_ht:
-        ht.append(valid_ht)
-    watch = _hebeltrader_watchlist_ausgabe_block()
-    if watch:
-        ht.append(watch)
-    a = _a_meldungen_ausgabe_block()
-    if a:
-        ht.append("6.5.3 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN\n\n" + a)
-    p6_parts.append("\n\n".join(ht))
-    p6_parts.append(setup("6.6 SHORT", short))
-
-    metals_setup_body = re.sub(r"(?im)^\s*7\.\s*EDELMETALLE-SETUPS\s*$", "", metals or "", count=1).strip()
-    metal_body = "\n\n".join(x for x in (_metals_information_block(), _strip_watchlists(metals_setup_body)) if x)
-    p6_parts.append("6.7 EDELMETALLE" + (f"\n\n{metal_body}" if metal_body else ""))
-    if external:
-        p6_parts.append(setup("6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE", external))
-    p6_body = "\n\n".join(x for x in p6_parts if x).strip()
-
-    # OFFENE POSITIONEN: Gemini darf die Analyse liefern, aber die
-    # vollständige Positionsidentität kommt deterministisch aus der
-    # Masterdatei. Dadurch können insbesondere Mehrfachpositionen desselben
-    # Tickers nicht durch einen unvollständigen Gemini-Block verloren gehen.
-    openpos = _legacy_source(
-        sec,
-        "8. OFFENE POSITIONEN (MANUELL BESTÄTIGT)",
-        "8. OFFENE POSITIONEN",
-        "7. OFFENE POSITIONEN (MANUELL BESTÄTIGT)",
-        "7. OFFENE POSITIONEN",
-    )
-    openpos = re.sub(
-        r"(?im)^\s*(?:7|8)\.\s*OFFENE POSITIONEN[^\n]*\s*$", "", openpos, count=1
-    ).strip()
-    p7 = (
-        "7. OFFENE POSITIONEN\n\n"
-        "7.1 PORTFOLIO-ÜBERSICHT\n\n"
-        "7.2 HANDLUNGSBEDARF\n\n"
-        "7.3 EINZELPOSITIONEN\n\n"
-        + (openpos or "")
-    )
-
-    # 7.4 wird ausschließlich durch _normalisiere_geschlossene_positionen_7_4
-    # aus Tab 2 ergänzt. Niemals eine alte 10-Tage-Ausgabe übernehmen.
-    outlook = re.sub(r"(?im)^WOCHENAUSBLICK\s*$", "", sec.get("WOCHENAUSBLICK", ""), count=1).strip()
-    method = re.sub(r"(?im)^METHODIK & LESEHILFE\s*$", "", sec.get("METHODIK & LESEHILFE", ""), count=1).strip()
-
-    p4 = _macro_status_block().strip()
-    parts = [
-        "1. DAS WICHTIGSTE AUF EINEN BLICK" + (f"\n\n{p1_body}" if p1_body else ""),
-        "2. MAKRO & MARKT" + (f"\n\n{market}" if market else ""),
-        "3. SYSTEMPERFORMANCE & BENCHMARK" + (f"\n\n{live}" if live else ""),
-        "4. DATEN- & SZENARIOSTATUS" + (f"\n\n{p4}" if p4 else ""),
-        "5. MARKTPERSPEKTIVE" + (f"\n\n{macro}" if macro else ""),
-        "6. TRADING-IDEEN & SETUPS" + (f"\n\n{p6_body}" if p6_body else ""),
-        p7,
-        "8. AUSBLICK & KEY EVENTS" + (f"\n\n{outlook}" if outlook else ""),
-        "9. METHODIK & DATENHINWEISE" + (f"\n\n{method}" if method else ""),
-    ]
-    return "\n\n".join(x.strip() for x in parts if x.strip()).strip() + "\n"
-
-def _master_position_key(source):
-    return (
-        _normalisiere_positionsname(source["name"]),
-        _normalisiere_ticker(source["ticker"]),
-        _positionsfeld_schluessel(source["entry"]),
-        _positionsfeld_schluessel(source["date"]),
-    )
-
-
-def _gemini_positionsbloecke(block):
-    """Zerlegt 7.3 in Positionsbloecke, ohne deren Vollstaendigkeit vorauszusetzen."""
-    header_re = re.compile(
-        r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$"
-    )
-    headers = list(header_re.finditer(block))
-    result = []
-    for idx, header in enumerate(headers):
-        end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
-        raw = block[header.start():end].strip()
-        em = re.search(
-            r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*([^\n(]+?)(?:\s*\(([^)]+)\))?\s*$",
-            raw,
-        )
-        entry = em.group(1).strip() if em else ""
-        date = em.group(2).strip() if em and em.group(2) else ""
-        if not date:
-            dm = re.search(r"(?im)^\s*Einstiegsdatum\s*:\s*([^\n|]+?)\s*$", raw)
-            date = dm.group(1).strip() if dm else ""
-        result.append({
-            "name": header.group(1).strip(),
-            "ticker": header.group(2).strip(),
-            "entry": entry,
-            "date": date,
-            "raw": raw,
-        })
-    return result
-
-
-def _finde_gemini_block_fuer_master(source, gemini_blocks, used):
-    """Ordnet hoechstens einen Gemini-Block einer Masterposition zu.
-
-    Bei Mehrfachpositionen desselben Tickers ist ausschliesslich der vollstaendige
-    Positionsschluessel zulaessig. Ohne Einstieg+Datum wird niemals geraten.
-    """
-    target = _master_position_key(source)
-
-    exact = []
-    for i, gb in enumerate(gemini_blocks):
-        if i in used or not gb["entry"] or not gb["date"]:
-            continue
-        key = (
-            _normalisiere_positionsname(gb["name"]),
-            _normalisiere_ticker(gb["ticker"]),
-            _positionsfeld_schluessel(gb["entry"]),
-            _positionsfeld_schluessel(gb["date"]),
-        )
-        if key == target:
-            exact.append(i)
-    if len(exact) == 1:
-        return exact[0]
-    if len(exact) > 1:
-        raise RuntimeError(
-            f"Mehrfacher Gemini-Block fuer Masterposition: {source['name']} "
-            f"({source['ticker']}) | Einstieg: {source['entry']} | Einstiegsdatum: {source['date']}"
-        )
-
-    # Eindeutiger Name+Ticker darf fehlende/abweichende Einstieg-/Datumsdarstellung
-    # korrigieren, weil die Masterdatei anschliessend die Werte verbindlich setzt.
-    candidates = []
-    for i, gb in enumerate(gemini_blocks):
-        if i in used:
-            continue
-        if (_normalisiere_positionsname(gb["name"]) == target[0]
-                and _normalisiere_ticker(gb["ticker"]) == target[1]):
-            candidates.append(i)
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        raise RuntimeError(
-            f"Nicht eindeutige Gemini-Zuordnung fuer {source['name']} ({source['ticker']}): "
-            "mehrere Bloecke mit gleichem Name+Ticker. Einstieg und Einstiegsdatum muessen "
-            "zur eindeutigen Zuordnung vorhanden sein."
-        )
-
-    # Ein eindeutiger Ticker darf nur dann als Fallback dienen, wenn er im Master
-    # ebenfalls genau einmal vorkommt. Bei Mehrfach-Tickern bleibt der Block unzugeordnet.
-    same_ticker_master = [
-        k for k in []  # bewusst leer; Mastereindeutigkeit wird beim Aufrufer geprueft
-    ]
-    del same_ticker_master
-    return None
-
-
-def _master_positionsblock(source_positions, gemini_blocks):
-    """Erzeugt 7.3 deterministisch aus ALLEN Masterpositionen.
-
-    Gemini darf qualitative Zusatzinformationen beisteuern. Existiert fuer eine
-    Masterposition kein Gemini-Block, wird trotzdem ein vollstaendiger
-    Stammdaten-/Technikblock erzeugt. Eine Position ausserhalb des Masters wird
-    nie in 7.3 aufgenommen.
-    """
-    master_by_ticker = {}
-    for source in source_positions:
-        master_by_ticker.setdefault(_normalisiere_ticker(source["ticker"]), []).append(source)
-
-    used = set()
-    blocks = []
-    unmatched_gemini = []
-
-    # Technische Ausgabeetiketten bleiben identisch zur bisherigen Legacy-Ausgabe.
-    tech_labels = {
-        "Technischer_Zustand": "Technischer Zustand",
-        "Trendrichtung": "Trendrichtung",
-        "Support/Widerstand": "Support/Widerstand",
-        "Breakout_Status": "Breakout Status",
-        "A-B-C_Status": "A-B-C Status",
-        "Fibonacci_Status/Ziele": "Fibonacci Status/Ziele",
-        "Trendkanal": "Trendkanal",
-        "Measured Move": "Measured Move",
-        "Formation": "Formation",
-        "Round Number": "Round Number",
-        "Major Resistance": "Major Resistance",
-        "Ueberdehnung": "Ueberdehnung",
-        "Relative Staerke_Sektor": "Relative Staerke_Sektor",
-        "Konfluenz": "Konfluenz",
-        "Retest_Support": "Retest_Support",
-        "Technische_Zielzone": "Technische Zielzone",
-        "Datenqualitaet": "Datenqualitaet",
-        "Analysehinweis": "Analysehinweis",
-    }
-
-    master_keys = {_master_position_key(s) for s in source_positions}
-
-    for source in source_positions:
-        # Erst vollstaendiger Schluessel, danach nur eindeutiger Name+Ticker.
-        idx = _finde_gemini_block_fuer_master(source, gemini_blocks, used)
-        if idx is None:
-            # Ein eindeutiger Ticker darf ebenfalls zugeordnet werden, aber niemals
-            # bei Mehrfachpositionen desselben Tickers.
-            ticker = _normalisiere_ticker(source["ticker"])
-            if len(master_by_ticker.get(ticker, [])) == 1:
-                candidates = [
-                    i for i, gb in enumerate(gemini_blocks)
-                    if i not in used and _normalisiere_ticker(gb["ticker"]) == ticker
-                ]
-                if len(candidates) == 1:
-                    idx = candidates[0]
-                elif len(candidates) > 1:
-                    raise RuntimeError(
-                        f"Mehrere Gemini-Bloecke fuer eindeutigen Master-Ticker {source['ticker']}; "
-                        "keine Zuordnung geraten."
-                    )
-
-        gb = gemini_blocks[idx] if idx is not None else None
-        if idx is not None:
-            used.add(idx)
-
-        meta = source.get("meta", {})
-        lines = [
-            f"{source['name']} ({source['ticker']}) | Markt: {meta.get('Markt', '') or 'nicht aus Quelle vorhanden'}",
-        ]
-        for label, field in [
-            ("Sektor", "Sektor"), ("Richtung", "Richtung"), ("Quelle", "Ideen_Quelle"),
-        ]:
-            value = meta.get(field, "")
-            if value:
-                lines.append(f"{label}: {value}")
-        lines.append(f"Einstieg: {source['entry']} ({source['date']})")
-        for label, field, suffix in [
-            ("Aktuell", "Aktueller_Kurs", ""),
-            ("Performance", "Performance_Seit_Einstieg%", "%"),
-            ("Stop", "Stop_Aktuell", ""),
-            ("TP1", "TP1_Original", ""),
-            ("TP2", "TP2_Original", ""),
-        ]:
-            value = meta.get(field, "")
-            if value:
-                lines.append(f"{label}: {value}{suffix}")
-
-        technical = source.get("technical", {})
-        for field, label in tech_labels.items():
-            value = technical.get(field)
-            if value not in (None, ""):
-                lines.append(f"{label}: {value}")
-
-        # Qualitative Gemini-Zusatzdaten: Stammdaten und technische Masterfelder
-        # werden aus dem Gemini-Block entfernt, damit sie nicht doppelt erscheinen.
-        if gb:
-            extra = gb["raw"]
-            extra = re.sub(r"(?m)^[^\n]*\|\s*Markt:\s*[^\n]*$\n?", "", extra, count=1)
-            extra = re.sub(r"(?im)^\s*(?:Einstieg(?:skurs)?|Einstiegsdatum)\s*:\s*[^\n]+$\n?", "", extra)
-            duplicate_labels = [
-                "Sektor", "Richtung", "Quelle", "Aktuell", "Performance", "Stop", "TP1", "TP2",
-                "Technischer Zustand", "Trendrichtung", "Support/Widerstand", "Breakout", "Breakout Status",
-                "A-B-C", "A-B-C Status", "Fibonacci", "Fibonacci Status/Ziele", "Trendkanal", "Measured Move",
-                "Formation", "Round Number", "Major Resistance", "Ueberdehnung", "Überdehnung",
-                "Relative Staerke Sektor", "Relative Staerke_Sektor", "Konfluenz", "Retest_Support",
-                "Technische Zielzone", "Datenqualitaet", "Analysehinweis",
-            ]
-            for label in duplicate_labels:
-                extra = re.sub(r"(?im)^\s*" + re.escape(label) + r"\s*:\s*[^\n]*\n?", "", extra)
-            extra = extra.strip()
-            if extra:
-                lines.append(extra)
-
-        blocks.append("\n".join(lines).strip())
-
-    # Gemini darf keine fremde Position einschleusen. Das ist bewusst nur eine
-    # Diagnose, kein Anlass fuer einen weiteren API-Call.
-    for i, gb in enumerate(gemini_blocks):
-        if i in used:
-            continue
-        if gb["entry"] and gb["date"]:
-            gkey = (
-                _normalisiere_positionsname(gb["name"]),
-                _normalisiere_ticker(gb["ticker"]),
-                _positionsfeld_schluessel(gb["entry"]),
-                _positionsfeld_schluessel(gb["date"]),
-            )
-            if gkey not in master_keys:
-                unmatched_gemini.append(
-                    f"{gb['name']} ({gb['ticker']}) | Einstieg: {gb['entry']} | Einstiegsdatum: {gb['date']}"
-                )
-
-    if unmatched_gemini:
-        print("INFO: Gemini-Positionen ausserhalb des Masterbestands werden aus 7.3 entfernt:")
-        for item in unmatched_gemini:
-            print(f"  - {item}")
-
-    return "\n\n".join(blocks)
-
-
-def _baue_7_aus_master(text, zielzonen):
-    """Ersetzt 7.3 durch einen vollstaendigen Master-Neuaufbau."""
-    if not zielzonen:
-        raise RuntimeError("Keine offenen Masterpositionen vorhanden; 7.3 kann nicht aufgebaut werden.")
-    match = re.search(r"(?ims)^7\. OFFENE POSITIONEN\s*$.*?(?=^8\.\s+|\Z)", text)
-    if not match:
-        raise RuntimeError("Abschnitt '7. OFFENE POSITIONEN' fehlt; Master-Neuaufbau nicht moeglich.")
-    block = match.group(0)
-    m73 = re.search(r"(?ims)^7\.3\s+EINZELPOSITIONEN\s*$", block)
-    if not m73:
-        raise RuntimeError("Unterabschnitt 7.3 fehlt; Master-Neuaufbau nicht moeglich.")
-
-    prefix = block[:m73.end()]
-    old73 = block[m73.end():]
-    # Alles nach 7.3 bis Abschnitt 8 sind Kandidaten fuer Gemini-Positionsbloecke.
-    gemini_blocks = _gemini_positionsbloecke(old73)
-    source_positions = list(zielzonen.values())
-    new73 = _master_positionsblock(source_positions, gemini_blocks)
-    rebuilt = prefix.rstrip() + "\n\n" + new73.strip() + "\n"
-    return text[:match.start()] + rebuilt + text[match.end():]
-
-
-def _validiere_master_7_3(text, zielzonen):
-    """Harte Vollstaendigkeitspruefung: exakt alle Masterpositionen, keine Fremdposition."""
-    match = re.search(r"(?ims)^7\.3\s+EINZELPOSITIONEN\s*$.*?(?=^8\.\s+|\Z)", text)
-    if not match:
-        raise RuntimeError("7.3 fehlt nach dem Master-Neuaufbau.")
-    blocks = _gemini_positionsbloecke(match.group(0))
-    seen = []
-    for gb in blocks:
-        if not gb["entry"] or not gb["date"]:
-            raise RuntimeError(
-                f"7.3 enthaelt eine Position ohne vollstaendige Identitaet: {gb['name']} ({gb['ticker']})"
-            )
-        seen.append((
-            _normalisiere_positionsname(gb["name"]),
-            _normalisiere_ticker(gb["ticker"]),
-            _positionsfeld_schluessel(gb["entry"]),
-            _positionsfeld_schluessel(gb["date"]),
-        ))
-    expected = list(zielzonen.keys())
-    if len(seen) != len(expected):
-        raise RuntimeError(f"Master-Vollstaendigkeit verletzt: 7.3 enthaelt {len(seen)} Positionen, erwartet {len(expected)}.")
-    if len(set(seen)) != len(seen):
-        raise RuntimeError("Master-Vollstaendigkeit verletzt: doppelte Position in 7.3.")
-    missing = [k for k in expected if k not in set(seen)]
-    extra = [k for k in seen if k not in set(expected)]
-    if missing or extra:
-        msg=[]
-        if missing: msg.append("fehlend=" + "; ".join(map(str, missing)))
-        if extra: msg.append("fremd=" + "; ".join(map(str, extra)))
-        raise RuntimeError("Master-Vollstaendigkeit verletzt: " + " | ".join(msg))
-
 def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt formale Regeln und macht die Check-Datei zum Master.
 
@@ -1885,14 +1159,6 @@ def normalisiere_ausgabe(text, zielzonen=None):
     """
     if not text:
         return text
-
-    text = _kanonisiere_ausgabestruktur(text)
-    # ENTSCHEIDEND: 7.3 wird jetzt vollstaendig aus dem Master neu aufgebaut.
-    # Gemini liefert nur qualitative Zusatzinformationen; Gemini bestimmt weder
-    # Anzahl noch Existenz der offenen Positionen.
-    text = _baue_7_aus_master(text, zielzonen)
-    text = _begrenze_ki_positionsfazits(text)
-    _validiere_master_7_3(text, zielzonen)
 
     text = re.sub(
         r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
@@ -1925,7 +1191,7 @@ def normalisiere_ausgabe(text, zielzonen=None):
 
     block = match.group(0)
     header_re = re.compile(
-        r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$"
+        r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
     )
     headers = list(header_re.finditer(block))
     if not headers:
@@ -2153,10 +1419,10 @@ def _lese_makro_datenqualitaet(makro_text):
 
 
 def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
-    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 4."""
+    """Sichert die autoritative Datenqualitaet ausschliesslich in Abschnitt 2."""
     if not text or not makro_datenqualitaet:
         return text
-    start = text.find("4. DATEN- & SZENARIOSTATUS")
+    start = text.find("2. MAKRO-ZUKUNFTSSZENARIO")
     if start < 0:
         return text
     end = text.find("\n3.", start)
@@ -2172,121 +1438,6 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
     return text[:start] + section + text[end:]
 
 
-def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
-    """Harte Endpruefung der Darstellung gegen die vereinbarte 1-9-Struktur.
-    Diese Funktion prueft nur Ausgabeform, keine Trading-/Analyseberechnung.
-    """
-    errors = []
-    if not text:
-        return ["Leere Auswertung"]
-
-    # Hauptabschnitte exakt 1..9 und in Reihenfolge.
-    text = text.lstrip("\ufeff")
-    heads_all = re.findall(r"(?im)^\ufeff?[ \t]*([1-9])\.[ \t]+([^\n]+)$", text)
-    # Hauptstruktur ausschließlich über die neun kanonischen Überschriften
-    # der aktuellen Master-Prompt-Zielarchitektur bestimmen.
-    _haupttitel = {
-        "DAS WICHTIGSTE AUF EINEN BLICK",
-        "MAKRO & MARKT",
-        "SYSTEMPERFORMANCE & BENCHMARK",
-        "DATEN- & SZENARIOSTATUS",
-        "MARKTPERSPEKTIVE",
-        "TRADING-IDEEN & SETUPS",
-        "OFFENE POSITIONEN",
-        "AUSBLICK & KEY EVENTS",
-        "METHODIK & DATENHINWEISE",
-    }
-    heads = [
-        (n, title) for n, title in heads_all
-        if title.strip().upper() in _haupttitel
-    ]
-    nums = [int(n) for n, _ in heads]
-    if nums != list(range(1, 10)):
-        errors.append(f"Hauptstruktur ungueltig: {nums}")
-
-    # Verbotene Watchlists ausserhalb HEBELTRADER.
-    p1 = re.search(r"(?ims)^1\. DAS WICHTIGSTE AUF EINEN BLICK\s*$.*?(?=^2\.\s+)", text)
-    if p1 and re.search(r"(?i)WATCHLIST|RISIKO-WATCH", p1.group(0)):
-        errors.append("Punkt 1 enthaelt Watchlist/Risiko-Watch")
-    for a,b in [("6.2 TRENDFOLGE","6.3 TRENDWENDE"),("6.3 TRENDWENDE","6.4 LANGFRIST"),("6.6 SHORT","6.7 EDELMETALLE")]:
-        m=re.search(r"(?ims)^"+re.escape(a)+r"\s*$.*?(?=^"+re.escape(b)+r"\s*$)",text)
-        if m and re.search(r"(?i)WATCHLIST|BEINAHE-KANDIDAT|DIVERGENZ-WATCHLIST",m.group(0)):
-            errors.append(f"{a} enthaelt unzulaessige Watchlist/Beinahe-Kandidaten")
-
-    # HEBELTRADER-Unterstruktur: 6.5.1 und 6.5.2 sind Pflicht; 6.5.3 nur bei
-    # vorhandener nicht-leerer A-Meldungsdatei (die eigentliche Datei wird separat gesucht).
-    m65=re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^6\.6\s+SHORT\s*$)",text)
-    if not m65:
-        errors.append("6.5 fehlt")
-    else:
-        b=m65.group(0)
-        if not re.search(r"(?im)^6\.5\.1\s+",b): errors.append("6.5.1 fehlt")
-        if not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.2 fehlt")
-        if re.search(r"(?im)^6\.5\.3\s+",b) and not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.3 falsch eingeordnet")
-
-    # 6.5.3 darf ausschließlich bei real vorhandener, nicht leerer A-Meldungsdatei erscheinen.
-    a_files = sorted(glob.glob("Einzel_Check_A_Meldungen(*).txt"))
-    a_has_content = False
-    if a_files:
-        try:
-            a_has_content = bool(Path(a_files[-1]).read_text(encoding="utf-8-sig").strip())
-        except OSError:
-            a_has_content = False
-    m65_check = re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^6\.6\s+SHORT\s*$)", text)
-    if m65_check:
-        b65 = m65_check.group(0)
-        if a_has_content and not re.search(r"(?im)^6\.5\.3\s+", b65):
-            errors.append("6.5.3 fehlt trotz vorhandener A-Meldungsdatei")
-        if (not a_has_content) and re.search(r"(?im)^6\.5\.3\s+", b65):
-            errors.append("6.5.3 vorhanden trotz leerer/fehlender A-Meldungsdatei")
-
-    # 6.7 muss bei vorhandener Edelmetallquelle die vier Metalle enthalten.
-    p67 = re.search(r"(?ims)^6\.7\s+EDELMETALLE\s*$.*?(?=^7\.\s+)", text)
-    if p67 and (glob.glob("Edelmetalle_Briefing(*).txt") or _metals_information_block()):
-        for metal in ("Gold", "Silber", "Platin", "Palladium"):
-            if not re.search(r"(?im)^\s*" + metal + r"\s*:", p67.group(0)):
-                errors.append(f"6.7 {metal} fehlt")
-
-    # Offene Positionen: 7.1-7.3 Pflicht. 7.4 ist konditional und darf bei
-    # fehlenden 3-Tage-Abgaengen nicht als "keine Position" erscheinen.
-    p7=re.search(r"(?ims)^7\. OFFENE POSITIONEN\s*$.*?(?=^8\.\s+)",text)
-    if not p7:
-        errors.append("7. OFFENE POSITIONEN fehlt")
-    else:
-        b=p7.group(0)
-        for sub in ("7.1", "7.2", "7.3"):
-            if not re.search(r"(?im)^"+re.escape(sub)+r"\s+",b): errors.append(f"{sub} fehlt")
-        if re.search(r"(?im)^7\.4\s+",b) and re.search(r"(?i)Keine Position in den letzten 3 (?:Kalender)?tagen geschlossen",b):
-            errors.append("7.4 darf bei 0 Abschluessen nicht als Leerhinweis erscheinen")
-
-    # KI-Positionsfazit unmittelbar unter jeder Position; maximal 2 Saetze.
-    if p7:
-        b=p7.group(0)
-        parts=list(re.finditer(r"(?m)^\s*(?:[#>*\-]+\s*)?(?:\*\*)?([^\n|]+?)\s*\(([^()]+)\)(?:\*\*)?\s*(?:\|\s*Markt:\s*[^\n]*)?$",b))
-        for i,h in enumerate(parts):
-            end=parts[i+1].start() if i+1<len(parts) else len(b)
-            pb=b[h.start():end]
-            fm=re.search(r"(?im)^KI-Positionsfazit\s*:\s*(.+)$",pb)
-            if not fm:
-                # Eine Masterposition bleibt auch ohne Gemini-Analyse gueltig.
-                # Es wird bewusst kein KI-Fazit erfunden.
-                continue
-            else:
-                # Satzende ist ein Punkt/!/?, gefolgt von Whitespace oder Zeilenende.
-                # Dadurch werden auch kurze Sätze wie "Satz eins." sicher erkannt.
-                sentence_count = len(re.findall(
-                    r"[^.!?]*[.!?](?=\s|$)",
-                    fm.group(1).strip(),
-                ))
-                if sentence_count > 2:
-                    errors.append(
-                        f"KI-Positionsfazit >2 Saetze bei "
-                        f"{h.group(1).strip()} ({h.group(2).strip()})"
-                    )
-
-    return errors
-
-
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -2294,12 +1445,6 @@ def speichere_ergebnis(text):
         text,
         zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
     )
-    xlsx_kandidaten = glob.glob("Offene Positionen+Check.xlsx") + glob.glob("Offene Positionen+Check(*).xlsx")
-    xlsx_pfad = sorted(xlsx_kandidaten)[-1] if xlsx_kandidaten else None
-    text = _normalisiere_geschlossene_positionen_7_4(text, xlsx_pfad)
-    strukturfehler = _validiere_finale_ausgabestruktur(text)
-    if strukturfehler:
-        raise RuntimeError("Finale Ausgabestruktur ungueltig: " + " | ".join(strukturfehler))
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
