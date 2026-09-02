@@ -64,9 +64,9 @@ import io
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash"  # Primaer-Modell
+MODELL = "gemini-3.6-flash"  # Primaer-Modell
 FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback
-DRITTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Zweiter Fallback bei 503-Ueberlast
+DRITTER_FALLBACK_MODELL = "gemini-3.5-flash-lite"  # Zweiter Fallback bei 503-Ueberlast
                               # Das dritte Modell wird nur verwendet, wenn auch der erste
                               # Fallback weiterhin serverseitig ueberlastet ist.
 
