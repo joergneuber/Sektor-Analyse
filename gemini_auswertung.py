@@ -41,6 +41,7 @@ muss - beide Skripte sind austauschbar, nicht gleichzeitig laufen lassen).
 """
 
 import os
+from pathlib import Path
 import sys
 import glob
 import re
