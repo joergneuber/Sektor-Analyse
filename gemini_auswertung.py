@@ -1318,62 +1318,228 @@ def _entferne_unerwuenschte_watchlists(text):
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
-def _begrenze_ki_positionsfazits(text):
-    """Begrenzt jedes KI-Positionsfazit deterministisch auf maximal 2 Saetze."""
+
+def _legacy_sections(text):
+    """Zerlegt Gemini ausschließlich anhand der bekannten Legacy-Quellüberschriften."""
     if not text:
-        return text
-    splitter = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜÀ-ÖØ-Þ])")
-    result = []
-    for line in text.splitlines():
-        m = re.match(r"^(\s*KI-Positionsfazit\s*:\s*)(.*)$", line, re.IGNORECASE)
-        if not m:
-            result.append(line)
-            continue
-        sentences = splitter.split(m.group(2).strip())
-        result.append(m.group(1) + " ".join(sentences[:2]).strip())
-    return "\n".join(result)
+        return {}
+    rx = re.compile(
+        r"(?im)^(?:\ufeff)?\s*("
+        r"1\.\s*MARKTUMFELD & GLOBALE RISIKOLAGE|"
+        r"2\.\s*MAKRO-ZUKUNFTSSZENARIO|"
+        r"3\.\s*TRENDFOLGE-SETUPS|"
+        r"4\.\s*TRENDWENDE-SETUPS[^\n]*|"
+        r"5\.\s*HEBELTRADER-SETUPS|"
+        r"6\.\s*SHORT-SETUPS[^\n]*|"
+        r"7\.\s*EDELMETALLE-SETUPS|"
+        r"8\.\s*OFFENE POSITIONEN[^\n]*|"
+        r"9\.\s*GESCHLOSSENE POSITIONEN[^\n]*|"
+        r"METHODIK & LESEHILFE|EXTERNE MARKTQUELLEN|"
+        r"PERSPEKTIVISCHE TRADE-IDEEN|LIVE-PERFORMANCE vs\. MSCI WORLD|"
+        r"KURZ-ZUSAMMENFASSUNG|RISIKO-WATCH|WOCHENAUSBLICK|SYSTEM-STATISTIK"
+        r")\s*$"
+    )
+    ms = list(rx.finditer(text))
+    out = {}
+    for i,m in enumerate(ms):
+        key = re.sub(r"\s+", " ", m.group(1).strip()).upper()
+        end = ms[i+1].start() if i+1 < len(ms) else len(text)
+        out[key] = text[m.start():end].strip()
+    return out
 
-def _kanonisiere_6_5(text):
-    """Stellt die HEBELTRADER-Unterstruktur rein auf Darstellungsebene her.
 
-    6.5.1 umfasst den bereits von Gemini gelieferten validen HEBELTRADER-
-    Setup-Inhalt. 6.5.2 umfasst die bereits gelieferte Beobachtungsliste.
-    Es werden keine Kandidaten geprueft, gefiltert oder neu berechnet.
-    """
-    if not text:
-        return text
-    m = re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^\s*6\.6\s+SHORT\s*$|\Z)", text)
-    if not m:
-        return text
-    block = m.group(0)
-    watch_re = r"(?im)^\s*(?:6\.5\.2\s+HEBELTRADER-Watchlist[^\n]*|WATCHLIST\s*\(MANUELLE PRÜFUNG\)|HE[Bb]ELTRADER-WATCHLIST[^\n]*|Einzel-Check-Beobachtungsliste\s*:?)\s*$"
+def _strip_watchlists(block):
+    """Entfernt komplette unerwünschte Watchlist-/Beinahe-Blöcke."""
+    if not block:
+        return ""
+    m = re.search(
+        r"(?im)^\s*(?:WATCHLIST(?:\s*\([^\n]*\))?|RISIKO-WATCH|"
+        r"DIVERGENZ-WATCHLIST|BEINAHE-KANDIDATEN?)\s*$",
+        block,
+    )
+    if m:
+        block = block[:m.start()].rstrip()
+    block = re.sub(r"(?im)^\s*Engstelle des Filters:[^\n]*\n?", "", block)
+    return re.sub(r"\n{3,}", "\n\n", block).strip()
 
-    if not re.search(r"(?im)^6\.5\.1\s+", block):
-        watch = re.search(watch_re, block)
-        if watch:
-            prefix = block[:watch.start()].rstrip()
-            suffix = block[watch.start():]
-            block = prefix + "\n\n6.5.1 VALIDE HEBELTRADER-SETUPS\n\n" + suffix.lstrip()
-        else:
-            header = re.search(r"(?im)^6\.5\s+HEBELTRADER\s*$", block)
-            insert_at = header.end() if header else 0
-            block = block[:insert_at] + "\n\n6.5.1 VALIDE HEBELTRADER-SETUPS\n" + block[insert_at:]
 
-    if not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist", block):
-        w = re.search(watch_re, block)
-        if w:
-            block = block[:w.start()] + "6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste\n\n" + block[w.end():]
-        else:
-            block = block.rstrip() + "\n\n6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste\n"
+def _extract_summary_without_watchlist(text):
+    raw = _legacy_sections(text).get("KURZ-ZUSAMMENFASSUNG", "")
+    raw = re.sub(r"(?im)^KURZ-ZUSAMMENFASSUNG\s*$", "", raw, count=1).strip()
+    return re.split(r"(?im)^\s*(?:WATCHLIST|RISIKO-WATCH)\s*$", raw, maxsplit=1)[0].strip()
 
-    return text[:m.start()] + block + text[m.end():]
+
+def _legacy_source(sec, *names):
+    for name in names:
+        if name in sec:
+            return sec[name]
+    return ""
+
+
+def _langfrist_ausgabe_block():
+    """Übernimmt vorhandene wöchentliche Langfrist-Dateien ohne Neuberechnung."""
+    files = sorted(glob.glob("Langfrist_Bewertung(*).csv"))
+    briefs = sorted(glob.glob("Langfrist_Briefing(*).txt"))
+    parts = []
+    if files:
+        try:
+            raw = Path(files[-1]).read_text(encoding="utf-8-sig").strip()
+            if raw:
+                parts.append(f"Quelle: {Path(files[-1]).name}\n{raw}")
+        except OSError:
+            pass
+    if briefs:
+        try:
+            raw = Path(briefs[-1]).read_text(encoding="utf-8-sig").strip()
+            if raw:
+                parts.append(f"Quelle: {Path(briefs[-1]).name}\n{raw}")
+        except OSError:
+            pass
+    return "\n\n".join(parts).strip()
+
+
+def _a_meldungen_ausgabe_block():
+    files = sorted(glob.glob("Einzel_Check_A_Meldungen(*).txt"))
+    if not files:
+        return ""
+    try:
+        raw = Path(files[-1]).read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return ""
+    return raw
+
+
+def _hebeltrader_watchlist_ausgabe_block():
+    """Vollständige JSON-Watchlist; keine Auswahl/Filterung."""
+    pfad = finde_datei([BEOBACHTUNGSLISTE_DATEI, "einzel_check_beobachtung*.json"])
+    if not pfad:
+        return ""
+    try:
+        daten = json.loads(Path(pfad).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return ""
+    if not isinstance(daten, dict):
+        return ""
+    lines = ["6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste", ""]
+    for ticker, info in daten.items():
+        info = info if isinstance(info, dict) else {}
+        name = str(info.get("name") or info.get("unternehmen") or "").strip()
+        status = str(info.get("status") or "").strip()
+        check = str(info.get("letzter_check") or "").strip()
+        label = f"{name} ({ticker})" if name else str(ticker)
+        lines.append(f"- {label}")
+        if status:
+            lines.append(f"  Status: {status}")
+        if check:
+            lines.append(f"  Letzter Check: {check}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _kanonisiere_ausgabestruktur(text):
-    text = _entferne_unerwuenschte_watchlists(text)
-    text = _kanonisiere_6_5(text)
-    return text
+    """Legacy-Architektur: Rohsektionen -> p1...p9 -> endgültige Zielstruktur."""
+    if not text:
+        return text
 
+    sec = _legacy_sections(text)
+
+    summary = _extract_summary_without_watchlist(text)
+    system = sec.get("SYSTEM-STATISTIK", "")
+    # Punkt 1 bekommt bewusst KEINEN RISIKO-WATCH-/WATCHLIST-Block.
+    p1_body = "\n\n".join(x for x in (summary, system) if x.strip()).strip()
+
+    market = _legacy_source(sec, "1. MARKTUMFELD & GLOBALE RISIKOLAGE")
+    market = re.sub(r"(?im)^1\.\s*MARKTUMFELD & GLOBALE RISIKOLAGE\s*$", "", market, count=1).strip()
+
+    live = _legacy_source(sec, "LIVE-PERFORMANCE VS. MSCI WORLD")
+    live = re.sub(r"(?im)^LIVE-PERFORMANCE vs\. MSCI WORLD\s*$", "", live, count=1).strip()
+
+    macro = _legacy_source(sec, "2. MAKRO-ZUKUNFTSSZENARIO")
+    macro = re.sub(r"(?im)^2\.\s*MAKRO-ZUKUNFTSSZENARIO\s*$", "", macro, count=1).strip()
+    macro = re.sub(r"(?m)^2\.1\s+", "5.1 ", macro)
+    macro = re.sub(r"(?m)^2\.2\s+", "5.2 ", macro)
+    macro = re.sub(r"(?m)^2\.[34]\s+", "5.3 ", macro)
+
+    perspective = sec.get("PERSPEKTIVISCHE TRADE-IDEEN", "")
+    trend = sec.get("3. TRENDFOLGE-SETUPS", "")
+    reversal = next((v for k,v in sec.items() if k.startswith("4. TRENDWENDE-SETUPS")), "")
+    leverage = sec.get("5. HEBELTRADER-SETUPS", "")
+    short = next((v for k,v in sec.items() if k.startswith("6. SHORT-SETUPS")), "")
+    metals = sec.get("7. EDELMETALLE-SETUPS", "")
+    external = sec.get("EXTERNE MARKTQUELLEN", "")
+
+    def setup(title, body):
+        body = re.sub(
+            r"(?im)^\s*\d+\.\s*(?:TRENDFOLGE|TRENDWENDE|HEBELTRADER|SHORT|EDELMETALLE)-SETUPS[^\n]*\s*$",
+            "", body or ""
+        )
+        body = _strip_watchlists(body)
+        return f"{title}\n\n{body.strip()}".strip() if body.strip() else ""
+
+    p6_parts = [
+        setup("6.1 PERSPEKTIVISCHE TRADE-IDEEN", re.sub(r"(?im)^PERSPEKTIVISCHE TRADE-IDEEN\s*$", "", perspective, count=1)),
+        setup("6.2 TRENDFOLGE", trend),
+        setup("6.3 TRENDWENDE", reversal),
+        ("6.4 LANGFRIST\n\n" + _langfrist_ausgabe_block()).strip()
+        if _langfrist_ausgabe_block() else "6.4 LANGFRIST",
+    ]
+
+    ht = ["6.5 HEBELTRADER"]
+    valid_ht = setup("6.5.1 VALIDE HEBELTRADER-SETUPS", leverage)
+    if valid_ht:
+        ht.append(valid_ht)
+    watch = _hebeltrader_watchlist_ausgabe_block()
+    if watch:
+        ht.append(watch)
+    a = _a_meldungen_ausgabe_block()
+    if a:
+        ht.append("6.5.3 A-KANDIDATEN / EINZEL-CHECK-MELDUNGEN\n\n" + a)
+    p6_parts.append("\n\n".join(ht))
+    p6_parts.append(setup("6.6 SHORT", short))
+
+    metals_setup_body = re.sub(r"(?im)^\s*7\.\s*EDELMETALLE-SETUPS\s*$", "", metals or "", count=1).strip()
+    metal_body = "\n\n".join(x for x in (_metals_information_block(), _strip_watchlists(metals_setup_body)) if x)
+    p6_parts.append("6.7 EDELMETALLE" + (f"\n\n{metal_body}" if metal_body else ""))
+    if external:
+        p6_parts.append(setup("6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE", external))
+    p6_body = "\n\n".join(x for x in p6_parts if x).strip()
+
+    openpos = _legacy_source(
+        sec,
+        "8. OFFENE POSITIONEN (MANUELL BESTÄTIGT)",
+        "8. OFFENE POSITIONEN",
+        "7. OFFENE POSITIONEN (MANUELL BESTÄTIGT)",
+        "7. OFFENE POSITIONEN",
+    )
+    openpos = re.sub(
+        r"(?im)^\s*(?:7|8)\.\s*OFFENE POSITIONEN[^\n]*\s*$", "", openpos, count=1
+    ).strip()
+    p7 = (
+        "7. OFFENE POSITIONEN\n\n"
+        "7.1 PORTFOLIO-ÜBERSICHT\n\n"
+        "7.2 HANDLUNGSBEDARF\n\n"
+        "7.3 EINZELPOSITIONEN\n\n"
+        + (openpos or "")
+    )
+
+    # 7.4 wird ausschließlich durch _normalisiere_geschlossene_positionen_7_4
+    # aus Tab 2 ergänzt. Niemals eine alte 10-Tage-Ausgabe übernehmen.
+    outlook = re.sub(r"(?im)^WOCHENAUSBLICK\s*$", "", sec.get("WOCHENAUSBLICK", ""), count=1).strip()
+    method = re.sub(r"(?im)^METHODIK & LESEHILFE\s*$", "", sec.get("METHODIK & LESEHILFE", ""), count=1).strip()
+
+    p4 = _macro_status_block().strip()
+    parts = [
+        "1. DAS WICHTIGSTE AUF EINEN BLICK" + (f"\n\n{p1_body}" if p1_body else ""),
+        "2. MAKRO & MARKT" + (f"\n\n{market}" if market else ""),
+        "3. SYSTEMPERFORMANCE & BENCHMARK" + (f"\n\n{live}" if live else ""),
+        "4. DATEN- & SZENARIOSTATUS" + (f"\n\n{p4}" if p4 else ""),
+        "5. MARKTPERSPEKTIVE" + (f"\n\n{macro}" if macro else ""),
+        "6. TRADING-IDEEN & SETUPS" + (f"\n\n{p6_body}" if p6_body else ""),
+        p7,
+        "8. AUSBLICK & KEY EVENTS" + (f"\n\n{outlook}" if outlook else ""),
+        "9. METHODIK & DATENHINWEISE" + (f"\n\n{method}" if method else ""),
+    ]
+    return "\n\n".join(x.strip() for x in parts if x.strip()).strip() + "\n"
 
 def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt formale Regeln und macht die Check-Datei zum Master.
@@ -1719,6 +1885,29 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
         if not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.2 fehlt")
         if re.search(r"(?im)^6\.5\.3\s+",b) and not re.search(r"(?im)^6\.5\.2\s+HEBELTRADER-Watchlist",b): errors.append("6.5.3 falsch eingeordnet")
 
+    # 6.5.3 darf ausschließlich bei real vorhandener, nicht leerer A-Meldungsdatei erscheinen.
+    a_files = sorted(glob.glob("Einzel_Check_A_Meldungen(*).txt"))
+    a_has_content = False
+    if a_files:
+        try:
+            a_has_content = bool(Path(a_files[-1]).read_text(encoding="utf-8-sig").strip())
+        except OSError:
+            a_has_content = False
+    m65_check = re.search(r"(?ims)^6\.5\s+HEBELTRADER\s*$.*?(?=^6\.6\s+SHORT\s*$)", text)
+    if m65_check:
+        b65 = m65_check.group(0)
+        if a_has_content and not re.search(r"(?im)^6\.5\.3\s+", b65):
+            errors.append("6.5.3 fehlt trotz vorhandener A-Meldungsdatei")
+        if (not a_has_content) and re.search(r"(?im)^6\.5\.3\s+", b65):
+            errors.append("6.5.3 vorhanden trotz leerer/fehlender A-Meldungsdatei")
+
+    # 6.7 muss bei vorhandener Edelmetallquelle die vier Metalle enthalten.
+    p67 = re.search(r"(?ims)^6\.7\s+EDELMETALLE\s*$.*?(?=^7\.\s+)", text)
+    if p67 and (glob.glob("Edelmetalle_Briefing(*).txt") or _metals_information_block()):
+        for metal in ("Gold", "Silber", "Platin", "Palladium"):
+            if not re.search(r"(?im)^\s*" + metal + r"\s*:", p67.group(0)):
+                errors.append(f"6.7 {metal} fehlt")
+
     # Offene Positionen: 7.1-7.3 Pflicht. 7.4 ist konditional und darf bei
     # fehlenden 3-Tage-Abgaengen nicht als "keine Position" erscheinen.
     p7=re.search(r"(?ims)^7\. OFFENE POSITIONEN\s*$.*?(?=^8\.\s+)",text)
@@ -1742,11 +1931,17 @@ def _validiere_finale_ausgabestruktur(text, beobachtungsliste=None):
             if not fm:
                 errors.append(f"KI-Positionsfazit fehlt bei {h.group(1).strip()} ({h.group(2).strip()})")
             else:
-                sentence_count = len(re.split(
-                    r"(?<=[.!?])\s+(?=[A-ZÄÖÜÀ-ÖØ-Þ])",
+                # Satzende ist ein Punkt/!/?, gefolgt von Whitespace oder Zeilenende.
+                # Dadurch werden auch kurze Sätze wie "Satz eins." sicher erkannt.
+                sentence_count = len(re.findall(
+                    r"[^.!?]*[.!?](?=\s|$)",
                     fm.group(1).strip(),
                 ))
-                if sentence_count>2: errors.append(f"KI-Positionsfazit >2 Saetze bei {h.group(1).strip()} ({h.group(2).strip()})")
+                if sentence_count > 2:
+                    errors.append(
+                        f"KI-Positionsfazit >2 Saetze bei "
+                        f"{h.group(1).strip()} ({h.group(2).strip()})"
+                    )
 
     return errors
 
