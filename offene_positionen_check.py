@@ -1266,6 +1266,79 @@ def merge_closed_history(existing_rows: list[list], new_closed_df: pd.DataFrame)
     return pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
 
 
+def _parse_sheet_stand_date(rows: list[list]) -> str:
+    """Ermittelt das Datum des letzten gespeicherten offenen Sheet-Stands."""
+    if not rows or not rows[0]:
+        return ""
+    text = str(rows[0][0])
+    m = re.search(r"Stand\s+(\d{2}\.\d{2}\.\d{4})", text)
+    return m.group(1) if m else ""
+
+
+def read_existing_open_rows(sheets, spreadsheet_id: str) -> list[list]:
+    """Liest den bisherigen Tab 1 als Snapshot des letzten offenen Bestands."""
+    try:
+        existing = sheets.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties",
+        ).execute().get("sheets", [])
+        titles = {str(s.get("properties", {}).get("title", "")).strip() for s in existing}
+        if "Offene Positionen + Check" not in titles:
+            return []
+        response = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="'Offene Positionen + Check'!A:AZ",
+        ).execute()
+        return response.get("values", [])
+    except Exception as exc:
+        print(f"WARNUNG: Vorheriger offener Bestand konnte nicht gelesen werden: {exc}")
+        return []
+
+
+def extract_disappeared_open_positions(existing_open_rows: list[list], current_df: pd.DataFrame) -> pd.DataFrame:
+    """Archiviert Positionen, die seit dem letzten Sheet-Stand aus Tab 1 verschwunden sind.
+
+    Das ist der entscheidende Persistenzpfad, wenn die Masterquelle eine geschlossene
+    Position bereits entfernt hat: Der letzte offene Snapshot ist die einzige lokale
+    Faktenbasis. Es werden keine technischen Werte neu berechnet und keine Stop-/Verkaufs-
+    kurswerte erfunden. Das Standdatum des letzten Snapshots wird als Ausstiegsdatum
+    verwendet; der letzte bekannte Kurs bleibt der letzte bekannte Kurs.
+    """
+    if not existing_open_rows or current_df is None:
+        return pd.DataFrame(columns=HISTORY_HEADERS)
+    headers = [str(x).strip() for x in existing_open_rows[1]] if len(existing_open_rows) > 1 else []
+    if not headers or not {"Name", "Ticker", "Einstieg", "Einstiegsdatum", "Status"}.issubset(headers):
+        return pd.DataFrame(columns=HISTORY_HEADERS)
+
+    old_rows = []
+    for raw in existing_open_rows[2:]:
+        if not any(str(x).strip() for x in raw):
+            continue
+        item = {headers[i]: raw[i] if i < len(raw) else "" for i in range(len(headers))}
+        if str(item.get("Status", "")).strip().lower() in {"offen", "open"}:
+            old_rows.append(item)
+
+    current_keys = set()
+    for _, row in current_df.iterrows():
+        current_keys.add(_position_key(row))
+
+    snapshot_date = _parse_sheet_stand_date(existing_open_rows)
+    disappeared = []
+    for row in old_rows:
+        key = _position_key(row)
+        if key in current_keys:
+            continue
+        item = {c: row.get(c, "") for c in HISTORY_HEADERS}
+        item["Status"] = "Geschlossen"
+        item["Ausstiegsdatum"] = snapshot_date
+        # Keine Erfindung eines Ausstiegskurses: nur übernehmen, falls der letzte
+        # offene Snapshot bereits einen Kurswert enthielt.
+        item["Ausstiegskurs"] = row.get("Aktueller_Kurs", "")
+        disappeared.append(item)
+
+    return pd.DataFrame(disappeared, columns=HISTORY_HEADERS).fillna("")
+
+
 def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
     """Liest den Historien-Tab nur, wenn er tatsächlich vorhanden ist.
 
@@ -1322,6 +1395,11 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     # Bestehende Historie VOR jedem Überschreiben sichern.
     existing_history_rows = read_existing_history(sheets, spreadsheet_id)
+    existing_open_rows = read_existing_open_rows(sheets, spreadsheet_id)
+    disappeared_closed = extract_disappeared_open_positions(existing_open_rows, df)
+    if not disappeared_closed.empty:
+        print(f"HISTORIE: {len(disappeared_closed)} zuvor offene Position(en) seit letztem Lauf verschwunden und werden archiviert.")
+    closed_for_merge = pd.concat([closed_df, disappeared_closed], ignore_index=True) if not disappeared_closed.empty else closed_df
 
     # Falls das alte Sheet einen anders benannten ersten Tab hat, wird dessen
     # Name erst nach erfolgreicher Vorbereitung der neuen Tabs geändert.
@@ -1348,7 +1426,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
     }
 
-    merged_history = merge_closed_history(existing_history_rows, closed_df)
+    merged_history = merge_closed_history(existing_history_rows, closed_for_merge)
     hvalues=[[f"Geschlossene Positionen | historische Faktenbasis | Stand {now}"]+[""]*(len(HISTORY_HEADERS)-1),HISTORY_HEADERS]
     for _,r in merged_history.iterrows(): hvalues.append([r.get(c,"") for c in HISTORY_HEADERS])
     hwidths={c:140 for c in HISTORY_HEADERS}
