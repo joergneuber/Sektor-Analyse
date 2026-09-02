@@ -510,9 +510,19 @@ Die Kennzahlen sind mit exakt folgenden Bezeichnungen auszugeben:
 • DATENSTAND SICHTBARKEIT (NEU 19.08.2026): Der Datenstand muss für den Leser unmittelbar erkennbar sein. Übernimm eine vorhandene Zeile „Handelstag (Datenstand dieser Auswertung): …” wörtlich. Zusätzlich müssen die vorhandenen Datenstände der Regionen wörtlich hinter Europa, USA und Asien stehen. Bei anderen Datenpaketen mit eigenem Datenstand darf dieser ebenfalls kurz und eindeutig benannt werden, sofern er in der Quelldatei ausdrücklich vorhanden ist. Kein Datum und keine Uhrzeit aus Kurswerten ableiten oder selbst ergänzen. Ein „Erstellt am” ist ausschließlich der Laufzeitstempel des Skripts und darf niemals als Kurs-Datenstand ausgegeben werden.
 • AUSGABE-GLIEDERUNG (ERWEITERT 16.08.2026 - Makro-Szenario als Punkt 2):
 Die Abschnittsnummern DIESER ANWEISUNG (z. B. „Abschnitt 5 =
-Trendwende”, „Abschnitt 7 = Offene Positionen”) sind rein INTERNE
+Trendwende”, „Abschnitt 9 = Offene Positionen”) sind rein INTERNE
 Referenzen zum Nachschlagen. Nummeriere die Überschriften der fertigen
-Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken. Die verbindliche Ausgabereihenfolge ist ausschließlich die am Ende dieser Anweisung unter „VERBINDLICHER AUSGABE-STRUKTUR-OVERRIDE” festgelegte Struktur.
+Auswertung IMMER FORTLAUFEND ab 1 ohne Lücken. Die verbindliche
+Ausgabereihenfolge lautet: 1. Marktumfeld & Globale Risikolage,
+2. Makro-Zukunftsszenario, 3. Trendfolge-Setups, 4. Trendwende-Setups,
+5. Hebeltrader-Setups, 6. Short-Setups, 7. Edelmetalle-Setups,
+ggf. 8. Langfrist-Bewertung, danach Offene Positionen und anschließend
+Geschlossene Positionen (letzte 10 Werktage). Falls die optionale
+Langfrist-Bewertung an einem Tag fehlt, rücken Offene und Geschlossene
+Positionen entsprechend auf 8 und 9 auf. „Methodik & Lesehilfe” bleibt
+der letzte, unnummerierte Nachschlageabschnitt. Das Makro-Szenario ist
+damit AUSDRÜCKLICH Punkt 2 der fertigen Auswertung und steht unmittelbar
+nach dem Marktumfeld, nicht am Ende der Auswertung.
 • GESCHLOSSENE POSITIONEN (ERWEITERT 29.07.2026): Der Abschnitt heißt
 jetzt „Geschlossene Positionen (letzte 10 Werktage)” und enthält
 ZWEI Arten von Abgängen - automatisch gestoppte UND manuell
@@ -1577,7 +1587,7 @@ validen Edelmetalle-Setups gefunden” – kein Fehler.
 werden: Abschnitt einfach weglassen, keine Rückfrage, keine
 Ablehnung deswegen.
 
-7. OFFENE POSITIONEN
+9. Offene Positionen
 TECHNISCHE CHECK-DATENQUELLE (VERBINDLICH): Für die offenen Positionen ist ab sofort ausschließlich die Datei „Offene Positionen+Check.csv“ die maßgebliche Quelle. Sie enthält die bereits aufbereiteten Positionsinformationen plus die zustandsabhängige technische Analyse. Die technischen Felder sind wörtlich zu übernehmen und nicht aus anderen Kursdaten-Dateien neu zu berechnen. Dazu gehören insbesondere Technischer_Zustand, Trendrichtung, Technische_Lage, Support_1/2, Widerstand_1/2 plus Widerstand_1_Label/Widerstand_2_Label, Breakout_Status, A-B-C_Status, Fibonacci_Status/Ziel_1/2/3, Trendkanal_Obergrenze, Measured_Move_Ziel, Formation, Round_Number_Zone, Uebergeordneter_Widerstand plus Uebergeordneter_Widerstand_Label, Ueberdehnung, Relative_Staerke_Sektor, Konfluenz, Retest_Support, Technische_Zielzone, Datenqualitaet und Analysehinweis. Eine alte „Offene_Positionen.csv“ darf für diesen Abschnitt nicht als konkurrierende technische Quelle verwendet werden. Sie darf ausschließlich als Backend-Fallback für Positionsfelder dienen, die bewusst nicht Teil der festgelegten Check-Struktur sind (z. B. Stop, TP1, TP2, Richtung, Ideen_Quelle, Einstiegsdatum).
 
 Das Briefing enthält einen zusätzlichen Abschnitt „OFFENE POSITIONEN
@@ -1806,7 +1816,8 @@ hinterlegte eigene Knock-Out-Schwelle.
 sich um einen direkten Aktienkauf – dann gilt nur die normale
 Performance-Zeile, kein Zusatzhinweis nötig.
 
-7.4 Geschlossene Positionen (letzte 3 Tage)
+10. Gestoppte Positionen (letzte 10 Werktage) – letzter Abschnitt der
+Auswertung
 
 Das Briefing kennzeichnet innerhalb der offenen Positionen diejenigen,
 deren Stop-Loss innerhalb der letzten 10 Werktage erreicht wurde
@@ -1978,23 +1989,28 @@ klar gekennzeichnete deterministische Berechnung zurueckfuehrbar sein.
 Wenn eine Quelle fehlt, schreibe „NICHT VERFUEGBAR“ statt einen Ersatzwert
 zu bilden.
 
-VERBINDLICHER AUSGABE-STRUKTUR-OVERRIDE (NEU – HÖCHSTE AUSGABEREGEL)
+# AUSGABESTRUKTUR-OVERRIDE – VERBINDLICH FÜR DIE AUSWERTUNG.TXT
 
-Die folgenden Regeln ersetzen für die FERTIGE AUSGABE alle älteren Angaben dieser Master-Anweisung zur Kapitelreihenfolge, Platzierung und sichtbaren Darstellung. Alle fachlichen, technischen und regelbasierten Inhalte bleiben unverändert. Dieser Override ändert ausschließlich die Ausgabestruktur.
+Die nachfolgende Struktur ersetzt AUSSCHLIESSLICH die bisherige Reihenfolge und
+Nummerierung der AUSGABE. Alle vorherigen fachlichen, analytischen, Trading-,
+Filter-, CRV-, Daten- und Quellenregeln bleiben unverändert gültig.
 
-ENDGÜLTIGE AUSGABESTRUKTUR
+ENDGÜLTIGE AUSGABESTRUKTUR:
 
 1. DAS WICHTIGSTE AUF EINEN BLICK
-Nur kurze Zusammenfassung der wichtigsten Fakten. KEINE Watchlist und keine Watchlist-Unterpunkte in Abschnitt 1. Keine verworfenen Setups.
 
 2. MAKRO & MARKT
-Kompakte Marktinformation und Makro-Lage. Keine Wiederholung der vollständigen Zukunftsperspektive.
 
 3. SYSTEMPERFORMANCE & BENCHMARK
-Systemperformance und Vergleich mit dem MSCI World aus den vorhandenen Daten. Keine neuen Kennzahlen erfinden.
 
 4. DATEN- & SZENARIOSTATUS
-Die folgenden drei Zeilen müssen, sofern im Makro_Briefing vorhanden, wörtlich aus dieser Datei übernommen werden: MAKRO-SZENARIO-GATE, DATENQUALITAET und SEKUNDAERE DATENLUECKEN. Keine Interpretation, Umbenennung, Kürzung oder eigene Bewertung dieser drei Zeilen.
+
+In diesem Abschnitt die autoritativen Statuszeilen aus Makro_Briefing.txt
+wortgetreu übernehmen:
+MAKRO-SZENARIO-GATE=...
+MAKRO-DATENQUALITAET=...
+SEKUNDAERE_DATENLUECKEN=...
+Keine Interpretation, Umformulierung oder eigene Bewertung dieser drei Werte.
 
 5. MARKTPERSPEKTIVE
 5.1 Kurzfristig
@@ -2004,54 +2020,56 @@ Die folgenden drei Zeilen müssen, sofern im Makro_Briefing vorhanden, wörtlich
 5.5 Chancen & Risiken
 
 6. TRADING-IDEEN & SETUPS
-6.1 Perspektivische Trade-Ideen
-6.2 Trendfolge
-6.3 Trendwende
-6.4 Langfrist
-6.5 HEBELTRADER
-6.6 Short
-6.7 Edelmetalle
-6.8 Externe Quellen / weitere Ansätze
-
-Unter 6.2 bis 6.7 werden ausschließlich valide Setups ausgegeben. Verworfenen Kandidaten, Filter-Engstellen, Beinahe-Kandidaten und interne Ablehnungsgründe werden dort nicht als Setup-Listen ausgegeben. Sie dürfen nicht als neue Trading-Ideen dargestellt werden.
-
 6.1 PERSPEKTIVISCHE TRADE-IDEEN
-Diese Ideen sind strategische Perspektiven aus den vorhandenen Daten und KEINE bestätigten Setups. Sie bleiben ausdrücklich von den regelbasierten Setup-Filtern getrennt.
-
+6.2 TRENDFOLGE
+6.3 TRENDWENDE
+6.4 LANGFRIST
 6.5 HEBELTRADER
-HEBELTRADER bleibt ein eigener Bereich. Die bestehende HEBELTRADER-Logik und deren bestehende CRV-Regel bleiben unverändert.
-
+6.5.1 VALIDE HEBELTRADER-SETUPS
+Nur valide HEBELTRADER-Setups ausgeben. Verworfene Kandidaten, Filter-
+Engstellen und Nicht-Setups gehören nicht in diesen Unterpunkt.
+6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste
+Grundlage ist ausschließlich die bereitgestellte einzel_check_beobachtung.json.
+Übernimm alle darin aktuell enthaltenen Kandidaten mit Unternehmensname, Ticker,
+Status und letztem Check; diese Beobachtungsliste ist von den validen Setups
+getrennt und darf nicht als Setup dargestellt werden. Die vollständige Liste der
+aktuellen Kandidaten ist aus der JSON zu übernehmen; keine Auswahl oder Kürzung
+auf 2–5 Titel. Wenn die JSON keine Kandidaten enthält, den Unterpunkt mit dem
+entsprechenden Leerhinweis ausgeben.
+6.6 SHORT
 6.7 EDELMETALLE
-Die relevanten Informationen aus Edelmetalle_Briefing werden ausführlicher dargestellt, insbesondere die vorhandenen Marktinformationen zu Gold, Silber, Platin und Palladium. Die Ausgabe verworfener Kandidaten oder interner Filtergründe entfällt. Valide Edelmetall-Setups werden separat und unverändert aus der bestehenden Datenbasis dargestellt.
-
 6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
-Vorhandene externe Quellen bleiben sichtbar und werden nicht mit den technischen Setups vermischt. Externe Quellen dürfen keine technischen Werte, CRV-Werte, Filter oder Setup-Entscheidungen verändern.
+
+Nur valide konkrete Setups in den Setup-Unterpunkten ausgeben. Verworfene
+Kandidaten, Filter-Engstellen und Nicht-Setups nicht als Trading-Setups
+darstellen. Die zugrunde liegenden Scanner- und Filterregeln werden dadurch
+NICHT verändert.
+
+6.7 EDELMETALLE darf die relevanten Informationen aus dem vollständigen
+Edelmetalle_Briefing nutzen. Interne Funnel-/Ablehnungsstatistiken sind keine
+Trading-Setups und werden nicht als solche ausgegeben.
 
 7. OFFENE POSITIONEN
 7.1 Portfolio-Übersicht
 7.2 Handlungsbedarf
 7.3 Einzelpositionen
-7.4 Geschlossene Positionen – letzte 3 Tage
 
-Die bestehende offene-Positionen-Reparaturlogik bleibt unverändert. Ausschließlich die Kapitelreferenz wird von 8 auf 7 angepasst. Keine neue Reparaturlogik.
+Unter jeder einzelnen offenen Position unmittelbar:
+KI-Positionsfazit: maximal 2 Sätze.
+Das Fazit darf nur die bereitgestellten Daten und deren aktuelle Lage bewerten.
 
-Direkt unter jeder einzelnen offenen Position folgt ein „KI-Positionsfazit” mit maximal 2 Sätzen. Es beurteilt die Position anhand der bereits vorhandenen Daten und verwendet ausschließlich die Entscheidungskategorien KAUFEN, AUFSTOCKEN, HALTEN, REDUZIEREN oder VERKAUFEN. Keine neuen technischen Werte berechnen oder Stop/TP-Werte verändern.
-
-Geschlossene Positionen werden ausschließlich für die letzten 3 Tage ausgegeben. Wenn keine passende geschlossene Position vorhanden ist, entfällt 7.4 vollständig.
+7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE
+Die autoritative Faktenbasis für diesen Unterpunkt ist ausschließlich Tab 2
+„Geschlossene Positionen“ der Datei „Offene Positionen+Check.xlsx“. Nur
+geschlossene Positionen mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage
+bezogen auf den Auswertungstag ausgeben. Wenn keine vorhanden sind, den
+Unterpunkt vollständig weglassen. Keine geschlossenen Positionen aus anderen
+Dateien rekonstruieren, ergänzen oder erfinden.
 
 8. AUSBLICK & KEY EVENTS
-Nur relevante zukünftige Termine/Ereignisse aus dem vorhandenen Datenbestand.
 
 9. METHODIK & DATENHINWEISE
-Methodik, Glossar, Reichweiten-Hinweis und sonstige methodische Hinweise am Ende.
 
-WICHTIG: Die frühere Watchlist-Darstellung aus Abschnitt 1 wird für die fertige Ausgabe nicht mehr verwendet. Eine Watchlist darf nicht als eigener sichtbarer Block in Abschnitt 1 erscheinen.
-WICHTIG: „PERSPEKTIVISCHE TRADE-IDEEN” gehört ausschließlich unter 6.1.
-WICHTIG: „OFFENE POSITIONEN” gehört ausschließlich unter 7.
-WICHTIG – ENDGÜLTIGE DARSTELLUNGSREGELN, ERSETZEN ALLE ÄLTEREN WATCHLIST-REGELN FÜR DIE FERTIGE AUSGABE: In Abschnitt 1 dürfen weder Watchlist, Risiko-Watch noch Beinahe-Kandidaten ausgegeben werden. Insbesondere dürfen dort die Aussagen „Keine erreichten Stop-Losses in den letzten 3 Tagen“ und „Keine anstehenden Earnings-Termine bei offenen Positionen im Datenbestand innerhalb der kommenden 5 Tage“ nicht ausgegeben werden. Unter 6.2, 6.3 und 6.6 dürfen ausschließlich valide Setups stehen; Watchlists, Beinahe-Kandidaten, Divergenz-Watchlists und interne Ablehnungs-/Filterlisten werden dort vollständig weggelassen. Diese ältere Regel zur sichtbaren „Watchlist (manuelle Prüfung)“ wird für die fertige Ausgabe in diesen Abschnitten vollständig überschrieben.
-WICHTIG – HEBELTRADER-AUSNAHME: 6.5 ist ausdrücklich von der allgemeinen Watchlist-Ausschlussregel ausgenommen. 6.5.1 enthält nur valide HEBELTRADER-Setups. 6.5.2 enthält die vollständige Einzel-Check-Beobachtungsliste aus „einzel_check_beobachtung.json“ mit ALLEN dort vorhandenen Kandidaten/Einträgen; keine Kürzung auf 5 und keine Auswahl einzelner Titel. 6.5.2 ist eine reine Beobachtungsliste und keine Setup-Liste.
-WICHTIG – HEBELTRADER A-MELDUNGEN: Wenn „Einzel_Check_A_Meldungen(Datum).txt“ vorhanden und nicht leer ist, muss deren Inhalt unter 6.5.3 als „A-MELDUNGEN“ ausgegeben werden. Wenn die Datei fehlt oder leer ist, entfällt 6.5.3 vollständig. Keine A-Kandidaten aus anderen Dateien ableiten.
-WICHTIG – KI-POSITIONSFAZIT: Direkt unter jeder offenen Position genau ein „KI-Positionsfazit“ mit maximal 2 Sätzen. Bei mehr als 2 Sätzen ist die Antwort strukturell ungültig und muss vor der finalen Ausgabe korrigiert werden.
-WICHTIG – EDELMETALLE: Unter 6.7 sind die vorhandenen Informationen aus Edelmetalle_Briefing ausführlich zu nutzen. Interne Filter-/Engstellen-Gründe und bloße „keine Kandidaten“-Leerhinweise gehören nicht in die fertige Ausgabe.
-WICHTIG – LANGFRIST: Wenn die wöchentliche „Langfrist_Bewertung(Datum).csv“ im Datenbestand vorhanden ist, muss sie für 6.4 verwendet werden. Ein „Kein Langfrist-Scan im heutigen Datenbestand vorhanden“ ist dann unzulässig. Außerhalb des vorhandenen Langfrist-Datensatzes darf nichts erfunden werden.
-WICHTIG: Die alte separate Darstellung „GESTOPPTE POSITIONEN (letzte 10 Werktage)” wird nicht mehr als eigener Hauptabschnitt ausgegeben; geschlossene Positionen gehören unter 7.4 und umfassen nur die letzten 3 Tage.
+WICHTIG: Diese Anweisung ist ausschließlich eine AUSGABEVORGABE. Sie darf
+keine bestehende Analyse-, Scanner-, Filter-, CRV-, Positions-, Daten- oder
+Berechnungslogik verändern. Keine Watchlist unter Punkt 1.
