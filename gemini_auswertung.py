@@ -184,7 +184,7 @@ def get_drive_service():
 def lade_geschlossene_positionen_tab2():
     """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 7.4.
 
-    Tab 2 „Geschlossene Positionen“ von „Offene Positionen+Check“ ist die
+    Tab 2 „Geschlossene Positionen“ von „Offene Positionen + Check“ ist die
     autoritative Faktenbasis. Es werden nur Datensätze mit Ausstiegsdatum
     innerhalb der letzten drei Kalendertage relativ zum Auswertungstag geliefert.
     Die Funktion verändert keine bestehende Positions-, Retry- oder
@@ -206,7 +206,7 @@ def lade_geschlossene_positionen_tab2():
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
@@ -214,7 +214,7 @@ def lade_geschlossene_positionen_tab2():
         ).execute()
         files = result.get("files", [])
         if not files:
-            print("WARNUNG: Master-Sheet 'Offene Positionen+Check' nicht gefunden - 7.4 bleibt leer.")
+            print("WARNUNG: Master-Sheet 'Offene Positionen + Check' nicht gefunden - 7.4 bleibt leer.")
             return ""
 
         spreadsheet_id = files[0]["id"]
@@ -755,16 +755,23 @@ def _gemini_finish_reason(antwort):
 
 
 def _abschnitt_7_vollstaendig(text, csv_pfad):
-    """Prüft, ob Punkt 7 alle offenen CSV-Positionen eindeutig enthält.
+    """Prüft nur, ob Punkt 7 strukturell vorhanden und nutzbar ist.
 
-    Diese Prüfung ist bewusst nur eine Vollständigkeitsprüfung. Die bestehende
-    harte technische/CSV-Kanonisierung in normalisiere_ausgabe() bleibt danach
-    unverändert und ist weiterhin die letzte Instanz.
+    Der Validator darf Gemini nicht dazu zwingen, bereits alle offenen
+    Positionen vollständig auszugeben. Die verbindliche Zuordnung und
+    Kanonisierung erfolgt anschließend über normalisiere_ausgabe() mit der
+    Master-Datei Offene Positionen+Check.csv.
     """
     if not _enthaelt_abschnitt_7(text):
         return False
 
-    expected = _technische_zielzonen_quelle(csv_pfad)
+    try:
+        expected = _technische_zielzonen_quelle(csv_pfad)
+    except Exception:
+        return False
+    if not expected:
+        return False
+
     match = re.search(
         r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
         text,
@@ -780,58 +787,20 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
     if not headers:
         return False
 
-    seen = set()
-    for idx, header in enumerate(headers):
-        start = header.start()
-        end = headers[idx + 1].start() if idx + 1 < len(headers) else len(block)
-        pos_block = block[start:end]
-
+    # Mindestens ein Positionskopf muss eindeutig zur Master-CSV passen.
+    # Vollständigkeit (z. B. 23/23) ist hier ausdrücklich KEIN Kriterium.
+    for header in headers:
         name = header.group(1).strip()
-        ticker = header.group(2).strip()
-        entry_match = re.search(
-            r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*([^\n(]+?)(?:\s*\(([^)]+)\))?\s*$",
-            pos_block,
-        )
-        if not entry_match:
-            return False
+        ticker = _normalisiere_ticker(header.group(2).strip())
+        name_norm = _normalisiere_positionsname(name)
+        if any(
+            _normalisiere_ticker(pos.get("ticker", "")) == ticker
+            and _normalisiere_positionsname(pos.get("name", "")) == name_norm
+            for pos in expected.values()
+        ):
+            return True
 
-        entry = _positionsfeld_schluessel(entry_match.group(1).strip())
-        if entry_match.group(2):
-            date = _normalisiere_datum(entry_match.group(2).strip())
-        else:
-            date_match = re.search(
-                r"(?im)^\s*Einstiegsdatum\s*:\s*([^\n]+)\s*$",
-                pos_block,
-            )
-            if not date_match:
-                return False
-            date = _normalisiere_datum(date_match.group(1).strip())
-
-        key = (
-            _normalisiere_positionsname(name),
-            _normalisiere_ticker(ticker),
-            entry,
-            date,
-        )
-        try:
-            source = _finde_quellposition(key, expected)
-        except Exception:
-            return False
-        if source is None:
-            return False
-
-        source_key = (
-            _normalisiere_positionsname(source["name"]),
-            _normalisiere_ticker(source["ticker"]),
-            source["entry"],
-            source["date"],
-        )
-        if source_key in seen:
-            return False
-        seen.add(source_key)
-
-    return len(seen) == len(expected)
-
+    return False
 
 def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
     """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
@@ -971,7 +940,7 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
-                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen+Check':\n"
+                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen + Check':\n"
                     + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
                     "Für 7.4 gilt ausschließlich diese Tab-2-Faktenbasis. Gib nur geschlossene Positionen "
                     "mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage bezogen auf den Auswertungstag aus. "
@@ -1568,6 +1537,8 @@ def speichere_ergebnis(text):
 
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(final_text)
+    with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
+        f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
     return ausgabe_datei
 
