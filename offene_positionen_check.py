@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Offene Positionen + Check
+Offene Positionen+Check
 
 Eigenstaendiger technischer Check fuer AUSSCHLIESSLICH offene Positionen.
 Geschlossene Positionen werden erst nach erfolgreicher Historien-/Google-Uebergabe aus Offene_Positionen.csv entfernt.
@@ -1022,7 +1022,7 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
         closed_df = pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
 
     results = []
-    print(f"OFFENE POSITIONEN + CHECK: {len(open_df)} offene Positionen gefunden.")
+    print(f"OFFENE POSITIONEN+CHECK: {len(open_df)} offene Positionen gefunden.")
     print(
         f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen "
         f"(Initialbestand={len(initial_closed_df)}, aktuell={len(current_closed_df)})."
@@ -1325,11 +1325,11 @@ def read_existing_open_rows(sheets, spreadsheet_id: str) -> list[list]:
             fields="sheets.properties",
         ).execute().get("sheets", [])
         titles = {str(s.get("properties", {}).get("title", "")).strip() for s in existing}
-        if "Offene Positionen + Check" not in titles:
+        if "Offene Positionen+Check" not in titles:
             return []
         response = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range="'Offene Positionen + Check'!A:AZ",
+            range="'Offene Positionen+Check'!A:AZ",
         ).execute()
         return response.get("values", [])
     except Exception as exc:
@@ -1446,11 +1446,11 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     # Falls das alte Sheet einen anders benannten ersten Tab hat, wird dessen
     # Name erst nach erfolgreicher Vorbereitung der neuen Tabs geändert.
     old_main_title = None
-    if "Offene Positionen + Check" not in existing_titles and existing:
+    if "Offene Positionen+Check" not in existing_titles and existing:
         old_main_title = existing[0]["properties"]["title"]
 
     now=dt.datetime.now().strftime("%d.%m.%Y %H:%M")
-    values=[[f"Offene Positionen + Check | Stand {now}"]+[""]*(len(HEADERS)-1),HEADERS]
+    values=[[f"Offene Positionen+Check | Stand {now}"]+[""]*(len(HEADERS)-1),HEADERS]
     for _,r in df.iterrows(): values.append([r.get(c,"") for c in HEADERS])
     widths = {
         "Ticker": 95, "Name": 240, "Steuerungsart": 125, "Sektor": 150,
@@ -1497,7 +1497,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # Beide neuen Tabs sind vollständig beschrieben und formatiert. Erst jetzt
         # werden sie gegen die produktiven Tabs getauscht.
         targets = {
-            temp_open: "Offene Positionen + Check",
+            temp_open: "Offene Positionen+Check",
             temp_closed: "Geschlossene Positionen",
         }
         # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
