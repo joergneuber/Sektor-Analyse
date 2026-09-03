@@ -206,7 +206,7 @@ def lade_geschlossene_positionen_tab2():
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
@@ -214,7 +214,7 @@ def lade_geschlossene_positionen_tab2():
         ).execute()
         files = result.get("files", [])
         if not files:
-            print("WARNUNG: Master-Sheet 'Offene Positionen + Check' nicht gefunden - 7.4 bleibt leer.")
+            print("WARNUNG: Master-Sheet 'Offene Positionen+Check' nicht gefunden - 7.4 bleibt leer.")
             return ""
 
         spreadsheet_id = files[0]["id"]
@@ -235,13 +235,13 @@ def lade_geschlossene_positionen_tab2():
             value = str(value or "").strip()
             for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
                 try:
-                    return datetime.datetime.strptime(value, fmt).date()
+                    return dt.datetime.strptime(value, fmt).date()
                 except ValueError:
                     pass
             return None
 
-        today = datetime.date.today()
-        start = today - datetime.timedelta(days=2)
+        today = dt.date.today()
+        start = today - dt.timedelta(days=2)
         selected = []
         for row in rows:
             exit_date = parse_date(row.get("Ausstiegsdatum"))
@@ -971,9 +971,14 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
-                    "7.4 GESCHLOSSENE POSITIONEN wird NICHT von Gemini erzeugt. Die persistente Tab-2-Historie "
-                    "wird nach der Gemini-Ausgabe deterministisch als separater Unterabschnitt 7.4 eingesetzt. "
-                    "Gemini darf 7.4 weder erzeugen noch aus anderen Quellen rekonstruieren.\n"
+                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen + Check':\n"
+                    + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
+                    "Für 7.4 gilt ausschließlich diese Tab-2-Faktenbasis. Gib nur geschlossene Positionen "
+                    "mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage bezogen auf den Auswertungstag aus. "
+                    "Wenn die Faktenbasis leer ist, lasse 7.4 vollständig weg. Rekonstruiere, ergänze, schätze "
+                    "oder erfinde keine geschlossenen Positionen aus anderen Dateien oder aus Modellwissen. "
+                    "Übernimm die Faktenfelder aus Tab 2 unverändert. 7.4 ist von der offenen Positionsprüfung "
+                    "und deren Reparaturmechanik getrennt.\n"
                     "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
@@ -1121,7 +1126,7 @@ def gemini_auswertung_starten():
                     ],
                     config=types.GenerateContentConfig(
                         system_instruction=anweisung,
-                        ),
+                    ),
                 )
                 reparatur_text = reparatur_antwort.text or ""
                 print(
@@ -1241,35 +1246,6 @@ def gemini_auswertung_starten():
     print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
     print(f"Letzte Antwort/Fehler:\n{letzte_antwort}")
     sys.exit(1)
-
-
-def _fuege_geschlossene_positionen_7_4_ein(text, block):
-    """Setzt die autoritative Tab-2-Historie erst NACH der Gemini-Ausgabe ein.
-
-    7.4 ist damit vollständig von der 7.3-Gemini-Vollständigkeitsprüfung
-    und vom Punkt-7-Reparaturpfad getrennt. Ein leerer 3-Tage-Block wird
-    bewusst nicht ausgegeben.
-    """
-    if not text or not block or not str(block).strip():
-        return text
-
-    section = "7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE"
-    # Nicht doppelt einsetzen.
-    if re.search(r"(?im)^\s*7\.4\s+GESCHLOSSENE POSITIONEN", text):
-        return text
-
-    payload = section + "\n\n" + str(block).strip() + "\n"
-    # 7.4 muss vor dem nächsten Hauptabschnitt stehen.
-    match = re.search(r"(?im)^\s*8\.\s+", text)
-    if match:
-        return text[:match.start()].rstrip() + "\n\n" + payload + "\n" + text[match.start():].lstrip()
-
-    # Sicherheits-Fallback: falls Abschnitt 8 fehlt, vor Abschnitt 9 einsetzen.
-    match = re.search(r"(?im)^\s*9\.\s+", text)
-    if match:
-        return text[:match.start()].rstrip() + "\n\n" + payload + "\n" + text[match.start():].lstrip()
-
-    return text.rstrip() + "\n\n" + payload
 
 
 def normalisiere_ausgabe(text, zielzonen=None):
@@ -1568,11 +1544,6 @@ def speichere_ergebnis(text):
         text,
         zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
     )
-    # 7.4 wird erst nach der offenen-Positions-Kanonisierung eingesetzt.
-    # Dadurch kann Tab 2 niemals die 7.3-Vollständigkeitsprüfung oder deren
-    # Reparaturmechanik beeinflussen.
-    geschlossene_7_4 = lade_geschlossene_positionen_tab2()
-    text = _fuege_geschlossene_positionen_7_4_ein(text, geschlossene_7_4)
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
