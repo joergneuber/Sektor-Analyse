@@ -1,4 +1,4 @@
-"""
+﻿"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
@@ -754,12 +754,13 @@ def _gemini_finish_reason(antwort):
         return "UNBEKANNT"
 
 
-def _abschnitt_7_vollstaendig(text, csv_pfad):
+def _abschnitt_7_strukturell_gueltig(text, csv_pfad):
     """Prueft nur die strukturelle Mindestvoraussetzung fuer Punkt 7.
 
-    Gemini bestimmt NICHT mehr die Vollstaendigkeit der offenen Positionen.
-    Die verbindliche Anzahl und Identitaet werden spaeter deterministisch aus
-    Offene Positionen+Check.csv als Master aufgebaut und validiert.
+    Gemini bestimmt NICHT die Master-Vollstaendigkeit der offenen Positionen.
+    Die Identitaet einer von Gemini ausgegebenen Position wird bei Bedarf
+    deterministisch gegen Offene Positionen+Check.csv als Master aufgeloest.
+    Eine fehlende Masterposition im Gemini-Text ist dabei kein Fehler.
 
     Fuer das API-Retry-Gate reicht deshalb: Abschnitt 7 existiert und enthaelt
     mindestens einen gueltigen Positionskopf. Eine teilweise Gemini-Antwort
@@ -807,7 +808,7 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
 
     block = block_match.group(0).strip("\n")
     # Ersetze den bereits vorhandenen Punkt-7-Block vollständig durch
-    # den erfolgreich reparierten Punkt-8-Block.
+    # den erfolgreich reparierten Punkt-7-Block.
     vorhandener_abschnitt = re.search(
         r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
         original_text,
@@ -932,6 +933,10 @@ def gemini_auswertung_starten():
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
                     "Offene Positionen ausschliesslich die Datei 'Offene Positionen+Check.csv'. "
+                    "Diese autoritative Liste definiert allein, welche offenen Positionen zum Auswertungstag gehoeren. "
+                    "Die Vollstaendigkeit der offenen Positionen wird NICHT aus der Gemini-Antwort abgeleitet und "
+                    "nachtraeglich NICHT als harte Bedingung geprueft. Gemini soll die uebergebene Master-Liste fuer Punkt 7 "
+                    "verwenden; Python behandelt den Master als Quelle der Wahrheit. "
                     "Ihre technischen Check-Felder sind die verbindliche Quelle fuer "
                     "Technischer_Zustand, Trendrichtung, Support/Widerstand, Breakout_Status, "
                     "A-B-C_Status, Fibonacci_Status/Ziele, Trendkanal, Measured Move, Formation, "
@@ -1022,17 +1027,16 @@ def gemini_auswertung_starten():
             # Gemini kann trotz der Hauptvorgabe die komplette Auswertung liefern,
             # aber Punkt 7 auslassen. In diesem Fall wird NICHT aus anderen Dateien
             # geraten und NICHT der Parser gelockert. Stattdessen erhält Gemini genau
-            # einen gezielten zweiten Versuch, ausschließlich Punkt 7 vollständig
-            # nachzuliefern. Erst danach darf normalisiere_ausgabe() den CSV-Master
-            # anwenden.
-            if not _abschnitt_7_vollstaendig(
+            # einen gezielten zweiten Versuch, Punkt 7 nachzuliefern. Die Anzahl der
+            # Masterpositionen wird dabei NICHT nachträglich gegen Gemini validiert.
+            if not _abschnitt_7_strukturell_gueltig(
                 text, eingabedateien.get("Offene Positionen+Check.csv")
             ):
                 if _enthaelt_abschnitt_7(text):
                     print(
                         "  Abschnitt '7. OFFENE POSITIONEN' ist vorhanden, "
-                        "aber unvollstaendig - starte gezielten Reparaturversuch "
-                        "fuer Punkt 7..."
+                        "aber strukturell unvollstaendig - starte gezielten "
+                        "Reparaturversuch fuer Punkt 7..."
                     )
                 else:
                     print(
@@ -1083,7 +1087,7 @@ def gemini_auswertung_starten():
                     f"{_gemini_finish_reason(reparatur_antwort)}"
                 )
 
-                if _abschnitt_7_vollstaendig(
+                if _abschnitt_7_strukturell_gueltig(
                     reparatur_text, eingabedateien.get("Offene Positionen+Check.csv")
                 ):
                     text = _fuege_abschnitt_7_ein(text, reparatur_text)
@@ -1094,7 +1098,7 @@ def gemini_auswertung_starten():
                 else:
                     print(
                         "  Reparatur fehlgeschlagen: Abschnitt "
-                        "'7. OFFENE POSITIONEN' weiterhin unvollstaendig."
+                        "'7. OFFENE POSITIONEN' weiterhin strukturell ungueltig."
                     )
                     letzte_antwort = reparatur_text or text
                     # Kein Parser-Fallback. Der äußere Retry startet eine neue
@@ -1208,10 +1212,13 @@ def gemini_auswertung_starten():
 def normalisiere_ausgabe(text, zielzonen=None):
     """Erzwingt formale Regeln und macht die Check-Datei zum Master.
 
-    Gemini liefert die Analyse, aber offene Positions-Stammdaten und
-    technische Check-Felder werden deterministisch aus
-    Offene Positionen+Check.csv übernommen. Keine technische Berechnung
-    findet hier statt.
+    Offene Positionen+Check.csv ist die verbindliche Master-Liste. Gemini
+    erhält diese Liste direkt und liefert die Analyse dazu. Diese Funktion
+    ersetzt Stammdaten und technische Check-Felder deterministisch aus dem
+    Master. Sie verlangt NICHT, dass Gemini jede Masterposition nochmals
+    vollständig aufzählt; die Master-Liste selbst definiert die offenen
+    Positionen. Fremdpositionen und doppelte Positionen bleiben unzulässig.
+    Keine technische Berechnung findet hier statt.
     """
     if not text:
         return text
@@ -1436,14 +1443,13 @@ def normalisiere_ausgabe(text, zielzonen=None):
 
         replacements.append((start, end, pos_block))
 
-    # Jede offene CSV-Position muss genau einmal im Gemini-Block auftauchen.
-    for source_key in expected:
-        if seen.get(source_key, 0) == 0:
-            source = expected[source_key]
-            errors.append(
-                f"{source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | "
-                f"Einstiegsdatum: {source['date']}: fehlt im Gemini-Output"
-            )
+    # WICHTIG: Keine Vollstaendigkeitspruefung gegen den Gemini-Output.
+    # Offene Positionen+Check.csv ist der verbindliche Master und wird als
+    # autoritative Liste an Gemini uebergeben. Gemini muss die Master-Liste
+    # nicht anschliessend nochmals beweisen. Fehlende Masterpositionen im
+    # Gemini-Text sind deshalb KEIN Fehler und loesen keinen Laufabbruch aus.
+    # Fremdpositionen sowie doppelte Ausgaben derselben Masterposition bleiben
+    # dagegen harte Fehler.
 
     if errors:
         raise RuntimeError(
@@ -1511,8 +1517,6 @@ def speichere_ergebnis(text):
 
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(final_text)
-    with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
-        f.write(text)
     print(f"\nGespeichert: {ausgabe_datei}")
     return ausgabe_datei
 

@@ -213,6 +213,56 @@ def _adp_cache_save(df, source, status="REAL"):
     os.replace(tmp, ADP_CACHE_FILE)
 
 
+def _adp_fred_api_series(series_id):
+    """ADP-spezifischer Abruf der FRED-Serie ueber die offizielle FRED API."""
+    api_key = os.environ.get("FRED_API_KEY")
+    if not api_key:
+        print(f"WARNUNG: FRED_API_KEY fuer ADP {series_id} nicht verfuegbar.")
+        return pd.DataFrame(), FRED_URL.format(series_id)
+
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "sort_order": "asc",
+    }
+    try:
+        r = requests.get(
+            url,
+            params=params,
+            timeout=20,
+            headers=REQUEST_HEADERS,
+        )
+        r.raise_for_status()
+        payload = r.json()
+        observations = payload.get("observations", [])
+        if not observations:
+            return pd.DataFrame(), url
+
+        rows = []
+        for obs in observations:
+            value = _clean_num(obs.get("value"))
+            if value is None:
+                continue
+            rows.append({
+                "DATE": pd.to_datetime(obs.get("date")),
+                series_id: value,
+            })
+
+        if not rows:
+            return pd.DataFrame(), url
+
+        df = pd.DataFrame(rows).dropna(subset=["DATE"]).sort_values("DATE")
+        return df, url
+    except Exception as exc:
+        print(
+            f"WARNUNG: FRED-API-Abruf fuer ADP {series_id} nicht verfuegbar: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return pd.DataFrame(), url
+
+
 def adp_snapshot():
     """ADP private nonfarm payroll change via ADP's FRED series.
 
@@ -227,9 +277,9 @@ def adp_snapshot():
     name = "ADP Employment Change"
     cache = _adp_cache_load()
 
-    # Always try to refresh ADP first. This lets the cache advance immediately
-    # when a new monthly ADP observation has been published.
-    df, source = _fred_direct_csv_series(series_id)
+    # ADP uses the official FRED API directly. This is ADP-specific and does
+    # not alter the normal FRED retrieval path.
+    df, source = _adp_fred_api_series(series_id)
     if not df.empty and len(df) >= 2:
         _adp_cache_save(df, source, "CALCULATED")
         current = df.iloc[-1]
