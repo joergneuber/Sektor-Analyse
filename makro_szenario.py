@@ -55,6 +55,7 @@ FRED_SERIES = {
     "Reales BIP": "GDPC1",
     "Arbeitslosenquote": "UNRATE",
     "NFP / Nonfarm Payrolls": "PAYEMS",
+    "ADP Employment Change": "ADPMNUSNERSA",
     "JOLTS Job Openings": "JTSJOL",
     "Initial Jobless Claims": "ICSA",
     "Industrieproduktion": "INDPRO",
@@ -119,6 +120,7 @@ BLS_API_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 
 MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
+ADP_CACHE_FILE = MACRO_CACHE_DIR / "adp_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
 CACHE_VERSION = 6
@@ -166,6 +168,100 @@ def _cache_save(data):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, MACRO_CACHE_FILE)
+
+
+def _adp_cache_load():
+    if not ADP_CACHE_FILE.exists():
+        return {"version": 1, "series_id": "ADPMNUSNERSA"}
+    try:
+        with ADP_CACHE_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("version") != 1 or data.get("series_id") != "ADPMNUSNERSA":
+            return {"version": 1, "series_id": "ADPMNUSNERSA"}
+        return data
+    except Exception as exc:
+        print(f"WARNUNG-ADP-CACHE: Cache nicht lesbar ({exc}) - starte leer.")
+        return {"version": 1, "series_id": "ADPMNUSNERSA"}
+
+
+def _adp_cache_save(df, source, status="REAL"):
+    if df is None or df.empty or len(df) < 2:
+        return
+    clean = df[["DATE", "ADPMNUSNERSA"]].dropna().sort_values("DATE").tail(2).copy()
+    if len(clean) < 2:
+        return
+    current = clean.iloc[-1]
+    previous = clean.iloc[-2]
+    payload = {
+        "version": 1,
+        "series_id": "ADPMNUSNERSA",
+        "saved_at": time.time(),
+        "data_month": current["DATE"].date().isoformat(),
+        "previous_month": previous["DATE"].date().isoformat(),
+        "payrolls": _clean_num(current["ADPMNUSNERSA"]),
+        "previous_payrolls": _clean_num(previous["ADPMNUSNERSA"]),
+        "change": _clean_num(current["ADPMNUSNERSA"]) - _clean_num(previous["ADPMNUSNERSA"]),
+        "source": source,
+        "status": status,
+    }
+    ADP_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ADP_CACHE_FILE.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, ADP_CACHE_FILE)
+
+
+def adp_snapshot():
+    """ADP private nonfarm payroll change via ADP's FRED series.
+
+    The source series is a monthly seasonally adjusted payroll level.
+    The reported employment change is calculated deterministically as
+    current published month minus the previous published month.
+
+    ADP uses a dedicated cache because the normal FRED age rule must not
+    invalidate a valid last-published monthly ADP observation at month-end.
+    """
+    series_id = "ADPMNUSNERSA"
+    name = "ADP Employment Change"
+    cache = _adp_cache_load()
+
+    # Always try to refresh ADP first. This lets the cache advance immediately
+    # when a new monthly ADP observation has been published.
+    df, source = _fred_direct_csv_series(series_id)
+    if not df.empty and len(df) >= 2:
+        _adp_cache_save(df, source, "CALCULATED")
+        current = df.iloc[-1]
+        previous = df.iloc[-2]
+        change = _clean_num(current[series_id]) - _clean_num(previous[series_id])
+        return (
+            f"{name}: {change:+,.0f} | "
+            f"Datenstand={current['DATE'].strftime('%Y-%m-%d')} | "
+            f"Vormonat={previous['DATE'].strftime('%Y-%m-%d')} | "
+            f"Payrolls={current[series_id]:,.0f} | "
+            f"STATUS=CALCULATED | SOURCE={source}"
+        )
+
+    # Dedicated ADP cache has no generic age expiry: a monthly observation
+    # remains the last valid published ADP observation until a newer one is
+    # successfully obtained. The calendar month alone never invalidates it.
+    if cache.get("data_month") and cache.get("payrolls") is not None and cache.get("previous_payrolls") is not None:
+        change = cache.get("change")
+        status = "REAL_CACHED"
+        source = cache.get("source", FRED_URL.format(series_id))
+        return (
+            f"{name}: {change:+,.0f} | "
+            f"Datenstand={cache['data_month']} | "
+            f"Vormonat={cache.get('previous_month', 'UNBEKANNT')} | "
+            f"Payrolls={cache['payrolls']:,.0f} | "
+            f"STATUS={status} | SOURCE={source}"
+        )
+
+    return (
+        f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | "
+        f"SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
+    )
 
 
 def _cache_valid(data_date, max_age_days, today=None):
@@ -3477,7 +3573,7 @@ def data_quality_gate(lines):
     ]
     tier2_labels = [
         "PCE", "Core PCE", "Realzins 10Y TIPS", "US High Yield OAS", "Chicago Fed NFCI",
-        "VIX", "DXY", "Reales BIP-Wachstum", "M2", "JOLTS Job Openings",
+        "VIX", "DXY", "Reales BIP-Wachstum", "M2", "JOLTS Job Openings", "ADP Employment Change",
         "Industrieproduktion", "Consumer Sentiment", "Kapazitaetsauslastung",
         "SLOOS C&I Tightening", "US Investment Grade OAS", "LME Nickel", "LME Blei", "LME Zinn", "LME Kobalt",
         "ISM Manufacturing EXTENDED", "ISM Services EXTENDED",
@@ -3557,6 +3653,7 @@ def main():
         "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "JOLTS Job Openings",
         "Initial Jobless Claims", "Industrieproduktion", "Kapazitaetsauslastung", "Consumer Sentiment",
     ]))
+    lines.append(adp_snapshot())
     lines.append(bea_gdp_snapshot())
     lines.extend(ism_snapshot(today))
     lines.append(spglobal_services_snapshot(today))

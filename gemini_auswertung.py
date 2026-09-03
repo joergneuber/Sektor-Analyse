@@ -1133,44 +1133,38 @@ def gemini_auswertung_starten():
                 sys.exit(2)
 
             if kategorie in ("ueberlast", "netzwerk"):
-                # Bei serverseitiger Ueberlast (503) nicht alle fuenf Versuche
-                # am selben Modell verbrauchen: Nach drei erfolglosen 503-
-                # Versuchen wird auf das definierte Fallback-Modell gewechselt.
-                # Netzwerk-Abbrueche behalten die bisherige Retry-Logik.
-                if kategorie == "ueberlast":
-                    if (aktuelles_modell == MODELL and
-                            FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
-                        aktuelles_modell = FALLBACK_MODELL
-                        print(
-                            f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
-                            f"Wechsle fuer den naechsten Versuch von {MODELL} "
-                            f"auf Fallback-Modell {FALLBACK_MODELL}."
-                        )
-                        continue
+                # Bei serverseitiger Ueberlast (503) oder Netzwerk-Abbruch
+                # wird jedes konfigurierte Modell hoechstens EINMAL versucht.
+                # Danach wird kein bereits gescheitertes Modell erneut verbrannt.
+                naechstes_modell = None
+                if (aktuelles_modell == MODELL and
+                        FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
+                    naechstes_modell = FALLBACK_MODELL
+                elif (aktuelles_modell == FALLBACK_MODELL and
+                      DRITTER_FALLBACK_MODELL and
+                      DRITTER_FALLBACK_MODELL not in (MODELL, FALLBACK_MODELL)):
+                    naechstes_modell = DRITTER_FALLBACK_MODELL
 
-                    if (aktuelles_modell == FALLBACK_MODELL and
-                            DRITTER_FALLBACK_MODELL and
-                            DRITTER_FALLBACK_MODELL not in (MODELL, FALLBACK_MODELL)):
-                        aktuelles_modell = DRITTER_FALLBACK_MODELL
-                        print(
-                            f"  503-Overload nach Versuch {versuch}/{MAX_VERSUCHE}. "
-                            f"Wechsle fuer den naechsten Versuch von {FALLBACK_MODELL} "
-                            f"auf dritten Fallback {DRITTER_FALLBACK_MODELL}."
-                        )
-                        continue
+                if naechstes_modell:
+                    grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
+                    print(
+                        f"  {grund} nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                        f"Wechsle fuer den naechsten Versuch von {aktuelles_modell} "
+                        f"auf {naechstes_modell}."
+                    )
+                    aktuelles_modell = naechstes_modell
+                    continue
 
-                # Serverseitige Ueberlast/Netzwerkabbruch: lange, exponentiell
-                # steigende Pause (siehe UEBERLAST_WARTEZEITEN). Ein von Google
-                # mitgeliefertes retryDelay wird beachtet, aber nur wenn es
-                # LAENGER ist - kuerzer waere hier kontraproduktiv.
-                staffel_index = min(versuch - 1, len(UEBERLAST_WARTEZEITEN) - 1)
-                wartezeit = UEBERLAST_WARTEZEITEN[staffel_index]
-                if empfohlene_wartezeit is not None:
-                    wartezeit = max(wartezeit, empfohlene_wartezeit)
-                grund = ("Modell ueberlastet (503)" if kategorie == "ueberlast"
-                         else "Netzwerk-Abbruch")
-                print(f"  {grund} - warte {wartezeit:.0f}s (kurze Staffel, "
-                      f"Versuch {versuch}/{MAX_VERSUCHE})...")
+                # Kein weiteres Modell verfuegbar: nicht dasselbe Modell
+                # erneut versuchen. Der technische Fallback wird direkt
+                # ueber den bestehenden Ausgabeweg erzeugt.
+                print(
+                    f"  {('503-Overload' if kategorie == 'ueberlast' else 'Netzwerk-Abbruch')} "
+                    "auf allen konfigurierten Modellen - keine Wiederholung "
+                    "eines bereits fehlgeschlagenen Modells."
+                )
+                break
+
             else:
                 wartezeit = (empfohlene_wartezeit if empfohlene_wartezeit is not None
                              else WARTEZEIT_SEKUNDEN + versuch * 5)
