@@ -206,7 +206,7 @@ def lade_geschlossene_positionen_tab2():
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
@@ -214,7 +214,7 @@ def lade_geschlossene_positionen_tab2():
         ).execute()
         files = result.get("files", [])
         if not files:
-            print("WARNUNG: Master-Sheet 'Offene Positionen+Check' nicht gefunden - 7.4 bleibt leer.")
+            print("WARNUNG: Master-Sheet 'Offene Positionen + Check' nicht gefunden - 7.4 bleibt leer.")
             return ""
 
         spreadsheet_id = files[0]["id"]
@@ -235,13 +235,13 @@ def lade_geschlossene_positionen_tab2():
             value = str(value or "").strip()
             for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
                 try:
-                    return dt.datetime.strptime(value, fmt).date()
+                    return datetime.datetime.strptime(value, fmt).date()
                 except ValueError:
                     pass
             return None
 
-        today = dt.date.today()
-        start = today - dt.timedelta(days=2)
+        today = datetime.date.today()
+        start = today - datetime.timedelta(days=2)
         selected = []
         for row in rows:
             exit_date = parse_date(row.get("Ausstiegsdatum"))
