@@ -180,6 +180,96 @@ def get_drive_service():
         return None
 
 
+
+def lade_geschlossene_positionen_tab2():
+    """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 7.4.
+
+    Tab 2 „Geschlossene Positionen“ von „Offene Positionen + Check“ ist die
+    autoritative Faktenbasis. Es werden nur Datensätze mit Ausstiegsdatum
+    innerhalb der letzten drei Kalendertage relativ zum Auswertungstag geliefert.
+    Die Funktion verändert keine bestehende Positions-, Retry- oder
+    Gemini-Validierungslogik.
+    """
+    service = get_drive_service()
+    if service is None:
+        print("INFO: Kein Google-Drive-Zugriff - 7.4 wird nur ausgegeben, wenn keine Historie vorhanden ist.")
+        return ""
+
+    try:
+        # Der bestehende Drive-Service enthält die bereits authentifizierten
+        # Credentials. Damit wird keine neue Authentifizierungslogik eingeführt.
+        creds = getattr(getattr(service, "_http", None), "credentials", None)
+        if creds is None:
+            print("WARNUNG: Google-Credentials für Tab-2-Lesung nicht verfügbar.")
+            return ""
+
+        sheets = build("sheets", "v4", credentials=creds)
+
+        result = service.files().list(
+            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            spaces="drive",
+            fields="files(id,name,modifiedTime)",
+            orderBy="modifiedTime desc",
+            pageSize=10,
+        ).execute()
+        files = result.get("files", [])
+        if not files:
+            print("WARNUNG: Master-Sheet 'Offene Positionen + Check' nicht gefunden - 7.4 bleibt leer.")
+            return ""
+
+        spreadsheet_id = files[0]["id"]
+        values = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="'Geschlossene Positionen'!A:AA",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute().get("values", [])
+
+        if len(values) < 3:
+            print("INFO: Tab 2 'Geschlossene Positionen' enthält keine historischen Datensätze.")
+            return ""
+
+        headers = [str(x).strip() for x in values[1]]
+        rows = [dict(zip(headers, row + [""] * max(0, len(headers) - len(row)))) for row in values[2:]]
+
+        def parse_date(value):
+            value = str(value or "").strip()
+            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    return dt.datetime.strptime(value, fmt).date()
+                except ValueError:
+                    pass
+            return None
+
+        today = dt.date.today()
+        start = today - dt.timedelta(days=2)
+        selected = []
+        for row in rows:
+            exit_date = parse_date(row.get("Ausstiegsdatum"))
+            if exit_date is not None and start <= exit_date <= today:
+                selected.append(row)
+
+        if not selected:
+            print("HISTORIE 7.4: Keine geschlossene Position innerhalb der letzten 3 Kalendertage.")
+            return ""
+
+        # Nur Faktenfelder aus Tab 2; keine technische Neubewertung.
+        fields = [
+            "Ticker", "Name", "Einstiegsdatum", "Einstieg",
+            "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",
+            "Status", "Richtung", "Produkt_Typ", "Emittent", "Hebel",
+            "OS_Einstiegskurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+        ]
+        out = []
+        for row in selected:
+            out.append(" | ".join(f"{field}: {row.get(field, '')}" for field in fields if str(row.get(field, "")).strip()))
+        print(f"HISTORIE 7.4: {len(selected)} geschlossene Position(en) aus Tab 2 innerhalb des 3-Tage-Fensters.")
+        return "\n".join(out)
+
+    except Exception as exc:
+        print(f"WARNUNG: Tab 2 'Geschlossene Positionen' konnte für 7.4 nicht gelesen werden: {exc}")
+        return ""
+
+
 def lade_short_dateien_von_drive():
     """Sucht im Drive-Ordner nach den heutigen Short_Setups(...).csv und
     Short_Briefing(...).txt (vom separaten, frueheren Short-Scan-Workflow
@@ -767,7 +857,7 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
         )
 
     block = block_match.group(0).strip("\n")
-    # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
+    # Ersetze den bereits vorhandenen Punkt-7-Block vollständig durch
     # den erfolgreich reparierten Punkt-8-Block.
     vorhandener_abschnitt = re.search(
         r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
@@ -871,6 +961,7 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
+            geschlossene_7_4 = lade_geschlossene_positionen_tab2()
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
@@ -880,6 +971,14 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
+                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen + Check':\n"
+                    + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
+                    "Für 7.4 gilt ausschließlich diese Tab-2-Faktenbasis. Gib nur geschlossene Positionen "
+                    "mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage bezogen auf den Auswertungstag aus. "
+                    "Wenn die Faktenbasis leer ist, lasse 7.4 vollständig weg. Rekonstruiere, ergänze, schätze "
+                    "oder erfinde keine geschlossenen Positionen aus anderen Dateien oder aus Modellwissen. "
+                    "Übernimm die Faktenfelder aus Tab 2 unverändert. 7.4 ist von der offenen Positionsprüfung "
+                    "und deren Reparaturmechanik getrennt.\n"
                     "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
@@ -992,7 +1091,7 @@ def gemini_auswertung_starten():
                         "starte gezielten Reparaturversuch fuer Punkt 7..."
                     )
                 reparatur_prompt = (
-                    "REPARATURVERSUCH - NUR ABSCHNITT 8 NACHLIEFERN.\n"
+                    "REPARATURVERSUCH - NUR ABSCHNITT 7 NACHLIEFERN.\n"
                     "Deine vorherige Antwort enthielt den erforderlichen Abschnitt "
                     "'7. OFFENE POSITIONEN' nicht. Erstelle deshalb jetzt "
                     "AUSSCHLIESSLICH den vollständigen Abschnitt 7.\n\n"
@@ -1031,7 +1130,7 @@ def gemini_auswertung_starten():
                 )
                 reparatur_text = reparatur_antwort.text or ""
                 print(
-                    f"  Gemini finish_reason (Punkt-8-Reparatur): "
+                    f"  Gemini finish_reason (Punkt-7-Reparatur): "
                     f"{_gemini_finish_reason(reparatur_antwort)}"
                 )
 
