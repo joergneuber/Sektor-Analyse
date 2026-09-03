@@ -1579,7 +1579,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 )
 
             verify_header = [str(x).strip() for x in verify_rows[1]]
-            expected_header = [str(x).strip() for x in OPEN_HEADERS]
+            expected_header = [str(x).strip() for x in HEADERS]
             if verify_header != expected_header:
                 raise RuntimeError(
                     "Produktiv-Verifikation fehlgeschlagen: Header von Offene Positionen+Check stimmt nicht."
