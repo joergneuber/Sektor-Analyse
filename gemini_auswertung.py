@@ -206,7 +206,7 @@ def lade_geschlossene_positionen_tab2():
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
