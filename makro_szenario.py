@@ -670,7 +670,7 @@ def _fred_direct_csv_series(series_id):
     """Direkter FRED-CSV-Abruf als Fallback, getrennt vom normalen FRED-Endpunkt."""
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
-        r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
+        r = requests.get(url, timeout=20, headers=REQUEST_HEADERS)
         r.raise_for_status()
         df = pd.read_csv(StringIO(r.text))
         if "DATE" not in df.columns or series_id not in df.columns:
