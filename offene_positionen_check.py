@@ -1568,9 +1568,20 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # nochmals aus Google lesen und gegen den gerade geprüften Datenbestand prüfen.
         # Erst wenn beide produktiven Tabs verifiziert sind, darf das Drive-Backup gelöscht werden.
         try:
+            # Die Verifikations-Range wird aus der tatsächlichen Anzahl der
+            # produktiven Header-Spalten abgeleitet. Dadurch kann ein zusätzlicher
+            # Header niemals wegen einer zu kurzen A1-Range abgeschnitten werden.
+            def _column_letter(n: int) -> str:
+                result = ""
+                while n:
+                    n, remainder = divmod(n - 1, 26)
+                    result = chr(65 + remainder) + result
+                return result
+
+            open_last_col = _column_letter(len(HEADERS))
             verify_ss = sheets.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
-                range="Offene Positionen+Check!A1:AK",
+                range=f"Offene Positionen+Check!A1:{open_last_col}",
             ).execute()
             verify_rows = verify_ss.get("values", [])
             if len(verify_rows) < 2:
@@ -1603,9 +1614,10 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                     "Offene-Positionen-Tabs stimmt nicht mit dem geprüften Datenbestand überein."
                 )
 
+            hist_last_col = _column_letter(len(HISTORY_HEADERS))
             hist_ss = sheets.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
-                range="Geschlossene Positionen!A1:AK",
+                range=f"Geschlossene Positionen!A1:{hist_last_col}",
             ).execute()
             hist_rows = hist_ss.get("values", [])
             if len(hist_rows) < 2:
