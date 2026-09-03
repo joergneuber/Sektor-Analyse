@@ -1205,24 +1205,70 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
 
 
 def _cleanup_backups(sheets, spreadsheet_id: str):
-    """Bereinigt alte Backup-Tabs und das unbenutzte Standardblatt.
+    """Bereinigt verwaiste Sicherungs-/TMP-Tabs nach erfolgreichem Swap.
 
-    Diese Bereinigung läuft erst NACH erfolgreichem Produktiv-Swap. Das
-    Standardblatt "Tabellenblatt1" wird nur dann entfernt, wenn es exakt so
-    heißt; andere vorhandene Tabs bleiben unangetastet.
+    Diese Bereinigung darf nur NACH erfolgreichem Produktiv-Swap aufgerufen
+    werden. Dann werden ausschließlich technische Altlasten entfernt:
+    _BACKUP_..., __TMP_OFFEN_..., __TMP_GESCHLOSSEN_... sowie das unbenutzte
+    Standardblatt "Tabellenblatt1". Produktive Tabs bleiben unangetastet.
     """
     ss = sheets.spreadsheets().get(
         spreadsheetId=spreadsheet_id, fields="sheets.properties"
     ).execute()
     delete_ids = [
         s["properties"]["sheetId"] for s in ss["sheets"]
-        if str(s["properties"]["title"]).startswith("_BACKUP_")
-        or str(s["properties"]["title"]) == "Tabellenblatt1"
+        if (
+            str(s["properties"]["title"]).startswith("_BACKUP_")
+            or str(s["properties"]["title"]).startswith("__TMP_OFFEN_")
+            or str(s["properties"]["title"]).startswith("__TMP_GESCHLOSSEN_")
+            or str(s["properties"]["title"]) == "Tabellenblatt1"
+        )
     ]
     if not delete_ids:
         return
     requests = [{"deleteSheet": {"sheetId": sid}} for sid in delete_ids]
-    _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context="Backup-Cleanup")
+    _google_batch_update_with_retry(
+        sheets, spreadsheet_id, {"requests": requests}, context="Backup-/TMP-Cleanup"
+    )
+
+
+def _cleanup_drive_backups(drive):
+    """Löscht nach erfolgreichem Swap alle alten Drive-Backups dieses Sheets.
+
+    Die Funktion wird ausschließlich nach erfolgreichem Produktiv-Swap
+    aufgerufen. Bei einem vorherigen Fehler bleiben die Backups unangetastet
+    und stehen damit weiterhin als Notfallstand zur Verfügung.
+    """
+    q = (
+        f"'{FOLDER_ID}' in parents and trashed = false "
+        f"and name contains '{DRIVE_NAME} - Backup '"
+    )
+    page_token = None
+    backups = []
+    prefix = f"{DRIVE_NAME} - Backup "
+    while True:
+        response = drive.files().list(
+            q=q,
+            spaces="drive",
+            fields="nextPageToken, files(id,name)",
+            pageToken=page_token,
+            pageSize=100,
+        ).execute()
+        for item in response.get("files", []):
+            name = str(item.get("name", ""))
+            if name.startswith(prefix) and item.get("id"):
+                backups.append(item)
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    deleted = 0
+    for item in backups:
+        file_id = item["id"]
+        drive.files().delete(fileId=file_id).execute()
+        deleted += 1
+        print(f"DATENSCHUTZ: Drive-Backup gelöscht | {item.get('name', file_id)}")
+    print(f"DATENSCHUTZ: Drive-Backup-Cleanup abgeschlossen | gelöscht={deleted}")
 
 
 def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
@@ -1246,11 +1292,11 @@ def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
 
 
 def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
-    """Erstellt vor dem produktiven Austausch eine dauerhafte Drive-Kopie.
+    """Erstellt vor dem produktiven Austausch eine temporäre Drive-Sicherung.
 
-    Die Kopie wird NICHT automatisch gelöscht. Sie dient als zusätzlicher
-    Notfallstand, falls nach einem API-/Netzwerkfehler eine Wiederherstellung
-    nötig wird.
+    Die Sicherung bleibt bis zum erfolgreichen Swap bestehen. Danach wird sie
+    durch _cleanup_drive_backups() entfernt. Bei einem fehlgeschlagenen Swap
+    bleibt sie als Notfallstand erhalten.
     """
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     copied = drive.files().copy(
@@ -1486,7 +1532,8 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     backup_id = None
     try:
         # Wenn das Sheet bereits existiert, vor dem ersten produktiven Austausch
-        # eine separate Drive-Sicherung erstellen. Diese bleibt bewusst erhalten.
+        # eine temporäre Drive-Sicherung erstellen. Sie wird nur nach erfolgreichem
+        # Swap gelöscht; bei Fehler bleibt sie als Notfallstand erhalten.
         if existing:
             backup_id = _snapshot_google_sheet(drive, spreadsheet_id)
             print(f"DATENSCHUTZ: Backup des bisherigen Google Sheets erstellt | ID={backup_id}")
@@ -1503,12 +1550,98 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
         _swap_temp_tabs(sheets, spreadsheet_id, targets)
 
-        # Nur nach erfolgreichem Swap werden alte Backup-Tabs entfernt.
-        # Scheitert die Bereinigung, bleiben sie als zusätzliche Sicherheitskopie.
+        # Sicherheitsstufe 1: technische Altlasten im Google Sheet entfernen.
+        # Schlägt dieser Cleanup fehl, wird das Drive-Backup NICHT gelöscht.
         try:
             _cleanup_backups(sheets, spreadsheet_id)
         except Exception as cleanup_exc:
-            print(f"WARNUNG: Backup-Tabs konnten nicht bereinigt werden; sie bleiben absichtlich erhalten: {cleanup_exc}")
+            print(
+                "WARNUNG: Backup-/TMP-Tabs konnten nicht vollständig bereinigt werden; "
+                f"Drive-Backup bleibt als Notfallstand erhalten: {cleanup_exc}"
+            )
+            raise RuntimeError(
+                "Sicherheitsabbruch nach Produktiv-Swap: Tab-Cleanup fehlgeschlagen; "
+                "separates Drive-Backup bleibt erhalten."
+            ) from cleanup_exc
+
+        # Sicherheitsstufe 2: den tatsächlich produktiven Stand nach dem Swap
+        # nochmals aus Google lesen und gegen den gerade geprüften Datenbestand prüfen.
+        # Erst wenn beide produktiven Tabs verifiziert sind, darf das Drive-Backup gelöscht werden.
+        try:
+            verify_ss = sheets.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range="Offene Positionen+Check!A1:AK",
+            ).execute()
+            verify_rows = verify_ss.get("values", [])
+            if len(verify_rows) < 2:
+                raise RuntimeError(
+                    "Produktiv-Verifikation fehlgeschlagen: Offene Positionen+Check ist leer oder unvollständig."
+                )
+
+            verify_header = [str(x).strip() for x in verify_rows[1]]
+            expected_header = [str(x).strip() for x in OPEN_HEADERS]
+            if verify_header != expected_header:
+                raise RuntimeError(
+                    "Produktiv-Verifikation fehlgeschlagen: Header von Offene Positionen+Check stimmt nicht."
+                )
+
+            ticker_idx = expected_header.index("Ticker")
+            verify_data = verify_rows[2:]
+            expected_tickers = [
+                str(x).strip().upper()
+                for x in df["Ticker"].tolist()
+                if str(x).strip()
+            ]
+            actual_tickers = [
+                str(row[ticker_idx]).strip().upper()
+                for row in verify_data
+                if len(row) > ticker_idx and str(row[ticker_idx]).strip()
+            ]
+            if actual_tickers != expected_tickers:
+                raise RuntimeError(
+                    "Produktiv-Verifikation fehlgeschlagen: Tickerbestand des produktiven "
+                    "Offene-Positionen-Tabs stimmt nicht mit dem geprüften Datenbestand überein."
+                )
+
+            hist_ss = sheets.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range="Geschlossene Positionen!A1:AK",
+            ).execute()
+            hist_rows = hist_ss.get("values", [])
+            if len(hist_rows) < 2:
+                raise RuntimeError(
+                    "Produktiv-Verifikation fehlgeschlagen: Geschlossene Positionen ist leer oder unvollständig."
+                )
+            hist_header = [str(x).strip() for x in hist_rows[1]]
+            expected_hist_header = [str(x).strip() for x in HISTORY_HEADERS]
+            if hist_header != expected_hist_header:
+                raise RuntimeError(
+                    "Produktiv-Verifikation fehlgeschlagen: Header der Historie stimmt nicht."
+                )
+
+            print(
+                f"DATENSCHUTZ: Produktivstand verifiziert | offene={len(verify_data)} | "
+                f"historisch={max(0, len(hist_rows) - 2)}"
+            )
+        except Exception as verify_exc:
+            print(
+                "WARNUNG: Produktiv-Verifikation fehlgeschlagen; "
+                f"Drive-Backup bleibt als Notfallstand erhalten: {verify_exc}"
+            )
+            raise RuntimeError(
+                "Sicherheitsabbruch nach Produktiv-Swap: produktiver Stand konnte nicht "
+                "verifiziert werden; separates Drive-Backup bleibt erhalten."
+            ) from verify_exc
+
+        # Erst jetzt ist die Transaktion vollständig verifiziert.
+        if backup_id:
+            try:
+                _cleanup_drive_backups(drive)
+            except Exception as cleanup_exc:
+                print(
+                    "WARNUNG: Drive-Backups konnten nicht vollständig bereinigt werden; "
+                    f"Backup bleibt als Notfallstand erhalten: {cleanup_exc}"
+                )
 
         print(f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | historisch={len(merged_history)} | 2 produktive Tabs")
         return spreadsheet_id
