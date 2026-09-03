@@ -30,6 +30,7 @@ import math
 import os
 import re
 import ast
+import time
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -1074,6 +1075,32 @@ def google_credentials():
     except Exception as exc:
         raise RuntimeError(f"GDRIVE_TOKEN konnte nicht verwendet werden: {exc}") from exc
 
+def _google_batch_update_with_retry(sheets, spreadsheet_id: str, body: dict, context: str = "Google-Sheets batchUpdate", max_attempts: int = 4):
+    """Fuehrt batchUpdate mit begrenztem Retry nur fuer transiente 5xx-Fehler aus.
+
+    4xx-Fehler (z.B. fehlerhafte mergeCells-Anfragen) werden sofort weitergereicht.
+    Bei 503 wird mit exponentiellem Backoff erneut versucht; produktive Swap-Logik
+    und Dateninhalt bleiben unveraendert.
+    """
+    delays = (2, 5, 10)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return sheets.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body=body
+            ).execute()
+        except Exception as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status is None:
+                m = re.search(r"(?:HttpError|HTTP)\s*([45]\d\d)", str(exc))
+                status = int(m.group(1)) if m else None
+            if status not in (500, 502, 503, 504) or attempt >= max_attempts:
+                raise
+            delay = delays[min(attempt - 1, len(delays) - 1)]
+            print(f"GOOGLE-RETRY: {context} -> HTTP {status}, Versuch {attempt}/{max_attempts}; warte {delay}s.")
+            time.sleep(delay)
+    raise RuntimeError(f"{context}: unerwarteter Retry-Abbruch.")
+
+
 def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
                  widths: dict[str, int], freeze_rows: int = 2,
                  target_title: Optional[str] = None):
@@ -1092,10 +1119,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
 
     if actual_title not in props:
-        created = sheets.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": [{"addSheet": {"properties": {"title": title}}}]}
-        ).execute()
+        created = _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": [{"addSheet": {"properties": {"title": title}}}]}, context=f"AddSheet {title}")
         sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
     else:
         sheet_id = props[actual_title]["sheetId"]
@@ -1110,16 +1134,10 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
             # Kollision mit einem alten temporären Rest -> neuen eindeutigen Namen
             # erzeugen; der alte Rest bleibt unangetastet.
             write_title = f"{title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-            created = sheets.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={"requests": [{"addSheet": {"properties": {"title": write_title}}}]}
-            ).execute()
+            created = _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": [{"addSheet": {"properties": {"title": write_title}}}]}, context=f"AddSheet {write_title}")
             sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
         else:
-            created = sheets.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={"requests": [{"addSheet": {"properties": {"title": write_title}}}]}
-            ).execute()
+            created = _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": [{"addSheet": {"properties": {"title": write_title}}}]}, context=f"AddSheet {write_title}")
             sheet_id = created["replies"][0]["addSheet"]["properties"]["sheetId"]
 
     # Nur der temporäre Tab wird geleert; ein eventueller produktiver Tab bleibt
@@ -1145,7 +1163,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
         if col in NUMERIC_COLUMNS or col.endswith("%"):
             requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":"0.00"}}},"fields":"userEnteredFormat.numberFormat"}})
         requests.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":widths.get(col,120)},"fields":"pixelSize"}})
-    sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests":requests}).execute()
+    _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context=f"Format {write_title}")
     return sheet_id
 
 
@@ -1182,9 +1200,7 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
             "fields": "title"
         }})
 
-    sheets.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id, body={"requests": requests}
-    ).execute()
+    _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context="Produktiver Swap")
     return old_ids
 
 
@@ -1206,9 +1222,7 @@ def _cleanup_backups(sheets, spreadsheet_id: str):
     if not delete_ids:
         return
     requests = [{"deleteSheet": {"sheetId": sid}} for sid in delete_ids]
-    sheets.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id, body={"requests": requests}
-    ).execute()
+    _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context="Backup-Cleanup")
 
 
 def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
