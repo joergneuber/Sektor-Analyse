@@ -48,6 +48,8 @@ import csv
 import time
 import json
 import datetime
+import zipfile
+import xml.etree.ElementTree as ET
 
 from google import genai
 from google.genai import types
@@ -90,6 +92,7 @@ ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
 # Scanner-Ausgaben, von dort werden ggf. die Short-Dateien nachgeladen.
 DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
+MASTER_XLSX_FUER_7_4 = None
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -178,150 +181,6 @@ def get_drive_service():
     except Exception as e:
         print(f"WARNUNG: Drive-Verbindung fuer Short-Dateien fehlgeschlagen ({e}) - wird uebersprungen.")
         return None
-
-
-
-def lade_geschlossene_positionen_tab2():
-    """Liest die persistente Historie für Punkt 7.4.
-
-    Primäre Übergabe innerhalb desselben Workflows:
-        Tab 2 "Geschlossene Positionen" des Master-Sheets
-        -> "Geschlossene Positionen.csv"
-        -> diese Funktion -> 7.4
-
-    Die lokale CSV ist dabei kein neuer Datenbestand: sie wird im unmittelbar
-    vorhergehenden Positions-Check aus der zusammengeführten Tab-2-Historie
-    erzeugt. Damit benötigt Gemini für 7.4 keinen zweiten, fehleranfälligen
-    Google-Sheet-Suchlauf.
-
-    Fallback, falls die lokale Übergabe fehlt: lesender Zugriff auf den
-    produktiven Google-Sheet-Master und dort ausschließlich Tab 2.
-
-    Es werden nur Status Gestoppt/Verkauft und Ausstiegsdaten innerhalb der
-    letzten drei Kalendertage übernommen. Keine technische Neuberechnung.
-    """
-    fields = [
-        "Ticker", "Name", "Einstiegsdatum", "Einstieg",
-        "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",
-        "Status", "Richtung", "Produkt_Typ", "Emittent", "Hebel",
-        "OS_Einstiegskurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
-    ]
-    today = datetime.date.today()
-    start = today - datetime.timedelta(days=2)
-
-    def parse_date(value):
-        value = str(value or "").strip()
-        for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
-            try:
-                return datetime.datetime.strptime(value, fmt).date()
-            except ValueError:
-                pass
-        return None
-
-    def make_block(rows):
-        selected = []
-        for row in rows:
-            status = str(row.get("Status", "")).strip().lower()
-            if status not in {"gestoppt", "geschlossen", "verkauft", "manuell verkauft"}:
-                continue
-            exit_date = parse_date(row.get("Ausstiegsdatum"))
-            if exit_date is None or not (start <= exit_date <= today):
-                continue
-            selected.append(row)
-
-        if not selected:
-            return ""
-
-        out = []
-        for row in selected:
-            out.append(" | ".join(
-                f"{field}: {row.get(field, '')}"
-                for field in fields
-                if str(row.get(field, "")).strip()
-            ))
-        print(
-            f"HISTORIE 7.4: {len(selected)} geschlossene Position(en) "
-            "aus persistenter Tab-2-Historie innerhalb des 3-Tage-Fensters."
-        )
-        return "\n".join(out)
-
-    # 1. Bevorzugte Übergabe: Die unmittelbar vorher erzeugte CSV ist der
-    # lokale Export von Tab 2 des Master-Sheets. Dadurch ist die Datenquelle
-    # deterministisch und unabhängig von einer erneuten Drive-Suche.
-    local_history = "Geschlossene Positionen.csv"
-    if os.path.isfile(local_history):
-        try:
-            with open(local_history, "r", encoding="utf-8-sig", newline="") as f:
-                reader = csv.DictReader(f, delimiter=";")
-                rows = list(reader)
-            block = make_block(rows)
-            if block:
-                print(
-                    f"MASTER/7.4: lokale Tab-2-Übergabe verwendet | "
-                    f"Historie={len(rows)} Datensätze"
-                )
-                return block
-            print(
-                f"MASTER/7.4: lokale Tab-2-Übergabe vorhanden | "
-                f"Historie={len(rows)} | kein Abschluss im 3-Tage-Fenster"
-            )
-            return ""
-        except Exception as exc:
-            print(f"WARNUNG: Lokale Tab-2-Übergabe konnte nicht gelesen werden ({exc}) - Drive-Fallback.")
-
-    # 2. Fallback: produktiven Master direkt lesen. Ausschließlich Tab 2.
-    service = get_drive_service()
-    if service is None:
-        print("INFO: Keine Master-/Tab-2-Übergabe verfügbar - 7.4 bleibt leer.")
-        return ""
-
-    try:
-        creds = getattr(getattr(service, "_http", None), "credentials", None)
-        if creds is None:
-            print("WARNUNG: Google-Credentials für Tab-2-Lesung nicht verfügbar.")
-            return ""
-
-        sheets = build("sheets", "v4", credentials=creds)
-        result = service.files().list(
-            q="name='Offene Positionen + Check' and "
-              "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
-            spaces="drive",
-            fields="files(id,name,modifiedTime)",
-            orderBy="modifiedTime desc",
-            pageSize=10,
-        ).execute()
-        files = result.get("files", [])
-        if not files:
-            print("WARNUNG: Master-Sheet 'Offene Positionen + Check' nicht gefunden - 7.4 bleibt leer.")
-            return ""
-
-        spreadsheet_id = files[0]["id"]
-        values = sheets.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range="'Geschlossene Positionen'!A:AA",
-            valueRenderOption="FORMATTED_VALUE",
-        ).execute().get("values", [])
-        if len(values) < 3:
-            print("INFO: Tab 2 'Geschlossene Positionen' enthält keine historischen Datensätze.")
-            return ""
-
-        headers = [str(x).strip() for x in values[1]]
-        rows = []
-        for raw in values[2:]:
-            row = {}
-            for i, header in enumerate(headers):
-                row[header] = raw[i] if i < len(raw) else ""
-            rows.append(row)
-
-        block = make_block(rows)
-        if block:
-            print("MASTER/7.4: produktiver Google-Sheet-Tab 2 als Fallback verwendet.")
-        else:
-            print("HISTORIE 7.4: Keine geschlossene Position innerhalb der letzten 3 Kalendertage.")
-        return block
-    except Exception as exc:
-        print(f"WARNUNG: Tab 2 'Geschlossene Positionen' konnte für 7.4 nicht gelesen werden: {exc}")
-        return ""
 
 
 def lade_short_dateien_von_drive():
@@ -474,6 +333,148 @@ def finde_datei(muster_liste):
     return None
 
 
+def _lokale_master_xlsx():
+    """Findet eine lokal vorhandene Kopie des Master-Google-Sheets."""
+    for muster in ("Offene Positionen+Check.xlsx", "Offene Positionen+Check(*).xlsx"):
+        treffer = sorted(glob.glob(muster))
+        if treffer:
+            return treffer[-1]
+    return None
+
+
+def _google_sheet_master_von_drive():
+    """Laedt den produktiven Master 'Offene Positionen + Check' aus Drive.
+
+    Der Master ist ein Google Sheet mit zwei produktiven Tabs. Falls der
+    vorgelagerte Check-Schritt die lokale CSV nicht mehr im Workspace hinterlaesst,
+    wird der Master hier read-only exportiert. Dadurch bleibt Tab 1 die technische
+    Masterquelle und Tab 2 die persistente Historie fuer 7.4.
+    """
+    service = get_drive_service()
+    if service is None:
+        return None
+    try:
+        q = (
+            "name = 'Offene Positionen + Check' and "
+            "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
+        )
+        # Gleicher Drive-Ordner zuerst; falls dort nichts gefunden wird, global.
+        treffer = service.files().list(
+            q=q + f" and '{DRIVE_FOLDER_ID}' in parents",
+            fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc"
+        ).execute().get("files", [])
+        if not treffer:
+            treffer = service.files().list(
+                q=q, fields="files(id,name,modifiedTime)", orderBy="modifiedTime desc"
+            ).execute().get("files", [])
+        if not treffer:
+            print("WARNUNG: Produktiver Master 'Offene Positionen + Check' in Drive nicht gefunden.")
+            return None
+
+        file_id = treffer[0]["id"]
+        ziel = "Offene Positionen+Check.xlsx"
+        request = service.files().export_media(
+            fileId=file_id,
+            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        with io.FileIO(ziel, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            fertig = False
+            while not fertig:
+                _, fertig = downloader.next_chunk()
+        print(f"MASTER: 'Offene Positionen + Check' aus Drive exportiert -> {ziel}")
+        return ziel
+    except Exception as exc:
+        print(f"WARNUNG: Master-Sheet konnte nicht aus Drive exportiert werden: {exc}")
+        return None
+
+
+def _xlsx_erster_tab_als_csv(xlsx_pfad, csv_pfad="Offene Positionen+Check.csv"):
+    """Extrahiert den ersten produktiven Tab des Master-XLSX als CSV.
+
+    Keine Neuberechnung und keine Feldinterpretation: Zellwerte werden nur
+    aus dem Master-Sheet in die lokale CSV uebertragen.
+    """
+    ns={"m":"http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r":"http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+    with zipfile.ZipFile(xlsx_pfad,"r") as z:
+        try:
+            ssroot=ET.fromstring(z.read("xl/sharedStrings.xml"))
+            strings=["".join(t.text or "" for t in si.iter("{%s}t"%ns["m"])) for si in ssroot.findall("m:si",ns)]
+        except KeyError:
+            strings=[]
+        wb=ET.fromstring(z.read("xl/workbook.xml"))
+        rels=ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+        relmap={rel.get("Id"):rel.get("Target") for rel in rels}
+        sheets=wb.findall("m:sheets/m:sheet",ns)
+        if not sheets:
+            raise RuntimeError("Master-XLSX enthält keinen Tabellen-Tab.")
+        sh=sheets[0]
+        target=relmap.get(sh.get("{%s}id"%ns["r"]))
+        if not target:
+            raise RuntimeError("Erster Master-Tab konnte nicht aufgelöst werden.")
+        target=target.lstrip("/")
+        if not target.startswith("xl/"): target="xl/"+target
+        root=ET.fromstring(z.read(target))
+        matrix=[]
+        max_col=0
+        for row in root.findall(".//m:row",ns):
+            vals={}
+            for cell in row.findall("m:c",ns):
+                ref=cell.get("r",""); m=re.match(r"[A-Z]+",ref)
+                if not m: continue
+                col=m.group(0)
+                # Spaltennummer aus Buchstaben
+                n=0
+                for ch in col: n=n*26+(ord(ch)-64)
+                max_col=max(max_col,n)
+                v=cell.find("m:v",ns)
+                if cell.get("t")=="inlineStr": value="".join(t.text or "" for t in cell.iter("{%s}t"%ns["m"]))
+                elif v is None: value=""
+                else:
+                    value=v.text or ""
+                    if cell.get("t")=="s":
+                        try: value=strings[int(value)]
+                        except (ValueError,IndexError): value=""
+                vals[n]=value
+            if vals: matrix.append([vals.get(i,"") for i in range(1,max_col+1)])
+    if len(matrix)<3:
+        raise RuntimeError("Master-XLSX enthält keinen verwertbaren Kopf/Datenteil.")
+    # Der erste Master-Tab hat eine reine Titelzeile; die lokale CSV erwartet
+    # direkt die Feldnamen als erste Zeile. Daten beginnen ab Zeile 3 des Sheets.
+    with open(csv_pfad,"w",encoding="utf-8-sig",newline="") as f:
+        csv.writer(f,delimiter=";").writerows(matrix[1:])
+    return csv_pfad
+
+
+def _bereite_master_7_4_vor(gefunden):
+    """Stellt den produktiven Master lokal für 7.3 und 7.4 bereit.
+
+    Primär wird die vom Check-Schritt erzeugte CSV verwendet. Nur wenn sie
+    fehlt, wird derselbe produktive Google-Sheet-Master read-only exportiert.
+    """
+    global MASTER_XLSX_FUER_7_4
+    xlsx = _lokale_master_xlsx()
+    if xlsx:
+        gefunden.setdefault("Offene Positionen+Check.xlsx", xlsx)
+    # Fuer 7.4 wird immer derselbe produktive Master benoetigt, auch wenn
+    # Tab 1 bereits als lokale CSV vorliegt. Nur so bleibt Tab 2 die persistente
+    # Faktenbasis und wir vermeiden die falsche Annahme, die CSV enthalte Historie.
+    if not gefunden.get("Offene Positionen+Check.xlsx"):
+        xlsx = _google_sheet_master_von_drive()
+        if xlsx:
+            gefunden["Offene Positionen+Check.xlsx"] = xlsx
+    xlsx = gefunden.get("Offene Positionen+Check.xlsx")
+    MASTER_XLSX_FUER_7_4 = xlsx
+    if xlsx and not gefunden.get("Offene Positionen+Check.csv"):
+        try:
+            gefunden["Offene Positionen+Check.csv"] = _xlsx_erster_tab_als_csv(xlsx)
+            print("MASTER: Tab 1 als Offene Positionen+Check.csv bereitgestellt.")
+        except Exception as exc:
+            print(f"WARNUNG: Master-Tab 1 konnte nicht als CSV bereitgestellt werden: {exc}")
+    return gefunden
+
+
 def sammle_eingabedateien():
     gefunden = {}
     for name, muster_liste in DATEIMUSTER.items():
@@ -489,6 +490,8 @@ def sammle_eingabedateien():
 
     if "Einzel-Check-Beobachtungsliste" not in gefunden:
         gefunden["Einzel-Check-Beobachtungsliste"] = None
+
+    gefunden = _bereite_master_7_4_vor(gefunden)
 
     fehlend = [n for n in PFLICHT_DATEIEN if gefunden.get(n) is None]
     if fehlend:
@@ -547,6 +550,92 @@ def _positionsfeld_schluessel(value):
         return f"{float(text):.12g}"
     except Exception:
         return text.lower()
+
+
+def _excel_seriennummer_datum(value):
+    text=str(value or "").strip()
+    for fmt in ("%Y-%m-%d","%d.%m.%Y","%d/%m/%Y","%d-%m-%Y"):
+        try: return datetime.datetime.strptime(text[:10],fmt).date().isoformat()
+        except ValueError: pass
+    try:
+        seriennummer=float(text)
+    except (TypeError,ValueError):
+        return text
+    basis=datetime.datetime(1899,12,30)
+    return (basis+datetime.timedelta(days=seriennummer)).date().isoformat()
+
+
+def _lese_geschlossene_positionen_tab2(xlsx_pfad, referenzdatum=None):
+    """Liest ausschliesslich Tab 2 'Geschlossene Positionen' aus dem Master-XLSX."""
+    if not xlsx_pfad or not os.path.isfile(xlsx_pfad): return []
+    if referenzdatum is None: referenzdatum=datetime.date.today()
+    elif isinstance(referenzdatum,str): referenzdatum=datetime.date.fromisoformat(referenzdatum)
+    grenze=referenzdatum-datetime.timedelta(days=2)
+    ns={"m":"http://schemas.openxmlformats.org/spreadsheetml/2006/main","r":"http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+    try:
+        with zipfile.ZipFile(xlsx_pfad,"r") as z:
+            try:
+                ssroot=ET.fromstring(z.read("xl/sharedStrings.xml")); strings=["".join(t.text or "" for t in si.iter("{%s}t"%ns["m"])) for si in ssroot.findall("m:si",ns)]
+            except KeyError: strings=[]
+            wb=ET.fromstring(z.read("xl/workbook.xml")); rels=ET.fromstring(z.read("xl/_rels/workbook.xml.rels")); relmap={rel.get("Id"):rel.get("Target") for rel in rels}
+            target=None
+            for sh in wb.findall("m:sheets/m:sheet",ns):
+                if sh.get("name","").strip().lower()=="geschlossene positionen": target=relmap.get(sh.get("{%s}id"%ns["r"])); break
+            if not target: return []
+            target=target.lstrip("/"); target=target if target.startswith("xl/") else "xl/"+target
+            root=ET.fromstring(z.read(target)); rows=[]
+            for row in root.findall(".//m:row",ns):
+                vals={}
+                for cell in row.findall("m:c",ns):
+                    ref=cell.get("r",""); m=re.match(r"[A-Z]+",ref)
+                    if not m: continue
+                    v=cell.find("m:v",ns)
+                    if cell.get("t")=="inlineStr": value="".join(t.text or "" for t in cell.iter("{%s}t"%ns["m"]))
+                    elif v is None: value=""
+                    else:
+                        value=v.text or ""
+                        if cell.get("t")=="s":
+                            try: value=strings[int(value)]
+                            except (ValueError,IndexError): value=""
+                    vals[m.group(0)]=value
+                rows.append(vals)
+            if len(rows)<3: return []
+            headers=rows[1]; hm={str(v).strip():k for k,v in headers.items()}; required=["Ticker","Name","Status","Ausstiegsdatum","Ausstiegskurs","Performance_Seit_Einstieg%"]
+            if any(x not in hm for x in required): return []
+            out=[]
+            for row in rows[2:]:
+                status=str(row.get(hm["Status"],"")).strip()
+                if status.lower() not in {"gestoppt","geschlossen","verkauft","manuell verkauft"}: continue
+                d=_excel_seriennummer_datum(row.get(hm["Ausstiegsdatum"],""))
+                try: ed=datetime.date.fromisoformat(d)
+                except ValueError: continue
+                if not (grenze<=ed<=referenzdatum): continue
+                def val(k): return str(row.get(hm[k],"") or "").strip()
+                out.append({"ticker":val("Ticker"),"name":val("Name"),"status":status,"ausstiegsdatum":d,"ausstiegskurs":val("Ausstiegskurs"),"performance":val("Performance_Seit_Einstieg%")})
+            return out
+    except (OSError,zipfile.BadZipFile,ET.ParseError): return []
+
+
+def _geschlossene_positionen_7_4_block(xlsx_pfad, referenzdatum=None):
+    positionen=_lese_geschlossene_positionen_tab2(xlsx_pfad,referenzdatum)
+    if not positionen: return ""
+    lines=["7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE",""]
+    for p in positionen:
+        detail=f"Status: {p['status']} | Ausstiegsdatum: {p['ausstiegsdatum']}"
+        if p["ausstiegskurs"]: detail+=f" | Ausstiegskurs: {p['ausstiegskurs']}"
+        if p["performance"]: detail+=f" | Performance seit Einstieg: {p['performance']}%"
+        lines += [f"{p['name']} ({p['ticker']}) | {detail}",""]
+    return "\n".join(lines).rstrip()
+
+
+def _normalisiere_geschlossene_positionen_7_4(text,xlsx_pfad,referenzdatum=None):
+    if not text: return text
+    text=re.sub(r"(?ims)^7\.4\s+GESCHLOSSENE POSITIONEN\s*[–-]\s*LETZTE 3 TAGE\s*$.*?(?=^8\.\s+|\Z)","",text)
+    block=_geschlossene_positionen_7_4_block(xlsx_pfad,referenzdatum)
+    if not block: return text
+    anchor=re.search(r"(?im)^8\.\s+",text)
+    if not anchor: return text.rstrip()+"\n\n"+block+"\n"
+    return text[:anchor.start()].rstrip()+"\n\n"+block+"\n\n"+text[anchor.start():].lstrip()
 
 
 def _offene_positionen_quellblock(csv_pfad):
@@ -820,7 +909,7 @@ def _abschnitt_7_vollstaendig(text, csv_pfad):
 
     expected = _technische_zielzonen_quelle(csv_pfad)
     match = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*7\.4\s+|^\s*8\.\s+|\Z)",
         text,
     )
     if not match:
@@ -901,7 +990,7 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
         )
 
     block_match = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*7\.4\s+|^\s*8\.\s+|\Z)",
         abschnitt_7,
     )
     if not block_match:
@@ -911,10 +1000,10 @@ def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
         )
 
     block = block_match.group(0).strip("\n")
-    # Ersetze den bereits vorhandenen Punkt-7-Block vollständig durch
+    # Ersetze den bereits vorhandenen Punkt-8-Block vollständig durch
     # den erfolgreich reparierten Punkt-8-Block.
     vorhandener_abschnitt = re.search(
-        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*8\.\s+|\Z)",
+        r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*7\.4\s+|^\s*8\.\s+|\Z)",
         original_text,
     )
     if vorhandener_abschnitt:
@@ -1015,7 +1104,8 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
-            geschlossene_7_4 = lade_geschlossene_positionen_tab2()
+            master_xlsx = eingabedateien.get("Offene Positionen+Check.xlsx") or _lokale_master_xlsx()
+            geschlossene_7_4 = _geschlossene_positionen_7_4_block(master_xlsx)
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
@@ -1023,16 +1113,15 @@ def gemini_auswertung_starten():
                     "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht. "
+                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 DES MASTER-SHEETS 'Offene Positionen + Check':\n" + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
+                    "7.4 darf ausschliesslich diese Faktenbasis verwenden. Tab 2 ist die persistente Historie; historische Positionen "
+                    "duerfen nicht aus der aktuellen offenen CSV rekonstruiert oder neu berechnet werden.\n"
+                    "WICHTIGE STRUKTURREGEL FUER 7.4: Erzeuge 7.4 NICHT selbst. 7.4 wird nach der Gemini-Antwort deterministisch "
+                    "aus der Tab-2-Faktenbasis eingesetzt. Wenn keine Position innerhalb der letzten 3 Kalendertage vorhanden ist, "
+                    "wird 7.4 vollstaendig weggelassen. Die Vollstaendigkeitspruefung betrifft AUSSCHLIESSLICH 7.3 EINZELPOSITIONEN "
+                    "und niemals 7.4.\n"
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
-                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen + Check':\n"
-                    + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
-                    "Für 7.4 gilt ausschließlich diese Tab-2-Faktenbasis. Gib nur geschlossene Positionen "
-                    "mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage bezogen auf den Auswertungstag aus. "
-                    "Wenn die Faktenbasis leer ist, lasse 7.4 vollständig weg. Rekonstruiere, ergänze, schätze "
-                    "oder erfinde keine geschlossenen Positionen aus anderen Dateien oder aus Modellwissen. "
-                    "Übernimm die Faktenfelder aus Tab 2 unverändert. 7.4 ist von der offenen Positionsprüfung "
-                    "und deren Reparaturmechanik getrennt.\n"
                     "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
                     "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
                     "WICHTIGE QUELLE FUER OFFENE POSITIONEN: Verwende fuer den Abschnitt "
@@ -1312,6 +1401,10 @@ def normalisiere_ausgabe(text, zielzonen=None):
     """
     if not text:
         return text
+
+    # 7.4 wird deterministisch aus Tab 2 des produktiven Master-Sheets erzeugt.
+    # Gemini darf diesen Faktenblock weder erfinden noch aus offenen Positionen ableiten.
+    text = _normalisiere_geschlossene_positionen_7_4(text, MASTER_XLSX_FUER_7_4 or _lokale_master_xlsx())
 
     text = re.sub(
         r"(?m)^[ \t]*(Was muesste technisch passieren, damit das bestehende "
