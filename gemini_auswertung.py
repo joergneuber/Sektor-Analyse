@@ -184,7 +184,7 @@ def get_drive_service():
 def lade_geschlossene_positionen_tab2():
     """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 7.4.
 
-    Tab 2 „Geschlossene Positionen“ von „Offene Positionen + Check“ ist die
+    Tab 2 „Geschlossene Positionen“ von „Offene Positionen+Check“ ist die
     autoritative Faktenbasis. Es werden nur Datensätze mit Ausstiegsdatum
     innerhalb der letzten drei Kalendertage relativ zum Auswertungstag geliefert.
     Die Funktion verändert keine bestehende Positions-, Retry- oder
@@ -206,7 +206,7 @@ def lade_geschlossene_positionen_tab2():
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
@@ -214,7 +214,7 @@ def lade_geschlossene_positionen_tab2():
         ).execute()
         files = result.get("files", [])
         if not files:
-            print("WARNUNG: Master-Sheet 'Offene Positionen + Check' nicht gefunden - 7.4 bleibt leer.")
+            print("WARNUNG: Master-Sheet 'Offene Positionen+Check' nicht gefunden - 7.4 bleibt leer.")
             return ""
 
         spreadsheet_id = files[0]["id"]
@@ -971,7 +971,7 @@ def gemini_auswertung_starten():
                     "und erstelle die vollstaendige Daten-Uebersicht. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
-                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen + Check':\n"
+                    "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen+Check':\n"
                     + (geschlossene_7_4 or "(keine geschlossene Position innerhalb der letzten 3 Kalendertage)") + "\n"
                     "Für 7.4 gilt ausschließlich diese Tab-2-Faktenbasis. Gib nur geschlossene Positionen "
                     "mit Ausstiegsdatum innerhalb der letzten 3 Kalendertage bezogen auf den Auswertungstag aus. "
