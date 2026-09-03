@@ -206,7 +206,7 @@ def lade_geschlossene_positionen_tab2():
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
@@ -1245,7 +1245,21 @@ def gemini_auswertung_starten():
 
     print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
     print(f"Letzte Antwort/Fehler:\n{letzte_antwort}")
-    sys.exit(1)
+
+    # TECHNISCHER FALLBACK:
+    # Ein dauerhafter Gemini-503 darf den gesamten GitHub-Lauf nicht mehr
+    # mit Exit-Code 1 beenden. Es wird bewusst KEINE Gemini-Analyse erfunden.
+    # Stattdessen wird ein klar gekennzeichneter technischer Bericht an den
+    # normalen Speicherpfad uebergeben. speichere_ergebnis() erkennt diesen
+    # Marker und schreibt ihn direkt als Auswertung(<Datum>).txt.
+    return (
+        "[GEMINI_TECHNISCHER_FALLBACK]\n"
+        "Gemini war nach allen konfigurierten Versuchen nicht verfuegbar. "
+        "Es wurde deshalb keine kuenstliche Gemini-Analyse erzeugt.\n\n"
+        f"Letzter API-Fehler:\n{letzte_antwort}\n\n"
+        "Die Eingabedateien wurden vor dem API-Aufruf geladen. "
+        "Die autoritativen Positionsdaten bleiben unveraendert."
+    )
 
 
 def normalisiere_ausgabe(text, zielzonen=None):
@@ -1540,12 +1554,20 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
-    text = normalisiere_ausgabe(
-        text,
-        zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
-    )
+
+    # Technischer Gemini-Fallback darf nicht durch die normale
+    # Positions-/Punkt-7-Validierung laufen: Es gibt in diesem Fall bewusst
+    # keine Gemini-Auswertung, die validiert werden koennte.
+    if str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
+        final_text = str(text)
+    else:
+        final_text = normalisiere_ausgabe(
+            text,
+            zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
+        )
+
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
-        f.write(text)
+        f.write(final_text)
     print(f"\nGespeichert: {ausgabe_datei}")
     return ausgabe_datei
 
