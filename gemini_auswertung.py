@@ -182,31 +182,109 @@ def get_drive_service():
 
 
 def lade_geschlossene_positionen_tab2():
-    """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 7.4.
+    """Liest die persistente Historie für Punkt 7.4.
 
-    Tab 2 „Geschlossene Positionen“ von „Offene Positionen + Check“ ist die
-    autoritative Faktenbasis. Es werden nur Datensätze mit Ausstiegsdatum
-    innerhalb der letzten drei Kalendertage relativ zum Auswertungstag geliefert.
-    Die Funktion verändert keine bestehende Positions-, Retry- oder
-    Gemini-Validierungslogik.
+    Primäre Übergabe innerhalb desselben Workflows:
+        Tab 2 "Geschlossene Positionen" des Master-Sheets
+        -> "Geschlossene Positionen.csv"
+        -> diese Funktion -> 7.4
+
+    Die lokale CSV ist dabei kein neuer Datenbestand: sie wird im unmittelbar
+    vorhergehenden Positions-Check aus der zusammengeführten Tab-2-Historie
+    erzeugt. Damit benötigt Gemini für 7.4 keinen zweiten, fehleranfälligen
+    Google-Sheet-Suchlauf.
+
+    Fallback, falls die lokale Übergabe fehlt: lesender Zugriff auf den
+    produktiven Google-Sheet-Master und dort ausschließlich Tab 2.
+
+    Es werden nur Status Gestoppt/Verkauft und Ausstiegsdaten innerhalb der
+    letzten drei Kalendertage übernommen. Keine technische Neuberechnung.
     """
+    fields = [
+        "Ticker", "Name", "Einstiegsdatum", "Einstieg",
+        "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",
+        "Status", "Richtung", "Produkt_Typ", "Emittent", "Hebel",
+        "OS_Einstiegskurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+    ]
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=2)
+
+    def parse_date(value):
+        value = str(value or "").strip()
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.datetime.strptime(value, fmt).date()
+            except ValueError:
+                pass
+        return None
+
+    def make_block(rows):
+        selected = []
+        for row in rows:
+            status = str(row.get("Status", "")).strip().lower()
+            if status not in {"gestoppt", "geschlossen", "verkauft", "manuell verkauft"}:
+                continue
+            exit_date = parse_date(row.get("Ausstiegsdatum"))
+            if exit_date is None or not (start <= exit_date <= today):
+                continue
+            selected.append(row)
+
+        if not selected:
+            return ""
+
+        out = []
+        for row in selected:
+            out.append(" | ".join(
+                f"{field}: {row.get(field, '')}"
+                for field in fields
+                if str(row.get(field, "")).strip()
+            ))
+        print(
+            f"HISTORIE 7.4: {len(selected)} geschlossene Position(en) "
+            "aus persistenter Tab-2-Historie innerhalb des 3-Tage-Fensters."
+        )
+        return "\n".join(out)
+
+    # 1. Bevorzugte Übergabe: Die unmittelbar vorher erzeugte CSV ist der
+    # lokale Export von Tab 2 des Master-Sheets. Dadurch ist die Datenquelle
+    # deterministisch und unabhängig von einer erneuten Drive-Suche.
+    local_history = "Geschlossene Positionen.csv"
+    if os.path.isfile(local_history):
+        try:
+            with open(local_history, "r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f, delimiter=";")
+                rows = list(reader)
+            block = make_block(rows)
+            if block:
+                print(
+                    f"MASTER/7.4: lokale Tab-2-Übergabe verwendet | "
+                    f"Historie={len(rows)} Datensätze"
+                )
+                return block
+            print(
+                f"MASTER/7.4: lokale Tab-2-Übergabe vorhanden | "
+                f"Historie={len(rows)} | kein Abschluss im 3-Tage-Fenster"
+            )
+            return ""
+        except Exception as exc:
+            print(f"WARNUNG: Lokale Tab-2-Übergabe konnte nicht gelesen werden ({exc}) - Drive-Fallback.")
+
+    # 2. Fallback: produktiven Master direkt lesen. Ausschließlich Tab 2.
     service = get_drive_service()
     if service is None:
-        print("INFO: Kein Google-Drive-Zugriff - 7.4 wird nur ausgegeben, wenn keine Historie vorhanden ist.")
+        print("INFO: Keine Master-/Tab-2-Übergabe verfügbar - 7.4 bleibt leer.")
         return ""
 
     try:
-        # Der bestehende Drive-Service enthält die bereits authentifizierten
-        # Credentials. Damit wird keine neue Authentifizierungslogik eingeführt.
         creds = getattr(getattr(service, "_http", None), "credentials", None)
         if creds is None:
             print("WARNUNG: Google-Credentials für Tab-2-Lesung nicht verfügbar.")
             return ""
 
         sheets = build("sheets", "v4", credentials=creds)
-
         result = service.files().list(
-            q=f"name='Offene Positionen + Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q="name='Offene Positionen + Check' and "
+              "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
             spaces="drive",
             fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc",
@@ -223,48 +301,24 @@ def lade_geschlossene_positionen_tab2():
             range="'Geschlossene Positionen'!A:AA",
             valueRenderOption="FORMATTED_VALUE",
         ).execute().get("values", [])
-
         if len(values) < 3:
             print("INFO: Tab 2 'Geschlossene Positionen' enthält keine historischen Datensätze.")
             return ""
 
         headers = [str(x).strip() for x in values[1]]
-        rows = [dict(zip(headers, row + [""] * max(0, len(headers) - len(row)))) for row in values[2:]]
+        rows = []
+        for raw in values[2:]:
+            row = {}
+            for i, header in enumerate(headers):
+                row[header] = raw[i] if i < len(raw) else ""
+            rows.append(row)
 
-        def parse_date(value):
-            value = str(value or "").strip()
-            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
-                try:
-                    return dt.datetime.strptime(value, fmt).date()
-                except ValueError:
-                    pass
-            return None
-
-        today = dt.date.today()
-        start = today - dt.timedelta(days=2)
-        selected = []
-        for row in rows:
-            exit_date = parse_date(row.get("Ausstiegsdatum"))
-            if exit_date is not None and start <= exit_date <= today:
-                selected.append(row)
-
-        if not selected:
+        block = make_block(rows)
+        if block:
+            print("MASTER/7.4: produktiver Google-Sheet-Tab 2 als Fallback verwendet.")
+        else:
             print("HISTORIE 7.4: Keine geschlossene Position innerhalb der letzten 3 Kalendertage.")
-            return ""
-
-        # Nur Faktenfelder aus Tab 2; keine technische Neubewertung.
-        fields = [
-            "Ticker", "Name", "Einstiegsdatum", "Einstieg",
-            "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",
-            "Status", "Richtung", "Produkt_Typ", "Emittent", "Hebel",
-            "OS_Einstiegskurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
-        ]
-        out = []
-        for row in selected:
-            out.append(" | ".join(f"{field}: {row.get(field, '')}" for field in fields if str(row.get(field, "")).strip()))
-        print(f"HISTORIE 7.4: {len(selected)} geschlossene Position(en) aus Tab 2 innerhalb des 3-Tage-Fensters.")
-        return "\n".join(out)
-
+        return block
     except Exception as exc:
         print(f"WARNUNG: Tab 2 'Geschlossene Positionen' konnte für 7.4 nicht gelesen werden: {exc}")
         return ""
