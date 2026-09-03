@@ -1568,20 +1568,9 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # nochmals aus Google lesen und gegen den gerade geprüften Datenbestand prüfen.
         # Erst wenn beide produktiven Tabs verifiziert sind, darf das Drive-Backup gelöscht werden.
         try:
-            # Die Verifikations-Range wird aus der tatsächlichen Anzahl der
-            # produktiven Header-Spalten abgeleitet. Dadurch kann ein zusätzlicher
-            # Header niemals wegen einer zu kurzen A1-Range abgeschnitten werden.
-            def _column_letter(n: int) -> str:
-                result = ""
-                while n:
-                    n, remainder = divmod(n - 1, 26)
-                    result = chr(65 + remainder) + result
-                return result
-
-            open_last_col = _column_letter(len(HEADERS))
             verify_ss = sheets.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
-                range=f"Offene Positionen+Check!A1:{open_last_col}",
+                range="Offene Positionen+Check!A1:AK",
             ).execute()
             verify_rows = verify_ss.get("values", [])
             if len(verify_rows) < 2:
@@ -1590,7 +1579,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 )
 
             verify_header = [str(x).strip() for x in verify_rows[1]]
-            expected_header = [str(x).strip() for x in HEADERS]
+            expected_header = [str(x).strip() for x in OPEN_HEADERS]
             if verify_header != expected_header:
                 raise RuntimeError(
                     "Produktiv-Verifikation fehlgeschlagen: Header von Offene Positionen+Check stimmt nicht."
@@ -1614,10 +1603,9 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                     "Offene-Positionen-Tabs stimmt nicht mit dem geprüften Datenbestand überein."
                 )
 
-            hist_last_col = _column_letter(len(HISTORY_HEADERS))
             hist_ss = sheets.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
-                range=f"Geschlossene Positionen!A1:{hist_last_col}",
+                range="Geschlossene Positionen!A1:AK",
             ).execute()
             hist_rows = hist_ss.get("values", [])
             if len(hist_rows) < 2:
