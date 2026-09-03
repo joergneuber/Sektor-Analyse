@@ -755,52 +755,32 @@ def _gemini_finish_reason(antwort):
 
 
 def _abschnitt_7_vollstaendig(text, csv_pfad):
-    """Prüft nur, ob Punkt 7 strukturell vorhanden und nutzbar ist.
+    """Prueft nur die strukturelle Mindestvoraussetzung fuer Punkt 7.
 
-    Der Validator darf Gemini nicht dazu zwingen, bereits alle offenen
-    Positionen vollständig auszugeben. Die verbindliche Zuordnung und
-    Kanonisierung erfolgt anschließend über normalisiere_ausgabe() mit der
-    Master-Datei Offene Positionen+Check.csv.
+    Gemini bestimmt NICHT mehr die Vollstaendigkeit der offenen Positionen.
+    Die verbindliche Anzahl und Identitaet werden spaeter deterministisch aus
+    Offene Positionen+Check.csv als Master aufgebaut und validiert.
+
+    Fuer das API-Retry-Gate reicht deshalb: Abschnitt 7 existiert und enthaelt
+    mindestens einen gueltigen Positionskopf. Eine teilweise Gemini-Antwort
+    darf nicht mehr wegen fehlender weiterer Masterpositionen eine Reparatur-
+    schleife ausloesen.
     """
     if not _enthaelt_abschnitt_7(text):
         return False
 
-    try:
-        expected = _technische_zielzonen_quelle(csv_pfad)
-    except Exception:
-        return False
-    if not expected:
-        return False
-
     match = re.search(
         r"(?ims)^\s*7\. OFFENE POSITIONEN\s*$.*?(?=^\s*\d+\.\s+|\Z)",
-        text,
+        text or "",
     )
     if not match:
         return False
 
-    block = match.group(0)
     header_re = re.compile(
         r"(?m)^([^\n|]+?)\s*\(([^()]+)\)\s*\|\s*Markt:\s*[^\n]+$"
     )
-    headers = list(header_re.finditer(block))
-    if not headers:
-        return False
+    return bool(header_re.search(match.group(0)))
 
-    # Mindestens ein Positionskopf muss eindeutig zur Master-CSV passen.
-    # Vollständigkeit (z. B. 23/23) ist hier ausdrücklich KEIN Kriterium.
-    for header in headers:
-        name = header.group(1).strip()
-        ticker = _normalisiere_ticker(header.group(2).strip())
-        name_norm = _normalisiere_positionsname(name)
-        if any(
-            _normalisiere_ticker(pos.get("ticker", "")) == ticker
-            and _normalisiere_positionsname(pos.get("name", "")) == name_norm
-            for pos in expected.values()
-        ):
-            return True
-
-    return False
 
 def _fuege_abschnitt_7_ein(original_text, abschnitt_7):
     """Fügt einen ausschließlich für Punkt 7 angeforderten Gemini-Block ein.
