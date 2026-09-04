@@ -181,7 +181,7 @@ def get_drive_service():
 
 
 
-def lade_geschlossene_positionen_tab2():
+def lade_offene_positionen+check_tab2():
     """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 7.4.
 
     Tab 2 „Geschlossene Positionen“ von „Offene Positionen+Check“ ist die
@@ -911,7 +911,7 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
-            geschlossene_7_4 = lade_geschlossene_positionen_tab2()
+            geschlossene_7_4 = lade_offene_positionen+check_tab2()
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
