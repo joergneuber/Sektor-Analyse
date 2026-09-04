@@ -1,4 +1,4 @@
-﻿"""
+"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
@@ -153,16 +153,20 @@ ABLEHNUNGS_MUSTER = [
 # HILFSFUNKTIONEN
 # ---------------------------------------------------------------------------
 
-def get_drive_service():
-    """Baut den Drive-Service auf (lesender Zugriff) - identische Auth-Logik
-    wie in upload_to_drive.py, damit Refresh-Fehler konsistent behandelt
-    werden. Gibt None zurueck (statt zu crashen), falls GDRIVE_TOKEN fehlt
-    oder ungueltig ist - das Nachladen der Short-Dateien ist optional, ein
-    fehlendes/kaputtes Token darf die eigentliche Gemini-Auswertung nicht
-    verhindern."""
+def get_drive_service(strict=False):
+    """Baut den Drive-Service auf (lesender Zugriff).
+
+    Im Standardmodus bleibt der Zugriff fuer optionale Short-Dateien tolerant
+    und liefert bei fehlendem/ungueltigem Token None. Fuer autoritative Daten
+    wie Punkt 7.4 wird strict=True verwendet: Technische Auth-/Drive-Fehler
+    duerfen dort niemals als "keine Historie" erscheinen.
+    """
     token_str = os.environ.get("GDRIVE_TOKEN")
     if not token_str:
-        print("INFO: GDRIVE_TOKEN nicht gesetzt - Short-Dateien werden nicht nachgeladen.")
+        msg = "GDRIVE_TOKEN nicht gesetzt"
+        if strict:
+            raise RuntimeError(f"7.4: Autoritativer Google-Drive-Zugriff nicht moeglich: {msg}")
+        print(f"INFO: {msg} - Short-Dateien werden nicht nachgeladen.")
         return None
 
     try:
@@ -172,16 +176,23 @@ def get_drive_service():
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                print("WARNUNG: GDRIVE_TOKEN ungueltig, kein Refresh moeglich - Short-Dateien werden uebersprungen.")
+                msg = "GDRIVE_TOKEN ungueltig, kein Refresh moeglich"
+                if strict:
+                    raise RuntimeError(f"7.4: Autoritativer Google-Drive-Zugriff nicht moeglich: {msg}")
+                print(f"WARNUNG: {msg} - Short-Dateien werden uebersprungen.")
                 return None
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
+        if strict:
+            if isinstance(e, RuntimeError):
+                raise
+            raise RuntimeError(f"7.4: Autoritativer Google-Drive-Zugriff fehlgeschlagen: {e}") from e
         print(f"WARNUNG: Drive-Verbindung fuer Short-Dateien fehlgeschlagen ({e}) - wird uebersprungen.")
         return None
 
 
 
-def lade_offene_positionen+check_tab2():
+def lade_offenen_positionen_check_tab2():
     """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 7.4.
 
     Tab 2 „Geschlossene Positionen“ von „Offene Positionen+Check“ ist die
@@ -190,45 +201,67 @@ def lade_offene_positionen+check_tab2():
     Die Funktion verändert keine bestehende Positions-, Retry- oder
     Gemini-Validierungslogik.
     """
-    service = get_drive_service()
-    if service is None:
-        print("INFO: Kein Google-Drive-Zugriff - 7.4 wird nur ausgegeben, wenn keine Historie vorhanden ist.")
-        return ""
+    service = get_drive_service(strict=True)
 
     try:
         # Der bestehende Drive-Service enthält die bereits authentifizierten
         # Credentials. Damit wird keine neue Authentifizierungslogik eingeführt.
         creds = getattr(getattr(service, "_http", None), "credentials", None)
         if creds is None:
-            print("WARNUNG: Google-Credentials für Tab-2-Lesung nicht verfügbar.")
-            return ""
+            raise RuntimeError("7.4: Google-Credentials für autoritativen Tab-2-Zugriff nicht verfügbar.")
 
         sheets = build("sheets", "v4", credentials=creds)
 
         result = service.files().list(
-            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            q=f"name='Offene Positionen+Check' and mimeType='application/vnd.google-apps.spreadsheet' and '{DRIVE_FOLDER_ID}' in parents and trashed=false",
             spaces="drive",
-            fields="files(id,name,modifiedTime)",
+            fields="files(id,name,modifiedTime,parents)",
             orderBy="modifiedTime desc",
             pageSize=10,
         ).execute()
         files = result.get("files", [])
         if not files:
-            print("WARNUNG: Master-Sheet 'Offene Positionen+Check' nicht gefunden - 7.4 bleibt leer.")
-            return ""
+            raise RuntimeError("7.4: Master-Sheet 'Offene Positionen+Check' im konfigurierten Projektordner nicht gefunden.")
+        if len(files) > 1:
+            raise RuntimeError(
+                "7.4: Mehrere Master-Sheets 'Offene Positionen+Check' im konfigurierten Projektordner gefunden: "
+                + ", ".join(f"{f.get('id')} (modified={f.get('modifiedTime')})" for f in files)
+            )
 
-        spreadsheet_id = files[0]["id"]
+        master = files[0]
+        spreadsheet_id = master["id"]
+        print(
+            f"7.4 MASTER: Offene Positionen+Check | id={spreadsheet_id} | "
+            f"modified={master.get('modifiedTime')} | folder={DRIVE_FOLDER_ID}"
+        )
+
+        metadata = sheets.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties(title,index,sheetId)"
+        ).execute()
+        sheet_props = [s.get("properties", {}) for s in metadata.get("sheets", [])]
+        titles = [str(p.get("title", "")).strip() for p in sheet_props]
+        print(f"7.4 MASTER-TABS: {titles}")
+        if "Geschlossene Positionen" not in titles:
+            raise RuntimeError("7.4: Tab 'Geschlossene Positionen' im Master-Sheet nicht vorhanden.")
+
         values = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range="'Geschlossene Positionen'!A:AA",
             valueRenderOption="FORMATTED_VALUE",
         ).execute().get("values", [])
 
-        if len(values) < 3:
-            print("INFO: Tab 2 'Geschlossene Positionen' enthält keine historischen Datensätze.")
-            return ""
+        if len(values) < 2:
+            raise RuntimeError("7.4: Tab 'Geschlossene Positionen' enthält keine Headerzeile.")
 
         headers = [str(x).strip() for x in values[1]]
+        required_headers = {"Ticker", "Ausstiegsdatum", "Status"}
+        missing_headers = sorted(required_headers - set(headers))
+        if missing_headers:
+            raise RuntimeError(
+                "7.4: Pflichtspalten in Tab 'Geschlossene Positionen' fehlen: "
+                + ", ".join(missing_headers)
+            )
         rows = [dict(zip(headers, row + [""] * max(0, len(headers) - len(row)))) for row in values[2:]]
 
         def parse_date(value):
@@ -243,10 +276,22 @@ def lade_offene_positionen+check_tab2():
         today = datetime.date.today()
         start = today - datetime.timedelta(days=2)
         selected = []
+        parseable_dates = 0
         for row in rows:
             exit_date = parse_date(row.get("Ausstiegsdatum"))
+            if exit_date is not None:
+                parseable_dates += 1
             if exit_date is not None and start <= exit_date <= today:
                 selected.append(row)
+
+        all_exit_dates = [parse_date(row.get("Ausstiegsdatum")) for row in rows]
+        all_exit_dates = [d for d in all_exit_dates if d is not None]
+        newest_exit = max(all_exit_dates).isoformat() if all_exit_dates else "keine parsebaren Ausstiegsdaten"
+        print(
+            f"7.4 HISTORIE-PRUEFUNG: daten={len(rows)} | parsebar={parseable_dates} | "
+            f"neuestes_ausstiegsdatum={newest_exit} | fenster={start.isoformat()}..{today.isoformat()} | "
+            f"treffer={len(selected)}"
+        )
 
         if not selected:
             print("HISTORIE 7.4: Keine geschlossene Position innerhalb der letzten 3 Kalendertage.")
@@ -262,12 +307,17 @@ def lade_offene_positionen+check_tab2():
         out = []
         for row in selected:
             out.append(" | ".join(f"{field}: {row.get(field, '')}" for field in fields if str(row.get(field, "")).strip()))
-        print(f"HISTORIE 7.4: {len(selected)} geschlossene Position(en) aus Tab 2 innerhalb des 3-Tage-Fensters.")
+        selected_tickers = [str(row.get("Ticker", "")).strip() for row in selected]
+        print(
+            f"HISTORIE 7.4: {len(selected)} geschlossene Position(en) aus Tab 2 innerhalb des 3-Tage-Fensters | "
+            f"Ticker={selected_tickers}"
+        )
         return "\n".join(out)
 
     except Exception as exc:
-        print(f"WARNUNG: Tab 2 'Geschlossene Positionen' konnte für 7.4 nicht gelesen werden: {exc}")
-        return ""
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"7.4: Tab 'Geschlossene Positionen' konnte nicht autoritativ gelesen/verifiziert werden: {exc}") from exc
 
 
 def lade_short_dateien_von_drive():
@@ -911,7 +961,7 @@ def gemini_auswertung_starten():
                 ]
 
             offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
-            geschlossene_7_4 = lade_offene_positionen+check_tab2()
+            geschlossene_7_4 = lade_offenen_positionen_check_tab2()
             antwort = client.models.generate_content(
                 model=aktuelles_modell,
                 contents=hochgeladene_teile + [
