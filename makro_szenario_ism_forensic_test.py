@@ -131,10 +131,10 @@ LME_PRICE_CACHE_TIME = 0.0
 LME_REQUEST_ATTEMPTED = False
 
 # Maximale Zeit, die ein gespeicherter REAL-Wert als verwendbar gilt, wenn die
-# Quelle beim aktuellen Lauf nicht erreichbar ist. Die Gültigkeit richtet sich
-# bewusst nach der Veröffentlichungsfrequenz des Datenpunkts, nicht nach dem
-# Abrufzeitpunkt. Ein echter Monatswert bleibt also gültig, bis ein neuer
-# veröffentlichter Monatswert vorliegt; tägliche Markt-/Zinswerte dürfen nur
+# Quelle beim aktuellen Lauf nicht erreichbar ist. Die GÃ¼ltigkeit richtet sich
+# bewusst nach der VerÃ¶ffentlichungsfrequenz des Datenpunkts, nicht nach dem
+# Abrufzeitpunkt. Ein echter Monatswert bleibt also gÃ¼ltig, bis ein neuer
+# verÃ¶ffentlichter Monatswert vorliegt; tÃ¤gliche Markt-/Zinswerte dÃ¼rfen nur
 # wenige Handelstage alt sein.
 FRED_MAX_AGE_DAYS = {
     "DFF": 7, "DFEDTARU": 45, "DFEDTARL": 45, "ECBDFR": 45, "M2SL": 45,
@@ -400,7 +400,7 @@ def gscpi_snapshot():
 
 
 def _rate_token_to_float(token):
-    token = str(token).strip().replace("‑", "-").replace("–", "-").replace("—", "-")
+    token = str(token).strip().replace("â", "-").replace("â", "-").replace("â", "-")
     m = re.fullmatch(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)", token)
     if m:
         den = int(m.group(3))
@@ -414,7 +414,7 @@ def _rate_token_to_float(token):
 
 
 def _official_fomc_target_series(series_id):
-    """Nur tatsächlich veröffentlichte Fed-Zielkorridore akzeptieren."""
+    """Nur tatsÃ¤chlich verÃ¶ffentlichte Fed-Zielkorridore akzeptieren."""
     urls = []
 
     try:
@@ -663,7 +663,7 @@ def _bea_release_gdp_series():
         return pd.DataFrame(), None
 
 def _public_hy_oas_series(series_id):
-    """Öffentlicher Sekundärabruf der exakt gleichen FRED/ICE-BofA-Reihe.
+    """Ãffentlicher SekundÃ¤rabruf der exakt gleichen FRED/ICE-BofA-Reihe.
     Autario stellt die Reihe BAMLH0A0HYM2 ohne API-Key als JSON bereit.
     """
     if series_id != "BAMLH0A0HYM2":
@@ -954,8 +954,8 @@ def _lme_official_prices(target_date=None):
         for metal, data in cached.items():
             if not isinstance(data, dict):
                 continue
-            # Nur echte, bereits veröffentlichte LME-Werte dürfen als Fallback
-            # dienen. Das ursprüngliche LME-Datum bleibt unverändert.
+            # Nur echte, bereits verÃ¶ffentlichte LME-Werte dÃ¼rfen als Fallback
+            # dienen. Das ursprÃ¼ngliche LME-Datum bleibt unverÃ¤ndert.
             bid = _clean_num(data.get("cash_bid"))
             ask = _clean_num(data.get("cash_ask"))
             if bid is None or ask is None or bid <= 0 or ask <= 0:
@@ -1170,11 +1170,11 @@ def _westmetall_tin_exact(target_date):
 
 
 def lme_snapshot(today, _target_override=None, _allow_previous_fallback=True):
-    """LME-TIER-2-Beschaffung mit Bereichs-/Quellenpriorität.
+    """LME-TIER-2-Beschaffung mit Bereichs-/QuellenprioritÃ¤t.
 
-    Ziel ist standardmäßig der letzte abgeschlossene Handelstag.
+    Ziel ist standardmÃ¤Ãig der letzte abgeschlossene Handelstag.
     Zuerst wird versucht, ALLE vier Metalle aus LME Official zu beziehen.
-    Erst wenn das nicht vollständig gelingt, wird der TE-Public-Snapshot als
+    Erst wenn das nicht vollstÃ¤ndig gelingt, wird der TE-Public-Snapshot als
     gemeinsame Bereichsquelle verwendet. Nur danach ist ein feldweiser
     Fallback erlaubt. Exaktes Zieldatum bleibt zwingend.
     """
@@ -1495,7 +1495,7 @@ def _extract_fed_futures_from_html(html):
     """Liest die oeffentliche Tabelle einer freien Marktseite.
 
     Es werden ausschliesslich tatsaechlich angezeigte Kontraktpreise uebernommen.
-    Keine Preisinterpolation oder Schätzung.
+    Keine Preisinterpolation oder SchÃ¤tzung.
     """
     found = {}
     try:
@@ -1820,8 +1820,8 @@ def _ism_official_get(url):
 
 
 def _extract_te_release_date(text):
-    """Extrahiert ein explizites Veröffentlichungsdatum aus einer TE-Seite.
-    Gibt YYYY-MM-DD zurück; Reference-Monat bleibt die Datenmonatsprüfung.
+    """Extrahiert ein explizites VerÃ¶ffentlichungsdatum aus einer TE-Seite.
+    Gibt YYYY-MM-DD zurÃ¼ck; Reference-Monat bleibt die DatenmonatsprÃ¼fung.
     """
     from datetime import datetime
     patterns = (
@@ -1905,7 +1905,7 @@ def _te_calendar_actual(html, expected_ref):
 
 
 def _te_text_actual(html, expected_ref, series_label):
-    """Fallback bei geänderter TE-Tabellenstruktur; nur expliziter Istwert."""
+    """Fallback bei geÃ¤nderter TE-Tabellenstruktur; nur expliziter Istwert."""
     text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -2321,7 +2321,7 @@ def _ism_target_maps(kind):
             "supplier_deliveries": ["Supplier Deliveries"],
             "backlog_of_orders": ["Backlog of Orders", "Backlog"],
             "inventories": ["Inventories"],
-            "customers_inventories": ["Customers' Inventories", "Customers’ Inventories", "Customers Inventories"],
+            "customers_inventories": ["Customers' Inventories", "Customersâ Inventories", "Customers Inventories"],
             "new_export_orders": ["New Export Orders"],
             "imports": ["Imports"],
         }
@@ -2361,7 +2361,7 @@ def _ism_structured_from_html(kind, year, month, html_text, source_url):
         return any(v in low for v in variants)
 
     def exact_label(value, aliases):
-        normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower().replace("®", "")
+        normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower().replace("Â®", "")
         return any(normalized == a.lower() for a in aliases)
 
     def numeric_cells(row):
@@ -2574,7 +2574,7 @@ def _te_public_ism_fetch(kind, year, month):
             "supplier_deliveries":["ISM Manufacturing Supplier Deliveries","Supplier Deliveries"],
             "backlog_of_orders":["ISM Manufacturing Backlog of Orders","Backlog of Orders","Backlog"],
             "inventories":["ISM Manufacturing Inventories","Inventories"],
-            "customers_inventories":["ISM Manufacturing Customers' Inventories","ISM Manufacturing Customers’ Inventories","Customers' Inventories","Customers’ Inventories","Customers Inventories"],
+            "customers_inventories":["ISM Manufacturing Customers' Inventories","ISM Manufacturing Customersâ Inventories","Customers' Inventories","Customersâ Inventories","Customers Inventories"],
             "new_export_orders":["ISM Manufacturing New Export Orders","New Export Orders"],
             "imports":["ISM Manufacturing Imports","Imports"],
         }
@@ -3300,7 +3300,7 @@ def _ism_public_report_full(kind, year, month, html_text, source_url):
     if kind == "services":
         alias_map["business_activity"] |= {"business activity/production", "business activity"}
     if kind == "manufacturing":
-        alias_map["customers_inventories"] |= {"customers' inventories", "customers’ inventories", "customers inventories"}
+        alias_map["customers_inventories"] |= {"customers' inventories", "customersâ inventories", "customers inventories"}
 
     try:
         frames = pd.read_html(StringIO(html_text))
@@ -3363,7 +3363,7 @@ def _ism_public_report_full(kind, year, month, html_text, source_url):
     if re.search(rf"\b{target_full}\s+{year}\b", plain, re.I):
         prose_patterns = {
             "inventories": rf"Inventories Index registered\s+([0-9]+(?:\.[0-9])?)\s+percent",
-            "customers_inventories": rf"Customers[’']?\s+Inventories Index reading of\s+([0-9]+(?:\.[0-9])?)\s+percent",
+            "customers_inventories": rf"Customers[â']?\s+Inventories Index reading of\s+([0-9]+(?:\.[0-9])?)\s+percent",
             "new_export_orders": rf"New Export Orders Index.*?reading of\s+([0-9]+(?:\.[0-9])?)\s+percent",
             "imports": rf"Imports Index registered\s+([0-9]+(?:\.[0-9])?)\s+percent",
         }
@@ -3876,8 +3876,8 @@ def _ism_forensic_test():
     official ISM public route is tested directly.
     """
     print("=" * 78)
-    print("ISM FORENSISCHER TEST – AKTUELLER GESAMTCODE")
-    print("Testet Juli 2026 und August 2026 ohne Cache-/Produktionsänderung")
+    print("ISM FORENSISCHER TEST â AKTUELLER GESAMTCODE")
+    print("Testet Juli 2026 und August 2026 ohne Cache-/ProduktionsÃ¤nderung")
     print("=" * 78)
 
     expected = {
@@ -3905,14 +3905,48 @@ def _ism_forensic_test():
         )
         print(f"\n[OFFICIAL] {y}-{m:02d} -> {url}")
         try:
-            r = requests.get(url, timeout=30, headers=REQUEST_HEADERS, allow_redirects=True)
+            # First pass: do NOT follow redirects. This exposes the real HTTP
+            # response from ISM instead of turning a 30x -> SSO redirect into
+            # a misleading final HTTP 200 login page.
+            r0 = requests.get(
+                url, timeout=30, headers=REQUEST_HEADERS, allow_redirects=False
+            )
         except Exception as exc:
-            print(f"FAIL HTTP: {type(exc).__name__}: {exc}")
+            print(f"FAIL HTTP (no-redirect): {type(exc).__name__}: {exc}")
             return None
 
-        print(f"HTTP={r.status_code} FINAL_URL={r.url}")
-        if r.status_code != 200:
+        location = r0.headers.get("Location", "")
+        content_type = r0.headers.get("Content-Type", "")
+        print(
+            f"HTTP_NO_REDIRECT={r0.status_code} "
+            f"LOCATION={location or '<none>'} "
+            f"CONTENT_TYPE={content_type or '<none>'}"
+        )
+
+        if r0.status_code in (301, 302, 303, 307, 308):
+            print("REDIRECT DETECTED: automatisches Folgen ist im Forensik-Test bewusst deaktiviert.")
+            if "login.aspx" in location.lower() or "sso" in location.lower():
+                print("FAIL: Redirect fuehrt direkt zu SSO/login")
+                return None
+            print("INFO: Redirect fuehrt NICHT offensichtlich zu SSO/login; teste Ziel separat.")
+            return None
+
+        if r0.status_code != 200:
             print("FAIL: HTTP status != 200")
+            return None
+
+        # Second pass: follow redirects only for diagnostic comparison.
+        try:
+            r = requests.get(
+                url, timeout=30, headers=REQUEST_HEADERS, allow_redirects=True
+            )
+        except Exception as exc:
+            print(f"FAIL HTTP (redirect-follow): {type(exc).__name__}: {exc}")
+            return None
+
+        print(f"HTTP_FOLLOW={r.status_code} FINAL_URL={r.url}")
+        if r.status_code != 200:
+            print("FAIL: HTTP status after redirect-follow != 200")
             return None
         if "login.aspx" in r.url.lower() or "sso" in r.url.lower():
             print("FAIL: official route ended at SSO/login")
@@ -3946,8 +3980,8 @@ def _ism_forensic_test():
 
     print("\n" + "-" * 78)
     print("[_ism_fetch] TEST MIT AUSGESCHALTETEM TRADINGECONOMICS")
-    print("Damit wird gezielt geprüft, ob die offizielle ISM-Quelle den")
-    print("vollständigen Datensatz über den echten Produktions-Fallback liefert.")
+    print("Damit wird gezielt geprÃ¼ft, ob die offizielle ISM-Quelle den")
+    print("vollstÃ¤ndigen Datensatz Ã¼ber den echten Produktions-Fallback liefert.")
     print("-" * 78)
 
     original_te = globals().get("_te_public_ism_fetch")
