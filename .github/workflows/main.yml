@@ -142,7 +142,7 @@ jobs:
 
       - name: Makro-Datenpaket erstellen
         continue-on-error: true
-        run: python makro_szenario_ism_forensic_test.py
+        run: python makro_szenario_ism_forensic_test.py --ism-forensic-test
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
 
