@@ -4201,103 +4201,185 @@ def _ism_forensic_test():
             # C = direkter HTML-Tabellenparser, D = Plain-Text-Diagnose.
             # Keine Variante veraendert Produktionsdaten.
             # --------------------------------------------------------------
-            print("\n[PARSER FORENSIK] A/B/C/D – gleicher HTML-Response")
+            print("\n[PARSER FORENSIK] A-H – PMI-Varianten auf EXAKT demselben HTML-Response")
             required = _ism_required_fields("manufacturing")
             parser_results = {}
 
+            # Referenzwerte duerfen NUR fuer die abschliessende Bewertung verwendet
+            # werden. Kein Parser kennt den erwarteten PMI-Wert. Alle Varianten
+            # muessen den Wert selbst aus exakt demselben bereits geladenen HTML
+            # extrahieren. Dadurch ist der Vergleich methodisch blind.
+            expected_pmi_for_evaluation = 54.6 if (y, m) == (2026, 8) else 55.6 if (y, m) == (2026, 7) else None
+
+            # A: bestehender Gesamtparser – unveraendert.
             try:
                 parser_results["A"] = _ism_public_report_full("manufacturing", y, m, r.text, url) or {}
             except Exception as exc:
                 parser_results["A"] = {}
                 print(f"PARSER_A_ERROR={type(exc).__name__}: {exc}")
 
+            # B: bestehender strukturierter Gesamtparser – unveraendert.
             try:
                 parser_results["B"] = _ism_structured_from_html("manufacturing", y, m, r.text, url) or {}
             except Exception as exc:
                 parser_results["B"] = {}
                 print(f"PARSER_B_ERROR={type(exc).__name__}: {exc}")
 
-            # C: HTML tables directly. Only an explicitly detected month
-            # column is accepted; otherwise the field remains missing.
-            pc = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
             try:
                 from bs4 import BeautifulSoup
-                soup_c = BeautifulSoup(r.text, "html.parser")
-                targets_c = _ism_target_maps("manufacturing")
-                aliases_c = {k: {re.sub(r"\s+", " ", a).strip().casefold() for a in v} for k, v in targets_c.items()}
-                for ti, table in enumerate(soup_c.find_all("table")):
-                    rows = []
-                    for tr in table.find_all("tr"):
-                        cells = [re.sub(r"\s+", " ", c.get_text(" ", strip=True)).strip() for c in tr.find_all(["th", "td"])]
-                        if cells: rows.append(cells)
-                    if not rows: continue
-                    blob = " | ".join(" | ".join(x) for x in rows[:4])
-                    if not (re.search(rf"\b{calendar.month_abbr[m]}\b", blob, re.I) or re.search(rf"\b{calendar.month_name[m]}\b", blob, re.I) or f"{y}-{m:02d}" in blob):
-                        continue
-                    current_idx = None
-                    for hr in rows[:4]:
-                        idx = _find_month_column(hr, y, m)
-                        if idx is not None: current_idx = idx; break
-                    if current_idx is None: continue
-                    for ri, row in enumerate(rows):
-                        if not row: continue
-                        first = row[0].casefold()
-                        key = next((k for k, aa in aliases_c.items() if first in aa), None)
-                        if key is None or pc.get(key) is not None or current_idx >= len(row): continue
-                        val = _parse_float_token(row[current_idx])
-                        if val is not None:
-                            pc[key] = val; pc["provenance"][key] = {"method": "PARSER_C_DIRECT_HTML_TABLE", "table": ti, "row": ri}
+                soup_p = BeautifulSoup(r.text, "html.parser")
+                visible_p = soup_p.get_text(" ", strip=True)
             except Exception as exc:
-                print(f"PARSER_C_ERROR={type(exc).__name__}: {exc}")
+                soup_p = None
+                visible_p = re.sub(r"<[^>]+>", " ", r.text or "")
+                visible_p = re.sub(r"\s+", " ", visible_p).strip()
+                print(f"PARSER_SHARED_HTML_ERROR={type(exc).__name__}: {exc}")
+
+            # Gemeinsame Extraktionsregeln fuer C-H: PMI-Werte werden immer
+            # aus dem lokalen Kontext des Labels gelesen. Es gibt KEINEN
+            # Vergleich mit einem vorab bekannten Monatswert.
+            pmi_number_re = r"(?<![A-Za-z])([0-9]{1,2}(?:\.[0-9])?)(?![A-Za-z])"
+
+            # C: sichtbarer Text. Das Label wird gesucht; anschliessend werden
+            # Zahlen nur innerhalb eines engen lokalen Kontextfensters extrahiert.
+            pc = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            for mm in re.finditer(r"Manufacturing\s+PMI", visible_p or "", re.I):
+                ctx = visible_p[mm.start():min(len(visible_p), mm.end() + 180)]
+                vm = re.search(r"(?:at|was|is|registered|reading|of|:)?\s*" + pmi_number_re, ctx, re.I)
+                if vm:
+                    pc["pmi"] = float(vm.group(1))
+                    pc["provenance"]["pmi"] = {"method": "PARSER_C_VISIBLE_PMI_CONTEXT", "match": ctx[:500]}
+                    break
             parser_results["C"] = pc
 
-            # D: bounded narrative extraction. Diagnostic only; it reports
-            # values immediately following the named field, never arbitrary
-            # page-wide numbers.
-            pdx = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
-            try:
-                plain_d = re.sub(r"<script.*?</script>|<style.*?</style>", " ", r.text, flags=re.I | re.S)
-                plain_d = re.sub(r"<[^>]+>", " ", plain_d)
-                plain_d = re.sub(r"\s+", " ", plain_d).strip()
-                patterns_d = {
-                    "pmi": r"(?:Manufacturing PMI|PMI)\s*(?:Index|registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "new_orders": r"New Orders(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "production": r"Production(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "employment": r"Employment(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "prices": r"Prices(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "supplier_deliveries": r"Supplier Deliveries(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "backlog_of_orders": r"Backlog of Orders(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "inventories": r"Inventories(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "customers_inventories": r"Customers[’']? Inventories(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "new_export_orders": r"New Export Orders(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                    "imports": r"Imports(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
-                }
-                for key, pat in patterns_d.items():
-                    mm = re.search(pat, plain_d, re.I)
-                    if mm:
-                        val = _parse_float_token(mm.group(1))
-                        if val is not None and 0 <= val <= 100: pdx[key] = val
-            except Exception as exc:
-                print(f"PARSER_D_ERROR={type(exc).__name__}: {exc}")
-            parser_results["D"] = pdx
+            # D: DOM-Traversal. Das PMI-Label wird gesucht; ausgewertet werden
+            # nur sein eigenes Element, Parent und direkte Geschwister.
+            pd = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            if soup_p is not None:
+                label_re = re.compile(r"Manufacturing\s+PMI", re.I)
+                for tag in soup_p.find_all(string=label_re):
+                    candidates = []
+                    parent = tag.parent
+                    if parent is not None:
+                        candidates.append(("PARSER_D_DOM_LABEL_PARENT", parent.get_text(" ", strip=True)))
+                        if parent.parent is not None:
+                            candidates.append(("PARSER_D_DOM_LABEL_GRANDPARENT", parent.parent.get_text(" ", strip=True)))
+                        sib = parent.find_next_sibling()
+                        if sib is not None:
+                            candidates.append(("PARSER_D_DOM_LABEL_SIBLING", sib.get_text(" ", strip=True)))
+                    for method, ctx in candidates:
+                        if not re.search(r"Manufacturing\s+PMI", ctx, re.I):
+                            continue
+                        vm = re.search(pmi_number_re, ctx)
+                        if vm:
+                            pd["pmi"] = float(vm.group(1))
+                            pd["provenance"]["pmi"] = {"method": method, "context": ctx[:700]}
+                            break
+                    if pd.get("pmi") is not None:
+                        break
+            parser_results["D"] = pd
+
+            # E: rohe HTML-Regex. Label und Wert muessen innerhalb desselben
+            # begrenzten HTML-Fensters liegen; Tags werden erst fuer die lokale
+            # Kontextauswertung entfernt.
+            pe = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            raw_e = r.text or ""
+            for mm in re.finditer(r"Manufacturing\s+PMI", raw_e, re.I):
+                raw_ctx = raw_e[mm.start():min(len(raw_e), mm.end() + 700)]
+                ctx = re.sub(r"<[^>]+>", " ", raw_ctx)
+                ctx = re.sub(r"\s+", " ", ctx).strip()
+                vm = re.search(pmi_number_re, ctx)
+                if vm:
+                    pe["pmi"] = float(vm.group(1))
+                    pe["provenance"]["pmi"] = {"method": "PARSER_E_RAW_HTML_BOUNDED_REGEX", "context": ctx[:900]}
+                    break
+            parser_results["E"] = pe
+
+            # F: Token-/Nachbarschaftsvariante. Das Label und die Zahl muessen
+            # innerhalb eines engen Tokenfensters liegen.
+            pf = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            tokens_f = (visible_p or "").split()
+            for i, tok in enumerate(tokens_f):
+                if re.search(r"Manufacturing", tok, re.I) and i + 1 < len(tokens_f) and re.search(r"PMI", tokens_f[i + 1], re.I):
+                    window = " ".join(tokens_f[i:min(len(tokens_f), i + 16)])
+                    vm = re.search(pmi_number_re, window)
+                    if vm:
+                        pf["pmi"] = float(vm.group(1))
+                        pf["provenance"]["pmi"] = {"method": "PARSER_F_TOKEN_WINDOW", "window": window[:700]}
+                        break
+            parser_results["F"] = pf
+
+            # G: alternative Label/Value-Regexe. Mehrere typische englische
+            # Formulierungen werden versucht, aber der Wert wird immer aus dem
+            # Response selbst gecaptured – nie aus einem Referenzwert.
+            pg = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            patterns_g = [
+                r"Manufacturing\s+PMI[^0-9]{0,120}?(?:at|was|is|registered|reading|of|:)\s*" + pmi_number_re,
+                r"Manufacturing\s+PMI[^0-9]{0,250}?" + pmi_number_re,
+                r"Manufacturing\s+PMI[^<]{0,500}?" + pmi_number_re,
+            ]
+            for pat in patterns_g:
+                mm = re.search(pat, visible_p or "", re.I | re.S)
+                if mm:
+                    pg["pmi"] = float(mm.group(1))
+                    pg["provenance"]["pmi"] = {"method": "PARSER_G_LABEL_VALUE_REGEX", "match": re.sub(r"\s+", " ", mm.group(0))[:700]}
+                    break
+            parser_results["G"] = pg
+
+            # H: DOM-Element-Selbsttest. Zuerst eigenes Element, dann direktes
+            # Geschwisterelement; die Auswertung bleibt lokal begrenzt.
+            ph = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            if soup_p is not None:
+                for el in soup_p.find_all(True):
+                    own = el.get_text(" ", strip=True)
+                    if not re.search(r"Manufacturing\s+PMI", own, re.I) or len(own) > 1200:
+                        continue
+                    vm = re.search(pmi_number_re, own)
+                    if vm:
+                        ph["pmi"] = float(vm.group(1))
+                        ph["provenance"]["pmi"] = {"method": "PARSER_H_DOM_ELEMENT_TEXT", "context": own[:900]}
+                        break
+                    sib = el.find_next_sibling()
+                    if sib is not None:
+                        ctx = sib.get_text(" ", strip=True)
+                        vm = re.search(pmi_number_re, ctx)
+                        if vm:
+                            ph["pmi"] = float(vm.group(1))
+                            ph["provenance"]["pmi"] = {"method": "PARSER_H_DOM_SIBLING", "context": ctx[:900]}
+                            break
+            parser_results["H"] = ph
+
+            print("PMI_VARIANT_RESULTS:")
+            for pname in "ABCDEFGH":
+                pdata = parser_results[pname]
+                print(f"  {pname}: PMI={pdata.get('pmi')!r} METHOD={((pdata.get('provenance') or {}).get('pmi') or {}).get('method', '<none>')}")
+                if pdata.get("pmi") is not None:
+                    print(f"    CONTEXT={((pdata.get('provenance') or {}).get('pmi') or {}).get('context', ((pdata.get('provenance') or {}).get('pmi') or {}).get('match', ((pdata.get('provenance') or {}).get('pmi') or {}).get('window', '')))[:900]}")
 
             print("PARSER_FIELDS:")
             for pname, pdata in parser_results.items():
                 got = sum(pdata.get(k) is not None for k in required)
                 missing = [k for k in required if pdata.get(k) is None]
                 print(f"  {pname}: {got}/{len(required)} missing={missing}")
-                print("    " + " | ".join(f"{k}={pdata.get(k)!r}" for k in required if pdata.get(k) is not None))
+                if pdata.get("pmi") is not None:
+                    print(f"    pmi={pdata.get('pmi')!r}")
 
-            print("PARSER_CROSSCHECK:")
-            for key in required:
-                vals = {p: parser_results[p].get(key) for p in parser_results if parser_results[p].get(key) is not None}
-                uniq = sorted({str(v) for v in vals.values()})
-                if len(uniq) == 1 and vals:
-                    print(f"  {key}: CONSENSUS={uniq[0]} via {','.join(vals)}")
-                elif len(uniq) > 1:
-                    print(f"  {key}: DISAGREEMENT=" + ", ".join(f"{p}={v}" for p, v in vals.items()))
+            print("PMI_VARIANT_WINNER:")
+            winners = [p for p in "ABCDEFGH" if parser_results[p].get("pmi") is not None]
+            print(f"  FOUND={winners if winners else []}")
+            print("PMI_VARIANT_ASSESSMENT:")
+            for pname in "ABCDEFGH":
+                got = parser_results[pname].get("pmi")
+                if expected_pmi_for_evaluation is None:
+                    verdict = "NO_REFERENCE"
+                elif got is None:
+                    verdict = "MISS"
+                elif abs(float(got) - expected_pmi_for_evaluation) < 1e-9:
+                    verdict = "CORRECT"
                 else:
-                    print(f"  {key}: NO_VALUE")
+                    verdict = "WRONG"
+                print(f"  {pname}: GOT={got!r} VERDICT={verdict}")
+            print(f"PMI_REFERENCE_ONLY_FOR_EVALUATION={expected_pmi_for_evaluation!r}")
 
             d = parser_results["A"]
             if d:
