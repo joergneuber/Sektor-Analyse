@@ -4363,6 +4363,82 @@ def _ism_3source_test():
     source_priority = {"A": 0, "B": 1, "C": 2}
     all_candidates = []
 
+    # ------------------------------------------------------------------
+    # OFFICIAL ISM ACCESS: reproduce the already proven successful path.
+    # The successful forensic run first established a normal public-site
+    # Session, then requested the report without redirect following, and
+    # finally requested the same report again with redirects enabled.
+    # This is deliberately kept as an acquisition layer, separate from
+    # parsing.  B and C must receive the real public HTML or be marked
+    # unavailable; they must never parse the SSO/login response.
+    # ------------------------------------------------------------------
+    browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/139.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Referer": "https://www.ismworld.org/",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+    }
+
+    def acquire_official_html(y, m, official_url):
+        session = requests.Session()
+        session.headers.update(browser_headers)
+        print(f"\n[OFFICIAL ACCESS] {y}-{m:02d}")
+        print(f"TARGET_URL={official_url}")
+
+        # Step 1: establish the public-site session, exactly as in the
+        # previously successful forensic run.  A redirect of the homepage
+        # itself to SSO is diagnostic only and is not treated as success.
+        try:
+            h = session.get("https://www.ismworld.org/", timeout=30, allow_redirects=True)
+            print(f"SESSION_HOME_HTTP={h.status_code}")
+            print(f"SESSION_HOME_FINAL_URL={h.url}")
+            print(f"SESSION_HOME_COOKIES={len(session.cookies)}")
+        except Exception as exc:
+            print(f"SESSION_HOME_ERROR={type(exc).__name__}: {exc}")
+
+        # Step 2: inspect the target without following redirects.
+        try:
+            r0 = session.get(official_url, timeout=30, allow_redirects=False)
+            print(f"SESSION_NO_REDIRECT={r0.status_code}")
+            print(f"SESSION_LOCATION={r0.headers.get('Location', '') or '<none>'}")
+            print(f"SESSION_SET_COOKIE={'YES' if r0.headers.get('Set-Cookie') else 'NO'}")
+            print(f"SESSION_SERVER={r0.headers.get('Server', '') or '<none>'}")
+            print(f"SESSION_COOKIE_COUNT_AFTER_TARGET={len(session.cookies)}")
+        except Exception as exc:
+            print(f"SESSION_NO_REDIRECT_ERROR={type(exc).__name__}: {exc}")
+            return None
+
+        # Step 3: follow the target in the SAME warmed session.
+        try:
+            r = session.get(official_url, timeout=30, allow_redirects=True)
+        except Exception as exc:
+            print(f"SESSION_FOLLOW_ERROR={type(exc).__name__}: {exc}")
+            return None
+
+        print(f"SESSION_FOLLOW={r.status_code}")
+        print(f"SESSION_FINAL_URL={r.url}")
+        print(f"SESSION_HISTORY={[x.status_code for x in r.history]}")
+        print(f"SESSION_COOKIE_COUNT_FINAL={len(session.cookies)}")
+
+        if r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
+            print("OFFICIAL ACCESS RESULT=PUBLIC_ISM_HTML")
+            return r
+        print("OFFICIAL ACCESS RESULT=SSO_OR_NON_PUBLIC")
+        return None
+
     def count_complete(d):
         return sum(1 for k in required if isinstance(d, dict) and d.get(k) is not None)
 
@@ -4620,29 +4696,26 @@ def _ism_3source_test():
             all_candidates.append(a)
 
         # B and C share one official HTML response for efficiency, but are
-        # independent parser candidates over that exact response. This keeps
-        # publication-source identity (official ISM) while testing two distinct
-        # extraction variants without duplicate HTTP traffic.
-        try:
-            session = requests.Session()
-            headers = dict(REQUEST_HEADERS)
-            headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Referer": "https://www.ismworld.org/",
-                "Upgrade-Insecure-Requests": "1",
-            })
-            r = session.get(official_url, timeout=20, headers=headers, allow_redirects=True)
-            official_ok = r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower()
-            print(f"OFFICIAL HTML HTTP: {r.status_code} FINAL_URL={r.url} HISTORY={[h.status_code for h in r.history]}")
-        except Exception as exc:
-            r = None
-            official_ok = False
-            print(f"OFFICIAL_HTML_ERROR={type(exc).__name__}: {exc}")
-
+        # independent parser candidates over that exact response. The access
+        # layer reproduces the already proven Session -> no-redirect ->
+        # follow path before B/C are allowed to parse anything.
+        r = acquire_official_html(y, m, official_url)
+        official_ok = r is not None
         if official_ok:
+            print(f"OFFICIAL HTML HTTP: {r.status_code} FINAL_URL={r.url} HISTORY={[h.status_code for h in r.history]}")
+
+            # Mandatory pre-proof: combine the already proven 10/11 official
+            # component parser with each independent PMI extractor. This is
+            # the explicit 11/11 proof before the source candidate is added.
+            base_probe = _ism_public_report_full(kind, y, m, r.text, official_url) or {}
+            for probe_name, probe_fn in (("B", pmi_variant_1_visible), ("C", pmi_variant_2_table_dom)):
+                probe = dict(base_probe)
+                pmi_probe, _, probe_method = probe_fn(r.text, y, m)
+                if pmi_probe is not None:
+                    probe["pmi"] = pmi_probe
+                probe_count = count_complete(probe)
+                print(f"OFFICIAL 11/11 PROOF {probe_name}: {probe_count}/{len(required)} PMI={probe.get('pmi')!r} METHOD={probe_method or '<none>'}")
+
             # B: visible-text PMI extraction + the existing official HTML
             # parser for the other ISM components.
             b = build_official_candidate(r.text, "B", "OFFICIAL_ISM_HTML_VARIANT_1", y, m, pmi_variant_1_visible)
