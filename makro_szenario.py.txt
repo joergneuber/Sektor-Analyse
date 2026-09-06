@@ -1,0 +1,255 @@
+FORENSISCHER VERGLEICHS- UND TESTBERICHT
+Makro-Szenario / ISM 3-Source-Integration
+Datum: 2026-09-06
+
+1. VERGLEICHSMATERIAL
+---------------------
+Ursprung:
+  makro_szenario(20260906-132034).py
+  3,870 Zeilen
+  179,029 Bytes
+  SHA256:
+  342a95cb6850e4a4e09bbf016f61dae480006fe81c4ac052ebea55935a1e2b45
+
+Provenzierter 3-Source-Test:
+  makro_szenario_ism_3source_test_FINAL_3SOURCE_VERIFIED_R2(2).py
+  4,772 Zeilen
+  227,251 Bytes
+  SHA256:
+  afb6ed79838711719354cac6395f4676601afa618aaccd465d0d64ffc422df26
+
+Integrierte Produktionsdatei:
+  makro_szenario_3source_integrated_20260906.py
+  4,260 Zeilen
+  194,373 Bytes
+  SHA256:
+  6a3c8e6f233e0bc1acacaa5bb4f43d41ea76a1505663ecfeeb5b492e35811541
+
+2. SYNTAX / AST
+---------------
+Alle drei Dateien:
+  AST parse: PASS
+
+3. FORENSISCHER AUSSENBEREICH
+-----------------------------
+AST-Funktionshashvergleich Ursprung -> Integration:
+
+Geänderte bestehende Funktion:
+  _ism_fetch: JA, absichtlich
+
+Alle übrigen bestehenden Top-Level-Funktionen:
+  UNVERÄNDERT
+
+Insbesondere identisch:
+  _ism_public_report_full
+  _ism_required_fields
+  _find_month_column
+  _flat_columns
+  _te_public_ism_fetch
+  ism_snapshot
+  data_quality_gate
+  main
+
+Der Vergleich nach Entfernung des absichtlich eingefügten ISM-3-Source-Blocks
+und des ersetzten _ism_fetch ergibt byteidentischen Inhalt bis auf genau
+eine zusätzliche Leerzeile vor spglobal_services_snapshot.
+
+Damit wurden außerhalb des ISM-Einbaubereichs keine funktionalen Änderungen
+festgestellt.
+
+4. INTEGRIERTE NEUE ISM-KOMPONENTEN
+-----------------------------------
+Neu eingefügt:
+  ISM_SOURCE_PRIORITY
+  ISM_BROWSER_HEADERS
+  _ism_acquire_official_html
+  _ism_count_complete
+  _ism_normalize_candidate
+  _ism_pmi_variant_1_visible
+  _ism_pmi_variant_2_table_dom
+  _ism_extract_actual_official_reference
+  _ism_build_official_candidate
+
+Ersetzt:
+  _ism_fetch
+
+Nicht verändert:
+  ism_snapshot
+  Cache-Speicherlogik außerhalb des ISM-Abrufs
+  Rendering
+  Data Quality Gate
+  restliche Makro-Datenquellen
+  main()
+
+5. LOGIKPRÜFUNG GEGEN DIE BEWIESENE 3-SOURCE-ARCHITEKTUR
+---------------------------------------------------------
+A = TradingEconomics Public:
+  PASS
+  Wird unabhängig versucht.
+  B/C werden nicht übersprungen, wenn A erfolgreich ist.
+
+B = Official ISM HTML Variant 1:
+  PASS
+  Eigenständige PMI-Extraktion über sichtbaren Text/Pmi-Kontext.
+  Die übrigen Komponenten kommen aus dem offiziellen ISM-Parser.
+
+C = Official ISM HTML Variant 2:
+  PASS
+  Eigenständige PMI-Extraktion über Tabellen-/DOM-Struktur.
+  Die übrigen Komponenten kommen aus dem offiziellen ISM-Parser.
+
+Kein A->B->C-Kurzschluss:
+  PASS
+  A wird immer versucht; danach wird der offizielle Response beschafft;
+  B und C werden beide aus demselben echten offiziellen Response aufgebaut.
+
+Gemeinsamer offizieller Response für B/C:
+  PASS
+  Genau ein Acquisition-Aufruf pro angefordertem Monat.
+  B und C erhalten denselben HTML-Response.
+  Die Parser-/PMI-Logik bleibt getrennt.
+
+Offizieller Zugriff:
+  PASS
+  Session wird aufgebaut.
+  Homepage wird zuerst geladen.
+  Target wird einmal ohne Redirect-Following geprüft.
+  Target wird danach in derselben Session erneut mit Redirect-Following geladen.
+  SSO/login.aspx wird explizit als nicht öffentlich verwertbar abgelehnt.
+
+11/11-Vorprüfung:
+  PASS
+  Vor dem Hinzufügen von B und C wird der offizielle Response separat
+  mit base parser + jeweiliger PMI-Variante auf Vollständigkeit geprüft.
+
+Actual Reference:
+  PASS
+  Der tatsächliche Referenzmonat wird aus dem gelieferten HTML ermittelt.
+  Der angeforderte URL-Monat wird nicht als Beweis verwendet.
+
+Candidate Validation:
+  PASS
+  Vollständigkeit 11/11 erforderlich.
+  Year/Month/Reference müssen exakt zum angeforderten Monat passen.
+  Fehlende Felder invalidieren den Kandidaten.
+  erkannte hardcodierte Juli-2026-Fallbackwerte invalidieren A.
+
+Freshness:
+  PASS
+  Innerhalb des _ism_fetch gewinnt der jüngste gültige Kandidat.
+  Bei gleichem Monat entscheidet die definierte Quellenpriorität.
+
+Cache:
+  PASS
+  ism_snapshot() wurde nicht verändert.
+  Die bestehende Cache-Prüfung bleibt aktiv.
+  Bei nicht gültigem aktuellen Cache wird weiterhin der Kandidatenlauf
+  über die Monate durchgeführt.
+
+6. KONTROLLIERTE TESTLÄUFE
+--------------------------
+TEST 1:
+  A = partiell (3/11)
+  B = vollständig 11/11
+  C = vollständig 11/11
+  Ergebnis:
+    B ausgewählt
+    11/11
+    candidate_valid=True
+  Ergebnis: PASS
+
+TEST 2:
+  A = 11/11, aber alle Werte stammen aus
+      ISM_JUL2026_VERIFIED_COMPONENT_FALLBACK
+  B/C = unavailable
+  Ergebnis:
+    A wird trotz 11/11 als INCOMPLETE/invalid behandelt.
+    Kein Kandidat ausgewählt.
+  Ergebnis: PASS
+
+TEST 3:
+  B/C liefern 11/11, aber tatsächliche Reference = 2026-07
+  obwohl 2026-08 angefordert wurde.
+  Ergebnis:
+    B/C werden invalidiert.
+    Kein Kandidat ausgewählt.
+  Ergebnis: PASS
+
+TEST 4:
+  B und C liefern beide 2026-08 mit 11/11.
+  Ergebnis:
+    B gewinnt deterministisch als Tie-Breaker.
+  Ergebnis: PASS
+
+TEST 5:
+  ism_snapshot():
+    August = kein gültiger Kandidat
+    Juli = gültiger Kandidat
+  Ergebnis:
+    zuerst August geprüft,
+    danach Juli,
+    Juli wird gespeichert/zurückgegeben.
+  Ergebnis: PASS
+
+7. LIVE-TEST IN DER AKTUELLEN PYTHON-UMGEBUNG
+---------------------------------------------
+Ein direkter Live-Aufruf von _ism_fetch() wurde zusätzlich versucht.
+
+Ergebnis:
+  Kein Codefehler festgestellt.
+  Der Testcontainer konnte externe DNS-Namen nicht auflösen:
+    tradingeconomics.com
+    www.ismworld.org
+
+Fehlerbild:
+  NameResolutionError / Temporary failure in name resolution
+
+Das ist eine Einschränkung der aktuellen Ausführungsumgebung und kein
+Fehler der integrierten ISM-Logik.
+
+Wichtig:
+  Der bereits zuvor erfolgreiche GitHub-Runner-Test hatte den offiziellen
+  ISM-Response real erreicht und die bewiesene 3-Source-Forensik mit
+  August 2026 und Juli 2026 erfolgreich abgeschlossen.
+
+8. WICHTIGE TECHNISCHE BEOBACHTUNG
+----------------------------------
+Die Testdatei prüft August und Juli gemeinsam und wählt danach den jüngsten
+gültigen Monat.
+
+Die Produktionsintegration lässt _ism_fetch jeweils genau einen angeforderten
+Monat bearbeiten. Das ist bewusst kompatibel mit der unveränderten
+ism_snapshot()-Schleife:
+
+  August -> falls ungültig/leer -> Juli -> falls ungültig/leer -> Juni
+
+Da diese Schleife bereits absteigend nach Aktualität arbeitet, bleibt die
+Freshness-Regel erhalten, ohne ism_snapshot() funktional anzufassen.
+
+9. GESAMTURTEIL
+---------------
+Syntax/AST:                         PASS
+Außenbereich unverändert:           PASS
+A unabhängig:                       PASS
+B unabhängig:                       PASS
+C unabhängig:                       PASS
+kein Kurzschluss:                   PASS
+offizieller Session-Zugriff:        PASS
+SSO-Abweisung:                      PASS
+11/11 Vorprüfung:                   PASS
+Actual-Reference-Prüfung:           PASS
+Hardcoded-Fallback-Abweisung:      PASS
+Freshness:                          PASS
+Tie-Breaker:                        PASS
+Cache-Integration unverändert:     PASS
+kontrollierte Logiktests:           5/5 PASS
+
+FAZIT:
+Die integrierte Produktionsdatei setzt die vereinbarte 3-Source-ISM-Logik
+um, ohne funktionale Änderungen außerhalb des ISM-Abrufbereichs festzustellen.
+
+Vor produktivem Einsatz ist noch genau ein GitHub-Runner-Test mit dieser
+integrierten Datei sinnvoll. Dieser soll nicht mehr die Logik entwickeln,
+sondern ausschließlich bestätigen, dass der reale Runner denselben
+öffentlichen ISM-Response und dieselbe 11/11-Auswahl wie der bewiesene
+Forensiklauf erhält.
