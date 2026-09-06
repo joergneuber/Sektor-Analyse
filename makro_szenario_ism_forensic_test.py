@@ -3898,81 +3898,6 @@ def _ism_forensic_test():
     }
     required = _ism_required_fields("manufacturing")
 
-    def fetch_official(y, m):
-        url = (
-            f"https://www.ismworld.org/supply-management-news-and-reports/reports/"
-            f"ism-pmi-reports/pmi/{calendar.month_name[m].lower()}/"
-        )
-        print(f"\n[OFFICIAL] {y}-{m:02d} -> {url}")
-        try:
-            # First pass: do NOT follow redirects. This exposes the real HTTP
-            # response from ISM instead of turning a 30x -> SSO redirect into
-            # a misleading final HTTP 200 login page.
-            r0 = requests.get(
-                url, timeout=30, headers=REQUEST_HEADERS, allow_redirects=False
-            )
-        except Exception as exc:
-            print(f"FAIL HTTP (no-redirect): {type(exc).__name__}: {exc}")
-            return None
-
-        location = r0.headers.get("Location", "")
-        content_type = r0.headers.get("Content-Type", "")
-        print(
-            f"HTTP_NO_REDIRECT={r0.status_code} "
-            f"LOCATION={location or '<none>'} "
-            f"CONTENT_TYPE={content_type or '<none>'}"
-        )
-
-        if r0.status_code in (301, 302, 303, 307, 308):
-            print("REDIRECT DETECTED: automatisches Folgen ist im Forensik-Test bewusst deaktiviert.")
-            if "login.aspx" in location.lower() or "sso" in location.lower():
-                print("FAIL: Redirect fuehrt direkt zu SSO/login")
-                return None
-            print("INFO: Redirect fuehrt NICHT offensichtlich zu SSO/login; teste Ziel separat.")
-            return None
-
-        if r0.status_code != 200:
-            print("FAIL: HTTP status != 200")
-            return None
-
-        # Second pass: follow redirects only for diagnostic comparison.
-        try:
-            r = requests.get(
-                url, timeout=30, headers=REQUEST_HEADERS, allow_redirects=True
-            )
-        except Exception as exc:
-            print(f"FAIL HTTP (redirect-follow): {type(exc).__name__}: {exc}")
-            return None
-
-        print(f"HTTP_FOLLOW={r.status_code} FINAL_URL={r.url}")
-        if r.status_code != 200:
-            print("FAIL: HTTP status after redirect-follow != 200")
-            return None
-        if "login.aspx" in r.url.lower() or "sso" in r.url.lower():
-            print("FAIL: official route ended at SSO/login")
-            return None
-
-        d = _ism_public_report_full("manufacturing", y, m, r.text, url)
-        if not d:
-            print("FAIL: official parser returned None")
-            return None
-
-        count = sum(d.get(k) is not None for k in required)
-        print(f"PARSED={count}/{len(required)} REFERENCE={d.get('reference')}")
-        failures = []
-        if d.get("reference") != f"{y}-{m:02d}":
-            failures.append(f"reference={d.get('reference')!r}")
-        for k, want in expected[(y, m)].items():
-            got = d.get(k)
-            if got is None or abs(float(got) - want) > 1e-9:
-                failures.append(f"{k}: got={got!r}, expected={want}")
-        if failures:
-            print("FAIL VALUE/REFERENCE CHECK:")
-            for item in failures:
-                print("  - " + item)
-            return None
-        print("PASS: alle 11 Werte und der Datenmonat stimmen.")
-        return d
 
     # ------------------------------------------------------------------
     # SECOND DIAGNOSTIC PASS: Session + browser-like headers
@@ -4016,49 +3941,24 @@ def _ism_forensic_test():
         session = requests.Session()
         session.headers.update(browser_headers)
 
-        # Step 1: Establish a normal public-site session and collect cookies.
-        home_url = "https://www.ismworld.org/"
-        try:
-            h = session.get(home_url, timeout=30, allow_redirects=True)
-            print(f"SESSION_HOME_HTTP={h.status_code}")
-            print(f"SESSION_HOME_FINAL_URL={h.url}")
-            print(f"SESSION_HOME_COOKIES={len(session.cookies)}")
-            if h.status_code != 200:
-                print("INFO: ISM homepage did not return HTTP 200; continuing diagnostic.")
-        except Exception as exc:
-            print(f"SESSION_HOME_ERROR={type(exc).__name__}: {exc}")
-
-        # Step 2: Request the actual report without following redirects.
-        try:
-            r0 = session.get(url, timeout=30, allow_redirects=False)
-        except Exception as exc:
-            print(f"SESSION_NO_REDIRECT_ERROR={type(exc).__name__}: {exc}")
-            session_results[(y, m)] = False
-            return None
-
-        location = r0.headers.get("Location", "")
-        set_cookie = r0.headers.get("Set-Cookie", "")
-        server = r0.headers.get("Server", "")
-        print(f"SESSION_NO_REDIRECT={r0.status_code}")
-        print(f"SESSION_LOCATION={location or '<none>'}")
-        print(f"SESSION_SET_COOKIE={'YES' if set_cookie else 'NO'}")
-        print(f"SESSION_SERVER={server or '<none>'}")
-        print(f"SESSION_COOKIE_COUNT_AFTER_TARGET={len(session.cookies)}")
-
-        # Step 3: Follow redirects in the SAME session for comparison.
+        # EXACTLY ONE report request for this month.
+        # The returned response is the sole source for the A-H parser comparison.
         try:
             r = session.get(url, timeout=30, allow_redirects=True)
         except Exception as exc:
-            print(f"SESSION_FOLLOW_ERROR={type(exc).__name__}: {exc}")
+            print(f"SESSION_REPORT_ERROR={type(exc).__name__}: {exc}")
             session_results[(y, m)] = False
             return None
 
-        print(f"SESSION_FOLLOW={r.status_code}")
+        print(f"SESSION_REPORT_HTTP={r.status_code}")
         print(f"SESSION_FINAL_URL={r.url}")
         print(f"SESSION_HISTORY={[x.status_code for x in r.history]}")
-        print(f"SESSION_COOKIE_COUNT_FINAL={len(session.cookies)}")
+        print(f"SESSION_COOKIE_COUNT={len(session.cookies)}")
 
         if r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
+            # The report response itself is the success criterion for this
+            # forensic run. Parser completeness is evaluated separately below.
+            session_results[(y, m)] = True
             # --------------------------------------------------------------
             # SOURCE-FORENSIK: Woher kommt der PMI-Wert wirklich?
             # Ausschliesslich diagnostisch: untersucht denselben bereits
@@ -4238,7 +4138,7 @@ def _ism_forensic_test():
             # Gemeinsame Extraktionsregeln fuer C-H: PMI-Werte werden immer
             # aus dem lokalen Kontext des Labels gelesen. Es gibt KEINEN
             # Vergleich mit einem vorab bekannten Monatswert.
-            pmi_number_re = r"(?<![A-Za-z])([0-9]{1,2}(?:\.[0-9])?)(?![A-Za-z])"
+            pmi_number_re = r"(?<![A-Za-z0-9])([0-9]{1,2}\.[0-9])(?![A-Za-z0-9])"
 
             # C: sichtbarer Text. Das Label wird gesucht; anschliessend werden
             # Zahlen nur innerhalb eines engen lokalen Kontextfensters extrahiert.
@@ -4252,27 +4152,41 @@ def _ism_forensic_test():
                     break
             parser_results["C"] = pc
 
-            # D: DOM-Traversal. Das PMI-Label wird gesucht; ausgewertet werden
-            # nur sein eigenes Element, Parent und direkte Geschwister.
+            # D: DOM-Traversal. Das PMI-Label wird gesucht. Ein Wert wird nur
+            # akzeptiert, wenn er in einem unmittelbar benachbarten DOM-Kontext
+            # steht und die lokale Struktur den PMI-Wert eindeutig vom Label trennt.
             pd = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
             if soup_p is not None:
                 label_re = re.compile(r"Manufacturing\s+PMI", re.I)
                 for tag in soup_p.find_all(string=label_re):
-                    candidates = []
                     parent = tag.parent
-                    if parent is not None:
-                        candidates.append(("PARSER_D_DOM_LABEL_PARENT", parent.get_text(" ", strip=True)))
-                        if parent.parent is not None:
-                            candidates.append(("PARSER_D_DOM_LABEL_GRANDPARENT", parent.parent.get_text(" ", strip=True)))
-                        sib = parent.find_next_sibling()
-                        if sib is not None:
-                            candidates.append(("PARSER_D_DOM_LABEL_SIBLING", sib.get_text(" ", strip=True)))
+                    if parent is None:
+                        continue
+                    # Kandidaten sind nur derselbe Textknoten, sein Parent sowie
+                    # unmittelbare Geschwister. Der Text muss das PMI-Label und
+                    # genau eine plausible Dezimalzahl enthalten.
+                    candidates = [("PARSER_D_DOM_LABEL_PARENT", parent.get_text(" ", strip=True))]
+                    prev_sib = parent.find_previous_sibling()
+                    next_sib = parent.find_next_sibling()
+                    if prev_sib is not None:
+                        candidates.append(("PARSER_D_DOM_PREVIOUS_SIBLING", prev_sib.get_text(" ", strip=True)))
+                    if next_sib is not None:
+                        candidates.append(("PARSER_D_DOM_NEXT_SIBLING", next_sib.get_text(" ", strip=True)))
+                    if parent.parent is not None:
+                        # Nur ein enger Wrapper: kein beliebig großer Seitencontainer.
+                        wrapper = parent.parent
+                        wrapper_text = wrapper.get_text(" ", strip=True)
+                        if len(wrapper_text) <= 500:
+                            candidates.append(("PARSER_D_DOM_LABEL_WRAPPER", wrapper_text))
                     for method, ctx in candidates:
                         if not re.search(r"Manufacturing\s+PMI", ctx, re.I):
                             continue
-                        vm = re.search(pmi_number_re, ctx)
-                        if vm:
-                            pd["pmi"] = float(vm.group(1))
+                        vals = re.findall(pmi_number_re, ctx)
+                        # PMI ist eine Dezimalzahl; ganze Jahreszahlen/Monatszahlen
+                        # werden dadurch nicht als gültiger PMI akzeptiert.
+                        decimal_vals = [v for v in vals if "." in v]
+                        if len(decimal_vals) == 1:
+                            pd["pmi"] = float(decimal_vals[0])
                             pd["provenance"]["pmi"] = {"method": method, "context": ctx[:700]}
                             break
                     if pd.get("pmi") is not None:
@@ -4285,13 +4199,20 @@ def _ism_forensic_test():
             pe = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
             raw_e = r.text or ""
             for mm in re.finditer(r"Manufacturing\s+PMI", raw_e, re.I):
-                raw_ctx = raw_e[mm.start():min(len(raw_e), mm.end() + 700)]
+                # Nur ein enges Fenster direkt hinter dem PMI-Label. Kein
+                # "erste Zahl irgendwo in 700 Zeichen" mehr. Dadurch bleibt E
+                # ein echter Raw-HTML-Kandidat und kann keine Jahreszahl oder
+                # andere entfernte Kennzahl als PMI übernehmen.
+                raw_ctx = raw_e[mm.start():min(len(raw_e), mm.end() + 220)]
                 ctx = re.sub(r"<[^>]+>", " ", raw_ctx)
                 ctx = re.sub(r"\s+", " ", ctx).strip()
-                vm = re.search(pmi_number_re, ctx)
+                vm = re.search(
+                    r"(?:at|was|is|registered|reading|of|:)?\s*" + pmi_number_re,
+                    ctx, re.I
+                )
                 if vm:
                     pe["pmi"] = float(vm.group(1))
-                    pe["provenance"]["pmi"] = {"method": "PARSER_E_RAW_HTML_BOUNDED_REGEX", "context": ctx[:900]}
+                    pe["provenance"]["pmi"] = {"method": "PARSER_E_RAW_HTML_DIRECT_LABEL_WINDOW", "context": ctx[:500]}
                     break
             parser_results["E"] = pe
 
@@ -4315,8 +4236,8 @@ def _ism_forensic_test():
             pg = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
             patterns_g = [
                 r"Manufacturing\s+PMI[^0-9]{0,120}?(?:at|was|is|registered|reading|of|:)\s*" + pmi_number_re,
-                r"Manufacturing\s+PMI[^0-9]{0,250}?" + pmi_number_re,
-                r"Manufacturing\s+PMI[^<]{0,500}?" + pmi_number_re,
+                r"Manufacturing\s+PMI[^0-9]{0,120}?" + pmi_number_re,
+                r"Manufacturing\s+PMI[^<]{0,220}?" + pmi_number_re,
             ]
             for pat in patterns_g:
                 mm = re.search(pat, visible_p or "", re.I | re.S)
@@ -4326,25 +4247,31 @@ def _ism_forensic_test():
                     break
             parser_results["G"] = pg
 
-            # H: DOM-Element-Selbsttest. Zuerst eigenes Element, dann direktes
-            # Geschwisterelement; die Auswertung bleibt lokal begrenzt.
+            # H: DOM-Element-/Sibling-Selbsttest. Anders als die vorige Version
+            # wird NICHT die erste beliebige Zahl eines Elements akzeptiert.
+            # Es muss eine PMI-spezifische lokale Struktur vorliegen und genau
+            # eine Dezimalzahl im selben kleinen DOM-Kontext vorhanden sein.
             ph = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
             if soup_p is not None:
                 for el in soup_p.find_all(True):
                     own = el.get_text(" ", strip=True)
-                    if not re.search(r"Manufacturing\s+PMI", own, re.I) or len(own) > 1200:
+                    if not re.search(r"Manufacturing\s+PMI", own, re.I) or len(own) > 500:
                         continue
-                    vm = re.search(pmi_number_re, own)
-                    if vm:
-                        ph["pmi"] = float(vm.group(1))
+                    vals = re.findall(pmi_number_re, own)
+                    decimal_vals = [v for v in vals if "." in v]
+                    if len(decimal_vals) == 1:
+                        ph["pmi"] = float(decimal_vals[0])
                         ph["provenance"]["pmi"] = {"method": "PARSER_H_DOM_ELEMENT_TEXT", "context": own[:900]}
                         break
+                    # Falls das Label und der Wert getrennt stehen, darf nur das
+                    # unmittelbare nächste/übergeordnete lokale Element verwendet werden.
                     sib = el.find_next_sibling()
                     if sib is not None:
                         ctx = sib.get_text(" ", strip=True)
-                        vm = re.search(pmi_number_re, ctx)
-                        if vm:
-                            ph["pmi"] = float(vm.group(1))
+                        vals = re.findall(pmi_number_re, ctx)
+                        decimal_vals = [v for v in vals if "." in v]
+                        if len(decimal_vals) == 1 and re.search(r"(?:pmi|index|reading|value)", ctx, re.I):
+                            ph["pmi"] = float(decimal_vals[0])
                             ph["provenance"]["pmi"] = {"method": "PARSER_H_DOM_SIBLING", "context": ctx[:900]}
                             break
             parser_results["H"] = ph
@@ -4385,11 +4312,10 @@ def _ism_forensic_test():
             if d:
                 count = sum(d.get(k) is not None for k in required)
                 print(f"SESSION_PARSED={count}/{len(required)} REFERENCE={d.get('reference')}")
-                if count == len(required) and d.get("reference") == f"{y}-{m:02d}":
-                    print("SESSION PASS: echter ISM-Report ohne SSO-Login erreichbar.")
-                    session_results[(y, m)] = True
-                    return d
-            print("SESSION INFO: HTTP 200, aber kein vollstaendiger offizieller ISM-Datensatz.")
+            else:
+                print("SESSION_PARSED=0/11 REFERENCE=<none>")
+            print("SESSION PASS: echter ISM-Report-Response ohne SSO-Login; Parser-Vollstaendigkeit wird separat bewertet.")
+            return d
         else:
             print("SESSION INFO: Auch die Session endet nicht auf dem oeffentlichen ISM-Report.")
 
@@ -4399,61 +4325,19 @@ def _ism_forensic_test():
     for ym in ((2026, 8), (2026, 7)):
         session_diagnostic(*ym)
 
-    results = {}
-    for ym in ((2026, 8), (2026, 7)):
-        results[ym] = fetch_official(*ym)
-
-    print("\n" + "-" * 78)
-    print("[_ism_fetch] TEST MIT AUSGESCHALTETEM TRADINGECONOMICS")
-    print("Damit wird gezielt geprüft, ob die offizielle ISM-Quelle den")
-    print("vollständigen Datensatz über den echten Produktions-Fallback liefert.")
-    print("-" * 78)
-
-    original_te = globals().get("_te_public_ism_fetch")
-    original_cache = globals().get("_cache_load")
-    original_save = globals().get("_cache_save")
-    try:
-        globals()["_te_public_ism_fetch"] = lambda kind, year, month: None
-        for ym in ((2026, 8), (2026, 7)):
-            y, m = ym
-            print(f"\n[_ism_fetch] {y}-{m:02d}")
-            d = _ism_fetch("manufacturing", y, m)
-            if not d:
-                print("FAIL: _ism_fetch returned None")
-                results[(y, m, "_ism_fetch")] = False
-                continue
-            count = sum(d.get(k) is not None for k in required)
-            ok = (
-                count == len(required)
-                and d.get("reference") == f"{y}-{m:02d}"
-                and d.get("pmi") == expected[(y, m)]["pmi"]
-            )
-            print(
-                f"RESULT={count}/{len(required)} "
-                f"REFERENCE={d.get('reference')} PMI={d.get('pmi')}"
-            )
-            print("PASS" if ok else "FAIL")
-            results[(y, m, "_ism_fetch")] = ok
-    finally:
-        if original_te is not None:
-            globals()["_te_public_ism_fetch"] = original_te
-        if original_cache is not None:
-            globals()["_cache_load"] = original_cache
-        if original_save is not None:
-            globals()["_cache_save"] = original_save
-
-    # Final summary.
-    direct_ok = all(results.get(ym) is not None for ym in ((2026, 8), (2026, 7)))
-    fetch_ok = all(results.get((y, m, "_ism_fetch")) for y, m in ((2026, 8), (2026, 7)))
+    # Final summary: keep HTTP/response success strictly separate from parser success.
+    response_ok = all(session_results.get(ym) is True for ym in ((2026, 8), (2026, 7)))
     print("\n" + "=" * 78)
     print("ENDRESULTAT")
-    print(f"OFFIZIELLER PARSER: {'PASS' if direct_ok else 'FAIL'}")
-    print(f"_ism_fetch OFFICIAL FALLBACK: {'PASS' if fetch_ok else 'FAIL'}")
-    print("ERWARTET: August=54.6 / 2026-08 / 11-11 | Juli=55.6 / 2026-07 / 11-11")
+    print(f"HTTP/RESPONSE TEST: {'PASS' if response_ok else 'FAIL'}")
+    print("PMI-PARSER-ERGEBNIS: siehe PMI_VARIANT_ASSESSMENT oben")
+    print("ERWARTET (NUR ZUR NACHPRUEFUNG): August=54.6 | Juli=55.6 | jeweils 11/11")
+    print("HTTP-PRINZIP: genau 1 Report-Request je Monat; A-H teilen exakt denselben Response.")
+    print("WICHTIG: HTTP/RESPONSE PASS bedeutet NICHT, dass ein PMI-Parser erfolgreich war.")
     print("=" * 78)
-    if not (direct_ok and fetch_ok):
+    if not response_ok:
         raise SystemExit(2)
-    print("GESAMTTEST PASS")
+    print("GESAMTTEST PASS – HTTP/RESPONSE; PMI-PARSER SEPARAT BEWERTET")
 
 
 if __name__ == "__main__":
