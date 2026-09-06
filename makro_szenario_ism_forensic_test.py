@@ -4059,7 +4059,111 @@ def _ism_forensic_test():
         print(f"SESSION_COOKIE_COUNT_FINAL={len(session.cookies)}")
 
         if r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
-            d = _ism_public_report_full("manufacturing", y, m, r.text, url)
+            # --------------------------------------------------------------
+            # PARSER-FORENSIK: vier Varianten auf exakt demselben HTML.
+            # A = bestehender Parser, B = strukturierter Parser,
+            # C = direkter HTML-Tabellenparser, D = Plain-Text-Diagnose.
+            # Keine Variante veraendert Produktionsdaten.
+            # --------------------------------------------------------------
+            print("\n[PARSER FORENSIK] A/B/C/D – gleicher HTML-Response")
+            required = _ism_required_fields("manufacturing")
+            parser_results = {}
+
+            try:
+                parser_results["A"] = _ism_public_report_full("manufacturing", y, m, r.text, url) or {}
+            except Exception as exc:
+                parser_results["A"] = {}
+                print(f"PARSER_A_ERROR={type(exc).__name__}: {exc}")
+
+            try:
+                parser_results["B"] = _ism_structured_from_html("manufacturing", y, m, r.text, url) or {}
+            except Exception as exc:
+                parser_results["B"] = {}
+                print(f"PARSER_B_ERROR={type(exc).__name__}: {exc}")
+
+            # C: HTML tables directly. Only an explicitly detected month
+            # column is accepted; otherwise the field remains missing.
+            pc = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            try:
+                from bs4 import BeautifulSoup
+                soup_c = BeautifulSoup(r.text, "html.parser")
+                targets_c = _ism_target_maps("manufacturing")
+                aliases_c = {k: {re.sub(r"\s+", " ", a).strip().casefold() for a in v} for k, v in targets_c.items()}
+                for ti, table in enumerate(soup_c.find_all("table")):
+                    rows = []
+                    for tr in table.find_all("tr"):
+                        cells = [re.sub(r"\s+", " ", c.get_text(" ", strip=True)).strip() for c in tr.find_all(["th", "td"])]
+                        if cells: rows.append(cells)
+                    if not rows: continue
+                    blob = " | ".join(" | ".join(x) for x in rows[:4])
+                    if not (re.search(rf"\b{calendar.month_abbr[m]}\b", blob, re.I) or re.search(rf"\b{calendar.month_name[m]}\b", blob, re.I) or f"{y}-{m:02d}" in blob):
+                        continue
+                    current_idx = None
+                    for hr in rows[:4]:
+                        idx = _find_month_column(hr, y, m)
+                        if idx is not None: current_idx = idx; break
+                    if current_idx is None: continue
+                    for ri, row in enumerate(rows):
+                        if not row: continue
+                        first = row[0].casefold()
+                        key = next((k for k, aa in aliases_c.items() if first in aa), None)
+                        if key is None or pc.get(key) is not None or current_idx >= len(row): continue
+                        val = _parse_float_token(row[current_idx])
+                        if val is not None:
+                            pc[key] = val; pc["provenance"][key] = {"method": "PARSER_C_DIRECT_HTML_TABLE", "table": ti, "row": ri}
+            except Exception as exc:
+                print(f"PARSER_C_ERROR={type(exc).__name__}: {exc}")
+            parser_results["C"] = pc
+
+            # D: bounded narrative extraction. Diagnostic only; it reports
+            # values immediately following the named field, never arbitrary
+            # page-wide numbers.
+            pdx = {"year": y, "month": m, "reference": f"{y}-{m:02d}", "provenance": {}}
+            try:
+                plain_d = re.sub(r"<script.*?</script>|<style.*?</style>", " ", r.text, flags=re.I | re.S)
+                plain_d = re.sub(r"<[^>]+>", " ", plain_d)
+                plain_d = re.sub(r"\s+", " ", plain_d).strip()
+                patterns_d = {
+                    "pmi": r"(?:Manufacturing PMI|PMI)\s*(?:Index|registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "new_orders": r"New Orders(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "production": r"Production(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "employment": r"Employment(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "prices": r"Prices(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "supplier_deliveries": r"Supplier Deliveries(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "backlog_of_orders": r"Backlog of Orders(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "inventories": r"Inventories(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "customers_inventories": r"Customers[’']? Inventories(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "new_export_orders": r"New Export Orders(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                    "imports": r"Imports(?: Index)?\s*(?:registered|reading|was|is|:)?\s*([0-9]{1,2}(?:\.[0-9])?)",
+                }
+                for key, pat in patterns_d.items():
+                    mm = re.search(pat, plain_d, re.I)
+                    if mm:
+                        val = _parse_float_token(mm.group(1))
+                        if val is not None and 0 <= val <= 100: pdx[key] = val
+            except Exception as exc:
+                print(f"PARSER_D_ERROR={type(exc).__name__}: {exc}")
+            parser_results["D"] = pdx
+
+            print("PARSER_FIELDS:")
+            for pname, pdata in parser_results.items():
+                got = sum(pdata.get(k) is not None for k in required)
+                missing = [k for k in required if pdata.get(k) is None]
+                print(f"  {pname}: {got}/{len(required)} missing={missing}")
+                print("    " + " | ".join(f"{k}={pdata.get(k)!r}" for k in required if pdata.get(k) is not None))
+
+            print("PARSER_CROSSCHECK:")
+            for key in required:
+                vals = {p: parser_results[p].get(key) for p in parser_results if parser_results[p].get(key) is not None}
+                uniq = sorted({str(v) for v in vals.values()})
+                if len(uniq) == 1 and vals:
+                    print(f"  {key}: CONSENSUS={uniq[0]} via {','.join(vals)}")
+                elif len(uniq) > 1:
+                    print(f"  {key}: DISAGREEMENT=" + ", ".join(f"{p}={v}" for p, v in vals.items()))
+                else:
+                    print(f"  {key}: NO_VALUE")
+
+            d = parser_results["A"]
             if d:
                 count = sum(d.get(k) is not None for k in required)
                 print(f"SESSION_PARSED={count}/{len(required)} REFERENCE={d.get('reference')}")
