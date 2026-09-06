@@ -4060,6 +4060,142 @@ def _ism_forensic_test():
 
         if r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
             # --------------------------------------------------------------
+            # SOURCE-FORENSIK: Woher kommt der PMI-Wert wirklich?
+            # Ausschliesslich diagnostisch: untersucht denselben bereits
+            # empfangenen HTML-Response r.text. KEINE zusaetzlichen Requests.
+            # --------------------------------------------------------------
+            print("\n[SOURCE FORENSIK] PMI/HTML/JS/JSON – gleicher HTML-Response")
+            expected_pmi = 54.6 if (y, m) == (2026, 8) else 55.6 if (y, m) == (2026, 7) else None
+            try:
+                from bs4 import BeautifulSoup
+                raw = r.text or ""
+                soup_sf = BeautifulSoup(raw, "html.parser")
+                visible_text = soup_sf.get_text(" ", strip=True)
+
+                value_token = f"{expected_pmi:.1f}" if expected_pmi is not None else None
+                raw_value_hits = raw.casefold().count(value_token.casefold()) if value_token else 0
+                visible_value_hits = visible_text.casefold().count(value_token.casefold()) if value_token else 0
+                print(f"PMI_EXPECTED_VALUE={value_token or '<none>'}")
+                print(f"PMI_VALUE_IN_RAW_HTML={'YES' if raw_value_hits else 'NO'} COUNT={raw_value_hits}")
+                print(f"PMI_VALUE_IN_VISIBLE_TEXT={'YES' if visible_value_hits else 'NO'} COUNT={visible_value_hits}")
+
+                # PMI-Labels + enger Kontext: damit wird geprueft, ob der
+                # erwartete Wert tatsaechlich im PMI-Kontext steht und nicht
+                # nur zufaellig irgendwo im HTML vorkommt.
+                label_patterns = [
+                    r"manufacturing\s+pmi",
+                    r"purchasing\s+managers.?\s+index",
+                    r"pmi\s*[:=]",
+                    r"headline\s+pmi",
+                ]
+                label_matches = []
+                for pat in label_patterns:
+                    for mm in re.finditer(pat, raw, re.I):
+                        a = max(0, mm.start() - 180)
+                        b = min(len(raw), mm.end() + 300)
+                        ctx = re.sub(r"\s+", " ", raw[a:b])
+                        label_matches.append((mm.group(0), ctx, value_token in ctx if value_token else False))
+                        if len(label_matches) >= 12:
+                            break
+                    if len(label_matches) >= 12:
+                        break
+                print(f"PMI_LABEL_MATCHES={len(label_matches)}")
+                label_value_matches = 0
+                for i, (label, ctx, has_value) in enumerate(label_matches, 1):
+                    if has_value:
+                        label_value_matches += 1
+                    print(f"PMI_LABEL_CONTEXT_{i}={ctx}")
+                print(f"PMI_LABEL_WITH_EXPECTED_VALUE_CONTEXTS={label_value_matches}")
+
+                # JS-/Script-Forensik: Werte, Labels, JSON-artige Daten und
+                # Hinweise auf dynamische Datenabrufe. Nur vorhandenes HTML.
+                scripts = soup_sf.find_all("script")
+                script_value_hits = 0
+                script_label_hits = 0
+                jsonish_hits = 0
+                dynamic_hints = []
+                for si, script in enumerate(scripts):
+                    body = script.get_text(" ", strip=False) or ""
+                    if value_token and value_token.casefold() in body.casefold():
+                        script_value_hits += 1
+                    if any(re.search(pat, body, re.I) for pat in label_patterns):
+                        script_label_hits += 1
+                    if re.search(r"[\{\[].*(?:pmi|manufacturing|new.?orders).*[\}\]]", body, re.I | re.S):
+                        jsonish_hits += 1
+                    if re.search(
+                        r"(?:fetch\s*\(|\$\.(?:get|ajax)|xmlhttprequest|axios|\.json(?:[?#]|\b)|/api/|/ajax/|/graphql|dataurl)",
+                        body,
+                        re.I,
+                    ):
+                        dynamic_hints.append((si, re.sub(r"\s+", " ", body[:700])))
+                print(f"SCRIPT_COUNT={len(scripts)}")
+                print(f"PMI_VALUE_IN_SCRIPT={'YES' if script_value_hits else 'NO'} SCRIPTS={script_value_hits}")
+                print(f"PMI_LABEL_IN_SCRIPT={'YES' if script_label_hits else 'NO'} SCRIPTS={script_label_hits}")
+                print(f"JSON_LIKE_SCRIPT_HINTS={jsonish_hits}")
+                print(f"DYNAMIC_REQUEST_SCRIPT_HINTS={len(dynamic_hints)}")
+                for si, snippet in dynamic_hints[:10]:
+                    print(f"DYNAMIC_SCRIPT_{si}={snippet}")
+
+                # data-* Attribute: ebenfalls nur Diagnose, keine Wertannahme.
+                data_hits = []
+                for tag in soup_sf.find_all(True):
+                    for attr, val in tag.attrs.items():
+                        if not attr.lower().startswith("data-"):
+                            continue
+                        sval = " ".join(val) if isinstance(val, list) else str(val)
+                        if re.search(r"pmi|manufactur|purchasing", attr + " " + sval, re.I):
+                            data_hits.append((attr, sval[:300]))
+                        elif value_token and value_token.casefold() in sval.casefold():
+                            data_hits.append((attr, sval[:300]))
+                        if len(data_hits) >= 12:
+                            break
+                    if len(data_hits) >= 12:
+                        break
+                print(f"PMI_DATA_ATTRIBUTE_HINTS={len(data_hits)}")
+                for i, (attr, val) in enumerate(data_hits, 1):
+                    print(f"DATA_ATTR_{i}={attr}={val}")
+
+                # Endpoint-/Daten-URL-Hinweise aus dem bereits empfangenen
+                # HTML. Diese URLs werden hier ABSICHTLICH NICHT aufgerufen.
+                urls = []
+                for tag in soup_sf.find_all(["script", "link", "a", "form"]):
+                    for attr in ("src", "href", "action"):
+                        v = tag.get(attr)
+                        if v and re.search(r"(?:api|ajax|json|graphql|pmi|report|data)", v, re.I):
+                            urls.append(v)
+                for mm in re.finditer(r"https?://[^\"'\s<>]+", raw, re.I):
+                    v = mm.group(0).rstrip(".,;)")
+                    if re.search(r"(?:api|ajax|json|graphql|pmi|report|data|ecommerce)", v, re.I):
+                        urls.append(v)
+                unique_urls = []
+                seen_urls = set()
+                for v in urls:
+                    if v not in seen_urls:
+                        seen_urls.add(v)
+                        unique_urls.append(v)
+                print(f"ENDPOINT_URL_HINTS={len(unique_urls)}")
+                for i, v in enumerate(unique_urls[:20], 1):
+                    print(f"ENDPOINT_HINT_{i}={v}")
+
+                # Finale Klassifikation. PMI_IM_RESPONSE wird nur gesetzt,
+                # wenn der erwartete Wert auch im PMI-Label-Kontext auftaucht.
+                if label_value_matches:
+                    source_branch = "PMI_IN_RESPONSE_PMI_CONTEXT"
+                elif script_value_hits and script_label_hits:
+                    source_branch = "PMI_IN_SCRIPT_WITH_LABEL"
+                elif data_hits:
+                    source_branch = "PMI_DATA_ATTRIBUTE_HINT"
+                elif dynamic_hints or unique_urls:
+                    source_branch = "NO_PMI_VALUE_BUT_DYNAMIC_SOURCE_HINT"
+                elif visible_value_hits or raw_value_hits:
+                    source_branch = "EXPECTED_PMI_VALUE_PRESENT_WITHOUT_PMI_CONTEXT"
+                else:
+                    source_branch = "NO_PMI_VALUE_OR_DYNAMIC_HINT"
+                print(f"PMI_SOURCE_BRANCH={source_branch}")
+            except Exception as exc:
+                print(f"SOURCE_FORENSIK_ERROR={type(exc).__name__}: {exc}")
+
+            # --------------------------------------------------------------
             # PARSER-FORENSIK: vier Varianten auf exakt demselben HTML.
             # A = bestehender Parser, B = strukturierter Parser,
             # C = direkter HTML-Tabellenparser, D = Plain-Text-Diagnose.
