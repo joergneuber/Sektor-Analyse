@@ -3974,6 +3974,109 @@ def _ism_forensic_test():
         print("PASS: alle 11 Werte und der Datenmonat stimmen.")
         return d
 
+    # ------------------------------------------------------------------
+    # SECOND DIAGNOSTIC PASS: Session + browser-like headers
+    # IMPORTANT: This is forensic-only. No credentials, tokens or SSO login.
+    # ------------------------------------------------------------------
+    print("\n" + "-" * 78)
+    print("[SESSION/BROWSER] DIAGNOSTISCHER PASS – OHNE AUTHENTIFIZIERUNG")
+    print("Prueft, ob Session/Cookies/browsernahe Header das SSO-Redirect veraendern.")
+    print("Keine Credentials, Tokens oder automatischer SSO-Login.")
+    print("-" * 78)
+
+    browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/139.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.ismworld.org/",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+    }
+
+    session_results = {}
+
+    def session_diagnostic(y, m):
+        url = (
+            f"https://www.ismworld.org/supply-management-news-and-reports/reports/"
+            f"ism-pmi-reports/pmi/{calendar.month_name[m].lower()}/"
+        )
+        print(f"\n[SESSION/BROWSER] {y}-{m:02d}")
+        print(f"TARGET_URL={url}")
+        session = requests.Session()
+        session.headers.update(browser_headers)
+
+        # Step 1: Establish a normal public-site session and collect cookies.
+        home_url = "https://www.ismworld.org/"
+        try:
+            h = session.get(home_url, timeout=30, allow_redirects=True)
+            print(f"SESSION_HOME_HTTP={h.status_code}")
+            print(f"SESSION_HOME_FINAL_URL={h.url}")
+            print(f"SESSION_HOME_COOKIES={len(session.cookies)}")
+            if h.status_code != 200:
+                print("INFO: ISM homepage did not return HTTP 200; continuing diagnostic.")
+        except Exception as exc:
+            print(f"SESSION_HOME_ERROR={type(exc).__name__}: {exc}")
+
+        # Step 2: Request the actual report without following redirects.
+        try:
+            r0 = session.get(url, timeout=30, allow_redirects=False)
+        except Exception as exc:
+            print(f"SESSION_NO_REDIRECT_ERROR={type(exc).__name__}: {exc}")
+            session_results[(y, m)] = False
+            return None
+
+        location = r0.headers.get("Location", "")
+        set_cookie = r0.headers.get("Set-Cookie", "")
+        server = r0.headers.get("Server", "")
+        print(f"SESSION_NO_REDIRECT={r0.status_code}")
+        print(f"SESSION_LOCATION={location or '<none>'}")
+        print(f"SESSION_SET_COOKIE={'YES' if set_cookie else 'NO'}")
+        print(f"SESSION_SERVER={server or '<none>'}")
+        print(f"SESSION_COOKIE_COUNT_AFTER_TARGET={len(session.cookies)}")
+
+        # Step 3: Follow redirects in the SAME session for comparison.
+        try:
+            r = session.get(url, timeout=30, allow_redirects=True)
+        except Exception as exc:
+            print(f"SESSION_FOLLOW_ERROR={type(exc).__name__}: {exc}")
+            session_results[(y, m)] = False
+            return None
+
+        print(f"SESSION_FOLLOW={r.status_code}")
+        print(f"SESSION_FINAL_URL={r.url}")
+        print(f"SESSION_HISTORY={[x.status_code for x in r.history]}")
+        print(f"SESSION_COOKIE_COUNT_FINAL={len(session.cookies)}")
+
+        if r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower():
+            d = _ism_public_report_full("manufacturing", y, m, r.text, url)
+            if d:
+                count = sum(d.get(k) is not None for k in required)
+                print(f"SESSION_PARSED={count}/{len(required)} REFERENCE={d.get('reference')}")
+                if count == len(required) and d.get("reference") == f"{y}-{m:02d}":
+                    print("SESSION PASS: echter ISM-Report ohne SSO-Login erreichbar.")
+                    session_results[(y, m)] = True
+                    return d
+            print("SESSION INFO: HTTP 200, aber kein vollstaendiger offizieller ISM-Datensatz.")
+        else:
+            print("SESSION INFO: Auch die Session endet nicht auf dem oeffentlichen ISM-Report.")
+
+        session_results[(y, m)] = False
+        return None
+
+    for ym in ((2026, 8), (2026, 7)):
+        session_diagnostic(*ym)
+
     results = {}
     for ym in ((2026, 8), (2026, 7)):
         results[ym] = fetch_official(*ym)
