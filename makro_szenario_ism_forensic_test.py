@@ -4340,8 +4340,360 @@ def _ism_forensic_test():
     print("GESAMTTEST PASS – HTTP/RESPONSE; PMI-PARSER SEPARAT BEWERTET")
 
 
+def _ism_3source_test():
+    """Forensic test of the three independent ISM candidate routes.
+
+    A = TradingEconomics public ISM data
+    B = official ISM HTML, variant 1 (visible-text PMI + existing 10/11 parser)
+    C = official ISM HTML, variant 2 (table/DOM PMI + existing 10/11 parser)
+
+    Each source candidate is built independently.  A/B/C are validated first;
+    only then is the newest complete reference month selected.  The test does
+    not modify production acquisition functions or the cache.
+    """
+    print("\n" + "=" * 88)
+    print("[ISM 3-SOURCE FORENSIK] A=TE | B=OFFICIAL_HTML_1 | C=OFFICIAL_HTML_2")
+    print("Prinzip: A/B/C unabhaengig pruefen -> je Quelle validieren -> juengsten vollstaendigen Monat waehlen")
+    print("Kein Fallback-Kurzschluss A->B->C; alle drei Kandidaten werden zuerst ermittelt.")
+    print("=" * 88)
+
+    kind = "manufacturing"
+    required = _ism_required_fields(kind)
+    candidates_months = ((2026, 8), (2026, 7))
+    source_priority = {"A": 0, "B": 1, "C": 2}
+    all_candidates = []
+
+    def count_complete(d):
+        return sum(1 for k in required if isinstance(d, dict) and d.get(k) is not None)
+
+    def normalize_candidate(d, source_name, source_label, y, m):
+        if not isinstance(d, dict):
+            return None
+        d = dict(d)
+        actual_year = d.get("year")
+        actual_month = d.get("month")
+        actual_reference = str(d.get("reference") or "").strip()
+        if actual_year is None or actual_month is None:
+            # A source without an explicit year/month is not allowed to become
+            # valid merely because it was requested for (y,m).
+            actual_year, actual_month = None, None
+        d["source_group"] = source_label
+        d["source_candidate"] = source_name
+        d["requested_reference"] = f"{y}-{m:02d}"
+        d["actual_reference"] = actual_reference
+        d["actual_year"] = actual_year
+        d["actual_month"] = actual_month
+        d["completeness"] = count_complete(d)
+        missing = [k for k in required if d.get(k) is None]
+        d["missing_fields"] = missing
+        provenance = d.get("provenance") or {}
+        hardcoded = []
+        for key, meta in provenance.items():
+            if isinstance(meta, dict) and meta.get("method") == "ISM_JUL2026_VERIFIED_COMPONENT_FALLBACK":
+                hardcoded.append(key)
+        d["hardcoded_fallback_fields"] = hardcoded
+        reference_ok = (
+            actual_year == y
+            and actual_month == m
+            and actual_reference == f"{y}-{m:02d}"
+        )
+        d["candidate_valid"] = (
+            d["completeness"] == len(required)
+            and not missing
+            and reference_ok
+            and not hardcoded
+        )
+        return d
+
+    def pmi_variant_1_visible(html_text, y, m):
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_text or "", "html.parser")
+            text = soup.get_text(" ", strip=True)
+        except Exception:
+            text = re.sub(r"<[^>]+>", " ", html_text or "")
+            text = re.sub(r"\s+", " ", text).strip()
+        num_re = r"(?<![A-Za-z0-9])([0-9]{1,2}\.[0-9])(?![A-Za-z0-9])"
+        for mm in re.finditer(r"Manufacturing\s+PMI", text, re.I):
+            ctx = text[mm.start():min(len(text), mm.end() + 180)]
+            vm = re.search(r"(?:at|was|is|registered|reading|of|:)??\s*" + num_re, ctx, re.I)
+            if vm:
+                return float(vm.group(1)), ctx[:700], "OFFICIAL_HTML_1_VISIBLE_PMI_CONTEXT"
+        return None, "", ""
+
+    def pmi_variant_2_table_dom(html_text, y, m):
+        num_re = r"(?<![A-Za-z0-9])([0-9]{1,2}\.[0-9])(?![A-Za-z0-9])"
+        # Variant 2A: pandas table structure. The value must be on the same
+        # row as the explicit Manufacturing PMI label.
+        if pd is not None:
+            try:
+                frames = pd.read_html(StringIO(html_text or ""))
+                for fi, df in enumerate(frames):
+                    if df.empty:
+                        continue
+                    rows = df.fillna("").astype(str).values.tolist()
+                    for ri, row in enumerate(rows):
+                        row_text = " | ".join(str(x).strip() for x in row)
+                        if not re.search(r"Manufacturing\s+PMI", row_text, re.I):
+                            continue
+                        # Prefer the column that is explicitly identified as
+                        # the requested reference month. This is essential when
+                        # the ISM table contains both current and prior month
+                        # values (e.g. Aug 2026 and Jul 2026).
+                        current_col = _find_month_column(df.columns, y, m)
+                        if current_col is not None and current_col < len(row):
+                            selected = _parse_float_token(row[current_col])
+                            if selected is not None:
+                                return float(selected), row_text[:700], f"OFFICIAL_HTML_2_TABLE_MONTH_COLUMN(fi={fi},ri={ri},col={current_col})"
+                        vals = re.findall(num_re, row_text)
+                        if len(vals) == 1:
+                            return float(vals[0]), row_text[:700], f"OFFICIAL_HTML_2_TABLE_ROW(fi={fi},ri={ri})"
+                        # Explicit label in first cell + a unique decimal value
+                        # remains a safe fallback when no month column is exposed.
+                        if row and re.search(r"Manufacturing\s+PMI", str(row[0]), re.I):
+                            vals2 = [v for v in re.findall(num_re, " | ".join(row[1:]))]
+                            if len(vals2) == 1:
+                                return float(vals2[0]), row_text[:700], f"OFFICIAL_HTML_2_TABLE_VALUE(fi={fi},ri={ri})"
+            except Exception:
+                pass
+
+        # Variant 2B: DOM local element. Unlike the generic H parser, the
+        # value must be in the same small element as the explicit PMI label.
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_text or "", "html.parser")
+            for el in soup.find_all(True):
+                own = el.get_text(" ", strip=True)
+                if not re.search(r"Manufacturing\s+PMI", own, re.I) or len(own) > 350:
+                    continue
+                vals = re.findall(num_re, own)
+                if len(vals) == 1:
+                    return float(vals[0]), own[:700], "OFFICIAL_HTML_2_DOM_LOCAL_ELEMENT"
+        except Exception:
+            pass
+        return None, "", ""
+
+    def extract_actual_official_reference(html_text, kind, requested_year, requested_month):
+        """Extract the actual ISM reference month from the delivered response.
+
+        The requested URL/month is never trusted.  Strong evidence is taken
+        from the page title/headings or the report's explicit "information
+        ... for the month of ..." statement.  Ambiguous month evidence is
+        rejected instead of being guessed.
+        """
+        series = "Services PMI" if kind == "services" else "Manufacturing PMI"
+        month_names = [calendar.month_name[i] for i in range(1, 13)]
+        month_abbrs = [calendar.month_abbr[i] for i in range(1, 13)]
+        month_map = {}
+        for i in range(1, 13):
+            month_map[calendar.month_name[i].lower()] = i
+            month_map[calendar.month_abbr[i].lower()] = i
+        month_alt = "|".join(re.escape(x) for x in month_names + month_abbrs if x)
+
+        def parse_token(token):
+            mm = re.fullmatch(rf"({month_alt})\s+(20\d{{2}})", token.strip(), re.I)
+            if not mm:
+                return None
+            mon = month_map.get(mm.group(1).lower())
+            return (int(mm.group(2)), mon, token.strip()) if mon else None
+
+        # 1) Strongest: actual HTML title/headings.  This avoids the many
+        # historical months deliberately listed later on ISM report pages.
+        heading_texts = []
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_text or "", "html.parser")
+            if soup.title:
+                heading_texts.append(soup.title.get_text(" ", strip=True))
+            for tag in soup.find_all(["h1", "h2", "h3", "h4"]):
+                txt = re.sub(r"\s+", " ", tag.get_text(" ", strip=True))
+                if txt:
+                    heading_texts.append(txt)
+        except Exception:
+            pass
+
+        strong = []
+        for txt in heading_texts:
+            if not re.search(re.escape(series), txt, re.I):
+                continue
+            for mm in re.finditer(rf"({month_alt})\s+(20\d{{2}})", txt, re.I):
+                parsed = parse_token(mm.group(0))
+                if parsed:
+                    strong.append(parsed)
+
+        if strong:
+            unique = {(yy, mm): token for yy, mm, token in strong}
+            if len(unique) == 1:
+                yy, mm = next(iter(unique))
+                return yy, mm, unique[(yy, mm)]
+
+        # 2) Explicit ISM statement near the end of the report: this is a
+        # strong source-derived month statement and is independent of the URL.
+        plain = re.sub(r"<script\b[^>]*>.*?</script>", " ", html_text or "", flags=re.I | re.S)
+        plain = re.sub(r"<style\b[^>]*>.*?</style>", " ", plain, flags=re.I | re.S)
+        plain = re.sub(r"<[^>]+>", " ", plain)
+        plain = re.sub(r"\s+", " ", plain).strip()
+        explicit_patterns = [
+            rf"information compiled in this report is for the month of\s+({month_alt})\s+(20\d{{2}})",
+            rf"information in this report is for the month of\s+({month_alt})\s+(20\d{{2}})",
+        ]
+        explicit = []
+        for pattern in explicit_patterns:
+            for mm in re.finditer(pattern, plain, re.I):
+                token = f"{mm.group(1)} {mm.group(2)}"
+                parsed = parse_token(token)
+                if parsed:
+                    explicit.append(parsed)
+        if explicit:
+            unique = {(yy, mm): token for yy, mm, token in explicit}
+            if len(unique) == 1:
+                yy, mm = next(iter(unique))
+                return yy, mm, unique[(yy, mm)]
+
+        # 3) No trustworthy actual reference found.  Do NOT substitute the
+        # requested URL month; normalize_candidate() will invalidate it.
+        return None, None, ""
+
+    def build_official_candidate(html_text, source_name, source_label, y, m, pmi_extractor):
+        # IMPORTANT: establish the actual reference from the delivered HTML
+        # BEFORE any field parser is allowed to create a candidate. The URL
+        # month is only the request target and is never trusted as evidence.
+        actual_y, actual_m, actual_token = extract_actual_official_reference(html_text, kind, y, m)
+        base = {
+            "year": actual_y,
+            "month": actual_m,
+            "reference": (f"{actual_y}-{actual_m:02d}" if actual_y is not None and actual_m is not None else ""),
+            "actual_reference_source": actual_token,
+            "url": official_url,
+            "provenance": {},
+        }
+
+        if actual_y is None or actual_m is None:
+            # No source-derived month evidence: do not parse fields and do not
+            # manufacture a reference from the requested URL.
+            return normalize_candidate(base, source_name, source_label, y, m)
+
+        # The actual month is now known. Parse the official report using that
+        # actual month, not the requested URL month. If it is a different month,
+        # the candidate will be invalidated without treating the requested month
+        # as the data reference.
+        base_parsed = _ism_public_report_full(kind, actual_y, actual_m, html_text, official_url)
+        if base_parsed:
+            base.update(dict(base_parsed))
+            base["year"] = actual_y
+            base["month"] = actual_m
+            base["reference"] = f"{actual_y}-{actual_m:02d}"
+            base["actual_reference_source"] = actual_token
+
+        pmi, context, method = pmi_extractor(html_text, actual_y, actual_m)
+        if pmi is not None:
+            base["pmi"] = pmi
+            base.setdefault("provenance", {})["pmi"] = {
+                "source": "ISM Official",
+                "url": official_url,
+                "reference_month": f"{actual_y}-{actual_m:02d}",
+                "method": method,
+                "context": context,
+            }
+        return normalize_candidate(base, source_name, source_label, y, m)
+
+    for y, m in candidates_months:
+        print(f"\n--- REFERENCE CANDIDATE {y}-{m:02d} ---")
+        official_url = (
+            f"https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports/"
+            f"pmi/{calendar.month_name[m].lower()}/"
+        )
+
+        # A: TradingEconomics is a separate source candidate. It is attempted
+        # independently and is never skipped because an official route worked.
+        try:
+            a_raw = _te_public_ism_fetch(kind, y, m)
+            a = normalize_candidate(a_raw, "A", "TRADINGECONOMICS_PUBLIC", y, m)
+        except Exception as exc:
+            a = None
+            print(f"A_ERROR={type(exc).__name__}: {exc}")
+        if a is None:
+            print(f"ISM SOURCE A / TRADINGECONOMICS: UNAVAILABLE reference={y}-{m:02d}")
+        else:
+            print(f"ISM SOURCE A / TRADINGECONOMICS: REFERENCE={a['reference']} COMPLETENESS={a['completeness']}/{len(required)} STATUS={'VALID' if a['candidate_valid'] else 'INCOMPLETE'}")
+            print(f"  MISSING={a['missing_fields']} HARDcoded_FALLBACK={a['hardcoded_fallback_fields']} ACTUAL_REFERENCE={a['actual_reference']!r}")
+            all_candidates.append(a)
+
+        # B and C share one official HTML response for efficiency, but are
+        # independent parser candidates over that exact response. This keeps
+        # publication-source identity (official ISM) while testing two distinct
+        # extraction variants without duplicate HTTP traffic.
+        try:
+            session = requests.Session()
+            headers = dict(REQUEST_HEADERS)
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Referer": "https://www.ismworld.org/",
+                "Upgrade-Insecure-Requests": "1",
+            })
+            r = session.get(official_url, timeout=20, headers=headers, allow_redirects=True)
+            official_ok = r.status_code == 200 and "login.aspx" not in r.url.lower() and "sso" not in r.url.lower()
+            print(f"OFFICIAL HTML HTTP: {r.status_code} FINAL_URL={r.url} HISTORY={[h.status_code for h in r.history]}")
+        except Exception as exc:
+            r = None
+            official_ok = False
+            print(f"OFFICIAL_HTML_ERROR={type(exc).__name__}: {exc}")
+
+        if official_ok:
+            # B: visible-text PMI extraction + the existing official HTML
+            # parser for the other ISM components.
+            b = build_official_candidate(r.text, "B", "OFFICIAL_ISM_HTML_VARIANT_1", y, m, pmi_variant_1_visible)
+            print(f"ISM SOURCE B / OFFICIAL_HTML_1: REFERENCE={b['reference']} COMPLETENESS={b['completeness']}/{len(required)} STATUS={'VALID' if b['candidate_valid'] else 'INCOMPLETE'}")
+            print(f"  MISSING={b['missing_fields']} ACTUAL_REFERENCE={b['actual_reference']!r} ACTUAL_REFERENCE_SOURCE={b.get('actual_reference_source','')!r}")
+            print(f"  PMI={b.get('pmi')!r} METHOD={((b.get('provenance') or {}).get('pmi') or {}).get('method','<none>')}")
+            all_candidates.append(b)
+
+            # C: table/DOM PMI extraction + the same existing official HTML
+            # parser for the remaining components.
+            c = build_official_candidate(r.text, "C", "OFFICIAL_ISM_HTML_VARIANT_2", y, m, pmi_variant_2_table_dom)
+            print(f"ISM SOURCE C / OFFICIAL_HTML_2: REFERENCE={c['reference']} COMPLETENESS={c['completeness']}/{len(required)} STATUS={'VALID' if c['candidate_valid'] else 'INCOMPLETE'}")
+            print(f"  MISSING={c['missing_fields']} ACTUAL_REFERENCE={c['actual_reference']!r} ACTUAL_REFERENCE_SOURCE={c.get('actual_reference_source','')!r}")
+            print(f"  PMI={c.get('pmi')!r} METHOD={((c.get('provenance') or {}).get('pmi') or {}).get('method','<none>')}")
+            all_candidates.append(c)
+        else:
+            print(f"ISM SOURCE B / OFFICIAL_HTML_1: UNAVAILABLE reference={y}-{m:02d}")
+            print(f"ISM SOURCE C / OFFICIAL_HTML_2: UNAVAILABLE reference={y}-{m:02d}")
+
+    print("\n" + "=" * 88)
+    print("[ISM 3-SOURCE SELECTION]")
+    valid = [d for d in all_candidates if d.get("candidate_valid")]
+    for d in sorted(all_candidates, key=lambda x: (x["year"], x["month"], -source_priority.get(x.get("source_candidate"), 99)), reverse=True):
+        print(f"CANDIDATE source={d.get('source_candidate')} requested={d.get('requested_reference')} actual={d.get('actual_reference')!r} completeness={d.get('completeness')}/{len(required)} valid={d.get('candidate_valid')} hardcoded_fallback={d.get('hardcoded_fallback_fields')}")
+
+    if valid:
+        # Freshness is the primary rule. Source priority is only a deterministic
+        # tie-breaker when multiple sources provide the same newest month.
+        selected = max(valid, key=lambda d: (d["year"], d["month"], -source_priority.get(d.get("source_candidate"), 99)))
+        print(f"ISM SELECTED: REFERENCE={selected['reference']} SOURCE={selected['source_candidate']} SOURCE_GROUP={selected['source_group']} COMPLETENESS={selected['completeness']}/{len(required)}")
+        newest_ref = max((d["year"], d["month"]) for d in valid)
+        same_month = [d for d in valid if (d["year"], d["month"]) == newest_ref]
+        print(f"ISM NEWEST VALID REFERENCE={newest_ref[0]}-{newest_ref[1]:02d} VALID_SOURCES={[d['source_candidate'] for d in same_month]}")
+        selection_ok = selected["completeness"] == len(required) and (selected["year"], selected["month"]) == newest_ref
+    else:
+        print("ISM SELECTED: NONE – kein vollstaendiger Kandidat")
+        selection_ok = False
+
+    print("=" * 88)
+    print(f"3-SOURCE TEST: {'PASS' if selection_ok else 'FAIL'}")
+    print("A/B/C werden unabhaengig validiert; kein A->B->C-Kurzschluss.")
+    print("Auswahlregel: juengster vollstaendiger Referenzmonat; Quellenrang nur bei gleichem Monat als Tie-Breaker.")
+    print("=" * 88)
+    if not selection_ok:
+        raise SystemExit(2)
+
+
 if __name__ == "__main__":
-    if "--ism-forensic-test" in sys.argv:
+    if "--ism-3source-test" in sys.argv:
+        _ism_3source_test()
+    elif "--ism-forensic-test" in sys.argv:
         _ism_forensic_test()
     else:
         main()
