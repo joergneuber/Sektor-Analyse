@@ -78,9 +78,9 @@ Der historische Initialbestand wird nicht überschrieben oder umgebaut; beim Ein
 3. Last-Price-Fallback
 4. Kein echter Kurs → kein Ersatzkurs
 5. Automatischer Kurs ist alleinige Quelle
-6. Automatischer Kurs liefert echte Performance
+6. Ungültiger/fehlender OS-Einstieg → keine Performance
 7. Kein echter Kurs → keine Schätzung / keine Performance
-8. Kein Stale-Data-/Schätzungs-Fallback auf Ebene der Berechnungsfunktion
+8. Tracker-Stale-Data-, Pandas-Dtype- und Einstiegsschutz
 9. Deutscher CSV-Roundtrip
 10. Tatsächlicher lokaler Übergabepfad `Offene_Positionen.csv` → `Offene Positionen+Check.csv` mit sieben Optionsscheinpositionen
 
@@ -110,7 +110,7 @@ Wenn die Quelle einen `Kurszeit`-Wert liefert, wird dieser in `OS_Kurszeit` übe
 
 Wenn weder Geldkurs noch letzter Preis verfügbar sind, wird kein erfundener oder geschätzter Kurs geschrieben. Auch ein alter automatisch gepflegter Kurs wird nicht weiterverwendet. Die Felder für aktuellen Kurs, Geld, Brief, Spread, Kurszeit, Kursquelle und Performance werden in diesem Fall geleert; `OS_Quelle` wird auf `nicht_verfügbar` gesetzt.
 
-Wenn ein echter Kurs vorhanden ist, aber `OS_Einstiegskurs` fehlt oder ungültig ist, bleibt der echte aktuelle Kurs erhalten; nur die Performance bleibt leer.
+Wenn ein echter Kurs vorhanden ist, aber `OS_Einstiegskurs` fehlt oder ungültig ist, bleiben `OS_Aktueller_Kurs`, `OS_Geld`, `OS_Brief`, `OS_Spread`, `OS_Kurszeit` und `OS_Kursquelle` erhalten; nur `OS_Performance%` bleibt leer und `OS_Quelle` wird auf `nicht_verfügbar` gesetzt.
 
 ## 10. Workflow
 
