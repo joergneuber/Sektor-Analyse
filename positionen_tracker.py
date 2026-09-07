@@ -1026,7 +1026,12 @@ def berechne_optionsschein_performance(df):
 
         # Automatische Kursfelder immer zuerst zurücksetzen. Nur ein erfolgreicher
         # aktueller Abruf darf sie wieder befüllen. Das verhindert Stale Data.
-        for spalte in ('OS_Aktueller_Kurs', 'OS_Geld', 'OS_Brief', 'OS_Spread', 'OS_Kurszeit', 'OS_Kursquelle'):
+        # Pandas 3.x behandelt leere numerische CSV-Spalten ggf. als float64.
+        # Ein leerer String darf dann nicht per .at gesetzt werden (LossySetitemError).
+        # Numerische Felder werden deshalb mit pd.NA geleert; Textfelder mit ''.
+        for spalte in ('OS_Aktueller_Kurs', 'OS_Geld', 'OS_Brief', 'OS_Spread'):
+            df.at[idx, spalte] = pd.NA
+        for spalte in ('OS_Kurszeit', 'OS_Kursquelle'):
             df.at[idx, spalte] = ''
 
         wkn = str(row.get('OS_WKN', '')).strip().upper()
@@ -1036,9 +1041,9 @@ def berechne_optionsschein_performance(df):
                 quote = hole_optionsschein_kurs(wkn)
                 auto_kurs = quote.aktueller_kurs
                 df.at[idx, 'OS_Aktueller_Kurs'] = auto_kurs
-                df.at[idx, 'OS_Geld'] = quote.geld if quote.geld is not None else ''
-                df.at[idx, 'OS_Brief'] = quote.brief if quote.brief is not None else ''
-                df.at[idx, 'OS_Spread'] = quote.spread if quote.spread is not None else ''
+                df.at[idx, 'OS_Geld'] = quote.geld if quote.geld is not None else pd.NA
+                df.at[idx, 'OS_Brief'] = quote.brief if quote.brief is not None else pd.NA
+                df.at[idx, 'OS_Spread'] = quote.spread if quote.spread is not None else pd.NA
                 df.at[idx, 'OS_Kurszeit'] = quote.kurszeit
                 df.at[idx, 'OS_Kursquelle'] = quote.quelle
                 print(f"DEBUG: {ticker} / {wkn} -> Optionsschein-Kurs automatisch: {auto_kurs} ({quote.quelle})")
@@ -1051,15 +1056,26 @@ def berechne_optionsschein_performance(df):
             automatischer_kurs=auto_kurs,
         )
         if result is None:
-            df.at[idx, 'OS_Aktueller_Kurs'] = ''
-            df.at[idx, 'OS_Geld'] = ''
-            df.at[idx, 'OS_Brief'] = ''
-            df.at[idx, 'OS_Spread'] = ''
-            df.at[idx, 'OS_Kurszeit'] = ''
-            df.at[idx, 'OS_Kursquelle'] = ''
-            df.at[idx, 'OS_Performance%'] = ''
-            df.at[idx, 'OS_Quelle'] = 'nicht_verfügbar'
-            print(f"DEBUG: {ticker} -> kein echter Optionsschein-Kurs verfügbar; Kurs und Performance bleiben leer.")
+            # Zwei fachlich unterschiedliche Fälle: Ein echter aktueller Kurs
+            # kann vorhanden sein, obwohl der manuelle OS-Einstiegskurs fehlt
+            # oder ungültig ist. Dann darf der echte Kurs NICHT gelöscht werden;
+            # nur die Performance bleibt leer. Nur wenn überhaupt kein echter
+            # automatischer Kurs vorliegt, werden die automatisch gepflegten
+            # Kursfelder geleert und OS_Quelle auf nicht_verfügbar gesetzt.
+            if auto_kurs is not None:
+                df.at[idx, 'OS_Performance%'] = pd.NA
+                df.at[idx, 'OS_Quelle'] = 'nicht_verfügbar'
+                print(f"DEBUG: {ticker} -> echter Optionsschein-Kurs vorhanden, aber OS_Einstiegskurs fehlt/ist ungültig; Kurs bleibt erhalten, Performance bleibt leer.")
+            else:
+                df.at[idx, 'OS_Aktueller_Kurs'] = pd.NA
+                df.at[idx, 'OS_Geld'] = pd.NA
+                df.at[idx, 'OS_Brief'] = pd.NA
+                df.at[idx, 'OS_Spread'] = pd.NA
+                df.at[idx, 'OS_Kurszeit'] = ''
+                df.at[idx, 'OS_Kursquelle'] = ''
+                df.at[idx, 'OS_Performance%'] = pd.NA
+                df.at[idx, 'OS_Quelle'] = 'nicht_verfügbar'
+                print(f"DEBUG: {ticker} -> kein echter Optionsschein-Kurs verfügbar; Kurs und Performance bleiben leer.")
             continue
 
         performance, quelle = result
