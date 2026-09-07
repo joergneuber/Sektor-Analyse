@@ -74,6 +74,9 @@ HEADERS = [
     "Uebergeordneter_Widerstand_Label",
     "Ueberdehnung", "Relative_Staerke_Sektor", "Konfluenz", "Retest_Support",
     "Technische_Zielzone", "Datenqualitaet", "Analysehinweis",
+    "Produkt_Typ", "Emittent", "Hebel", "OS_Einstiegskurs",
+    "OS_Aktueller_Kurs", "OS_Geld", "OS_Brief", "OS_Spread", "OS_Performance%",
+    "OS_Quelle", "OS_WKN", "OS_Kurszeit", "OS_Kursquelle",
 ]
 
 NUMERIC_COLUMNS = {
@@ -81,6 +84,8 @@ NUMERIC_COLUMNS = {
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
     "Fibonacci_Ziel_1", "Fibonacci_Ziel_2", "Fibonacci_Ziel_3", "Trendkanal_Obergrenze",
     "Measured_Move_Ziel", "Round_Number_Zone", "Uebergeordneter_Widerstand",
+    "Hebel", "OS_Einstiegskurs", "OS_Aktueller_Kurs",
+    "OS_Geld", "OS_Brief", "OS_Spread", "OS_Performance%",
 }
 
 HISTORY_HEADERS = [
@@ -89,14 +94,16 @@ HISTORY_HEADERS = [
     "Stop", "TP1", "TP2", "Status", "Ausstiegsdatum", "Ausstiegskurs",
     "Performance_Seit_Einstieg%", "TP_Hinweis", "Alert_Hinweis",
     "Produkt_Typ", "Emittent", "Hebel", "OS_Einstiegskurs",
-    "OS_Manueller_Kurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+    "OS_Aktueller_Kurs", "OS_Geld", "OS_Brief", "OS_Spread",
+    "OS_Performance%", "OS_Quelle", "OS_WKN", "OS_Kurszeit", "OS_Kursquelle",
 ]
 
 
 HISTORY_NUMERIC_COLUMNS = {
     "Einstieg", "Aktueller_Kurs", "Stop", "TP1", "TP2", "Ausstiegskurs",
     "Performance_Seit_Einstieg%", "Hebel", "OS_Einstiegskurs",
-    "OS_Manueller_Kurs", "OS_Performance%",
+    "OS_Aktueller_Kurs", "OS_Geld", "OS_Brief", "OS_Spread",
+    "OS_Performance%",
 }
 
 
@@ -977,6 +984,19 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Technische_Zielzone": target_zone,
         "Datenqualitaet": quality,
         "Analysehinweis": tech.note,
+        "Produkt_Typ": str(row.get("Produkt_Typ", "")).strip(),
+        "Emittent": str(row.get("Emittent", "")).strip(),
+        "Hebel": parse_number(row.get("Hebel")),
+        "OS_Einstiegskurs": parse_number(row.get("OS_Einstiegskurs")),
+        "OS_Aktueller_Kurs": parse_number(row.get("OS_Aktueller_Kurs")),
+        "OS_Geld": parse_number(row.get("OS_Geld")),
+        "OS_Brief": parse_number(row.get("OS_Brief")),
+        "OS_Spread": parse_number(row.get("OS_Spread")),
+        "OS_Performance%": parse_number(row.get("OS_Performance%")),
+        "OS_Quelle": str(row.get("OS_Quelle", "")).strip(),
+        "OS_WKN": str(row.get("OS_WKN", "")).strip(),
+        "OS_Kurszeit": str(row.get("OS_Kurszeit", "")).strip(),
+        "OS_Kursquelle": str(row.get("OS_Kursquelle", "")).strip(),
     }
 
 
