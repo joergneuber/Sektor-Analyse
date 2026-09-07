@@ -21,17 +21,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install openpyxl requests
 
-      - name: Testdatei und Testskript prüfen
+      - name: Testdateien prüfen
         run: |
-          test -f test/Offene_Positionen_TEST.xlsx
-          test -f test/optionsschein_kurse.py
-          test -f test/test_optionsschein_kurse.py
+          test -f Test/Offene_Positionen_TEST.xlsx
+          test -f Test/optionsschein_kurse.py
+          test -f Test/test_optionsschein_kurse.py
 
       - name: Python-Syntax prüfen
         run: |
-          python -m py_compile test/optionsschein_kurse.py
-          python -m py_compile test/test_optionsschein_kurse.py
+          python -m py_compile Test/optionsschein_kurse.py
+          python -m py_compile Test/test_optionsschein_kurse.py
 
       - name: Optionsschein-Test ausführen
-        working-directory: test
+        working-directory: Test
         run: python test_optionsschein_kurse.py
