@@ -26,12 +26,18 @@ jobs:
           test -f Test/Offene_Positionen_TEST.xlsx
           test -f Test/optionsschein_kurse.py
           test -f Test/test_optionsschein_kurse.py
+          test -f Test/test_optionsschein_live.py
 
       - name: Python-Syntax prüfen
         run: |
           python -m py_compile Test/optionsschein_kurse.py
           python -m py_compile Test/test_optionsschein_kurse.py
+          python -m py_compile Test/test_optionsschein_live.py
 
-      - name: Optionsschein-Test ausführen
+      - name: Deterministischen Offline-Test ausführen
         working-directory: Test
         run: python test_optionsschein_kurse.py
+
+      - name: Live-Integrationstest Börse Stuttgart
+        working-directory: Test
+        run: python test_optionsschein_live.py
