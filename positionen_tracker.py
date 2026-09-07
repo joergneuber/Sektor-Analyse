@@ -17,11 +17,6 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from os_kurse import (
-    berechne_os_performance,
-    hole_optionsschein_kurs,
-)
-
 # --- KONFIGURATION ---
 FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 LOKALE_DATEI = 'Offene_Positionen.csv'          # lokale Arbeitsdatei (für analyse.py)
@@ -41,14 +36,12 @@ SPALTEN = [
     'Status', 'Ausstiegsdatum', 'Ausstiegskurs',
     'Performance_Seit_Einstieg%', 'TP_Hinweis', 'Alert_Hinweis',
     'Produkt_Typ', 'Emittent', 'Hebel',
-    'OS_Einstiegskurs',
-    'OS_Performance%', 'OS_Quelle', 'OS_WKN',
-    'OS_Aktueller_Kurs', 'OS_Geld', 'OS_Brief', 'OS_Spread', 'OS_Kurszeit', 'OS_Kursquelle'
+    'OS_Einstiegskurs', 'OS_Manueller_Kurs',
+    'OS_Performance%', 'OS_Quelle', 'OS_WKN'
 ]
 NUMERISCHE_SPALTEN = [
     'Einstieg', 'Stop', 'TP1', 'TP2', 'Ausstiegskurs', 'Aktueller_Kurs', 'Performance_Seit_Einstieg%',
-    'Hebel', 'OS_Einstiegskurs', 'OS_Performance%',
-    'OS_Aktueller_Kurs', 'OS_Geld', 'OS_Brief', 'OS_Spread'
+    'Hebel', 'OS_Einstiegskurs', 'OS_Manueller_Kurs', 'OS_Performance%'
 ]
 
 alpaca_client = StockHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
@@ -531,16 +524,14 @@ def stelle_anleitung_sicher(df):
         "OPTIONSSCHEIN (zusaetzlich zu Ticker/Einstieg/Stop): Produkt_Typ = 'Optionsschein', "
         "Emittent (z.B. HSBC), Hebel (z.B. 5) und OS_Einstiegskurs (dein Kaufkurs des SCHEINS) "
         "ausfuellen. WICHTIG: Ticker/Einstieg/Stop/TP beziehen sich IMMER auf den BASISWERT "
-        "(die Aktie), NIE auf WKN oder Kurs des Scheins selbst! Der Optionsschein-Kurs wird "
-        "ausschließlich automatisch über die WKN vom Börsenkurs bezogen. Wenn kein echter "
-        "automatischer Kurs verfügbar ist, bleiben OS-Aktueller-Kurs und OS-Performance leer "
-        "(Quelle 'nicht_verfügbar'). Es gibt keine Schätzung. "
-        "OS_WKN: WKN/ISIN des Scheins angeben. Sie dient der automatischen Kursabfrage "
-        "und wird nicht automatisch veraendert."
+        "(die Aktie), NIE auf WKN oder Kurs des Scheins selbst! OS_Manueller_Kurs: hier bei "
+        "Gelegenheit den aktuellen Schein-Kurs eintragen -> echte Performance (Quelle 'manuell', "
+        "hat Vorrang). Sonst wird geschaetzt: Hebel x Aktienbewegung (Quelle 'geschaetzt'). "
+        "OS_WKN: reines Notizfeld fuer die WKN/ISIN deines Scheins - wird nie automatisch "
+        "beschrieben oder ausgewertet, nur fuer deine eigene Zuordnung."
     )
     anleitung_markt = (
         "AUTOMATISCH BEFUELLT (nicht anfassen): Aktueller_Kurs, Performance_Seit_Einstieg%, "
-        "OS_Aktueller_Kurs, OS_Geld, OS_Brief, OS_Spread, OS_Kurszeit, OS_Kursquelle, "
         "OS_Performance%, OS_Quelle. Bei Stop-Beruehrung: Status -> 'Gestoppt' + Ausstiegsdatum/"
         "-kurs automatisch. POSITION SELBST VERKAUFT (vor TP1 oder Stop): Status auf "
         "'Verkauft' setzen und Ausstiegsdatum + Ausstiegskurs von Hand eintragen - dann "
@@ -1001,16 +992,19 @@ def aktualisiere_positionen(df):
 
 
 def berechne_optionsschein_performance(df):
-    """Ermittelt die echte Optionsschein-Performance mit klarer Priorität:
-
-    1. automatischer Geld-/Letzter-Kurs -> echte OS-Performance
-    2. kein echter Kurs -> keine OS-Performance / kein Ersatzkurs
-
-    Ein automatischer Abruf beginnt mit dem Löschen der automatisch gepflegten
-    Kursfelder der betreffenden Zeile. Dadurch kann kein alter Kurs als
-    aktueller Kurs stehen bleiben. Ein echter neuer Kurs wird anschließend
-    ausschließlich aus der automatischen Quelle übernommen.
-    """
+    """Berechnet für Positionen mit Produkt_Typ = 'Optionsschein' die Performance
+    des Scheins selbst (nicht der Aktie). Zwei Quellen, manueller Kurs hat Vorrang:
+    - OS_Manueller_Kurs vorhanden: echte Performance daraus, OS_Quelle = 'manuell'
+      (präziser, da der tatsächliche Schein-Kurs verwendet wird statt einer
+      linearen Näherung - erfasst Spread, Restlaufzeit, Volatilität automatisch)
+    - sonst, falls Hebel + OS_Einstiegskurs vorhanden: GESCHÄTZTE Performance aus
+      Hebel x Aktienkursbewegung, OS_Quelle = 'geschätzt' (vereinfachte lineare
+      Näherung - reale Scheine bewegen sich nicht exakt linear zum Hebel)
+    Gilt nur für Zeilen mit Status = 'Offen' und echten Werten in Aktueller_Kurs
+    (wird vorher von aktualisiere_positionen gesetzt)."""
+    # Defensiv: Falls die eingelesene Datei die Optionsschein-Spalten (noch)
+    # nicht kennt (altes Schema, manuell bearbeitete Datei), hier nachrüsten
+    # statt mit KeyError abzubrechen
     for spalte in SPALTEN:
         if spalte not in df.columns:
             df[spalte] = ""
@@ -1021,67 +1015,40 @@ def berechne_optionsschein_performance(df):
             continue
         if str(row['Status']).strip().lower() != 'offen':
             continue
-        if str(row['Produkt_Typ']).strip().lower() != 'optionsschein':
+
+        produkt_typ = str(row['Produkt_Typ']).strip().lower()
+        if produkt_typ != 'optionsschein':
             continue
 
-        # Automatische Kursfelder immer zuerst zurücksetzen. Nur ein erfolgreicher
-        # aktueller Abruf darf sie wieder befüllen. Das verhindert Stale Data.
-        # Pandas 3.x behandelt leere numerische CSV-Spalten ggf. als float64.
-        # Ein leerer String darf dann nicht per .at gesetzt werden (LossySetitemError).
-        # Numerische Felder werden deshalb mit pd.NA geleert; Textfelder mit ''.
-        for spalte in ('OS_Aktueller_Kurs', 'OS_Geld', 'OS_Brief', 'OS_Spread'):
-            df.at[idx, spalte] = pd.NA
-        for spalte in ('OS_Kurszeit', 'OS_Kursquelle'):
-            df.at[idx, spalte] = ''
+        os_manuell = row['OS_Manueller_Kurs']
+        os_manuell_vorhanden = not pd.isna(os_manuell) and str(os_manuell).strip() not in ("", "nan")
 
-        wkn = str(row.get('OS_WKN', '')).strip().upper()
-        auto_kurs = None
-        if wkn and wkn.lower() != 'nan':
-            try:
-                quote = hole_optionsschein_kurs(wkn)
-                auto_kurs = quote.aktueller_kurs
-                df.at[idx, 'OS_Aktueller_Kurs'] = auto_kurs
-                df.at[idx, 'OS_Geld'] = quote.geld if quote.geld is not None else pd.NA
-                df.at[idx, 'OS_Brief'] = quote.brief if quote.brief is not None else pd.NA
-                df.at[idx, 'OS_Spread'] = quote.spread if quote.spread is not None else pd.NA
-                df.at[idx, 'OS_Kurszeit'] = quote.kurszeit
-                df.at[idx, 'OS_Kursquelle'] = quote.quelle
-                print(f"DEBUG: {ticker} / {wkn} -> Optionsschein-Kurs automatisch: {auto_kurs} ({quote.quelle})")
-            except Exception as exc:
-                print(f"WARNUNG: {ticker} / {wkn} -> automatischer Optionsschein-Kurs nicht verfügbar: {type(exc).__name__}: {exc}")
+        os_einstieg = row['OS_Einstiegskurs']
+        os_einstieg_vorhanden = not pd.isna(os_einstieg) and str(os_einstieg).strip() not in ("", "nan")
 
-        os_einstieg = sicheres_float(row.get('OS_Einstiegskurs'), ticker, 'OS_Einstiegskurs')
-        result = berechne_os_performance(
-            os_einstieg=os_einstieg,
-            automatischer_kurs=auto_kurs,
-        )
-        if result is None:
-            # Zwei fachlich unterschiedliche Fälle: Ein echter aktueller Kurs
-            # kann vorhanden sein, obwohl der manuelle OS-Einstiegskurs fehlt
-            # oder ungültig ist. Dann darf der echte Kurs NICHT gelöscht werden;
-            # nur die Performance bleibt leer. Nur wenn überhaupt kein echter
-            # automatischer Kurs vorliegt, werden die automatisch gepflegten
-            # Kursfelder geleert und OS_Quelle auf nicht_verfügbar gesetzt.
-            if auto_kurs is not None:
-                df.at[idx, 'OS_Performance%'] = pd.NA
-                df.at[idx, 'OS_Quelle'] = 'nicht_verfügbar'
-                print(f"DEBUG: {ticker} -> echter Optionsschein-Kurs vorhanden, aber OS_Einstiegskurs fehlt/ist ungültig; Kurs bleibt erhalten, Performance bleibt leer.")
-            else:
-                df.at[idx, 'OS_Aktueller_Kurs'] = pd.NA
-                df.at[idx, 'OS_Geld'] = pd.NA
-                df.at[idx, 'OS_Brief'] = pd.NA
-                df.at[idx, 'OS_Spread'] = pd.NA
-                df.at[idx, 'OS_Kurszeit'] = ''
-                df.at[idx, 'OS_Kursquelle'] = ''
-                df.at[idx, 'OS_Performance%'] = pd.NA
-                df.at[idx, 'OS_Quelle'] = 'nicht_verfügbar'
-                print(f"DEBUG: {ticker} -> kein echter Optionsschein-Kurs verfügbar; Kurs und Performance bleiben leer.")
+        if os_manuell_vorhanden and os_einstieg_vorhanden:
+            os_manuell_f = float(os_manuell)
+            os_einstieg_f = float(os_einstieg)
+            if os_einstieg_f > 0:
+                performance = round(((os_manuell_f - os_einstieg_f) / os_einstieg_f) * 100, 2)
+                df.at[idx, 'OS_Performance%'] = performance
+                df.at[idx, 'OS_Quelle'] = 'manuell'
+                print(f"DEBUG: {ticker} -> OS-Performance aus manuellem Kurs: {performance}%")
             continue
 
-        performance, quelle = result
-        df.at[idx, 'OS_Performance%'] = performance
-        df.at[idx, 'OS_Quelle'] = quelle
-        print(f"DEBUG: {ticker} -> OS-Performance {performance}% | Quelle={quelle}")
+        hebel = row['Hebel']
+        hebel_vorhanden = not pd.isna(hebel) and str(hebel).strip() not in ("", "nan")
+        aktien_performance = row['Performance_Seit_Einstieg%']
+        aktien_performance_vorhanden = not pd.isna(aktien_performance) and str(aktien_performance).strip() not in ("", "nan")
+
+        if hebel_vorhanden and aktien_performance_vorhanden:
+            hebel_f = float(hebel)
+            performance = round(hebel_f * float(aktien_performance), 2)
+            df.at[idx, 'OS_Performance%'] = performance
+            df.at[idx, 'OS_Quelle'] = 'geschätzt'
+            print(f"DEBUG: {ticker} -> OS-Performance geschätzt (Hebel {hebel_f}x): {performance}%")
+        else:
+            print(f"DEBUG: {ticker} -> Produkt_Typ=Optionsschein, aber weder OS_Manueller_Kurs noch (Hebel+OS_Einstiegskurs) vollständig - keine OS-Performance berechenbar.")
 
     return df
 
