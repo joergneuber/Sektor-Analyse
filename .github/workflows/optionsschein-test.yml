@@ -1,0 +1,37 @@
+name: Optionsschein-Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  optionsschein-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install openpyxl requests
+
+      - name: Testdatei und Testskript prüfen
+        run: |
+          test -f test/Offene_Positionen_TEST.xlsx
+          test -f test/optionsschein_kurse.py
+          test -f test/test_optionsschein_kurse.py
+
+      - name: Python-Syntax prüfen
+        run: |
+          python -m py_compile test/optionsschein_kurse.py
+          python -m py_compile test/test_optionsschein_kurse.py
+
+      - name: Optionsschein-Test ausführen
+        working-directory: test
+        run: python test_optionsschein_kurse.py
