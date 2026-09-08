@@ -876,7 +876,28 @@ def _finde_quellposition(ziel_key, quellpositionen):
     if len(kandidaten) == 1:
         return kandidaten[0]
 
-    # 3. Falls der Firmenname durch Gemini leicht abweicht, ist ein eindeutiger
+    # 3. Sicherheits-Fallback: Name + Einstieg + Einstiegsdatum.
+    #
+    # Dieser Fallback darf nur greifen, wenn die Kombination in der
+    # Master-Datei exakt EINMAL vorkommt. Damit kann ein fehlender/falsch
+    # ausgegebener Ticker (z. B. EUNL statt EUNL.DE) repariert werden, ohne
+    # bei mehreren gleichnamigen Positionen zu raten. Der Master bleibt
+    # autoritativ: Die gefundene Position liefert anschließend den kanonischen
+    # Ticker, Einstieg und das Datum.
+    kandidaten = [
+        pos for key, pos in quellpositionen.items()
+        if key[0] == name and key[2] == entry and key[3] == date
+    ]
+    if len(kandidaten) == 1:
+        return kandidaten[0]
+    if len(kandidaten) > 1:
+        raise RuntimeError(
+            "Position nicht eindeutig zuordenbar: gleiche Kombination aus "
+            "Name + Einstieg + Einstiegsdatum mehrfach vorhanden: "
+            f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}"
+        )
+
+    # 4. Falls der Firmenname durch Gemini leicht abweicht, ist ein eindeutiger
     # Ticker ebenfalls ausreichend. Bei mehreren gleichen Tickern wird ohne
     # Einstieg+Datum niemals geraten.
     kandidaten = [
@@ -1751,9 +1772,24 @@ def normalisiere_ausgabe(text, zielzonen=None):
             continue
 
         if source is None:
+            # Diagnostik bewusst ohne automatische Annahmen: Wenn kein Match
+            # möglich ist, werden die engsten Master-Kandidaten ausgegeben.
+            # So ist im CI-Log sofort sichtbar, ob z. B. der Ticker fehlt,
+            # abweicht oder die Quelldatei tatsächlich andere Stammdaten
+            # enthält.
+            namens_kandidaten = [
+                pos for key, pos in expected.items()
+                if key[0] == _normalisiere_positionsname(name)
+            ]
+            diagnose = "; ".join(
+                f"{pos['name']} ({pos['ticker']}) | Einstieg: {pos['entry']} | "
+                f"Einstiegsdatum: {pos['date']}"
+                for pos in namens_kandidaten[:5]
+            ) or "kein Master-Kandidat mit identischem normalisiertem Namen"
             errors.append(
                 f"{name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}: "
-                "kein passender Positionsschluessel in Offene Positionen+Check.csv"
+                "kein passender Positionsschluessel in Offene Positionen+Check.csv "
+                f"[Master-Kandidaten nach Name: {diagnose}]"
             )
             continue
 
