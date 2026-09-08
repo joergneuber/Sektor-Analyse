@@ -81,6 +81,15 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python einzel_check.py --beobachtungsliste
 
+      # HEBELTRADER: letzter um 09:30 Europe/Berlin erfolgreich verarbeiteter
+      # Einzel-Check wird aus Drive geladen. Der nächste Hauptlauf verwendet
+      # immer den letzten erfolgreichen Stand – unabhängig davon, ob der
+      # Hauptlauf automatisch oder manuell gestartet wurde.
+      - name: Letzten HEBELTRADER-Einzelcheck aus Drive laden
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python hebeltrader_sync.py
+
       - name: Analyse ausführen
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
