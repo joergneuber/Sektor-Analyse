@@ -12,7 +12,7 @@ HARTE DATENREGELN
 
 Dieses Modul veraendert keine Setup-, CRV-, Score-, Portfolio- oder Intraday-Logik.
 
-VERSION = "v7.5-nfp-change-cache-verified"
+VERSION = "v7.6-macro-architecture-integrated"
 """
 
 import datetime as dt
@@ -38,6 +38,17 @@ FRED_URL = "https://fred.stlouisfed.org/series/{}"
 ISM_BASE = "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports"
 LME_OFFICIAL_PRICES_URL = "https://www.lme.com/market-data/reports-and-data/lme-official-prices"
 FED_FUTURES_PUBLIC_URL = "https://www.pomeroygrain.com/markets.aspx?cg=30-Day+Fed+Funds"
+GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+GDELT_TIMEOUT = 12
+BLS_ICS_URL = "https://www.bls.gov/schedule/news_release/bls.ics"
+ECB_MEETING_CALENDAR_URL = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
+GEOPOLITICAL_CLUSTERS = {
+    "Nahost": '(Iran OR "Middle East" OR Israel OR "Strait of Hormuz" OR Hormuz)',
+    "China/Taiwan": '(China OR Taiwan OR "Taiwan Strait" OR "South China Sea")',
+    "Russland/Ukraine": '(Russia OR Ukraine OR NATO OR sanctions)',
+    "Handel/Sanktionen": '(tariff OR tariffs OR sanctions OR "export controls" OR "trade war")',
+    "Lieferketten/Schifffahrt": '(shipping OR "supply chain" OR "Red Sea" OR Suez OR "shipping disruption")',
+}
 
 FRED_SERIES = {
     "Fed Funds Effective Rate": "DFF",
@@ -1091,6 +1102,27 @@ def fred_series(series_id, limit_days=5000):
         if not df.empty and _cache_valid(df["DATE"].iloc[-1].date().isoformat(), FRED_MAX_AGE_DAYS.get(series_id,60)):
             return df
     return pd.DataFrame()
+def _fred_yoy(df, series_id):
+    """Deterministische 12-Monatsveraenderung fuer monatliche Preisindizes."""
+    if df is None or df.empty or series_id not in df.columns:
+        return None, None
+    work = df[["DATE", series_id]].dropna().sort_values("DATE")
+    if work.empty:
+        return None, None
+    latest = work.iloc[-1]
+    latest_date = pd.Timestamp(latest["DATE"])
+    target = latest_date - pd.DateOffset(years=1)
+    prior = work[work["DATE"] <= target]
+    if prior.empty:
+        return None, None
+    prev = prior.iloc[-1]
+    previous_value = _clean_num(prev[series_id])
+    current_value = _clean_num(latest[series_id])
+    if previous_value is None or current_value is None or previous_value == 0:
+        return None, None
+    return (current_value / previous_value - 1.0) * 100.0, pd.Timestamp(prev["DATE"]).strftime("%Y-%m-%d")
+
+
 def fred_snapshot(name, series_id):
     df = fred_series(series_id)
     if df.empty:
@@ -1101,13 +1133,14 @@ def fred_snapshot(name, series_id):
     entry = cache.get("fred", {}).get(series_id, {})
     source = entry.get("source", FRED_URL.format(series_id))
     status = entry.get("status", "REAL")
-    # Wenn Quelle im aktuellen Lauf nicht erreichbar war, aber ein echter gespeicherter
-    # Wert verwendet wurde, bleibt er REAL_CACHED. Der Wert selbst wird nie veraendert.
-    if status == "REAL" and entry.get("saved_at",0) < time.time()-1:
-        # Nicht automatisch als cached markieren, weil der Abrufstatus unbekannt ist.
-        status = "REAL"
-    return f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
-
+    base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
+    if name in {"CPI", "Core CPI", "PCE", "Core PCE", "PPI"}:
+        yoy, prior_date = _fred_yoy(df, series_id)
+        if yoy is not None:
+            base += f" | YOY={yoy:+.2f}% | YOY_VORMONAT={prior_date} | YOY_STATUS=CALCULATED"
+        else:
+            base += " | YOY=NICHT VERFUEGBAR | YOY_STATUS=UNAVAILABLE"
+    return base
 
 def _lme_official_prices(target_date=None):
     """LME Official Prices mit einem Abruf pro Prozess und sicherem Fallback.
@@ -4332,8 +4365,233 @@ def fred_snapshots_parallel(names):
                 results[name] = f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=FRED {FRED_SERIES[name]} | FEHLER={exc}"
     return [results[name] for name in names]
 
+
+def _parse_named_value(lines, label):
+    """Robuster Parser fuer Datenstand/Datenmonat sowie nachgelagerte Felder."""
+    pat = re.compile(r"^" + re.escape(label) + r":\s*([-+]?\d+(?:\.\d+)?)\s*\|", re.I)
+    for line in lines:
+        m = pat.search(line)
+        if m:
+            try:
+                return float(m.group(1)), line
+            except ValueError:
+                return None, line
+    return None, None
+
+
+def _parse_inline_number(line, token):
+    if not line:
+        return None
+    m = re.search(r"(?:^|\|\s*)" + re.escape(token) + r"\s*=\s*([-+]?\d+(?:\.\d+)?)%?", line, re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _line_for(lines, label):
+    return next((line for line in lines if line.startswith(label + ":")), "")
+
+
+def bond_market_snapshot(lines):
+    """Deterministische Anleihenmarkt-Auswertung aus den bereits geladenen FRED-Werten."""
+    names = ["US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury", "Realzins 10Y TIPS"]
+    vals = {n: _parse_named_value(lines, n)[0] for n in names}
+    out = ["BOND-MARKT"]
+    for n in names:
+        line = _line_for(lines, n)
+        data_date = re.search(r"(?:Datenstand|Datenmonat)=([^|]+)", line)
+        out.append(f"{n}: {('NICHT VERFUEGBAR' if vals[n] is None else _fmt(vals[n],4))} | Datenstand={data_date.group(1).strip() if data_date else 'NICHT VERFUEGBAR'} | STATUS={'REAL' if vals[n] is not None else 'UNAVAILABLE'}")
+    y2, y5, y10, y30, real10 = (vals[n] for n in names)
+    if y2 is not None and y10 is not None:
+        out.append(f"2Y-10Y Spread: {_fmt(y10-y2,4)} | STATUS=CALCULATED")
+    else: out.append("2Y-10Y Spread: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+    if y5 is not None and y10 is not None:
+        out.append(f"5Y-10Y Spread: {_fmt(y10-y5,4)} | STATUS=CALCULATED")
+    else: out.append("5Y-10Y Spread: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+    if y10 is not None and y30 is not None:
+        out.append(f"10Y-30Y Spread: {_fmt(y30-y10,4)} | STATUS=CALCULATED")
+    else: out.append("10Y-30Y Spread: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+    if y10 is not None and real10 is not None:
+        out.append(f"10Y Nominal-Real Differenz: {_fmt(y10-real10,4)} | STATUS=CALCULATED")
+    else: out.append("10Y Nominal-Real Differenz: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+    if y2 is not None and y10 is not None:
+        curve = "INVERTIERT" if y10 < y2 else ("STEEP" if y10-y2 > 0.75 else "FLACH BIS POSITIV")
+        out.append(f"Yield-Curve-Form 2Y-10Y: {curve} | STATUS=MODEL_DERIVED")
+    else: out.append("Yield-Curve-Form 2Y-10Y: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+    return out
+
+
+def _parse_bls_ics(text):
+    events = []
+    for block in re.split(r"BEGIN:VEVENT", text or "")[1:]:
+        summary = re.search(r"(?:^|\n)SUMMARY[^:]*:(.*)", block)
+        start = re.search(r"(?:^|\n)DTSTART(?:;[^:]*)?:(\d{8})", block)
+        if not summary or not start:
+            continue
+        title = re.sub(r"\\[,;]", " ", summary.group(1)).strip()
+        try:
+            date = dt.datetime.strptime(start.group(1), "%Y%m%d").date()
+        except ValueError:
+            continue
+        if any(k in title.lower() for k in ("consumer price index", "producer price index", "employment situation", "job openings and labor turnover")):
+            events.append((date, title, "BLS"))
+    return events
+
+
+def _upcoming_macro_events(today):
+    events = []
+    horizon = today + dt.timedelta(days=14)
+    meeting = _next_fomc_date(today)
+    if meeting and meeting <= horizon:
+        events.append((meeting, "FOMC-Zinsentscheid", "Federal Reserve / fomc_termine.json"))
+    try:
+        r = requests.get(BLS_ICS_URL, timeout=12, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        for date, title, source in _parse_bls_ics(r.text):
+            if today <= date <= horizon:
+                events.append((date, title, source))
+    except Exception as exc:
+        print(f"WARNUNG: BLS-Kalender nicht verfuegbar: {type(exc).__name__}: {exc}")
+    try:
+        r = requests.get(ECB_MEETING_CALENDAR_URL, timeout=12, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        text = re.sub(r"\s+", " ", text)
+        for m in re.finditer(r"(\d{2}/\d{2}/\d{4}).{0,700}?monetary policy meeting", text, re.I):
+            try:
+                date = dt.datetime.strptime(m.group(1), "%d/%m/%Y").date()
+            except ValueError:
+                continue
+            if today <= date <= horizon:
+                events.append((date, "EZB-Geldpolitische Sitzung", "ECB official calendar"))
+    except Exception as exc:
+        print(f"WARNUNG: EZB-Kalender nicht verfuegbar: {type(exc).__name__}: {exc}")
+    unique = {}
+    for date, title, source in events:
+        unique[(date, title)] = (date, title, source)
+    return sorted(unique.values(), key=lambda x: (x[0], x[1]))
+
+
+def macro_events_snapshot(today):
+    events = _upcoming_macro_events(today)
+    out = ["MAKRO-EVENTS / WICHTIGE IMPULSE VORAUS"]
+    if not events:
+        out.append("Keine verifizierten hochrelevanten Makro-Events in den naechsten 14 Tagen | STATUS=UNAVAILABLE")
+    else:
+        for date, title, source in events:
+            days = (date - today).days
+            out.append(f"{title}: {('HEUTE' if days == 0 else 'in ' + str(days) + ' Tag(en)')} ({date.isoformat()}) | SOURCE={source} | STATUS=REAL_PUBLIC_SECONDARY")
+    out.append("IMPULSE-VORAUS-REGEL: Nur verifizierte Termine aus offiziellen Kalendern; keine erfundenen Termine oder Konsenswerte.")
+    return out
+
+
+def geopolitics_snapshot(today):
+    out = ["GEOPOLITIK"]
+    all_articles = []
+    for cluster, query in GEOPOLITICAL_CLUSTERS.items():
+        try:
+            r = requests.get(GDELT_DOC_URL, params={"query": query, "mode": "artlist", "maxrecords": 20, "timespan": "24h", "format": "json", "sort": "HybridRel"}, timeout=GDELT_TIMEOUT, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            data = r.json() if r.content else {}
+            arts = data.get("articles") or data.get("items") or []
+            out.append(f"{cluster}: ARTIKEL_24H={len(arts)} | STATUS=REAL_PUBLIC_SECONDARY | SOURCE=GDELT DOC 2.0")
+            for a in arts[:5]:
+                title = str(a.get("title") or a.get("name") or "").strip()
+                url = str(a.get("url") or a.get("link") or "").strip()
+                if title:
+                    all_articles.append((title, url, cluster))
+                    out.append(f"  - {title[:180]}" + (f" | {url}" if url else ""))
+        except Exception as exc:
+            out.append(f"{cluster}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=GDELT DOC 2.0 | FEHLER={str(exc)[:180]}")
+    try:
+        broad_query = '("stock market" OR "Federal Reserve" OR ECB OR inflation OR oil OR tariffs OR Iran OR China OR Ukraine OR bonds)'
+        r = requests.get(GDELT_DOC_URL, params={"query": broad_query, "mode": "artlist", "maxrecords": 10, "timespan": "24h", "format": "json", "sort": "HybridRel"}, timeout=GDELT_TIMEOUT, headers=REQUEST_HEADERS)
+        r.raise_for_status()
+        data = r.json() if r.content else {}
+        arts = data.get("articles") or data.get("items") or []
+        if arts:
+            a = arts[0]
+            title = str(a.get("title") or a.get("name") or "").strip()
+            url = str(a.get("url") or a.get("link") or "").strip()
+            out.append("BOERSENHAMMER / BIG NEWS 24H:")
+            out.append(f"  {title[:240]} | RANKING=GDELT_HYBRIDREL | STATUS=REAL_PUBLIC_SECONDARY" + (f" | SOURCE={url}" if url else ""))
+        else:
+            out.append("BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+    except Exception as exc:
+        out.append(f"BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | FEHLER={str(exc)[:180]}")
+    out.append("GEOPOLITIK-REGEL: News-Aktivitaet ist Kontext; sie darf das Makro-Gate nicht sperren. Die BIG-NEWS-Auswahl ist eine GDELT-Relevanzsortierung und keine Behauptung einer objektiv groessten Nachricht.")
+    return out
+
+
+def _scenario_engine(lines, gate, data_quality, secondary_missing):
+    """Deterministischer Makro-Szenario-Engine; keine Imputation fehlender Werte."""
+    def val(label): return _parse_named_value(lines, label)[0]
+    def yoy(label): return _parse_inline_number(_line_for(lines, label), "YOY")
+    pmi_m, pmi_s = val("ISM Manufacturing PMI"), val("ISM Services PMI")
+    core_cpi_yoy, core_pce_yoy = yoy("Core CPI"), yoy("Core PCE")
+    unemp, nfp, fed = val("Arbeitslosenquote"), val("NFP / Nonfarm Payrolls"), val("Fed Funds Effective Rate")
+    y2, y10, real10 = val("US 2Y Treasury"), val("US 10Y Treasury"), val("Realzins 10Y TIPS")
+    hy, nfci, vix, sp = val("US High Yield OAS"), val("Chicago Fed NFCI"), val("VIX"), val("S&P 500")
+    spread = _parse_inline_number(_line_for(lines, "2Y-10Y Spread"), "2Y-10Y Spread")
+    geop_line = next((l for l in lines if l.startswith("Nahost: ARTIKEL_24H=")), "")
+    geop_counts = []
+    for line in lines:
+        m = re.match(r"^[^:]+: ARTIKEL_24H=(\d+)", line)
+        if m: geop_counts.append(int(m.group(1)))
+    geop_total = sum(geop_counts)
+    axes = {}
+    def axis(name, score, basis): axes[name] = (score, basis)
+    growth = None if pmi_m is None and pmi_s is None else (1 if ((pmi_m is not None and pmi_m >= 50) or (pmi_s is not None and pmi_s >= 50)) else -1)
+    axis("Wachstum", growth, f"ISM Mfg={pmi_m}; ISM Services={pmi_s}")
+    infl = None if core_cpi_yoy is None and core_pce_yoy is None else (1 if ((core_cpi_yoy is not None and core_cpi_yoy > 3.0) or (core_pce_yoy is not None and core_pce_yoy > 3.0)) else (-1 if (core_cpi_yoy is not None and core_cpi_yoy < 2.5 and (core_pce_yoy is None or core_pce_yoy < 2.5)) else 0))
+    axis("Inflation (Druck)", infl, f"Core CPI YoY={core_cpi_yoy}; Core PCE YoY={core_pce_yoy}")
+    labor = None if unemp is None else (1 if unemp < 4.5 else (-1 if unemp >= 5.0 else 0))
+    axis("Arbeitsmarkt", labor, f"Arbeitslosenquote={unemp}; NFP={nfp}")
+    monetary = None if fed is None else (1 if fed >= 4.0 else (-1 if fed <= 2.5 else 0))
+    axis("Monetaer", monetary, f"Fed Funds={fed}")
+    fc = None if hy is None and nfci is None else (1 if ((hy is not None and hy < 4) and (nfci is None or nfci < 0)) else (-1 if ((hy is not None and hy > 6) or (nfci is not None and nfci > 1)) else 0))
+    axis("Financial Conditions", fc, f"HY OAS={hy}; NFCI={nfci}")
+    pmi = None if pmi_m is None and pmi_s is None else (1 if ((pmi_m is not None and pmi_m >= 55) or (pmi_s is not None and pmi_s >= 55)) else (-1 if ((pmi_m is not None and pmi_m < 50) and (pmi_s is not None and pmi_s < 50)) else 0))
+    axis("PMI", pmi, f"ISM Mfg={pmi_m}; ISM Services={pmi_s}")
+    market = None if sp is None and vix is None else (1 if sp is not None and (vix is None or vix < 20) else (-1 if vix is not None and vix > 30 else 0))
+    axis("Marktbestaetigung", market, f"S&P 500={sp}; VIX={vix}")
+    bond = None if y2 is None and y10 is None else (1 if y10 is not None and y2 is not None and y10 >= y2 and (real10 is None or real10 < 2.5) else (-1 if (real10 is not None and real10 >= 3.0) or (spread is not None and spread < -0.25) else 0))
+    axis("Anleihenmarkt", bond, f"2Y={y2}; 10Y={y10}; Real10Y={real10}; 2Y-10Y={spread}")
+    geop = None if not geop_counts else (-1 if geop_total >= 60 else (0 if geop_total >= 20 else 0))
+    axis("Geopolitik (Kontext)", geop, f"GDELT Artikel 24H gesamt={geop_total}; kein Richtungsurteil aus News-Menge")
+    weights = {"Wachstum":.16,"Inflation (Druck)":.15,"Arbeitsmarkt":.12,"Monetaer":.12,"Financial Conditions":.12,"PMI":.12,"Marktbestaetigung":.09,"Anleihenmarkt":.08,"Geopolitik (Kontext)":.04}
+    available = [(n,s) for n,(s,_) in axes.items() if s is not None]
+    score = sum(weights[n]*s for n,s in available) / sum(weights[n] for n,s in available) if available else None
+    if growth is not None and infl is not None and growth >= 0 and infl > 0: scenario="Inflationaere Expansion"
+    elif growth is not None and growth < 0 and infl is not None and infl > 0: scenario="Stagflation"
+    elif growth is not None and growth < 0: scenario="Recession / Kontraktion"
+    elif growth is not None and growth >= 0 and infl is not None and infl < 0: scenario="Soft Landing"
+    elif growth is not None and growth >= 0: scenario="Expansion"
+    else: scenario="Gemischtes Makro-Szenario"
+    market_env = "Defensiv" if score is not None and score <= -0.35 else ("Konstruktiv" if score is not None and score >= 0.35 else "Konstruktiv / selektiv")
+    out=["", "8. MAKRO-SZENARIO", "SZENARIO-ARCHITEKTUR: MAKRO-DATEN -> TIER 1 CORE / TIER 2 CONFIRMATION / TIER 3 CONTEXT -> MAKRO-SZENARIO -> SZENARIO-SCORE -> MARKTUMFELD"]
+    if gate != "FREIGEGEBEN":
+        out.append("MAKRO-SZENARIO: NICHT FREIGEGEBEN | STATUS=UNAVAILABLE")
+        out.append("SZENARIO-SCORE: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | GRUND=TIER-1-GATE GESPERRT")
+        for n,(s,b) in axes.items(): out.append(f"{n}: NICHT FREIGEGEBEN | BASIS={b} | STATUS=UNAVAILABLE")
+        out.append("MARKTUMFELD: NICHT FREIGEGEBEN | STATUS=UNAVAILABLE")
+    else:
+        out.append(f"MAKRO-SZENARIO: {scenario} | STATUS=MODEL_DERIVED")
+        out.append(f"SZENARIO-SCORE: {('NICHT VERFUEGBAR' if score is None else f'{score:+.2f}')} | STATUS={'UNAVAILABLE' if score is None else 'MODEL_DERIVED'}")
+        for n,(s,b) in axes.items(): out.append(f"{n}: {('NICHT VERFUEGBAR' if s is None else f'{s:+d}')} | BASIS={b} | STATUS={'UNAVAILABLE' if s is None else 'MODEL_DERIVED'}")
+        out.append(f"MARKTUMFELD: {market_env} | STATUS=MODEL_DERIVED")
+    out.append(f"TIER-1-GATE: {gate} | DATENQUALITAET={data_quality}")
+    out.append(f"TIER-2-CONFIRMATION: {'EINGESCHRAENKT' if secondary_missing else 'VOLLSTAENDIG'}")
+    out.append("TIER-3-CONTEXT: Geopolitik und exogene Faktoren beeinflussen die Interpretation, aber nicht das Gate.")
+    out.append("INTERPRETATIONSACHSEN: Geldpolitik | Liquiditaet | Kredit | Risk Appetite | Bewertung | Angebotsschock | Investitionszyklus")
+    out.append("Makro-Fazit aufgrund Datenlage: Das Makro-Szenario-Gate ist " + ("FREIGEGEBEN" if gate=="FREIGEGEBEN" else "GESPERRT") + f" (Datenqualität: {data_quality}).")
+    return out
+
 def data_quality_gate(lines):
-    """TIER-1 entscheidet allein ueber das Gate; TIER-2/3 beeinflussen nur die Qualitaet."""
+    """TIER-1 entscheidet allein ueber das Gate; TIER-2/3 beeinflussen nur die Datenqualitaet."""
     tier1_labels = [
         "Fed Funds Effective Rate", "US 2Y Treasury", "US 10Y Treasury",
         "Core CPI", "NFP / Nonfarm Payrolls", "Arbeitslosenquote",
@@ -4344,45 +4602,44 @@ def data_quality_gate(lines):
         "VIX", "DXY", "Reales BIP-Wachstum", "M2", "JOLTS Job Openings", "ADP Employment Change",
         "Industrieproduktion", "Consumer Sentiment", "Kapazitaetsauslastung",
         "SLOOS C&I Tightening", "US Investment Grade OAS", "LME Nickel", "LME Blei", "LME Zinn", "LME Kobalt",
-        "ISM Manufacturing EXTENDED", "ISM Services EXTENDED",
     ]
     tier3_labels = ["GSCPI", "Global Economic Policy Uncertainty", "US Federal Debt/GDP", "S&P Global Services PMI"]
 
-    def unavailable(label):
-        return any(line.startswith(label + ": NICHT VERFUEGBAR") for line in lines)
+    def missing_or_unavailable(label):
+        line = next((line for line in lines if line.startswith(label + ":")), None)
+        return line is None or line.startswith(label + ": NICHT VERFUEGBAR")
 
-    critical_missing=[label for label in tier1_labels if unavailable(label)]
-    tier2_missing=[label for label in tier2_labels if unavailable(label)]
+    critical_missing = [label for label in tier1_labels if missing_or_unavailable(label)]
+    tier2_missing = [label for label in tier2_labels if missing_or_unavailable(label)]
+    tier3_missing = [label for label in tier3_labels if missing_or_unavailable(label)]
 
-    # Extended-ISM wird aus den Einzelzeilen zusammengefasst. Nur wirklich
-    # nicht verfuegbare Komponenten werden als TIER-2-Luecke markiert.
-    service_line=next((l for l in lines if l.startswith("ISM Services PMI:")), "")
-    manuf_line=next((l for l in lines if l.startswith("ISM Manufacturing PMI:")), "")
+    # Extended-ISM wird aus den konkreten Komponenten bewertet; die Containerzeile
+    # selbst existiert im Datenpaket nicht und darf deshalb nicht als fehlend gelten.
+    service_line = next((l for l in lines if l.startswith("ISM Services PMI:")), "")
+    manuf_line = next((l for l in lines if l.startswith("ISM Manufacturing PMI:")), "")
     for prefix, line in (("ISM Services", service_line), ("ISM Manufacturing", manuf_line)):
         if line and not line.startswith(prefix + " PMI: NICHT VERFUEGBAR"):
             extended_fields = (
-                ["Business Activity","New Export Orders","Supplier Deliveries","Backlog","Inventories","Inventory Sentiment","Imports"]
+                ["Business Activity", "New Export Orders", "Supplier Deliveries", "Backlog", "Inventories", "Inventory Sentiment", "Imports"]
                 if prefix == "ISM Services" else
-                ["Production","Supplier Deliveries","Backlog of Orders","Inventories","Customers' Inventories","New Export Orders","Imports"]
+                ["Production", "Supplier Deliveries", "Backlog of Orders", "Inventories", "Customers' Inventories", "New Export Orders", "Imports"]
             )
-            missing_components=[]
-            for field in extended_fields:
-                if f"{field}=NICHT VERFUEGBAR" in line:
-                    missing_components.append(field)
+            missing_components = [field for field in extended_fields if f"{field}=NICHT VERFUEGBAR" in line]
             if missing_components:
                 tier2_missing.append(f"{prefix} EXTENDED: " + ", ".join(missing_components))
 
-    # Do not double-count generic container labels if their concrete line is healthy.
-    tier2_missing=[x for i,x in enumerate(tier2_missing) if x not in tier2_missing[:i]]
-    gate="GESPERRT" if critical_missing else "FREIGEGEBEN"
+    secondary_missing = []
+    for item in tier2_missing + tier3_missing:
+        if item not in secondary_missing:
+            secondary_missing.append(item)
+    gate = "GESPERRT" if critical_missing else "FREIGEGEBEN"
     if critical_missing:
-        data_quality="UNZUREICHEND"
-    elif tier2_missing:
-        data_quality="EINGESCHRAENKT"
+        data_quality = "UNZUREICHEND"
+    elif secondary_missing:
+        data_quality = "EINGESCHRAENKT"
     else:
-        data_quality="VOLLSTAENDIG"
-    return gate, critical_missing, data_quality, tier2_missing
-
+        data_quality = "VOLLSTAENDIG"
+    return gate, critical_missing, data_quality, secondary_missing
 
 def main():
     today = dt.date.today()
@@ -4428,14 +4685,16 @@ def main():
     lines.append(spglobal_services_snapshot(today))
     lines.append("")
 
-    lines.append("3. KREDIT, FINANCIAL CONDITIONS & RISIKO")
+    lines.append("3. KREDIT, FINANCIAL CONDITIONS & ANLEIHENMARKT")
     lines.extend(fred_snapshots_parallel(["SLOOS C&I Tightening", "US High Yield OAS", "US Investment Grade OAS", "Chicago Fed NFCI"]))
+    lines.extend(bond_market_snapshot(lines))
     lines.append("")
 
     lines.append("4. EXOGENE FAKTOREN, LIEFERKETTEN & FISKAL")
     lines.append(gscpi_snapshot())
     lines.extend(fred_snapshots_parallel(["Global Economic Policy Uncertainty", "US Federal Debt/GDP"]))
-    lines.append("Geopolitik: kein kuenstlicher Tages-Score. Nur konkret belegte Ereignisse aus den bereitgestellten Quellen duerfen interpretiert werden.")
+    lines.extend(macro_events_snapshot(today))
+    lines.extend(geopolitics_snapshot(today))
     lines.append("")
 
     lines.append("5. MARKT, FX, KRYPTO & ROHSTOFFE")
@@ -4456,12 +4715,13 @@ def main():
     lines.append(f"KRITISCHE DATENLUECKEN: {', '.join(missing) if missing else 'KEINE'}")
     lines.append("REGEL: Bei GESPERRT darf keine Base/Bull/Bear-Prognose mit Zahlen ausgegeben werden. Die Tagesauswertung darf die bestehende regelbasierte Analyse trotzdem weiter ausgeben.")
     lines.append("CACHE-REGEL: REAL_CACHED darf nur verwendet werden, wenn der gespeicherte Originalwert innerhalb seiner definierten Datenaltersgrenze liegt. Es werden keine Werte fortgeschrieben oder geschaetzt.")
+    lines.extend(_scenario_engine(lines, gate, data_quality, secondary_missing))
     lines.append("")
 
-    lines.append("7. INTERPRETATIONSREGELN FUER GEMINI")
-    lines.append("Makroachsen: Wachstum | Inflation | Geldpolitik | Liquiditaet | Kredit | Risk Appetite | Bewertung | Angebotsschock | struktureller Capex-Zyklus.")
+    lines.append("9. INTERPRETATIONSREGELN FUER GEMINI")
+    lines.append("Makroachsen: Wachstum | Inflation | Arbeitsmarkt | Monetär | Financial Conditions | PMI | Marktbestätigung | Anleihenmarkt | Geopolitik (Kontext).")
     lines.append("Horizonte: 1-4 Wochen | 1-3 Monate | 3-6 Monate | >6 Monate.")
-    lines.append("Szenarien: Base Case | Bull Case | Bear Case. Szenario-Wahrscheinlichkeiten sind MODEL_DERIVED, niemals reale Marktdaten und niemals geschaetzte Eingangsdaten.")
+    lines.append("Szenario und Szenario-Score aus Punkt 8 sind autoritativ MODEL_DERIVED. Gemini darf Architektur, Score oder Gate nicht eigenständig neu berechnen.")
     lines.append("Wenn der Makro-Szenario-Gate GESPERRT ist: KEINE Szenario-Wahrscheinlichkeiten und KEINE erfundenen Ersatzwerte. Stattdessen Datenluecke benennen.")
     lines.append("Lithium ist als struktureller Speicher-/Batterie-/Netzausbau-Indikator zu interpretieren. PROXY-Daten duerfen niemals als Original-Rohstoffpreise bezeichnet werden.")
 

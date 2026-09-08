@@ -1918,6 +1918,11 @@ werden.
 • Fed-Erwartung: keine kostenpflichtige CME-FedWatch-API. Die eigene marktimplizierte Erwartung wird aus realen 30-Day-Fed-Funds-Futures berechnet; die Berechnungsmethodik muss nachvollziehbar bleiben.
 • PMI: keine geschaetzten PMI-Werte. Fuer die USA sind offizielle oeffentliche ISM-Manufacturing-/Services-Releases die Primaerquelle. Nicht verfuegbare weitere PMI-Reihen bleiben UNAVAILABLE.
 
+• VERBINDLICHE MAKRO-ARCHITEKTUR (ERGÄNZT 08.09.2026): Der Makro-Block folgt der Kette MAKRO-DATEN -> TIER 1 CORE / TIER 2 CONFIRMATION / TIER 3 CONTEXT -> MAKRO-SZENARIO -> SZENARIO-SCORE -> MARKTUMFELD. MAKRO-SZENARIO, SZENARIO-SCORE und MARKTUMFELD aus dem Makro-Datenpaket sind autoritative MODEL_DERIVED-Ergebnisse. Gemini darf sie nicht neu berechnen oder durch eigene Schwellen ersetzen.
+• ANLEIHENMARKT (ERGÄNZT 08.09.2026): Der separate Bond-Block umfasst 2Y/5Y/10Y/30Y, Realzins, Kurvenspreads und deterministische Kurvenform. Er ist eine eigenständige Bestätigungsebene und fließt bereits in den autoritativen Szenario-Score ein.
+• GEOPOLITIK (ERGÄNZT 08.09.2026): GDELT liefert kostenlose 24-Stunden-News-Aktivität und eine quellengebundene „BOERSENHAMMER / BIG NEWS 24H“-Topmeldung. Geopolitik ist TIER-3-CONTEXT und darf das Makro-Gate niemals sperren. Die GDELT-Relevanzsortierung ist keine Behauptung einer objektiv größten Nachricht.
+• WICHTIGE IMPULSE VORAUS (ERGÄNZT 08.09.2026): „MAKRO-EVENTS / WICHTIGE IMPULSE VORAUS“ enthält nur verifizierte kommende Termine aus offiziellen Kalendern, insbesondere FOMC, EZB, CPI und PPI. Keine erfundenen Termine, Konsenswerte oder Wahrscheinlichkeiten.
+
 Der Makro-Block wird unmittelbar NACH „Marktumfeld & Globale Risikolage“
 und VOR „Trendfolge-Setups“ als neuer Abschnitt 2 eingefuegt.
 
@@ -1929,7 +1934,7 @@ Zukunftsperspektive darstellen.
 
 Makro-Fazit aufgrund Datenlage
 Formuliere direkt zu Beginn 2-4 kompakte Saetze. Nenne das aktuelle
-Makro-Regime, die 2-4 wichtigsten Treiber sowie die wichtigsten
+Makro-Szenario, die 2-4 wichtigsten Treiber sowie die wichtigsten
 Gegentreiber bzw. Datenluecken. Keine künstliche quantitative Sicherheit.
 Wenn das MAKRO-SZENARIO-GATE GESPERRT ist, nenne den Sperrgrund und
 verzichte auf modellbasierte Zukunftsaussagen, die durch die TIER-1-Datenluecke
@@ -1947,7 +1952,7 @@ entsteht.
 Bewerte die wahrscheinlichste Entwicklung fuer die naechsten 1-3 Monate.
 Verknuepfe Geldpolitik, Inflation, Arbeitsmarkt, Konjunktur, Kredit,
 Liquiditaet, Marktbreite, Bewertungen und Unternehmensgewinne soweit im
-Datenbestand vorhanden. Leite daraus die wichtigsten Marktregime und
+Datenbestand vorhanden. Leite daraus das wichtigste Marktumfeld und
 Trading-Themen ab.
 
 2.3 WEITERER HORIZONT: 3-6 MONATE
@@ -1957,7 +1962,7 @@ Kreditbedingungen sowie Rohstoff-, Energie- und Liquiditaetswirkung.
 
 2.4 STRUKTURELL: >6 MONATE
 Bewerte die strukturellen Treiber mit einem Horizont von mehr als 6 Monaten.
-Dazu gehoeren insbesondere struktureller Capex, Energie, Industriemetalle,
+Dazu gehoeren insbesondere Investitionszyklus, Energie, Industriemetalle,
 Demografie/Arbeitsmarkt, Verschuldung, Liquiditaet und langfristige
 technologische Investitionszyklen, soweit Daten vorhanden sind. Lithium ist
 als Speicher-/Batterie-/Netzausbau-Indikator zu behandeln. Ein einzelner
@@ -1971,7 +1976,7 @@ Keine künstlichen Wahrscheinlichkeiten fuer alternative Szenarien.
 
 Fuer den BASE CASE nennen:
 Makroannahme: 1-2 Saetze
-Aktien: Richtung/Regime
+Aktien: Richtung/Marktumfeld
 Zinsen: Richtung
 Gold/Edelmetalle: Richtung
 Energie: Richtung
@@ -1979,7 +1984,7 @@ Industriemetalle: Richtung
 FX: Richtung
 Krypto: Richtung
 Bevorzugte Trading-Themen: 2-5 konkrete Themen/Sektoren/Assetklassen
-Regime-Killer: die 2-4 Datenveraenderungen, die den BASE CASE deutlich schwaechen oder kippen wuerden
+Szenario-Invalidatoren: die 2-4 Datenveraenderungen, die den BASE CASE deutlich schwaechen oder kippen wuerden
 
 PERSPEKTIVISCHE TRADE-IDEEN
 Aus dem Makrobild maximal 5 perspektivische Themen ableiten. Fuer jedes
@@ -2118,6 +2123,8 @@ Unterpunkt vollständig weglassen. Keine geschlossenen Positionen aus anderen
 Dateien rekonstruieren, ergänzen oder erfinden.
 
 8. AUSBLICK & KEY EVENTS
+
+VERBINDLICHER MAKRO-EVENT-ABGLEICH: Berücksichtige im Ausblick den Block „MAKRO-EVENTS / WICHTIGE IMPULSE VORAUS“. Verifizierte kommende FOMC-, EZB-, CPI-, PPI- und andere wichtige Makrotermine innerhalb des bereitgestellten 14-Tage-Fensters sind als kommende Impulse zu berücksichtigen. Wenn „BOERSENHAMMER / BIG NEWS 24H“ vorhanden ist, nenne diese eine quellengebundene Top-News kurz als aktuellen Impuls. Keine eigene News-Recherche, keine erfundenen Termine und keine Konsenswerte.
 
 9. METHODIK & DATENHINWEISE
 
