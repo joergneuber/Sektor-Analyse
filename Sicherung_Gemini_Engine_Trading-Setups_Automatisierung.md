@@ -81,7 +81,7 @@ darunter das Datum der Auswertung und der Untertitel „Tägliche
 Markt- und Setup-Auswertung”.
 • Kurz-Zusammenfassung (Pflicht, GEÄNDERT 19.08.2026, Nutzerwunsch „Prioritäten klarer sichtbar”): Die bisherige 4-6-Bullet-Summary wird in einen klaren Prioritätsblock gegliedert, damit der Leser die tägliche Auswertung schneller erfassen kann. Die beiden Prioritätsblöcke sind immer in dieser Reihenfolge auszugeben:
 SOFORT BEACHTEN: Nur unmittelbar relevante Fakten aus dem Datenbestand – Positionen weniger als 2% vom Stop entfernt, erreichte Stop-Losses, erreichte TP1/TP2, Earnings bei bestehenden Positionen/Setups und außergewöhnliche Marktbewegungen bzw. exakte neue Rekordhochs, sofern vorhanden. Bei Earnings einer offenen Position Ereignis und Positionsrisiko direkt miteinander verknüpfen. Keine Handlungsempfehlung.
-WATCHLIST: Nur die interessantesten Grenzfälle aus den vorhandenen allgemeinen manuellen Watchlists und beinahe-Kandidaten, maximal 5 Titel je Kategorie bzw. zugehörigem Watchlist-Block. Die vollständige HEBELTRADER-Beobachtungsliste aus 6.5.2 ist hiervon ausdrücklich ausgenommen. Wenn die Quelldatei eine Reihenfolge vorgibt, übernimm diese Reihenfolge und die ersten maximal 5 Einträge; wenn keine Reihenfolge vorgegeben ist, übernimm die vorhandene Reihenfolge und erfinde keine eigene Rangliste. Keine neuen Kennzahlen und keine Empfehlungen.
+WATCHLIST: Nur die interessantesten Grenzfälle aus den vorhandenen allgemeinen manuellen Watchlists und beinahe-Kandidaten, maximal 5 Titel je Kategorie bzw. zugehörigem Watchlist-Block. Die vollständige Liste in 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste ist hiervon ausdrücklich ausgenommen. Wenn die Quelldatei eine Reihenfolge vorgibt, übernimm diese Reihenfolge und die ersten maximal 5 Einträge; wenn keine Reihenfolge vorgegeben ist, übernimm die vorhandene Reihenfolge und erfinde keine eigene Rangliste. Keine neuen Kennzahlen und keine Empfehlungen.
 Die frühere Executive-Summary-Logik zu Setup-Anzahlen bleibt erhalten: neue valide Setups je Kategorie nennen, auch „0”; bereits offene Positionen mit bestätigtem laufendem Setup zählen NICHT als neue valide Setups. FOMC nur nennen, wenn er laut BENCHMARKS-Block innerhalb der nächsten 5 Tage liegt oder ein Rückblick vorliegt. Reine Fakten aus den Dateien, keine zusätzlichen Bewertungen.
 • “Risiko-Watch” (Pflicht, GEÄNDERT 05.08.2026, Nutzerwunsch
 „eigener, visuell hervorgehobener Block” – eigener Abschnitt mit
@@ -356,13 +356,14 @@ Punkt „4. Hebeltrader-Setups” ist zusätzlich ein eigener Unterabschnitt
 die bereitgestellte Datei „einzel_check_beobachtung.json”, die aus dem
 separaten manuellen Einzel-Check-Workflow stammt. Diese Liste ist NICHT
 die Sektor-Rotations-Watchlist und NICHT aus dem täglichen Hebeltrader-
-Scanner abzuleiten. Übernimm alle aktuell enthaltenen Titel mit
+Scanner abzuleiten. Übernimm die aktuell enthaltenen Titel mit
 Unternehmensname, Ticker, Status und „letzter_check”. Da die JSON-Datei
 nur den Ticker enthält, darf der eindeutige Unternehmensname aus dem
 Ticker abgeleitet werden; keine weiteren Werte oder Kandidaten ergänzen. Die Bedeutung der
-Statuswerte ist: KAUFKANDIDAT B = starke Trigger-Nähe, KAUFKANDIDAT C =
-frühe technische Vorbereitung. A und KEIN KANDIDAT stehen dort nicht, weil
-sie vom Einzel-Check automatisch entfernt werden. Zusätzlich kann die
+Statuswerte ist: KAUFKANDIDAT A = bestätigtes technisches Setup + CRV >= 1,0;
+KAUFKANDIDAT B = starke Trigger-Nähe; KAUFKANDIDAT C = frühe technische Vorbereitung;
+KEIN KANDIDAT = aktuell kein A/B/C, bleibt aber nach der bestehenden Beobachtungslogik
+solange in der Liste, bis die bestehende Bereinigungsregel greift. Zusätzlich kann die
 Datei „Einzel_Check_A_Meldungen(<Datum>).txt” echte A-Kandidaten aus der
 Beobachtungsliste melden. Wenn diese Datei vorhanden und nicht leer ist, MUSS
 unter der Beobachtungsliste ein kurzer Unterabschnitt „A-Meldungen” ausgegeben
@@ -2059,16 +2060,33 @@ Keine Interpretation, Umformulierung oder eigene Bewertung dieser drei Werte.
 6.4 LANGFRIST
 6.5 HEBELTRADER
 6.5.1 VALIDE HEBELTRADER-SETUPS
-Nur valide HEBELTRADER-Setups ausgeben. Verworfene Kandidaten, Filter-
-Engstellen und Nicht-Setups gehören nicht in diesen Unterpunkt.
+Hier stehen ALLE aktuell als „KAUFKANDIDAT A” eingestuften Titel aus den Einzel-Checks,
+unabhängig von ihrer Quelle. Ein A-Kandidat mit „Quelle: -” gehört genauso hierher wie
+ein A-Kandidat aus einer HEBELTRADER-Ausgabe. Wird ein bisheriger A-Kandidat bei einem
+späteren Einzel-Check zu B, C oder KEIN KANDIDAT, rutscht er automatisch aus 6.5.1 in
+6.5.2. Wird er später wieder A, kommt er wieder in 6.5.1. Es gibt KEINE separate
+HEBELTRADER-A-Kategorie.
+
+Bei JEDEM A-Kandidaten sind neben Firmenname und Yahoo-Ticker die vorhandenen technischen
+Details des Einzel-Checks auszugeben, insbesondere – soweit vorhanden – technischer
+Zustand, Setup-Typ, aktueller Kurs, Trendfolge-/Trendwende-Informationen, Momentum,
+CRV, Stop, TP1 und TP2 sowie relevante Trigger-/Breakout-Informationen. Einstieg, Stop,
+TP1 und TP2 dürfen nur aus bereitgestellten technischen Daten übernommen oder transparent
+aus diesen Daten abgeleitet werden; nichts erfinden oder schätzen. Die bestehende technische
+Berechnungslogik bleibt unverändert. Insbesondere aktiviert ein Breakout Fibonacci nicht
+automatisch; Fibonacci/Extension erst bei qualifizierter und bestätigter A-B-C-Struktur.
+
 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste
-Grundlage ist ausschließlich die bereitgestellte einzel_check_beobachtung.json.
-Übernimm alle darin aktuell enthaltenen Kandidaten mit Unternehmensname, Ticker,
-Status und letztem Check; diese Beobachtungsliste ist von den validen Setups
-getrennt und darf nicht als Setup dargestellt werden. Die vollständige Liste der
-aktuellen Kandidaten ist aus der JSON zu übernehmen; keine Auswahl oder Kürzung
-auf 2–5 Titel. Wenn die JSON keine Kandidaten enthält, den Unterpunkt mit dem
-entsprechenden Leerhinweis ausgeben.
+Hier stehen ALLE aktuell in der bestehenden einzel_check_beobachtung.json enthaltenen
+Kandidaten, deren Status nicht A ist, also insbesondere B, C und – solange nach der
+bestehenden 45-Tage-Regel noch vorhanden – KEIN KANDIDAT. A-Kandidaten werden nicht
+doppelt in 6.5.2 ausgegeben, sondern ausschließlich in 6.5.1.
+Übernimm Unternehmensname, Yahoo-Ticker, Status und letzten Check. Ergänze außerdem
+„Quelle”: Für HEBELTRADER-Kandidaten die konkrete Ausgabe (z.B. „HEBELTRADER 164/26”),
+für manuell/anderweitig hinzugefügte Kandidaten „-”. Die Quelle ist vollständig getrennt
+vom Status. Die vollständige Liste wird ausgegeben und nicht auf 5 Titel gekürzt.
+Wenn die JSON keine Kandidaten enthält, den Unterpunkt mit dem entsprechenden Leerhinweis
+ausgeben.
 6.6 SHORT
 6.7 EDELMETALLE
 6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
@@ -2103,7 +2121,7 @@ Dateien rekonstruieren, ergänzen oder erfinden.
 
 9. METHODIK & DATENHINWEISE
 
-VERBINDLICHE AUSNAHME FÜR 6.5.2: Die allgemeine 5-Titel-Begrenzung für Watchlists gilt NICHT für „6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste”. Dort sind ALLE aktuell in einzel_check_beobachtung.json enthaltenen Kandidaten auszugeben.
+VERBINDLICHE AUSNAHME FÜR 6.5.2: Die allgemeine 5-Titel-Begrenzung für Watchlists gilt NICHT für „6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste”. Dort sind ALLE aktuell in einzel_check_beobachtung.json enthaltenen Nicht-A-Kandidaten auszugeben; A-Kandidaten gehören ausschließlich in 6.5.1.
 
 WICHTIG: Diese Anweisung ist ausschließlich eine AUSGABEVORGABE. Sie darf
 keine bestehende Analyse-, Scanner-, Filter-, CRV-, Positions-, Daten- oder

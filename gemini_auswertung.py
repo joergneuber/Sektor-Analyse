@@ -113,6 +113,11 @@ DATEIMUSTER = {
     "Short_Setups(...).csv": ["Short_Setups(*).csv"],
     "Short_Briefing(...).txt": ["Short_Briefing(*).txt"],
     "Einzel_Check_Aufstiege(...).txt": ["Einzel_Check_Aufstiege(*).txt"],
+    # Letzter erfolgreicher HEBELTRADER-Einzelcheck. Optional: Am ersten Lauf
+    # kann die Datei noch fehlen. Wenn vorhanden, wird sie als normale
+    # strukturierte Datenquelle an Gemini übergeben.
+    "HEBELTRADER-Einzelcheck": ["hebeltrader_einzel_check.json"],
+    "Einzel-Check-Technikhistorie": ["einzel_check_historie.jsonl"],
     "Edelmetalle_Setups(...).csv": ["Edelmetalle_Setups(*).csv"],
     "Edelmetalle_Briefing(...).txt": ["Edelmetalle_Briefing(*).txt"],
     # NEU 16.08.2026: separates Makro-Datenpaket fuer die mehrhorizontige
@@ -1003,6 +1008,52 @@ def gemini_auswertung_starten():
                     "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben "
                     "und erstelle die vollstaendige Daten-Uebersicht. "
+                    "HEBELTRADER-EINZELCHECK: Falls die bereitgestellte Datei "
+                    "'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte "
+                    "Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und "
+                    "deren Kandidaten. Sie ist KEINE eigene Kandidatenkategorie. Entscheidend "
+                    "fuer die Zuordnung in Punkt 6.5 ist ausschliesslich der aktuelle Status aus "
+                    "dem bestehenden einzel_check.py: Jeder aktuelle 'KAUFKANDIDAT A' gehoert in "
+                    "6.5.1 'VALIDE HEBELTRADER-SETUPS', unabhaengig von seiner Quelle. Jeder "
+                    "Kandidat mit 'KAUFKANDIDAT B', 'KAUFKANDIDAT C' oder 'KEIN KANDIDAT' gehoert "
+                    "in 6.5.2 'HEBELTRADER-Watchlist / Beobachtungsliste', sofern er nach der "
+                    "bestehenden Beobachtungslistenlogik noch vorhanden ist. Wenn ein bisheriger "
+                    "A-Kandidat bei einem spaeteren Einzel-Check auf B/C/KEIN KANDIDAT faellt, "
+                    "rutscht er entsprechend nach 6.5.2; wenn er wieder A wird, kommt er wieder "
+                    "nach 6.5.1. Es gibt KEINE separate HEBELTRADER-A-Kategorie. "
+                    "Die Quelle ist davon vollstaendig getrennt und wird als zusaetzliches Feld "
+                    "'Quelle' angezeigt: HEBELTRADER-Kandidaten tragen die konkrete Ausgabe "
+                    "(z.B. 'HEBELTRADER 164/26'), manuell oder anderweitig hinzugefuegte Titel "
+                    "tragen 'Quelle: -'. Ein A-Kandidat mit 'Quelle: -' gehoert also ebenfalls "
+                    "in 6.5.1. Zeige bei JEDEM Titel immer Firmenname UND Yahoo-Ticker gemeinsam. "
+                    "Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, "
+                    "Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht "
+                    "neu berechnet, veraendert, aufgehoben oder ersetzt werden. "
+                    "Fuer 6.5.1 muessen bei JEDEM A-Kandidaten die vorhandenen technischen Details "
+                    "des Einzel-Checks ausgegeben werden. Nutze dafuer insbesondere das Feld "
+                    "'technischer_zustand' aus dem HEBELTRADER-Einzelcheck sowie die darin "
+                    "enthaltenen Setup-/Kurs-/Stop-/TP1-/TP2-/CRV-/RSI-/MACD-Informationen. "
+                    "Diese Werte sind ausschliesslich aus den vorhandenen technischen Daten zu "
+                    "uebernehmen. Einstieg, Stop, TP1 und TP2 duerfen nur angegeben werden, wenn "
+                    "sie aus den bereitgestellten Daten ersichtlich sind. Fehlen Werte, darf Gemini "
+                    "sie NICHT erfinden oder aus allgemeinem Modellwissen schaetzen. Wenn aus den "
+                    "vorhandenen technischen Daten ein konkreter Einstieg/Stop/TP1/TP2 ableitbar "
+                    "ist, darf diese Ableitung transparent als Ableitung gekennzeichnet werden; "
+                    "keine neue technische Berechnungslogik erfinden. Insbesondere gilt weiterhin: "
+                    "Breakout allein aktiviert Fibonacci nicht; Fibonacci/Extension nur bei "
+                    "qualifizierter und bestaetigter A-B-C-Struktur. "
+                    "Wenn die HEBELTRADER-JSON fehlt, erfinde keinen HEBELTRADER-Inhalt. "
+                    "Für A-Kandidaten, die nicht aus HEBELTRADER stammen, nutze die bereitgestellte "
+                    "'einzel_check_historie.jsonl' als autoritative technische Historie des Einzel-Checks. "
+                    "Nutze daraus nur den Snapshot des aktuellen Auswertungstages und den darin enthaltenen "
+                    "bereits berechneten Block 'Technik'. Diese Historie dient ausschließlich dazu, den "
+                    "technischen Zustand eines aktuellen A-Kandidaten vollständig darzustellen; keine Werte "
+                    "neu berechnen. Wenn die Historie für einen Titel fehlt, keine technischen Werte erfinden. "
+                    "Die Beobachtungsliste bleibt ausschließlich für Status, Quelle und Watchlist-Zugehörigkeit "
+                    "maßgeblich. "
+                    "Die vollstaendige 6.5.2-Liste soll aus der bestehenden einzel_check_beobachtung.json "
+                    "kommen; deren 'quelle' zeigt HEBELTRADER-Ausgabe oder '-' an. "
+                    "6.5.2 darf nicht auf 5 Titel gekuerzt werden. "
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
                     "AUTORITATIVE FAKTENBASIS FUER 7.4 AUS TAB 2 VON 'Offene Positionen+Check':\n"
@@ -1665,6 +1716,7 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
     )
     section = section.rstrip() + f"\nDatenqualitaet: {makro_datenqualitaet}\n"
     return text[:start] + section + text[end:]
+
 
 
 def speichere_ergebnis(text):

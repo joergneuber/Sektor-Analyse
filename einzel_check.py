@@ -178,6 +178,20 @@ def _crv_aus_resultat(res):
     return result[0], result[1], (max(werte) if werte else None)
 
 
+def _historie_sichere_struktur(value):
+    """Macht technische Ergebnisstrukturen JSON-sicher, ohne Werte neu zu berechnen."""
+    if isinstance(value, dict):
+        return {str(k): _historie_sichere_struktur(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_historie_sichere_struktur(v) for v in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        return _historie_normalisiere_wert(value)
+    except Exception:
+        return str(value)
+
+
 def schreibe_historie_snapshot(
     ticker,
     data,
@@ -234,6 +248,13 @@ def schreibe_historie_snapshot(
         "Trendwende_CRV_Max": tw_crv_max,
         "Gruende": kauf.get("Gruende", []),
         "Risiken": kauf.get("Risiken", []),
+        # Vollständige bereits berechnete technische Ergebnisstrukturen für
+        # die spätere Auswertung. Es findet hier keinerlei Neubewertung statt.
+        "Technik": {
+            "Momentum": _historie_sichere_struktur(momentum_ergebnis),
+            "Trendfolge": _historie_sichere_struktur(trendfolge_res),
+            "Trendwende": _historie_sichere_struktur(trendwende_res),
+        },
     }
 
     try:
@@ -287,11 +308,16 @@ def _normalisiere_beobachtungseintrag(ticker, eintrag):
             if match:
                 beobachtung_start_date = match.group(1)
 
+    quelle = eintrag.get("quelle", "-")
+    if quelle is None or not str(quelle).strip():
+        quelle = "-"
+
     return {
         "status": status or "UNBEKANNT",
         "letzter_check": letzter_check or "?",
         "last_candidate_date": last_candidate_date,
         "beobachtung_start_date": beobachtung_start_date,
+        "quelle": str(quelle).strip(),
     }
 
 
@@ -499,10 +525,12 @@ def aktualisiere_beobachtungsliste(ticker, status, grund=None):
     war_bereits_drin = ticker in liste
 
     if status == "KAUFKANDIDAT A":
+        quelle = (liste.get(ticker, {}).get("quelle") or "-").strip()
         liste[ticker] = {
             "status": status,
             "letzter_check": heute,
             "last_candidate_date": heute,
+            "quelle": quelle,
         }
         speichere_beobachtungsliste(liste)
         print(
@@ -512,10 +540,12 @@ def aktualisiere_beobachtungsliste(ticker, status, grund=None):
         return
 
     if status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C"):
+        quelle = (liste.get(ticker, {}).get("quelle") or "-").strip()
         liste[ticker] = {
             "status": status,
             "letzter_check": heute,
             "last_candidate_date": heute,
+            "quelle": quelle,
         }
         speichere_beobachtungsliste(liste)
         print(
@@ -529,6 +559,7 @@ def aktualisiere_beobachtungsliste(ticker, status, grund=None):
             eintrag = liste[ticker]
             eintrag["status"] = status
             eintrag["letzter_check"] = heute
+            eintrag["quelle"] = (eintrag.get("quelle") or "-").strip()
         else:
             # Variante B: Jeder technisch gültige, tatsächlich geprüfte Titel
             # wird auch bei KEIN KANDIDAT neu in die Beobachtungsliste aufgenommen.
@@ -537,6 +568,7 @@ def aktualisiere_beobachtungsliste(ticker, status, grund=None):
                 "letzter_check": heute,
                 "last_candidate_date": None,
                 "beobachtung_start_date": heute,
+                "quelle": "-",
             }
             liste[ticker] = eintrag
 

@@ -176,6 +176,20 @@ if __name__ == '__main__':
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
+        elif filename == "einzel_check_historie.jsonl":
+            # Persistente technische Tages-Snapshots des Einzel-Checks.
+            # Sie liefern Gemini die bereits berechneten technischen Felder
+            # auch für A-Kandidaten, die nicht aus HEBELTRADER stammen.
+            print(f"Lade '{filename}' hoch...")
+            upload_file(filename, FOLDER_ID, drive_service)
+            found = True
+        elif filename == "hebeltrader_einzel_check.json":
+            # Persistenter letzter HEBELTRADER-Einzelcheck. Die Datei ist
+            # zugleich State (bereits verarbeitete Ausgabe) und Ergebnisquelle
+            # für den nächsten Hauptlauf am Folgetag.
+            print(f"Lade '{filename}' hoch...")
+            upload_file(filename, FOLDER_ID, drive_service)
+            found = True
         elif filename == "einzel_check_beobachtung.json":
             # Persistente Beobachtungsliste des manuellen Einzel-Checks:
             # A/B/C und bereits beobachtete KEIN-KANDIDAT-Titel bleiben erhalten;
