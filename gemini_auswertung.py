@@ -744,6 +744,9 @@ def _technische_zielzonen_quelle(csv_pfad):
             status_k = key("Status")
             entry_k = key("Einstieg")
             date_k = key("Einstiegsdatum")
+            market_k = key("Markt")
+            direction_k = key("Richtung")
+            source_k = key("Quelle")
             technical_keys = {field: key(field) for field in technische_felder}
 
             missing = [
@@ -803,6 +806,9 @@ def _technische_zielzonen_quelle(csv_pfad):
                     "ticker": ticker,
                     "entry": entry,
                     "date": date,
+                    "market": str(row.get(market_k, "") or "").strip() if market_k else "",
+                    "direction": str(row.get(direction_k, "") or "").strip() if direction_k else "",
+                    "source": str(row.get(source_k, "") or "").strip() if source_k else "",
                     "technical": technical_values,
                 }
 
@@ -1801,10 +1807,12 @@ def normalisiere_ausgabe(text, zielzonen=None):
         )
         seen[source_key] = seen.get(source_key, 0) + 1
         if seen[source_key] > 1:
-            errors.append(
-                f"{source['name']} ({source['ticker']}) | Einstieg: {source['entry']} | "
-                f"Einstiegsdatum: {source['date']}: doppelte Position im Gemini-Output"
-            )
+            # Gemini darf eine Masterposition versehentlich mehrfach ausgeben.
+            # Die Masterdatei bleibt autoritativ; die erste bereits verarbeitete
+            # Instanz bleibt erhalten, jede weitere identische Gemini-Instanz
+            # wird deterministisch entfernt. Eine echte Fremd-/Mehrdeutigkeits-
+            # position bleibt dagegen ein harter Fehler.
+            replacements.append((start, end, ""))
             continue
 
         # Stammdaten aus CSV: Gemini-Ausgabe wird nicht als Quelle akzeptiert.
@@ -1895,13 +1903,56 @@ def normalisiere_ausgabe(text, zielzonen=None):
 
         replacements.append((start, end, pos_block))
 
-    # WICHTIG: Keine Vollstaendigkeitspruefung gegen den Gemini-Output.
-    # Offene Positionen+Check.csv ist der verbindliche Master und wird als
-    # autoritative Liste an Gemini uebergeben. Gemini muss die Master-Liste
-    # nicht anschliessend nochmals beweisen. Fehlende Masterpositionen im
-    # Gemini-Text sind deshalb KEIN Fehler und loesen keinen Laufabbruch aus.
-    # Fremdpositionen sowie doppelte Ausgaben derselben Masterposition bleiben
-    # dagegen harte Fehler.
+    # Offene Positionen+Check.csv ist der verbindliche Master. Gemini muss
+    # deshalb weder Vollstaendigkeit noch Einmaligkeit beweisen. Doppelte
+    # identische Gemini-Bloecke wurden oben bereits deterministisch entfernt.
+    # Fehlende Masterpositionen werden jetzt aus dem Master als kanonischer
+    # Faktenblock ergaenzt. So kann Gemini weder durch Auslassung noch durch
+    # Wiederholung die offene Positionsliste veraendern.
+    missing_keys = [key for key in expected if key not in seen]
+    if missing_keys:
+        master_blocks = []
+        for key in missing_keys:
+            source = expected[key]
+            market = source.get("market") or "EU"
+            direction = source.get("direction") or ""
+            source_label = source.get("source") or ""
+            lines = [
+                f"{source['name']} ({source['ticker']}) | Markt: {market}",
+            ]
+            if direction:
+                lines.append(f"Richtung: {direction}")
+            if source_label:
+                lines.append(f"Quelle: {source_label}")
+            lines.append(f"Einstieg: {source['entry']} ({source['date']})")
+            for field, value in source.get("technical", {}).items():
+                if value is None or value == "":
+                    continue
+                label = {
+                    "Technischer_Zustand": "Technischer Zustand",
+                    "Trendrichtung": "Trendrichtung",
+                    "Support/Widerstand": "Support/Widerstand",
+                    "Breakout_Status": "Breakout Status",
+                    "A-B-C_Status": "A-B-C Status",
+                    "Fibonacci_Status/Ziele": "Fibonacci Status/Ziele",
+                    "Trendkanal": "Trendkanal",
+                    "Measured Move": "Measured Move",
+                    "Formation": "Formation",
+                    "Round Number": "Round Number",
+                    "Major Resistance": "Major Resistance",
+                    "Ueberdehnung": "Ueberdehnung",
+                    "Relative Staerke_Sektor": "Relative Staerke_Sektor",
+                    "Konfluenz": "Konfluenz",
+                    "Retest_Support": "Retest_Support",
+                    "Technische_Zielzone": "Technische Zielzone",
+                    "Datenqualitaet": "Datenqualitaet",
+                    "Analysehinweis": "Analysehinweis",
+                }.get(field)
+                if label:
+                    lines.append(f"{label}: {value}")
+            master_blocks.append("\n".join(lines))
+        append_text = "\n\n" + "\n\n".join(master_blocks) + "\n"
+        block = block.rstrip() + append_text
 
     if errors:
         raise RuntimeError(
