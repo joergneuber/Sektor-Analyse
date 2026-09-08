@@ -40,6 +40,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch 
 
+      - name: Makro-Architektur Regressionstest
+        run: python tests/test_macro_architecture.py
+
       - name: Offene Positionen aktualisieren
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
@@ -146,9 +149,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v5-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v6-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            nmm-macro-cache-v5-${{ runner.os }}-
+            nmm-macro-cache-v6-${{ runner.os }}-
 
       - name: Makro-Datenpaket erstellen
         continue-on-error: true
@@ -161,7 +164,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .macro_cache
-          key: nmm-macro-cache-v5-${{ runner.os }}-${{ github.run_id }}
+          key: nmm-macro-cache-v6-${{ runner.os }}-${{ github.run_id }}
 
       - name: Cache-Diagnose
         if: always()
