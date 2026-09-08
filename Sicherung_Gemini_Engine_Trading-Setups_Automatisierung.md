@@ -1805,9 +1805,9 @@ Optionsschein-Positionen – eigene Zeile „Optionsschein: …”
 
 Manche offenen Positionen sind keine direkten Aktienkäufe, sondern
 Optionsscheine/Zertifikate auf den genannten Basiswert. Erkennbar an
-einer zusätzlichen Zeile im Format „Optionsschein: {{Emittent}} |
-Hebel: {{Hebel}}x | OS-Performance: {{OS_Performance%}}% (Quelle:
-{{OS_Quelle}})” direkt unter den normalen Positions-Angaben.
+einer zusätzlichen Zeile im Format „Optionsschein: WKN {{OS_WKN}} | Kurs:
+{{OS_Aktueller_Kurs}} | OS-Performance: {{OS_Performance%}}% | Quelle:
+{{OS_Quelle}} | Kurszeit: {{OS_Kurszeit}}” direkt unter den normalen Positions-Angaben.
 
 • Zwei Performance-Werte, nicht verwechseln: Performance (ohne „OS-”)
 bezieht sich immer auf den Basiswert (die Aktie selbst) –
@@ -1815,12 +1815,14 @@ OS-Performance bezieht sich auf den Optionsschein. Bei einer
 Optionsschein-Position ist die OS-Performance die für den Nutzer
 eigentlich relevante Zahl, nenne beide, aber ordne klar zu, welche
 zu welchem Instrument gehört.
-• Quelle immer nennen: OS_Quelle = manuell bedeutet, der Nutzer hat
-den echten Schein-Kurs eingetragen – verlässlich. OS_Quelle =
-geschätzt bedeutet, die Performance wurde nur näherungsweise aus
-Hebel × Aktienkursbewegung berechnet (lineare Vereinfachung) –
-weise bei „geschätzt” immer kurz darauf hin, dass es sich um eine
-Näherung handelt, nicht den tatsächlichen Marktpreis des Scheins.
+• Quelle immer nennen: OS_Quelle = „Börse Stuttgart“ bedeutet, der
+aktuelle Schein-Kurs stammt aus dem automatischen Abruf der Börse Stuttgart.
+OS_Quelle = „nicht_verfügbar“ bedeutet, dass kein echter Stuttgart-Kurs
+abgerufen werden konnte. In diesem Fall bleiben OS_Aktueller_Kurs,
+OS_Performance% und OS_Kurszeit leer; es darf kein alter/staler Kurs und
+keine Schätzung verwendet werden. OS-Performance wird ausschließlich aus
+OS_Einstiegskurs und dem echten OS_Aktueller_Kurs berechnet. Es gibt keine
+manuelle Kursquelle und keine hebelbasierte Schätzung.
 • Stop/TP1/TP2 beziehen sich weiterhin auf den Basiswert (die Aktie),
 nicht auf den Optionsschein selbst – dieser hat keine im Datensatz
 hinterlegte eigene Knock-Out-Schwelle.

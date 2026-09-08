@@ -34,8 +34,8 @@ GESCHLOSSENE_HISTORY_HEADERS = [
     "Ideen_Quelle", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs",
     "Stop", "TP1", "TP2", "Status", "Ausstiegsdatum", "Ausstiegskurs",
     "Performance_Seit_Einstieg%", "TP_Hinweis", "Alert_Hinweis",
-    "Produkt_Typ", "Emittent", "Hebel", "OS_Einstiegskurs",
-    "OS_Manueller_Kurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+    "Produkt_Typ", "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs",
+    "OS_Performance%", "OS_Quelle", "OS_Kurszeit",
 ]
 
 def lade_geschlossene_historie_google() -> pd.DataFrame:
@@ -4332,11 +4332,16 @@ if __name__ == "__main__":
                     # tatsächlich als Optionsschein befüllt wurde
                     produkt_typ = str(prow.get('Produkt_Typ', '')).strip().lower()
                     if produkt_typ == 'optionsschein':
-                        emittent = prow.get('Emittent', 'n/a')
-                        hebel = prow.get('Hebel', 'n/a')
+                        os_wkn = str(prow.get('OS_WKN', '')).strip() or 'n/a'
+                        os_aktuell = fmt_de(prow.get('OS_Aktueller_Kurs', 'n/a'))
                         os_performance = fmt_de(prow.get('OS_Performance%', 'n/a'))
-                        os_quelle = prow.get('OS_Quelle', 'n/a')
-                        f.write(f"Optionsschein: {emittent} | Hebel: {hebel}x | OS-Performance: {os_performance}% (Quelle: {os_quelle})\n")
+                        os_quelle = str(prow.get('OS_Quelle', '')).strip() or 'n/a'
+                        os_kurszeit = str(prow.get('OS_Kurszeit', '')).strip() or 'n/a'
+                        f.write(
+                            f"Optionsschein: WKN {os_wkn} | Kurs: {os_aktuell} | "
+                            f"OS-Performance: {os_performance}% | Quelle: {os_quelle} | "
+                            f"Kurszeit: {os_kurszeit}\n"
+                        )
 
                     # Earnings-Warnung + Schlagzeilen auch für laufende Positionen
                     earnings = get_earnings_warnung(prow['Ticker'])

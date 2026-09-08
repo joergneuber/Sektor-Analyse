@@ -74,6 +74,8 @@ HEADERS = [
     "Uebergeordneter_Widerstand_Label",
     "Ueberdehnung", "Relative_Staerke_Sektor", "Konfluenz", "Retest_Support",
     "Technische_Zielzone", "Datenqualitaet", "Analysehinweis",
+    "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs", "OS_Performance%",
+    "OS_Quelle", "OS_Kurszeit",
 ]
 
 NUMERIC_COLUMNS = {
@@ -88,15 +90,15 @@ HISTORY_HEADERS = [
     "Ideen_Quelle", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs",
     "Stop", "TP1", "TP2", "Status", "Ausstiegsdatum", "Ausstiegskurs",
     "Performance_Seit_Einstieg%", "TP_Hinweis", "Alert_Hinweis",
-    "Produkt_Typ", "Emittent", "Hebel", "OS_Einstiegskurs",
-    "OS_Manueller_Kurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+    "Produkt_Typ", "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs",
+    "OS_Performance%", "OS_Quelle", "OS_Kurszeit",
 ]
 
 
 HISTORY_NUMERIC_COLUMNS = {
     "Einstieg", "Aktueller_Kurs", "Stop", "TP1", "TP2", "Ausstiegskurs",
-    "Performance_Seit_Einstieg%", "Hebel", "OS_Einstiegskurs",
-    "OS_Manueller_Kurs", "OS_Performance%",
+    "Performance_Seit_Einstieg%", "OS_Einstiegskurs", "OS_Aktueller_Kurs",
+    "OS_Performance%",
 }
 
 
@@ -977,6 +979,12 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Technische_Zielzone": target_zone,
         "Datenqualitaet": quality,
         "Analysehinweis": tech.note,
+        "OS_WKN": str(row.get("OS_WKN", "")).strip(),
+        "OS_Einstiegskurs": fmt_num(row.get("OS_Einstiegskurs", "")),
+        "OS_Aktueller_Kurs": fmt_num(row.get("OS_Aktueller_Kurs", "")),
+        "OS_Performance%": fmt_num(row.get("OS_Performance%", "")),
+        "OS_Quelle": str(row.get("OS_Quelle", "")).strip(),
+        "OS_Kurszeit": str(row.get("OS_Kurszeit", "")).strip(),
     }
 
 

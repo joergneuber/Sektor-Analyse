@@ -320,8 +320,9 @@ def lade_offenen_positionen_check_tab2():
         fields = [
             "Ticker", "Name", "Einstiegsdatum", "Einstieg",
             "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",
-            "Status", "Richtung", "Produkt_Typ", "Emittent", "Hebel",
-            "OS_Einstiegskurs", "OS_Performance%", "OS_Quelle", "OS_WKN",
+            "Status", "Richtung", "Produkt_Typ",
+            "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs", "OS_Performance%",
+            "OS_Quelle", "OS_Kurszeit",
         ]
         out = []
         for row in selected:
@@ -1312,8 +1313,8 @@ def _normalisiere_7_4_numerische_ausgabe(text):
         "Einstieg",
         "Ausstiegskurs",
         "Performance_Seit_Einstieg%",
-        "Hebel",
         "OS_Einstiegskurs",
+        "OS_Aktueller_Kurs",
         "OS_Performance%",
     )
 
