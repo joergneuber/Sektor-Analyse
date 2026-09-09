@@ -48,7 +48,7 @@ jobs:
 
       - name: GDELT GKG Runner-Test
         continue-on-error: true
-        run: python tests/test_gdelt_gkg_runner.py -- full
+        run: python tests/test_gdelt_gkg_runner.py --full
 
       - name: LME Quellen Runner-Test
         continue-on-error: true
