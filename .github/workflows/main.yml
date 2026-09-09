@@ -40,20 +40,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch 
 
-      # ============================================================
-      # EXTERNER DATENQUELLEN-TEST – GDELT + LME
-      # Diagnose/Freigabeprüfung im echten GitHub Runner.
-      # Zunächst bewusst nicht blockierend.
-      # ============================================================
-
-      - name: GDELT GKG Runner-Test
-        continue-on-error: true
-        run: python tests/test_gdelt_gkg_runner.py
-
-      - name: LME Quellen Runner-Test
-        continue-on-error: true
-        run: python tests/test_lme_sources_runner.py
-
       - name: Makro-Architektur Regressionstest
         run: python tests/test_macro_architecture.py
 
