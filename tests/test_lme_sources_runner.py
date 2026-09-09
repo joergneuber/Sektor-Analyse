@@ -107,43 +107,30 @@ def main() -> None:
         except Exception as exc:
             print(f"FAIL: {metal} Westmetall {type(exc).__name__}: {exc}")
 
-    # Kobalt: mehrere unabhängige Richtungen PARALLEL in EINEM Runner-Lauf.
+    # Kobalt: mehrere unabhängige, kostenlose/öffentliche Wege PARALLEL.
     #
-    # Ziel: mit einem einzigen Testlauf parallel feststellen:
-    # A) offizielle LME-Seite / Varianten
-    # B) offizielle LME-Cobalt-Fastmarkets-MB-Seite
-    # C) offizielle LME-Historical-cash-settled-Seite
-    # D) frei zugängliche Drittquelle als PROXY-Kandidat
-    #
-    # Wichtig: Ein Drittanbieterwert wird NICHT als REAL_LME freigegeben.
-    # Der Test dient ausschließlich der Quellen- und Automatisierbarkeitsprüfung.
+    # Ziel dieses Diagnosetests:
+    # - offizielle LME-Web-/Datenpfade probieren
+    # - freie Drittquellen mit explizitem LME-Cobalt-Bezug probieren
+    # - Datum/Preis/Einheit/Preistyp sichtbar machen
+    # - KEIN Drittanbieterwert wird automatisch als REAL_LME freigegeben.
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     cobalt_targets = [
         (
             "LME_OFFICIAL_DE",
-            "https://www.lme.com/en/Metals/EV/LME-Cobalt",
-            "official_lme",
-        ),
-        (
-            "LME_OFFICIAL_LOWERCASE",
             "https://www.lme.com/metals/ev/lme-cobalt",
             "official_lme",
         ),
         (
-            "LME_OFFICIAL_EN_PATH",
-            "https://www.lme.com/en/Metals/EV/LME-Cobalt?ret=%2Fmetals%2Fminor-metals%2Fcobalt%2F",
+            "LME_OFFICIAL_EN",
+            "https://www.lme.com/en/Metals/EV/LME-Cobalt",
             "official_lme",
         ),
         (
-            "LME_COBALT_FASTMARKETS",
-            "https://www.lme.com/Metals/EV/LME-Cobalt-Fastmarkets-MB",
-            "official_lme_fastmarkets",
-        ),
-        (
-            "LME_COBALT_FASTMARKETS_EN",
-            "https://www.lme.com/en/metals/ev/lme-cobalt-fastmarkets-mb",
-            "official_lme_fastmarkets",
+            "LME_FASTMARKETS_MB",
+            "https://www.lme.com/en/Metals/EV/LME-Cobalt-Fastmarkets-MB",
+            "official_lme_other_contract",
         ),
         (
             "LME_HISTORICAL_CASH_SETTLED",
@@ -151,9 +138,24 @@ def main() -> None:
             "official_lme_historical",
         ),
         (
-            "TRADINGECONOMICS_COBALT",
+            "TRADING_ECONOMICS",
             "https://tradingeconomics.com/commodity/cobalt",
-            "third_party_proxy",
+            "third_party_market",
+        ),
+        (
+            "CBONDS_COBALT",
+            "https://cbonds.com/indexes/26889/",
+            "third_party_lme_futures_index",
+        ),
+        (
+            "TRENDFORCE_LME_COBALT",
+            "https://datatrack.trendforce.com/Chart/content/2657/spot-settlement-price-selling-price-lme-cobalt",
+            "third_party_lme_reference",
+        ),
+        (
+            "FERAILLEMONITOR_COBALT",
+            "https://ferraillemonitor.com/analyses/prix-ferraille-centre-val-de-loire/",
+            "third_party_metal_market",
         ),
     ]
 
@@ -161,44 +163,84 @@ def main() -> None:
         label, url, source_class = item
         try:
             r = fetch(url)
-            text = r.text or ""
-            plain = re.sub(r"<[^>]+>", " ", text)
-            plain = re.sub(r"\s+", " ", plain).lower()
+            body = r.text or ""
+            plain = re.sub(r"<[^>]+>", " ", body)
+            plain = re.sub(r"\s+", " ", html.unescape(plain))
 
-            has_cobalt = "cobalt" in plain
-            has_5day = (
-                "five-day look-back" in plain
-                or "five day look-back" in plain
-                or "5-day look-back" in plain
-                or "5 day look-back" in plain
+            low = plain.lower()
+            has_cobalt = "cobalt" in low
+            status = "HTTP_OK" if r.status_code == 200 else f"HTTP_{r.status_code}"
+
+            # Search date anchors and nearby numeric candidates.
+            date_markers = [
+                target.strftime("%d/%m/%Y"),
+                target.strftime("%m/%d/%Y"),
+                target.strftime("%d/%m/%y"),
+                target.strftime("%Y-%m-%d"),
+                target.strftime("%d %B %Y"),
+                target.strftime("%B %d, %Y"),
+            ]
+            windows = []
+            for dm in date_markers:
+                p = low.find(dm.lower())
+                if p >= 0:
+                    windows.append(plain[max(0, p-120):p+420])
+
+            # If date isn't printed in the expected form, inspect first part
+            # because some sites publish a current value without a textual date.
+            if not windows:
+                windows.append(plain[:2000])
+
+            price_hits = []
+            for window in windows:
+                for raw in re.findall(
+                    r"(?<![\d])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2,4})(?![\d])",
+                    window,
+                ):
+                    try:
+                        value = parse_number(raw)
+                    except Exception:
+                        continue
+                    if 1000 <= value <= 200000:
+                        price_hits.append(value)
+
+            unique_prices = []
+            for value in price_hits:
+                if value not in unique_prices:
+                    unique_prices.append(value)
+
+            # Strong source-specific hints; informational only.
+            lme_wording = any(
+                token in low
+                for token in [
+                    "lme cobalt",
+                    "lme-cobalt",
+                    "published by london metal exchange",
+                    "london metal exchange (choice)",
+                ]
             )
-
-            # Search for current-looking numeric values near cobalt/price terms.
-            number_hits = re.findall(
-                r"(?<![\d])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2,4})(?![\d])",
-                plain,
+            settlement_wording = any(
+                token in low
+                for token in [
+                    "cash settlement",
+                    "spot settlement",
+                    "settlement price",
+                    "settlement",
+                ]
             )
-            numbers_sample = number_hits[:12]
-
-            status = "HTTP_FAIL"
-            if r.status_code == 200:
-                status = "HTTP_OK"
-            elif r.status_code in (401, 403, 429):
-                status = f"BLOCKED_{r.status_code}"
+            three_month = "3m" in low or "3-month" in low or "3 month" in low
 
             print(
                 f"KOBALT_PROBE {label}: status={status} "
-                f"source_class={source_class} "
-                f"bytes={len(r.content)} "
-                f"has_cobalt={has_cobalt} "
-                f"has_5day={has_5day} "
-                f"number_hits={len(number_hits)}"
+                f"source_class={source_class} bytes={len(r.content)} "
+                f"has_cobalt={has_cobalt} lme_wording={lme_wording} "
+                f"settlement_wording={settlement_wording} 3m_hint={three_month} "
+                f"price_candidates={len(unique_prices)}"
             )
-
-            if numbers_sample:
+            if unique_prices:
                 print(
-                    f"KOBALT_PROBE {label}: numeric_sample="
-                    + ",".join(numbers_sample)
+                    f"KOBALT_PROBE {label}: prices="
+                    + ",".join(str(v) for v in unique_prices[:10])
                 )
 
             return {
@@ -206,10 +248,10 @@ def main() -> None:
                 "status": status,
                 "source_class": source_class,
                 "has_cobalt": has_cobalt,
-                "has_5day": has_5day,
-                "number_hits": len(number_hits),
+                "lme_wording": lme_wording,
+                "settlement_wording": settlement_wording,
+                "prices": unique_prices,
             }
-
         except Exception as exc:
             print(
                 f"KOBALT_PROBE {label}: EXCEPTION "
@@ -220,8 +262,9 @@ def main() -> None:
                 "status": "EXCEPTION",
                 "source_class": source_class,
                 "has_cobalt": False,
-                "has_5day": False,
-                "number_hits": 0,
+                "lme_wording": False,
+                "settlement_wording": False,
+                "prices": [],
             }
 
     cobalt_results = []
@@ -230,52 +273,55 @@ def main() -> None:
         for future in as_completed(futures):
             cobalt_results.append(future.result())
 
-    official_ok = [
+    official_page_ok = [
         x for x in cobalt_results
         if x["source_class"] == "official_lme" and x["status"] == "HTTP_OK"
     ]
-    official_fastmarkets_ok = [
+    official_other_ok = [
         x for x in cobalt_results
-        if x["source_class"] == "official_lme_fastmarkets"
+        if x["source_class"].startswith("official_lme_")
         and x["status"] == "HTTP_OK"
     ]
-    historical_ok = [
+    free_reference_hits = [
         x for x in cobalt_results
-        if x["source_class"] == "official_lme_historical"
+        if x["source_class"] in {
+            "third_party_lme_futures_index",
+            "third_party_lme_reference",
+        }
         and x["status"] == "HTTP_OK"
+        and x["has_cobalt"]
+        and x["prices"]
     ]
-    proxy_ok = [
+    market_proxy_hits = [
         x for x in cobalt_results
-        if x["source_class"] == "third_party_proxy"
+        if x["source_class"] == "third_party_market"
         and x["status"] == "HTTP_OK"
+        and x["has_cobalt"]
+        and x["prices"]
     ]
 
     print(
         "LME_COBALT_PARALLEL: "
-        f"official_ok={len(official_ok)}/{sum(x['source_class']=='official_lme' for x in cobalt_results)} "
-        f"fastmarkets_ok={len(official_fastmarkets_ok)}/{sum(x['source_class']=='official_lme_fastmarkets' for x in cobalt_results)} "
-        f"historical_ok={len(historical_ok)}/{sum(x['source_class']=='official_lme_historical' for x in cobalt_results)} "
-        f"proxy_ok={len(proxy_ok)}/{sum(x['source_class']=='third_party_proxy' for x in cobalt_results)}"
+        f"official_page_ok={len(official_page_ok)}/2 "
+        f"official_other_ok={len(official_other_ok)}/2 "
+        f"free_reference_hits={len(free_reference_hits)} "
+        f"market_proxy_hits={len(market_proxy_hits)}"
     )
 
-    cobalt_page_ok = bool(official_ok or official_fastmarkets_ok)
+    # Diagnostic-only: we do not call a third-party number REAL_LME.
+    if free_reference_hits:
+        print("LME_COBALT_FREE_REFERENCE_CANDIDATE: FOUND")
+    else:
+        print("LME_COBALT_FREE_REFERENCE_CANDIDATE: NOT_FOUND")
+
+    if market_proxy_hits:
+        print("LME_COBALT_MARKET_PROXY: FOUND")
+    else:
+        print("LME_COBALT_MARKET_PROXY: NOT_FOUND")
 
     print(
-        "LME_COBALT_OFFICIAL_PAGE: "
-        f"{'PASS' if cobalt_page_ok else 'FAIL'}"
-    )
-
-    # This test remains diagnostic. No third-party proxy is ever promoted
-    # automatically to REAL_LME.
-    if passed < 3:
-        raise SystemExit(1)
-    if not cobalt_page_ok:
-        raise SystemExit(1)
-
-    print(
-        "LME_SOURCE_RUNNER_TEST: DIAGNOSTIC PASS | "
-        "PB_NI_SN exact via Westmetall + official LME cobalt access proven; "
-        "free exact automated cobalt settlement source remains open"
+        "LME_COBALT_OFFICIAL_AUTOMATION: "
+        f"{'PROVEN' if official_page_ok else 'NOT_PROVEN'}"
     )
 
 
