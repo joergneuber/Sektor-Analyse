@@ -24,6 +24,12 @@ BASE_HTTPS = "https://data.gdeltproject.org/gdeltv2/"
 BASE_HTTP = "http://data.gdeltproject.org/gdeltv2/"
 LASTUPDATE = "lastupdate.txt"
 TIMEOUT = 30
+CSV_FIELD_LIMIT = 10 * 1024 * 1024
+try:
+    csv.field_size_limit(CSV_FIELD_LIMIT)
+except OverflowError:
+    csv.field_size_limit(2**31 - 1)
+
 HEADERS = {"User-Agent": "NeuberMacro-GDELT-GKG-Test/1.0"}
 
 CATEGORIES = {

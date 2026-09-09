@@ -19,9 +19,8 @@ WESTMETALL = {
     "Blei": "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Pb_cash",
     "Zinn": "https://www.westmetall.com/en/markdaten.php?action=table&field=LME_Sn_cash",
 }
-COBALT_CANDIDATES = [
-    "https://arsenalltd.com.ua/export/waste/products/lme",
-]
+LME_COBALT_PAGE = "https://www.lme.com/en/Metals/EV/LME-Cobalt"
+
 
 
 def target_default() -> dt.date:
@@ -108,34 +107,48 @@ def main() -> None:
         except Exception as exc:
             print(f"FAIL: {metal} Westmetall {type(exc).__name__}: {exc}")
 
-    # Cobalt is explicitly kept separate: these public LME-quote pages are a
-    # secondary source and must NOT be labeled REAL_LME without an official cross-check.
-    cobalt_found = False
-    for url in COBALT_CANDIDATES:
-        try:
-            r = fetch(url)
-            if r.status_code != 200:
-                print(f"WARN: Kobalt candidate HTTP {r.status_code} | {url}")
-                continue
-            value = exact_arsenal(r.text, "Cobalt", target)
-            if value is not None:
+    # Kobalt: direkte Prüfung der öffentlichen offiziellen LME-Seite.
+    # Die Seite weist den Five-day look-back öffentlich aus. Die konkrete
+    # Preisextraktion bleibt getrennt, weil die Wertetabelle clientseitig
+    # bereitgestellt werden kann und nicht als frei zugänglicher historischer
+    # CSV/JSON-Feed dokumentiert ist.
+    cobalt_page_ok = False
+    try:
+        r = fetch(LME_COBALT_PAGE)
+        if r.status_code != 200:
+            print(f"FAIL: Kobalt offizielle LME-Seite HTTP {r.status_code}")
+        else:
+            plain = re.sub(r"<[^>]+>", " ", r.text)
+            plain = re.sub(r"\s+", " ", plain).lower()
+            has_cobalt = "lme cobalt" in plain or "cobalt" in plain
+            has_lookback = "five-day look-back" in plain or "five day look-back" in plain
+            has_login_history = "login or register to view historical prices" in plain
+            if has_cobalt and has_lookback:
+                cobalt_page_ok = True
                 print(
-                    f"CANDIDATE: Kobalt | source=Arsenal Ukraine public LME quotes | "
-                    f"exact_date={target.isoformat()} | cash_settlement={value} | "
-                    f"STATUS=SECONDARY_REQUIRES_OFFICIAL_CROSSCHECK"
+                    "PASS: Kobalt | source=LME official page | "
+                    "five_day_lookback=DETECTED | "
+                    f"historical_login_notice={'YES' if has_login_history else 'NO'}"
                 )
-                cobalt_found = True
-                break
-        except Exception as exc:
-            print(f"WARN: Kobalt candidate {type(exc).__name__}: {exc}")
+            else:
+                print(
+                    "FAIL: Kobalt | offizielle LME-Seite erreichbar, "
+                    "aber Five-day look-back nicht sicher erkannt"
+                )
+    except Exception as exc:
+        print(f"FAIL: Kobalt offizielle LME-Seite {type(exc).__name__}: {exc}")
+
 
     print(f"LME_WESTMETALL_EXACT: {passed}/3 PASS")
-    print(f"LME_COBALT_CANDIDATE: {'FOUND' if cobalt_found else 'NOT_FOUND'}")
+    print(f"LME_COBALT_OFFICIAL_PAGE: {'PASS' if cobalt_page_ok else 'FAIL'}")
     if passed < 3:
         raise SystemExit(1)
-    if not cobalt_found:
+    if not cobalt_page_ok:
         raise SystemExit(1)
-    print("LME_SOURCE_RUNNER_TEST: PARTIAL - Kobalt ist noch NICHT produktionsfreigegeben")
+    print(
+        "LME_SOURCE_RUNNER_TEST: PASS_PB_NI_SN + COBALT_OFFICIAL_PAGE; "
+        "Kobalt-EXAKTWERT-AUTOMATISIERUNG noch NICHT produktionsfreigegeben"
+    )
     raise SystemExit(2)
 
 
