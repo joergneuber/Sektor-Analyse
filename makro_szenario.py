@@ -107,7 +107,7 @@ MARKET_DATA = {
     "Kupfer": ("HG=F", "REAL_FUTURES"),
     "Aluminium": ("ALI=F", "REAL_FUTURES"),
     "Zink": ("ZNC=F", "REAL_FUTURES"),
-    # LME ist fuer diese vier Metalle die primaere kostenlose Quelle fuer
+    # LME ist fuer diese fünf Metalle die primaere kostenlose Quelle fuer
     # den day-delayed aktuellen Official Price. Historische LME-Reihen
     # werden hier bewusst NICHT erfunden oder kostenpflichtig bezogen.
     "Nickel": ("LME:Nickel", "REAL_LME"),
