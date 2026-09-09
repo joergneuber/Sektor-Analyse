@@ -588,7 +588,7 @@ def main() -> None:
     )
 
 
-    print(f"LME_WESTMETALL_EXACT: {passed}/3 PASS")
+    print(f"LME_WESTMETALL_EXACT: {passed}/4 PASS")
     cobalt_exact_candidates = [
         x for x in cobalt_results
         if x["status"] == "HTTP_OK" and x["has_cobalt"] and x["prices"]
@@ -620,7 +620,7 @@ def main() -> None:
     # one inaccessible source cannot hide results from all other parsers/sources.
     # Production classification of Kobalt remains forbidden until an exact,
     # contract-correct LME value is proven for the requested date.
-    if passed < 3:
+    if passed < 4:
         print(
             "LME_SOURCE_RUNNER_TEST: DIAGNOSTIC FAIL - "
             "mindestens eine erforderliche Westmetall-Referenz ist nicht exakt lesbar."
