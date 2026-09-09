@@ -251,6 +251,86 @@ def extract_price_candidates(body: str, target: dt.date) -> tuple[list[float], l
 
     return candidates, methods
 
+
+def candidate_evidence(body: str, value: float, target: dt.date) -> dict:
+    """Classify one numeric candidate by explicit evidence, not page proximity alone."""
+    visible = strip_html(body)
+    value_forms = {
+        f"{value:g}",
+        f"{value:,.0f}",
+        f"{value:,.2f}",
+        f"{value:.0f}",
+        f"{value:.2f}",
+    }
+    positions = []
+    low = visible.lower()
+    for form in value_forms:
+        start = 0
+        while True:
+            pos = low.find(form.lower(), start)
+            if pos < 0:
+                break
+            positions.append(pos)
+            start = pos + max(1, len(form))
+    if not positions:
+        return {
+            "value": value, "date_exact": False, "contract": None,
+            "price_type": None, "unit": None, "source_context": "",
+            "confidence": "LOW", "evidence": "VALUE_NOT_LOCATED"
+        }
+
+    # Evaluate the occurrence with the strongest explicit semantic context.
+    best = None
+    for pos in positions:
+        chunk = visible[max(0, pos-500):pos+500]
+        lowc = chunk.lower()
+        date_exact = any(m.lower() in lowc for m in target_date_markers(target))
+        contract = "CO" if re.search(r"\bCO\b", chunk, re.I) else None
+        if not contract and re.search(r"physically settled", chunk, re.I):
+            contract = "CO?"
+        if re.search(r"fastmarkets|cash-settled", chunk, re.I):
+            contract = "CB" if re.search(r"fastmarkets", chunk, re.I) else contract
+        price_type = None
+        if re.search(r"official\s+(?:price|settlement)|official price", chunk, re.I):
+            price_type = "OFFICIAL"
+        elif re.search(r"cash\s+(?:settlement|price)|cash", chunk, re.I):
+            price_type = "CASH"
+        elif re.search(r"3\s*-?\s*month|3m", chunk, re.I):
+            price_type = "3M"
+        elif re.search(r"spot\s+settlement|spot", chunk, re.I):
+            price_type = "SPOT"
+        unit = None
+        if re.search(r"USD\s*/\s*T|US\$\s*/\s*T|USD\s+per\s+tonne|USD/T", chunk, re.I):
+            unit = "USD/t"
+        score = sum((
+            5 if date_exact else 0,
+            4 if contract == "CO" else 0,
+            3 if price_type in {"OFFICIAL", "CASH", "SPOT", "3M"} else 0,
+            2 if unit == "USD/t" else 0,
+            2 if re.search(r"cobalt", chunk, re.I) else 0,
+            1 if re.search(r"london metal exchange|\bLME\b", chunk, re.I) else 0,
+        ))
+        if best is None or score > best[0]:
+            best = (score, date_exact, contract, price_type, unit, chunk)
+
+    score, date_exact, contract, price_type, unit, chunk = best
+    if score >= 12 and date_exact and contract == "CO" and unit == "USD/t":
+        confidence = "HIGH"
+    elif score >= 8 and date_exact and (contract == "CO" or price_type in {"OFFICIAL", "CASH", "SPOT", "3M"}):
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+    return {
+        "value": value,
+        "date_exact": date_exact,
+        "contract": contract,
+        "price_type": price_type,
+        "unit": unit,
+        "source_context": re.sub(r"\s+", " ", chunk).strip()[:900],
+        "confidence": confidence,
+        "evidence": f"score={score}",
+    }
+
 def exact_westmetall(text: str, metal: str, target: dt.date) -> float | None:
     # Look for the exact target date and the corresponding first numeric field.
     target_text = target.strftime("%d. %B %Y")
@@ -410,11 +490,17 @@ def main() -> None:
                 f"parser_methods={','.join(parser_methods[:8]) or 'NONE'}"
             )
 
-            if price_candidates:
-                print(
-                    f"KOBALT_PROBE {label}: "
-                    f"prices={','.join(str(v) for v in price_candidates[:20])}"
-                )
+            evidence = [candidate_evidence(body, v, target) for v in price_candidates]
+            strong = [e for e in evidence if e["confidence"] in {"HIGH", "MEDIUM"} and e["date_exact"]]
+
+            if evidence:
+                for e in evidence[:20]:
+                    print(
+                        f"KOBALT_EVIDENCE {label}: value={e['value']} "
+                        f"date_exact={e['date_exact']} contract={e['contract'] or 'NONE'} "
+                        f"price_type={e['price_type'] or 'NONE'} unit={e['unit'] or 'NONE'} "
+                        f"confidence={e['confidence']} {e['evidence']}"
+                    )
 
             return {
                 "label": label,
@@ -424,6 +510,8 @@ def main() -> None:
                 "lme_wording": lme_wording,
                 "settlement_wording": settlement_wording,
                 "prices": price_candidates,
+                "evidence": evidence,
+                "strong_evidence": strong,
             }
 
         except Exception as exc:
@@ -440,6 +528,8 @@ def main() -> None:
                 "lme_wording": False,
                 "settlement_wording": False,
                 "prices": [],
+                "evidence": [],
+                "strong_evidence": [],
             }
 
     cobalt_results = []
@@ -503,11 +593,28 @@ def main() -> None:
         x for x in cobalt_results
         if x["status"] == "HTTP_OK" and x["has_cobalt"] and x["prices"]
     ]
+    cobalt_strong_candidates = [
+        x for x in cobalt_results
+        if x.get("strong_evidence")
+    ]
     print(
-        "LME_COBALT_EXACT_CANDIDATES: "
-        f"{len(cobalt_exact_candidates)} source(s) produced numeric candidates; "
-        "manual/source-contract validation still required."
+        "LME_COBALT_NUMERIC_CANDIDATES: "
+        f"{len(cobalt_exact_candidates)} source(s) produced numeric candidates."
     )
+    print(
+        "LME_COBALT_STRONG_EVIDENCE: "
+        f"{len(cobalt_strong_candidates)} source(s) produced target-date + contract/price evidence."
+    )
+    if cobalt_strong_candidates:
+        for source in cobalt_strong_candidates:
+            for e in source["strong_evidence"][:5]:
+                print(
+                    "LME_COBALT_STRONG: "
+                    f"source={source['label']} value={e['value']} "
+                    f"date={e['date_exact']} contract={e['contract']} "
+                    f"price_type={e['price_type']} unit={e['unit']} "
+                    f"confidence={e['confidence']}"
+                )
 
     # This is deliberately a diagnostic gate: the runner must finish cleanly so
     # one inaccessible source cannot hide results from all other parsers/sources.
