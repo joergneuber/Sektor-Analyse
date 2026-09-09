@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import re
 import sys
 
@@ -109,11 +110,11 @@ def main() -> None:
 
     # Kobalt: mehrere unabhängige, kostenlose/öffentliche Wege PARALLEL.
     #
-    # Ziel dieses Diagnosetests:
-    # - offizielle LME-Web-/Datenpfade probieren
-    # - freie Drittquellen mit explizitem LME-Cobalt-Bezug probieren
-    # - Datum/Preis/Einheit/Preistyp sichtbar machen
-    # - KEIN Drittanbieterwert wird automatisch als REAL_LME freigegeben.
+    # Dieser Block ist rein diagnostisch:
+    # - jeder Quellenfehler wird isoliert behandelt
+    # - ein Fehler in Quelle A darf Quelle B nicht beeinflussen
+    # - HTTP 200 allein reicht NICHT für eine Produktionsfreigabe
+    # - Drittquellen werden niemals automatisch als REAL_LME klassifiziert
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     cobalt_targets = [
@@ -166,33 +167,34 @@ def main() -> None:
             body = r.text or ""
             plain = re.sub(r"<[^>]+>", " ", body)
             plain = re.sub(r"\s+", " ", html.unescape(plain))
-
             low = plain.lower()
+
             has_cobalt = "cobalt" in low
             status = "HTTP_OK" if r.status_code == 200 else f"HTTP_{r.status_code}"
 
-            # Search date anchors and nearby numeric candidates.
+            # Search date-adjacent text first; then use a bounded fallback
+            # to avoid treating arbitrary page numbers as prices.
             date_markers = [
+                target.strftime("%Y-%m-%d"),
                 target.strftime("%d/%m/%Y"),
                 target.strftime("%m/%d/%Y"),
-                target.strftime("%d/%m/%y"),
-                target.strftime("%Y-%m-%d"),
+                target.strftime("%d.%m.%Y"),
                 target.strftime("%d %B %Y"),
                 target.strftime("%B %d, %Y"),
             ]
+
             windows = []
             for dm in date_markers:
-                p = low.find(dm.lower())
-                if p >= 0:
-                    windows.append(plain[max(0, p-120):p+420])
+                pos = low.find(dm.lower())
+                if pos >= 0:
+                    windows.append(plain[max(0, pos - 180): pos + 600])
 
-            # If date isn't printed in the expected form, inspect first part
-            # because some sites publish a current value without a textual date.
             if not windows:
-                windows.append(plain[:2000])
+                windows.append(plain[:4000])
 
-            price_hits = []
+            price_candidates = []
             for window in windows:
+                # Restrict to realistic USD/t-like values.
                 for raw in re.findall(
                     r"(?<![\d])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2,4})(?![\d])",
                     window,
@@ -201,46 +203,49 @@ def main() -> None:
                         value = parse_number(raw)
                     except Exception:
                         continue
-                    if 1000 <= value <= 200000:
-                        price_hits.append(value)
+                    if 1000 <= value <= 200000 and value not in price_candidates:
+                        price_candidates.append(value)
 
-            unique_prices = []
-            for value in price_hits:
-                if value not in unique_prices:
-                    unique_prices.append(value)
-
-            # Strong source-specific hints; informational only.
+            # Informational source-role indicators.
             lme_wording = any(
                 token in low
-                for token in [
+                for token in (
                     "lme cobalt",
                     "lme-cobalt",
-                    "published by london metal exchange",
-                    "london metal exchange (choice)",
-                ]
+                    "london metal exchange",
+                    "lme cobalt cash",
+                )
             )
             settlement_wording = any(
                 token in low
-                for token in [
+                for token in (
                     "cash settlement",
                     "spot settlement",
                     "settlement price",
                     "settlement",
-                ]
+                )
             )
-            three_month = "3m" in low or "3-month" in low or "3 month" in low
+            three_month = any(
+                token in low
+                for token in ("3m", "3-month", "3 month", "three month")
+            )
 
             print(
-                f"KOBALT_PROBE {label}: status={status} "
-                f"source_class={source_class} bytes={len(r.content)} "
-                f"has_cobalt={has_cobalt} lme_wording={lme_wording} "
-                f"settlement_wording={settlement_wording} 3m_hint={three_month} "
-                f"price_candidates={len(unique_prices)}"
+                f"KOBALT_PROBE {label}: "
+                f"status={status} "
+                f"source_class={source_class} "
+                f"bytes={len(r.content)} "
+                f"has_cobalt={has_cobalt} "
+                f"lme_wording={lme_wording} "
+                f"settlement_wording={settlement_wording} "
+                f"3m_hint={three_month} "
+                f"price_candidates={len(price_candidates)}"
             )
-            if unique_prices:
+
+            if price_candidates:
                 print(
-                    f"KOBALT_PROBE {label}: prices="
-                    + ",".join(str(v) for v in unique_prices[:10])
+                    f"KOBALT_PROBE {label}: "
+                    f"prices={','.join(str(v) for v in price_candidates[:10])}"
                 )
 
             return {
@@ -250,9 +255,11 @@ def main() -> None:
                 "has_cobalt": has_cobalt,
                 "lme_wording": lme_wording,
                 "settlement_wording": settlement_wording,
-                "prices": unique_prices,
+                "prices": price_candidates,
             }
+
         except Exception as exc:
+            # A source-level exception must never abort the parallel batch.
             print(
                 f"KOBALT_PROBE {label}: EXCEPTION "
                 f"{type(exc).__name__}: {exc}"
@@ -275,7 +282,8 @@ def main() -> None:
 
     official_page_ok = [
         x for x in cobalt_results
-        if x["source_class"] == "official_lme" and x["status"] == "HTTP_OK"
+        if x["source_class"] == "official_lme"
+        and x["status"] == "HTTP_OK"
     ]
     official_other_ok = [
         x for x in cobalt_results
@@ -308,17 +316,14 @@ def main() -> None:
         f"market_proxy_hits={len(market_proxy_hits)}"
     )
 
-    # Diagnostic-only: we do not call a third-party number REAL_LME.
-    if free_reference_hits:
-        print("LME_COBALT_FREE_REFERENCE_CANDIDATE: FOUND")
-    else:
-        print("LME_COBALT_FREE_REFERENCE_CANDIDATE: NOT_FOUND")
-
-    if market_proxy_hits:
-        print("LME_COBALT_MARKET_PROXY: FOUND")
-    else:
-        print("LME_COBALT_MARKET_PROXY: NOT_FOUND")
-
+    print(
+        "LME_COBALT_FREE_REFERENCE_CANDIDATE: "
+        f"{'FOUND' if free_reference_hits else 'NOT_FOUND'}"
+    )
+    print(
+        "LME_COBALT_MARKET_PROXY: "
+        f"{'FOUND' if market_proxy_hits else 'NOT_FOUND'}"
+    )
     print(
         "LME_COBALT_OFFICIAL_AUTOMATION: "
         f"{'PROVEN' if official_page_ok else 'NOT_PROVEN'}"
