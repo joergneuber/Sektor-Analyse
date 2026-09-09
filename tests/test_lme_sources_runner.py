@@ -86,158 +86,170 @@ def target_date_markers(target: dt.date) -> list[str]:
 
 
 def extract_price_candidates(body: str, target: dt.date) -> tuple[list[float], list[str]]:
-    """Use several independent parsers; return values plus method names.
+    """Multi-parser extraction with strict semantic context validation.
 
-    The runner must not depend on one HTML layout. Candidates are accepted only
-    in cobalt/LME/settlement/date-related context or from strongly typed
-    numeric attributes/scripts. No candidate is promoted to REAL_LME here.
+    A numeric token is NOT a valid cobalt candidate merely because it occurs on
+    a cobalt/LME page. The parser requires a meaningful relationship to cobalt,
+    LME, the target date, a price/settlement label, or a typed price field.
+    This deliberately suppresses IDs, page numbers, dates and unrelated values.
     """
     visible = strip_html(body)
     low = visible.lower()
+    decoded = html.unescape(body).replace(r"\/", "/").replace(r"\u002c", ",")
     markers = target_date_markers(target)
-    windows: list[str] = []
-    for marker in markers:
-        start = 0
-        while True:
-            pos = low.find(marker.lower(), start)
-            if pos < 0:
-                break
-            windows.append(visible[max(0, pos - 500): pos + 1000])
-            start = pos + len(marker)
-    # Always inspect relevant visible context as a fallback, but keep it bounded.
-    for token in ("lme cobalt", "cobalt", "settlement", "3m cobalt", "cash cobalt"):
-        start = 0
-        while True:
-            pos = low.find(token, start)
-            if pos < 0:
-                break
-            windows.append(visible[max(0, pos - 350): pos + 900])
-            start = pos + len(token)
 
     candidates: list[float] = []
     methods: list[str] = []
 
-    def mask_date_tokens(text: str) -> str:
-        masked = text
-        date_patterns = [
+    number_re = r"(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?"
+
+    def mask_dates(text: str) -> str:
+        patterns = (
             r"\b\d{4}-\d{2}-\d{2}\b",
             r"\b\d{2}[./]\d{2}[./]\d{4}\b",
             r"\b\d{2}\s+[A-Za-zÄÖÜäöü]+\s+\d{4}\b",
             r"\b[A-Za-zÄÖÜäöü]+\s+\d{2},\s+\d{4}\b",
-        ]
-        for pattern in date_patterns:
-            masked = re.sub(pattern, lambda m: " " * len(m.group(0)), masked, flags=re.I)
-        return masked
+        )
+        out = text
+        for pattern in patterns:
+            out = re.sub(pattern, lambda m: " " * len(m.group(0)), out, flags=re.I)
+        return out
 
-    def add(raw: str, method: str) -> None:
+    def valid(value: float | None) -> bool:
+        return value is not None and 1000 <= value <= 200000 and not (1900 <= value <= 2100)
+
+    def add(raw: str, method: str, context: str = "") -> None:
         value = normalise_number(raw)
-        if value is not None and 1000 <= value <= 200000 and value not in candidates:
-            # Reject bare calendar years; they are common false positives in HTML.
-            if 1900 <= value <= 2100:
-                return
+        if not valid(value):
+            return
+        ctx = context.lower()
+        # Hard semantic guard: prevent generic page numbers/IDs from becoming
+        # candidates unless a price/settlement or cobalt/LME relationship exists.
+        semantic = (
+            "cobalt" in ctx
+            or "lme" in ctx
+            or "settlement" in ctx
+            or "official price" in ctx
+            or "price" in ctx
+            or "usd/t" in ctx
+            or "usd per tonne" in ctx
+            or "cash" in ctx
+        )
+        if not semantic:
+            return
+        if value not in candidates:
             candidates.append(value)
             methods.append(method)
 
-    # Parser 1: human-visible date/context -> price.
-    for window in windows:
-        for raw in re.findall(r"(?<![\d])(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?(?![\d])", mask_date_tokens(window)):
-            add(raw, "VISIBLE_CONTEXT_NUMBER")
+    # 1) Exact target-date + cobalt/LME/settlement visible context.
+    # Only numbers in the target-date window are considered.
+    for marker in markers:
+        pos = 0
+        while True:
+            hit = low.find(marker.lower(), pos)
+            if hit < 0:
+                break
+            window = visible[max(0, hit - 300): hit + 700]
+            context_low = window.lower()
+            if any(x in context_low for x in ("cobalt", "lme", "settlement", "price")):
+                for raw in re.findall(number_re, mask_dates(window)):
+                    add(raw, "EXACT_DATE_VISIBLE_CONTEXT", window)
+            pos = hit + len(marker)
 
-    # Parser 2: explicit price/settlement labels.
+    # 2) Explicit labelled price/settlement, but only when cobalt/LME is nearby.
     for m in re.finditer(
-        r"(?is)(?:cash|spot|official|settlement|price|value)[^\n|]{0,100}?"
-        r"((?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?)",
+        rf"(?is)(?:cobalt|lme).{{0,220}}?(?:cash|spot|official|settlement|price)"
+        rf".{{0,120}}?({number_re})",
         visible,
     ):
-        add(m.group(1), "LABELLED_PRICE")
-
-    # Parser 3: raw HTML data-* / value / content attributes.
+        add(m.group(1), "COBALT_LABELLED_PRICE", m.group(0))
     for m in re.finditer(
-        r"(?is)(?:data-(?:value|price|settlement|last|close)|(?:value|price|settlement|last|close)=(?:\"|'))\s*"
-        r"((?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?)",
+        rf"(?is)(?:cash|spot|official|settlement|price).{{0,120}}?"
+        rf"({number_re}).{{0,220}}?(?:cobalt|lme)",
+        visible,
+    ):
+        add(m.group(1), "LABELLED_PRICE_COBALT_CONTEXT", m.group(0))
+
+    # 3) HTML data-* attributes, only when the surrounding tag/context names
+    # cobalt, LME, settlement or price explicitly.
+    for m in re.finditer(
+        rf"(?is)<[^>]*(?:cobalt|lme|settlement|price)[^>]*"
+        rf"(?:data-(?:value|price|settlement|last|close)|(?:value|price|settlement|last|close))"
+        rf"\s*=\s*[\"']({number_re})[\"'][^>]*>",
         body,
     ):
-        add(m.group(1), "HTML_DATA_ATTRIBUTE")
+        add(m.group(1), "HTML_TYPED_ATTRIBUTE", m.group(0))
 
-    # Parser 4: JSON-ish/script numeric fields.
+    # 4) Typed JSON/JavaScript fields with cobalt/LME in the same bounded object.
+    typed_pattern = rf"(?is)(?:[\"']?(?:price|settlementPrice|cashSettlement|officialPrice|lastPrice)[\"']?)"
     for m in re.finditer(
-        r"(?is)(?:\"|')?(?:price|settlementPrice|cashSettlement|officialPrice|lastPrice|value)"
-        r"(?:\"|')?\s*:\s*(?:\"|')?"
-        r"((?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?)",
-        body,
-    ):
-        add(m.group(1), "SCRIPT_TYPED_FIELD")
-
-    # Parser 5: JSON-LD/meta/content attributes.
-    for m in re.finditer(
-        r"(?is)(?:meta|script)[^>]{0,300}?(?:content|value)=(?:\"|')"
-        r"((?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?)(?:\"|')",
-        body,
-    ):
-        add(m.group(1), "META_OR_JSONLD_VALUE")
-
-    # Parser 6: HTML table/cell text, useful when the page has no semantic labels.
-    for row in re.findall(r"(?is)<(?:tr|li)[^>]*>(.*?)</(?:tr|li)>", body):
-        row_text = strip_html(row)
-        row_low = row_text.lower()
-        if any(t in row_low for t in ("cobalt", "lme", "settlement", target.isoformat())):
-            for raw in re.findall(r"(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?", mask_date_tokens(row_text)):
-                add(raw, "HTML_TABLE_ROW")
-
-    # Parser 7: URL/query-encoded or escaped JSON numeric payloads.
-    decoded = html.unescape(body).replace(r"\/", "/").replace(r"\u002c", ",")
-    for m in re.finditer(
-        r"(?is)(?:price|settlement|cash|official|last|close)[^&=]{0,40}="
-        r"((?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?)",
+        typed_pattern + rf"\s*:\s*[\"']?({number_re})[\"']?",
         decoded,
     ):
-        add(m.group(1), "ENCODED_TYPED_FIELD")
+        context = decoded[max(0, m.start() - 450): m.end() + 450]
+        if re.search(r"cobalt|lme|settlement|cash", context, re.I):
+            add(m.group(1), "SCRIPT_TYPED_PRICE", context)
 
-    # Parser 8: JavaScript date/price tuple with the date before the value.
-    for marker in markers:
-        for m in re.finditer(re.escape(marker), decoded, re.I):
-            chunk = decoded[m.end():m.end()+500]
-            nums = re.findall(r"(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?", mask_date_tokens(chunk))
-            for raw in nums[:8]:
-                add(raw, "DATE_THEN_NUMERIC_PAYLOAD")
-
-    # Parser 9: numeric value immediately preceding an exact target date.
-    for marker in markers:
-        for m in re.finditer(re.escape(marker), decoded, re.I):
-            chunk = decoded[max(0, m.start()-500):m.start()]
-            nums = re.findall(r"(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?", mask_date_tokens(chunk))
-            for raw in nums[-8:]:
-                add(raw, "NUMERIC_BEFORE_DATE")
-
-    # Parser 10: visible context around source-specific contract terminology.
-    for token in ("CO", "USD/t", "USD per tonne", "physically settled", "cash-settled"):
-        for m in re.finditer(re.escape(token), visible, re.I):
-            chunk = visible[max(0, m.start()-500):m.end()+800]
-            for raw in re.findall(r"(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?", mask_date_tokens(chunk)):
-                add(raw, "CONTRACT_CONTEXT")
-
-    # Parser 11: JS arrays/objects with quoted numeric strings.
+    # 5) JSON-LD/meta values with explicit cobalt/LME/price context.
     for m in re.finditer(
-        r"(?is)(?:\"|')((?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?)(?:\"|')",
+        rf"(?is)(?:meta|script)[^>]*(?:cobalt|lme|price|settlement)[^>]*"
+        rf"(?:content|value)\s*=\s*[\"']({number_re})[\"']",
         body,
     ):
-        add(m.group(1), "QUOTED_NUMERIC_STRING")
+        add(m.group(1), "META_JSONLD_PRICE", m.group(0))
 
-    # Parser 12: plain numeric tokens in bounded cobalt/LME source text.
-    # This is intentionally last because it is the least semantically strong.
-    for window in windows[:40]:
-        for raw in re.findall(r"(?<![\d])(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?(?![\d])", mask_date_tokens(window)):
-            add(raw, "BOUNDED_SOURCE_CONTEXT")
+    # 6) HTML table rows: exact target date AND cobalt/LME/settlement in the
+    # same row. This is much safer than scanning arbitrary table numbers.
+    for row in re.findall(r"(?is)<tr\b[^>]*>(.*?)</tr>", body):
+        row_text = strip_html(row)
+        row_low = row_text.lower()
+        if not any(x in row_low for x in ("cobalt", "lme", "settlement", "price")):
+            continue
+        if not any(marker.lower() in row_low for marker in markers):
+            continue
+        for raw in re.findall(number_re, mask_dates(row_text)):
+            add(raw, "EXACT_DATE_TABLE_ROW", row_text)
 
-    # Parser 13: JS/JSON arrays containing target date + a nearby numeric value.
+    # 7) Query/encoded fields: price-like key + cobalt/LME in nearby payload.
+    for m in re.finditer(
+        rf"(?is)(?:price|settlement|cash|official|last|close)[^&=]{{0,40}}="
+        rf"({number_re})",
+        decoded,
+    ):
+        context = decoded[max(0, m.start() - 400): m.end() + 400]
+        if re.search(r"cobalt|lme|settlement|cash", context, re.I):
+            add(m.group(1), "ENCODED_TYPED_PRICE", context)
+
+    # 8) Date/value tuple in scripts. The target date must be adjacent to a
+    # price-like label OR the tuple must sit in an explicit cobalt/LME context.
     for marker in markers:
-        for m in re.finditer(re.escape(marker), body, re.I):
-            chunk = body[max(0, m.start()-300):m.end()+700]
-            for raw in re.findall(r"(?:\d{1,3}(?:[.,]\d{3})+|\d{4,6})(?:[.,]\d{1,2})?", mask_date_tokens(chunk)):
-                add(raw, "RAW_HTML_DATE_ARRAY")
+        for m in re.finditer(re.escape(marker), decoded, re.I):
+            chunk = decoded[max(0, m.start() - 180): m.end() + 450]
+            if not re.search(r"cobalt|lme|price|settlement|cash", chunk, re.I):
+                continue
+            for raw in re.findall(number_re, mask_dates(chunk)):
+                add(raw, "DATE_PRICE_TUPLE", chunk)
+
+    # 9) Contract-specific parser. CO must be a real token, and cobalt/LME or
+    # physical/cash-settled wording must occur nearby. Bare substring 'co' is
+    # deliberately forbidden because it creates huge false-positive counts.
+    for m in re.finditer(r"\bCO\b", visible, re.I):
+        chunk = visible[max(0, m.start() - 350): m.end() + 650]
+        if not re.search(r"cobalt|lme|physically settled|cash-settled|usd\s*/?\s*t", chunk, re.I):
+            continue
+        for raw in re.findall(number_re, mask_dates(chunk)):
+            add(raw, "CONTRACT_CO_CONTEXT", chunk)
+
+    # 10) USD/t parser. A value is accepted only when USD/t and cobalt/LME are
+    # part of the same bounded context. This is the strongest generic fallback.
+    for m in re.finditer(r"(?is)(?:usd\s*/\s*t|usd\s+per\s+tonne|us\$\s*/\s*t)", visible):
+        chunk = visible[max(0, m.start() - 300): m.end() + 500]
+        if not re.search(r"cobalt|lme", chunk, re.I):
+            continue
+        for raw in re.findall(number_re, mask_dates(chunk)):
+            add(raw, "USD_T_CONTEXT", chunk)
 
     return candidates, methods
-
 
 def exact_westmetall(text: str, metal: str, target: dt.date) -> float | None:
     # Look for the exact target date and the corresponding first numeric field.
