@@ -30,6 +30,22 @@ def target_default() -> dt.date:
     return d
 
 
+def test_cobalt_semantic_row_guard() -> None:
+    """Regression: neighbouring Aluminum values must never become Cobalt."""
+    fixture = """
+    <table>
+      <tr><td>Aluminum</td><td>09/09/2026</td><td>3362.05</td></tr>
+      <tr><td>Cobalt</td><td>09/09/2026</td><td>44940</td></tr>
+    </table>
+    """
+    values, methods = extract_price_candidates(fixture, dt.date(2026, 9, 9))
+    if 3362.05 in values or 44940.0 not in values:
+        raise AssertionError(
+            f"Kobalt-Semantikschutz fehlgeschlagen: values={values} methods={methods}"
+        )
+    print("PASS: Kobalt-Semantikschutz | Nachbarwert Aluminium=3362.05 ausgeschlossen | Kobalt=44940.00 erkannt")
+
+
 def parse_num(s: str) -> float | None:
     s = s.replace(",", "").replace(" ", "")
     try:
@@ -141,20 +157,50 @@ def extract_price_candidates(body: str, target: dt.date) -> tuple[list[float], l
             candidates.append(value)
             methods.append(method)
 
-    # 1) Exact target-date + cobalt/LME/settlement visible context.
-    # Only numbers in the target-date window are considered.
-    for marker in markers:
-        pos = 0
-        while True:
-            hit = low.find(marker.lower(), pos)
-            if hit < 0:
-                break
-            window = visible[max(0, hit - 300): hit + 700]
-            context_low = window.lower()
-            if any(x in context_low for x in ("cobalt", "lme", "settlement", "price")):
-                for raw in re.findall(number_re, mask_dates(window)):
-                    add(raw, "EXACT_DATE_VISIBLE_CONTEXT", window)
-            pos = hit + len(marker)
+    # 1) Exact target-date + cobalt-specific visible context.
+    # If an HTML table exposes a Cobalt row for the target date, that row is
+    # authoritative for this parser and the broader page-context parser is
+    # skipped. This prevents neighbouring metals from being mixed into Cobalt.
+    cobalt_row_found = False
+    for row_html in re.findall(r"<tr\b[^>]*>.*?</tr>", body, flags=re.I | re.S):
+        row_visible = strip_html(row_html)
+        row_low = row_visible.lower()
+        if "cobalt" not in row_low:
+            continue
+        if not any(marker.lower() in row_low for marker in markers):
+            continue
+        masked_row = mask_dates(row_visible)
+        row_values = []
+        for nm in re.finditer(number_re, masked_row):
+            local_context = row_visible[max(0, nm.start() - 160): min(len(row_visible), nm.end() + 160)]
+            value = normalise_number(nm.group(0))
+            if valid(value):
+                row_values.append((nm.group(0), local_context))
+        if row_values:
+            cobalt_row_found = True
+            for raw, local_context in row_values:
+                add(raw, "EXACT_DATE_COBALT_ROW", local_context)
+
+    if not cobalt_row_found:
+        # No explicit Cobalt table row: require the candidate itself to be
+        # semantically close to the Cobalt label.
+        for marker in markers:
+            pos = 0
+            while True:
+                hit = low.find(marker.lower(), pos)
+                if hit < 0:
+                    break
+                window_start = max(0, hit - 300)
+                window_end = min(len(visible), hit + 700)
+                window = visible[window_start:window_end]
+                masked = mask_dates(window)
+                for nm in re.finditer(number_re, masked):
+                    number_start = window_start + nm.start()
+                    number_end = window_start + nm.end()
+                    local_context = visible[max(0, number_start - 220): min(len(visible), number_end + 220)]
+                    if "cobalt" in local_context.lower():
+                        add(nm.group(0), "EXACT_DATE_COBALT_CONTEXT", local_context)
+                pos = hit + len(marker)
 
     # 2) Explicit labelled price/settlement, but only when cobalt/LME is nearby.
     for m in re.finditer(
@@ -211,43 +257,47 @@ def extract_price_candidates(body: str, target: dt.date) -> tuple[list[float], l
             add(raw, "EXACT_DATE_TABLE_ROW", row_text)
 
     # 7) Query/encoded fields: price-like key + cobalt/LME in nearby payload.
-    for m in re.finditer(
-        rf"(?is)(?:price|settlement|cash|official|last|close)[^&=]{{0,40}}="
-        rf"({number_re})",
-        decoded,
-    ):
-        context = decoded[max(0, m.start() - 400): m.end() + 400]
-        if re.search(r"cobalt|lme|settlement|cash", context, re.I):
-            add(m.group(1), "ENCODED_TYPED_PRICE", context)
+    if not cobalt_row_found:
+        for m in re.finditer(
+            rf"(?is)(?:price|settlement|cash|official|last|close)[^&=]{{0,40}}="
+            rf"({number_re})",
+            decoded,
+        ):
+            context = decoded[max(0, m.start() - 400): m.end() + 400]
+            if re.search(r"cobalt|lme|settlement|cash", context, re.I):
+                add(m.group(1), "ENCODED_TYPED_PRICE", context)
 
     # 8) Date/value tuple in scripts. The target date must be adjacent to a
     # price-like label OR the tuple must sit in an explicit cobalt/LME context.
-    for marker in markers:
-        for m in re.finditer(re.escape(marker), decoded, re.I):
-            chunk = decoded[max(0, m.start() - 180): m.end() + 450]
-            if not re.search(r"cobalt|lme|price|settlement|cash", chunk, re.I):
-                continue
-            for raw in re.findall(number_re, mask_dates(chunk)):
-                add(raw, "DATE_PRICE_TUPLE", chunk)
+    if not cobalt_row_found:
+        for marker in markers:
+            for m in re.finditer(re.escape(marker), decoded, re.I):
+                chunk = decoded[max(0, m.start() - 180): m.end() + 450]
+                if not re.search(r"cobalt|lme|price|settlement|cash", chunk, re.I):
+                    continue
+                for raw in re.findall(number_re, mask_dates(chunk)):
+                    add(raw, "DATE_PRICE_TUPLE", chunk)
 
     # 9) Contract-specific parser. CO must be a real token, and cobalt/LME or
     # physical/cash-settled wording must occur nearby. Bare substring 'co' is
     # deliberately forbidden because it creates huge false-positive counts.
-    for m in re.finditer(r"\bCO\b", visible, re.I):
-        chunk = visible[max(0, m.start() - 350): m.end() + 650]
-        if not re.search(r"cobalt|lme|physically settled|cash-settled|usd\s*/?\s*t", chunk, re.I):
-            continue
-        for raw in re.findall(number_re, mask_dates(chunk)):
-            add(raw, "CONTRACT_CO_CONTEXT", chunk)
+    if not cobalt_row_found:
+        for m in re.finditer(r"\bCO\b", visible, re.I):
+            chunk = visible[max(0, m.start() - 350): m.end() + 650]
+            if not re.search(r"cobalt|lme|physically settled|cash-settled|usd\s*/?\s*t", chunk, re.I):
+                continue
+            for raw in re.findall(number_re, mask_dates(chunk)):
+                add(raw, "CONTRACT_CO_CONTEXT", chunk)
 
     # 10) USD/t parser. A value is accepted only when USD/t and cobalt/LME are
     # part of the same bounded context. This is the strongest generic fallback.
-    for m in re.finditer(r"(?is)(?:usd\s*/\s*t|usd\s+per\s+tonne|us\$\s*/\s*t)", visible):
-        chunk = visible[max(0, m.start() - 300): m.end() + 500]
-        if not re.search(r"cobalt|lme", chunk, re.I):
-            continue
-        for raw in re.findall(number_re, mask_dates(chunk)):
-            add(raw, "USD_T_CONTEXT", chunk)
+    if not cobalt_row_found:
+        for m in re.finditer(r"(?is)(?:usd\s*/\s*t|usd\s+per\s+tonne|us\$\s*/\s*t)", visible):
+            chunk = visible[max(0, m.start() - 300): m.end() + 500]
+            if not re.search(r"cobalt|lme", chunk, re.I):
+                continue
+            for raw in re.findall(number_re, mask_dates(chunk)):
+                add(raw, "USD_T_CONTEXT", chunk)
 
     return candidates, methods
 
@@ -370,6 +420,8 @@ def main() -> None:
     print("LME SOURCE RUNNER TEST")
     print(f"Runner Python: {sys.version.split()[0]}")
     print(f"target_date={target.isoformat()}")
+
+    test_cobalt_semantic_row_guard()
 
     passed = 0
     for metal, url in WESTMETALL.items():

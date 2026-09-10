@@ -5,6 +5,10 @@ Direkt mit Python ausfuehrbar; keine pytest-Abhaengigkeit.
 from __future__ import annotations
 
 import datetime as dt
+import ast
+import csv
+import os
+import re
 import sys
 from pathlib import Path
 import types
@@ -141,6 +145,80 @@ def test_no_legacy_macro_terms():
     _assert(("SZENARIO-" + "SCORE") not in text, "Legacy scenario score remains in master instruction")
 
 
+def test_gdelt_gkg_fallback_degrades_quality_without_blocking_gate():
+    lines = [
+        "Fed Funds Effective Rate: 3.63 | STATUS=REAL",
+        "US 2Y Treasury: 4.39 | STATUS=REAL",
+        "US 10Y Treasury: 4.79 | STATUS=REAL",
+        "Core CPI: 336.789 | STATUS=REAL",
+        "NFP / Nonfarm Payrolls: 158858 | STATUS=REAL",
+        "Arbeitslosenquote: 4.1 | STATUS=REAL",
+        "ISM Manufacturing PMI: 55.6 | STATUS=REAL",
+        "ISM Services PMI: 55.4 | STATUS=REAL",
+        "S&P 500: 6460.26 | STATUS=REAL",
+    ]
+    for label in ("Nahost", "China/Taiwan", "Russland/Ukraine", "Handel/Sanktionen", "Lieferketten/Schifffahrt"):
+        lines.append(
+            f"{label}: THEMEN_TREFFER_24H_SAMPLE=10 | STATUS=REAL_PUBLIC_SECONDARY | "
+            "SOURCE=GDELT GKG/Bulk | SLICES=9 | ABDECKUNG=24H_SAMPLE"
+        )
+    gate, _, quality, secondary = m.data_quality_gate(lines)
+    _assert(gate == "FREIGEGEBEN", "GKG sample must not block Tier-1 gate")
+    _assert(quality == "EINGESCHRAENKT", "GKG sample must degrade data quality")
+    _assert("GDELT Nahost (24H_SAMPLE)" in secondary, "GKG sample provenance gap missing")
+
+
+def test_kobalt_secondary_provenance_degrades_quality():
+    lines = [
+        "Fed Funds Effective Rate: 3.63 | STATUS=REAL",
+        "US 2Y Treasury: 4.39 | STATUS=REAL",
+        "US 10Y Treasury: 4.79 | STATUS=REAL",
+        "Core CPI: 336.789 | STATUS=REAL",
+        "NFP / Nonfarm Payrolls: 158858 | STATUS=REAL",
+        "Arbeitslosenquote: 4.1 | STATUS=REAL",
+        "ISM Manufacturing PMI: 55.6 | STATUS=REAL",
+        "ISM Services PMI: 55.4 | STATUS=REAL",
+        "S&P 500: 6460.26 | STATUS=REAL",
+        "LME Kobalt: 43250.00 | Datenstand=2026-09-09 | STATUS=REAL_PUBLIC_SECONDARY | SOURCE=MetalsMarket LME Cash Settlements | DATENTYP=LME_CASH_SETTLEMENT_PUBLIC",
+    ]
+    # Other GDELT clusters are deliberately omitted to ensure missing-context
+    # handling is independent of the cobalt provenance check.
+    gate, _, quality, secondary = m.data_quality_gate(lines)
+    _assert(gate == "FREIGEGEBEN", "Kobalt secondary provenance must not block Tier-1 gate")
+    _assert(quality == "EINGESCHRAENKT", "Kobalt without official LME provenance must degrade quality")
+    _assert("LME Kobalt (OFFIZIELLE QUELLE NICHT BESTAETIGT)" in secondary, "Kobalt provenance gap missing")
+
+
+def test_point7_is_python_authoritative_and_gemini_only_interprets_72():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    _assert("def _erstelle_punkt7_fakten(" in source, "Deterministic point-7 builder missing")
+    _assert("def _ersetze_punkt7_durch_python_fakten(" in source, "Point-7 injection missing")
+    _assert("7.1/7.3/7.4 deterministisch" in source, "Point-7 authority logging missing")
+    _assert("PUNKT-7-ARCHITEKTUR" in source, "Gemini prompt does not define point-7 architecture")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        csv_path = Path(td) / "Offene Positionen+Check.csv"
+        csv_path.write_text(
+            "Firmenname;Ticker;Markt;Einstiegskurs;Einstiegsdatum;Technischer_Zustand;Technische_Zielzone;Status\n"
+            "Test AG;TEST.DE;XETRA;100,00;01.09.2026;Aufwaertstrend;110,00;OFFEN\n",
+            encoding="utf-8-sig",
+        )
+        tree = ast.parse(source, filename=str(ROOT / "gemini_auswertung.py"))
+        wanted = {"_csv_value", "_offene_positionen_rows", "_erstelle_punkt7_fakten"}
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+        ns = {"re": re, "os": os, "csv": csv}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "gemini_auswertung.py"), "exec"), ns)
+        block = ns["_erstelle_punkt7_fakten"](str(csv_path), "")
+        _assert("7.1 Portfolio-Übersicht" in block, "Python did not generate 7.1")
+        _assert("Test AG (TEST.DE) | Markt: XETRA" in block, "Python did not generate authoritative position header")
+        _assert("Technische Zielzone: 110,00" in block, "Python did not copy technical source field")
+        _assert("7.4 GESCHLOSSENE POSITIONEN – LETZTE 3 TAGE" in block, "Python did not always generate 7.4")
+        _assert("Keine geschlossene Position innerhalb der letzten 3 Kalendertage." in block, "Python did not generate explicit empty 7.4 state")
+        _assert("7.3 Einzelpositionen" in block, "Python did not generate 7.3")
+        _assert("[GEMINI-INTERPRETATION]" in block, "Gemini interpretation marker missing")
+
+
 def main():
     tests = [
         test_parser_real_format,
@@ -149,6 +227,9 @@ def main():
         test_python_contains_no_macro_scenario_interpretation,
         test_gemini_is_macro_interpreter,
         test_gate_rules,
+        test_gdelt_gkg_fallback_degrades_quality_without_blocking_gate,
+        test_kobalt_secondary_provenance_degrades_quality,
+        test_point7_is_python_authoritative_and_gemini_only_interprets_72,
         test_trade_story_layer_is_explicit_and_does_not_create_setups,
         test_calendar_parsers,
         test_no_legacy_macro_terms,
@@ -272,6 +353,6 @@ def test_gdelt_cache_is_clusterwise_and_provenance_aware():
 def test_hebeltrader_latest_drive_version_can_replace_stale_local_copy():
     source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
     _assert("def lade_hebeltrader_datei_von_drive(" in source, "HEBELTRADER Drive synchronization missing")
-    _assert("local_modified >= drive_modified" in source, "HEBELTRADER freshness comparison missing")
+    _assert("autoritative Quelle" in source and "heruntergeladen" in source, "HEBELTRADER must use latest Drive payload as authority")
     _assert('"HEBELTRADER-Einzelcheck"' in source, "HEBELTRADER input key missing")
-    _assert("neuere Drive-Version hat Vorrang" in source, "HEBELTRADER newest-version rule missing")
+    _assert("issue_label" in source and "lokale Version bleibt erhalten" in source, "HEBELTRADER payload validation/logging missing")
