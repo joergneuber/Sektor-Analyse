@@ -90,6 +90,18 @@ def test_gemini_is_macro_interpreter():
     _assert(("SZENARIO-" + "SCORE") not in prompt, "Legacy scenario score remains in Gemini prompt")
     _assert(("SZENARIO-" + "SCORE") not in master, "Legacy scenario score remains in master instruction")
 
+def test_trade_story_layer_is_explicit_and_does_not_create_setups():
+    prompt = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    master = (ROOT / "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md").read_text(encoding="utf-8")
+    for term in ("INTERESSANT", "VORBEREITET", "VALIDE SETUP", "Trade-Story"):
+        _assert(term in prompt, f"Gemini prompt missing Trade-Story term: {term}")
+        _assert(term in master, f"Master instruction missing Trade-Story term: {term}")
+    _assert("Gemini darf niemals aus einer interessanten Story" in prompt, "Gemini setup boundary missing")
+    _assert("Gemini darf aus INTERESSANT oder VORBEREITET niemals selbst ein VALIDE" in master, "Master setup boundary missing")
+    _assert("Status: INTERESSANT | VORBEREITET | VALIDE SETUP" in master, "Trade-Story status field missing")
+
+
+
 def test_gate_rules():
     base = [
         "Fed Funds Effective Rate: 3.63 | Datenstand=2026-09-02",
@@ -137,6 +149,7 @@ def main():
         test_python_contains_no_macro_scenario_interpretation,
         test_gemini_is_macro_interpreter,
         test_gate_rules,
+        test_trade_story_layer_is_explicit_and_does_not_create_setups,
         test_calendar_parsers,
         test_no_legacy_macro_terms,
     ]
@@ -148,3 +161,62 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_trade_story_validator_enforces_status_and_setup_authority():
+    gem = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    _assert("def _trade_story_validierung(" in gem, "Trade-Story validator function missing")
+    _assert("Status\\s*:\\s*(INTERESSANT|VORBEREITET|VALIDE SETUP)" in gem, "Trade-Story status regex missing")
+    _assert("VALIDE SETUP" in gem and "autoritativen Setup-Dateien" in gem, "VALIDE SETUP authority check missing")
+    _assert("Kauf-/Entry" in gem, "Purchase boundary check missing")
+
+
+def test_gdelt_retry_and_trade_story_validation_are_present():
+    macro = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    gem = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    _assert("def _gdelt_get(" in macro, "GDELT retry helper missing")
+    _assert("status_code == 429" in macro, "GDELT 429 handling missing")
+    _assert("_gdelt_get({\"query\": query" in macro, "GDELT cluster calls do not use retry helper")
+    _assert("_gdelt_get({\"query\": broad_query" in macro, "GDELT big-news call does not use retry helper")
+    _assert("_trade_story_validierung(text, eingabedateien, beobachtung_pfad)" in gem, "Trade-Story validator not integrated into Gemini flow")
+
+
+def test_trade_story_validator_requires_real_setup_status_and_observation_anchor(tmp_path):
+    """Stage-2.1: mere presence in a CSV must not authorize VALIDE SETUP."""
+    import csv
+    import json
+    import os
+    import re
+
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    _assert("status != required_status" in source, "Setup validator does not enforce source-specific status")
+    _assert("if not gelesene_quellen:" in source, "Missing authoritative setup sources must block VALIDE SETUP")
+    _assert("_trade_story_beobachtung_universum" in source, "Observation universe validator missing")
+    _assert("not beobachtung_verfuegbar" in source, "Missing observation source must not silently pass")
+    _assert("Antworte ausschliesslich mit dem vollstaendigen Abschnitt 6.1" in source, "Repair prompt is not restricted to section 6.1")
+
+    # Source-level fixture: a setup row with a non-valid status must not be
+    # treated as a valid setup merely because ticker/name exist.
+    setup = tmp_path / "Setups(2026-09-10).csv"
+    setup.write_text("Ticker;Name;Status\nEOG;EOG Resources, Inc.;KAUFKANDIDAT B\n", encoding="utf-8-sig")
+    obs = tmp_path / "einzel_check_beobachtung.json"
+    obs.write_text(json.dumps({"EOG": {"status": "KAUFKANDIDAT B", "name": "EOG Resources, Inc."}}), encoding="utf-8")
+    _assert("KAUFKANDIDAT B" in setup.read_text(encoding="utf-8-sig"), "Fixture setup not created")
+    _assert(json.loads(obs.read_text(encoding="utf-8"))["EOG"]["status"] == "KAUFKANDIDAT B", "Fixture observation not created")
+
+
+def test_trade_story_validator_source_specific_status_contracts():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    for required in (
+        '("Setups(...).csv", "status", "KAUFKANDIDAT A")',
+        '("Trendwende_Setups(...).csv", "presence", None)',
+        '("Short_Setups(...).csv", "status2", "VALIDE")',
+        '("Edelmetalle_Setups(...).csv", "status2", "VALIDE")',
+    ):
+        _assert(required in source, f"Missing source-specific setup contract: {required}")
+
+
+def test_trade_story_validator_does_not_allow_unanchored_prepared_story():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    _assert("ist nicht in der aktuellen Beobachtungsliste verankert" in source, "VORBEREITET/INTERESSANT is not anchored to current observation universe")
+    _assert("darf keine Kauf-/Entry-Formulierung enthalten" in source, "Purchase boundary missing for non-valid story states")
