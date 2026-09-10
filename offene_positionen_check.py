@@ -1230,6 +1230,61 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
     return old_ids
 
 
+def _enforce_productive_tab_order(sheets, spreadsheet_id: str):
+    """Stellt die verbindliche Reihenfolge der beiden Produktiv-Tabs sicher.
+
+    Fachliche Zuordnung:
+      Index 0 = Offene Positionen+Check
+      Index 1 = Geschlossene Positionen
+
+    Die Sheet-IDs und Inhalte bleiben dabei unverändert; nur die Reihenfolge
+    der Tabellenreiter wird per updateSheetProperties korrigiert.
+    """
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    props = {x["properties"]["title"]: x["properties"] for x in ss.get("sheets", [])}
+
+    open_props = props.get("Offene Positionen+Check")
+    closed_props = props.get("Geschlossene Positionen")
+    if open_props is None or closed_props is None:
+        raise RuntimeError(
+            "Produktiv-Tab-Reihenfolge kann nicht hergestellt werden: "
+            "Offene Positionen+Check oder Geschlossene Positionen fehlt."
+        )
+
+    requests = [
+        {"updateSheetProperties": {
+            "properties": {"sheetId": open_props["sheetId"], "index": 0},
+            "fields": "index"
+        }},
+        {"updateSheetProperties": {
+            "properties": {"sheetId": closed_props["sheetId"], "index": 1},
+            "fields": "index"
+        }},
+    ]
+    _google_batch_update_with_retry(
+        sheets, spreadsheet_id, {"requests": requests}, context="Produktiv-Tab-Reihenfolge"
+    )
+
+    verify = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    ordered = sorted(
+        (x["properties"] for x in verify.get("sheets", [])),
+        key=lambda x: x.get("index", 0),
+    )
+    titles = [x["title"] for x in ordered[:2]]
+    expected = ["Offene Positionen+Check", "Geschlossene Positionen"]
+    if titles != expected:
+        raise RuntimeError(
+            "Produktiv-Tab-Reihenfolge-Verifikation fehlgeschlagen: "
+            f"erhalten={titles}, erwartet={expected}."
+        )
+
+    print("PERSISTENZ: Tabellenreiter verifiziert | 1=Offene Positionen+Check | 2=Geschlossene Positionen")
+
+
 def _cleanup_backups(sheets, spreadsheet_id: str):
     """Bereinigt verwaiste Sicherungs-/TMP-Tabs nach erfolgreichem Swap.
 
@@ -1799,7 +1854,11 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             f"historisch={max(0, len(hist_rows)-2)}"
         )
 
-        # 6) Nur nach vollständiger Verifikation technische Altlasten entfernen.
+        # 6) Verbindliche Reihenfolge der beiden produktiven Tabellenreiter herstellen
+        #    und unmittelbar danach verifizieren. Die Sheet-Inhalte/IDs bleiben erhalten.
+        _enforce_productive_tab_order(sheets, spreadsheet_id)
+
+        # 7) Nur nach vollständiger Verifikation technische Altlasten entfernen.
         _cleanup_backups(sheets, spreadsheet_id)
         try:
             _cleanup_drive_backups(drive)
