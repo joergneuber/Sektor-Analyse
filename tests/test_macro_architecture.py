@@ -46,40 +46,49 @@ def test_inflation_yoy():
     _assert(prior == "2025-08-01", "YoY reference month incorrect")
 
 
-def test_bond_market_and_scenario_connection():
+def test_bond_market_remains_objective_data():
     lines = [
-        "ISM Manufacturing PMI: 55.6 | Datenmonat=2026-08 | STATUS=REAL",
-        "ISM Services PMI: 55.4 | Datenmonat=2026-08 | STATUS=REAL",
-        "Core CPI: 336.789 | Datenstand=2026-08-01 | YOY=+2.70% | YOY_STATUS=CALCULATED | STATUS=REAL",
-        "Core PCE: 130.658 | Datenstand=2026-07-01 | YOY=+2.90% | YOY_STATUS=CALCULATED | STATUS=REAL",
-        "Arbeitslosenquote: 4.1 | Datenstand=2026-08-01 | STATUS=REAL",
-        "NFP / Nonfarm Payrolls: 158858 | Datenstand=2026-08-01 | STATUS=REAL",
-        "Fed Funds Effective Rate: 3.63 | Datenstand=2026-09-02 | STATUS=REAL",
         "US 2Y Treasury: 4.39 | Datenstand=2026-09-03 | STATUS=REAL",
+        "US 5Y Treasury: 4.50 | Datenstand=2026-09-03 | STATUS=REAL",
         "US 10Y Treasury: 4.79 | Datenstand=2026-09-03 | STATUS=REAL",
+        "US 30Y Treasury: 5.42 | Datenstand=2026-09-03 | STATUS=REAL",
         "Realzins 10Y TIPS: 2.45 | Datenstand=2026-09-03 | STATUS=REAL",
-        "US High Yield OAS: 2.66 | Datenstand=2026-09-03 | STATUS=REAL",
-        "Chicago Fed NFCI: -0.566 | Datenstand=2026-09-03 | STATUS=REAL",
-        "VIX: 14.32 | Datenstand=2026-09-03 | STATUS=REAL",
-        "S&P 500: 6460.26 | Datenstand=2026-09-03 | STATUS=REAL",
-        "2Y-10Y Spread: 0.40 | STATUS=CALCULATED",
-        "Nahost: ARTIKEL_24H=25 | STATUS=REAL_PUBLIC_SECONDARY",
-        "China/Taiwan: ARTIKEL_24H=10 | STATUS=REAL_PUBLIC_SECONDARY",
-        "Russland/Ukraine: ARTIKEL_24H=12 | STATUS=REAL_PUBLIC_SECONDARY",
     ]
     bond = m.bond_market_snapshot(lines)
-    _assert(any(x.startswith("2Y-10Y Spread:") for x in bond), "Bond spread missing")
-    gate, missing, quality, secondary = m.data_quality_gate(lines)
-    # S&P/ISM etc are present; data_quality_gate only needs exact critical lines.
-    _assert(gate == "FREIGEGEBEN", f"Unexpected gate: {gate} / {missing}")
-    out = m._scenario_engine(lines, gate, quality, secondary)
-    text = "\n".join(out)
-    _assert("MAKRO-SZENARIO:" in text, "Scenario missing")
-    _assert("SZENARIO-SCORE:" in text, "Scenario score missing")
-    _assert("MARKTUMFELD:" in text, "Marktumfeld missing")
-    _assert("Anleihenmarkt:" in text, "Bond axis not connected to scenario engine")
-    _assert("Core CPI YoY=2.7" in text, "Scenario engine did not use YoY inflation")
+    text = "\n".join(bond)
+    _assert("2Y-10Y Spread: 0.4" in text, "Bond spread missing")
+    _assert("5Y-10Y Spread: 0.29" in text, "5Y-10Y spread missing")
+    _assert("10Y-30Y Spread: 0.63" in text, "10Y-30Y spread missing")
+    _assert("10Y Nominal-Real Differenz: 2.34" in text, "Nominal-real difference missing")
+    _assert("Yield-Curve-Form" not in text, "Python still emits qualitative curve interpretation")
 
+
+def test_python_contains_no_macro_scenario_interpretation():
+    text = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    forbidden = [
+        "SZENARIO-" + "SCORE",
+        "Inflationaere " + "Expansion",
+        "Stag" + "flation",
+        "Recession / " + "Kontraktion",
+        "Soft " + "Landing",
+        "Gemischtes Makro-" + "Szenario",
+        "Konstruktiv / " + "selektiv",
+        "Defensiv",
+    ]
+    for term in forbidden:
+        _assert(term not in text, f"Python still contains macro interpretation: {term}")
+    _assert(("_scenario_" + "engine") not in text, "Deterministic macro scenario engine still exists")
+    _assert("PMI-Regel:" not in text, "Python still emits qualitative PMI interpretation")
+    _assert("Lithium ist als struktureller" not in text, "Python still emits commodity interpretation")
+
+
+def test_gemini_is_macro_interpreter():
+    prompt = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    master = (ROOT / "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md").read_text(encoding="utf-8")
+    _assert("vollstaendige" in prompt.lower() and "makrooekonomische interpretation" in prompt.lower(), "Gemini prompt does not own macro interpretation")
+    _assert("Die makrooekonomische Interpretation, das Makro-Szenario" in master, "Master instruction does not assign scenario interpretation to Gemini")
+    _assert(("SZENARIO-" + "SCORE") not in prompt, "Legacy scenario score remains in Gemini prompt")
+    _assert(("SZENARIO-" + "SCORE") not in master, "Legacy scenario score remains in master instruction")
 
 def test_gate_rules():
     base = [
@@ -100,8 +109,7 @@ def test_gate_rules():
     gate2, missing2, quality2, _ = m.data_quality_gate(blocked)
     _assert(gate2 == "GESPERRT", "Missing Tier-1 must block gate")
     _assert("Core CPI" in missing2, "Missing Core CPI not reported")
-    blocked_out = m._scenario_engine(blocked, gate2, quality2, [])
-    _assert("SZENARIO-SCORE: NICHT VERFUEGBAR" in "\n".join(blocked_out), "Blocked gate leaked scenario score")
+    _assert(gate2 == "GESPERRT", "Blocked gate must remain authoritative")
 
 
 def test_calendar_parsers():
@@ -116,14 +124,18 @@ def test_no_legacy_macro_terms():
     _assert("struktureller Capex-Zyklus" not in text, "Legacy Capex terminology remains")
     _assert("Regime-Killer" not in text, "Legacy Regime-Killer terminology remains")
     _assert("Marktregime" not in text, "Legacy Marktregime terminology remains")
-    _assert("MAKRO-SZENARIO -> SZENARIO-SCORE -> MARKTUMFELD" in (ROOT / "makro_szenario.py").read_text(encoding="utf-8"), "Scenario architecture missing")
+    makro = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    _assert(("SZENARIO-" + "SCORE") not in makro, "Legacy scenario score remains in Python")
+    _assert(("SZENARIO-" + "SCORE") not in text, "Legacy scenario score remains in master instruction")
 
 
 def main():
     tests = [
         test_parser_real_format,
         test_inflation_yoy,
-        test_bond_market_and_scenario_connection,
+        test_bond_market_remains_objective_data,
+        test_python_contains_no_macro_scenario_interpretation,
+        test_gemini_is_macro_interpreter,
         test_gate_rules,
         test_calendar_parsers,
         test_no_legacy_macro_terms,
