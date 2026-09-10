@@ -411,6 +411,113 @@ def exact_westmetall(text: str, metal: str, target: dt.date) -> float | None:
 
 
 
+
+def test_cobalt_multi_variant_fixtures() -> None:
+    """All cobalt parser variants run in one deterministic regression batch."""
+    target = dt.date(2026, 9, 9)
+    lme_fixture = """
+    <html><body>
+      <h1>LME Cobalt</h1>
+      <div>Contract code: CO</div><div>Price quotation: US$ per tonne</div>
+      <div>Trading SUMMARY Prices in US$ Data valid for 09 Sep 2026 10 Sep 2026</div>
+    </body></html>
+    """
+    metalsmarket_fixture = """
+    <html><body>
+      <h1>LME CASH SETTLEMENTS</h1>
+      <div>CASH | USD | 09/09/2026</div>
+      <table>
+        <tr><th>METAL</th><th>BID</th><th>ASK</th></tr>
+        <tr><td>ALUM</td><td>3351.50</td><td>3352.00</td></tr>
+        <tr><td>COBALT</td><td>42750.00</td><td>43250.00</td></tr>
+      </table>
+    </body></html>
+    """
+    cbonds_fixture = """
+    <html><body>
+      <div>Cobalt futures contract ... physically settled ... cobalt (CO)</div>
+      <table>
+        <tr><td>Aluminum</td><td>3,362.05 USD/T</td><td>09/09/2026</td></tr>
+        <tr><td>Cobalt</td><td>44,940 USD/T</td><td>08/09/2026</td></tr>
+      </table>
+    </body></html>
+    """
+    # Variant A: direct LME contract/date identity. No price is invented when
+    # the public page exposes only the dynamic widget shell.
+    lme_candidates, _ = extract_price_candidates(lme_fixture, target)
+    if lme_candidates:
+        raise AssertionError(f"LME shell parser must not invent a price: {lme_candidates}")
+    if not re.search(r"\bCO\b", strip_html(lme_fixture)):
+        raise AssertionError("LME contract CO fixture not recognized")
+
+    # Variant B: exact Cobalt row from an LME cash-settlement reference page.
+    mm = extract_metalsmarket_cash_settlement(metalsmarket_fixture, target)
+    if mm != {"bid": 42750.0, "ask": 43250.0, "mid": 43000.0}:
+        raise AssertionError(f"MetalsMarket parser regression failed: {mm}")
+
+    # Variant C: exact Cobalt row from CBONDS. The adjacent Aluminum value must
+    # never be assigned to Cobalt, and a one-day date mismatch must be visible.
+    cb = extract_cbonds_cobalt(cbonds_fixture, target)
+    if cb["values"] != []:
+        raise AssertionError(f"CBONDS target-date parser accepted stale row: {cb}")
+    cb_prev = extract_cbonds_cobalt(cbonds_fixture, dt.date(2026, 9, 8))
+    if cb_prev["values"] != [44940.0] or cb_prev["contract"] != "CO":
+        raise AssertionError(f"CBONDS Cobalt CO regression failed: {cb_prev}")
+
+    print("PASS: Kobalt-Multi-Variant-Fixtures | LME shell + MetalsMarket bid/ask + CBONDS CO/date guard")
+
+
+def extract_metalsmarket_cash_settlement(body: str, target: dt.date) -> dict[str, float | str | None]:
+    """Parse the exact-date USD cash-settlement table without cross-row leakage."""
+    visible = strip_html(body)
+    target_markers = {target.strftime("%d/%m/%Y"), target.strftime("%m/%d/%Y"), target.isoformat()}
+    if not any(m in visible for m in target_markers):
+        return {"bid": None, "ask": None, "mid": None}
+    for row in re.findall(r"(?is)<tr\b[^>]*>(.*?)</tr>", body):
+        row_text = strip_html(row)
+        if not re.search(r"\bCOBALT\b", row_text, re.I):
+            continue
+        nums = [normalise_number(x) for x in re.findall(r"\d[\d,.]*", row_text)]
+        nums = [x for x in nums if x is not None and 1000 <= x <= 200000]
+        if len(nums) >= 2:
+            return {"bid": nums[0], "ask": nums[1], "mid": (nums[0] + nums[1]) / 2.0}
+    return {"bid": None, "ask": None, "mid": None}
+
+
+def extract_cbonds_cobalt(body: str, target: dt.date) -> dict[str, object]:
+    """Extract only a same-row Cobalt value and preserve the CO contract context."""
+    for row in re.findall(r"(?is)<tr\b[^>]*>(.*?)</tr>", body):
+        row_text = strip_html(row)
+        if not re.search(r"\bCobalt\b", row_text, re.I):
+            continue
+        if not any(m.lower() in row_text.lower() for m in target_date_markers(target)):
+            continue
+        values = []
+        for raw in re.findall(r"\d[\d,.]*", row_text):
+            value = normalise_number(raw)
+            if value is not None and 1000 <= value <= 200000:
+                values.append(value)
+        # Never accept a neighboring Aluminum row or a page-wide value.
+        return {"values": values[:1], "contract": "CO" if re.search(r"cobalt.*\(co\)|\(co\).*cobalt", strip_html(body), re.I) else None}
+    return {"values": [], "contract": "CO" if re.search(r"cobalt.*\(co\)|\(co\).*cobalt", strip_html(body), re.I) else None}
+
+
+def select_cobalt_price(source_records: list[dict]) -> dict:
+    """Select a price without hiding disagreement; official beats secondary."""
+    official = [r for r in source_records if r.get("quality") == "REAL_OFFICIAL" and r.get("price") is not None]
+    if official:
+        return {"price": official[0]["price"], "status": "REAL_OFFICIAL", "source": official[0]["source"]}
+    validated = [r for r in source_records if r.get("quality") == "VALIDATED_SECONDARY" and r.get("price") is not None]
+    if validated:
+        return {"price": validated[0]["price"], "status": "VALIDATED_SECONDARY", "source": validated[0]["source"]}
+    available = [r for r in source_records if r.get("price") is not None]
+    if available:
+        # Best available value is deliberately exposed together with its degraded
+        # quality; it is never silently promoted to an official LME value.
+        best = sorted(available, key=lambda r: r.get("score", 0), reverse=True)[0]
+        return {"price": best["price"], "status": "SECONDARY_UNCONFIRMED", "source": best["source"]}
+    return {"price": None, "status": "UNVERIFIED", "source": None}
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target-date", help="YYYY-MM-DD; default = letzter abgeschlossener Werktag")
@@ -422,6 +529,7 @@ def main() -> None:
     print(f"target_date={target.isoformat()}")
 
     test_cobalt_semantic_row_guard()
+    test_cobalt_multi_variant_fixtures()
 
     passed = 0
     for metal, url in WESTMETALL.items():
@@ -470,6 +578,11 @@ def main() -> None:
             "official_lme_historical",
         ),
         (
+            "METALSMARKET_CASH_USD",
+            "https://www.metalsmarket.net/w_lmeCashSett.html",
+            "secondary_lme_cash_reference",
+        ),
+        (
             "TRADING_ECONOMICS",
             "https://tradingeconomics.com/commodity/cobalt",
             "third_party_market",
@@ -504,6 +617,15 @@ def main() -> None:
             status = "HTTP_OK" if r.status_code == 200 else f"HTTP_{r.status_code}"
 
             price_candidates, parser_methods = extract_price_candidates(body, target)
+
+            # Source-specific Variant: MetalsMarket exposes an exact-date USD
+            # cash table with separate Cobalt BID/ASK. Use the same-row parser
+            # and derive the midpoint only as a clearly labelled secondary
+            # reference; never call it an official LME settlement automatically.
+            metalsmarket = extract_metalsmarket_cash_settlement(body, target)
+            if label == "METALSMARKET_CASH_USD" and metalsmarket.get("mid") is not None:
+                price_candidates = [float(metalsmarket["mid"])]
+                parser_methods = ["METALSMARKET_EXACT_COBALT_BID_ASK_MID"]
 
             # Informational source-role indicators.
             lme_wording = any(
@@ -564,6 +686,7 @@ def main() -> None:
                 "prices": price_candidates,
                 "evidence": evidence,
                 "strong_evidence": strong,
+                "metalsmarket": metalsmarket,
             }
 
         except Exception as exc:
@@ -582,6 +705,7 @@ def main() -> None:
                 "prices": [],
                 "evidence": [],
                 "strong_evidence": [],
+                "metalsmarket": {"bid": None, "ask": None, "mid": None},
             }
 
     cobalt_results = []
@@ -639,6 +763,33 @@ def main() -> None:
         f"{'PROVEN' if official_page_ok else 'NOT_PROVEN'}"
     )
 
+    # One-run price result: expose the best exact-date price we can prove,
+    # while preserving provenance/quality. Official LME always wins; otherwise
+    # a same-day secondary cash reference is usable but explicitly degraded.
+    price_records = []
+    for source in cobalt_results:
+        if source.get("label") == "METALSMARKET_CASH_USD" and source.get("metalsmarket", {}).get("mid") is not None:
+            price_records.append({
+                "source": source["label"],
+                "price": source["metalsmarket"]["mid"],
+                "quality": "SECONDARY_UNCONFIRMED",
+                "score": 90,
+            })
+        for e in source.get("strong_evidence", []):
+            if e.get("contract") == "CO" and e.get("unit") == "USD/t":
+                price_records.append({
+                    "source": source["label"],
+                    "price": e["value"],
+                    "quality": "REAL_OFFICIAL" if source["source_class"].startswith("official_lme") else "VALIDATED_SECONDARY",
+                    "score": 100 if source["source_class"].startswith("official_lme") else 70,
+                })
+    cobalt_price = select_cobalt_price(price_records)
+    print(
+        "LME_COBALT_BEST_AVAILABLE: "
+        f"price={cobalt_price['price'] if cobalt_price['price'] is not None else 'NONE'} "
+        f"status={cobalt_price['status']} "
+        f"source={cobalt_price['source'] or 'NONE'}"
+    )
 
     print(f"LME_WESTMETALL_EXACT: {passed}/{len(WESTMETALL)} PASS")
     cobalt_exact_candidates = [
@@ -681,9 +832,9 @@ def main() -> None:
 
     print(
         "LME_SOURCE_RUNNER_TEST: DIAGNOSTIC PASS - "
-        "Blei/Nickel/Zinn exakt via Westmetall; Kobalt wurde mit mehreren "
-        "Quellen und Parsern parallel untersucht. Kobalt bleibt bis zum "
-        "Nachweis von Vertragsart + exaktem Tageswert NICHT produktionsfreigegeben."
+        "Blei/Nickel/Zinn exakt via Westmetall; Kobalt-Multi-Variant-Runner "
+        "absolviert alle Parserpfade in einem Lauf. Preis, Quelle, Datum, "
+        "Kontrakt und Qualitaetsstatus werden getrennt ausgewiesen."
     )
     raise SystemExit(0)
 
