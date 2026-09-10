@@ -23,6 +23,7 @@ def load_validator_namespace():
         "_trade_story_kandidaten_schluessel",
         "_trade_story_keys_treffen",
         "_trade_story_validierung",
+        "_trade_story_deterministische_reparatur",
     }
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     ns = {"re": re, "os": os, "json": json, "csv": csv}
@@ -109,10 +110,29 @@ def main():
         ok, errors = ns["_trade_story_validierung"](valid, {}, str(obs))
         assert not ok and any("nicht verifizierbar" in e for e in errors)
 
+        # Quota regression: invalid Trade-Story must be repairable locally,
+        # without a second Gemini API call. Invalid VALIDE SETUP is downgraded
+        # conservatively to INTERESSANT; buy language is neutralized.
+        invalid = """6.1 PERSPEKTIVISCHE TRADE-IDEEN
+
+Unknown Story
+Zeithorizont: kurzfristig
+Bestehender Kandidat / Bezug: F5, Inc. (FFIV)
+Status: VALIDE SETUP
+Naechster technischer Trigger: jetzt kaufen
+Risiko: Risiko
+"""
+        repaired = ns["_trade_story_deterministische_reparatur"](invalid, files, str(obs))
+        assert "Status: INTERESSANT" in repaired
+        assert "jetzt kaufen" not in repaired.lower()
+        ok, errors = ns["_trade_story_validierung"](repaired, files, str(obs))
+        assert ok, errors
+
     source = GEMINI.read_text(encoding="utf-8")
     assert "Langfrist_Bewertung(...).csv" in source
     assert "Langfrist_Briefing(...).txt" in source
-    assert "TRADE_STORY_REPARATUR_TERMINAL" in source
+    assert "TRADE_STORY_DETERMINISTISCHE_REPARATUR_TERMINAL" in source
+    assert "ohne Gemini-API-Call" in source
     assert "PORTFOLIO-MAKRO-ABGLEICH / WARNER" in source
     print("TRADE_STORY_VALIDATOR_TESTS: 7 PASS")
 

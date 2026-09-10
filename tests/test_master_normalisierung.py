@@ -2,7 +2,7 @@ import ast
 import re
 from pathlib import Path
 
-SRC = Path(__file__).with_name('gemini_auswertung.py').read_text(encoding='utf-8')
+SRC = Path(__file__).parents[1].joinpath('gemini_auswertung.py').read_text(encoding='utf-8')
 tree = ast.parse(SRC)
 node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'normalisiere_ausgabe')
 ns = {

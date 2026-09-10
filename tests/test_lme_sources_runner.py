@@ -464,6 +464,11 @@ def test_cobalt_multi_variant_fixtures() -> None:
     if cb_prev["values"] != [44940.0] or cb_prev["contract"] != "CO":
         raise AssertionError(f"CBONDS Cobalt CO regression failed: {cb_prev}")
 
+    # Derived midpoint is valid evidence from BID/ASK, even though 43000 is
+    # not a literal number in the source page.
+    if mm["mid"] != (mm["bid"] + mm["ask"]) / 2:
+        raise AssertionError("MetalsMarket midpoint derivation failed")
+
     print("PASS: Kobalt-Multi-Variant-Fixtures | LME shell + MetalsMarket bid/ask + CBONDS CO/date guard")
 
 
@@ -618,6 +623,15 @@ def main() -> None:
 
             price_candidates, parser_methods = extract_price_candidates(body, target)
 
+            # CBONDS: once an exact Cobalt row exists, do not mix page-wide
+            # fallback candidates from neighboring metals/contracts into the
+            # result. The row parser is the authoritative parser for this
+            # source variant.
+            if label == "CBONDS_COBALT":
+                cbonds_exact = extract_cbonds_cobalt(body, target)
+                price_candidates = list(cbonds_exact.get("values", []))
+                parser_methods = ["CBONDS_EXACT_COBALT_ROW"] if price_candidates else []
+
             # Source-specific Variant: MetalsMarket exposes an exact-date USD
             # cash table with separate Cobalt BID/ASK. Use the same-row parser
             # and derive the midpoint only as a clearly labelled secondary
@@ -664,7 +678,27 @@ def main() -> None:
                 f"parser_methods={','.join(parser_methods[:8]) or 'NONE'}"
             )
 
-            evidence = [candidate_evidence(body, v, target) for v in price_candidates]
+            if label == "METALSMARKET_CASH_USD" and metalsmarket.get("mid") is not None:
+                # The midpoint is derived from BID/ASK and therefore is not a
+                # literal token in the source. Do not falsely report
+                # VALUE_NOT_LOCATED for the derived 43000 reference. Preserve
+                # the source evidence as BID, ASK, exact date and derivation.
+                evidence = [{
+                    "value": metalsmarket["mid"],
+                    "date_exact": True,
+                    "contract": "CO",
+                    "price_type": "BID_ASK_MIDPOINT",
+                    "unit": "USD/t",
+                    "source_context": "METALSMARKET exact-date Cobalt BID/ASK row",
+                    "confidence": "MEDIUM",
+                    "evidence": (
+                        f"exact_date={target.isoformat()} "
+                        f"bid={metalsmarket['bid']} ask={metalsmarket['ask']} "
+                        f"mid=(bid+ask)/2={metalsmarket['mid']}"
+                    ),
+                }]
+            else:
+                evidence = [candidate_evidence(body, v, target) for v in price_candidates]
             strong = [e for e in evidence if e["confidence"] in {"HIGH", "MEDIUM"} and e["date_exact"]]
 
             if evidence:
@@ -721,7 +755,7 @@ def main() -> None:
     ]
     official_other_ok = [
         x for x in cobalt_results
-        if x["source_class"].startswith("official_lme_")
+        if x["source_class"] in {"official_lme_other_contract", "official_lme_historical"}
         and x["status"] == "HTTP_OK"
     ]
     free_reference_hits = [

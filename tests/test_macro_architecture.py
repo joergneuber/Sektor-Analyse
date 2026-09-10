@@ -274,7 +274,7 @@ def test_trade_story_validator_requires_real_setup_status_and_observation_anchor
     _assert("if not gelesene_quellen:" in source, "Missing authoritative setup sources must block VALIDE SETUP")
     _assert("_trade_story_beobachtung_universum" in source, "Observation universe validator missing")
     _assert("not beobachtung_verfuegbar" in source, "Missing observation source must not silently pass")
-    _assert("Antworte ausschliesslich mit dem vollstaendigen Abschnitt 6.1" in source, "Repair prompt is not restricted to section 6.1")
+    _assert("Trade-Story-Reparatur" in source and "ohne Gemini-API-Call" in source, "Deterministic Trade-Story repair is not enforced")
 
     # Source-level fixture: a setup row with a non-valid status must not be
     # treated as a valid setup merely because ticker/name exist.
@@ -356,3 +356,33 @@ def test_hebeltrader_latest_drive_version_can_replace_stale_local_copy():
     _assert("autoritative Quelle" in source and "heruntergeladen" in source, "HEBELTRADER must use latest Drive payload as authority")
     _assert('"HEBELTRADER-Einzelcheck"' in source, "HEBELTRADER input key missing")
     _assert("issue_label" in source and "lokale Version bleibt erhalten" in source, "HEBELTRADER payload validation/logging missing")
+
+
+def test_gdelt_cache_rejects_old_cluster_even_when_other_cluster_is_fresh(tmp_path):
+    """Regression: one fresh cluster must not refresh another cluster's TTL."""
+    import datetime as dt
+    import json
+    cache_file = tmp_path / "gdelt_cache.json"
+    now = dt.datetime.now(dt.timezone.utc)
+    cache_file.write_text(json.dumps({
+        "schema": "GDELT_CLUSTER_V2",
+        "clusters": {
+            "China/Taiwan": {
+                "count": 12,
+                "cache_saved_at": (now - dt.timedelta(hours=2)).isoformat(),
+            },
+            "Nahost": {
+                "count": 99,
+                "cache_saved_at": (now - dt.timedelta(hours=25)).isoformat(),
+            },
+        },
+    }), encoding="utf-8")
+    original = m.GDELT_CACHE_FILE
+    try:
+        m.GDELT_CACHE_FILE = cache_file
+        loaded = m._gdelt_cache_load(now.date())
+    finally:
+        m.GDELT_CACHE_FILE = original
+    clusters = (loaded or {}).get("clusters", {})
+    _assert("China/Taiwan" in clusters, "Fresh cluster must remain cache-valid")
+    _assert("Nahost" not in clusters, "Old cluster must expire independently")
