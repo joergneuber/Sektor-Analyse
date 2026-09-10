@@ -31,6 +31,7 @@ import os
 import re
 import ast
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -1165,9 +1166,12 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     ).execute()
     is_history_sheet = len(values) >= 2 and list(values[1]) == HISTORY_HEADERS
     upload_values = _canonicalize_history_values(values) if is_history_sheet else values
+    # Bewährter Zahlenpfad: echte numerische Werte an Google Sheets übergeben.
+    # RAW verhindert lokale String-Interpretation; das de_DE-Sheet-Locale steuert
+    # anschließend die Anzeige als deutsches Dezimalkomma.
     sheets.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id, range=f"'{write_title}'!A1",
-        valueInputOption="RAW" if is_history_sheet else "USER_ENTERED",
+        valueInputOption="RAW",
         body={"values": upload_values}
     ).execute()
 
@@ -1180,14 +1184,13 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
         {"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"ROWS","startIndex":0,"endIndex":2},"properties":{"pixelSize":34},"fields":"pixelSize"}},
         {"setBasicFilter":{"filter":{"range":{"sheetId":sheet_id,"startRowIndex":1,"endRowIndex":len(values),"startColumnIndex":0,"endColumnIndex":ncols}}}},
     ]
+    format_numeric = HISTORY_NUMERIC_COLUMNS if is_history_sheet else NUMERIC_COLUMNS
     for i,col in enumerate(values[1]):
-        format_numeric = HISTORY_NUMERIC_COLUMNS if is_history_sheet else NUMERIC_COLUMNS
         if col in format_numeric or col.endswith("%"):
             requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":'0.00" %"' if col.endswith("%") else "0.00"}}},"fields":"userEnteredFormat.numberFormat"}})
         requests.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":widths.get(col,120)},"fields":"pixelSize"}})
     _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context=f"Format {write_title}")
     return sheet_id
-
 
 
 def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str]) -> list[int]:
@@ -1395,11 +1398,13 @@ def read_existing_open_rows(sheets, spreadsheet_id: str) -> list[list]:
 
 
 def extract_disappeared_open_positions(existing_open_rows: list[list], current_df: pd.DataFrame) -> pd.DataFrame:
-    """Legacy-Diagnosepfad; NICHT Teil des produktiven Abschluss-Lifecycles.
+    """Archiviert Positionen, die seit dem letzten Sheet-Stand aus Tab 1 verschwunden sind.
 
-    Die produktive Architektur archiviert ausschließlich Positionen, die in
-    Offene_Positionen tatsächlich als GESTOPPT/VERKAUFT vorliegen. Das bloße
-    Verschwinden aus Tab 1 darf keinen Abschluss erzeugen.
+    Das ist der entscheidende Persistenzpfad, wenn die Masterquelle eine geschlossene
+    Position bereits entfernt hat: Der letzte offene Snapshot ist die einzige lokale
+    Faktenbasis. Es werden keine technischen Werte neu berechnet und keine Stop-/Verkaufs-
+    kurswerte erfunden. Das Standdatum des letzten Snapshots wird als Ausstiegsdatum
+    verwendet; der letzte bekannte Kurs bleibt der letzte bekannte Kurs.
     """
     if not existing_open_rows or current_df is None:
         return pd.DataFrame(columns=HISTORY_HEADERS)
@@ -1465,25 +1470,64 @@ def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
         return []
 
 
-def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.DataFrame) -> int:
-    """Fügt neue geschlossene Positionen dauerhaft an Tab 2 an.
 
-    Tab 2 ist das unverlierbare Archiv. Bestehende Zeilen werden niemals
-    überschrieben, gekürzt oder gelöscht. Vor dem Append wird der aktuelle
-    Produktivstand erneut gelesen, damit parallel entstandene Abschlüsse
-    berücksichtigt werden.
+def _format_history_range(sheets, spreadsheet_id: str, sheet_id: int, start_row_index: int, end_row_index: int):
+    """Formatiert nur die neu geschriebenen Historienzeilen numerisch."""
+    if end_row_index <= start_row_index:
+        return
+    requests = []
+    for i, col in enumerate(HISTORY_HEADERS):
+        if col not in HISTORY_NUMERIC_COLUMNS:
+            continue
+        pattern = '0.00" %"' if col.endswith('%') else '0.00'
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row_index,
+                    "endRowIndex": end_row_index,
+                    "startColumnIndex": i,
+                    "endColumnIndex": i + 1,
+                },
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": pattern}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        })
+    if requests:
+        _google_batch_update_with_retry(
+            sheets, spreadsheet_id, {"requests": requests}, context="Format neue Historienzeilen"
+        )
+
+
+def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.DataFrame) -> int:
+    """Fügt neue Gestoppt/Verkauft-Positionen dauerhaft an Tab 2 an.
+
+    Tab 2 ist unverlierbares APPEND-ONLY-Archiv. Bestehende Zeilen werden niemals
+    ersetzt, gekürzt oder gelöscht. Die Identität eines Trades ist ausschließlich
+    der verbindliche Positionsschlüssel (Name, Ticker, Einstieg, Einstiegsdatum).
     """
     if new_closed_df is None or new_closed_df.empty:
         return 0
 
-    # Aktuellen Produktivstand unmittelbar vor dem Append lesen.
     existing_rows = read_existing_history(sheets, spreadsheet_id)
     existing_keys = set()
+    existing_data_count = 0
+    history_sheet_id = None
+
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    props = {x["properties"]["title"]: x["properties"] for x in ss.get("sheets", [])}
+    hist_props = props.get("Geschlossene Positionen")
+    if hist_props:
+        history_sheet_id = hist_props["sheetId"]
+
     if existing_rows and len(existing_rows) >= 2:
         old_headers = [str(x).strip() for x in existing_rows[1]]
         for raw in existing_rows[2:]:
             if not any(str(x).strip() for x in raw):
                 continue
+            existing_data_count += 1
             item = {old_headers[i]: raw[i] if i < len(raw) else "" for i in range(len(old_headers))}
             if str(item.get("Ticker", "")).strip():
                 existing_keys.add(_history_key(item))
@@ -1498,9 +1542,8 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
         seen_new.add(key)
         rows_to_append.append(item)
 
-    # Tab 2 darf fehlen nur beim Erstaufbau. Dann wird es einmalig vollständig
-    # aus der vorhandenen Historie angelegt. Ab dann gilt strikt APPEND-ONLY.
-    if not existing_rows or len(existing_rows) < 2:
+    # Erstaufbau von Tab 2: einmalig vollständig anlegen. Danach ausschließlich Append.
+    if not existing_rows or len(existing_rows) < 2 or history_sheet_id is None:
         all_items = []
         seen = set()
         for _, row in new_closed_df.iterrows():
@@ -1512,12 +1555,12 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
             all_items.append(item)
         if not all_items:
             return 0
+
         values = [
             [f"Geschlossene Positionen | historische Faktenbasis | Stand {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"] + [""] * (len(HISTORY_HEADERS)-1),
             HISTORY_HEADERS,
         ]
-        for item in all_items:
-            values.append([item.get(c, "") for c in HISTORY_HEADERS])
+        values.extend([[item.get(c, "") for c in HISTORY_HEADERS] for item in all_items])
         _write_sheet(
             sheets, spreadsheet_id, "Geschlossene Positionen", values,
             {c: 140 for c in HISTORY_HEADERS}, 2,
@@ -1528,17 +1571,66 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
     if not rows_to_append:
         return 0
 
-    # Append-only: bestehende Zeilen bleiben unverändert.
     values = [[item.get(c, "") for c in HISTORY_HEADERS] for item in rows_to_append]
-    sheets.spreadsheets().values().append(
+    payload = _canonicalize_history_values(
+        [[f"Geschlossene Positionen | historische Faktenbasis"] + [""] * (len(HISTORY_HEADERS)-1), HISTORY_HEADERS] + values
+    )[2:]
+    response = sheets.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        range="'Geschlossene Positionen'!A:AA",
+        range="'Geschlossene Positionen'!A:Z",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
-        body={"values": _canonicalize_history_values([HISTORY_HEADERS] + values)[1:]},
+        body={"values": payload},
     ).execute()
+
+    if history_sheet_id is not None:
+        start_row = 2 + existing_data_count
+        end_row = start_row + len(rows_to_append)
+        _format_history_range(sheets, spreadsheet_id, history_sheet_id, start_row, end_row)
+
     return len(rows_to_append)
 
+
+def _rollback_productive_swap(sheets, spreadsheet_id: str, target_title: str, backup_title: str) -> None:
+    """Stellt nach einem bereits erfolgreichen Swap den vorherigen Produktivtab wieder her."""
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    props = {x["properties"]["title"]: x["properties"] for x in ss.get("sheets", [])}
+    current = props.get(target_title)
+    backup = props.get(backup_title)
+    if current is None or backup is None:
+        raise RuntimeError(
+            f"Rollback nicht möglich: target={target_title!r}, backup={backup_title!r} nicht vollständig vorhanden."
+        )
+
+    rollback_title = f"__ROLLBACK_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    requests = [
+        {"updateSheetProperties": {
+            "properties": {"sheetId": current["sheetId"], "title": rollback_title},
+            "fields": "title",
+        }},
+        {"updateSheetProperties": {
+            "properties": {"sheetId": backup["sheetId"], "title": target_title},
+            "fields": "title",
+        }},
+    ]
+    _google_batch_update_with_retry(
+        sheets, spreadsheet_id, {"requests": requests}, context="Rollback Produktiv-Swap"
+    )
+    # Die fehlerhafte neue Version ist nun nur noch temporärer Schrott und darf gelöscht werden.
+    ss2 = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    rb = next(
+        (x["properties"]["sheetId"] for x in ss2.get("sheets", []) if x["properties"]["title"] == rollback_title),
+        None,
+    )
+    if rb is not None:
+        _google_batch_update_with_retry(
+            sheets, spreadsheet_id, {"requests": [{"deleteSheet": {"sheetId": rb}}]},
+            context="Rollback Altprodukt löschen",
+        )
 
 def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
     if creds is None:
@@ -1547,27 +1639,25 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     _validate_output_before_upload(df, closed_df)
 
-    drive=build("drive","v3",credentials=creds)
-    sheets=build("sheets","v4",credentials=creds)
-    q=f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
-    files=drive.files().list(q=q,fields="files(id,name,mimeType)").execute().get("files",[])
+    drive = build("drive", "v3", credentials=creds)
+    sheets = build("sheets", "v4", credentials=creds)
+    q = f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
+    files = drive.files().list(q=q, fields="files(id,name,mimeType)").execute().get("files", [])
     if files:
-        spreadsheet_id=files[0]["id"]
+        spreadsheet_id = files[0]["id"]
     else:
-        created=drive.files().create(
-            body={"name":DRIVE_NAME,"mimeType":"application/vnd.google-apps.spreadsheet","parents":[FOLDER_ID]},
-            fields="id,name"
+        created = drive.files().create(
+            body={"name": DRIVE_NAME, "mimeType": "application/vnd.google-apps.spreadsheet", "parents": [FOLDER_ID]},
+            fields="id,name",
         ).execute()
-        spreadsheet_id=created["id"]
+        spreadsheet_id = created["id"]
 
-    # Projektstandard: deutsches Google-Sheets-Gebietsschema.
-    # Zusammen mit echten numerischen Werten sorgt dies für Dezimalkomma.
+    # Deutsches Locale + echte numerische Werte = stabile Anzeige ohne String-Parsing.
     sheets.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={"requests": [{"updateSpreadsheetProperties": {
-            "properties": {"locale": "de_DE"},
-            "fields": "locale"
-        }}]}
+            "properties": {"locale": "de_DE"}, "fields": "locale"
+        }}]},
     ).execute()
 
     existing = sheets.spreadsheets().get(
@@ -1575,24 +1665,17 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     ).execute().get("sheets", [])
     existing_titles = [s["properties"]["title"] for s in existing]
 
-    # Tab 2 ist das dauerhafte Archiv. Es wird ausschließlich aus tatsächlich
-    # in der Basisdatei Offene_Positionen als GESTOPPT/VERKAUFT markierten
-    # Positionen erweitert. Ein bloßes Verschwinden aus Tab 1 ist KEIN
-    # Abschlussereignis und darf nicht als solches interpretiert werden.
-    # Tab 2 ist ein dauerhaftes APPEND-ONLY-Archiv. Die bestehende Historie
-    # wird erst unmittelbar vor dem Append erneut gelesen. Dadurch gibt es
-    # keinen zweiten, potenziell veralteten Historien-Snapshot in diesem Lauf.
+    # Verbindliche Abschlussquelle: ausschließlich aktuell Gestoppt/Verkauft in der Masterquelle.
+    # Ein bloßes Verschwinden aus Tab 1 ist niemals ein Abschlussereignis.
     closed_for_append = closed_df.copy()
 
-    # Falls das alte Sheet einen anders benannten ersten Tab hat, wird dessen
-    # Name erst nach erfolgreicher Vorbereitung der neuen Tabs geändert.
     old_main_title = None
     if "Offene Positionen+Check" not in existing_titles and existing:
         old_main_title = existing[0]["properties"]["title"]
 
-    now=dt.datetime.now().strftime("%d.%m.%Y %H:%M")
-    values=[[f"Offene Positionen+Check | Stand {now}"]+[""]*(len(HEADERS)-1),HEADERS]
-    for _,r in df.iterrows(): values.append([r.get(c,"") for c in HEADERS])
+    now = dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+    values = [[f"Offene Positionen+Check | Stand {now}"] + [""] * (len(HEADERS)-1), HEADERS]
+    values.extend([[r.get(c, "") for c in HEADERS] for _, r in df.iterrows()])
     widths = {
         "Ticker": 95, "Name": 240, "Steuerungsart": 125, "Sektor": 150,
         "Markt": 65, "Waehrung": 75, "Status": 75, "Einstieg": 85,
@@ -1601,58 +1684,32 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         "Support_1": 90, "Support_2": 90, "Widerstand_1": 100, "Widerstand_2": 100,
         "Widerstand_1_Label": 170, "Widerstand_2_Label": 170,
         "Breakout_Status": 180, "A-B-C_Status": 260, "Fibonacci_Status": 260,
-        "Fibonacci_Ziel_1": 120, "Fibonacci_Ziel_2": 120,
-        "Fibonacci_Ziel_3": 120, "Trendkanal_Obergrenze": 130,
-        "Measured_Move_Ziel": 130, "Formation": 220, "Round_Number_Zone": 130,
-        "Uebergeordneter_Widerstand": 150, "Uebergeordneter_Widerstand_Label": 190, "Ueberdehnung": 300,
+        "Fibonacci_Ziel_1": 120, "Fibonacci_Ziel_2": 120, "Fibonacci_Ziel_3": 120,
+        "Trendkanal_Obergrenze": 130, "Measured_Move_Ziel": 130, "Formation": 220,
+        "Round_Number_Zone": 130, "Uebergeordneter_Widerstand": 150,
+        "Uebergeordneter_Widerstand_Label": 190, "Ueberdehnung": 300,
         "Relative_Staerke_Sektor": 300, "Konfluenz": 300, "Retest_Support": 120,
         "Technische_Zielzone": 220, "Datenqualitaet": 220, "Analysehinweis": 360,
     }
 
-    # Datenverlustschutz:
-    # 1) bestehende Historie lesen
-    # 2) Tab 1 vollständig lokal/temporär schreiben und formatieren
-    # 3) produktiven Tab 1 erst danach per Batch-Rename austauschen
-    # 4) Tab 2 ausschließlich append-only erweitern
-    # 5) zusätzliche Drive-Sicherung des bisherigen Sheets vor dem Swap
     temp_suffix = f"__TMP_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     temp_open = f"__TMP_OFFEN_{temp_suffix}"
-
     backup_id = None
+    backup_tab_title = None
+    swapped = False
+
     try:
-        # Wenn das Sheet bereits existiert, vor dem ersten produktiven Austausch
-        # eine temporäre Drive-Sicherung erstellen. Sie wird nur nach erfolgreichem
-        # Swap gelöscht; bei Fehler bleibt sie als Notfallstand erhalten.
         if existing:
             backup_id = _snapshot_google_sheet(drive, spreadsheet_id)
             print(f"DATENSCHUTZ: Backup des bisherigen Google Sheets erstellt | ID={backup_id}")
 
+        # 1) Tab 1 vollständig vorbereiten – produktiver Tab bleibt unberührt.
         _write_sheet(sheets, spreadsheet_id, temp_open, values, widths, 2, target_title=temp_open)
 
-        # Tab 1 ist vollständig vorbereitet und formatiert. Tab 2 wird bewusst
-        # NICHT als neuer Snapshot vorbereitet, sondern erst nach dem erfolgreichen
-        # Tab-1-Swap append-only um tatsächlich neue Abschlüsse erweitert.
-        # WICHTIG: Tab 2 ist ein dauerhaftes APPEND-ONLY-ARCHIV.
-        # Er wird niemals durch einen neuen Snapshot ersetzt. Nur Tab 1 wird
-        # per vorbereitetem Temp-Tab ausgetauscht. Dadurch kann ein später
-        # laufender Workflow niemals bereits archivierte Trades zurücksetzen.
-        targets = {
-            temp_open: "Offene Positionen+Check",
-        }
-        # Temporäre Namen stehen in props; deshalb direkter, atomarer Swap.
-        _swap_temp_tabs(sheets, spreadsheet_id, targets)
-
-        # Tab 2 wird niemals ersetzt. Nur neue historische Datensätze werden
-        # append-only angehängt. Ein späterer Lauf kann damit keine bereits
-        # archivierte Position mehr verlieren.
-        appended_history = _append_missing_history_rows(
-            sheets, spreadsheet_id, closed_for_append
-        )
+        # 2) Historie append-only vorbereiten/verifizieren – niemals durch Snapshot ersetzen.
+        appended_history = _append_missing_history_rows(sheets, spreadsheet_id, closed_for_append)
         if appended_history:
-            print(
-                f"PERSISTENZ: {appended_history} neue geschlossene Position(en) "
-                "append-only in Tab 2 archiviert."
-            )
+            print(f"PERSISTENZ: {appended_history} neue geschlossene Position(en) append-only in Tab 2 archiviert.")
 
         def _column_letter(n: int) -> str:
             result = ""
@@ -1661,152 +1718,114 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 result = chr(65 + remainder) + result
             return result
 
-        # Sicherheitsstufe 2: den tatsächlich produktiven Stand nach dem Swap
-        # nochmals aus Google lesen und gegen den gerade geprüften Datenbestand prüfen.
-        # Erst wenn beide produktiven Tabs verifiziert sind, darf das Drive-Backup gelöscht werden.
-        try:
-            verify_ss = sheets.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=f"Offene Positionen+Check!A1:{_column_letter(len(HEADERS))}",
-            ).execute()
-            verify_rows = verify_ss.get("values", [])
-            if len(verify_rows) < 2:
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Offene Positionen+Check ist leer oder unvollständig."
-                )
+        # 3) Tab 2 VOR dem produktiven Tab-1-Swap verifizieren.
+        hist_ss = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"Geschlossene Positionen!A1:{_column_letter(len(HISTORY_HEADERS))}",
+        ).execute()
+        hist_rows = hist_ss.get("values", [])
+        if len(hist_rows) < 2:
+            raise RuntimeError("Historien-Verifikation fehlgeschlagen: Geschlossene Positionen ist leer oder unvollständig.")
+        expected_hist_header = [str(x).strip() for x in HISTORY_HEADERS]
+        if [str(x).strip() for x in hist_rows[1]] != expected_hist_header:
+            raise RuntimeError("Historien-Verifikation fehlgeschlagen: Header der Historie stimmt nicht.")
 
-            verify_header = [str(x).strip() for x in verify_rows[1]]
-            expected_header = [str(x).strip() for x in HEADERS]
-            if verify_header != expected_header:
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Header von Offene Positionen+Check stimmt nicht."
-                )
+        if not closed_for_append.empty:
+            hist_keys = []
+            for raw in hist_rows[2:]:
+                item = {col: (raw[i] if i < len(raw) else "") for i, col in enumerate(expected_hist_header)}
+                if str(item.get("Ticker", "")).strip():
+                    hist_keys.append(_history_key(item))
+            persisted_counts = Counter(hist_keys)
+            for _, closed_row in closed_for_append.iterrows():
+                key = _history_key(closed_row)
+                if persisted_counts.get(key, 0) != 1:
+                    raise RuntimeError(
+                        "Historien-Verifikation fehlgeschlagen: aktuell geschlossene Position "
+                        f"nicht genau einmal in Tab 2 archiviert: {key}"
+                    )
 
-            ticker_idx = expected_header.index("Ticker")
-            verify_data = verify_rows[2:]
-            status_idx = expected_header.index("Status")
-            if len(verify_data) != len(df):
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Zeilenanzahl von Offene "
-                    f"Positionen+Check ({len(verify_data)}) entspricht nicht dem geprüften "
-                    f"Datenbestand ({len(df)})."
-                )
-            non_open = [
-                str(row[status_idx]).strip()
-                for row in verify_data
-                if len(row) > status_idx and str(row[status_idx]).strip().lower() != "offen"
-            ]
-            if non_open:
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Tab 1 enthält einen "
-                    f"nicht-offenen Status: {non_open[:5]}"
-                )
+        # 4) Erst jetzt Tab 1 produktiv tauschen. _swap_temp_tabs hinterlegt den alten Tab als Backup-Tab.
+        if "Offene Positionen+Check" in existing_titles:
+            stamp = dt.datetime.now().strftime('%Y%m%d%H%M%S')
+            backup_tab_title = f"_BACKUP_Offene Positionen+Check_{stamp}"
+        _swap_temp_tabs(sheets, spreadsheet_id, {temp_open: "Offene Positionen+Check"})
+        swapped = True
 
-            expected_tickers = [
-                str(x).strip().upper()
-                for x in df["Ticker"].tolist()
-                if str(x).strip()
-            ]
-            actual_tickers = [
-                str(row[ticker_idx]).strip().upper()
-                for row in verify_data
-                if len(row) > ticker_idx and str(row[ticker_idx]).strip()
-            ]
-            if actual_tickers != expected_tickers:
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Tickerbestand des produktiven "
-                    "Offene-Positionen-Tabs stimmt nicht mit dem geprüften Datenbestand überein."
-                )
+        # 5) Produktiven Tab 1 direkt nach dem Swap prüfen.
+        verify_ss = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"Offene Positionen+Check!A1:{_column_letter(len(HEADERS))}",
+        ).execute()
+        verify_rows = verify_ss.get("values", [])
+        if len(verify_rows) < 2:
+            raise RuntimeError("Produktiv-Verifikation fehlgeschlagen: Offene Positionen+Check ist leer oder unvollständig.")
+        expected_header = [str(x).strip() for x in HEADERS]
+        verify_header = [str(x).strip() for x in verify_rows[1]]
+        if verify_header != expected_header:
+            raise RuntimeError("Produktiv-Verifikation fehlgeschlagen: Header von Offene Positionen+Check stimmt nicht.")
 
-            hist_ss = sheets.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=f"Geschlossene Positionen!A1:{_column_letter(len(HISTORY_HEADERS))}",
-            ).execute()
-            hist_rows = hist_ss.get("values", [])
-            if len(hist_rows) < 2:
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Geschlossene Positionen ist leer oder unvollständig."
-                )
-            hist_header = [str(x).strip() for x in hist_rows[1]]
-            expected_hist_header = [str(x).strip() for x in HISTORY_HEADERS]
-            if hist_header != expected_hist_header:
-                raise RuntimeError(
-                    "Produktiv-Verifikation fehlgeschlagen: Header der Historie stimmt nicht."
-                )
-
-            # Lifecycle-Sicherheitsstufe: Jeder aktuell in der Basisdatei als
-            # Gestoppt/Verkauft markierte Trade muss jetzt in Tab 2 vorhanden
-            # sein, bevor die Quelle bereinigt werden darf. Das verhindert genau
-            # den JOST-Fall: Stop erkannt -> Archivierung scheinbar erfolgreich ->
-            # späterer Lauf überschreibt/verliert den historischen Datensatz.
-            if not closed_for_append.empty:
-                history_data = hist_rows[2:]
-                hist_keys = []
-                for raw in history_data:
-                    item = {
-                        col: (raw[i] if i < len(raw) else "")
-                        for i, col in enumerate(expected_hist_header)
-                    }
-                    if str(item.get("Ticker", "")).strip():
-                        hist_keys.append(_history_key(item))
-
-                persisted_counts = Counter(hist_keys)
-                for _, closed_row in closed_for_append.iterrows():
-                    key = _history_key(closed_row)
-                    if persisted_counts.get(key, 0) != 1:
-                        raise RuntimeError(
-                            "Produktiv-Verifikation fehlgeschlagen: aktuell geschlossene "
-                            f"Position nicht genau einmal in Tab 2 archiviert: {key}"
-                        )
-
-            print(
-                f"DATENSCHUTZ: Produktivstand verifiziert | offene={len(verify_data)} | "
-                f"historisch={max(0, len(hist_rows) - 2)}"
-            )
-        except Exception as verify_exc:
-            print(
-                "WARNUNG: Produktiv-Verifikation fehlgeschlagen; "
-                f"Drive-Backup bleibt als Notfallstand erhalten: {verify_exc}"
-            )
+        verify_data = verify_rows[2:]
+        if len(verify_data) != len(df):
             raise RuntimeError(
-                "Sicherheitsabbruch nach Produktiv-Swap: produktiver Stand konnte nicht "
-                "verifiziert werden; separates Drive-Backup bleibt erhalten."
-            ) from verify_exc
+                "Produktiv-Verifikation fehlgeschlagen: Tab 1 enthält "
+                f"{len(verify_data)} Datenzeilen statt {len(df)}."
+            )
+        status_idx = expected_header.index("Status")
+        non_open = [
+            str(row[status_idx]).strip() for row in verify_data
+            if len(row) > status_idx and str(row[status_idx]).strip().lower() != "offen"
+        ]
+        if non_open:
+            raise RuntimeError(
+                "Produktiv-Verifikation fehlgeschlagen: Tab 1 enthält nicht-offene Statuswerte: "
+                f"{non_open[:5]}"
+            )
 
-        # Sicherheitsstufe 3: technische Altlasten im Google Sheet entfernen –
-        # erst nach erfolgreicher Produktiv-Verifikation.
-        # Schlägt dieser Cleanup fehl, wird das Drive-Backup NICHT gelöscht.
+        ticker_idx = expected_header.index("Ticker")
+        expected_tickers = [str(x).strip().upper() for x in df["Ticker"].tolist() if str(x).strip()]
+        actual_tickers = [
+            str(row[ticker_idx]).strip().upper() for row in verify_data
+            if len(row) > ticker_idx and str(row[ticker_idx]).strip()
+        ]
+        if actual_tickers != expected_tickers:
+            raise RuntimeError(
+                "Produktiv-Verifikation fehlgeschlagen: Tickerbestand des produktiven "
+                "Offene-Positionen-Tabs stimmt nicht mit dem geprüften Datenbestand überein."
+            )
+
+        print(
+            f"DATENSCHUTZ: Produktivstand verifiziert | offene={len(verify_data)} | "
+            f"historisch={max(0, len(hist_rows)-2)}"
+        )
+
+        # 6) Nur nach vollständiger Verifikation technische Altlasten entfernen.
+        _cleanup_backups(sheets, spreadsheet_id)
         try:
-            _cleanup_backups(sheets, spreadsheet_id)
+            _cleanup_drive_backups(drive)
         except Exception as cleanup_exc:
-            print(
-                "WARNUNG: Backup-/TMP-Tabs konnten nicht vollständig bereinigt werden; "
-                f"Drive-Backup bleibt als Notfallstand erhalten: {cleanup_exc}"
-            )
-            raise RuntimeError(
-                "Sicherheitsabbruch nach Produktiv-Swap: Tab-Cleanup fehlgeschlagen; "
-                "separates Drive-Backup bleibt erhalten."
-            ) from cleanup_exc
+            print(f"WARNUNG: Drive-Backups konnten nicht vollständig bereinigt werden; Backup bleibt erhalten: {cleanup_exc}")
 
-        # Erst jetzt ist die Transaktion vollständig verifiziert.
-        if backup_id:
-            try:
-                _cleanup_drive_backups(drive)
-            except Exception as cleanup_exc:
-                print(
-                    "WARNUNG: Drive-Backups konnten nicht vollständig bereinigt werden; "
-                    f"Backup bleibt als Notfallstand erhalten: {cleanup_exc}"
-                )
-
-        print(f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | historisch={max(0, len(hist_rows)-2)} | 2 produktive Tabs (Tab2 APPEND-ONLY)")
+        print(
+            f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | "
+            f"historisch={max(0, len(hist_rows)-2)} | 2 produktive Tabs (Tab2 APPEND-ONLY)"
+        )
         return spreadsheet_id
+
     except Exception as exc:
-        print("DATENSCHUTZ: Produktiver Swap NICHT erfolgreich abgeschlossen.")
-        print("DATENSCHUTZ: Bestehende produktive Tabs wurden vor dem Swap nicht verändert.")
+        # Falls der produktive Tab bereits getauscht wurde, aktiv zurückrollen.
+        if swapped and backup_tab_title:
+            try:
+                _rollback_productive_swap(sheets, spreadsheet_id, "Offene Positionen+Check", backup_tab_title)
+                print("SICHERHEIT: Produktiver Tab 1 auf den vorherigen Stand zurückgerollt.")
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "Sicherheitsabbruch: Verifikation fehlgeschlagen UND Rollback von "
+                    f"Offene Positionen+Check war nicht möglich: {rollback_exc}"
+                ) from exc
         if backup_id:
             print(f"DATENSCHUTZ: Notfall-Backup bleibt erhalten | ID={backup_id}")
         raise RuntimeError(f"Google-Upload sicher abgebrochen: {exc}") from exc
-
 
 def _position_key(row) -> tuple:
     """Eindeutiger Positionsschlüssel für das sichere Entfernen geschlossener Trades."""
@@ -2250,6 +2269,69 @@ def _remove_closed_from_source(
                 pass
         raise
 
+
+def _selftest_closed_position_removal():
+    """Schneller Selbsttest ausschließlich für die neue Archivierungslogik."""
+    import tempfile
+
+    columns = ["Ticker", "Name", "Einstiegsdatum", "Einstieg", "Status"]
+    rows = [
+        ["ANLEITUNG", "NEUE POSITION - Pflichtfelder ...", "", "", ""],
+        ["NEM", "Newmont Corporation", "01.08.2026", "45,20", "gestoppt"],
+        ["NEM", "Newmont Corporation", "19.08.2026", "52,10", "Offen"],
+        ["FCX", "Freeport-McMoRan", "10.08.2026", "66,32", "verkauft"],
+        ["FCX", "Freeport-McMoRan", "20.08.2026", "70,00", "Offen"],
+        ["AEM", "Agnico Eagle Mines Limited", "01.08.2026", "100,00", "Offen"],
+    ]
+    source_df = pd.DataFrame(rows, columns=columns)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source_path = os.path.join(tmp, INPUT_FILE)
+        source_df.to_csv(source_path, sep=";", index=False, encoding="utf-8-sig")
+
+        closed = source_df[
+            source_df["Status"].str.lower().isin({"gestoppt", "verkauft"})
+        ].copy()
+        assert _remove_closed_from_source(source_path, closed) == 2
+
+        after = read_positions(source_path)
+        assert len(after) == 4
+        assert after.iloc[0]["Ticker"] == "ANLEITUNG"
+        assert after.iloc[0]["Name"].startswith("NEUE POSITION")
+        assert set(after.iloc[1:]["Ticker"]) == {"NEM", "FCX", "AEM"}
+        assert len(after.iloc[1:][after.iloc[1:]["Status"].str.lower() == "offen"]) == 3
+
+        # Fehlende Position muss hart scheitern und die Quelle unverändert lassen.
+        missing = pd.DataFrame(
+            [["XYZ", "Nicht vorhanden", "01.01.2026", "1,00", "verkauft"]],
+            columns=columns,
+        )
+        before = open(source_path, "rb").read()
+        try:
+            _remove_closed_from_source(source_path, missing)
+            raise AssertionError("Fehlende Position wurde nicht abgewiesen.")
+        except RuntimeError:
+            pass
+        assert open(source_path, "rb").read() == before
+
+        # Doppelte identische Position muss hart scheitern.
+        duplicate = pd.concat([closed.iloc[[0]], closed.iloc[[0]]], ignore_index=True)
+        try:
+            _remove_closed_from_source(source_path, duplicate)
+            raise AssertionError("Doppelte Position wurde nicht abgewiesen.")
+        except RuntimeError:
+            pass
+
+        # Alle Offen: nichts darf verändert werden.
+        open_only = source_df[source_df["Status"].str.lower() == "offen"].copy()
+        before = open_only.to_csv(sep=";", index=False)
+        temp_open_path = os.path.join(tmp, "open_only.csv")
+        open_only.to_csv(temp_open_path, sep=";", index=False, encoding="utf-8-sig")
+        empty_closed = source_df.iloc[0:0].copy()
+        assert _remove_closed_from_source(temp_open_path, empty_closed) == 0
+        assert read_positions(temp_open_path).to_csv(sep=";", index=False) == before
+
+    print("SELFTEST Archivierung geschlossener Positionen: PASS")
 
 
 def _selftest_closed_position_removal():
