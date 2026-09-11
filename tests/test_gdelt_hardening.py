@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 if "yfinance" not in sys.modules:
     sys.modules["yfinance"] = types.SimpleNamespace()
 spec = importlib.util.spec_from_file_location("makro_szenario_under_test", ROOT / "makro_szenario.py")
@@ -84,8 +85,9 @@ class TestGDELTHardening(unittest.TestCase):
         finally:
             mod.requests.get = original
 
-    def test_doc_concurrency_is_capped_at_two(self):
-        self.assertEqual(mod.GDELT_DOC_MAX_WORKERS, 2)
+    def test_doc_concurrency_is_serialized_to_avoid_burst_429(self):
+        self.assertEqual(mod.GDELT_DOC_MAX_WORKERS, 1)
+        self.assertGreaterEqual(mod.GDELT_MIN_REQUEST_INTERVAL_SECONDS, 1.0)
 
 if __name__ == "__main__":
     unittest.main()

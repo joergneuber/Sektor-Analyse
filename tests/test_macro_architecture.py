@@ -29,7 +29,7 @@ def _assert(condition, message):
 
 def test_parser_real_format():
     lines = [
-        "Core CPI: 336.7890 | Datenstand=2026-08-01 | STATUS=REAL | SOURCE=FRED CPILFESL | YOY=+2.70% | YOY_VORMONAT=2025-08-01 | YOY_STATUS=CALCULATED",
+        "Core CPI: 336.7890 | Datenstand=2026-08-01 | STATUS=REAL | SOURCE=FRED CPILFESL | YOY=+2.70% | YOY_VORJAHRESMONAT=2025-08-01 | YOY_STATUS=CALCULATED",
         "ISM Manufacturing PMI: 55.6 | Datenmonat=2026-08 | STATUS=REAL_PUBLIC_SECONDARY | SOURCE=ISM",
         "US 10Y Treasury: 4.79 | Datenstand=2026-09-03 | STATUS=REAL | SOURCE=FRED DGS10",
     ]
@@ -129,9 +129,13 @@ def test_gate_rules():
 
 
 def test_calendar_parsers():
-    ics = """BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260911\nSUMMARY:Consumer Price Index\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260910\nSUMMARY:Producer Price Index\nEND:VEVENT\nEND:VCALENDAR\n"""
-    events = m._parse_bls_ics(ics)
-    _assert(len(events) == 2, "BLS ICS parser failed")
+    html = """<table><thead><tr><th>Release</th><th>Date</th></tr></thead>
+    <tbody>
+    <tr><td>Consumer Price Index</td><td>Friday, September 11, 2026</td></tr>
+    <tr><td>Producer Price Index</td><td>Thursday, September 10, 2026</td></tr>
+    </tbody></table>"""
+    events = m._parse_bls_schedule_html(html, 2026, "https://www.bls.gov/schedule/2026/09_sched_list.htm")
+    _assert(len(events) == 2, "BLS HTML schedule parser failed")
     _assert(events[0][0] == dt.date(2026, 9, 11) or events[1][0] == dt.date(2026, 9, 11), "CPI date missing")
 
 
@@ -350,7 +354,7 @@ def test_gdelt_cache_is_explicitly_limited_to_24h():
 
     _assert("SEKUNDAERE DATENHINWEISE" in macro, "GDELT secondary output label was not renamed")
     _assert("SEKUNDAERE_DATENHINWEISE=" in macro, "GDELT secondary log label was not renamed")
-    _assert("GDELT_DOC_MAX_WORKERS = 2" in macro, "GDELT cluster request worker cap must be 2")
+    _assert("GDELT_DOC_MAX_WORKERS = 1" in macro, "GDELT cluster request worker cap must be 1")
     _assert("ThreadPoolExecutor(max_workers=GDELT_DOC_MAX_WORKERS)" in macro, "GDELT worker cap is not applied to cluster requests")
 
 
