@@ -32,6 +32,7 @@ import logging
 import re
 import sys
 import time
+import random
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -146,12 +147,19 @@ def age_days(timestamp: str | None) -> float | None:
     return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
 
 
-def http_get(url: str, timeout: int = 45, retries: int = 2) -> bytes:
+def http_get(url: str, timeout: int = 60, retries: int = 5) -> bytes:
+    """Robuster öffentlicher HTTP-Abruf mit besonderer Behandlung von 429.
+
+    OECD SDMX kann bei zu vielen Einzelabfragen temporär HTTP 429 liefern.
+    Wir reagieren darauf mit Retry-After bzw. exponentiellem Backoff.
+    Die eigentliche Entlastung erfolgt zusätzlich dadurch, dass OECD-Abfragen
+    unten gebündelt werden und nicht mehr pro Land/Branche einzeln erfolgen.
+    """
     last_error: Exception | None = None
     headers = {
-        "User-Agent": "Neuber-Macro-Structural-Trends/1.0",
-        "Accept": "application/vnd.sdmx.data+csv;version=2.0.0,"
-                  "text/csv,application/csv,application/json;q=0.9,*/*;q=0.5",
+        "User-Agent": "Neuber-Macro-Structural-Trends/1.1",
+        "Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,"
+                  "application/csv,application/json;q=0.9,*/*;q=0.5",
     }
 
     for attempt in range(retries + 1):
@@ -159,10 +167,34 @@ def http_get(url: str, timeout: int = 45, retries: int = 2) -> bytes:
             request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code != 429 or attempt >= retries:
+                raise RuntimeError(
+                    f"HTTP-Abruf fehlgeschlagen: {url} | HTTP {exc.code}: {exc.reason}"
+                ) from exc
+
+            retry_after = exc.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else 0.0
+            except ValueError:
+                delay = 0.0
+
+            # Wenn der Server keine Wartezeit vorgibt: konservativer Backoff.
+            # Kleiner Jitter verhindert identische Retry-Zeitpunkte.
+            if delay <= 0:
+                delay = min(60.0, 5.0 * (2 ** attempt))
+            delay += random.uniform(0.25, 1.25)
+            LOG.warning(
+                "HTTP 429 von OECD/Quelle; Retry %d/%d in %.1fs: %s",
+                attempt + 1, retries, delay, url
+            )
+            time.sleep(delay)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt < retries:
-                time.sleep(2 ** attempt)
+                delay = min(30.0, 2.0 * (2 ** attempt)) + random.uniform(0.1, 0.8)
+                time.sleep(delay)
 
     raise RuntimeError(f"HTTP-Abruf fehlgeschlagen: {url} | {last_error}")
 
@@ -301,12 +333,11 @@ def cache_field_summary(field: dict[str, Any]) -> dict[str, Any]:
 # OECD STAN
 # ---------------------------------------------------------------------------
 
-def oecd_stan_url(reference_area: str, activity: str, measure: str,
-                  start_period: int | None = None) -> str:
-    # Current-price / national-currency form used by the verified STAN
-    # Data Explorer examples. We retain unit/price-base metadata returned by
-    # the API. No cross-country conversion is performed here.
-    key = f"A.{reference_area}.{activity}.{measure}.V.XDC"
+def oecd_stan_url(measure: str, start_period: int | None = None) -> str:
+    """Bündelte STAN-Abfrage für alle benötigten Länder und Aktivitäten."""
+    countries = "+".join(OECD_STAN_REFERENCE_AREAS)
+    activities = "+".join(OECD_STAN_ACTIVITIES)
+    key = f"A.{countries}.{activities}.{measure}.V.XDC"
     url = OECD_STAN_BASE + key + "?dimensionAtObservation=AllDimensions"
     if start_period:
         url += f"&startPeriod={start_period}"
@@ -328,10 +359,7 @@ def first_present(row: dict[str, Any], *names: str) -> Any:
 
 
 def parse_sdmx_csv_rows(raw: bytes) -> list[dict[str, Any]]:
-    """
-    Toleranter Parser für SDMX-CSV. Die OECD kann je nach Accept-Header
-    unterschiedliche Spaltennamen liefern.
-    """
+    """Toleranter Parser für SDMX-CSV mit erhaltenen Dimensionsmetadaten."""
     rows = parse_csv_payload(raw)
     output: list[dict[str, Any]] = []
 
@@ -350,6 +378,11 @@ def parse_sdmx_csv_rows(raw: bytes) -> list[dict[str, Any]]:
             "period": str(period),
             "value": numeric,
             "unit": first_present(row, "UNIT", "UNIT_MEASURE"),
+            "reference_area": first_present(row, "REF_AREA", "REFERENCE_AREA"),
+            "activity": first_present(row, "ACTIVITY", "ACTIVITY_CODE"),
+            "measure": first_present(row, "MEASURE", "MEASURE_CODE"),
+            "frequency": first_present(row, "FREQ", "FREQUENCY"),
+            "transformation": first_present(row, "TRANSFORMATION"),
             "observation_status": first_present(
                 row, "OBS_STATUS", "OBSERVATION_STATUS", "OBS_STATUS_CODE"
             ),
@@ -361,11 +394,37 @@ def parse_sdmx_csv_rows(raw: bytes) -> list[dict[str, Any]]:
     return output
 
 
-def fetch_stan_measure(reference_area: str, activity: str, measure: str,
-                       start_period: int = 2000) -> list[dict[str, Any]]:
-    url = oecd_stan_url(reference_area, activity, measure, start_period)
+def fetch_stan_measure(measure: str, start_period: int = 2000) -> list[dict[str, Any]]:
+    url = oecd_stan_url(measure, start_period)
     raw = http_get(url)
     return parse_sdmx_csv_rows(raw)
+
+
+def _group_stan_rows(rows: list[dict[str, Any]], measure: str) -> dict[str, Any]:
+    observations: dict[str, Any] = {}
+    for row in rows:
+        country = str(row.get("reference_area") or "").strip()
+        activity = str(row.get("activity") or "").strip()
+        if not country or not activity:
+            continue
+        if country not in OECD_STAN_REFERENCE_AREAS or activity not in OECD_STAN_ACTIVITIES:
+            continue
+        key = f"{country}|{activity}"
+        block = observations.setdefault(
+            key,
+            {
+                "reference_area": country,
+                "activity": activity,
+                "activity_name": OECD_STAN_ACTIVITIES[activity],
+                "measure": measure,
+                "observations": [],
+            },
+        )
+        block["observations"].append({
+            k: v for k, v in row.items()
+            if k not in {"reference_area", "activity", "measure"}
+        })
+    return observations
 
 
 def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
@@ -376,23 +435,10 @@ def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
 
     for field_name, measure in mapping.items():
         field = cache["OECD_STAN"][field_name]
-        observations: dict[str, Any] = {}
         retrieved = now_iso()
-
         try:
-            for country in OECD_STAN_REFERENCE_AREAS:
-                for activity, activity_name in OECD_STAN_ACTIVITIES.items():
-                    rows = fetch_stan_measure(
-                        country, activity, measure, start_period=start_period
-                    )
-                    key = f"{country}|{activity}"
-                    observations[key] = {
-                        "reference_area": country,
-                        "activity": activity,
-                        "activity_name": activity_name,
-                        "measure": measure,
-                        "observations": rows,
-                    }
+            rows = fetch_stan_measure(measure, start_period=start_period)
+            observations = _group_stan_rows(rows, measure)
 
             if observations:
                 field.update({
@@ -404,6 +450,8 @@ def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
                     "data": observations,
                     "source_notes": [],
                 })
+            else:
+                raise RuntimeError("OECD STAN lieferte keine verwertbaren Beobachtungen.")
 
         except Exception as exc:
             LOG.warning("OECD STAN %s: %s", field_name, exc)
@@ -411,14 +459,14 @@ def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
                 field, "OECD_STAN"
             )
 
-    # Working hours: do NOT invent a dimension key.
     labour = cache["OECD_STAN"]["labour_input"]
-    labour.setdefault("source_notes", []).append(
+    note = (
         "Working-hours SDMX-Abfrage muss anhand der aktuellen OECD-STAN-"
         "Strukturabfrage parametrisiert werden; kein geratener Key."
     )
+    if note not in labour.setdefault("source_notes", []):
+        labour["source_notes"].append(note)
     labour["status"] = "UNAVAILABLE" if not labour.get("data") else labour["status"]
-
 
 def _latest_period(container: dict[str, Any]) -> str | None:
     periods: list[str] = []
@@ -435,55 +483,62 @@ def _latest_period(container: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 
 def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) -> None:
-    """
-    Produktivitäts-Level und offizielle OECD-Wachstumsreihe.
-    Die konkrete Dimensionierung der Growth-Reihe wird nicht aus einer
-    Eigenberechnung abgeleitet.
-    """
-    # Verified example family:
-    # .A.GVAHRS._T.XDC_H..N..
-    for country in OECD_PRODUCTIVITY_REFERENCE_AREAS:
-        key = f"{country}.A.{OECD_PRODUCTIVITY_MEASURE}._T.XDC_H..N.."
-        url = (
-            OECD_PRODUCTIVITY_BASE + key
-            + "?dimensionAtObservation=AllDimensions"
-            + f"&startPeriod={start_period}"
-        )
-
-        try:
-            raw = http_get(url)
-            rows = parse_sdmx_csv_rows(raw)
-
-            if rows:
-                cache["OECD_PRODUCTIVITY"]["labour_productivity_level"]["data"][country] = {
-                    "reference_area": country,
-                    "measure": OECD_PRODUCTIVITY_MEASURE,
-                    "observations": rows,
-                }
-        except Exception as exc:
-            LOG.warning("OECD Productivity %s: %s", country, exc)
+    """Produktivitäts-Level als eine gebündelte OECD-Abfrage."""
+    countries = "+".join(OECD_PRODUCTIVITY_REFERENCE_AREAS)
+    key = f"{countries}.A.{OECD_PRODUCTIVITY_MEASURE}._T.XDC_H..N.."
+    url = (
+        OECD_PRODUCTIVITY_BASE + key
+        + "?dimensionAtObservation=AllDimensions"
+        + f"&startPeriod={start_period}"
+    )
 
     level = cache["OECD_PRODUCTIVITY"]["labour_productivity_level"]
-    if level.get("data"):
-        ts = now_iso()
-        level.update({
-            "version": "2.0",
-            "status": "REAL",
-            "retrieved_at": ts,
-            "last_successful_update": ts,
-            "data_period": _latest_period(level["data"]),
-        })
-    else:
+    try:
+        raw = http_get(url)
+        rows = parse_sdmx_csv_rows(raw)
+        grouped: dict[str, Any] = {}
+        for row in rows:
+            country = str(row.get("reference_area") or "").strip()
+            if country not in OECD_PRODUCTIVITY_REFERENCE_AREAS:
+                continue
+            grouped.setdefault(
+                country,
+                {
+                    "reference_area": country,
+                    "measure": OECD_PRODUCTIVITY_MEASURE,
+                    "observations": [],
+                },
+            )["observations"].append({
+                k: v for k, v in row.items() if k != "reference_area"
+            })
+
+        if grouped:
+            ts = now_iso()
+            level.update({
+                "version": "2.0",
+                "status": "REAL",
+                "retrieved_at": ts,
+                "last_successful_update": ts,
+                "data_period": _latest_period(grouped),
+                "data": grouped,
+                "source_notes": [],
+            })
+        else:
+            raise RuntimeError("OECD Productivity lieferte keine verwertbaren Beobachtungen.")
+    except Exception as exc:
+        LOG.warning("OECD Productivity: %s", exc)
         cache["OECD_PRODUCTIVITY"]["labour_productivity_level"] = (
             set_real_cached_if_valid(level, "OECD_PRODUCTIVITY")
         )
 
     growth = cache["OECD_PRODUCTIVITY"]["labour_productivity_growth"]
-    growth.setdefault("source_notes", []).append(
+    note = (
         "Growth wird als offizielle OECD-Reihe geführt; die konkrete "
         "Growth-Dimension wird vor Produktiveinsatz anhand der aktuellen "
         "PDB-SDMX-Struktur festgelegt. Keine Python-Eigenberechnung."
     )
+    if note not in growth.setdefault("source_notes", []):
+        growth["source_notes"].append(note)
     if not growth.get("data"):
         growth["status"] = "UNAVAILABLE"
 
