@@ -33,6 +33,9 @@ import re
 import sys
 import time
 import random
+import os
+import tempfile
+from urllib.parse import quote
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -43,7 +46,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_FILE = SCRIPT_DIR / "struktur_trends_cache.json"
 
-CACHE_VERSION = "1.1"
+CACHE_VERSION = "1.2"
 
 # ---------------------------------------------------------------------------
 # Datenquellen / feste Konfiguration
@@ -57,6 +60,11 @@ OECD_STAN_BASE = (
 OECD_PRODUCTIVITY_BASE = (
     "https://sdmx.oecd.org/public/rest/data/"
     "OECD.SDD.TPS,DSD_PDB@DF_PDB,2.0/"
+)
+
+OECD_PRODUCTIVITY_GROWTH_BASE = (
+    "https://sdmx.oecd.org/archive/rest/data/"
+    "OECD.SDD.TPS,DSD_PDB@DF_PDB_GR,1.0/"
 )
 
 OECD_STAN_REFERENCE_AREAS = [
@@ -93,7 +101,19 @@ OECD_PRODUCTIVITY_MEASURE = "GVAHRS"
 
 # Stanford AI Index is an annual public-data release, not a stable daily API.
 # The exact public-data download URL can change between annual editions.
-STANFORD_PUBLIC_DATA_URL = "https://hai.stanford.edu/ai-index"
+STANFORD_PUBLIC_DATA_URL = "https://hai.stanford.edu/ai-index/2026-ai-index-report"
+STANFORD_ECONOMY_URL = "https://hai.stanford.edu/ai-index/2026-ai-index-report/economy"
+STANFORD_RD_URL = "https://hai.stanford.edu/ai-index/2026-ai-index-report/research-and-development"
+STANFORD_TAKEAWAY_URL = "https://hai.stanford.edu/news/inside-the-ai-index-12-takeaways-from-the-2026-report"
+STANFORD_PUBLIC_DATA_FOLDER = "https://drive.google.com/drive/folders/1zJTOg0iR0j5SijCwFutwWvDt143lW277"
+
+IEA_API_BASE = "https://growth-sis-cc-api-wv.iea.org/rest"
+IEA_MAPPING_URLS = {
+    "MESGEN": "https://iea.blob.core.windows.net/assets/2489b143-bc40-4b36-bbb5-2e5ac60679fd/MESGENmapping.xlsx",
+    "MESBAL": "https://iea.blob.core.windows.net/assets/bbc02b8a-b510-471a-8597-1899f302a57b/MESBALmapping.xlsx",
+}
+
+SIPRI_XLSX_URL = "https://www.sipri.org/sites/default/files/SIPRI-Milex-data-1949-2025_v1.2.xlsx"
 
 # IEA: new SDMX datasets. Exact dimension keys are intentionally supplied
 # through the official mapping files rather than guessed here.
@@ -402,6 +422,21 @@ def fetch_stan_measure(measure: str, start_period: int = 2000) -> list[dict[str,
     return parse_sdmx_csv_rows(raw)
 
 
+def fetch_stan_labour_input(start_period: int = 2000) -> list[dict[str, Any]]:
+    countries = "+".join(OECD_STAN_REFERENCE_AREAS)
+    activities = "+".join(OECD_STAN_ACTIVITIES)
+    # Official STAN explorer example uses A.FRA._T...H for Working Hours.
+    key = f"A.{countries}.{activities}...H"
+    url = OECD_STAN_BASE + key + "?dimensionAtObservation=AllDimensions"
+    if start_period:
+        url += f"&startPeriod={start_period}"
+    raw = http_get(url)
+    rows = parse_sdmx_csv_rows(raw)
+    for row in rows:
+        row["measure"] = "WORKING_HOURS"
+    return rows
+
+
 def _group_stan_rows(rows: list[dict[str, Any]], measure: str) -> dict[str, Any]:
     """Gruppiert STAN-Rohdaten und entfernt nur exakte Serien-Duplikate.
 
@@ -542,13 +577,31 @@ def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
             )
 
     labour = cache["OECD_STAN"]["labour_input"]
-    note = (
-        "Working-hours SDMX-Abfrage muss anhand der aktuellen OECD-STAN-"
-        "Strukturabfrage parametrisiert werden; kein geratener Key."
-    )
-    if note not in labour.setdefault("source_notes", []):
-        labour["source_notes"].append(note)
-    labour["status"] = "UNAVAILABLE" if not labour.get("data") else labour["status"]
+    try:
+        rows = fetch_stan_labour_input(start_period=start_period)
+        grouped = _group_stan_rows(rows, "WORKING_HOURS")
+        if grouped:
+            ts = now_iso()
+            labour.update({
+                "version": "1.0",
+                "status": "REAL",
+                "retrieved_at": ts,
+                "last_successful_update": ts,
+                "data_period": _latest_period(grouped),
+                "data": grouped,
+                "series_count": len(grouped),
+                "observation_count": _count_observations(grouped),
+                "source_notes": [
+                    "STAN labour input über die offizielle Working-Hours-Einheit H selektiert; kein gerateter Measure-Code.",
+                ],
+            })
+        else:
+            raise RuntimeError("OECD STAN lieferte keine Working-Hours-Beobachtungen.")
+    except Exception as exc:
+        LOG.warning("OECD STAN labour_input: %s", exc)
+        cache["OECD_STAN"]["labour_input"] = set_real_cached_if_valid(
+            labour, "OECD_STAN"
+        )
 
 def _latest_period(container: dict[str, Any]) -> str | None:
     periods: list[str] = []
@@ -619,96 +672,337 @@ def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) ->
         )
 
     growth = cache["OECD_PRODUCTIVITY"]["labour_productivity_growth"]
-    note = (
-        "Growth wird als offizielle OECD-Reihe geführt; die konkrete "
-        "Growth-Dimension wird vor Produktiveinsatz anhand der aktuellen "
-        "PDB-SDMX-Struktur festgelegt. Keine Python-Eigenberechnung."
-    )
-    if note not in growth.setdefault("source_notes", []):
-        growth["source_notes"].append(note)
-    if not growth.get("data"):
-        growth["status"] = "UNAVAILABLE"
+    try:
+        countries = "+".join(OECD_PRODUCTIVITY_REFERENCE_AREAS)
+        # Official OECD growth-rate database. GDP per hour worked is the
+        # published labour-productivity growth measure; Python does not
+        # calculate the growth itself.
+        key = f"{countries}.A.GDPHRS..PA..GY.."
+        url = OECD_PRODUCTIVITY_GROWTH_BASE + key
+        url += "?dimensionAtObservation=AllDimensions"
+        if start_period:
+            url += f"&startPeriod={start_period}"
+        raw = http_get(url)
+        rows = parse_sdmx_csv_rows(raw)
+        grouped = {}
+        for row in rows:
+            country = str(row.get("reference_area") or "").strip()
+            if country not in OECD_PRODUCTIVITY_REFERENCE_AREAS:
+                continue
+            grouped.setdefault(country, {
+                "reference_area": country,
+                "measure": "GDPHRS",
+                "observations": [],
+            })["observations"].append({
+                k: v for k, v in row.items() if k != "reference_area"
+            })
+        if not grouped:
+            raise RuntimeError("OECD Productivity Growth lieferte keine Beobachtungen.")
+        ts = now_iso()
+        growth.update({
+            "version": "1.0",
+            "status": "REAL",
+            "retrieved_at": ts,
+            "last_successful_update": ts,
+            "data_period": _latest_period(grouped),
+            "data": grouped,
+            "series_count": len(grouped),
+            "observation_count": _count_observations(grouped),
+            "source_notes": [
+                "Offizielle OECD Productivity Growth Rates: GDP per hour worked, Growth rate over 1 year.",
+                "Wachstum wird nicht in Python berechnet.",
+            ],
+        })
+    except Exception as exc:
+        LOG.warning("OECD Productivity Growth: %s", exc)
+        cache["OECD_PRODUCTIVITY"]["labour_productivity_growth"] = (
+            set_real_cached_if_valid(growth, "OECD_PRODUCTIVITY")
+        )
 
 
 # ---------------------------------------------------------------------------
 # Stanford AI Index
 # ---------------------------------------------------------------------------
 
+def _fetch_text(url: str) -> str:
+    return http_get(url, timeout=60).decode("utf-8", errors="replace")
+
+
+def _extract_first_number(text: str, patterns: list[str]) -> float | None:
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            raw = m.group(1).replace(",", "")
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+    return None
+
+
 def update_ai_index(cache: dict[str, Any]) -> None:
+    """Liest aktuelle, ausdrücklich veröffentlichte Stanford-AI-Index-Werte.
+
+    Es werden keine Werte im Code fest verdrahtet. Die offiziellen Stanford-
+    Seiten werden bei jedem Lauf abgefragt; fällt der Abruf aus, greift die
+    normale REAL_CACHED/UNAVAILABLE-Logik.
     """
-    Stanford AI Index:
-    jährlicher Public-Data-Bestand. Keine erfundene Download-URL und keine
-    Scraping-/Interpretationslogik. Der Public-Data-Link kann pro Jahr ändern.
-    """
-    for field_name in (
-        "ai_investment", "ai_adoption", "ai_compute"
-    ):
-        field = cache["AI_INDEX"][field_name]
-        field.setdefault("source_notes", []).append(
-            "Offizieller Stanford AI Index Public-Data-Bestand. "
-            "Jährliche Aktualisierung; konkreter Public-Data-Download wird "
-            "pro Index-Version verifiziert."
+    ts = now_iso()
+    try:
+        economy = _fetch_text(STANFORD_ECONOMY_URL)
+        rd = _fetch_text(STANFORD_RD_URL)
+        takeaway = _fetch_text(STANFORD_TAKEAWAY_URL)
+
+        investment = _extract_first_number(
+            takeaway + "\n" + economy,
+            [r"global corporate AI investments? hit \$([0-9.]+)\s*billion",
+             r"global corporate AI investment[^$]{0,300}\$([0-9.]+)\s*billion",
+             r"AI investment[^$]{0,300}\$([0-9.]+)\s*billion"],
+        )
+        adoption = _extract_first_number(
+            economy,
+            [r"organizational adoption.*?([0-9.]+)%",
+             r"AI adoption.*?([0-9.]+)%"],
+        )
+        compute = _extract_first_number(
+            rd,
+            [r"reaching ([0-9.]+) million H100-equivalents",
+             r"([0-9.]+) million H100-equivalents"],
         )
 
-        if field.get("data"):
-            field["status"] = "REAL_CACHED"
-        else:
-            field["status"] = "UNAVAILABLE"
+        results = {
+            "ai_investment": (investment, "USD billion", "2025"),
+            "ai_adoption": (adoption, "percent of surveyed organizations", "2025"),
+            "ai_compute": (compute, "million H100-equivalents", "2025"),
+        }
+        for field_name, (value, unit, period) in results.items():
+            field = cache["AI_INDEX"][field_name]
+            if value is None:
+                raise RuntimeError(f"Stanford-Wert nicht eindeutig extrahierbar: {field_name}")
+            field.update({
+                "version": "2026",
+                "status": "REAL",
+                "unit": unit,
+                "data_period": period,
+                "retrieved_at": ts,
+                "last_successful_update": ts,
+                "series_count": 1,
+                "observation_count": 1,
+                "data": {period: {"value": value, "source": "Stanford HAI AI Index 2026"}},
+                "source_notes": [
+                    "Offizielle Stanford HAI AI Index 2026-Webquelle; Wert wird zur Laufzeit extrahiert.",
+                    "Kein Python-Seitentrend oder Interpretationssignal.",
+                ],
+            })
+    except Exception as exc:
+        LOG.warning("Stanford AI Index: %s", exc)
+        for field_name in ("ai_investment", "ai_adoption", "ai_compute"):
+            field = cache["AI_INDEX"][field_name]
+            cache["AI_INDEX"][field_name] = set_real_cached_if_valid(field, "AI_INDEX")
 
 
 # ---------------------------------------------------------------------------
 # IEA MESGEN / MESBAL
 # ---------------------------------------------------------------------------
 
+def _try_iea_data(flow: str) -> bytes:
+    # The IEA API exposes the standard SDMX data endpoint. Try the public
+    # flow reference forms without inventing a dimension-specific key.
+    candidates = [
+        f"{IEA_API_BASE}/data/{flow}/../IEA",
+        f"{IEA_API_BASE}/v1/data/{flow}/../IEA",
+        f"{IEA_API_BASE}/data/IEA,{flow},1.0/../IEA",
+    ]
+    last = None
+    for url in candidates:
+        try:
+            return http_get(url, timeout=90, retries=3)
+        except Exception as exc:
+            last = exc
+    raise RuntimeError(f"IEA {flow} SDMX-Abruf nicht verfügbar: {last}")
+
+
 def update_iea(cache: dict[str, Any]) -> None:
-    """
-    Absichtlich konservativ:
-    Die IEA hat auf die neue SDMX-Struktur umgestellt und stellt offizielle
-    MESGEN/MESBAL-Mapping-Dateien bereit. Die konkreten Keys dürfen nicht
-    geraten werden. Bis die Mapping-Datei lokal/programmatisch eingelesen
-    werden kann, bleiben die Felder UNAVAILABLE bzw. bestehender Cache wird
-    nach Alter geprüft.
-    """
     for field_name, dataset in IEA_DATASETS.items():
         field = cache["IEA_ELECTRICITY"][field_name]
-        field.setdefault("source_notes", []).append(
-            f"{dataset}: offizielle IEA-SDMX-Mapping-Datei erforderlich; "
-            "kein frei erfundener SDMX-Key."
-        )
-        if field.get("data"):
+        try:
+            raw = _try_iea_data(dataset)
+            rows = parse_sdmx_csv_rows(raw)
+            if not rows:
+                raise RuntimeError("keine Beobachtungen")
+            # Keep the full source series; no country/technology interpretation.
+            grouped = {}
+            for row in rows:
+                country = str(row.get("reference_area") or "").strip() or "UNKNOWN"
+                grouped.setdefault(country, {
+                    "reference_area": country,
+                    "dataset": dataset,
+                    "observations": [],
+                })["observations"].append({
+                    k: v for k, v in row.items() if k != "reference_area"
+                })
+            ts = now_iso()
+            field.update({
+                "version": "2026",
+                "status": "REAL",
+                "retrieved_at": ts,
+                "last_successful_update": ts,
+                "data_period": _latest_period(grouped),
+                "data": grouped,
+                "series_count": len(grouped),
+                "observation_count": _count_observations(grouped),
+                "source_notes": [
+                    f"Offizielle IEA Monthly Electricity Statistics, {dataset}, SDMX.",
+                    "IEA-Daten können quellenseitige Schätz-/Imputationsflags enthalten; diese werden erhalten.",
+                ],
+            })
+        except Exception as exc:
+            LOG.warning("IEA %s: %s", dataset, exc)
             cache["IEA_ELECTRICITY"][field_name] = set_real_cached_if_valid(
                 field, "IEA_ELECTRICITY"
             )
-        else:
-            field["status"] = "UNAVAILABLE"
 
 
 # ---------------------------------------------------------------------------
 # SIPRI
 # ---------------------------------------------------------------------------
 
+def _sipri_sheet_rows(path: str) -> list[tuple[str, list[Any]]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("openpyxl fehlt; GitHub-Workflow muss es installieren.") from exc
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    rows = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            rows.append((ws.title, list(row)))
+    wb.close()
+    return rows
+
+
+def _download_temp(url: str, suffix: str) -> str:
+    raw = http_get(url, timeout=120, retries=4)
+    fd, path = tempfile.mkstemp(prefix="struktur_trends_", suffix=suffix)
+    os.close(fd)
+    Path(path).write_bytes(raw)
+    return path
+
+
+def _find_sipri_tables(path: str) -> dict[str, dict[str, Any]]:
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True, data_only=True)
+    targets = {
+        "military_expenditure_real": ["constant", "2024", "US$"],
+        "military_burden_gdp": ["share", "GDP"],
+        "military_share_government": ["share", "government"],
+    }
+    found = {}
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        for i, row in enumerate(rows):
+            texts = " | ".join(str(x or "") for x in row).lower()
+            if "country" not in texts and "countries" not in texts:
+                continue
+            header = list(row)
+            for field, needles in targets.items():
+                if field in found:
+                    continue
+                context = ws.title.lower() + " " + " ".join(
+                    " | ".join(str(x or "") for x in r).lower()
+                    for r in rows[max(0, i-3):i+3]
+                )
+                if all(n.lower() in context for n in needles):
+                    found[field] = {"sheet": ws.title, "header_row": i, "header": header, "rows": rows[i+1:]}
+    wb.close()
+    return found
+
+
+def _parse_sipri_table(table: dict[str, Any]) -> dict[str, Any]:
+    header = table["header"]
+    country_idx = next((i for i, x in enumerate(header) if str(x or "").strip().lower() in {"country", "countries"}), None)
+    if country_idx is None:
+        raise RuntimeError("SIPRI Country-Spalte nicht gefunden")
+    observations = {}
+    for col_idx, label in enumerate(header):
+        if col_idx == country_idx or label in (None, ""):
+            continue
+        label_text = str(label).strip()
+        m = re.search(r"(19\d{2}|20\d{2})", label_text)
+        if not m:
+            continue
+        period = m.group(1)
+        for row in table["rows"]:
+            if country_idx >= len(row) or col_idx >= len(row):
+                continue
+            country = str(row[country_idx] or "").strip()
+            value = row[col_idx]
+            if not country or value in (None, "", "..", "..."):
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            observations.setdefault(country, []).append({"period": period, "value": numeric})
+    return observations
+
+
 def update_sipri(cache: dict[str, Any]) -> None:
-    """
-    SIPRI veröffentlicht die Military Expenditure Database als offiziellen
-    Download. Der konkrete XLSX-Download wird nicht hier hart erfunden;
-    die offizielle Datenbankseite ist die Referenz.
-    """
-    for field_name in (
-        "military_expenditure_real",
-        "military_burden_gdp",
-        "military_share_government",
-    ):
-        field = cache["SIPRI_DEFENCE"][field_name]
-        field.setdefault("source_notes", []).append(
-            "Quelle: offizielle SIPRI Military Expenditure Database; "
-            "jährliche XLSX-Datenbasis."
-        )
-        if field.get("data"):
+    path = None
+    try:
+        path = _download_temp(SIPRI_XLSX_URL, ".xlsx")
+        tables = _find_sipri_tables(path)
+        mapping = {
+            "military_expenditure_real": "military_expenditure_real",
+            "military_burden_gdp": "military_burden_gdp",
+            "military_share_government": "military_share_government",
+        }
+        ts = now_iso()
+        for field_name, key in mapping.items():
+            table = tables.get(key)
+            if not table:
+                raise RuntimeError(f"SIPRI-Tabelle nicht eindeutig gefunden: {field_name}")
+            grouped = _parse_sipri_table(table)
+            field = cache["SIPRI_DEFENCE"][field_name]
+            field.update({
+                "version": "2025-revised-2026-04-27",
+                "status": "REAL",
+                "retrieved_at": ts,
+                "last_successful_update": ts,
+                "data_period": max(
+                    (obs["period"] for rows in grouped.values() for obs in rows),
+                    default=None,
+                ),
+                "data": {
+                    country: {"reference_area": country, "observations": obs}
+                    for country, obs in grouped.items()
+                },
+                "series_count": len(grouped),
+                "observation_count": sum(len(v) for v in grouped.values()),
+                "source_notes": [
+                    "Offizielle SIPRI Military Expenditure Database, revidierte Fassung 27.04.2026.",
+                    "Calendar-year basis for constant USD/GDP; government share follows financial year.",
+                    "Quelleneigene Schätzungen/Flags werden nicht als Python-Schätzungen erzeugt.",
+                ],
+            })
+    except Exception as exc:
+        LOG.warning("SIPRI: %s", exc)
+        for field_name in (
+            "military_expenditure_real",
+            "military_burden_gdp",
+            "military_share_government",
+        ):
+            field = cache["SIPRI_DEFENCE"][field_name]
             cache["SIPRI_DEFENCE"][field_name] = set_real_cached_if_valid(
                 field, "SIPRI_DEFENCE"
             )
-        else:
-            field["status"] = "UNAVAILABLE"
+    finally:
+        if path:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -865,4 +1159,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
