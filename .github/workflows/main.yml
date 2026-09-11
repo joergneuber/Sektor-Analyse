@@ -40,6 +40,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch 
 
+      # Gemeinsamer Markt-Datenstand fuer alle Python-Prozesse dieses Jobs.
+      # Der Cache bleibt bewusst job-lokal: kein alter Run darf als aktueller
+      # Primärstand in einen neuen Lauf hineinwirken.
+      - name: Gemeinsamen Marktdaten-Cache initialisieren
+        run: rm -f market_cache.json market_cache.json.lock
+
       # ============================================================
       # EXTERNER DATENQUELLEN-TEST – GDELT + LME
       # Diagnose/Freigabeprüfung im echten GitHub Runner.
@@ -172,6 +178,10 @@ jobs:
         run: python makro_szenario.py
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          # Der Makro-Prozess darf den von analyse.py erzeugten Shared-Stand
+          # auch nach laengeren Vorstufen noch verwenden. Der Cache wurde zu
+          # Job-Beginn geleert und enthaelt daher nur diesen aktuellen Lauf.
+          NMM_MARKET_CACHE_TTL_MINUTES: "120"
 
       - name: Persistenten Makro-Cache explizit speichern
         if: always()
@@ -179,6 +189,14 @@ jobs:
         with:
           path: .macro_cache
           key: nmm-macro-cache-v6-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Gemeinsamen Marktdaten-Cache diagnostizieren
+        if: always()
+        run: |
+          echo "SHARED_MARKET_CACHE_FILE_EXISTS=$(test -f market_cache.json && echo YES || echo NO)"
+          if [ -f market_cache.json ]; then
+            echo "SHARED_MARKET_CACHE_SIZE=$(wc -c < market_cache.json)"
+          fi
 
       - name: Cache-Diagnose
         if: always()
