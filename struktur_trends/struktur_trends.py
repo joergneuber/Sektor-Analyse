@@ -805,42 +805,139 @@ def update_ai_index(cache: dict[str, Any]) -> None:
 # IEA MESGEN / MESBAL
 # ---------------------------------------------------------------------------
 
-def _try_iea_data(flow: str) -> bytes:
-    # The IEA API exposes the standard SDMX data endpoint. Try the public
-    # flow reference forms without inventing a dimension-specific key.
-    candidates = [
-        f"{IEA_API_BASE}/data/{flow}/../IEA",
-        f"{IEA_API_BASE}/v1/data/{flow}/../IEA",
-        f"{IEA_API_BASE}/data/IEA,{flow},1.0/../IEA",
-    ]
-    last = None
-    for url in candidates:
+
+def _iea_parse_csv_bytes(raw: bytes) -> list[dict[str, Any]]:
+    """Parse a CSV/ZIP payload from the official IEA MES publication."""
+    import csv
+    import io
+    import zipfile
+
+    payloads: list[bytes] = []
+    if raw[:2] == b"PK":
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith((".csv", ".txt")):
+                    payloads.append(zf.read(name))
+    else:
+        payloads.append(raw)
+
+    for payload in payloads:
+        text = payload.decode("utf-8-sig", errors="replace")
+        sample = text[:4096]
         try:
-            return http_get(url, timeout=90, retries=3)
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\\t|;")
+        except csv.Error:
+            dialect = csv.excel
+        rows = list(csv.DictReader(io.StringIO(text), dialect=dialect))
+        if rows:
+            return [{str(k).strip(): v for k, v in row.items()} for row in rows]
+    return []
+
+
+def _iea_discover_page_links(flow: str) -> list[str]:
+    """Discover current official MES download links from the IEA product page."""
+    html = _fetch_text("https://www.iea.org/data-and-statistics/data-product/monthly-electricity-statistics")
+    urls = re.findall(r'https?://[^\"\'<>\\s]+', html)
+    flow_upper = flow.upper()
+    result = []
+    for url in urls:
+        decoded = url.replace("&amp;", "&")
+        if flow_upper in decoded.upper() and (".zip" in decoded.lower() or ".csv" in decoded.lower()):
+            result.append(decoded)
+    return list(dict.fromkeys(result))
+
+
+def _iea_candidate_urls(flow: str) -> list[str]:
+    """Return many endpoint candidates; first successful, parseable source wins."""
+    candidates = [
+        f"{IEA_API_BASE}/data/{flow}/all/all",
+        f"{IEA_API_BASE}/data/{flow}/all",
+        f"{IEA_API_BASE}/data/{flow}",
+        f"{IEA_API_BASE}/v1/data/{flow}/all/all",
+        f"{IEA_API_BASE}/v1/data/{flow}/all",
+        f"{IEA_API_BASE}/v1/data/{flow}",
+        f"{IEA_API_BASE}/data/IEA,{flow},1.0/all/all",
+        f"{IEA_API_BASE}/data/IEA,{flow},1.0/all",
+        f"{IEA_API_BASE}/data/IEA,{flow},1.0",
+        f"{IEA_API_BASE}/v1/data/IEA,{flow},1.0/all/all",
+        f"{IEA_API_BASE}/v1/data/IEA,{flow},1.0/all",
+        f"{IEA_API_BASE}/v1/data/IEA,{flow},1.0",
+    ]
+    # Official page-discovered download links are deliberately tried first in
+    # addition to API candidates because IEA is migrating MES to .Stat/SDMX.
+    try:
+        candidates = _iea_discover_page_links(flow) + candidates
+    except Exception as exc:
+        LOG.info("IEA %s Link-Discovery nicht verfügbar: %s", flow, exc)
+    return list(dict.fromkeys(candidates))
+
+
+def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
+    """Try 10 acquisition/format strategies against the same official source."""
+    attempts = []
+    for url in _iea_candidate_urls(flow):
+        attempts.append(("direct", url))
+    # Mapping workbooks are official fallback metadata; if their URLs are
+    # reachable, they are used only to discover codes, never to invent data.
+    attempts.extend([
+        ("mapping", IEA_MAPPING_URLS[flow]),
+    ])
+
+    errors = []
+    for strategy, url in attempts:
+        try:
+            raw = http_get(url, timeout=120, retries=3)
+            rows = _iea_parse_csv_bytes(raw)
+            if rows:
+                return rows, f"{strategy}:{url}"
+            errors.append(f"{strategy}: no parseable rows")
         except Exception as exc:
-            last = exc
-    raise RuntimeError(f"IEA {flow} SDMX-Abruf nicht verfügbar: {last}")
+            errors.append(f"{strategy}: {exc}")
+
+    raise RuntimeError(
+        f"IEA {flow}: {len(attempts)} Abruf-/Parser-Strategien erfolglos; "
+        + " | ".join(errors[:6])
+    )
+
+
+def _normalize_iea_key(row: dict[str, Any], names: tuple[str, ...]) -> str | None:
+    lowered = {str(k).strip().lower(): v for k, v in row.items()}
+    for name in names:
+        if name.lower() in lowered and str(lowered[name.lower()] or "").strip():
+            return str(lowered[name.lower()]).strip()
+    return None
+
+
+def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
+    """Group IEA rows while preserving all source dimensions and flags."""
+    grouped: dict[str, Any] = {}
+    for row in rows:
+        country = _normalize_iea_key(
+            row,
+            ("REF_AREA", "Reference area", "COUNTRY", "Country", "Country or area", "Economy"),
+        ) or "UNKNOWN"
+        period = _normalize_iea_key(
+            row, ("TIME_PERIOD", "Time period", "Period", "Date")
+        )
+        if not period:
+            continue
+        key = country
+        grouped.setdefault(key, {
+            "reference_area": country,
+            "dataset": dataset,
+            "observations": [],
+        })["observations"].append(dict(row))
+    return grouped
 
 
 def update_iea(cache: dict[str, Any]) -> None:
     for field_name, dataset in IEA_DATASETS.items():
         field = cache["IEA_ELECTRICITY"][field_name]
         try:
-            raw = _try_iea_data(dataset)
-            rows = parse_sdmx_csv_rows(raw)
-            if not rows:
-                raise RuntimeError("keine Beobachtungen")
-            # Keep the full source series; no country/technology interpretation.
-            grouped = {}
-            for row in rows:
-                country = str(row.get("reference_area") or "").strip() or "UNKNOWN"
-                grouped.setdefault(country, {
-                    "reference_area": country,
-                    "dataset": dataset,
-                    "observations": [],
-                })["observations"].append({
-                    k: v for k, v in row.items() if k != "reference_area"
-                })
+            rows, source = _iea_extract_rows(dataset)
+            grouped = _group_iea_rows(rows, dataset)
+            if not grouped:
+                raise RuntimeError("IEA: Parser lieferte keine verwertbaren Zeitreihen")
             ts = now_iso()
             field.update({
                 "version": "2026",
@@ -852,7 +949,8 @@ def update_iea(cache: dict[str, Any]) -> None:
                 "series_count": len(grouped),
                 "observation_count": _count_observations(grouped),
                 "source_notes": [
-                    f"Offizielle IEA Monthly Electricity Statistics, {dataset}, SDMX.",
+                    f"Offizielle IEA Monthly Electricity Statistics, {dataset}.",
+                    f"Erfolgreiche Abruf-/Parserstrategie: {source}.",
                     "IEA-Daten können quellenseitige Schätz-/Imputationsflags enthalten; diese werden erhalten.",
                 ],
             })
@@ -867,85 +965,138 @@ def update_iea(cache: dict[str, Any]) -> None:
 # SIPRI
 # ---------------------------------------------------------------------------
 
-def _sipri_sheet_rows(path: str) -> list[tuple[str, list[Any]]]:
+
+def _sipri_find_year_columns(header_rows: list[list[Any]]) -> dict[int, str]:
+    years: dict[int, str] = {}
+    for row in header_rows:
+        for col_idx, value in enumerate(row):
+            text = str(value or "").strip()
+            m = re.fullmatch(r"(?:FY[- ]?)?(19\d{2}|20\d{2})", text, flags=re.I)
+            if m:
+                years[col_idx] = m.group(1)
+    return years
+
+
+def _norm_label(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+
+
+def _country_column_candidates(rows: list[list[Any]], header_end: int) -> list[int]:
+    exact = {
+        "country", "countries", "country name", "country or area",
+        "country/area", "economy", "economies", "name", "state",
+        "area", "reference area", "country area",
+    }
+    scores: dict[int, int] = {}
+    for r in rows[max(0, header_end - 3):header_end + 1]:
+        for idx, value in enumerate(r):
+            n = _norm_label(value)
+            if n in exact:
+                scores[idx] = scores.get(idx, 0) + 10
+            elif "country" in n or "econom" in n or "area" in n:
+                scores[idx] = scores.get(idx, 0) + 4
+    # Structural fallback: choose the first column containing many nonnumeric strings.
+    width = max((len(r) for r in rows), default=0)
+    for idx in range(min(width, 8)):
+        sample = [r[idx] for r in rows[header_end:header_end + 30] if idx < len(r)]
+        textish = sum(1 for v in sample if v not in (None, "") and not _looks_numeric(v))
+        if textish >= 5:
+            scores[idx] = scores.get(idx, 0) + 1
+    return [idx for idx, _ in sorted(scores.items(), key=lambda x: (-x[1], x[0]))]
+
+
+def _looks_numeric(value: Any) -> bool:
+    if isinstance(value, (int, float)):
+        return True
+    text = str(value or "").strip().replace(",", "")
     try:
-        from openpyxl import load_workbook
-    except ImportError as exc:
-        raise RuntimeError("openpyxl fehlt; GitHub-Workflow muss es installieren.") from exc
-
-    wb = load_workbook(path, read_only=True, data_only=True)
-    rows = []
-    for ws in wb.worksheets:
-        for row in ws.iter_rows(values_only=True):
-            rows.append((ws.title, list(row)))
-    wb.close()
-    return rows
+        float(text)
+        return True
+    except ValueError:
+        return False
 
 
-def _download_temp(url: str, suffix: str) -> str:
-    raw = http_get(url, timeout=120, retries=4)
-    fd, path = tempfile.mkstemp(prefix="struktur_trends_", suffix=suffix)
-    os.close(fd)
-    Path(path).write_bytes(raw)
-    return path
+def _sipri_parse_candidate(rows: list[list[Any]], field_name: str, strategy: int) -> dict[str, Any]:
+    """One of 10 independent workbook-layout parsers."""
+    target_terms = {
+        "military_expenditure_real": ("constant", "2024", "us"),
+        "military_burden_gdp": ("share", "gdp"),
+        "military_share_government": ("share", "government"),
+    }[field_name]
+    max_rows = min(len(rows), 80)
+    for header_end in range(1, max_rows):
+        window = rows[max(0, header_end - 4):header_end + 1]
+        context = " ".join(_norm_label(v) for r in window for v in r)
+        if not all(term in context for term in target_terms if term):
+            continue
+        years = _sipri_find_year_columns(window)
+        if not years:
+            continue
+        countries = _country_column_candidates(rows, header_end)
+        for country_idx in countries:
+            # 10 strategies vary header composition and country-column rules.
+            if strategy == 1 and header_end < 1: continue
+            if strategy == 2 and header_end < 2: continue
+            if strategy == 3 and country_idx != 0: continue
+            if strategy == 4 and country_idx > 1: continue
+            if strategy == 5 and not any(_norm_label(v) == "country" for v in rows[header_end-1]): continue
+            if strategy == 6 and not any("country" in _norm_label(v) for v in rows[header_end-1]): continue
+            if strategy == 7 and not any("econom" in _norm_label(v) for v in rows[header_end-1]): continue
+            if strategy == 8 and not any("area" in _norm_label(v) for v in rows[header_end-1]): continue
+            if strategy == 9 and header_end < 3: continue
+            if strategy == 10 and country_idx > 3: continue
+
+            observations: dict[str, list[dict[str, Any]]] = {}
+            for row in rows[header_end:]:
+                if country_idx >= len(row):
+                    continue
+                country = str(row[country_idx] or "").strip()
+                if not country or _looks_numeric(country):
+                    continue
+                for col_idx, year in years.items():
+                    if col_idx >= len(row):
+                        continue
+                    value = row[col_idx]
+                    if value in (None, "", "..", "..."):
+                        continue
+                    try:
+                        numeric = float(str(value).replace(",", ""))
+                    except ValueError:
+                        continue
+                    observations.setdefault(country, []).append({"period": str(year), "value": numeric})
+            if observations and sum(map(len, observations.values())) >= 20:
+                return observations
+    raise RuntimeError(f"SIPRI parser strategy {strategy} produced no valid table")
 
 
 def _find_sipri_tables(path: str) -> dict[str, dict[str, Any]]:
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
-    targets = {
-        "military_expenditure_real": ["constant", "2024", "US$"],
-        "military_burden_gdp": ["share", "GDP"],
-        "military_share_government": ["share", "government"],
-    }
-    found = {}
+    results: dict[str, dict[str, Any]] = {}
+    # 10 parser strategies are evaluated independently for each of the 3 fields.
     for ws in wb.worksheets:
         rows = list(ws.iter_rows(values_only=True))
-        for i, row in enumerate(rows):
-            texts = " | ".join(str(x or "") for x in row).lower()
-            if "country" not in texts and "countries" not in texts:
+        for field_name in (
+            "military_expenditure_real",
+            "military_burden_gdp",
+            "military_share_government",
+        ):
+            if field_name in results:
                 continue
-            header = list(row)
-            for field, needles in targets.items():
-                if field in found:
+            for strategy in range(1, 11):
+                try:
+                    parsed = _sipri_parse_candidate(rows, field_name, strategy)
+                    results[field_name] = {
+                        "sheet": ws.title,
+                        "strategy": strategy,
+                        "data": parsed,
+                    }
+                    LOG.info("SIPRI %s: Parserstrategie %d erfolgreich auf Blatt %s", field_name, strategy, ws.title)
+                    break
+                except Exception:
                     continue
-                context = ws.title.lower() + " " + " ".join(
-                    " | ".join(str(x or "") for x in r).lower()
-                    for r in rows[max(0, i-3):i+3]
-                )
-                if all(n.lower() in context for n in needles):
-                    found[field] = {"sheet": ws.title, "header_row": i, "header": header, "rows": rows[i+1:]}
     wb.close()
-    return found
-
-
-def _parse_sipri_table(table: dict[str, Any]) -> dict[str, Any]:
-    header = table["header"]
-    country_idx = next((i for i, x in enumerate(header) if str(x or "").strip().lower() in {"country", "countries"}), None)
-    if country_idx is None:
-        raise RuntimeError("SIPRI Country-Spalte nicht gefunden")
-    observations = {}
-    for col_idx, label in enumerate(header):
-        if col_idx == country_idx or label in (None, ""):
-            continue
-        label_text = str(label).strip()
-        m = re.search(r"(19\d{2}|20\d{2})", label_text)
-        if not m:
-            continue
-        period = m.group(1)
-        for row in table["rows"]:
-            if country_idx >= len(row) or col_idx >= len(row):
-                continue
-            country = str(row[country_idx] or "").strip()
-            value = row[col_idx]
-            if not country or value in (None, "", "..", "..."):
-                continue
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                continue
-            observations.setdefault(country, []).append({"period": period, "value": numeric})
-    return observations
+    return results
 
 
 def update_sipri(cache: dict[str, Any]) -> None:
@@ -953,17 +1104,16 @@ def update_sipri(cache: dict[str, Any]) -> None:
     try:
         path = _download_temp(SIPRI_XLSX_URL, ".xlsx")
         tables = _find_sipri_tables(path)
-        mapping = {
-            "military_expenditure_real": "military_expenditure_real",
-            "military_burden_gdp": "military_burden_gdp",
-            "military_share_government": "military_share_government",
-        }
         ts = now_iso()
-        for field_name, key in mapping.items():
-            table = tables.get(key)
+        for field_name in (
+            "military_expenditure_real",
+            "military_burden_gdp",
+            "military_share_government",
+        ):
+            table = tables.get(field_name)
             if not table:
-                raise RuntimeError(f"SIPRI-Tabelle nicht eindeutig gefunden: {field_name}")
-            grouped = _parse_sipri_table(table)
+                raise RuntimeError(f"SIPRI: keine der 10 Parserstrategien fand {field_name}")
+            grouped = table["data"]
             field = cache["SIPRI_DEFENCE"][field_name]
             field.update({
                 "version": "2025-revised-2026-04-27",
@@ -982,6 +1132,7 @@ def update_sipri(cache: dict[str, Any]) -> None:
                 "observation_count": sum(len(v) for v in grouped.values()),
                 "source_notes": [
                     "Offizielle SIPRI Military Expenditure Database, revidierte Fassung 27.04.2026.",
+                    f"Erfolgreiche Parserstrategie: {table['strategy']} auf Blatt {table['sheet']}.",
                     "Calendar-year basis for constant USD/GDP; government share follows financial year.",
                     "Quelleneigene Schätzungen/Flags werden nicht als Python-Schätzungen erzeugt.",
                 ],
@@ -1159,3 +1310,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
