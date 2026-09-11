@@ -1,7 +1,7 @@
 {
   "cache_version": "1.0",
   "cache_created_at": null,
-  "cache_updated_at": null,
+  "cache_updated_at": "2026-09-11T10:50:03+00:00",
   "OECD_STAN": {
     "value_added": {
       "source": "OECD",
@@ -41,7 +41,8 @@
       "last_successful_update": null,
       "data": {},
       "source_notes": [
-        "Working-hours-SDMX-Dimension vor Produktiveinsatz anhand der aktuellen OECD-STAN-Strukturabfrage verifizieren."
+        "Working-hours-SDMX-Dimension vor Produktiveinsatz anhand der aktuellen OECD-STAN-Strukturabfrage verifizieren.",
+        "Working-hours SDMX-Abfrage muss anhand der aktuellen OECD-STAN-Strukturabfrage parametrisiert werden; kein geratener Key."
       ]
     }
   },
@@ -51,12 +52,865 @@
       "dataset": "DSD_PDB@DF_PDB",
       "version": "2.0",
       "frequency": "annual",
-      "status": "UNAVAILABLE",
+      "status": "REAL",
       "unit": null,
-      "data_period": null,
-      "retrieved_at": null,
-      "last_successful_update": null,
-      "data": {},
+      "data_period": "2025",
+      "retrieved_at": "2026-09-11T10:50:03+00:00",
+      "last_successful_update": "2026-09-11T10:50:03+00:00",
+      "data": {
+        "ITA": {
+          "reference_area": "ITA",
+          "measure": "GVAHRS",
+          "observations": [
+            {
+              "period": "2002",
+              "value": 37.02079473239689,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2003",
+              "value": 36.78262304060389,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 38.126010047861634,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2005",
+              "value": 37.37997689483642,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2022",
+              "value": 39.59554839512766,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2011",
+              "value": 37.54904503309148,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2003",
+              "value": 36.78262304060389,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 37.856977261765856,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2007",
+              "value": 37.35000137160719,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2008",
+              "value": 37.184802564541094,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2009",
+              "value": 36.40058574289398,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2006",
+              "value": 37.33602972832326,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2017",
+              "value": 38.04925359726476,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2018",
+              "value": 38.05064550308286,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2019",
+              "value": 38.304558973064125,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2013",
+              "value": 37.81995418344011,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2014",
+              "value": 37.83402699914467,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2015",
+              "value": 37.88247155225066,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2016",
+              "value": 37.76797017353779,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2000",
+              "value": 36.99694969643896,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2010",
+              "value": 37.25836104708135,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2011",
+              "value": 37.54904503309148,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 38.126010047861634,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 37.856977261765856,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2000",
+              "value": 36.99694969643896,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2001",
+              "value": 37.19478337781608,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2002",
+              "value": 37.02079473239689,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2012",
+              "value": 37.40638785084606,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2013",
+              "value": 37.81995418344011,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2014",
+              "value": 37.83402699914467,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2015",
+              "value": 37.88247155225066,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2016",
+              "value": 37.76797017353779,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2017",
+              "value": 38.04925359726476,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2018",
+              "value": 38.05064550308286,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2019",
+              "value": 38.304558973064125,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2020",
+              "value": 39.80534849640509,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2021",
+              "value": 39.34494437298839,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2010",
+              "value": 37.25836104708135,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2023",
+              "value": 38.75368280338988,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2012",
+              "value": 37.40638785084606,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2004",
+              "value": 37.20082328522335,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2004",
+              "value": 37.20082328522335,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2005",
+              "value": 37.37997689483642,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2006",
+              "value": 37.33602972832326,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2007",
+              "value": 37.35000137160719,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2008",
+              "value": 37.184802564541094,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2008",
+              "value": 33.12957930778588,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2009",
+              "value": 33.076823552318935,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2000",
+              "value": 26.760682209609143,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2001",
+              "value": 27.8789245095056,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2002",
+              "value": 28.634269196209274,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 43.238788508543145,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 43.75673873430014,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2010",
+              "value": 33.80827377102065,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2011",
+              "value": 34.519605266770014,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2012",
+              "value": 34.79799191016007,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2013",
+              "value": 35.480754065155686,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2014",
+              "value": 35.719991892674095,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2015",
+              "value": 36.0676124302083,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2016",
+              "value": 36.330100733209726,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2017",
+              "value": 36.805852191303806,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2018",
+              "value": 37.160890140485215,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2019",
+              "value": 37.65997280111433,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2020",
+              "value": 39.80534849640509,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2021",
+              "value": 39.67183802256296,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2022",
+              "value": 41.50695807116099,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2023",
+              "value": 43.19804416538716,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2003",
+              "value": 29.46229468297718,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2004",
+              "value": 30.436286684561317,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2005",
+              "value": 31.167170890628267,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2006",
+              "value": 31.58070829902705,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2001",
+              "value": 37.19478337781608,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2009",
+              "value": 36.40058574289398,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2007",
+              "value": 32.41534897590008,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2021",
+              "value": 39.34494437298839,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2022",
+              "value": 39.59554839512766,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2023",
+              "value": 38.75368280338988,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2020",
+              "value": 39.80534849640509,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            }
+          ]
+        },
+        "KOR": {
+          "reference_area": "KOR",
+          "measure": "GVAHRS",
+          "observations": [
+            {
+              "period": "2013",
+              "value": 29975.71535429271,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2018",
+              "value": 34934.48469563549,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2014",
+              "value": 30632.661853685102,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2011",
+              "value": 28698.807326469054,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 44674.50971950953,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2016",
+              "value": 31951.061763163267,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2018",
+              "value": 34934.48469563549,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2019",
+              "value": 35864.231833865335,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2020",
+              "value": 36953.76731963357,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2022",
+              "value": 38331.873973295915,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2023",
+              "value": 39238.0307126358,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2015",
+              "value": 31063.591501076524,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2016",
+              "value": 31951.061763163267,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2017",
+              "value": 33488.86768515255,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2021",
+              "value": 38060.76509280995,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2012",
+              "value": 29171.09096799683,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2019",
+              "value": 35864.231833865335,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2020",
+              "value": 36953.76731963357,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2022",
+              "value": 38331.873973295915,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2023",
+              "value": 39238.0307126358,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 39972.93975170757,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2016",
+              "value": 30943.69375845208,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2015",
+              "value": 29504.775772569195,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2013",
+              "value": 27250.940974946036,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2014",
+              "value": 28181.269872358604,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2017",
+              "value": 33054.35471084213,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2021",
+              "value": 39229.30739308719,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2012",
+              "value": 26182.93989407087,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2011",
+              "value": 25416.36156555991,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2018",
+              "value": 34638.31629178271,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2019",
+              "value": 35338.23334530402,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2020",
+              "value": 36953.76731963357,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2022",
+              "value": 40181.82630884284,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2023",
+              "value": 42160.697412680056,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 39972.93975170757,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2014",
+              "value": 30632.661853685102,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2012",
+              "value": 29171.09096799683,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2013",
+              "value": 29975.71535429271,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2011",
+              "value": 28698.807326469054,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2017",
+              "value": 33488.86768515255,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2021",
+              "value": 38060.76509280995,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            },
+            {
+              "period": "2015",
+              "value": 31063.591501076524,
+              "unit": "XDC_H",
+              "observation_status": "A",
+              "source_flag": null
+            }
+          ]
+        }
+      },
       "source_notes": []
     },
     "labour_productivity_growth": {
@@ -71,7 +925,8 @@
       "last_successful_update": null,
       "data": {},
       "source_notes": [
-        "Offizielle OECD-Growth-Reihe verwenden; keine Python-Eigenberechnung."
+        "Offizielle OECD-Growth-Reihe verwenden; keine Python-Eigenberechnung.",
+        "Growth wird als offizielle OECD-Reihe geführt; die konkrete Growth-Dimension wird vor Produktiveinsatz anhand der aktuellen PDB-SDMX-Struktur festgelegt. Keine Python-Eigenberechnung."
       ]
     }
   },
@@ -87,7 +942,9 @@
       "retrieved_at": null,
       "last_successful_update": null,
       "data": {},
-      "source_notes": []
+      "source_notes": [
+        "Offizieller Stanford AI Index Public-Data-Bestand. Jährliche Aktualisierung; konkreter Public-Data-Download wird pro Index-Version verifiziert."
+      ]
     },
     "ai_adoption": {
       "source": "Stanford AI Index",
@@ -100,7 +957,9 @@
       "retrieved_at": null,
       "last_successful_update": null,
       "data": {},
-      "source_notes": []
+      "source_notes": [
+        "Offizieller Stanford AI Index Public-Data-Bestand. Jährliche Aktualisierung; konkreter Public-Data-Download wird pro Index-Version verifiziert."
+      ]
     },
     "ai_compute": {
       "source": "Stanford AI Index",
@@ -113,7 +972,9 @@
       "retrieved_at": null,
       "last_successful_update": null,
       "data": {},
-      "source_notes": []
+      "source_notes": [
+        "Offizieller Stanford AI Index Public-Data-Bestand. Jährliche Aktualisierung; konkreter Public-Data-Download wird pro Index-Version verifiziert."
+      ]
     }
   },
   "IEA_ELECTRICITY": {
@@ -129,7 +990,8 @@
       "last_successful_update": null,
       "data": {},
       "source_notes": [
-        "Offizielle IEA-MESGEN-SDMX-Mapping-Datei erforderlich; kein geratener Key."
+        "Offizielle IEA-MESGEN-SDMX-Mapping-Datei erforderlich; kein geratener Key.",
+        "MESGEN: offizielle IEA-SDMX-Mapping-Datei erforderlich; kein frei erfundener SDMX-Key."
       ]
     },
     "electricity_balance": {
@@ -144,7 +1006,8 @@
       "last_successful_update": null,
       "data": {},
       "source_notes": [
-        "Offizielle IEA-MESBAL-SDMX-Mapping-Datei erforderlich; kein geratener Key."
+        "Offizielle IEA-MESBAL-SDMX-Mapping-Datei erforderlich; kein geratener Key.",
+        "MESBAL: offizielle IEA-SDMX-Mapping-Datei erforderlich; kein frei erfundener SDMX-Key."
       ]
     }
   },
@@ -160,7 +1023,9 @@
       "retrieved_at": null,
       "last_successful_update": null,
       "data": {},
-      "source_notes": []
+      "source_notes": [
+        "Quelle: offizielle SIPRI Military Expenditure Database; jährliche XLSX-Datenbasis."
+      ]
     },
     "military_burden_gdp": {
       "source": "SIPRI",
@@ -173,7 +1038,9 @@
       "retrieved_at": null,
       "last_successful_update": null,
       "data": {},
-      "source_notes": []
+      "source_notes": [
+        "Quelle: offizielle SIPRI Military Expenditure Database; jährliche XLSX-Datenbasis."
+      ]
     },
     "military_share_government": {
       "source": "SIPRI",
@@ -186,7 +1053,9 @@
       "retrieved_at": null,
       "last_successful_update": null,
       "data": {},
-      "source_notes": []
+      "source_notes": [
+        "Quelle: offizielle SIPRI Military Expenditure Database; jährliche XLSX-Datenbasis."
+      ]
     }
   }
 }
