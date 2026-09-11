@@ -2073,7 +2073,7 @@ In diesem Abschnitt die autoritativen Statuszeilen aus Makro_Briefing.txt
 wortgetreu übernehmen:
 MAKRO-SZENARIO-GATE=...
 MAKRO-DATENQUALITAET=...
-SEKUNDAERE_DATENLUECKEN=...
+SEKUNDAERE_DATENHINWEISE=...
 Keine Interpretation, Umformulierung oder eigene Bewertung dieser drei Werte.
 
 5. MARKTPERSPEKTIVE
@@ -2168,3 +2168,10 @@ VERBINDLICHE AUSNAHME FÜR 6.5.2: Die allgemeine 5-Titel-Begrenzung für Watchli
 WICHTIG: Diese Anweisung ist ausschließlich eine AUSGABEVORGABE. Sie darf
 keine bestehende Analyse-, Scanner-, Filter-, CRV-, Positions-, Daten- oder
 Berechnungslogik verändern. Keine Watchlist unter Punkt 1.
+
+
+### VERBINDLICHE MAKRO-ZAHLENINTEGRITAET
+Für direkte aktuelle Makro-Zahlen ist ausschließlich das aktuelle Makro_Briefing(<Datum>).txt maßgeblich. Direkte Kurs- und Veränderungsangaben dürfen nicht aus älteren Auswertungen, früheren Briefings, Nachrichten oder Modellwissen übernommen werden. Berechnungen bleiben zulässig, wenn alle Ausgangswerte aus dem aktuellen Makro-Datenpaket stammen. Bei einer eindeutigen aktuellen Metrik mit Kurs-/Periodenwert im aktuellen Datenpaket gilt dieser Wert; abweichende direkte Zahlen dürfen nicht verwendet werden. Fehlt der erforderliche aktuelle Ausgangswert, ist die Aussage qualitativ zu formulieren oder wegzulassen.
+
+### GDELT-PROVENIENZ
+GDELT GKG/Bulk mit 24H_SAMPLE ist keine Datenlücke. Es handelt sich um einen erfolgreichen offiziellen Fallback mit eingeschränkter Datenart (Themen-Stichprobe statt vollständiger DOC-Artikelabdeckung). Diese Fälle sind als DATENHINWEIS zu kennzeichnen; nur tatsächlich fehlende oder nicht verfügbare GDELT-Daten sind als Datenlücke zu bezeichnen.

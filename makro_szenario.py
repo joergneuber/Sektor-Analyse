@@ -5399,7 +5399,7 @@ def main():
     lines.append("6. DATENQUALITAETS-GATEKEEPER")
     lines.append(f"MAKRO-SZENARIO-GATE: {gate}")
     lines.append(f"DATENQUALITAET: {data_quality}")
-    lines.append(f"SEKUNDAERE DATENLUECKEN: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
+    lines.append(f"SEKUNDAERE DATENHINWEISE: {', '.join(secondary_missing) if secondary_missing else 'KEINE'}")
     lme_missing_report = [m for m in ("Nickel", "Blei", "Zinn", "Kobalt", "Kupfer")
                            if f"LME {m}" in secondary_missing]
     lines.append(
@@ -5428,7 +5428,7 @@ def main():
     print(f"MAKRO-SZENARIO-GATE={gate}")
     print(f"MAKRO-DATENQUALITAET={data_quality}")
     if secondary_missing:
-        print("SEKUNDAERE_DATENLUECKEN=" + ", ".join(secondary_missing))
+        print("SEKUNDAERE_DATENHINWEISE=" + ", ".join(secondary_missing))
     if missing:
         print("KRITISCHE_DATENLUECKEN=" + ", ".join(missing))
 

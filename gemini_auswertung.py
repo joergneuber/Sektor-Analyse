@@ -868,21 +868,31 @@ def _kurzstatus(status):
 def _lade_6_5_namen(eingabedateien=None, historie_pfad=None):
     """Ermittelt autoritative Anzeigenamen fuer 6.5.
 
-    Prioritaet: aktuelle strukturierte CSV/JSON-Quellen des aktuellen Laufs.
-    Die Historie wird nur als Fallback fuer Ticker verwendet, fuer die kein
-    aktueller Name vorliegt. Der Name dient nur der Darstellung; die aktuelle
-    Kategorie bleibt ausschliesslich aus der Beobachtungsliste.
+    Prioritaet: aktueller Einzel-Check-Historieneintrag, danach strukturierte
+    CSV/JSON-Quellen des aktuellen Laufs. Der Name dient nur der Darstellung;
+    die aktuelle Kategorie bleibt ausschliesslich aus der Beobachtungsliste.
     """
     namen = {}
 
-    def add_current(ticker, name):
+    def add(ticker, name):
         ticker = _normalisiere_ticker(ticker)
         name = str(name or "").strip()
         if ticker and name and name.upper() != ticker.upper():
-            # Aktuelle strukturierte Daten haben Vorrang.
-            namen[ticker] = name
+            namen.setdefault(ticker, name)
 
-    # Zuerst ausschliesslich aktuelle strukturierte Quellen lesen.
+    if historie_pfad and os.path.isfile(historie_pfad):
+        try:
+            with open(historie_pfad, "r", encoding="utf-8-sig") as f:
+                for raw in f:
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict):
+                        add(row.get("Ticker"), row.get("Name"))
+        except Exception as exc:
+            print(f"WARNUNG: 6.5-Namenshistorie konnte nicht gelesen werden: {exc}")
+
     for pfad in (eingabedateien or {}).values():
         if not pfad or not os.path.isfile(pfad):
             continue
@@ -903,47 +913,16 @@ def _lade_6_5_namen(eingabedateien=None, historie_pfad=None):
                     name_k = next((lower[k] for k in ("name", "firmenname", "unternehmen", "company") if k in lower), None)
                     if ticker_k and name_k:
                         for row in reader:
-                            add_current(row.get(ticker_k), row.get(name_k))
+                            add(row.get(ticker_k), row.get(name_k))
             elif suffix == ".json":
                 with open(pfad, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
                     for ticker, entry in data.items():
                         if isinstance(entry, dict):
-                            add_current(
-                                ticker,
-                                entry.get("Name")
-                                or entry.get("name")
-                                or entry.get("Firmenname")
-                                or entry.get("firmenname"),
-                            )
+                            add(ticker, entry.get("Name") or entry.get("name") or entry.get("Firmenname") or entry.get("firmenname"))
         except Exception:
             continue
-
-    # Historie erst danach: nur fehlende Namen ergaenzen, niemals aktuelle
-    # Namen ueberschreiben.
-    if historie_pfad and os.path.isfile(historie_pfad):
-        try:
-            with open(historie_pfad, "r", encoding="utf-8-sig") as f:
-                for raw in f:
-                    try:
-                        row = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    ticker = _normalisiere_ticker(row.get("Ticker"))
-                    name = str(row.get("Name") or "").strip()
-                    if (
-                        ticker
-                        and name
-                        and name.upper() != ticker.upper()
-                        and ticker not in namen
-                    ):
-                        namen[ticker] = name
-        except Exception as exc:
-            print(f"WARNUNG: 6.5-Namenshistorie konnte nicht gelesen werden: {exc}")
-
     return namen
 
 
@@ -1806,6 +1785,10 @@ def gemini_auswertung_starten():
                 ),
             )
             text = antwort.text or ""
+            # Direkte aktuelle Makro-Zahlen werden deterministisch gegen das
+            # autoritative aktuelle Makro-Briefing abgesichert. Gemini bleibt
+            # fuer Interpretation und abgeleitete Aussagen zustaendig.
+            text, makro_zahlen_korrekturen = _sichere_makro_zahlen(text, makro_text if makro_pfad else "")
             print(f"  Gemini finish_reason (Hauptantwort): {_gemini_finish_reason(antwort)}")
 
             if not pruefe_makro_gate_konsistenz(text, makro_gate):
@@ -2466,6 +2449,118 @@ def _lese_makro_datenqualitaet(makro_text):
         if m:
             return m.group(1).upper()
     return None
+
+
+def _extrahiere_makro_referenzwerte(makro_text):
+    """Extrahiert aktuelle numerische Referenzwerte aus dem autoritativen Makro-Briefing.
+
+    Nur explizite strukturierte Felder (5T/1M/3M/6M/1J und der erste Kurswert)
+    werden als Referenz übernommen. Fehlende Felder bleiben unbekannt.
+    """
+    referenzen = {}
+    if not makro_text:
+        return referenzen
+    for raw in makro_text.splitlines():
+        line = raw.strip()
+        if not line or ":" not in line:
+            continue
+        label, rest = line.split(":", 1)
+        label = label.strip()
+        if not label or len(label) > 80 or not re.search(r"[A-Za-zÄÖÜäöüß]", label):
+            continue
+        kurs = re.match(r"\s*([-+]?\d+(?:[.,]\d+)?)", rest)
+        if not kurs:
+            continue
+        ref = {"kurs": float(kurs.group(1).replace(",", ".")), "perioden": {}}
+        for key in ("5T", "1M", "3M", "6M", "1J"):
+            m = re.search(rf"(?:^|\|)\s*{re.escape(key)}\s*=\s*([-+]?\d+(?:[.,]\d+)?)\s*%", rest)
+            if m:
+                ref["perioden"][key] = float(m.group(1).replace(",", "."))
+        referenzen[label.lower()] = ref
+    return referenzen
+
+
+def _sichere_makro_zahlen(text, makro_text):
+    """Korrigiert nur direkt zuordenbare aktuelle Makro-Zahlen gegen das aktuelle Briefing.
+
+    Der Schutz greift ausschließlich bei einer eindeutigen Metrik im selben Text-
+    segment. Berechnete/abgeleitete Aussagen ohne eindeutige Perioden-/Preisangabe
+    werden nicht verändert; sie werden damit nicht fälschlich als Rohdaten behandelt.
+    """
+    if not text or not makro_text:
+        return text, []
+    referenzen = _extrahiere_makro_referenzwerte(makro_text)
+    if not referenzen:
+        return text, []
+
+    period_aliases = {
+        "5T": r"(?:5T|5\s+Handelstagen?|5\s+Tagen?|5-Tage(?:n)?|fünf\s+Tagen?)",
+        "1M": r"(?:1M|1\s+Monat|einem\s+Monat|4\s+Wochen?|4-Wochen)",
+        "3M": r"(?:3M|3\s+Monate?|3\s+Monaten?|12\s+Wochen?)",
+        "6M": r"(?:6M|6\s+Monate?|6\s+Monaten?)",
+        "1J": r"(?:1J|1\s+Jahr|einem\s+Jahr|12\s+Monate?)",
+    }
+    price_re = re.compile(r"(?P<num>[-+]?\d{1,3}(?:[.,]\d{1,6})?)\s*(?P<unit>\$|USD|US\$)")
+    pct_re = re.compile(r"(?P<num>[-+]?\d{1,3}(?:[.,]\d{1,6})?)\s*%")
+    changes = []
+    out_lines = []
+    for line in text.splitlines():
+        new_line = line
+        lower_line = line.lower()
+        for label, ref in referenzen.items():
+            if len(label) < 3 or label not in lower_line:
+                continue
+            # Nur Werte in unmittelbarer Umgebung der Metrik anfassen.
+            for pm in list(price_re.finditer(new_line)):
+                start = max(0, pm.start() - 120)
+                end = min(len(new_line), pm.end() + 40)
+                if label not in new_line[start:end].lower():
+                    continue
+                try:
+                    old = float(pm.group("num").replace(",", "."))
+                except ValueError:
+                    continue
+                # Integerische Schwellen wie >100$ bleiben qualitative Aussagen;
+                # explizite Dezimalwerte werden als direkter Kursanspruch behandelt.
+                if "." not in pm.group("num") and "," not in pm.group("num"):
+                    continue
+                if abs(old - ref["kurs"]) < 0.005:
+                    continue
+                replacement = f"{ref['kurs']:.2f}".replace(".", ",") + pm.group("unit")
+                new_line = new_line[:pm.start()] + replacement + new_line[pm.end():]
+                changes.append(f"{label}: Kurs {old} -> {ref['kurs']}")
+                break
+
+            # Prozentwerte nur dann korrigieren, wenn eine eindeutige Periode
+            # direkt in der Umgebung genannt wird.
+            for pct in list(pct_re.finditer(new_line)):
+                start = max(0, pct.start() - 90)
+                end = min(len(new_line), pct.end() + 90)
+                context = new_line[start:end]
+                period_candidates = []
+                for key, alias in period_aliases.items():
+                    if key not in ref["perioden"]:
+                        continue
+                    for pmatch in re.finditer(alias, context, re.IGNORECASE):
+                        absolute = start + pmatch.start()
+                        period_candidates.append((abs(absolute - pct.start()), key))
+                if not period_candidates:
+                    continue
+                period_key = min(period_candidates, key=lambda item: item[0])[1]
+                try:
+                    old = float(pct.group("num").replace(",", "."))
+                except ValueError:
+                    continue
+                target = ref["perioden"][period_key]
+                if abs(old - target) < 0.005:
+                    continue
+                replacement = f"{target:+.2f}".replace(".", ",") + "%"
+                new_line = new_line[:pct.start()] + replacement + new_line[pct.end():]
+                changes.append(f"{label}: {period_key} {old} -> {target}")
+        out_lines.append(new_line)
+    if changes:
+        print(f"MAKRO-ZAHLENINTEGRITAET: {len(changes)} direkte Zahlenangaben gegen aktuelles Makro-Briefing korrigiert.")
+    return "\n".join(out_lines), changes
 
 
 def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
