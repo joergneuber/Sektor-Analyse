@@ -1,0 +1,192 @@
+{
+  "cache_version": "1.0",
+  "cache_created_at": null,
+  "cache_updated_at": null,
+  "OECD_STAN": {
+    "value_added": {
+      "source": "OECD",
+      "dataset": "DSD_STAN@DF_STAN_2025",
+      "version": "1.0",
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "investment": {
+      "source": "OECD",
+      "dataset": "DSD_STAN@DF_STAN_2025",
+      "version": "1.0",
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "labour_input": {
+      "source": "OECD",
+      "dataset": "DSD_STAN@DF_STAN_2025",
+      "version": "1.0",
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": [
+        "Working-hours-SDMX-Dimension vor Produktiveinsatz anhand der aktuellen OECD-STAN-Strukturabfrage verifizieren."
+      ]
+    }
+  },
+  "OECD_PRODUCTIVITY": {
+    "labour_productivity_level": {
+      "source": "OECD",
+      "dataset": "DSD_PDB@DF_PDB",
+      "version": "2.0",
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "labour_productivity_growth": {
+      "source": "OECD",
+      "dataset": "DSD_PDB@DF_PDB",
+      "version": "2.0",
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": [
+        "Offizielle OECD-Growth-Reihe verwenden; keine Python-Eigenberechnung."
+      ]
+    }
+  },
+  "AI_INDEX": {
+    "ai_investment": {
+      "source": "Stanford AI Index",
+      "dataset": "AI Index Public Data",
+      "version": null,
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "ai_adoption": {
+      "source": "Stanford AI Index",
+      "dataset": "AI Index Public Data",
+      "version": null,
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "ai_compute": {
+      "source": "Stanford AI Index",
+      "dataset": "AI Index Public Data",
+      "version": null,
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    }
+  },
+  "IEA_ELECTRICITY": {
+    "electricity_generation": {
+      "source": "IEA",
+      "dataset": "MESGEN",
+      "version": null,
+      "frequency": "monthly",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": [
+        "Offizielle IEA-MESGEN-SDMX-Mapping-Datei erforderlich; kein geratener Key."
+      ]
+    },
+    "electricity_balance": {
+      "source": "IEA",
+      "dataset": "MESBAL",
+      "version": null,
+      "frequency": "monthly",
+      "status": "UNAVAILABLE",
+      "unit": null,
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": [
+        "Offizielle IEA-MESBAL-SDMX-Mapping-Datei erforderlich; kein geratener Key."
+      ]
+    }
+  },
+  "SIPRI_DEFENCE": {
+    "military_expenditure_real": {
+      "source": "SIPRI",
+      "dataset": "Military Expenditure Database",
+      "version": null,
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": "constant 2024 USD",
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "military_burden_gdp": {
+      "source": "SIPRI",
+      "dataset": "Military Expenditure Database",
+      "version": null,
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": "% GDP",
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    },
+    "military_share_government": {
+      "source": "SIPRI",
+      "dataset": "Military Expenditure Database",
+      "version": null,
+      "frequency": "annual",
+      "status": "UNAVAILABLE",
+      "unit": "% government expenditure",
+      "data_period": null,
+      "retrieved_at": null,
+      "last_successful_update": null,
+      "data": {},
+      "source_notes": []
+    }
+  }
+}
