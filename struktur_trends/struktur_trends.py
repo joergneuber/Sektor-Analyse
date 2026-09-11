@@ -219,6 +219,36 @@ def http_get(url: str, timeout: int = 60, retries: int = 5) -> bytes:
     raise RuntimeError(f"HTTP-Abruf fehlgeschlagen: {url} | {last_error}")
 
 
+def _download_temp(url: str, suffix: str = "") -> str:
+    raw = http_get(url, timeout=180, retries=3)
+    fd, path = tempfile.mkstemp(prefix="struktur_trends_", suffix=suffix)
+    os.close(fd)
+    Path(path).write_bytes(raw)
+    return path
+
+
+def _http_get_headers(url: str, headers: dict[str, str], timeout: int = 120, retries: int = 3) -> bytes:
+    last_error = None
+    base = {"User-Agent": "Neuber-Macro-Structural-Trends/1.2"}
+    base.update(headers)
+    for attempt in range(retries + 1):
+        try:
+            request = urllib.request.Request(url, headers=base)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code != 429 or attempt >= retries: raise RuntimeError(f"HTTP-Abruf fehlgeschlagen: {url} | HTTP {exc.code}: {exc.reason}") from exc
+            retry_after = exc.headers.get("Retry-After")
+            try: delay = float(retry_after) if retry_after else min(60.0, 5.0 * (2 ** attempt))
+            except ValueError: delay = min(60.0, 5.0 * (2 ** attempt))
+            time.sleep(delay + random.uniform(0.2, 1.0))
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt < retries: time.sleep(min(30.0, 2.0 * (2 ** attempt)) + random.uniform(0.1, 0.8))
+    raise RuntimeError(f"HTTP-Abruf fehlgeschlagen: {url} | {last_error}")
+
+
 def read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return new_cache()
@@ -807,12 +837,8 @@ def update_ai_index(cache: dict[str, Any]) -> None:
 
 
 def _iea_parse_csv_bytes(raw: bytes) -> list[dict[str, Any]]:
-    """Parse a CSV/ZIP payload from the official IEA MES publication."""
-    import csv
-    import io
-    import zipfile
-
-    payloads: list[bytes] = []
+    import csv, io, zipfile
+    payloads = []
     if raw[:2] == b"PK":
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
             for name in zf.namelist():
@@ -820,12 +846,12 @@ def _iea_parse_csv_bytes(raw: bytes) -> list[dict[str, Any]]:
                     payloads.append(zf.read(name))
     else:
         payloads.append(raw)
-
     for payload in payloads:
         text = payload.decode("utf-8-sig", errors="replace")
-        sample = text[:4096]
+        if not text.strip():
+            continue
         try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\\t|;")
+            dialect = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
         rows = list(csv.DictReader(io.StringIO(text), dialect=dialect))
@@ -834,100 +860,165 @@ def _iea_parse_csv_bytes(raw: bytes) -> list[dict[str, Any]]:
     return []
 
 
+def _iea_parse_json_bytes(raw: bytes) -> list[dict[str, Any]]:
+    try:
+        obj = json.loads(raw.decode("utf-8-sig", errors="replace"))
+    except Exception:
+        return []
+    if isinstance(obj, list) and obj and all(isinstance(x, dict) for x in obj):
+        return [{str(k): v for k, v in x.items()} for x in obj]
+    if not isinstance(obj, dict):
+        return []
+    structure = obj.get("structure", {}) if isinstance(obj.get("structure"), dict) else {}
+    dims = structure.get("dimensions", {}) if isinstance(structure.get("dimensions"), dict) else {}
+    series_dims = dims.get("series", []) or []
+    obs_dims = dims.get("observation", []) or []
+    datasets = obj.get("dataSets") or obj.get("data") or []
+    if not datasets or not isinstance(datasets[0], dict):
+        return []
+    ds = datasets[0]
+    def dim_value(dim, index):
+        values = dim.get("values", []) if isinstance(dim, dict) else []
+        if index >= len(values):
+            return index
+        item = values[index]
+        return item.get("id", item.get("name", index)) if isinstance(item, dict) else item
+    out = []
+    series = ds.get("series", {})
+    if isinstance(series, dict):
+        for series_key, series_obj in series.items():
+            if not isinstance(series_obj, dict):
+                continue
+            sk = [int(x) for x in str(series_key).split(":") if str(x).isdigit()]
+            base = {}
+            for i, dim in enumerate(series_dims):
+                base[dim.get("id", f"SERIES_{i}")] = dim_value(dim, sk[i] if i < len(sk) else 0)
+            observations = series_obj.get("observations", {})
+            if isinstance(observations, dict):
+                for obs_key, obs in observations.items():
+                    oi = [int(x) for x in str(obs_key).split(":") if str(x).isdigit()]
+                    row = dict(base)
+                    for i, dim in enumerate(obs_dims):
+                        row[dim.get("id", f"OBS_{i}")] = dim_value(dim, oi[i] if i < len(oi) else 0)
+                    row["OBS_VALUE"] = obs[0] if isinstance(obs, list) and obs else obs
+                    if isinstance(obs, list) and len(obs) > 1:
+                        row["OBS_STATUS"] = obs[1]
+                    out.append(row)
+    return out
+
+
+def _iea_parse_xml_bytes(raw: bytes) -> list[dict[str, Any]]:
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(raw)
+    except Exception:
+        return []
+    rows = []
+    for series in root.iter():
+        if not series.tag.lower().endswith("series"):
+            continue
+        base = {k.split("}")[-1]: v for k, v in series.attrib.items()}
+        for child in series:
+            if child.tag.lower().endswith("obs"):
+                row = dict(base)
+                row.update({k.split("}")[-1]: v for k, v in child.attrib.items()})
+                rows.append(row)
+    return rows
+
+
+def _iea_parse_payload(raw: bytes) -> list[dict[str, Any]]:
+    for parser in (_iea_parse_csv_bytes, _iea_parse_json_bytes, _iea_parse_xml_bytes):
+        try:
+            rows = parser(raw)
+            if rows:
+                return rows
+        except Exception:
+            pass
+    return []
+
+
 def _iea_discover_page_links(flow: str) -> list[str]:
-    """Discover current official MES download links from the IEA product page."""
     html = _fetch_text("https://www.iea.org/data-and-statistics/data-product/monthly-electricity-statistics")
-    urls = re.findall(r'https?://[^\"\'<>\\s]+', html)
-    flow_upper = flow.upper()
+    urls = re.findall(r'https?://[^"\'<>\s]+', html)
     result = []
     for url in urls:
         decoded = url.replace("&amp;", "&")
-        if flow_upper in decoded.upper() and (".zip" in decoded.lower() or ".csv" in decoded.lower()):
+        if flow.upper() in decoded.upper() and any(x in decoded.lower() for x in (".zip", ".csv")):
             result.append(decoded)
     return list(dict.fromkeys(result))
 
 
-def _iea_candidate_urls(flow: str) -> list[str]:
-    """Return many endpoint candidates; first successful, parseable source wins."""
-    candidates = [
-        f"{IEA_API_BASE}/data/{flow}/all/all",
-        f"{IEA_API_BASE}/data/{flow}/all",
-        f"{IEA_API_BASE}/data/{flow}",
-        f"{IEA_API_BASE}/v1/data/{flow}/all/all",
-        f"{IEA_API_BASE}/v1/data/{flow}/all",
-        f"{IEA_API_BASE}/v1/data/{flow}",
-        f"{IEA_API_BASE}/data/IEA,{flow},1.0/all/all",
-        f"{IEA_API_BASE}/data/IEA,{flow},1.0/all",
-        f"{IEA_API_BASE}/data/IEA,{flow},1.0",
-        f"{IEA_API_BASE}/v1/data/IEA,{flow},1.0/all/all",
-        f"{IEA_API_BASE}/v1/data/IEA,{flow},1.0/all",
-        f"{IEA_API_BASE}/v1/data/IEA,{flow},1.0",
-    ]
-    # Official page-discovered download links are deliberately tried first in
-    # addition to API candidates because IEA is migrating MES to .Stat/SDMX.
+def _iea_structure_candidates(flow: str) -> list[str]:
+    return [f"IEA,{flow},1.0", f"IEA,{flow},latest"]
+
+
+def _iea_data_candidates(flow: str) -> list[tuple[str, str]]:
+    refs = _iea_structure_candidates(flow)
+    bases = (
+        IEA_API_BASE,
+        IEA_API_BASE + "/v1",
+        "https://sis-cc-api-wv.iea.org/rest",
+        "https://sis-cc-api-wv.iea.org/rest/v1",
+    )
+    candidates = []
+    for ref in refs:
+        for base in bases:
+            for provider in ("IEA", "all"):
+                candidates.append(("sdmx", f"{base}/data/{ref}/all/{provider}"))
     try:
-        candidates = _iea_discover_page_links(flow) + candidates
+        candidates = [("download", u) for u in _iea_discover_page_links(flow)] + candidates
     except Exception as exc:
         LOG.info("IEA %s Link-Discovery nicht verfügbar: %s", flow, exc)
     return list(dict.fromkeys(candidates))
 
 
-def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
-    """Try 10 acquisition/format strategies against the same official source."""
-    attempts = []
-    for url in _iea_candidate_urls(flow):
-        attempts.append(("direct", url))
-    # Mapping workbooks are official fallback metadata; if their URLs are
-    # reachable, they are used only to discover codes, never to invent data.
-    attempts.extend([
-        ("mapping", IEA_MAPPING_URLS[flow]),
-    ])
-
-    errors = []
-    for strategy, url in attempts:
-        try:
-            raw = http_get(url, timeout=120, retries=3)
-            rows = _iea_parse_csv_bytes(raw)
-            if rows:
-                return rows, f"{strategy}:{url}"
-            errors.append(f"{strategy}: no parseable rows")
-        except Exception as exc:
-            errors.append(f"{strategy}: {exc}")
-
-    raise RuntimeError(
-        f"IEA {flow}: {len(attempts)} Abruf-/Parser-Strategien erfolglos; "
-        + " | ".join(errors[:6])
-    )
-
-
-def _normalize_iea_key(row: dict[str, Any], names: tuple[str, ...]) -> str | None:
-    lowered = {str(k).strip().lower(): v for k, v in row.items()}
-    for name in names:
-        if name.lower() in lowered and str(lowered[name.lower()] or "").strip():
-            return str(lowered[name.lower()]).strip()
-    return None
+def _iea_structure_discovery(flow: str) -> None:
+    for base in (IEA_API_BASE, IEA_API_BASE + "/v1", "https://sis-cc-api-wv.iea.org/rest", "https://sis-cc-api-wv.iea.org/rest/v1"):
+        for structure in ("dataflow", "datastructure"):
+            for ref in _iea_structure_candidates(flow):
+                agency, resource, version = ref.split(",")
+                url = f"{base}/{structure}/{agency}/{resource}/{version}"
+                try:
+                    raw = _http_get_headers(url, {"Accept": "application/xml,application/json;q=0.8,*/*;q=0.2"}, timeout=45, retries=1)
+                    if raw:
+                        LOG.info("IEA %s Strukturantwort erhalten: %s", flow, url)
+                        return
+                except Exception:
+                    continue
 
 
 def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
-    """Group IEA rows while preserving all source dimensions and flags."""
-    grouped: dict[str, Any] = {}
+    grouped = {}
     for row in rows:
-        country = _normalize_iea_key(
-            row,
-            ("REF_AREA", "Reference area", "COUNTRY", "Country", "Country or area", "Economy"),
-        ) or "UNKNOWN"
-        period = _normalize_iea_key(
-            row, ("TIME_PERIOD", "Time period", "Period", "Date")
-        )
-        if not period:
+        lowered = {str(k).strip().lower(): v for k, v in row.items()}
+        country = next((str(lowered[n]).strip() for n in ("ref_area", "reference area", "country", "country or area", "economy", "geo", "area") if n in lowered and str(lowered[n] or "").strip()), None)
+        period = next((str(lowered[n]).strip() for n in ("time_period", "time period", "period", "time", "date") if n in lowered and str(lowered[n] or "").strip()), None)
+        if not country or not period:
             continue
-        key = country
-        grouped.setdefault(key, {
-            "reference_area": country,
-            "dataset": dataset,
-            "observations": [],
-        })["observations"].append(dict(row))
+        grouped.setdefault(country, {"reference_area": country, "dataset": dataset, "observations": []})["observations"].append(dict(row))
     return grouped
+
+
+def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
+    errors = []
+    candidates = _iea_data_candidates(flow)
+    _iea_structure_discovery(flow)
+    # Exactly 20 combined attempts: 10 acquisition variants x 2 parser orders.
+    for attempt, (kind, url) in enumerate(candidates[:10], start=1):
+        for parser_variant, parsers in enumerate(((_iea_parse_csv_bytes, _iea_parse_json_bytes, _iea_parse_xml_bytes), (_iea_parse_json_bytes, _iea_parse_csv_bytes, _iea_parse_xml_bytes)), start=1):
+            try:
+                raw = _http_get_headers(url, {"Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2"}, timeout=180, retries=2)
+                rows = []
+                for parser in parsers:
+                    rows = parser(raw)
+                    if rows:
+                        break
+                if rows and _group_iea_rows(rows, flow):
+                    return rows, f"strategy={attempt}.{parser_variant}:{kind}:{url}"
+                errors.append(f"{attempt}.{parser_variant}: no usable series")
+            except Exception as exc:
+                errors.append(f"{attempt}.{parser_variant}: {exc}")
+    raise RuntimeError("IEA %s: 20 kombinierte Abruf-/Parserstrategien erfolglos; %s" % (flow, " | ".join(errors[:8])))
 
 
 def update_iea(cache: dict[str, Any]) -> None:
@@ -939,26 +1030,10 @@ def update_iea(cache: dict[str, Any]) -> None:
             if not grouped:
                 raise RuntimeError("IEA: Parser lieferte keine verwertbaren Zeitreihen")
             ts = now_iso()
-            field.update({
-                "version": "2026",
-                "status": "REAL",
-                "retrieved_at": ts,
-                "last_successful_update": ts,
-                "data_period": _latest_period(grouped),
-                "data": grouped,
-                "series_count": len(grouped),
-                "observation_count": _count_observations(grouped),
-                "source_notes": [
-                    f"Offizielle IEA Monthly Electricity Statistics, {dataset}.",
-                    f"Erfolgreiche Abruf-/Parserstrategie: {source}.",
-                    "IEA-Daten können quellenseitige Schätz-/Imputationsflags enthalten; diese werden erhalten.",
-                ],
-            })
+            field.update({"version": "2026", "status": "REAL", "retrieved_at": ts, "last_successful_update": ts, "data_period": _latest_period(grouped), "data": grouped, "series_count": len(grouped), "observation_count": _count_observations(grouped), "source_notes": [f"Offizielle IEA Monthly Electricity Statistics, {dataset}.", f"Erfolgreiche Abruf-/Parserstrategie: {source}.", "IEA-Daten können quellenseitige Schätz-/Imputationsflags enthalten; diese werden erhalten."]})
         except Exception as exc:
             LOG.warning("IEA %s: %s", dataset, exc)
-            cache["IEA_ELECTRICITY"][field_name] = set_real_cached_if_valid(
-                field, "IEA_ELECTRICITY"
-            )
+            cache["IEA_ELECTRICITY"][field_name] = set_real_cached_if_valid(field, "IEA_ELECTRICITY")
 
 
 # ---------------------------------------------------------------------------
@@ -966,133 +1041,128 @@ def update_iea(cache: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _sipri_find_year_columns(header_rows: list[list[Any]]) -> dict[int, str]:
-    years: dict[int, str] = {}
-    for row in header_rows:
-        for col_idx, value in enumerate(row):
-            text = str(value or "").strip()
-            m = re.fullmatch(r"(?:FY[- ]?)?(19\d{2}|20\d{2})", text, flags=re.I)
-            if m:
-                years[col_idx] = m.group(1)
-    return years
-
-
 def _norm_label(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
 
 
-def _country_column_candidates(rows: list[list[Any]], header_end: int) -> list[int]:
-    exact = {
-        "country", "countries", "country name", "country or area",
-        "country/area", "economy", "economies", "name", "state",
-        "area", "reference area", "country area",
-    }
-    scores: dict[int, int] = {}
-    for r in rows[max(0, header_end - 3):header_end + 1]:
-        for idx, value in enumerate(r):
+def _sipri_numeric(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = re.sub(r"\[[^\]]*\]", "", str(value).strip()).replace("%", "").replace(" ", "").replace(",", "")
+    if text.lower() in {".", "..", "...", "—", "-", "na", "n/a", "n a"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _sipri_year_columns(rows: list[list[Any]], max_header_rows: int = 12) -> dict[int, str]:
+    years = {}
+    for row in rows[:max_header_rows]:
+        for idx, value in enumerate(row):
+            m = re.fullmatch(r"(?:FY[- ]?)?(19\d{2}|20\d{2})", str(value or "").strip(), re.I)
+            if m:
+                years[idx] = m.group(1)
+    return years
+
+
+def _sipri_country_columns(rows: list[list[Any]], header_end: int) -> list[int]:
+    exact = {"country", "countries", "country name", "country or area", "country area", "country/area", "economy", "economies", "name", "state", "area", "reference area"}
+    scores = {}
+    width = max((len(r) for r in rows), default=0)
+    for row in rows[max(0, header_end - 5):header_end + 1]:
+        for idx, value in enumerate(row):
             n = _norm_label(value)
             if n in exact:
-                scores[idx] = scores.get(idx, 0) + 10
-            elif "country" in n or "econom" in n or "area" in n:
-                scores[idx] = scores.get(idx, 0) + 4
-    # Structural fallback: choose the first column containing many nonnumeric strings.
-    width = max((len(r) for r in rows), default=0)
-    for idx in range(min(width, 8)):
-        sample = [r[idx] for r in rows[header_end:header_end + 30] if idx < len(r)]
-        textish = sum(1 for v in sample if v not in (None, "") and not _looks_numeric(v))
-        if textish >= 5:
+                scores[idx] = scores.get(idx, 0) + 20
+            elif "country" in n or "econom" in n or n == "area":
+                scores[idx] = scores.get(idx, 0) + 7
+    for idx in range(min(width, 10)):
+        sample = [r[idx] for r in rows[header_end:header_end + 40] if idx < len(r)]
+        textish = sum(1 for v in sample if v not in (None, "") and _sipri_numeric(v) is None)
+        if textish >= 8:
             scores[idx] = scores.get(idx, 0) + 1
     return [idx for idx, _ in sorted(scores.items(), key=lambda x: (-x[1], x[0]))]
 
 
-def _looks_numeric(value: Any) -> bool:
-    if isinstance(value, (int, float)):
-        return True
-    text = str(value or "").strip().replace(",", "")
-    try:
-        float(text)
-        return True
-    except ValueError:
-        return False
+def _sipri_sheet_score(title: str, field_name: str) -> int:
+    n = _norm_label(title)
+    if field_name == "military_share_government" and ("government" in n or "govt" in n): return 50
+    if field_name == "military_burden_gdp" and ("gdp" in n or "gross domestic" in n): return 50
+    if field_name == "military_expenditure_real" and ("constant" in n or "us dollar" in n or "usd" in n): return 50
+    return 0
 
 
-def _sipri_parse_candidate(rows: list[list[Any]], field_name: str, strategy: int) -> dict[str, Any]:
-    """One of 10 independent workbook-layout parsers."""
-    target_terms = {
-        "military_expenditure_real": ("constant", "2024", "us"),
-        "military_burden_gdp": ("share", "gdp"),
-        "military_share_government": ("share", "government"),
-    }[field_name]
-    max_rows = min(len(rows), 80)
-    for header_end in range(1, max_rows):
-        window = rows[max(0, header_end - 4):header_end + 1]
-        context = " ".join(_norm_label(v) for r in window for v in r)
-        if not all(term in context for term in target_terms if term):
+def _sipri_context_score(rows: list[list[Any]], header_end: int, field_name: str) -> int:
+    context = " ".join(_norm_label(v) for r in rows[max(0, header_end - 6):header_end + 1] for v in r)
+    terms = {"military_expenditure_real": ("constant", "2024", "us"), "military_burden_gdp": ("share", "gross domestic product"), "military_share_government": ("share", "government expenditure")}[field_name]
+    score = 0
+    for term in terms:
+        if _norm_label(term) in context or term in context:
+            score += 10
+    return score
+
+
+def _sipri_parse_strategy(rows: list[list[Any]], title: str, field_name: str, strategy: int) -> dict[str, Any]:
+    if not 1 <= strategy <= 20:
+        raise ValueError(strategy)
+    max_header = 18 if strategy % 2 == 0 else 12
+    best = None
+    for header_end in range(1, min(len(rows), max_header) + 1):
+        years = _sipri_year_columns(rows[max(0, header_end - 6):header_end + 1], 7)
+        if len(years) < 5:
             continue
-        years = _sipri_find_year_columns(window)
-        if not years:
+        context_score = _sipri_context_score(rows, header_end, field_name)
+        sheet_score = _sipri_sheet_score(title, field_name)
+        if strategy <= 10 and context_score < 6 and sheet_score < 20:
             continue
-        countries = _country_column_candidates(rows, header_end)
-        for country_idx in countries:
-            # 10 strategies vary header composition and country-column rules.
-            if strategy == 1 and header_end < 1: continue
-            if strategy == 2 and header_end < 2: continue
-            if strategy == 3 and country_idx != 0: continue
-            if strategy == 4 and country_idx > 1: continue
-            if strategy == 5 and not any(_norm_label(v) == "country" for v in rows[header_end-1]): continue
-            if strategy == 6 and not any("country" in _norm_label(v) for v in rows[header_end-1]): continue
-            if strategy == 7 and not any("econom" in _norm_label(v) for v in rows[header_end-1]): continue
-            if strategy == 8 and not any("area" in _norm_label(v) for v in rows[header_end-1]): continue
-            if strategy == 9 and header_end < 3: continue
-            if strategy == 10 and country_idx > 3: continue
-
-            observations: dict[str, list[dict[str, Any]]] = {}
+        if 11 <= strategy <= 15 and context_score < 10 and sheet_score < 20:
+            continue
+        country_cols = _sipri_country_columns(rows, header_end)
+        if not country_cols:
+            continue
+        if strategy in (3, 8, 13, 18): country_cols = [c for c in country_cols if c <= 1]
+        elif strategy in (4, 9, 14, 19): country_cols = [c for c in country_cols if c <= 3]
+        elif strategy in (5, 10, 15, 20): country_cols = country_cols[:1]
+        for country_idx in country_cols:
+            observations = {}
             for row in rows[header_end:]:
-                if country_idx >= len(row):
-                    continue
+                if country_idx >= len(row): continue
                 country = str(row[country_idx] or "").strip()
-                if not country or _looks_numeric(country):
-                    continue
+                if not country or _sipri_numeric(country) is not None: continue
+                obs = []
                 for col_idx, year in years.items():
-                    if col_idx >= len(row):
-                        continue
-                    value = row[col_idx]
-                    if value in (None, "", "..", "..."):
-                        continue
-                    try:
-                        numeric = float(str(value).replace(",", ""))
-                    except ValueError:
-                        continue
-                    observations.setdefault(country, []).append({"period": str(year), "value": numeric})
-            if observations and sum(map(len, observations.values())) >= 20:
-                return observations
-    raise RuntimeError(f"SIPRI parser strategy {strategy} produced no valid table")
+                    if col_idx < len(row):
+                        value = _sipri_numeric(row[col_idx])
+                        if value is not None: obs.append({"period": str(year), "value": value})
+                if obs: observations[country] = obs
+            count = sum(len(v) for v in observations.values())
+            if count < 20: continue
+            score = context_score + sheet_score + min(count, 500) / 100.0 + min(header_end, 10) * 0.1
+            candidate = {"strategy": strategy, "sheet": title, "header_end": header_end, "country_column": country_idx, "data": observations, "score": score}
+            if best is None or score > best["score"]: best = candidate
+    if best is None: raise RuntimeError(f"strategy {strategy}: no valid table")
+    return best
 
 
 def _find_sipri_tables(path: str) -> dict[str, dict[str, Any]]:
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
-    results: dict[str, dict[str, Any]] = {}
-    # 10 parser strategies are evaluated independently for each of the 3 fields.
+    results = {}
+    fields = ("military_expenditure_real", "military_burden_gdp", "military_share_government")
     for ws in wb.worksheets:
-        rows = list(ws.iter_rows(values_only=True))
-        for field_name in (
-            "military_expenditure_real",
-            "military_burden_gdp",
-            "military_share_government",
-        ):
-            if field_name in results:
-                continue
-            for strategy in range(1, 11):
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        if not rows: continue
+        for field_name in fields:
+            for strategy in range(1, 21):
                 try:
-                    parsed = _sipri_parse_candidate(rows, field_name, strategy)
-                    results[field_name] = {
-                        "sheet": ws.title,
-                        "strategy": strategy,
-                        "data": parsed,
-                    }
-                    LOG.info("SIPRI %s: Parserstrategie %d erfolgreich auf Blatt %s", field_name, strategy, ws.title)
-                    break
+                    candidate = _sipri_parse_strategy(rows, ws.title, field_name, strategy)
+                    current = results.get(field_name)
+                    if current is None or candidate["score"] > current["score"]:
+                        results[field_name] = candidate
                 except Exception:
                     continue
     wb.close()
@@ -1105,55 +1175,22 @@ def update_sipri(cache: dict[str, Any]) -> None:
         path = _download_temp(SIPRI_XLSX_URL, ".xlsx")
         tables = _find_sipri_tables(path)
         ts = now_iso()
-        for field_name in (
-            "military_expenditure_real",
-            "military_burden_gdp",
-            "military_share_government",
-        ):
+        for field_name in ("military_expenditure_real", "military_burden_gdp", "military_share_government"):
             table = tables.get(field_name)
-            if not table:
-                raise RuntimeError(f"SIPRI: keine der 10 Parserstrategien fand {field_name}")
+            if not table: raise RuntimeError(f"SIPRI: keine der 20 Parserstrategien fand {field_name}")
             grouped = table["data"]
             field = cache["SIPRI_DEFENCE"][field_name]
-            field.update({
-                "version": "2025-revised-2026-04-27",
-                "status": "REAL",
-                "retrieved_at": ts,
-                "last_successful_update": ts,
-                "data_period": max(
-                    (obs["period"] for rows in grouped.values() for obs in rows),
-                    default=None,
-                ),
-                "data": {
-                    country: {"reference_area": country, "observations": obs}
-                    for country, obs in grouped.items()
-                },
-                "series_count": len(grouped),
-                "observation_count": sum(len(v) for v in grouped.values()),
-                "source_notes": [
-                    "Offizielle SIPRI Military Expenditure Database, revidierte Fassung 27.04.2026.",
-                    f"Erfolgreiche Parserstrategie: {table['strategy']} auf Blatt {table['sheet']}.",
-                    "Calendar-year basis for constant USD/GDP; government share follows financial year.",
-                    "Quelleneigene Schätzungen/Flags werden nicht als Python-Schätzungen erzeugt.",
-                ],
-            })
+            field.update({"version": "2025-revised-2026-04-27", "status": "REAL", "retrieved_at": ts, "last_successful_update": ts, "data_period": max((obs["period"] for rows in grouped.values() for obs in rows), default=None), "data": {country: {"reference_area": country, "observations": obs} for country, obs in grouped.items()}, "series_count": len(grouped), "observation_count": sum(len(v) for v in grouped.values()), "source_notes": ["Offizielle SIPRI Military Expenditure Database, revidierte Fassung 27.04.2026.", f"Beste von 20 Parserstrategien: {table['strategy']} auf Blatt {table['sheet']} (Headerzeile {table['header_end']}, Länder-Spalte {table['country_column']}).", "Calendar-year basis for constant USD/GDP; government share follows financial year.", "Quelleneigene Schätzungen/Flags werden nicht als Python-Schätzungen erzeugt."]})
+            LOG.info("SIPRI %s: beste Parserstrategie %d auf Blatt %s (Score %.1f)", field_name, table["strategy"], table["sheet"], table["score"])
     except Exception as exc:
         LOG.warning("SIPRI: %s", exc)
-        for field_name in (
-            "military_expenditure_real",
-            "military_burden_gdp",
-            "military_share_government",
-        ):
+        for field_name in ("military_expenditure_real", "military_burden_gdp", "military_share_government"):
             field = cache["SIPRI_DEFENCE"][field_name]
-            cache["SIPRI_DEFENCE"][field_name] = set_real_cached_if_valid(
-                field, "SIPRI_DEFENCE"
-            )
+            cache["SIPRI_DEFENCE"][field_name] = set_real_cached_if_valid(field, "SIPRI_DEFENCE")
     finally:
         if path:
-            try:
-                Path(path).unlink(missing_ok=True)
-            except OSError:
-                pass
+            try: Path(path).unlink(missing_ok=True)
+            except OSError: pass
 
 
 # ---------------------------------------------------------------------------
@@ -1310,4 +1347,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
