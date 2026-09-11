@@ -221,6 +221,22 @@ def test_point7_is_python_authoritative_and_gemini_only_interprets_72():
         _assert("[GEMINI-INTERPRETATION]" in block, "Gemini interpretation marker missing")
 
 
+
+def test_macro_numeric_integrity_normalizes_stale_direct_claims():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(ROOT / "gemini_auswertung.py"))
+    wanted = {"_extrahiere_makro_referenzwerte", "_sichere_makro_zahlen"}
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    ns = {"re": __import__("re")}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "gemini_auswertung.py"), "exec"), ns)
+    briefing = "WTI: 101.830002 | 5T=+11.31% | 1M=+22.29% | SOURCE=CL=F\n"
+    text = "WTI bricht in 5 Handelstagen um +12,66% (+23,87% in 4 Wochen) auf 103,06$ aus."
+    out, changes = ns["_sichere_makro_zahlen"](text, briefing)
+    _assert("+11,31%" in out, "Current 5T WTI value was not restored")
+    _assert("+22,29%" in out, "Current 1M WTI value was not restored")
+    _assert("101,83$" in out, "Current WTI price was not restored")
+    _assert(len(changes) >= 3, "Expected direct stale macro claims to be corrected")
+
 def main():
     tests = [
         test_parser_real_format,
@@ -231,6 +247,7 @@ def main():
         test_gate_rules,
         test_gdelt_gkg_fallback_degrades_quality_without_blocking_gate,
         test_kobalt_secondary_provenance_is_valid_without_warning,
+        test_macro_numeric_integrity_normalizes_stale_direct_claims,
         test_point7_is_python_authoritative_and_gemini_only_interprets_72,
         test_trade_story_layer_is_explicit_and_does_not_create_setups,
         test_calendar_parsers,
@@ -322,7 +339,7 @@ def test_gdelt_quality_gap_is_visible_but_does_not_block_gate():
     gate, missing, quality, secondary = m.data_quality_gate(lines)
     _assert(gate == "FREIGEGEBEN", "GDELT context gap must not block Tier-1 macro gate")
     _assert(quality == "EINGESCHRAENKT", "GDELT context gap must degrade data quality")
-    _assert("GDELT Nahost" in secondary, "GDELT unavailable cluster must be visible as secondary data gap")
+    _assert("GDELT Nahost" in secondary, "GDELT unavailable cluster must be visible as secondary data hint")
 
 
 def test_gdelt_cache_is_explicitly_limited_to_24h():
@@ -330,6 +347,9 @@ def test_gdelt_cache_is_explicitly_limited_to_24h():
     _assert("GDELT_CACHE_MAX_AGE_HOURS = 24" in macro, "GDELT cache age limit missing")
     _assert("STATUS=REAL_CACHED" in macro, "GDELT cached provenance missing")
     _assert("GDELT GKG/Bulk" in macro, "Official GKG fallback missing")
+
+    _assert("SEKUNDAERE DATENHINWEISE" in macro, "GDELT secondary output label was not renamed")
+    _assert("SEKUNDAERE_DATENHINWEISE=" in macro, "GDELT secondary log label was not renamed")
     _assert("GDELT_DOC_MAX_WORKERS = 2" in macro, "GDELT cluster request worker cap must be 2")
     _assert("ThreadPoolExecutor(max_workers=GDELT_DOC_MAX_WORKERS)" in macro, "GDELT worker cap is not applied to cluster requests")
 
