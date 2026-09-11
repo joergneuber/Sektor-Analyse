@@ -3,7 +3,7 @@ name: Struktur-Trends Cache
 on:
   workflow_dispatch:
   schedule:
-    # Separater Lauf, später in den bestehenden Workflow integrierbar.
+    # Separater Testlauf, später in den bestehenden Workflow integrierbar.
     # Montag bis Freitag um 06:30 UTC.
     - cron: "30 6 * * 1-5"
 
@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Repository auschecken
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Python einrichten
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
