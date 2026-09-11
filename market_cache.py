@@ -203,6 +203,152 @@ def get_or_fetch_series(
     return series.copy()
 
 
+
+def get_yf_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """Liefert gemeinsame yfinance-Historien fuer mehrere Ticker.
+
+    Bereits im prozessuebergreifenden Cache vorhandene Reihen werden direkt
+    verwendet. Nur fehlende/abgelaufene Ticker werden gemeinsam per Yahoo-
+    Batch geladen und anschliessend unter denselben ``yf:<ticker>``-Schluesseln
+    gespeichert, die auch ``get_yf_history()`` verwendet.
+
+    Damit koennen analyse.py und makro_szenario.py innerhalb desselben
+    GitHub-Actions-Laufs exakt denselben Markt-Datenstand verwenden, ohne
+    dass die beiden Prozesse die gemeinsamen Instrumente unabhaengig abrufen.
+    """
+    unique = list(dict.fromkeys(str(t).strip() for t in tickers if str(t).strip()))
+    if not unique:
+        return {}
+
+    result: dict[str, pd.DataFrame] = {}
+    missing: list[str] = []
+
+    # Cache-first: vorhandene Historien werden unveraendert wiederverwendet.
+    for ticker in unique:
+        entry = _get_entry(f"yf:{ticker}")
+        if entry is None:
+            missing.append(ticker)
+            continue
+        try:
+            df = pd.read_json(StringIO(entry["payload"]), orient="split")
+            df.index = pd.to_datetime(df.index)
+            if not df.empty:
+                result[ticker] = df.copy()
+            else:
+                missing.append(ticker)
+        except Exception as exc:
+            print(f"WARNUNG-MARKET-CACHE: Batch-Eintrag {ticker} unlesbar "
+                  f"({type(exc).__name__}: {exc}) - lade neu.")
+            missing.append(ticker)
+
+    if not missing:
+        return result
+
+    try:
+        import yfinance as yf
+        print(f"INFO: YF-SHARED-BATCH Start tickers={len(missing)}")
+        hist = yf.download(
+            missing,
+            period="max",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+        )
+    except Exception as exc:
+        print(f"WARNUNG-MARKET-CACHE: Shared-YF-Batch fehlgeschlagen "
+              f"({type(exc).__name__}: {exc})")
+        return result
+
+    batch: dict[str, pd.DataFrame] = {}
+    if isinstance(hist, pd.DataFrame) and not hist.empty:
+        if isinstance(hist.columns, pd.MultiIndex):
+            for ticker in missing:
+                series = None
+                if ("Close", ticker) in hist.columns:
+                    series = hist[("Close", ticker)]
+                elif (ticker, "Close") in hist.columns:
+                    series = hist[(ticker, "Close")]
+                if series is None:
+                    continue
+                close = pd.to_numeric(series, errors="coerce").dropna()
+                if close.empty:
+                    continue
+                # Bei yfinance.download() ist das Batch-Ergebnis ein MultiIndex.
+                # Pro Cache-Key darf aber ausschliesslich der angeforderte Ticker
+                # landen; sonst koennte z. B. yf:GC=F noch Spalten anderer
+                # Ticker enthalten. Unterstuetzt beide von yfinance verwendeten
+                # Ebenenordnungen: (field, ticker) und (ticker, field).
+                if isinstance(hist.columns, pd.MultiIndex):
+                    if ticker in hist.columns.get_level_values(0):
+                        frame = hist.xs(ticker, axis=1, level=0, drop_level=True).copy()
+                    else:
+                        frame = hist.xs(ticker, axis=1, level=1, drop_level=True).copy()
+                else:
+                    frame = hist.loc[close.index].copy()
+                frame = frame.loc[close.index].copy()
+                if "Close" not in frame.columns:
+                    continue
+                frame["Close"] = pd.to_numeric(frame["Close"], errors="coerce")
+                frame = frame.dropna(subset=["Close"])
+                # Der gemeinsame Cache braucht die komplette Historie,
+                # nicht nur Close; technische Scanner verwenden High/Low.
+                if not frame.empty:
+                    batch[ticker] = frame
+        elif len(missing) == 1 and "Close" in hist.columns:
+            batch[missing[0]] = hist.dropna(subset=["Close"]).copy()
+
+    if batch:
+        if _acquire_lock():
+            try:
+                data = _load_cache()
+                entries = data.setdefault("entries", {})
+                for ticker, df in batch.items():
+                    entries[f"yf:{ticker}"] = {
+                        "saved_at": time.time(),
+                        "kind": "dataframe",
+                        "payload": df.to_json(orient="split", date_format="iso"),
+                    }
+                _save_cache(data)
+            except Exception as exc:
+                print(f"WARNUNG-MARKET-CACHE: Shared-Batch-Write fehlgeschlagen: {exc}")
+            finally:
+                _release_lock()
+        result.update({ticker: df.copy() for ticker, df in batch.items()})
+
+    print(f"INFO: YF-SHARED-BATCH Ende erhalten={len(batch)}/{len(missing)}")
+    return result
+
+def _write_yf_dataframe_cache(ticker: str, df: pd.DataFrame) -> None:
+    """Schreibt eine vollstaendige Ticker-Historie atomar in den Shared-Cache."""
+    if df is None or df.empty:
+        return
+    try:
+        frame = df.copy()
+        if isinstance(frame.columns, pd.MultiIndex):
+            return
+        if "Close" not in frame.columns:
+            return
+        frame["Close"] = pd.to_numeric(frame["Close"], errors="coerce")
+        frame = frame.dropna(subset=["Close"])
+        if frame.empty:
+            return
+        payload = frame.to_json(orient="split", date_format="iso")
+        if _acquire_lock():
+            try:
+                data = _load_cache()
+                data.setdefault("entries", {})[f"yf:{ticker}"] = {
+                    "saved_at": time.time(),
+                    "kind": "dataframe",
+                    "payload": payload,
+                }
+                _save_cache(data)
+            finally:
+                _release_lock()
+    except Exception as exc:
+        print(f"WARNUNG-MARKET-CACHE: Schreiben von yf:{ticker} fehlgeschlagen: {exc}")
+
+
 def get_yf_history(ticker: str) -> pd.DataFrame:
     """Gemeinsame yfinance-Historie pro Ticker; immer period='max'.
 
@@ -290,6 +436,7 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
             return pd.DataFrame()
         print(f"DEBUG-YF-FALLBACK: {ticker} -> 'max' hat keinen gueltigen Close; "
               f"verwende '5d' bis {recent_letztes_datum.date()}.")
+        _write_yf_dataframe_cache(ticker, df_recent)
         return df_recent
 
     if recent_letztes_datum is None or recent_letztes_datum <= max_letztes_datum:
@@ -317,6 +464,11 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     kombiniert = kombiniert[~kombiniert.index.duplicated(keep="last")]
     kombiniert = kombiniert.sort_index()
 
+    # Der frischere, zusammengefuehrte Stand wird wieder unter dem gemeinsamen
+    # yf:<ticker>-Key gespeichert. Damit profitiert auch der nachfolgende
+    # Prozess (insbesondere makro_szenario.py) vom 5d-Frische-Fallback und
+    # verwendet nicht erneut den zuvor veralteten max-Stand.
+    _write_yf_dataframe_cache(ticker, kombiniert)
     return kombiniert
 
 

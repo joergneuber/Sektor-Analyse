@@ -31,6 +31,7 @@ from io import StringIO, BytesIO
 import pandas as pd
 import requests
 import yfinance as yf
+from market_cache import get_yf_histories
 
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 NYFED_GSCPI_URL = "https://www.newyorkfed.org/medialibrary/research/interactives/gscpi/downloads/gscpi_data.xlsx"
@@ -4741,61 +4742,57 @@ def market_snapshots_parallel():
 
     today = dt.date.today()
     non_lme = [(name, ticker, data_type) for name, (ticker, data_type) in MARKET_DATA.items() if data_type != "REAL_LME"]
+    tickers = [ticker for _name, ticker, _data_type in non_lme]
+
+    # ZENTRALE MARKTDATENQUELLE: analyse.py und makro_szenario.py verwenden
+    # dieselben yf:<ticker>-Eintraege aus market_cache.py. Dadurch gibt es
+    # innerhalb eines Hauptlaufs keinen zweiten unabhaengigen Yahoo-Datenstand
+    # fuer dieselben Instrumente. analyse.py laeuft vorher und befuellt den
+    # Cache bereits fuer viele gemeinsame Benchmarks; hier werden nur fehlende
+    # Ticker im Shared-Batch nachgeladen.
+    shared_histories = get_yf_histories(tickers)
+
+    # Bei einem Shared-Yahoo-Fehler bleibt der bestehende Makro-Cache als
+    # definierter Fallback erhalten. Er wird NICHT mehr als Primaerquelle
+    # fuer einen zweiten Yahoo-Abruf verwendet.
     cache = _cache_load()
-    batch_tickers = []
-    cached_series = {}
-
     for name, ticker, data_type in non_lme:
-        entry = cache.get("market", {}).get(ticker)
-        cached = _parse_market_cache_entry(entry)
-        cache_ok = bool(not cached.empty and _cache_valid(cached.index[-1].date().isoformat(), 7, today=today))
+        hist = shared_histories.get(ticker)
+        close = pd.Series(dtype=float)
+        provenance = "UNAVAILABLE"
+
+        # Die bisherige Makro-Provenienz bleibt unveraendert: An Wochenenden
+        # gilt der letzte gueltige Makro-Cache-Stand weiterhin als
+        # REAL_CACHED. Der Shared-Cache darf diese fachliche Kennzeichnung
+        # nicht in REAL umwandeln, auch wenn analyse.py zuvor dieselbe
+        # Historie geladen hat. Unter der Woche ist ein erfolgreicher Shared-
+        # Cache-Treffer der aktuelle REAL-Marktstand dieses Jobs.
         weekend_closed = today.weekday() >= 5 and ticker not in {"BTC-USD", "ETH-USD"}
-        if weekend_closed and cache_ok:
-            cached_series[ticker] = (cached, "REAL_CACHED")
-            print(f"INFO: MARKET-CACHE-Hit {ticker} Datenstand={cached.index[-1].date()} Grund=Wochenende")
+        macro_entry = cache.get("market", {}).get(ticker)
+        macro_cached = _parse_market_cache_entry(macro_entry)
+        macro_cache_ok = bool(
+            not macro_cached.empty
+            and _cache_valid(macro_cached.index[-1].date().isoformat(), 7, today=today)
+        )
+
+        if weekend_closed and macro_cache_ok:
+            close, provenance = macro_cached, "REAL_CACHED"
+            print(f"INFO: MARKET-CACHE-Hit {ticker} Datenstand={close.index[-1].date()} Grund=Wochenende")
         else:
-            batch_tickers.append(ticker)
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+                if not close.empty:
+                    provenance = "REAL"
+                    print(f"INFO: SHARED-MARKET-Hit {ticker} Datenstand={close.index[-1].date()}")
 
-    batch_data = {}
-    if batch_tickers:
-        try:
-            print(f"INFO: YF-BATCH Start tickers={len(batch_tickers)}")
-            hist = yf.download(batch_tickers, period="2y", interval="1d", auto_adjust=False, progress=False, threads=4, timeout=MARKET_TIMEOUT)
-            batch_data = _market_batch_extract(hist, batch_tickers)
-            print(f"INFO: YF-BATCH Ende erhalten={len(batch_data)}/{len(batch_tickers)}")
-        except Exception as exc:
-            print(f"WARNUNG: YF-BATCH fehlgeschlagen ({type(exc).__name__}: {exc})")
-
-    # Batch-Ergebnisse gesammelt und einmalig atomar in den Cache schreiben.
-    # Dadurch entstehen bei einem erfolgreichen 24-Ticker-Batch nicht 24 Cache-Writes.
-    if batch_data:
-        with CACHE_WRITE_LOCK:
-            cache = _cache_load()
-            market_cache = cache.setdefault("market", {})
-            for ticker, close in batch_data.items():
-                market_cache[ticker] = {
-                    "saved_at": time.time(),
-                    "data_date": pd.Timestamp(close.index[-1]).date().isoformat(),
-                    "payload": close.to_frame("Close").to_json(orient="split", date_format="iso"),
-                    "status": "REAL",
-                }
-            _cache_save(cache)
-        print(f"INFO: MARKET-CACHE Batch-Write entries={len(batch_data)}")
-
-    for name, ticker, data_type in non_lme:
-        if ticker in cached_series:
-            close, provenance = cached_series[ticker]
-        elif ticker in batch_data:
-            close, provenance = batch_data[ticker], "REAL"
-        else:
+        if close.empty:
             entry = cache.get("market", {}).get(ticker)
             cached = _parse_market_cache_entry(entry)
             if not cached.empty and _cache_valid(cached.index[-1].date().isoformat(), 7, today=today):
                 close, provenance = cached, "REAL_CACHED"
-                print(f"WARNUNG: Marktdaten {ticker} im Batch nicht erhalten - verwende REAL_CACHED {cached.index[-1].date()}")
+                print(f"WARNUNG: Shared-Marktdaten {ticker} nicht verfuegbar - verwende Makro-REAL_CACHED {cached.index[-1].date()}")
             else:
-                close, provenance = pd.Series(dtype=float), "UNAVAILABLE"
-                print(f"WARNUNG: Marktdaten {ticker} nicht verfuegbar: Batch ohne gueltigen Cache-Fallback")
+                print(f"WARNUNG: Marktdaten {ticker} nicht verfuegbar: Shared-Quelle ohne gueltigen Cache-Fallback")
 
         if close.empty:
             results[name] = f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE={ticker} | DATENTYP={data_type}"
