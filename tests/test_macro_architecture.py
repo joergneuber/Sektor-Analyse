@@ -168,7 +168,7 @@ def test_gdelt_gkg_fallback_degrades_quality_without_blocking_gate():
     _assert("GDELT Nahost (24H_SAMPLE)" in secondary, "GKG sample provenance gap missing")
 
 
-def test_kobalt_secondary_provenance_degrades_quality():
+def test_kobalt_secondary_provenance_is_valid_without_warning():
     lines = [
         "Fed Funds Effective Rate: 3.63 | STATUS=REAL",
         "US 2Y Treasury: 4.39 | STATUS=REAL",
@@ -185,8 +185,10 @@ def test_kobalt_secondary_provenance_degrades_quality():
     # handling is independent of the cobalt provenance check.
     gate, _, quality, secondary = m.data_quality_gate(lines)
     _assert(gate == "FREIGEGEBEN", "Kobalt secondary provenance must not block Tier-1 gate")
-    _assert(quality == "EINGESCHRAENKT", "Kobalt without official LME provenance must degrade quality")
-    _assert("LME Kobalt (OFFIZIELLE QUELLE NICHT BESTAETIGT)" in secondary, "Kobalt provenance gap missing")
+    # GDELT is deliberately omitted above, so quality may still be restricted
+    # independently of the valid cobalt price/provenance.
+    _assert(quality == "EINGESCHRAENKT", "Missing GDELT context should still degrade quality")
+    _assert("LME Kobalt (OFFIZIELLE QUELLE NICHT BESTAETIGT)" not in secondary, "Obsolete cobalt provenance warning must not be emitted")
 
 
 def test_point7_is_python_authoritative_and_gemini_only_interprets_72():
@@ -228,7 +230,7 @@ def main():
         test_gemini_is_macro_interpreter,
         test_gate_rules,
         test_gdelt_gkg_fallback_degrades_quality_without_blocking_gate,
-        test_kobalt_secondary_provenance_degrades_quality,
+        test_kobalt_secondary_provenance_is_valid_without_warning,
         test_point7_is_python_authoritative_and_gemini_only_interprets_72,
         test_trade_story_layer_is_explicit_and_does_not_create_setups,
         test_calendar_parsers,
