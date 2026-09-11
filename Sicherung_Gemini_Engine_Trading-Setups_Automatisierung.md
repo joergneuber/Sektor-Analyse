@@ -373,7 +373,7 @@ anderen Dateien A-Kandidaten ableiten. Wenn die JSON leer ist oder keine Datei
 bereitgestellt wurde, schreibe „Keine Titel in der Einzel-Check-Beobachtungsliste.”
 Nichts selbst berechnen, keine Titel aus anderen Dateien ergänzen und die Liste
 nicht mit der bestehenden „Watchlist (manuelle Prüfung)” vermischen.
-• WATCHLIST-UMFANG (für allgemeine manuelle Watchlists): Die ausführlichen Roh-Watchlists dürfen vollständig gelesen und zur internen Nachvollziehbarkeit verwendet werden, aber in der fertigen Auswertung werden je allgemeinem Watchlist-Block höchstens 5 Titel ausgegeben. Bei BEINAHE-KANDIDATEN ist die bestehende Reihenfolge nach dem bindenden CRV verbindlich und es werden die ersten maximal 5 Titel übernommen. Bei einer ACHTUNG-Watchlist oder DIVERGENZ-Watchlist ohne vorgegebene Rangfolge wird die vorhandene Reihenfolge übernommen; keine eigene Rangfolge, kein neues Scoring und keine Berechnung eines „Interesse-Scores”. AUSNAHME: Abschnitt 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste wird vollständig aus der bereitgestellten einzel_check_beobachtung.json übernommen und darf nicht auf 5 Titel gekürzt werden. Die zugrunde liegenden Filter und Statuswerte bleiben unverändert.
+• WATCHLIST-UMFANG (für allgemeine manuelle Watchlists): Die ausführlichen Roh-Watchlists dürfen vollständig gelesen und zur internen Nachvollziehbarkeit verwendet werden, aber in der fertigen Auswertung werden je allgemeinem Watchlist-Block höchstens 5 Titel ausgegeben. Bei BEINAHE-KANDIDATEN ist die bestehende Reihenfolge nach dem bindenden CRV verbindlich und es werden die ersten maximal 5 Titel übernommen. Bei einer ACHTUNG-Watchlist oder DIVERGENZ-Watchlist ohne vorgegebene Rangfolge wird die vorhandene Reihenfolge übernommen; keine eigene Rangfolge, kein neues Scoring und keine Berechnung eines „Interesse-Scores”. AUSNAHME: Abschnitt 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste übernimmt vollständig alle aktuell vorhandenen B- und C-Kandidaten aus der bereitgestellten einzel_check_beobachtung.json und darf nicht auf 5 Titel gekürzt werden; KEIN-KANDIDAT-Titel werden bewusst nicht sichtbar ausgegeben. Die zugrunde liegenden Filter und Statuswerte bleiben unverändert.
 • EINHEITLICHE „WATCHLIST (manuelle Prüfung)” – MEHRZEILEN-VORLAGE
 (Pflicht, GEÄNDERT 09.08.2026, Nutzerwunsch – ersetzt die
 Kompaktzeile vom 06.08.2026 vollständig; die zugrunde liegenden
@@ -386,7 +386,7 @@ Abschnitt 2/4/5 (nur wenn dort PFLICHT gemäß der jeweiligen
 0-Setups-Regel) und die Divergenz-Watchlist aus Abschnitt 3 – unter
 der Überschrift „Watchlist (manuelle Prüfung)” zusammen, direkt am
 Ende des jeweils zugehörigen Abschnitts (nicht als separater
-Gesamt-Abschnitt – die Zuordnung zur Kategorie bleibt wichtig). WICHTIG: Trotz vollständiger Prüfung der Rohdaten werden je zugehörigem allgemeinen Watchlist-Block höchstens 5 Titel ausgegeben; weitere Titel werden nicht einzeln aufgelistet. AUSNAHME: 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste wird vollständig ausgegeben und nicht gekürzt.
+Gesamt-Abschnitt – die Zuordnung zur Kategorie bleibt wichtig). WICHTIG: Trotz vollständiger Prüfung der Rohdaten werden je zugehörigem allgemeinen Watchlist-Block höchstens 5 Titel ausgegeben; weitere Titel werden nicht einzeln aufgelistet. AUSNAHME: 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste wird vollständig für alle aktuellen B- und C-Kandidaten ausgegeben und nicht gekürzt; KEIN-KANDIDAT-Titel werden bewusst nicht sichtbar ausgegeben.
 KEINE Markdown-Syntax, KEINE Tabelle (siehe globale Regel oben).
 ZWEI VERSCHIEDENE FORMATE je nach Quelle: (1) ACHTUNG-Watchlist UND
 Beinahe-Kandidaten (haben beide TP1/TP2/CRV/Stop in den Rohdaten):
@@ -426,9 +426,8 @@ RSI-Divergenz) erfüllt ist und denen nur noch der frische
 Kumo-Trigger fehlt (die Kandidaten-Pipeline der nächsten Tage). Gib
 diese Liste im Abschnitt „Trendwende-Setups” in einem kompakten Satz wieder, maximal 5 Namen; wenn die Quelldatei eine Reihenfolge vorgibt, übernimm die ersten maximal 5 Einträge unverändert. Formuliere z. B. „Beobachtung: 11 Titel erfüllen die Boden-Bedingung und warten auf den frischen Kumo-Trigger; ausgegeben werden die relevantesten 5: …”
 (29.07.2026): Das Briefing liefert die Watchlist jetzt als „Name
-(Ticker)”-Liste. Übernimm in der Auswertung NUR DIE NAMEN
-(vollständige Firmennamen, Ticker in Klammern weglassen - dieselbe
-Namens-Regel wie überall sonst). Keine Setup-Karten, keine
+(Ticker)”-Liste. Übernimm in der Auswertung die vollständigen Namen
+inklusive Ticker im Format „Name (Ticker)”. Keine Setup-Karten, keine
 Bewertung, keine Empfehlung. Fehlt der Block, entfällt der Satz
 ersatzlos.
 • REGIONEN-PERFORMANCE ZUERST (NEU 29.07.2026, Nutzerwunsch): Die
@@ -2084,6 +2083,9 @@ Keine Interpretation, Umformulierung oder eigene Bewertung dieser drei Werte.
 5.4 Szenario-Matrix
 5.5 Chancen & Risiken
 
+VERBINDLICHE DARSTELLUNGSREGEL FÜR TITELNENNUNGEN:
+In der gesamten fertigen Auswertung ist bei jeder Nennung eines Unternehmens oder Wertpapiers immer der Firmen-/Unternehmensname zusammen mit dem Yahoo-Ticker im Format „Name (Ticker)” auszugeben, sofern der Ticker für den Titel vorhanden ist. Der Ticker allein ist nicht zulässig, auch nicht in Überschriften, Listen, Trade-Storys, Markt-/Sektorbetrachtungen, Chancen/Risiken, Watchlists oder Setup-Abschnitten. Für Instrumente ohne Yahoo-Ticker ist die verfügbare eindeutige Bezeichnung zu verwenden.
+
 6. TRADING-IDEEN & SETUPS
 6.1 PERSPEKTIVISCHE TRADE-IDEEN
 6.2 TRENDFOLGE
@@ -2109,21 +2111,19 @@ automatisch; Fibonacci/Extension erst bei qualifizierter und bestätigter A-B-C-
 
 6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste
 Hier stehen ALLE aktuell in der bestehenden einzel_check_beobachtung.json enthaltenen
-Kandidaten, deren Status nicht A ist, also insbesondere B, C und – solange nach der
-bestehenden 45-Tage-Regel noch vorhanden – KEIN KANDIDAT. A-Kandidaten werden nicht
-doppelt in 6.5.2 ausgegeben, sondern ausschließlich in 6.5.1.
-Übernimm Unternehmensname, Yahoo-Ticker, Status und letzten Check. Ergänze außerdem
-„Quelle”: Für HEBELTRADER-Kandidaten die konkrete Ausgabe (z.B. „HEBELTRADER 164/26”),
-für manuell/anderweitig hinzugefügte Kandidaten „-”. Die Quelle ist vollständig getrennt
-vom Status. Die vollständige Liste wird ausgegeben und nicht auf 5 Titel gekürzt.
-Für die Darstellung ist die vollständige Liste übersichtlich nach aktuellem Status in
-B, C und KEIN KANDIDAT zu gruppieren und innerhalb der Gruppen alphabetisch zu sortieren.
-Für jeden Titel ist zusätzlich der von Python bereitgestellte Statusverlauf „Letzter Status ->
-aktueller Status” kompakt auszugeben, z.B. „AMD | A -> A”, „TSM | B -> B” oder „CVX | C -> B”.
-Der historische Status dient ausschließlich der Darstellung; Gemini darf daraus keine aktuelle
-Kategorie rekonstruieren oder verändern. Kein Titel darf wegen dieser Darstellung weggelassen werden.
-Wenn die JSON keine Kandidaten enthält, den Unterpunkt mit dem entsprechenden Leerhinweis
-ausgeben.
+Kandidaten mit Status B oder C. Titel mit aktuellem Status KEIN KANDIDAT werden in der
+sichtbaren Liste bewusst nicht ausgegeben. Sie bleiben Bestandteil der autoritativen
+Beobachtungsliste und erscheinen automatisch wieder, sobald ihr aktueller Status erneut
+A, B oder C ist. A-Kandidaten werden nicht doppelt in 6.5.2 ausgegeben, sondern
+ausschließlich in 6.5.1.
+Übernimm bei jedem sichtbaren Titel Unternehmensname und Yahoo-Ticker im Format
+„Name (Ticker)”, den aktuellen Status sowie den Statusverlauf „Letzter Status -> aktueller
+Status”. Ergänze außerdem „Quelle”: Für HEBELTRADER-Kandidaten die konkrete Ausgabe
+(z.B. „HEBELTRADER 164/26”), für manuell/anderweitig hinzugefügte Kandidaten „-”.
+Die Quelle ist vollständig getrennt vom Status. Die vollständige B/C-Liste wird ausgegeben
+und nicht auf 5 Titel gekürzt. Gruppiere nach B und C und sortiere innerhalb jeder Gruppe
+alphabetisch. Wenn keine B/C-Kandidaten vorhanden sind, den Unterpunkt mit dem
+entsprechenden Leerhinweis ausgeben.
 6.6 SHORT
 6.7 EDELMETALLE
 6.8 EXTERNE QUELLEN / WEITERE ANSÄTZE
@@ -2163,7 +2163,7 @@ VERBINDLICHER MAKRO-EVENT-ABGLEICH: Berücksichtige im Ausblick den Block „MAK
 
 9. METHODIK & DATENHINWEISE
 
-VERBINDLICHE AUSNAHME FÜR 6.5.2: Die allgemeine 5-Titel-Begrenzung für Watchlists gilt NICHT für „6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste”. Dort sind ALLE aktuell in einzel_check_beobachtung.json enthaltenen Nicht-A-Kandidaten auszugeben; A-Kandidaten gehören ausschließlich in 6.5.1.
+VERBINDLICHE AUSNAHME FÜR 6.5.2: Die allgemeine 5-Titel-Begrenzung für Watchlists gilt NICHT für „6.5.2 HEBELTRADER-Watchlist / Beobachtungsliste”. Dort sind ALLE aktuell in einzel_check_beobachtung.json enthaltenen B- und C-Kandidaten auszugeben; KEIN-KANDIDAT-Titel werden bewusst nicht sichtbar ausgegeben und A-Kandidaten gehören ausschließlich in 6.5.1.
 
 WICHTIG: Diese Anweisung ist ausschließlich eine AUSGABEVORGABE. Sie darf
 keine bestehende Analyse-, Scanner-, Filter-, CRV-, Positions-, Daten- oder

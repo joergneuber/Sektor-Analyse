@@ -865,7 +865,89 @@ def _kurzstatus(status):
     return mapping.get(str(status or "").strip().upper(), str(status or "NICHT BEKANNT").strip())
 
 
-def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None):
+def _lade_6_5_namen(eingabedateien=None, historie_pfad=None):
+    """Ermittelt autoritative Anzeigenamen fuer 6.5.
+
+    Prioritaet: aktuelle strukturierte CSV/JSON-Quellen des aktuellen Laufs.
+    Die Historie wird nur als Fallback fuer Ticker verwendet, fuer die kein
+    aktueller Name vorliegt. Der Name dient nur der Darstellung; die aktuelle
+    Kategorie bleibt ausschliesslich aus der Beobachtungsliste.
+    """
+    namen = {}
+
+    def add_current(ticker, name):
+        ticker = _normalisiere_ticker(ticker)
+        name = str(name or "").strip()
+        if ticker and name and name.upper() != ticker.upper():
+            # Aktuelle strukturierte Daten haben Vorrang.
+            namen[ticker] = name
+
+    # Zuerst ausschliesslich aktuelle strukturierte Quellen lesen.
+    for pfad in (eingabedateien or {}).values():
+        if not pfad or not os.path.isfile(pfad):
+            continue
+        suffix = Path(pfad).suffix.lower()
+        try:
+            if suffix == ".csv":
+                with open(pfad, "r", encoding="utf-8-sig", newline="") as f:
+                    sample = f.read(4096)
+                    f.seek(0)
+                    try:
+                        dialect = csv.Sniffer().sniff(sample, delimiters=";,\t") if sample.strip() else None
+                    except csv.Error:
+                        dialect = None
+                    reader = csv.DictReader(f, delimiter=dialect.delimiter if dialect else ";")
+                    fields = reader.fieldnames or []
+                    lower = {str(x).strip().lower(): x for x in fields}
+                    ticker_k = next((lower[k] for k in ("ticker", "yahoo-ticker", "yahoo ticker") if k in lower), None)
+                    name_k = next((lower[k] for k in ("name", "firmenname", "unternehmen", "company") if k in lower), None)
+                    if ticker_k and name_k:
+                        for row in reader:
+                            add_current(row.get(ticker_k), row.get(name_k))
+            elif suffix == ".json":
+                with open(pfad, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    for ticker, entry in data.items():
+                        if isinstance(entry, dict):
+                            add_current(
+                                ticker,
+                                entry.get("Name")
+                                or entry.get("name")
+                                or entry.get("Firmenname")
+                                or entry.get("firmenname"),
+                            )
+        except Exception:
+            continue
+
+    # Historie erst danach: nur fehlende Namen ergaenzen, niemals aktuelle
+    # Namen ueberschreiben.
+    if historie_pfad and os.path.isfile(historie_pfad):
+        try:
+            with open(historie_pfad, "r", encoding="utf-8-sig") as f:
+                for raw in f:
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    ticker = _normalisiere_ticker(row.get("Ticker"))
+                    name = str(row.get("Name") or "").strip()
+                    if (
+                        ticker
+                        and name
+                        and name.upper() != ticker.upper()
+                        and ticker not in namen
+                    ):
+                        namen[ticker] = name
+        except Exception as exc:
+            print(f"WARNUNG: 6.5-Namenshistorie konnte nicht gelesen werden: {exc}")
+
+    return namen
+
+
+def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, eingabedateien=None):
     """Erzeugt die verbindliche 6.5.1-/6.5.2-Zuordnung aus dem aktuellen
     Einzel-Check-Status. Historie wird nur fuer die Darstellung des
     Statusverlaufs verwendet, niemals fuer die aktuelle Kategoriezuordnung.
@@ -889,6 +971,7 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None):
     aktuelle_nicht_a = []
     zulaessige_nicht_a_status = {"KAUFKANDIDAT B", "KAUFKANDIDAT C", "KEIN KANDIDAT"}
     vorherige_status = _lade_6_5_statusverlauf(historie_pfad)
+    namen = _lade_6_5_namen(eingabedateien, historie_pfad)
 
     for ticker, eintrag in daten.items():
         if not isinstance(eintrag, dict):
@@ -918,33 +1001,37 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None):
     ]
     for ticker, quelle in aktuelle_a:
         vorher = vorherige_status.get(ticker, "NICHT BEKANNT")
+        name = namen.get(_normalisiere_ticker(ticker), "Name nicht verfügbar")
         zeilen.append(
-            f"- {ticker} | {_kurzstatus(vorher)} -> A | aktueller Status: KAUFKANDIDAT A | Quelle: {quelle}"
+            f"- {name} ({ticker}) | {_kurzstatus(vorher)} -> A | aktueller Status: KAUFKANDIDAT A | Quelle: {quelle}"
         )
 
-    # 6.5.2 bleibt vollstaendig: keine Begrenzung, keine Auswahl.
-    # Darstellung erfolgt gruppiert nach dem aktuellen Status und innerhalb
-    # der Gruppe alphabetisch.
+    # 6.5.2 zeigt ausschliesslich aktuell aktive Nicht-A-Kandidaten (B/C).
+    # KEIN KANDIDAT bleibt intern Bestandteil der autoritativen Beobachtungsliste,
+    # wird aber bewusst nicht dargestellt. Sobald derselbe Titel wieder B/C/A wird,
+    # erscheint er automatisch wieder. Es gibt weiterhin KEINE Mengenbegrenzung.
+    aktive_nicht_a = [row for row in aktuelle_nicht_a if row[1] in {"KAUFKANDIDAT B", "KAUFKANDIDAT C"}]
     zeilen.extend([
         "",
-        f"6.5.2 AKTUELLE NICHT-A-KANDIDATEN ({len(aktuelle_nicht_a)} Titel):",
-        "Darstellung: Letzter Status -> aktueller Status | Quelle",
+        f"6.5.2 AKTUELLE NICHT-A-KANDIDATEN ({len(aktive_nicht_a)} Titel):",
+        "Darstellung: Name (Ticker) | Letzter Status -> aktueller Status | Quelle",
     ])
-    gruppen = {"KAUFKANDIDAT B": [], "KAUFKANDIDAT C": [], "KEIN KANDIDAT": []}
-    for ticker, status, quelle in aktuelle_nicht_a:
+    gruppen = {"KAUFKANDIDAT B": [], "KAUFKANDIDAT C": []}
+    for ticker, status, quelle in aktive_nicht_a:
         gruppen[status].append((ticker, status, quelle))
-    for status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C", "KEIN KANDIDAT"):
+    for status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C"):
         zeilen.append("")
         zeilen.append(f"{_kurzstatus(status)}:")
         for ticker, current_status, quelle in gruppen[status]:
             vorher = vorherige_status.get(ticker, "NICHT BEKANNT")
+            name = namen.get(_normalisiere_ticker(ticker), "Name nicht verfügbar")
             zeilen.append(
-                f"- {ticker} | {_kurzstatus(vorher)} -> {_kurzstatus(current_status)} | Quelle: {quelle}"
+                f"- {name} ({ticker}) | {_kurzstatus(vorher)} -> {_kurzstatus(current_status)} | Quelle: {quelle}"
             )
 
     zeilen.extend([
         "",
-        f"KONTROLLSUMME: {len(aktuelle_a)} Titel in 6.5.1 + {len(aktuelle_nicht_a)} Titel in 6.5.2 = {len(daten)} beobachtete Titel.",
+        f"KONTROLLSUMME: {len(aktuelle_a)} A-Kandidaten + {len(aktive_nicht_a)} aktive B/C-Kandidaten = {len(aktuelle_a) + len(aktive_nicht_a)} dargestellte Titel; weitere {len(aktuelle_nicht_a) - len(aktive_nicht_a)} Titel mit Status KEIN KANDIDAT werden bewusst nicht dargestellt.",
         "Die Quelle ist unabhaengig vom Status: Quelle HEBELTRADER oder Quelle '-' aendert die Kategorie nicht.",
         "Gemini darf fuer 6.5 nur die hier vorgegebene Mitgliedschaft verwenden; technische Inhalte duerfen weiterhin nur aus den bereitgestellten Quelldaten uebernommen werden.",
     ])
@@ -1536,7 +1623,7 @@ def gemini_auswertung_starten():
     # HEBELTRADER- oder Historienstatus die aktuelle Kategorie nicht mehr verfälschen.
     beobachtung_pfad = eingabedateien.get("Einzel-Check-Beobachtungsliste")
     sechs_fuenf_autoritaet = erstelle_6_5_autoritative_liste(
-        beobachtung_pfad, eingabedateien.get("Einzel-Check-Technikhistorie")
+        beobachtung_pfad, eingabedateien.get("Einzel-Check-Technikhistorie"), eingabedateien
     )
 
     # Autoritative Punkt-7-Fakten werden genau einmal pro Lauf gelesen.
@@ -1607,7 +1694,7 @@ def gemini_auswertung_starten():
                     "'Quelle' angezeigt: HEBELTRADER-Kandidaten tragen die konkrete Ausgabe "
                     "(z.B. 'HEBELTRADER 164/26'), manuell oder anderweitig hinzugefuegte Titel "
                     "tragen 'Quelle: -'. Ein A-Kandidat mit 'Quelle: -' gehoert also ebenfalls "
-                    "in 6.5.1. Zeige bei JEDEM Titel immer Firmenname UND Yahoo-Ticker gemeinsam. "
+                    "in 6.5.1. Zeige bei JEDEM Titel immer Firmenname UND Yahoo-Ticker gemeinsam im Format 'Name (Ticker)'. Diese Regel gilt fuer JEDE Titel-/Unternehmensnennung in der gesamten fertigen Auswertung, nicht nur fuer Punkt 6.5. Ticker allein ist unzulaessig, sofern ein Name aus den bereitgestellten Daten verfuegbar ist. "
                     "Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, "
                     "Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht "
                     "neu berechnet, veraendert, aufgehoben oder ersetzt werden. "
@@ -1635,7 +1722,7 @@ def gemini_auswertung_starten():
                     "maßgeblich. "
                     "Die vollstaendige 6.5.2-Liste soll aus der bestehenden einzel_check_beobachtung.json "
                     "kommen; deren 'quelle' zeigt HEBELTRADER-Ausgabe oder '-' an. "
-                    "6.5.2 darf nicht auf 5 Titel gekuerzt werden. Gib ALLE vorgegebenen Nicht-A-Kandidaten aus. Fuer die Darstellung von 6.5.2 gruppiere nach aktuellem Status in B, C und Kein Kandidat und sortiere innerhalb jeder Gruppe alphabetisch. Zeige fuer jeden Titel den Statusverlauf kompakt als 'Letzter Status -> aktueller Status', z.B. 'AMD | A -> A' bzw. bei Nicht-A entsprechend 'B -> B', 'C -> B' oder 'B -> Kein Kandidat'. Verwende dafuer ausschliesslich die von Python bereitgestellte Statusverlaufsinformation; Gemini darf keinen frueheren Status selbst rekonstruieren. Die Darstellung darf die Mitgliedschaft nicht veraendern und darf keine Titel auslassen. "
+                    "6.5.2 darf nicht auf 5 Titel gekuerzt werden. Gib ALLE aktuell vorhandenen B- und C-Kandidaten aus. Titel mit aktuellem Status KEIN KANDIDAT werden in der sichtbaren 6.5.2-Liste bewusst NICHT ausgegeben; sie bleiben jedoch Bestandteil der autoritativen Beobachtungsliste und erscheinen automatisch wieder, sobald ihr aktueller Status erneut B, C oder A ist. Gruppiere die sichtbaren Titel nach aktuellem Status in B und C und sortiere innerhalb jeder Gruppe alphabetisch. Zeige fuer jeden sichtbaren Titel den Statusverlauf kompakt als 'Name (Ticker) | Letzter Status -> aktueller Status', z.B. 'Advanced Micro Devices, Inc. (AMD) | A -> A' bzw. 'Chevron Corporation (CVX) | C -> B'. Verwende dafuer ausschliesslich die von Python bereitgestellte Statusverlaufsinformation; Gemini darf keinen frueheren Status selbst rekonstruieren. Die Darstellung darf die Mitgliedschaft nicht veraendern und darf keine Titel auslassen. "
                     "PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 7.2 Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Python erzeugt 7.1 Portfolio-Übersicht, 7.3 Einzelpositionen und 7.4 geschlossene Positionen aus den autoritativen Quellen. Gemini erzeugt ausschließlich die qualitative Interpretation für 7.2 Handlungsbedarf und darf in 7.1/7.3/7.4 keine Faktenblöcke erzeugen.\n"
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
