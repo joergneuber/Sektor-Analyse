@@ -802,6 +802,10 @@ def run(update: bool = True, start_period: int = 2000) -> int:
         update_iea(cache)
         update_sipri(cache)
 
+    # Cache-Metadaten beim Übergang von einer älteren Cache-Version
+    # kontrolliert auf die aktuelle Strukturversion migrieren.
+    # Die vorhandenen Beobachtungen werden dabei nicht verworfen oder verändert.
+    cache["cache_version"] = CACHE_VERSION
     cache["cache_updated_at"] = now_iso()
     atomic_write_json(CACHE_FILE, cache)
 
@@ -861,3 +865,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
