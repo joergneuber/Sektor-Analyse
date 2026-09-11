@@ -793,33 +793,45 @@ def aktualisiere_positionen(df):
         # noch fehlen (z.B. durch manuelle Wiederherstellung eines Testfalls).
         # In diesem Fall die fehlenden Exit-Fakten noch vervollständigen.
         #
-        # WICHTIG: 'Verkauft' bleibt bewusst vollständig manuell; nur
-        # 'Gestoppt' darf hier automatisch vervollständigt werden.
-        if status == 'gestoppt':
+        # WICHTIG: Bei 'Verkauft' bleiben die vom Nutzer manuell gesetzten
+        # Exit-Fakten (Ausstiegsdatum/Ausstiegskurs) unverändert. Die danach
+        # notwendige Finalisierung (Performance) erfolgt jedoch genauso wie
+        # bei 'Gestoppt'.
+        if status in {'gestoppt', 'verkauft'}:
             ausstiegsdatum = str(row.get('Ausstiegsdatum', '')).strip()
             ausstiegskurs = sicheres_float(row.get('Ausstiegskurs'), ticker, 'Ausstiegskurs')
 
-            if ausstiegskurs is None:
-                # Falls der aktuelle Kurs bereits in der Position steht, diesen
-                # als den beim Stop festgehaltenen Kurs verwenden. Nur wenn er
-                # ebenfalls fehlt, wird der Kurs extern ermittelt.
-                ausstiegskurs = sicheres_float(row.get('Aktueller_Kurs'), ticker, 'Aktueller_Kurs')
-                if ausstiegskurs is not None:
-                    ausstiegskurs = round(ausstiegskurs, 2)
-                else:
-                    ausstiegskurs = hole_aktuellen_kurs(ticker, row.get('Markt'))
+            if status == 'gestoppt':
+                if ausstiegskurs is None:
+                    # Falls der aktuelle Kurs bereits in der Position steht, diesen
+                    # als den beim Stop festgehaltenen Kurs verwenden. Nur wenn er
+                    # ebenfalls fehlt, wird der Kurs extern ermittelt.
+                    ausstiegskurs = sicheres_float(row.get('Aktueller_Kurs'), ticker, 'Aktueller_Kurs')
                     if ausstiegskurs is not None:
                         ausstiegskurs = round(ausstiegskurs, 2)
+                    else:
+                        ausstiegskurs = hole_aktuellen_kurs(ticker, row.get('Markt'))
+                        if ausstiegskurs is not None:
+                            ausstiegskurs = round(ausstiegskurs, 2)
 
-            if ausstiegskurs is None:
-                print(f"WARNUNG: {ticker} ist bereits GESTOPPT, aber Ausstiegskurs fehlt und konnte nicht ermittelt werden - Exit-Daten bleiben unvollständig.")
-                continue
+                if ausstiegskurs is None:
+                    print(f"WARNUNG: {ticker} ist bereits GESTOPPT, aber Ausstiegskurs fehlt und konnte nicht ermittelt werden - Exit-Daten bleiben unvollständig.")
+                    continue
 
-            if not ausstiegsdatum or ausstiegsdatum.lower() == 'nan':
-                df.at[idx, 'Ausstiegsdatum'] = heute
-                ausstiegsdatum = heute
+                if not ausstiegsdatum or ausstiegsdatum.lower() == 'nan':
+                    df.at[idx, 'Ausstiegsdatum'] = heute
+                    ausstiegsdatum = heute
 
-            df.at[idx, 'Ausstiegskurs'] = ausstiegskurs
+                df.at[idx, 'Ausstiegskurs'] = ausstiegskurs
+            else:
+                # 'Verkauft' ist ein manueller Abschluss: Ausstiegsdatum und
+                # Ausstiegskurs werden ausschließlich vom Nutzer vorgegeben.
+                # Fehlt einer der beiden Werte, wird die Position nicht
+                # künstlich vervollständigt und bleibt für die manuelle
+                # Nachpflege erhalten.
+                if not ausstiegsdatum or ausstiegsdatum.lower() == 'nan' or ausstiegskurs is None:
+                    print(f"WARNUNG: {ticker} ist VERKAUFT, aber Ausstiegsdatum/Ausstiegskurs sind unvollständig - keine automatische Vervollständigung.")
+                    continue
 
             einstieg_geschlossen = sicheres_float(row.get('Einstieg'), ticker, 'Einstieg')
             stop_geschlossen = sicheres_float(row.get('Stop'), ticker, 'Stop')
@@ -840,10 +852,17 @@ def aktualisiere_positionen(df):
                     )
                 df.at[idx, 'Performance_Seit_Einstieg%'] = performance_geschlossen
 
-            print(
-                f"DEBUG: {ticker} bereits GESTOPPT -> Exit-Fakten vervollständigt: "
-                f"Ausstiegsdatum={ausstiegsdatum}, Ausstiegskurs={ausstiegskurs}."
-            )
+            if status == 'gestoppt':
+                print(
+                    f"DEBUG: {ticker} bereits GESTOPPT -> Exit-Fakten vervollständigt: "
+                    f"Ausstiegsdatum={ausstiegsdatum}, Ausstiegskurs={ausstiegskurs}."
+                )
+            else:
+                print(
+                    f"DEBUG: {ticker} VERKAUFT -> manuelle Exit-Fakten übernommen und "
+                    f"Performance finalisiert: Ausstiegsdatum={ausstiegsdatum}, "
+                    f"Ausstiegskurs={ausstiegskurs}."
+                )
             continue
 
         if status != 'offen':
@@ -1095,18 +1114,23 @@ if __name__ == '__main__':
     status_norm = df['Status'].astype(str).str.strip().str.lower() if not df.empty else pd.Series(dtype=str)
     anzahl_offen = int((status_norm == 'offen').sum())
     anzahl_gestoppt_unvollstaendig = 0
+    anzahl_verkauft = 0
     if not df.empty:
         gestoppt = status_norm == 'gestoppt'
+        verkauft = status_norm == 'verkauft'
         ausstiegsdatum_leer = df['Ausstiegsdatum'].astype(str).str.strip().isin(('', 'nan'))
         ausstiegskurs_leer = df['Ausstiegskurs'].astype(str).str.strip().isin(('', 'nan'))
         anzahl_gestoppt_unvollstaendig = int((gestoppt & (ausstiegsdatum_leer | ausstiegskurs_leer)).sum())
+        anzahl_verkauft = int(verkauft.sum())
 
     print(f"DEBUG: {anzahl_offen} offene Position(en) zur Prüfung gefunden.")
     if anzahl_gestoppt_unvollstaendig:
         print(f"DEBUG: {anzahl_gestoppt_unvollstaendig} bereits GESTOPPTe Position(en) mit unvollständigen Exit-Daten zur Vervollständigung gefunden.")
+    if anzahl_verkauft:
+        print(f"DEBUG: {anzahl_verkauft} manuell VERKAUFTE Position(en) zur Finalisierung gefunden.")
 
     alert_events = []
-    if anzahl_offen > 0 or anzahl_gestoppt_unvollstaendig > 0:
+    if anzahl_offen > 0 or anzahl_gestoppt_unvollstaendig > 0 or anzahl_verkauft > 0:
         df, alert_events = aktualisiere_positionen(df)
         df = aktualisiere_os_kurse(df)
 

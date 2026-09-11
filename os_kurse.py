@@ -199,7 +199,10 @@ def berechne_os_performance(einstieg: object, aktuell: object) -> Optional[float
 
 
 def aktualisiere_optionsscheine(df: pd.DataFrame) -> pd.DataFrame:
-    """Aktualisiert echte OS-Kurse für offene Optionsschein-Positionen."""
+    """Aktualisiert echte OS-Kurse für offene und manuell verkaufte
+    Optionsschein-Positionen. Bei 'Verkauft' dient der Abruf der finalen
+    Kurs-/Performance-Feststellung; manuelle Aktien-Exit-Daten werden hier
+    nicht verändert."""
     required = [
         "Produkt_Typ", "Status", "OS_WKN", "OS_Einstiegskurs",
         "OS_Aktueller_Kurs", "OS_Performance%", "OS_Quelle", "OS_Kurszeit",
@@ -214,12 +217,15 @@ def aktualisiere_optionsscheine(df: pd.DataFrame) -> pd.DataFrame:
         df[column] = df[column].astype(object)
 
     for idx, row in df.iterrows():
-        if str(row.get("Status", "")).strip().lower() != "offen":
+        status = str(row.get("Status", "")).strip().lower()
+        if status not in {"offen", "verkauft"}:
             continue
         if str(row.get("Produkt_Typ", "")).strip().lower() != "optionsschein":
             continue
 
         # Alte/stale Automatikwerte vor jedem Abruf konsequent entfernen.
+        # Das gilt auch fuer manuell VERKAUFTE Positionen, damit ein alter
+        # oder fehlerhaft uebernommener Wert nicht in die Historie gelangt.
         df.at[idx, "OS_Aktueller_Kurs"] = ""
         df.at[idx, "OS_Performance%"] = ""
         df.at[idx, "OS_Kurszeit"] = ""
@@ -251,7 +257,7 @@ def aktualisiere_optionsscheine(df: pd.DataFrame) -> pd.DataFrame:
             df.at[idx, "OS_Performance%"] = performance
 
         print(
-            f"DEBUG: {ticker} / {wkn} -> OS-Kurs {quote.aktueller_kurs} | "
+            f"DEBUG: {ticker} / {wkn} ({status}) -> OS-Kurs {quote.aktueller_kurs} | "
             f"Performance {performance if performance is not None else '-'}% | "
             f"Quelle {QUELLE} | Kurszeit {quote.kurszeit or '-'}"
         )
