@@ -43,7 +43,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_FILE = SCRIPT_DIR / "struktur_trends_cache.json"
 
-CACHE_VERSION = "1.0"
+CACHE_VERSION = "1.1"
 
 # ---------------------------------------------------------------------------
 # Datenquellen / feste Konfiguration
@@ -233,6 +233,8 @@ def empty_field(source: str, dataset: str, frequency: str) -> dict[str, Any]:
         "data_period": None,
         "retrieved_at": None,
         "last_successful_update": None,
+        "series_count": 0,
+        "observation_count": 0,
         "data": {},
         "source_notes": [],
     }
@@ -401,14 +403,23 @@ def fetch_stan_measure(measure: str, start_period: int = 2000) -> list[dict[str,
 
 
 def _group_stan_rows(rows: list[dict[str, Any]], measure: str) -> dict[str, Any]:
+    """Gruppiert STAN-Rohdaten und entfernt nur exakte Serien-Duplikate.
+
+    Eine Serie wird durch Land + Aktivität definiert. Innerhalb der Serie
+    bleiben unterschiedliche Perioden/Einheiten/Transformationen erhalten.
+    Identische Beobachtungen werden deterministisch dedupliziert.
+    """
     observations: dict[str, Any] = {}
+
     for row in rows:
         country = str(row.get("reference_area") or "").strip()
         activity = str(row.get("activity") or "").strip()
-        if not country or not activity:
+
+        if country not in OECD_STAN_REFERENCE_AREAS:
             continue
-        if country not in OECD_STAN_REFERENCE_AREAS or activity not in OECD_STAN_ACTIVITIES:
+        if activity not in OECD_STAN_ACTIVITIES:
             continue
+
         key = f"{country}|{activity}"
         block = observations.setdefault(
             key,
@@ -420,11 +431,77 @@ def _group_stan_rows(rows: list[dict[str, Any]], measure: str) -> dict[str, Any]
                 "observations": [],
             },
         )
-        block["observations"].append({
+
+        observation = {
             k: v for k, v in row.items()
             if k not in {"reference_area", "activity", "measure"}
-        })
+        }
+
+        # Deduplizierung ohne Informationsverlust:
+        # gleiche Periode + gleiche technische Metadaten + gleicher Wert
+        # werden nur einmal gespeichert.
+        dedupe_key = json.dumps(
+            observation,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        seen = block.setdefault("_seen", set())
+        if dedupe_key not in seen:
+            seen.add(dedupe_key)
+            block["observations"].append(observation)
+
+    # Interne Dedupe-Hilfsmenge nicht in den Cache schreiben.
+    for block in observations.values():
+        block.pop("_seen", None)
+        block["observations"].sort(
+            key=lambda x: (
+                str(x.get("period") or ""),
+                str(x.get("unit") or ""),
+                str(x.get("transformation") or ""),
+            )
+        )
+
     return observations
+
+
+def _count_observations(container: dict[str, Any]) -> int:
+    return sum(
+        len(block.get("observations", []))
+        for block in container.values()
+    )
+
+
+def _audit_stan_container(container: dict[str, Any], measure: str) -> tuple[int, int]:
+    """Prüft, dass nur konfigurierte STAN-Serien im Cache landen."""
+    series_count = 0
+    observation_count = 0
+
+    for key, block in container.items():
+        country = block.get("reference_area")
+        activity = block.get("activity")
+
+        if country not in OECD_STAN_REFERENCE_AREAS:
+            raise RuntimeError(f"Unerwartetes STAN-Land im Cache: {country!r}")
+        if activity not in OECD_STAN_ACTIVITIES:
+            raise RuntimeError(f"Unerwartete STAN-Aktivität im Cache: {activity!r}")
+        if block.get("measure") != measure:
+            raise RuntimeError(
+                f"Falsches STAN-Measure in Serie {key}: "
+                f"{block.get('measure')!r} statt {measure!r}"
+            )
+
+        series_count += 1
+        observation_count += len(block.get("observations", []))
+
+    if series_count == 0 or observation_count == 0:
+        raise RuntimeError(
+            f"STAN-Audit fehlgeschlagen: measure={measure}, "
+            f"series={series_count}, observations={observation_count}"
+        )
+
+    return series_count, observation_count
 
 
 def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
@@ -439,19 +516,24 @@ def update_oecd_stan(cache: dict[str, Any], start_period: int = 2000) -> None:
         try:
             rows = fetch_stan_measure(measure, start_period=start_period)
             observations = _group_stan_rows(rows, measure)
+            series_count, observation_count = _audit_stan_container(
+                observations, measure
+            )
 
-            if observations:
-                field.update({
-                    "version": "1.0",
-                    "status": "REAL",
-                    "retrieved_at": retrieved,
-                    "last_successful_update": retrieved,
-                    "data_period": _latest_period(observations),
-                    "data": observations,
-                    "source_notes": [],
-                })
-            else:
-                raise RuntimeError("OECD STAN lieferte keine verwertbaren Beobachtungen.")
+            field.update({
+                "version": "1.0",
+                "status": "REAL",
+                "retrieved_at": retrieved,
+                "last_successful_update": retrieved,
+                "data_period": _latest_period(observations),
+                "data": observations,
+                "series_count": series_count,
+                "observation_count": observation_count,
+                "source_notes": [
+                    "STAN-Abfrage gebündelt über konfigurierte Länder und Aktivitäten.",
+                    "Exakte Beobachtungsduplikate werden vor dem Cache entfernt.",
+                ],
+            })
 
         except Exception as exc:
             LOG.warning("OECD STAN %s: %s", field_name, exc)
@@ -514,14 +596,19 @@ def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) ->
 
         if grouped:
             ts = now_iso()
+            observation_count = _count_observations(grouped)
             level.update({
                 "version": "2.0",
                 "status": "REAL",
                 "retrieved_at": ts,
                 "last_successful_update": ts,
                 "data_period": _latest_period(grouped),
+                "series_count": len(grouped),
+                "observation_count": observation_count,
                 "data": grouped,
-                "source_notes": [],
+                "source_notes": [
+                    "Gebündelte OECD-Produktivitätsabfrage über die konfigurierte Länderliste.",
+                ],
             })
         else:
             raise RuntimeError("OECD Productivity lieferte keine verwertbaren Beobachtungen.")
