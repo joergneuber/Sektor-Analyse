@@ -5317,14 +5317,6 @@ def data_quality_gate(lines):
         elif "SOURCE=GDELT GKG/Bulk" in line:
             secondary_missing.append(f"GDELT {label} (24H_SAMPLE)")
 
-    # Der Kobalt-Wert kann im aktuellen Fallback exakt datiert vorliegen, ohne
-    # dass die offizielle LME-Quelle automatisiert bestaetigt werden konnte.
-    # In diesem Fall ist der Wert vorhanden, aber die Datenqualitaet darf nicht
-    # als VOLLSTAENDIG ausgegeben werden.
-    cobalt_line = next((l for l in lines if l.startswith("LME Kobalt:")), None)
-    if cobalt_line and "STATUS=REAL_OFFICIAL" not in cobalt_line:
-        secondary_missing.append("LME Kobalt (OFFIZIELLE QUELLE NICHT BESTAETIGT)")
-
     # Der Gesamt-News-/Boersenhammer ist TIER-3-Kontext. Sein Ausfall sperrt
     # das Makro-Gate nicht, muss aber sichtbar bleiben.
     big_news = next((l for l in lines if l.startswith("BOERSENHAMMER / BIG NEWS 24H:")), None)

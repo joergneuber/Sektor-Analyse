@@ -810,10 +810,65 @@ def lade_beobachtungsliste_von_drive():
         return None
 
 
-def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad):
+def _lade_6_5_statusverlauf(historie_pfad):
+    """Liest den letzten bekannten Status fuer die reine 6.5-Darstellung.
+
+    Die Beobachtungsliste bleibt allein autoritativ fuer die AKTUELLE
+    Kategorie. Historie wird hier ausschliesslich fuer die Anzeige
+    ``letzter Status -> aktueller Status`` verwendet und kann keine
+    Kategoriezuordnung veraendern. Wenn ein heutiger Snapshot vorhanden ist,
+    ist dessen ``Vorheriger_Status`` der Status des vorherigen Laufs.
+    """
+    if not historie_pfad or not os.path.isfile(historie_pfad):
+        return {}
+    heute = datetime.date.today().isoformat()
+    latest = {}
+    try:
+        with open(historie_pfad, "r", encoding="utf-8-sig") as f:
+            for raw in f:
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                ticker = str(row.get("Ticker", "")).strip().upper()
+                datum = str(row.get("Datum", "")).strip()
+                if not ticker or not datum:
+                    continue
+                if datum <= heute and (
+                    ticker not in latest or datum >= str(latest[ticker].get("Datum", ""))
+                ):
+                    latest[ticker] = row
+        result = {}
+        for ticker, row in latest.items():
+            datum = str(row.get("Datum", "")).strip()
+            if datum == heute:
+                previous = str(row.get("Vorheriger_Status") or "").strip().upper()
+            else:
+                previous = str(row.get("Status", "")).strip().upper()
+            result[ticker] = previous or "NICHT BEKANNT"
+        return result
+    except Exception as exc:
+        print(f"WARNUNG: 6.5-Statushistorie konnte nicht gelesen werden: {exc}")
+        return {}
+
+
+def _kurzstatus(status):
+    """Normalisiert die langen Beobachtungsstatus auf A/B/C/Kein Kandidat."""
+    mapping = {
+        "KAUFKANDIDAT A": "A",
+        "KAUFKANDIDAT B": "B",
+        "KAUFKANDIDAT C": "C",
+        "KEIN KANDIDAT": "Kein Kandidat",
+    }
+    return mapping.get(str(status or "").strip().upper(), str(status or "NICHT BEKANNT").strip())
+
+
+def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None):
     """Erzeugt die verbindliche 6.5.1-/6.5.2-Zuordnung aus dem aktuellen
-    Einzel-Check-Status. Historische Quellen werden fuer die Kategoriezuordnung
-    bewusst nicht verwendet.
+    Einzel-Check-Status. Historie wird nur fuer die Darstellung des
+    Statusverlaufs verwendet, niemals fuer die aktuelle Kategoriezuordnung.
     """
     if not beobachtungsliste_pfad or not os.path.exists(beobachtungsliste_pfad):
         raise RuntimeError(
@@ -833,6 +888,7 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad):
     aktuelle_a = []
     aktuelle_nicht_a = []
     zulaessige_nicht_a_status = {"KAUFKANDIDAT B", "KAUFKANDIDAT C", "KEIN KANDIDAT"}
+    vorherige_status = _lade_6_5_statusverlauf(historie_pfad)
 
     for ticker, eintrag in daten.items():
         if not isinstance(eintrag, dict):
@@ -861,14 +917,30 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad):
         f"6.5.1 AKTUELLE KAUFKANDIDATEN A ({len(aktuelle_a)} Titel):",
     ]
     for ticker, quelle in aktuelle_a:
-        zeilen.append(f"- {ticker} | aktueller Status: KAUFKANDIDAT A | Quelle: {quelle}")
+        vorher = vorherige_status.get(ticker, "NICHT BEKANNT")
+        zeilen.append(
+            f"- {ticker} | {_kurzstatus(vorher)} -> A | aktueller Status: KAUFKANDIDAT A | Quelle: {quelle}"
+        )
 
+    # 6.5.2 bleibt vollstaendig: keine Begrenzung, keine Auswahl.
+    # Darstellung erfolgt gruppiert nach dem aktuellen Status und innerhalb
+    # der Gruppe alphabetisch.
     zeilen.extend([
         "",
         f"6.5.2 AKTUELLE NICHT-A-KANDIDATEN ({len(aktuelle_nicht_a)} Titel):",
+        "Darstellung: Letzter Status -> aktueller Status | Quelle",
     ])
+    gruppen = {"KAUFKANDIDAT B": [], "KAUFKANDIDAT C": [], "KEIN KANDIDAT": []}
     for ticker, status, quelle in aktuelle_nicht_a:
-        zeilen.append(f"- {ticker} | aktueller Status: {status} | Quelle: {quelle}")
+        gruppen[status].append((ticker, status, quelle))
+    for status in ("KAUFKANDIDAT B", "KAUFKANDIDAT C", "KEIN KANDIDAT"):
+        zeilen.append("")
+        zeilen.append(f"{_kurzstatus(status)}:")
+        for ticker, current_status, quelle in gruppen[status]:
+            vorher = vorherige_status.get(ticker, "NICHT BEKANNT")
+            zeilen.append(
+                f"- {ticker} | {_kurzstatus(vorher)} -> {_kurzstatus(current_status)} | Quelle: {quelle}"
+            )
 
     zeilen.extend([
         "",
@@ -1463,7 +1535,9 @@ def gemini_auswertung_starten():
     # und uebergibt diese beiden Mengen explizit an Gemini. Damit koennen alte
     # HEBELTRADER- oder Historienstatus die aktuelle Kategorie nicht mehr verfälschen.
     beobachtung_pfad = eingabedateien.get("Einzel-Check-Beobachtungsliste")
-    sechs_fuenf_autoritaet = erstelle_6_5_autoritative_liste(beobachtung_pfad)
+    sechs_fuenf_autoritaet = erstelle_6_5_autoritative_liste(
+        beobachtung_pfad, eingabedateien.get("Einzel-Check-Technikhistorie")
+    )
 
     # Autoritative Punkt-7-Fakten werden genau einmal pro Lauf gelesen.
     # Sie sind von Gemini-Retries unabhaengig und duerfen nicht bei jedem
@@ -1561,7 +1635,7 @@ def gemini_auswertung_starten():
                     "maßgeblich. "
                     "Die vollstaendige 6.5.2-Liste soll aus der bestehenden einzel_check_beobachtung.json "
                     "kommen; deren 'quelle' zeigt HEBELTRADER-Ausgabe oder '-' an. "
-                    "6.5.2 darf nicht auf 5 Titel gekuerzt werden. "
+                    "6.5.2 darf nicht auf 5 Titel gekuerzt werden. Gib ALLE vorgegebenen Nicht-A-Kandidaten aus. Fuer die Darstellung von 6.5.2 gruppiere nach aktuellem Status in B, C und Kein Kandidat und sortiere innerhalb jeder Gruppe alphabetisch. Zeige fuer jeden Titel den Statusverlauf kompakt als 'Letzter Status -> aktueller Status', z.B. 'AMD | A -> A' bzw. bei Nicht-A entsprechend 'B -> B', 'C -> B' oder 'B -> Kein Kandidat'. Verwende dafuer ausschliesslich die von Python bereitgestellte Statusverlaufsinformation; Gemini darf keinen frueheren Status selbst rekonstruieren. Die Darstellung darf die Mitgliedschaft nicht veraendern und darf keine Titel auslassen. "
                     "PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 7.2 Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Python erzeugt 7.1 Portfolio-Übersicht, 7.3 Einzelpositionen und 7.4 geschlossene Positionen aus den autoritativen Quellen. Gemini erzeugt ausschließlich die qualitative Interpretation für 7.2 Handlungsbedarf und darf in 7.1/7.3/7.4 keine Faktenblöcke erzeugen.\n"
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
@@ -1618,6 +1692,8 @@ def gemini_auswertung_starten():
                         "Daten gegeneinander gewichten, daraus das Makro-Szenario und das daraus resultierende "
                         "Marktumfeld ableiten und die Zukunftsperspektive fuer die geforderten Horizonte formulieren. "
                         "Es gibt KEIN vorgegebenes Python-Makro-Szenario und KEINE vorgegebene Python-Marktumfeldklassifikation. "
+                        "VERBINDLICHE MAKRO-DATENREGEL - AKTUELLES DATENPAKET ALS EINZIGE ZAHLENQUELLE: Fuer saemtliche numerischen Aussagen in Makro-Interpretation, Trade-Storys, Marktperspektive, Chancen/Risiken und Szenario-Matrix sind ausschliesslich die im aktuellen Makro_Briefing(<Datum>).txt enthaltenen Daten massgeblich. Gemini darf keine numerischen Werte aus eigenem Vorwissen, aelteren Auswertungen, frueheren Briefings, Nachrichtenartikeln oder sonstigen externen Quellen ergaenzen oder ersetzen, wenn der betreffende Sachverhalt im aktuellen Makro-Datenpaket enthalten ist. Berechnungen sind zulaessig, wenn saemtliche dafuer benoetigten Ausgangswerte aus dem aktuellen Makro-Datenpaket stammen. Historische Vergleichswerte duerfen nur verwendet werden, wenn sie im aktuellen Makro-Datenpaket enthalten sind. Bei widerspruechlichen Werten innerhalb verschiedener Quellen gilt fuer die aktuelle Makro-Auswertung der Wert aus dem aktuellen Makro-Datenpaket. Ist ein Wert im aktuellen Datenpaket nicht vorhanden, darf Gemini ihn nicht schaetzen oder aus aelterem Kontext rekonstruieren; die Aussage ist qualitativ zu formulieren oder wegzulassen. Insbesondere verboten: einen aktuellen Wert mit einem Wert aus einer frueheren Auswertung.txt oder einem frueheren Lauf zu kombinieren, um daraus eine neue numerische Aussage abzuleiten. "
+                        "QUELLENROLLEN BEI ROHSTOFFEN: Ein strukturierter aktueller Marktpreis ist ROLE=CURRENT_PRICE. Externe Artikel, Videos, Kommentare oder Forecasts sind ROLE=COMMENTARY bzw. ROLE=FORECAST. Eine externe Zahl aus COMMENTARY/FORECAST darf niemals als aktueller Marktpreis uebernommen werden, wenn ein aktueller CURRENT_PRICE im Makro-Datenpaket vorhanden ist. Externe Zahlen duerfen nur dann numerisch verwendet werden, wenn Instrument, Zeitpunkt, Einheit und Quellenrolle eindeutig mit dem betrachteten Wert uebereinstimmen; andernfalls nur qualitativ oder gar nicht verwenden. "
                         "Keine Python-Schwellen, Gewichte oder vorgefertigten Richtungsurteile fuer das Makro uebernehmen. "
                         "VERBINDLICHE TRADE-STORY-ARCHITEKTUR: Behandle die fertige Auswertung als eine nachvollziehbare Kette von Daten zu Handlungsebene, nicht als neues Scoring. Python liefert die Puzzleteile (Rohdaten, objektive Berechnungen, technische Statusfelder, bestehende Kandidaten-/Beobachtungsstatus und regelbasierte Setups). Gemini verbindet diese Puzzleteile zu einer Trade-Story: Warum ist ein Thema oder Titel interessant, welche Daten bestaetigen die These, welcher Sektor bzw. welche Aktie ist betroffen, was muss als Naechstes passieren und welche Risiken koennen die These entkraeften? Die Statusstufen sind strikt zu trennen: INTERESSANT = strategische Idee/These ohne bestaetigtes Setup; VORBEREITET = bestehender Kandidat bzw. technische Vorbereitung/Trigger-Naehe, aber noch kein bestaetigtes Kauf-Setup; VALIDE SETUP = ausschliesslich ein bereits vom bestehenden Regelwerk bestaetigtes Setup. Gemini darf niemals aus einer interessanten Story oder aus einem VORBEREITET-Status selbst ein VALIDE SETUP oder einen Kauf machen. Die bestehende technische Setup-, Filter- und CRV-Logik bleibt allein autoritativ fuer die Stufe VALIDE SETUP. "
                         "Jede perspektivische Trade-Story in 6.1 soll deshalb, soweit aus den Dateien ableitbar, die Kette Thema -> Makro-Treiber -> bestaetigende Daten -> Sektor/Asset -> bestehender Kandidat -> Status (INTERESSANT/VORBEREITET/VALIDE SETUP) -> naechster technischer Trigger -> Gegentreiber/Risiko sichtbar machen. Wenn kein bestehender Kandidat vorhanden ist, ist das explizit zu kennzeichnen. Ein Makro-Treiber allein ist niemals ein Einstiegssignal. "
