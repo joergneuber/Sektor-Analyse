@@ -47,7 +47,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_FILE = SCRIPT_DIR / "struktur_trends_cache.json"
 
-CACHE_VERSION = "1.4"
+CACHE_VERSION = "1.5"
 
 # ---------------------------------------------------------------------------
 # Datenquellen / feste Konfiguration
@@ -840,6 +840,7 @@ def update_ai_index(cache: dict[str, Any]) -> None:
 
 
 IEA_MES_PAGE = "https://www.iea.org/data-and-statistics/data-product/monthly-electricity-statistics"
+IEA_MES_DATA_TOOL = "https://www.iea.org/data-and-statistics/data-tools/monthly-electricity-statistics"
 IEA_MES_DOCUMENTATION_PDF = "https://iea.blob.core.windows.net/assets/a7d1b044-38cd-4b85-a804-c68be5b45687/Monthly_electricity_statistics_Documentation_2026.pdf"
 IEA_MES_MAPPING_SUMMARY_PDF = "https://iea.blob.core.windows.net/assets/2ae5c8ac-0397-4e85-ac5d-5ec9be3e7c01/MESSDMXmappingsummary2026.pdf"
 
@@ -1025,28 +1026,32 @@ def _iea_html_links(raw: bytes, flow: str) -> list[str]:
 
 
 def _iea_page_fetch_variants() -> list[tuple[str, bytes]]:
-    """Fetch the official MES page with browser-like variants.
+    """Fetch the two official IEA MES surfaces that can expose current downloads.
 
-    GitHub runners have historically received HTTP 403 from the IEA website.
-    We therefore try several ordinary browser headers before giving up.  No
-    third-party mirror is used.
+    No mirror/proxy is used.  The data-product page and the dedicated MES data-tool
+    page are both official IEA surfaces.
     """
     variants = (
-        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://www.google.com/"},
+        (IEA_MES_PAGE, "product"),
+        (IEA_MES_DATA_TOOL, "data-tool"),
+    )
+    headers_list = (
+        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"},
         {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.8"},
         {"User-Agent": "curl/8.10.1", "Accept": "text/html,*/*;q=0.8"},
         {"User-Agent": "python-urllib/3.13", "Accept": "text/html,*/*;q=0.5"},
     )
     out = []
-    for i, headers in enumerate(variants, start=1):
-        try:
-            raw = _http_get_headers(IEA_MES_PAGE, headers, timeout=60, retries=1)
-            if raw:
-                out.append((f"page-header-{i}", raw))
-                LOG.info("IEA MES-Seite erreichbar mit Header-Variante %s", i)
-                break
-        except Exception as exc:
-            LOG.info("IEA MES-Seite Variante %s nicht verfügbar: %s", i, exc)
+    for page_url, page_label in variants:
+        for i, headers in enumerate(headers_list, start=1):
+            try:
+                raw = _http_get_headers(page_url, headers, timeout=60, retries=1)
+                if raw:
+                    out.append((f"{page_label}-header-{i}", raw))
+                    LOG.info("IEA offizielle MES-Seite erreichbar: %s | Header-Variante %s", page_label, i)
+                    break
+            except Exception as exc:
+                LOG.info("IEA %s Variante %s nicht verfügbar: %s", page_label, i, exc)
     return out
 
 
@@ -1254,50 +1259,12 @@ IEA_PUBLIC_STATS_API = "https://api.iea.org/stats"
 
 
 def _iea_public_stats_indicator_codes(flow: str) -> list[str]:
-    """Discover indicator codes from the official IEA public Stats API.
-
-    Compatibility fallback only. No indicator code is invented: generation uses
-    the documented IEA code; balance is accepted only from the official catalogue
-    when its metadata explicitly identifies an electricity-balance indicator.
-    """
-    if flow == "MESGEN":
-        return ["ElecGenByFuel"]
-
-    url = f"{IEA_PUBLIC_STATS_API}/indicators/"
-    try:
-        raw = _http_get_headers(url, {
-            "Accept": "application/json,*/*;q=0.2",
-            "User-Agent": "Mozilla/5.0 (compatible; StrukturTrends/1.4)",
-        }, timeout=90, retries=2)
-        obj = json.loads(raw.decode("utf-8-sig", errors="replace"))
-    except Exception as exc:
-        LOG.info("IEA public Stats indicators catalogue nicht verfügbar: %s", exc)
-        return []
-
-    items = obj
-    if isinstance(obj, dict):
-        for key in ("indicators", "data", "results", "items"):
-            if isinstance(obj.get(key), list):
-                items = obj[key]
-                break
-    if not isinstance(items, list):
-        return []
-
-    found: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        code = str(item.get("code") or item.get("id") or item.get("indicator") or item.get("indicator_code") or "").strip()
-        text = " ".join(str(item.get(k, "")) for k in ("name", "label", "title", "description", "frequency", "unit")).lower()
-        if code and "electricity" in text and "balance" in text and code not in found:
-            found.append(code)
-    return found[:10]
+    """Compatibility hook retained for cache/schema stability; never substitutes MES."""
+    return []
 
 
 def _iea_public_stats_candidates(flow: str) -> list[tuple[str, str]]:
-    return [(f"{IEA_PUBLIC_STATS_API}/indicator/{code}", f"public-stats:{code}")
-            for code in _iea_public_stats_indicator_codes(flow)]
-
+    return []
 
 def _iea_monthly_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep observations whose period is explicitly monthly (YYYY-MM[/DD])."""
@@ -1313,10 +1280,10 @@ def _iea_monthly_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
-    """Acquire MESGEN/MESBAL through the official stable IEA SDMX service first.
+    """Acquire the official IEA MESGEN/MESBAL datasets.
 
-    Only IEA-owned endpoints are used.  The older IEA page/ZIP route remains a
-    fallback because the page is currently blocked by some GitHub runners.
+    Priority: verified IEA SDMX service -> official IEA MES download surfaces.
+    No legacy Stats API or guessed indicator is accepted as a MES substitute.
     """
     errors: list[str] = []
     payload_candidates: list[tuple[str, bytes]] = []
@@ -1340,27 +1307,7 @@ def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
         except Exception as exc:
             errors.append(f"stable-data {url}: {exc}")
 
-    # 2) Compatibility fallback: official IEA public Stats API.
-    # Only accepted when it actually returns sufficient monthly observations.
-    if not payload_candidates:
-        for url, identity in _iea_public_stats_candidates(flow):
-            try:
-                raw = _http_get_headers(url, {
-                    "Accept": "application/json,text/csv,*/*;q=0.2",
-                    "User-Agent": "Mozilla/5.0 (compatible; StrukturTrends/1.4)",
-                }, timeout=180, retries=2)
-                parsed = _iea_parse_json_bytes(raw)
-                monthly = _iea_monthly_rows(parsed)
-                grouped = _group_iea_rows(monthly, flow)
-                obs = sum(len(v.get("observations", [])) for v in grouped.values())
-                if len(grouped) >= 2 and obs >= 10:
-                    payload_candidates.append((f"official-public-stats:{identity}:{url}", raw))
-                    LOG.info("IEA %s Public-Stats-Fallback geladen: %s | series=%s | obs=%s", flow, url, len(grouped), obs)
-                else:
-                    errors.append(f"public-stats {identity}: keine ausreichenden monatlichen Beobachtungen (series={len(grouped)} obs={obs})")
-            except Exception as exc:
-                errors.append(f"public-stats {identity}: {exc}")
-
+    # 2) No legacy IEA Stats API substitution. MES remains the sole IEA source.
     # 3) Official mappings remain a validation/structure source, never observations.
     mapping = _iea_mapping_metadata(flow)
     if mapping:
@@ -1390,7 +1337,7 @@ def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
     if not payload_candidates:
         raise RuntimeError(
             "IEA %s: offizielles SDMX-Datenpayload nicht erreichbar. "
-            "Stable-Registry/Data und offizieller MES-Fallback erfolglos. %s"
+            "Stable-Registry/Data und offizielle MES-Downloadflächen erfolglos. %s"
             % (flow, " | ".join(errors[:20]))
         )
 
