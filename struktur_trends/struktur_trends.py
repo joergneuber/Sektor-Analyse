@@ -109,6 +109,7 @@ STANFORD_PUBLIC_DATA_FOLDER = "https://drive.google.com/drive/folders/1zJTOg0iR0
 
 IEA_API_BASE = "https://growth-sis-cc-api-wv.iea.org/rest"
 IEA_API_BASE_STABLE = "https://sis-cc-api-stable.iea.org/rest"
+IEA_API_BASE_NSI_STABLE = "https://sis-cc-nsi-stable.iea.org/rest"
 IEA_MAPPING_URLS = {
     "MESGEN": "https://iea.blob.core.windows.net/assets/2489b143-bc40-4b36-bbb5-2e5ac60679fd/MESGENmapping.xlsx",
     "MESBAL": "https://iea.blob.core.windows.net/assets/bbc02b8a-b510-471a-8597-1899f302a57b/MESBALmapping.xlsx",
@@ -1163,17 +1164,30 @@ def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
     return grouped
 
 def _iea_stable_structure_candidates(flow: str) -> list[tuple[str, str]]:
-    """Build official IEA SDMX structure candidates for both REST generations."""
+    """Discover the real IEA .Stat dataflow instead of assuming MESGEN/MESBAL IDs.
+
+    The IEA stable host exposes a standard .Stat/SDMX registry.  MESGEN/MESBAL
+    are the published file labels/mapping names, not proven dataflow IDs.  The
+    first candidates therefore enumerate all dataflows and let
+    ``_iea_extract_resource_ids`` identify matching flows by title/ID.
+    Specific legacy guesses remain only as a narrow fallback.
+    """
     flow = str(flow).upper()
     out = []
-    # The IEA stable service exposes REST v1 and REST v2.  MES mappings use
-    # OECD.IEA codelists, so both IEA and OECD.IEA are tested as agencies.
-    for agency in ("OECD.IEA", "IEA"):
-        for version in ("1.0", "latest", "2026"):
-            # REST v1 structure syntax.
-            out.append(("stable-v1", f"{IEA_API_BASE_STABLE}/dataflow/{agency}/{flow}/{version}"))
-            # REST v2 structure syntax.
-            out.append(("stable-v2", f"{IEA_API_BASE_STABLE}/v2/data/dataflow/{agency}/{flow}/{version}"))
+    bases = (
+        (IEA_API_BASE_STABLE, "stable-api"),
+        (IEA_API_BASE_NSI_STABLE, "stable-nsi"),
+    )
+    for base, host_label in bases:
+        # .Stat standard structural query: all agencies, all dataflows, latest.
+        out.append((f"{host_label}-all", f"{base}/dataflow/all/all/latest?detail=allstubs"))
+        out.append((f"{host_label}-all-v", f"{base}/dataflow/all/all/all?detail=allstubs"))
+        # Some .Stat deployments expose the compact all-dataflow form.
+        out.append((f"{host_label}-all-short", f"{base}/dataflow/all/latest"))
+        # Narrow fallbacks only; these are not treated as authoritative IDs.
+        for agency in ("OECD.IEA", "IEA"):
+            for version in ("1.0", "latest", "2026"):
+                out.append((f"{host_label}-guess-v1", f"{base}/dataflow/{agency}/{flow}/{version}"))
     return list(dict.fromkeys(out))
 
 
@@ -1230,7 +1244,7 @@ def _iea_data_candidates(flow: str, structures: list[tuple[str, str, bytes]]) ->
     for agency, resource, version in triples:
         # SDMX REST v1: flowRef/key/providerRef.  ``all`` is the standards-
         # defined key wildcard; providerRef is omitted first.
-        for base, label in ((IEA_API_BASE_STABLE, "stable-v1"), (IEA_API_BASE, "legacy-v1")):
+        for base, label in ((IEA_API_BASE_STABLE, "stable-v1"), (IEA_API_BASE_NSI_STABLE, "stable-nsi-v1"), (IEA_API_BASE, "legacy-v1")):
             for key in ("all", ""):
                 key_part = f"/{key}" if key else ""
                 for provider in ("", "/all", "/IEA", "/OECD.IEA"):
@@ -1242,9 +1256,13 @@ def _iea_data_candidates(flow: str, structures: list[tuple[str, str, bytes]]) ->
         # SDMX REST v2: data/dataflow/{agency}/{resource}/{version}/{key};
         # omitted key means the whole dataflow. Component filters are preferred.
         base2 = f"{IEA_API_BASE_STABLE}/v2/data/dataflow/{agency}/{resource}/{version}"
+        base2_nsi = f"{IEA_API_BASE_NSI_STABLE}/v2/data/dataflow/{agency}/{resource}/{version}"
         urls.append((base2, f"stable-v2:{agency}/{resource}/{version}|key=omitted"))
+        urls.append((base2_nsi, f"stable-nsi-v2:{agency}/{resource}/{version}|key=omitted"))
         urls.append((base2 + "?startPeriod=2020-01&endPeriod=2026-12&c%5BFREQUENCY%5D=M", f"stable-v2:{agency}/{resource}/{version}|key=omitted|FREQUENCY=M"))
+        urls.append((base2_nsi + "?startPeriod=2020-01&endPeriod=2026-12&c%5BFREQUENCY%5D=M", f"stable-nsi-v2:{agency}/{resource}/{version}|key=omitted|FREQUENCY=M"))
         urls.append((base2 + "/all?startPeriod=2020-01&endPeriod=2026-12", f"stable-v2:{agency}/{resource}/{version}|key=all|period"))
+        urls.append((base2_nsi + "/all?startPeriod=2020-01&endPeriod=2026-12", f"stable-nsi-v2:{agency}/{resource}/{version}|key=all|period"))
     return list(dict.fromkeys(urls))
 
 def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
