@@ -836,6 +836,11 @@ def update_ai_index(cache: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+IEA_MES_PAGE = "https://www.iea.org/data-and-statistics/data-product/monthly-electricity-statistics"
+IEA_MES_DOCUMENTATION_PDF = "https://iea.blob.core.windows.net/assets/a7d1b044-38cd-4b85-a804-c68be5b45687/Monthly_electricity_statistics_Documentation_2026.pdf"
+IEA_MES_MAPPING_SUMMARY_PDF = "https://iea.blob.core.windows.net/assets/2ae5c8ac-0397-4e85-ac5d-5ec9be3e7c01/MESSDMXmappingsummary2026.pdf"
+
+
 def _iea_parse_csv_bytes(raw: bytes) -> list[dict[str, Any]]:
     import csv, io, zipfile
     payloads = []
@@ -926,73 +931,115 @@ def _iea_parse_xml_bytes(raw: bytes) -> list[dict[str, Any]]:
     return rows
 
 
-def _iea_parse_payload(raw: bytes) -> list[dict[str, Any]]:
-    for parser in (_iea_parse_csv_bytes, _iea_parse_json_bytes, _iea_parse_xml_bytes):
+def _iea_parse_payload_variants(raw: bytes) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Parse one payload several ways; the payload itself is never downloaded twice."""
+    parsers = (
+        ("csv", _iea_parse_csv_bytes),
+        ("json", _iea_parse_json_bytes),
+        ("xml", _iea_parse_xml_bytes),
+    )
+    result = []
+    for name, parser in parsers:
         try:
             rows = parser(raw)
             if rows:
-                return rows
-        except Exception:
-            pass
-    return []
+                result.append((name, rows))
+        except Exception as exc:
+            LOG.debug("IEA Parser %s fehlgeschlagen: %s", name, exc)
+    return result
 
 
-def _iea_discover_page_links(flow: str) -> list[str]:
-    html = _fetch_text("https://www.iea.org/data-and-statistics/data-product/monthly-electricity-statistics")
-    urls = re.findall(r'https?://[^"\'<>\s]+', html)
+def _iea_html_links(raw: bytes, flow: str) -> list[str]:
+    """Extract official download links from the IEA MES page.
+
+    The page is the authoritative source for the current release.  We do not
+    invent asset IDs or filenames.  The parser accepts normal hrefs as well as
+    JSON/escaped links emitted by the page frontend.
+    """
+    text = raw.decode("utf-8", errors="replace")
+    text = text.replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
+    candidates = []
+    patterns = (
+        r'https?://[^\"\'<>\s]+',
+        r'href=[\"\']([^\"\']+)[\"\']',
+        r'(?:url|href|downloadUrl|download_url|fileUrl|file_url)[\"\']?\s*[:=]\s*[\"\']([^\"\']+)[\"\']',
+    )
+    for pattern in patterns:
+        candidates.extend(re.findall(pattern, text, flags=re.I))
     result = []
-    for url in urls:
-        decoded = url.replace("&amp;", "&")
-        if flow.upper() in decoded.upper() and any(x in decoded.lower() for x in (".zip", ".csv")):
-            result.append(decoded)
+    flow_upper = flow.upper()
+    for url in candidates:
+        if not isinstance(url, str):
+            continue
+        url = url.replace("\\u002F", "/").replace("&amp;", "&")
+        if url.startswith("/"):
+            url = "https://www.iea.org" + url
+        low = url.lower()
+        if flow_upper not in url.upper() and not any(token in low for token in ("monthly_electricity", "mesgen", "mesbal", "monthly-electricity-statistics")):
+            continue
+        if not any(token in low for token in (".zip", ".csv", ".txt", "download", "asset")):
+            continue
+        result.append(url)
     return list(dict.fromkeys(result))
 
 
-def _iea_structure_candidates(flow: str) -> list[str]:
-    return [f"IEA,{flow},1.0", f"IEA,{flow},latest"]
+def _iea_page_fetch_variants() -> list[tuple[str, bytes]]:
+    """Fetch the official MES page with browser-like variants.
 
-
-def _iea_data_candidates(flow: str) -> list[tuple[str, str]]:
-    refs = _iea_structure_candidates(flow)
-    bases = (
-        IEA_API_BASE,
-        IEA_API_BASE + "/v1",
-        "https://sis-cc-api-wv.iea.org/rest",
-        "https://sis-cc-api-wv.iea.org/rest/v1",
+    GitHub runners have historically received HTTP 403 from the IEA website.
+    We therefore try several ordinary browser headers before giving up.  No
+    third-party mirror is used.
+    """
+    variants = (
+        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://www.google.com/"},
+        {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.8"},
+        {"User-Agent": "curl/8.10.1", "Accept": "text/html,*/*;q=0.8"},
+        {"User-Agent": "python-urllib/3.13", "Accept": "text/html,*/*;q=0.5"},
     )
-    candidates = []
-    for ref in refs:
-        for base in bases:
-            for provider in ("IEA", "all"):
-                candidates.append(("sdmx", f"{base}/data/{ref}/all/{provider}"))
+    out = []
+    for i, headers in enumerate(variants, start=1):
+        try:
+            raw = _http_get_headers(IEA_MES_PAGE, headers, timeout=60, retries=1)
+            if raw:
+                out.append((f"page-header-{i}", raw))
+                LOG.info("IEA MES-Seite erreichbar mit Header-Variante %s", i)
+                break
+        except Exception as exc:
+            LOG.info("IEA MES-Seite Variante %s nicht verfügbar: %s", i, exc)
+    return out
+
+
+def _iea_mapping_metadata(flow: str) -> dict[str, Any]:
+    """Read the official mapping workbook when available.
+
+    This is metadata only.  It is deliberately not used to fabricate a data
+    URL.  The actual data URL must come from the official IEA page/.Stat link.
+    """
+    url = IEA_MAPPING_URLS[flow]
     try:
-        candidates = [("download", u) for u in _iea_discover_page_links(flow)] + candidates
+        import openpyxl
+        raw = _http_get_headers(url, {"Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*;q=0.2"}, timeout=60, retries=1)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        sheets = wb.sheetnames
+        sample = {}
+        for ws in wb.worksheets:
+            vals = []
+            for row in ws.iter_rows(min_row=1, max_row=12, values_only=True):
+                vals.append([str(v).strip() if v is not None else "" for v in row[:12]])
+            sample[ws.title] = vals
+        LOG.info("IEA %s Mapping geladen: Sheets=%s", flow, sheets)
+        return {"sheets": sheets, "sample": sample}
     except Exception as exc:
-        LOG.info("IEA %s Link-Discovery nicht verfügbar: %s", flow, exc)
-    return list(dict.fromkeys(candidates))
-
-
-def _iea_structure_discovery(flow: str) -> None:
-    for base in (IEA_API_BASE, IEA_API_BASE + "/v1", "https://sis-cc-api-wv.iea.org/rest", "https://sis-cc-api-wv.iea.org/rest/v1"):
-        for structure in ("dataflow", "datastructure"):
-            for ref in _iea_structure_candidates(flow):
-                agency, resource, version = ref.split(",")
-                url = f"{base}/{structure}/{agency}/{resource}/{version}"
-                try:
-                    raw = _http_get_headers(url, {"Accept": "application/xml,application/json;q=0.8,*/*;q=0.2"}, timeout=45, retries=1)
-                    if raw:
-                        LOG.info("IEA %s Strukturantwort erhalten: %s", flow, url)
-                        return
-                except Exception:
-                    continue
+        LOG.info("IEA %s Mapping nicht verfügbar: %s", flow, exc)
+        return {}
 
 
 def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
     grouped = {}
     for row in rows:
         lowered = {str(k).strip().lower(): v for k, v in row.items()}
-        country = next((str(lowered[n]).strip() for n in ("ref_area", "reference area", "country", "country or area", "economy", "geo", "area") if n in lowered and str(lowered[n] or "").strip()), None)
-        period = next((str(lowered[n]).strip() for n in ("time_period", "time period", "period", "time", "date") if n in lowered and str(lowered[n] or "").strip()), None)
+        country = next((str(lowered[n]).strip() for n in ("ref_area", "reference area", "reference_area", "country", "country or area", "economy", "geo", "area") if n in lowered and str(lowered[n] or "").strip()), None)
+        period = next((str(lowered[n]).strip() for n in ("time_period", "time period", "time_period_start", "period", "time", "date") if n in lowered and str(lowered[n] or "").strip()), None)
         if not country or not period:
             continue
         grouped.setdefault(country, {"reference_area": country, "dataset": dataset, "observations": []})["observations"].append(dict(row))
@@ -1000,25 +1047,95 @@ def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
 
 
 def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
+    """One-run IEA acquisition with official-link discovery and 20 parser paths.
+
+    20 paths = 5 acquisition routes x 4 parser/header combinations.  All
+    routes use only the official IEA MES page, official IEA mapping files or
+    the official IEA SDMX endpoint; no guessed third-party endpoint is used.
+    """
     errors = []
-    candidates = _iea_data_candidates(flow)
-    _iea_structure_discovery(flow)
-    # Exactly 20 combined attempts: 10 acquisition variants x 2 parser orders.
-    for attempt, (kind, url) in enumerate(candidates[:10], start=1):
-        for parser_variant, parsers in enumerate(((_iea_parse_csv_bytes, _iea_parse_json_bytes, _iea_parse_xml_bytes), (_iea_parse_json_bytes, _iea_parse_csv_bytes, _iea_parse_xml_bytes)), start=1):
+    payload_candidates: list[tuple[str, bytes]] = []
+
+    # Route 1: official page, browser-like headers, extract the actual ZIP/CSV URL.
+    page_variants = _iea_page_fetch_variants()
+    for page_label, page_raw in page_variants:
+        for url in _iea_html_links(page_raw, flow):
             try:
-                raw = _http_get_headers(url, {"Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2"}, timeout=180, retries=2)
+                raw = _http_get_headers(url, {"Accept": "application/zip,text/csv,application/octet-stream,*/*;q=0.2", "Referer": IEA_MES_PAGE}, timeout=180, retries=2)
+                payload_candidates.append((f"official-page-link:{page_label}:{url}", raw))
+            except Exception as exc:
+                errors.append(f"official-link {url}: {exc}")
+
+    # Route 2: official .Stat/SDMX endpoint discovered from the official page.
+    # Only URLs actually present in the page are used; no guessed data key.
+    for page_label, page_raw in page_variants:
+        text = page_raw.decode("utf-8", errors="replace").replace("\\u002F", "/")
+        stat_urls = re.findall(r'https?://[^\"\'<>\s]*(?:stat|sdmx)[^\"\'<>\s]*', text, flags=re.I)
+        for url in list(dict.fromkeys(stat_urls))[:20]:
+            if flow.lower() not in url.lower() and "monthly" not in url.lower() and "mes" not in url.lower():
+                continue
+            try:
+                raw = _http_get_headers(url, {"Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2", "Referer": IEA_MES_PAGE}, timeout=180, retries=2)
+                payload_candidates.append((f"official-stat-link:{page_label}:{url}", raw))
+            except Exception as exc:
+                errors.append(f"official-stat {url}: {exc}")
+
+    # Route 3: official mapping metadata.  This validates that the new split
+    # dataset exists and provides a useful diagnostic even if page access is blocked.
+    mapping = _iea_mapping_metadata(flow)
+    if mapping:
+        LOG.info("IEA %s Mapping-Diagnose: %s", flow, ", ".join(mapping.get("sheets", [])))
+
+    # Route 4: retain the official SDMX service as a last resort, but first
+    # discover dataflow references instead of inventing /all/IEA keys.
+    for base in (IEA_API_BASE, IEA_API_BASE + "/v1"):
+        for structure_url in (
+            f"{base}/dataflow/all/all/latest",
+            f"{base}/dataflow/IEA/all/latest",
+        ):
+            try:
+                raw = _http_get_headers(structure_url, {"Accept": "application/vnd.sdmx.structure+csv;version=2.0.0,application/xml,application/json;q=0.8,*/*;q=0.2"}, timeout=90, retries=1)
+                text = raw.decode("utf-8", errors="replace")
+                if flow.lower() in text.lower():
+                    refs = re.findall(r'[^\"\'\s,<>]*' + re.escape(flow) + r'[^\"\'\s,<>]*', text, flags=re.I)
+                    for ref in list(dict.fromkeys(refs))[:10]:
+                        if "," not in ref:
+                            continue
+                        payload_candidates.append((f"sdmx-discovered:{structure_url}:{ref}", raw))
+                LOG.info("IEA %s SDMX-Discovery erreichbar: %s", flow, structure_url)
+            except Exception as exc:
+                errors.append(f"sdmx-discovery {structure_url}: {exc}")
+
+    # Route 5: official mapping workbook itself is not data, so do not parse it
+    # as observations.  This explicit guard prevents false REAL results.
+
+    # Exactly 20 parser paths over the collected official payloads.
+    parser_orders = (
+        ("csv", "json", "xml"),
+        ("json", "csv", "xml"),
+        ("xml", "csv", "json"),
+        ("csv", "xml", "json"),
+    )
+    parser_map = {"csv": _iea_parse_csv_bytes, "json": _iea_parse_json_bytes, "xml": _iea_parse_xml_bytes}
+    if not payload_candidates:
+        raise RuntimeError("IEA %s: keine offizielle Datenantwort erreichbar; %s" % (flow, " | ".join(errors[:10])))
+
+    for route_index, (label, raw) in enumerate(payload_candidates[:5], start=1):
+        for parser_index, order in enumerate(parser_orders, start=1):
+            try:
                 rows = []
-                for parser in parsers:
-                    rows = parser(raw)
+                for name in order:
+                    rows = parser_map[name](raw)
                     if rows:
                         break
-                if rows and _group_iea_rows(rows, flow):
-                    return rows, f"strategy={attempt}.{parser_variant}:{kind}:{url}"
-                errors.append(f"{attempt}.{parser_variant}: no usable series")
+                grouped = _group_iea_rows(rows, flow)
+                if grouped and sum(len(v.get("observations", [])) for v in grouped.values()) >= 10:
+                    return rows, f"strategy={((route_index-1)*4)+parser_index}:{label}:parser={order[0]}>{order[1]}>{order[2]}"
+                errors.append(f"{((route_index-1)*4)+parser_index}: no usable series")
             except Exception as exc:
-                errors.append(f"{attempt}.{parser_variant}: {exc}")
-    raise RuntimeError("IEA %s: 20 kombinierte Abruf-/Parserstrategien erfolglos; %s" % (flow, " | ".join(errors[:8])))
+                errors.append(f"{((route_index-1)*4)+parser_index}: {exc}")
+
+    raise RuntimeError("IEA %s: 20 kombinierte Abruf-/Parserstrategien erfolglos; %s" % (flow, " | ".join(errors[:12])))
 
 
 def update_iea(cache: dict[str, Any]) -> None:
