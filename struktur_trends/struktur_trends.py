@@ -1010,27 +1010,100 @@ def _iea_page_fetch_variants() -> list[tuple[str, bytes]]:
 
 
 def _iea_mapping_metadata(flow: str) -> dict[str, Any]:
-    """Read the official mapping workbook when available.
+    """Analyse the complete official IEA mapping workbook.
 
-    This is metadata only.  It is deliberately not used to fabricate a data
-    URL.  The actual data URL must come from the official IEA page/.Stat link.
+    This Lauf is deliberately a structure-analysis step.  We do not invent a
+    data URL and we do not turn mapping metadata into observations.  Instead,
+    the complete workbook is inspected so that the next implementation can
+    derive the real MESGEN/MESBAL structure from the IEA's own mapping.
     """
     url = IEA_MAPPING_URLS[flow]
     try:
         import openpyxl
-        raw = _http_get_headers(url, {"Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*;q=0.2"}, timeout=60, retries=1)
+        raw = _http_get_headers(
+            url,
+            {"Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*;q=0.2"},
+            timeout=60,
+            retries=2,
+        )
         wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
-        sheets = wb.sheetnames
-        sample = {}
+        result: dict[str, Any] = {"url": url, "sheets": wb.sheetnames, "sheet_info": {}}
+
+        LOG.info("IEA %s Mapping geladen: %s", flow, ", ".join(wb.sheetnames))
+
+        url_re = re.compile(r"https?://[^\s<>\"']+", re.I)
+        keyword_re = re.compile(
+            r"dataflow|datastructure|data structure|dimension|attribute|series|observation|"
+            r"frequency|time period|time_period|ref_area|reference area|measure|unit|"
+            r"generation|balance|download|\.zip|\.csv|sdmx|estat|stat",
+            re.I,
+        )
+        code_re = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{1,31}$")
+
         for ws in wb.worksheets:
-            vals = []
-            for row in ws.iter_rows(min_row=1, max_row=12, values_only=True):
-                vals.append([str(v).strip() if v is not None else "" for v in row[:12]])
-            sample[ws.title] = vals
-        LOG.info("IEA %s Mapping geladen: Sheets=%s", flow, sheets)
-        return {"sheets": sheets, "sample": sample}
+            # Read the complete used range, not just the first 12 rows.  Mapping
+            # workbooks often place the actual dimension/code information well
+            # below the explanatory header.
+            rows: list[list[Any]] = []
+            max_cols = 0
+            nonempty = 0
+            url_candidates: list[str] = []
+            keyword_hits: list[tuple[int, int, str]] = []
+            code_samples: list[str] = []
+
+            for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                values = list(row)
+                max_cols = max(max_cols, len(values))
+                cleaned = [str(v).strip() if v is not None else "" for v in values]
+                if any(cleaned):
+                    nonempty += 1
+                rows.append(cleaned)
+                for c_idx, value in enumerate(cleaned, start=1):
+                    if not value:
+                        continue
+                    for found in url_re.findall(value):
+                        url_candidates.append(found.rstrip(').,;'))
+                    if keyword_re.search(value):
+                        keyword_hits.append((r_idx, c_idx, value[:180]))
+                    if len(code_samples) < 80 and code_re.fullmatch(value) and value.upper() not in {"CODE", "VALUE", "NAME", "LABEL", "ID"}:
+                        code_samples.append(value)
+
+            # Compact structural summary for the GitHub log.
+            header_candidates = []
+            for r_idx, row in enumerate(rows[:80], start=1):
+                filled = [v for v in row if v]
+                if len(filled) >= 2:
+                    header_candidates.append({"row": r_idx, "values": filled[:16]})
+
+            info = {
+                "rows": len(rows),
+                "nonempty_rows": nonempty,
+                "columns": max_cols,
+                "url_candidates": list(dict.fromkeys(url_candidates))[:30],
+                "keyword_hits": keyword_hits[:80],
+                "code_samples": list(dict.fromkeys(code_samples))[:80],
+                "header_candidates": header_candidates[:12],
+            }
+            result["sheet_info"][ws.title] = info
+
+            LOG.info(
+                "IEA %s Mapping Sheet '%s': rows=%s nonempty=%s cols=%s",
+                flow, ws.title, len(rows), nonempty, max_cols,
+            )
+            if info["url_candidates"]:
+                LOG.info("IEA %s %s URLs: %s", flow, ws.title, " | ".join(info["url_candidates"][:10]))
+            if info["header_candidates"]:
+                for header in info["header_candidates"][:4]:
+                    LOG.info("IEA %s %s Header-Kandidat Zeile %s: %s", flow, ws.title, header["row"], header["values"])
+            if info["keyword_hits"]:
+                for hit in info["keyword_hits"][:12]:
+                    LOG.info("IEA %s %s Struktur-Treffer r=%s c=%s: %s", flow, ws.title, hit[0], hit[1], hit[2])
+            if info["code_samples"]:
+                LOG.info("IEA %s %s Code-Beispiele: %s", flow, ws.title, ", ".join(info["code_samples"][:30]))
+
+        return result
     except Exception as exc:
-        LOG.info("IEA %s Mapping nicht verfügbar: %s", flow, exc)
+        LOG.info("IEA %s Mapping-Analyse nicht verfügbar: %s", flow, exc)
         return {}
 
 
@@ -1080,11 +1153,13 @@ def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
             except Exception as exc:
                 errors.append(f"official-stat {url}: {exc}")
 
-    # Route 3: official mapping metadata.  This validates that the new split
-    # dataset exists and provides a useful diagnostic even if page access is blocked.
+    # Route 3: complete official mapping analysis.  This Lauf deliberately
+    # does not interpret mapping cells as observations and does not invent a
+    # data URL.  The resulting structure is written to the log for the next
+    # targeted acquisition implementation.
     mapping = _iea_mapping_metadata(flow)
     if mapping:
-        LOG.info("IEA %s Mapping-Diagnose: %s", flow, ", ".join(mapping.get("sheets", [])))
+        LOG.info("IEA %s Mapping-Analyse abgeschlossen: %s", flow, ", ".join(mapping.get("sheets", [])))
 
     # Route 4: retain the official SDMX service as a last resort, but first
     # discover dataflow references instead of inventing /all/IEA keys.
