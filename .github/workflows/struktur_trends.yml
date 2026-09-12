@@ -1,0 +1,86 @@
+name: Struktur-Trends Cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Auszuführender Test-/Laufmodus"
+        required: true
+        default: cache
+        type: choice
+        options:
+          - cache
+          - iea_forensic
+  schedule:
+    - cron: "30 6 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  update-struktur-trends:
+    if: ${{ github.event_name == 'schedule' || inputs.run_mode == 'cache' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v7
+
+      - name: Python einrichten
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Benötigte Python-Bibliotheken installieren
+        run: |
+          python -m pip install --disable-pip-version-check --no-input openpyxl
+
+      - name: Struktur-Trends Cache aktualisieren
+        working-directory: struktur_trends
+        run: |
+          python struktur_trends.py
+
+      - name: Cache speichern
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add struktur_trends/struktur_trends_cache.json
+          git diff --cached --quiet || git commit -m "Update structural trends cache"
+          git push
+
+  iea-forensic-discovery:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mode == 'iea_forensic' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v7
+
+      - name: Python einrichten
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: IEA-Discovery-Abhängigkeiten installieren
+        run: |
+          python -m pip install --disable-pip-version-check --no-input requests playwright
+
+      - name: Chromium installieren
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: IEA MESGEN/MESBAL SDMX Discovery
+        working-directory: struktur_trends
+        run: |
+          python iea_mes_sdmx_discovery.py \
+            --wait 20 \
+            --output iea_mes_sdmx_discovery
+
+      - name: IEA MESGEN/MESBAL SDMX Ergebnisse als Artifact speichern
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: iea-mes-sdmx-discovery
+          path: struktur_trends/iea_mes_sdmx_discovery/
+          if-no-files-found: warn
+          retention-days: 14
