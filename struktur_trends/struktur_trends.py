@@ -47,7 +47,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_FILE = SCRIPT_DIR / "struktur_trends_cache.json"
 
-CACHE_VERSION = "1.3"
+CACHE_VERSION = "1.4"
 
 # ---------------------------------------------------------------------------
 # Datenquellen / feste Konfiguration
@@ -1250,6 +1250,68 @@ def _iea_data_candidates(flow: str, structures: list[tuple[str,str,bytes]]) -> l
     return list(dict.fromkeys(urls))
 
 
+IEA_PUBLIC_STATS_API = "https://api.iea.org/stats"
+
+
+def _iea_public_stats_indicator_codes(flow: str) -> list[str]:
+    """Discover indicator codes from the official IEA public Stats API.
+
+    Compatibility fallback only. No indicator code is invented: generation uses
+    the documented IEA code; balance is accepted only from the official catalogue
+    when its metadata explicitly identifies an electricity-balance indicator.
+    """
+    if flow == "MESGEN":
+        return ["ElecGenByFuel"]
+
+    url = f"{IEA_PUBLIC_STATS_API}/indicators/"
+    try:
+        raw = _http_get_headers(url, {
+            "Accept": "application/json,*/*;q=0.2",
+            "User-Agent": "Mozilla/5.0 (compatible; StrukturTrends/1.4)",
+        }, timeout=90, retries=2)
+        obj = json.loads(raw.decode("utf-8-sig", errors="replace"))
+    except Exception as exc:
+        LOG.info("IEA public Stats indicators catalogue nicht verfügbar: %s", exc)
+        return []
+
+    items = obj
+    if isinstance(obj, dict):
+        for key in ("indicators", "data", "results", "items"):
+            if isinstance(obj.get(key), list):
+                items = obj[key]
+                break
+    if not isinstance(items, list):
+        return []
+
+    found: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or item.get("id") or item.get("indicator") or item.get("indicator_code") or "").strip()
+        text = " ".join(str(item.get(k, "")) for k in ("name", "label", "title", "description", "frequency", "unit")).lower()
+        if code and "electricity" in text and "balance" in text and code not in found:
+            found.append(code)
+    return found[:10]
+
+
+def _iea_public_stats_candidates(flow: str) -> list[tuple[str, str]]:
+    return [(f"{IEA_PUBLIC_STATS_API}/indicator/{code}", f"public-stats:{code}")
+            for code in _iea_public_stats_indicator_codes(flow)]
+
+
+def _iea_monthly_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep observations whose period is explicitly monthly (YYYY-MM[/DD])."""
+    out = []
+    for row in rows:
+        lowered = {str(k).strip().lower(): v for k, v in row.items()}
+        period = next((str(lowered[k]).strip() for k in
+                       ("time_period", "time period", "time_period_start", "period", "time", "date")
+                       if str(lowered.get(k, "")).strip()), "")
+        if re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", period):
+            out.append(row)
+    return out
+
+
 def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
     """Acquire MESGEN/MESBAL through the official stable IEA SDMX service first.
 
@@ -1278,12 +1340,33 @@ def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
         except Exception as exc:
             errors.append(f"stable-data {url}: {exc}")
 
-    # 2) Official mappings remain a validation/structure source, never observations.
+    # 2) Compatibility fallback: official IEA public Stats API.
+    # Only accepted when it actually returns sufficient monthly observations.
+    if not payload_candidates:
+        for url, identity in _iea_public_stats_candidates(flow):
+            try:
+                raw = _http_get_headers(url, {
+                    "Accept": "application/json,text/csv,*/*;q=0.2",
+                    "User-Agent": "Mozilla/5.0 (compatible; StrukturTrends/1.4)",
+                }, timeout=180, retries=2)
+                parsed = _iea_parse_json_bytes(raw)
+                monthly = _iea_monthly_rows(parsed)
+                grouped = _group_iea_rows(monthly, flow)
+                obs = sum(len(v.get("observations", [])) for v in grouped.values())
+                if len(grouped) >= 2 and obs >= 10:
+                    payload_candidates.append((f"official-public-stats:{identity}:{url}", raw))
+                    LOG.info("IEA %s Public-Stats-Fallback geladen: %s | series=%s | obs=%s", flow, url, len(grouped), obs)
+                else:
+                    errors.append(f"public-stats {identity}: keine ausreichenden monatlichen Beobachtungen (series={len(grouped)} obs={obs})")
+            except Exception as exc:
+                errors.append(f"public-stats {identity}: {exc}")
+
+    # 3) Official mappings remain a validation/structure source, never observations.
     mapping = _iea_mapping_metadata(flow)
     if mapping:
         LOG.info("IEA %s Mapping-Analyse vorhanden: %s", flow, ", ".join(mapping.get("sheets", [])))
 
-    # 3) Fallback: official MES page and its current download links.
+    # 4) Fallback: official MES page and its current download links.
     if not payload_candidates:
         page_variants = _iea_page_fetch_variants()
         for page_label, page_raw in page_variants:
