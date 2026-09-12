@@ -1,7 +1,7 @@
 {
   "cache_version": "1.5",
   "cache_created_at": null,
-  "cache_updated_at": "2026-09-12T17:02:55+00:00",
+  "cache_updated_at": "2026-09-12T18:00:16+00:00",
   "OECD_STAN": {
     "value_added": {
       "source": "OECD",
@@ -11,8 +11,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:20+00:00",
-      "last_successful_update": "2026-09-12T17:01:20+00:00",
+      "retrieved_at": "2026-09-12T17:58:39+00:00",
+      "last_successful_update": "2026-09-12T17:58:39+00:00",
       "data": {
         "FRA|C28": {
           "reference_area": "FRA",
@@ -18454,8 +18454,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:21+00:00",
-      "last_successful_update": "2026-09-12T17:01:21+00:00",
+      "retrieved_at": "2026-09-12T17:58:39+00:00",
+      "last_successful_update": "2026-09-12T17:58:39+00:00",
       "data": {
         "FRA|J": {
           "reference_area": "FRA",
@@ -35327,8 +35327,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:21+00:00",
-      "last_successful_update": "2026-09-12T17:01:21+00:00",
+      "retrieved_at": "2026-09-12T17:58:40+00:00",
+      "last_successful_update": "2026-09-12T17:58:40+00:00",
       "data": {
         "DEU|_T": {
           "reference_area": "DEU",
@@ -64329,8 +64329,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:22+00:00",
-      "last_successful_update": "2026-09-12T17:01:22+00:00",
+      "retrieved_at": "2026-09-12T17:58:41+00:00",
+      "last_successful_update": "2026-09-12T17:58:41+00:00",
       "data": {
         "FRA": {
           "reference_area": "FRA",
@@ -72525,8 +72525,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2024",
-      "retrieved_at": "2026-09-12T17:01:25+00:00",
-      "last_successful_update": "2026-09-12T17:01:25+00:00",
+      "retrieved_at": "2026-09-12T17:58:43+00:00",
+      "last_successful_update": "2026-09-12T17:58:43+00:00",
       "data": {
         "JPN": {
           "reference_area": "JPN",
@@ -75191,8 +75191,8 @@
       "status": "REAL",
       "unit": "USD billion",
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:25+00:00",
-      "last_successful_update": "2026-09-12T17:01:25+00:00",
+      "retrieved_at": "2026-09-12T17:58:43+00:00",
+      "last_successful_update": "2026-09-12T17:58:43+00:00",
       "data": {
         "2025": {
           "value": 581.7,
@@ -75214,8 +75214,8 @@
       "status": "REAL",
       "unit": "percent of surveyed organizations",
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:25+00:00",
-      "last_successful_update": "2026-09-12T17:01:25+00:00",
+      "retrieved_at": "2026-09-12T17:58:43+00:00",
+      "last_successful_update": "2026-09-12T17:58:43+00:00",
       "data": {
         "2025": {
           "value": 88.0,
@@ -75237,8 +75237,8 @@
       "status": "REAL",
       "unit": "million H100-equivalents",
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:01:25+00:00",
-      "last_successful_update": "2026-09-12T17:01:25+00:00",
+      "retrieved_at": "2026-09-12T17:58:43+00:00",
+      "last_successful_update": "2026-09-12T17:58:43+00:00",
       "data": {
         "2025": {
           "value": 17.1,
@@ -75300,8 +75300,8 @@
       "status": "REAL",
       "unit": "constant 2024 USD",
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:02:55+00:00",
-      "last_successful_update": "2026-09-12T17:02:55+00:00",
+      "retrieved_at": "2026-09-12T18:00:16+00:00",
+      "last_successful_update": "2026-09-12T18:00:16+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -109901,8 +109901,8 @@
       "status": "REAL",
       "unit": "% GDP",
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:02:55+00:00",
-      "last_successful_update": "2026-09-12T17:02:55+00:00",
+      "retrieved_at": "2026-09-12T18:00:16+00:00",
+      "last_successful_update": "2026-09-12T18:00:16+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -144921,8 +144921,8 @@
       "status": "REAL",
       "unit": "% government expenditure",
       "data_period": "2025",
-      "retrieved_at": "2026-09-12T17:02:55+00:00",
-      "last_successful_update": "2026-09-12T17:02:55+00:00",
+      "retrieved_at": "2026-09-12T18:00:16+00:00",
+      "last_successful_update": "2026-09-12T18:00:16+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
