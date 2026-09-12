@@ -842,28 +842,66 @@ IEA_MES_MAPPING_SUMMARY_PDF = "https://iea.blob.core.windows.net/assets/2ae5c8ac
 
 
 def _iea_parse_csv_bytes(raw: bytes) -> list[dict[str, Any]]:
+    """Parse official IEA SDMX CSV/ZIP content.
+
+    A release ZIP can contain more than one CSV (for example data plus
+    metadata).  Score all CSV candidates and select the file that actually
+    looks like an SDMX observation table instead of blindly taking the first
+    CSV.
+    """
     import csv, io, zipfile
-    payloads = []
+
+    payloads: list[tuple[str, bytes]] = []
     if raw[:2] == b"PK":
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
             for name in zf.namelist():
                 if name.lower().endswith((".csv", ".txt")):
-                    payloads.append(zf.read(name))
+                    payloads.append((name, zf.read(name)))
     else:
-        payloads.append(raw)
-    for payload in payloads:
+        payloads.append(("payload", raw))
+
+    best_rows: list[dict[str, Any]] = []
+    best_score = -1
+    best_name = ""
+    for name, payload in payloads:
         text = payload.decode("utf-8-sig", errors="replace")
         if not text.strip():
             continue
         try:
-            dialect = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|")
+            dialect = csv.Sniffer().sniff(text[:16384], delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
-        rows = list(csv.DictReader(io.StringIO(text), dialect=dialect))
-        if rows:
-            return [{str(k).strip(): v for k, v in row.items()} for row in rows]
-    return []
+        try:
+            rows = list(csv.DictReader(io.StringIO(text), dialect=dialect))
+        except Exception:
+            continue
+        if not rows:
+            continue
+        normalized = [{str(k).strip(): v for k, v in row.items()} for row in rows]
+        headers = {str(k).strip().upper() for k in normalized[0].keys()}
+        score = 0
+        for required in ("COUNTRY", "TIME_PERIOD", "OBS_VALUE"):
+            if required in headers:
+                score += 20
+        if "ENERGY_BALANCE_FLOW" in headers:
+            score += 10
+        if "ENERGY_PRODUCT" in headers:
+            score += 10
+        if "FREQUENCY" in headers:
+            score += 5
+        if "UNIT" in headers:
+            score += 5
+        if "CONF_STATUS" in headers or "QUALIFIER" in headers:
+            score += 3
+        score += min(len(normalized) / 1000.0, 10.0)
+        if score > best_score:
+            best_score = score
+            best_rows = normalized
+            best_name = name
 
+    if best_rows:
+        LOG.info("IEA SDMX CSV ausgewählt: %s | rows=%s | score=%.1f", best_name, len(best_rows), best_score)
+    return best_rows
 
 def _iea_parse_json_bytes(raw: bytes) -> list[dict[str, Any]]:
     try:
@@ -1108,153 +1146,121 @@ def _iea_mapping_metadata(flow: str) -> dict[str, Any]:
 
 
 def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
-    grouped = {}
+    grouped: dict[str, Any] = {}
     for row in rows:
         lowered = {str(k).strip().lower(): v for k, v in row.items()}
-        country = next((str(lowered[n]).strip() for n in ("ref_area", "reference area", "reference_area", "country", "country or area", "economy", "geo", "area") if n in lowered and str(lowered[n] or "").strip()), None)
-        period = next((str(lowered[n]).strip() for n in ("time_period", "time period", "time_period_start", "period", "time", "date") if n in lowered and str(lowered[n] or "").strip()), None)
+        def pick(*names):
+            for name in names:
+                if name in lowered and str(lowered[name] or "").strip():
+                    return str(lowered[name]).strip()
+            return None
+        country = pick("country", "ref_area", "reference area", "reference_area", "country or area", "economy", "geo", "area")
+        period = pick("time_period", "time period", "time_period_start", "period", "time", "date")
         if not country or not period:
             continue
         grouped.setdefault(country, {"reference_area": country, "dataset": dataset, "observations": []})["observations"].append(dict(row))
     return grouped
 
-
 def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
-    """One-run IEA acquisition with official-link discovery and 20 parser paths.
+    """Acquire the current free IEA MES release without inventing SDMX keys.
 
-    20 paths = 5 acquisition routes x 4 parser/header combinations.  All
-    routes use only the official IEA MES page, official IEA mapping files or
-    the official IEA SDMX endpoint; no guessed third-party endpoint is used.
+    Primary route: the official MES page supplies the current SDMX ZIP links.
+    The runner may receive a 403 for the HTML page, so several normal IEA page
+    delivery variants are attempted.  Once a real ZIP/CSV URL is discovered,
+    the payload is downloaded once and many parser orders are applied to that
+    same payload.  Mapping files are used only for validation, never as data.
     """
-    errors = []
+    errors: list[str] = []
     payload_candidates: list[tuple[str, bytes]] = []
 
-    # Route 1: official page, browser-like headers, extract the actual ZIP/CSV URL.
     page_variants = _iea_page_fetch_variants()
     for page_label, page_raw in page_variants:
-        for url in _iea_html_links(page_raw, flow):
+        urls = _iea_html_links(page_raw, flow)
+        LOG.info("IEA %s: %s offizielle Download-Link-Kandidaten gefunden", flow, len(urls))
+        for url in urls:
             try:
-                raw = _http_get_headers(url, {"Accept": "application/zip,text/csv,application/octet-stream,*/*;q=0.2", "Referer": IEA_MES_PAGE}, timeout=180, retries=2)
-                payload_candidates.append((f"official-page-link:{page_label}:{url}", raw))
+                raw = _http_get_headers(url, {
+                    "Accept": "application/zip,application/octet-stream,text/csv,*/*;q=0.2",
+                    "Referer": IEA_MES_PAGE,
+                }, timeout=240, retries=2)
+                if raw[:2] == b"PK" or b"COUNTRY" in raw[:4096].upper():
+                    payload_candidates.append((f"official-page-link:{page_label}:{url}", raw))
+                    LOG.info("IEA %s offizielles Datenpayload geladen: %s | bytes=%s | ZIP=%s", flow, url, len(raw), raw[:2] == b"PK")
+                else:
+                    LOG.warning("IEA %s Link lieferte unerwarteten Inhalt: %s | bytes=%s | head=%r", flow, url, len(raw), raw[:120])
             except Exception as exc:
                 errors.append(f"official-link {url}: {exc}")
 
-    # Route 2: official .Stat/SDMX endpoint discovered from the official page.
-    # Only URLs actually present in the page are used; no guessed data key.
+    # The IEA page itself is authoritative for the current release.  If the
+    # page is reachable, also inspect embedded Stat/SDMX URLs without guessing
+    # any resource/key.
     for page_label, page_raw in page_variants:
-        text = page_raw.decode("utf-8", errors="replace").replace("\\u002F", "/")
-        stat_urls = re.findall(r'https?://[^\"\'<>\s]*(?:stat|sdmx)[^\"\'<>\s]*', text, flags=re.I)
-        for url in list(dict.fromkeys(stat_urls))[:20]:
-            if flow.lower() not in url.lower() and "monthly" not in url.lower() and "mes" not in url.lower():
+        text = page_raw.decode("utf-8", errors="replace").replace("\\u002F", "/").replace("\\/", "/")
+        stat_urls = re.findall(r'https?://[^\"\'< >\s]*(?:stat|sdmx)[^\"\'< >\s]*', text, flags=re.I)
+        for url in list(dict.fromkeys(stat_urls))[:40]:
+            if flow.lower() not in url.lower() and not any(x in url.lower() for x in ("monthly", "mes", "electricity")):
                 continue
             try:
-                raw = _http_get_headers(url, {"Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2", "Referer": IEA_MES_PAGE}, timeout=180, retries=2)
+                raw = _http_get_headers(url, {
+                    "Accept": "application/zip,text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2",
+                    "Referer": IEA_MES_PAGE,
+                }, timeout=240, retries=2)
                 payload_candidates.append((f"official-stat-link:{page_label}:{url}", raw))
             except Exception as exc:
                 errors.append(f"official-stat {url}: {exc}")
 
-    # Route 3: complete official mapping analysis.  This Lauf deliberately
-    # does not interpret mapping cells as observations and does not invent a
-    # data URL.  The resulting structure is written to the log for the next
-    # targeted acquisition implementation.
+    # Always refresh the official mapping as a structure guard.
     mapping = _iea_mapping_metadata(flow)
     if mapping:
-        LOG.info("IEA %s Mapping-Analyse abgeschlossen: %s", flow, ", ".join(mapping.get("sheets", [])))
+        LOG.info("IEA %s Mapping-Analyse vorhanden: %s", flow, ", ".join(mapping.get("sheets", [])))
 
-    # Route 4: use the actual SDMX REST structure syntax.  The previous
-    # implementation queried /dataflow/all/all/latest, which is not the
-    # structure-query syntax of this IEA SDMX service.  Structure queries are
-    # /rest/{structure}/{agencyId}/{resourceId}/{version}.
-    flow_versions = ["1.0", "1.0.0", "+", "latest"]
-    discovered_refs: list[tuple[str, str]] = []
-    for base in (IEA_API_BASE, IEA_API_BASE + "/v1"):
-        for version in flow_versions:
-            for agency in ("IEA", "OECD.IEA"):
-                structure_url = f"{base}/dataflow/{agency}/{flow}/{version}"
-                try:
-                    raw = _http_get_headers(
-                        structure_url,
-                        {"Accept": "application/vnd.sdmx.structure+xml;version=2.1,application/vnd.sdmx.structure+json,application/xml,application/json;q=0.8,*/*;q=0.2"},
-                        timeout=90, retries=1,
-                    )
-                    text = raw.decode("utf-8", errors="replace")
-                    LOG.info("IEA %s SDMX-Structure erreichbar: %s (%s Bytes)", flow, structure_url, len(raw))
-                    # Keep the structure response as evidence, but do not treat
-                    # structure metadata itself as observations.  Extract an
-                    # explicit flow ID/version when the response exposes it.
-                    id_matches = re.findall(r'(?i)(?:id|resourceID)=[\"\']([^\"\']+)', text)
-                    ver_matches = re.findall(r'(?i)(?:version)=[\"\']([^\"\']+)', text)
-                    ref_id = next((x for x in id_matches if x.upper() == flow.upper()), flow)
-                    ref_ver = next((x for x in ver_matches if re.fullmatch(r"\d+(?:\.\d+){1,2}", x)), version)
-                    discovered_refs.append((ref_id, ref_ver))
-                    break
-                except Exception as exc:
-                    errors.append(f"sdmx-structure {structure_url}: {exc}")
+    if not payload_candidates:
+        raise RuntimeError(
+            "IEA %s: offizielles SDMX-Datenpayload nicht erreichbar; "
+            "die IEA-Seite/Download-Links sind vom Runner derzeit nicht erreichbar. %s"
+            % (flow, " | ".join(errors[:12]))
+        )
 
-    # Route 5: query the discovered flow directly using SDMX wildcard keys.
-    # SDMX supports wildcarding with *; component filters are used for the
-    # monthly frequency and a bounded time range.  We deliberately try both
-    # the compact flowRef endpoint and the /v2 form used by .Stat Suite.
-    if not discovered_refs:
-        discovered_refs = [(flow, "1.0"), (flow, "1.0.0")]
-    for ref_id, ref_ver in list(dict.fromkeys(discovered_refs)):
-        flow_refs = [f"IEA,{ref_id},{ref_ver}", f"OECD.IEA,{ref_id},{ref_ver}"]
-        for base in (IEA_API_BASE, IEA_API_BASE + "/v1"):
-            for flow_ref in flow_refs:
-                for key in ("*", "", "*.*.*.*.*.*", "*.*.*.*.*"):
-                    if key == "":
-                        url = f"{base}/data/{flow_ref}//IEA"
-                    else:
-                        url = f"{base}/data/{flow_ref}/{key}/IEA"
-                    for query in (
-                        "?c%5BFREQUENCY%5D=M&c%5BTIME_PERIOD%5D=ge:2020-01",
-                        "?startPeriod=2020-01&endPeriod=2026-12",
-                        "",
-                    ):
-                        try:
-                            raw = _http_get_headers(
-                                url + query,
-                                {"Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2"},
-                                timeout=180, retries=2,
-                            )
-                            if raw and len(raw) > 100:
-                                payload_candidates.append((f"sdmx-data:{url}{query}", raw))
-                                LOG.info("IEA %s SDMX-Datenantwort: %s (%s Bytes)", flow, url + query, len(raw))
-                                break
-                        except Exception as exc:
-                            errors.append(f"sdmx-data {url}{query}: {exc}")
+    # De-duplicate identical payloads before parsing.
+    unique_payloads: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    import hashlib
+    for label, raw in payload_candidates:
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            unique_payloads.append((label, raw))
 
-    # Route 6: official mapping workbook itself is not data, so do not parse it
-    # as observations.  This explicit guard prevents false REAL results.
-
-    # Exactly 20 parser paths over the collected official payloads.
     parser_orders = (
         ("csv", "json", "xml"),
         ("json", "csv", "xml"),
         ("xml", "csv", "json"),
         ("csv", "xml", "json"),
+        ("json", "xml", "csv"),
     )
     parser_map = {"csv": _iea_parse_csv_bytes, "json": _iea_parse_json_bytes, "xml": _iea_parse_xml_bytes}
-    if not payload_candidates:
-        raise RuntimeError("IEA %s: keine offizielle Datenantwort erreichbar; %s" % (flow, " | ".join(errors[:10])))
-
-    for route_index, (label, raw) in enumerate(payload_candidates[:5], start=1):
-        for parser_index, order in enumerate(parser_orders, start=1):
+    strategy = 0
+    for payload_index, (label, raw) in enumerate(unique_payloads[:4], start=1):
+        for order in parser_orders:
+            strategy += 1
             try:
-                rows = []
+                rows: list[dict[str, Any]] = []
+                parser_used = ""
                 for name in order:
                     rows = parser_map[name](raw)
                     if rows:
+                        parser_used = name
                         break
                 grouped = _group_iea_rows(rows, flow)
-                if grouped and sum(len(v.get("observations", [])) for v in grouped.values()) >= 10:
-                    return rows, f"strategy={((route_index-1)*4)+parser_index}:{label}:parser={order[0]}>{order[1]}>{order[2]}"
-                errors.append(f"{((route_index-1)*4)+parser_index}: no usable series")
+                obs = sum(len(v.get("observations", [])) for v in grouped.values())
+                if len(grouped) >= 2 and obs >= 10:
+                    LOG.info("IEA %s erfolgreiche Strategie %s: %s | parser=%s | series=%s | obs=%s", flow, strategy, label, parser_used, len(grouped), obs)
+                    return rows, f"strategy={strategy}:{label}:parser={parser_used}"
+                errors.append(f"strategy {strategy}: unzureichende Struktur series={len(grouped)} obs={obs}")
             except Exception as exc:
-                errors.append(f"{((route_index-1)*4)+parser_index}: {exc}")
+                errors.append(f"strategy {strategy}: {exc}")
 
-    raise RuntimeError("IEA %s: 20 kombinierte Abruf-/Parserstrategien erfolglos; %s" % (flow, " | ".join(errors[:12])))
-
+    raise RuntimeError("IEA %s: 20 kombinierte Parserstrategien erfolglos; %s" % (flow, " | ".join(errors[:12])))
 
 def update_iea(cache: dict[str, Any]) -> None:
     for field_name, dataset in IEA_DATASETS.items():
