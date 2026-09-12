@@ -1239,14 +1239,21 @@ def _iea_data_candidates(flow: str, structures: list[tuple[str, str, bytes]]) ->
     if not triples:
         triples = [("IEA", flow, "latest"), ("IEA", flow, "1.0"), ("OECD.IEA", flow, "latest"), ("OECD.IEA", flow, "1.0")]
     urls = []
+    # SDMX REST uses empty components (not the literal word ``all``) as
+    # wildcards inside a dimension key. MESBAL has 9 non-time dimensions
+    # (8 separators); MESGEN has 10 non-time dimensions (9 separators).
+    key_wildcard = "." * (9 if flow.upper() == "MESGEN" else 8)
     for base in (IEA_API_BASE_STABLE, IEA_API_BASE):
         for agency, resource, version in triples:
-            for path in (
-                f"/data/{agency},{resource},{version}/all/all",
-                f"/data/{agency},{resource},{version}/all/",
-                f"/data/{agency},{resource},{version}/all/all?startPeriod=2020-01&endPeriod=2026-12",
-            ):
-                urls.append((f"{base}{path}", f"{agency}/{resource}/{version}"))
+            for provider in ("IEA", "OECD.IEA", "all", ""):
+                suffixes = (f"/{provider}", "") if provider else ("",)
+                for suffix in suffixes:
+                    for path in (
+                        f"/data/{agency},{resource},{version}/{key_wildcard}{suffix}",
+                        f"/data/{agency},{resource},{version}/{key_wildcard}{suffix}?startPeriod=2020-01&endPeriod=2026-12",
+                        f"/data/{agency},{resource},{version}/{key_wildcard}{suffix}?startPeriod=2020-01&endPeriod=2026-12&dimension_at_observation=AllDimensions",
+                    ):
+                        urls.append((f"{base}{path}", f"{agency}/{resource}/{version}|key={key_wildcard!r}|provider={provider or 'omitted'}"))
     return list(dict.fromkeys(urls))
 
 
