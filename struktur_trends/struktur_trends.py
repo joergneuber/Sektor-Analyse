@@ -34,6 +34,7 @@ import sys
 import time
 import random
 import os
+import hashlib
 import tempfile
 from urllib.parse import quote
 import urllib.error
@@ -46,7 +47,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_FILE = SCRIPT_DIR / "struktur_trends_cache.json"
 
-CACHE_VERSION = "1.2"
+CACHE_VERSION = "1.3"
 
 # ---------------------------------------------------------------------------
 # Datenquellen / feste Konfiguration
@@ -231,7 +232,7 @@ def _download_temp(url: str, suffix: str = "") -> str:
 
 def _http_get_headers(url: str, headers: dict[str, str], timeout: int = 120, retries: int = 3) -> bytes:
     last_error = None
-    base = {"User-Agent": "Neuber-Macro-Structural-Trends/1.2"}
+    base = {"User-Agent": "Neuber-Macro-Structural-Trends/1.3"}
     base.update(headers)
     for attempt in range(retries + 1):
         try:
@@ -1164,106 +1165,90 @@ def _group_iea_rows(rows: list[dict[str, Any]], dataset: str) -> dict[str, Any]:
     return grouped
 
 def _iea_stable_structure_candidates(flow: str) -> list[tuple[str, str]]:
-    """Discover the real IEA .Stat dataflow instead of assuming MESGEN/MESBAL IDs.
+    """Build official IEA SDMX structure-discovery probes only.
 
-    The IEA stable host exposes a standard .Stat/SDMX registry.  MESGEN/MESBAL
-    are the published file labels/mapping names, not proven dataflow IDs.  The
-    first candidates therefore enumerate all dataflows and let
-    ``_iea_extract_resource_ids`` identify matching flows by title/ID.
-    Specific legacy guesses remain only as a narrow fallback.
+    MESGEN/MESBAL are publication/mapping labels. They are deliberately not
+    treated as Dataflow IDs. A dataflow ID must first be returned by the
+    official IEA structure service.
     """
-    flow = str(flow).upper()
-    out = []
-    bases = (
-        (IEA_API_BASE_STABLE, "stable-api"),
-        (IEA_API_BASE_NSI_STABLE, "stable-nsi"),
-    )
-    for base, host_label in bases:
-        # .Stat standard structural query: all agencies, all dataflows, latest.
-        out.append((f"{host_label}-all", f"{base}/dataflow/all/all/latest?detail=allstubs"))
-        out.append((f"{host_label}-all-v", f"{base}/dataflow/all/all/all?detail=allstubs"))
-        # Some .Stat deployments expose the compact all-dataflow form.
-        out.append((f"{host_label}-all-short", f"{base}/dataflow/all/latest"))
-        # Narrow fallbacks only; these are not treated as authoritative IDs.
-        for agency in ("OECD.IEA", "IEA"):
-            for version in ("1.0", "latest", "2026"):
-                out.append((f"{host_label}-guess-v1", f"{base}/dataflow/{agency}/{flow}/{version}"))
-    return list(dict.fromkeys(out))
+    candidates=[]
+    for base,label in ((IEA_API_BASE_STABLE,"stable-api"),(IEA_API_BASE_NSI_STABLE,"stable-nsi"),(IEA_API_BASE,"legacy-api")):
+        for path in (
+            "/dataflow/all/all/latest?references=all",
+            "/dataflow/all/all/latest?detail=allstubs",
+            "/dataflow/all/latest?references=all",
+            "/dataflow?references=all",
+        ):
+            candidates.append((f"{label}:{path}",base+path))
+    return list(dict.fromkeys(candidates))
 
 
-def _iea_find_dataflow(flow: str) -> list[tuple[str, str, bytes]]:
-    """Find the real MES resource on the official IEA SDMX service.
-
-    A data response is also a valid discovery signal for this public service,
-    so this function accepts both structure and dataflow-style responses.
-    """
-    found = []
-    seen = set()
-    headers = {
-        "Accept": "application/vnd.sdmx.structure+csv;version=2.0.0,application/vnd.sdmx.structure+xml,application/vnd.sdmx.structure+json,application/vnd.sdmx.data+csv;version=2.0.0,application/json,application/xml,text/csv;q=0.8,*/*;q=0.2",
-        "User-Agent": "Mozilla/5.0 (compatible; StrukturTrends/1.0; +https://github.com/)"
-    }
-    for label, url in _iea_stable_structure_candidates(flow):
-        try:
-            raw = _http_get_headers(url, headers, timeout=90, retries=2)
-            head = raw[:500].lower()
-            if not raw or head.startswith(b"<!doctype html") or b"<html" in head:
-                LOG.info("IEA %s Discovery %s: unerwartete HTML-Antwort | %s", flow, label, url)
-                continue
-            digest = hashlib.sha256(raw).hexdigest()
-            if digest in seen:
-                continue
-            seen.add(digest)
-            found.append((label, url, raw))
-            LOG.info("IEA %s Discovery erreichbar: %s | bytes=%s | head=%r", flow, url, len(raw), raw[:120])
-        except Exception as exc:
-            LOG.info("IEA %s Discovery %s nicht verfügbar: %s", flow, label, exc)
+def _iea_extract_resource_ids(raw: bytes, flow: str) -> list[tuple[str,str,str]]:
+    """Extract verified dataflow agency/id/version triples from SDMX structure."""
+    found=[]
+    def add(agency,resource,version,text=""):
+        agency=str(agency or "").strip(); resource=str(resource or "").strip(); version=str(version or "latest").strip()
+        if not agency or not resource: return
+        hay=f"{resource} {text}".lower()
+        # Require an explicit MES/electricity marker in the returned structure.
+        if not any(x in hay for x in ("monthly electricity statistics","mes","electricity generation","electricity balance")):
+            return
+        item=(agency,resource,version)
+        if item not in found: found.append(item)
+    try:
+        import xml.etree.ElementTree as ET
+        root=ET.fromstring(raw)
+        for elem in root.iter():
+            if elem.tag.rsplit("}",1)[-1].lower()!="dataflow": continue
+            attrs={k.rsplit("}",1)[-1].lower():v for k,v in elem.attrib.items()}
+            text=" ".join(t.strip() for t in elem.itertext() if t and t.strip())
+            add(attrs.get("agencyid") or attrs.get("agency"),attrs.get("id") or attrs.get("resourceid"),attrs.get("version"),text)
+    except Exception: pass
+    try:
+        obj=json.loads(raw.decode("utf-8-sig",errors="replace"))
+        raw_flows=obj.get("dataflows") or obj.get("dataFlow") or obj.get("dataflowsList") if isinstance(obj,dict) else None
+        if isinstance(raw_flows,dict): raw_flows=raw_flows.get("dataflow") or raw_flows.get("dataflows") or []
+        if isinstance(raw_flows,list):
+            for item in raw_flows:
+                if isinstance(item,dict):
+                    add(item.get("agencyID") or item.get("agencyId") or item.get("agency"),item.get("id") or item.get("resourceID") or item.get("resourceId"),item.get("version"),json.dumps(item,ensure_ascii=False))
+    except Exception: pass
     return found
 
 
-def _iea_data_candidates(flow: str, structures: list[tuple[str, str, bytes]]) -> list[tuple[str, str]]:
-    """Create official SDMX data candidates without inventing dimension codes.
+def _iea_find_dataflow(flow: str) -> list[tuple[str,str,bytes]]:
+    found=[]; seen=set()
+    headers={"Accept":"application/vnd.sdmx.structure+json;version=1.0;urn=true,application/vnd.sdmx.structure+xml,application/json,application/xml,*/*;q=0.2","User-Agent":"Mozilla/5.0 (compatible; StrukturTrends/1.3; +https://github.com/)"}
+    for label,url in _iea_stable_structure_candidates(flow):
+        try:
+            raw=_http_get_headers(url,headers,timeout=90,retries=1)
+            if not raw or raw[:100].lower().lstrip().startswith((b"<!doctype",b"<html")): continue
+            triples=_iea_extract_resource_ids(raw,flow)
+            if triples:
+                LOG.info("IEA %s: verifizierte Dataflows gefunden: %s",flow,triples[:10])
+                digest=hashlib.sha256(raw).hexdigest()
+                if digest not in seen: seen.add(digest); found.append((label,url,raw))
+        except Exception as exc:
+            LOG.info("IEA %s Registry %s nicht verfügbar: %s",flow,label,exc)
+    return found
 
-    The key point is that SDMX v1 accepts ``all`` as the key wildcard and v2
-    permits an omitted key.  The previous implementation used strings of dots,
-    which produced HTTP 400 on the IEA service.  We therefore test the standards-
-    compliant forms first and use component filters in v2 where supported.
-    """
-    triples = []
-    for _, _, raw in structures:
-        triples.extend(_iea_extract_resource_ids(raw, flow))
-    # Always test the documented IEA mapping agency and the public IEA agency,
-    # with explicit versions first.  The mapping workbook identifies its
-    # codelists as OECD.IEA, so that agency is the primary candidate.
-    for agency in ("OECD.IEA", "IEA"):
-        for version in ("1.0", "latest", "2026"):
-            triples.append((agency, flow, version))
-    triples = list(dict.fromkeys(triples))
 
-    urls = []
-    for agency, resource, version in triples:
-        # SDMX REST v1: flowRef/key/providerRef.  ``all`` is the standards-
-        # defined key wildcard; providerRef is omitted first.
-        for base, label in ((IEA_API_BASE_STABLE, "stable-v1"), (IEA_API_BASE_NSI_STABLE, "stable-nsi-v1"), (IEA_API_BASE, "legacy-v1")):
-            for key in ("all", ""):
-                key_part = f"/{key}" if key else ""
-                for provider in ("", "/all", "/IEA", "/OECD.IEA"):
-                    if provider and key == "" and provider == "/all":
-                        pass
-                    url = f"{base}/data/{agency},{resource},{version}{key_part}{provider}"
-                    urls.append((url, f"{label}:{agency}/{resource}/{version}|key={key or 'omitted'}|provider={provider.strip('/') or 'omitted'}"))
-                    urls.append((url + "?startPeriod=2020-01&endPeriod=2026-12&dimensionAtObservation=AllDimensions", f"{label}:{agency}/{resource}/{version}|key={key or 'omitted'}|provider={provider.strip('/') or 'omitted'}|period"))
-        # SDMX REST v2: data/dataflow/{agency}/{resource}/{version}/{key};
-        # omitted key means the whole dataflow. Component filters are preferred.
-        base2 = f"{IEA_API_BASE_STABLE}/v2/data/dataflow/{agency}/{resource}/{version}"
-        base2_nsi = f"{IEA_API_BASE_NSI_STABLE}/v2/data/dataflow/{agency}/{resource}/{version}"
-        urls.append((base2, f"stable-v2:{agency}/{resource}/{version}|key=omitted"))
-        urls.append((base2_nsi, f"stable-nsi-v2:{agency}/{resource}/{version}|key=omitted"))
-        urls.append((base2 + "?startPeriod=2020-01&endPeriod=2026-12&c%5BFREQUENCY%5D=M", f"stable-v2:{agency}/{resource}/{version}|key=omitted|FREQUENCY=M"))
-        urls.append((base2_nsi + "?startPeriod=2020-01&endPeriod=2026-12&c%5BFREQUENCY%5D=M", f"stable-nsi-v2:{agency}/{resource}/{version}|key=omitted|FREQUENCY=M"))
-        urls.append((base2 + "/all?startPeriod=2020-01&endPeriod=2026-12", f"stable-v2:{agency}/{resource}/{version}|key=all|period"))
-        urls.append((base2_nsi + "/all?startPeriod=2020-01&endPeriod=2026-12", f"stable-nsi-v2:{agency}/{resource}/{version}|key=all|period"))
+def _iea_data_candidates(flow: str, structures: list[tuple[str,str,bytes]]) -> list[tuple[str,str]]:
+    """Build data URLs only from dataflow IDs actually returned by IEA."""
+    triples=[]
+    for _,_,raw in structures: triples.extend(_iea_extract_resource_ids(raw,flow))
+    triples=list(dict.fromkeys(triples)); urls=[]
+    for agency,resource,version in triples:
+        for base,label in ((IEA_API_BASE_STABLE,"stable-v1"),(IEA_API_BASE_NSI_STABLE,"stable-nsi-v1")):
+            endpoint=f"{base}/data/{agency},{resource},{version}"
+            urls.append((endpoint+"/all?startPeriod=2000-01&endPeriod=2026-12&dimensionAtObservation=AllDimensions",f"{label}:{agency}/{resource}/{version}"))
+            urls.append((endpoint+"?startPeriod=2000-01&endPeriod=2026-12&dimensionAtObservation=AllDimensions",f"{label}:{agency}/{resource}/{version}|key=omitted"))
+        for base,label in ((IEA_API_BASE_STABLE,"stable-v2"),(IEA_API_BASE_NSI_STABLE,"stable-nsi-v2")):
+            endpoint=f"{base}/v2/data/dataflow/{agency}/{resource}/{version}"
+            urls.append((endpoint+"/*?c%5BTIME_PERIOD%5D=ge:2000+le:2026",f"{label}:{agency}/{resource}/{version}"))
+            urls.append((endpoint+"/*?limit=100000",f"{label}:{agency}/{resource}/{version}|limit"))
     return list(dict.fromkeys(urls))
+
 
 def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
     """Acquire MESGEN/MESBAL through the official stable IEA SDMX service first.
