@@ -61,20 +61,17 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: IEA-Discovery-Abhängigkeiten installieren
+      - name: IEA-SDMX-Abhängigkeiten installieren
         run: |
-          python -m pip install --disable-pip-version-check --no-input requests playwright
-
-      - name: Chromium installieren
-        run: |
-          python -m playwright install --with-deps chromium
+          python -m pip install --disable-pip-version-check --no-input requests
 
       - name: IEA MESGEN/MESBAL SDMX Discovery
         working-directory: struktur_trends
         run: |
           python iea_mes_sdmx_discovery.py \
-            --wait 20 \
-            --output iea_mes_sdmx_discovery
+            --output iea_mes_sdmx_discovery \
+            --timeout 25 \
+            --max-data-probes 160
 
       - name: IEA MESGEN/MESBAL SDMX Ergebnisse als Artifact speichern
         if: ${{ always() }}
