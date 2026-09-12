@@ -30,7 +30,9 @@ jobs:
 
       - name: Run IEA forensic discovery
         run: |
-          python iea_forensic_discovery.py             --wait 20             --output iea_forensic_discovery
+          python iea_forensic_discovery.py \
+            --wait 20 \
+            --output iea_forensic_discovery
 
       - name: Upload forensic results
         if: always()
@@ -40,4 +42,3 @@ jobs:
           path: iea_forensic_discovery/
           if-no-files-found: warn
           retention-days: 14
-
