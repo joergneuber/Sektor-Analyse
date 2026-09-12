@@ -12,7 +12,6 @@ on:
           - cache
           - iea_forensic
   schedule:
-    # Montag bis Freitag um 06:30 UTC.
     - cron: "30 6 * * 1-5"
 
 permissions:
@@ -71,9 +70,10 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: IEA Forensic Discovery
+        working-directory: struktur_trends
         run: |
-          python iea_forensic_discovery.py
-            --wait 20
+          python iea_forensic_discovery.py \
+            --wait 20 \
             --output iea_forensic_discovery
 
       - name: IEA Forensic Ergebnisse als Artifact speichern
@@ -81,6 +81,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iea-forensic-discovery
-          path: iea_forensic_discovery/
+          path: struktur_trends/iea_forensic_discovery/
           if-no-files-found: warn
           retention-days: 14
