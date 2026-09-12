@@ -1161,27 +1161,70 @@ def _iea_extract_rows(flow: str) -> tuple[list[dict[str, Any]], str]:
     if mapping:
         LOG.info("IEA %s Mapping-Analyse abgeschlossen: %s", flow, ", ".join(mapping.get("sheets", [])))
 
-    # Route 4: retain the official SDMX service as a last resort, but first
-    # discover dataflow references instead of inventing /all/IEA keys.
+    # Route 4: use the actual SDMX REST structure syntax.  The previous
+    # implementation queried /dataflow/all/all/latest, which is not the
+    # structure-query syntax of this IEA SDMX service.  Structure queries are
+    # /rest/{structure}/{agencyId}/{resourceId}/{version}.
+    flow_versions = ["1.0", "1.0.0", "+", "latest"]
+    discovered_refs: list[tuple[str, str]] = []
     for base in (IEA_API_BASE, IEA_API_BASE + "/v1"):
-        for structure_url in (
-            f"{base}/dataflow/all/all/latest",
-            f"{base}/dataflow/IEA/all/latest",
-        ):
-            try:
-                raw = _http_get_headers(structure_url, {"Accept": "application/vnd.sdmx.structure+csv;version=2.0.0,application/xml,application/json;q=0.8,*/*;q=0.2"}, timeout=90, retries=1)
-                text = raw.decode("utf-8", errors="replace")
-                if flow.lower() in text.lower():
-                    refs = re.findall(r'[^\"\'\s,<>]*' + re.escape(flow) + r'[^\"\'\s,<>]*', text, flags=re.I)
-                    for ref in list(dict.fromkeys(refs))[:10]:
-                        if "," not in ref:
-                            continue
-                        payload_candidates.append((f"sdmx-discovered:{structure_url}:{ref}", raw))
-                LOG.info("IEA %s SDMX-Discovery erreichbar: %s", flow, structure_url)
-            except Exception as exc:
-                errors.append(f"sdmx-discovery {structure_url}: {exc}")
+        for version in flow_versions:
+            for agency in ("IEA", "OECD.IEA"):
+                structure_url = f"{base}/dataflow/{agency}/{flow}/{version}"
+                try:
+                    raw = _http_get_headers(
+                        structure_url,
+                        {"Accept": "application/vnd.sdmx.structure+xml;version=2.1,application/vnd.sdmx.structure+json,application/xml,application/json;q=0.8,*/*;q=0.2"},
+                        timeout=90, retries=1,
+                    )
+                    text = raw.decode("utf-8", errors="replace")
+                    LOG.info("IEA %s SDMX-Structure erreichbar: %s (%s Bytes)", flow, structure_url, len(raw))
+                    # Keep the structure response as evidence, but do not treat
+                    # structure metadata itself as observations.  Extract an
+                    # explicit flow ID/version when the response exposes it.
+                    id_matches = re.findall(r'(?i)(?:id|resourceID)=[\"\']([^\"\']+)', text)
+                    ver_matches = re.findall(r'(?i)(?:version)=[\"\']([^\"\']+)', text)
+                    ref_id = next((x for x in id_matches if x.upper() == flow.upper()), flow)
+                    ref_ver = next((x for x in ver_matches if re.fullmatch(r"\d+(?:\.\d+){1,2}", x)), version)
+                    discovered_refs.append((ref_id, ref_ver))
+                    break
+                except Exception as exc:
+                    errors.append(f"sdmx-structure {structure_url}: {exc}")
 
-    # Route 5: official mapping workbook itself is not data, so do not parse it
+    # Route 5: query the discovered flow directly using SDMX wildcard keys.
+    # SDMX supports wildcarding with *; component filters are used for the
+    # monthly frequency and a bounded time range.  We deliberately try both
+    # the compact flowRef endpoint and the /v2 form used by .Stat Suite.
+    if not discovered_refs:
+        discovered_refs = [(flow, "1.0"), (flow, "1.0.0")]
+    for ref_id, ref_ver in list(dict.fromkeys(discovered_refs)):
+        flow_refs = [f"IEA,{ref_id},{ref_ver}", f"OECD.IEA,{ref_id},{ref_ver}"]
+        for base in (IEA_API_BASE, IEA_API_BASE + "/v1"):
+            for flow_ref in flow_refs:
+                for key in ("*", "", "*.*.*.*.*.*", "*.*.*.*.*"):
+                    if key == "":
+                        url = f"{base}/data/{flow_ref}//IEA"
+                    else:
+                        url = f"{base}/data/{flow_ref}/{key}/IEA"
+                    for query in (
+                        "?c%5BFREQUENCY%5D=M&c%5BTIME_PERIOD%5D=ge:2020-01",
+                        "?startPeriod=2020-01&endPeriod=2026-12",
+                        "",
+                    ):
+                        try:
+                            raw = _http_get_headers(
+                                url + query,
+                                {"Accept": "text/csv,application/vnd.sdmx.data+csv;version=2.0.0,application/vnd.sdmx.data+json,application/json,application/xml;q=0.8,*/*;q=0.2"},
+                                timeout=180, retries=2,
+                            )
+                            if raw and len(raw) > 100:
+                                payload_candidates.append((f"sdmx-data:{url}{query}", raw))
+                                LOG.info("IEA %s SDMX-Datenantwort: %s (%s Bytes)", flow, url + query, len(raw))
+                                break
+                        except Exception as exc:
+                            errors.append(f"sdmx-data {url}{query}: {exc}")
+
+    # Route 6: official mapping workbook itself is not data, so do not parse it
     # as observations.  This explicit guard prevents false REAL results.
 
     # Exactly 20 parser paths over the collected official payloads.
