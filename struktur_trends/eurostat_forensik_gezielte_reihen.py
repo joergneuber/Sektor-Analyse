@@ -258,7 +258,7 @@ def run() -> int:
             ]
 
         for label, key in targeted:
-            r = fetch(data_url(dataset, key), "text/csv")
+            r = fetch(data_url(dataset, key), "application/vnd.sdmx.data+csv;version=2.0.0")
             print_result(f"GEZIELTE REIHE: {label}", r)
             if r.status != 200:
                 network_failed = True
@@ -267,8 +267,7 @@ def run() -> int:
 
     print("\n" + "=" * 78)
     if network_failed:
-        print("ERGEBNIS: Mindestens ein Live-Endpunkt war nicht erfolgreich erreichbar.")
-        print("Das ist ein Infrastruktur-/Netzwerktest, kein fachlicher Negativbefund.")
+        print("ERGEBNIS: Mindestens ein Eurostat-Live-Request war nicht erfolgreich.")
         print("Die Produktionsdateien wurden NICHT verändert.")
         return 2
 
