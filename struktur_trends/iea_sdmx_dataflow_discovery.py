@@ -1,110 +1,99 @@
 #!/usr/bin/env python3
 """
-IEA MES SDMX provisioning/data-source forensics v5.0
+IEA MES .Stat / product-access forensics v6.0
 
 Diagnostic only. No production/cache changes.
 
-Lauf 32 questions, deliberately narrow:
-  Q1  Provision Agreements: does the official IEA SDMX REST service expose a
-      ProvisionAgreement for MESGEN/MESBAL or for their Dataflows?
-  Q2  DataProvider / DataSource: does the ProvisionAgreement identify a provider,
-      registration, data source URL, or actionable annotation?
-  Q3  Official IEA download references: what do the MESGEN/MESBAL product-download
-      links actually return (redirect, ZIP, CSV, SDMX, HTML)?
-  Q4  NonProductionDataflow: are there explicit annotations/references indicating
-      a production/superseding flow?
-  Q5  Only after Q1-Q4 establish an evidence-backed route: perform at most ONE
-      data request per proven route, with no blind matrix.
+Lauf 33 questions:
+  Q1  What does the official MES product page expose for the SDMX/.Stat
+      "Access" links (real hrefs, redirects, embedded data, scripts)?
+  Q2  Which .Stat/API hosts are actually evidenced by the IEA page/client
+      resources? No unverified IEA host is treated as authoritative.
+  Q3  Do the official product-download references redirect to a usable file,
+      a session/login flow, or an interstitial? Capture status/headers/final URL.
+  Q4  If a real .Stat host is evidenced, does its documented v2 data route
+      (/rest/v2/data/dataflow/{agency}/{id}/{version}/{key}) work for MESGEN or
+      MESBAL? The route is tested only when the host was discovered from an
+      official IEA resource; no blind host matrix is used.
+  Q5  Are authentication/session indicators present? Record only header/cookie
+      NAMES and presence, never cookie/token values.
 
-Important safeguards:
-  - MESGEN/MESBAL are accepted as Dataflow IDs only when the IEA response contains
-    an actual Dataflow object.
-  - A string occurrence in an error, URL, or unrelated structure is not a flow.
-  - ProvisionAgreement IDs are never invented. They are extracted from returned
-    SDMX semantics first; only then are detail requests made.
-  - Suggested agency 'IEA' is tested only as a bounded hypothesis; the official
-    IEA agency observed in Lauf 31 is OECD.IEA.
+Safeguards:
+  - MESGEN/MESBAL are not inferred as dataflows. Lauf 31 already established
+    them as real Dataflows; this run reuses that evidence rather than probing
+    structure again.
+  - No invented ProvisionAgreement IDs and no generic provision-agreement
+    endpoint sweep.
+  - No arbitrary sdmx.iea.org/api.iea.org host assumptions.
+  - No API-key/token guessing or persistence of secrets.
+  - At most one evidence-backed data request per discovered target route.
+  - Product-page HTML/JS is parsed with stdlib only; no browser automation or
+    extra dependency is required.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import time
 import zipfile
-import io
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
 
-HOSTS = [
-    "https://sis-cc-nsi-stable.iea.org",
-    "https://sis-cc-api-stable.iea.org",
-]
-AGENCIES = ["OECD.IEA", "IEA"]
+PRODUCT_URL = "https://www.iea.org/data-and-statistics/data-product/monthly-electricity-statistics"
+DATA_TOOL_URL = "https://www.iea.org/data-and-statistics/data-tools/monthly-electricity-statistics"
 TARGETS = {
-    "MESGEN": {"dataflow": "MESGEN", "download": "https://www.iea.org/product/download/023477-000289-023189"},
-    "MESBAL": {"dataflow": "MESBAL", "download": "https://www.iea.org/product/download/023477-000289-023188"},
+    "MESGEN": {
+        "agency": "OECD.IEA",
+        "version": "1.1",
+        "download": "https://www.iea.org/product/download/023477-000289-023189",
+    },
+    "MESBAL": {
+        "agency": "OECD.IEA",
+        "version": "1.1",
+        "download": "https://www.iea.org/product/download/023477-000289-023188",
+    },
+}
+# Only these IEA service hosts were directly observed in previous forensic runs.
+KNOWN_IEA_SERVICE_HOSTS = {
+    "sis-cc-api-stable.iea.org",
+    "sis-cc-nsi-stable.iea.org",
+    "growth-sis-cc-api-wv.iea.org",
 }
 
-# Standard SDMX REST resource forms, plus the IEA advertised REST v2 surface.
-PA_LIST_PATHS = [
-    "/rest/provisionagreement/OECD.IEA/all/latest",
-    "/rest/provisionagreement/IEA/all/latest",
-    "/rest/provisionagreement",
-    "/rest/v1/provisionagreement/OECD.IEA/all/latest",
-    "/rest/v1/provisionagreement/IEA/all/latest",
-    "/rest/v2/provisionagreement/OECD.IEA/all/latest",
-    "/rest/v2/provisionagreement/IEA/all/latest",
-]
-FLOW_REF_PATHS = [
-    "/rest/dataflow/OECD.IEA/{flow}/1.1?references=provisionagreement",
-    "/rest/v1/dataflow/OECD.IEA/{flow}/1.1?references=provisionagreement",
-    "/rest/v2/dataflow/OECD.IEA/{flow}/1.1?references=provisionagreement",
-]
-
-STRUCTURE_ACCEPTS = [
-    ("sdmx_xml", "application/vnd.sdmx.structure+xml;version=2.1"),
-    ("xml", "application/xml"),
-    ("sdmx_json", "application/vnd.sdmx.structure+json;version=2.0"),
-    ("json", "application/json"),
-]
-
-DOWNLOAD_URLS = {k: v["download"] for k, v in TARGETS.items()}
-OBS_RE = re.compile(r"(?i)\bOBS_VALUE\b")
-TIME_RE = re.compile(r"(?i)\bTIME_PERIOD\b")
-ANNOTATION_TYPES = {
-    "ENDPOINT", "REST_ENDPOINT", "DOWNLOAD_URL", "PRIMARY_MEASURE",
-    "SUPERSEDED_BY", "PRODUCTION_FLOW_REF", "PRODUCTION_DATAFLOW",
-    "DATA_SOURCE", "DATASOURCE", "URL", "SOURCE", "REGISTRATION",
-}
+URL_RE = re.compile(r"https?://[^\s\"'<>\\]+", re.I)
+STAT_HOST_RE = re.compile(r"(?:^|\.)stat(?:suite|suite\.com)?\.|\.stat-suite\.|\.stat\.", re.I)
+SDMX_PATH_RE = re.compile(r"/(?:rest/)?v?\d*/?data(?:flow)?/|/rest/v2/data/dataflow/", re.I)
+AUTH_HEADER_NAMES = {"authorization", "x-api-key", "api-key", "x-auth-token", "x-access-token"}
+COOKIE_NAME_RE = re.compile(r"(?:^|,)\s*([^=;,\s]+)=", re.I)
 
 @dataclass
-class Result:
+class HttpResult:
     category: str
-    host: str
     url: str
+    final_url: str | None
     status: int | None
     content_type: str
     bytes: int
     elapsed_ms: int
+    redirect_chain: list[dict[str, Any]]
+    response_header_names: list[str]
+    set_cookie_names: list[str]
+    auth_indicators: list[str]
     saved: str | None
-    dataflows: list[dict[str, str]]
-    dsds: list[dict[str, str]]
-    provision_agreements: list[dict[str, str]]
-    data_providers: list[dict[str, str]]
-    data_sources: list[str]
-    annotations: list[dict[str, str]]
-    links: list[dict[str, str]]
+    extracted_urls: list[str]
+    extracted_links: list[dict[str, str]]
+    extracted_scripts: list[str]
+    extracted_hosts: list[str]
     target_hits: list[str]
-    observation_count: int
-    strict_payload: bool
-    error_text: str | None
+    error: str | None
 
 
 def dedupe(items):
@@ -112,198 +101,325 @@ def dedupe(items):
     for item in items:
         key = json.dumps(item, sort_keys=True, ensure_ascii=False) if isinstance(item, dict) else str(item)
         if key not in seen:
-            seen.add(key); out.append(item)
+            seen.add(key)
+            out.append(item)
     return out
 
 
-def attrs(elem):
-    return {k.rsplit("}", 1)[-1].lower(): v for k, v in elem.attrib.items()}
+def safe_url(value: str, base: str) -> str | None:
+    value = value.strip().strip("\"'<>`)")
+    if not value or value.startswith(("javascript:", "mailto:", "tel:", "#")):
+        return None
+    u = urljoin(base, value)
+    p = urlparse(u)
+    if p.scheme not in {"http", "https"} or not p.netloc:
+        return None
+    return u
 
 
-def ref(elem):
-    a = attrs(elem)
-    ident = a.get("id") or a.get("idref") or a.get("resourceid")
-    if ident:
-        return {"id": ident, "agency": a.get("agencyid", a.get("agency", "")), "version": a.get("version", "")}
-    txt = (elem.text or "").strip()
-    m = re.search(r"(?:Dataflow|ProvisionAgreement|DataProvider|DataStructure)[^=]*=([^:(]+):?([^:(]*)\(([^)]+)\)", txt, re.I)
-    if m:
-        return {"id": m.group(2) or m.group(1), "agency": m.group(1), "version": m.group(3)}
-    return None
+class PageParser(HTMLParser):
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.urls: list[str] = []
+        self.links: list[dict[str, str]] = []
+        self.scripts: list[str] = []
+        self._script = False
+        self._script_buf: list[str] = []
+        self.script_text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag.lower() == "a":
+            href = safe_url(a.get("href", ""), self.base_url)
+            if href:
+                text = ""
+                self.links.append({"href": href, "text": text})
+                self.urls.append(href)
+        for key in ("href", "src", "data-href", "data-url", "data-download-url", "data-endpoint"):
+            if a.get(key):
+                u = safe_url(a[key], self.base_url)
+                if u:
+                    self.urls.append(u)
+        if tag.lower() == "script":
+            src = safe_url(a.get("src", ""), self.base_url)
+            if src:
+                self.scripts.append(src)
+            self._script = True
+            self._script_buf = []
+
+    def handle_data(self, data):
+        if self._script:
+            self._script_buf.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "script" and self._script:
+            self.script_text.append("".join(self._script_buf))
+            self._script = False
+            self._script_buf = []
 
 
-def parse_xml(text: str):
-    flows=[]; dsds=[]; pas=[]; providers=[]; sources=[]; annotations=[]; links=[]
-    try: root=ET.fromstring(text)
-    except ET.ParseError: return flows,dsds,pas,providers,sources,annotations,links
-    for e in root.iter():
-        tag=e.tag.rsplit("}",1)[-1].lower(); a=attrs(e)
-        if tag == "dataflow":
-            x={"id":a.get("id",""),"agency":a.get("agencyid",a.get("agency","")),"version":a.get("version","")}
-            if x["id"]: flows.append(x)
-            if a.get("isfinal"): x["is_final"]=a["isfinal"]
-            if a.get("nonproductiondataflow"): x["nonproductiondataflow"]=a["nonproductiondataflow"]
-        elif tag == "datastructure":
-            x={"id":a.get("id",""),"agency":a.get("agencyid",a.get("agency","")),"version":a.get("version","")}
-            if x["id"]: dsds.append(x)
-        elif tag == "provisionagreement":
-            x={"id":a.get("id",""),"agency":a.get("agencyid",a.get("agency","")),"version":a.get("version","")}
-            if x["id"]: pas.append(x)
-        elif tag in {"dataprovider","dataproviderref"}:
-            x=ref(e)
-            if x and x["id"]: providers.append(x)
-        elif tag in {"datasource","datasourceref","dataregistration","registration"}:
-            txt=(e.text or "").strip()
-            if txt.startswith(("http://","https://")): sources.append(txt)
-            href=a.get("href") or a.get("uri") or a.get("url")
-            if href: sources.append(href)
-        elif tag == "annotation":
-            at=a.get("annotationtype","")
-            title=a.get("annotationtitle","")
-            textval=" ".join("".join(e.itertext()).split())
-            if at or title or textval:
-                rec={"type":at,"title":title,"text":textval[:1000]}
-                annotations.append(rec)
-                low=(at+" "+title+" "+textval).lower()
-                if any(k.lower() in low for k in ANNOTATION_TYPES):
-                    for u in re.findall(r"https?://[^\s<>\"']+", textval): sources.append(u.rstrip(".,;"))
-        elif tag in {"dataflowref","datastructureref","provisionagreementref","registrationref"}:
-            x=ref(e)
-            if x: links.append({"kind":tag, **x})
-        # Some SDMX structures use Ref with class/package attributes.
-        elif tag == "ref" and (a.get("class") or a.get("package")):
-            x=ref(e)
-            if x: links.append({"kind":f"{a.get('package','')}.{a.get('class','')}", **x})
-    return [*dedupe(flows)],[*dedupe(dsds)],[*dedupe(pas)],[*dedupe(providers)],dedupe(sources),dedupe(annotations),dedupe(links)
+def extract_embedded_urls(text: str, base_url: str) -> list[str]:
+    out = []
+    for raw in URL_RE.findall(text):
+        u = safe_url(raw, base_url)
+        if u:
+            out.append(u)
+    # JSON/JS frequently escapes slashes.
+    for raw in re.findall(r"https?:\\?/\\?/[^\"'\s<>]+", text, re.I):
+        u = safe_url(raw.replace("\\/", "/"), base_url)
+        if u:
+            out.append(u)
+    return dedupe(out)
 
 
-def save_body(root:Path, category:str, url:str, status:int|None, body:bytes, suffix:str):
-    d=hashlib.sha256(url.encode()).hexdigest()[:20]
-    p=root/f"{category}_{status or 'ERR'}_{d}{suffix}"; p.write_bytes(body); return str(p)
+def classify_host(url: str) -> str:
+    host = urlparse(url).netloc.lower().split(":", 1)[0]
+    if host in KNOWN_IEA_SERVICE_HOSTS:
+        return "known_iea_service_host"
+    if STAT_HOST_RE.search(host):
+        return "stat_candidate_host"
+    return "other_host"
 
 
-def fetch(session, root, category, host, url, accept, timeout):
-    headers={"User-Agent":"NEUBER-MACRO-MES-forensics/5.0","Accept":accept,"Accept-Encoding":"gzip, deflate"}
-    t=time.perf_counter()
+def save_body(root: Path, category: str, url: str, status: int | None, body: bytes, suffix: str) -> str:
+    digest = hashlib.sha256(url.encode()).hexdigest()[:20]
+    path = root / f"{category}_{status or 'ERR'}_{digest}{suffix}"
+    path.write_bytes(body)
+    return str(path)
+
+
+def auth_indicators(headers: requests.structures.CaseInsensitiveDict, set_cookie: str) -> list[str]:
+    out = []
+    for name in headers.keys():
+        if name.lower() in AUTH_HEADER_NAMES:
+            out.append(f"response-header:{name.lower()}")
+    low = set_cookie.lower()
+    for token in ("session", "auth", "token", "sso", "csrf"):
+        if token in low:
+            out.append(f"set-cookie-name-hint:{token}")
+    return sorted(set(out))
+
+
+def cookie_names(set_cookie: str) -> list[str]:
+    return dedupe(COOKIE_NAME_RE.findall(set_cookie or ""))
+
+
+def fetch(session: requests.Session, root: Path, category: str, url: str, timeout: int, parse_page: bool = False) -> tuple[HttpResult, requests.Response | None]:
+    t = time.perf_counter()
     try:
-        r=session.get(url,headers=headers,timeout=timeout,allow_redirects=True)
-        ms=int((time.perf_counter()-t)*1000); body=r.content
-        suffix=".json" if "json" in r.headers.get("Content-Type","").lower() else ".xml" if "xml" in r.headers.get("Content-Type","").lower() else ".bin"
-        saved=save_body(root,category,url,r.status_code,body,suffix)
-        text=body.decode("utf-8","replace")
-        f,d,p,pr,s,a,l=parse_xml(text)
-        err=None if r.status_code==200 else text[:500]
-        return Result(category,host,url,r.status_code,r.headers.get("Content-Type",""),len(body),ms,saved,f,d,p,pr,s,a,l,[],len(OBS_RE.findall(text)),bool(r.status_code==200 and OBS_RE.search(text) and TIME_RE.search(text)),err),r
+        r = session.get(
+            url,
+            headers={
+                "User-Agent": "NEUBER-MACRO-MES-forensics/6.0",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+            },
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        elapsed = int((time.perf_counter() - t) * 1000)
+        body = r.content
+        ct = r.headers.get("Content-Type", "")
+        suffix = ".html" if "html" in ct.lower() else ".json" if "json" in ct.lower() else ".xml" if "xml" in ct.lower() else ".bin"
+        saved = save_body(root, category, url, r.status_code, body, suffix)
+        chain = []
+        for h in r.history:
+            chain.append({"status": h.status_code, "url": h.url, "location": h.headers.get("Location")})
+        chain.append({"status": r.status_code, "url": r.url, "location": None})
+        set_cookie = r.headers.get("Set-Cookie", "")
+        extracted_urls: list[str] = []
+        extracted_links: list[dict[str, str]] = []
+        extracted_scripts: list[str] = []
+        if parse_page and "html" in ct.lower():
+            text = body.decode("utf-8", "replace")
+            parser = PageParser(url)
+            parser.feed(text)
+            extracted_links = parser.links
+            extracted_scripts = parser.scripts
+            extracted_urls = dedupe(parser.urls + extract_embedded_urls(text, url))
+            for script_text in parser.script_text:
+                extracted_urls.extend(extract_embedded_urls(script_text, url))
+            extracted_urls = dedupe(extracted_urls)
+        hosts = dedupe([urlparse(u).netloc.lower() for u in extracted_urls if urlparse(u).netloc])
+        target_hits = [k for k, spec in TARGETS.items() if spec["download"] in extracted_urls or k.lower() in r.text.lower()]
+        return HttpResult(
+            category, url, r.url, r.status_code, ct, len(body), elapsed, chain,
+            sorted(r.headers.keys()), cookie_names(set_cookie), auth_indicators(r.headers, set_cookie),
+            saved, extracted_urls, extracted_links, extracted_scripts, hosts, target_hits, None
+        ), r
     except Exception as e:
-        return Result(category,host,url,None,"",0,int((time.perf_counter()-t)*1000),None,[],[],[],[],[],[],[],[],0,False,str(e)),None
+        return HttpResult(category, url, None, None, "", 0, int((time.perf_counter() - t) * 1000), [], [], [], [], None, [], [], [], [], [], str(e)), None
 
 
-def download_probe(session, root, key, url, timeout):
-    t=time.perf_counter()
-    try:
-        r=session.get(url,headers={"User-Agent":"NEUBER-MACRO-MES-forensics/5.0","Accept":"*/*"},timeout=timeout,allow_redirects=True)
-        body=r.content; ms=int((time.perf_counter()-t)*1000)
-        ct=r.headers.get("Content-Type",""); final=r.url
-        suffix=".zip" if body[:2]==b"PK" else ".bin"
-        if "text/html" in ct.lower(): suffix=".html"
-        elif "csv" in ct.lower(): suffix=".csv"
-        saved=save_body(root,"download_"+key,final,r.status_code,body,suffix)
-        zip_members=[]
-        if body[:2]==b"PK":
-            try:
-                with zipfile.ZipFile(io.BytesIO(body)) as z: zip_members=z.namelist()[:100]
-            except zipfile.BadZipFile: pass
-        return {"category":"official_download","target":key,"url":url,"final_url":final,"status":r.status_code,"content_type":ct,"bytes":len(body),"elapsed_ms":ms,"saved":saved,"zip_members":zip_members,"looks_like_sdmx":bool(b"OBS_VALUE" in body or b"TIME_PERIOD" in body),"error":None if r.status_code==200 else body[:500].decode("utf-8","replace")}
-    except Exception as e:
-        return {"category":"official_download","target":key,"url":url,"final_url":None,"status":None,"content_type":"","bytes":0,"elapsed_ms":int((time.perf_counter()-t)*1000),"saved":None,"zip_members":[],"looks_like_sdmx":False,"error":str(e)}
+def download_probe(session: requests.Session, root: Path, key: str, url: str, timeout: int):
+    res, r = fetch(session, root, f"official_download_{key}", url, timeout, parse_page=False)
+    zip_members = []
+    if r is not None and r.content[:2] == b"PK":
+        try:
+            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                zip_members = z.namelist()[:100]
+        except zipfile.BadZipFile:
+            pass
+    return {
+        "category": "official_download",
+        "target": key,
+        "url": url,
+        "final_url": res.final_url,
+        "status": res.status,
+        "content_type": res.content_type,
+        "bytes": res.bytes,
+        "elapsed_ms": res.elapsed_ms,
+        "redirect_chain": res.redirect_chain,
+        "response_header_names": res.response_header_names,
+        "set_cookie_names": res.set_cookie_names,
+        "auth_indicators": res.auth_indicators,
+        "saved": res.saved,
+        "zip_members": zip_members,
+        "looks_like_sdmx": bool(r is not None and (b"OBS_VALUE" in r.content or b"TIME_PERIOD" in r.content)),
+        "error": res.error,
+    }
+
+
+def derive_stat_hosts(page_results: list[HttpResult]) -> list[str]:
+    hosts = []
+    for r in page_results:
+        for h in r.extracted_hosts:
+            if h in KNOWN_IEA_SERVICE_HOSTS or STAT_HOST_RE.search(h):
+                hosts.append(h)
+    return sorted(set(hosts))
+
+
+def derive_stat_links(page_results: list[HttpResult]) -> list[str]:
+    urls = []
+    for r in page_results:
+        for u in r.extracted_urls:
+            low = u.lower()
+            if any(x in low for x in (".stat", "/rest/", "/api/", "sdmx", "dataflow", "product/download")):
+                urls.append(u)
+    return dedupe(urls)
+
+
+def build_evidence_backed_data_url(host: str, target: str) -> str:
+    spec = TARGETS[target]
+    # This syntax is tested only after the host itself was found in an official
+    # IEA page/client resource. The empty key is the least invasive collection query.
+    return f"https://{host}/rest/v2/data/dataflow/{spec['agency']}/{target}/{spec['version']}/"
 
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--output",default="iea_sdmx_dataflow_discovery"); ap.add_argument("--timeout",type=int,default=25); args=ap.parse_args()
-    root=Path(args.output); root.mkdir(parents=True,exist_ok=True)
-    s=requests.Session(); results=[]; downloads=[]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--output", default="iea_sdmx_dataflow_discovery")
+    ap.add_argument("--timeout", type=int, default=25)
+    args = ap.parse_args()
 
-    # Q1/Q2: PA lists and exact Dataflow references. Bounded: 7 paths x 2 hosts + 6 exact flow-ref probes x 2 hosts.
-    for host in HOSTS:
-        for path in PA_LIST_PATHS:
-            for label,accept in STRUCTURE_ACCEPTS[:2]:
-                res,_=fetch(s,root,"pa_list",host,host+path,accept,args.timeout); results.append(res)
-        for flow in TARGETS:
-            for path in FLOW_REF_PATHS:
-                for label,accept in STRUCTURE_ACCEPTS[:2]:
-                    res,_=fetch(s,root,"flow_pa_ref",host,host+path.format(flow=flow),accept,args.timeout); results.append(res)
+    root = Path(args.output)
+    root.mkdir(parents=True, exist_ok=True)
+    session = requests.Session()
+    page_results: list[HttpResult] = []
 
-    # Q3: official IEA product download surfaces, exactly once each.
-    for key,url in DOWNLOAD_URLS.items(): downloads.append(download_probe(s,root,key,url,args.timeout))
+    # Q1/Q2: only the two official IEA pages are fetched initially.
+    for label, url in (("product_page", PRODUCT_URL), ("data_tool_page", DATA_TOOL_URL)):
+        res, _ = fetch(session, root, label, url, args.timeout, parse_page=True)
+        page_results.append(res)
 
-    # Extract PA identities only from real PA XML responses, then query exact PA detail once per unique identity.
-    pa_ids=[]
-    for r in results:
-        if r.category in {"pa_list","flow_pa_ref"}:
-            for p in r.provision_agreements:
-                if p["id"]: pa_ids.append(p)
-    pa_ids=dedupe(pa_ids)
-    pa_details=[]
-    for p in pa_ids:
-        agency=p.get("agency") or "OECD.IEA"; version=p.get("version") or "latest"
-        for host in HOSTS:
-            path=f"/rest/provisionagreement/{agency}/{p['id']}/{version}"
-            for label,accept in STRUCTURE_ACCEPTS[:2]:
-                res,_=fetch(s,root,"pa_detail",host,host+path,accept,args.timeout); pa_details.append(res)
+    stat_hosts = derive_stat_hosts(page_results)
+    stat_links = derive_stat_links(page_results)
 
-    allres=results+pa_details
-    flows=dedupe([x for r in allres for x in r.dataflows])
-    dsds=dedupe([x for r in allres for x in r.dsds])
-    pas=dedupe([x for r in allres for x in r.provision_agreements])
-    providers=dedupe([x for r in allres for x in r.data_providers])
-    sources=dedupe([x for r in allres for x in r.data_sources])
-    annotations=dedupe([x for r in allres for x in r.annotations if any(k.lower() in json.dumps(x).lower() for k in ANNOTATION_TYPES)])
-    links=dedupe([x for r in allres for x in r.links])
+    # Follow only URLs actually emitted by the official IEA pages and only a
+    # small bounded number. Never crawl arbitrary third-party assets.
+    page_follow_candidates = []
+    for u in stat_links:
+        host = urlparse(u).netloc.lower()
+        if host in KNOWN_IEA_SERVICE_HOSTS or STAT_HOST_RE.search(host) or "/product/download/" in u:
+            page_follow_candidates.append(u)
+    page_follow_candidates = dedupe(page_follow_candidates)[:12]
 
-    # Only evidence-backed endpoint candidates may reach Q5. No blind data probes in v5.
-    endpoint_candidates=[]
-    for u in sources:
-        if u.startswith(("http://","https://")): endpoint_candidates.append({"url":u,"source":"sdmx_metadata"})
-    for d in downloads:
-        if d.get("status")==200 and d.get("final_url") and d.get("final_url")!=d.get("url"):
-            endpoint_candidates.append({"url":d["final_url"],"source":"official_download_redirect","target":d["target"]})
-    endpoint_candidates=dedupe(endpoint_candidates)
+    follow_results: list[HttpResult] = []
+    for u in page_follow_candidates:
+        res, _ = fetch(session, root, "page_discovered_resource", u, args.timeout, parse_page=True)
+        follow_results.append(res)
 
-    report={
-      "version":"5.0-targeted-provision-download",
-      "questions":[
-        "ProvisionAgreement exposure and references",
-        "DataProvider/DataSource/annotation discovery",
-        "official MESGEN/MESBAL product-download behavior",
-        "NonProductionDataflow/production-flow evidence",
-        "only evidence-backed data endpoint; no blind matrix"
-      ],
-      "hosts":HOSTS,"agencies_tested":AGENCIES,
-      "targets":TARGETS,
-      "counts":{"structure_probes":len(allres),"pa_identities":len(pa_ids),"pa_details":len(pa_details),"official_download_probes":len(downloads),"evidence_backed_endpoint_candidates":len(endpoint_candidates)},
-      "observed_dataflows":flows,"observed_dsds":dsds,"observed_provision_agreements":pas,
-      "observed_data_providers":providers,"observed_data_sources":sources,
-      "relevant_annotations":annotations,"observed_reference_links":links,
-      "official_downloads":downloads,
-      "evidence_backed_endpoint_candidates":endpoint_candidates,
-      "data_probes":[],"confirmed_data_payloads":[],
-      "status_counts":{},
-      "results":[asdict(r) for r in allres]
+    all_page_results = page_results + follow_results
+    stat_hosts = sorted(set(stat_hosts + derive_stat_hosts(follow_results)))
+
+    # Q3: official product download references exactly once each.
+    downloads = [download_probe(session, root, k, spec["download"], args.timeout) for k, spec in TARGETS.items()]
+
+    # Q4/Q5: only hosts actually evidenced by the official IEA pages/client
+    # resources can reach a .Stat v2 data probe. At most one request per target.
+    evidenced_data_urls = []
+    data_results = []
+    for host in stat_hosts:
+        for target in TARGETS:
+            url = build_evidence_backed_data_url(host, target)
+            evidenced_data_urls.append({"target": target, "url": url, "host": host, "source": "official_ia_page_evidence"})
+            # Exactly one request per target on the first evidenced host only.
+            break
+        break
+    if stat_hosts:
+        host = stat_hosts[0]
+        for target in TARGETS:
+            url = build_evidence_backed_data_url(host, target)
+            res, r = fetch(session, root, f"stat_v2_data_{target}", url, args.timeout, parse_page=False)
+            data_results.append({
+                "target": target,
+                "url": url,
+                "host": host,
+                "status": res.status,
+                "final_url": res.final_url,
+                "content_type": res.content_type,
+                "bytes": res.bytes,
+                "elapsed_ms": res.elapsed_ms,
+                "redirect_chain": res.redirect_chain,
+                "response_header_names": res.response_header_names,
+                "set_cookie_names": res.set_cookie_names,
+                "auth_indicators": res.auth_indicators,
+                "saved": res.saved,
+                "strict_payload": bool(r is not None and r.status_code == 200 and b"OBS_VALUE" in r.content and b"TIME_PERIOD" in r.content),
+                "error": res.error,
+            })
+
+    all_results = all_page_results
+    report = {
+        "version": "6.0-targeted-stat-access",
+        "questions": [
+            "official MES product/data-tool page Access and client-resource discovery",
+            ".Stat/API host discovery from official IEA resources only",
+            "official MESGEN/MESBAL product-download redirect/session behavior",
+            "authentication/session indicators without retaining secrets",
+            "one evidence-backed .Stat v2 data request per target; no blind host matrix",
+        ],
+        "official_sources": [PRODUCT_URL, DATA_TOOL_URL],
+        "targets": TARGETS,
+        "known_iea_service_hosts": sorted(KNOWN_IEA_SERVICE_HOSTS),
+        "discovered_stat_hosts": stat_hosts,
+        "discovered_stat_links": stat_links,
+        "followed_page_resources": page_follow_candidates,
+        "counts": {
+            "official_page_probes": len(page_results),
+            "page_discovered_resource_probes": len(follow_results),
+            "official_download_probes": len(downloads),
+            "evidence_backed_data_probes": len(data_results),
+        },
+        "official_downloads": downloads,
+        "evidence_backed_data_urls": evidenced_data_urls,
+        "data_probes": data_results,
+        "results": [asdict(r) for r in all_results],
+        "security_note": "No cookie/token/API-key values are stored; only header names and cookie-name indicators are recorded.",
     }
-    for r in allres:
-        key=f"{r.status}|{r.content_type}"; report["status_counts"][key]=report["status_counts"].get(key,0)+1
-    (root/"iea_sdmx_dataflow_discovery_report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
-    print("IEA MES SDMX PROVISION / DOWNLOAD FORENSICS – targeted v5.0")
-    print(f"Structure probes:                 {len(allres)}")
-    print(f"Observed Dataflows:               {flows}")
-    print(f"Observed DSDs:                    {dsds}")
-    print(f"Provision Agreements:             {pas}")
-    print(f"Data Providers:                   {providers}")
-    print(f"Data sources / endpoint refs:     {sources}")
-    print(f"Relevant annotations:              {len(annotations)}")
-    print(f"Official download probes:         {len(downloads)}")
-    print(f"Evidence-backed endpoint candidates:{len(endpoint_candidates)}")
-    print("Blind data probes:                0")
-    print(f"Report:                            {root/'iea_sdmx_dataflow_discovery_report.json'}")
+    (root / "iea_sdmx_dataflow_discovery_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-if __name__ == "__main__": main()
+    print("IEA MES .STAT / PRODUCT-ACCESS FORENSICS – targeted v6.0")
+    print(f"Official page probes:             {len(page_results)}")
+    print(f"Page-discovered resource probes:  {len(follow_results)}")
+    print(f"Discovered .Stat/API hosts:       {stat_hosts}")
+    print(f"Discovered relevant links:        {len(stat_links)}")
+    print(f"Official download probes:         {len(downloads)}")
+    print(f"Evidence-backed data probes:      {len(data_results)}")
+    print("Blind host/data matrix:            0")
+    print(f"Report:                            {root / 'iea_sdmx_dataflow_discovery_report.json'}")
+
+
+if __name__ == "__main__":
+    main()
