@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """
-IEA MES SDMX Dataflow/DSD reference forensics v4.0
+IEA MES SDMX provisioning/data-source forensics v5.0
 
-Diagnostic only. It does not modify production code or the cache.
+Diagnostic only. No production/cache changes.
 
-Core correction versus v3.x:
-  MESGEN/MESBAL are treated strictly as DSD IDs, never as Dataflow IDs.
+Lauf 32 questions, deliberately narrow:
+  Q1  Provision Agreements: does the official IEA SDMX REST service expose a
+      ProvisionAgreement for MESGEN/MESBAL or for their Dataflows?
+  Q2  DataProvider / DataSource: does the ProvisionAgreement identify a provider,
+      registration, data source URL, or actionable annotation?
+  Q3  Official IEA download references: what do the MESGEN/MESBAL product-download
+      links actually return (redirect, ZIP, CSV, SDMX, HTML)?
+  Q4  NonProductionDataflow: are there explicit annotations/references indicating
+      a production/superseding flow?
+  Q5  Only after Q1-Q4 establish an evidence-backed route: perform at most ONE
+      data request per proven route, with no blind matrix.
 
-Questions tested, in order:
-  Q1  Which real Dataflow objects are exposed by the IEA structure service?
-  Q2  Do those Dataflows explicitly reference DSD MESGEN/MESBAL?
-  Q3  Do direct DSD requests with references=parents/all expose a parent Dataflow?
-  Q4  Does the same relationship appear through REST v1/v2 structure endpoints?
-  Q5  Only if a real Dataflow->DSD relationship is proven: can a bounded data
-      request return observations for that Dataflow?
-
-A Dataflow becomes a candidate ONLY when the response semantics prove that a
-Dataflow object references the target DSD. Seeing the string MESGEN/MESBAL in
-an error or unrelated structure is never sufficient.
+Important safeguards:
+  - MESGEN/MESBAL are accepted as Dataflow IDs only when the IEA response contains
+    an actual Dataflow object.
+  - A string occurrence in an error, URL, or unrelated structure is not a flow.
+  - ProvisionAgreement IDs are never invented. They are extracted from returned
+    SDMX semantics first; only then are detail requests made.
+  - Suggested agency 'IEA' is tested only as a bounded hypothesis; the official
+    IEA agency observed in Lauf 31 is OECD.IEA.
 """
 from __future__ import annotations
 
@@ -26,11 +32,13 @@ import hashlib
 import json
 import re
 import time
+import zipfile
+import io
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -38,52 +46,43 @@ HOSTS = [
     "https://sis-cc-nsi-stable.iea.org",
     "https://sis-cc-api-stable.iea.org",
 ]
-AGENCY = "OECD.IEA"
-TARGET_DSD = {"MESGEN", "MESBAL"}
-TARGET_VERSION = "1.1"
+AGENCIES = ["OECD.IEA", "IEA"]
+TARGETS = {
+    "MESGEN": {"dataflow": "MESGEN", "download": "https://www.iea.org/product/download/023477-000289-023189"},
+    "MESBAL": {"dataflow": "MESBAL", "download": "https://www.iea.org/product/download/023477-000289-023188"},
+}
 
-# v2.1-style resource endpoints and the IEA's advertised REST v2 surface.
-DATAFLOW_PATHS = [
-    "/rest/dataflow",
-    "/rest/dataflow/all/all/latest",
-    "/rest/dataflow/OECD.IEA/all/latest",
-    "/rest/v1/dataflow",
-    "/rest/v1/dataflow/all/all/latest",
-    "/rest/v1/dataflow/OECD.IEA/all/latest",
-    "/rest/v2/dataflow",
-    "/rest/v2/dataflow/all/all/latest",
-    "/rest/v2/dataflow/OECD.IEA/all/latest",
-    "/rest/structure/dataflow",
-    "/rest/v1/structure/dataflow",
-    "/rest/v2/structure/dataflow",
+# Standard SDMX REST resource forms, plus the IEA advertised REST v2 surface.
+PA_LIST_PATHS = [
+    "/rest/provisionagreement/OECD.IEA/all/latest",
+    "/rest/provisionagreement/IEA/all/latest",
+    "/rest/provisionagreement",
+    "/rest/v1/provisionagreement/OECD.IEA/all/latest",
+    "/rest/v1/provisionagreement/IEA/all/latest",
+    "/rest/v2/provisionagreement/OECD.IEA/all/latest",
+    "/rest/v2/provisionagreement/IEA/all/latest",
+]
+FLOW_REF_PATHS = [
+    "/rest/dataflow/OECD.IEA/{flow}/1.1?references=provisionagreement",
+    "/rest/v1/dataflow/OECD.IEA/{flow}/1.1?references=provisionagreement",
+    "/rest/v2/dataflow/OECD.IEA/{flow}/1.1?references=provisionagreement",
 ]
 
-DSD_PATHS = [
-    "/rest/datastructure/OECD.IEA/MESGEN/1.1",
-    "/rest/datastructure/OECD.IEA/MESBAL/1.1",
-    "/rest/v1/datastructure/OECD.IEA/MESGEN/1.1",
-    "/rest/v1/datastructure/OECD.IEA/MESBAL/1.1",
-    "/rest/v2/datastructure/OECD.IEA/MESGEN/1.1",
-    "/rest/v2/datastructure/OECD.IEA/MESBAL/1.1",
-]
-
-ACCEPTS = [
+STRUCTURE_ACCEPTS = [
     ("sdmx_xml", "application/vnd.sdmx.structure+xml;version=2.1"),
     ("xml", "application/xml"),
     ("sdmx_json", "application/vnd.sdmx.structure+json;version=2.0"),
     ("json", "application/json"),
 ]
 
-DATA_ACCEPTS = [
-    ("sdmx_csv", "application/vnd.sdmx.data+csv;version=2.0.0"),
-    ("csv", "text/csv"),
-    ("sdmx_xml", "application/vnd.sdmx.genericdata+xml;version=2.1"),
-    ("xml", "application/xml"),
-]
-
+DOWNLOAD_URLS = {k: v["download"] for k, v in TARGETS.items()}
 OBS_RE = re.compile(r"(?i)\bOBS_VALUE\b")
 TIME_RE = re.compile(r"(?i)\bTIME_PERIOD\b")
-
+ANNOTATION_TYPES = {
+    "ENDPOINT", "REST_ENDPOINT", "DOWNLOAD_URL", "PRIMARY_MEASURE",
+    "SUPERSEDED_BY", "PRODUCTION_FLOW_REF", "PRODUCTION_DATAFLOW",
+    "DATA_SOURCE", "DATASOURCE", "URL", "SOURCE", "REGISTRATION",
+}
 
 @dataclass
 class Result:
@@ -95,9 +94,13 @@ class Result:
     bytes: int
     elapsed_ms: int
     saved: str | None
-    semantic_dataflows: list[dict[str, str]]
-    dsd_refs: list[dict[str, str]]
-    dataflow_dsd_links: list[dict[str, str]]
+    dataflows: list[dict[str, str]]
+    dsds: list[dict[str, str]]
+    provision_agreements: list[dict[str, str]]
+    data_providers: list[dict[str, str]]
+    data_sources: list[str]
+    annotations: list[dict[str, str]]
+    links: list[dict[str, str]]
     target_hits: list[str]
     observation_count: int
     strict_payload: bool
@@ -107,260 +110,200 @@ class Result:
 def dedupe(items):
     out, seen = [], set()
     for item in items:
-        key = tuple(sorted(item.items())) if isinstance(item, dict) else str(item)
+        key = json.dumps(item, sort_keys=True, ensure_ascii=False) if isinstance(item, dict) else str(item)
         if key not in seen:
-            seen.add(key)
-            out.append(item)
+            seen.add(key); out.append(item)
     return out
 
 
-def local_path(root: Path, category: str, name: str, status: int | None,
-               url: str, suffix: str) -> Path:
-    digest = hashlib.sha256(url.encode()).hexdigest()[:20]
-    return root / f"{category}_{name}_{status or 'ERR'}_{digest}{suffix}"
-
-
-def attrs(elem: ET.Element) -> dict[str, str]:
+def attrs(elem):
     return {k.rsplit("}", 1)[-1].lower(): v for k, v in elem.attrib.items()}
 
 
-def ref_from_elem(elem: ET.Element) -> dict[str, str] | None:
+def ref(elem):
     a = attrs(elem)
-    ident = a.get("id") or a.get("idref") or a.get("resourceid") or a.get("ref")
-    if not ident:
-        # Some SDMX forms put a URN in the text.
-        text = (elem.text or "").strip()
-        m = re.search(r"=(?:[^=]+:)?([^:(]+)\(([^)]+)\)", text)
-        if m:
-            ident = m.group(1)
-            return {"id": ident, "agency": "", "version": m.group(2)}
-        return None
-    return {"id": ident, "agency": a.get("agencyid") or a.get("agency") or "",
-            "version": a.get("version") or ""}
+    ident = a.get("id") or a.get("idref") or a.get("resourceid")
+    if ident:
+        return {"id": ident, "agency": a.get("agencyid", a.get("agency", "")), "version": a.get("version", "")}
+    txt = (elem.text or "").strip()
+    m = re.search(r"(?:Dataflow|ProvisionAgreement|DataProvider|DataStructure)[^=]*=([^:(]+):?([^:(]*)\(([^)]+)\)", txt, re.I)
+    if m:
+        return {"id": m.group(2) or m.group(1), "agency": m.group(1), "version": m.group(3)}
+    return None
 
 
-def xml_semantics(text: str):
-    """Return actual Dataflow objects, DSD objects, and Dataflow->DSD links."""
-    flows, dsds, links = [], [], []
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
-        return flows, dsds, links
-
-    for elem in root.iter():
-        tag = elem.tag.rsplit("}", 1)[-1].lower()
+def parse_xml(text: str):
+    flows=[]; dsds=[]; pas=[]; providers=[]; sources=[]; annotations=[]; links=[]
+    try: root=ET.fromstring(text)
+    except ET.ParseError: return flows,dsds,pas,providers,sources,annotations,links
+    for e in root.iter():
+        tag=e.tag.rsplit("}",1)[-1].lower(); a=attrs(e)
         if tag == "dataflow":
-            fa = attrs(elem)
-            flow = {"id": fa.get("id", ""), "agency": fa.get("agencyid", fa.get("agency", "")),
-                    "version": fa.get("version", "")}
-            if flow["id"]:
-                flows.append(flow)
-                for child in elem.iter():
-                    ctag = child.tag.rsplit("}", 1)[-1].lower()
-                    if ctag not in {"ref", "structure", "datastructureref", "structureuse"}:
-                        continue
-                    r = ref_from_elem(child)
-                    if r and r["id"].upper() in TARGET_DSD:
-                        links.append({
-                            "dataflow_id": flow["id"],
-                            "dataflow_agency": flow["agency"],
-                            "dataflow_version": flow["version"],
-                            "dsd_id": r["id"],
-                            "dsd_agency": r["agency"] or flow["agency"],
-                            "dsd_version": r["version"] or TARGET_VERSION,
-                            "relation": ctag,
-                        })
+            x={"id":a.get("id",""),"agency":a.get("agencyid",a.get("agency","")),"version":a.get("version","")}
+            if x["id"]: flows.append(x)
+            if a.get("isfinal"): x["is_final"]=a["isfinal"]
+            if a.get("nonproductiondataflow"): x["nonproductiondataflow"]=a["nonproductiondataflow"]
         elif tag == "datastructure":
-            a = attrs(elem)
-            ident = a.get("id")
-            if ident:
-                dsds.append({"id": ident, "agency": a.get("agencyid", a.get("agency", "")),
-                             "version": a.get("version", "")})
-    return dedupe(flows), dedupe(dsds), dedupe(links)
+            x={"id":a.get("id",""),"agency":a.get("agencyid",a.get("agency","")),"version":a.get("version","")}
+            if x["id"]: dsds.append(x)
+        elif tag == "provisionagreement":
+            x={"id":a.get("id",""),"agency":a.get("agencyid",a.get("agency","")),"version":a.get("version","")}
+            if x["id"]: pas.append(x)
+        elif tag in {"dataprovider","dataproviderref"}:
+            x=ref(e)
+            if x and x["id"]: providers.append(x)
+        elif tag in {"datasource","datasourceref","dataregistration","registration"}:
+            txt=(e.text or "").strip()
+            if txt.startswith(("http://","https://")): sources.append(txt)
+            href=a.get("href") or a.get("uri") or a.get("url")
+            if href: sources.append(href)
+        elif tag == "annotation":
+            at=a.get("annotationtype","")
+            title=a.get("annotationtitle","")
+            textval=" ".join("".join(e.itertext()).split())
+            if at or title or textval:
+                rec={"type":at,"title":title,"text":textval[:1000]}
+                annotations.append(rec)
+                low=(at+" "+title+" "+textval).lower()
+                if any(k.lower() in low for k in ANNOTATION_TYPES):
+                    for u in re.findall(r"https?://[^\s<>\"']+", textval): sources.append(u.rstrip(".,;"))
+        elif tag in {"dataflowref","datastructureref","provisionagreementref","registrationref"}:
+            x=ref(e)
+            if x: links.append({"kind":tag, **x})
+        # Some SDMX structures use Ref with class/package attributes.
+        elif tag == "ref" and (a.get("class") or a.get("package")):
+            x=ref(e)
+            if x: links.append({"kind":f"{a.get('package','')}.{a.get('class','')}", **x})
+    return [*dedupe(flows)],[*dedupe(dsds)],[*dedupe(pas)],[*dedupe(providers)],dedupe(sources),dedupe(annotations),dedupe(links)
 
 
-def json_semantics(obj: Any):
-    """Conservative JSON parser: classify by explicit Dataflow/DataStructure context."""
-    flows, dsds, links = [], [], []
-
-    def walk(x, context="", current_flow=None):
-        if isinstance(x, dict):
-            lowctx = context.lower()
-            ident = x.get("id") or x.get("resourceId") or x.get("resourceid")
-            agency = x.get("agencyID") or x.get("agencyId") or x.get("agency") or ""
-            version = x.get("version") or ""
-            is_flow = "dataflow" in lowctx
-            is_dsd = "datastructure" in lowctx or lowctx.endswith("/structure")
-            flow = current_flow
-            if isinstance(ident, str) and ident:
-                item = {"id": ident, "agency": str(agency), "version": str(version)}
-                if is_flow:
-                    flows.append(item)
-                    flow = item
-                elif is_dsd:
-                    dsds.append(item)
-                if flow and ident.upper() in TARGET_DSD and not is_flow:
-                    links.append({"dataflow_id": flow["id"], "dataflow_agency": flow["agency"],
-                                  "dataflow_version": flow["version"], "dsd_id": ident,
-                                  "dsd_agency": str(agency), "dsd_version": str(version),
-                                  "relation": context.split("/")[-1]})
-            for k, v in x.items():
-                walk(v, f"{context}/{k}", flow)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v, context, current_flow)
-
-    walk(obj)
-    return dedupe(flows), dedupe(dsds), dedupe(links)
+def save_body(root:Path, category:str, url:str, status:int|None, body:bytes, suffix:str):
+    d=hashlib.sha256(url.encode()).hexdigest()[:20]
+    p=root/f"{category}_{status or 'ERR'}_{d}{suffix}"; p.write_bytes(body); return str(p)
 
 
-def semantics(text: str, ctype: str):
-    if "json" in ctype.lower() or text.lstrip().startswith(("{", "[")):
-        try:
-            return json_semantics(json.loads(text))
-        except json.JSONDecodeError:
-            pass
-    if text.lstrip().startswith("<"):
-        return xml_semantics(text)
-    return [], [], []
-
-
-def count_observations(text: str, ctype: str) -> int:
-    if "csv" in ctype.lower():
-        lines = [x for x in text.splitlines() if x.strip()]
-        if lines and "obs_value" in lines[0].lower() and "time_period" in lines[0].lower():
-            return max(0, len(lines) - 1)
-    if "xml" in ctype.lower() or text.lstrip().startswith("<"):
-        return len(re.findall(r"(?i)<(?:\w+:)?Obs(?:\s|>)", text))
-    return len(re.findall(r"(?i)[\"']obs_value[\"']", text))
-
-
-def strict_payload(text: str, ctype: str, status: int | None):
-    if status != 200:
-        return False, 0
-    low = text.lower()
-    if any(x in low for x in ("could not find", "not found", "unsupportedapiversion",
-                              "bad request", "internal server error")):
-        return False, 0
-    obs = count_observations(text, ctype)
-    return bool(obs > 0 and OBS_RE.search(text) and TIME_RE.search(text)), obs
-
-
-def request(session, root, category, host, path, name, accept, timeout):
-    url = host.rstrip("/") + path
-    t0 = time.perf_counter()
+def fetch(session, root, category, host, url, accept, timeout):
+    headers={"User-Agent":"NEUBER-MACRO-MES-forensics/5.0","Accept":accept,"Accept-Encoding":"gzip, deflate"}
+    t=time.perf_counter()
     try:
-        r = session.get(url, headers={"Accept": accept,
-                                      "User-Agent": "NEUBER-MACRO-IEA-SDMX-DATAFLOW-DISCOVERY/4.0"},
-                        timeout=timeout, allow_redirects=True)
-        elapsed = int((time.perf_counter() - t0) * 1000)
-        raw = r.content
-        ctype = r.headers.get("content-type", "")
-        text = raw[:8_000_000].decode("utf-8", errors="replace")
-        flows, dsds, links = semantics(text, ctype)
-        targets = sorted(t for t in TARGET_DSD if t.lower() in text.lower())
-        ok, obs = strict_payload(text, ctype, r.status_code)
-        suffix = ".xml" if "xml" in ctype.lower() or text.lstrip().startswith("<") else ".json" if "json" in ctype.lower() else ".txt"
-        fp = local_path(root, category, name, r.status_code, url, suffix)
-        fp.write_bytes(raw[:8_000_000])
-        return Result(category, host, url, r.status_code, ctype, len(raw), elapsed,
-                      str(fp.relative_to(root.parent)), flows, dsds, links, targets,
-                      obs, ok, None if r.status_code == 200 else text[:1000])
-    except requests.RequestException as exc:
-        return Result(category, host, url, None, "", 0,
-                      int((time.perf_counter() - t0) * 1000), None, [], [], [], [],
-                      0, False, f"{type(exc).__name__}: {exc}")
+        r=session.get(url,headers=headers,timeout=timeout,allow_redirects=True)
+        ms=int((time.perf_counter()-t)*1000); body=r.content
+        suffix=".json" if "json" in r.headers.get("Content-Type","").lower() else ".xml" if "xml" in r.headers.get("Content-Type","").lower() else ".bin"
+        saved=save_body(root,category,url,r.status_code,body,suffix)
+        text=body.decode("utf-8","replace")
+        f,d,p,pr,s,a,l=parse_xml(text)
+        err=None if r.status_code==200 else text[:500]
+        return Result(category,host,url,r.status_code,r.headers.get("Content-Type",""),len(body),ms,saved,f,d,p,pr,s,a,l,[],len(OBS_RE.findall(text)),bool(r.status_code==200 and OBS_RE.search(text) and TIME_RE.search(text)),err),r
+    except Exception as e:
+        return Result(category,host,url,None,"",0,int((time.perf_counter()-t)*1000),None,[],[],[],[],[],[],[],[],0,False,str(e)),None
+
+
+def download_probe(session, root, key, url, timeout):
+    t=time.perf_counter()
+    try:
+        r=session.get(url,headers={"User-Agent":"NEUBER-MACRO-MES-forensics/5.0","Accept":"*/*"},timeout=timeout,allow_redirects=True)
+        body=r.content; ms=int((time.perf_counter()-t)*1000)
+        ct=r.headers.get("Content-Type",""); final=r.url
+        suffix=".zip" if body[:2]==b"PK" else ".bin"
+        if "text/html" in ct.lower(): suffix=".html"
+        elif "csv" in ct.lower(): suffix=".csv"
+        saved=save_body(root,"download_"+key,final,r.status_code,body,suffix)
+        zip_members=[]
+        if body[:2]==b"PK":
+            try:
+                with zipfile.ZipFile(io.BytesIO(body)) as z: zip_members=z.namelist()[:100]
+            except zipfile.BadZipFile: pass
+        return {"category":"official_download","target":key,"url":url,"final_url":final,"status":r.status_code,"content_type":ct,"bytes":len(body),"elapsed_ms":ms,"saved":saved,"zip_members":zip_members,"looks_like_sdmx":bool(b"OBS_VALUE" in body or b"TIME_PERIOD" in body),"error":None if r.status_code==200 else body[:500].decode("utf-8","replace")}
+    except Exception as e:
+        return {"category":"official_download","target":key,"url":url,"final_url":None,"status":None,"content_type":"","bytes":0,"elapsed_ms":int((time.perf_counter()-t)*1000),"saved":None,"zip_members":[],"looks_like_sdmx":False,"error":str(e)}
 
 
 def main():
-    ap = argparse.ArgumentParser(description="IEA MES SDMX reference forensics v4.0")
-    ap.add_argument("--output", default="iea_sdmx_dataflow_discovery")
-    ap.add_argument("--timeout", type=int, default=25)
-    args = ap.parse_args()
-    root = Path(args.output)
-    root.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
+    ap=argparse.ArgumentParser(); ap.add_argument("--output",default="iea_sdmx_dataflow_discovery"); ap.add_argument("--timeout",type=int,default=25); args=ap.parse_args()
+    root=Path(args.output); root.mkdir(parents=True,exist_ok=True)
+    s=requests.Session(); results=[]; downloads=[]
 
-    results = []
-    # Q1/Q2: discover real Dataflow objects and explicit links to MES DSDs.
+    # Q1/Q2: PA lists and exact Dataflow references. Bounded: 7 paths x 2 hosts + 6 exact flow-ref probes x 2 hosts.
     for host in HOSTS:
-        for path in DATAFLOW_PATHS:
-            for name, accept in ACCEPTS:
-                results.append(request(session, root, "dataflow_structure", host, path, name, accept, args.timeout))
+        for path in PA_LIST_PATHS:
+            for label,accept in STRUCTURE_ACCEPTS[:2]:
+                res,_=fetch(s,root,"pa_list",host,host+path,accept,args.timeout); results.append(res)
+        for flow in TARGETS:
+            for path in FLOW_REF_PATHS:
+                for label,accept in STRUCTURE_ACCEPTS[:2]:
+                    res,_=fetch(s,root,"flow_pa_ref",host,host+path.format(flow=flow),accept,args.timeout); results.append(res)
 
-    # Q3/Q4: ask the known DSD directly for parents/all references.
-    dsd_ref_results = []
-    for host in HOSTS:
-        for base in DSD_PATHS:
-            for refmode in ("parents", "all"):
-                path = base + "?references=" + refmode
-                for name, accept in ACCEPTS[:2]:
-                    dsd_ref_results.append(request(session, root, "dsd_references", host, path,
-                                                    name + "_" + refmode, accept, args.timeout))
+    # Q3: official IEA product download surfaces, exactly once each.
+    for key,url in DOWNLOAD_URLS.items(): downloads.append(download_probe(s,root,key,url,args.timeout))
 
-    all_results = results + dsd_ref_results
-    links = dedupe([x for r in all_results for x in r.dataflow_dsd_links])
-    observed_flows = dedupe([x for r in all_results for x in r.semantic_dataflows])
-    observed_dsds = dedupe([x for r in all_results for x in r.dsd_refs])
-
-    # Only explicit Dataflow -> target DSD links create data candidates.
-    candidates = links
-
-    data_results = []
-    for link in candidates:
-        agency = link["dataflow_agency"] or AGENCY
-        flow_id = link["dataflow_id"]
-        version = link["dataflow_version"] or TARGET_VERSION
-        flowref = f"{agency},{flow_id},{version}"
+    # Extract PA identities only from real PA XML responses, then query exact PA detail once per unique identity.
+    pa_ids=[]
+    for r in results:
+        if r.category in {"pa_list","flow_pa_ref"}:
+            for p in r.provision_agreements:
+                if p["id"]: pa_ids.append(p)
+    pa_ids=dedupe(pa_ids)
+    pa_details=[]
+    for p in pa_ids:
+        agency=p.get("agency") or "OECD.IEA"; version=p.get("version") or "latest"
         for host in HOSTS:
-            for prefix in ("/rest", "/rest/v1", "/rest/v2"):
-                for key in ("all", "DEU"):
-                    path = f"{prefix}/data/{quote(flowref, safe=',')}/{key}/{quote(agency, safe='')}"
-                    for name, accept in DATA_ACCEPTS:
-                        rr = request(session, root, "data", host, path, name, accept, args.timeout)
-                        data_results.append(rr)
-                        if rr.strict_payload:
-                            break
-                    if data_results and data_results[-1].strict_payload:
-                        break
+            path=f"/rest/provisionagreement/{agency}/{p['id']}/{version}"
+            for label,accept in STRUCTURE_ACCEPTS[:2]:
+                res,_=fetch(s,root,"pa_detail",host,host+path,accept,args.timeout); pa_details.append(res)
 
-    confirmed = [r for r in data_results if r.strict_payload]
-    report = {
-        "tool": "iea_sdmx_dataflow_discovery",
-        "version": "4.0-reference-forensics",
-        "purpose": "Discover real Dataflow objects that explicitly reference MESGEN/MESBAL DSDs.",
-        "hosts": HOSTS,
-        "target_dsd": sorted(TARGET_DSD),
-        "registry_probe_count": len(results),
-        "dsd_reference_probe_count": len(dsd_ref_results),
-        "observed_dataflows": observed_flows,
-        "observed_dsds": observed_dsds,
-        "explicit_dataflow_to_target_dsd_links": links,
-        "candidate_dataflows": candidates,
-        "data_probe_count": len(data_results),
-        "confirmed_data_payloads": [asdict(x) for x in confirmed],
-        "dataflow_structure_results": [asdict(x) for x in results],
-        "dsd_reference_results": [asdict(x) for x in dsd_ref_results],
-        "data_results": [asdict(x) for x in data_results],
+    allres=results+pa_details
+    flows=dedupe([x for r in allres for x in r.dataflows])
+    dsds=dedupe([x for r in allres for x in r.dsds])
+    pas=dedupe([x for r in allres for x in r.provision_agreements])
+    providers=dedupe([x for r in allres for x in r.data_providers])
+    sources=dedupe([x for r in allres for x in r.data_sources])
+    annotations=dedupe([x for r in allres for x in r.annotations if any(k.lower() in json.dumps(x).lower() for k in ANNOTATION_TYPES)])
+    links=dedupe([x for r in allres for x in r.links])
+
+    # Only evidence-backed endpoint candidates may reach Q5. No blind data probes in v5.
+    endpoint_candidates=[]
+    for u in sources:
+        if u.startswith(("http://","https://")): endpoint_candidates.append({"url":u,"source":"sdmx_metadata"})
+    for d in downloads:
+        if d.get("status")==200 and d.get("final_url") and d.get("final_url")!=d.get("url"):
+            endpoint_candidates.append({"url":d["final_url"],"source":"official_download_redirect","target":d["target"]})
+    endpoint_candidates=dedupe(endpoint_candidates)
+
+    report={
+      "version":"5.0-targeted-provision-download",
+      "questions":[
+        "ProvisionAgreement exposure and references",
+        "DataProvider/DataSource/annotation discovery",
+        "official MESGEN/MESBAL product-download behavior",
+        "NonProductionDataflow/production-flow evidence",
+        "only evidence-backed data endpoint; no blind matrix"
+      ],
+      "hosts":HOSTS,"agencies_tested":AGENCIES,
+      "targets":TARGETS,
+      "counts":{"structure_probes":len(allres),"pa_identities":len(pa_ids),"pa_details":len(pa_details),"official_download_probes":len(downloads),"evidence_backed_endpoint_candidates":len(endpoint_candidates)},
+      "observed_dataflows":flows,"observed_dsds":dsds,"observed_provision_agreements":pas,
+      "observed_data_providers":providers,"observed_data_sources":sources,
+      "relevant_annotations":annotations,"observed_reference_links":links,
+      "official_downloads":downloads,
+      "evidence_backed_endpoint_candidates":endpoint_candidates,
+      "data_probes":[],"confirmed_data_payloads":[],
+      "status_counts":{},
+      "results":[asdict(r) for r in allres]
     }
-    rp = root / "iea_sdmx_dataflow_discovery_report.json"
-    rp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    for r in allres:
+        key=f"{r.status}|{r.content_type}"; report["status_counts"][key]=report["status_counts"].get(key,0)+1
+    (root/"iea_sdmx_dataflow_discovery_report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+    print("IEA MES SDMX PROVISION / DOWNLOAD FORENSICS – targeted v5.0")
+    print(f"Structure probes:                 {len(allres)}")
+    print(f"Observed Dataflows:               {flows}")
+    print(f"Observed DSDs:                    {dsds}")
+    print(f"Provision Agreements:             {pas}")
+    print(f"Data Providers:                   {providers}")
+    print(f"Data sources / endpoint refs:     {sources}")
+    print(f"Relevant annotations:              {len(annotations)}")
+    print(f"Official download probes:         {len(downloads)}")
+    print(f"Evidence-backed endpoint candidates:{len(endpoint_candidates)}")
+    print("Blind data probes:                0")
+    print(f"Report:                            {root/'iea_sdmx_dataflow_discovery_report.json'}")
 
-    print("=" * 78)
-    print("IEA SDMX DATAFLOW / DSD REFERENCE FORENSICS v4.0")
-    print("=" * 78)
-    print(f"Dataflow-structure probes: {len(results)}")
-    print(f"DSD reference probes:      {len(dsd_ref_results)}")
-    print(f"Real Dataflows observed:   {len(observed_flows)}")
-    print(f"Target DSDs observed:      {len(observed_dsds)}")
-    print(f"EXPLICIT Dataflow->DSD:    {links}")
-    print(f"Data probes:               {len(data_results)}")
-    print(f"CONFIRMED data payloads:   {len(confirmed)}")
-    print(f"Report:                    {rp}")
-    for item in confirmed:
-        print(f"CONFIRMED {item.url} [{item.content_type}] observations={item.observation_count}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": main()
