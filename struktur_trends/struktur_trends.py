@@ -361,16 +361,37 @@ def set_real_cached_if_valid(field: dict[str, Any], source_key: str) -> dict[str
 
 
 def cache_field_summary(field: dict[str, Any]) -> dict[str, Any]:
+    """Return a reliable human-readable summary for one cache field.
+
+    The production cache stores explicit ``series_count`` and
+    ``observation_count`` metadata.  The previous summary implementation
+    counted only the immediate children of ``data`` and therefore produced
+    misleading values for nested Eurostat structures (for example ``6``
+    instead of the actual observation count).  Use the authoritative counters
+    first and retain a small legacy fallback for older cache entries.
+    """
+    data = field.get("data", {})
+    observation_count = field.get("observation_count")
+    if not isinstance(observation_count, int):
+        observation_count = sum(
+            len(v.get("observations", []))
+            if isinstance(v, dict) and isinstance(v.get("observations"), list)
+            else len(v) if isinstance(v, dict) else 1
+            for v in data.values()
+        ) if isinstance(data, dict) else 0
+
+    series_count = field.get("series_count")
+    if not isinstance(series_count, int):
+        series_count = len(data) if isinstance(data, dict) else 0
+
     return {
         "status": field.get("status"),
         "frequency": field.get("frequency"),
         "data_period": field.get("data_period"),
         "retrieved_at": field.get("retrieved_at"),
         "last_successful_update": field.get("last_successful_update"),
-        "observations": sum(
-            len(v) if isinstance(v, dict) else 1
-            for v in field.get("data", {}).values()
-        ),
+        "series": series_count,
+        "observations": observation_count,
     }
 
 
@@ -1277,6 +1298,7 @@ def print_summary(cache: dict[str, Any]) -> None:
                 f"  {name:32s} "
                 f"{summary['status']:14s} "
                 f"period={str(summary['data_period']):12s} "
+                f"series={summary['series']} "
                 f"obs={summary['observations']}"
             )
         print()
