@@ -65,10 +65,10 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-input requests
 
-      - name: IEA MESGEN/MESBAL SDMX Dataflow Discovery v3.1
+      - name: IEA MESGEN/MESBAL SDMX Dataflow Discovery
         working-directory: struktur_trends
         run: |
-          python iea_sdmx_dataflow_discovery_v3_1.py \
+          python iea_sdmx_dataflow_discovery.py \
             --output iea_sdmx_dataflow_discovery \
             --timeout 25
 
@@ -76,7 +76,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: iea-sdmx-dataflow-discovery-v3-1
+          name: iea-sdmx-dataflow-discovery
           path: struktur_trends/iea_sdmx_dataflow_discovery/
           if-no-files-found: warn
           retention-days: 14
