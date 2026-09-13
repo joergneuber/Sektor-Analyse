@@ -12,6 +12,7 @@ on:
           - cache
           - iea_forensic
           - iea_browser
+          - eurostat_forensic
   schedule:
     - cron: "30 6 * * 1-5"
 
@@ -77,6 +78,38 @@ jobs:
         with:
           name: iea-sdmx-dataflow-discovery
           path: struktur_trends/iea_sdmx_dataflow_discovery/
+          if-no-files-found: warn
+          retention-days: 14
+
+  eurostat-forensic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mode == 'eurostat_forensic' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v7
+
+      - name: Python einrichten
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Eurostat-SDMX-Abhängigkeiten installieren
+        run: |
+          python -m pip install --disable-pip-version-check --no-input requests
+
+      - name: Eurostat Forensik / Validierung
+        working-directory: struktur_trends
+        run: |
+          python eurostat_forensik.py
+
+      - name: Eurostat Forensik als Artifact speichern
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eurostat-forensik
+          path: |
+            struktur_trends/eurostat_forensik.py
           if-no-files-found: warn
           retention-days: 14
 
