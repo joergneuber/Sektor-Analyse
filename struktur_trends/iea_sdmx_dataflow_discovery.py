@@ -48,10 +48,15 @@ REGISTRY_PATHS = [
     "/rest/v1/dataflow",
     "/rest/v1/dataflow/all/all/latest",
     "/rest/v1/dataflow/OECD.IEA/all/latest",
+    "/rest/v2/dataflow",
+    "/rest/v2/dataflow/all/all/latest",
+    "/rest/v2/dataflow/OECD.IEA/all/latest",
     "/rest/structure",
     "/rest/v1/structure",
+    "/rest/v2/structure",
     "/rest/structure/dataflow",
     "/rest/v1/structure/dataflow",
+    "/rest/v2/structure/dataflow",
 ]
 
 DSD_PATHS = [
@@ -59,6 +64,14 @@ DSD_PATHS = [
     "/rest/datastructure/OECD.IEA/MESBAL/1.1",
     "/rest/v1/datastructure/OECD.IEA/MESGEN/1.1",
     "/rest/v1/datastructure/OECD.IEA/MESBAL/1.1",
+    "/rest/v2/datastructure/OECD.IEA/MESGEN/1.1?references=all",
+    "/rest/v2/datastructure/OECD.IEA/MESBAL/1.1?references=all",
+    "/rest/v2/datastructure/OECD.IEA/MESGEN/1.1?references=parents",
+    "/rest/v2/datastructure/OECD.IEA/MESBAL/1.1?references=parents",
+    "/rest/datastructure/OECD.IEA/MESGEN/1.1?references=all",
+    "/rest/datastructure/OECD.IEA/MESBAL/1.1?references=all",
+    "/rest/v1/datastructure/OECD.IEA/MESGEN/1.1?references=all",
+    "/rest/v1/datastructure/OECD.IEA/MESBAL/1.1?references=all",
 ]
 
 ACCEPTS = [
@@ -253,7 +266,7 @@ def request(session: requests.Session, root: Path, category: str,
         r = session.get(
             url,
             headers={"Accept": accept,
-                     "User-Agent": "NEUBER-MACRO-IEA-SDMX-DATAFLOW-DISCOVERY/3.1"},
+                     "User-Agent": "NEUBER-MACRO-IEA-SDMX-DATAFLOW-DISCOVERY/3.2-targeted"},
             timeout=timeout,
             allow_redirects=True,
         )
@@ -286,7 +299,7 @@ def request(session: requests.Session, root: Path, category: str,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="IEA MESGEN/MESBAL Dataflow discovery v3.1")
+    ap = argparse.ArgumentParser(description="IEA MESGEN/MESBAL Dataflow discovery")
     ap.add_argument("--output", default="iea_sdmx_dataflow_discovery")
     ap.add_argument("--timeout", type=int, default=25)
     args = ap.parse_args()
@@ -339,7 +352,7 @@ def main():
 
     report = {
         "tool": "iea_sdmx_dataflow_discovery",
-        "version": "3.1",
+        "version": "3.2-targeted",
         "hosts": HOSTS,
         "targets": sorted(TARGETS),
         "agency_default": AGENCY,
@@ -357,7 +370,7 @@ def main():
     rp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("=" * 78)
-    print("IEA SDMX DATAFLOW / DSD REGISTRY DISCOVERY v3.1")
+    print("IEA SDMX DATAFLOW / DSD REGISTRY DISCOVERY – targeted")
     print("=" * 78)
     print(f"Registry probes:        {len(registry)}")
     print(f"Observed dataflows:     {observed_flows}")
