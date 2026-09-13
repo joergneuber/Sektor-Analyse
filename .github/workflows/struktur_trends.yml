@@ -98,18 +98,18 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-input requests
 
-      - name: Eurostat Forensik / Validierung
+      - name: Eurostat Forensik / gezielte Reihen
         working-directory: struktur_trends
         run: |
-          python eurostat_forensik.py
+          python eurostat_forensik_gezielte_reihen.py
 
       - name: Eurostat Forensik als Artifact speichern
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: eurostat-forensik
+          name: eurostat-forensik-gezielte-reihen
           path: |
-            struktur_trends/eurostat_forensik.py
+            struktur_trends/eurostat_forensik_gezielte_reihen.py
           if-no-files-found: warn
           retention-days: 14
 
