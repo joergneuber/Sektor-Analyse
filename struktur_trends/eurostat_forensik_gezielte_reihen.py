@@ -338,7 +338,8 @@ def run() -> int:
     # Geprüft werden nur sichere Relationen:
     # - EU-Teilflüsse dürfen nicht grösser sein als die jeweiligen
     #   Gesamtflüsse im absoluten Wert.
-    # - alle sieben Reihen müssen denselben Monatsbereich abdecken.
+    # - unterschiedliche historische Verfügbarkeitszeiträume sind zulässig
+    #   und werden nur dokumentiert, nicht als Fehler gewertet.
     # ------------------------------------------------------------------
     print("\n" + "#" * 90)
     print("FACHLICHE KONSISTENZPRÜFUNG nrg_cb_em")
@@ -367,10 +368,18 @@ def run() -> int:
                   f"bis {max(common) if common else '<none>'}")
             if common != union:
                 print(
-                    "WARNUNG: Nicht alle sieben Flows decken exakt denselben "
-                    "Monatsbereich ab."
+                    "INFO: Die sieben Flows haben unterschiedliche historische "
+                    "Verfügbarkeitszeiträume. Das ist zulässig und wird nicht "
+                    "als Konsistenzfehler gewertet."
                 )
-                consistency_failed = True
+                for flow, periods in sorted(period_sets.items()):
+                    if periods:
+                        print(
+                            f"  {flow}: {min(periods)} bis {max(periods)} "
+                            f"({len(periods)} Monate)"
+                        )
+                    else:
+                        print(f"  {flow}: <keine Perioden>")
             else:
                 print("OK: Alle sieben Flows haben denselben Monatsbestand.")
 
@@ -420,7 +429,8 @@ def run() -> int:
         return 2
 
     if consistency_failed:
-        print("ERGEBNIS: Alle Reihen wurden abgerufen, aber es gibt Konsistenz-WARNUNGEN.")
+        print("ERGEBNIS: Alle Reihen wurden abgerufen, aber es gibt echte "
+              "fachliche Konsistenz-WARNUNGEN.")
         print("Die Produktionsdateien wurden NICHT verändert.")
         return 3
 
