@@ -12,6 +12,8 @@ concurrency:
 jobs:
   run-scripts:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       NODE_OPTIONS: "--no-deprecation"
 
@@ -38,7 +40,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch 
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
 
       # Gemeinsamer Markt-Datenstand fuer alle Python-Prozesse dieses Jobs.
       # Der Cache bleibt bewusst job-lokal: kein alter Run darf als aktueller
@@ -211,9 +213,7 @@ jobs:
 
       # ============================================================
       # STRUKTUR-TRENDS (C)
-      # C ist ein eigenständiger struktureller Datenproduzent und
-      # Bestandteil des Hauptlaufs. Es bleibt bewusst getrennt von B/D.
-      # Bei einem Fehler darf der Hauptlauf mit A+B+D zu Gemini weiterlaufen.
+      # Eigenständiger struktureller Datenbaustein im Hauptlauf.
       # ============================================================
 
       - name: Altes Struktur-Trend-Briefing entfernen
@@ -224,7 +224,6 @@ jobs:
         continue-on-error: true
         run: python struktur_trends.py
 
-      # Nur ein erfolgreicher C-Lauf darf den neuen C-Cache persistent machen.
       - name: Struktur-Trends Cache speichern
         if: steps.struktur-trends.outcome == 'success'
         continue-on-error: true
@@ -232,8 +231,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add struktur_trends_cache.json
-          git diff --cached --quiet || git commit -m "Update structural trends cache"
-          git push
+          if git diff --cached --quiet; then
+            echo "No structural trends cache changes to commit."
+            exit 0
+          fi
+          git commit -m "Update structural trends cache"
+          git push origin HEAD:${GITHUB_REF_NAME}
 
       # Bei einem fehlgeschlagenen C-Lauf darf kein teilweise erzeugtes
       # Briefing als scheinbar aktueller C-Input an Gemini gelangen.
