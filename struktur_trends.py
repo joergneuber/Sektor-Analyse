@@ -48,7 +48,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_FILE = SCRIPT_DIR / "struktur_trends_cache.json"
 
-CACHE_VERSION = "1.3"
+CACHE_VERSION = "1.4"
 
 # ---------------------------------------------------------------------------
 # Datenquellen / feste Konfiguration
@@ -664,7 +664,7 @@ def _latest_period(container: dict[str, Any]) -> str | None:
 def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) -> None:
     """Produktivitäts-Level als eine gebündelte OECD-Abfrage."""
     countries = "+".join(OECD_PRODUCTIVITY_REFERENCE_AREAS)
-    key = f"{countries}.A.{OECD_PRODUCTIVITY_MEASURE}._T.XDC_H..N.."
+    key = f"{countries}.A.{OECD_PRODUCTIVITY_MEASURE}._T.USD_PPP_H..N.."
     url = (
         OECD_PRODUCTIVITY_BASE + key
         + "?dimensionAtObservation=AllDimensions"
@@ -718,10 +718,9 @@ def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) ->
     growth = cache["OECD_PRODUCTIVITY"]["labour_productivity_growth"]
     try:
         countries = "+".join(OECD_PRODUCTIVITY_REFERENCE_AREAS)
-        # Official OECD growth-rate database. GDP per hour worked is the
-        # published labour-productivity growth measure; Python does not
-        # calculate the growth itself.
-        key = f"{countries}.A.GDPHRS..PA..GY.."
+        # Official OECD growth-rate database for the same GVAHRS labour-
+        # productivity measure. Python does not calculate the growth itself.
+        key = f"{countries}.A.GVAHRS._T.USD_PPP_H..GY.."
         url = OECD_PRODUCTIVITY_GROWTH_BASE + key
         url += "?dimensionAtObservation=AllDimensions"
         if start_period:
@@ -735,7 +734,7 @@ def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) ->
                 continue
             grouped.setdefault(country, {
                 "reference_area": country,
-                "measure": "GDPHRS",
+                "measure": OECD_PRODUCTIVITY_MEASURE,
                 "observations": [],
             })["observations"].append({
                 k: v for k, v in row.items() if k != "reference_area"
@@ -1528,6 +1527,13 @@ def run(update: bool = True, start_period: int = 2000) -> int:
         cache.setdefault(section, {})
         for field_name, field in fields.items():
             cache[section].setdefault(field_name, field)
+
+    if cache.get("cache_version") != CACHE_VERSION:
+        # Productivity semantics changed in 1.4: discard only the affected
+        # productivity fields so an old XDC_H/GDPHRS cache cannot survive as
+        # a fallback for the new USD_PPP_H/GVAHRS definition.
+        template = new_cache()
+        cache["OECD_PRODUCTIVITY"] = deepcopy(template["OECD_PRODUCTIVITY"])
 
     if update:
         update_oecd_stan(cache, start_period=start_period)
