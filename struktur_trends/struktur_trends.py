@@ -1315,7 +1315,8 @@ def _latest_observation(series: dict[str, Any]) -> dict[str, Any] | None:
         return None
     valid = [
         item for item in observations
-        if isinstance(item, dict) and (item.get("period") is not None or item.get("TIME_PERIOD") is not None)
+        if isinstance(item, dict)
+        and (item.get("period") is not None or item.get("TIME_PERIOD") is not None)
     ]
     return max(
         valid,
@@ -1327,29 +1328,76 @@ def _series_line(series_key: str, series: dict[str, Any]) -> str:
     latest = _latest_observation(series)
     if latest:
         label = series.get("activity_name") or series.get("reference_area") or series_key
+        unit = latest.get("unit") or series.get("unit") or "nicht angegeben"
         return (
             f"  {series_key} | {label} | "
             f"letzte Periode={latest.get('period') or latest.get('TIME_PERIOD')} | "
             f"Wert={latest.get('value') if 'value' in latest else latest.get('OBS_VALUE')} | "
-            f"Einheit={latest.get('unit', '')}"
+            f"Einheit={unit}"
         )
     if isinstance(series, dict) and "value" in series:
-        return f"  {series_key} | Periode={series_key} | Wert={series.get('value')} | Quelle={series.get('source', '')}"
+        return (
+            f"  {series_key} | Periode={series_key} | Wert={series.get('value')} | "
+            f"Einheit={series.get('unit') or 'nicht angegeben'} | Quelle={series.get('source', '')}"
+        )
     return f"  {series_key} | keine Beobachtung im erwarteten Format"
 
 
+def _payload_unit(payload: dict[str, Any]) -> str:
+    """Return a useful unit even when the payload-level unit is absent."""
+    unit = payload.get("unit")
+    if unit not in (None, "", "None"):
+        return str(unit)
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for series in data.values():
+            if isinstance(series, dict):
+                direct = series.get("unit")
+                if direct not in (None, "", "None"):
+                    return str(direct)
+                latest = _latest_observation(series)
+                if latest and latest.get("unit") not in (None, "", "None"):
+                    return str(latest["unit"])
+    return "nicht angegeben"
+
+
+# Kernländer für die Gemini-Auswertung. Vollständige Rohdaten bleiben im Cache.
+GEMINI_CORE_COUNTRIES = {
+    "DEU", "USA", "CHN", "RUS", "GBR", "FRA", "ITA", "ESP", "JPN",
+    "KOR", "NLD", "SWE", "AUT", "TWN", "EU27_2020",
+}
+GEMINI_CORE_COUNTRY_NAMES = {
+    "Germany", "United States of America", "China", "Russia", "United Kingdom",
+    "France", "Italy", "Spain", "Japan", "Korea, South", "Netherlands", "Sweden",
+    "Austria", "Taiwan", "European Union", "EU27_2020",
+}
+GEMINI_CORE_ACTIVITIES = {"C", "C20_21", "C26", "C27", "C28", "C29", "J", "_T"}
+
+
+def _is_core_series(series_key: str, series: dict[str, Any]) -> bool:
+    key = str(series_key)
+    parts = key.split("|")
+    if parts and parts[0] in GEMINI_CORE_COUNTRIES:
+        return len(parts) == 1 or len(parts) > 1 and parts[1] in GEMINI_CORE_ACTIVITIES
+    reference_area = str(series.get("reference_area") or "")
+    activity = str(series.get("activity") or series.get("activity_code") or "")
+    if reference_area in GEMINI_CORE_COUNTRIES or reference_area in GEMINI_CORE_COUNTRY_NAMES:
+        return not activity or activity in GEMINI_CORE_ACTIVITIES
+    return key in GEMINI_CORE_COUNTRY_NAMES
+
+
 def write_structure_trend_briefing(cache: dict[str, Any], output_dir: Path | None = None) -> Path:
-    """Create a traceable C briefing directly from the validated cache."""
+    """Create a Gemini-oriented C briefing while keeping the cache fully complete."""
     output_dir = output_dir or SCRIPT_DIR.parent
     updated = str(cache.get("cache_updated_at") or now_iso())
     data_date = updated[:10]
     out = output_dir / f"Struktur_Trend_Briefing({data_date}).txt"
 
     lines = [
-        "STRUKTUR-TREND-BRIEFING",
-        "=" * 72,
+        "STRUKTUR-TREND-BRIEFING | GEMINI INPUT",
+        "=" * 78,
         f"Cache-Datenstand: {updated}",
-        "",
+        "", 
         "ROLLE VON C",
         "C ist eine langsam veränderliche strukturelle Datenbasis.",
         "OECD-/SIPRI-Daten ändern sich überwiegend quartalsweise oder jährlich.",
@@ -1357,7 +1405,16 @@ def write_structure_trend_briefing(cache: dict[str, Any], output_dir: Path | Non
         "Aktuelle Marktbewegungen in A dürfen nicht durch ältere C-Daten überlagert werden.",
         "Keine fehlenden Werte schätzen oder aus älteren Daten rekonstruieren.",
         "",
+        "AUSWERTUNGSREGEL FÜR GEMINI",
+        "Zuerst die nachfolgend hervorgehobenen Kerninformationen verwenden.",
+        "Die vollständigen Rohdaten bleiben im Cache und dienen der Nachvollziehbarkeit; sie sind nicht als gleichgewichtete Signale zu behandeln.",
+        "Datenalter immer anhand der jeweiligen letzten Periode beurteilen; Cache-Aktualisierung ist nicht gleich Beobachtungszeitpunkt.",
+        "C darf aktuelle Signale aus A sowie aktuelle Makro-/Geopolitikdaten aus B/D weder ersetzen noch überstimmen.",
+        "",
+        "=== GEMINI KERNKONTEXT ===",
+        "",
     ]
+
     display_names = {
         "OECD_STAN": "OECD STAN",
         "OECD_PRODUCTIVITY": "OECD Productivity",
@@ -1365,35 +1422,71 @@ def write_structure_trend_briefing(cache: dict[str, Any], output_dir: Path | Non
         "IEA_ELECTRICITY": "Eurostat Electricity",
         "SIPRI_DEFENCE": "SIPRI Defence",
     }
+
     for section, fields in cache.items():
         if section.startswith("cache_") or not isinstance(fields, dict):
             continue
-        lines += [f"=== {display_names.get(section, section)} ===", ""]
+        lines += [f"--- {display_names.get(section, section)} ---", ""]
         for field_name, payload in fields.items():
             if not isinstance(payload, dict):
                 continue
-            lines.append(f"{field_name}:")
-            for key in ("status", "source", "dataset", "frequency", "data_period", "unit",
-                        "series_count", "observation_count", "last_successful_update", "retrieved_at", "version"):
-                if key in payload:
-                    lines.append(f"  {key}: {payload[key]}")
-            if payload.get("source_notes"):
-                lines.append(f"  source_notes: {payload['source_notes']}")
+            lines += [f"{field_name} | status={payload.get('status', 'nicht angegeben')} | "
+                      f"frequency={payload.get('frequency', 'nicht angegeben')} | "
+                      f"data_period={payload.get('data_period', 'nicht angegeben')} | "
+                      f"unit={_payload_unit(payload)} | "
+                      f"source={payload.get('source', 'nicht angegeben')}"]
             data = payload.get("data")
             if isinstance(data, dict):
-                lines.append(f"  enthaltene Serien/Einträge: {len(data)}")
-                lines.append("  letzte gespeicherte Beobachtung je Serie/Eintrag:")
+                selected = []
                 for series_key in sorted(data, key=str):
                     series = data[series_key]
-                    if isinstance(series, dict):
-                        lines.append(_series_line(str(series_key), series))
+                    if not isinstance(series, dict):
+                        continue
+                    if section in ("OECD_STAN", "OECD_PRODUCTIVITY", "SIPRI_DEFENCE"):
+                        if _is_core_series(str(series_key), series):
+                            selected.append((series_key, series))
+                    else:
+                        selected.append((series_key, series))
+                lines.append(f"  Kern-Serien/Einträge: {len(selected)} von {len(data)}")
+                for series_key, series in selected:
+                    lines.append(_series_line(str(series_key), series))
             elif isinstance(data, list):
-                lines.append(f"  enthaltene Beobachtungen: {len(data)}")
+                lines.append(f"  Beobachtungen: {len(data)}")
                 for item in data[-5:]:
                     lines.append(f"  {item}")
             else:
                 lines.append("  keine Datenstruktur vorhanden")
             lines.append("")
+
+    lines += [
+        "=== STRUKTURELLE EINORDNUNG ===",
+        "",
+        "Die folgenden Daten sind Kontextfaktoren für die langfristige Bewertung von Sektoren und Regionen.",
+        "Besonders relevant sind reale Wertschöpfung/Investitionen, Produktivität, AI-Investitionen/-Adoption/-Compute, Strom-/Energieentwicklung und Verteidigungsausgaben.",
+        "Ein einzelner C-Wert ist kein Kaufs-, Verkaufs-, Breakout- oder Zielzonensignal.",
+        "Bei widersprüchlichen Zeithorizonten gilt: aktuelle A-Signale bleiben für die aktuelle Marktentscheidung maßgeblich; C liefert den strukturellen Hintergrund.",
+        "",
+        "=== DATENQUALITÄT / HERKUNFT ===",
+        "",
+    ]
+
+    for section, fields in cache.items():
+        if section.startswith("cache_") or not isinstance(fields, dict):
+            continue
+        for field_name, payload in fields.items():
+            if not isinstance(payload, dict):
+                continue
+            notes = payload.get("source_notes") or []
+            lines.append(
+                f"{display_names.get(section, section)} / {field_name}: "
+                f"version={payload.get('version', 'nicht angegeben')} | "
+                f"last_successful_update={payload.get('last_successful_update', 'nicht angegeben')}"
+            )
+            if notes:
+                for note in notes:
+                    lines.append(f"  - {note}")
+            lines.append("")
+
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
