@@ -1324,11 +1324,24 @@ def _latest_observation(series: dict[str, Any]) -> dict[str, Any] | None:
     ) if valid else None
 
 
+GEMINI_UNIT_LABELS = {
+    "PA": "% p.a.",
+    "XDC_H": "XDC je Arbeitsstunde",
+}
+
+
+def _gemini_unit(unit: str | None) -> str:
+    """Translate technical source units into unambiguous Gemini labels."""
+    if unit in GEMINI_UNIT_LABELS:
+        return GEMINI_UNIT_LABELS[unit]
+    return unit or "nicht angegeben"
+
+
 def _series_line(series_key: str, series: dict[str, Any], fallback_unit: str | None = None) -> str:
     latest = _latest_observation(series)
     if latest:
         label = series.get("activity_name") or series.get("reference_area") or series_key
-        unit = latest.get("unit") or series.get("unit") or fallback_unit or "nicht angegeben"
+        unit = _gemini_unit(latest.get("unit") or series.get("unit") or fallback_unit)
         value = latest.get("value") if "value" in latest else latest.get("OBS_VALUE")
         # SIPRI liefert Prozentanteile als Dezimalbruch; im Gemini-Briefing
         # werden sie in der angegebenen Prozenteinheit dargestellt.
@@ -1343,7 +1356,7 @@ def _series_line(series_key: str, series: dict[str, Any], fallback_unit: str | N
     if isinstance(series, dict) and "value" in series:
         return (
             f"  {series_key} | Periode={series_key} | Wert={series.get('value')} | "
-            f"Einheit={series.get('unit') or fallback_unit or 'nicht angegeben'} | Quelle={series.get('source', '')}"
+            f"Einheit={_gemini_unit(series.get('unit') or fallback_unit)} | Quelle={series.get('source', '')}"
         )
     return f"  {series_key} | keine Beobachtung im erwarteten Format"
 
@@ -1415,6 +1428,14 @@ def write_structure_trend_briefing(cache: dict[str, Any], output_dir: Path | Non
         "Die vollständigen Rohdaten bleiben im Cache und dienen der Nachvollziehbarkeit; sie sind nicht als gleichgewichtete Signale zu behandeln.",
         "Datenalter immer anhand der jeweiligen letzten Periode beurteilen; Cache-Aktualisierung ist nicht gleich Beobachtungszeitpunkt.",
         "C darf aktuelle Signale aus A sowie aktuelle Makro-/Geopolitikdaten aus B/D weder ersetzen noch überstimmen.",
+        "",
+        "INTERPRETATION DER OECD-PRODUKTIVITÄT",
+        "labour_productivity_level = Arbeitsproduktivität je Arbeitsstunde.",
+        "labour_productivity_growth = jährliche Veränderung der Arbeitsproduktivität gegenüber dem Vorjahr.",
+        "Positive Wachstumswerte = Produktivität steigt; negative Wachstumswerte = Produktivität sinkt.",
+        "Die Wachstumsrate stammt direkt aus der offiziellen OECD-Reihe und wird nicht in Python berechnet.",
+        "Technische OECD-Einheiten wie PA werden im Gemini-Briefing in verständliche Einheiten übersetzt.",
+        "Produktivitätswerte sind Strukturindikatoren und kein unmittelbares Kaufs-, Verkaufs-, Breakout- oder Zielzonensignal.",
         "",
         "=== GEMINI KERNKONTEXT ===",
         "",
