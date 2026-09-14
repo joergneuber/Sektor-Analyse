@@ -1308,6 +1308,96 @@ def print_summary(cache: dict[str, Any]) -> None:
 # Orchestrierung
 # ---------------------------------------------------------------------------
 
+
+def _latest_observation(series: dict[str, Any]) -> dict[str, Any] | None:
+    observations = series.get("observations") if isinstance(series, dict) else None
+    if not isinstance(observations, list):
+        return None
+    valid = [
+        item for item in observations
+        if isinstance(item, dict) and (item.get("period") is not None or item.get("TIME_PERIOD") is not None)
+    ]
+    return max(
+        valid,
+        key=lambda item: str(item.get("period") or item.get("TIME_PERIOD")),
+    ) if valid else None
+
+
+def _series_line(series_key: str, series: dict[str, Any]) -> str:
+    latest = _latest_observation(series)
+    if latest:
+        label = series.get("activity_name") or series.get("reference_area") or series_key
+        return (
+            f"  {series_key} | {label} | "
+            f"letzte Periode={latest.get('period') or latest.get('TIME_PERIOD')} | "
+            f"Wert={latest.get('value') if 'value' in latest else latest.get('OBS_VALUE')} | "
+            f"Einheit={latest.get('unit', '')}"
+        )
+    if isinstance(series, dict) and "value" in series:
+        return f"  {series_key} | Periode={series_key} | Wert={series.get('value')} | Quelle={series.get('source', '')}"
+    return f"  {series_key} | keine Beobachtung im erwarteten Format"
+
+
+def write_structure_trend_briefing(cache: dict[str, Any], output_dir: Path | None = None) -> Path:
+    """Create a traceable C briefing directly from the validated cache."""
+    output_dir = output_dir or SCRIPT_DIR.parent
+    updated = str(cache.get("cache_updated_at") or now_iso())
+    data_date = updated[:10]
+    out = output_dir / f"Struktur_Trend_Briefing({data_date}).txt"
+
+    lines = [
+        "STRUKTUR-TREND-BRIEFING",
+        "=" * 72,
+        f"Cache-Datenstand: {updated}",
+        "",
+        "ROLLE VON C",
+        "C ist eine langsam veränderliche strukturelle Datenbasis.",
+        "OECD-/SIPRI-Daten ändern sich überwiegend quartalsweise oder jährlich.",
+        "C liefert strukturellen Kontext und ist kein aktuelles Preis- oder Setup-Signal.",
+        "Aktuelle Marktbewegungen in A dürfen nicht durch ältere C-Daten überlagert werden.",
+        "Keine fehlenden Werte schätzen oder aus älteren Daten rekonstruieren.",
+        "",
+    ]
+    display_names = {
+        "OECD_STAN": "OECD STAN",
+        "OECD_PRODUCTIVITY": "OECD Productivity",
+        "AI_INDEX": "Stanford AI Index",
+        "IEA_ELECTRICITY": "Eurostat Electricity",
+        "SIPRI_DEFENCE": "SIPRI Defence",
+    }
+    for section, fields in cache.items():
+        if section.startswith("cache_") or not isinstance(fields, dict):
+            continue
+        lines += [f"=== {display_names.get(section, section)} ===", ""]
+        for field_name, payload in fields.items():
+            if not isinstance(payload, dict):
+                continue
+            lines.append(f"{field_name}:")
+            for key in ("status", "source", "dataset", "frequency", "data_period", "unit",
+                        "series_count", "observation_count", "last_successful_update", "retrieved_at", "version"):
+                if key in payload:
+                    lines.append(f"  {key}: {payload[key]}")
+            if payload.get("source_notes"):
+                lines.append(f"  source_notes: {payload['source_notes']}")
+            data = payload.get("data")
+            if isinstance(data, dict):
+                lines.append(f"  enthaltene Serien/Einträge: {len(data)}")
+                lines.append("  letzte gespeicherte Beobachtung je Serie/Eintrag:")
+                for series_key in sorted(data, key=str):
+                    series = data[series_key]
+                    if isinstance(series, dict):
+                        lines.append(_series_line(str(series_key), series))
+            elif isinstance(data, list):
+                lines.append(f"  enthaltene Beobachtungen: {len(data)}")
+                for item in data[-5:]:
+                    lines.append(f"  {item}")
+            else:
+                lines.append("  keine Datenstruktur vorhanden")
+            lines.append("")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
 def run(update: bool = True, start_period: int = 2000) -> int:
     cache = read_json(CACHE_FILE)
 
@@ -1343,6 +1433,8 @@ def run(update: bool = True, start_period: int = 2000) -> int:
             print(f"  - {error}")
         return 2
 
+    briefing_path = write_structure_trend_briefing(cache)
+    print(f"STRUKTUR-TREND-BRIEFING: {briefing_path}")
     print("CHECK: OK")
     return 0
 
@@ -1362,6 +1454,11 @@ def main() -> int:
         help="Cache-Zusammenfassung anzeigen.",
     )
     parser.add_argument(
+        "--briefing-only",
+        action="store_true",
+        help="Nur aus dem vorhandenen Cache das Struktur-Trend-Briefing erzeugen.",
+    )
+    parser.add_argument(
         "--start-period",
         type=int,
         default=2000,
@@ -1373,6 +1470,17 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
+
+    if args.briefing_only:
+        cache = read_json(CACHE_FILE)
+        ok, errors = check_cache(cache)
+        if not ok:
+            for error in errors:
+                print(f"ERROR: {error}")
+            return 2
+        briefing_path = write_structure_trend_briefing(cache)
+        print(f"STRUKTUR-TREND-BRIEFING: {briefing_path}")
+        return 0
 
     if args.check or args.show:
         cache = read_json(CACHE_FILE)
