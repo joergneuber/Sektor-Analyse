@@ -184,8 +184,7 @@ nicht vertraut sind. Mindestens diese Begriffe müssen enthalten sein
 (weitere nur, falls im jeweiligen Tagesbericht tatsächlich
 verwendet): CRV, Setup-Qualität (B- bis A+), Kumo-Ausbruch,
 Pullback-Zone, Trendlinien-Ausbruch, EMA/WMA, RSI, MACD-Trend,
-Divergenz, Fundamental-Ampel, Golden-/Death-Cross, KGV, Rabatt vs.
-5J-Schnitt.
+Divergenz, Fundamental-Ampel, Golden-/Death-Cross, KGV und KGV-Näherung vs. aktuellem KGV.
 
 1. Extraktions-Regeln (strikt)
 
@@ -295,16 +294,9 @@ DIVERGENZ-WATCHLIST (Boden-Bedingung erfüllt, wartet noch auf den
 Kumo-Trigger) UND „BEINAHE-KANDIDATEN CRV-Filter” (Boden-Bedingung
 UND Kumo-Trigger bereits erfüllt, erst am CRV gescheitert) - BEIDE
 gehören in den Trendwende-Abschnitt, das ist keine Doppelung,
-sondern zwei verschiedene Stufen. GILT AUCH FÜR EDELMETALLE UND
-LANGFRIST (ergänzt 30.07.2026): Im Edelmetalle-Briefing steht der
+sondern zwei verschiedene Stufen. GILT AUCH FÜR EDELMETALLE: Im Edelmetalle-Briefing steht der
 Block je Strategie getrennt (Trendfolge / Short) - ordne ihn dem
-jeweiligen Unterabschnitt zu. Im Langfrist-Briefing heißt das
-Pendant „BEINAHE GUENSTIG” und listet Titel, die die
-Günstig-Schwelle knapp verfehlt haben (Rabatt vs. 5J-Näherung
-innerhalb von 5 Punkten darunter) - gib ihn im Langfrist-Abschnitt
-aus, wenn dort 0 Günstig-Titel stehen, sonst nur als Halbsatz. Auch
-hier gilt: keine Kandidaten, keine Empfehlungen, nur
-Nachvollziehbarkeit.
+jeweiligen Unterabschnitt zu.
 • 4. HEBELTRADER-SETUPS (NEU 07.08.2026, Nutzerwunsch - sechste
 Kategorie neben Trendfolge/Trendwende/Short/Langfrist/Edelmetalle):
 Die briefing.txt kann einen Block „HEBELTRADER-SETUPS” enthalten -
@@ -1308,72 +1300,56 @@ Anhang mitgeschickt werden (z. B. weil der Scanner an diesem Tag
 nicht mitlief): Abschnitt einfach weglassen, keine Rückfrage, keine
 Ablehnung deswegen.
 
-6. Langfrist-Bewertung (separater, wöchentlicher Scan)
+6. Langfrist-Bewertung / Faktenbasis (separater, wöchentlicher Scan)
 
 Nur EINMAL PRO WOCHE (nicht täglich) erhältst du ggf. zwei weitere
 Datei-Anhänge: Langfrist_Bewertung(…).csv und
 Langfrist_Briefing(…).txt. Diese stammen aus einem dritten, komplett
-eigenständigen Scanner mit einer nochmals anderen Grundannahme als die
-ersten beiden: keine kurzfristige Trade-Idee, sondern eine fundamentale
-Bewertung (KGV, KUV, KBV, Dividendenrendite, Verschuldung, Wachstum)
-einer kuratierten Liste bekannter Qualitäts-/Blue-Chip-Aktien für eine
-LANGFRISTIGE Positionierung (Halten über Monate/Jahre, nicht
+eigenständigen Scanner. Der Scanner liefert eine deterministische
+Faktenbasis aus Fundamentaldaten und langfristigem Chart-Kontext für
+eine LANGFRISTIGE Positionierung (Halten über Monate/Jahre, nicht
 Tage/Wochen).
 
 • Strikte Trennung (Pflicht): Diese Titel gehören NIEMALS in die
 Abschnitte „Valide Setups” oder „Trendwende-Setups”. Erstelle einen
 eigenen, klar abgegrenzten Abschnitt „LANGFRIST-BEWERTUNG
-(fundamental, kein Trade-Setup)”.
-• Kein Stop, kein Kursziel, kein CRV bei diesen Titeln erfinden oder
-erwarten – die Datei enthält bewusst keine, das ist kein
-technisches Setup. Gib nur die vorhandenen Bewertungskennzahlen
-wieder.
-• KGV_Naeherung_5J ist KEINE echte historische KGV-Reihe (siehe
-Datei-Kommentar in Langfrist_Briefing.txt) – übernimm den Wert und
-den Hinweis auf die Näherungs-Methodik wörtlich, erwecke nicht den
-Eindruck, es handle sich um eine exakte historische Kennzahl.
-• Filter auf echte Kandidaten (NEU, Pflicht – ersetzt die frühere
-Vollständigkeits-Ausgabe): Die CSV enthält typischerweise 70+ Titel,
-das macht die Auswertung unübersichtlich und beantwortet nicht die
-eigentliche Frage, wo eine echte historische Chance auf Kursgewinne
-besteht. Gib in diesem Abschnitt daher NUR Titel mit
-Bewertungs_Status = „Guenstig” aus. Titel mit Neutral, Teuer oder
-Nicht aussagekraeftig werden komplett übersprungen (nicht einmal in
-Kurzform erwähnt) – sie bleiben nur in der Rohdatei für die eigene
-Recherche. Falls kein einziger Titel „Guenstig” ist, vermerke kurz
-„Keine güns­tig bewerteten Titel diese Woche gefunden” statt den
-Abschnitt wegzulassen.
-• Bewertungs_Status = „Nicht aussagekraeftig” (NEU, zwei mögliche
-Ursachen) bedeutet: entweder (1) aktuelles KGV und Forward-KGV
-weichen stark voneinander ab (Einmaleffekt in den
-Trailing-Earnings, z. B. Abschreibung oder Sondergewinn), oder (2)
-ein starker jüngster Gewinnrückgang verzerrt die 5J-Näherung nach
-oben (historische Kurse werden durch den heutigen, gedrückten Gewinn
-geteilt – Beispiel: KGV_aktuell nah am KGV_forward, aber deutlich
-negatives Gewinnwachstum). In beiden Fällen ist der aktuelle Gewinn
-pro Aktie keine brauchbare Bewertungsgrundlage – wird bereits im
-Scanner selbst herausgefiltert, taucht als Status in der CSV auf,
-aber (siehe Filter oben) nie in dieser Auswertung.
-• Rabatt_vs_5J_Perc (NEU): Prozentwert, wie weit das aktuelle KGV
-unter dem eigenen 5-Jahres-Schnitt liegt (positiv = günstiger als
-die eigene Historie) – das ist die Kernaussage dieses Abschnitts,
-gib sie prominent aus.
-• Einstieg/Stop/TP1/TP2 (NEU, nur bei „Guenstig”-Titeln vorhanden):
-eine grobe Orientierung aus dem 1-Jahres-Kursverlauf
-(EMA50/EMA200/WMA200 als Stützen, 52-Wochen-Hoch als Chart-Ziel) –
-deutlich gröber als bei den täglichen Setups, da es hier nur um eine
-Orientierung für eine langfristige Position geht, nicht um präzises
-Kurzfrist-Timing. Gib IMMER beide TP-Varianten nebeneinander aus,
-ohne eine davon als „die richtige” herauszustellen: TP1/TP2
-(Bewertung) = rechnerische Rück-Projektion aus der KGV-Näherung
-(Kurs, bei dem sich die Rabatt-Lücke schließt bzw. leicht darüber
-hinaus), TP1/TP2 (Chart) = charttechnisch aus dem 52-Wochen-Hoch.
-Diese beiden können deutlich auseinanderliegen – das ist normal und
-kein Widerspruch, sie beantworten unterschiedliche Fragen
-(Bewertungs-Normalisierung vs. Chart-Widerstand). Fehlen diese
-Felder bei einem Titel (leer/N/A in der CSV, z. B. weil zu wenig
-Kurshistorie vorlag), lasse die entsprechende Zeile in der Ausgabe
-einfach weg statt „N/A” zu erfinden.
+(Fundamental × Long-Term-Chart-Fakten, kein Trade-Setup)”.
+• Keine vorweggenommene Bewertungs- oder Chartklassifizierung aus dem
+Scanner übernehmen oder erfinden. Der Scanner liefert Messwerte und
+rein mathematische Relationen; die Interpretation der Kombination
+erfolgt erst hier.
+• Keine Aussage „Günstig”, „Neutral”, „Teuer”, „Value Trap”,
+„Aufwärtstrend”, „Abwärtstrend” oder vergleichbare Zustandslabels aus
+den Rohdaten ableiten, bevor die tatsächlichen Werte und Relationen
+geprüft wurden. Begründe jede solche Interpretation aus den
+vorliegenden Daten.
+• Kein Stop, kein Kursziel und kein CRV bei diesen Titeln erfinden.
+Dieser Scanner ist kein technisches Setup.
+• KGV_Naeherung_5J ist KEINE echte historische KGV-Reihe. Sie entsteht
+durch Anwendung des heutigen EPS auf historische Kurse der letzten
+5 Jahre und ist ein rechnerischer Vergleichswert. Stelle dies nicht
+als historische Gewinnbewertung dar.
+• Die Fundamental-Fakten umfassen aktuelles KGV, KGV_Naeherung_5J,
+KGV_Aktuell_vs_Naeherung_Perc, Trailing EPS, Forward-KGV, KUV, KBV,
+Dividendenrendite, Verschuldung sowie Umsatz- und Gewinnwachstum.
+• Die Chart-Fakten umfassen EMA50, SMA200, SMA200_vor_20_Tagen,
+SMA200_vor_40_Tagen, 52W_Hoch, 52W_Tief sowie die ausgewiesenen
+rein mathematischen Kurs-/Durchschnitts- und Abstandsrelationen.
+• Beurteile Fundamental- und Chartdaten zunächst getrennt und
+beschreibe anschließend ihr Zusammenspiel. Eine positive oder negative
+Interpretation darf nicht aus einem einzelnen Kennwert abgeleitet
+werden.
+• Wenn die Daten eine mögliche Value-Trap-, Turnaround- oder
+Trendbestätigungs-Konstellation nahelegen, darf dies als Interpretation
+benannt werden, muss aber ausdrücklich aus den konkreten Fakten
+begründet werden. Solche Begriffe sind KEINE vom Scanner vorgegebene
+Kategorien.
+• Verwende die vollständige Faktenbasis der CSV. Es gibt keinen
+„Guenstig“-Filter mehr. Titel mit neutralen oder widersprüchlichen
+Fakten werden nicht vorab ausgeblendet.
+• Die Reihenfolge der CSV grundsätzlich beibehalten; keine neue
+Kandidaten-Rangliste konstruieren, wenn sie nicht ausdrücklich aus den
+Daten begründet wird.
 
 Festes Ausgabe-Format je Langfrist-Titel: {{Name}} | Markt: {{Markt}}
 | Sektor: {{Sektor}}
@@ -1381,34 +1357,39 @@ Festes Ausgabe-Format je Langfrist-Titel: {{Name}} | Markt: {{Markt}}
 Kurs: {{Kurs, 2 Nachkommastellen}}{{Waehrungssymbol}}
 
 KGV aktuell: {{KGV_aktuell}} | KGV-Näherung (5J, siehe Hinweis):
-{{KGV_Naeherung_5J}} | Rabatt vs. 5J-Schnitt: {{Rabatt_vs_5J_Perc}}%
+{{KGV_Naeherung_5J}} | KGV aktuell vs. Näherung: {{KGV_Aktuell_vs_Naeherung_Perc}}%
 
-KGV forward: {{KGV_forward}} | KUV: {{KUV}} | KBV: {{KBV}}
+Trailing EPS: {{Trailing_EPS}} | KGV forward: {{KGV_forward}} |
+KUV: {{KUV}} | KBV: {{KBV}}
 
-Dividendenrendite: {{Dividendenrendite_Perc}}% | Verschuldung (D/E):
-{{Verschuldung_DE}}
+Dividendenrendite: {{Dividendenrendite_Perc}}% |
+Verschuldung (D/E): {{Verschuldung_DE}}
 
 Umsatzwachstum: {{Umsatzwachstum_Perc}}% | Gewinnwachstum:
 {{Gewinnwachstum_Perc}}%
 
-Einstieg: {{Einstieg_Hinweis}} | Stop (Chart):
-{{Stop_Chart}}{{Waehrungssymbol}}
+EMA50: {{EMA50}} | SMA200: {{SMA200}}
 
-TP1 (Bewertung): {{TP1_Bewertung}}{{Waehrungssymbol}} | TP2
-(Bewertung): {{TP2_Bewertung}}{{Waehrungssymbol}}
+SMA200 vor 20 Tagen: {{SMA200_vor_20_Tagen}} |
+SMA200 vor 40 Tagen: {{SMA200_vor_40_Tagen}}
 
-TP1 (Chart): {{TP1_Chart}}{{Waehrungssymbol}} | TP2 (Chart):
-{{TP2_Chart}}{{Waehrungssymbol}}
+52W-Hoch: {{52W_Hoch}} | 52W-Tief: {{52W_Tief}}
 
-• Sortierung: absteigend nach Rabatt_vs_5J_Perc (größte historische
-Unterbewertung zuerst) – steht in der CSV bereits so vor (nach
-Bewertungs_Status, dann Rabatt_vs_5J_Perc absteigend sortiert),
-Reihenfolge beibehalten, nicht neu sortieren.
-• Falls die beiden Langfrist-Dateien in einem Lauf nicht als Anhang
-mitgeschickt werden (an sechs von sieben Tagen der Fall, da
-wöchentlicher Rhythmus): Abschnitt einfach weglassen, keine
-Rückfrage, keine Ablehnung deswegen – das ist der Normalfall, kein
-Fehler.
+Kurs vs. SMA200: {{Kurs_vs_SMA200_Perc}}% |
+Kurs vs. EMA50: {{Kurs_vs_EMA50_Perc}}%
+
+SMA200-Veränderung 20T: {{SMA200_Veraenderung_20T_Perc}}% |
+SMA200-Veränderung 40T: {{SMA200_Veraenderung_40T_Perc}}%
+
+Kurs vs. 52W-Hoch: {{Kurs_vs_52W_Hoch_Perc}}% |
+Kurs vs. 52W-Tief: {{Kurs_vs_52W_Tief_Perc}}%
+
+EMA50 vs. SMA200: {{EMA50_vs_SMA200_Perc}}%
+
+• Fehlen einzelne Felder (leer/N/A in der CSV), erfinde keinen Wert.
+Beschreibe die daraus entstehende Einschränkung nur, wenn sie für
+die Interpretation relevant ist.
+
 
 7. Short-Setups (vierte Kategorie, spiegelt Abschnitt 2)
 
