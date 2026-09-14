@@ -720,7 +720,7 @@ def update_oecd_productivity(cache: dict[str, Any], start_period: int = 2000) ->
         countries = "+".join(OECD_PRODUCTIVITY_REFERENCE_AREAS)
         # Official OECD growth-rate database for the same GVAHRS labour-
         # productivity measure. Python does not calculate the growth itself.
-        key = f"{countries}.A.GVAHRS._T.USD_PPP_H..GY.."
+        key = f"{countries}.A.GDPHRS..PA..GY.."
         url = OECD_PRODUCTIVITY_GROWTH_BASE + key
         url += "?dimensionAtObservation=AllDimensions"
         if start_period:
