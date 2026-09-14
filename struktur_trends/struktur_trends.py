@@ -1324,21 +1324,26 @@ def _latest_observation(series: dict[str, Any]) -> dict[str, Any] | None:
     ) if valid else None
 
 
-def _series_line(series_key: str, series: dict[str, Any]) -> str:
+def _series_line(series_key: str, series: dict[str, Any], fallback_unit: str | None = None) -> str:
     latest = _latest_observation(series)
     if latest:
         label = series.get("activity_name") or series.get("reference_area") or series_key
-        unit = latest.get("unit") or series.get("unit") or "nicht angegeben"
+        unit = latest.get("unit") or series.get("unit") or fallback_unit or "nicht angegeben"
+        value = latest.get("value") if "value" in latest else latest.get("OBS_VALUE")
+        # SIPRI liefert Prozentanteile als Dezimalbruch; im Gemini-Briefing
+        # werden sie in der angegebenen Prozenteinheit dargestellt.
+        if unit in ("% GDP", "% government expenditure") and isinstance(value, (int, float)) and abs(value) <= 1:
+            value = value * 100
         return (
             f"  {series_key} | {label} | "
             f"letzte Periode={latest.get('period') or latest.get('TIME_PERIOD')} | "
-            f"Wert={latest.get('value') if 'value' in latest else latest.get('OBS_VALUE')} | "
+            f"Wert={value} | "
             f"Einheit={unit}"
         )
     if isinstance(series, dict) and "value" in series:
         return (
             f"  {series_key} | Periode={series_key} | Wert={series.get('value')} | "
-            f"Einheit={series.get('unit') or 'nicht angegeben'} | Quelle={series.get('source', '')}"
+            f"Einheit={series.get('unit') or fallback_unit or 'nicht angegeben'} | Quelle={series.get('source', '')}"
         )
     return f"  {series_key} | keine Beobachtung im erwarteten Format"
 
@@ -1449,7 +1454,7 @@ def write_structure_trend_briefing(cache: dict[str, Any], output_dir: Path | Non
                         selected.append((series_key, series))
                 lines.append(f"  Kern-Serien/Einträge: {len(selected)} von {len(data)}")
                 for series_key, series in selected:
-                    lines.append(_series_line(str(series_key), series))
+                    lines.append(_series_line(str(series_key), series, _payload_unit(payload)))
             elif isinstance(data, list):
                 lines.append(f"  Beobachtungen: {len(data)}")
                 for item in data[-5:]:
