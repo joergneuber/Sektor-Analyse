@@ -46,6 +46,7 @@ import glob
 import re
 import csv
 import time
+import random
 import json
 import datetime
 from pathlib import Path
@@ -64,27 +65,32 @@ import io
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash"  # Primaer-Modell
-FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback
-DRITTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Zweiter Fallback bei 503-Ueberlast
-                              # Das dritte Modell wird nur verwendet, wenn auch der erste
-                              # Fallback weiterhin serverseitig ueberlastet ist.
+MODELL = "gemini-3.5-flash"  # Primaer-Modell (bereits im Projekt erfolgreich erprobt)
+FALLBACK_MODELL = "gemini-3.8-flash"  # Erster Fallback
+DRITTER_FALLBACK_MODELL = "gemini-3.7-flash"  # Zweiter Fallback
+VIERTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Dritter Fallback
+FUENFTER_FALLBACK_MODELL = "gemini-3.5-flash-lite"  # Vierter Fallback
 
-MAX_VERSUCHE = 5
+# Alle fuer diesen Lauf konfigurierten Modelle werden hoechstens einmal
+# versucht. So wird ein einzelnes Free-Tier-Modell bei 503/Netzwerkproblemen
+# nicht mehrfach in derselben Nachfragespitze verbrannt.
+GEMINI_MODELLREIHENFOLGE = tuple(
+    modell for modell in (
+        MODELL,
+        FALLBACK_MODELL,
+        DRITTER_FALLBACK_MODELL,
+        VIERTER_FALLBACK_MODELL,
+        FUENFTER_FALLBACK_MODELL,
+    )
+    if modell
+)
+MAX_VERSUCHE = len(GEMINI_MODELLREIHENFOLGE)
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
 
-# NEU (30.07.2026): eigene, deutlich laengere Staffel fuer SERVERSEITIGE
-# UEBERLAST (HTTP 503 "This model is currently experiencing high demand")
-# und fuer Netzwerk-Abbrueche. Anlass: der Morgenlauf am 30.07. verbrannte
-# alle fuenf Versuche in rund zwei Minuten (15/20/25/30/35 s), weil die alte
-# Formel WARTEZEIT_SEKUNDEN + versuch*5 fuer JEDEN Fehlertyp galt. Eine
-# Nachfragespitze bei einem Gratis-Modell dauert typischerweise laenger als
-# zwei Minuten - fuenf Versuche in diesem Fenster sind praktisch fuenf
-# Versuche im selben Moment. Exponentiell statt linear:
-UEBERLAST_WARTEZEITEN = [30, 60, 60, 60]  # Sekunden; kurze Staffel vor dem Fallback
-# Ein GitHub-Actions-Job darf 6 Stunden laufen, 15 Minuten sind also
-# unkritisch; laenger ist trotzdem nicht sinnvoll, weil der Lauf sonst den
-# ganzen Vormittag blockiert - dann lieber ein spaeterer Handstart.
+# Fuer SERVERSEITIGE UEBERLAST (HTTP 503) und Netzwerk-Abbrueche gilt eine
+# exponentiell ansteigende Backoff-Staffel. Zusaetzlicher Jitter verhindert,
+# dass mehrere parallele Laeufe exakt gleichzeitig erneut anfragen.
+UEBERLAST_WARTEZEITEN = [15, 30, 60, 120]  # Sekunden; Backoff vor dem Modellwechsel
 
 ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
 
@@ -1564,7 +1570,8 @@ def gemini_auswertung_starten():
 
     letzte_antwort = None
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
-    aktuelles_modell = MODELL
+    modell_index = 0
+    aktuelles_modell = GEMINI_MODELLREIHENFOLGE[modell_index]
 
     # Harte Datenqualitaetskontrolle fuer Punkt 2: Der Makro-Block darf nur
     # dann numerische Base/Bull/Bear-Wahrscheinlichkeiten erzeugen, wenn
@@ -1888,50 +1895,55 @@ def gemini_auswertung_starten():
 
             abbrechen, empfohlene_wartezeit, kategorie = analysiere_api_fehler(fehlertext)
             if abbrechen:
-                # Das RPD-Free-Tier-Limit ist modellbezogen. Wenn das
-                # Primaermodell sein Tageskontingent erreicht hat, wechseln
-                # wir genau einmal auf das definierte Fallback-Modell.
-                # Ist auch dessen Tageskontingent erschoepft, gibt es keinen
-                # weiteren sinnvollen Retry am selben Tag.
-                if aktuelles_modell == MODELL and FALLBACK_MODELL and FALLBACK_MODELL != MODELL:
-                    aktuelles_modell = FALLBACK_MODELL
+                # Das RPD-Free-Tier-Limit ist modellbezogen. Bei PerDay wird
+                # deshalb der naechste noch nicht versuchte Eintrag der festen
+                # Modellreihenfolge verwendet. Ist die Reihe ausgeschoepft,
+                # wird nicht versucht, ein bereits erschoepftes Modell erneut
+                # zu verwenden.
+                if modell_index + 1 < len(GEMINI_MODELLREIHENFOLGE):
+                    vorheriges_modell = aktuelles_modell
+                    modell_index += 1
+                    aktuelles_modell = GEMINI_MODELLREIHENFOLGE[modell_index]
                     print(
-                        f"  Tages-Kontingent von {MODELL} erschoepft "
+                        f"  Tages-Kontingent von {vorheriges_modell} erschoepft "
                         "(429 RESOURCE_EXHAUSTED, PerDay). "
-                        f"Wechsle fuer diesen Lauf auf Fallback-Modell {FALLBACK_MODELL}."
+                        f"Wechsle fuer diesen Lauf auf Fallback-Modell {aktuelles_modell}."
                     )
                     continue
 
                 print(
                     f"  Tages-Kontingent des Gemini-Free-Tiers fuer {aktuelles_modell} ist erschoepft "
                     "(429 RESOURCE_EXHAUSTED, quotaId enthaelt 'PerDay'). "
-                    f"Auch das Fallback-Modell kann heute nicht weiter verwendet werden; "
-                    f"breche ab statt die restlichen {MAX_VERSUCHE - versuch} Versuche zu verbrennen. "
+                    f"Alle {len(GEMINI_MODELLREIHENFOLGE)} konfigurierten Modelle wurden fuer diesen Lauf ausgeschöpft; "
+                    "breche ab statt ein bereits erschoepftes Modell erneut zu verwenden. "
                     "Naechster sinnvoller Versuch nach dem taeglichen Reset oder mit erweitertem Tier."
                 )
-                sys.exit(2)
+                break
 
             if kategorie in ("ueberlast", "netzwerk"):
                 # Bei serverseitiger Ueberlast (503) oder Netzwerk-Abbruch
                 # wird jedes konfigurierte Modell hoechstens EINMAL versucht.
-                # Danach wird kein bereits gescheitertes Modell erneut verbrannt.
-                naechstes_modell = None
-                if (aktuelles_modell == MODELL and
-                        FALLBACK_MODELL and FALLBACK_MODELL != MODELL):
-                    naechstes_modell = FALLBACK_MODELL
-                elif (aktuelles_modell == FALLBACK_MODELL and
-                      DRITTER_FALLBACK_MODELL and
-                      DRITTER_FALLBACK_MODELL not in (MODELL, FALLBACK_MODELL)):
-                    naechstes_modell = DRITTER_FALLBACK_MODELL
-
-                if naechstes_modell:
+                # Vor dem Wechsel wartet der Lauf mit exponentiellem Backoff
+                # und Jitter. Ein vom Server geliefertes retryDelay gewinnt,
+                # wenn es laenger als die lokale Backoff-Stufe ist.
+                if modell_index + 1 < len(GEMINI_MODELLREIHENFOLGE):
                     grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
+                    backoff_index = min(modell_index, len(UEBERLAST_WARTEZEITEN) - 1)
+                    basis_wartezeit = UEBERLAST_WARTEZEITEN[backoff_index]
+                    server_wartezeit = (empfohlene_wartezeit
+                                        if empfohlene_wartezeit is not None else 0)
+                    wartezeit = max(float(basis_wartezeit), float(server_wartezeit))
+                    jitter = random.uniform(0.0, wartezeit * 0.20)
+                    wartezeit += jitter
+                    naechstes_modell = GEMINI_MODELLREIHENFOLGE[modell_index + 1]
                     print(
                         f"  {grund} nach Versuch {versuch}/{MAX_VERSUCHE}. "
-                        f"Wechsle fuer den naechsten Versuch von {aktuelles_modell} "
-                        f"auf {naechstes_modell}."
+                        f"Warte {wartezeit:.1f}s (Backoff {basis_wartezeit}s + Jitter) und "
+                        f"wechsle danach von {aktuelles_modell} auf {naechstes_modell}."
                     )
-                    aktuelles_modell = naechstes_modell
+                    time.sleep(wartezeit)
+                    modell_index += 1
+                    aktuelles_modell = GEMINI_MODELLREIHENFOLGE[modell_index]
                     continue
 
                 # Kein weiteres Modell verfuegbar: nicht dasselbe Modell
