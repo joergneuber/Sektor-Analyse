@@ -210,6 +210,38 @@ jobs:
           fi
 
       # ============================================================
+      # STRUKTUR-TRENDS (C)
+      # C ist ein eigenständiger struktureller Datenproduzent und
+      # Bestandteil des Hauptlaufs. Es bleibt bewusst getrennt von B/D.
+      # Bei einem Fehler darf der Hauptlauf mit A+B+D zu Gemini weiterlaufen.
+      # ============================================================
+
+      - name: Altes Struktur-Trend-Briefing entfernen
+        run: rm -f Struktur_Trend_Briefing\(*\).txt Struktur_Trend_Briefing*.txt
+
+      - name: Struktur-Trends aktualisieren
+        id: struktur-trends
+        continue-on-error: true
+        run: python struktur_trends.py
+
+      # Nur ein erfolgreicher C-Lauf darf den neuen C-Cache persistent machen.
+      - name: Struktur-Trends Cache speichern
+        if: steps.struktur-trends.outcome == 'success'
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add struktur_trends_cache.json
+          git diff --cached --quiet || git commit -m "Update structural trends cache"
+          git push
+
+      # Bei einem fehlgeschlagenen C-Lauf darf kein teilweise erzeugtes
+      # Briefing als scheinbar aktueller C-Input an Gemini gelangen.
+      - name: Struktur-Trend-Briefing bei C-Fehler entfernen
+        if: steps.struktur-trends.outcome != 'success'
+        run: rm -f Struktur_Trend_Briefing\(*\).txt Struktur_Trend_Briefing*.txt
+
+      # ============================================================
       # GEMINI-AUSWERTUNG
       # ============================================================
 
