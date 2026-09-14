@@ -2053,6 +2053,43 @@ klar gekennzeichnete deterministische Berechnung zurueckfuehrbar sein.
 Wenn eine Quelle fehlt, schreibe „NICHT VERFUEGBAR“ statt einen Ersatzwert
 zu bilden.
 
+# VERBINDLICHE GESAMTARCHITEKTUR A + B + C + D
+
+Sektor-Analyse/
+├── .github/workflows/main.yml                 ← einziger Hauptworkflow
+├── struktur_trends.py                         ← C: Struktur-Trends
+├── struktur_trends_cache.json                 ← C-Cache
+├── eurostat_forensik.py
+├── eurostat_forensik_gezielte_reihen.py
+├── iea_forensic_discovery.py
+├── iea_mes_sdmx_discovery.py
+├── iea_sdmx_dataflow.json
+├── iea_sdmx_dataflow_discovery.py
+├── iea_stat_browser_forensics.py
+├── makro_szenario.py                          ← B + technisch auch D
+├── gemini_auswertung.py
+├── upload_to_drive.py
+└── Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md
+
+A = technische / Markt- und Setup-Analyse.
+B = Makroökonomie.
+C = strukturelle Daten (OECD STAN, OECD Productivity, Stanford AI Index,
+    Eurostat Energie und SIPRI).
+D = Geopolitik; technisch weiterhin über makro_szenario.py und
+    Makro_Briefing.txt bereitgestellt.
+
+A + B + C + D
+        ↓
+GEMINI-AUSWERTUNG
+        ↓
+GESAMTAUSWERTUNG
+
+C ist kein Nebenlauf und kein Unterordner-Modul mehr. C wird im einzigen
+Hauptworkflow main.yml erzeugt und als eigenständige Eingabe an Gemini
+übergeben. Das Struktur_Trend_Briefing ist optional: Fällt C aus, wird
+A+B+D weiterhin ausgewertet; Gemini darf fehlende C-Werte nicht erfinden.
+Der vollständige C-Cache bleibt separat als technische Datenbasis erhalten.
+
 # AUSGABESTRUKTUR-OVERRIDE – VERBINDLICH FÜR DIE AUSWERTUNG.TXT
 
 Die nachfolgende Struktur ersetzt AUSSCHLIESSLICH die bisherige Reihenfolge und

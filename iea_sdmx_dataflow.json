@@ -1,0 +1,20 @@
+{
+  "comparison": "v3.0 -> v3.1",
+  "v3_0_sha256": "fc902626714043130c49538e570eced8e1cce62d687cef78b00df022541953ae",
+  "v3_1_sha256": "6de5b8c8eaf6e55cfaa9256f8af14f022be9b978805a46154f9e95f145fafff7",
+  "v3_0_lines": 246,
+  "v3_1_lines": 374,
+  "diff_lines": 523,
+  "checks": {
+    "syntax_v3_0": "PASS",
+    "syntax_v3_1": "PASS",
+    "saved_path_consumer_bug_removed": "PASS",
+    "xml_and_json_reference_extraction": "PASS",
+    "strict_payload_validation": "PASS",
+    "observation_count_validation": "PASS",
+    "only_observed_target_flow_data_tests": "PASS",
+    "production_isolation": "PASS",
+    "cli_contract": "PASS",
+    "cli_help": "PASS"
+  }
+}
