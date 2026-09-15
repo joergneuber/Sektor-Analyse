@@ -51,8 +51,12 @@ GDELT_LAST_REQUEST_TIME = 0.0
 GDELT_GKG_LOOKBACK_SLICES = 8
 GDELT_CACHE_FILE = Path(".gdelt_geopolitics_cache.json")
 GDELT_CACHE_MAX_AGE_HOURS = 24
-BLS_SCHEDULE_BASE_URL = "https://www.bls.gov/schedule/{year}/{month:02d}_sched_list.htm"
-BLS_ANNUAL_SCHEDULE_URL = "https://www.bls.gov/schedule/{year}/home.htm"
+BLS_RELEASE_SCHEDULE_URLS = {
+    "Employment Situation": "https://www.bls.gov/schedule/news_release/empsit.htm",
+    "Consumer Price Index": "https://www.bls.gov/schedule/news_release/cpi.htm",
+    "Producer Price Index": "https://www.bls.gov/schedule/news_release/ppi.htm",
+    "Job Openings and Labor Turnover Survey": "https://www.bls.gov/schedule/news_release/jolts.htm",
+}
 ECB_MEETING_CALENDAR_URL = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
 GEOPOLITICAL_CLUSTERS = {
     "Nahost": '(Iran OR "Middle East" OR Israel OR "Strait of Hormuz" OR Hormuz)',
@@ -5001,6 +5005,39 @@ def _parse_bls_schedule_html(html, year, source_url):
     return events
 
 
+def _parse_bls_release_schedule_html(html, release_name, source_url):
+    """Parst einen offiziellen BLS-Releasekalender fuer eine einzelne Releasefamilie."""
+    events = []
+    try:
+        frames = pd.read_html(StringIO(html))
+    except Exception:
+        frames = []
+    for frame in frames:
+        if frame is None or frame.empty:
+            continue
+        for _, row in frame.iterrows():
+            values = [str(v).strip() for v in row.tolist()]
+            blob = " | ".join(values)
+            date_match = re.search(
+                r"([A-Za-z]{3,9}\.?\s+\d{1,2},\s+\d{4})",
+                blob,
+            )
+            if not date_match:
+                continue
+            raw_date = date_match.group(1).replace(".", "")
+            date = None
+            for fmt in ("%b %d, %Y", "%B %d, %Y"):
+                try:
+                    date = dt.datetime.strptime(raw_date, fmt).date()
+                    break
+                except ValueError:
+                    pass
+            if date is None:
+                continue
+            events.append((date, release_name, source_url))
+    return events
+
+
 def _upcoming_macro_events(today):
     events = []
     horizon = today + dt.timedelta(days=14)
@@ -5008,37 +5045,22 @@ def _upcoming_macro_events(today):
     if meeting and meeting <= horizon:
         events.append((meeting, "FOMC-Zinsentscheid", "Federal Reserve / fomc_termine.json"))
 
-    # BLS transport fallback chain: monthly HTML -> annual official schedule.
-    # Jeder betroffene Monat wird unabhaengig behandelt, damit ein erfolgreicher
-    # Abruf fuer den aktuellen Monat einen Ausfall des Folgemonats nicht verdeckt.
-    months = {(today.year, today.month), (horizon.year, horizon.month)}
-    bls_failed_months = []
-    for year, month in sorted(months):
-        url = BLS_SCHEDULE_BASE_URL.format(year=year, month=month)
+    # BLS official release calendars. The generic /schedule/{year}/{month}
+    # endpoints returned HTTP 403 in the runner. Each release family has its
+    # own first-party BLS calendar and is therefore fetched independently.
+    for release_name, url in BLS_RELEASE_SCHEDULE_URLS.items():
         try:
-            r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
+            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
             r.raise_for_status()
-            parsed = _parse_bls_schedule_html(r.text, year, url)
+            parsed = _parse_bls_release_schedule_html(r.text, release_name, url)
+            added = 0
             for date, title, source in parsed:
                 if today <= date <= horizon:
-                    events.append((date, title, "BLS official schedule"))
+                    events.append((date, title, "BLS official release schedule"))
+                    added += 1
+            print(f"INFO: BLS-Releasekalender erfolgreich: {release_name} | Termine={added} | URL={url}")
         except Exception as exc:
-            bls_failed_months.append((year, month))
-            print(f"WARNUNG: BLS-Monatskalender nicht verfuegbar ({url}): {type(exc).__name__}: {exc}")
-
-    if bls_failed_months:
-        for year in sorted({year for year, _month in bls_failed_months}):
-            url = BLS_ANNUAL_SCHEDULE_URL.format(year=year)
-            try:
-                r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
-                r.raise_for_status()
-                parsed = _parse_bls_schedule_html(r.text, year, url)
-                for date, title, source in parsed:
-                    if today <= date <= horizon and (year, date.month) in bls_failed_months:
-                        events.append((date, title, "BLS official annual schedule"))
-                print(f"INFO: BLS-Jahreskalender erfolgreich als offizieller Fallback verwendet: {url}")
-            except Exception as exc:
-                print(f"WARNUNG: BLS-Jahreskalender nicht verfuegbar ({url}): {type(exc).__name__}: {exc}")
+            print(f"WARNUNG: BLS-Releasekalender nicht verfuegbar ({release_name} | {url}): {type(exc).__name__}: {exc}")
 
     try:
         r = requests.get(ECB_MEETING_CALENDAR_URL, timeout=12, headers=REQUEST_HEADERS)
@@ -5364,20 +5386,23 @@ def geopolitics_snapshot(today):
             if title:
                 out.append(f"  - {title[:180]}" + (f" | {url}" if url else ""))
 
-    try:
-        broad_query = '("stock market" OR "Federal Reserve" OR ECB OR inflation OR oil OR tariffs OR Iran OR China OR Ukraine OR bonds)'
-        r = _gdelt_get({"query": broad_query, "mode": "artlist", "maxrecords": 10, "timespan": "24h", "format": "json", "sort": "HybridRel"})
-        arts = _gdelt_extract_articles(r)
-        if arts:
-            a = arts[0]
-            title = str(a.get("title") or a.get("name") or "").strip()
-            url = str(a.get("url") or a.get("link") or "").strip()
-            out.append("BOERSENHAMMER / BIG NEWS 24H:")
-            out.append(f"  {title[:240]} | RANKING=GDELT_HYBRIDREL | STATUS=REAL_PUBLIC_SECONDARY" + (f" | SOURCE={url}" if url else ""))
-        else:
-            out.append("BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
-    except Exception as exc:
-        out.append(f"BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | FEHLER={str(exc)[:180]}")
+    if rate_limited:
+        out.append("BOERSENHAMMER / BIG NEWS 24H: UEBER GDELT-DOC DEAKTIVIERT | STATUS=FALLBACK_GKG_BULK | HINWEIS=Nach HTTP 429 keine weitere DOC-Anfrage im selben Lauf.")
+    else:
+        try:
+            broad_query = '("stock market" OR "Federal Reserve" OR ECB OR inflation OR oil OR tariffs OR Iran OR China OR Ukraine OR bonds)'
+            r = _gdelt_get({"query": broad_query, "mode": "artlist", "maxrecords": 10, "timespan": "24h", "format": "json", "sort": "HybridRel"})
+            arts = _gdelt_extract_articles(r)
+            if arts:
+                a = arts[0]
+                title = str(a.get("title") or a.get("name") or "").strip()
+                url = str(a.get("url") or a.get("link") or "").strip()
+                out.append("BOERSENHAMMER / BIG NEWS 24H:")
+                out.append(f"  {title[:240]} | RANKING=GDELT_HYBRIDREL | STATUS=REAL_PUBLIC_SECONDARY" + (f" | SOURCE={url}" if url else ""))
+            else:
+                out.append("BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+        except Exception as exc:
+            out.append(f"BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | FEHLER={str(exc)[:180]}")
 
     if result:
         # Nur belastbare Ergebnisse speichern. Der Cache ist clusterweise
