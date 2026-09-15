@@ -318,7 +318,7 @@ def main():
     SPALTEN = [
         "Ticker", "Name", "Markt", "Sektor", "Kurs",
         "KGV_aktuell", "KGV_Naeherung_5J", "KGV_Aktuell_vs_Naeherung_Perc",
-        "KGV_forward", "KUV", "KBV", "Dividendenrendite_Perc",
+        "Trailing_EPS", "KGV_forward", "KUV", "KBV", "Dividendenrendite_Perc",
         "Verschuldung_DE", "Umsatzwachstum_Perc", "Gewinnwachstum_Perc",
         "EMA50", "SMA200", "SMA200_vor_20_Tagen", "SMA200_vor_40_Tagen",
         "52W_Hoch", "52W_Tief", "Kurs_vs_SMA200_Perc", "Kurs_vs_EMA50_Perc",
