@@ -52,13 +52,22 @@ GDELT_GKG_LOOKBACK_SLICES = 8
 GDELT_CACHE_FILE = Path(".gdelt_geopolitics_cache.json")
 GDELT_CACHE_MAX_AGE_HOURS = 24
 ECB_MEETING_CALENDAR_URL = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
+# GDELT wird bewusst auf BÖRSEN-/MARKTRELEVANZ zugespitzt.
+# Die geopolitischen Themen bleiben erhalten, werden aber nur dann als
+# besonders interessant behandelt, wenn sie einen plausiblen Marktbezug
+# (Aktien, Bonds, Öl, Rohstoffe, Volatilität, Handel, Unternehmen etc.) haben.
+GDELT_MARKET_TERMS = '("stock market" OR stocks OR equities OR shares OR "S&P 500" OR Nasdaq OR DAX OR Dow OR "Wall Street" OR futures OR investors OR bonds OR yields OR volatility OR "risk-off" OR "risk on" OR oil OR crude OR commodities OR earnings OR semiconductor OR banks OR "market impact")'
 GEOPOLITICAL_CLUSTERS = {
-    "Nahost": '(Iran OR "Middle East" OR Israel OR "Strait of Hormuz" OR Hormuz)',
-    "China/Taiwan": '(China OR Taiwan OR "Taiwan Strait" OR "South China Sea")',
-    "Russland/Ukraine": '(Russia OR Ukraine OR NATO OR sanctions)',
-    "Handel/Sanktionen": '(tariff OR tariffs OR sanctions OR "export controls" OR "trade war")',
-    "Lieferketten/Schifffahrt": '(shipping OR "supply chain" OR "Red Sea" OR Suez OR "shipping disruption")',
+    "Nahost": f'((Iran OR "Middle East" OR Israel OR "Strait of Hormuz" OR Hormuz) AND {GDELT_MARKET_TERMS})',
+    "China/Taiwan": f'((China OR Taiwan OR "Taiwan Strait" OR "South China Sea") AND {GDELT_MARKET_TERMS})',
+    "Russland/Ukraine": f'((Russia OR Ukraine OR NATO OR sanctions) AND {GDELT_MARKET_TERMS})',
+    "Handel/Sanktionen": f'((tariff OR tariffs OR sanctions OR "export controls" OR "trade war") AND {GDELT_MARKET_TERMS})',
+    "Lieferketten/Schifffahrt": f'((shipping OR "supply chain" OR "Red Sea" OR Suez OR "shipping disruption") AND {GDELT_MARKET_TERMS})',
 }
+GDELT_GKG_MARKET_PATTERN = re.compile(
+    r"\b(stock market|stocks?|equities|shares?|S&P 500|Nasdaq|DAX|Dow|Wall Street|futures|investors?|bonds?|yields?|volatility|risk-off|risk on|oil|crude|commodit(?:y|ies)|earnings|semiconductor|banks?|market impact)\b",
+    re.I,
+)
 GDELT_GKG_PATTERNS = {
     "Nahost": re.compile(r"\b(Iran|Israel|Middle East|Gaza|Lebanon|Syria|Yemen|Hormuz)\b", re.I),
     "China/Taiwan": re.compile(r"\b(China|Taiwan|Taiwan Strait|South China Sea|PLA)\b", re.I),
@@ -5242,7 +5251,10 @@ def _gdelt_gkg_fallback(cluster_queries):
                         text = "\t".join(row[:20])
                         for cluster in cluster_queries:
                             pattern = GDELT_GKG_PATTERNS.get(cluster)
-                            if pattern and pattern.search(text):
+                            # Nur thematische Treffer mit erkennbarem Börsen-/Marktbezug
+                            # zählen. Das macht die GKG-Stichprobe zur Discovery-Schicht
+                            # für die anschließenden konkreten DOC-News-Abfragen.
+                            if pattern and pattern.search(text) and GDELT_GKG_MARKET_PATTERN.search(text):
                                 counts[cluster] += 1
             successes += 1
         except Exception as exc:
@@ -5253,80 +5265,146 @@ def _gdelt_gkg_fallback(cluster_queries):
 
 
 def geopolitics_snapshot(today):
-    """Liefert geopolitische GDELT-Daten mit DOC-Retry, offiziellem GKG-Fallback und 24h-Cache.
+    """Zweistufige GDELT-Engine mit klarem Börsen-/Marktfokus.
 
-    Ziel ist Datenrobustheit ohne ein geopolitisches Richtungsurteil in Python zu erzeugen.
-    DOC liefert Artikel/Ranking; GKG/Bulk liefert bei DOC-Ausfall nur belastbare Themenhaeufigkeiten.
+    STUFE 1 (GKG/Bulk): robuste, günstige Discovery aus einer verteilten
+    24h-Stichprobe. Gezählt werden nur Themen-Treffer mit erkennbarem
+    Börsen-/Marktbezug.
+
+    STUFE 2 (DOC): nur die 2-3 aktuell stärksten Markt-Themen werden mit
+    konkreten Artikeln angereichert. Damit sinkt die DOC-Requestzahl deutlich,
+    während die für Gemini wertvollsten Titel/URLs erhalten bleiben.
+
+    HTTP 429 bleibt ein harter globaler DOC-Circuit-Breaker: keine weiteren
+    DOC-Anfragen und kein Broad-Query-Retry im selben Lauf.
     """
     out = ["GEOPOLITIK"]
     result = {}
     failures = {}
 
+    # --- STUFE 1: GKG/Bulk als Markt-News-Discovery -----------------------
+    try:
+        discovery_counts, latest_gkg, gkg_slices = _gdelt_gkg_fallback(GEOPOLITICAL_CLUSTERS)
+        out.append(
+            f"GDELT GKG/Bulk DISCOVERY: {gkg_slices}/9 Slices | "
+            "nur Treffer mit Börsen-/Marktbezug | "
+            f"LATEST={latest_gkg}"
+        )
+    except Exception as exc:
+        discovery_counts = {}
+        latest_gkg = None
+        gkg_slices = 0
+        out.append(
+            f"GDELT GKG/Bulk DISCOVERY: NICHT VERFUEGBAR | "
+            f"FEHLER={type(exc).__name__}: {str(exc)[:160]}"
+        )
+
+    # Nur die stärksten Markt-Themen gehen in DOC. Bei Gleichstand bleibt die
+    # definierte Cluster-Reihenfolge stabil. Ein Minimum von 2 sorgt dafür,
+    # dass ein einzelner GKG-Ausreißer nicht die gesamte News-Sicht dominiert.
+    ranked = sorted(
+        GEOPOLITICAL_CLUSTERS,
+        key=lambda cluster: (-int(discovery_counts.get(cluster, 0) or 0), list(GEOPOLITICAL_CLUSTERS).index(cluster)),
+    )
+    doc_clusters = ranked[:3]
+    if discovery_counts:
+        out.append(
+            "GDELT DOC DISCOVERY-RANKING: "
+            + ", ".join(f"{c}={int(discovery_counts.get(c, 0) or 0)}" for c in ranked)
+            + " | DOC-TOP=3"
+        )
+
     def fetch_cluster(item):
         cluster, query = item
         try:
-            r = _gdelt_get({"query": query, "mode": "artlist", "maxrecords": 20, "timespan": "24h", "format": "json", "sort": "HybridRel"})
+            r = _gdelt_get({
+                "query": query,
+                "mode": "artlist",
+                "maxrecords": 20,
+                "timespan": "24h",
+                "format": "json",
+                "sort": "HybridRel",
+            })
             arts = _gdelt_extract_articles(r)
-            return cluster, {"count": len(arts), "articles": [
-                {"title": str(a.get("title") or a.get("name") or "").strip(), "url": str(a.get("url") or a.get("link") or "").strip()}
-                for a in arts[:5]
-            ]}, None
+            return cluster, {
+                "count": len(arts),
+                "articles": [
+                    {
+                        "title": str(a.get("title") or a.get("name") or "").strip(),
+                        "url": str(a.get("url") or a.get("link") or "").strip(),
+                    }
+                    for a in arts[:5]
+                ],
+            }, None
         except Exception as exc:
             return cluster, None, f"{type(exc).__name__}: {str(exc)[:160]}"
 
-    # DOC ist rate-limit-empfindlich. Sobald ein 429 auftritt, greift ein
-    # Circuit-Breaker: keine weiteren DOC-Abfragen im selben Lauf, sondern
-    # sofort offizieller GKG/Bulk-/Cache-Fallback. Das verhindert eine Kaskade
-    # aus identischen 429-Retries fuer alle Cluster.
     rate_limited = False
-    for item in GEOPOLITICAL_CLUSTERS.items():
-        cluster, value, error = fetch_cluster(item)
-        if value is not None:
-            result[cluster] = value
-        else:
-            failures[cluster] = error
-            if "429" in str(error):
-                rate_limited = True
-                remaining = [c for c in GEOPOLITICAL_CLUSTERS if c != cluster and c not in result]
-                for remaining_cluster in remaining:
-                    failures.setdefault(remaining_cluster, "HTTPError: 429 (GDELT circuit breaker)")
-                break
+    if not discovery_counts:
+        out.append("GDELT DOC: keine belastbare GKG-Discovery -> DOC wird in diesem Lauf bewusst nicht gestartet.")
+    else:
+        for cluster in doc_clusters:
+            cluster_name, value, error = fetch_cluster((cluster, GEOPOLITICAL_CLUSTERS[cluster]))
+            if value is not None:
+                result[cluster_name] = value
+            else:
+                failures[cluster_name] = error
+                if "429" in str(error):
+                    rate_limited = True
+                    remaining = [c for c in doc_clusters if c != cluster and c not in result]
+                    for remaining_cluster in remaining:
+                        failures.setdefault(remaining_cluster, "HTTPError: 429 (GDELT circuit breaker)")
+                    break
+
     if rate_limited:
-        out.append("GDELT-DOC: HTTP 429 erkannt - DOC-Circuit-Breaker aktiviert; restliche Cluster werden ohne weitere DOC-Retries ueber GKG/Bulk bzw. Cache abgesichert.")
+        out.append(
+            "GDELT-DOC: HTTP 429 erkannt - DOC-Circuit-Breaker aktiviert; "
+            "keine weiteren DOC-Anfragen im selben Lauf."
+        )
 
-    # Fehlerbehandlung erfolgt pro Cluster: frische DOC-Ergebnisse bleiben
-    # erhalten. Nur der jeweils ausgefallene Cluster darf durch GKG bzw. Cache
-    # ersetzt werden. So kann ein Teil-Erfolg niemals durch einen alten
-    # Komplett-Cache ueberschrieben werden.
+    # Nicht für DOC ausgewählte Themen bleiben als GKG-Discovery-Kontext
+    # sichtbar. Sie werden ausdrücklich nicht als konkrete Artikel ausgegeben.
+    for cluster in GEOPOLITICAL_CLUSTERS:
+        if cluster not in result and cluster not in failures:
+            result[cluster] = {
+                "count": int(discovery_counts.get(cluster, 0) or 0),
+                "articles": [],
+                "fallback": True,
+                "fallback_type": "GKG_DISCOVERY",
+                "gkg_latest": latest_gkg,
+                "gkg_slices": gkg_slices,
+            }
+
+    # Bei DOC-Fehlern bleibt die Absicherung clusterbezogen: nur der jeweils
+    # ausgefallene Cluster wird ersatzweise aus Cache/GKG-Kontext bedient;
+    # frische DOC-Ergebnisse anderer Cluster werden nicht überschrieben.
+    # Die bereits vorhandene GKG-Discovery ist dabei die primäre Absicherung. Nur wenn die Discovery selbst ausfällt, kommt der
+    # clusterweise 24h-Cache ins Spiel.
     cached_clusters = set()
-    if failures:
-        try:
-            fallback_counts, latest_gkg, successes = _gdelt_gkg_fallback({cluster: GEOPOLITICAL_CLUSTERS[cluster] for cluster in failures})
-            for cluster in failures:
-                result[cluster] = {
-                    "count": fallback_counts.get(cluster, 0),
-                    "articles": [],
-                    "fallback": True,
-                    "fallback_type": "GKG_SAMPLE",
-                    "gkg_latest": latest_gkg,
-                    "gkg_slices": successes,
-                }
-            out.append(f"GDELT-DOC: {len(GEOPOLITICAL_CLUSTERS)-len(failures)}/{len(GEOPOLITICAL_CLUSTERS)} Cluster direkt verfuegbar; {len(failures)} ausgefallene Cluster ueber offiziellen GKG/Bulk-24H-Stichprobenfallback (9 Slices) abgesichert.")
-        except Exception as exc:
-            cached = _gdelt_cache_load(today)
-            cache_clusters = (cached or {}).get("clusters") or {}
-            for cluster in failures:
-                cached_item = cache_clusters.get(cluster)
-                if cached_item:
-                    result[cluster] = dict(cached_item)
-                    result[cluster]["cached_fallback"] = True
-                    cached_clusters.add(cluster)
-            unresolved = [cluster for cluster in failures if cluster not in cached_clusters]
-            if cached_clusters:
-                out.append(f"GDELT-DOC/GKG: {len(cached_clusters)}/{len(failures)} ausgefallene Cluster aus gueltigem Cluster-Cache (<24h) abgesichert; frische DOC-Ergebnisse blieben erhalten.")
-            if unresolved:
-                out.append(f"GDELT-DOC/GKG: {len(unresolved)} Cluster weiterhin UNAVAILABLE nach DOC/GKG/Cache-Kette: {', '.join(unresolved)} | GKG_FEHLER={type(exc).__name__}: {str(exc)[:160]}")
+    if failures and not discovery_counts:
+        cached = _gdelt_cache_load(today)
+        cache_clusters = (cached or {}).get("clusters") or {}
+        for cluster in failures:
+            cached_item = cache_clusters.get(cluster)
+            if cached_item:
+                result[cluster] = dict(cached_item)
+                result[cluster]["cached_fallback"] = True
+                cached_clusters.add(cluster)
+        unresolved = [cluster for cluster in failures if cluster not in cached_clusters]
+        if cached_clusters:
+            out.append(
+                f"GDELT-DOC/GKG: {len(cached_clusters)}/{len(failures)} ausgefallene Cluster "
+                "aus gueltigem Cluster-Cache (<24h) abgesichert."
+            )
+        if unresolved:
+            out.append(
+                f"GDELT-DOC/GKG: {len(unresolved)} Cluster weiterhin UNAVAILABLE "
+                "nach DOC/GKG/Cache-Kette."
+            )
 
+    # Ausgabe: konkrete DOC-News sind echte Artikel. GKG/Bulk ist nur Discovery
+    # und darf nicht als Artikelanzahl missverstanden werden.
+    all_doc_articles = []
     for cluster in GEOPOLITICAL_CLUSTERS:
         item = result.get(cluster)
         if not item:
@@ -5336,7 +5414,7 @@ def geopolitics_snapshot(today):
             status = "REAL_CACHED"
             source = "GDELT Cluster-Cache (<24h)"
             metric = "ARTIKEL_24H" if not item.get("fallback") else "THEMEN_TREFFER_24H_SAMPLE"
-        elif item.get("fallback"):
+        elif item.get("fallback_type") in {"GKG_DISCOVERY", "GKG_SAMPLE"} or item.get("fallback"):
             status = "REAL_PUBLIC_SECONDARY"
             source = f"GDELT GKG/Bulk | SLICES={item.get('gkg_slices')} | ABDECKUNG=24H_SAMPLE | LATEST={item.get('gkg_latest')}"
             metric = "THEMEN_TREFFER_24H_SAMPLE"
@@ -5354,34 +5432,43 @@ def geopolitics_snapshot(today):
         for a in item.get("articles", [])[:5]:
             title, url = a.get("title", ""), a.get("url", "")
             if title:
+                all_doc_articles.append((cluster, title, url))
                 out.append(f"  - {title[:180]}" + (f" | {url}" if url else ""))
 
-    if rate_limited:
-        out.append("BOERSENHAMMER / BIG NEWS 24H: UEBER GDELT-DOC DEAKTIVIERT | STATUS=FALLBACK_GKG_BULK | HINWEIS=Nach HTTP 429 keine weitere DOC-Anfrage im selben Lauf.")
+    # Kein redundanter Broad-DOC-Call mehr. Der Boersenhammer wird aus den
+    # konkreten, bereits gezielt gefundenen DOC-Artikeln bestimmt.
+    if all_doc_articles:
+        cluster, title, url = all_doc_articles[0]
+        out.append("BOERSENHAMMER / BIG NEWS 24H:")
+        out.append(
+            f"  {title[:240]} | CLUSTER={cluster} | RANKING=GDELT_HYBRIDREL | "
+            "STATUS=REAL_PUBLIC_SECONDARY" + (f" | SOURCE={url}" if url else "")
+        )
+    elif rate_limited:
+        out.append(
+            "BOERSENHAMMER / BIG NEWS 24H: UEBER GDELT-DOC DEAKTIVIERT | "
+            "STATUS=FALLBACK_GKG_BULK | HINWEIS=Nach HTTP 429 keine weitere DOC-Anfrage im selben Lauf."
+        )
     else:
-        try:
-            broad_query = '("stock market" OR "Federal Reserve" OR ECB OR inflation OR oil OR tariffs OR Iran OR China OR Ukraine OR bonds)'
-            r = _gdelt_get({"query": broad_query, "mode": "artlist", "maxrecords": 10, "timespan": "24h", "format": "json", "sort": "HybridRel"})
-            arts = _gdelt_extract_articles(r)
-            if arts:
-                a = arts[0]
-                title = str(a.get("title") or a.get("name") or "").strip()
-                url = str(a.get("url") or a.get("link") or "").strip()
-                out.append("BOERSENHAMMER / BIG NEWS 24H:")
-                out.append(f"  {title[:240]} | RANKING=GDELT_HYBRIDREL | STATUS=REAL_PUBLIC_SECONDARY" + (f" | SOURCE={url}" if url else ""))
-            else:
-                out.append("BOERSENHAMMER / BIG NEWS 24H: KEINE RELEVANTEN ARTIKEL GEFUNDEN | STATUS=NO_RELEVANT_ARTICLES_FOUND | SOURCE=GDELT DOC 2.0")
-        except Exception as exc:
-            out.append(f"BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | FEHLER={str(exc)[:180]}")
+        out.append(
+            "BOERSENHAMMER / BIG NEWS 24H: KEINE KONKRETEN DOC-NEWS GEFUNDEN | "
+            "STATUS=NO_RELEVANT_ARTICLES_FOUND | SOURCE=GDELT DOC 2.0"
+        )
 
     if result:
-        # Nur belastbare Ergebnisse speichern. Der Cache ist clusterweise
-        # nutzbar und wird bei Teil-Ausfaellen mit frischen Ergebnissen gemischt.
         _gdelt_cache_save({
             "saved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "clusters": result,
         })
-    out.append("GEOPOLITIK-DATENREGEL: GDELT liefert im DOC-Modus Artikelanzahl/Relevanzsortierung; der GKG/Bulk-Fallback liefert Themen-Treffer aus 9 ueber 24h verteilten GKG-Slices (24H_SAMPLE), ist keine vollstaendige 24h-Abdeckung und keine vollstaendige Artikelanzahl. Python leitet daraus kein makrooekonomisches Richtungsurteil ab. News-Daten duerfen das Makro-Gate nicht sperren.")
+    out.append(
+        "GEOPOLITIK-DATENREGEL: GDELT wird zweistufig verarbeitet: GKG/Bulk ist "
+        "die Börsen-/Markt-Discovery aus 9 ueber 24h verteilten Slices; DOC liefert "
+        "nur fuer die Top-3 Markt-Themen konkrete Artikel. GKG/Bulk ist keine "
+        "vollstaendige 24h-Abdeckung und keine vollstaendige Artikelanzahl. "
+        "Python leitet daraus kein makrooekonomisches Richtungsurteil ab. "
+        "Konkrete DOC-News duerfen Gemini qualitativ informieren; GDELT bleibt TIER-3 "
+        "und kann das Makro-Gate nicht sperren."
+    )
     return out
 
 def data_quality_gate(lines):
