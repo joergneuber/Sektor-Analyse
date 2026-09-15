@@ -244,8 +244,10 @@ def test_gdelt_retry_and_trade_story_validation_are_present():
     _assert("def _gdelt_get(" in macro, "GDELT retry helper missing")
     _assert("if r.status_code == 429:" in macro, "GDELT HTTP 429 immediate breaker handling missing")
     _assert("if r.status_code in {500, 502, 503, 504}:" in macro, "GDELT 5xx retry handling missing")
-    _assert("_gdelt_get({\"query\": query" in macro, "GDELT cluster calls do not use retry helper")
-    _assert("_gdelt_get({\"query\": broad_query" in macro, "GDELT big-news call does not use retry helper")
+    _assert('"query": query' in macro and "_gdelt_get({" in macro, "GDELT cluster calls do not use retry helper")
+    _assert("GDELT DOC DISCOVERY-RANKING" in macro, "GDELT market discovery ranking missing")
+    _assert("DOC-TOP=3" in macro, "GDELT DOC request cap missing")
+    _assert("Kein redundanter Broad-DOC-Call mehr" in macro, "Redundant GDELT broad DOC call was not removed")
     _assert("_trade_story_validierung(text, eingabedateien, beobachtung_pfad)" in gem, "Trade-Story validator not integrated into Gemini flow")
 
 
@@ -290,24 +292,6 @@ def test_trade_story_validator_does_not_allow_unanchored_prepared_story():
     _assert("darf keine Kauf-/Entry-Formulierung enthalten" in source, "Purchase boundary missing for non-valid story states")
 
 
-def test_gemini_uses_concrete_gdelt_articles_when_present_and_never_invents_them():
-    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
-    required = (
-        "VERBINDLICHE GDELT-NEWS-REGEL",
-        "GDELT-DOC-Artikel mit Titel und URL",
-        "einzige",
-        "zulaessige Quelle fuer konkrete GDELT-Newsinhalte",
-        "Lies diese Artikelzeilen aktiv als Nachrichtenkontext",
-        "THEMEN_TREFFER_24H_SAMPLE",
-        "erfinde daraus keine konkreten",
-        "HTTP 429 deaktiviert",
-        "GDELT bleibt TIER-3-CONTEXT",
-        "MAKRO-SZENARIO-GATE niemals veraendern oder sperren",
-    )
-    for term in required:
-        _assert(term in source, f"GDELT-to-Gemini contract missing: {term}")
-
-
 def test_gdelt_quality_gap_is_visible_but_does_not_block_gate():
     lines = [
         "Fed Funds Effective Rate: 3.63 | STATUS=REAL",
@@ -338,7 +322,8 @@ def test_gdelt_cache_is_explicitly_limited_to_24h():
     _assert("SEKUNDAERE_DATENHINWEISE=" in macro, "GDELT secondary log label was not renamed")
     _assert("GDELT_DOC_MAX_WORKERS = 1" in macro, "GDELT worker cap configuration missing")
     _assert("HTTP 429 erkannt - DOC-Circuit-Breaker aktiviert" in macro, "GDELT 429 circuit breaker missing")
-    _assert("for item in GEOPOLITICAL_CLUSTERS.items()" in macro, "GDELT cluster requests are not serialized")
+    _assert("for cluster in doc_clusters:" in macro, "GDELT selected cluster requests are not serialized")
+    _assert("GDELT_MARKET_TERMS" in macro, "GDELT market-focus query terms missing")
 
 
 def test_gdelt_fallback_is_labeled_as_sample_not_article_count():
@@ -348,8 +333,9 @@ def test_gdelt_fallback_is_labeled_as_sample_not_article_count():
     _assert("ABDECKUNG=24H_SAMPLE" in source, "GKG fallback coverage must be explicit as a 24h sample")
     _assert("0h, 3h, ..., 24h" in source, "GKG fallback slice spacing must be explicit")
     _assert("keine vollstaendige 24h-Abdeckung" in source, "GKG fallback must not claim full 24h coverage")
-    _assert("frische DOC-Ergebnisse blieben erhalten" in source, "Per-cluster fallback merge must preserve fresh results")
-    _assert("Nur der jeweils ausgefallene Cluster" in source or "nur der jeweils ausgefallene Cluster" in source, "Fallback must operate per cluster")
+    _assert("Konkrete DOC-News" in source, "Concrete DOC news provenance missing")
+    _assert("GKG_DISCOVERY" in source, "GKG discovery provenance missing")
+    _assert("Absicherung clusterbezogen" in source, "Fallback must operate per cluster")
 
 
 def test_gdelt_cache_is_clusterwise_and_provenance_aware():
@@ -510,11 +496,21 @@ def test_bls_production_path_uses_api_not_html_calendar():
     _assert("BLS_RELEASE_SCHEDULE_URLS" not in source, "HTML BLS release-calendar dependency remains in production")
 
 
+def test_gdelt_is_market_focused_and_uses_gkg_as_doc_discovery():
+    source = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    _assert("GDELT_MARKET_TERMS" in source, "GDELT market terms missing")
+    _assert("nur Treffer mit Börsen-/Marktbezug" in source, "GKG discovery is not explicitly market-focused")
+    _assert("discovery_counts" in source, "GKG discovery counts missing")
+    _assert("doc_clusters = ranked[:3]" in source, "DOC must be limited to top 3 market themes")
+    _assert("all_doc_articles" in source, "Concrete DOC articles are not collected for market news")
+    _assert("Kein redundanter Broad-DOC-Call mehr" in source, "Broad DOC query must stay removed")
+
+
 def test_gdelt_zero_articles_is_not_reported_as_real_data():
     source = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
     _assert("NO_RELEVANT_ARTICLES_FOUND" in source, "GDELT zero-article status missing")
     _assert("if count > 0:" in source, "GDELT zero-article semantic branch missing")
-    _assert("KEINE RELEVANTEN ARTIKEL GEFUNDEN" in source, "GDELT broad-query zero-article status missing")
+    _assert("KEINE KONKRETEN DOC-NEWS GEFUNDEN" in source, "GDELT zero-concrete-news status missing")
 
 
 def test_gdelt_global_breaker_still_blocks_broad_query():
@@ -574,3 +570,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def test_gemini_uses_concrete_gdelt_articles_when_present_and_never_invents_them():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    required = (
+        "VERBINDLICHE GDELT-NEWS-REGEL",
+        "GDELT-DOC-Artikel mit Titel und URL",
+        "einzige",
+        "zulaessige Quelle fuer konkrete GDELT-Newsinhalte",
+        "Lies diese Artikelzeilen aktiv als Nachrichtenkontext",
+        "THEMEN_TREFFER_24H_SAMPLE",
+        "erfinde daraus keine konkreten",
+        "HTTP 429 deaktiviert",
+        "GDELT bleibt TIER-3-CONTEXT",
+        "MAKRO-SZENARIO-GATE niemals veraendern oder sperren",
+    )
+    for term in required:
+        _assert(term in source, f"GDELT-to-Gemini contract missing: {term}")
