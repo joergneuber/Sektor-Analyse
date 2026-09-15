@@ -65,6 +65,9 @@ jobs:
       - name: Makro-Architektur Regressionstest
         run: python tests/test_macro_architecture.py
 
+      - name: ForexFactory Produktions-Normalizer Regressionstest
+        run: python tests/test_forexfactory_production.py
+
       - name: Offene Positionen aktualisieren
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
