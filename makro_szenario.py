@@ -51,12 +51,6 @@ GDELT_LAST_REQUEST_TIME = 0.0
 GDELT_GKG_LOOKBACK_SLICES = 8
 GDELT_CACHE_FILE = Path(".gdelt_geopolitics_cache.json")
 GDELT_CACHE_MAX_AGE_HOURS = 24
-BLS_RELEASE_SCHEDULE_URLS = {
-    "Employment Situation": "https://www.bls.gov/schedule/news_release/empsit.htm",
-    "Consumer Price Index": "https://www.bls.gov/schedule/news_release/cpi.htm",
-    "Producer Price Index": "https://www.bls.gov/schedule/news_release/ppi.htm",
-    "Job Openings and Labor Turnover Survey": "https://www.bls.gov/schedule/news_release/jolts.htm",
-}
 ECB_MEETING_CALENDAR_URL = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
 GEOPOLITICAL_CLUSTERS = {
     "Nahost": '(Iran OR "Middle East" OR Israel OR "Strait of Hormuz" OR Hormuz)',
@@ -150,7 +144,9 @@ TREASURY_YIELD_URL = "https://home.treasury.gov/resource-center/data-chart-cente
 TREASURY_REAL_YIELD_URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_real_yield_curve&field_tdr_date_value={year}&page&_format=csv"
 BEA_NIPA_Q_URL = "https://apps.bea.gov/national/Release/TXT/NipaDataQ.txt"
 DBNOMICS_BASE = "https://api.db.nomics.world/v22/series"
-BLS_API_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_API_V2_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+BLS_API_V1_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
+BLS_API_KEY_ENV = "BLS_API_KEY"
 
 MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
@@ -846,36 +842,92 @@ BLS_SERIES = {
 }
 
 
+def _parse_bls_api_response(payload, series_id, start_year, end_year):
+    """Parst eine BLS-Public-Data-API-Antwort ohne Netzwerkannahmen."""
+    if not isinstance(payload, dict):
+        return pd.DataFrame()
+    if payload.get("status") != "REQUEST_SUCCEEDED":
+        return pd.DataFrame()
+    series = payload.get("Results", {}).get("series", [])
+    if not series:
+        return pd.DataFrame()
+    target = next((item for item in series if item.get("seriesID") == series_id), series[0])
+    rows = []
+    for item in target.get("data", []):
+        period = str(item.get("period", ""))
+        year_raw = str(item.get("year", ""))
+        if not re.fullmatch(r"M(0[1-9]|1[0-2])", period):
+            continue
+        try:
+            year = int(year_raw)
+            date = pd.Timestamp(year=year, month=int(period[1:]), day=1)
+            value = _clean_num(item.get("value"))
+        except Exception:
+            continue
+        if value is not None and start_year <= year <= end_year:
+            rows.append((date, value))
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows, columns=["DATE", series_id]).sort_values("DATE")
+
+
 def _bls_series(series_id, years_back=3):
     bls_id = BLS_SERIES.get(series_id)
     if not bls_id:
         return pd.DataFrame(), None
+    end_year = dt.date.today().year
+    start_year = max(2000, end_year - years_back)
+    api_key = os.environ.get(BLS_API_KEY_ENV, "").strip()
+
+    # Prefer the registered official V2 API when the repository secret exists.
+    # Without the secret, use the official unregistered V1 API. Neither path
+    # depends on the BLS HTML release-calendar pages, which are blocked by the
+    # CI runner with HTTP 403.
+    if api_key:
+        try:
+            payload = {
+                "seriesid": [bls_id],
+                "startyear": str(start_year),
+                "endyear": str(end_year),
+                "registrationkey": api_key,
+            }
+            r = requests.post(
+                BLS_API_V2_URL,
+                json=payload,
+                timeout=12,
+                headers={**REQUEST_HEADERS, "Content-type": "application/json"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            frame = _parse_bls_api_response(data, bls_id, start_year, end_year)
+            if not frame.empty:
+                frame = frame.rename(columns={bls_id: series_id})
+                return frame, BLS_API_V2_URL
+            print(f"WARNUNG: BLS V2 lieferte keine verwertbaren Daten fuer {series_id}: {data.get('message', '')}")
+        except Exception as exc:
+            print(f"WARNUNG: BLS V2 fuer {series_id} nicht verfuegbar: {type(exc).__name__}: {exc}")
+
+    # Official V1 fallback (no registration required). This is deliberately
+    # attempted only after V2 is unavailable or no key is configured.
     try:
-        end_year = dt.date.today().year
-        start_year = max(2000, end_year - years_back)
-        url = BLS_API_URL + bls_id
-        r = requests.get(url, timeout=8, headers=REQUEST_HEADERS)
+        payload = {"seriesid": [bls_id], "startyear": str(start_year), "endyear": str(end_year)}
+        r = requests.post(
+            BLS_API_V1_URL,
+            json=payload,
+            timeout=12,
+            headers={**REQUEST_HEADERS, "Content-type": "application/json"},
+        )
         r.raise_for_status()
         data = r.json()
-        rows = []
-        for item in data.get("Results", {}).get("series", [{}])[0].get("data", []):
-            period = item.get("period", "")
-            year = item.get("year", "")
-            if not re.fullmatch(r"M(0[1-9]|1[0-2])", period):
-                continue
-            try:
-                date = pd.Timestamp(year=int(year), month=int(period[1:]), day=1)
-                value = _clean_num(item.get("value"))
-            except Exception:
-                continue
-            if value is not None and start_year <= int(year) <= end_year:
-                rows.append((date, value))
-        if not rows:
-            return pd.DataFrame(), None
-        return pd.DataFrame(rows, columns=["DATE", series_id]).sort_values("DATE"), url
+        frame = _parse_bls_api_response(data, bls_id, start_year, end_year)
+        if not frame.empty:
+            frame = frame.rename(columns={bls_id: series_id})
+            return frame, BLS_API_V1_URL
+        print(f"WARNUNG: BLS V1 lieferte keine verwertbaren Daten fuer {series_id}: {data.get('message', '')}")
     except Exception as exc:
-        print(f"WARNUNG: BLS-Quelle fuer {series_id} nicht verfuegbar: {exc}")
-        return pd.DataFrame(), None
+        print(f"WARNUNG: BLS V1 fuer {series_id} nicht verfuegbar: {type(exc).__name__}: {exc}")
+
+    return pd.DataFrame(), None
 
 def _bea_release_gdp_series():
     """Fallback: offizieller BEA-GDP-Release. Nur real veroeffentlichte Advance-Estimate-Werte."""
@@ -4954,90 +5006,6 @@ def bond_market_snapshot(lines):
     return out
 
 
-def _parse_bls_ics(text):
-    events = []
-    for block in re.split(r"BEGIN:VEVENT", text or "")[1:]:
-        summary = re.search(r"(?:^|\n)SUMMARY[^:]*:(.*)", block)
-        start = re.search(r"(?:^|\n)DTSTART(?:;[^:]*)?:(\d{8})", block)
-        if not summary or not start:
-            continue
-        title = re.sub(r"\\[,;]", " ", summary.group(1)).strip()
-        try:
-            date = dt.datetime.strptime(start.group(1), "%Y%m%d").date()
-        except ValueError:
-            continue
-        if any(k in title.lower() for k in ("consumer price index", "producer price index", "employment situation", "job openings and labor turnover")):
-            events.append((date, title, "BLS"))
-    return events
-
-
-def _parse_bls_schedule_html(html, year, source_url):
-    """Parst die offizielle BLS-Monatsliste statt des fuer CI oft gesperrten ICS-Endpunkts."""
-    events = []
-    try:
-        frames = pd.read_html(StringIO(html))
-    except Exception:
-        frames = []
-    wanted = ("consumer price index", "producer price index", "employment situation", "job openings and labor turnover")
-    for frame in frames:
-        if frame is None or frame.empty:
-            continue
-        cols = [str(c).strip().lower() for c in frame.columns]
-        if len(cols) < 2 or not any("release" in c for c in cols):
-            continue
-        for _, row in frame.iterrows():
-            values = [str(v).strip() for v in row.tolist()]
-            blob = " | ".join(values)
-            if not any(term in blob.lower() for term in wanted):
-                continue
-            date_match = re.search(r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", blob)
-            if not date_match:
-                date_match = re.search(r"([A-Za-z]+\s+\d{1,2},\s+\d{4})", blob)
-            if not date_match:
-                continue
-            try:
-                date = dt.datetime.strptime(date_match.group(1), "%B %d, %Y").date()
-            except ValueError:
-                continue
-            title = next((v for v in values if any(term in v.lower() for term in wanted)), "").strip()
-            if title:
-                events.append((date, title, source_url))
-    return events
-
-
-def _parse_bls_release_schedule_html(html, release_name, source_url):
-    """Parst einen offiziellen BLS-Releasekalender fuer eine einzelne Releasefamilie."""
-    events = []
-    try:
-        frames = pd.read_html(StringIO(html))
-    except Exception:
-        frames = []
-    for frame in frames:
-        if frame is None or frame.empty:
-            continue
-        for _, row in frame.iterrows():
-            values = [str(v).strip() for v in row.tolist()]
-            blob = " | ".join(values)
-            date_match = re.search(
-                r"([A-Za-z]{3,9}\.?\s+\d{1,2},\s+\d{4})",
-                blob,
-            )
-            if not date_match:
-                continue
-            raw_date = date_match.group(1).replace(".", "")
-            date = None
-            for fmt in ("%b %d, %Y", "%B %d, %Y"):
-                try:
-                    date = dt.datetime.strptime(raw_date, fmt).date()
-                    break
-                except ValueError:
-                    pass
-            if date is None:
-                continue
-            events.append((date, release_name, source_url))
-    return events
-
-
 def _upcoming_macro_events(today):
     events = []
     horizon = today + dt.timedelta(days=14)
@@ -5045,22 +5013,10 @@ def _upcoming_macro_events(today):
     if meeting and meeting <= horizon:
         events.append((meeting, "FOMC-Zinsentscheid", "Federal Reserve / fomc_termine.json"))
 
-    # BLS official release calendars. The generic /schedule/{year}/{month}
-    # endpoints returned HTTP 403 in the runner. Each release family has its
-    # own first-party BLS calendar and is therefore fetched independently.
-    for release_name, url in BLS_RELEASE_SCHEDULE_URLS.items():
-        try:
-            r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
-            r.raise_for_status()
-            parsed = _parse_bls_release_schedule_html(r.text, release_name, url)
-            added = 0
-            for date, title, source in parsed:
-                if today <= date <= horizon:
-                    events.append((date, title, "BLS official release schedule"))
-                    added += 1
-            print(f"INFO: BLS-Releasekalender erfolgreich: {release_name} | Termine={added} | URL={url}")
-        except Exception as exc:
-            print(f"WARNUNG: BLS-Releasekalender nicht verfuegbar ({release_name} | {url}): {type(exc).__name__}: {exc}")
+    # The BLS Public Data API provides time-series observations, not a future
+    # release calendar. The former HTML calendar endpoints are blocked by the
+    # CI runner (HTTP 403), so they are deliberately not called here. BLS
+    # observations themselves are supplied through _bls_series().
 
     try:
         r = requests.get(ECB_MEETING_CALENDAR_URL, timeout=12, headers=REQUEST_HEADERS)
@@ -5109,7 +5065,15 @@ def _gdelt_get(params, max_retries=GDELT_MAX_RETRIES):
                     time.sleep(wait)
                 GDELT_LAST_REQUEST_TIME = time.monotonic()
                 r = requests.get(GDELT_DOC_URL, params=params, timeout=GDELT_TIMEOUT, headers=REQUEST_HEADERS)
-            if r.status_code in {429, 500, 502, 503, 504}:
+            # HTTP 429 ist ein explizites Rate-Limit-Signal. Nicht denselben
+            # DOC-Request erneut senden: Der aufrufende Circuit-Breaker muss
+            # sofort greifen und weitere DOC-Cluster sowie die Broad-Query
+            # fuer diesen Lauf unterbinden. Retries bleiben nur fuer temporaere
+            # Serverfehler (5xx) und Netzwerk-/Timeoutfehler aktiv.
+            if r.status_code == 429:
+                r.raise_for_status()
+
+            if r.status_code in {500, 502, 503, 504}:
                 retry_after = r.headers.get("Retry-After")
                 wait = min(45, 5 * (2 ** attempt))
                 try:
@@ -5377,9 +5341,15 @@ def geopolitics_snapshot(today):
             source = f"GDELT GKG/Bulk | SLICES={item.get('gkg_slices')} | ABDECKUNG=24H_SAMPLE | LATEST={item.get('gkg_latest')}"
             metric = "THEMEN_TREFFER_24H_SAMPLE"
         else:
-            status = "REAL_PUBLIC_SECONDARY"
-            source = "GDELT DOC 2.0"
-            metric = "ARTIKEL_24H"
+            count = int(item.get("count", 0) or 0)
+            if count > 0:
+                status = "REAL_PUBLIC_SECONDARY"
+                source = "GDELT DOC 2.0"
+                metric = "ARTIKEL_24H"
+            else:
+                status = "NO_RELEVANT_ARTICLES_FOUND"
+                source = "GDELT DOC 2.0"
+                metric = "ARTIKEL_24H"
         out.append(f"{cluster}: {metric}={item.get('count', 0)} | STATUS={status} | SOURCE={source}")
         for a in item.get("articles", [])[:5]:
             title, url = a.get("title", ""), a.get("url", "")
@@ -5400,7 +5370,7 @@ def geopolitics_snapshot(today):
                 out.append("BOERSENHAMMER / BIG NEWS 24H:")
                 out.append(f"  {title[:240]} | RANKING=GDELT_HYBRIDREL | STATUS=REAL_PUBLIC_SECONDARY" + (f" | SOURCE={url}" if url else ""))
             else:
-                out.append("BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE")
+                out.append("BOERSENHAMMER / BIG NEWS 24H: KEINE RELEVANTEN ARTIKEL GEFUNDEN | STATUS=NO_RELEVANT_ARTICLES_FOUND | SOURCE=GDELT DOC 2.0")
         except Exception as exc:
             out.append(f"BOERSENHAMMER / BIG NEWS 24H: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | FEHLER={str(exc)[:180]}")
 
