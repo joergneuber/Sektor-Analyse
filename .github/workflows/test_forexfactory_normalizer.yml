@@ -1,0 +1,16 @@
+name: ForexFactory Semantic Normalizer Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  normalizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run semantic normalizer test
+        run: python tests/test_forexfactory_normalizer.py
