@@ -160,6 +160,9 @@ BLS_API_KEY_ENV = "BLS_API_KEY"
 MACRO_CACHE_DIR = Path(os.environ.get("NMM_MACRO_CACHE_DIR", ".macro_cache"))
 MACRO_CACHE_FILE = MACRO_CACHE_DIR / "macro_cache.json"
 ADP_CACHE_FILE = MACRO_CACHE_DIR / "adp_cache.json"
+FOREXFACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+FOREXFACTORY_CACHE_FILE = MACRO_CACHE_DIR / "forexfactory_calendar.json"
+FOREXFACTORY_CACHE_MAX_AGE_HOURS = 24
 NFP_CACHE_FILE = MACRO_CACHE_DIR / "nfp_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
@@ -5015,17 +5018,221 @@ def bond_market_snapshot(lines):
     return out
 
 
-def _upcoming_macro_events(today):
+MACRO_EVENT_RULES = {
+    "ADP": {
+        "aliases": ("adp employment", "adp weekly employment", "adp national employment"),
+        "priority": "HIGH", "focus": "US_LABOR_MARKET", "fed": "HIGH", "wall_street": "HIGH",
+    },
+    "NFP": {
+        "aliases": ("non-farm", "non farm", "nonfarm", "non-farm payroll", "nonfarm payroll"),
+        "priority": "VERY_HIGH", "focus": "US_LABOR_MARKET", "fed": "VERY_HIGH", "wall_street": "VERY_HIGH",
+    },
+    "CPI": {
+        "aliases": ("consumer price index", "cpi"),
+        "priority": "VERY_HIGH", "focus": "US_INFLATION", "fed": "VERY_HIGH", "wall_street": "VERY_HIGH",
+    },
+    "PPI": {
+        "aliases": ("producer price index", "ppi"),
+        "priority": "HIGH", "focus": "US_INFLATION", "fed": "HIGH", "wall_street": "HIGH",
+    },
+    "JOLTS": {
+        "aliases": ("jolts", "job openings"),
+        "priority": "HIGH", "focus": "US_LABOR_MARKET", "fed": "HIGH", "wall_street": "HIGH",
+    },
+    "PCE": {
+        "aliases": ("personal consumption expenditures", "pce price", "pce"),
+        "priority": "VERY_HIGH", "focus": "US_INFLATION", "fed": "VERY_HIGH", "wall_street": "VERY_HIGH",
+    },
+    "GDP": {
+        "aliases": ("gross domestic product", "gdp"),
+        "priority": "HIGH", "focus": "US_GROWTH", "fed": "HIGH", "wall_street": "HIGH",
+    },
+    "ISM": {
+        "aliases": ("ism manufacturing", "ism services", "ism manufacturing pmi", "ism services pmi"),
+        "priority": "HIGH", "focus": "US_GROWTH", "fed": "HIGH", "wall_street": "HIGH",
+    },
+    "JOBLESS_CLAIMS": {
+        "aliases": ("initial jobless claims", "unemployment claims", "jobless claims", "continuing claims"),
+        "priority": "HIGH", "focus": "US_LABOR_MARKET", "fed": "HIGH", "wall_street": "HIGH",
+    },
+    "FOMC": {
+        "aliases": ("federal funds rate", "fomc", "fomc statement", "fomc press conference", "economic projections"),
+        "priority": "VERY_HIGH", "focus": "US_MONETARY_POLICY", "fed": "VERY_HIGH", "wall_street": "VERY_HIGH",
+    },
+}
+
+_MACRO_EVENT_NEGATIVE = {
+    "NFP": ("adp",),
+    "CPI": ("cpi expectations",),
+    "PPI": ("ppi expectations",),
+    "GDP": ("gdpnow",),
+}
+
+_MACRO_PRIORITY_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "VERY_HIGH": 4}
+
+
+def _macro_event_text(event):
+    return re.sub(r"\s+", " ", " ".join(
+        str(event.get(field, ""))
+        for field in ("title", "event", "category", "name", "description")
+        if event.get(field) is not None
+    )).strip().lower()
+
+
+def _is_us_calendar_event(event):
+    return str(event.get("country", "")).strip().lower() in {
+        "usd", "us", "usa", "united states", "united states of america"
+    }
+
+
+def _normalize_macro_event(event):
+    text = _macro_event_text(event)
+    hits = []
+    for canonical, rule in MACRO_EVENT_RULES.items():
+        if any(alias in text for alias in rule["aliases"]) and not any(
+            negative in text for negative in _MACRO_EVENT_NEGATIVE.get(canonical, ())
+        ):
+            hits.append(canonical)
+    if "FOMC" in hits:
+        return "FOMC"
+    return hits[0] if len(hits) == 1 else (f"AMBIGUOUS:{','.join(hits)}" if hits else None)
+
+
+def _forexfactory_cache_load(today):
+    try:
+        if not FOREXFACTORY_CACHE_FILE.exists():
+            return None
+        payload = json.loads(FOREXFACTORY_CACHE_FILE.read_text(encoding="utf-8"))
+        if payload.get("schema") != "FOREXFACTORY_CALENDAR_V1":
+            return None
+        saved_at = dt.datetime.fromisoformat(str(payload["saved_at"]))
+        if saved_at.tzinfo is None:
+            saved_at = saved_at.replace(tzinfo=dt.timezone.utc)
+        age = dt.datetime.now(dt.timezone.utc) - saved_at.astimezone(dt.timezone.utc)
+        if age.total_seconds() < 0 or age.total_seconds() > FOREXFACTORY_CACHE_MAX_AGE_HOURS * 3600:
+            return None
+        if payload.get("week_date") != today.isoformat():
+            # The feed is a rolling current-week export. A previous calendar
+            # week must never be reused as a current event calendar.
+            return None
+        events = payload.get("events")
+        return events if isinstance(events, list) else None
+    except Exception as exc:
+        print(f"WARNUNG-FOREXFACTORY: Cache nicht lesbar: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _forexfactory_cache_save(today, events):
+    try:
+        FOREXFACTORY_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": "FOREXFACTORY_CALENDAR_V1",
+            "saved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "week_date": today.isoformat(),
+            "events": events,
+        }
+        tmp = FOREXFACTORY_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, FOREXFACTORY_CACHE_FILE)
+    except Exception as exc:
+        print(f"WARNUNG-FOREXFACTORY: Cache konnte nicht gespeichert werden: {type(exc).__name__}: {exc}")
+
+
+def _forexfactory_events(today):
+    cached = _forexfactory_cache_load(today)
+    if cached is not None:
+        return cached, "CACHE"
+
+    try:
+        r = requests.get(
+            FOREXFACTORY_CALENDAR_URL,
+            timeout=20,
+            headers={"User-Agent": "NeuberMacro/1.0"},
+        )
+        r.raise_for_status()
+        events = r.json()
+        if not isinstance(events, list):
+            raise ValueError("unerwarteter JSON-Typ")
+        events = [e for e in events if isinstance(e, dict)]
+        _forexfactory_cache_save(today, events)
+        return events, "LIVE"
+    except Exception as exc:
+        print(f"WARNUNG-FOREXFACTORY: Kalender nicht verfuegbar: {type(exc).__name__}: {exc}")
+        return [], "UNAVAILABLE"
+
+
+def _macro_focus_from_calendar(today, events):
+    candidates = []
+    for event in events:
+        if not _is_us_calendar_event(event):
+            continue
+        canonical = _normalize_macro_event(event)
+        if not canonical or canonical.startswith("AMBIGUOUS:"):
+            continue
+        raw_date = str(event.get("date", "")).strip()[:10]
+        try:
+            event_date = dt.date.fromisoformat(raw_date)
+        except ValueError:
+            continue
+        if event_date < today or event_date > today + dt.timedelta(days=14):
+            continue
+        rule = MACRO_EVENT_RULES[canonical]
+        candidates.append({
+            "date": event_date,
+            "canonical": canonical,
+            "title": str(event.get("title", event.get("event", canonical))).strip(),
+            "priority": rule["priority"],
+            "priority_rank": _MACRO_PRIORITY_RANK[rule["priority"]],
+            "focus": rule["focus"],
+            "fed": rule["fed"],
+            "wall_street": rule["wall_street"],
+            "source": "ForexFactory",
+        })
+
+    # Deterministic focus rule: today's relevant event(s) take precedence.
+    # If there is no relevant event today, use the next upcoming event; within
+    # one date, project-owned priority decides. This never creates direction.
+    today_candidates = [c for c in candidates if c["date"] == today]
+    pool = today_candidates or candidates
+    if not pool:
+        return None, []
+
+    pool.sort(key=lambda c: (c["date"], -c["priority_rank"], c["canonical"]))
+    focus = pool[0]
+    return focus, candidates
+
+
+def _upcoming_macro_events(today, ff_events=None, ff_status=None):
     events = []
     horizon = today + dt.timedelta(days=14)
     meeting = _next_fomc_date(today)
     if meeting and meeting <= horizon:
         events.append((meeting, "FOMC-Zinsentscheid", "Federal Reserve / fomc_termine.json"))
 
-    # The BLS Public Data API provides time-series observations, not a future
-    # release calendar. The former HTML calendar endpoints are blocked by the
-    # CI runner (HTTP 403), so they are deliberately not called here. BLS
-    # observations themselves are supplied through _bls_series().
+    # ForexFactory is used only as a free secondary event-discovery layer.
+    # It supplies current-week publication metadata; it does not supply
+    # authoritative macro values or directional judgments.
+    if ff_events is None:
+        ff_events, ff_status = _forexfactory_events(today)
+    for event in ff_events:
+        if not _is_us_calendar_event(event):
+            continue
+        canonical = _normalize_macro_event(event)
+        # The official Federal Reserve calendar remains authoritative for FOMC
+        # dates. ForexFactory still feeds MACRO_FOCUS but must not duplicate
+        # the official FOMC entry in the upcoming-events list.
+        if canonical == "FOMC" and meeting:
+            continue
+        if not canonical or canonical.startswith("AMBIGUOUS:"):
+            continue
+        raw_date = str(event.get("date", "")).strip()[:10]
+        try:
+            event_date = dt.date.fromisoformat(raw_date)
+        except ValueError:
+            continue
+        if today <= event_date <= horizon:
+            title = str(event.get("title", event.get("event", canonical))).strip()
+            events.append((event_date, f"{canonical}: {title}", f"ForexFactory ({ff_status})"))
 
     try:
         r = requests.get(ECB_MEETING_CALENDAR_URL, timeout=12, headers=REQUEST_HEADERS)
@@ -5048,18 +5255,34 @@ def _upcoming_macro_events(today):
 
 
 def macro_events_snapshot(today):
-    events = _upcoming_macro_events(today)
+    ff_events, ff_status = _forexfactory_events(today)
+    events = _upcoming_macro_events(today, ff_events=ff_events, ff_status=ff_status)
     out = ["MAKRO-EVENTS / WICHTIGE IMPULSE VORAUS"]
     if not events:
-        out.append("Keine verifizierten hochrelevanten Makro-Events in den naechsten 14 Tagen | STATUS=UNAVAILABLE")
+        out.append("Keine verifizierten Makro-Events in den naechsten 14 Tagen | STATUS=UNAVAILABLE")
     else:
         for date, title, source in events:
             days = (date - today).days
             out.append(f"{title}: {('HEUTE' if days == 0 else 'in ' + str(days) + ' Tag(en)')} ({date.isoformat()}) | SOURCE={source} | STATUS=REAL_PUBLIC_SECONDARY")
-    out.append("IMPULSE-VORAUS-REGEL: Nur verifizierte Termine aus offiziellen Kalendern; keine erfundenen Termine oder Konsenswerte.")
+
+    focus, candidates = _macro_focus_from_calendar(today, ff_events)
+    out.append(f"FOREXFACTORY-EVENTDISCOVERY: STATUS={ff_status} | EVENTS={len(ff_events)}")
+    if focus:
+        out.append(
+            f"MACRO_FOCUS={focus['canonical']} | FOCUS_EVENT={focus['title']} | "
+            f"EVENT_STATUS={'TODAY' if focus['date'] == today else 'UPCOMING'} | "
+            f"PRIORITY={focus['priority']} | FOCUS_DATE={focus['date'].isoformat()} | "
+            f"FED_RELEVANCE={focus['fed']} | WALL_STREET_RELEVANCE={focus['wall_street']} | "
+            f"SOURCE=ForexFactory"
+        )
+        out.append(
+            "MACRO_FOCUS_REGEL: Deterministische Ereignispriorisierung; "
+            "keine Richtungsentscheidung, kein Buy/Sell-Signal."
+        )
+    else:
+        out.append("MACRO_FOCUS=NONE | STATUS=UNAVAILABLE")
+    out.append("IMPULSE-VORAUS-REGEL: Nur verifizierte Termine; ForexFactory ist Event-Discovery, nicht Datenwert-/Richtungsauthoritaet.")
     return out
-
-
 
 
 def _gdelt_get(params, max_retries=GDELT_MAX_RETRIES):
