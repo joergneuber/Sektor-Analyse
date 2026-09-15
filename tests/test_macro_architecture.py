@@ -128,17 +128,6 @@ def test_gate_rules():
     _assert(gate2 == "GESPERRT", "Blocked gate must remain authoritative")
 
 
-def test_calendar_parsers():
-    html = """<table><thead><tr><th>Release</th><th>Date</th></tr></thead>
-    <tbody>
-    <tr><td>Consumer Price Index</td><td>Friday, September 11, 2026</td></tr>
-    <tr><td>Producer Price Index</td><td>Thursday, September 10, 2026</td></tr>
-    </tbody></table>"""
-    events = m._parse_bls_schedule_html(html, 2026, "https://www.bls.gov/schedule/2026/09_sched_list.htm")
-    _assert(len(events) == 2, "BLS HTML schedule parser failed")
-    _assert(events[0][0] == dt.date(2026, 9, 11) or events[1][0] == dt.date(2026, 9, 11), "CPI date missing")
-
-
 def test_no_legacy_macro_terms():
     text = (ROOT / "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md").read_text(encoding="utf-8")
     _assert("struktureller Capex-Zyklus" not in text, "Legacy Capex terminology remains")
@@ -241,32 +230,6 @@ def test_macro_numeric_integrity_normalizes_stale_direct_claims():
     _assert("101,83$" in out, "Current WTI price was not restored")
     _assert(len(changes) >= 3, "Expected direct stale macro claims to be corrected")
 
-def main():
-    tests = [
-        test_parser_real_format,
-        test_inflation_yoy,
-        test_bond_market_remains_objective_data,
-        test_python_contains_no_macro_scenario_interpretation,
-        test_gemini_is_macro_interpreter,
-        test_gate_rules,
-        test_gdelt_gkg_fallback_degrades_quality_without_blocking_gate,
-        test_kobalt_secondary_provenance_is_valid_without_warning,
-        test_macro_numeric_integrity_normalizes_stale_direct_claims,
-        test_point7_is_python_authoritative_and_gemini_only_interprets_72,
-        test_trade_story_layer_is_explicit_and_does_not_create_setups,
-        test_calendar_parsers,
-        test_no_legacy_macro_terms,
-    ]
-    for test in tests:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"MACRO_ARCHITECTURE_TESTS: {len(tests)}/{len(tests)} PASS")
-
-
-if __name__ == "__main__":
-    main()
-
-
 def test_trade_story_validator_enforces_status_and_setup_authority():
     gem = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
     _assert("def _trade_story_validierung(" in gem, "Trade-Story validator function missing")
@@ -279,7 +242,8 @@ def test_gdelt_retry_and_trade_story_validation_are_present():
     macro = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
     gem = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
     _assert("def _gdelt_get(" in macro, "GDELT retry helper missing")
-    _assert("status_code in {429, 500, 502, 503, 504}" in macro, "GDELT HTTP retry handling missing")
+    _assert("if r.status_code == 429:" in macro, "GDELT HTTP 429 immediate breaker handling missing")
+    _assert("if r.status_code in {500, 502, 503, 504}:" in macro, "GDELT 5xx retry handling missing")
     _assert("_gdelt_get({\"query\": query" in macro, "GDELT cluster calls do not use retry helper")
     _assert("_gdelt_get({\"query\": broad_query" in macro, "GDELT big-news call does not use retry helper")
     _assert("_trade_story_validierung(text, eingabedateien, beobachtung_pfad)" in gem, "Trade-Story validator not integrated into Gemini flow")
@@ -416,37 +380,133 @@ def test_gdelt_cache_rejects_old_cluster_even_when_other_cluster_is_fresh(tmp_pa
     _assert("Nahost" not in clusters, "Old cluster must expire independently")
 
 
-def test_bls_release_schedule_urls_are_first_party():
-    expected = {
-        "Employment Situation": "https://www.bls.gov/schedule/news_release/empsit.htm",
-        "Consumer Price Index": "https://www.bls.gov/schedule/news_release/cpi.htm",
-        "Producer Price Index": "https://www.bls.gov/schedule/news_release/ppi.htm",
-        "Job Openings and Labor Turnover Survey": "https://www.bls.gov/schedule/news_release/jolts.htm",
+def test_bls_api_configuration_is_official_and_secret_based():
+    _assert(m.BLS_API_V2_URL == "https://api.bls.gov/publicAPI/v2/timeseries/data/", "BLS V2 endpoint incorrect")
+    _assert(m.BLS_API_V1_URL == "https://api.bls.gov/publicAPI/v1/timeseries/data/", "BLS V1 endpoint incorrect")
+    _assert(m.BLS_API_KEY_ENV == "BLS_API_KEY", "BLS API secret name incorrect")
+
+
+def test_bls_api_response_parser_shape():
+    import pandas as pd
+    payload = {
+        "status": "REQUEST_SUCCEEDED",
+        "Results": {
+            "series": [{
+                "seriesID": "LNS14000000",
+                "data": [
+                    {"year": "2026", "period": "M08", "value": "4.3", "footnotes": []},
+                    {"year": "2026", "period": "M09", "value": "4.2", "footnotes": []},
+                    {"year": "2026", "period": "M13", "value": "4.2", "footnotes": []},
+                ],
+            }]
+        },
     }
-    _assert(m.BLS_RELEASE_SCHEDULE_URLS == expected, "BLS release calendars must use official first-party URLs")
+    frame = m._parse_bls_api_response(payload, "LNS14000000", 2026, 2026)
+    _assert(len(frame) == 2, "BLS API parser must keep monthly M01-M12 observations only")
+    _assert(frame.iloc[-1]["DATE"] == pd.Timestamp("2026-09-01"), "BLS API date parsing incorrect")
+    _assert(float(frame.iloc[-1]["LNS14000000"]) == 4.2, "BLS API value parsing incorrect")
 
 
-def test_bls_release_schedule_parser_shape():
-    html = """<table><thead><tr><th>Reference Month</th><th>Release Date</th><th>Release Time</th></tr></thead>
-    <tbody>
-    <tr><td>August 2026</td><td>Sep. 29, 2026</td><td>10:00 AM</td></tr>
-    </tbody></table>"""
-    events = m._parse_bls_release_schedule_html(
-        html,
-        "Job Openings and Labor Turnover Survey",
-        "https://www.bls.gov/schedule/news_release/jolts.htm",
-    )
-    _assert(len(events) == 1, "BLS release schedule row must parse")
-    _assert(events[0][0] == dt.date(2026, 9, 29), "BLS release date parsed incorrectly")
+def test_bls_api_response_rejects_unsuccessful_status():
+    frame = m._parse_bls_api_response({"status": "REQUEST_FAILED", "message": ["bad request"]}, "LNS14000000", 2026, 2026)
+    _assert(frame.empty, "BLS API parser must reject unsuccessful responses")
 
 
-def test_gdelt_doc_circuit_breaker_blocks_broad_query():
+def test_bls_v2_request_uses_secret_and_parses_success():
+    import os
+    original_post = m.requests.post
+    original_key = os.environ.get("BLS_API_KEY")
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "status": "REQUEST_SUCCEEDED",
+                "Results": {"series": [{"seriesID": "LNS14000000", "data": [
+                    {"year": "2026", "period": "M09", "value": "4.2", "footnotes": []}
+                ]}]}
+            }
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    try:
+        os.environ["BLS_API_KEY"] = "TEST-ONLY-NOT-A-REAL-KEY"
+        m.requests.post = fake_post
+        frame, source = m._bls_series("UNRATE", years_back=0)
+    finally:
+        m.requests.post = original_post
+        if original_key is None:
+            os.environ.pop("BLS_API_KEY", None)
+        else:
+            os.environ["BLS_API_KEY"] = original_key
+
+    _assert(source == m.BLS_API_V2_URL, "BLS V2 must be preferred when the secret exists")
+    _assert(len(frame) == 1 and float(frame.iloc[0]["UNRATE"]) == 4.2, "BLS V2 response was not parsed")
+    _assert(calls and calls[0][0] == m.BLS_API_V2_URL, "BLS V2 endpoint was not called")
+    _assert(calls[0][1]["json"]["registrationkey"] == "TEST-ONLY-NOT-A-REAL-KEY", "BLS API key was not sent in the V2 payload")
+
+
+def test_bls_v1_fallback_without_secret():
+    import os
+    original_post = m.requests.post
+    original_key = os.environ.pop("BLS_API_KEY", None)
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "status": "REQUEST_SUCCEEDED",
+                "Results": {"series": [{"seriesID": "LNS14000000", "data": [
+                    {"year": "2026", "period": "M09", "value": "4.2", "footnotes": []}
+                ]}]}
+            }
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    try:
+        m.requests.post = fake_post
+        frame, source = m._bls_series("UNRATE", years_back=0)
+    finally:
+        m.requests.post = original_post
+        if original_key is not None:
+            os.environ["BLS_API_KEY"] = original_key
+
+    _assert(source == m.BLS_API_V1_URL, "BLS V1 must be used without the secret")
+    _assert(calls and calls[0][0] == m.BLS_API_V1_URL, "BLS V1 endpoint was not called")
+    _assert(len(frame) == 1, "BLS V1 response was not parsed")
+
+
+def test_bls_production_path_uses_api_not_html_calendar():
+    source = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    _assert("requests.post(\n                BLS_API_V2_URL" in source, "BLS V2 POST path missing")
+    _assert("BLS_API_KEY_ENV" in source, "BLS API secret integration missing")
+    _assert("requests.post(\n            BLS_API_V1_URL" in source, "BLS V1 fallback path missing")
+    _assert("BLS_RELEASE_SCHEDULE_URLS" not in source, "HTML BLS release-calendar dependency remains in production")
+
+
+def test_gdelt_zero_articles_is_not_reported_as_real_data():
+    source = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    _assert("NO_RELEVANT_ARTICLES_FOUND" in source, "GDELT zero-article status missing")
+    _assert("if count > 0:" in source, "GDELT zero-article semantic branch missing")
+    _assert("KEINE RELEVANTEN ARTIKEL GEFUNDEN" in source, "GDELT broad-query zero-article status missing")
+
+
+def test_gdelt_global_breaker_still_blocks_broad_query():
     source = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
     _assert("if rate_limited:" in source, "GDELT rate-limit state missing")
     _assert("UEBER GDELT-DOC DEAKTIVIERT" in source, "Broad GDELT fallback status missing")
     _assert("Nach HTTP 429 keine weitere DOC-Anfrage im selben Lauf." in source, "GDELT global DOC breaker contract missing")
     _assert("if rate_limited:\n        out.append" in source, "Broad DOC query must be guarded by the global breaker")
-
+    _assert("# HTTP 429 ist ein explizites Rate-Limit-Signal." in source, "GDELT 429 must not be retried")
+    _assert("if r.status_code in {500, 502, 503, 504}:" in source, "GDELT retries must be limited to 5xx responses")
 
 
 def test_bitcoin_identical_marke_handles_common_number_formats():
@@ -480,24 +540,19 @@ def test_bitcoin_identical_marke_handles_common_number_formats():
     )
     _assert(not changed, "Independent Bitcoin reference must not be rewritten")
 
+def main():
+    import inspect
+    tests = [
+        fn for name, fn in globals().items()
+        if name.startswith("test_")
+        and callable(fn)
+        and len(inspect.signature(fn).parameters) == 0
+    ]
+    for test in tests:
+        test()
+        print(f"PASS: {test.__name__}")
+    print(f"MACRO_ARCHITECTURE_TESTS: {len(tests)}/{len(tests)} PASS")
 
-def test_bls_annual_schedule_parser_shape():
-    html = """<table><thead><tr><th>Date</th><th>Time</th><th>Release</th></tr></thead>
-    <tbody>
-    <tr><td>Wednesday, September 16, 2026</td><td>08:30 AM</td><td>U.S. Import and Export Price Indexes for August 2026</td></tr>
-    <tr><td>Friday, September 18, 2026</td><td>10:00 AM</td><td>State Employment and Unemployment (Monthly) for August 2026</td></tr>
-    </tbody></table>"""
-    events = m._parse_bls_schedule_html(html, 2026, "https://www.bls.gov/schedule/2026/")
-    _assert(len(events) == 0, "Parser should only select its explicitly supported BLS release families")
 
-
-def test_bls_official_schedule_source_contains_real_future_release():
-    # The live official BLS page is verified separately; this regression test
-    # protects the parser contract using the same visible table shape.
-    html = """<table><thead><tr><th>Date</th><th>Time</th><th>Release</th></tr></thead>
-    <tbody>
-    <tr><td>Tuesday, September 29, 2026</td><td>10:00 AM</td><td>Job Openings and Labor Turnover Survey for August 2026</td></tr>
-    </tbody></table>"""
-    events = m._parse_bls_schedule_html(html, 2026, "https://www.bls.gov/schedule/2026/")
-    _assert(len(events) == 1, "Official BLS annual/monthly table shape must parse a supported release")
-    _assert(events[0][0] == dt.date(2026, 9, 29), "BLS release date parsed incorrectly")
+if __name__ == "__main__":
+    main()
