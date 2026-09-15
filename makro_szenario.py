@@ -52,6 +52,7 @@ GDELT_GKG_LOOKBACK_SLICES = 8
 GDELT_CACHE_FILE = Path(".gdelt_geopolitics_cache.json")
 GDELT_CACHE_MAX_AGE_HOURS = 24
 BLS_SCHEDULE_BASE_URL = "https://www.bls.gov/schedule/{year}/{month:02d}_sched_list.htm"
+BLS_ANNUAL_SCHEDULE_URL = "https://www.bls.gov/schedule/{year}/home.htm"
 ECB_MEETING_CALENDAR_URL = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
 GEOPOLITICAL_CLUSTERS = {
     "Nahost": '(Iran OR "Middle East" OR Israel OR "Strait of Hormuz" OR Hormuz)',
@@ -4779,6 +4780,23 @@ def market_snapshots_parallel():
     # Ticker im Shared-Batch nachgeladen.
     shared_histories = get_yf_histories(tickers)
 
+    # Aktuelle, bereits verfuegbare Tagesdaten duerfen verwendet werden, wenn
+    # sie neuer sind als der letzte abgeschlossene Schlussstand. Der Datenstand
+    # wird dabei explizit als HEUTE gekennzeichnet; ein laufender Tageswert darf
+    # niemals stillschweigend wie ein abgeschlossener Schlussstand erscheinen.
+    for ticker, hist in list(shared_histories.items()):
+        if hist is None or hist.empty:
+            continue
+        try:
+            idx = pd.to_datetime(hist.index, errors="coerce")
+            if getattr(idx, "tz", None) is not None:
+                idx = idx.tz_localize(None)
+            hist = hist.copy()
+            hist.index = idx
+            shared_histories[ticker] = hist.loc[hist.index.notna()].copy()
+        except Exception as exc:
+            print(f"WARNUNG: Marktindex-Normalisierung fuer {ticker} fehlgeschlagen: {type(exc).__name__}: {exc}")
+
     # Bei einem Shared-Yahoo-Fehler bleibt der bestehende Makro-Cache als
     # definierter Fallback erhalten. Er wird NICHT mehr als Primaerquelle
     # fuer einen zweiten Yahoo-Abruf verwendet.
@@ -4825,12 +4843,20 @@ def market_snapshots_parallel():
             results[name] = f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE={ticker} | DATENTYP={data_type}"
             continue
 
+        close.index = pd.to_datetime(close.index, errors="coerce")
+        close = close.loc[close.index.notna()].sort_index()
         current = float(close.iloc[-1])
-        date = close.index[-1]
+        current_date = close.index[-1].date()
+        last_closed = close.loc[close.index < pd.Timestamp(today)]
+        last_closed_date = last_closed.index[-1].date() if not last_closed.empty else None
+        data_status = "REAL_HEUTE" if current_date == today else provenance
         parts = []
+        performance_base = last_closed if current_date == today and not last_closed.empty else close
+        performance_date = last_closed.index[-1] if not last_closed.empty and current_date == today else close.index[-1]
+        # Performancevergleiche basieren nur auf abgeschlossenen Tagesstaenden.
         for label, days in (("5T", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1J", 365)):
-            target = date - pd.Timedelta(days=days)
-            old = close[close.index <= target]
+            target = performance_date - pd.Timedelta(days=days)
+            old = performance_base[performance_base.index <= target]
             if not old.empty and float(old.iloc[-1]) != 0:
                 parts.append(f"{label}={(current / float(old.iloc[-1]) - 1) * 100:+.2f}%")
         ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1] if len(close) >= 20 else None
@@ -4840,9 +4866,12 @@ def market_snapshots_parallel():
             trend.append(f"EMA20={'DARUEBER' if current > ema20 else 'DARUNTER'}")
         if ema50 is not None:
             trend.append(f"EMA50={'DARUEBER' if current > ema50 else 'DARUNTER'}")
+        status = "PROXY" if data_type == "PROXY" else data_status
+        data_note = "laufender/aktueller Tageswert; nicht als Schlussstand interpretieren" if current_date == today else "letzter verfuegbarer abgeschlossener Datenstand"
         results[name] = (
-            f"{name}: {current:.6f} | Datenstand={date.strftime('%Y-%m-%d')} | "
-            f"STATUS={'PROXY' if data_type == 'PROXY' else provenance} | DATENTYP={data_type} | "
+            f"{name}: {current:.6f} | Datenstand={current_date.isoformat()} | "
+            f"STATUS={status} | DATENTYP={data_type} | HINWEIS={data_note} | "
+            + (f"Letzter_Schluss={last_closed_date.isoformat()} | " if last_closed_date else "")
             + " | ".join(parts + trend + [f"SOURCE={ticker}"])
         )
     # LME ist ein eigener Datenblock. Das ist insbesondere fuer Kupfer zwingend,
@@ -4979,20 +5008,37 @@ def _upcoming_macro_events(today):
     if meeting and meeting <= horizon:
         events.append((meeting, "FOMC-Zinsentscheid", "Federal Reserve / fomc_termine.json"))
 
-    # BLS ICS returns HTTP 403 from the CI environment. Use the official BLS
-    # monthly HTML schedule as the primary calendar source instead. The source
-    # remains official; only the transport is changed.
+    # BLS transport fallback chain: monthly HTML -> annual official schedule.
+    # Jeder betroffene Monat wird unabhaengig behandelt, damit ein erfolgreicher
+    # Abruf fuer den aktuellen Monat einen Ausfall des Folgemonats nicht verdeckt.
     months = {(today.year, today.month), (horizon.year, horizon.month)}
+    bls_failed_months = []
     for year, month in sorted(months):
         url = BLS_SCHEDULE_BASE_URL.format(year=year, month=month)
         try:
             r = requests.get(url, timeout=12, headers=REQUEST_HEADERS)
             r.raise_for_status()
-            for date, title, source in _parse_bls_schedule_html(r.text, year, url):
+            parsed = _parse_bls_schedule_html(r.text, year, url)
+            for date, title, source in parsed:
                 if today <= date <= horizon:
                     events.append((date, title, "BLS official schedule"))
         except Exception as exc:
+            bls_failed_months.append((year, month))
             print(f"WARNUNG: BLS-Monatskalender nicht verfuegbar ({url}): {type(exc).__name__}: {exc}")
+
+    if bls_failed_months:
+        for year in sorted({year for year, _month in bls_failed_months}):
+            url = BLS_ANNUAL_SCHEDULE_URL.format(year=year)
+            try:
+                r = requests.get(url, timeout=15, headers=REQUEST_HEADERS)
+                r.raise_for_status()
+                parsed = _parse_bls_schedule_html(r.text, year, url)
+                for date, title, source in parsed:
+                    if today <= date <= horizon and (year, date.month) in bls_failed_months:
+                        events.append((date, title, "BLS official annual schedule"))
+                print(f"INFO: BLS-Jahreskalender erfolgreich als offizieller Fallback verwendet: {url}")
+            except Exception as exc:
+                print(f"WARNUNG: BLS-Jahreskalender nicht verfuegbar ({url}): {type(exc).__name__}: {exc}")
 
     try:
         r = requests.get(ECB_MEETING_CALENDAR_URL, timeout=12, headers=REQUEST_HEADERS)
@@ -5242,16 +5288,25 @@ def geopolitics_snapshot(today):
         except Exception as exc:
             return cluster, None, f"{type(exc).__name__}: {str(exc)[:160]}"
 
-    # Maximal zwei parallele DOC-Abfragen: reduziert Burst-/429-Risiko,
-    # ohne Einzel-Timeouts wieder vollstaendig zu serialisieren.
-    with ThreadPoolExecutor(max_workers=GDELT_DOC_MAX_WORKERS) as executor:
-        futures = [executor.submit(fetch_cluster, item) for item in GEOPOLITICAL_CLUSTERS.items()]
-        for future in as_completed(futures):
-            cluster, value, error = future.result()
-            if value is not None:
-                result[cluster] = value
-            else:
-                failures[cluster] = error
+    # DOC ist rate-limit-empfindlich. Sobald ein 429 auftritt, greift ein
+    # Circuit-Breaker: keine weiteren DOC-Abfragen im selben Lauf, sondern
+    # sofort offizieller GKG/Bulk-/Cache-Fallback. Das verhindert eine Kaskade
+    # aus identischen 429-Retries fuer alle Cluster.
+    rate_limited = False
+    for item in GEOPOLITICAL_CLUSTERS.items():
+        cluster, value, error = fetch_cluster(item)
+        if value is not None:
+            result[cluster] = value
+        else:
+            failures[cluster] = error
+            if "429" in str(error):
+                rate_limited = True
+                remaining = [c for c in GEOPOLITICAL_CLUSTERS if c != cluster and c not in result]
+                for remaining_cluster in remaining:
+                    failures.setdefault(remaining_cluster, "HTTPError: 429 (GDELT circuit breaker)")
+                break
+    if rate_limited:
+        out.append("GDELT-DOC: HTTP 429 erkannt - DOC-Circuit-Breaker aktiviert; restliche Cluster werden ohne weitere DOC-Retries ueber GKG/Bulk bzw. Cache abgesichert.")
 
     # Fehlerbehandlung erfolgt pro Cluster: frische DOC-Ergebnisse bleiben
     # erhalten. Nur der jeweils ausgefallene Cluster darf durch GKG bzw. Cache

@@ -241,6 +241,35 @@ def get_yf_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
                   f"({type(exc).__name__}: {exc}) - lade neu.")
             missing.append(ticker)
 
+    # Freshness guard: Ein frischer Cache-Eintrag kann trotzdem einen zu alten
+    # letzten Schluss enthalten (z. B. Yahoo-Edge-Cache bei einzelnen EU-Tickern).
+    # Wenn der letzte Close mindestens vor dem letzten normalen BDay liegt, wird
+    # genau fuer diesen Ticker die bestehende max+5d-Refreshlogik verwendet.
+    # Damit bleibt die zentrale Cache-Architektur erhalten, waehrend veraltete
+    # Einzelreihen nicht stillschweigend als aktuell gelten.
+    try:
+        expected_last_completed = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
+        lagging = []
+        for ticker, df in result.items():
+            if df is None or df.empty or "Close" not in df.columns:
+                continue
+            close_idx = pd.to_datetime(df.index, errors="coerce")
+            if getattr(close_idx, "tz", None) is not None:
+                close_idx = close_idx.tz_localize(None)
+            close_idx = close_idx[~close_idx.isna()]
+            if len(close_idx) and close_idx.max().normalize() < expected_last_completed:
+                lagging.append(ticker)
+        for ticker in lagging:
+            refreshed = get_yf_history(ticker)
+            if refreshed is not None and not refreshed.empty:
+                result[ticker] = refreshed.copy()
+                print(
+                    f"INFO: YF-SHARED-FRESHNESS-REFRESH {ticker} -> "
+                    f"letzter Close={pd.to_datetime(refreshed.index).max().date()}"
+                )
+    except Exception as exc:
+        print(f"WARNUNG-MARKET-CACHE: Freshness-Guard fehlgeschlagen ({type(exc).__name__}: {exc})")
+
     if not missing:
         return result
 

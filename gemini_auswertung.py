@@ -1800,6 +1800,9 @@ def gemini_auswertung_starten():
             # autoritative aktuelle Makro-Briefing abgesichert. Gemini bleibt
             # fuer Interpretation und abgeleitete Aussagen zustaendig.
             text, makro_zahlen_korrekturen = _sichere_makro_zahlen(text, makro_text if makro_pfad else "")
+            text, bitcoin_marken_korrigiert = _korrigiere_bitcoin_identische_marke(text, makro_text if makro_pfad else "")
+            if bitcoin_marken_korrigiert:
+                print("  BITCOIN-MARKENKORREKTUR: aktueller Bitcoin-Kurs wurde nicht als identische Schwellenmarke dargestellt.")
             print(f"  Gemini finish_reason (Hauptantwort): {_gemini_finish_reason(antwort)}")
 
             if not pruefe_makro_gate_konsistenz(text, makro_gate):
@@ -2638,6 +2641,56 @@ def _sichere_makro_zahlen(text, makro_text):
             "gegen aktuelles Makro-Briefing korrigiert."
         )
     return "\n".join(out_lines), changes
+
+
+def _korrigiere_bitcoin_identische_marke(text, makro_text):
+    """Verhindert eine irrefuehrende Bitcoin-Formulierung mit dem aktuellen Kurs als Marke.
+
+    Wenn Gemini den aktuellen Bitcoin-Kurs selbst als „ueber X-Marke“ beschreibt,
+    wird nur diese redundante Formulierung deterministisch auf „bei X USD“
+    korrigiert. Unabhaengige Referenzwerte wie 50W-SMA/EMA20 bleiben unberuehrt.
+    Kein zusaetzlicher Gemini-API-Call.
+    """
+    if not text or not makro_text:
+        return text, False
+    m = re.search(r"(?im)^Bitcoin:\s*([-+]?\d[\d.,\s]*)", makro_text)
+    if not m:
+        return text, False
+    raw_value = m.group(1).strip()
+    try:
+        compact = re.sub(r"\s+", "", raw_value)
+        if "," in compact and "." in compact:
+            # Last separator is the decimal separator; the other one is thousands.
+            if compact.rfind(",") > compact.rfind("."):
+                normalized = compact.replace(".", "").replace(",", ".")
+            else:
+                normalized = compact.replace(",", "")
+        elif compact.count(",") == 1:
+            left, right = compact.split(",")
+            normalized = f"{left}.{right}" if len(right) <= 2 else compact.replace(",", "")
+        elif compact.count(".") == 1:
+            left, right = compact.split(".")
+            normalized = compact if len(right) <= 2 else compact.replace(".", "")
+        else:
+            normalized = compact.replace(",", "").replace(".", "")
+        value = float(normalized)
+    except ValueError:
+        return text, False
+    if value <= 0:
+        return text, False
+    value_de = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    value_us = f"{value:,.2f}"
+    value_plain = f"{value:.2f}"
+    escaped_variants = [re.escape(v) for v in {value_de, value_us, value_plain, raw_value}]
+    number_pattern = "(?:" + "|".join(sorted(set(escaped_variants), key=len, reverse=True)) + ")"
+    patterns = [
+        rf"(?i)(?:ueber|über|oberhalb)\s+(?:der\s+|die\s+)?{number_pattern}\s*\$?\s*-?\s*Marke",
+        rf"(?i)(?:ueber|über|oberhalb)\s+(?:der\s+|die\s+)?{number_pattern}\s*USD\s*-?\s*Marke",
+    ]
+    new_text = text
+    for pattern in patterns:
+        new_text = re.sub(pattern, f"bei {value_de} USD", new_text)
+    return new_text, new_text != text
 
 
 def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
