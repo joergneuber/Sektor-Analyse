@@ -290,6 +290,24 @@ def test_trade_story_validator_does_not_allow_unanchored_prepared_story():
     _assert("darf keine Kauf-/Entry-Formulierung enthalten" in source, "Purchase boundary missing for non-valid story states")
 
 
+def test_gemini_uses_concrete_gdelt_articles_when_present_and_never_invents_them():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    required = (
+        "VERBINDLICHE GDELT-NEWS-REGEL",
+        "GDELT-DOC-Artikel mit Titel und URL",
+        "einzige",
+        "zulaessige Quelle fuer konkrete GDELT-Newsinhalte",
+        "Lies diese Artikelzeilen aktiv als Nachrichtenkontext",
+        "THEMEN_TREFFER_24H_SAMPLE",
+        "erfinde daraus keine konkreten",
+        "HTTP 429 deaktiviert",
+        "GDELT bleibt TIER-3-CONTEXT",
+        "MAKRO-SZENARIO-GATE niemals veraendern oder sperren",
+    )
+    for term in required:
+        _assert(term in source, f"GDELT-to-Gemini contract missing: {term}")
+
+
 def test_gdelt_quality_gap_is_visible_but_does_not_block_gate():
     lines = [
         "Fed Funds Effective Rate: 3.63 | STATUS=REAL",
