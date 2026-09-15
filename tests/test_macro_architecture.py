@@ -416,11 +416,36 @@ def test_gdelt_cache_rejects_old_cluster_even_when_other_cluster_is_fresh(tmp_pa
     _assert("Nahost" not in clusters, "Old cluster must expire independently")
 
 
-def test_bls_annual_schedule_url_is_official_home():
-    _assert(
-        m.BLS_ANNUAL_SCHEDULE_URL == "https://www.bls.gov/schedule/{year}/home.htm",
-        "BLS annual fallback must target the official yearly home page",
+def test_bls_release_schedule_urls_are_first_party():
+    expected = {
+        "Employment Situation": "https://www.bls.gov/schedule/news_release/empsit.htm",
+        "Consumer Price Index": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        "Producer Price Index": "https://www.bls.gov/schedule/news_release/ppi.htm",
+        "Job Openings and Labor Turnover Survey": "https://www.bls.gov/schedule/news_release/jolts.htm",
+    }
+    _assert(m.BLS_RELEASE_SCHEDULE_URLS == expected, "BLS release calendars must use official first-party URLs")
+
+
+def test_bls_release_schedule_parser_shape():
+    html = """<table><thead><tr><th>Reference Month</th><th>Release Date</th><th>Release Time</th></tr></thead>
+    <tbody>
+    <tr><td>August 2026</td><td>Sep. 29, 2026</td><td>10:00 AM</td></tr>
+    </tbody></table>"""
+    events = m._parse_bls_release_schedule_html(
+        html,
+        "Job Openings and Labor Turnover Survey",
+        "https://www.bls.gov/schedule/news_release/jolts.htm",
     )
+    _assert(len(events) == 1, "BLS release schedule row must parse")
+    _assert(events[0][0] == dt.date(2026, 9, 29), "BLS release date parsed incorrectly")
+
+
+def test_gdelt_doc_circuit_breaker_blocks_broad_query():
+    source = (ROOT / "makro_szenario.py").read_text(encoding="utf-8")
+    _assert("if rate_limited:" in source, "GDELT rate-limit state missing")
+    _assert("UEBER GDELT-DOC DEAKTIVIERT" in source, "Broad GDELT fallback status missing")
+    _assert("Nach HTTP 429 keine weitere DOC-Anfrage im selben Lauf." in source, "GDELT global DOC breaker contract missing")
+    _assert("if rate_limited:\n        out.append" in source, "Broad DOC query must be guarded by the global breaker")
 
 
 
