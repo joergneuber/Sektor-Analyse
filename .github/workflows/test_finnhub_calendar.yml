@@ -1,0 +1,26 @@
+name: Finnhub Economic Calendar Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1-5"
+
+jobs:
+  finnhub-calendar-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test Finnhub Economic Calendar
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: |
+          python tests/test_finnhub_calendar.py
