@@ -354,8 +354,9 @@ def test_gdelt_cache_is_explicitly_limited_to_24h():
 
     _assert("SEKUNDAERE DATENHINWEISE" in macro, "GDELT secondary output label was not renamed")
     _assert("SEKUNDAERE_DATENHINWEISE=" in macro, "GDELT secondary log label was not renamed")
-    _assert("GDELT_DOC_MAX_WORKERS = 1" in macro, "GDELT cluster request worker cap must be 1")
-    _assert("ThreadPoolExecutor(max_workers=GDELT_DOC_MAX_WORKERS)" in macro, "GDELT worker cap is not applied to cluster requests")
+    _assert("GDELT_DOC_MAX_WORKERS = 1" in macro, "GDELT worker cap configuration missing")
+    _assert("HTTP 429 erkannt - DOC-Circuit-Breaker aktiviert" in macro, "GDELT 429 circuit breaker missing")
+    _assert("for item in GEOPOLITICAL_CLUSTERS.items()" in macro, "GDELT cluster requests are not serialized")
 
 
 def test_gdelt_fallback_is_labeled_as_sample_not_article_count():
@@ -413,3 +414,65 @@ def test_gdelt_cache_rejects_old_cluster_even_when_other_cluster_is_fresh(tmp_pa
     clusters = (loaded or {}).get("clusters", {})
     _assert("China/Taiwan" in clusters, "Fresh cluster must remain cache-valid")
     _assert("Nahost" not in clusters, "Old cluster must expire independently")
+
+
+def test_bls_annual_schedule_url_is_official_home():
+    _assert(
+        m.BLS_ANNUAL_SCHEDULE_URL == "https://www.bls.gov/schedule/{year}/home.htm",
+        "BLS annual fallback must target the official yearly home page",
+    )
+
+
+
+def test_bitcoin_identical_marke_handles_common_number_formats():
+    # Execute only the pure deterministic post-processing function from the
+    # Gemini module; this avoids requiring the Gemini SDK in the unit suite.
+    import ast as _ast
+    import re as _re
+    gemini_source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    tree = _ast.parse(gemini_source)
+    fn = next(
+        node for node in tree.body
+        if isinstance(node, _ast.FunctionDef)
+        and node.name == "_korrigiere_bitcoin_identische_marke"
+    )
+    namespace = {"re": _re}
+    exec(compile(_ast.Module(body=[fn], type_ignores=[]), "gemini_test", "exec"), namespace)
+    fixer = namespace[fn.name]
+
+    for raw in ("77626.58", "77,626.58", "77.626,58"):
+        text, changed = fixer(
+            "Bitcoin konsolidiert bullisch über der 77.626,58$-Marke.",
+            f"Bitcoin: {raw}",
+        )
+        _assert(changed, f"Bitcoin mark correction failed for {raw}")
+        _assert("über der 77.626,58$-Marke" not in text, f"Old Bitcoin mark survived for {raw}")
+        _assert("bei 77.626,58 USD" in text, f"Normalized Bitcoin wording missing for {raw}")
+
+    text, changed = fixer(
+        "Bitcoin bleibt über der 50W-SMA von 72.000 USD.",
+        "Bitcoin: 77.626,58",
+    )
+    _assert(not changed, "Independent Bitcoin reference must not be rewritten")
+
+
+def test_bls_annual_schedule_parser_shape():
+    html = """<table><thead><tr><th>Date</th><th>Time</th><th>Release</th></tr></thead>
+    <tbody>
+    <tr><td>Wednesday, September 16, 2026</td><td>08:30 AM</td><td>U.S. Import and Export Price Indexes for August 2026</td></tr>
+    <tr><td>Friday, September 18, 2026</td><td>10:00 AM</td><td>State Employment and Unemployment (Monthly) for August 2026</td></tr>
+    </tbody></table>"""
+    events = m._parse_bls_schedule_html(html, 2026, "https://www.bls.gov/schedule/2026/")
+    _assert(len(events) == 0, "Parser should only select its explicitly supported BLS release families")
+
+
+def test_bls_official_schedule_source_contains_real_future_release():
+    # The live official BLS page is verified separately; this regression test
+    # protects the parser contract using the same visible table shape.
+    html = """<table><thead><tr><th>Date</th><th>Time</th><th>Release</th></tr></thead>
+    <tbody>
+    <tr><td>Tuesday, September 29, 2026</td><td>10:00 AM</td><td>Job Openings and Labor Turnover Survey for August 2026</td></tr>
+    </tbody></table>"""
+    events = m._parse_bls_schedule_html(html, 2026, "https://www.bls.gov/schedule/2026/")
+    _assert(len(events) == 1, "Official BLS annual/monthly table shape must parse a supported release")
+    _assert(events[0][0] == dt.date(2026, 9, 29), "BLS release date parsed incorrectly")

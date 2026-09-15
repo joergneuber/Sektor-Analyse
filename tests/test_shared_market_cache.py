@@ -109,3 +109,26 @@ def test_recent5d_refresh_is_written_back_to_shared_ticker_cache(tmp_path, monke
     assert refreshed is not None
     cached = pd.read_json(__import__("io").StringIO(refreshed["payload"]), orient="split")
     assert float(cached["Close"].iloc[-1]) == 3.5
+
+
+def test_shared_batch_refreshes_lagging_cached_ticker(tmp_path, monkeypatch):
+    import market_cache as mc
+    mc = importlib.reload(mc)
+    monkeypatch.setattr(mc, "CACHE_FILE", tmp_path / "market_cache.json")
+    monkeypatch.setattr(mc, "LOCK_FILE", tmp_path / "market_cache.json.lock")
+
+    old_index = pd.date_range("2026-09-10", periods=2, freq="D")
+    fresh_index = pd.date_range("2026-09-10", periods=5, freq="D")
+    old = pd.DataFrame({"Close": [100.0, 101.0]}, index=old_index)
+    fresh = pd.DataFrame({"Close": [100.0, 101.0, 102.0, 103.0, 104.0]}, index=fresh_index)
+    mc.get_or_fetch_dataframe("yf:EU.TEST", lambda: old)
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+        def history(self, period):
+            return fresh if period == "max" else fresh
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=FakeTicker))
+    out = mc.get_yf_histories(["EU.TEST"])
+    assert float(out["EU.TEST"]["Close"].iloc[-1]) == 104.0
