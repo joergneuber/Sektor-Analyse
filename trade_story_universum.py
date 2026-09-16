@@ -205,29 +205,35 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
         if item:
             _merge(candidates, item)
 
-    # Hebeltrader A/B comes from the current observation state. C/KEIN KANDIDAT
-    # are deliberately excluded from the Trade-Story candidate universe.
-    if observation_path and os.path.isfile(observation_path):
+    # Hebeltrader A/B comes exclusively from the current structured
+    # HEBELTRADER-Einzelcheck. The observation list is deliberately not used
+    # as a substitute because it can contain manual/legacy entries.
+    hebel_path = paths.get("HEBELTRADER-Einzelcheck", "")
+    if hebel_path and os.path.isfile(hebel_path):
         try:
-            data = json.load(open(observation_path, encoding="utf-8"))
-            if isinstance(data, dict):
-                for tk, row in data.items():
+            with open(hebel_path, encoding="utf-8") as f:
+                data = json.load(f)
+            rows = data.get("candidates", []) if isinstance(data, dict) else []
+            if isinstance(rows, list):
+                for row in rows:
                     if not isinstance(row, dict):
                         continue
-                    status = str(row.get("status", "")).strip().upper()
-                    quelle = str(row.get("quelle", "")).strip().upper()
+                    check = row.get("einzel_check") if isinstance(row.get("einzel_check"), dict) else {}
+                    status = str(
+                        check.get("status") or row.get("status") or row.get("role") or ""
+                    ).strip().upper()
+                    # Role is only a fallback for older schemas; current schema
+                    # stores the authoritative A/B/C result in einzel_check.status.
                     if status not in {"KAUFKANDIDAT A", "KAUFKANDIDAT B"}:
                         continue
-                    # The Trade-Story source is strictly the HEbeltrader
-                    # Einzel-Check. Manual/other observation-list entries
-                    # (e.g. Quelle='-') are not eligible candidates here.
-                    if not quelle or "HEBELTRADER" not in quelle:
+                    tk = _ticker(str(row.get("ticker") or check.get("ticker") or ""))
+                    if not tk:
                         continue
                     item = {
-                        "ticker": _ticker(tk),
-                        "name": str(row.get("name") or row.get("firmenname") or "").strip() or None,
+                        "ticker": tk,
+                        "name": str(row.get("name") or check.get("name") or "").strip() or None,
                         "direction": "Long",
-                        "trade_story_status": VALID_STATUS if status.endswith("A") else PREPARED_STATUS,
+                        "trade_story_status": VALID_STATUS if status == "KAUFKANDIDAT A" else PREPARED_STATUS,
                         "sources": ["Hebeltrader-Einzel-Check"],
                         "hebeltrader_status": status,
                     }
@@ -235,8 +241,8 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
                         if row.get(field) not in (None, "", []):
                             item[field] = row[field]
                     _merge(candidates, item)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"WARNUNG: HEBELTRADER-Einzelcheck fuer Trade-Story-Universum unlesbar: {exc}")
 
     # Bitcoin is a distinct source, not a stock setup and not a normal CRV
     # setup. Only confirmed Long events enter VALID; prealerts remain prepared.

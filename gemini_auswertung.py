@@ -2534,6 +2534,19 @@ def _extrahiere_makro_referenzwerte(makro_text):
             if m:
                 ref["perioden"][key] = float(m.group(1).replace(",", "."))
         referenzen[label.lower()] = ref
+        normalized_label = re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
+        treasury_aliases = {
+            "2y": ("us 2y treasury", "2y us treasury", "us 2 year treasury", "2 year us treasury", "2j us treasury", "us 2j treasury", "2j", "2y"),
+            "5y": ("us 5y treasury", "5y us treasury", "us 5 year treasury", "5 year us treasury", "5j us treasury", "us 5j treasury", "5j", "5y"),
+            "10y": ("us 10y treasury", "10y us treasury", "us 10 year treasury", "10 year us treasury", "10j us treasury", "us 10j treasury", "10j treasury", "10j", "10y"),
+            "30y": ("us 30y treasury", "30y us treasury", "us 30 year treasury", "30 year us treasury", "30j us treasury", "us 30j treasury", "30j treasury", "30j", "30y"),
+            "real10y": ("realzins 10y tips", "10y tips real yield", "10y real yield", "real 10y tips", "10j tips realzins", "realzins 10j tips", "10j realzins", "10y realzins"),
+        }
+        for aliases in treasury_aliases.values():
+            if normalized_label in aliases:
+                for alias in aliases:
+                    referenzen[alias] = ref
+                break
     return referenzen
 
 
@@ -2601,7 +2614,30 @@ def _sichere_makro_zahlen(text, makro_text):
         for start_pos, end_pos, segment_end, label, ref, segment in reversed(pieces):
             replacements = []
 
-            price_matches = list(price_re.finditer(segment))
+            # Treasury-/TIPS-Renditen werden von Gemini typischerweise als
+            # Prozentwerte geschrieben (z.B. "10J bei 4,97%"). Sie sind
+            # trotzdem Kurs-/Referenzwerte der jeweiligen Metrik und muessen
+            # gegen den autoritativen Briefing-Wert geprueft werden.
+            normalized_label = re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
+            treasury_metric = bool(re.fullmatch(r"(?:2|5|10|30)[jy]", normalized_label)) or any(
+                token in normalized_label for token in ("treasury", "tips", "realzins", "real yield")
+            )
+            if treasury_metric:
+                yield_matches = list(pct_re.finditer(segment))
+                if yield_matches:
+                    ym = yield_matches[0]
+                    try:
+                        old = float(ym.group("num").replace(",", "."))
+                    except ValueError:
+                        old = None
+                    if old is not None and abs(old - ref["kurs"]) >= 0.005:
+                        replacements.append((
+                            ym.start(), ym.end(),
+                            f"{ref['kurs']:.2f}".replace(".", ",") + "%",
+                        ))
+                        changes.append(f"{label}: Kurs {old} -> {ref['kurs']}")
+
+            price_matches = [] if treasury_metric else list(price_re.finditer(segment))
             if price_matches:
                 pm = price_matches[0]
                 try:
@@ -2894,6 +2930,26 @@ def _trade_story_kandidaten_schluessel(candidate):
     return {k for k in keys if k}
 
 
+def _trade_story_kandidaten_teile(candidate):
+    """Zerlegt eine Kandidatenangabe nur an eindeutigen Story-Trennern.
+
+    Besonders wichtig sind mehrere Titel mit Tickerangaben wie
+    ``A (AAA) | B (BBB)``. Jeder Teil wird spaeter separat gegen das
+    autoritative Universum geprueft. Ohne eindeutigen Trenner bleibt die
+    komplette Angabe bewusst ein Kandidat, damit Firmennamen nicht
+    versehentlich an Kommas/Bindestrichen zerlegt werden.
+    """
+    text = str(candidate or "").strip()
+    if not text:
+        return []
+    if len(re.findall(r"\(([A-Za-z0-9._=-]{1,30})\)", text)) >= 2:
+        parts = [p.strip() for p in re.split(r"\s*(?:\||;|\n)\s*", text) if p.strip()]
+        if len(parts) >= 2:
+            return parts
+    parts = [p.strip() for p in re.split(r"\s*(?:\||;)\s*", text) if p.strip()]
+    return parts or [text]
+
+
 def _trade_story_keys_treffen(candidate, universe):
     keys = _trade_story_kandidaten_schluessel(candidate)
     if keys & universe:
@@ -2901,13 +2957,18 @@ def _trade_story_keys_treffen(candidate, universe):
     normalized_candidate = _normalisiere_positionsname(candidate)
     if not normalized_candidate:
         return False
-    # Namen koennen in einer Story mit mehreren Titeln zusammenstehen. Ein
-    # einzelner autoritativer Name innerhalb des Kandidaten reicht dann als
-    # Verankerung; der Vergleich bleibt auf dem bereits gelieferten Universum.
     for key in universe:
         if len(key) >= 4 and (key in normalized_candidate or normalized_candidate in key):
             return True
     return False
+
+
+def _trade_story_alle_kandidaten_treffen(candidate, universe):
+    """Prueft jeden explizit getrennten Titel einer Story einzeln."""
+    teile = _trade_story_kandidaten_teile(candidate)
+    if not teile:
+        return False
+    return all(_trade_story_keys_treffen(teil, universe) for teil in teile)
 
 
 def _trade_story_zentrales_universum(eingabedateien):
@@ -2966,7 +3027,7 @@ def _trade_story_validierung(text, eingabedateien, beobachtungsliste_pfad=None):
         if st == "VALIDE SETUP":
             if not gelesene_quellen:
                 errors.append("Trade-Story %d: VALIDE SETUP nicht verifizierbar, weil keine autoritative Setup-Datei erfolgreich gelesen wurde." % idx)
-            elif not _trade_story_keys_treffen(candidate, valid_keys):
+            elif not _trade_story_alle_kandidaten_treffen(candidate, valid_keys):
                 errors.append(f"Trade-Story {idx}: VALIDE SETUP fuer '{candidate or 'unbekannter Kandidat'}' nicht in gueltigen autoritativen Setup-Zeilen gefunden.")
         else:
             if re.search(r"(?i)\b(?:kaufen|direkt(?:er|en)?\s+einstieg|jetzt\s+einsteigen|entry|buy)\b", story):
@@ -2981,9 +3042,9 @@ def _trade_story_validierung(text, eingabedateien, beobachtungsliste_pfad=None):
                 prepared_available = zentrale_verfuegbar or beobachtung_verfuegbar
                 if not prepared_available:
                     errors.append(f"Trade-Story {idx}: VORBEREITET nicht verifizierbar, weil das zentrale Trade-Story-Universum bzw. die aktuelle Beobachtungsliste fehlt oder unlesbar ist.")
-                elif not _trade_story_keys_treffen(candidate, prepared_keys):
+                elif not _trade_story_alle_kandidaten_treffen(candidate, prepared_keys):
                     errors.append(f"Trade-Story {idx}: VORBEREITET fuer '{candidate}' ist nicht im autoritativen Vorbereitungsuniversum verankert.")
-                elif _trade_story_keys_treffen(candidate, valid_keys):
+                elif _trade_story_alle_kandidaten_treffen(candidate, valid_keys):
                     errors.append(f"Trade-Story {idx}: VORBEREITET fuer '{candidate}' verweist bereits auf ein autoritatives VALIDE SETUP; verwende Status: VALIDE SETUP.")
 
     if fehlende_quellen and not gelesene_quellen:
@@ -3035,15 +3096,15 @@ def _trade_story_deterministische_reparatur(text, eingabedateien, beobachtungsli
             candidate = ""
 
         if status == "VALIDE SETUP":
-            if not gelesene_quellen or not _trade_story_keys_treffen(candidate, valid_keys):
+            if not gelesene_quellen or not _trade_story_alle_kandidaten_treffen(candidate, valid_keys):
                 status = "INTERESSANT"
         elif status == "VORBEREITET":
             prepared_keys = zentrale_prepared_keys if zentrale_verfuegbar else beobachtungs_keys
             prepared_available = zentrale_verfuegbar or beobachtung_verfuegbar
             if (not candidate or not prepared_available or
-                    not _trade_story_keys_treffen(candidate, prepared_keys)):
+                    not _trade_story_alle_kandidaten_treffen(candidate, prepared_keys)):
                 status = "INTERESSANT"
-            elif _trade_story_keys_treffen(candidate, valid_keys):
+            elif _trade_story_alle_kandidaten_treffen(candidate, valid_keys):
                 status = "VALIDE SETUP"
         elif status != "INTERESSANT":
             status = "INTERESSANT"

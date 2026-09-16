@@ -3844,7 +3844,14 @@ if __name__ == "__main__":
     # bleibt unverändert; dieses Exportformat verhindert, dass ein valides
     # Setup nur wegen der Präsentationsfilter für die Trade-Story verloren geht.
     try:
-        _trade_story_raw = df_s.reset_index(drop=True).copy()
+        _trade_story_raw = df_s.copy()
+        # Der Ticker ist die technische Identitaet des Rohuniversums. Der
+        # bestehende df_s verwendet ihn als Index; reset_index(drop=True) wuerde
+        # diese Identitaet unwiederbringlich entfernen und gleichnamige
+        # Wertpapiere spaeter im zentralen Universum verschmelzen.
+        if "Ticker" not in _trade_story_raw.columns:
+            _trade_story_raw.insert(0, "Ticker", [str(x) for x in _trade_story_raw.index])
+        _trade_story_raw = _trade_story_raw.reset_index(drop=True)
         _trade_story_raw.to_csv(
             f"Trade_Story_Setup_Rohuniversum({today}).csv",
             index=False, sep=';', encoding='utf-8-sig'
