@@ -94,6 +94,8 @@ def _result(message: str, signal: bool = False, **extra: Any) -> dict[str, Any]:
 def calculate_bitcoin_50w_sma(hist: pd.DataFrame, *, consume_cross: bool = True) -> dict[str, Any]:
     """Return current 50W-SMA status, pre-alert and newly confirmed cross.
 
+    Cross UP is the Bitcoin long/buy signal; cross DOWN is an exit/sell
+    signal. Only a completed weekly close can confirm either cross.
     consume_cross=True is used by the regular analysis. Benchmark snapshots
     may inspect the signal but must not consume/report it as delivered.
     """
@@ -174,6 +176,7 @@ def calculate_bitcoin_50w_sma(hist: pd.DataFrame, *, consume_cross: bool = True)
             message,
             signal=True,
             signal_type=f"CROSS_{direction}",
+            trade_action="LONG" if direction == "UP" else "EXIT",
             cross_date=event_date,
             weekly_close=float(new_event["Close"]),
             sma50w=float(new_event["SMA50W"]),

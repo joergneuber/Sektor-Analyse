@@ -45,6 +45,7 @@ import sys
 import glob
 import re
 import csv
+from trade_story_universum import write_trade_story_universe
 import time
 import random
 import json
@@ -104,6 +105,8 @@ BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
 DATEIMUSTER = {
     "briefing.txt": ["briefing.txt", "Briefing(*).txt"],
     "Setups(...).csv": ["Setups(*).csv"],
+    "Trade_Story_Setup_Rohuniversum(...).csv": ["Trade_Story_Setup_Rohuniversum(*).csv"],
+    "Trade_Story_Bitcoin(...).json": ["Trade_Story_Bitcoin(*).json"],
     "Performance(...).csv": ["Performance(*).csv"],
     "Performance_EU(...).csv": ["Performance_EU(*).csv"],
     "Offene Positionen+Check.csv": ["Offene Positionen+Check.csv"],
@@ -145,6 +148,7 @@ DATEIMUSTER = {
     # NEU: Live-Benchmark gegen MSCI World; wird als verbindlicher
     # Datenblock an Gemini uebergeben.
     "Benchmark_Live.txt": ["Benchmark_Live.txt"],
+    "Trade_Story_Universum(...).json": ["Trade_Story_Universum(*).json"],
 }
 # Diese Dateien MUESSEN vorhanden sein, sonst wird abgebrochen. Offene
 # Positionen und die beiden Trendwende-Dateien sind optional (siehe
@@ -1088,6 +1092,25 @@ def sammle_eingabedateien():
             if gefunden.get(key) is None:
                 gefunden[key] = pfad
 
+    # ZENTRALES TRADE-STORY-UNIVERSUM:
+    # täglich neu aus den bereits erzeugten Scanner-Ausgaben aufbauen.
+    # Es ist die deterministische Kandidaten-Handoff-Schicht zwischen
+    # Python-Scannern und Gemini. Ein Fehler beim optionalen Aggregator
+    # darf den Hauptlauf nicht blockieren; in diesem Fall bleibt die
+    # bisherige Validator-Logik als Sicherheitsnetz aktiv.
+    try:
+        heute = datetime.date.today().isoformat()
+        universe_path = f"Trade_Story_Universum({heute}).json"
+        write_trade_story_universe(
+            gefunden,
+            universe_path,
+            gefunden.get("Einzel-Check-Beobachtungsliste"),
+        )
+        gefunden["Trade_Story_Universum(...).json"] = universe_path
+        print(f"TRADE-STORY-UNIVERSUM: {universe_path} erzeugt.")
+    except Exception as exc:
+        print(f"WARNUNG: Zentrales Trade-Story-Universum konnte nicht erzeugt werden: {exc}")
+
     print("Gefundene Eingabedateien:")
     for name, pfad in gefunden.items():
         print(f"  - {name}: {pfad if pfad else '(nicht vorhanden, wird uebersprungen)'}")
@@ -1666,6 +1689,8 @@ def gemini_auswertung_starten():
                     "\n\n"
                     + sechs_fuenf_autoritaet + "\n\n"
                     "TRADE-STORY-EBENE: Die Auswertung muss die bereits im System verteilten Informationen zu einer nachvollziehbaren Trade-Story verbinden, ohne ein neues Handelssignal zu erzeugen. INTERESSANT bedeutet strategische These/Beobachtung; VORBEREITET bedeutet vorhandener Kandidat bzw. technische Trigger-Naehe ohne bestaetigtes Setup; VALIDE SETUP bedeutet ausschliesslich ein vom bestehenden regelbasierten Setup-System bestaetigtes Setup. Nutze fuer die Story nur bereitgestellte Daten. Zeige die Kette Thema -> Treiber -> Beleg -> Sektor/Asset -> Kandidat -> Status -> naechster Trigger -> Risiko. Ein VORBEREITET-Titel darf nicht als Kauf dargestellt werden. Ein VALIDE-SETUP-Status darf nur aus den bestehenden Setup-/CRV-Ausgaben uebernommen werden; Gemini darf keine Filter, CRV-Regeln oder technische Schwellen veraendern. "
+                     "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Kandidaten-Handoff-Schicht fuer 6.1. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. C/KEIN KANDIDAT/Langfrist sind keine konkreten Kandidatenquellen. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
+                     "BITCOIN-REGEL IM TRADE-STORY-UNIVERSUM: Pi-Cycle-Bottom DOWN-Cross (150-EMA von oben nach unten durch 0.745*471SMA) ist LONG/AKKUMULATION und kann VALIDE SETUP sein. Pi-Cycle UP-Cross beendet die Akkumulationsphase und ist kein generisches SELL. 50W-SMA UP-Cross ist LONG/BUY; 50W-SMA DOWN-Cross ist EXIT/SELL und daher kein Long-Kandidat. Verwende ausschliesslich die strukturierten Bitcoin-Felder im Tagesuniversum. "
                     "HEBELTRADER-EINZELCHECK: Falls die bereitgestellte Datei "
                     "'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte "
                     "Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und "
@@ -2730,26 +2755,34 @@ def _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet):
 
 
 def _trade_story_setup_universum(eingabedateien):
-    """Liest ausschliesslich nachweislich gueltige regelbasierte Setups.
+    """Liest das zentrale, taeglich neu erzeugte Trade-Story-Universum.
 
-    Die vier Setup-Dateien haben unterschiedliche Statusfelder. Deshalb wird
-    nicht mehr nur die Existenz eines Namens/Tickers als Autoritaetsbeleg
-    verwendet:
-      - Setups(...).csv: Status muss KAUFKANDIDAT A sein.
-      - Trendwende_Setups(...).csv: jede vorhandene Datenzeile ist ein vom
-        Trendwende-Scanner ausgegebenes Setup.
-      - Short_Setups(...).csv: Status2 muss VALIDE sein.
-      - Edelmetalle_Setups(...).csv: Status2 muss VALIDE sein.
-
-    Rueckgabe: (gueltige_schluessel, gelesene_quellen, fehlende_quellen).
+    Fallback: Wenn das zentrale JSON fehlt (z.B. Altbestand/Test), wird die
+    bisherige direkte CSV-Validierung verwendet. So bleibt die Validierung
+    rueckwaertskompatibel, ohne die neue Architektur zu umgehen.
     """
+    central = eingabedateien.get("Trade_Story_Universum(...).json")
+    if central and os.path.isfile(central):
+        try:
+            with open(central, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            result = set()
+            candidates = data.get("candidates", []) if isinstance(data, dict) else []
+            for item in candidates:
+                if not isinstance(item, dict) or item.get("trade_story_status") != "VALIDE SETUP":
+                    continue
+                for value in (item.get("ticker"), item.get("name")):
+                    if value:
+                        result.add(_normalisiere_ticker(value))
+                        result.add(_normalisiere_positionsname(value))
+            return result, {"Trade_Story_Universum(...).json"}, set()
+        except Exception as exc:
+            print(f"WARNUNG: Zentrales Trade-Story-Universum konnte nicht gelesen werden: {central}: {exc}")
+
     result = set()
     gelesene_quellen = set()
     fehlende_quellen = set()
     specs = (
-        # Normale Setups verwenden im realen Tagesformat Status2=VALIDE.
-        # A-Kandidat ist eine Kategoriezuordnung der Beobachtungsliste, nicht
-        # die einzige Definition eines bestaetigten technischen Setups.
         ("Setups(...).csv", "status2_or_status", "VALIDE"),
         ("Trendwende_Setups(...).csv", "presence", None),
         ("Short_Setups(...).csv", "status2", "VALIDE"),
@@ -2777,7 +2810,6 @@ def _trade_story_setup_universum(eingabedateien):
                     raise ValueError("weder Status2- noch Status-Spalte vorhanden")
                 if mode == "status2" and "status2" not in lower_fields:
                     raise ValueError("Status2-Spalte fehlt")
-
                 rows_usable = 0
                 for row in reader:
                     if mode == "status2_or_status":
@@ -2786,8 +2818,7 @@ def _trade_story_setup_universum(eingabedateien):
                         if not (status2 == required_status or status == "KAUFKANDIDAT A"):
                             continue
                     elif mode == "status2":
-                        status2 = str(row.get(lower_fields["status2"]) or "").strip().upper()
-                        if status2 != required_status:
+                        if str(row.get(lower_fields["status2"]) or "").strip().upper() != required_status:
                             continue
                     rows_usable += 1
                     for field in name_fields:
@@ -2807,7 +2838,9 @@ def _trade_story_setup_universum(eingabedateien):
 
 
 def _trade_story_beobachtung_universum(beobachtungsliste_pfad):
-    """Liest das aktuelle Beobachtungsuniversum fuer INTERESSANT/VORBEREITET."""
+    """Liest das aktuelle Beobachtungsuniversum fuer vorbereitete A/B-Kandidaten.
+    C und KEIN KANDIDAT sind keine Trade-Story-Kandidaten.
+    """
     result = set()
     if not beobachtungsliste_pfad or not os.path.isfile(beobachtungsliste_pfad):
         return result, False
@@ -2820,7 +2853,7 @@ def _trade_story_beobachtung_universum(beobachtungsliste_pfad):
             if not isinstance(eintrag, dict):
                 continue
             status = str(eintrag.get("status", "")).strip().upper()
-            if status in {"KAUFKANDIDAT A", "KAUFKANDIDAT B", "KAUFKANDIDAT C", "KEIN KANDIDAT"}:
+            if status in {"KAUFKANDIDAT A", "KAUFKANDIDAT B"}:
                 result.add(_normalisiere_ticker(ticker))
                 for key in ("name", "firmenname"):
                     if eintrag.get(key):
@@ -2877,6 +2910,37 @@ def _trade_story_keys_treffen(candidate, universe):
     return False
 
 
+def _trade_story_zentrales_universum(eingabedateien):
+    """Liest valid/prepared Kandidaten aus dem zentralen Tages-Snapshot."""
+    path = eingabedateien.get("Trade_Story_Universum(...).json")
+    if not path or not os.path.isfile(path):
+        return set(), set(), False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        valid, prepared = set(), set()
+        for item in data.get("candidates", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            item_status = item.get("trade_story_status")
+            # A directional conflict is neither valid nor prepared. It must
+            # never be silently downgraded to VORBEREITET.
+            if item_status == "STATUSKONFLIKT":
+                continue
+            if item_status not in {"VALIDE SETUP", "VORBEREITET"}:
+                continue
+            target = valid if item_status == "VALIDE SETUP" else prepared
+            for value in (item.get("ticker"), item.get("name")):
+                if value:
+                    text = str(value).strip()
+                    target.add(_normalisiere_ticker(text))
+                    target.add(_normalisiere_positionsname(text))
+        return valid, prepared, True
+    except Exception as exc:
+        print(f"WARNUNG: Trade-Story-Universum fuer Validator unlesbar: {path}: {exc}")
+        return set(), set(), False
+
+
 def _trade_story_validierung(text, eingabedateien, beobachtungsliste_pfad=None):
     """Validiert Status, Kaufgrenze und autoritative Kandidatenherkunft."""
     stories = _trade_story_bloecke(text)
@@ -2884,6 +2948,9 @@ def _trade_story_validierung(text, eingabedateien, beobachtungsliste_pfad=None):
         return False, ["Abschnitt 6.1 mit perspektivischen Trade-Story-Eintraegen fehlt oder ist nicht parsebar."]
     errors = []
     valid_keys, gelesene_quellen, fehlende_quellen = _trade_story_setup_universum(eingabedateien)
+    zentrale_valid_keys, zentrale_prepared_keys, zentrale_verfuegbar = _trade_story_zentrales_universum(eingabedateien)
+    if zentrale_verfuegbar:
+        valid_keys = zentrale_valid_keys
     beobachtungs_keys, beobachtung_verfuegbar = _trade_story_beobachtung_universum(beobachtungsliste_pfad)
 
     for idx, story in enumerate(stories, 1):
@@ -2910,10 +2977,12 @@ def _trade_story_validierung(text, eingabedateien, beobachtungsliste_pfad=None):
             # Titel/Assets ausserhalb der technischen Beobachtungsliste nennen.
             # Nur VORBEREITET braucht einen bestehenden Kandidaten.
             if st == "VORBEREITET" and candidate:
-                if not beobachtung_verfuegbar:
-                    errors.append(f"Trade-Story {idx}: VORBEREITET nicht verifizierbar, weil die aktuelle Beobachtungsliste fehlt oder unlesbar ist.")
-                elif not _trade_story_keys_treffen(candidate, beobachtungs_keys):
-                    errors.append(f"Trade-Story {idx}: VORBEREITET fuer '{candidate}' ist nicht in der aktuellen Beobachtungsliste verankert.")
+                prepared_keys = zentrale_prepared_keys if zentrale_verfuegbar else beobachtungs_keys
+                prepared_available = zentrale_verfuegbar or beobachtung_verfuegbar
+                if not prepared_available:
+                    errors.append(f"Trade-Story {idx}: VORBEREITET nicht verifizierbar, weil das zentrale Trade-Story-Universum bzw. die aktuelle Beobachtungsliste fehlt oder unlesbar ist.")
+                elif not _trade_story_keys_treffen(candidate, prepared_keys):
+                    errors.append(f"Trade-Story {idx}: VORBEREITET fuer '{candidate}' ist nicht im autoritativen Vorbereitungsuniversum verankert.")
                 elif _trade_story_keys_treffen(candidate, valid_keys):
                     errors.append(f"Trade-Story {idx}: VORBEREITET fuer '{candidate}' verweist bereits auf ein autoritatives VALIDE SETUP; verwende Status: VALIDE SETUP.")
 
@@ -2950,6 +3019,9 @@ def _trade_story_deterministische_reparatur(text, eingabedateien, beobachtungsli
         )
 
     valid_keys, gelesene_quellen, _ = _trade_story_setup_universum(eingabedateien)
+    zentrale_valid_keys, zentrale_prepared_keys, zentrale_verfuegbar = _trade_story_zentrales_universum(eingabedateien)
+    if zentrale_verfuegbar:
+        valid_keys = zentrale_valid_keys
     beobachtungs_keys, beobachtung_verfuegbar = _trade_story_beobachtung_universum(beobachtungsliste_pfad)
 
     repaired = []
@@ -2966,8 +3038,10 @@ def _trade_story_deterministische_reparatur(text, eingabedateien, beobachtungsli
             if not gelesene_quellen or not _trade_story_keys_treffen(candidate, valid_keys):
                 status = "INTERESSANT"
         elif status == "VORBEREITET":
-            if (not candidate or not beobachtung_verfuegbar or
-                    not _trade_story_keys_treffen(candidate, beobachtungs_keys)):
+            prepared_keys = zentrale_prepared_keys if zentrale_verfuegbar else beobachtungs_keys
+            prepared_available = zentrale_verfuegbar or beobachtung_verfuegbar
+            if (not candidate or not prepared_available or
+                    not _trade_story_keys_treffen(candidate, prepared_keys)):
                 status = "INTERESSANT"
             elif _trade_story_keys_treffen(candidate, valid_keys):
                 status = "VALIDE SETUP"

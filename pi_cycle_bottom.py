@@ -5,12 +5,12 @@ TradingDigits variant used here:
 - 471-day SMA * 0.745 (reference)
 
 Both confirmed cross directions are detected:
-- 150 EMA crosses UP through the reference -> BUY information
-- 150 EMA crosses DOWN through the reference -> SELL information
+- 150 EMA crosses DOWN through the reference -> BUY / LONG / accumulation
+- 150 EMA crosses UP through the reference -> end of accumulation / parabolic-phase information
 
 Only completed BTC daily candles are used.
-The feature is informational only and never changes CRV, setup scores,
-filters, trade decisions, or intraday logic.
+The indicator direction is authoritative for the Bitcoin Trade-Story universe,
+while the raw calculation remains independent of equity CRV/setup filters.
 
 Weekend handling:
 BTC trades 24/7 while the main analysis runs Monday-Friday. The module
@@ -159,10 +159,14 @@ def calculate_pi_cycle_bottom(hist: pd.DataFrame) -> dict[str, Any]:
 
     events = values[values["cross_up"] | values["cross_down"]].copy()
 
+    current_diff = float(values.iloc[-1]["EMA150"] - values.iloc[-1]["Reference"])
+    current_state = "ACCUMULATION" if current_diff < 0 else "ABOVE_REFERENCE"
     if events.empty:
         return {
             "ok": True,
             "signal": False,
+            "signal_type": "STATUS",
+            "state": current_state,
             "message": "Bitcoin Pi-Cycle Bottom: kein neuer Cross.",
             "date": values.index[-1].date(),
             "close": float(values.iloc[-1]["Close"]),
@@ -190,9 +194,13 @@ def calculate_pi_cycle_bottom(hist: pd.DataFrame) -> dict[str, Any]:
         events_new = events[events.index.normalize() >= cutoff.normalize()]
 
     if events_new.empty:
+        current_diff = float(values.iloc[-1]["EMA150"] - values.iloc[-1]["Reference"])
+        current_state = "ACCUMULATION" if current_diff < 0 else "ABOVE_REFERENCE"
         return {
             "ok": True,
             "signal": False,
+            "signal_type": "STATUS",
+            "state": current_state,
             "message": "Bitcoin Pi-Cycle Bottom: kein neuer Cross.",
             "date": values.index[-1].date(),
             "close": float(values.iloc[-1]["Close"]),
@@ -204,26 +212,31 @@ def calculate_pi_cycle_bottom(hist: pd.DataFrame) -> dict[str, Any]:
     event_idx = events_new.index[-1]
     event = events_new.iloc[-1]
 
-    signal = "BUY" if bool(event["cross_up"]) else "SELL"
+    # Pi Cycle Bottom is directionally opposite to a conventional momentum cross:
+    # crossing DOWN through 0.745 * 471SMA is the bottom/accumulation long signal.
+    # Crossing UP ends the accumulation phase; it is not a new bottom and not a
+    # generic SELL signal.
+    signal = "BOTTOM_LONG" if bool(event["cross_down"]) else "ACCUMULATION_END"
     event_date = event_idx.date()
 
     state["last_reported_cross_date"] = str(event_date)
     state["last_signal"] = signal
     _save_state(state)
 
-    if signal == "BUY":
+    if signal == "BOTTOM_LONG":
         message = (
-            "🟦 BITCOIN PI-CYCLE BOTTOM → KAUFSIGNAL: "
+            "🟦 BITCOIN PI-CYCLE BOTTOM → LONG-/AKKUMULATIONSSIGNAL: "
             f"150-EMA kreuzt 471-SMA × {PI_SLOW_MULTIPLIER:.3f} "
-            f"von unten nach oben. Cross-Datum: "
+            f"von oben nach unten. Cross-Datum: "
             f"{event_date.strftime('%d.%m.%Y')} "
             f"(BTC {float(event['Close']):,.0f} USD)."
         )
     else:
         message = (
-            "🔻 BITCOIN PI-CYCLE BOTTOM → VERKAUFSSIGNAL: "
+            "🟢 BITCOIN PI-CYCLE → AKKUMULATION BEENDET / "
+            "BEGINN PARABOLISCHE PHASE: "
             f"150-EMA kreuzt 471-SMA × {PI_SLOW_MULTIPLIER:.3f} "
-            f"von oben nach unten. Cross-Datum: "
+            f"von unten nach oben. Cross-Datum: "
             f"{event_date.strftime('%d.%m.%Y')} "
             f"(BTC {float(event['Close']):,.0f} USD)."
         )
@@ -232,6 +245,8 @@ def calculate_pi_cycle_bottom(hist: pd.DataFrame) -> dict[str, Any]:
         "ok": True,
         "signal": True,
         "signal_type": signal,
+        "trade_action": "LONG" if signal == "BOTTOM_LONG" else "PHASE_CHANGE",
+        "state": "ACCUMULATION" if signal == "BOTTOM_LONG" else "PARABOLIC_PHASE",
         "date": event_date,
         "close": float(event["Close"]),
         "ema150": float(event["EMA150"]),

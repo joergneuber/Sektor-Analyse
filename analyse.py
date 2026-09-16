@@ -2814,7 +2814,7 @@ def fetch_eu_batch(ticker_liste):
     return ergebnis
 
 
-def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
+def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrader=True):
     upside_potenzial = None
     # Firmennamen abrufen (mit Retry, siehe _hole_firma_name)
     firma_name = _hole_firma_name(ticker)
@@ -2920,7 +2920,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
 
         # Hebeltrader-Kriterien 1-4 (NEU 07.08.2026) - vor jedem moeglichen
         # fruehen Abbruch, damit auch spaeter verworfene Titel erfasst werden
-        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "US", "USD", data, entry, stop)
+        if collect_hebeltrader:
+            _hebeltrader_teilkriterien(ticker, firma_name, sektor, "US", "USD", data, entry, stop)
 
         # MACD Berechnung
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
@@ -3221,7 +3222,7 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None):
         funnel_zaehle("fehler")
         return None
 
-def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
+def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None, collect_hebeltrader=True):
     """EU-Variante von analyze_a_setup: identische Analyse-Logik (RSI, EMAs, MACD,
     Stochastik, Breakout/Pullback-Filter, Momentum-Kriterien, CRV, setup-spezifische
     Stop/TP-Logik), aber Kursdaten via yfinance statt Alpaca, da Alpaca DAX-Werte
@@ -3319,7 +3320,8 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None):
 
         # Hebeltrader-Kriterien 1-4 (NEU 07.08.2026) - EU-Pipeline nutzt
         # durchgaengig EUR (siehe dax_aktien-Definition weiter oben)
-        _hebeltrader_teilkriterien(ticker, firma_name, sektor, "EU", "EUR", data, entry, stop)
+        if collect_hebeltrader:
+            _hebeltrader_teilkriterien(ticker, firma_name, sektor, "EU", "EUR", data, entry, stop)
 
         exp1 = data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = data['Close'].ewm(span=26, adjust=False).mean()
@@ -3630,23 +3632,38 @@ if __name__ == "__main__":
     # simplen Funktion statt Wiederverwendung von get_index_benchmark_yf.
     eurusd_text = get_eurusd_wechselkurs()
     btc_text = get_index_benchmark_yf("BTC-USD", "Bitcoin")
-    # BITCOIN PI-CYCLE BOTTOM (NEU): reine Info. Nutzt dieselben bereits
-    # gecachten BTC-Tagesdaten wie der Benchmark; keine Auswirkung auf
-    # Setup-Score, CRV, Filter, Marktumfeld oder Intraday. Signal nur bei
-    # bestaetigtem Tages-Cross: 150-EMA von unten ueber 471-SMA x 0.745.
+    # BITCOIN PI-CYCLE BOTTOM: eigener regelbasierter Bitcoin-Signalzweig.
+    # DOWN-Cross des 150-EMA durch 0.745 * 471SMA = Bottom/Long/Akkumulation.
+    # UP-Cross beendet die Akkumulationsphase und ist kein generisches SELL.
     btc_hist = _hole_kursdaten_gecached("BTC-USD")
     pi_cycle_result = calculate_pi_cycle_bottom(btc_hist)
     pi_cycle_text = pi_cycle_result.get("message", "Bitcoin Pi-Cycle Bottom: nicht verfuegbar")
 
-    # BITCOIN 50-WOCHEN-SMA (NEU): reine Info. Basis ist ausschliesslich
-    # der BTC/USD-Wochenchart. Der offizielle Cross wird nur anhand eines
-    # abgeschlossenen Wochen-Close erkannt. Ein separater Voralarm wird
-    # bereits bei Annäherung an die 50W-SMA ausgegeben. Keine Auswirkung auf
-    # Setup-Score, CRV, Filter, Marktumfeld oder Intraday-Logik.
+    # BITCOIN 50-WOCHEN-SMA: eigener regelbasierter Bitcoin-Signalzweig.
+    # UP-Cross = Long/BUY; DOWN-Cross = Exit-/Risiko-Kontext. Ein separater
+    # Voralarm bleibt Vorbereitung und ersetzt keinen bestätigten Cross.
     btc_50w_sma_result = calculate_bitcoin_50w_sma(btc_hist, consume_cross=True)
     btc_50w_sma_text = btc_50w_sma_result.get(
         "message", "Bitcoin 50W-SMA: nicht verfuegbar"
     )
+
+    # Bitcoin-Signale werden als strukturierter, taeglich neu erzeugter
+    # Trade-Story-Datenblock persistiert. Der Export ist reproduzierbar und
+    # entkoppelt die Gemini-Ebene von der reinen Textdarstellung im Briefing.
+    try:
+        _btc_trade_story = {
+            "date": today,
+            "asset": "Bitcoin",
+            "ticker": "BTC-USD",
+            "pi_cycle_bottom": pi_cycle_result,
+            "sma50w": btc_50w_sma_result,
+        }
+        with open(f"Trade_Story_Bitcoin({today}).json", "w", encoding="utf-8") as _bf:
+            json.dump(_btc_trade_story, _bf, ensure_ascii=False, indent=2, default=str)
+            _bf.write("\n")
+        print("TRADE-STORY-BITCOIN: strukturierter Bitcoin-Datenblock exportiert.")
+    except Exception as _e:
+        print(f"WARNUNG: Trade-Story-Bitcoin-Export fehlgeschlagen: {_e}")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
@@ -3664,21 +3681,40 @@ if __name__ == "__main__":
     print("Starte Setup-Analyse...")
     blacklist = ["SPLK"] 
     
-    # Aufgabenliste erstellen (Top 8 Sektoren, konsistent zum finalen Sektor-Filter unten)
-    tasks = []
+    # Aufgabenlisten: Die bestehende Hebeltrader-Quelle bleibt exakt auf dem
+    # bisherigen Top-Sektor-Universum begrenzt. Fuer das normale technische
+    # Setup-Rohuniversum werden zusaetzlich ALLE Sektoren analysiert, damit
+    # valide Setups aus Nicht-Top-Sektoren nicht schon bei der Datenerhebung
+    # verloren gehen. Die spaetere Setups.csv-Filterung bleibt unveraendert.
+    top_tasks = []
     for _, row in df_perf.head(8).iterrows():
+        aktien_liste = sektoren_aktien.get(row['Ticker'], [])
+        for s in aktien_liste:
+            if s not in blacklist:
+                top_tasks.append((s, row['Sektor']))
+    top_tasks_eu = []
+    for _, row in df_perf_eu.head(5).iterrows():
+        aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
+        for s in aktien_liste_eu:
+            top_tasks_eu.append((s, row['Sektor']))
+
+    tasks = []
+    for _, row in df_perf.iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
         for s in aktien_liste:
             if s not in blacklist:
                 tasks.append((s, row['Sektor']))
 
-    # EU-Aufgabenliste erstellen (Top 5 von 13 ETF-Sektoren - GEAENDERT 09.08.2026:
-    # eu_sektoren_etf deckt jetzt alle 13 dax_aktien-Kategorien ab, siehe dortige Historie)
+    # EU-Aufgabenliste: ALLE verfuegbaren EU-Sektoren. Die normale Ausgabe wird
+    # spaeter weiterhin auf Top-5 begrenzt; das Rohuniversum nicht.
     tasks_eu = []
-    for _, row in df_perf_eu.head(5).iterrows():
+    for _, row in df_perf_eu.iterrows():
         aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
         for s in aktien_liste_eu:
             tasks_eu.append((s, row['Sektor']))
+
+    hebeltrader_us_tickers = {t for t, _ in top_tasks}
+    hebeltrader_eu_tickers = {t for t, _ in top_tasks_eu}
 
     # KEIN künstliches Ticker-Budget mehr.
     # Seit dem 09.08.2026 werden die Kursdaten über robuste Sammelabrufe
@@ -3713,7 +3749,8 @@ if __name__ == "__main__":
         # Fallback zurueck statt zu crashen.
         results = list(executor.map(
             lambda p: analyze_a_setup(*p, spy_close=spy_close,
-                                      data=us_daten[p[0]].copy() if p[0] in us_daten else None),
+                                      data=us_daten[p[0]].copy() if p[0] in us_daten else None,
+                                      collect_hebeltrader=p[0] in hebeltrader_us_tickers),
             tasks))
 
     # Parallel mit max_workers=10 ausführen (EU)
@@ -3729,7 +3766,8 @@ if __name__ == "__main__":
             # mehrfach vorkommendem Ticker ueber mehrere Sektoren)
             results_eu = list(executor.map(
                 lambda p: analyze_a_setup_eu(*p, eu_bench_close=eu_bench_close,
-                                             data=eu_daten[p[0]].copy() if p[0] in eu_daten else None),
+                                             data=eu_daten[p[0]].copy() if p[0] in eu_daten else None,
+                                             collect_hebeltrader=p[0] in hebeltrader_eu_tickers),
                 tasks_eu))
         
     # Ergebnisse filtern (None-Werte entfernen) und US+EU zusammenführen
@@ -3799,6 +3837,24 @@ if __name__ == "__main__":
         df_s[['Status2', 'Status_Grund']] = df_s.apply(update_status_logic, axis=1)
     
     setups_vor_filter = len(df_s)  # für die Funnel-Statistik (NEU 28.07.2026)
+
+    # AUTORITATIVES TRADE-STORY-ROHUNIVERSUM:
+    # Vor dem Top-Sektor-/Trend-Filter werden alle vom bestehenden Setup-
+    # Regelwerk erzeugten Zeilen separat gesichert. Die normale Setups.csv
+    # bleibt unverändert; dieses Exportformat verhindert, dass ein valides
+    # Setup nur wegen der Präsentationsfilter für die Trade-Story verloren geht.
+    try:
+        _trade_story_raw = df_s.reset_index(drop=True).copy()
+        _trade_story_raw.to_csv(
+            f"Trade_Story_Setup_Rohuniversum({today}).csv",
+            index=False, sep=';', encoding='utf-8-sig'
+        )
+        print(
+            f"TRADE-STORY-ROHUNIVERSUM: {len(_trade_story_raw)} Setup-Zeilen "
+            f"vor Top-Sektor-/Trend-Filter exportiert."
+        )
+    except Exception as _e:
+        print(f"WARNUNG: Trade-Story-Rohuniversum konnte nicht exportiert werden: {_e}")
 
     # Hebeltrader-Finalisierung (NEU 07.08.2026) - Stufe 2: df_perf/df_perf_eu
     # liegen jetzt vollstaendig vor, Kriterium 5 (Sektor-Vergleich) kann
