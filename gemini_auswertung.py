@@ -1913,6 +1913,22 @@ def gemini_auswertung_starten():
                 text = text[:original.start()] + repaired.group(0).rstrip() + "\n\n" + text[original.end():]
                 print("  Trade-Story-Reparatur erfolgreich.")
 
+            # FINALER MAKRO-ZAHLEN-GATE: Eine eventuelle Trade-Story-Reparatur
+            # kann den Text nach der ersten Zahlenabsicherung erneut erzeugen.
+            # Deshalb werden die semantisch kritischen Angaben unmittelbar vor
+            # der deterministischen Punkt-7-Erzeugung nochmals gegen das
+            # aktuelle Makro-Briefing gebunden. So gilt auch nach jeder
+            # Reparatur: Label + Instrument + Einheit + Zeitraum bleiben gekoppelt.
+            if makro_pfad:
+                text, final_makro_korrekturen = _sichere_makro_kritische_kompaktangaben(
+                    text, makro_text
+                )
+                if final_makro_korrekturen:
+                    print(
+                        f"  FINAL-MAKRO-ZAHLEN-GATE: {len(final_makro_korrekturen)} "
+                        "semantisch gebundene Angaben korrigiert."
+                    )
+
         except Exception as e:
             fehlertext = str(e)
             print(f"  Technischer Fehler beim API-Call: {e}")
@@ -2720,74 +2736,273 @@ def _sichere_makro_zahlen(text, makro_text):
 
 
 def _sichere_makro_kritische_kompaktangaben(text, makro_text):
-    """Bindet kompakte Treasury-, Spread- und Metallangaben an ihr Label/ihre Periode."""
+    """Bindet kompakte Makroangaben strikt an Label, Instrument und Zeitraum.
+
+    Wichtig: Eine Zeile kann mehrere Metriken enthalten (z.B. Gold, Silber,
+    Platin und Palladium). Deshalb wird jede Metrik zuerst auf ihren eigenen
+    Textabschnitt bis zur naechsten Metrik begrenzt. So kann ein Wert nie aus
+    Versehen auf die benachbarte Metrik uebertragen werden.
+    """
     if not text or not makro_text:
         return text, []
     refs = _extrahiere_makro_referenzwerte(makro_text)
     changes = []
+
     def ref_for(*aliases):
         for alias in aliases:
-            if refs.get(alias.lower()):
-                return refs[alias.lower()]
+            ref = refs.get(alias.lower())
+            if ref:
+                return ref
+        normalized_refs = {re.sub(r"[^a-z0-9]+", "", key.casefold()): ref for key, ref in refs.items()}
+        for alias in aliases:
+            ref = normalized_refs.get(re.sub(r"[^a-z0-9]+", "", alias.casefold()))
+            if ref:
+                return ref
         return None
-    treasury = {k: ref_for(*aliases) for k, aliases in {
-        "2j": ("2j", "2y", "us 2y treasury"),
-        "5j": ("5j", "5y", "us 5y treasury"),
-        "10j": ("10j", "10y", "us 10y treasury"),
-        "30j": ("30j", "30y", "us 30y treasury"),
-    }.items()}
+
+    treasury = {
+        "2j": ref_for("2j", "2y", "us 2y treasury"),
+        "5j": ref_for("5j", "5y", "us 5y treasury"),
+        "10j": ref_for("10j", "10y", "us 10y treasury"),
+        "30j": ref_for("30j", "30y", "us 30y treasury"),
+    }
     tips = ref_for("realzins 10y tips", "realzins 10j tips", "10y tips real yield")
+
     spread = None
     m = re.search(r"(?im)^2Y-10Y Spread:\s*([-+]?\d+(?:[.,]\d+)?)", makro_text)
     if m:
         spread = float(m.group(1).replace(",", "."))
+
     pct = r"[-+]?\d{1,3}(?:[.,]\d{1,6})?"
+    num = r"[-+]?\d[\d.,]*"
+    metals = {name: ref_for(name) for name in ("gold", "silber", "platin", "palladium")}
+    indices = {
+        r"DAX": ref_for("dax"),
+        r"EuroStoxx\s*50": ref_for("eurostoxx 50"),
+        r"Nikkei\s*225": ref_for("nikkei 225"),
+    }
+    lme_copper = ref_for("lme kupfer")
+
+    def _parse_number(raw):
+        value = str(raw or "").strip().replace(" ", "")
+        if not value:
+            raise ValueError("empty number")
+        sign = ""
+        if value[0] in "+-":
+            sign, value = value[0], value[1:]
+        if "," in value and "." in value:
+            # German form: 25.402,28
+            if value.rfind(",") > value.rfind("."):
+                value = value.replace(".", "").replace(",", ".")
+            else:
+                value = value.replace(",", "")
+        elif "," in value:
+            value = value.replace(",", ".")
+        elif value.count(".") > 1:
+            value = value.replace(".", "")
+        return float(sign + value)
+
+    def _fmt(value):
+        return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
     out = []
     for line in text.splitlines():
-        original = line
-        # Label follows percentage: 4,43% (2J), ...
-        for label, ref in treasury.items():
-            if not ref: continue
-            label_alias = "(?:" + label + "|" + label.replace("j", "y") + ")"
-            pat = re.compile(rf"(?P<num>{pct})\s*%\s*\(\s*{label_alias}\s*\)", re.I)
-            def r1(m, ref=ref, label=label):
-                old=float(m.group('num').replace(',','.')); target=ref['kurs']
-                if abs(old-target)>=0.005: changes.append(f"{label}: Kurs {old} -> {target}")
-                return f"{target:.2f}".replace('.',',')+f"% ({m.group(0)[m.group(0).rfind("(")+1:-1].strip().upper()})"
-            line=pat.sub(r1,line)
-        # Label precedes percentage: 10J Treasury bei 4,97%; TIPS bei 4,97%
-        for aliases, ref in [
-            (("10j us treasury","10y us treasury","10j treasury","10y treasury"),treasury['10j']),
-            (("2j us treasury","2y us treasury","2j treasury","2y treasury"),treasury['2j']),
-            (("5j us treasury","5y us treasury","5j treasury","5y treasury"),treasury['5j']),
-            (("30j us treasury","30y us treasury","30j treasury","30y treasury"),treasury['30j']),
-            (("realzins 10y tips","realzins 10j tips","10y tips real yield"),tips),
-        ]:
-            if not ref: continue
-            ap='|'.join(re.escape(a) for a in aliases)
-            pat=re.compile(rf"(?P<label>{ap})(?P<middle>[^\n%]{{0,45}}?)(?P<num>{pct})\s*%",re.I)
-            def r2(m, ref=ref):
-                old=float(m.group('num').replace(',','.')); target=ref['kurs']
-                if abs(old-target)>=0.005: changes.append(f"Treasury/TIPS: Kurs {old} -> {target}")
-                return m.group('label')+m.group('middle')+f"{target:.2f}".replace('.',',')+'%'
-            line=pat.sub(r2,line)
-        if spread is not None and re.search(r"2Y[- ]10Y[- ]Spread", line, re.I):
-            line=re.sub(rf"(2Y[- ]10Y[- ]Spread\s*(?:bei|von|ist|=|:)\s*){pct}\s*%?",lambda m:m.group(1)+f"{spread:.2f}".replace('.',',')+" %",line,flags=re.I)
-        for name in ('gold','silber','platin','palladium'):
-            ref=ref_for(name)
-            if not ref or not re.search(rf"\b{name}\b",line,re.I): continue
-            for key, aliases in (("5T",r"(?:5\s+Tagen?|5\s+Handelstagen?|5T)"),("1M",r"(?:4\s+Wochen?|4-Wochen|1\s+Monat|1M)")):
-                target=ref['perioden'].get(key)
-                if target is None: continue
-                pat=re.compile(rf"(?P<num>{pct})\s*%\s*(?P<period>{aliases})",re.I)
-                def r3(m,target=target,key=key,name=name):
-                    old=float(m.group('num').replace(',','.'))
-                    if abs(old-target)>=0.005: changes.append(f"{name}: {key} {old} -> {target}")
-                    return f"{target:+.2f}".replace('.',',')+'% '+m.group('period')
-                line=pat.sub(r3,line)
-        out.append(line)
-    return '\n'.join(out), changes
+        # --- Treasury / TIPS: each label owns only the text until the next
+        # bond metric label. TIPS is handled before generic 10Y matching so
+        # "10Y TIPS" can never be mistaken for the nominal 10Y Treasury.
+        bond_labels = [
+            (r"10Y\s*TIPS\s*Realzins", tips, "10Y TIPS"),
+            (r"Realzins\s*10Y\s*TIPS", tips, "10Y TIPS"),
+            (r"US\s*2Y\s*Treasury", treasury["2j"], "2Y"),
+            (r"US\s*5Y\s*Treasury", treasury["5j"], "5Y"),
+            (r"US\s*10Y\s*Treasury", treasury["10j"], "10Y"),
+            (r"US\s*30Y\s*Treasury", treasury["30j"], "30Y"),
+            (r"\b2(?:J|Y)\b", treasury["2j"], "2Y"),
+            (r"\b5(?:J|Y)\b", treasury["5j"], "5Y"),
+            (r"\b10(?:J|Y)\b", treasury["10j"], "10Y"),
+            (r"\b30(?:J|Y)\b", treasury["30j"], "30Y"),
+        ]
+        matches = []
+        for pattern, ref, label in bond_labels:
+            if not ref:
+                continue
+            for match in re.finditer(pattern, line, re.I):
+                # Generic 10Y/2Y aliases must not hit inside an explicit TIPS label.
+                if label == "10Y" and re.match(r"\s*TIPS", line[match.end():], re.I):
+                    continue
+                matches.append((match.start(), match.end(), ref, label))
+        # Keep one match per position and prefer the longest explicit label.
+        unique = {}
+        for item in matches:
+            key = (item[0], item[1])
+            if key not in unique or (item[1] - item[0]) > (unique[key][1] - unique[key][0]):
+                unique[key] = item
+        matches = sorted(unique.values(), key=lambda x: x[0])
 
+        # Compact form often places the tenor after the value: "4,43% (2J)".
+        # Bind that percentage directly to the parenthesized tenor instead of
+        # treating the text after the tenor as its value.
+        compact_done = []
+        for pattern, ref, label in bond_labels:
+            if not ref:
+                continue
+            compact_pattern = re.compile(rf"(?P<num>{pct})\s*%\s*\(\s*{pattern}\s*\)", re.I)
+            for cm in compact_pattern.finditer(line):
+                try:
+                    old = _parse_number(cm.group("num"))
+                    target = ref["kurs"]
+                except (ValueError, TypeError):
+                    continue
+                if abs(old - target) < 0.005:
+                    continue
+                replacement = _fmt(target)
+                line = line[:cm.start("num")] + replacement + line[cm.end("num"):]
+                changes.append(f"{label}: Kurs {old} -> {target}")
+                compact_done.append((cm.start(), cm.end()))
+
+        if compact_done:
+            matches = []
+        for idx, (start_pos, end_pos, ref, label) in enumerate(matches):
+            segment_end = matches[idx + 1][0] if idx + 1 < len(matches) else len(line)
+            segment = line[end_pos:segment_end]
+            # Treasury/TIPS value is the percentage immediately following the
+            # label, not a later period performance percentage.
+            pm = re.search(rf"(?P<num>{pct})\s*%", segment)
+            if pm:
+                try:
+                    old = _parse_number(pm.group("num"))
+                    target = ref["kurs"]
+                except (ValueError, TypeError):
+                    old = target = None
+                if old is not None and target is not None and abs(old - target) >= 0.005:
+                    replacement = _fmt(target) + "%"
+                    line = line[:end_pos + pm.start()] + replacement + line[end_pos + pm.end():]
+                    shift = len(replacement) - (pm.end() - pm.start())
+                    if shift:
+                        # Recompute later labels from the modified line; only one
+                        # correction is needed per bond segment.
+                        pass
+                    changes.append(f"{label}: Kurs {old} -> {target}")
+
+        # Explicit TIPS pass: TIPS is semantically distinct from nominal 10Y.
+        # Run this after generic tenor handling so a phrase such as
+        # "Realzins 10Y TIPS ... 4,83%" can never inherit the nominal 10Y value.
+        if tips:
+            tips_pattern = re.compile(
+                rf"(?P<label>(?:Realzins\s*10Y\s*TIPS|10Y\s*TIPS\s*Realzins))"
+                rf"(?P<middle>[^\n%]{{0,45}}?)(?P<num>{pct})\s*%",
+                re.I,
+            )
+            def _tips_replace(tm):
+                try:
+                    old = _parse_number(tm.group("num"))
+                except ValueError:
+                    return tm.group(0)
+                target = tips["kurs"]
+                if abs(old - target) < 0.005:
+                    return tm.group(0)
+                changes.append(f"10Y TIPS: Kurs {old} -> {target}")
+                return tm.group("label") + tm.group("middle") + _fmt(target) + "%"
+            line = tips_pattern.sub(_tips_replace, line)
+
+        # --- 2Y-10Y spread: deterministic value from the calculated field.
+        if spread is not None and re.search(r"2Y[- ]10Y[- ]Spread", line, re.I):
+            line = re.sub(
+                rf"(2Y[- ]10Y[- ]Spread\s*(?:bei|von|ist|=|:)\s*){pct}\s*(?:Prozentpunkte?|%)?",
+                lambda mm: mm.group(1) + _fmt(spread) + " Prozentpunkte",
+                line,
+                flags=re.I,
+            )
+
+        # --- Precious metals: isolate each metal segment before replacing
+        # period values. This is the critical protection against cross-metal
+        # propagation on a single line.
+        metal_matches = []
+        for name, ref in metals.items():
+            if not ref:
+                continue
+            for mm in re.finditer(rf"\b{re.escape(name)}\b", line, re.I):
+                metal_matches.append((mm.start(), mm.end(), name, ref))
+        metal_matches.sort(key=lambda x: x[0])
+        for idx, (start_pos, end_pos, name, ref) in enumerate(metal_matches):
+            segment_end = metal_matches[idx + 1][0] if idx + 1 < len(metal_matches) else len(line)
+            segment = line[end_pos:segment_end]
+            period_aliases = {
+                "5T": r"(?:5\s+Tagen?|5\s+Handelstagen?|5T)",
+                "1M": r"(?:4\s+Wochen?|4-Wochen|1\s+Monat|1M)",
+            }
+            # Work from right to left so replacements do not invalidate matches.
+            local_replacements = []
+            for key, aliases in period_aliases.items():
+                target = ref["perioden"].get(key)
+                if target is None:
+                    continue
+                pm = re.search(rf"(?P<num>{pct})\s*%\s*(?P<period>{aliases})", segment, re.I)
+                if not pm:
+                    continue
+                try:
+                    old = _parse_number(pm.group("num"))
+                except ValueError:
+                    continue
+                if abs(old - target) < 0.005:
+                    continue
+                local_replacements.append((pm.start("num"), pm.end("num"), f"{target:+.2f}".replace(".", ",")))
+                changes.append(f"{name}: {key} {old} -> {target}")
+            for rs, re_, replacement in sorted(local_replacements, reverse=True):
+                segment = segment[:rs] + replacement + segment[re_:]
+            line = line[:end_pos] + segment + line[segment_end:]
+
+        # --- Market indices: points are not percentages/currency. Bind the
+        # parenthesized closing value to the exact index label.
+        for label_pattern, ref in indices.items():
+            if not ref:
+                continue
+            index_name = re.sub(r"\\s+", " ", label_pattern.replace("\\s*", "")).strip()
+            lm = re.search(label_pattern, line, re.I)
+            if not lm:
+                continue
+            tail = line[lm.end():lm.end() + 120]
+            # The closing value is the parenthesized number immediately after
+            # the daily percentage (e.g. "-0,15% (25.402,28)"). Do not grab
+            # EMA values or other parenthesized numbers later in the line.
+            pm = re.search(rf"[-+]?\d+(?:[.,]\d+)?%\s*\(\s*(?P<num>{num})\s*(?:Punkte?)?\s*\)", tail, re.I)
+            if not pm:
+                continue
+            try:
+                old = _parse_number(pm.group("num"))
+                target = ref["kurs"]
+            except (ValueError, TypeError):
+                continue
+            if abs(old - target) < 0.005:
+                continue
+            replacement = _fmt(target)
+            abs_start = lm.end() + pm.start("num")
+            abs_end = lm.end() + pm.end("num")
+            line = line[:abs_start] + replacement + line[abs_end:]
+            changes.append(f"{index_name}: Kurs {old} -> {target}")
+
+        # --- LME copper cash: keep the LME cash settlement distinct from the
+        # HG=F copper future. Unit binding (/t) is part of the semantic key.
+        if lme_copper:
+            lm = re.search(r"LME\s+Kupfer", line, re.I)
+            if lm:
+                tail = line[lm.end():lm.end() + 80]
+                cm = re.search(rf"(?:bei|von|ist|=|:)\s*(?P<num>{num})\s*(?P<unit>\$\s*/\s*t|USD\s*/\s*t|\$/t)", tail, re.I)
+                if cm:
+                    try:
+                        old = _parse_number(cm.group("num"))
+                        target = lme_copper["kurs"]
+                    except (ValueError, TypeError):
+                        old = target = None
+                    if old is not None and target is not None and abs(old - target) >= 0.005:
+                        replacement = _fmt(target)
+                        abs_start = lm.end() + cm.start("num")
+                        abs_end = lm.end() + cm.end("num")
+                        line = line[:abs_start] + replacement + line[abs_end:]
+                        changes.append(f"LME Kupfer Cash: Kurs {old} -> {target}")
+
+        out.append(line)
+    return "\n".join(out), changes
 
 def _korrigiere_bitcoin_identische_marke(text, makro_text):
     """Verhindert eine irrefuehrende Bitcoin-Formulierung mit dem aktuellen Kurs als Marke.

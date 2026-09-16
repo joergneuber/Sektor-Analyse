@@ -253,6 +253,55 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
         except Exception as exc:
             print(f"WARNUNG: HEBELTRADER-Einzelcheck fuer Trade-Story-Universum unlesbar: {exc}")
 
+    # The observation snapshot is the authoritative daily status ledger for
+    # the Hebeltrader Einzel-Check. It is also the completeness anchor: the
+    # structured JSON may be a reduced/exported view, so current-day A/B
+    # statuses from the observation snapshot must not disappear merely because
+    # they are absent from that payload. Entries with a different last-check
+    # date are deliberately ignored to prevent stale candidates from leaking
+    # into the daily universe.
+    if observation_path and os.path.isfile(observation_path):
+        try:
+            with open(observation_path, encoding="utf-8") as f:
+                observation = json.load(f)
+            run_date = date.today().isoformat()
+            if isinstance(observation, dict):
+                for tk_raw, row in observation.items():
+                    if not isinstance(row, dict):
+                        continue
+                    status = str(row.get("status") or "").strip().upper()
+                    last_check = str(row.get("letzter_check") or "").strip()
+                    source = str(row.get("quelle") or "").strip()
+                    # The observation list is the daily status ledger. A/B
+                    # entries with a current last_check AND a current
+                    # last_candidate_date are valid current candidates even
+                    # when the optional issue/provenance field is "-". This
+                    # prevents a reduced structured payload from silently
+                    # dropping current A/B entries. Manual/legacy rows without
+                    # the current candidate date remain excluded.
+                    last_candidate_date = str(row.get("last_candidate_date") or "").strip()
+                    if (last_check != run_date or
+                            last_candidate_date != run_date or
+                            status not in {"KAUFKANDIDAT A", "KAUFKANDIDAT B"}):
+                        continue
+                    tk = _ticker(tk_raw)
+                    if not tk:
+                        continue
+                    item = {
+                        "ticker": tk,
+                        "name": str(row.get("name") or "").strip() or None,
+                        "direction": "Long",
+                        "trade_story_status": VALID_STATUS if status == "KAUFKANDIDAT A" else PREPARED_STATUS,
+                        "sources": ["Hebeltrader-Einzel-Check"],
+                        "hebeltrader_status": status,
+                        "hebeltrader_observation_date": last_check,
+                    }
+                    if source:
+                        item["hebeltrader_issue"] = source
+                    _merge(candidates, item)
+        except Exception as exc:
+            print(f"WARNUNG: HEBELTRADER-Beobachtungsliste fuer Trade-Story-Universum unlesbar: {exc}")
+
     # Bitcoin is a distinct source, not a stock setup and not a normal CRV
     # setup. Only confirmed Long events enter VALID; prealerts remain prepared.
     btc_path = paths.get("Trade_Story_Bitcoin(...).json", "")
