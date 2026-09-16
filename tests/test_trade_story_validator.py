@@ -23,6 +23,8 @@ def load_validator_namespace():
         "_trade_story_bloecke",
         "_trade_story_kandidaten_schluessel",
         "_trade_story_keys_treffen",
+        "_trade_story_kandidaten_teile",
+        "_trade_story_alle_kandidaten_treffen",
         "_trade_story_validierung",
         "_trade_story_deterministische_reparatur",
     }
@@ -87,7 +89,20 @@ def main():
         ok, errors = validate(valid)
         assert ok, errors
 
-        # A valid setup mentioned as multiple titles must be recognized.
+        # Every explicitly separated candidate must be authoritative; one valid
+        # title must not authorize a second, unknown title in the same story.
+        multi_valid_and_unknown = """6.1 PERSPEKTIVISCHE TRADE-IDEEN
+Mixed Story
+Zeithorizont: mittelfristig
+Bestehender Kandidat / Bezug: Nebius Group N.V. (NBIS) | F5, Inc. (FFIV)
+Status: VALIDE SETUP
+Nächster technischer Trigger: Trigger
+Risiko: Risiko
+"""
+        ok, errors = validate(multi_valid_and_unknown)
+        assert not ok and any("VALIDE SETUP" in e for e in errors), errors
+
+        # A valid setup mentioned as a single title must still work.
         multi = """6.1 PERSPEKTIVISCHE TRADE-IDEEN\nTechnologie-Story\nZeithorizont: mittelfristig\nBestehender Kandidat / Bezug: F5, Inc. (FFIV)\nStatus: VALIDE SETUP\nNächster technischer Trigger: Trigger\nRisiko: Risiko\n"""
         ok, errors = validate(multi)
         assert not ok, "FFIV is not authoritative in this fixture and must fail"

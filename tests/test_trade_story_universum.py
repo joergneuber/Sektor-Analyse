@@ -33,6 +33,15 @@ def main():
             "BAD":{"name":"Bad","status":"KAUFKANDIDAT C","quelle":"HEBELTRADER 164/26"},
             "NONE":{"name":"None","status":"KEIN KANDIDAT","quelle":"HEBELTRADER 164/26"},
         }), encoding="utf-8")
+        hebel = td / "hebeltrader_einzel_check.json"
+        hebel.write_text(json.dumps({
+            "schema_version": 3,
+            "candidates": [
+                {"ticker":"TSM","name":"Taiwan Semiconductor","einzel_check":{"status":"KAUFKANDIDAT A"}},
+                {"ticker":"ZS","name":"Zscaler","einzel_check":{"status":"KAUFKANDIDAT B"}},
+                {"ticker":"BAD","name":"Bad","einzel_check":{"status":"KAUFKANDIDAT C"}},
+            ]
+        }), encoding="utf-8")
         trend = td / "Trendwende_Setups(2026-09-15).csv"
         write_csv(trend, ["Ticker","Name"], [["ARGX","argenx SE"]])
         short = td / "Short_Setups(2026-09-15).csv"
@@ -56,6 +65,7 @@ def main():
             "Edelmetalle_Setups(...).csv":str(metals),
             "Trade_Story_Bitcoin(...).json":str(btc),
             "Offene Positionen+Check.csv":str(portfolio),
+            "HEBELTRADER-Einzelcheck":str(hebel),
         }
         uni=build_trade_story_universe(paths,str(obs))
         by={x["ticker"]:x for x in uni["candidates"]}
@@ -69,6 +79,17 @@ def main():
         assert by["GOLD"]["trade_story_status"]=="VORBEREITET"
         assert by["BTC-USD"]["trade_story_status"]=="VALIDE SETUP"
 
+        # Same company name with two tickers must remain two candidates.
+        raw2 = td / "Trade_Story_Setup_Rohuniversum(duplicate).csv"
+        write_csv(raw2, ["Ticker","Name","Status2","Sektor","Trend","CRV1","CRV2"], [
+            ["GOOGL","Alphabet Inc.","VALIDE","Communication Services","OK","2.0","2.0"],
+            ["GOOG","Alphabet Inc.","VALIDE","Communication Services","OK","2.0","2.0"],
+        ])
+        paths["Trade_Story_Setup_Rohuniversum(...).csv"] = str(raw2)
+        uni=build_trade_story_universe(paths,str(obs))
+        by={x["ticker"]:x for x in uni["candidates"]}
+        assert "GOOGL" in by and "GOOG" in by
+
         # Manual/other Einzel-Check entries are not Hebeltrader candidates.
         obs_data = json.loads(obs.read_text(encoding="utf-8"))
         obs_data["MANUAL"] = {"name":"Manual Entry","status":"KAUFKANDIDAT A","quelle":"-"}
@@ -76,6 +97,8 @@ def main():
         uni=build_trade_story_universe(paths,str(obs))
         by={x["ticker"]:x for x in uni["candidates"]}
         assert "MANUAL" not in by
+
+        paths["Trade_Story_Setup_Rohuniversum(...).csv"] = str(raw)
 
         # Long/Short is a genuine directional conflict and must not be silently resolved.
         short2 = td / "Short_Setups_conflict.csv"
