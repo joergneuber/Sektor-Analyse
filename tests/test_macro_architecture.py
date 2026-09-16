@@ -554,6 +554,60 @@ def test_bitcoin_identical_marke_handles_common_number_formats():
     )
     _assert(not changed, "Independent Bitcoin reference must not be rewritten")
 
+
+def test_compact_macro_values_bind_each_instrument_without_cross_contamination():
+    """Regression for TIPS, metals, indices and LME-copper semantic binding."""
+    import ast
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    ns = {"re": re}
+    wanted = {"_extrahiere_makro_referenzwerte", "_sichere_makro_kritische_kompaktangaben"}
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "gemini_auswertung.py"), "exec"), ns)
+    makro = """US 2Y Treasury: 4.4300 | STATUS=REAL
+US 5Y Treasury: 4.6100 | STATUS=REAL
+US 10Y Treasury: 4.8300 | STATUS=REAL
+US 30Y Treasury: 5.2800 | STATUS=REAL
+Realzins 10Y TIPS: 2.4600 | STATUS=REAL
+2Y-10Y Spread: 0.4000 | STATUS=CALCULATED
+DAX: 25452.800781 | STATUS=REAL
+EuroStoxx 50: 6263.020020 | STATUS=REAL
+Nikkei 225: 63923.000000 | STATUS=REAL
+Gold: 4367.000000 | 5T=-0.91% | 1M=-1.58%
+Silber: 64.980003 | 5T=+1.08% | 1M=-0.01%
+Platin: 1788.699951 | 5T=-0.47% | 1M=+2.21%
+Palladium: 1324.500000 | 5T=+3.37% | 1M=+0.15%
+LME Kupfer: 14045.00 | STATUS=REAL_PUBLIC_SECONDARY
+"""
+    text = (
+        "DAX: letzter abgeschlossener Handelstag -0,15% (25.402,28) | YTD +3,72%\n"
+        "EuroStoxx50: letzter abgeschlossener Handelstag -0,38% (6.236,50) | YTD +7,60%\n"
+        "Nikkei 225: letzter abgeschlossener Handelstag +0,69% (63.923,00) | YTD +26,98%\n"
+        "Zinsstruktur: US 2Y Treasury liegt bei 4,43%; US 5Y bei 4,61%; US 10Y bei 4,83%; US 30Y bei 5,28%. 10Y TIPS Realzins beträgt 4,83%. Der 10Y-2Y Spread liegt bei +0,32 bis +0,40 Prozentpunkten.\n"
+        "Edelmetalle: Gold (GC=F) notiert bei 4.367,00$ (+3,37% 5T, +0,15% 1M, -1,58% 4W). Silber (SI=F) notiert bei 64,98$ (+3,37% 5T, +0,15% 1M, -0,01% 4W). Platin (PL=F) notiert bei 1.788,70$ (+3,37% 5T, +0,15% 1M, +2,21% 4W). Palladium (PA=F) notiert bei 1.324,50$ (+3,37% 5T, +0,15% 1M, +0,15% 4W).\n"
+        "Industriemetalle: Kupfer-Future (HG=F) notiert bei 6,48$ (+0,25% 5T, -1,77% 1M, +19,33% 6M). LME Kupfer Cash notiert bei 6,48$/t."
+    )
+    out, changes = ns["_sichere_makro_kritische_kompaktangaben"](text, makro)
+    _assert("DAX: letzter abgeschlossener Handelstag -0,15% (25.452,80)" in out, "DAX value not bound to macro source")
+    _assert("EuroStoxx50: letzter abgeschlossener Handelstag -0,38% (6.263,02)" in out, "EuroStoxx value not bound to macro source")
+    _assert("Nikkei 225: letzter abgeschlossener Handelstag +0,69% (63.923,00)" in out, "Nikkei closing value mapping failed")
+    _assert("10Y TIPS Realzins beträgt 2,46%" in out, "TIPS nominal/real semantic mix-up remains")
+    _assert("Gold (GC=F) notiert bei 4.367,00$ (-0,91% 5T, -1,58% 1M, -1,58% 4W)" in out, "Gold period mapping failed")
+    _assert("Silber (SI=F) notiert bei 64,98$ (+1,08% 5T, -0,01% 1M, -0,01% 4W)" in out, "Silver period mapping failed")
+    _assert("Platin (PL=F) notiert bei 1.788,70$ (-0,47% 5T, +2,21% 1M, +2,21% 4W)" in out, "Platinum period mapping failed")
+    _assert("Palladium (PA=F) notiert bei 1.324,50$ (+3,37% 5T, +0,15% 1M, +0,15% 4W)" in out, "Palladium period mapping failed")
+    _assert("LME Kupfer Cash notiert bei 14.045,00$/t" in out, "LME copper cash must remain distinct from HG=F")
+    _assert("Kupfer-Future (HG=F) notiert bei 6,48$" in out, "HG=F copper future was incorrectly overwritten")
+    _assert(len(changes) >= 9, "Expected semantic macro corrections were not recorded")
+
+
+def test_final_macro_gate_is_after_trade_story_repair():
+    source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
+    repair_pos = source.index("Trade-Story-Reparatur erfolgreich.")
+    gate_pos = source.index("FINALER MAKRO-ZAHLEN-GATE")
+    _assert(gate_pos > repair_pos, "Final macro gate must run after possible Trade-Story repair")
+    _assert("if makro_pfad:" in source[gate_pos:gate_pos + 500], "Final macro gate is not guarded by macro source availability")
+
 def main():
     import inspect
     tests = [
@@ -605,7 +659,7 @@ def test_compact_macro_values_are_bound_to_labels_and_periods():
           "Palladium: 1.325,00 USD (+3,41% 5 Tage, +3,41% 4 Wochen)")
     out,changes=ns["_sichere_makro_kritische_kompaktangaben"](text,makro)
     _assert("4,43% (2J), 4,61% (5J), 4,83% (10Y), 5,28% (30Y)" in out,"Treasury mapping failed")
-    _assert("2Y-10Y Spread bei 0,40 %" in out,"Spread mapping failed")
+    _assert("2Y-10Y Spread bei 0,40 Prozentpunkte" in out,"Spread mapping failed")
     _assert("Realzins 10Y TIPS bei 2,46%" in out,"TIPS mapping failed")
     _assert("-1,57% 4 Wochen" in out,"Gold 4W failed")
     _assert("+0,24% 4 Wochen" in out,"Silver 4W failed")

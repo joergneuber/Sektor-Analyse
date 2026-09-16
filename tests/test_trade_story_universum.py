@@ -110,7 +110,8 @@ def main():
         assert by["WMB"]["direction"]=="CONFLICT"
 
         test_hebeltrader_nested_schema_variant()
-        print("TRADE_STORY_UNIVERSUM_TESTS: 3 PASS")
+        test_hebeltrader_observation_completeness_fallback()
+        print("TRADE_STORY_UNIVERSUM_TESTS: 4 PASS")
 
 
 
@@ -133,6 +134,38 @@ def test_hebeltrader_nested_schema_variant():
         assert by["PFE"]["trade_story_status"] == "VALIDE SETUP"
         assert by["TMO"]["trade_story_status"] == "VORBEREITET"
         assert "BAD" not in by
+
+
+def test_hebeltrader_observation_completeness_fallback():
+    """Current A/B observation entries must survive a reduced/missing JSON payload."""
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-16).csv"
+        write_csv(raw, ["Ticker", "Name", "Status2"], [])
+        obs = td / "einzel_check_beobachtung.json"
+        from datetime import date
+        today = date.today().isoformat()
+        obs.write_text(json.dumps({
+            "PLTR": {"name": "Palantir Technologies", "status": "KAUFKANDIDAT A", "letzter_check": today, "last_candidate_date": today, "quelle": "HEBELTRADER 170/26"},
+            "RVTY": {"name": "Revvity, Inc.", "status": "KAUFKANDIDAT B", "letzter_check": today, "last_candidate_date": today, "quelle": "HEBELTRADER 170/26"},
+            "OLD": {"name": "Old Candidate", "status": "KAUFKANDIDAT A", "letzter_check": "2026-09-15", "quelle": "HEBELTRADER 169/26"},
+            "MANUAL": {"name": "Manual", "status": "KAUFKANDIDAT A", "letzter_check": today, "last_candidate_date": None, "quelle": "-"},
+            "C": {"name": "Excluded", "status": "KAUFKANDIDAT C", "letzter_check": today, "last_candidate_date": today, "quelle": "HEBELTRADER 170/26"},
+        }), encoding="utf-8")
+        hebel = td / "hebeltrader_einzel_check.json"
+        hebel.write_text(json.dumps({"schema_version": 3, "candidates": [
+            {"ticker": "PLTR", "name": "Palantir Technologies", "einzel_check": {"status": "KAUFKANDIDAT A"}}
+        ]}), encoding="utf-8")
+        uni = build_trade_story_universe({
+            "Trade_Story_Setup_Rohuniversum(...).csv": str(raw),
+            "HEBELTRADER-Einzelcheck": str(hebel),
+        }, str(obs))
+        by = {x["ticker"]: x for x in uni["candidates"]}
+        assert by["PLTR"]["trade_story_status"] == "VALIDE SETUP"
+        assert by["RVTY"]["trade_story_status"] == "VORBEREITET"
+        assert "OLD" not in by
+        assert "MANUAL" not in by
+        assert "C" not in by
 
 if __name__ == "__main__":
     main()
