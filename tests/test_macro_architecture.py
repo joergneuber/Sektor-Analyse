@@ -587,3 +587,33 @@ def test_gemini_uses_concrete_gdelt_articles_when_present_and_never_invents_them
     )
     for term in required:
         _assert(term in source, f"GDELT-to-Gemini contract missing: {term}")
+
+def test_compact_macro_values_are_bound_to_labels_and_periods():
+    import ast
+    source=(ROOT/"gemini_auswertung.py").read_text(encoding="utf-8")
+    tree=ast.parse(source); ns={"re":re}
+    wanted={"_extrahiere_makro_referenzwerte","_sichere_makro_kritische_kompaktangaben"}
+    for node in tree.body:
+        if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in wanted:
+            exec(compile(ast.Module(body=[node],type_ignores=[]),str(ROOT/"gemini_auswertung.py"),"exec"),ns)
+    makro="""US 2Y Treasury: 4.4300 | 5T=+1.00% | 1M=+2.00%\nUS 5Y Treasury: 4.6100 | 5T=+1.10% | 1M=+2.10%\nUS 10Y Treasury: 4.8300 | 5T=+1.20% | 1M=+2.20%\nUS 30Y Treasury: 5.2800 | 5T=+1.30% | 1M=+2.30%\nRealzins 10Y TIPS: 2.4600 | STATUS=REAL\n2Y-10Y Spread: 0.4000 | STATUS=CALCULATED\nGold: 4367.799805 | 5T=-0.90% | 1M=-1.57%\nSilber: 65.144997 | 5T=+1.34% | 1M=+0.24%\nPlatin: 1800.500000 | 5T=+0.19% | 1M=+2.89%\nPalladium: 1325.000000 | 5T=+3.41% | 1M=+0.19%\n"""
+    text=("US-Renditen: 4,43% (2J), 4,43% (5J), 4,61% (10Y), 4,83% (30Y). "
+          "2Y-10Y Spread bei 4,83% nominal. Realzins 10Y TIPS bei 4,83%.\n"
+          "Gold: 4.367,80 USD (-0,90% 5 Tage, -0,90% 4 Wochen)\n"
+          "Silber: 65,14 USD (+1,34% 5 Tage, +1,34% 4 Wochen)\n"
+          "Platin: 1.800,50 USD (+0,19% 5 Tage, +0,19% 4 Wochen)\n"
+          "Palladium: 1.325,00 USD (+3,41% 5 Tage, +3,41% 4 Wochen)")
+    out,changes=ns["_sichere_makro_kritische_kompaktangaben"](text,makro)
+    _assert("4,43% (2J), 4,61% (5J), 4,83% (10Y), 5,28% (30Y)" in out,"Treasury mapping failed")
+    _assert("2Y-10Y Spread bei 0,40 %" in out,"Spread mapping failed")
+    _assert("Realzins 10Y TIPS bei 2,46%" in out,"TIPS mapping failed")
+    _assert("-1,57% 4 Wochen" in out,"Gold 4W failed")
+    _assert("+0,24% 4 Wochen" in out,"Silver 4W failed")
+    _assert("+2,89% 4 Wochen" in out,"Platinum 4W failed")
+    _assert("+0,19% 4 Wochen" in out,"Palladium 4W failed")
+    _assert(len(changes)>=8,"Too few compact corrections recorded")
+
+def test_trade_story_name_lookup_is_deferred_and_cached():
+    source=(ROOT/"analyse.py").read_text(encoding="utf-8")
+    _assert("@lru_cache(maxsize=2048)" in source,"Name lookup cache missing")
+    _assert("firma_name = _hole_firma_name(ticker) if collect_hebeltrader else ticker" in source,"Name lookup still unconditional")

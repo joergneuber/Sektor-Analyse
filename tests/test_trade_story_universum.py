@@ -108,8 +108,31 @@ def main():
         by={x["ticker"]:x for x in uni["candidates"]}
         assert by["WMB"]["trade_story_status"]=="STATUSKONFLIKT"
         assert by["WMB"]["direction"]=="CONFLICT"
+
+        test_hebeltrader_nested_schema_variant()
         print("TRADE_STORY_UNIVERSUM_TESTS: 3 PASS")
 
+
+
+def test_hebeltrader_nested_schema_variant():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-16).csv"
+        write_csv(raw, ["Ticker","Name","Status2"], [])
+        hebel = td / "hebeltrader_einzel_check.json"
+        hebel.write_text(json.dumps({"issue_label":"HEBELTRADER 169/26","result":{"candidates":[
+            {"ticker":"PFE","name":"Pfizer Inc.","einzel_check":{"status":"KAUFKANDIDAT A"}},
+            {"ticker":"TMO","name":"Thermo Fisher Scientific Inc.","einzel_check":{"status":"KAUFKANDIDAT B"}},
+            {"ticker":"BAD","name":"Bad","einzel_check":{"status":"KAUFKANDIDAT C"}}
+        ]}}), encoding="utf-8")
+        uni = build_trade_story_universe({
+            "Trade_Story_Setup_Rohuniversum(...).csv":str(raw),
+            "HEBELTRADER-Einzelcheck":str(hebel)
+        })
+        by={x["ticker"]:x for x in uni["candidates"]}
+        assert by["PFE"]["trade_story_status"] == "VALIDE SETUP"
+        assert by["TMO"]["trade_story_status"] == "VORBEREITET"
+        assert "BAD" not in by
 
 if __name__ == "__main__":
     main()
