@@ -1,0 +1,92 @@
+from __future__ import annotations
+import json
+import csv
+import tempfile
+from pathlib import Path
+
+from trade_story_universum import build_trade_story_universe
+
+
+def write_csv(path, header, rows):
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(header)
+        w.writerows(rows)
+
+
+def main():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-15).csv"
+        write_csv(raw, ["Ticker","Name","Status2","Sektor","Trend","CRV1","CRV2"], [
+            ["WMB","The Williams Companies, Inc.","VALIDE","Energy","FAIL","2.0","2.1"],
+            ["EOG","EOG Resources, Inc.","ACHTUNG","Energy","OK","1.2","1.4"],
+        ])
+        final = td / "Setups(2026-09-15).csv"
+        write_csv(final, ["Ticker","Name","Status2","Status_Grund"], [
+            ["EOG","EOG Resources, Inc.","ACHTUNG","Earnings-Gap-Risiko"],
+        ])
+        obs = td / "einzel_check_beobachtung.json"
+        obs.write_text(json.dumps({
+            "TSM":{"name":"Taiwan Semiconductor","status":"KAUFKANDIDAT A","quelle":"HEBELTRADER 164/26"},
+            "ZS":{"name":"Zscaler","status":"KAUFKANDIDAT B","quelle":"HEBELTRADER 164/26"},
+            "BAD":{"name":"Bad","status":"KAUFKANDIDAT C","quelle":"HEBELTRADER 164/26"},
+            "NONE":{"name":"None","status":"KEIN KANDIDAT","quelle":"HEBELTRADER 164/26"},
+        }), encoding="utf-8")
+        trend = td / "Trendwende_Setups(2026-09-15).csv"
+        write_csv(trend, ["Ticker","Name"], [["ARGX","argenx SE"]])
+        short = td / "Short_Setups(2026-09-15).csv"
+        write_csv(short, ["Ticker","Name","Status2"], [])
+        metals = td / "Edelmetalle_Setups(2026-09-15).csv"
+        write_csv(metals, ["Ticker","Name","Status2"], [["GOLD","Gold","ACHTUNG"]])
+        btc = td / "Trade_Story_Bitcoin(2026-09-15).json"
+        btc.write_text(json.dumps({
+            "date":"2026-09-15", "asset":"Bitcoin", "ticker":"BTC-USD",
+            "pi_cycle_bottom":{"signal_type":"BOTTOM_LONG","trade_action":"LONG"},
+            "sma50w":{"signal_type":"PREALERT","trade_action":"LONG"}
+        }), encoding="utf-8")
+        portfolio = td / "Offene Positionen+Check.csv"
+        write_csv(portfolio, ["Ticker","Status"], [["WMB","Offen"]])
+
+        paths = {
+            "Trade_Story_Setup_Rohuniversum(...).csv":str(raw),
+            "Setups(...).csv":str(final),
+            "Trendwende_Setups(...).csv":str(trend),
+            "Short_Setups(...).csv":str(short),
+            "Edelmetalle_Setups(...).csv":str(metals),
+            "Trade_Story_Bitcoin(...).json":str(btc),
+            "Offene Positionen+Check.csv":str(portfolio),
+        }
+        uni=build_trade_story_universe(paths,str(obs))
+        by={x["ticker"]:x for x in uni["candidates"]}
+        assert by["WMB"]["trade_story_status"]=="VALIDE SETUP"
+        assert by["WMB"]["portfolio_status"]=="OFFENE POSITION"
+        assert by["EOG"]["trade_story_status"]=="VORBEREITET"
+        assert by["TSM"]["trade_story_status"]=="VALIDE SETUP"
+        assert by["ZS"]["trade_story_status"]=="VORBEREITET"
+        assert "BAD" not in by and "NONE" not in by
+        assert by["ARGX"]["trade_story_status"]=="VALIDE SETUP"
+        assert by["GOLD"]["trade_story_status"]=="VORBEREITET"
+        assert by["BTC-USD"]["trade_story_status"]=="VALIDE SETUP"
+
+        # Manual/other Einzel-Check entries are not Hebeltrader candidates.
+        obs_data = json.loads(obs.read_text(encoding="utf-8"))
+        obs_data["MANUAL"] = {"name":"Manual Entry","status":"KAUFKANDIDAT A","quelle":"-"}
+        obs.write_text(json.dumps(obs_data), encoding="utf-8")
+        uni=build_trade_story_universe(paths,str(obs))
+        by={x["ticker"]:x for x in uni["candidates"]}
+        assert "MANUAL" not in by
+
+        # Long/Short is a genuine directional conflict and must not be silently resolved.
+        short2 = td / "Short_Setups_conflict.csv"
+        write_csv(short2, ["Ticker","Name","Status2"], [["WMB","The Williams Companies, Inc.","VALIDE"]])
+        paths["Short_Setups(...).csv"] = str(short2)
+        uni=build_trade_story_universe(paths,str(obs))
+        by={x["ticker"]:x for x in uni["candidates"]}
+        assert by["WMB"]["trade_story_status"]=="STATUSKONFLIKT"
+        assert by["WMB"]["direction"]=="CONFLICT"
+        print("TRADE_STORY_UNIVERSUM_TESTS: 3 PASS")
+
+
+if __name__ == "__main__":
+    main()

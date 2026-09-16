@@ -262,7 +262,7 @@ def test_trade_story_validator_requires_real_setup_status_and_observation_anchor
     _assert("status2 == required_status or status == \"KAUFKANDIDAT A\"" in source, "Setup validator does not enforce source-specific status")
     _assert("if not gelesene_quellen:" in source, "Missing authoritative setup sources must block VALIDE SETUP")
     _assert("_trade_story_beobachtung_universum" in source, "Observation universe validator missing")
-    _assert("not beobachtung_verfuegbar" in source, "Missing observation source must not silently pass")
+    _assert("prepared_available = zentrale_verfuegbar or beobachtung_verfuegbar" in source, "Prepared-source availability guard missing")
     _assert("Trade-Story-Reparatur" in source and "ohne Gemini-API-Call" in source, "Deterministic Trade-Story repair is not enforced")
 
     # Source-level fixture: a setup row with a non-valid status must not be
@@ -288,7 +288,7 @@ def test_trade_story_validator_source_specific_status_contracts():
 
 def test_trade_story_validator_does_not_allow_unanchored_prepared_story():
     source = (ROOT / "gemini_auswertung.py").read_text(encoding="utf-8")
-    _assert("ist nicht in der aktuellen Beobachtungsliste verankert" in source, "VORBEREITET/INTERESSANT is not anchored to current observation universe")
+    _assert("ist nicht im autoritativen Vorbereitungsuniversum verankert" in source, "Prepared story is not anchored to the authoritative prepared universe")
     _assert("darf keine Kauf-/Entry-Formulierung enthalten" in source, "Purchase boundary missing for non-valid story states")
 
 

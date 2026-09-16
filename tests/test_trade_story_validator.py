@@ -18,6 +18,7 @@ def load_validator_namespace():
         "_normalisiere_positionsname",
         "_normalisiere_ticker",
         "_trade_story_setup_universum",
+        "_trade_story_zentrales_universum",
         "_trade_story_beobachtung_universum",
         "_trade_story_bloecke",
         "_trade_story_kandidaten_schluessel",
@@ -96,6 +97,11 @@ def main():
         ok, errors = validate(prepared)
         assert ok, errors
 
+        # C and KEIN KANDIDAT are never valid prepared candidates.
+        prepared_c = """6.1 PERSPEKTIVISCHE TRADE-IDEEN\nC Story\nZeithorizont: kurzfristig\nBestehender Kandidat / Bezug: Bad Candidate (BAD)\nStatus: VORBEREITET\nNächster technischer Trigger: Breakout\nRisiko: Risiko\n"""
+        ok, errors = validate(prepared_c)
+        assert not ok and any("VORBEREITET" in e for e in errors)
+
         # Prepared must reject a name that is only a valid setup, not a current observer candidate.
         prepared_invalid = """6.1 PERSPEKTIVISCHE TRADE-IDEEN\nWMB Story\nZeithorizont: kurzfristig\nBestehender Kandidat / Bezug: The Williams Companies, Inc. (WMB)\nStatus: VORBEREITET\nNächster technischer Trigger: Breakout\nRisiko: Risiko\n"""
         ok, errors = validate(prepared_invalid)
@@ -128,13 +134,43 @@ Risiko: Risiko
         ok, errors = ns["_trade_story_validierung"](repaired, files, str(obs))
         assert ok, errors
 
+        # Central daily universe is authoritative when present and can contain
+        # a prepared candidate that is not merely an A/B observation fallback.
+        central = td / "Trade_Story_Universum(2026-09-10).json"
+        central.write_text(json.dumps({
+            "schema_version": 1,
+            "candidates": [
+                {"ticker":"NBIS","name":"Nebius Group N.V.","trade_story_status":"VALIDE SETUP"},
+                {"ticker":"EOG","name":"EOG Resources, Inc.","trade_story_status":"VORBEREITET"},
+            ]
+        }), encoding="utf-8")
+        files["Trade_Story_Universum(...).json"] = str(central)
+        ok, errors = ns["_trade_story_validierung"](valid, files, str(obs))
+        assert ok, errors
+        central_prepared = prepared
+        ok, errors = ns["_trade_story_validierung"](central_prepared, files, str(obs))
+        assert ok, errors
+
+        # Central STATUSKONFLIKT is neither valid nor prepared.
+        conflict_central = td / "Trade_Story_Universum(2026-09-10)-conflict.json"
+        conflict_central.write_text(json.dumps({
+            "schema_version": 1,
+            "candidates": [
+                {"ticker":"WMB","name":"The Williams Companies, Inc.","trade_story_status":"STATUSKONFLIKT"}
+            ]
+        }), encoding="utf-8")
+        files["Trade_Story_Universum(...).json"] = str(conflict_central)
+        conflict_story = """6.1 PERSPEKTIVISCHE TRADE-IDEEN\nConflict Story\nZeithorizont: kurzfristig\nBestehender Kandidat / Bezug: The Williams Companies, Inc. (WMB)\nStatus: VORBEREITET\nNaechster technischer Trigger: Trigger\nRisiko: Risiko\n"""
+        ok, errors = ns["_trade_story_validierung"](conflict_story, files, str(obs))
+        assert not ok and any("VORBEREITET" in e for e in errors), errors
+
     source = GEMINI.read_text(encoding="utf-8")
     assert "Langfrist_Bewertung(...).csv" in source
     assert "Langfrist_Briefing(...).txt" in source
     assert "TRADE_STORY_DETERMINISTISCHE_REPARATUR_TERMINAL" in source
     assert "ohne Gemini-API-Call" in source
     assert "PORTFOLIO-MAKRO-ABGLEICH / WARNER" in source
-    print("TRADE_STORY_VALIDATOR_TESTS: 7 PASS")
+    print("TRADE_STORY_VALIDATOR_TESTS: 8 PASS")
 
 
 if __name__ == "__main__":
