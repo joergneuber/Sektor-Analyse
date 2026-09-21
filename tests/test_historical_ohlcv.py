@@ -93,3 +93,21 @@ def test_coverage_summary_detects_missing_dynamic_ticker(tmp_path):
     ho.init_db(db)
     report = ho.coverage(db, source, dynamic)
     assert "ZZZ.TEST" in set(report.loc[report["Status"] == "MISSING", "Ticker"])
+
+def test_market_cache_normalises_mixed_timezone_indices():
+    import market_cache as mc
+
+    naive = pd.DataFrame({"Close": [100.0]}, index=pd.DatetimeIndex(["2026-09-18"]))
+    aware = pd.DataFrame({"Close": [101.0]}, index=pd.DatetimeIndex(["2026-09-19"], tz="UTC"))
+
+    naive_out = mc._normalise_datetime_index(naive)
+    aware_out = mc._normalise_datetime_index(aware)
+
+    assert naive_out.index.tz is None
+    assert aware_out.index.tz is None
+    assert aware_out.index[0] == pd.Timestamp("2026-09-19")
+
+    combined = pd.concat([naive_out, aware_out])
+    assert combined.index.tz is None
+    assert len(combined) == 2
+
