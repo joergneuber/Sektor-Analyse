@@ -54,12 +54,11 @@ jobs:
         with:
           path: |
             historical_ohlcv.sqlite*
-            historical_ohlcv_universe.json
           key: nmm-historical-ohlcv-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             nmm-historical-ohlcv-v1-${{ runner.os }}-${{ github.ref_name }}-
 
-      - name: Historische OHLCV-Datenbank aus Dauerarchiv wiederherstellen
+      - name: Historische OHLCV-Datenbank und dynamisches Universum aus Dauerarchiv wiederherstellen
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -68,10 +67,18 @@ jobs:
           else
             echo "OHLCV-Dauerarchiv: vorhandene historische DB aus Cache bleibt Primärstand."
           fi
-          if [ ! -f historical_ohlcv_universe.json ]; then
-            gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber || true
+          # Das dynamische Universum darf NICHT aus dem Actions-Cache stammen:
+          # der Einzel-Check aktualisiert es in einem separaten Workflow und
+          # archiviert danach die neue JSON im Release. Ein alter Actions-Cache
+          # konnte sonst eine frisch registrierte Aktie (z.B. ABBNY) verdecken.
+          # Die Release-Datei ist deshalb die autoritative Quelle für diesen
+          # kleinen, persistenten State.
+          rm -f historical_ohlcv_universe.json
+          gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber || true
+          if [ -f historical_ohlcv_universe.json ]; then
+            echo "OHLCV-Dauerarchiv: dynamisches Universum aus aktuellem Release geladen."
           else
-            echo "OHLCV-Dauerarchiv: vorhandenes dynamisches Universum aus Cache bleibt Primärstand."
+            echo "OHLCV-Dauerarchiv: noch kein dynamisches Universum vorhanden; Basisuniversum wird verwendet."
           fi
 
       - name: Historische OHLCV-Datenbank aktualisieren
@@ -95,7 +102,6 @@ jobs:
         with:
           path: |
             historical_ohlcv.sqlite*
-            historical_ohlcv_universe.json
           key: nmm-historical-ohlcv-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       # Zusaetzlich wird der aktuelle Research-Bestand als Release-Asset
