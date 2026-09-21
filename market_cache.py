@@ -397,6 +397,34 @@ def _load_persistent_historical(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _normalise_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalisiert Tagesindizes auf timezone-naive Timestamps.
+
+    Die persistente SQLite-Historie liefert derzeit naive Tagesstempel,
+    waehrend yfinance je nach Endpoint/Version timezone-aware Indizes liefern
+    kann. Fuer Tagesdaten ist die lokale Kalenderdatum-Information relevant;
+    deshalb wird die Zeitzone entfernt, ohne den Zeitpunkt nach UTC zu
+    verschieben. So koennen historische DB und 5d-Frischeabruf sicher
+    verglichen und zusammengefuehrt werden.
+    """
+    if df is None or df.empty:
+        return df
+    frame = df.copy()
+    try:
+        idx = pd.to_datetime(frame.index, errors="coerce")
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        frame.index = idx
+        frame = frame[~frame.index.isna()]
+        return frame
+    except Exception as exc:
+        print(
+            f"WARNUNG-MARKET-CACHE: Zeitindex konnte nicht normalisiert werden "
+            f"({type(exc).__name__}: {exc})"
+        )
+        return frame
+
+
 def get_yf_history(ticker: str) -> pd.DataFrame:
     """Gemeinsame yfinance-Historie pro Ticker; immer period='max'.
 
@@ -433,6 +461,11 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
             f"yf:{ticker}:recent5d",
             lambda: yf.Ticker(ticker).history(period="5d"),
         )
+        # SQLite/persistente Historie und yfinance koennen unterschiedliche
+        # Zeitzonen-Konventionen liefern. Vor jedem Datumsvergleich und vor
+        # dem spaeteren concat() muessen beide Tagesindizes dieselbe Form haben.
+        df_max = _normalise_datetime_index(df_max)
+        df_recent = _normalise_datetime_index(df_recent)
     except Exception as exc:
         print(f"WARNUNG-MARKET-CACHE: Kurzabruf (5d) fuer {ticker} fehlgeschlagen "
               f"({type(exc).__name__}: {exc}) - bleibe bei 'max'-Historie.")
