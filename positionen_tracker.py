@@ -4,6 +4,7 @@ import json
 import datetime
 import re
 import smtplib
+import numpy as np
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 import pandas as pd
