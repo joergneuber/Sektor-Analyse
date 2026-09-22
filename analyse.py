@@ -718,7 +718,7 @@ dax_aktien = {
         "VNA.DE"
     ],
     "Kommunikation": [
-        "1U1.DE", "DTE.DE", "FNTN.DE", "PSM.DE", "RTL.DE", "SAX.DE", "SPG.DE", "UTDI.DE"
+        "1U1.DE", "DTE.DE", "FNTN.DE", "PSM.DE", "RRTL.DE", "SAX.DE", "SPG.DE", "UTDI.DE"
     ],
     "Konsum": [
         "ADS.DE", "AG1.DE", "BEI.DE", "BOSS.DE", "BVB.DE", "CWC.DE", "DHER.DE", "DOU.DE", "EVD.DE",
