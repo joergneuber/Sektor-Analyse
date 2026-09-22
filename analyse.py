@@ -685,7 +685,7 @@ eu_benchmark_ticker = "EXSA.DE"  # iShares STOXX Europe 600 UCITS ETF (DE) - EU-
 # gelegentlich gegenchecken)
 dax_aktien = {
     "Industrie": [
-        "10O.DE", "8TRA.DE", "AIR.DE", "ASTA.DE", "AUM.DE", "BFSA.DE", "BMW.DE", "BNR.DE",
+        "10O.DE", "8TRA.DE", "AIR.DE", "1AST.DE", "AUM.DE", "BFSA.DE", "BMW.DE", "BNR.DE",
         "CON.DE", "DEZ.DE", "DHL.DE", "DTG.DE", "DUE.DE", "FRAG.DE", "G1A.DE", "GBF.DE", "HAG.DE",
         "HDD.DE", "HEI.DE", "HOT.DE", "JST.DE", "JUN3.DE", "KBX.DE", "KGX.DE", "KRN.DE", "KSB3.DE",
         "LHA.DE", "MBB.DE", "MBG.DE", "MTX.DE", "NDX1.DE", "NOEJ.DE", "P911.DE", "R3NK.DE",
@@ -714,7 +714,7 @@ dax_aktien = {
         "KCOG.DE", "NAFG.DE", "SDF.DE", "SZG.DE"
     ],
     "Immobilien": [
-        "ARND.DE", "DEQ.DE", "DWNI.DE", "GYC.DE", "HABA.DE", "LEG.DE", "PAT.DE", "TEG.DE",
+        "AT1.DE", "DEQ.DE", "DWNI.DE", "GYC.DE", "HABA.DE", "LEG.DE", "PAT.DE", "TEG.DE",
         "VNA.DE"
     ],
     "Kommunikation": [
@@ -728,7 +728,7 @@ dax_aktien = {
     "Technologie": [
         "ADN1.DE", "ADV.DE", "AIXA.DE", "AOF.DE", "BC8.DE", "COK.DE", "ELG.DE", "F3C.DE", "G24.DE",
         "GFT.DE", "IFX.DE", "IOS.DE", "JEN.DE", "KTN.DE", "NA9.DE", "NEM.DE", "PSAG.DE", "S92.DE",
-        "SAP.DE", "SHELL.SO", "SMHN.DE", "TMV.DE", "TPE.DE", "VRV.DE", "WAF.DE", "YSN.DE"
+        "SAP.DE", "SMHN.DE", "TMV.DE", "TPE.DE", "VRV.DE", "WAF.DE", "YSN.DE"
     ],
     "Versicherungen": [
         "ALV.DE", "HNR1.DE", "MUV2.DE", "TLX.DE", "WUW.DE"
