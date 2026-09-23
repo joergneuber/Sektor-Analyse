@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.request import Request, urlopen
+from pathlib import Path
 
 DW_RSS_URL = "https://rss.dw.com/syndication/feeds/VAS_DE_NeuseelandNews.32453-copypaste.html"
 TIMEOUT = 30
