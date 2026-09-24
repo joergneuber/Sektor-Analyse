@@ -1,0 +1,70 @@
+name: Trendwende Research Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Startdatum YYYY-MM-DD (leer = gesamte DB)"
+        required: false
+        default: ""
+      end:
+        description: "Enddatum YYYY-MM-DD (leer = letzter DB-Tag)"
+        required: false
+        default: ""
+      pivot_order:
+        description: "Pivot-Bestaetigungsordnung"
+        required: false
+        default: "5"
+
+jobs:
+  trendwende-backtest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy scipy yfinance alpaca-py google-auth-oauthlib google-api-python-client google-auth-httplib2 groq google-genai requests lxml xlrd cme-fedwatch openpyxl
+
+      - name: Historische OHLCV-Datenbank aus Release laden
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download historical-ohlcv \
+            --pattern historical_ohlcv.sqlite \
+            --dir . --clobber
+
+      - name: Backtest-Regressions-Unit-Tests
+        run: python -m pytest -q tests/test_trendwende_backtest.py
+
+      - name: Großer Trendwende-Varianten-Backtest
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.start }}" ]; then ARGS="$ARGS --start ${{ inputs.start }}"; fi
+          if [ -n "${{ inputs.end }}" ]; then ARGS="$ARGS --end ${{ inputs.end }}"; fi
+          python trendwende_backtest.py \
+            --db historical_ohlcv.sqlite \
+            --out trendwende_backtest \
+            --pivot-order ${{ inputs.pivot_order }} \
+            $ARGS
+
+      - name: Backtest-Ergebnisse als Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: trendwende-backtest
+          path: trendwende_backtest/
+
+      - name: Kurzbericht
+        run: |
+          echo "=== TRENDWENDE BACKTEST ==="
+          cat trendwende_backtest/trendwende_backtest_summary.csv
