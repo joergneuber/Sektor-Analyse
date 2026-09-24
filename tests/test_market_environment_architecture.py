@@ -48,3 +48,46 @@ def test_short_call_sites_no_longer_pass_market_environment_flag():
     assert "marktumfeld_baerisch_eu" not in src
     assert '_pruefe_short_setup, t, s, "US", us_daten[t], spy_close, momentum_us.get(s)' in src
     assert '_pruefe_short_setup, t, s, "EU", eu_daten[t], eu_bench_close, momentum_eu.get(s)' in src
+
+
+def test_all_short_call_sites_match_new_signature():
+    for filename in ("einzel_check.py", "edelmetalle_scanner.py"):
+        src = (ROOT / filename).read_text(encoding="utf-8")
+        assert "_pruefe_short_setup(" in src
+        assert "marktumfeld_baerisch" not in src
+
+
+def test_edelmetall_short_briefing_has_no_market_environment_modifier():
+    src = (ROOT / "edelmetalle_scanner.py").read_text(encoding="utf-8")
+    assert "Marktumfeld-Modifikator" not in src
+    assert "marktumfeld_baerisch" not in src
+
+
+def test_all_runtime_short_call_boundaries_have_no_legacy_market_environment_argument():
+    for filename in ("short_scanner.py", "einzel_check.py", "edelmetalle_scanner.py"):
+        src = (ROOT / filename).read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=filename)
+        found = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            direct = isinstance(node.func, ast.Name) and node.func.id == "_pruefe_short_setup"
+            submitted = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "submit"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "_pruefe_short_setup"
+            )
+            if direct or submitted:
+                found += 1
+                assert all(kw.arg != "marktumfeld_baerisch" for kw in node.keywords)
+        assert found >= 1, filename
+
+
+def test_runtime_short_path_contains_no_legacy_market_environment_interface():
+    for filename in ("analyse.py", "short_scanner.py", "einzel_check.py", "edelmetalle_scanner.py"):
+        src = (ROOT / filename).read_text(encoding="utf-8")
+        assert "marktumfeld_baerisch" not in src
+        assert "Marktumfeld-Modifikator" not in src
+        assert "MARKTUMFELD (Score-Modell" not in src
