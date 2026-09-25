@@ -47,6 +47,7 @@ import re
 import csv
 from trade_story_universum import write_trade_story_universe
 import time
+import hashlib
 import random
 import json
 import datetime
