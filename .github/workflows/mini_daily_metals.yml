@@ -1,0 +1,356 @@
+name: Neuber Precious Metals Daily
+
+on:
+  schedule:
+    # Automatische Starts in Europe/Berlin. GitHub beruecksichtigt damit
+    # Sommer-/Winterzeit automatisch.
+    # Neue Laufzeiten: 06:45, 09:45, 13:45, 16:45, 19:45.
+    - cron: "45 6,9,13,16,19 * * 1-5"
+      timezone: "Europe/Berlin"
+  workflow_dispatch:
+    inputs:
+      watchdog:
+        description: "Start durch externen Watchdog"
+        required: false
+        default: false
+        type: boolean
+      watchdog_slot:
+        description: "Sollzeit des zu pruefenden Cron-Laufs (HH:MM)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  watchdog_gate:
+    permissions:
+      actions: read
+    runs-on: ubuntu-latest
+    outputs:
+      run_analysis: ${{ steps.decision.outputs.run_analysis || steps.normal.outputs.run_analysis }}
+    steps:
+      - name: Watchdog-Pruefung
+        id: decision
+        if: inputs.watchdog == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WATCHDOG_SLOT: ${{ inputs.watchdog_slot }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          BERLIN = ZoneInfo("Europe/Berlin")
+          TOLERANZ_MINUTEN = 45
+          DEBOUNCE_SEKUNDEN = 30
+          WORKFLOW_FILE = "mini_daily_metals.yml"
+          ERLAUBTER_CRON = "45 6,9,13,16,19 * * 1-5"
+          slot_text = os.environ.get("WATCHDOG_SLOT", "").strip()
+
+          if slot_text not in {"06:45", "09:45", "13:45", "16:45", "19:45"}:
+              raise SystemExit(f"Watchdog: ungueltiger watchdog_slot: {slot_text!r}")
+
+          stunde, minute = (int(x) for x in slot_text.split(":"))
+          jetzt = datetime.now(BERLIN)
+          zielzeit = jetzt.replace(hour=stunde, minute=minute, second=0, microsecond=0)
+
+          if zielzeit > jetzt:
+              raise SystemExit(f"Watchdog: Sollzeit {slot_text} liegt heute noch in der Zukunft.")
+
+          deadline = zielzeit + timedelta(minutes=TOLERANZ_MINUTEN)
+          if jetzt < deadline:
+              raise SystemExit(f"Watchdog: 45-Minuten-Fenster fuer {slot_text} noch nicht abgelaufen.")
+
+          endpoint = (
+              f"repos/${{github.repository}}/actions/workflows/"
+              f"{WORKFLOW_FILE}/runs?event=schedule&per_page=100"
+          )
+
+          def load_schedule_runs():
+              result = subprocess.run(
+                  ["gh", "api", endpoint],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              return json.loads(result.stdout).get("workflow_runs", [])
+
+          def find_matching_runs(runs):
+              passende = []
+              for run in runs:
+                  if run.get("event") != "schedule":
+                      continue
+                  if run.get("schedule") != ERLAUBTER_CRON:
+                      continue
+                  created = run.get("created_at")
+                  if not created:
+                      continue
+                  try:
+                      runzeit = datetime.fromisoformat(
+                          created.replace("Z", "+00:00")
+                      ).astimezone(BERLIN)
+                  except ValueError:
+                      continue
+                  if zielzeit <= runzeit <= deadline:
+                      passende.append(run)
+              return passende
+
+          def write_decision(value):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"run_analysis={value}\n")
+
+          def should_skip(runs_for_slot):
+              if any(r.get("status") in {"queued", "in_progress"} for r in runs_for_slot):
+                  print("Watchdog: passender Schedule-Lauf ist noch aktiv. Kein Recovery-Lauf.")
+                  return True
+              if any(
+                  r.get("status") == "completed"
+                  and r.get("conclusion") == "success"
+                  for r in runs_for_slot
+              ):
+                  print("Watchdog: passender Schedule-Lauf erfolgreich. Kein Recovery-Lauf.")
+                  return True
+              return False
+
+          try:
+              runs = load_schedule_runs()
+          except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+              print("Watchdog-WARNUNG: erster GitHub-API-Versuch fehlgeschlagen. Zweiter Versuch vor Recovery.")
+              print(f"Watchdog-Fehlerdetails: {exc}")
+              time.sleep(DEBOUNCE_SEKUNDEN)
+              try:
+                  runs = load_schedule_runs()
+              except (subprocess.CalledProcessError, json.JSONDecodeError) as exc2:
+                  print("Watchdog-WARNUNG: auch der zweite API-Versuch fehlgeschlagen. Analyse wird zur Alert-Sicherung ausgefuehrt.")
+                  print(f"Watchdog-Fehlerdetails (2. Versuch): {exc2}")
+                  write_decision("true")
+                  raise SystemExit(0)
+
+          passende = find_matching_runs(runs)
+          print(f"Watchdog: Sollzeit = {zielzeit.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+          print(f"Watchdog: Deadline = {deadline.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+          print(f"Watchdog: Pruefzeit = {datetime.now(BERLIN).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+          print(f"Watchdog: exakter Cron = {ERLAUBTER_CRON}")
+          print(f"Watchdog: passende Schedule-Runs im exakten 45-Minuten-Fenster = {len(passende)}")
+
+          if should_skip(passende):
+              write_decision("false")
+              raise SystemExit(0)
+
+          print(
+              f"Watchdog: kein erfolgreicher Schedule-Lauf fuer {slot_text} gefunden. "
+              f"Warte {DEBOUNCE_SEKUNDEN} Sekunden und pruefe erneut."
+          )
+          time.sleep(DEBOUNCE_SEKUNDEN)
+
+          try:
+              runs = load_schedule_runs()
+          except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+              print("Watchdog-WARNUNG: zweiter Status-Check fehlgeschlagen. Analyse wird ausgefuehrt.")
+              print(f"Watchdog-Fehlerdetails: {exc}")
+              write_decision("true")
+              raise SystemExit(0)
+
+          passende = find_matching_runs(runs)
+          print(f"Watchdog: zweiter Check findet {len(passende)} passende Schedule-Runs.")
+
+          if should_skip(passende):
+              write_decision("false")
+              raise SystemExit(0)
+
+          if passende:
+              print("Watchdog: passender Schedule-Lauf vorhanden, aber nicht erfolgreich. Recovery wird ausgefuehrt.")
+          else:
+              print("Watchdog: kein passender Schedule-Lauf im 45-Minuten-Fenster. Recovery wird ausgefuehrt.")
+
+          write_decision("true")
+          PY
+
+      - name: Normalen Lauf freigeben
+        id: normal
+        if: inputs.watchdog != true
+        run: echo "run_analysis=true" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: watchdog_gate
+    if: needs.watchdog_gate.outputs.run_analysis == 'true'
+    permissions:
+      contents: read
+      actions: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Trade-Alert-Status wiederherstellen
+        uses: actions/cache/restore@v4
+        with:
+          path: trade_alert_state.json
+          key: precious-metals-trade-alert-state-${{ github.run_id }}
+          restore-keys: |
+            precious-metals-trade-alert-state-
+
+      # ============================================================
+      # PRECIOUS-METALS-WIRTSCHAFTSKALENDER
+      # 24h-Cache fuer offiziellen Fed/ECB/BLS/BEA-Kalender und
+      # ForexFactory-Event-Discovery. Keine Trading-Logik.
+      # ============================================================
+      - name: Wirtschafts-/Makrokalender wiederherstellen
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            economic_events_cache.json
+            economic_events_forexfactory_cache.json
+          key: precious-metals-economic-events-v2-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            precious-metals-economic-events-v2-${{ runner.os }}-
+
+      # 45-Minuten-Toleranz: Ein automatischer Cron-Lauf darf bis
+      # maximal 45 Minuten nach seiner jeweiligen Sollzeit laufen.
+      - name: Cron-Verzögerung prüfen (45 Minuten)
+        if: github.event_name == 'schedule'
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          TOLERANZ_MINUTEN = 45
+          jetzt = datetime.now(ZoneInfo("Europe/Berlin"))
+          schedule = os.environ.get("SCHEDULE", "").strip()
+
+          erlaubte_crons = {
+              "45 6,9,13,16,19 * * 1-5",
+          }
+
+          if schedule not in erlaubte_crons:
+              raise SystemExit(f"Unbekannter Cron-Ausdruck: {schedule}")
+
+          teile = schedule.split()
+          minute = int(teile[0])
+          stunden = [int(x) for x in teile[1].split(",")]
+
+          kandidaten = []
+          for stunde in stunden:
+              ziel = jetzt.replace(
+                  hour=stunde,
+                  minute=minute,
+                  second=0,
+                  microsecond=0,
+              )
+              if ziel <= jetzt:
+                  kandidaten.append(ziel)
+
+          if not kandidaten:
+              raise SystemExit("Cron-Lauf wurde vor der Sollzeit gestartet.")
+
+          zielzeit = max(kandidaten)
+          verzoegerung = int((jetzt - zielzeit).total_seconds() // 60)
+
+          print(f"Cron: {schedule}")
+          print(f"Sollzeit: {zielzeit.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+          print(f"Aktuelle Zeit: {jetzt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+          print(f"Verzögerung: {verzoegerung} Minuten")
+          print(f"Erlaubte Verzögerung: {TOLERANZ_MINUTEN} Minuten")
+
+          if verzoegerung > TOLERANZ_MINUTEN:
+              raise SystemExit("Cron-Lauf liegt außerhalb des 45-Minuten-Fensters.")
+
+          print("Cron-Lauf innerhalb des erlaubten 45-Minuten-Fensters.")
+          PY
+
+      # Reine Diagnose: verändert weder Zeitplan noch Report-Logik.
+      # github.event.schedule zeigt bei schedule-Runs den tatsächlich
+      # auslösenden Cron-Ausdruck an.
+      - name: Schedule-Diagnose
+        run: |
+          echo "========== SCHEDULE-DIAGNOSE =========="
+          echo "Event: ${{ github.event_name }}"
+          echo "Schedule: ${{ github.event.schedule }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run-ID: ${{ github.run_id }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "UTC:"
+          date -u '+%Y-%m-%d %H:%M:%S %Z'
+          echo "Europe/Berlin:"
+          TZ=Europe/Berlin date '+%Y-%m-%d %H:%M:%S %Z (%z)'
+          echo "========================================"
+
+      - name: Markt-Daten-Cache wiederherstellen
+        uses: actions/cache/restore@v4
+        with:
+          path: market_data_cache.json.gz
+          key: precious-metals-market-data-v2-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            precious-metals-market-data-v2-${{ runner.os }}-
+
+      - name: Report erzeugen
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: python run_precious_metals.py
+
+      - name: Separate Trade-Alerts senden
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
+        run: python send_trade_alerts.py
+
+      - name: Markt-Daten-Cache fuer Actions-Cache vorbereiten
+        if: always()
+        run: |
+          if [ ! -f market_data_cache.json.gz ]; then
+            python -c 'import gzip, json; gzip.open("market_data_cache.json.gz", "wt", encoding="utf-8").write(json.dumps({"schema_version": 2, "updated_at_utc": None, "series": {}}))'
+          fi
+
+      - name: Markt-Daten-Cache speichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: market_data_cache.json.gz
+          key: precious-metals-market-data-v2-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Wirtschafts-/Makrokalender speichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            economic_events_cache.json
+            economic_events_forexfactory_cache.json
+          key: precious-metals-economic-events-v2-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Trade-Alert-Status speichern
+        uses: actions/cache/save@v4
+        with:
+          path: trade_alert_state.json
+          key: precious-metals-trade-alert-state-${{ github.run_id }}
+
+      - name: Nach Google Drive hochladen
+        env:
+          GOOGLE_OAUTH_TOKEN_JSON: ${{ secrets.GOOGLE_OAUTH_TOKEN_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: python upload_to_drive.py
+
+      - name: Mail versenden
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
+        run: python send_mail.py
