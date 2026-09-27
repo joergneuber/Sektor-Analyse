@@ -24,10 +24,10 @@ jobs:
       NODE_OPTIONS: "--no-deprecation"
     steps:
       - name: Code auschecken
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python einrichten
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -35,7 +35,7 @@ jobs:
       # the first regular Monday analysis and is not re-reported later.
       - name: BTC 50W-SMA State wiederherstellen
         id: btc-50w-state-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .btc_50w_sma_state
           key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
