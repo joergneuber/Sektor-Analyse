@@ -1,7 +1,7 @@
 {
   "cache_version": "1.4",
   "cache_created_at": null,
-  "cache_updated_at": "2026-09-25T04:33:35+00:00",
+  "cache_updated_at": "2026-09-27T06:07:54+00:00",
   "OECD_STAN": {
     "value_added": {
       "source": "OECD",
@@ -11,8 +11,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:35+00:00",
-      "last_successful_update": "2026-09-25T04:32:35+00:00",
+      "retrieved_at": "2026-09-27T06:06:12+00:00",
+      "last_successful_update": "2026-09-27T06:06:12+00:00",
       "data": {
         "FRA|C28": {
           "reference_area": "FRA",
@@ -18454,8 +18454,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:36+00:00",
-      "last_successful_update": "2026-09-25T04:32:36+00:00",
+      "retrieved_at": "2026-09-27T06:06:13+00:00",
+      "last_successful_update": "2026-09-27T06:06:13+00:00",
       "data": {
         "FRA|J": {
           "reference_area": "FRA",
@@ -35327,8 +35327,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:38+00:00",
-      "last_successful_update": "2026-09-25T04:32:38+00:00",
+      "retrieved_at": "2026-09-27T06:06:16+00:00",
+      "last_successful_update": "2026-09-27T06:06:16+00:00",
       "data": {
         "DEU|_T": {
           "reference_area": "DEU",
@@ -64329,8 +64329,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:38+00:00",
-      "last_successful_update": "2026-09-25T04:32:38+00:00",
+      "retrieved_at": "2026-09-27T06:06:17+00:00",
+      "last_successful_update": "2026-09-27T06:06:17+00:00",
       "series_count": 10,
       "observation_count": 498,
       "data": {
@@ -64725,17 +64725,6 @@
             },
             {
               "period": "2023",
-              "value": 88.01888237259176,
-              "unit": "USD_PPP_H",
-              "activity": "_T",
-              "measure": "GVAHRS",
-              "frequency": "A",
-              "transformation": "N",
-              "observation_status": "E",
-              "source_flag": null
-            },
-            {
-              "period": "2023",
               "value": 74.10831959494323,
               "unit": "USD_PPP_H",
               "activity": "_T",
@@ -64746,8 +64735,8 @@
               "source_flag": null
             },
             {
-              "period": "2024",
-              "value": 73.68692505214813,
+              "period": "2023",
+              "value": 88.01888237259176,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -64768,8 +64757,8 @@
               "source_flag": null
             },
             {
-              "period": "2025",
-              "value": 94.6255534234246,
+              "period": "2024",
+              "value": 73.68692505214813,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -64781,6 +64770,17 @@
             {
               "period": "2025",
               "value": 75.37140834796179,
+              "unit": "USD_PPP_H",
+              "activity": "_T",
+              "measure": "GVAHRS",
+              "frequency": "A",
+              "transformation": "N",
+              "observation_status": "E",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 94.6255534234246,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -66002,17 +66002,6 @@
             },
             {
               "period": "2023",
-              "value": 52.94147739962305,
-              "unit": "USD_PPP_H",
-              "activity": "_T",
-              "measure": "GVAHRS",
-              "frequency": "A",
-              "transformation": "N",
-              "observation_status": "E",
-              "source_flag": null
-            },
-            {
-              "period": "2023",
               "value": 58.758274034337525,
               "unit": "USD_PPP_H",
               "activity": "_T",
@@ -66023,8 +66012,8 @@
               "source_flag": null
             },
             {
-              "period": "2024",
-              "value": 59.41570763122088,
+              "period": "2023",
+              "value": 52.94147739962305,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -66045,8 +66034,8 @@
               "source_flag": null
             },
             {
-              "period": "2025",
-              "value": 53.147800630846056,
+              "period": "2024",
+              "value": 59.41570763122088,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -66058,6 +66047,17 @@
             {
               "period": "2025",
               "value": 61.2584505762075,
+              "unit": "USD_PPP_H",
+              "activity": "_T",
+              "measure": "GVAHRS",
+              "frequency": "A",
+              "transformation": "N",
+              "observation_status": "E",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 53.147800630846056,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -67483,7 +67483,7 @@
             },
             {
               "period": "2025",
-              "value": 90.41247977984378,
+              "value": 72.23595468873343,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -67494,7 +67494,7 @@
             },
             {
               "period": "2025",
-              "value": 72.23595468873343,
+              "value": 90.41247977984378,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -67995,17 +67995,6 @@
             },
             {
               "period": "2023",
-              "value": 65.96329771567471,
-              "unit": "USD_PPP_H",
-              "activity": "_T",
-              "measure": "GVAHRS",
-              "frequency": "A",
-              "transformation": "N",
-              "observation_status": "E",
-              "source_flag": null
-            },
-            {
-              "period": "2023",
               "value": 74.35269494686024,
               "unit": "USD_PPP_H",
               "activity": "_T",
@@ -68016,8 +68005,8 @@
               "source_flag": null
             },
             {
-              "period": "2024",
-              "value": 75.96734100180521,
+              "period": "2023",
+              "value": 65.96329771567471,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -68029,6 +68018,17 @@
             {
               "period": "2024",
               "value": 65.60861260867289,
+              "unit": "USD_PPP_H",
+              "activity": "_T",
+              "measure": "GVAHRS",
+              "frequency": "A",
+              "transformation": "N",
+              "observation_status": "E",
+              "source_flag": null
+            },
+            {
+              "period": "2024",
+              "value": 75.96734100180521,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -68782,17 +68782,6 @@
             },
             {
               "period": "2023",
-              "value": 71.7636280903983,
-              "unit": "USD_PPP_H",
-              "activity": "_T",
-              "measure": "GVAHRS",
-              "frequency": "A",
-              "transformation": "N",
-              "observation_status": "E",
-              "source_flag": null
-            },
-            {
-              "period": "2023",
               "value": 61.29080045831654,
               "unit": "USD_PPP_H",
               "activity": "_T",
@@ -68803,8 +68792,8 @@
               "source_flag": null
             },
             {
-              "period": "2024",
-              "value": 60.29810601409101,
+              "period": "2023",
+              "value": 71.7636280903983,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -68825,8 +68814,8 @@
               "source_flag": null
             },
             {
-              "period": "2025",
-              "value": 71.70003479464198,
+              "period": "2024",
+              "value": 60.29810601409101,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -68838,6 +68827,17 @@
             {
               "period": "2025",
               "value": 59.87261781228587,
+              "unit": "USD_PPP_H",
+              "activity": "_T",
+              "measure": "GVAHRS",
+              "frequency": "A",
+              "transformation": "N",
+              "observation_status": "E",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 71.70003479464198,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -69151,17 +69151,6 @@
             },
             {
               "period": "2023",
-              "value": 47.31126482592849,
-              "unit": "USD_PPP_H",
-              "activity": "_T",
-              "measure": "GVAHRS",
-              "frequency": "A",
-              "transformation": "N",
-              "observation_status": "E",
-              "source_flag": null
-            },
-            {
-              "period": "2023",
               "value": 51.98298402732604,
               "unit": "USD_PPP_H",
               "activity": "_T",
@@ -69172,8 +69161,8 @@
               "source_flag": null
             },
             {
-              "period": "2024",
-              "value": 55.20365661111237,
+              "period": "2023",
+              "value": 47.31126482592849,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -69194,8 +69183,8 @@
               "source_flag": null
             },
             {
-              "period": "2025",
-              "value": 49.557430879086695,
+              "period": "2024",
+              "value": 55.20365661111237,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -69207,6 +69196,17 @@
             {
               "period": "2025",
               "value": 58.000442562079286,
+              "unit": "USD_PPP_H",
+              "activity": "_T",
+              "measure": "GVAHRS",
+              "frequency": "A",
+              "transformation": "N",
+              "observation_status": "E",
+              "source_flag": null
+            },
+            {
+              "period": "2025",
+              "value": 49.557430879086695,
               "unit": "USD_PPP_H",
               "activity": "_T",
               "measure": "GVAHRS",
@@ -69885,8 +69885,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2024",
-      "retrieved_at": "2026-09-25T04:32:41+00:00",
-      "last_successful_update": "2026-09-25T04:32:41+00:00",
+      "retrieved_at": "2026-09-27T06:06:20+00:00",
+      "last_successful_update": "2026-09-27T06:06:20+00:00",
       "series_count": 10,
       "observation_count": 235,
       "data": {
@@ -72551,8 +72551,8 @@
       "status": "REAL",
       "unit": "USD billion",
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:41+00:00",
-      "last_successful_update": "2026-09-25T04:32:41+00:00",
+      "retrieved_at": "2026-09-27T06:06:20+00:00",
+      "last_successful_update": "2026-09-27T06:06:20+00:00",
       "data": {
         "2025": {
           "value": 581.7,
@@ -72574,8 +72574,8 @@
       "status": "REAL",
       "unit": "percent of surveyed organizations",
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:41+00:00",
-      "last_successful_update": "2026-09-25T04:32:41+00:00",
+      "retrieved_at": "2026-09-27T06:06:20+00:00",
+      "last_successful_update": "2026-09-27T06:06:20+00:00",
       "data": {
         "2025": {
           "value": 88.0,
@@ -72597,8 +72597,8 @@
       "status": "REAL",
       "unit": "million H100-equivalents",
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:32:41+00:00",
-      "last_successful_update": "2026-09-25T04:32:41+00:00",
+      "retrieved_at": "2026-09-27T06:06:20+00:00",
+      "last_successful_update": "2026-09-27T06:06:20+00:00",
       "data": {
         "2025": {
           "value": 17.1,
@@ -72622,8 +72622,8 @@
       "status": "REAL",
       "unit": "GWH",
       "data_period": "2026-07",
-      "retrieved_at": "2026-09-25T04:32:44+00:00",
-      "last_successful_update": "2026-09-25T04:32:44+00:00",
+      "retrieved_at": "2026-09-27T06:06:22+00:00",
+      "last_successful_update": "2026-09-27T06:06:22+00:00",
       "data": {
         "DE": {
           "reference_area": "DE",
@@ -75350,8 +75350,8 @@
       "status": "REAL",
       "unit": "GWH",
       "data_period": "2026-07",
-      "retrieved_at": "2026-09-25T04:32:49+00:00",
-      "last_successful_update": "2026-09-25T04:32:49+00:00",
+      "retrieved_at": "2026-09-27T06:06:31+00:00",
+      "last_successful_update": "2026-09-27T06:06:31+00:00",
       "data": {
         "DE": {
           "reference_area": "DE",
@@ -93266,8 +93266,8 @@
       "status": "REAL",
       "unit": "constant 2024 USD",
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:33:35+00:00",
-      "last_successful_update": "2026-09-25T04:33:35+00:00",
+      "retrieved_at": "2026-09-27T06:07:54+00:00",
+      "last_successful_update": "2026-09-27T06:07:54+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -127867,8 +127867,8 @@
       "status": "REAL",
       "unit": "% GDP",
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:33:35+00:00",
-      "last_successful_update": "2026-09-25T04:33:35+00:00",
+      "retrieved_at": "2026-09-27T06:07:54+00:00",
+      "last_successful_update": "2026-09-27T06:07:54+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -162887,8 +162887,8 @@
       "status": "REAL",
       "unit": "% government expenditure",
       "data_period": "2025",
-      "retrieved_at": "2026-09-25T04:33:35+00:00",
-      "last_successful_update": "2026-09-25T04:33:35+00:00",
+      "retrieved_at": "2026-09-27T06:07:54+00:00",
+      "last_successful_update": "2026-09-27T06:07:54+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
