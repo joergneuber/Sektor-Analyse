@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Code auschecken
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python einrichten
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -33,7 +33,7 @@ jobs:
       # the first regular Monday analysis and is not re-reported later.
       - name: BTC 50W-SMA State wiederherstellen
         id: btc-50w-state-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .btc_50w_sma_state
           key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
@@ -50,7 +50,7 @@ jobs:
       # kurzlebigen market_cache.json. Bei einem Fehler darf der bestehende
       # Tageslauf weiterlaufen und auf die bisherigen Quellen zurueckfallen.
       - name: Historische OHLCV-Datenbank wiederherstellen
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             historical_ohlcv.sqlite*
@@ -98,7 +98,7 @@ jobs:
 
       - name: Historische OHLCV-Datenbank speichern
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             historical_ohlcv.sqlite*
@@ -214,7 +214,7 @@ jobs:
       # abbricht. Benchmark-Snapshots konsumieren den Cross ausdrücklich nicht.
       - name: BTC 50W-SMA State speichern
         if: ${{ success() && hashFiles('.btc_50w_sma_state/state.json') != '' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .btc_50w_sma_state
           key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
@@ -254,7 +254,7 @@ jobs:
 
       - name: Persistenten Makro-Cache wiederherstellen
         id: macro-cache-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .macro_cache
           key: nmm-macro-cache-v6-${{ runner.os }}-${{ github.run_id }}
@@ -273,7 +273,7 @@ jobs:
 
       - name: Persistenten Makro-Cache explizit speichern
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .macro_cache
           key: nmm-macro-cache-v6-${{ runner.os }}-${{ github.run_id }}
@@ -358,7 +358,7 @@ jobs:
       # Die Benchmark-Workflows lesen diesen State nicht schreibend.
       - name: Bitcoin Trading DE State wiederherstellen
         id: btc-youtube-state-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .bitcoin_youtube_state
           key: btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
@@ -368,7 +368,7 @@ jobs:
       # Zusätzlicher State ausschließlich für die Gold-/Silber-Erweiterung.
       - name: Gold/Silber YouTube State wiederherstellen
         id: metals-youtube-state-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .youtube_market_sources_state
           key: metals-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
@@ -416,7 +416,7 @@ jobs:
 
       - name: ChatGPT-Fallback-Paket als Artifact sichern
         if: env.CHATGPT_FALLBACK_ERZEUGT == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: chatgpt-fallback-${{ github.run_id }}
           path: CHATGPT_FALLBACK_*.zip
@@ -431,14 +431,14 @@ jobs:
 
       - name: Bitcoin Trading DE State speichern
         if: steps.gemini-auswertung.outcome == 'success'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .bitcoin_youtube_state
           key: btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Gold/Silber YouTube State speichern
         if: steps.gemini-auswertung.outcome == 'success'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .youtube_market_sources_state
           key: metals-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
