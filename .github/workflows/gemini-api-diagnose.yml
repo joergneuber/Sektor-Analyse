@@ -24,6 +24,6 @@ jobs:
       - name: Kleinen Gemini-API-Test ausführen
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_DIAGNOSE_MODEL: gemini-3.5-flash
+          GEMINI_DIAGNOSE_MODEL: gemini-3.5-flash-lite
         run: |
           python gemini_api_diagnose.py
