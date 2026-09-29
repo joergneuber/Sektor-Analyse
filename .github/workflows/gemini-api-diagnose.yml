@@ -1,1 +1,29 @@
+name: Gemini API Diagnosetest
 
+on:
+  workflow_dispatch:
+
+jobs:
+  gemini-api-diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: google-genai installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-genai
+
+      - name: Kleinen Gemini-API-Test ausführen
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_DIAGNOSE_MODEL: gemini-3.5-flash
+        run: |
+          python gemini_api_diagnose.py
