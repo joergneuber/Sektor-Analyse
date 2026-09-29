@@ -69,7 +69,7 @@ from collections import defaultdict
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash"  # Primaer-Modell (bereits im Projekt erfolgreich erprobt)
+MODELL = "gemini-3.5-flash-lite"  # Primaer-Modell (bereits im Projekt erfolgreich erprobt)
 FALLBACK_MODELL = "gemini-3.8-flash"  # Erster Fallback
 DRITTER_FALLBACK_MODELL = "gemini-3.7-flash"  # Zweiter Fallback
 VIERTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Dritter Fallback
