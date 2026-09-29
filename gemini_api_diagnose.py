@@ -1,175 +1,163 @@
-"""
-Isolierter Gemini-API-Belastungstest.
-
-Teststufe:
-    ca. 50.000 Input-Tokens
-
-Bewusst KEIN:
-- Produktionscode
-- Quota-Scheduler
-- Retry
-- Modellwechsel
-- A1/A2/A3-Kontext
-- File-Upload
-
-Es wird genau EIN generate_content()-Request gesendet.
-"""
-
 import os
 import sys
+import time
+
 from google import genai
 
 
-MODEL = os.getenv("GEMINI_DIAGNOSE_MODEL", "gemini-3.5-flash-lite")
-
-# Zielgröße des Tests.
-TARGET_WORDS = 38_000
+MODEL = "gemini-3.5-flash-lite"
+TARGET_TOKENS = 150_000
 
 
-def build_test_prompt() -> str:
-    """
-    Erzeugt deterministischen, aber inhaltlich einfachen Testtext.
-    Die Wiederholung ist absichtlich gewählt: Wir testen die
-    Request-Größe, nicht die fachliche Verarbeitung.
-    """
-    block = (
-        "Dies ist ein kontrollierter Gemini API Belastungstest. "
-        "Der Text dient ausschließlich dazu, einen Request mit "
-        "ungefähr fünfzigtausend Input-Tokens zu erzeugen. "
-        "Die Daten enthalten keine Trading- oder Projektdaten. "
-        "Bitte verarbeite den gesamten bereitgestellten Kontext. "
-    )
-
-    parts = []
-    while len(" ".join(parts).split()) < TARGET_WORDS:
-        parts.append(block)
-
-    return "\n".join(parts)
-
-
-def main() -> int:
-    api_key = os.getenv("GEMINI_API_KEY")
+def main():
+    api_key = os.environ.get("GEMINI_API_KEY")
 
     if not api_key:
-        print(
-            "FEHLER: GEMINI_API_KEY ist nicht gesetzt.",
-            flush=True,
-        )
-        return 2
+        print("FEHLER: GEMINI_API_KEY ist nicht gesetzt.")
+        sys.exit(1)
 
-    print(
-        f"GEMINI-DIAGNOSE: Modell={MODEL}",
-        flush=True,
+    print("=" * 70)
+    print("GEMINI API DIAGNOSETEST")
+    print("=" * 70)
+    print(f"Modell: {MODEL}")
+    print(f"Zielgröße: ca. {TARGET_TOKENS:,} Input-Tokens")
+    print()
+
+    client = genai.Client(api_key=api_key)
+
+    # ------------------------------------------------------------
+    # Großen, deterministischen Testinput erzeugen.
+    # Keine echten Projektdaten notwendig.
+    # ------------------------------------------------------------
+    block = (
+        "Dies ist ein deterministischer API-Diagnosetest. "
+        "Der Text dient ausschließlich dazu, einen großen Input-Kontext "
+        "für Gemini zu erzeugen. Die inhaltliche Aussage dieses Textes "
+        "ist für den Test nicht relevant. "
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ "
+        "abcdefghijklmnopqrstuvwxyz "
+        "0123456789 "
     )
 
-    print(
-        f"GEMINI-DIAGNOSE: Zielgröße ungefähr {TARGET_WORDS:,} Wörter.",
-        flush=True,
-    )
+    # Sicherheitsreserve: count_tokens() bestimmt die tatsächliche Größe.
+    text = block * 180_000
 
-    prompt = build_test_prompt()
+    print("1. count_tokens()")
+    print("-" * 70)
 
-    word_count = len(prompt.split())
-    char_count = len(prompt)
-
-    print(
-        f"GEMINI-DIAGNOSE: erzeugte Wörter={word_count:,}",
-        flush=True,
-    )
-
-    print(
-        f"GEMINI-DIAGNOSE: erzeugte Zeichen={char_count:,}",
-        flush=True,
-    )
+    start = time.time()
 
     try:
-        client = genai.Client(api_key=api_key)
-
-        # Nur Messung der tatsächlichen Tokenzahl.
-        # Diese Messung wird NICHT an generate_content() gesendet.
-        token_info = client.models.count_tokens(
+        token_result = client.models.count_tokens(
             model=MODEL,
-            contents=prompt,
+            contents=text,
         )
+    except Exception as exc:
+        print("COUNT_TOKENS_FEHLER")
+        print(type(exc).__name__)
+        print(str(exc))
+        sys.exit(2)
 
-        measured_tokens = getattr(
-            token_info,
-            "total_tokens",
-            None,
-        )
+    elapsed = time.time() - start
 
+    token_count = getattr(token_result, "total_tokens", None)
+
+    print(f"Gemeldete Input-Tokens: {token_count}")
+    print(f"Dauer count_tokens(): {elapsed:.2f}s")
+    print()
+
+    if token_count is None:
+        print("FEHLER: total_tokens konnte nicht ermittelt werden.")
+        print(repr(token_result))
+        sys.exit(3)
+
+    # ------------------------------------------------------------
+    # Falls die erzeugte Menge zu klein ist, nicht künstlich
+    # mehrfach senden. Der Test soll genau EINEN Request machen.
+    # ------------------------------------------------------------
+    if token_count < 140_000:
         print(
-            f"GEMINI-DIAGNOSE: count_tokens={measured_tokens}",
-            flush=True,
+            f"WARNUNG: Input liegt mit {token_count:,} Tokens "
+            "unterhalb des erwarteten Testbereichs."
         )
 
+    if token_count > 170_000:
         print(
-            "GEMINI-DIAGNOSE: jetzt EINMALIG generate_content()...",
-            flush=True,
+            f"WARNUNG: Input liegt mit {token_count:,} Tokens "
+            "oberhalb des erwarteten Testbereichs."
         )
 
+    print("2. EINMALIGER generate_content()-Aufruf")
+    print("-" * 70)
+    print(f"Modell VOR Request: {MODEL}")
+    print("Kein Retry")
+    print("Kein Fallback")
+    print("Kein Scheduler")
+    print()
+
+    start = time.time()
+
+    try:
         response = client.models.generate_content(
             model=MODEL,
-            contents=prompt,
+            contents=text,
         )
 
-        print(
-            "GEMINI-DIAGNOSE: generate_content() erfolgreich.",
-            flush=True,
-        )
+        elapsed = time.time() - start
 
-        response_text = getattr(response, "text", "")
+        print("GENERATE_CONTENT_ERFOLG")
+        print(f"Dauer: {elapsed:.2f}s")
+        print(f"Modell angefordert: {MODEL}")
 
-        print(
-            f"GEMINI-DIAGNOSE: Antwort={response_text!r}",
-            flush=True,
-        )
+        # Antwort nur sehr kurz ausgeben.
+        response_text = getattr(response, "text", None)
 
-        usage = getattr(
-            response,
-            "usage_metadata",
-            None,
-        )
+        if response_text:
+            print()
+            print("Antwortanfang:")
+            print(response_text[:500])
+
+        # Nutzungsinformationen ausgeben, sofern vorhanden.
+        usage = getattr(response, "usage_metadata", None)
 
         if usage is not None:
-            print(
-                "GEMINI-DIAGNOSE: usage_metadata="
-                f"prompt_token_count="
-                f"{getattr(usage, 'prompt_token_count', None)}, "
-                f"candidates_token_count="
-                f"{getattr(usage, 'candidates_token_count', None)}, "
-                f"total_token_count="
-                f"{getattr(usage, 'total_token_count', None)}",
-                flush=True,
-            )
+            print()
+            print("Usage-Metadaten:")
+            print(usage)
 
-        return 0
+        print()
+        print("=" * 70)
+        print("TEST ERFOLGREICH ABGESCHLOSSEN")
+        print("=" * 70)
 
     except Exception as exc:
-        print(
-            "GEMINI-DIAGNOSE: API-FEHLER: "
-            f"{type(exc).__name__}: {exc}",
-            flush=True,
-        )
+        elapsed = time.time() - start
 
-        for attr in (
+        print("GENERATE_CONTENT_FEHLER")
+        print(f"Dauer bis Fehler: {elapsed:.2f}s")
+        print(f"Modell angefordert: {MODEL}")
+        print(f"Exception-Typ: {type(exc).__name__}")
+        print(f"Fehlermeldung: {exc}")
+
+        # Zusätzliche Attribute des Google-Fehlers ausgeben,
+        # soweit vorhanden.
+        for attribute in (
             "code",
-            "status_code",
+            "status",
+            "details",
+            "response",
         ):
-            value = getattr(
-                exc,
-                attr,
-                None,
-            )
-
+            value = getattr(exc, attribute, None)
             if value is not None:
-                print(
-                    f"GEMINI-DIAGNOSE: {attr}={value}",
-                    flush=True,
-                )
+                print(f"{attribute}: {value!r}")
 
-        return 1
+        print()
+        print("=" * 70)
+        print("TEST MIT API-FEHLER BEENDET")
+        print("=" * 70)
+
+        sys.exit(4)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
