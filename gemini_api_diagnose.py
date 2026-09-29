@@ -20,7 +20,7 @@ import sys
 from google import genai
 
 
-MODEL = os.getenv("GEMINI_DIAGNOSE_MODEL", "gemini-3.5-flash")
+MODEL = os.getenv("GEMINI_DIAGNOSE_MODEL", "gemini-3.5-flash-lite")
 
 # Zielgröße des Tests.
 TARGET_WORDS = 38_000
