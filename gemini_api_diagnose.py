@@ -6,7 +6,18 @@ from google import genai
 
 
 MODEL = "gemini-3.5-flash-lite"
+
 TARGET_TOKENS = 150_000
+MIN_TOKENS = 145_000
+MAX_TOKENS = 155_000
+
+
+def count_tokens(client, text):
+    result = client.models.count_tokens(
+        model=MODEL,
+        contents=text,
+    )
+    return result.total_tokens
 
 
 def main():
@@ -17,82 +28,108 @@ def main():
         sys.exit(1)
 
     print("=" * 70)
-    print("GEMINI API DIAGNOSETEST")
+    print("GEMINI FLASH-LITE 150K DIAGNOSETEST")
     print("=" * 70)
     print(f"Modell: {MODEL}")
-    print(f"Zielgröße: ca. {TARGET_TOKENS:,} Input-Tokens")
+    print(f"Ziel: {TARGET_TOKENS:,} Input-Tokens")
+    print(f"zulässiger Bereich: {MIN_TOKENS:,}–{MAX_TOKENS:,}")
     print()
 
     client = genai.Client(api_key=api_key)
 
-    # ------------------------------------------------------------
-    # Großen, deterministischen Testinput erzeugen.
-    # Keine echten Projektdaten notwendig.
-    # ------------------------------------------------------------
+    # Ein bewusst kurzer, deterministischer Textblock.
+    # Die tatsächliche Tokenzahl wird NICHT geschätzt,
+    # sondern mit count_tokens() kontrolliert.
     block = (
-        "Dies ist ein deterministischer API-Diagnosetest. "
-        "Der Text dient ausschließlich dazu, einen großen Input-Kontext "
-        "für Gemini zu erzeugen. Die inhaltliche Aussage dieses Textes "
-        "ist für den Test nicht relevant. "
+        "Dies ist ein deterministischer Gemini-Diagnosetest. "
+        "Der Inhalt dient ausschließlich zur Erzeugung eines "
+        "definierten großen Input-Kontextes. "
+        "Es handelt sich nicht um echte Projektdaten. "
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ "
         "abcdefghijklmnopqrstuvwxyz "
         "0123456789 "
+        "MARKET DATA TEST "
+        "TECHNICAL ANALYSIS TEST "
+        "HISTORICAL DATA TEST "
     )
 
-    # Sicherheitsreserve: count_tokens() bestimmt die tatsächliche Größe.
-    text = block * 180_000
+    # Start deutlich unterhalb des Ziels.
+    repetitions = 1000
 
-    print("1. count_tokens()")
+    print("1. Aufbau des Testinputs")
     print("-" * 70)
 
-    start = time.time()
+    # Wir erhöhen schrittweise und kontrollieren jedes Mal die
+    # tatsächliche Tokenzahl über count_tokens().
+    for iteration in range(20):
+        text = block * repetitions
 
-    try:
-        token_result = client.models.count_tokens(
-            model=MODEL,
-            contents=text,
+        start = time.time()
+
+        try:
+            token_count = count_tokens(client, text)
+        except Exception as exc:
+            print("COUNT_TOKENS_FEHLER")
+            print(type(exc).__name__)
+            print(str(exc))
+            sys.exit(2)
+
+        elapsed = time.time() - start
+
+        print(
+            f"Iteration {iteration + 1:02d}: "
+            f"{token_count:,} Tokens "
+            f"({repetitions:,} Wiederholungen, "
+            f"{elapsed:.2f}s)"
         )
-    except Exception as exc:
-        print("COUNT_TOKENS_FEHLER")
-        print(type(exc).__name__)
-        print(str(exc))
-        sys.exit(2)
 
-    elapsed = time.time() - start
+        if MIN_TOKENS <= token_count <= MAX_TOKENS:
+            break
 
-    token_count = getattr(token_result, "total_tokens", None)
+        if token_count < TARGET_TOKENS:
+            # proportional hochskalieren
+            factor = TARGET_TOKENS / max(token_count, 1)
 
-    print(f"Gemeldete Input-Tokens: {token_count}")
-    print(f"Dauer count_tokens(): {elapsed:.2f}s")
-    print()
+            # etwas konservativer aufrunden
+            repetitions = max(
+                repetitions + 1,
+                int(repetitions * factor * 0.98),
+            )
+        else:
+            # proportional reduzieren
+            factor = TARGET_TOKENS / token_count
 
-    if token_count is None:
-        print("FEHLER: total_tokens konnte nicht ermittelt werden.")
-        print(repr(token_result))
+            repetitions = max(
+                1,
+                int(repetitions * factor * 0.98),
+            )
+
+    else:
+        print()
+        print("FEHLER: Zielbereich konnte nicht erreicht werden.")
+        print(f"Letzte Tokenzahl: {token_count:,}")
         sys.exit(3)
 
-    # ------------------------------------------------------------
-    # Falls die erzeugte Menge zu klein ist, nicht künstlich
-    # mehrfach senden. Der Test soll genau EINEN Request machen.
-    # ------------------------------------------------------------
-    if token_count < 140_000:
-        print(
-            f"WARNUNG: Input liegt mit {token_count:,} Tokens "
-            "unterhalb des erwarteten Testbereichs."
-        )
+    print()
+    print(f"Finale Input-Tokens: {token_count:,}")
+    print(f"Finale Textlänge: {len(text):,} Zeichen")
+    print()
 
-    if token_count > 170_000:
-        print(
-            f"WARNUNG: Input liegt mit {token_count:,} Tokens "
-            "oberhalb des erwarteten Testbereichs."
-        )
+    # Absolute Sicherheitsprüfung.
+    # Niemals einen Request außerhalb unseres geplanten Bereichs senden.
+    if token_count < MIN_TOKENS or token_count > MAX_TOKENS:
+        print("FEHLER: Input liegt außerhalb des erlaubten Bereichs.")
+        sys.exit(4)
 
     print("2. EINMALIGER generate_content()-Aufruf")
     print("-" * 70)
-    print(f"Modell VOR Request: {MODEL}")
+    print(f"Modell: {MODEL}")
+    print(f"Input-Tokens: {token_count:,}")
+    print()
     print("Kein Retry")
     print("Kein Fallback")
-    print("Kein Scheduler")
+    print("Kein Quota-Scheduler")
+    print("Kein Modellwechsel")
     print()
 
     start = time.time()
@@ -109,15 +146,6 @@ def main():
         print(f"Dauer: {elapsed:.2f}s")
         print(f"Modell angefordert: {MODEL}")
 
-        # Antwort nur sehr kurz ausgeben.
-        response_text = getattr(response, "text", None)
-
-        if response_text:
-            print()
-            print("Antwortanfang:")
-            print(response_text[:500])
-
-        # Nutzungsinformationen ausgeben, sofern vorhanden.
         usage = getattr(response, "usage_metadata", None)
 
         if usage is not None:
@@ -125,9 +153,16 @@ def main():
             print("Usage-Metadaten:")
             print(usage)
 
+        response_text = getattr(response, "text", None)
+
+        if response_text:
+            print()
+            print("Antwortanfang:")
+            print(response_text[:500])
+
         print()
         print("=" * 70)
-        print("TEST ERFOLGREICH ABGESCHLOSSEN")
+        print("TEST ERFOLGREICH")
         print("=" * 70)
 
     except Exception as exc:
@@ -135,12 +170,11 @@ def main():
 
         print("GENERATE_CONTENT_FEHLER")
         print(f"Dauer bis Fehler: {elapsed:.2f}s")
-        print(f"Modell angefordert: {MODEL}")
+        print(f"Modell: {MODEL}")
+        print(f"Input-Tokens: {token_count:,}")
         print(f"Exception-Typ: {type(exc).__name__}")
         print(f"Fehlermeldung: {exc}")
 
-        # Zusätzliche Attribute des Google-Fehlers ausgeben,
-        # soweit vorhanden.
         for attribute in (
             "code",
             "status",
@@ -156,7 +190,7 @@ def main():
         print("TEST MIT API-FEHLER BEENDET")
         print("=" * 70)
 
-        sys.exit(4)
+        sys.exit(5)
 
 
 if __name__ == "__main__":
