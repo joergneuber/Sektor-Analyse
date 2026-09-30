@@ -5753,6 +5753,10 @@ def speichere_ergebnis(text):
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
 
+    if str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
+        print("INFO: Technischer Gemini-Fallback - bestehende Auswertung bleibt unverändert; keine Auswertung wird gespeichert.")
+        return None
+
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
         f.write(final_text)
 
