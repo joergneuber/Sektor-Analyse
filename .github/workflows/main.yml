@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     env:
       NODE_OPTIONS: "--no-deprecation"
       NMM_USE_HISTORICAL_OHLCV: "1"
@@ -23,6 +24,38 @@ jobs:
     steps:
       - name: Code auschecken
         uses: actions/checkout@v5
+
+      # Persistenter Tagesstatus nur für automatische Läufe.
+      - name: Automatischen Tagesstatus wiederherstellen
+        if: ${{ github.event_name == 'schedule' }}
+        id: daily-main-state-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: .daily_main_run_state
+          key: daily-main-run-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            daily-main-run-${{ github.ref_name }}-
+
+      # Automatischer Hauptlauf: maximal ein erfolgreicher Lauf pro Werktag.
+      # Manuelle workflow_dispatch-Läufe bleiben immer erlaubt.
+      - name: Automatischen Tageslauf nur einmal ausführen
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          set -euo pipefail
+          state_file=".daily_main_run_state"
+          today="$(date -u +%Y-%m-%d)"
+          if [ -f "$state_file" ] && [ "$(cat "$state_file")" = "$today" ]; then
+            echo "Automatischer Hauptlauf für ${today} wurde bereits erfolgreich ausgeführt."
+            echo "DAILY_MAIN_RUN_ALREADY_DONE=true" >> "$GITHUB_ENV"
+          else
+            echo "Automatischer Hauptlauf für ${today} ist noch nicht als erfolgreich markiert."
+            echo "DAILY_MAIN_RUN_ALREADY_DONE=false" >> "$GITHUB_ENV"
+          fi
+          if [ "${DAILY_MAIN_RUN_ALREADY_DONE:-false}" = "true" ]; then
+            echo "Bereits erfolgreich gelaufen – automatischer Lauf wird beendet."
+            gh run cancel "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}"
+            exit 0
+          fi
 
       - name: Python einrichten
         uses: actions/setup-python@v6
@@ -533,3 +566,17 @@ jobs:
               smtp.send_message(msg)
           print(f"Technische Gemini-Fallback-Mail versendet: {status_file.name}")
           PY
+
+      # Erfolgreichen automatischen Tageslauf erst nach dem vollständigen
+      # Hauptlauf markieren. Fehlgeschlagene Läufe setzen keinen Tagesstatus.
+      - name: Erfolgreichen automatischen Tageslauf markieren
+        if: ${{ github.event_name == 'schedule' && success() }}
+        run: |
+          date -u +%Y-%m-%d > .daily_main_run_state
+
+      - name: Automatischen Tagesstatus nach Erfolg speichern
+        if: ${{ github.event_name == 'schedule' && success() }}
+        uses: actions/cache/save@v5
+        with:
+          path: .daily_main_run_state
+          key: daily-main-run-${{ github.ref_name }}-${{ github.run_id }}
