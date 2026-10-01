@@ -1311,7 +1311,7 @@ def aktualisiere_positionen(df):
             df.at[idx, 'Ausstiegsdatum'] = heute
             df.at[idx, 'Ausstiegskurs'] = aktueller_kurs
             alert_hinweis = str(row.get('Alert_Hinweis', '')).strip()
-            if 'STOP' not in alert_hinweis.upper():
+            if not any(teil.strip().upper().startswith('STOP GEMELDET AM') for teil in alert_hinweis.split('|')):
                 alert_events.append({
                     'event': 'STOP', 'idx': idx, 'ticker': ticker,
                     'kurs': aktueller_kurs, 'performance': performance,
