@@ -6381,7 +6381,7 @@ def _pruefe_inhaltliche_mindesttiefe(text):
             # Explizite, fachlich zuordenbare Nichtverfügbarkeit ist eine gültige
             # datenabhängige Aussage und darf nicht an einer Längenheuristik scheitern.
             continue
-        if label_only and not any(len(re.sub(r"\W", "", unit, flags=re.UNICODE)) >= 45 for unit in units):
+        if label_only and h != "11.2 Makro-Szenario-Status" and not any(len(re.sub(r"\W", "", unit, flags=re.UNICODE)) >= 45 for unit in units):
             errors.append(f"{h}: Inhalt ist nur eine kurze Label-/Wert-Angabe; es fehlen substanzielle Informationen.")
             continue
 
@@ -6419,6 +6419,7 @@ def _pruefe_inhaltliche_mindesttiefe(text):
         if (len(units) == 1 and len(profile) >= 6 and len(distinct_terms) < 12
                 and h not in {"1.4 Frühindikatoren / neue Themen", "2.2 Trendwende", "2.3 Short",
                               "2.4 HebelTrader", "2.5 Sonstige durch Gemini erkannte Chancen",
+                              "6.5 Investmentthese gegen aktuelle Marktdaten", "7.7 Konjunktur / Makro",
                               "9.2 Unternehmen", "9.3 Branchenereignisse", "10.2 Stop-/TP-Änderungen"}
                 and not h.startswith("11.")):
             errors.append(f"{h}: zu kompakte Sammelaussage für die vorhandene fachliche Breite.")
