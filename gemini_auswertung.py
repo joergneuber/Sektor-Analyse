@@ -6300,13 +6300,42 @@ def _pruefe_inhaltliche_mindesttiefe(text):
         return active, len(active), True
 
     def _has_any_date_or_time(text_block):
-        """Erkennt konkrete Zeitbezüge robust über die gesamte Inhaltseinheit."""
+        """Erkennt konkrete Zeitbezüge robust über die gesamte Inhaltseinheit.
+
+        Berücksichtigt neben den kanonischen Datumsformaten des Projekts auch
+        die in Makro-/Briefing-Quellen tatsächlich vorkommenden natürlichen
+        deutschen Zeitangaben, damit diese nicht fälschlich als fehlender
+        Terminbezug bewertet werden.
+        """
         patterns = (
+            # Konkretes Datum: 7. Oktober 2026 / 07. Oktober 2026
             r"\b\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
+            # Numerische Datumsformate: 07.10.2026 / 07-10-2026 / 07/10/2026
             r"\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b",
+            # ISO-Datum: 2026-10-07
             r"\b20\d{2}-\d{1,2}-\d{1,2}\b",
+            # Monat + Jahr: Oktober 2026
             r"\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
+            # Datums-/Zeiträume aus den Projektquellen: 6. bis 8. Oktober
+            r"\b\d{1,2}\.?\s*(?:bis|[-–—])\s*\d{1,2}\.?\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
+            # Tagesangabe ohne Jahr: am 7. Oktober / 7. Oktober
+            r"\b(?:am\s+)?\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
+            # Explizite Monatszeiträume
+            r"\b(?:im|in|anfang|mitte|ende)\s+(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
+            # Relative Zeitangaben, wie sie in den Projektquellen vorkommen
+            r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\s+(?:woche|monat|tag(?:en)?|jahr(?:es)?|wochen|monaten|monate)\b",
+            r"\b(?:nächste|naechste|kommende)\s+woche\b",
+            r"\b(?:in|innerhalb(?:\s+von)?)\s+\d{1,3}\s+(?:tag(?:en)?|woche(?:n)?|monat(?:en)?|jahr(?:en)?)\b",
+            r"\b(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b",
+            # Einzelne relative Zeitwörter bleiben gültig, wie bisher.
+            r"\b(?:heute|morgen|übermorgen)\b",
+            # Rückwärtskompatibilität: auch die bisherigen isolierten relativen
+            # Zeitwörter bleiben gültige Treffer.
             r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\b",
+            # Quartal/Kalenderwoche, mit optionalem Jahr.
+            r"\bq[1-4](?:\s+20\d{2})?\b",
+            r"\bkw\s*\d{1,2}(?:\s*[/.-]?\s*20\d{2})?\b",
+            # Rückwärtskompatibilität zum bisherigen Q/KW-Muster.
             r"\b(?:q[1-4]|kw\s*\d{1,2})\b",
         )
         return any(re.search(pattern, text_block, re.I | re.U) for pattern in patterns)
