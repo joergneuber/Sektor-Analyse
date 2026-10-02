@@ -1,7 +1,7 @@
 {
   "cache_version": "1.4",
   "cache_created_at": null,
-  "cache_updated_at": "2026-10-01T10:15:58+00:00",
+  "cache_updated_at": "2026-10-02T03:30:42+00:00",
   "OECD_STAN": {
     "value_added": {
       "source": "OECD",
@@ -11,8 +11,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:21+00:00",
-      "last_successful_update": "2026-10-01T10:14:21+00:00",
+      "retrieved_at": "2026-10-02T03:29:09+00:00",
+      "last_successful_update": "2026-10-02T03:29:09+00:00",
       "data": {
         "FRA|C28": {
           "reference_area": "FRA",
@@ -18454,8 +18454,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:22+00:00",
-      "last_successful_update": "2026-10-01T10:14:22+00:00",
+      "retrieved_at": "2026-10-02T03:29:10+00:00",
+      "last_successful_update": "2026-10-02T03:29:10+00:00",
       "data": {
         "FRA|J": {
           "reference_area": "FRA",
@@ -35327,8 +35327,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:23+00:00",
-      "last_successful_update": "2026-10-01T10:14:23+00:00",
+      "retrieved_at": "2026-10-02T03:29:11+00:00",
+      "last_successful_update": "2026-10-02T03:29:11+00:00",
       "data": {
         "DEU|_T": {
           "reference_area": "DEU",
@@ -64329,8 +64329,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:23+00:00",
-      "last_successful_update": "2026-10-01T10:14:23+00:00",
+      "retrieved_at": "2026-10-02T03:29:11+00:00",
+      "last_successful_update": "2026-10-02T03:29:11+00:00",
       "series_count": 10,
       "observation_count": 498,
       "data": {
@@ -69885,8 +69885,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2024",
-      "retrieved_at": "2026-10-01T10:14:26+00:00",
-      "last_successful_update": "2026-10-01T10:14:26+00:00",
+      "retrieved_at": "2026-10-02T03:29:14+00:00",
+      "last_successful_update": "2026-10-02T03:29:14+00:00",
       "series_count": 10,
       "observation_count": 235,
       "data": {
@@ -72551,8 +72551,8 @@
       "status": "REAL",
       "unit": "USD billion",
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:26+00:00",
-      "last_successful_update": "2026-10-01T10:14:26+00:00",
+      "retrieved_at": "2026-10-02T03:29:14+00:00",
+      "last_successful_update": "2026-10-02T03:29:14+00:00",
       "data": {
         "2025": {
           "value": 581.7,
@@ -72574,8 +72574,8 @@
       "status": "REAL",
       "unit": "percent of surveyed organizations",
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:26+00:00",
-      "last_successful_update": "2026-10-01T10:14:26+00:00",
+      "retrieved_at": "2026-10-02T03:29:14+00:00",
+      "last_successful_update": "2026-10-02T03:29:14+00:00",
       "data": {
         "2025": {
           "value": 88.0,
@@ -72597,8 +72597,8 @@
       "status": "REAL",
       "unit": "million H100-equivalents",
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:14:26+00:00",
-      "last_successful_update": "2026-10-01T10:14:26+00:00",
+      "retrieved_at": "2026-10-02T03:29:14+00:00",
+      "last_successful_update": "2026-10-02T03:29:14+00:00",
       "data": {
         "2025": {
           "value": 17.1,
@@ -72622,8 +72622,8 @@
       "status": "REAL",
       "unit": "GWH",
       "data_period": "2026-07",
-      "retrieved_at": "2026-10-01T10:14:29+00:00",
-      "last_successful_update": "2026-10-01T10:14:29+00:00",
+      "retrieved_at": "2026-10-02T03:29:16+00:00",
+      "last_successful_update": "2026-10-02T03:29:16+00:00",
       "data": {
         "DE": {
           "reference_area": "DE",
@@ -74185,7 +74185,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 39595.977,
+              "OBS_VALUE": 39404.847,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "DE"
@@ -75325,7 +75325,14 @@
             },
             {
               "TIME_PERIOD": "2026-06",
-              "OBS_VALUE": 213995.656,
+              "OBS_VALUE": 214012.854,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "geo": "EU27_2020"
+            },
+            {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 228235.451,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
@@ -75340,7 +75347,7 @@
         "Eurostat source flags are preserved per observation."
       ],
       "series_count": 2,
-      "observation_count": 385
+      "observation_count": 386
     },
     "electricity_balance": {
       "source": "Eurostat",
@@ -75350,8 +75357,8 @@
       "status": "REAL",
       "unit": "GWH",
       "data_period": "2026-07",
-      "retrieved_at": "2026-10-01T10:14:36+00:00",
-      "last_successful_update": "2026-10-01T10:14:36+00:00",
+      "retrieved_at": "2026-10-02T03:29:24+00:00",
+      "last_successful_update": "2026-10-02T03:29:24+00:00",
       "data": {
         "DE": {
           "reference_area": "DE",
@@ -77135,7 +77142,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 5041.225,
+              "OBS_VALUE": 5392.207,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "IMP",
@@ -78055,7 +78062,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 4513.134,
+              "OBS_VALUE": 4715.933,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "IMP_FROM_EU",
@@ -79839,7 +79846,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 5201.81,
+              "OBS_VALUE": 5435.707,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "EXP",
@@ -80759,7 +80766,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 4430.631,
+              "OBS_VALUE": 4748.156,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "EXP_TO_EU",
@@ -82543,7 +82550,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 917.155,
+              "OBS_VALUE": 844.472,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "TI_EHG_EPS",
@@ -83463,7 +83470,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 2375.759,
+              "OBS_VALUE": 2394.987,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "DL",
@@ -85247,7 +85254,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 36142.478,
+              "OBS_VALUE": 36121.888,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -86748,6 +86755,14 @@
               "geo": "EU27_2020"
             },
             {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 37592.957,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "nrg_bal": "IMP",
+              "geo": "EU27_2020"
+            },
+            {
               "TIME_PERIOD": "2017-01",
               "OBS_VALUE": 25855.267,
               "OBS_FLAG": "",
@@ -87654,6 +87669,14 @@
             {
               "TIME_PERIOD": "2026-06",
               "OBS_VALUE": 29620.448,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "nrg_bal": "IMP_FROM_EU",
+              "geo": "EU27_2020"
+            },
+            {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 31228.644,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "IMP_FROM_EU",
@@ -89148,6 +89171,14 @@
               "geo": "EU27_2020"
             },
             {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 40301.128,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "nrg_bal": "EXP",
+              "geo": "EU27_2020"
+            },
+            {
               "TIME_PERIOD": "2017-01",
               "OBS_VALUE": 25055.199,
               "OBS_FLAG": "",
@@ -90060,6 +90091,14 @@
               "geo": "EU27_2020"
             },
             {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 31069.283,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "nrg_bal": "EXP_TO_EU",
+              "geo": "EU27_2020"
+            },
+            {
               "TIME_PERIOD": "2017-01",
               "OBS_VALUE": 3716.657,
               "OBS_FLAG": "",
@@ -90965,7 +91004,15 @@
             },
             {
               "TIME_PERIOD": "2026-06",
-              "OBS_VALUE": 4957.688,
+              "OBS_VALUE": 4901.72,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "nrg_bal": "TI_EHG_EPS",
+              "geo": "EU27_2020"
+            },
+            {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 4931.259,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "TI_EHG_EPS",
@@ -93237,7 +93284,15 @@
             },
             {
               "TIME_PERIOD": "2026-06",
-              "OBS_VALUE": 197267.001,
+              "OBS_VALUE": 197333.216,
+              "OBS_FLAG": "",
+              "OBS_STATUS": "",
+              "nrg_bal": "AIM",
+              "geo": "EU27_2020"
+            },
+            {
+              "TIME_PERIOD": "2026-07",
+              "OBS_VALUE": 208678.771,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -93254,7 +93309,7 @@
         "Eurostat source flags are preserved per observation."
       ],
       "series_count": 14,
-      "observation_count": 2235
+      "observation_count": 2241
     }
   },
   "SIPRI_DEFENCE": {
@@ -93266,8 +93321,8 @@
       "status": "REAL",
       "unit": "constant 2024 USD",
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:15:58+00:00",
-      "last_successful_update": "2026-10-01T10:15:58+00:00",
+      "retrieved_at": "2026-10-02T03:30:42+00:00",
+      "last_successful_update": "2026-10-02T03:30:42+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -127867,8 +127922,8 @@
       "status": "REAL",
       "unit": "% GDP",
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:15:58+00:00",
-      "last_successful_update": "2026-10-01T10:15:58+00:00",
+      "retrieved_at": "2026-10-02T03:30:42+00:00",
+      "last_successful_update": "2026-10-02T03:30:42+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -162887,8 +162942,8 @@
       "status": "REAL",
       "unit": "% government expenditure",
       "data_period": "2025",
-      "retrieved_at": "2026-10-01T10:15:58+00:00",
-      "last_successful_update": "2026-10-01T10:15:58+00:00",
+      "retrieved_at": "2026-10-02T03:30:42+00:00",
+      "last_successful_update": "2026-10-02T03:30:42+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
