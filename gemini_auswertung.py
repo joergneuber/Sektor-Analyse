@@ -1034,7 +1034,7 @@ def lade_beobachtungsliste_von_drive():
 
 
 def _lade_6_5_statusverlauf(historie_pfad):
-    """Liest den letzten bekannten Status fuer die reine 6.5-Darstellung.
+    """Liest den letzten bekannten Status fuer die interne A/B/C-Kandidatenhistorie.
 
     Die Beobachtungsliste bleibt allein autoritativ fuer die AKTUELLE
     Kategorie. Historie wird hier ausschliesslich fuer die Anzeige
@@ -1073,7 +1073,7 @@ def _lade_6_5_statusverlauf(historie_pfad):
             result[ticker] = previous or "NICHT BEKANNT"
         return result
     except Exception as exc:
-        print(f"WARNUNG: 6.5-Statushistorie konnte nicht gelesen werden: {exc}")
+        print(f"WARNUNG: A/B/C-Statushistorie konnte nicht gelesen werden: {exc}")
         return {}
 
 
@@ -1089,7 +1089,7 @@ def _kurzstatus(status):
 
 
 def _lade_6_5_namen(eingabedateien=None, historie_pfad=None):
-    """Ermittelt autoritative Anzeigenamen fuer 6.5.
+    """Ermittelt autoritative Anzeigenamen fuer die interne A/B/C-Kandidatenhistorie.
 
     Prioritaet: aktueller Einzel-Check-Historieneintrag, danach strukturierte
     CSV/JSON-Quellen des aktuellen Laufs. Der Name dient nur der Darstellung;
@@ -1114,7 +1114,7 @@ def _lade_6_5_namen(eingabedateien=None, historie_pfad=None):
                     if isinstance(row, dict):
                         add(row.get("Ticker"), row.get("Name"))
         except Exception as exc:
-            print(f"WARNUNG: 6.5-Namenshistorie konnte nicht gelesen werden: {exc}")
+            print(f"WARNUNG: A/B/C-Namenshistorie konnte nicht gelesen werden: {exc}")
 
     for pfad in (eingabedateien or {}).values():
         if not pfad or not os.path.isfile(pfad):
@@ -1149,25 +1149,25 @@ def _lade_6_5_namen(eingabedateien=None, historie_pfad=None):
     return namen
 
 
-def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, eingabedateien=None):
-    """Erzeugt die verbindliche 6.5.1-/6.5.2-Zuordnung aus dem aktuellen
+def erstelle_abkandidaten_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, eingabedateien=None):
+    """Erzeugt die verbindliche A/B/C-Zuordnung aus dem aktuellen
     Einzel-Check-Status. Historie wird nur fuer die Darstellung des
     Statusverlaufs verwendet, niemals fuer die aktuelle Kategoriezuordnung.
     """
     if not beobachtungsliste_pfad or not os.path.exists(beobachtungsliste_pfad):
         raise RuntimeError(
-            "6.5: Autoritative einzel_check_beobachtung.json fehlt. "
-            "Die 6.5-Zuordnung darf nicht aus historischen Daten rekonstruiert werden."
+            "Autoritative einzel_check_beobachtung.json fehlt. "
+            "Die A/B/C-Zuordnung darf nicht aus historischen Daten rekonstruiert werden."
         )
 
     try:
         with open(beobachtungsliste_pfad, "r", encoding="utf-8-sig") as f:
             daten = json.load(f)
     except Exception as exc:
-        raise RuntimeError(f"6.5: Beobachtungsliste konnte nicht gelesen werden: {exc}") from exc
+        raise RuntimeError(f"Beobachtungsliste konnte nicht gelesen werden: {exc}") from exc
 
     if not isinstance(daten, dict):
-        raise RuntimeError("6.5: einzel_check_beobachtung.json ist kein JSON-Objekt.")
+        raise RuntimeError("einzel_check_beobachtung.json ist kein JSON-Objekt.")
 
     aktuelle_a = []
     aktuelle_nicht_a = []
@@ -1177,7 +1177,7 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, 
 
     for ticker, eintrag in daten.items():
         if not isinstance(eintrag, dict):
-            raise RuntimeError(f"6.5: Ungueltiger Beobachtungslisteneintrag fuer {ticker!r}.")
+            raise RuntimeError(f"Ungueltiger Beobachtungslisteneintrag fuer {ticker!r}.")
         status = str(eintrag.get("status", "")).strip()
         quelle = str(eintrag.get("quelle", "-")).strip() or "-"
         if status == "KAUFKANDIDAT A":
@@ -1186,7 +1186,7 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, 
             aktuelle_nicht_a.append((str(ticker).strip(), status, quelle))
         else:
             raise RuntimeError(
-                f"6.5: Unerwarteter aktueller Status fuer {ticker!r}: {status!r}. "
+                f"Unerwarteter aktueller Status fuer {ticker!r}: {status!r}. "
                 "Die Liste wird nicht aus historischen Daten repariert."
             )
 
@@ -1194,12 +1194,12 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, 
     aktuelle_nicht_a.sort(key=lambda x: x[0].upper())
 
     zeilen = [
-        "AUTORITATIVE 6.5-ZUORDNUNG AUS einzel_check_beobachtung.json",
+        "AUTORITATIVE A/B/C-ZUORDNUNG AUS einzel_check_beobachtung.json",
         "Diese Zuordnung ist verbindlich und wurde von Python aus dem AKTUELLEN Status erzeugt.",
         "Gemini darf die Kategoriezuordnung NICHT selbst rekonstruieren, veraendern oder aus anderen Dateien ableiten.",
-        "Historische Status aus einzel_check_historie.jsonl und der zuletzt erfolgreichen HEBELTRADER-Datei sind fuer die 6.5-Kategoriezuordnung unzulaessig.",
+        "Historische Status aus einzel_check_historie.jsonl und der zuletzt erfolgreichen HEBELTRADER-Datei sind fuer die A/B/C-Kategoriezuordnung unzulaessig.",
         "",
-        f"6.5.1 AKTUELLE KAUFKANDIDATEN A ({len(aktuelle_a)} Titel):",
+        f"INTERNE A-KANDIDATEN ({len(aktuelle_a)} Titel):",
     ]
     for ticker, quelle in aktuelle_a:
         vorher = vorherige_status.get(ticker, "NICHT BEKANNT")
@@ -1208,14 +1208,14 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, 
             f"- {name} ({ticker}) | {_kurzstatus(vorher)} -> A | aktueller Status: KAUFKANDIDAT A | Quelle: {quelle}"
         )
 
-    # 6.5.2 zeigt ausschliesslich aktuell aktive Nicht-A-Kandidaten (B/C).
+    # Interne Nicht-A-Kandidaten zeigt ausschliesslich aktuell aktive Nicht-A-Kandidaten (B/C).
     # KEIN KANDIDAT bleibt intern Bestandteil der autoritativen Beobachtungsliste,
     # wird aber bewusst nicht dargestellt. Sobald derselbe Titel wieder B/C/A wird,
     # erscheint er automatisch wieder. Es gibt weiterhin KEINE Mengenbegrenzung.
     aktive_nicht_a = [row for row in aktuelle_nicht_a if row[1] in {"KAUFKANDIDAT B", "KAUFKANDIDAT C"}]
     zeilen.extend([
         "",
-        f"6.5.2 AKTUELLE NICHT-A-KANDIDATEN ({len(aktive_nicht_a)} Titel):",
+        f"INTERNE NICHT-A-KANDIDATEN ({len(aktive_nicht_a)} Titel):",
         "Darstellung: Name (Ticker) | Letzter Status -> aktueller Status | Quelle",
     ])
     gruppen = {"KAUFKANDIDAT B": [], "KAUFKANDIDAT C": []}
@@ -1235,10 +1235,10 @@ def erstelle_6_5_autoritative_liste(beobachtungsliste_pfad, historie_pfad=None, 
         "",
         f"KONTROLLSUMME: {len(aktuelle_a)} A-Kandidaten + {len(aktive_nicht_a)} aktive B/C-Kandidaten = {len(aktuelle_a) + len(aktive_nicht_a)} dargestellte Titel; weitere {len(aktuelle_nicht_a) - len(aktive_nicht_a)} Titel mit Status KEIN KANDIDAT werden bewusst nicht dargestellt.",
         "Die Quelle ist unabhaengig vom Status: Quelle HEBELTRADER oder Quelle '-' aendert die Kategorie nicht.",
-        "Gemini darf fuer 6.5 nur die hier vorgegebene Mitgliedschaft verwenden; technische Inhalte duerfen weiterhin nur aus den bereitgestellten Quelldaten uebernommen werden.",
+        "Gemini darf fuer die interne A/B/C-Kandidatenmitgliedschaft nur die hier vorgegebene Zuordnung verwenden; technische Inhalte duerfen weiterhin nur aus den bereitgestellten Quelldaten uebernommen werden.",
     ])
     print(
-        f"6.5-Autoritaetsliste: {len(aktuelle_a)} A-Kandidaten | "
+        f"Interne A/B/C-Autoritaetsliste: {len(aktuelle_a)} A-Kandidaten | "
         f"{len(aktuelle_nicht_a)} Nicht-A-Kandidaten | {len(daten)} beobachtete Titel"
     )
     return "\n".join(zeilen)
@@ -2809,8 +2809,8 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
         f"MAKRO-SZENARIO-GATE: {makro_gate}",
         f"MAKRO-GATE-GRUND: {makro_gate_grund}",
         "",
-        "6.5 AUTORITATIVE AKTUELLE KANDIDATEN-/BEOBACHTUNGSZUORDNUNG:",
-        sechs_fuenf_autoritaet or "(keine autoritative 6.5-Zuordnung vorhanden)",
+        "AUTORITATIVE A/B/C-KANDIDATEN-/BEOBACHTUNGSZUORDNUNG (INTERN):",
+        sechs_fuenf_autoritaet or "(keine autoritative A/B/C-Zuordnung vorhanden)",
         "",
         "AUTORITATIVE OFFENE POSITIONEN:",
         offene_quelle or "(keine offenen Positionen)",
@@ -3016,6 +3016,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "vorgegebenen Ueberschriften ist verbindlich. Wenn zu einem Abschnitt keine relevanten Erkenntnisse "
         "vorliegen, muss die Ueberschrift trotzdem allein auf ihrer eigenen Zeile erscheinen, gefolgt von einer "
         "Leerzeile und einer klaren Negativfeststellung.\n\n"
+        "AUSGABESTRUKTUR-ALLEINHERRSCHAFT: Die fertige Auswertung darf ausschließlich die verbindliche 1–11-Struktur enthalten. Interne Datenblöcke, autoritative Handoffs, A/B/C-Listen, Einzel-Check-Ausgaben, HEBELTRADER-Quellen und externe Briefing-Strukturen sind keine Ausgabestruktur und dürfen nicht als eigene Überschrift, nummerierter Abschnitt oder Unterabschnitt in die fertige Auswertung übernommen werden. Ihre Informationen dürfen nur inhaltlich in die dafür passenden Pflichtabschnitte einfließen. Insbesondere sind 6.5.1, 6.5.2 und EXTERNE MARKTQUELLEN als Ausgabestrukturen verboten. Wenn eine Information keinem Pflichtabschnitt zugeordnet werden kann, darf dafür kein neuer Abschnitt erfunden werden.\n\n"
         "VORANALYSE A1 – DISCOVERY:\n" + daten_analyse +
         "\n\nVORANALYSE A2 – TECHNIK / SETUPS:\n" + technik_analyse +
         "\n\nVORANALYSE A3 – HISTORIE:\n" + historie_analyse
@@ -3094,12 +3095,12 @@ def gemini_auswertung_starten():
     if makro_datenqualitaet:
         print(f"Makro-Datenqualitaet: {makro_datenqualitaet} | Quelle: Makro-Datenpaket")
 
-    # Punkt 6.5 wird nicht mehr allein per Prompt interpretiert: Python erzeugt
+    # Die Kandidaten-/Beobachtungszuordnung wird nicht mehr allein per Prompt interpretiert: Python erzeugt
     # die aktuelle A-/Nicht-A-Mitgliedschaft verbindlich aus der Beobachtungsliste
     # und uebergibt diese beiden Mengen explizit an Gemini. Damit koennen alte
     # HEBELTRADER- oder Historienstatus die aktuelle Kategorie nicht mehr verfälschen.
     beobachtung_pfad = eingabedateien.get("Einzel-Check-Beobachtungsliste")
-    sechs_fuenf_autoritaet = erstelle_6_5_autoritative_liste(
+    sechs_fuenf_autoritaet = erstelle_abkandidaten_autoritative_liste(
         beobachtung_pfad, eingabedateien.get("Einzel-Check-Technikhistorie"), eingabedateien
     )
 
@@ -3148,74 +3149,20 @@ def gemini_auswertung_starten():
             _gemini_zusatz_anweisungen = [
                     "VERBINDLICHE STRUKTUR-TREND-DATENREGEL (C): Wenn die Datei Struktur_Trend_Briefing(<Datum>).txt vorhanden ist, ist sie die maßgebliche Quelle für den strukturellen Datenblock C. C ist eine eigenständige Datenebene und darf nicht mit B (Makro) oder D (Geopolitik) vermischt werden. Die Gesamtbewertung entsteht erst durch die gemeinsame Einordnung von A+B+C+D. Struktur-Trend-Werte sind Strukturindikatoren und keine unmittelbaren Kauf-, Verkaufs-, Breakout- oder Zielzonensignale. Verwende für das Alter einer Beobachtung die Beobachtungsperiode, nicht das Cache- oder Abrufdatum. PA bedeutet Prozent pro Jahr (% p.a.); XDC_H bedeutet XDC je Arbeitsstunde. C darf aktuelle A-, B- oder D-Signale niemals überschreiben oder ersetzen. Wenn die Struktur-Trend-Datei fehlt, fahre mit A+B+D fort und erfinde keine C-Werte. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. Die Dateien Bitcoin_Trading_DE_Briefing.txt, Gold_Trading_DE_Briefing.txt und Silber_Trading_DE_Briefing.txt sind ausschließlich qualitative externe YouTube-Quellen. Nutze sie nur als Kontext/Abgleich; sie dürfen niemals objektive Kursdaten, technische Check-Felder, CRV, Setup-Scores, Filter, Setup-Qualität oder Handelsentscheidungen verändern. Wenn eine solche Datei fehlt, ist das kein Fehler und es darf nichts daraus erfunden werden. "
-                    "ERSTELLE in der fertigen Auswertung zusätzlich eine feste Sektion mit exakt der Überschrift 'EXTERNE MARKTQUELLEN'. Gliedere sie getrennt nach 'Bitcoin', 'Gold' und 'Silber'. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
+                    "KEINE EIGENE SEKTION 'EXTERNE MARKTQUELLEN' ERZEUGEN. Die bereitgestellten externen Bitcoin-/Gold-/Silber-YouTube-Briefings sind ausschließlich qualitative Quellen. Integriere relevante Erkenntnisse ausschließlich in die fachlich passenden Abschnitte der verbindlichen 1–11-Struktur; Quellen-/Datenqualität ist in 11.4 externe Quellen zu dokumentieren. Für jeden Markt nenne die Anzahl der tatsächlich in der jeweiligen bereitgestellten Briefing-Datei enthaltenen relevanten Videos. WICHTIG: Zähle und verarbeite jedes vorhandene Video einzeln anhand jedes einzelnen 'Titel:'-Blocks bzw. Video-Blocks. Wenn die Briefing-Datei beispielsweise 3 relevante Videos enthält, müssen in der fertigen Auswertung genau diese 3 Videos einzeln erscheinen. Kein Video darf wegen Kürze, Ähnlichkeit, Redundanz oder eigener Auswahl des Modells weggelassen, zusammengefasst oder durch ein anderes ersetzt werden. Führe für JEDES vorhandene relevante Video separat Titel und eine kurze Kernaussage auf und ordne JEDE einzelne Aussage ausschließlich im Verhältnis zur bestehenden Systemanalyse als 'BESTÄTIGT', 'WIDERSPRICHT' oder 'NEUTRAL' ein. Die Anzahl muss mit der Zahl der tatsächlich einzeln aufgeführten Videos übereinstimmen. Ergänze bei jedem Markt ausdrücklich 'Technische Auswirkung: KEINE'. Wenn für einen Markt keine relevanten Videos in der bereitgestellten Briefing-Datei vorhanden sind oder die Datei fehlt, schreibe ausdrücklich 'Keine neuen relevanten Videos verarbeitet'. Verwende für Titel und Kernaussagen ausschließlich die Inhalte der bereitgestellten YouTube-Briefing-Dateien; ergänze nichts aus allgemeinem Modellwissen und erfinde nichts. Die Einordnung darf keine technische Berechnung oder Entscheidung verändern. Die externe Quelle ist ausschließlich qualitativer Kontext. Eine Übereinstimmung mit der externen Quelle ist keine technische Bestätigung; eine Abweichung ist kein technischer Ausschluss. Eine Aussage wie '1 Video' ist nur zulässig, wenn tatsächlich genau 1 relevanter Video-Block in der betreffenden Briefing-Datei vorhanden ist. "
                     "Verarbeite die bereitgestellten Dateien wie in der Anleitung beschrieben. "
                     "Falls die Datei 'Letzte_Auswertung(...).txt' bereitgestellt wurde, nutze sie ausschließlich als Vergleichsbasis für Abschnitt 1.1. Aktuelle Zahlen und aktuelle technische Werte stammen ausschließlich aus den aktuellen Tagesdateien; die vorherige Auswertung darf keine aktuellen Werte überschreiben. "
                     "PERSISTENTER LANGZEIT-KONTEXT: Falls die Datei 'Gemini_Auswertung_Historie.txt' bereitgestellt wurde, nutze sie zusaetzlich als vollständige persistente Historie ueber mehrere Laeufe. Sie dient dazu, Entwicklungen von Investmentthesen, Fruehsignalen, handelbaren Chancen, Widerspruechen und Edelmetallideen ueber mehrere Tage zu erkennen. Verwende sie NICHT als Quelle fuer aktuelle numerische Werte, aktuelle Kurse, aktuelle Stops/TPs, aktuelle Makrodaten oder aktuelle technische Kennzahlen. Diese stammen ausschliesslich aus den aktuellen Tagesdateien. Wenn eine These in der Historie mehrfach auftaucht, beschreibe die Entwicklung nur, wenn sie durch die Historie und/oder aktuelle Daten belegbar ist. Am Montag oder nach einem Lauf-Ausfall darf die Historie ausdruecklich mehrere vorherige Laeufe miteinander verbinden; 1.1 vergleicht dennoch den aktuellen Lauf primaer mit dem unmittelbar vorherigen verfuegbaren Lauf. "
                     "PRIORITAET FRUEHE ENTDECKUNG: Arbeite zwingend in drei getrennten Schritten: (1) zuerst ein kandidatenunabhaengiger Gesamtscan ueber den gesamten bereitgestellten Research A+B+C+D, insbesondere Makro, Geopolitik, Oel/Rohstoffe, Inflation, Zentralbanken, Zinsen, Liquiditaet, Waehrungen, Sektoren und Marktstruktur; (2) erst danach fuer jede relevante These Veraenderung -> Treiber -> Belege -> Kausalzusammenhang -> moeglicher Kapitalfluss -> naechster bestaetigter Kalenderkatalysator pruefen; (3) erst danach vorhandene Setups, Watchlists und offene Positionen gegen die These abgleichen. Ein grosses Discovery-Thema darf ausdruecklich ohne bestehenden Kandidaten ausgegeben werden. Oel/Rohstoffe sind dabei ausdruecklich als Bruecke zwischen Geopolitik, Inflation, Zentralbanken, Zinsen, Transport, Chemie, Industrie und Energieaktien zu pruefen. Ein vorhandener Kandidat darf die Discovery-These weder erzeugen noch in ein Setup umwandeln. Der bestehende Sektor-Rotations-Score darf als objektiver Beleg aus den bereitgestellten Daten verwendet werden; Gemini darf daraus keinen eigenen Discovery-Score erzeugen und darf ihn niemals als alleinigen Grund fuer eine These oder ein Setup verwenden. "
                     "und erstelle die vollstaendige Daten-Uebersicht. "
-                    "HARTE VORGABE FUER PUNKT 6.5: Die folgende von Python erzeugte "
-                    "AUTORITATIVE 6.5-ZUORDNUNG ist die alleinige Wahrheit fuer die "
-                    "Mitgliedschaft von 6.5.1 und 6.5.2. Gemini darf keinen Titel zwischen "
-                    "den beiden Kategorien verschieben, Titel aus historischen Daten "
-                    "hinzufuegen oder aktuelle Titel entfernen. Gemini uebernimmt die "
-                    "vorgegebene Kategorie und kuemmert sich innerhalb dieser Kategorie "
-                    "nur um die inhaltliche/technische Darstellung aus den bereitgestellten "
-                    "Quelldaten. Die Zuordnung ist statusbasiert und unabhaengig von der Quelle."
-                    "\n\n"
+                    "INTERNE KANDIDATEN-/EINZELCHECK-DATEN: Die folgende von Python erzeugte A/B/C-Zuordnung ist ausschließlich eine autoritative interne Faktenquelle. Sie dient Gemini zur Interpretation der bestehenden Kandidaten-, Watchlist- und Technikdaten, darf aber niemals als eigene Ausgabestruktur, Zwischenüberschrift oder nummerierter Abschnitt der fertigen Auswertung erscheinen. Die alleinige autoritative Struktur der fertigen Auswertung ist ausschließlich die verbindliche 1–11-Struktur. A/B/C-Statuswerte dürfen in den fachlich passenden Abschnitten erwähnt werden, wenn sie für die Investmentaussage relevant sind. Die Kategoriezuordnung darf nicht verändert, ergänzt oder aus historischen Daten rekonstruiert werden. Historische Daten dienen nur dem ausdrücklich erlaubten Status-/Entwicklungsvergleich.\n\n"
                     + sechs_fuenf_autoritaet + "\n\n"
-                    "MARKTUMFELD-AUSGABEREGEL: In allen Abschnitten mit Marktumfeld/Marktumfeld-Fazit sowie in der globalen Risikolage sind Scores, Score-Werte, Score-Modelle, Punktwerte und Formulierungen wie \"Score 0,0\" VERBOTEN. Beschreibe ausschließlich den qualitativen Zustand (z.B. bullish, neutral, bearish) und die zugrunde liegenden beobachtbaren Marktmerkmale. Setup-/CRV-Scores außerhalb des Marktumfeld-Blocks sind davon nicht betroffen. "
+"MARKTUMFELD-AUSGABEREGEL: In allen Abschnitten mit Marktumfeld/Marktumfeld-Fazit sowie in der globalen Risikolage sind Scores, Score-Werte, Score-Modelle, Punktwerte und Formulierungen wie \"Score 0,0\" VERBOTEN. Beschreibe ausschließlich den qualitativen Zustand (z.B. bullish, neutral, bearish) und die zugrunde liegenden beobachtbaren Marktmerkmale. Setup-/CRV-Scores außerhalb des Marktumfeld-Blocks sind davon nicht betroffen. "
                     "NUMERISCHE MAKRO-BINDUNG: Alle numerischen Markt-/Makroangaben muessen exakt aus dem bereitgestellten Makro_Briefing uebernommen werden. Nicht neu rechnen, schaetzen, runden oder aus einer anderen Quelle ersetzen. Wenn ein Wert nicht eindeutig im Makro_Briefing vorhanden ist, nur qualitativ beschreiben oder weglassen. Instrument, Einheit und Datenstand muessen zusammengehoeren.\n                     FRUEHE-ENTDECKUNGS-UND-TRADE-STORY-EBENE: Die Discovery-Ebene und die technische Ebene sind zwingend getrennt auszugeben. Verwende in jedem 1.3-Block exakt zwei getrennte Statusfelder: Discovery-Status: ENTDECKT oder BEOBACHTUNG; Technischer Status: NICHT VORHANDEN, NUR TEILW. VOLLSTAENDIG oder VALIDER SETUP. Discovery-Status beschreibt nur den Erkenntnisstand der These. Technischer Status beschreibt ausschliesslich den Stand der bestehenden technischen Systempruefung. Wenn kein bestehender Kandidat im autoritativen Datenbestand vorhanden ist, muss Technischer Status = NICHT VORHANDEN sein. Wenn ein vorhandener Kandidat vorhanden ist, aber kein vollstaendig bestaetigtes Setup besitzt, muss Technischer Status = NUR TEILW. VOLLSTAENDIG sein. VALIDER SETUP darf ausschliesslich aus dem bestehenden regelbasierten Setup-/CRV-System uebernommen werden. Eine Discovery bleibt auch dann eine Discovery, wenn bereits ein VALIDE-SETUP-Kandidat existiert. Die Existenz eines Kandidaten darf niemals die Discovery erzeugen. Gemini darf aus Discovery, ENTDECKT, BEOBACHTUNG, NICHT VORHANDEN oder NUR TEILW. VOLLSTAENDIG niemals selbst einen VALIDEN SETUP, einen Kauf oder einen Entry machen. Zeige die Kette Thema -> Veraenderung -> Treiber -> Beleg -> Kausalzusammenhang -> moeglicher Kapitalfluss -> betroffene Assetklasse/Sektor -> bestehender Kandidat (falls vorhanden) -> naechster bestaetigter Kalenderkatalysator -> Discovery-Status -> Technischer Status -> widerlegender Trigger -> Risiko. Nutze nur bereitgestellte Daten. Der bestehende Sektor-Rotations-Score darf als objektiver Beleg genannt werden, ist aber kein Gemini-Score und niemals alleiniger Grund fuer eine Discovery oder ein Setup. "
                      "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Kandidaten-Handoff-Schicht fuer 1.3. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. C/KEIN KANDIDAT/Langfrist sind keine konkreten Kandidatenquellen. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
                      "BITCOIN-REGEL IM TRADE-STORY-UNIVERSUM: Pi-Cycle-Bottom DOWN-Cross (150-EMA von oben nach unten durch 0.745*471SMA) ist LONG/AKKUMULATION und kann VALIDE SETUP sein. Pi-Cycle UP-Cross beendet die Akkumulationsphase und ist kein generisches SELL. 50W-SMA UP-Cross ist LONG/BUY; 50W-SMA DOWN-Cross ist EXIT/SELL und daher kein Long-Kandidat. Verwende ausschliesslich die strukturierten Bitcoin-Felder im Tagesuniversum. "
-                    "HEBELTRADER-EINZELCHECK: Falls die bereitgestellte Datei "
-                    "'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte "
-                    "Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und "
-                    "verwende dabei die aus Drive synchronisierte neueste Version, falls sie neuer als eine lokale Kopie ist. "
-                    "deren Kandidaten. Sie ist KEINE eigene Kandidatenkategorie. Entscheidend "
-                    "fuer die Zuordnung in Punkt 6.5 ist ausschliesslich der aktuelle Status aus "
-                    "dem bestehenden einzel_check.py: Jeder aktuelle 'KAUFKANDIDAT A' gehoert in "
-                    "6.5.1 'AKTUELLE KAUFKANDIDATEN A', unabhaengig von seiner Quelle. Jeder "
-                    "Kandidat mit 'KAUFKANDIDAT B', 'KAUFKANDIDAT C' oder 'KEIN KANDIDAT' gehoert "
-                    "in 6.5.2 'AKTUELLE NICHT-A-KANDIDATEN / BEOBACHTUNGSLISTE', sofern er nach der "
-                    "bestehenden Beobachtungslistenlogik noch vorhanden ist. Wenn ein bisheriger "
-                    "A-Kandidat bei einem spaeteren Einzel-Check auf B/C/KEIN KANDIDAT faellt, "
-                    "rutscht er entsprechend nach 6.5.2; wenn er wieder A wird, kommt er wieder "
-                    "nach 6.5.1. Es gibt KEINE separate HEBELTRADER-A-Kategorie. "
-                    "Die Quelle ist davon vollstaendig getrennt und wird als zusaetzliches Feld "
-                    "'Quelle' angezeigt: HEBELTRADER-Kandidaten tragen die konkrete Ausgabe "
-                    "(z.B. 'HEBELTRADER 164/26'), manuell oder anderweitig hinzugefuegte Titel "
-                    "tragen 'Quelle: -'. Ein A-Kandidat mit 'Quelle: -' gehoert also ebenfalls "
-                    "in 6.5.1. Zeige bei JEDEM Titel immer Firmenname UND Yahoo-Ticker gemeinsam im Format 'Name (Ticker)'. Diese Regel gilt fuer JEDE Titel-/Unternehmensnennung in der gesamten fertigen Auswertung, nicht nur fuer Punkt 6.5. Ticker allein ist unzulaessig, sofern ein Name aus den bereitgestellten Daten verfuegbar ist. "
-                    "Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, "
-                    "Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht "
-                    "neu berechnet, veraendert, aufgehoben oder ersetzt werden. "
-                    "Fuer 6.5.1 muessen bei JEDEM A-Kandidaten die vorhandenen technischen Details "
-                    "des Einzel-Checks ausgegeben werden. Nutze dafuer insbesondere das Feld "
-                    "'technischer_zustand' aus dem HEBELTRADER-Einzelcheck sowie die darin "
-                    "enthaltenen Setup-/Kurs-/Stop-/TP1-/TP2-/CRV-/RSI-/MACD-Informationen. "
-                    "Diese Werte sind ausschliesslich aus den vorhandenen technischen Daten zu "
-                    "uebernehmen. Einstieg, Stop, TP1 und TP2 duerfen nur angegeben werden, wenn "
-                    "sie aus den bereitgestellten Daten ersichtlich sind. Fehlen Werte, darf Gemini "
-                    "sie NICHT erfinden oder aus allgemeinem Modellwissen schaetzen. Wenn aus den "
-                    "vorhandenen technischen Daten ein konkreter Einstieg/Stop/TP1/TP2 ableitbar "
-                    "ist, darf diese Ableitung transparent als Ableitung gekennzeichnet werden; "
-                    "keine neue technische Berechnungslogik erfinden. Insbesondere gilt weiterhin: "
-                    "Breakout allein aktiviert Fibonacci nicht; Fibonacci/Extension nur bei "
-                    "qualifizierter und bestaetigter A-B-C-Struktur. "
-                    "Wenn die HEBELTRADER-JSON fehlt, erfinde keinen HEBELTRADER-Inhalt. "
-                    "Für A-Kandidaten, die nicht aus HEBELTRADER stammen, nutze die bereitgestellte "
-                    "'einzel_check_historie.jsonl' als autoritative technische Historie des Einzel-Checks. "
-                    "Nutze daraus nur den Snapshot des aktuellen Auswertungstages und den darin enthaltenen "
-                    "bereits berechneten Block 'Technik'. Diese Historie dient ausschließlich dazu, den "
-                    "technischen Zustand eines aktuellen A-Kandidaten vollständig darzustellen; keine Werte "
-                    "neu berechnen. Wenn die Historie für einen Titel fehlt, keine technischen Werte erfinden. "
-                    "Die Beobachtungsliste bleibt ausschließlich für Status, Quelle und Watchlist-Zugehörigkeit "
-                    "maßgeblich. "
-                    "Die vollstaendige 6.5.2-Liste soll aus der bestehenden einzel_check_beobachtung.json "
-                    "kommen; deren 'quelle' zeigt HEBELTRADER-Ausgabe oder '-' an. "
-                    "6.5.2 darf nicht auf 5 Titel gekuerzt werden. Gib ALLE aktuell vorhandenen B- und C-Kandidaten aus. Titel mit aktuellem Status KEIN KANDIDAT werden in der sichtbaren 6.5.2-Liste bewusst NICHT ausgegeben; sie bleiben jedoch Bestandteil der autoritativen Beobachtungsliste und erscheinen automatisch wieder, sobald ihr aktueller Status erneut B, C oder A ist. Gruppiere die sichtbaren Titel nach aktuellem Status in B und C und sortiere innerhalb jeder Gruppe alphabetisch. Zeige fuer jeden sichtbaren Titel den Statusverlauf kompakt als 'Name (Ticker) | Letzter Status -> aktueller Status', z.B. 'Advanced Micro Devices, Inc. (AMD) | A -> A' bzw. 'Chevron Corporation (CVX) | C -> B'. Verwende dafuer ausschliesslich die von Python bereitgestellte Statusverlaufsinformation; Gemini darf keinen frueheren Status selbst rekonstruieren. Die Darstellung darf die Mitgliedschaft nicht veraendern und darf keine Titel auslassen. "
-                    "PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 10.1 Sofortiger Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Der bestehende Makro-/Portfolio-Datenblock bleibt autoritativ; Python liefert die Fakten, Gemini interpretiert nur die qualitative Ebene.\nPUNKT-10-ARCHITEKTUR: Python stellt die autoritative Positionsfaktenbasis bereit und erzeugt 10.5 geschlossene Positionen deterministisch. Gemini erzeugt 10.1, 10.2, 10.3 und 10.4 als qualitative Interpretation. 10.3 darf ausschließlich Positionen enthalten, bei denen sich die Investmentthese gegenüber dem vorherigen Lauf bzw. der bereitgestellten Historie belastbar verändert hat. Gemini darf in 10.3/10.5 keine Faktenblöcke erzeugen.\n"
+                    "HEBELTRADER-EINZELCHECK / INTERNE DATENQUELLE: Falls die bereitgestellte Datei 'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und verwende die aus Drive synchronisierte neueste Version, falls sie neuer ist. Diese Datenquelle ist KEINE eigene Ausgabekategorie. Ihre A/B/C-/Technik-/Setup-Informationen duerfen ausschließlich in die fachlich passenden Abschnitte der verbindlichen 1–11-Struktur einfließen. Insbesondere darf daraus niemals eine zusätzliche nummerierte Ausgabestruktur erzeugt werden. Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht neu berechnet, veraendert, aufgehoben oder ersetzt werden. Fuer konkrete technische Details sind ausschließlich die bereits berechneten Felder aus den bereitgestellten autoritativen Einzel-Check-/HebelTrader-Daten zu verwenden. Einstieg, Stop, TP1, TP2 und CRV duerfen nur angegeben werden, wenn sie aus bereitgestellten Daten ersichtlich sind; fehlende Werte duerfen nicht erfunden oder geschaetzt werden. Wenn aus den vorhandenen technischen Daten eine Ableitung transparent moeglich ist, muss sie als Ableitung gekennzeichnet werden. Breakout allein aktiviert Fibonacci nicht; Fibonacci/Extension nur bei qualifizierter und bestaetigter A-B-C-Struktur. Wenn die HEBELTRADER-JSON fehlt, erfinde keinen HEBELTRADER-Inhalt. Fuer A-Kandidaten, die nicht aus HEBELTRADER stammen, nutze die bereitgestellte einzel_check_historie.jsonl ausschließlich als autoritative technische Historie des aktuellen Auswertungstages. Die Beobachtungsliste bleibt ausschließlich fuer Status, Quelle und Watchlist-Zugehoerigkeit massgeblich. Die sichtbare Darstellung richtet sich ausschließlich nach der verbindlichen 1–11-Struktur. "
+"PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 10.1 Sofortiger Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Der bestehende Makro-/Portfolio-Datenblock bleibt autoritativ; Python liefert die Fakten, Gemini interpretiert nur die qualitative Ebene.\nPUNKT-10-ARCHITEKTUR: Python stellt die autoritative Positionsfaktenbasis bereit und erzeugt 10.5 geschlossene Positionen deterministisch. Gemini erzeugt 10.1, 10.2, 10.3 und 10.4 als qualitative Interpretation. 10.3 darf ausschließlich Positionen enthalten, bei denen sich die Investmentthese gegenüber dem vorherigen Lauf bzw. der bereitgestellten Historie belastbar verändert hat. Gemini darf in 10.3/10.5 keine Faktenblöcke erzeugen.\n"
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
                     "AUTORITATIVE FAKTENBASIS FUER 10.5 AUS TAB 2 VON 'Offene Positionen+Check':\n"
@@ -5100,7 +5047,7 @@ def _sichere_technische_assetangaben(text, eingabedateien):
     # Globaler technischer Fakten-Gate: Jede Zeile mit einem eindeutig
     # genannten Ticker wird auf natürlich formulierte Kurs-/Stop-/TP-/CRV-
     # Angaben geprüft. Das ist notwendig, weil technische Werte nicht nur in
-    # 1.3, sondern auch in Zusammenfassungen und 6.5 vorkommen.
+    # 1.3, sondern auch in Zusammenfassungen und in den fachlich passenden Pflichtabschnitten vorkommen.
     lines = text.splitlines()
     normalized_lines = []
     for line in lines:
@@ -6012,19 +5959,33 @@ def _pruefe_neue_ausgabestruktur(text):
 
     canonical_counts = {heading: 0 for heading in required}
     section_counts = {heading: 0 for heading in required}
+    occurrences = []
 
-    for line in (text or "").splitlines():
+    forbidden_legacy_patterns = [
+        r"^6\.5\.1\s+AKTUELLE\s+KAUFKANDIDATEN\s+A\b",
+        r"^6\.5\.2\s+AKTUELLE\s+NICHT-A-KANDIDATEN\b",
+        r"^EXTERNE\s+MARKTQUELLEN\s*$",
+    ]
+    forbidden_legacy = []
+
+    all_lines = (text or "").splitlines()
+    for idx, line in enumerate(all_lines):
         stripped = line.strip()
+        if any(re.search(pattern, stripped, flags=re.IGNORECASE) for pattern in forbidden_legacy_patterns):
+            forbidden_legacy.append(f"Zeile {idx + 1}: {stripped}")
+
         match = _ausgabe_heading_key(stripped, required)
         if match:
             key, canonical = match
             section_counts[canonical] += 1
             if stripped == canonical:
                 canonical_counts[canonical] += 1
+            occurrences.append((canonical, idx, stripped))
 
     missing = []
     duplicate = []
     noncanonical = []
+    blankline_errors = []
 
     for heading in required:
         if section_counts[heading] == 0:
@@ -6038,7 +5999,28 @@ def _pruefe_neue_ausgabestruktur(text):
                 f"{heading} (nicht kanonisch normalisiert)"
             )
 
-    if missing or duplicate or noncanonical:
+    found_order = [canonical for canonical, _, _ in occurrences]
+    if found_order != required:
+        wrong_order = []
+        for idx, expected in enumerate(required):
+            actual = found_order[idx] if idx < len(found_order) else "<FEHLT>"
+            if actual != expected:
+                wrong_order.append(
+                    f"Position {idx + 1}: erwartet={expected!r}, gefunden={actual!r}"
+                )
+        if len(found_order) > len(required):
+            wrong_order.append(
+                "Zusaetzliche Pflicht-/Varianten-Ueberschriften: "
+                + repr(found_order[len(required):])
+            )
+    else:
+        wrong_order = []
+
+    for canonical, line_idx, _ in occurrences:
+        if line_idx + 1 >= len(all_lines) or all_lines[line_idx + 1].strip() != "":
+            blankline_errors.append(canonical)
+
+    if missing or duplicate or noncanonical or wrong_order or blankline_errors or forbidden_legacy:
         parts = []
         if missing:
             parts.append("FEHLEND: " + "; ".join(missing))
@@ -6046,10 +6028,19 @@ def _pruefe_neue_ausgabestruktur(text):
             parts.append("DOPPELT/MEHRFACH: " + "; ".join(duplicate))
         if noncanonical:
             parts.append("NICHT_KANONISCH: " + "; ".join(noncanonical))
+        if wrong_order:
+            parts.append("FALSCHE_REIHENFOLGE: " + "; ".join(wrong_order))
+        if blankline_errors:
+            parts.append("KEINE_LEERZEILE_NACH: " + "; ".join(blankline_errors))
+        if forbidden_legacy:
+            parts.append(
+                "UNZULAESSIGE_ALTE_AUSGABESTRUKTUR: "
+                + "; ".join(forbidden_legacy)
+            )
         raise RuntimeError(
             "NEUE_AUSGABESTRUKTUR_UNGUELTIG: " + " | ".join(parts)
         )
-    return True
+
 
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
