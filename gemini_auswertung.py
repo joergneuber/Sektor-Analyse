@@ -6442,16 +6442,10 @@ def _pruefe_inhaltliche_mindesttiefe(text):
             if event_claims and not _has_any_date_or_time(compact_text):
                 errors.append(f"{h}: tatsächliche Ereignis-/Terminangabe ohne verifizierbaren Zeit-/Datumsbezug.")
 
-        # Anti-Keyword-/Anti-Label-Schutz: mehrere scheinbare Dimensionen, die
-        # nur in derselben extrem kurzen Zeile stehen, gelten nicht als belastbare
-        # inhaltliche Ausarbeitung.
-        if (len(units) == 1 and len(profile) >= 6 and len(distinct_terms) < 12
-                and h not in {"1.4 Frühindikatoren / neue Themen", "2.2 Trendwende", "2.3 Short",
-                              "2.4 HebelTrader", "2.5 Sonstige durch Gemini erkannte Chancen",
-                              "6.5 Investmentthese gegen aktuelle Marktdaten", "7.7 Konjunktur / Makro",
-                              "9.2 Unternehmen", "9.3 Branchenereignisse", "10.2 Stop-/TP-Änderungen"}
-                and not h.startswith("11.")):
-            errors.append(f"{h}: zu kompakte Sammelaussage für die vorhandene fachliche Breite.")
+        # Keine pauschale Sammelaussage-/Textdichte-Heuristik:
+        # Gemini soll die aus den Python-Daten ableitbare fachliche Interpretation
+        # frei formulieren koennen. Inhaltliche Tiefe wird nicht ueber Keywords,
+        # Satzanzahl oder erkannte Profil-Dimensionen erzwungen.
 
     # Cross-section anti-cheating check: identical or near-identical bodies may not
     # be copied into several sections merely to satisfy the gates.
