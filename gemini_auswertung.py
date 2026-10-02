@@ -3008,16 +3008,47 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Fuehre diese Ebenen zusammen, suche selbst nach Querverbindungen und beachte die autoritativen "
         "Fakten. Erhalte die bestehende Auswertungsstruktur 1–11, CRV-/Setup-Regeln und Statuslogik. "
         "Die Rohdaten aus A1/A2/A3 werden hier NICHT erneut bereitgestellt.\n\n"
-        "INHALTLICHE MINDESTTIEFE – VERBINDLICH: Die Pflichtstruktur wird nicht nur formal, sondern auch inhaltlich geprüft. Ein Abschnitt gilt nur dann als vollständig, wenn die nachfolgend verlangten Informationsbestandteile soweit aus den bereitgestellten Daten ableitbar sichtbar sind. Fehlen Daten für einen einzelnen Bestandteil, muss dies ausdrücklich mit 'NICHT VERFUEGBAR' bzw. einer gleichwertigen klaren Negativfeststellung gekennzeichnet werden; niemals erfinden oder aus Modellwissen ergänzen. Ein pauschales 'Keine relevanten Erkenntnisse' ersetzt keine vorgeschriebene Analyse, wenn autoritative Daten für den Abschnitt vorhanden sind. "
-        "MINDESTTIEFE 2.1 – TRENDFOLGE: Für jedes konkrete Trendfolge-Setup sind soweit vorhanden technische Bestätigung/Status, Entry/Stop/TP/CRV aus den autoritativen Daten, relevante Makro-/Sektorunterstützung sowie Risiken/Gegenargumente und der nächste Trigger darzustellen. Fehlende Bestandteile ausdrücklich als nicht verfügbar kennzeichnen. "
-        "MINDESTTIEFE 5 – AKTIEN MIT FRÜHEM SIGNAL: Für jedes konkret genannte Signal sind mindestens Zusammenhang/These, bestätigende Daten oder Belege, bereits sichtbar, noch nicht bestätigt bzw. fehlende Bestätigung und nächster entscheidender Trigger darzustellen. Mehrere Aktien sind jeweils einzeln zu behandeln. "
-        "MINDESTTIEFE 6 – WIDERSPRÜCHE & RISIKEN: In 6.1 bis 6.6 ist jeder relevante Widerspruch/Risikofall mit betroffener Idee/Aktie bzw. Thema, Ausgangsthese oder Ausgangslage, widersprechender Information, Bedeutung/Auswirkung, nächstem Prüfpunkt und möglichem Invalidierungstrigger zu beschreiben. Bei tatsächlich keinem belastbaren Fall ist eine ausdrückliche Negativfeststellung zulässig. "
-        "MINDESTTIEFE 7.1/7.7: 7.1 muss Marktregionen/Indizes, Marktbreite bzw. relevante Trend-/Momentumveränderung und qualitative Einordnung enthalten, soweit Daten vorhanden sind. 7.7 muss mindestens die verfügbaren Konjunktur-/Makrobereiche Arbeitsmarkt, Inflation, Wachstum/PMI bzw. ISM, Konsum/Kreditbedingungen und sonstige relevante Makrodaten einordnen; fehlende Bereiche ausdrücklich als nicht verfügbar kennzeichnen. "
-        "MINDESTTIEFE 8 – EDELMETALLE: 8.1 Gold, 8.2 Silber, 8.3 Platin und 8.4 Palladium müssen jeweils separat enthalten: aktueller Kurs, kurzfristige Entwicklung, 4-Wochen-Entwicklung, 52-Wochen-Situation, EMA200 und/oder WMA200 soweit vorhanden, technischer Zustand, Trendfolge-Status, Trendwende-Status, Short-Status, CRV/relevante Filter soweit vorhanden, Beinahe-Kandidaten bzw. ausdrückliche Negativfeststellung, Saisonalität bzw. Nicht-Verfügbarkeit, relevante Makrotreiber, Rohstoff-/Branchenzusammenhänge, mögliche Gewinner/Verlierer, konkrete Aktienbezüge, frühe Aktienreaktionen und mögliche Trigger. 'Kein Setup' darf diese Analyse nicht ersetzen. "
-        "MINDESTTIEFE 9.1–9.3: 9.1 muss verifizierte FOMC-/EZB-/Inflations-/Arbeitsmarkt-/ISM- bzw. PMI-Termine und weitere relevante Makrotermine aus den bereitgestellten Daten aufführen oder je fehlender Kategorie ausdrücklich deren Nichtverfügbarkeit kennzeichnen. 9.2 muss relevante Earnings/Unternehmensveranstaltungen/-meldungen aufführen oder deren Nichtverfügbarkeit kennzeichnen. 9.3 muss relevante Konferenzen, politische/regulatorische Entscheidungen und Branchenereignisse aufführen oder deren Nichtverfügbarkeit kennzeichnen. Keine Termine erfinden. "
-        "MINDESTTIEFE 9.4: Technische Trigger müssen, soweit vorhanden, konkrete Triggerarten wie Unterstützungen/Widerstände, Ausbrüche/Bestätigungen, 50-Tage-Linien und relevante Momentum-/MACD-Signale sowie die zugehörige Bedingung enthalten. "
-        "MINDESTTIEFE 10.3/10.4: Wenn Positionen genannt werden, sind je Position Name/Ticker, ursprüngliche These bzw. Ausgangslage, neue Daten, Veränderung der Investmentthese und Auswirkung auf die Position darzustellen. Wenn keine belastbare Veränderung vorliegt, ist dies ausdrücklich festzustellen. "
-        "MINDESTTIEFE 10.5: Verwende ausschließlich die autoritative Tab-2-Faktenbasis. Keine Rekonstruktion aus anderen Quellen. Für vorhandene geschlossene Positionen müssen die vorhandenen Fakten vollständig erhalten bleiben; Status und Performance dürfen nicht interpretiert oder verändert werden. "
+        "VERBINDLICHER INHALTSVERTRAG 1–11: Halte die folgende Struktur exakt ein. "
+        "Jeder Unterpunkt wird eigenständig bearbeitet. Wenn eine geforderte Information im bereitgestellten Datenbestand nicht vorhanden ist, "
+        "schreibe ausdrücklich 'NICHT VERFUEGBAR' bzw. eine gleichwertige konkrete Negativfeststellung. Erfinde niemals Daten, Termine, Kurse, CRV, "
+        "Fundamentaldaten oder Unternehmensinformationen. 'Kein Setup' darf einen Abschnitt nicht ersetzen, wenn dort andere Daten verfügbar sind.\n\n"
+        "1. 🔥 WAS KÖNNTE GELD VERDIENEN?: 1.1 Veränderungen seit dem letzten Lauf einschließlich neuer Makro-, Sektor-, Rohstoff-, Aktien- und Investmententwicklungen sowie "
+        "Ideenstatus; 1.2 nur konkret handelbare Chancen mit Titel/Ticker, Richtung, These, Treibern, Technik, Scanner-Setup soweit vorhanden, Entry/Zone, Stop, TP1/TP2, CRV soweit vorhanden, "
+        "Quellen, Gegenargumenten, Trigger und Invalidierung; 1.3 Ideen im Aufbau mit These, bestätigenden und widersprechenden Daten, Makro/Sektor/Rohstoff-Zusammenhang, Zweitrundeneffekten, "
+        "Profiteuren/Verlierern, konkreten Titeln, technischem Status, fehlenden Voraussetzungen, Aktivierungs- und Widerlegungstrigger; 1.4 Frühindikatoren/neue Themen mit Ereignis, Zusammenhang, "
+        "Branche und soweit möglich konkreten Aktien sowie Triggern, ohne Scores.\n"
+        "2. 🎯 KONKRETE TRADES: 2.1 Trendfolge mit validem Setup, Aktie/Ticker, Entry, Stop, TP1/TP2, CRV, technischem Zustand, Makro-/Sektorunterstützung und Risiken; "
+        "2.2 Trendwende mit Abwärtsbewegung, Boden-/Wendezeichen, Entry, Stop, Ziele, CRV und bestätigten/fehlenden Kriterien; "
+        "2.3 Short mit Abwärtsthese, technischer Bestätigung, Entry, Stop, TP1/TP2, CRV, Makro-/Sektorunterstützung und Risiken; "
+        "2.4 HebelTrader mit Basisinstrument, Richtung, Setup, Entry, Stop, Ziel, Risiko und Hebel-/Volatilitätsrisiken; "
+        "2.5 sonstige Gemini-Chancen mit nachvollziehbarer Datenbegründung und konkretem Titel. Fehlende Daten nicht ersetzen.\n"
+        "3. 🧠 THEMEN & ZUSAMMENHÄNGE: 3.1 Makro→Branche→Aktie; 3.2 Rohstoff→Branche→Aktie; 3.3 Politik→Branche→Aktie; "
+        "3.4 Technologie→Branche→Aktie; 3.5 Unternehmens-/Fundamentaldaten→Aktie. Immer konkreten Investmentbezug herstellen und keine isolierte Allgemeinanalyse.\n"
+        "4. 🔭 IDEEN IM AUFBAU: Für jede relevante These THESE, bestätigende Daten, Gegenargumente, Kausalkette, Profiteure/Verlierer, frühe Aktienreaktion, Status, fehlende Information/Entwicklung, "
+        "Aktivierungstrigger und Invalidierung. Keine Scores oder künstliche Rangfolge.\n"
+        "5. 🥇 AKTIEN MIT FRÜHEM SIGNAL: konkrete Aktie, Zusammenhang, unabhängige Datenquellen, bereits sichtbar, noch nicht bestätigt, mögliche Fehlbewertung und nächster entscheidender Trigger. Keine Scores.\n"
+        "6. ⚠️ WIDERSPRÜCHE & RISIKEN: 6.1 Makro gegen Technik, 6.2 Technik gegen Fundamentaldaten, 6.3 Sektor gegen Aktie, 6.4 Rohstoff gegen Aktie, "
+        "6.5 Investmentthese gegen aktuelle Marktdaten, 6.6 Risiken bestehender Ideen. Für jeden tatsächlichen Fall Aktie/Idee, Ausgangsthese, widersprechende Information, Bedeutung, Prüfpunkt und Invalidierung nennen. "
+        "Wenn kein belastbarer Fall vorhanden ist, ausdrücklich so feststellen.\n"
+        "7. 🌍 MARKT- & MAKROKONTEXT: 7.1 Aktienmärkte/Indizes Europa, USA, Asien, Marktbreite und Trend/Momentum; 7.2 Leitzinsen, 2Y/10Y, Realzinsen und Zinskurve; "
+        "7.3 VIX/Volatilität; 7.4 EUR/USD, DXY, USD/JPY und weitere relevante FX; 7.5 Öl, Kupfer, Lithium, Industriemetalle und weitere relevante Rohstoffe; "
+        "7.6 Bitcoin, Ethereum und relevante Kryptoentwicklung; 7.7 Inflation, Arbeitsmarkt, ISM/PMI, Konsum, Kreditbedingungen und sonstige relevante Makrodaten. "
+        "Nur investmentrelevante Informationen und deren Bedeutung nennen.\n"
+        "8. 🪙 EDELMETALLE: 8.1 Gold, 8.2 Silber, 8.3 Platin, 8.4 Palladium jeweils separat mit aktuellem Kurs, kurzfristiger Entwicklung, 4-Wochen-Entwicklung, "
+        "52-Wochen-Situation, EMA200/WMA200 soweit vorhanden, technischem Zustand, Trendfolge-, Trendwende- und Short-Status, CRV/relevanten Filtern soweit vorhanden, "
+        "Beinahe-Kandidaten, Saisonalität soweit vorhanden, Makrotreibern, Rohstoff-/Branchenzusammenhängen, möglichen Gewinnern/Verlierern, konkreten Aktienbezügen, frühen Aktienreaktionen und Triggern. "
+        "Fehlende einzelne Daten explizit als NICHT VERFUEGBAR kennzeichnen; 'Kein Setup' ersetzt diese Analyse nicht.\n"
+        "9. 📅 NÄCHSTE KATALYSATOREN: 9.1 verifizierte Makrotermine, 9.2 Earnings/Unternehmensveranstaltungen/-meldungen, 9.3 Branchenereignisse, "
+        "9.4 technische Trigger und 9.5 mögliche Aktivierung/Invalidierung. Keine Termine erfinden. Ein tatsächlicher Termin/Ereignis muss einen verifizierbaren Zeit-/Datumsbezug haben; "
+        "Datumsformen wie 7. Oktober 2026, 07.10.2026 und 2026-10-07 sind gleichwertig.\n"
+        "10. 💼 BESTEHENDES PORTFOLIO: 10.1 unmittelbarer Handlungsbedarf, 10.2 tatsächliche Stop-/TP-Änderungen, 10.3 Positionen mit neuer Investmentthese, "
+        "10.4 Positionen mit schwächerer These und 10.5 letzte relevante geschlossene Positionen. 10.5 ausschließlich aus der autoritativen Tab-2-Faktenbasis; "
+        "nur tatsächlich vorhandene Fakten übernehmen und nichts aus anderen Quellen ergänzen. Die Mindesttiefe von 10.5 passt sich ausschließlich den tatsächlich vorhandenen Tab-2-Fakten an.\n"
+        "11. METHODIK / DATENQUALITÄT: 11.1 Datenstatus, 11.2 Makro-Szenario-Status, 11.3 Datenlücken, 11.4 externe Quellen, "
+        "11.5 technische/fundamentale Datenqualität, 11.6 Hinweise zur Interpretation und 11.7 klare Abgrenzung zwischen regelbasiertem Scanner, Gemini-Szenario, Idee im Aufbau und konkreter handelbarer Idee.\n"
+        "SUBSTANZREGEL: Die obigen Anforderungen sind fachliche Inhaltsanforderungen, keine Aufforderung zum Auffüllen mit Stichworten. "
+        "Bearbeite nur Informationen, die aus den bereitgestellten Daten ableitbar sind. Kurze legitime Abschnitte dürfen kurz sein, wenn die Datenlage tatsächlich kurz ist; "
+        "umgekehrt darf ein vorhandener Datenbestand nicht durch 'keine Erkenntnisse' oder 'kein Setup' abgefertigt werden.\n\n"
         "KEINE KÜNSTLICHE AUFFÜLLUNG: Die Mindesttiefe darf nicht durch Wiederholung derselben Aussage, generische Floskeln oder erfundene Daten erfüllt werden. "
         "VERBINDLICHE AUSGABESTRUKTUR: Jede vorgeschriebene Ueberschrift von 1.1 bis 11.7 muss exakt "
         "uebernommen werden und allein auf einer eigenen Zeile stehen. Direkt nach jeder solchen Ueberschrift "
@@ -6194,378 +6225,214 @@ def _pruefe_inhaltliche_mindesttiefe(text):
             "group_units": group_units,
         }
 
-    # section: (required concept groups, minimum concept hits, minimum substantive units,
-    #           minimum unique-word ratio, negative statement allowed)
-    specs = {
-        "1.1 Was hat sich seit dem letzten Lauf verändert?": ([
-            [r"verändert|veraendert|neu|seit dem letzten"],
-            [r"markt|aktie|index|sektor|rohstoff|zinsen|makro"],
-            [r"daten|kurs|performance|signal|status"],
-            [r"bedeut|auswirkung|folgerung|relevanz"],
-        ], 3, 4, 0.34, False),
-        "1.2 Sofort handelbare Chancen": ([
-            [r"ticker|aktie|unternehmen"], [r"entry|einstieg"], [r"stop"], [r"tp1|tp2|ziel"],
-            [r"crv"], [r"these|begründ|begruend"], [r"risiko|gegenargument"], [r"trigger|katalysator"],
-        ], 6, 6, 0.32, True),
-        "1.3 Ideen im Aufbau": ([
-            [r"these"], [r"bestät|bestaet|beleg|daten"], [r"gegenargument|risiko"], [r"kausal|zusammenhang"],
-            [r"profiteur|verlierer"], [r"früh|frueh|reaktion"], [r"aktivierung|trigger"], [r"invalid"],
-        ], 6, 6, 0.32, True),
-        "1.4 Frühindikatoren / neue Themen": ([
-            [r"früh|frueh|indikator|signal"], [r"thema|these|zusammenhang"], [r"daten|beleg|quelle"],
-            [r"bestät|bestaet|offen|noch nicht"], [r"trigger|nächster|naechster"],
-        ], 4, 4, 0.32, True),
-        "2.1 Trendfolge": ([
-            [r"entry|einstieg"], [r"stop"], [r"tp1|tp2|take profit|ziel"], [r"crv"],
-            [r"technik|setup|trend"], [r"makro|sektor|branche"], [r"risiko|gegenargument"], [r"trigger|katalysator"],
-        ], 6, 6, 0.32, True),
-        "2.2 Trendwende": ([
-            [r"ticker|aktie|kandidat"], [r"trendwende|reversal"], [r"entry|einstieg"], [r"stop"],
-            [r"ziel|tp"], [r"crv|filter"], [r"risiko|gegenargument"], [r"trigger|invalid"],
-        ], 5, 5, 0.30, True),
-        "2.3 Short": ([
-            [r"ticker|aktie|kandidat"], [r"short|abwärts|abwaerts"], [r"entry|einstieg"], [r"stop"],
-            [r"ziel|tp"], [r"crv|filter"], [r"risiko|gegenargument"], [r"trigger|invalid"],
-        ], 5, 5, 0.30, True),
-        "2.4 HebelTrader": ([
-            [r"ticker|aktie"], [r"richtung|long|short"], [r"setup"], [r"entry|einstieg"],
-            [r"stop"], [r"ziel|tp"], [r"risiko|hebel|volatil"],
-        ], 5, 5, 0.30, True),
-        "2.5 Sonstige durch Gemini erkannte Chancen": ([
-            [r"ticker|aktie|chance"], [r"these|begründ|begruend"], [r"daten|beleg"],
-            [r"risiko|gegenargument"], [r"trigger|katalysator"],
-        ], 4, 4, 0.30, True),
-        "3.1 Makro → Branche → Aktie": ([[r"makro"], [r"branche|sektor"], [r"aktie|ticker"], [r"zusammenhang|kausal"]], 4, 3, 0.30, True),
-        "3.2 Rohstoff → Branche → Aktie": ([[r"rohstoff"], [r"branche|sektor"], [r"aktie|ticker"], [r"zusammenhang|kausal"]], 4, 3, 0.30, True),
-        "3.3 Politik → Branche → Aktie": ([[r"politik|regulier|staat"], [r"branche|sektor"], [r"aktie|ticker"], [r"zusammenhang|auswirkung"]], 4, 3, 0.30, True),
-        "3.4 Technologie → Branche → Aktie": ([[r"technologie|technolog"], [r"branche|sektor"], [r"aktie|ticker"], [r"auswirkung|zusammenhang"]], 4, 3, 0.30, True),
-        "3.5 Unternehmens-/Fundamentaldaten → Aktie": ([[r"fundamental|umsatz|gewinn|marge|bilanz"], [r"aktie|ticker"], [r"daten|kennzahl"], [r"auswirkung|these"]], 4, 3, 0.30, True),
-        "4. 🔭 IDEEN IM AUFBAU": ([[r"these"], [r"entsteht|entsteh"], [r"bestät|bestaet|daten"], [r"gegenargument|risiko"], [r"kausal|zusammenhang"], [r"profiteur|verlierer"], [r"status"], [r"aktivierung|trigger"], [r"invalid"]], 7, 7, 0.32, True),
-        "5. 🥇 AKTIEN MIT FRÜHEM SIGNAL": ([[r"ticker|aktie"], [r"these|zusammenhang"], [r"beleg|daten|quelle"], [r"sichtbar|bereits"], [r"noch nicht|offen|fehlt"], [r"eingepreist|preis"], [r"trigger|katalysator"]], 6, 6, 0.32, True),
-        "6.1 Makro gegen Technik": ([[r"aktie|ticker|idee"], [r"these|ausgang"], [r"makro"], [r"technik|technisch"], [r"bedeut|auswirkung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]], 6, 6, 0.32, True),
-        "6.2 Technik gegen Fundamentaldaten": ([[r"aktie|ticker|idee"], [r"these|ausgang"], [r"technik"], [r"fundamental"], [r"bedeut|auswirkung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]], 6, 6, 0.32, True),
-        "6.3 Sektor gegen Aktie": ([[r"aktie|ticker"], [r"these|ausgang"], [r"sektor|branche"], [r"aktie"], [r"bedeut|auswirkung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]], 6, 6, 0.32, True),
-        "6.4 Rohstoff gegen Aktie": ([[r"aktie|ticker"], [r"these|ausgang"], [r"rohstoff"], [r"aktie"], [r"bedeut|auswirkung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]], 6, 6, 0.32, True),
-        "6.5 Investmentthese gegen aktuelle Marktdaten": ([[r"aktie|ticker|idee"], [r"these|ausgang"], [r"aktuelle?\s+markt|marktdaten|daten"], [r"widerspruch|konflikt"], [r"bedeut|auswirkung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]], 6, 6, 0.32, True),
-        "6.6 Risiken bestehender Ideen": ([[r"aktie|ticker|idee"], [r"risiko"], [r"wahrscheinlich|auswirkung|bedeut"], [r"gegenmaß|gegenmass|absicherung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]], 5, 5, 0.32, True),
-        "7.1 Aktienmärkte / Indizes": ([[r"europa|europe"], [r"usa|us\b|s&p|nasdaq|dow"], [r"asien|asia|nikkei|hang seng"], [r"index|markt"], [r"breite|marktbreite"], [r"momentum|trend|dynamik"], [r"einordnung|bewertung"]], 6, 6, 0.32, False),
-        "7.2 Zinsen": ([[r"leitzins|fed|ezb|zins"], [r"2\s*j|2\s*y"], [r"5\s*j|5\s*y"], [r"10\s*j|10\s*y"], [r"30\s*j|30\s*y"], [r"kurve|spread"], [r"realzins|realzins"], [r"interpret|auswirkung"]], 6, 6, 0.32, False),
-        "7.3 Volatilität": ([[r"vix|volatil"], [r"veränder|veraender|verlauf|niveau"], [r"interpret|auswirkung|risiko"]], 3, 3, 0.30, False),
-        "7.4 FX": ([[r"eur/?usd|euro|dollar"], [r"dxy|us.?dollar.?index"], [r"usd/?jpy|yen"], [r"trend|beweg|veränder|veraender"], [r"interpret|auswirkung"]], 4, 4, 0.30, False),
-        "7.5 Rohstoffe": ([[r"oil|öl|brent|wti"], [r"gold|silber|platin|palladium"], [r"kupfer|copper"], [r"preis|kurs"], [r"trend|beweg"], [r"makro|angebot|nachfrage"], [r"auswirkung|branche"]], 6, 6, 0.30, False),
-        "7.6 Krypto": ([[r"bitcoin|btc"], [r"ethereum|eth"], [r"performance|veränder|veraender"], [r"sma|ema|trend"], [r"interpret|auswirkung"]], 4, 4, 0.30, False),
-        "7.7 Konjunktur / Makro": ([[r"arbeitsmarkt|nfp|claims|arbeitslosen"], [r"inflation|cpi|ppi"], [r"bip|wachstum|gdp|ism|pmi"], [r"konsum|kredit|credit"], [r"makro|konjunktur"], [r"interpret|auswirkung"]], 5, 5, 0.32, False),
-        "8.1 Gold": ([[r"gold|xau"], [r"kurs|preis"], [r"5\s*(?:t|tage)|5d|5-day"], [r"4\s*(?:w|wochen)|4w|4-week"], [r"52\s*(?:w|wochen)|52w|52-week|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv"], [r"beinahe|near.?candidate|kandidat"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion|reakt"], [r"trigger|katalysator"]], 12, 8, 0.30, True),
-        "8.2 Silber": ([[r"silber|xag"], [r"kurs|preis"], [r"5\s*(?:t|tage)|5d|5-day"], [r"4\s*(?:w|wochen)|4w|4-week"], [r"52\s*(?:w|wochen)|52w|52-week|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv"], [r"beinahe|near.?candidate|kandidat"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion|reakt"], [r"trigger|katalysator"]], 12, 8, 0.30, True),
-        "8.3 Platin": ([[r"platin|xpt"], [r"kurs|preis"], [r"5\s*(?:t|tage)|5d|5-day"], [r"4\s*(?:w|wochen)|4w|4-week"], [r"52\s*(?:w|wochen)|52w|52-week|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv"], [r"beinahe|near.?candidate|kandidat"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion|reakt"], [r"trigger|katalysator"]], 12, 8, 0.30, True),
-        "8.4 Palladium": ([[r"palladium|xpd"], [r"kurs|preis"], [r"5\s*(?:t|tage)|5d|5-day"], [r"4\s*(?:w|wochen)|4w|4-week"], [r"52\s*(?:w|wochen)|52w|52-week|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv"], [r"beinahe|near.?candidate|kandidat"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion|reakt"], [r"trigger|katalysator"]], 12, 8, 0.30, True),
-        "9.1 Makrotermine": ([[r"fomc|fed"], [r"ezb|ecb"], [r"cpi|inflation|ppi"], [r"arbeitsmarkt|nfp|claims"], [r"ism|pmi"], [r"termin|datum|katalysator"]], 4, 4, 0.30, True),
-        "9.2 Unternehmen": ([[r"earnings|quartal|zahlen"], [r"konferenz|veranstaltung"], [r"meldung|unternehmensmeldung|corporate"], [r"ticker|unternehmen"], [r"termin|datum"]], 3, 3, 0.30, True),
-        "9.3 Branchenereignisse": ([[r"konferenz"], [r"politisch|politik"], [r"regulator|regulierung"], [r"branche|industrie"], [r"ereignis|termin|datum"]], 3, 3, 0.30, True),
-        "9.4 Technische Trigger": ([[r"unterstützung|unterstuetzung|support"], [r"widerstand|resistance"], [r"ausbruch|breakout|bestätigung|bestaetigung"], [r"50\s*[- ]?tage|50\s*[- ]?day"], [r"macd|momentum"], [r"trigger|bedingung"]], 4, 4, 0.30, True),
-        "9.5 Mögliche Aktivierung / Invalidierung": ([[r"aktivierung|aktivieren"], [r"invalid|widerleg"], [r"trigger|bedingung"], [r"ticker|aktie|these"]], 3, 3, 0.30, True),
-        "10.1 Sofortiger Handlungsbedarf": ([[r"ticker|aktie|position"], [r"handlungsbedarf|maßnahme|massnahme"], [r"grund|begründ|begruend"], [r"priorität|prioritaet|sofort"]], 3, 3, 0.30, True),
-        "10.2 Stop-/TP-Änderungen": ([[r"ticker|aktie|position"], [r"stop"], [r"tp1|tp2|take profit"], [r"geändert|geaendert|nachgezogen|neuer"], [r"grund|begründ|begruend"]], 3, 3, 0.30, True),
-        "10.3 Positionen mit neuer Investmentthese": ([[r"ticker|\([A-Z][A-Z0-9._=-]{1,12}\)"], [r"ursprüng|ursprueng|ausgang|bisher"], [r"neue daten|aktuelle daten|daten"], [r"investmentthese|neue these|verändert|veraendert"], [r"auswirkung|position|handlungsbedarf"]], 4, 4, 0.30, True),
-        "10.4 Positionen, deren These schwächer wird": ([[r"ticker|\([A-Z][A-Z0-9._=-]{1,12}\)"], [r"ursprüng|ursprueng|ausgang|bisher"], [r"neue daten|aktuelle daten|daten"], [r"schwächer|schwaecher|widerlegt|belastet"], [r"auswirkung|position|handlungsbedarf"]], 4, 4, 0.30, True),
-        "10.5 Geschlossene Positionen": ([[r"ticker|position|wertpapier"], [r"einstieg|ausstieg"], [r"performance|rendite|ergebnis"], [r"status|geschlossen|gestoppt"]], 3, 3, 0.30, True),
-        "11.1 Datenstatus": ([[r"datenstand|status"], [r"aktuell|zeitpunkt|datum"], [r"vollständig|vollstaendig|verfügbar|verfuegbar"]], 2, 2, 0.30, False),
-        "11.2 Makro-Szenario-Status": ([[r"makro"], [r"szenario|scenario"], [r"status|ampel"], [r"treiber|begründ|begruend"]], 3, 2, 0.30, False),
-        "11.3 Datenlücken": ([[r"datenlücke|datenluecke|fehlend|nicht verfügbar|nicht verfuegbar"], [r"quelle|bereich|reihe"], [r"auswirkung|einschränkung|einschraenkung"]], 2, 2, 0.30, True),
-        "11.4 externe Quellen": ([[r"quelle|quelle:"], [r"fred|alpaca|yahoo|yfinance|google|gemini|api|website"], [r"zweck|verwendung|daten"]], 2, 1, 0.30, False),
-        "11.5 technische / fundamentale Datenqualität": ([[r"technisch|technik"], [r"fundamental"], [r"qualität|qualitaet"], [r"einschränkung|einschraenkung|zuverlässig|zuverlaessig"]], 3, 2, 0.30, False),
-        "11.6 Hinweise zur Interpretation": ([[r"interpret|einordnung"], [r"vorsicht|einschränkung|einschraenkung"], [r"nicht als|keine kauf|kein kauf"], [r"daten|modell|unsicherheit"]], 3, 2, 0.30, False),
-        "11.7 Abgrenzung:": ([[r"scanner"], [r"discovery|entdeckung"], [r"signal|setup"], [r"abgrenz|nicht gleich|nicht identisch"]], 3, 3, 0.30, False),
+    # Datenabhängiges Inhalts-Gate:
+    # Die fachliche Mindesttiefe wird aus dem verbindlichen Inhaltsvertrag abgeleitet.
+    # Es gibt keine festen Keyword-Quoten und keine künstliche Mindestanzahl von Sätzen.
+    # Stattdessen wird geprüft:
+    #   1) Pflichtabschnitt vorhanden
+    #   2) echter, nicht-generischer Inhalt vorhanden
+    #   3) vorhandene fachliche Dimensionen sind erkennbar abgedeckt
+    #   4) explizite Nichtverfügbarkeit darf eine tatsächlich fehlende Dimension erfüllen
+    #   5) bei 9.1–9.3 braucht jeder tatsächlich behauptete Termin einen Zeitbezug
+    #   6) 10.5 richtet sich ausschließlich nach den tatsächlich gelieferten Tab-2-Fakten.
+    profiles = {
+        "1.1 Was hat sich seit dem letzten Lauf verändert?": [[r"neu|verändert|veraendert|seit dem letzten"], [r"makro|markt|sektor|branche|rohstoff|aktie|index"], [r"daten|kurs|signal|status|these"], [r"bedeut|auswirkung|relevanz|folgerung"]],
+        "1.2 Sofort handelbare Chancen": [[r"ticker|aktie|unternehmen"], [r"long|short|richtung"], [r"entry|einstieg"], [r"stop"], [r"tp1|tp2|ziel"], [r"crv"], [r"these|begründ|begruend"], [r"risiko|gegenargument"], [r"trigger|katalysator"],],
+        "1.3 Ideen im Aufbau": [[r"these"], [r"daten|beleg|bestät|bestaet"], [r"gegenargument|risiko"], [r"makro|sektor|branche|rohstoff"], [r"profiteur|verlierer|zweitrund"], [r"aktie|ticker"], [r"status|fehlt"], [r"trigger|aktivierung|invalid"],],
+        "1.4 Frühindikatoren / neue Themen": [[r"früh|frueh|indikator|signal"], [r"thema|ereignis|entwicklung"], [r"makro|rohstoff|zins|fx|branche|sektor"], [r"aktie|ticker"], [r"trigger|später|spaeter|wichtig"],],
+        "2.1 Trendfolge": [[r"ticker|aktie"], [r"entry|einstieg"], [r"stop"], [r"tp1|tp2|ziel"], [r"crv"], [r"technik|setup|trend"], [r"makro|sektor|branche"], [r"risiko|gegenargument"], [r"trigger"],],
+        "2.2 Trendwende": [[r"ticker|aktie|kandidat"], [r"trendwende|reversal|boden|wende"], [r"abwärts|abwaerts|abwärtsbewegung|abwaertsbewegung"], [r"entry|einstieg"], [r"stop|ziel|tp"], [r"crv|filter"], [r"bestät|bestaet|fehlt"], [r"risiko|gegenargument"],],
+        "2.3 Short": [[r"ticker|aktie"], [r"short|abwärts|abwaerts|abwärtsthese|abwaertsthese"], [r"technisch|bestät|bestaet"], [r"entry|einstieg"], [r"stop"], [r"tp1|tp2|ziel"], [r"crv"], [r"makro|sektor|branche"], [r"risiko|gegenargument"],],
+        "2.4 HebelTrader": [[r"ticker|aktie|instrument"], [r"long|short|richtung"], [r"setup"], [r"entry|einstieg"], [r"stop"], [r"ziel|tp"], [r"risiko|hebel|volatil"],],
+        "2.5 Sonstige durch Gemini erkannte Chancen": [[r"ticker|aktie"], [r"chance|idee"], [r"these|begründ|begruend"], [r"daten|beleg"], [r"gegenargument|risiko"], [r"trigger|katalysator"],],
+        "3.1 Makro → Branche → Aktie": [[r"makro"], [r"branche|sektor"], [r"aktie|ticker"], [r"auswirkung|zusammenhang|kausal"]],
+        "3.2 Rohstoff → Branche → Aktie": [[r"rohstoff"], [r"branche|sektor"], [r"aktie|ticker"], [r"auswirkung|zusammenhang|kausal"]],
+        "3.3 Politik → Branche → Aktie": [[r"politik|regulier|staat|zoll|subvention"], [r"branche|sektor"], [r"unternehmen|aktie|ticker"], [r"auswirkung|zusammenhang"]],
+        "3.4 Technologie → Branche → Aktie": [[r"technologie|ki|halbleiter|automatisierung|speicher"], [r"branche|sektor"], [r"unternehmen|aktie|ticker"], [r"auswirkung|zusammenhang"]],
+        "3.5 Unternehmens-/Fundamentaldaten → Aktie": [[r"fundamental|umsatz|gewinn|marge|bewertung|analyst"], [r"aktie|ticker"], [r"daten|kennzahl|nachricht"], [r"auswirkung|these"]],
+        "4. 🔭 IDEEN IM AUFBAU": [[r"these"], [r"bestät|bestaet|daten"], [r"gegenargument|risiko"], [r"kausal|zusammenhang"], [r"profiteur|verlierer"], [r"aktie"], [r"status|fehlt"], [r"aktivierung|trigger"], [r"invalid"]],
+        "5. 🥇 AKTIEN MIT FRÜHEM SIGNAL": [[r"aktie|ticker"], [r"zusammenhang|these"], [r"daten|quelle|beleg"], [r"sichtbar|reaktion"], [r"nicht bestätigt|nicht bestaet|fehlt"], [r"eingepreist|markt"], [r"trigger|katalysator"]],
+        "6.1 Makro gegen Technik": [[r"aktie|ticker|idee"], [r"these"], [r"makro"], [r"technik|technisch"], [r"widerspruch|konflikt|gegen"], [r"bedeut|auswirkung"], [r"prüf|pruef|invalid|trigger"]],
+        "6.2 Technik gegen Fundamentaldaten": [[r"aktie|ticker|idee"], [r"these"], [r"technik"], [r"fundamental"], [r"widerspruch|konflikt|gegen"], [r"bedeut|auswirkung"], [r"prüf|pruef|invalid|trigger"]],
+        "6.3 Sektor gegen Aktie": [[r"aktie|ticker"], [r"these"], [r"sektor|branche"], [r"widerspruch|konflikt"], [r"bedeut|auswirkung"], [r"prüf|pruef|invalid|trigger"]],
+        "6.4 Rohstoff gegen Aktie": [[r"aktie|ticker"], [r"these"], [r"rohstoff"], [r"widerspruch|konflikt"], [r"bedeut|auswirkung"], [r"prüf|pruef|invalid|trigger"]],
+        "6.5 Investmentthese gegen aktuelle Marktdaten": [[r"aktie|ticker|idee"], [r"these"], [r"markt|marktdaten|aktuelle daten"], [r"widerspruch|konflikt"], [r"bedeut|auswirkung"], [r"prüf|pruef|invalid|trigger"]],
+        "6.6 Risiken bestehender Ideen": [[r"aktie|ticker|idee"], [r"risiko"], [r"auswirkung|bedeut"], [r"gegenmaß|gegenmass|absicherung"], [r"prüf|pruef|monitor"], [r"invalid|trigger"]],
+        "7.1 Aktienmärkte / Indizes": [[r"europa|europe"], [r"usa|us\b|s&p|nasdaq|dow"], [r"asien|asia|nikkei|hang seng"], [r"markt|index"], [r"breite|marktbreite"], [r"momentum|trend|dynamik"]],
+        "7.2 Zinsen": [[r"leitzins|fed|ezb|zins"], [r"2\s*y"], [r"10\s*y"], [r"realzins"], [r"kurve|spread"], [r"auswirkung|interpret"]],
+        "7.3 Volatilität": [[r"vix|volatil"], [r"veränder|veraender|niveau|verlauf"], [r"auswirkung|risiko|interpret"]],
+        "7.4 FX": [[r"eur/?usd|euro|dollar"], [r"dxy"], [r"usd/?jpy|yen"], [r"trend|beweg|veränder|veraender"], [r"auswirkung|interpret"]],
+        "7.5 Rohstoffe": [[r"öl|oil|brent|wti"], [r"kupfer|copper|lithium|industriemetall"], [r"gold|silber|platin|palladium"], [r"preis|kurs"], [r"trend|beweg"], [r"auswirkung|branche|angebot|nachfrage"]],
+        "7.6 Krypto": [[r"bitcoin|btc"], [r"ethereum|eth"], [r"performance|veränder|veraender"], [r"trend|sma|ema"], [r"auswirkung|interpret"]],
+        "7.7 Konjunktur / Makro": [[r"arbeitsmarkt|nfp|claims|arbeitslosen"], [r"inflation|cpi|ppi"], [r"bip|wachstum|gdp|ism|pmi"], [r"konsum|kredit|credit"], [r"makro|konjunktur"], [r"auswirkung|interpret"]],
+        "8.1 Gold": [[r"gold|xau"], [r"kurs|preis"], [r"kurzfrist|5\s*(?:t|tage)|5d"], [r"4\s*(?:w|wochen)|4w"], [r"52\s*(?:w|wochen)|52w|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv|filter"], [r"beinahe|kandidat|setup"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion"], [r"trigger|katalysator"]],
+        "8.2 Silber": [[r"silber|xag"], [r"kurs|preis"], [r"kurzfrist|5\s*(?:t|tage)|5d"], [r"4\s*(?:w|wochen)|4w"], [r"52\s*(?:w|wochen)|52w|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv|filter"], [r"beinahe|kandidat|setup"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion"], [r"trigger|katalysator"]],
+        "8.3 Platin": [[r"platin|xpt"], [r"kurs|preis"], [r"kurzfrist|5\s*(?:t|tage)|5d"], [r"4\s*(?:w|wochen)|4w"], [r"52\s*(?:w|wochen)|52w|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv|filter"], [r"beinahe|kandidat|setup"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion"], [r"trigger|katalysator"]],
+        "8.4 Palladium": [[r"palladium|xpd"], [r"kurs|preis"], [r"kurzfrist|5\s*(?:t|tage)|5d"], [r"4\s*(?:w|wochen)|4w"], [r"52\s*(?:w|wochen)|52w|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv|filter"], [r"beinahe|kandidat|setup"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion"], [r"trigger|katalysator"]],
+        "9.1 Makrotermine": [[r"fomc|fed"], [r"ezb|ecb"], [r"cpi|inflation|ppi"], [r"arbeitsmarkt|nfp|claims"], [r"ism|pmi"]],
+        "9.2 Unternehmen": [[r"earnings|quartal|zahlen"], [r"konferenz|veranstaltung|capital markets day|investor day"], [r"meldung|unternehmensmeldung|corporate|mitteilung"], [r"ticker|unternehmen"]],
+        "9.3 Branchenereignisse": [[r"konferenz"], [r"politisch|politik|gesetz|wahl|regier"], [r"regulator|regulierung|aufsicht"], [r"branche|industrie|sektor"], [r"ereignis|event|ankündigung|ankuendigung"]],
+        "9.4 Technische Trigger": [[r"unterstützung|unterstuetzung|support"], [r"widerstand|resistance"], [r"ausbruch|breakout|bestätigung|bestaetigung|trendwechsel"], [r"ema|50\s*[- ]?tage|macd|momentum"], [r"trigger|bedingung"]],
+        "9.5 Mögliche Aktivierung / Invalidierung": [[r"aktivierung|aktivieren"], [r"invalid|widerleg"], [r"trigger|bedingung"], [r"ticker|aktie|these"]],
+        "10.1 Sofortiger Handlungsbedarf": [[r"ticker|aktie|position"], [r"handlungsbedarf|maßnahme|massnahme"], [r"grund|begründ|begruend"], [r"sofort|priorität|prioritaet"]],
+        "10.2 Stop-/TP-Änderungen": [[r"ticker|aktie|position"], [r"stop|tp1|tp2|take profit"], [r"geändert|geaendert|nachgezogen|neuer|angepasst"], [r"grund|begründ|begruend"]],
+        "10.3 Positionen mit neuer Investmentthese": [[r"ticker|aktie"], [r"ursprüng|ursprueng|ausgang|bisher"], [r"neue daten|aktuelle daten|daten"], [r"investmentthese|neue these|verändert|veraendert"], [r"auswirkung|position|handlungsbedarf"]],
+        "10.4 Positionen, deren These schwächer wird": [[r"ticker|aktie"], [r"ursprüng|ursprueng|ausgang|bisher"], [r"neue daten|aktuelle daten|daten"], [r"schwächer|schwaecher|widerlegt|belastet"], [r"auswirkung|position|handlungsbedarf"]],
+        "11.1 Datenstatus": [[r"datenstand|status"], [r"aktuell|zeitpunkt|datum"], [r"vollständig|vollstaendig|verfügbar|verfuegbar"]],
+        "11.2 Makro-Szenario-Status": [[r"makro"], [r"szenario|scenario"], [r"status|ampel"], [r"treiber|begründ|begruend"]],
+        "11.3 Datenlücken": [[r"datenlücke|datenluecke|fehlend|nicht verfügbar|nicht verfuegbar"], [r"quelle|bereich|reihe"], [r"auswirkung|einschränkung|einschraenkung"]],
+        "11.4 externe Quellen": [[r"quelle|quelle:"], [r"fred|alpaca|yahoo|yfinance|google|gemini|api|website"], [r"zweck|verwendung|daten"]],
+        "11.5 technische / fundamentale Datenqualität": [[r"technisch|technik"], [r"fundamental"], [r"qualität|qualitaet"], [r"einschränkung|einschraenkung|zuverlässig|zuverlaessig"]],
+        "11.6 Hinweise zur Interpretation": [[r"interpret|einordnung"], [r"vorsicht|einschränkung|einschraenkung"], [r"nicht als|keine kauf|kein kauf"], [r"daten|modell|unsicherheit"]],
+        "11.7 Abgrenzung:": [[r"scanner"], [r"discovery|entdeckung"], [r"signal|setup"], [r"abgrenz|nicht gleich|nicht identisch"]],
     }
 
     def dynamic_10_5_spec(block):
-        """Kalibriert 10.5 ausschließlich an den tatsächlich ausgegebenen Tab-2-Fakten.
-
-        10.5 wird deterministisch aus der autoritativen Tab-2-Quelle erzeugt.
-        Leere Quellfelder werden dort nicht ausgegeben. Deshalb darf die
-        Mindesttiefenprüfung nur Fakten verlangen, die in diesem autoritativen
-        Block tatsächlich vorhanden sind. Eine einzelne geschlossene Position
-        bleibt damit auch dann gültig, wenn nur wenige Quellfelder befüllt sind.
-        Die Zahl der erforderlichen Inhaltseinheiten folgt der Zahl der
-        tatsächlich ausgegebenen Faktenzeilen (mindestens eine).
-        """
+        """10.5 folgt ausschließlich den tatsächlich vorhandenen Tab-2-Fakten."""
+        content = "\n".join(content_lines(block))
         units = sentences(block)
         if not units:
-            return [], 0, 0, 0.30, True
-
+            return [], 0, True
         factual_groups = [
             [r"ticker|position|wertpapier"],
             [r"einstieg|ausstieg"],
             [r"performance|rendite|ergebnis"],
             [r"status|geschlossen|gestoppt"],
         ]
-        content = "\n".join(content_lines(block))
-        available_groups = [group for group in factual_groups if has(content, group)]
-        # Bei autoritativen Tab-2-Daten sind nur tatsächlich ausgegebene
-        # Fakten verpflichtend; fehlende/leere Quellfelder dürfen nicht
-        # künstlich als fehlende Mindesttiefe gewertet werden.
-        min_hits = len(available_groups)
-        min_units = max(1, len(units))
-        return available_groups, min_hits, min_units, 0.30, True
+        active = [group for group in factual_groups if has(content, group)]
+        return active, len(active), True
 
-    def adaptive_8_spec(block):
-        """Inhaltliches Pflichtprofil für Gold/Silber/Platin/Palladium.
-
-        Die Edelmetallprüfung verlangt nicht mehr eine künstliche Quote aus
-        18 Regex-Treffern. Stattdessen müssen die fachlich relevanten
-        Analysebereiche abgedeckt sein. Datenabhängige Lücken werden nur
-        anerkannt, wenn der konkrete Bereich ausdrücklich als nicht verfügbar
-        gekennzeichnet ist. Eine reine "Kein Setup"-Aussage ersetzt die
-        Analyse nicht.
-        """
-        groups = [
-            [r"kurs|preis|quote|spot"],
-            [r"5\s*(?:t|tage)|5d|5[- ]?day|kurzfrist"],
-            [r"4\s*(?:w|wochen)|4w|4[- ]?week"],
-            [r"52\s*(?:w|wochen)|52w|52[- ]?week|jahreshoch|jahrestief"],
-            [r"ema\s*200|wma\s*200|200[- ]?tage|technik|technisch"],
-            [r"trendfolge"],
-            [r"trendwende|reversal"],
-            [r"short|abwärts|abwaerts"],
-            [r"crv|filter|setup|kandidat|near.?candidate|beinahe"],
-            [r"saisonal|saisonalität|saisonalitaet|makro|zins|inflation"],
-            [r"branche|sektor|industrie"],
-            [r"aktie|ticker|reaktion|reakt"],
-            [r"trigger|katalysator|invalid|risiko"],
-        ]
-        # Mindestens acht der elf fachlichen Bereiche sowie sechs
-        # eigenständige Inhaltseinheiten. Nicht verfügbare Bereiche können
-        # ausdrücklich als solche erfüllt werden.
-        return groups, 10, 6, 0.30, False, True, 35.0
-
-    def adaptive_9_spec(h, block):
-        """Datenabhängiges Pflichtprofil für 9.1–9.3.
-
-        Es werden nur Ereignis-/Faktenarten geprüft, die im konkreten Abschnitt
-        tatsächlich angesprochen werden oder dort ausdrücklich als nicht
-        verfügbar gekennzeichnet sind. Nicht vorhandene Kategorien erzeugen
-        keine künstliche Pflicht. Sobald mindestens eine konkrete Ereignisart
-        vorhanden ist, müssen Datum/Termin bzw. der entsprechende
-        Zeit-/Katalysatorbezug ebenfalls vorhanden oder ausdrücklich nicht
-        verfügbar sein. Ein vollständig leerer Bereich darf nur über die
-        bestehende explizite Negativfeststellung entfallen.
-        """
-        if h == "9.1 Makrotermine":
-            factual_groups = [
-                [r"fomc|fed"],
-                [r"ezb|ecb"],
-                [r"cpi|inflation|ppi"],
-                [r"arbeitsmarkt|nfp|claims"],
-                [r"ism|pmi"],
-            ]
-            context_group = [r"\btermine?\b|\bdatum\b|katalysator|entscheidung|sitzung|veröffentlichung|veroeffentlichung|\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b|\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b"]
-        elif h == "9.2 Unternehmen":
-            factual_groups = [
-                [r"earnings|quartal|zahlen|geschäftszahlen|geschaeftszahlen"],
-                [r"konferenz|veranstaltung|capital markets day|investor day"],
-                [r"meldung|unternehmensmeldung|corporate|mitteilung|nachricht"],
-                [r"ticker|unternehmen|gesellschaft"],
-            ]
-            context_group = [r"\btermine?\b|\bdatum\b|katalysator|veröffentlichung|veroeffentlichung|berichtstermin|\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b|\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b"]
-        else:
-            factual_groups = [
-                [r"konferenz"],
-                [r"politisch|politik|gesetz|wahl|regier"],
-                [r"regulator|regulierung|aufsicht|zulassung"],
-                [r"branche|industrie|sektor"],
-                [r"ereignis|event|ankündigung|ankuendigung"],
-            ]
-            context_group = [r"\btermine?\b|\bdatum\b|katalysator|entscheidung|sitzung|veröffentlichung|veroeffentlichung|\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b|\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b"]
-
-        # Nur konkret im Abschnitt belegte bzw. ausdrücklich als nicht
-        # verfügbar markierte Faktenarten werden zu Pflichtgruppen. Die
-        # Überschrift selbst darf dabei niemals als Fakt zählen.
-        content = "\n".join(content_lines(block))
-        active_groups = []
-        has_real_fact = False
-        for group in factual_groups:
-            if has(content, group) or _group_has_explicit_unavailable(block, group):
-                active_groups.append(group)
-                # Ein echter Fakt (und nicht nur eine ausdrückliche
-                # Nichtverfügbarkeit) braucht zusätzlich den Zeit-/Termin-/
-                # Katalysatorbezug. Dafür werden die konkreten Inhaltseinheiten
-                # geprüft, sodass eine Formulierung wie "FOMC nicht verfügbar"
-                # nicht künstlich einen Termin erzwingt.
-                # Den echten Faktenbezug direkt im bereinigten Abschnitt prüfen.
-                # Die allgemeine Satzzerlegung kann Datumsangaben wie
-                # "7. Oktober 2026" an der Punktstelle fälschlich trennen.
-                if any(re.search(pattern, content, re.I | re.U) for pattern in group):
-                    has_real_fact = True
-
-        # Bei tatsächlich vorhandenen Ereignissen ist der Zeit-/Termin-/
-        # Katalysatorbezug Pflicht. Fehlt er, wird die Kontextgruppe trotzdem
-        # aufgenommen und der Abschnitt fällt kontrolliert durch. Bei rein
-        # nicht verfügbaren Daten ist kein zusätzlicher Termin erforderlich.
-        if active_groups and has_real_fact:
-            active_groups.append(context_group)
-
-        return active_groups, len(active_groups), 1, 0.30, True, True, 30.0
-
-    def adaptive_9_4_5_spec(h, block):
-        if h == "9.4 Technische Trigger":
-            groups = [
-                [r"unterstützung|unterstuetzung|support"],
-                [r"widerstand|resistance"],
-                [r"ausbruch|breakout|bestätigung|bestaetigung|trendwechsel"],
-                [r"50\s*[- ]?tage|50\s*[- ]?day|ema|macd|momentum"],
-                [r"trigger|bedingung"],
-            ]
-            min_hits = 4
-        else:
-            groups = [
-                [r"aktivierung|aktivieren"],
-                [r"invalid|widerleg"],
-                [r"trigger|bedingung"],
-                [r"ticker|aktie|these"],
-            ]
-            min_hits = 3
-        # Auch hier zählt die tatsächliche Anzahl der beschriebenen Trigger,
-        # nicht eine künstlich vorgegebene Satzanzahl.
-        return groups, min_hits, 1, 0.30, True, True, 30.0
-
-    def adaptive_10_2_spec(block):
-        content = "\n".join(content_lines(block))
-        groups = [
-            [r"ticker|aktie|position"],
-            [r"geändert|geaendert|nachgezogen|neuer|angepasst"],
-            [r"grund|begründ|begruend"],
-        ]
-        if re.search(r"\bstop\b", content, re.I | re.U):
-            groups.append([r"stop"])
-        if re.search(r"\btp1\b|\btp2\b|take profit", content, re.I | re.U):
-            groups.append([r"tp1|tp2|take profit"])
-        return groups, len(groups), 1, 0.30, True, True, 35.0
-
-    def adaptive_10_3_4_spec(h, block):
-        if h == "10.3 Positionen mit neuer Investmentthese":
-            groups = [
-                [r"ticker|\([A-Z][A-Z0-9._=-]{1,12}\)"],
-                [r"ursprüng|ursprueng|ausgang|bisher"],
-                [r"neue daten|aktuelle daten|daten"],
-                [r"investmentthese|neue these|verändert|veraendert"],
-                [r"auswirkung|position|handlungsbedarf"],
-            ]
-        else:
-            groups = [
-                [r"ticker|\([A-Z][A-Z0-9._=-]{1,12}\)"],
-                [r"ursprüng|ursprueng|ausgang|bisher"],
-                [r"neue daten|aktuelle daten|daten"],
-                [r"schwächer|schwaecher|widerlegt|belastet"],
-                [r"auswirkung|position|handlungsbedarf"],
-            ]
-        # Ein Abschnitt darf genau so viele Einheiten benötigen wie
-        # tatsächlich unterschiedliche Ticker/Positionsbezüge vorhanden sind.
-        content = "\n".join(content_lines(block))
-        tickers = set(re.findall(r"\(([A-Z][A-Z0-9._=-]{1,12})\)", content))
-        tickers.update(re.findall(r"(?i)\bticker\s*[:=]\s*([A-Z][A-Z0-9._=-]{1,12})\b", content))
-        min_units = max(1, min(len(tickers), 20))
-        return groups, 4, min_units, 0.30, True, True, 35.0
-
-    def adaptive_11_spec(h, block):
-        specs_11 = {
-            "11.1 Datenstatus": (
-                [[r"datenstand|status"], [r"aktuell|zeitpunkt|datum"], [r"vollständig|vollstaendig|verfügbar|verfuegbar"]],
-                2,
-            ),
-            "11.2 Makro-Szenario-Status": (
-                [[r"makro"], [r"szenario|scenario"], [r"status|ampel"], [r"treiber|begründ|begruend"]],
-                3,
-            ),
-            "11.3 Datenlücken": (
-                [[r"datenlücke|datenluecke|fehlend|nicht verfügbar|nicht verfuegbar"], [r"quelle|bereich|reihe"], [r"auswirkung|einschränkung|einschraenkung"]],
-                1,
-            ),
-            "11.4 externe Quellen": (
-                [[r"quelle|quelle:"], [r"fred|alpaca|yahoo|yfinance|google|gemini|api|website"], [r"zweck|verwendung|daten"]],
-                2,
-            ),
-            "11.5 technische / fundamentale Datenqualität": (
-                [[r"technisch|technik"], [r"fundamental"], [r"qualität|qualitaet"], [r"einschränkung|einschraenkung|zuverlässig|zuverlaessig"]],
-                2,
-            ),
-            "11.6 Hinweise zur Interpretation": (
-                [[r"interpret|einordnung"], [r"vorsicht|einschränkung|einschraenkung"], [r"nicht als|keine kauf|kein kauf"], [r"daten|modell|unsicherheit"]],
-                2,
-            ),
-            "11.7 Abgrenzung:": (
-                [[r"scanner"], [r"discovery|entdeckung"], [r"signal|setup"], [r"abgrenz|nicht gleich|nicht identisch"]],
-                3,
-            ),
-        }
-        groups, min_hits = specs_11[h]
-        # Methodik-/Statusabschnitte dürfen fachlich vollständig in einer
-        # kompakten Aussage sein. Die Prüfung bleibt substantiell, verlangt
-        # aber keine künstliche Satzanzahl.
-        return groups, min_hits, 1, 0.25, False, True, 25.0
+    def _has_any_date_or_time(text_block):
+        """Erkennt konkrete Zeitbezüge robust über die gesamte Inhaltseinheit."""
+        patterns = (
+            r"\b\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
+            r"\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b",
+            r"\b20\d{2}-\d{1,2}-\d{1,2}\b",
+            r"\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
+            r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\b",
+            r"\b(?:q[1-4]|kw\s*\d{1,2})\b",
+        )
+        return any(re.search(pattern, text_block, re.I | re.U) for pattern in patterns)
 
     errors = []
+
     for h in required:
         block = sections.get(h, "")
         if not block:
             errors.append(f"{h}: Abschnitt für die Mindesttiefenprüfung nicht gefunden.")
             continue
+
         lines = content_lines(block)
         units = sentences(block)
-        # Never let a generic fallback satisfy a substantive section.
-        if len(lines) == 1 and generic.fullmatch(lines[0]):
-            if specs.get(h, ([], 0, 0, 0.0, False))[4]:
+        profile = profiles.get(h, [])
+
+        # Eine reine Überschrift bzw. generische Einzeiler sind keine inhaltliche
+        # Bearbeitung. Explizite, konkrete Nichtverfügbarkeit bleibt zulässig.
+        if not lines:
+            errors.append(f"{h}: kein inhaltlicher Abschnitt vorhanden.")
+            continue
+        if is_explicit_negative(block):
+            # "Kein Setup" allein reicht bei Edelmetallen ausdrücklich nicht.
+            if h in {"8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"} and not unavailable_re.search(block):
+                errors.append(f"{h}: 'Kein Setup' ersetzt nicht die geforderte Edelmetallanalyse.")
+            else:
                 continue
+        if len(lines) == 1 and generic.fullmatch(lines[0]):
             errors.append(f"{h}: nur generischer Fallback statt Pflichtinhalt.")
             continue
 
-        adaptive = False
-        min_avg_len = 35.0
-        if h in {"8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"}:
-            groups, min_hits, min_units, min_unique, neg_allowed, adaptive, min_avg_len = adaptive_8_spec(block)
-        elif h in {"9.1 Makrotermine", "9.2 Unternehmen", "9.3 Branchenereignisse"}:
-            groups, min_hits, min_units, min_unique, neg_allowed, adaptive, min_avg_len = adaptive_9_spec(h, block)
-        elif h in {"9.4 Technische Trigger", "9.5 Mögliche Aktivierung / Invalidierung"}:
-            groups, min_hits, min_units, min_unique, neg_allowed, adaptive, min_avg_len = adaptive_9_4_5_spec(h, block)
-        elif h == "10.2 Stop-/TP-Änderungen":
-            groups, min_hits, min_units, min_unique, neg_allowed, adaptive, min_avg_len = adaptive_10_2_spec(block)
-        elif h in {"10.3 Positionen mit neuer Investmentthese", "10.4 Positionen, deren These schwächer wird"}:
-            groups, min_hits, min_units, min_unique, neg_allowed, adaptive, min_avg_len = adaptive_10_3_4_spec(h, block)
-        elif h.startswith("11."):
-            groups, min_hits, min_units, min_unique, neg_allowed, adaptive, min_avg_len = adaptive_11_spec(h, block)
-        else:
-            groups, min_hits, min_units, min_unique, neg_allowed = specs.get(h, ([], 0, 0, 0.0, False))
-
+        # 10.5 ist eine Sonderquelle: nur tatsächlich ausgegebene Tab-2-Fakten
+        # dürfen die Prüfung bestimmen.
         if h == "10.5 Geschlossene Positionen":
-            groups, min_hits, min_units, min_unique, neg_allowed = dynamic_10_5_spec(block)
-
-        if neg_allowed and is_explicit_negative(block):
+            groups, min_hits, _ = dynamic_10_5_spec(block)
+            if not units:
+                # Kein Datensatz ist nur dann gültig, wenn die deterministische
+                # Quelle dies explizit als leer meldet.
+                if re.search(r"keine\s+geschlossene\s+position", block, re.I | re.U):
+                    continue
+                errors.append(f"{h}: keine aus Tab 2 ableitbaren Fakten.")
+                continue
+            if groups:
+                observed = sum(1 for group in groups if has(block, group))
+                if observed < 1:
+                    errors.append(f"{h}: vorhandene Tab-2-Inhalte enthalten keine erkennbaren Fakten.")
             continue
-        if not groups:
-            # Safety net for a section accidentally omitted from the specification.
-            if len(units) < 2:
-                errors.append(f"{h}: zu wenig eigenständiger Inhalt.")
+
+        if not profile:
+            # Sicherheitsnetz: unbekannter Abschnitt darf nicht leer/etikettenartig sein.
+            if not units:
+                errors.append(f"{h}: kein substantieller Inhalt.")
             continue
 
-        stats = substantive_stats(block, groups)
-        hits = hit_count(block, groups)
-        if hits < min_hits:
-            errors.append(f"{h}: Inhaltsabdeckung {hits}/{len(groups)}; mindestens {min_hits} erforderlich.")
-        if stats["units"] < min_units:
-            errors.append(f"{h}: nur {stats['units']} eigenständige Inhaltseinheiten; mindestens {min_units} erforderlich.")
+        observed_groups = []
+        unavailable_groups = []
+        for group in profile:
+            if has("\n".join(content_lines(block)), group):
+                observed_groups.append(group)
+            elif _group_has_explicit_unavailable(block, group):
+                unavailable_groups.append(group)
 
-        # Adaptive sections are intentionally not forced to distribute a
-        # synthetic number of keyword groups across multiple sentences.
-        # Their factual completeness is checked by concept coverage and
-        # explicit data-unavailability statements instead.
-        if not adaptive:
-            min_group_units = 1 if min_units == 1 else max(2, min_units - 1)
-            if stats["group_units"] < min_group_units:
-                errors.append(f"{h}: geforderte Inhaltsgruppen sind nicht auf genügend eigenständige Aussagen verteilt ({stats['group_units']} Einheiten).")
+        # Datenabhängige Tiefe: Nicht jede theoretisch mögliche Information ist
+        # automatisch Pflicht. Die tatsächlich belegten bzw. ausdrücklich nicht
+        # verfügbaren Dimensionen bilden den relevanten Prüfbestand.
+        covered = len(observed_groups) + len(unavailable_groups)
+        content_present = len(observed_groups)
 
-        if h != "10.5 Geschlossene Positionen" and stats["unique"] < min_unique:
-            errors.append(f"{h}: zu geringe inhaltliche Vielfalt (Unique-Word-Rate {stats['unique']:.2f} < {min_unique:.2f}).")
-        if h != "10.5 Geschlossene Positionen" and stats["avg_len"] < min_avg_len:
-            errors.append(f"{h}: Aussagen sind zu kurz/etikettenartig (durchschnittlich {stats['avg_len']:.1f} alphanumerische Zeichen je Inhaltseinheit).")
+        # Ein einzelner Satz darf bestehen, wenn er fachlich substanziell ist.
+        # Es wird keine Mindestanzahl von Sätzen erzwungen.
+        compact_text = " ".join(lines)
+        alnum_len = len(re.sub(r"\W", "", compact_text, flags=re.UNICODE))
+        distinct_terms = set(re.findall(r"[A-Za-zÄÖÜäöüßÀ-ÿ0-9]{4,}", compact_text.lower(), flags=re.UNICODE))
+        if alnum_len < 45 or len(distinct_terms) < 5:
+            errors.append(f"{h}: Inhalt ist zu dünn/etikettenartig; es fehlen substanzielle Informationen.")
+            continue
+
+        # Die notwendige fachliche Breite wächst mit dem tatsächlich vorhandenen
+        # Inhalt. Damit kurze, legitime Abschnitte nicht künstlich aufgebläht
+        # werden müssen, wird keine feste Trefferzahl verlangt.
+        density = min(1.0, max(0.0, len(units) / max(1.0, len(profile))))
+        coverage = covered / len(profile) if profile else 1.0
+        # Die Schwelle ist daten-/abschnittsabhängig und bewusst niedrig genug,
+        # damit legitime Kurzabschnitte (z.B. 2.2/2.3, 9.2/9.3, 10.2 und 11.x)
+        # nicht wegen einer künstlichen Keywordquote abgewiesen werden.
+        required_coverage = min(0.65, max(0.25, 0.25 + 0.25 * density))
+        if h in {"8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"}:
+            required_coverage = max(required_coverage, 0.45)
+        if h in {"2.2 Trendwende", "2.3 Short", "2.4 HebelTrader", "2.5 Sonstige durch Gemini erkannte Chancen"}:
+            required_coverage = min(required_coverage, 0.40)
+        # 9.1–9.3 werden nicht gegen einen künstlichen Kalender-Vollständigkeits-
+        # wert geprüft: nur tatsächlich genannte Ereignisse sind relevant. Der
+        # Zeitbezug wird separat deterministisch geprüft.
+        if h in {"9.1 Makrotermine", "9.2 Unternehmen", "9.3 Branchenereignisse", "10.2 Stop-/TP-Änderungen"} or h.startswith("11."):
+            required_coverage = 0.0
+
+        if coverage < required_coverage:
+            errors.append(
+                f"{h}: inhaltliche Abdeckung zu gering ({covered}/{len(profile)} "
+                f"Dimensionen; erforderlich dynamisch {required_coverage:.0%})."
+            )
+
+        # Bei 9.1–9.3 muss jede tatsächlich behauptete Ereignis-/Terminart
+        # einen Zeitbezug besitzen. Die Prüfung läuft über den gesamten
+        # bereinigten Abschnitt und zerlegt daher "7. Oktober 2026" nicht falsch.
+        if h in {"9.1 Makrotermine", "9.2 Unternehmen", "9.3 Branchenereignisse"} and content_present:
+            factual_event_patterns = {
+                "9.1 Makrotermine": r"fomc|fed|ezb|ecb|cpi|inflation|ppi|arbeitsmarkt|nfp|claims|ism|pmi",
+                "9.2 Unternehmen": r"earnings|quartal|zahlen|konferenz|veranstaltung|capital markets day|investor day|meldung|unternehmensmeldung|corporate|ticker|unternehmen",
+                "9.3 Branchenereignisse": r"konferenz|politisch|politik|gesetz|wahl|regier|regulator|regulierung|aufsicht|branche|industrie|sektor|ereignis|event|ankündigung|ankuendigung",
+            }
+            if re.search(factual_event_patterns[h], compact_text, re.I | re.U) and not _has_any_date_or_time(compact_text):
+                errors.append(f"{h}: tatsächliche Ereignis-/Terminangabe ohne verifizierbaren Zeit-/Datumsbezug.")
+
+        # Anti-Keyword-/Anti-Label-Schutz: mehrere scheinbare Dimensionen, die
+        # nur in derselben extrem kurzen Zeile stehen, gelten nicht als belastbare
+        # inhaltliche Ausarbeitung.
+        if (len(units) == 1 and len(profile) >= 6 and len(distinct_terms) < 12
+                and h not in {"1.4 Frühindikatoren / neue Themen", "2.2 Trendwende", "2.3 Short",
+                              "2.4 HebelTrader", "2.5 Sonstige durch Gemini erkannte Chancen",
+                              "9.2 Unternehmen", "9.3 Branchenereignisse", "10.2 Stop-/TP-Änderungen"}
+                and not h.startswith("11.")):
+            errors.append(f"{h}: zu kompakte Sammelaussage für die vorhandene fachliche Breite.")
 
     # Cross-section anti-cheating check: identical or near-identical bodies may not
     # be copied into several sections merely to satisfy the gates.
