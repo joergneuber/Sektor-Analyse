@@ -100,16 +100,52 @@ def _merge(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
     for source in item.get("sources", []):
         if source not in old["sources"]:
             old["sources"].append(source)
-    # Confirmed always dominates prepared. A later source may also add details.
-    if (old.get("trade_story_status") != "STATUSKONFLIKT" and
-            old.get("trade_story_status") != VALID_STATUS and
-            item.get("trade_story_status") == VALID_STATUS):
-        old["trade_story_status"] = VALID_STATUS
+    # A technical status may refine an existing all-asset-universe row.
+    # VALIDE SETUP dominates everything; VORBEREITET dominates the
+    # universe-only "KEIN SETUP" state but not an existing conflict.
+    if old.get("trade_story_status") != "STATUSKONFLIKT":
+        new_status = item.get("trade_story_status")
+        old_status = old.get("trade_story_status")
+        if new_status == VALID_STATUS:
+            old["trade_story_status"] = VALID_STATUS
+        elif new_status == PREPARED_STATUS and old_status in {"KEIN SETUP", None, ""}:
+            old["trade_story_status"] = PREPARED_STATUS
     for k, v in item.items():
         if k in {"sources", "trade_story_status"}:
             continue
         if v not in (None, "") and k not in old:
             old[k] = v
+
+
+def _asset_universe_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
+    """Liest alle Ticker mit erfolgreich ausgelesenen Kurs-/Assetdaten.
+
+    Diese Ebene ist bewusst von technischen Setups getrennt: Ein Ticker
+    gehoert zum Aktien-/Trade-Story-Universum, sobald Assetdaten vorhanden
+    sind. A/B/C, VALIDE SETUP und KEIN SETUP werden erst danach bewertet.
+    """
+    rows = _read_csv(paths.get("Trade_Story_Aktienuniversum(...).csv", ""))
+    out = []
+    for row in rows:
+        ticker = _ticker(_value(row, *TICKER_FIELDS))
+        if not ticker:
+            continue
+        status = _value(row, "Assetdaten_Status").upper()
+        if status and status != "AUSGELESEN":
+            continue
+        item = _candidate_from_row(
+            row,
+            "Aktien-Universum",
+            "KEIN SETUP",
+            "Long",
+            {
+                "universe_membership": True,
+                "asset_data_status": "AUSGELESEN",
+            },
+        )
+        if item:
+            out.append(item)
+    return out
 
 
 def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
@@ -172,6 +208,13 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
 
 def build_trade_story_universe(paths: dict[str, str], observation_path: str | None = None) -> dict[str, Any]:
     candidates: dict[str, dict[str, Any]] = {}
+
+    # 0) Aktien-Universum: jeder Ticker mit erfolgreich ausgelesenen
+    # Kurs-/Assetdaten. Technischer Setup-Status ist hier bewusst noch
+    # "KEIN SETUP" und darf spaeter durch A/B/C bzw. Scanner-Setups
+    # qualifiziert werden.
+    for item in _asset_universe_rows(paths):
+        _merge(candidates, item)
 
     # Normal setup: raw pre-presentation-filter universe, with final Setups.csv
     # status used when that ticker survived the existing presentation pipeline.
@@ -462,6 +505,8 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
         "schema_version": 1,
         "generated_at": date.today().isoformat(),
         "principles": {
+            "universe_definition": "ALLE AUSGELESENEN PROJEKT-AKTIEN",
+            "universe_exclusion": "NICHT AUSGELESEN (keine verwertbaren Kurs-/Assetdaten)",
             "valid": VALID_STATUS,
             "prepared": PREPARED_STATUS,
             "hebeltrader_excluded": sorted(EXCLUDED_HEBEL),
@@ -469,7 +514,14 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
             "portfolio_is_context": True,
             "top_sector_is_not_candidate_filter": True,
         },
+        # Backward-compatible key: candidates now contains the complete
+        # read asset universe plus any non-stock sources. Technical consumers
+        # must filter by trade_story_status before treating an item as a setup.
         "candidates": candidates_list,
+        "universe": [
+            x for x in candidates_list
+            if x.get("universe_membership") is True
+        ],
     }
 
 

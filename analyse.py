@@ -3751,14 +3751,23 @@ if __name__ == "__main__":
         f"Gesamt: {len(tasks) + len(tasks_eu)} (kein künstliches Ticker-Limit)"
     )
 
-    # SAMMEL-ABRUF (NEU 09.08.2026, Nutzerwunsch): vorher machte jeder der
-    # bis zu 10 parallelen Worker unten einen EIGENEN Alpaca-Request pro
-    # Ticker - bei 334 US-Tickern also bis zu 334 Einzel-Requests, bei
-    # Alpacas hartem 200-Requests/Minute-Limit ein echtes Risiko. Jetzt:
-    # EIN Sammel-Abruf VOR der parallelen Verarbeitung, dieselbe Methode
-    # wie trendwende_scanner.py's fetch_us_batch (siehe dortige Funktion,
-    # hier eigenstaendig nachgebaut wg. drohendem Zirkelimport).
-    us_ticker_liste = sorted({t for t, _ in tasks})
+    # SAMMEL-ABRUF: Die Kurs-/Assetdatenbasis des Trade-Story-Universums wird
+    # bewusst aus ALLEN Projekt-Tickern gebildet. Die technische Setup-Analyse
+    # darf weiterhin eine eigene Aufgabenliste verwenden; fuer die
+    # Universumsdefinition ist allein entscheidend, ob Kurs-/Assetdaten
+    # erfolgreich ausgelesen wurden.
+    universe_tasks = []
+    for _, row in df_perf.iterrows():
+        aktien_liste = sektoren_aktien.get(row['Ticker'], [])
+        for s in aktien_liste:
+            universe_tasks.append((s, row['Sektor']))
+    universe_tasks_eu = []
+    for _, row in df_perf_eu.iterrows():
+        aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
+        for s in aktien_liste_eu:
+            universe_tasks_eu.append((s, row['Sektor']))
+
+    us_ticker_liste = sorted({t for t, _ in universe_tasks})
     us_daten = fetch_us_batch(us_ticker_liste)
 
     # Parallel mit max_workers=10 ausführen (US)
@@ -3784,7 +3793,7 @@ if __name__ == "__main__":
         # SAMMEL-ABRUF (NEU 09.08.2026): gleiche Begruendung wie beim US-Teil
         # oben - vorher ein yfinance-Request pro EU-Ticker, jetzt EIN
         # Sammel-Abruf vorab.
-        eu_ticker_liste = sorted({t for t, _ in tasks_eu})
+        eu_ticker_liste = sorted({t for t, _ in universe_tasks_eu})
         eu_daten = fetch_eu_batch(eu_ticker_liste)
         with ThreadPoolExecutor(max_workers=10) as executor:
             # .copy() aus demselben Grund wie beim US-Teil (Race Condition bei
@@ -3795,6 +3804,70 @@ if __name__ == "__main__":
                                              collect_hebeltrader=p[0] in hebeltrader_eu_tickers),
                 tasks_eu))
         
+    # AUTORITATIVES AKTIEN-UNIVERSUM:
+    # Ein Projekt-Ticker gehoert zum Aktien-/Trade-Story-Universum, sobald
+    # Kurs-/Assetdaten erfolgreich ausgelesen wurden. Ob danach A/B/C, ein
+    # valides Setup oder ueberhaupt kein technisches Setup entsteht, ist fuer
+    # die Universumszugehoerigkeit irrelevant. Ohne auslesbare Kursdaten gibt
+    # es keinen Eintrag; dies ist die einzige Ausnahme.
+    try:
+        universe_meta = {}
+
+        def _register_universe_data(ticker, sektor, markt, data):
+            if data is None or getattr(data, "empty", True):
+                return
+            key = str(ticker).strip()
+            if not key:
+                return
+            close = None
+            datenstand = ""
+            try:
+                close_series = data["Close"].dropna()
+                if not close_series.empty:
+                    close = float(close_series.iloc[-1])
+                    idx = close_series.index[-1]
+                    datenstand = str(idx.date() if hasattr(idx, "date") else idx)
+            except Exception:
+                pass
+            entry = universe_meta.setdefault(key, {
+                "Ticker": key,
+                "Name": key,
+                "Sektor": str(sektor or ""),
+                "Markt": markt,
+                "Sektoren": [],
+                "Assetdaten_Status": "AUSGELESEN",
+            })
+            if sektor and str(sektor) not in entry["Sektoren"]:
+                entry["Sektoren"].append(str(sektor))
+            if close is not None:
+                entry["Kurs"] = close
+            if datenstand:
+                entry["Datenstand"] = datenstand
+
+        for ticker, sektor in universe_tasks:
+            _register_universe_data(ticker, sektor, "US", us_daten.get(ticker))
+        for ticker, sektor in universe_tasks_eu:
+            _register_universe_data(ticker, sektor, "EU", eu_daten.get(ticker))
+
+        universe_rows = []
+        for entry in universe_meta.values():
+            entry["Sektoren"] = ";".join(entry["Sektoren"])
+            universe_rows.append(entry)
+        universe_rows.sort(key=lambda x: x["Ticker"])
+        pd.DataFrame(universe_rows, columns=[
+            "Ticker", "Name", "Sektor", "Sektoren", "Markt",
+            "Assetdaten_Status", "Kurs", "Datenstand"
+        ]).to_csv(
+            f"Trade_Story_Aktienuniversum({today}).csv",
+            index=False, sep=";", encoding="utf-8-sig"
+        )
+        print(
+            f"TRADE-STORY-AKTIENUNIVERSUM: {len(universe_rows)} Ticker mit "
+            f"ausgelesenen Kurs-/Assetdaten exportiert."
+        )
+    except Exception as _e:
+        print(f"WARNUNG: Trade-Story-Aktienuniversum konnte nicht exportiert werden: {_e}")
+
     # Ergebnisse filtern (None-Werte entfernen) und US+EU zusammenführen
     all_setups = [r for r in results if r is not None] + [r for r in results_eu if r is not None]
     print(f"Analyse beendet. {len(all_setups)} Setups gefunden.")
