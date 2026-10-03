@@ -29,7 +29,7 @@ def test_current_stdout_and_nested_payload():
         assert b["PFE"]["trade_story_status"] == "VORBEREITET"
         assert b["TMO"]["trade_story_status"] == "VORBEREITET"
         assert b["SRT3.DE"]["trade_story_status"] == "VORBEREITET"
-        assert "BAD" not in b and "IBM" not in b
+        assert b["BAD"]["trade_story_status"] == "VORBEREITET" and b["IBM"]["trade_story_status"] == "KEIN KANDIDAT"
 
 
 def test_time_shifted_observation_is_authoritative_for_next_main_run():
@@ -65,7 +65,7 @@ def test_current_observation_negative_overrides_structured_snapshot_and_a_messag
             "IBM": {"name": "IBM", "status": "KEIN KANDIDAT", "letzter_check": "2026-09-16", "last_candidate_date": "2026-09-16", "quelle": "HEBELTRADER 170/26"},
         }), encoding="utf-8")
         b = _build({"Trade_Story_Setup_Rohuniversum(...).csv": str(raw), "HEBELTRADER-Einzelcheck": str(h), "Einzel_Check_A_Meldungen(...).txt": str(a)}, str(obs))
-        assert "IBM" not in b
+        assert b["IBM"]["trade_story_status"] == "KEIN KANDIDAT"
         assert b["PLTR"]["trade_story_status"] == "VORBEREITET"
 
 

@@ -17,6 +17,12 @@ def write_csv(path, header, rows):
 def main():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
+        asset = td / "Trade_Story_Aktienuniversum(2026-09-15).csv"
+        write_csv(asset, ["Ticker","Name","Sektor","Markt","Assetdaten_Status","Kurs"], [
+            ["WMB","The Williams Companies, Inc.","Energy","US","AUSGELESEN","58.10"],
+            ["EOG","EOG Resources, Inc.","Energy","US","AUSGELESEN","123.40"],
+            ["NOSETUP","No Setup Corp.","Technology","US","AUSGELESEN","42.00"],
+        ])
         raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-15).csv"
         write_csv(raw, ["Ticker","Name","Status2","Sektor","Trend","CRV1","CRV2"], [
             ["WMB","The Williams Companies, Inc.","VALIDE","Energy","FAIL","2.0","2.1"],
@@ -58,6 +64,7 @@ def main():
         write_csv(portfolio, ["Ticker","Status"], [["WMB","Offen"]])
 
         paths = {
+            "Trade_Story_Aktienuniversum(...).csv":str(asset),
             "Trade_Story_Setup_Rohuniversum(...).csv":str(raw),
             "Setups(...).csv":str(final),
             "Trendwende_Setups(...).csv":str(trend),
@@ -74,7 +81,10 @@ def main():
         assert by["EOG"]["trade_story_status"]=="VORBEREITET"
         assert by["TSM"]["trade_story_status"]=="VALIDE SETUP"
         assert by["ZS"]["trade_story_status"]=="VORBEREITET"
-        assert "BAD" not in by and "NONE" not in by
+        assert by["BAD"]["trade_story_status"] == "VORBEREITET"
+        assert by["NONE"]["trade_story_status"] == "KEIN KANDIDAT"
+        assert by["NOSETUP"]["trade_story_status"] == "KEIN SETUP"
+        assert by["NOSETUP"]["universe_membership"] is True
         assert by["ARGX"]["trade_story_status"]=="VALIDE SETUP"
         assert by["GOLD"]["trade_story_status"]=="VORBEREITET"
         assert by["BTC-USD"]["trade_story_status"]=="VALIDE SETUP"
@@ -111,7 +121,8 @@ def main():
 
         test_hebeltrader_nested_schema_variant()
         test_hebeltrader_observation_completeness_fallback()
-        print("TRADE_STORY_UNIVERSUM_TESTS: 4 PASS")
+        test_asset_universe_excludes_only_unreadable_assets()
+        print("TRADE_STORY_UNIVERSUM_TESTS: 5 PASS")
 
 
 
@@ -133,7 +144,7 @@ def test_hebeltrader_nested_schema_variant():
         by={x["ticker"]:x for x in uni["candidates"]}
         assert by["PFE"]["trade_story_status"] == "VORBEREITET"
         assert by["TMO"]["trade_story_status"] == "VORBEREITET"
-        assert "BAD" not in by
+        assert by["BAD"]["trade_story_status"] == "VORBEREITET"
 
 
 def test_hebeltrader_observation_completeness_fallback():
@@ -165,7 +176,26 @@ def test_hebeltrader_observation_completeness_fallback():
         assert by["RVTY"]["trade_story_status"] == "VORBEREITET"
         assert "OLD" not in by
         assert "MANUAL" not in by
-        assert "C" not in by
+        assert by["C"]["trade_story_status"] == "VORBEREITET"
+
+
+def test_asset_universe_excludes_only_unreadable_assets():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        asset = td / "Trade_Story_Aktienuniversum(2026-09-16).csv"
+        write_csv(asset, ["Ticker", "Name", "Assetdaten_Status"], [
+            ["READ", "Readable Corp.", "AUSGELESEN"],
+            ["UNREAD", "Unreadable Corp.", "NICHT AUSGELESEN"],
+        ])
+        uni = build_trade_story_universe({
+            "Trade_Story_Aktienuniversum(...).csv": str(asset),
+        })
+        by = {x["ticker"]: x for x in uni["candidates"]}
+        assert "READ" in by
+        assert by["READ"]["trade_story_status"] == "KEIN SETUP"
+        assert "UNREAD" not in by
+        assert by["READ"]["asset_data_status"] == "AUSGELESEN"
+
 
 if __name__ == "__main__":
     main()
