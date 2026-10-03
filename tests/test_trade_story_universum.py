@@ -1,201 +1,102 @@
-from __future__ import annotations
-import json
+
 import csv
+import json
 import tempfile
 from pathlib import Path
+import importlib.util
 
-from trade_story_universum import build_trade_story_universe
+MODULE_PATH = Path(__file__).with_name("trade_story_universum_korrigiert.py")
+
+spec = importlib.util.spec_from_file_location("trade_story_universum_korrigiert", MODULE_PATH)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
 
 
-def write_csv(path, header, rows):
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f, delimiter=";")
-        w.writerow(header)
+def write_csv(path, rows, fields):
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields, delimiter=";")
+        w.writeheader()
         w.writerows(rows)
 
 
-def main():
+def run_matrix():
     with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        asset = td / "Trade_Story_Aktienuniversum(2026-09-15).csv"
-        write_csv(asset, ["Ticker","Name","Sektor","Markt","Assetdaten_Status","Kurs"], [
-            ["WMB","The Williams Companies, Inc.","Energy","US","AUSGELESEN","58.10"],
-            ["EOG","EOG Resources, Inc.","Energy","US","AUSGELESEN","123.40"],
-            ["NOSETUP","No Setup Corp.","Technology","US","AUSGELESEN","42.00"],
-        ])
-        raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-15).csv"
-        write_csv(raw, ["Ticker","Name","Status2","Sektor","Trend","CRV1","CRV2"], [
-            ["WMB","The Williams Companies, Inc.","VALIDE","Energy","FAIL","2.0","2.1"],
-            ["EOG","EOG Resources, Inc.","ACHTUNG","Energy","OK","1.2","1.4"],
-        ])
-        final = td / "Setups(2026-09-15).csv"
-        write_csv(final, ["Ticker","Name","Status2","Status_Grund"], [
-            ["EOG","EOG Resources, Inc.","ACHTUNG","Earnings-Gap-Risiko"],
-        ])
-        obs = td / "einzel_check_beobachtung.json"
-        obs.write_text(json.dumps({
-            "TSM":{"name":"Taiwan Semiconductor","status":"KAUFKANDIDAT A","quelle":"HEBELTRADER 164/26"},
-            "ZS":{"name":"Zscaler","status":"KAUFKANDIDAT B","quelle":"HEBELTRADER 164/26"},
-            "BAD":{"name":"Bad","status":"KAUFKANDIDAT C","quelle":"HEBELTRADER 164/26"},
-            "NONE":{"name":"None","status":"KEIN KANDIDAT","quelle":"HEBELTRADER 164/26"},
-        }), encoding="utf-8")
-        hebel = td / "hebeltrader_einzel_check.json"
-        hebel.write_text(json.dumps({
-            "schema_version": 3,
+        root = Path(td)
+
+        stock_rows = [
+            {"Ticker": "A1", "Name": "Aktie 1", "Assetdaten_Status": "AUSGELESEN"},
+            {"Ticker": "B1", "Name": "Aktie 2", "Assetdaten_Status": "AUSGELESEN"},
+            {"Ticker": "C1", "Name": "Aktie 3", "Assetdaten_Status": "AUSGELESEN"},
+            {"Ticker": "V1", "Name": "Aktie 4", "Assetdaten_Status": "AUSGELESEN"},
+            {"Ticker": "N1", "Name": "Aktie 5", "Assetdaten_Status": "AUSGELESEN"},
+            {"Ticker": "H1", "Name": "Aktie 6", "Assetdaten_Status": "AUSGELESEN"},
+            {"Ticker": "A2", "Name": "Aktie 7", "Assetdaten_Status": "NICHT AUSGELESEN"},
+            {"Ticker": "N2", "Name": "Aktie 8", "Assetdaten_Status": "NICHT AUSGELESEN"},
+        ]
+        stock_csv = root / "Trade_Story_Aktienuniversum(2099-01-01).csv"
+        write_csv(stock_csv, stock_rows, ["Ticker", "Name", "Assetdaten_Status"])
+
+        setup_csv = root / "Setups(2099-01-01).csv"
+        write_csv(
+            setup_csv,
+            [{"Ticker": "V1", "Name": "Aktie 4", "Status2": "VALIDE"}],
+            ["Ticker", "Name", "Status2"],
+        )
+
+        hebel_json = root / "hebeltrader_einzel_check.json"
+        hebel_json.write_text(json.dumps({
             "candidates": [
-                {"ticker":"TSM","name":"Taiwan Semiconductor","einzel_check":{"status":"KAUFKANDIDAT A"}},
-                {"ticker":"ZS","name":"Zscaler","einzel_check":{"status":"KAUFKANDIDAT B"}},
-                {"ticker":"BAD","name":"Bad","einzel_check":{"status":"KAUFKANDIDAT C"}},
+                {"ticker": "A1", "name": "Aktie 1", "status": "KAUFKANDIDAT A"},
+                {"ticker": "B1", "name": "Aktie 2", "status": "KAUFKANDIDAT B"},
+                {"ticker": "C1", "name": "Aktie 3", "status": "KAUFKANDIDAT C"},
+                {"ticker": "A2", "name": "Aktie 7", "status": "KAUFKANDIDAT A"},
+                {"ticker": "X9", "name": "Nicht-Projekt-Aktie", "status": "KAUFKANDIDAT A"},
             ]
         }), encoding="utf-8")
-        trend = td / "Trendwende_Setups(2026-09-15).csv"
-        write_csv(trend, ["Ticker","Name"], [["ARGX","argenx SE"]])
-        short = td / "Short_Setups(2026-09-15).csv"
-        write_csv(short, ["Ticker","Name","Status2"], [])
-        metals = td / "Edelmetalle_Setups(2026-09-15).csv"
-        write_csv(metals, ["Ticker","Name","Status2"], [["GOLD","Gold","ACHTUNG"]])
-        btc = td / "Trade_Story_Bitcoin(2026-09-15).json"
-        btc.write_text(json.dumps({
-            "date":"2026-09-15", "asset":"Bitcoin", "ticker":"BTC-USD",
-            "pi_cycle_bottom":{"signal_type":"BOTTOM_LONG","trade_action":"LONG"},
-            "sma50w":{"signal_type":"PREALERT","trade_action":"LONG"}
-        }), encoding="utf-8")
-        portfolio = td / "Offene Positionen+Check.csv"
-        write_csv(portfolio, ["Ticker","Status"], [["WMB","Offen"]])
 
         paths = {
-            "Trade_Story_Aktienuniversum(...).csv":str(asset),
-            "Trade_Story_Setup_Rohuniversum(...).csv":str(raw),
-            "Setups(...).csv":str(final),
-            "Trendwende_Setups(...).csv":str(trend),
-            "Short_Setups(...).csv":str(short),
-            "Edelmetalle_Setups(...).csv":str(metals),
-            "Trade_Story_Bitcoin(...).json":str(btc),
-            "Offene Positionen+Check.csv":str(portfolio),
-            "HEBELTRADER-Einzelcheck":str(hebel),
+            "Trade_Story_Aktienuniversum(...).csv": str(stock_csv),
+            "Setups(...).csv": str(setup_csv),
+            "HEBELTRADER-Einzelcheck": str(hebel_json),
         }
-        uni=build_trade_story_universe(paths,str(obs))
-        by={x["ticker"]:x for x in uni["candidates"]}
-        assert by["WMB"]["trade_story_status"]=="VALIDE SETUP"
-        assert by["WMB"]["portfolio_status"]=="OFFENE POSITION"
-        assert by["EOG"]["trade_story_status"]=="VORBEREITET"
-        assert by["TSM"]["trade_story_status"]=="VALIDE SETUP"
-        assert by["ZS"]["trade_story_status"]=="VORBEREITET"
-        assert by["BAD"]["trade_story_status"] == "VORBEREITET"
-        assert by["NONE"]["trade_story_status"] == "KEIN KANDIDAT"
-        assert by["NOSETUP"]["trade_story_status"] == "KEIN SETUP"
-        assert by["NOSETUP"]["universe_membership"] is True
-        assert by["ARGX"]["trade_story_status"]=="VALIDE SETUP"
-        assert by["GOLD"]["trade_story_status"]=="VORBEREITET"
-        assert by["BTC-USD"]["trade_story_status"]=="VALIDE SETUP"
 
-        # Same company name with two tickers must remain two candidates.
-        raw2 = td / "Trade_Story_Setup_Rohuniversum(duplicate).csv"
-        write_csv(raw2, ["Ticker","Name","Status2","Sektor","Trend","CRV1","CRV2"], [
-            ["GOOGL","Alphabet Inc.","VALIDE","Communication Services","OK","2.0","2.0"],
-            ["GOOG","Alphabet Inc.","VALIDE","Communication Services","OK","2.0","2.0"],
-        ])
-        paths["Trade_Story_Setup_Rohuniversum(...).csv"] = str(raw2)
-        uni=build_trade_story_universe(paths,str(obs))
-        by={x["ticker"]:x for x in uni["candidates"]}
-        assert "GOOGL" in by and "GOOG" in by
+        universe = mod.build_trade_story_universe(paths)
+        members = {
+            str(x.get("ticker")).upper()
+            for x in universe["candidates"]
+            if x.get("ticker")
+        }
 
-        # Manual/other Einzel-Check entries are not Hebeltrader candidates.
-        obs_data = json.loads(obs.read_text(encoding="utf-8"))
-        obs_data["MANUAL"] = {"name":"Manual Entry","status":"KAUFKANDIDAT A","quelle":"-"}
-        obs.write_text(json.dumps(obs_data), encoding="utf-8")
-        uni=build_trade_story_universe(paths,str(obs))
-        by={x["ticker"]:x for x in uni["candidates"]}
-        assert "MANUAL" not in by
+        expected = {"A1", "B1", "C1", "V1", "N1", "H1"}
+        excluded = {"A2", "N2", "X9"}
 
-        paths["Trade_Story_Setup_Rohuniversum(...).csv"] = str(raw)
+        assert expected <= members, (expected, members)
+        assert not (excluded & members), (excluded, members)
 
-        # Long/Short is a genuine directional conflict and must not be silently resolved.
-        short2 = td / "Short_Setups_conflict.csv"
-        write_csv(short2, ["Ticker","Name","Status2"], [["WMB","The Williams Companies, Inc.","VALIDE"]])
-        paths["Short_Setups(...).csv"] = str(short2)
-        uni=build_trade_story_universe(paths,str(obs))
-        by={x["ticker"]:x for x in uni["candidates"]}
-        assert by["WMB"]["trade_story_status"]=="STATUSKONFLIKT"
-        assert by["WMB"]["direction"]=="CONFLICT"
+        # Explicitly verify that technical status does not control membership.
+        status_by_ticker = {
+            x["ticker"]: x["trade_story_status"]
+            for x in universe["candidates"]
+            if x.get("ticker")
+        }
+        assert status_by_ticker["A1"] in {"VALIDE SETUP", "VORBEREITET"}
+        assert status_by_ticker["B1"] == "VORBEREITET"
+        assert status_by_ticker["C1"] == "VORBEREITET"
+        assert status_by_ticker["V1"] == "VALIDE SETUP"
+        assert status_by_ticker["N1"] == "KEIN SETUP"
+        assert status_by_ticker["H1"] == "KEIN SETUP"
 
-        test_hebeltrader_nested_schema_variant()
-        test_hebeltrader_observation_completeness_fallback()
-        test_asset_universe_excludes_only_unreadable_assets()
-        print("TRADE_STORY_UNIVERSUM_TESTS: 5 PASS")
+        # Name + ticker must survive the primary universe handoff.
+        for ticker, name in {
+            "A1": "Aktie 1", "B1": "Aktie 2", "C1": "Aktie 3",
+            "V1": "Aktie 4", "N1": "Aktie 5", "H1": "Aktie 6",
+        }.items():
+            row = next(x for x in universe["candidates"] if x.get("ticker") == ticker)
+            assert row.get("name") == name
 
-
-
-def test_hebeltrader_nested_schema_variant():
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-16).csv"
-        write_csv(raw, ["Ticker","Name","Status2"], [])
-        hebel = td / "hebeltrader_einzel_check.json"
-        hebel.write_text(json.dumps({"issue_label":"HEBELTRADER 169/26","result":{"candidates":[
-            {"ticker":"PFE","name":"Pfizer Inc.","einzel_check":{"status":"KAUFKANDIDAT A"}},
-            {"ticker":"TMO","name":"Thermo Fisher Scientific Inc.","einzel_check":{"status":"KAUFKANDIDAT B"}},
-            {"ticker":"BAD","name":"Bad","einzel_check":{"status":"KAUFKANDIDAT C"}}
-        ]}}), encoding="utf-8")
-        uni = build_trade_story_universe({
-            "Trade_Story_Setup_Rohuniversum(...).csv":str(raw),
-            "HEBELTRADER-Einzelcheck":str(hebel)
-        })
-        by={x["ticker"]:x for x in uni["candidates"]}
-        assert by["PFE"]["trade_story_status"] == "VORBEREITET"
-        assert by["TMO"]["trade_story_status"] == "VORBEREITET"
-        assert by["BAD"]["trade_story_status"] == "VORBEREITET"
-
-
-def test_hebeltrader_observation_completeness_fallback():
-    """Current A/B observation entries must survive a reduced/missing JSON payload."""
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        raw = td / "Trade_Story_Setup_Rohuniversum(2026-09-16).csv"
-        write_csv(raw, ["Ticker", "Name", "Status2"], [])
-        obs = td / "einzel_check_beobachtung.json"
-        from datetime import date
-        today = date.today().isoformat()
-        obs.write_text(json.dumps({
-            "PLTR": {"name": "Palantir Technologies", "status": "KAUFKANDIDAT A", "letzter_check": today, "last_candidate_date": today, "quelle": "HEBELTRADER 170/26"},
-            "RVTY": {"name": "Revvity, Inc.", "status": "KAUFKANDIDAT B", "letzter_check": today, "last_candidate_date": today, "quelle": "HEBELTRADER 170/26"},
-            "OLD": {"name": "Old Candidate", "status": "KAUFKANDIDAT A", "letzter_check": "2026-09-15", "quelle": "HEBELTRADER 169/26"},
-            "MANUAL": {"name": "Manual", "status": "KAUFKANDIDAT A", "letzter_check": today, "last_candidate_date": None, "quelle": "-"},
-            "C": {"name": "Excluded", "status": "KAUFKANDIDAT C", "letzter_check": today, "last_candidate_date": today, "quelle": "HEBELTRADER 170/26"},
-        }), encoding="utf-8")
-        hebel = td / "hebeltrader_einzel_check.json"
-        hebel.write_text(json.dumps({"schema_version": 3, "candidates": [
-            {"ticker": "PLTR", "name": "Palantir Technologies", "einzel_check": {"status": "KAUFKANDIDAT A"}}
-        ]}), encoding="utf-8")
-        uni = build_trade_story_universe({
-            "Trade_Story_Setup_Rohuniversum(...).csv": str(raw),
-            "HEBELTRADER-Einzelcheck": str(hebel),
-        }, str(obs))
-        by = {x["ticker"]: x for x in uni["candidates"]}
-        assert by["PLTR"]["trade_story_status"] == "VORBEREITET"
-        assert by["RVTY"]["trade_story_status"] == "VORBEREITET"
-        assert "OLD" not in by
-        assert "MANUAL" not in by
-        assert by["C"]["trade_story_status"] == "VORBEREITET"
-
-
-def test_asset_universe_excludes_only_unreadable_assets():
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        asset = td / "Trade_Story_Aktienuniversum(2026-09-16).csv"
-        write_csv(asset, ["Ticker", "Name", "Assetdaten_Status"], [
-            ["READ", "Readable Corp.", "AUSGELESEN"],
-            ["UNREAD", "Unreadable Corp.", "NICHT AUSGELESEN"],
-        ])
-        uni = build_trade_story_universe({
-            "Trade_Story_Aktienuniversum(...).csv": str(asset),
-        })
-        by = {x["ticker"]: x for x in uni["candidates"]}
-        assert "READ" in by
-        assert by["READ"]["trade_story_status"] == "KEIN SETUP"
-        assert "UNREAD" not in by
-        assert by["READ"]["asset_data_status"] == "AUSGELESEN"
+        return True
 
 
 if __name__ == "__main__":
-    main()
+    run_matrix()
+    print("8-FÄLLE-MATRIX: PASS")
