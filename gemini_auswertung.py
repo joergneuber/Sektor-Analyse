@@ -135,7 +135,6 @@ DATEIMUSTER = {
     "briefing.txt": ["briefing.txt", "Briefing(*).txt"],
     "Setups(...).csv": ["Setups(*).csv"],
     "Trade_Story_Setup_Rohuniversum(...).csv": ["Trade_Story_Setup_Rohuniversum(*).csv"],
-    "Trade_Story_Aktienuniversum(...).csv": ["Trade_Story_Aktienuniversum(*).csv"],
     "Trade_Story_Bitcoin(...).json": ["Trade_Story_Bitcoin(*).json"],
     "Performance(...).csv": ["Performance(*).csv"],
     "Performance_EU(...).csv": ["Performance_EU(*).csv"],
@@ -195,7 +194,6 @@ PFLICHT_DATEIEN = {
     "Setups(...).csv",
     "Performance(...).csv",
     "Performance_EU(...).csv",
-    "Trade_Story_Aktienuniversum(...).csv",
     "Offene Positionen+Check.csv",
 }
 
@@ -2319,7 +2317,14 @@ def _gemini_cache_erstellen(client, modell, anweisung, hochgeladene_teile, einga
 
 def _gemini_sichere_daten_gruppen(client, modell, daten_teile, arbeits_contents,
                                    system_instruction, label):
-    """Teilt nur an Dateigrenzen; keine Quelle wird gekuerzt."""
+    """Teilt nur an Dateigrenzen und garantiert budgetkonforme Gruppen.
+
+    Keine Quelle wird gekuerzt. Jede erzeugte Gruppe wird zusammen mit
+    arbeits_contents und system_instruction gemessen. Passt eine Datei nicht
+    mehr in die aktuelle Gruppe, wird die aktuelle Gruppe abgeschlossen und die
+    einzelne Datei unmittelbar separat geprueft. Eine zu grosse Einzelquelle
+    wird niemals als gueltige Gruppe weitergereicht.
+    """
     gruppe = []
     for teil in daten_teile:
         kandidat = gruppe + [teil]
@@ -2337,10 +2342,31 @@ def _gemini_sichere_daten_gruppen(client, modell, daten_teile, arbeits_contents,
                     f"eine einzelne Quelle ueberschreitet "
                     f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens."
                 )
+
+            # Die bisherige Gruppe ist gueltig und wird abgeschlossen.
             yield gruppe
+
+            # Kritischer Schutz: Die neue Einzelquelle wird sofort zusammen
+            # mit dem festen Arbeits- und Systemkontext geprueft. Sie darf
+            # niemals ungeprueft als neue Gruppe weitergereicht werden.
+            einzel_tokens = _gemini_tokenzahl(
+                client,
+                modell,
+                [teil] + arbeits_contents,
+                system_instruction,
+                label=f"{label} Einzelquelle",
+            )
+            if einzel_tokens > GEMINI_INPUT_SAFE_BUDGET:
+                raise RuntimeError(
+                    f"GEMINI_EINZELQUELLE_ZU_GROSS: {label} "
+                    f"eine einzelne Quelle ueberschreitet "
+                    f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens "
+                    f"(gemessen: {einzel_tokens:,})."
+                )
             gruppe = [teil]
         else:
             gruppe = kandidat
+
     if gruppe:
         yield gruppe
 
@@ -2864,31 +2890,18 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
         try:
             with open(universe_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            lines.extend(["", "TRADE-STORY-UNIVERSUM – KOMPAKTER HANDOFF:",
-                          "Alle hier aufgefuehrten Aktien gehoeren zum Universum, sofern Assetdaten erfolgreich ausgelesen wurden.",
-                          "Technische Setup-Qualifikation ist davon getrennt: VALIDE SETUP/VORBEREITET sind konkrete technische Kandidaten; KEIN SETUP und KEIN KANDIDAT sind nur Universums-/Discovery-Mitgliedschaften."])
+            lines.extend(["", "TRADE-STORY-UNIVERSUM – KOMPAKTER HANDOFF:"])
             candidates = data.get("candidates", []) if isinstance(data, dict) else []
             for item in candidates:
                 if not isinstance(item, dict):
                     continue
-                status = str(item.get("trade_story_status") or "").strip()
-                if item.get("universe_membership") is not True:
+                status = item.get("trade_story_status")
+                if status not in {"VALIDE SETUP", "VORBEREITET", "STATUSKONFLIKT"}:
                     continue
                 name = str(item.get("name") or "").strip()
                 ticker = str(item.get("ticker") or "").strip()
                 source = str(item.get("quelle") or "").strip()
-                hebel = str(item.get("hebeltrader_status") or "").strip()
-                sector = str(item.get("Sektor") or "").strip()
-                parts = [f"- {name} ({ticker})", f"Universum=AUSGELESEN"]
-                if sector:
-                    parts.append(f"Sektor={sector}")
-                if status:
-                    parts.append(f"Technik={status}")
-                if hebel:
-                    parts.append(f"HEBELTRADER={hebel}")
-                if source:
-                    parts.append(f"Quelle={source}")
-                lines.append(" | ".join(parts))
+                lines.append(f"- {name} ({ticker}) | Status={status}" + (f" | Quelle={source}" if source else ""))
         except Exception as exc:
             lines.append(f"TRADE-STORY-UNIVERSUM NICHT LESBAR: {exc}")
 
@@ -3216,7 +3229,7 @@ def gemini_auswertung_starten():
                     + sechs_fuenf_autoritaet + "\n\n"
 "MARKTUMFELD-AUSGABEREGEL: In allen Abschnitten mit Marktumfeld/Marktumfeld-Fazit sowie in der globalen Risikolage sind Scores, Score-Werte, Score-Modelle, Punktwerte und Formulierungen wie \"Score 0,0\" VERBOTEN. Beschreibe ausschließlich den qualitativen Zustand (z.B. bullish, neutral, bearish) und die zugrunde liegenden beobachtbaren Marktmerkmale. Setup-/CRV-Scores außerhalb des Marktumfeld-Blocks sind davon nicht betroffen. "
                     "NUMERISCHE MAKRO-BINDUNG: Alle numerischen Markt-/Makroangaben muessen exakt aus dem bereitgestellten Makro_Briefing uebernommen werden. Nicht neu rechnen, schaetzen, runden oder aus einer anderen Quelle ersetzen. Wenn ein Wert nicht eindeutig im Makro_Briefing vorhanden ist, nur qualitativ beschreiben oder weglassen. Instrument, Einheit und Datenstand muessen zusammengehoeren.\n                     FRUEHE-ENTDECKUNGS-UND-TRADE-STORY-EBENE: Die Discovery-Ebene und die technische Ebene sind zwingend getrennt auszugeben. Verwende in jedem 1.3-Block exakt zwei getrennte Statusfelder: Discovery-Status: ENTDECKT oder BEOBACHTUNG; Technischer Status: NICHT VORHANDEN, NUR TEILW. VOLLSTAENDIG oder VALIDER SETUP. Discovery-Status beschreibt nur den Erkenntnisstand der These. Technischer Status beschreibt ausschliesslich den Stand der bestehenden technischen Systempruefung. Wenn kein bestehender Kandidat im autoritativen Datenbestand vorhanden ist, muss Technischer Status = NICHT VORHANDEN sein. Wenn ein vorhandener Kandidat vorhanden ist, aber kein vollstaendig bestaetigtes Setup besitzt, muss Technischer Status = NUR TEILW. VOLLSTAENDIG sein. VALIDER SETUP darf ausschliesslich aus dem bestehenden regelbasierten Setup-/CRV-System uebernommen werden. Eine Discovery bleibt auch dann eine Discovery, wenn bereits ein VALIDE-SETUP-Kandidat existiert. Die Existenz eines Kandidaten darf niemals die Discovery erzeugen. Gemini darf aus Discovery, ENTDECKT, BEOBACHTUNG, NICHT VORHANDEN oder NUR TEILW. VOLLSTAENDIG niemals selbst einen VALIDEN SETUP, einen Kauf oder einen Entry machen. Zeige die Kette Thema -> Veraenderung -> Treiber -> Beleg -> Kausalzusammenhang -> moeglicher Kapitalfluss -> betroffene Assetklasse/Sektor -> bestehender Kandidat (falls vorhanden) -> naechster bestaetigter Kalenderkatalysator -> Discovery-Status -> Technischer Status -> widerlegender Trigger -> Risiko. Nutze nur bereitgestellte Daten. Der bestehende Sektor-Rotations-Score darf als objektiver Beleg genannt werden, ist aber kein Gemini-Score und niemals alleiniger Grund fuer eine Discovery oder ein Setup. "
-                     "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Discovery-/Handoff-Schicht. ALLE Projekt-Aktien mit erfolgreich ausgelesenen Kurs-/Assetdaten gehoeren zum Aktien-Universum, unabhaengig von Herkunft, A/B/C-Status, Validitaet oder technischem Setup. Die einzige Ausnahme ist NICHT AUSGELESEN, also fehlende/verwertbare Kurs-/Assetdaten. KAUFKANDIDAT A/B/C und KEIN KANDIDAT bleiben als HEBELTRADER-Status erhalten; KEIN SETUP ist eine reine technische Universumsmitgliedschaft ohne konkretes Setup. Nur VALIDE SETUP/VORBEREITET duerfen als konkrete technische Kandidatenquelle behandelt werden. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
+                     "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Discovery-/Handoff-Schicht. Jeder echte HEBELTRADER-Fund, einschliesslich KAUFKANDIDAT A/B/C und KEIN KANDIDAT, gehoert zum Universum. KEIN KANDIDAT ist dabei nur Universums-/Discovery-Mitglied und keine konkrete Setup-Quelle. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
                      "BITCOIN-REGEL IM TRADE-STORY-UNIVERSUM: Pi-Cycle-Bottom DOWN-Cross (150-EMA von oben nach unten durch 0.745*471SMA) ist LONG/AKKUMULATION und kann VALIDE SETUP sein. Pi-Cycle UP-Cross beendet die Akkumulationsphase und ist kein generisches SELL. 50W-SMA UP-Cross ist LONG/BUY; 50W-SMA DOWN-Cross ist EXIT/SELL und daher kein Long-Kandidat. Verwende ausschliesslich die strukturierten Bitcoin-Felder im Tagesuniversum. "
                     "HEBELTRADER-EINZELCHECK / INTERNE DATENQUELLE: Falls die bereitgestellte Datei 'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und verwende die aus Drive synchronisierte neueste Version, falls sie neuer ist. Diese Datenquelle ist KEINE eigene Ausgabekategorie. Ihre A/B/C-/Technik-/Setup-Informationen duerfen ausschließlich in die fachlich passenden Abschnitte der verbindlichen 1–11-Struktur einfließen. Insbesondere darf daraus niemals eine zusätzliche nummerierte Ausgabestruktur erzeugt werden. Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht neu berechnet, veraendert, aufgehoben oder ersetzt werden. Fuer konkrete technische Details sind ausschließlich die bereits berechneten Felder aus den bereitgestellten autoritativen Einzel-Check-/HebelTrader-Daten zu verwenden. Einstieg, Stop, TP1, TP2 und CRV duerfen nur angegeben werden, wenn sie aus bereitgestellten Daten ersichtlich sind; fehlende Werte duerfen nicht erfunden oder geschaetzt werden. Wenn aus den vorhandenen technischen Daten eine Ableitung transparent moeglich ist, muss sie als Ableitung gekennzeichnet werden. Breakout allein aktiviert Fibonacci nicht; Fibonacci/Extension nur bei qualifizierter und bestaetigter A-B-C-Struktur. Wenn die HEBELTRADER-JSON fehlt, erfinde keinen HEBELTRADER-Inhalt. Fuer A-Kandidaten, die nicht aus HEBELTRADER stammen, nutze die bereitgestellte einzel_check_historie.jsonl ausschließlich als autoritative technische Historie des aktuellen Auswertungstages. Die Beobachtungsliste bleibt ausschließlich fuer Status, Quelle und Watchlist-Zugehoerigkeit massgeblich. Die sichtbare Darstellung richtet sich ausschließlich nach der verbindlichen 1–11-Struktur. "
 "PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 10.1 Sofortiger Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Der bestehende Makro-/Portfolio-Datenblock bleibt autoritativ; Python liefert die Fakten, Gemini interpretiert nur die qualitative Ebene.\nPUNKT-10-ARCHITEKTUR: Python stellt die autoritative Positionsfaktenbasis bereit und erzeugt 10.5 geschlossene Positionen deterministisch. Gemini erzeugt 10.1, 10.2, 10.3 und 10.4 als qualitative Interpretation. 10.3 darf ausschließlich Positionen enthalten, bei denen sich die Investmentthese gegenüber dem vorherigen Lauf bzw. der bereitgestellten Historie belastbar verändert hat. Gemini darf in 10.3/10.5 keine Faktenblöcke erzeugen.\n"
@@ -5182,12 +5195,7 @@ def _extrahiere_technische_referenzen(eingabedateien):
             with open(central, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for item in data.get("candidates", []) if isinstance(data, dict) else []:
-                if not isinstance(item, dict):
-                    continue
-                # Das zentrale JSON enthaelt jetzt das komplette Asset-Universum.
-                # Nur konkrete technische Kandidaten duerfen hier als
-                # bestehende Kandidatenreferenz in die Setup-Validierung eingehen.
-                if item.get("trade_story_status") in {"VALIDE SETUP", "VORBEREITET"}:
+                if isinstance(item, dict) and item.get("trade_story_status") != "STATUSKONFLIKT":
                     add(item, 3)
         except Exception as exc:
             print(f"WARNUNG: Technisches Trade-Story-Universum nicht lesbar: {exc}")

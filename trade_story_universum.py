@@ -18,6 +18,7 @@ VALID_STATUS = "VALIDE SETUP"
 PREPARED_STATUS = "VORBEREITET"
 EXCLUDED_HEBEL = {"NICHT AUSGELESEN"}
 UNIVERSE_ONLY_HEBEL_STATUS = "KEIN KANDIDAT"
+NO_SETUP_STATUS = "KEIN SETUP"
 NAME_FIELDS = ("Name", "Firmenname", "name", "firmenname")
 TICKER_FIELDS = ("Ticker", "ticker", "Yahoo-Ticker", "Yahoo_Ticker", "yahoo-ticker")
 
@@ -100,15 +101,12 @@ def _merge(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
     for source in item.get("sources", []):
         if source not in old["sources"]:
             old["sources"].append(source)
-    # A technical status may refine an existing all-asset-universe row.
-    # VALIDE SETUP dominates everything; VORBEREITET dominates the
-    # universe-only "KEIN SETUP" state but not an existing conflict.
+    # Confirmed always dominates prepared. A later source may also add details.
     if old.get("trade_story_status") != "STATUSKONFLIKT":
-        new_status = item.get("trade_story_status")
-        old_status = old.get("trade_story_status")
-        if new_status == VALID_STATUS:
+        if item.get("trade_story_status") == VALID_STATUS:
             old["trade_story_status"] = VALID_STATUS
-        elif new_status == PREPARED_STATUS and old_status in {"KEIN SETUP", None, ""}:
+        elif (old.get("trade_story_status") == NO_SETUP_STATUS and
+              item.get("trade_story_status") == PREPARED_STATUS):
             old["trade_story_status"] = PREPARED_STATUS
     for k, v in item.items():
         if k in {"sources", "trade_story_status"}:
@@ -117,42 +115,19 @@ def _merge(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
             old[k] = v
 
 
-def _asset_universe_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
-    """Liest alle Ticker mit erfolgreich ausgelesenen Kurs-/Assetdaten.
-
-    Diese Ebene ist bewusst von technischen Setups getrennt: Ein Ticker
-    gehoert zum Aktien-/Trade-Story-Universum, sobald Assetdaten vorhanden
-    sind. A/B/C, VALIDE SETUP und KEIN SETUP werden erst danach bewertet.
-    """
-    rows = _read_csv(paths.get("Trade_Story_Aktienuniversum(...).csv", ""))
-    out = []
-    for row in rows:
-        ticker = _ticker(_value(row, *TICKER_FIELDS))
-        if not ticker:
-            continue
-        status = _value(row, "Assetdaten_Status").upper()
-        if status and status != "AUSGELESEN":
-            continue
-        item = _candidate_from_row(
-            row,
-            "Aktien-Universum",
-            "KEIN SETUP",
-            "Long",
-            {
-                "universe_membership": True,
-                "asset_data_status": "AUSGELESEN",
-            },
-        )
-        if item:
-            out.append(item)
-    return out
-
-
 def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
+    """Build the stock universe before technical qualification.
+
+    The raw setup universe and the project performance exports are treated as
+    discovery sources. A ticker is therefore admitted when it is readable
+    from one of these sources; technical status is assigned afterwards.
+    Explicit ``NICHT AUSGELESEN`` rows are the only normal-stock exclusion.
+    """
     raw = _read_csv(paths.get("Trade_Story_Setup_Rohuniversum(...).csv", ""))
     final = _read_csv(paths.get("Setups(...).csv", ""))
     us_perf = _read_csv(paths.get("Performance(...).csv", ""))
     eu_perf = _read_csv(paths.get("Performance_EU(...).csv", ""))
+
     def top_sectors(rows, limit):
         ranked = []
         for r in rows:
@@ -164,57 +139,93 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
             if sector:
                 ranked.append((score, sector))
         return {sector for _, sector in sorted(ranked, reverse=True)[:limit]}
+
     top_us = top_sectors(us_perf, 8)
     top_eu = top_sectors(eu_perf, 5)
-    # Standalone Gemini runs may not have the new pre-filter export yet.
-    # In that case use the final setup file as a conservative compatibility
-    # fallback; the full no-top-sector-loss behavior requires the raw export.
-    if not raw:
-        raw = final
-    final_by_ticker = {
-        _ticker(_value(r, *TICKER_FIELDS)): r for r in final if _ticker(_value(r, *TICKER_FIELDS))
-    }
-    out = []
+
+    # Discovery order: raw universe first, then project performance exports,
+    # then the final setup export. This prevents technical qualification from
+    # becoming an accidental universe filter.
+    discovery_rows: list[tuple[dict[str, Any], str]] = []
     for row in raw:
-        status = _value(row, "Status2").upper()
-        if status not in {"VALIDE", "ACHTUNG"}:
-            continue
+        discovery_rows.append((row, "Normales Setup"))
+    for row in us_perf:
+        discovery_rows.append((row, "Performance US"))
+    for row in eu_perf:
+        discovery_rows.append((row, "Performance EU"))
+    for row in final:
+        discovery_rows.append((row, "Setups"))
+
+    by_ticker: dict[str, tuple[dict[str, Any], list[str]]] = {}
+    for row, source in discovery_rows:
         tk = _ticker(_value(row, *TICKER_FIELDS))
+        name = _value(row, *NAME_FIELDS)
+        if not tk and not name:
+            continue
+        status = _value(row, "Status2").upper()
+        if status == "NICHT AUSGELESEN":
+            continue
+        key = tk or name.casefold()
+        if key not in by_ticker:
+            by_ticker[key] = (dict(row), [source])
+        else:
+            existing, sources = by_ticker[key]
+            if source not in sources:
+                sources.append(source)
+            # Prefer non-empty values while keeping the first discovery record
+            # as the stable base row.
+            for field, value in row.items():
+                if _value(existing, field) == "" and _value(row, field) != "":
+                    existing[field] = value
+
+    out = []
+    final_by_ticker = {
+        _ticker(_value(r, *TICKER_FIELDS)): r for r in final
+        if _ticker(_value(r, *TICKER_FIELDS))
+    }
+
+    for row, sources in by_ticker.values():
+        tk = _ticker(_value(row, *TICKER_FIELDS))
+        status = _value(row, "Status2").upper()
         effective = final_by_ticker.get(tk, {})
         final_status = _value(effective, "Status2").upper()
         if final_status in {"VALIDE", "ACHTUNG"}:
             status = final_status
-        item = _candidate_from_row(
-            row, "Normales Setup",
-            VALID_STATUS if status == "VALIDE" else PREPARED_STATUS,
-            "Long",
-            {"normal_setup_status": status},
-        )
-        if item:
-            if effective:
-                item["final_setup_status"] = final_status
-                reason = _value(effective, "Status_Grund")
-                if reason:
-                    item["Status_Grund"] = reason
-            markt = str(item.get("Markt") or "").strip().upper()
-            sektor = str(item.get("Sektor") or "").strip()
-            item["top_sector"] = (
-                sektor in (top_us if markt == "US" else top_eu)
-                if sektor else False
-            )
-            out.append(item)
-    return out
 
+        # Technical qualification is downstream of universe membership.
+        if status == "VALIDE":
+            story_status = VALID_STATUS
+        elif status == "ACHTUNG":
+            story_status = PREPARED_STATUS
+        else:
+            story_status = NO_SETUP_STATUS
+
+        item = _candidate_from_row(
+            row, sources[0], story_status, "Long",
+            {"normal_setup_status": status or NO_SETUP_STATUS},
+        )
+        if not item:
+            continue
+        if len(sources) > 1:
+            item["sources"] = sources
+        if final_status in {"VALIDE", "ACHTUNG"}:
+            item["final_setup_status"] = final_status
+            reason = _value(effective, "Status_Grund")
+            if reason:
+                item["Status_Grund"] = reason
+
+        markt = str(item.get("Markt") or "").strip().upper()
+        sektor = str(item.get("Sektor") or "").strip()
+        item["top_sector"] = (
+            sektor in (top_us if markt == "US" else top_eu)
+            if sektor else False
+        )
+        item["universe_membership"] = True
+        out.append(item)
+    return out
 
 def build_trade_story_universe(paths: dict[str, str], observation_path: str | None = None) -> dict[str, Any]:
     candidates: dict[str, dict[str, Any]] = {}
-
-    # 0) Aktien-Universum: jeder Ticker mit erfolgreich ausgelesenen
-    # Kurs-/Assetdaten. Technischer Setup-Status ist hier bewusst noch
-    # "KEIN SETUP" und darf spaeter durch A/B/C bzw. Scanner-Setups
-    # qualifiziert werden.
-    for item in _asset_universe_rows(paths):
-        _merge(candidates, item)
 
     # Normal setup: raw pre-presentation-filter universe, with final Setups.csv
     # status used when that ticker survived the existing presentation pipeline.
@@ -505,23 +516,16 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
         "schema_version": 1,
         "generated_at": date.today().isoformat(),
         "principles": {
-            "universe_definition": "ALLE AUSGELESENEN PROJEKT-AKTIEN",
-            "universe_exclusion": "NICHT AUSGELESEN (keine verwertbaren Kurs-/Assetdaten)",
             "valid": VALID_STATUS,
             "prepared": PREPARED_STATUS,
+            "no_setup": NO_SETUP_STATUS,
+            "universe_rule": "AUSGELESEN -> UNIVERSUM; NICHT AUSGELESEN -> ausgeschlossen",
             "hebeltrader_excluded": sorted(EXCLUDED_HEBEL),
             "hebeltrader_universe_only_status": UNIVERSE_ONLY_HEBEL_STATUS,
             "portfolio_is_context": True,
             "top_sector_is_not_candidate_filter": True,
         },
-        # Backward-compatible key: candidates now contains the complete
-        # read asset universe plus any non-stock sources. Technical consumers
-        # must filter by trade_story_status before treating an item as a setup.
         "candidates": candidates_list,
-        "universe": [
-            x for x in candidates_list
-            if x.get("universe_membership") is True
-        ],
     }
 
 
