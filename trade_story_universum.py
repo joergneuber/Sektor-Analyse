@@ -123,6 +123,7 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
     from one of these sources; technical status is assigned afterwards.
     Explicit ``NICHT AUSGELESEN`` rows are the only normal-stock exclusion.
     """
+    stock_universe = _read_csv(paths.get("Trade_Story_Aktienuniversum(...).csv", ""))
     raw = _read_csv(paths.get("Trade_Story_Setup_Rohuniversum(...).csv", ""))
     final = _read_csv(paths.get("Setups(...).csv", ""))
     us_perf = _read_csv(paths.get("Performance(...).csv", ""))
@@ -143,10 +144,13 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
     top_us = top_sectors(us_perf, 8)
     top_eu = top_sectors(eu_perf, 5)
 
-    # Discovery order: raw universe first, then project performance exports,
-    # then the final setup export. This prevents technical qualification from
-    # becoming an accidental universe filter.
+    # Discovery order: the successfully-read stock universe is the primary
+    # membership source. Technical setup exports remain enrichment sources and
+    # may upgrade a member from KEIN SETUP to VORBEREITET/VALIDE, but may never
+    # remove a successfully-read stock from the universe.
     discovery_rows: list[tuple[dict[str, Any], str]] = []
+    for row in stock_universe:
+        discovery_rows.append((row, "Trade_Story_Aktienuniversum"))
     for row in raw:
         discovery_rows.append((row, "Normales Setup"))
     for row in us_perf:
@@ -162,8 +166,15 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
         name = _value(row, *NAME_FIELDS)
         if not tk and not name:
             continue
+        asset_status = _value(row, "Assetdaten_Status").upper()
         status = _value(row, "Status2").upper()
-        if status == "NICHT AUSGELESEN":
+        if source == "Trade_Story_Aktienuniversum":
+            # This CSV is authoritative for the only membership gate:
+            # AUSGELESEN enters; everything else is outside the stock universe.
+            if asset_status != "AUSGELESEN":
+                continue
+            status = ""
+        elif status == "NICHT AUSGELESEN":
             continue
         key = tk or name.casefold()
         if key not in by_ticker:
@@ -227,10 +238,31 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
 def build_trade_story_universe(paths: dict[str, str], observation_path: str | None = None) -> dict[str, Any]:
     candidates: dict[str, dict[str, Any]] = {}
 
+    # The stock-universe CSV is the authoritative asset-data gate. A ticker
+    # explicitly marked NICHT AUSGELESEN is excluded globally, even if another
+    # downstream source (e.g. HEBELTRADER) happens to mention it.
+    stock_universe_rows = _read_csv(paths.get("Trade_Story_Aktienuniversum(...).csv", ""))
+    ausgelesen_ticker = {
+        _ticker(_value(row, *TICKER_FIELDS))
+        for row in stock_universe_rows
+        if _value(row, "Assetdaten_Status").upper() == "AUSGELESEN"
+        and _ticker(_value(row, *TICKER_FIELDS))
+    }
+    nicht_ausgelesen_ticker = {
+        _ticker(_value(row, *TICKER_FIELDS))
+        for row in stock_universe_rows
+        if _value(row, "Assetdaten_Status").upper() == "NICHT AUSGELESEN"
+        and _ticker(_value(row, *TICKER_FIELDS))
+    }
+
     # Normal setup: raw pre-presentation-filter universe, with final Setups.csv
     # status used when that ticker survived the existing presentation pipeline.
     for item in _normal_setup_rows(paths):
         _merge(candidates, item)
+
+    # The asset-data gate overrides all technical/discovery sources.
+    for tk in nicht_ausgelesen_ticker:
+        candidates.pop(tk, None)
 
     # Trendwende: every emitted data row is a scanner-confirmed setup.
     for row in _read_csv(paths.get("Trendwende_Setups(...).csv", "")):
@@ -435,7 +467,7 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
     # Kandidat bzw. Setup-Quelle behandelt werden. A ist nur bei bestaetigter
     # Tages-Technikhistorie VALIDE, sonst VORBEREITET; B/C bleiben VORBEREITET.
     for tk, (status, source, meta) in current_hebel.items():
-        if status in EXCLUDED_HEBEL:
+        if status in EXCLUDED_HEBEL or tk in nicht_ausgelesen_ticker or tk not in ausgelesen_ticker:
             candidates.pop(tk, None)
             continue
         item = {
@@ -519,7 +551,7 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
             "valid": VALID_STATUS,
             "prepared": PREPARED_STATUS,
             "no_setup": NO_SETUP_STATUS,
-            "universe_rule": "AUSGELESEN -> UNIVERSUM; NICHT AUSGELESEN -> ausgeschlossen",
+            "universe_rule": "Trade_Story_Aktienuniversum: AUSGELESEN -> UNIVERSUM; NICHT AUSGELESEN -> ausgeschlossen",
             "hebeltrader_excluded": sorted(EXCLUDED_HEBEL),
             "hebeltrader_universe_only_status": UNIVERSE_ONLY_HEBEL_STATUS,
             "portfolio_is_context": True,

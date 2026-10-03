@@ -179,6 +179,7 @@ DATEIMUSTER = {
     # Datenblock an Gemini uebergeben.
     "Benchmark_Live.txt": ["Benchmark_Live.txt"],
     "Trade_Story_Universum(...).json": ["Trade_Story_Universum(*).json"],
+    "Trade_Story_Aktienuniversum(...).csv": ["Trade_Story_Aktienuniversum(*).csv"],
     # Optional: letzter fertiger Gemini-Report fuer den expliziten Laufvergleich.
     "Letzte_Auswertung(...).txt": ["Auswertung(*).txt"],
     # Persistenter Langzeit-Kontext fuer Gemini: rollierende Historie der
@@ -194,6 +195,7 @@ PFLICHT_DATEIEN = {
     "Setups(...).csv",
     "Performance(...).csv",
     "Performance_EU(...).csv",
+    "Trade_Story_Aktienuniversum(...).csv",
     "Offene Positionen+Check.csv",
 }
 
@@ -2892,16 +2894,27 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
                 data = json.load(f)
             lines.extend(["", "TRADE-STORY-UNIVERSUM – KOMPAKTER HANDOFF:"])
             candidates = data.get("candidates", []) if isinstance(data, dict) else []
+            lines.append(
+                "UNIVERSUM-REGEL: Jeder Eintrag mit ausgelesenen Assetdaten ist "
+                "Kontext-/Querverbindungsmitglied. Der Universumsstatus ist KEIN "
+                "technischer Setup-Status und darf weder Kauf noch Entry erzeugen."
+            )
             for item in candidates:
                 if not isinstance(item, dict):
                     continue
-                status = item.get("trade_story_status")
-                if status not in {"VALIDE SETUP", "VORBEREITET", "STATUSKONFLIKT"}:
-                    continue
+                status = str(item.get("trade_story_status") or "").strip()
+                # The complete universe is handed to Gemini for context.
+                # STATUSKONFLIKT remains visible as a technical conflict and
+                # must never be silently converted into a setup.
                 name = str(item.get("name") or "").strip()
                 ticker = str(item.get("ticker") or "").strip()
                 source = str(item.get("quelle") or "").strip()
-                lines.append(f"- {name} ({ticker}) | Status={status}" + (f" | Quelle={source}" if source else ""))
+                universe_only = status in {"KEIN KANDIDAT", "KEIN SETUP", "STATUSKONFLIKT", ""}
+                role = "UNIVERSUM/KONTEXT" if universe_only else "UNIVERSUM + TECHNIKSTATUS"
+                lines.append(
+                    f"- {name} ({ticker}) | Status={status or 'UNIVERSUM'} | Rolle={role}"
+                    + (f" | Quelle={source}" if source else "")
+                )
         except Exception as exc:
             lines.append(f"TRADE-STORY-UNIVERSUM NICHT LESBAR: {exc}")
 
@@ -2959,6 +2972,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Einzel-Check-Technikhistorie",
         "Einzel-Check-Beobachtungsliste",
         "Trade_Story_Universum(...).json",
+        "Trade_Story_Aktienuniversum(...).csv",
         "Gemini_Auswertung_Historie.txt",
     }
     final_names = {"Finale-Autoritative-Fakten"}
@@ -3036,6 +3050,8 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Fuehre diese Ebenen zusammen, suche selbst nach Querverbindungen und beachte die autoritativen "
         "Fakten. Erhalte die bestehende Auswertungsstruktur 1–11, CRV-/Setup-Regeln und Statuslogik. "
         "Die Rohdaten aus A1/A2/A3 werden hier NICHT erneut bereitgestellt.\n\n"
+        "DARSTELLUNGSREGEL: Jede genannte Aktie bzw. jedes Unternehmen muss immer mit Firmenname und Ticker im Format Name (TICKER) erscheinen. "
+        "Keine Aktiennennung nur über den Ticker oder nur über den Namen. Dies gilt insbesondere für 1.3, 1.4, 2.1–2.5, 3.x, 4, 5, 6.x, 8.x und 9.x.\n\n"
         "VERBINDLICHER INHALTSVERTRAG 1–11: Halte die folgende Struktur exakt ein. "
         "Jeder Unterpunkt wird eigenständig bearbeitet. Wenn eine geforderte Information im bereitgestellten Datenbestand nicht vorhanden ist, "
         "schreibe ausdrücklich 'NICHT VERFUEGBAR' bzw. eine gleichwertige konkrete Negativfeststellung. Erfinde niemals Daten, Termine, Kurse, CRV, "
@@ -3048,7 +3064,10 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "2. 🎯 KONKRETE TRADES: 2.1 Trendfolge mit validem Setup, Aktie/Ticker, Entry, Stop, TP1/TP2, CRV, technischem Zustand, Makro-/Sektorunterstützung und Risiken; "
         "2.2 Trendwende mit Abwärtsbewegung, Boden-/Wendezeichen, Entry, Stop, Ziele, CRV und bestätigten/fehlenden Kriterien; "
         "2.3 Short mit Abwärtsthese, technischer Bestätigung, Entry, Stop, TP1/TP2, CRV, Makro-/Sektorunterstützung und Risiken; "
-        "2.4 HebelTrader mit Basisinstrument, Richtung, Setup, Entry, Stop, Ziel, Risiko und Hebel-/Volatilitätsrisiken; "
+        "2.4 HebelTrader darf AUSSCHLIESSLICH aktuelle HebelTrader-Scan-/Einzel-Check-Kandidaten (KAUFKANDIDAT A/B/C) wiedergeben. "
+        "Offene Positionen aus Offene Positionen+Check.csv gehören NICHT in 2.4, sondern ausschließlich in Punkt 10. "
+        "KEIN KANDIDAT ist kein konkreter Trade und darf daher in 2.4 nicht als Trade vorgeschlagen werden. "
+        "Für jeden genannten Titel zwingend Name und Ticker im Format Name (TICKER); Basisinstrument, Richtung, Setup, Entry, Stop, Ziel, Risiko und Hebel-/Volatilitätsrisiken nur soweit autoritativ vorhanden. "
         "2.5 sonstige Gemini-Chancen mit nachvollziehbarer Datenbegründung und konkretem Titel. Fehlende Daten nicht ersetzen.\n"
         "3. 🧠 THEMEN & ZUSAMMENHÄNGE: 3.1 Makro→Branche→Aktie; 3.2 Rohstoff→Branche→Aktie; 3.3 Politik→Branche→Aktie; "
         "3.4 Technologie→Branche→Aktie; 3.5 Unternehmens-/Fundamentaldaten→Aktie. Immer konkreten Investmentbezug herstellen und keine isolierte Allgemeinanalyse.\n"
@@ -3059,8 +3078,9 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "6.5 Investmentthese gegen aktuelle Marktdaten, 6.6 Risiken bestehender Ideen. Für jeden tatsächlichen Fall Aktie/Idee, Ausgangsthese, widersprechende Information, Bedeutung, Prüfpunkt und Invalidierung nennen. "
         "Wenn kein belastbarer Fall vorhanden ist, ausdrücklich so feststellen.\n"
         "7. 🌍 MARKT- & MAKROKONTEXT: 7.1 Aktienmärkte/Indizes Europa, USA, Asien, Marktbreite und Trend/Momentum; 7.2 Leitzinsen, 2Y/10Y, Realzinsen und Zinskurve; "
-        "7.3 VIX/Volatilität; 7.4 EUR/USD, DXY, USD/JPY und weitere relevante FX; 7.5 Öl, Kupfer, Lithium, Industriemetalle und weitere relevante Rohstoffe; "
-        "7.6 Bitcoin, Ethereum und relevante Kryptoentwicklung; 7.7 Inflation, Arbeitsmarkt, ISM/PMI, Konsum, Kreditbedingungen und sonstige relevante Makrodaten. "
+        "7.3 VIX/Volatilität; 7.4 EUR/USD, DXY, USD/JPY und weitere relevante FX; 7.5 Öl, Kupfer, Lithium, Industriemetalle und weitere relevante Rohstoffe, ABER KEINE Edelmetalle. "
+        "Gold, Silber, Platin und Palladium gehören ausschließlich in Punkt 8 und dürfen in 7.5 nicht wiederholt werden; 7.6 Bitcoin, Ethereum und relevante Kryptoentwicklung; "
+        "7.7 Inflation, Arbeitsmarkt, ISM/PMI, Konsum, Kreditbedingungen und sonstige relevante Makrodaten. "
         "Nur investmentrelevante Informationen und deren Bedeutung nennen.\n"
         "8. 🪙 EDELMETALLE: 8.1 Gold, 8.2 Silber, 8.3 Platin, 8.4 Palladium jeweils separat mit aktuellem Kurs, kurzfristiger Entwicklung, 4-Wochen-Entwicklung, "
         "52-Wochen-Situation, EMA200/WMA200 soweit vorhanden, technischem Zustand, Trendfolge-, Trendwende- und Short-Status, CRV/relevanten Filtern soweit vorhanden, "
@@ -7000,6 +7020,71 @@ def _pruefe_inhaltliche_mindesttiefe(text):
         raise RuntimeError("INHALTLICHE_MINDESTTIEFE_UNGUELTIG: " + " | ".join(errors))
     print("INHALTLICHE-MINDESTTIEFE-GATE: PASS")
 
+def _bereinige_ausgabe_und_formatiere(text):
+    """Deterministische Endformatierung fuer fachlich getrennte Abschnitte.
+
+    7.5 darf keine Edelmetalle enthalten, weil diese ausschliesslich in Punkt 8
+    autoritativ dargestellt werden. Zusaetzlich werden die vom Nutzer geforderten
+    Leerzeilen zwischen eigenstaendigen Eintraegen in 1.4, 2.4, 5 und 10 gesetzt.
+    Die Funktion veraendert keine Fachwerte oder Berechnungen.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines()
+
+    # 7.5: Edelmetalle aus dem Rohstoffblock entfernen. Nur eigenstaendige
+    # Zeilen mit Gold/Silber/Platin/Palladium werden entfernt; Punkt 8 bleibt
+    # vollständig unangetastet.
+    precious = re.compile(r"(?i)^\s*[-•]?\s*(?:gold|silber|platin|palladium)\b")
+    out = []
+    in_75 = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^7\.5\s+Rohstoffe\s*$", stripped, re.I):
+            in_75 = True
+            out.append(line)
+            continue
+        if in_75 and re.match(r"^7\.6\s+Krypto\s*$", stripped, re.I):
+            in_75 = False
+            out.append(line)
+            continue
+        if in_75 and precious.match(line):
+            continue
+        out.append(line)
+    lines = out
+
+    # Leerzeilen zwischen Eintraegen/Unterpunkten in den explizit genannten
+    # Abschnitten. Bereits vorhandene Leerzeilen werden nicht vervielfacht.
+    target_sections = {"1.4", "2.4", "5."}
+    section = None
+    formatted = []
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r"^(1\.4|2\.4|5\.)\b", stripped)
+        if m:
+            section = m.group(1)
+            formatted.append(line)
+            continue
+        if re.match(r"^(?:1\.|2\.|3\.|4\.|6\.|7\.|8\.|9\.|10\.|11\.)", stripped) and not stripped.startswith(("1.4", "2.4", "5.")):
+            section = None
+        formatted.append(line)
+        if section in target_sections and stripped.startswith("-"):
+            # Nur zwischen Bullet-Eintraegen: keine Leerzeile erzwingen, wenn
+            # bereits die nächste Zeile leer ist.
+            formatted.append("")
+    lines = formatted
+
+    # Punkt 10: Leerzeile zwischen 10.1–10.5 und deren Inhalten. Das ist rein
+    # typografisch und lässt die tatsächlichen Daten unverändert.
+    out = []
+    for i, line in enumerate(lines):
+        if re.match(r"^10\.[1-5]\s+", line.strip()) and out and out[-1] != "":
+            out.append("")
+        out.append(line)
+    return "\n".join(out).strip() + "\n"
+
+
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -7014,6 +7099,7 @@ def speichere_ergebnis(text):
             text,
             zielzonen=_technische_zielzonen_quelle("Offene Positionen+Check.csv"),
         )
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
 
         # Letzter deterministischer Brent-WTI-Gate vor der Strukturpruefung und
         # Speicherung. Der aktuelle Makro-Datensatz ist die einzige Quelle fuer
@@ -7042,6 +7128,7 @@ def speichere_ergebnis(text):
         if fx_repaired:
             print("INFO: 7.4 FX deterministisch aus autoritativer Makroquelle repariert (Gemini-Ausgabe zu knapp).")
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
         _pruefe_inhaltliche_mindesttiefe(final_text)
 

@@ -3804,6 +3804,15 @@ if __name__ == "__main__":
                                              collect_hebeltrader=p[0] in hebeltrader_eu_tickers),
                 tasks_eu))
         
+    # Namen aus den bereits berechneten technischen Ergebnissen wiederverwenden,
+    # um doppelte externe Namens-Lookups zu vermeiden.
+    _universe_name_by_ticker = {}
+    for _r in [r for r in results if r is not None] + [r for r in results_eu if r is not None]:
+        _tk = str(_r.get("Ticker") or "").strip()
+        _nm = str(_r.get("Name") or "").strip()
+        if _tk and _nm:
+            _universe_name_by_ticker[_tk] = _nm
+
     # AUTORITATIVES AKTIEN-UNIVERSUM:
     # Ein Projekt-Ticker gehoert zum Aktien-/Trade-Story-Universum, sobald
     # Kurs-/Assetdaten erfolgreich ausgelesen wurden. Ob danach A/B/C, ein
@@ -3813,7 +3822,7 @@ if __name__ == "__main__":
     try:
         universe_meta = {}
 
-        def _register_universe_data(ticker, sektor, markt, data):
+        def _register_universe_data(ticker, sektor, markt, data, name=""):
             if data is None or getattr(data, "empty", True):
                 return
             key = str(ticker).strip()
@@ -3821,6 +3830,12 @@ if __name__ == "__main__":
                 return
             close = None
             datenstand = ""
+            firma_name = str(name or "").strip()
+            if not firma_name or firma_name.upper() == key.upper():
+                # The stock universe must carry a human-readable company name
+                # whenever the project can resolve one. Reuse the existing
+                # authoritative lookup; the ticker remains the immutable key.
+                firma_name = _hole_firma_name(key)
             try:
                 close_series = data["Close"].dropna()
                 if not close_series.empty:
@@ -3831,12 +3846,14 @@ if __name__ == "__main__":
                 pass
             entry = universe_meta.setdefault(key, {
                 "Ticker": key,
-                "Name": key,
+                "Name": firma_name or key,
                 "Sektor": str(sektor or ""),
                 "Markt": markt,
                 "Sektoren": [],
                 "Assetdaten_Status": "AUSGELESEN",
             })
+            if entry.get("Name") in (None, "", key) and firma_name:
+                entry["Name"] = firma_name
             if sektor and str(sektor) not in entry["Sektoren"]:
                 entry["Sektoren"].append(str(sektor))
             if close is not None:
@@ -3845,9 +3862,9 @@ if __name__ == "__main__":
                 entry["Datenstand"] = datenstand
 
         for ticker, sektor in universe_tasks:
-            _register_universe_data(ticker, sektor, "US", us_daten.get(ticker))
+            _register_universe_data(ticker, sektor, "US", us_daten.get(ticker), _universe_name_by_ticker.get(ticker, ""))
         for ticker, sektor in universe_tasks_eu:
-            _register_universe_data(ticker, sektor, "EU", eu_daten.get(ticker))
+            _register_universe_data(ticker, sektor, "EU", eu_daten.get(ticker), _universe_name_by_ticker.get(ticker, ""))
 
         universe_rows = []
         for entry in universe_meta.values():
