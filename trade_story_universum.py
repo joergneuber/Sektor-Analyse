@@ -16,7 +16,8 @@ from typing import Any
 
 VALID_STATUS = "VALIDE SETUP"
 PREPARED_STATUS = "VORBEREITET"
-EXCLUDED_HEBEL = {"KAUFKANDIDAT C", "KEIN KANDIDAT", "NICHT AUSGELESEN"}
+EXCLUDED_HEBEL = {"NICHT AUSGELESEN"}
+UNIVERSE_ONLY_HEBEL_STATUS = "KEIN KANDIDAT"
 NAME_FIELDS = ("Name", "Firmenname", "name", "firmenname")
 TICKER_FIELDS = ("Ticker", "ticker", "Yahoo-Ticker", "Yahoo_Ticker", "yahoo-ticker")
 
@@ -373,9 +374,12 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
         except Exception as exc:
             print(f"WARNUNG: HEBELTRADER-Technikhistorie fuer Setup-Bestaetigung unlesbar: {exc}")
 
-    # A = candidate; A is VALID only when the same day's technical history
-    # confirms a setup. B is prepared. C/KEIN KANDIDAT/NICHT AUSGELESEN = excluded.
-    # No status is invented from older history.
+    # Jeder echte HEBELTRADER-Fund gehoert zum Universum. Das gilt fuer A/B/C
+    # ebenso wie fuer KEIN KANDIDAT und ist unabhaengig von technischer Validitaet.
+    # NICHT AUSGELESEN ist dagegen kein verwertbarer Fund und bleibt ausgeschlossen.
+    # KEIN KANDIDAT ist dabei universum-only: Er darf nicht als konkreter Trade-Story-
+    # Kandidat bzw. Setup-Quelle behandelt werden. A ist nur bei bestaetigter
+    # Tages-Technikhistorie VALIDE, sonst VORBEREITET; B/C bleiben VORBEREITET.
     for tk, (status, source, meta) in current_hebel.items():
         if status in EXCLUDED_HEBEL:
             candidates.pop(tk, None)
@@ -385,12 +389,17 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
             "name": meta.get("name") or None,
             "direction": "Long",
             "trade_story_status": (
-                VALID_STATUS
-                if status == "KAUFKANDIDAT A" and (tk, str(meta.get("check_date") or "").strip()) in hebel_valid_by_ticker_date
-                else PREPARED_STATUS
+                UNIVERSE_ONLY_HEBEL_STATUS
+                if status == "KEIN KANDIDAT"
+                else (
+                    VALID_STATUS
+                    if status == "KAUFKANDIDAT A" and (tk, str(meta.get("check_date") or "").strip()) in hebel_valid_by_ticker_date
+                    else PREPARED_STATUS
+                )
             ),
             "sources": ["Hebeltrader-Einzel-Check"],
             "hebeltrader_status": status,
+            "universe_membership": True,
         }
         if meta.get("issue"):
             item["hebeltrader_issue"] = meta["issue"]
@@ -456,6 +465,7 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
             "valid": VALID_STATUS,
             "prepared": PREPARED_STATUS,
             "hebeltrader_excluded": sorted(EXCLUDED_HEBEL),
+            "hebeltrader_universe_only_status": UNIVERSE_ONLY_HEBEL_STATUS,
             "portfolio_is_context": True,
             "top_sector_is_not_candidate_filter": True,
         },

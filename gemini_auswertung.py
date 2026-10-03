@@ -3201,7 +3201,7 @@ def gemini_auswertung_starten():
                     + sechs_fuenf_autoritaet + "\n\n"
 "MARKTUMFELD-AUSGABEREGEL: In allen Abschnitten mit Marktumfeld/Marktumfeld-Fazit sowie in der globalen Risikolage sind Scores, Score-Werte, Score-Modelle, Punktwerte und Formulierungen wie \"Score 0,0\" VERBOTEN. Beschreibe ausschließlich den qualitativen Zustand (z.B. bullish, neutral, bearish) und die zugrunde liegenden beobachtbaren Marktmerkmale. Setup-/CRV-Scores außerhalb des Marktumfeld-Blocks sind davon nicht betroffen. "
                     "NUMERISCHE MAKRO-BINDUNG: Alle numerischen Markt-/Makroangaben muessen exakt aus dem bereitgestellten Makro_Briefing uebernommen werden. Nicht neu rechnen, schaetzen, runden oder aus einer anderen Quelle ersetzen. Wenn ein Wert nicht eindeutig im Makro_Briefing vorhanden ist, nur qualitativ beschreiben oder weglassen. Instrument, Einheit und Datenstand muessen zusammengehoeren.\n                     FRUEHE-ENTDECKUNGS-UND-TRADE-STORY-EBENE: Die Discovery-Ebene und die technische Ebene sind zwingend getrennt auszugeben. Verwende in jedem 1.3-Block exakt zwei getrennte Statusfelder: Discovery-Status: ENTDECKT oder BEOBACHTUNG; Technischer Status: NICHT VORHANDEN, NUR TEILW. VOLLSTAENDIG oder VALIDER SETUP. Discovery-Status beschreibt nur den Erkenntnisstand der These. Technischer Status beschreibt ausschliesslich den Stand der bestehenden technischen Systempruefung. Wenn kein bestehender Kandidat im autoritativen Datenbestand vorhanden ist, muss Technischer Status = NICHT VORHANDEN sein. Wenn ein vorhandener Kandidat vorhanden ist, aber kein vollstaendig bestaetigtes Setup besitzt, muss Technischer Status = NUR TEILW. VOLLSTAENDIG sein. VALIDER SETUP darf ausschliesslich aus dem bestehenden regelbasierten Setup-/CRV-System uebernommen werden. Eine Discovery bleibt auch dann eine Discovery, wenn bereits ein VALIDE-SETUP-Kandidat existiert. Die Existenz eines Kandidaten darf niemals die Discovery erzeugen. Gemini darf aus Discovery, ENTDECKT, BEOBACHTUNG, NICHT VORHANDEN oder NUR TEILW. VOLLSTAENDIG niemals selbst einen VALIDEN SETUP, einen Kauf oder einen Entry machen. Zeige die Kette Thema -> Veraenderung -> Treiber -> Beleg -> Kausalzusammenhang -> moeglicher Kapitalfluss -> betroffene Assetklasse/Sektor -> bestehender Kandidat (falls vorhanden) -> naechster bestaetigter Kalenderkatalysator -> Discovery-Status -> Technischer Status -> widerlegender Trigger -> Risiko. Nutze nur bereitgestellte Daten. Der bestehende Sektor-Rotations-Score darf als objektiver Beleg genannt werden, ist aber kein Gemini-Score und niemals alleiniger Grund fuer eine Discovery oder ein Setup. "
-                     "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Kandidaten-Handoff-Schicht fuer 1.3. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. C/KEIN KANDIDAT/Langfrist sind keine konkreten Kandidatenquellen. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
+                     "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Discovery-/Handoff-Schicht. Jeder echte HEBELTRADER-Fund, einschliesslich KAUFKANDIDAT A/B/C und KEIN KANDIDAT, gehoert zum Universum. KEIN KANDIDAT ist dabei nur Universums-/Discovery-Mitglied und keine konkrete Setup-Quelle. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
                      "BITCOIN-REGEL IM TRADE-STORY-UNIVERSUM: Pi-Cycle-Bottom DOWN-Cross (150-EMA von oben nach unten durch 0.745*471SMA) ist LONG/AKKUMULATION und kann VALIDE SETUP sein. Pi-Cycle UP-Cross beendet die Akkumulationsphase und ist kein generisches SELL. 50W-SMA UP-Cross ist LONG/BUY; 50W-SMA DOWN-Cross ist EXIT/SELL und daher kein Long-Kandidat. Verwende ausschliesslich die strukturierten Bitcoin-Felder im Tagesuniversum. "
                     "HEBELTRADER-EINZELCHECK / INTERNE DATENQUELLE: Falls die bereitgestellte Datei 'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und verwende die aus Drive synchronisierte neueste Version, falls sie neuer ist. Diese Datenquelle ist KEINE eigene Ausgabekategorie. Ihre A/B/C-/Technik-/Setup-Informationen duerfen ausschließlich in die fachlich passenden Abschnitte der verbindlichen 1–11-Struktur einfließen. Insbesondere darf daraus niemals eine zusätzliche nummerierte Ausgabestruktur erzeugt werden. Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht neu berechnet, veraendert, aufgehoben oder ersetzt werden. Fuer konkrete technische Details sind ausschließlich die bereits berechneten Felder aus den bereitgestellten autoritativen Einzel-Check-/HebelTrader-Daten zu verwenden. Einstieg, Stop, TP1, TP2 und CRV duerfen nur angegeben werden, wenn sie aus bereitgestellten Daten ersichtlich sind; fehlende Werte duerfen nicht erfunden oder geschaetzt werden. Wenn aus den vorhandenen technischen Daten eine Ableitung transparent moeglich ist, muss sie als Ableitung gekennzeichnet werden. Breakout allein aktiviert Fibonacci nicht; Fibonacci/Extension nur bei qualifizierter und bestaetigter A-B-C-Struktur. Wenn die HEBELTRADER-JSON fehlt, erfinde keinen HEBELTRADER-Inhalt. Fuer A-Kandidaten, die nicht aus HEBELTRADER stammen, nutze die bereitgestellte einzel_check_historie.jsonl ausschließlich als autoritative technische Historie des aktuellen Auswertungstages. Die Beobachtungsliste bleibt ausschließlich fuer Status, Quelle und Watchlist-Zugehoerigkeit massgeblich. Die sichtbare Darstellung richtet sich ausschließlich nach der verbindlichen 1–11-Struktur. "
 "PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 10.1 Sofortiger Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Der bestehende Makro-/Portfolio-Datenblock bleibt autoritativ; Python liefert die Fakten, Gemini interpretiert nur die qualitative Ebene.\nPUNKT-10-ARCHITEKTUR: Python stellt die autoritative Positionsfaktenbasis bereit und erzeugt 10.5 geschlossene Positionen deterministisch. Gemini erzeugt 10.1, 10.2, 10.3 und 10.4 als qualitative Interpretation. 10.3 darf ausschließlich Positionen enthalten, bei denen sich die Investmentthese gegenüber dem vorherigen Lauf bzw. der bereitgestellten Historie belastbar verändert hat. Gemini darf in 10.3/10.5 keine Faktenblöcke erzeugen.\n"
@@ -5595,11 +5595,11 @@ def _trade_story_bestehende_kandidaten_universum(eingabedateien, beobachtungslis
     Ein Titel gilt als bestehender Kandidat, wenn er aus einer autoritativen
     Einzel-Check-/Hebeltrader-Quelle als Kandidat bzw. Setup-Fund hervorgeht
     oder bereits im zentralen Trade-Story-Snapshot als Kandidat gefuehrt wird.
-    Beim HEBELTRADER-Einzelcheck bleibt ein gefundener Titel auch dann Teil
-    des Universums, wenn er aktuell weder A, B noch C ist oder das Setup
-    aktuell nicht valide ist. Ein blosser Gemini-Hinweis oder ein Status
-    ``KEIN KANDIDAT`` ohne autoritativen Setup-/Kandidatenbeleg erzeugt
-    dagegen keinen Kandidatenbezug.
+    Beim HEBELTRADER-Einzelcheck bleibt jeder echte Fund Teil des Universums,
+    auch bei Status ``KEIN KANDIDAT`` und unabhaengig von technischer Validitaet.
+    ``KEIN KANDIDAT`` ist dabei ein reiner Discovery-/Universumsstatus und
+    erzeugt keinen konkreten Trade-Story-Kandidatenbezug. Ein blosser Gemini-
+    Hinweis ohne autoritativen HEBELTRADER-Beleg erzeugt weiterhin keinen Bezug.
     """
     result = set()
 
@@ -5628,12 +5628,18 @@ def _trade_story_bestehende_kandidaten_universum(eingabedateien, beobachtungslis
             for item in data.get("candidates", []) if isinstance(data, dict) else []:
                 if not isinstance(item, dict) or item.get("trade_story_status") == "STATUSKONFLIKT":
                     continue
+                # KEIN KANDIDAT kann im zentralen Universum enthalten sein,
+                # ist dort aber bewusst nur Discovery-/Universumsmitglied und
+                # kein konkreter Trade-Story-Kandidat.
+                if item.get("trade_story_status") == "UNIVERSUM":
+                    continue
                 add_pair(item.get("ticker"), item.get("name"))
         except Exception as exc:
             print(f"WARNUNG: Bestehendes Trade-Story-Universum nicht lesbar: {exc}")
 
     # 2) Aktuelle Beobachtungsliste: A/B/C sind bestehende Kandidaten.
-    # KEIN KANDIDAT ist ausdruecklich kein Kandidatenbezug.
+    # KEIN KANDIDAT ist dort kein konkreter Kandidatenbezug; seine Zugehoerigkeit
+    # zum zentralen HEBELTRADER-Universum wird separat erhalten.
     if beobachtungsliste_pfad and os.path.isfile(beobachtungsliste_pfad):
         try:
             with open(beobachtungsliste_pfad, "r", encoding="utf-8-sig") as f:
@@ -5840,9 +5846,9 @@ def _trade_story_deterministische_reparatur(text, eingabedateien, beobachtungsli
         candidate = name_m.group(1).strip() if name_m else ""
         if re.search(r"(?i)\bkein(?:e|en)?\s+(?:bestehender\s+)?kandidat(?:en)?\b|\bkein bestehender kandidat vorhanden\b", candidate):
             candidate = ""
-        # Nicht autoritative C/KEIN-KANDIDAT-Markierungen duerfen nach einer
-        # Herabstufung auf INTERESSANT nicht als Kandidatenstatus stehen bleiben.
-        candidate = re.sub(r"\s*\[(?:Kaufkandidat\s*C|KEIN\s+KANDIDAT)[^\]]*\]", "", candidate, flags=re.I).strip()
+        # Ein expliziter KEIN-KANDIDAT-Hinweis ist kein konkreter Kandidatentitel;
+        # KAUFKANDIDAT C bleibt dagegen ein regulärer Kandidatenstatus.
+        candidate = re.sub(r"\s*\[KEIN\s+KANDIDAT[^\]]*\]", "", candidate, flags=re.I).strip()
 
         # Technischer Status wird ausschliesslich aus Kandidatenexistenz und
         # autoritativ bestaetigtem Setup abgeleitet. Die interne Quelle darf
@@ -6113,11 +6119,121 @@ def _bereinige_doppelte_ausgabestruktur(text, required):
     return result
 
 
+
+def _inhaltlicher_abgrenzungstext():
+    """Erzeugt den deterministischen Mindestinhalt fuer 11.7.
+
+    Die Abgrenzung beschreibt die Architektur des Trade-Story-Universums,
+    ohne neue Kandidaten, technische Signale oder Bewertungen zu erfinden.
+    """
+    return (
+        "11.7 Abgrenzung:\n"
+        "Das Trade-Story-Universum ist die zentrale Discovery- und Handoff-Schicht "
+        "für bereits durch die bestehenden Scanner bzw. den HEBELTRADER-Einzel-Check "
+        "gefundenen Titel. Die Aufnahme in dieses Universum ist nicht gleichbedeutend "
+        "mit einem validen technischen Setup, einem Entry oder einer Kaufentscheidung. "
+        "Insbesondere ein echter HEBELTRADER-Fund bleibt unabhängig von A/B/C-Status und "
+        "technischer Validität im Universum enthalten; die technische Validierung wird "
+        "davon getrennt geführt. Scanner-Fund, Discovery, vorbereiteter Kandidat und "
+        "VALIDE SETUP sind daher unterschiedliche Zustände und dürfen nicht miteinander "
+        "gleichgesetzt werden. Die nachgelagerte Auswertung darf aus der Universums-"
+        "Zugehörigkeit keine neue technische Bestätigung ableiten."
+    )
+
+
+def _repariere_7_4_fx_aus_makroquelle(text, makro_text):
+    """Ersetzt nur einen zu knappen 7.4-FX-Block durch Makro-Quellfakten.
+
+    Es werden ausschließlich explizit strukturierte FX-Werte aus dem aktuellen
+    Makro-Briefing verwendet. Fehlende Instrumente bleiben ausdrücklich
+    unbekannt; es werden keine Kurse oder Bewegungen erfunden.
+    """
+    if not text:
+        return text, False
+
+    match = re.search(r"(?ims)^\s*7\.4\s+FX\s*$.*?(?=^\s*7\.5\s+Rohstoffe\s*$|^\s*8\.\s+|\Z)", text)
+    if not match:
+        return text, False
+
+    block = match.group(0).strip()
+    body = re.sub(r"(?im)^\s*7\.4\s+FX\s*$", "", block, count=1).strip()
+    compact = re.sub(r"\W", "", body, flags=re.UNICODE)
+    label_only = bool(body) and all(
+        re.fullmatch(r"[^:]{1,100}:\s*[^:]{1,100}", line.strip())
+        and len(re.findall(r"[A-Za-zÄÖÜäöüßÀ-ÿ0-9]{3,}", line, flags=re.UNICODE)) <= 8
+        for line in body.splitlines() if line.strip()
+    )
+    if len(compact) >= 120 and not label_only:
+        return text, False
+
+    refs = _extrahiere_makro_referenzwerte(makro_text or "")
+
+    def get_ref(*aliases):
+        for alias in aliases:
+            ref = refs.get(alias.casefold())
+            if ref is not None:
+                return ref
+        return None
+
+    def fmt_ref(label, ref):
+        if ref is None:
+            return f"{label}: in der autoritativen Makroquelle nicht als strukturierter Wert vorhanden."
+        parts = [f"{label}: {ref['kurs']}"]
+        if ref.get("datenstand"):
+            parts.append(f"Datenstand={ref['datenstand']}")
+        if ref.get("schluss") is not None:
+            parts.append(f"Letzter_Schluss={ref['schluss']}")
+        perioden = ref.get("perioden") or {}
+        if perioden:
+            parts.append("Veränderungen: " + ", ".join(f"{k}={v}%" for k, v in sorted(perioden.items())))
+        return " | ".join(parts)
+
+    eurusd = get_ref("eur/usd", "eurusd", "eur usd", "euro/us-dollar", "euro dollar")
+    dxy = get_ref("dxy", "usd index", "us dollar index")
+    usdjpy = get_ref("usd/jpy", "usdjpy", "usd jpy", "usd/yen", "dollar/yen")
+    available = [("EUR/USD", eurusd), ("DXY", dxy), ("USD/JPY", usdjpy)]
+    present = [(label, ref) for label, ref in available if ref is not None]
+
+    lines = ["7.4 FX"]
+    if present:
+        for label, ref in present:
+            lines.append(fmt_ref(label, ref))
+        direction_parts = []
+        for label, ref in present:
+            periods = ref.get("perioden") or {}
+            if periods:
+                vals = ", ".join(f"{k}={v}%" for k, v in sorted(periods.items()))
+                direction_parts.append(f"{label} weist laut Quelle die ausgewiesenen Periodenbewegungen auf ({vals}).")
+        if direction_parts:
+            lines.append("Bewegung: " + " ".join(direction_parts))
+        else:
+            lines.append("Bewegung: Für die vorhandenen FX-Instrumente liegen in der Quelle keine strukturierten Periodenveränderungen vor; daher wird keine zusätzliche Richtung abgeleitet.")
+        lines.append(
+            "Einordnung: Die FX-Werte und die ausgewiesenen Veränderungen sind die "
+            "einzige numerische Grundlage dieses Abschnitts. Ihre Relevanz liegt insbesondere "
+            "in der relativen Entwicklung von Euro und US-Dollar sowie in der Wirkung von "
+            "Währungsbewegungen auf international erzielte bzw. umgerechnete Erträge; eine "
+            "konkrete Aktienwirkung wird nur behauptet, wenn sie aus den bereitgestellten "
+            "Daten nachvollziehbar ist."
+        )
+    else:
+        lines.extend([
+            "Datenstatus: Die autoritative Makroquelle enthält für EUR/USD, DXY und USD/JPY "
+            "keinen strukturierten FX-Referenzwert. Deshalb werden keine Kurse, Bewegungen "
+            "oder Richtungen ergänzt.",
+            "Einordnung: Ohne quellengebundene FX-Daten ist keine belastbare konkrete "
+            "Währungsrichtung oder daraus abgeleitete Aktienwirkung zulässig."
+        ])
+
+    replacement = "\n".join(lines).strip() + "\n"
+    return text[:match.start()] + replacement + text[match.end():], True
+
 def _ergaenze_fehlende_ausgabestruktur(text):
     """Fügt nur fehlende Pflichtabschnitte 1–11.7 positionsgenau ein.
 
-    Bereits vorhandene Gemini-Ausgabe bleibt unverändert. Jeder fehlende
-    Abschnitt erhält ausschließlich die deterministische Negativfeststellung.
+    Bereits vorhandene Gemini-Ausgabe bleibt unverändert. Für 11.7 wird ein
+    inhaltlicher, deterministischer Abgrenzungstext verwendet; andere fehlende
+    Pflichtabschnitte behalten ihren bisherigen Fallback.
     Bekannte Schreibvarianten vorhandener Pflichtüberschriften werden nicht
     fälschlich als fehlende Sektionen behandelt.
     """
@@ -6212,7 +6328,10 @@ def _ergaenze_fehlende_ausgabestruktur(text):
                 next_heading = candidate
                 break
 
-        block = heading + "\nKeine relevanten Erkenntnisse.\n\n"
+        if heading == "11.7 Abgrenzung:":
+            block = _inhaltlicher_abgrenzungstext() + "\n"
+        else:
+            block = heading + "\nKeine relevanten Erkenntnisse.\n\n"
         if next_heading:
             match = re.search(r"(?m)^" + re.escape(next_heading) + r"\s*$", result)
             if match:
@@ -6884,6 +7003,16 @@ def speichere_ergebnis(text):
                 ) from exc
 
     if not str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
+        makro_pfad = finde_datei(DATEIMUSTER["Makro_Briefing(...).txt"])
+        makro_text_fx = ""
+        if makro_pfad and os.path.isfile(makro_pfad):
+            try:
+                makro_text_fx = Path(makro_pfad).read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                raise RuntimeError(f"FX_QUELLE_NICHT_LESBAR: {exc}") from exc
+        final_text, fx_repaired = _repariere_7_4_fx_aus_makroquelle(final_text, makro_text_fx)
+        if fx_repaired:
+            print("INFO: 7.4 FX deterministisch aus autoritativer Makroquelle repariert (Gemini-Ausgabe zu knapp).")
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
         _pruefe_inhaltliche_mindesttiefe(final_text)
