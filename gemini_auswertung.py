@@ -6379,7 +6379,35 @@ def _ergaenze_fehlende_ausgabestruktur(text):
         if heading == "11.7 Abgrenzung:":
             block = _inhaltlicher_abgrenzungstext() + "\n"
         else:
-            block = heading + "\nKeine relevanten Erkenntnisse.\n\n"
+            # Fachlich deterministische Fallbacks: keine erfundenen Markt-/Unternehmensdaten.
+            fallback = {
+                "6.1 Makro gegen Technik":
+                    "Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.",
+                "6.2 Technik gegen Fundamentaldaten":
+                    "Keine belastbare Gegenüberstellung von Technik und Fundamentaldaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.",
+                "6.3 Sektor gegen Aktie":
+                    "Keine belastbare Gegenüberstellung von Sektor und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.",
+                "6.4 Rohstoff gegen Aktie":
+                    "Keine belastbare Gegenüberstellung von Rohstofftreibern und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.",
+                "6.5 Investmentthese gegen aktuelle Marktdaten":
+                    "Keine belastbare Prüfung der Investmentthese gegen aktuelle Marktdaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.",
+                "6.6 Risiken bestehender Ideen":
+                    "Keine belastbare Risikobewertung bestehender Ideen möglich, weil für diesen Abschnitt keine verifizierbaren, konkret zuordenbaren Angaben in den vorliegenden Projektquellen vorliegen.",
+                "9.1 Makrotermine":
+                    "Keine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine, Daten oder Ereignisse erfunden.",
+                "9.2 Unternehmen":
+                    "Keine verifizierten Unternehmensveranstaltungen oder Unternehmensmeldungen aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine erfunden.",
+                "9.3 Branchenereignisse":
+                    "Keine verifizierten Branchenereignisse aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine oder Ereignisse erfunden.",
+                "9.4 Technische Trigger":
+                    "Keine verifizierbaren technischen Trigger aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Kursmarken oder Signale erfunden.",
+                "9.5 Mögliche Aktivierung / Invalidierung":
+                    "Keine belastbaren Aktivierungs- oder Invalidierungsbedingungen aus den vorliegenden Projektquellen ableitbar; es werden deshalb keine Trigger erfunden.",
+            }
+            block = heading + "\n" + fallback.get(
+                heading,
+                "Keine belastbare fachliche Aussage aus den vorliegenden Projektquellen ableitbar, ohne nicht verifizierte Daten zu ergänzen."
+            ) + "\n\n"
         if next_heading:
             match = re.search(r"(?m)^" + re.escape(next_heading) + r"\s*$", result)
             if match:
@@ -6726,7 +6754,7 @@ def _pruefe_inhaltliche_mindesttiefe(text):
         "7.2 Zinsen": [[r"leitzins|fed|ezb|zins"], [r"2\s*y"], [r"10\s*y"], [r"realzins"], [r"kurve|spread"], [r"auswirkung|interpret"]],
         "7.3 Volatilität": [[r"vix|volatil"], [r"veränder|veraender|niveau|verlauf"], [r"auswirkung|risiko|interpret"]],
         "7.4 FX": [[r"eur/?usd|euro|dollar"], [r"dxy"], [r"usd/?jpy|yen"], [r"trend|beweg|veränder|veraender"], [r"auswirkung|interpret"]],
-        "7.5 Rohstoffe": [[r"öl|oil|brent|wti"], [r"kupfer|copper|lithium|industriemetall"], [r"gold|silber|platin|palladium"], [r"preis|kurs"], [r"trend|beweg"], [r"auswirkung|branche|angebot|nachfrage"]],
+        "7.5 Rohstoffe": [[r"öl|oil|brent|wti"], [r"kupfer|copper|lithium|industriemetall"], [r"preis|kurs"], [r"trend|beweg"], [r"auswirkung|branche|angebot|nachfrage"]],
         "7.6 Krypto": [[r"bitcoin|btc"], [r"ethereum|eth"], [r"performance|veränder|veraender"], [r"trend|sma|ema"], [r"auswirkung|interpret"]],
         "7.7 Konjunktur / Makro": [[r"arbeitsmarkt|nfp|claims|arbeitslosen"], [r"inflation|cpi|ppi"], [r"bip|wachstum|gdp|ism|pmi"], [r"konsum|kredit|credit"], [r"makro|konjunktur"], [r"auswirkung|interpret"]],
         "8.1 Gold": [[r"gold|xau"], [r"kurs|preis"], [r"kurzfrist|5\s*(?:t|tage)|5d"], [r"4\s*(?:w|wochen)|4w"], [r"52\s*(?:w|wochen)|52w|jahreshoch|jahrestief"], [r"ema\s*200|wma\s*200|200[- ]?tage"], [r"technik|technisch"], [r"trendfolge"], [r"trendwende|reversal"], [r"short|abwärts|abwaerts"], [r"crv|filter"], [r"beinahe|kandidat|setup"], [r"saisonal"], [r"makro|zins|inflation"], [r"branche|sektor"], [r"aktie|ticker"], [r"reaktion"], [r"trigger|katalysator"]],
@@ -7003,7 +7031,27 @@ def _pruefe_inhaltliche_mindesttiefe(text):
                 if pos1 & pos2:
                     continue
 
-            # A high shared-token ratio indicates copied boilerplate rather than section-specific analysis.
+            # Edelmetallblöcke werden assetbezogen geprüft. Gemeinsame fachliche
+            # Methodik darf dort nicht allein wegen identischer Fachterminologie
+            # als Copy/Paste gewertet werden.
+            precious_sections = {"8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"}
+            if h1 in precious_sections and h2 in precious_sections:
+                asset_tokens = {
+                    "8.1 Gold": r"gold|xau",
+                    "8.2 Silber": r"silber|xag",
+                    "8.3 Platin": r"platin|xpt",
+                    "8.4 Palladium": r"palladium|xpd",
+                }
+                if unavailable_re.search(b1) and unavailable_re.search(b2):
+                    continue
+                if not re.search(asset_tokens[h1], b1, re.I | re.U) or not re.search(asset_tokens[h2], b2, re.I | re.U):
+                    errors.append(f"{h1} / {h2}: Edelmetallabschnitte nicht eindeutig assetbezogen.")
+                    continue
+                if b1 == b2:
+                    errors.append(f"{h1} / {h2}: vollständig identischer Analyseinhalt trotz unterschiedlichem Edelmetall.")
+                continue
+
+            # Für unterschiedliche Fachabschnitte bleibt der allgemeine Anti-Copy-Schutz aktiv.
             w1 = set(re.findall(r"[a-zäöüß]{4,}", b1))
             w2 = set(re.findall(r"[a-zäöüß]{4,}", b2))
             if not w1 or not w2:
