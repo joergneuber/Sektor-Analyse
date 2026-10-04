@@ -1728,6 +1728,16 @@ def _normalisiere_ticker(value):
     return re.sub(r"[^a-z0-9.=-]+", "", str(value or "").strip().lower())
 
 
+def _ticker_grenzen_regex(ticker):
+    """Erzeugt eine Unicode-sichere Regex fuer isolierte Ticker.
+
+    \\w ist in Python standardmaessig Unicode-aware. Dadurch wird z. B.
+    "geändert" nicht mehr faelschlich als isoliertes "GE" erkannt.
+    Punkte und Bindestriche bleiben weiterhin Teil der Tickergrenze.
+    """
+    return rf"(?<![\w.\-]){re.escape(str(ticker))}(?![\w.\-])"
+
+
 def _finde_quellposition(ziel_key, quellpositionen):
     """Findet genau eine CSV-Position.
 
@@ -4412,7 +4422,7 @@ def _sichere_punkt10_tp1_angaben(text, briefing_pfad):
             return float(value)
         def replace(match):
             prefix = line[:match.start()]
-            ticker_candidates = [t.upper() for t in re.findall(r"(?i)(?<![A-Z0-9.-])([A-Z]{1,6}(?:\.[A-Z]{1,3})?)(?![A-Z0-9.-])", prefix)]
+            ticker_candidates = [t.upper() for t in re.findall(r"(?i)(?<![\w.-])([A-Z]{1,6}(?:\.[A-Z]{1,3})?)(?![\w.-])", prefix)]
             ticker_candidates = [t for t in ticker_candidates if t in refs]
             if not ticker_candidates:
                 return match.group(0)
@@ -7248,10 +7258,10 @@ def _bereinige_punkt_24_nur_a(text):
     kept = []
     for part in parts:
         norm = _normalisiere_positionsname(part)
-        has_a = any(t and re.search(rf"(?<![A-Z0-9.\-]){re.escape(t)}(?![A-Z0-9.\-])", part, re.I) for t in tickers)
+        has_a = any(t and re.search(rf"{_ticker_grenzen_regex(t)}", part, re.I) for t in tickers)
         has_a = has_a or any(n and n in norm for n in names)
         has_non_a = any(
-            t and re.search(rf"(?<![A-Z0-9.\-]){re.escape(t)}(?![A-Z0-9.\-])", part, re.I)
+            t and re.search(rf"{_ticker_grenzen_regex(t)}", part, re.I)
             for t in nicht_a_tickers
         )
         has_non_a = has_non_a or any(n and n in norm for n in nicht_a_names)
@@ -7326,8 +7336,8 @@ def _normalisiere_name_ticker_ausgabe(text):
             if not re.search(r"(?i)(^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|sektor|markt:|entry|stop:|tp1|tp2)", line):
                 continue
             for ticker_key, name in by_ticker.items():
-                if re.search(rf"(?<![A-Z0-9.\-]){re.escape(ticker_key)}(?![A-Z0-9.\-])", line, re.I) and not re.search(rf"\([^\n()]*\b{re.escape(ticker_key)}\b[^\n()]*\)", line, re.I):
-                    lines[i] = re.sub(rf"(?<![A-Z0-9.\-]){re.escape(ticker_key)}(?![A-Z0-9.\-])", f"{name} ({ticker_key.upper()})", line, count=1, flags=re.I)
+                if re.search(rf"{_ticker_grenzen_regex(ticker_key)}", line, re.I) and not re.search(rf"\([^\n()]*\b{re.escape(ticker_key)}\b[^\n()]*\)", line, re.I):
+                    lines[i] = re.sub(rf"{_ticker_grenzen_regex(ticker_key)}", f"{name} ({ticker_key.upper()})", line, count=1, flags=re.I)
                     break
         block=''.join(lines)
         text=text[:start]+block+text[end:]
@@ -7382,7 +7392,7 @@ def _pruefe_name_ticker_gate(text):
         for line in checked.splitlines():
             if not line.strip():
                 continue
-            if re.search(rf"(?<![A-Z0-9.\-]){re.escape(ticker)}(?![A-Z0-9.\-])", line, re.I):
+            if re.search(rf"{_ticker_grenzen_regex(ticker)}", line, re.I):
                 # Reine Makro-/Querverbindungsnennungen sind kein konkreter
                 # Unternehmensbezug. Konkrete Aktienzeilen müssen kanonisch sein.
                 if company_context.search(line) and not re.search(rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)", line, re.I):
