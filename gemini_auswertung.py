@@ -7248,14 +7248,30 @@ def _pruefe_name_ticker_gate(text):
         raise RuntimeError(f"NAME_TICKER_GATE_QUELLE_NICHT_LESBAR: {exc}") from exc
     identities = {}
     name_tickers = {}
+    # Das Trade-Story-Universum enthält neben Aktien auch Basisinstrumente
+    # (z. B. Gold/Silber) und Krypto-/Rohstoffsymbole. Das Name(Ticker)-Gate
+    # gilt ausschließlich für konkrete Aktien-/Unternehmensbezüge.
+    # Andernfalls wird z. B. der Rohstoff-Ticker "gold" fälschlich als
+    # Aktien-Ticker interpretiert und das End-Gate blockiert die gesamte
+    # Auswertung.
+    non_equity_tickers = {
+        "gold", "silver", "platinum", "palladium",
+        "xau", "xag", "xpt", "xpd",
+        "gc=f", "si=f", "pl=f", "pa=f",
+        "bitcoin", "btc", "ethereum", "eth",
+        "brent", "wti",
+    }
     for item in data.get("candidates", []) if isinstance(data, dict) else []:
         if not isinstance(item, dict):
             continue
         ticker = str(item.get("ticker") or "").strip()
         name = str(item.get("name") or "").strip()
+        normalized_ticker = _normalisiere_ticker(ticker)
+        if normalized_ticker in non_equity_tickers:
+            continue
         if ticker and name and ticker.casefold() != name.casefold():
-            identities[_normalisiere_ticker(ticker)] = name
-            name_tickers.setdefault(name.casefold(), set()).add(_normalisiere_ticker(ticker))
+            identities[normalized_ticker] = name
+            name_tickers.setdefault(name.casefold(), set()).add(normalized_ticker)
     starts = [m.start() for m in re.finditer(
         r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b", text
     )]
