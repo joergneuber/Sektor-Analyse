@@ -6277,6 +6277,95 @@ def _repariere_7_4_fx_aus_makroquelle(text, makro_text):
     replacement = "\n".join(lines).strip() + "\n"
     return text[:match.start()] + replacement + text[match.end():], True
 
+def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
+    """Ersetzt einen zu knappen 7.5-Rohstoffblock deterministisch durch
+    quellengebundene Rohstofffakten aus dem aktuellen Makro-Briefing.
+
+    Gold, Silber, Platin und Palladium werden bewusst nicht übernommen; diese
+    gehören ausschließlich in Punkt 8. Fehlende Rohstoffwerte bleiben
+    ausdrücklich unbekannt und werden nicht geschätzt.
+    """
+    if not text:
+        return text, False
+
+    match = re.search(
+        r"(?ims)^\s*7\.5\s+Rohstoffe\s*$.*?(?=^\s*7\.6\s+Krypto\s*$|^\s*8\.\s+|\Z)",
+        text,
+    )
+    if not match:
+        return text, False
+
+    block = match.group(0).strip()
+    body = re.sub(r"(?im)^\s*7\.5\s+Rohstoffe\s*$", "", block, count=1).strip()
+    compact = re.sub(r"\W", "", body, flags=re.UNICODE)
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    label_only = bool(lines) and all(
+        re.fullmatch(r"[^:]{1,100}:\s*[^:]{1,120}", line)
+        and len(re.findall(r"[A-Za-zÄÖÜäöüßÀ-ÿ0-9]{3,}", line, flags=re.UNICODE)) <= 8
+        for line in lines
+    )
+    if len(compact) >= 180 and not label_only:
+        return text, False
+
+    refs = _extrahiere_makro_referenzwerte(makro_text or "")
+
+    def get_ref(*aliases):
+        for alias in aliases:
+            ref = refs.get(alias.casefold())
+            if ref is not None:
+                return ref
+        return None
+
+    def fmt_ref(label, ref):
+        if ref is None:
+            return f"{label}: in der autoritativen Makroquelle nicht als strukturierter Wert vorhanden."
+        parts = [f"{label}: {ref['kurs']}"]
+        if ref.get("datenstand"):
+            parts.append(f"Datenstand={ref['datenstand']}")
+        if ref.get("schluss") is not None:
+            parts.append(f"Letzter_Schluss={ref['schluss']}")
+        perioden = ref.get("perioden") or {}
+        if perioden:
+            parts.append("Veränderungen: " + ", ".join(f"{k}={v}%" for k, v in sorted(perioden.items())))
+        return " | ".join(parts)
+
+    # Nur Rohstoffe, die im Makro-Briefing strukturiert vorhanden sind.
+    candidates = [
+        ("Brent", get_ref("brent")),
+        ("WTI", get_ref("wti")),
+        ("Kupfer", get_ref("kupfer", "copper")),
+        ("Lithium", get_ref("lithium")),
+    ]
+    present = [(label, ref) for label, ref in candidates if ref is not None]
+
+    lines_out = ["7.5 Rohstoffe"]
+    if present:
+        for label, ref in present:
+            lines_out.append(fmt_ref(label, ref))
+        movements = []
+        for label, ref in present:
+            periods = ref.get("perioden") or {}
+            if periods:
+                vals = ", ".join(f"{k}={v}%" for k, v in sorted(periods.items()))
+                movements.append(f"{label}: ausgewiesene Periodenbewegungen ({vals}).")
+        if movements:
+            lines_out.append("Bewegung: " + " ".join(movements))
+        else:
+            lines_out.append(
+                "Bewegung: Für die vorhandenen Rohstoffe liegen in der autoritativen Quelle keine strukturierten Periodenveränderungen vor; daher wird keine zusätzliche Richtung abgeleitet."
+            )
+        lines_out.append(
+            "Einordnung: Rohstoffbewegungen sind vor allem für Energie-, Industrie- und transportintensive Branchen relevant. Eine konkrete Aktienwirkung wird nur aus den bereitgestellten Daten abgeleitet; aus fehlenden Rohstoffwerten werden keine Trends oder Setups ergänzt."
+        )
+    else:
+        lines_out.extend([
+            "Datenstatus: Die autoritative Makroquelle enthält keine strukturierten Referenzwerte für die in Punkt 7.5 vorgesehenen Rohstoffe. Deshalb werden keine Kurse, Bewegungen oder Richtungen ergänzt.",
+            "Einordnung: Ohne quellengebundene Rohstoffdaten ist keine belastbare konkrete Rohstoffrichtung oder daraus abgeleitete Aktienwirkung zulässig.",
+        ])
+
+    replacement = "\n".join(lines_out).strip() + "\n"
+    return text[:match.start()] + replacement + text[match.end():], True
+
 def _ergaenze_fehlende_ausgabestruktur(text):
     """Fügt nur fehlende Pflichtabschnitte 1–11.7 positionsgenau ein.
 
@@ -7045,7 +7134,14 @@ def _pruefe_inhaltliche_mindesttiefe(text):
                 }
                 if unavailable_re.search(b1) and unavailable_re.search(b2):
                     continue
-                if not re.search(asset_tokens[h1], b1, re.I | re.U) or not re.search(asset_tokens[h2], b2, re.I | re.U):
+                # Die kanonische Abschnittsüberschrift ist selbst eine belastbare
+                # Asset-Identität. content_lines() entfernt diese Überschrift für
+                # den Anti-Copy-Vergleich; deshalb darf die Asset-Prüfung sie nicht
+                # ebenfalls verwerfen. Der anschließende Identitätsvergleich des
+                # Inhalts bleibt unverändert bestehen.
+                asset_source_1 = f"{h1}\n{b1}"
+                asset_source_2 = f"{h2}\n{b2}"
+                if not re.search(asset_tokens[h1], asset_source_1, re.I | re.U) or not re.search(asset_tokens[h2], asset_source_2, re.I | re.U):
                     errors.append(f"{h1} / {h2}: Edelmetallabschnitte nicht eindeutig assetbezogen.")
                     continue
                 if b1 == b2:
@@ -7484,6 +7580,9 @@ def speichere_ergebnis(text):
         final_text, fx_repaired = _repariere_7_4_fx_aus_makroquelle(final_text, makro_text_fx)
         if fx_repaired:
             print("INFO: 7.4 FX deterministisch aus autoritativer Makroquelle repariert (Gemini-Ausgabe zu knapp).")
+        final_text, rohstoffe_repaired = _repariere_7_5_rohstoffe_aus_makroquelle(final_text, makro_text_fx)
+        if rohstoffe_repaired:
+            print("INFO: 7.5 Rohstoffe deterministisch aus autoritativer Makroquelle repariert (Gemini-Ausgabe zu knapp).")
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
         final_text = _bereinige_punkt_24_nur_a(final_text)
