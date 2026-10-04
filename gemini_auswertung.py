@@ -7475,6 +7475,15 @@ def speichere_ergebnis(text):
         final_text = _normalisiere_punkt11_quellengebunden(final_text)
         final_text = _normalisiere_name_ticker_ausgabe(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
+
+        # Letzte Strukturabsicherung NACH allen inhaltlichen Normalisierungen.
+        # Frühere Pflichtabschnitte können durch nachgelagerte Normalisierungen
+        # verändert oder entfernt werden; deshalb wird die verbindliche
+        # 1–11.7-Struktur unmittelbar vor dem harten Final-Gate nochmals
+        # deterministisch ergänzt. Bereits vorhandene echte Inhalte bleiben
+        # unverändert.
+        final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+
         _pruefe_name_ticker_gate(final_text)
         _pruefe_punkt11_quellenbindung(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
