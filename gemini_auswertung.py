@@ -3064,9 +3064,10 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "2. 🎯 KONKRETE TRADES: 2.1 Trendfolge mit validem Setup, Aktie/Ticker, Entry, Stop, TP1/TP2, CRV, technischem Zustand, Makro-/Sektorunterstützung und Risiken; "
         "2.2 Trendwende mit Abwärtsbewegung, Boden-/Wendezeichen, Entry, Stop, Ziele, CRV und bestätigten/fehlenden Kriterien; "
         "2.3 Short mit Abwärtsthese, technischer Bestätigung, Entry, Stop, TP1/TP2, CRV, Makro-/Sektorunterstützung und Risiken; "
-        "2.4 HebelTrader darf AUSSCHLIESSLICH aktuelle HebelTrader-Scan-/Einzel-Check-Kandidaten (KAUFKANDIDAT A/B/C) wiedergeben. "
+        "2.4 HebelTrader darf AUSSCHLIESSLICH aktuelle KAUFKANDIDAT-A-Titel als konkrete Trades wiedergeben. "
+        "KAUFKANDIDAT B/C, KEIN KANDIDAT, KEIN SETUP, VALIDE/VORBEREITET ohne A sowie reine Universums-/Kontextmitglieder dürfen NICHT als Trade in 2.4 erscheinen. "
+        "Aufstiege/Abstiege zwischen A/B/C oder C→KEIN KANDIDAT dürfen ausschließlich qualitativ interpretiert werden und erzeugen erst bei aktuellem Status KAUFKANDIDAT A einen konkreten 2.4-Trade. "
         "Offene Positionen aus Offene Positionen+Check.csv gehören NICHT in 2.4, sondern ausschließlich in Punkt 10. "
-        "KEIN KANDIDAT ist kein konkreter Trade und darf daher in 2.4 nicht als Trade vorgeschlagen werden. "
         "Für jeden genannten Titel zwingend Name und Ticker im Format Name (TICKER); Basisinstrument, Richtung, Setup, Entry, Stop, Ziel, Risiko und Hebel-/Volatilitätsrisiken nur soweit autoritativ vorhanden. "
         "2.5 sonstige Gemini-Chancen mit nachvollziehbarer Datenbegründung und konkretem Titel. Fehlende Daten nicht ersetzen.\n"
         "3. 🧠 THEMEN & ZUSAMMENHÄNGE: 3.1 Makro→Branche→Aktie; 3.2 Rohstoff→Branche→Aktie; 3.3 Politik→Branche→Aktie; "
@@ -7068,6 +7069,298 @@ def _pruefe_inhaltliche_mindesttiefe(text):
         raise RuntimeError("INHALTLICHE_MINDESTTIEFE_UNGUELTIG: " + " | ".join(errors))
     print("INHALTLICHE-MINDESTTIEFE-GATE: PASS")
 
+
+def _autoritative_a_kandidaten():
+    """Liest ausschließlich den aktuellen HEBELTRADER-Status für Punkt 2.4.
+
+    2.4 ist bewusst enger als das Trade-Story-Universum: Nur KAUFKANDIDAT A
+    ist ein konkreter aktueller HebelTrader-Trade. B/C und alle anderen
+    Universumsmitglieder bleiben Kontext und dürfen hier nicht als Trade
+    erscheinen.
+    """
+    pfad = BEOBACHTUNGSLISTE_DATEI
+    if not os.path.isfile(pfad):
+        return set(), set(), False
+    try:
+        daten = json.loads(Path(pfad).read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"2.4_AUTORITATIVE_A_QUELLE_NICHT_LESBAR: {exc}") from exc
+    if not isinstance(daten, dict):
+        raise RuntimeError("2.4_AUTORITATIVE_A_QUELLE_UNGUELTIG")
+    tickers, names = set(), set()
+    for ticker, eintrag in daten.items():
+        if not isinstance(eintrag, dict):
+            continue
+        status = str(eintrag.get("status") or "").strip().upper()
+        if status != "KAUFKANDIDAT A":
+            continue
+        if ticker:
+            tickers.add(_normalisiere_ticker(ticker))
+        for key in ("name", "firmenname"):
+            value = str(eintrag.get(key) or "").strip()
+            if value:
+                names.add(_normalisiere_positionsname(value))
+    return tickers, names, True
+
+
+def _bereinige_punkt_24_nur_a(text):
+    """Entfernt deterministisch Nicht-A-Titel aus 2.4.
+
+    Die Gemini-Interpretation bleibt für eindeutig aktuelle A-Titel erhalten.
+    B/C/KEIN KANDIDAT werden nicht zu Trades umgedeutet. Eintragstrennung
+    erfolgt über Leerzeilen; falls Gemini mehrere A/B/C-Titel in einen Absatz
+    mischt, wird der gesamte gemischte Absatz konservativ entfernt, statt
+    einen falschen Trade zu erzeugen.
+    """
+    if not text:
+        return text
+    tickers, names, available = _autoritative_a_kandidaten()
+    if not available:
+        raise RuntimeError("2.4_AUTORITATIVE_A_QUELLE_FEHLT")
+
+    # Alle Nicht-A-Statuswerte werden ebenfalls ermittelt. Ein Absatz, der
+    # gleichzeitig einen autoritativen A-Titel und einen autoritativen B/C-
+    # oder sonstigen Nicht-A-Titel enthält, darf nicht als A-Trade bestehen
+    # bleiben: Die Information ist nicht mehr eindeutig und wird konservativ
+    # vollständig entfernt.
+    try:
+        beobachtungsdaten = json.loads(Path(BEOBACHTUNGSLISTE_DATEI).read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"2.4_AUTORITATIVE_A_QUELLE_NICHT_LESBAR: {exc}") from exc
+    nicht_a_tickers, nicht_a_names = set(), set()
+    if isinstance(beobachtungsdaten, dict):
+        for ticker, eintrag in beobachtungsdaten.items():
+            if not isinstance(eintrag, dict):
+                continue
+            status = str(eintrag.get("status") or "").strip().upper()
+            if status == "KAUFKANDIDAT A":
+                continue
+            norm_ticker = _normalisiere_ticker(ticker) if ticker else ""
+            if norm_ticker:
+                nicht_a_tickers.add(norm_ticker)
+            for key in ("name", "firmenname"):
+                value = str(eintrag.get(key) or "").strip()
+                if value:
+                    nicht_a_names.add(_normalisiere_positionsname(value))
+    m = re.search(r"(?ms)^2\.4\s+HebelTrader\s*$", text)
+    if not m:
+        return text
+    next_m = re.search(r"(?m)^2\.5\s+", text[m.end():])
+    end = m.end() + next_m.start() if next_m else len(text)
+    block = text[m.end():end]
+    parts = re.split(r"\n\s*\n", block.strip()) if block.strip() else []
+    kept = []
+    for part in parts:
+        norm = _normalisiere_positionsname(part)
+        has_a = any(t and re.search(rf"(?<![A-Z0-9.\-]){re.escape(t)}(?![A-Z0-9.\-])", part, re.I) for t in tickers)
+        has_a = has_a or any(n and n in norm for n in names)
+        has_non_a = any(
+            t and re.search(rf"(?<![A-Z0-9.\-]){re.escape(t)}(?![A-Z0-9.\-])", part, re.I)
+            for t in nicht_a_tickers
+        )
+        has_non_a = has_non_a or any(n and n in norm for n in nicht_a_names)
+        if has_a and not has_non_a:
+            kept.append(part.strip())
+    rebuilt = "2.4 HebelTrader\n\n" + ("\n\n".join(kept) if kept else "Keine aktuellen KAUFKANDIDAT-A-Trades aus der autoritativen HEBELTRADER-Beobachtungsliste.")
+    return text[:m.start()] + rebuilt + "\n\n" + text[end:]
+
+
+def _normalisiere_punkt10_autoritaet(text):
+    """Sichert Punkt 10 gegen erfundene technische Positionsänderungen.
+
+    10.3/10.5 sind bereits deterministisch. 10.2 wird zusätzlich auf die
+    tatsächlich vorhandenen autoritativen Stop-/TP-Änderungen begrenzt; wenn
+    keine solche Änderung vorliegt, wird eine klare Negativfeststellung gesetzt.
+    """
+    if not text:
+        return text
+    csv_path = finde_datei(DATEIMUSTER["Offene Positionen+Check.csv"])
+    if not csv_path or not os.path.isfile(csv_path):
+        raise RuntimeError("PUNKT10_AUTORITATIVE_QUELLE_FEHLT")
+    try:
+        raw = Path(csv_path).read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise RuntimeError(f"PUNKT10_AUTORITATIVE_QUELLE_NICHT_LESBAR: {exc}") from exc
+    # Nur explizite Änderungsfelder gelten als Beleg. Die vorhandenen CSV-Fakten
+    # werden nicht von Gemini-Zahlen überschrieben.
+    change_markers = re.findall(r"(?im)^.*(?:Stop|TP1|TP2).*(?:geändert|geaendert|verändert|veraendert|neu|alt).*$", raw)
+    start = text.find("10.2 Stop-/TP-Änderungen")
+    end = text.find("\n10.3 Positionen mit neuer Investmentthese", start) if start >= 0 else -1
+    if start >= 0 and end > start and not change_markers:
+        replacement = ("10.2 Stop-/TP-Änderungen\n\n"
+                       "Keine tatsächlich verifizierte Stop-/TP-Änderung in der autoritativen "
+                       "Offene Positionen+Check-Datenquelle festgestellt.")
+        text = text[:start] + replacement + text[end:]
+    return text
+
+
+def _normalisiere_name_ticker_ausgabe(text):
+    """Erzwingt Name (Ticker) für konkrete bekannte Unternehmensnennungen."""
+    universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
+    if not universe_path or not os.path.isfile(universe_path):
+        raise RuntimeError("NAME_TICKER_NORMALISIERUNG_QUELLE_FEHLT")
+    data = json.loads(Path(universe_path).read_text(encoding="utf-8"))
+    by_name = {}
+    by_ticker = {}
+    for item in data.get("candidates", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not ticker or not name or name.casefold() == ticker.casefold():
+            continue
+        key = name.casefold()
+        by_name.setdefault(key, {"name": name, "tickers": set()})["tickers"].add(ticker)
+        by_ticker[ticker.casefold()] = name
+    unique_names = [(v["name"], next(iter(v["tickers"]))) for v in by_name.values() if len(v["tickers"]) == 1]
+    starts = [m.start() for m in re.finditer(r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b", text)]
+    if not starts:
+        return text
+    spans = [(s, starts[i + 1] if i + 1 < len(starts) else len(text)) for i, s in enumerate(starts)]
+    for start, end in reversed(spans):
+        block = text[start:end]
+        lines = block.splitlines(True)
+        for i, line in enumerate(lines):
+            for name, ticker in unique_names:
+                if name.casefold() in line.casefold() and not re.search(rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)", line, re.I):
+                    lines[i] = re.sub(re.escape(name), f"{name} ({ticker})", lines[i], count=1, flags=re.I)
+                    line = lines[i]
+        # Nur konkrete Aktienzeilen mit isoliertem Ticker werden ersetzt.
+        for i, line in enumerate(lines):
+            if not re.search(r"(?i)(^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|sektor|markt:|entry|stop:|tp1|tp2)", line):
+                continue
+            for ticker_key, name in by_ticker.items():
+                if re.search(rf"(?<![A-Z0-9.\-]){re.escape(ticker_key)}(?![A-Z0-9.\-])", line, re.I) and not re.search(rf"\([^\n()]*\b{re.escape(ticker_key)}\b[^\n()]*\)", line, re.I):
+                    lines[i] = re.sub(rf"(?<![A-Z0-9.\-]){re.escape(ticker_key)}(?![A-Z0-9.\-])", f"{name} ({ticker_key.upper()})", line, count=1, flags=re.I)
+                    break
+        block=''.join(lines)
+        text=text[:start]+block+text[end:]
+    return text
+
+def _pruefe_name_ticker_gate(text):
+    """Harte Endprüfung: konkrete Aktien-/Unternehmensbezüge nur als Name (Ticker)."""
+    universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
+    if not universe_path or not os.path.isfile(universe_path):
+        raise RuntimeError("NAME_TICKER_GATE_QUELLE_FEHLT")
+    try:
+        data = json.loads(Path(universe_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"NAME_TICKER_GATE_QUELLE_NICHT_LESBAR: {exc}") from exc
+    identities = {}
+    name_tickers = {}
+    for item in data.get("candidates", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if ticker and name and ticker.casefold() != name.casefold():
+            identities[_normalisiere_ticker(ticker)] = name
+            name_tickers.setdefault(name.casefold(), set()).add(_normalisiere_ticker(ticker))
+    starts = [m.start() for m in re.finditer(
+        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b", text
+    )]
+    if not starts:
+        return
+    checked = "\n".join(text[s:(starts[i + 1] if i + 1 < len(starts) else len(text))] for i, s in enumerate(starts))
+    errors = []
+    company_context = re.compile(r"(?i)(?:^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|sektor|markt:|entry|stop:|tp1|tp2)")
+    for ticker, name in identities.items():
+        if len(ticker) < 2:
+            continue
+        for line in checked.splitlines():
+            if not line.strip():
+                continue
+            if re.search(rf"(?<![A-Z0-9.\-]){re.escape(ticker)}(?![A-Z0-9.\-])", line, re.I):
+                # Reine Makro-/Querverbindungsnennungen sind kein konkreter
+                # Unternehmensbezug. Konkrete Aktienzeilen müssen kanonisch sein.
+                if company_context.search(line) and not re.search(rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)", line, re.I):
+                    errors.append(f"{ticker}: konkreter Aktienbezug ohne Name (Ticker)")
+                    break
+            if name and name.casefold() in line.casefold():
+                valid_tickers = name_tickers.get(name.casefold(), {ticker})
+                if not any(re.search(rf"\([^\n()]*\b{re.escape(t)}\b[^\n()]*\)", line, re.I) for t in valid_tickers):
+                    errors.append(f"{name}: Firmenname ohne kanonisches Name (Ticker)-Format")
+                    break
+    if errors:
+        raise RuntimeError("NAME_TICKER_GATE_UNGUELTIG: " + " | ".join(errors[:20]))
+
+def _normalisiere_punkt11_quellengebunden(text):
+    """Ersetzt 11.1–11.6 durch deterministische, quellengebundene Fakten."""
+    if not text:
+        return text
+    makro_path = finde_datei(DATEIMUSTER["Makro_Briefing(...).txt"])
+    makro_quality = "NICHT VERFUEGBAR"
+    if makro_path and os.path.isfile(makro_path):
+        try:
+            makro_quality = _lese_makro_datenqualitaet(Path(makro_path).read_text(encoding="utf-8-sig")) or "NICHT AUSGEWIESEN"
+        except OSError:
+            makro_quality = "NICHT VERFUEGBAR"
+    def status(label, key):
+        path = finde_datei(DATEIMUSTER[key]) if key in DATEIMUSTER else None
+        return f"{label}: {'VERFUEGBAR' if path and os.path.isfile(path) else 'NICHT VERFUEGBAR'}"
+    lines = [
+        "11.1 Datenstatus", "",
+        status("Trade-Story-Universum", "Trade_Story_Universum(...).json"),
+        status("Trade-Story-Aktienuniversum", "Trade_Story_Aktienuniversum(...).csv"),
+        status("Makro-Datenpaket", "Makro_Briefing(...).txt"),
+        status("HEBELTRADER-Beobachtung", "Einzel_Check_A_Meldungen(...).txt"),
+        "Die Verfügbarkeit wird aus den tatsächlich vorliegenden Projektdateien bestimmt; fehlende Quellen werden nicht durch Modellwissen ersetzt.",
+        "",
+        "11.2 Makro-Szenario-Status", "",
+        f"Datenqualitaet: {makro_quality}",
+        "Das Makro-Szenario darf nur auf Basis des autoritativen Makro-Datenpakets interpretiert werden; numerische Werte werden durch die bestehenden Makro-Gates quellengebunden abgesichert.",
+        "",
+        "11.3 Datenlücken", "",
+        "Nicht vorhandene optionale Quellen oder nicht verifizierbare Einzelwerte werden als NICHT VERFUEGBAR behandelt. Es werden keine Termine, Kurse, CRV-, Fundamentaldaten oder Statuswerte ergänzt.",
+        "",
+        "11.4 externe Quellen", "",
+        status("Bitcoin Trading DE Briefing", "Bitcoin_Trading_DE_Briefing.txt"),
+        status("Gold Trading DE Briefing", "Gold_Trading_DE_Briefing.txt"),
+        status("Silber Trading DE Briefing", "Silber_Trading_DE_Briefing.txt"),
+        "Externe Briefings liefern ausschließlich qualitativen Kontext und dürfen keine technischen oder numerischen Fakten ersetzen.",
+        "",
+        "11.5 technische / fundamentale Datenqualität", "",
+        status("Technische Setups", "Setups(...).csv"),
+        status("Trendwende", "Trendwende_Setups(...).csv"),
+        status("Short", "Short_Setups(...).csv"),
+        status("Edelmetalle", "Edelmetalle_Setups(...).csv"),
+        status("Offene Positionen + Check", "Offene Positionen+Check.csv"),
+        "Technische Werte und Positionsdaten sind quellengebunden; Gemini darf fehlende Werte nicht schätzen oder zwischen Titeln übertragen.",
+        "",
+        "11.6 Hinweise zur Interpretation", "",
+        "Universumszugehörigkeit ist keine technische Bestätigung. A/B/C sind technische Statusinformationen; ein konkreter HebelTrader-Trade in 2.4 ist ausschließlich KAUFKANDIDAT A. Gemini darf Statusänderungen interpretieren, aber keine neue technische Validierung oder Positionsfakten erfinden.",
+    ]
+    new11 = "\n".join(lines)
+    m = re.search(r"(?ms)^11\. METHODIK / DATENQUALITÄT\s*$.*\Z", text)
+    if not m:
+        raise RuntimeError("PUNKT11_QUELLENBINDUNG_FEHLT")
+    # 11.7 wird aus der bestehenden deterministischen Abgrenzung erhalten.
+    old = m.group(0)
+    m117 = re.search(r"(?ms)^11\.7 Abgrenzung:\s*\n.*\Z", old)
+    if not m117:
+        tail = "11.7 Abgrenzung:\n\n" + _inhaltlicher_abgrenzungstext()
+    else:
+        tail = m117.group(0)
+    return text[:m.start()] + "11. METHODIK / DATENQUALITÄT\n\n" + new11 + "\n\n" + tail + "\n" + text[m.end():]
+
+
+def _pruefe_punkt11_quellenbindung(text):
+    """Final-Gate: 11.x muss quellengebunden und fachlich konkret sein."""
+    block_m = re.search(r"(?ms)^11\. METHODIK / DATENQUALITÄT\s*$.*\Z", text or "")
+    if not block_m:
+        raise RuntimeError("PUNKT11_QUELLENBINDUNG_FEHLT")
+    block = block_m.group(0)
+    for h in ("11.1 Datenstatus", "11.2 Makro-Szenario-Status", "11.3 Datenlücken", "11.4 externe Quellen", "11.5 technische / fundamentale Datenqualität", "11.6 Hinweise zur Interpretation", "11.7 Abgrenz:"):
+        if h not in block and h != "11.7 Abgrenz:":
+            raise RuntimeError(f"PUNKT11_QUELLENBINDUNG_FEHLT: {h}")
+    if "Keine belastbare fachliche Aussage aus den vorliegenden Projektquellen ableitbar" in block:
+        raise RuntimeError("PUNKT11_GENERISCHER_FALLBACK_VORHANDEN")
+    makro_path = finde_datei(DATEIMUSTER["Makro_Briefing(...).txt"])
+    if makro_path and os.path.isfile(makro_path):
+        qual = _lese_makro_datenqualitaet(Path(makro_path).read_text(encoding="utf-8-sig"))
+        if qual and f"Datenqualitaet: {qual}" not in block:
+            raise RuntimeError(f"PUNKT11_DATENQUALITAET_WIDERSPRUCH: erwartet={qual}")
+
 def _bereinige_ausgabe_und_formatiere(text):
     """Deterministische Endformatierung fuer fachlich getrennte Abschnitte.
 
@@ -7177,6 +7470,13 @@ def speichere_ergebnis(text):
             print("INFO: 7.4 FX deterministisch aus autoritativer Makroquelle repariert (Gemini-Ausgabe zu knapp).")
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
+        final_text = _bereinige_punkt_24_nur_a(final_text)
+        final_text = _normalisiere_punkt10_autoritaet(final_text)
+        final_text = _normalisiere_punkt11_quellengebunden(final_text)
+        final_text = _normalisiere_name_ticker_ausgabe(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
+        _pruefe_name_ticker_gate(final_text)
+        _pruefe_punkt11_quellenbindung(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
         _pruefe_inhaltliche_mindesttiefe(final_text)
 
