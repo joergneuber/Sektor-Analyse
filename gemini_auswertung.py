@@ -7978,14 +7978,9 @@ def _repariere_8_x_quellengebunden(text, edel_text):
         else:
             trend[asset] = (m200.group(2), m200.group(3))
 
-        lage_line = next(
-            (line for line in edel_text.splitlines()
-             if re.match(r"^\s*" + re.escape(asset) + r":\s*Kurs\s+", line)),
-            "",
-        )
         low = re.search(
             r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
-            lage_line,
+            source_block,
         )
         if low:
             lows[asset] = (low.group(1), low.group(2))
@@ -8226,16 +8221,9 @@ def speichere_ergebnis(text):
         # Dieser Pass steht bewusst unmittelbar vor den harten Quellen-Gates,
         # damit nachgelagerte Normalisierungen die autoritativen Werte nicht
         # wieder aus ihrem zugeordneten Abschnitt entfernen koennen.
-        briefing_pfad = finde_datei(DATEIMUSTER["briefing.txt"])
-        briefing_text = ""
-        if briefing_pfad and os.path.isfile(briefing_pfad):
-            try:
-                briefing_text = Path(briefing_pfad).read_text(encoding="utf-8-sig")
-            except OSError as exc:
-                raise RuntimeError(f"BRIEFING_QUELLE_NICHT_LESBAR: {exc}") from exc
         final_text, quellen_repaired = _repariere_7_x_quellengebunden(
             final_text,
-            briefing_text,
+            briefing,
             makro_text_fx,
         )
         if quellen_repaired:
