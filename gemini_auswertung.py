@@ -7341,6 +7341,32 @@ def _normalisiere_name_ticker_ausgabe(text):
                     break
         block=''.join(lines)
         text=text[:start]+block+text[end:]
+    # Finaler globaler Name(Ticker)-Pass: Ein bekannter Unternehmens-Ticker
+    # darf nicht nur in den heuristisch erkannten Aktienzeilen normalisiert
+    # werden. Portfolio-/Kontextsaetze koennen einen konkreten Ticker ebenfalls
+    # enthalten (z. B. "Im Portfolio ... TSM ...") und muessen deshalb vor dem
+    # harten Gate ebenfalls kanonisiert werden. Die Unicode-sichere Tickergrenze
+    # verhindert weiterhin Treffer innerhalb normaler Woerter. Bereits korrekt
+    # kanonisierte "Name (Ticker)"-Vorkommen bleiben unveraendert.
+    global_lines = text.splitlines(True)
+    for i, line in enumerate(global_lines):
+        changed = line
+        for ticker_key, name in by_ticker.items():
+            if len(ticker_key) < 2:
+                continue
+            if not re.search(rf"{_ticker_grenzen_regex(ticker_key)}", changed, re.I):
+                continue
+            if re.search(rf"\([^\n()]*\b{re.escape(ticker_key)}\b[^\n()]*\)", changed, re.I):
+                continue
+            changed = re.sub(
+                rf"{_ticker_grenzen_regex(ticker_key)}",
+                f"{name} ({ticker_key.upper()})",
+                changed,
+                count=1,
+                flags=re.I,
+            )
+        global_lines[i] = changed
+    text = ''.join(global_lines)
     return text
 
 def _pruefe_name_ticker_gate(text):
@@ -7548,6 +7574,510 @@ def _bereinige_ausgabe_und_formatiere(text):
     return "\n".join(out).strip() + "\n"
 
 
+
+def _abschnitt_text(text, heading, naechste_headings):
+    """Liest einen Pflichtabschnitt, auch bei einer von Gemini gelieferten Inline-Ueberschrift."""
+    source = _normalisiere_inline_pflichtueberschriften(text or "")
+    m = re.search(r"(?m)^" + re.escape(heading) + r"\s*$", source)
+    if not m:
+        return ""
+    end = len(source)
+    for nxt in naechste_headings:
+        n = re.search(r"(?m)^" + re.escape(nxt) + r"\s*$", source[m.end():])
+        if n:
+            end = min(end, m.end() + n.start())
+    return (source[m.start():end] or "").strip()
+
+
+def _normalisiere_inline_pflichtueberschriften(text):
+    """Trennt Inline-Pflichtueberschriften von ihrem eigentlichen Abschnittstext."""
+    if not text:
+        return text
+    headings = (
+        "7.1 Aktienmärkte / Indizes", "7.2 Zinsen", "7.3 Volatilität", "7.4 FX",
+        "7.5 Rohstoffe", "7.6 Krypto", "7.7 Konjunktur / Makro",
+        "8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium",
+    )
+    pattern = re.compile(r"^(\s*)(" + "|".join(re.escape(h) for h in headings) + r")\s*:\s*(.*)$")
+    out = []
+    for line in str(text).splitlines():
+        m = pattern.match(line)
+        if not m:
+            out.append(line)
+            continue
+        indent, heading, rest = m.groups()
+        out.append(f"{indent}{heading}")
+        if rest.strip():
+            out.append(f"{indent}{rest.strip()}")
+    return "\n".join(out) + ("\n" if str(text).endswith("\n") else "")
+
+
+def _zahl_im_block_vorhanden(block, wert):
+    """Prueft numerisch robust, ob ein autoritativer Wert im Ausgabeabschnitt vorkommt."""
+    if wert is None:
+        return False
+    try:
+        ziel = float(wert)
+    except (TypeError, ValueError):
+        return False
+
+    for match in re.finditer(r"(?<![A-Za-z0-9])[-+]?\d[\d.,]*(?:%|)", block or ""):
+        raw = match.group(0).rstrip("%").strip()
+        kandidat = _quellenwert_float(raw)
+        if kandidat is None:
+            continue
+        if abs(kandidat - ziel) <= max(1e-9, abs(ziel) * 1e-9):
+            return True
+    return False
+
+
+def _gate_quellenwert(block, label, wert, fehler):
+    if not _zahl_im_block_vorhanden(block, wert):
+        fehler.append(f"{label}: autoritativer Wert {wert} nicht im zugeordneten Ausgabeabschnitt gefunden.")
+
+
+def _quellenwert_aus_zeile(source, label, aus_parenthesen=False):
+    """Liest den aktuellen numerischen Wert hinter einem autoritativen Label."""
+    for line in (source or "").splitlines():
+        clean_line = line.lstrip(" -•\t")
+        if not clean_line.startswith(label + ":"):
+            continue
+        if aus_parenthesen:
+            m = re.search(r"\(\s*([-+]?\d[\d.,]*)", clean_line)
+        else:
+            m = re.search(r":\s*([-+]?\d[\d.,]*)", clean_line)
+        if m:
+            raw = m.group(1).strip().strip(".,;:()[]{}")
+            if raw:
+                return raw
+    return None
+
+
+def _quellenwert_float(raw):
+    if raw is None:
+        return None
+    value = raw.strip().strip(".,;:()[]{}")
+    if value.count(",") and value.count("."):
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    elif value.count(",") == 1 and len(value.rsplit(",", 1)[1]) in (1, 2):
+        value = value.replace(",", ".")
+    elif value.count(".") > 1:
+        value = value.replace(".", "")
+    else:
+        value = value.replace(",", "")
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
+    """Vollstaendigkeits-Gate fuer 7.1–7.7 gegen die jeweils aktuellen Tagesquellen."""
+    briefing = ""
+    makro = ""
+    for key, target in (("briefing.txt", "briefing"), ("Makro_Briefing(...).txt", "makro")):
+        path = (eingabedateien or {}).get(key)
+        if path and os.path.isfile(path):
+            try:
+                content = Path(path).read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                raise RuntimeError(f"PUNKT7_QUELLE_NICHT_LESBAR: {key}: {exc}") from exc
+            if target == "briefing":
+                briefing = content
+            else:
+                makro = content
+
+    sections = [
+        "7.1 Aktienmärkte / Indizes", "7.2 Zinsen", "7.3 Volatilität", "7.4 FX",
+        "7.5 Rohstoffe", "7.6 Krypto", "7.7 Konjunktur / Makro",
+    ]
+    blocks = {h: _abschnitt_text(text, h, sections + ["8.1 Gold"]) for h in sections}
+    errors = [f"{h}: Abschnitt fehlt oder ist nicht kanonisch abgrenzbar." for h in sections if not blocks[h]]
+    if errors:
+        raise RuntimeError("PUNKT7_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))
+
+    # Pro Abschnitt werden nur die aktuell in den Quellen vorhandenen Kernfelder
+    # abgefragt. Dadurch ist das Gate datumsoffen und muss nicht bei jedem Lauf
+    # mit neuen Kursen/Terminen im Code angepasst werden.
+    index_labels = [
+        ("S&P 500", False), ("Nasdaq", False), ("DAX", False),
+        ("EuroStoxx50", False), ("Russell 2000", False), ("Nikkei 225", False),
+        ("Hang Seng", False), ("Shanghai Composite", True),
+    ]
+    direct_labels = {
+        "7.2 Zinsen": ["Fed Funds Effective Rate", "ECB Deposit Facility Rate", "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury", "Realzins 10Y TIPS", "2Y-10Y Spread"],
+        "7.3 Volatilität": ["VIX"],
+        "7.4 FX": ["DXY", "EUR/USD", "USD/JPY"],
+        "7.5 Rohstoffe": ["WTI", "Brent", "Erdgas", "Kupfer", "Aluminium", "Zink", "Lithium", "Eisenerz"],
+        "7.6 Krypto": ["Bitcoin", "Ethereum"],
+        "7.7 Konjunktur / Makro": ["CPI", "Core CPI", "PCE", "Core PCE", "PPI", "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "ADP Employment Change", "Reales BIP-Wachstum", "ISM Manufacturing PMI", "ISM Services PMI"],
+    }
+
+    errors = []
+    for label, parenthesized in index_labels:
+        raw = _quellenwert_aus_zeile(briefing, label, parenthesized)
+        if raw is None:
+            errors.append(f"7.1 Aktienmärkte / Indizes: autoritativer Quellwert {label} fehlt in Briefing.")
+            continue
+        value = _quellenwert_float(raw)
+        if value is None:
+            errors.append(f"7.1 Aktienmärkte / Indizes: Quellwert {label}={raw!r} ist nicht numerisch lesbar.")
+            continue
+        _gate_quellenwert(blocks["7.1 Aktienmärkte / Indizes"], label, value, errors)
+
+    for heading, labels in direct_labels.items():
+        for label in labels:
+            raw = _quellenwert_aus_zeile(makro, label)
+            if raw is None:
+                errors.append(f"{heading}: autoritativer Quellwert {label} fehlt im Makro_Briefing.")
+                continue
+            value = _quellenwert_float(raw)
+            if value is None:
+                errors.append(f"{heading}: Quellwert {label}={raw!r} ist nicht numerisch lesbar.")
+                continue
+            _gate_quellenwert(blocks[heading], label, value, errors)
+
+    if "Lithium" in blocks["7.5 Rohstoffe"]:
+        lithium_source = next((line for line in makro.splitlines() if line.startswith("Lithium:")), "")
+        if "STATUS=PROXY" in lithium_source and not re.search(r"proxy", blocks["7.5 Rohstoffe"], re.I):
+            errors.append("7.5 Rohstoffe: Lithium wurde genannt, aber der Quellstatus PROXY wird in der Ausgabe nicht kenntlich gemacht.")
+
+    if errors:
+        raise RuntimeError("PUNKT7_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))
+    print("PUNKT-7-QUELLENABDECKUNGS-GATE: PASS")
+
+
+def _edelmetall_quellenblock(edel_text, asset):
+    """Liefert den exakt zugeordneten operativen Diagnoseblock eines Metalls."""
+    lines = (edel_text or "").splitlines()
+    start = next(
+        (
+            i for i, line in enumerate(lines)
+            if re.match(r"^\s*-\s*" + re.escape(asset) + r"\s*\([^)]*\)\s*$", line)
+        ),
+        None,
+    )
+    if start is None:
+        return ""
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if re.match(r"^\s*-\s*(?:Gold|Silber|Platin|Palladium)\s*\([^)]*\)\s*$", lines[i]):
+            end = i
+            break
+        if re.match(r"^\s*=+\s*$", lines[i]):
+            end = i
+            break
+        if re.match(r"^\s*STRATEGIE:\s+", lines[i]):
+            end = i
+            break
+    return "\n".join(lines[start:end]).strip()
+
+
+def _edelmetall_strategieblock(edel_text, strategie):
+    """Liest genau einen autoritativen STRATEGIE-Block."""
+    marker = f"STRATEGIE: {strategie.upper()}"
+    matches = list(re.finditer(r"(?m)^" + re.escape(marker) + r"\s*$", edel_text or ""))
+    if not matches:
+        return ""
+    start = matches[0].end()
+    nxt = re.search(r"(?m)^STRATEGIE:\s+", (edel_text or "")[start:])
+    end = start + nxt.start() if nxt else len(edel_text or "")
+    return (edel_text or "")[start:end].strip()
+
+
+def _edelmetall_status(edel_text, strategie, asset, ticker):
+    """Ermittelt den Status deterministisch aus dem autoritativen Strategieblock."""
+    block = _edelmetall_strategieblock(edel_text, strategie)
+    if not block:
+        raise RuntimeError(
+            f"EDELMETALL_QUELLE_UNVOLLSTAENDIG: STRATEGIE:{strategie.upper()} fehlt."
+        )
+
+    if strategie.casefold() == "trendfolge":
+        source_block = _edelmetall_quellenblock(edel_text, asset)
+        if not source_block:
+            raise RuntimeError(
+                f"EDELMETALL_QUELLE_UNVOLLSTAENDIG: {asset} fehlt im Trendfolge-Diagnoseblock."
+            )
+        if re.search(r"(?i)\bEndergebnis:\s*KANDIDAT\b", source_block):
+            return "KANDIDAT"
+        if re.search(
+            r"(?i)\bErgebnis:\s*BLOCKIERT\b|\bGesamt\s+NEIN\b|\bEndergebnis:\s*BLOCKIERT\b",
+            source_block,
+        ):
+            return "kein Kandidat / blockiert"
+        return "nicht eindeutig"
+
+    # Trendwende/Short enthalten bei 0 Kandidaten teilweise keine
+    # assetbezogenen Detailblöcke. Dann darf kein Asset-Status erfunden werden.
+    m_asset = re.search(
+        r"(?im)^\s*[-•]?\s*" + re.escape(asset) +
+        r"\s*\(" + re.escape(ticker) + r"\)\s*$",
+        block,
+    )
+    if m_asset:
+        tail = block[m_asset.start():]
+        nxt = re.search(
+            r"(?im)^\s*[-•]\s*(?:Gold|Silber|Platin|Palladium)\s*\([^)]*\)\s*$",
+            tail[1:],
+        )
+        asset_block = tail[:nxt.start() + 1] if nxt else tail
+        if re.search(
+            r"(?i)\bEndergebnis:\s*KANDIDAT\b|\bStatus:\s*VALIDE\b",
+            asset_block,
+        ):
+            return "KANDIDAT"
+        if re.search(
+            r"(?i)\bBLOCKIERT\b|\bKEIN\s+SETUP\b|\bKEIN\s+KANDIDAT\b|\bEndergebnis:\s*BLOCKIERT\b",
+            asset_block,
+        ):
+            return "kein Kandidat / blockiert"
+        return "im Quellblock vorhanden"
+
+    zero_pattern = (
+        r"(?i)Keine\s+(?:Trendwende|Short)-Kandidaten"
+        r"|=>\s*(?:TRENDWENDE|SHORT)-KANDIDAT:\s*0\b"
+    )
+    if re.search(zero_pattern, block):
+        return "kein Kandidat"
+    if re.search(r"(?i)=>\s*(?:TRENDWENDE|SHORT)-KANDIDAT:\s*[1-9]\d*", block):
+        return "nicht eindeutig"
+    return "nicht eindeutig"
+
+
+def _repariere_8_x_quellengebunden(text, edel_text):
+    """
+    Uebernimmt die autoritativen 8.1–8.4-Daten deterministisch.
+
+    Regeln:
+    - Quelle ist ausschliesslich das aktuelle Edelmetalle-Briefing.
+    - Kurs/4W und EMA200/WMA200 werden fuer alle vier Metalle zwingend aus
+      der Quelle gelesen; fehlt ein Wert, wird hart abgebrochen.
+    - Bereits vorhandene Gemini-Werte dieser Felder werden entfernt und durch
+      die Quellwerte ersetzt.
+    - Strategie-Status wird ebenfalls ausschliesslich aus der Quelle erzeugt.
+    - Qualitative Gemini-Inhalte bleiben unveraendert.
+    """
+    if not text:
+        return text
+    if not edel_text:
+        raise RuntimeError("EDELMETALL_QUELLE_UNVOLLSTAENDIG: leere Quelle.")
+
+    headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
+    assets = {
+        "8.1 Gold": ("Gold", "GC=F"),
+        "8.2 Silber": ("Silber", "SI=F"),
+        "8.3 Platin": ("Platin", "PL=F"),
+        "8.4 Palladium": ("Palladium", "PA=F"),
+    }
+
+    # 1) Ausschliesslich den aktuellen LAGE-JE-METALL-Block auswerten.
+    lage_match = re.search(
+        r"(?ms)^LAGE JE METALL\b.*?^(?=TRENDFOLGE-DIAGNOSE JE METALL\b)",
+        edel_text,
+    )
+    if not lage_match:
+        raise RuntimeError(
+            "EDELMETALL_QUELLE_UNVOLLSTAENDIG: Block 'LAGE JE METALL' fehlt."
+        )
+    lage_block = lage_match.group(0)
+
+    lage = {}
+    missing = []
+    for asset, _ticker in assets.values():
+        m = re.search(
+            r"(?m)^\s*" + re.escape(asset) +
+            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen\b[^\n]*$",
+            lage_block,
+        )
+        if not m:
+            missing.append(f"{asset}: Kurs/4W")
+        else:
+            lage[asset] = (m.group(1), m.group(2))
+
+    # 2) Operative EMA200/WMA200-Basis aus dem exakt zugeordneten
+    #    Trendfolge-Diagnoseblock lesen.
+    trend = {}
+    lows = {}
+    for asset, _ticker in assets.values():
+        source_block = _edelmetall_quellenblock(edel_text, asset)
+        if not source_block:
+            missing.append(f"{asset}: Trendfolge-Diagnose")
+            continue
+
+        m200 = re.search(
+            r"200er-Trend:\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+            r"EMA200\s+([-+]?\d[\d.,]*)\s*\([^)]*\)\s*\|\s*"
+            r"WMA200\s+([-+]?\d[\d.,]*)",
+            source_block,
+        )
+        if not m200:
+            missing.append(f"{asset}: EMA200/WMA200")
+        else:
+            trend[asset] = (m200.group(2), m200.group(3))
+
+        low = re.search(
+            r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
+            source_block,
+        )
+        if low:
+            lows[asset] = (low.group(1), low.group(2))
+
+    if missing:
+        raise RuntimeError(
+            "EDELMETALL_QUELLE_UNVOLLSTAENDIG: " + " | ".join(missing)
+        )
+
+    # 3) Alle vier Ausgabeabschnitte müssen vorhanden und kanonisch abgrenzbar sein.
+    matches = list(
+        re.finditer(
+            r"(?m)^(8\.[1-4]\s+(?:Gold|Silber|Platin|Palladium))\s*$",
+            text,
+        )
+    )
+    found = {m.group(1) for m in matches}
+    missing_headings = [h for h in headings if h not in found]
+    if missing_headings:
+        raise RuntimeError(
+            "PUNKT8_QUELLENUEBERNAHME_UNGUELTIG: fehlende Ausgabeabschnitte: "
+            + ", ".join(missing_headings)
+        )
+
+    replacements = []
+    for i, match in enumerate(matches):
+        heading = match.group(1)
+        asset, ticker = assets[heading]
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+        # Abschnitt 8.4 endet vor Punkt 9.
+        n9 = re.search(
+            r"(?m)^9\.\s*📅\s*NÄCHSTE KATALYSATOREN\s*$",
+            text[match.end():end],
+        )
+        if n9:
+            end = match.end() + n9.start()
+
+        block = text[match.start():end].strip()
+
+        cleaned = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if re.match(
+                r"^[-•]?\s*(?:Kurs(?:\s*\(Futures[^)]*\))?|"
+                r"4W|52W-Tief|Abstand 52W-Tief|EMA200|WMA200|"
+                r"Autoritative Fakten|Strategie-Status(?:\s*\([^)]*\))?)\s*:",
+                stripped,
+                re.I,
+            ):
+                continue
+            cleaned.append(line)
+
+        # 4) Quellwerte werden immer geschrieben. Es gibt keinen Fallback
+        #    auf bereits vorhandene Gemini-Werte.
+        kurs, four_w = lage[asset]
+        ema, wma = trend[asset]
+        fact_parts = [
+            f"Kurs (Futures {ticker}): {kurs}$",
+            f"4W: {four_w}%",
+        ]
+        if asset in lows:
+            low, dist = lows[asset]
+            fact_parts.extend([
+                f"52W-Tief: {low}$",
+                f"Abstand 52W-Tief: {dist}%",
+            ])
+        fact_parts.extend([
+            f"EMA200: {ema}",
+            f"WMA200: {wma}",
+        ])
+
+        insert_at = 1 if len(cleaned) > 1 else len(cleaned)
+        cleaned.insert(
+            insert_at,
+            "- Autoritative Fakten: " + " | ".join(fact_parts),
+        )
+
+        statuses = [
+            f"Trendfolge={_edelmetall_status(edel_text, 'Trendfolge', asset, ticker)}",
+            f"Trendwende={_edelmetall_status(edel_text, 'Trendwende', asset, ticker)}",
+            f"Short={_edelmetall_status(edel_text, 'Short', asset, ticker)}",
+        ]
+        cleaned.append(
+            "- Strategie-Status (autoritative Quelle): " + " | ".join(statuses)
+        )
+        replacements.append(
+            (match.start(), end, "\n".join(cleaned).strip() + "\n")
+        )
+
+    for start, end, replacement in reversed(replacements):
+        text = text[:start] + replacement + text[end:]
+
+    return text
+
+def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
+    """Vollstaendigkeits-Gate fuer 8.1–8.4 gegen das aktuelle Edelmetall-Briefing."""
+    edel = ""
+    path = (eingabedateien or {}).get("Edelmetalle_Briefing(...).txt")
+    if path and os.path.isfile(path):
+        try:
+            edel = Path(path).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise RuntimeError(f"PUNKT8_QUELLE_NICHT_LESBAR: Edelmetalle_Briefing(...).txt: {exc}") from exc
+
+    headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
+    blocks = {h: _abschnitt_text(text, h, headings + ["9. 📅 NÄCHSTE KATALYSATOREN"]) for h in headings}
+    errors = [f"{h}: Abschnitt fehlt oder ist nicht kanonisch abgrenzbar." for h in headings if not blocks[h]]
+    if errors:
+        raise RuntimeError("PUNKT8_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))
+
+    assets = {
+        "8.1 Gold": "Gold", "8.2 Silber": "Silber", "8.3 Platin": "Platin", "8.4 Palladium": "Palladium",
+    }
+    for heading, asset in assets.items():
+        block = blocks[heading]
+        lage_line = next((line for line in edel.splitlines() if re.match(r"^\s*" + re.escape(asset) + r":\s*Kurs\s+", line)), "")
+        trend_line = next((line for line in edel.splitlines() if re.match(r"^\s*-\s*" + re.escape(asset) + r"\s*\(.*\)\s*$", line) and "200er-Trend" not in line), "")
+        trend_idx = edel.find(f"- {asset} (" )
+        trend_block = edel[trend_idx:edel.find("- ", trend_idx + 3)] if trend_idx >= 0 else ""
+
+        if not lage_line:
+            errors.append(f"{heading}: aktuelle Lagezeile fehlt im Edelmetalle_Briefing.")
+        else:
+            m = re.search(r"Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen", lage_line)
+            if not m:
+                errors.append(f"{heading}: Kurs/4W-Werte konnten aus der Lagezeile nicht gelesen werden.")
+            else:
+                for label, raw in (("Kurs", m.group(1)), ("4W", m.group(2))):
+                    value = _quellenwert_float(raw)
+                    if value is not None:
+                        _gate_quellenwert(block, label, value, errors)
+
+            low_match = re.search(r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%", lage_line)
+            if low_match:
+                _gate_quellenwert(block, "52W-Tief", _quellenwert_float(low_match.group(1)), errors)
+                _gate_quellenwert(block, "Abstand 52W-Tief", _quellenwert_float(low_match.group(2)), errors)
+
+        # Die 200er-Zeile enthält die operative EMA200/WMA200-Basis und das
+        # deterministische Trendfolge-Ergebnis je Metall.
+        m200 = re.search(r"200er-Trend:\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*EMA200\s+([-+]?\d[\d.,]*)\s*\([^)]*\)\s*\|\s*WMA200\s+([-+]?\d[\d.,]*)", trend_block)
+        if not m200:
+            errors.append(f"{heading}: 200er-Trendzeile fehlt oder ist nicht lesbar.")
+        else:
+            for label, raw in (("EMA200", m200.group(2)), ("WMA200", m200.group(3))):
+                _gate_quellenwert(block, label, _quellenwert_float(raw), errors)
+        if "BLOCKIERT" in trend_block and not re.search(r"trendfolge", block, re.I):
+            errors.append(f"{heading}: Trendfolge-Blockierung fehlt in der Ausgabe.")
+        for strategy in ("Trendfolge", "Trendwende", "Short"):
+            if not re.search(r"\b" + strategy + r"\b", block, re.I):
+                errors.append(f"{heading}: {strategy}-Status/Einordnung fehlt.")
+
+    if errors:
+        raise RuntimeError("PUNKT8_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))
+    print("PUNKT-8-QUELLENABDECKUNGS-GATE: PASS")
 def speichere_ergebnis(text):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -7593,7 +8123,22 @@ def speichere_ergebnis(text):
         final_text, rohstoffe_repaired = _repariere_7_5_rohstoffe_aus_makroquelle(final_text, makro_text_fx)
         if rohstoffe_repaired:
             print("INFO: 7.5 Rohstoffe deterministisch aus autoritativer Makroquelle repariert (Gemini-Ausgabe zu knapp).")
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+
+        # 8.1–8.4: autoritative Fakten/Strategiestatus aus dem aktuellen
+        # Edelmetalle-Briefing deterministisch einsetzen; Gemini bleibt für
+        # qualitative Interpretation zuständig.
+        edelmetall_pfad = finde_datei(DATEIMUSTER["Edelmetalle_Briefing(...).txt"])
+        edelmetall_text = ""
+        if edelmetall_pfad and os.path.isfile(edelmetall_pfad):
+            try:
+                edelmetall_text = Path(edelmetall_pfad).read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                raise RuntimeError(f"EDELMETALLE_QUELLE_NICHT_LESBAR: {exc}") from exc
+            final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text)
+
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
         final_text = _bereinige_punkt_24_nur_a(final_text)
         final_text = _normalisiere_punkt10_autoritaet(final_text)
@@ -7607,7 +8152,27 @@ def speichere_ergebnis(text):
         # 1–11.7-Struktur unmittelbar vor dem harten Final-Gate nochmals
         # deterministisch ergänzt. Bereits vorhandene echte Inhalte bleiben
         # unverändert.
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+        if edelmetall_text:
+            final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text)
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
+
+        # Neue Vollstaendigkeits-Gates fuer 7.1–7.7 und 8.1–8.4.
+        # Sie werden ADDITIV vor den bestehenden Final-Gates ausgefuehrt.
+        # Keine bestehende Schutzpruefung wird dadurch ersetzt oder entfernt.
+        eingabedateien_gate = {
+            key: finde_datei(patterns)
+            for key, patterns in DATEIMUSTER.items()
+            if key in (
+                "briefing.txt",
+                "Makro_Briefing(...).txt",
+                "Edelmetalle_Briefing(...).txt",
+            )
+        }
+        _pruefe_punkt7_quellenabdeckung(final_text, eingabedateien_gate)
+        _pruefe_punkt8_quellenabdeckung(final_text, eingabedateien_gate)
 
         _pruefe_name_ticker_gate(final_text)
         _pruefe_punkt11_quellenbindung(final_text)
