@@ -2499,16 +2499,37 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
 
 
 def _gemini_quota_rollback_sendung(modell, request_tokens):
-    """Entfernt eine lokale Sendungsbuchung, wenn der Server den Request
-    wegen des minutenbezogenen Input-Token-Quotas vor Verarbeitung ablehnt."""
+    """Rollt die vollstaendige lokale Sendungsbuchung eines Requests zurueck.
+
+    Eine Sendungsregistrierung besteht aus zwei lokalen Buchungen:
+    * Input-Token im minutenbezogenen Fenster-Tracking
+    * ein Request im modellbezogenen RPD-Zaehler
+
+    Bei einem technischen 503 wurde der Request serverseitig nicht erfolgreich
+    verarbeitet. Deshalb muessen beide lokalen Buchungen gemeinsam zurueck-
+    genommen werden. Die Funktion aendert dagegen NICHT den RPD-Sperrstatus
+    fuer ein serverseitig bestaetigtes PerDay-429; dieser Pfad ruft diese
+    Funktion bewusst nicht auf.
+    """
     eintraege = _gemini_input_quota_usage.get(modell, [])
     if not eintraege:
-        return
+        return False
+
     for index in range(len(eintraege) - 1, -1, -1):
         zeitpunkt, tokens = eintraege[index]
         if tokens == request_tokens:
             del eintraege[index]
-            return
+            if _gemini_rpd_requests[modell] > 0:
+                _gemini_rpd_requests[modell] -= 1
+            if not _gemini_rpd_requests[modell]:
+                _gemini_rpd_requests.pop(modell, None)
+            print(
+                f"GEMINI-QUOTA-ROLLBACK: Modell={modell} | Request={request_tokens:,} | "
+                f"Input-Quota-Buchung entfernt | RPD-lokal={_gemini_rpd_requests.get(modell, 0)}"
+            )
+            return True
+
+    return False
 
 
 def _gemini_generate_content_quota_safe(
@@ -2594,8 +2615,12 @@ def _gemini_generate_content_quota_safe(
     # Requests zulaesst.
     _gemini_active_modell = modell
     _gemini_last_request_model = modell
+    # Der tatsaechlich reservierte Sendungszustand wird separat verfolgt, damit
+    # ein spaeterer 503 exakt dieselbe lokale Buchung zurueckrollen kann.
+    sendung_modell = modell
+    sendung_tokens = measured_tokens
     # Die Registrierung erfolgt unmittelbar vor dem echten API-Aufruf.
-    _gemini_quota_registriere_sendung(modell, measured_tokens)
+    _gemini_quota_registriere_sendung(sendung_modell, sendung_tokens)
     print(
         f"GEMINI-REQUEST-SAFE: {label} | Modell={modell} | "
         f"vorab gemessen={measured_tokens:,} <= {GEMINI_INPUT_SAFE_BUDGET:,} | "
@@ -2637,7 +2662,27 @@ def _gemini_generate_content_quota_safe(
         return _generate_content_503_retry()
     except Exception as exc:
         fehlertext = str(exc).lower()
-        if "perday" in fehlertext or "generaterequestsperdayperprojectpermodelfreetier" in fehlertext:
+
+        # Ein 503/Netzwerkfehler ist keine erfolgreich verbrauchte Sendung.
+        # Deshalb wird die unmittelbar vor dem API-Aufruf reservierte lokale
+        # Input- und RPD-Buchung vollstaendig zurueckgerollt. Ein 429 PerDay
+        # erreicht diesen Block ebenfalls, wird aber bewusst NICHT gerollt.
+        ist_perday = (
+            "perday" in fehlertext
+            or "generaterequestsperdayperprojectpermodelfreetier" in fehlertext
+        )
+        ist_technischer_sendefehler = (
+            "503" in fehlertext
+            or "unavailable" in fehlertext
+            or "high demand" in fehlertext
+            or "connection reset" in fehlertext
+            or "connection aborted" in fehlertext
+            or "timed out" in fehlertext
+        )
+        if ist_technischer_sendefehler and not ist_perday:
+            _gemini_quota_rollback_sendung(sendung_modell, sendung_tokens)
+
+        if ist_perday:
             _gemini_rpd_exhausted.add(modell)
             print(f"GEMINI-RPD-SERVER: Modell={modell} wegen 429 PerDay fuer den restlichen Lauf gesperrt.")
             for naechstes_modell in _gemini_quota_kandidaten(modell):
@@ -2657,7 +2702,9 @@ def _gemini_generate_content_quota_safe(
                     continue
                 _gemini_active_modell = verfuegbares_modell
                 _gemini_last_request_model = verfuegbares_modell
-                _gemini_quota_registriere_sendung(verfuegbares_modell, neu_gemessen)
+                sendung_modell = verfuegbares_modell
+                sendung_tokens = neu_gemessen
+                _gemini_quota_registriere_sendung(sendung_modell, sendung_tokens)
                 print(
                     f"GEMINI-RPD-SERVER-FALLBACK: {modell} -> {verfuegbares_modell} | "
                     f"Request={neu_gemessen:,}"
@@ -3322,8 +3369,15 @@ def gemini_auswertung_starten():
     )
     eingabedateien_gemini["Finale-Autoritative-Fakten"] = final_fakten_pfad
 
-    for versuch in range(1, MAX_VERSUCHE + 1):
-        print(f"\nVersuch {versuch}/{MAX_VERSUCHE}...")
+    versuch = 0
+    versuch_zyklus = 1
+    while True:
+        versuch += 1
+        versuch_nummer = ((versuch - 1) % MAX_VERSUCHE) + 1
+        print(
+            f"\nVersuch {versuch_nummer}/{MAX_VERSUCHE} "
+            f"(technischer 503-Zyklus {versuch_zyklus})..."
+        )
 
         try:
             # GEAENDERT (30.07.2026): Dateien werden nur hochgeladen, wenn
@@ -3733,20 +3787,42 @@ def gemini_auswertung_starten():
                     # erneuter Datei-Upload erforderlich.
                     continue
 
-                # Kein weiteres Modell verfuegbar: nicht dasselbe Modell
-                # erneut versuchen. Der technische Fallback wird direkt
-                # ueber den bestehenden Ausgabeweg erzeugt.
-                print(
-                    f"  {('503-Overload' if kategorie == 'ueberlast' else 'Netzwerk-Abbruch')} "
-                    "auf allen konfigurierten Modellen - keine Wiederholung "
-                    "eines bereits fehlgeschlagenen Modells."
+                # Alle Modelle waren in diesem temporaeren 503-/Netzwerk-Zyklus
+                # nicht verfuegbar. Das ist kein terminaler Zustand: alle lokalen
+                # Sendungsbuchungen wurden bei den 503s bereits zurueckgerollt.
+                # Nach einem echten Wartefenster wird der komplette Modell-/Quota-
+                # Zustand neu bewertet. Dadurch kann ein 503 nicht durch den
+                # bisherigen MAX_VERSUCHE-Zaehler kuenstlich terminal werden.
+                grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
+                backoff_index = len(UEBERLAST_WARTEZEITEN) - 1
+                basis_wartezeit = UEBERLAST_WARTEZEITEN[backoff_index]
+                server_wartezeit = (
+                    empfohlene_wartezeit if empfohlene_wartezeit is not None else 0
                 )
-                break
+                wartezeit = max(float(basis_wartezeit), float(server_wartezeit))
+                jitter = random.uniform(0.0, wartezeit * 0.20)
+                wartezeit += jitter
+                print(
+                    f"  {grund} auf allen konfigurierten Modellen. "
+                    f"Warte {wartezeit:.1f}s und pruefe danach alle Modelle und "
+                    "lokalen Quoten erneut."
+                )
+                time.sleep(wartezeit)
+                _gemini_failed_models.clear()
+                _gemini_active_modell = None
+                _gemini_last_request_model = None
+                modell_index = 0
+                aktuelles_modell = GEMINI_MODELLREIHENFOLGE[modell_index]
+                versuch = 0
+                versuch_zyklus += 1
+                continue
 
             else:
                 wartezeit = (empfohlene_wartezeit if empfohlene_wartezeit is not None
-                             else WARTEZEIT_SEKUNDEN + versuch * 5)
+                             else WARTEZEIT_SEKUNDEN + versuch_nummer * 5)
                 print(f"  Warte {wartezeit:.0f}s vor dem naechsten Versuch...")
+            if versuch_nummer >= MAX_VERSUCHE:
+                break
             time.sleep(wartezeit)
             continue
 
