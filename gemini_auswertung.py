@@ -135,6 +135,9 @@ _gemini_rpd_exhausted = set()
 _gemini_active_modell = None
 _gemini_last_request_model = None
 _gemini_failed_models = set()
+# Eindeutige lokale Sendungsreservierungen. Eine Reservierung bindet
+# Input-Token-Buchung und RPD-Buchung an genau denselben GenerateContent-Versuch.
+_gemini_sendungsreservierungen = []
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -2479,7 +2482,12 @@ def _gemini_rpd_registriere_sendung(modell):
 
 
 def _gemini_quota_registriere_sendung(modell, request_tokens):
-    """Registriert einen unmittelbar bevorstehenden echten GenerateContent-Call."""
+    """Registriert einen unmittelbar bevorstehenden echten GenerateContent-Call.
+
+    Die Rueckgabe ist eine eindeutige lokale Sendungsreservierung. Dadurch kann
+    ein technischer 503 exakt die zugehoerige Input-Token- und RPD-Buchung
+    zurueckrollen, auch wenn mehrere Requests dieselbe Tokenzahl haben.
+    """
     jetzt = time.monotonic()
     _gemini_quota_prune(modell, jetzt)
     verbrauch = sum(tokens for _, tokens in _gemini_input_quota_usage.get(modell, []))
@@ -2490,46 +2498,69 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
             f"Limit={GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,}"
         )
     _gemini_rpd_registriere_sendung(modell)
-    _gemini_input_quota_usage[modell].append((jetzt, request_tokens))
+    eintrag = (jetzt, request_tokens)
+    _gemini_input_quota_usage[modell].append(eintrag)
+    reservierung = {
+        "modell": modell,
+        "request_tokens": request_tokens,
+        "zeitpunkt": jetzt,
+        "input_eintrag": eintrag,
+        "aktiv": True,
+    }
+    _gemini_sendungsreservierungen.append(reservierung)
     print(
         f"GEMINI-INPUT-QUOTA: Modell={modell} | Request={request_tokens:,} | "
         f"Fensterverbrauch={verbrauch + request_tokens:,}/{GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,} | "
         f"RPD-lokal={_gemini_rpd_requests[modell]}/{GEMINI_FREE_TIER_RPD_LIMIT}"
     )
+    return reservierung
 
 
-def _gemini_quota_rollback_sendung(modell, request_tokens):
+def _gemini_quota_rollback_sendung(reservierung):
     """Rollt die vollstaendige lokale Sendungsbuchung eines Requests zurueck.
 
-    Eine Sendungsregistrierung besteht aus zwei lokalen Buchungen:
+    Eine Sendungsreservierung besteht aus genau zwei lokalen Buchungen:
     * Input-Token im minutenbezogenen Fenster-Tracking
     * ein Request im modellbezogenen RPD-Zaehler
 
-    Bei einem technischen 503 wurde der Request serverseitig nicht erfolgreich
-    verarbeitet. Deshalb muessen beide lokalen Buchungen gemeinsam zurueck-
-    genommen werden. Die Funktion aendert dagegen NICHT den RPD-Sperrstatus
-    fuer ein serverseitig bestaetigtes PerDay-429; dieser Pfad ruft diese
-    Funktion bewusst nicht auf.
+    Die Reservierung wird ueber ihre eindeutige Identitaet zurueckgerollt und
+    nicht nur ueber die Tokenzahl gesucht. Dadurch kann bei identischen
+    Request-Groessen niemals die falsche Sendung zurueckgesetzt werden.
+
+    Ein serverseitig bestaetigtes 429 PerDay darf diese Funktion nicht
+    verwenden; dieser Pfad bleibt bewusst ohne Rollback.
     """
-    eintraege = _gemini_input_quota_usage.get(modell, [])
-    if not eintraege:
+    if not reservierung or not reservierung.get("aktiv"):
         return False
 
-    for index in range(len(eintraege) - 1, -1, -1):
-        zeitpunkt, tokens = eintraege[index]
-        if tokens == request_tokens:
-            del eintraege[index]
-            if _gemini_rpd_requests[modell] > 0:
-                _gemini_rpd_requests[modell] -= 1
-            if not _gemini_rpd_requests[modell]:
-                _gemini_rpd_requests.pop(modell, None)
-            print(
-                f"GEMINI-QUOTA-ROLLBACK: Modell={modell} | Request={request_tokens:,} | "
-                f"Input-Quota-Buchung entfernt | RPD-lokal={_gemini_rpd_requests.get(modell, 0)}"
-            )
-            return True
+    modell = reservierung["modell"]
+    request_tokens = reservierung["request_tokens"]
+    input_eintrag = reservierung["input_eintrag"]
 
-    return False
+    eintraege = _gemini_input_quota_usage.get(modell, [])
+    try:
+        eintraege.remove(input_eintrag)
+        input_entfernt = True
+    except ValueError:
+        input_entfernt = False
+
+    if _gemini_rpd_requests[modell] > 0:
+        _gemini_rpd_requests[modell] -= 1
+    if not _gemini_rpd_requests[modell]:
+        _gemini_rpd_requests.pop(modell, None)
+
+    reservierung["aktiv"] = False
+    try:
+        _gemini_sendungsreservierungen.remove(reservierung)
+    except ValueError:
+        pass
+
+    print(
+        f"GEMINI-QUOTA-ROLLBACK: Modell={modell} | Request={request_tokens:,} | "
+        f"Input-Quota-Buchung {'entfernt' if input_entfernt else 'bereits nicht mehr vorhanden'} | "
+        f"RPD-lokal={_gemini_rpd_requests.get(modell, 0)}"
+    )
+    return True
 
 
 def _gemini_generate_content_quota_safe(
@@ -2546,7 +2577,35 @@ def _gemini_generate_content_quota_safe(
     preferred_modell = _gemini_active_modell or preferred_modell
     modell, wartezeit = _gemini_quota_waehlen(preferred_modell, measured_tokens)
     while modell is None:
-        if not _gemini_quota_kandidaten(preferred_modell):
+        kandidaten = _gemini_quota_kandidaten(preferred_modell)
+        if not kandidaten:
+            # Sind alle Kandidaten nur wegen temporaerer 503-/Netzwerkfehler
+            # gesperrt, darf dieser technische Zustand nicht als Input-Quota-
+            # Fehler terminal werden. Nach einem echten Wartefenster wird der
+            # temporaere failed_models-Zustand geloescht und Quota + Modellwahl
+            # vollstaendig neu bewertet. RPD-PerDay-Sperren bleiben erhalten.
+            if _gemini_failed_models:
+                wartezeit = max(
+                    float(wartezeit),
+                    UEBERLAST_WARTEZEITEN[-1],
+                    GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
+                    + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS,
+                )
+                print(
+                    "GEMINI-503-WAIT: Alle aktuell verfuegbaren Modelle sind "
+                    "wegen temporaerer 503-/Netzwerkfehler gesperrt; "
+                    f"warte {wartezeit:.1f}s, loesche den temporaeren "
+                    "failed_models-Zustand und bewerte Quota/Modelle neu."
+                )
+                time.sleep(wartezeit)
+                _gemini_failed_models.clear()
+                _gemini_active_modell = None
+                _gemini_last_request_model = None
+                modell, wartezeit = _gemini_quota_waehlen(
+                    preferred_modell, measured_tokens
+                )
+                continue
+
             raise RuntimeError(
                 "GEMINI_INPUT_QUOTA_KEIN_MODELL_FREI: "
                 f"Request={measured_tokens:,} Tokens; alle Modelle sind fuer diesen Lauf gesperrt."
@@ -2620,46 +2679,20 @@ def _gemini_generate_content_quota_safe(
     sendung_modell = modell
     sendung_tokens = measured_tokens
     # Die Registrierung erfolgt unmittelbar vor dem echten API-Aufruf.
-    _gemini_quota_registriere_sendung(sendung_modell, sendung_tokens)
+    sendungs_reservierung = _gemini_quota_registriere_sendung(
+        sendung_modell, sendung_tokens
+    )
     print(
         f"GEMINI-REQUEST-SAFE: {label} | Modell={modell} | "
         f"vorab gemessen={measured_tokens:,} <= {GEMINI_INPUT_SAFE_BUDGET:,} | "
         "Free-Tier-Input-Quota vor Sendung geprueft"
     )
-    _503_retry_waits = (2.0, 5.0, 10.0)
-
-    def _generate_content_503_retry():
-        _503_retry_count = 0
-        while True:
-            try:
-                return client.models.generate_content(
-                    model=modell,
-                    contents=contents,
-                    config=types.GenerateContentConfig(**config_kwargs),
-                )
-            except Exception as exc:
-                fehlertext = str(exc).lower()
-                if (
-                    "503" in fehlertext
-                    or "unavailable" in fehlertext
-                    or "high demand" in fehlertext
-                ) and _503_retry_count < len(_503_retry_waits):
-                    basis_wartezeit = _503_retry_waits[_503_retry_count]
-                    jitter = random.uniform(0.0, basis_wartezeit * 0.20)
-                    wartezeit = basis_wartezeit + jitter
-                    _503_retry_count += 1
-                    print(
-                        f"  503-Overload auf {modell}: Retry {_503_retry_count}/"
-                        f"{len(_503_retry_waits)} in {wartezeit:.1f}s "
-                        f"(Backoff {basis_wartezeit:.1f}s + Jitter). "
-                        "Gleicher Request, gleiches Modell."
-                    )
-                    time.sleep(wartezeit)
-                    continue
-                raise
-
     try:
-        return _generate_content_503_retry()
+        return client.models.generate_content(
+            model=modell,
+            contents=contents,
+            config=types.GenerateContentConfig(**config_kwargs),
+        )
     except Exception as exc:
         fehlertext = str(exc).lower()
 
@@ -2680,7 +2713,7 @@ def _gemini_generate_content_quota_safe(
             or "timed out" in fehlertext
         )
         if ist_technischer_sendefehler and not ist_perday:
-            _gemini_quota_rollback_sendung(sendung_modell, sendung_tokens)
+            _gemini_quota_rollback_sendung(sendungs_reservierung)
 
         if ist_perday:
             _gemini_rpd_exhausted.add(modell)
@@ -2704,7 +2737,9 @@ def _gemini_generate_content_quota_safe(
                 _gemini_last_request_model = verfuegbares_modell
                 sendung_modell = verfuegbares_modell
                 sendung_tokens = neu_gemessen
-                _gemini_quota_registriere_sendung(sendung_modell, sendung_tokens)
+                sendungs_reservierung = _gemini_quota_registriere_sendung(
+                    sendung_modell, sendung_tokens
+                )
                 print(
                     f"GEMINI-RPD-SERVER-FALLBACK: {modell} -> {verfuegbares_modell} | "
                     f"Request={neu_gemessen:,}"
@@ -2717,13 +2752,28 @@ def _gemini_generate_content_quota_safe(
                     )
                 except Exception as fallback_exc:
                     fallback_text = str(fallback_exc).lower()
-                    if "perday" in fallback_text or "generaterequestsperdayperprojectpermodelfreetier" in fallback_text:
+                    fallback_perday = (
+                        "perday" in fallback_text
+                        or "generaterequestsperdayperprojectpermodelfreetier" in fallback_text
+                    )
+                    fallback_technisch = (
+                        "503" in fallback_text
+                        or "unavailable" in fallback_text
+                        or "high demand" in fallback_text
+                        or "connection reset" in fallback_text
+                        or "connection aborted" in fallback_text
+                        or "timed out" in fallback_text
+                    )
+                    if fallback_perday:
                         _gemini_rpd_exhausted.add(verfuegbares_modell)
                         print(
                             f"GEMINI-RPD-SERVER: Modell={verfuegbares_modell} ebenfalls wegen 429 PerDay "
                             "fuer den restlichen Lauf gesperrt."
                         )
                         continue
+                    if fallback_technisch:
+                        _gemini_quota_rollback_sendung(sendungs_reservierung)
+                        _gemini_failed_models.add(verfuegbares_modell)
                     raise
             raise RuntimeError(
                 "GEMINI_RPD_SERVERSEITIG_ERSCHOEPFT: kein anderes Modell ist fuer diesen Request noch verfuegbar."
@@ -2740,7 +2790,7 @@ def _gemini_generate_content_quota_safe(
             # Minutenfenster gesperrt und anschliessend wird zuerst ein anderes
             # Modell versucht. Ist keines frei, wartet der Scheduler selbststaendig
             # bis zum fruehesten sicheren Quota-Fenster.
-            _gemini_quota_rollback_sendung(modell, measured_tokens)
+            _gemini_quota_rollback_sendung(sendungs_reservierung)
             _gemini_input_quota_cooldown_until[modell] = (
                 time.monotonic()
                 + GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
@@ -2771,7 +2821,7 @@ def _gemini_generate_content_quota_safe(
                     if verfuegbares_modell is not None:
                         _gemini_active_modell = verfuegbares_modell
                         _gemini_last_request_model = verfuegbares_modell
-                        _gemini_quota_registriere_sendung(
+                        fallback_reservierung = _gemini_quota_registriere_sendung(
                             verfuegbares_modell, neu_gemessen
                         )
                         print(
@@ -2786,14 +2836,24 @@ def _gemini_generate_content_quota_safe(
                             )
                         except Exception as fallback_exc:
                             fallback_text = str(fallback_exc).lower()
+                            fallback_technisch = (
+                                "503" in fallback_text
+                                or "unavailable" in fallback_text
+                                or "high demand" in fallback_text
+                                or "connection reset" in fallback_text
+                                or "connection aborted" in fallback_text
+                                or "timed out" in fallback_text
+                            )
+                            if fallback_technisch:
+                                _gemini_quota_rollback_sendung(fallback_reservierung)
+                                _gemini_failed_models.add(verfuegbares_modell)
+                                raise
                             if (
                                 "generate_content_free_tier_input_token_count" in fallback_text
                                 or "generatecontentinputtokenspermodelperminute-freetier" in fallback_text
                                 or ("input_token_count" in fallback_text and "250000" in fallback_text)
                             ):
-                                _gemini_quota_rollback_sendung(
-                                    verfuegbares_modell, neu_gemessen
-                                )
+                                _gemini_quota_rollback_sendung(fallback_reservierung)
                                 _gemini_input_quota_cooldown_until[verfuegbares_modell] = (
                                     time.monotonic()
                                     + GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
@@ -2843,12 +2903,29 @@ def _gemini_generate_content_quota_safe(
                         )
                     _gemini_active_modell = neue_modell
                     _gemini_last_request_model = neue_modell
-                    _gemini_quota_registriere_sendung(neue_modell, neu_gemessen)
-                    return client.models.generate_content(
-                        model=neue_modell,
-                        contents=contents,
-                        config=types.GenerateContentConfig(**config_kwargs),
+                    wait_reservierung = _gemini_quota_registriere_sendung(
+                        neue_modell, neu_gemessen
                     )
+                    try:
+                        return client.models.generate_content(
+                            model=neue_modell,
+                            contents=contents,
+                            config=types.GenerateContentConfig(**config_kwargs),
+                        )
+                    except Exception as wait_exc:
+                        wait_text = str(wait_exc).lower()
+                        wait_technisch = (
+                            "503" in wait_text
+                            or "unavailable" in wait_text
+                            or "high demand" in wait_text
+                            or "connection reset" in wait_text
+                            or "connection aborted" in wait_text
+                            or "timed out" in wait_text
+                        )
+                        if wait_technisch:
+                            _gemini_quota_rollback_sendung(wait_reservierung)
+                            _gemini_failed_models.add(neue_modell)
+                        raise
 
         raise
 
