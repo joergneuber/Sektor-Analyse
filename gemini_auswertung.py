@@ -1,4 +1,4 @@
-﻿"""
+"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
