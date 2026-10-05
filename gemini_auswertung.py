@@ -7341,32 +7341,6 @@ def _normalisiere_name_ticker_ausgabe(text):
                     break
         block=''.join(lines)
         text=text[:start]+block+text[end:]
-    # Finaler globaler Name(Ticker)-Pass: Ein bekannter Unternehmens-Ticker
-    # darf nicht nur in den heuristisch erkannten Aktienzeilen normalisiert
-    # werden. Portfolio-/Kontextsaetze koennen einen konkreten Ticker ebenfalls
-    # enthalten (z. B. "Im Portfolio ... TSM ...") und muessen deshalb vor dem
-    # harten Gate ebenfalls kanonisiert werden. Die Unicode-sichere Tickergrenze
-    # verhindert weiterhin Treffer innerhalb normaler Woerter. Bereits korrekt
-    # kanonisierte "Name (Ticker)"-Vorkommen bleiben unveraendert.
-    global_lines = text.splitlines(True)
-    for i, line in enumerate(global_lines):
-        changed = line
-        for ticker_key, name in by_ticker.items():
-            if len(ticker_key) < 2:
-                continue
-            if not re.search(rf"{_ticker_grenzen_regex(ticker_key)}", changed, re.I):
-                continue
-            if re.search(rf"\([^\n()]*\b{re.escape(ticker_key)}\b[^\n()]*\)", changed, re.I):
-                continue
-            changed = re.sub(
-                rf"{_ticker_grenzen_regex(ticker_key)}",
-                f"{name} ({ticker_key.upper()})",
-                changed,
-                count=1,
-                flags=re.I,
-            )
-        global_lines[i] = changed
-    text = ''.join(global_lines)
     return text
 
 def _pruefe_name_ticker_gate(text):
@@ -7673,6 +7647,86 @@ def _quellenwert_float(raw):
     except ValueError:
         return None
 
+
+
+def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
+    """Sichert die autoritativen Kernwerte deterministisch in 7.1–7.7.
+
+    Die Gemini-Interpretation bleibt unangetastet. Fehlt ein aktueller
+    Quellwert im jeweils zugeordneten Ausgabeabschnitt, wird ausschließlich
+    eine klar gekennzeichnete autoritative Faktenzeile innerhalb genau dieses
+    Abschnitts ergänzt. Damit ist die Kette Quelle -> Abschnitt -> Gate
+    deterministisch geschlossen, ohne Zahlen zu erfinden oder Werte zwischen
+    Abschnitten zu verschieben.
+    """
+    if not text:
+        return text, False
+
+    sections = [
+        "7.1 Aktienmärkte / Indizes", "7.2 Zinsen", "7.3 Volatilität", "7.4 FX",
+        "7.5 Rohstoffe", "7.6 Krypto", "7.7 Konjunktur / Makro",
+    ]
+    index_labels = [
+        ("S&P 500", False), ("Nasdaq", False), ("DAX", False),
+        ("EuroStoxx50", False), ("Russell 2000", False), ("Nikkei 225", False),
+        ("Hang Seng", False), ("Shanghai Composite", True),
+    ]
+    direct_labels = {
+        "7.2 Zinsen": ["Fed Funds Effective Rate", "ECB Deposit Facility Rate", "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury", "Realzins 10Y TIPS", "2Y-10Y Spread"],
+        "7.3 Volatilität": ["VIX"],
+        "7.4 FX": ["DXY", "EUR/USD", "USD/JPY"],
+        "7.5 Rohstoffe": ["WTI", "Brent", "Erdgas", "Kupfer", "Aluminium", "Zink", "Lithium", "Eisenerz"],
+        "7.6 Krypto": ["Bitcoin", "Ethereum"],
+        "7.7 Konjunktur / Makro": ["CPI", "Core CPI", "PCE", "Core PCE", "PPI", "Arbeitslosenquote", "NFP / Nonfarm Payrolls", "ADP Employment Change", "Reales BIP-Wachstum", "ISM Manufacturing PMI", "ISM Services PMI"],
+    }
+
+    source_values = {h: [] for h in sections}
+    for label, parenthesized in index_labels:
+        raw = _quellenwert_aus_zeile(briefing_text, label, parenthesized)
+        if raw is not None and _quellenwert_float(raw) is not None:
+            source_values["7.1 Aktienmärkte / Indizes"].append((label, raw))
+    for heading, labels in direct_labels.items():
+        for label in labels:
+            raw = _quellenwert_aus_zeile(makro_text, label)
+            if raw is not None and _quellenwert_float(raw) is not None:
+                source_values[heading].append((label, raw))
+
+    # Lithium ist der einzige Sonderfall mit zusätzlichem autoritativem
+    # Quellstatus, der vom bestehenden Gate separat geprüft wird.
+    lithium_source = next((line for line in (makro_text or "").splitlines() if line.startswith("Lithium:")), "")
+    lithium_proxy = "STATUS=PROXY" in lithium_source
+
+    changed = False
+    result = text
+    for heading in sections:
+        block = _abschnitt_text(result, heading, sections + ["8.1 Gold"])
+        if not block:
+            continue
+        additions = []
+        for label, raw in source_values[heading]:
+            value = _quellenwert_float(raw)
+            if not _zahl_im_block_vorhanden(block, value):
+                additions.append(f"- [AUTORITATIVE QUELLE] {label}: {raw}")
+        if heading == "7.5 Rohstoffe" and lithium_proxy and "Lithium" in block and not re.search(r"proxy", block, re.I):
+            additions.append("- [AUTORITATIVE QUELLE] Lithium: STATUS=PROXY")
+        if not additions:
+            continue
+
+        source = _normalisiere_inline_pflichtueberschriften(result)
+        m = re.search(r"(?m)^" + re.escape(heading) + r"\s*$", source)
+        if not m:
+            continue
+        end = len(source)
+        for nxt in sections + ["8.1 Gold"]:
+            n = re.search(r"(?m)^" + re.escape(nxt) + r"\s*$", source[m.end():])
+            if n:
+                end = min(end, m.end() + n.start())
+        insertion = "\n" + "\n".join(additions) + "\n"
+        new_block = source[m.start():end].rstrip() + insertion
+        result = source[:m.start()] + new_block + source[end:]
+        changed = True
+
+    return result, changed
 
 def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
     """Vollstaendigkeits-Gate fuer 7.1–7.7 gegen die jeweils aktuellen Tagesquellen."""
@@ -8158,6 +8212,18 @@ def speichere_ergebnis(text):
             final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text)
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
+
+        # Letzte deterministische Schliessung der Kette Quelle -> 7.1–7.7 -> Gate.
+        # Dieser Pass steht bewusst unmittelbar vor den harten Quellen-Gates,
+        # damit nachgelagerte Normalisierungen die autoritativen Werte nicht
+        # wieder aus ihrem zugeordneten Abschnitt entfernen koennen.
+        final_text, quellen_repaired = _repariere_7_x_quellengebunden(
+            final_text,
+            briefing,
+            makro_text_fx,
+        )
+        if quellen_repaired:
+            print("INFO: 7.1-7.7 autoritative Quellwerte deterministisch in die zugeordneten Abschnitte ergaenzt.")
 
         # Neue Vollstaendigkeits-Gates fuer 7.1–7.7 und 8.1–8.4.
         # Sie werden ADDITIV vor den bestehenden Final-Gates ausgefuehrt.
