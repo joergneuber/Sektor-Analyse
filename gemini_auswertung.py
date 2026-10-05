@@ -98,6 +98,13 @@ GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT = 250_000
 GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS = 60.0
 # Kleine Reserve gegen die Grenze des serverseitigen Minutenfensters.
 GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS = 2.0
+# Lokale Planungsreserve unterhalb des serverseitigen 250k-Minutenlimits.
+# Sie schützt vor Rundungs-/Messabweichungen und unbekanntem serverseitigem
+# Vorverbrauch, ohne das eigentliche Einzelrequest-Budget von 210k zu senken.
+GEMINI_FREE_TIER_INPUT_TOKEN_RESERVE = 10_000
+GEMINI_FREE_TIER_INPUT_LOCAL_LIMIT = (
+    GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT - GEMINI_FREE_TIER_INPUT_TOKEN_RESERVE
+)
 # Bekannte Free-Tier-Requests pro Modell und Tag. Der lokale Zaehler ist nur
 # eine Untergrenze, weil serverseitiger Verbrauch vor Prozessstart unbekannt ist.
 GEMINI_FREE_TIER_RPD_LIMIT = 20
@@ -2433,7 +2440,7 @@ def _gemini_quota_waehlen(preferred_modell, request_tokens, ausgeschlossene_mode
         _gemini_quota_prune(modell, jetzt)
         cooldown = _gemini_input_quota_cooldown_until.get(modell, 0.0)
         verbrauch = sum(tokens for _, tokens in _gemini_input_quota_usage.get(modell, []))
-        rest = GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT - verbrauch
+        rest = GEMINI_FREE_TIER_INPUT_LOCAL_LIMIT - verbrauch
 
         if cooldown <= jetzt and request_tokens <= rest:
             return modell, 0.0
@@ -2476,7 +2483,7 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
     jetzt = time.monotonic()
     _gemini_quota_prune(modell, jetzt)
     verbrauch = sum(tokens for _, tokens in _gemini_input_quota_usage.get(modell, []))
-    if verbrauch + request_tokens > GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:
+    if verbrauch + request_tokens > GEMINI_FREE_TIER_INPUT_LOCAL_LIMIT:
         raise RuntimeError(
             "GEMINI_LOKALES_INPUT_QUOTA_VOR_SENDUNG: "
             f"Modell={modell} | bereits={verbrauch:,} | Request={request_tokens:,} | "
@@ -2489,6 +2496,19 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
         f"Fensterverbrauch={verbrauch + request_tokens:,}/{GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,} | "
         f"RPD-lokal={_gemini_rpd_requests[modell]}/{GEMINI_FREE_TIER_RPD_LIMIT}"
     )
+
+
+def _gemini_quota_rollback_sendung(modell, request_tokens):
+    """Entfernt eine lokale Sendungsbuchung, wenn der Server den Request
+    wegen des minutenbezogenen Input-Token-Quotas vor Verarbeitung ablehnt."""
+    eintraege = _gemini_input_quota_usage.get(modell, [])
+    if not eintraege:
+        return
+    for index in range(len(eintraege) - 1, -1, -1):
+        zeitpunkt, tokens = eintraege[index]
+        if tokens == request_tokens:
+            del eintraege[index]
+            return
 
 
 def _gemini_generate_content_quota_safe(
@@ -2504,18 +2524,26 @@ def _gemini_generate_content_quota_safe(
     global _gemini_active_modell, _gemini_last_request_model
     preferred_modell = _gemini_active_modell or preferred_modell
     modell, wartezeit = _gemini_quota_waehlen(preferred_modell, measured_tokens)
-    if modell is None:
+    while modell is None:
+        if not _gemini_quota_kandidaten(preferred_modell):
+            raise RuntimeError(
+                "GEMINI_INPUT_QUOTA_KEIN_MODELL_FREI: "
+                f"Request={measured_tokens:,} Tokens; alle Modelle sind fuer diesen Lauf gesperrt."
+            )
+        # 0.0 s bedeutet hier: lokales Tracking kennt keinen freien Slot.
+        # Niemals sofort denselben Zustand erneut pruefen; mindestens ein
+        # komplettes serverseitiges Minutenfenster abwarten.
+        wartezeit = max(
+            float(wartezeit),
+            GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
+            + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS,
+        )
         print(
             f"GEMINI-INPUT-QUOTA-WAIT: kein Modell hat aktuell genug Restkontingent; "
             f"warte {wartezeit:.1f}s. Request={measured_tokens:,}"
         )
         time.sleep(wartezeit)
         modell, wartezeit = _gemini_quota_waehlen(preferred_modell, measured_tokens)
-        if modell is None:
-            raise RuntimeError(
-                "GEMINI_INPUT_QUOTA_KEIN_MODELL_FREI: "
-                f"Request={measured_tokens:,} Tokens."
-            )
 
     if modell != preferred_modell:
         _gemini_active_modell = modell
@@ -2659,53 +2687,122 @@ def _gemini_generate_content_quota_safe(
             or "generatecontentinputtokenspermodelperminute-freetier" in fehlertext
             or ("input_token_count" in fehlertext and "250000" in fehlertext)
         ):
-            # Serverseitige Quota kann bereits vor diesem Lauf teilweise
-            # verbraucht worden sein. Das lokale Tracking kann diesen externen
-            # Verbrauch naturgemaess nicht kennen. Dieses Modell wird deshalb
-            # fuer mindestens ein komplettes Minutenfenster gesperrt und der
-            # exakt gleiche Request wird NICHT blind erneut an dasselbe Modell
-            # geschickt.
+            # Der Server kennt ggf. Vorverbrauch aus einem anderen Prozess/Lauf,
+            # den unser lokaler Zaehler nicht kennen kann. Die lokale Buchung wird
+            # deshalb zurueckgerollt, das betroffene Modell fuer ein volles
+            # Minutenfenster gesperrt und anschliessend wird zuerst ein anderes
+            # Modell versucht. Ist keines frei, wartet der Scheduler selbststaendig
+            # bis zum fruehesten sicheren Quota-Fenster.
+            _gemini_quota_rollback_sendung(modell, measured_tokens)
             _gemini_input_quota_cooldown_until[modell] = (
                 time.monotonic()
                 + GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
                 + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS
             )
-            for naechstes_modell in _gemini_quota_kandidaten(modell):
-                if naechstes_modell == modell:
-                    continue
-                neu_gemessen = _gemini_tokenzahl(
-                    client,
-                    naechstes_modell,
-                    contents,
-                    config_kwargs.get("system_instruction"),
-                    label=f"{label} Server-Quota-Fallback {naechstes_modell}",
-                )
-                if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
-                    continue
-                verfuegbares_modell, _ = _gemini_quota_waehlen(
-                    naechstes_modell,
-                    neu_gemessen,
-                    ausgeschlossene_modelle={modell},
-                )
-                if verfuegbares_modell is None:
-                    continue
-                _gemini_active_modell = verfuegbares_modell
-                _gemini_last_request_model = verfuegbares_modell
-                _gemini_quota_registriere_sendung(verfuegbares_modell, neu_gemessen)
+            print(
+                f"GEMINI-INPUT-QUOTA-SERVER: {modell} hat das serverseitige "
+                "Minutenkontingent abgewiesen; Modell fuer mindestens "
+                f"{GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS:.0f}s gesperrt."
+            )
+
+            while True:
+                kandidaten = _gemini_quota_kandidaten(modell)
+                kandidaten = [m for m in kandidaten if m != modell]
+                bester_wait = None
+                for naechstes_modell in kandidaten:
+                    neu_gemessen = _gemini_tokenzahl(
+                        client, naechstes_modell, contents,
+                        config_kwargs.get("system_instruction"),
+                        label=f"{label} Server-Quota-Fallback {naechstes_modell}",
+                    )
+                    if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
+                        continue
+                    verfuegbares_modell, modell_wait = _gemini_quota_waehlen(
+                        naechstes_modell, neu_gemessen,
+                        ausgeschlossene_modelle={modell},
+                    )
+                    if verfuegbares_modell is not None:
+                        _gemini_active_modell = verfuegbares_modell
+                        _gemini_last_request_model = verfuegbares_modell
+                        _gemini_quota_registriere_sendung(
+                            verfuegbares_modell, neu_gemessen
+                        )
+                        print(
+                            f"GEMINI-INPUT-QUOTA-SERVER-FALLBACK: {modell} -> "
+                            f"{verfuegbares_modell} | Request={neu_gemessen:,}"
+                        )
+                        try:
+                            return client.models.generate_content(
+                                model=verfuegbares_modell,
+                                contents=contents,
+                                config=types.GenerateContentConfig(**config_kwargs),
+                            )
+                        except Exception as fallback_exc:
+                            fallback_text = str(fallback_exc).lower()
+                            if (
+                                "generate_content_free_tier_input_token_count" in fallback_text
+                                or "generatecontentinputtokenspermodelperminute-freetier" in fallback_text
+                                or ("input_token_count" in fallback_text and "250000" in fallback_text)
+                            ):
+                                _gemini_quota_rollback_sendung(
+                                    verfuegbares_modell, neu_gemessen
+                                )
+                                _gemini_input_quota_cooldown_until[verfuegbares_modell] = (
+                                    time.monotonic()
+                                    + GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
+                                    + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS
+                                )
+                                print(
+                                    f"GEMINI-INPUT-QUOTA-SERVER: {verfuegbares_modell} "
+                                    "ebenfalls temporaer gesperrt; suche weiter."
+                                )
+                                continue
+                            raise
+                    if modell_wait > 0.0:
+                        bester_wait = (
+                            modell_wait if bester_wait is None
+                            else min(bester_wait, modell_wait)
+                        )
+
+                # Kein anderes Modell ist momentan frei. Nicht abbrechen und
+                # insbesondere keinen identischen aeusseren Retry erzeugen.
+                # Stattdessen bis zum naechsten sicheren Fenster warten.
+                if bester_wait is None:
+                    bester_wait = GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS
+                bester_wait = max(float(bester_wait), 1.0)
                 print(
-                    f"GEMINI-INPUT-QUOTA-SERVER-FALLBACK: {modell} -> "
-                    f"{verfuegbares_modell} | Request={neu_gemessen:,}"
+                    "GEMINI-INPUT-QUOTA-WAIT: kein alternatives Modell frei; "
+                    f"warte {bester_wait:.1f}s und pruefe alle Modelle erneut."
                 )
-                return client.models.generate_content(
-                    model=verfuegbares_modell,
-                    contents=contents,
-                    config=types.GenerateContentConfig(**config_kwargs),
+                time.sleep(bester_wait)
+                # Nach dem Warten wird der gesperrte Serverkandidat wieder
+                # automatisch beruecksichtigt, sobald sein Cooldown abgelaufen ist.
+                neue_modell, _ = _gemini_quota_waehlen(
+                    modell, measured_tokens, ausgeschlossene_modelle=set()
                 )
-            raise RuntimeError(
-                "GEMINI_INPUT_QUOTA_SERVERSEITIG_ERSCHOEPFT: "
-                "kein anderes Modell hat fuer diesen Request ausreichend "
-                "lokal verfuegbares Free-Tier-Input-Kontingent."
-            ) from exc
+                if neue_modell is not None:
+                    neu_gemessen = measured_tokens
+                    if neue_modell != modell:
+                        neu_gemessen = _gemini_tokenzahl(
+                            client, neue_modell, contents,
+                            config_kwargs.get("system_instruction"),
+                            label=f"{label} Server-Quota-Wait-Fallback {neue_modell}",
+                        )
+                    if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
+                        raise RuntimeError(
+                            "GEMINI_REQUEST_ZU_GROSS_NACH_QUOTA_WARTEN: "
+                            f"Modell={neue_modell} | {neu_gemessen:,} > "
+                            f"{GEMINI_INPUT_SAFE_BUDGET:,}"
+                        )
+                    _gemini_active_modell = neue_modell
+                    _gemini_last_request_model = neue_modell
+                    _gemini_quota_registriere_sendung(neue_modell, neu_gemessen)
+                    return client.models.generate_content(
+                        model=neue_modell,
+                        contents=contents,
+                        config=types.GenerateContentConfig(**config_kwargs),
+                    )
+
         raise
 
 
