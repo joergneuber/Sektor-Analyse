@@ -4,18 +4,11 @@ on:
   # Manueller Lauf: prueft sofort, unabhaengig vom Zeitfenster.
   workflow_dispatch:
   schedule:
-    # GitHub Actions Cron arbeitet in UTC. Deshalb wird stundenweise zwischen
-    # 06:00 und 21:00 UTC gestartet und im folgenden Schritt auf Europe/Berlin
-    # geprueft. Dadurch bleibt das gewuenschte 2-Stunden-Raster auch bei der
-    # Umstellung MEZ/MESZ korrekt:
-    #
-    # Sommerzeit: 08,10,12,14,16,18,20,22 Uhr Berlin
-    # Winterzeit: 08,10,12,14,16,18,20,22 Uhr Berlin
-    #
-    # Nur jeder zweite Berliner Stundenlauf wird tatsaechlich ausgefuehrt.
-    # Die ungeraden Zwischenlaeufe beenden sich nach dem Zeitcheck ohne
-    # positionen_tracker.py aufzurufen.
-    - cron: '17 6-21 * * 1-5'
+    # GitHub Actions Cron arbeitet in UTC. Deshalb wird stuendlich zwischen
+    # 06:00 und 22:00 UTC gestartet und im folgenden Schritt auf Europe/Berlin
+    # geprueft. Dadurch wird das gewuenschte stuendliche Raster zwischen
+    # 08:00 und 22:00 Uhr Berlin bei der Umstellung MEZ/MESZ korrekt geprueft.
+    - cron: '17 6-22 * * 1-5'
 
 jobs:
   stop-check:
@@ -32,12 +25,12 @@ jobs:
         run: |
           berlin_stunde=$(TZ=Europe/Berlin date +%H)
           echo "Berliner Uhrzeit: ${berlin_stunde}:17"
-          if (( 10#$berlin_stunde >= 8 && 10#$berlin_stunde <= 22 && 10#$berlin_stunde % 2 == 0 )); then
+          if (( 10#$berlin_stunde >= 8 && 10#$berlin_stunde <= 22 )); then
             echo "run_tracker=true" >> "$GITHUB_OUTPUT"
             echo "Positionspruefung wird ausgefuehrt."
           else
             echo "run_tracker=false" >> "$GITHUB_OUTPUT"
-            echo "Kein planmaessiger Lauf in diesem Zwischenfenster."
+            echo "Kein Lauf innerhalb des Berliner Zeitfensters."
           fi
 
       - name: Python einrichten
