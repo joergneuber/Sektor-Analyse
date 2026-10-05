@@ -8221,9 +8221,16 @@ def speichere_ergebnis(text):
         # Dieser Pass steht bewusst unmittelbar vor den harten Quellen-Gates,
         # damit nachgelagerte Normalisierungen die autoritativen Werte nicht
         # wieder aus ihrem zugeordneten Abschnitt entfernen koennen.
+        briefing_pfad = finde_datei(DATEIMUSTER["briefing.txt"])
+        briefing_text = ""
+        if briefing_pfad and os.path.isfile(briefing_pfad):
+            try:
+                briefing_text = Path(briefing_pfad).read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                raise RuntimeError(f"BRIEFING_QUELLE_NICHT_LESBAR: {exc}") from exc
         final_text, quellen_repaired = _repariere_7_x_quellengebunden(
             final_text,
-            briefing,
+            briefing_text,
             makro_text_fx,
         )
         if quellen_repaired:
