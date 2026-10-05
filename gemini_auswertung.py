@@ -941,6 +941,10 @@ def analysiere_api_fehler(fehlertext):
         "generate_content_free_tier_input_token_count" in text_klein
         or "generatecontentinputtokenspermodelperminute-freetier" in text_klein
         or ("input_token_count" in text_klein and "250000" in text_klein)
+        # Interner Server-Quota-Fallback meldet selbst kein Google-Quota-
+        # Feld mehr, sondern wirft diesen eigenen Fehler. Er gehoert
+        # semantisch trotzdem zum minutenbezogenen Input-Token-Limit.
+        or "gemini_input_quota_serverseitig_erschoepft" in text_klein
     )
     if ist_input_token_limit:
         # Das Free-Tier-Input-Limit von 250.000 Tokens ist ein
