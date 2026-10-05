@@ -1,4 +1,4 @@
-"""
+﻿"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
@@ -7978,9 +7978,14 @@ def _repariere_8_x_quellengebunden(text, edel_text):
         else:
             trend[asset] = (m200.group(2), m200.group(3))
 
+        lage_line = next(
+            (line for line in edel_text.splitlines()
+             if re.match(r"^\s*" + re.escape(asset) + r":\s*Kurs\s+", line)),
+            "",
+        )
         low = re.search(
             r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
-            source_block,
+            lage_line,
         )
         if low:
             lows[asset] = (low.group(1), low.group(2))
