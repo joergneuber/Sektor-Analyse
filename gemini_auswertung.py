@@ -8206,11 +8206,16 @@ def _repariere_8_x_quellengebunden(text, edel_text):
             missing.append(f"{asset}: Kurs/4W")
         else:
             lage[asset] = (m.group(1), m.group(2))
+            low = re.search(
+                r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
+                m.group(0),
+            )
+            if low:
+                lage[asset] = (m.group(1), m.group(2), low.group(1), low.group(2))
 
     # 2) Operative EMA200/WMA200-Basis aus dem exakt zugeordneten
     #    Trendfolge-Diagnoseblock lesen.
     trend = {}
-    lows = {}
     for asset, _ticker in assets.values():
         source_block = _edelmetall_quellenblock(edel_text, asset)
         if not source_block:
@@ -8227,13 +8232,6 @@ def _repariere_8_x_quellengebunden(text, edel_text):
             missing.append(f"{asset}: EMA200/WMA200")
         else:
             trend[asset] = (m200.group(2), m200.group(3))
-
-        low = re.search(
-            r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
-            source_block,
-        )
-        if low:
-            lows[asset] = (low.group(1), low.group(2))
 
     if missing:
         raise RuntimeError(
@@ -8286,14 +8284,15 @@ def _repariere_8_x_quellengebunden(text, edel_text):
 
         # 4) Quellwerte werden immer geschrieben. Es gibt keinen Fallback
         #    auf bereits vorhandene Gemini-Werte.
-        kurs, four_w = lage[asset]
+        lage_values = lage[asset]
+        kurs, four_w = lage_values[0], lage_values[1]
         ema, wma = trend[asset]
         fact_parts = [
             f"Kurs (Futures {ticker}): {kurs}$",
             f"4W: {four_w}%",
         ]
-        if asset in lows:
-            low, dist = lows[asset]
+        if len(lage_values) >= 4:
+            low, dist = lage_values[2], lage_values[3]
             fact_parts.extend([
                 f"52W-Tief: {low}$",
                 f"Abstand 52W-Tief: {dist}%",
