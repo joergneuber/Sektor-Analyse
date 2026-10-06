@@ -2417,21 +2417,30 @@ def _gemini_quota_prune(modell, jetzt=None):
 
 
 
-def _gemini_quota_kandidaten(preferred_modell):
-    """Liefert die Modellreihenfolge mit stabilem Active-Model-Pin."""
+def _gemini_quota_kandidaten(preferred_modell, fehlgeschlagene_einschliessen=False):
+    """Liefert die Modellreihenfolge mit stabilem Active-Model-Pin.
+
+    Standardmaessig werden Modelle mit einem temporaeren 503-/Netzwerkfehler
+    ausgeschlossen. Bei einem serverseitigen 429 PerDay duerfen diese Modelle
+    jedoch wieder als Fallback betrachtet werden: Ihr vorheriger 503 war kein
+    Tagesquota-Verbrauch und wurde lokal zurueckgerollt.
+    """
     reihenfolge = []
     for modell in (_gemini_active_modell, preferred_modell, *GEMINI_MODELLREIHENFOLGE):
         if (
             modell
             and modell not in reihenfolge
             and modell not in _gemini_rpd_exhausted
-            and modell not in _gemini_failed_models
+            and (fehlgeschlagene_einschliessen or modell not in _gemini_failed_models)
         ):
             reihenfolge.append(modell)
     return reihenfolge
 
 
-def _gemini_quota_waehlen(preferred_modell, request_tokens, ausgeschlossene_modelle=None):
+def _gemini_quota_waehlen(
+    preferred_modell, request_tokens, ausgeschlossene_modelle=None,
+    fehlgeschlagene_einschliessen=False
+):
     """Waehlt ein Modell mit Minuten- und bekanntem Tagesquota.
 
     Die Wartezeit beruecksichtigt sowohl das Auslaufen des lokalen 60-s-
@@ -2441,7 +2450,10 @@ def _gemini_quota_waehlen(preferred_modell, request_tokens, ausgeschlossene_mode
     jetzt = time.monotonic()
     beste_wartezeit = None
     ausgeschlossene_modelle = set(ausgeschlossene_modelle or ())
-    for modell in _gemini_quota_kandidaten(preferred_modell):
+    for modell in _gemini_quota_kandidaten(
+        preferred_modell,
+        fehlgeschlagene_einschliessen=fehlgeschlagene_einschliessen,
+    ):
         if modell in ausgeschlossene_modelle or modell in _gemini_rpd_exhausted:
             continue
         _gemini_quota_prune(modell, jetzt)
@@ -2722,7 +2734,10 @@ def _gemini_generate_content_quota_safe(
         if ist_perday:
             _gemini_rpd_exhausted.add(modell)
             print(f"GEMINI-RPD-SERVER: Modell={modell} wegen 429 PerDay fuer den restlichen Lauf gesperrt.")
-            for naechstes_modell in _gemini_quota_kandidaten(modell):
+            for naechstes_modell in _gemini_quota_kandidaten(
+                modell,
+                fehlgeschlagene_einschliessen=True,
+            ):
                 if naechstes_modell == modell:
                     continue
                 neu_gemessen = _gemini_tokenzahl(
@@ -2733,7 +2748,10 @@ def _gemini_generate_content_quota_safe(
                 if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
                     continue
                 verfuegbares_modell, _ = _gemini_quota_waehlen(
-                    naechstes_modell, neu_gemessen, ausgeschlossene_modelle={modell}
+                    naechstes_modell,
+                    neu_gemessen,
+                    ausgeschlossene_modelle={modell},
+                    fehlgeschlagene_einschliessen=True,
                 )
                 if verfuegbares_modell is None:
                     continue
