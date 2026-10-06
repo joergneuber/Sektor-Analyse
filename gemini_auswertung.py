@@ -6606,6 +6606,21 @@ def _repariere_7_4_fx_aus_makroquelle(text, makro_text):
     replacement = "\n".join(lines).strip() + "\n"
     return text[:match.start()] + replacement + text[match.end():], True
 
+def _lithium_quellenstatus_proxy(makro_text):
+    """Liefert deterministisch, ob Lithium in der autoritativen Makroquelle als PROXY gekennzeichnet ist.
+
+    Die gleiche Erkennung wird fuer Reparatur und Gate verwendet, damit beide
+    Stufen garantiert denselben Quellstatus beurteilen. Fuehrende Leerzeichen
+    vor der Lithium-Zeile werden toleriert; andere Zeilen koennen den Status
+    nicht ausloesen.
+    """
+    for raw in (makro_text or "").splitlines():
+        line = raw.strip()
+        if re.match(r"(?i)^Lithium\s*:", line) and re.search(r"(?i)\bSTATUS\s*=\s*PROXY\b", line):
+            return True
+    return False
+
+
 def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
     """Ersetzt einen zu knappen 7.5-Rohstoffblock deterministisch durch
     quellengebundene Rohstofffakten aus dem aktuellen Makro-Briefing.
@@ -6645,10 +6660,14 @@ def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
                 return ref
         return None
 
+    lithium_proxy = _lithium_quellenstatus_proxy(makro_text)
+
     def fmt_ref(label, ref):
         if ref is None:
             return f"{label}: in der autoritativen Makroquelle nicht als strukturierter Wert vorhanden."
         parts = [f"{label}: {ref['kurs']}"]
+        if label == "Lithium" and lithium_proxy:
+            parts.append("STATUS=PROXY")
         if ref.get("datenstand"):
             parts.append(f"Datenstand={ref['datenstand']}")
         if ref.get("schluss") is not None:
@@ -8063,8 +8082,7 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
 
     # Lithium ist der einzige Sonderfall mit zusätzlichem autoritativem
     # Quellstatus, der vom bestehenden Gate separat geprüft wird.
-    lithium_source = next((line for line in (makro_text or "").splitlines() if line.startswith("Lithium:")), "")
-    lithium_proxy = "STATUS=PROXY" in lithium_source
+    lithium_proxy = _lithium_quellenstatus_proxy(makro_text)
 
     changed = False
     result = text
@@ -8165,8 +8183,8 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
             _gate_quellenwert(blocks[heading], label, value, errors)
 
     if "Lithium" in blocks["7.5 Rohstoffe"]:
-        lithium_source = next((line for line in makro.splitlines() if line.startswith("Lithium:")), "")
-        if "STATUS=PROXY" in lithium_source and not re.search(r"proxy", blocks["7.5 Rohstoffe"], re.I):
+        lithium_proxy = _lithium_quellenstatus_proxy(makro)
+        if lithium_proxy and not re.search(r"proxy", blocks["7.5 Rohstoffe"], re.I):
             errors.append("7.5 Rohstoffe: Lithium wurde genannt, aber der Quellstatus PROXY wird in der Ausgabe nicht kenntlich gemacht.")
 
     if errors:
