@@ -78,7 +78,7 @@ FUENFTER_FALLBACK_MODELL = "gemini-3.5-flash-lite"  # Vierter Fallback
 # Alle fuer diesen Lauf konfigurierten Modelle werden hoechstens einmal
 # versucht. So wird ein einzelnes Free-Tier-Modell bei 503/Netzwerkproblemen
 # nicht mehrfach in derselben Nachfragespitze verbrannt.
-GEMINI_MODELLREIHENFOLGE = tuple(
+GEMINI_MODELLREIHENFOLGE = tuple(dict.fromkeys(
     modell for modell in (
         MODELL,
         FALLBACK_MODELL,
@@ -87,7 +87,7 @@ GEMINI_MODELLREIHENFOLGE = tuple(
         FUENFTER_FALLBACK_MODELL,
     )
     if modell
-)
+))
 MAX_VERSUCHE = len(GEMINI_MODELLREIHENFOLGE)
 # Sicherheitsbudget deutlich unter dem serverseitigen Free-Tier-Limit von 250.000.
 # Jeder tatsaechliche GenerateContent-Request muss vorab <= diesem Wert liegen.
@@ -138,6 +138,10 @@ _gemini_failed_models = set()
 # Eindeutige lokale Sendungsreservierungen. Eine Reservierung bindet
 # Input-Token-Buchung und RPD-Buchung an genau denselben GenerateContent-Versuch.
 _gemini_sendungsreservierungen = []
+# Erfolgreiche Analyse-Stufen bleiben bei rein technischen Retries erhalten.
+# Dadurch startet ein 503 in A2/A3/Final nicht erneut bei A1 und verbraucht
+# keine bereits erfolgreich erzeugten GenerateContent-Requests ein zweites Mal.
+_gemini_stufen_cache = {}
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -3160,7 +3164,8 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
 
 
 def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweisung,
-                                      zusatz_anweisungen, eingabedateien, final_fakten_pfad=None):
+                                      zusatz_anweisungen, eingabedateien, final_fakten_pfad=None,
+                                      reuse_stages=False):
     """Vier getrennte Datenkontexte: Discovery, Technik, Historie und Final-Synthese.
 
     A1 = Discovery ohne HEBELTRADER/Einzelcheck-Historie und ohne technische Rohquellen.
@@ -3239,11 +3244,16 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Das Trade-Story-Universum ist nur Handoff/Orientierung und darf Discovery nicht ersetzen. "
         "Keine technischen Setups erfinden, keine Scores erzeugen und keine technische Kaufentscheidung vorwegnehmen."
     )
-    daten_antwort = _gemini_cache_antwort(client, modell, cache_stufe1, daten_prompt)
-    daten_analyse = daten_antwort.text or ""
-    if ist_ablehnung(daten_analyse):
-        raise RuntimeError("GEMINI_STUFE_1_SICHERHEITSFILTER_ABLEHNUNG")
-    print(f"  Gemini A1 Discovery erfolgreich | Zeichen: {len(daten_analyse)}")
+    if reuse_stages and _gemini_stufen_cache.get("A1") is not None:
+        daten_analyse = _gemini_stufen_cache["A1"]
+        print(f"  Gemini A1 Discovery aus technischem Retry-Cache übernommen | Zeichen: {len(daten_analyse)}")
+    else:
+        daten_antwort = _gemini_cache_antwort(client, modell, cache_stufe1, daten_prompt)
+        daten_analyse = daten_antwort.text or ""
+        if ist_ablehnung(daten_analyse):
+            raise RuntimeError("GEMINI_STUFE_1_SICHERHEITSFILTER_ABLEHNUNG")
+        _gemini_stufen_cache["A1"] = daten_analyse
+        print(f"  Gemini A1 Discovery erfolgreich | Zeichen: {len(daten_analyse)}")
 
     technik_prompt = (
         "STUFE 2 – TECHNIK / SETUPS. Analysiere ausschliesslich die bereitgestellten aktuellen "
@@ -3253,11 +3263,16 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "pruefe stattdessen technische Bestaetigung, Status, Setup, CRV, Stop/TP und Widersprueche nur aus "
         "den autoritativen technischen Quellen. Keine neuen technischen Berechnungen und keine erfundenen Setups."
     )
-    technik_antwort = _gemini_cache_antwort(client, modell, cache_stufe2, technik_prompt)
-    technik_analyse = technik_antwort.text or ""
-    if ist_ablehnung(technik_analyse):
-        raise RuntimeError("GEMINI_STUFE_2_TECHNIK_SICHERHEITSFILTER_ABLEHNUNG")
-    print(f"  Gemini A2 Technik erfolgreich | Zeichen: {len(technik_analyse)}")
+    if reuse_stages and _gemini_stufen_cache.get("A2") is not None:
+        technik_analyse = _gemini_stufen_cache["A2"]
+        print(f"  Gemini A2 Technik aus technischem Retry-Cache übernommen | Zeichen: {len(technik_analyse)}")
+    else:
+        technik_antwort = _gemini_cache_antwort(client, modell, cache_stufe2, technik_prompt)
+        technik_analyse = technik_antwort.text or ""
+        if ist_ablehnung(technik_analyse):
+            raise RuntimeError("GEMINI_STUFE_2_TECHNIK_SICHERHEITSFILTER_ABLEHNUNG")
+        _gemini_stufen_cache["A2"] = technik_analyse
+        print(f"  Gemini A2 Technik erfolgreich | Zeichen: {len(technik_analyse)}")
 
     historie_prompt = (
         "STUFE 3 – HISTORIENANALYSE. Analysiere die GESAMTE verfuegbare Einzel-Check-Historie ohne "
@@ -3270,11 +3285,16 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "den aktuellen Referenzdaten.\n\n"
         "A1-ORIENTIERUNG:\n" + daten_analyse
     )
-    historie_antwort = _gemini_cache_antwort(client, modell, cache_stufe3, historie_prompt)
-    historie_analyse = historie_antwort.text or ""
-    if ist_ablehnung(historie_analyse):
-        raise RuntimeError("GEMINI_STUFE_3_HISTORIE_SICHERHEITSFILTER_ABLEHNUNG")
-    print(f"  Gemini A3 Historie erfolgreich | Zeichen: {len(historie_analyse)}")
+    if reuse_stages and _gemini_stufen_cache.get("A3") is not None:
+        historie_analyse = _gemini_stufen_cache["A3"]
+        print(f"  Gemini A3 Historie aus technischem Retry-Cache übernommen | Zeichen: {len(historie_analyse)}")
+    else:
+        historie_antwort = _gemini_cache_antwort(client, modell, cache_stufe3, historie_prompt)
+        historie_analyse = historie_antwort.text or ""
+        if ist_ablehnung(historie_analyse):
+            raise RuntimeError("GEMINI_STUFE_3_HISTORIE_SICHERHEITSFILTER_ABLEHNUNG")
+        _gemini_stufen_cache["A3"] = historie_analyse
+        print(f"  Gemini A3 Historie erfolgreich | Zeichen: {len(historie_analyse)}")
 
     final_prompt = (
         "FINALE SYNTHESE. Erstelle die vollstaendige finale Auswertung NICHT aus Rohdatenkopien, "
@@ -3347,9 +3367,15 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "\n\nVORANALYSE A2 – TECHNIK / SETUPS:\n" + technik_analyse +
         "\n\nVORANALYSE A3 – HISTORIE:\n" + historie_analyse
     )
+    if reuse_stages and _gemini_stufen_cache.get("FINAL") is not None:
+        final_text = _gemini_stufen_cache["FINAL"]
+        print(f"  Gemini Finale Synthese aus technischem Retry-Cache übernommen | Zeichen: {len(final_text)}")
+        return SimpleNamespace(text=final_text, candidates=[])
+
     final_antwort = _gemini_cache_antwort(
         client, modell, cache_final, [final_prompt] + zusatz_anweisungen
     )
+    _gemini_stufen_cache["FINAL"] = final_antwort.text or ""
     print(f"  Gemini Finale Synthese erfolgreich | Zeichen: {len(final_antwort.text or '')}")
     return final_antwort
 
@@ -3376,7 +3402,7 @@ def gemini_auswertung_starten():
 
     letzte_antwort = None
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
-    global _gemini_cache_name, _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models
+    global _gemini_cache_name, _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models, _gemini_stufen_cache
     _gemini_cache_name = None
     _gemini_input_quota_usage.clear()
     _gemini_input_quota_cooldown_until.clear()
@@ -3385,6 +3411,8 @@ def gemini_auswertung_starten():
     _gemini_active_modell = None
     _gemini_last_request_model = None
     _gemini_failed_models = set()
+    _gemini_stufen_cache = {}
+    technische_retry_wiederverwenden = False
     modell_index = 0
     aktuelles_modell = GEMINI_MODELLREIHENFOLGE[modell_index]
 
@@ -3597,6 +3625,7 @@ def gemini_auswertung_starten():
                 zusatz_anweisungen=_gemini_zusatz_anweisungen,
                 eingabedateien=eingabedateien_gemini,
                 final_fakten_pfad=final_fakten_pfad,
+                reuse_stages=technische_retry_wiederverwenden,
             )
             text = antwort.text or ""
             # Direkte aktuelle Makro-Zahlen werden deterministisch gegen das
@@ -3766,7 +3795,38 @@ def gemini_auswertung_starten():
             if _gemini_last_request_model in GEMINI_MODELLREIHENFOLGE:
                 aktuelles_modell = _gemini_last_request_model
                 modell_index = GEMINI_MODELLREIHENFOLGE.index(aktuelles_modell)
+
+            # Sicherheitsfilter-Ablehnungen innerhalb von A1/A2/A3 werden als
+            # eigener Stage-Fehler geworfen. Dieser Pfad muss den technischen
+            # Retry-Cache zwingend verwerfen, damit der naechste Versuch einen
+            # vollstaendig frischen Analysekontext erzeugt. Insbesondere darf
+            # ein zuvor gesetztes technische_retry_wiederverwenden=True hier
+            # niemals erhalten bleiben.
+            ist_stufen_sicherheitsfilter = any(
+                marker in fehlertext
+                for marker in (
+                    "GEMINI_STUFE_1_SICHERHEITSFILTER_ABLEHNUNG",
+                    "GEMINI_STUFE_2_TECHNIK_SICHERHEITSFILTER_ABLEHNUNG",
+                    "GEMINI_STUFE_3_HISTORIE_SICHERHEITSFILTER_ABLEHNUNG",
+                )
+            )
+            if ist_stufen_sicherheitsfilter:
+                _gemini_stufen_cache.clear()
+                technische_retry_wiederverwenden = False
+                hochgeladene_teile = None
+                _gemini_cache_name = None
+                print(
+                    "  Sicherheitsfilter-Ablehnung in A1/A2/A3 erkannt - "
+                    "Stage-Cache geloescht; naechster Versuch mit frischem Kontext."
+                )
+
             abbrechen, empfohlene_wartezeit, kategorie = analysiere_api_fehler(fehlertext)
+            # Jeder API-/Quota-Fehler ist ein technischer Retry: bereits
+            # erfolgreich abgeschlossene A1/A2/A3/Final-Stufen werden nicht
+            # erneut angefordert. Ein Sicherheitsfilter wird weiter unten
+            # ausdrücklich als frischer Kontext behandelt.
+            if kategorie in ("ueberlast", "netzwerk", "input_token_limit", "tageskontingent"):
+                technische_retry_wiederverwenden = True
             if abbrechen:
                 if kategorie == "cache_free_tier":
                     print(
@@ -3911,6 +3971,8 @@ def gemini_auswertung_starten():
             # gegen diese Art von Ablehnung (siehe Kommentar oben).
             hochgeladene_teile = None
             _gemini_cache_name = None
+            _gemini_stufen_cache.clear()
+            technische_retry_wiederverwenden = False
             time.sleep(WARTEZEIT_SEKUNDEN + versuch * 5)
             continue
 
