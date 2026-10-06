@@ -5697,12 +5697,15 @@ def _sichere_technische_assetangaben(text, eingabedateien):
         ref = _technische_ref_fuer_kandidat(candidate, refs)
         if not ref:
             continue
-        # Kanonischer Name+Ticker verhindert spätere Verwechslungen.
-        canonical = ref.get("name") and ref.get("ticker")
-        if canonical:
-            replacements.append((section_match.start() + cm.start(1), section_match.start() + cm.end(1), f"{ref['name']} ({ref['ticker']})"))
-            if candidate != f"{ref['name']} ({ref['ticker']})":
-                changes.append(f"{candidate} -> {ref['name']} ({ref['ticker']})")
+        # Die technische Zahlenabsicherung darf die autoritative Kandidatenidentität
+        # NICHT umschreiben. Diese Identität wurde unmittelbar zuvor durch die
+        # Trade-Story-Reparatur/Validierung gegen das autoritative Kandidaten-
+        # universum gebunden. Eine nachtraegliche Kanonisierung aus der
+        # technischen Referenzquelle kann Name/Ticker-Aliase einfuehren, die der
+        # Trade-Story-Validator nicht als dieselbe autoritative Setup-Zeile
+        # erkennt. Deshalb bleibt die Kandidatenzeile unveraendert; nur die
+        # technischen Zahlenfelder dieses bereits identifizierten Kandidaten
+        # werden quellengebunden korrigiert.
         story_start = cm.start()
         story_end = matches[matches.index(cm) + 1].start() if matches.index(cm) + 1 < len(matches) else len(section)
         story = section[story_start:story_end]
