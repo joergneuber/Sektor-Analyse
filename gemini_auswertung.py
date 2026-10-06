@@ -7619,6 +7619,47 @@ def _normalisiere_punkt10_autoritaet(text):
     return text
 
 
+def _ist_adp_makrozeile(line):
+    """Erkennt ADP nur bei eindeutigem Makro-/Arbeitsmarktkontext.
+
+    ADP ist zugleich der Aktien-Ticker von Automatic Data Processing und
+    das Kürzel für den ADP-Arbeitsmarktindikator. Die Makroausnahme darf
+    deshalb nur bei expliziten, deterministischen Makroformulierungen greifen.
+    Ein isoliertes "ADP" oder ein Aktien-/Unternehmenskontext reicht niemals.
+    """
+    text = str(line or "")
+    if not re.search(r"(?<![A-Za-z0-9])ADP(?![A-Za-z0-9])", text, re.I):
+        return False
+
+    # Ein expliziter Aktien-/Unternehmenskontext hat Vorrang. Dadurch kann
+    # z. B. "Aktie: ADP employment growth" niemals als Makrozeile gelten.
+    company_context = re.compile(
+        r"(?i)(?:^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|"
+        r"sektor|markt:|entry|stop|tp1|tp2)"
+    )
+    if company_context.search(text):
+        return False
+
+    # Eindeutige, fest benannte ADP-Indikatorbezeichnungen. Ein bloßes
+    # Vorkommen von "employment", "jobs" oder "payroll" reicht bewusst nicht.
+    macro_phrases = re.compile(
+        r"(?i)(?:"
+        r"\badp\s+employment(?:\s+(?:change|report|data))?(?=\s*[:;,.)-]|\s*$)"
+        r"|\badp\s+payroll(?:\s+report)?(?=\s*[:;,.)-]|\s*$)"
+        r"|\badp\s+jobs(?:\s+report)?(?=\s*[:;,.)-]|\s*$)"
+        r"|\badp\s+(?:arbeitsmarkt|arbeitsmarktdaten|arbeitsmarktindikator)"
+        r"(?=\s*[:;,.)-]|\s*$)"
+        r"|\badp\s+(?:beschäftigung|beschaeftigung)(?:s(?:änderung|daten)|s(?:aenderung|daten))?"
+        r"(?=\s*[:;,.)-]|\s*$)"
+        r"|\badp[- ](?:arbeitsmarktdaten|arbeitsmarktindikator|beschäftigungsdaten|beschaeftigungsdaten)"
+        r"(?=\s*[:;,.)-]|\s*$)"
+        r"|(?:makro|macro|risiko|risk)\s*[:：-]\s*.{0,50}\badp\b"
+        r"|\badp\b.{0,50}\b(?:makro|macro)\b"
+        r")"
+    )
+    return bool(macro_phrases.search(text))
+
+
 def _normalisiere_name_ticker_ausgabe(text):
     """Erzwingt Name (Ticker) für konkrete bekannte Unternehmensnennungen."""
     universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
@@ -7652,6 +7693,11 @@ def _normalisiere_name_ticker_ausgabe(text):
                     line = lines[i]
         # Nur konkrete Aktienzeilen mit isoliertem Ticker werden ersetzt.
         for i, line in enumerate(lines):
+            # ADP ist hier ggf. die Makrokennzahl (ADP Employment Change)
+            # und darf nicht in den Firmennamen Automatic Data Processing
+            # umgeschrieben werden.
+            if _ist_adp_makrozeile(line):
+                continue
             if not re.search(r"(?i)(^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|sektor|markt:|entry|stop:|tp1|tp2)", line):
                 continue
             for ticker_key, name in by_ticker.items():
@@ -7712,6 +7758,11 @@ def _pruefe_name_ticker_gate(text):
             if not line.strip():
                 continue
             if re.search(rf"{_ticker_grenzen_regex(ticker)}", line, re.I):
+                # ADP ist zugleich Aktien-Ticker und Makrokennzahl. Nur ein
+                # deterministisch erkennbarer Makro-Kontext ist ausgenommen;
+                # ein isoliertes "ADP" bleibt weiterhin gate-pflichtig.
+                if ticker == "adp" and _ist_adp_makrozeile(line):
+                    continue
                 # Reine Makro-/Querverbindungsnennungen sind kein konkreter
                 # Unternehmensbezug. Konkrete Aktienzeilen müssen kanonisch sein.
                 if company_context.search(line) and not re.search(rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)", line, re.I):
