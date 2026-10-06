@@ -4658,6 +4658,26 @@ def _extrahiere_makro_referenzwerte(makro_text):
     Nur explizite strukturierte Felder (5T/1M/3M/6M/1J und der erste Kurswert)
     werden als Referenz übernommen. Fehlende Felder bleiben unbekannt.
     """
+    def _parse_number(raw):
+        value = str(raw or "").strip().replace(" ", "")
+        if not value:
+            raise ValueError("empty number")
+        sign = ""
+        if value[0] in "+-":
+            sign, value = value[0], value[1:]
+        if not re.fullmatch(r"\d[\d.,]*", value):
+            raise ValueError("invalid number")
+        if "," in value and "." in value:
+            if value.rfind(",") > value.rfind("."):
+                value = value.replace(".", "").replace(",", ".")
+            else:
+                value = value.replace(",", "")
+        elif "," in value:
+            value = value.replace(",", ".")
+        elif value.count(".") > 1:
+            value = value.replace(".", "")
+        return float(sign + value)
+
     referenzen = {}
     if not makro_text:
         return referenzen
@@ -4669,20 +4689,30 @@ def _extrahiere_makro_referenzwerte(makro_text):
         label = label.strip()
         if not label or len(label) > 80 or not re.search(r"[A-Za-zÄÖÜäöüß]", label):
             continue
-        kurs = re.match(r"\s*([-+]?\d+(?:[.,]\d+)?)", rest)
+        kurs = re.match(r"\s*([-+]?\d[\d.,]*)", rest)
         if not kurs:
             continue
-        ref = {"kurs": float(kurs.group(1).replace(",", ".")), "perioden": {}}
+        try:
+            kurs_value = _parse_number(kurs.group(1))
+        except ValueError:
+            continue
+        ref = {"kurs": kurs_value, "perioden": {}}
         dm = re.search(r"(?:Datenstand|Datenstand:?)\s*=\s*(\d{4}-\d{2}-\d{2})", rest, re.I)
         if dm:
             ref["datenstand"] = dm.group(1)
-        sm = re.search(r"(?:Letzter_Schluss|Letzter\s+Schluss)\s*=\s*(?!\d{4}-\d{2}-\d{2})([-+]?\d+(?:[.,]\d+)?)", rest, re.I)
+        sm = re.search(r"(?:Letzter_Schluss|Letzter\s+Schluss)\s*=\s*(?!\d{4}-\d{2}-\d{2})([-+]?\d[\d.,]*)", rest, re.I)
         if sm:
-            ref["schluss"] = float(sm.group(1).replace(",", "."))
+            try:
+                ref["schluss"] = _parse_number(sm.group(1))
+            except ValueError:
+                pass
         for key in ("5T", "1M", "3M", "6M", "1J"):
-            m = re.search(rf"(?:^|\|)\s*{re.escape(key)}\s*=\s*([-+]?\d+(?:[.,]\d+)?)\s*%", rest)
+            m = re.search(rf"(?:^|\|)\s*{re.escape(key)}\s*=\s*([-+]?\d[\d.,]*)\s*%", rest)
             if m:
-                ref["perioden"][key] = float(m.group(1).replace(",", "."))
+                try:
+                    ref["perioden"][key] = _parse_number(m.group(1))
+                except ValueError:
+                    pass
         referenzen[label.lower()] = ref
         normalized_label = re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
         treasury_aliases = {
@@ -7993,8 +8023,10 @@ def _normalisiere_inline_pflichtueberschriften(text):
     return "\n".join(out) + ("\n" if str(text).endswith("\n") else "")
 
 
-def _zahl_im_block_vorhanden(block, wert):
-    """Prueft numerisch robust, ob ein autoritativer Wert im Ausgabeabschnitt vorkommt."""
+def _zahl_im_block_vorhanden(block, wert, label=None):
+    """Prueft einen autoritativen Wert; bei Labelvorgabe muessen Label und Wert
+    im selben Ausgabezeile zusammengehören. Dadurch werden Zahlenkollisionen
+    mit anderen Quellfeldern im selben Abschnitt verhindert."""
     if wert is None:
         return False
     try:
@@ -8002,18 +8034,33 @@ def _zahl_im_block_vorhanden(block, wert):
     except (TypeError, ValueError):
         return False
 
-    for match in re.finditer(r"(?<![A-Za-z0-9])[-+]?\d[\d.,]*(?:%|)", block or ""):
-        raw = match.group(0).rstrip("%").strip()
-        kandidat = _quellenwert_float(raw)
-        if kandidat is None:
-            continue
-        if abs(kandidat - ziel) <= max(1e-9, abs(ziel) * 1e-9):
+    def wert_in_zeile(zeile):
+        for match in re.finditer(r"(?<![A-Za-z0-9])[-+]?\d[\d.,]*(?:%|)", zeile or ""):
+            raw = match.group(0).rstrip("%").strip()
+            kandidat = _quellenwert_float(raw)
+            if kandidat is not None and abs(kandidat - ziel) <= max(1e-9, abs(ziel) * 1e-9):
+                return True
+        return False
+
+    if label:
+        label_pattern = re.compile(
+            r"(?i)(?:^|\||:)\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?"
+            + re.escape(label)
+            + r"(?=\s*(?:[:(=]|$))"
+        )
+        for zeile in (block or "").splitlines():
+            if label_pattern.search(zeile) and wert_in_zeile(zeile):
+                return True
+        return False
+
+    for zeile in (block or "").splitlines():
+        if wert_in_zeile(zeile):
             return True
     return False
 
 
 def _gate_quellenwert(block, label, wert, fehler):
-    if not _zahl_im_block_vorhanden(block, wert):
+    if not _zahl_im_block_vorhanden(block, wert, label=label):
         fehler.append(f"{label}: autoritativer Wert {wert} nicht im zugeordneten Ausgabeabschnitt gefunden.")
 
 
@@ -8111,9 +8158,18 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
         additions = []
         for label, raw in source_values[heading]:
             value = _quellenwert_float(raw)
-            if not _zahl_im_block_vorhanden(block, value):
+            if not _zahl_im_block_vorhanden(block, value, label=label):
                 additions.append(f"- [AUTORITATIVE QUELLE] {label}: {raw}")
-        if heading == "7.5 Rohstoffe" and lithium_proxy and "Lithium" in block and not re.search(r"proxy", block, re.I):
+        lithium_wird_vorhanden_sein = (
+            "Lithium" in block
+            or any(label == "Lithium" for label, _ in source_values[heading])
+        )
+        if (
+            heading == "7.5 Rohstoffe"
+            and lithium_proxy
+            and lithium_wird_vorhanden_sein
+            and not re.search(r"proxy", block, re.I)
+        ):
             additions.append("- [AUTORITATIVE QUELLE] Lithium: STATUS=PROXY")
         if not additions:
             continue
@@ -8211,8 +8267,18 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
 
 
 def _edelmetall_quellenblock(edel_text, asset):
-    """Liefert den exakt zugeordneten operativen Diagnoseblock eines Metalls."""
-    lines = (edel_text or "").splitlines()
+    """Liefert den exakt zugeordneten operativen Trendfolge-Diagnoseblock eines Metalls.
+
+    Die Suche beginnt bewusst erst innerhalb von ``TRENDFOLGE-DIAGNOSE JE METALL``.
+    Dadurch kann ein gleichnamiger Asset-Bullet aus einem vorgelagerten oder
+    anderen Quellblock nicht versehentlich als EMA200/WMA200-Quelle verwendet werden.
+    """
+    source = edel_text or ""
+    trend_match = re.search(r"(?m)^TRENDFOLGE-DIAGNOSE JE METALL\s*$", source)
+    if not trend_match:
+        return ""
+
+    lines = source[trend_match.end():].splitlines()
     start = next(
         (
             i for i, line in enumerate(lines)
@@ -8222,6 +8288,7 @@ def _edelmetall_quellenblock(edel_text, asset):
     )
     if start is None:
         return ""
+
     end = len(lines)
     for i in range(start + 1, len(lines)):
         if re.match(r"^\s*-\s*(?:Gold|Silber|Platin|Palladium)\s*\([^)]*\)\s*$", lines[i]):
@@ -8500,8 +8567,7 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
         block = blocks[heading]
         lage_line = next((line for line in edel.splitlines() if re.match(r"^\s*" + re.escape(asset) + r":\s*Kurs\s+", line)), "")
         trend_line = next((line for line in edel.splitlines() if re.match(r"^\s*-\s*" + re.escape(asset) + r"\s*\(.*\)\s*$", line) and "200er-Trend" not in line), "")
-        trend_idx = edel.find(f"- {asset} (" )
-        trend_block = edel[trend_idx:edel.find("- ", trend_idx + 3)] if trend_idx >= 0 else ""
+        trend_block = _edelmetall_quellenblock(edel, asset)
 
         if not lage_line:
             errors.append(f"{heading}: aktuelle Lagezeile fehlt im Edelmetalle_Briefing.")
