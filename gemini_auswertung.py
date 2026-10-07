@@ -89,9 +89,24 @@ GEMINI_MODELLREIHENFOLGE = tuple(dict.fromkeys(
     if modell
 ))
 MAX_VERSUCHE = len(GEMINI_MODELLREIHENFOLGE)
-# Sicherheitsbudget deutlich unter dem serverseitigen Free-Tier-Limit von 250.000.
-# Jeder tatsaechliche GenerateContent-Request muss vorab <= diesem Wert liegen.
-GEMINI_INPUT_SAFE_BUDGET = 210_000
+# Konservatives Einzelrequest-Budget. Das bisherige 210k-Budget erlaubte trotz
+# 250k-Serverlimit noch sehr grosse Einzelrequests (z.B. 133k/197k).
+# 120k begrenzt die Groesse eines einzelnen GenerateContent-Requests deutlich
+# und laesst zugleich genug Raum fuer den grossen Master-Systemkontext.
+GEMINI_INPUT_SAFE_BUDGET = 120_000
+# Konservatives projektweites Minutenbudget fuer den Free-Tier-TPM-Schutz.
+# WICHTIG: Dieses Tracking ist bewusst PROZESSLOKAL. Es verhindert, dass mehrere
+# Modelle innerhalb dieses Python-Prozesses zusammen das lokale 240k/60s-Budget
+# ueberschreiten. Es synchronisiert NICHT mehrere parallel laufende GitHub-Jobs
+# oder Prozesse. Eine echte projektweite Synchronisation wuerde einen gemeinsamen
+# persistenten/externen Quota-Ledger erfordern und ist hier bewusst nicht eingefuehrt.
+# Das laesst 10k Reserve gegen Rundungs-/Vorverbrauchseffekte.
+GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT = 240_000
+GEMINI_PROJECT_QUOTA_SCOPE = "PROCESS_LOCAL"
+# Lokale Quell-Chunks werden bewusst deutlich kleiner gehalten, damit selbst
+# zusammen mit Systemanweisung und Stufenprompt ein Chunk sicher unter dem
+# Einzelrequest-Budget bleibt. 180k Zeichen entsprechen grob <50k Tokens.
+GEMINI_SOURCE_CHUNK_MAX_CHARS = 60_000
 # Serverseitiges Free-Tier-Input-Token-Kontingent pro Modell und Minute.
 # Dieses Kontingent ist vom Einzelrequest-Limit getrennt.
 GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT = 250_000
@@ -129,6 +144,11 @@ GEMINI_A3_HISTORIE_DATEI = ".gemini_einzel_check_historie_a3.json"
 # GenerateContent-Aufruf als gesendet betrachtet werden. count_tokens() selbst
 # wird hier ausdruecklich NICHT angerechnet.
 _gemini_input_quota_usage = defaultdict(list)
+# Zusaetzliches konservatives projektweites Minutenfenster innerhalb DIESES
+# Python-Prozesses. Es verhindert Modell-uebergreifende Ueberschreitungen im
+# laufenden Prozess; parallele Prozesse/GitHub-Jobs werden bewusst nicht
+# gegenseitig synchronisiert (siehe GEMINI_PROJECT_QUOTA_SCOPE).
+_gemini_project_input_quota_usage = []
 _gemini_input_quota_cooldown_until = {}
 _gemini_rpd_requests = defaultdict(int)
 _gemini_rpd_exhausted = set()
@@ -142,6 +162,9 @@ _gemini_sendungsreservierungen = []
 # Dadurch startet ein 503 in A2/A3/Final nicht erneut bei A1 und verbraucht
 # keine bereits erfolgreich erzeugten GenerateContent-Requests ein zweites Mal.
 _gemini_stufen_cache = {}
+# Erfolgreiche einzelne GenerateContent-Splits bleiben innerhalb des Laufes erhalten.
+# Ein technischer Fehler darf niemals bereits erfolgreiche Splits erneut senden.
+_gemini_request_split_cache = {}
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -2293,21 +2316,35 @@ def _gemini_cache_erstellen(client, modell, anweisung, hochgeladene_teile, einga
     nicht geloescht oder veraendert.
     """
     names = list(eingabedateien.keys()) if eingabedateien else []
+
+    def basisname(name):
+        # Chunk-Namen tragen die Form logical_name#CHUNK_001. Fuer include/exclude
+        # bleibt trotzdem der urspruengliche logische Dateiname autoritativ.
+        return str(name).split("#CHUNK_", 1)[0]
+
+    if isinstance(hochgeladene_teile, list) and hochgeladene_teile and all(
+        isinstance(item, tuple) and len(item) == 2 for item in hochgeladene_teile
+    ):
+        upload_pairs = list(hochgeladene_teile)
+    else:
+        name_to_index = {name: i for i, name in enumerate(names)}
+        upload_pairs = [(name, hochgeladene_teile[name_to_index[name]]) for name in names]
+
     if include_names is not None and eingabedateien:
         allowed = set(include_names)
-        context_names = [name for name in names if name in allowed]
+        selected_pairs = [(name, teil) for name, teil in upload_pairs if basisname(name) in allowed]
     elif exclude_names and eingabedateien:
         excluded = set(exclude_names)
-        context_names = [name for name in names if name not in excluded]
+        selected_pairs = [(name, teil) for name, teil in upload_pairs if basisname(name) not in excluded]
     else:
-        context_names = names
+        selected_pairs = upload_pairs
 
-    name_to_index = {name: i for i, name in enumerate(names)}
-    contents = [hochgeladene_teile[name_to_index[name]] for name in context_names]
+    context_names = [name for name, _ in selected_pairs]
+    contents = [teil for _, teil in selected_pairs]
 
     print(
         f"  Gemini-Kontext fuer normale GenerateContent-Anfragen vorbereitet: "
-        f"{len(contents)} Dateien"
+        f"{len(contents)} Quellen/Chunks"
     )
     if context_names:
         paar = list(zip(context_names, contents))
@@ -2342,54 +2379,160 @@ def _gemini_cache_erstellen(client, modell, anweisung, hochgeladene_teile, einga
                 "GEMINI-DATENBLOCK: D wird nicht doppelt gezaehlt; "
                 "Geopolitik ist technisch im Makro_Briefing enthalten."
             )
-    return {"contents": contents, "system_instruction": anweisung}
+    return {"contents": contents, "system_instruction": anweisung, "context_names": context_names}
+
+
+
+def _gemini_quelltext_chunks(pfad, logical_name):
+    """Liest grosse Textquellen verlustfrei und erzeugt deterministische Chunks.
+
+    CSV/JSONL/sonstige Textdateien werden bevorzugt an Zeilengrenzen geteilt.
+    Bei einem einzelnen uebergrossen Datensatz wird kontrolliert innerhalb der
+    Zeile geteilt. JSON-Dateien mit ``ticker_blocks`` werden, wenn moeglich,
+    blockweise als weiterhin valides JSON segmentiert. Originaldateien bleiben
+    unveraendert; die Chunks sind ausschliesslich Gemini-Requestteile.
+    """
+    ext = Path(pfad).suffix.lower()
+    text_mimes = {".txt", ".csv", ".json", ".jsonl", ".md", ".log"}
+    if ext not in text_mimes or os.path.getsize(pfad) <= GEMINI_SOURCE_CHUNK_MAX_CHARS:
+        return None
+
+    text = Path(pfad).read_text(encoding="utf-8-sig")
+    if len(text) <= GEMINI_SOURCE_CHUNK_MAX_CHARS:
+        return None
+
+    # Spezialfall A3-Historie / JSON-Objekte mit ticker_blocks: jeder Chunk
+    # bleibt syntaktisch valides JSON und enthaelt nur ganze Ticker-Bloecke.
+    if ext == ".json":
+        try:
+            payload = json.loads(text)
+            blocks = payload.get("ticker_blocks") if isinstance(payload, dict) else None
+            if isinstance(blocks, list) and blocks:
+                prefix = {k: v for k, v in payload.items() if k != "ticker_blocks"}
+                chunks = []
+                current = []
+                for block in blocks:
+                    candidate = current + [block]
+                    probe = dict(prefix)
+                    probe["ticker_blocks"] = candidate
+                    probe["chunking"] = {"logical_source": logical_name, "partial": True}
+                    if current and len(json.dumps(probe, ensure_ascii=False, separators=(",", ":"))) > GEMINI_SOURCE_CHUNK_MAX_CHARS:
+                        chunks.append(current)
+                        current = [block]
+                    else:
+                        current = candidate
+                if current:
+                    chunks.append(current)
+                result = []
+                for idx, block_group in enumerate(chunks, 1):
+                    out = dict(prefix)
+                    out["ticker_blocks"] = block_group
+                    out["chunking"] = {
+                        "logical_source": logical_name,
+                        "chunk_index": idx,
+                        "chunk_count": len(chunks),
+                        "partial": len(chunks) > 1,
+                    }
+                    result.append(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+                return result
+        except Exception:
+            # Kein Spezialformat erzwingen; unten folgt der sichere Text-Fallback.
+            pass
+
+    chunks = []
+    current_lines = []
+    current_chars = 0
+    for line in text.splitlines(keepends=True):
+        if current_lines and current_chars + len(line) > GEMINI_SOURCE_CHUNK_MAX_CHARS:
+            chunks.append("".join(current_lines))
+            current_lines = []
+            current_chars = 0
+        if len(line) > GEMINI_SOURCE_CHUNK_MAX_CHARS:
+            if current_lines:
+                chunks.append("".join(current_lines))
+                current_lines = []
+                current_chars = 0
+            for start in range(0, len(line), GEMINI_SOURCE_CHUNK_MAX_CHARS):
+                chunks.append(line[start:start + GEMINI_SOURCE_CHUNK_MAX_CHARS])
+        else:
+            current_lines.append(line)
+            current_chars += len(line)
+    if current_lines:
+        chunks.append("".join(current_lines))
+    return chunks
+
+
+def _gemini_hochgeladene_quellen_erstellen(client, eingabedateien_gemini):
+    """Erzeugt Upload-Referenzen bzw. lokale Text-Chunks fuer Gemini.
+
+    Rueckgabe: ``[(logical_name, content_part), ...]``. Damit koennen mehrere
+    Chunks derselben logischen Quelle in den stufenspezifischen Kontext gelangen,
+    ohne die bestehende include/exclude-Logik zu veraendern.
+    """
+    result = []
+    for logical_name, pfad in eingabedateien_gemini.items():
+        if not pfad:
+            continue
+        chunks = _gemini_quelltext_chunks(pfad, logical_name)
+        if chunks:
+            print(
+                f"  Gemini-Chunking: {os.path.basename(pfad)} | "
+                f"{len(chunks)} Chunks | max. {GEMINI_SOURCE_CHUNK_MAX_CHARS:,} Zeichen/Chunk"
+            )
+            for idx, chunk_text in enumerate(chunks, 1):
+                header = (
+                    f"\n\n===== QUELLDATEI {logical_name} | CHUNK {idx}/{len(chunks)} =====\n"
+                    "Dieser Chunk ist ein vollstaendiger Ausschnitt der unveraenderten Originalquelle. "
+                    "Keine Daten ergaenzen oder weglassen.\n\n"
+                )
+                result.append((f"{logical_name}#CHUNK_{idx:03d}", types.Part.from_text(text=header + chunk_text)))
+            continue
+
+        mime_type = ermittle_upload_mime_type(pfad)
+        print(f"  Gemini-Upload: {os.path.basename(pfad)} | MIME: {mime_type}")
+        result.append((logical_name, client.files.upload(
+            file=pfad,
+            config=types.UploadFileConfig(mime_type=mime_type),
+        )))
+    return result
 
 
 def _gemini_sichere_daten_gruppen(client, modell, daten_teile, arbeits_contents,
                                    system_instruction, label):
-    """Teilt nur an Dateigrenzen und garantiert budgetkonforme Gruppen.
+    """Erzeugt strikt budgetkonforme Request-Gruppen.
 
-    Keine Quelle wird gekuerzt. Jede erzeugte Gruppe wird zusammen mit
-    arbeits_contents und system_instruction gemessen. Passt eine Datei nicht
-    mehr in die aktuelle Gruppe, wird die aktuelle Gruppe abgeschlossen und die
-    einzelne Datei unmittelbar separat geprueft. Eine zu grosse Einzelquelle
-    wird niemals als gueltige Gruppe weitergereicht.
+    Normalerweise wird an logischen Dateigrenzen gebuendelt. Die Upload-Schicht
+    zerlegt sehr grosse lokale Textquellen jedoch bereits vorab in kontrollierte
+    ``#CHUNK_NNN``-Teile. Dadurch kann auch eine einzelne grosse Quelle niemals
+    wieder einen 133k/197k-Request erzwingen. Jeder tatsaechliche Request wird
+    weiterhin unmittelbar vor dem Senden erneut per CountTokens verifiziert.
     """
     gruppe = []
     for teil in daten_teile:
         kandidat = gruppe + [teil]
         tokens = _gemini_tokenzahl(
-            client,
-            modell,
-            kandidat + arbeits_contents,
+            client, modell, kandidat + arbeits_contents,
             system_instruction,
             label=label,
         )
         if tokens > GEMINI_INPUT_SAFE_BUDGET:
             if not gruppe:
                 raise RuntimeError(
-                    f"GEMINI_EINZELQUELLE_ZU_GROSS: {label} "
-                    f"eine einzelne Quelle ueberschreitet "
-                    f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens."
+                    f"GEMINI_QUELLE_NACH_CHUNKING_ZU_GROSS: {label} "
+                    f"ein einzelner Daten-Chunk ueberschreitet "
+                    f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens. "
+                    "Die Quelle muss kleiner segmentiert werden."
                 )
-
-            # Die bisherige Gruppe ist gueltig und wird abgeschlossen.
             yield gruppe
-
-            # Kritischer Schutz: Die neue Einzelquelle wird sofort zusammen
-            # mit dem festen Arbeits- und Systemkontext geprueft. Sie darf
-            # niemals ungeprueft als neue Gruppe weitergereicht werden.
             einzel_tokens = _gemini_tokenzahl(
-                client,
-                modell,
-                [teil] + arbeits_contents,
+                client, modell, [teil] + arbeits_contents,
                 system_instruction,
-                label=f"{label} Einzelquelle",
+                label=f"{label} Einzelchunk",
             )
             if einzel_tokens > GEMINI_INPUT_SAFE_BUDGET:
                 raise RuntimeError(
-                    f"GEMINI_EINZELQUELLE_ZU_GROSS: {label} "
-                    f"eine einzelne Quelle ueberschreitet "
+                    f"GEMINI_QUELLE_NACH_CHUNKING_ZU_GROSS: {label} "
+                    f"ein einzelner Daten-Chunk ueberschreitet "
                     f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens "
                     f"(gemessen: {einzel_tokens:,})."
                 )
@@ -2402,7 +2545,7 @@ def _gemini_sichere_daten_gruppen(client, modell, daten_teile, arbeits_contents,
 
 
 def _gemini_quota_prune(modell, jetzt=None):
-    """Entfernt lokale Input-Token-Buchungen ausserhalb des Minutenfensters."""
+    """Entfernt lokale Modell- und projektweite Buchungen ausserhalb des Minutenfensters."""
     jetzt = time.monotonic() if jetzt is None else jetzt
     grenze = jetzt - GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
     eintraege = _gemini_input_quota_usage.get(modell, [])
@@ -2410,6 +2553,12 @@ def _gemini_quota_prune(modell, jetzt=None):
         _gemini_input_quota_usage[modell] = [
             (zeitpunkt, tokens)
             for zeitpunkt, tokens in eintraege
+            if zeitpunkt > grenze
+        ]
+    if _gemini_project_input_quota_usage:
+        _gemini_project_input_quota_usage[:] = [
+            (zeitpunkt, tokens)
+            for zeitpunkt, tokens in _gemini_project_input_quota_usage
             if zeitpunkt > grenze
         ]
     if (_gemini_input_quota_cooldown_until.get(modell, 0.0) <= jetzt):
@@ -2450,6 +2599,12 @@ def _gemini_quota_waehlen(
     jetzt = time.monotonic()
     beste_wartezeit = None
     ausgeschlossene_modelle = set(ausgeschlossene_modelle or ())
+    # Erst das gemeinsame lokale 60-s-Fenster bereinigen, dann Projektverbrauch
+    # und Restbudget berechnen. Andernfalls konnten bereits abgelaufene
+    # Projektbuchungen die erste Restberechnung unnoetig verknappen.
+    _gemini_quota_prune(None, jetzt)
+    projektverbrauch = sum(tokens for _, tokens in _gemini_project_input_quota_usage)
+    projekt_rest = GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT - projektverbrauch
     for modell in _gemini_quota_kandidaten(
         preferred_modell,
         fehlgeschlagene_einschliessen=fehlgeschlagene_einschliessen,
@@ -2461,10 +2616,11 @@ def _gemini_quota_waehlen(
         verbrauch = sum(tokens for _, tokens in _gemini_input_quota_usage.get(modell, []))
         rest = GEMINI_FREE_TIER_INPUT_LOCAL_LIMIT - verbrauch
 
-        if cooldown <= jetzt and request_tokens <= rest:
+        if cooldown <= jetzt and request_tokens <= rest and request_tokens <= projekt_rest:
             return modell, 0.0
 
         eintraege = _gemini_input_quota_usage.get(modell, [])
+        wait_for_usage = 0.0
         if request_tokens > rest and eintraege:
             aeltester_zeitpunkt = min(zeitpunkt for zeitpunkt, _ in eintraege)
             wait_for_usage = max(
@@ -2474,8 +2630,16 @@ def _gemini_quota_waehlen(
                 + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS
                 - jetzt,
             )
-        else:
-            wait_for_usage = 0.0
+        if request_tokens > projekt_rest and _gemini_project_input_quota_usage:
+            aeltester_projektzeitpunkt = min(zeitpunkt for zeitpunkt, _ in _gemini_project_input_quota_usage)
+            wait_for_project = max(
+                0.0,
+                aeltester_projektzeitpunkt
+                + GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS
+                + GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS
+                - jetzt,
+            )
+            wait_for_usage = max(wait_for_usage, wait_for_project)
         wait_for_cooldown = max(0.0, cooldown - jetzt)
         wartezeit = max(wait_for_usage, wait_for_cooldown)
         if beste_wartezeit is None or wartezeit < beste_wartezeit:
@@ -2507,15 +2671,24 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
     jetzt = time.monotonic()
     _gemini_quota_prune(modell, jetzt)
     verbrauch = sum(tokens for _, tokens in _gemini_input_quota_usage.get(modell, []))
+    projektverbrauch = sum(tokens for _, tokens in _gemini_project_input_quota_usage)
     if verbrauch + request_tokens > GEMINI_FREE_TIER_INPUT_LOCAL_LIMIT:
         raise RuntimeError(
             "GEMINI_LOKALES_INPUT_QUOTA_VOR_SENDUNG: "
             f"Modell={modell} | bereits={verbrauch:,} | Request={request_tokens:,} | "
             f"Limit={GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,}"
         )
+    if projektverbrauch + request_tokens > GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT:
+        raise RuntimeError(
+            "GEMINI_PROJEKT_INPUT_QUOTA_VOR_SENDUNG: "
+            f"Projektverbrauch={projektverbrauch:,} | Request={request_tokens:,} | "
+            f"LokalesProjektLimit={GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT:,} | "
+            f"ServerTPMLimit={GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,}"
+        )
     _gemini_rpd_registriere_sendung(modell)
     eintrag = (jetzt, request_tokens)
     _gemini_input_quota_usage[modell].append(eintrag)
+    _gemini_project_input_quota_usage.append(eintrag)
     reservierung = {
         "modell": modell,
         "request_tokens": request_tokens,
@@ -2527,6 +2700,8 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
     print(
         f"GEMINI-INPUT-QUOTA: Modell={modell} | Request={request_tokens:,} | "
         f"Fensterverbrauch={verbrauch + request_tokens:,}/{GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,} | "
+        f"Projektfenster={projektverbrauch + request_tokens:,}/{GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT:,} "
+        f"({GEMINI_PROJECT_QUOTA_SCOPE}) | "
         f"RPD-lokal={_gemini_rpd_requests[modell]}/{GEMINI_FREE_TIER_RPD_LIMIT}"
     )
     return reservierung
@@ -2559,6 +2734,11 @@ def _gemini_quota_rollback_sendung(reservierung):
         input_entfernt = True
     except ValueError:
         input_entfernt = False
+
+    try:
+        _gemini_project_input_quota_usage.remove(input_eintrag)
+    except ValueError:
+        pass
 
     if _gemini_rpd_requests[modell] > 0:
         _gemini_rpd_requests[modell] -= 1
@@ -3017,75 +3197,6 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
     return aktuelle[0] if aktuelle else ""
 
 
-def _gemini_cache_antwort(client, modell, cache_name, contents, system_instruction=None):
-    """Sendet sichere Requests mit Einzelrequest- und Minutenquota-Schutz.
-
-    Die fachliche Arbeitsanweisung bleibt identisch. Rohdaten werden nicht
-    gekuerzt. Jeder GenerateContent-Request wird unmittelbar davor sowohl
-    gegen das 210k-Sicherheitsbudget als auch gegen das modellbezogene
-    250k-Free-Tier-Minutenkontingent geprueft.
-    """
-    config_kwargs = {}
-    if system_instruction:
-        config_kwargs["system_instruction"] = system_instruction
-    elif isinstance(cache_name, dict):
-        config_kwargs["system_instruction"] = cache_name.get("system_instruction")
-
-    daten_teile = cache_name.get("contents", []) if isinstance(cache_name, dict) else []
-    arbeits_contents = list(contents if isinstance(contents, list) else [contents])
-    anfrage_contents = list(daten_teile) + arbeits_contents
-    token_count = _gemini_tokenzahl(
-        client, modell, anfrage_contents,
-        config_kwargs.get("system_instruction"),
-        label="GenerateContent",
-    )
-
-    if token_count <= GEMINI_INPUT_SAFE_BUDGET:
-        return _gemini_generate_content_quota_safe(
-            client, modell, anfrage_contents, config_kwargs, token_count,
-            "GenerateContent",
-        )
-
-    print(
-        f"GEMINI-REQUEST-SPLIT: {token_count:,} > "
-        f"{GEMINI_INPUT_SAFE_BUDGET:,}; Rohdaten werden an Dateigrenzen "
-        "auf mehrere Requests verteilt."
-    )
-    teiltexte = []
-    gruppen = _gemini_sichere_daten_gruppen(
-        client, modell, daten_teile, arbeits_contents,
-        config_kwargs.get("system_instruction"), "GenerateContent Split",
-    )
-    for idx, gruppe in enumerate(gruppen, 1):
-        gruppe_contents = list(gruppe) + arbeits_contents
-        group_tokens = _gemini_tokenzahl(
-            client, modell, gruppe_contents,
-            config_kwargs.get("system_instruction"),
-            label=f"GenerateContent Split {idx}",
-        )
-        if group_tokens > GEMINI_INPUT_SAFE_BUDGET:
-            raise RuntimeError(
-                f"GEMINI_REQUEST_ZU_GROSS_NACH_SPLIT: {group_tokens:,} Tokens."
-            )
-        response = _gemini_generate_content_quota_safe(
-            client, modell, gruppe_contents, config_kwargs, group_tokens,
-            f"GenerateContent Split {idx}",
-        )
-        teiltexte.append(response.text or "")
-
-    if len(teiltexte) == 1:
-        return response
-
-    # Die Teilanalysen werden ausschliesslich technisch zusammengefuehrt.
-    synth_text = _gemini_synthese(
-        client,
-        modell,
-        teiltexte,
-        config_kwargs.get("system_instruction"),
-        "GenerateContent",
-    )
-    return SimpleNamespace(text=synth_text, candidates=[])
-
 def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autoritaet, offene_quelle, geschlossene_10_5, makro_gate, makro_gate_grund):
     """Erzeugt einen kleinen finalen Faktenblock statt des kompletten Rohdatenkontexts."""
     lines = [
@@ -3180,6 +3291,165 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
         f.write("\n".join(lines).strip() + "\n")
     return output
 
+
+
+
+def _gemini_request_part_fingerprint(cache_name, arbeits_contents, system_instruction, part_index, part_contents):
+    """Erzeugt einen modellunabhaengigen Fingerabdruck fuer einen einzelnen Request-Teil.
+
+    Der Fingerabdruck bindet Datenkontext, Arbeitsanweisung und Teilnummer. Damit
+    kann ein nachfolgender technischer Retry exakt dort fortsetzen, wo der letzte
+    Laufstand abgebrochen ist. Ein bereits erfolgreich erzeugter Teil wird nicht
+    nochmals an Gemini gesendet.
+    """
+    context_names = []
+    if isinstance(cache_name, dict):
+        context_names = list(cache_name.get("context_names") or [])
+    def _stable_part(value):
+        for attr in ("uri", "name", "display_name", "text"):
+            candidate = getattr(value, attr, None)
+            if candidate:
+                return f"{attr}={candidate}"
+        return repr(value)
+    payload = {
+        "part_index": int(part_index),
+        "context_names": context_names,
+        "part": [_stable_part(x) for x in part_contents],
+        "work": [_stable_part(x) for x in arbeits_contents],
+        "system": str(system_instruction or ""),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _gemini_request_plan(client, modell, cache_name, daten_teile, arbeits_contents,
+                         system_instruction, label):
+    """Erstellt den fachlich/stufenbezogenen Request-Plan genau einmal pro Aufruf.
+
+    Die bestehende A1/A2/A3/Final-Architektur definiert bereits die fachlichen
+    Grenzen. Innerhalb einer Stufe wird nur noch an Dateigrenzen gebündelt.
+    Das Ergebnis ist eine kleine, deterministische Liste von Requests; es gibt
+    keine blinden Wiederholungen eines bereits erfolgreichen Teils.
+    """
+    gruppen = list(_gemini_sichere_daten_gruppen(
+        client, modell, daten_teile, arbeits_contents,
+        system_instruction, label,
+    ))
+    if not gruppen:
+        raise RuntimeError(f"GEMINI_REQUEST_PLAN_LEER: {label}")
+    print(
+        f"GEMINI-REQUEST-PLAN: {label} | "
+        f"{len(gruppen)} fachlich gebundene Request-Teile | "
+        f"bereits erfolgreiche Teile werden beim Retry aus dem Cache uebernommen."
+    )
+    return gruppen
+
+
+def _gemini_cache_antwort(client, modell, cache_name, contents, system_instruction=None):
+    """Sendet einen fachlich geplanten Request mit resumierbarem Split-Cache.
+
+    Die verbindliche A1/A2/A3/Final-Architektur bleibt erhalten. Wenn eine
+    Stufe das 120k-Sicherheitsbudget ueberschreitet, werden die Quellen an
+    logischen Datei-/Chunk-Grenzen gebuendelt.
+    Jeder erfolgreiche Teil wird sofort lokal gecacht. Ein 503, Netzwerkfehler
+    oder minutenbezogenes Quota-Problem setzt deshalb beim naechsten Versuch
+    exakt beim fehlgeschlagenen Teil fort.
+    """
+    config_kwargs = {}
+    if system_instruction:
+        config_kwargs["system_instruction"] = system_instruction
+    elif isinstance(cache_name, dict):
+        config_kwargs["system_instruction"] = cache_name.get("system_instruction")
+
+    daten_teile = cache_name.get("contents", []) if isinstance(cache_name, dict) else []
+    arbeits_contents = list(contents if isinstance(contents, list) else [contents])
+    anfrage_contents = list(daten_teile) + arbeits_contents
+    token_count = _gemini_tokenzahl(
+        client, modell, anfrage_contents,
+        config_kwargs.get("system_instruction"),
+        label="GenerateContent",
+    )
+
+    if token_count <= GEMINI_INPUT_SAFE_BUDGET:
+        return _gemini_generate_content_quota_safe(
+            client, modell, anfrage_contents, config_kwargs, token_count,
+            "GenerateContent",
+        )
+
+    print(
+        f"GEMINI-REQUEST-SPLIT: {token_count:,} > "
+        f"{GEMINI_INPUT_SAFE_BUDGET:,}; fachlicher Request-Plan wird erstellt."
+    )
+    gruppen = _gemini_request_plan(
+        client, modell, cache_name, daten_teile, arbeits_contents,
+        config_kwargs.get("system_instruction"), "GenerateContent Split",
+    )
+
+    teiltexte = []
+    response = None
+    for idx, gruppe in enumerate(gruppen, 1):
+        gruppe_contents = list(gruppe) + arbeits_contents
+        group_tokens = _gemini_tokenzahl(
+            client, modell, gruppe_contents,
+            config_kwargs.get("system_instruction"),
+            label=f"GenerateContent Split {idx}",
+        )
+        if group_tokens > GEMINI_INPUT_SAFE_BUDGET:
+            raise RuntimeError(
+                f"GEMINI_REQUEST_ZU_GROSS_NACH_SPLIT: Split={idx} Tokens={group_tokens:,}."
+            )
+
+        part_key = _gemini_request_part_fingerprint(
+            cache_name, arbeits_contents,
+            config_kwargs.get("system_instruction"), idx, gruppe,
+        )
+        cached_text = _gemini_request_split_cache.get(part_key)
+        if cached_text is not None:
+            print(
+                f"GEMINI-SPLIT-CACHE-HIT: Split {idx}/{len(gruppen)} | "
+                f"bereits erfolgreich | Zeichen={len(cached_text)}"
+            )
+            teiltexte.append(cached_text)
+            continue
+
+        print(
+            f"GEMINI-SPLIT-SEND: Split {idx}/{len(gruppen)} | "
+            f"Tokens={group_tokens:,} | nur dieser Split ist noch offen."
+        )
+        response = _gemini_generate_content_quota_safe(
+            client, modell, gruppe_contents, config_kwargs, group_tokens,
+            f"GenerateContent Split {idx}",
+        )
+        result_text = response.text or ""
+        if ist_ablehnung(result_text):
+            raise RuntimeError(
+                f"GEMINI_SPLIT_{idx}_SICHERHEITSFILTER_ABLEHNUNG"
+            )
+        _gemini_request_split_cache[part_key] = result_text
+        print(
+            f"GEMINI-SPLIT-CACHE-STORE: Split {idx}/{len(gruppen)} | "
+            f"erfolgreich gespeichert | Zeichen={len(result_text)}"
+        )
+        teiltexte.append(result_text)
+
+    if len(teiltexte) == 1:
+        if response is not None:
+            return response
+        return SimpleNamespace(text=teiltexte[0], candidates=[])
+
+    # Die Teilanalysen werden hierarchisch zusammengefuehrt. Auch die Synthese
+    # ist ein eigener Request und wird bei einem technischen Fehler ueber den
+    # bestehenden Stage-Cache der aufrufenden Ebene nicht erneut fuer A1/A2/A3
+    # aufgebaut.
+    synth_text = _gemini_synthese(
+        client,
+        modell,
+        teiltexte,
+        config_kwargs.get("system_instruction"),
+        "GenerateContent",
+    )
+    return SimpleNamespace(text=synth_text, candidates=[])
 
 def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweisung,
                                       zusatz_anweisungen, eingabedateien, final_fakten_pfad=None,
@@ -3398,7 +3668,53 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
     return final_antwort
 
 
+def _gemini_fallback_status_datei(aktion="clear", fehler=""):
+    """Verwaltet ausschließlich die tagesbezogene technische Fallback-Statusdatei.
+
+    Die Datei ist bewusst von der normalen Auswertung getrennt. Sie wird zu
+    Laufbeginn für den aktuellen Tag entfernt und ausschließlich bei einem
+    technischen Gemini-Fallback neu erzeugt. Dadurch kann ein alter Status
+    nicht versehentlich als Status des aktuellen erfolgreichen Laufs gelten.
+    """
+    heute = datetime.date.today().isoformat()
+    status_datei = f"Gemini_Fallback_Status_{heute}.txt"
+
+    if aktion == "clear":
+        try:
+            if os.path.isfile(status_datei):
+                os.remove(status_datei)
+                print(f"INFO: Alter technischer Gemini-Fallback-Status entfernt: {status_datei}")
+        except OSError as exc:
+            raise RuntimeError(
+                f"GEMINI_FALLBACK_STATUS_ALTBESTAND_NICHT_ENTFERNBAR: {exc}"
+            ) from exc
+        return None
+
+    if aktion == "write":
+        fehler_text = str(fehler or "").strip()
+        inhalt = (
+            f"GEMINI_STATUS=TECHNISCHER_FALLBACK\n"
+            f"GEMINI_FALLBACK_DATUM={heute}\n"
+            f"GEMINI_AUSWERTUNG_DATEI=KEINE\n"
+            f"GEMINI_AUSWERTUNG_UEBERSCHREIBUNG=NEIN\n"
+            f"GEMINI_FALLBACK_STATUS_DATEI={status_datei}\n"
+            "HINWEIS=Keine gueltige Gemini-Auswertung erzeugt.\n"
+        )
+        if fehler_text:
+            inhalt += f"LETZTER_API_FEHLER={fehler_text}\n"
+        with open(status_datei, "w", encoding="utf-8") as f:
+            f.write(inhalt)
+        print(f"Technischer Gemini-Fallback-Status gespeichert: {status_datei}")
+        return status_datei
+
+    raise ValueError(f"Unbekannte Aktion fuer Gemini-Fallback-Status: {aktion}")
+
+
 def gemini_auswertung_starten():
+    # Ein alter Status des gleichen Tages darf niemals in einen neuen Lauf
+    # hineinragen. Bei erfolgreichem Lauf existiert danach keine Statusdatei.
+    _gemini_fallback_status_datei("clear")
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("FEHLER: Umgebungsvariable GEMINI_API_KEY nicht gesetzt.")
@@ -3420,9 +3736,11 @@ def gemini_auswertung_starten():
 
     letzte_antwort = None
     hochgeladene_teile = None  # wird bei Bedarf (neu) befuellt, siehe unten
-    global _gemini_cache_name, _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models, _gemini_stufen_cache
+    global _gemini_cache_name, _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models, _gemini_stufen_cache, _gemini_request_split_cache
     _gemini_cache_name = None
+    _gemini_request_split_cache = {}
     _gemini_input_quota_usage.clear()
+    _gemini_project_input_quota_usage.clear()
     _gemini_input_quota_cooldown_until.clear()
     _gemini_rpd_requests.clear()
     _gemini_rpd_exhausted.clear()
@@ -3512,18 +3830,9 @@ def gemini_auswertung_starten():
             # jedem 503-Retry alle elf Dateien erneut hochgeladen, was den
             # Lauf verlaengert hat, ohne etwas zu verbessern.
             if hochgeladene_teile is None:
-                hochgeladene_teile = []
-                for pfad in eingabedateien_gemini.values():
-                    if not pfad:
-                        continue
-                    mime_type = ermittle_upload_mime_type(pfad)
-                    print(f"  Gemini-Upload: {os.path.basename(pfad)} | MIME: {mime_type}")
-                    hochgeladene_teile.append(
-                        client.files.upload(
-                            file=pfad,
-                            config=types.UploadFileConfig(mime_type=mime_type),
-                        )
-                    )
+                hochgeladene_teile = _gemini_hochgeladene_quellen_erstellen(
+                    client, eingabedateien_gemini
+                )
 
             _gemini_zusatz_anweisungen = [
                     "VERBINDLICHE STRUKTUR-TREND-DATENREGEL (C): Wenn die Datei Struktur_Trend_Briefing(<Datum>).txt vorhanden ist, ist sie die maßgebliche Quelle für den strukturellen Datenblock C. C ist eine eigenständige Datenebene und darf nicht mit B (Makro) oder D (Geopolitik) vermischt werden. Die Gesamtbewertung entsteht erst durch die gemeinsame Einordnung von A+B+C+D. Struktur-Trend-Werte sind Strukturindikatoren und keine unmittelbaren Kauf-, Verkaufs-, Breakout- oder Zielzonensignale. Verwende für das Alter einer Beobachtung die Beobachtungsperiode, nicht das Cache- oder Abrufdatum. PA bedeutet Prozent pro Jahr (% p.a.); XDC_H bedeutet XDC je Arbeitsstunde. C darf aktuelle A-, B- oder D-Signale niemals überschreiben oder ersetzen. Wenn die Struktur-Trend-Datei fehlt, fahre mit A+B+D fort und erfinde keine C-Werte. "
@@ -3830,6 +4139,7 @@ def gemini_auswertung_starten():
             )
             if ist_stufen_sicherheitsfilter:
                 _gemini_stufen_cache.clear()
+                _gemini_request_split_cache.clear()
                 technische_retry_wiederverwenden = False
                 hochgeladene_teile = None
                 _gemini_cache_name = None
@@ -3990,6 +4300,7 @@ def gemini_auswertung_starten():
             hochgeladene_teile = None
             _gemini_cache_name = None
             _gemini_stufen_cache.clear()
+            _gemini_request_split_cache.clear()
             technische_retry_wiederverwenden = False
             time.sleep(WARTEZEIT_SEKUNDEN + versuch * 5)
             continue
@@ -4004,9 +4315,11 @@ def gemini_auswertung_starten():
     # TECHNISCHER FALLBACK:
     # Ein dauerhafter Gemini-503 darf den gesamten GitHub-Lauf nicht mehr
     # mit Exit-Code 1 beenden. Es wird bewusst KEINE Gemini-Analyse erfunden.
-    # Stattdessen wird ein klar gekennzeichneter technischer Bericht an den
-    # normalen Speicherpfad uebergeben. speichere_ergebnis() erkennt diesen
-    # Marker und schreibt ihn direkt als Auswertung(<Datum>).txt.
+    # Stattdessen wird ein klar gekennzeichneter technischer Fallback-Marker an
+    # den normalen Speicherpfad uebergeben. speichere_ergebnis() erkennt diesen
+    # Marker und verwirft die Ausgabe bewusst, damit keine Tagesdatei erzeugt
+    # oder ueberschrieben wird.
+    _gemini_fallback_status_datei("write", letzte_antwort)
     return (
         "[GEMINI_TECHNISCHER_FALLBACK]\n"
         "TECHNISCHE FALLBACK-DATEI – KEINE GUELTIGE GEMINI-AUSWERTUNG.\n"
@@ -8895,4 +9208,4 @@ if __name__ == "__main__":
     print(f"AUSWERTUNG_DATEI={ausgabe_pfad}")
     if str(ergebnis_text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("GEMINI_STATUS=TECHNISCHER_FALLBACK")
-        sys.exit(2)
+        print("GEMINI_EXIT_STATUS=0 | Technischer Fallback: Keine Auswertung-Datei erzeugt; vorhandene Tagesdatei bleibt unverändert.")
