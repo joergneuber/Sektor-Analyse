@@ -8274,7 +8274,12 @@ def _edelmetall_quellenblock(edel_text, asset):
     anderen Quellblock nicht versehentlich als EMA200/WMA200-Quelle verwendet werden.
     """
     source = edel_text or ""
-    trend_match = re.search(r"(?m)^TRENDFOLGE-DIAGNOSE JE METALL\s*$", source)
+    trend_match = re.search(
+        r"(?m)^TRENDFOLGE-DIAGNOSE JE METALL"
+        r"(?:\s*\(GC=F etc\. = operative Datenbasis\))?"
+        r"\s*:?\s*$",
+        source,
+    )
     if not trend_match:
         return ""
 
@@ -8282,7 +8287,11 @@ def _edelmetall_quellenblock(edel_text, asset):
     start = next(
         (
             i for i, line in enumerate(lines)
-            if re.match(r"^\s*-\s*" + re.escape(asset) + r"\s*\([^)]*\)\s*$", line)
+            if re.match(
+                r"^\s*-\s*" + re.escape(asset) +
+                r"\s*\([^)]*\)\s*(?:(?::|[-–—])\s*[^\r\n]*)?$",
+                line,
+            )
         ),
         None,
     )
@@ -8291,7 +8300,10 @@ def _edelmetall_quellenblock(edel_text, asset):
 
     end = len(lines)
     for i in range(start + 1, len(lines)):
-        if re.match(r"^\s*-\s*(?:Gold|Silber|Platin|Palladium)\s*\([^)]*\)\s*$", lines[i]):
+        if re.match(
+            r"^\s*-\s*(?:Gold|Silber|Platin|Palladium)\s*\([^)]*\)\s*(?:(?::|[-–—])\s*[^\r\n]*)?$",
+            lines[i],
+        ):
             end = i
             break
         if re.match(r"^\s*=+\s*$", lines[i]):
@@ -8306,7 +8318,13 @@ def _edelmetall_quellenblock(edel_text, asset):
 def _edelmetall_strategieblock(edel_text, strategie):
     """Liest genau einen autoritativen STRATEGIE-Block."""
     marker = f"STRATEGIE: {strategie.upper()}"
-    matches = list(re.finditer(r"(?m)^" + re.escape(marker) + r"\s*$", edel_text or ""))
+    matches = list(
+        re.finditer(
+            r"(?m)^" + re.escape(marker) +
+            r"(?:\s*:|\s*[-–—]\s*operative Datenbasis)?\s*$",
+            edel_text or "",
+        )
+    )
     if not matches:
         return ""
     start = matches[0].end()
@@ -8565,8 +8583,26 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
     }
     for heading, asset in assets.items():
         block = blocks[heading]
-        lage_line = next((line for line in edel.splitlines() if re.match(r"^\s*" + re.escape(asset) + r":\s*Kurs\s+", line)), "")
-        trend_line = next((line for line in edel.splitlines() if re.match(r"^\s*-\s*" + re.escape(asset) + r"\s*\(.*\)\s*$", line) and "200er-Trend" not in line), "")
+
+        # Ausschliesslich den autoritativen LAGE-JE-METALL-Block verwenden.
+        # Kein globales ``find`` auf Asset-Zeilen: Dadurch kann eine gleichnamige
+        # Zeile aus einem anderen Quellblock nicht als aktuelle Lagequelle
+        # durchrutschen.
+        lage_match = re.search(
+            r"(?ms)^LAGE JE METALL\b.*?^(?=TRENDFOLGE-DIAGNOSE JE METALL\b)",
+            edel,
+        )
+        lage_block = lage_match.group(0) if lage_match else ""
+        lage_line = next(
+            (
+                line for line in lage_block.splitlines()
+                if re.match(
+                    r"^\s*" + re.escape(asset) + r":\s*Kurs\s+",
+                    line,
+                )
+            ),
+            "",
+        )
         trend_block = _edelmetall_quellenblock(edel, asset)
 
         if not lage_line:
@@ -8588,7 +8624,13 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
 
         # Die 200er-Zeile enthält die operative EMA200/WMA200-Basis und das
         # deterministische Trendfolge-Ergebnis je Metall.
-        m200 = re.search(r"200er-Trend:\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*EMA200\s+([-+]?\d[\d.,]*)\s*\([^)]*\)\s*\|\s*WMA200\s+([-+]?\d[\d.,]*)", trend_block)
+        m200 = re.search(
+            r"200er-Trend:\s*Kurs\s*=?\s*([-+]?\d[\d.,]*)\s*\|\s*"
+            r"EMA200\s*=?\s*([-+]?\d[\d.,]*)"
+            r"(?:\s*\([^)]*\))?\s*\|\s*"
+            r"WMA200\s*=?\s*([-+]?\d[\d.,]*)",
+            trend_block,
+        )
         if not m200:
             errors.append(f"{heading}: 200er-Trendzeile fehlt oder ist nicht lesbar.")
         else:
