@@ -1,4 +1,4 @@
-"""
+﻿"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
@@ -176,6 +176,10 @@ DATEIMUSTER = {
     "Performance(...).csv": ["Performance(*).csv"],
     "Performance_EU(...).csv": ["Performance_EU(*).csv"],
     "Offene Positionen+Check.csv": ["Offene Positionen+Check.csv"],
+    # PDF-Ausgaben des aktuellen Positionslaufs: zusaetzliche Syntheseinformation,
+    # aber keine Ersatzquelle fuer die autoritative CSV/Tab-2-Faktenbasis.
+    "Offene Positionen+Check.pdf": ["Offene Positionen+Check.pdf"],
+    "Offene_Positionen.pdf": ["Offene_Positionen.pdf"],
     # Backend-Fallback: Der Tracker benötigt die alte Rohdatei weiterhin für
     # Positionsfelder, die bewusst NICHT Teil der festgelegten Check-Struktur
     # sind (z.B. Stop/TP/Richtung/Ideen_Quelle). Sie ist keine technische
@@ -714,7 +718,10 @@ def _erstelle_punkt7_fakten(csv_pfad, geschlossene_7_4=""):
             facts = []
             for label, value in [
                 ("Einstieg", entry), ("Einstiegsdatum", entry_date),
-                ("Richtung", direction), ("Status", status), ("Aktueller Kurs", current)
+                ("Richtung", direction), ("Status", status), ("Aktueller Kurs", current),
+                ("Stop", _csv_value(row, ["Stop"])),
+                ("TP1", _csv_value(row, ["TP1"])),
+                ("TP2", _csv_value(row, ["TP2"])),
             ]:
                 if value:
                     facts.append(f"{label}: {value}")
@@ -1598,6 +1605,10 @@ def _offene_positionen_quellblock(csv_pfad):
             status_k = key("Status")
             entry_k = key("Einstieg")
             date_k = key("Einstiegsdatum")
+            current_k = key("Aktueller_Kurs") or key("Aktueller Kurs")
+            stop_k = key("Stop")
+            tp1_k = key("TP1")
+            tp2_k = key("TP2")
             if not all((name_k, ticker_k, entry_k, date_k)):
                 raise ValueError("Check-Datei benötigt Name, Ticker, Einstieg und Einstiegsdatum.")
             rows = []
@@ -1609,8 +1620,21 @@ def _offene_positionen_quellblock(csv_pfad):
                 ticker = str(row.get(ticker_k, "")).strip()
                 entry = str(row.get(entry_k, "")).strip()
                 date = str(row.get(date_k, "")).strip()
+                current = str(row.get(current_k, "") or "").strip() if current_k else ""
+                stop = str(row.get(stop_k, "") or "").strip() if stop_k else ""
+                tp1 = str(row.get(tp1_k, "") or "").strip() if tp1_k else ""
+                tp2 = str(row.get(tp2_k, "") or "").strip() if tp2_k else ""
                 if name or ticker:
-                    rows.append(f"- {name} ({ticker}) | Einstieg: {entry} | Einstiegsdatum: {date}")
+                    parts = [f"- {name} ({ticker})", f"Einstieg: {entry}", f"Einstiegsdatum: {date}"]
+                    if current:
+                        parts.append(f"Aktueller Kurs: {current}")
+                    if stop:
+                        parts.append(f"Stop: {stop}")
+                    if tp1:
+                        parts.append(f"TP1: {tp1}")
+                    if tp2:
+                        parts.append(f"TP2: {tp2}")
+                    rows.append(" | ".join(parts))
             return "\n".join(rows)
     except Exception as exc:
         raise RuntimeError(f"Offene Positionen+Check.csv konnte nicht als verbindliche Quelle gelesen werden: {exc}")
@@ -1671,6 +1695,10 @@ def _technische_zielzonen_quelle(csv_pfad):
             market_k = key("Markt")
             direction_k = key("Richtung")
             source_k = key("Quelle")
+            current_k = key("Aktueller_Kurs") or key("Aktueller Kurs")
+            stop_k = key("Stop")
+            tp1_k = key("TP1")
+            tp2_k = key("TP2")
             technical_keys = {field: key(field) for field in technische_felder}
 
             missing = [
@@ -1733,6 +1761,10 @@ def _technische_zielzonen_quelle(csv_pfad):
                     "market": str(row.get(market_k, "") or "").strip() if market_k else "",
                     "direction": str(row.get(direction_k, "") or "").strip() if direction_k else "",
                     "source": str(row.get(source_k, "") or "").strip() if source_k else "",
+                    "current": str(row.get(current_k, "") or "").strip() if current_k else "",
+                    "stop": str(row.get(stop_k, "") or "").strip() if stop_k else "",
+                    "tp1": str(row.get(tp1_k, "") or "").strip() if tp1_k else "",
+                    "tp2": str(row.get(tp2_k, "") or "").strip() if tp2_k else "",
                     "technical": technical_values,
                 }
 
@@ -3198,7 +3230,7 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
 
 
 def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autoritaet, offene_quelle, geschlossene_10_5, makro_gate, makro_gate_grund):
-    """Erzeugt einen kleinen finalen Faktenblock statt des kompletten Rohdatenkontexts."""
+    """Erzeugt den finalen autoritativen Fakten-/Synthese-Handoff.\n\n    Makro-, Marktbreiten- und Benchmarkdaten werden vollstaendig als Kontext\n    bereitgestellt; deterministische Gates und Positionsfakten bleiben davon\n    getrennt. """
     lines = [
         "FINALE AUTORITATIVE FAKTEN – KOMPAKTER REFERENZBLOCK",
         "Diese Datei ersetzt in der Final-Synthese die erneute Bereitstellung des gesamten Rohdatenbestands.",
@@ -3215,6 +3247,13 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
         "",
         "AUTORITATIVE GESCHLOSSENE POSITIONEN 10.5:",
         geschlossene_10_5 or "(keine geschlossenen Positionen im relevanten Zeitraum)",
+        "",
+        "POSITIONSZAHLEN-REGEL:",
+        "Einstieg, Aktueller Kurs, Stop, TP1 und TP2 sind positionsgebundene Fakten. "
+        "Sie dürfen niemals untereinander verwechselt, aus Fließtext rekonstruiert oder "
+        "aus einer anderen Position übernommen werden. Für offene Positionen ist "
+        "Offene Positionen+Check.csv maßgeblich; für geschlossene Positionen ist die "
+        "autoritative Tab-2-Faktenbasis maßgeblich.",
     ]
 
     vorherige_auswertung_pfad = eingabedateien.get("Letzte_Auswertung(...).txt")
@@ -3251,9 +3290,62 @@ def _erstelle_gemini_final_autoritative_fakten(eingabedateien, sechs_fuenf_autor
                 perioden = ref.get("perioden") or {}
                 if perioden:
                     parts.append("| " + " | ".join(f"{k}={v}%" for k, v in sorted(perioden.items())))
+                if label.casefold() == "lithium te":
+                    parts.append("| Einheit=CNY/T | DATENTYP=TE_PUBLIC_LITHIUM")
                 lines.append(" ".join(parts))
         except Exception as exc:
             lines.append(f"MAKRO-REFERENZWERTE NICHT LESBAR: {exc}")
+
+    # FINAL-SYNTHESE: Der kompakte Referenzblock darf die reichhaltige
+    # Makro-Quelle nicht semantisch verkuerzen. A1 sieht das vollstaendige
+    # Makro-Datenpaket, die finale Synthese erhaelt es hier deshalb ebenfalls
+    # als unveraenderten autoritativen Handoff. Dadurch bleiben auch Daten
+    # erhalten, die nicht zu den 7.1-7.7-Kernfeldern gehoeren, z.B. M2,
+    # Fed-Target-Korridor, OAS/NFCI/SLOOS, LME-Metalle, Lithium TE CNY/T,
+    # ISM-Komponenten, GSCPI/GEPU sowie Quellen-/Status-/Datenstandsangaben.
+    # Keine Zahl wird hier neu berechnet oder ersetzt.
+    if makro_path and os.path.isfile(makro_path):
+        try:
+            lines.extend([
+                "",
+                "AUTORITATIVER MAKRO-DATENHANDOFF – VOLLSTAENDIG",
+                "Die folgenden Zeilen stammen 1:1 aus dem aktuellen Makro_Briefing. "+
+                "Sie sind zusaetzlicher Kontext fuer die finale Synthese und ersetzen "+
+                "keine deterministischen Python-Gates.",
+                "--- BEGIN MAKRO_Briefing ORIGINAL ---",
+                makro_text.rstrip(),
+                "--- END MAKRO_Briefing ORIGINAL ---",
+            ])
+        except Exception as exc:
+            lines.append(f"VOLLSTAENDIGER MAKRO-DATENHANDOFF NICHT LESBAR: {exc}")
+
+    # FINAL-SYNTHESE: Auch das vollstaendige Markt-/Index-Briefing und der
+    # Live-Benchmark werden explizit mitgegeben. Damit stehen Gemini fuer die
+    # Synthese nicht nur die ausgewaehlten 7.1-Kernwerte, sondern die komplette
+    # Marktbreite, Entwicklung und die dazugehoerigen Datenstaende/Statusfelder
+    # zur Verfuegung. Diese Daten sind Kontext und duerfen keine bestehenden
+    # technischen Setup- oder Positionsregeln ersetzen.
+    for handoff_label, handoff_key in (
+        ("AKTUELLER MARKT-/INDEX-DATENHANDOFF – VOLLSTAENDIG", "briefing.txt"),
+        ("LIVE-BENCHMARK-DATENHANDOFF – VOLLSTAENDIG", "Benchmark_Live.txt"),
+    ):
+        handoff_path = eingabedateien.get(handoff_key)
+        if handoff_path and os.path.isfile(handoff_path):
+            try:
+                with open(handoff_path, "r", encoding="utf-8-sig") as f:
+                    handoff_text = f.read()
+                lines.extend([
+                    "",
+                    handoff_label,
+                    "Die folgenden Zeilen stammen 1:1 aus der aktuellen Projektquelle. "
+                    "Nutze sie fuer Marktbreite, Entwicklung und Querverbindungen in der "
+                    "finalen Synthese; keine Zahl daraus darf erfunden oder umetikettiert werden.",
+                    f"--- BEGIN {handoff_key} ORIGINAL ---",
+                    handoff_text.rstrip(),
+                    f"--- END {handoff_key} ORIGINAL ---",
+                ])
+            except Exception as exc:
+                lines.append(f"{handoff_label} NICHT LESBAR: {exc}")
 
     universe_path = eingabedateien.get("Trade_Story_Universum(...).json")
     if universe_path and os.path.isfile(universe_path):
@@ -3459,7 +3551,8 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
     A1 = Discovery ohne HEBELTRADER/Einzelcheck-Historie und ohne technische Rohquellen.
     A2 = aktuelle technische Quellen ohne Discovery-/Historien-Rohdaten.
     A3 = komplette Historie + kleiner aktueller Referenzkontext + A1-Ergebnis.
-    Final = A1/A2/A3-Ergebnisse + kleiner autoritativer Faktenblock; keine Rohdatenkopie.
+    Final = A1/A2/A3-Ergebnisse + autoritativer Faktenblock + vollstaendiger
+    aktueller Quelldaten-Handoff des Laufes; persistente Historien bleiben separat.
     """
     global _gemini_cache_name
 
@@ -3503,7 +3596,22 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Trade_Story_Aktienuniversum(...).csv",
         "Gemini_Auswertung_Historie.txt",
     }
-    final_names = {"Finale-Autoritative-Fakten"}
+    # Die Final-Synthese muss den vollstaendigen aktuellen Quelldatenbestand
+    # sehen koennen. Persistente Historien werden bereits separat in A3 verarbeitet
+    # und die vorherige Auswertung dient bereits als eigener Kontinuitaets-Handoff;
+    # der aktuelle Tagesreport selbst darf nicht als Rohquelle wieder eingespeist
+    # werden (sonst entstuende ein zirkulaerer Final-Input).
+    final_exclude_from_full_handoff = {
+        "Letzte_Auswertung(...).txt",
+        "Gemini_Auswertung_Historie.txt",
+        "Einzel-Check-Technikhistorie",
+        "Finale-Autoritative-Fakten",
+    }
+    final_names = {
+        name for name in eingabedateien
+        if name not in final_exclude_from_full_handoff
+    }
+    final_names.add("Finale-Autoritative-Fakten")
 
     cache_stufe1 = _gemini_cache_erstellen(
         client, modell, anweisung, hochgeladene_teile, eingabedateien,
@@ -3585,14 +3693,20 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         print(f"  Gemini A3 Historie erfolgreich | Zeichen: {len(historie_analyse)}")
 
     final_prompt = (
-        "FINALE SYNTHESE. Erstelle die vollstaendige finale Auswertung NICHT aus Rohdatenkopien, "
-        "sondern aus den drei fachlichen Voranalysen und dem kleinen autoritativen Faktenblock. "
+        "FINALE SYNTHESE. Erstelle die vollstaendige finale Auswertung aus den drei fachlichen "
+        "Voranalysen, dem autoritativen Faktenblock UND dem vollstaendigen aktuellen Quelldaten-Handoff "
+        "des heutigen Laufes. Die Rohquellen sind fuer die Synthese ausdruecklich verfuegbar und sollen "
+        "aktiv fuer Querverbindungen, Marktbreite, Entwicklungen, Widersprueche und neue Investmentthesen "
+        "genutzt werden. "
         "A1 beantwortet: Was passiert gerade / welche neuen Zusammenhaenge und Thesen gibt es? "
         "A2 beantwortet: Was bestaetigen die technischen Systeme und Setups? "
         "A3 beantwortet: Wie haben sich relevante Entwicklungen historisch aufgebaut oder veraendert? "
         "Fuehre diese Ebenen zusammen, suche selbst nach Querverbindungen und beachte die autoritativen "
         "Fakten. Erhalte die bestehende Auswertungsstruktur 1–11, CRV-/Setup-Regeln und Statuslogik. "
-        "Die Rohdaten aus A1/A2/A3 werden hier NICHT erneut bereitgestellt.\n\n"
+        "Alle aktuellen Quelldateien des Laufes stehen als Final-Handoff zur Verfuegung. Nutze nicht nur "
+        "die bereits verdichteten A1/A2/A3-Ergebnisse, sondern pruefe bei relevanten Aussagen auch den "
+        "zugrunde liegenden aktuellen Quelldatenbestand. Persistent gespeicherte Historien bleiben davon "
+        "getrennt und werden ueber A3 bzw. den bestehenden Historienmechanismus verarbeitet.\n\n"
         "DARSTELLUNGSREGEL: Jede genannte Aktie bzw. jedes Unternehmen muss immer mit Firmenname und Ticker im Format Name (TICKER) erscheinen. "
         "Keine Aktiennennung nur über den Ticker oder nur über den Namen. Dies gilt insbesondere für 1.3, 1.4, 2.1–2.5, 3.x, 4, 5, 6.x, 8.x und 9.x.\n\n"
         "VERBINDLICHER INHALTSVERTRAG 1–11: Halte die folgende Struktur exakt ein. "
@@ -3641,6 +3755,29 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "SUBSTANZREGEL: Die obigen Anforderungen sind fachliche Inhaltsanforderungen, keine Aufforderung zum Auffüllen mit Stichworten. "
         "Bearbeite nur Informationen, die aus den bereitgestellten Daten ableitbar sind. Kurze legitime Abschnitte dürfen kurz sein, wenn die Datenlage tatsächlich kurz ist; "
         "umgekehrt darf ein vorhandener Datenbestand nicht durch 'keine Erkenntnisse' oder 'kein Setup' abgefertigt werden.\n\n"
+        "DATEN-UND-SYNTHESE-ROLLEN: Python und die autoritativen Faktenblöcke liefern die verbindlichen Fakten, Zahlen, Kurse, Entries, Stops, Ziele, CRV, Performancewerte, Termine und Statusangaben. "
+        "Gemini liefert daraus Interpretation, Kausalität, Querverbindungen, Szenarien, Investmentthesen, Gegenargumente, Trigger und Invalidierungen. "
+        "Eine harte numerische Tatsachenbehauptung darf nur aus den bereitgestellten autoritativen Daten stammen. Gemini darf die Bedeutung eines Wertes interpretieren, aber keinen alternativen Wert daneben erfinden oder als Tatsache darstellen. "
+        "Wenn eine Zahl für die Interpretation nicht benötigt wird, wiederhole sie nicht. Verwende autoritative Zahlen nur dort erneut, wo sie für eine neue Schlussfolgerung tatsächlich erforderlich sind.\n\n"
+        "SYNTHESE-VORRANG: Die finale Auswertung ist eine Synthese und keine Aneinanderreihung oder Wiederholung der A1/A2/A3-Ergebnisse. Suche aktiv nach Erkenntnissen, die erst durch die Kombination mehrerer Datenebenen entstehen. "
+        "Prüfe insbesondere Ketten wie MAKRO → ZINS/FX → ROHSTOFF/MARKT → SEKTOR → UNTERNEHMEN → AKTIE → TECHNIK/SETUP. "
+        "Eine echte Synthese muss erklären, warum die Verbindung relevant ist, welche Daten sie stützen, welche Daten dagegen sprechen, welche konkrete Aktie betroffen ist und was als nächstes passieren müsste. "
+        "Wenn eine solche Querverbindung noch kein handelbares Setup besitzt, ist sie ausdrücklich als IDEE IM AUFBAU oder FRÜHINDIKATOR zulässig und soll einen konkreten Aktivierungstrigger erhalten. "
+        "Wenn der Scanner bereits ein Setup bestätigt, soll die Synthese prüfen, ob Makro, Sektor und Fundamentaldaten die technische Idee unterstützen oder ihr widersprechen. "
+        "Ein fehlendes Setup beendet eine interessante Investmentthese nicht; ein vorhandenes Setup macht eine Investmentthese aber auch nicht automatisch überzeugend.\n\n"
+        "NEUHEITSREGEL / WIEDERHOLUNGSSCHUTZ: Jede wesentliche Erkenntnis erhält in der Auswertung einen primären Ort. Erkläre eine These dort ausführlich, wo sie am besten hingehört. "
+        "Wenn dieselbe Aktie, dasselbe Makrothema oder dieselbe Kausalkette später erneut relevant ist, darf sie nicht nochmals vollständig beschrieben werden. Wiederhole nur den neuen Informationsanteil oder verweise knapp auf die bereits erklärte These. "
+        "7.x ist primär Kontext und darf keine bereits in 1–6 ausführlich erklärte These nochmals ausformulieren. 8.x konzentriert sich auf Edelmetalle und ergänzt nur neue metallbezogene Erkenntnisse. 10.x behandelt das bestehende Portfolio und wiederholt keine vollständigen Trade-Storys aus 1–6. "
+        "Abschnitte mit identischer Aussage, identischer Begründung und identischem Schluss sollen nicht mehrfach gefüllt werden. Ziel ist weniger Text bei höherer Erkenntnisdichte.\n\n"
+        "HISTORIEN-DELTA / PERSISTENTE THESENENTWICKLUNG: Die bereitgestellte Gemini_Auswertung_Historie.txt ist nicht nur Hintergrundwissen, sondern ein persistenter Änderungslog für Investmentthesen. "
+        "Nutze sie in der finalen Synthese aktiv zusammen mit A3, um relevante aktuelle Thesen mit älteren Läufen zu vergleichen. Prüfe insbesondere: NEU ENTSTANDEN, VERSTAERKT, ABGESCHWAECHT, WIDERLEGT/ERLEDIGT, BESTAETIGT oder UNVERAENDERT. "
+        "Beschreibe eine historische Entwicklung nur dann, wenn sie durch die Historie und/oder aktuelle Daten belegbar ist. Wenn eine ältere These weiterläuft, wiederhole nicht ihre gesamte Begründung, sondern nenne nur den aktuellen Entwicklungsstand und den neuen Informationsanteil. "
+        "Wenn eine ältere These durch aktuelle Daten deutlich verändert, abgeschwächt oder widerlegt wird, soll diese Veränderung ausdrücklich sichtbar werden. Bevorzuge dabei den Vergleich mit dem unmittelbar vorherigen relevanten Lauf; bei längeren Entwicklungen darfst du mehrere historische Läufe verbinden. "
+        "Historische Snapshots liefern keine autoritativen aktuellen Zahlen: aktuelle Kurse, Stops, TP-Werte, Makrodaten und technische Kennzahlen stammen ausschließlich aus den aktuellen Tagesdateien bzw. autoritativen Faktenblöcken. Nutze historische Inhalte für Entwicklung, Richtung und These – niemals als Ersatz für aktuelle Fakten. "
+        "Eine Historien-Referenz soll einen echten Mehrwert liefern: Was war die These, was hat sich seitdem verändert, was bedeutet das heute und welcher nächste Trigger bzw. welche Invalidierung entscheidet über die weitere Entwicklung. Wenn keine relevante Veränderung vorliegt, genügt eine kurze Feststellung; erfinde kein Historien-Delta.\n\n"
+        "MAKRO-ZÜNDUNG: Prüfe bei jeder Final-Synthese ausdrücklich, ob aus mehreren aktuellen Datenpunkten mindestens eine neue Makro-/Investmentthese entsteht. Suche nicht nur nach der Beschreibung einzelner Makrodaten, sondern nach einer veränderten Beziehung zwischen ihnen. "
+        "Bevorzuge Aussagen der Form: WAS HAT SICH VERÄNDERT → WARUM IST DIE KOMBINATION RELEVANT → WELCHER SEKTOR/ROHSTOFF PROFITIERT ODER LEIDET → WELCHE AKTIE ZEIGT BEREITS EINE REAKTION → WAS FEHLT NOCH → WELCHER TRIGGER AKTIVIERT DIE THESE → WAS INVALIDIERT SIE. "
+        "Wenn die Daten keine belastbare neue Makrothese tragen, sage das ausdrücklich, statt eine künstliche These zu erzeugen.\n\n"
         "KEINE KÜNSTLICHE AUFFÜLLUNG: Die Mindesttiefe darf nicht durch Wiederholung derselben Aussage, generische Floskeln oder erfundene Daten erfüllt werden. "
         "VERBINDLICHE AUSGABESTRUKTUR: Jede vorgeschriebene Ueberschrift von 1.1 bis 11.7 muss exakt "
         "uebernommen werden und allein auf einer eigenen Zeile stehen. Direkt nach jeder solchen Ueberschrift "
@@ -3800,10 +3937,12 @@ def gemini_auswertung_starten():
     offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
     geschlossene_10_5 = lade_offenen_positionen_check_tab2()
 
-    # Fuer die finale Synthese wird ein kleiner autoritativer Faktenblock erzeugt.
-    # Damit muessen die kompletten Rohdateien nicht erneut als Final-Kontext
-    # bereitgestellt werden. Die Originaldateien bleiben fuer die deterministischen
-    # Python-Gates und die jeweiligen Spezialstufen vollstaendig erhalten.
+    # Fuer die finale Synthese wird weiterhin der autoritative Faktenblock erzeugt.
+    # ZUSAETZLICH werden jetzt alle aktuellen Projekt-Quelldateien des Laufes als
+    # vollstaendiger Synthese-Handoff an die Finalstufe gegeben. Die bisherigen
+    # stufenspezifischen A1/A2/A3-Kontexte bleiben unveraendert. Die Finalstufe
+    # bekommt dadurch nicht nur die Voranalysen, sondern den gesamten aktuellen
+    # Datenbestand fuer Querverbindungen, Marktbreite, Entwicklung und neue Thesen.
     final_fakten_pfad = _erstelle_gemini_final_autoritative_fakten(
         eingabedateien_gemini, sechs_fuenf_autoritaet, offene_quelle,
         geschlossene_10_5, makro_gate, makro_gate_grund,
@@ -3850,7 +3989,7 @@ def gemini_auswertung_starten():
                      "VERBINDLICHES TRADE-STORY-UNIVERSUM: Wenn 'Trade_Story_Universum(<Datum>).json' vorhanden ist, ist dieses taeglich neu erzeugte JSON die autoritative Discovery-/Handoff-Schicht. Jeder echte HEBELTRADER-Fund, einschliesslich KAUFKANDIDAT A/B/C und KEIN KANDIDAT, gehoert zum Universum. KEIN KANDIDAT ist dabei nur Universums-/Discovery-Mitglied und keine konkrete Setup-Quelle. VALIDE SETUP darf nur aus candidates mit trade_story_status='VALIDE SETUP' stammen; VORBEREITET nur aus candidates mit trade_story_status='VORBEREITET'. Eine offene Position ist nur Kontext und kein Ausschluss. Ein STATUSKONFLIKT (z.B. gleichzeitig Long und Short) darf nicht als eindeutiges Setup dargestellt werden. Das Universum darf durch Top-Sektor-Zugehoerigkeit nicht nachtraeglich verengt werden. "
                      "BITCOIN-REGEL IM TRADE-STORY-UNIVERSUM: Pi-Cycle-Bottom DOWN-Cross (150-EMA von oben nach unten durch 0.745*471SMA) ist LONG/AKKUMULATION und kann VALIDE SETUP sein. Pi-Cycle UP-Cross beendet die Akkumulationsphase und ist kein generisches SELL. 50W-SMA UP-Cross ist LONG/BUY; 50W-SMA DOWN-Cross ist EXIT/SELL und daher kein Long-Kandidat. Verwende ausschliesslich die strukturierten Bitcoin-Felder im Tagesuniversum. "
                     "HEBELTRADER-EINZELCHECK / INTERNE DATENQUELLE: Falls die bereitgestellte Datei 'hebeltrader_einzel_check.json' vorhanden ist, nutze sie als strukturierte Quelle fuer die zuletzt erfolgreich verarbeitete HEBELTRADER-Ausgabe und verwende die aus Drive synchronisierte neueste Version, falls sie neuer ist. Diese Datenquelle ist KEINE eigene Ausgabekategorie. Ihre A/B/C-/Technik-/Setup-Informationen duerfen ausschließlich in die fachlich passenden Abschnitte der verbindlichen 1–11-Struktur einfließen. Insbesondere darf daraus niemals eine zusätzliche nummerierte Ausgabestruktur erzeugt werden. Die bestehende einzel_check.py-Logik, insbesondere A/B/C, Momentum, Gruende, Risiken und die Watchlist-Bereinigung nach >45 Tagen ohne A/B/C, darf nicht neu berechnet, veraendert, aufgehoben oder ersetzt werden. Fuer konkrete technische Details sind ausschließlich die bereits berechneten Felder aus den bereitgestellten autoritativen Einzel-Check-/HebelTrader-Daten zu verwenden. Einstieg, Stop, TP1, TP2 und CRV duerfen nur angegeben werden, wenn sie aus bereitgestellten Daten ersichtlich sind; fehlende Werte duerfen nicht erfunden oder geschaetzt werden. Wenn aus den vorhandenen technischen Daten eine Ableitung transparent moeglich ist, muss sie als Ableitung gekennzeichnet werden. Breakout allein aktiviert Fibonacci nicht; Fibonacci/Extension nur bei qualifizierter und bestaetigter A-B-C-Struktur. Wenn die HEBELTRADER-JSON fehlt, erfinde keinen HEBELTRADER-Inhalt. Fuer A-Kandidaten, die nicht aus HEBELTRADER stammen, nutze die bereitgestellte einzel_check_historie.jsonl ausschließlich als autoritative technische Historie des aktuellen Auswertungstages. Die Beobachtungsliste bleibt ausschließlich fuer Status, Quelle und Watchlist-Zugehoerigkeit massgeblich. Die sichtbare Darstellung richtet sich ausschließlich nach der verbindlichen 1–11-Struktur. "
-"PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 10.1 Sofortiger Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nPUNKT-7-ARCHITEKTUR: Der bestehende Makro-/Portfolio-Datenblock bleibt autoritativ; Python liefert die Fakten, Gemini interpretiert nur die qualitative Ebene.\nPUNKT-10-ARCHITEKTUR: Python stellt die autoritative Positionsfaktenbasis bereit und erzeugt 10.5 geschlossene Positionen deterministisch. Gemini erzeugt 10.1, 10.2, 10.3 und 10.4 als qualitative Interpretation. 10.3 darf ausschließlich Positionen enthalten, bei denen sich die Investmentthese gegenüber dem vorherigen Lauf bzw. der bereitgestellten Historie belastbar verändert hat. Gemini darf in 10.3/10.5 keine Faktenblöcke erzeugen.\n"
+"PORTFOLIO-MAKRO-ABGLEICH / WARNER: Vergleiche die autoritativen offenen Positionen mit dem von Gemini aus dem Makro-Datenpaket abgeleiteten Marktumfeld und den Sektorwirkungen. Wenn eine offene Position klar oder zunehmend gegen das Makro-Bild bzw. die relevante Sektorwirkung laeuft, MUSS dies in 10.1 Sofortiger Handlungsbedarf als '⚠ MAKRO-KONFLIKT' gekennzeichnet und die betroffene Position namentlich/Ticker zugeordnet werden. Nenne kurz den konkreten Widerspruch aus den vorhandenen Daten. Das ist eine Warnung zur erneuten Pruefung, KEINE automatische Verkaufs-/Kaufempfehlung und keine neue technische Kennzahl. Wenn kein belastbarer Konflikt aus den bereitgestellten Daten ableitbar ist, erfinde keinen.\nLITHIUM-DATENTRENNUNG: 'Lithium' mit STATUS=PROXY ist ausschließlich der LIT-Proxy. Der separat bereitgestellte 'Lithium TE' Wert ist der autoritative Lithiumcarbonat-Referenzwert in CNY/T und darf nicht mit dem LIT-Proxy gleichgesetzt, ersetzt oder als derselbe Preis dargestellt werden. Verwende fuer Lithium TE ausschließlich den letzten tatsaechlich verfuegbaren Datenstand <= Datenabrufdatum des aktuellen Makro_Briefings. Übernimm Wert, Einheit und den tatsächlichen Datenstand exakt aus dem Datenpaket; ein älterer legitimer Datenstand darf nicht als aktuelleres Datum ausgegeben werden. Wenn kein belastbarer Wert <= Zieldatum vorhanden ist, verwende NICHT VERFUEGBAR und erfinde keinen Wert.\nPUNKT-7-ARCHITEKTUR: Der bestehende Makro-/Portfolio-Datenblock bleibt autoritativ; Python liefert die Fakten, Gemini interpretiert nur die qualitative Ebene.\nFINAL-SYNTHESE – VOLLSTAENDIGE MARKTBREITE: Nutze fuer die Synthese nicht nur die kompakten 7.1-Kernwerte. Der finale Fakten-Handoff enthaelt das vollstaendige aktuelle Markt-/Index-Briefing und den Live-Benchmark. Beziehe relevante Entwicklungen, Marktbreite, regionale Divergenzen und Querverbindungen aktiv ein, wenn sie eine These erklaeren, bestaetigen, abschwaechen oder neu entstehen lassen. Nicht jede Zahl muss genannt werden; die vollstaendige Datenbasis soll aber verfuegbar sein. Vermeide reine Aufzaehlung und leite aus mehreren Datenpunkten eine belastbare Synthese ab.\nPUNKT-10-ARCHITEKTUR: Python stellt die autoritative Positionsfaktenbasis bereit und erzeugt 10.5 geschlossene Positionen deterministisch. Gemini erzeugt 10.1, 10.2, 10.3 und 10.4 als qualitative Interpretation. 10.3 darf ausschließlich Positionen enthalten, bei denen sich die Investmentthese gegenüber dem vorherigen Lauf bzw. der bereitgestellten Historie belastbar verändert hat. Gemini darf in 10.3/10.5 keine Faktenblöcke erzeugen.\nPOSITIONSZAHLEN-GATE: Bei jeder offenen oder geschlossenen Position sind Einstieg, Aktueller Kurs, Stop, TP1 und TP2 strikt positionsgebunden. Niemals den aktuellen Kurs als Einstieg, den Einstieg als aktuellen Kurs oder Stop/TP-Werte aus einer anderen Position übernehmen. Wenn eine Zahl nicht in der autoritativen Positionsquelle vorhanden ist, lasse sie weg statt sie zu schätzen oder zu rekonstruieren.\n"
                     "AUTORITATIVE OFFENE-POSITIONEN-LISTE (ausschließlich aus Offene Positionen+Check.csv):\n"
                     + (offene_quelle or "(keine offenen Positionen gefunden)") + "\n"
                     "AUTORITATIVE FAKTENBASIS FUER 10.5 AUS TAB 2 VON 'Offene Positionen+Check':\n"
@@ -3861,8 +4000,10 @@ def gemini_auswertung_starten():
                     "oder erfinde keine geschlossenen Positionen aus anderen Dateien oder aus Modellwissen. "
                     "Übernimm die Faktenfelder aus Tab 2 unverändert. 10.5 ist von der offenen Positionsprüfung "
                     "und deren Reparaturmechanik getrennt.\n"
-                    "Diese Liste ist für Firmenname, Ticker, Einstiegskurs und Einstiegsdatum verbindlich. "
-                    "Übernimm diese vier Werte exakt; erfinde, schätze oder ändere sie nicht. "
+                    "Diese Liste ist für Firmenname, Ticker, Einstiegskurs, Einstiegsdatum, Aktuellen Kurs, Stop, TP1 und TP2 verbindlich, sofern die Felder in der Quelle vorhanden sind. "
+                    "Übernimm diese Werte exakt; erfinde, schätze oder ändere sie nicht. "
+                    "Einstiegskurs, Aktueller Kurs, Stop, TP1 und TP2 sind semantisch strikt getrennte Felder. "
+                    "Der Aktuelle Kurs darf niemals als Einstiegskurs interpretiert werden; der Einstieg darf niemals aus dem aktuellen Kurs oder der Performance rekonstruiert werden; Stop/TP1/TP2 dürfen niemals aus anderen Positionen oder aus Fließtext übernommen werden. "
                     "PUNKT-10-ARCHITEKTUR: 'Offene Positionen+Check.csv' ist die alleinige "
                     "autoritative Faktenquelle fuer die offenen Positionen. Python stellt diese Liste "
                     "als Kontext bereit und erzeugt 10.5 ausschliesslich aus der autoritativen Tab-2-Faktenbasis. "
@@ -4639,6 +4780,10 @@ def normalisiere_ausgabe(text, zielzonen=None):
         "Technische_Zielzone": re.compile(r"(?im)^(\s*Technische Zielzone\s*:\s*)[^\n]*$"),
         "Datenqualitaet": re.compile(r"(?im)^(\s*Datenqualitaet\s*:\s*)[^\n]*$"),
         "Analysehinweis": re.compile(r"(?im)^(\s*Analysehinweis\s*:\s*)[^\n]*$"),
+        "Aktueller_Kurs": re.compile(r"(?im)^(\s*Aktueller Kurs\s*:\s*)[^\n]*$"),
+        "Stop": re.compile(r"(?im)^(\s*Stop\s*:\s*)[^\n]*$"),
+        "TP1": re.compile(r"(?im)^(\s*TP1\s*:\s*)[^\n]*$"),
+        "TP2": re.compile(r"(?im)^(\s*TP2\s*:\s*)[^\n]*$"),
     }
 
     replacements = []
@@ -4837,6 +4982,37 @@ def normalisiere_ausgabe(text, zielzonen=None):
                 + pos_block[dm.end(0):]
             )
 
+        position_facts = (
+            ("current", "Aktueller Kurs", "Aktueller_Kurs"),
+            ("stop", "Stop", "Stop"),
+            ("tp1", "TP1", "TP1"),
+            ("tp2", "TP2", "TP2"),
+        )
+        for source_key, label, field in position_facts:
+            value = source.get(source_key, "")
+            if value in (None, ""):
+                continue
+            pattern = technical_labels[field]
+            replacement = f"{label}: {value}"
+            pos_block, count = pattern.subn(replacement, pos_block, count=1)
+            if count == 0:
+                insertion_anchor = re.search(
+                    r"(?im)^\s*Einstieg(?:skurs)?\s*:\s*[^\n]+(?:\n|$)",
+                    pos_block,
+                )
+                if insertion_anchor:
+                    pos_block = (
+                        pos_block[:insertion_anchor.end()]
+                        + replacement + "\n"
+                        + pos_block[insertion_anchor.end():]
+                    )
+                else:
+                    errors.append(
+                        f"{source['name']} ({source['ticker']}): "
+                        f"Positionsfeld {label} konnte nicht kanonisiert werden"
+                    )
+                    continue
+
         technical = source["technical"]
 
         for field, value in technical.items():
@@ -4907,6 +5083,15 @@ def normalisiere_ausgabe(text, zielzonen=None):
             if source_label:
                 lines.append(f"Quelle: {source_label}")
             lines.append(f"Einstieg: {source['entry']} ({source['date']})")
+            for field, label in (
+                ("current", "Aktueller Kurs"),
+                ("stop", "Stop"),
+                ("tp1", "TP1"),
+                ("tp2", "TP2"),
+            ):
+                value = source.get(field)
+                if value not in (None, ""):
+                    lines.append(f"{label}: {value}")
             for field, value in source.get("technical", {}).items():
                 if value is None or value == "":
                     continue
@@ -6967,6 +7152,107 @@ def _repariere_7_4_fx_aus_makroquelle(text, makro_text):
     replacement = "\n".join(lines).strip() + "\n"
     return text[:match.start()] + replacement + text[match.end():], True
 
+def _lithium_te_referenz(makro_text):
+    """Liest Lithium TE als autoritativen CNY/T-Wert.
+
+    Es gilt immer der letzte tatsaechlich verfuegbare Trading-Economics-Wert
+    mit Datenstand <= Datenabrufdatum des aktuellen Makro_Briefings. Ein
+    juengerer/future-dated Wert darf niemals als aktueller Wert verwendet
+    werden. Der reale Datenstand bleibt Bestandteil der Rueckgabe.
+    """
+    if not makro_text:
+        return None
+
+    target_match = re.search(
+        r"(?im)^\s*MAKRO-DATENPAKET\s*\|\s*Datenabruf\s*=\s*(\d{4}-\d{2}-\d{2})\b",
+        makro_text,
+    )
+    target_date = None
+    if target_match:
+        try:
+            target_date = dt.date.fromisoformat(target_match.group(1))
+        except ValueError:
+            target_date = None
+
+    def parse_number(raw):
+        value = str(raw or "").strip().replace(" ", "")
+        if not value:
+            raise ValueError("empty number")
+        sign = ""
+        if value[0] in "+-":
+            sign, value = value[0], value[1:]
+        if not re.fullmatch(r"\d[\d.,]*", value):
+            raise ValueError("invalid number")
+        if "," in value and "." in value:
+            if value.rfind(",") > value.rfind("."):
+                value = value.replace(".", "").replace(",", ".")
+            else:
+                value = value.replace(",", "")
+        elif "," in value:
+            value = value.replace(",", ".")
+        elif value.count(".") > 1:
+            value = value.replace(".", "")
+        return float(sign + value)
+
+    candidates = []
+    unavailable = False
+    for raw in makro_text.splitlines():
+        line = raw.strip()
+        if not re.match(r"(?i)^Lithium\s+TE\s*:", line):
+            continue
+
+        if re.search(r"(?i)\bSTATUS\s*=\s*UNAVAILABLE\b", line):
+            unavailable = True
+            continue
+
+        value_match = re.match(r"(?i)^Lithium\s+TE\s*:\s*([-+]?\d[\d.,]*)", line)
+        if not value_match:
+            continue
+        try:
+            value = parse_number(value_match.group(1))
+        except ValueError:
+            continue
+
+        date_match = re.search(
+            r"(?i)\bDatenstand\s*=\s*(\d{4}-\d{2}-\d{2})\b", line
+        )
+        data_date = None
+        if date_match:
+            try:
+                data_date = dt.date.fromisoformat(date_match.group(1))
+            except ValueError:
+                data_date = None
+
+        if target_date is not None and data_date is not None and data_date > target_date:
+            continue
+
+        ref = {"kurs": value, "perioden": {}, "status": "VALUE", "unit": "CNY/T"}
+        if data_date is not None:
+            ref["datenstand"] = data_date.isoformat()
+
+        for key in ("5T", "1M", "3M", "6M", "1J"):
+            period_match = re.search(
+                rf"(?:^|\|)\s*{re.escape(key)}\s*=\s*([-+]?\d[\d.,]*)\s*%",
+                line,
+            )
+            if period_match:
+                try:
+                    ref["perioden"][key] = parse_number(period_match.group(1))
+                except ValueError:
+                    pass
+        candidates.append((data_date, ref))
+
+    if candidates:
+        dated = [(d, r) for d, r in candidates if d is not None]
+        if dated:
+            dated.sort(key=lambda x: x[0])
+            return dated[-1][1]
+        return candidates[-1][1]
+
+    if unavailable:
+        return {"status": "UNAVAILABLE", "unit": "CNY/T"}
+    return None
+
 def _lithium_quellenstatus_proxy(makro_text):
     """Liefert deterministisch, ob Lithium in der autoritativen Makroquelle als PROXY gekennzeichnet ist.
 
@@ -7022,13 +7308,21 @@ def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
         return None
 
     lithium_proxy = _lithium_quellenstatus_proxy(makro_text)
+    lithium_te = _lithium_te_referenz(makro_text)
 
     def fmt_ref(label, ref):
         if ref is None:
             return f"{label}: in der autoritativen Makroquelle nicht als strukturierter Wert vorhanden."
-        parts = [f"{label}: {ref['kurs']}"]
+        if label == "Lithiumcarbonat CNY/T":
+            parts = [f"{label}: {float(ref['kurs']):.2f}"]
+        else:
+            parts = [f"{label}: {ref['kurs']}"]
         if label == "Lithium" and lithium_proxy:
             parts.append("STATUS=PROXY")
+        if label == "Lithiumcarbonat CNY/T":
+            parts.append("Einheit=CNY/T")
+            parts.append("SOURCE=TradingEconomics Public Commodities")
+            parts.append("DATENTYP=TE_PUBLIC_LITHIUM")
         if ref.get("datenstand"):
             parts.append(f"Datenstand={ref['datenstand']}")
         if ref.get("schluss") is not None:
@@ -7044,6 +7338,7 @@ def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
         ("WTI", get_ref("wti")),
         ("Kupfer", get_ref("kupfer", "copper")),
         ("Lithium", get_ref("lithium")),
+        ("Lithiumcarbonat CNY/T", lithium_te if lithium_te and lithium_te.get("status") == "VALUE" else None),
     ]
     present = [(label, ref) for label, ref in candidates if ref is not None]
 
@@ -7073,7 +7368,9 @@ def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
         ])
 
     replacement = "\n".join(lines_out).strip() + "\n"
-    return text[:match.start()] + replacement + text[match.end():], True
+    result = text[:match.start()] + replacement + text[match.end():]
+    secured_result, lithium_changed = _sichere_lithium_te_in_7_5(result, lithium_te)
+    return secured_result, True or lithium_changed
 
 def _ergaenze_fehlende_ausgabestruktur(text):
     """Fügt nur fehlende Pflichtabschnitte 1–11.7 positionsgenau ein.
@@ -8556,9 +8853,10 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
             elif status == "UNAVAILABLE":
                 source_values[heading].append((label, "UNAVAILABLE", raw))
 
-    # Lithium ist der einzige Sonderfall mit zusätzlichem autoritativem
-    # Quellstatus, der vom bestehenden Gate separat geprüft wird.
+    # Lithium ist der Sonderfall mit zwei bewusst getrennten autoritativen
+    # Datenpunkten: LIT-Proxy und Lithium-TE in CNY/T.
     lithium_proxy = _lithium_quellenstatus_proxy(makro_text)
+    lithium_te = _lithium_te_referenz(makro_text)
 
     changed = False
     result = text
@@ -8607,6 +8905,24 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
             and not re.search(r"proxy", block, re.I)
         ):
             additions.append("- [AUTORITATIVE QUELLE] Lithium: STATUS=PROXY")
+        if heading == "7.5 Rohstoffe" and lithium_te is not None:
+            if lithium_te.get("status") == "UNAVAILABLE":
+                if not re.search(
+                    r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?Lithiumcarbonat CNY/T\s*:\s*NICHT\s+VERFUEGBAR\b.*STATUS\s*=\s*UNAVAILABLE",
+                    block,
+                ):
+                    additions.append(
+                        "- [AUTORITATIVE QUELLE] Lithiumcarbonat CNY/T: NICHT VERFUEGBAR | "
+                        "STATUS=UNAVAILABLE | Einheit=CNY/T | DATENTYP=TE_PUBLIC_LITHIUM"
+                    )
+            else:
+                lithium_te_value = f"{float(lithium_te['kurs']):.2f}"
+                if not _zahl_im_block_vorhanden(block, float(lithium_te['kurs']), label="Lithiumcarbonat CNY/T"):
+                    additions.append(
+                        f"- [AUTORITATIVE QUELLE] Lithiumcarbonat CNY/T: {lithium_te_value} | "
+                        f"Einheit=CNY/T | Datenstand={lithium_te.get('datenstand', 'unbekannt')} | "
+                        "SOURCE=TradingEconomics Public Commodities | DATENTYP=TE_PUBLIC_LITHIUM"
+                    )
         if not additions:
             continue
 
@@ -8624,7 +8940,39 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
         result = source[:m.start()] + new_block + source[end:]
         changed = True
 
-    return result, changed
+
+def _sichere_lithium_te_in_7_5(text, lithium_te):
+    """Sichert den getrennten Lithium-TE/CNY-T-Datenpunkt im Rohstoffblock."""
+    if not text or lithium_te is None:
+        return text, False
+    m = re.search(
+        r"(?ms)^7\.5\s+Rohstoffe\s*$.*?(?=^7\.6\s+Krypto\s*$|^8\.1\s+Gold\s*$|\Z)",
+        text,
+    )
+    if not m:
+        return text, False
+    block = m.group(0)
+    if lithium_te.get("status") == "UNAVAILABLE":
+        if re.search(
+            r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?Lithiumcarbonat CNY/T\s*:\s*NICHT\s+VERFUEGBAR\b.*STATUS\s*=\s*UNAVAILABLE",
+            block,
+        ):
+            return text, False
+        line = (
+            "- [AUTORITATIVE QUELLE] Lithiumcarbonat CNY/T: NICHT VERFUEGBAR | "
+            "STATUS=UNAVAILABLE | Einheit=CNY/T | DATENTYP=TE_PUBLIC_LITHIUM"
+        )
+    else:
+        value = float(lithium_te["kurs"])
+        if _zahl_im_block_vorhanden(block, value, label="Lithiumcarbonat CNY/T"):
+            return text, False
+        line = (
+            f"- [AUTORITATIVE QUELLE] Lithiumcarbonat CNY/T: {value:.2f} | "
+            f"Einheit=CNY/T | Datenstand={lithium_te.get('datenstand', 'unbekannt')} | "
+            "SOURCE=TradingEconomics Public Commodities | DATENTYP=TE_PUBLIC_LITHIUM"
+        )
+    return text[:m.end()] + "\n" + line + "\n" + text[m.end():], True
+
 
 def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
     """Vollstaendigkeits-Gate fuer 7.1–7.7 gegen die jeweils aktuellen Tagesquellen."""
@@ -8702,6 +9050,24 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
         lithium_proxy = _lithium_quellenstatus_proxy(makro)
         if lithium_proxy and not re.search(r"proxy", blocks["7.5 Rohstoffe"], re.I):
             errors.append("7.5 Rohstoffe: Lithium wurde genannt, aber der Quellstatus PROXY wird in der Ausgabe nicht kenntlich gemacht.")
+
+    lithium_te = _lithium_te_referenz(makro)
+    if lithium_te is not None:
+        status, raw = _quellenwert_status_aus_zeile(
+            blocks["7.5 Rohstoffe"], "Lithiumcarbonat CNY/T"
+        )
+        if lithium_te.get("status") == "UNAVAILABLE":
+            if status != "UNAVAILABLE":
+                errors.append(
+                    "7.5 Rohstoffe: Lithiumcarbonat CNY/T ist in der autoritativen Quelle UNAVAILABLE, "
+                    "aber dieser Status fehlt in der Ausgabe."
+                )
+        else:
+            lithium_te_value = float(lithium_te["kurs"])
+            if status != "VALUE" or _quellenwert_float(raw) is None or abs(_quellenwert_float(raw) - lithium_te_value) > 1e-9:
+                errors.append(
+                    "7.5 Rohstoffe: autoritativer Lithiumcarbonat-CNY/T-Wert fehlt oder weicht vom Makro-Referenzwert ab."
+                )
 
     if errors:
         raise RuntimeError("PUNKT7_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))

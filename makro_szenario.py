@@ -4308,6 +4308,59 @@ def _te_public_lithium_exact(target_date):
                         }
         except Exception as exc:
             print(f"WARNUNG: TradingEconomics Lithium {url}: {type(exc).__name__}: {exc}")
+
+        # Die oeffentliche TE-Seite zeigt haeufig den letzten verfuegbaren
+        # Tageswert (z.B. 30.09.2026), obwohl der Lauf erst spaeter erfolgt.
+        # Wenn kein exakter Zieltag gefunden wurde, uebernehmen wir diesen
+        # sichtbaren letzten Datenstand nur dann, wenn er <= target_date ist.
+        try:
+            month_map = {
+                "januar": 1, "februar": 2, "märz": 3, "maerz": 3,
+                "april": 4, "mai": 5, "juni": 6, "juli": 7,
+                "august": 8, "september": 9, "oktober": 10,
+                "november": 11, "dezember": 12,
+            }
+            patterns_latest = (
+                r"Lithium\s+fiel\s+am\s+(\d{1,2})\.\s*([A-Za-zÄÖÜäöü]+)\s+(\d{4})\s+auf\s+([0-9][0-9.,]*)\s*CNY/T",
+                r"Lithium\s+fell\s+on\s+([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\s+to\s+([0-9][0-9.,]*)\s*CNY/T",
+            )
+            for pattern_index, pattern in enumerate(patterns_latest):
+                match = re.search(pattern, plain, re.I)
+                if not match:
+                    continue
+                if pattern_index == 0:
+                    day = int(match.group(1))
+                    month = month_map.get(match.group(2).casefold())
+                    year = int(match.group(3))
+                    value_raw = match.group(4)
+                else:
+                    month_name = match.group(1).casefold()
+                    month = next((i for i, name in enumerate(calendar.month_name) if name and name.casefold() == month_name), None)
+                    if month is None:
+                        month = next((i for i, name in enumerate(calendar.month_abbr) if name and name.casefold() == month_name[:3]), None)
+                    day = int(match.group(2))
+                    year = int(match.group(3))
+                    value_raw = match.group(4)
+                if not month:
+                    continue
+                reference_date = dt.date(year, month, day)
+                if reference_date > target_date:
+                    continue
+                value = parse_number(value_raw)
+                if value is None:
+                    continue
+                return {
+                    "value": value,
+                    "reference_date": reference_date.isoformat(),
+                    "unit": "CNY/T",
+                    "status": "REAL_PUBLIC_SECONDARY",
+                    "source": "TradingEconomics Public Commodities",
+                    "url": url,
+                    "datatype": "TE_PUBLIC_LITHIUM",
+                    "method": "TE_PUBLIC_LATEST_VISIBLE_AS_OF_TARGET",
+                }
+        except Exception as exc:
+            print(f"WARNUNG: TradingEconomics Lithium Latest-Visible-Fallback {url}: {type(exc).__name__}: {exc}")
     return None
 
 
@@ -4319,22 +4372,35 @@ def lithium_te_snapshot(target_date):
 
     fresh = _te_public_lithium_exact(target_date)
     if fresh is not None:
-        observations[target_key] = fresh
-        cache["latest_date"] = target_key
+        reference_date = str(fresh.get("reference_date") or target_key)
+        observations[reference_date] = fresh
+        cache["latest_date"] = reference_date
         cache["latest_value"] = fresh["value"]
         _lithium_te_cache_save(cache)
         data = fresh
         status = "REAL_PUBLIC_SECONDARY"
     else:
-        cached = observations.get(target_key)
-        if isinstance(cached, dict) and cached.get("value") is not None:
+        # Nutze den juengsten bereits belegten Beobachtungstag <= Zieltag.
+        # Ein juengerer/future-dated Cache-Eintrag darf niemals verwendet werden.
+        eligible = []
+        for observation_date, observation in observations.items():
+            try:
+                obs_date = dt.date.fromisoformat(str(observation_date))
+            except (TypeError, ValueError):
+                continue
+            if obs_date <= target_date and isinstance(observation, dict) and observation.get("value") is not None:
+                eligible.append((obs_date, observation))
+        if eligible:
+            eligible.sort(key=lambda item: item[0])
+            reference_date, cached = eligible[-1]
             data = dict(cached)
+            data["reference_date"] = reference_date.isoformat()
             data["status"] = "REAL_CACHED"
             status = "REAL_CACHED"
         else:
             print(
                 f"WARNUNG: TradingEconomics Lithium fuer {target_key} "
-                "nicht verfuegbar; kein Wert aus einem anderen Datum wird uebernommen."
+                "nicht neu verfuegbar und kein belegter Cache-Wert <= Zieltag vorhanden."
             )
             return (
                 "Lithium TE: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | "
@@ -4343,10 +4409,11 @@ def lithium_te_snapshot(target_date):
             )
 
     observations_count = len(observations)
+    reference_date = str(data.get("reference_date") or target_key)
     parts = [
         f"Lithium TE: {float(data['value']):.2f}",
         f"Einheit={data.get('unit', 'CNY/T')}",
-        f"Datenstand={target_key}",
+        f"Datenstand={reference_date}",
         f"STATUS={status}",
         "DATENTYP=TE_PUBLIC_LITHIUM",
         f"SOURCE={data.get('source', 'TradingEconomics Public Commodities')}",
