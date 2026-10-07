@@ -8011,10 +8011,13 @@ def _ist_adp_makrozeile(line):
     if not re.search(r"(?<![A-Za-z0-9])ADP(?![A-Za-z0-9])", text, re.I):
         return False
 
-    # Ein expliziter Aktien-/Unternehmenskontext hat Vorrang. Dadurch kann
-    # z. B. "Aktie: ADP employment growth" niemals als Makrozeile gelten.
+    # Ein expliziter Aktien-/Unternehmenskontext hat Vorrang. Ein bloßer
+    # Listen-/Aufzählungsmarker (-/•) ist jedoch noch kein Aktienkontext:
+    # Makro-Briefings enthalten ADP häufig als Bullet-Zeile, z. B.
+    # "- ADP Employment Change: ...". Solche Zeilen müssen als Makro erkannt
+    # werden, während "Aktie: ADP ..." weiterhin eindeutig Aktienkontext ist.
     company_context = re.compile(
-        r"(?i)(?:^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|"
+        r"(?i)(?:aktie|unternehmen|position|trade|kandidat|setup|"
         r"sektor|markt:|entry|stop|tp1|tp2)"
     )
     if company_context.search(text):
