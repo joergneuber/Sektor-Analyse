@@ -8044,13 +8044,17 @@ def _ist_adp_makrozeile(line):
 
 
 def _normalisiere_name_ticker_ausgabe(text):
-    """Erzwingt Name (Ticker) für konkrete bekannte Unternehmensnennungen."""
+    """Erzwingt Name (Ticker) fuer konkrete bekannte Unternehmensnennungen.
+
+    Grundregel: Der kanonische Firmenname ist die Identitaet. Ein Ticker
+    allein ist kein ausreichender Aktienbezug und wird daher nicht
+    automatisch interpretiert oder umgeschrieben.
+    """
     universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
     if not universe_path or not os.path.isfile(universe_path):
         raise RuntimeError("NAME_TICKER_NORMALISIERUNG_QUELLE_FEHLT")
     data = json.loads(Path(universe_path).read_text(encoding="utf-8"))
     by_name = {}
-    by_ticker = {}
     for item in data.get("candidates", []) if isinstance(data, dict) else []:
         if not isinstance(item, dict):
             continue
@@ -8060,39 +8064,66 @@ def _normalisiere_name_ticker_ausgabe(text):
             continue
         key = name.casefold()
         by_name.setdefault(key, {"name": name, "tickers": set()})["tickers"].add(ticker)
-        by_ticker[ticker.casefold()] = name
-    unique_names = [(v["name"], next(iter(v["tickers"]))) for v in by_name.values() if len(v["tickers"]) == 1]
-    starts = [m.start() for m in re.finditer(r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b", text)]
+
+    unique_names = [
+        (v["name"], next(iter(v["tickers"])))
+        for v in by_name.values()
+        if len(v["tickers"]) == 1
+    ]
+
+    starts = [m.start() for m in re.finditer(
+        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
+        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
+        text,
+    )]
     if not starts:
         return text
-    spans = [(s, starts[i + 1] if i + 1 < len(starts) else len(text)) for i, s in enumerate(starts)]
+
+    spans = [
+        (s, starts[i + 1] if i + 1 < len(starts) else len(text))
+        for i, s in enumerate(starts)
+    ]
+
     for start, end in reversed(spans):
         block = text[start:end]
         lines = block.splitlines(True)
+
+        # Ausschliesslich kanonische Firmennamen bestimmen den Aktienbezug.
+        # Der zugehoerige Ticker wird nur ergaenzt, wenn er in derselben
+        # Zeile noch nicht bereits im kanonischen Name (Ticker)-Format steht.
         for i, line in enumerate(lines):
             for name, ticker in unique_names:
-                if name.casefold() in line.casefold() and not re.search(rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)", line, re.I):
-                    lines[i] = re.sub(re.escape(name), f"{name} ({ticker})", lines[i], count=1, flags=re.I)
+                if name.casefold() in line.casefold() and not re.search(
+                    rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)",
+                    line,
+                    re.I,
+                ):
+                    lines[i] = re.sub(
+                        re.escape(name),
+                        f"{name} ({ticker})",
+                        lines[i],
+                        count=1,
+                        flags=re.I,
+                    )
                     line = lines[i]
-        # Nur konkrete Aktienzeilen mit isoliertem Ticker werden ersetzt.
-        for i, line in enumerate(lines):
-            # ADP ist hier ggf. die Makrokennzahl (ADP Employment Change)
-            # und darf nicht in den Firmennamen Automatic Data Processing
-            # umgeschrieben werden.
-            if _ist_adp_makrozeile(line):
-                continue
-            if not re.search(r"(?i)(^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|sektor|markt:|entry|stop:|tp1|tp2)", line):
-                continue
-            for ticker_key, name in by_ticker.items():
-                if re.search(rf"{_ticker_grenzen_regex(ticker_key)}", line, re.I) and not re.search(rf"\([^\n()]*\b{re.escape(ticker_key)}\b[^\n()]*\)", line, re.I):
-                    lines[i] = re.sub(rf"{_ticker_grenzen_regex(ticker_key)}", f"{name} ({ticker_key.upper()})", line, count=1, flags=re.I)
-                    break
-        block=''.join(lines)
-        text=text[:start]+block+text[end:]
+
+        block = "".join(lines)
+        text = text[:start] + block + text[end:]
+
     return text
 
+
 def _pruefe_name_ticker_gate(text):
-    """Harte Endprüfung: konkrete Aktien-/Unternehmensbezüge nur als Name (Ticker)."""
+    """Harte Endpruefung: konkrete Unternehmensnamen nur als Name (Ticker).
+
+    Die Identitaetsregel ist bewusst einseitig:
+    - Ein kanonischer Firmenname ohne zugehoerigen Ticker ist ungueltig.
+    - Name (Ticker) ist gueltig.
+    - Ein Ticker allein ist fuer dieses Gate kein Aktienbezug und wird
+      insbesondere bei mehrdeutigen Begriffen wie FIX oder MSCI ignoriert.
+    - Basisinstrumente/Rohstoffe/Krypto werden weiterhin nicht als
+      Unternehmensnamen geprueft.
+    """
     universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
     if not universe_path or not os.path.isfile(universe_path):
         raise RuntimeError("NAME_TICKER_GATE_QUELLE_FEHLT")
@@ -8100,14 +8131,9 @@ def _pruefe_name_ticker_gate(text):
         data = json.loads(Path(universe_path).read_text(encoding="utf-8"))
     except Exception as exc:
         raise RuntimeError(f"NAME_TICKER_GATE_QUELLE_NICHT_LESBAR: {exc}") from exc
-    identities = {}
+
     name_tickers = {}
-    # Das Trade-Story-Universum enthält neben Aktien auch Basisinstrumente
-    # (z. B. Gold/Silber) und Krypto-/Rohstoffsymbole. Das Name(Ticker)-Gate
-    # gilt ausschließlich für konkrete Aktien-/Unternehmensbezüge.
-    # Andernfalls wird z. B. der Rohstoff-Ticker "gold" fälschlich als
-    # Aktien-Ticker interpretiert und das End-Gate blockiert die gesamte
-    # Auswertung.
+    name_display = {}
     non_equity_tickers = {
         "gold", "silver", "platinum", "palladium",
         "xau", "xag", "xpt", "xpd",
@@ -8115,6 +8141,7 @@ def _pruefe_name_ticker_gate(text):
         "bitcoin", "btc", "ethereum", "eth",
         "brent", "wti",
     }
+
     for item in data.get("candidates", []) if isinstance(data, dict) else []:
         if not isinstance(item, dict):
             continue
@@ -8124,40 +8151,50 @@ def _pruefe_name_ticker_gate(text):
         if normalized_ticker in non_equity_tickers:
             continue
         if ticker and name and ticker.casefold() != name.casefold():
-            identities[normalized_ticker] = name
-            name_tickers.setdefault(name.casefold(), set()).add(normalized_ticker)
+            key = name.casefold()
+            name_tickers.setdefault(key, set()).add(ticker)
+            name_display.setdefault(key, name)
+
     starts = [m.start() for m in re.finditer(
-        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b", text
+        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
+        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
+        text,
     )]
     if not starts:
         return
-    checked = "\n".join(text[s:(starts[i + 1] if i + 1 < len(starts) else len(text))] for i, s in enumerate(starts))
+
+    checked = "\n".join(
+        text[s:(starts[i + 1] if i + 1 < len(starts) else len(text))]
+        for i, s in enumerate(starts)
+    )
+
     errors = []
-    company_context = re.compile(r"(?i)(?:^\s*[-•]|aktie|unternehmen|position|trade|kandidat|setup|sektor|markt:|entry|stop:|tp1|tp2)")
-    for ticker, name in identities.items():
-        if len(ticker) < 2:
+    for line in checked.splitlines():
+        if not line.strip():
             continue
-        for line in checked.splitlines():
-            if not line.strip():
+
+        # Nur ein kanonischer Firmenname startet die Aktienpruefung.
+        # Ein nackter Ticker (z. B. FIX oder MSCI) ist bewusst kein Fehler.
+        for name_key, valid_tickers in name_tickers.items():
+            if not name_key or name_key not in line.casefold():
                 continue
-            if re.search(rf"{_ticker_grenzen_regex(ticker)}", line, re.I):
-                # ADP ist zugleich Aktien-Ticker und Makrokennzahl. Nur ein
-                # deterministisch erkennbarer Makro-Kontext ist ausgenommen;
-                # ein isoliertes "ADP" bleibt weiterhin gate-pflichtig.
-                if ticker == "adp" and _ist_adp_makrozeile(line):
-                    continue
-                # Reine Makro-/Querverbindungsnennungen sind kein konkreter
-                # Unternehmensbezug. Konkrete Aktienzeilen müssen kanonisch sein.
-                if company_context.search(line) and not re.search(rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)", line, re.I):
-                    errors.append(f"{ticker}: konkreter Aktienbezug ohne Name (Ticker)")
-                    break
-            if name and name.casefold() in line.casefold():
-                valid_tickers = name_tickers.get(name.casefold(), {ticker})
-                if not any(re.search(rf"\([^\n()]*\b{re.escape(t)}\b[^\n()]*\)", line, re.I) for t in valid_tickers):
-                    errors.append(f"{name}: Firmenname ohne kanonisches Name (Ticker)-Format")
-                    break
+            if not any(
+                re.search(
+                    rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)",
+                    line,
+                    re.I,
+                )
+                for ticker in valid_tickers
+            ):
+                display_name = name_display.get(name_key, name_key)
+                errors.append(
+                    f"{display_name}: Firmenname ohne kanonisches Name (Ticker)-Format"
+                )
+                break
+
     if errors:
         raise RuntimeError("NAME_TICKER_GATE_UNGUELTIG: " + " | ".join(errors[:20]))
+
 
 def _normalisiere_punkt11_quellengebunden(text):
     """Ersetzt 11.1–11.6 durch deterministische, quellengebundene Fakten."""
