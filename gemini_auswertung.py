@@ -8064,6 +8064,32 @@ def _gate_quellenwert(block, label, wert, fehler):
         fehler.append(f"{label}: autoritativer Wert {wert} nicht im zugeordneten Ausgabeabschnitt gefunden.")
 
 
+def _gate_quellenstatus(block, label, status, fehler):
+    if status == "UNAVAILABLE":
+        ok = re.search(
+            r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?"
+            + re.escape(label)
+            + r"\s*:\s*NICHT\s+VERFUEGBAR\b.*?\bSTATUS\s*=\s*UNAVAILABLE\b",
+            block or "",
+        )
+        if not ok:
+            fehler.append(
+                f"{label}: autoritativer Quellstatus NICHT VERFUEGBAR/STATUS=UNAVAILABLE "
+                "nicht im zugeordneten Ausgabeabschnitt gefunden."
+            )
+            return
+        if re.search(
+            r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?"
+            + re.escape(label)
+            + r"\s*:\s*(?!NICHT\s+VERFUEGBAR\b).*?\d[\d.,]*",
+            block or "",
+        ):
+            fehler.append(
+                f"{label}: widerspruechlicher numerischer Wert trotz autoritativem "
+                "UNAVAILABLE-Quellstatus im zugeordneten Ausgabeabschnitt."
+            )
+
+
 def _quellenwert_aus_zeile(source, label, aus_parenthesen=False):
     """Liest den aktuellen numerischen Wert hinter einem autoritativen Label."""
     for line in (source or "").splitlines():
@@ -8079,6 +8105,34 @@ def _quellenwert_aus_zeile(source, label, aus_parenthesen=False):
             if raw:
                 return raw
     return None
+
+
+def _quellenwert_status_aus_zeile(source, label, aus_parenthesen=False):
+    """Liest deterministisch entweder einen numerischen Quellwert oder den
+    expliziten autoritativen UNAVAILABLE-Status einer Quellenzeile.
+
+    Makro_Briefing verwendet bei technisch nicht verfuegbaren Marktdaten
+    bewusst ``NICHT VERFUEGBAR | STATUS=UNAVAILABLE``. Dieser Zustand ist
+    selbst eine autoritative Dateninformation und darf nicht als "fehlender
+    Quellwert" behandelt werden.
+    """
+    for line in (source or "").splitlines():
+        clean_line = line.lstrip(" -•\t")
+        if not clean_line.startswith(label + ":"):
+            continue
+        if re.search(r"(?i)\bSTATUS\s*=\s*UNAVAILABLE\b", clean_line) and re.search(
+            r"(?i)\bNICHT\s+VERFUEGBAR\b", clean_line
+        ):
+            return "UNAVAILABLE", "NICHT VERFUEGBAR"
+        if aus_parenthesen:
+            m = re.search(r"\(\s*([-+]?\d[\d.,]*)", clean_line)
+        else:
+            m = re.search(r":\s*([-+]?\d[\d.,]*)", clean_line)
+        if m:
+            raw = m.group(1).strip().strip(".,;:()[]{}")
+            if raw:
+                return "VALUE", raw
+    return None, None
 
 
 def _quellenwert_float(raw):
@@ -8136,14 +8190,18 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
 
     source_values = {h: [] for h in sections}
     for label, parenthesized in index_labels:
-        raw = _quellenwert_aus_zeile(briefing_text, label, parenthesized)
-        if raw is not None and _quellenwert_float(raw) is not None:
-            source_values["7.1 Aktienmärkte / Indizes"].append((label, raw))
+        status, raw = _quellenwert_status_aus_zeile(briefing_text, label, parenthesized)
+        if status == "VALUE" and _quellenwert_float(raw) is not None:
+            source_values["7.1 Aktienmärkte / Indizes"].append((label, "VALUE", raw))
+        elif status == "UNAVAILABLE":
+            source_values["7.1 Aktienmärkte / Indizes"].append((label, "UNAVAILABLE", raw))
     for heading, labels in direct_labels.items():
         for label in labels:
-            raw = _quellenwert_aus_zeile(makro_text, label)
-            if raw is not None and _quellenwert_float(raw) is not None:
-                source_values[heading].append((label, raw))
+            status, raw = _quellenwert_status_aus_zeile(makro_text, label)
+            if status == "VALUE" and _quellenwert_float(raw) is not None:
+                source_values[heading].append((label, "VALUE", raw))
+            elif status == "UNAVAILABLE":
+                source_values[heading].append((label, "UNAVAILABLE", raw))
 
     # Lithium ist der einzige Sonderfall mit zusätzlichem autoritativem
     # Quellstatus, der vom bestehenden Gate separat geprüft wird.
@@ -8156,13 +8214,38 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
         if not block:
             continue
         additions = []
-        for label, raw in source_values[heading]:
+        for label, status, raw in source_values[heading]:
+            if status == "UNAVAILABLE":
+                # Eine bereits vorhandene numerische Zeile desselben autoritativen
+                # Labels darf niemals neben dem UNAVAILABLE-Quellstatus bestehen:
+                # sonst koennte ein Gemini-Wert die deterministische Quelle
+                # semantisch ueberschreiben. Eine vorhandene korrekte
+                # UNAVAILABLE-Zeile bleibt unangetastet.
+                if re.search(
+                    r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?"
+                    + re.escape(label)
+                    + r"\s*:\s*(?!NICHT\s+VERFUEGBAR\b).*?\d[\d.,]*",
+                    block,
+                ):
+                    additions.append(
+                        f"- [AUTORITATIVE QUELLE] {label}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE"
+                    )
+                elif not re.search(
+                    r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?"
+                    + re.escape(label)
+                    + r"\s*:\s*NICHT\s+VERFUEGBAR\b.*?\bSTATUS\s*=\s*UNAVAILABLE\b",
+                    block,
+                ):
+                    additions.append(
+                        f"- [AUTORITATIVE QUELLE] {label}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE"
+                    )
+                continue
             value = _quellenwert_float(raw)
             if not _zahl_im_block_vorhanden(block, value, label=label):
                 additions.append(f"- [AUTORITATIVE QUELLE] {label}: {raw}")
         lithium_wird_vorhanden_sein = (
             "Lithium" in block
-            or any(label == "Lithium" for label, _ in source_values[heading])
+            or any(label == "Lithium" for label, _, _ in source_values[heading])
         )
         if (
             heading == "7.5 Rohstoffe"
@@ -8234,9 +8317,12 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
 
     errors = []
     for label, parenthesized in index_labels:
-        raw = _quellenwert_aus_zeile(briefing, label, parenthesized)
-        if raw is None:
+        status, raw = _quellenwert_status_aus_zeile(briefing, label, parenthesized)
+        if status is None:
             errors.append(f"7.1 Aktienmärkte / Indizes: autoritativer Quellwert {label} fehlt in Briefing.")
+            continue
+        if status == "UNAVAILABLE":
+            _gate_quellenstatus(blocks["7.1 Aktienmärkte / Indizes"], label, status, errors)
             continue
         value = _quellenwert_float(raw)
         if value is None:
@@ -8246,9 +8332,12 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
 
     for heading, labels in direct_labels.items():
         for label in labels:
-            raw = _quellenwert_aus_zeile(makro, label)
-            if raw is None:
+            status, raw = _quellenwert_status_aus_zeile(makro, label)
+            if status is None:
                 errors.append(f"{heading}: autoritativer Quellwert {label} fehlt im Makro_Briefing.")
+                continue
+            if status == "UNAVAILABLE":
+                _gate_quellenstatus(blocks[heading], label, status, errors)
                 continue
             value = _quellenwert_float(raw)
             if value is None:
