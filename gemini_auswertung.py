@@ -144,7 +144,14 @@ WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt
 # Fuer SERVERSEITIGE UEBERLAST (HTTP 503) und Netzwerk-Abbrueche gilt eine
 # exponentiell ansteigende Backoff-Staffel. Zusaetzlicher Jitter verhindert,
 # dass mehrere parallele Laeufe exakt gleichzeitig erneut anfragen.
-UEBERLAST_WARTEZEITEN = [15, 30, 60, 120]  # Sekunden; Backoff vor dem Modellwechsel
+UEBERLAST_WARTEZEITEN = [15, 30, 60, 120]  # Sekunden; Backoff nur beim erneuten Poolversuch
+# Beim Wechsel auf ein ANDERES Modell wird nicht zusaetzlich die volle
+# Ueberlast-Backoffzeit verbrannt: das ist ein Fallback, kein Retry desselben
+# Requests. Ein kleiner Jitter verhindert synchronisierte Modellwechsel.
+GEMINI_MODELLWECHSEL_JITTER_MAX = 2.0
+# Harte Obergrenze gegen endlose 503-Zyklen. Innerhalb eines Zyklus duerfen
+# alle Modelle einmal versucht werden; erst danach beginnt ein neuer Poolversuch.
+GEMINI_MAX_TECHNISCHE_RETRY_ZYKLEN = 3
 
 ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
 
@@ -973,8 +980,8 @@ def analysiere_api_fehler(fehlertext):
     Retry-Faellen, weil diese eine viel laengere Wartezeit brauchen (siehe
     UEBERLAST_WARTEZEITEN oben).
     Gibt (abbrechen: bool, empfohlene_wartezeit_sekunden: float|None,
-    kategorie: str) zurueck. Kategorien: "tageskontingent", "ueberlast",
-    "netzwerk", "sonstiges"."""
+    kategorie: str) zurueck. Kategorien: "tageskontingent", "modellpool_temporaer",
+    "ueberlast", "netzwerk", "sonstiges"."""
     text_klein = fehlertext.lower()
     ist_cache_free_tier = (
         "totalcachedcontentstoragetokenspermodelfreetier" in text_klein
@@ -990,13 +997,21 @@ def analysiere_api_fehler(fehlertext):
     # unmittelbar nach dem break der Hauptretry-Schleife.
     ist_server_rpd_terminal = (
         "gemini_rpd_serverseitig_erschoepft" in text_klein
+        and "gemini_rpd_serverseitig_erschoepft_temporaer" not in text_klein
+    )
+    ist_modellpool_temporaer = (
+        "gemini_rpd_serverseitig_erschoepft_temporaer" in text_klein
+        or "gemini_modellpool_temporaer_nicht_verfuegbar" in text_klein
     )
     ist_tages_kontingent = (
-        ist_server_rpd_terminal
-        or "perday" in text_klein
-        or "gemini_rpd_lokal_erschoepft" in text_klein
-        or "gemini_rpd_modell_erschoepft" in text_klein
-        or "generaterequestsperdayperprojectpermodelfreetier" in text_klein
+        not ist_modellpool_temporaer
+        and (
+            ist_server_rpd_terminal
+            or "perday" in text_klein
+            or "gemini_rpd_lokal_erschoepft" in text_klein
+            or "gemini_rpd_modell_erschoepft" in text_klein
+            or "generaterequestsperdayperprojectpermodelfreetier" in text_klein
+        )
     )
     if ist_tages_kontingent:
         return True, None, "tageskontingent"
@@ -1028,6 +1043,9 @@ def analysiere_api_fehler(fehlertext):
 
     treffer = re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", fehlertext)
     empfohlene_wartezeit = float(treffer.group(1)) if treffer else None
+
+    if ist_modellpool_temporaer:
+        return False, empfohlene_wartezeit, "modellpool_temporaer"
 
     text_klein = fehlertext.lower()
     if "503" in fehlertext or "unavailable" in text_klein or "high demand" in text_klein:
@@ -3001,6 +3019,7 @@ def _gemini_generate_content_quota_safe(
         if ist_perday:
             _gemini_rpd_exhausted.add(modell)
             print(f"GEMINI-RPD-SERVER: Modell={modell} wegen 429 PerDay fuer den restlichen Lauf gesperrt.")
+            temporaerer_fallback_fehlgeschlagen = False
             for naechstes_modell in _gemini_quota_kandidaten(
                 modell,
                 fehlgeschlagene_einschliessen=True,
@@ -3063,7 +3082,20 @@ def _gemini_generate_content_quota_safe(
                     if fallback_technisch:
                         _gemini_quota_rollback_sendung(sendungs_reservierung)
                         _gemini_failed_models.add(verfuegbares_modell)
+                        temporaerer_fallback_fehlgeschlagen = True
+                        print(
+                            f"GEMINI-RPD-SERVER-FALLBACK-503: {verfuegbares_modell} "
+                            "ist temporaer ueberlastet; pruefe den naechsten Fallback ohne "
+                            "den gesamten Retry-Zyklus neu zu starten."
+                        )
+                        continue
                     raise
+            if temporaerer_fallback_fehlgeschlagen:
+                raise RuntimeError(
+                    "GEMINI_RPD_SERVERSEITIG_ERSCHOEPFT_TEMPORAER: "
+                    "PerDay-gesperrte Modelle vorhanden, die uebrigen Modelle sind temporaer "
+                    "wegen 503/Netzwerk nicht verfuegbar; erneute Poolpruefung nach Backoff erforderlich."
+                ) from exc
             raise RuntimeError(
                 "GEMINI_RPD_SERVERSEITIG_ERSCHOEPFT: kein anderes Modell ist fuer diesen Request noch verfuegbar."
             ) from exc
@@ -4350,7 +4382,7 @@ def gemini_auswertung_starten():
             # erfolgreich abgeschlossene A1/A2/A3/Final-Stufen werden nicht
             # erneut angefordert. Ein Sicherheitsfilter wird weiter unten
             # ausdrücklich als frischer Kontext behandelt.
-            if kategorie in ("ueberlast", "netzwerk", "input_token_limit", "tageskontingent"):
+            if kategorie in ("ueberlast", "netzwerk", "input_token_limit", "tageskontingent", "modellpool_temporaer"):
                 technische_retry_wiederverwenden = True
             if abbrechen:
                 if kategorie == "cache_free_tier":
@@ -4388,6 +4420,42 @@ def gemini_auswertung_starten():
                 )
                 break
 
+            if kategorie == "modellpool_temporaer":
+                # Ein PerDay-gesperrtes Modell kann zusammen mit mehreren
+                # temporaeren 503-Modellen auftreten. Das ist NICHT terminal: die
+                # 503-Modelle duerfen nach einem echten Backoff erneut versucht werden.
+                if versuch_zyklus >= GEMINI_MAX_TECHNISCHE_RETRY_ZYKLEN:
+                    print(
+                        f"  Temporär nicht verfuegbarer Modellpool nach "
+                        f"{GEMINI_MAX_TECHNISCHE_RETRY_ZYKLEN} technischen Zyklen; "
+                        "beende kontrolliert mit technischem Fallback."
+                    )
+                    break
+                backoff_index = min(
+                    versuch_zyklus - 1, len(UEBERLAST_WARTEZEITEN) - 1
+                )
+                basis_wartezeit = UEBERLAST_WARTEZEITEN[backoff_index]
+                server_wartezeit = (
+                    empfohlene_wartezeit if empfohlene_wartezeit is not None else 0
+                )
+                wartezeit = max(float(basis_wartezeit), float(server_wartezeit))
+                jitter = random.uniform(0.0, wartezeit * 0.20)
+                wartezeit += jitter
+                print(
+                    "  GEMINI-MODELLPOOL-WAIT: PerDay-Sperren plus temporaere "
+                    f"503/Netzwerkfehler; warte {wartezeit:.1f}s und starte "
+                    f"technischen Pool-Zyklus {versuch_zyklus + 1}/{GEMINI_MAX_TECHNISCHE_RETRY_ZYKLEN}."
+                )
+                time.sleep(wartezeit)
+                _gemini_failed_models.clear()
+                _gemini_active_modell = None
+                _gemini_last_request_model = None
+                modell_index = 0
+                aktuelles_modell = GEMINI_MODELLREIHENFOLGE[modell_index]
+                versuch = 0
+                versuch_zyklus += 1
+                continue
+
             if kategorie == "input_token_limit":
                 # Das Free-Tier-Input-Limit von 250.000 Tokens ist ein
                 # minutenbezogenes Limit des aktuell verwendeten Modells.
@@ -4418,17 +4486,15 @@ def gemini_auswertung_starten():
                     naechster_index += 1
                 if naechster_index < len(GEMINI_MODELLREIHENFOLGE):
                     grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
-                    backoff_index = min(modell_index, len(UEBERLAST_WARTEZEITEN) - 1)
-                    basis_wartezeit = UEBERLAST_WARTEZEITEN[backoff_index]
-                    server_wartezeit = (empfohlene_wartezeit
-                                        if empfohlene_wartezeit is not None else 0)
-                    wartezeit = max(float(basis_wartezeit), float(server_wartezeit))
-                    jitter = random.uniform(0.0, wartezeit * 0.20)
-                    wartezeit += jitter
+                    # Modellwechsel ist ein Fallback auf eine andere Ressource,
+                    # kein Retry desselben Requests. Deshalb nur kurzer Jitter statt
+                    # 15/30/60/120 s Voll-Backoff. Der echte exponentielle Backoff
+                    # erfolgt erst, wenn der gesamte Modellpool temporaer ueberlastet ist.
+                    wartezeit = random.uniform(0.0, GEMINI_MODELLWECHSEL_JITTER_MAX)
                     naechstes_modell = GEMINI_MODELLREIHENFOLGE[naechster_index]
                     print(
                         f"  {grund} nach Versuch {versuch}/{MAX_VERSUCHE}. "
-                        f"Warte {wartezeit:.1f}s (Backoff {basis_wartezeit}s + Jitter) und "
+                        f"Kurzer Modellwechsel-Jitter {wartezeit:.1f}s; "
                         f"wechsle danach von {aktuelles_modell} auf {naechstes_modell}."
                     )
                     time.sleep(wartezeit)
@@ -4456,7 +4522,16 @@ def gemini_auswertung_starten():
                 # Zustand neu bewertet. Dadurch kann ein 503 nicht durch den
                 # bisherigen MAX_VERSUCHE-Zaehler kuenstlich terminal werden.
                 grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
-                backoff_index = len(UEBERLAST_WARTEZEITEN) - 1
+                if versuch_zyklus >= GEMINI_MAX_TECHNISCHE_RETRY_ZYKLEN:
+                    print(
+                        f"  {grund} auf allen konfigurierten Modellen auch im letzten "
+                        f"technischen Zyklus {versuch_zyklus}/{GEMINI_MAX_TECHNISCHE_RETRY_ZYKLEN}; "
+                        "beende kontrolliert mit technischem Fallback."
+                    )
+                    break
+                backoff_index = min(
+                    versuch_zyklus - 1, len(UEBERLAST_WARTEZEITEN) - 1
+                )
                 basis_wartezeit = UEBERLAST_WARTEZEITEN[backoff_index]
                 server_wartezeit = (
                     empfohlene_wartezeit if empfohlene_wartezeit is not None else 0
