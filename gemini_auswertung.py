@@ -103,10 +103,13 @@ GEMINI_INPUT_SAFE_BUDGET = 120_000
 # Das laesst 10k Reserve gegen Rundungs-/Vorverbrauchseffekte.
 GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT = 240_000
 GEMINI_PROJECT_QUOTA_SCOPE = "PROCESS_LOCAL"
-# Lokale Quell-Chunks werden bewusst deutlich kleiner gehalten, damit selbst
-# zusammen mit Systemanweisung und Stufenprompt ein Chunk sicher unter dem
-# Einzelrequest-Budget bleibt. 180k Zeichen entsprechen grob <50k Tokens.
-GEMINI_SOURCE_CHUNK_MAX_CHARS = 60_000
+# Lokale Quell-Chunks werden bewusst token-konservativ gehalten. Die bisherige
+# 60.000-Zeichen-Grenze war nicht ausreichend: datenreiche JSON/CSV-Inhalte
+# koennen deutlich mehr als 1 Token pro Zeichen benoetigen und zusammen mit
+# dem ca. 45,6k Token grossen Systemkontext das 120k-Einzelrequest-Budget
+# ueberschreiten. 20.000 Zeichen halten selbst bei deutlich hoeherer
+# Token-Dichte ausreichend Reserve fuer Systemanweisung und Stufenprompt.
+GEMINI_SOURCE_CHUNK_MAX_CHARS = 20_000
 # Serverseitiges Free-Tier-Input-Token-Kontingent pro Modell und Minute.
 # Dieses Kontingent ist vom Einzelrequest-Limit getrennt.
 GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT = 250_000
