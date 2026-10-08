@@ -165,6 +165,7 @@ if __name__ == '__main__':
     # Kopie niemals wieder nach Drive hochladen und damit einen neueren Stand
     # (z.B. 166/26) überschreiben.
     upload_hebeltrader = os.getenv("UPLOAD_HEBELTRADER", "0").strip().lower() in {"1", "true", "yes"}
+    skip_auswertung_upload = os.getenv("SKIP_AUSWERTUNG_UPLOAD", "0").strip().lower() in {"1", "true", "yes"}
     for filename in os.listdir('.'):
         # Scannt nach Performance, Setups (CSV) ODER Briefing (TXT) - "in" statt
         # "startswith", damit auch Trendwende_Setups(...).csv und
@@ -231,9 +232,14 @@ if __name__ == '__main__':
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
         elif ("Briefing" in filename or "Auswertung" in filename) and filename.endswith(".txt"):
-            # "Auswertung" (NEU): die von claude_auswertung.py erzeugte fertige
-            # Daten-Übersicht, landet genau wie die anderen Text-Dateien direkt
-            # im selben Drive-Ordner.
+            # Bei technischem Gemini-Fallback darf eine bereits im Workspace
+            # vorhandene alte Auswertung NICHT erneut als aktuelles Ergebnis
+            # veroeffentlicht werden. Andere Briefings bleiben uploadbar.
+            if skip_auswertung_upload and "Auswertung" in filename:
+                print(f"Überspringe '{filename}': technischer Gemini-Fallback; keine alte Auswertung veroeffentlichen.")
+                continue
+            # "Auswertung" (NEU): die fertige Daten-Übersicht landet bei einem
+            # erfolgreichen Gemini-Lauf direkt im selben Drive-Ordner.
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
