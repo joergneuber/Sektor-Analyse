@@ -69,11 +69,11 @@ from collections import defaultdict
 # KONFIGURATION
 # ---------------------------------------------------------------------------
 
-MODELL = "gemini-3.5-flash-lite"  # Primaer-Modell (bereits im Projekt erfolgreich erprobt)
-FALLBACK_MODELL = "gemini-3.8-flash"  # Erster Fallback
-DRITTER_FALLBACK_MODELL = "gemini-3.7-flash"  # Zweiter Fallback
-VIERTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Dritter Fallback
-FUENFTER_FALLBACK_MODELL = "gemini-3.5-flash-lite"  # Vierter Fallback
+MODELL = "gemini-3.5-flash-lite"  # Primaer-Modell: hohes kostenloses RPD/TPM und hoher Durchsatz
+FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback: ebenfalls hohes kostenloses RPD/TPM
+DRITTER_FALLBACK_MODELL = "gemini-3.8-flash"  # Qualitaets-Fallback bei Ausfall beider Lite-Modelle
+VIERTER_FALLBACK_MODELL = "gemini-3.7-flash"  # Weiterer Qualitaets-Fallback
+FUENFTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Weiterer Qualitaets-Fallback
 
 # Alle fuer diesen Lauf konfigurierten Modelle werden hoechstens einmal
 # versucht. So wird ein einzelnes Free-Tier-Modell bei 503/Netzwerkproblemen
@@ -123,9 +123,22 @@ GEMINI_FREE_TIER_INPUT_TOKEN_RESERVE = 10_000
 GEMINI_FREE_TIER_INPUT_LOCAL_LIMIT = (
     GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT - GEMINI_FREE_TIER_INPUT_TOKEN_RESERVE
 )
-# Bekannte Free-Tier-Requests pro Modell und Tag. Der lokale Zaehler ist nur
-# eine Untergrenze, weil serverseitiger Verbrauch vor Prozessstart unbekannt ist.
-GEMINI_FREE_TIER_RPD_LIMIT = 20
+# Bekannte Free-Tier-Requests pro Modell und Tag. Diese Limits sind bewusst
+# MODELLABHAENGIG: AI Studio zeigt fuer die beiden Flash-Lite-Modelle aktuell
+# deutlich hoehere RPD-Limits als fuer die Flash-Modelle. Ein globales Limit
+# von 20 wuerde gemini-3.5-flash-lite nach 20 erfolgreichen Requests lokal
+# faelschlich sperren, obwohl dessen Free-Tier-RPD deutlich hoeher ist.
+# Der lokale Zaehler bleibt eine Untergrenze, weil serverseitiger Verbrauch
+# vor Prozessstart unbekannt ist.
+GEMINI_FREE_TIER_RPD_LIMITS = {
+    "gemini-3.5-flash-lite": 500,
+    "gemini-3.1-flash-lite": 500,
+    "gemini-3.5-flash": 20,
+    "gemini-3.6-flash": 20,
+    "gemini-3.7-flash": 20,
+    "gemini-3.8-flash": 20,
+}
+GEMINI_FREE_TIER_RPD_DEFAULT_LIMIT = 20
 WARTEZEIT_SEKUNDEN = 10  # Grundwartezeit fuer Sicherheitsfilter-Retries (steigt leicht an)
 
 # Fuer SERVERSEITIGE UEBERLAST (HTTP 503) und Netzwerk-Abbrueche gilt eine
@@ -147,6 +160,10 @@ GEMINI_A3_HISTORIE_DATEI = ".gemini_einzel_check_historie_a3.json"
 # GenerateContent-Aufruf als gesendet betrachtet werden. count_tokens() selbst
 # wird hier ausdruecklich NICHT angerechnet.
 _gemini_input_quota_usage = defaultdict(list)
+# CountTokens-Ergebnisse bleiben fuer die Dauer EINES Python-Laufs im Speicher.
+# Das vermeidet tausende identische CountTokens-Aufrufe bei technischen Retries,
+# ohne Ergebnisse zwischen verschiedenen GitHub-Laeufen zu persistieren.
+_gemini_token_count_cache = {}
 # Zusaetzliches konservatives projektweites Minutenfenster innerhalb DIESES
 # Python-Prozesses. Es verhindert Modell-uebergreifende Ueberschreitungen im
 # laufenden Prozess; parallele Prozesse/GitHub-Jobs werden bewusst nicht
@@ -2095,6 +2112,27 @@ def _speichere_gemini_input_manifest(eingabedateien):
 
 
 
+def _gemini_token_cache_key(modell, contents, system_instruction=None):
+    """Erzeugt einen laufinternen, modellabhaengigen CountTokens-Schluessel."""
+    teile = list(contents if isinstance(contents, list) else [contents])
+
+    def stable_part(value):
+        for attr in ("uri", "name", "display_name", "text"):
+            candidate = getattr(value, attr, None)
+            if candidate:
+                return f"{attr}={candidate}"
+        return repr(value)
+
+    payload = {
+        "modell": modell,
+        "contents": [stable_part(value) for value in teile],
+        "system": str(system_instruction or ""),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
 def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label=""):
     """Misst den Eingabeumfang vor GenerateContent.
 
@@ -2106,6 +2144,15 @@ def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label="
     NICHT gesendet.
     """
     teile = list(contents if isinstance(contents, list) else [contents])
+    cache_key = _gemini_token_cache_key(modell, teile, system_instruction)
+    cached_tokens = _gemini_token_count_cache.get(cache_key)
+    if cached_tokens is not None:
+        print(
+            f"GEMINI-TOKEN-CACHE-HIT: {label or 'Request'} | Modell={modell} | "
+            f"Gesamt={cached_tokens:,}"
+        )
+        return cached_tokens
+
     try:
         config = (
             types.CountTokensConfig(system_instruction=system_instruction)
@@ -2121,6 +2168,7 @@ def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label="
             f"GEMINI-TOKEN-CHECK: {label or 'Request'} | Modell={modell} | "
             f"Gesamt={gesamt:,} | Sicherheitsbudget={GEMINI_INPUT_SAFE_BUDGET:,}"
         )
+        _gemini_token_count_cache[cache_key] = gesamt
         return gesamt
     except Exception as combined_error:
         if not system_instruction:
@@ -2146,6 +2194,7 @@ def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label="
                 f"Gesamt={gesamt:,} | Sicherheitsbudget={GEMINI_INPUT_SAFE_BUDGET:,} | "
                 f"Fallback=separate CountTokens"
             )
+            _gemini_token_count_cache[cache_key] = gesamt
             return gesamt
         except Exception as fallback_error:
             raise RuntimeError(
@@ -2687,11 +2736,14 @@ def _gemini_rpd_registriere_sendung(modell):
     """Zaehlt einen echten GenerateContent-Versuch fuer diesen Prozesslauf."""
     if modell in _gemini_rpd_exhausted:
         raise RuntimeError(f"GEMINI_RPD_MODELL_ERCHOEPFT: {modell} ist fuer diesen Lauf gesperrt.")
-    if _gemini_rpd_requests[modell] >= GEMINI_FREE_TIER_RPD_LIMIT:
+    limit = GEMINI_FREE_TIER_RPD_LIMITS.get(
+        modell, GEMINI_FREE_TIER_RPD_DEFAULT_LIMIT
+    )
+    if _gemini_rpd_requests[modell] >= limit:
         _gemini_rpd_exhausted.add(modell)
         raise RuntimeError(
             f"GEMINI_RPD_LOKAL_ERCHOEPFT: Modell={modell} | "
-            f"Requests={_gemini_rpd_requests[modell]} | Limit={GEMINI_FREE_TIER_RPD_LIMIT}"
+            f"Requests={_gemini_rpd_requests[modell]} | Limit={limit}"
         )
     _gemini_rpd_requests[modell] += 1
 
@@ -2737,7 +2789,7 @@ def _gemini_quota_registriere_sendung(modell, request_tokens):
         f"Fensterverbrauch={verbrauch + request_tokens:,}/{GEMINI_FREE_TIER_INPUT_TOKEN_LIMIT:,} | "
         f"Projektfenster={projektverbrauch + request_tokens:,}/{GEMINI_FREE_TIER_PROJECT_INPUT_LOCAL_LIMIT:,} "
         f"({GEMINI_PROJECT_QUOTA_SCOPE}) | "
-        f"RPD-lokal={_gemini_rpd_requests[modell]}/{GEMINI_FREE_TIER_RPD_LIMIT}"
+        f"RPD-lokal={_gemini_rpd_requests[modell]}/{GEMINI_FREE_TIER_RPD_LIMITS.get(modell, GEMINI_FREE_TIER_RPD_DEFAULT_LIMIT)}"
     )
     return reservierung
 
@@ -3485,16 +3537,6 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
     response = None
     for idx, gruppe in enumerate(gruppen, 1):
         gruppe_contents = list(gruppe) + arbeits_contents
-        group_tokens = _gemini_tokenzahl(
-            client, modell, gruppe_contents,
-            config_kwargs.get("system_instruction"),
-            label=f"GenerateContent Split {idx}",
-        )
-        if group_tokens > GEMINI_INPUT_SAFE_BUDGET:
-            raise RuntimeError(
-                f"GEMINI_REQUEST_ZU_GROSS_NACH_SPLIT: Split={idx} Tokens={group_tokens:,}."
-            )
-
         part_key = _gemini_request_part_fingerprint(
             cache_name, arbeits_contents,
             config_kwargs.get("system_instruction"), idx, gruppe,
@@ -3507,6 +3549,16 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
             )
             teiltexte.append(cached_text)
             continue
+
+        group_tokens = _gemini_tokenzahl(
+            client, modell, gruppe_contents,
+            config_kwargs.get("system_instruction"),
+            label=f"GenerateContent Split {idx}",
+        )
+        if group_tokens > GEMINI_INPUT_SAFE_BUDGET:
+            raise RuntimeError(
+                f"GEMINI_REQUEST_ZU_GROSS_NACH_SPLIT: Split={idx} Tokens={group_tokens:,}."
+            )
 
         print(
             f"GEMINI-SPLIT-SEND: Split {idx}/{len(gruppen)} | "
@@ -3879,6 +3931,7 @@ def gemini_auswertung_starten():
     global _gemini_cache_name, _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models, _gemini_stufen_cache, _gemini_request_split_cache
     _gemini_cache_name = None
     _gemini_request_split_cache = {}
+    _gemini_token_count_cache.clear()
     _gemini_input_quota_usage.clear()
     _gemini_project_input_quota_usage.clear()
     _gemini_input_quota_cooldown_until.clear()
