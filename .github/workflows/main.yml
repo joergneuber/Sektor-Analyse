@@ -428,22 +428,38 @@ jobs:
       # Auswertung in ChatGPT. Es wird keine OpenAI-API verwendet und keine
       # Trading-/Setup-Logik verändert.
       - name: ChatGPT-Fallback-Paket erzeugen
-        if: steps.gemini-auswertung.outcome != 'success' || hashFiles('Auswertung(*).txt') != ''
+        if: steps.gemini-auswertung.outcome != 'success' || hashFiles('Gemini_Fallback_Status*.txt') != ''
         run: |
           fallback_needed=false
+
+          # Ein technischer Gemini-Fallback beendet gemini_auswertung.py
+          # bewusst mit Exit 0. Deshalb darf ausschliesslich der Prozess-
+          # Exitcode den Fallback NICHT entscheiden. Die von Gemini erzeugte
+          # Statusdatei ist hier die autoritative Quelle.
           if [ "${{ steps.gemini-auswertung.outcome }}" != "success" ]; then
             fallback_needed=true
           fi
-          for f in Auswertung*.txt; do
-            if [ -f "$f" ] && grep -q "^\[GEMINI_TECHNISCHER_FALLBACK\]" "$f"; then
+
+          for f in Gemini_Fallback_Status*.txt; do
+            if [ -f "$f" ] && grep -q "^GEMINI_STATUS=TECHNISCHER_FALLBACK$" "$f"; then
               fallback_needed=true
               break
             fi
           done
+
           if [ "$fallback_needed" = true ]; then
-            python chatgpt_fallback_paket.py
+            # Sperren VOR dem Paketbau setzen: selbst wenn der optionale
+            # ChatGPT-Fallback danach fehlschlaegt, darf weder die alte
+            # Auswertung hochgeladen noch als normale Mail verschickt werden.
             echo "CHATGPT_FALLBACK_ERZEUGT=true" >> "$GITHUB_ENV"
+            # upload_to_drive.py soll weiterhin alle normalen Tagesdateien
+            # hochladen, aber niemals eine alte Auswertung aus dem Workspace
+            # als aktuelles Ergebnis veroeffentlichen.
+            echo "SKIP_AUSWERTUNG_UPLOAD=true" >> "$GITHUB_ENV"
+            python chatgpt_fallback_paket.py
           else
+            echo "CHATGPT_FALLBACK_ERZEUGT=false" >> "$GITHUB_ENV"
+            echo "SKIP_AUSWERTUNG_UPLOAD=false" >> "$GITHUB_ENV"
             echo "Kein Gemini-Ausfall erkannt; kein ChatGPT-Fallback-Paket erforderlich."
           fi
 
