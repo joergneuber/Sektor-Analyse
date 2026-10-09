@@ -9131,6 +9131,8 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
         result = source[:m.start()] + new_block + source[end:]
         changed = True
 
+    return result, changed
+
 
 def _sichere_lithium_te_in_7_5(text, lithium_te):
     """Sichert den getrennten Lithium-TE/CNY-T-Datenpunkt im Rohstoffblock."""
