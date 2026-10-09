@@ -9131,40 +9131,59 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
         result = source[:m.start()] + new_block + source[end:]
         changed = True
 
+    # Den Lithium-TE-Datenpunkt unmittelbar vor dem Gate kanonisieren: Eine
+    # abweichende Gemini-Zeile darf nicht vor der autoritativen Zeile stehen,
+    # weil das Quellen-Gate den ersten passenden Eintrag ausliest.
+    result, lithium_changed = _sichere_lithium_te_in_7_5(result, lithium_te)
+    changed = changed or lithium_changed
     return result, changed
 
 
 def _sichere_lithium_te_in_7_5(text, lithium_te):
-    """Sichert den getrennten Lithium-TE/CNY-T-Datenpunkt im Rohstoffblock."""
+    """Kanonisiert den getrennten Lithium-TE/CNY-T-Datenpunkt im Rohstoffblock."""
     if not text or lithium_te is None:
         return text, False
     m = re.search(
-        r"(?ms)^7\.5\s+Rohstoffe\s*$.*?(?=^7\.6\s+Krypto\s*$|^8\.1\s+Gold\s*$|\Z)",
+        r"(?ms)^7\.5\s+Rohstoffe\s*$.*?(?=^7\.[67]\s+|^8\.1\s+Gold\s*$|\Z)",
         text,
     )
     if not m:
         return text, False
-    block = m.group(0)
+
     if lithium_te.get("status") == "UNAVAILABLE":
-        if re.search(
-            r"(?im)^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?Lithiumcarbonat CNY/T\s*:\s*NICHT\s+VERFUEGBAR\b.*STATUS\s*=\s*UNAVAILABLE",
-            block,
-        ):
-            return text, False
         line = (
             "- [AUTORITATIVE QUELLE] Lithiumcarbonat CNY/T: NICHT VERFUEGBAR | "
             "STATUS=UNAVAILABLE | Einheit=CNY/T | DATENTYP=TE_PUBLIC_LITHIUM"
         )
     else:
         value = float(lithium_te["kurs"])
-        if _zahl_im_block_vorhanden(block, value, label="Lithiumcarbonat CNY/T"):
-            return text, False
         line = (
             f"- [AUTORITATIVE QUELLE] Lithiumcarbonat CNY/T: {value:.2f} | "
             f"Einheit=CNY/T | Datenstand={lithium_te.get('datenstand', 'unbekannt')} | "
             "SOURCE=TradingEconomics Public Commodities | DATENTYP=TE_PUBLIC_LITHIUM"
         )
-    return text[:m.end()] + "\n" + line + "\n" + text[m.end():], True
+
+    block = m.group(0)
+    lines = block.splitlines()
+    if not lines:
+        return text, False
+
+    # Alle expliziten Zeilen dieses Datenpunkts entfernen, egal ob Gemini- oder
+    # vorherige autoritative Zeile. Genau eine aktuelle autoritative Zeile wird
+    # direkt nach der Abschnittsüberschrift eingesetzt. Andere Rohstoffinhalte
+    # und nachfolgende Abschnitte bleiben erhalten.
+    label_line = re.compile(
+        r"^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?Lithiumcarbonat CNY/T\s*:",
+        re.I,
+    )
+    rest = [entry for entry in lines[1:] if not label_line.match(entry)]
+    canonical_lines = [lines[0], line, *rest]
+    replacement = "\n".join(canonical_lines)
+    if block.endswith("\n"):
+        replacement += "\n"
+    if replacement == block:
+        return text, False
+    return text[:m.start()] + replacement + text[m.end():], True
 
 
 def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
@@ -9246,9 +9265,31 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
 
     lithium_te = _lithium_te_referenz(makro)
     if lithium_te is not None:
-        status, raw = _quellenwert_status_aus_zeile(
-            blocks["7.5 Rohstoffe"], "Lithiumcarbonat CNY/T"
+        # Die deterministische Reparatur markiert ihre Zeile mit
+        # [AUTORITATIVE QUELLE]. Der allgemeine Quellenparser erwartet dagegen
+        # das Label am Zeilenanfang und erkennt diesen Marker nicht. Bevorzugt
+        # deshalb die kanonische autoritative Zeile; so wird auch kein davor
+        # stehender, abweichender Gemini-Wert als Referenz gelesen.
+        lithium_lines = [
+            line for line in blocks["7.5 Rohstoffe"].splitlines()
+            if re.match(
+                r"^\s*(?:[-•]\s*)?(?:\[[^\]]+\]\s*)?Lithiumcarbonat CNY/T\s*:",
+                line,
+                re.I,
+            )
+        ]
+        authoritative_line = next(
+            (line for line in lithium_lines if re.search(r"(?i)\[AUTORITATIVE QUELLE\]", line)),
+            None,
         )
+        selected_line = authoritative_line
+        if selected_line and re.search(r"(?i)\bSTATUS\s*=\s*UNAVAILABLE\b", selected_line):
+            status, raw = "UNAVAILABLE", "NICHT VERFUEGBAR"
+        elif selected_line:
+            value_match = re.search(r":\s*([-+]?\d[\d.,]*)", selected_line)
+            status, raw = ("VALUE", value_match.group(1)) if value_match else (None, None)
+        else:
+            status, raw = None, None
         if lithium_te.get("status") == "UNAVAILABLE":
             if status != "UNAVAILABLE":
                 errors.append(
