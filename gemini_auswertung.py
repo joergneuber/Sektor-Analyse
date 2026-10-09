@@ -4270,15 +4270,74 @@ def gemini_auswertung_starten():
                         + " | ".join(story_errors2)
                     )
                 print("  Trade-Story-Reparatur erfolgreich (deterministisch, ohne Gemini-API-Call).")
-                original = re.search(r"(?ims)^1\.3\s+IDEEN IM AUFBAU.*?(?=^1\.4\s+|\Z)", text or "")
+                # Aktuelles Schema 1.3: Überschriften mit optionaler Markdown-Formatierung
+                # erkennen. Die Abschnittsgrenze ist die nächste Hauptsektion ab 1.4;
+                # fehlt 1.4, wird vor der nächsten Hauptsektion (2, 3, ...) begrenzt.
+                heading_re = re.compile(
+                    r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?"
+                    r"(?P<number>\d+(?:\.\d+)*)(?:[.)])?[ \t]+(?P<title>[^\n]+)$"
+                )
+                headings = list(heading_re.finditer(text or ""))
+
+                def _ist_grenze_1_3(match):
+                    nummern = tuple(int(part) for part in match.group("number").split("."))
+                    return nummern[0] >= 2 or (
+                        nummern[0] == 1 and len(nummern) > 1 and nummern[1] >= 4
+                    )
+
+                original = None
+                for heading in headings:
+                    title = heading.group("title").strip().rstrip("*").strip()
+                    if (
+                        heading.group("number") == "1.3"
+                        and re.match(r"(?i)^IDEEN\s+IM\s+AUFBAU\b", title)
+                    ):
+                        boundary = next(
+                            (
+                                candidate
+                                for candidate in headings
+                                if candidate.start() > heading.start()
+                                and _ist_grenze_1_3(candidate)
+                            ),
+                            None,
+                        )
+                        original = (heading.start(), boundary.start() if boundary else len(text or ""))
+                        original_header_end = (text or "").find("\n", heading.start())
+                        if original_header_end < 0:
+                            original_header_end = len(text or "")
+                        original_header = (text or "")[heading.start():original_header_end]
+                        break
+
                 repaired_block = story_reparatur_text.strip()
                 if original:
-                    text = text[:original.start()] + repaired_block + "\n\n" + text[original.end():]
+                    # Überschriftenformat des vorhandenen aktuellen Abschnitts erhalten.
+                    repaired_block = re.sub(
+                        r"(?i)^1\.3\s+IDEEN IM AUFBAU",
+                        original_header.strip(),
+                        repaired_block,
+                        count=1,
+                    )
+                    text = (text or "")[:original[0]] + repaired_block + "\n\n" + (text or "")[original[1]:]
                 else:
-                    anchor = re.search(r"(?ims)^1\.4\s+", text or "")
-                    if not anchor:
-                        raise RuntimeError("Trade-Story-Reparatur enthielt keinen gueltigen Einfuegepunkt vor Abschnitt 1.4.")
-                    text = text[:anchor.start()] + repaired_block + "\n\n" + text[anchor.start():]
+                    # Fehlt 1.3, vor 1.4 einfügen. Fehlt auch 1.4, vor der
+                    # nächsten Hauptsektion einfügen; nur wenn es keine gibt,
+                    # kontrolliert ans Dateiende. Keine Alt-Schema-Erkennung.
+                    anchor = next(
+                        (
+                            heading for heading in headings
+                            if heading.group("number") == "1.4"
+                        ),
+                        None,
+                    )
+                    if anchor is None:
+                        anchor = next(
+                            (heading for heading in headings if _ist_grenze_1_3(heading)),
+                            None,
+                        )
+                    if anchor is not None:
+                        text = (text or "")[:anchor.start()] + repaired_block + "\n\n" + (text or "")[anchor.start():]
+                    else:
+                        text = ((text or "").rstrip() + "\n\n" + repaired_block + "\n")
                 print("  Trade-Story-Reparatur erfolgreich.")
 
             # TECHNISCHE ASSET-ZAHLEN-GATE: Technische Werte eines konkret
