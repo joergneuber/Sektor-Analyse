@@ -193,6 +193,9 @@ _gemini_stufen_cache = {}
 # Erfolgreiche einzelne GenerateContent-Splits bleiben innerhalb des Laufes erhalten.
 # Ein technischer Fehler darf niemals bereits erfolgreiche Splits erneut senden.
 _gemini_request_split_cache = {}
+# Exakte Eingabedateien desselben Gemini-Laufs; werden auch fuer deterministische
+# Nachbearbeitung (u.a. Abschnitt 2.4) weitergereicht, statt Quellen neu zu suchen.
+_GEMINI_EINGABEDATEIEN_AUSWERTUNG = None
 
 # Dateimuster fuer die Eingabedateien (glob-Muster, nimmt jeweils den
 # alphabetisch letzten Treffer -> passt zu "Setups(2026-07-19).csv" etc.)
@@ -1483,6 +1486,16 @@ def sammle_eingabedateien():
     for name, muster_liste in DATEIMUSTER.items():
         gefunden[name] = finde_datei(muster_liste)
 
+    # Abschnitt 2.4 darf ausschliesslich die A-Meldungsliste des heutigen
+    # Einzel-Check-Laufs verwenden. Wenn heute keine A-Kandidaten vorliegen,
+    # entfernt einzel_check.py die Tagesdatei; dann darf kein Vortag einspringen.
+    heute_a_meldungen = (
+        f"Einzel_Check_A_Meldungen({datetime.date.today().isoformat()}).txt"
+    )
+    gefunden["Einzel_Check_A_Meldungen(...).txt"] = (
+        heute_a_meldungen if os.path.isfile(heute_a_meldungen) else None
+    )
+
     # Die Einzel-Check-Beobachtungsliste gehört nicht zu den Pflichtdateien.
     # WICHTIG: Wenn ein vorheriger Schritt dieses Jobs die Liste bereits lokal
     # aktualisiert hat (z.B. einzel_check.py --beobachtungsliste), MUSS diese
@@ -2155,12 +2168,11 @@ def _gemini_token_cache_key(modell, contents, system_instruction=None):
 def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label=""):
     """Misst den Eingabeumfang vor GenerateContent.
 
-    Die aktuelle Developer-API/SDK kann system_instruction je nach installierter
-    SDK-Version im CountTokensConfig ablehnen. Deshalb wird zuerst der
-    vollstaendige Request in einem CountTokens-Aufruf versucht. Falls genau
-    diese Kombination nicht akzeptiert wird, werden Contents und
-    Systemanweisung separat gemessen und addiert. Bei fehlender Messung wird
-    NICHT gesendet.
+    Die Gemini Developer API dieses Skripts akzeptiert system_instruction
+    nicht in CountTokensConfig. Wenn eine Systemanweisung vorhanden ist,
+    werden Contents und Systemanweisung deshalb direkt separat gemessen.
+    Das vermeidet einen bekannten, deterministisch fehlschlagenden API-Aufruf
+    vor jeder eigentlichen Messung. Bei fehlender Messung wird NICHT gesendet.
     """
     teile = list(contents if isinstance(contents, list) else [contents])
     cache_key = _gemini_token_cache_key(modell, teile, system_instruction)
@@ -2173,29 +2185,10 @@ def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label="
         return cached_tokens
 
     try:
-        config = (
-            types.CountTokensConfig(system_instruction=system_instruction)
-            if system_instruction else None
-        )
-        result = client.models.count_tokens(
-            model=modell,
-            contents=teile,
-            config=config,
-        )
-        gesamt = int(getattr(result, "total_tokens", 0) or 0)
-        print(
-            f"GEMINI-TOKEN-CHECK: {label or 'Request'} | Modell={modell} | "
-            f"Gesamt={gesamt:,} | Sicherheitsbudget={GEMINI_INPUT_SAFE_BUDGET:,}"
-        )
-        _gemini_token_count_cache[cache_key] = gesamt
-        return gesamt
-    except Exception as combined_error:
-        if not system_instruction:
-            raise RuntimeError(
-                f"GEMINI_TOKENMESSUNG_FEHLER ({label or 'Request'}): "
-                f"{combined_error}"
-            ) from combined_error
-        try:
+        if system_instruction:
+            # In der Developer API ist system_instruction in CountTokensConfig
+            # nicht unterstützt. Die Addition entspricht dem bisherigen
+            # separaten Fallback und bleibt bewusst konservativ.
             content_result = client.models.count_tokens(
                 model=modell,
                 contents=teile,
@@ -2211,15 +2204,26 @@ def _gemini_tokenzahl(client, modell, contents, system_instruction=None, label="
                 f"GEMINI-TOKEN-CHECK: {label or 'Request'} | Modell={modell} | "
                 f"Contents={content_tokens:,} | System={system_tokens:,} | "
                 f"Gesamt={gesamt:,} | Sicherheitsbudget={GEMINI_INPUT_SAFE_BUDGET:,} | "
-                f"Fallback=separate CountTokens"
+                "Messung=separate CountTokens (Developer API)"
             )
-            _gemini_token_count_cache[cache_key] = gesamt
-            return gesamt
-        except Exception as fallback_error:
-            raise RuntimeError(
-                f"GEMINI_TOKENMESSUNG_FEHLER ({label or 'Request'}): "
-                f"kombiniert={combined_error}; separat={fallback_error}"
-            ) from fallback_error
+        else:
+            result = client.models.count_tokens(
+                model=modell,
+                contents=teile,
+            )
+            gesamt = int(getattr(result, "total_tokens", 0) or 0)
+            print(
+                f"GEMINI-TOKEN-CHECK: {label or 'Request'} | Modell={modell} | "
+                f"Gesamt={gesamt:,} | Sicherheitsbudget={GEMINI_INPUT_SAFE_BUDGET:,}"
+            )
+        _gemini_token_count_cache[cache_key] = gesamt
+        return gesamt
+    except Exception as exc:
+        messmodus = "separat" if system_instruction else "einzeln"
+        raise RuntimeError(
+            f"GEMINI_TOKENMESSUNG_FEHLER ({label or 'Request'}): "
+            f"{messmodus}={exc}"
+        ) from exc
 
 
 
@@ -3945,7 +3949,16 @@ def gemini_auswertung_starten():
         print("FEHLER: Umgebungsvariable GEMINI_API_KEY nicht gesetzt.")
         sys.exit(1)
 
-    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=600000))
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=600000,
+            # Die eigene Retry-/Modellpool-Logik behandelt 503/429 bereits.
+            # SDK-interne Wiederholungen werden deaktiviert, damit sie nicht
+            # zusaetzlich und unsichtbar auf die expliziten Retries aufaddieren.
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
     anweisung = lade_anweisung()
     eingabedateien = sammle_eingabedateien()
     a3_historie_pfad = _erstelle_gemini_a3_historie(
@@ -3957,6 +3970,8 @@ def gemini_auswertung_starten():
         eingabedateien_gemini["Einzel-Check-Technikhistorie"] = a3_historie_pfad
     else:
         eingabedateien_gemini = dict(eingabedateien)
+    global _GEMINI_EINGABEDATEIEN_AUSWERTUNG
+    _GEMINI_EINGABEDATEIEN_AUSWERTUNG = dict(eingabedateien_gemini)
     _speichere_gemini_input_manifest(eingabedateien_gemini)
 
     letzte_antwort = None
@@ -8363,100 +8378,185 @@ def _pruefe_inhaltliche_mindesttiefe(text):
     print("INHALTLICHE-MINDESTTIEFE-GATE: PASS")
 
 
-def _autoritative_a_kandidaten():
-    """Liest ausschließlich den aktuellen HEBELTRADER-Status für Punkt 2.4.
+def _hebeltrader_charttechnik_fuer_ticker(eingabedateien, name, ticker, auswertungsdatum=None):
+    """Liest den tagesaktuellen Snapshot nur bei passendem Namen UND Ticker.
 
-    2.4 ist bewusst enger als das Trade-Story-Universum: Nur KAUFKANDIDAT A
-    ist ein konkreter aktueller HebelTrader-Trade. B/C und alle anderen
-    Universumsmitglieder bleiben Kontext und dürfen hier nicht als Trade
-    erscheinen.
+    Kurs stammt aus dem Snapshot-Kursfeld. Einstieg/Stop/TP1/TP2 stammen
+    ausschließlich aus dessen Trendfolge-Ergebnis. Trendwende-Werte werden
+    hier bewusst nicht als Ersatz oder Mischung verwendet.
     """
-    pfad = BEOBACHTUNGSLISTE_DATEI
-    if not os.path.isfile(pfad):
-        return set(), set(), False
+    nicht_verfuegbar = "NICHT VERFÜGBAR"
+    datum = auswertungsdatum or datetime.date.today().isoformat()
+    name_norm = _normalisiere_positionsname(name)
+    ticker_norm = _normalisiere_ticker(ticker)
+    history_path = (eingabedateien or {}).get("Einzel-Check-Technikhistorie")
+    if not history_path:
+        history_path = finde_datei(DATEIMUSTER["Einzel-Check-Technikhistorie"])
+    if not name_norm or not ticker_norm or not history_path or not os.path.isfile(history_path):
+        return {
+            "Datum": datum,
+            "Kurs": nicht_verfuegbar,
+            "Einstieg": nicht_verfuegbar,
+            "Stop": nicht_verfuegbar,
+            "TP1": nicht_verfuegbar,
+            "TP2": nicht_verfuegbar,
+        }
+
+    matching_rows = []
     try:
-        daten = json.loads(Path(pfad).read_text(encoding="utf-8-sig"))
-    except Exception as exc:
-        raise RuntimeError(f"2.4_AUTORITATIVE_A_QUELLE_NICHT_LESBAR: {exc}") from exc
-    if not isinstance(daten, dict):
-        raise RuntimeError("2.4_AUTORITATIVE_A_QUELLE_UNGUELTIG")
-    tickers, names = set(), set()
-    for ticker, eintrag in daten.items():
-        if not isinstance(eintrag, dict):
-            continue
-        status = str(eintrag.get("status") or "").strip().upper()
-        if status != "KAUFKANDIDAT A":
-            continue
-        if ticker:
-            tickers.add(_normalisiere_ticker(ticker))
-        for key in ("name", "firmenname"):
-            value = str(eintrag.get(key) or "").strip()
-            if value:
-                names.add(_normalisiere_positionsname(value))
-    return tickers, names, True
+        with open(history_path, "r", encoding="utf-8-sig") as f:
+            for raw_line in f:
+                if not raw_line.strip():
+                    continue
+                try:
+                    row = json.loads(raw_line)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("Datum") or "").strip() != datum:
+                    continue
+                # Strikte zusammengesetzte Identität: Name UND Ticker müssen passen.
+                if _normalisiere_ticker(row.get("Ticker")) != ticker_norm:
+                    continue
+                if _normalisiere_positionsname(row.get("Name")) != name_norm:
+                    continue
+                matching_rows.append(row)
+    except OSError as exc:
+        raise RuntimeError(
+            f"2.4_TECHNIKHISTORIE_NICHT_LESBAR: {exc}"
+        ) from exc
+
+    if not matching_rows:
+        return {
+            "Datum": datum,
+            "Kurs": nicht_verfuegbar,
+            "Einstieg": nicht_verfuegbar,
+            "Stop": nicht_verfuegbar,
+            "TP1": nicht_verfuegbar,
+            "TP2": nicht_verfuegbar,
+        }
+
+    # Bei mehreren heutigen Snapshots ist der zuletzt gespeicherte Snapshot
+    # der jüngste Lauf des Tages; es wird kein historischer Tag herangezogen.
+    row = matching_rows[-1]
+    technik = row.get("Technik") if isinstance(row.get("Technik"), dict) else {}
+    trendfolge = technik.get("Trendfolge") if isinstance(technik.get("Trendfolge"), dict) else {}
+
+    def wert(source, key):
+        value = source.get(key) if isinstance(source, dict) else None
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return nicht_verfuegbar
+        return str(value).strip()
+
+    # Aktueller Kurs und Einstieg bleiben semantisch getrennt, auch wenn die
+    # zugrunde liegende Analyse für beide denselben Zahlenwert gespeichert hat.
+    kurs = wert(row, "Kurs")
+    if kurs == nicht_verfuegbar:
+        kurs = wert(trendfolge, "Kurs")
+    return {
+        "Datum": datum,
+        "Kurs": kurs,
+        "Einstieg": wert(trendfolge, "Einstieg"),
+        "Stop": wert(trendfolge, "Stop"),
+        "TP1": wert(trendfolge, "TP1"),
+        "TP2": wert(trendfolge, "TP2"),
+    }
 
 
-def _bereinige_punkt_24_nur_a(text):
-    """Entfernt deterministisch Nicht-A-Titel aus 2.4.
+def _bereinige_punkt_24_nur_a(text, eingabedateien=None):
+    """Übernimmt den vollständigen A-Meldungsbericht und ergänzt Charttechnik.
 
-    Die Gemini-Interpretation bleibt für eindeutig aktuelle A-Titel erhalten.
-    B/C/KEIN KANDIDAT werden nicht zu Trades umgedeutet. Eintragstrennung
-    erfolgt über Leerzeilen; falls Gemini mehrere A/B/C-Titel in einen Absatz
-    mischt, wird der gesamte gemischte Absatz konservativ entfernt, statt
-    einen falschen Trade zu erzeugen.
+    Die Meldungsdatei bleibt inhaltlich vollständig erhalten. Technische Werte
+    werden nur aus einem Snapshot mit exakt passendem Ticker und aktuellem
+    Auswertungsdatum ergänzt. Einstieg/Stop/TP1/TP2 stammen aus dem Trendfolge-
+    Ergebnis des Einzel-Checks; Trendwende-Werte werden nicht beigemischt.
     """
     if not text:
-        return text
-    tickers, names, available = _autoritative_a_kandidaten()
-    if not available:
-        raise RuntimeError("2.4_AUTORITATIVE_A_QUELLE_FEHLT")
-
-    # Alle Nicht-A-Statuswerte werden ebenfalls ermittelt. Ein Absatz, der
-    # gleichzeitig einen autoritativen A-Titel und einen autoritativen B/C-
-    # oder sonstigen Nicht-A-Titel enthält, darf nicht als A-Trade bestehen
-    # bleiben: Die Information ist nicht mehr eindeutig und wird konservativ
-    # vollständig entfernt.
-    try:
-        beobachtungsdaten = json.loads(Path(BEOBACHTUNGSLISTE_DATEI).read_text(encoding="utf-8-sig"))
-    except Exception as exc:
-        raise RuntimeError(f"2.4_AUTORITATIVE_A_QUELLE_NICHT_LESBAR: {exc}") from exc
-    nicht_a_tickers, nicht_a_names = set(), set()
-    if isinstance(beobachtungsdaten, dict):
-        for ticker, eintrag in beobachtungsdaten.items():
-            if not isinstance(eintrag, dict):
-                continue
-            status = str(eintrag.get("status") or "").strip().upper()
-            if status == "KAUFKANDIDAT A":
-                continue
-            norm_ticker = _normalisiere_ticker(ticker) if ticker else ""
-            if norm_ticker:
-                nicht_a_tickers.add(norm_ticker)
-            for key in ("name", "firmenname"):
-                value = str(eintrag.get(key) or "").strip()
-                if value:
-                    nicht_a_names.add(_normalisiere_positionsname(value))
-    m = re.search(r"(?ms)^2\.4\s+HebelTrader\s*$", text)
+        raise RuntimeError("2.4_AUSWERTUNGSABSCHNITT_FEHLT")
+    m = re.search(r"(?m)^2\.4\s+HebelTrader\s*$", text)
     if not m:
-        return text
+        raise RuntimeError("2.4_AUSWERTUNGSABSCHNITT_FEHLT")
     next_m = re.search(r"(?m)^2\.5\s+", text[m.end():])
-    end = m.end() + next_m.start() if next_m else len(text)
-    block = text[m.end():end]
-    parts = re.split(r"\n\s*\n", block.strip()) if block.strip() else []
-    kept = []
-    for part in parts:
-        norm = _normalisiere_positionsname(part)
-        has_a = any(t and re.search(rf"{_ticker_grenzen_regex(t)}", part, re.I) for t in tickers)
-        has_a = has_a or any(n and n in norm for n in names)
-        has_non_a = any(
-            t and re.search(rf"{_ticker_grenzen_regex(t)}", part, re.I)
-            for t in nicht_a_tickers
-        )
-        has_non_a = has_non_a or any(n and n in norm for n in nicht_a_names)
-        if has_a and not has_non_a:
-            kept.append(part.strip())
-    rebuilt = "2.4 HebelTrader\n\n" + ("\n\n".join(kept) if kept else "Keine aktuellen KAUFKANDIDAT-A-Trades aus der autoritativen HEBELTRADER-Beobachtungsliste.")
-    return text[:m.start()] + rebuilt + "\n\n" + text[end:]
+    if not next_m:
+        raise RuntimeError("2.5_FOLGEABSCHNITT_FEHLT")
+    end = m.end() + next_m.start()
 
+    # Autoritative Quelle ist die im selben Gemini-Lauf eingesammelte A-Datei.
+    # Nur bei direktem Funktionsaufruf ohne Eingabemanifest wird exakt die heutige
+    # Datei geprüft; eine ältere A-Liste wird niemals als Ersatz verwendet.
+    pfad = (eingabedateien or {}).get("Einzel_Check_A_Meldungen(...).txt")
+    if not pfad and eingabedateien is None:
+        heute_datei = f"Einzel_Check_A_Meldungen({datetime.date.today().isoformat()}).txt"
+        pfad = heute_datei if os.path.isfile(heute_datei) else None
+
+    # Keine Tagesdatei bedeutet bei diesem Ablauf: Der Einzel-Check hat heute
+    # keine A-Meldungen erzeugt. Abschnitt 2.4 bleibt klar, statt die gesamte
+    # Auswertung abzubrechen oder Kandidaten vom Vortag zu übernehmen.
+    if not pfad:
+        rebuilt = (
+            "2.4 HebelTrader\n\n"
+            "Heute liegen keine aktuellen A-Kandidaten aus dem Einzel-Check vor."
+        )
+        return text[:m.start()] + rebuilt + "\n\n" + text[end:]
+
+    if not os.path.isfile(pfad):
+        raise RuntimeError("2.4_A_MELDUNGEN_QUELLE_FEHLT")
+
+    dateiname = os.path.basename(os.fspath(pfad))
+    datums_match = re.fullmatch(
+        r"Einzel_Check_A_Meldungen\((\d{4}-\d{2}-\d{2})\)\.txt",
+        dateiname,
+    )
+    heute = datetime.date.today().isoformat()
+    if not datums_match or datums_match.group(1) != heute:
+        raise RuntimeError(
+            f"2.4_A_MELDUNGEN_NICHT_AKTUELL: erwartet Einzel_Check_A_Meldungen({heute}).txt, "
+            f"erhalten {dateiname!r}"
+        )
+    try:
+        meldungen = Path(pfad).read_text(encoding="utf-8-sig")
+    except Exception as exc:
+        raise RuntimeError(f"2.4_A_MELDUNGEN_QUELLE_NICHT_LESBAR: {exc}") from exc
+    meldungen = meldungen.strip()
+    if not meldungen:
+        raise RuntimeError("2.4_A_MELDUNGEN_QUELLE_LEER")
+
+    name_ticker_pairs = []
+    for line in meldungen.splitlines():
+        name_match = re.search(r"(?i)\bName\s*:\s*([^|;\n]+)", line)
+        ticker_match = re.search(r"(?i)\bTicker\s*:\s*([^|;\n]+)", line)
+        if not name_match or not ticker_match:
+            continue
+        name = name_match.group(1).strip()
+        ticker = ticker_match.group(1).strip()
+        if not _normalisiere_positionsname(name) or not _normalisiere_ticker(ticker):
+            continue
+        # Keine Deduplizierung: jede Originalmeldung bleibt einzeln sichtbar.
+        # Die technische Zuordnung basiert immer auf Name UND Ticker.
+        name_ticker_pairs.append((name, ticker))
+
+    enrichment = ["CHARTTECHNISCHE ERGÄNZUNG JE A-MELDUNG"]
+    if not name_ticker_pairs:
+        enrichment.append(
+            "Keine vollständige Name-/Ticker-Kombination in der A-Meldungsdatei erkannt. "
+            "Der Originaltext bleibt vollständig erhalten."
+        )
+    for name, ticker in name_ticker_pairs:
+        values = _hebeltrader_charttechnik_fuer_ticker(
+            eingabedateien, name, ticker, datetime.date.today().isoformat()
+        )
+        enrichment.extend([
+            f"{name} ({ticker}) — Charttechnik aus Einzel-Check (Trendfolge; Auswertungsdatum: {values['Datum']})",
+            f"Aktueller Kurs (letzter verfügbarer Schlusskurs): {values['Kurs']}",
+            f"Einstieg: {values['Einstieg']}",
+            f"Stop: {values['Stop']}",
+            f"TP1: {values['TP1']}",
+            f"TP2: {values['TP2']}",
+        ])
+
+    rebuilt = "2.4 HebelTrader\n\n" + meldungen + "\n\n" + "\n".join(enrichment)
+    return text[:m.start()] + rebuilt + "\n\n" + text[end:]
 
 def _normalisiere_punkt10_autoritaet(text):
     """Sichert Punkt 10 gegen erfundene technische Positionsänderungen.
@@ -8703,7 +8803,7 @@ def _normalisiere_punkt11_quellengebunden(text):
         status("Trade-Story-Universum", "Trade_Story_Universum(...).json"),
         status("Trade-Story-Aktienuniversum", "Trade_Story_Aktienuniversum(...).csv"),
         status("Makro-Datenpaket", "Makro_Briefing(...).txt"),
-        status("HEBELTRADER-Beobachtung", "Einzel_Check_A_Meldungen(...).txt"),
+        status("HEBELTRADER-A-Meldungen", "Einzel_Check_A_Meldungen(...).txt"),
         "Die Verfügbarkeit wird aus den tatsächlich vorliegenden Projektdateien bestimmt; fehlende Quellen werden nicht durch Modellwissen ersetzt.",
         "",
         "11.2 Makro-Szenario-Status", "",
@@ -9687,7 +9787,7 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
     if errors:
         raise RuntimeError("PUNKT8_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))
     print("PUNKT-8-QUELLENABDECKUNGS-GATE: PASS")
-def speichere_ergebnis(text):
+def speichere_ergebnis(text, eingabedateien=None):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
 
@@ -9749,7 +9849,9 @@ def speichere_ergebnis(text):
 
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
-        final_text = _bereinige_punkt_24_nur_a(final_text)
+        if eingabedateien is None:
+            eingabedateien = _GEMINI_EINGABEDATEIEN_AUSWERTUNG
+        final_text = _bereinige_punkt_24_nur_a(final_text, eingabedateien)
         final_text = _normalisiere_punkt10_autoritaet(final_text)
         final_text = _normalisiere_punkt11_quellengebunden(final_text)
         final_text = _normalisiere_name_ticker_ausgabe(final_text)
@@ -9844,7 +9946,10 @@ def speichere_ergebnis(text):
 if __name__ == "__main__":
     print("Gemini-Auswertung gestartet...")
     ergebnis_text = gemini_auswertung_starten()
-    ausgabe_pfad = speichere_ergebnis(ergebnis_text)
+    ausgabe_pfad = speichere_ergebnis(
+        ergebnis_text,
+        _GEMINI_EINGABEDATEIEN_AUSWERTUNG,
+    )
     print(f"AUSWERTUNG_DATEI={ausgabe_pfad}")
     if str(ergebnis_text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("GEMINI_STATUS=TECHNISCHER_FALLBACK")
