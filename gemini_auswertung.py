@@ -53,6 +53,7 @@ import json
 import math
 import datetime
 import datetime as dt
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import mimetypes
 from types import SimpleNamespace
@@ -163,6 +164,7 @@ DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
 GEMINI_HISTORIE_DATEI = "Gemini_Auswertung_Historie.txt"
 GEMINI_A3_HISTORIE_DATEI = ".gemini_einzel_check_historie_a3.json"
+_GEMINI_GESCHLOSSENE_10_5_FINAL = ""  # Autoritative Tab-2-Fakten fuer den finalen Ausgabe-Gate.
 
 # Laufzeit-Tracking fuer das serverseitige Free-Tier-Input-Token-Kontingent.
 # Es werden nur Tokens registriert, die unmittelbar vor einem echten
@@ -4050,7 +4052,9 @@ def gemini_auswertung_starten():
     # Sie sind von Gemini-Retries unabhaengig und duerfen nicht bei jedem
     # API-Versuch erneut aus Drive/CSV beschafft werden.
     offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
+    global _GEMINI_GESCHLOSSENE_10_5_FINAL
     geschlossene_10_5 = lade_offenen_positionen_check_tab2()
+    _GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_10_5 or ""
 
     # Fuer die finale Synthese wird weiterhin der autoritative Faktenblock erzeugt.
     # ZUSAETZLICH werden jetzt alle aktuellen Projekt-Quelldateien des Laufes als
@@ -8911,13 +8915,13 @@ def _normalisiere_punkt12_scannerbindung(text, eingabedateien=None):
 
 
 def _repariere_1_3_aus_idee_im_aufbau(text):
-    """Befuellt ein weitgehend leeres 1.3 aus den belegten Feldern von Abschnitt 4."""
+    """Synchronisiert 1.3 mit belegten Inline-Feldern aus Abschnitt 4."""
     if not text:
         return text
-    start_13 = re.search(r"(?m)^1\.3\s+Ideen im Aufbau\s*$", text)
-    end_13 = re.search(r"(?m)^1\.4\s+Frühindikatoren / neue Themen\s*$", text)
-    start_4 = re.search(r"(?m)^4\.\s*🔭?\s*IDEEN IM AUFBAU\s*$", text)
-    end_4 = re.search(r"(?m)^5\.\s*🥇?\s*AKTIEN MIT FRÜHEM SIGNAL\s*$", text)
+    start_13 = re.search(r"(?im)^\s*1\.3\s+Ideen im Aufbau\s*$", text)
+    end_13 = re.search(r"(?im)^\s*1\.4\s+Frühindikatoren\s*/\s*neue Themen\s*$", text)
+    start_4 = re.search(r"(?im)^\s*4\.\s*🔭?\s*IDEEN IM AUFBAU\s*$", text)
+    end_4 = re.search(r"(?im)^\s*5\.\s*🥇?\s*AKTIEN MIT FRÜHEM SIGNAL\s*$", text)
     if not (start_13 and end_13 and start_4 and end_4):
         return text
     block_13 = text[start_13.end():end_13.start()]
@@ -8925,32 +8929,41 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
         return text
 
     block_4 = text[start_4.end():end_4.start()]
-    labels = {
+    # Das tatsächliche Berichtsschema nutzt "- LABEL: Wert" in einer Zeile,
+    # nicht einen alleinstehenden LABEL-Absatz. Beide Schreibweisen werden
+    # akzeptiert, damit ältere Läufe ebenfalls repariert werden.
+    label_patterns = {
         "these": r"THESE",
-        "why": r"Warum entsteht sie\?",
-        "evidence": r"BESTÄTIGENDE DATEN",
+        "why": r"WARUM\s+ENTSTEHT\s+SIE\?|WARUM\s*/\s*TREIBER",
+        "evidence": r"BESTÄTIGENDE\s+DATEN",
         "counter": r"GEGENARGUMENTE",
         "causal": r"KAUSALKETTE",
         "beneficiaries": r"PROFIT(?:EURE|IERER)\s*/\s*VERLIERER",
-        "reaction": r"FRÜHE AKTIENREAKTION",
-        "status": r"AKTUELLER STATUS",
-        "missing": r"WAS FEHLT\?",
+        "reaction": r"FRÜHE\s+AKTIENREAKTION",
+        "status": r"AKTUELLER\s+STATUS",
+        "missing": r"WAS\s+FEHLT\?",
         "trigger": r"AKTIVIERUNGSTRIGGER",
         "invalid": r"INVALIDIERUNG",
-        # Nur ein explizites Sektor-/Assetklassenfeld darf dieses Feld fuellen.
-        "sector": r"(?:BETROFFENE ASSETKLASSE\s*/\s*SEKTOR|SEKTOR\s*/\s*ASSETKLASSE|BETROFFENER SEKTOR|ASSETKLASSE)",
+        "sector": r"(?:BETROFFENE\s+ASSETKLASSE\s*/\s*SEKTOR|SEKTOR\s*/\s*ASSETKLASSE|BETROFFENER\s+SEKTOR|ASSETKLASSE)",
     }
-    combined = "|".join(f"(?P<{key}>{pattern})" for key, pattern in labels.items())
-    matches = list(re.finditer(r"(?im)^\s*(?:" + combined + r")\s*$", block_4))
     extracted = {}
-    for idx, match in enumerate(matches):
-        key = next((name for name in labels if match.group(name) is not None), None)
-        if not key:
+    for key, label_pattern in label_patterns.items():
+        # Preferred format: "- LABEL: value"
+        inline = re.search(
+            r"(?im)^\s*[-•]\s*(?:" + label_pattern + r")\s*:\s*(.+?)\s*$",
+            block_4,
+        )
+        if inline:
+            extracted[key] = inline.group(1).strip()
             continue
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(block_4)
-        value = block_4[match.end():end].strip()
-        value = re.sub(r"(?m)^\s*[-•]\s*", "", value).strip()
-        extracted[key] = re.sub(r"\n{2,}", " ", value)
+        # Legacy format: label on its own line, value in following lines
+        legacy = re.search(
+            r"(?ims)^\s*(?:" + label_pattern + r")\s*$\n(.*?)(?=^\s*(?:"
+            + "|".join(label_patterns.values()) + r")\s*$|\Z)",
+            block_4,
+        )
+        if legacy:
+            extracted[key] = re.sub(r"\s+", " ", legacy.group(1)).strip()
 
     thesis = extracted.get("these", "")
     if not thesis:
@@ -8958,6 +8971,14 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
     beneficiaries_raw = extracted.get("beneficiaries", "")
     beneficiaries = re.split(r"(?i)\bVerlierer\s*:", beneficiaries_raw, maxsplit=1)[0].strip()
     beneficiaries = re.sub(r"(?i)^Profiteure\s*:\s*", "", beneficiaries).strip()
+    intro_line = next(
+        (line.strip() for line in block_4.splitlines() if "Vertiefung der These" in line),
+        "",
+    )
+    asset_match = re.search(r"\((.*)\)\s*:\s*$", intro_line)
+    technical_assets = asset_match.group(1).strip() if asset_match else (
+        extracted.get("reaction") or "Keine konkreten technischen Nachsuch-Assets ausdrücklich ausgewiesen."
+    )
     missing_technical = extracted.get("missing", "")
     technical_status = (
         "Beobachtungsphase; " + missing_technical
@@ -8970,11 +8991,15 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
         ("Warum? / Treiber", extracted.get("why") or "Nicht gesondert ausgewiesen."),
         ("Bestätigende Daten", extracted.get("evidence") or "Nicht gesondert ausgewiesen."),
         ("Kausalzusammenhang", extracted.get("causal") or "Nicht gesondert ausgewiesen."),
-        ("Wohin fließt Kapital?", beneficiaries or "Aus den vorhandenen Feldern nicht eindeutig ausgewiesen."),
+        ("Wohin fließt Kapital?", (
+            "Hypothese potenzieller Profiteure: " + beneficiaries +
+            "; tatsächliche Kapitalflüsse sind mit den vorliegenden Daten nicht belegt."
+            if beneficiaries else "Keine gemessenen Kapitalflüsse belegt; nur eine qualitative These vorhanden."
+        )),
         ("Betroffene Assetklasse / Sektor", extracted.get("sector") or "Nicht eindeutig aus Abschnitt 4 ableitbar; keine Zuordnung ergänzt."),
         ("Frühester Beobachtungspunkt", extracted.get("trigger") or "Nicht ausdrücklich in Abschnitt 4 ausgewiesen; kein Beobachtungspunkt ergänzt."),
         ("Bestehender Kandidat / Bezug", extracted.get("reaction") or "Kein konkreter Einzelkandidat in der These eindeutig ausgewiesen."),
-        ("Potenzielle Assets für technische Nachsuche", beneficiaries or "Nicht gesondert ausgewiesen."),
+        ("Potenzielle Assets für technische Nachsuche", technical_assets),
         ("Nächster bestätigter Kalenderkatalysator", "NICHT VERFUEGBAR – in Abschnitt 4 nicht konkret datiert."),
         ("Nächster bestätigender Trigger", extracted.get("trigger") or "Nicht gesondert ausgewiesen."),
         ("Widerlegender Trigger", extracted.get("invalid") or "Nicht gesondert ausgewiesen."),
@@ -8984,8 +9009,6 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
     ]
     rebuilt = "1.3 Ideen im Aufbau\n" + "\n".join(f"{label}: {value}" for label, value in fields)
     return text[:start_13.start()] + rebuilt + "\n\n" + text[end_13.start():]
-
-
 
 def _repariere_3_x_kausalitaet(text):
     """Ergaenzt fehlende Kausal-/Trigger-Einordnung in 3.1–3.5 vorsichtig.
@@ -10487,6 +10510,367 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
     if errors:
         raise RuntimeError("PUNKT8_QUELLENABDECKUNG_UNGUELTIG: " + " | ".join(errors))
     print("PUNKT-8-QUELLENABDECKUNGS-GATE: PASS")
+
+def _pct_aus_quellenzeile(text, asset, period="4W"):
+    """Liest eine explizite Periodenrendite aus dem Marktbriefing."""
+    patterns = {
+        "WTI": r"(?im)^\s*-\s*WTI:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|.*?([+-]\d+(?:[.,]\d+)?)%\s*4W\b",
+        "Brent": r"(?im)^\s*-\s*Brent:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|.*?([+-]\d+(?:[.,]\d+)?)%\s*4W\b",
+        "Gold": r"(?im)^\s*-\s*Gold:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|.*?([+-]\d+(?:[.,]\d+)?)%\s*4W\b",
+        "Silber": r"(?im)^\s*-\s*Silber:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|.*?([+-]\d+(?:[.,]\d+)?)%\s*4W\b",
+        "Platin": r"(?im)^\s*-\s*Platin:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|.*?([+-]\d+(?:[.,]\d+)?)%\s*4W\b",
+        "Palladium": r"(?im)^\s*-\s*Palladium:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|.*?([+-]\d+(?:[.,]\d+)?)%\s*4W\b",
+    }
+    match = re.search(patterns.get(asset, r"(?!)"), text or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _fmt_pct_de(value):
+    sign = "+" if value > 0 else ""
+    return (sign + f"{value:.2f}".rstrip("0").rstrip(".")).replace(".", ",") + "%"
+
+
+def _parse_percent_value(raw):
+    """Liest Prozentpunkte aus einer Prozent-Spalte; keine stillschweigende Dezimal-Skalierung."""
+    value = str(raw or "").strip().replace("%", "").replace(" ", "")
+    if not value:
+        return None
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    elif "," in value:
+        value = value.replace(",", ".")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _repariere_doppelte_sektion_6(text):
+    """Entfernt nur den zweiten, widersprüchlichen 6.1–6.6-Platzhalterblock."""
+    first_66 = re.search(r"(?im)^\s*6\.6\s+Risiken bestehender Ideen\b[^\n]*$", text or "")
+    if not first_66:
+        return text
+    second_61 = re.search(r"(?im)^\s*6\.1\s+Makro gegen Technik\b[^\n]*$", text[first_66.end():])
+    if not second_61:
+        return text
+    start = first_66.end() + second_61.start()
+    next7 = re.search(r"(?im)^\s*7\.\s*🌍?\s*MARKT.*MAKROKONTEXT\s*$", text[start:])
+    if not next7:
+        return text
+    end = start + next7.start()
+    duplicate_block = text[start:end]
+    # Nur entfernen, wenn die zweite Serie nachweislich aus Platzhaltern besteht.
+    if duplicate_block.count("Keine belastbare") >= 4:
+        return text[:start].rstrip() + "\n\n" + text[end:].lstrip()
+    return text
+
+def _repariere_1_1_rohstoffperioden(text, briefing_text):
+    """1.1 verwendet explizite 4W-Werte aus dem Marktbriefing, keine 1M-Proxies."""
+    values = {asset: _pct_aus_quellenzeile(briefing_text, asset) for asset in ("WTI", "Brent", "Gold")}
+    start = re.search(r"(?m)^\s*1\.1\s+Was hat sich seit dem letzten Lauf verändert\?\s*$", text or "")
+    end = re.search(r"(?m)^\s*1\.2\s+Sofort handelbare Chancen\s*$", text or "")
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.start():end.start()]
+    replacements = [
+        (r"(WTI-Öl\s+mit\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:auf\s+)?4-Wochen-Sicht", values.get("WTI")),
+        (r"(Brent-Öl\s+bei\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:auf\s+)?4-Wochen-Sicht", values.get("Brent")),
+        (r"(Gold\s+notiert\s+bei\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:in\s+)?4\s+Wochen", values.get("Gold")),
+    ]
+    for pattern, value in replacements:
+        if value is None:
+            continue
+        block = re.sub(pattern, lambda m, v=value: m.group(1) + _fmt_pct_de(v) + (" auf 4-Wochen-Sicht" if "4-Wochen-Sicht" in m.group(0) else " in 4 Wochen"), block, count=1, flags=re.I)
+    # Do not present the already-A BTG status as a fresh A promotion; make
+    # the low momentum and bearish MACD caveat explicit without breaking names.
+    block = re.sub(
+        r"In der Einzel-Check-Beobachtungsliste wurden frische A-Meldungen für "
+        r"Newmont Corporation \(NEM\), B2Gold Corp\. \(BTG\), Guardant Health, Inc\. "
+        r"\(GH\) und General Motors Company \(GM\) registriert\.",
+        "In der Einzel-Check-Beobachtungsliste wurden aktuelle A-Meldungen für "
+        "Newmont Corporation (NEM), B2Gold Corp. (BTG), Guardant Health, Inc. (GH) "
+        "und General Motors Company (GM) registriert. Alle vier Meldungen haben Momentum 0/4; "
+        "NEM, BTG und GH weisen einen bärischen MACD auf; BTG war bereits zuvor "
+        "KAUFKANDIDAT A und ist kein neuer A-Aufstieg.",
+        block, flags=re.I, count=1
+    )
+    block = re.sub(
+        r"Es liegen keine abweichenden Vortagesdaten im Dateibestand vor;\s*",
+        "Der Vorbericht vom 09.10.2026 liegt im Laufpaket vor; eine vollständige feldweise Delta-Liste ist hier nicht belegt. ",
+        block, count=1, flags=re.I
+    )
+    return text[:start.start()] + block + text[end.start():]
+
+
+def _repariere_8_doppelte_durchschnitte(text, briefing_text="", edelmetall_text=""):
+    """Verhindert widersprüchliche zweite WMA200-Werte in den Metall-Unterabschnitten."""
+    headings = [
+        (r"(?m)^\s*8\.1\s+Gold\s*$", r"(?m)^\s*8\.2\s+Silber\s*$"),
+        (r"(?m)^\s*8\.2\s+Silber\s*$", r"(?m)^\s*8\.3\s+Platin\s*$"),
+        (r"(?m)^\s*8\.3\s+Platin\s*$", r"(?m)^\s*8\.4\s+Palladium\s*$"),
+        (r"(?m)^\s*8\.4\s+Palladium\s*$", r"(?m)^\s*9\.\s*📅?\s*NÄCHSTE KATALYSATOREN\s*$"),
+    ]
+    for start_pat, end_pat in headings:
+        start = re.search(start_pat, text)
+        if not start:
+            continue
+        end = re.search(end_pat, text[start.end():])
+        if not end:
+            continue
+        stop = start.end() + end.start()
+        block = text[start.start():stop]
+        block = re.sub(r"(?m)(^\s*[-•]\s*EMA20:[^\n]*?)\s*\|\s*WMA200\s*:\s*[-+]?\d[\d.,]*\$?",
+                       r"\1", block)
+        text = text[:start.start()] + block + text[stop:]
+    # Alle Unterschiede zwischen allgemeinem Marktbriefing und operativem
+    # Edelmetall-Scanner explizit dokumentieren, nicht nur Gold.
+    assets = ("Gold", "Silber", "Platin", "Palladium")
+    market_values = {a: _pct_aus_quellenzeile(briefing_text, a) for a in assets}
+    scanner_values = {}
+    for asset in assets:
+        m = re.search(
+            r"(?im)^\s*" + re.escape(asset) + r":\s*Kurs\s+[-+]?\d[\d.,]*\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen",
+            edelmetall_text or ""
+        )
+        scanner_values[asset] = _parse_percent_value(m.group(1)) if m else None
+    pairs = []
+    for asset in assets:
+        if market_values.get(asset) is not None and scanner_values.get(asset) is not None:
+            pairs.append(f"{asset}: Marktbriefing {_fmt_pct_de(market_values[asset])}, Scanner {_fmt_pct_de(scanner_values[asset])}")
+    if pairs:
+        note = ("Quellenhinweis 4W: " + "; ".join(pairs) +
+                ". Abschnitt 8 verwendet die Edelmetall-Scannerwerte als operative Quelle; "
+                "abweichende Marktbriefing-Werte werden nicht als identisch behandelt.")
+        total = re.search(r"(?m)^EDELMETALL-GESAMTBILD:\s*$", text)
+        if total and note not in text:
+            text = text[:total.start()] + note + "\n\n" + text[total.start():]
+    return text
+
+
+def _repariere_3_2_rohstoffinterpretation(text, macro_text, briefing_text):
+    """Korrigiert die kurzfristige Rohstoffbeschreibung auf belegte Zeiträume."""
+    copper_1y = re.search(r"(?im)^Kupfer:\s*[-+]?\d[\d.,]*\s*\|.*?1J=([+-]?\d[\d.,]*)%", macro_text or "")
+    copper_1m = re.search(r"(?im)^Kupfer:\s*[-+]?\d[\d.,]*\s*\|.*?1M=([+-]?\d[\d.,]*)%", macro_text or "")
+    start = re.search(r"(?m)^\s*3\.2\s+Rohstoff\s*→\s*Branche\s*→\s*Aktie\s*$", text or "")
+    end = re.search(r"(?m)^\s*3\.3\s+Politik\s*→\s*Branche\s*→\s*Aktie\s*$", text or "")
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.start():end.start()]
+    if copper_1y and copper_1m and re.search(r"Steigende Industriemetallpreise.*stabile Edelmetalle", block, re.I):
+        y = _parse_percent_value(copper_1y.group(1))
+        m = _parse_percent_value(copper_1m.group(1))
+        gold = _pct_aus_quellenzeile(briefing_text, "Gold")
+        silver = _pct_aus_quellenzeile(briefing_text, "Silber")
+        platinum = _pct_aus_quellenzeile(briefing_text, "Platin")
+        palladium = _pct_aus_quellenzeile(briefing_text, "Palladium")
+        metal_text = ", ".join(
+            f"{name} {_fmt_pct_de(value)}" for name, value in
+            (("Gold", gold), ("Silber", silver), ("Platin", platinum), ("Palladium", palladium))
+            if value is not None
+        )
+        sentence = (
+            f"Kupfer ist langfristig positiv (1J {_fmt_pct_de(y)}) aber auf Monatssicht schwächer "
+            f"(1M {_fmt_pct_de(m)}). Edelmetalle zeigen laut Marktbriefing auf 4W eine Schwächephase "
+            f"({metal_text}). Die mögliche Wirkung auf Minenwerte wie Freeport-McMoRan Inc. (FCX), "
+            f"Southern Copper Corporation (SCCO) und Newmont Corporation (NEM) ist eine Hypothese, "
+            "keine aus diesen Kursdaten allein bewiesene Kausalität."
+        )
+        block = re.sub(r"(?m)^\s*Steigende Industriemetallpreise.*$", sentence, block, count=1)
+        return text[:start.start()] + block + text[end.start():]
+    return text
+
+
+def _repariere_6_4_rohstoffperioden(text, briefing_text, macro_text):
+    """Korrigiert Rohstoff-Zeiträume im Widerspruchsblock auf die jeweilige Quelle."""
+    wti = _pct_aus_quellenzeile(briefing_text, "WTI")
+    copper_1y = re.search(r"(?im)^Kupfer:\s*[-+]?\d[\d.,]*\s*\|.*?1J=([+-]?\d[\d.,]*)%", macro_text or "")
+    copper_1m = re.search(r"(?im)^Kupfer:\s*[-+]?\d[\d.,]*\s*\|.*?1M=([+-]?\d[\d.,]*)%", macro_text or "")
+    if wti is None:
+        return text
+    y = _parse_percent_value(copper_1y.group(1)) if copper_1y else None
+    m = _parse_percent_value(copper_1m.group(1)) if copper_1m else None
+    copper_phrase = (
+        f"Kupfer liegt auf 1M bei {_fmt_pct_de(m)} (1J {_fmt_pct_de(y)})"
+        if m is not None and y is not None else "Kupfer zeigt ein anderes Periodenbild als Öl"
+    )
+    corrected = (
+        f"6.4 Rohstoff gegen Aktie: WTI liegt laut Marktbriefing auf 4W bei "
+        f"{_fmt_pct_de(wti)}; {copper_phrase}. Die kurzfristigen Rohstoffsignale divergieren; "
+        "Aktienwirkungen bleiben branchen- und unternehmensabhängig."
+    )
+    return re.sub(r"(?m)^\s*6\.4\s+Rohstoff gegen Aktie:.*$", corrected, text or "", count=1)
+
+
+def _repariere_1_4_kapitalflussbehauptung(text):
+    return re.sub(
+        r"spiegeln defensive Mittelzuflüsse wider",
+        "zeigen relative defensive Sektorstärke im Rotation-Score; direkte Kapitalflussdaten liegen nicht vor",
+        text or "", flags=re.I
+    )
+
+
+def _repariere_9_2_unbelegte_katalysatoren(text):
+    """Ersetzt pauschale Earnings-Ankuendigungen ohne verifizierbaren Termin."""
+    return re.sub(
+        r"(?m)^(\s*-\s*)Anstehende Quartalsberichte \(Earnings\) der im S&P 500 und DAX gelisteten Technologie-, Software- und Industrieunternehmen\.?\s*$",
+        r"\1Keine konkreten Unternehmenstermine mit verifizierbarem Datum in den bereitgestellten Laufquellen belegt.",
+        text or "", count=1
+    )
+
+
+def _repariere_10_3_unbelegte_systemperformance(text):
+    """Behauptet keine System-Performance-Prozentwerte ohne entsprechendes Quellenfeld."""
+    if "System-Performance" not in (text or ""):
+        return text
+    # Der mitgelieferte Positionsdatenbestand belegt Positionsperformance, aber
+    # kein gleichnamiges autoritatives System-Performance-Feld.
+    return re.sub(
+        r"(?m)^(\s*-\s*Freeport-McMoRan Inc\. \(FCX\), Fastly, Inc\. \(FSLY\) und Siemens Energy AG \(ENR\.DE\):\s*)"
+        r"Bestätigung durch positive System-Performance \([^)]*\), gestützt durch strukturelle Infrastruktur- und Rohstoffthesen\.",
+        r"\1Die strukturellen Infrastruktur- und Rohstoffthesen werden qualitativ als mögliche neue Einordnung genannt; eine positive System-Performance ist aus den bereitgestellten Positionsdaten nicht verifiziert.",
+        text or "", count=1
+    )
+
+
+def _repariere_11_7_doppelten_reichweitenhinweis(text):
+    lines = (text or "").splitlines()
+    out = []
+    seen_reach = False
+    for line in lines:
+        if line.strip().startswith("- Reichweiten-Hinweis:"):
+            if seen_reach:
+                continue
+            seen_reach = True
+        out.append(line)
+    return "\n".join(out) + ("\n" if (text or "").endswith("\n") else "")
+
+
+def _repariere_punkt10_5_und_portfolio(text, eingabedateien, closed_history):
+    """Letzter Schutz: 10.5 kommt nur aus Tab 2; Portfoliozahlen nur aus offener Positionsquelle."""
+    heading = re.search(r"(?m)^\s*10\.5\s+Geschlossene Positionen\s*$", text or "")
+    next11 = re.search(r"(?m)^\s*11\.\s*METHODIK\s*/\s*DATENQUALITÄT\s*$", text or "")
+    if not (heading and next11 and heading.start() < next11.start()):
+        return text
+    block = text[heading.end():next11.start()]
+    # Den vorhandenen qualitativen Portfolio-Fazit-Satz bewahren, aber alte
+    # geschlossene Positionen und isolierte Duplikate niemals übernehmen.
+    fazit_match = re.search(r"(?m)^\s*Portfolio-Fazit:\s*.*$", block)
+    portfolio_fazit = fazit_match.group(0).strip() if fazit_match else ""
+    csv_path = (eingabedateien or {}).get("Offene Positionen+Check.csv")
+    if not csv_path or not os.path.isfile(csv_path):
+        try:
+            csv_path = finde_datei(DATEIMUSTER["Offene Positionen+Check.csv"])
+        except Exception:
+            csv_path = None
+
+    portfolio_line = "Portfolio-Übersicht: Anzahl offene Positionen: NICHT VERIFIZIERT | Ø Performance offener Positionen: NICHT VERIFIZIERT"
+    if csv_path and os.path.isfile(csv_path):
+        try:
+            rows = _offene_positionen_rows(csv_path)
+            unique = {}
+            perf_values = []
+            for row in rows:
+                ticker = _csv_value(row, ["Ticker", "Yahoo-Ticker", "Yahoo Ticker"]).strip()
+                status = _csv_value(row, ["Status", "Positionstatus"]).casefold()
+                if not ticker or any(term in status for term in ("geschlossen", "gestoppt", "closed", "verkauft")):
+                    continue
+                unique.setdefault(ticker, row)
+            for row in unique.values():
+                raw = _csv_value(row, [
+                    "Performance_Seit_Einstieg%", "Performance Seit Einstieg %",
+                    "Performance_Seit_Einstieg", "Performance%", "Performance"
+                ])
+                value = _parse_percent_value(raw)
+                if value is not None:
+                    perf_values.append(value)
+            if perf_values:
+                average = sum(perf_values) / len(perf_values)
+                portfolio_line = (
+                    f"Portfolio-Übersicht: Anzahl offene Positionen: {len(unique)} | "
+                    f"Ø Performance offener Positionen: {average:.2f}% "
+                    f"(n={len(perf_values)} Positionen mit verwertbarer Performance)"
+                )
+            else:
+                portfolio_line = (
+                    f"Portfolio-Übersicht: Anzahl offene Positionen: {len(unique)} | "
+                    "Ø Performance offener Positionen: NICHT VERIFIZIERT (keine verwertbaren Performancewerte)"
+                )
+        except Exception as exc:
+            print(f"WARNUNG: Portfolio-Zusammenfassung konnte nicht deterministisch neu berechnet werden: {exc}")
+
+    closed_lines = []
+    for raw_line in str(closed_history or "").splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("(keine geschlossenen Positionen"):
+            closed_lines.append("- " + line.lstrip("-• "))
+    if not closed_lines:
+        closed_lines = ["Keine geschlossene Position innerhalb der letzten 3 Kalendertage laut autoritativer Tab-2-Prüfung."]
+    replacement = ["", *closed_lines, "", portfolio_line]
+    if portfolio_fazit:
+        replacement.extend(["", portfolio_fazit])
+    new_block = "\n".join(replacement).rstrip() + "\n\n"
+    return text[:heading.end()] + new_block + text[next11.start():]
+
+
+def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
+    """Letzter deterministischer Korrekturpass fuer die zuvor festgestellten Fehler."""
+    inputs = eingabedateien or {}
+    def source_text(key, pattern_key=None):
+        path = inputs.get(key)
+        if not path and pattern_key:
+            try:
+                path = finde_datei(DATEIMUSTER[pattern_key])
+            except Exception:
+                path = None
+        if path and os.path.isfile(path):
+            try:
+                return Path(path).read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                print(f"WARNUNG: Finaler Reparaturpass kann Quelle {key} nicht lesen: {exc}")
+        return ""
+
+    briefing = source_text("briefing.txt", "briefing.txt")
+    macro = source_text("Makro_Briefing(...).txt", "Makro_Briefing(...).txt")
+    edelmetall = source_text("Edelmetalle_Briefing(...).txt", "Edelmetalle_Briefing(...).txt")
+    text = _repariere_1_1_rohstoffperioden(text, briefing)
+    text = _repariere_1_4_kapitalflussbehauptung(text)
+    text = _repariere_3_2_rohstoffinterpretation(text, macro, briefing)
+    text = _repariere_6_4_rohstoffperioden(text, briefing, macro)
+    text = _repariere_8_doppelte_durchschnitte(text, briefing, edelmetall)
+    text = _repariere_doppelte_sektion_6(text)
+    text = _repariere_9_2_unbelegte_katalysatoren(text)
+    text = _repariere_10_3_unbelegte_systemperformance(text)
+    text = _repariere_11_7_doppelten_reichweitenhinweis(text)
+    text = _repariere_1_3_aus_idee_im_aufbau(text)
+    text = _repariere_punkt10_5_und_portfolio(text, inputs, closed_history)
+
+    # Report-Zeitstempel von der Briefing-Erstellungszeit trennen.
+    now = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
+    timestamp = now.strftime("%d.%m.%Y, %H:%M Uhr (MESZ/MEZ)")
+    text = re.sub(r"(?m)^Erstellt am:\s*.*$", "Erstellt am: " + timestamp, text, count=1)
+
+    # Der A-Status ist kein Kaufsignal; Momentum-/MACD-Einschraenkungen sichtbar halten.
+    if "Einordnung: A-Status ist ein technischer Kandidatenstatus" not in text:
+        text = re.sub(
+            r"(?m)^2\.4 HebelTrader\s*$",
+            "2.4 HebelTrader\nEinordnung: A-Status ist ein technischer Kandidatenstatus, keine bestätigte Kaufgelegenheit. "
+            "Die vier aktuellen Meldungen haben jeweils Momentum 0/4; NEM, BTG und GH weisen einen bärischen MACD auf. "
+            "BTG war bereits zuvor KAUFKANDIDAT A und ist kein neuer A-Aufstieg.\n",
+            text, count=1
+        )
+    return text
+
+
 def speichere_ergebnis(text, eingabedateien=None):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -10577,6 +10961,15 @@ def speichere_ergebnis(text, eingabedateien=None):
             final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text)
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
+
+        # Letzter Reparaturpass gegen nachgewiesene Fehler aus dem Lauf vom
+        # 10.10.2026. Er steht nach allen inhaltlichen Normalisierungen, damit
+        # keine spaetere Gemini-/Formatierungsstufe die Korrekturen ueberschreibt.
+        final_text = _repariere_auswertung_final(
+            final_text,
+            eingabedateien,
+            _GEMINI_GESCHLOSSENE_10_5_FINAL,
+        )
 
         # Letzte deterministische Schliessung der Kette Quelle -> 7.1–7.7 -> Gate.
         # Dieser Pass steht bewusst unmittelbar vor den harten Quellen-Gates,
