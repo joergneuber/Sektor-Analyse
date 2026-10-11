@@ -11688,6 +11688,16 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_text = _repariere_3_5_fundamentaldaten(final_text)
         _pruefe_dokumentierte_reparaturen(final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt"))
 
+        # WICHTIG: Der finale Reparaturpass oben kann 6.1–6.6-Platzhalter
+        # entfernen, wenn er einen nachgelagerten doppelten Platzhalterblock
+        # erkennt. Deshalb muss die verbindliche Gesamtstruktur NACH diesem
+        # Reparaturpass und VOR dem ersten harten Struktur-Gate erneut
+        # hergestellt werden. Andernfalls scheitert bereits das erste Gate,
+        # bevor der bisherige spätere Abschluss-Reparaturpass erreicht wird.
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
+        final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
+
         # Neue Vollstaendigkeits-Gates fuer 7.1–7.7 und 8.1–8.4.
         # Sie werden ADDITIV vor den bestehenden Final-Gates ausgefuehrt.
         # Keine bestehende Schutzpruefung wird dadurch ersetzt oder entfernt.
