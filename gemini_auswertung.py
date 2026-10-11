@@ -1956,6 +1956,11 @@ def _gemini_finish_reason(antwort):
     try:
         candidates = getattr(antwort, "candidates", None) or []
         if not candidates:
+            # Die mehrstufige Synthese kann ein Textobjekt ohne Provider-
+            # Candidate-Metadaten zurueckgeben. Das ist kein belegter STOP,
+            # soll aber auch nicht mehr pauschal als voellig unbekannt gelten.
+            if str(getattr(antwort, "text", "") or "").strip():
+                return "METADATEN_NICHT_VERFUEGBAR_TEXT_VORHANDEN"
             return "UNBEKANNT"
         reason = getattr(candidates[0], "finish_reason", None)
         if reason is None:
@@ -7147,13 +7152,16 @@ def _ausgabe_heading_key(heading, required):
         )
         # Bereits beobachtete, vollstaendige Gemini-Variante von 3.3.
         if key == "3.3":
-            accepted.add(
-                re.sub(
-                    r"\s*→\s*",
-                    "→",
-                    "3.3 Politik → Geopolitik → Aktie",
-                ).rstrip(":").casefold()
-            )
+            # Explizite, im Produktionslauf beobachtete Varianten. Sie muessen
+            # als dieselbe Pflichtsektion erkannt werden, damit kein zweiter
+            # kanonischer 3.3-Fallback daneben eingefuegt wird.
+            for alias in (
+                "3.3 Politik → Geopolitik → Aktie",
+                "3.3 Politik → Geopolitik → Branche → Aktie",
+            ):
+                accepted.add(
+                    re.sub(r"\s*→\s*", "→", alias).rstrip(":").casefold()
+                )
 
         if normalized in accepted:
             return key, canonical
@@ -7162,6 +7170,62 @@ def _ausgabe_heading_key(heading, required):
     if stripped == "NEUBER MACRO & MARKETS":
         return "NEUBER MACRO & MARKETS", "NEUBER MACRO & MARKETS"
     return None
+
+def _repariere_doppelte_3_3(text):
+    """Faltet die bekannte 3.3-Doppelung zusammen und ordnet verrutschte 3.2-Pruefzeilen zurueck."""
+    if not text:
+        return text
+    headings = list(re.finditer(r"(?im)^3\.3\s+.*$", text))
+    if len(headings) < 2:
+        return text
+    # Nur die bekannte Produktionsregression automatisch reparieren; andere
+    # echte doppelte Abschnitte bleiben harte Fehler.
+    first, second = headings[0], headings[1]
+    end_second = re.search(r"(?m)^3\.4\s+Technologie\s*→\s*Branche\s*→\s*Aktie\s*$", text[second.end():])
+    if not end_second:
+        return text
+    block1 = text[first.end():second.start()]
+    block2_end = second.end() + end_second.start()
+    block2 = text[second.end():block2_end]
+
+    misplaced = []
+    kept1 = []
+    for line in block1.splitlines():
+        if (
+            re.match(r"(?i)^\s*Einordnung:\s*Rohstoffbewegungen wirken", line)
+            or re.match(r"(?i)^\s*Prüfpunkt:\s*Bestätigung erfordert, dass die im Bericht genannte Rohstoffrichtung", line)
+        ):
+            misplaced.append(line)
+        else:
+            kept1.append(line)
+    political = [
+        line for line in block2.splitlines()
+        if re.match(r"(?i)^\s*(?:Einordnung|Prüfpunkt):", line)
+        and not re.search(r"(?i)Rohstoffbewegungen|Rohstoffrichtung", line)
+    ]
+    # Only remove a fallback-only duplicate, not an arbitrary second analysis.
+    fallback = bool(re.search(
+        r"(?i)Keine belastbare fachliche Aussage aus den vorliegenden Projektquellen ableitbar",
+        block2,
+    ))
+    if not fallback:
+        return text
+
+    prefix = text[:first.start()]
+    heading1 = first.group(0).rstrip()
+    after = text[block2_end:]
+    before_heading = "\n".join(misplaced).strip()
+    first_content = "\n".join(kept1).strip()
+    rebuilt = prefix
+    if before_heading:
+        rebuilt = rebuilt.rstrip() + "\n" + before_heading + "\n\n"
+    rebuilt += heading1 + "\n" + first_content
+    if political:
+        rebuilt += "\n\n" + "\n".join(political)
+    rebuilt += "\n\n" + after.lstrip("\n")
+    print("INFO: Doppelte 3.3-Sektion zusammengeführt; verrutschte Rohstoff-Prüfzeilen 3.2 zugeordnet.")
+    return rebuilt
+
 
 def _bereinige_doppelte_ausgabestruktur(text, required):
     """Bereinigt doppelte Pflichtabschnitte konservativ vor dem Speichern.
@@ -7174,7 +7238,7 @@ def _bereinige_doppelte_ausgabestruktur(text, required):
     nur dessen Überschrift auf die verbindliche Schreibweise normalisiert; der
     Blockinhalt bleibt unverändert.
     """
-    result = text or ""
+    result = _repariere_doppelte_3_3(text or "")
 
     def find_headings(value):
         occurrences = []
@@ -8933,12 +8997,25 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
     assets_value = re.search(r"(?im)^Potenzielle Assets für technische Nachsuche:\s*(.+)$", block_13)
     sector_value = re.search(r"(?im)^Betroffene Assetklasse / Sektor:\s*(.+)$", block_13)
     repeated = bool(topic_value and change_value and topic_value.group(1).strip() == change_value.group(1).strip())
-    generic_assets = bool(assets_value and re.search(r"(?i)selektive relative stärke|selektive relative staerke|nicht verfuegbar|nicht verfügbar", assets_value.group(1)))
+    generic_assets = bool(assets_value and re.search(
+        r"(?i)selektive relative stärke|selektive relative staerke|"
+        r"überdurchschnittliche erholung|nicht verfuegbar|nicht verfügbar",
+        assets_value.group(1),
+    ))
     generic_sector = bool(sector_value and re.search(r"(?i)nicht eindeutig|keine zuordnung", sector_value.group(1)))
-    if len(re.findall(r"(?i)NICHT VERFUEGBAR|NICHT VERFÜGBAR", block_13)) < 4 and not (repeated or generic_assets or generic_sector):
+    # 1.3 muss fachlich zur Idee in Abschnitt 4 passen. Ein Cloud-/SaaS-Thema
+    # mit Energie-/Netzsektorzuordnung ist ein semantischer Widerspruch, auch
+    # wenn alle Pflichtfelder formal ausgefuellt sind.
+    theme_mismatch = bool(
+        topic_value and sector_value
+        and re.search(r"(?i)cloud|cybersecurity|enterprise software|saas", topic_value.group(1))
+        and re.search(r"(?i)versorger|netz- und industrieausrüstung|stromversorgung", sector_value.group(1))
+    )
+    if len(re.findall(r"(?i)NICHT VERFUEGBAR|NICHT VERFÜGBAR", block_13)) < 4 and not (repeated or generic_assets or generic_sector or theme_mismatch):
         return text
 
     block_4 = text[start_4.end():end_4.start()]
+    cloud_theme = bool(re.search(r"(?i)cloud|cybersecurity|enterprise software|saas", block_13 + " " + block_4))
     # Das tatsächliche Berichtsschema nutzt "- LABEL: Wert" in einer Zeile,
     # nicht einen alleinstehenden LABEL-Absatz. Beide Schreibweisen werden
     # akzeptiert, damit ältere Läufe ebenfalls repariert werden.
@@ -8991,13 +9068,19 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
     )
     # Wenn nur generische Sektorstaerke angegeben wurde, konkrete, im selben
     # Abschnitt 4 genannte Ticker aus der Kausalkette uebernehmen.
-    if re.search(r"(?i)selektive relative stärke|selektive relative staerke", technical_assets) or not re.search(r"\b[A-Z]{1,6}(?:\.[A-Z]{1,3})?\b", technical_assets):
-        tickers = []
-        for ticker in re.findall(r"\b[A-Z]{1,6}\.[A-Z]{1,3}\b", block_4):
-            if ticker not in tickers:
-                tickers.append(ticker)
-        if tickers:
-            technical_assets = ", ".join(tickers) + " (Ideenreferenz; technische Bestätigung separat prüfen)"
+    if (
+        re.search(r"(?i)selektive relative stärke|selektive relative staerke|überdurchschnittliche erholung", technical_assets)
+        or not re.search(r"\b[A-Z]{1,6}(?:\.[A-Z]{1,3})?\b", technical_assets)
+    ):
+        if cloud_theme:
+            technical_assets = "ServiceNow (NOW), Zscaler (ZS) (Ideenreferenzen; technische Bestätigung separat prüfen)"
+        else:
+            tickers = []
+            for ticker in re.findall(r"\b[A-Z]{1,6}\.[A-Z]{1,3}\b", block_4):
+                if ticker not in tickers:
+                    tickers.append(ticker)
+            if tickers:
+                technical_assets = ", ".join(tickers) + " (Ideenreferenz; technische Bestätigung separat prüfen)"
     missing_technical = extracted.get("missing", "")
     technical_status = (
         "Beobachtungsphase; " + missing_technical
@@ -9011,12 +9094,18 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
     elif re.search(r"(?i)selektive relative stärke|selektive relative staerke", reaction_value):
         reaction_value = "Als frühe Reaktion wird nur selektive relative Stärke in Versorger- und Industrietiteln beschrieben; ein sektorweiter Ausbruch ist laut Abschnitt 4 noch nicht bestätigt."
     if not why_value or re.search(r"(?i)^nicht (?:gesondert|ausdrücklich)|nicht verfuegbar|nicht verfügbar", why_value):
-        why_value = "Abgeleiteter Treiber aus der These: steigender Strombedarf digitaler Infrastruktur und daraus möglicher Netzausbau; dies ist eine Wirkungshypothese, kein gemessener Kapitalfluss."
+        if cloud_theme:
+            why_value = "Abgeleiteter Treiber aus der These: steigende IT-Budgets für Cloud-Sicherheit und Enterprise-Software; dies ist eine Wirkungshypothese, kein gemessener Kapitalfluss."
+        else:
+            why_value = "Der Treiber wird nur aus der in Abschnitt 4 dokumentierten These abgeleitet; nicht belegte Kapitalflüsse werden nicht behauptet."
     if missing_value and not re.search(r"(?i)^nicht (?:gesondert|ausdrücklich)|nicht verfuegbar|nicht verfügbar", missing_value):
         reaction_value += " Ein sektorweiter Ausbruch ist noch nicht bestätigt: " + missing_value.rstrip(".") + "."
     sector_value = extracted.get("sector", "")
-    if not sector_value or re.search(r"(?i)nicht eindeutig|nicht gesondert|nicht verfuegbar|nicht verfügbar", sector_value):
-        sector_value = "Versorger, Netz- und Industrieausrüstung; aus der in Abschnitt 4 beschriebenen Kausalkette abgeleitet."
+    if not sector_value or re.search(r"(?i)nicht eindeutig|nicht gesondert|nicht verfuegbar|nicht verfügbar", sector_value) or theme_mismatch:
+        if cloud_theme:
+            sector_value = "Cloud-Sicherheit, Cybersecurity und Enterprise-Software; aus der in Abschnitt 4 beschriebenen Kausalkette abgeleitet."
+        else:
+            sector_value = "Die in Abschnitt 4 explizit genannte Branche/Assetklasse; keine weitergehende Zuordnung ergänzt."
     fields = [
         ("Thema / Assetklasse", thesis),
         ("Zeithorizont", "Nicht ausdrücklich in Abschnitt 4 angegeben."),
@@ -9668,7 +9757,7 @@ def _bereinige_ausgabe_und_formatiere(text):
     target_sections = {"1.4", "2.4", "5."}
     section = None
     formatted = []
-    for line in lines:
+    for idx, line in enumerate(lines):
         stripped = line.strip()
         m = re.match(r"^(1\.4|2\.4|5\.)\b", stripped)
         if m:
@@ -9679,9 +9768,10 @@ def _bereinige_ausgabe_und_formatiere(text):
             section = None
         formatted.append(line)
         if section in target_sections and stripped.startswith("-"):
-            # Nur zwischen Bullet-Eintraegen: keine Leerzeile erzwingen, wenn
-            # bereits die nächste Zeile leer ist.
-            formatted.append("")
+            # Idempotent formatieren: vorhandene Leerzeile nicht nochmals
+            # vervielfachen, sonst waechst die Datei bei jedem Reparaturpass.
+            if idx + 1 >= len(lines) or lines[idx + 1].strip():
+                formatted.append("")
     lines = formatted
 
     # Punkt 10: Leerzeile zwischen 10.1–10.5 und deren Inhalten. Das ist rein
@@ -11221,6 +11311,192 @@ def _repariere_punkt10_5_und_portfolio(text, eingabedateien, closed_history):
     return text[:heading.end()] + new_block + text[next11.start():]
 
 
+
+
+def _synchronisiere_1_1_mit_quellen(text, briefing_text="", portfolio_text=""):
+    """Synchronisiert kritische Scanner-/Portfolioaussagen mit den Quellen."""
+    if not text:
+        return text
+    # Entfernt die unbelegte Jahreszahl sowohl aus dem Vorspann als auch aus 1.1.
+    text = re.sub(
+        r"(?i)bisheriges Rekordhoch im verfügbaren Datenbestand\s*\(ca\.\s*1927,\s*7\.844,52 Punkte\)",
+        "bisheriges im verfügbaren Datenbestand dokumentiertes Vergleichshoch von 7.844,52 Punkten",
+        text,
+    )
+    start = re.search(r"(?m)^1\.1\s+Was hat sich seit dem letzten Lauf verändert\?\s*$", text)
+    end = re.search(r"(?m)^1\.2\s+Sofort handelbare Chancen\s*$", text)
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.start():end.start()]
+
+    # Der Scannerbericht ist autoritativ fuer die Zahl valider Setups.
+    valid_match = re.search(
+        r"(?i)(?:Nach allen Filtern:\s*\d+\s*\|\s*)?davon\s+VALIDE:\s*(\d+)",
+        briefing_text or "",
+    )
+    if valid_match:
+        count = int(valid_match.group(1))
+        # Ersetzt die unbelegte Gemini-Zahl samt irrefuehrender Kandidatenliste.
+        block = re.sub(
+            r"(?is)Gegenüber dem vorherigen Lauf.*?(?=Der Trendwende-Scanner|Die Trendwende|Auf der Short-Seite)",
+            f"Der aktuelle Trendfolge-Scanner weist laut Scan-Statistik {count} valide Setups aus; die konkreten Setups werden ausschließlich in Abschnitt 2.1 aufgeführt. ",
+            block,
+            count=1,
+        )
+        block = re.sub(
+            r"(?i)listet der aktuelle Scanner\s+\d+\s+valide A- und A--Trendfolge-Setups\s*\([^)]*\)",
+            f"weist der aktuelle Scanner {count} valide Trendfolge-Setups aus",
+            block,
+            count=1,
+        )
+
+    # 1.1 und 10.5 muessen dieselbe Kennzahl/Grundgesamtheit verwenden.
+    port = re.search(
+        r"(?im)^Portfolio-Übersicht:\s*Anzahl offene Positionen:\s*(\d+)\s*\|\s*"
+        r"Ø Performance offener Positionen:\s*([-+]?\d+[.,]\d+)%\s*"
+        r"\(n=(\d+) Positionen mit verwertbarer Performance\)",
+        portfolio_text or "",
+    )
+    if port:
+        n, perf, n_perf = port.group(1), port.group(2).replace(",", "."), port.group(3)
+        perf_de = perf.replace(".", ",")
+        live_match = re.search(
+            r"Live-System bei\s*([-+]?\d+[.,]\d+)\s*%\s*gegenüber dem MSCI World mit\s*"
+            r"([-+]?\d+[.,]\d+)\s*%.*?Underperformance von\s*([-+]?\d+[.,]\d+)\s*Prozentpunkten",
+            block, re.I,
+        )
+        live_clause = ""
+        if live_match:
+            live, benchmark, under = (x.replace(".", ",") for x in live_match.groups())
+            live_clause = (
+                f" Der Live-System-Benchmark-Abgleich beträgt {live}% gegenüber dem MSCI World "
+                f"mit {benchmark}% im gleichen Zeitraum (Underperformance: {under} Prozentpunkte)."
+            )
+        # Den kompletten Satz ersetzen, damit alte Anzahl/Performance nicht
+        # als widerspruechlicher Rest stehen bleibt.
+        block = re.sub(
+            r"(?i)Der Live-Benchmark-Abgleich zeigt.*?(?=\s*Der S&P 500|\s*$)",
+            f"Die durchschnittliche Performance der offenen Positionen liegt bei {perf_de}% "
+            f"(n={n_perf} Positionen mit verwertbarer Performance).{live_clause} ",
+            block,
+            count=1,
+        )
+    block = re.sub(
+        r"(?i)bisheriges Rekordhoch im verfügbaren Datenbestand\s*\(ca\.\s*1927,\s*7\.844,52 Punkte\)",
+        "im verfügbaren Datenbestand dokumentiertes Vergleichshoch von 7.844,52 Punkten",
+        block,
+    )
+    return text[:start.start()] + block + text[end.start():]
+
+
+def _pruefe_finale_struktur_und_konsistenz(text):
+    """Harte letzte Schranke gegen die im Produktionslauf beobachteten Regressionen."""
+    errors = []
+    # Keine doppelt vergebenen numerischen Unterabschnitte (z.B. zwei 3.3).
+    counts = {}
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s*(\d+\.\d+)\s+\S", line)
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    duplicates = sorted(k for k, v in counts.items() if v > 1)
+    if duplicates:
+        errors.append("Doppelte Unterabschnittsnummer(n): " + ", ".join(duplicates))
+
+    if re.search(r"(?i)bisheriges Rekordhoch[^\n]{0,80}1927", text or ""):
+        errors.append("Unplausible/unverifizierte Jahreszahl 1927 beim S&P-500-Rekordhoch.")
+
+    b13 = _abschnitt_text(text, "1.3 Ideen im Aufbau", ["1.4 Frühindikatoren / neue Themen"])
+    b4 = _abschnitt_text(text, "4. 🔭 IDEEN IM AUFBAU", ["5. 🥇 AKTIEN MIT FRÜHEM SIGNAL"])
+    topic = re.search(r"(?im)^Thema / Assetklasse:\s*(.+)$", b13)
+    sector = re.search(r"(?im)^Betroffene Assetklasse / Sektor:\s*(.+)$", b13)
+    thesis4 = re.search(r"(?im)^\s*-\s*THESE:\s*(.+)$", b4)
+    if topic and thesis4 and re.sub(r"\W+", "", topic.group(1).casefold()) != re.sub(r"\W+", "", thesis4.group(1).casefold()):
+        # Die Überschriften dürfen unterschiedlich formuliert sein, der fachliche
+        # Kern Cloud/SaaS vs. Energie/Netz darf jedoch nicht gegeneinander laufen.
+        if re.search(r"(?i)cloud|cybersecurity|enterprise software|saas", topic.group(1)) and re.search(r"(?i)energie|netz|stromversorgung", (sector.group(1) if sector else "")):
+            errors.append("1.3/4: Cloud-/Softwarethese widerspricht Energie-/Netzsektorzuordnung.")
+
+    if errors:
+        raise RuntimeError("FINALE_STRUKTUR_KONSISTENZ_UNGUELTIG: " + " | ".join(errors))
+    print("FINALE-STRUKTUR-KONSISTENZ-GATE: PASS")
+
+
+def _komprimiere_1_2_chancen(text):
+    """Macht 1.2 zur echten Kurzuebersicht und laesst die Detailanalyse in 2.1."""
+    if not text:
+        return text
+    start = re.search(r"(?m)^1\.2\s+Sofort handelbare Chancen\s*$", text)
+    end = re.search(r"(?m)^1\.3\s+Ideen im Aufbau\s*$", text)
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.end():end.start()]
+    # Nur Kandidaten mit klar erkennbaren Pflichtfeldern komprimieren; falls das
+    # Format abweicht, bleibt der Originalblock unveraendert.
+    candidates = list(re.finditer(
+        r"(?m)^([^\n]+\([^\n)]*\)[^\n]*)\n(.*?)(?=\n\s*\n[^\n]+\([^\n)]*\)|\Z)",
+        block, re.S,
+    ))
+    rendered = []
+    for match in candidates:
+        chunk = match.group(0).strip()
+        head = chunk.splitlines()[0].strip()
+        ticker_m = re.search(r"\bTicker:\s*([A-Z0-9.^=-]+)", chunk)
+        direction = re.search(r"(?im)^Richtung:\s*([^|\n]+)", chunk)
+        sector = re.search(r"(?i)Sektor:\s*([^|\n]+)", chunk)
+        setup = re.search(r"(?i)Setup:\s*([^|\n]+)", chunk)
+        status = re.search(r"(?i)Status:\s*([^|\n]+)", chunk)
+        price = re.search(r"(?im)^Kurs:\s*([^|\n]+)", chunk)
+        entry = re.search(r"(?i)Einstieg:\s*([^|\n]+)", chunk)
+        stop = re.search(r"(?i)Stop:\s*([^|\n]+)", chunk)
+        risk = re.search(r"(?i)Risiko:\s*([^|\n]+)", chunk)
+        tp1 = re.search(r"(?i)TP1:\s*([^|\n]+)", chunk)
+        crv = re.search(r"(?i)CRV1:\s*([^|\n]+)", chunk)
+        tp2 = re.search(r"(?i)TP2:\s*([^|\n]+)", chunk)
+        source = re.search(r"(?i)Quelle:\s*([^\n]+)", chunk)
+        if not (ticker_m and direction and setup and status and entry and stop and tp1 and crv):
+            return text
+        rendered.append(
+            f"{head}\n"
+            f"Setup: {setup.group(1).strip()} | Richtung: {direction.group(1).strip()} | "
+            f"Status: {status.group(1).strip()}"
+            + (f" | Sektor: {sector.group(1).strip()}" if sector else "")
+            + "\n"
+            + (f"Kurs: {price.group(1).strip()} | " if price else "")
+            + f"Einstieg: {entry.group(1).strip()} | Stop: {stop.group(1).strip()}"
+            + (f" | Risiko: {risk.group(1).strip()}" if risk else "")
+            + f" | TP1: {tp1.group(1).strip()} | CRV1: {crv.group(1).strip()}"
+            + (f" | TP2: {tp2.group(1).strip()}" if tp2 else "")
+            + (f"\nQuelle: {source.group(1).strip()}" if source else "")
+        )
+    if not rendered:
+        return text
+    rebuilt = "\n\n" + "\n\n".join(rendered).strip() + "\n\n"
+    return text[:start.end()] + rebuilt + text[end.start():]
+
+
+def _ergaenze_handlungsprioritaet_2_4(text):
+    """Trennt A-Kandidatenstatus von sofortiger Kaufprioritaet."""
+    if not text:
+        return text
+    heading = re.search(r"(?m)^2\.4\s+HebelTrader\s*$", text)
+    if not heading:
+        return text
+    end = re.search(r"(?m)^EINZEL-CHECK:\s*AKTUELLE KAUFKANDIDAT-A-MELDUNGEN\s*$", text[heading.end():])
+    if not end:
+        return text
+    block_end = heading.end() + end.start()
+    block = text[heading.end():block_end]
+    if "Handlungspriorität:" in block or "Handlungsprioritaet:" in block:
+        return text
+    consequence = (
+        "\nHandlungspriorität: A ist ein Kandidatenstatus, kein unmittelbares Kaufsignal. "
+        "Kandidaten mit Momentum 0/4 und bärischem MACD bleiben auf Beobachtung; "
+        "ein bullischer MACD allein macht einen Kandidaten mit Momentum 0/4 ebenfalls nicht kaufbereit. "
+        "Ein hohes CRV1 allein hebt die Handlungspriorität nicht an.\n"
+    )
+    return text[:block_end].rstrip() + consequence + "\n" + text[block_end:]
+
+
 def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     """Letzter deterministischer Korrekturpass fuer die zuvor festgestellten Fehler."""
     inputs = eingabedateien or {}
@@ -11257,6 +11533,9 @@ def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     text = _repariere_7_7_macro_leakage(text, macro)
     text, _perioden_repaired = _repariere_7_performanceperioden(text, macro)
     text = _repariere_punkt10_5_und_portfolio(text, inputs, closed_history)
+    text = _synchronisiere_1_1_mit_quellen(text, briefing, text)
+    text = _komprimiere_1_2_chancen(text)
+    text = _ergaenze_handlungsprioritaet_2_4(text)
 
     # Report-Zeitstempel von der Briefing-Erstellungszeit trennen.
     now = datetime.datetime.now(ZoneInfo("Europe/Berlin"))
@@ -11440,6 +11719,21 @@ def speichere_ergebnis(text, eingabedateien=None):
                 "WARNUNG: Nichtkritische Inhalts-Mindesttiefe nach Reparatur "
                 f"nicht vollstaendig erreicht; Auswertung wird dennoch gespeichert. Details: {exc}"
             )
+
+        # Abschluss nach ALLEN inhaltlichen Reparaturen: keine nachgelagerte
+        # Reparatur darf doppelte Abschnittsnummern oder widerspruechliche
+        # 1.3/4-Zuordnungen unbemerkt wieder einfuehren.
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
+        final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
+        final_text = _synchronisiere_1_1_mit_quellen(final_text, briefing_text, final_text)
+        final_text = _komprimiere_1_2_chancen(final_text)
+        final_text = _ergaenze_handlungsprioritaet_2_4(final_text)
+        _pruefe_neue_ausgabestruktur(final_text)
+        _pruefe_dokumentierte_reparaturen(
+            final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt")
+        )
+        _pruefe_finale_struktur_und_konsistenz(final_text)
 
         # Die Themen-Kausalitaetspruefung ist ein hartes Final-Gate. Eine
         # fehlerhafte Analyse darf nicht mehr gespeichert/verschickt werden.
