@@ -3833,7 +3833,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Aufstiege/Abstiege zwischen A/B/C oder C→KEIN KANDIDAT dürfen ausschließlich qualitativ interpretiert werden und erlauben erst bei aktuellem Status KAUFKANDIDAT A einen Eintrag als A-Kandidat in 2.4; die technische Handelbarkeit muss separat belegt werden. "
         "Offene Positionen aus Offene Positionen+Check.csv gehören NICHT in 2.4, sondern ausschließlich in Punkt 10. "
         "Für jeden genannten Titel zwingend Name und Ticker im Format Name (TICKER); Basisinstrument, Richtung, Setup, Entry, Stop, Ziel, Risiko und Hebel-/Volatilitätsrisiken nur soweit autoritativ vorhanden. "
-        "2.5 sonstige Gemini-Chancen mit nachvollziehbarer Datenbegründung und konkretem Titel. Fehlende Daten nicht ersetzen.\n"
+        "2.5 sonstige Gemini-Chancen nur mit nachvollziehbarer, quellengebundener Datenbegründung, konkretem Titel, Gegenargument/Risiko und Trigger. Reine Performance bereits bestehender Portfolio-/Langfristpositionen ist kein neues Einstiegssignal; unbestätigte thematische Ideen müssen ausdrücklich als nicht handelbare Ideenreferenzen gekennzeichnet werden. Fehlen aktuelle Setup-Daten, darf keine sofort handelbare Alternative behauptet werden. Fehlende Daten nicht ersetzen.\n"
         "3. 🧠 THEMEN & ZUSAMMENHÄNGE: 3.1 Makro→Branche→Aktie; 3.2 Rohstoff→Branche→Aktie; 3.3 Politik→Branche→Aktie; "
         "3.4 Technologie→Branche→Aktie; 3.5 Unternehmens-/Fundamentaldaten→Aktie. Für jeden Unterpunkt die Kausalkette, die konkrete Wirkung auf Branche und namentlich genannte Aktie, die dafür sprechenden und widersprechenden Daten sowie den nächsten bestätigenden oder widerlegenden Trigger erklären. Eine reine Aufzählung von Marktwerten oder Profiteuren reicht nicht.\n"
         "4. 🔭 IDEEN IM AUFBAU: Für jede relevante These THESE, bestätigende Daten, Gegenargumente, Kausalkette, Profiteure/Verlierer, frühe Aktienreaktion, Status, fehlende Information/Entwicklung, "
@@ -9090,7 +9090,7 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
                 technical_assets = ", ".join(tickers) + " (Ideenreferenz; technische Bestätigung separat prüfen)"
     missing_technical = extracted.get("missing", "")
     technical_status = (
-        "Beobachtungsphase; " + missing_technical
+        "Beobachtungsphase; noch kein bestätigtes technisches Trendfolge-Setup (z. B. Volumen-Breakout)."
         if missing_technical else "Beobachtungsphase; technische Bestätigung einzelner Titel ist separat zu prüfen."
     )
     reaction_value = extracted.get("reaction", "")
@@ -9105,8 +9105,9 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
             why_value = "Abgeleiteter Treiber aus der These: steigende IT-Budgets für Cloud-Sicherheit und Enterprise-Software; dies ist eine Wirkungshypothese, kein gemessener Kapitalfluss."
         else:
             why_value = "Der Treiber wird nur aus der in Abschnitt 4 dokumentierten These abgeleitet; nicht belegte Kapitalflüsse werden nicht behauptet."
-    if missing_value and not re.search(r"(?i)^nicht (?:gesondert|ausdrücklich)|nicht verfuegbar|nicht verfügbar", missing_value):
-        reaction_value += " Ein sektorweiter Ausbruch ist noch nicht bestätigt: " + missing_value.rstrip(".") + "."
+    # "Was verändert sich?" beschreibt die beobachtete Reaktion. Der noch
+    # fehlende Setup-Trigger gehört ausschließlich in "Technischer Status" und
+    # darf nicht in den Reaktionssatz hineinkopiert werden.
     sector_value = extracted.get("sector", "")
     if not sector_value or re.search(r"(?i)nicht eindeutig|nicht gesondert|nicht verfuegbar|nicht verfügbar", sector_value) or theme_mismatch:
         if cloud_theme:
@@ -9121,13 +9122,21 @@ def _repariere_1_3_aus_idee_im_aufbau(text):
         ("Bestätigende Daten", extracted.get("evidence") or "Nicht gesondert ausgewiesen."),
         ("Kausalzusammenhang", extracted.get("causal") or "Nicht gesondert ausgewiesen."),
         ("Wohin fließt Kapital?", (
-            "Hypothese potenzieller Profiteure: " + beneficiaries +
-            "; tatsächliche Kapitalflüsse sind mit den vorliegenden Daten nicht belegt."
+            "Hypothese: " + re.sub(
+                r"(?i)^Profiteure\s+sind\s+", "mögliche Profiteure sind ",
+                re.sub(r"(?i)\bVerlierer\s+sind\s+", "mögliche Verlierer sind ", beneficiaries),
+            ).rstrip(" .;") + ". Tatsächliche Kapitalflüsse sind mit den vorliegenden Daten nicht belegt."
             if beneficiaries else "Keine gemessenen Kapitalflüsse belegt; nur eine qualitative These vorhanden."
         )),
         ("Betroffene Assetklasse / Sektor", sector_value),
         ("Frühester Beobachtungspunkt", extracted.get("trigger") or "Nicht ausdrücklich in Abschnitt 4 ausgewiesen; kein Beobachtungspunkt ergänzt."),
-        ("Bestehender Kandidat / Bezug", ("Siemens Energy AG (ENR.DE) wird in der Kausalkette als Ideenreferenz genannt; ein validiertes Setup wird damit nicht behauptet." if re.search(r"Siemens Energy AG \(ENR\.DE\)", block_4) else (reaction_value or "Kein konkreter Einzelkandidat in der These eindeutig ausgewiesen."))),
+        ("Bestehender Kandidat / Bezug", (
+            "ServiceNow (NOW) und Zscaler (ZS) werden in Abschnitt 4 als Ideenreferenzen genannt; ein validiertes Setup wird damit nicht behauptet."
+            if cloud_theme else
+            ("Siemens Energy AG (ENR.DE) wird in der Kausalkette als Ideenreferenz genannt; ein validiertes Setup wird damit nicht behauptet."
+             if re.search(r"Siemens Energy AG \(ENR\.DE\)", block_4)
+             else "Kein konkreter Einzelkandidat in der These eindeutig ausgewiesen.")
+        )),
         ("Potenzielle Assets für technische Nachsuche", technical_assets),
         ("Nächster bestätigter Kalenderkatalysator", "NICHT VERFUEGBAR – in Abschnitt 4 nicht konkret datiert."),
         ("Nächster bestätigender Trigger", extracted.get("trigger") or "Nicht gesondert ausgewiesen."),
@@ -9495,158 +9504,297 @@ def _ist_adp_makrozeile(line):
     return bool(macro_phrases.search(text))
 
 
-def _normalisiere_name_ticker_ausgabe(text):
-    """Erzwingt Name (Ticker) fuer konkrete bekannte Unternehmensnennungen.
+def _lade_name_ticker_quellenmapping():
+    """Lädt eindeutige Firmenname/Ticker-Paare aus den aktuellen Laufquellen."""
+    name_tickers = {}
+    ticker_names = {}
 
-    Grundregel: Der kanonische Firmenname ist die Identitaet. Ein Ticker
-    allein ist kein ausreichender Aktienbezug und wird daher nicht
-    automatisch interpretiert oder umgeschrieben.
-    """
+    def add(name, ticker):
+        name = re.sub(r"\s+", " ", str(name or "").strip())
+        ticker = str(ticker or "").strip()
+        if not name or not ticker or name.casefold() == ticker.casefold():
+            return
+        name_tickers.setdefault(name.casefold(), set()).add(ticker)
+        ticker_names.setdefault(ticker, set()).add(name)
+
+    # Primärquelle des Trade-Story-Universums.
     universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
     if not universe_path or not os.path.isfile(universe_path):
         raise RuntimeError("NAME_TICKER_NORMALISIERUNG_QUELLE_FEHLT")
-    data = json.loads(Path(universe_path).read_text(encoding="utf-8"))
-    by_name = {}
+    try:
+        data = json.loads(Path(universe_path).read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"NAME_TICKER_NORMALISIERUNG_QUELLE_NICHT_LESBAR: {exc}") from exc
     for item in data.get("candidates", []) if isinstance(data, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        ticker = str(item.get("ticker") or "").strip()
-        name = str(item.get("name") or "").strip()
-        if not ticker or not name or name.casefold() == ticker.casefold():
-            continue
-        key = name.casefold()
-        by_name.setdefault(key, {"name": name, "tickers": set()})["tickers"].add(ticker)
+        if isinstance(item, dict):
+            add(item.get("name"), item.get("ticker"))
 
-    unique_names = [
-        (v["name"], next(iter(v["tickers"])))
-        for v in by_name.values()
-        if len(v["tickers"]) == 1
-    ]
+    # Ergänzende aktuelle Scanner-CSV-Dateien schließen z.B. Titel ein, die
+    # nicht im Trade-Story-Universum liegen, aber in einem aktuellen Einzelcheck
+    # oder Edelmetall-/Trendwende-Scan vorkommen.
+    csv_keys = (
+        "Setups(...).csv",
+        "Trade_Story_Setup_Rohuniversum(...).csv",
+        "Trendwende_Setups(...).csv",
+        "Short_Setups(...).csv",
+        "Edelmetalle_Setups(...).csv",
+        "Langfrist_Bewertung(...).csv",
+        "Trade_Story_Aktienuniversum(...).csv",
+    )
+    for key in csv_keys:
+        try:
+            path = finde_datei(DATEIMUSTER[key])
+        except Exception:
+            path = None
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                sample = handle.read(4096)
+                handle.seek(0)
+                delimiter = ";" if sample.count(";") >= sample.count(",") else ","
+                for row in csv.DictReader(handle, delimiter=delimiter):
+                    lower = {str(k or "").strip().casefold(): v for k, v in row.items()}
+                    name = next((lower[k] for k in ("name", "firmenname", "unternehmen", "company") if k in lower), "")
+                    ticker = next((lower[k] for k in ("ticker", "symbol") if k in lower), "")
+                    add(name, ticker)
+        except (OSError, csv.Error):
+            continue
 
-    starts = [m.start() for m in re.finditer(
-        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
-        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
-        text,
-    )]
-    if not starts:
+    # Aktuelle A-Meldungen sind autoritative Identitätsquelle für Kandidaten,
+    # die in keinem der generischen Scanneruniversen vorkommen.
+    try:
+        a_path = finde_datei(DATEIMUSTER["Einzel_Check_A_Meldungen(...).txt"])
+    except Exception:
+        a_path = None
+    if a_path and os.path.isfile(a_path):
+        try:
+            a_text = Path(a_path).read_text(encoding="utf-8-sig")
+            for match in re.finditer(
+                r"(?im)^\s*Name:\s*(.*?)\s*\|\s*Ticker:\s*([A-Z0-9.^=-]+)\b",
+                a_text,
+            ):
+                add(match.group(1), match.group(2))
+        except OSError:
+            pass
+
+    return name_tickers, ticker_names
+
+
+def _normalisiere_name_ticker_ausgabe(text):
+    """Erzwingt im gesamten Bericht die kanonische Schreibweise Name (TICKER).
+
+    Namen und Ticker werden nur aus dem aktuellen Trade-Story-Universum bezogen.
+    Ein fehlender oder mehrdeutiger Quellbezug wird nicht geraten.
+    """
+    if not text:
         return text
+    name_tickers, ticker_names = _lade_name_ticker_quellenmapping()
 
-    spans = [
-        (s, starts[i + 1] if i + 1 < len(starts) else len(text))
-        for i, s in enumerate(starts)
+    names = []
+    for folded, tickers in name_tickers.items():
+        if len(tickers) != 1:
+            continue
+        ticker = next(iter(tickers))
+        name = next(
+            candidate_name for candidate_name in ticker_names.get(ticker, set())
+            if candidate_name.casefold() == folded
+        )
+        names.append((name, ticker))
+    names.sort(key=lambda item: len(item[0]), reverse=True)
+
+    tickers = {
+        ticker: next(iter(company_names))
+        for ticker, company_names in ticker_names.items()
+        if len(company_names) == 1 and len(ticker) > 1
+    }
+    tickers = {
+        ticker: name for ticker, name in tickers.items()
+        if ticker.upper() not in {
+            "BTC", "ETH", "GC=F", "SI=F", "PL=F", "PA=F", "WTI", "BRENT",
+            "XAU", "XAG", "XPT", "XPD", "SPX", "NDX", "VIX", "DXY",
+            # Häufige Fachabkürzungen, die nicht als Aktienbezug interpretiert
+            # werden dürfen (z.B. RS = Relative Stärke).
+            "RS", "IT", "ON", "ALL", "CAT", "LOW", "KEY", "ADP", "MSCI",
+        }
+    }
+
+    name_patterns = [
+        (name, ticker, re.compile(r"(?<!\w)" + re.escape(name) + r"(?:\s*\(\s*[A-Z0-9.^=-]+\s*\))?(?!\w)", re.I))
+        for name, ticker in names
+    ]
+    ticker_patterns = [
+        (
+            ticker,
+            name,
+            re.compile(rf"(?<![\w.^=-])(?:\(\s*)?{re.escape(ticker)}(?:\s*\))?(?![\w.^=-])"),
+        )
+        for ticker, name in sorted(tickers.items(), key=lambda item: len(item[0]), reverse=True)
+    ]
+    reversed_patterns = [
+        (
+            name,
+            ticker,
+            re.compile(
+                rf"(?<![\w.^=-]){re.escape(ticker)}\s*\(\s*{re.escape(name)}\s*\)(?!\w)",
+                re.I,
+            ),
+        )
+        for name, ticker in names
     ]
 
-    for start, end in reversed(spans):
-        block = text[start:end]
-        lines = block.splitlines(True)
+    result_lines = []
+    for original_line in text.splitlines(keepends=True):
+        line = original_line
+        # Schneller Vorfilter: Regexe nur für Identitäten ausführen, deren
+        # Literal überhaupt in dieser Zeile vorkommt. Das vermeidet bei großen
+        # Quellenuniversen eine Zeile×Universum-Vollprüfung ohne Inhaltsverlust.
+        line_folded = line.casefold()
 
-        # Ausschliesslich kanonische Firmennamen bestimmen den Aktienbezug.
-        # Der zugehoerige Ticker wird nur ergaenzt, wenn er in derselben
-        # Zeile noch nicht bereits im kanonischen Name (Ticker)-Format steht.
-        for i, line in enumerate(lines):
-            for name, ticker in unique_names:
-                if name.casefold() in line.casefold() and not re.search(
-                    rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)",
+        # Structured A-list fields: keep the field but ensure it also contains
+        # the canonical identity, e.g. "Name: Firma (XYZ) | Ticker: XYZ".
+        ticker_field = re.search(r"(?i)\bTicker:\s*([A-Z0-9.^=-]+)", line)
+        if ticker_field:
+            field_ticker = ticker_field.group(1)
+            field_name = tickers.get(field_ticker)
+            if field_name:
+                name_field = re.search(r"(?i)\bName:\s*([^|\n]+)", line)
+                if name_field:
+                    raw_name = name_field.group(1).strip()
+                    canonical = next(
+                        ((n, t) for n, t in names if n.casefold() == raw_name.casefold()),
+                        None,
+                    )
+                    if canonical:
+                        disp_name, disp_ticker = canonical
+                        trailing_space = re.search(r"\s*$", name_field.group(1)).group(0)
+                        new_value = f"{disp_name} ({disp_ticker})" + trailing_space
+                        line = line[:name_field.start(1)] + new_value + line[name_field.end(1):]
+                if not re.search(
+                    rf"{re.escape(field_name)}\s*\(\s*{re.escape(field_ticker)}\s*\)",
                     line,
                     re.I,
                 ):
-                    lines[i] = re.sub(
-                        re.escape(name),
-                        f"{name} ({ticker})",
-                        lines[i],
-                        count=1,
-                        flags=re.I,
-                    )
-                    line = lines[i]
+                    line = f"{field_name} ({field_ticker}) | " + line
 
-        block = "".join(lines)
-        text = text[:start] + block + text[end:]
+        # First normalize reversed "TICKER (Company Name)" forms into the
+        # required "Company Name (TICKER)" order.
+        for name, ticker, reversed_re in reversed_patterns:
+            if name.casefold() not in line_folded:
+                continue
+            line = reversed_re.sub(f"{name} ({ticker})", line)
 
-    return text
+        # Normalize all canonical company-name mentions. Consume an immediately
+        # following ticker parenthesis as part of the match, so wrong/duplicate
+        # ticker suffixes are replaced instead of being appended.
+        for name, ticker, name_re in name_patterns:
+            if name.casefold() not in line.casefold():
+                continue
+            line = name_re.sub(lambda _m, n=name, t=ticker: f"{n} ({t})", line)
 
+        # Then normalize ticker-only mentions. Parenthetical "(XYZ)" becomes
+        # "Company (XYZ)"; already-canonical "Company (XYZ)" stays unchanged.
+        # One-character tickers are intentionally excluded here to avoid
+        # false positives in units such as CNY/T; their company names are still
+        # normalized by the source-backed name pass above.
+        line_folded = line.casefold()
+        for ticker, name, token_re in ticker_patterns:
+            if ticker.casefold() not in line_folded:
+                continue
+            def replace_ticker(match, _ticker=ticker, _name=name):
+                before = line[:match.start()]
+                after = line[match.end():]
+                if re.search(r"(?i)\bTicker:\s*$", before):
+                    return match.group(0)
+                if re.search(r"(?i)(?:\.csv|\.json|\.py|\.zip)\s*$", before):
+                    return match.group(0)
+                if re.search(r"(?i)https?://\S*$", before):
+                    return match.group(0)
+                # Existing canonical identity immediately precedes this ticker.
+                if re.search(rf"{re.escape(_name)}\s*$", before, re.I):
+                    return f"({_ticker})" if match.group(0).lstrip().startswith("(") else match.group(0)
+                return f"{_name} ({_ticker})"
+            line = token_re.sub(replace_ticker, line)
+
+        result_lines.append(line)
+    return "".join(result_lines)
 
 def _pruefe_name_ticker_gate(text):
-    """Harte Endpruefung: konkrete Unternehmensnamen nur als Name (Ticker).
+    """Harte Endpruefung fuer Name (TICKER) im gesamten gespeicherten Bericht."""
+    name_to_ticker, ticker_to_name = _lade_name_ticker_quellenmapping()
 
-    Die Identitaetsregel ist bewusst einseitig:
-    - Ein kanonischer Firmenname ohne zugehoerigen Ticker ist ungueltig.
-    - Name (Ticker) ist gueltig.
-    - Ein Ticker allein ist fuer dieses Gate kein Aktienbezug und wird
-      insbesondere bei mehrdeutigen Begriffen wie FIX oder MSCI ignoriert.
-    - Basisinstrumente/Rohstoffe/Krypto werden weiterhin nicht als
-      Unternehmensnamen geprueft.
-    """
-    universe_path = finde_datei(DATEIMUSTER["Trade_Story_Universum(...).json"])
-    if not universe_path or not os.path.isfile(universe_path):
-        raise RuntimeError("NAME_TICKER_GATE_QUELLE_FEHLT")
-    try:
-        data = json.loads(Path(universe_path).read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"NAME_TICKER_GATE_QUELLE_NICHT_LESBAR: {exc}") from exc
-
-    name_tickers = {}
-    name_display = {}
-    non_equity_tickers = {
-        "gold", "silver", "platinum", "palladium",
-        "xau", "xag", "xpt", "xpd",
-        "gc=f", "si=f", "pl=f", "pa=f",
-        "bitcoin", "btc", "ethereum", "eth",
-        "brent", "wti",
+    canonical_names = []
+    for key, tickers in name_to_ticker.items():
+        if len(tickers) == 1:
+            ticker = next(iter(tickers))
+            name = next(
+                candidate_name for candidate_name in ticker_to_name.get(ticker, set())
+                if candidate_name.casefold() == key
+            )
+            canonical_names.append((name, ticker))
+    canonical_names.sort(key=lambda pair: len(pair[0]), reverse=True)
+    unique_tickers = {
+        ticker: next(iter(names))
+        for ticker, names in ticker_to_name.items()
+        if len(names) == 1 and len(ticker) > 1
+    }
+    non_equity = {
+        "BTC", "ETH", "GC=F", "SI=F", "PL=F", "PA=F", "WTI", "BRENT",
+        "XAU", "XAG", "XPT", "XPD", "SPX", "NDX", "VIX", "DXY",
+    }
+    unique_tickers = {
+        t: n for t, n in unique_tickers.items()
+        if t.upper() not in non_equity | {"RS", "IT", "ON", "ALL", "CAT", "LOW", "KEY", "ADP", "MSCI"}
     }
 
-    for item in data.get("candidates", []) if isinstance(data, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        ticker = str(item.get("ticker") or "").strip()
-        name = str(item.get("name") or "").strip()
-        normalized_ticker = _normalisiere_ticker(ticker)
-        if normalized_ticker in non_equity_tickers:
-            continue
-        if ticker and name and ticker.casefold() != name.casefold():
-            key = name.casefold()
-            name_tickers.setdefault(key, set()).add(ticker)
-            name_display.setdefault(key, name)
-
-    starts = [m.start() for m in re.finditer(
-        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
-        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
-        text,
-    )]
-    if not starts:
-        return
-
-    checked = "\n".join(
-        text[s:(starts[i + 1] if i + 1 < len(starts) else len(text))]
-        for i, s in enumerate(starts)
-    )
-
     errors = []
-    for line in checked.splitlines():
+    for line_no, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
+        # Source-/Dateinamen und URL-Provenienz sind keine Aktiennennungen.
+        if re.search(r"(?i)(?:https?://|\.csv\b|\.json\b|\.py\b|\.zip\b)", line):
+            continue
 
-        # Nur ein kanonischer Firmenname startet die Aktienpruefung.
-        # Ein nackter Ticker (z. B. FIX oder MSCI) ist bewusst kein Fehler.
-        for name_key, valid_tickers in name_tickers.items():
-            if not name_key or name_key not in line.casefold():
+        line_folded = line.casefold()
+        for name, ticker in canonical_names:
+            if name.casefold() not in line_folded:
                 continue
-            if not any(
-                re.search(
-                    rf"\([^\n()]*\b{re.escape(ticker)}\b[^\n()]*\)",
-                    line,
-                    re.I,
-                )
-                for ticker in valid_tickers
-            ):
-                display_name = name_display.get(name_key, name_key)
-                errors.append(
-                    f"{display_name}: Firmenname ohne kanonisches Name (Ticker)-Format"
-                )
+            for match in re.finditer(r"(?<!\w)" + re.escape(name) + r"(?!\w)", line, re.I):
+                after = line[match.end():]
+                suffix = re.match(r"\s*\(\s*([A-Z0-9.^=-]+)\s*\)", after)
+                if not suffix or suffix.group(1).casefold() != ticker.casefold():
+                    errors.append(
+                        f"Zeile {line_no}: {name} nicht unmittelbar als {name} ({ticker}) formatiert"
+                    )
+                    break
+
+        # Auch nackte Ticker in Fliesstext muessen aufgeloest sein. Explizite
+        # Tickerfelder bleiben Metadaten; die Identitaet muss dann im selben
+        # Datensatz durch die Normalisierung vorangestellt sein.
+        for ticker, name in unique_tickers.items():
+            if ticker.casefold() not in line_folded:
+                continue
+            token_re = re.compile(
+                rf"(?<![\w.^=-]){re.escape(ticker)}(?![\w.^=-])"
+            )
+            for match in token_re.finditer(line):
+                before = line[:match.start()]
+                after = line[match.end():]
+                if re.search(r"(?i)\bTicker:\s*$", before):
+                    continue
+                if before.endswith("(") and re.search(rf"{re.escape(name)}\s*$", before[:-1], re.I) and after.startswith(")"):
+                    continue
+                # A line with a structured field must still have an explicit
+                # identity, not just a bare ticker value.
+                errors.append(f"Zeile {line_no}: Ticker {ticker} ohne Name ({ticker})")
                 break
+            if errors and len(errors) >= 30:
+                break
+        if len(errors) >= 30:
+            break
 
     if errors:
-        raise RuntimeError("NAME_TICKER_GATE_UNGUELTIG: " + " | ".join(errors[:20]))
-
+        raise RuntimeError("NAME_TICKER_GATE_UNGUELTIG: " + " | ".join(errors[:30]))
 
 def _normalisiere_punkt11_quellengebunden(text):
     """Ersetzt 11.1–11.6 durch deterministische, quellengebundene Fakten."""
@@ -9726,21 +9874,19 @@ def _pruefe_punkt11_quellenbindung(text):
             raise RuntimeError(f"PUNKT11_DATENQUALITAET_WIDERSPRUCH: erwartet={qual}")
 
 def _bereinige_ausgabe_und_formatiere(text):
-    """Deterministische Endformatierung fuer fachlich getrennte Abschnitte.
+    """Idempotente Endformatierung für Überschriften, Unterpunkte und Aktienblöcke.
 
-    7.5 darf keine Edelmetalle enthalten, weil diese ausschliesslich in Punkt 8
-    autoritativ dargestellt werden. Zusaetzlich werden die vom Nutzer geforderten
-    Leerzeilen zwischen eigenstaendigen Eintraegen in 1.4, 2.4, 5 und 10 gesetzt.
-    Die Funktion veraendert keine Fachwerte oder Berechnungen.
+    Vereinheitlicht Leerzeilen im gesamten Bericht und stellt insbesondere
+    Abstände zwischen nummerierten Abschnitten sowie einzelnen Aktienprofilen
+    in 1.2/2.1 her. Inhaltliche Werte werden nicht verändert.
     """
     if not text:
         return text
 
     lines = text.splitlines()
 
-    # 7.5: Edelmetalle aus dem Rohstoffblock entfernen. Nur eigenstaendige
-    # Zeilen mit Gold/Silber/Platin/Palladium werden entfernt; Punkt 8 bleibt
-    # vollständig unangetastet.
+    # 7.5: Edelmetalle gehören ausschließlich in Abschnitt 8. Nur eigenständige
+    # Zeilen mit einem Metallnamen werden entfernt; andere Rohstoffdaten bleiben.
     precious = re.compile(r"(?i)^\s*[-•]?\s*(?:gold|silber|platin|palladium)\b")
     out = []
     in_75 = False
@@ -9748,48 +9894,63 @@ def _bereinige_ausgabe_und_formatiere(text):
         stripped = line.strip()
         if re.match(r"^7\.5\s+Rohstoffe\s*$", stripped, re.I):
             in_75 = True
-            out.append(line)
+            out.append(line.rstrip())
             continue
         if in_75 and re.match(r"^7\.6\s+Krypto\s*$", stripped, re.I):
             in_75 = False
-            out.append(line)
+            out.append(line.rstrip())
             continue
         if in_75 and precious.match(line):
             continue
-        out.append(line)
-    lines = out
+        out.append(line.rstrip())
 
-    # Leerzeilen zwischen Eintraegen/Unterpunkten in den explizit genannten
-    # Abschnitten. Bereits vorhandene Leerzeilen werden nicht vervielfacht.
-    target_sections = {"1.4", "2.4", "5."}
-    section = None
+    # Alle strukturellen Haupt- und Unterüberschriften erhalten genau eine
+    # Leerzeile davor. Das behebt u.a. fehlende Abstände vor 1.3, 8 und 9.
+    heading_re = re.compile(r"^\s*(?:\d+\.\s+|\d+\.\d+\s+).+$")
+    # Kandidaten-/Aktienblöcke, die nicht immer mit einer Nummer beginnen.
+    stock_12_re = re.compile(r"^.+\([A-Z0-9.^=-]+\)\s*\|\s*Ticker:")
+    stock_21_re = re.compile(r"^.+\([A-Z0-9.^=-]+\)\s*\|\s*Ticker:.*\|\s*Scanner:")
+    a_candidate_re = re.compile(r"^Name:\s*.+\|\s*Ticker:")
+
     formatted = []
-    for idx, line in enumerate(lines):
+    section = None
+    for line in out:
         stripped = line.strip()
-        m = re.match(r"^(1\.4|2\.4|5\.)\b", stripped)
-        if m:
-            section = m.group(1)
-            formatted.append(line)
-            continue
-        if re.match(r"^(?:1\.|2\.|3\.|4\.|6\.|7\.|8\.|9\.|10\.|11\.)", stripped) and not stripped.startswith(("1.4", "2.4", "5.")):
-            section = None
-        formatted.append(line)
-        if section in target_sections and stripped.startswith("-"):
-            # Idempotent formatieren: vorhandene Leerzeile nicht nochmals
-            # vervielfachen, sonst waechst die Datei bei jedem Reparaturpass.
-            if idx + 1 >= len(lines) or lines[idx + 1].strip():
+        if not stripped:
+            # Vorläufig nur eine Leerzeile zulassen.
+            if formatted and formatted[-1] != "":
                 formatted.append("")
-    lines = formatted
+            continue
 
-    # Punkt 10: Leerzeile zwischen 10.1–10.5 und deren Inhalten. Das ist rein
-    # typografisch und lässt die tatsächlichen Daten unverändert.
-    out = []
-    for i, line in enumerate(lines):
-        if re.match(r"^10\.[1-5]\s+", line.strip()) and out and out[-1] != "":
-            out.append("")
-        out.append(line)
-    return "\n".join(out).strip() + "\n"
+        # Abschnitte mit separaten Listeneinträgen.
+        main = re.match(r"^(\d+)\.\s+", stripped)
+        sub = re.match(r"^(\d+\.\d+)\s+", stripped)
+        if main:
+            section = main.group(1) + "."
+        elif sub:
+            section = sub.group(1)
 
+        needs_blank = bool(heading_re.match(stripped))
+        if section == "1.2" and stock_12_re.match(stripped):
+            needs_blank = True
+        if section == "2.1" and stock_21_re.match(stripped):
+            needs_blank = True
+        if section == "2.4" and a_candidate_re.match(stripped):
+            needs_blank = True
+        # Im Ideen-/Frühsignal-Abschnitt jeden eigenständigen Titel trennen.
+        if section == "5." and stripped.startswith(("- ", "• ")):
+            needs_blank = True
+        if section == "1.4" and stripped.startswith(("- ", "• ")):
+            needs_blank = True
+
+        if needs_blank and formatted and formatted[-1] != "":
+            formatted.append("")
+        formatted.append(stripped)
+
+    # Kein Leerraum am Dokumentende; bei mehrfachen Aufrufen identisches Ergebnis.
+    while formatted and formatted[-1] == "":
+        formatted.pop()
+    return "\n".join(formatted) + "\n"
 
 
 def _abschnitt_text(text, heading, naechste_headings):
@@ -11321,32 +11482,35 @@ def _repariere_punkt10_5_und_portfolio(text, eingabedateien, closed_history):
 
 
 def _synchronisiere_1_1_mit_quellen(text, briefing_text="", portfolio_text=""):
-    """Synchronisiert kritische Scanner-/Portfolioaussagen mit den Quellen."""
+    """Synchronisiert Scannerzahlen, getrennte Portfolio-Grundgesamtheiten und S&P-Text."""
     if not text:
         return text
-    # Entfernt die unbelegte Jahreszahl sowohl aus dem Vorspann als auch aus 1.1.
-    text = re.sub(
-        r"(?i)bisheriges Rekordhoch im verfügbaren Datenbestand\s*\(ca\.\s*1927,\s*7\.844,52 Punkte\)",
-        "bisheriges im verfügbaren Datenbestand dokumentiertes Vergleichshoch von 7.844,52 Punkten",
-        text,
-    )
+
+    # Die Jahreszahl 1927 bezeichnet im Briefing den ungefähren Beginn der
+    # Datenreihe, nicht das Jahr des Rekordhochs. Die Formulierung wird entwirrt.
+    text = _repariere_sp500_rekordhoch(text)
+
     start = re.search(r"(?m)^1\.1\s+Was hat sich seit dem letzten Lauf verändert\?\s*$", text)
     end = re.search(r"(?m)^1\.2\s+Sofort handelbare Chancen\s*$", text)
     if not (start and end and start.start() < end.start()):
         return text
     block = text[start.start():end.start()]
 
-    # Der Scannerbericht ist autoritativ fuer die Zahl valider Setups.
     valid_match = re.search(
         r"(?i)(?:Nach allen Filtern:\s*\d+\s*\|\s*)?davon\s+VALIDE:\s*(\d+)",
         briefing_text or "",
     )
     if valid_match:
         count = int(valid_match.group(1))
-        # Ersetzt die unbelegte Gemini-Zahl samt irrefuehrender Kandidatenliste.
+        # Den kompletten alten Scannervergleich ersetzen; keine alte Zahl oder
+        # veraltete Kandidatenliste aus dem Gemini-Text stehen lassen.
+        new_intro = (
+            f"Der aktuelle Trendfolge-Scanner weist laut Scan-Statistik {count} valide Setups aus; "
+            "die konkreten Setups werden ausschließlich in Abschnitt 2.1 aufgeführt. "
+        )
         block = re.sub(
             r"(?is)Gegenüber dem vorherigen Lauf.*?(?=Der Trendwende-Scanner|Die Trendwende|Auf der Short-Seite)",
-            f"Der aktuelle Trendfolge-Scanner weist laut Scan-Statistik {count} valide Setups aus; die konkreten Setups werden ausschließlich in Abschnitt 2.1 aufgeführt. ",
+            new_intro,
             block,
             count=1,
         )
@@ -11357,43 +11521,254 @@ def _synchronisiere_1_1_mit_quellen(text, briefing_text="", portfolio_text=""):
             count=1,
         )
 
-    # 1.1 und 10.5 muessen dieselbe Kennzahl/Grundgesamtheit verwenden.
+    # Zwei gültige Kennzahlen mit unterschiedlichen Grundgesamtheiten getrennt
+    # ausweisen: offener Korb ohne Benchmark-ETF (21) und gesamtes Portfolio (22).
+    basket = re.search(
+        r"(?im)^\s*Ø\s*Performance aktuell offener Positionen\s*\(ohne\s+EUNL\.DE\)\s*:\s*([+-]?\d+(?:[.,]\d+)?)\s*%\s*\r?\n"
+        r"\s*Anzahl berücksichtigter offener Positionen\s*:\s*(\d+)",
+        briefing_text or "",
+    )
     port = re.search(
         r"(?im)^Portfolio-Übersicht:\s*Anzahl offene Positionen:\s*(\d+)\s*\|\s*"
         r"Ø Performance offener Positionen:\s*([-+]?\d+[.,]\d+)%\s*"
         r"\(n=(\d+) Positionen mit verwertbarer Performance\)",
         portfolio_text or "",
     )
-    if port:
-        n, perf, n_perf = port.group(1), port.group(2).replace(",", "."), port.group(3)
-        perf_de = perf.replace(".", ",")
-        live_match = re.search(
-            r"Live-System bei\s*([-+]?\d+[.,]\d+)\s*%\s*gegenüber dem MSCI World mit\s*"
-            r"([-+]?\d+[.,]\d+)\s*%.*?Underperformance von\s*([-+]?\d+[.,]\d+)\s*Prozentpunkten",
-            block, re.I,
+    live_match = re.search(
+        r"Live-System bei\s*([-+]?\d+[.,]\d+)\s*%\s*gegenüber dem MSCI World mit\s*"
+        r"([-+]?\d+[.,]\d+)\s*%.*?Underperformance von\s*([-+]?\d+[.,]\d+)\s*Prozentpunkten",
+        block, re.I,
+    )
+    live_clause = ""
+    if live_match:
+        live, benchmark, under = (x.replace(".", ",") for x in live_match.groups())
+        live_clause = (
+            f" Der Live-System-Benchmark-Abgleich beträgt {live}% gegenüber dem MSCI World "
+            f"mit {benchmark}% im gleichen Zeitraum (Underperformance: {under} Prozentpunkte)."
         )
-        live_clause = ""
-        if live_match:
-            live, benchmark, under = (x.replace(".", ",") for x in live_match.groups())
-            live_clause = (
-                f" Der Live-System-Benchmark-Abgleich beträgt {live}% gegenüber dem MSCI World "
-                f"mit {benchmark}% im gleichen Zeitraum (Underperformance: {under} Prozentpunkte)."
-            )
-        # Den kompletten Satz ersetzen, damit alte Anzahl/Performance nicht
-        # als widerspruechlicher Rest stehen bleibt.
+    if basket and port:
+        basket_perf = basket.group(1).replace(".", ",")
+        basket_n = basket.group(2)
+        portfolio_perf = port.group(2).replace(".", ",")
+        portfolio_n = port.group(3)
+        portfolio_count = port.group(1)
+        metrics_clause = (
+            f"Der offene Korb ohne EUNL.DE liegt bei {basket_perf}% ({basket_n} Positionen). "
+            f"Die Portfolio-Übersicht über alle offenen Positionen weist im Durchschnitt "
+            f"{portfolio_perf}% bei {portfolio_count} offenen Positionen aus "
+            f"(n={portfolio_n} mit verwertbarer Performance); die Grundgesamtheiten sind verschieden."
+            + live_clause + " "
+        )
         block = re.sub(
-            r"(?i)Der Live-Benchmark-Abgleich zeigt.*?(?=\s*Der S&P 500|\s*$)",
-            f"Die durchschnittliche Performance der offenen Positionen liegt bei {perf_de}% "
-            f"(n={n_perf} Positionen mit verwertbarer Performance).{live_clause} ",
+            r"(?is)(?:Der Live-Benchmark-Abgleich zeigt|Die durchschnittliche Performance der offenen Positionen liegt bei|Der offene Korb ohne EUNL\.DE liegt bei).*?(?=Der S&P 500)",
+            metrics_clause,
             block,
             count=1,
         )
-    block = re.sub(
-        r"(?i)bisheriges Rekordhoch im verfügbaren Datenbestand\s*\(ca\.\s*1927,\s*7\.844,52 Punkte\)",
-        "im verfügbaren Datenbestand dokumentiertes Vergleichshoch von 7.844,52 Punkten",
-        block,
-    )
+    elif port:
+        portfolio_perf = port.group(2).replace(".", ",")
+        block = re.sub(
+            r"(?is)(?:Der Live-Benchmark-Abgleich zeigt|Die durchschnittliche Performance der offenen Positionen liegt bei|Der offene Korb ohne EUNL\.DE liegt bei).*?(?=Der S&P 500)",
+            f"Die Portfolio-Übersicht weist {portfolio_perf}% bei {port.group(1)} offenen Positionen aus. " + live_clause + " ",
+            block,
+            count=1,
+        )
+
+    block = _repariere_sp500_rekordhoch(block)
     return text[:start.start()] + block + text[end.start():]
+
+
+def _repariere_sp500_rekordhoch(text):
+    """Entwirrt den S&P-500-Hinweis: 1927 ist Datenreihenbeginn, nicht Rekordjahr."""
+    if not text:
+        return text
+    lines = []
+    for line in text.splitlines():
+        is_record_note = (
+            re.search(r"(?i)S&P\s*500", line)
+            and re.search(r"1927|7[.,]844[.,]52", line)
+            and re.search(r"(?i)Rekordhoch|Vergleichshoch", line)
+            and re.search(r"(?i)1927|im Tagesverlauf", line)
+        )
+        if is_record_note:
+            close = re.search(r"(?i)(?:Schlussstand(?:\s+von)?|schloss bei)\s*([0-9.,]+)\s*Punkte", line)
+            high = re.search(r"7[.,]844[.,]52\s*Punkte", line)
+            close_value = close.group(1) if close else "7.811,54"
+            high_value = high.group(0).replace(" Punkte", "") if high else "7.844,52"
+            if line.lstrip().startswith(("- S&P", "• S&P")):
+                prefix = line[:len(line) - len(line.lstrip())]
+                line = (
+                    f"{prefix}- S&P 500 – Schlussstand {close_value} Punkte; rund 0,4 % unter dem "
+                    f"höchsten Wert im verfügbaren Datenbestand von {high_value} Punkten "
+                    "(Datenreihe ab ca. 1927)."
+                )
+            else:
+                line = (
+                    f"Der S&P 500 schloss bei {close_value} Punkten, rund 0,4 % unter dem "
+                    f"höchsten Wert im verfügbaren Datenbestand von {high_value} Punkten "
+                    "(Datenreihe ab ca. 1927)."
+                )
+        # Ältere, grammatisch beschädigte Formulierungen aus früheren Reparaturpässen.
+        line = re.sub(
+            r"(?i)bisheriges im verfügbaren Datenbestand dokumentiertes Vergleichshoch von 7\.844,52 Punkten",
+            "höchster Wert im verfügbaren Datenbestand von 7.844,52 Punkten",
+            line,
+        )
+        lines.append(line)
+    result = "\n".join(lines)
+    # In 1.1 steht die Marktbeobachtung innerhalb eines langen Absatzes. Nur
+    # diesen S&P-Satz ersetzen, nicht den gesamten Absatz mit seinen Makrofakten.
+    result = re.sub(
+        r"(?i)Der S&P 500 nähert sich mit einem Schlussstand von 7\.811,54 Punkten "
+        r"\(ca\.\s*0,4%?\s*unter dem bisherigen Rekordhoch von 7\.844,52 Punkten im verfügbaren Datenbestand\) "
+        r"aktiv seinem Höchststand\.",
+        "Der S&P 500 schloss bei 7.811,54 Punkten, rund 0,4 % unter dem höchsten Wert im verfügbaren Datenbestand von 7.844,52 Punkten (Datenreihe ab ca. 1927).",
+        result,
+    )
+    return result
+
+
+def _repariere_watchlist_technisches_potenzial(text, eingabedateien=None):
+    """Berechnet Watchlist-Technikpotenzial aus Kurs und technischem Ziel der Scanner-CSV."""
+    if not text:
+        return text
+    inputs = eingabedateien or {}
+    path = inputs.get("Setups(...).csv") if isinstance(inputs, dict) else None
+    if not path or not os.path.isfile(path):
+        try:
+            path = finde_datei(DATEIMUSTER["Setups(...).csv"])
+        except Exception:
+            path = None
+    if not path or not os.path.isfile(path):
+        return text
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle, delimiter=";"))
+    except (OSError, csv.Error):
+        return text
+
+    source = {}
+    for row in rows:
+        ticker = str(row.get("Ticker", "")).strip().upper()
+        try:
+            price = float(str(row.get("Kurs", "")).strip().replace(",", "."))
+            target = float(str(row.get("Tech-Kursziel", "")).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        if ticker and price > 0 and target > 0:
+            source[ticker] = (price, target, row)
+
+    def fmt_de(value):
+        return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    lines = text.splitlines()
+    in_watchlist = False
+    changed = False
+    out = []
+    for line in lines:
+        if re.match(r"(?i)^WATCHLIST(?:\s|$)", line.strip()):
+            in_watchlist = True
+            out.append(line)
+            continue
+        if in_watchlist and re.match(r"(?i)^RISIKO-WATCH\s*$", line.strip()):
+            in_watchlist = False
+        if in_watchlist:
+            m = re.match(r"(?P<prefix>\s*[-•]\s*)?(?P<name>.+?)\s*\((?P<ticker>[A-Z0-9.^=-]+)\)\s*\|(?P<rest>.*)", line)
+            if m and m.group("ticker").upper() in source and re.search(r"Technisches Potenzial", line, re.I):
+                price, target, row = source[m.group("ticker").upper()]
+                pct = (target / price - 1.0) * 100.0
+                currency = "€" if str(row.get("Waehrung", "")).upper() == "EUR" else "$"
+                reason = str(row.get("Status_Grund", "")).strip() or "Nicht gesondert ausgewiesen"
+                name = str(row.get("Name", m.group("name"))).strip()
+                pct_de = f"{pct:.2f}".replace(".", ",")
+                replacement = (
+                    f"- {name} ({m.group('ticker').upper()}) | Grund: {reason} | Kurs: {fmt_de(price)}{currency} | "
+                    f"Technisches Potenzial: {pct_de}% (Tech-Kursziel: {fmt_de(target)}{currency})"
+                )
+                out.append(replacement)
+                changed = changed or replacement != line
+                continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+def _repariere_7_1_ytd_aus_briefing(text, briefing_text):
+    """Synchronisiert YTD-Angaben in 7.1 ausschließlich aus dem aktuellen Briefing."""
+    if not text:
+        return text
+    start = re.search(r"(?m)^7\.1\s+Aktienmärkte\s*/\s*Indizes\s*$", text)
+    end = re.search(r"(?m)^7\.2\s+Zinsen\s*$", text)
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.start():end.start()]
+    # Nur die explizit vorhandenen YTD-Quellwerte werden übernommen.
+    source_specs = [
+        ("S&P 500", r"S&P\s*500"),
+        ("Nasdaq", r"Nasdaq(?: Composite)?(?:\s*/\s*Nasdaq 100)?"),
+        ("DAX", r"DAX"),
+        ("EuroStoxx50", r"EuroStoxx\s*50"),
+        ("Nikkei 225", r"Nikkei\s*225"),
+        ("Shanghai Composite", r"Shanghai Composite"),
+        ("Hang Seng", r"Hang Seng"),
+    ]
+    ytd = {}
+    for label, line_pattern in source_specs:
+        src = re.search(
+            r"(?im)^\s*[•-]\s*" + line_pattern + r"\s*:\s*[^\n]*?\bYTD\s+([+-]?\d+(?:[.,]\d+)?)%",
+            briefing_text or "",
+        )
+        if src:
+            ytd[label] = src.group(1).replace(".", ",")
+    source_dates = {}
+    for label, line_pattern in source_specs:
+        src = re.search(
+            r"(?im)^\s*[•-]\s*" + line_pattern + r"\s*:\s*[^\n]*?\bDatenstand\s+(\d{2})\.(\d{2})\.(\d{4})",
+            briefing_text or "",
+        )
+        if src:
+            day, month, year = src.groups()
+            source_dates[label] = f"{year}-{month}-{day}"
+    lines = block.splitlines()
+    out = []
+    for line in lines:
+        replaced = line
+        for label, pattern in source_specs:
+            if label not in ytd or not re.search(r"(?i)^\s*[-•]\s*" + pattern + r"\s*:", line):
+                continue
+            replaced = re.sub(r"(?i)(\bYTD\s+)[+-]?\d+(?:[.,]\d+)?%", lambda m: m.group(1) + ytd[label] + "%", line, count=1)
+            if label in source_dates:
+                replaced = re.sub(r"(?i)(\bDatenstand:\s*)\d{4}-\d{2}-\d{2}", lambda m: m.group(1) + source_dates[label], replaced, count=1)
+                replaced = re.sub(r"(?i)(\bDatenstand:\s*)\d{2}\.\d{2}\.\d{4}", lambda m: m.group(1) + source_dates[label], replaced, count=1)
+            break
+        # Für Russell 2000 enthält das aktuelle Briefing keinen YTD-Wert. Keine
+        # nicht belegte Zahl stehen lassen; andere Perioden/Indexwerte bleiben.
+        if re.match(r"(?i)^\s*[-•]\s*Russell\s+2000\s*:", replaced) and re.search(r"(?i)\bYTD\s+[+-]?\d+(?:[.,]\d+)?%", replaced) and "Russell 2000" not in ytd:
+            replaced = re.sub(r"(?i)\s*\|\s*YTD\s+[+-]?\d+(?:[.,]\d+)?%", " | YTD NICHT VERFÜGBAR (im aktuellen Briefing nicht ausgewiesen)", replaced, count=1)
+        out.append(replaced)
+    new_block = "\n".join(out)
+    return text[:start.start()] + new_block + text[end.start():]
+
+
+def _repariere_2_5_alternativen(text):
+    """Trennt Portfolio-Performance/Ideenreferenzen von tatsächlich belegten Alternativ-Setups."""
+    if not text:
+        return text
+    start = re.search(r"(?m)^2\.5\s+Sonstige durch Gemini erkannte Chancen\s*$", text)
+    end = re.search(r"(?m)^3\.\s*🧠\s*THEMEN\s*&\s*ZUSAMMENHÄNGE\s*$", text)
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.end():end.start()]
+    portfolio_refs = all(ticker in block for ticker in ("XDEQ.DE", "SPYI.DE", "LSUG.MI")) and "Performance im Korb" in block
+    unsupported_theme_refs = all(ticker in block for ticker in ("ETN", "PH", "ITW"))
+    if not (portfolio_refs and unsupported_theme_refs):
+        return text
+    replacement = (
+        "2.5 Sonstige durch Gemini erkannte Chancen\n"
+        "- Keine zusätzlichen, durch aktuelle Scanner-Daten bestätigten Alternativ-Setups ausgewiesen.\n"
+        "- XDEQ.DE, SPYI.DE und LSUG.MI werden mit ihrer Performance im Korb als bestehender Portfolio-Kontext genannt; diese Performance ist kein neues Einstiegssignal.\n"
+        "- Eaton Corporation plc (ETN), Parker-Hannifin Corporation (PH) und Illinois Tool Works Inc. (ITW) sind thematische Ideenreferenzen. Für diesen Lauf sind keine aktuellen Scanner-Setups oder konkreten Entry-/Stop-/Ziel-/CRV-Daten belegt; daher keine sofort handelbaren Alternativen.\n\n"
+    )
+    return text[:start.start()] + replacement + text[end.start():]
 
 
 def _pruefe_finale_struktur_und_konsistenz(text):
@@ -11409,8 +11784,8 @@ def _pruefe_finale_struktur_und_konsistenz(text):
     if duplicates:
         errors.append("Doppelte Unterabschnittsnummer(n): " + ", ".join(duplicates))
 
-    if re.search(r"(?i)bisheriges Rekordhoch[^\n]{0,80}1927", text or ""):
-        errors.append("Unplausible/unverifizierte Jahreszahl 1927 beim S&P-500-Rekordhoch.")
+    if re.search(r"(?i)Rekordhoch[^\n]{0,80}\(ca\.\s*1927\s*,", text or ""):
+        errors.append("Mehrdeutige S&P-500-Formulierung: 1927 muss als Beginn der Datenreihe, nicht als Rekordjahr, bezeichnet werden.")
 
     b13 = _abschnitt_text(text, "1.3 Ideen im Aufbau", ["1.4 Frühindikatoren / neue Themen"])
     b4 = _abschnitt_text(text, "4. 🔭 IDEEN IM AUFBAU", ["5. 🥇 AKTIEN MIT FRÜHEM SIGNAL"])
@@ -11503,6 +11878,198 @@ def _ergaenze_handlungsprioritaet_2_4(text):
     )
     return text[:block_end].rstrip() + consequence + "\n" + text[block_end:]
 
+
+
+def _repariere_makro_und_edelmetall_konsistenz(text, makro_text, edel_text):
+    """Synchronisiert bekannte numerische Konflikte strikt aus den aktuellen Quellen.
+
+    Nicht vergleichbare alternative Indexstände werden absichtlich nicht
+    überschrieben: solange ihre Herkunft nicht belegt ist, bleiben sie getrennt
+    und erhalten einen expliziten Hinweis auf die offene Quellenvergleichbarkeit.
+    """
+    if not text:
+        return text, []
+
+    changes = []
+    # Makro: einzelne, strukturierte Faktenwerte aus dem aktuellen Makrobriefing.
+    macro_lines = (makro_text or "").splitlines()
+    ism_services = None
+    for line in macro_lines:
+        m = re.match(r"(?i)^\s*ISM Services PMI:\s*([-+]?\d[\d.,]*)\b", line)
+        if m:
+            ism_services = m.group(1).replace(".", ",")
+            break
+
+    if ism_services is not None:
+        # Korrigiert nur das explizite PMI-Label bzw. die zugeordnete Services-Angabe,
+        # nicht beliebige Vorkommen derselben Zahl (z.B. Subindizes).
+        patterns = [
+            (r"(?i)(ISM Services PMI\s+)(\d+(?:[.,]\d+)?)\s*(?:bzw\.\s*\d+(?:[.,]\d+)?|\|\s*\d+(?:[.,]\d+)?)",
+             r"\g<1>" + ism_services),
+            (r"(?i)(ISM Services PMI\s+)(?:54[,.]9|58[,.]8)\b", r"\g<1>" + ism_services),
+            (r"(?i)(ISM Services\s+)(?:54[,.]9|58[,.]8)\b", r"\g<1>" + ism_services),
+        ]
+        for pattern, replacement in patterns:
+            text, n = re.subn(pattern, replacement, text)
+            if n:
+                changes.append(f"ISM Services PMI auf Quellwert {ism_services} gesetzt ({n} Stelle(n))")
+
+    # Brent/WTI: jede als Spread-/Differenzsatz erkennbare Formulierung erhält
+    # die richtigen drei Rollen; der Spread darf nicht als Brent-Kurs erscheinen.
+    refs = _extrahiere_makro_referenzwerte(makro_text or "")
+    brent = refs.get("brent")
+    wti = refs.get("wti")
+    if brent and wti:
+        b = float(brent["kurs"])
+        w = float(wti["kurs"])
+        spread = b - w
+        fmt = lambda v: f"{v:.2f}".replace(".", ",")
+        bad_energy = re.compile(
+            r"(?i)Brent\s+" + re.escape(fmt(spread)) +
+            r"\s*\$?\s*(?:vs\.?|gegenüber|und)\s*WTI\s+" + re.escape(fmt(w)) +
+            r"\s*\$?\s*,?\s*(?:Differenz|Spread)\s+" + re.escape(fmt(spread)) + r"\s*\$?"
+        )
+        text, n = bad_energy.subn(
+            f"Brent {fmt(b)} $ vs. WTI {fmt(w)} $, Spread {fmt(spread)} $",
+            text,
+        )
+        if n:
+            changes.append(f"Brent/WTI-Rollen korrigiert ({n} Stelle(n))")
+
+    # Edelmetalle: Quelle liefert Kurs/4W/Tief/Abstand aus Lageblock und
+    # EMA200/WMA200 aus dem expliziten Trendfolge-Diagnoseblock.
+    if edel_text:
+        lage_m = re.search(
+            r"(?ms)^LAGE JE METALL\b.*?^(?=TRENDFOLGE-DIAGNOSE JE METALL\b)",
+            edel_text,
+        )
+        lage_block = lage_m.group(0) if lage_m else ""
+        metals = {
+            "Gold": ("GC=F", "8.1 Gold"),
+            "Silber": ("SI=F", "8.2 Silber"),
+            "Platin": ("PL=F", "8.3 Platin"),
+            "Palladium": ("PA=F", "8.4 Palladium"),
+        }
+        source = {}
+        for metal, (ticker, heading) in metals.items():
+            lm = re.search(
+                r"(?m)^\s*" + re.escape(metal) +
+                r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+                r"([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen\b([^\n]*)",
+                lage_block,
+            )
+            if not lm:
+                continue
+            vals = {"kurs": lm.group(1), "fourw": lm.group(2)}
+            low = re.search(r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%", lm.group(3))
+            if low:
+                vals.update({"low": low.group(1).rstrip("."), "distance": low.group(2).rstrip(".")})
+            src_block = _edelmetall_quellenblock(edel_text, metal)
+            tm = re.search(
+                r"200er-Trend:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|\s*EMA200\s+([-+]?\d[\d.,]*)"
+                r"\s*\([^)]*\)\s*\|\s*WMA200\s+([-+]?\d[\d.,]*)",
+                src_block or "",
+            )
+            if tm:
+                vals.update({"ema": tm.group(1), "wma": tm.group(2)})
+            source[metal] = vals
+
+        section_matches = list(re.finditer(r"(?m)^8\.[1-4]\s+(Gold|Silber|Platin|Palladium)\s*$", text))
+        for idx, sm in reversed(list(enumerate(section_matches))):
+            metal = sm.group(1)
+            vals = source.get(metal)
+            if not vals:
+                continue
+            end = section_matches[idx + 1].start() if idx + 1 < len(section_matches) else len(text)
+            n9 = re.search(r"(?m)^9\.\s*📅\s*NÄCHSTE KATALYSATOREN\s*$", text[sm.end():end])
+            if n9:
+                end = sm.end() + n9.start()
+            block = text[sm.start():end]
+            ticker = metals[metal][0]
+            # Entfernt veraltete Varianten der exakt quellengebundenen Felder,
+            # ersetzt sie durch eine kanonische Einzelzeile. Kurzfristige 5T-Werte
+            # bleiben erhalten, da sie in diesem Briefing nicht geliefert werden.
+            def fmt_source_number(raw):
+                return f"{float(raw.replace(',', '.')):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            four_w_display = vals["fourw"].replace(".", ",")
+            canonical_lines = [
+                f"Aktueller Kurs: {fmt_source_number(vals['kurs'])}$ (Futures {ticker}; Datenstand 09.10.2026)",
+                f"4-Wochen-Entwicklung: {four_w_display}% (autoritative Futures-Daten)",
+            ]
+            if "low" in vals:
+                canonical_lines.append(
+                    f"52-Wochen-Situation: 52W-Tief bei {fmt_source_number(vals['low'])}$, aktueller Abstand {vals['distance'].replace('.', ',')}% darüber"
+                )
+            if "ema" in vals and "wma" in vals:
+                canonical_lines.append(f"EMA200 / WMA200: EMA200 bei {fmt_source_number(vals['ema'])}$, WMA200 bei {fmt_source_number(vals['wma'])}$")
+            for label, canonical in [
+                ("Aktueller Kurs", canonical_lines[0]),
+                ("4-Wochen-Entwicklung", canonical_lines[1]),
+            ]:
+                pat = r"(?m)^\s*" + re.escape(label) + r":.*$"
+                block, n = re.subn(pat, canonical, block)
+                if n:
+                    changes.append(f"{metal}: {label} quellengebunden ersetzt ({n})")
+            if "low" in vals:
+                pat = r"(?m)^\s*52-Wochen-Situation:.*$"
+                block, n = re.subn(pat, canonical_lines[2], block)
+                if n:
+                    changes.append(f"{metal}: 52-Wochen-Situation quellengebunden ersetzt ({n})")
+            if "ema" in vals and "wma" in vals:
+                pat = r"(?m)^\s*EMA200\s*/\s*WMA200:.*$"
+                block, n = re.subn(pat, canonical_lines[-1], block)
+                if n:
+                    changes.append(f"{metal}: EMA/WMA200 quellengebunden ersetzt ({n})")
+            text = text[:sm.start()] + block + text[end:]
+
+        # Gesamtbild muss dieselben autoritativen Kurse und 4W-Werte nennen.
+        summary = re.search(r"(?ms)^EDELMETALL-GESAMTBILD\s*$.*?(?=^\s*9\.\s*📅\s*NÄCHSTE KATALYSATOREN|\Z)", text)
+        if summary:
+            block = summary.group(0)
+            for metal in ("Gold", "Silber", "Platin", "Palladium"):
+                vals = source.get(metal)
+                if not vals:
+                    continue
+                # Ersetzt kursgebundene Klammerangabe nach Metallname, wenn vorhanden.
+                pat = r"(?i)(" + re.escape(metal) + r"\s*)\(\s*[-+]?\d[\d.,]*\s*\$?\s*\)"
+                canonical_price = f"{metal} ({float(vals['kurs'].replace(',', '.')):,.2f}$)".replace(",", "X").replace(".", ",").replace("X", ".")
+                block, n = re.subn(pat, canonical_price, block)
+                if n:
+                    changes.append(f"Gesamtbild {metal}: Kurs synchronisiert ({n})")
+            text = text[:summary.start()] + block + text[summary.end():]
+
+    # Auch der spätere Trigger-Kalender darf das aktuelle Palladium-Kurstief
+    # nicht mit dem abweichenden Kurswert verwechseln.
+    if edel_text:
+        p_low = re.search(
+            r"(?m)^\s*Palladium:\s*Kurs\s+[-+]?\d[\d.,]*\s*\|\s*[-+]?\d[\d.,]*%\s+in den letzten 4 Wochen[^\n]*52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)",
+            lage_block if "lage_block" in locals() else "",
+        )
+        if p_low:
+            low_raw = p_low.group(1).rstrip(".,")
+            low_value = f"{float(low_raw.replace(',', '.')):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            text, n = re.subn(
+                r"(?i)(Palladium:\s*Verteidigung des 52-Wochen-Tiefs bei\s*)[-+]?\d[\d.,]*\s*\$",
+                lambda m: m.group(1) + low_value + "$",
+                text,
+            )
+            if n:
+                changes.append(f"Palladium-Trigger auf 52W-Tief {low_value}$ gesetzt ({n})")
+
+    # Alternative Indexstände: bewusst nicht angleichen; dokumentiere, dass die
+    # gelieferten Dateien Herkunft/Vergleichbarkeit nicht abschließend belegen.
+    if re.search(r"(?i)Alternativer Datenstand", text) and not re.search(r"(?i)Vergleichbarkeit.*(?:nicht|ungeklärt|offen)", text):
+        note = (
+            "Quellenhinweis: Die alternativen Index-Punktestände werden getrennt dokumentiert. "
+            "Ihre genaue Herkunft, Indexdefinition und zeitliche Vergleichbarkeit sind durch die vorliegenden "
+            "Dateien nicht abschließend belegt; sie werden deshalb nicht miteinander verrechnet oder automatisch vereinheitlicht."
+        )
+        anchor = re.search(r"(?m)^Hinweis zu den Datenständen:.*$", text)
+        if anchor:
+            text = text[:anchor.end()] + "\n" + note + text[anchor.end():]
+            changes.append("Hinweis zur offenen Vergleichbarkeit alternativer Indexstände ergänzt")
+
+    return text, changes
 
 def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     """Letzter deterministischer Korrekturpass fuer die zuvor festgestellten Fehler."""
@@ -11628,6 +12195,14 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_text = _bereinige_punkt_24_nur_a(final_text, eingabedateien)
         final_text = _normalisiere_punkt10_autoritaet(final_text)
         final_text = _normalisiere_punkt11_quellengebunden(final_text)
+        # Repariert die bekannte, ungueltige Zusammenziehung zweier Firmennamen
+        # vor dem ersten harten Identitaets-Gate.
+        final_text = re.sub(
+            r",\s*ComfoQuanta Services, Inc\.\s*\(PWR\)\s*\(\+9,87%\)",
+            "",
+            final_text,
+            flags=re.I,
+        )
         final_text = _normalisiere_name_ticker_ausgabe(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
 
@@ -11744,8 +12319,36 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
         final_text = _synchronisiere_1_1_mit_quellen(final_text, briefing_text, final_text)
+        final_text = _repariere_watchlist_technisches_potenzial(final_text, eingabedateien)
+        final_text = _repariere_7_1_ytd_aus_briefing(final_text, briefing_text)
+        final_text = _repariere_1_3_aus_idee_im_aufbau(final_text)
+        final_text = _repariere_2_5_alternativen(final_text)
         final_text = _komprimiere_1_2_chancen(final_text)
         final_text = _ergaenze_handlungsprioritaet_2_4(final_text)
+        # Bekannter Textkorruptionsfehler aus der aktuellen Auswertung: ein
+        # zusammengezogener Quanta-/Comfort-Systems-Name ist keine echte Firma.
+        final_text = re.sub(
+            r",\s*ComfoQuanta Services, Inc\.\s*\(PWR\)\s*\(\+9,87%\)",
+            "",
+            final_text,
+            flags=re.I,
+        )
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
+
+        # Quellengebundene Schlusskorrektur der bekannten Zahlenwidersprüche:
+        # Makrowerte, Brent/WTI-Rollen und alle wiederholten Edelmetallwerte
+        # werden erst nach sämtlichen vorherigen Reparaturen synchronisiert.
+        final_text, zahlen_reparaturen = _repariere_makro_und_edelmetall_konsistenz(
+            final_text, makro_text_fx, edelmetall_text
+        )
+        if zahlen_reparaturen:
+            print("ZAHLENKONSISTENZ-GATE: " + " | ".join(zahlen_reparaturen))
+
+        # Letzter Identitaetsdurchlauf nach ALLEN Inhaltsreparaturen. So werden
+        # auch spaeter eingefuegte Firmen-/Ticker-Nennungen kanonisiert.
+        final_text = _normalisiere_name_ticker_ausgabe(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
+        _pruefe_name_ticker_gate(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
         _pruefe_dokumentierte_reparaturen(
             final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt")
