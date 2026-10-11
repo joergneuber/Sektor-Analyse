@@ -7825,6 +7825,13 @@ def _ergaenze_fehlende_ausgabestruktur(text):
         "INFO: Fehlende Pflichtabschnitte deterministisch ergaenzt: "
         + ", ".join(fehlend)
     )
+    # Pflichtabschnittsergaenzung kann nach einer vorangegangenen 3.3-Reparatur
+    # denselben kanonischen Fallback erneut einsetzen, wenn die urspruengliche
+    # Gemini-Ueberschrift nicht als Pflichtueberschrift erkannt wurde. Deshalb
+    # muss die bekannte 3.3-Produktionsregression NACH dem Einsetzen fehlender
+    # Abschnitte nochmals zusammengefuehrt werden. Andere echte Doppelungen
+    # bleiben unveraendert und werden vom Final-Gate weiterhin abgelehnt.
+    result = _repariere_doppelte_3_3(result)
     return result
 
 
