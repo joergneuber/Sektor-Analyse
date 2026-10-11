@@ -75,7 +75,7 @@ from collections import defaultdict
 MODELL = "gemini-3.5-flash-lite"  # Primaer-Modell: hohes kostenloses RPD/TPM und hoher Durchsatz
 FALLBACK_MODELL = "gemini-3.1-flash-lite"  # Erster Fallback: ebenfalls hohes kostenloses RPD/TPM
 DRITTER_FALLBACK_MODELL = "gemini-3.8-flash"  # Qualitaets-Fallback bei Ausfall beider Lite-Modelle
-VIERTER_FALLBACK_MODELL = "gemini-3.7-flash"  # Weiterer Qualitaets-Fallback
+VIERTER_FALLBACK_MODELL = "gemini-3-flash-preview"  # Weiterer Qualitaets-Fallback
 FUENFTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Weiterer Qualitaets-Fallback
 
 # Alle fuer diesen Lauf konfigurierten Modelle werden hoechstens einmal
