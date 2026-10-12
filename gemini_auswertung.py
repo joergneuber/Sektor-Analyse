@@ -7780,7 +7780,12 @@ def _ergaenze_fehlende_ausgabestruktur(text):
                 next_heading = candidate
                 break
 
-        if heading == "11.7 Abgrenzung:":
+        if heading == "11. METHODIK / DATENQUALITÄT":
+            # Die Hauptüberschrift ist ein reiner Strukturanker. Kein generischer
+            # Fallback-Satz darf vor den bereits vorhandenen Unterabschnitten
+            # erscheinen oder dort inhaltliche Methodik vortäuschen.
+            block = heading + "\n\n"
+        elif heading == "11.7 Abgrenzung:":
             block = _inhaltlicher_abgrenzungstext() + "\n"
         else:
             # Fachlich deterministische Fallbacks: keine erfundenen Markt-/Unternehmensdaten.
@@ -12893,19 +12898,18 @@ def speichere_ergebnis(text, eingabedateien=None):
         # auch spaeter eingefuegte Firmen-/Ticker-Nennungen kanonisiert.
         final_text = _normalisiere_name_ticker_ausgabe(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
-        _pruefe_name_ticker_gate(final_text)
-        _pruefe_neue_ausgabestruktur(final_text)
-        _pruefe_dokumentierte_reparaturen(
-            final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt")
-        )
-        _pruefe_finale_struktur_und_konsistenz(final_text)
 
-        # Die Themen-Kausalitaetspruefung ist ein hartes Final-Gate. Eine
-        # fehlerhafte Analyse darf nicht mehr gespeichert/verschickt werden.
-        _pruefe_themen_kausalitaet(final_text)
+        # Letzte Struktur-Schliessung nach ALLEN textveraendernden Reparaturen.
+        # Insbesondere Zahlen-/Quellenabgleich und Namensnormalisierung duerfen
+        # keine Pflichtueberschrift vor dem harten Final-Gate unbemerkt entfernen.
+        final_text = _normalisiere_inline_pflichtueberschriften(final_text)
+        final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
+        final_text = _bereinige_ausgabe_und_formatiere(final_text)
 
-        # Zahlen-Gate erst nach ALLEN Textreparaturen/Normalisierungen:
-        # Es prüft damit den Text, der anschließend tatsächlich gespeichert wird.
+        # Das Zahlen-Gate kann bei offenen Konflikten einen dokumentierten
+        # Warnhinweis in den Bericht einsetzen. Deshalb muss es VOR den letzten
+        # Struktur-/Identitäts-/Konsistenz-Gates laufen. So prüfen diese Gates
+        # genau den Textstand, der anschließend gespeichert wird.
         final_text, zahlen_gate_warnungen = _pruefe_auswertung_quellenkonflikte(
             final_text,
             briefing_text,
@@ -12918,6 +12922,20 @@ def speichere_ergebnis(text, eingabedateien=None):
                 "INFO: Zahlenkonsistenz-Gate hat offene Prüfpunkte markiert; "
                 "die Tagesauswertung wird trotzdem gespeichert und versendet."
             )
+
+        # Nach dem Zahlen-Gate folgen nur noch nicht-mutierende Prüfungen.
+        # Damit werden auch der ggf. ergänzte Konflikthinweis und der endgültige
+        # Berichtstext vor dem Speichern geprüft.
+        _pruefe_name_ticker_gate(final_text)
+        _pruefe_neue_ausgabestruktur(final_text)
+        _pruefe_dokumentierte_reparaturen(
+            final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt")
+        )
+        _pruefe_finale_struktur_und_konsistenz(final_text)
+
+        # Die Themen-Kausalitaetspruefung ist ein hartes Final-Gate. Eine
+        # fehlerhafte Analyse darf nicht mehr gespeichert/verschickt werden.
+        _pruefe_themen_kausalitaet(final_text)
 
     if str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("INFO: Technischer Gemini-Fallback - bestehende Auswertung bleibt unverändert; keine Auswertung wird gespeichert.")
