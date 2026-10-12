@@ -12824,6 +12824,18 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
 
+        # Gemeinsame Markt-Briefing-Quelle vor allen 8.x-Reparaturaufrufen laden.
+        # Sie wird benoetigt, um abweichende 4W-Werte gegen das Edelmetalle-
+        # Briefing zu erkennen. Nicht mit leerem Text weiterarbeiten, weil das
+        # den Quellenkonflikt-Gate unbemerkt deaktivieren wuerde.
+        briefing_pfad = finde_datei(DATEIMUSTER["briefing.txt"])
+        if not briefing_pfad or not os.path.isfile(briefing_pfad):
+            raise RuntimeError("BRIEFING_QUELLE_FEHLT: Markt-Briefing fuer 8.x-Quellenabgleich nicht gefunden.")
+        try:
+            briefing_text = Path(briefing_pfad).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise RuntimeError(f"BRIEFING_QUELLE_NICHT_LESBAR: {exc}") from exc
+
         # 8.1–8.4: autoritative Fakten/Strategiestatus aus dem aktuellen
         # Edelmetalle-Briefing deterministisch einsetzen; Gemini bleibt für
         # qualitative Interpretation zuständig.
@@ -12888,14 +12900,6 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Dieser Pass steht bewusst unmittelbar vor den harten Quellen-Gates,
         # damit nachgelagerte Normalisierungen die autoritativen Werte nicht
         # wieder aus ihrem zugeordneten Abschnitt entfernen koennen.
-        briefing_pfad = finde_datei(DATEIMUSTER["briefing.txt"])
-        briefing_text = ""
-        if briefing_pfad and os.path.isfile(briefing_pfad):
-            try:
-                briefing_text = Path(briefing_pfad).read_text(encoding="utf-8-sig")
-            except OSError as exc:
-                raise RuntimeError(f"BRIEFING_QUELLE_NICHT_LESBAR: {exc}") from exc
-
         final_text, quellen_repaired = _repariere_7_x_quellengebunden(
             final_text,
             briefing_text,
