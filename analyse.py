@@ -1,4 +1,5 @@
 import pandas as pd
+from quellenwert_vertrag import four_week_return
 import numpy as np
 import yfinance as yf
 import datetime
@@ -1758,15 +1759,18 @@ def get_kurzfrist_kontext_text(ticker, label, wochen=4, naehe_schwelle_prozent=1
     Kontext wie hier."""
     try:
         data = _hole_kursdaten_gecached(ticker)
+        data, letztes_datum = _nur_abgeschlossene_tagesbalken(data, ticker)
         if data.empty:
             return None
 
-        kurzfrist = data.tail(wochen * 5)
-        if len(kurzfrist) < 2:
+        close = data["Close"].dropna()
+        sessions = int(wochen) * 5
+        # Eine Rendite ueber 20 abgeschlossene Handelssitzungen benoetigt
+        # 21 Schlusskurse (Startschluss + 20 abgeschlossene Intervalle).
+        if len(close) < sessions + 1:
             return None
-        kurs = float(kurzfrist['Close'].iloc[-1])
-        kurs_vor_wochen = float(kurzfrist['Close'].iloc[0])
-        veraenderung = (kurs / kurs_vor_wochen - 1) * 100 if kurs_vor_wochen else None
+        kurs = float(close.iloc[-1])
+        veraenderung = four_week_return(close.tolist(), sessions=sessions)
 
         stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
         if getattr(data.index, 'tz', None) is not None:
@@ -1812,9 +1816,7 @@ def get_markt_kurzfrist_kontext_text(ticker, label):
         if len(close) >= 6 and float(close.iloc[-6]):
             v5 = (kurs / float(close.iloc[-6]) - 1) * 100
 
-        v4 = None
-        if len(close) >= 21 and float(close.iloc[-21]):
-            v4 = (kurs / float(close.iloc[-21]) - 1) * 100
+        v4 = four_week_return(close.tolist(), sessions=20)
 
         fenster = data.tail(252)
         hoch = float(fenster["High"].max())

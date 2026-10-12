@@ -66,6 +66,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 from collections import defaultdict
+from quellenwert_vertrag import (
+    values_match_display, find_exact_labeled_line, extract_four_week_percent,
+    extract_metal_four_week_value,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -9988,10 +9992,9 @@ def _gate_quellenstatus(block, label, status, fehler):
 
 def _quellenwert_aus_zeile(source, label, aus_parenthesen=False):
     """Liest den aktuellen numerischen Wert hinter einem autoritativen Label."""
-    for line in (source or "").splitlines():
-        clean_line = line.lstrip(" -•\t")
-        if not clean_line.startswith(label + ":"):
-            continue
+    matched_line = find_exact_labeled_line(source or "", label)
+    for line in ([matched_line] if matched_line else []):
+        clean_line = line.strip()
         if aus_parenthesen:
             m = re.search(r"\(\s*([-+]?\d[\d.,]*)", clean_line)
         else:
@@ -10012,10 +10015,9 @@ def _quellenwert_status_aus_zeile(source, label, aus_parenthesen=False):
     selbst eine autoritative Dateninformation und darf nicht als "fehlender
     Quellwert" behandelt werden.
     """
-    for line in (source or "").splitlines():
-        clean_line = line.lstrip(" -•\t")
-        if not clean_line.startswith(label + ":"):
-            continue
+    matched_line = find_exact_labeled_line(source or "", label)
+    for line in ([matched_line] if matched_line else []):
+        clean_line = line.strip()
         if re.search(r"(?i)\bSTATUS\s*=\s*UNAVAILABLE\b", clean_line) and re.search(
             r"(?i)\bNICHT\s+VERFUEGBAR\b", clean_line
         ):
@@ -10070,10 +10072,13 @@ def _repariere_7_x_quellengebunden(text, briefing_text, makro_text):
         "7.1 Aktienmärkte / Indizes", "7.2 Zinsen", "7.3 Volatilität", "7.4 FX",
         "7.5 Rohstoffe", "7.6 Krypto", "7.7 Konjunktur / Makro",
     ]
+    # Im REGIONEN-PERFORMANCE-Block steht erst die Tagesveraenderung und
+    # danach der Indexstand in Klammern. Fuer diese Zeilen muss der Indexstand
+    # explizit aus der Klammer gelesen werden, nicht die davorstehende Rendite.
     index_labels = [
-        ("S&P 500", False), ("Nasdaq", False), ("DAX", False),
-        ("EuroStoxx50", False), ("Russell 2000", False), ("Nikkei 225", False),
-        ("Hang Seng", False), ("Shanghai Composite", True),
+        ("S&P 500", True), ("Nasdaq", True), ("DAX", True),
+        ("EuroStoxx50", True), ("Russell 2000", False), ("Nikkei 225", True),
+        ("Hang Seng", True), ("Shanghai Composite", True),
     ]
     direct_labels = {
         "7.2 Zinsen": ["Fed Funds Effective Rate", "ECB Deposit Facility Rate", "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury", "Realzins 10Y TIPS", "2Y-10Y Spread"],
@@ -10776,16 +10781,17 @@ def _edelmetall_status(edel_text, strategie, asset, ticker):
     return "nicht eindeutig"
 
 
-def _repariere_8_x_quellengebunden(text, edel_text):
+def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
     """
     Uebernimmt die autoritativen 8.1–8.4-Daten deterministisch.
 
     Regeln:
-    - Quelle ist ausschliesslich das aktuelle Edelmetalle-Briefing.
-    - Kurs/4W und EMA200/WMA200 werden fuer alle vier Metalle zwingend aus
-      der Quelle gelesen; fehlt ein Wert, wird hart abgebrochen.
-    - Bereits vorhandene Gemini-Werte dieser Felder werden entfernt und durch
-      die Quellwerte ersetzt.
+    - Edelmetalle-Briefing liefert Kurs/4W und EMA200/WMA200, sofern die
+      parallel erzeugte Markt-Briefing-4W-Kennzahl dieselbe Definition ergibt.
+    - Bei abweichenden 4W-Werten beider Quellen wird die automatische Reparatur
+      ausgesetzt; die spaetere Quellenpruefung muss den Konflikt offen ausweisen.
+    - Bei konsistenten Quellen werden vorhandene Gemini-Werte durch die
+      zugeordneten Quellwerte ersetzt.
     - Strategie-Status wird ebenfalls ausschliesslich aus der Quelle erzeugt.
     - Qualitative Gemini-Inhalte bleiben unveraendert.
     """
@@ -10793,6 +10799,19 @@ def _repariere_8_x_quellengebunden(text, edel_text):
         return text
     if not edel_text:
         raise RuntimeError("EDELMETALL_QUELLE_UNVOLLSTAENDIG: leere Quelle.")
+
+    # Wenn die beiden Python-Briefings unterschiedliche 4W-Werte liefern,
+    # darf dieser Pass keinen der Werte stillschweigend als Gewinner einsetzen.
+    if briefing_text:
+        conflicts = []
+        for metal in ("Gold", "Silber", "Platin", "Palladium"):
+            market_4w = _extract_metal_4w_value(briefing_text, metal)
+            detail_4w = _extract_metal_4w_value(edel_text, metal)
+            if market_4w is not None and detail_4w is not None and abs(market_4w[1] - detail_4w[1]) > 1e-8:
+                conflicts.append(f"{metal}: Markt-Briefing {market_4w[0]}% vs. Edelmetalle-Briefing {detail_4w[0]}%")
+        if conflicts:
+            print("EDELMETALL_4W_QUELLENKONFLIKT: automatische Abschnittsreparatur ausgesetzt | " + " | ".join(conflicts))
+            return text
 
     headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
     assets = {
@@ -12130,7 +12149,12 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
         wage = re.search(r"(?i)Durchschnittlicher Stundenlohn\s*:\s*([-+]?\d[\d.,]*)", makro_text)
         if wage:
             wage_value = fmt_de(float(wage.group(1)))
-            pat = re.compile(r"(?i)(Stundenl(?:ohn|öhne|oehne)\s*)(?:von\s*)?[-+]?\d+(?:[.,]\d+)?\s*(?:USD|\$)?")
+            # Nur einen Stundenlohn-Niveauwert mit Waehrungseinheit ersetzen.
+            # Prozentuale Lohnveraenderungen (z.B. +4,2%) bleiben unberuehrt.
+            pat = re.compile(
+                r"(?i)(Stundenl(?:ohn|öhne|oehne)\s*)(?:von\s*)?"
+                r"[-+]?\d[\d.,]*\s*(?:USD|\$)(?:\s*/?\s*(?:Stunde|h))?"
+            )
             text, n = pat.subn(lambda m: m.group(1) + wage_value + " USD", text)
             if n:
                 changes.append(f"7.7 Stundenlohn auf Makro-Quellwert {wage_value} USD gesetzt ({n})")
@@ -12180,6 +12204,14 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
                 metal_values[metal] = parsed_fourw
     for idx, metal in enumerate(("Gold", "Silber", "Platin", "Palladium"), start=1):
         if metal not in metal_values:
+            continue
+        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
+        detail_4w = _extract_metal_4w_value(edel_text or "", metal)
+        if market_4w is not None and detail_4w is not None and abs(market_4w[1] - detail_4w[1]) > 1e-8:
+            changes.append(
+                f"{metal}: 4W-Quellenkonflikt Markt-Briefing {market_4w[0]}% vs. "
+                f"Edelmetalle-Briefing {detail_4w[0]}%; automatische Überschreibung ausgesetzt"
+            )
             continue
         value = metal_values[metal]
         display = fmt_de(value, 1)
@@ -12395,6 +12427,11 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
 
 
 
+def _extract_metal_4w_value(source_text, metal):
+    """Extract the percent explicitly attached to the metal's 4W field."""
+    return extract_metal_four_week_value(source_text or "", metal)
+
+
 def _pruefe_auswertung_quellenkonflikte(
     text, briefing_text="", makro_text="", edel_text="", eingabedateien=None
 ):
@@ -12432,7 +12469,9 @@ def _pruefe_auswertung_quellenkonflikte(
         # Bevorzugt eine kanonische Label-/Wert-Zeile. Das Label wird als
         # vollständiger Begriff gesucht, damit z.B. Nasdaq nicht versehentlich
         # die Indexnummer "100" aus "Nasdaq 100" als Kurswert liest.
-        label_re = re.compile(r"(?i)(?<![A-Za-z0-9])" + re.escape(label) + r"(?![A-Za-z0-9])")
+        label_re = re.compile(
+            r"(?i)^\s*(?:[-•]\s*)?(?:\[[^]]+\]\s*)?" + re.escape(label) + r"(?![A-Za-z0-9])"
+        )
         for line in (block or "").splitlines():
             lm = label_re.search(line)
             if not lm:
@@ -12457,11 +12496,29 @@ def _pruefe_auswertung_quellenkonflikte(
         status, raw, expected = source_value_status(source, label, parenthesized)
         if status != "VALUE" or expected is None:
             return
+        source_line = find_exact_labeled_line(source or "", label) or ""
+        source_is_live = bool(re.search(
+            r"(?i)REAL_HEUTE|laufender/aktueller Tageswert",
+            source_line,
+        ))
         for line, actual, actual_raw in line_values_for_label(block, label):
-            if abs(actual - expected) > max(1e-8, abs(expected) * 1e-8):
+            # Zeitbasis muss an der konkreten Zahlenzeile erkennbar sein; ein
+            # Live-Hinweis an anderer Stelle im Abschnitt darf nicht auf alle
+            # Werte uebertragen werden.
+            output_basis = line.casefold()
+            if source_is_live and not re.search(
+                r"(?i)live|intraday|laufender Tageswert|Live/Tagesstand|Schlusskurs|letzter Schluss|last close",
+                output_basis,
+            ):
+                errors.append(
+                    f"{section_name or 'Auswertung'} {label}: Zeitbasis nicht belegt. "
+                    f"Quelle {raw} ist Live/Intraday; Ausgabe {actual_raw} hat keine passende Zeitbasis."
+                )
+                continue
+            if not values_match_display(actual, expected, actual_raw):
                 errors.append(
                     f"{section_name or 'Auswertung'} {label}: Ausgabe {actual_raw} widerspricht "
-                    f"aktuellem Quellwert {raw}."
+                    f"vergleichbarem Quellwert {raw}."
                 )
 
     # Die aktuellen Indexstände werden labelbezogen aus dem heutigen Briefing
@@ -12473,6 +12530,10 @@ def _pruefe_auswertung_quellenkonflikte(
         ("Hang Seng", False), ("Shanghai Composite", True),
     ]
     for label, parenthesized in index_labels:
+        # Indexblock-Werte stammen standardmaessig aus dem Briefing mit dem
+        # letzten abgeschlossenen Schlussstand. Ein einzelner Outputwert darf
+        # nur dann auf den Live-Wert umgestellt werden, wenn seine eigene Zeile
+        # die Live-/Intraday-Basis explizit ausweist.
         check_labeled_source(index_block, label, briefing_text, parenthesized, "7.1")
 
     # Direkte Makrofelder: alle verfügbaren Quellwerte werden mit den
@@ -12496,7 +12557,14 @@ def _pruefe_auswertung_quellenkonflikte(
     for heading, labels in macro_labels.items():
         block = section(heading, section_ends.get(heading))
         for label in labels:
-            check_labeled_source(block, label, makro_text, False, heading)
+            source = makro_text
+            if heading == "7.3 Volatilität" and label == "VIX":
+                if not re.search(r"(?i)live|intraday|laufender Tageswert|Live/Tagesstand", block):
+                    vix_close_source = re.sub(
+                        r"(?im)^\s*VIX\s*\(Volatilitaet\)\s*:", "VIX:", briefing_text or ""
+                    )
+                    source = vix_close_source
+            check_labeled_source(block, label, source, False, heading)
 
     # Stundenlohn: Wert wird dynamisch aus der aktuellen Makroquelle gelesen.
     wage_match = re.search(
@@ -12510,19 +12578,27 @@ def _pruefe_auswertung_quellenkonflikte(
             for line in (wage_block or "").splitlines():
                 if not re.search(r"(?i)Stundenl(?:ohn|öhne|oehne)", line):
                     continue
-                nums = re.findall(r"[-+]?\d[\d.,]*", line)
-                parsed = next((_quellenwert_float(x) for x in nums if _quellenwert_float(x) is not None), None)
-                if parsed is not None and abs(parsed - expected) > max(1e-8, abs(expected) * 1e-8):
+                # Niveauwert nur aus einer explizit als USD/$ gekennzeichneten
+                # Zahl lesen. Eine Wachstumsrate wie 4,2% ist kein Stundenlohn.
+                wage_value_match = re.search(
+                    r"(?i)([-+]?\d[\d.,]*)\s*(?:USD|\$)(?:\s*/?\s*(?:Stunde|h))?",
+                    line,
+                )
+                if not wage_value_match:
+                    continue
+                parsed_raw = wage_value_match.group(1)
+                parsed = _quellenwert_float(parsed_raw)
+                if parsed is not None and not values_match_display(parsed, expected, parsed_raw):
                     errors.append(
-                        f"7.7 Stundenlohn: Ausgabe {fmt_value(parsed)} widerspricht aktuellem "
-                        f"Quellwert {wage_match.group(1)} USD."
+                        f"7.7 Stundenlohn: Ausgabe {parsed_raw} USD/Stunde widerspricht aktuellem "
+                        f"Quellwert {wage_match.group(1)} USD/Stunde."
                     )
 
     # Edelmetall-Performance: 4W-Werte werden aus der aktuellen Edelmetallquelle
     # gelesen, nicht aus festen Prozentzahlen im Programmcode.
     metal_names = ("Gold", "Silber", "Platin", "Palladium")
     for idx, metal in enumerate(metal_names, start=1):
-        block = section(f"8.{idx} {metal}", f"8.{idx+1} " + metal_names[idx] if idx < 4 else "9. 📅 NÄCHSTE KATALYSOREN")
+        block = section(f"8.{idx} {metal}", f"8.{idx+1} " + metal_names[idx] if idx < 4 else "9. 📅 NÄCHSTE KATALYSATOREN")
         market_source = briefing_text or makro_text or ""
         source_line = next(
             (ln for ln in market_source.splitlines()
@@ -12550,32 +12626,67 @@ def _pruefe_auswertung_quellenkonflikte(
                     for line in (block or "").splitlines():
                         if not re.search(r"(?i)\b4W\b|4[- ]Wochen-Entwicklung|in den letzten 4 Wochen", line):
                             continue
-                        for raw_pct in re.findall(r"[-+]?\d[\d.,]*\s*%", line):
-                            actual = _quellenwert_float(raw_pct.replace("%", "").strip())
-                            if actual is not None and abs(actual - expected) > max(1e-8, abs(expected) * 1e-8):
+                        # Nur den Prozentwert pruefen, der syntaktisch direkt zu 4W
+                        # gehoert. Der Abstand zum 52W-Tief (z.B. 7,6% darueber)
+                        # ist eine andere Kennzahl und darf nicht als Rendite gelten.
+                        raw_value = extract_four_week_percent(line)
+                        if raw_value is not None:
+                            actual = _quellenwert_float(raw_value)
+                            if actual is not None and not values_match_display(actual, expected, raw_value):
                                 errors.append(
-                                    f"8.{idx} {metal}: 4W-Wert {raw_pct.strip()} widerspricht "
+                                    f"8.{idx} {metal}: 4W-Wert {raw_value}% widerspricht "
                                     f"aktuellem Quellwert {perf_match.group(1)}%."
                                 )
-        # Palladiums 52-Wochen-Tief und Schlusskurs sind getrennte Quellfelder.
+        # Beide Briefings muessen dieselbe 4W-Definition und dasselbe Zeitfenster
+        # abbilden. Abweichende Quellwerte sind ein Quellenkonflikt, kein Anlass,
+        # einen Wert stillschweigend zum Sieger zu erklaeren.
+        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
+        detail_4w = _extract_metal_4w_value(edel_text or "", metal)
+        if market_4w is not None and detail_4w is not None:
+            market_raw, market_value = market_4w
+            detail_raw, detail_value = detail_4w
+            if abs(market_value - detail_value) > 1e-8:
+                errors.append(
+                    f"8.{idx} {metal}: Quellenkonflikt 4W – Markt-Briefing {market_raw}% "
+                    f"gegen Edelmetalle-Briefing {detail_raw}%; Berechnungsfenster/Quelle angleichen."
+                )
+
+        # Palladium-Livekurs und letzter Schlusskurs sind getrennte Felder.
+        # Ohne explizite Zeitbasis darf der Pruefer keinen der beiden Werte als
+        # Sollwert fuer den anderen verwenden.
         if metal == "Palladium":
             current_match = re.search(
                 r"(?im)^\s*Palladium:\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|",
                 edel_text or "",
             )
             current_expected = _quellenwert_float(current_match.group(1)) if current_match else None
-            if current_expected is not None:
-                for line in (section("8.4 Palladium", "9. 📅 NÄCHSTE KATALYSATOREN") or "").splitlines():
-                    for price_match in re.finditer(
-                        r"(?i)Palladium\s+(?:bei\s+|\(\s*)([-+]?\d[\d.,]*)\s*(?:USD|\$)",
-                        line,
-                    ):
-                        actual_price = _quellenwert_float(price_match.group(1))
-                        if actual_price is not None and abs(actual_price - current_expected) > max(1e-8, abs(current_expected) * 1e-8):
+            macro_close_line = find_exact_labeled_line(makro_text or "", "Palladium") or ""
+            close_match = re.match(r"(?i)^Palladium:\s*([-+]?\d[\d.,]*)", macro_close_line)
+            close_expected = _quellenwert_float(close_match.group(1)) if close_match else None
+            for line in (section("8.4 Palladium", "9. 📅 NÄCHSTE KATALYSATOREN") or "").splitlines():
+                for price_match in re.finditer(
+                    r"(?i)Palladium\s+(?:bei\s+|\(\s*)([-+]?\d[\d.,]*)\s*(?:USD|\$)",
+                    line,
+                ):
+                    actual_price = _quellenwert_float(price_match.group(1))
+                    if actual_price is None:
+                        continue
+                    if re.search(r"(?i)Schlusskurs|letzter Schluss|last close", line):
+                        if close_expected is None or not values_match_display(actual_price, close_expected, price_match.group(1)):
                             errors.append(
-                                f"8.4 Palladium: Schlusskurs {price_match.group(1)} widerspricht "
-                                f"aktuellem Quellwert {current_match.group(1)}."
+                                f"8.4 Palladium: Schlusskurs {price_match.group(1)} ist nicht durch "
+                                f"den verfügbaren Schlusskurs {close_match.group(1) if close_match else 'NICHT VERFÜGBAR'} belegt."
                             )
+                    elif re.search(r"(?i)live|intraday|laufender Tageswert|aktueller Kurs", line):
+                        errors.append(
+                            f"8.4 Palladium: Live-Kurs {price_match.group(1)} kann ohne identischen Abrufzeitpunkt "
+                            f"nicht gegen den Quellenwert {current_match.group(1) if current_match else 'NICHT VERFÜGBAR'} geprüft werden."
+                        )
+                    else:
+                        errors.append(
+                            f"8.4 Palladium: Kurs {price_match.group(1)} ohne ausgewiesene Zeitbasis; "
+                            "Livekurs und letzter Schlusskurs sind nicht vergleichbar."
+                        )
         if metal == "Palladium":
             edel_source_line = next(
                 (ln for ln in (edel_text or "").splitlines()
@@ -12595,7 +12706,7 @@ def _pruefe_auswertung_quellenkonflikte(
                         num = re.search(r"52[- ]Wochen[- ]Tief\s*\(\s*([-+]?\d[\d.,]*)", line, re.I)
                         if num:
                             actual_low = _quellenwert_float(num.group(1))
-                            if actual_low is not None and abs(actual_low - expected_low) > max(1e-8, abs(expected_low) * 1e-8):
+                            if actual_low is not None and not values_match_display(actual_low, expected_low, num.group(1)):
                                 errors.append(
                                     f"8.4 Palladium: 52-Wochen-Tief {num.group(1)} widerspricht "
                                     f"aktuellem Quellwert {low_match.group(1)}."
@@ -12723,7 +12834,7 @@ def speichere_ergebnis(text, eingabedateien=None):
                 edelmetall_text = Path(edelmetall_pfad).read_text(encoding="utf-8-sig")
             except OSError as exc:
                 raise RuntimeError(f"EDELMETALLE_QUELLE_NICHT_LESBAR: {exc}") from exc
-            final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text)
+            final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text, briefing_text)
 
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
@@ -12760,7 +12871,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _ergaenze_fehlende_ausgabestruktur(final_text)
         if edelmetall_text:
-            final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text)
+            final_text = _repariere_8_x_quellengebunden(final_text, edelmetall_text, briefing_text)
         final_text = _normalisiere_inline_pflichtueberschriften(final_text)
         final_text = _bereinige_ausgabe_und_formatiere(final_text)
 
