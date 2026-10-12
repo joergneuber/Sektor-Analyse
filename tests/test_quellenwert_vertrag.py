@@ -67,3 +67,28 @@ def test_metal_four_week_source_rows_detect_source_conflict():
     assert extract_metal_four_week_value(market, "Gold") == ("-3.6", -3.6)
     assert extract_metal_four_week_value(detail, "Gold") == ("-4.6", -4.6)
     assert extract_metal_four_week_value("Gold: Kurs 4196.20 | 7.6% darüber zum 52W-Tief", "Gold") is None
+
+
+def test_speichere_ergebnis_loads_market_briefing_before_8x_repair():
+    """Prevent UnboundLocalError and keep the 4W source-conflict check active."""
+    import ast
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    target = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "speichere_ergebnis"
+    )
+    calls_8x = [
+        node for node in ast.walk(target)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_repariere_8_x_quellengebunden"
+    ]
+    briefing_assignments = [
+        node for node in ast.walk(target)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(name, ast.Name) and name.id == "briefing_text" for name in node.targets)
+    ]
+    assert calls_8x and briefing_assignments
+    assert min(node.lineno for node in briefing_assignments) < min(node.lineno for node in calls_8x)
+    assert 'BRIEFING_QUELLE_FEHLT' in source_path.read_text(encoding="utf-8")
