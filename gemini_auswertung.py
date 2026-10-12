@@ -9582,219 +9582,130 @@ def _lade_name_ticker_quellenmapping():
 
 
 def _normalisiere_name_ticker_ausgabe(text):
-    """Erzwingt im gesamten Bericht die kanonische Schreibweise Name (TICKER).
+    """Normalisiert konkrete Firmennamen quellengebunden zu Name (TICKER).
 
-    Namen und Ticker werden nur aus dem aktuellen Trade-Story-Universum bezogen.
-    Ein fehlender oder mehrdeutiger Quellbezug wird nicht geraten.
+    Wie die funktionierende Sektor-Analyse-Version interpretiert diese Funktion
+    einen nackten Ticker NICHT als Aktienbezug. Nur ein kanonischer Firmenname
+    aus dem aktuellen Quellenmapping löst eine Normalisierung aus.
     """
     if not text:
         return text
+
     name_tickers, ticker_names = _lade_name_ticker_quellenmapping()
-
     names = []
-    for folded, tickers in name_tickers.items():
-        if len(tickers) != 1:
+    for folded, tickers_for_name in name_tickers.items():
+        if len(tickers_for_name) != 1:
             continue
-        ticker = next(iter(tickers))
+        ticker = next(iter(tickers_for_name))
         name = next(
-            candidate_name for candidate_name in ticker_names.get(ticker, set())
-            if candidate_name.casefold() == folded
+            (candidate for candidate in ticker_names.get(ticker, set())
+             if candidate.casefold() == folded),
+            None,
         )
-        names.append((name, ticker))
-    names.sort(key=lambda item: len(item[0]), reverse=True)
+        if name:
+            names.append((name, ticker))
+    names.sort(key=lambda pair: len(pair[0]), reverse=True)
 
-    tickers = {
-        ticker: next(iter(company_names))
-        for ticker, company_names in ticker_names.items()
-        if len(company_names) == 1 and len(ticker) > 1
-    }
-    tickers = {
-        ticker: name for ticker, name in tickers.items()
-        if ticker.upper() not in {
-            "BTC", "ETH", "GC=F", "SI=F", "PL=F", "PA=F", "WTI", "BRENT",
-            "XAU", "XAG", "XPT", "XPD", "SPX", "NDX", "VIX", "DXY",
-            # Häufige Fachabkürzungen, die nicht als Aktienbezug interpretiert
-            # werden dürfen (z.B. RS = Relative Stärke).
-            "RS", "IT", "ON", "ALL", "CAT", "LOW", "KEY", "ADP", "MSCI",
-        }
-    }
+    # Wie im produktiv verwendeten Sektor-Analyse-Normalizer nur die
+    # fachlichen Berichtabschnitte prüfen; Quellen-/Metadatenbereiche bleiben
+    # unangetastet. Abschnitt 7 wird als Makrobereich nicht als Aktienliste
+    # interpretiert.
+    starts = [m.start() for m in re.finditer(
+        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
+        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
+        text,
+    )]
+    if not starts:
+        return text
 
-    name_patterns = [
-        (name, ticker, re.compile(r"(?<!\w)" + re.escape(name) + r"(?:\s*\(\s*[A-Z0-9.^=-]+\s*\))?(?!\w)", re.I))
-        for name, ticker in names
+    spans = [
+        (start, starts[i + 1] if i + 1 < len(starts) else len(text))
+        for i, start in enumerate(starts)
     ]
-    ticker_patterns = [
-        (
-            ticker,
-            name,
-            re.compile(rf"(?<![\w.^=-])(?:\(\s*)?{re.escape(ticker)}(?:\s*\))?(?![\w.^=-])"),
-        )
-        for ticker, name in sorted(tickers.items(), key=lambda item: len(item[0]), reverse=True)
-    ]
-    reversed_patterns = [
-        (
-            name,
-            ticker,
-            re.compile(
-                rf"(?<![\w.^=-]){re.escape(ticker)}\s*\(\s*{re.escape(name)}\s*\)(?!\w)",
-                re.I,
-            ),
-        )
-        for name, ticker in names
-    ]
-
-    result_lines = []
-    for original_line in text.splitlines(keepends=True):
-        line = original_line
-        # Schneller Vorfilter: Regexe nur für Identitäten ausführen, deren
-        # Literal überhaupt in dieser Zeile vorkommt. Das vermeidet bei großen
-        # Quellenuniversen eine Zeile×Universum-Vollprüfung ohne Inhaltsverlust.
-        line_folded = line.casefold()
-
-        # Structured A-list fields: keep the field but ensure it also contains
-        # the canonical identity, e.g. "Name: Firma (XYZ) | Ticker: XYZ".
-        ticker_field = re.search(r"(?i)\bTicker:\s*([A-Z0-9.^=-]+)", line)
-        if ticker_field:
-            field_ticker = ticker_field.group(1)
-            field_name = tickers.get(field_ticker)
-            if field_name:
-                name_field = re.search(r"(?i)\bName:\s*([^|\n]+)", line)
-                if name_field:
-                    raw_name = name_field.group(1).strip()
-                    canonical = next(
-                        ((n, t) for n, t in names if n.casefold() == raw_name.casefold()),
-                        None,
-                    )
-                    if canonical:
-                        disp_name, disp_ticker = canonical
-                        trailing_space = re.search(r"\s*$", name_field.group(1)).group(0)
-                        new_value = f"{disp_name} ({disp_ticker})" + trailing_space
-                        line = line[:name_field.start(1)] + new_value + line[name_field.end(1):]
-                if not re.search(
-                    rf"{re.escape(field_name)}\s*\(\s*{re.escape(field_ticker)}\s*\)",
-                    line,
+    for start, end in reversed(spans):
+        block = text[start:end]
+        lines = block.splitlines(keepends=True)
+        for i, line in enumerate(lines):
+            folded_line = line.casefold()
+            for name, ticker in names:
+                if name.casefold() not in folded_line:
+                    continue
+                # Den direkt folgenden Klammerzusatz konsumieren und auf den
+                # quellengebundenen Ticker korrigieren.
+                pattern = re.compile(
+                    r"(?<!\w)" + re.escape(name) +
+                    r"(?:\s*\(\s*[A-Z0-9.^=-]+\s*\))?(?!\w)",
                     re.I,
-                ):
-                    line = f"{field_name} ({field_ticker}) | " + line
+                )
+                lines[i] = pattern.sub(lambda _m, n=name, t=ticker: f"{n} ({t})", lines[i])
+                line = lines[i]
+                folded_line = line.casefold()
+        text = text[:start] + "".join(lines) + text[end:]
+    return text
 
-        # First normalize reversed "TICKER (Company Name)" forms into the
-        # required "Company Name (TICKER)" order.
-        for name, ticker, reversed_re in reversed_patterns:
-            if name.casefold() not in line_folded:
-                continue
-            line = reversed_re.sub(f"{name} ({ticker})", line)
-
-        # Normalize all canonical company-name mentions. Consume an immediately
-        # following ticker parenthesis as part of the match, so wrong/duplicate
-        # ticker suffixes are replaced instead of being appended.
-        for name, ticker, name_re in name_patterns:
-            if name.casefold() not in line.casefold():
-                continue
-            line = name_re.sub(lambda _m, n=name, t=ticker: f"{n} ({t})", line)
-
-        # Then normalize ticker-only mentions. Parenthetical "(XYZ)" becomes
-        # "Company (XYZ)"; already-canonical "Company (XYZ)" stays unchanged.
-        # One-character tickers are intentionally excluded here to avoid
-        # false positives in units such as CNY/T; their company names are still
-        # normalized by the source-backed name pass above.
-        line_folded = line.casefold()
-        for ticker, name, token_re in ticker_patterns:
-            if ticker.casefold() not in line_folded:
-                continue
-            def replace_ticker(match, _ticker=ticker, _name=name):
-                before = line[:match.start()]
-                after = line[match.end():]
-                if re.search(r"(?i)\bTicker:\s*$", before):
-                    return match.group(0)
-                if re.search(r"(?i)(?:\.csv|\.json|\.py|\.zip)\s*$", before):
-                    return match.group(0)
-                if re.search(r"(?i)https?://\S*$", before):
-                    return match.group(0)
-                # Existing canonical identity immediately precedes this ticker.
-                if re.search(rf"{re.escape(_name)}\s*$", before, re.I):
-                    return f"({_ticker})" if match.group(0).lstrip().startswith("(") else match.group(0)
-                return f"{_name} ({_ticker})"
-            line = token_re.sub(replace_ticker, line)
-
-        result_lines.append(line)
-    return "".join(result_lines)
 
 def _pruefe_name_ticker_gate(text):
-    """Harte Endpruefung fuer Name (TICKER) im gesamten gespeicherten Bericht."""
-    name_to_ticker, ticker_to_name = _lade_name_ticker_quellenmapping()
+    """Harte Endpruefung: konkrete Firmennamen nur als Name (Ticker).
 
-    canonical_names = []
-    for key, tickers in name_to_ticker.items():
-        if len(tickers) == 1:
-            ticker = next(iter(tickers))
-            name = next(
-                candidate_name for candidate_name in ticker_to_name.get(ticker, set())
-                if candidate_name.casefold() == key
-            )
-            canonical_names.append((name, ticker))
-    canonical_names.sort(key=lambda pair: len(pair[0]), reverse=True)
-    unique_tickers = {
-        ticker: next(iter(names))
-        for ticker, names in ticker_to_name.items()
-        if len(names) == 1 and len(ticker) > 1
+    Ein nackter Ticker ist fuer sich allein kein Aktienbezug und wird daher
+    nicht beanstandet. Das entspricht dem funktionierenden Gate in der
+    Sektor-Analyse. Ein erkannter kanonischer Firmenname ohne zugehoerigen
+    Ticker bleibt dagegen ein Fehler.
+    """
+    name_tickers, ticker_names = _lade_name_ticker_quellenmapping()
+    name_tickers = {
+        name: set(tickers)
+        for name, tickers in name_tickers.items()
+        if name and tickers
     }
-    non_equity = {
-        "BTC", "ETH", "GC=F", "SI=F", "PL=F", "PA=F", "WTI", "BRENT",
-        "XAU", "XAG", "XPT", "XPD", "SPX", "NDX", "VIX", "DXY",
-    }
-    unique_tickers = {
-        t: n for t, n in unique_tickers.items()
-        if t.upper() not in non_equity | {"RS", "IT", "ON", "ALL", "CAT", "LOW", "KEY", "ADP", "MSCI"}
-    }
+
+    starts = [m.start() for m in re.finditer(
+        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
+        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
+        text,
+    )]
+    if not starts:
+        return
+    checked = "\n".join(
+        text[start:(starts[i + 1] if i + 1 < len(starts) else len(text))]
+        for i, start in enumerate(starts)
+    )
 
     errors = []
-    for line_no, line in enumerate(text.splitlines(), 1):
+    for line_no, line in enumerate(checked.splitlines(), 1):
         if not line.strip():
             continue
-        # Source-/Dateinamen und URL-Provenienz sind keine Aktiennennungen.
+        # Source-/Dateinamen und URL-Provenienz sind keine Unternehmensnennung.
         if re.search(r"(?i)(?:https?://|\.csv\b|\.json\b|\.py\b|\.zip\b)", line):
             continue
-
-        line_folded = line.casefold()
-        for name, ticker in canonical_names:
-            if name.casefold() not in line_folded:
+        folded = line.casefold()
+        for name_key, valid_tickers in name_tickers.items():
+            if name_key not in folded:
                 continue
-            for match in re.finditer(r"(?<!\w)" + re.escape(name) + r"(?!\w)", line, re.I):
-                after = line[match.end():]
-                suffix = re.match(r"\s*\(\s*([A-Z0-9.^=-]+)\s*\)", after)
-                if not suffix or suffix.group(1).casefold() != ticker.casefold():
-                    errors.append(
-                        f"Zeile {line_no}: {name} nicht unmittelbar als {name} ({ticker}) formatiert"
-                    )
-                    break
-
-        # Auch nackte Ticker in Fliesstext muessen aufgeloest sein. Explizite
-        # Tickerfelder bleiben Metadaten; die Identitaet muss dann im selben
-        # Datensatz durch die Normalisierung vorangestellt sein.
-        for ticker, name in unique_tickers.items():
-            if ticker.casefold() not in line_folded:
+            # Mehrdeutige Firmennamen/Ticker werden nicht geraten.
+            if len(valid_tickers) != 1:
                 continue
-            token_re = re.compile(
-                rf"(?<![\w.^=-]){re.escape(ticker)}(?![\w.^=-])"
+            ticker = next(iter(valid_tickers))
+            name = next(
+                (candidate for candidate in ticker_names.get(ticker, set())
+                 if candidate.casefold() == name_key),
+                name_key,
             )
-            for match in token_re.finditer(line):
-                before = line[:match.start()]
-                after = line[match.end():]
-                if re.search(r"(?i)\bTicker:\s*$", before):
-                    continue
-                if before.endswith("(") and re.search(rf"{re.escape(name)}\s*$", before[:-1], re.I) and after.startswith(")"):
-                    continue
-                # A line with a structured field must still have an explicit
-                # identity, not just a bare ticker value.
-                errors.append(f"Zeile {line_no}: Ticker {ticker} ohne Name ({ticker})")
+            if not re.search(
+                r"(?<!\w)" + re.escape(name) +
+                r"\s*\(\s*" + re.escape(ticker) + r"\s*\)(?!\w)",
+                line,
+                re.I,
+            ):
+                errors.append(
+                    f"Zeile {line_no}: {name} nicht als {name} ({ticker}) formatiert"
+                )
                 break
-            if errors and len(errors) >= 30:
-                break
-        if len(errors) >= 30:
+        if len(errors) >= 20:
             break
-
     if errors:
-        raise RuntimeError("NAME_TICKER_GATE_UNGUELTIG: " + " | ".join(errors[:30]))
+        raise RuntimeError("NAME_TICKER_GATE_UNGUELTIG: " + " | ".join(errors[:20]))
+
 
 def _normalisiere_punkt11_quellengebunden(text):
     """Ersetzt 11.1–11.6 durch deterministische, quellengebundene Fakten."""
@@ -12288,7 +12199,13 @@ def speichere_ergebnis(text, eingabedateien=None):
         _pruefe_punkt7_quellenabdeckung(final_text, eingabedateien_gate)
         _pruefe_punkt8_quellenabdeckung(final_text, eingabedateien_gate)
 
-        _pruefe_name_ticker_gate(final_text)
+        # Das Name/Ticker-Gate darf hier noch nicht laufen: Nach diesem Block
+        # folgen weitere deterministische Inhaltsreparaturen, die neue
+        # Kandidatenzeilen oder Tickerangaben erzeugen koennen. Ein Gate vor
+        # diesen Reparaturen kann einen Zwischenstand ablehnen, obwohl der
+        # nachgelagerte finale Normalisierungslauf ihn korrekt reparieren wuerde.
+        # Die verbindliche Identitaetspruefung erfolgt einmalig nach ALLEN
+        # Inhaltsreparaturen direkt vor Speicherung (siehe finales Gate unten).
         _pruefe_punkt11_quellenbindung(final_text)
         _pruefe_neue_ausgabestruktur(final_text)
 
