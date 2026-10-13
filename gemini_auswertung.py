@@ -101,6 +101,8 @@ MAX_VERSUCHE = len(GEMINI_MODELLREIHENFOLGE)
 # 120k begrenzt die Groesse eines einzelnen GenerateContent-Requests deutlich
 # und laesst zugleich genug Raum fuer den grossen Master-Systemkontext.
 GEMINI_INPUT_SAFE_BUDGET = 120_000
+# Ausnahmegrenze fuer einzelne ansonsten gueltige Requests; Minutenquoten bleiben unveraendert.
+GEMINI_INPUT_EXCEPTION_BUDGET = 121_200
 # Konservatives projektweites Minutenbudget fuer den Free-Tier-TPM-Schutz.
 # WICHTIG: Dieses Tracking ist bewusst PROZESSLOKAL. Es verhindert, dass mehrere
 # Modelle innerhalb dieses Python-Prozesses zusammen das lokale 240k/60s-Budget
@@ -994,6 +996,19 @@ def analysiere_api_fehler(fehlertext):
     kategorie: str) zurueck. Kategorien: "tageskontingent", "modellpool_temporaer",
     "ueberlast", "netzwerk", "sonstiges"."""
     text_klein = fehlertext.lower()
+    # Interne Budget-/Chunking-Fehler sind deterministisch: denselben Request
+    # unveraendert zu wiederholen kann sie nicht beheben. Sie werden terminal
+    # behandelt und duerfen nicht in die generische Retry-Schleife gelangen.
+    interne_budget_marker = (
+        "gemini_quelle_nach_chunking_zu_gross",
+        "gemini_request_zu_gross",
+        "gemini_request_zugross",
+        "gemini_synthese_zu_gross",
+        "gemini_synthese_request_zu_gross",
+    )
+    if any(marker in text_klein for marker in interne_budget_marker):
+        return True, None, "request_budget"
+
     ist_cache_free_tier = (
         "totalcachedcontentstoragetokenspermodelfreetier" in text_klein
         or "cachedcontent" in text_klein and "limit=0" in text_klein
@@ -2618,16 +2633,85 @@ def _gemini_hochgeladene_quellen_erstellen(client, eingabedateien_gemini):
 
 def _gemini_sichere_daten_gruppen(client, modell, daten_teile, arbeits_contents,
                                    system_instruction, label):
-    """Erzeugt strikt budgetkonforme Request-Gruppen.
+    """Erzeugt Request-Gruppen mit 120k Normalziel und 121.2k Ausnahmegrenze.
 
-    Normalerweise wird an logischen Dateigrenzen gebuendelt. Die Upload-Schicht
-    zerlegt sehr grosse lokale Textquellen jedoch bereits vorab in kontrollierte
-    ``#CHUNK_NNN``-Teile. Dadurch kann auch eine einzelne grosse Quelle niemals
-    wieder einen 133k/197k-Request erzwingen. Jeder tatsaechliche Request wird
-    weiterhin unmittelbar vor dem Senden erneut per CountTokens verifiziert.
+    Ein einzelner Daten-Part, der zusammen mit Arbeitskontext und
+    Systemanweisung die Ausnahmegrenze ueberschreitet, wird verlustfrei in
+    kleinere Text-Parts zerlegt. Nichttextuelle Parts koennen hier nicht
+    sicher geteilt werden und fuehren mit klarer Diagnose zum Abbruch.
+    Jeder Request wird vor dem Senden erneut per CountTokens verifiziert.
     """
+    arbeits_tokens = _gemini_tokenzahl(
+        client, modell, arbeits_contents, system_instruction,
+        label=f"{label} Arbeitskontext",
+    )
+    if arbeits_tokens > GEMINI_INPUT_EXCEPTION_BUDGET:
+        raise RuntimeError(
+            f"GEMINI_ARBEITSKONTEXT_ZU_GROSS: {label} Arbeitskontext allein "
+            f"enthaelt {arbeits_tokens:,} Tokens und ueberschreitet die "
+            f"Ausnahmegrenze {GEMINI_INPUT_EXCEPTION_BUDGET:,}; "
+            "eine Aufteilung der Daten-Quellen kann diesen Fehler nicht beheben."
+        )
+
+    # Vor der Gruppierung jeden einzelnen Part zusammen mit dem unveraenderten
+    # Arbeitskontext pruefen. Wenn nur diese Kombination zu gross ist, den
+    # Text-Part teilen und beide Haelften erneut messen. Die Textsegmente
+    # werden unveraendert aneinandergereiht; kein Quelltext geht verloren.
+    verarbeitungs_teile = list(daten_teile)
+    index = 0
+    while index < len(verarbeitungs_teile):
+        teil = verarbeitungs_teile[index]
+        einzel_tokens = _gemini_tokenzahl(
+            client, modell, [teil] + arbeits_contents,
+            system_instruction,
+            label=f"{label} Einzelchunk {index + 1}",
+        )
+        if einzel_tokens <= GEMINI_INPUT_EXCEPTION_BUDGET:
+            index += 1
+            continue
+
+        teil_text = getattr(teil, "text", None)
+        if not isinstance(teil_text, str) or len(teil_text) < 2:
+            raise RuntimeError(
+                f"GEMINI_QUELLE_NACH_CHUNKING_ZU_GROSS: {label} einzelner "
+                f"nichttextueller oder nicht weiter teilbarer Daten-Part "
+                f"enthaelt zusammen mit dem Arbeitskontext {einzel_tokens:,} "
+                f"Tokens (> {GEMINI_INPUT_EXCEPTION_BUDGET:,}). "
+                "Der Part kann ohne Zugriff auf die Originalquelle nicht "
+                "verlustfrei weiter segmentiert werden."
+            )
+
+        mitte = len(teil_text) // 2
+        # Bevorzugt an einer Zeilengrenze nahe der Mitte trennen. Falls es
+        # keine brauchbare Grenze gibt, exakt an der Mitte teilen.
+        zeilenanfang = teil_text.rfind("\n", max(1, mitte - 2000), mitte)
+        zeilenende = teil_text.find("\n", mitte, min(len(teil_text) - 1, mitte + 2000))
+        kandidaten = [pos + 1 for pos in (zeilenanfang, zeilenende) if pos >= 0]
+        trennpunkt = min(kandidaten, key=lambda pos: abs(pos - mitte)) if kandidaten else mitte
+        if trennpunkt <= 0 or trennpunkt >= len(teil_text):
+            trennpunkt = mitte
+
+        linker_text = teil_text[:trennpunkt]
+        rechter_text = teil_text[trennpunkt:]
+        if not linker_text or not rechter_text or linker_text + rechter_text != teil_text:
+            raise RuntimeError(
+                f"GEMINI_QUELLE_CHUNKING_FEHLER: {label} Text-Part konnte "
+                "nicht verlustfrei geteilt werden."
+            )
+
+        linker_part = types.Part.from_text(text=linker_text)
+        rechter_part = types.Part.from_text(text=rechter_text)
+        verarbeitungs_teile[index:index + 1] = [linker_part, rechter_part]
+        print(
+            f"GEMINI-QUELLE-NACHSEGMENTIERT: {label} | urspruenglicher Part "
+            f"{len(teil_text):,} Zeichen / {einzel_tokens:,} Tokens | "
+            f"neue Teilgroessen={len(linker_text):,}+{len(rechter_text):,} Zeichen"
+        )
+        # Nicht indexieren: die erste Haelfte muss direkt erneut geprueft
+        # werden; bei weiterhin zu grossem Kontext wird sie rekursiv geteilt.
+
     gruppe = []
-    for teil in daten_teile:
+    for teil in verarbeitungs_teile:
         kandidat = gruppe + [teil]
         tokens = _gemini_tokenzahl(
             client, modell, kandidat + arbeits_contents,
@@ -2636,25 +2720,18 @@ def _gemini_sichere_daten_gruppen(client, modell, daten_teile, arbeits_contents,
         )
         if tokens > GEMINI_INPUT_SAFE_BUDGET:
             if not gruppe:
-                raise RuntimeError(
-                    f"GEMINI_QUELLE_NACH_CHUNKING_ZU_GROSS: {label} "
-                    f"ein einzelner Daten-Chunk ueberschreitet "
-                    f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens. "
-                    "Die Quelle muss kleiner segmentiert werden."
-                )
+                # Einzel-Parts wurden oben bereits gegen die Ausnahmegrenze
+                # geprueft. Der normale Zielwert bleibt 120k.
+                if tokens > GEMINI_INPUT_EXCEPTION_BUDGET:
+                    raise RuntimeError(
+                        f"GEMINI_QUELLE_NACH_CHUNKING_ZU_GROSS: {label} "
+                        f"ein einzelner Daten-Chunk ueberschreitet die "
+                        f"Ausnahmegrenze {GEMINI_INPUT_EXCEPTION_BUDGET:,} "
+                        f"Tokens (gemessen: {tokens:,})."
+                    )
+                gruppe = [teil]
+                continue
             yield gruppe
-            einzel_tokens = _gemini_tokenzahl(
-                client, modell, [teil] + arbeits_contents,
-                system_instruction,
-                label=f"{label} Einzelchunk",
-            )
-            if einzel_tokens > GEMINI_INPUT_SAFE_BUDGET:
-                raise RuntimeError(
-                    f"GEMINI_QUELLE_NACH_CHUNKING_ZU_GROSS: {label} "
-                    f"ein einzelner Daten-Chunk ueberschreitet "
-                    f"{GEMINI_INPUT_SAFE_BUDGET:,} Tokens "
-                    f"(gemessen: {einzel_tokens:,})."
-                )
             gruppe = [teil]
         else:
             gruppe = kandidat
@@ -2952,11 +3029,11 @@ def _gemini_generate_content_quota_safe(
             config_kwargs.get("system_instruction"),
             label=f"{label} Quota-Fallback {modell}",
         )
-        if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
+        if neu_gemessen > GEMINI_INPUT_EXCEPTION_BUDGET:
             raise RuntimeError(
                 "GEMINI_REQUEST_ZU_GROSS_NACH_QUOTA_FALLBACK: "
                 f"Modell={modell} | {neu_gemessen:,} > "
-                f"{GEMINI_INPUT_SAFE_BUDGET:,}"
+                f"{GEMINI_INPUT_EXCEPTION_BUDGET:,}"
             )
         measured_tokens = neu_gemessen
         # Die Neumessung gilt fuer das bereits ausgewaehlte Fallback-Modell.
@@ -2981,10 +3058,10 @@ def _gemini_generate_content_quota_safe(
                     f"Request={measured_tokens:,} Tokens."
                 )
 
-    if measured_tokens > GEMINI_INPUT_SAFE_BUDGET:
+    if measured_tokens > GEMINI_INPUT_EXCEPTION_BUDGET:
         raise RuntimeError(
             "GEMINI_REQUEST_ZU_GROSS_VOR_SENDUNG: "
-            f"{measured_tokens:,} > {GEMINI_INPUT_SAFE_BUDGET:,}"
+            f"{measured_tokens:,} > {GEMINI_INPUT_EXCEPTION_BUDGET:,}"
         )
 
     # Modellbindung fuer den laufenden Analyseversuch: Nach einem lokalen
@@ -3002,7 +3079,8 @@ def _gemini_generate_content_quota_safe(
     )
     print(
         f"GEMINI-REQUEST-SAFE: {label} | Modell={modell} | "
-        f"vorab gemessen={measured_tokens:,} <= {GEMINI_INPUT_SAFE_BUDGET:,} | "
+        f"vorab gemessen={measured_tokens:,} <= {GEMINI_INPUT_EXCEPTION_BUDGET:,} "
+        f"(Normalziel {GEMINI_INPUT_SAFE_BUDGET:,}) | "
         "Free-Tier-Input-Quota vor Sendung geprueft"
     )
     try:
@@ -3048,7 +3126,7 @@ def _gemini_generate_content_quota_safe(
                     config_kwargs.get("system_instruction"),
                     label=f"{label} Server-RPD-Fallback {naechstes_modell}",
                 )
-                if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
+                if neu_gemessen > GEMINI_INPUT_EXCEPTION_BUDGET:
                     continue
                 verfuegbares_modell, _ = _gemini_quota_waehlen(
                     naechstes_modell,
@@ -3150,7 +3228,7 @@ def _gemini_generate_content_quota_safe(
                         config_kwargs.get("system_instruction"),
                         label=f"{label} Server-Quota-Fallback {naechstes_modell}",
                     )
-                    if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
+                    if neu_gemessen > GEMINI_INPUT_EXCEPTION_BUDGET:
                         continue
                     verfuegbares_modell, modell_wait = _gemini_quota_waehlen(
                         naechstes_modell, neu_gemessen,
@@ -3233,11 +3311,11 @@ def _gemini_generate_content_quota_safe(
                             config_kwargs.get("system_instruction"),
                             label=f"{label} Server-Quota-Wait-Fallback {neue_modell}",
                         )
-                    if neu_gemessen > GEMINI_INPUT_SAFE_BUDGET:
+                    if neu_gemessen > GEMINI_INPUT_EXCEPTION_BUDGET:
                         raise RuntimeError(
                             "GEMINI_REQUEST_ZU_GROSS_NACH_QUOTA_WARTEN: "
                             f"Modell={neue_modell} | {neu_gemessen:,} > "
-                            f"{GEMINI_INPUT_SAFE_BUDGET:,}"
+                            f"{GEMINI_INPUT_EXCEPTION_BUDGET:,}"
                         )
                     _gemini_active_modell = neue_modell
                     _gemini_last_request_model = neue_modell
@@ -3291,10 +3369,17 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
             )
             if tokens > GEMINI_INPUT_SAFE_BUDGET:
                 if not gruppe:
-                    raise RuntimeError(
-                        f"GEMINI_SYNTHESE_ZU_GROSS: Einzelne Teilanalyse "
-                        f"ueberschreitet {GEMINI_INPUT_SAFE_BUDGET:,} Tokens."
-                    )
+                    if tokens > GEMINI_INPUT_EXCEPTION_BUDGET:
+                        raise RuntimeError(
+                            f"GEMINI_SYNTHESE_ZU_GROSS: Einzelne Teilanalyse "
+                            f"ueberschreitet die Ausnahmegrenze "
+                            f"{GEMINI_INPUT_EXCEPTION_BUDGET:,} Tokens "
+                            f"(gemessen: {tokens:,})."
+                        )
+                    # Einzelne Synthese-Teile duerfen ausnahmsweise bis 121.2k
+                    # gehen; die normale Gruppierung bleibt bei 120k.
+                    gruppe = [text]
+                    continue
                 gruppen.append(gruppe)
                 gruppe = [text]
             else:
@@ -3315,7 +3400,7 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
                 client, modell, [synth_prompt], system_instruction,
                 label=f"{label} Synthese {stufe}/{idx}",
             )
-            if tokens > GEMINI_INPUT_SAFE_BUDGET:
+            if tokens > GEMINI_INPUT_EXCEPTION_BUDGET:
                 raise RuntimeError(
                     f"GEMINI_SYNTHESE_REQUEST_ZU_GROSS: {tokens:,} Tokens."
                 )
@@ -3543,7 +3628,7 @@ def _gemini_request_plan(client, modell, cache_name, daten_teile, arbeits_conten
 
 
 def _gemini_cache_antwort(client, modell, cache_name, contents, system_instruction=None):
-    """Sendet einen fachlich geplanten Request mit resumierbarem Split-Cache.
+    """Sendet geplante Requests mit 120k Normalziel und 121.2k Ausnahmegrenze.
 
     Die verbindliche A1/A2/A3/Final-Architektur bleibt erhalten. Wenn eine
     Stufe das 120k-Sicherheitsbudget ueberschreitet, werden die Quellen an
@@ -3567,15 +3652,23 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
         label="GenerateContent",
     )
 
-    if token_count <= GEMINI_INPUT_SAFE_BUDGET:
+    if token_count <= GEMINI_INPUT_EXCEPTION_BUDGET:
+        if token_count > GEMINI_INPUT_SAFE_BUDGET:
+            print(
+                f"GEMINI-REQUEST-BUDGET-TOLERANZ: GenerateContent | "
+                f"{token_count:,} Tokens liegt ueber dem Normalziel "
+                f"{GEMINI_INPUT_SAFE_BUDGET:,}, aber innerhalb der "
+                f"Ausnahmegrenze {GEMINI_INPUT_EXCEPTION_BUDGET:,}."
+            )
         return _gemini_generate_content_quota_safe(
             client, modell, anfrage_contents, config_kwargs, token_count,
             "GenerateContent",
         )
 
     print(
-        f"GEMINI-REQUEST-SPLIT: {token_count:,} > "
-        f"{GEMINI_INPUT_SAFE_BUDGET:,}; fachlicher Request-Plan wird erstellt."
+        f"GEMINI-REQUEST-SPLIT: {token_count:,} > Ausnahmegrenze "
+        f"{GEMINI_INPUT_EXCEPTION_BUDGET:,}; fachlicher Request-Plan wird erstellt "
+        f"(Normalziel {GEMINI_INPUT_SAFE_BUDGET:,})."
     )
     gruppen = _gemini_request_plan(
         client, modell, cache_name, daten_teile, arbeits_contents,
@@ -3604,9 +3697,10 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
             config_kwargs.get("system_instruction"),
             label=f"GenerateContent Split {idx}",
         )
-        if group_tokens > GEMINI_INPUT_SAFE_BUDGET:
+        if group_tokens > GEMINI_INPUT_EXCEPTION_BUDGET:
             raise RuntimeError(
-                f"GEMINI_REQUEST_ZU_GROSS_NACH_SPLIT: Split={idx} Tokens={group_tokens:,}."
+                f"GEMINI_REQUEST_ZU_GROSS_NACH_SPLIT: Split={idx} Tokens={group_tokens:,} "
+                f"> Ausnahmegrenze {GEMINI_INPUT_EXCEPTION_BUDGET:,}."
             )
 
         print(
@@ -4484,6 +4578,13 @@ def gemini_auswertung_starten():
             if kategorie in ("ueberlast", "netzwerk", "input_token_limit", "tageskontingent", "modellpool_temporaer"):
                 technische_retry_wiederverwenden = True
             if abbrechen:
+                if kategorie == "request_budget":
+                    print(
+                        "  Nicht wiederholbarer interner Request-/Chunk-Groessenfehler; "
+                        "derselbe Request wird nicht erneut gesendet. Technischer Fallback."
+                    )
+                    break
+
                 if kategorie == "cache_free_tier":
                     print(
                         "  Explizites Gemini-Context-Caching ist im Free-Tier nicht verfuegbar; "
