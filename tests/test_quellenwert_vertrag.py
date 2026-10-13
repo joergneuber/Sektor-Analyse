@@ -264,3 +264,160 @@ def test_edelmetall_4w_extractor_uses_lage_je_metall_not_duplicate_rows():
         "TRENDFOLGE-DIAGNOSE JE METALL\n"
     )
     assert namespace["_edelmetall_4w_value"](source, "Gold") == ("-4.9", -4.9)
+
+
+
+def test_final_futures_basis_sanitizer_removes_inline_duplicates_only_from_8x():
+    """The final sanitizer removes all gate-triggering variants from 8.1–8.4."""
+    import ast
+    import re
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_entferne_futures_basis_duplikate_aus_abschnitt8"
+    )
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), str(source_path), "exec"), namespace)
+    clean = namespace[helper.name]
+    report = (
+        "8.1 Gold\n"
+        "- Autoritative Fakten: Kurs 100 | 4W: -4.8%\n"
+        "- Futures-Basis-Duplikate: alter Kurs 101\n"
+        "Qualitative Interpretation bleibt erhalten.\n"
+        "8.2 Silber\n"
+        "Futures-Basis (abweichender Wert): 99\n"
+        "8.3 Platin\n"
+        "- Notiz: Futures-Basis: widersprüchlicher Wert\n"
+        "8.4 Palladium\n"
+        "Kurs (Futures PA=F): 100$\n"
+        "9. 📅 NÄCHSTE KATALYSATOREN\n"
+        "Futures-Basis in einem späteren Abschnitt bleibt unangetastet.\n"
+    )
+    result = clean(report)
+    section8 = result[result.index("8.1 Gold"):result.index("9. 📅")]
+    assert "Futures-Basis" not in section8
+    assert "Qualitative Interpretation bleibt erhalten." in section8
+    assert "Futures-Basis in einem späteren Abschnitt bleibt unangetastet." in result
+
+
+def test_final_futures_basis_sanitizer_runs_before_final_repair_gate():
+    """The sanitizer must run after final mutations and before the hard gate."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    save = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "speichere_ergebnis"
+    )
+    sanitizer_calls = [
+        node for node in ast.walk(save)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_entferne_futures_basis_duplikate_aus_abschnitt8"
+    ]
+    source_gate_calls = [
+        node for node in ast.walk(save)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_pruefe_auswertung_quellenkonflikte"
+    ]
+    documented_gate_calls = [
+        node for node in ast.walk(save)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_pruefe_dokumentierte_reparaturen"
+    ]
+    assert sanitizer_calls and source_gate_calls and documented_gate_calls
+    sanitizer_lines = sorted(node.lineno for node in sanitizer_calls)
+    source_gate_line = max(node.lineno for node in source_gate_calls)
+    documented_gate_lines = sorted(node.lineno for node in documented_gate_calls)
+    assert sanitizer_lines[0] < documented_gate_lines[0]
+    assert source_gate_line < sanitizer_lines[-1] < documented_gate_lines[-1]
+    source = source_path.read_text(encoding="utf-8")
+    assert 'AUSGABE_ERSTELLT=PASS' in source
+    assert 'FACHLICH_FINAL=NICHT_FINAL' in source
+
+
+
+def test_edelmetall_conflict_is_written_into_report_without_blocking():
+    """A conflicting 4W source is visible in the report and marked non-final."""
+    import ast
+    import re
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    helpers = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "_dokumentiere_edelmetall_4w_quellenkonflikte",
+        }
+    ]
+    namespace = {
+        "re": re,
+        "_edelmetall_4w_quellenkonflikte": lambda edel, markt: [
+            "Gold: Markt-Briefing -2.8% vs. Edelmetalle-Briefing -4.8%"
+        ],
+    }
+    exec(compile(ast.Module(body=helpers, type_ignores=[]), str(source_path), "exec"), namespace)
+    document = namespace["_dokumentiere_edelmetall_4w_quellenkonflikte"]
+    report = "8.1 Gold\nKurs: 100\n11. METHODIK / DATENQUALITÄT\nMethodiktext\n"
+    result = document(report, "edel", "markt")
+    assert "EDELMETALL-4W-QUELLENKONFLIKT | FACHLICH_FINAL=NICHT_FINAL" in result
+    assert "Edelmetalle-Briefing -4.8%" in result
+    assert result.index("EDELMETALL-4W-QUELLENKONFLIKT") < result.index("11. METHODIK")
+    assert document(result, "edel", "markt").count("EDELMETALL-4W-QUELLENKONFLIKT") == 1
+
+def test_technical_fallback_logs_nonfinal_before_early_return():
+    """The fallback status must be emitted before the no-save early return."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    save = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "speichere_ergebnis"
+    )
+    fallback_branch = next(
+        node for node in ast.walk(save)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Call)
+        and isinstance(node.test.func, ast.Attribute)
+        and node.test.func.attr == "startswith"
+        and any(
+            isinstance(arg, ast.Constant)
+            and arg.value == "[GEMINI_TECHNISCHER_FALLBACK]"
+            for arg in node.test.args
+        )
+        and any(
+            isinstance(child, ast.Return)
+            and isinstance(child.value, ast.Constant)
+            and child.value.value is None
+            for child in node.body
+        )
+    )
+    return_index = next(
+        i for i, node in enumerate(fallback_branch.body)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is None
+    )
+    prior_prints = [
+        node for node in fallback_branch.body[:return_index]
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "print"
+        and any(
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and "FACHLICH_FINAL=NICHT_FINAL" in arg.value
+            for arg in node.value.args
+        )
+    ]
+    assert prior_prints, "Fallback must log FACHLICH_FINAL=NICHT_FINAL before return None"
+
