@@ -413,6 +413,25 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: python youtube_market_sources.py
 
+      # Regressionstest fuer Chunking, 503-Retry, Synthese-Limit und Resume.
+      # Muss vor dem produktiven Gemini-Lauf bestehen.
+      - name: Gemini Chunking/Resume Regressionstest
+        run: python tests/test_gemini_chunking_reparatur.py
+
+      # Resume-Zustand erfolgreicher Gemini-Splits ueberlebt kurzlebige GitHub-Runner.
+      # Der Python-Code prueft vor Wiederverwendung den Fingerabdruck aller Quellen.
+      - name: Gemini Split Resume wiederherstellen
+        id: gemini-split-resume-restore
+        continue-on-error: true
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .gemini_request_split_resume.json
+            .gemini_request_split_resume_done
+          key: gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-
+
       - name: Gemini-Auswertung erstellen
         id: gemini-auswertung
         continue-on-error: true
@@ -420,6 +439,25 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
+
+      # Auch bei einem kontrollierten Gemini-Fallback sichern: erfolgreiche
+      # Split-Antworten und Fehlerstatus dienen dem naechsten Lauf als Resume.
+      - name: Gemini Split Resume nach Lauf sichern
+        id: gemini-split-resume-save
+        if: ${{ always() && hashFiles('.gemini_request_split_resume*') != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .gemini_request_split_resume.json
+            .gemini_request_split_resume_done
+          key: gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Cache-Speichern soll den Tageslauf nicht blockieren, sein Fehlschlag
+      # darf aber nicht unbemerkt bleiben: Resume ist dann nicht garantiert.
+      - name: Warnung bei nicht gespeichertem Gemini Resume
+        if: ${{ always() && steps.gemini-split-resume-save.outcome == 'failure' }}
+        run: echo "::warning::Gemini Split Resume konnte nicht im Actions-Cache gespeichert werden; Wiederaufnahme im naechsten Lauf ist nicht garantiert."
 
       # ============================================================
       # KOSTENLOSER CHATGPT-FALLBACK BEI GEMINI-TECHNISCHEM AUSFALL
