@@ -10806,10 +10806,9 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
     Uebernimmt die autoritativen 8.1–8.4-Daten deterministisch.
 
     Regeln:
-    - Edelmetalle-Briefing liefert Kurs/4W und EMA200/WMA200, sofern die
-      parallel erzeugte Markt-Briefing-4W-Kennzahl dieselbe Definition ergibt.
-    - Bei abweichenden 4W-Werten beider Quellen wird die automatische Reparatur
-      ausgesetzt; die spaetere Quellenpruefung muss den Konflikt offen ausweisen.
+    - Edelmetalle-Briefing liefert Kurs/4W und EMA200/WMA200.
+    - Markt-Briefing ist nur Fallback, wenn der jeweilige Edelmetall-4W-Wert
+      fehlt oder unbrauchbar ist; Konflikte werden protokolliert.
     - Bei konsistenten Quellen werden vorhandene Gemini-Werte durch die
       zugeordneten Quellwerte ersetzt.
     - Strategie-Status wird ebenfalls ausschliesslich aus der Quelle erzeugt.
@@ -10820,18 +10819,18 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
     if not edel_text:
         raise RuntimeError("EDELMETALL_QUELLE_UNVOLLSTAENDIG: leere Quelle.")
 
-    # Wenn die beiden Python-Briefings unterschiedliche 4W-Werte liefern,
-    # darf dieser Pass keinen der Werte stillschweigend als Gewinner einsetzen.
+    # Edelmetalle-Briefing ist die Primaerquelle fuer die vier Metall-4W-Werte.
+    # Abweichungen zum Markt-Briefing werden protokolliert, blockieren aber nicht
+    # die deterministische Uebernahme des spezialisierten Quellwerts.
     if briefing_text:
         conflicts = []
         for metal in ("Gold", "Silber", "Platin", "Palladium"):
             market_4w = _extract_metal_4w_value(briefing_text, metal)
-            detail_4w = _extract_metal_4w_value(edel_text, metal)
+            detail_4w = _edelmetall_4w_value(edel_text, metal)
             if market_4w is not None and detail_4w is not None and abs(market_4w[1] - detail_4w[1]) > 1e-8:
-                conflicts.append(f"{metal}: Markt-Briefing {market_4w[0]}% vs. Edelmetalle-Briefing {detail_4w[0]}%")
+                conflicts.append(f"{metal}: Markt-Briefing {market_4w[0]}% vs. Edelmetalle-Briefing {detail_4w[0]}%; Edelmetalle-Briefing verwendet")
         if conflicts:
-            print("EDELMETALL_4W_QUELLENKONFLIKT: automatische Abschnittsreparatur ausgesetzt | " + " | ".join(conflicts))
-            return text
+            print("EDELMETALL_4W_QUELLENKONFLIKT: " + " | ".join(conflicts))
 
     headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
     assets = {
@@ -10855,22 +10854,29 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
     lage = {}
     missing = []
     for asset, _ticker in assets.values():
-        m = re.search(
-            r"(?m)^\s*" + re.escape(asset) +
-            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen\b[^\n]*$",
+        line_match = re.search(
+            r"(?m)^\s*" + re.escape(asset) + r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|([^\n]*)$",
             lage_block,
         )
-        if not m:
-            missing.append(f"{asset}: Kurs/4W")
-        else:
-            lage[asset] = (m.group(1), m.group(2))
-            low = re.search(
-                r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
-                m.group(0),
-            )
-            if low:
-                lage[asset] = (m.group(1), m.group(2), low.group(1), low.group(2))
+        if not line_match:
+            missing.append(f"{asset}: Kurs")
+            continue
+        kurs_raw = line_match.group(1)
+        detail_4w = _extract_metal_4w_value(lage_block, asset)
+        market_4w = _extract_metal_4w_value(briefing_text or "", asset)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
+        if chosen_4w is None:
+            missing.append(f"{asset}: 4W in Edelmetalle-Briefing und Markt-Briefing")
+            continue
+        if detail_4w is None:
+            print(f"EDELMETALL_4W_FALLBACK: {asset}: Edelmetalle-Briefing ohne brauchbaren 4W-Wert; Markt-Briefing {chosen_4w[0]}% verwendet")
+        lage[asset] = (kurs_raw, chosen_4w[0])
+        low = re.search(
+            r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
+            line_match.group(0),
+        )
+        if low:
+            lage[asset] = (kurs_raw, chosen_4w[0], low.group(1), low.group(2))
 
     # 2) Operative EMA200/WMA200-Basis aus dem exakt zugeordneten
     #    Trendfolge-Diagnoseblock lesen.
@@ -10984,12 +10990,20 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
 def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
     """Vollstaendigkeits-Gate fuer 8.1–8.4 gegen das aktuelle Edelmetall-Briefing."""
     edel = ""
-    path = (eingabedateien or {}).get("Edelmetalle_Briefing(...).txt")
+    market = ""
+    inputs = eingabedateien or {}
+    path = inputs.get("Edelmetalle_Briefing(...).txt")
     if path and os.path.isfile(path):
         try:
             edel = Path(path).read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise RuntimeError(f"PUNKT8_QUELLE_NICHT_LESBAR: Edelmetalle_Briefing(...).txt: {exc}") from exc
+    market_path = inputs.get("briefing.txt")
+    if market_path and os.path.isfile(market_path):
+        try:
+            market = Path(market_path).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise RuntimeError(f"PUNKT8_MARKT_FALLBACK_NICHT_LESBAR: briefing.txt: {exc}") from exc
 
     headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
     blocks = {h: _abschnitt_text(text, h, headings + ["9. 📅 NÄCHSTE KATALYSATOREN"]) for h in headings}
@@ -11027,14 +11041,20 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
         if not lage_line:
             errors.append(f"{heading}: aktuelle Lagezeile fehlt im Edelmetalle_Briefing.")
         else:
-            m = re.search(r"Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen", lage_line)
-            if not m:
-                errors.append(f"{heading}: Kurs/4W-Werte konnten aus der Lagezeile nicht gelesen werden.")
+            kurs_match = re.search(r"Kurs\s+([-+]?\d[\d.,]*)", lage_line)
+            if not kurs_match:
+                errors.append(f"{heading}: Kurswert konnte aus der Lagezeile nicht gelesen werden.")
             else:
-                for label, raw in (("Kurs", m.group(1)), ("4W", m.group(2))):
-                    value = _quellenwert_float(raw)
-                    if value is not None:
-                        _gate_quellenwert(block, label, value, errors)
+                kurs_value = _quellenwert_float(kurs_match.group(1))
+                if kurs_value is not None:
+                    _gate_quellenwert(block, "Kurs", kurs_value, errors)
+            detail_4w = _extract_metal_4w_value(lage_block, asset)
+            market_4w = _extract_metal_4w_value(market, asset)
+            chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
+            if chosen_4w is None:
+                errors.append(f"{heading}: kein brauchbarer 4W-Wert im Edelmetalle-Briefing oder Markt-Briefing-Fallback.")
+            else:
+                _gate_quellenwert(block, "4W", chosen_4w[1], errors)
 
             low_match = re.search(r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%", lage_line)
             if low_match:
@@ -12199,30 +12219,24 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
             if n:
                 changes.append(f"WTI-EMA-Aussage aus Quellkurs/EMA20/EMA50 korrigiert ({n})")
 
-    # Edelmetall-Kurzfristwerte: Das aktuelle Markt-Briefing liefert die
-    # autoritativen 4W-Werte; die Scanner-Datei kann ein anderes Messfenster nutzen.
+    # Edelmetalle-Briefing hat fuer Metall-4W-Werte Vorrang; Markt-Briefing
+    # dient nur als Fallback, wenn der spezialisierte Wert fehlt/ungueltig ist.
     metal_values = {}
     for metal in ("Gold", "Silber", "Platin", "Palladium"):
-        source_text = briefing_text or makro_text or ""
-        m = re.search(
-            r"(?im)^\s*(?:[-•]\s*)?" + metal +
-            r":\s*Kurs\s+[-+]?\d[\d.,]*\s*\|[^\n]*?([-+]?\d[\d.,]*)%\s*4W\b",
-            source_text,
-        )
-        if m:
-            parsed_fourw = _quellenwert_float(m.group(1))
-            if parsed_fourw is not None:
-                metal_values[metal] = parsed_fourw
+        detail_4w = _edelmetall_4w_value(edel_text or "", metal)
+        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
+        chosen = _waehle_edelmetall_4w(detail_4w, market_4w)
+        if chosen is not None:
+            metal_values[metal] = chosen[1]
+            if detail_4w is not None and market_4w is not None and abs(detail_4w[1] - market_4w[1]) > 1e-8:
+                changes.append(
+                    f"{metal}: 4W-Quellenkonflikt Markt-Briefing {market_4w[0]}% vs. "
+                    f"Edelmetalle-Briefing {detail_4w[0]}%; Edelmetalle-Briefing verwendet"
+                )
+            elif detail_4w is None and market_4w is not None:
+                changes.append(f"{metal}: 4W-Fallback auf Markt-Briefing {market_4w[0]}% (Edelmetalle-Wert fehlt/ungueltig)")
     for idx, metal in enumerate(("Gold", "Silber", "Platin", "Palladium"), start=1):
         if metal not in metal_values:
-            continue
-        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
-        detail_4w = _extract_metal_4w_value(edel_text or "", metal)
-        if market_4w is not None and detail_4w is not None and abs(market_4w[1] - detail_4w[1]) > 1e-8:
-            changes.append(
-                f"{metal}: 4W-Quellenkonflikt Markt-Briefing {market_4w[0]}% vs. "
-                f"Edelmetalle-Briefing {detail_4w[0]}%; automatische Überschreibung ausgesetzt"
-            )
             continue
         value = metal_values[metal]
         display = fmt_de(value, 1)
@@ -12253,7 +12267,7 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
         )
         if n or n2:
             text = text[:sm.start()] + block + text[en:]
-            changes.append(f"{metal}: 4W-Performance auf Markt-Briefing {display}% gesetzt ({n + n2})")
+            changes.append(f"{metal}: 4W-Performance auf priorisierten Quellwert {display}% gesetzt ({n + n2})")
 
     # Das 52W-Tief ist nicht der letzte Schlusskurs. Quelle: Edelmetall-Lageblock.
     if edel_text:
@@ -12443,6 +12457,50 @@ def _extract_metal_4w_value(source_text, metal):
     return extract_metal_four_week_value(source_text or "", metal)
 
 
+def _edelmetall_lage_block(edel_text):
+    """Return only the current LAGE JE METALL block from the specialized source."""
+    match = re.search(
+        r"(?ms)^LAGE JE METALL\b.*?^(?=TRENDFOLGE-DIAGNOSE JE METALL\b)",
+        edel_text or "",
+    )
+    return match.group(0) if match else ""
+
+
+def _edelmetall_lage_zeile(edel_text, metal):
+    """Return the exact metal row from LAGE JE METALL, never a duplicate elsewhere."""
+    block = _edelmetall_lage_block(edel_text)
+    return next((line.strip() for line in block.splitlines()
+                 if re.match(r"(?i)^\s*" + re.escape(metal) + r"\s*:\s*Kurs\b", line)), "")
+
+
+def _edelmetall_4w_value(edel_text, metal):
+    """Read the 4W value only from the specialized source's LAGE JE METALL block."""
+    block = _edelmetall_lage_block(edel_text)
+    return _extract_metal_4w_value(block, metal) if block else None
+
+
+def _waehle_edelmetall_4w(edelmetall_wert, markt_wert):
+    """Edelmetalle-Briefing gewinnt; Markt-Briefing ist nur der Missing-Value-Fallback."""
+    if edelmetall_wert is not None:
+        raw, value = edelmetall_wert
+        if value is not None:
+            return raw, value, "Edelmetalle-Briefing"
+    if markt_wert is not None:
+        raw, value = markt_wert
+        if value is not None:
+            return raw, value, "Markt-Briefing-Fallback"
+    return None
+
+
+def _first_4w_value_in_block(block):
+    """Find a percentage explicitly labelled as a 4W value in report text."""
+    for line in (block or "").splitlines():
+        raw = extract_four_week_percent(line)
+        if raw is not None:
+            return raw
+    return None
+
+
 def _pruefe_auswertung_quellenkonflikte(
     text, briefing_text="", makro_text="", edel_text="", eingabedateien=None
 ):
@@ -12610,11 +12668,17 @@ def _pruefe_auswertung_quellenkonflikte(
     metal_names = ("Gold", "Silber", "Platin", "Palladium")
     for idx, metal in enumerate(metal_names, start=1):
         block = section(f"8.{idx} {metal}", f"8.{idx+1} " + metal_names[idx] if idx < 4 else "9. 📅 NÄCHSTE KATALYSATOREN")
-        market_source = briefing_text or makro_text or ""
-        source_line = next(
-            (ln for ln in market_source.splitlines()
-             if re.match(r"(?i)^\s*(?:[-•]\s*)?" + re.escape(metal) + r"\s*:\s*Kurs\b", ln)),
-            "",
+        detail_4w = _edelmetall_4w_value(edel_text or "", metal)
+        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
+        source_line = (
+            _edelmetall_lage_zeile(edel_text, metal)
+            if detail_4w is not None
+            else next(
+                (ln for ln in (briefing_text or makro_text or "").splitlines()
+                 if re.match(r"(?i)^\s*(?:[-•]\s*)?" + re.escape(metal) + r"\s*:\s*Kurs\b", ln)),
+                "",
+            )
         )
         if source_line:
             perf_match = re.search(
@@ -12648,18 +12712,26 @@ def _pruefe_auswertung_quellenkonflikte(
                                     f"8.{idx} {metal}: 4W-Wert {raw_value}% widerspricht "
                                     f"aktuellem Quellwert {perf_match.group(1)}%."
                                 )
-        # Beide Briefings muessen dieselbe 4W-Definition und dasselbe Zeitfenster
-        # abbilden. Abweichende Quellwerte sind ein Quellenkonflikt, kein Anlass,
-        # einen Wert stillschweigend zum Sieger zu erklaeren.
+        # Quellenprioritaet ist verbindlich: spezialisierte Edelmetallquelle zuerst,
+        # Markt-Briefing nur als Fallback. Differenzen werden protokolliert, aber
+        # nicht als Bindungsfehler gewertet, wenn der priorisierte Wert ausgegeben ist.
         market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
-        detail_4w = _extract_metal_4w_value(edel_text or "", metal)
-        if market_4w is not None and detail_4w is not None:
-            market_raw, market_value = market_4w
-            detail_raw, detail_value = detail_4w
-            if abs(market_value - detail_value) > 1e-8:
+        detail_4w = _edelmetall_4w_value(edel_text or "", metal)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
+        if market_4w is not None and detail_4w is not None and abs(market_4w[1] - detail_4w[1]) > 1e-8:
+            print(
+                f"EDELMETALL_4W_QUELLENKONFLIKT-GATE: {metal}: Markt-Briefing "
+                f"{market_4w[0]}% vs. Edelmetalle-Briefing {detail_4w[0]}%; "
+                "Edelmetalle-Briefing ist der erwartete Ausgabewert."
+            )
+        if chosen_4w is not None:
+            block = section(f"8.{idx} {metal}", "9. 📅 NÄCHSTE KATALYSATOREN")
+            raw_value = _first_4w_value_in_block(block)
+            actual_value = _quellenwert_float(raw_value) if raw_value is not None else None
+            if actual_value is None or not values_match_display(actual_value, chosen_4w[1], raw_value):
                 errors.append(
-                    f"8.{idx} {metal}: Quellenkonflikt 4W – Markt-Briefing {market_raw}% "
-                    f"gegen Edelmetalle-Briefing {detail_raw}%; Berechnungsfenster/Quelle angleichen."
+                    f"8.{idx} {metal}: 4W-Wert fehlt oder widerspricht priorisierter Quelle "
+                    f"{chosen_4w[2]} ({chosen_4w[0]}%)."
                 )
 
         # Palladium-Livekurs und letzter Schlusskurs sind getrennte Felder.

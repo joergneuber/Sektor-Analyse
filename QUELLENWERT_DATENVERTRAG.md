@@ -67,7 +67,7 @@ Eine 4W-Rendite und der prozentuale Abstand zum 52W-Tief sind unterschiedliche M
 | Platin | −4,2 % | −4,6 % | `NICHT FINAL` |
 | Palladium | −10,8 % | −11,6 % | `NICHT FINAL` |
 
-Bis die Datenfenster und Formeln in den beiden Erzeugungspfaden übereinstimmen, darf der Reparaturcode diese Werte nicht stillschweigend überschreiben.
+**Verbindliche Ausgaberegel:** Für Gold, Silber, Platin und Palladium hat das `Edelmetalle-Briefing` bei der 4W-Rendite Vorrang, sofern dort ein expliziter, numerisch brauchbarer 4W-Wert vorhanden ist. Das `Markt-Briefing` ist ausschließlich Fallback, wenn der entsprechende Wert im Edelmetalle-Briefing fehlt oder unbrauchbar ist. Abweichungen werden protokolliert und müssen fachlich untersucht werden; sie verhindern aber nicht die Ausgabe des priorisierten Edelmetallwerts. Die Reparatur, spätere Schlusskorrektur und Quellenbindungs-Gates müssen dieselbe Regel verwenden. Wenn beide Quellen keinen brauchbaren Wert liefern, darf kein Zahlenwert erfunden werden und das Gate muss den fehlenden Wert melden.
 
 ## 5. Makrodaten: Messwert und Veränderungsrate trennen
 
