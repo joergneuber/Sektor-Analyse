@@ -10560,10 +10560,13 @@ def _pruefe_punkt7_quellenabdeckung(text, eingabedateien):
     # Pro Abschnitt werden nur die aktuell in den Quellen vorhandenen Kernfelder
     # abgefragt. Dadurch ist das Gate datumsoffen und muss nicht bei jedem Lauf
     # mit neuen Kursen/Terminen im Code angepasst werden.
+    # Muss mit _repariere_7_x_quellengebunden uebereinstimmen:
+    # diese Indizes stehen im Briefing im REGIONEN-PERFORMANCE-Format,
+    # in dem die Tagesveraenderung vor dem Indexstand in Klammern steht.
     index_labels = [
-        ("S&P 500", False), ("Nasdaq", False), ("DAX", False),
-        ("EuroStoxx50", False), ("Russell 2000", False), ("Nikkei 225", False),
-        ("Hang Seng", False), ("Shanghai Composite", True),
+        ("S&P 500", True), ("Nasdaq", True), ("DAX", True),
+        ("EuroStoxx50", True), ("Russell 2000", False), ("Nikkei 225", True),
+        ("Hang Seng", True), ("Shanghai Composite", True),
     ]
     direct_labels = {
         "7.2 Zinsen": ["Fed Funds Effective Rate", "ECB Deposit Facility Rate", "US 2Y Treasury", "US 5Y Treasury", "US 10Y Treasury", "US 30Y Treasury", "Realzins 10Y TIPS", "2Y-10Y Spread"],
@@ -10701,6 +10704,23 @@ def _edelmetall_quellenblock(edel_text, asset):
             end = i
             break
     return "\n".join(lines[start:end]).strip()
+
+
+def _extrahiere_200er_trend(source_block):
+    """Liest Kurs, EMA200 und WMA200 mit einer gemeinsamen Formatregel.
+
+    Gleichheitszeichen und die optionale EMA200-Klammerannotation sind
+    zulässige reine Darstellungsvarianten; Reparatur und Gate verwenden
+    exakt denselben Parser.
+    """
+    match = re.search(
+        r"200er-Trend:\s*Kurs\s*=?\s*([-+]?\d[\d.,]*)\s*\|\s*"
+        r"EMA200\s*=?\s*([-+]?\d[\d.,]*)"
+        r"(?:\s*\([^)]*\))?\s*\|\s*"
+        r"WMA200\s*=?\s*([-+]?\d[\d.,]*)",
+        source_block or "",
+    )
+    return match.groups() if match else None
 
 
 def _edelmetall_strategieblock(edel_text, strategie):
@@ -10861,16 +10881,13 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
             missing.append(f"{asset}: Trendfolge-Diagnose")
             continue
 
-        m200 = re.search(
-            r"200er-Trend:\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
-            r"EMA200\s+([-+]?\d[\d.,]*)\s*\([^)]*\)\s*\|\s*"
-            r"WMA200\s+([-+]?\d[\d.,]*)",
-            source_block,
-        )
+        # Derselbe Parser wird im Abschnitt-8-Gate verwendet. Damit duerfen
+        # Reparatur und Gate nicht unterschiedliche Schreibvarianten akzeptieren.
+        m200 = _extrahiere_200er_trend(source_block)
         if not m200:
             missing.append(f"{asset}: EMA200/WMA200")
         else:
-            trend[asset] = (m200.group(2), m200.group(3))
+            trend[asset] = (m200[1], m200[2])
 
     if missing:
         raise RuntimeError(
@@ -11026,17 +11043,11 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
 
         # Die 200er-Zeile enthält die operative EMA200/WMA200-Basis und das
         # deterministische Trendfolge-Ergebnis je Metall.
-        m200 = re.search(
-            r"200er-Trend:\s*Kurs\s*=?\s*([-+]?\d[\d.,]*)\s*\|\s*"
-            r"EMA200\s*=?\s*([-+]?\d[\d.,]*)"
-            r"(?:\s*\([^)]*\))?\s*\|\s*"
-            r"WMA200\s*=?\s*([-+]?\d[\d.,]*)",
-            trend_block,
-        )
+        m200 = _extrahiere_200er_trend(trend_block)
         if not m200:
             errors.append(f"{heading}: 200er-Trendzeile fehlt oder ist nicht lesbar.")
         else:
-            for label, raw in (("EMA200", m200.group(2)), ("WMA200", m200.group(3))):
+            for label, raw in (("EMA200", m200[1]), ("WMA200", m200[2])):
                 _gate_quellenwert(block, label, _quellenwert_float(raw), errors)
         if "BLOCKIERT" in trend_block and not re.search(r"trendfolge", block, re.I):
             errors.append(f"{heading}: Trendfolge-Blockierung fehlt in der Ausgabe.")
