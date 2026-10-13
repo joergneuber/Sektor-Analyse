@@ -178,3 +178,89 @@ def test_punkt8_repair_and_gate_share_200er_trend_parser():
             and node.func.id == "_extrahiere_200er_trend"
         ]
         assert calls, f"{name} must use the shared 200er-Trend parser"
+
+
+def test_edelmetall_4w_priority_uses_specialized_source_on_conflict():
+    """The specialized metals briefing wins even when market values disagree."""
+    import ast
+    import re
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_waehle_edelmetall_4w"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), str(source_path), "exec"), namespace)
+    choose = namespace["_waehle_edelmetall_4w"]
+
+    assert choose(("-8.9", -8.9), ("-4.9", -4.9)) == ("-8.9", -8.9, "Edelmetalle-Briefing")
+
+
+def test_edelmetall_4w_priority_falls_back_only_when_detail_value_missing():
+    """Missing/unusable detail value falls back to market; no source means None."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_waehle_edelmetall_4w"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), str(source_path), "exec"), namespace)
+    choose = namespace["_waehle_edelmetall_4w"]
+
+    assert choose(None, ("-4.9", -4.9)) == ("-4.9", -4.9, "Markt-Briefing-Fallback")
+    assert choose(("not-a-number", None), ("-4.9", -4.9)) == ("-4.9", -4.9, "Markt-Briefing-Fallback")
+    assert choose(None, None) is None
+
+
+def test_edelmetall_repair_and_final_gate_use_shared_priority_rule():
+    """Prevent later repair/gate paths from restoring market-first behavior."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in (
+        "_repariere_8_x_quellengebunden",
+        "_pruefe_punkt8_quellenabdeckung",
+        "_repariere_auswertung_quellenkonflikte",
+        "_pruefe_auswertung_quellenkonflikte",
+    ):
+        calls = [
+            node for node in ast.walk(functions[name])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_waehle_edelmetall_4w"
+        ]
+        assert calls, f"{name} must use the shared Edelmetalle-first source rule"
+
+
+def test_edelmetall_4w_extractor_uses_lage_je_metall_not_duplicate_rows():
+    """A duplicate value outside the designated source block must not win."""
+    import ast
+    import re
+    from quellenwert_vertrag import extract_metal_four_week_value
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    wanted = {"_edelmetall_lage_block", "_edelmetall_4w_value"}
+    helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    namespace = {
+        "re": re,
+        "_extract_metal_4w_value": lambda source, metal: extract_metal_four_week_value(source or "", metal),
+    }
+    exec(compile(ast.Module(body=helpers, type_ignores=[]), str(source_path), "exec"), namespace)
+    source = (
+        "Gold: Kurs 100 | -3.4% 4W\n"
+        "LAGE JE METALL\n"
+        "Gold: Kurs 101 | -4.9% in den letzten 4 Wochen\n"
+        "TRENDFOLGE-DIAGNOSE JE METALL\n"
+    )
+    assert namespace["_edelmetall_4w_value"](source, "Gold") == ("-4.9", -4.9)
