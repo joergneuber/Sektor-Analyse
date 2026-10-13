@@ -92,3 +92,89 @@ def test_speichere_ergebnis_loads_market_briefing_before_8x_repair():
     assert calls_8x and briefing_assignments
     assert min(node.lineno for node in briefing_assignments) < min(node.lineno for node in calls_8x)
     assert 'BRIEFING_QUELLE_FEHLT' in source_path.read_text(encoding="utf-8")
+
+
+def test_punkt7_index_gate_uses_same_briefing_value_format_as_repair():
+    """The final gate must parse the same index-value location as the repair pass."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    def index_mapping(function_name):
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        assignment = next(
+            node for node in function.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "index_labels"
+                    for target in node.targets)
+        )
+        return dict(ast.literal_eval(assignment.value))
+
+    repair = index_mapping("_repariere_7_x_quellengebunden")
+    gate = index_mapping("_pruefe_punkt7_quellenabdeckung")
+    assert gate == repair
+    assert gate == {
+        "S&P 500": True,
+        "Nasdaq": True,
+        "DAX": True,
+        "EuroStoxx50": True,
+        "Russell 2000": False,
+        "Nikkei 225": True,
+        "Hang Seng": True,
+        "Shanghai Composite": True,
+    }
+
+
+
+def test_punkt8_200er_trend_parser_accepts_gate_and_repair_formats():
+    """Repair and gate must parse the same valid 200er-Trend line variants."""
+    import ast
+    import re
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_extrahiere_200er_trend"
+    )
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), str(source_path), "exec"), namespace)
+    parse_trend = namespace["_extrahiere_200er_trend"]
+
+    assert parse_trend(
+        "200er-Trend: Kurs 4195.40 | EMA200 4324.15 (NEIN) | WMA200 4413.91 (NEIN) | Gesamt NEIN"
+    ) == ("4195.40", "4324.15", "4413.91")
+    assert parse_trend(
+        "200er-Trend: Kurs=4.196,20 | EMA200=4.021,10 | WMA200=3.988,00"
+    ) == ("4.196,20", "4.021,10", "3.988,00")
+    assert parse_trend(
+        "200er-Trend: Kurs 4196.20 | EMA200 4021.10 | WMA200 3988.00"
+    ) == ("4196.20", "4021.10", "3988.00")
+    assert parse_trend("200er-Trend: keine Daten") is None
+
+
+def test_punkt8_repair_and_gate_share_200er_trend_parser():
+    """Prevent a source-format mismatch between section-8 repair and its gate."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    def function(name):
+        return next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+
+    for name in ("_repariere_8_x_quellengebunden", "_pruefe_punkt8_quellenabdeckung"):
+        calls = [
+            node for node in ast.walk(function(name))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_extrahiere_200er_trend"
+        ]
+        assert calls, f"{name} must use the shared 200er-Trend parser"
