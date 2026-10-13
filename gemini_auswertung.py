@@ -10934,6 +10934,10 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
         cleaned = []
         for line in block.splitlines():
             stripped = line.strip()
+            # Das Abschluss-Gate verwirft jede Futures-Basis-Erwaehnung in 8.1–8.4;
+            # deshalb werden auch zusammengesetzte/inline Duplikat-Zeilen entfernt.
+            if re.search(r"(?i)Futures[- ]Basis", stripped):
+                continue
             if re.match(
                 r"^[-•]?\s*(?:Kurs(?:\s*\(Futures[^)]*\))?|"
                 r"4W|52W-Tief|Abstand 52W-Tief|EMA200|WMA200|"
@@ -12479,6 +12483,82 @@ def _edelmetall_4w_value(edel_text, metal):
     return _extract_metal_4w_value(block, metal) if block else None
 
 
+def _edelmetall_4w_quellenkonflikte(edel_text, markt_text):
+    """Return unresolved 4W disagreements while preserving Edelmetalle-first output."""
+    conflicts = []
+    for metal in ("Gold", "Silber", "Platin", "Palladium"):
+        detail = _edelmetall_4w_value(edel_text, metal)
+        market = _extract_metal_4w_value(markt_text or "", metal)
+        if (
+            detail is not None and detail[1] is not None
+            and market is not None and market[1] is not None
+            and abs(detail[1] - market[1]) > 1e-8
+        ):
+            conflicts.append(
+                f"{metal}: Markt-Briefing {market[0]}% vs. "
+                f"Edelmetalle-Briefing {detail[0]}%"
+            )
+    return conflicts
+
+
+def _dokumentiere_edelmetall_4w_quellenkonflikte(text, edel_text, markt_text):
+    """Keep 4W source disagreements visible in the saved report without blocking output."""
+    marker = "EDELMETALL-4W-QUELLENKONFLIKT"
+    # Idempotent replacement: a pre-existing generated note must not accumulate.
+    text = re.sub(
+        r"(?ms)^" + re.escape(marker) + r".*?(?:\n\s*\n|\Z)",
+        "",
+        text or "",
+    )
+    conflicts = _edelmetall_4w_quellenkonflikte(edel_text, markt_text)
+    if not conflicts:
+        return text
+    note = (
+        marker + " | FACHLICH_FINAL=NICHT_FINAL\n"
+        "- Ausgabewert: Edelmetalle-Briefing; Markt-Briefing bleibt Vergleichsquelle.\n"
+        "- Die Abweichungen sind nicht durch Mittelung oder stilles Überschreiben aufgeloest: "
+        + " | ".join(conflicts)
+        + "\n- Technische Berichtserstellung ist erlaubt; die fachliche Endfreigabe bleibt bis zur "
+          "Pruefung von Berechnung und Zeitfenster offen.\n\n"
+    )
+    methodik = re.search(r"(?m)^11\. METHODIK / DATENQUALITÄT\s*$", text)
+    if methodik:
+        return text[:methodik.start()] + note + text[methodik.start():]
+    return text.rstrip() + "\n\n" + note.rstrip() + "\n"
+
+
+def _entferne_futures_basis_duplikate_aus_abschnitt8(text):
+    """Remove every Futures-Basis line from 8.1–8.4, including inline variants.
+
+    The documented-repair gate rejects any remaining Futures-Basis mention in
+    these four sections. Therefore the final sanitizer uses the same broad
+    condition and runs after all content-changing repairs.
+    """
+    if not text:
+        return text
+    pattern = re.compile(
+        r"(?m)^(8\.[1-4]\s+(?:Gold|Silber|Platin|Palladium))\s*$"
+    )
+    matches = list(pattern.finditer(text))
+    replacements = []
+    for match in matches:
+        following = re.search(
+            r"(?m)^(?:8\.[1-4]\s+(?:Gold|Silber|Platin|Palladium)|"
+            r"9\.\s*📅\s*NÄCHSTE KATALYSATOREN)\s*$",
+            text[match.end():],
+        )
+        end = match.end() + following.start() if following else len(text)
+        block = text[match.start():end]
+        kept = [
+            line for line in block.splitlines()
+            if not re.search(r"(?i)Futures[- ]Basis", line)
+        ]
+        replacements.append((match.start(), end, "\n".join(kept).rstrip() + "\n"))
+    for start, end, replacement in reversed(replacements):
+        text = text[:start] + replacement + text[end:]
+    return text
+
+
 def _waehle_edelmetall_4w(edelmetall_wert, markt_wert):
     """Edelmetalle-Briefing gewinnt; Markt-Briefing ist nur der Missing-Value-Fallback."""
     if edelmetall_wert is not None:
@@ -12862,6 +12942,7 @@ def _pruefe_auswertung_quellenkonflikte(
 def speichere_ergebnis(text, eingabedateien=None):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
+    fachliche_mindesttiefe_offen = False
 
     # Technischer Gemini-Fallback darf nicht durch die normale
     # Positions-/Punkt-10-Validierung laufen: Es gibt in diesem Fall bewusst
@@ -12996,6 +13077,10 @@ def speichere_ergebnis(text, eingabedateien=None):
             print("INFO: Performance-Zeitraeume in 7.1/7.3/7.5/7.6 gegen autoritative Makro-Perioden repariert.")
         _pruefe_7_performanceperioden(final_text, makro_text_fx)
         final_text = _repariere_3_5_fundamentaldaten(final_text)
+        # Dieses fruehe Regression-Gate laeuft vor den spaeteren Schlusskorrekturen.
+        # Futures-Basis-Duplikate muessen bereits hier aus 8.1–8.4 entfernt sein,
+        # sonst bricht der Lauf ab, bevor der spaetere Abschluss-Sanitizer erreicht wird.
+        final_text = _entferne_futures_basis_duplikate_aus_abschnitt8(final_text)
         _pruefe_dokumentierte_reparaturen(final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt"))
 
         # WICHTIG: Der finale Reparaturpass oben kann 6.1–6.6-Platzhalter
@@ -13051,6 +13136,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         try:
             _pruefe_inhaltliche_mindesttiefe(final_text)
         except RuntimeError as exc:
+            fachliche_mindesttiefe_offen = True
             print(f"WARNUNG: Mindesttiefe der Auswertung nicht bestanden; Bericht wird dennoch gespeichert: {exc}")
 
         # Abschluss nach ALLEN inhaltlichen Reparaturen: keine nachgelagerte
@@ -13115,6 +13201,19 @@ def speichere_ergebnis(text, eingabedateien=None):
             edelmetall_text,
             eingabedateien,
         )
+
+        # Der offene Edelmetallkonflikt wird im gespeicherten Bericht dokumentiert;
+        # er blockiert die technische Ausgabe nicht, verhindert aber FACHLICH_FINAL.
+        final_text = _dokumentiere_edelmetall_4w_quellenkonflikte(
+            final_text, edelmetall_text, briefing_text
+        )
+
+        # Letzte textverändernde Reparatur direkt nach dem letzten Gate, das
+        # Konflikthinweise einsetzen kann. Danach folgen ausschließlich Prüfungen.
+        # So können spätere Zahlen-/Hinweisreparaturen keine Futures-Basis-
+        # Duplikate in 8.1–8.4 zurückbringen.
+        final_text = _entferne_futures_basis_duplikate_aus_abschnitt8(final_text)
+
         if zahlen_gate_warnungen:
             print(
                 "INFO: Zahlenkonsistenz-Gate hat offene Prüfpunkte markiert; "
@@ -13137,6 +13236,7 @@ def speichere_ergebnis(text, eingabedateien=None):
 
     if str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("INFO: Technischer Gemini-Fallback - bestehende Auswertung bleibt unverändert; keine Auswertung wird gespeichert.")
+        print("FACHLICH_FINAL=NICHT_FINAL | keine neue Gemini-Auswertung erzeugt")
         return None
 
     with open(ausgabe_datei, "w", encoding="utf-8-sig") as f:
@@ -13165,6 +13265,33 @@ def speichere_ergebnis(text, eingabedateien=None):
         print("INFO: Technischer Gemini-Fallback - persistente Historie wird nicht fortgeschrieben.")
 
     print(f"\nGespeichert: {ausgabe_datei}")
+    print("AUSGABE_ERSTELLT=PASS")
+    fachliche_gruende = []
+    if not str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
+        try:
+            offene_metallkonflikte = _edelmetall_4w_quellenkonflikte(
+                edelmetall_text if "edelmetall_text" in locals() else "",
+                briefing_text if "briefing_text" in locals() else "",
+            )
+        except Exception as exc:
+            offene_metallkonflikte = []
+            fachliche_gruende.append(
+                f"4W-Quellenkonflikt konnte nicht verifiziert werden ({type(exc).__name__})"
+            )
+        if offene_metallkonflikte:
+            fachliche_gruende.append(
+                "offene Edelmetall-4W-Quellenkonflikte: " + " | ".join(offene_metallkonflikte)
+            )
+        if "zahlen_gate_warnungen" in locals() and zahlen_gate_warnungen:
+            fachliche_gruende.append("Zahlenkonsistenz-Gate meldet offene Prüfpunkte")
+        if fachliche_mindesttiefe_offen:
+            fachliche_gruende.append("inhaltliche Mindesttiefe nicht bestanden")
+    if fachliche_gruende:
+        print("FACHLICH_FINAL=NICHT_FINAL | " + " | ".join(fachliche_gruende))
+    elif str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
+        print("FACHLICH_FINAL=NICHT_FINAL | keine neue Gemini-Auswertung erzeugt")
+    else:
+        print("FACHLICH_FINAL=PASS")
     return ausgabe_datei
 
 

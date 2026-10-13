@@ -1,13 +1,13 @@
 # Quellenwert-Datenvertrag – Sektor-Analyse
 
-**Version:** 1.0 – 12.10.2026  
+**Version:** 1.1 – 13.10.2026  
 **Geltungsbereich:** numerische Fakten in `Briefing`, `Makro_Briefing`, `Edelmetalle_Briefing` und der daraus erzeugten Gemini-Tagesauswertung.
 
 ## 1. Grundsatz
 
 Eine Zahl ist nur dann vergleichbar, wenn **Kennzahl, Messart, Einheit und Zeitbasis** übereinstimmen. Quelle und Datenstand müssen rückverfolgbar sein. Ein Zahlenwert allein ist kein vollständiger Fakt.
 
-Python-Scanner und Quelldateien liefern die Fakten. Gemini darf sie erklären, aber keine abweichenden Werte als bestätigt darstellen. Bei einem Konflikt zwischen zwei Python-Quellen wird nicht automatisch eine Quelle zum Sieger erklärt. Der Konflikt muss als `NICHT FINAL` ausgewiesen werden, bis Berechnung und Zeitfenster übereinstimmen.
+Python-Scanner und Quelldateien liefern die Fakten. Gemini darf sie erklären, aber keine abweichenden Werte als bestätigt darstellen. Für die 4W-Renditen von Gold, Silber, Platin und Palladium gilt die in Abschnitt 4 festgelegte Quellenpriorität. Ein ungelöster Quellenkonflikt wird sichtbar als `FACHLICH_FINAL=NICHT_FINAL` ausgewiesen, blockiert aber nicht allein die technische Erstellung und Speicherung des Berichts.
 
 ## 2. Pflichtfelder pro Quellenwert
 
@@ -100,9 +100,11 @@ Beispiele:
 
 ## 7. Gate-Verhalten
 
-- `PASS` nur, wenn die relevanten Werte und ihre Zuordnungen geprüft wurden und keine offenen Konflikte verbleiben.
+- `AUSGABE_ERSTELLT=PASS` bedeutet ausschließlich, dass der Bericht technisch erfolgreich gespeichert wurde.
+- `FACHLICH_FINAL=PASS` ist nur zulässig, wenn alle verpflichtenden Prüfungen bestanden wurden und keine offenen fachlich relevanten Konflikte verbleiben.
+- Ein ungelöster Edelmetall-4W-Quellenkonflikt setzt `FACHLICH_FINAL=NICHT_FINAL`, blockiert aber nicht allein die technische Ausgabe.
 - Unterschiedliche Zeitbasen: entweder getrennt und nachvollziehbar darstellen oder als nicht vergleichbar markieren.
-- Fehlende Datenbasis, fehlende Zeitbasis und widersprüchliche Quellen: dokumentierter Fehlerstatus; kein `PASS`.
+- Fehlende Datenbasis oder fehlende Zeitbasis müssen als offener Prüfpunkt dokumentiert werden; sie dürfen nicht automatisch zu `PASS` führen.
 - Quellenkonflikte dürfen nicht durch eine automatische Überschreibung verborgen werden.
 - Der abschließende Gate-Test muss den tatsächlich gespeicherten Endstand prüfen.
 
@@ -112,9 +114,9 @@ Beispiele:
 2. CPI/Core CPI und PCE/Core PCE werden über exakte Zeilenlabels getrennt.
 3. Rundungstoleranz orientiert sich an der angezeigten Präzision statt an einer pauschalen `1e-8`-Grenze.
 4. Der 4W-Prüfer liest nur den direkt mit `4W` verknüpften Prozentwert; die 52W-Distanz wird nicht mehr als 4W-Rendite gelesen.
-5. Abweichende 4W-Werte der zwei Briefings lösen einen Quellenkonflikt aus und werden nicht automatisch überschrieben.
+5. Abweichende 4W-Werte der zwei Briefings werden sichtbar protokolliert; Edelmetalle-Briefing hat Vorrang, der technische Bericht wird dennoch gespeichert und `FACHLICH_FINAL` bleibt bis zur Klärung `NICHT_FINAL`.
 6. Stundenlohnprüfung/-reparatur unterscheidet USD/Stunde von prozentualen Veränderungen.
 7. `get_kurzfrist_kontext_text` und `get_markt_kurzfrist_kontext_text` verwenden abgeschlossene Tageskerzen und dieselbe 20-Intervall-Formel.
 8. Die falsche Abschnittsgrenze `NÄCHSTE KATALYSOREN` wurde auf `NÄCHSTE KATALYSATOREN` korrigiert.
 
-Diese Arbeitsversion ist **noch nicht produktionsfreigegeben**. Die Tests und der vollständige Workflow müssen nach Einbindung in die GitHub-Umgebung erneut laufen.
+Die Quellenpriorität und die getrennten Status `AUSGABE_ERSTELLT` / `FACHLICH_FINAL` sind verbindliche Regeln. Vor Produktionsfreigabe müssen die Tests und der vollständige GitHub-Workflow erneut laufen.
