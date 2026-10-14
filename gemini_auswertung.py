@@ -2609,7 +2609,7 @@ def _gemini_split_resume_fehler_sichern(
         "model_attempts": model_attempts,
         "model_attempt_count": actual_model_attempts,
         "model_attempts_remaining": remaining_model_attempts,
-        "pool_pass": int(_gemini_503_pool_passes_this_run.get(
+        "pool_pass": int((globals().get("_gemini_503_pool_passes_this_run") or {}).get(
             str(request_info.get("request_fingerprint") or request_fingerprint), 0
         )) + 1,
         "run_id": _GEMINI_RUN_ID,
@@ -3282,7 +3282,7 @@ def _gemini_generate_content_einzelversuch(client, modell, contents, config, lab
     _gemini_503_failures_this_run[attempt_key] = attempts + 1
     _gemini_last_503_request_info["model_attempt_count"] = attempts + 1
     _gemini_last_503_request_info["request_attempt_count"] = attempts + 1
-    pool_pass = int(_gemini_503_pool_passes_this_run.get(request_fingerprint, 0)) + 1
+    pool_pass = int((globals().get("_gemini_503_pool_passes_this_run") or {}).get(request_fingerprint, 0)) + 1
     remaining_attempts = max(
         0, GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN - (attempts + 1)
     )
@@ -3325,8 +3325,46 @@ def _gemini_generate_content_quota_safe(
         contents, config_kwargs.get("system_instruction")
     )
     # 503-Sperren gelten nur fuer genau diesen Request, nicht fuer alle
-    # folgenden Splits oder Synthese-Requests desselben Tageslaufs.
-    _gemini_failed_models = _gemini_503_failed_models_by_request[request_fingerprint]
+    # folgenden Splits oder Synthese-Requests desselben Tageslaufs. Der
+    # Registry-Zustand wird auch in isolierten Test-Namespaces konsistent angelegt.
+    failed_by_request = globals().get("_gemini_503_failed_models_by_request")
+    if failed_by_request is None:
+        failed_by_request = {}
+        globals()["_gemini_503_failed_models_by_request"] = failed_by_request
+    elif not isinstance(failed_by_request, dict):
+        raise TypeError(
+            "_gemini_503_failed_models_by_request muss ein Dictionary sein; "
+            f"erhalten: {type(failed_by_request).__name__}"
+        )
+    failed_models = failed_by_request.get(request_fingerprint)
+    if failed_models is None:
+        failed_models = set()
+    elif isinstance(failed_models, str):
+        # Ein einzelner Modellname ist ein Element, niemals eine Zeichenfolge
+        # von Modellnamen-Zeichen.
+        if not failed_models:
+            raise TypeError("Leerer Modellname in _gemini_503_failed_models_by_request")
+        failed_models = {failed_models}
+    elif isinstance(failed_models, set):
+        if any(not isinstance(model, str) or not model for model in failed_models):
+            raise TypeError(
+                "Registry-Eintrag muss ausschließlich nichtleere Modellnamen enthalten"
+            )
+        # Bestehende Sets nicht kopieren: Referenzen auf den laufenden
+        # request-spezifischen Zustand bleiben dadurch konsistent.
+    elif isinstance(failed_models, (frozenset, list, tuple)):
+        if any(not isinstance(model, str) or not model for model in failed_models):
+            raise TypeError(
+                "Registry-Eintrag muss ausschließlich nichtleere Modellnamen enthalten"
+            )
+        failed_models = set(failed_models)
+    else:
+        raise TypeError(
+            "Registry-Eintrag muss None, ein Modellname oder eine Sammlung "
+            f"von Modellnamen sein; erhalten: {type(failed_models).__name__}"
+        )
+    failed_by_request[request_fingerprint] = failed_models
+    _gemini_failed_models = failed_models
     # Der aktive Modell-Pin eines vorherigen Splits darf die Auswahl dieses
     # Requests nicht bestimmen. Der Aufrufer uebergibt das aktuell vorgesehene
     # Modell; bei einem Retry aktualisiert die Hauptschleife diesen Wert.
@@ -4244,7 +4282,7 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
             "GenerateContent",
         )
     except Exception as exc:
-        request_info = dict(_gemini_last_503_request_info or {})
+        request_info = dict(globals().get("_gemini_last_503_request_info") or {})
         synthesis_fingerprint = str(
             request_info.get("request_fingerprint")
             or _gemini_request_part_fingerprint(
@@ -4634,11 +4672,44 @@ def _gemini_503_aeussere_retry_aktion(
     vom integrierten Regressionstest gemeinsam verwendet.
     """
     global _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models
-    request_fingerprint = str((_gemini_last_503_request_info or {}).get("request_fingerprint") or "")
+    request_fingerprint = str((globals().get("_gemini_last_503_request_info") or {}).get("request_fingerprint") or "")
     if fehlgeschlagene_modelle is not None:
         failed = fehlgeschlagene_modelle
     elif request_fingerprint:
-        failed = _gemini_503_failed_models_by_request[request_fingerprint]
+        failed_by_request = globals().get("_gemini_503_failed_models_by_request")
+        if failed_by_request is None:
+            failed_by_request = {}
+            globals()["_gemini_503_failed_models_by_request"] = failed_by_request
+        elif not isinstance(failed_by_request, dict):
+            raise TypeError(
+                "_gemini_503_failed_models_by_request muss ein Dictionary sein; "
+                f"erhalten: {type(failed_by_request).__name__}"
+            )
+        failed = failed_by_request.get(request_fingerprint)
+        if failed is None:
+            failed = set()
+        elif isinstance(failed, str):
+            if not failed:
+                raise TypeError("Leerer Modellname in _gemini_503_failed_models_by_request")
+            failed = {failed}
+        elif isinstance(failed, set):
+            if any(not isinstance(model, str) or not model for model in failed):
+                raise TypeError(
+                    "Registry-Eintrag muss ausschließlich nichtleere Modellnamen enthalten"
+                )
+            # Das bestehende Set samt Identität erhalten.
+        elif isinstance(failed, (frozenset, list, tuple)):
+            if any(not isinstance(model, str) or not model for model in failed):
+                raise TypeError(
+                    "Registry-Eintrag muss ausschließlich nichtleere Modellnamen enthalten"
+                )
+            failed = set(failed)
+        else:
+            raise TypeError(
+                "Registry-Eintrag muss None, ein Modellname oder eine Sammlung "
+                f"von Modellnamen sein; erhalten: {type(failed).__name__}"
+            )
+        failed_by_request[request_fingerprint] = failed
         _gemini_failed_models = failed
     else:
         failed = _gemini_failed_models
