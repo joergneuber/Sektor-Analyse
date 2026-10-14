@@ -83,9 +83,9 @@ DRITTER_FALLBACK_MODELL = "gemini-3.8-flash"  # Qualitaets-Fallback bei Ausfall 
 VIERTER_FALLBACK_MODELL = "gemini-3-flash-preview"  # Weiterer Qualitaets-Fallback
 FUENFTER_FALLBACK_MODELL = "gemini-3.6-flash"  # Weiterer Qualitaets-Fallback
 
-# Alle fuer diesen Lauf konfigurierten Modelle werden hoechstens einmal
-# versucht. So wird ein einzelnes Free-Tier-Modell bei 503/Netzwerkproblemen
-# nicht mehrfach in derselben Nachfragespitze verbrannt.
+# Je Request sind zwei begrenzte Modellpool-Runden moeglich. Pro Request und
+# Modell bleiben maximal zwei echte API-Sendungen erlaubt; andere Splits haben
+# eine eigene Fehlerhistorie.
 GEMINI_MODELLREIHENFOLGE = tuple(dict.fromkeys(
     modell for modell in (
         MODELL,
@@ -205,6 +205,9 @@ _gemini_stufen_cache = {}
 # Erfolgreiche einzelne GenerateContent-Splits bleiben innerhalb des Laufes erhalten.
 # Ein technischer Fehler darf niemals bereits erfolgreiche Splits erneut senden.
 _gemini_request_split_cache = {}
+# Erfolgreiche Zwischensynthesen werden bei einem spaeteren technischen Fehler
+# wiederverwendet, statt bei Wiederaufnahme erneut API-Requests auszuloesen.
+_gemini_synthese_request_cache = {}
 # Persistenter Resume-Zustand fuer erfolgreich beantwortete Request-Splits.
 # Der Inhalt wird nur wiederverwendet, wenn der Fingerabdruck des vollstaendigen
 # Quellkontexts, der Arbeitsanweisung und des konkreten Splits identisch ist.
@@ -212,10 +215,16 @@ GEMINI_SPLIT_RESUME_DATEI = ".gemini_request_split_resume.json"
 GEMINI_SPLIT_RESUME_DONE_DATEI = ".gemini_request_split_resume_done"
 _GEMINI_SPLIT_RESUME_VERSION = 2
 _GEMINI_RUN_ID = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{os.getpid()}"
+# Maximal zwei echte GenerateContent-Sendungen je Request UND Modell in einem Lauf.
+# Eine zweite Modellpool-Runde ist erlaubt; erfolgreiche Splits bleiben gecacht.
 GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN = 2
-# Zentrale Versuchszählung unmittelbar an jeder echten GenerateContent-Sendung.
-# Der Schlüssel bindet identische Inhalte + Systemanweisung modellunabhängig.
+GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+GEMINI_503_POOL_BACKOFF_SECONDS = 20.0
+# Tatsächliche Sendungen werden pro Request-Fingerprint UND Modell gezählt.
+# Damit blockiert ein 503 bei einem Modell nicht pauschal alle anderen Splits.
 _gemini_503_failures_this_run = defaultdict(int)
+_gemini_503_failed_models_by_request = defaultdict(set)
+_gemini_503_pool_passes_this_run = defaultdict(int)
 _gemini_last_503_request_info = {}
 # Exakte Eingabedateien desselben Gemini-Laufs; werden auch fuer deterministische
 # Nachbearbeitung (u.a. Abschnitt 2.4) weitergereicht, statt Quellen neu zu suchen.
@@ -2561,7 +2570,7 @@ def _gemini_split_resume_fehler_sichern(
     context_fingerprint, completed, previous_failed, request_fingerprint,
     stage, index, total, exc, model=None,
 ):
-    """Persistiert Fehlerstatus; nach zwei 503-/Netzwerkversuchen pro Request ist Schluss."""
+    """Persistiert Fehlerstatus, ohne nach zwei Modellversuchen den Pool abzuwürgen."""
     error_category = analysiere_api_fehler(str(exc))[2]
     is_terminal_503 = "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in str(exc)
     is_transient_503 = (
@@ -2576,6 +2585,15 @@ def _gemini_split_resume_fehler_sichern(
     )
     previous_attempts = int(previous_failed.get("attempt_count", 0)) if same_failed_request else 0
     attempt_count = previous_attempts + 1 if is_transient_503 else previous_attempts
+    model_name = str(model or _gemini_last_request_model or "UNBEKANNT")
+    model_attempts = dict(previous_failed.get("model_attempts") or {}) if same_failed_request else {}
+    if is_transient_503:
+        model_attempts[model_name] = int(model_attempts.get(model_name, 0)) + 1
+    request_info = dict(_gemini_last_503_request_info or {})
+    actual_model_attempts = int(request_info.get("model_attempt_count", 0))
+    remaining_model_attempts = max(
+        0, GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN - actual_model_attempts
+    )
     failed_status = {
         "split_index": index,
         "split_total": total,
@@ -2583,24 +2601,28 @@ def _gemini_split_resume_fehler_sichern(
         "stage": stage,
         "status": "FAILED",
         "attempt_count": attempt_count,
+        "model_attempts": model_attempts,
+        "model_attempt_count": actual_model_attempts,
+        "model_attempts_remaining": remaining_model_attempts,
+        "pool_pass": int(_gemini_503_pool_passes_this_run.get(
+            str(request_info.get("request_fingerprint") or request_fingerprint), 0
+        )) + 1,
         "run_id": _GEMINI_RUN_ID,
         "error_type": type(exc).__name__,
         "error": str(exc)[:4000],
-        "model": str(model or _gemini_last_request_model or "UNBEKANNT"),
+        "model": model_name,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     _gemini_split_resume_speichern(context_fingerprint, completed, failed_status)
     print(
         f"GEMINI-REQUEST-STATUS: {stage} {index}/{total} als FAILED gespeichert; "
-        f"503-/Netzwerkversuche in diesem Lauf={attempt_count}."
+        f"Fehlversuche gesamt={attempt_count} | Modell={model_name} | "
+        f"Sendungen dieses Modells={actual_model_attempts}/"
+        f"{GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN} | "
+        f"weitere Sendungen fuer dieses Modell={remaining_model_attempts}."
     )
-    if is_transient_503 and attempt_count >= GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN:
-        raise RuntimeError(
-            "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL: "
-            f"{stage} {index}/{total} scheiterte nach {attempt_count} Versuchen "
-            "mit temporaerem 503/Netzwerkfehler; Status und erfolgreiche Splits "
-            "wurden fuer einen spaeteren Lauf gesichert."
-        ) from exc
+    # Der Fehlerstatus wird gesichert, aber der Modellpool darf weiterarbeiten.
+    # Das harte Limit wird unmittelbar vor jeder echten API-Sendung geprüft.
     return attempt_count
 
 
@@ -3233,21 +3255,40 @@ def _gemini_generate_content_einzelversuch(client, modell, contents, config, lab
     """Prueft die 503-Grenze VOR jeder echten API-Sendung und zaehlt echte Fehler."""
     global _gemini_last_503_request_info
     request_fingerprint = _gemini_503_request_fingerprint(contents, system_instruction)
-    failures = int(_gemini_503_failures_this_run.get(request_fingerprint, 0))
+    attempt_key = (request_fingerprint, str(modell))
+    attempts = int(_gemini_503_failures_this_run.get(attempt_key, 0))
     _gemini_last_503_request_info = {
         "request_fingerprint": request_fingerprint,
         "stage": str(label),
         "model": str(modell),
-        "attempt_count": failures,
+        "model_attempt_count": attempts,
+        "request_attempt_count": attempts,
         "run_id": _GEMINI_RUN_ID,
     }
-    if failures >= GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN:
+    if attempts >= GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN:
         raise RuntimeError(
             "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL: "
-            f"Request {request_fingerprint[:12]} hat das Limit von "
-            f"{GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN} echten 503-/Netzwerkfehlern "
-            "erreicht; vor dem API-Aufruf blockiert."
+            f"Request {request_fingerprint[:12]} auf Modell {modell} hat das Limit von "
+            f"{GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN} echten API-Sendungen erreicht; "
+            "vor dem API-Aufruf blockiert."
         )
+    # Zählung unmittelbar VOR der echten Sendung: auch ein anderer API-Fehler
+    # verbraucht einen Versuch. Ein blockierter Request zählt ausdrücklich nicht.
+    _gemini_503_failures_this_run[attempt_key] = attempts + 1
+    _gemini_last_503_request_info["model_attempt_count"] = attempts + 1
+    _gemini_last_503_request_info["request_attempt_count"] = attempts + 1
+    pool_pass = int(_gemini_503_pool_passes_this_run.get(request_fingerprint, 0)) + 1
+    remaining_attempts = max(
+        0, GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN - (attempts + 1)
+    )
+    print(
+        f"GEMINI-API-SEND-BUDGET: Request={request_fingerprint[:12]} | "
+        f"Modell={modell} | echte Sendung={attempts + 1}/"
+        f"{GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN} | "
+        f"weitere Sendungen fuer dieses Request/Modell={remaining_attempts} | "
+        f"Modellpool-Runde={pool_pass}/"
+        f"{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN}."
+    )
     try:
         return client.models.generate_content(
             model=modell, contents=contents, config=config,
@@ -3260,8 +3301,6 @@ def _gemini_generate_content_einzelversuch(client, modell, contents, config, lab
         ))
         is_perday = "perday" in text or "generaterequestsperdayperprojectpermodelfreetier" in text
         if is_transient and not is_perday:
-            _gemini_503_failures_this_run[request_fingerprint] = failures + 1
-            _gemini_last_503_request_info["attempt_count"] = failures + 1
             _gemini_last_503_request_info["error"] = str(exc)[:4000]
         raise
 
@@ -3276,8 +3315,17 @@ def _gemini_generate_content_quota_safe(
     ein Fallback-Modell wechselt. Kein Request wird gesendet, wenn das lokale
     Minutenkontingent nicht ausreicht.
     """
-    global _gemini_active_modell, _gemini_last_request_model
-    preferred_modell = _gemini_active_modell or preferred_modell
+    global _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models
+    request_fingerprint = _gemini_503_request_fingerprint(
+        contents, config_kwargs.get("system_instruction")
+    )
+    # 503-Sperren gelten nur fuer genau diesen Request, nicht fuer alle
+    # folgenden Splits oder Synthese-Requests desselben Tageslaufs.
+    _gemini_failed_models = _gemini_503_failed_models_by_request[request_fingerprint]
+    # Der aktive Modell-Pin eines vorherigen Splits darf die Auswahl dieses
+    # Requests nicht bestimmen. Der Aufrufer uebergibt das aktuell vorgesehene
+    # Modell; bei einem Retry aktualisiert die Hauptschleife diesen Wert.
+    _gemini_active_modell = preferred_modell
     modell, wartezeit = _gemini_quota_waehlen(preferred_modell, measured_tokens)
     while modell is None:
         kandidaten = _gemini_quota_kandidaten(preferred_modell)
@@ -3702,6 +3750,17 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
                 raise RuntimeError(
                     f"GEMINI_SYNTHESE_REQUEST_ZU_GROSS: {tokens:,} Tokens."
                 )
+            synthese_fingerprint = _gemini_503_request_fingerprint(
+                [synth_prompt], system_instruction
+            )
+            cached_synthese = _gemini_synthese_request_cache.get(synthese_fingerprint)
+            if cached_synthese is not None:
+                print(
+                    f"GEMINI-SYNTHESE-CACHE-HIT: Stufe {stufe}/{idx} | "
+                    f"bereits erfolgreich | Zeichen={len(cached_synthese)}"
+                )
+                neue_aktuelle.append(cached_synthese)
+                continue
             response = _gemini_generate_content_quota_safe(
                 client,
                 modell,
@@ -3710,7 +3769,9 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
                 tokens,
                 f"{label} Synthese {stufe}/{idx}",
             )
-            neue_aktuelle.append(response.text or "")
+            synthese_text = response.text or ""
+            _gemini_synthese_request_cache[synthese_fingerprint] = synthese_text
+            neue_aktuelle.append(synthese_text)
         aktuelle = neue_aktuelle
         stufe += 1
     return aktuelle[0] if aktuelle else ""
@@ -4568,7 +4629,14 @@ def _gemini_503_aeussere_retry_aktion(
     vom integrierten Regressionstest gemeinsam verwendet.
     """
     global _gemini_active_modell, _gemini_last_request_model, _gemini_failed_models
-    failed = _gemini_failed_models if fehlgeschlagene_modelle is None else fehlgeschlagene_modelle
+    request_fingerprint = str((_gemini_last_503_request_info or {}).get("request_fingerprint") or "")
+    if fehlgeschlagene_modelle is not None:
+        failed = fehlgeschlagene_modelle
+    elif request_fingerprint:
+        failed = _gemini_503_failed_models_by_request[request_fingerprint]
+        _gemini_failed_models = failed
+    else:
+        failed = _gemini_failed_models
     action, candidate = _gemini_503_aeussere_entscheidung(
         fehlertext, aktuelles_modell, modell_reihenfolge, failed,
     )
@@ -4634,6 +4702,10 @@ def gemini_auswertung_starten():
     _gemini_active_modell = None
     _gemini_last_request_model = None
     _gemini_failed_models = set()
+    _gemini_503_failures_this_run.clear()
+    _gemini_503_failed_models_by_request.clear()
+    _gemini_503_pool_passes_this_run.clear()
+    _gemini_synthese_request_cache.clear()
     _gemini_stufen_cache = {}
     technische_retry_wiederverwenden = False
     modell_index = 0
@@ -4706,8 +4778,10 @@ def gemini_auswertung_starten():
         versuch += 1
         versuch_nummer = ((versuch - 1) % MAX_VERSUCHE) + 1
         print(
-            f"\nVersuch {versuch_nummer}/{MAX_VERSUCHE} "
-            "(Modellpool einmalig; 503-Wiederaufnahme ueber gespeicherten Split-Status)..."
+            f"\nHauptversuch={versuch} | Modellpool-Groesse={MAX_VERSUCHE} | "
+            f"maximale 503-Modellpool-Runden je Request="
+            f"{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN} | "
+            "erfolgreiche Splits werden aus dem Resume-Cache uebernommen."
         )
 
         try:
@@ -5231,13 +5305,38 @@ def gemini_auswertung_starten():
                     # erneuter Datei-Upload erforderlich.
                     continue
 
-                # Ein vollstaendig erfolgloser Modellpool ist fuer diesen Lauf
-                # terminal. Keine Wiederholung desselben unveraenderten Requests.
-                # Split-/Stufen-Resume bleibt fuer einen spaeteren Lauf erhalten.
+                # Nach dem ersten vollstaendigen Pooldurchlauf ist genau eine
+                # zweite Runde nach Backoff erlaubt. Der Poolstatus ist request-
+                # spezifisch; ein Fehler bei einem Split sperrt das Modell nicht
+                # fuer andere Splits. Die API-Sendegrenze bleibt modellbezogen.
+                request_fingerprint = str(
+                    (_gemini_last_503_request_info or {}).get("request_fingerprint") or ""
+                )
+                pool_passes = int(_gemini_503_pool_passes_this_run.get(request_fingerprint, 0))
                 grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
+                if request_fingerprint and pool_passes < (GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN - 1):
+                    _gemini_503_pool_passes_this_run[request_fingerprint] = pool_passes + 1
+                    _gemini_503_failed_models_by_request[request_fingerprint].clear()
+                    _gemini_failed_models = _gemini_503_failed_models_by_request[request_fingerprint]
+                    _gemini_active_modell = None
+                    _gemini_last_request_model = None
+                    modell_index = 0
+                    aktuelles_modell = GEMINI_MODELLREIHENFOLGE[0]
+                    wartezeit = GEMINI_503_POOL_BACKOFF_SECONDS
+                    print(
+                        f"  {grund}: erster Modellpool-Durchlauf ausgeschoepft. "
+                        f"Starte begrenzte zweite Runde nach {wartezeit:.0f}s; "
+                        f"bereits erfolgreiche Splits bleiben im Cache. "
+                        f"Pool-Runde 2/{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN}; "
+                        "pro Request/Modell maximal "
+                        f"{GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN} echte API-Sendungen."
+                    )
+                    time.sleep(wartezeit)
+                    continue
                 print(
-                    f"  {grund} auf allen konfigurierten Modellen; "
-                    "kontrollierter technischer Fallback ohne weiteren identischen Zyklus."
+                    f"  {grund}: beide Modellpool-Runden ausgeschöpft. "
+                    "Technischer Fallback; fehlgeschlagener Split und erfolgreiche "
+                    "Teilergebnisse bleiben fuer den naechsten Lauf gespeichert."
                 )
                 break
 
@@ -5268,7 +5367,10 @@ def gemini_auswertung_starten():
         text = _normalisiere_makro_datenqualitaet(text, makro_datenqualitaet)
         return text
 
-    print(f"\nFEHLER: Nach {MAX_VERSUCHE} Versuchen weiterhin keine gueltige Antwort.")
+    print(
+        f"\nFEHLER: Keine gueltige Antwort nach {versuch} Hauptversuchen "
+        f"(Modellpool-Groesse={MAX_VERSUCHE}; begrenzte zweite Poolrunde moeglich)."
+    )
     print(f"Letzte Antwort/Fehler:\n{letzte_antwort}")
 
     # TECHNISCHER FALLBACK:
