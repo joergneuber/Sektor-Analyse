@@ -2589,8 +2589,13 @@ def _gemini_split_resume_fehler_sichern(
     model_attempts = dict(previous_failed.get("model_attempts") or {}) if same_failed_request else {}
     if is_transient_503:
         model_attempts[model_name] = int(model_attempts.get(model_name, 0)) + 1
-    request_info = dict(_gemini_last_503_request_info or {})
-    actual_model_attempts = int(request_info.get("model_attempt_count", 0))
+    # Der vollstaendige Produktionslauf initialisiert diese Variable auf Modulebene.
+    # Isolierte AST-/Resume-Tests koennen die Funktion jedoch ohne dieses Modul-Global
+    # ausfuehren; in diesem Fall darf die Fehlerpersistierung nicht selbst abstuerzen.
+    request_info = dict(globals().get("_gemini_last_503_request_info") or {})
+    actual_model_attempts = int(
+        request_info.get("model_attempt_count", model_attempts.get(model_name, 0))
+    )
     remaining_model_attempts = max(
         0, GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN - actual_model_attempts
     )
