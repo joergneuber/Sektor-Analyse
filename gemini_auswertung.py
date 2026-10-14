@@ -189,6 +189,9 @@ _gemini_project_input_quota_usage = []
 _gemini_input_quota_cooldown_until = {}
 _gemini_rpd_requests = defaultdict(int)
 _gemini_rpd_exhausted = set()
+# Expliziter Startzustand: Auch direkte/isolierte Funktionsaufrufe duerfen
+# den Cache-Namen lesen, bevor die mehrstufige Analyse einen Cache erzeugt.
+_gemini_cache_name = None
 _gemini_active_modell = None
 _gemini_last_request_model = None
 _gemini_failed_models = set()
@@ -4399,6 +4402,10 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "8. 🪙 EDELMETALLE: 8.1 Gold, 8.2 Silber, 8.3 Platin, 8.4 Palladium jeweils separat mit aktuellem Kurs, kurzfristiger Entwicklung, 4-Wochen-Entwicklung, "
         "52-Wochen-Situation, EMA200/WMA200 soweit vorhanden, technischem Zustand, Trendfolge-, Trendwende- und Short-Status, CRV/relevanten Filtern soweit vorhanden, "
         "Beinahe-Kandidaten, Saisonalität soweit vorhanden, Makrotreibern, Rohstoff-/Branchenzusammenhängen, möglichen Gewinnern/Verlierern, konkreten Aktienbezügen, frühen Aktienreaktionen und Triggern. "
+        "VERBINDLICHE EDELMETALL-QUELLENREGEL: Sämtliche numerischen und sonstigen Fakten zu Gold, Silber, Platin und Palladium stammen ausschließlich aus Edelmetalle_Briefing(...).txt bzw. aus den von Python daraus erzeugten Faktenblöcken. "
+        "Das Markt-Briefing und das Makro-Briefing dürfen keine Edelmetall-Kurse, Performancewerte, Zeiträume, technischen Kennzahlen oder Statuswerte liefern oder ersetzen. "
+        "Python stellt die überprüfbaren Fakten bereit; Gemini interpretiert sie, ohne neue Zahlen, Zeiträume, Indikatorstände oder Statusangaben zu erfinden. "
+        "5T/kurzfristige Entwicklung, EMA20/EMA50 oder andere Kennzahlen dürfen nur genannt werden, wenn diese konkret im Edelmetalle-Briefing als aktuelle Fakten enthalten sind; andernfalls NICHT VERFUEGBAR oder nicht behaupten. "
         "Fehlende einzelne Daten explizit als NICHT VERFUEGBAR kennzeichnen; 'Kein Setup' ersetzt diese Analyse nicht.\n"
         "9. 📅 NÄCHSTE KATALYSATOREN: 9.1 verifizierte Makrotermine, 9.2 Earnings/Unternehmensveranstaltungen/-meldungen, 9.3 Branchenereignisse, "
         "9.4 technische Trigger und 9.5 mögliche Aktivierung/Invalidierung. Keine Termine erfinden. Ein tatsächlicher Termin/Ereignis muss einen verifizierbaren Zeit-/Datumsbezug haben; "
@@ -10828,6 +10835,676 @@ def _sichere_lithium_te_in_7_5(text, lithium_te):
 
 
 
+
+
+
+
+def _ist_portfolio_positionsdatensatz(line):
+    """True only for a full position record, not a monitoring/summary mention."""
+    return bool(
+        re.match(r"^\s*[-•]\s+", line or "")
+        and re.search(r"(?i)\bEinstieg\s*:", line or "")
+        and re.search(r"(?i)\bAktuell\s*:", line or "")
+        and re.search(r"(?i)\bPerformance\s*:", line or "")
+    )
+
+
+def _portfolio_positionsduplikate(text):
+    """Find duplicate tickers only within true position records in the same 10.x section."""
+    p10 = re.search(r"(?m)^10\.\s*💼\s*BESTEHENDES PORTFOLIO\s*$", text or "")
+    p11 = re.search(r"(?m)^11\.\s*METHODIK\s*/\s*DATENQUALITÄT\s*$", text or "")
+    if not p10 or not p11 or p11.start() <= p10.start():
+        return None
+    seen_by_section = {}
+    current_section = None
+    duplicates = []
+    for line in (text or "")[p10.start():p11.start()].splitlines():
+        heading = re.match(r"10\.(1|2|3|4|5)\s+", line)
+        if heading:
+            current_section = heading.group(1)
+        if current_section not in {"1", "3", "4"} or not _ist_portfolio_positionsdatensatz(line):
+            continue
+        tickers = re.findall(r"\(([A-Z0-9][A-Z0-9.^=-]{0,12})\)", line)
+        tickers = [t for t in tickers if t not in {"USD", "EUR", "US", "EMA", "SMA", "YTD", "TP1", "TP2", "CRV", "MSCI"}]
+        section_seen = seen_by_section.setdefault(current_section, set())
+        for ticker in tickers:
+            if ticker in section_seen:
+                duplicates.append((current_section, ticker))
+            else:
+                section_seen.add(ticker)
+    return duplicates
+
+
+def _dedupliziere_portfolio_positionsdatensaetze(text):
+    """Remove only duplicate full records within the same section; preserve cross-section mentions."""
+    p10 = re.search(r"(?m)^10\.\s*💼\s*BESTEHENDES PORTFOLIO\s*$", text or "")
+    p11 = re.search(r"(?m)^11\.\s*METHODIK\s*/\s*DATENQUALITÄT\s*$", text or "")
+    if not p10 or not p11 or p11.start() <= p10.start():
+        return text, []
+    block = text[p10.start():p11.start()]
+    seen_by_section = {}
+    current_section = None
+    out = []
+    removed = []
+    for line in block.splitlines():
+        heading = re.match(r"(?m)^\s*10\.(1|2|3|4|5)\s+", line)
+        if heading:
+            current_section = heading.group(1)
+        if current_section in {"1", "3", "4"} and _ist_portfolio_positionsdatensatz(line):
+            tickers = re.findall(r"\(([A-Z0-9][A-Z0-9.^=-]{0,12})\)", line)
+            tickers = [t for t in tickers if t not in {"USD", "EUR", "US", "EMA", "SMA", "YTD", "TP1", "TP2", "CRV", "MSCI"}]
+            section_seen = seen_by_section.setdefault(current_section, set())
+            already = [ticker for ticker in tickers if ticker in section_seen]
+            unseen = [ticker for ticker in tickers if ticker not in section_seen]
+            if already and not unseen:
+                removed.append((current_section, tuple(already)))
+                continue
+            section_seen.update(unseen)
+        out.append(line)
+    new_block = "\n".join(out).rstrip("\n")
+    return text[:p10.start()] + new_block + "\n\n" + text[p11.start():], removed
+
+
+def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro_text="", edel_text=""):
+    """Hartes Abschluss-Gate für Periodenzuordnung, Zeitbasis und doppelte offene Positionseinträge."""
+    errors = []
+    if not text:
+        raise RuntimeError("QUELLEN_PERIODEN_POSITIONEN_GATE: leere Auswertung")
+
+    # Die sieben explizit ausgewiesenen Regional-Performance-Zeilen müssen
+    # Tagesrendite, Schlussstand und YTD aus derselben Briefing-Zeile enthalten.
+    regional = {}
+    for line in (briefing_text or "").splitlines():
+        m = re.match(
+            r"(?i)^\s*[•-]\s*(S&P\s*500|Nasdaq|DAX|EuroStoxx\s*50|Nikkei\s*225|"
+            r"Shanghai\s+Composite|Hang\s+Seng):\s*"
+            r"letzter\s+abgeschlossener\s+Handelstag\s+([+-]?\d+(?:[.,]\d+)?)%\s*"
+            r"\(([^)]+)\)\s*\|\s*YTD\s+([+-]?\d+(?:[.,]\d+)?)%\s*\|\s*Datenstand\s+([0-9.]+)",
+            line,
+        )
+        if m:
+            regional[re.sub(r"\s+", " ", m.group(1)).casefold()] = m.groups()
+    for key, label in (
+        ("s&p 500", "S&P 500"), ("nasdaq", "Nasdaq Composite"), ("dax", "DAX"),
+        ("eurostoxx50", "EuroStoxx 50"), ("nikkei 225", "Nikkei 225"),
+        ("shanghai composite", "Shanghai Composite"), ("hang seng", "Hang Seng"),
+    ):
+        src = regional.get(key) or regional.get(key.replace(" ", ""))
+        if not src:
+            continue
+        daily, close, ytd, date = src[1], src[2], src[3], src[4]
+        expected = (
+            f"- {label}: letzter abgeschlossener Handelstag {daily.replace('.', ',')}% "
+            f"({close.replace(',', 'X').replace('.', ',').replace('X', '.')}) | "
+            f"YTD {ytd.replace('.', ',')}% | Datenstand {date}"
+        )
+        if expected not in text:
+            errors.append(f"7.1 {label}: Tagesrendite/Schlussstand/YTD nicht quellenkonsistent")
+
+    # Der aktuelle Öl-Kurzüberblick muss genau die 5T-/4W-Paare des Marktbriefings
+    # verwenden. Makro-Fakten dürfen dagegen nur 5T/1M heißen.
+    for asset in ("WTI", "Brent"):
+        m = re.search(
+            r"(?im)^\s*-\s*" + re.escape(asset) +
+            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+([0-9.]+)",
+            briefing_text or "",
+        )
+        if m:
+            expected_values = [fmt.replace(".", ",") for fmt in m.groups()[:3]]
+            summary_line = next(
+                (ln for ln in text.splitlines()
+                 if re.match(r"(?i)^\s*-\s*" + re.escape(asset) + r":\s*Kurs\b", ln)),
+                "",
+            )
+            if not summary_line or any(v not in summary_line for v in expected_values):
+                errors.append(f"7.5 {asset}: Markt-Briefing-Kurs/5T/4W stimmt nicht mit der Ausgabe überein")
+        macro_ref = _extrahiere_makro_referenzwerte(makro_text or "").get(asset.casefold())
+        if macro_ref:
+            fact = next(
+                (ln for ln in text.splitlines()
+                 if re.match(r"(?i)^\s*-\s*\[AUTORITATIVE QUELLE\]\s*" + re.escape(asset) + r":", ln)),
+                "",
+            )
+            source_date = macro_ref.get("datenstand", "")
+            source_date_de = (
+                datetime.datetime.strptime(source_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", source_date or "")
+                else source_date
+            )
+            if "Quelle=Makro_Briefing" not in fact or (source_date_de and f"Datenstand={source_date_de}" not in fact):
+                errors.append(f"7.5 {asset}: Makro-Fakt muss Quelle und aktuellen Datenstand ausweisen")
+            for key, value in macro_ref.get("perioden", {}).items():
+                expected = f"{key}={value:+.2f}".replace(".", ",") + "%"
+                if expected not in fact:
+                    errors.append(f"7.5 {asset}: Makro-Periode {key} fehlt oder ist falsch zugeordnet")
+
+    # Abschnitt 8.1–8.4 verwendet die spezialisierte Edelmetallquelle als Primärquelle.
+    for idx, metal in enumerate(("Gold", "Silber", "Platin", "Palladium"), start=1):
+        source_value = _edelmetall_4w_value(edel_text or "", metal)
+        if source_value is None:
+            errors.append(f"8.{idx} {metal}: 4W-Wert fehlt im maßgeblichen Edelmetalle-Briefing")
+            continue
+        expected = f"{source_value[1]:+.2f}".replace(".", ",") + "%"
+        summary = next(
+            (ln for ln in text.splitlines()
+             if re.match(r"(?i)^\s*-\s*8\." + str(idx) + r"\s+" + re.escape(metal) + r":", ln)),
+            "",
+        )
+        if not summary or f"4W {expected}" not in summary:
+            errors.append(f"8.{idx} {metal}: 4W-Wert stimmt nicht mit dem Edelmetalle-Briefing überein")
+
+    # Nur echte Positionsdatensätze prüfen; Monitoring-Hinweise und legitime
+    # Wiederholungen in unterschiedlichen Unterabschnitten sind zulässig.
+    pdups = _portfolio_positionsduplikate(text)
+    if pdups is None:
+        errors.append("Portfolio: Abschnittsgrenze 10/11 fehlt oder ist fehlerhaft")
+    else:
+        for section_id, ticker in pdups:
+            errors.append(f"Portfolio: echter Positionsdatensatz {ticker} innerhalb 10.{section_id} doppelt")
+
+    if errors:
+        raise RuntimeError("QUELLEN_PERIODEN_POSITIONEN_GATE: " + " | ".join(errors))
+    print("QUELLEN-PERIODEN-POSITIONS-GATE: PASS")
+    return True
+
+def _repariere_quellenperioden_und_positionsduplikate(
+    text, briefing_text="", makro_text="", edel_text=""
+):
+    """Finale deterministische Korrektur von Periodenzuordnung und doppelten Portfolioeinträgen.
+
+    Prioritäten:
+    - abgeschlossene Index-Tagesrendite/YTD: explizite REGIONEN-PERFORMANCE im Markt-Briefing;
+    - aktuelle WTI-/Brent-Übersicht: Kurs/5T/4W gemeinsam aus dem Markt-Briefing;
+    - Makro-Faktenblock 7.2–7.7: strukturierte Makroquelle inklusive Datenstand/Zeitbasis;
+    - sämtliche Edelmetall-Fakten: ausschließlich Edelmetalle-Briefing; Marktbriefing nur als separat dokumentierte Vergleichsquelle;
+    - Portfolio-Deduplizierung: nur echte Positionsdatensätze innerhalb desselben Unterabschnitts.
+    """
+    if not text:
+        return text, []
+
+    changes = []
+    # Eine bereits beobachtete Gemini-Ausgabe klebte die Methodik-Überschrift
+    # an das Ende des Portfolio-Fazits und erzeugte später zusätzlich eine
+    # korrekte Überschrift. Den angeklebten Doppelkopf entfernen.
+    text, n_inline_methodik = re.subn(
+        r"(?m)(?<=\.)11\.\s*METHODIK\s*/\s*DATENQUALITÄT\s*$",
+        "",
+        text,
+        count=1,
+    )
+    if n_inline_methodik:
+        changes.append("An Portfolio-Fazit angeklebte doppelte Methodik-Überschrift entfernt")
+
+    def fmt_num(raw, decimals=2):
+        value = _quellenwert_float(str(raw))
+        if value is None:
+            return str(raw)
+        return f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def fmt_pct(raw):
+        raw = str(raw or "").strip().replace("%", "").replace(".", ",")
+        if not raw:
+            return raw
+        try:
+            value = float(raw.replace(",", "."))
+            return f"{value:+.2f}".replace(".", ",") + "%"
+        except ValueError:
+            return raw + "%"
+
+    # --- Markt-Briefing: belastbare regionale Tagesrendite und YTD-Felder ---
+    regional = {}
+    for line in (briefing_text or "").splitlines():
+        m = re.match(
+            r"(?i)^\s*[•-]\s*(S&P\s*500|Nasdaq|DAX|EuroStoxx\s*50|Nikkei\s*225|"
+            r"Shanghai\s+Composite|Hang\s+Seng):\s*"
+            r"letzter\s+abgeschlossener\s+Handelstag\s+([+-]?\d+(?:[.,]\d+)?)%\s*"
+            r"\(([^)]+)\)\s*\|\s*YTD\s+([+-]?\d+(?:[.,]\d+)?)%\s*\|\s*Datenstand\s+([0-9.]+)",
+            line,
+        )
+        if m:
+            label = re.sub(r"\s+", " ", m.group(1)).casefold()
+            regional[label] = {
+                "daily": m.group(2), "close": m.group(3),
+                "ytd": m.group(4), "date": m.group(5),
+            }
+
+    # 1.1: Keine 5T-Rendite als Tagesrendite/YTD ausgeben; DAX erhält den
+    # jüngsten expliziten abgeschlossenen Schluss aus dem Markt-Briefing.
+    dax = regional.get("dax")
+    if dax:
+        corrected = (
+            f"- Der DAX schloss bei {fmt_num(dax['close'])} Punkten "
+            f"({fmt_pct(dax['daily'])} am letzten abgeschlossenen Handelstag, "
+            f"YTD {fmt_pct(dax['ytd'])}; Datenstand {dax['date']}) und notiert "
+            "weiter unterhalb von EMA20 und EMA50."
+        )
+        text, n = re.subn(
+            r"(?m)^\s*-\s*Der DAX schloss\b[^\n]*$", corrected, text, count=1
+        )
+        if n:
+            changes.append("1.1 DAX-Tagesrendite/YTD aus Markt-Briefing korrigiert")
+
+    # WTI/Brent: Kurs, 5T und 4W immer aus derselben Markt-Briefing-Zeile.
+    energy = {}
+    for asset in ("WTI", "Brent"):
+        m = re.search(
+            r"(?im)^\s*-\s*" + re.escape(asset) +
+            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+([0-9.]+)",
+            briefing_text or "",
+        )
+        if m:
+            energy[asset.lower()] = {
+                "price": m.group(1), "5T": m.group(2),
+                "4W": m.group(3), "date": m.group(4),
+            }
+    if all(k in energy for k in ("wti", "brent")):
+        w, b = energy["wti"], energy["brent"]
+        corrected = (
+            f"- WTI-Öl notiert bei {fmt_num(w['price'])} USD "
+            f"({fmt_pct(w['5T'])} in 5T, {fmt_pct(w['4W'])} in 4W) und "
+            f"Brent bei {fmt_num(b['price'])} USD "
+            f"({fmt_pct(b['5T'])} in 5T, {fmt_pct(b['4W'])} in 4W); "
+            f"Quelle: Markt-Briefing, Datenstand {w['date']}. "
+            "Das erhöht den energetischen Kostendruck im Industriesektor."
+        )
+        text, n = re.subn(
+            r"(?m)^\s*-\s*WTI-Öl\b[^\n]*$", corrected, text, count=1
+        )
+        if n:
+            changes.append("1.1 WTI/Brent-Kurs und 5T/4W-Zeiträume gemeinsam aus Markt-Briefing gesetzt")
+        # Derselbe aktuelle Ölstand wird auch in 3.2 verwendet; kein älterer
+        # Makro-Kurs ohne Zeitbasis in der Kausalkette stehen lassen.
+        corrected_32 = (
+            f"- Der Anstieg von WTI-Öl ({fmt_num(w['price'])} USD; 4W {fmt_pct(w['4W'])}) "
+            f"und Brent ({fmt_num(b['price'])} USD; 4W {fmt_pct(b['4W'])}) stützt direkt "
+            "die Margen integrierter Energiekonzerne wie ExxonMobil Corporation (XOM) "
+            "und ConocoPhillips (COP), während steigende Energiekosten für den "
+            f"verarbeitenden Sektor als Kostenfaktor wirken. Quelle: Markt-Briefing, Datenstand {w['date']}."
+        )
+        text, n32 = re.subn(
+            r"(?m)^\s*[-•]\s*Der Anstieg von WTI-Öl\b[^\n]*$",
+            corrected_32, text, count=1
+        )
+        if n32:
+            changes.append("3.2 WTI/Brent-Kurse und 4W-Zeiträume auf gemeinsamen Markt-Briefing-Stand gesetzt")
+
+    # S&P-500-Abstand zum Datenhoch aus Kurs und Hoch berechnen statt einen
+    # falsch gerundeten Prozentwert aus Gemini zu übernehmen.
+    sp_line = re.search(r"(?m)^\s*Der S&P 500 schloss bei\s+([\d.,]+)\s+Punkten,\s*rund\s+([\d.,]+)\s*%\s+unter dem höchsten Wert.*?von\s+([\d.,]+)\s+Punkten", text)
+    if sp_line:
+        close_value = _quellenwert_float(sp_line.group(1))
+        high_value = _quellenwert_float(sp_line.group(3))
+        if close_value is not None and high_value:
+            distance = (high_value - close_value) / high_value * 100.0
+            corrected = f"{distance:.1f}".replace(".", ",")
+            text = text[:sp_line.start(2)] + corrected + text[sp_line.end(2):]
+            changes.append("1.1 S&P-500-Abstand zum Datenhoch rechnerisch korrekt gerundet")
+
+    # Bitcoin: aktuelle Kurs-/SMA-Distanz rechnerisch aus den beiden sichtbaren
+    # Zahlen ableiten; nicht die Distanz des separaten Wochen-Schlusskurses verwenden.
+    btc_line = re.search(r"(?m)^\s*-\s*Bitcoin notiert\b[^\n]*$", text)
+    if btc_line:
+        line = btc_line.group(0)
+        price_m = re.search(r"Bitcoin notiert bei\s+([\d.,]+)\s*USD", line, re.I)
+        sma_m = re.search(r"50-Wochen-SMA bei\s+([\d.,]+)\s*USD", line, re.I)
+        if price_m and sma_m:
+            def parse_report_number(raw):
+                raw = str(raw or "").strip()
+                # Deutsche Tausenderpunkte wie 77.114 sind keine Dezimalwerte.
+                if "," not in raw and re.fullmatch(r"\d{1,3}(?:\.\d{3})+", raw):
+                    raw = raw.replace(".", "")
+                return _quellenwert_float(raw)
+            price = parse_report_number(price_m.group(1))
+            sma = parse_report_number(sma_m.group(1))
+            if price is not None and sma:
+                distance = (price / sma - 1.0) * 100.0
+                line = re.sub(
+                    r"\(Abstand\s+[+-]?[\d.,]+\s*%\)",
+                    f"(Abstand {distance:+.2f}% auf Basis des aktuellen Kurses)".replace(".", ","),
+                    line,
+                    count=1,
+                    flags=re.I,
+                )
+                line = re.sub(
+                    r"Bitcoin notiert bei",
+                    "Bitcoin notiert aktuell bei",
+                    line,
+                    count=1,
+                    flags=re.I,
+                )
+                line = re.sub(
+                    r"(Bitcoin notiert aktuell bei\s+[\d.,]+\s*USD)",
+                    r"\1 (Live/Intraday)",
+                    line,
+                    count=1,
+                    flags=re.I,
+                )
+                text = text[:btc_line.start()] + line + text[btc_line.end():]
+                changes.append("1.1 Bitcoin-SMA-Abstand aus aktuellem Kurs neu berechnet und Zeitbasis gekennzeichnet")
+
+    # Dieselbe falsche Zuordnung stand erneut im Frühindikatoren-Abschnitt:
+    # der aktuelle Kurs war dort fälschlich als SMA-Wert bezeichnet.
+    btc_line_14 = re.search(r"(?m)^\s*[-•]\s*Bitcoin-Stabilität:[^\n]*$", text)
+    btc_summary = re.search(
+        r"Bitcoin notiert aktuell bei\s+([\d.,]+)\s*USD.*?50-Wochen-SMA bei\s+([\d.,]+)\s*USD",
+        text,
+        re.I,
+    )
+    if btc_line_14 and btc_summary:
+        corrected_14 = (
+            f"- Bitcoin-Stabilität: Aktueller Kurs {btc_summary.group(1)} USD (Live/Intraday) "
+            f"liegt oberhalb des 50W-SMA bei {btc_summary.group(2)} USD und dient als "
+            "prozyklischer Liquiditäts- und Risk-Appetite-Frühindikator."
+        )
+        text = text[:btc_line_14.start()] + corrected_14 + text[btc_line_14.end():]
+        changes.append("1.4 Bitcoin-Kurs und 50W-SMA korrekt getrennt")
+
+    # Der Fast-Stop-Hinweis muss aus Kurs/Stop berechnet werden. FSLY lag
+    # tatsächlich deutlich über 2% vom Stop entfernt; ROK lag innerhalb 2%.
+    fast_line = re.search(r"(?m)^\s*[-•]\s*Fastly, Inc\.\s*\(FSLY\)[^\n]*$", text)
+    if fast_line:
+        line = fast_line.group(0)
+        fsl = re.search(r"Fastly, Inc\.\s*\(FSLY\)\s*\(Kurs\s+([\d.,]+)\s*USD,\s*Stop\s+([\d.,]+)\s*USD\)", line, re.I)
+        rok = re.search(r"Rockwell Automation, Inc\.\s*\(ROK\)\s*\(Kurs\s+([\d.,]+)\s*USD,\s*Stop\s+([\d.,]+)\s*USD\)", line, re.I)
+        if fsl and rok:
+            fsl_price, fsl_stop = (_quellenwert_float(x) for x in fsl.groups())
+            rok_price, rok_stop = (_quellenwert_float(x) for x in rok.groups())
+            if None not in (fsl_price, fsl_stop, rok_price, rok_stop) and fsl_price and rok_price:
+                fsl_gap = (fsl_price - fsl_stop) / fsl_price * 100.0
+                rok_gap = (rok_price - rok_stop) / rok_price * 100.0
+                corrected_fast = (
+                    f"- Rockwell Automation, Inc. (ROK) (Kurs {fmt_num(rok.groups()[0])} USD, "
+                    f"Stop {fmt_num(rok.groups()[1])} USD, Stop-Abstand {rok_gap:.2f}%) liegt "
+                    f"innerhalb des Fast-Stop-Bereichs (<2%) und erfordert erhöhte Wachsamkeit. "
+                    f"Fastly, Inc. (FSLY) (Kurs {fmt_num(fsl.groups()[0])} USD, Stop "
+                    f"{fmt_num(fsl.groups()[1])} USD, Stop-Abstand {fsl_gap:.2f}%) liegt nicht "
+                    "innerhalb des <2%-Fast-Stop-Bereichs."
+                )
+                corrected_fast = re.sub(r"(Stop-Abstand )([\d]+)\.([\d]+)%", r"\1\2,\3%", corrected_fast)
+                text = text[:fast_line.start()] + corrected_fast + text[fast_line.end():]
+                changes.append("10.1 Fast-Stop-Abstände rechnerisch korrigiert (ROK innerhalb, FSLY außerhalb 2%)")
+
+    # 7.1: Den kompakten Überblick vollständig aus expliziten Tages-/YTD-Paaren
+    # neu aufbauen. Russell hat in dieser Quelle keinen Tages-/YTD-Wert und wird
+    # deshalb nicht mit 5T/1M als Ersatz befüllt.
+    overview_start = re.search(r"(?m)^-\s*7\.1\s+Aktienmärkte\s*/\s*Indizes\b[^\n]*$", text)
+    overview_end = re.search(r"(?m)^-\s*7\.2\s+Zinsen\s*:", text[overview_start.end():]) if overview_start else None
+    if overview_start and overview_end:
+        block_end = overview_start.end() + overview_end.start()
+        block = text[overview_start.end():block_end]
+        labels = [
+            ("S&P 500", "s&p 500", "S&P 500"),
+            ("Nasdaq", "nasdaq", "Nasdaq Composite"),
+            ("DAX", "dax", "DAX"),
+            ("EuroStoxx 50", "eurostoxx 50", "EuroStoxx 50"),
+            ("Nikkei 225", "nikkei 225", "Nikkei 225"),
+            ("Shanghai Composite", "shanghai composite", "Shanghai Composite"),
+            ("Hang Seng", "hang seng", "Hang Seng"),
+        ]
+        rows = []
+        for source_label, key, display in labels:
+            item = regional.get(key) or regional.get(key.replace(" ", ""))
+            if not item:
+                continue
+            rows.append(
+                f"- {display}: letzter abgeschlossener Handelstag {fmt_pct(item['daily'])} "
+                f"({fmt_num(item['close'])}) | YTD {fmt_pct(item['ytd'])} | Datenstand {item['date']}"
+            )
+        russell = re.search(
+            r"(?im)^\s*Russell 2000:\s*([-+]?\d[\d.,]*)\s*\|.*?\bDatenstand:\s*([0-9.]+)",
+            briefing_text or "",
+        )
+        if russell:
+            rows.append(
+                f"- Russell 2000: Schlussstand {fmt_num(russell.group(1))} | "
+                f"Tagesrendite: NICHT VERFÜGBAR | YTD: NICHT VERFÜGBAR | Datenstand {russell.group(2)}"
+            )
+        # Remove all prior index-summary lines, including false period assignments.
+        kept = [
+            ln for ln in block.splitlines()
+            if not re.match(
+                r"(?i)^\s*[-•]\s*(?:S&P\s*500|Nasdaq(?:\s+Composite)?|Russell\s+2000|"
+                r"DAX|EuroStoxx\s*50|Nikkei\s*225|Shanghai\s+Composite|Hang\s+Seng)\s*:",
+                ln,
+            )
+        ]
+        rebuilt = "\n" + "\n".join(rows) + "\n" + "\n".join(kept).strip("\n") + "\n"
+        text = text[:overview_start.end()] + rebuilt + text[block_end:]
+        changes.append("7.1 Kurzüberblick aus echten Tagesrendite-/YTD-Quellpaaren neu aufgebaut")
+
+    # 7.5: Markt-Briefing-Werte (13.10) und strukturierte Makro-Fakten (12.10)
+    # werden als getrennte Zeitstände ausgewiesen. Keine stille Vermischung.
+    if all(k in energy for k in ("wti", "brent")):
+        start = re.search(r"(?m)^-\s*7\.5\s+Rohstoffe\s*:\s*$", text)
+        end = re.search(r"(?m)^-\s*7\.6\s+Krypto\s*:\s*$", text[start.end():]) if start else None
+        if start and end:
+            en = start.end() + end.start()
+            block = text[start.end():en]
+            replacement_lines = []
+            for asset in ("wti", "brent"):
+                item = energy[asset]
+                label = asset.upper()
+                replacement_lines.append(
+                    f"- {label}: Kurs {fmt_num(item['price'])} USD | "
+                    f"5T {fmt_pct(item['5T'])} | 4W {fmt_pct(item['4W'])} | "
+                    f"Quelle=Markt-Briefing | Datenstand={item['date']}"
+                )
+            out = []
+            inserted = False
+            for ln in block.splitlines():
+                if re.match(r"(?i)^\s*[-•]\s*(?:WTI|Brent)\s*:", ln):
+                    if not inserted:
+                        out.extend(replacement_lines)
+                        inserted = True
+                    continue
+                out.append(ln)
+            if not inserted:
+                out = replacement_lines + out
+            text = text[:start.end()] + "\n" + "\n".join(out).strip("\n") + "\n" + text[en:]
+            changes.append("7.5 Öl-Kurzüberblick mit explizitem Markt-Briefing-Zeitstand und korrekten 4W-Werten gesetzt")
+
+    # 7.6: Die Makro-Kurszeilen erhalten echte Periodenlabels und die Zeitbasis
+    # der Quelle. Live-/Intraday-Werte werden nicht als Schlusskurse ausgegeben.
+    refs = _extrahiere_makro_referenzwerte(makro_text or "")
+    for asset, display in (("bitcoin", "Bitcoin"), ("ethereum", "Ethereum")):
+        ref = refs.get(asset)
+        if not ref:
+            continue
+        source_line = next(
+            (ln for ln in (makro_text or "").splitlines()
+             if re.match(r"(?i)^\s*" + re.escape(display) + r"\s*:", ln)),
+            "",
+        )
+        if not source_line or not re.search(r"(?i)REAL_HEUTE|laufender/aktueller Tageswert", source_line):
+            continue
+        date = ref.get("datenstand", "")
+        date_de = datetime.datetime.strptime(date, "%Y-%m-%d").strftime("%d.%m.%Y") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or "") else date
+        periods = ref.get("perioden", {})
+        period_text = " | ".join(f"{key}={fmt_pct(value)}" for key, value in periods.items())
+        line = (
+            f"- {display}: {fmt_num(ref['kurs'])} USD | Zeitbasis=Live/Intraday"
+            + (f" | Datenstand={date_de}" if date_de else "")
+            + (f" | {period_text}" if period_text else "")
+        )
+        text, n = re.subn(
+            r"(?m)^\s*-\s*" + re.escape(display) + r"\s*:\s*[^\n]*$",
+            line, text, count=1
+        )
+        if n:
+            changes.append(f"7.6 {display}: Live-Zeitbasis und Periodenwerte explizit zugeordnet")
+
+    # Add time-basis metadata to every source-bound output fact whose exact
+    # macro source row is explicitly REAL_HEUTE/live. This prevents a live quote
+    # from being silently compared with a prior close.
+    live_sources = {}
+    for raw_line in (makro_text or "").splitlines():
+        m = re.match(r"^\s*([^:]+):\s*([-+]?\d[\d.,]*)\s*\|([^\n]*)$", raw_line)
+        if not m:
+            continue
+        if not re.search(r"(?i)REAL_HEUTE|laufender/aktueller Tageswert", m.group(3)):
+            continue
+        label = m.group(1).strip()
+        dm = re.search(r"(?i)Datenstand=(\d{4}-\d{2}-\d{2})", m.group(3))
+        date = dm.group(1) if dm else ""
+        periods = {}
+        for key in ("5T", "1M", "3M", "6M", "1J"):
+            pm = re.search(rf"(?:^|\|)\s*{key}\s*=\s*([+-]?\d[\d.,]*)%", m.group(3))
+            if pm:
+                periods[key] = pm.group(1)
+        live_sources[label.casefold()] = (date, periods)
+
+    # Include likely aliases for output labels that differ from the source label.
+    label_aliases = {
+        "eur/usd": ("eur/usd",), "usd/jpy": ("usd/jpy",),
+        "dxy": ("dxy",), "erdgas": ("erdgas",), "aluminium": ("aluminium",),
+        "bitcoin": ("bitcoin",), "ethereum": ("ethereum",),
+    }
+    for output_label, aliases in label_aliases.items():
+        src_entry = next((live_sources[a] for a in aliases if a in live_sources), None)
+        if not src_entry:
+            continue
+        date, periods = src_entry
+        date_de = datetime.datetime.strptime(date, "%Y-%m-%d").strftime("%d.%m.%Y") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or "") else date
+        metadata = "Zeitbasis=Live/Intraday"
+        if date_de:
+            metadata += f"; Datenstand={date_de}"
+        if periods:
+            metadata += "; " + ", ".join(f"{k}={fmt_pct(v)}" for k, v in periods.items())
+        pattern = re.compile(
+            r"(?im)^(\s*[-•]\s*(?:\[AUTORITATIVE QUELLE\]\s*)?" +
+            re.escape(output_label) + r"\s*:[^\n]*?)(?<!\|)\s*$"
+        )
+        new_text, n = pattern.subn(
+            lambda m: m.group(1) + " | " + metadata
+            if not re.search(r"(?i)Zeitbasis\s*=\s*Live/Intraday|Live/Intraday", m.group(1))
+            else m.group(1),
+            text,
+        )
+        if n:
+            text = new_text
+            changes.append(f"{output_label}: Live-Zeitbasis/Datenstand an quellengebundene Zeilen angefügt")
+
+    # Öl-Fakten im ausführlichen Makroblock bleiben an den älteren strukturierten
+    # Makro-Datenstand gebunden. Die Zeiträume werden direkt an derselben Zeile
+    # genannt, damit sie nicht mit den aktuelleren Markt-Briefing-4W-Werten
+    # darüber verwechselt werden.
+    for asset in ("wti", "brent"):
+        ref = refs.get(asset)
+        if not ref:
+            continue
+        date = ref.get("datenstand", "")
+        date_de = datetime.datetime.strptime(date, "%Y-%m-%d").strftime("%d.%m.%Y") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or "") else date
+        periods = ref.get("perioden", {})
+        period_text = " | ".join(f"{key}={fmt_pct(value)}" for key, value in periods.items())
+        metadata = "Quelle=Makro_Briefing"
+        if date_de:
+            metadata += f" | Datenstand={date_de}"
+        if period_text:
+            metadata += " | " + period_text
+        label = "WTI" if asset == "wti" else "Brent"
+        pat = re.compile(r"(?im)^(\s*[-•]\s*\[AUTORITATIVE QUELLE\]\s*" + re.escape(label) + r"\s*:[^\n]*)(?<!\|)\s*$")
+        text, n = pat.subn(
+            lambda m: m.group(1) if re.search(r"(?i)Quelle=Makro_Briefing", m.group(1))
+            else m.group(1) + " | " + metadata,
+            text,
+        )
+        if n:
+            changes.append(f"7.5 {label}: Makro-Datenstand und 5T/1M-Perioden direkt an Quellwert gebunden")
+
+    # 8: Kompakte Faktenzeilen ausschließlich aus dem Edelmetalle-Briefing.
+    # Python stellt belegte Werte dar; es erzeugt hier keine Marktinterpretation.
+    metal_tickers = {
+        "Gold": "GC=F",
+        "Silber": "SI=F",
+        "Platin": "PL=F",
+        "Palladium": "PA=F",
+    }
+    metal_date_match = re.search(r"(?im)^EDELMETALLE-SCAN\s+(\d{4}-\d{2}-\d{2})\s*$", edel_text or "")
+    metal_date = metal_date_match.group(1) if metal_date_match else ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", metal_date or ""):
+        metal_date = datetime.datetime.strptime(metal_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+    metal_rows = []
+    for metal, ticker in metal_tickers.items():
+        row = _edelmetall_lage_zeile(edel_text or "", metal)
+        if not row:
+            continue
+        m = re.search(
+            r"(?i)^\s*" + re.escape(metal) +
+            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen\b([^\n]*)",
+            row,
+        )
+        if not m:
+            continue
+        facts = [f"Kurs (Futures {ticker}) {fmt_num(m.group(1))} USD"]
+        five_day = re.search(
+            r"(?i)([-+]?\d[\d.,]*)%\s*(?:in den letzten\s*)?5 Tagen\b|\b5T\s*[:=]?\s*([-+]?\d[\d.,]*)%",
+            row,
+        )
+        if five_day:
+            raw_5t = five_day.group(1) or five_day.group(2)
+            facts.append(f"5T {fmt_pct(raw_5t)}")
+        facts.append(f"4W {fmt_pct(m.group(2))}")
+        low = re.search(
+            r"(?i)52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
+            row,
+        )
+        if low:
+            facts.append(
+                f"52-Wochen-Tief {fmt_num(low.group(1))} USD "
+                f"({fmt_pct(low.group(2))} darüber)"
+            )
+        trend_block = _edelmetall_quellenblock(edel_text or "", metal)
+        trend_values = _extrahiere_200er_trend(trend_block)
+        if trend_values:
+            facts.extend([
+                f"EMA200 {fmt_num(trend_values[1])} USD",
+                f"WMA200 {fmt_num(trend_values[2])} USD",
+            ])
+        facts.append(f"Quelle={EDELMETALL_FAKTENQUELLE}")
+        if metal_date:
+            facts.append(f"Datenstand={metal_date}")
+        metal_rows.append(f"- 8.{len(metal_rows)+1} {metal}: " + " | ".join(facts))
+    if len(metal_rows) == 4:
+        start = re.search(r"(?m)^8\.\s*🪙\s*EDELMETALLE\s*$", text)
+        end = re.search(r"(?m)^8\.1\s+Gold\s*$", text[start.end():]) if start else None
+        if start and end:
+            en = start.end() + end.start()
+            block = text[start.end():en]
+            out = []
+            inserted = False
+            for ln in block.splitlines():
+                if re.match(r"(?i)^\s*-\s*8\.[1-4]\s+(?:Gold|Silber|Platin|Palladium)\s*:", ln):
+                    if not inserted:
+                        out.extend(metal_rows)
+                        inserted = True
+                    continue
+                out.append(ln)
+            if not inserted:
+                out = metal_rows + out
+            text = text[:start.end()] + "\n" + "\n".join(out).strip("\n") + "\n\n" + text[en:]
+            changes.append("8.1–8.4 Kurzüberblick vollständig aus Edelmetalle-Briefing neu aufgebaut")
+
+    # 10: Nur echte Positionsdatensätze innerhalb desselben Unterabschnitts
+    # deduplizieren. Cross-section mentions and monitoring bullets remain valid.
+    deduped_text, removed = _dedupliziere_portfolio_positionsdatensaetze(text)
+    if removed:
+        changes.append(
+            "Echte doppelte Positionsdatensätze innerhalb eines Abschnitts entfernt: "
+            + ", ".join(f"10.{section}: {', '.join(tickers)}" for section, tickers in removed)
+        )
+    if deduped_text != text:
+        text = deduped_text
+
+    if changes:
+        print("QUELLEN-/PERIODEN-/POSITIONS-GATE: " + " | ".join(changes))
+    return text, changes
+
+
 def _repariere_7_performanceperioden(text, makro_text):
     """Kanonisiert Periodenrenditen anhand der Label-Wert-Paare im Makro-Briefing.
 
@@ -11387,22 +12064,19 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
     Uebernimmt die autoritativen 8.1–8.4-Daten deterministisch.
 
     Regeln:
-    - Edelmetalle-Briefing liefert Kurs/4W und EMA200/WMA200.
-    - Markt-Briefing ist nur Fallback, wenn der jeweilige Edelmetall-4W-Wert
-      fehlt oder unbrauchbar ist; Konflikte werden protokolliert.
-    - Bei konsistenten Quellen werden vorhandene Gemini-Werte durch die
-      zugeordneten Quellwerte ersetzt.
-    - Strategie-Status wird ebenfalls ausschliesslich aus der Quelle erzeugt.
-    - Qualitative Gemini-Inhalte bleiben unveraendert.
+    - Sämtliche Edelmetall-Fakten (Kurs, 4W, 52W-Tief/Abstand, EMA/WMA und
+      Strategie-Status) stammen ausschließlich aus dem Edelmetalle-Briefing.
+    - Das Markt-Briefing ist keine Ersatzquelle. Fehlende Pflichtfakten lösen
+      einen Quellenfehler aus, statt durch Werte anderer Quellen ersetzt zu werden.
+    - Qualitative Gemini-Interpretationen bleiben getrennt erhalten.
     """
     if not text:
         return text
     if not edel_text:
         raise RuntimeError("EDELMETALL_QUELLE_UNVOLLSTAENDIG: leere Quelle.")
 
-    # Edelmetalle-Briefing ist die Primaerquelle fuer die vier Metall-4W-Werte.
-    # Abweichungen zum Markt-Briefing werden protokolliert, blockieren aber nicht
-    # die deterministische Uebernahme des spezialisierten Quellwerts.
+    # Das Edelmetalle-Briefing ist die alleinige Faktenquelle für den gesamten
+    # Edelmetallbereich. Abweichungen zum Markt-Briefing sind nur Diagnosemetadaten.
     if briefing_text:
         conflicts = []
         for metal in ("Gold", "Silber", "Platin", "Palladium"):
@@ -11444,13 +12118,10 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
             continue
         kurs_raw = line_match.group(1)
         detail_4w = _extract_metal_4w_value(lage_block, asset)
-        market_4w = _extract_metal_4w_value(briefing_text or "", asset)
-        chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w)
         if chosen_4w is None:
-            missing.append(f"{asset}: 4W in Edelmetalle-Briefing und Markt-Briefing")
+            missing.append(f"{asset}: 4W-Wert fehlt/ungültig im Edelmetalle-Briefing")
             continue
-        if detail_4w is None:
-            print(f"EDELMETALL_4W_FALLBACK: {asset}: Edelmetalle-Briefing ohne brauchbaren 4W-Wert; Markt-Briefing {chosen_4w[0]}% verwendet")
         lage[asset] = (kurs_raw, chosen_4w[0])
         low = re.search(
             r"52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
@@ -11534,10 +12205,28 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
         lage_values = lage[asset]
         kurs, four_w = lage_values[0], lage_values[1]
         ema, wma = trend[asset]
-        fact_parts = [
+        metal_date_match = re.search(
+            r"(?im)^EDELMETALLE-SCAN\s+(\d{4}-\d{2}-\d{2})\s*$",
+            edel_text,
+        )
+        metal_date = metal_date_match.group(1) if metal_date_match else ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", metal_date or ""):
+            metal_date = datetime.datetime.strptime(metal_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+        fact_parts = [f"Quelle: {EDELMETALL_FAKTENQUELLE}"]
+        if metal_date:
+            fact_parts.append(f"Datenstand: {metal_date}")
+        fact_parts.extend([
             f"Kurs (Futures {ticker}): {kurs}$",
-            f"4W: {four_w}%",
-        ]
+        ])
+        source_lage_line = _edelmetall_lage_zeile(edel_text, asset)
+        five_day_match = re.search(
+            r"(?i)([-+]?\d[\d.,]*)%\s*(?:in den letzten\s*)?5 Tagen\b|\b5T\s*[:=]?\s*([-+]?\d[\d.,]*)%",
+            source_lage_line or "",
+        )
+        if five_day_match:
+            five_day_raw = five_day_match.group(1) or five_day_match.group(2)
+            fact_parts.append(f"5T: {five_day_raw}%")
+        fact_parts.append(f"4W: {four_w}%")
         if len(lage_values) >= 4:
             low, dist = lage_values[2], lage_values[3]
             fact_parts.extend([
@@ -11575,7 +12264,6 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
 def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
     """Vollstaendigkeits-Gate fuer 8.1–8.4 gegen das aktuelle Edelmetall-Briefing."""
     edel = ""
-    market = ""
     inputs = eingabedateien or {}
     path = inputs.get("Edelmetalle_Briefing(...).txt")
     if path and os.path.isfile(path):
@@ -11583,13 +12271,6 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
             edel = Path(path).read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise RuntimeError(f"PUNKT8_QUELLE_NICHT_LESBAR: Edelmetalle_Briefing(...).txt: {exc}") from exc
-    market_path = inputs.get("briefing.txt")
-    if market_path and os.path.isfile(market_path):
-        try:
-            market = Path(market_path).read_text(encoding="utf-8-sig")
-        except OSError as exc:
-            raise RuntimeError(f"PUNKT8_MARKT_FALLBACK_NICHT_LESBAR: briefing.txt: {exc}") from exc
-
     headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
     blocks = {h: _abschnitt_text(text, h, headings + ["9. 📅 NÄCHSTE KATALYSATOREN"]) for h in headings}
     errors = [f"{h}: Abschnitt fehlt oder ist nicht kanonisch abgrenzbar." for h in headings if not blocks[h]]
@@ -11601,6 +12282,13 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
     }
     for heading, asset in assets.items():
         block = blocks[heading]
+        if not re.search(r"(?i)Quelle\s*:?\s*Edelmetalle-Briefing", block):
+            errors.append(f"{heading}: Faktenquelle Edelmetalle-Briefing ist nicht explizit ausgewiesen.")
+        source_date_match = re.search(r"(?im)^EDELMETALLE-SCAN\s+(\d{4}-\d{2}-\d{2})\s*$", edel)
+        if source_date_match:
+            expected_date = datetime.datetime.strptime(source_date_match.group(1), "%Y-%m-%d").strftime("%d.%m.%Y")
+            if not re.search(r"(?i)Datenstand\s*:?\s*" + re.escape(expected_date), block):
+                errors.append(f"{heading}: Datenstand {expected_date} des Edelmetalle-Briefings fehlt in der Ausgabe.")
 
         # Ausschliesslich den autoritativen LAGE-JE-METALL-Block verwenden.
         # Kein globales ``find`` auf Asset-Zeilen: Dadurch kann eine gleichnamige
@@ -11633,11 +12321,18 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
                 kurs_value = _quellenwert_float(kurs_match.group(1))
                 if kurs_value is not None:
                     _gate_quellenwert(block, "Kurs", kurs_value, errors)
+            five_day_match = re.search(
+                r"(?i)([-+]?\d[\d.,]*)%\s*(?:in den letzten\s*)?5 Tagen\b|\b5T\s*[:=]?\s*([-+]?\d[\d.,]*)%",
+                lage_line,
+            )
+            if five_day_match:
+                five_day_raw = five_day_match.group(1) or five_day_match.group(2)
+                _gate_quellenwert(block, "5T", _quellenwert_float(five_day_raw), errors)
+
             detail_4w = _extract_metal_4w_value(lage_block, asset)
-            market_4w = _extract_metal_4w_value(market, asset)
-            chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
+            chosen_4w = _waehle_edelmetall_4w(detail_4w)
             if chosen_4w is None:
-                errors.append(f"{heading}: kein brauchbarer 4W-Wert im Edelmetalle-Briefing oder Markt-Briefing-Fallback.")
+                errors.append(f"{heading}: kein brauchbarer 4W-Wert im Edelmetalle-Briefing.")
             else:
                 _gate_quellenwert(block, "4W", chosen_4w[1], errors)
 
@@ -11726,14 +12421,28 @@ def _repariere_doppelte_sektion_6(text):
         return text[:start].rstrip() + "\n\n" + text[end:].lstrip()
     return text
 
-def _repariere_1_1_rohstoffperioden(text, briefing_text, previous_report_path=None):
-    """1.1 verwendet explizite 4W-Werte aus dem Marktbriefing, keine 1M-Proxies."""
-    values = {asset: _pct_aus_quellenzeile(briefing_text, asset) for asset in ("WTI", "Brent", "Gold")}
+def _repariere_1_1_rohstoffperioden(text, briefing_text, previous_report_path=None, edelmetall_text=""):
+    """WTI/Brent stammen aus dem Marktbriefing; Gold-Fakten aus dem Edelmetalle-Briefing."""
+    values = {asset: _pct_aus_quellenzeile(briefing_text, asset) for asset in ("WTI", "Brent")}
+    gold_4w = _edelmetall_4w_value(edelmetall_text or "", "Gold")
+    values["Gold"] = gold_4w[1] if gold_4w is not None else None
+    gold_row = _edelmetall_lage_zeile(edelmetall_text or "", "Gold")
+    gold_price_match = re.search(r"(?i)\bKurs\s+([-+]?\d[\d.,]*)", gold_row or "")
+    gold_price = _quellenwert_float(gold_price_match.group(1)) if gold_price_match else None
     start = re.search(r"(?m)^\s*1\.1\s+Was hat sich seit dem letzten Lauf verändert\?\s*$", text or "")
     end = re.search(r"(?m)^\s*1\.2\s+Sofort handelbare Chancen\s*$", text or "")
     if not (start and end and start.start() < end.start()):
         return text
     block = text[start.start():end.start()]
+    if gold_price is not None:
+        # Nur den Kurswert in einer expliziten Gold-Notierung ersetzen; Interpretation
+        # und Satzstruktur bleiben Gemini überlassen.
+        block = re.sub(
+            r"(?i)(Gold\s+notiert\s+bei\s+)([-+]?\d[\d.,]*)(?=\s*(?:USD|\$))",
+            lambda mm: mm.group(1) + f"{gold_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+            block,
+            count=1,
+        )
     replacements = [
         (r"(WTI-Öl\s+mit\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:auf\s+)?4-Wochen-Sicht", values.get("WTI")),
         (r"(Brent-Öl\s+bei\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:auf\s+)?4-Wochen-Sicht", values.get("Brent")),
@@ -11816,34 +12525,14 @@ def _repariere_8_doppelte_durchschnitte(text, briefing_text="", edelmetall_text=
         block = re.sub(r"(?m)(^\s*[-•]\s*EMA20:[^\n]*?)\s*\|\s*WMA200\s*:\s*[-+]?\d[\d.,]*\$?",
                        r"\1", block)
         text = text[:start.start()] + block + text[stop:]
-    # Alle Unterschiede zwischen allgemeinem Marktbriefing und operativem
-    # Edelmetall-Scanner explizit dokumentieren, nicht nur Gold.
-    assets = ("Gold", "Silber", "Platin", "Palladium")
-    market_values = {a: _pct_aus_quellenzeile(briefing_text, a) for a in assets}
-    scanner_values = {}
-    for asset in assets:
-        m = re.search(
-            r"(?im)^\s*" + re.escape(asset) + r":\s*Kurs\s+[-+]?\d[\d.,]*\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s+in den letzten 4 Wochen",
-            edelmetall_text or ""
-        )
-        scanner_values[asset] = _parse_percent_value(m.group(1)) if m else None
-    pairs = []
-    for asset in assets:
-        if market_values.get(asset) is not None and scanner_values.get(asset) is not None:
-            pairs.append(f"{asset}: Marktbriefing {_fmt_pct_de(market_values[asset])}, Scanner {_fmt_pct_de(scanner_values[asset])}")
-    if pairs:
-        note = ("Quellenhinweis 4W: " + "; ".join(pairs) +
-                ". Abschnitt 8 verwendet die Edelmetall-Scannerwerte als operative Quelle; "
-                "abweichende Marktbriefing-Werte werden nicht als identisch behandelt.")
-        total = re.search(r"(?m)^EDELMETALL-GESAMTBILD:\s*$", text)
-        if total and note not in text:
-            text = text[:total.start()] + note + "\n\n" + text[total.start():]
+    # Die Edelmetall-Fakten bleiben ausschließlich in der spezialisierten Quelle
+    # verankert. Ein Quellenvergleich wird zentral in der Methodik dokumentiert,
+    # nicht als zusätzlicher Faktenblock im Edelmetall-Gesamtbild ausgegeben.
     return text
 
 
-def _repariere_3_2_rohstoffinterpretation(text, macro_text, briefing_text):
-    """Korrigiert die kurzfristige Rohstoffbeschreibung auf belegte Zeiträume."""
+def _repariere_3_2_rohstoffinterpretation(text, macro_text, briefing_text, edelmetall_text=""):
+    """Bindet Edelmetall-4W-Fakten an die Spezialquelle, ohne Gemini-Interpretation neu zu formulieren."""
     copper_1y = re.search(r"(?im)^Kupfer:\s*[-+]?\d[\d.,]*\s*\|.*?1J=([+-]?\d[\d.,]*)%", macro_text or "")
     copper_1m = re.search(r"(?im)^Kupfer:\s*[-+]?\d[\d.,]*\s*\|.*?1M=([+-]?\d[\d.,]*)%", macro_text or "")
     start = re.search(r"(?m)^\s*3\.2\s+Rohstoff\s*→\s*Branche\s*→\s*Aktie\s*$", text or "")
@@ -11854,24 +12543,31 @@ def _repariere_3_2_rohstoffinterpretation(text, macro_text, briefing_text):
     if copper_1y and copper_1m and re.search(r"Steigende Industriemetallpreise.*stabile Edelmetalle", block, re.I):
         y = _parse_percent_value(copper_1y.group(1))
         m = _parse_percent_value(copper_1m.group(1))
-        gold = _pct_aus_quellenzeile(briefing_text, "Gold")
-        silver = _pct_aus_quellenzeile(briefing_text, "Silber")
-        platinum = _pct_aus_quellenzeile(briefing_text, "Platin")
-        palladium = _pct_aus_quellenzeile(briefing_text, "Palladium")
-        metal_text = ", ".join(
-            f"{name} {_fmt_pct_de(value)}" for name, value in
-            (("Gold", gold), ("Silber", silver), ("Platin", platinum), ("Palladium", palladium))
-            if value is not None
-        )
-        sentence = (
-            f"Kupfer ist langfristig positiv (1J {_fmt_pct_de(y)}) aber auf Monatssicht schwächer "
-            f"(1M {_fmt_pct_de(m)}). Edelmetalle zeigen laut Marktbriefing auf 4W eine Schwächephase "
-            f"({metal_text}). Die mögliche Wirkung auf Minenwerte wie Freeport-McMoRan Inc. (FCX), "
-            f"Southern Copper Corporation (SCCO) und Newmont Corporation (NEM) ist eine Hypothese, "
-            "keine aus diesen Kursdaten allein bewiesene Kausalität."
-        )
-        block = re.sub(r"(?m)^\s*Steigende Industriemetallpreise.*$", sentence, block, count=1)
-        return text[:start.start()] + block + text[end.start():]
+        metal_values = []
+        for name in ("Gold", "Silber", "Platin", "Palladium"):
+            source_value = _edelmetall_4w_value(edelmetall_text or "", name)
+            if source_value is not None:
+                metal_values.append(f"{name} {_fmt_pct_de(source_value[1])}")
+        if metal_values:
+            facts = "4W-Werte laut Edelmetalle-Briefing: " + ", ".join(metal_values)
+            # Nur die Faktenangabe aktualisieren. Die bestehende Gemini-Interpretation
+            # und deren Kausalitätsvorbehalte werden nicht durch Python neu verfasst.
+            if re.search(r"(?i)Edelmetalle", block):
+                if re.search(r"(?i)\([^)]*(?:Gold|Silber|Platin|Palladium)[^)]*\)", block):
+                    block = re.sub(
+                        r"(?i)\([^)]*(?:Gold|Silber|Platin|Palladium)[^)]*\)",
+                        "(" + facts + ")",
+                        block,
+                        count=1,
+                    )
+                else:
+                    block = re.sub(
+                        r"(?i)(Edelmetalle)",
+                        r"\1 (" + facts + ")",
+                        block,
+                        count=1,
+                    )
+                return text[:start.start()] + block + text[end.start():]
     return text
 
 
@@ -12515,7 +13211,8 @@ def _repariere_makro_und_edelmetall_konsistenz(text, makro_text, edel_text):
             "Palladium": ("PA=F", "8.4 Palladium"),
         }
         source_date_match = re.search(
-            r"(?im)^\s*(?:Datenstand|Stand|Erstellt am|Datum)\s*:\s*(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})",
+            r"(?im)^\s*(?:(?:Datenstand|Stand|Erstellt am|Datum)\s*:\s*|EDELMETALLE-SCAN\s+)"
+            r"(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})",
             edel_text,
         )
         source_date = source_date_match.group(1) if source_date_match else ""
@@ -12524,7 +13221,7 @@ def _repariere_makro_und_edelmetall_konsistenz(text, makro_text, edel_text):
                 source_date = datetime.datetime.strptime(source_date, "%Y-%m-%d").strftime("%d.%m.%Y")
             except ValueError:
                 source_date = ""
-        source_date_note = f"; Datenstand {source_date}" if source_date else ""
+        source_date_note = f"; Quelle: {EDELMETALL_FAKTENQUELLE}; Datenstand {source_date}" if source_date else f"; Quelle: {EDELMETALL_FAKTENQUELLE}"
         source = {}
         for metal, (ticker, heading) in metals.items():
             lm = re.search(
@@ -12575,14 +13272,14 @@ def _repariere_makro_und_edelmetall_konsistenz(text, makro_text, edel_text):
             four_w_display = vals["fourw"].replace(".", ",")
             canonical_lines = [
                 f"Aktueller Kurs: {fmt_source_number(vals['kurs'])}$ (Futures {ticker}{source_date_note})",
-                f"4-Wochen-Entwicklung: {four_w_display}% (autoritative Futures-Daten)",
+                f"4-Wochen-Entwicklung: {four_w_display}% (Quelle: {EDELMETALL_FAKTENQUELLE})",
             ]
             if "low" in vals:
                 canonical_lines.append(
-                    f"52-Wochen-Situation: 52W-Tief bei {fmt_source_number(vals['low'])}$, aktueller Abstand {vals['distance'].replace('.', ',')}% darüber"
+                    f"52-Wochen-Situation: 52W-Tief bei {fmt_source_number(vals['low'])}$, aktueller Abstand {vals['distance'].replace('.', ',')}% darüber (Quelle: {EDELMETALL_FAKTENQUELLE})"
                 )
             if "ema" in vals and "wma" in vals:
-                canonical_lines.append(f"EMA200 / WMA200: EMA200 bei {fmt_source_number(vals['ema'])}$, WMA200 bei {fmt_source_number(vals['wma'])}$")
+                canonical_lines.append(f"EMA200 / WMA200: EMA200 bei {fmt_source_number(vals['ema'])}$, WMA200 bei {fmt_source_number(vals['wma'])}$ (Quelle: {EDELMETALL_FAKTENQUELLE})")
             for label, canonical in [
                 ("Aktueller Kurs", canonical_lines[0]),
                 ("4-Wochen-Entwicklung", canonical_lines[1]),
@@ -12677,10 +13374,10 @@ def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     macro = source_text("Makro_Briefing(...).txt", "Makro_Briefing(...).txt")
     edelmetall = source_text("Edelmetalle_Briefing(...).txt", "Edelmetalle_Briefing(...).txt")
     text = _repariere_1_1_rohstoffperioden(
-        text, briefing, inputs.get("Letzte_Auswertung(...).txt")
+        text, briefing, inputs.get("Letzte_Auswertung(...).txt"), edelmetall
     )
     text = _repariere_1_4_kapitalflussbehauptung(text)
-    text = _repariere_3_2_rohstoffinterpretation(text, macro, briefing)
+    text = _repariere_3_2_rohstoffinterpretation(text, macro, briefing, edelmetall)
     text = _repariere_6_4_rohstoffperioden(text, briefing, macro)
     text = _repariere_8_doppelte_durchschnitte(text, briefing, edelmetall)
     text = _repariere_doppelte_sektion_6(text)
@@ -12804,22 +13501,15 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
             if n:
                 changes.append(f"WTI-EMA-Aussage aus Quellkurs/EMA20/EMA50 korrigiert ({n})")
 
-    # Edelmetalle-Briefing hat fuer Metall-4W-Werte Vorrang; Markt-Briefing
-    # dient nur als Fallback, wenn der spezialisierte Wert fehlt/ungueltig ist.
+    # Edelmetall-Fakten ausschließlich aus dem Edelmetalle-Briefing übernehmen.
+    # Abweichungen zur Vergleichsquelle werden separat dokumentiert; sie ersetzen
+    # niemals einen fehlenden oder unbrauchbaren Wert aus der Faktenquelle.
     metal_values = {}
     for metal in ("Gold", "Silber", "Platin", "Palladium"):
         detail_4w = _edelmetall_4w_value(edel_text or "", metal)
-        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
-        chosen = _waehle_edelmetall_4w(detail_4w, market_4w)
+        chosen = _waehle_edelmetall_4w(detail_4w)
         if chosen is not None:
             metal_values[metal] = chosen[1]
-            if detail_4w is not None and market_4w is not None and abs(detail_4w[1] - market_4w[1]) > 1e-8:
-                changes.append(
-                    f"{metal}: 4W-Quellenkonflikt Markt-Briefing {market_4w[0]}% vs. "
-                    f"Edelmetalle-Briefing {detail_4w[0]}%; Edelmetalle-Briefing verwendet"
-                )
-            elif detail_4w is None and market_4w is not None:
-                changes.append(f"{metal}: 4W-Fallback auf Markt-Briefing {market_4w[0]}% (Edelmetalle-Wert fehlt/ungueltig)")
     for idx, metal in enumerate(("Gold", "Silber", "Platin", "Palladium"), start=1):
         if metal not in metal_values:
             continue
@@ -13042,6 +13732,13 @@ def _extract_metal_4w_value(source_text, metal):
     return extract_metal_four_week_value(source_text or "", metal)
 
 
+# Verbindliche Faktenquellenregel: Python übernimmt Edelmetall-Fakten ausschließlich
+# aus dem Edelmetalle-Briefing; Gemini interpretiert diese Fakten. Das Markt-Briefing
+# darf nur für eine separat dokumentierte Abweichungsdiagnose gelesen werden, niemals
+# als Ersatz-/Fallbackquelle für Edelmetallwerte in der Auswertung.
+EDELMETALL_FAKTENQUELLE = "Edelmetalle-Briefing"
+
+
 def _edelmetall_lage_block(edel_text):
     """Return only the current LAGE JE METALL block from the specialized source."""
     match = re.search(
@@ -13065,7 +13762,7 @@ def _edelmetall_4w_value(edel_text, metal):
 
 
 def _edelmetall_4w_quellenkonflikte(edel_text, markt_text):
-    """Return unresolved 4W disagreements while preserving Edelmetalle-first output."""
+    """Return diagnostic 4W differences; they are not unresolved blockers by themselves."""
     conflicts = []
     for metal in ("Gold", "Silber", "Platin", "Palladium"):
         detail = _edelmetall_4w_value(edel_text, metal)
@@ -13082,12 +13779,375 @@ def _edelmetall_4w_quellenkonflikte(edel_text, markt_text):
     return conflicts
 
 
+
+
+def _repariere_inline_8_x_kurzzeilen(text, edel_text):
+    """Baut die vier kompakten 8.1–8.4-Zeilen ausschließlich aus Edelmetalle-Briefing-Fakten neu auf.
+
+    Diese Zusammenfassungszeilen sind eine zweite Darstellung derselben Fakten wie
+    die Detailblöcke. Sie werden vollständig ersetzt, damit keine alten Gemini-Zahlen,
+    nicht belegten 5T-Werte oder EMA20/EMA50-Aussagen stehen bleiben.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("EDELMETALL_INLINE_GATE: Auswertungstext fehlt.")
+    if not isinstance(edel_text, str) or not edel_text.strip():
+        raise RuntimeError("EDELMETALL_INLINE_GATE: Edelmetalle-Briefing fehlt.")
+
+    assets = (
+        ("Gold", "GC=F", "8.1"),
+        ("Silber", "SI=F", "8.2"),
+        ("Platin", "PL=F", "8.3"),
+        ("Palladium", "PA=F", "8.4"),
+    )
+    replacements = {}
+    missing = []
+
+    for asset, ticker, section in assets:
+        source_row = _edelmetall_lage_zeile(edel_text, asset)
+        if not source_row:
+            missing.append(f"{asset}: LAGE-JE-METALL-Zeile")
+            continue
+
+        kurs_match = re.search(
+            r"(?i)^\s*" + re.escape(asset) + r":\s*Kurs\s+([-+]?\d[\d.,]*)",
+            source_row,
+        )
+        four_w = _edelmetall_4w_value(edel_text, asset)
+        if not kurs_match:
+            missing.append(f"{asset}: Kurs")
+            continue
+        if not four_w or four_w[1] is None:
+            missing.append(f"{asset}: 4W")
+            continue
+
+        trend_block = _edelmetall_quellenblock(edel_text, asset)
+        trend = _extrahiere_200er_trend(trend_block)
+        if not trend:
+            missing.append(f"{asset}: EMA200/WMA200")
+            continue
+
+        parts = [
+            f"Quelle: {EDELMETALL_FAKTENQUELLE}",
+            f"Kurs (Futures {ticker}): {kurs_match.group(1)} USD",
+            f"4W: {four_w[0]}%",
+        ]
+
+        low_match = re.search(
+            r"(?i)52-Wochen-Tief\s*\(([-+]?\d[\d.,]*)\s*,\s*([-+]?\d[\d.,]*)%",
+            source_row,
+        )
+        if low_match:
+            parts.extend([
+                f"52W-Tief: {low_match.group(1)} USD",
+                f"Abstand 52W-Tief: {low_match.group(2)}%",
+            ])
+
+        parts.extend([
+            f"EMA200: {trend[1]} USD",
+            f"WMA200: {trend[2]} USD",
+            "Strategie-Status: "
+            + "; ".join(
+                f"{strategy}={_edelmetall_status(edel_text, strategy, asset, ticker)}"
+                for strategy in ("Trendfolge", "Trendwende", "Short")
+            ),
+        ])
+        replacements[section] = f"- {section} {asset}: " + " | ".join(parts)
+
+    if missing:
+        raise RuntimeError(
+            "EDELMETALL_INLINE_GATE: Pflichtfakten fehlen im spezialisierten Briefing: "
+            + " | ".join(missing)
+        )
+
+    # Alle bestehenden kompakten Zeilen ersetzen; falls eine fehlt, nach der
+    # Überschrift von Abschnitt 8 einfügen. Duplikate werden entfernt.
+    missing_rows = []
+    for _asset, _ticker, section in assets:
+        replacement = replacements[section]
+        pattern = re.compile(
+            r"(?m)^[ \t]*[-•]?[ \t]*" + re.escape(section)
+            + r"[ \t]+" + re.escape(_asset) + r"[ \t]*:[^\n]*(?:\n|$)"
+        )
+        matches = list(pattern.finditer(text))
+        if matches:
+            count = {"n": 0}
+            def _replace_row(match):
+                count["n"] += 1
+                return replacement + "\n" if count["n"] == 1 else ""
+            text = pattern.sub(_replace_row, text)
+        else:
+            missing_rows.append(replacement)
+
+    if missing_rows:
+        heading = re.search(r"(?m)^8\.\s*.*EDELMETALLE.*$", text)
+        if not heading:
+            raise RuntimeError(
+                "EDELMETALL_INLINE_GATE: Abschnitt 8 (EDELMETALLE) fehlt."
+            )
+        insert_at = heading.end()
+        text = text[:insert_at] + "\n" + "\n".join(missing_rows) + "\n" + text[insert_at:]
+
+    return text
+
+
+
+def _repariere_unbelegte_edelmetall_aussagen(text):
+    """Entfernt die drei bekannten, nicht durch die Edelmetallquelle belegten Aussagen.
+
+    Die Reparatur ist deterministisch und idempotent. Sie läuft vor dem globalen
+    Edelmetall-Release-Gate: nicht belegte Kurzfristbehauptungen werden nicht
+    sprachlich kaschiert, sondern durch eine quellengebundene Formulierung ersetzt.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("EDELMETALL_AUSSAGEN_GATE: Auswertungstext fehlt.")
+
+    lines = text.splitlines()
+    repaired = []
+    changes = []
+
+    for line_no, line in enumerate(lines, 1):
+        # Die frühere Gesamtbild-Zeile enthielt sowohl eine unbelegte 5T-Aussage
+        # als auch einen nicht gelieferten EMA20/EMA50-Zustand. Ersetze die ganze
+        # Zeile, damit keine Teilbehauptung aus derselben Synthese stehen bleibt.
+        if re.search(r"(?i)EDELMETALL[- ]GESAMTBILD", line):
+            new_line = (
+                "- EDELMETALL-GESAMTBILD: Die Gesamteinordnung stützt sich "
+                "ausschließlich auf die belegten 4W-/52W-Angaben sowie EMA200/WMA200; "
+                "nicht belegte kurzfristige Zustände werden nicht behauptet."
+            )
+            if new_line != line:
+                changes.append(f"Zeile {line_no}: Edelmetall-Gesamtbild quellengebunden ersetzt")
+            repaired.append(new_line)
+            continue
+
+        # EMA20/EMA50 können in 9.4 als allgemeiner Index-Trigger vorkommen,
+        # aber nicht als aktueller Edelmetall-Trigger, weil diese Metallwerte
+        # nicht Teil der spezialisierten Faktenquelle sind. Die Zeile wird
+        # daher eindeutig auf belegbare Metall-Trigger begrenzt.
+        if (
+            re.search(r"(?i)^\s*[-•]?\s*9\.4\s+Technische Trigger\s*:", line)
+            and re.search(r"(?i)Edelmetall", line)
+            and re.search(r"(?i)EMA\s*20\s*/\s*(?:EMA\s*)?50|EMA20/50", line)
+        ):
+            new_line = (
+                "- 9.4 Technische Trigger: bestätigte technische Signale an "
+                "europäischen Indizes; bei Edelmetallen ausschließlich "
+                "quellenbelegte EMA200/WMA200-Niveaus; Ausbruch an lokalen "
+                "Widerständen der Top-Sektoren."
+            )
+            if new_line != line:
+                changes.append(f"Zeile {line_no}: unbelegte EMA20/EMA50-Edelmetalltrigger entfernt")
+            repaired.append(new_line)
+            continue
+
+        repaired.append(line)
+
+    if changes:
+        print("EDELMETALL_AUSSAGEN_REPARIERT | " + " | ".join(changes))
+    # splitlines() entfernt den abschließenden Zeilenumbruch. Den Zustand der
+    # Eingabe deshalb explizit erhalten, damit die Reparatur keine reine
+    # Formatänderung am Dateiende erzeugt.
+    result = "\n".join(repaired)
+    if text.endswith(("\n", "\r")):
+        result += "\n"
+    return result
+
+def _edelmetall_interpretationswarnungen(text, edel_text):
+    """Prueft Edelmetall-Aussagen global gegen die Fakten aus dem Edelmetalle-Briefing.
+
+    Grundsatz: Python liefert die Zahlen/Fakten aus der spezialisierten Quelle;
+    Gemini darf diese interpretieren, aber keine unbelegten Zeitraeume, Indikatoren
+    oder Zahlen erfinden. Die Pruefung gilt fuer den gesamten Bericht, nicht nur
+    fuer Abschnitt 8. Ein Konfliktvermerk zum Markt-Briefing ist eine Diagnose und
+    wird nicht als Edelmetall-Aussage der Gemini-Interpretation bewertet.
+    """
+    report = str(text or "")
+    source = str(edel_text or "")
+    warnings = []
+    seen = set()
+
+    metal_aliases = {
+        "Gold": r"\bGold\b|\bGC=F\b",
+        "Silber": r"\bSilber\b|\bSI=F\b",
+        "Platin": r"\bPlatin\b|\bPL=F\b",
+        "Palladium": r"\bPalladium\b|\bPA=F\b",
+    }
+
+    # Nur Werte aus LAGE JE METALL und der zugehoerigen Trendfolge-Diagnose
+    # gelten als aktuelle Metall-Fakten. Andere Abschnitte der Quelle enthalten
+    # Scanner-Regeln, aber keine zusaetzlichen aktuellen Messwerte.
+    facts = {}
+    for metal in metal_aliases:
+        row = _edelmetall_lage_zeile(source, metal)
+        four_week = _edelmetall_4w_value(source, metal)
+        item = {"row": row, "percentages": [], "prices": [], "indicators": {}}
+        if four_week and four_week[1] is not None:
+            item["four_week"] = float(four_week[1])
+            item["percentages"].append(float(four_week[1]))
+        else:
+            item["four_week"] = None
+        # Prozentabstand zum 52W-Tief nur ueber die explizite Quellenformulierung.
+        m = re.search(r"(?i)(?:52[- ]Wochen[- ]Tief|52W[- ]Tief).*?([-+]?\d+(?:[.,]\d+)?)\s*%\s*(?:darueber|darüber)?", row)
+        if m:
+            value = float(m.group(1).replace(",", "."))
+            item["low_distance"] = value
+            item["percentages"].append(value)
+        else:
+            item["low_distance"] = None
+        # Preis/Tief aus der Lage-Zeile sowie EMA200/WMA200 aus dem separaten
+        # Trendfolge-Diagnoseblock werden als Faktenwerte gesammelt.
+        for m in re.finditer(r"(?i)(?:Kurs|52[- ]Wochen[- ]Tief|52W[- ]Tief)\s*(?:\([^)]*\))?\s*[:=]?\s*([-+]?\d[\d.,]*)", row):
+            try:
+                item["prices"].append(float(m.group(1).replace(",", ".")))
+            except ValueError:
+                pass
+        # Im Briefing steht das 52W-Tief teilweise in Klammern direkt hinter
+        # dem Wort "52-Wochen-Tief" statt als benanntes Feld mit Doppelpunkt.
+        for low_match in re.finditer(r"(?i)52[- ]Wochen[- ]Tief\s*\(\s*([-+]?\d+(?:[.,]\d+)?)", row):
+            try:
+                item["prices"].append(float(low_match.group(1).replace(",", ".")))
+            except ValueError:
+                pass
+        diag = re.search(
+            r"(?is)" + re.escape(metal) + r"\s*\([^\n]*?\).*?(?=\n-\s*(?:Gold|Silber|Platin|Palladium)\s*\(|\Z)",
+            source,
+        )
+        diag_text = diag.group(0) if diag else ""
+        for indicator in ("EMA200", "WMA200"):
+            im = re.search(r"(?i)\b" + indicator + r"\s+([-+]?\d[\d.,]*)", diag_text)
+            if im:
+                try:
+                    item["indicators"][indicator.upper()] = float(im.group(1).replace(",", "."))
+                    item["prices"].append(item["indicators"][indicator.upper()])
+                except ValueError:
+                    pass
+        facts[metal] = item
+
+    def _norm_num(value):
+        try:
+            value = str(value).replace("%", "").replace("$", "").strip()
+            # Dezimaltrennzeichen robust behandeln: 3.901,30 -> 3901.30;
+            # 4186.40 bleibt ein normaler Punkt-Dezimalwert.
+            if "." in value and "," in value and value.rfind(",") > value.rfind("."):
+                value = value.replace(".", "").replace(",", ".")
+            elif "," in value:
+                value = value.replace(",", ".")
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _same_number(a, b):
+        return a is not None and b is not None and abs(a - b) <= max(0.015, abs(b) * 0.0005)
+
+    def _warn(line_no, metal_label, category, snippet):
+        compact = re.sub(r"\s+", " ", snippet).strip()[:180]
+        message = f"Zeile {line_no}: {metal_label}: {category} | {compact}"
+        if message not in seen:
+            seen.add(message)
+            warnings.append(message)
+
+    # Ein expliziter Zeitraum ist nur dann belegt, wenn er in den aktuellen
+    # Metall-Fakten enthalten ist (4W und 52W). 5T, 3 Tage etc. sind keine
+    # zulaessigen Ersatz- oder Ableitungsperioden.
+    timeframe_re = re.compile(
+        r"(?i)(?<![\w/])(?:\d+\s*(?:T|D|Tag|Tage|Handelstag|Handelstage|W|Woche|Wochen|Monat|Monate|Stunde|Stunden))\b|"
+        r"\b(?:in den letzten|ueber die letzten|über die letzten|auf)\s+\d+\s+(?:Tagen?|Handelstagen?|Wochen?|Monaten?|Stunden?)\b|"
+        r"\b5[- ]Tages[- ]Sicht\b|\bin den letzten\s+5\s+Tagen\b"
+    )
+    unsupported_indicator_re = re.compile(
+        r"(?i)\bEMA\s*\d+\s*/\s*(?:EMA\s*)?\d+\b|\b(?:EMA|WMA|SMA)\s*\d+\b"
+    )
+    percent_re = re.compile(r"(?<![\w.])([-+]?\d+(?:[.,]\d+)?)\s*%")
+    currency_re = re.compile(r"(?<![\w.])([-+]?\d[\d.,]*)\s*(?:\$|USD\b)", re.I)
+
+    for line_no, line in enumerate(report.splitlines(), 1):
+        if not line.strip():
+            continue
+        # Quellenkonflikt-Zeilen sind transparente Diagnose, keine Behauptung,
+        # dass der Markt-Briefing-Wert der richtige Edelmetallwert sei.
+        if "EDELMETALL-4W-QUELLENKONFLIKT" in line.upper() or (
+            "Markt-Briefing" in line and ("vs." in line or "Abweich" in line or "Vergleichsquelle" in line)
+        ):
+            continue
+
+        named_metals = [metal for metal, pattern in metal_aliases.items() if re.search(pattern, line, re.I)]
+        collective = bool(re.search(r"(?i)\bEdelmetall(?:e|en|s)?\b|\bEdelmetall-Gesamtbild\b", line))
+        # Allgemeine Worte wie "Metall" allein reichen nicht; nur eindeutige
+        # Metallnamen/-Ticker oder ein expliziter Edelmetall-Kollektivsatz.
+        if not named_metals and not collective:
+            continue
+        target_metals = named_metals or list(metal_aliases)
+        label = "/".join(target_metals) if named_metals else "Edelmetalle gesamt"
+
+        # Die Quelle liefert aktuelle 4W-/52W-Fakten, jedoch keine 5T-/3-Tage-
+        # Werte. 4W/52W-Angaben werden aus der Zeitraumwarnung ausgenommen.
+        for tm in timeframe_re.finditer(line):
+            token = tm.group(0)
+            token_norm = re.sub(r"\s+", "", token.lower())
+            if token_norm in {"4w", "4wochen", "52w", "52wochen"}:
+                continue
+            # Der explizite Ausdruck 52-Wochen-Tief ist eine belegte Quellenperiode.
+            around = line[max(0, tm.start() - 12):min(len(line), tm.end() + 20)]
+            if re.search(r"(?i)52[- ]Wochen[- ]Tief|52W[- ]Tief", around) and re.search(r"(?i)52[- ]Wochen|52W", token):
+                continue
+            _warn(line_no, label, f"nicht belegter Zeitraum '{token}' (Quelle liefert aktuelle 4W-/52W-Fakten, keine passende Zahl fuer diesen Zeitraum)", line)
+
+        # EMA/WMA/SMA 200 sind durch die spezialisierte Quelle belegt. Andere
+        # gleitende Durchschnitte sind nicht als aktuelle Werte je Metall geliefert.
+        for im in unsupported_indicator_re.finditer(line):
+            indicator = re.sub(r"\s+", "", im.group(0)).upper()
+            if indicator in {"EMA200", "WMA200"}:
+                continue
+            # Strategieerklaerungen duerfen Scanner-Regeln nennen; beanstandet
+            # werden Aussagen, die den Indikator als aktuellen Zustand/Trigger
+            # eines Metalls ausgeben.
+            context = line[max(0, im.start() - 55):min(len(line), im.end() + 90)]
+            claim_context = re.search(
+                r"(?i)\b(?:unter|ueber|über|unterschritten|ueberschritten|überschritten|darunter|darueber|darüber|notiert|liegt|liegen|ueberwinden|überwinden|bei|signal|trigger|durchschnitt|gleitenden|kreuzt|ausbruch)\b",
+                context,
+            )
+            if claim_context or re.search(r"(?i)\bEMA\s*\d+\s*/\s*(?:EMA\s*)?\d+\b", im.group(0)):
+                _warn(line_no, label, f"aktueller Indikator {indicator} ist im Edelmetalle-Briefing nicht als aktueller Faktenwert belegt (nur EMA200/WMA200)", line)
+
+        # Prozentangaben zu Metallen muessen zu einem Quellenwert passen. Ein
+        # Wert wird nicht allein deshalb akzeptiert, weil er irgendwo im Bericht
+        # vorkommt: Vergleich gegen die Fakten des jeweils genannten Metalls.
+        pcts = [(_norm_num(m.group(1)), m.start(), m.end(), m.group(0)) for m in percent_re.finditer(line)]
+        if pcts:
+            for metal in target_metals:
+                item = facts.get(metal, {})
+                supported = [v for v in item.get("percentages", []) if v is not None]
+                for value, pstart, pend, raw in pcts:
+                    if value is None:
+                        continue
+                    if any(_same_number(value, v) for v in supported):
+                        continue
+                    # Werte in einer ausdruecklichen Prozent-Range/Quellenkonflikt
+                    # werden nicht stillschweigend legitimiert; Konflikte wurden
+                    # oben bereits ausgeschlossen.
+                    _warn(line_no, metal, f"nicht durch die Edelmetall-Fakten belegte Prozentangabe {raw}", line)
+
+        # Dollar-/USD-Kurszahlen auf Metallzeilen ebenfalls gegen Kurs, Tief,
+        # EMA200 und WMA200 der Quelle pruefen. Das verhindert alte Kurswerte in
+        # einem spaeteren Abschnitt, auch wenn dort keine Zeitperiode steht.
+        currencies = [(_norm_num(m.group(1)), m.group(0)) for m in currency_re.finditer(line)]
+        if currencies:
+            for metal in target_metals:
+                known_prices = facts.get(metal, {}).get("prices", [])
+                for value, raw in currencies:
+                    if value is None or any(_same_number(value, known) for known in known_prices):
+                        continue
+                    _warn(line_no, metal, f"nicht durch Kurs-/Tief-/EMA200-/WMA200-Fakten belegte Preiszahl {raw}", line)
+
+    return warnings
+
+
 def _dokumentiere_edelmetall_4w_quellenkonflikte(text, edel_text, markt_text):
     """Keep 4W source disagreements visible in the saved report without blocking output."""
     marker = "EDELMETALL-4W-QUELLENKONFLIKT"
     # Idempotent replacement: a pre-existing generated note must not accumulate.
     text = re.sub(
-        r"(?ms)^" + re.escape(marker) + r".*?(?:\n\s*\n|\Z)",
+        r"(?ms)^" + re.escape(marker) + r".*?(?:\n[ \t]*\n|\Z)",
         "",
         text or "",
     )
@@ -13095,12 +14155,11 @@ def _dokumentiere_edelmetall_4w_quellenkonflikte(text, edel_text, markt_text):
     if not conflicts:
         return text
     note = (
-        marker + " | FACHLICH_FINAL=NICHT_FINAL\n"
-        "- Ausgabewert: Edelmetalle-Briefing; Markt-Briefing bleibt Vergleichsquelle.\n"
-        "- Die Abweichungen sind nicht durch Mittelung oder stilles Überschreiben aufgeloest: "
+        marker + " | PRIORITÄT ANGEWENDET | DIAGNOSEHINWEIS, KEIN AUTOMATISCHER FREIGABEBLOCKER\n"
+        "- Faktenquelle für sämtliche Edelmetallangaben: Edelmetalle-Briefing. Markt-Briefing dient ausschließlich der dokumentierten Abweichungsdiagnose und wird nicht als Fallback verwendet.\n"
+        "- Dokumentierte Quellenabweichungen (keine Mittelung, kein stilles Überschreiben): "
         + " | ".join(conflicts)
-        + "\n- Technische Berichtserstellung ist erlaubt; die fachliche Endfreigabe bleibt bis zur "
-          "Pruefung von Berechnung und Zeitfenster offen.\n\n"
+        + "\n- Die spezialisierte Edelmetallquelle wurde deterministisch priorisiert; die Abweichung bleibt transparent dokumentiert.\n\n"
     )
     methodik = re.search(r"(?m)^11\. METHODIK / DATENQUALITÄT\s*$", text)
     if methodik:
@@ -13140,16 +14199,14 @@ def _entferne_futures_basis_duplikate_aus_abschnitt8(text):
     return text
 
 
-def _waehle_edelmetall_4w(edelmetall_wert, markt_wert):
-    """Edelmetalle-Briefing gewinnt; Markt-Briefing ist nur der Missing-Value-Fallback."""
+def _waehle_edelmetall_4w(edelmetall_wert, markt_wert=None):
+    """Liefert 4W ausschließlich aus dem Edelmetalle-Briefing; kein Markt-Fallback."""
     if edelmetall_wert is not None:
         raw, value = edelmetall_wert
         if value is not None:
-            return raw, value, "Edelmetalle-Briefing"
-    if markt_wert is not None:
-        raw, value = markt_wert
-        if value is not None:
-            return raw, value, "Markt-Briefing-Fallback"
+            return raw, value, EDELMETALL_FAKTENQUELLE
+    # markt_wert bleibt aus Rückwärtskompatibilität im Funktionsvertrag, wird aber
+    # absichtlich nicht als Faktenquelle verwendet.
     return None
 
 
@@ -13330,17 +14387,8 @@ def _pruefe_auswertung_quellenkonflikte(
     for idx, metal in enumerate(metal_names, start=1):
         block = section(f"8.{idx} {metal}", f"8.{idx+1} " + metal_names[idx] if idx < 4 else "9. 📅 NÄCHSTE KATALYSATOREN")
         detail_4w = _edelmetall_4w_value(edel_text or "", metal)
-        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
-        chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
-        source_line = (
-            _edelmetall_lage_zeile(edel_text, metal)
-            if detail_4w is not None
-            else next(
-                (ln for ln in (briefing_text or makro_text or "").splitlines()
-                 if re.match(r"(?i)^\s*(?:[-•]\s*)?" + re.escape(metal) + r"\s*:\s*Kurs\b", ln)),
-                "",
-            )
-        )
+        chosen_4w = _waehle_edelmetall_4w(detail_4w)
+        source_line = _edelmetall_lage_zeile(edel_text or "", metal)
         if source_line:
             perf_match = re.search(
                 r"(?i)(?<!\d)([-+]?\d[\d.,]*)\s*%\s*4W\b",
@@ -13373,18 +14421,10 @@ def _pruefe_auswertung_quellenkonflikte(
                                     f"8.{idx} {metal}: 4W-Wert {raw_value}% widerspricht "
                                     f"aktuellem Quellwert {perf_match.group(1)}%."
                                 )
-        # Quellenprioritaet ist verbindlich: spezialisierte Edelmetallquelle zuerst,
-        # Markt-Briefing nur als Fallback. Differenzen werden protokolliert, aber
-        # nicht als Bindungsfehler gewertet, wenn der priorisierte Wert ausgegeben ist.
-        market_4w = _extract_metal_4w_value(briefing_text or makro_text or "", metal)
+        # Der ausgegebene 4W-Wert muss ausschließlich mit dem Edelmetalle-Briefing
+        # übereinstimmen. Die allgemeine Marktquelle ist kein Sollwert und kein Fallback.
         detail_4w = _edelmetall_4w_value(edel_text or "", metal)
-        chosen_4w = _waehle_edelmetall_4w(detail_4w, market_4w)
-        if market_4w is not None and detail_4w is not None and abs(market_4w[1] - detail_4w[1]) > 1e-8:
-            print(
-                f"EDELMETALL_4W_QUELLENKONFLIKT-GATE: {metal}: Markt-Briefing "
-                f"{market_4w[0]}% vs. Edelmetalle-Briefing {detail_4w[0]}%; "
-                "Edelmetalle-Briefing ist der erwartete Ausgabewert."
-            )
+        chosen_4w = _waehle_edelmetall_4w(detail_4w)
         if chosen_4w is not None:
             block = section(f"8.{idx} {metal}", "9. 📅 NÄCHSTE KATALYSATOREN")
             raw_value = _first_4w_value_in_block(block)
@@ -13759,6 +14799,14 @@ def speichere_ergebnis(text, eingabedateien=None):
         )
         if konflikt_reparaturen:
             print("ZAHLENKONSISTENZ-GATE: " + " | ".join(konflikt_reparaturen))
+
+        # Abschließender Fix für nachgewiesene Perioden-/Quellenzuordnungen und
+        # mehrfache offene Positionseinträge. Muss nach allen Gemini-/Textreparaturen
+        # laufen, damit keine spätere Normalisierung die Korrekturen zurücksetzt.
+        final_text, quellen_perioden_positionen_reparaturen = _repariere_quellenperioden_und_positionsduplikate(
+            final_text, briefing_text, makro_text_fx, edelmetall_text
+        )
+
         # Letzter Identitaetsdurchlauf nach ALLEN Inhaltsreparaturen. So werden
         # auch spaeter eingefuegte Firmen-/Ticker-Nennungen kanonisiert.
         final_text = _normalisiere_name_ticker_ausgabe(final_text)
@@ -13783,8 +14831,8 @@ def speichere_ergebnis(text, eingabedateien=None):
             eingabedateien,
         )
 
-        # Der offene Edelmetallkonflikt wird im gespeicherten Bericht dokumentiert;
-        # er blockiert die technische Ausgabe nicht, verhindert aber FACHLICH_FINAL.
+        # Quellenabweichungen werden im gespeicherten Bericht dokumentiert;
+        # sie blockieren die technische Ausgabe und FACHLICH_FINAL nicht allein.
         final_text = _dokumentiere_edelmetall_4w_quellenkonflikte(
             final_text, edelmetall_text, briefing_text
         )
@@ -13794,6 +14842,20 @@ def speichere_ergebnis(text, eingabedateien=None):
         # So können spätere Zahlen-/Hinweisreparaturen keine Futures-Basis-
         # Duplikate in 8.1–8.4 zurückbringen.
         final_text = _entferne_futures_basis_duplikate_aus_abschnitt8(final_text)
+
+        # Die kompakten Inline-Zeilen 8.1–8.4 werden nach ALLEN Textreparaturen
+        # erneut aus der spezialisierten Faktenquelle aufgebaut. Damit bleiben
+        # keine alten Gemini-Kurs-/Perioden-/Indikatorwerte als zweite Faktenkopie.
+        final_text = _repariere_inline_8_x_kurzzeilen(final_text, edelmetall_text)
+        # Drei bekannte, nicht belegte Edelmetall-Aussagen vor dem finalen
+        # globalen Release-Gate deterministisch entfernen/neu formulieren.
+        final_text = _repariere_unbelegte_edelmetall_aussagen(final_text)
+
+        # Letztes hartes Gate: Quellperioden, Zeitstände, Edelmetall-Priorität
+        # und eindeutige offene Positionslisten müssen im gespeicherten Text stehen.
+        _pruefe_quellenperioden_und_positionsduplikate(
+            final_text, briefing_text, makro_text_fx, edelmetall_text
+        )
 
         if zahlen_gate_warnungen:
             print(
@@ -13814,6 +14876,33 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Die Themen-Kausalitaetspruefung ist ein hartes Final-Gate. Eine
         # fehlerhafte Analyse darf nicht mehr gespeichert/verschickt werden.
         _pruefe_themen_kausalitaet(final_text)
+
+        # HARTES EDELMETALL-RELEASE-GATE: Nach sämtlichen Reparaturen und vor
+        # jedem Dateischreiben/History-Update. Fehler beim Prüfen blockieren
+        # ebenfalls (fail closed); Warnungen dürfen nicht nur nach dem Speichern
+        # als FACHLICH_FINAL=NICHT_FINAL protokolliert werden.
+        try:
+            edelmetall_global_warnungen = _edelmetall_interpretationswarnungen(
+                final_text, edelmetall_text
+            )
+        except Exception as exc:
+            print(f"GEMINI_RELEASE_GATE=BLOCKED | Edelmetallprüfung fehlgeschlagen: {type(exc).__name__}: {exc}")
+            raise RuntimeError(
+                "GEMINI_RELEASE_GATE_BLOCKED: globale Edelmetallprüfung konnte nicht sicher abgeschlossen werden."
+            ) from exc
+        if edelmetall_global_warnungen:
+            for warnung in edelmetall_global_warnungen:
+                print("EDELMETALL_INTERPRETATION_WARNUNG | " + warnung)
+            print(
+                f"GEMINI_RELEASE_GATE=BLOCKED | "
+                f"{len(edelmetall_global_warnungen)} unbelegte Edelmetall-Aussage(n); "
+                "keine Speicherung, Historienfortschreibung oder nachfolgende Upload-Stufe."
+            )
+            raise RuntimeError(
+                "GEMINI_RELEASE_GATE_BLOCKED: unbelegte Edelmetall-Interpretationen; "
+                "Auswertung wurde nicht gespeichert und der Python-Lauf endet mit Fehler."
+            )
+        print("GEMINI_RELEASE_GATE=PASS | globale Edelmetallprüfung vor Speicherung bestanden")
 
     if str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("INFO: Technischer Gemini-Fallback - bestehende Auswertung bleibt unverändert; keine Auswertung wird gespeichert.")
@@ -13873,20 +14962,17 @@ def speichere_ergebnis(text, eingabedateien=None):
     print("AUSGABE_ERSTELLT=PASS")
     fachliche_gruende = []
     if not str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
+        # Der globale Edelmetall-Check ist bereits vor dem Speichern als hartes
+        # Gate gelaufen. Hier werden nur noch Diagnose-/Statusinformationen gesammelt.
         try:
-            offene_metallkonflikte = _edelmetall_4w_quellenkonflikte(
+            dokumentierte_metallabweichungen = _edelmetall_4w_quellenkonflikte(
                 edelmetall_text if "edelmetall_text" in locals() else "",
                 briefing_text if "briefing_text" in locals() else "",
             )
+            if dokumentierte_metallabweichungen:
+                print("EDELMETALL_QUELLENABWEICHUNG_DOKUMENTIERT | " + " | ".join(dokumentierte_metallabweichungen))
         except Exception as exc:
-            offene_metallkonflikte = []
-            fachliche_gruende.append(
-                f"4W-Quellenkonflikt konnte nicht verifiziert werden ({type(exc).__name__})"
-            )
-        if offene_metallkonflikte:
-            fachliche_gruende.append(
-                "offene Edelmetall-4W-Quellenkonflikte: " + " | ".join(offene_metallkonflikte)
-            )
+            print(f"WARNUNG: Vergleich der Edelmetallquellen nicht möglich ({type(exc).__name__}); kein Fallback auf Marktwerte.")
         if "zahlen_gate_warnungen" in locals() and zahlen_gate_warnungen:
             fachliche_gruende.append("Zahlenkonsistenz-Gate meldet offene Prüfpunkte")
         if fachliche_mindesttiefe_offen:
