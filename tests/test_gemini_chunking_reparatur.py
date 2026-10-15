@@ -1,4 +1,5 @@
-import ast, contextlib, datetime, hashlib, json, math, os, tempfile
+import ast, contextlib, datetime, hashlib, json, math, os, tempfile, time
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,15 @@ ns = {
     'print': lambda *a, **k: None,
     'os': os, 'json': json, 'hashlib': hashlib, 'datetime': datetime,
     'tempfile': tempfile, 'SimpleNamespace': SimpleNamespace,
+    'time': SimpleNamespace(sleep=lambda seconds: None, monotonic=time.monotonic, time=time.time),
+    # These module-level production states must exist in isolated AST namespaces.
+    '_gemini_503_failed_models_by_request': defaultdict(set),
+    '_gemini_503_pool_passes_this_run': defaultdict(int),
+    'GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN': 2,
+    'GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN': 2,
+    'GEMINI_503_POOL_BACKOFF_SECONDS': 0.0,
+    'GEMINI_MODELLREIHENFOLGE': ['model-a', 'model-b'],
+    'GEMINI_MODELLWECHSEL_JITTER_MAX': 0.0,
 }
 extract_function('_gemini_sichere_daten_gruppen', ns)
 
@@ -171,15 +181,18 @@ with tempfile.TemporaryDirectory() as td:
         'system_instruction': 'system',
         'resume_fingerprint': 'same-context',
     }
-    for expected_terminal in (False, True):
+    # This branch deliberately stubs the quota-safe sender. Therefore it tests
+    # split failure persistence/cache resume only; terminal retry-cap behavior
+    # is tested below with the real production quota-safe sender.
+    for _attempt in range(2):
         try:
             resume_ns['_gemini_cache_antwort'](None, 'model-a', request_context, [FakePart('work')], 'system')
             raise AssertionError('simulated failing split unexpectedly succeeded')
         except RuntimeError as exc:
-            if expected_terminal:
-                assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' in str(exc)
-            else:
-                assert '503 UNAVAILABLE' in str(exc)
+            assert '503 UNAVAILABLE' in str(exc), str(exc)
+            assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' not in str(exc), (
+                'stubbed sender must not be used to assert production terminal-cap behavior'
+            )
         resume_ns['_gemini_request_split_cache'] = {}
     assert send_log == ['GenerateContent Split 1', 'GenerateContent Split 2', 'GenerateContent Split 2'], send_log
     saved = json.loads(Path(resume_ns['GEMINI_SPLIT_RESUME_DATEI']).read_text(encoding='utf-8'))
@@ -244,7 +257,11 @@ with tempfile.TemporaryDirectory() as td:
     extract_function('_gemini_cache_antwort', actual_ns)
     actual_ns['_gemini_synthese'] = lambda client, model, texts, system, label: '|'.join(texts)
     actual_client = Actual503Client()
-    for model, expected_terminal in [('model-a', False), ('model-b', True)]:
+    # Each model gets at most two real sends for this request. The third
+    # attempt on model-b must be blocked before generate_content is called.
+    for model, expected_terminal in [
+        ('model-a', False), ('model-b', False), ('model-b', False), ('model-b', True)
+    ]:
         actual_ns['_gemini_active_modell'] = model
         actual_ns['_gemini_last_request_model'] = model
         try:
@@ -258,9 +275,10 @@ with tempfile.TemporaryDirectory() as td:
             else:
                 assert '503 UNAVAILABLE' in str(exc), str(exc)
     assert actual_sends == [
-        ('model-a', 'source-a'), ('model-a', 'source-b'), ('model-b', 'source-b')
+        ('model-a', 'source-a'), ('model-a', 'source-b'),
+        ('model-b', 'source-b'), ('model-b', 'source-b')
     ], actual_sends
-    assert len([call for call in actual_sends if call[1] == 'source-b']) == 2, actual_sends
+    assert len([call for call in actual_sends if call[1] == 'source-b']) == 3, actual_sends
     extract_function('_gemini_503_naechstes_modell', actual_ns)
     extract_function('_gemini_503_aeussere_entscheidung', actual_ns)
     extract_function('analysiere_api_fehler', actual_ns)
@@ -364,7 +382,7 @@ with tempfile.TemporaryDirectory() as td:
         'context_names': ['a.txt', 'b.txt'], 'system_instruction': 'system',
         'resume_fingerprint': 'synthesis-context',
     }
-    for terminal_expected in (False, True):
+    for terminal_expected in (False, False, True):
         synth_ns['_gemini_request_split_cache'] = {}
         try:
             synth_ns['_gemini_cache_antwort'](
@@ -469,7 +487,7 @@ with tempfile.TemporaryDirectory() as td:
                 assert (action, candidate) == ('switch', 'model-b'), (action, candidate)
                 assert outer_ns['_gemini_active_modell'] == 'model-b'
             else:
-                assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' in str(exc), str(exc)
+                assert '503 UNAVAILABLE' in str(exc), str(exc)
                 assert (action, candidate) == ('terminal', None), (action, candidate)
                 outer_terminal_error = str(exc)
                 break
@@ -494,86 +512,168 @@ with tempfile.TemporaryDirectory() as td:
     assert len(outer_saved['contexts']['outer-integration-context']['completed']) == 2, outer_saved
     print('PASS: integrated outer retry switches model A->B, stops after second synthesis 503, writes technical fallback status, and preserves completed source splits')
 
-    # FULL OUTER-PRODUCTION INTEGRATION: execute gemini_auswertung_starten() itself.
-    # The multi-stage analysis boundary is stubbed to return two deterministic 503
-    # outcomes; the actual production outer try/except, model switch, terminal break,
-    # and fallback-status write must run unmodified.
-    outer_full_ns = dict(outer_ns)
-    outer_full_ns.update({
-        'os': os, 'sys': __import__('sys'), 're': __import__('re'),
-        'time': __import__('time'), 'random': __import__('random'),
-        'MAX_VERSUCHE': 5, 'WARTEZEIT_SEKUNDEN': 0,
-        'GEMINI_MODELLREIHENFOLGE': ['model-a', 'model-b'],
-        'GEMINI_MODELLWECHSEL_JITTER_MAX': 0,
-        'genai': SimpleNamespace(Client=lambda **kwargs: outer_client),
-        'types': SimpleNamespace(
-            HttpOptions=lambda **kwargs: kwargs,
-            HttpRetryOptions=lambda **kwargs: kwargs,
-            Part=FakePart,
-            GenerateContentConfig=staticmethod(lambda **kwargs: kwargs),
-        ),
-        'lade_anweisung': lambda: 'test instruction',
-        'sammle_eingabedateien': lambda: {},
-        '_erstelle_gemini_a3_historie': lambda *a, **k: None,
-        '_speichere_gemini_input_manifest': lambda *a, **k: None,
-        '_lese_makro_datenqualitaet': lambda *a, **k: '',
-        'erstelle_abkandidaten_autoritative_liste': lambda *a, **k: '',
-        '_offene_positionen_quellblock': lambda *a, **k: '',
-        'lade_offenen_positionen_check_tab2': lambda *a, **k: '',
-        '_erstelle_gemini_final_autoritative_fakten': lambda *a, **k: 'facts.txt',
-        '_gemini_hochgeladene_quellen_erstellen': lambda *a, **k: [],
-        '_gemini_token_count_cache': {},
-        '_gemini_input_quota_usage': {},
-        '_gemini_project_input_quota_usage': {},
-        '_gemini_input_quota_cooldown_until': {},
-        '_gemini_rpd_requests': {},
-        '_gemini_rpd_exhausted': set(),
-        '_gemini_stufen_cache': {},
-        '_gemini_request_split_cache': {},
-        '_gemini_failed_models': set(),
-        '_gemini_active_modell': None,
-        '_gemini_last_request_model': None,
-        '_gemini_cache_name': None,
-        '_GEMINI_GESCHLOSSENE_10_5_FINAL': '',
-        '_GEMINI_EINGABEDATEIEN_AUSWERTUNG': {},
-        '_gemini_fallback_status_datei': outer_ns['_gemini_fallback_status_datei'],
-        'GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN': 2,
-        'GEMINI_INPUT_SAFE_BUDGET': 120_000,
-        'GEMINI_INPUT_EXCEPTION_BUDGET': 121_200,
+    # TRUE OUTER-HANDLER INTEGRATION: execute the actual production except-handler
+    # inside a real while/try loop, not a test-authored retry loop. The try body
+    # calls the real production _gemini_cache_antwort sender; the exception
+    # handler below is extracted verbatim from gemini_auswertung_starten().
+    production_start = next(
+        n for n in TREE.body
+        if isinstance(n, ast.FunctionDef) and n.name == 'gemini_auswertung_starten'
+    )
+    production_outer_try = next(
+        n for n in ast.walk(production_start)
+        if isinstance(n, ast.Try)
+        and any(h.name == 'e' and h.body
+                and isinstance(h.body[0], ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == 'fehlertext'
+                        for t in h.body[0].targets)
+                for h in n.handlers)
+    )
+    production_handler = next(
+        h for h in production_outer_try.handlers
+        if h.name == 'e' and h.body
+        and isinstance(h.body[0], ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == 'fehlertext'
+                for t in h.body[0].targets)
+    )
+    true_outer_ns = dict(outer_ns)
+    true_outer_ns['GEMINI_SPLIT_RESUME_DATEI'] = str(Path(td) / '.resume_true_outer.json')
+    true_outer_ns['GEMINI_SPLIT_RESUME_DONE_DATEI'] = str(Path(td) / '.resume_true_outer_done')
+    true_outer_ns['_GEMINI_RUN_ID'] = 'true-outer-production-handler-run'
+    true_outer_ns['_gemini_503_failures_this_run'] = {}
+    true_outer_ns['_gemini_last_503_request_info'] = {}
+    true_outer_ns['_gemini_request_split_cache'] = {}
+    true_outer_ns['_gemini_active_modell'] = 'model-a'
+    true_outer_ns['_gemini_last_request_model'] = 'model-a'
+    true_outer_ns['_gemini_failed_models'] = set()
+    true_outer_ns['GEMINI_MODELLREIHENFOLGE'] = ['model-a', 'model-b']
+    true_outer_ns['GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN'] = 2
+    true_outer_ns['GEMINI_MODELLWECHSEL_JITTER_MAX'] = 0
+    true_outer_ns['MAX_VERSUCHE'] = 4
+    true_outer_ns['WARTEZEIT_SEKUNDEN'] = 0
+    true_outer_ns['random'] = SimpleNamespace(uniform=lambda a, b: 0)
+    true_outer_ns['time'] = SimpleNamespace(sleep=lambda seconds: None)
+    true_outer_ns['print'] = lambda *a, **k: None
+    true_outer_ns['analysiere_api_fehler'] = lambda error: (
+        False, None, 'ueberlast' if '503' in str(error) else 'sonstiges'
+    )
+    true_outer_ns['_gemini_stufen_cache'] = {}
+    true_outer_ns['_gemini_cache_name'] = None
+    true_outer_ns['_gemini_last_request_model'] = 'model-a'
+    true_outer_ns['_gemini_fallback_status_datei'] = outer_ns['_gemini_fallback_status_datei']
+    # Re-extract into the new namespace so function globals (counters, model
+    # state and resume paths) are the same objects as the production handler.
+    for _function_name in (
+        '_gemini_503_request_fingerprint', '_gemini_generate_content_einzelversuch',
+        '_gemini_generate_content_quota_safe', '_gemini_split_resume_laden',
+        '_gemini_split_resume_speichern', '_gemini_split_resume_fehler_sichern',
+        '_gemini_request_part_fingerprint', '_gemini_cache_antwort',
+        '_gemini_503_naechstes_modell', '_gemini_503_aeussere_entscheidung',
+        '_gemini_503_aeussere_retry_aktion', '_gemini_fallback_status_datei',
+    ):
+        extract_function(_function_name, true_outer_ns)
+    true_outer_ns['_gemini_request_plan'] = lambda client, model, cache, data, work, system, label: [[data[0]], [data[1]]]
+    def true_outer_real_sender_synthesis(client, model, texts, system, label):
+        prompt = FakePart('synth-prompt:' + '|'.join(texts))
+        response = true_outer_ns['_gemini_generate_content_quota_safe'](
+            client, model, [prompt], {'system_instruction': system}, 1_000, 'SYNTHESIS'
+        )
+        return response.text
+    true_outer_ns['_gemini_synthese'] = true_outer_real_sender_synthesis
+    # The exact production handler includes `continue` and `break`; placing it
+    # in this test harness preserves those control-flow semantics unchanged.
+    call_sender = ast.Call(
+        func=ast.Name(id='_gemini_cache_antwort', ctx=ast.Load()),
+        args=[
+            ast.Name(id='outer_client', ctx=ast.Load()),
+            ast.Name(id='aktuelles_modell', ctx=ast.Load()),
+            ast.Name(id='outer_context', ctx=ast.Load()),
+            ast.List(elts=[ast.Call(func=ast.Name(id='FakePart', ctx=ast.Load()),
+                                    args=[ast.Constant(value='work')], keywords=[])], ctx=ast.Load()),
+            ast.Constant(value='system'),
+        ], keywords=[],
+    )
+    synthetic_try = ast.Try(
+        body=[ast.Expr(value=call_sender)],
+        handlers=[production_handler], orelse=[], finalbody=[],
+    )
+    # The except-handler is nested in gemini_auswertung_starten(). Preserve
+    # that function's module-global bindings in this synthetic integration wrapper.
+    production_global_names = sorted({
+        name
+        for node in ast.walk(production_start)
+        if isinstance(node, ast.Global)
+        for name in node.names
     })
-    outer_full_calls = []
-    def full_outer_stage_stub(**kwargs):
-        model = kwargs['modell']
-        outer_full_calls.append(model)
-        outer_full_ns['_gemini_last_request_model'] = model
-        if len(outer_full_calls) == 1:
-            raise RuntimeError('503 UNAVAILABLE high demand')
-        raise RuntimeError('GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL: two attempts exhausted')
-    outer_full_ns['_gemini_mehrstufige_gesamtanalyse'] = full_outer_stage_stub
-    extract_function('gemini_auswertung_starten', outer_full_ns)
-    old_api_key = os.environ.get('GEMINI_API_KEY')
-    with tempfile.TemporaryDirectory() as full_outer_td:
-        old_cwd = os.getcwd()
-        try:
-            os.chdir(full_outer_td)
-            os.environ['GEMINI_API_KEY'] = 'test-key'
-            outer_full_ns['_gemini_fallback_status_datei']('clear')
-            full_outer_result = outer_full_ns['gemini_auswertung_starten']()
-            assert full_outer_result.startswith('[GEMINI_TECHNISCHER_FALLBACK]'), full_outer_result
-            assert outer_full_calls == ['model-a', 'model-b'], outer_full_calls
-            assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' in full_outer_result
-            status_files = list(Path(full_outer_td).glob('Gemini_Fallback_Status_*.txt'))
-            assert len(status_files) == 1, status_files
-            status_text = status_files[0].read_text(encoding='utf-8')
-            assert 'GEMINI_STATUS=TECHNISCHER_FALLBACK' in status_text, status_text
-            assert 'GEMINI_SPLIT_STATUS=FAILED' in status_text, status_text
-        finally:
-            os.chdir(old_cwd)
-            if old_api_key is None:
-                os.environ.pop('GEMINI_API_KEY', None)
-            else:
-                os.environ['GEMINI_API_KEY'] = old_api_key
-    print('PASS: full production gemini_auswertung_starten outer loop executed; model-a -> model-b; terminal 503 exits to technical fallback status')
+    true_outer_global_stmt = ast.Global(names=production_global_names)
+    true_outer_function = ast.FunctionDef(
+        name='_run_actual_production_outer_handler', args=ast.arguments(
+            posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]
+        ),
+        body=[
+            true_outer_global_stmt,
+            ast.Assign(targets=[ast.Name(id='versuch', ctx=ast.Store())], value=ast.Constant(value=0)),
+            ast.Assign(targets=[ast.Name(id='versuch_nummer', ctx=ast.Store())], value=ast.Constant(value=0)),
+            ast.Assign(targets=[ast.Name(id='letzte_antwort', ctx=ast.Store())], value=ast.Constant(value=None)),
+            ast.Assign(targets=[ast.Name(id='hochgeladene_teile', ctx=ast.Store())], value=ast.Constant(value=None)),
+            ast.Assign(targets=[ast.Name(id='modell_index', ctx=ast.Store())], value=ast.Constant(value=0)),
+            ast.Assign(targets=[ast.Name(id='aktuelles_modell', ctx=ast.Store())], value=ast.Constant(value='model-a')),
+            ast.Assign(targets=[ast.Name(id='technische_retry_wiederverwenden', ctx=ast.Store())], value=ast.Constant(value=False)),
+            ast.While(
+                test=ast.Constant(value=True),
+                body=[
+                    ast.AugAssign(target=ast.Name(id='versuch', ctx=ast.Store()), op=ast.Add(), value=ast.Constant(value=1)),
+                    ast.Assign(
+                        targets=[ast.Name(id='versuch_nummer', ctx=ast.Store())],
+                        value=ast.BinOp(
+                            left=ast.BinOp(
+                                left=ast.BinOp(left=ast.Name(id='versuch', ctx=ast.Load()), op=ast.Sub(), right=ast.Constant(value=1)),
+                                op=ast.Mod(), right=ast.Name(id='MAX_VERSUCHE', ctx=ast.Load())
+                            ), op=ast.Add(), right=ast.Constant(value=1)
+                        ),
+                    ),
+                    synthetic_try,
+                    ast.Expr(value=ast.Call(func=ast.Name(id='AssertionError', ctx=ast.Load()), args=[ast.Constant(value='production outer handler returned without continue/break')], keywords=[])),
+                ], orelse=[],
+            ),
+            ast.Expr(value=ast.Call(
+                func=ast.Name(id='_gemini_fallback_status_datei', ctx=ast.Load()),
+                args=[ast.Constant(value='write'), ast.Name(id='letzte_antwort', ctx=ast.Load())], keywords=[]
+            )),
+            ast.Return(value=ast.Name(id='letzte_antwort', ctx=ast.Load())),
+        ], decorator_list=[],
+    )
+    true_outer_module = ast.fix_missing_locations(ast.Module(body=[true_outer_function], type_ignores=[]))
+    exec(compile(true_outer_module, '<actual-production-outer-handler>', 'exec'), true_outer_ns)
+    true_outer_context = {
+        'contents': [FakePart('source-a'), FakePart('source-b')],
+        'context_names': ['a.txt', 'b.txt'], 'system_instruction': 'system',
+        'resume_fingerprint': 'true-outer-production-context',
+    }
+    true_outer_ns['FakePart'] = FakePart
+    true_outer_ns['outer_client'] = outer_client
+    true_outer_ns['outer_context'] = true_outer_context
+    true_outer_sends_before = len(outer_sends)
+    previous_cwd = os.getcwd()
+    try:
+        os.chdir(td)
+        true_outer_result = true_outer_ns['_run_actual_production_outer_handler']()
+        true_outer_status = next(Path(td).glob('Gemini_Fallback_Status_*.txt')).read_text(encoding='utf-8')
+    finally:
+        os.chdir(previous_cwd)
+    assert true_outer_result.startswith('[Technischer Fehler] 503 UNAVAILABLE'), true_outer_result
+    assert 'GEMINI_STATUS=TECHNISCHER_FALLBACK' in true_outer_status, true_outer_status
+    assert 'GEMINI_SPLIT_STATUS=FAILED' in true_outer_status, true_outer_status
+    assert outer_sends[true_outer_sends_before:] == [
+        ('source-a', 'model-a'), ('source-b', 'model-a'),
+        ('SYNTHESIS', 'model-a'), ('SYNTHESIS', 'model-b'),
+        ('SYNTHESIS', 'model-a'), ('SYNTHESIS', 'model-b')
+    ], outer_sends[true_outer_sends_before:]
+    true_outer_saved = json.loads(Path(true_outer_ns['GEMINI_SPLIT_RESUME_DATEI']).read_text(encoding='utf-8'))
+    true_outer_failed = true_outer_saved['contexts']['true-outer-production-context']['failed']
+    assert true_outer_failed['stage'] == 'SYNTHESIS' and true_outer_failed['attempt_count'] == 4, true_outer_failed
+    assert len(true_outer_saved['contexts']['true-outer-production-context']['completed']) == 2, true_outer_saved
+    print('PASS: verbatim production outer except-handler executes real sender, switches model A->B, breaks on terminal 503, and writes fallback status')
 
     # The same two-attempt cap also applies to a request that fits into one call.
     direct_ns = dict(resume_ns)
@@ -598,15 +698,16 @@ with tempfile.TemporaryDirectory() as td:
         'system_instruction': 'system',
         'resume_fingerprint': 'direct-context',
     }
-    for expected_terminal in (False, True):
+    # This stub intentionally bypasses the production quota-safe sender.
+    # Test the cache/resume failure path here; terminal send-cap behavior is
+    # verified above with the real production sender.
+    for _attempt in range(2):
         try:
             direct_ns['_gemini_cache_antwort'](None, 'model-a', direct_context, [FakePart('work')], 'system')
             raise AssertionError('simulated direct 503 unexpectedly succeeded')
         except RuntimeError as exc:
-            if expected_terminal:
-                assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' in str(exc)
-            else:
-                assert '503 UNAVAILABLE' in str(exc)
+            assert '503 UNAVAILABLE' in str(exc), str(exc)
+            assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' not in str(exc), str(exc)
     assert len(direct_sends) == 2, direct_sends
 
 
@@ -671,7 +772,9 @@ resegment_ns['_gemini_quota_waehlen'] = lambda preferred, tokens, **kwargs: (
 resegment_ns['_gemini_quota_registriere_sendung'] = lambda model, tokens: {'model': model, 'tokens': tokens}
 resegment_ns['_gemini_tokenzahl'] = lambda client, model, contents, system, label: (
     200_000 if label == 'GenerateContent' else
-    121_300 if 'Quota-Fallback' in label else 1_000
+    121_300 if 'Quota-Fallback' in label and any(
+        'oversized-source-group' in (getattr(part, 'text', '') or '') for part in contents
+    ) else 1_000
 )
 resegment_ns['GEMINI_INPUT_SAFE_BUDGET'] = 120_000
 resegment_ns['GEMINI_INPUT_EXCEPTION_BUDGET'] = 121_200
@@ -760,16 +863,22 @@ assert 'GEMINI_SOURCE_CHUNK_MAX_CHARS = 20_000' in SOURCE
 assert 'GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL' in SOURCE
 assert 'GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN = 2' in SOURCE
 assert SOURCE.count('_gemini_503_aeussere_retry_aktion(') >= 3, 'outer retry/terminal branches are not wired to the tested production helper'
-assert 'attempt_count >= GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN' in SOURCE
+assert 'if attempts >= GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN:' in SOURCE
 assert 'os.replace(temp_output, ausgabe_datei)' in SOURCE
 assert 'GEMINI_SPLIT_RESUME_DONE_DATEI' in SOURCE
 assert 'body.rfind("\\n"' in SOURCE
 assert 'body.find("\\n"' in SOURCE
 assert 'GEMINI_INPUT_SAFE_BUDGET' in SOURCE[SOURCE.index('def _gemini_sichere_daten_gruppen'):SOURCE.index('def _gemini_quota_prune')]
 assert 'direct_request_allowed' in SOURCE and 'and not daten_teile' in SOURCE
-# The 503 exhausted-pool branch must not start a new retry cycle.
-outer = SOURCE[SOURCE.index('# Ein vollstaendig erfolgloser Modellpool ist fuer diesen Lauf') : SOURCE.index('else:\n                wartezeit = (empfohlene_wartezeit', SOURCE.index('# Ein vollstaendig erfolgloser Modellpool ist fuer diesen Lauf'))]
-assert 'time.sleep(wartezeit)' not in outer and 'versuch_zyklus += 1' not in outer
+# Exhausted pool may enter exactly the guarded second pass; after that it
+# must break instead of creating an unbounded retry cycle.
+outer_anchor = '# Nach dem ersten vollstaendigen Pooldurchlauf'
+outer_start = SOURCE.index(outer_anchor)
+outer_end = SOURCE.index('else:\n                wartezeit = (empfohlene_wartezeit', outer_start)
+outer = SOURCE[outer_start:outer_end]
+assert 'pool_passes < (GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN - 1)' in outer
+assert 'time.sleep(wartezeit)' in outer
+assert 'break' in outer and 'versuch_zyklus += 1' not in outer
 workflow_path = Path(__file__).resolve().parents[1] / '.github' / 'workflows' / 'main.yml'
 if workflow_path.exists():
     workflow = workflow_path.read_text(encoding='utf-8')
@@ -788,3 +897,162 @@ print('PASS: persistent resume status, source invalidation, and multi-context re
 print('PASS: simulated 503 cap at two attempts; persistent resume reuses completed split and retries only failed split')
 print('PASS: technical fallback leaves existing daily output unchanged')
 print('PASS: 120k/121.2k/20k limits; 503 terminal behavior; atomic output; newline split')
+
+
+# Targeted regression: registry absent, then outer retry creates request-a;
+# quota-safe production logic must safely initialize a distinct request-b entry.
+target_ns = {
+    'GEMINI_MODELLREIHENFOLGE': ['model-a', 'model-b'],
+    '_gemini_last_503_request_info': {'request_fingerprint': 'req-test-a'},
+    '_gemini_active_modell': 'model-a',
+    '_gemini_last_request_model': 'model-a',
+    '_gemini_failed_models': set(),
+    'analysiere_api_fehler': lambda msg: (
+        False, None, 'ueberlast' if '503' in str(msg) else 'sonstiges'
+    ),
+}
+extract_function('_gemini_503_naechstes_modell', target_ns)
+extract_function('_gemini_503_aeussere_entscheidung', target_ns)
+extract_function('_gemini_503_aeussere_retry_aktion', target_ns)
+target_result = target_ns['_gemini_503_aeussere_retry_aktion']('503 UNAVAILABLE', 'model-a')
+assert target_result == ('switch', 'model-b'), target_result
+registry = target_ns['_gemini_503_failed_models_by_request']
+assert 'model-a' in registry['req-test-a']
+assert target_ns['_gemini_failed_models'] is registry['req-test-a']
+
+# Exercise the ACTUAL production quota-safe function (not a mock of it) with a
+# fake provider boundary. A second fingerprint absent from the existing plain
+# dict must be initialized, not raise KeyError. Existing request-a state survives.
+quota_ns = dict(target_ns)
+quota_ns['_gemini_503_failed_models_by_request'] = registry
+quota_ns['_gemini_last_503_request_info'] = {}
+quota_ns['_gemini_active_modell'] = 'model-b'
+quota_ns['_gemini_last_request_model'] = 'model-b'
+quota_ns['GEMINI_INPUT_EXCEPTION_BUDGET'] = 121200
+quota_ns['GEMINI_INPUT_SAFE_BUDGET'] = 120000
+quota_ns['GEMINI_FREE_TIER_INPUT_WINDOW_SECONDS'] = 60
+quota_ns['GEMINI_FREE_TIER_INPUT_WINDOW_RESERVE_SECONDS'] = 5
+quota_ns['types'] = FakeTypes
+quota_ns['time'] = SimpleNamespace(sleep=lambda seconds: None)
+quota_ns['print'] = lambda *a, **k: None
+quota_ns['_gemini_503_request_fingerprint'] = lambda contents, system: 'req-test-b'
+quota_ns['_gemini_quota_waehlen'] = lambda preferred, tokens, **kwargs: (preferred, 0)
+quota_ns['_gemini_quota_registriere_sendung'] = lambda model, tokens: {'model': model, 'tokens': tokens}
+quota_ns['_gemini_generate_content_einzelversuch'] = lambda *args, **kwargs: SimpleNamespace(text='OK', candidates=[])
+quota_ns['_gemini_tokenzahl'] = lambda *args, **kwargs: 1000
+extract_function('_gemini_generate_content_quota_safe', quota_ns)
+# Also test the quota-safe function when the registry itself is absent, not
+# merely when one request key is absent from an existing plain dictionary.
+quota_missing_ns = dict(quota_ns)
+quota_missing_ns.pop('_gemini_503_failed_models_by_request', None)
+quota_missing_ns['_gemini_503_request_fingerprint'] = lambda contents, system: 'req-created-from-none'
+extract_function('_gemini_generate_content_quota_safe', quota_missing_ns)
+missing_registry_response = quota_missing_ns['_gemini_generate_content_quota_safe'](
+    None, 'model-b', [FakePart('missing-registry-payload')], {}, 1000, 'MISSING-REGISTRY'
+)
+assert missing_registry_response.text == 'OK', missing_registry_response.text
+assert quota_missing_ns['_gemini_503_failed_models_by_request']['req-created-from-none'] == set()
+quota_response = quota_ns['_gemini_generate_content_quota_safe'](
+    None, 'model-b', [FakePart('request-b-payload')], {}, 1000, 'TARGET-REGRESSION'
+)
+assert quota_response.text == 'OK', quota_response.text
+registry = quota_ns['_gemini_503_failed_models_by_request']
+assert 'req-test-a' in registry and registry['req-test-a'] == {'model-a'}, registry
+assert 'req-test-b' in registry and isinstance(registry['req-test-b'], set), registry
+assert quota_ns['_gemini_failed_models'] is registry['req-test-b']
+assert registry['req-test-a'] is not registry['req-test-b']
+print('PASS: missing registry and missing second request key are safely initialized by both production functions; existing request state preserved')
+
+
+# Explicit registry value-type policy:
+# - a string is one model name, never an iterable of characters;
+# - collections must contain only non-empty model-name strings;
+# - malformed registry roots/entries raise TypeError rather than silently
+#   erasing state or constructing a misleading blocklist.
+string_outer_ns = {
+    'GEMINI_MODELLREIHENFOLGE': ['model-a', 'model-b'],
+    '_gemini_last_503_request_info': {'request_fingerprint': 'req-string-outer'},
+    '_gemini_active_modell': 'model-a',
+    '_gemini_last_request_model': 'model-a',
+    '_gemini_failed_models': set(),
+    '_gemini_503_failed_models_by_request': {'req-string-outer': 'model-a'},
+    'analysiere_api_fehler': lambda msg: (
+        False, None, 'ueberlast' if '503' in str(msg) else 'sonstiges'
+    ),
+}
+extract_function('_gemini_503_naechstes_modell', string_outer_ns)
+extract_function('_gemini_503_aeussere_entscheidung', string_outer_ns)
+extract_function('_gemini_503_aeussere_retry_aktion', string_outer_ns)
+assert string_outer_ns['_gemini_503_aeussere_retry_aktion'](
+    '503 UNAVAILABLE', 'model-a'
+) == ('switch', 'model-b')
+assert string_outer_ns['_gemini_503_failed_models_by_request']['req-string-outer'] == {'model-a'}
+
+string_quota_ns = dict(quota_ns)
+string_quota_ns['_gemini_503_failed_models_by_request'] = {'req-string-quota': 'model-a'}
+string_quota_ns['_gemini_503_request_fingerprint'] = lambda contents, system: 'req-string-quota'
+extract_function('_gemini_generate_content_quota_safe', string_quota_ns)
+string_response = string_quota_ns['_gemini_generate_content_quota_safe'](
+    None, 'model-b', [FakePart('string-registry-payload')], {}, 1000, 'STRING-REGISTRY'
+)
+assert string_response.text == 'OK'
+assert string_quota_ns['_gemini_503_failed_models_by_request']['req-string-quota'] == {'model-a'}
+assert string_quota_ns['_gemini_failed_models'] == {'model-a'}
+
+def assert_type_error(label, call):
+    try:
+        call()
+    except TypeError:
+        return
+    raise AssertionError(f'{label}: malformed registry state was silently accepted')
+
+bad_entry_outer_ns = dict(string_outer_ns)
+bad_entry_outer_ns['_gemini_last_503_request_info'] = {'request_fingerprint': 'req-bad-entry'}
+bad_entry_outer_ns['_gemini_503_failed_models_by_request'] = {'req-bad-entry': 17}
+extract_function('_gemini_503_aeussere_retry_aktion', bad_entry_outer_ns)
+assert_type_error(
+    'outer retry invalid registry entry',
+    lambda: bad_entry_outer_ns['_gemini_503_aeussere_retry_aktion']('503 UNAVAILABLE', 'model-a')
+)
+
+bad_entry_quota_ns = dict(quota_ns)
+bad_entry_quota_ns['_gemini_503_failed_models_by_request'] = {'req-bad-entry-quota': 17}
+bad_entry_quota_ns['_gemini_503_request_fingerprint'] = lambda contents, system: 'req-bad-entry-quota'
+extract_function('_gemini_generate_content_quota_safe', bad_entry_quota_ns)
+assert_type_error(
+    'quota-safe invalid registry entry',
+    lambda: bad_entry_quota_ns['_gemini_generate_content_quota_safe'](
+        None, 'model-b', [FakePart('bad-registry-payload')], {}, 1000, 'BAD-REGISTRY'
+    )
+)
+
+bad_root_outer_ns = dict(string_outer_ns)
+bad_root_outer_ns['_gemini_last_503_request_info'] = {'request_fingerprint': 'req-bad-root'}
+bad_root_outer_ns['_gemini_503_failed_models_by_request'] = ['not-a-dict']
+extract_function('_gemini_503_aeussere_retry_aktion', bad_root_outer_ns)
+assert_type_error(
+    'outer retry invalid registry root',
+    lambda: bad_root_outer_ns['_gemini_503_aeussere_retry_aktion']('503 UNAVAILABLE', 'model-a')
+)
+
+bad_root_quota_ns = dict(quota_ns)
+bad_root_quota_ns['_gemini_503_failed_models_by_request'] = ['not-a-dict']
+bad_root_quota_ns['_gemini_503_request_fingerprint'] = lambda contents, system: 'req-bad-root-quota'
+extract_function('_gemini_generate_content_quota_safe', bad_root_quota_ns)
+assert_type_error(
+    'quota-safe invalid registry root',
+    lambda: bad_root_quota_ns['_gemini_generate_content_quota_safe'](
+        None, 'model-b', [FakePart('bad-root-payload')], {}, 1000, 'BAD-ROOT'
+    )
+)
+
+bad_collection_ns = dict(string_quota_ns)
+bad_collection_ns['_gemini_503_failed_models_by_request'] = {'req-string-quota': ['model-a', 7]}
+extract_function('_gemini_generate_content_quota_safe', bad_collection_ns)
+assert_type_error(
+    'quota-safe mixed-type collection',
+    lambda: bad_collection_ns['_gemini_generate_content_quota_safe'](
+        None, 'model-b', [FakePart('mixed-registry-payload')], {}, 1000, 'MIXED-REGISTRY'
+    )
+)
+print('PASS: registry strings normalize as one model; malformed roots/entries/collections raise TypeError')
