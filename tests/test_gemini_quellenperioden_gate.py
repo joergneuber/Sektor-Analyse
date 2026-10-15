@@ -6,6 +6,8 @@ kein Gemini-API-Zugriff und kein Projekt-Import ausgeführt.
 import ast
 import datetime
 import re
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +26,12 @@ NEEDED = {
     "_echte_unterabschnittsueberschrift", "_ist_fallback_pflichttext",
     "_ausgabe_heading_key", "_bereinige_doppelte_ausgabestruktur",
     "_repariere_doppelte_3_3", "_pruefe_finale_struktur_und_konsistenz",
+    "_hat_expliziten_zeitbezug", "_ereignisbehauptungen_aufteilen", "_undatierte_ereignisbehauptungen",
+    "_repariere_9_3_unbelegte_ereignisplatzhalter", "_pruefe_punkt8_quellenabdeckung",
+    "_repariere_9_2_unbelegte_katalysatoren",
+    "_ist_portfolio_positionsdatensatz", "_portfolio_tickers_aus_positionsdatensatz",
+    "_portfolio_positionsduplikate", "_dedupliziere_portfolio_positionsdatensaetze",
+    "_extrahiere_200er_trend",
 }
 NODES = [node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NEEDED]
 
@@ -66,7 +74,7 @@ def _abschnitt_text(text, start, ends):
     return ""
 
 ENV = {
-    "re": re, "datetime": datetime,
+    "re": re, "datetime": datetime, "os": os, "Path": Path,
     "_portfolio_positionsduplikate": _portfolio_positionsduplikate,
     "_dedupliziere_portfolio_positionsdatensaetze": _dedupliziere_portfolio_positionsdatensaetze,
     "_edelmetall_lage_zeile": _edelmetall_lage_zeile,
@@ -136,6 +144,34 @@ class SourceGateTests(unittest.TestCase):
         self.assertEqual(ENV["_normalisiere_quellenbezeichnung"]("EuroStoxx 50"), "eurostoxx50")
         self.assertEqual(ENV["_normalisiere_quellenbezeichnung"]("EURO STOXX-50"), "eurostoxx50")
         self.assertTrue(ENV["_pruefe_quellenperioden_und_positionsduplikate"](text, briefing, "", edel))
+
+    def test_nikkei_staleness_warning_suffix_is_parseable_and_repair_rebuilds_all_indices(self):
+        _, briefing, edel = fixture()
+        warning = " [WARNUNG: Datenstand vom 14.10.2026, 2 Tage alt - moeglicherweise veraltet]"
+        briefing = "\n".join(
+            line + warning if line.startswith("- Nikkei 225:") else line
+            for line in briefing.splitlines()
+        )
+        text = (
+            "7.1 Aktienmärkte / Indizes\n- alte, unvollständige Übersicht\n"
+            "7.2 Zinsen\n- Zinsdaten\n"
+            "7.5 Rohstoffe\n- alte Ölzeilen\n"
+            "7.6 Krypto\n- Krypto\n"
+            + "\n".join([
+                "- 8.1 Gold: Quelle: Edelmetalle-Briefing | Kurs (Futures GC=F): 4171.40 USD | 4W: -5.70% | EMA200: 4321.96 USD",
+                "- 8.2 Silber: Quelle: Edelmetalle-Briefing | Kurs (Futures SI=F): 56.18 USD | 4W: -15.60% | EMA200: 64.62 USD",
+                "- 8.3 Platin: Quelle: Edelmetalle-Briefing | Kurs (Futures PL=F): 1615.60 USD | 4W: -9.80% | EMA200: 1700.00 USD",
+                "- 8.4 Palladium: Quelle: Edelmetalle-Briefing | Kurs (Futures PA=F): 1109.00 USD | 4W: -15.10% | EMA200: 1200.00 USD",
+                "10. 💼 BESTEHENDES PORTFOLIO", "10.1 Offene Positionen", "11. METHODIK / DATENQUALITÄT",
+            ])
+        )
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", edel
+        )
+        self.assertTrue(any("7.1 Kurzüberblick aus vollständigen Tagesrendite-/YTD-Quellpaaren neu aufgebaut" in item for item in changes))
+        for label in LABELS:
+            self.assertIn(f"- {label}: letzter abgeschlossener Handelstag", fixed)
+        self.assertTrue(ENV["_pruefe_quellenperioden_und_positionsduplikate"](fixed, briefing, "", edel))
 
     def test_missing_mandatory_index_source_fails(self):
         text, briefing, edel = fixture()
@@ -670,11 +706,11 @@ class StructureIdempotencyAndSafetyTests(unittest.TestCase):
                 self.assertIsNone(is_heading(line))
                 self.assertIsNone(heading_key(line, required))
         text = (
-            "6.1 Makro gegen Technik\\n"
-            "Originalanalyse bleibt bestehen.\\n"
-            + prose_lines[0] + "\\n"
-            + prose_lines[1] + "\\n"
-            + "Weiterer Fließtext bleibt im selben Abschnitt.\\n"
+            "6.1 Makro gegen Technik\n"
+            "Originalanalyse bleibt bestehen.\n"
+            + prose_lines[0] + "\n"
+            + prose_lines[1] + "\n"
+            + "Weiterer Fließtext bleibt im selben Abschnitt.\n"
         )
         result = repair(text)
         self.assertIn(prose_lines[0], result)
@@ -726,3 +762,257 @@ class StructureIdempotencyAndSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+
+class Sections8910HardeningTests(unittest.TestCase):
+    def test_shared_date_helper_accepts_project_date_variants(self):
+        for value in (
+            "7. Oktober 2026", "07.10.2026", "2026-10-07",
+            "Quartalszahlen am 7. Oktober", "Konferenz im Oktober",
+            "Earnings nächste Woche", "FOMC am Mittwoch",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(ENV["_hat_expliziten_zeitbezug"](value), value)
+
+    def test_shared_date_helper_rejects_vague_month_without_date(self):
+        for value in ("Quartalszahlen im Berichtsmonat", "Earnings irgendwann", "Konferenz anstehend"):
+            with self.subTest(value=value):
+                self.assertFalse(ENV["_hat_expliziten_zeitbezug"](value), value)
+
+    def test_92_repair_preserves_day_month_without_year(self):
+        text = (
+            "9.2 Unternehmen\n"
+            "- Quartalszahlen am 7. Oktober, im Berichtsmonat erwartet.\n"
+            "9.3 Branchenereignisse\n"
+            "- Keine konkreten Branchenereignisse belegt.\n"
+        )
+        repaired = ENV["_repariere_9_2_unbelegte_katalysatoren"](text)
+        self.assertIn("Quartalszahlen am 7. Oktober", repaired)
+
+    def test_92_repair_removes_vague_undated_placeholder(self):
+        text = (
+            "9.2 Unternehmen\n"
+            "- Quartalsberichte und Earnings-Meldungen im Berichtsmonat.\n"
+            "9.3 Branchenereignisse\n"
+            "- Keine konkreten Branchenereignisse belegt.\n"
+        )
+        repaired = ENV["_repariere_9_2_unbelegte_katalysatoren"](text)
+        self.assertNotIn("Earnings-Meldungen im Berichtsmonat", repaired)
+        self.assertIn("Keine konkreten Unternehmenstermine", repaired)
+
+    def test_93_event_dates_are_checked_per_event_not_per_section(self):
+        units = [
+            "Earnings-Call für Firma A am 7. Oktober.",
+            "Branchenkonferenz für Sektor B ohne Datum.",
+        ]
+        undated = ENV["_undatierte_ereignisbehauptungen"](
+            units, r"konferenz|earnings"
+        )
+        self.assertEqual(undated, ["Branchenkonferenz für Sektor B ohne Datum."])
+
+    def test_93_negated_event_is_not_reported_as_undated_claim(self):
+        units = ["Keine Branchenkonferenz für Sektor B belegt."]
+        self.assertEqual(
+            ENV["_undatierte_ereignisbehauptungen"](units, r"konferenz"),
+            [],
+        )
+
+    def test_portfolio_position_detector_accepts_alternative_field_labels(self):
+        variants = [
+            "- AAPL (AAPL) | Einstand: 180,00 | Kurs aktuell: 190,00 | P/L: +5,56%",
+            "- Ticker: AAPL | Entry Price: 180.00 | Current Price: 190.00 | Gewinn/Verlust: +5.56%",
+            "- AAPL | Kaufkurs: 180.00 | Marktwert: 190.00 | Rendite: +5.56%",
+        ]
+        for line in variants:
+            with self.subTest(line=line):
+                self.assertTrue(ENV["_ist_portfolio_positionsdatensatz"](line), line)
+                self.assertIn("AAPL", ENV["_portfolio_tickers_aus_positionsdatensatz"](line))
+
+    def test_portfolio_duplicate_gate_detects_duplicate_across_format_variants(self):
+        text = (
+            "10. 💼 BESTEHENDES PORTFOLIO\n"
+            "10.1 Offene Positionen\n"
+            "- AAPL (AAPL) | Einstand: 180,00 | Kurs aktuell: 190,00 | P/L: +5,56%\n"
+            "- Ticker: AAPL | Entry Price: 181.00 | Current Price: 190.00 | Gewinn/Verlust: +4.97%\n"
+            "11. METHODIK / DATENQUALITÄT\n"
+        )
+        self.assertIn(("1", "AAPL"), ENV["_portfolio_positionsduplikate"](text))
+
+    def test_portfolio_deduplication_removes_duplicate_format_variant(self):
+        text = (
+            "10. 💼 BESTEHENDES PORTFOLIO\n"
+            "10.1 Offene Positionen\n"
+            "- AAPL (AAPL) | Einstieg: 180,00 | Aktuell: 190,00 | Performance: +5,56%\n"
+            "- Ticker: AAPL | Entry Price: 181.00 | Current Price: 190.00 | P/L: +4.97%\n"
+            "11. METHODIK / DATENQUALITÄT\n"
+        )
+        repaired, removed = ENV["_dedupliziere_portfolio_positionsdatensaetze"](text)
+        self.assertTrue(removed)
+        self.assertEqual(repaired.count("Ticker: AAPL"), 0)
+        self.assertEqual(repaired.count("AAPL (AAPL)"), 1)
+
+    def test_section8_200_trend_parser_accepts_warning_suffix(self):
+        parsed = ENV["_extrahiere_200er_trend"](
+            "200er-Trend: Kurs 4171.40 | EMA200 4321.96 | WMA200 4298.20 [WARNUNG: Kursdaten älter]"
+        )
+        self.assertEqual(parsed, ("4171.40", "4321.96", "4298.20"))
+
+    def test_section8_200_trend_parser_blocks_missing_or_unparseable_required_values(self):
+        for value in (
+            "200er-Trend: Kurs 4171.40 | EMA200 4321.96 | WMA200 n/a",
+            "200er-Trend: Kurs 4171.40 | WMA200 4298.20",
+            "200er-Trend: Kurs 4171.40 | EMA200 4321.96",
+        ):
+            with self.subTest(value=value):
+                self.assertIsNone(ENV["_extrahiere_200er_trend"](value))
+
+
+
+    def test_portfolio_action_prefixes_are_not_tickers(self):
+        cases = {
+            "- LONG AAPL | Einstieg: 180,00 | Aktuell: 190,00 | Performance: +5,56%": ["AAPL"],
+            "- SHORT TSLA | Einstieg: 250,00 | Aktuell: 240,00 | Performance: +4,00%": ["TSLA"],
+            "- BUY MSFT | Einstieg: 400,00 | Aktuell: 410,00 | Performance: +2,50%": ["MSFT"],
+            "- SELL NVDA | Einstieg: 120,00 | Aktuell: 115,00 | Performance: -4,17%": ["NVDA"],
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(ENV["_portfolio_tickers_aus_positionsdatensatz"](line), expected)
+
+    def test_portfolio_duplicate_gate_uses_ticker_after_action_prefix(self):
+        text = (
+            "10. 💼 BESTEHENDES PORTFOLIO\n"
+            "10.1 Offene Positionen\n"
+            "- LONG AAPL | Einstieg: 180,00 | Aktuell: 190,00 | Performance: +5,56%\n"
+            "- BUY AAPL | Einstand: 181,00 | Kurs aktuell: 190,00 | P/L: +4,97%\n"
+            "11. METHODIK / DATENQUALITÄT\n"
+        )
+        self.assertIn(("1", "AAPL"), ENV["_portfolio_positionsduplikate"](text))
+        self.assertNotIn(("1", "LONG"), ENV["_portfolio_positionsduplikate"](text))
+        self.assertNotIn(("1", "BUY"), ENV["_portfolio_positionsduplikate"](text))
+
+    def test_multiple_events_inside_one_sentence_are_split_for_date_check(self):
+        unit = (
+            "Earnings-Call für Firma A am 7. Oktober 2026 und "
+            "Branchenkonferenz für Sektor B ohne Datum."
+        )
+        undated = ENV["_undatierte_ereignisbehauptungen"](
+            [unit], r"earnings|branchenkonferenz"
+        )
+        self.assertEqual(len(undated), 1)
+        self.assertIn("Branchenkonferenz", undated[0])
+        self.assertNotIn("Earnings-Call", undated[0])
+
+    def test_93_vague_placeholder_is_removed_but_specific_undated_event_is_preserved(self):
+        text = (
+            "9.2 Unternehmen\n"
+            "- Keine konkreten Unternehmenstermine belegt.\n"
+            "9.3 Branchenereignisse\n"
+            "- Branchenkonferenz im Berichtsmonat erwartet.\n"
+            "- Geplante Regulierungsentscheidung für den Halbleitersektor ohne konkreten Termin.\n"
+            "9.4 Technische Trigger\n"
+            "- Trigger bleibt unverändert.\n"
+        )
+        repaired = ENV["_repariere_9_3_unbelegte_ereignisplatzhalter"](text)
+        self.assertNotIn("Branchenkonferenz im Berichtsmonat erwartet", repaired)
+        self.assertIn("Regulierungsentscheidung für den Halbleitersektor", repaired)
+        self.assertIn("9.4 Technische Trigger", repaired)
+
+    def test_93_all_vague_placeholders_become_explicit_unavailability(self):
+        text = (
+            "9.2 Unternehmen\n- Keine Termine.\n"
+            "9.3 Branchenereignisse\n"
+            "- Branchenereignis anstehend.\n"
+            "9.4 Technische Trigger\n- Trigger.\n"
+        )
+        repaired = ENV["_repariere_9_3_unbelegte_ereignisplatzhalter"](text)
+        self.assertIn("Keine konkreten Branchenereignisse mit verifizierbarem Datum", repaired)
+        self.assertNotIn("Branchenereignis anstehend", repaired)
+
+    def _run_full_section8_gate(self, bad_trend_asset=None, bad_value=None):
+        # Exercise the complete source-coverage gate, not just the 200er parser.
+        original = {
+            key: ENV.get(key)
+            for key in ("_abschnitt_text", "_edelmetall_quellenblock",
+                        "_extract_metal_4w_value", "_waehle_edelmetall_4w", "_gate_quellenwert")
+        }
+        headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
+        assets = ["Gold", "Silber", "Platin", "Palladium"]
+        output = []
+        for heading in headings:
+            output.extend([
+                heading,
+                "- Quelle: Edelmetalle-Briefing",
+                "- Datenstand: 15.10.2026",
+                "- Kurs: 4000",
+                "- 4W: +2.00%",
+                "- EMA200: 3900",
+                "- WMA200: 3800",
+                "- Trendfolge=BLOCKIERT",
+                "- Trendwende=NEIN",
+                "- Short=NEIN",
+            ])
+        text = "\n".join(output)
+        def section_text(value, start, ends):
+            match = re.search(r"(?m)^" + re.escape(start) + r"\s*$", value)
+            if not match:
+                return ""
+            end = len(value)
+            for heading in ends:
+                next_match = re.search(r"(?m)^" + re.escape(heading) + r"\s*$", value[match.end():])
+                if next_match:
+                    end = min(end, match.end() + next_match.start())
+            return value[match.start():end]
+        trends = {}
+        for asset in assets:
+            trend = f"200er-Trend: Kurs 4000 | EMA200 3900 | WMA200 3800"
+            if asset == bad_trend_asset:
+                trend = bad_value
+            trends[asset] = trend
+        ENV["_abschnitt_text"] = section_text
+        ENV["_edelmetall_quellenblock"] = lambda source, asset: trends[asset]
+        ENV["_extract_metal_4w_value"] = lambda source, asset: ("+2.00", 2.0)
+        ENV["_waehle_edelmetall_4w"] = lambda value: value
+        ENV["_gate_quellenwert"] = lambda block, label, value, errors: None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                source = Path(td) / "edel.txt"
+                source.write_text(
+                    "EDELMETALLE-SCAN 2026-10-15\nLAGE JE METALL\n"
+                    "Gold: Kurs 4000 | +1.00% 5T | 4W +2.00% | 52-Wochen-Tief (3000, 33.3%)\n"
+                    "Silber: Kurs 40 | +1.00% 5T | 4W +2.00% | 52-Wochen-Tief (20, 33.3%)\n"
+                    "Platin: Kurs 1000 | +1.00% 5T | 4W +2.00% | 52-Wochen-Tief (700, 33.3%)\n"
+                    "Palladium: Kurs 1000 | +1.00% 5T | 4W +2.00% | 52-Wochen-Tief (700, 33.3%)\n"
+                    "TRENDFOLGE-DIAGNOSE JE METALL\n",
+                    encoding="utf-8",
+                )
+                ENV["_pruefe_punkt8_quellenabdeckung"](
+                    text, {"Edelmetalle_Briefing(...).txt": str(source)}
+                )
+        finally:
+            for key, value in original.items():
+                if value is not None:
+                    ENV[key] = value
+                else:
+                    ENV.pop(key, None)
+
+    def test_section8_full_gate_accepts_warning_suffix_on_required_trend_values(self):
+        self._run_full_section8_gate(
+            bad_trend_asset="Gold",
+            bad_value="200er-Trend: Kurs 4000 | EMA200 3900 | WMA200 3800 [WARNUNG: veralteter Kurs]",
+        )
+
+    def test_section8_full_gate_blocks_missing_required_trend_value(self):
+        with self.assertRaisesRegex(RuntimeError, "PUNKT8_QUELLENABDECKUNG_UNGUELTIG"):
+            self._run_full_section8_gate(
+                bad_trend_asset="Gold",
+                bad_value="200er-Trend: Kurs 4000 | EMA200 3900 | WMA200 n/a",
+            )
+
+    def test_section8_full_gate_blocks_unparseable_required_trend_value(self):
+        with self.assertRaisesRegex(RuntimeError, "PUNKT8_QUELLENABDECKUNG_UNGUELTIG"):
+            self._run_full_section8_gate(
+                bad_trend_asset="Gold",
+                bad_value="200er-Trend: Kurs 4000 | EMA200 ??? | WMA200 3800",
+            )
