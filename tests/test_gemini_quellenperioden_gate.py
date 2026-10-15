@@ -9,18 +9,39 @@ import re
 import unittest
 from pathlib import Path
 
-SOURCE = Path(__file__).with_name("gemini_auswertung_repariert_final_nachgebessert.py")
+# Im Repository liegt der Produktivcode im Projektstamm; beim isolierten
+# lokalen Testen darf alternativ die separat benannte Reparaturdatei daneben liegen.
+SOURCE = Path(__file__).resolve().parent.parent / "gemini_auswertung.py"
+if not SOURCE.exists():
+    SOURCE = Path(__file__).with_name("gemini_auswertung_strukturfix.py")
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"))
 NEEDED = {
     "_normalisiere_quellenbezeichnung", "_quellenwert_toleranz",
     "_quellenwerte_gleich", "_quellenwert_ist_mehrdeutig", "_quellenwert_float", "_normalisiere_datenstand",
     "_datenstand_ist_aktuell", "_pruefe_quellenperioden_und_positionsduplikate",
+    "_repariere_quellenperioden_und_positionsduplikate",
 }
 NODES = [node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NEEDED]
 
 
 def _portfolio_positionsduplikate(text):
     return []
+
+
+def _dedupliziere_portfolio_positionsdatensaetze(text):
+    return text, []
+
+
+def _edelmetall_lage_zeile(text, metal):
+    return None
+
+
+def _edelmetall_quellenblock(text, metal):
+    return ""
+
+
+def _extrahiere_200er_trend(text):
+    return None
 
 
 def _extrahiere_makro_referenzwerte(text):
@@ -40,6 +61,11 @@ def _edelmetall_lage_block(text):
 ENV = {
     "re": re, "datetime": datetime,
     "_portfolio_positionsduplikate": _portfolio_positionsduplikate,
+    "_dedupliziere_portfolio_positionsdatensaetze": _dedupliziere_portfolio_positionsdatensaetze,
+    "_edelmetall_lage_zeile": _edelmetall_lage_zeile,
+    "_edelmetall_quellenblock": _edelmetall_quellenblock,
+    "_extrahiere_200er_trend": _extrahiere_200er_trend,
+    "EDELMETALL_FAKTENQUELLE": "Edelmetalle-Briefing",
     "_extrahiere_makro_referenzwerte": _extrahiere_makro_referenzwerte,
     "_edelmetall_4w_value": _edelmetall_4w_value,
     "_edelmetall_lage_block": _edelmetall_lage_block,
@@ -81,6 +107,15 @@ def fixture():
         "TRENDFOLGE-DIAGNOSE JE METALL (GC=F etc. = operative Datenbasis):",
     ])
     return output, briefing, edel
+
+
+def section_block(text, start_number, end_number):
+    pattern = (
+        r"(?ims)^(?:\s*#{1,6}\s*)?" + re.escape(start_number) +
+        r"\b[^\n]*\n.*?(?=^(?:\s*#{1,6}\s*)?" + re.escape(end_number) + r"\b[^\n]*$)"
+    )
+    match = re.search(pattern, text)
+    return match.group(0) if match else None
 
 
 class SourceGateTests(unittest.TestCase):
@@ -195,6 +230,178 @@ class SourceGateTests(unittest.TestCase):
         briefing = briefing.replace("Datenstand 14.10.2026", "Datenstand 01.10.2026")
         with self.assertRaisesRegex(RuntimeError, "7.5 WTI: Quelldatenstand ist veraltet"):
             ENV["_pruefe_quellenperioden_und_positionsduplikate"](text, briefing, "", edel)
+
+
+    def test_repair_rebuilds_indices_under_markdown_headings_and_iso_dates(self):
+        _, briefing, edel = fixture()
+        briefing = briefing.replace("14.10.2026", "2026-10-14")
+        index_rows = "\n".join(
+            line for line in briefing.splitlines()
+            if any(line.startswith("- " + label + ":") for label in LABELS)
+        )
+        text = (
+            "### 7.1 Aktienmärkte / Indizes\n- alte, nicht kanonische Indexübersicht\n"
+            "### 7.2 Zinsen: Überblick\n- Zinsdaten\n"
+            "### 7.5 Rohstoffe\n- alte Ölzeile\n"
+            "### 7.6 Krypto\n- Kryptozeile\n"
+            + "\n".join([
+                "- 8.1 Gold: Quelle: Edelmetalle-Briefing | Kurs (Futures GC=F): 4171.40 USD | 4W: -5.70% | EMA200: 4321.96 USD",
+                "- 8.2 Silber: Quelle: Edelmetalle-Briefing | Kurs (Futures SI=F): 56.18 USD | 4W: -15.60% | EMA200: 64.62 USD",
+                "- 8.3 Platin: Quelle: Edelmetalle-Briefing | Kurs (Futures PL=F): 1615.60 USD | 4W: -9.80% | EMA200: 1700.00 USD",
+                "- 8.4 Palladium: Quelle: Edelmetalle-Briefing | Kurs (Futures PA=F): 1109.00 USD | 4W: -15.10% | EMA200: 1200.00 USD",
+                "10. 💼 BESTEHENDES PORTFOLIO", "10.1 Offene Positionen", "11. METHODIK / DATENQUALITÄT",
+            ])
+        )
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](text, briefing, "", edel)
+        self.assertIn("7.1 Kurzüberblick aus vollständigen Tagesrendite-/YTD-Quellpaaren neu aufgebaut", changes)
+        self.assertIn("- EuroStoxx 50: letzter abgeschlossener Handelstag", fixed)
+        self.assertIn("- WTI: Kurs 72,50 | +1,20% 5T | -2,30% 4W | Datenstand 2026-10-14", fixed)
+        self.assertIn("- BRENT: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 2026-10-14", fixed)
+        self.assertTrue(ENV["_pruefe_quellenperioden_und_positionsduplikate"](fixed, briefing, "", edel))
+
+    def test_repair_handles_nasdaq_composite_and_eurostoxx_aliases(self):
+        _, briefing, edel = fixture()
+        briefing = briefing.replace("Nasdaq Composite:", "Nasdaq:").replace("EuroStoxx 50:", "EURO STOXX-50:")
+        text = (
+            "7.1 Aktienmärkte / Indizes\n- alte Zeilen\n"
+            "7.2 Zinsen\n- Zinsen\n"
+            "7.5 Rohstoffe\n- alte Ölzeilen\n"
+            "7.6 Krypto\n- Krypto\n"
+            + "\n".join([
+                "- 8.1 Gold: Quelle: Edelmetalle-Briefing | Kurs (Futures GC=F): 4171.40 USD | 4W: -5.70% | EMA200: 4321.96 USD",
+                "- 8.2 Silber: Quelle: Edelmetalle-Briefing | Kurs (Futures SI=F): 56.18 USD | 4W: -15.60% | EMA200: 1700.00 USD",
+                "- 8.3 Platin: Quelle: Edelmetalle-Briefing | Kurs (Futures PL=F): 1615.60 USD | 4W: -9.80% | EMA200: 1700.00 USD",
+                "- 8.4 Palladium: Quelle: Edelmetalle-Briefing | Kurs (Futures PA=F): 1109.00 USD | 4W: -15.10% | EMA200: 1200.00 USD",
+                "10. 💼 BESTEHENDES PORTFOLIO", "10.1 Offene Positionen", "11. METHODIK / DATENQUALITÄT",
+            ])
+        )
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](text, briefing, "", edel)
+        self.assertIn("- Nasdaq Composite: letzter abgeschlossener Handelstag", fixed)
+        self.assertIn("- EuroStoxx 50: letzter abgeschlossener Handelstag", fixed)
+        self.assertIn("- WTI: Kurs 72,50 | +1,20% 5T | -2,30% 4W | Datenstand 14.10.2026", fixed)
+
+
+    def test_incomplete_index_source_preserves_existing_index_section(self):
+        _, briefing, _ = fixture()
+        briefing = "\n".join(line for line in briefing.splitlines() if not line.startswith("- DAX:"))
+        original_rows = "\n".join(index_line(label, vals) for label, vals in zip(LABELS, VALUES))
+        text = (
+            "7.1 Aktienmärkte / Indizes\n" + original_rows + "\n"
+            "7.2 Zinsen\n- Zinsdaten\n"
+            "7.5 Rohstoffe\n- bestehende WTI-Zeile bleibt\n- bestehende Brent-Zeile bleibt\n"
+            "7.6 Krypto\n- Krypto\n"
+        )
+        before_section = section_block(text, "7.1", "7.2")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.1", "7.2"), before_section)
+        self.assertTrue(any("7.1 Index-Reparatur übersprungen; bestehende Ausgabe unverändert gelassen" in item for item in changes))
+        self.assertIn("- DAX: letzter abgeschlossener Handelstag", fixed)
+        self.assertIn("- EuroStoxx 50: letzter abgeschlossener Handelstag", fixed)
+        self.assertNotIn("Kurzüberblick aus vollständigen", " ".join(changes))
+
+    def test_unrecognized_index_source_line_preserves_existing_section(self):
+        _, briefing, _ = fixture()
+        briefing = briefing.replace("- DAX:", "- Dax-Index:", 1)
+        original_rows = "\n".join(index_line(label, vals) for label, vals in zip(LABELS, VALUES))
+        text = (
+            "7.1 Aktienmärkte / Indizes\n" + original_rows + "\n"
+            "7.2 Zinsen\n- Zinsdaten\n7.5 Rohstoffe\n- Öl bleibt\n7.6 Krypto\n"
+        )
+        before_section = section_block(text, "7.1", "7.2")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.1", "7.2"), before_section)
+        self.assertIn("- DAX: letzter abgeschlossener Handelstag", fixed)
+        self.assertTrue(any("7.1 Index-Reparatur übersprungen" in item for item in changes))
+
+    def test_incomplete_index_source_field_preserves_existing_section(self):
+        _, briefing, _ = fixture()
+        briefing = briefing.replace("YTD +11,10%", "YTD %", 1)
+        original_rows = "\n".join(index_line(label, vals) for label, vals in zip(LABELS, VALUES))
+        text = (
+            "7.1 Aktienmärkte / Indizes\n" + original_rows + "\n"
+            "7.2 Zinsen\n- Zinsdaten\n7.5 Rohstoffe\n- Öl bleibt\n7.6 Krypto\n"
+        )
+        before_section = section_block(text, "7.1", "7.2")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.1", "7.2"), before_section)
+        self.assertIn("- DAX: letzter abgeschlossener Handelstag", fixed)
+        self.assertTrue(any("7.1 Index-Reparatur übersprungen" in item for item in changes))
+
+    def test_missing_brent_source_preserves_both_existing_oil_rows(self):
+        _, briefing, _ = fixture()
+        briefing = "\n".join(line for line in briefing.splitlines() if not line.startswith("- Brent:"))
+        text = (
+            "7.1 Aktienmärkte / Indizes\n- Indextext\n7.2 Zinsen\n- Zinsdaten\n"
+            "7.5 Rohstoffe\n- WTI: bestehende WTI-Zeile\n- Brent: bestehende Brent-Zeile\n"
+            "7.6 Krypto\n- Krypto\n"
+        )
+        before_section = section_block(text, "7.5", "7.6")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.5", "7.6"), before_section)
+        self.assertIn("- WTI: bestehende WTI-Zeile", fixed)
+        self.assertIn("- Brent: bestehende Brent-Zeile", fixed)
+        self.assertTrue(any("7.5 Öl-Reparatur übersprungen" in item for item in changes))
+
+    def test_duplicate_wti_source_preserves_existing_oil_rows(self):
+        _, briefing, _ = fixture()
+        wti = next(line for line in briefing.splitlines() if line.startswith("- WTI:"))
+        briefing = briefing + "\n" + wti
+        text = (
+            "7.1 Aktienmärkte / Indizes\n- Indextext\n7.2 Zinsen\n- Zinsdaten\n"
+            "7.5 Rohstoffe\n- WTI: bestehende WTI-Zeile\n- Brent: bestehende Brent-Zeile\n"
+            "7.6 Krypto\n- Krypto\n"
+        )
+        before_section = section_block(text, "7.5", "7.6")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.5", "7.6"), before_section)
+        self.assertIn("- WTI: bestehende WTI-Zeile", fixed)
+        self.assertIn("- Brent: bestehende Brent-Zeile", fixed)
+        self.assertTrue(any("7.5 Öl-Reparatur übersprungen" in item for item in changes))
+
+
+    def test_duplicate_index_source_preserves_existing_index_section(self):
+        _, briefing, _ = fixture()
+        sp500 = next(line for line in briefing.splitlines() if line.startswith("- S&P 500:"))
+        briefing = briefing + "\n" + sp500
+        original_rows = "\n".join(index_line(label, vals) for label, vals in zip(LABELS, VALUES))
+        text = (
+            "7.1 Aktienmärkte / Indizes\n" + original_rows + "\n"
+            "7.2 Zinsen\n- Zinsdaten\n7.5 Rohstoffe\n- Öl bleibt\n7.6 Krypto\n"
+        )
+        before_section = section_block(text, "7.1", "7.2")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.1", "7.2"), before_section)
+        self.assertIn("- S&P 500: letzter abgeschlossener Handelstag", fixed)
+        self.assertTrue(any("7.1 Index-Reparatur übersprungen" in item for item in changes))
+
+    def test_malformed_duplicate_wti_source_preserves_existing_oil_rows(self):
+        _, briefing, _ = fixture()
+        briefing = briefing + "\n- WTI: Kurs unbekannt | 5T unbekannt | 4W unbekannt"
+        text = (
+            "7.1 Aktienmärkte / Indizes\n- Indextext\n7.2 Zinsen\n- Zinsdaten\n"
+            "7.5 Rohstoffe\n- WTI: bestehende WTI-Zeile\n- Brent: bestehende Brent-Zeile\n"
+            "7.6 Krypto\n- Krypto\n"
+        )
+        before_section = section_block(text, "7.5", "7.6")
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", ""
+        )
+        self.assertEqual(section_block(fixed, "7.5", "7.6"), before_section)
+        self.assertIn("- WTI: bestehende WTI-Zeile", fixed)
+        self.assertIn("- Brent: bestehende Brent-Zeile", fixed)
+        self.assertTrue(any("7.5 Öl-Reparatur übersprungen" in item for item in changes))
 
 
 if __name__ == "__main__":
