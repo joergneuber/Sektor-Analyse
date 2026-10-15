@@ -7936,6 +7936,22 @@ def _ausgabe_heading_key(heading, required):
         if normalized in accepted:
             return key, canonical
 
+    # 6.x/9.x werden über dieselbe titelvalidierte Erkennung geprüft wie
+    # Reparatur und finales Gate. Ein bloßer Wort-Overlap darf nummerierten
+    # Fließtext nicht als Abschnittsgrenze klassifizieren.
+    heading_match = _echte_unterabschnittsueberschrift(stripped)
+    if heading_match and heading_match[0] in {
+        "6.1", "6.2", "6.3", "6.4", "6.5", "6.6",
+        "9.1", "9.2", "9.3", "9.4", "9.5",
+    }:
+        canonical = next(
+            (item for item in required
+             if re.match(r"^\s*" + re.escape(heading_match[0]) + r"\s+", item)),
+            None,
+        )
+        if canonical:
+            return heading_match[0], canonical
+
     # Die nicht nummerierte Hauptueberschrift wird nur exakt erkannt.
     if stripped == "NEUBER MACRO & MARKETS":
         return "NEUBER MACRO & MARKETS", "NEUBER MACRO & MARKETS"
@@ -8054,6 +8070,17 @@ def _bereinige_doppelte_ausgabestruktur(text, required):
                 known_fallbacks = {
                     "Keine relevanten Erkenntnisse.",
                     "Keine belastbare fachliche Aussage aus den vorliegenden Projektquellen ableitbar, ohne nicht verifizierte Daten zu ergänzen.",
+                    'Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
+                    'Keine belastbare Gegenüberstellung von Rohstofftreibern und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
+                    'Keine belastbare Gegenüberstellung von Sektor und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
+                    'Keine belastbare Gegenüberstellung von Technik und Fundamentaldaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
+                    'Keine belastbare Prüfung der Investmentthese gegen aktuelle Marktdaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
+                    'Keine belastbare Risikobewertung bestehender Ideen möglich, weil für diesen Abschnitt keine verifizierbaren, konkret zuordenbaren Angaben in den vorliegenden Projektquellen vorliegen.',
+                    'Keine belastbaren Aktivierungs- oder Invalidierungsbedingungen aus den vorliegenden Projektquellen ableitbar; es werden deshalb keine Trigger erfunden.',
+                    'Keine verifizierbaren technischen Trigger aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Kursmarken oder Signale erfunden.',
+                    'Keine verifizierten Branchenereignisse aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine oder Ereignisse erfunden.',
+                    'Keine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine, Daten oder Ereignisse erfunden.',
+                    'Keine verifizierten Unternehmensveranstaltungen oder Unternehmensmeldungen aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine erfunden.',
                 }
                 blocks.append(
                     {
@@ -13460,15 +13487,270 @@ def _repariere_2_5_alternativen(text):
     return text[:start.start()] + replacement + text[end.start():]
 
 
+
+
+def _kanonische_unterabschnittstitel():
+    """Zentrale Titelliste fuer die Erkennung echter numerierter Abschnittsueberschriften."""
+    return {
+        "1.1": "Was hat sich seit dem letzten Lauf verändert",
+        "1.2": "Sofort handelbare Chancen",
+        "1.3": "Ideen im Aufbau",
+        "1.4": "Frühindikatoren neue Themen",
+        "2.1": "Trendfolge",
+        "2.2": "Trendwende",
+        "2.3": "Short",
+        "2.4": "HebelTrader",
+        "2.5": "Sonstige durch Gemini erkannte Chancen",
+        "3.1": "Makro Branche Aktie",
+        "3.2": "Rohstoff Branche Aktie",
+        "3.3": "Politik Branche Aktie",
+        "3.4": "Technologie Branche Aktie",
+        "3.5": "Unternehmens Fundamentaldaten Aktie",
+        "6.1": "Makro gegen Technik",
+        "6.2": "Technik gegen Fundamentaldaten",
+        "6.3": "Sektor gegen Aktie",
+        "6.4": "Rohstoff gegen Aktie",
+        "6.5": "Investmentthese gegen aktuelle Marktdaten",
+        "6.6": "Risiken bestehender Ideen",
+        "7.1": "Aktienmärkte Indizes",
+        "7.2": "Zinsen",
+        "7.3": "Volatilität",
+        "7.4": "FX",
+        "7.5": "Rohstoffe",
+        "7.6": "Krypto",
+        "7.7": "Konjunktur Makro",
+        "8.1": "Gold",
+        "8.2": "Silber",
+        "8.3": "Platin",
+        "8.4": "Palladium",
+        "9.1": "Makrotermine",
+        "9.2": "Unternehmen",
+        "9.3": "Branchenereignisse",
+        "9.4": "Technische Trigger",
+        "9.5": "Mögliche Aktivierung Invalidierung",
+        "10.1": "Sofortiger Handlungsbedarf",
+        "10.2": "Stop TP Änderungen",
+        "10.3": "Positionen mit neuer Investmentthese",
+        "10.4": "Positionen deren These schwächer wird",
+        "10.5": "Geschlossene Positionen",
+        "11.1": "Datenstatus",
+        "11.2": "Makro Szenario Status",
+        "11.3": "Datenlücken",
+        "11.4": "externe Quellen",
+        "11.5": "technische fundamentale Datenqualität",
+        "11.6": "Hinweise zur Interpretation",
+        "11.7": "Abgrenzung",
+    }
+
+
+def _echte_unterabschnittsueberschrift(line):
+    """Erkennt echte Abschnittsüberschriften und weist satzförmigen Fließtext zurück.
+
+    Neben der Abschnittsnummer muss der Titelkern zur bekannten Titelliste passen.
+    Zusatzinformationen sind nur in ausdrücklich abgetrennten Formen zulässig
+    (Klammerzusatz, Gedankenstrich, Doppelpunkt, senkrechter Strich oder
+    definierte Titelergänzung). Ein bloßer Wort-Overlap genügt ausdrücklich nicht.
+    """
+    if not line:
+        return None
+    value = line.strip()
+    if value.startswith(("-", "*", "+")):
+        return None
+    value = re.sub(r"^#{1,6}\s*", "", value)
+    value = re.sub(r"^(?:\*\*|__)", "", value)
+    value = re.sub(r"(?:\*\*|__)$", "", value).strip()
+    if len(value) > 150 or re.search(r"[.!?]\s*$", value):
+        return None
+    match = re.fullmatch(r"(?P<key>\d{1,2}\.\d{1,2})\s+(?P<title>.+?)\s*", value)
+    if not match:
+        return None
+    key, title = match.group("key"), match.group("title")
+    expected = _kanonische_unterabschnittstitel().get(key)
+    if not expected:
+        return None
+
+    ignored = {
+        "und", "der", "die", "das", "gegen", "für", "fuer", "mit", "von",
+        "im", "in", "zu", "zur", "des", "den", "mögliche", "moegliche",
+        "aktuelle", "bestehender", "bestehende", "bestehenden", "bestehendes", "einer", "eines", "vs",
+        "versus", "v", "and",
+    }
+
+    def words(text):
+        result = set()
+        for word in re.findall(r"[a-zäöüß0-9]+", text.casefold()):
+            if word in ignored:
+                continue
+            # Harmloser Kurzname für "Marktdaten" in einer Titelvariante.
+            if word == "marktdaten":
+                word = "daten"
+            result.add(word)
+        return result
+
+    expected_words = words(expected)
+    if not expected_words:
+        return None
+
+    # Nur klar markierte Zusätze entfernen. Die vollständige Variante bleibt
+    # ebenfalls Kandidat, damit inhaltlich notwendige Klammerteile erhalten sind.
+    candidates = [title]
+    without_parenthetical = re.sub(r"\s*\([^()]*\)", "", title).strip()
+    if without_parenthetical != title:
+        candidates.append(without_parenthetical)
+    for separator in (" — ", " – ", " | ", ": "):
+        if separator in title:
+            candidates.append(title.split(separator, 1)[0].strip())
+    if "/" in title:
+        candidates.append(title.split("/", 1)[0].strip())
+    # Eine verbreitete, semantisch harmlose Überschriftenerweiterung.
+    if re.search(r"\s+und\s+Auslöser\s*$", title, flags=re.IGNORECASE):
+        candidates.append(re.sub(r"\s+und\s+Auslöser\s*$", "", title, flags=re.IGNORECASE).strip())
+
+    for candidate in candidates:
+        actual_words = words(candidate.rstrip(":"))
+        if actual_words == expected_words:
+            return key, title
+    return None
+
+def _ist_fallback_pflichttext(body, key):
+    """Erkennt bekannte Fallbacks trotz kleiner, inhaltlich harmloser Formulierungsvarianten."""
+    if not body:
+        return True
+    compact = " ".join(body.casefold().split())
+    if len(compact) > 700 or "\n" in body.strip():
+        return False
+    # Fallback-Texte sind kurze, deklarative Aussagen ohne konkrete Zahlen/Marken.
+    if re.search(r"\b\d+(?:[.,]\d+)?\s*%|\b(?:usd|eur|ticker|kurs|stop|tp\d)\b", compact):
+        return False
+    families = {
+        "6.1": (r"keine belastbare gegenueberstellung|keine belastbare gegenüberstellung", ("makro", "technik")),
+        "6.2": (r"keine belastbare gegenueberstellung|keine belastbare gegenüberstellung", ("technik", "fundament")),
+        "6.3": (r"keine belastbare gegenueberstellung|keine belastbare gegenüberstellung", ("sektor", "aktie")),
+        "6.4": (r"keine belastbare gegenueberstellung|keine belastbare gegenüberstellung", ("rohstoff", "aktie")),
+        "6.5": (r"keine belastbare pruefung|keine belastbare prüfung", ("investmentthese", "marktdaten")),
+        "6.6": (r"keine belastbare risikobewertung|keine belastbare bewertung der risiken", ("risik", "ideen")),
+        "9.1": (r"keine verifizier(?:baren|ten) makrotermine|keine bestaetigten makrotermine|keine bestätigten makrotermine", ("makro", "termin")),
+        "9.2": (r"keine verifizier(?:baren|ten) unternehmens|keine bestaetigten unternehmens|keine bestätigten unternehmens", ("unternehmens",)),
+        "9.3": (r"keine verifizier(?:baren|ten) branchenereignisse|keine bestaetigten branchenereignisse|keine bestätigten branchenereignisse", ("branchen",)),
+        "9.4": (r"keine verifizier(?:baren|ten) technischen trigger|keine belastbaren technischen trigger", ("techn", "trigger")),
+        "9.5": (r"keine belastbaren aktivierungs|keine verifizierbaren aktivierungs|keine belastbaren aktivierungs- oder invalidierungsbedingungen", ("aktivier", "invalidier")),
+    }
+    family = families.get(key)
+    if not family:
+        return False
+    start_pattern, required_terms = family
+    starts_as_fallback = bool(re.search(start_pattern, compact))
+    if not starts_as_fallback and key.startswith("6."):
+        # Harmlose Umschreibungen wie "Eine belastbare Gegenüberstellung ...
+        # ist nicht möglich" gelten ebenfalls als Fallback, solange sie keine
+        # konkreten Messwerte/Instrumente enthalten (oben bereits ausgeschlossen).
+        noun_by_key = {
+            "6.1": r"gegen(?:ueberstellung|überstellung).*?(?:nicht moeglich|nicht möglich|nicht belastbar)",
+            "6.2": r"gegen(?:ueberstellung|überstellung).*?(?:nicht moeglich|nicht möglich|nicht belastbar)",
+            "6.3": r"gegen(?:ueberstellung|überstellung).*?(?:nicht moeglich|nicht möglich|nicht belastbar)",
+            "6.4": r"gegen(?:ueberstellung|überstellung).*?(?:nicht moeglich|nicht möglich|nicht belastbar)",
+            "6.5": r"(?:pruefung|prüfung).*?(?:nicht moeglich|nicht möglich|nicht belastbar)",
+            "6.6": r"(?:risikobewertung|bewertung der risiken).*?(?:nicht moeglich|nicht möglich|nicht belastbar)",
+        }
+        starts_as_fallback = bool(
+            re.search(r"\b(?:eine|keine)\s+belastbare\b", compact)
+            and re.search(noun_by_key.get(key, r"$^"), compact)
+        )
+    if not starts_as_fallback:
+        return False
+    return all(term in compact for term in required_terms)
+
+
+def _repariere_doppelte_pflichtunterabschnitte(text):
+    """Entfernt nur erkannte Fallback-Duplikate; erhält echte Überschriften und Inhalte.
+
+    Die Funktion ist idempotent. Grenzen werden ausschließlich anhand echter,
+    titelvalidierter Abschnittsüberschriften gebildet. Fließtext mit einer
+    nummerähnlichen Präfixzeile kann weder als Abschnittsgrenze noch als Duplikat
+    gewertet werden. Vorhandene fachliche Überschriften werden nie umgeschrieben.
+    """
+    if not text:
+        return text
+
+    canonical_keys = {"6.1", "6.2", "6.3", "6.4", "6.5", "6.6",
+                      "9.1", "9.2", "9.3", "9.4", "9.5"}
+    lines = text.splitlines(keepends=True)
+    occurrences = []
+    offset = 0
+    for line in lines:
+        heading = _echte_unterabschnittsueberschrift(line.rstrip("\r\n"))
+        if heading and heading[0] in canonical_keys:
+            occurrences.append({
+                "key": heading[0], "start": offset,
+                "line_end": offset + len(line), "line": line,
+            })
+        offset += len(line)
+
+    if not occurrences:
+        return text
+
+    # Abschnittsgrenzen sind nur andere erkannte echte Überschriften, nicht
+    # nummerierte Fließtextzeilen.
+    all_boundaries = []
+    offset = 0
+    for line in lines:
+        if _echte_unterabschnittsueberschrift(line.rstrip("\r\n")):
+            all_boundaries.append(offset)
+        offset += len(line)
+
+    for item in occurrences:
+        item["end"] = next(
+            (pos for pos in all_boundaries if pos > item["start"]), len(text)
+        )
+        item["body"] = text[item["line_end"]:item["end"]].strip()
+        item["fallback"] = _ist_fallback_pflichttext(item["body"], item["key"])
+
+    by_key = {}
+    for item in occurrences:
+        by_key.setdefault(item["key"], []).append(item)
+
+    remove_ranges = []
+    for key, items in by_key.items():
+        if len(items) < 2:
+            continue
+        real_items = [item for item in items if not item["fallback"]]
+        if len(real_items) > 1:
+            distinct_bodies = {
+                re.sub(r"\s+", " ", item["body"]).strip() for item in real_items
+            }
+            if len(distinct_bodies) > 1:
+                raise RuntimeError(
+                    "DOPPELTE_PFLICHTUNTERABSCHNITTE_ECHTE_INHALTE: "
+                    + key + " – mehrere substanzielle Abschnitte; keine automatische Löschung."
+                )
+            keep = real_items[0]
+        elif real_items:
+            keep = real_items[0]
+        else:
+            keep = items[0]
+        for item in items:
+            if item is not keep:
+                remove_ranges.append((item["start"], item["end"]))
+
+    if not remove_ranges:
+        return text
+    # Entfernen in umgekehrter Offset-Reihenfolge hält die Originalpositionen stabil.
+    result = text
+    for start, end in sorted(remove_ranges, reverse=True):
+        result = result[:start] + result[end:]
+    return result
+
 def _pruefe_finale_struktur_und_konsistenz(text):
     """Harte letzte Schranke gegen die im Produktionslauf beobachteten Regressionen."""
     errors = []
-    # Keine doppelt vergebenen numerischen Unterabschnitte (z.B. zwei 3.3).
+    # Doppelte Nummern nur anhand titelvalidierter Abschnittsüberschriften zählen.
+    # Eine nummerierte Fließtextzeile darf kein Struktur-Gate auslösen.
     counts = {}
     for line in (text or "").splitlines():
-        m = re.match(r"^\s*(\d+\.\d+)\s+\S", line)
-        if m:
-            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+        heading = _echte_unterabschnittsueberschrift(line)
+        if heading:
+            key = heading[0]
+            counts[key] = counts.get(key, 0) + 1
     duplicates = sorted(k for k, v in counts.items() if v > 1)
     if duplicates:
         errors.append("Doppelte Unterabschnittsnummer(n): " + ", ".join(duplicates))
@@ -15300,6 +15582,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         _pruefe_dokumentierte_reparaturen(
             final_text, (eingabedateien or {}).get("Letzte_Auswertung(...).txt")
         )
+        final_text = _repariere_doppelte_pflichtunterabschnitte(final_text)
         _pruefe_finale_struktur_und_konsistenz(final_text)
 
         # Die Themen-Kausalitaetspruefung ist ein hartes Final-Gate. Eine
