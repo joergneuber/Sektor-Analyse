@@ -11410,17 +11410,29 @@ def _repariere_quellenperioden_und_positionsduplikate(
 
     # --- Markt-Briefing: belastbare regionale Tagesrendite und YTD-Felder ---
     regional = {}
+    regional_counts = {}
+    required_regional_keys = {
+        "sp500", "nasdaqcomposite", "dax", "eurostoxx50",
+        "nikkei225", "shanghaicomposite", "hangseng",
+    }
     for line in (briefing_text or "").splitlines():
+        label_match = re.match(r"(?i)^\s*[•-]\s*([^:|]+):", line)
+        if label_match:
+            candidate_key = _normalisiere_quellenbezeichnung(label_match.group(1))
+            if candidate_key in required_regional_keys:
+                regional_counts[candidate_key] = regional_counts.get(candidate_key, 0) + 1
         m = re.match(
-            r"(?i)^\s*[•-]\s*(S&P\s*500|Nasdaq|DAX|EuroStoxx\s*50|Nikkei\s*225|"
+            r"(?i)^\s*[•-]\s*(S&P\s*500|Nasdaq(?:\s+Composite)?|DAX|"
+            r"Euro[\s-]*Stoxx[\s-]*50|Nikkei[\s-]*225|"
             r"Shanghai\s+Composite|Hang\s+Seng):\s*"
             r"letzter\s+abgeschlossener\s+Handelstag\s+([+-]?\d+(?:[.,]\d+)?)%\s*"
-            r"\(([^)]+)\)\s*\|\s*YTD\s+([+-]?\d+(?:[.,]\d+)?)%\s*\|\s*Datenstand\s+([0-9.]+)",
+            r"\(([^)]+)\)\s*\|\s*YTD\s+([+-]?\d+(?:[.,]\d+)?)%\s*\|\s*Datenstand\s+"
+            r"(\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
             line,
         )
         if m:
-            label = re.sub(r"\s+", " ", m.group(1)).casefold()
-            regional[label] = {
+            key = _normalisiere_quellenbezeichnung(m.group(1))
+            regional[key] = {
                 "daily": m.group(2), "close": m.group(3),
                 "ytd": m.group(4), "date": m.group(5),
             }
@@ -11443,50 +11455,61 @@ def _repariere_quellenperioden_und_positionsduplikate(
 
     # WTI/Brent: Kurs, 5T und 4W immer aus derselben Markt-Briefing-Zeile.
     energy = {}
+    energy_source_errors = []
+    energy_pattern = (
+        r"(?im)^\s*[-•]\s*" + r"ASSET" +
+        r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
+        r"([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
+        r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s*[:=]?\s*"
+        r"(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$"
+    )
     for asset in ("WTI", "Brent"):
-        m = re.search(
-            r"(?im)^\s*-\s*" + re.escape(asset) +
-            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+([0-9.]+)",
+        candidate_lines = [
+            line for line in (briefing_text or "").splitlines()
+            if re.match(r"(?i)^\s*[-•]\s*" + re.escape(asset) + r"\s*:", line)
+        ]
+        matches = list(re.finditer(
+            energy_pattern.replace("ASSET", re.escape(asset)),
             briefing_text or "",
-        )
-        if m:
-            energy[asset.lower()] = {
-                "price": m.group(1), "5T": m.group(2),
-                "4W": m.group(3), "date": m.group(4),
-            }
-    if all(k in energy for k in ("wti", "brent")):
-        w, b = energy["wti"], energy["brent"]
-        corrected = (
-            f"- WTI-Öl notiert bei {fmt_num(w['price'])} USD "
-            f"({fmt_pct(w['5T'])} in 5T, {fmt_pct(w['4W'])} in 4W) und "
-            f"Brent bei {fmt_num(b['price'])} USD "
-            f"({fmt_pct(b['5T'])} in 5T, {fmt_pct(b['4W'])} in 4W); "
-            f"Quelle: Markt-Briefing, Datenstand {w['date']}. "
-            "Das erhöht den energetischen Kostendruck im Industriesektor."
-        )
-        text, n = re.subn(
-            r"(?m)^\s*-\s*WTI-Öl\b[^\n]*$", corrected, text, count=1
-        )
-        if n:
-            changes.append("1.1 WTI/Brent-Kurs und 5T/4W-Zeiträume gemeinsam aus Markt-Briefing gesetzt")
-        # Derselbe aktuelle Ölstand wird auch in 3.2 verwendet; kein älterer
-        # Makro-Kurs ohne Zeitbasis in der Kausalkette stehen lassen.
-        corrected_32 = (
-            f"- Der Anstieg von WTI-Öl ({fmt_num(w['price'])} USD; 4W {fmt_pct(w['4W'])}) "
-            f"und Brent ({fmt_num(b['price'])} USD; 4W {fmt_pct(b['4W'])}) stützt direkt "
-            "die Margen integrierter Energiekonzerne wie ExxonMobil Corporation (XOM) "
-            "und ConocoPhillips (COP), während steigende Energiekosten für den "
-            f"verarbeitenden Sektor als Kostenfaktor wirken. Quelle: Markt-Briefing, Datenstand {w['date']}."
-        )
-        text, n32 = re.subn(
-            r"(?m)^\s*[-•]\s*Der Anstieg von WTI-Öl\b[^\n]*$",
-            corrected_32, text, count=1
-        )
-        if n32:
-            changes.append("3.2 WTI/Brent-Kurse und 4W-Zeiträume auf gemeinsamen Markt-Briefing-Stand gesetzt")
+        ))
+        if len(candidate_lines) != 1 or len(matches) != 1:
+            energy_source_errors.append(
+                f"{asset}: erwartet genau eine vollständige Quellzeile, "
+                f"gefunden {len(candidate_lines)} Kandidatenzeilen und {len(matches)} parsebare Zeilen"
+            )
+            continue
+        m = matches[0]
+        price, period_5t, period_4w, raw_date = m.groups()
+        numeric_values = (price, period_5t, period_4w)
+        if any(
+            _quellenwert_float(value) is None
+            or _quellenwert_ist_mehrdeutig(value)
+            for value in numeric_values
+        ):
+            energy_source_errors.append(f"{asset}: Kurs/5T/4W nicht eindeutig numerisch parsebar")
+            continue
+        normalized_date = _normalisiere_datenstand(raw_date)
+        if not normalized_date or not _datenstand_ist_aktuell(raw_date):
+            energy_source_errors.append(f"{asset}: Datenstand ungültig, veraltet oder zukünftig")
+            continue
+        energy[asset.lower()] = {
+            "price": price, "5T": period_5t,
+            "4W": period_4w, "date": raw_date,
+            "normalized_date": normalized_date,
+        }
 
+    # WTI und Brent dürfen nur gemeinsam ersetzt werden. Eine fehlende,
+    # doppelte oder unvollständige Pflichtquelle lässt den bestehenden Text
+    # unverändert und wird ausdrücklich protokolliert.
+    if set(energy) == {"wti", "brent"}:
+        if energy["wti"]["normalized_date"] != energy["brent"]["normalized_date"]:
+            energy_source_errors.append("WTI und Brent haben unterschiedliche Datenstände")
+            energy = {}
+    if energy_source_errors:
+        changes.append(
+            "7.5 Öl-Reparatur übersprungen; bestehende Ausgabe unverändert gelassen: "
+            + "; ".join(energy_source_errors)
+        )
     # S&P-500-Abstand zum Datenhoch aus Kurs und Hoch berechnen statt einen
     # falsch gerundeten Prozentwert aus Gemini zu übernehmen.
     sp_line = re.search(r"(?m)^\s*Der S&P 500 schloss bei\s+([\d.,]+)\s+Punkten,\s*rund\s+([\d.,]+)\s*%\s+unter dem höchsten Wert.*?von\s+([\d.,]+)\s+Punkten", text)
@@ -11586,23 +11609,31 @@ def _repariere_quellenperioden_und_positionsduplikate(
     # 7.1: Den kompakten Überblick vollständig aus expliziten Tages-/YTD-Paaren
     # neu aufbauen. Russell hat in dieser Quelle keinen Tages-/YTD-Wert und wird
     # deshalb nicht mit 5T/1M als Ersatz befüllt.
-    overview_start = re.search(r"(?m)^-\s*7\.1\s+Aktienmärkte\s*/\s*Indizes\b[^\n]*$", text)
-    overview_end = re.search(r"(?m)^-\s*7\.2\s+Zinsen\s*:", text[overview_start.end():]) if overview_start else None
+    # Überschriften können nach Gemini/Markdown-Normalisierung als Listenpunkt,
+    # Markdown-Heading oder nackte nummerierte Zeile vorliegen.
+    heading_prefix = r"(?im)^\s*(?:(?:[-•]\s*)|(?:#{1,6}\s*))?"
+    overview_start = re.search(
+        heading_prefix + r"7\.1\s+Aktienmärkte\s*/\s*Indizes\b[^\n]*$", text
+    )
+    overview_end = re.search(
+        heading_prefix + r"7\.2\s+Zinsen\b[^\n]*$",
+        text[overview_start.end():],
+    ) if overview_start else None
     if overview_start and overview_end:
         block_end = overview_start.end() + overview_end.start()
         block = text[overview_start.end():block_end]
         labels = [
-            ("S&P 500", "s&p 500", "S&P 500"),
-            ("Nasdaq", "nasdaq", "Nasdaq Composite"),
-            ("DAX", "dax", "DAX"),
-            ("EuroStoxx 50", "eurostoxx 50", "EuroStoxx 50"),
-            ("Nikkei 225", "nikkei 225", "Nikkei 225"),
-            ("Shanghai Composite", "shanghai composite", "Shanghai Composite"),
-            ("Hang Seng", "hang seng", "Hang Seng"),
+            ("sp500", "S&P 500"),
+            ("nasdaqcomposite", "Nasdaq Composite"),
+            ("dax", "DAX"),
+            ("eurostoxx50", "EuroStoxx 50"),
+            ("nikkei225", "Nikkei 225"),
+            ("shanghaicomposite", "Shanghai Composite"),
+            ("hangseng", "Hang Seng"),
         ]
         rows = []
-        for source_label, key, display in labels:
-            item = regional.get(key) or regional.get(key.replace(" ", ""))
+        for key, display in labels:
+            item = regional.get(key)
             if not item:
                 continue
             rows.append(
@@ -11610,7 +11641,7 @@ def _repariere_quellenperioden_und_positionsduplikate(
                 f"({fmt_num(item['close'])}) | YTD {fmt_pct(item['ytd'])} | Datenstand {item['date']}"
             )
         russell = re.search(
-            r"(?im)^\s*Russell 2000:\s*([-+]?\d[\d.,]*)\s*\|.*?\bDatenstand:\s*([0-9.]+)",
+            r"(?im)^\s*[-•]?\s*Russell 2000:\s*([-+]?\d[\d.,]*)\s*\|.*?\bDatenstand\s*[:=]\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})",
             briefing_text or "",
         )
         if russell:
@@ -11618,24 +11649,65 @@ def _repariere_quellenperioden_und_positionsduplikate(
                 f"- Russell 2000: Schlussstand {fmt_num(russell.group(1))} | "
                 f"Tagesrendite: NICHT VERFÜGBAR | YTD: NICHT VERFÜGBAR | Datenstand {russell.group(2)}"
             )
-        # Remove all prior index-summary lines, including false period assignments.
-        kept = [
-            ln for ln in block.splitlines()
-            if not re.match(
-                r"(?i)^\s*[-•]\s*(?:S&P\s*500|Nasdaq(?:\s+Composite)?|Russell\s+2000|"
-                r"DAX|EuroStoxx\s*50|Nikkei\s*225|Shanghai\s+Composite|Hang\s+Seng)\s*:",
-                ln,
+        required_index_keys = [key for key, _display in labels]
+        invalid_index_sources = []
+        for key, display in labels:
+            item = regional.get(key)
+            if not item:
+                invalid_index_sources.append(f"{display}: Quellzeile fehlt oder wurde nicht erkannt")
+                continue
+            if regional_counts.get(key, 0) != 1:
+                invalid_index_sources.append(
+                    f"{display}: erwartet genau eine Quellzeile, gefunden {regional_counts.get(key, 0)}"
+                )
+            values = (item.get("daily"), item.get("close"), item.get("ytd"))
+            if any(
+                not value
+                or _quellenwert_float(value) is None
+                or _quellenwert_ist_mehrdeutig(value)
+                for value in values
+            ):
+                invalid_index_sources.append(f"{display}: Tagesrendite/Schlussstand/YTD nicht eindeutig parsebar")
+            normalized_date = _normalisiere_datenstand(item.get("date", ""))
+            if not normalized_date or not _datenstand_ist_aktuell(item.get("date", "")):
+                invalid_index_sources.append(f"{display}: Datenstand ungültig, veraltet oder zukünftig")
+        # Der bestehende Abschnitt darf erst ersetzt werden, wenn ALLE sieben
+        # Pflichtindizes vollständig und eindeutig aus der Quelle extrahiert
+        # wurden. Bei Teiltreffern bleibt der Originalblock unverändert.
+        index_sources_complete = (
+            not invalid_index_sources
+            and all(key in regional for key in required_index_keys)
+            and len(rows) >= len(required_index_keys)
+        )
+        if index_sources_complete:
+            # Remove all prior index-summary lines, including false period assignments.
+            kept = [
+                ln for ln in block.splitlines()
+                if not re.match(
+                    r"(?i)^\s*[-•]\s*(?:S&P\s*500|Nasdaq(?:\s+Composite)?|Russell\s+2000|"
+                    r"DAX|Euro[\s-]*Stoxx[\s-]*50|Nikkei[\s-]*225|Shanghai\s+Composite|Hang\s+Seng)\s*:",
+                    ln,
+                )
+            ]
+            rebuilt = "\n" + "\n".join(rows) + "\n" + "\n".join(kept).strip("\n") + "\n"
+            text = text[:overview_start.end()] + rebuilt + text[block_end:]
+            changes.append("7.1 Kurzüberblick aus vollständigen Tagesrendite-/YTD-Quellpaaren neu aufgebaut")
+        else:
+            changes.append(
+                "7.1 Index-Reparatur übersprungen; bestehende Ausgabe unverändert gelassen: "
+                + "; ".join(invalid_index_sources or ["nicht alle sieben Pflichtindizes vollständig extrahiert"])
             )
-        ]
-        rebuilt = "\n" + "\n".join(rows) + "\n" + "\n".join(kept).strip("\n") + "\n"
-        text = text[:overview_start.end()] + rebuilt + text[block_end:]
-        changes.append("7.1 Kurzüberblick aus echten Tagesrendite-/YTD-Quellpaaren neu aufgebaut")
 
     # 7.5: Markt-Briefing-Werte (13.10) und strukturierte Makro-Fakten (12.10)
     # werden als getrennte Zeitstände ausgewiesen. Keine stille Vermischung.
     if all(k in energy for k in ("wti", "brent")):
-        start = re.search(r"(?m)^-\s*7\.5\s+Rohstoffe\s*:\s*$", text)
-        end = re.search(r"(?m)^-\s*7\.6\s+Krypto\s*:\s*$", text[start.end():]) if start else None
+        start = re.search(
+            heading_prefix + r"7\.5\s+Rohstoffe\b[^\n]*$", text
+        )
+        end = re.search(
+            heading_prefix + r"7\.6\s+Krypto\b[^\n]*$",
+            text[start.end():],
+        ) if start else None
         if start and end:
             en = start.end() + end.start()
             block = text[start.end():en]
@@ -11643,10 +11715,12 @@ def _repariere_quellenperioden_und_positionsduplikate(
             for asset in ("wti", "brent"):
                 item = energy[asset]
                 label = asset.upper()
+                # Genau dasselbe kanonische Format wie das harte Abschluss-Gate:
+                # Wert vor Periodenlabel, Datenstand ohne abweichende Metadaten-Syntax.
                 replacement_lines.append(
-                    f"- {label}: Kurs {fmt_num(item['price'])} USD | "
-                    f"5T {fmt_pct(item['5T'])} | 4W {fmt_pct(item['4W'])} | "
-                    f"Quelle=Markt-Briefing | Datenstand={item['date']}"
+                    f"- {label}: Kurs {fmt_num(item['price'])} | "
+                    f"{fmt_pct(item['5T'])} 5T | {fmt_pct(item['4W'])} 4W | "
+                    f"Datenstand {item['date']}"
                 )
             out = []
             inserted = False
