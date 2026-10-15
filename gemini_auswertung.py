@@ -9008,45 +9008,8 @@ def _pruefe_inhaltliche_mindesttiefe(text):
         return active, len(active), True
 
     def _has_any_date_or_time(text_block):
-        """Erkennt konkrete Zeitbezüge robust über die gesamte Inhaltseinheit.
-
-        Berücksichtigt neben den kanonischen Datumsformaten des Projekts auch
-        die in Makro-/Briefing-Quellen tatsächlich vorkommenden natürlichen
-        deutschen Zeitangaben, damit diese nicht fälschlich als fehlender
-        Terminbezug bewertet werden.
-        """
-        patterns = (
-            # Konkretes Datum: 7. Oktober 2026 / 07. Oktober 2026
-            r"\b\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
-            # Numerische Datumsformate: 07.10.2026 / 07-10-2026 / 07/10/2026
-            r"\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b",
-            # ISO-Datum: 2026-10-07
-            r"\b20\d{2}-\d{1,2}-\d{1,2}\b",
-            # Monat + Jahr: Oktober 2026
-            r"\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
-            # Datums-/Zeiträume aus den Projektquellen: 6. bis 8. Oktober
-            r"\b\d{1,2}\.?\s*(?:bis|[-–—])\s*\d{1,2}\.?\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
-            # Tagesangabe ohne Jahr: am 7. Oktober / 7. Oktober
-            r"\b(?:am\s+)?\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
-            # Explizite Monatszeiträume
-            r"\b(?:im|in|anfang|mitte|ende)\s+(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
-            # Relative Zeitangaben, wie sie in den Projektquellen vorkommen
-            r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\s+(?:woche|monat|tag(?:en)?|jahr(?:es)?|wochen|monaten|monate)\b",
-            r"\b(?:nächste|naechste|kommende)\s+woche\b",
-            r"\b(?:in|innerhalb(?:\s+von)?)\s+\d{1,3}\s+(?:tag(?:en)?|woche(?:n)?|monat(?:en)?|jahr(?:en)?)\b",
-            r"\b(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b",
-            # Einzelne relative Zeitwörter bleiben gültig, wie bisher.
-            r"\b(?:heute|morgen|übermorgen)\b",
-            # Rückwärtskompatibilität: auch die bisherigen isolierten relativen
-            # Zeitwörter bleiben gültige Treffer.
-            r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\b",
-            # Quartal/Kalenderwoche, mit optionalem Jahr.
-            r"\bq[1-4](?:\s+20\d{2})?\b",
-            r"\bkw\s*\d{1,2}(?:\s*[/.-]?\s*20\d{2})?\b",
-            # Rückwärtskompatibilität zum bisherigen Q/KW-Muster.
-            r"\b(?:q[1-4]|kw\s*\d{1,2})\b",
-        )
-        return any(re.search(pattern, text_block, re.I | re.U) for pattern in patterns)
+        # Rückwärtskompatibler Wrapper auf die zentrale Datumsfunktion.
+        return _hat_expliziten_zeitbezug(text_block)
 
     errors = []
     warnings = []
@@ -9138,18 +9101,13 @@ def _pruefe_inhaltliche_mindesttiefe(text):
                 "9.3 Branchenereignisse": r"konferenz(?:termin)?|gesetz(?:esänderung|esbeschluss)?|wahl(?:termin)?|regulierungs(?:entscheidung|beschluss)|aufsicht(?:sentscheidung|smaßnahme)|branchenereignis|industrieereignis|sektorereignis|event(?:termin)?|ankündigung|ankuendigung|beschluss|abstimmung|verordnung",
             }
             event_pattern = factual_event_patterns[h]
-            event_claims = []
-            for unit in units:
-                if not re.search(event_pattern, unit, re.I | re.U):
-                    continue
-                # Negierte Aussagen wie "keine Konferenz" oder "kein Ereignis"
-                # sind keine behaupteten Termine und benötigen daher keinen
-                # künstlichen Datumsbezug.
-                if re.search(r"\b(?:kein|keine|keinen|keiner|nicht|derzeit\s+keine|aktuell\s+keine)\b", unit, re.I | re.U):
-                    continue
-                event_claims.append(unit)
-            if event_claims and not _has_any_date_or_time(compact_text):
-                warnings.append(f"{h}: tatsächliche Ereignis-/Terminangabe ohne verifizierbaren Zeit-/Datumsbezug.")
+            undated_claims = _undatierte_ereignisbehauptungen(units, event_pattern)
+            if undated_claims:
+                preview = " / ".join(re.sub(r"\\s+", " ", claim).strip()[:100] for claim in undated_claims[:3])
+                warnings.append(
+                    f"{h}: {len(undated_claims)} tatsächliche Ereignis-/Terminangabe(n) "
+                    f"ohne eigenen verifizierbaren Zeit-/Datumsbezug: {preview}"
+                )
 
         # Keine pauschale Sammelaussage-/Textdichte-Heuristik:
         # Gemini soll die aus den Python-Daten ableitbare fachliche Interpretation
@@ -11044,14 +11002,47 @@ def _sichere_lithium_te_in_7_5(text, lithium_te):
 
 
 
-def _ist_portfolio_positionsdatensatz(line):
-    """True only for a full position record, not a monitoring/summary mention."""
-    return bool(
-        re.match(r"^\s*[-•]\s+", line or "")
-        and re.search(r"(?i)\bEinstieg\s*:", line or "")
-        and re.search(r"(?i)\bAktuell\s*:", line or "")
-        and re.search(r"(?i)\bPerformance\s*:", line or "")
+def _portfolio_tickers_aus_positionsdatensatz(line):
+    """Extrahiert Ticker aus Positionszeilen mit Klammer- oder Feldnotation."""
+    value = line or ""
+    candidates = re.findall(r"\(([A-Z0-9][A-Z0-9.^=-]{0,12})\)", value)
+    candidates.extend(re.findall(
+        r"(?i)\b(?:ticker|symbol|wertpapier)\s*:\s*([A-Z0-9][A-Z0-9.^=-]{0,12})\b",
+        value,
+    ))
+    # Positionszeilen koennen mit einer Aktion/Richtung vor dem Ticker beginnen,
+    # z.B. "- LONG AAPL | ..." oder "- SHORT TSLA | ...". Das Aktionswort ist
+    # kein Wertpapierkennzeichen; der eigentliche Ticker folgt direkt danach.
+    action_words = {
+        "LONG", "SHORT", "BUY", "SELL", "HOLD", "FLAT", "ADD", "REDUCE",
+        "TRIM", "CLOSE", "OPEN", "KAUFEN", "VERKAUFEN", "HALTEN",
+        "AUFSTOCKEN", "REDUZIEREN",
+    }
+    leading = re.match(
+        r"^\s*[-•*]\s+(?:(?:LONG|SHORT|BUY|SELL|HOLD|FLAT|ADD|REDUCE|TRIM|CLOSE|OPEN|KAUFEN|VERKAUFEN|HALTEN|AUFSTOCKEN|REDUZIEREN)\s+)?"
+        r"([A-Z0-9][A-Z0-9.^=-]{0,12})(?=\s*(?:\||[-–—:]|\s))",
+        value,
+        re.I,
     )
+    if leading:
+        candidates.append(leading.group(1))
+    excluded = {
+        "USD", "EUR", "US", "EMA", "SMA", "YTD", "TP1", "TP2", "CRV", "MSCI",
+        "ENTRY", "CURRENT", "PERFORMANCE", "EINSTIEG", "AKTUELL", "TICKER", "SYMBOL",
+        *action_words,
+    }
+    return list(dict.fromkeys(t.upper() for t in candidates if t.upper() not in excluded))
+
+
+def _ist_portfolio_positionsdatensatz(line):
+    """Erkennt vollständige Positionsdatensätze mit gängigen Feldvarianten."""
+    value = line or ""
+    if not re.match(r"^\s*[-•*]\s+", value):
+        return False
+    entry = r"(?i)\b(?:Einstieg|Einstand|Entry|Entry\s+Price|Kaufkurs)\s*:"
+    current = r"(?i)\b(?:Aktuell|Aktueller\s+Kurs|Kurs\s+aktuell|Current|Current\s+Price|Marktwert)\s*:"
+    performance = r"(?i)\b(?:Performance|Rendite|Ergebnis|Gewinn\s*/\s*Verlust|P\s*/\s*L|P&L|Unrealisierter\s+Gewinn)\s*:"
+    return bool(re.search(entry, value) and re.search(current, value) and re.search(performance, value))
 
 
 def _portfolio_positionsduplikate(text):
@@ -11064,13 +11055,12 @@ def _portfolio_positionsduplikate(text):
     current_section = None
     duplicates = []
     for line in (text or "")[p10.start():p11.start()].splitlines():
-        heading = re.match(r"10\.(1|2|3|4|5)\s+", line)
+        heading = re.match(r"^\s*(?:#{1,6}\s*)?10\.(1|2|3|4|5)\b", line)
         if heading:
             current_section = heading.group(1)
         if current_section not in {"1", "3", "4"} or not _ist_portfolio_positionsdatensatz(line):
             continue
-        tickers = re.findall(r"\(([A-Z0-9][A-Z0-9.^=-]{0,12})\)", line)
-        tickers = [t for t in tickers if t not in {"USD", "EUR", "US", "EMA", "SMA", "YTD", "TP1", "TP2", "CRV", "MSCI"}]
+        tickers = _portfolio_tickers_aus_positionsdatensatz(line)
         section_seen = seen_by_section.setdefault(current_section, set())
         for ticker in tickers:
             if ticker in section_seen:
@@ -11092,12 +11082,11 @@ def _dedupliziere_portfolio_positionsdatensaetze(text):
     out = []
     removed = []
     for line in block.splitlines():
-        heading = re.match(r"(?m)^\s*10\.(1|2|3|4|5)\s+", line)
+        heading = re.match(r"(?m)^\s*(?:#{1,6}\s*)?10\.(1|2|3|4|5)\b", line)
         if heading:
             current_section = heading.group(1)
         if current_section in {"1", "3", "4"} and _ist_portfolio_positionsdatensatz(line):
-            tickers = re.findall(r"\(([A-Z0-9][A-Z0-9.^=-]{0,12})\)", line)
-            tickers = [t for t in tickers if t not in {"USD", "EUR", "US", "EMA", "SMA", "YTD", "TP1", "TP2", "CRV", "MSCI"}]
+            tickers = _portfolio_tickers_aus_positionsdatensatz(line)
             section_seen = seen_by_section.setdefault(current_section, set())
             already = [ticker for ticker in tickers if ticker in section_seen]
             unseen = [ticker for ticker in tickers if ticker not in section_seen]
@@ -11216,7 +11205,8 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
         r"(?i)^\s*[•-]\s*(?P<label>[^:|]+):\s*"
         r"letzter\s+abgeschlossener\s+Handelstag\s+(?P<daily>[+-]?\d[\d.,]*)%\s*"
         r"\((?P<close>[^)]+)\)\s*\|\s*YTD\s+(?P<ytd>[+-]?\d[\d.,]*)%\s*"
-        r"\|\s*Datenstand\s+(?P<date>\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$"
+        r"\|\s*Datenstand\s+(?P<date>\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})"
+        r"(?:\s+\[WARNUNG:[^\r\n]*\])?\s*$"
     )
     for line in (briefing_text or "").splitlines():
         match = source_pattern.match(line)
@@ -11454,7 +11444,8 @@ def _repariere_quellenperioden_und_positionsduplikate(
             r"Shanghai\s+Composite|Hang\s+Seng):\s*"
             r"letzter\s+abgeschlossener\s+Handelstag\s+([+-]?\d+(?:[.,]\d+)?)%\s*"
             r"\(([^)]+)\)\s*\|\s*YTD\s+([+-]?\d+(?:[.,]\d+)?)%\s*\|\s*Datenstand\s+"
-            r"(\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
+            r"(\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})"
+            r"(?:\s+\[WARNUNG:[^\r\n]*\])?\s*$",
             line,
         )
         if m:
@@ -13056,6 +13047,73 @@ def _repariere_1_4_kapitalflussbehauptung(text):
     )
 
 
+def _hat_expliziten_zeitbezug(text):
+    """Gemeinsame Erkennung expliziter Datums-/Zeitangaben für Abschnitt 9."""
+    value = text or ""
+    patterns = (
+        r"\b\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
+        r"\b\d{1,2}[./-]\d{1,2}[./-]20\d{2}\b",
+        r"\b20\d{2}-\d{1,2}-\d{1,2}\b",
+        r"\b(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+20\d{2}\b",
+        r"\b\d{1,2}\.?\s*(?:bis|[-–—])\s*\d{1,2}\.?\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
+        r"\b(?:am\s+)?\d{1,2}\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
+        r"\b(?:im|in|anfang|mitte|ende)\s+(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b",
+        r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\s+(?:woche|monat|tag(?:en)?|jahr(?:es)?|wochen|monaten|monate)\b",
+        r"\b(?:nächste|naechste|kommende)\s+woche\b",
+        r"\b(?:in|innerhalb(?:\s+von)?)\s+\d{1,3}\s+(?:tag(?:en)?|woche(?:n)?|monat(?:en)?|jahr(?:en)?)\b",
+        r"\b(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b",
+        r"\b(?:heute|morgen|übermorgen|naechste[nr]?|kommende[nr]?|diese[rn]?)\b",
+        r"\bq[1-4](?:\s+20\d{2})?\b",
+        r"\bkw\s*\d{1,2}(?:\s*[/.-]?\s*20\d{2})?\b",
+    )
+    return any(re.search(pattern, value, re.I | re.U) for pattern in patterns)
+
+
+def _ereignisbehauptungen_aufteilen(unit, event_pattern):
+    """Trennt mehrere Ereignisbehauptungen in derselben Satz-Unit konservativ."""
+    value = (unit or "").strip()
+    if not value:
+        return []
+    # Nur an Konnektoren trennen, wenn beide Seiten tatsaechlich ein Ereignis
+    # enthalten. So wird ein gemeinsamer Datumsbezug nicht unnoetig zerschnitten.
+    parts = [value]
+    separators = re.compile(r"\s*(?:;|\s+und\s+|\s+sowie\s+|\s+außerdem\s+|\s+zudem\s+)\s*", re.I)
+    changed = True
+    while changed:
+        changed = False
+        next_parts = []
+        for part in parts:
+            matches = list(separators.finditer(part))
+            split_done = False
+            for match in matches:
+                left, right = part[:match.start()].strip(" ,"), part[match.end():].strip(" ,")
+                if (left and right
+                        and re.search(event_pattern, left, re.I | re.U)
+                        and re.search(event_pattern, right, re.I | re.U)):
+                    next_parts.extend([left, right])
+                    changed = True
+                    split_done = True
+                    break
+            if not split_done:
+                next_parts.append(part)
+        parts = next_parts
+    return parts
+
+
+def _undatierte_ereignisbehauptungen(units, event_pattern):
+    """Liefert jede konkrete, nicht negierte Ereignisbehauptung ohne eigenen Zeitbezug."""
+    undated = []
+    for unit in units or []:
+        for claim in _ereignisbehauptungen_aufteilen(unit, event_pattern):
+            if not re.search(event_pattern, claim, re.I | re.U):
+                continue
+            if re.search(r"\b(?:kein|keine|keinen|keiner|nicht|derzeit\s+keine|aktuell\s+keine)\b", claim, re.I | re.U):
+                continue
+            if not _hat_expliziten_zeitbezug(claim):
+                undated.append(claim)
+    return undated
+
+
 def _repariere_9_2_unbelegte_katalysatoren(text):
     """Entfernt undatierte Earnings-Platzhalter ohne konkrete Firma/Terminquelle."""
     if not text:
@@ -13072,12 +13130,38 @@ def _repariere_9_2_unbelegte_katalysatoren(text):
     kept = []
     changed = False
     for line in block.splitlines():
-        if vague.match(line) and not re.search(r"\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}\.\s*[A-Za-zÄÖÜäöüß]+\s+20\d{2})\b", line):
+        if vague.match(line) and not _hat_expliziten_zeitbezug(line):
             changed = True
             continue
         kept.append(line)
-    if changed and not any(re.search(r"(?i)\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}\.\s*[A-Za-zÄÖÜäöüß]+\s+20\d{2})\b", line) for line in kept):
+    if changed and not any(_hat_expliziten_zeitbezug(line) for line in kept):
         kept.append("- Keine konkreten Unternehmenstermine mit verifizierbarem Datum in den bereitgestellten Laufquellen belegt.")
+    return text[:start.end()] + "\n" + "\n".join(kept).strip("\n") + "\n" + text[end.start():]
+
+
+def _repariere_9_3_unbelegte_ereignisplatzhalter(text):
+    """Entfernt nur generische, unbelegte 9.3-Platzhalter; konkrete Ereignisse bleiben erhalten."""
+    if not text:
+        return text
+    start = re.search(r"(?m)^\s*9\.3\s+Branchenereignisse\s*$", text)
+    end = re.search(r"(?m)^\s*9\.4\s+Technische Trigger\s*$", text)
+    if not (start and end and start.start() < end.start()):
+        return text
+    block = text[start.end():end.start()]
+    event_terms = r"konferenz|branchenereignis|industrieereignis|sektorereignis|regulierungs(?:entscheidung|beschluss)|aufsicht(?:sentscheidung|smaßnahme)|gesetz(?:esänderung|esbeschluss)?|wahl(?:termin)?|abstimmung|verordnung|ankündigung|ankuendigung|event"
+    vague_terms = r"im\s+berichtsmonat|anstehend|kommend|demnächst|demnaechst|irgendwann|bald|in\s+naher\s+zukunft"
+    kept = []
+    changed = False
+    for line in block.splitlines():
+        if (re.search(event_terms, line, re.I | re.U)
+                and re.search(vague_terms, line, re.I | re.U)
+                and not _hat_expliziten_zeitbezug(line)
+                and not re.search(r"\b(?:keine|kein|nicht)\b", line, re.I | re.U)):
+            changed = True
+            continue
+        kept.append(line)
+    if changed and not any(re.search(event_terms, line, re.I | re.U) for line in kept):
+        kept.append("- Keine konkreten Branchenereignisse mit verifizierbarem Datum in den bereitgestellten Laufquellen belegt.")
     return text[:start.end()] + "\n" + "\n".join(kept).strip("\n") + "\n" + text[end.start():]
 
 
@@ -14093,6 +14177,7 @@ def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     text = _repariere_8_doppelte_durchschnitte(text, briefing, edelmetall)
     text = _repariere_doppelte_sektion_6(text)
     text = _repariere_9_2_unbelegte_katalysatoren(text)
+    text = _repariere_9_3_unbelegte_ereignisplatzhalter(text)
     text = _repariere_10_3_unbelegte_systemperformance(text)
     text = _repariere_11_7_doppelten_reichweitenhinweis(text)
     text = _repariere_1_3_aus_idee_im_aufbau(text)
