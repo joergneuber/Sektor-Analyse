@@ -11083,98 +11083,245 @@ def _dedupliziere_portfolio_positionsdatensaetze(text):
     return text[:p10.start()] + new_block + "\n\n" + text[p11.start():], removed
 
 
+def _normalisiere_quellenbezeichnung(value):
+    """Normalisiert Marktbezeichnungen unabhängig von Leerzeichen/Interpunktion."""
+    key = re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+    aliases = {
+        "sp500": "sp500",
+        "sandp500": "sp500",
+        "nasdaq": "nasdaqcomposite",
+        "nasdaqcomposite": "nasdaqcomposite",
+        "eurostoxx": "eurostoxx50",
+        "eurostoxx50": "eurostoxx50",
+        "eurostoxx50index": "eurostoxx50",
+        "nikkei": "nikkei225",
+        "nikkei225": "nikkei225",
+        "shanghaicomposite": "shanghaicomposite",
+        "hangseng": "hangseng",
+    }
+    return aliases.get(key, key)
+
+
+def _quellenwert_toleranz(raw):
+    """Halbe Einheit der letzten ausgewiesenen Quell-Dezimalstelle.
+
+    Die Toleranz hängt damit von der Präzision des konkreten Quellwerts ab,
+    statt für Prozentwerte, Indexstände und Kurse eine gemeinsame Konstante
+    anzuwenden. Die Toleranz dient nur der Rundungsdarstellung, nicht einer
+    fachlichen Abweichung.
+    """
+    value = str(raw or "").strip().strip(".,;:()[]{}")
+    if not value:
+        return 0.0
+    comma, dot = value.rfind(","), value.rfind(".")
+    sep = None
+    if comma >= 0 and dot >= 0:
+        sep = "," if comma > dot else "."
+    elif comma >= 0 or dot >= 0:
+        candidate = "," if comma >= 0 else "."
+        tail = value.rsplit(candidate, 1)[-1]
+        # Drei Nachkommastellen sind bei Punkt/Komma typischerweise ein
+        # Tausendertrenner; eine explizite Dezimalpräzision mit drei Stellen
+        # wird weiterhin unterstützt, wenn die andere Trennart vorkommt.
+        if 1 <= len(tail) <= 2:
+            sep = candidate
+        elif len(tail) == 3 and len(value.split(candidate)[0].lstrip("+-")) <= 3:
+            sep = candidate
+    if sep is None:
+        decimals = 0
+    else:
+        decimals = len(value.rsplit(sep, 1)[-1])
+    return 0.5 * (10 ** (-decimals)) + 1e-12
+
+
+def _quellenwert_ist_mehrdeutig(raw):
+    """Erkennt Einzeltrenner mit genau drei Folgeziffern ohne Locale-Kontext.
+
+    Beispiele wie "1.234" können Dezimalzahl oder Tausenderformat bedeuten.
+    Statt eine fachlich falsche Interpretation zu erraten, erzwingt das Gate
+    in diesem Fall eine explizite, eindeutige Quellformatierung.
+    """
+    value = str(raw or "").strip().strip(".,;:()[]{}")
+    if "," in value and "." in value:
+        return False
+    separator = "," if "," in value else "." if "." in value else None
+    if separator is None or value.count(separator) != 1:
+        return False
+    left, right = value.rsplit(separator, 1)
+    return bool(re.fullmatch(r"[+-]?\d{1,3}", left) and re.fullmatch(r"\d{3}", right))
+
+
+def _quellenwerte_gleich(source_raw, output_raw):
+    """Vergleicht Werte numerisch; mehrdeutige Locale-Formate werden abgelehnt."""
+    if _quellenwert_ist_mehrdeutig(source_raw) or _quellenwert_ist_mehrdeutig(output_raw):
+        return False
+    source_value = _quellenwert_float(source_raw)
+    output_value = _quellenwert_float(output_raw)
+    if source_value is None or output_value is None:
+        return False
+    return abs(source_value - output_value) <= _quellenwert_toleranz(source_raw)
+
+
 def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro_text="", edel_text=""):
-    """Hartes Abschluss-Gate für Periodenzuordnung, Zeitbasis und doppelte offene Positionseinträge."""
+    """Hartes Abschluss-Gate für Pflichtquellen, Perioden, Zeitbasis und Positionsduplikate."""
     errors = []
-    if not text:
+    if not isinstance(text, str) or not text.strip():
         raise RuntimeError("QUELLEN_PERIODEN_POSITIONEN_GATE: leere Auswertung")
 
-    # Die sieben explizit ausgewiesenen Regional-Performance-Zeilen müssen
-    # Tagesrendite, Schlussstand und YTD aus derselben Briefing-Zeile enthalten.
-    regional = {}
+    # Alle sieben Indizes sind Pflichtdaten. Quelle und Ausgabe müssen jeweils
+    # genau einen parsebaren Datensatz mit Tagesrendite, Schlussstand, YTD und
+    # Datenstand enthalten. Unbekannte/fehlende Quellen werden nie übersprungen.
+    required_indices = (
+        ("sp500", "S&P 500", r"S&P\s*500"),
+        ("nasdaqcomposite", "Nasdaq Composite", r"Nasdaq(?:\s+Composite)?"),
+        ("dax", "DAX", r"DAX"),
+        ("eurostoxx50", "EuroStoxx 50", r"Euro\s*Stoxx\s*50"),
+        ("nikkei225", "Nikkei 225", r"Nikkei\s*225"),
+        ("shanghaicomposite", "Shanghai Composite", r"Shanghai\s+Composite"),
+        ("hangseng", "Hang Seng", r"Hang\s*Seng"),
+    )
+    source_rows = {}
+    # Bezeichnung zuerst vollständig erfassen und danach normalisieren. Dadurch
+    # werden Varianten wie "EURO STOXX-50" nicht vor der Normalisierung verworfen.
+    required_keys = {entry[0] for entry in required_indices}
+    source_rows = {}
+    source_pattern = re.compile(
+        r"(?i)^\s*[•-]\s*(?P<label>[^:|]+):\s*"
+        r"letzter\s+abgeschlossener\s+Handelstag\s+(?P<daily>[+-]?\d[\d.,]*)%\s*"
+        r"\((?P<close>[^)]+)\)\s*\|\s*YTD\s+(?P<ytd>[+-]?\d[\d.,]*)%\s*"
+        r"\|\s*Datenstand\s+(?P<date>\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$"
+    )
     for line in (briefing_text or "").splitlines():
-        m = re.match(
-            r"(?i)^\s*[•-]\s*(S&P\s*500|Nasdaq|DAX|EuroStoxx\s*50|Nikkei\s*225|"
-            r"Shanghai\s+Composite|Hang\s+Seng):\s*"
-            r"letzter\s+abgeschlossener\s+Handelstag\s+([+-]?\d+(?:[.,]\d+)?)%\s*"
-            r"\(([^)]+)\)\s*\|\s*YTD\s+([+-]?\d+(?:[.,]\d+)?)%\s*\|\s*Datenstand\s+([0-9.]+)",
-            line,
-        )
-        if m:
-            regional[re.sub(r"\s+", " ", m.group(1)).casefold()] = m.groups()
-    for key, label in (
-        ("s&p 500", "S&P 500"), ("nasdaq", "Nasdaq Composite"), ("dax", "DAX"),
-        ("eurostoxx50", "EuroStoxx 50"), ("nikkei 225", "Nikkei 225"),
-        ("shanghai composite", "Shanghai Composite"), ("hang seng", "Hang Seng"),
-    ):
-        src = regional.get(key) or regional.get(key.replace(" ", ""))
-        if not src:
+        match = source_pattern.match(line)
+        if not match:
             continue
-        daily, close, ytd, date = src[1], src[2], src[3], src[4]
-        expected = (
-            f"- {label}: letzter abgeschlossener Handelstag {daily.replace('.', ',')}% "
-            f"({close.replace(',', 'X').replace('.', ',').replace('X', '.')}) | "
-            f"YTD {ytd.replace('.', ',')}% | Datenstand {date}"
-        )
-        if expected not in text:
-            errors.append(f"7.1 {label}: Tagesrendite/Schlussstand/YTD nicht quellenkonsistent")
+        key = _normalisiere_quellenbezeichnung(match.group("label"))
+        if key not in required_keys:
+            continue
+        if key in source_rows:
+            errors.append(f"7.1 {match.group('label')}: Pflichtquelle mehrfach vorhanden")
+        source_rows[key] = match.groupdict()
 
-    # Der aktuelle Öl-Kurzüberblick muss genau die 5T-/4W-Paare des Marktbriefings
-    # verwenden. Makro-Fakten dürfen dagegen nur 5T/1M heißen.
+    output_rows = {}
+    output_pattern = re.compile(
+        r"(?i)^\s*[-•]\s*(?P<label>[^:|]+):\s*"
+        r"letzter\s+abgeschlossener\s+Handelstag\s+(?P<daily>[+-]?\d[\d.,]*)%\s*"
+        r"\((?P<close>[^)]+)\)\s*\|\s*YTD\s+(?P<ytd>[+-]?\d[\d.,]*)%\s*"
+        r"\|\s*Datenstand\s+(?P<date>\d{1,2}[-./]\d{1,2}[-./]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$"
+    )
+    for line in text.splitlines():
+        match = output_pattern.match(line)
+        if not match:
+            continue
+        key = _normalisiere_quellenbezeichnung(match.group("label"))
+        if key not in required_keys:
+            continue
+        if key in output_rows:
+            errors.append(f"7.1 {match.group('label')}: Ausgabezeile mehrfach vorhanden")
+        output_rows[key] = match.groupdict()
+
+    for key, label, _ in required_indices:
+        src = source_rows.get(key)
+        out = output_rows.get(key)
+        if not src:
+            errors.append(f"7.1 {label}: Pflichtquellwert fehlt oder ist nicht vollständig parsebar")
+            continue
+        if not out:
+            errors.append(f"7.1 {label}: Pflicht-Ausgabezeile fehlt oder ist unvollständig")
+            continue
+        for field, field_label in (("daily", "Tagesrendite"), ("close", "Schlussstand"), ("ytd", "YTD")):
+            if not _quellenwerte_gleich(src[field], out[field]):
+                errors.append(f"7.1 {label}: {field_label} weicht vom Quellwert ab")
+        if _normalisiere_datenstand(src["date"]) is None:
+            errors.append(f"7.1 {label}: Quell-Datenstand ist ungültig")
+        elif not _datenstand_ist_aktuell(src["date"]):
+            errors.append(f"7.1 {label}: Quelldatenstand ist veraltet oder liegt in der Zukunft")
+        if _normalisiere_datenstand(out["date"]) is None:
+            errors.append(f"7.1 {label}: Ausgabe-Datenstand ist ungültig")
+        elif _normalisiere_datenstand(src["date"]) != _normalisiere_datenstand(out["date"]):
+            errors.append(f"7.1 {label}: Datenstand fehlt, ist veraltet oder weicht von der Quelle ab")
+
+    # WTI/Brent: Kurs (Preiseinheit), 5T/4W (Prozent) und Datenstand sind Pflicht.
     for asset in ("WTI", "Brent"):
-        m = re.search(
-            r"(?im)^\s*-\s*" + re.escape(asset) +
-            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+([0-9.]+)",
+        source_matches = list(re.finditer(
+            r"(?im)^\s*[-•]\s*" + re.escape(asset) +
+            r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
+            r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
             briefing_text or "",
-        )
-        if m:
-            expected_values = [fmt.replace(".", ",") for fmt in m.groups()[:3]]
-            summary_line = next(
-                (ln for ln in text.splitlines()
-                 if re.match(r"(?i)^\s*-\s*" + re.escape(asset) + r":\s*Kurs\b", ln)),
-                "",
-            )
-            if not summary_line or any(v not in summary_line for v in expected_values):
-                errors.append(f"7.5 {asset}: Markt-Briefing-Kurs/5T/4W stimmt nicht mit der Ausgabe überein")
+        ))
+        if len(source_matches) != 1:
+            errors.append(f"7.5 {asset}: Pflichtquelle fehlt, ist unvollständig oder mehrfach vorhanden")
+        else:
+            source_match = source_matches[0]
+            source_values = source_match.groups()
+            summary_matches = list(re.finditer(
+                r"(?im)^\s*[-•]\s*" + re.escape(asset) +
+                r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
+                r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
+                text,
+            ))
+            if len(summary_matches) != 1:
+                errors.append(f"7.5 {asset}: Ausgabe fehlt, ist unvollständig oder mehrfach vorhanden")
+            else:
+                output_values = summary_matches[0].groups()
+                for i, field in enumerate(("Kurs", "5T", "4W")):
+                    if not _quellenwerte_gleich(source_values[i], output_values[i]):
+                        errors.append(f"7.5 {asset}: {field} stimmt nicht mit der Quelle überein")
+                if _normalisiere_datenstand(source_values[3]) is None:
+                    errors.append(f"7.5 {asset}: Quell-Datenstand ist ungültig")
+                elif not _datenstand_ist_aktuell(source_values[3]):
+                    errors.append(f"7.5 {asset}: Quelldatenstand ist veraltet oder liegt in der Zukunft")
+                if (_normalisiere_datenstand(source_values[3]) is not None
+                        and _normalisiere_datenstand(source_values[3]) != _normalisiere_datenstand(output_values[3])):
+                    errors.append(f"7.5 {asset}: Datenstand fehlt, ist ungültig oder veraltet")
+
         macro_ref = _extrahiere_makro_referenzwerte(makro_text or "").get(asset.casefold())
         if macro_ref:
-            fact = next(
-                (ln for ln in text.splitlines()
-                 if re.match(r"(?i)^\s*-\s*\[AUTORITATIVE QUELLE\]\s*" + re.escape(asset) + r":", ln)),
-                "",
-            )
+            fact = next((ln for ln in text.splitlines() if re.match(
+                r"(?i)^\s*-\s*\[AUTORITATIVE QUELLE\]\s*" + re.escape(asset) + r":", ln)), "")
             source_date = macro_ref.get("datenstand", "")
-            source_date_de = (
-                datetime.datetime.strptime(source_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", source_date or "")
-                else source_date
-            )
-            if "Quelle=Makro_Briefing" not in fact or (source_date_de and f"Datenstand={source_date_de}" not in fact):
+            source_date_de = source_date
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", source_date or ""):
+                try:
+                    source_date_de = datetime.datetime.strptime(source_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                except ValueError:
+                    errors.append(f"7.5 {asset}: ungültiger Makro-Datenstand {source_date!r}")
+                    source_date_de = "__INVALID_DATE__"
+            if not fact or "Quelle=Makro_Briefing" not in fact or (source_date_de and f"Datenstand={source_date_de}" not in fact):
                 errors.append(f"7.5 {asset}: Makro-Fakt muss Quelle und aktuellen Datenstand ausweisen")
-            for key, value in macro_ref.get("perioden", {}).items():
-                expected = f"{key}={value:+.2f}".replace(".", ",") + "%"
+            for period, value in macro_ref.get("perioden", {}).items():
+                expected = f"{period}={value:+.2f}".replace(".", ",") + "%"
                 if expected not in fact:
-                    errors.append(f"7.5 {asset}: Makro-Periode {key} fehlt oder ist falsch zugeordnet")
+                    errors.append(f"7.5 {asset}: Makro-Periode {period} fehlt oder ist falsch zugeordnet")
 
-    # Abschnitt 8.1–8.4 verwendet die spezialisierte Edelmetallquelle als Primärquelle.
+    # Edelmetalle: Quelle liefert in LAGE JE METALL zwingend Kurs und 4W.
+    # Der Block hat im produktiven Briefing keinen eigenen Datenstand; deshalb
+    # wird hier kein erfundener Zeitstempel verlangt. Die expliziten 4W-Perioden
+    # werden jedoch geprüft und die Ausgabekurswerte müssen quellenidentisch sein.
+    metal_source_block = _edelmetall_lage_block(edel_text or "")
     for idx, metal in enumerate(("Gold", "Silber", "Platin", "Palladium"), start=1):
+        source_row = next((ln.strip() for ln in metal_source_block.splitlines() if re.match(
+            r"(?i)^\s*" + re.escape(metal) + r"\s*:\s*Kurs\b", ln)), "")
+        source_course = re.search(r"(?i)^\s*" + re.escape(metal) + r"\s*:\s*Kurs\s+([-+]?\d[\d.,]*)", source_row) if source_row else None
         source_value = _edelmetall_4w_value(edel_text or "", metal)
-        if source_value is None:
-            errors.append(f"8.{idx} {metal}: 4W-Wert fehlt im maßgeblichen Edelmetalle-Briefing")
+        if not source_row or not source_course:
+            errors.append(f"8.{idx} {metal}: Kurs-Pflichtwert fehlt oder ist nicht parsebar")
             continue
-        expected = f"{source_value[1]:+.2f}".replace(".", ",") + "%"
-        summary = next(
-            (ln for ln in text.splitlines()
-             if re.match(r"(?i)^\s*-\s*8\." + str(idx) + r"\s+" + re.escape(metal) + r":", ln)),
-            "",
-        )
-        if not summary or f"4W {expected}" not in summary:
+        if source_value is None or len(source_value) < 2 or source_value[1] is None:
+            errors.append(f"8.{idx} {metal}: 4W-Pflichtwert fehlt oder ist nicht parsebar")
+            continue
+        summaries = [ln for ln in text.splitlines() if re.match(
+            r"(?i)^\s*[-•]\s*8\." + str(idx) + r"\s+" + re.escape(metal) + r":", ln)]
+        if len(summaries) != 1:
+            errors.append(f"8.{idx} {metal}: Ausgabezeile fehlt oder ist mehrfach vorhanden")
+            continue
+        out_course = re.search(r"(?i)\bKurs\s*\(Futures\s+[^)]+\)\s*:\s*([-+]?\d[\d.,]*)\s+USD\b", summaries[0])
+        out_4w = re.search(r"(?i)\b4W\s*:\s*([+-]?[\d.,]+)\s*%", summaries[0])
+        if not out_course or not _quellenwerte_gleich(source_course.group(1), out_course.group(1)):
+            errors.append(f"8.{idx} {metal}: Kurs stimmt nicht mit dem Edelmetalle-Briefing überein")
+        if not out_4w or not _quellenwerte_gleich(source_value[0], out_4w.group(1)):
             errors.append(f"8.{idx} {metal}: 4W-Wert stimmt nicht mit dem Edelmetalle-Briefing überein")
 
-    # Nur echte Positionsdatensätze prüfen; Monitoring-Hinweise und legitime
-    # Wiederholungen in unterschiedlichen Unterabschnitten sind zulässig.
     pdups = _portfolio_positionsduplikate(text)
     if pdups is None:
         errors.append("Portfolio: Abschnittsgrenze 10/11 fehlt oder ist fehlerhaft")
@@ -11186,6 +11333,36 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
         raise RuntimeError("QUELLEN_PERIODEN_POSITIONEN_GATE: " + " | ".join(errors))
     print("QUELLEN-PERIODEN-POSITIONS-GATE: PASS")
     return True
+
+
+def _normalisiere_datenstand(value):
+    """Validiert und normalisiert DD.MM.YYYY, DD-MM-YYYY und YYYY-MM-DD."""
+    raw = str(value or "").strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return datetime.datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        for fmt in ("%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%y", "%d-%m-%y", "%d/%m/%y"):
+            try:
+                return datetime.datetime.strptime(raw, fmt).date().isoformat()
+            except ValueError:
+                continue
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _datenstand_ist_aktuell(value, max_alter_tage=5, heute=None):
+    """Validiert das Alter eines Marktdatenstands (inkl. Wochenend-/Feiertagspuffer)."""
+    normalized = _normalisiere_datenstand(value)
+    if normalized is None:
+        return False
+    try:
+        datum = datetime.date.fromisoformat(normalized)
+        referenz = heute or datetime.date.today()
+    except (TypeError, ValueError):
+        return False
+    alter = (referenz - datum).days
+    return 0 <= alter <= max_alter_tage
 
 def _repariere_quellenperioden_und_positionsduplikate(
     text, briefing_text="", makro_text="", edel_text=""
