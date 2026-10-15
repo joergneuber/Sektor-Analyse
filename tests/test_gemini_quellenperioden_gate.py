@@ -20,6 +20,10 @@ NEEDED = {
     "_quellenwerte_gleich", "_quellenwert_ist_mehrdeutig", "_quellenwert_float", "_normalisiere_datenstand",
     "_datenstand_ist_aktuell", "_pruefe_quellenperioden_und_positionsduplikate",
     "_repariere_quellenperioden_und_positionsduplikate",
+    "_repariere_doppelte_pflichtunterabschnitte", "_kanonische_unterabschnittstitel",
+    "_echte_unterabschnittsueberschrift", "_ist_fallback_pflichttext",
+    "_ausgabe_heading_key", "_bereinige_doppelte_ausgabestruktur",
+    "_repariere_doppelte_3_3", "_pruefe_finale_struktur_und_konsistenz",
 }
 NODES = [node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NEEDED]
 
@@ -58,6 +62,9 @@ def _edelmetall_lage_block(text):
     match = re.search(r"(?ms)^LAGE JE METALL\b.*?^(?=TRENDFOLGE-DIAGNOSE JE METALL\b)", text or "")
     return match.group(0) if match else ""
 
+def _abschnitt_text(text, start, ends):
+    return ""
+
 ENV = {
     "re": re, "datetime": datetime,
     "_portfolio_positionsduplikate": _portfolio_positionsduplikate,
@@ -69,6 +76,7 @@ ENV = {
     "_extrahiere_makro_referenzwerte": _extrahiere_makro_referenzwerte,
     "_edelmetall_4w_value": _edelmetall_4w_value,
     "_edelmetall_lage_block": _edelmetall_lage_block,
+    "_abschnitt_text": _abschnitt_text,
 }
 exec(compile(ast.Module(body=NODES, type_ignores=[]), str(SOURCE), "exec"), ENV)
 
@@ -402,6 +410,318 @@ class SourceGateTests(unittest.TestCase):
         self.assertIn("- WTI: bestehende WTI-Zeile", fixed)
         self.assertIn("- Brent: bestehende Brent-Zeile", fixed)
         self.assertTrue(any("7.5 Öl-Reparatur übersprungen" in item for item in changes))
+
+
+class FinalStructureDuplicateTests(unittest.TestCase):
+    def test_real_section_is_preserved_and_fallback_duplicate_removed(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6. ⚠️ WIDERSPRÜCHE & RISIKEN\n"
+            "6.1 Makro vs. Technik\n"
+            "Originalanalyse: Makrotrend und technische Lage widersprechen sich konkret.\n"
+            "Prüfpunkt: Bestätigung durch den nächsten Datenstand.\n"
+            "6.2 Technik gegen Fundamentaldaten\n"
+            "Vorhandener Abschnitt.\n"
+            "6.1 Makro gegen Technik\n"
+            "Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, "
+            "weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren "
+            "Angaben in den vorliegenden Projektquellen vorliegen.\n"
+            "6.2 Technik gegen Fundamentaldaten\n"
+            "Vorhandener Abschnitt.\n"
+        )
+        result = repair(text)
+        self.assertIn("Originalanalyse: Makrotrend", result)
+        self.assertEqual(len(re.findall(r"(?m)^\s*6\.1\s+", result)), 1)
+        self.assertIn("6.1 Makro vs. Technik", result)
+        self.assertNotIn("Keine belastbare Gegenüberstellung", result)
+        self.assertEqual(repair(result), result)
+
+    def test_duplicate_fallbacks_collapse_to_one(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        fallback = "Keine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine, Daten oder Ereignisse erfunden."
+        text = (
+            "9.1 Makrotermine\n" + fallback + "\n"
+            "9.1 Makrotermine (Kalender)\n" + fallback + "\n"
+            "9.2 Unternehmen\nKeine verifizierten Unternehmensveranstaltungen verfügbar.\n"
+        )
+        result = repair(text)
+        self.assertEqual(len(re.findall(r"(?m)^\s*9\.1\s+", result)), 1)
+        self.assertIn("9.1 Makrotermine", result)
+        self.assertEqual(repair(result), result)
+
+    def test_two_different_real_sections_fail_closed(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6.1 Makro gegen Technik\n"
+            "Erste substanzielle Analyse mit eigenen Prüfpunkten.\n"
+            "6.2 Technik gegen Fundamentaldaten\n"
+            "Zweite substanzielle Analyse mit anderen Prüfpunkten.\n"
+            "6.1 Makro vs Technik\n"
+            "Eine andere substanzielle Analyse, die nicht überschrieben werden darf.\n"
+            "6.3 Sektor gegen Aktie\n"
+            "Sektorprüfung.\n"
+        )
+        with self.assertRaisesRegex(RuntimeError, "DOPPELTE_PFLICHTUNTERABSCHNITTE_ECHTE_INHALTE: 6.1"):
+            repair(text)
+
+    def test_duplicate_cleanup_keeps_all_distinct_subsections(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6.1 Makro gegen Technik\nAnalyse A.\n"
+            "6.2 Technik gegen Fundamentaldaten\nAnalyse B.\n"
+            "6.3 Sektor gegen Aktie\nAnalyse C.\n"
+            "9.1 Makrotermine\nKeine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar.\n"
+            "9.2 Unternehmen\nKeine verifizierten Unternehmensveranstaltungen oder Unternehmensmeldungen aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine erfunden.\n"
+        )
+        result = repair(text)
+        for key in ("6.1", "6.2", "6.3", "9.1", "9.2"):
+            self.assertEqual(len(re.findall(r"(?m)^\s*" + re.escape(key) + r"\s+", result)), 1)
+        self.assertEqual(repair(result), result)
+
+
+    def test_heading_variants_are_recognized_before_fallback_insertion(self):
+        heading_key = ENV["_ausgabe_heading_key"]
+        required = [
+            "6.1 Makro gegen Technik",
+            "6.2 Technik gegen Fundamentaldaten",
+            "6.3 Sektor gegen Aktie",
+            "6.4 Rohstoff gegen Aktie",
+            "6.5 Investmentthese gegen aktuelle Marktdaten",
+            "6.6 Risiken bestehender Ideen",
+            "9.1 Makrotermine",
+            "9.2 Unternehmen",
+            "9.3 Branchenereignisse",
+            "9.4 Technische Trigger",
+            "9.5 Mögliche Aktivierung / Invalidierung",
+        ]
+        variants = [
+            ("6.1 Makro vs. Technik — zusätzlicher Kontext", "6.1"),
+            ("6.2 Technik vs Fundamentaldaten", "6.2"),
+            ("6.3 Sektor vs. Aktie", "6.3"),
+            ("6.4 Rohstoff gegen Aktie", "6.4"),
+            ("6.5 Investmentthese gegen aktuelle Daten", "6.5"),
+            ("6.6 Risiken der bestehenden Ideen", "6.6"),
+            ("9.1 Makrotermine (Fed/EZB)", "9.1"),
+            ("9.2 Unternehmen / Earnings", "9.2"),
+            ("9.3 Branchenereignisse (Konferenzen)", "9.3"),
+            ("9.4 Technische Trigger und Auslöser", "9.4"),
+            ("9.5 Aktivierung / Invalidierung", "9.5"),
+        ]
+        for line, expected_key in variants:
+            with self.subTest(line=line):
+                match = heading_key(line, required)
+                self.assertIsNotNone(match)
+                self.assertEqual(match[0], expected_key)
+
+    def test_all_eleven_logged_duplicate_numbers_are_repaired_before_final_gate(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        final_gate = ENV["_pruefe_finale_struktur_und_konsistenz"]
+        canonical = {
+            "6.1": ("6.1 Makro gegen Technik", "Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen."),
+            "6.2": ("6.2 Technik gegen Fundamentaldaten", "Keine belastbare Gegenüberstellung von Technik und Fundamentaldaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen."),
+            "6.3": ("6.3 Sektor gegen Aktie", "Keine belastbare Gegenüberstellung von Sektor und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen."),
+            "6.4": ("6.4 Rohstoff gegen Aktie", "Keine belastbare Gegenüberstellung von Rohstofftreibern und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen."),
+            "6.5": ("6.5 Investmentthese gegen aktuelle Marktdaten", "Keine belastbare Prüfung der Investmentthese gegen aktuelle Marktdaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen."),
+            "6.6": ("6.6 Risiken bestehender Ideen", "Keine belastbare Risikobewertung bestehender Ideen möglich, weil für diesen Abschnitt keine verifizierbaren, konkret zuordenbaren Angaben in den vorliegenden Projektquellen vorliegen."),
+             "9.1": ("9.1 Makrotermine", "Keine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine, Daten oder Ereignisse erfunden."),
+            "9.2": ("9.2 Unternehmen", "Keine verifizierten Unternehmensveranstaltungen oder Unternehmensmeldungen aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine erfunden."),
+            "9.3": ("9.3 Branchenereignisse", "Keine verifizierten Branchenereignisse aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine oder Ereignisse erfunden."),
+            "9.4": ("9.4 Technische Trigger", "Keine verifizierbaren technischen Trigger aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Kursmarken oder Signale erfunden."),
+            "9.5": ("9.5 Mögliche Aktivierung / Invalidierung", "Keine belastbaren Aktivierungs- oder Invalidierungsbedingungen aus den vorliegenden Projektquellen ableitbar; es werden deshalb keine Trigger erfunden."),
+        }
+        chunks = []
+        for key, (heading, _) in canonical.items():
+            chunks.append(f"{heading}\nEchte Analyse für {key}: nachvollziehbare Aussage und Prüfpunkt.\n")
+        for key, (heading, fallback) in canonical.items():
+            # Typische Schreibvariante plus deterministischer Fallback.
+            variant = heading + " (Pflichtabschnitt)"
+            chunks.append(f"{variant}\n{fallback}\n")
+        result = repair("\n".join(chunks))
+        for key in canonical:
+            self.assertEqual(len(re.findall(r"(?m)^\s*" + re.escape(key) + r"\s+", result)), 1)
+        self.assertIn("Echte Analyse für 6.1", result)
+        self.assertIn("Echte Analyse für 9.5", result)
+        final_gate(result)
+
+    def test_known_fallback_duplicate_is_removed_by_regular_structure_cleanup(self):
+        cleanup = ENV["_bereinige_doppelte_ausgabestruktur"]
+        required = [
+            "6.1 Makro gegen Technik",
+            "6.2 Technik gegen Fundamentaldaten",
+            "6.3 Sektor gegen Aktie",
+            "6.4 Rohstoff gegen Aktie",
+            "6.5 Investmentthese gegen aktuelle Marktdaten",
+            "6.6 Risiken bestehender Ideen",
+            "9.1 Makrotermine",
+            "9.2 Unternehmen",
+            "9.3 Branchenereignisse",
+            "9.4 Technische Trigger",
+            "9.5 Mögliche Aktivierung / Invalidierung",
+        ]
+        text = (
+            "6.1 Makro vs. Technik — aktuelle Lage\n"
+            "Substanzielle Originalanalyse bleibt erhalten.\n"
+            "6.1 Makro gegen Technik\n"
+            "Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.\n"
+        )
+        result = cleanup(text, required)
+        self.assertEqual(len(re.findall(r"(?m)^\s*6\.1\s+", result)), 1)
+        self.assertIn("Substanzielle Originalanalyse bleibt erhalten.", result)
+        self.assertNotIn("Keine belastbare Gegenüberstellung", result)
+
+
+
+class StructureIdempotencyAndSafetyTests(unittest.TestCase):
+    def test_numbered_prose_is_not_treated_as_heading_or_boundary(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        is_heading = ENV["_echte_unterabschnittsueberschrift"]
+        prose = "6.1 Das bedeutet im konkreten Fall, dass die Kennzahl weiter beobachtet werden sollte"
+        self.assertIsNone(is_heading(prose))
+        text = (
+            "6.1 Makro gegen Technik\n"
+            "Substanzielle Originalanalyse bleibt bestehen.\n"
+            + prose + "\n"
+            "Die Fließtextzeile gehört zum Analyseblock.\n"
+            "6.1 Makro vs. Technik — aktuelle Lage\n"
+            "Keine belastbare Gegenüberstellung von Makro- und Techniksignalen ist möglich, "
+            "da aktuelle Quellenwerte für diesen Abgleich fehlen.\n"
+        )
+        result = repair(text)
+        self.assertEqual(len(re.findall(r"(?m)^6\.1\s+(?:Makro gegen Technik|Makro vs\.)", result)), 1)
+        self.assertIn(prose, result)
+        self.assertIn("Die Fließtextzeile gehört zum Analyseblock.", result)
+
+    def test_formulation_variant_of_known_fallback_is_removed(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6.1 Makro gegen Technik\n"
+            "Substanzielle Analyse: Der Makrotrend und die Technik widersprechen sich.\n"
+            "6.1 Makro vs. Technik – zusätzliche Erläuterung\n"
+            "Eine belastbare Gegenüberstellung von Makro- und Techniksignalen ist nicht möglich, "
+            "weil die vorliegenden Projektquellen keine gemeinsam auswertbaren Angaben enthalten.\n"
+        )
+        result = repair(text)
+        self.assertIn("Substanzielle Analyse:", result)
+        self.assertNotIn("Eine belastbare Gegenüberstellung", result)
+        self.assertEqual(len(re.findall(r"(?m)^6\.1\s+", result)), 1)
+
+    def test_existing_professional_heading_is_never_rewritten(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6.1 Makro vs. Technik — aktueller Datenabgleich\n"
+            "Analyseinhalt mit überprüfbaren Details.\n"
+            "6.2 Technik gegen Fundamentaldaten\n"
+            "Anderer Inhalt.\n"
+        )
+        result = repair(text)
+        self.assertIn("6.1 Makro vs. Technik — aktueller Datenabgleich", result)
+        self.assertEqual(result, text)
+
+    def test_repair_is_idempotent_over_repeated_runs(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6.1 Makro gegen Technik\n"
+            "Substanzielle Originalanalyse bleibt bestehen.\n"
+            "6.1 Makro gegen Technik (Pflichtabschnitt)\n"
+            "Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, "
+            "weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben "
+            "in den vorliegenden Projektquellen vorliegen.\n"
+            "9.1 Makrotermine\n"
+            "Keine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar; "
+            "es werden deshalb keine Termine, Daten oder Ereignisse erfunden.\n"
+            "9.1 Makrotermine (Kalender)\n"
+            "Es liegen derzeit keine bestätigten Makrotermine aus den verfügbaren Quellen vor.\n"
+        )
+        once = repair(text)
+        twice = repair(once)
+        thrice = repair(twice)
+        self.assertEqual(once, twice)
+        self.assertEqual(twice, thrice)
+        self.assertIn("Substanzielle Originalanalyse bleibt bestehen.", thrice)
+        self.assertEqual(len(re.findall(r"(?m)^6\.1\s+", thrice)), 1)
+        self.assertEqual(len(re.findall(r"(?m)^9\.1\s+", thrice)), 1)
+
+    def test_title_shaped_numbered_prose_is_not_misclassified_as_heading(self):
+        is_heading = ENV["_echte_unterabschnittsueberschrift"]
+        heading_key = ENV["_ausgabe_heading_key"]
+        final_gate = ENV["_pruefe_finale_struktur_und_konsistenz"]
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        required = [
+            "6.1 Makro gegen Technik",
+            "6.2 Technik gegen Fundamentaldaten",
+            "6.3 Sektor gegen Aktie",
+            "6.4 Rohstoff gegen Aktie",
+            "6.5 Investmentthese gegen aktuelle Marktdaten",
+            "6.6 Risiken bestehender Ideen",
+            "9.1 Makrotermine",
+            "9.2 Unternehmen",
+            "9.3 Branchenereignisse",
+            "9.4 Technische Trigger",
+            "9.5 Mögliche Aktivierung / Invalidierung",
+        ]
+        prose_lines = [
+            "6.1 Makro gegen Technik ist derzeit uneindeutig",
+            "9.1 Makrotermine wurden bisher nicht bestätigt",
+            "6.2 Technik gegen Fundamentaldaten bleiben widersprüchlich",
+            "6.1 Makro gegen Technik zeigt im aktuellen Lauf keine klare Richtung",
+        ]
+        for line in prose_lines:
+            with self.subTest(line=line):
+                self.assertIsNone(is_heading(line))
+                self.assertIsNone(heading_key(line, required))
+        text = (
+            "6.1 Makro gegen Technik\\n"
+            "Originalanalyse bleibt bestehen.\\n"
+            + prose_lines[0] + "\\n"
+            + prose_lines[1] + "\\n"
+            + "Weiterer Fließtext bleibt im selben Abschnitt.\\n"
+        )
+        result = repair(text)
+        self.assertIn(prose_lines[0], result)
+        self.assertIn(prose_lines[1], result)
+        final_gate(result)
+
+    def test_legitimate_heading_extensions_remain_supported(self):
+        is_heading = ENV["_echte_unterabschnittsueberschrift"]
+        cases = [
+            ("6.1 Makro vs. Technik — zusätzlicher Kontext", "6.1"),
+            ("6.5 Investmentthese gegen aktuelle Daten", "6.5"),
+            ("6.6 Risiken der bestehenden Ideen", "6.6"),
+            ("9.2 Unternehmen / Earnings", "9.2"),
+            ("9.4 Technische Trigger und Auslöser", "9.4"),
+            ("9.5 Mögliche Aktivierung / Invalidierung", "9.5"),
+        ]
+        for line, key in cases:
+            with self.subTest(line=line):
+                self.assertEqual(is_heading(line)[0], key)
+
+    def test_final_gate_ignores_numbered_prose_but_rejects_real_duplicate_headings(self):
+        final_gate = ENV["_pruefe_finale_struktur_und_konsistenz"]
+        prose = (
+            "6.1 Makro gegen Technik\n"
+            "Analyseinhalt.\n"
+            "6.1 Das bedeutet im konkreten Fall, dass der Wert weiter beobachtet werden muss.\n"
+            "Weiterer Fließtext.\n"
+        )
+        final_gate(prose)
+        duplicate = (
+            "6.1 Makro gegen Technik\nAnalyse A.\n"
+            "6.1 Makro vs. Technik – weiterer Abgleich\nAnalyse B.\n"
+        )
+        with self.assertRaisesRegex(RuntimeError, "Doppelte Unterabschnittsnummer"):
+            final_gate(duplicate)
+
+    def test_real_duplicate_content_fails_closed_without_mutation(self):
+        repair = ENV["_repariere_doppelte_pflichtunterabschnitte"]
+        text = (
+            "6.1 Makro gegen Technik\nAnalyse A mit eigenständiger fachlicher Bewertung.\n"
+            "6.1 Makro vs. Technik – zweiter Abgleich\nAnalyse B mit anderer fachlicher Bewertung.\n"
+        )
+        original = text
+        with self.assertRaisesRegex(RuntimeError, "DOPPELTE_PFLICHTUNTERABSCHNITTE_ECHTE_INHALTE"):
+            repair(text)
+        self.assertEqual(text, original)
+
 
 
 if __name__ == "__main__":
