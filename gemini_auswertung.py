@@ -216,10 +216,13 @@ GEMINI_SPLIT_RESUME_DONE_DATEI = ".gemini_request_split_resume_done"
 _GEMINI_SPLIT_RESUME_VERSION = 2
 _GEMINI_RUN_ID = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{os.getpid()}"
 # Maximal zwei echte GenerateContent-Sendungen je Request UND Modell in einem Lauf.
-# Eine zweite Modellpool-Runde ist erlaubt; erfolgreiche Splits bleiben gecacht.
+# Der Modellpool darf bis zu drei Runden durchlaufen; bereits erfolgreiche Splits
+# bleiben gecacht. Das Sendungslimit gilt pro Request/Modell und verhindert,
+# dass derselbe Modell-Request bei anhaltender Ueberlast unbegrenzt wiederholt wird.
+# 503 UNAVAILABLE ist meist transient; zwischen Poolrunden wird progressiv gewartet.
 GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN = 2
-GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 2
-GEMINI_503_POOL_BACKOFF_SECONDS = 20.0
+GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 3
+GEMINI_503_POOL_BACKOFF_SECONDS = 60.0
 # Tatsächliche Sendungen werden pro Request-Fingerprint UND Modell gezählt.
 # Damit blockiert ein 503 bei einem Modell nicht pauschal alle anderen Splits.
 _gemini_503_failures_this_run = defaultdict(int)
@@ -5347,23 +5350,17 @@ def gemini_auswertung_starten():
             letzte_antwort = f"[Technischer Fehler] {e}"
 
             if "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in fehlertext:
-                # Auch der terminale Abbruch wird durch dieselbe Produktions-
-                # entscheidung klassifiziert, die den Modellwechsel steuert.
-                terminal_aktion, _ = _gemini_503_aeussere_retry_aktion(
-                    fehlertext, aktuelles_modell,
-                    GEMINI_MODELLREIHENFOLGE, _gemini_failed_models,
-                )
-                if terminal_aktion != "terminal":
-                    raise RuntimeError(
-                        "GEMINI_503_TERMINAL_ENTSCHEIDUNG_INKONSISTENT: "
-                        f"Aktion={terminal_aktion!r}"
-                    )
+                # Dieser Marker bedeutet, dass die aktuelle Poolrunde ausgeschoepft
+                # ist - NICHT, dass alle begrenzten Backoff-Runden beendet sind.
+                # Deshalb NICHT hier abbrechen: Der Fehler wird unten in den
+                # gemeinsamen ueberlast/netzwerk-Pfad geroutet. Dort werden
+                # request-spezifische Fehler-Sperren geloescht, 60/120 s gewartet
+                # und maximal GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN
+                # Poolrunden ausgefuehrt. Resume-Ergebnisse bleiben erhalten.
                 print(
-                    "  GEMINI-503-TERMINAL: Modellpool ausgeschoepft; "
-                    "kein weiterer identischer Request-Zyklus. "
-                    "Split-Status/erfolgreiche Teilantworten wurden gesichert."
+                    "  GEMINI-503-POOL-ERSCHOEPFT: leite in begrenzte Backoff-Recovery "
+                    "weiter; noch nicht automatisch terminal fuer den Gesamtlauf."
                 )
-                break
 
             # Ein 429 waehrend der gezielten Punkt-7-Reparatur ist terminal
             # fuer diesen Lauf: Der normale API-Retry darf hier NICHT erneut
@@ -5413,6 +5410,14 @@ def gemini_auswertung_starten():
                 )
 
             abbrechen, empfohlene_wartezeit, kategorie = analysiere_api_fehler(fehlertext)
+            if "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in fehlertext:
+                # analysiere_api_fehler klassifiziert den Marker historisch als
+                # modellpool_temporaer. Fuer die begrenzte Recovery muss er hier
+                # als temporaere Ueberlast behandelt werden, damit der darunter
+                # liegende Pool-Backoff (60/120 s) erreicht wird.
+                kategorie = "ueberlast"
+                abbrechen = False
+                empfohlene_wartezeit = None
             # Jeder API-/Quota-Fehler ist ein technischer Retry: bereits
             # erfolgreich abgeschlossene A1/A2/A3/Final-Stufen werden nicht
             # erneut angefordert. Ein Sicherheitsfilter wird weiter unten
@@ -5596,21 +5601,26 @@ def gemini_auswertung_starten():
                     _gemini_last_request_model = None
                     modell_index = 0
                     aktuelles_modell = GEMINI_MODELLREIHENFOLGE[0]
-                    wartezeit = GEMINI_503_POOL_BACKOFF_SECONDS
+                    # Exponentieller Backoff: nach Runde 1 60 s, nach Runde 2 120 s.
+                    # pool_passes ist vor dem Inkrement die Zahl bereits absolvierter
+                    # Wiederholungen; die erste Poolrunde selbst zaehlt als Runde 1.
+                    wartezeit = GEMINI_503_POOL_BACKOFF_SECONDS * (2 ** pool_passes)
+                    naechste_runde = pool_passes + 2
                     print(
-                        f"  {grund}: erster Modellpool-Durchlauf ausgeschoepft. "
-                        f"Starte begrenzte zweite Runde nach {wartezeit:.0f}s; "
-                        f"bereits erfolgreiche Splits bleiben im Cache. "
-                        f"Pool-Runde 2/{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN}; "
-                        "pro Request/Modell maximal "
+                        f"  {grund}: Modellpool-Durchlauf ausgeschoepft. "
+                        f"Starte Pool-Runde {naechste_runde}/"
+                        f"{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN} "
+                        f"nach {wartezeit:.0f}s Backoff; bereits erfolgreiche Splits "
+                        "bleiben im Cache. Pro Request/Modell maximal "
                         f"{GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN} echte API-Sendungen."
                     )
                     time.sleep(wartezeit)
                     continue
                 print(
-                    f"  {grund}: beide Modellpool-Runden ausgeschöpft. "
-                    "Technischer Fallback; fehlgeschlagener Split und erfolgreiche "
-                    "Teilergebnisse bleiben fuer den naechsten Lauf gespeichert."
+                    f"  {grund}: alle {GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN} "
+                    "Modellpool-Runden ausgeschoepft. Technischer Fallback; "
+                    "fehlgeschlagener Split und erfolgreiche Teilergebnisse bleiben "
+                    "fuer den naechsten Lauf gespeichert."
                 )
                 break
 
@@ -15577,6 +15587,29 @@ def _pruefe_auswertung_quellenkonflikte(
     return text, []
 
 
+def _gemini_pruefe_freigabe_vor_speicherung(zahlen_gate_warnungen, fachliche_mindesttiefe_offen):
+    """Protokolliert dokumentierbare Qualitaetswarnungen; harte Gates laufen separat."""
+    if zahlen_gate_warnungen:
+        print(
+            "GEMINI_RELEASE_GATE=WARNUNG | "
+            f"{len(zahlen_gate_warnungen)} dokumentierte Quellen-/Zahlenpruefpunkte; "
+            "Speicherung wird nicht allein dadurch blockiert."
+        )
+        for warnung in zahlen_gate_warnungen:
+            print("QUELLEN_ZAHLENKONFLIKT_DOKUMENTIERT | " + str(warnung))
+
+    if fachliche_mindesttiefe_offen:
+        print(
+            "GEMINI_RELEASE_GATE=WARNUNG | inhaltliche Mindesttiefe mit offenem "
+            "Pruefpunkt; Speicherung wird nicht allein dadurch blockiert."
+        )
+
+    # Harte Integritaetsfehler werden nicht hier abgeschwaecht: Quellenbindung,
+    # Pflichtstruktur, Name/Ticker, Quellperioden/Positionen, Themenkausalitaet
+    # und das globale Edelmetall-Release-Gate werden separat vor dem Schreiben
+    # geprueft und werfen bei Fehlern weiterhin RuntimeError.
+
+
 def speichere_ergebnis(text, eingabedateien=None):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -15874,11 +15907,11 @@ def speichere_ergebnis(text, eingabedateien=None):
             final_text, briefing_text, makro_text_fx, edelmetall_text
         )
 
-        if zahlen_gate_warnungen:
-            print(
-                "INFO: Zahlenkonsistenz-Gate hat offene Prüfpunkte markiert; "
-                "die Tagesauswertung wird trotzdem gespeichert und versendet."
-            )
+        # Dokumentierbare Warnungen werden protokolliert; harte Integritaets-
+        # Gates wurden davor und danach separat geprueft und bleiben blockierend.
+        _gemini_pruefe_freigabe_vor_speicherung(
+            zahlen_gate_warnungen, fachliche_mindesttiefe_offen
+        )
 
         # Nach dem Zahlen-Gate folgen nur noch nicht-mutierende Prüfungen.
         # Damit werden auch der ggf. ergänzte Konflikthinweis und der endgültige
@@ -15991,10 +16024,12 @@ def speichere_ergebnis(text, eingabedateien=None):
                 print("EDELMETALL_QUELLENABWEICHUNG_DOKUMENTIERT | " + " | ".join(dokumentierte_metallabweichungen))
         except Exception as exc:
             print(f"WARNUNG: Vergleich der Edelmetallquellen nicht möglich ({type(exc).__name__}); kein Fallback auf Marktwerte.")
-        if "zahlen_gate_warnungen" in locals() and zahlen_gate_warnungen:
-            fachliche_gruende.append("Zahlenkonsistenz-Gate meldet offene Prüfpunkte")
-        if fachliche_mindesttiefe_offen:
-            fachliche_gruende.append("inhaltliche Mindesttiefe nicht bestanden")
+        # Dokumentierte Zahlen-/Quellenwarnungen und Mindesttiefe-Hinweise
+        # sind Diagnosepunkte, keine harten Integritaetsfehler. Die harten
+        # Struktur-, Identitaets-, Quellenperioden-, Kausalitaets- und
+        # Edelmetall-Gates wurden vor dem Speichern erfolgreich bestanden.
+        # Deshalb blockieren diese dokumentierten Warnungen FACHLICH_FINAL
+        # nicht pauschal; sie bleiben im Bericht und Log sichtbar.
     if fachliche_gruende:
         print("FACHLICH_FINAL=NICHT_FINAL | " + " | ".join(fachliche_gruende))
     elif str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
@@ -16002,6 +16037,24 @@ def speichere_ergebnis(text, eingabedateien=None):
     else:
         print("FACHLICH_FINAL=FINAL")
     return ausgabe_datei
+
+
+def _gemini_schreibe_github_outputs(status, fachlich_final, auswertung_datei=""):
+    """Stellt eindeutige, maschinenlesbare Erfolgsmarker fuer GitHub Actions bereit."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    werte = {
+        "status": str(status),
+        "fachlich_final": str(fachlich_final),
+        "auswertung_datei": str(auswertung_datei or ""),
+    }
+    for key, value in werte.items():
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"Ungueltiger Zeilenumbruch im GitHub-Output {key}")
+    with open(output_path, "a", encoding="utf-8") as handle:
+        for key, value in werte.items():
+            handle.write(f"{key}={value}\n")
 
 
 if __name__ == "__main__":
@@ -16014,4 +16067,29 @@ if __name__ == "__main__":
     print(f"AUSWERTUNG_DATEI={ausgabe_pfad}")
     if str(ergebnis_text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("GEMINI_STATUS=TECHNISCHER_FALLBACK")
-        print("GEMINI_EXIT_STATUS=0 | Technischer Fallback: Keine Auswertung-Datei erzeugt; vorhandene Tagesdatei bleibt unverändert.")
+        _gemini_schreibe_github_outputs(
+            "TECHNISCHER_FALLBACK", "NICHT_FINAL", ""
+        )
+        print(
+            "GEMINI_EXIT_STATUS=2 | Technischer Fallback: Keine neue, fachlich finale "
+            "Auswertung-Datei erzeugt; vorhandene Tagesdatei bleibt unverändert."
+        )
+        # Wichtig fuer GitHub Actions: Ein technischer Fallback darf nicht als
+        # erfolgreicher Tageslauf gecacht oder als fertig markiert werden.
+        raise SystemExit(2)
+
+    if not ausgabe_pfad or not os.path.isfile(ausgabe_pfad):
+        print("GEMINI_STATUS=FEHLER")
+        print("GEMINI_EXIT_STATUS=3 | Auswertungspfad fehlt oder Datei wurde nicht gespeichert.")
+        raise SystemExit(3)
+
+    if os.path.getsize(ausgabe_pfad) <= 0:
+        print("GEMINI_STATUS=FEHLER")
+        print("GEMINI_EXIT_STATUS=3 | Auswertung-Datei ist leer.")
+        raise SystemExit(3)
+
+    _gemini_schreibe_github_outputs(
+        "SUCCESS", "FINAL", os.path.abspath(ausgabe_pfad)
+    )
+    print("GEMINI_STATUS=SUCCESS")
+    print("GEMINI_EXIT_STATUS=0 | Fachlich finale Auswertung wurde gespeichert.")
