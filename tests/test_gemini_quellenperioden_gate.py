@@ -347,6 +347,38 @@ class SourceGateTests(unittest.TestCase):
         self.assertIn("- BRENT: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 2026-10-14", fixed)
         self.assertTrue(ENV["_pruefe_quellenperioden_und_positionsduplikate"](fixed, briefing, "", edel))
 
+    def test_oil_rows_rebuilt_when_wti_and_brent_have_different_valid_dates(self):
+        text, briefing, edel = fixture()
+        # Unterschiedliche, aber beide gültige Quellstände müssen erhalten bleiben.
+        briefing = briefing.replace(
+            "- Brent: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 14.10.2026",
+            "- Brent: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 15.10.2026",
+        )
+        text = text.replace(
+            "- WTI: Kurs 72,50 | +1,20% 5T | -2,30% 4W | Datenstand 14.10.2026",
+            "7.5 Rohstoffe\n- WTI: alte oder unvollständige Zeile",
+        ).replace(
+            "- Brent: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 14.10.2026",
+            "- Brent: alte oder unvollständige Zeile\n7.6 Krypto",
+        )
+        fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+            text, briefing, "", edel
+        )
+        self.assertIn(
+            "- WTI: Kurs 72,50 | +1,20% 5T | -2,30% 4W | Datenstand 14.10.2026",
+            fixed,
+        )
+        self.assertIn(
+            "- BRENT: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 15.10.2026",
+            fixed,
+        )
+        self.assertTrue(any("7.5 Öl-Kurzüberblick" in item for item in changes))
+        self.assertTrue(
+            ENV["_pruefe_quellenperioden_und_positionsduplikate"](
+                fixed, briefing, "", edel
+            )
+        )
+
     def test_repair_handles_nasdaq_composite_and_eurostoxx_aliases(self):
         _, briefing, edel = fixture()
         briefing = briefing.replace("Nasdaq Composite:", "Nasdaq:").replace("EuroStoxx 50:", "EURO STOXX-50:")
