@@ -4,6 +4,9 @@ import json
 import datetime
 import re
 import smtplib
+import socket
+import time
+import uuid
 import numpy as np
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
@@ -1418,38 +1421,104 @@ def aktualisiere_os_kurse(df):
     """Produktive OS-Kursaktualisierung; zentrale Logik liegt in os_kurse.py."""
     return aktualisiere_optionsscheine(df)
 
-def hochladen(service, lokale_datei, folder_id, alte_file_id):
-    """Lädt die aktualisierte Datei als NATIVE Google-Sheets-Datei nach Drive.
+def _finde_upload_mit_token(service, folder_id, upload_token):
+    """Findet einen bereits von Drive angenommenen Upload nach eindeutigem Token.
 
-    Sicherheitsreihenfolge:
-    1. Neue Datei zuerst hochladen.
-    2. Upload/Datei-ID bestätigen.
-    3. Bei temporären Google-5xx-Fehlern Upload mit Backoff wiederholen.
-    4. Erst nach bestätigtem erfolgreichem Upload die alte Datei löschen.
-
-    Ansonsten bleibt die bestehende Positionslogik unverändert.
+    Wichtig bei Read-Timeouts: Der Server kann die Datei bereits angelegt haben,
+    obwohl die Antwort den Runner nicht erreicht hat. Vor einem neuen create()
+    wird deshalb nach derselben Upload-Operation gesucht.
     """
+    query = (
+        f"'{folder_id}' in parents and trashed=false and "
+        f"appProperties has {{ key='tracker_upload_token' and value='{upload_token}' }}"
+    )
+    result = service.files().list(
+        q=query,
+        fields="files(id,name,mimeType,appProperties)"
+    ).execute(num_retries=3)
+    for item in result.get("files", []):
+        props = item.get("appProperties") or {}
+        if props.get("tracker_upload_token") == upload_token:
+            return item
+    return None
+
+
+def hochladen(service, lokale_datei, folder_id, alte_file_id):
+    """Lädt den Positionsstand fehlertolerant als natives Google Sheet hoch.
+
+    Sicherheitsregeln:
+    1. Der neue Stand wird zuerst hochgeladen; die alte Datei bleibt erhalten.
+    2. Bei Timeout/Verbindungsfehlern wird mit demselben eindeutigen Token
+       geprüft, ob Drive den Upload bereits angenommen hat.
+    3. Nur wenn kein bereits angelegter Upload gefunden wird, erfolgt ein
+       begrenzter Retry mit exponentiellem Backoff.
+    4. Erst nach bestätigter Datei-ID wird die alte Datei gelöscht.
+
+    Die Positions- und Managementlogik bleibt davon unberührt.
+    """
+    upload_token = uuid.uuid4().hex
     file_metadata = {
         'name': DRIVE_NAME,
         'parents': [folder_id],
-        'mimeType': SHEET_MIME
+        'mimeType': SHEET_MIME,
+        'appProperties': {'tracker_upload_token': upload_token}
     }
 
-    letzter_fehler = None
+    max_versuche = 4
+    letzte_fehler = None
     neue_datei = None
 
-    for versuch in range(1, 4):
+    # Nur temporäre Netzwerkfehler und Google-5xx/429 sind retry-fähig.
+    def ist_temporaerer_fehler(exc):
+        status = getattr(getattr(exc, 'resp', None), 'status', None)
+        if status == 429 or (status is not None and 500 <= status < 600):
+            return True
+        return isinstance(exc, (TimeoutError, socket.timeout, ConnectionError, OSError))
+
+    for versuch in range(1, max_versuche + 1):
         try:
-            media = MediaIoBaseUpload(
-                io.FileIO(lokale_datei, 'rb'),
-                mimetype='text/csv',
-                resumable=True
-            )
-            neue_datei = service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id'
-            ).execute(num_retries=3)
+            # Ein vorheriger create()-Aufruf kann trotz Timeout serverseitig
+            # erfolgreich gewesen sein. Niemals blind einen zweiten Upload
+            # anlegen, bevor wir den Marker geprüft haben.
+            try:
+                bereits_vorhanden = _finde_upload_mit_token(
+                    service, folder_id, upload_token
+                )
+            except Exception as lookup_error:
+                # Bei einem Lookup-Fehler nicht riskieren, sofort einen
+                # potenziellen Duplikat-Upload zu erzeugen.
+                if versuch < max_versuche and ist_temporaerer_fehler(lookup_error):
+                    wartezeit = min(2 ** (versuch - 1), 8)
+                    print(
+                        f"Drive-Statusprüfung vor Upload fehlgeschlagen "
+                        f"({lookup_error}); erneuter Versuch in {wartezeit}s "
+                        f"({versuch + 1}/{max_versuche})."
+                    )
+                    time.sleep(wartezeit)
+                    continue
+                raise
+
+            if bereits_vorhanden:
+                neue_datei = bereits_vorhanden
+                print(
+                    "Vorheriger Upload wurde trotz fehlender Antwort in Drive "
+                    f"gefunden (ID: {neue_datei.get('id')}); verwende diese Datei."
+                )
+            else:
+                # Datei bei jedem neuen Request frisch öffnen. So startet ein
+                # Retry nicht versehentlich am EOF des alten Datei-Handles.
+                with open(lokale_datei, 'rb') as datei_handle:
+                    media = MediaIoBaseUpload(
+                        datei_handle,
+                        mimetype='text/csv',
+                        resumable=True,
+                        chunksize=5 * 1024 * 1024
+                    )
+                    neue_datei = service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id,name,mimeType,appProperties'
+                    ).execute(num_retries=3)
 
             neue_file_id = neue_datei.get('id') if neue_datei else None
             if not neue_file_id:
@@ -1458,40 +1527,53 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
                 )
 
             print(
-                f"Datei '{DRIVE_NAME}' als Google Sheet in Drive angelegt "
-                f"(ID: {neue_file_id}, Versuch {versuch}/3)."
+                f"Datei '{DRIVE_NAME}' als Google Sheet in Drive bestätigt "
+                f"(ID: {neue_file_id}, Versuch {versuch}/{max_versuche})."
             )
 
-            # Erst jetzt ist der neue Produktionsstand bestätigt.
+            # Alte Datei erst löschen, nachdem die neue Datei-ID bestätigt ist.
             if alte_file_id and alte_file_id != neue_file_id:
-                service.files().delete(
-                    fileId=alte_file_id
-                ).execute(num_retries=3)
-                print(
-                    f"Alte Datei (ID: {alte_file_id}) "
-                    f"nach erfolgreichem Upload gelöscht."
-                )
+                try:
+                    service.files().delete(
+                        fileId=alte_file_id
+                    ).execute(num_retries=3)
+                    print(
+                        f"Alte Datei (ID: {alte_file_id}) "
+                        "nach erfolgreichem Upload gelöscht."
+                    )
+                except Exception as delete_error:
+                    # Ein vorheriger Löschaufruf kann erfolgreich gewesen sein,
+                    # obwohl dessen Antwort ebenfalls im Timeout endete.
+                    # HTTP 404 beim Wiederholungsversuch bedeutet dann: bereits weg.
+                    delete_status = getattr(
+                        getattr(delete_error, 'resp', None), 'status', None
+                    )
+                    if delete_status == 404:
+                        print(
+                            f"Alte Datei (ID: {alte_file_id}) ist bereits gelöscht."
+                        )
+                    else:
+                        raise
 
             friere_erste_zwei_zeilen_ein(creds, neue_file_id)
             return neue_file_id
 
-        except Exception as e:
-            letzter_fehler = e
-            status = getattr(getattr(e, 'resp', None), 'status', None)
+        except Exception as exc:
+            letzte_fehler = exc
+            if not ist_temporaerer_fehler(exc) or versuch >= max_versuche:
+                raise
 
-            # Nur temporäre Google-5xx-Fehler bekommen den zusätzlichen
-            # Upload-Retry mit Backoff. Andere Fehler bleiben unverändert.
-            if status is not None and 500 <= status < 600 and versuch < 3:
-                wartezeit = 2 ** (versuch - 1)
-                print(
-                    f"Google-Drive-Fehler HTTP {status} beim Upload. "
-                    f"Retry {versuch + 1}/3 in {wartezeit}s..."
-                )
-                __import__('time').sleep(wartezeit)
-                continue
-            raise
+            wartezeit = min(2 ** (versuch - 1), 8)
+            status = getattr(getattr(exc, 'resp', None), 'status', None)
+            fehler_typ = f"HTTP {status}" if status is not None else type(exc).__name__
+            print(
+                f"Temporärer Drive-Uploadfehler ({fehler_typ}): {exc}. "
+                f"Prüfe Upload-Status und versuche es in {wartezeit}s erneut "
+                f"({versuch + 1}/{max_versuche})."
+            )
+            time.sleep(wartezeit)
 
-    raise letzter_fehler
+    raise letzte_fehler
 
 
 if __name__ == '__main__':
