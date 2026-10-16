@@ -11853,14 +11853,35 @@ def _repariere_quellenperioden_und_positionsduplikate(
         if period_text:
             metadata += " | " + period_text
         label = "WTI" if asset == "wti" else "Brent"
-        pat = re.compile(r"(?im)^(\s*[-•]\s*\[AUTORITATIVE QUELLE\]\s*" + re.escape(label) + r"\s*:[^\n]*)(?<!\|)\s*$")
-        text, n = pat.subn(
-            lambda m: m.group(1) if re.search(r"(?i)Quelle=Makro_Briefing", m.group(1))
-            else m.group(1) + " | " + metadata,
-            text,
+        pat = re.compile(
+            r"(?im)^(\s*[-•]\s*\[AUTORITATIVE QUELLE\]\s*"
+            + re.escape(label) + r"\s*:[^\n]*)\s*$"
         )
+
+        def _aktualisiere_makro_metadaten(match):
+            # Vorhandene Quelle=Makro_Briefing darf die Reparatur nicht
+            # vorzeitig stoppen: eine Zeile kann die Quelle nennen, aber
+            # Datenstand und/oder Periodenwerte noch nicht enthalten.
+            # Entferne nur die von diesem Reparaturschritt verwalteten
+            # Metadatenfelder und setze sie anschließend quellengetreu neu.
+            parts = match.group(1).split("|")
+            retained = [parts[0].rstrip()]
+            for part in parts[1:]:
+                field = part.strip()
+                if re.match(
+                    r"(?i)^(?:Quelle\s*=|Datenstand\s*=|(?:5T|1M|3M|6M|1J)\s*=)",
+                    field,
+                ):
+                    continue
+                if field:
+                    retained.append(field)
+            return " | ".join(retained + metadata.split(" | "))
+
+        text, n = pat.subn(_aktualisiere_makro_metadaten, text)
         if n:
-            changes.append(f"7.5 {label}: Makro-Datenstand und 5T/1M-Perioden direkt an Quellwert gebunden")
+            changes.append(
+                f"7.5 {label}: Makro-Quelle, Datenstand und verfügbare Periodenmetadaten synchronisiert"
+            )
 
     # 8: Kompakte Faktenzeilen ausschließlich aus dem Edelmetalle-Briefing.
     # Python stellt belegte Werte dar; es erzeugt hier keine Marktinterpretation.
