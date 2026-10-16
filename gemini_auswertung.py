@@ -11516,13 +11516,15 @@ def _repariere_quellenperioden_und_positionsduplikate(
             "normalized_date": normalized_date,
         }
 
-    # WTI und Brent dürfen nur gemeinsam ersetzt werden. Eine fehlende,
-    # doppelte oder unvollständige Pflichtquelle lässt den bestehenden Text
-    # unverändert und wird ausdrücklich protokolliert.
-    if set(energy) == {"wti", "brent"}:
-        if energy["wti"]["normalized_date"] != energy["brent"]["normalized_date"]:
-            energy_source_errors.append("WTI und Brent haben unterschiedliche Datenstände")
-            energy = {}
+    # WTI und Brent werden weiterhin nur gemeinsam ersetzt, wenn beide
+    # Pflichtquellen jeweils eindeutig und vollständig parsebar sind. Ihre
+    # Datenstände müssen aber nicht identisch sein: Jede Ausgabezeile trägt
+    # den Datenstand ihrer eigenen Quelle, und das Abschluss-Gate prüft beide
+    # Zeilen getrennt gegen genau diese Quelle.
+    #
+    # Ein pauschales Verwerfen beider gültiger Zeilen bei unterschiedlichen
+    # Datenständen ließ alte/unvollständige Gemini-Zeilen stehen und führte
+    # anschließend zu "Ausgabe fehlt, ist unvollständig oder mehrfach vorhanden".
     if energy_source_errors:
         changes.append(
             "7.5 Öl-Reparatur übersprungen; bestehende Ausgabe unverändert gelassen: "
