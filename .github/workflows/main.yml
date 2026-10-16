@@ -413,8 +413,6 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: python youtube_market_sources.py
 
-      # Regressionstest fuer Chunking, 503-Retry, Synthese-Limit und Resume.
-      # Muss vor dem produktiven Gemini-Lauf bestehen.
       - name: Gemini Chunking/Resume Regressionstest
         run: python tests/test_gemini_chunking_reparatur.py
 
@@ -432,6 +430,11 @@ jobs:
           restore-keys: |
             gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-
 
+      - name: Gemini-Laufmarker setzen
+        run: |
+          rm -f Gemini_Fallback_Status*.txt
+          touch .gemini_auswertung_run_started
+
       - name: Gemini-Auswertung erstellen
         id: gemini-auswertung
         continue-on-error: true
@@ -440,8 +443,8 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
 
-      # Auch bei einem kontrollierten Gemini-Fallback sichern: erfolgreiche
-      # Split-Antworten und Fehlerstatus dienen dem naechsten Lauf als Resume.
+      # Auch bei einem kontrollierten Gemini-Fallback sichern: die erfolgreiche
+      # Split-Antworten und der Fehlerstatus dienen dem naechsten Lauf als Resume.
       - name: Gemini Split Resume nach Lauf sichern
         id: gemini-split-resume-save
         if: ${{ always() && hashFiles('.gemini_request_split_resume*') != '' }}
@@ -466,9 +469,23 @@ jobs:
       # Auswertung in ChatGPT. Es wird keine OpenAI-API verwendet und keine
       # Trading-/Setup-Logik verändert.
       - name: ChatGPT-Fallback-Paket erzeugen
-        if: steps.gemini-auswertung.outcome != 'success' || hashFiles('Gemini_Fallback_Status*.txt') != ''
+        if: steps.gemini-auswertung.outcome != 'success' || steps.gemini-auswertung.outputs.status != 'SUCCESS' || steps.gemini-auswertung.outputs.fachlich_final != 'FINAL' || hashFiles('Gemini_Fallback_Status*.txt') != ''
+        env:
+          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
+          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
+          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
         run: |
+          set -euo pipefail
           fallback_needed=false
+
+          # Nur SUCCESS + FINAL + neue, nichtleere Datei gilt als Erfolg.
+          if [ "${GEMINI_STATUS:-}" != "SUCCESS" ] ||
+             [ "${GEMINI_FACHLICH_FINAL:-}" != "FINAL" ] ||
+             [ -z "${GEMINI_AUSWERTUNG_DATEI:-}" ] ||
+             [ ! -s "${GEMINI_AUSWERTUNG_DATEI:-/__missing_auswertung__}" ] ||
+             [ ! "${GEMINI_AUSWERTUNG_DATEI:-/__missing_auswertung__}" -nt .gemini_auswertung_run_started ]; then
+            fallback_needed=true
+          fi
 
           # Ein technischer Gemini-Fallback beendet gemini_auswertung.py
           # bewusst mit Exit 0. Deshalb darf ausschliesslich der Prozess-
@@ -508,6 +525,35 @@ jobs:
           name: chatgpt-fallback-${{ github.run_id }}
           path: CHATGPT_FALLBACK_*.zip
           if-no-files-found: error
+
+      # Kein Tagesstatus und keine normale Auswertung ohne echten Erfolg der aktuellen Ausführung.
+      - name: Neue Auswertung FINAL und frisch verifizieren
+        id: gemini-finality-check
+        if: always()
+        env:
+          GEMINI_STEP_OUTCOME: ${{ steps.gemini-auswertung.outcome }}
+          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
+          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
+          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
+        run: |
+          set -euo pipefail
+          if [ "$GEMINI_STEP_OUTCOME" != "success" ]; then
+            echo "FINALITY_CHECK=FAIL | Gemini-Schritt endete mit $GEMINI_STEP_OUTCOME"
+            exit 1
+          fi
+          if [ "$GEMINI_STATUS" != "SUCCESS" ] || [ "$GEMINI_FACHLICH_FINAL" != "FINAL" ]; then
+            echo "FINALITY_CHECK=FAIL | Status=$GEMINI_STATUS | FACHLICH_FINAL=$GEMINI_FACHLICH_FINAL"
+            exit 1
+          fi
+          if [ -z "$GEMINI_AUSWERTUNG_DATEI" ] || [ ! -s "$GEMINI_AUSWERTUNG_DATEI" ]; then
+            echo "FINALITY_CHECK=FAIL | neue Auswertung fehlt oder ist leer"
+            exit 1
+          fi
+          if [ ! "$GEMINI_AUSWERTUNG_DATEI" -nt .gemini_auswertung_run_started ]; then
+            echo "FINALITY_CHECK=FAIL | Auswertung wurde in diesem Lauf nicht neu geschrieben"
+            exit 1
+          fi
+          echo "FINALITY_CHECK=PASS | neue, nichtleere Auswertung und FINAL-Marker bestaetigt"
 
       # YouTube-States erst sichern, wenn die Gemini-Auswertung tatsächlich
       # erfolgreich erstellt wurde. Bei einem Fehler bleiben neue Videos
@@ -558,7 +604,7 @@ jobs:
       # verschickt. Stattdessen erhält der Nutzer ausdrücklich eine technische
       # Fehler-/Fallback-Mail mit Statusdatei und dem erzeugten ChatGPT-Paket.
       - name: Technischen Gemini-Fallback per E-Mail melden
-        if: env.CHATGPT_FALLBACK_ERZEUGT == 'true'
+        if: ${{ always() && env.CHATGPT_FALLBACK_ERZEUGT == 'true' }}
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -625,12 +671,12 @@ jobs:
       # Fehlgeschlagene Läufe setzen keinen Tagesstatus. Ein erfolgreicher Lauf
       # erledigt den Tag unabhängig davon, ob er automatisch oder manuell gestartet wurde.
       - name: Erfolgreichen Tageslauf markieren
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() }}
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' }}
         run: |
           date -u +%Y-%m-%d > .daily_main_run_state
 
       - name: Tagesstatus nach Erfolg speichern
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() }}
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' }}
         uses: actions/cache/save@v5
         with:
           path: .daily_main_run_state
