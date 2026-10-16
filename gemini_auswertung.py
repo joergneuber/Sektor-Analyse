@@ -225,6 +225,11 @@ GEMINI_503_POOL_BACKOFF_SECONDS = 20.0
 _gemini_503_failures_this_run = defaultdict(int)
 _gemini_503_failed_models_by_request = defaultdict(set)
 _gemini_503_pool_passes_this_run = defaultdict(int)
+# Begrenzung der aeusseren Modellwechsel nach logischem Request/Stage, nicht
+# global fuer den gesamten Tageslauf. Der Stage-Name bleibt auch dann stabil,
+# wenn ein modellabhaengiges Re-Chunking den technischen Request-Fingerprint
+# veraendert. So verbraucht Split 8 nicht das Budget von Split 9.
+_gemini_503_modellwechsel_je_stage = defaultdict(int)
 _gemini_last_503_request_info = {}
 # Exakte Eingabedateien desselben Gemini-Laufs; werden auch fuer deterministische
 # Nachbearbeitung (u.a. Abschnitt 2.4) weitergereicht, statt Quellen neu zu suchen.
@@ -3256,14 +3261,44 @@ def _gemini_503_request_fingerprint(contents, system_instruction):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _gemini_generate_content_einzelversuch(client, modell, contents, config, label, system_instruction=None):
+def _gemini_logische_request_id(
+    context_fingerprint, semantic_stage, prompt_contents, system_instruction=None,
+    source_contents=None,
+):
+    """Erzeugt eine stabile 503-Budget-ID aus Kontext, Fachstufe und Prompt-Identitaet.
+
+    Die Prompt-Identitaet wird ausschliesslich aus dem fachlichen Arbeits-Prompt
+    (nicht aus den variabel grossen Quellen-Splits) gebildet. Dadurch bleiben
+    Split-IDs bei verlustfreiem Re-Chunking stabil, waehrend unterschiedliche
+    Prompts derselben Quelle niemals dasselbe logische Budget teilen.
+    """
+    stage = " ".join(str(semantic_stage or "UNBEKANNTE_FACHSTUFE").split())
+    stage = re.sub(r"[^A-Za-z0-9._-]+", "_", stage).strip("_") or "UNBEKANNTE_FACHSTUFE"
+    context_id = str(context_fingerprint or "").strip()
+    if not context_id:
+        # Nur fuer isolierte/alte Aufrufer ohne Resume-Fingerprint. In der
+        # Produktion wird der persistente Quellkontext-Fingerprint verwendet.
+        context_id = _gemini_503_request_fingerprint(
+            source_contents or [], system_instruction
+        )
+    prompt_id = _gemini_503_request_fingerprint(
+        prompt_contents, system_instruction
+    )
+    return f"CTX:{context_id}:STAGE:{stage}:PROMPT:{prompt_id}"
+
+
+def _gemini_generate_content_einzelversuch(
+    client, modell, contents, config, label, system_instruction=None, logical_request_id=None
+):
     """Prueft die 503-Grenze VOR jeder echten API-Sendung und zaehlt echte Fehler."""
     global _gemini_last_503_request_info
     request_fingerprint = _gemini_503_request_fingerprint(contents, system_instruction)
+    logical_request_id = str(logical_request_id or request_fingerprint)
     attempt_key = (request_fingerprint, str(modell))
     attempts = int(_gemini_503_failures_this_run.get(attempt_key, 0))
     _gemini_last_503_request_info = {
         "request_fingerprint": request_fingerprint,
+        "logical_request_id": logical_request_id,
         "stage": str(label),
         "model": str(modell),
         "model_attempt_count": attempts,
@@ -3311,7 +3346,8 @@ def _gemini_generate_content_einzelversuch(client, modell, contents, config, lab
 
 
 def _gemini_generate_content_quota_safe(
-    client, preferred_modell, contents, config_kwargs, measured_tokens, label
+    client, preferred_modell, contents, config_kwargs, measured_tokens, label,
+    logical_request_id=None,
 ):
     """Sendet einen bereits gemessenen Request quota-sicher.
 
@@ -3324,6 +3360,10 @@ def _gemini_generate_content_quota_safe(
     request_fingerprint = _gemini_503_request_fingerprint(
         contents, config_kwargs.get("system_instruction")
     )
+    # Die logische ID bleibt bei Re-Chunking stabil, wenn der Aufrufer sie aus
+    # dem fachlichen Resume-Kontext und der Split-Position bildet. Außerhalb
+    # dieses Pfads dient der exakte Request-Fingerprint als sichere Fallback-ID.
+    logical_request_id = str(logical_request_id or request_fingerprint)
     # 503-Sperren gelten nur fuer genau diesen Request, nicht fuer alle
     # folgenden Splits oder Synthese-Requests desselben Tageslaufs. Der
     # Registry-Zustand wird auch in isolierten Test-Namespaces konsistent angelegt.
@@ -3476,7 +3516,7 @@ def _gemini_generate_content_quota_safe(
     try:
         return _gemini_generate_content_einzelversuch(
             client, modell, contents, types.GenerateContentConfig(**config_kwargs),
-            label, config_kwargs.get("system_instruction"),
+            label, config_kwargs.get("system_instruction"), logical_request_id,
         )
     except Exception as exc:
         fehlertext = str(exc).lower()
@@ -3504,27 +3544,50 @@ def _gemini_generate_content_quota_safe(
             _gemini_rpd_exhausted.add(modell)
             print(f"GEMINI-RPD-SERVER: Modell={modell} wegen 429 PerDay fuer den restlichen Lauf gesperrt.")
             temporaerer_fallback_fehlgeschlagen = False
-            for naechstes_modell in _gemini_quota_kandidaten(
-                modell,
-                fehlgeschlagene_einschliessen=True,
+            # Modelle, die in DIESEM serverseitigen RPD-Fallback bereits
+            # tatsaechlich versucht wurden, bleiben fuer diese Runde gesperrt.
+            # Andernfalls kann _gemini_quota_waehlen wegen des Active-Model-Pins
+            # erneut das soeben mit 503 gescheiterte Modell auswaehlen.
+            fallback_versuchte_modelle = {modell}
+            for naechstes_modell in _gemini_fallback_kandidaten_ohne_versuchte(
+                _gemini_quota_kandidaten(
+                    modell,
+                    fehlgeschlagene_einschliessen=True,
+                ),
+                fallback_versuchte_modelle,
             ):
-                if naechstes_modell == modell:
-                    continue
                 neu_gemessen = _gemini_tokenzahl(
                     client, naechstes_modell, contents,
                     config_kwargs.get("system_instruction"),
                     label=f"{label} Server-RPD-Fallback {naechstes_modell}",
                 )
                 if neu_gemessen > GEMINI_INPUT_EXCEPTION_BUDGET:
+                    fallback_versuchte_modelle.add(naechstes_modell)
                     continue
                 verfuegbares_modell, _ = _gemini_quota_waehlen(
                     naechstes_modell,
                     neu_gemessen,
-                    ausgeschlossene_modelle={modell},
+                    ausgeschlossene_modelle=fallback_versuchte_modelle,
                     fehlgeschlagene_einschliessen=True,
                 )
                 if verfuegbares_modell is None:
                     continue
+                # Die Quota-Auswahl kann auf ein anderes freies Modell fallen
+                # als das gerade gepruefte. Tokenzahlen sind modellabhaengig:
+                # vor der Sendung deshalb fuer das tatsaechlich gewaehlte Modell
+                # neu messen, statt einen fremden Messwert zu uebernehmen.
+                if verfuegbares_modell != naechstes_modell:
+                    neu_gemessen = _gemini_tokenzahl(
+                        client, verfuegbares_modell, contents,
+                        config_kwargs.get("system_instruction"),
+                        label=f"{label} Server-RPD-Fallback {verfuegbares_modell}",
+                    )
+                    if neu_gemessen > GEMINI_INPUT_EXCEPTION_BUDGET:
+                        fallback_versuchte_modelle.add(verfuegbares_modell)
+                        continue
+                if verfuegbares_modell in fallback_versuchte_modelle:
+                    continue
+                fallback_versuchte_modelle.add(verfuegbares_modell)
                 _gemini_active_modell = verfuegbares_modell
                 _gemini_last_request_model = verfuegbares_modell
                 sendung_modell = verfuegbares_modell
@@ -3540,7 +3603,7 @@ def _gemini_generate_content_quota_safe(
                     return _gemini_generate_content_einzelversuch(
                         client, verfuegbares_modell, contents,
                         types.GenerateContentConfig(**config_kwargs), label,
-                        config_kwargs.get("system_instruction"),
+                        config_kwargs.get("system_instruction"), logical_request_id,
                     )
                 except Exception as fallback_exc:
                     fallback_text = str(fallback_exc).lower()
@@ -3637,7 +3700,7 @@ def _gemini_generate_content_quota_safe(
                             return _gemini_generate_content_einzelversuch(
                                 client, verfuegbares_modell, contents,
                                 types.GenerateContentConfig(**config_kwargs), label,
-                                config_kwargs.get("system_instruction"),
+                                config_kwargs.get("system_instruction"), logical_request_id,
                             )
                         except Exception as fallback_exc:
                             fallback_text = str(fallback_exc).lower()
@@ -3715,7 +3778,7 @@ def _gemini_generate_content_quota_safe(
                         return _gemini_generate_content_einzelversuch(
                             client, neue_modell, contents,
                             types.GenerateContentConfig(**config_kwargs), label,
-                            config_kwargs.get("system_instruction"),
+                            config_kwargs.get("system_instruction"), logical_request_id,
                         )
                     except Exception as wait_exc:
                         wait_text = str(wait_exc).lower()
@@ -3735,7 +3798,9 @@ def _gemini_generate_content_quota_safe(
         raise
 
 
-def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
+def _gemini_synthese(
+    client, modell, teiltexte, system_instruction, label, logical_request_prefix=None
+):
     """Fuehrt mehrere Teilanalysen hierarchisch unter dem Sicherheitsbudget zusammen."""
     aktuelle = list(teiltexte)
     stufe = 1
@@ -3811,6 +3876,15 @@ def _gemini_synthese(client, modell, teiltexte, system_instruction, label):
                 {"system_instruction": system_instruction},
                 tokens,
                 f"{label} Synthese {stufe}/{idx}",
+                logical_request_id=(
+                    _gemini_logische_request_id(
+                        logical_request_prefix,
+                        f"SYNTHESE_{stufe}_{idx}",
+                        [synth_prompt],
+                        system_instruction,
+                    )
+                    if logical_request_prefix else None
+                ),
             )
             synthese_text = response.text or ""
             _gemini_synthese_request_cache[synthese_fingerprint] = synthese_text
@@ -4041,7 +4115,9 @@ def _gemini_request_plan(client, modell, cache_name, daten_teile, arbeits_conten
     return gruppen
 
 
-def _gemini_cache_antwort(client, modell, cache_name, contents, system_instruction=None):
+def _gemini_cache_antwort(
+    client, modell, cache_name, contents, system_instruction=None, logical_stage=None
+):
     """Sendet geplante Requests mit 120k Normalziel und 121.2k Ausnahmegrenze.
 
     Die verbindliche A1/A2/A3/Final-Architektur bleibt erhalten. Wenn eine
@@ -4063,6 +4139,22 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
     resume_fingerprint = (
         str(cache_name.get("resume_fingerprint") or "")
         if isinstance(cache_name, dict) else ""
+    )
+    # Die fachliche Stufe und der Hash des Arbeits-Prompts trennen Requests,
+    # die denselben Quellkontext verwenden. Der Prompt-Hash umfasst nicht die
+    # variabel gesplitteten Quelldaten und bleibt deshalb bei Re-Chunking stabil.
+    if logical_stage is None:
+        first_prompt = "\n".join(
+            str(getattr(part, "text", part) or "") for part in arbeits_contents
+        )
+        stage_match = re.search(
+            r"(?im)^\s*(STUFE\s+\d+\s*[–-]\s*[^.\n]+|FINALE SYNTHESE|REPARATUR[^\n]*)",
+            first_prompt,
+        )
+        logical_stage = stage_match.group(1).strip() if stage_match else "GenerateContent"
+    logical_request_base = _gemini_logische_request_id(
+        resume_fingerprint, logical_stage, arbeits_contents,
+        config_kwargs.get("system_instruction"), source_contents=daten_teile,
     )
     resume_state = _gemini_split_resume_laden(resume_fingerprint)
     persistent_completed = dict(resume_state.get("completed") or {})
@@ -4106,6 +4198,7 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
             direct_response = _gemini_generate_content_quota_safe(
                 client, modell, anfrage_contents, config_kwargs, token_count,
                 "GenerateContent",
+                logical_request_id=f"{logical_request_base}:Direct",
             )
         except Exception as exc:
             if "GEMINI_REQUEST_ZU_GROSS_NACH_QUOTA_FALLBACK" in str(exc) and daten_teile:
@@ -4190,6 +4283,7 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
             response = _gemini_generate_content_quota_safe(
                 client, modell, gruppe_contents, config_kwargs, group_tokens,
                 f"GenerateContent Split {idx}",
+                logical_request_id=f"{logical_request_base}:Split:{idx}",
             )
         except Exception as exc:
             if "GEMINI_REQUEST_ZU_GROSS_NACH_QUOTA_FALLBACK" in str(exc):
@@ -4280,6 +4374,7 @@ def _gemini_cache_antwort(client, modell, cache_name, contents, system_instructi
             teiltexte,
             config_kwargs.get("system_instruction"),
             "GenerateContent",
+            logical_request_prefix=f"{logical_request_base}:Synthesis",
         )
     except Exception as exc:
         request_info = dict(globals().get("_gemini_last_503_request_info") or {})
@@ -4400,7 +4495,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         daten_analyse = _gemini_stufen_cache["A1"]
         print(f"  Gemini A1 Discovery aus technischem Retry-Cache übernommen | Zeichen: {len(daten_analyse)}")
     else:
-        daten_antwort = _gemini_cache_antwort(client, modell, cache_stufe1, daten_prompt)
+        daten_antwort = _gemini_cache_antwort(client, modell, cache_stufe1, daten_prompt, logical_stage="A1_DISCOVERY")
         daten_analyse = daten_antwort.text or ""
         if ist_ablehnung(daten_analyse):
             raise RuntimeError("GEMINI_STUFE_1_SICHERHEITSFILTER_ABLEHNUNG")
@@ -4419,7 +4514,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         technik_analyse = _gemini_stufen_cache["A2"]
         print(f"  Gemini A2 Technik aus technischem Retry-Cache übernommen | Zeichen: {len(technik_analyse)}")
     else:
-        technik_antwort = _gemini_cache_antwort(client, modell, cache_stufe2, technik_prompt)
+        technik_antwort = _gemini_cache_antwort(client, modell, cache_stufe2, technik_prompt, logical_stage="A2_TECHNIK")
         technik_analyse = technik_antwort.text or ""
         if ist_ablehnung(technik_analyse):
             raise RuntimeError("GEMINI_STUFE_2_TECHNIK_SICHERHEITSFILTER_ABLEHNUNG")
@@ -4441,7 +4536,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         historie_analyse = _gemini_stufen_cache["A3"]
         print(f"  Gemini A3 Historie aus technischem Retry-Cache übernommen | Zeichen: {len(historie_analyse)}")
     else:
-        historie_antwort = _gemini_cache_antwort(client, modell, cache_stufe3, historie_prompt)
+        historie_antwort = _gemini_cache_antwort(client, modell, cache_stufe3, historie_prompt, logical_stage="A3_HISTORIE")
         historie_analyse = historie_antwort.text or ""
         if ist_ablehnung(historie_analyse):
             raise RuntimeError("GEMINI_STUFE_3_HISTORIE_SICHERHEITSFILTER_ABLEHNUNG")
@@ -4565,7 +4660,8 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         return SimpleNamespace(text=final_text, candidates=[])
 
     final_antwort = _gemini_cache_antwort(
-        client, modell, cache_final, [final_prompt] + zusatz_anweisungen
+        client, modell, cache_final, [final_prompt] + zusatz_anweisungen,
+        logical_stage="FINAL_SYNTHESE",
     )
     _gemini_stufen_cache["FINAL"] = final_antwort.text or ""
     print(f"  Gemini Finale Synthese erfolgreich | Zeichen: {len(final_antwort.text or '')}")
@@ -4633,6 +4729,52 @@ def _gemini_fallback_status_datei(aktion="clear", fehler=""):
         return status_datei
 
     raise ValueError(f"Unbekannte Aktion fuer Gemini-Fallback-Status: {aktion}")
+
+
+def _gemini_fallback_kandidaten_ohne_versuchte(kandidaten, versuchte_modelle):
+    """Iteriert Fallback-Kandidaten, ohne bereits gescheiterte Modelle erneut zu waehlen.
+
+    Die Menge wird bei jedem Schritt erneut geprueft, damit ein waehrend des
+    Durchlaufs fehlgeschlagenes Modell auch dann ausgeschlossen bleibt, wenn
+    die Kandidatenliste bereits vor dem Fehler erzeugt wurde.
+    """
+    for kandidat in kandidaten or []:
+        if kandidat not in versuchte_modelle:
+            yield kandidat
+
+
+def _gemini_503_modellwechsel_budget_pruefen(
+    stage, maximum, zaehler=None, logical_request_id=None
+):
+    """Reserviert einen Modellwechsel pro logischer Request-ID UND Stage.
+
+    Rueckgabe: (erlaubt, bisherige/neu belegte Anzahl, Budget-Schluessel).
+    Die Request-ID muss von der fachlichen Stage stammen und bei Re-Chunking
+    stabil bleiben; die Stage-Normalisierung entfernt den variablen Split-Nenner.
+    Unabhängige Requests mit identischem generischem Label erhalten getrennte Budgets.
+    """
+    import re as _re
+    schluessel = " ".join(_re.sub(r"\s+", " ", str(stage or "UNBEKANNTE_STAGE")).split())
+    # Gesamtzahl kann sich bei verlustfreiem Re-Chunking ändern. Den Index
+    # beibehalten, aber den variablen Nenner aus "Split 8/39" entfernen.
+    schluessel = _re.sub(
+        r"(?i)\bSplit\s+(\d+)\s*/\s*\d+\b",
+        lambda match: f"Split {match.group(1)}",
+        schluessel,
+    )
+    if not schluessel:
+        schluessel = "UNBEKANNTE_STAGE"
+    if logical_request_id is None:
+        request_info = globals().get("_gemini_last_503_request_info") or {}
+        logical_request_id = request_info.get("logical_request_id") or request_info.get("request_fingerprint")
+    logical_request_id = str(logical_request_id or "UNBEKANNTE_LOGISCHE_REQUEST_ID").strip()
+    budget_schluessel = f"{logical_request_id}::{schluessel}"
+    registry = _gemini_503_modellwechsel_je_stage if zaehler is None else zaehler
+    bisher = int(registry.get(budget_schluessel, 0))
+    if bisher >= int(maximum):
+        return False, bisher, budget_schluessel
+    registry[budget_schluessel] = bisher + 1
+    return True, bisher + 1, budget_schluessel
 
 
 def _gemini_503_naechstes_modell(aktuelles_modell, modell_reihenfolge=None, fehlgeschlagene_modelle=None):
@@ -4781,6 +4923,7 @@ def gemini_auswertung_starten():
     _gemini_503_failures_this_run.clear()
     _gemini_503_failed_models_by_request.clear()
     _gemini_503_pool_passes_this_run.clear()
+    _gemini_503_modellwechsel_je_stage.clear()
     _gemini_synthese_request_cache.clear()
     _gemini_stufen_cache = {}
     technische_retry_wiederverwenden = False
@@ -5024,6 +5167,7 @@ def gemini_auswertung_starten():
                     cache_name=_gemini_cache_name,
                     contents=_gemini_reparatur_anweisungen,
                     system_instruction=None,
+                    logical_stage="MAKRO_GATE_REPARATUR",
                 )
                 reparatur_text = reparatur.text or ""
                 if pruefe_makro_gate_konsistenz(reparatur_text, makro_gate):
@@ -5357,6 +5501,58 @@ def gemini_auswertung_starten():
                     GEMINI_MODELLREIHENFOLGE, _gemini_failed_models,
                 )
                 if retry_aktion == "switch" and naechstes_modell is not None:
+                    # Sicherheitsgrenze pro logischer Stage/Split. Nicht global
+                    # zaehlen: ein 503 in Split 8 darf Split 9 kein Budget nehmen.
+                    # Der Stage-Name bleibt bei modellabhaengigem Re-Chunking stabil.
+                    maximale_503_modellwechsel = (
+                        MAX_VERSUCHE * GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN
+                    )
+                    request_info = dict(_gemini_last_503_request_info or {})
+                    stage_key = str(request_info.get("stage") or "UNBEKANNTE_STAGE")
+                    logical_request_id = str(
+                        request_info.get("logical_request_id")
+                        or request_info.get("request_fingerprint")
+                        or "UNBEKANNTE_LOGISCHE_REQUEST_ID"
+                    )
+                    budget_pruefer = globals().get("_gemini_503_modellwechsel_budget_pruefen")
+                    if callable(budget_pruefer):
+                        wechsel_erlaubt, wechsel_anzahl, normalisierte_stage = (
+                            budget_pruefer(
+                                stage_key, maximale_503_modellwechsel,
+                                logical_request_id=logical_request_id,
+                            )
+                        )
+                    else:
+                        # Der Retry-Handler bleibt auch dann vollstaendig
+                        # funktionsfaehig, wenn er isoliert ohne Modul-Helper
+                        # ausgefuehrt wird (z.B. AST-basierte Integrationstests).
+                        import re as _re
+                        normalisierte_stage = " ".join(
+                            _re.sub(r"\s+", " ", stage_key).split()
+                        ) or "UNBEKANNTE_STAGE"
+                        normalisierte_stage = _re.sub(
+                            r"(?i)\bSplit\s+(\d+)\s*/\s*\d+\b",
+                            lambda match: f"Split {match.group(1)}",
+                            normalisierte_stage,
+                        )
+                        budget_key = f"{logical_request_id}::{normalisierte_stage}"
+                        stage_registry = globals().setdefault(
+                            "_gemini_503_modellwechsel_je_stage", {}
+                        )
+                        bisherige_wechsel = int(stage_registry.get(budget_key, 0))
+                        wechsel_erlaubt = bisherige_wechsel < maximale_503_modellwechsel
+                        wechsel_anzahl = bisherige_wechsel
+                        if wechsel_erlaubt:
+                            wechsel_anzahl += 1
+                            stage_registry[budget_key] = wechsel_anzahl
+                    if not wechsel_erlaubt:
+                        print(
+                            f"  GEMINI-MODELLPOOL-STAGE-GRENZE: Request={logical_request_id[:16]} | Stage={normalisierte_stage} | "
+                            f"{wechsel_anzahl}/{maximale_503_modellwechsel} Modellwechsel bereits "
+                            "verbraucht; keine weitere Neuplanung fuer diese Stage. "
+                            "Andere Splits behalten ihr eigenes Fehlerbudget."
+                        )
+                        break
                     naechster_index = GEMINI_MODELLREIHENFOLGE.index(naechstes_modell)
                     grund = "503-Overload" if kategorie == "ueberlast" else "Netzwerk-Abbruch"
                     # Modellwechsel ist ein Fallback auf eine andere Ressource,
@@ -5365,7 +5561,9 @@ def gemini_auswertung_starten():
                     # erfolgt erst, wenn der gesamte Modellpool temporaer ueberlastet ist.
                     wartezeit = random.uniform(0.0, GEMINI_MODELLWECHSEL_JITTER_MAX)
                     print(
-                        f"  {grund} nach Versuch {versuch}/{MAX_VERSUCHE}. "
+                        f"  {grund} nach Versuch {versuch}/{MAX_VERSUCHE} | "
+                        f"Stage-Modellwechsel={wechsel_anzahl}/{maximale_503_modellwechsel} "
+                        f"({normalisierte_stage}; Request={logical_request_id[:16]}). "
                         f"Kurzer Modellwechsel-Jitter {wartezeit:.1f}s; "
                         f"wechsle danach von {aktuelles_modell} auf {naechstes_modell}."
                     )
@@ -15802,7 +16000,7 @@ def speichere_ergebnis(text, eingabedateien=None):
     elif str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("FACHLICH_FINAL=NICHT_FINAL | keine neue Gemini-Auswertung erzeugt")
     else:
-        print("FACHLICH_FINAL=PASS")
+        print("FACHLICH_FINAL=FINAL")
     return ausgabe_datei
 
 
