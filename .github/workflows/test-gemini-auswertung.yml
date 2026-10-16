@@ -1,0 +1,35 @@
+name: Schnelle Regressionstests – Gemini-Auswertung
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gemini_auswertung.py'
+      - 'tests/**'
+      - '.github/workflows/test-gemini-auswertung.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'gemini_auswertung.py'
+      - 'tests/**'
+      - '.github/workflows/test-gemini-auswertung.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax prüfen
+        run: python -m py_compile gemini_auswertung.py tests/test_gemini_quellenperioden_gate.py
+      - name: Isolierte Regressionstests ausführen
+        run: python -m unittest discover -s tests -p 'test_gemini_quellenperioden_gate.py' -v
