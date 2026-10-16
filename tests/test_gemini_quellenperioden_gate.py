@@ -173,6 +173,49 @@ class SourceGateTests(unittest.TestCase):
             self.assertIn(f"- {label}: letzter abgeschlossener Handelstag", fixed)
         self.assertTrue(ENV["_pruefe_quellenperioden_und_positionsduplikate"](fixed, briefing, "", edel))
 
+    def test_macro_wti_existing_source_metadata_is_completed_idempotently(self):
+        text, briefing, edel = fixture()
+        text = text.replace(
+            "- WTI: Kurs 72,50 | +1,20% 5T | -2,30% 4W | Datenstand 14.10.2026",
+            "- WTI: Kurs 72,50 | +1,20% 5T | -2,30% 4W | Datenstand 14.10.2026\n"
+            "- [AUTORITATIVE QUELLE] WTI: 72.50 USD | Quelle=Makro_Briefing",
+        )
+        text = text.replace(
+            "- Brent: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 14.10.2026",
+            "- Brent: Kurs 76,40 | +1,10% 5T | -1,90% 4W | Datenstand 14.10.2026\n"
+            "- [AUTORITATIVE QUELLE] Brent: 76.40 USD | Quelle=Makro_Briefing",
+        )
+        refs = {
+            "wti": {"kurs": 72.50, "datenstand": "2026-10-14", "perioden": {
+                "5T": 1.25, "1M": -2.50, "3M": 3.75, "6M": -4.50, "1J": 5.25,
+            }},
+            "brent": {"kurs": 76.40, "datenstand": "2026-10-14", "perioden": {
+                "5T": 1.10, "1M": -1.90, "3M": 2.25, "6M": -3.50, "1J": 4.75,
+            }},
+        }
+        original_extractor = ENV["_extrahiere_makro_referenzwerte"]
+        ENV["_extrahiere_makro_referenzwerte"] = lambda _source: refs
+        try:
+            fixed, changes = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+                text, briefing, "test-macro-source", edel
+            )
+            wti_fact = next(line for line in fixed.splitlines() if "[AUTORITATIVE QUELLE] WTI:" in line)
+            self.assertIn("Quelle=Makro_Briefing", wti_fact)
+            self.assertIn("Datenstand=14.10.2026", wti_fact)
+            for expected in ("5T=+1,25%", "1M=-2,50%", "3M=+3,75%", "6M=-4,50%", "1J=+5,25%"):
+                self.assertIn(expected, wti_fact)
+            self.assertTrue(any("7.5 WTI: Makro-Quelle, Datenstand" in item for item in changes))
+            self.assertTrue(ENV["_pruefe_quellenperioden_und_positionsduplikate"](
+                fixed, briefing, "test-macro-source", edel
+            ))
+            fixed_again, _ = ENV["_repariere_quellenperioden_und_positionsduplikate"](
+                fixed, briefing, "test-macro-source", edel
+            )
+            wti_fact_again = next(line for line in fixed_again.splitlines() if "[AUTORITATIVE QUELLE] WTI:" in line)
+            self.assertEqual(wti_fact_again, wti_fact)
+        finally:
+            ENV["_extrahiere_makro_referenzwerte"] = original_extractor
+
     def test_missing_mandatory_index_source_fails(self):
         text, briefing, edel = fixture()
         briefing = "\n".join(line for line in briefing.splitlines() if not line.startswith("- DAX:"))
@@ -247,8 +290,9 @@ class SourceGateTests(unittest.TestCase):
 
     def test_future_source_date_fails(self):
         text, briefing, edel = fixture()
-        text = text.replace("Datenstand 14.10.2026", "Datenstand 16.10.2026")
-        briefing = briefing.replace("Datenstand 14.10.2026", "Datenstand 16.10.2026")
+        future_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%d.%m.%Y")
+        text = text.replace("Datenstand 14.10.2026", f"Datenstand {future_date}")
+        briefing = briefing.replace("Datenstand 14.10.2026", f"Datenstand {future_date}")
         with self.assertRaisesRegex(RuntimeError, "Quelldatenstand ist veraltet oder liegt in der Zukunft"):
             ENV["_pruefe_quellenperioden_und_positionsduplikate"](text, briefing, "", edel)
 
