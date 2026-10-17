@@ -7686,6 +7686,41 @@ def _trade_story_alle_kandidaten_treffen(candidate, universe):
     return all(_trade_story_keys_treffen(teil, universe) for teil in teile)
 
 
+def _trade_story_kandidaten_auf_universum_reduzieren(candidate, *universen):
+    """Reduziert ein vermischtes Kandidatenfeld auf explizite autoritative Ticker.
+
+    Gemini kann Kandidatenfelder durch wiederholte Namen, Portfoliokontext,
+    Rohstoffbegriffe und Satzreste zusammenziehen. Ein solcher Gesamtstring
+    darf nicht als eine Kandidatenidentitaet oder als All-of-Pruefung gelten.
+    Diese Funktion greift nur, wenn mindestens zwei Ticker-Tokens enthalten
+    sind. Sie gibt eindeutige Ticker zurueck, die in mindestens einem der
+    uebergebenen autoritativen Universen enthalten sind. Es wird kein Status
+    erfunden; die nachfolgende Statuslogik prueft die Treffer gegen die
+    jeweiligen Universen.
+    """
+    text = str(candidate or "").strip()
+    ticker_tokens = re.findall(r"\(([A-Za-z0-9._=-]{1,30})\)", text)
+    if len(ticker_tokens) < 2:
+        return ""
+    # Statushierarchie beachten: Sobald ein valides Setup eindeutig enthalten
+    # ist, darf ein vorbereiteter/sonstiger Kandidat aus angehaengtem Kontext
+    # dieses Setup nicht wieder auf NUR TEILW. VOLLSTAENDIG herunterziehen.
+    priority_universes = [u for u in universen if isinstance(u, set)]
+    for universe in priority_universes:
+        found = []
+        seen = set()
+        for ticker in ticker_tokens:
+            normalized = _normalisiere_ticker(ticker)
+            if not normalized or normalized in seen:
+                continue
+            if normalized in universe:
+                seen.add(normalized)
+                found.append(ticker.strip())
+        if found:
+            return " | ".join(found)
+    return ""
+
+
 def _trade_story_zentrales_universum(eingabedateien):
     """Liest valid/prepared Kandidaten aus dem zentralen Tages-Snapshot."""
     path = eingabedateien.get("Trade_Story_Universum(...).json")
@@ -7978,6 +8013,26 @@ def _trade_story_deterministische_reparatur(text, eingabedateien, beobachtungsli
         # KAUFKANDIDAT C bleibt dagegen ein regulärer Kandidatenstatus.
         candidate = re.sub(r"\s*\[KEIN\s+KANDIDAT[^\]]*\]", "", candidate, flags=re.I).strip()
 
+        # Gemini kann das Kandidatenfeld mit wiederholten Titeln, Portfoliobestand
+        # und Satzresten verkleben. Bei mehreren expliziten Tickerangaben wird
+        # das Feld auf die in den autoritativen Tagesuniversen belegten Ticker
+        # reduziert, bevor der Status ermittelt wird. Insbesondere darf ein
+        # vorhandenes VALIDE SETUP nicht durch nicht zugehoerige Zusatznamen
+        # in derselben Zeichenkette als NUR TEILW. VOLLSTAENDIG erscheinen.
+        bereinigte_kandidaten = _trade_story_kandidaten_auf_universum_reduzieren(
+            candidate,
+            valid_keys,
+            zentrale_prepared_keys,
+            beobachtungs_keys,
+            bestehende_kandidaten_keys,
+        )
+        if bereinigte_kandidaten:
+            # Nur den Kandidatenwert im Arbeitsspeicher aktualisieren. Den Textblock
+            # hier noch NICHT mit den Offsets von name_m umschreiben: candidate
+            # kann deutlich kuerzer als der urspruengliche Gemini-String sein und
+            # wuerde sonst alle nachfolgenden Felder/Abschnitte verschieben.
+            candidate = bereinigte_kandidaten
+
         # Technischer Status wird ausschliesslich aus Kandidatenexistenz und
         # autoritativ bestaetigtem Setup abgeleitet. Die interne Quelle darf
         # weiterhin VALIDE SETUP/VORBEREITET fuehren; nach aussen gibt es nur
@@ -8006,7 +8061,22 @@ def _trade_story_deterministische_reparatur(text, eingabedateien, beobachtungsli
         block = re.sub(r"(?im)^Status\s*:\s*(INTERESSANT|VORBEREITET|VALIDE SETUP|NUR TEILW\. VOLLSTAENDIG|VALIDER SETUP)\s*$", "", block)
         block = block.rstrip() + "\n" + status_line + "\n"
         if name_m:
-            block = block[:name_m.start(1)] + (candidate or "kein bestehender autoritativer Kandidat vorhanden") + block[name_m.end(1):]
+            # Kandidatenfeld genau einmal und anhand des aktuellen Textes ersetzen.
+            # Keine alten Match-Offsets verwenden, da der Block inzwischen durch
+            # Statusbereinigung/Normalisierung veraendert worden sein kann.
+            feldname = name_m.group(0).split(":", 1)[0].strip()
+            feldwert = candidate or "kein bestehender autoritativer Kandidat vorhanden"
+            block, ersetzt = re.subn(
+                rf"(?im)^({re.escape(feldname)}\s*:\s*).*$",
+                lambda m: m.group(1) + feldwert,
+                block,
+                count=1,
+            )
+            if ersetzt != 1:
+                raise RuntimeError(
+                    "TRADE_STORY_KANDIDATENFELD_NICHT_EINDEUTIG: "
+                    f"Feld '{feldname}' konnte nicht exakt einmal ersetzt werden."
+                )
 
         # Auf nicht-validen Ebenen keine Kauf-/Entry-Sprache stehen lassen.
         if status != "VALIDER SETUP":
