@@ -8269,10 +8269,36 @@ def _bereinige_doppelte_ausgabestruktur(text, required):
         blocks_by_key[key]["canonical"] = occurrence["canonical"]
         body = body.strip("\r\n")
         if body.strip():
+            # Known fallback paragraphs are removed only when the same logical
+            # section also contains substantive analysis. A fallback-only
+            # section remains explicit; real or conflicting analyses are kept.
+            paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
+            substantive = [part for part in paragraphs if not re.match(
+                r"(?is)^Keine\s+belastbare\s+(?:Gegen(?:ueber|über)stellung|fachliche Aussage|Prüfung|Risikobewertung)\b", part
+            )]
+            if substantive:
+                paragraphs = substantive
+                body = "\n\n".join(paragraphs)
             # Do not discard substantive material. Only exact repeated bodies
             # are deduplicated; separate or conflicting content is retained.
             if body not in blocks_by_key[key]["bodies"]:
                 blocks_by_key[key]["bodies"].append(body)
+
+    # Remove a known fallback paragraph only if the merged logical section
+    # also contains real analysis. Fallback-only sections remain explicit.
+    fallback_start = re.compile(
+        r"(?is)^Keine\s+belastbare\s+(?:Gegen(?:ueber|über)stellung|fachliche Aussage|Prüfung|Risikobewertung)\b"
+    )
+    for block in blocks_by_key.values():
+        paragraphs = [
+            part.strip()
+            for body in block["bodies"]
+            for part in re.split(r"\n\s*\n", body)
+            if part.strip()
+        ]
+        substantive = [part for part in paragraphs if not fallback_start.match(part)]
+        if substantive:
+            block["bodies"] = ["\n\n".join(substantive)]
 
     rebuilt = [preamble.rstrip("\r\n")]
     required_keys = []
