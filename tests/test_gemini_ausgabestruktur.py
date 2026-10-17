@@ -121,6 +121,17 @@ class WholeStructureRegression(unittest.TestCase):
                 ]
                 self.assertEqual(actual_order, REQUIRED)
 
+    def test_known_fallback_paragraph_is_removed_but_original_analysis_kept(self):
+        heading = "6.1 Makro gegen Technik"
+        fallback = ("Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, "
+                    "weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren "
+                    "Angaben in den vorliegenden Projektquellen vorliegen.")
+        source = (heading + "\nSubstanzielle Originalanalyse bleibt erhalten.\n\n" + fallback + "\n")
+        repaired = quiet_repair(source, required=[heading])
+        self.assertIn("Substanzielle Originalanalyse bleibt erhalten.", repaired)
+        self.assertNotIn("Keine belastbare Gegenüberstellung", repaired)
+        self.assertEqual(quiet_repair(repaired, required=[heading]), repaired)
+
     def test_production_33_duplicate_and_known_heading_variant_preserve_both_analyses(self):
         source = valid_report()
         heading = "3.3 Politik → Branche → Aktie"
