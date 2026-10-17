@@ -8222,139 +8222,91 @@ def _repariere_doppelte_3_3(text):
 
 
 def _bereinige_doppelte_ausgabestruktur(text, required):
-    """Bereinigt doppelte Pflichtabschnitte konservativ vor dem Speichern.
+    """Repariert die gesamte Pflichtstruktur zentral und inhaltsbewahrend.
 
-    Die Erkennung erfolgt über die verbindliche Sektion plus bekannte
-    Schreibvarianten. Ein vorhandener echter Analyseblock wird nie
-    überschrieben. Ein reiner Fallback wird entfernt, wenn für dieselbe
-    Sektion bereits echter Inhalt vorhanden ist. Zwei echte Inhalte derselben
-    Sektion sind ein harter Fehler. Bei einem einzigen vorhandenen Block wird
-    nur dessen Überschrift auf die verbindliche Schreibweise normalisiert; der
-    Blockinhalt bleibt unverändert.
+    Alle erkannten Pflichtabschnitte werden anhand von ``required``
+    kanonisiert und in Sollreihenfolge gebracht. Mehrfach vorkommende
+    Abschnitte werden zusammengeführt; unterschiedliche Inhaltsblöcke
+    bleiben erhalten. Identische doppelte Inhalte werden nur einmal geführt.
+    Die Funktion ist idempotent und enthält keinen 3.3-Sonderpfad.
     """
-    result = _repariere_doppelte_3_3(text or "")
+    source = text or ""
+    if not source.strip():
+        return source
 
-    def find_headings(value):
-        occurrences = []
-        offset = 0
-        for line in value.splitlines(keepends=True):
-            line_without_eol = line.rstrip("\r\n")
-            match = _ausgabe_heading_key(line_without_eol, required)
-            if match:
-                key, canonical = match
-                occurrences.append(
-                    {
-                        "key": key,
-                        "canonical": canonical,
-                        "start": offset,
-                        "line_end": offset + len(line),
-                        "line": line,
-                    }
-                )
-            offset += len(line)
-        return occurrences
+    # Pflichtüberschriften und Abschnittsgrenzen zentral erkennen.
+    occurrences = []
+    offset = 0
+    for line in source.splitlines(keepends=True):
+        line_body = line.rstrip("\r\n")
+        heading = _ausgabe_heading_key(line_body, required)
+        if heading:
+            key, canonical = heading
+            occurrences.append({
+                "key": key,
+                "canonical": canonical,
+                "start": offset,
+                "line_end": offset + len(line),
+                "line": line,
+            })
+        offset += len(line)
 
-    while True:
-        occurrences = find_headings(result)
-        by_key = {}
-        for occurrence in occurrences:
-            by_key.setdefault(occurrence["key"], []).append(occurrence)
+    if not occurrences:
+        return source
 
-        changed = False
-        for key, items in by_key.items():
-            if len(items) <= 1:
-                continue
+    preamble = source[:occurrences[0]["start"]]
+    blocks_by_key = {}
+    ordered_keys = []
+    for index, occurrence in enumerate(occurrences):
+        block_end = (occurrences[index + 1]["start"]
+                     if index + 1 < len(occurrences) else len(source))
+        body = source[occurrence["line_end"]:block_end]
+        key = occurrence["key"]
+        if key not in blocks_by_key:
+            blocks_by_key[key] = {"canonical": occurrence["canonical"], "bodies": []}
+            ordered_keys.append(key)
+        # Canonical heading is always supplied from the central required list.
+        blocks_by_key[key]["canonical"] = occurrence["canonical"]
+        body = body.strip("\r\n")
+        if body.strip():
+            # Do not discard substantive material. Only exact repeated bodies
+            # are deduplicated; separate or conflicting content is retained.
+            if body not in blocks_by_key[key]["bodies"]:
+                blocks_by_key[key]["bodies"].append(body)
 
-            blocks = []
-            for idx, item in enumerate(items):
-                later_starts = [
-                    occurrence["start"]
-                    for occurrence in occurrences
-                    if occurrence["start"] > item["start"]
-                ]
-                block_end = min(later_starts) if later_starts else len(result)
-                block = result[item["start"]:block_end]
-                body = block[item["line_end"] - item["start"]:].strip()
-                known_fallbacks = {
-                    "Keine relevanten Erkenntnisse.",
-                    "Keine belastbare fachliche Aussage aus den vorliegenden Projektquellen ableitbar, ohne nicht verifizierte Daten zu ergänzen.",
-                    'Keine belastbare Gegenüberstellung von Makro- und Techniksignalen möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
-                    'Keine belastbare Gegenüberstellung von Rohstofftreibern und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
-                    'Keine belastbare Gegenüberstellung von Sektor und einzelner Aktie möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
-                    'Keine belastbare Gegenüberstellung von Technik und Fundamentaldaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
-                    'Keine belastbare Prüfung der Investmentthese gegen aktuelle Marktdaten möglich, weil für diesen Abschnitt keine verifizierbaren, gemeinsam auswertbaren Angaben in den vorliegenden Projektquellen vorliegen.',
-                    'Keine belastbare Risikobewertung bestehender Ideen möglich, weil für diesen Abschnitt keine verifizierbaren, konkret zuordenbaren Angaben in den vorliegenden Projektquellen vorliegen.',
-                    'Keine belastbaren Aktivierungs- oder Invalidierungsbedingungen aus den vorliegenden Projektquellen ableitbar; es werden deshalb keine Trigger erfunden.',
-                    'Keine verifizierbaren technischen Trigger aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Kursmarken oder Signale erfunden.',
-                    'Keine verifizierten Branchenereignisse aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine oder Ereignisse erfunden.',
-                    'Keine verifizierten Makrotermine aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine, Daten oder Ereignisse erfunden.',
-                    'Keine verifizierten Unternehmensveranstaltungen oder Unternehmensmeldungen aus den vorliegenden Projektquellen verfügbar; es werden deshalb keine Termine erfunden.',
-                }
-                blocks.append(
-                    {
-                        "item": item,
-                        "end": block_end,
-                        "body": body,
-                        # Leere Titelstubs und exakt bekannte Ein-Zeilen-Fallbacks
-                        # sind entfernbar. Jeder Block mit weiterem Inhalt bleibt
-                        # ein echter Inhaltsblock und wird niemals still verworfen.
-                        "fallback": (not body) or (body in known_fallbacks),
-                    }
-                )
+    rebuilt = [preamble.rstrip("\r\n")]
+    required_keys = []
+    for canonical in required:
+        heading = _ausgabe_heading_key(canonical, required)
+        if heading:
+            required_keys.append(heading[0])
 
-            real_indices = [
-                idx for idx, block in enumerate(blocks)
-                if not block["fallback"]
-            ]
-            fallback_indices = [
-                idx for idx, block in enumerate(blocks)
-                if block["fallback"]
-            ]
+    # The first recognized occurrence of each key is emitted once, in the
+    # central required order. Existing content is kept with its section.
+    emitted = set()
+    for key in required_keys:
+        block = blocks_by_key.get(key)
+        if not block or key in emitted:
+            continue
+        emitted.add(key)
+        section_parts = [block["canonical"]]
+        if block["bodies"]:
+            section_parts.append("\n\n".join(block["bodies"]))
+        rebuilt.append("\n".join(section_parts).rstrip())
 
-            if len(real_indices) > 1:
-                raise RuntimeError(
-                    "DOPPELTE_AUSGABESTRUKTUR_ECHTE_INHALTE: "
-                    + blocks[real_indices[0]]["item"]["canonical"]
-                )
+    # Preserve recognized sections not listed in the current required schema
+    # rather than silently deleting their content.
+    for key in ordered_keys:
+        if key in emitted:
+            continue
+        block = blocks_by_key[key]
+        section_parts = [block["canonical"]]
+        if block["bodies"]:
+            section_parts.append("\n\n".join(block["bodies"]))
+        rebuilt.append("\n".join(section_parts).rstrip())
 
-            if real_indices:
-                remove_indices = fallback_indices
-            else:
-                # Mehrere reine Fallback-Blöcke werden auf genau einen reduziert.
-                remove_indices = list(range(1, len(blocks)))
-
-            for idx in reversed(remove_indices):
-                start = blocks[idx]["item"]["start"]
-                end = blocks[idx]["end"]
-                result = result[:start] + result[end:]
-                changed = True
-
-            if changed:
-                break
-
-        if not changed:
-            break
-
-    # Nur die Überschrift wird kanonisiert; der Analyseinhalt bleibt byteweise
-    # unverändert. Dadurch werden Schreibvarianten vor der exakten Prüfung
-    # deterministisch vereinheitlicht.
-    occurrences = find_headings(result)
-    replacements = []
-    for occurrence in occurrences:
-        canonical = occurrence["canonical"]
-        current_line = occurrence["line"]
-        line_body = current_line.rstrip("\r\n")
-        newline = current_line[len(line_body):]
-        if line_body.strip() != canonical:
-            replacements.append(
-                (occurrence["start"], occurrence["line_end"], canonical + newline)
-            )
-
-    for start, end, replacement in reversed(replacements):
-        result = result[:start] + replacement + result[end:]
-
+    result = "\n\n".join(part for part in rebuilt if part).rstrip() + "\n"
     return result
-
 
 
 def _inhaltlicher_abgrenzungstext():
@@ -8685,16 +8637,9 @@ def _repariere_7_5_rohstoffe_aus_makroquelle(text, makro_text):
     secured_result, lithium_changed = _sichere_lithium_te_in_7_5(result, lithium_te)
     return secured_result, True or lithium_changed
 
-def _ergaenze_fehlende_ausgabestruktur(text):
-    """Fügt nur fehlende Pflichtabschnitte 1–11.7 positionsgenau ein.
-
-    Bereits vorhandene Gemini-Ausgabe bleibt unverändert. Für 11.7 wird ein
-    inhaltlicher, deterministischer Abgrenzungstext verwendet; andere fehlende
-    Pflichtabschnitte behalten ihren bisherigen Fallback.
-    Bekannte Schreibvarianten vorhandener Pflichtüberschriften werden nicht
-    fälschlich als fehlende Sektionen behandelt.
-    """
-    required = [
+def _ausgabe_pflichtstruktur():
+    """Zentrale Sollstruktur der Auswertung; Reparatur und Final-Gate nutzen dieselbe Liste."""
+    return [
         "NEUBER MACRO & MARKETS",
         "1. 🔥 WAS KÖNNTE GELD VERDIENEN?",
         "1.1 Was hat sich seit dem letzten Lauf verändert?",
@@ -8756,6 +8701,26 @@ def _ergaenze_fehlende_ausgabestruktur(text):
         "11.6 Hinweise zur Interpretation",
         "11.7 Abgrenzung:",
     ]
+
+
+def _repariere_gesamte_ausgabestruktur(text, required=None):
+    """Repariert und normalisiert die vollständige Pflichtstruktur zentral.
+
+    Die Sollstruktur ist ``required`` (standardmäßig die vollständige
+    Ausgabepflichtstruktur 1–11.7). Erkannt werden fehlende, doppelte,
+    verschobene und bekannte abweichend geschriebene Pflichtüberschriften.
+    Fachliche Abschnittsinhalte werden mit ihrer Sektion zusammengeführt und
+    nicht durch einen 3.3-spezifischen Reparaturpfad ersetzt.
+    """
+    required = list(required if required is not None else _ausgabe_pflichtstruktur())
+    if not required:
+        raise RuntimeError("AUSGABESTRUKTUR_SCHEMA_LEER: keine Pflichtüberschriften definiert")
+    required_keys = [_ausgabe_heading_key(heading, required) for heading in required]
+    if any(item is None for item in required_keys):
+        raise RuntimeError("AUSGABESTRUKTUR_SCHEMA_UNGUELTIG: Pflichtüberschrift nicht erkennbar")
+    keys = [item[0] for item in required_keys]
+    if len(keys) != len(set(keys)):
+        raise RuntimeError("AUSGABESTRUKTUR_SCHEMA_UNGUELTIG: doppelte Pflichtsektion im Schema")
 
     result = _bereinige_doppelte_ausgabestruktur(text or "", required)
 
@@ -8835,14 +8800,15 @@ def _ergaenze_fehlende_ausgabestruktur(text):
         "INFO: Fehlende Pflichtabschnitte deterministisch ergaenzt: "
         + ", ".join(fehlend)
     )
-    # Pflichtabschnittsergaenzung kann nach einer vorangegangenen 3.3-Reparatur
-    # denselben kanonischen Fallback erneut einsetzen, wenn die urspruengliche
-    # Gemini-Ueberschrift nicht als Pflichtueberschrift erkannt wurde. Deshalb
-    # muss die bekannte 3.3-Produktionsregression NACH dem Einsetzen fehlender
-    # Abschnitte nochmals zusammengefuehrt werden. Andere echte Doppelungen
-    # bleiben unveraendert und werden vom Final-Gate weiterhin abgelehnt.
-    result = _repariere_doppelte_3_3(result)
-    return result
+    # Nach dem Einfügen fehlender Abschnitte die komplette Pflichtstruktur
+    # erneut zentral normalisieren. Das umfasst Reihenfolge und Duplikate aller
+    # Sektionen; es gibt keinen 3.3-spezifischen Abschlussweg.
+    return _bereinige_doppelte_ausgabestruktur(result, required)
+
+
+def _ergaenze_fehlende_ausgabestruktur(text):
+    """Kompatibilitaetswrapper: alle Strukturreparaturen zentral ausfuehren."""
+    return _repariere_gesamte_ausgabestruktur(text)
 
 
 def _pruefe_neue_ausgabestruktur(text):
@@ -8852,68 +8818,7 @@ def _pruefe_neue_ausgabestruktur(text):
     zugeordnet; nach der Normalisierung muss jede Sektion exakt einmal und mit
     der verbindlichen Überschrift vorhanden sein.
     """
-    required = [
-        "NEUBER MACRO & MARKETS",
-        "1. 🔥 WAS KÖNNTE GELD VERDIENEN?",
-        "1.1 Was hat sich seit dem letzten Lauf verändert?",
-        "1.2 Sofort handelbare Chancen",
-        "1.3 Ideen im Aufbau",
-        "1.4 Frühindikatoren / neue Themen",
-        "2. 🎯 KONKRETE TRADES",
-        "2.1 Trendfolge",
-        "2.2 Trendwende",
-        "2.3 Short",
-        "2.4 HebelTrader",
-        "2.5 Sonstige durch Gemini erkannte Chancen",
-        "3. 🧠 THEMEN & ZUSAMMENHÄNGE",
-        "3.1 Makro → Branche → Aktie",
-        "3.2 Rohstoff → Branche → Aktie",
-        "3.3 Politik → Branche → Aktie",
-        "3.4 Technologie → Branche → Aktie",
-        "3.5 Unternehmens-/Fundamentaldaten → Aktie",
-        "4. 🔭 IDEEN IM AUFBAU",
-        "5. 🥇 AKTIEN MIT FRÜHEM SIGNAL",
-        "6. ⚠️ WIDERSPRÜCHE & RISIKEN",
-        "6.1 Makro gegen Technik",
-        "6.2 Technik gegen Fundamentaldaten",
-        "6.3 Sektor gegen Aktie",
-        "6.4 Rohstoff gegen Aktie",
-        "6.5 Investmentthese gegen aktuelle Marktdaten",
-        "6.6 Risiken bestehender Ideen",
-        "7. 🌍 MARKT- & MAKROKONTEXT",
-        "7.1 Aktienmärkte / Indizes",
-        "7.2 Zinsen",
-        "7.3 Volatilität",
-        "7.4 FX",
-        "7.5 Rohstoffe",
-        "7.6 Krypto",
-        "7.7 Konjunktur / Makro",
-        "8. 🪙 EDELMETALLE",
-        "8.1 Gold",
-        "8.2 Silber",
-        "8.3 Platin",
-        "8.4 Palladium",
-        "9. 📅 NÄCHSTE KATALYSATOREN",
-        "9.1 Makrotermine",
-        "9.2 Unternehmen",
-        "9.3 Branchenereignisse",
-        "9.4 Technische Trigger",
-        "9.5 Mögliche Aktivierung / Invalidierung",
-        "10. 💼 BESTEHENDES PORTFOLIO",
-        "10.1 Sofortiger Handlungsbedarf",
-        "10.2 Stop-/TP-Änderungen",
-        "10.3 Positionen mit neuer Investmentthese",
-        "10.4 Positionen, deren These schwächer wird",
-        "10.5 Geschlossene Positionen",
-        "11. METHODIK / DATENQUALITÄT",
-        "11.1 Datenstatus",
-        "11.2 Makro-Szenario-Status",
-        "11.3 Datenlücken",
-        "11.4 externe Quellen",
-        "11.5 technische / fundamentale Datenqualität",
-        "11.6 Hinweise zur Interpretation",
-        "11.7 Abgrenzung:",
-    ]
+    required = _ausgabe_pflichtstruktur()
 
     canonical_counts = {heading: 0 for heading in required}
     section_counts = {heading: 0 for heading in required}
