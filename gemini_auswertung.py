@@ -12787,15 +12787,34 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
 
     lage = {}
     missing = []
-    for asset, _ticker in assets.values():
-        line_match = re.search(
-            r"(?m)^\s*" + re.escape(asset) + r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|([^\n]*)$",
-            lage_block,
+    for asset, expected_ticker in assets.values():
+        # Eine Asset-Zeile muss genau einmal im LAGE-Block vorkommen. Bei
+        # Duplikaten ist die Quellenzuordnung mehrdeutig und wird nicht geraten.
+        row_pattern = re.compile(
+            r"(?m)^\s*" + re.escape(asset) + r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|([^\n]*)$"
         )
-        if not line_match:
-            missing.append(f"{asset}: Kurs")
+        source_rows = list(row_pattern.finditer(lage_block))
+        if len(source_rows) != 1:
+            missing.append(
+                f"{asset}: Kurs-Zuordnung nicht eindeutig (Quellzeilen={len(source_rows)}; erwartet 1; Ticker={expected_ticker})"
+            )
             continue
+        line_match = source_rows[0]
         kurs_raw = line_match.group(1)
+        kurs_numeric = _quellenwert_float(kurs_raw)
+        if kurs_numeric is None or not math.isfinite(kurs_numeric):
+            missing.append(f"{asset}: Kurswert nicht numerisch parsebar ({kurs_raw!r}; Ticker={expected_ticker})")
+            continue
+        # Wenn die Quellzeile selbst einen Ticker explizit nennt, muss er zur
+        # fest verdrahteten Metallzuordnung passen. Fehlende Ticker-Metadaten
+        # sind erlaubt; widersprüchliche Angaben nicht.
+        source_line = line_match.group(0)
+        ticker_tokens = re.findall(r"(?<![A-Z0-9])(?:GC=F|SI=F|PL=F|PA=F)(?![A-Z0-9])", source_line, re.I)
+        if ticker_tokens and any(token.upper() != expected_ticker.upper() for token in ticker_tokens):
+            missing.append(
+                f"{asset}: Ticker-Konflikt in Quellzeile (gefunden={ticker_tokens}; erwartet={expected_ticker})"
+            )
+            continue
         detail_4w = _extract_metal_4w_value(lage_block, asset)
         chosen_4w = _waehle_edelmetall_4w(detail_4w)
         if chosen_4w is None:
@@ -13105,23 +13124,49 @@ def _repariere_1_1_rohstoffperioden(text, briefing_text, previous_report_path=No
     values = {asset: _pct_aus_quellenzeile(briefing_text, asset) for asset in ("WTI", "Brent")}
     gold_4w = _edelmetall_4w_value(edelmetall_text or "", "Gold")
     values["Gold"] = gold_4w[1] if gold_4w is not None else None
+    # Kurswerte werden als Rohstring aus genau der metallbezogenen Quellzeile
+    # gelesen. Keine Suche im gesamten Briefing und kein float-Roundtrip: das
+    # verhindert, dass benachbarte Zahlen/Metalle oder bereits formatierte
+    # Reportwerte in den Kurs geraten.
     gold_row = _edelmetall_lage_zeile(edelmetall_text or "", "Gold")
-    gold_price_match = re.search(r"(?i)\bKurs\s+([-+]?\d[\d.,]*)", gold_row or "")
-    gold_price = _quellenwert_float(gold_price_match.group(1)) if gold_price_match else None
+    gold_price_match = re.fullmatch(
+        r"Gold:\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|.*",
+        gold_row or "",
+    )
+    gold_price_raw = gold_price_match.group(1) if gold_price_match else None
+    gold_price = _quellenwert_float(gold_price_raw) if gold_price_raw else None
+    metal_prices = {}
+    for metal in ("Gold", "Silber", "Platin", "Palladium"):
+        row = _edelmetall_lage_zeile(edelmetall_text or "", metal)
+        row_match = re.fullmatch(
+            re.escape(metal) + r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|.*",
+            row or "",
+        )
+        raw_price = row_match.group(1) if row_match else None
+        numeric_price = _quellenwert_float(raw_price) if raw_price else None
+        if raw_price and numeric_price is not None and math.isfinite(numeric_price):
+            metal_prices[metal] = numeric_price
     start = re.search(r"(?m)^\s*1\.1\s+Was hat sich seit dem letzten Lauf verändert\?\s*$", text or "")
     end = re.search(r"(?m)^\s*1\.2\s+Sofort handelbare Chancen\s*$", text or "")
     if not (start and end and start.start() < end.start()):
         return text
     block = text[start.start():end.start()]
-    if gold_price is not None:
-        # Nur den Kurswert in einer expliziten Gold-Notierung ersetzen; Interpretation
-        # und Satzstruktur bleiben Gemini überlassen.
-        block = re.sub(
-            r"(?i)(Gold\s+notiert\s+bei\s+)([-+]?\d[\d.,]*)(?=\s*(?:USD|\$))",
-            lambda mm: mm.group(1) + f"{gold_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-            block,
-            count=1,
+    # Kursnennungen im Marktüberblick werden je Metall anhand des exakten
+    # Namens aus der jeweiligen LAGE-JE-METALL-Quellzeile synchronisiert. Die
+    # komplette beschädigte Zahl wird ersetzt (nicht nur ein Präfix), damit
+    # zusammengezogene Werte wie 4181.104181,10USD verschwinden.
+    for metal, source_price in metal_prices.items():
+        display_price = f"{source_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        patterns = (
+            r"(?i)(\b" + re.escape(metal) + r"\s+notiert\s+bei\s+)[+-]?[\d.,]+(?=\s*(?:USD|\$))",
+            r"(?i)(\b" + re.escape(metal) + r"\s+)[+-]?[\d.,]+(?=\s*(?:USD|\$))",
         )
+        total_replacements = 0
+        for pattern in patterns:
+            block, n = re.subn(pattern, lambda mm: mm.group(1) + display_price, block)
+            total_replacements += n
+        if total_replacements:
+            print(f"EDELMETALL_KURS_REPARIERT | {metal} | Quelle=Edelmetalle-Briefing | Ersetzungen={total_replacements}")
     replacements = [
         (r"(WTI-Öl\s+mit\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:auf\s+)?4-Wochen-Sicht", values.get("WTI")),
         (r"(Brent-Öl\s+bei\s+[^(\n]+\()\s*[+-]?\d+(?:[.,]\d+)?%\s+(?:auf\s+)?4-Wochen-Sicht", values.get("Brent")),
@@ -14380,6 +14425,68 @@ def _repariere_makro_und_edelmetall_konsistenz(text, makro_text, edel_text):
 
     return text, changes
 
+
+def _repariere_1_1_wti_btc_kurse(text, makro_text):
+    """Ersetzt WTI- und BTC-Kursdarstellungen in 1.1 aus eindeutigen Makrozeilen.
+
+    Quellenformat: `WTI: <Kurs> | ... | SOURCE=CL=F` und
+    `Bitcoin: <Kurs> | ... | SOURCE=BTC-USD`. Andere Kennzahlen/Perioden
+    werden nicht aus diesem Kurswert abgeleitet oder überschrieben.
+    """
+    if not text or not makro_text:
+        return text, []
+    start = re.search(r"(?m)^1\.1\s+Was hat sich seit dem letzten Lauf verändert\?\s*$", text)
+    end = re.search(r"(?m)^1\.2\s+Sofort handelbare Chancen\s*$", text)
+    if not (start and end and start.start() < end.start()):
+        return text, []
+
+    def parse_source(asset, expected_source):
+        candidates = []
+        for line in makro_text.splitlines():
+            m = re.match(r"(?im)^\s*" + re.escape(asset) + r":\s*([-+]?\d[\d.,]*)\s*\|([^\n]*)$", line)
+            if not m:
+                continue
+            tail = m.group(2)
+            source_m = re.search(r"(?i)\bSOURCE\s*=\s*([^|\s]+)", tail)
+            if source_m and source_m.group(1).upper() == expected_source.upper():
+                value = _quellenwert_float(m.group(1))
+                if value is not None and not _quellenwert_ist_mehrdeutig(m.group(1)):
+                    candidates.append((value, m.group(1)))
+        return candidates
+
+    block = text[start.start():end.start()]
+    changes = []
+    for asset, source_id in (("WTI", "CL=F"), ("Bitcoin", "BTC-USD")):
+        values = parse_source(asset, source_id)
+        if len(values) != 1:
+            # Warnung bleibt sichtbar; keine Schätzung/unsichere Quellwahl.
+            if re.search(r"(?i)\b" + re.escape(asset) + r"\b", block):
+                changes.append(f"{asset}: Kurs nicht ersetzt; eindeutige Quelle {source_id} fehlt/mehrdeutig ({len(values)} Treffer)")
+            continue
+        value = values[0][0]
+        display = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        # Repariert ausschließlich die Kursangabe im 1.1-Absatz, nicht 5T/4W
+        # oder technische Schwellen/Moving-Average-Werte.
+        patterns = (
+            r"(?i)(WTI(?:-Öl)?\s*\(?\s*)(?:[-+]?\d[\d.,]*\s*USD?)(?=\s*[;,)])",
+            r"(?i)(Bitcoin\s*\(?\s*)(?:[-+]?\d[\d.,]*\s*USD?)(?=\s*[;,)])",
+        )
+        pat = patterns[0] if asset == "WTI" else patterns[1]
+        block, n = re.subn(pat, lambda m: m.group(1) + display + " USD", block, count=1)
+        if n:
+            changes.append(f"{asset}: Kurs auf Makroquelle {source_id} ({display} USD) gesetzt")
+        else:
+            # Fließtext kann zwischen Assetname und Kurs einen beschreibenden
+            # Satzteil enthalten (WTI-Öl markiert ... (KURSUSD)).
+            if asset == "WTI":
+                bad_pat = r"(?is)(\bWTI(?:-Öl)?\b[^()\n]*?\()\s*[-+]?\d[\d.,]*\s*(USD)"
+            else:
+                bad_pat = r"(?is)(\bBitcoin\s*\()\s*[-+]?\d[\d.,]*\s*(USD)"
+            block, n = re.subn(bad_pat, lambda m: m.group(1) + display + " " + m.group(2), block, count=1)
+            if n:
+                changes.append(f"{asset}: beschädigte Kursdarstellung aus Makroquelle {source_id} ersetzt ({display} USD)")
+    return text[:start.start()] + block + text[end.start():], changes
+
 def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     """Letzter deterministischer Korrekturpass fuer die zuvor festgestellten Fehler."""
     inputs = eingabedateien or {}
@@ -14418,6 +14525,9 @@ def _repariere_auswertung_final(text, eingabedateien=None, closed_history=""):
     text, _perioden_repaired = _repariere_7_performanceperioden(text, macro)
     text = _repariere_punkt10_5_und_portfolio(text, inputs, closed_history)
     text = _synchronisiere_1_1_mit_quellen(text, briefing, text)
+    text, market_price_changes = _repariere_1_1_wti_btc_kurse(text, macro)
+    if market_price_changes:
+        print("1.1_MARKTKURSE_QUELLGEBUNDEN: " + " | ".join(market_price_changes))
     text = _komprimiere_1_2_chancen(text)
     text = _ergaenze_handlungsprioritaet_2_4(text)
 
