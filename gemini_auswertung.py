@@ -16155,6 +16155,19 @@ def speichere_ergebnis(text, eingabedateien=None):
     return ausgabe_datei
 
 
+def _gemini_report_metall_status(report_text):
+    """Extrahiert mehrere Edelmetallstatus als GitHub-Output-Zeichenkette.
+
+    re.findall liefert bei zwei Capture-Gruppen Tupel. Diese werden hier
+    explizit in die bestehende Pipe-getrennte Transportform umgewandelt.
+    """
+    status_paare = re.findall(
+        r"(?m)^EDELMETALL_ROHSTOFF_STATUS=(Gold|Silber|Platin|Palladium)\|(FINAL|NICHT_FINAL)\s*$",
+        str(report_text or ""),
+    )
+    return "|".join(f"{rohstoff}|{status}" for rohstoff, status in status_paare)
+
+
 def _gemini_schreibe_github_outputs(
     status, fachlich_final, auswertung_datei="", edelmetall_status="FINAL",
     edelmetall_befunde="", edelmetall_metall_status="",
@@ -16226,10 +16239,7 @@ if __name__ == "__main__":
     # GitHub-Output darf keine mehrzeilige Payload enthalten; Befunde werden
     # als kompakte, escaped Ein-Zeilen-Information transportiert.
     report_befunde = report_befunde.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    report_metall_status = "|".join(re.findall(
-        r"(?m)^EDELMETALL_ROHSTOFF_STATUS=(Gold|Silber|Platin|Palladium)\|(FINAL|NICHT_FINAL)\s*$",
-        report_text,
-    ))
+    report_metall_status = _gemini_report_metall_status(report_text)
     report_metall_status = report_metall_status.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     _gemini_schreibe_github_outputs(
         "SUCCESS", fachlich_final, os.path.abspath(ausgabe_pfad),
