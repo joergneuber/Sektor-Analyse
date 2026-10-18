@@ -1,3 +1,4 @@
+
 name: tägliche Analyse Sektoren
 
 on:
@@ -416,6 +417,9 @@ jobs:
       - name: Gemini Chunking/Resume Regressionstest
         run: python tests/test_gemini_chunking_reparatur.py
 
+      - name: Gemini Status-/Versand-Regressionstest
+        run: python tests/test_gemini_status_delivery.py
+
       # Resume-Zustand erfolgreicher Gemini-Splits ueberlebt kurzlebige GitHub-Runner.
       # Der Python-Code prueft vor Wiederverwendung den Fingerabdruck aller Quellen.
       - name: Gemini Split Resume wiederherstellen
@@ -443,8 +447,8 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python gemini_auswertung.py
 
-      # Auch bei einem kontrollierten Gemini-Fallback sichern: die erfolgreiche
-      # Split-Antworten und der Fehlerstatus dienen dem naechsten Lauf als Resume.
+      # Auch bei kontrolliertem Gemini-Fallback sichern: erfolgreiche Split-
+      # Antworten und Fehlerstatus dienen dem nächsten Lauf als Resume.
       - name: Gemini Split Resume nach Lauf sichern
         id: gemini-split-resume-save
         if: ${{ always() && hashFiles('.gemini_request_split_resume*') != '' }}
@@ -460,7 +464,7 @@ jobs:
       # darf aber nicht unbemerkt bleiben: Resume ist dann nicht garantiert.
       - name: Warnung bei nicht gespeichertem Gemini Resume
         if: ${{ always() && steps.gemini-split-resume-save.outcome == 'failure' }}
-        run: echo "::warning::Gemini Split Resume konnte nicht im Actions-Cache gespeichert werden; Wiederaufnahme im naechsten Lauf ist nicht garantiert."
+        run: echo "::warning::Gemini Split Resume konnte nicht im Actions-Cache gespeichert werden; Wiederaufnahme im nächsten Lauf ist nicht garantiert."
 
       # ============================================================
       # KOSTENLOSER CHATGPT-FALLBACK BEI GEMINI-TECHNISCHEM AUSFALL
@@ -469,7 +473,7 @@ jobs:
       # Auswertung in ChatGPT. Es wird keine OpenAI-API verwendet und keine
       # Trading-/Setup-Logik verändert.
       - name: ChatGPT-Fallback-Paket erzeugen
-        if: steps.gemini-auswertung.outcome != 'success' || steps.gemini-auswertung.outputs.status != 'SUCCESS' || steps.gemini-auswertung.outputs.fachlich_final != 'FINAL' || hashFiles('Gemini_Fallback_Status*.txt') != ''
+        if: always()
         env:
           GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
           GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
@@ -478,9 +482,11 @@ jobs:
           set -euo pipefail
           fallback_needed=false
 
-          # Nur SUCCESS + FINAL + neue, nichtleere Datei gilt als Erfolg.
+          # SUCCESS + FINAL und SUCCESS + NICHT_FINAL sind technisch gültig.
+          # Fallback nur bei fehlendem/ungültigem Status oder fehlendem,
+          # leerem bzw. nicht in diesem Lauf erzeugtem Report.
           if [ "${GEMINI_STATUS:-}" != "SUCCESS" ] ||
-             [ "${GEMINI_FACHLICH_FINAL:-}" != "FINAL" ] ||
+             { [ "${GEMINI_FACHLICH_FINAL:-}" != "FINAL" ] && [ "${GEMINI_FACHLICH_FINAL:-}" != "NICHT_FINAL" ]; } ||
              [ -z "${GEMINI_AUSWERTUNG_DATEI:-}" ] ||
              [ ! -s "${GEMINI_AUSWERTUNG_DATEI:-/__missing_auswertung__}" ] ||
              [ ! "${GEMINI_AUSWERTUNG_DATEI:-/__missing_auswertung__}" -nt .gemini_auswertung_run_started ]; then
@@ -489,8 +495,8 @@ jobs:
 
           # Ein technischer Gemini-Fallback beendet gemini_auswertung.py
           # bewusst mit Exit 0. Deshalb darf ausschliesslich der Prozess-
-          # Exitcode den Fallback NICHT entscheiden. Die von Gemini erzeugte
-          # Statusdatei ist hier die autoritative Quelle.
+          # Exitcode den Fallback NICHT entscheiden. Die Statusdatei ist
+          # eine zusätzliche Quelle zur Erkennung des technischen Fallbacks.
           if [ "${{ steps.gemini-auswertung.outcome }}" != "success" ]; then
             fallback_needed=true
           fi
@@ -504,12 +510,12 @@ jobs:
 
           if [ "$fallback_needed" = true ]; then
             # Sperren VOR dem Paketbau setzen: selbst wenn der optionale
-            # ChatGPT-Fallback danach fehlschlaegt, darf weder die alte
+            # ChatGPT-Fallback danach fehlschlägt, darf weder die alte
             # Auswertung hochgeladen noch als normale Mail verschickt werden.
             echo "CHATGPT_FALLBACK_ERZEUGT=true" >> "$GITHUB_ENV"
             # upload_to_drive.py soll weiterhin alle normalen Tagesdateien
             # hochladen, aber niemals eine alte Auswertung aus dem Workspace
-            # als aktuelles Ergebnis veroeffentlichen.
+            # als aktuelles Ergebnis veröffentlichen.
             echo "SKIP_AUSWERTUNG_UPLOAD=true" >> "$GITHUB_ENV"
             python chatgpt_fallback_paket.py
           else
@@ -526,8 +532,9 @@ jobs:
           path: CHATGPT_FALLBACK_*.zip
           if-no-files-found: error
 
-      # Kein Tagesstatus und keine normale Auswertung ohne echten Erfolg der aktuellen Ausführung.
-      - name: Neue Auswertung FINAL und frisch verifizieren
+      # Technischen Erfolg und fachlichen Status getrennt prüfen.
+      # FINAL und NICHT_FINAL sind beide aktuelle, versendbare Reports.
+      - name: Neue Auswertung technisch gültig und frisch verifizieren
         id: gemini-finality-check
         if: always()
         env:
@@ -541,8 +548,9 @@ jobs:
             echo "FINALITY_CHECK=FAIL | Gemini-Schritt endete mit $GEMINI_STEP_OUTCOME"
             exit 1
           fi
-          if [ "$GEMINI_STATUS" != "SUCCESS" ] || [ "$GEMINI_FACHLICH_FINAL" != "FINAL" ]; then
-            echo "FINALITY_CHECK=FAIL | Status=$GEMINI_STATUS | FACHLICH_FINAL=$GEMINI_FACHLICH_FINAL"
+          if [ "$GEMINI_STATUS" != "SUCCESS" ] ||
+             { [ "$GEMINI_FACHLICH_FINAL" != "FINAL" ] && [ "$GEMINI_FACHLICH_FINAL" != "NICHT_FINAL" ]; }; then
+            echo "REPORT_CHECK=FAIL | Status=$GEMINI_STATUS | FACHLICH_FINAL=$GEMINI_FACHLICH_FINAL"
             exit 1
           fi
           if [ -z "$GEMINI_AUSWERTUNG_DATEI" ] || [ ! -s "$GEMINI_AUSWERTUNG_DATEI" ]; then
@@ -553,7 +561,12 @@ jobs:
             echo "FINALITY_CHECK=FAIL | Auswertung wurde in diesem Lauf nicht neu geschrieben"
             exit 1
           fi
-          echo "FINALITY_CHECK=PASS | neue, nichtleere Auswertung und FINAL-Marker bestaetigt"
+          report_status="$(grep -E '^FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$GEMINI_AUSWERTUNG_DATEI" | tail -n 1 | cut -d= -f2 || true)"
+          if [ "$report_status" != "$GEMINI_FACHLICH_FINAL" ]; then
+            echo "REPORT_CHECK=FAIL | Output-Status und Report-Marker stimmen nicht überein."
+            exit 1
+          fi
+          echo "REPORT_CHECK=PASS | aktueller, nichtleerer Report; fachlicher Status=$report_status"
 
       # YouTube-States erst sichern, wenn die Gemini-Auswertung tatsächlich
       # erfolgreich erstellt wurde. Bei einem Fehler bleiben neue Videos
@@ -584,6 +597,10 @@ jobs:
         if: always()
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
+          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
+          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
+          GEMINI_REPORT_CHECK_OUTCOME: ${{ steps.gemini-finality-check.outcome }}
         run: python upload_to_drive.py
 
       # ============================================================
@@ -591,13 +608,17 @@ jobs:
       # ============================================================
 
       - name: Auswertung per E-Mail versenden
-        if: steps.gemini-auswertung.outcome == 'success' && env.CHATGPT_FALLBACK_ERZEUGT != 'true'
+        if: steps.gemini-auswertung.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && steps.gemini-finality-check.outcome == 'success'
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
+          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
+          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
+          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
+          GEMINI_REPORT_CHECK_OUTCOME: ${{ steps.gemini-finality-check.outcome }}
         run: python send_mail.py
 
       # Bei einem technischen Gemini-Ausfall wird KEINE normale Auswertung
@@ -667,16 +688,16 @@ jobs:
           print(f"Technische Gemini-Fallback-Mail versendet: {status_file.name}")
           PY
 
-      # Erfolgreichen Tageslauf erst nach dem vollständigen Hauptlauf markieren.
-      # Fehlgeschlagene Läufe setzen keinen Tagesstatus. Ein erfolgreicher Lauf
-      # erledigt den Tag unabhängig davon, ob er automatisch oder manuell gestartet wurde.
+      # Tageslauf nach technisch gültigem und versendbarem Report markieren.
+      # FINAL und NICHT_FINAL gelten als abgeschlossener Tageslauf; technische
+      # Ausfälle/Fallbacks oder fehlgeschlagene Folgeschritte setzen keinen Tagesstatus.
       - name: Erfolgreichen Tageslauf markieren
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' }}
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && (steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' || steps.gemini-auswertung.outputs.fachlich_final == 'NICHT_FINAL') }}
         run: |
           date -u +%Y-%m-%d > .daily_main_run_state
 
       - name: Tagesstatus nach Erfolg speichern
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' }}
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && (steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' || steps.gemini-auswertung.outputs.fachlich_final == 'NICHT_FINAL') }}
         uses: actions/cache/save@v5
         with:
           path: .daily_main_run_state
