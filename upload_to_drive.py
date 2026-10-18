@@ -1,9 +1,5 @@
 import os
 import json
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 
 print(f"Aktuelles Arbeitsverzeichnis: {os.getcwd()}")
 print("Gefundene Dateien im Ordner:")
@@ -11,6 +7,10 @@ print(os.listdir('.'))
 
 
 def get_drive_service():
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+
     """Baut den Drive-Service auf und sorgt dafür, dass der Access-Token
     aktuell ist - inklusive klarer Fehlermeldungen, falls das Refreshen
     fehlschlägt (z.B. weil das Secret unvollständig ist oder der Google-
@@ -79,7 +79,23 @@ def get_drive_service():
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
+
+def validierter_gemini_report(status, fachlich_final, report_path, report_check, skip_upload=False):
+    """Gibt nur den exakt geprüften aktuellen Reportpfad zur Veröffentlichung frei."""
+    if skip_upload or status != "SUCCESS" or fachlich_final not in {"FINAL", "NICHT_FINAL"}:
+        return None
+    if report_check != "success" or not report_path:
+        return None
+    if not os.path.isfile(report_path) or os.path.getsize(report_path) == 0:
+        return None
+    name = os.path.basename(report_path)
+    if "Auswertung" not in name or not name.endswith(".txt"):
+        return None
+    return report_path
+
 def upload_file(filename, folder_id, service):
+    from googleapiclient.http import MediaFileUpload
+
     # Sicherheitsreihenfolge: Die bestehende Datei wird NICHT vor dem Upload
     # gelöscht. Ein transienter Drive-/SSL-Timeout darf niemals dazu führen,
     # dass der letzte erfolgreiche Stand verloren geht. Erst nach bestätigtem
@@ -165,7 +181,30 @@ if __name__ == '__main__':
     # Kopie niemals wieder nach Drive hochladen und damit einen neueren Stand
     # (z.B. 166/26) überschreiben.
     upload_hebeltrader = os.getenv("UPLOAD_HEBELTRADER", "0").strip().lower() in {"1", "true", "yes"}
+    # Dieser Schalter darf ausschließlich bei technischem Gemini-Ausfall
+    # gesetzt werden. FACHLICH_FINAL=NICHT_FINAL ist ein gültiger Report und
+    # bleibt uploadbar.
     skip_auswertung_upload = os.getenv("SKIP_AUSWERTUNG_UPLOAD", "0").strip().lower() in {"1", "true", "yes"}
+    gemini_fachlich_final = os.getenv("GEMINI_FACHLICH_FINAL", "").strip()
+    gemini_status = os.getenv("GEMINI_STATUS", "").strip()
+    gemini_report = os.getenv("GEMINI_AUSWERTUNG_DATEI", "").strip()
+    report_check = os.getenv("GEMINI_REPORT_CHECK_OUTCOME", "").strip()
+
+    # Nur genau den vom Workflow verifizierten Report veröffentlichen.
+    verified_report = validierter_gemini_report(
+        gemini_status, gemini_fachlich_final, gemini_report, report_check,
+        skip_upload=skip_auswertung_upload,
+    )
+    if verified_report:
+        filename = os.path.basename(verified_report)
+        if gemini_fachlich_final == "NICHT_FINAL":
+            print(f"Report '{filename}' ist fachlich NICHT_FINAL, wird aber hochgeladen.")
+        print(f"Lade verifizierten Gemini-Report '{filename}' hoch...")
+        upload_file(verified_report, FOLDER_ID, drive_service)
+        found = True
+    else:
+        print("Auswertungsupload gesperrt: kein gültiger/verifizierter Gemini-Report.")
+
     for filename in os.listdir('.'):
         # Scannt nach Performance, Setups (CSV) ODER Briefing (TXT) - "in" statt
         # "startswith", damit auch Trendwende_Setups(...).csv und
@@ -231,15 +270,8 @@ if __name__ == '__main__':
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
-        elif ("Briefing" in filename or "Auswertung" in filename) and filename.endswith(".txt"):
-            # Bei technischem Gemini-Fallback darf eine bereits im Workspace
-            # vorhandene alte Auswertung NICHT erneut als aktuelles Ergebnis
-            # veroeffentlicht werden. Andere Briefings bleiben uploadbar.
-            if skip_auswertung_upload and "Auswertung" in filename:
-                print(f"Überspringe '{filename}': technischer Gemini-Fallback; keine alte Auswertung veroeffentlichen.")
-                continue
-            # "Auswertung" (NEU): die fertige Daten-Übersicht landet bei einem
-            # erfolgreichen Gemini-Lauf direkt im selben Drive-Ordner.
+        elif "Briefing" in filename and filename.endswith(".txt"):
+            # Briefings bleiben unabhängig vom Gemini-Auswertungsstatus uploadbar.
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True

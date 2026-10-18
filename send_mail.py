@@ -21,6 +21,7 @@ sie hier im Neuber Macro & Markets-Repo separat eingetragen werden):
 
 import os
 import glob
+import re
 import smtplib
 from email.message import EmailMessage
 from datetime import datetime
@@ -28,21 +29,22 @@ from zoneinfo import ZoneInfo
 
 
 def finde_neueste_auswertung():
-    """Der Dateiname ist datiert (Auswertung(2026-08-08).txt), deshalb kein
-    fester Name moeglich - gleiches Muster wie lade_rotation_scores() in
-    einzel_check.py (sorted(glob.glob(...))[-1], das ISO-Datumsformat
-    YYYY-MM-DD im Dateinamen sortiert korrekt chronologisch als String).
-    Wirft bewusst einen Fehler statt still eine alte/leere Mail zu
-    verschicken, wenn keine Datei gefunden wird (z.B. weil der Gemini-
-    Schritt an diesem Tag fehlgeschlagen ist - continue-on-error laesst
-    main.yml dann zwar weiterlaufen, aber es gibt schlicht nichts zu
-    verschicken)."""
+    """Bevorzugt exakt den vom Gemini-Schritt ausgegebenen Reportpfad.
+    Ohne expliziten Pfad wird nur für lokale/manuelle Nutzung das alte
+    datierte Dateimuster verwendet."""
+    explizit = os.environ.get("GEMINI_AUSWERTUNG_DATEI", "").strip()
+    if explizit:
+        if not os.path.isfile(explizit):
+            raise FileNotFoundError(
+                f"Der vom Gemini-Schritt angegebene Report fehlt: {explizit}"
+            )
+        if os.path.getsize(explizit) == 0:
+            raise ValueError(f"Der vom Gemini-Schritt angegebene Report ist leer: {explizit}")
+        return explizit
+
     treffer = sorted(glob.glob("Auswertung(*).txt"))
     if not treffer:
-        raise FileNotFoundError(
-            "Keine Auswertung(*).txt im Arbeitsverzeichnis gefunden - "
-            "vermutlich ist der Gemini-Auswertung-Schritt heute fehlgeschlagen."
-        )
+        raise FileNotFoundError("Keine Auswertung(*).txt im Arbeitsverzeichnis gefunden.")
     return treffer[-1]
 
 
@@ -72,20 +74,53 @@ def pruefe_smtp_secrets():
 def main():
     pruefe_smtp_secrets()
     dateipfad = finde_neueste_auswertung()
-    with open(dateipfad, "r", encoding="utf-8") as f:
+    # utf-8-sig entfernt einen ggf. vorhandenen BOM am Dateianfang.
+    with open(dateipfad, "r", encoding="utf-8-sig") as f:
         text = f.read()
 
+    status_matches = re.findall(
+        r"(?m)^FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text
+    )
+    if not status_matches:
+        raise ValueError("Report enthält keinen gültigen FACHLICH_FINAL-Marker.")
+    report_status = status_matches[-1]
+    gemini_status = os.environ.get("GEMINI_STATUS", "SUCCESS").strip()
+    if gemini_status != "SUCCESS":
+        raise ValueError(f"Reportversand blockiert: GEMINI_STATUS={gemini_status}")
+    expected_status = os.environ.get("GEMINI_FACHLICH_FINAL", "").strip()
+    if expected_status and expected_status != report_status:
+        raise ValueError(
+            f"Statusabweichung: Workflow={expected_status}, Report={report_status}"
+        )
+    report_check = os.environ.get("GEMINI_REPORT_CHECK_OUTCOME", "success").strip()
+    if report_check != "success":
+        raise ValueError(f"Reportversand blockiert: Report-Check={report_check}")
+
     jetzt_berlin = datetime.now(ZoneInfo("Europe/Berlin"))
+    fachlich_nicht_final = report_status == "NICHT_FINAL"
 
     msg = EmailMessage()
-    msg["Subject"] = f"Neuber Macro & Markets - {jetzt_berlin.strftime('%d.%m.%Y %H:%M')}"
+    status_label = "NICHT_FINAL – fachlich eingeschränkt" if fachlich_nicht_final else "FINAL"
+    msg["Subject"] = (
+        f"Neuber Macro & Markets - {status_label} - "
+        f"{jetzt_berlin.strftime('%d.%m.%Y %H:%M')}"
+    )
     msg["From"] = os.environ["SMTP_USER"]
     msg["To"] = os.environ["MAIL_EMPFAENGER"]
 
-    # NUR Klartext, bewusst kein HTML-Teil (anders als bei Mini Daily Gold):
-    # die Auswertung ist explizit als reine Plain-Text-Datei ohne Markdown/
-    # Formatierung angelegt, passt deshalb unveraendert als E-Mail-Body.
-    msg.set_content(text)
+    # Der Originalreport bleibt unverändert. Bei NICHT_FINAL wird eine
+    # deutliche Kennzeichnung vorangestellt, damit der Empfänger den Status
+    # auch im Mail-Body sofort erkennt.
+    mail_body = text
+    if fachlich_nicht_final:
+        mail_body = (
+            "ACHTUNG: FACHLICH NICHT_FINAL\n"
+            "Die Auswertung wurde technisch erfolgreich erstellt, ist aber "
+            "fachlich nicht final freigegeben. Bitte Befunde/Unsicherheiten im "
+            "Report beachten. Dies ist KEIN technischer Gemini-Fallback.\n\n"
+            + text
+        )
+    msg.set_content(mail_body)
 
     # Zusaetzlich als Anhang - falls ein Mail-Client den Body umbricht/
     # kuerzt, bleibt die Originaldatei komplett und mit Original-Dateinamen

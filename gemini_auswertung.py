@@ -14981,81 +14981,26 @@ def _repariere_unbelegte_edelmetall_aussagen(text):
     return result
 
 def _edelmetall_interpretationswarnungen(text, edel_text):
-    """Prueft Edelmetall-Aussagen global gegen die Fakten aus dem Edelmetalle-Briefing.
+    """Prueft Metallinterpretationen erst nach strikter Identitaets-/Abschnittsbindung.
 
-    Grundsatz: Python liefert die Zahlen/Fakten aus der spezialisierten Quelle;
-    Gemini darf diese interpretieren, aber keine unbelegten Zeitraeume, Indikatoren
-    oder Zahlen erfinden. Die Pruefung gilt fuer den gesamten Bericht, nicht nur
-    fuer Abschnitt 8. Ein Konfliktvermerk zum Markt-Briefing ist eine Diagnose und
-    wird nicht als Edelmetall-Aussage der Gemini-Interpretation bewertet.
+    Rueckgabe ist eine Liste maschinenlesbarer Befunde:
+      ZUORDNUNG | ...     -> Zahl/Quelle nicht sicher einem Metall zugeordnet
+      INTERPRETATION | ... -> Metallbezug eindeutig, Aussage aber nicht belegt
     """
     report = str(text or "")
     source = str(edel_text or "")
     warnings = []
     seen = set()
-
-    metal_aliases = {
-        "Gold": r"\bGold\b|\bGC=F\b",
-        "Silber": r"\bSilber\b|\bSI=F\b",
-        "Platin": r"\bPlatin\b|\bPL=F\b",
-        "Palladium": r"\bPalladium\b|\bPA=F\b",
+    metals = {
+        "Gold": {"name": r"\bGold\b", "ticker": r"\bGC=F\b"},
+        "Silber": {"name": r"\bSilber\b", "ticker": r"\bSI=F\b"},
+        "Platin": {"name": r"\bPlatin\b", "ticker": r"\bPL=F\b"},
+        "Palladium": {"name": r"\bPalladium\b", "ticker": r"\bPA=F\b"},
     }
 
-    # Nur Werte aus LAGE JE METALL und der zugehoerigen Trendfolge-Diagnose
-    # gelten als aktuelle Metall-Fakten. Andere Abschnitte der Quelle enthalten
-    # Scanner-Regeln, aber keine zusaetzlichen aktuellen Messwerte.
-    facts = {}
-    for metal in metal_aliases:
-        row = _edelmetall_lage_zeile(source, metal)
-        four_week = _edelmetall_4w_value(source, metal)
-        item = {"row": row, "percentages": [], "prices": [], "indicators": {}}
-        if four_week and four_week[1] is not None:
-            item["four_week"] = float(four_week[1])
-            item["percentages"].append(float(four_week[1]))
-        else:
-            item["four_week"] = None
-        # Prozentabstand zum 52W-Tief nur ueber die explizite Quellenformulierung.
-        m = re.search(r"(?i)(?:52[- ]Wochen[- ]Tief|52W[- ]Tief).*?([-+]?\d+(?:[.,]\d+)?)\s*%\s*(?:darueber|darüber)?", row)
-        if m:
-            value = float(m.group(1).replace(",", "."))
-            item["low_distance"] = value
-            item["percentages"].append(value)
-        else:
-            item["low_distance"] = None
-        # Preis/Tief aus der Lage-Zeile sowie EMA200/WMA200 aus dem separaten
-        # Trendfolge-Diagnoseblock werden als Faktenwerte gesammelt.
-        for m in re.finditer(r"(?i)(?:Kurs|52[- ]Wochen[- ]Tief|52W[- ]Tief)\s*(?:\([^)]*\))?\s*[:=]?\s*([-+]?\d[\d.,]*)", row):
-            try:
-                item["prices"].append(float(m.group(1).replace(",", ".")))
-            except ValueError:
-                pass
-        # Im Briefing steht das 52W-Tief teilweise in Klammern direkt hinter
-        # dem Wort "52-Wochen-Tief" statt als benanntes Feld mit Doppelpunkt.
-        for low_match in re.finditer(r"(?i)52[- ]Wochen[- ]Tief\s*\(\s*([-+]?\d+(?:[.,]\d+)?)", row):
-            try:
-                item["prices"].append(float(low_match.group(1).replace(",", ".")))
-            except ValueError:
-                pass
-        diag = re.search(
-            r"(?is)" + re.escape(metal) + r"\s*\([^\n]*?\).*?(?=\n-\s*(?:Gold|Silber|Platin|Palladium)\s*\(|\Z)",
-            source,
-        )
-        diag_text = diag.group(0) if diag else ""
-        for indicator in ("EMA200", "WMA200"):
-            im = re.search(r"(?i)\b" + indicator + r"\s+([-+]?\d[\d.,]*)", diag_text)
-            if im:
-                try:
-                    item["indicators"][indicator.upper()] = float(im.group(1).replace(",", "."))
-                    item["prices"].append(item["indicators"][indicator.upper()])
-                except ValueError:
-                    pass
-        facts[metal] = item
-
-    def _norm_num(value):
+    def norm_num(value):
         try:
             value = str(value).replace("%", "").replace("$", "").strip()
-            # Dezimaltrennzeichen robust behandeln: 3.901,30 -> 3901.30;
-            # 4186.40 bleibt ein normaler Punkt-Dezimalwert.
             if "." in value and "," in value and value.rfind(",") > value.rfind("."):
                 value = value.replace(".", "").replace(",", ".")
             elif "," in value:
@@ -15064,111 +15009,237 @@ def _edelmetall_interpretationswarnungen(text, edel_text):
         except (TypeError, ValueError):
             return None
 
-    def _same_number(a, b):
+    def same_number(a, b):
         return a is not None and b is not None and abs(a - b) <= max(0.015, abs(b) * 0.0005)
 
-    def _warn(line_no, metal_label, category, snippet):
-        compact = re.sub(r"\s+", " ", snippet).strip()[:180]
-        message = f"Zeile {line_no}: {metal_label}: {category} | {compact}"
-        if message not in seen:
-            seen.add(message)
-            warnings.append(message)
+    # Aktuelle Fakten ausschliesslich aus der jeweils eigenen Lage-Zeile.
+    facts = {}
+    for metal in metals:
+        row = _edelmetall_lage_zeile(source, metal) or ""
+        item = {"percentages": [], "prices": []}
+        fw = _edelmetall_4w_value(source, metal)
+        if fw and fw[1] is not None:
+            item["percentages"].append(float(fw[1]))
+        low = re.search(r"(?i)52[- ]Wochen[- ]Tief\s*\(\s*([-+]?\d+(?:[.,]\d+)?)", row)
+        if low:
+            val = norm_num(low.group(1))
+            if val is not None:
+                item["prices"].append(val)
+        for match in re.finditer(
+            r"(?i)(?:Kurs|52[- ]Wochen[- ]Tief|52W[- ]Tief)\s*(?:\([^)]*\))?\s*[:=]?\s*([-+]?\d[\d.,]*)",
+            row,
+        ):
+            val = norm_num(match.group(1))
+            if val is not None:
+                item["prices"].append(val)
+        diag = re.search(
+            r"(?is)" + re.escape(metal) + r"\s*\([^\n]*?\).*?(?=\n-\s*(?:Gold|Silber|Platin|Palladium)\s*\(|\Z)",
+            source,
+        )
+        for indicator in ("EMA200", "WMA200"):
+            im = re.search(r"(?i)\b" + indicator + r"\s+([-+]?\d[\d.,]*)", diag.group(0) if diag else "")
+            if im:
+                val = norm_num(im.group(1))
+                if val is not None:
+                    item["prices"].append(val)
+        facts[metal] = item
 
-    # Ein expliziter Zeitraum ist nur dann belegt, wenn er in den aktuellen
-    # Metall-Fakten enthalten ist (4W und 52W). 5T, 3 Tage etc. sind keine
-    # zulaessigen Ersatz- oder Ableitungsperioden.
+    percent_re = re.compile(r"(?<![\w.])([-+]?\d+(?:[.,]\d+)?)\s*%")
+    currency_re = re.compile(r"(?<![\w.])([-+]?\d[\d.,]*)\s*(?:\$|USD\b)", re.I)
+    indicator_re = re.compile(r"(?i)\bEMA\s*\d+\s*/\s*(?:EMA\s*)?\d+\b|\b(?:EMA|WMA|SMA)\s*\d+\b")
     timeframe_re = re.compile(
         r"(?i)(?<![\w/])(?:\d+\s*(?:T|D|Tag|Tage|Handelstag|Handelstage|W|Woche|Wochen|Monat|Monate|Stunde|Stunden))\b|"
         r"\b(?:in den letzten|ueber die letzten|über die letzten|auf)\s+\d+\s+(?:Tagen?|Handelstagen?|Wochen?|Monaten?|Stunden?)\b|"
-        r"\b5[- ]Tages[- ]Sicht\b|\bin den letzten\s+5\s+Tagen\b"
+        r"\b5[- ]Tages[- ]Sicht\b"
     )
-    unsupported_indicator_re = re.compile(
-        r"(?i)\bEMA\s*\d+\s*/\s*(?:EMA\s*)?\d+\b|\b(?:EMA|WMA|SMA)\s*\d+\b"
-    )
-    percent_re = re.compile(r"(?<![\w.])([-+]?\d+(?:[.,]\d+)?)\s*%")
-    currency_re = re.compile(r"(?<![\w.])([-+]?\d[\d.,]*)\s*(?:\$|USD\b)", re.I)
 
+    # Zahlen werden nicht aus einer gesamten physischen Zeile verteilt. Erst
+    # trennen wir eigenstaendige Aussagen; danach muss jede Aussage selbst
+    # eine widerspruchsfreie Metallidentitaet enthalten.
+    # Vollstaendige konservative Erkennung fremder Markt-/Rohstoffkontexte.
+    # Namen UND gaengige Yahoo-/Index-Ticker werden erkannt. Bei gemischten
+    # Edelmetall- und Fremdmarkt-Aussagen wird nicht geraten.
+    unrelated_market = re.compile(
+        r"(?i)(?:"
+        r"\bS\s*&?P\s*500\b|\bS&P\s*500\b|\bSPX\b|\^GSPC|\bES=F\b|"
+        r"\bNASDAQ(?:\s*100|\s*Composite)?\b|\bNDX\b|\^IXIC|\bNQ=F\b|"
+        r"\bDAX\b|\bGDAXI\b|\^GDAXI|\bDow\s*Jones(?:\s*Industrial)?\b|\bDJI\b|\^DJI|\bYM=F\b|"
+        r"\bRussell\s*2000\b|\bRUT\b|\^RUT|\bEuro\s*Stoxx(?:\s*50)?\b|\bSX5E\b|"
+        r"\bMSCI\s*World\b|\bVIX\b|\^VIX|"
+        r"\bFTSE\s*100\b|\bUKX\b|\^FTSE|\bNikkei(?:\s*225)?\b|\^N225|"
+        r"\bHang\s*Seng\b|\^HSI|\bCAC\s*40\b|\^FCHI|\bIBEX\s*35\b|\^IBEX|"
+        r"\bSMI\b|\^SSMI|\bTSX(?:\s*Composite)?\b|\^GSPTSE|\bKOSPI(?:\s*200)?\b|\^KS11|"
+        r"\bASX\s*200\b|\^AXJO|\bBovespa\b|\^BVSP|\bSTOXX\s*600\b|\bSXXP\b|"
+        r"\bNifty\s*50\b|\^NSEI|\bSensex\b|\^BSESN|\bMSCI\s*Emerging\s*Markets\b|"
+        r"\bBrent(?:\s*(?:Crude|Oel|Öl))?\b|\bBZ=F\b|\bWTI\b|\bCL=F\b|"
+        r"\bNatural\s*Gas\b|\bErdgas\b|\bNG=F\b|"
+        r"\bKupfer\b|\bCopper\b|\bHG=F\b|"
+        r"\bAluminium\b|\bAluminum\b|\bZink\b|\bZinc\b|\bNickel\b|"
+        r"\bZinn\b|\bTin\b|\bTIN=F\b|\bBlei\b|\bLead\b|"
+        r"\bUran\b|\bUranium\b|\bEisenerz\b|\bIron\s*Ore\b|"
+        r"\bStahl\b|\bSteel\b|\bLithium\b|\bKobalt\b|\bCobalt\b|"
+        # Platin und Palladium sind selbst Prüfmetalle und dürfen hier nicht als
+        # Fremdmarkt-Treffer gelten. Ihre Name-/Ticker-Zuordnung wird separat geprüft.
+        r"\bWeizen\b|\bWheat\b|\bZW=F\b|\bMais\b|\bCorn\b|\bZC=F\b|"
+        r"\bSojab(?:ohnen|ean)\b|\bZS=F\b|\bKaffee\b|\bCoffee\b|\bKC=F\b|"
+        r"\bZucker\b|\bSugar\b|\bSB=F\b|\bKakao\b|\bCocoa\b|\bCC=F\b|"
+        r"\bBaumwolle\b|\bCotton\b|\bCT=F\b|\bRind(?:er)?\b|\bLive\s*Cattle\b|\bLE=F\b|"
+        r"\bSchwein(?:e)?\b|\bLean\s*Hogs\b|\bHE=F\b|"
+        r"\bHafer\b|\bOats?\b|\bZO=F\b|\bReis\b|\bRice\b|\bZR=F\b|"
+        r"\bOrangensaft\b|\bOrange\s*Juice\b|\bOJ=F\b|\bHolz\b|\bLumber\b|\bLBS=F\b|"
+        r"\bFeeder\s*Cattle\b|\bGF=F\b|"
+        r"\bBitcoin\b|\bBTC(?:-USD)?\b|\bEthereum\b|\bETH(?:-USD)?\b|"
+        r"\bDollar\s*Index\b|\bDXY\b|\bEUR\s*/\s*USD\b|\bUSD\s*/\s*JPY\b"
+        r")"
+    )
+    foreign_section_header = re.compile(
+        r"(?im)^\s*(?:\d+(?:\.\d+)*\s+)?"
+        r"(?:Rohstoffe?|Commodit(?:y|ies)|Energie|Agrarrohstoffe|Indizes?|Aktien|"
+        r"Devisen|Waehrungen|Währungen|Krypto(?:waehrungen|währungen)?|"
+        r"Makro(?:daten|maerkte|märkte)?|Fremdmaerkte|Fremdmärkte)\b.*$"
+    )
+
+
+    def emit(line_no, category, metal, value, reason, snippet):
+        compact = re.sub(r"\s+", " ", snippet).strip()[:180]
+        value_text = "ZAHL=" + (str(value) if value is not None else "nicht_erkannt")
+        msg = f"{category} | ROHSTOFF={metal} | {value_text} | GRUND={reason} | Zeile={line_no} | {compact}"
+        if msg not in seen:
+            seen.add(msg)
+            warnings.append(msg)
+
+    # Der Abschnittskontext wird aus den strukturellen Edelmetall-Überschriften
+    # übernommen. So werden Zahlen ohne lokale Name/Ticker-Paarung nicht einfach
+    # übergangen, sondern als unzugeordnet markiert.
+    section_metal = None
+    section_header = re.compile(
+        r"(?im)^\s*8\.[1-4]\s+(Gold|Silber|Platin|Palladium)\s*$"
+    )
+    # Jeder andere nummerierte Haupt-/Unterabschnitt beendet den Metallkontext.
+    # Damit koennen z.B. Zahlen aus 7.5 Rohstoffe oder 9. Aktien nicht in
+    # einen vorherigen Edelmetallabschnitt hineinlaufen.
+    any_numbered_header = re.compile(r"(?im)^\s*\d+(?:\.\d+)*\s+[^\n]{2,100}\s*$")
     for line_no, line in enumerate(report.splitlines(), 1):
+        header_match = section_header.match(line)
+        if header_match:
+            section_metal = header_match.group(1).capitalize()
+            continue
+        if any_numbered_header.match(line) or foreign_section_header.match(line):
+            section_metal = None
         if not line.strip():
             continue
-        # Quellenkonflikt-Zeilen sind transparente Diagnose, keine Behauptung,
-        # dass der Markt-Briefing-Wert der richtige Edelmetallwert sei.
+        # Quellenvergleichs-/Diagnosezeilen sind keine Gemini-Metallinterpretation.
         if "EDELMETALL-4W-QUELLENKONFLIKT" in line.upper() or (
             "Markt-Briefing" in line and ("vs." in line or "Abweich" in line or "Vergleichsquelle" in line)
         ):
             continue
-
-        named_metals = [metal for metal, pattern in metal_aliases.items() if re.search(pattern, line, re.I)]
-        collective = bool(re.search(r"(?i)\bEdelmetall(?:e|en|s)?\b|\bEdelmetall-Gesamtbild\b", line))
-        # Allgemeine Worte wie "Metall" allein reichen nicht; nur eindeutige
-        # Metallnamen/-Ticker oder ein expliziter Edelmetall-Kollektivsatz.
-        if not named_metals and not collective:
-            continue
-        target_metals = named_metals or list(metal_aliases)
-        label = "/".join(target_metals) if named_metals else "Edelmetalle gesamt"
-
-        # Die Quelle liefert aktuelle 4W-/52W-Fakten, jedoch keine 5T-/3-Tage-
-        # Werte. 4W/52W-Angaben werden aus der Zeitraumwarnung ausgenommen.
-        for tm in timeframe_re.finditer(line):
-            token = tm.group(0)
-            token_norm = re.sub(r"\s+", "", token.lower())
-            if token_norm in {"4w", "4wochen", "52w", "52wochen"}:
+        chunks = re.split(r"(?<=[!?;])\s+|(?<=\.)\s+(?!\d)|\s+\|\s+", line)
+        for chunk in chunks:
+            if not chunk.strip():
                 continue
-            # Der explizite Ausdruck 52-Wochen-Tief ist eine belegte Quellenperiode.
-            around = line[max(0, tm.start() - 12):min(len(line), tm.end() + 20)]
-            if re.search(r"(?i)52[- ]Wochen[- ]Tief|52W[- ]Tief", around) and re.search(r"(?i)52[- ]Wochen|52W", token):
+            numbers = list(percent_re.finditer(chunk)) + list(currency_re.finditer(chunk))
+            identities = []
+            for metal, aliases in metals.items():
+                for kind, pattern in aliases.items():
+                    for match in re.finditer(pattern, chunk, re.I):
+                        identities.append((match.start(), match.end(), metal, kind))
+            if not identities:
+                # Explizit erkannte Fremdmarkt-/Indexaussagen bleiben außerhalb
+                # der Edelmetallprüfung, auch wenn sie direkt nach einer
+                # Edelmetall-Überschrift stehen.
+                if unrelated_market.search(chunk):
+                    continue
+                # In einem Edelmetallabschnitt können Zahlen auch ohne wiederholte
+                # Identität auftreten. Diese werden nicht geraten oder verglichen.
+                if section_metal:
+                    unbound_numbers = numbers
+                    for number in unbound_numbers:
+                        emit(
+                            line_no, "ZUORDNUNG", section_metal, number.group(0),
+                            "Zahl im Edelmetall-Marktabschnitt ohne eindeutiges Name-/Ticker-Paar; nicht als Metallfakt verwendet",
+                            chunk,
+                        )
                 continue
-            _warn(line_no, label, f"nicht belegter Zeitraum '{token}' (Quelle liefert aktuelle 4W-/52W-Fakten, keine passende Zahl fuer diesen Zeitraum)", line)
 
-        # EMA/WMA/SMA 200 sind durch die spezialisierte Quelle belegt. Andere
-        # gleitende Durchschnitte sind nicht als aktuelle Werte je Metall geliefert.
-        for im in unsupported_indicator_re.finditer(line):
-            indicator = re.sub(r"\s+", "", im.group(0)).upper()
-            if indicator in {"EMA200", "WMA200"}:
+            names = {metal for _, _, metal, kind in identities if kind == "name"}
+            tickers = {metal for _, _, metal, kind in identities if kind == "ticker"}
+            # Identitaet ist ein vorgeschaltetes Gate: Erst wenn Name UND
+            # passender Ticker im selben Aussageabschnitt stehen, darf die Zahl
+            # mit den Fakten des Metalls verglichen werden. Name-only/Ticker-only
+            # wird nicht geraten und ist daher ein Zuordnungsbefund.
+            if not names or not tickers or names != tickers:
+                affected = sorted(names | tickers) or ["UNGEKLAERT"]
+                reason = (
+                    "Name und Ticker fehlen gemeinsam oder widersprechen sich; "
+                    "Zahl bleibt unzugeordnet"
+                )
+                for m in affected:
+                    for number in numbers or [None]:
+                        raw = number.group(0) if number else None
+                        emit(line_no, "ZUORDNUNG", m, raw, reason, chunk)
                 continue
-            # Strategieerklaerungen duerfen Scanner-Regeln nennen; beanstandet
-            # werden Aussagen, die den Indikator als aktuellen Zustand/Trigger
-            # eines Metalls ausgeben.
-            context = line[max(0, im.start() - 55):min(len(line), im.end() + 90)]
-            claim_context = re.search(
-                r"(?i)\b(?:unter|ueber|über|unterschritten|ueberschritten|überschritten|darunter|darueber|darüber|notiert|liegt|liegen|ueberwinden|überwinden|bei|signal|trigger|durchschnitt|gleitenden|kreuzt|ausbruch)\b",
-                context,
-            )
-            if claim_context or re.search(r"(?i)\bEMA\s*\d+\s*/\s*(?:EMA\s*)?\d+\b", im.group(0)):
-                _warn(line_no, label, f"aktueller Indikator {indicator} ist im Edelmetalle-Briefing nicht als aktueller Faktenwert belegt (nur EMA200/WMA200)", line)
 
-        # Prozentangaben zu Metallen muessen zu einem Quellenwert passen. Ein
-        # Wert wird nicht allein deshalb akzeptiert, weil er irgendwo im Bericht
-        # vorkommt: Vergleich gegen die Fakten des jeweils genannten Metalls.
-        pcts = [(_norm_num(m.group(1)), m.start(), m.end(), m.group(0)) for m in percent_re.finditer(line)]
-        if pcts:
-            for metal in target_metals:
-                item = facts.get(metal, {})
-                supported = [v for v in item.get("percentages", []) if v is not None]
-                for value, pstart, pend, raw in pcts:
-                    if value is None:
-                        continue
-                    if any(_same_number(value, v) for v in supported):
-                        continue
-                    # Werte in einer ausdruecklichen Prozent-Range/Quellenkonflikt
-                    # werden nicht stillschweigend legitimiert; Konflikte wurden
-                    # oben bereits ausgeschlossen.
-                    _warn(line_no, metal, f"nicht durch die Edelmetall-Fakten belegte Prozentangabe {raw}", line)
+            # Auch eine Aussage mit mehreren Metallen und einer fremden
+            # Markt-/Indexidentitaet ist fuer Zahlenbindung mehrdeutig.
+            # Marktwerte werden niemals gegen Edelmetall-Fakten verglichen.
+            if unrelated_market.search(chunk) and numbers:
+                affected = sorted(names | tickers)
+                for m in affected:
+                    for number in numbers:
+                        emit(line_no, "ZUORDNUNG", m, number.group(0),
+                             "Index-/Fremdmarktwert im selben Aussageabschnitt; Quelle nicht eindeutig", chunk)
+                continue
 
-        # Dollar-/USD-Kurszahlen auf Metallzeilen ebenfalls gegen Kurs, Tief,
-        # EMA200 und WMA200 der Quelle pruefen. Das verhindert alte Kurswerte in
-        # einem spaeteren Abschnitt, auch wenn dort keine Zeitperiode steht.
-        currencies = [(_norm_num(m.group(1)), m.group(0)) for m in currency_re.finditer(line)]
-        if currencies:
-            for metal in target_metals:
-                known_prices = facts.get(metal, {}).get("prices", [])
-                for value, raw in currencies:
-                    if value is None or any(_same_number(value, known) for known in known_prices):
-                        continue
-                    _warn(line_no, metal, f"nicht durch Kurs-/Tief-/EMA200-/WMA200-Fakten belegte Preiszahl {raw}", line)
+            identities.sort(key=lambda x: (x[0], x[1]))
+            # Mehrere unterschiedliche Metalle in einem Aussageabschnitt:
+            # Werte nur bei eindeutig getrennten lokalen Klauseln zuordnen.
+            unique_metals = {x[2] for x in identities}
+            if len(unique_metals) > 1:
+                # Wenn klar getrennte Name/Ticker-Klauseln vorliegen, wird an
+                # Semikolon/Satzgrenzen getrennt; innerhalb dieses Chunks bleibt
+                # die gemeinsame Zahlenbasis aber absichtlich ungeklärt.
+                for m in sorted(unique_metals):
+                    for number in numbers or [None]:
+                        emit(line_no, "ZUORDNUNG", m, number.group(0) if number else None,
+                             "mehrere Rohstoffe im selben Aussageabschnitt; Zahl nicht eindeutig gebunden", chunk)
+                continue
 
+            metal = next(iter(unique_metals))
+            item = facts.get(metal, {})
+            for tm in timeframe_re.finditer(chunk):
+                token = tm.group(0)
+                token_norm = re.sub(r"\s+", "", token.lower())
+                if token_norm in {"4w", "4wochen", "52w", "52wochen"}:
+                    continue
+                around = chunk[max(0, tm.start() - 18):min(len(chunk), tm.end() + 24)]
+                if re.search(r"(?i)52[- ]Wochen[- ]Tief|52W[- ]Tief", around):
+                    continue
+                emit(line_no, "INTERPRETATION", metal, token,
+                     "Zeitraum nicht durch die aktuelle Metallquelle belegt", chunk)
+
+            for im in indicator_re.finditer(chunk):
+                indicator = re.sub(r"\s+", "", im.group(0)).upper()
+                if indicator in {"EMA200", "WMA200"}:
+                    continue
+                context = chunk[max(0, im.start() - 55):min(len(chunk), im.end() + 90)]
+                if re.search(r"(?i)\b(?:unter|ueber|über|unterschritten|ueberschritten|überschritten|darunter|darueber|darüber|notiert|liegt|liegen|ueberwinden|überwinden|bei|signal|trigger|durchschnitt|gleitenden|kreuzt|ausbruch)\b", context):
+                    emit(line_no, "INTERPRETATION", metal, indicator,
+                         "aktueller Indikator ist nicht als Faktenwert belegt (nur EMA200/WMA200)", chunk)
+
+            for match in percent_re.finditer(chunk):
+                value = norm_num(match.group(1))
+                if value is None or any(same_number(value, known) for known in item.get("percentages", [])):
+                    continue
+                emit(line_no, "INTERPRETATION", metal, match.group(0),
+                     "Prozentangabe stimmt nicht mit den Fakten dieses Rohstoffs ueberein", chunk)
+
+            for match in currency_re.finditer(chunk):
+                value = norm_num(match.group(1))
+                if value is None or any(same_number(value, known) for known in item.get("prices", [])):
+                    continue
+                emit(line_no, "INTERPRETATION", metal, match.group(0),
+                     "Preiszahl stimmt nicht mit Kurs/Tief/EMA200/WMA200 dieses Rohstoffs ueberein", chunk)
     return warnings
-
 
 def _dokumentiere_edelmetall_4w_quellenkonflikte(text, edel_text, markt_text):
     """Keep 4W source disagreements visible in the saved report without blocking output."""
@@ -15929,37 +16000,78 @@ def speichere_ergebnis(text, eingabedateien=None):
         # fehlerhafte Analyse darf nicht mehr gespeichert/verschickt werden.
         _pruefe_themen_kausalitaet(final_text)
 
-        # HARTES EDELMETALL-RELEASE-GATE: Nach sämtlichen Reparaturen und vor
-        # jedem Dateischreiben/History-Update. Fehler beim Prüfen blockieren
-        # ebenfalls (fail closed); Warnungen dürfen nicht nur nach dem Speichern
-        # als FACHLICH_FINAL=NICHT_FINAL protokolliert werden.
+        # Edelmetall-Interpretationen sind ein fachlicher Teilstatus, kein
+        # globaler Ausgabeblocker. Harte Struktur-/Quellen-/Kausalitaets-Gates
+        # bleiben davor unveraendert aktiv. Pruefungsfehler selbst bleiben fail-closed.
         try:
             edelmetall_global_warnungen = _edelmetall_interpretationswarnungen(
                 final_text, edelmetall_text
             )
         except Exception as exc:
-            print(f"GEMINI_RELEASE_GATE=BLOCKED | Edelmetallprüfung fehlgeschlagen: {type(exc).__name__}: {exc}")
+            print(f"EDELMETALL_PRUEFUNG_FEHLER | {type(exc).__name__}: {exc}")
             raise RuntimeError(
-                "GEMINI_RELEASE_GATE_BLOCKED: globale Edelmetallprüfung konnte nicht sicher abgeschlossen werden."
+                "EDELMETALL_PRUEFUNG_FEHLER: Zuordnungspruefung konnte nicht sicher abgeschlossen werden."
             ) from exc
-        if edelmetall_global_warnungen:
-            for warnung in edelmetall_global_warnungen:
-                print("EDELMETALL_INTERPRETATION_WARNUNG | " + warnung)
+        for warnung in edelmetall_global_warnungen:
+            print("EDELMETALL_BEFUND | " + warnung)
+        edelmetall_zuordnungsbefunde = [
+            w for w in edelmetall_global_warnungen if w.startswith("ZUORDNUNG |")
+        ]
+        edelmetall_interpretationsbefunde = [
+            w for w in edelmetall_global_warnungen if w.startswith("INTERPRETATION |")
+        ]
+        # Der fachliche Status wird aus den konkreten, metallbezogenen Befunden
+        # abgeleitet. Die Befunde bleiben einzeln im Report erhalten; andere
+        # Aktien-/Marktabschnitte werden dadurch nicht veraendert.
+        edelmetall_nicht_final = bool(
+            edelmetall_zuordnungsbefunde or edelmetall_interpretationsbefunde
+        )
+        edelmetall_betroffene_metalle = sorted({
+            m.group(1) for w in edelmetall_global_warnungen
+            if (m := re.search(r"ROHSTOFF=([^|]+)", w))
+        })
+        edelmetall_metall_status = {
+            metal: (
+                "NICHT_FINAL"
+                if any(re.search(r"ROHSTOFF=" + re.escape(metal) + r"(?:\s*\||$)", w)
+                       for w in edelmetall_global_warnungen)
+                else "FINAL"
+            )
+            for metal in ("Gold", "Silber", "Platin", "Palladium")
+        }
+        if edelmetall_nicht_final:
             print(
-                f"GEMINI_RELEASE_GATE=BLOCKED | "
-                f"{len(edelmetall_global_warnungen)} unbelegte Edelmetall-Aussage(n); "
-                "keine Speicherung, Historienfortschreibung oder nachfolgende Upload-Stufe."
+                "EDELMETALL_STATUS=NICHT_FINAL"
+                f" | ZUORDNUNG={len(edelmetall_zuordnungsbefunde)}"
+                f" | INTERPRETATION={len(edelmetall_interpretationsbefunde)}"
+                f" | BETROFFENE_ROHSTOFFE={','.join(edelmetall_betroffene_metalle) or 'UNGEKLAERT'}"
+                " | Ausgabe, Historie und Upload bleiben erlaubt."
             )
-            raise RuntimeError(
-                "GEMINI_RELEASE_GATE_BLOCKED: unbelegte Edelmetall-Interpretationen; "
-                "Auswertung wurde nicht gespeichert und der Python-Lauf endet mit Fehler."
-            )
-        print("GEMINI_RELEASE_GATE=PASS | globale Edelmetallprüfung vor Speicherung bestanden")
+            # Die konkreten Befunde werden mit dem Report persistiert. Ein
+            # Zuordnungsfehler bleibt getrennt von einer unbelegten Interpretation.
+            for metal, metal_status in edelmetall_metall_status.items():
+                final_text += "\n" + f"EDELMETALL_ROHSTOFF_STATUS={metal}|{metal_status}"
+            for befund in edelmetall_global_warnungen:
+                final_text += "\n" + "EDELMETALL_BEFUND=" + befund
+        else:
+            print("EDELMETALL_STATUS=FINAL | keine Interpretationswarnungen")
 
     if str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("INFO: Technischer Gemini-Fallback - bestehende Auswertung bleibt unverändert; keine Auswertung wird gespeichert.")
         print("FACHLICH_FINAL=NICHT_FINAL | keine neue Gemini-Auswertung erzeugt")
         return None
+
+    # Statusmarker fuer Tagesdatei, Historie und Upload: fachliche Finalitaet
+    # bleibt strikt getrennt vom technischen Erfolg der Dateierzeugung.
+    final_text = re.sub(r"(?m)^FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*\n?", "", final_text)
+    final_text = re.sub(r"(?m)^EDELMETALL_STATUS=(?:FINAL|NICHT_FINAL)\s*\n?", "", final_text)
+    fachlich_nicht_final = bool(locals().get("edelmetall_nicht_final", False))
+    fachlich_status = "NICHT_FINAL" if fachlich_nicht_final else "FINAL"
+    final_text = (
+        f"EDELMETALL_STATUS={fachlich_status}\n"
+        f"FACHLICH_FINAL={fachlich_status}\n"
+        + final_text.lstrip("\ufeff\n\r")
+    )
 
     # Erst nach Abschluss aller fachlichen Gates atomar ersetzen. Ein Abbruch
     # waehrend des Schreibens kann die bestehende Tagesauswertung dadurch nicht
@@ -16013,9 +16125,12 @@ def speichere_ergebnis(text, eingabedateien=None):
     print(f"\nGespeichert: {ausgabe_datei}")
     print("AUSGABE_ERSTELLT=PASS")
     fachliche_gruende = []
+    if locals().get("edelmetall_nicht_final", False):
+        fachliche_gruende.append(
+            f"Edelmetall-Interpretation gesperrt ({len(edelmetall_global_warnungen)} Warnung(en)); Aktien-/Marktabschnitte erhalten"
+        )
     if not str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
-        # Der globale Edelmetall-Check ist bereits vor dem Speichern als hartes
-        # Gate gelaufen. Hier werden nur noch Diagnose-/Statusinformationen gesammelt.
+        # Edelmetallwarnungen sind Statushinweise, keine globalen Abbruchgruende.
         try:
             dokumentierte_metallabweichungen = _edelmetall_4w_quellenkonflikte(
                 edelmetall_text if "edelmetall_text" in locals() else "",
@@ -16040,8 +16155,11 @@ def speichere_ergebnis(text, eingabedateien=None):
     return ausgabe_datei
 
 
-def _gemini_schreibe_github_outputs(status, fachlich_final, auswertung_datei=""):
-    """Stellt eindeutige, maschinenlesbare Erfolgsmarker fuer GitHub Actions bereit."""
+def _gemini_schreibe_github_outputs(
+    status, fachlich_final, auswertung_datei="", edelmetall_status="FINAL",
+    edelmetall_befunde="", edelmetall_metall_status="",
+):
+    """Stellt technische und fachliche Statusmarker getrennt fuer GitHub Actions bereit."""
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         return
@@ -16049,6 +16167,9 @@ def _gemini_schreibe_github_outputs(status, fachlich_final, auswertung_datei="")
         "status": str(status),
         "fachlich_final": str(fachlich_final),
         "auswertung_datei": str(auswertung_datei or ""),
+        "edelmetall_status": str(edelmetall_status),
+        "edelmetall_befunde": str(edelmetall_befunde or ""),
+        "edelmetall_metall_status": str(edelmetall_metall_status or ""),
     }
     for key, value in werte.items():
         if "\n" in value or "\r" in value:
@@ -16089,8 +16210,33 @@ if __name__ == "__main__":
         print("GEMINI_EXIT_STATUS=3 | Auswertung-Datei ist leer.")
         raise SystemExit(3)
 
+    fachlich_final = "NICHT_FINAL" if re.search(
+        r"(?m)^FACHLICH_FINAL=NICHT_FINAL\s*$", Path(ausgabe_pfad).read_text(encoding="utf-8-sig")
+    ) else "FINAL"
+    # Technischer Laufstatus bleibt SUCCESS, damit bestehende Workflow-Consumer
+    # den erzeugten und uploadbaren Report weiter als erfolgreichen Lauf erkennen;
+    # die fachliche Freigabe steht separat und eindeutig auf NICHT_FINAL.
+    report_text = Path(ausgabe_pfad).read_text(encoding="utf-8-sig")
+    edelmetall_status = "NICHT_FINAL" if re.search(
+        r"(?m)^EDELMETALL_STATUS=NICHT_FINAL\s*$", report_text
+    ) else "FINAL"
+    report_befunde = "\n".join(re.findall(
+        r"(?m)^EDELMETALL_BEFUND=(.*)$", report_text
+    ))
+    # GitHub-Output darf keine mehrzeilige Payload enthalten; Befunde werden
+    # als kompakte, escaped Ein-Zeilen-Information transportiert.
+    report_befunde = report_befunde.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    report_metall_status = "|".join(re.findall(
+        r"(?m)^EDELMETALL_ROHSTOFF_STATUS=(Gold|Silber|Platin|Palladium)\|(FINAL|NICHT_FINAL)\s*$",
+        report_text,
+    ))
+    report_metall_status = report_metall_status.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     _gemini_schreibe_github_outputs(
-        "SUCCESS", "FINAL", os.path.abspath(ausgabe_pfad)
+        "SUCCESS", fachlich_final, os.path.abspath(ausgabe_pfad),
+        edelmetall_status, report_befunde, report_metall_status,
     )
     print("GEMINI_STATUS=SUCCESS")
-    print("GEMINI_EXIT_STATUS=0 | Fachlich finale Auswertung wurde gespeichert.")
+    if fachlich_final == "NICHT_FINAL":
+        print("GEMINI_EXIT_STATUS=0 | Auswertung gespeichert und hochladbar; fachlicher Status NICHT_FINAL.")
+    else:
+        print("GEMINI_EXIT_STATUS=0 | Fachlich finale Auswertung wurde gespeichert.")
