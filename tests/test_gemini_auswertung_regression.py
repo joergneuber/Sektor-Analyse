@@ -1,9 +1,9 @@
+
 """Automatisierte Regressionstests fuer die 503-Budget-/Fallback-Reparatur.
 
 Die Produktionsfunktionen werden per AST aus gemini_auswertung.py
 extrahiert, damit Tests auch ohne Google-API, Secrets oder Projekt-Importe laufen.
 """
-
 from __future__ import annotations
 
 import ast
@@ -41,65 +41,97 @@ class Gemini503RegressionTests(unittest.TestCase):
             ["_gemini_503_modellwechsel_budget_pruefen"],
             ns,
         )
+
         counts = defaultdict(int)
 
         # Split 8 darf sein eigenes Budget verbrauchen.
+        # Die Request-ID muss den Budget-Schluessel eindeutig praegen.
         for expected in range(1, 4):
-            allowed, count, key = ns[
-                "_gemini_503_modellwechsel_budget_pruefen"
-            ](
+            allowed, count, key = (
+                ns["_gemini_503_modellwechsel_budget_pruefen"](
+                    "GenerateContent Split 8/39",
+                    3,
+                    counts,
+                    logical_request_id="test_request_1",
+                )
+            )
+
+            self.assertTrue(allowed)
+            self.assertEqual(count, expected)
+            self.assertEqual(
+                key,
+                "test_request_1::GenerateContent Split 8",
+            )
+
+        # Nach Erreichen des Limits darf keine weitere Reservierung erfolgen.
+        allowed, count, key = (
+            ns["_gemini_503_modellwechsel_budget_pruefen"](
                 "GenerateContent Split 8/39",
                 3,
                 counts,
                 logical_request_id="test_request_1",
             )
-
-            self.assertTrue(allowed)
-            self.assertEqual(count, expected)
-            self.assertEqual(key, "GenerateContent Split 8")
-
-        # Das Budget ist exakt auf 3 Modellwechsel begrenzt.
-        allowed, count, _ = ns[
-            "_gemini_503_modellwechsel_budget_pruefen"
-        ](
-            "GenerateContent Split 8/39",
-            3,
-            counts,
-            logical_request_id="test_request_1",
-        )
-
-        self.assertFalse(allowed)
-        self.assertEqual(count, 3)  # Ablehnung erhoeht den Zaehler nicht.
-
-        # Re-Chunking darf den Nenner aendern, ohne fuer denselben
-        # logischen Split ein neues Budget zu oeffnen.
-        allowed, count, key = ns[
-            "_gemini_503_modellwechsel_budget_pruefen"
-        ](
-            "GenerateContent Split 8/40",
-            3,
-            counts,
-            logical_request_id="test_request_1",
         )
 
         self.assertFalse(allowed)
         self.assertEqual(count, 3)
-        self.assertEqual(key, "GenerateContent Split 8")
+        self.assertEqual(
+            key,
+            "test_request_1::GenerateContent Split 8",
+        )
 
-        # Split 9 beginnt mit einer eigenen logischen Request-ID
-        # unabhaengig bei 1.
-        allowed, count, key = ns[
-            "_gemini_503_modellwechsel_budget_pruefen"
-        ](
-            "GenerateContent Split 9/39",
-            3,
-            counts,
-            logical_request_id="test_request_2",
+        # Re-Chunking darf den Nenner aendern, ohne fuer denselben
+        # logischen Split ein neues Budget zu oeffnen.
+        allowed, count, key = (
+            ns["_gemini_503_modellwechsel_budget_pruefen"](
+                "GenerateContent Split 8/40",
+                3,
+                counts,
+                logical_request_id="test_request_1",
+            )
+        )
+
+        self.assertFalse(allowed)
+        self.assertEqual(count, 3)
+        self.assertEqual(
+            key,
+            "test_request_1::GenerateContent Split 8",
+        )
+
+        # Split 9 beginnt unabhaengig bei 1.
+        allowed, count, key = (
+            ns["_gemini_503_modellwechsel_budget_pruefen"](
+                "GenerateContent Split 9/39",
+                3,
+                counts,
+                logical_request_id="test_request_1",
+            )
         )
 
         self.assertTrue(allowed)
         self.assertEqual(count, 1)
-        self.assertEqual(key, "GenerateContent Split 9")
+        self.assertEqual(
+            key,
+            "test_request_1::GenerateContent Split 9",
+        )
+
+        # Ein anderer logischer Request mit identischem Stage-Namen
+        # bekommt ebenfalls ein eigenes Budget.
+        allowed, count, key = (
+            ns["_gemini_503_modellwechsel_budget_pruefen"](
+                "GenerateContent Split 8/39",
+                3,
+                counts,
+                logical_request_id="test_request_2",
+            )
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            key,
+            "test_request_2::GenerateContent Split 8",
+        )
 
     def test_429_then_503_uses_next_fallback_not_same_model_again(self):
         # Der echte Produktions-Quota-Safe-Pfad wird mit deterministischen
@@ -195,10 +227,7 @@ class Gemini503RegressionTests(unittest.TestCase):
 
         # Ein Request-spezifischer failed-model-Satz wie im Produktionspfad.
         contents = [SimpleNamespace(text="same split payload")]
-        fp = ns["_gemini_503_request_fingerprint"](
-            contents,
-            "system",
-        )
+        fp = ns["_gemini_503_request_fingerprint"](contents, "system")
 
         ns["_gemini_503_failed_models_by_request"][fp] = set()
         ns["_gemini_failed_models"] = (
