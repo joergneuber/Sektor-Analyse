@@ -30,7 +30,7 @@ jobs:
         run: python -m compileall -q .
 
       - name: Bitcoin-/Edelmetall-Test separat ausführen
-        run: python tests/test_bitcoin_edelmetall_sections.py
+        run: python tests/test_bitcoin_edelmetall_sections.py gemini_auswertung.py
 
-      - name: Gesamten tests-Ordner ausführen
-        run: python -m pytest -v tests/
+      - name: Übrige Tests im tests-Ordner ausführen
+        run: python -m pytest -v tests/ --ignore=tests/test_bitcoin_edelmetall_sections.py
