@@ -4,7 +4,7 @@ from pathlib import Path
 
 SRC = Path(__file__).parents[1].joinpath('gemini_auswertung.py').read_text(encoding='utf-8')
 tree = ast.parse(SRC)
-nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {'normalisiere_ausgabe', '_entferne_marktumfeld_scores'}]
+nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {'normalisiere_ausgabe', '_entferne_marktumfeld_scores', '_bereinige_doppelte_10_5_ueberschrift'}]
 ns = {
     're': re,
     'RuntimeError': RuntimeError,

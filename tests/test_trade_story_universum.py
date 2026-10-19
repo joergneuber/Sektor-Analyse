@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 import importlib.util
 
-MODULE_PATH = Path(__file__).with_name("trade_story_universum.py")
+MODULE_PATH = Path(__file__).resolve().parents[1] / "trade_story_universum.py"
 
 spec = importlib.util.spec_from_file_location("trade_story_universum", MODULE_PATH)
 mod = importlib.util.module_from_spec(spec)
