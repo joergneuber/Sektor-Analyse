@@ -10511,9 +10511,39 @@ def _lade_name_ticker_quellenmapping():
         if isinstance(item, dict):
             add(item.get("name"), item.get("ticker"))
 
+    # Krypto-Story-Quelle: Name/Ticker-Paare explizit ergänzen, damit auch
+    # Bitcoin & Co. in allen Berichtsteilen kanonisch bezeichnet werden.
+    crypto_path = finde_datei(DATEIMUSTER["Trade_Story_Bitcoin(...).json"])
+    if crypto_path and os.path.isfile(crypto_path):
+        try:
+            crypto_data = json.loads(Path(crypto_path).read_text(encoding="utf-8-sig"))
+            if isinstance(crypto_data, dict):
+                # Root-Format der Trade_Story_Bitcoin-Quelle (z.B. asset/ticker)
+                # zusätzlich zu den vorhandenen Listenformaten übernehmen.
+                if crypto_data.get("asset") and crypto_data.get("ticker"):
+                    add(crypto_data["asset"], crypto_data["ticker"])
+
+                # Bestehende candidates/assets/instruments-Formate beibehalten.
+                crypto_items = crypto_data.get("candidates", [])
+                if not crypto_items:
+                    crypto_items = crypto_data.get("assets", crypto_data.get("instruments", []))
+            else:
+                crypto_items = []
+            for item in crypto_items if isinstance(crypto_items, list) else []:
+                if isinstance(item, dict):
+                    add(item.get("name") or item.get("asset") or item.get("coin"),
+                        item.get("ticker") or item.get("symbol") or item.get("yahoo_ticker"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(
+                f"WARNUNG: Krypto-Quelle {os.path.basename(crypto_path)} "
+                f"konnte nicht eingelesen werden ({type(exc).__name__}: {exc}); "
+                "Krypto-Mapping aus dieser Quelle wurde nicht übernommen."
+            )
+
     # Ergänzende aktuelle Scanner-CSV-Dateien schließen z.B. Titel ein, die
     # nicht im Trade-Story-Universum liegen, aber in einem aktuellen Einzelcheck
-    # oder Edelmetall-/Trendwende-Scan vorkommen.
+    # oder Edelmetall-/Trendwende-Scan vorkommen. Die Identitätsliste gilt für
+    # die gesamte Auswertung (Aktien, Edelmetalle, Krypto und weitere Assets).
     csv_keys = (
         "Setups(...).csv",
         "Trade_Story_Setup_Rohuniversum(...).csv",
@@ -10563,6 +10593,32 @@ def _lade_name_ticker_quellenmapping():
     return name_tickers, ticker_names
 
 
+def _name_ticker_pruefbereiche(text):
+    """Liefert identische fachliche Berichtbereiche fuer Normalizer und Gate.
+
+    Nummerierte Haupt-/Unterabschnitte 1 bis 10 werden eingeschlossen,
+    insbesondere Portfolio (7.x/10.x) und Edelmetall-Analysen. Punkt 11 ist
+    Methodik/Datenqualitaet und wird explizit ausgeschlossen. Die Erkennung
+    ist an Zeilenanfang gebunden, damit Zahlen innerhalb von Fliesstexten,
+    Kursen oder Datumsangaben keine neuen Bereiche erzeugen.
+    """
+    if not text:
+        return []
+    heading_re = re.compile(r"(?m)^\s*(?P<number>(?P<main>\d{1,2})\.(?:\d+(?:\.\d+)*\.?)?)\s+")
+    headings = [(match.start(), int(match.group("main")))
+                for match in heading_re.finditer(text)]
+    if not headings:
+        return []
+    spans = []
+    for i, (start, main) in enumerate(headings):
+        end = headings[i + 1][0] if i + 1 < len(headings) else len(text)
+        # Abschnitt 11 (Methodik/Datenqualität) und weitere Nicht-Analyse-
+        # Hauptabschnitte dienen nur als Grenze, werden aber nicht geprüft.
+        if 1 <= main <= 10 and start < end:
+            spans.append((start, end))
+    return spans
+
+
 def _normalisiere_name_ticker_ausgabe(text):
     """Normalisiert konkrete Firmennamen quellengebunden zu Name (TICKER).
 
@@ -10588,22 +10644,12 @@ def _normalisiere_name_ticker_ausgabe(text):
             names.append((name, ticker))
     names.sort(key=lambda pair: len(pair[0]), reverse=True)
 
-    # Wie im produktiv verwendeten Sektor-Analyse-Normalizer nur die
-    # fachlichen Berichtabschnitte prüfen; Quellen-/Metadatenbereiche bleiben
-    # unangetastet. Abschnitt 7 wird als Makrobereich nicht als Aktienliste
-    # interpretiert.
-    starts = [m.start() for m in re.finditer(
-        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
-        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
-        text,
-    )]
-    if not starts:
+    # Gemeinsamer Abschnittsfilter: Portfolio (7.x/10.x) und Edelmetalle
+    # werden ebenso erfasst wie die übrigen fachlichen Analyseabschnitte;
+    # Methodik/Datenqualität (11.x) bleibt außen vor.
+    spans = _name_ticker_pruefbereiche(text)
+    if not spans:
         return text
-
-    spans = [
-        (start, starts[i + 1] if i + 1 < len(starts) else len(text))
-        for i, start in enumerate(starts)
-    ]
     for start, end in reversed(spans):
         block = text[start:end]
         lines = block.splitlines(keepends=True)
@@ -10641,17 +10687,12 @@ def _pruefe_name_ticker_gate(text):
         if name and tickers
     }
 
-    starts = [m.start() for m in re.finditer(
-        r"(?m)^(?:1\.1|1\.2|1\.3|1\.4|2\.1|2\.2|2\.3|2\.4|2\.5|"
-        r"3\.[1-5]|4\.|5\.|6\.[1-6]|8\.[1-4]|9\.[1-5])\b",
-        text,
-    )]
-    if not starts:
+    # Dasselbe Bereichsmodell wie die Normalisierung verwenden, damit das
+    # Gate keine Abschnitte übersieht oder zusätzliche Bereiche beanstandet.
+    spans = _name_ticker_pruefbereiche(text)
+    if not spans:
         return
-    checked = "\n".join(
-        text[start:(starts[i + 1] if i + 1 < len(starts) else len(text))]
-        for i, start in enumerate(starts)
-    )
+    checked = "\n".join(text[start:end] for start, end in spans)
 
     errors = []
     for line_no, line in enumerate(checked.splitlines(), 1):
