@@ -2,25 +2,8 @@ name: Gemini Regressionstests
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'gemini_auswertung.py'
-      - 'send_mail.py'
-      - 'upload_to_drive.py'
-      - 'tests/test_gemini_report_status.py'
-      - 'tests/test_gemini_status_delivery.py'
-      - 'tests/test_gemini_auswertung_regression.py'
-      - '.github/workflows/test-gemini-auswertung.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'gemini_auswertung.py'
-      - 'send_mail.py'
-      - 'upload_to_drive.py'
-      - 'tests/test_gemini_report_status.py'
-      - 'tests/test_gemini_status_delivery.py'
-      - 'tests/test_gemini_auswertung_regression.py'
-      - '.github/workflows/test-gemini-auswertung.yml'
   workflow_dispatch:
 
 permissions:
