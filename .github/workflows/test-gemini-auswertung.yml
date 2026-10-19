@@ -26,7 +26,7 @@ jobs:
       - name: Testabhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest pandas numpy requests scipy
+          python -m pip install pytest pandas numpy requests scipy alpaca-py
           python -m pip install google-genai google-auth google-api-python-client
 
       - name: Syntax aller Python-Dateien prüfen
