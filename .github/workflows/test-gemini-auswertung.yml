@@ -22,11 +22,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: pytest installieren
-        run: python -m pip install pytest
+      - name: Testabhängigkeiten installieren
+        run: python -m pip install pytest pandas numpy requests
 
-      - name: Syntax prüfen
-        run: python -m py_compile gemini_auswertung.py send_mail.py upload_to_drive.py tests/test_gemini_report_status.py tests/test_gemini_status_delivery.py tests/test_gemini_auswertung_regression.py
+      - name: Syntax aller Python-Dateien prüfen
+        run: python -m compileall -q .
 
-      - name: Schnelle Status-, Versand-, Upload- und Gemini-Regressionstests
-        run: python -m pytest -v tests/test_gemini_report_status.py tests/test_gemini_status_delivery.py tests/test_gemini_auswertung_regression.py
+      - name: Gesamten tests-Ordner ausführen
+        run: python -m pytest -v tests/
