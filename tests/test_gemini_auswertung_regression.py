@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
-SOURCE = Path(__file__).with_name("gemini_auswertung.py")
+SOURCE = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 SOURCE_TEXT = SOURCE.read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE_TEXT, filename=str(SOURCE))
 FUNCTIONS = {node.name: node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
