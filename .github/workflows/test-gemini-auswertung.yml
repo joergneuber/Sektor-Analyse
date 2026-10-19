@@ -1,22 +1,23 @@
-
-    
-  
-name: Schnelle Regressionstests – Gemini-Auswertung
+name: Gemini Regressionstests
 
 on:
   push:
     branches: [main]
     paths:
       - 'gemini_auswertung.py'
-      - 'tests/test_gemini_quellenperioden_gate.py'
-      - 'tests/test_gemini_briefing_source_repair.py'
+      - 'send_mail.py'
+      - 'upload_to_drive.py'
+      - 'tests/test_*gemini*.py'
+      - 'tests/test_bitcoin_edelmetall_sections.py'
       - '.github/workflows/test-gemini-auswertung.yml'
   pull_request:
     branches: [main]
     paths:
       - 'gemini_auswertung.py'
-      - 'tests/test_gemini_quellenperioden_gate.py'
-      - 'tests/test_gemini_briefing_source_repair.py'
+      - 'send_mail.py'
+      - 'upload_to_drive.py'
+      - 'tests/test_*gemini*.py'
+      - 'tests/test_bitcoin_edelmetall_sections.py'
       - '.github/workflows/test-gemini-auswertung.yml'
   workflow_dispatch:
 
@@ -26,7 +27,7 @@ permissions:
 jobs:
   regression-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Repository auschecken
         uses: actions/checkout@v5
@@ -34,10 +35,11 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Für Regressionstests benötigte Import-Abhängigkeiten installieren
-        run: python -m pip install google-genai google-auth google-api-python-client
+      - name: Testabhängigkeiten installieren
+        run: python -m pip install google-genai google-auth google-api-python-client pytest
       - name: Syntax prüfen
-        run: python -m py_compile gemini_auswertung.py tests/test_gemini_quellenperioden_gate.py tests/test_gemini_briefing_source_repair.py
-      - name: Isolierte Regressionstests ausführen
-        run: python -m unittest tests.test_gemini_quellenperioden_gate tests.test_gemini_briefing_source_repair -v
-
+        run: python -m compileall -q gemini_auswertung.py send_mail.py upload_to_drive.py tests
+      - name: Alle Gemini-Regressionstests automatisch ausführen
+        run: python -m pytest -v tests/test_*gemini*.py
+      - name: Edelmetall-Abschnittstest ausführen
+        run: python tests/test_bitcoin_edelmetall_sections.py gemini_auswertung.py
