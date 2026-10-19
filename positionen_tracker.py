@@ -53,8 +53,28 @@ NUMERISCHE_SPALTEN = [
     'OS_Einstiegskurs', 'OS_Aktueller_Kurs', 'OS_Performance%'
 ]
 
-alpaca_client = StockHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
-crypto_client = CryptoHistoricalDataClient(os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET'))
+# Alpaca-Clients erst bei echtem Datenabruf initialisieren.
+# Dadurch können reine Berechnungs-/Regressionstests das Modul ohne API-Secrets importieren.
+_alpaca_client = None
+_crypto_client = None
+
+
+def _get_alpaca_client():
+    global _alpaca_client
+    if _alpaca_client is None:
+        _alpaca_client = StockHistoricalDataClient(
+            os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET')
+        )
+    return _alpaca_client
+
+
+def _get_crypto_client():
+    global _crypto_client
+    if _crypto_client is None:
+        _crypto_client = CryptoHistoricalDataClient(
+            os.getenv('ALPACA_KEY'), os.getenv('ALPACA_SECRET')
+        )
+    return _crypto_client
 
 
 def sicheres_float(val, ticker="?", feldname="?"):
@@ -626,7 +646,7 @@ def hole_aktuellen_kurs(ticker, markt):
                 start=start_date,
                 timeframe=TimeFrame.Day
             )
-            bars = crypto_client.get_crypto_bars(request)
+            bars = _get_crypto_client().get_crypto_bars(request)
             hist = bars.df
             if hist.empty:
                 return None
@@ -650,7 +670,7 @@ def hole_aktuellen_kurs(ticker, markt):
         if markt == 'US' and '.' not in str(ticker):
             start_date = datetime.datetime.now() - datetime.timedelta(days=10)
             request = StockBarsRequest(symbol_or_symbols=[ticker], start=start_date, timeframe=TimeFrame.Day)
-            bars = alpaca_client.get_stock_bars(request)
+            bars = _get_alpaca_client().get_stock_bars(request)
             hist = bars.df
             if hist.empty:
                 return None
@@ -839,7 +859,7 @@ def _hole_tageshistorie(ticker, markt, tage=45):
                 start=start,
                 timeframe=TimeFrame.Day
             )
-            bars = crypto_client.get_crypto_bars(req).df
+            bars = _get_crypto_client().get_crypto_bars(req).df
             if bars.empty:
                 return pd.DataFrame()
             hist = bars.reset_index()
@@ -859,7 +879,7 @@ def _hole_tageshistorie(ticker, markt, tage=45):
                 start=start,
                 timeframe=TimeFrame.Day
             )
-            bars = alpaca_client.get_stock_bars(req).df
+            bars = _get_alpaca_client().get_stock_bars(req).df
             if bars.empty:
                 return pd.DataFrame()
             hist = bars.reset_index()
