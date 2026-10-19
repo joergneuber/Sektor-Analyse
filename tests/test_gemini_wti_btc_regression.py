@@ -10,7 +10,7 @@ import types
 import unittest
 from pathlib import Path
 
-SOURCE = Path(__file__).with_name("gemini_auswertung_wti_btc_korrigiert.py")
+SOURCE = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 
 
 def _install_import_stubs():

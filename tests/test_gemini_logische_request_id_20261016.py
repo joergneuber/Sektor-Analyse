@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-SOURCE_PATH = Path('/mnt/data/gemini_auswertung(20261016-102942)_repariert.py')
+SOURCE_PATH = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 SOURCE = SOURCE_PATH.read_text(encoding='utf-8')
 TREE = ast.parse(SOURCE)
 

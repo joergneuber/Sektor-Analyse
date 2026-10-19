@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 import unittest
 
-SOURCE = Path(__file__).with_name("gemini_auswertung(9)_repariert.py")
+SOURCE = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"))
 NODE = next(
     n for n in TREE.body
