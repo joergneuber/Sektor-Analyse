@@ -1,6 +1,6 @@
 """Regression suite for the whole Auswertung structure repair.\n
 Run:
-  python test_gemini_ausgabestruktur_generalisiert.py gemini_auswertung_struktur_generalisiert.py
+  python -m pytest -v tests/test_gemini_ausgabestruktur.py
 
 The harness compiles the production structure functions from the supplied source
 file, avoiding imports of unrelated API/network dependencies in the full program.
@@ -14,9 +14,7 @@ import unittest
 from pathlib import Path
 
 
-SOURCE = Path(sys.argv[1] if len(sys.argv) > 1 else "gemini_auswertung_struktur_generalisiert.py").resolve()
-if len(sys.argv) > 1:
-    sys.argv = [sys.argv[0]]  # keep unittest from treating the source path as a test selector
+SOURCE = Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 
 FUNCTIONS = {
     "_ausgabe_pflichtstruktur",
