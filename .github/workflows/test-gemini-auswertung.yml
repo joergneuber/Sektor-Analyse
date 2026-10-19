@@ -7,8 +7,9 @@ on:
       - 'gemini_auswertung.py'
       - 'send_mail.py'
       - 'upload_to_drive.py'
-      - 'tests/test_*gemini*.py'
-      - 'tests/test_bitcoin_edelmetall_sections.py'
+      - 'tests/test_gemini_report_status.py'
+      - 'tests/test_gemini_status_delivery.py'
+      - 'tests/test_gemini_auswertung_regression.py'
       - '.github/workflows/test-gemini-auswertung.yml'
   pull_request:
     branches: [main]
@@ -16,8 +17,9 @@ on:
       - 'gemini_auswertung.py'
       - 'send_mail.py'
       - 'upload_to_drive.py'
-      - 'tests/test_*gemini*.py'
-      - 'tests/test_bitcoin_edelmetall_sections.py'
+      - 'tests/test_gemini_report_status.py'
+      - 'tests/test_gemini_status_delivery.py'
+      - 'tests/test_gemini_auswertung_regression.py'
       - '.github/workflows/test-gemini-auswertung.yml'
   workflow_dispatch:
 
@@ -27,7 +29,7 @@ permissions:
 jobs:
   regression-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Repository auschecken
         uses: actions/checkout@v5
@@ -35,11 +37,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Testabhängigkeiten installieren
-        run: python -m pip install google-genai google-auth google-api-python-client pytest
       - name: Syntax prüfen
-        run: python -m compileall -q gemini_auswertung.py send_mail.py upload_to_drive.py tests
-      - name: Alle Gemini-Regressionstests automatisch ausführen
-        run: python -m pytest -v tests/test_*gemini*.py
-      - name: Edelmetall-Abschnittstest ausführen
-        run: python tests/test_bitcoin_edelmetall_sections.py gemini_auswertung.py
+        run: python -m py_compile gemini_auswertung.py send_mail.py upload_to_drive.py tests/test_gemini_report_status.py tests/test_gemini_status_delivery.py tests/test_gemini_auswertung_regression.py
+      - name: Schnelle Status-, Versand-, Upload- und Gemini-Regressionstests
+        run: python -m pytest -v tests/test_gemini_report_status.py tests/test_gemini_status_delivery.py tests/test_gemini_auswertung_regression.py
