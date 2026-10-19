@@ -210,17 +210,49 @@ def _json_from_response(text: str) -> Any:
 
 
 def _llm_call(client: Any, system: str, user: str) -> Any:
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        temperature=0.1,
-        max_tokens=5000,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return _json_from_response(response.choices[0].message.content or "")
+    """Ruft Groq auf; wiederholt ausschließlich json_validate_failed genau einmal."""
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                temperature=0.1,
+                max_tokens=5000,
+                response_format={"type": "json_object"},
+                messages=messages,
+            )
+            return _json_from_response(response.choices[0].message.content or "")
+        except Exception as exc:
+            # Groq weist ungültig generiertes JSON bereits als HTTP 400 zurück.
+            # Andere API-/Netzwerk-/Parserfehler werden nicht erneut ausgeführt.
+            error_text = str(exc).lower()
+            error_body = getattr(exc, "body", None)
+            if error_body is not None:
+                error_text += " " + repr(error_body).lower()
+            is_json_validation_error = (
+                getattr(exc, "status_code", None) == 400
+                and "json_validate_failed" in error_text
+            )
+            if attempt == 0 and is_json_validation_error:
+                messages = messages + [{
+                    "role": "user",
+                    "content": (
+                        "Dein vorheriger Generierungsversuch wurde wegen ungültigem JSON " 
+                        "zurückgewiesen. Wiederhole die Aufgabe. Gib ausschließlich ein "
+                        "syntaktisch gültiges JSON-Objekt zurück, ohne Markdown-Codezaun " 
+                        "oder zusätzlichen Text. Achte auf korrekt geschlossene und "
+                        "escaped Anführungszeichen sowie gültige JSON-Zeichenfolgen."
+                    ),
+                }]
+                continue
+            raise
+
+    # Der Loop kann regulär nur mit Rückgabe oder Exception enden.
+    raise RuntimeError("Groq-Generierung unerwartet ohne Ergebnis beendet.")
 
 
 def extrahiere_kandidaten(issue: dict[str, Any]) -> list[dict[str, Any]]:
