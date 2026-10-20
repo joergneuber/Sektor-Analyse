@@ -22,7 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Investment Radar ausführen
-        run: python investment_radar.py
+        run: python investment_radar.py --input-dir .
 
       - name: Radar-Bericht committen
         run: |
