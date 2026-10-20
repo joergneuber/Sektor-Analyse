@@ -12857,7 +12857,7 @@ def _repariere_8_x_quellengebunden(text, edel_text, briefing_text=""):
             )
             continue
         detail_4w = _extract_metal_4w_value(lage_block, asset)
-        chosen_4w = _waehle_edelmetall_4w(detail_4w)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w, _extract_metal_4w_value(briefing_text, asset))
         if chosen_4w is None:
             missing.append(f"{asset}: 4W-Wert fehlt/ungültig im Edelmetalle-Briefing")
             continue
@@ -13010,6 +13010,13 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
             edel = Path(path).read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise RuntimeError(f"PUNKT8_QUELLE_NICHT_LESBAR: Edelmetalle_Briefing(...).txt: {exc}") from exc
+    markt = ""
+    market_path = inputs.get("briefing.txt")
+    if market_path and os.path.isfile(market_path):
+        try:
+            markt = Path(market_path).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise RuntimeError(f"PUNKT8_MARKTQUELLE_NICHT_LESBAR: briefing.txt: {exc}") from exc
     headings = ["8.1 Gold", "8.2 Silber", "8.3 Platin", "8.4 Palladium"]
     blocks = {h: _abschnitt_text(text, h, headings + ["9. 📅 NÄCHSTE KATALYSATOREN"]) for h in headings}
     errors = [f"{h}: Abschnitt fehlt oder ist nicht kanonisch abgrenzbar." for h in headings if not blocks[h]]
@@ -13069,7 +13076,7 @@ def _pruefe_punkt8_quellenabdeckung(text, eingabedateien):
                 _gate_quellenwert(block, "5T", _quellenwert_float(five_day_raw), errors)
 
             detail_4w = _extract_metal_4w_value(lage_block, asset)
-            chosen_4w = _waehle_edelmetall_4w(detail_4w)
+            chosen_4w = _waehle_edelmetall_4w(detail_4w, _extract_metal_4w_value(markt, asset))
             if chosen_4w is None:
                 errors.append(f"{heading}: kein brauchbarer 4W-Wert im Edelmetalle-Briefing.")
             else:
@@ -14680,13 +14687,12 @@ def _repariere_auswertung_quellenkonflikte(text, eingabedateien=None, briefing_t
             if n:
                 changes.append(f"WTI-EMA-Aussage aus Quellkurs/EMA20/EMA50 korrigiert ({n})")
 
-    # Edelmetall-Fakten ausschließlich aus dem Edelmetalle-Briefing übernehmen.
-    # Abweichungen zur Vergleichsquelle werden separat dokumentiert; sie ersetzen
-    # niemals einen fehlenden oder unbrauchbaren Wert aus der Faktenquelle.
+    # Edelmetall-4W: Edelmetalle-Briefing priorisieren, Marktwert bei fehlendem
+    # oder unbrauchbarem Detailwert als gekennzeichneten Fallback verwenden.
     metal_values = {}
     for metal in ("Gold", "Silber", "Platin", "Palladium"):
         detail_4w = _edelmetall_4w_value(edel_text or "", metal)
-        chosen = _waehle_edelmetall_4w(detail_4w)
+        chosen = _waehle_edelmetall_4w(detail_4w, _extract_metal_4w_value(briefing_text, metal))
         if chosen is not None:
             metal_values[metal] = chosen[1]
     for idx, metal in enumerate(("Gold", "Silber", "Platin", "Palladium"), start=1):
@@ -15449,30 +15455,29 @@ def _entferne_futures_basis_duplikate_aus_abschnitt8(text):
     return text
 
 
-def _waehle_edelmetall_4w(edelmetall_wert):
-    """Verwendet ausschließlich den 4W-Wert aus dem Edelmetalle-Briefing.
+def _waehle_edelmetall_4w(edelmetall_wert, markt_wert=None):
+    """Priorisiert das Edelmetalle-Briefing; Markt-Briefing ist Fallback.
 
-    Das Markt-Briefing dient nur der Konfliktdiagnose und darf weder als
-    Ersatzquelle noch als stiller Fallback für operative Edelmetall-Fakten
-    verwendet werden.
+    Ein Quellenwert muss als (Rohwert, Zahlenwert) vorliegen und einen endlichen
+    Zahlenwert enthalten. Die Rohdarstellung bleibt unveraendert erhalten.
     """
-    if edelmetall_wert is None:
-        return None
-    try:
-        raw, value = edelmetall_wert
-    except (TypeError, ValueError):
-        return None
-    if value is None:
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(numeric):
-        return None
-    # Rohdarstellung unveraendert erhalten; nur der Zahlenwert wird normalisiert.
-    # So bleiben Quelltext-/Berichtsdarstellung und fachlicher Zahlenwert getrennt.
-    return raw, numeric, "Edelmetalle-Briefing"
+    def parse_source(source_value, source_name):
+        if source_value is None:
+            return None
+        try:
+            raw, value = source_value
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        # Ohne globale math-Abhaengigkeit nutzbar, auch bei isolierten AST-Tests.
+        if numeric != numeric or numeric in (float("inf"), float("-inf")):
+            return None
+        return raw, numeric, source_name
+
+    detail = parse_source(edelmetall_wert, "Edelmetalle-Briefing")
+    if detail is not None:
+        return detail
+    return parse_source(markt_wert, "Markt-Briefing-Fallback")
 
 
 def _first_4w_value_in_block(block):
@@ -15652,7 +15657,7 @@ def _pruefe_auswertung_quellenkonflikte(
     for idx, metal in enumerate(metal_names, start=1):
         block = section(f"8.{idx} {metal}", f"8.{idx+1} " + metal_names[idx] if idx < 4 else "9. 📅 NÄCHSTE KATALYSATOREN")
         detail_4w = _edelmetall_4w_value(edel_text or "", metal)
-        chosen_4w = _waehle_edelmetall_4w(detail_4w)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w, _extract_metal_4w_value(briefing_text, metal))
         source_line = _edelmetall_lage_zeile(edel_text or "", metal)
         if source_line:
             perf_match = re.search(
@@ -15686,10 +15691,10 @@ def _pruefe_auswertung_quellenkonflikte(
                                     f"8.{idx} {metal}: 4W-Wert {raw_value}% widerspricht "
                                     f"aktuellem Quellwert {perf_match.group(1)}%."
                                 )
-        # Der ausgegebene 4W-Wert muss ausschließlich mit dem Edelmetalle-Briefing
-        # übereinstimmen. Die allgemeine Marktquelle ist kein Sollwert und kein Fallback.
+        # Der ausgegebene 4W-Wert muss mit der priorisierten Quelle oder dem
+        # gekennzeichneten Markt-Fallback übereinstimmen.
         detail_4w = _edelmetall_4w_value(edel_text or "", metal)
-        chosen_4w = _waehle_edelmetall_4w(detail_4w)
+        chosen_4w = _waehle_edelmetall_4w(detail_4w, _extract_metal_4w_value(briefing_text, metal))
         if chosen_4w is not None:
             block = section(f"8.{idx} {metal}", "9. 📅 NÄCHSTE KATALYSATOREN")
             raw_value = _first_4w_value_in_block(block)
