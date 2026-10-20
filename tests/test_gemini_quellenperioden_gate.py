@@ -1158,6 +1158,19 @@ class FinalGateDuplicateNumberRegressionTests(unittest.TestCase):
         ):
             self.final_gate(report)
 
+    def test_duplicate_error_includes_heading_titles_and_line_numbers(self):
+        report = self._report([
+            "7.1 Aktienmärkte / Indizes",
+            "7.1 Aktienmärkte / Indizes — ergänzende Auswertung",
+        ])
+        with self.assertRaises(RuntimeError) as caught:
+            self.final_gate(report)
+        message = str(caught.exception)
+        self.assertIn("7.1 [Zeile 1:", message)
+        self.assertIn("Zeile 3:", message)
+        self.assertIn("Aktienmärkte / Indizes", message)
+        self.assertIn("ergänzende Auswertung", message)
+
     def test_numbered_prose_is_not_a_duplicate_heading(self):
         report = (
             "7.1 Aktienmärkte / Indizes\nAnalyseinhalt.\n"
