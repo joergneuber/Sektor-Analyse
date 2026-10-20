@@ -1,6 +1,3 @@
-
-    
-  
 """Gezielte Regressionstests fuer Bitcoin-Root-Mapping, Edelmetall-Normalisierung
 und identische Abschnittsbereiche von Normalizer und Gate.
 
@@ -77,4 +74,3 @@ class TargetedRegression(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
