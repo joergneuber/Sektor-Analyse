@@ -242,12 +242,6 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
     # explicitly marked NICHT AUSGELESEN is excluded globally, even if another
     # downstream source (e.g. HEBELTRADER) happens to mention it.
     stock_universe_rows = _read_csv(paths.get("Trade_Story_Aktienuniversum(...).csv", ""))
-    ausgelesen_ticker = {
-        _ticker(_value(row, *TICKER_FIELDS))
-        for row in stock_universe_rows
-        if _value(row, "Assetdaten_Status").upper() == "AUSGELESEN"
-        and _ticker(_value(row, *TICKER_FIELDS))
-    }
     nicht_ausgelesen_ticker = {
         _ticker(_value(row, *TICKER_FIELDS))
         for row in stock_universe_rows
@@ -335,6 +329,11 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
             # Bei einer hoeher priorisierten Quelle niemals einen bereits
             # bekannten Namen durch null/leer ueberschreiben.
             previous_name = old[2].get("name", "") if old else ""
+            # Preserve the displaced status so a dated negative observation can
+            # remove a stale positive candidate, while a standalone negative
+            # status (e.g. IBM) remains visible as universe-only context.
+            previous_status = old[0] if old else ""
+            previous_source = old[1] if old else ""
             current_hebel[tk] = (
                 st,
                 source,
@@ -342,6 +341,8 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
                     "name": resolved_name or previous_name,
                     "issue": str(issue or "").strip(),
                     "check_date": str(check_date or "").strip(),
+                    "previous_status": previous_status,
+                    "previous_source": previous_source,
                 },
             )
 
@@ -467,7 +468,29 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
     # Kandidat bzw. Setup-Quelle behandelt werden. A ist nur bei bestaetigter
     # Tages-Technikhistorie VALIDE, sonst VORBEREITET; B/C bleiben VORBEREITET.
     for tk, (status, source, meta) in current_hebel.items():
-        if status in EXCLUDED_HEBEL or tk in nicht_ausgelesen_ticker or tk not in ausgelesen_ticker:
+        # A ticker absent from the asset-data CSV is not implicitly excluded:
+        # downstream discovery/status sources may legitimately introduce it.
+        # Only an explicit NICHT AUSGELESEN row is a global asset-data block.
+        # A dated observation is the authoritative next-run snapshot. Its
+        # explicit negative result removes a stale candidate from earlier
+        # A-message/structured sources; a structured negative without such an
+        # observation remains visible as a universe-only status.
+        if status in EXCLUDED_HEBEL or tk in nicht_ausgelesen_ticker:
+            candidates.pop(tk, None)
+            continue
+        if (
+            status == "KEIN KANDIDAT"
+            and source == "observation"
+            and meta.get("previous_status") in {"KAUFKANDIDAT A", "KAUFKANDIDAT B", "KAUFKANDIDAT C"}
+        ):
+            # A dated negative observation invalidates an older positive
+            # structured/A-message status. A standalone negative observation
+            # is retained below as universe-only context.
+            candidates.pop(tk, None)
+            continue
+        if status == "KAUFKANDIDAT C" and source == "observation":
+            # C from the dated snapshot is a watch/early signal, not an
+            # actionable Trade-Story item. Structured current payloads retain C.
             candidates.pop(tk, None)
             continue
         item = {

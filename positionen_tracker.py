@@ -1059,6 +1059,11 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
                 if stop is None or trailing > stop:
                     stop = trailing
 
+    # Normalize legacy/CSV TP2 values before assigning a dynamic numeric
+    # target. Invalid text becomes NaN; valid prices remain numeric floats.
+    if 'TP2' in df.columns:
+        df['TP2'] = pd.to_numeric(df['TP2'], errors='coerce')
+
     # Dynamisches TP2: erst nachträglich aus einem bestätigten Swing-High
     # oberhalb von TP1/Entry ableiten. Kein TP2/CRV2-Zwang am Entry.
     management_alt = str(row.get('TF_Management', '')).strip()
