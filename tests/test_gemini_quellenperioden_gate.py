@@ -1074,7 +1074,7 @@ class Sections8910HardeningTests(unittest.TestCase):
         ENV["_abschnitt_text"] = section_text
         ENV["_edelmetall_quellenblock"] = lambda source, asset: trends[asset]
         ENV["_extract_metal_4w_value"] = lambda source, asset: ("+2.00", 2.0)
-        ENV["_waehle_edelmetall_4w"] = lambda value: value
+        ENV["_waehle_edelmetall_4w"] = lambda detail, markt=None: detail if detail is not None else markt
         ENV["_gate_quellenwert"] = lambda block, label, value, errors: None
         try:
             with tempfile.TemporaryDirectory() as td:
