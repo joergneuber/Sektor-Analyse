@@ -14154,15 +14154,26 @@ def _pruefe_finale_struktur_und_konsistenz(text):
     errors = []
     # Doppelte Nummern nur anhand titelvalidierter Abschnittsüberschriften zählen.
     # Eine nummerierte Fließtextzeile darf kein Struktur-Gate auslösen.
-    counts = {}
-    for line in (text or "").splitlines():
+    occurrences = {}
+    for line_number, line in enumerate((text or "").splitlines(), start=1):
         heading = _echte_unterabschnittsueberschrift(line)
         if heading:
             key = heading[0]
-            counts[key] = counts.get(key, 0) + 1
-    duplicates = sorted(k for k, v in counts.items() if v > 1)
+            title = heading[1] if len(heading) > 1 else line.strip()
+            occurrences.setdefault(key, []).append((line_number, title.strip()))
+    duplicates = sorted(k for k, items in occurrences.items() if len(items) > 1)
     if duplicates:
-        errors.append("Doppelte Unterabschnittsnummer(n): " + ", ".join(duplicates))
+        duplicate_details = []
+        for key in duplicates:
+            locations = "; ".join(
+                f"Zeile {line_number}: {title!r}"
+                for line_number, title in occurrences[key]
+            )
+            duplicate_details.append(f"{key} [{locations}]")
+        errors.append(
+            "Doppelte Unterabschnittsnummer(n): " + ", ".join(duplicates)
+            + " | Überschriften: " + " | ".join(duplicate_details)
+        )
 
     if re.search(r"(?i)Rekordhoch[^\n]{0,80}\(ca\.\s*1927\s*,", text or ""):
         errors.append("Mehrdeutige S&P-500-Formulierung: 1927 muss als Beginn der Datenreihe, nicht als Rekordjahr, bezeichnet werden.")
