@@ -1117,3 +1117,51 @@ class Sections8910HardeningTests(unittest.TestCase):
                 bad_trend_asset="Gold",
                 bad_value="200er-Trend: Kurs 4000 | EMA200 ??? | WMA200 3800",
             )
+
+class FinalGateDuplicateNumberRegressionTests(unittest.TestCase):
+    """Regression: finale Strukturprüfung erkennt beliebige doppelte Nummern."""
+
+    def setUp(self):
+        self.final_gate = ENV["_pruefe_finale_struktur_und_konsistenz"]
+
+    def _report(self, headings):
+        return "\n".join(f"{heading}\nAnalyseinhalt für {heading}." for heading in headings) + "\n"
+
+    def test_duplicate_71_is_rejected(self):
+        report = self._report([
+            "7.1 Aktienmärkte / Indizes",
+            "7.1 Aktienmärkte / Indizes — ergänzende Auswertung",
+        ])
+        with self.assertRaisesRegex(RuntimeError, r"Doppelte Unterabschnittsnummer\(n\): 7\.1"):
+            self.final_gate(report)
+
+    def test_duplicate_82_is_rejected(self):
+        report = self._report([
+            "8.2 Edelmetalle",
+            "8.2 Edelmetalle — Quellenabgleich",
+        ])
+        with self.assertRaisesRegex(RuntimeError, r"Doppelte Unterabschnittsnummer\(n\): 8\.2"):
+            self.final_gate(report)
+
+    def test_multiple_distinct_duplicate_numbers_are_all_reported(self):
+        report = self._report([
+            "6.1 Makro gegen Technik",
+            "6.1 Makro gegen Technik — Ergänzung",
+            "7.1 Aktienmärkte / Indizes",
+            "7.1 Aktienmärkte / Indizes — Ergänzung",
+            "8.2 Edelmetalle",
+            "8.2 Edelmetalle — Ergänzung",
+        ])
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"Doppelte Unterabschnittsnummer\(n\): 6\.1, 7\.1, 8\.2",
+        ):
+            self.final_gate(report)
+
+    def test_numbered_prose_is_not_a_duplicate_heading(self):
+        report = (
+            "7.1 Aktienmärkte / Indizes\nAnalyseinhalt.\n"
+            "Im Fließtext bedeutet 7.1 lediglich eine Referenznummer.\n"
+            "8.2 Edelmetalle\nAnalyseinhalt.\n"
+        )
+        self.final_gate(report)
