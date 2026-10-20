@@ -125,6 +125,31 @@ def fixture():
     return output, briefing, edel
 
 
+# Die Testuhr wird automatisch aus dem unveränderten Ausgangs-Fixture abgeleitet:
+# Referenztag = jüngster dort enthaltener Quellenstand + 1 Kalendertag.
+# Ändern sich die Fixture-Daten, muss kein separates Datum nachgezogen werden.
+def _fixture_reference_date():
+    _, briefing, edel = fixture()
+    source_text = "\n".join((briefing or "", edel or ""))
+    dates = re.findall(r"\b(?:Datenstand\s*)?(\d{2}\.\d{2}\.\d{4})\b", source_text)
+    parsed = []
+    for raw in dates:
+        try:
+            parsed.append(datetime.datetime.strptime(raw, "%d.%m.%Y").date())
+        except ValueError:
+            continue
+    if not parsed:
+        raise AssertionError("Test-Fixture enthält keinen gültigen Quellen-Datenstand")
+    return max(parsed) + datetime.timedelta(days=1)
+
+
+_SIMULATED_TODAY = _fixture_reference_date()
+_original_freshness_helper = ENV["_datenstand_ist_aktuell"]
+ENV["_datenstand_ist_aktuell"] = lambda value, max_alter_tage=5, heute=None: _original_freshness_helper(
+    value, max_alter_tage=max_alter_tage, heute=heute or _SIMULATED_TODAY
+)
+
+
 def section_block(text, start_number, end_number):
     pattern = (
         r"(?ims)^(?:\s*#{1,6}\s*)?" + re.escape(start_number) +
@@ -290,7 +315,7 @@ class SourceGateTests(unittest.TestCase):
 
     def test_future_source_date_fails(self):
         text, briefing, edel = fixture()
-        future_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%d.%m.%Y")
+        future_date = (_SIMULATED_TODAY + datetime.timedelta(days=1)).strftime("%d.%m.%Y")
         text = text.replace("Datenstand 14.10.2026", f"Datenstand {future_date}")
         briefing = briefing.replace("Datenstand 14.10.2026", f"Datenstand {future_date}")
         with self.assertRaisesRegex(RuntimeError, "Quelldatenstand ist veraltet oder liegt in der Zukunft"):

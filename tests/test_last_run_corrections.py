@@ -83,8 +83,10 @@ def test_hebeltrader_time_shift_a_b_c_rule():
         assert by_ticker["FME.DE"]["trade_story_status"] == "VORBEREITET"
         assert by_ticker["EOG"]["hebeltrader_status"] == "KAUFKANDIDAT B"
         assert by_ticker["EOG"]["trade_story_status"] == "VORBEREITET"
-        assert "SRT3.DE" not in by_ticker
-        assert "GOOGL" not in by_ticker
+        # KEIN KANDIDAT is retained as universe-only context. It must not be
+        # promoted to a trade/setup, but it is not silently deleted either.
+        assert by_ticker["SRT3.DE"]["trade_story_status"] == "KEIN KANDIDAT"
+        assert by_ticker["GOOGL"]["trade_story_status"] == "KEIN KANDIDAT"
         assert "PANW" not in by_ticker
 
 

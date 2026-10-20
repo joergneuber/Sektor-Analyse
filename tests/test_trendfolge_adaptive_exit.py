@@ -4,7 +4,49 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+# The test may live beside the module in a patch bundle or under tests/ in the repo.
+HERE = Path(__file__).resolve().parent
+ROOT = HERE if (HERE / "positionen_tracker.py").exists() else HERE.parent
+# positionen_tracker imports data-provider clients at module load. These tests
+# exercise local dataframe/price logic only, so provide minimal import stubs.
+import sys
+import types
+
+def _stub_module(name, attrs=None):
+    module = types.ModuleType(name)
+    existing = sys.modules.get(name)
+    if existing is None:
+        sys.modules[name] = module
+        existing = module
+    for key, value in (attrs or {}).items():
+        setattr(existing, key, value)
+    return existing
+
+_stub_module("yfinance")
+for name in ("google", "google.oauth2", "google.oauth2.credentials",
+             "google.auth", "google.auth.transport", "google.auth.transport.requests",
+             "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
+             "alpaca", "alpaca.data", "alpaca.data.historical",
+             "alpaca.data.requests", "alpaca.data.timeframe"):
+    _stub_module(name)
+_stub_module("google.oauth2.credentials", {"Credentials": type("Credentials", (), {})})
+_stub_module("google.auth.transport.requests", {"Request": type("Request", (), {})})
+_stub_module("googleapiclient.discovery", {"build": lambda *a, **k: None})
+_stub_module("googleapiclient.http", {
+    "MediaIoBaseDownload": type("MediaIoBaseDownload", (), {}),
+    "MediaIoBaseUpload": type("MediaIoBaseUpload", (), {}),
+})
+_stub_module("alpaca.data.historical", {
+    "StockHistoricalDataClient": type("StockHistoricalDataClient", (), {}),
+    "CryptoHistoricalDataClient": type("CryptoHistoricalDataClient", (), {}),
+})
+_stub_module("alpaca.data.requests", {
+    "StockBarsRequest": type("StockBarsRequest", (), {}),
+    "CryptoBarsRequest": type("CryptoBarsRequest", (), {}),
+})
+_stub_module("alpaca.data.timeframe", {"TimeFrame": type("TimeFrame", (), {})})
+_stub_module("os_kurse", {"aktualisiere_optionsscheine": lambda *a, **k: None})
+
 spec = importlib.util.spec_from_file_location("positionen_tracker", ROOT / "positionen_tracker.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -81,5 +123,6 @@ def test_tp2_is_dynamic_and_not_entry_requirement(monkeypatch):
     assert "TP1: 105.00" in df.at[0, "TF_Management"]
     assert tp2 is not None
     assert float(tp2) > 105.0
+    assert pd.api.types.is_numeric_dtype(df["TP2"].dtype)
     assert float(stop) >= 100.0
     assert "Teilverkauf" not in df.at[0, "TF_Management"]
