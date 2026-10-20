@@ -15405,7 +15405,7 @@ def _dokumentiere_edelmetall_4w_quellenkonflikte(text, edel_text, markt_text):
     if not conflicts:
         return text
     note = (
-        marker + " | PRIORITÄT ANGEWENDET | DIAGNOSEHINWEIS, KEIN AUTOMATISCHER FREIGABEBLOCKER\n"
+        marker + " | FACHLICH_FINAL=NICHT_FINAL | PRIORITÄT ANGEWENDET\n"
         "- Faktenquelle für sämtliche Edelmetallangaben: Edelmetalle-Briefing. Markt-Briefing dient ausschließlich der dokumentierten Abweichungsdiagnose und wird nicht als Fallback verwendet.\n"
         "- Dokumentierte Quellenabweichungen (keine Mittelung, kein stilles Überschreiben): "
         + " | ".join(conflicts)
@@ -15449,15 +15449,30 @@ def _entferne_futures_basis_duplikate_aus_abschnitt8(text):
     return text
 
 
-def _waehle_edelmetall_4w(edelmetall_wert, markt_wert=None):
-    """Liefert 4W ausschließlich aus dem Edelmetalle-Briefing; kein Markt-Fallback."""
-    if edelmetall_wert is not None:
+def _waehle_edelmetall_4w(edelmetall_wert):
+    """Verwendet ausschließlich den 4W-Wert aus dem Edelmetalle-Briefing.
+
+    Das Markt-Briefing dient nur der Konfliktdiagnose und darf weder als
+    Ersatzquelle noch als stiller Fallback für operative Edelmetall-Fakten
+    verwendet werden.
+    """
+    if edelmetall_wert is None:
+        return None
+    try:
         raw, value = edelmetall_wert
-        if value is not None:
-            return raw, value, EDELMETALL_FAKTENQUELLE
-    # markt_wert bleibt aus Rückwärtskompatibilität im Funktionsvertrag, wird aber
-    # absichtlich nicht als Faktenquelle verwendet.
-    return None
+    except (TypeError, ValueError):
+        return None
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    # Rohdarstellung unveraendert erhalten; nur der Zahlenwert wird normalisiert.
+    # So bleiben Quelltext-/Berichtsdarstellung und fachlicher Zahlenwert getrennt.
+    return raw, numeric, "Edelmetalle-Briefing"
 
 
 def _first_4w_value_in_block(block):
