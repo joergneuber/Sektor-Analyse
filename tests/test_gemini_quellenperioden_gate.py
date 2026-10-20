@@ -1137,8 +1137,8 @@ class FinalGateDuplicateNumberRegressionTests(unittest.TestCase):
 
     def test_duplicate_82_is_rejected(self):
         report = self._report([
-            "8.2 Edelmetalle",
-            "8.2 Edelmetalle — Quellenabgleich",
+            "8.2 Silber",
+            "8.2 Silber — Quellenabgleich",
         ])
         with self.assertRaisesRegex(RuntimeError, r"Doppelte Unterabschnittsnummer\(n\): 8\.2"):
             self.final_gate(report)
@@ -1149,8 +1149,8 @@ class FinalGateDuplicateNumberRegressionTests(unittest.TestCase):
             "6.1 Makro gegen Technik — Ergänzung",
             "7.1 Aktienmärkte / Indizes",
             "7.1 Aktienmärkte / Indizes — Ergänzung",
-            "8.2 Edelmetalle",
-            "8.2 Edelmetalle — Ergänzung",
+            "8.2 Silber",
+            "8.2 Silber — Ergänzung",
         ])
         with self.assertRaisesRegex(
             RuntimeError,
