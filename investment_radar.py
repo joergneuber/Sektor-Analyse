@@ -260,57 +260,108 @@ def interpret_candidate(item: dict[str, Any], macro_positive: list[str], macro_n
 
 
 
-# General causal macro scenarios. These are hypotheses, not automatic trade signals.
+# Explicit macro-data rules. A keyword hit alone is never evidence: a line must
+# contain a directional observation and a usable source/date anchor.
 SCENARIO_RULES = [
-    {"id": "GOLD_REAL_YIELDS", "label": "Gold: Zins-/Dollar-Korrektur",
-     "patterns": r"(realzins|real.?yield).*(steig|hoch)|((steig|hoch).*(realzins|real.?yield))|(starker? dollar|usd.*stärk)",
-     "assets": ["gold", "xau", "silber", "silver", "goldminen", "gold miners"],
-     "thesis": "Zins-/Dollar-Druck kann Gold zunächst belasten; nach Entspannung mögliche Erholung prüfen."},
-    {"id": "GOLD_EASING", "label": "Gold/Silber: Zins- oder Dollar-Entspannung",
-     "patterns": r"(realzins|real.?yield|fed|leitzins|dollar|usd).*(fall|sink|schwäch)|((fall|sink|schwäch).*(realzins|real.?yield|dollar|usd))",
-     "assets": ["gold", "xau", "silber", "silver", "goldminen", "gold miners"],
-     "thesis": "Nachlassender Zins-/Dollar-Druck kann Edelmetalle stützen; technische Bestätigung abwarten."},
-    {"id": "ENERGY_SUPPLY", "label": "Energie: Angebots-/Preisimpuls",
-     "patterns": r"(öl|oil|gas|energie|energy).*(angebot|förder|produktion|preis|versorgung)|((angebot|förder|produktion|versorgung).*(öl|oil|gas|energie))",
-     "assets": ["öl", "oil", "gas", "energie", "energy", "ölerzeuger", "oil producers", "energy stocks"],
-     "thesis": "Angebots- oder Preisänderungen können Energieanlagen unterschiedlich beeinflussen; Richtung anhand bestätigter Daten klären."},
-    {"id": "INFLATION_RATES", "label": "Inflation/Zinsen: Bewertungsrotation",
-     "patterns": r"(inflation|preisdrück|teuerung).*(steig|fall|abkühl|beschleun)|((zins|yield|rendite).*(steig|fall|hoch|sink))",
-     "assets": ["anleihen", "bonds", "duration", "growth", "technologie", "technology", "banken", "bank"],
-     "thesis": "Inflations- und Zinsänderungen können Bewertungs- und Sektorrotation auslösen; Gewinner/Verlierer datenbasiert prüfen."},
-    {"id": "RISK_OFF", "label": "Risk-off: defensive/Absicherungs-Chance",
-     "patterns": r"(risikoaversion|risk.?off|marktstress|volatilität|credit.?spread|kreditrisik).*(steig|hoch|zunehm)|((steig|hoch|zunehm).*(volatilität|credit.?spread|kreditrisik))",
-     "assets": ["gold", "xau", "defensiv", "utilities", "gesundheit", "healthcare", "staatsanleihen", "treasuries"],
-     "thesis": "Bei zunehmendem Stress defensive oder absichernde Assets beobachten; Gegenbewegung und Liquiditätsrisiken beachten."},
-    {"id": "CYCLICAL_RECOVERY", "label": "Konjunktur: zyklische Erholung",
-     "patterns": r"(pmi|industrie|manufacturing|auftragseingang|konjunktur).*(erhol|verbesser|expansion|steig)|((erhol|verbesser|expansion|steig).*(pmi|industrie|manufacturing|auftragseingang|konjunktur))",
-     "assets": ["zyklisch", "industrials", "industrie", "materialien", "materials", "transport", "logistik"],
-     "thesis": "Frühe Konjunkturverbesserung kann zyklische Branchen begünstigen; Trend- und Nachfragebestätigung prüfen."},
+    {"id": "GOLD_REAL_YIELDS", "label": "Gold: steigender Realzins/Dollar-Druck",
+     "indicator": r"real.?yield|realzins|dollar.?index|\busd\b|dxy",
+     "direction": r"steig|zunehm|höher|higher|strong|stärk|aufwert|rise|rose|rising|increas|up",
+     "assets": ["gold", "silver"],
+     "thesis": "Steigende Realzinsen bzw. ein stärkerer US-Dollar erhöhen typischerweise den Gegenwind für Gold und Silber; die Richtung muss durch Kursdaten bestätigt werden."},
+    {"id": "GOLD_EASING", "label": "Gold/Silber: nachlassender Zins-/Dollar-Druck",
+     "indicator": r"real.?yield|realzins|dollar.?index|\busd\b|dxy|fed.?rate|leitzins",
+     "direction": r"fall|sink|abnehm|niedriger|weak|schwäch|abwert|declin|cut|fell|falling|decreas",
+     "assets": ["gold", "silver"],
+     "thesis": "Nachlassende Realzinsen bzw. ein schwächerer US-Dollar können Gold und Silber stützen; ein technisches Signal bleibt separat erforderlich."},
+    {"id": "ENERGY_SUPPLY", "label": "Energie: belegter Angebots-/Preisimpuls",
+     "indicator": r"\b(?:oil|crude|wti|brent|natural gas|erdgas|öl|opec|energy supply|energieangebot)\b",
+     "direction": r"steig|fall|zunehm|abnehm|kürz|ausweit|disrupt|unterbrech|higher|lower|increase|decrease|surplus|shortage",
+     "assets": ["energy"],
+     "thesis": "Ein belegter Öl-/Gas-Angebots- oder Preisimpuls wirkt je nach Produzent, Förderkosten und Geschäftsmodell unterschiedlich; Asset-Richtung wird nicht pauschal unterstellt."},
+    {"id": "INFLATION_RATES", "label": "Inflation/Zinsen: Bewertungs- und Sektorwirkung",
+     "indicator": r"inflation|cpi|pce|yield|rendite|zins|fed.?rate|leitzins",
+     "direction": r"steig|fall|abkühl|beschleun|sink|rise|higher|lower|hotter|cooler",
+     "assets": ["rates_sensitive"],
+     "thesis": "Eine belegte Inflations-/Zinsänderung kann zinssensitive Branchen unterschiedlich beeinflussen; die konkrete Sektorwirkung muss durch ein explizites Mapping belegt sein."},
+    {"id": "CYCLICAL_RECOVERY", "label": "Konjunktur: belegte zyklische Veränderung",
+     "indicator": r"\bpmi\b|industrieproduktion|industrial production|auftragseingang|new orders|manufacturing|bip|gdp",
+     "direction": r"erhol|verbesser|expansion|steig|fall|verschlechter|contract|increase|decrease|growth|declin",
+     "assets": ["cyclical"],
+     "thesis": "Eine belegte Konjunkturänderung kann zyklische Branchen beeinflussen; die konkrete Richtung wird nur bei klarer Zuordnung und passendem Datenkontext ausgegeben."},
 ]
 
-def detect_opportunity_scenarios(macro_text: str, structure_text: str = "", candidates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Find causal macro/structure hypotheses and map them to relevant candidate assets.
+# Deliberately exact/conservative mapping. Candidate sectors may use German or
+# English labels; individual tickers are mapped only where the business exposure
+# is reasonably direct. Unknowns remain unmapped rather than guessed.
+ASSET_MAP = {
+    "gold": {"tickers": {"RGLD", "GOLD", "AEM", "NEM", "FNV", "WPM", "GFI", "KGC", "AU"},
+            "sector_terms": [r"gold", r"edelmetall", r"precious metal", r"gold miner", r"goldmine"]},
+    "silver": {"tickers": {"PAAS", "AG", "HL", "CDE", "WPM"},
+              "sector_terms": [r"silver", r"silber", r"silver miner", r"silbermine"]},
+    "energy": {"tickers": {"RIG", "SLB", "VAL", "WMB", "XOM", "CVX", "COP", "OXY", "EOG", "HAL", "BKR"},
+              "sector_terms": [r"energy", r"energie", r"oil.?gas", r"öl.?gas", r"energy equipment", r"exploration", r"production"]},
+    "rates_sensitive": {"tickers": set(),
+              "sector_terms": [r"technology", r"technologie", r"growth", r"banken", r"banking", r"utilities", r"immobilien", r"real estate"]},
+    "cyclical": {"tickers": set(),
+              "sector_terms": [r"industrials", r"industrie", r"materials", r"materialien", r"transport", r"logistik", r"consumer discretionary", r"zyklisch"]},
+}
 
-    The rule engine intentionally emits watch hypotheses only. It does not invent
-    entry/stop/target levels or upgrade a candidate to an active trade.
-    """
-    text = normalize_text(macro_text + "\n" + structure_text)
-    lines = [normalize_text(line) for line in (macro_text + "\n" + structure_text).splitlines() if normalize_text(line)]
+SOURCE_MARKER = re.compile(r"(?:https?://|\bsource\s*[:=]|\bquelle\s*[:=]|\b(?:fred|bls|bea|eia|ecb|opec|ism|s&p|yahoo|alphavantage)\b)", re.I)
+DATE_MARKER = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{2,4}|datenstand\s*[:=])\b", re.I)
+JUNK_LINE = re.compile(r"^(?:status|series|frequency|datentyp|hinweis|nfp-check|nfp-validierung|\d+\s*[.)]|[-_=]{3,})", re.I)
+
+
+def _valid_macro_evidence(raw_line: str, rule: dict[str, Any]) -> bool:
+    line = normalize_text(raw_line.strip(" -•\\t"))
+    if not line or JUNK_LINE.search(line):
+        return False
+    cleaned = clean_macro_text(line, limit=1000)
+    # Metadata-only fragments and technical setup lines are not macro evidence.
+    if not cleaned or re.search(r"\b(?:entry|stop|crv|setup_typ|kumo|ema|swing.?low|technische? bestätigung)\b", cleaned, re.I):
+        return False
+    return bool(re.search(rule["indicator"], cleaned, re.I)
+                and re.search(rule["direction"], cleaned, re.I)
+                and SOURCE_MARKER.search(cleaned)
+                and DATE_MARKER.search(cleaned))
+
+
+def _candidate_asset_classes(item: dict[str, Any]) -> set[str]:
+    ticker = ticker_of(item)
+    sector = first(item, "Sektor", "Sector", "Branche", "Industry", "Assetklasse", "Asset_Class")
+    classes: set[str] = set()
+    for asset_class, mapping in ASSET_MAP.items():
+        if ticker in mapping["tickers"] or any(re.search(term, sector, re.I) for term in mapping["sector_terms"]):
+            classes.add(asset_class)
+    # Explicit asset-type fields are accepted, but never broad company-name or
+    # thesis text keyword matches.
+    asset_type = first(item, "Assetklasse", "Asset_Class", "Instrument_Type").lower()
+    if re.search(r"gold|xau", asset_type): classes.add("gold")
+    if re.search(r"silver|silber|xag", asset_type): classes.add("silver")
+    if re.search(r"energy|energie|oil|gas", asset_type): classes.add("energy")
+    return classes
+
+
+def detect_opportunity_scenarios(macro_text: str, structure_text: str = "", candidates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Emit only evidence-backed causal hypotheses with explicit asset mapping."""
+    raw_lines = (macro_text + "\n" + structure_text).splitlines()
     candidates = candidates or []
     found: list[dict[str, Any]] = []
     for rule in SCENARIO_RULES:
-        evidence = [line for line in lines if re.search(rule["patterns"], line, re.I)]
-        if not evidence:
+        evidence_raw = [line for line in raw_lines if _valid_macro_evidence(line, rule)]
+        if not evidence_raw:
             continue
-        assets = rule["assets"]
-        matched = []
+        mapped = []
         for item in candidates:
-            identity = normalize_text(" ".join([company_label(item), ticker_of(item), first(item, "Sektor", "Sector", "Branche", "Industry"), thesis_of(item)]))
-            if any(re.search(re.escape(asset), identity, re.I) for asset in assets):
-                matched.append(item)
+            classes = _candidate_asset_classes(item)
+            if rule["assets"][0] in classes or (rule["id"] == "GOLD_REAL_YIELDS" and "silver" in classes):
+                mapped.append(item)
+        # A macro hypothesis without any explicit matching candidate mapping is
+        # not printed as an asset opportunity in this report.
+        if not mapped:
+            continue
         found.append({"id": rule["id"], "label": rule["label"], "thesis": rule["thesis"],
-                     "evidence": [clean_macro_text(x, 220) for x in evidence[:3]],
-                     "assets": assets, "matched_candidates": matched,
+                     "evidence": [clean_macro_text(x, 220) for x in evidence_raw[:3]],
+                     "assets": rule["assets"], "matched_candidates": mapped,
                      "status": "FRÜHINDIKATION"})
     return found
 
@@ -396,26 +447,19 @@ def find_previous_report(output: Path, input_folder: Path, today: date) -> Path 
 
 
 def macro_relevance(item: dict[str, Any], macro_text: str, structure_text: str) -> tuple[str, str]:
-    """Return compact macro label and rationale only for evidence tied to title/sector."""
-    name = first(item, "Name", "name", "Unternehmen", "Company")
-    ticker = ticker_of(item)
-    sector = first(item, "Sektor", "Sector", "Branche", "Industry")
-    terms = [x for x in (name, ticker, sector) if x]
-    if not terms:
-        return "OFFEN", "Keine Aktie-/Sektorzuordnung in den Quelldaten."
-    source_lines = [normalize_text(x) for x in (macro_text + "\n" + structure_text).splitlines() if normalize_text(x)]
-    matches = [line for line in source_lines if any(re.search(re.escape(term), line, re.I) for term in terms)]
-    if not matches:
-        return "OFFEN", "Kein belegter direkter Makro-/Sektorbezug."
-    joined = clean_macro_text(" ".join(matches[:2]), limit=150)
-    if not joined:
-        return "OFFEN", "Kein verwertbarer direkter Makro-/Sektorbezug."
-    if re.search(r"(gegenwind|bear|negativ|risiko|belast|steigende? zins|schwäch)", joined, re.I):
-        return "GEGENWIND", joined
-    if re.search(r"(rückenwind|bull|positiv|profitiert|stärk|sinkende? zins|nachfrage steigt|steigende? nachfrage|investitionen nehmen zu|auftragseingang steigt|wachstum beschleunigt)", joined, re.I):
-        return "RÜCKENWIND", joined
-    return "NEUTRAL", joined
-
+    """Only report a macro link when an evidence line passes the data gate and
+    the candidate has an explicit asset/sector mapping to that indicator."""
+    classes = _candidate_asset_classes(item)
+    if not classes:
+        return "OFFEN", "Kein explizites Asset-/Sektormapping; Makrobezug nicht belegt."
+    for rule in SCENARIO_RULES:
+        if not (set(rule["assets"]) & classes):
+            continue
+        matches = [line for line in (macro_text + "\n" + structure_text).splitlines()
+                   if _valid_macro_evidence(line, rule)]
+        if matches:
+            return "NEUTRAL", clean_macro_text(matches[0], limit=150)
+    return "OFFEN", "Keine konkrete Makroquelle mit Datenstand und passender Kausalkette gefunden."
 
 def technical_trigger(item: dict[str, Any]) -> tuple[str, str, str, str]:
     """Read levels/trigger from input only; never invent them."""
