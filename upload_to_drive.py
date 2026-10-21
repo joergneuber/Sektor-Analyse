@@ -259,6 +259,12 @@ if __name__ == '__main__':
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True
+        elif filename.startswith("Trading_Radar(") and filename.endswith(".txt"):
+            # Separater Shadow-Bericht fuer den Trading-Radar-Parallelvergleich.
+            # Er ersetzt die bisherige Auswertung nicht.
+            print(f"Lade '{filename}' hoch...")
+            upload_file(filename, FOLDER_ID, drive_service)
+            found = True
         elif filename == "Gemini_Auswertung_Historie.txt":
             # Persistenter Langzeitkontext der Gemini-Auswertung.
             # Dieser wird erst nach einer erfolgreichen echten Gemini-Auswertung

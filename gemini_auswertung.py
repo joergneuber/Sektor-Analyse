@@ -16462,6 +16462,33 @@ def speichere_ergebnis(text, eingabedateien=None):
             except OSError:
                 pass
 
+    # Parallelvergleich Trading-Radar: Die bestehende Tagesauswertung bleibt
+    # unveraendert unter Auswertung(<Datum>).txt. Zusaetzlich wird derselbe
+    # fachlich validierte Stand als separater Radar-Kandidat abgelegt. Die
+    # fachliche Umstellung auf die PDF-Spezifikation ist damit NICHT behauptet;
+    # dieser Shadow-Report dient zunaechst der getrennten Ablage/Abnahme.
+    radar_datei = f"Trading_Radar({heute}).txt"
+    radar_output = os.path.join(output_dir, radar_datei)
+    radar_temp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8-sig", dir=output_dir,
+            prefix=f".{Path(radar_datei).name}.", suffix=".tmp", delete=False,
+        ) as f:
+            radar_temp = f.name
+            f.write(final_text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(radar_temp, radar_output)
+        radar_temp = None
+        print(f"Trading-Radar-Parallelbericht gespeichert: {radar_datei}")
+    finally:
+        if radar_temp and os.path.exists(radar_temp):
+            try:
+                os.remove(radar_temp)
+            except OSError:
+                pass
+
     _gemini_split_resume_loeschen()
 
     # Persistenter Gemini-Langzeitkontext: Nur nach einer echten Gemini-
