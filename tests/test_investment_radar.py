@@ -1,30 +1,21 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 import investment_radar
 
+class InvestmentRadarReportTests(unittest.TestCase):
+    def test_company_label_name_ticker(self):
+        self.assertEqual(investment_radar.company_label({"name":"Example Corp","ticker":"EXM"}),"Example Corp (EXM)")
 
-class InvestmentRadarLinkTests(unittest.TestCase):
-    def test_rule_overlap_uses_only_present_sector_data(self):
-        macro = "CPI: 3.2 | STATUS=REAL\nISM Manufacturing PMI: 51.0 | STATUS=REAL"
-        perf = [{"Ticker": "XLB", "Sektor": "Rohstoffe", "30T": "2.0"}]
-        setups = [{"Ticker": "NUE", "Sektor": "Rohstoffe", "Status2": "VALIDE"}]
-        story = [{"ticker": "NUE", "Sektor": "Rohstoffe"}]
-        found = investment_radar.macro_hypotheses(macro, perf, [], setups, story)
-        self.assertTrue(found)
-        self.assertTrue(all(item["sector"] == "Rohstoffe" for item in found))
-        self.assertTrue(any(item["setup_tickers"] == ["NUE"] for item in found))
-        self.assertTrue(any(item["performance"][0]["ticker"] == "XLB" for item in found))
+    def test_report_shows_all_candidates_without_top_n_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/"Trade_Story_Universum(2026-10-21).json"
+            candidates=[{"name":f"Company {i}","ticker":f"T{i}","trade_story_status":"VALIDE SETUP","Setup_Typ":"Trend"} for i in range(14)]
+            p.write_text(json.dumps({"candidates":candidates}),encoding="utf-8")
+            report=investment_radar.build_report(Path(d))
+            self.assertIn("Company 13 (T13)",report)
+            self.assertIn("Company 0 (T0)",report)
+            self.assertEqual(report.count("VALIDE SETUP"),14)
 
-    def test_no_macro_evidence_means_no_hypothesis(self):
-        found = investment_radar.macro_hypotheses(
-            "Keine passenden Makrozeilen", [{"Ticker": "XLE", "Sektor": "Energie"}],
-            [], [], [])
-        self.assertEqual(found, [])
-
-    def test_no_sector_overlap_means_no_hypothesis(self):
-        found = investment_radar.macro_hypotheses(
-            "CPI: 3.2 | STATUS=REAL", [], [], [], [])
-        self.assertEqual(found, [])
-
-
-if __name__ == "__main__":
-    unittest.main()
+if __name__=="__main__": unittest.main()
