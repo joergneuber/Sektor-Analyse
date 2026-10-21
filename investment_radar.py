@@ -225,27 +225,31 @@ def interpret_candidate(item: dict[str, Any], macro_positive: list[str], macro_n
 
 
 def parse_report_snapshot(path: Path) -> dict[str, dict[str, str]]:
-    """Read candidate snapshots from this script's report format (and older report lines)."""
+    """Read candidate identity and the actual assessment from a prior report."""
     snapshot: dict[str, dict[str, str]] = {}
     if not path.exists():
         return snapshot
     section = False
+    current_ticker = ""
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if line.strip().startswith("2. AUSSICHTSREICHE TRADECHANCEN"):
             section = True
             continue
         if section and re.match(r"\s*\d+\.", line):
             break
-        if not section or not line.lstrip().startswith("-"):
+        if not section:
             continue
-        # Format: - Name (TICKER): Setup. Status: X. CRV1: Y.
-        match = re.match(r"\s*-\s*(.+?)\s*:\s*(.*?)\.\s*Status:\s*(.*?)\.\s*CRV1:\s*(.*?)\.", line)
-        if not match:
+        match = re.match(r"\s*-\s*(.+?)\s*:\s*(.*?)\.\s*Status:\s*(.*?)\.\s*CRV1:\s*(.+?)\s*$", line)
+        if match:
+            label, setup, status, crv = (x.strip() for x in match.groups())
+            crv = crv.rstrip(".").strip()
+            ticker_match = re.search(r"\(([^()]+)\)\s*$", label)
+            current_ticker = ticker_match.group(1).strip().upper() if ticker_match else label.upper()
+            snapshot[current_ticker] = {"label": label, "setup": setup, "status": status, "crv": crv, "assessment": ""}
             continue
-        label, setup, status, crv = (x.strip() for x in match.groups())
-        ticker_match = re.search(r"\(([^()]+)\)\s*$", label)
-        ticker = ticker_match.group(1).strip().upper() if ticker_match else label.upper()
-        snapshot[ticker] = {"label": label, "setup": setup, "status": status, "crv": crv}
+        assessment_match = re.match(r"\s*Einschätzung:\s*(.*)", line)
+        if current_ticker and assessment_match:
+            snapshot[current_ticker]["assessment"] = assessment_match.group(1).strip()
     return snapshot
 
 
@@ -333,8 +337,10 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
             for key, title in (("status", "Status"), ("setup", "Setup"), ("crv", "CRV1")):
                 if normalize_text(old.get(key, "")) != normalize_text(new.get(key, "")):
                     diffs.append(f"{title}: '{old.get(key, 'n.v.')}' → '{new.get(key, 'n.v.')}'")
-            if normalize_text(old.get("assessment", "")) != normalize_text(new.get("assessment", "")):
-                diffs.append("Einschätzung hat sich verändert (siehe heutige Kandidatenbegründung).")
+            old_thesis = normalize_text(old.get("assessment", ""))
+            new_thesis = normalize_text(new.get("assessment", ""))
+            if old_thesis and new_thesis and old_thesis != new_thesis:
+                diffs.append(f"These/Einschätzung: '{old_thesis[:220]}' → '{new_thesis[:220]}'")
             if diffs:
                 changes.append(f"{new['label']}: " + "; ".join(diffs))
         lines.extend(f"Änderung: {x}" for x in changes)
@@ -351,8 +357,11 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
                 thesis_changes.append(f"Entfallen: {previous[ticker]['label']} – heute nicht mehr in den Kandidatenquellen.")
             else:
                 old, new = previous[ticker], current[ticker]
-                if old.get("status") != new.get("status") or old.get("crv") != new.get("crv") or old.get("setup") != new.get("setup"):
-                    thesis_changes.append(f"Aktualisiert: {new['label']} – Status/Setup/CRV gegenüber Vortag verändert; aktuelle Bewertung siehe Abschnitt 2.")
+                changed = (old.get("status") != new.get("status") or old.get("crv") != new.get("crv")
+                           or old.get("setup") != new.get("setup")
+                           or normalize_text(old.get("assessment", "")) != normalize_text(new.get("assessment", "")))
+                if changed:
+                    thesis_changes.append(f"Aktualisiert: {new['label']} – Status, Setup, CRV oder konkrete Einschätzung gegenüber Vortag verändert; Details in Abschnitt 3.")
     if thesis_changes:
         lines.extend(f"- {x}" for x in thesis_changes)
     elif previous_path:
