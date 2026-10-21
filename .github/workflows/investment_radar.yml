@@ -31,18 +31,22 @@ jobs:
       - name: Radar-Tests
         run: python -m unittest discover -s tests -p "test_investment_radar.py" -v
 
+      - name: Berichtsdatum festlegen
+        id: radar_date
+        run: echo "report_date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Vorhandene Ergebnisse aus Google Drive herunterladen
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-        run: python investment_radar_drive.py --output-dir investment_radar_input
+        run: python investment_radar_drive.py --output-dir investment_radar_input --report-date "${{ steps.radar_date.outputs.report_date }}"
 
       - name: Datierten Investment-Radar-Bericht erstellen
         run: |
           python investment_radar.py \
             --input-dir investment_radar_input \
-            --output "Investment_Radar_$(date -u +%Y-%m-%d).txt"
+            --output "Investment_Radar_${{ steps.radar_date.outputs.report_date }}.txt"
 
       - name: Tagesbericht dauerhaft auf Google Drive speichern
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-        run: python investment_radar_upload.py --report "Investment_Radar_$(date -u +%Y-%m-%d).txt"
+        run: python investment_radar_upload.py --report "Investment_Radar_${{ steps.radar_date.outputs.report_date }}.txt"
