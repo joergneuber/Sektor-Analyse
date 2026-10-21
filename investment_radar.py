@@ -333,8 +333,8 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
         rows.append({"ticker": ticker, "label": label, "decision": decision, "setup": setup,
                     "crv": crv, "macro": macro_status, "macro_reason": macro_reason,
                     "entry": entry, "stop": stop, "target": target,
-                    "technical_status": status, "thesis": thesis_of(item),
-                    "trigger": condition_of(item)})
+                    "technical_status": status, "source_status": status_of(item),
+                    "thesis": thesis_of(item), "trigger": condition_of(item)})
 
     # Prioritize active trade candidates, then emerging opportunities, then CRV.
     rank = {"AKTIV": 0, "AKTIV – MAKRO-GEGENWIND": 1, "IN ENTWICKLUNG": 2, "VORWARNUNG": 3, "PRÜFEN": 4}
@@ -347,7 +347,8 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
     for r in rows:
         crv_text = f"{r['crv']:g}" if r["crv"] is not None else "offen"
         lines.extend([
-            f"{r['decision']} | {r['label']} | {r['setup']} | CRV1 {crv_text}",
+            f"{r['decision']} | {r['label']} | {r['setup']} | CRV1 {crv_text}"
+                + (f" | Quellstatus: {r['source_status']}" if r["source_status"] else ""),
             f"Makro: {r['macro']} – {r['macro_reason']}",
             f"Technik: Einstieg/Trigger {r['entry']} | Stop {r['stop']} | Ziel {r['target']}",
         ])
