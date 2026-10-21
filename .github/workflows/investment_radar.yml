@@ -36,16 +36,13 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python investment_radar_drive.py --output-dir investment_radar_input
 
-      - name: Investment Radar erstellen
+      - name: Datierten Investment-Radar-Bericht erstellen
         run: |
           python investment_radar.py \
             --input-dir investment_radar_input \
-            --output Investment_Radar_Bericht.txt
+            --output "Investment_Radar_$(date -u +%Y-%m-%d).txt"
 
-      - name: Bericht als GitHub-Artefakt sichern
-        uses: actions/upload-artifact@v6
-        with:
-          name: investment-radar-${{ github.run_id }}
-          path: Investment_Radar_Bericht.txt
-          if-no-files-found: error
-          retention-days: 14
+      - name: Tagesbericht dauerhaft auf Google Drive speichern
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python investment_radar_upload.py --report "Investment_Radar_$(date -u +%Y-%m-%d).txt"
