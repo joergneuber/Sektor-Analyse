@@ -59,12 +59,30 @@ from pathlib import Path
 import mimetypes
 from types import SimpleNamespace
 
-from google import genai
-from google.genai import types
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+# Die Auswertungs- und Statushilfen sollen auch in Umgebungen ohne Gemini-SDK
+# importierbar/testbar bleiben. Der eigentliche Produktionsstart fail-closed
+# mit einer konkreten Installationsmeldung, bevor ein API-Aufruf erfolgt.
+try:
+    from google import genai
+    from google.genai import types
+except ImportError as exc:
+    genai = None
+    types = None
+    _GEMINI_SDK_IMPORT_ERROR = exc
+else:
+    _GEMINI_SDK_IMPORT_ERROR = None
+# Google-Drive-Abhaengigkeiten sind fuer Status-/Report-Tests nicht erforderlich.
+# Der Drive-Zugriff prueft sie erst am fachlich benoetigten Einstiegspunkt.
+try:
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+except ImportError as exc:
+    Credentials = Request = build = MediaIoBaseDownload = None
+    _GOOGLE_DRIVE_IMPORT_ERROR = exc
+else:
+    _GOOGLE_DRIVE_IMPORT_ERROR = None
 import io
 from collections import defaultdict
 from quellenwert_vertrag import (
@@ -336,6 +354,15 @@ def get_drive_service(strict=False):
     wie Punkt 10.5 wird strict=True verwendet: Technische Auth-/Drive-Fehler
     duerfen dort niemals als "keine Historie" erscheinen.
     """
+    if any(item is None for item in (Credentials, Request, build, MediaIoBaseDownload)):
+        msg = "Google-Drive-Abhaengigkeiten fehlen"
+        if strict:
+            raise RuntimeError(
+                f"10.5: Autoritativer Google-Drive-Zugriff nicht moeglich: {msg}"
+            ) from _GOOGLE_DRIVE_IMPORT_ERROR
+        print(f"INFO: {msg} - Drive-Dateien werden nicht nachgeladen.")
+        return None
+
     token_str = os.environ.get("GDRIVE_TOKEN")
     if not token_str:
         msg = "GDRIVE_TOKEN nicht gesetzt"
@@ -4880,6 +4907,12 @@ def gemini_auswertung_starten():
     if not api_key:
         print("FEHLER: Umgebungsvariable GEMINI_API_KEY nicht gesetzt.")
         sys.exit(1)
+
+    if genai is None or types is None:
+        raise RuntimeError(
+            "GEMINI_SDK_FEHLT: Bitte die Projektabhaengigkeit installieren: "
+            "python -m pip install google-genai"
+        ) from _GEMINI_SDK_IMPORT_ERROR
 
     client = genai.Client(
         api_key=api_key,
@@ -15864,6 +15897,137 @@ def _gemini_pruefe_freigabe_vor_speicherung(zahlen_gate_warnungen, fachliche_min
     # geprueft und werfen bei Fehlern weiterhin RuntimeError.
 
 
+
+def _gemini_bereichsstatus(
+    zahlen_gate_warnungen=None,
+    fachliche_mindesttiefe_offen=False,
+    edelmetall_nicht_final=False,
+    edelmetall_global_warnungen=None,
+):
+    """Erzeugt fail-closed Bereichsstatus aus expliziten oder klaren Befunden.
+
+    Abschnittsnummern werden nur am Warnungsanfang ausgewertet. Bei mehreren
+    widerspruechlichen Fachsignalen bleibt die Warnung berichtsweit, statt eine
+    falsche Bereichszuordnung zu behaupten.
+    """
+    zahlen_gate_warnungen = list(zahlen_gate_warnungen or [])
+    edelmetall_global_warnungen = list(edelmetall_global_warnungen or [])
+    bereiche = {
+        "AKTIEN": [], "MARKT_MAKRO": [], "EDELMETALLE": [],
+        "GESAMTBERICHT": [],
+    }
+
+    def zuordnen(warnung):
+        text = str(warnung or "").casefold()
+        # Stabile, explizite Bereichstags haben Vorrang vor Freitext.
+        tag = re.match(r"^\s*\[(aktien|markt_makro|edelmetalle)\]", text)
+        if tag:
+            return {"aktien": "AKTIEN", "markt_makro": "MARKT_MAKRO",
+                    "edelmetalle": "EDELMETALLE"}[tag.group(1)]
+
+        # Nummern nur am Anfang / nach einem bekannten Abschnittslabel lesen;
+        # beiläufige Zahlen im Warntext dürfen keinen Bereich festlegen.
+        nummer = re.match(r"^\s*(?:abschnitt\s*)?(\d+(?:\.\d+)*)(?:[.):]\s|\s+)", text)
+        nummer_bereich = None
+        if nummer:
+            haupt = nummer.group(1).split(".", 1)[0]
+            if haupt in {"2", "4", "5", "6"}:
+                nummer_bereich = "AKTIEN"
+            elif haupt in {"1", "3", "7", "8"}:
+                nummer_bereich = "MARKT_MAKRO"
+
+        metal = any(token in text for token in (
+            "edelmetall", "gold", "silber", "platin", "palladium",
+            "rohstoff=", "metall",
+        ))
+        stock = any(token in text for token in (
+            "ticker", "aktie", "aktien", "kandidat", "unternehmen",
+        ))
+        market = any(token in text for token in (
+            "vix", "wti", "brent", "makro", "markt",
+            "volatilitaet", "volatilität", "sektor",
+        ))
+        domains = [name for name, active in (
+            ("EDELMETALLE", metal), ("AKTIEN", stock),
+            ("MARKT_MAKRO", market),
+        ) if active]
+
+        # Abschnittsnummer und Textsignale muessen zusammenpassen. Ein
+        # widerspruechlicher oder fachlich gemischter Hinweis bleibt global.
+        if nummer_bereich:
+            if domains and (len(domains) != 1 or domains[0] != nummer_bereich):
+                return None
+            return nummer_bereich
+        return domains[0] if len(domains) == 1 else None
+
+    for warnung in zahlen_gate_warnungen:
+        bereich = zuordnen(warnung)
+        if bereich:
+            bereiche[bereich].append(str(warnung))
+        else:
+            bereiche["GESAMTBERICHT"].append(str(warnung))
+
+    for warnung in edelmetall_global_warnungen:
+        bereiche["EDELMETALLE"].append(str(warnung))
+
+    if fachliche_mindesttiefe_offen:
+        bereiche["GESAMTBERICHT"].append("Inhaltliche Mindesttiefe nicht bestanden")
+    if edelmetall_nicht_final and not bereiche["EDELMETALLE"]:
+        bereiche["EDELMETALLE"].append("Edelmetallprüfung nicht bestanden")
+
+    status = {name: ("NICHT_FINAL" if befundliste else "FINAL")
+              for name, befundliste in bereiche.items()}
+    status["GESAMT"] = ("NICHT_FINAL" if any(
+        value == "NICHT_FINAL" for value in status.values()
+    ) else "FINAL")
+    return status, bereiche
+
+
+def _gemini_report_bereichsstatus(report_text):
+    """Liest Bereichsstatus/-befunde aus einer gespeicherten Auswertung robust aus."""
+    text = str(report_text or "")
+    status = {}
+    befunde = {name: [] for name in (
+        "AKTIEN", "MARKT_MAKRO", "EDELMETALLE", "GESAMTBERICHT"
+    )}
+    status_matches = re.findall(
+        r"(?m)^BEREICH_STATUS=(AKTIEN|MARKT_MAKRO|EDELMETALLE|GESAMTBERICHT)\|(FINAL|NICHT_FINAL)\s*$",
+        text,
+    )
+    for bereich, wert in status_matches:
+        if bereich in status:
+            status[bereich] = "NICHT_FINAL"
+        else:
+            status[bereich] = wert
+    for bereich, befund in re.findall(
+        r"(?m)^BEREICH_BEFUND=(AKTIEN|MARKT_MAKRO|EDELMETALLE|GESAMTBERICHT)\|(.*)$",
+        text,
+    ):
+        befunde[bereich].append(befund)
+    # Fehlende/duplizierte Statusmarker sind kein implizites FINAL.
+    for bereich in befunde:
+        if bereich not in status:
+            status[bereich] = "NICHT_FINAL"
+        if any(bereich == marker_bereich for marker_bereich, _ in status_matches) and sum(
+            1 for marker_bereich, _ in status_matches if marker_bereich == bereich
+        ) != 1:
+            status[bereich] = "NICHT_FINAL"
+    # Legacy-Edelmetallstatus wird separat konsumiert und muss mit dem
+    # Bereichsmarker konsistent sein.
+    metall_marker = re.findall(r"(?m)^EDELMETALL_STATUS=(FINAL|NICHT_FINAL)\s*$", text)
+    if len(metall_marker) != 1 or metall_marker[0] != status["EDELMETALLE"]:
+        status["EDELMETALLE"] = "NICHT_FINAL"
+
+    gesamt = "NICHT_FINAL" if any(v == "NICHT_FINAL" for v in status.values()) else "FINAL"
+    bericht_marker = re.findall(r"(?m)^BERICHT_STATUS=(FINAL|NICHT_FINAL)\s*$", text)
+    fach_marker = re.findall(r"(?m)^FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text)
+    if len(bericht_marker) != 1 or len(fach_marker) != 1:
+        gesamt = "NICHT_FINAL"
+    elif bericht_marker[0] != gesamt or fach_marker[0] != gesamt:
+        gesamt = "NICHT_FINAL"
+    status["GESAMT"] = gesamt
+    return status, befunde
+
 def speichere_ergebnis(text, eingabedateien=None):
     heute = datetime.date.today().isoformat()
     ausgabe_datei = f"Auswertung({heute}).txt"
@@ -16246,14 +16410,30 @@ def speichere_ergebnis(text, eingabedateien=None):
     # Statusmarker fuer Tagesdatei, Historie und Upload: fachliche Finalitaet
     # bleibt strikt getrennt vom technischen Erfolg der Dateierzeugung.
     final_text = re.sub(r"(?m)^FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*\n?", "", final_text)
-    final_text = re.sub(r"(?m)^EDELMETALL_STATUS=(?:FINAL|NICHT_FINAL)\s*\n?", "", final_text)
-    fachlich_nicht_final = bool(locals().get("edelmetall_nicht_final", False))
-    fachlich_status = "NICHT_FINAL" if fachlich_nicht_final else "FINAL"
-    final_text = (
-        f"EDELMETALL_STATUS={fachlich_status}\n"
-        f"FACHLICH_FINAL={fachlich_status}\n"
-        + final_text.lstrip("\ufeff\n\r")
+    final_text = re.sub(r"(?m)^(?:EDELMETALL_STATUS|FACHLICH_FINAL|BERICHT_STATUS|BEREICH_STATUS|BEREICH_BEFUND)=.*\n?", "", final_text)
+    bereich_status, bereich_befunde = _gemini_bereichsstatus(
+        zahlen_gate_warnungen=locals().get("zahlen_gate_warnungen", []),
+        fachliche_mindesttiefe_offen=fachliche_mindesttiefe_offen,
+        edelmetall_nicht_final=locals().get("edelmetall_nicht_final", False),
+        edelmetall_global_warnungen=locals().get("edelmetall_global_warnungen", []),
     )
+    fachlich_status = bereich_status["GESAMT"]
+    metall_status = bereich_status["EDELMETALLE"]
+    statuszeilen = [
+        f"EDELMETALL_STATUS={metall_status}",
+        f"FACHLICH_FINAL={fachlich_status}",
+        f"BERICHT_STATUS={fachlich_status}",
+    ]
+    for bereich in ("AKTIEN", "MARKT_MAKRO", "EDELMETALLE", "GESAMTBERICHT"):
+        statuszeilen.append(f"BEREICH_STATUS={bereich}|{bereich_status[bereich]}")
+        for befund in bereich_befunde[bereich]:
+            statuszeilen.append(f"BEREICH_BEFUND={bereich}|{befund}")
+            if bereich == "EDELMETALLE":
+                # Bestehende GitHub-Consumer erwarten den Legacy-Befundmarker.
+                statuszeilen.append(f"EDELMETALL_BEFUND={befund}")
+    for metall, status in locals().get("edelmetall_metall_status", {}).items():
+        statuszeilen.append(f"EDELMETALL_ROHSTOFF_STATUS={metall}|{status}")
+    final_text = "\n".join(statuszeilen) + "\n" + final_text.lstrip("\ufeff\n\r")
 
     # Erst nach Abschluss aller fachlichen Gates atomar ersetzen. Ein Abbruch
     # waehrend des Schreibens kann die bestehende Tagesauswertung dadurch nicht
@@ -16307,9 +16487,11 @@ def speichere_ergebnis(text, eingabedateien=None):
     print(f"\nGespeichert: {ausgabe_datei}")
     print("AUSGABE_ERSTELLT=PASS")
     fachliche_gruende = []
-    if locals().get("edelmetall_nicht_final", False):
+    for bereich in ("AKTIEN", "MARKT_MAKRO", "EDELMETALLE", "GESAMTBERICHT"):
+        print(f"BEREICH_STATUS={bereich}|{bereich_status[bereich]}")
+    if bereich_status["GESAMT"] == "NICHT_FINAL":
         fachliche_gruende.append(
-            f"Edelmetall-Interpretation gesperrt ({len(edelmetall_global_warnungen)} Warnung(en)); Aktien-/Marktabschnitte erhalten"
+            "Mindestens ein Bereich oder ein berichtsweiter Qualitätsprüfpunkt ist NICHT_FINAL"
         )
     if not str(text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         # Edelmetallwarnungen sind Statushinweise, keine globalen Abbruchgruende.
@@ -16353,6 +16535,7 @@ def _gemini_report_metall_status(report_text):
 def _gemini_schreibe_github_outputs(
     status, fachlich_final, auswertung_datei="", edelmetall_status="FINAL",
     edelmetall_befunde="", edelmetall_metall_status="",
+    bereich_status="", bereich_befunde="",
 ):
     """Stellt technische und fachliche Statusmarker getrennt fuer GitHub Actions bereit."""
     output_path = os.environ.get("GITHUB_OUTPUT")
@@ -16365,6 +16548,8 @@ def _gemini_schreibe_github_outputs(
         "edelmetall_status": str(edelmetall_status),
         "edelmetall_befunde": str(edelmetall_befunde or ""),
         "edelmetall_metall_status": str(edelmetall_metall_status or ""),
+        "bereich_status": str(bereich_status or ""),
+        "bereich_befunde": str(bereich_befunde or ""),
     }
     for key, value in werte.items():
         if "\n" in value or "\r" in value:
@@ -16405,16 +16590,10 @@ if __name__ == "__main__":
         print("GEMINI_EXIT_STATUS=3 | Auswertung-Datei ist leer.")
         raise SystemExit(3)
 
-    fachlich_final = "NICHT_FINAL" if re.search(
-        r"(?m)^FACHLICH_FINAL=NICHT_FINAL\s*$", Path(ausgabe_pfad).read_text(encoding="utf-8-sig")
-    ) else "FINAL"
-    # Technischer Laufstatus bleibt SUCCESS, damit bestehende Workflow-Consumer
-    # den erzeugten und uploadbaren Report weiter als erfolgreichen Lauf erkennen;
-    # die fachliche Freigabe steht separat und eindeutig auf NICHT_FINAL.
     report_text = Path(ausgabe_pfad).read_text(encoding="utf-8-sig")
-    edelmetall_status = "NICHT_FINAL" if re.search(
-        r"(?m)^EDELMETALL_STATUS=NICHT_FINAL\s*$", report_text
-    ) else "FINAL"
+    report_bereich_status, report_bereich_befunde = _gemini_report_bereichsstatus(report_text)
+    fachlich_final = report_bereich_status["GESAMT"]
+    edelmetall_status = report_bereich_status["EDELMETALLE"]
     report_befunde = "\n".join(re.findall(
         r"(?m)^EDELMETALL_BEFUND=(.*)$", report_text
     ))
@@ -16423,9 +16602,28 @@ if __name__ == "__main__":
     report_befunde = report_befunde.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     report_metall_status = _gemini_report_metall_status(report_text)
     report_metall_status = report_metall_status.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    bereich_status, bereich_befunde = _gemini_report_bereichsstatus(report_text)
+    bereich_status_transport = ";".join(
+        f"{name}|{bereich_status[name]}"
+        for name in ("AKTIEN", "MARKT_MAKRO", "EDELMETALLE", "GESAMTBERICHT")
+    )
+    bereich_befunde_transport = ";".join(
+        f"{name}|{befund}"
+        for name, liste in bereich_befunde.items() for befund in liste
+    )
+    for name, value in (("bereich_status", bereich_status_transport),
+                        ("bereich_befunde", bereich_befunde_transport)):
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"Ungueltiger Zeilenumbruch im GitHub-Output {name}")
+        value = value.replace("%", "%25").replace(";", "%3B").replace("\r", "%0D").replace("\n", "%0A")
+        if name == "bereich_status":
+            bereich_status_transport = value
+        else:
+            bereich_befunde_transport = value
     _gemini_schreibe_github_outputs(
         "SUCCESS", fachlich_final, os.path.abspath(ausgabe_pfad),
         edelmetall_status, report_befunde, report_metall_status,
+        bereich_status_transport, bereich_befunde_transport,
     )
     print("GEMINI_STATUS=SUCCESS")
     if fachlich_final == "NICHT_FINAL":
