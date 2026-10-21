@@ -244,6 +244,87 @@ def interpret_candidate(item: dict[str, Any], macro_positive: list[str], macro_n
     return assessment, evidence
 
 
+
+# General causal macro scenarios. These are hypotheses, not automatic trade signals.
+SCENARIO_RULES = [
+    {"id": "GOLD_REAL_YIELDS", "label": "Gold: Zins-/Dollar-Korrektur",
+     "patterns": r"(realzins|real.?yield).*(steig|hoch)|((steig|hoch).*(realzins|real.?yield))|(starker? dollar|usd.*stärk)",
+     "assets": ["gold", "xau", "silber", "silver", "goldminen", "gold miners"],
+     "thesis": "Zins-/Dollar-Druck kann Gold zunächst belasten; nach Entspannung mögliche Erholung prüfen."},
+    {"id": "GOLD_EASING", "label": "Gold/Silber: Zins- oder Dollar-Entspannung",
+     "patterns": r"(realzins|real.?yield|fed|leitzins|dollar|usd).*(fall|sink|schwäch)|((fall|sink|schwäch).*(realzins|real.?yield|dollar|usd))",
+     "assets": ["gold", "xau", "silber", "silver", "goldminen", "gold miners"],
+     "thesis": "Nachlassender Zins-/Dollar-Druck kann Edelmetalle stützen; technische Bestätigung abwarten."},
+    {"id": "ENERGY_SUPPLY", "label": "Energie: Angebots-/Preisimpuls",
+     "patterns": r"(öl|oil|gas|energie|energy).*(angebot|förder|produktion|preis|versorgung)|((angebot|förder|produktion|versorgung).*(öl|oil|gas|energie))",
+     "assets": ["öl", "oil", "gas", "energie", "energy", "ölerzeuger", "oil producers", "energy stocks"],
+     "thesis": "Angebots- oder Preisänderungen können Energieanlagen unterschiedlich beeinflussen; Richtung anhand bestätigter Daten klären."},
+    {"id": "INFLATION_RATES", "label": "Inflation/Zinsen: Bewertungsrotation",
+     "patterns": r"(inflation|preisdrück|teuerung).*(steig|fall|abkühl|beschleun)|((zins|yield|rendite).*(steig|fall|hoch|sink))",
+     "assets": ["anleihen", "bonds", "duration", "growth", "technologie", "technology", "banken", "bank"],
+     "thesis": "Inflations- und Zinsänderungen können Bewertungs- und Sektorrotation auslösen; Gewinner/Verlierer datenbasiert prüfen."},
+    {"id": "RISK_OFF", "label": "Risk-off: defensive/Absicherungs-Chance",
+     "patterns": r"(risikoaversion|risk.?off|marktstress|volatilität|credit.?spread|kreditrisik).*(steig|hoch|zunehm)|((steig|hoch|zunehm).*(volatilität|credit.?spread|kreditrisik))",
+     "assets": ["gold", "xau", "defensiv", "utilities", "gesundheit", "healthcare", "staatsanleihen", "treasuries"],
+     "thesis": "Bei zunehmendem Stress defensive oder absichernde Assets beobachten; Gegenbewegung und Liquiditätsrisiken beachten."},
+    {"id": "CYCLICAL_RECOVERY", "label": "Konjunktur: zyklische Erholung",
+     "patterns": r"(pmi|industrie|manufacturing|auftragseingang|konjunktur).*(erhol|verbesser|expansion|steig)|((erhol|verbesser|expansion|steig).*(pmi|industrie|manufacturing|auftragseingang|konjunktur))",
+     "assets": ["zyklisch", "industrials", "industrie", "materialien", "materials", "transport", "logistik"],
+     "thesis": "Frühe Konjunkturverbesserung kann zyklische Branchen begünstigen; Trend- und Nachfragebestätigung prüfen."},
+]
+
+def detect_opportunity_scenarios(macro_text: str, structure_text: str = "", candidates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Find causal macro/structure hypotheses and map them to relevant candidate assets.
+
+    The rule engine intentionally emits watch hypotheses only. It does not invent
+    entry/stop/target levels or upgrade a candidate to an active trade.
+    """
+    text = normalize_text(macro_text + "\n" + structure_text)
+    lines = [normalize_text(line) for line in (macro_text + "\n" + structure_text).splitlines() if normalize_text(line)]
+    candidates = candidates or []
+    found: list[dict[str, Any]] = []
+    for rule in SCENARIO_RULES:
+        evidence = [line for line in lines if re.search(rule["patterns"], line, re.I)]
+        if not evidence:
+            continue
+        assets = rule["assets"]
+        matched = []
+        for item in candidates:
+            identity = normalize_text(" ".join([company_label(item), ticker_of(item), first(item, "Sektor", "Sector", "Branche", "Industry"), thesis_of(item)]))
+            if any(re.search(re.escape(asset), identity, re.I) for asset in assets):
+                matched.append(item)
+        found.append({"id": rule["id"], "label": rule["label"], "thesis": rule["thesis"],
+                     "evidence": [clean_macro_text(x, 220) for x in evidence[:3]],
+                     "assets": assets, "matched_candidates": matched,
+                     "status": "FRÜHINDIKATION"})
+    return found
+
+def technical_entry_readiness(item: dict[str, Any]) -> dict[str, str]:
+    """Describe readiness from sourced technical fields; never synthesize price levels.
+
+    Entry/stop/target are copied from source. Entry readiness requires a valid
+    source status, CRV1 >= 1, an entry and a completed confirmation field.
+    """
+    status, entry, stop, target = technical_trigger(item)
+    crv = crv_of(item)
+    confirmation = first(item, "Bestätigung", "Bestaetigung", "Confirmation", "Entry_Bestaetigung", "Trigger_Bestaetigt")
+    source_status = status_of(item).upper()
+    source_valid = bool(re.match(r"^VALIDE(?:\s+SETUP)?$", source_status))
+    confirmed = bool(confirmation and re.search(r"(ja|true|bestätigt|bestaetigt|confirmed|close|schlusskurs)", confirmation, re.I))
+    if not entry or entry.lower() in {"offen", "n.v.", "keine"}:
+        readiness = "FRÜHINDIKATION – TECHNISCHE ZONE NICHT AUS QUELLE ABLEITBAR"
+    elif crv is None or crv < 1:
+        readiness = "EINSTIEGSZONE ERREICHT – CRV1 NICHT FREIGEGEBEN"
+    elif source_valid and confirmed:
+        readiness = "EINSTIEG BESTÄTIGT – TECHNISCHE REGELN ERFÜLLT"
+    elif source_valid:
+        readiness = "EINSTIEGSZONE ERREICHT – BESTÄTIGUNG OFFEN"
+    else:
+        readiness = "EINSTIEGSZONE ERREICHT – QUELLSTATUS/BESTÄTIGUNG PRÜFEN"
+    return {"readiness": readiness, "entry": entry, "stop": stop, "target": target,
+            "crv1": f"{crv:.2f}" if crv is not None else "offen",
+            "confirmation": confirmation or "Keine abgeschlossene Bestätigung in Quelle"}
+
 def parse_report_snapshot(path: Path) -> dict[str, dict[str, str]]:
     """Read candidate identity and the actual assessment from a prior report."""
     snapshot: dict[str, dict[str, str]] = {}
@@ -321,7 +402,7 @@ def technical_trigger(item: dict[str, Any]) -> tuple[str, str, str, str]:
     if valid:
         decision = "AKTIV"
     elif re.search(r"(VORBEREIT|WATCH|BEOBACHT|IN ENTWICKLUNG|ENTWICKL)", status, re.I) or (setup and setup != "Setup nicht angegeben"):
-        decision = "VORWARNUNG" if not entry else "IN ENTWICKLUNG"
+        decision = "FRÜHINDIKATION" if not entry else "IN ENTWICKLUNG"
     else:
         decision = "OFFEN"
     return decision, entry or "offen", stop or "offen", target or "offen"
@@ -349,7 +430,7 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
             decision = "AKTIV – MAKRO-GEGENWIND"
         elif status == "AKTIV":
             decision = "AKTIV"
-        elif status in {"VORWARNUNG", "IN ENTWICKLUNG"}:
+        elif status in {"FRÜHINDIKATION", "IN ENTWICKLUNG"}:
             decision = status
         else:
             decision = "PRÜFEN"
@@ -360,11 +441,11 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
                     "thesis": thesis_of(item), "trigger": condition_of(item)})
 
     # Prioritize active trade candidates, then emerging opportunities, then CRV.
-    rank = {"AKTIV": 0, "AKTIV – MAKRO-GEGENWIND": 1, "IN ENTWICKLUNG": 2, "VORWARNUNG": 3, "PRÜFEN": 4}
+    rank = {"AKTIV": 0, "AKTIV – MAKRO-GEGENWIND": 1, "IN ENTWICKLUNG": 2, "FRÜHINDIKATION": 3, "PRÜFEN": 4}
     rows.sort(key=lambda r: (rank.get(r["decision"], 5), -(r["crv"] if r["crv"] is not None else -1)))
     lines = [
         f"INVESTMENT RADAR | {today.isoformat()}",
-        "Makro + Technik | AKTIV = Setup bestätigt; IN ENTWICKLUNG = Bestätigung/Entry offen; VORWARNUNG = frühe These.",
+        "Makro + Technik | FRÜHINDIKATION = mögliche Chance; EINSTIEGSZONE ERREICHT = Zone berührt, Bestätigung offen; EINSTIEG BESTÄTIGT = technische Regeln erfüllt.",
         "Preise aus Quellen; Makro allein ist kein Einstiegssignal.",
         "",
     ]
@@ -385,6 +466,28 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
         if trigger and trigger != r["entry"] and trigger.lower() not in {"offen", "n.v.", "keine"}:
             lines.append(f"Trigger: {clean_macro_text(trigger, limit=120)}")
         lines.append("")
+    scenarios = detect_opportunity_scenarios(macro_text, structure_text, picks)
+    if scenarios:
+        lines.extend(["", "FRÜHE CHANCEN | KAUSALKETTEN",
+                     "Szenarien sind Hypothesen; technische Freigabe bleibt separat."])
+        for scenario in scenarios:
+            lines.append(f"{scenario['status']} | {scenario['label']}")
+            evidence_text = " | ".join(scenario["evidence"]) if scenario["evidence"] else "Keine konkrete Evidenz aus den Briefings erkannt."
+            # Preserve any source/date tokens present in the input evidence. Never invent a date/source.
+            lines.append(f"1. DATENLAGE (Quelle/Datenstand aus Briefing): {evidence_text}")
+            lines.append(f"2. KAUSALKETTE: {scenario['thesis']}")
+            lines.append("3. ASSET-WIRKUNG: " + ", ".join(scenario["assets"]) + " (mögliche Betroffenheit; Richtung asset-spezifisch prüfen)")
+            lines.append("4. FRÜHINDIKATION: Beobachtungsthese, noch kein Kaufsignal; Evidenz siehe Datenlage.")
+            lines.append("5. TECHNISCHE BEREITSCHAFT: Einstieg/Stop/Ziel nur aus vorhandener technischer Quelle; Bestätigung separat prüfen.")
+            lines.append("6. WIDERLEGUNG: These verwerfen, wenn Folgedaten die Ausgangsannahme nicht bestätigen oder die erwartete Asset-Wirkung ausbleibt.")
+            if scenario["matched_candidates"]:
+                for item in scenario["matched_candidates"][:8]:
+                    readiness = technical_entry_readiness(item)
+                    lines.append(f"Asset: {company_label(item)} | {readiness['readiness']} | Entry/Zonenquelle: {format_price(readiness['entry'])} | Stop: {format_price(readiness['stop'])} | Ziel: {format_price(readiness['target'])} | CRV1: {readiness['crv1']}")
+                    lines.append(f"Bestätigung: {readiness['confirmation']}")
+            else:
+                lines.append("Technischer Einstieg: noch kein passender Setup-Datensatz zugeordnet; Zone/Entry/Stop/Ziel nicht erfinden. Asset-Universum bzw. technische Quellen ergänzen.")
+            lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
