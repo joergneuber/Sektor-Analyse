@@ -266,123 +266,99 @@ def find_previous_report(output: Path, input_folder: Path, today: date) -> Path 
     return candidates[max(candidates)]
 
 
+def macro_relevance(item: dict[str, Any], macro_text: str, structure_text: str) -> tuple[str, str]:
+    """Return compact macro label and rationale only for evidence tied to title/sector."""
+    name = first(item, "Name", "name", "Unternehmen", "Company")
+    ticker = ticker_of(item)
+    sector = first(item, "Sektor", "Sector", "Branche", "Industry")
+    terms = [x for x in (name, ticker, sector) if x]
+    if not terms:
+        return "OFFEN", "Keine Aktie-/Sektorzuordnung in den Quelldaten."
+    source_lines = [normalize_text(x) for x in (macro_text + "\n" + structure_text).splitlines() if normalize_text(x)]
+    matches = [line for line in source_lines if any(re.search(re.escape(term), line, re.I) for term in terms)]
+    if not matches:
+        return "OFFEN", "Kein belegter direkter Makro-/Sektorbezug."
+    joined = " ".join(matches[:2])[:350]
+    if re.search(r"(gegenwind|bear|negativ|risiko|belast|steigende? zins|schwäch)", joined, re.I):
+        return "GEGENWIND", joined
+    if re.search(r"(rückenwind|bull|positiv|profitiert|stärk|sinkende? zins|nachfrage steigt|steigende? nachfrage|investitionen nehmen zu|auftragseingang steigt|wachstum beschleunigt)", joined, re.I):
+        return "RÜCKENWIND", joined
+    return "NEUTRAL", joined
+
+
+def technical_trigger(item: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Read levels/trigger from input only; never invent them."""
+    entry = first(item, "Entry", "Einstieg", "Entry_Zone", "Einstiegszone", "Trigger", "Bedingung")
+    stop = first(item, "Stop", "Stop_Loss", "SL")
+    target = first(item, "TP1", "Ziel", "Target", "Kursziel")
+    setup = setup_of(item)
+    status = status_of(item).upper()
+    crv = crv_of(item)
+    valid = status == "VALIDE SETUP" and crv is not None and crv >= 1 and bool(entry)
+    if valid:
+        decision = "AKTIV"
+    elif re.search(r"(VORBEREIT|WATCH|BEOBACHT|IN ENTWICKLUNG|ENTWICKL)", status, re.I) or (setup and setup != "Setup nicht angegeben"):
+        decision = "VORWARNUNG" if not entry else "IN ENTWICKLUNG"
+    else:
+        decision = "OFFEN"
+    return decision, entry or "offen", stop or "offen", target or "offen"
+
+
 def build_report(folder: Path, output: Path | None = None, today: date | None = None) -> str:
+    """Build a compact macro+technical trading decision sheet with explicit maturity status."""
     folder = Path(folder)
     today = today or date.today()
     output = output or folder / f"Investment_Radar_{today.isoformat()}.txt"
-
     macro = newest(folder, "Makro_Briefing(*).txt")
     structure = newest(folder, "Struktur_Trend_Briefing(*).txt")
-    bitcoin = newest(folder, "Trade_Story_Bitcoin(*).json")
     macro_text, structure_text = read_text(macro), read_text(structure)
-    context_lines, positive, negative = macro_and_structure_view(macro_text, structure_text)
-
     picks = make_candidate_pool(folder)
-    picks.sort(key=lambda item: (
-        status_of(item).upper() == "VALIDE SETUP",
-        crv_of(item) if crv_of(item) is not None else -999,
-        company_label(item).casefold(),
-    ), reverse=True)
-
-    previous_path = find_previous_report(output, folder, today)
-    previous = parse_report_snapshot(previous_path) if previous_path else {}
-    current: dict[str, dict[str, str]] = {}
-    candidate_sections: list[str] = []
+    rows = []
     for item in picks:
         ticker = ticker_of(item)
         label = company_label(item)
         setup = setup_of(item)
-        status = status_of(item)
-        crv_value = crv_of(item)
-        crv_text = first(item, "CRV1", "CRV") or "n.v."
-        assessment, evidence = interpret_candidate(item, positive, negative)
-        current[ticker] = {"label": label, "setup": setup, "status": status, "crv": crv_text, "assessment": assessment}
-        candidate_sections.extend([
-            f"- {label}: {setup}. Status: {status}. CRV1: {crv_text}.",
-            f"  Einschätzung: {assessment}",
+        crv = crv_of(item)
+        status, entry, stop, target = technical_trigger(item)
+        macro_status, macro_reason = macro_relevance(item, macro_text, structure_text)
+        # Early opportunities stay visible; macro alone cannot turn them into an active trade.
+        if status == "AKTIV" and macro_status == "GEGENWIND":
+            decision = "AKTIV – MAKRO-GEGENWIND"
+        elif status == "AKTIV":
+            decision = "AKTIV"
+        elif status in {"VORWARNUNG", "IN ENTWICKLUNG"}:
+            decision = status
+        else:
+            decision = "PRÜFEN"
+        rows.append({"ticker": ticker, "label": label, "decision": decision, "setup": setup,
+                    "crv": crv, "macro": macro_status, "macro_reason": macro_reason,
+                    "entry": entry, "stop": stop, "target": target,
+                    "technical_status": status, "thesis": thesis_of(item),
+                    "trigger": condition_of(item)})
+
+    # Prioritize active trade candidates, then emerging opportunities, then CRV.
+    rank = {"AKTIV": 0, "AKTIV – MAKRO-GEGENWIND": 1, "IN ENTWICKLUNG": 2, "VORWARNUNG": 3, "PRÜFEN": 4}
+    rows.sort(key=lambda r: (rank.get(r["decision"], 5), -(r["crv"] if r["crv"] is not None else -1)))
+    lines = [f"INVESTMENT RADAR | {today.isoformat()}",
+             "Makro + Technik | Status trennt bestätigte Trades von frühen Chancen.",
+             "STATUS: AKTIV = Setup-Quelle valide, CRV1 ≥ 1 und Entry/Trigger vorhanden; IN ENTWICKLUNG = Setupdaten vorhanden, Bestätigung/Entry offen; VORWARNUNG = frühe These, noch kein belastbares Setup.", ""]
+    if not rows:
+        lines.append("Keine Kandidaten mit verwertbaren Setup-/Thesedaten.")
+    for r in rows:
+        crv_text = f"{r['crv']:g}" if r["crv"] is not None else "offen"
+        lines.extend([
+            f"{r['decision']} | {r['label']} | {r['setup']} | CRV1 {crv_text}",
+            f"Makro: {r['macro']} – {r['macro_reason']}",
+            f"Technik: Einstieg/Trigger {r['entry']} | Stop {r['stop']} | Ziel {r['target']}",
         ])
-        if evidence:
-            candidate_sections.extend(f"  Belege/Einordnung: {x}" for x in evidence)
-
-    lines = [
-        f"INVESTMENT RADAR | {today.isoformat()}",
-        "Fokus: begründete Chancenbewertung mit Datenstatus; Radar ist keine automatische Entry-Freigabe.",
-        "", "1. MAKRO- UND STRUKTURBLICK",
-    ]
-    lines.extend(context_lines or ["- Makro-/Strukturbriefing fehlt."])
-    if positive:
-        lines += ["", "Bestätigende Kontextsignale:"] + [f"- {x}" for x in positive[:8]]
-    if negative:
-        lines += ["", "Gegenwind / Risiken:"] + [f"- {x}" for x in negative[:8]]
-
-    lines += ["", "2. AUSSICHTSREICHE TRADECHANCEN"]
-    lines.extend(candidate_sections or ["- Keine ausreichend belegten Kandidaten in den verfügbaren Quellen."])
-
-    lines += ["", "3. VERÄNDERUNG ZUM VORTAG"]
-    if not previous_path:
-        lines.append("- Kein früherer datierter Radarbericht gefunden; Tagesvergleich startet mit diesem Snapshot.")
-    else:
-        lines.append(f"- Vergleichsbasis: {previous_path.name}")
-        new_tickers = sorted(set(current) - set(previous))
-        gone_tickers = sorted(set(previous) - set(current))
-        shared = sorted(set(current) & set(previous))
-        if new_tickers:
-            lines.append("Neue Kandidaten: " + "; ".join(current[t]["label"] for t in new_tickers))
-        if gone_tickers:
-            lines.append("Nicht mehr gelistet: " + "; ".join(previous[t]["label"] for t in gone_tickers))
-        changes = []
-        for ticker in shared:
-            old, new = previous[ticker], current[ticker]
-            diffs = []
-            for key, title in (("status", "Status"), ("setup", "Setup"), ("crv", "CRV1")):
-                if normalize_text(old.get(key, "")) != normalize_text(new.get(key, "")):
-                    diffs.append(f"{title}: '{old.get(key, 'n.v.')}' → '{new.get(key, 'n.v.')}'")
-            old_thesis = normalize_text(old.get("assessment", ""))
-            new_thesis = normalize_text(new.get("assessment", ""))
-            if old_thesis and new_thesis and old_thesis != new_thesis:
-                diffs.append(f"These/Einschätzung: '{old_thesis[:220]}' → '{new_thesis[:220]}'")
-            if diffs:
-                changes.append(f"{new['label']}: " + "; ".join(diffs))
-        lines.extend(f"Änderung: {x}" for x in changes)
-        if not (new_tickers or gone_tickers or changes):
-            lines.append("- Keine Änderung bei Kandidaten, Status, Setup oder CRV1 im verfügbaren Berichtssnapshot erkannt.")
-
-    lines += ["", "4. THESENVERLAUF / WAS DIE THESE ÄNDERT"]
-    thesis_changes = []
-    if previous_path:
-        for ticker in sorted(set(current) | set(previous)):
-            if ticker not in previous:
-                thesis_changes.append(f"Neu: {current[ticker]['label']} – erstmals im Radar; These anhand der heutigen Quellen prüfen.")
-            elif ticker not in current:
-                thesis_changes.append(f"Entfallen: {previous[ticker]['label']} – heute nicht mehr in den Kandidatenquellen.")
-            else:
-                old, new = previous[ticker], current[ticker]
-                changed = (old.get("status") != new.get("status") or old.get("crv") != new.get("crv")
-                           or old.get("setup") != new.get("setup")
-                           or normalize_text(old.get("assessment", "")) != normalize_text(new.get("assessment", "")))
-                if changed:
-                    thesis_changes.append(f"Aktualisiert: {new['label']} – Status, Setup, CRV oder konkrete Einschätzung gegenüber Vortag verändert; Details in Abschnitt 3.")
-    if thesis_changes:
-        lines.extend(f"- {x}" for x in thesis_changes)
-    elif previous_path:
-        lines.append("- Im Berichtssnapshot keine Kandidatenänderung als Thesenwechsel erkennbar; das ist kein Beweis für unveränderte Kurs-/Makrothese.")
-    else:
-        lines.append("- Für echte Verlaufsaussagen wird ein vorheriger datierter Bericht benötigt. Dieser erste Snapshot dient als Vergleichsbasis.")
-    lines += [
-        "- Quellenlücken oder nicht tickerbezogene Makrohinweise werden ausdrücklich als Unsicherheit behandelt; daraus wird keine Kursrichtung abgeleitet.",
-        "- Kandidaten sind Radar-Chancen, keine automatische Order- oder Entry-Empfehlung.",
-    ]
-
-    btc_data = read_json(bitcoin)
-    if btc_data:
-        btc_lines = []
-        for key in ("pi_cycle_bottom", "sma50w"):
-            value = btc_data.get(key)
-            if isinstance(value, dict) and (value.get("message") or value.get("state")):
-                btc_lines.append(f"{key}: {value.get('message') or value.get('state')}")
-        if btc_lines:
-            lines += ["", "Bitcoin-Kontext:"] + [f"- {x}" for x in btc_lines]
-    return "\n".join(lines) + "\n"
+        short_thesis = normalize_text(r["thesis"])
+        if short_thesis:
+            lines.append(f"These: {short_thesis[:220]}")
+        if r["trigger"] and r["trigger"] != r["entry"]:
+            lines.append(f"Nächster Trigger: {normalize_text(r['trigger'])[:180]}")
+        lines.append("")
+    lines += ["Hinweis: Preislevel werden nur aus den Eingabedaten übernommen. Fehlende Werte bleiben offen; Makro-Rückenwind allein ist kein Einstiegssignal."]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def main() -> None:
