@@ -106,6 +106,26 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def clean_macro_text(text: str, limit: int = 150) -> str:
+    """Remove embedded article bodies and technical source metadata from report snippets."""
+    text = normalize_text(text)
+    # Article bodies were accidentally appended to macro rows and made unrelated
+    # news appear to be a stock-specific macro assessment.
+    text = re.split(r"\bARTICLE_TEXT\s*=", text, maxsplit=1, flags=re.I)[0]
+    text = re.split(r"\bSOURCE\s*=", text, maxsplit=1, flags=re.I)[0]
+    text = re.sub(r"\b(?:STATUS|SERIES|frequency|DATENTYP|HINWEIS|NFP-CHECK|NFP-VALIDIERUNG)\s*=.*", "", text, flags=re.I)
+    text = normalize_text(text).strip(" |;,-")
+    return text[:limit].rstrip()
+
+
+def format_price(value: Any) -> str:
+    """Render numeric price levels consistently to two decimals."""
+    number = parse_float(value)
+    if number is None:
+        return str(value or "offen")
+    return f"{number:.2f}"
+
+
 def evidence_lines(text: str, patterns: str) -> list[str]:
     result = []
     for raw in text.splitlines():
@@ -278,7 +298,9 @@ def macro_relevance(item: dict[str, Any], macro_text: str, structure_text: str) 
     matches = [line for line in source_lines if any(re.search(re.escape(term), line, re.I) for term in terms)]
     if not matches:
         return "OFFEN", "Kein belegter direkter Makro-/Sektorbezug."
-    joined = " ".join(matches[:2])[:350]
+    joined = clean_macro_text(" ".join(matches[:2]), limit=150)
+    if not joined:
+        return "OFFEN", "Kein verwertbarer direkter Makro-/Sektorbezug."
     if re.search(r"(gegenwind|bear|negativ|risiko|belast|steigende? zins|schwäch)", joined, re.I):
         return "GEGENWIND", joined
     if re.search(r"(rückenwind|bull|positiv|profitiert|stärk|sinkende? zins|nachfrage steigt|steigende? nachfrage|investitionen nehmen zu|auftragseingang steigt|wachstum beschleunigt)", joined, re.I):
@@ -294,7 +316,8 @@ def technical_trigger(item: dict[str, Any]) -> tuple[str, str, str, str]:
     setup = setup_of(item)
     status = status_of(item).upper()
     crv = crv_of(item)
-    valid = status == "VALIDE SETUP" and crv is not None and crv >= 1 and bool(entry)
+    valid_source_status = bool(re.match(r"^VALIDE(?:\s+SETUP)?$", status))
+    valid = valid_source_status and crv is not None and crv >= 1 and bool(entry)
     if valid:
         decision = "AKTIV"
     elif re.search(r"(VORBEREIT|WATCH|BEOBACHT|IN ENTWICKLUNG|ENTWICKL)", status, re.I) or (setup and setup != "Setup nicht angegeben"):
@@ -339,26 +362,29 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
     # Prioritize active trade candidates, then emerging opportunities, then CRV.
     rank = {"AKTIV": 0, "AKTIV – MAKRO-GEGENWIND": 1, "IN ENTWICKLUNG": 2, "VORWARNUNG": 3, "PRÜFEN": 4}
     rows.sort(key=lambda r: (rank.get(r["decision"], 5), -(r["crv"] if r["crv"] is not None else -1)))
-    lines = [f"INVESTMENT RADAR | {today.isoformat()}",
-             "Makro + Technik | Status trennt bestätigte Trades von frühen Chancen.",
-             "STATUS: AKTIV = Setup-Quelle valide, CRV1 ≥ 1 und Entry/Trigger vorhanden; IN ENTWICKLUNG = Setupdaten vorhanden, Bestätigung/Entry offen; VORWARNUNG = frühe These, noch kein belastbares Setup.", ""]
+    lines = [
+        f"INVESTMENT RADAR | {today.isoformat()}",
+        "Makro + Technik | AKTIV = Setup bestätigt; IN ENTWICKLUNG = Bestätigung/Entry offen; VORWARNUNG = frühe These.",
+        "Preise aus Quellen; Makro allein ist kein Einstiegssignal.",
+        "",
+    ]
     if not rows:
         lines.append("Keine Kandidaten mit verwertbaren Setup-/Thesedaten.")
     for r in rows:
-        crv_text = f"{r['crv']:g}" if r["crv"] is not None else "offen"
-        lines.extend([
+        crv_text = f"{r['crv']:.2f}" if r["crv"] is not None else "offen"
+        macro_reason = clean_macro_text(r["macro_reason"], limit=125) or "Bezug offen"
+        lines.append(
             f"{r['decision']} | {r['label']} | {r['setup']} | CRV1 {crv_text}"
-                + (f" | Quellstatus: {r['source_status']}" if r["source_status"] else ""),
-            f"Makro: {r['macro']} – {r['macro_reason']}",
-            f"Technik: Einstieg/Trigger {r['entry']} | Stop {r['stop']} | Ziel {r['target']}",
-        ])
-        short_thesis = normalize_text(r["thesis"])
-        if short_thesis:
-            lines.append(f"These: {short_thesis[:220]}")
-        if r["trigger"] and r["trigger"] != r["entry"]:
-            lines.append(f"Nächster Trigger: {normalize_text(r['trigger'])[:180]}")
+            + (f" | Quellstatus: {r['source_status']}" if r["source_status"] else "")
+        )
+        lines.append(
+            f"Makro {r['macro']}: {macro_reason} | "
+            f"Entry {format_price(r['entry'])} | Stop {format_price(r['stop'])} | Ziel {format_price(r['target'])}"
+        )
+        trigger = normalize_text(r["trigger"])
+        if trigger and trigger != r["entry"] and trigger.lower() not in {"offen", "n.v.", "keine"}:
+            lines.append(f"Trigger: {clean_macro_text(trigger, limit=120)}")
         lines.append("")
-    lines += ["Hinweis: Preislevel werden nur aus den Eingabedaten übernommen. Fehlende Werte bleiben offen; Makro-Rückenwind allein ist kein Einstiegssignal."]
     return "\n".join(lines).rstrip() + "\n"
 
 
