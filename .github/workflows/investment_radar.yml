@@ -1,46 +1,51 @@
 name: Investment Radar
 
 on:
-workflow_dispatch:
-schedule:
-# Nach dem Hauptlauf; liest nur bereits hochgeladene Google-Drive-Ergebnisse.
-- cron: “30 5 * * 1-5”
+  workflow_dispatch:
+  schedule:
+    # Nach dem Hauptlauf; liest nur bereits hochgeladene Google-Drive-Ergebnisse.
+    - cron: "30 5 * * 1-5"
 
 permissions:
-contents: read
+  contents: read
 
 concurrency:
-group: investment-radar-${{ github.ref }}
-cancel-in-progress: false
+  group: investment-radar-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-radar:
-runs-on: ubuntu-latest
-steps:
-- name: Repository auschecken
-uses: actions/checkout@v5
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v5
 
-  - name: Python einrichten
-    uses: actions/setup-python@v6
-    with:
-      python-version: "3.12"
-  - name: Google-Drive-Abhängigkeiten installieren
-    run: python -m pip install --upgrade google-api-python-client google-auth google-auth-httplib2
-  - name: Radar-Tests
-    run: python -m unittest discover -s tests -p "test_investment_radar.py" -v
-  - name: Vorhandene Ergebnisse aus Google Drive herunterladen
-    env:
-      GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-    run: python investment_radar_drive.py --output-dir investment_radar_input
-  - name: Investment Radar erstellen
-    run: |
-      python investment_radar.py \
-        --input-dir investment_radar_input \
-        --output Investment_Radar_Bericht.txt
-  - name: Bericht als GitHub-Artefakt sichern
-    uses: actions/upload-artifact@v6
-    with:
-      name: investment-radar-${{ github.run_id }}
-      path: Investment_Radar_Bericht.txt
-      if-no-files-found: error
-      retention-days: 14
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Google-Drive-Abhängigkeiten installieren
+        run: python -m pip install --upgrade google-api-python-client google-auth google-auth-httplib2
+
+      - name: Radar-Tests
+        run: python -m unittest discover -s tests -p "test_investment_radar.py" -v
+
+      - name: Vorhandene Ergebnisse aus Google Drive herunterladen
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python investment_radar_drive.py --output-dir investment_radar_input
+
+      - name: Investment Radar erstellen
+        run: |
+          python investment_radar.py \
+            --input-dir investment_radar_input \
+            --output Investment_Radar_Bericht.txt
+
+      - name: Bericht als GitHub-Artefakt sichern
+        uses: actions/upload-artifact@v6
+        with:
+          name: investment-radar-${{ github.run_id }}
+          path: Investment_Radar_Bericht.txt
+          if-no-files-found: error
+          retention-days: 14
