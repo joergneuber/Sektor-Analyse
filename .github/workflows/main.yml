@@ -26,37 +26,34 @@ jobs:
       - name: Code auschecken
         uses: actions/checkout@v5
 
-      # Persistenter Tagesstatus für automatische und manuelle Läufe.
-      - name: Automatischen Tagesstatus wiederherstellen
+      # Automatische Läufe nur zulassen, wenn heute (UTC) noch kein
+      # erfolgreicher manueller oder automatischer Lauf dieses Workflows existiert.
+      # Fehlgeschlagene Läufe zählen nicht. Manuelle Starts umgehen diese Prüfung.
+      - name: Erfolgreichen Tageslauf prüfen
         if: ${{ github.event_name == 'schedule' }}
-        id: daily-main-state-restore
-        uses: actions/cache/restore@v5
-        with:
-          path: .daily_main_run_state
-          key: daily-main-run-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            daily-main-run-${{ github.ref_name }}-
-
-      # Hauptlauf: maximal ein erfolgreicher Lauf pro Werktag für automatische Läufe.
-      # Manuelle workflow_dispatch-Läufe bleiben immer erlaubt, auch wenn der Tag bereits erledigt ist.
-      - name: Automatischen Tageslauf nur einmal ausführen
-        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          state_file=".daily_main_run_state"
           today="$(date -u +%Y-%m-%d)"
-          if [ -f "$state_file" ] && [ "$(cat "$state_file")" = "$today" ]; then
-            echo "Automatischer Hauptlauf für ${today} wurde bereits erfolgreich ausgeführt."
-            echo "DAILY_MAIN_RUN_ALREADY_DONE=true" >> "$GITHUB_ENV"
-          else
-            echo "Automatischer Hauptlauf für ${today} ist noch nicht als erfolgreich markiert."
-            echo "DAILY_MAIN_RUN_ALREADY_DONE=false" >> "$GITHUB_ENV"
-          fi
-          if [ "${DAILY_MAIN_RUN_ALREADY_DONE:-false}" = "true" ]; then
-            echo "Bereits erfolgreich gelaufen – automatischer Lauf wird beendet."
+          previous_success="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            | jq -r --arg today "$today" --arg branch "$GITHUB_REF_NAME" --arg current "$GITHUB_RUN_ID" '
+              .workflow_runs[]
+              | select(.path == ".github/workflows/main.yml")
+              | select(.head_branch == $branch)
+              | select((.id | tostring) != $current)
+              | select(.status == "completed" and .conclusion == "success")
+              | select(.event == "schedule" or .event == "workflow_dispatch")
+              | select(.updated_at[0:10] == $today)
+              | .id
+            ' | head -n 1)"
+          if [ -n "$previous_success" ]; then
+            echo "Heute (${today} UTC) wurde bereits ein erfolgreicher Lauf abgeschlossen (Run ${previous_success})."
+            echo "Automatischer Lauf wird abgebrochen; manuelle Starts bleiben erlaubt."
             gh run cancel "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}"
             exit 0
           fi
+          echo "Heute (${today} UTC) liegt noch kein erfolgreicher Lauf vor. Automatischer Lauf darf fortfahren."
 
       - name: Python einrichten
         uses: actions/setup-python@v6
@@ -686,19 +683,4 @@ jobs:
               smtp.login(user, password)
               smtp.send_message(msg)
           print(f"Technische Gemini-Fallback-Mail versendet: {status_file.name}")
-          PY
-
-      # Tageslauf nach technisch gültigem und versendbarem Report markieren.
-      # FINAL und NICHT_FINAL gelten als abgeschlossener Tageslauf; technische
-      # Ausfälle/Fallbacks oder fehlgeschlagene Folgeschritte setzen keinen Tagesstatus.
-      - name: Erfolgreichen Tageslauf markieren
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && (steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' || steps.gemini-auswertung.outputs.fachlich_final == 'NICHT_FINAL') }}
-        run: |
-          date -u +%Y-%m-%d > .daily_main_run_state
-
-      - name: Tagesstatus nach Erfolg speichern
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && success() && steps.gemini-finality-check.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && (steps.gemini-auswertung.outputs.fachlich_final == 'FINAL' || steps.gemini-auswertung.outputs.fachlich_final == 'NICHT_FINAL') }}
-        uses: actions/cache/save@v5
-        with:
-          path: .daily_main_run_state
-          key: daily-main-run-${{ github.ref_name }}-${{ github.run_id }}
+          PY\n
