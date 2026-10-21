@@ -1,23 +1,15 @@
-# Investment Radar (separater Offline-Baustein)
+# Investment Radar
 
-Der Radar wertet bereits erzeugte Projekt-Ergebnisdateien aus. Er ruft **keine** Scanner, APIs, Gemini oder den Hauptworkflow auf und verändert keine vorhandenen Analyse-Dateien.
+Das Radar interpretiert bereits erzeugte Projektergebnisse. Es startet keine Scanner, APIs oder Gemini.
+
+## Ablauf
+- `investment_radar_drive.py` lädt die neuesten vorhandenen Radar-Eingaben aus dem bestehenden Google-Drive-Ordner.
+- `investment_radar.py` erzeugt einen kompakten, interpretationsorientierten Tagesbericht. Es gibt keine feste Kandidatenobergrenze; plausible Kandidaten werden aus dem Trade-Story-Universum und Setup-Dateien zusammengeführt. Unternehmen erscheinen als `Name (Ticker)`, soweit Name und Ticker in den Quelldaten vorhanden sind.
+- `investment_radar_upload.py` speichert den Bericht als `Investment_Radar_YYYY-MM-DD.txt` im Radar-Google-Drive-Ordner. Datierte Dateien werden nicht überschrieben oder gelöscht und ermöglichen Tagesvergleiche.
+- Der Workflow lädt den Bericht nicht mehr als GitHub-Artefakt hoch. Google Drive ist die dauerhafte Ablage.
 
 ## Ausführen
-
 ```bash
-python investment_radar.py --input-dir /pfad/zu/vorhandenen_ergebnissen
+python investment_radar.py --input-dir investment_radar_input --output Investment_Radar_YYYY-MM-DD.txt
+python investment_radar_upload.py --report Investment_Radar_YYYY-MM-DD.txt
 ```
-
-Optionaler Berichtspfad: `--output /pfad/Investment_Radar_Bericht.txt`.
-
-## Stufe 2: Makro-/Sektor-Überschneidungen
-
-Zusätzlich zur Ergebnisübersicht werden nachvollziehbare, regelbasierte Recherchehypothesen ausgegeben. Die Regeln suchen in bereits vorhandenen Makrobriefing-Zeilen nach festgelegten Begriffen und verbinden diese nur mit Sektoren, die in Performance-, Setup- oder Trade-Story-Dateien tatsächlich vorkommen. Angezeigt werden die gefundenen Makro-Belegzeilen sowie vorhandene Performance- und Setup-Kandidaten.
-
-Die Zuordnung ist eine **heuristische Recherchehilfe**, kein Kausalitätsnachweis, kein Kaufsignal und keine Prognose. Die Keyword-Regeln sind im Skript in `MACRO_RULES` offengelegt und können dort kontrolliert erweitert werden. Fehlende Daten werden nicht ergänzt.
-
-## Abgrenzung
-
-- Eingaben: vorhandene CSV-, JSON- und TXT-Ergebnisse.
-- Keine neuen Datenabrufe, Scannerläufe oder Gemini-Aufrufe.
-- Kein automatischer Eingriff in den Hauptworkflow; dessen Workflow-YAML bleibt unverändert.
