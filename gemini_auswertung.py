@@ -4587,7 +4587,9 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Alle aktuellen Quelldateien des Laufes stehen als Final-Handoff zur Verfuegung. Nutze nicht nur "
         "die bereits verdichteten A1/A2/A3-Ergebnisse, sondern pruefe bei relevanten Aussagen auch den "
         "zugrunde liegenden aktuellen Quelldatenbestand. Persistent gespeicherte Historien bleiben davon "
-        "getrennt und werden ueber A3 bzw. den bestehenden Historienmechanismus verarbeitet. Gemini darf die vollstaendige B-/C-/A-Historie interpretieren; in der fuer den Nutzer hervorgehobenen Statusmeldung stehen aber aktuelle A-Einstufungen, Aufstiege zu A und Statusverluste aus A im Vordergrund. Unveraendertes B (B→B) ist fuer den Nutzer irrelevant und darf nicht als eigene Meldung hervorgehoben werden. C→B kann als Vorstufe intern eingeordnet werden, ist aber kein A-Aufstieg. Statusverläufe müssen, wenn sie genannt werden, als exakter Vorheriger-Status → aktueller Status wiedergegeben werden. Fehlende Statuswerte bedeuten „Statusverlauf nicht verifiziert“ und niemals „stabil“. Das Wort stabil/gleichbleibend ist nur zulässig, wenn beide vorhandenen Statuswerte identisch sind; ein Wechsel wie C→B ist als Verbesserung und nicht als stabil zu beschreiben.\n\n"
+        "getrennt und werden ueber A3 bzw. den bestehenden Historienmechanismus verarbeitet. "
+        "THESENREGISTER: Gib am Ende einen optionalen, exakt markierten Block ```TRADING_RADAR_THESEN_JSON\n{\"data_cutoff\":\"Zeitstempel aus den aktuellen Daten, sonst leer\",\"theses\":[...]}\n``` aus. Jede These hat thesis_id (bei Fortführung dieselbe ID), thesis, horizon, evidence[], counter_evidence[], confidence, confirm_triggers[], invalidate_triggers[], event_dependencies[], asset_classes[], candidates[] und status. Zulässige Status: NEU, BESTAETIGT, VERSTAERKT, ABGESCHWAECHT, WARTET_AUF_EVENT, WIDERLEGT, ERSETZT, UNKLAR. Eventdetails (Name, Datum/Uhrzeit/Zeitzone, Konsens, Vorwert, Istwert und Marktreaktion) nur aus bereitgestellten Fakten; fehlende Angaben leer/null, nicht schätzen. Keine technische Handelsfreigabe daraus ableiten. Wenn keine belastbaren Thesen vorliegen, theses=[] ausgeben. Der Block darf keine neuen Fakten gegenüber dem Bericht einführen. "
+        "Gemini darf die vollstaendige B-/C-/A-Historie interpretieren; in der fuer den Nutzer hervorgehobenen Statusmeldung stehen aber aktuelle A-Einstufungen, Aufstiege zu A und Statusverluste aus A im Vordergrund. Unveraendertes B (B→B) ist fuer den Nutzer irrelevant und darf nicht als eigene Meldung hervorgehoben werden. C→B kann als Vorstufe intern eingeordnet werden, ist aber kein A-Aufstieg. Statusverläufe müssen, wenn sie genannt werden, als exakter Vorheriger-Status → aktueller Status wiedergegeben werden. Fehlende Statuswerte bedeuten „Statusverlauf nicht verifiziert“ und niemals „stabil“. Das Wort stabil/gleichbleibend ist nur zulässig, wenn beide vorhandenen Statuswerte identisch sind; ein Wechsel wie C→B ist als Verbesserung und nicht als stabil zu beschreiben.\n\n"
         "DARSTELLUNGSREGEL: Jede genannte Aktie bzw. jedes Unternehmen muss immer mit Firmenname und Ticker im Format Name (TICKER) erscheinen. "
         "Keine Aktiennennung nur über den Ticker oder nur über den Namen. Dies gilt insbesondere für 1.3, 1.4, 2.1–2.5, 3.x, 4, 5, 6.x, 8.x und 9.x.\n\n"
         "VERBINDLICHER INHALTSVERTRAG 1–11: Halte die folgende Struktur exakt ein. "
@@ -16477,6 +16479,17 @@ def speichere_ergebnis(text, eingabedateien=None):
             with open(GEMINI_HISTORIE_DATEI, "w", encoding="utf-8") as f:
                 f.write(historie)
             print(f"Persistente Gemini-Historie aktualisiert: {GEMINI_HISTORIE_DATEI}")
+            try:
+                from trading_radar_thesen import update_register
+                register_result = update_register(
+                    final_text, os.path.join(output_dir, ".trading_radar_thesen.json")
+                )
+                if register_result.get("updated"):
+                    print(f"Trading-Radar-Thesenregister aktualisiert: {register_result.get('count')} Thesen")
+                else:
+                    print("INFO: Trading-Radar-Thesenregister unveraendert: kein strukturierter Thesenblock")
+            except Exception as register_exc:
+                print(f"WARNUNG: Thesenregister nicht aktualisiert ({type(register_exc).__name__}: {register_exc})")
         except Exception as exc:
             # Die Tagesauswertung darf durch einen reinen Historienfehler nicht
             # unbrauchbar werden; der Fehler bleibt im Log sichtbar.
