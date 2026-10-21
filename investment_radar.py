@@ -220,7 +220,7 @@ def interpret_candidate(item: dict[str, Any], macro_positive: list[str], macro_n
     else:
         evidence.append("Keine belastbare Zuordnung von Makro-/Strukturkontext zu diesem Titel möglich.")
         assessment += " Makro-/Strukturbezug bleibt mangels verwertbarer oder zuordenbarer Daten offen."
-    evidence.insert(0, f"Setup: {setup}; Status: {status}")
+    evidence.insert(0, f"Setup: {setup}; Status-Einordnung siehe Kandidatenzeile")
     return assessment, evidence
 
 
