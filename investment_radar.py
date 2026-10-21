@@ -94,6 +94,21 @@ def crv_of(item: dict[str, Any]) -> float | None:
     return parse_float(first(item, "CRV1", "CRV"))
 
 
+def current_price_of(item: dict[str, Any]) -> str:
+    """Return the latest/current price exactly from an available input field.
+
+    No price is calculated or inferred. The report labels it as source-provided
+    and shows 'offen' when the input candidate has no current-price field.
+    """
+    value = first(
+        item,
+        "Aktueller_Kurs", "Aktueller Kurs", "Kurs_aktuell", "Kurs aktuell",
+        "Current_Price", "Current Price", "Last_Price", "Last Price",
+        "Last", "Kurs", "Preis", "Close", "Schlusskurs", "Adj Close",
+    )
+    return format_price(value) if value else "offen"
+
+
 def thesis_of(item: dict[str, Any]) -> str:
     return first(item, "These", "Trade_Story", "trade_story", "Begründung", "Kommentar", "Einordnung")
 
@@ -300,30 +315,43 @@ def detect_opportunity_scenarios(macro_text: str, structure_text: str = "", cand
     return found
 
 def technical_entry_readiness(item: dict[str, Any]) -> dict[str, str]:
-    """Describe readiness from sourced technical fields; never synthesize price levels.
-
-    Entry/stop/target are copied from source. Entry readiness requires a valid
-    source status, CRV1 >= 1, an entry and a completed confirmation field.
-    """
-    status, entry, stop, target = technical_trigger(item)
-    crv = crv_of(item)
+    """Apply data, price-zone, confirmation and independently recalculated CRV gates."""
+    status, entry_raw, stop_raw, target_raw = technical_trigger(item)
+    entry, stop, target = parse_float(entry_raw), parse_float(stop_raw), parse_float(target_raw)
+    price = parse_float(current_price_of(item))
     confirmation = first(item, "Bestätigung", "Bestaetigung", "Confirmation", "Entry_Bestaetigung", "Trigger_Bestaetigt")
     source_status = status_of(item).upper()
     source_valid = bool(re.match(r"^VALIDE(?:\s+SETUP)?$", source_status))
-    confirmed = bool(confirmation and re.search(r"(ja|true|bestätigt|bestaetigt|confirmed|close|schlusskurs)", confirmation, re.I))
-    if not entry or entry.lower() in {"offen", "n.v.", "keine"}:
-        readiness = "FRÜHINDIKATION – TECHNISCHE ZONE NICHT AUS QUELLE ABLEITBAR"
-    elif crv is None or crv < 1:
-        readiness = "EINSTIEGSZONE ERREICHT – CRV1 NICHT FREIGEGEBEN"
-    elif source_valid and confirmed:
-        readiness = "EINSTIEG BESTÄTIGT – TECHNISCHE REGELN ERFÜLLT"
-    elif source_valid:
-        readiness = "EINSTIEGSZONE ERREICHT – BESTÄTIGUNG OFFEN"
+    confirmed = bool(confirmation and re.search(r"(^|\b)(ja|true|bestätigt|bestaetigt|confirmed)(\b|$)", confirmation, re.I))
+    evidence = first(item, "Quelle", "Source", "Datenquelle", "Quelle_URL", "URL", "Datenstand", "Datum")
+    data_gate = bool(evidence and first(item, "These", "Trade_Story", "trade_story", "Begründung", "Kommentar", "Einordnung"))
+    crv_source = crv_of(item)
+    crv_calc = ((target-entry)/(entry-stop)) if entry is not None and stop is not None and target is not None and entry > stop else None
+    crv_matches = crv_source is not None and crv_calc is not None and abs(crv_source-crv_calc) <= max(0.05, abs(crv_calc)*0.03)
+    zone_reached = price is not None and entry is not None and price <= entry
+    if not data_gate:
+        readiness = "DATEN-GATE GESPERRT – konkrete Quelle/These fehlt"
+    elif entry is None or stop is None or target is None:
+        readiness = "TECHNIK-GATE GESPERRT – Entry, Stop oder Ziel fehlt"
+    elif crv_calc is None or not crv_matches or crv_calc < 1:
+        readiness = "CRV-GATE GESPERRT – berechnetes CRV fehlt, weicht von Quelle ab oder liegt unter 1"
+    elif price is None:
+        readiness = "KURS-GATE GESPERRT – aktueller Kurs fehlt"
+    elif not zone_reached:
+        readiness = "FRÜHINDIKATION – Einstiegszone noch nicht erreicht"
+    elif not source_valid:
+        readiness = "EINSTIEGSZONE ERREICHT – Quellstatus nicht valide"
+    elif not confirmed:
+        readiness = "EINSTIEGSZONE ERREICHT – technische Bestätigung offen"
     else:
-        readiness = "EINSTIEGSZONE ERREICHT – QUELLSTATUS/BESTÄTIGUNG PRÜFEN"
-    return {"readiness": readiness, "entry": entry, "stop": stop, "target": target,
-            "crv1": f"{crv:.2f}" if crv is not None else "offen",
-            "confirmation": confirmation or "Keine abgeschlossene Bestätigung in Quelle"}
+        readiness = "EINSTIEG BESTÄTIGT – alle Gates erfüllt"
+    return {"readiness": readiness, "entry": entry_raw, "stop": stop_raw, "target": target_raw,
+            "crv1": f"{crv_calc:.2f}" if crv_calc is not None else "offen",
+            "crv_source": f"{crv_source:.2f}" if crv_source is not None else "offen",
+            "current_price": current_price_of(item),
+            "confirmation": confirmation or "Keine abgeschlossene Bestätigung in Quelle",
+            "data_gate": "OK" if data_gate else "GESPERRT",
+            "crv_gate": "OK" if crv_matches else "GESPERRT"}
 
 def parse_report_snapshot(path: Path) -> dict[str, dict[str, str]]:
     """Read candidate identity and the actual assessment from a prior report."""
@@ -436,6 +464,7 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
             decision = "PRÜFEN"
         rows.append({"ticker": ticker, "label": label, "decision": decision, "setup": setup,
                     "crv": crv, "macro": macro_status, "macro_reason": macro_reason,
+                    "current_price": current_price_of(item),
                     "entry": entry, "stop": stop, "target": target,
                     "technical_status": status, "source_status": status_of(item),
                     "thesis": thesis_of(item), "trigger": condition_of(item)})
@@ -460,6 +489,7 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
         )
         lines.append(
             f"Makro {r['macro']}: {macro_reason} | "
+            f"Kurs aktuell {r['current_price']} (Quelle) | "
             f"Entry {format_price(r['entry'])} | Stop {format_price(r['stop'])} | Ziel {format_price(r['target'])}"
         )
         trigger = normalize_text(r["trigger"])
@@ -483,7 +513,7 @@ def build_report(folder: Path, output: Path | None = None, today: date | None = 
             if scenario["matched_candidates"]:
                 for item in scenario["matched_candidates"][:8]:
                     readiness = technical_entry_readiness(item)
-                    lines.append(f"Asset: {company_label(item)} | {readiness['readiness']} | Entry/Zonenquelle: {format_price(readiness['entry'])} | Stop: {format_price(readiness['stop'])} | Ziel: {format_price(readiness['target'])} | CRV1: {readiness['crv1']}")
+                    lines.append(f"Asset: {company_label(item)} | Kurs aktuell: {readiness['current_price']} (Quelle) | {readiness['readiness']} | Entry/Zonenquelle: {format_price(readiness['entry'])} | Stop: {format_price(readiness['stop'])} | Ziel: {format_price(readiness['target'])} | CRV1 berechnet/Quelle: {readiness['crv1']}/{readiness['crv_source']} | Daten-Gate: {readiness['data_gate']} | CRV-Gate: {readiness['crv_gate']}")
                     lines.append(f"Bestätigung: {readiness['confirmation']}")
             else:
                 lines.append("Technischer Einstieg: noch kein passender Setup-Datensatz zugeordnet; Zone/Entry/Stop/Ziel nicht erfinden. Asset-Universum bzw. technische Quellen ergänzen.")
