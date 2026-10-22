@@ -93,6 +93,19 @@ def validierter_gemini_report(status, fachlich_final, report_path, report_check,
         return None
     return report_path
 
+def validierter_trading_radar_report(status, fachlich_final, report_path, report_check, skip_upload=False):
+    """Gibt nur den im aktuellen Lauf geprüften Trading-Radar-Bericht frei."""
+    if skip_upload or status != "SUCCESS" or fachlich_final not in {"FINAL", "NICHT_FINAL"}:
+        return None
+    if report_check != "success" or not report_path:
+        return None
+    if not os.path.isfile(report_path) or os.path.getsize(report_path) == 0:
+        return None
+    name = os.path.basename(report_path)
+    if not name.startswith("Trading_Radar(") or not name.endswith(").txt"):
+        return None
+    return report_path
+
 def upload_file(filename, folder_id, service):
     from googleapiclient.http import MediaFileUpload
 
@@ -181,29 +194,22 @@ if __name__ == '__main__':
     # Kopie niemals wieder nach Drive hochladen und damit einen neueren Stand
     # (z.B. 166/26) überschreiben.
     upload_hebeltrader = os.getenv("UPLOAD_HEBELTRADER", "0").strip().lower() in {"1", "true", "yes"}
-    # Dieser Schalter darf ausschließlich bei technischem Gemini-Ausfall
-    # gesetzt werden. FACHLICH_FINAL=NICHT_FINAL ist ein gültiger Report und
-    # bleibt uploadbar.
-    skip_auswertung_upload = os.getenv("SKIP_AUSWERTUNG_UPLOAD", "0").strip().lower() in {"1", "true", "yes"}
-    gemini_fachlich_final = os.getenv("GEMINI_FACHLICH_FINAL", "").strip()
-    gemini_status = os.getenv("GEMINI_STATUS", "").strip()
-    gemini_report = os.getenv("GEMINI_AUSWERTUNG_DATEI", "").strip()
-    report_check = os.getenv("GEMINI_REPORT_CHECK_OUTCOME", "").strip()
-
-    # Nur genau den vom Workflow verifizierten Report veröffentlichen.
-    verified_report = validierter_gemini_report(
-        gemini_status, gemini_fachlich_final, gemini_report, report_check,
-        skip_upload=skip_auswertung_upload,
+    skip_radar_upload = os.getenv("SKIP_TRADING_RADAR_UPLOAD", os.getenv("SKIP_AUSWERTUNG_UPLOAD", "0")).strip().lower() in {"1", "true", "yes"}
+    radar_status = os.getenv("TRADING_RADAR_STATUS", "").strip()
+    radar_final = os.getenv("TRADING_RADAR_FACHLICH_FINAL", "").strip()
+    radar_report = os.getenv("TRADING_RADAR_DATEI", "").strip()
+    report_check = os.getenv("TRADING_RADAR_REPORT_CHECK_OUTCOME", "").strip()
+    verified_report = validierter_trading_radar_report(
+        radar_status, radar_final, radar_report, report_check,
+        skip_upload=skip_radar_upload,
     )
     if verified_report:
         filename = os.path.basename(verified_report)
-        if gemini_fachlich_final == "NICHT_FINAL":
-            print(f"Report '{filename}' ist fachlich NICHT_FINAL, wird aber hochgeladen.")
-        print(f"Lade verifizierten Gemini-Report '{filename}' hoch...")
+        print(f"Lade verifizierten Trading-Radar-Bericht '{filename}' hoch...")
         upload_file(verified_report, FOLDER_ID, drive_service)
         found = True
     else:
-        print("Auswertungsupload gesperrt: kein gültiger/verifizierter Gemini-Report.")
+        print("Trading-Radar-Upload gesperrt: kein gültiger/verifizierter aktueller Bericht.")
 
     for filename in os.listdir('.'):
         # Scannt nach Performance, Setups (CSV) ODER Briefing (TXT) - "in" statt
@@ -256,12 +262,6 @@ if __name__ == '__main__':
             # Persistente Beobachtungsliste des manuellen Einzel-Checks:
             # A/B/C und bereits beobachtete KEIN-KANDIDAT-Titel bleiben erhalten;
             # >45 Tage ohne A/B/C oder technische Ausschlüsse werden entfernt.
-            print(f"Lade '{filename}' hoch...")
-            upload_file(filename, FOLDER_ID, drive_service)
-            found = True
-        elif filename.startswith("Trading_Radar(") and filename.endswith(".txt"):
-            # Separater Shadow-Bericht fuer den Trading-Radar-Parallelvergleich.
-            # Er ersetzt die bisherige Auswertung nicht.
             print(f"Lade '{filename}' hoch...")
             upload_file(filename, FOLDER_ID, drive_service)
             found = True

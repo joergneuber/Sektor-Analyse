@@ -16173,8 +16173,19 @@ def speichere_ergebnis(text, eingabedateien=None):
                     os.remove(temp_output)
                 except OSError:
                     pass
+        # Fachlichen Status ausschließlich aus einem eindeutigen Reportmarker
+        # übernehmen. Ohne Marker ist der Bericht technisch erzeugt, aber nicht
+        # fachlich freigegeben; niemals aus Dateiexistenz FINAL ableiten.
+        status_matches = re.findall(
+            r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text
+        )
+        radar_final = status_matches[0] if len(status_matches) == 1 else "NICHT_FINAL"
+        if len(status_matches) != 1:
+            with open(radar_output, "a", encoding="utf-8") as f:
+                f.write(f"\nTRADING_RADAR_FACHLICH_FINAL={radar_final}\n")
         print(f"Trading-Radar-Eigenbericht gespeichert: {radar_datei}")
         print("TRADING_RADAR_DATEI=" + radar_output)
+        print("TRADING_RADAR_FACHLICH_FINAL=" + radar_final)
         return radar_output
     ausgabe_datei = f"Auswertung({heute}).txt"
     fachliche_mindesttiefe_offen = False
@@ -16754,8 +16765,23 @@ if __name__ == "__main__":
         if not ausgabe_pfad or not os.path.isfile(ausgabe_pfad) or os.path.getsize(ausgabe_pfad) <= 0:
             print("TRADING_RADAR_STATUS=FEHLER | Datei fehlt oder ist leer")
             raise SystemExit(3)
-        print("TRADING_RADAR_STATUS=FINAL")
+        # Fachstatus muss exakt aus dem gespeicherten Report stammen.
+        with open(ausgabe_pfad, "r", encoding="utf-8-sig") as report_handle:
+            report_text = report_handle.read()
+        status_matches = re.findall(
+            r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", report_text
+        )
+        if len(status_matches) != 1:
+            print("TRADING_RADAR_STATUS=FEHLER | eindeutiger Fachstatusmarker fehlt")
+            raise SystemExit(4)
+        fachlich_final = status_matches[0]
+        print("TRADING_RADAR_STATUS=SUCCESS")
+        print("TRADING_RADAR_FACHLICH_FINAL=" + fachlich_final)
         print("TRADING_RADAR_EXIT_STATUS=0")
+        output_path = os.environ.get("GITHUB_OUTPUT")
+        if output_path:
+            with open(output_path, "a", encoding="utf-8") as handle:
+                handle.write(f"status=SUCCESS\nfachlich_final={fachlich_final}\nreport_path={os.path.abspath(ausgabe_pfad)}\n")
         raise SystemExit(0)
     if str(ergebnis_text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("GEMINI_STATUS=TECHNISCHER_FALLBACK")

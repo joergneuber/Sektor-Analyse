@@ -32,7 +32,7 @@ def finde_neueste_auswertung():
     """Bevorzugt exakt den vom Gemini-Schritt ausgegebenen Reportpfad.
     Ohne expliziten Pfad wird nur für lokale/manuelle Nutzung das alte
     datierte Dateimuster verwendet."""
-    explizit = os.environ.get("GEMINI_AUSWERTUNG_DATEI", "").strip()
+    explizit = os.environ.get("TRADING_RADAR_DATEI", "").strip()
     if explizit:
         if not os.path.isfile(explizit):
             raise FileNotFoundError(
@@ -42,9 +42,9 @@ def finde_neueste_auswertung():
             raise ValueError(f"Der vom Gemini-Schritt angegebene Report ist leer: {explizit}")
         return explizit
 
-    treffer = sorted(glob.glob("Auswertung(*).txt"))
+    treffer = sorted(glob.glob("Trading_Radar(*).txt"))
     if not treffer:
-        raise FileNotFoundError("Keine Auswertung(*).txt im Arbeitsverzeichnis gefunden.")
+        raise FileNotFoundError("Keine Trading_Radar(*).txt im Arbeitsverzeichnis gefunden.")
     return treffer[-1]
 
 
@@ -79,20 +79,20 @@ def main():
         text = f.read()
 
     status_matches = re.findall(
-        r"(?m)^FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text
+        r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text
     )
-    if not status_matches:
-        raise ValueError("Report enthält keinen gültigen FACHLICH_FINAL-Marker.")
-    report_status = status_matches[-1]
-    gemini_status = os.environ.get("GEMINI_STATUS", "SUCCESS").strip()
+    if len(status_matches) != 1:
+        raise ValueError("Report enthält keinen eindeutigen Trading-Radar-Fachstatus.")
+    report_status = status_matches[0]
+    gemini_status = os.environ.get("TRADING_RADAR_STATUS", "").strip()
     if gemini_status != "SUCCESS":
-        raise ValueError(f"Reportversand blockiert: GEMINI_STATUS={gemini_status}")
-    expected_status = os.environ.get("GEMINI_FACHLICH_FINAL", "").strip()
+        raise ValueError(f"Reportversand blockiert: TRADING_RADAR_STATUS={gemini_status}")
+    expected_status = os.environ.get("TRADING_RADAR_FACHLICH_FINAL", "").strip()
     if expected_status and expected_status != report_status:
         raise ValueError(
             f"Statusabweichung: Workflow={expected_status}, Report={report_status}"
         )
-    report_check = os.environ.get("GEMINI_REPORT_CHECK_OUTCOME", "success").strip()
+    report_check = os.environ.get("TRADING_RADAR_REPORT_CHECK_OUTCOME", "").strip()
     if report_check != "success":
         raise ValueError(f"Reportversand blockiert: Report-Check={report_check}")
 
@@ -100,7 +100,7 @@ def main():
     fachlich_nicht_final = report_status == "NICHT_FINAL"
 
     msg = EmailMessage()
-    status_label = "NICHT_FINAL – fachlich eingeschränkt" if fachlich_nicht_final else "FINAL"
+    status_label = "NICHT_FINAL – fachlich eingeschränkt" if fachlich_nicht_final else "TRADING-RADAR – fachlich final"
     msg["Subject"] = (
         f"Neuber Macro & Markets - {status_label} - "
         f"{jetzt_berlin.strftime('%d.%m.%Y %H:%M')}"
