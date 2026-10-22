@@ -14209,7 +14209,7 @@ def _pruefe_finale_struktur_und_konsistenz(text):
             )
             duplicate_details.append(f"{key} [{locations}]")
         errors.append(
-            "DOPPELTE_UNTERABSCHNITTSNUMMERN: "
+            "Doppelte Unterabschnittsnummer(n): "
             + ", ".join(duplicates)
             + " | Überschriften: " + " | ".join(duplicate_details)
         )
