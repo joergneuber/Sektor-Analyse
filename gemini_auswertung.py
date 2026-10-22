@@ -11466,6 +11466,7 @@ def _quellenwerte_gleich(source_raw, output_raw):
 def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro_text="", edel_text=""):
     """Hartes Abschluss-Gate für Pflichtquellen, Perioden, Zeitbasis und Positionsduplikate."""
     errors = []
+    warnings = []
     if not isinstance(text, str) or not text.strip():
         raise RuntimeError("QUELLEN_PERIODEN_POSITIONEN_GATE: leere Auswertung")
 
@@ -11545,6 +11546,10 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
 
     # WTI/Brent: Kurs (Preiseinheit), 5T/4W (Prozent) und Datenstand sind Pflicht.
     for asset in ("WTI", "Brent"):
+        def asset_issue(message):
+            # WTI darf die tägliche Berichtshistorie nicht blockieren. Befunde
+            # werden gespeichert und als fachliche Warnung ausgewiesen.
+            (warnings if asset.casefold() == "wti" else errors).append(message)
         source_matches = list(re.finditer(
             r"(?im)^\s*[-•]\s*" + re.escape(asset) +
             r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
@@ -11552,7 +11557,7 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
             briefing_text or "",
         ))
         if len(source_matches) != 1:
-            errors.append(f"7.5 {asset}: Pflichtquelle fehlt, ist unvollständig oder mehrfach vorhanden")
+            asset_issue(f"7.5 {asset}: Pflichtquelle fehlt, ist unvollständig oder mehrfach vorhanden")
         else:
             source_match = source_matches[0]
             source_values = source_match.groups()
@@ -11563,19 +11568,19 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
                 text,
             ))
             if len(summary_matches) != 1:
-                errors.append(f"7.5 {asset}: Ausgabe fehlt, ist unvollständig oder mehrfach vorhanden")
+                asset_issue(f"7.5 {asset}: Ausgabe fehlt, ist unvollständig oder mehrfach vorhanden")
             else:
                 output_values = summary_matches[0].groups()
                 for i, field in enumerate(("Kurs", "5T", "4W")):
                     if not _quellenwerte_gleich(source_values[i], output_values[i]):
-                        errors.append(f"7.5 {asset}: {field} stimmt nicht mit der Quelle überein")
+                        asset_issue(f"7.5 {asset}: {field} stimmt nicht mit der Quelle überein")
                 if _normalisiere_datenstand(source_values[3]) is None:
-                    errors.append(f"7.5 {asset}: Quell-Datenstand ist ungültig")
+                    asset_issue(f"7.5 {asset}: Quell-Datenstand ist ungültig")
                 elif not _datenstand_ist_aktuell(source_values[3]):
-                    errors.append(f"7.5 {asset}: Quelldatenstand ist veraltet oder liegt in der Zukunft")
+                    asset_issue(f"7.5 {asset}: Quelldatenstand ist veraltet oder liegt in der Zukunft")
                 if (_normalisiere_datenstand(source_values[3]) is not None
                         and _normalisiere_datenstand(source_values[3]) != _normalisiere_datenstand(output_values[3])):
-                    errors.append(f"7.5 {asset}: Datenstand fehlt, ist ungültig oder veraltet")
+                    asset_issue(f"7.5 {asset}: Datenstand fehlt, ist ungültig oder veraltet")
 
         macro_ref = _extrahiere_makro_referenzwerte(makro_text or "").get(asset.casefold())
         if macro_ref:
@@ -11587,14 +11592,17 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
                 try:
                     source_date_de = datetime.datetime.strptime(source_date, "%Y-%m-%d").strftime("%d.%m.%Y")
                 except ValueError:
-                    errors.append(f"7.5 {asset}: ungültiger Makro-Datenstand {source_date!r}")
+                    asset_issue(f"7.5 {asset}: ungueltiger Makro-Datenstand {source_date!r}")
                     source_date_de = "__INVALID_DATE__"
-            if not fact or "Quelle=Makro_Briefing" not in fact or (source_date_de and f"Datenstand={source_date_de}" not in fact):
-                errors.append(f"7.5 {asset}: Makro-Fakt muss Quelle und aktuellen Datenstand ausweisen")
+            macro_issues = []
+            if not fact or "Quelle=Makro_Briefing" not in fact or (source_date and f"Datenstand={source_date_de}" not in fact):
+                macro_issues.append("Makro-Fakt ohne passende Quelle bzw. Datenstand")
             for period, value in macro_ref.get("perioden", {}).items():
                 expected = f"{period}={value:+.2f}".replace(".", ",") + "%"
                 if expected not in fact:
-                    errors.append(f"7.5 {asset}: Makro-Periode {period} fehlt oder ist falsch zugeordnet")
+                    macro_issues.append(f"Makro-Periode {period} fehlt oder ist falsch zugeordnet")
+            if macro_issues:
+                asset_issue(f"7.5 {asset}: " + "; ".join(macro_issues))
 
     # Edelmetalle: Quelle liefert in LAGE JE METALL zwingend Kurs und 4W.
     # Der Block hat im produktiven Briefing keinen eigenen Datenstand; deshalb
@@ -11633,8 +11641,10 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
 
     if errors:
         raise RuntimeError("QUELLEN_PERIODEN_POSITIONEN_GATE: " + " | ".join(errors))
-    print("QUELLEN-PERIODEN-POSITIONS-GATE: PASS")
-    return True
+    for warning in warnings:
+        print("WARNUNG | QUELLEN_PERIODEN_POSITIONEN_GATE | " + warning)
+    print("QUELLEN-PERIODEN-POSITIONS-GATE: PASS" + (" MIT WARNUNGEN" if warnings else ""))
+    return warnings
 
 
 def _normalisiere_datenstand(value):
@@ -16327,9 +16337,16 @@ def speichere_ergebnis(text, eingabedateien=None):
 
         # Letztes hartes Gate: Quellperioden, Zeitstände, Edelmetall-Priorität
         # und eindeutige offene Positionslisten müssen im gespeicherten Text stehen.
-        _pruefe_quellenperioden_und_positionsduplikate(
+        wti_quellenwarnungen = _pruefe_quellenperioden_und_positionsduplikate(
             final_text, briefing_text, makro_text_fx, edelmetall_text
         )
+        if wti_quellenwarnungen:
+            # Warnungen dauerhaft in Auswertung.txt festhalten. Der Status wird
+            # separat als NICHT_FINAL markiert; die Tagesdatei/Historie entsteht.
+            final_text += "\n\nWTI_QUELLENWARNUNGEN (nicht blockierend):\n" + "\n".join(
+                "- WARNUNG: " + warning for warning in wti_quellenwarnungen
+            ) + "\n"
+            zahlen_gate_warnungen = list(zahlen_gate_warnungen or []) + list(wti_quellenwarnungen)
 
         # Dokumentierbare Warnungen werden protokolliert; harte Integritaets-
         # Gates wurden davor und danach separat geprueft und bleiben blockierend.
