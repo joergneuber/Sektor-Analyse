@@ -14198,10 +14198,9 @@ def _pruefe_finale_struktur_und_konsistenz(text):
             occurrences.setdefault(key, []).append((line_number, title.strip()))
     duplicates = sorted(k for k, items in occurrences.items() if len(items) > 1)
     if duplicates:
-        # Doppelte Abschnittsnummern sind ein redaktioneller Strukturhinweis,
-        # aber kein Grund, die ansonsten erzeugte Tagesauswertung zu verwerfen.
-        # Alle Vorkommen bleiben im Text erhalten; der Befund wird sichtbar
-        # protokolliert. Andere Konsistenzfehler bleiben weiterhin blockierend.
+        # Echte doppelte Abschnittsüberschriften sind ein harter Gate-Fehler.
+        # Nummerierte Erwähnungen im Fließtext werden vom titelvalidierten
+        # Parser _echte_unterabschnittsueberschrift() ausgeschlossen.
         duplicate_details = []
         for key in duplicates:
             locations = "; ".join(
@@ -14209,9 +14208,8 @@ def _pruefe_finale_struktur_und_konsistenz(text):
                 for line_number, title in occurrences[key]
             )
             duplicate_details.append(f"{key} [{locations}]")
-        print(
-            "FINALE-STRUKTUR-KONSISTENZ-GATE: WARNUNG | Doppelte "
-            "Unterabschnittsnummer(n) werden toleriert: "
+        errors.append(
+            "DOPPELTE_UNTERABSCHNITTSNUMMERN: "
             + ", ".join(duplicates)
             + " | Überschriften: " + " | ".join(duplicate_details)
         )
@@ -14232,10 +14230,7 @@ def _pruefe_finale_struktur_und_konsistenz(text):
 
     if errors:
         raise RuntimeError("FINALE_STRUKTUR_KONSISTENZ_UNGUELTIG: " + " | ".join(errors))
-    if not duplicates:
-        print("FINALE-STRUKTUR-KONSISTENZ-GATE: PASS")
-    else:
-        print("FINALE-STRUKTUR-KONSISTENZ-GATE: PASS MIT WARNUNG | Bericht darf gespeichert werden")
+    print("FINALE-STRUKTUR-KONSISTENZ-GATE: PASS")
 
 
 def _komprimiere_1_2_chancen(text):
