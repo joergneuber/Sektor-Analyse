@@ -11647,7 +11647,7 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
         source_matches = list(re.finditer(
             r"(?im)^\s*[-•]\s*" + re.escape(asset) +
             r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
-            r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
+            r"([-+]?\d[\d.,]*)%\s*4W(?:\s*\|\s*[-+]?\d[\d.,]*%\s*(?:1M|3M|6M|1J))*\s*\|\s*Datenstand\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
             briefing_text or "",
         ))
         if len(source_matches) != 1:
@@ -11658,7 +11658,7 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
             summary_matches = list(re.finditer(
                 r"(?im)^\s*[-•]\s*" + re.escape(asset) +
                 r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
-                r"([-+]?\d[\d.,]*)%\s*4W\s*\|\s*Datenstand\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
+                r"([-+]?\d[\d.,]*)%\s*4W(?:\s*\|\s*[-+]?\d[\d.,]*%\s*(?:1M|3M|6M|1J))*\s*\|\s*Datenstand\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$",
                 text,
             ))
             if len(summary_matches) != 1:
@@ -11668,6 +11668,17 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
                 for i, field in enumerate(("Kurs", "5T", "4W")):
                     if not _quellenwerte_gleich(source_values[i], output_values[i]):
                         errors.append(f"7.5 {asset}: {field} stimmt nicht mit der Quelle überein")
+                # Zusätzliche Perioden werden anhand ihres Labels verglichen.
+                # Dadurch bleiben 4W (28 Kalendertage) und 1M (Kalendermonat)
+                # getrennte Quellenwerte und können nicht versehentlich vertauscht werden.
+                period_pattern = re.compile(r"([-+]?\d[\d.,]*)%\s*(5T|4W|1M|3M|6M|1J)\b")
+                src_periods = {m.group(2): m.group(1) for m in period_pattern.finditer(source_match.group(0))}
+                out_periods = {m.group(2): m.group(1) for m in period_pattern.finditer(summary_matches[0].group(0))}
+                for period in ("1M", "3M", "6M", "1J"):
+                    if period in src_periods and period not in out_periods:
+                        errors.append(f"7.5 {asset}: Ausgabe-Periode {period} fehlt")
+                    elif period in src_periods and not _quellenwerte_gleich(src_periods[period], out_periods[period]):
+                        errors.append(f"7.5 {asset}: Periode {period} stimmt nicht mit der Quelle überein")
                 if _normalisiere_datenstand(source_values[3]) is None:
                     errors.append(f"7.5 {asset}: Quell-Datenstand ist ungültig")
                 elif not _datenstand_ist_aktuell(source_values[3]):

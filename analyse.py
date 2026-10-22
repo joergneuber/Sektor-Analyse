@@ -2033,6 +2033,45 @@ def get_rekord_naehe_text(ticker, label, schwelle_prozent=REKORD_NAEHE_SCHWELLE_
         return None
 
 
+
+def get_rohstoff_performance_yf(ticker, label):
+    """Erzeugt Kurs plus abgeschlossene Performanceperioden aus derselben Historie.
+
+    5T = fünf Handelssitzungen (Vergleich mit Schlusskurs vor fünf Sitzungen),
+    4W = 28 Kalendertage, 1M/3M/6M/1J = Kalendermonate/-jahr.
+    Für Kalenderperioden wird der letzte verfügbare Schluss am oder vor dem
+    jeweiligen Zieltag verwendet. Fehlende Historie wird explizit ausgewiesen.
+    """
+    try:
+        hist = _hole_kursdaten_gecached(ticker)
+        if hist is None or hist.empty or 'Close' not in hist:
+            return f"- {label}: Kurs/Performance nicht verfügbar | Quelle=yfinance/{ticker} | Datenstand=nicht verfügbar"
+        hist, last_date = _nur_abgeschlossene_tagesbalken(hist, ticker)
+        close = pd.to_numeric(hist['Close'], errors='coerce').dropna()
+        if close.empty or last_date is None:
+            return f"- {label}: Kurs/Performance nicht verfügbar | Quelle=yfinance/{ticker} | Datenstand=nicht verfügbar"
+        close = close.loc[~close.index.duplicated(keep='last')].sort_index()
+        latest = float(close.iloc[-1])
+        last_ts = close.index[-1]
+        values = {}
+        # 5 abgeschlossene Handelstage als Kursbewegung, nicht als 5 Datenpunkte.
+        values['5T'] = (latest / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 else None
+        periods = [('4W', datetime.timedelta(days=28)), ('1M', None), ('3M', None), ('6M', None), ('1J', None)]
+        for name, delta in periods:
+            if name == '1M': target = last_ts - pd.DateOffset(months=1)
+            elif name == '3M': target = last_ts - pd.DateOffset(months=3)
+            elif name == '6M': target = last_ts - pd.DateOffset(months=6)
+            elif name == '1J': target = last_ts - pd.DateOffset(years=1)
+            else: target = last_ts - delta
+            eligible = close.loc[close.index <= target]
+            base = float(eligible.iloc[-1]) if not eligible.empty else None
+            values[name] = (latest / base - 1) * 100 if base and base > 0 else None
+        fmt = lambda v: 'nicht verfügbar' if v is None else f"{v:+.2f}%".replace('.', ',')
+        line = f"- {label}: Kurs {latest:.2f} | " + " | ".join(f"{fmt(v)} {k}" for k,v in values.items())
+        return line + f" | Quelle=yfinance/{ticker} | Datenstand {last_date.strftime('%d.%m.%Y')}"
+    except Exception as exc:
+        return f"- {label}: Kurs/Performance nicht verfügbar | Quelle=yfinance/{ticker} | Datenstand=nicht verfügbar ({type(exc).__name__})"
+
 def get_index_benchmark_yf(ticker, label):
     """Generische Benchmark-Funktion für Indizes/Futures via yfinance - u.a.
     für S&P 500 (^GSPC) und Nasdaq (^IXIC) seit 27.07.2026 (vorher fälschlich
@@ -3607,8 +3646,8 @@ if __name__ == "__main__":
     # DXY als Dollar-Staerke-Indikator (treibt Rohstoffe invers + verzerrt
     # EU-Gewinne/-Kurse bei Waehrungsschwankungen), Bitcoin als zunehmend
     # verbreiteter Liquiditaets-/Risikoappetit-Gauge.
-    oel_text = get_index_benchmark_yf("CL=F", "Rohöl (WTI)")
-    oel_brent_text = get_index_benchmark_yf("BZ=F", "Rohöl (Brent)")
+    oel_text = get_rohstoff_performance_yf("CL=F", "WTI")
+    oel_brent_text = get_rohstoff_performance_yf("BZ=F", "Brent")
     # 52-Wochen-Kontext + Rekord-Naehe fuer Oel (NEU 30.07.2026, Nutzerwunsch:
     # dieselbe Einordnung, die die Edelmetalle schon haben ueber "LAGE JE
     # METALL" im Edelmetalle-Briefing). None-Werte werden weiter unten beim

@@ -38,7 +38,7 @@ durch unterschiedliche Anordnung erschwert wird.
 """
 import datetime
 
-from analyse import get_index_benchmark_yf, get_zinskurve_fred, get_fomc_countdown, get_eurusd_wechselkurs, _hole_kursdaten_gecached
+from analyse import get_index_benchmark_yf, get_rohstoff_performance_yf, get_zinskurve_fred, get_fomc_countdown, get_eurusd_wechselkurs, _hole_kursdaten_gecached
 from bitcoin_50w_sma import calculate_bitcoin_50w_sma
 
 
@@ -58,8 +58,8 @@ def erzeuge_snapshot():
     vix_text = get_index_benchmark_yf("^VIX", "VIX (Volatilitaet)")
     zins_text = get_zinskurve_fred()
     fomc_text = get_fomc_countdown()
-    oel_text = get_index_benchmark_yf("CL=F", "Rohöl (WTI)")
-    oel_brent_text = get_index_benchmark_yf("BZ=F", "Rohöl (Brent)")
+    oel_text = get_rohstoff_performance_yf("CL=F", "WTI")
+    oel_brent_text = get_rohstoff_performance_yf("BZ=F", "Brent")
     gold_text = get_index_benchmark_yf("GC=F", "Gold")
     silber_text = get_index_benchmark_yf("SI=F", "Silber")
     platin_text = get_index_benchmark_yf("PL=F", "Platin")
