@@ -156,3 +156,241 @@ def save_thesis_register(payload: dict[str, Any], path: str | Path) -> None:
         try: os.unlink(tmp)
         except OSError: pass
         raise
+
+
+# --- Deterministic data package and lifecycle helpers (specification v1.0) ---
+from datetime import datetime, timezone
+import hashlib
+import time
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+def build_validated_data_manifest(input_files: dict[str, str | Path],
+                                 cutoff: str | None = None) -> dict[str, Any]:
+    """Create reproducible file-level provenance; does not infer financial facts.
+
+    cutoff must be an ISO-8601 timestamp with timezone. Source files whose
+    modification time is later than cutoff are rejected to prevent look-ahead.
+    """
+    cutoff_value = cutoff or datetime.now(timezone.utc).isoformat()
+    try:
+        cutoff_dt = datetime.fromisoformat(cutoff_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("cutoff muss ISO-8601 sein") from exc
+    if cutoff_dt.tzinfo is None:
+        raise ValueError("cutoff muss eine Zeitzone enthalten")
+    sources, errors = [], []
+    for label, raw_path in input_files.items():
+        p = Path(raw_path)
+        if not p.is_file():
+            sources.append({"label": label, "path": str(p), "status": "MISSING"})
+            errors.append(f"Quelle fehlt: {label} ({p})")
+            continue
+        stat = p.stat()
+        mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+        item = {"label": str(label), "path": str(p), "size_bytes": stat.st_size,
+                "mtime_utc": mtime.isoformat(), "sha256": _sha256_file(p), "status": "OK"}
+        if mtime > cutoff_dt.astimezone(timezone.utc):
+            item["status"] = "AFTER_CUTOFF"
+            errors.append(f"Quelle liegt nach Daten-Cutoff: {label}")
+        sources.append(item)
+    return {"schema_version": 1, "data_cutoff": cutoff_value,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "sources": sources, "errors": errors,
+            "valid": not errors}
+
+def compare_thesis_registers(previous: Any, current: Any) -> dict[str, Any]:
+    """Compare thesis IDs/status/versions and flag invalid lifecycle transitions."""
+    old_list = previous.get("theses", []) if isinstance(previous, dict) else []
+    new_list = current.get("theses", []) if isinstance(current, dict) else []
+    old = {t.get("thesis_id"): t for t in old_list if isinstance(t, dict) and t.get("thesis_id")}
+    new = {t.get("thesis_id"): t for t in new_list if isinstance(t, dict) and t.get("thesis_id")}
+    changes = {"new": [], "updated": [], "removed": [], "errors": []}
+    for tid, thesis in new.items():
+        if tid not in old:
+            changes["new"].append(tid)
+            if thesis.get("status") != "NEU":
+                changes["errors"].append(f"Neue These {tid} muss Status NEU haben")
+            if thesis.get("version") != 1:
+                changes["errors"].append(f"Neue These {tid} muss mit Version 1 beginnen")
+            continue
+        before = old[tid]
+        changed = any(before.get(k) != thesis.get(k) for k in thesis if k != "version")
+        if changed:
+            changes["updated"].append(tid)
+            if not isinstance(thesis.get("version"), int) or thesis.get("version") != before.get("version", 0) + 1:
+                changes["errors"].append(f"These {tid}: Änderung muss Version exakt um 1 erhöhen")
+        elif thesis.get("version") != before.get("version"):
+            changes["errors"].append(f"These {tid}: Version geändert, obwohl Inhalte gleich sind")
+    changes["removed"] = sorted(set(old) - set(new))
+    for tid in changes["removed"]:
+        changes["errors"].append(f"These {tid} wurde entfernt; Status INVALIDIERT/ERSETZT und Historie erforderlich")
+    # ERSETZT must name the successor explicitly.
+    for thesis in new_list:
+        if isinstance(thesis, dict) and thesis.get("status") == "ERSETZT":
+            successor = thesis.get("replaced_by")
+            if not isinstance(successor, str) or not successor.strip():
+                changes["errors"].append(f"These {thesis.get('thesis_id')}: ERSETZT benötigt replaced_by")
+    return changes
+
+def validate_radar_report_strict(report: str) -> list[str]:
+    """Strict gate: exact ordered sections, nonempty bodies, and validated JSON."""
+    text = str(report or "")
+    errors = []
+    if not text.strip():
+        return ["Radar-Bericht ist leer"]
+    positions = []
+    for heading in RADAR_SECTIONS:
+        matches = list(re.finditer(re.escape(heading), text, flags=re.IGNORECASE))
+        if len(matches) != 1:
+            errors.append(f"Abschnitt {heading}: erwartet genau einmal, gefunden {len(matches)}")
+            continue
+        positions.append(matches[0].start())
+    if len(positions) == len(RADAR_SECTIONS) and positions != sorted(positions):
+        errors.append("Radar-Abschnitte sind nicht in Soll-Reihenfolge")
+    # Extract section bodies and reject blank/placeholder-only content.
+    for idx, heading in enumerate(RADAR_SECTIONS):
+        match = re.search(re.escape(heading), text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        end = len(text)
+        later = [re.search(re.escape(h), text[match.end():], flags=re.IGNORECASE) for h in RADAR_SECTIONS[idx+1:]]
+        later = [m for m in later if m]
+        if later:
+            end = match.end() + min(m.start() for m in later)
+        body = text[match.end():end].strip()
+        body = re.sub(r"```TRADING_RADAR_THESEN_JSON.*?```", "", body, flags=re.DOTALL|re.IGNORECASE).strip()
+        if len(re.sub(r"[\W_]+", "", body)) < 20:
+            errors.append(f"Abschnitt {heading}: Inhalt fehlt/zu kurz")
+    try:
+        payload = extract_thesis_json(text)
+        errors.extend(validate_thesis_register(payload))
+    except ValueError as exc:
+        errors.append(str(exc))
+    return errors
+
+class RadarRunLogger:
+    """Append-only JSONL run telemetry; secrets and raw prompt are not logged."""
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+    def record(self, *, run_id: str, stage: str, started_at: float,
+                input_bytes: int = 0, requests: int = 0, retries: int = 0,
+                input_tokens: int | None = None, output_tokens: int | None = None,
+                model: str | None = None, status: str, details: dict[str, Any] | None = None):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        row = {"run_id": run_id, "stage": stage,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": round(max(0.0, time.monotonic()-started_at), 3),
+                "input_bytes": int(input_bytes), "requests": int(requests), "retries": int(retries),
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "model": model, "status": status, "details": details or {}}
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+# --- Parallel-run orchestration seam (project adapters are injected explicitly) ---
+from collections.abc import Callable
+from uuid import uuid4
+
+
+def validate_thesis_lifecycle(previous: Any, current: Any) -> list[str]:
+    """Combine schema and previous/current lifecycle checks into one hard gate."""
+    errors = validate_thesis_register(current)
+    if previous is not None:
+        errors.extend(compare_thesis_registers(previous, current).get("errors", []))
+    return errors
+
+
+def validate_radar_report_against_register(report: str, previous_register: Any = None) -> tuple[dict[str, Any], list[str]]:
+    """Validate report sections, JSON schema, and register lifecycle before release."""
+    errors = validate_radar_report_strict(report)
+    try:
+        payload = extract_thesis_json(report)
+        errors.extend(validate_thesis_lifecycle(previous_register, payload))
+    except ValueError as exc:
+        errors.append(str(exc))
+        payload = {}
+    return payload, list(dict.fromkeys(errors))
+
+
+def run_parallel_radar(old_analysis_runner: Callable[[], Any],
+                       data_package_builder: Callable[[], dict[str, Any]],
+                       radar_generator: Callable[[dict[str, Any], Any], str],
+                       *, old_report_path: str | Path, radar_report_path: str | Path,
+                       register_path: str | Path, previous_register: Any = None,
+                       run_log_path: str | Path | None = None) -> dict[str, Any]:
+    """Run old analysis and independent radar side-by-side, without altering trading state.
+
+    Project-specific source and Gemini functions are passed as adapters. Reports
+    and register are written only after the radar report and register pass gates.
+    This function deliberately exposes no buy/sell/stop/position mutation API.
+    """
+    run_id = str(uuid4())
+    logger = RadarRunLogger(run_log_path) if run_log_path else None
+    started = time.monotonic()
+    old_started = time.monotonic()
+    old_report = old_analysis_runner()
+    old_text = old_report if isinstance(old_report, str) else str(old_report)
+    if logger:
+        logger.record(run_id=run_id, stage="legacy_analysis", started_at=old_started,
+                     input_bytes=len(old_text.encode("utf-8")), status="COMPLETED")
+
+    data_started = time.monotonic()
+    package = data_package_builder()
+    if not isinstance(package, dict):
+        raise TypeError("data_package_builder muss ein dict liefern")
+    if package.get("valid") is False:
+        raise ValueError("Radar-Datenpaket ist nicht validiert; Radar-Lauf abgebrochen")
+    cutoff = package.get("data_cutoff")
+    if not isinstance(cutoff, str) or not cutoff.strip():
+        raise ValueError("Radar-Datenpaket benötigt data_cutoff")
+    if logger:
+        logger.record(run_id=run_id, stage="data_package", started_at=data_started,
+                     input_bytes=len(json.dumps(package, ensure_ascii=False, default=str).encode("utf-8")),
+                     status="VALIDATED", details={"data_cutoff": cutoff})
+
+    radar_started = time.monotonic()
+    radar_text = radar_generator(package, previous_register)
+    if not isinstance(radar_text, str):
+        raise TypeError("radar_generator muss einen Bericht als String liefern")
+    payload, errors = validate_radar_report_against_register(radar_text, previous_register)
+    if errors:
+        if logger:
+            logger.record(run_id=run_id, stage="radar_validation", started_at=radar_started,
+                         status="FAILED", details={"errors": errors})
+        raise ValueError("Radar nicht freigegeben:\n- " + "\n- ".join(errors))
+
+    _atomic_write_text(Path(old_report_path), old_text)
+    _atomic_write_text(Path(radar_report_path), radar_text)
+    save_thesis_register(payload, register_path)
+    if logger:
+        logger.record(run_id=run_id, stage="radar_generation_validation_save", started_at=radar_started,
+                     input_bytes=len(json.dumps(package, ensure_ascii=False, default=str).encode("utf-8")),
+                     status="COMPLETED", details={"data_cutoff": cutoff})
+    return {"run_id": run_id, "old_report_path": str(old_report_path),
+            "radar_report_path": str(radar_report_path), "register_path": str(register_path),
+            "data_cutoff": cutoff, "radar_valid": True,
+            "duration_seconds": round(time.monotonic() - started, 3)}
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically write text in the destination directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
