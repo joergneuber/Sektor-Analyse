@@ -11547,9 +11547,9 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
     # WTI/Brent: Kurs (Preiseinheit), 5T/4W (Prozent) und Datenstand sind Pflicht.
     for asset in ("WTI", "Brent"):
         def asset_issue(message):
-            # WTI darf die tägliche Berichtshistorie nicht blockieren. Befunde
-            # werden gespeichert und als fachliche Warnung ausgewiesen.
-            (warnings if asset.casefold() == "wti" else errors).append(message)
+            # WTI und Brent sind Pflichtquellen im Rohstoff-Gate. Fehlende,
+            # unvollständige oder veraltete Werte müssen den Lauf blockieren.
+            errors.append(message)
         source_matches = list(re.finditer(
             r"(?im)^\s*[-•]\s*" + re.escape(asset) +
             r":\s*Kurs\s+([-+]?\d[\d.,]*)\s*\|\s*([-+]?\d[\d.,]*)%\s*5T\s*\|\s*"
@@ -11644,7 +11644,10 @@ def _pruefe_quellenperioden_und_positionsduplikate(text, briefing_text="", makro
     for warning in warnings:
         print("WARNUNG | QUELLEN_PERIODEN_POSITIONEN_GATE | " + warning)
     print("QUELLEN-PERIODEN-POSITIONS-GATE: PASS" + (" MIT WARNUNGEN" if warnings else ""))
-    return warnings
+    # Ein erfolgreicher Gate-Lauf ohne Warnungen liefert einen eindeutigen,
+    # truthy Erfolgswert. Bei Warnungen bleibt die Warnungsliste erhalten,
+    # damit der produktive Aufrufer sie in den Bericht übernehmen kann.
+    return warnings if warnings else True
 
 
 def _normalisiere_datenstand(value):
@@ -16340,7 +16343,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         wti_quellenwarnungen = _pruefe_quellenperioden_und_positionsduplikate(
             final_text, briefing_text, makro_text_fx, edelmetall_text
         )
-        if wti_quellenwarnungen:
+        if wti_quellenwarnungen is not True and wti_quellenwarnungen:
             # Warnungen dauerhaft in Auswertung.txt festhalten. Der Status wird
             # separat als NICHT_FINAL markiert; die Tagesdatei/Historie entsteht.
             final_text += "\n\nWTI_QUELLENWARNUNGEN (nicht blockierend):\n" + "\n".join(
