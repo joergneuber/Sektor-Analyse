@@ -431,18 +431,19 @@ jobs:
           restore-keys: |
             gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-
 
-      - name: Gemini-Laufmarker setzen
+      - name: Trading-Radar-Laufmarker setzen
         run: |
           rm -f Gemini_Fallback_Status*.txt
-          touch .gemini_auswertung_run_started
+          rm -f Trading_Radar_Status*.txt
+          touch .trading_radar_run_started
 
-      - name: Gemini-Auswertung erstellen
-        id: gemini-auswertung
+      - name: Trading-Radar erstellen
+        id: trading-radar
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-        run: python gemini_auswertung.py
+        run: python Trading_Radar_Alleinauswertung.py
 
       # Auch bei kontrolliertem Gemini-Fallback sichern: erfolgreiche Split-
       # Antworten und Fehlerstatus dienen dem nächsten Lauf als Resume.
@@ -472,9 +473,9 @@ jobs:
       - name: ChatGPT-Fallback-Paket erzeugen
         if: always()
         env:
-          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
-          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
-          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
+          TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
+          TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
         run: |
           set -euo pipefail
           fallback_needed=false
@@ -482,11 +483,11 @@ jobs:
           # SUCCESS + FINAL und SUCCESS + NICHT_FINAL sind technisch gültig.
           # Fallback nur bei fehlendem/ungültigem Status oder fehlendem,
           # leerem bzw. nicht in diesem Lauf erzeugtem Report.
-          if [ "${GEMINI_STATUS:-}" != "SUCCESS" ] ||
-             { [ "${GEMINI_FACHLICH_FINAL:-}" != "FINAL" ] && [ "${GEMINI_FACHLICH_FINAL:-}" != "NICHT_FINAL" ]; } ||
-             [ -z "${GEMINI_AUSWERTUNG_DATEI:-}" ] ||
-             [ ! -s "${GEMINI_AUSWERTUNG_DATEI:-/__missing_auswertung__}" ] ||
-             [ ! "${GEMINI_AUSWERTUNG_DATEI:-/__missing_auswertung__}" -nt .gemini_auswertung_run_started ]; then
+          if [ "${TRADING_RADAR_STATUS:-}" != "SUCCESS" ] ||
+             { [ "${TRADING_RADAR_FACHLICH_FINAL:-}" != "FINAL" ] && [ "${TRADING_RADAR_FACHLICH_FINAL:-}" != "NICHT_FINAL" ]; } ||
+             [ -z "${TRADING_RADAR_DATEI:-}" ] ||
+             [ ! -s "${TRADING_RADAR_DATEI:-/__missing_auswertung__}" ] ||
+             [ ! "${TRADING_RADAR_DATEI:-/__missing_auswertung__}" -nt .trading_radar_run_started ]; then
             fallback_needed=true
           fi
 
@@ -494,12 +495,12 @@ jobs:
           # bewusst mit Exit 0. Deshalb darf ausschliesslich der Prozess-
           # Exitcode den Fallback NICHT entscheiden. Die Statusdatei ist
           # eine zusätzliche Quelle zur Erkennung des technischen Fallbacks.
-          if [ "${{ steps.gemini-auswertung.outcome }}" != "success" ]; then
+          if [ "${{ steps.trading-radar.outcome }}" != "success" ]; then
             fallback_needed=true
           fi
 
-          for f in Gemini_Fallback_Status*.txt; do
-            if [ -f "$f" ] && grep -q "^GEMINI_STATUS=TECHNISCHER_FALLBACK$" "$f"; then
+          for f in Trading_Radar_Status*.txt; do
+            if [ -f "$f" ] && grep -q "^TRADING_RADAR_STATUS=TECHNISCHER_FALLBACK$" "$f"; then
               fallback_needed=true
               break
             fi
@@ -513,10 +514,12 @@ jobs:
             # upload_to_drive.py soll weiterhin alle normalen Tagesdateien
             # hochladen, aber niemals eine alte Auswertung aus dem Workspace
             # als aktuelles Ergebnis veröffentlichen.
+            echo "SKIP_TRADING_RADAR_UPLOAD=true" >> "$GITHUB_ENV"
             echo "SKIP_AUSWERTUNG_UPLOAD=true" >> "$GITHUB_ENV"
             python chatgpt_fallback_paket.py
           else
             echo "CHATGPT_FALLBACK_ERZEUGT=false" >> "$GITHUB_ENV"
+            echo "SKIP_TRADING_RADAR_UPLOAD=false" >> "$GITHUB_ENV"
             echo "SKIP_AUSWERTUNG_UPLOAD=false" >> "$GITHUB_ENV"
             echo "Kein Gemini-Ausfall erkannt; kein ChatGPT-Fallback-Paket erforderlich."
           fi
@@ -531,56 +534,72 @@ jobs:
 
       # Technischen Erfolg und fachlichen Status getrennt prüfen.
       # FINAL und NICHT_FINAL sind beide aktuelle, versendbare Reports.
-      - name: Neue Auswertung technisch gültig und frisch verifizieren
-        id: gemini-finality-check
+      - name: Neue Trading-Radar technisch gültig und frisch verifizieren
+        id: trading-radar-report-check
         if: always()
         env:
-          GEMINI_STEP_OUTCOME: ${{ steps.gemini-auswertung.outcome }}
-          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
-          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
-          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
+          TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
+          TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
+          TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
         run: |
           set -euo pipefail
-          if [ "$GEMINI_STEP_OUTCOME" != "success" ]; then
-            echo "FINALITY_CHECK=FAIL | Gemini-Schritt endete mit $GEMINI_STEP_OUTCOME"
+          if [ "$TRADING_RADAR_STEP_OUTCOME" != "success" ]; then
+            echo "FINALITY_CHECK=FAIL | Gemini-Schritt endete mit $TRADING_RADAR_STEP_OUTCOME"
             exit 1
           fi
-          if [ "$GEMINI_STATUS" != "SUCCESS" ] ||
-             { [ "$GEMINI_FACHLICH_FINAL" != "FINAL" ] && [ "$GEMINI_FACHLICH_FINAL" != "NICHT_FINAL" ]; }; then
-            echo "REPORT_CHECK=FAIL | Status=$GEMINI_STATUS | FACHLICH_FINAL=$GEMINI_FACHLICH_FINAL"
+          if [ "$TRADING_RADAR_STATUS" != "SUCCESS" ] ||
+             { [ "$TRADING_RADAR_FACHLICH_FINAL" != "FINAL" ] && [ "$TRADING_RADAR_FACHLICH_FINAL" != "NICHT_FINAL" ]; }; then
+            echo "REPORT_CHECK=FAIL | Status=$TRADING_RADAR_STATUS | FACHLICH_FINAL=$TRADING_RADAR_FACHLICH_FINAL"
             exit 1
           fi
-          if [ -z "$GEMINI_AUSWERTUNG_DATEI" ] || [ ! -s "$GEMINI_AUSWERTUNG_DATEI" ]; then
+          if [ -z "$TRADING_RADAR_DATEI" ] || [ ! -s "$TRADING_RADAR_DATEI" ]; then
             echo "FINALITY_CHECK=FAIL | neue Auswertung fehlt oder ist leer"
             exit 1
           fi
-          if [ ! "$GEMINI_AUSWERTUNG_DATEI" -nt .gemini_auswertung_run_started ]; then
+          if [ ! "$TRADING_RADAR_DATEI" -nt .trading_radar_run_started ]; then
             echo "FINALITY_CHECK=FAIL | Auswertung wurde in diesem Lauf nicht neu geschrieben"
             exit 1
           fi
-          report_status="$(grep -E '^FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$GEMINI_AUSWERTUNG_DATEI" | tail -n 1 | cut -d= -f2 || true)"
-          if [ "$report_status" != "$GEMINI_FACHLICH_FINAL" ]; then
-            echo "REPORT_CHECK=FAIL | Output-Status und Report-Marker stimmen nicht überein."
+          required=(
+            "1. Trading-Radar" "2. Thesen-Update" "3. Ereignisradar" "4. Assetklassenvergleich"
+            "5. Technische Kandidaten" "6. Portfolio & Risiko" "7. MSCI-Vergleich" "8. Daten-/Prüfanhang"
+          )
+          for heading in "${required[@]}"; do
+            if ! grep -Fqi "$heading" "$TRADING_RADAR_DATEI"; then
+              echo "REPORT_CHECK=FAIL | Pflichtabschnitt fehlt: $heading"
+              exit 1
+            fi
+          done
+          report_status_count=$(grep -Ec '^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$TRADING_RADAR_DATEI" || true)
+          if [ "$report_status_count" -ne 1 ]; then
+            echo "REPORT_CHECK=FAIL | eindeutiger Fachstatusmarker fehlt/dupliziert"
             exit 1
           fi
-          echo "REPORT_CHECK=PASS | aktueller, nichtleerer Report; fachlicher Status=$report_status"
+          report_status=$(grep -E '^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$TRADING_RADAR_DATEI" | cut -d= -f2)
+          if [ "$report_status" != "$TRADING_RADAR_FACHLICH_FINAL" ]; then
+            echo "REPORT_CHECK=FAIL | Statusmarker im Report weicht vom Prozessoutput ab"
+            exit 1
+          fi
+          echo "TRADING_RADAR_FACHLICH_FINAL=$report_status" >> "$GITHUB_OUTPUT"
+          echo "REPORT_CHECK=PASS | frischer Bericht, acht Abschnitte und eindeutiger Status=$report_status"
 
-      # YouTube-States erst sichern, wenn die Gemini-Auswertung tatsächlich
-      # erfolgreich erstellt wurde. Bei einem Fehler bleiben neue Videos
-      # pending und werden beim nächsten Lauf erneut versucht.
+      # YouTube-States erst nach bestandenem Trading-Radar-Report-Gate sichern.
+      # Ein Exit 0 allein genügt nicht: bei fehlendem/ungültigem Bericht bleiben
+      # neue Videos pending und werden im nächsten Lauf erneut verarbeitet.
       - name: YouTube-Marktquellen State bestätigen
-        if: steps.gemini-auswertung.outcome == 'success'
+        if: steps.trading-radar-report-check.outcome == 'success'
         run: python -c "from youtube_market_sources import mark_youtube_market_context_processed; mark_youtube_market_context_processed()"
 
       - name: Bitcoin Trading DE State speichern
-        if: steps.gemini-auswertung.outcome == 'success'
+        if: steps.trading-radar-report-check.outcome == 'success'
         uses: actions/cache/save@v5
         with:
           path: .bitcoin_youtube_state
           key: btc-youtube-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Gold/Silber YouTube State speichern
-        if: steps.gemini-auswertung.outcome == 'success'
+        if: steps.trading-radar-report-check.outcome == 'success'
         uses: actions/cache/save@v5
         with:
           path: .youtube_market_sources_state
@@ -594,10 +613,10 @@ jobs:
         if: always()
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
-          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
-          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
-          GEMINI_REPORT_CHECK_OUTCOME: ${{ steps.gemini-finality-check.outcome }}
+          TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
+          TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
+          TRADING_RADAR_REPORT_CHECK_OUTCOME: ${{ steps.trading-radar-report-check.outcome }}
         run: python upload_to_drive.py
 
       # ============================================================
@@ -605,17 +624,17 @@ jobs:
       # ============================================================
 
       - name: Auswertung per E-Mail versenden
-        if: steps.gemini-auswertung.outcome == 'success' && steps.gemini-auswertung.outputs.status == 'SUCCESS' && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && steps.gemini-finality-check.outcome == 'success'
+        if: steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && steps.trading-radar-report-check.outcome == 'success'
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
-          GEMINI_STATUS: ${{ steps.gemini-auswertung.outputs.status }}
-          GEMINI_FACHLICH_FINAL: ${{ steps.gemini-auswertung.outputs.fachlich_final }}
-          GEMINI_AUSWERTUNG_DATEI: ${{ steps.gemini-auswertung.outputs.auswertung_datei }}
-          GEMINI_REPORT_CHECK_OUTCOME: ${{ steps.gemini-finality-check.outcome }}
+          TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
+          TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
+          TRADING_RADAR_REPORT_CHECK_OUTCOME: ${{ steps.trading-radar-report-check.outcome }}
         run: python send_mail.py
 
       # Bei einem technischen Gemini-Ausfall wird KEINE normale Auswertung
@@ -638,32 +657,25 @@ jobs:
           from email.message import EmailMessage
           from pathlib import Path
 
-          status_files = sorted(glob.glob("Gemini_Fallback_Status*.txt"))
+          status_files = sorted(glob.glob("Trading_Radar_Status*.txt"))
           if not status_files:
-              status_files = sorted(glob.glob("Auswertung*.txt"))
-          status_file = Path(status_files[-1]) if status_files else None
+              raise SystemExit("FEHLER: Trading_Radar_Status*.txt fehlt; keine Statusdatei fuer Fallback-Mail.")
 
-          if status_file is None:
-              status_file = Path("Gemini_Fallback_Status.txt")
-              status_file.write_text(
-                  "[GEMINI_TECHNISCHER_FALLBACK]\n"
-                  "Keine gueltige Gemini-Auswertung erzeugt.\n"
-                  "Das ChatGPT-Fallback-Paket wurde erstellt.\n",
-                  encoding="utf-8-sig",
-              )
-
+          status_file = Path(status_files[-1])
           packages = sorted(glob.glob("CHATGPT_FALLBACK_*.zip"))
+          if not packages:
+              raise SystemExit("FEHLER: ChatGPT-Fallback-Mail nicht versendet; Fallback-ZIP fehlt.")
 
           msg = EmailMessage()
           msg["Subject"] = "TECHNISCHER GEMINI-FALLBACK – Auswertung nicht erzeugt"
           msg["From"] = os.environ["SMTP_USER"]
           msg["To"] = os.environ["MAIL_EMPFAENGER"]
           msg.set_content(
-              "Technischer Gemini-Fallback im Sektor-Analyse-Lauf.\n\n"
-              "5/5 Gemini-Versuche haben keine gueltige Auswertung geliefert.\n"
+              "Technischer Gemini-Fallback im Trading-Radar-Lauf.\n\n"
+              "Trading-Radar konnte keine gueltige Auswertung erzeugen. Details stehen in der Statusdatei.\n"
               "Es wurde deshalb bewusst KEINE normale Auswertung per E-Mail verschickt.\n\n"
               f"Technischer Status: {status_file.name}\n"
-              f"Fallback-Paket: {Path(packages[-1]).name if packages else 'nicht gefunden'}\n\n"
+              f"Fallback-Paket: {Path(packages[-1]).name}\n\n"
               "Bitte Statusdatei und Fallback-Paket pruefen und das Paket fuer die manuelle ChatGPT-Auswertung verwenden."
           )
 
@@ -683,4 +695,4 @@ jobs:
               smtp.login(user, password)
               smtp.send_message(msg)
           print(f"Technische Gemini-Fallback-Mail versendet: {status_file.name}")
-          PY\n
+          PY
