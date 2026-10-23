@@ -561,16 +561,7 @@ jobs:
             echo "FINALITY_CHECK=FAIL | Auswertung wurde in diesem Lauf nicht neu geschrieben"
             exit 1
           fi
-          required=(
-            "1. Trading-Radar" "2. Thesen-Update" "3. Ereignisradar" "4. Assetklassenvergleich"
-            "5. Technische Kandidaten" "6. Portfolio & Risiko" "7. MSCI-Vergleich" "8. Daten-/Prüfanhang"
-          )
-          for heading in "${required[@]}"; do
-            if ! grep -Fqi "$heading" "$TRADING_RADAR_DATEI"; then
-              echo "REPORT_CHECK=FAIL | Pflichtabschnitt fehlt: $heading"
-              exit 1
-            fi
-          done
+          python trading_radar_report_gate.py "$TRADING_RADAR_DATEI"
           report_status_count=$(grep -Ec '^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$TRADING_RADAR_DATEI" || true)
           if [ "$report_status_count" -ne 1 ]; then
             echo "REPORT_CHECK=FAIL | eindeutiger Fachstatusmarker fehlt/dupliziert"
