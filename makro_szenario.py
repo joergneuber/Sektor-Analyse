@@ -4087,7 +4087,7 @@ def _te_public_commodities_exact(target_date):
                  if c in {"date", "last update", "reference"} or "date" == c.split("|")[-1].strip()), None
             )
 
-            for row_index, row in frame.fillna("").astype(str).iterrows():
+            for row_index, row in frame.astype(object).where(pd.notna(frame), "").astype(str).iterrows():
                 cells = [str(x).strip() for x in row.tolist()]
                 if not cells:
                     continue
