@@ -60,6 +60,10 @@ jobs:
         with:
           python-version: '3.13'
 
+      # Pflicht-Regression: Trading-Radar-Datenvertrag vor produktiven Schritten prüfen.
+      - name: Trading-Radar Datenvertrag Regressionstest
+        run: python -m unittest discover -s tests -p "test_trading_radar_data_contract.py"
+
       # BTC 50W-SMA: persistent state so a weekend cross is delivered by
       # the first regular Monday analysis and is not re-reported later.
       - name: BTC 50W-SMA State wiederherstellen
