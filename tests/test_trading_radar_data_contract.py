@@ -70,6 +70,18 @@ class TradingRadarDataContractTests(unittest.TestCase):
             positions.append(found)
         self.assertEqual(positions, sorted(positions), "Radar muss nach seinen vorgelagerten Datenquellen laufen")
 
+    def test_standalone_radar_uses_shared_report_gate_and_thesis_register(self):
+        self.assertIn("from trading_radar_report_gate import validate_report", self.radar_source)
+        self.assertIn("from trading_radar_thesen import extract_thesis_payload, validate_theses", self.radar_source)
+        self.assertIn("TRADING_RADAR_THESEN_JSON", self.radar_source)
+        # Register write is in the standalone save branch as well as the legacy path.
+        standalone = self.radar_source[self.radar_source.find("def speichere_ergebnis(text, eingabedateien=None):"): ]
+        self.assertIn("update_register(text", standalone)
+
+    def test_nonfinal_radar_is_marked_not_silently_promoted(self):
+        self.assertIn('"TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"', self.radar_source)
+        self.assertIn('"TRADING_RADAR_STATUS=NICHT_FINAL | Befunde="', self.radar_source)
+
     def test_radar_candidate_loader_is_explicitly_scanner_only(self):
         start = self.radar_source.find("def _lade_aktuelle_scanner_kandidaten")
         self.assertGreaterEqual(start, 0)
