@@ -74,7 +74,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
+          pip install alpaca-py "pandas<3.1" google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
 
       # Persistenter historischer OHLCV-Bestand. Die Action-Cache-Schicht ist
       # nur der Speichertransport; die fachliche Datenbank bleibt getrennt vom
