@@ -4927,7 +4927,10 @@ Keine Prognose erzwingen. Keine erfundenen technischen Werte (Entry, Stop, Ziele
 Keine automatischen Portfolio-/Trading-Aenderungen. Marktthese ist keine Handelsfreigabe.
 Bestehende Thesen anhand neuer Fakten aktualisieren. Kalender nur aus Quellen belegen.
 Portfolio und Watchlist-Kandidaten getrennt halten; Benchmark nur mit gelieferten Werten.
-Fehlende Datenbereiche klar als nicht verfuegbar markieren.
+Fehlende Datenbereiche klar als nicht verfuegbar markieren. Fehlende optionale Quellen
+nicht verschweigen und nicht durch andere Datenstände ersetzen. Verwende den Laufzeit-
+Zeitstempel NICHT als Daten-Cutoff; data_cutoff muss aus den tatsächlich verwendeten
+Marktdaten ableitbar sein. Wenn das nicht möglich ist, gib data_cutoff als null aus.
 Gib diese acht Abschnitte aus:
 1. Trading-Radar
 2. Thesen-Update
@@ -4937,6 +4940,12 @@ Gib diese acht Abschnitte aus:
 6. Portfolio & Risiko
 7. MSCI-Vergleich
 8. Daten-/Prüfanhang
+
+Danach zwingend einen maschinenlesbaren Block exakt in diesem Format ausgeben:
+```TRADING_RADAR_THESEN_JSON
+{"data_cutoff":"ISO-8601 mit Zeitzone oder null","theses":[{"thesis_id":"stabile eindeutige ID","thesis":"These","horizon":"Zeithorizont","evidence":["konkrete Quellenbelege"],"counter_evidence":["Gegenbelege"],"confidence":"niedrig|mittel|hoch","confirm_triggers":["Bestätigung"],"invalidate_triggers":["Invalidierung"],"event_dependencies":["Ereignis oder leer"],"asset_classes":["Assetklasse"],"candidates":["Ticker oder leer"],"status":"NEU|BESTAETIGT|VERSTAERKT|ABGESCHWAECHT|WARTET_AUF_EVENT|WIDERLEGT|ERSETZT|UNKLAR"}]}
+```
+Keine These erfinden: bei fehlender belegter These theses als leere Liste ausgeben.
 
 ALTBERICHT (nur Kontext, nicht kopieren):
 __ALTBERICHT__
@@ -4954,13 +4963,33 @@ __QUELLEN__
             logical_request_id="Trading-Radar-Eigenlauf:" + datetime.date.today().isoformat(),
         )
         radar_text = str(getattr(response, "text", response) or "").strip()
-        required = ("1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar", "4. Assetklassenvergleich",
-                   "5. Technische Kandidaten", "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang")
-        missing = [heading for heading in required if heading.casefold() not in radar_text.casefold()]
-        if not radar_text or missing:
-            _GEMINI_TRADING_RADAR_STATUS = "NICHT_FINAL"
-            print("TRADING_RADAR_STATUS=NICHT_FINAL | Fehlend=" + ", ".join(missing))
-            return None
+        from trading_radar_report_gate import validate_report
+        report_errors = validate_report(radar_text)
+        thesis_errors = []
+        try:
+            from trading_radar_thesen import extract_thesis_payload, validate_theses
+            thesis_payload = extract_thesis_payload(radar_text)
+            if thesis_payload is None:
+                thesis_errors.append("strukturierter Thesenblock fehlt")
+            else:
+                validate_theses(thesis_payload)
+                cutoff_value = thesis_payload.get("data_cutoff")
+                if cutoff_value is not None:
+                    cutoff_dt = datetime.datetime.fromisoformat(str(cutoff_value).replace("Z", "+00:00"))
+                    if cutoff_dt.tzinfo is None:
+                        thesis_errors.append("data_cutoff ohne Zeitzone")
+        except Exception as thesis_exc:
+            thesis_errors.append(f"Thesenblock ungueltig: {type(thesis_exc).__name__}: {thesis_exc}")
+        errors = report_errors + thesis_errors
+        if errors:
+            # Nichtfinale Berichte bleiben als gekennzeichnete Auswertung
+            # speicherbar; der Status darf weder auf FINAL hochgestuft noch
+            # wegen eines Fach-Gates komplett verworfen werden.
+            marker = re.compile(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$")
+            radar_text = marker.sub("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL", radar_text)
+            if not marker.search(radar_text):
+                radar_text = radar_text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+            print("TRADING_RADAR_STATUS=NICHT_FINAL | Befunde=" + " ; ".join(errors))
         _GEMINI_TRADING_RADAR_TEXT = radar_text
         _GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
         print("TRADING_RADAR_STATUS=EIGENSTAENDIG_ERZEUGT")
@@ -16184,6 +16213,24 @@ def speichere_ergebnis(text, eingabedateien=None):
             with open(radar_output, "a", encoding="utf-8") as f:
                 f.write(f"\nTRADING_RADAR_FACHLICH_FINAL={radar_final}\n")
         print(f"Trading-Radar-Eigenbericht gespeichert: {radar_datei}")
+        # Persist the thesis register in the standalone production path too.
+        # A missing/unusable cutoff deliberately leaves the previous register intact.
+        try:
+            from trading_radar_thesen import update_register
+            register_result = update_register(text, os.path.join(os.path.dirname(radar_output), ".trading_radar_thesen.json"))
+            if register_result.get("updated"):
+                print(f"Trading-Radar-Thesenregister aktualisiert: {register_result.get('count')} Thesen")
+            else:
+                print("INFO: Trading-Radar-Thesenregister unveraendert: " + str(register_result.get("reason")))
+        except Exception as register_exc:
+            radar_final = "NICHT_FINAL"
+            print(f"WARNUNG: Thesenregister nicht aktualisiert ({type(register_exc).__name__}: {register_exc})")
+            report_text = Path(radar_output).read_text(encoding="utf-8-sig")
+            marker = re.compile(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$")
+            report_text = marker.sub("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL", report_text)
+            if not marker.search(report_text):
+                report_text = report_text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+            Path(radar_output).write_text(report_text, encoding="utf-8")
         print("TRADING_RADAR_DATEI=" + radar_output)
         print("TRADING_RADAR_FACHLICH_FINAL=" + radar_final)
         return radar_output
