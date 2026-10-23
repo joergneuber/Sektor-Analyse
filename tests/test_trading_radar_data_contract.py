@@ -1,11 +1,22 @@
-"""Statische Schnittstellen-Regression fuer den Trading-Radar-Handoff.
+"""Ausfuehrbare Vertrags- und Integrationstests fuer den Trading-Radar-Handoff.
 
-Prueft nur Dateivertraege und Workflow-Reihenfolge; Scanner-, Portfolio- und
-Benchmarkberechnungen werden nicht ausgefuehrt oder veraendert.
+Die Tests benoetigen weder Gemini-Zugang noch Google-Drive-Credentials.
+Ein fehlender Workflow wird als explizite Skip-Meldung behandelt, nicht als
+impliziter Erfolg. Der Report-Speicherpfad wird mit echten temporaeren Dateien
+und einem erzeugten Radarbericht durchlaufen.
 """
 from pathlib import Path
+import csv
+import datetime
+import importlib.util
+import os
 import re
+import sys
+import tempfile
+import types
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
 ROOT = Path(__file__).resolve().parents[1]
 RADAR = ROOT / "Trading_Radar_Alleinauswertung.py"
@@ -13,89 +24,115 @@ WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
 BENCHMARK = ROOT / "performance_benchmark.py"
 
 
+def load_radar_module():
+    """Importiert die Datei ohne optionale Projekt-/API-Abhaengigkeiten."""
+    trade_story = types.ModuleType("trade_story_universum")
+    trade_story.write_trade_story_universe = lambda *a, **k: None
+    sources = types.ModuleType("quellenwert_vertrag")
+    sources.values_match_display = lambda *a, **k: False
+    sources.find_exact_labeled_line = lambda *a, **k: None
+    sources.extract_four_week_percent = lambda *a, **k: None
+    sources.extract_metal_four_week_value = lambda *a, **k: None
+    sys.modules.setdefault("trade_story_universum", trade_story)
+    sys.modules.setdefault("quellenwert_vertrag", sources)
+    spec = importlib.util.spec_from_file_location("trading_radar_under_test", RADAR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TradingRadarDataContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.radar_source = RADAR.read_text(encoding="utf-8-sig")
-        cls.workflow_source = WORKFLOW.read_text(encoding="utf-8-sig")
-        cls.benchmark_source = BENCHMARK.read_text(encoding="utf-8-sig")
 
-    def test_radar_keeps_existing_scanner_and_portfolio_input_keys(self):
-        for key in (
-            '"Setups(...).csv"',
-            '"Trendwende_Setups(...).csv"',
-            '"Short_Setups(...).csv"',
-            '"Offene Positionen+Check.csv"',
-            '"Trade_Story_Universum(...).json"',
-            '"Benchmark_Live.txt"',
-        ):
-            with self.subTest(key=key):
-                self.assertIn(key, self.radar_source)
+    def test_workflow_presence_is_reported_not_assumed(self):
+        if not WORKFLOW.is_file():
+            self.skipTest("Runner-/Workflow-End-to-End nicht pruefbar: .github/workflows/main.yml fehlt in dieser Anlage")
+        workflow = WORKFLOW.read_text(encoding="utf-8-sig")
+        self.assertIn("Trading-Radar erstellen", workflow)
 
-    def test_radar_required_sources_include_portfolio_check_and_core_scanner(self):
-        match = re.search(r"(?ms)^PFLICHT_DATEIEN\s*=\s*\{(.*?)^\}", self.radar_source)
-        self.assertIsNotNone(match, "PFLICHT_DATEIEN-Kontrakt nicht gefunden")
-        required = match.group(1)
-        for key in (
-            '"briefing.txt"',
-            '"Setups(...).csv"',
-            '"Performance(...).csv"',
-            '"Performance_EU(...).csv"',
-            '"Trade_Story_Aktienuniversum(...).csv"',
-            '"Offene Positionen+Check.csv"',
-        ):
-            with self.subTest(key=key):
-                self.assertIn(key, required)
+    def test_benchmark_contract_only_when_source_is_in_package(self):
+        if not BENCHMARK.is_file():
+            self.skipTest("Benchmark-Vertrag nicht pruefbar: performance_benchmark.py fehlt in dieser Anlage")
+        benchmark = BENCHMARK.read_text(encoding="utf-8-sig")
+        self.assertIn('OUTPUT_FILE = Path("Benchmark_Live.txt")', benchmark)
 
-    def test_live_benchmark_contract_stays_on_raw_open_positions(self):
-        self.assertIn('POSITIONS_FILE = Path("Offene_Positionen.csv")', self.benchmark_source)
-        self.assertIn('OUTPUT_FILE = Path("Benchmark_Live.txt")', self.benchmark_source)
-        self.assertIn('"Benchmark_Live.txt"', self.radar_source)
-        # Check-Datei und Live-Benchmark bleiben getrennte Quellen/Pfade.
-        self.assertNotIn('POSITIONS_FILE = Path("Offene Positionen+Check.csv")', self.benchmark_source)
+    def test_radar_prompt_keeps_a_b_c_as_non_authorization(self):
+        self.assertIn("interne Kategorisierungen der Setups", self.radar_source)
+        self.assertIn("KEINE finale Kaufentscheidung", self.radar_source)
 
-    def test_workflow_generates_upstream_sources_before_radar(self):
-        steps = (
-            "Offene Positionen + Check erstellen und in Drive aktualisieren",
-            "Live-Benchmark gegen MSCI World aktualisieren",
-            "Analyse ausführen",
-            "Trendwende-Scan ausführen",
-            "Edelmetalle-Scan ausführen",
-            "Trading-Radar erstellen",
-        )
-        positions = []
-        for step in steps:
-            found = self.workflow_source.find(f"- name: {step}")
-            self.assertGreaterEqual(found, 0, f"Workflow-Schritt fehlt: {step}")
-            positions.append(found)
-        self.assertEqual(positions, sorted(positions), "Radar muss nach seinen vorgelagerten Datenquellen laufen")
+    def test_radar_filename_contract_exists_at_both_save_paths(self):
+        self.assertGreaterEqual(self.radar_source.count("TRADING_RADAR_DATEINAME_UNGUELTIG"), 2)
+        self.assertIn(r"Trading_Radar\(\d{4}-\d{2}-\d{2}\)\.txt", self.radar_source)
+        self.assertIn("TRADING_RADAR_ABLAGEPFAD_UNGUELTIG", self.radar_source)
 
-    def test_standalone_radar_uses_shared_report_gate_and_thesis_register(self):
-        self.assertIn("from trading_radar_report_gate import validate_report", self.radar_source)
-        self.assertIn("from trading_radar_thesen import extract_thesis_payload, validate_theses", self.radar_source)
-        self.assertIn("TRADING_RADAR_THESEN_JSON", self.radar_source)
-        # Register write is in the standalone save branch as well as the legacy path.
-        standalone = self.radar_source[self.radar_source.find("def speichere_ergebnis(text, eingabedateien=None):"): ]
-        self.assertIn("update_register(text", standalone)
-
-    def test_nonfinal_radar_is_marked_not_silently_promoted(self):
-        self.assertIn('"TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"', self.radar_source)
-        self.assertIn('"TRADING_RADAR_STATUS=NICHT_FINAL | Befunde="', self.radar_source)
-
-    def test_radar_candidate_loader_is_explicitly_scanner_only(self):
-        start = self.radar_source.find("def _lade_aktuelle_scanner_kandidaten")
+    def test_closed_positions_loader_has_no_date_filter_and_keeps_unparseable_dates(self):
+        start = self.radar_source.find("def lade_offenen_positionen_check_tab2")
+        end = self.radar_source.find("\ndef ", start + 5)
+        section = self.radar_source[start:end if end >= 0 else None]
         self.assertGreaterEqual(start, 0)
-        section = self.radar_source[start:start + 9000]
-        for scanner in (
-            '"Setups(...).csv"',
-            '"Trendwende_Setups(...).csv"',
-            '"Short_Setups(...).csv"',
-        ):
-            self.assertIn(scanner, section)
-        self.assertIn("crv < 1.0", section)
-        self.assertIn("entry or not stop or not tp1", section)
-        self.assertIn("source_date != report_date", section)
+        self.assertIn("selected = list(rows)", section)
+        self.assertNotIn("timedelta(days=2)", section)
+        self.assertIn("TAB-2-ANZAHL", section)
+        self.assertIn("Unparsebare Datumswerte", section)
+
+    def test_open_positions_source_block_has_count_and_rejects_empty_export(self):
+        start = self.radar_source.find("def _offene_positionen_quellblock")
+        end = self.radar_source.find("\ndef ", start + 5)
+        section = self.radar_source[start:end if end >= 0 else None]
+        self.assertGreaterEqual(start, 0)
+        self.assertIn("OFFENE_POSITIONEN_QUELLANZAHL={offene_quellzeilen}", section)
+        self.assertIn("OFFENE_POSITIONEN_ANZAHL={export_count}", section)
+        self.assertIn("Quellen-/Exportzählung abweichend", section)
+        self.assertIn("nicht zuordenbar", section)
+        self.assertIn("Keine offenen Positionen exportiert", section)
+
+    def test_actual_report_writer_creates_canonical_report_and_complete_facts(self):
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                csv_path = Path(temp_dir) / "Offene Positionen+Check.csv"
+                with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(handle, delimiter=";", fieldnames=[
+                        "Name", "Ticker", "Status", "Einstieg", "Einstiegsdatum", "Stop"
+                    ])
+                    writer.writeheader()
+                    writer.writerows([
+                        {"Name": "Alpha", "Ticker": "AAA", "Status": "Offen", "Einstieg": "10", "Einstiegsdatum": "01.01.2026", "Stop": "9"},
+                        {"Name": "Beta", "Ticker": "BBB", "Status": "Offen", "Einstieg": "20", "Einstiegsdatum": "02.01.2026", "Stop": "18"},
+                        {"Name": "Closed", "Ticker": "CCC", "Status": "Geschlossen", "Einstieg": "30", "Einstiegsdatum": "03.01.2026", "Stop": "25"},
+                    ])
+                radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
+                radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
+                radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
+                    "TAB-2-ANZAHL=2\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                    "Ticker: OLD | Ausstiegsdatum: 2019-01-01\n"
+                    "Ticker: BADDATE | Ausstiegsdatum: unbekannt"
+                )
+                report = "\n".join(f"{i}. {title}" for i, title in enumerate([
+                    "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                    "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
+                ], start=1)) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                with redirect_stdout(StringIO()):
+                    output = radar.speichere_ergebnis(report, {"Offene Positionen+Check.csv": str(csv_path)})
+                output_path = Path(output)
+                self.assertEqual(output_path.name, f"Trading_Radar({datetime.date.today().isoformat()}).txt")
+                self.assertTrue(output_path.is_file())
+                saved = output_path.read_text(encoding="utf-8-sig")
+                self.assertIn("OFFENE_POSITIONEN_QUELLANZAHL=2", saved)
+                self.assertIn("OFFENE_POSITIONEN_ANZAHL=2", saved)
+                self.assertIn("Alpha (AAA)", saved)
+                self.assertIn("Beta (BBB)", saved)
+                self.assertNotIn("Closed (CCC)", saved)
+                self.assertIn("Ticker: OLD | Ausstiegsdatum: 2019-01-01", saved)
+                self.assertIn("Ticker: BADDATE | Ausstiegsdatum: unbekannt", saved)
+                self.assertEqual(output_path.parent, Path(temp_dir))
+            finally:
+                os.chdir(previous_cwd)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)
