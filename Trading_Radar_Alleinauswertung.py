@@ -398,10 +398,9 @@ def lade_offenen_positionen_check_tab2():
     """Liest ausschließlich Tab 2 des Master-Sheets für Punkt 10.5.
 
     Tab 2 „Geschlossene Positionen“ von „Offene Positionen+Check“ ist die
-    autoritative Faktenbasis. Es werden nur Datensätze mit Ausstiegsdatum
-    innerhalb der letzten drei Kalendertage relativ zum Auswertungstag geliefert.
-    Die Funktion verändert keine bestehende Positions-, Retry- oder
-    Gemini-Validierungslogik.
+    Faktenbasis. Alle vorhandenen Datenzeilen aus Tab 2 werden übernommen;
+    es gibt keine zeitliche Begrenzung. Unparsebare Datumswerte bleiben als
+    Quellwerte enthalten und werden nicht stillschweigend ausgeschlossen.
     """
     service = get_drive_service(strict=True)
 
@@ -494,29 +493,20 @@ def lade_offenen_positionen_check_tab2():
                     pass
             return None
 
-        today = datetime.date.today()
-        start = today - datetime.timedelta(days=2)
-        selected = []
-        parseable_dates = 0
-        for row in rows:
-            exit_date = parse_date(row.get("Ausstiegsdatum"))
-            if exit_date is not None:
-                parseable_dates += 1
-            if exit_date is not None and start <= exit_date <= today:
-                selected.append(row)
-
-        all_exit_dates = [parse_date(row.get("Ausstiegsdatum")) for row in rows]
-        all_exit_dates = [d for d in all_exit_dates if d is not None]
-        newest_exit = max(all_exit_dates).isoformat() if all_exit_dates else "keine parsebaren Ausstiegsdaten"
+        # Keine Datumsselektion: vollständige Tab-2-Zeilenbasis übernehmen.
+        selected = list(rows)
+        parseable_dates = sum(parse_date(row.get("Ausstiegsdatum")) is not None for row in rows)
         print(
-            f"10.5 HISTORIE-PRUEFUNG: daten={len(rows)} | parsebar={parseable_dates} | "
-            f"neuestes_ausstiegsdatum={newest_exit} | fenster={start.isoformat()}..{today.isoformat()} | "
-            f"treffer={len(selected)}"
+            f"10.5 TAB-2-VOLLSTÄNDIGKEIT: quellzeilen={len(rows)} | "
+            f"datumswerte_parsebar={parseable_dates} | übernommen={len(selected)}"
         )
-
+        if len(selected) != len(rows):
+            raise RuntimeError(
+                f"10.5: Vollständigkeitsfehler Tab 2: Quelle={len(rows)}, übernommen={len(selected)}"
+            )
         if not selected:
-            print("HISTORIE 10.5: Keine geschlossene Position innerhalb der letzten 3 Kalendertage.")
-            return ""
+            print("10.5 TAB 2: Keine geschlossenen Positionen in der Quelle vorhanden.")
+            return "TAB-2-ANZAHL=0\nTAB-2-QUELLE=Geschlossene Positionen"
 
         # Nur Faktenfelder aus Tab 2; keine technische Neubewertung.
         fields = [
@@ -526,7 +516,7 @@ def lade_offenen_positionen_check_tab2():
             "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs", "OS_Performance%",
             "OS_Quelle", "OS_Kurszeit",
         ]
-        out = []
+        out = [f"TAB-2-ANZAHL={len(selected)}", "TAB-2-QUELLE=Geschlossene Positionen"]
         for row in selected:
             formatted_fields = []
             for field in fields:
@@ -1725,54 +1715,59 @@ def _positionsfeld_schluessel(value):
 
 
 def _offene_positionen_quellblock(csv_pfad):
-    """Erstellt eine unveränderte, autoritative Positionsliste aus der Check-Datei.
-    Nur Name/Ticker/Einstieg/Einstiegsdatum werden hier als Stammdaten vorgegeben."""
+    """Exportiert jede offene Quellzeile genau einmal oder bricht explizit ab.
+
+    Quellenanzahl und Exportanzahl werden getrennt ermittelt. Nicht zuordenbare
+    offene Zeilen oder unbekannte Statuswerte dürfen nicht still verschwinden.
+    """
     if not csv_pfad or not os.path.isfile(csv_pfad):
-        return ""
-    try:
-        with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            fields = reader.fieldnames or []
-            def key(name):
-                return next((k for k in fields if str(k).strip().lower() == name.lower()), None)
-            name_k = key("Name")
-            ticker_k = key("Ticker")
-            status_k = key("Status")
-            entry_k = key("Einstieg")
-            date_k = key("Einstiegsdatum")
-            current_k = key("Aktueller_Kurs") or key("Aktueller Kurs")
-            stop_k = key("Stop")
-            tp1_k = key("TP1")
-            tp2_k = key("TP2")
-            if not all((name_k, ticker_k, entry_k, date_k)):
-                raise ValueError("Check-Datei benötigt Name, Ticker, Einstieg und Einstiegsdatum.")
-            rows = []
-            for row in reader:
-                status = str(row.get(status_k, "")).strip().lower() if status_k else ""
-                if status and status not in {"offen", "open"}:
-                    continue
-                name = str(row.get(name_k, "")).strip()
-                ticker = str(row.get(ticker_k, "")).strip()
-                entry = str(row.get(entry_k, "")).strip()
-                date = str(row.get(date_k, "")).strip()
-                current = str(row.get(current_k, "") or "").strip() if current_k else ""
-                stop = str(row.get(stop_k, "") or "").strip() if stop_k else ""
-                tp1 = str(row.get(tp1_k, "") or "").strip() if tp1_k else ""
-                tp2 = str(row.get(tp2_k, "") or "").strip() if tp2_k else ""
-                if name or ticker:
-                    parts = [f"- {name} ({ticker})", f"Einstieg: {entry}", f"Einstiegsdatum: {date}"]
-                    if current:
-                        parts.append(f"Aktueller Kurs: {current}")
-                    if stop:
-                        parts.append(f"Stop: {stop}")
-                    if tp1:
-                        parts.append(f"TP1: {tp1}")
-                    if tp2:
-                        parts.append(f"TP2: {tp2}")
-                    rows.append(" | ".join(parts))
-            return "\n".join(rows)
-    except Exception as exc:
-        raise RuntimeError(f"Offene Positionen+Check.csv konnte nicht als verbindliche Quelle gelesen werden: {exc}")
+        raise RuntimeError("Offene Positionsquelle fehlt; Vollständigkeit nicht prüfbar.")
+    with open(csv_pfad, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        fields = reader.fieldnames or []
+        def key(name):
+            return next((k for k in fields if str(k).strip().lower() == name.lower()), None)
+        name_k, ticker_k, status_k = key("Name"), key("Ticker"), key("Status")
+        entry_k, date_k = key("Einstieg"), key("Einstiegsdatum")
+        current_k = key("Aktueller_Kurs") or key("Aktueller Kurs")
+        stop_k, tp1_k, tp2_k = key("Stop"), key("TP1"), key("TP2")
+        if not all((name_k, ticker_k, entry_k, date_k)):
+            raise RuntimeError("Check-Datei benötigt Name, Ticker, Einstieg und Einstiegsdatum.")
+        source_rows = list(reader)
+
+    rows = []
+    offene_quellzeilen = 0
+    for index, row in enumerate(source_rows, start=2):
+        status = str(row.get(status_k, "")).strip().lower() if status_k else ""
+        if status in {"geschlossen", "closed", "close"}:
+            continue
+        if status and status not in {"offen", "open"}:
+            raise RuntimeError(f"Offene Positionsquelle: unbekannter Status in Zeile {index}: {status!r}")
+        name = str(row.get(name_k, "") or "").strip()
+        ticker = str(row.get(ticker_k, "") or "").strip()
+        if not name or not ticker:
+            raise RuntimeError(f"Offene Positionsquelle: offene Zeile {index} nicht zuordenbar (Name/Ticker fehlt).")
+        offene_quellzeilen += 1
+        entry = str(row.get(entry_k, "") or "").strip()
+        date = str(row.get(date_k, "") or "").strip()
+        current = str(row.get(current_k, "") or "").strip() if current_k else ""
+        stop = str(row.get(stop_k, "") or "").strip() if stop_k else ""
+        tp1 = str(row.get(tp1_k, "") or "").strip() if tp1_k else ""
+        tp2 = str(row.get(tp2_k, "") or "").strip() if tp2_k else ""
+        parts = [f"- {name} ({ticker})", f"Einstieg: {entry}", f"Einstiegsdatum: {date}"]
+        if current: parts.append(f"Aktueller Kurs: {current}")
+        if stop: parts.append(f"Stop: {stop}")
+        if tp1: parts.append(f"TP1: {tp1}")
+        if tp2: parts.append(f"TP2: {tp2}")
+        rows.append(" | ".join(parts))
+
+    export_count = len(rows)
+    print(f"OFFENE_POSITIONEN_QUELLVERGLEICH: quelle={offene_quellzeilen} | export={export_count}")
+    if offene_quellzeilen != export_count:
+        raise RuntimeError(f"Offene Positionsquelle: Quellen-/Exportzählung abweichend: Quelle={offene_quellzeilen}, Export={export_count}.")
+    if export_count == 0:
+        raise RuntimeError("Keine offenen Positionen exportiert; Vollständigkeit nicht bestätigt.")
+    return f"OFFENE_POSITIONEN_QUELLANZAHL={offene_quellzeilen}\\nOFFENE_POSITIONEN_ANZAHL={export_count}\\n" + "\\n".join(rows)
 
 def _technische_zielzonen_quelle(csv_pfad):
     """Liest die technischen Check-Felder verbindlich aus der Check-Datei.
@@ -4918,6 +4913,15 @@ def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien
             quellen.append(f"\n### QUELLE: {name} | Datei={os.path.basename(path)} | SHA256={_hashlib.sha256(raw).hexdigest()}\n" + content[:18000])
         except Exception as exc:
             quellen.append(f"\n### QUELLE: {name} | QUELLFEHLER={type(exc).__name__}: {exc}\n")
+    offene_positionen_fakten = _offene_positionen_quellblock(
+        (eingabedateien or {}).get("Offene Positionen+Check.csv")
+    )
+    try:
+        geschlossene_positionen_fakten = lade_offenen_positionen_check_tab2()
+    except Exception as exc:
+        geschlossene_positionen_fakten = (
+            "TAB-2-QUELLE NICHT VERIFIZIERBAR: " + type(exc).__name__ + ": " + str(exc)
+        )
     prompt = """Du erstellst eine eigenstaendige Trading-Radar-Auswertung fuer Sektor-Analyse.
 Daten-Cutoff: CUTOFF
 Nutze die bereitgestellten Python-Quellen und den Altbericht nur als Kontext/Thesenstand.
@@ -4927,10 +4931,17 @@ Keine Prognose erzwingen. Keine erfundenen technischen Werte (Entry, Stop, Ziele
 Keine automatischen Portfolio-/Trading-Aenderungen. Marktthese ist keine Handelsfreigabe.
 Bestehende Thesen anhand neuer Fakten aktualisieren. Kalender nur aus Quellen belegen.
 Portfolio und Watchlist-Kandidaten getrennt halten; Benchmark nur mit gelieferten Werten.
-Fehlende Datenbereiche klar als nicht verfuegbar markieren. Fehlende optionale Quellen
-nicht verschweigen und nicht durch andere Datenstände ersetzen. Verwende den Laufzeit-
-Zeitstempel NICHT als Daten-Cutoff; data_cutoff muss aus den tatsächlich verwendeten
-Marktdaten ableitbar sein. Wenn das nicht möglich ist, gib data_cutoff als null aus.
+Fehlende Datenbereiche klar als nicht verfuegbar markieren.
+Die Hebeltrader-Bewertungen A/B/C sind interne Kategorisierungen der Setups,
+KEINE finale Kaufentscheidung und KEINE automatische Handelsfreigabe. Behalte
+sie als Bewertung bei und erkläre ihre Bedeutung knapp.
+Thesen: Für jede wichtige These Daten/Fakten, Datenzeitraum, Gegenbelege,
+Konfidenz sowie konkrete Bestätigungs- und Widerlegungsbedingungen nennen.
+Ereignisse: Datum, Uhrzeit/Zeitzone und Quelle nur nennen, wenn belegt; mögliche
+Assetwirkung als Ableitung kennzeichnen. Fehlende Kalenderdaten explizit nennen.
+Portfolio: Keine verkürzte oder beispielhafte Positionsauswahl als vollständige
+Liste ausgeben. Die vollständige offene Positionsliste wird separat aus der
+autoritativen Faktenbasis ergänzt.
 Gib diese acht Abschnitte aus:
 1. Trading-Radar
 2. Thesen-Update
@@ -4941,18 +4952,20 @@ Gib diese acht Abschnitte aus:
 7. MSCI-Vergleich
 8. Daten-/Prüfanhang
 
-Danach zwingend einen maschinenlesbaren Block exakt in diesem Format ausgeben:
-```TRADING_RADAR_THESEN_JSON
-{"data_cutoff":"ISO-8601 mit Zeitzone oder null","theses":[{"thesis_id":"stabile eindeutige ID","thesis":"These","horizon":"Zeithorizont","evidence":["konkrete Quellenbelege"],"counter_evidence":["Gegenbelege"],"confidence":"niedrig|mittel|hoch","confirm_triggers":["Bestätigung"],"invalidate_triggers":["Invalidierung"],"event_dependencies":["Ereignis oder leer"],"asset_classes":["Assetklasse"],"candidates":["Ticker oder leer"],"status":"NEU|BESTAETIGT|VERSTAERKT|ABGESCHWAECHT|WARTET_AUF_EVENT|WIDERLEGT|ERSETZT|UNKLAR"}]}
-```
-Keine These erfinden: bei fehlender belegter These theses als leere Liste ausgeben.
-
 ALTBERICHT (nur Kontext, nicht kopieren):
 __ALTBERICHT__
 
+AUTORITATIVE OFFENE POSITIONEN (vollständig und unverändert, jede Zeile ist
+separate Position; nicht tickerweise zusammenfassen):
+__OFFENE_POSITIONEN__
+
+GESCHLOSSENE POSITIONEN: ausschließlich Tab 2 / Bereich „Geschlossene Positionen“
+aus „Offene Positionen+Check“, mit dortiger zeitlicher Auswahl und Quellenstatus:
+__GESCHLOSSENE_POSITIONEN__
+
 PROJEKTQUELLEN:
 __QUELLEN__
-""".replace("CUTOFF", cutoff).replace("__ALTBERICHT__", str(bestehende_auswertung or "")[:40000]).replace("__QUELLEN__", "".join(quellen)[:140000])
+""".replace("CUTOFF", cutoff).replace("__ALTBERICHT__", str(bestehende_auswertung or "")[:40000]).replace("__OFFENE_POSITIONEN__", offene_positionen_fakten or "QUELLE FEHLT/LEER: offene Positionsliste nicht belastbar verfügbar.").replace("__GESCHLOSSENE_POSITIONEN__", geschlossene_positionen_fakten or "TAB 2: keine Datensätze im relevanten Zeitraum.").replace("__QUELLEN__", "".join(quellen)[:140000])
     contents = [prompt]
     modell = preferred_modell or globals().get("_gemini_last_request_model") or MODELL
     try:
@@ -4963,33 +4976,13 @@ __QUELLEN__
             logical_request_id="Trading-Radar-Eigenlauf:" + datetime.date.today().isoformat(),
         )
         radar_text = str(getattr(response, "text", response) or "").strip()
-        from trading_radar_report_gate import validate_report
-        report_errors = validate_report(radar_text)
-        thesis_errors = []
-        try:
-            from trading_radar_thesen import extract_thesis_payload, validate_theses
-            thesis_payload = extract_thesis_payload(radar_text)
-            if thesis_payload is None:
-                thesis_errors.append("strukturierter Thesenblock fehlt")
-            else:
-                validate_theses(thesis_payload)
-                cutoff_value = thesis_payload.get("data_cutoff")
-                if cutoff_value is not None:
-                    cutoff_dt = datetime.datetime.fromisoformat(str(cutoff_value).replace("Z", "+00:00"))
-                    if cutoff_dt.tzinfo is None:
-                        thesis_errors.append("data_cutoff ohne Zeitzone")
-        except Exception as thesis_exc:
-            thesis_errors.append(f"Thesenblock ungueltig: {type(thesis_exc).__name__}: {thesis_exc}")
-        errors = report_errors + thesis_errors
-        if errors:
-            # Nichtfinale Berichte bleiben als gekennzeichnete Auswertung
-            # speicherbar; der Status darf weder auf FINAL hochgestuft noch
-            # wegen eines Fach-Gates komplett verworfen werden.
-            marker = re.compile(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$")
-            radar_text = marker.sub("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL", radar_text)
-            if not marker.search(radar_text):
-                radar_text = radar_text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
-            print("TRADING_RADAR_STATUS=NICHT_FINAL | Befunde=" + " ; ".join(errors))
+        required = ("1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar", "4. Assetklassenvergleich",
+                   "5. Technische Kandidaten", "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang")
+        missing = [heading for heading in required if heading.casefold() not in radar_text.casefold()]
+        if not radar_text or missing:
+            _GEMINI_TRADING_RADAR_STATUS = "NICHT_FINAL"
+            print("TRADING_RADAR_STATUS=NICHT_FINAL | Fehlend=" + ", ".join(missing))
+            return None
         _GEMINI_TRADING_RADAR_TEXT = radar_text
         _GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
         print("TRADING_RADAR_STATUS=EIGENSTAENDIG_ERZEUGT")
@@ -16183,7 +16176,39 @@ def speichere_ergebnis(text, eingabedateien=None):
                 "keine alte Auswertung als Ersatz verwenden."
             )
         radar_datei = f"Trading_Radar({heute}).txt"
-        radar_output = os.path.abspath(radar_datei)
+        if not re.fullmatch(r"Trading_Radar\(\d{4}-\d{2}-\d{2}\)\.txt", radar_datei):
+            raise RuntimeError(f"TRADING_RADAR_DATEINAME_UNGUELTIG: {radar_datei}")
+        # Der veröffentlichte Dateiname ist ein fixer Vertrag; Runner-Pfade
+        # dienen nur als Ablageort. Keine automatisch nummerierten Varianten.
+        radar_output = os.path.abspath(os.path.join(os.getcwd(), radar_datei))
+        offene_positionen_fakten = _offene_positionen_quellblock(
+            (eingabedateien or {}).get("Offene Positionen+Check.csv")
+        )
+        if not offene_positionen_fakten:
+            raise RuntimeError(
+                "TRADING_RADAR_NICHT_SPEICHERBAR: autoritative offene Positionsliste "
+                "fehlt oder ist leer; Vollständigkeit kann nicht bestätigt werden."
+            )
+        marker = "TRADING_RADAR_OFFENE_POSITIONEN_BEGIN"
+        if marker not in text:
+            text = text.rstrip() + "\n\n9. Vollständige offene Positionen (Quelle: Offene Positionen+Check.csv)\n" + offene_positionen_fakten + "\n" + marker + "\n"
+        geschlossene_positionen_fakten = globals().get(
+            "_GEMINI_GESCHLOSSENE_10_5_FINAL",
+            "",
+        )
+        if not isinstance(geschlossene_positionen_fakten, str) or not geschlossene_positionen_fakten.strip():
+            geschlossene_positionen_fakten = (
+                "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
+                "geschlossene Positionsquelle wurde im Lauf nicht geladen"
+            )
+        if "10.5 Geschlossene Positionen" not in text:
+            text = text.rstrip() + "\n\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n" + (geschlossene_positionen_fakten or "NICHT VERFÜGBAR") + "\n"
+        if str(geschlossene_positionen_fakten or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
+            text = re.sub(
+                r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\s*$",
+                "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL",
+                text,
+            )
         temp_output = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -16213,24 +16238,6 @@ def speichere_ergebnis(text, eingabedateien=None):
             with open(radar_output, "a", encoding="utf-8") as f:
                 f.write(f"\nTRADING_RADAR_FACHLICH_FINAL={radar_final}\n")
         print(f"Trading-Radar-Eigenbericht gespeichert: {radar_datei}")
-        # Persist the thesis register in the standalone production path too.
-        # A missing/unusable cutoff deliberately leaves the previous register intact.
-        try:
-            from trading_radar_thesen import update_register
-            register_result = update_register(text, os.path.join(os.path.dirname(radar_output), ".trading_radar_thesen.json"))
-            if register_result.get("updated"):
-                print(f"Trading-Radar-Thesenregister aktualisiert: {register_result.get('count')} Thesen")
-            else:
-                print("INFO: Trading-Radar-Thesenregister unveraendert: " + str(register_result.get("reason")))
-        except Exception as register_exc:
-            radar_final = "NICHT_FINAL"
-            print(f"WARNUNG: Thesenregister nicht aktualisiert ({type(register_exc).__name__}: {register_exc})")
-            report_text = Path(radar_output).read_text(encoding="utf-8-sig")
-            marker = re.compile(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$")
-            report_text = marker.sub("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL", report_text)
-            if not marker.search(report_text):
-                report_text = report_text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
-            Path(radar_output).write_text(report_text, encoding="utf-8")
         print("TRADING_RADAR_DATEI=" + radar_output)
         print("TRADING_RADAR_FACHLICH_FINAL=" + radar_final)
         return radar_output
@@ -16670,7 +16677,11 @@ def speichere_ergebnis(text, eingabedateien=None):
     radar_temp = None
     if isinstance(radar_text, str) and radar_text.strip() and radar_status == "EIGENSTAENDIG_ERZEUGT":
         radar_datei = f"Trading_Radar({heute}).txt"
+        if not re.fullmatch(r"Trading_Radar\(\d{4}-\d{2}-\d{2}\)\.txt", radar_datei):
+            raise RuntimeError(f"TRADING_RADAR_DATEINAME_UNGUELTIG: {radar_datei}")
         radar_output = os.path.join(output_dir, radar_datei)
+        if os.path.basename(radar_output) != radar_datei:
+            raise RuntimeError(f"TRADING_RADAR_ABLAGEPFAD_UNGUELTIG: {radar_output}")
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8-sig", dir=output_dir,
                     prefix=f".{Path(radar_datei).name}.", suffix=".tmp", delete=False) as f:
@@ -16828,7 +16839,7 @@ if __name__ == "__main__":
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:
             with open(output_path, "a", encoding="utf-8") as handle:
-                handle.write(f"status=SUCCESS\nfachlich_final={fachlich_final}\nreport_path={os.path.abspath(ausgabe_pfad)}\n")
+                handle.write(f"status=SUCCESS\nfachlich_final={fachlich_final}\nreport_path={Path(ausgabe_pfad).name}\n")
         raise SystemExit(0)
     if str(ergebnis_text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
         print("GEMINI_STATUS=TECHNISCHER_FALLBACK")
