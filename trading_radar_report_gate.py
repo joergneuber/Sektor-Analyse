@@ -38,66 +38,187 @@ def _section_body(text: str, number: int, title: str) -> str:
 def _has_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
 
+_MISSING_VALUE_RE = re.compile(
+    r"^(?:|[-–—]|n/?a|na|tbd|todo|xxx|placeholder|platzhalter|unbekannt|"
+    r"nicht\s+(?:vorhanden|verfügbar|verifizierbar|bekannt)|fehlt|unklar)$",
+    re.IGNORECASE,
+)
+
+
+def _label_value(text: str, labels: tuple[str, ...]) -> str | None:
+    """Extract a labeled value without accepting an empty/placeholder value.
+
+    Values may be inline (separated by | or ;) or on the following line.
+    The extraction is intentionally conservative: a label without a value is
+    not evidence that the field is present.
+    """
+    label = r"(?:" + "|".join(labels) + r")"
+    match = re.search(
+        rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*(?:([^|;\r\n]+)|(?:\r?\n\s*([^|;\r\n]+)))",
+        text,
+    )
+    if not match:
+        return None
+    value = (match.group(1) or match.group(2) or "").strip().strip(". ")
+    if _MISSING_VALUE_RE.fullmatch(value):
+        return None
+    return value
+
+
+def _is_explicit_unavailable(text: str, labels: tuple[str, ...]) -> bool:
+    """Allow an explicit unavailable state, but not a blank or vague mention."""
+    label = r"(?:" + "|".join(labels) + r")"
+    return bool(re.search(
+        rf"(?i)(?:{label})\s*(?:[:=]\s*)?(?:nicht\s+(?:verfügbar|verifizierbar|vorhanden)|fehlt|unklar|FEHLT)\b",
+        text,
+    ))
+
+
+def _valid_numeric_value(value: str | None) -> bool:
+    """Accept a complete numeric field, optionally with a known unit/currency.
+
+    Do not search for a number inside arbitrary prose (e.g. ``bald 100``).
+    Decimal comma and common thousands separators are supported.
+    """
+    if value is None:
+        return False
+    cleaned = value.strip()
+    if not cleaned or _MISSING_VALUE_RE.fullmatch(cleaned):
+        return False
+
+    # Explicitly supported wrappers; the numeric core must occupy the entire
+    # remaining field. Units are deliberately limited to common price/ratio
+    # labels rather than accepting arbitrary trailing prose.
+    cleaned = re.sub(r"^(?:EUR|USD|GBP|€|\$|£)\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*(?:EUR|USD|GBP|€|\$|£|%|x|\b(?:Punkte|pts)\b)$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
+    if not re.fullmatch(r"[-+]?(?:\d{1,3}(?:[ .’']\d{3})+|\d+)(?:[,.]\d+)?", cleaned):
+        return False
+
+    normalized = cleaned.replace(" ", "").replace("’", "").replace("'", "")
+    # A dot/comma followed by exactly three digits is treated as a grouping
+    # separator when another grouping separator exists; otherwise it is the
+    # decimal separator. This handles common German and English report values.
+    if "," in normalized and "." in normalized:
+        if normalized.rfind(",") > normalized.rfind("."):
+            normalized = normalized.replace(".", "").replace(",", ".")
+        else:
+            normalized = normalized.replace(",", "")
+    elif "," in normalized:
+        normalized = normalized.replace(",", ".")
+    try:
+        number = float(normalized)
+        return number == number and abs(number) != float("inf")
+    except (TypeError, ValueError):
+        return False
+
+
 def _validate_m05_m10(text: str, errors: list[str]) -> None:
-    """Check concrete M-05..M-10 report evidence; never infer missing facts as present."""
-    # M-05: source-derived closed-position rows/count are checked above. A count is
-    # not a license to require quantity/fees, which are outside this contract.
+    """Check concrete M-05..M-10 report evidence; reject blank placeholders."""
+    # M-05: the deterministic Tab-2 source block and row/count comparison are
+    # checked in validate_report. Quantity and fees are not contract fields.
 
-    # M-06: distinguish portfolio total performance from average position performance.
-    portfolio = _section_body(text, 7, SECTION_NAMES[6])
-    portfolio_total = _has_any(portfolio, (
-        r"Portfolio(?:-Gesamt)?performance", r"Gesamtperformance.*Portfolio",
-        r"Portfolio.*Performance.*(?:nicht verfügbar|nicht verifizierbar|fehl\w*|%|\d)"))
-    position_average = _has_any(portfolio, (
-        r"(?:Ø|durchschnitt(?:liche|s)?|mittelwert).*Positionsperformance",
-        r"Positionsperformance.*(?:Ø|durchschnitt|mittelwert|%|nicht verfügbar|nicht verifizierbar)"))
-    if not (portfolio_total and position_average):
-        errors.append("M-06: Portfolio-Gesamtperformance und durchschnittliche Positionsperformance müssen getrennt ausgewiesen sein (oder jeweils ausdrücklich als nicht verfügbar).")
+    # M-06: both values must be explicit and independently labeled. Either may
+    # be a numeric value or an explicit unavailable state.
+    benchmark = _section_body(text, 7, SECTION_NAMES[6])
+    portfolio_labels = (r"Portfolio(?:-Gesamt)?performance", r"Gesamtperformance\s+Portfolio")
+    average_labels = (r"(?:Ø|durchschnitt(?:liche|s)?|mittelwert)\s*Positionsperformance",
+                      r"Positionsperformance(?:\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?\))?")
+    portfolio_value = _label_value(benchmark, portfolio_labels)
+    average_value = _label_value(benchmark, average_labels)
+    portfolio_ok = _valid_numeric_value(portfolio_value) or _is_explicit_unavailable(benchmark, portfolio_labels)
+    average_ok = _valid_numeric_value(average_value) or _is_explicit_unavailable(benchmark, average_labels)
+    # Preserve compatibility with the report's established explicit prose form.
+    portfolio_ok = portfolio_ok or _has_any(benchmark, (r"Portfolio-Gesamtperformance\s+(?:nicht verfügbar|nicht verifizierbar)",))
+    average_ok = average_ok or _has_any(benchmark, (r"Positionsperformance\s+(?:nicht verfügbar|nicht verifizierbar)",))
+    if not (portfolio_ok and average_ok):
+        errors.append("M-06: Portfolio-Gesamtperformance und durchschnittliche Positionsperformance müssen jeweils einen konkreten Zahlenwert oder einen ausdrücklichen Nichtverfügbarkeitsstatus haben.")
 
-    # M-07: thesis update must preserve identity/version/status rather than prose only.
+    # M-07: identity/version/status values must be populated, not merely labels.
     thesis = _section_body(text, 2, SECTION_NAMES[1])
-    thesis_identity = _has_any(thesis, (r"Thesen-ID\s*:", r"thesis_id\s*[:=]"))
-    thesis_version = _has_any(thesis, (r"Version\s*:", r"version\s*[:=]"))
-    thesis_status = _has_any(thesis, (r"Status\s*:", r"status\s*[:=]"))
-    if not (thesis_identity and thesis_version and thesis_status):
-        errors.append("M-07: Thesen-Update benötigt These-ID, Version und Status; Änderungen müssen nachvollziehbar sein.")
+    thesis_id = _label_value(thesis, (r"Thesen-ID", r"thesis_id"))
+    version = _label_value(thesis, (r"Version", r"version"))
+    status = _label_value(thesis, (r"Status", r"status"))
+    version_match = re.search(r"\d+", version or "")
+    status_ok = bool(status and re.search(
+        r"(?i)\b(?:NEU|BESTÄTIGT|ABGESCHWÄCHT|WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|FEHLT|UNKLAR|NICHT VERFÜGBAR)\b",
+        status,
+    ))
+    if not (thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok):
+        errors.append("M-07: Thesen-Update benötigt eine nichtleere Thesen-ID, positive Version und einen zulässigen, nichtleeren Status.")
 
-    # M-08: events need time zone, metric, reporting period and values when available.
+    # M-08: every field needs a non-placeholder value. Explicit FEHLT/UNKLAR
+    # remains visible as missing data, rather than being mistaken for a value.
     events = _section_body(text, 3, SECTION_NAMES[2])
-    event_fields = (
-        _has_any(events, (r"Uhrzeit\s*:", r"Zeit\s*:")),
-        _has_any(events, (r"Zeitzone\s*:", r"\b(?:ET|UTC|CET|CEST|GMT)\b")),
-        _has_any(events, (r"Kennzahl\s*:", r"Indikator\s*:")),
-        _has_any(events, (r"Berichtszeitraum\s*:", r"Zeitraum\s*:")),
-        _has_any(events, (r"(?:letzter Wert|Vorwert|Konsens|Istwert)\s*:", r"(?:letzter Wert|Vorwert|Konsens|Istwert)\s*(?:=|\b)")),
+    event_labels = (
+        (r"Uhrzeit", r"Zeit"),
+        (r"Zeitzone",),
+        (r"Kennzahl", r"Indikator"),
+        (r"Berichtszeitraum", r"Zeitraum"),
     )
-    if not all(event_fields):
-        errors.append("M-08: Ereignisdetails unvollständig; Uhrzeit, Zeitzone, Kennzahl, Zeitraum und verfügbare Werte/Konsens ausweisen.")
+    event_values = [_label_value(events, labels) for labels in event_labels]
+    timezone_value = event_values[1]
+    # Accept common named zones, UTC offsets, and IANA-style region names.
+    timezone_ok = bool(timezone_value and re.search(
+        r"(?i)(?:\b(?:ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|CET|CEST|GMT)\b|"
+        r"\b(?:UTC|GMT)?[+-]\d{1,2}(?::?\d{2})?\b|"
+        r"\b[A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?\b)", timezone_value))
+    values_ok = all(event_values[i] for i in (0, 2, 3)) and timezone_ok
+    # Observation may be on the same line or a subsequent line. Require a
+    # non-placeholder value after the observation label.
+    event_observation = any(_label_value(events, (label,)) for label in
+                            (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")) or _has_any(events, (
+        r"(?:letzter Wert|Vorwert|Konsens|Istwert)\s+(?:nicht verfügbar|FEHLT|UNKLAR)",
+    ))
+    no_relevant_events = _has_any(events, (
+        r"keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?Ereignisse",
+        r"Ereignisradar\s*:\s*keine",
+    ))
+    if not no_relevant_events and not (values_ok and event_observation):
+        errors.append("M-08: Ereignisdetails benötigen konkrete Uhrzeit, Zeitzone, Kennzahl, Zeitraum und einen ausgewiesenen Wert/Konsens oder expliziten Fehlstatus; alternativ muss ausdrücklich festgehalten sein, dass keine relevanten Ereignisse vorliegen.")
 
-    # M-09: actionable candidate data, without accepting a generic mention as a setup.
+    # M-09: candidate labels need usable values. Numeric fields must contain
+    # parseable numbers; explicit FEHLT is accepted only as a declared absence,
+    # and does not silently become a numeric trade level.
     candidates = _section_body(text, 5, SECTION_NAMES[4])
-    candidate_fields = (
-        _has_any(candidates, (r"Ticker\s*:", r"Asset\s*:")),
-        _has_any(candidates, (r"Trigger\s*:", r"Bestaetigung\s*:", r"Bestätigung\s*:")),
-        _has_any(candidates, (r"Einstieg\s*:", r"Entry\s*:")),
-        _has_any(candidates, (r"Stop\s*:", r"Stop-Loss\s*:")),
-        _has_any(candidates, (r"TP1\s*:", r"Ziel 1\s*:")),
-        _has_any(candidates, (r"TP2\s*:", r"Ziel 2\s*:")),
-        _has_any(candidates, (r"CRV\s*:", r"Chance-Risiko")),
-        _has_any(candidates, (r"Gegenargument\s*:", r"Risiko\s*:")),
-        _has_any(candidates, (r"Regelstatus\s*:", r"Datenstatus\s*:")),
-    )
-    if not all(candidate_fields):
-        errors.append("M-09: Technische Kandidaten benötigen Asset/Ticker, Trigger, Einstieg, Stop, TP1/TP2, CRV, Gegenargument und Regel-/Datenstatus.")
+    asset = _label_value(candidates, (r"Ticker", r"Asset"))
+    trigger = _label_value(candidates, (r"Trigger", r"Bestätigung", r"Bestaetigung"))
+    entry = _label_value(candidates, (r"Einstieg", r"Entry"))
+    stop = _label_value(candidates, (r"Stop", r"Stop-Loss"))
+    tp1 = _label_value(candidates, (r"TP1", r"Ziel\s*1"))
+    tp2 = _label_value(candidates, (r"TP2", r"Ziel\s*2"))
+    crv = _label_value(candidates, (r"CRV", r"Chance-Risiko"))
+    counter = _label_value(candidates, (r"Gegenargument", r"Risiko"))
+    rule_data = _label_value(candidates, (r"Regelstatus", r"Datenstatus"))
+    candidate_required = (asset, trigger, entry, stop, tp1, tp2, crv, counter, rule_data)
+    numeric_fields_ok = all(_valid_numeric_value(value) for value in (entry, stop, tp1, tp2, crv))
+    no_actionable_candidates = _has_any(candidates, (
+        r"keine\s+(?:belastbaren\s+)?(?:technischen\s+)?Kandidaten",
+        r"keine\s+Kandidaten\s+(?:mit\s+)?(?:belastbarem|konkretem)\s+Setup",
+    r"kein\s+belastbarer\s+technischer\s+Kandidat",
+    ))
+    if not no_actionable_candidates and (not all(candidate_required) or not numeric_fields_ok):
+        errors.append("M-09: Technische Kandidaten benötigen nichtleere Werte für Asset/Ticker, Trigger, Einstieg, Stop, TP1/TP2, CRV, Gegenargument und Regel-/Datenstatus; Einstieg/Stop/TP1/TP2/CRV müssen numerisch sein. Alternativ muss ausdrücklich ausgewiesen sein, dass keine belastbaren Kandidaten vorliegen.")
 
-    # M-10: if OHLCV is missing/stale, explicitly describe its effect on candidates.
+    # M-10: a concrete OHLCV issue and its candidate impact must both be stated.
     appendix = _section_body(text, 8, SECTION_NAMES[7])
-    warning = _has_any(appendix, (r"OHLCV.*(?:fehlt|fehlend|missing|luecke|lücke|nicht verfügbar|veraltet)",
-                                  r"(?:fehlt|fehlend|missing|luecke|lücke|nicht verfügbar|veraltet).*OHLCV"))
-    impact = _has_any(appendix, (r"Kandidat(?:en)?(?:.*)(?:eingeschränkt|nicht prüfbar|nicht valide|gesperrt)",
-                                 r"(?:eingeschränkt|nicht prüfbar|nicht valide|gesperrt).*Kandidat(?:en)?"))
-    if not (warning and impact):
-        errors.append("M-10: OHLCV-Datenlücken/-veraltung und konkrete Auswirkung auf technische Kandidaten müssen im Prüfanhang stehen.")
+    warning = _has_any(appendix, (
+        r"OHLCV.*(?:fehlt|fehlend|missing|luecke|lücke|nicht verfügbar|veraltet)",
+        r"(?:fehlt|fehlend|missing|luecke|lücke|nicht verfügbar|veraltet).*OHLCV",
+    ))
+    impact = _has_any(appendix, (
+        r"Kandidat(?:en)?(?:[^\r\n]{0,100})(?:eingeschränkt|nicht prüfbar|nicht valide|gesperrt)",
+        r"(?:eingeschränkt|nicht prüfbar|nicht valide|gesperrt)(?:[^\r\n]{0,100})Kandidat(?:en)?",
+    ))
+    clean_data = _has_any(appendix, (
+        r"OHLCV[^\r\n]{0,100}(?:vollständig|vollstaendig|keine\s+(?:Daten)?lücken|keine\s+fehlenden\s+Daten)",
+        r"(?:vollständig|vollstaendig|keine\s+(?:Daten)?lücken|keine\s+fehlenden\s+Daten)[^\r\n]{0,100}OHLCV",
+    )) and _has_any(appendix, (
+        r"Kandidat(?:en)?[^\r\n]{0,100}(?:nicht eingeschränkt|keine Einschränkung|unverändert valide)",
+        r"(?:nicht eingeschränkt|keine Einschränkung|unverändert valide)[^\r\n]{0,100}Kandidat(?:en)?",
+    ))
+    if not ((warning and impact) or clean_data):
+        errors.append("M-10: OHLCV-Datenlücke/-veraltung und konkrete Auswirkung auf Kandidaten müssen ausgewiesen sein; bei lückenfreien Daten sind vollständige OHLCV-Abdeckung und fehlende Kandidateneinschränkung ausdrücklich zu nennen.")
 
 def validate_report(text: str) -> list[str]:
     errors: list[str] = []
