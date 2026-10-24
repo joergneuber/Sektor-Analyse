@@ -58,6 +58,21 @@ class TradingRadarDataContractTests(unittest.TestCase):
         benchmark = BENCHMARK.read_text(encoding="utf-8-sig")
         self.assertIn('OUTPUT_FILE = Path("Benchmark_Live.txt")', benchmark)
 
+    def test_report_prompt_has_explicit_m05_m10_fields_and_no_fabrication_rules(self):
+        self.assertIn("REPORT-GATE-VERTRAG", self.radar_source)
+        self.assertIn("Keine neue oder aktualisierte", self.radar_source)
+        self.assertIn("Portfolio-Gesamtperformance", self.radar_source)
+        self.assertIn("OHLCV-Abdeckung", self.radar_source)
+
+    def test_workflow_keeps_non_final_as_artifact_not_regular_publication(self):
+        if not WORKFLOW.is_file():
+            self.skipTest("Workflow fehlt in dieser Anlage")
+        workflow = WORKFLOW.read_text(encoding="utf-8-sig")
+        self.assertIn("Vorläufigen Trading-Radar-Bericht als Artifact sichern", workflow)
+        self.assertIn("trading-radar-vorlaeufig-${{ github.run_id }}", workflow)
+        self.assertIn("fachlich_final == 'NICHT_FINAL'", workflow)
+        self.assertIn("steps.trading-radar-report-check.outcome == 'success'", workflow)
+
     def test_radar_prompt_keeps_a_b_c_as_non_authorization(self):
         self.assertIn("interne Kategorisierungen der Setups", self.radar_source)
         self.assertIn("KEINE finale Kaufentscheidung", self.radar_source)

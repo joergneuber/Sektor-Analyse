@@ -43,6 +43,13 @@ class ReportGateTests(unittest.TestCase):
         errors = gate.validate_report(text)
         self.assertTrue(any("M-07" in e for e in errors), errors)
 
+    def test_m07_accepts_explicit_no_thesis_update_without_fabricated_id(self):
+        text = report_fixture().replace(
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.",
+        )
+        self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
+
     def test_m08_requires_event_detail(self):
         text = report_fixture().replace("Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.", "Ein wichtiges makroökonomisches Ereignis wurde angekündigt und wird beobachtet.")
         errors = gate.validate_report(text)
