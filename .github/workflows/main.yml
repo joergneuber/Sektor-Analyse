@@ -584,7 +584,7 @@ jobs:
       # sichern. Das ist keine reguläre Veröffentlichung: Drive und E-Mail
       # bleiben für NICHT_FINAL gesperrt.
       - name: Vorläufigen Trading-Radar-Bericht als Artifact sichern
-        if: ${{ steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'NICHT_FINAL' }}
+        if: ${{ steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL' }}
         uses: actions/upload-artifact@v6
         with:
           name: trading-radar-vorlaeufig-${{ github.run_id }}
@@ -617,7 +617,7 @@ jobs:
       # ============================================================
 
       - name: Daten hochladen
-        if: always()
+        if: ${{ steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar.outputs.fachlich_final == 'FINAL' }}
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
@@ -631,7 +631,7 @@ jobs:
       # ============================================================
 
       - name: Auswertung per E-Mail versenden
-        if: steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && steps.trading-radar-report-check.outcome == 'success'
+        if: ${{ steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && steps.trading-radar.outputs.fachlich_final == 'FINAL' && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && steps.trading-radar-report-check.outcome == 'success' }}
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
