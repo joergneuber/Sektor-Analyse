@@ -36,9 +36,9 @@ jobs:
         run: |
           set -euo pipefail
           today="$(date -u +%Y-%m-%d)"
-          previous_success="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+          previous_success="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
             | jq -r --arg today "$today" --arg branch "$GITHUB_REF_NAME" --arg current "$GITHUB_RUN_ID" '
-              .workflow_runs[]
+              .[] | .workflow_runs[]
               | select(.path == ".github/workflows/main.yml")
               | select(.head_branch == $branch)
               | select((.id | tostring) != $current)
@@ -664,9 +664,17 @@ jobs:
           from email.message import EmailMessage
           from pathlib import Path
 
-          status_files = sorted(glob.glob("Trading_Radar_Status*.txt"))
+          # Der Trading-Radar erzeugt den technischen Status unter diesem Namen.
+          # Den alten Namen weiterhin akzeptieren, damit ältere Projektstände laufen.
+          status_files = sorted(
+              glob.glob("Gemini_Fallback_Status_*.txt")
+              + glob.glob("Trading_Radar_Status*.txt")
+          )
           if not status_files:
-              raise SystemExit("FEHLER: Trading_Radar_Status*.txt fehlt; keine Statusdatei fuer Fallback-Mail.")
+              raise SystemExit(
+                  "FEHLER: Weder Gemini_Fallback_Status_*.txt noch "
+                  "Trading_Radar_Status*.txt gefunden; keine Statusdatei fuer Fallback-Mail."
+              )
 
           status_file = Path(status_files[-1])
           packages = sorted(glob.glob("CHATGPT_FALLBACK_*.zip"))
