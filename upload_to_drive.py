@@ -82,7 +82,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 def validierter_gemini_report(status, fachlich_final, report_path, report_check, skip_upload=False):
     """Gibt nur den exakt geprüften aktuellen Reportpfad zur Veröffentlichung frei."""
-    if skip_upload or status != "SUCCESS" or fachlich_final not in {"FINAL", "NICHT_FINAL"}:
+    if skip_upload or status != "SUCCESS" or fachlich_final != "FINAL":
         return None
     if report_check != "success" or not report_path:
         return None
@@ -95,7 +95,7 @@ def validierter_gemini_report(status, fachlich_final, report_path, report_check,
 
 def validierter_trading_radar_report(status, fachlich_final, report_path, report_check, skip_upload=False):
     """Gibt nur den im aktuellen Lauf geprüften Trading-Radar-Bericht frei."""
-    if skip_upload or status != "SUCCESS" or fachlich_final not in {"FINAL", "NICHT_FINAL"}:
+    if skip_upload or status != "SUCCESS" or fachlich_final != "FINAL":
         return None
     if report_check != "success" or not report_path:
         return None

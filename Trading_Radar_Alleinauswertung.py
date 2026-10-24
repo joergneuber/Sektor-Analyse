@@ -535,7 +535,7 @@ def lade_offenen_positionen_check_tab2():
             out.append(" | ".join(formatted_fields))
         selected_tickers = [str(row.get("Ticker", "")).strip() for row in selected]
         print(
-            f"HISTORIE 10.5: {len(selected)} geschlossene Position(en) aus Tab 2 innerhalb des 3-Tage-Fensters | "
+            f"HISTORIE 10.5: {len(selected)} geschlossene Position(en) vollständig aus Tab 2 übernommen | "
             f"Ticker={selected_tickers}"
         )
         return "\n".join(out)
@@ -1767,7 +1767,7 @@ def _offene_positionen_quellblock(csv_pfad):
         raise RuntimeError(f"Offene Positionsquelle: Quellen-/Exportzählung abweichend: Quelle={offene_quellzeilen}, Export={export_count}.")
     if export_count == 0:
         raise RuntimeError("Keine offenen Positionen exportiert; Vollständigkeit nicht bestätigt.")
-    return f"OFFENE_POSITIONEN_QUELLANZAHL={offene_quellzeilen}\\nOFFENE_POSITIONEN_ANZAHL={export_count}\\n" + "\\n".join(rows)
+    return f"OFFENE_POSITIONEN_QUELLANZAHL={offene_quellzeilen}\nOFFENE_POSITIONEN_ANZAHL={export_count}\n" + "\n".join(rows)
 
 def _technische_zielzonen_quelle(csv_pfad):
     """Liest die technischen Check-Felder verbindlich aus der Check-Datei.
@@ -16201,8 +16201,15 @@ def speichere_ergebnis(text, eingabedateien=None):
                 "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
                 "geschlossene Positionsquelle wurde im Lauf nicht geladen"
             )
-        if "10.5 Geschlossene Positionen" not in text:
-            text = text.rstrip() + "\n\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n" + (geschlossene_positionen_fakten or "NICHT VERFÜGBAR") + "\n"
+        # M-01: Die Gemini-Sektion wird stets entfernt und deterministisch aus
+        # der geladenen Tab-2-Faktenbasis neu aufgebaut. Gemini darf die Quelle
+        # weder ersetzen noch eine widersprüchliche Fehlermeldung stehen lassen.
+        closed_heading = r"(?m)^\s*10\.5\s+Geschlossene Positionen[^\r\n]*\r?\n"
+        text = re.sub(closed_heading, "", text)
+        # Alte, frei formulierte Tab-2-Fehlerzeilen aus Gemini ebenfalls entfernen.
+        text = re.sub(r"(?im)^TAB-2-QUELLE NICHT VERIFIZIERBAR:.*(?:\r?\n|$)", "", text)
+        closed_block = (geschlossene_positionen_fakten or "TAB-2-QUELLE NICHT VERIFIZIERBAR: Quellenblock fehlt")
+        text = text.rstrip() + "\n\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n" + closed_block + "\n"
         if str(geschlossene_positionen_fakten or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
             text = re.sub(
                 r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\s*$",

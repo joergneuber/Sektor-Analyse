@@ -54,6 +54,34 @@ def validate_report(text: str) -> list[str]:
         if len(meaningful) < 20:
             errors.append(f"Pflichtabschnitt {number} ({title}): Inhalt fehlt/zu kurz")
 
+
+    # Fachlich unvollständige Berichte dürfen den regulären Publikations-Gate
+    # nicht passieren. NICHT_FINAL bleibt ein Fehler-/Teilbericht.
+    status = re.findall(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text)
+    if len(status) != 1:
+        errors.append("Fachstatusmarker fehlt oder ist nicht eindeutig")
+    elif status[0] != "FINAL":
+        errors.append("Fachstatus NICHT_FINAL: reguläre Veröffentlichung gesperrt")
+
+    # Tab 2 muss im Bericht als deterministischer Quellenblock vorkommen und
+    # die ausgewiesene Zeilenzahl muss mit den exportierten Datensätzen stimmen.
+    closed = re.search(r"(?ms)^10\.5 Geschlossene Positionen[^\r\n]*\r?\n(.*?)(?=^\s*TRADING_RADAR_FACHLICH_FINAL=|\Z)", text)
+    if not closed:
+        errors.append("Geschlossene-Positionen-Abschnitt 10.5 fehlt")
+    else:
+        body = closed.group(1)
+        count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", body)
+        rows = [line for line in body.splitlines() if re.search(r"(?m)(?:^|\s)Ticker:\s*\S+", line)]
+        if not count_match:
+            errors.append("Tab-2-Quellen-/Exportzählung fehlt")
+        elif int(count_match.group(1)) != len(rows):
+            errors.append(f"Tab-2-Zählung widerspricht Positionszeilen: gemeldet={count_match.group(1)}, erkannt={len(rows)}")
+        if "TAB-2-QUELLE NICHT VERIFIZIERBAR" in body:
+            errors.append("Tab-2-Quelle im Bericht als nicht verifizierbar markiert")
+
+    if r"\n" in text:
+        errors.append("Bericht enthält literal \\n statt physischer Zeilenumbrüche")
+
     return errors
 
 

@@ -97,6 +97,9 @@ def main():
         raise ValueError(f"Reportversand blockiert: Report-Check={report_check}")
 
     jetzt_berlin = datetime.now(ZoneInfo("Europe/Berlin"))
+    if report_status != "FINAL":
+        raise ValueError("Reportversand blockiert: fachlich NICHT_FINAL; Teilbericht nicht regulär versenden")
+
     fachlich_nicht_final = report_status == "NICHT_FINAL"
 
     msg = EmailMessage()
