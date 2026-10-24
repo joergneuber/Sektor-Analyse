@@ -45,13 +45,11 @@ class GeminiStatusDeliveryTests(unittest.TestCase):
         self.assertIn("final", FakeSMTP.last_message["Subject"].lower())
         self.assertNotIn("NICHT_FINAL", FakeSMTP.last_message.get_payload(0).get_content())
 
-    def test_success_nicht_final_email_is_labeled(self):
+    def test_nicht_final_email_is_blocked(self):
         self.report.write_text("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n", encoding="utf-8-sig")
         with patch.dict(os.environ, {**self.env, "TRADING_RADAR_FACHLICH_FINAL": "NICHT_FINAL"}, clear=False), patch.object(send_mail.smtplib, "SMTP", FakeSMTP):
-            send_mail.main()
-        self.assertIn("NICHT_FINAL", FakeSMTP.last_message["Subject"])
-        self.assertIn("ACHTUNG: FACHLICH NICHT_FINAL", FakeSMTP.last_message.get_payload(0).get_content())
-        self.assertIn("KEIN technischer Gemini-Fallback", FakeSMTP.last_message.get_payload(0).get_content())
+            with self.assertRaisesRegex(ValueError, "fachlich NICHT_FINAL"):
+                send_mail.main()
 
     def test_technical_failure_email_path_is_blocked(self):
         self.report.write_text("TRADING_RADAR_FACHLICH_FINAL=FINAL\n", encoding="utf-8")
@@ -61,9 +59,8 @@ class GeminiStatusDeliveryTests(unittest.TestCase):
 
     def test_upload_accepts_only_exact_verified_current_report(self):
         self.report.write_text("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n", encoding="utf-8")
-        self.assertEqual(
-            upload_to_drive.validierter_trading_radar_report("SUCCESS", "NICHT_FINAL", str(self.report), "success"),
-            str(self.report),
+        self.assertIsNone(
+            upload_to_drive.validierter_trading_radar_report("SUCCESS", "NICHT_FINAL", str(self.report), "success")
         )
         self.assertIsNone(upload_to_drive.validierter_trading_radar_report("TECHNISCHER_FALLBACK", "FINAL", str(self.report), "success"))
         self.assertIsNone(upload_to_drive.validierter_trading_radar_report("SUCCESS", "FINAL", str(self.report), "failure"))

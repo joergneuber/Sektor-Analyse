@@ -33,8 +33,8 @@ class TradingRadarGateTests(unittest.TestCase):
     def test_final_report_accepted(self):
         self.assertEqual(self.check(), str(self.report))
 
-    def test_non_final_report_accepted_as_report(self):
-        self.assertEqual(self.check(fachlich="NICHT_FINAL"), str(self.report))
+    def test_non_final_report_blocked_from_publication(self):
+        self.assertIsNone(self.check(fachlich="NICHT_FINAL"))
 
     def test_bad_process_status_rejected(self):
         self.assertIsNone(self.check(status="FAILED"))
