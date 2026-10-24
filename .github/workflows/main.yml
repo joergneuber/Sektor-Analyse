@@ -537,7 +537,8 @@ jobs:
           if-no-files-found: error
 
       # Technischen Erfolg und fachlichen Status getrennt prüfen.
-      # FINAL und NICHT_FINAL sind beide aktuelle, versendbare Reports.
+      # FINAL und NICHT_FINAL sind technisch gültig; NICHT_FINAL wird nur als
+      # vorläufiges Artifact gesichert und nicht regulär veröffentlicht.
       - name: Neue Trading-Radar technisch gültig und frisch verifizieren
         id: trading-radar-report-check
         if: always()
@@ -578,6 +579,17 @@ jobs:
           fi
           echo "TRADING_RADAR_FACHLICH_FINAL=$report_status" >> "$GITHUB_OUTPUT"
           echo "REPORT_CHECK=PASS | frischer Bericht, acht Abschnitte und eindeutiger Status=$report_status"
+
+      # Fachlich vorläufige, aber technisch gültige Berichte als GitHub Artifact
+      # sichern. Das ist keine reguläre Veröffentlichung: Drive und E-Mail
+      # bleiben für NICHT_FINAL gesperrt.
+      - name: Vorläufigen Trading-Radar-Bericht als Artifact sichern
+        if: ${{ steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'NICHT_FINAL' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: trading-radar-vorlaeufig-${{ github.run_id }}
+          path: ${{ steps.trading-radar.outputs.report_path }}
+          if-no-files-found: error
 
       # YouTube-States erst nach bestandenem Trading-Radar-Report-Gate sichern.
       # Ein Exit 0 allein genügt nicht: bei fehlendem/ungültigem Bericht bleiben
