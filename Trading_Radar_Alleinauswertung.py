@@ -4952,6 +4952,30 @@ Gib diese acht Abschnitte aus:
 7. MSCI-Vergleich
 8. Daten-/Prüfanhang
 
+REPORT-GATE-VERTRAG (Felder exakt und einzeln ausweisen; keine Werte erfinden):
+- Abschnitt 2: Thesen-ID, Version und Status je aktualisierter These. Wenn keine
+  These neu/aktualisiert wurde, schreibe exakt: "Keine neue oder aktualisierte
+  These; Thesenregister geprüft, keine Änderung." Erfinde dafür keine ID/Version.
+- Abschnitt 3: Ereignis-Uhrzeit, Zeitzone, Kennzahl, Zeitraum sowie letzter
+  Wert/Konsens einzeln beschriften. Wenn die Werte aus den Quellen fehlen,
+  kennzeichne das konkrete Feld ausdrücklich als NICHT VERFÜGBAR. Wenn keine
+  relevanten Ereignisse vorliegen, schreibe exakt: "Keine relevanten Ereignisse
+  im geprüften Zeitraum."
+- Abschnitt 5: Für jeden Kandidaten Asset/Ticker, Trigger, Einstieg, Stop, TP1,
+  TP2, CRV, Gegenargument und Regel-/Datenstatus einzeln beschriften. Einstieg,
+  Stop, TP1, TP2 und CRV nur als vollständige numerische Werte aus Quellen oder
+  regelbasierter Berechnung ausgeben. Wenn kein Kandidat belastbar ist, schreibe
+  exakt: "Keine belastbaren technischen Kandidaten; keine Handelsfreigabe."
+- Abschnitt 7: Portfolio-Gesamtperformance und durchschnittliche
+  Positionsperformance als getrennte Felder ausweisen. Nur berechnete Werte
+  verwenden; andernfalls für jedes Feld ausdrücklich NICHT VERFÜGBAR angeben.
+- Abschnitt 8: OHLCV-Abdeckung, Datenstand und Lückenstatus nennen. Bei Lücken
+  konkrete betroffene Kandidaten/Einschränkung nennen. Bei vollständiger Abdeckung
+  ausdrücklich "OHLCV vollständig, keine Datenlücken; Kandidaten nicht
+  eingeschränkt" schreiben, sofern das aus dem Datenlauf belegt ist.
+- Abschnitt 10.5 wird ausschließlich danach deterministisch aus dem geladenen
+  Tab-2-Quellblock ergänzt; dort keine freie Gemini-Zählung verwenden.
+
 ALTBERICHT (nur Kontext, nicht kopieren):
 __ALTBERICHT__
 

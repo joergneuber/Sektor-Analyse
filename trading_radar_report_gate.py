@@ -144,8 +144,14 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         r"(?i)\b(?:NEU|BESTÄTIGT|ABGESCHWÄCHT|WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|FEHLT|UNKLAR|NICHT VERFÜGBAR)\b",
         status,
     ))
-    if not (thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok):
-        errors.append("M-07: Thesen-Update benötigt eine nichtleere Thesen-ID, positive Version und einen zulässigen, nichtleeren Status.")
+    no_thesis_update = _has_any(thesis, (
+        r"keine neue oder aktualisierte these;?\s*thesenregister geprüft, keine änderung",
+        r"keine neue oder aktualisierte these;?\s*thesenregister geprueft, keine aenderung",
+    ))
+    if not no_thesis_update and not (
+        thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok
+    ):
+        errors.append("M-07: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder den expliziten Nachweis, dass keine These aktualisiert wurde.")
 
     # M-08: every field needs a non-placeholder value. Explicit FEHLT/UNKLAR
     # remains visible as missing data, rather than being mistaken for a value.
