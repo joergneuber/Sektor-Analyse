@@ -23,6 +23,82 @@ HEADER_RE = re.compile(
 )
 
 
+
+def _section_body(text: str, number: int, title: str) -> str:
+    """Return the body of one canonical numbered section, bounded by the next heading."""
+    headings = list(HEADER_RE.finditer(text))
+    start = next((m for m in headings if int(m.group("number")) == number
+                  and m.group("title").strip().casefold() == title.casefold()), None)
+    if start is None:
+        return ""
+    end = next((m.start() for m in headings if m.start() > start.start()
+                and int(m.group("number")) > number), len(text))
+    return text[start.end():end]
+
+def _has_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
+
+def _validate_m05_m10(text: str, errors: list[str]) -> None:
+    """Check concrete M-05..M-10 report evidence; never infer missing facts as present."""
+    # M-05: source-derived closed-position rows/count are checked above. A count is
+    # not a license to require quantity/fees, which are outside this contract.
+
+    # M-06: distinguish portfolio total performance from average position performance.
+    portfolio = _section_body(text, 7, SECTION_NAMES[6])
+    portfolio_total = _has_any(portfolio, (
+        r"Portfolio(?:-Gesamt)?performance", r"Gesamtperformance.*Portfolio",
+        r"Portfolio.*Performance.*(?:nicht verfügbar|nicht verifizierbar|fehl\w*|%|\d)"))
+    position_average = _has_any(portfolio, (
+        r"(?:Ø|durchschnitt(?:liche|s)?|mittelwert).*Positionsperformance",
+        r"Positionsperformance.*(?:Ø|durchschnitt|mittelwert|%|nicht verfügbar|nicht verifizierbar)"))
+    if not (portfolio_total and position_average):
+        errors.append("M-06: Portfolio-Gesamtperformance und durchschnittliche Positionsperformance müssen getrennt ausgewiesen sein (oder jeweils ausdrücklich als nicht verfügbar).")
+
+    # M-07: thesis update must preserve identity/version/status rather than prose only.
+    thesis = _section_body(text, 2, SECTION_NAMES[1])
+    thesis_identity = _has_any(thesis, (r"Thesen-ID\s*:", r"thesis_id\s*[:=]"))
+    thesis_version = _has_any(thesis, (r"Version\s*:", r"version\s*[:=]"))
+    thesis_status = _has_any(thesis, (r"Status\s*:", r"status\s*[:=]"))
+    if not (thesis_identity and thesis_version and thesis_status):
+        errors.append("M-07: Thesen-Update benötigt These-ID, Version und Status; Änderungen müssen nachvollziehbar sein.")
+
+    # M-08: events need time zone, metric, reporting period and values when available.
+    events = _section_body(text, 3, SECTION_NAMES[2])
+    event_fields = (
+        _has_any(events, (r"Uhrzeit\s*:", r"Zeit\s*:")),
+        _has_any(events, (r"Zeitzone\s*:", r"\b(?:ET|UTC|CET|CEST|GMT)\b")),
+        _has_any(events, (r"Kennzahl\s*:", r"Indikator\s*:")),
+        _has_any(events, (r"Berichtszeitraum\s*:", r"Zeitraum\s*:")),
+        _has_any(events, (r"(?:letzter Wert|Vorwert|Konsens|Istwert)\s*:", r"(?:letzter Wert|Vorwert|Konsens|Istwert)\s*(?:=|\b)")),
+    )
+    if not all(event_fields):
+        errors.append("M-08: Ereignisdetails unvollständig; Uhrzeit, Zeitzone, Kennzahl, Zeitraum und verfügbare Werte/Konsens ausweisen.")
+
+    # M-09: actionable candidate data, without accepting a generic mention as a setup.
+    candidates = _section_body(text, 5, SECTION_NAMES[4])
+    candidate_fields = (
+        _has_any(candidates, (r"Ticker\s*:", r"Asset\s*:")),
+        _has_any(candidates, (r"Trigger\s*:", r"Bestaetigung\s*:", r"Bestätigung\s*:")),
+        _has_any(candidates, (r"Einstieg\s*:", r"Entry\s*:")),
+        _has_any(candidates, (r"Stop\s*:", r"Stop-Loss\s*:")),
+        _has_any(candidates, (r"TP1\s*:", r"Ziel 1\s*:")),
+        _has_any(candidates, (r"TP2\s*:", r"Ziel 2\s*:")),
+        _has_any(candidates, (r"CRV\s*:", r"Chance-Risiko")),
+        _has_any(candidates, (r"Gegenargument\s*:", r"Risiko\s*:")),
+        _has_any(candidates, (r"Regelstatus\s*:", r"Datenstatus\s*:")),
+    )
+    if not all(candidate_fields):
+        errors.append("M-09: Technische Kandidaten benötigen Asset/Ticker, Trigger, Einstieg, Stop, TP1/TP2, CRV, Gegenargument und Regel-/Datenstatus.")
+
+    # M-10: if OHLCV is missing/stale, explicitly describe its effect on candidates.
+    appendix = _section_body(text, 8, SECTION_NAMES[7])
+    warning = _has_any(appendix, (r"OHLCV.*(?:fehlt|fehlend|missing|luecke|lücke|nicht verfügbar|veraltet)",
+                                  r"(?:fehlt|fehlend|missing|luecke|lücke|nicht verfügbar|veraltet).*OHLCV"))
+    impact = _has_any(appendix, (r"Kandidat(?:en)?(?:.*)(?:eingeschränkt|nicht prüfbar|nicht valide|gesperrt)",
+                                 r"(?:eingeschränkt|nicht prüfbar|nicht valide|gesperrt).*Kandidat(?:en)?"))
+    if not (warning and impact):
+        errors.append("M-10: OHLCV-Datenlücken/-veraltung und konkrete Auswirkung auf technische Kandidaten müssen im Prüfanhang stehen.")
+
 def validate_report(text: str) -> list[str]:
     errors: list[str] = []
     if not text.strip():
@@ -82,6 +158,7 @@ def validate_report(text: str) -> list[str]:
     if r"\n" in text:
         errors.append("Bericht enthält literal \\n statt physischer Zeilenumbrüche")
 
+    _validate_m05_m10(text, errors)
     return errors
 
 
