@@ -57,6 +57,83 @@ class ReportGateTests(unittest.TestCase):
         errors = gate.validate_report(report_fixture(ohlcv_warning=False))
         self.assertTrue(any("M-10" in e for e in errors), errors)
 
+
+    def test_m06_rejects_placeholder_performance_values(self):
+        text = report_fixture().replace(
+            "Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).",
+            "Portfolio-Gesamtperformance: TBD; Ø Positionsperformance: Platzhalter.",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-06" in e for e in errors), errors)
+
+    def test_m07_rejects_empty_identity_and_invalid_status(self):
+        text = report_fixture().replace(
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Thesen-ID: | Version: 0 | Status: vielleicht.",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-07" in e for e in errors), errors)
+
+    def test_m08_rejects_placeholder_event_values(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "Uhrzeit: TBD | Zeitzone: ET | Kennzahl: | Berichtszeitraum: N/A | letzter Wert: TBD.",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-08" in e for e in errors), errors)
+
+    def test_m09_rejects_non_numeric_levels_and_crv(self):
+        text = report_fixture().replace(
+            "Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Einstieg: bald | Stop: tief | TP1: später | TP2: offen | CRV: gut",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-09" in e for e in errors), errors)
+
+
+    def test_m09_rejects_number_embedded_in_prose(self):
+        text = report_fixture().replace(
+            "Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Einstieg: bald 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-09" in e for e in errors), errors)
+
+    def test_m09_accepts_complete_numeric_values_with_units(self):
+        text = report_fixture().replace(
+            "Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Einstieg: 100,50 EUR | Stop: 95,00 EUR | TP1: 110,00 EUR | TP2: 120,00 EUR | CRV: 2,0x",
+        )
+        self.assertEqual(gate.validate_report(text), [])
+
+    def test_m08_accepts_labeled_event_values_on_following_lines(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "Uhrzeit:\n14:30\nZeitzone:\nAmerica/New_York\nKennzahl:\nCPI\nBerichtszeitraum:\nQ3 2026\nletzter Wert:\n2.8",
+        )
+        self.assertEqual(gate.validate_report(text), [])
+
+    def test_m08_accepts_explicit_no_relevant_events(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "Keine relevanten Ereignisse im Berichtszeitraum.",
+        )
+        self.assertEqual(gate.validate_report(text), [])
+
+    def test_m09_accepts_explicit_no_actionable_candidates(self):
+        text = report_fixture().replace(
+            "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Datenlücke geprüft; Regelstatus: valide.",
+            "Keine belastbaren technischen Kandidaten; fehlende Voraussetzungen werden nicht als Setup ausgegeben.",
+        )
+        self.assertEqual(gate.validate_report(text), [])
+
+    def test_m10_accepts_explicit_complete_ohlcv_and_unrestricted_candidates(self):
+        text = report_fixture().replace(
+            "WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt.",
+            "OHLCV vollständig und keine Datenlücken; Kandidaten nicht eingeschränkt und unverändert valide.",
+        )
+        self.assertEqual(gate.validate_report(text), [])
+
     def test_non_final_report_blocked(self):
         errors = gate.validate_report(report_fixture().replace("TRADING_RADAR_FACHLICH_FINAL=FINAL", "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"))
         self.assertTrue(any("NICHT_FINAL" in e for e in errors), errors)
