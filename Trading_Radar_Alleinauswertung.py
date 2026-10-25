@@ -188,6 +188,17 @@ DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
 
 
+def _parse_tab2_entry_date_text(value):
+    """Parse only the textual date formats accepted by the Tab-2 contract."""
+    raw = str(value or "").strip()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _tab2_nonempty_rows_with_source_numbers(values, start_sheet_row=3):
     """Return nonempty row dictionaries and their original physical Sheet row numbers.
 
@@ -472,7 +483,7 @@ def lade_offenen_positionen_check_tab2():
             raise RuntimeError("10.5: Tab 'Geschlossene Positionen' enthält keine Headerzeile.")
 
         headers = [str(x).strip() for x in values[1]]
-        required_headers = {"Ticker", "Ausstiegsdatum", "Status"}
+        required_headers = {"Ticker", "Einstiegsdatum", "Ausstiegsdatum", "Status"}
         missing_headers = sorted(required_headers - set(headers))
         if missing_headers:
             raise RuntimeError(
@@ -499,12 +510,6 @@ def lade_offenen_positionen_check_tab2():
             for index, row in enumerate(rows)
             if not str(row.get("Ticker", "")).strip()
         ]
-        if missing_ticker_rows:
-            raise RuntimeError(
-                "10.5: Befuellte Tab-2-Quellzeilen ohne Ticker; "
-                "Quellen-/Exportzaehlung nicht sicher: "
-                + ", ".join(map(str, missing_ticker_rows))
-            )
 
         def parse_date(value):
             # UNFORMATTED_VALUE liefert Google-Sheets-Datumszellen als
@@ -515,11 +520,9 @@ def lade_offenen_positionen_check_tab2():
                 return value
 
             raw = str(value or "").strip()
-            for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
-                try:
-                    return datetime.datetime.strptime(raw, fmt).date()
-                except ValueError:
-                    pass
+            parsed_text_date = _parse_tab2_entry_date_text(raw)
+            if parsed_text_date is not None:
+                return parsed_text_date
 
             # Google-Sheets-Datumssystem: Seriennummer 25569 = 1970-01-01.
             # Nur ein plausibler Kalenderbereich wird als Datum interpretiert,
@@ -534,8 +537,21 @@ def lade_offenen_positionen_check_tab2():
                     pass
             return None
 
+        # Positionsidentitaet gemaess Datenvertrag: Ticker + Einstiegsdatum.
+        # Ohne ein parsebares Einstiegsdatum kann die Zeile nicht sicher einer
+        # einzelnen historischen Position zugeordnet werden; sie wird nicht
+        # stillschweigend aus dem Export entfernt.
+        invalid_entry_date_rows = [
+            source_row_numbers[index]
+            for index, row in enumerate(rows)
+            if parse_date(row.get("Einstiegsdatum")) is None
+        ]
+
         # Keine Datumsselektion: vollständige Tab-2-Zeilenbasis übernehmen.
-        selected = list(rows)
+        # Jede gefuellte Quellzeile bleibt enthalten. Identitaet wird spaeter
+        # fachlich ueber Ticker + Einstiegsdatum geprueft; die physische
+        # Quellzeile dient zusaetzlich der Rueckverfolgbarkeit.
+        selected = list(zip(source_row_numbers, rows))
         parseable_dates = sum(parse_date(row.get("Ausstiegsdatum")) is not None for row in rows)
         print(
             f"10.5 TAB-2-VOLLSTÄNDIGKEIT: quellzeilen={len(rows)} | "
@@ -557,29 +573,63 @@ def lade_offenen_positionen_check_tab2():
             "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs", "OS_Performance%",
             "OS_Quelle", "OS_Kurszeit",
         ]
-        out = [f"TAB-2-ANZAHL={len(selected)}", "TAB-2-QUELLE=Geschlossene Positionen"]
-        for row in selected:
-            formatted_fields = []
+        position_lines = []
+        for source_row_number, row in selected:
+            formatted_fields = [f"Quellzeile: {source_row_number}"]
             for field in fields:
                 raw_value = row.get(field, "")
                 if not str(raw_value).strip():
                     continue
-                # Bei UNFORMATTED_VALUE ist Ausstiegsdatum ggf. eine
-                # Google-Sheets-Seriennummer. Für Gemini wieder als Datum
-                # ausgeben, damit die Faktenbasis lesbar und stabil bleibt.
-                if field == "Ausstiegsdatum":
-                    parsed_exit = parse_date(raw_value)
-                    value = parsed_exit.strftime("%d.%m.%Y") if parsed_exit is not None else str(raw_value)
+                # Beide Datumsfelder werden für den Bericht kanonisch formatiert.
+                if field in {"Einstiegsdatum", "Ausstiegsdatum"}:
+                    parsed_date = parse_date(raw_value)
+                    value = parsed_date.strftime("%d.%m.%Y") if parsed_date is not None else str(raw_value)
                 else:
                     value = raw_value
                 formatted_fields.append(f"{field}: {value}")
-            out.append(" | ".join(formatted_fields))
-        selected_tickers = [str(row.get("Ticker", "")).strip() for row in selected]
+            position_lines.append(" | ".join(formatted_fields))
+
+        # Vor dem Setzen von Anzahl/Quellenmarker/Fingerabdruck muss jede
+        # Position über Ticker + Einstiegsdatum identifizierbar und der
+        # Schlüssel innerhalb des vollständigen Exports eindeutig sein.
+        identity_errors = []
+        if missing_ticker_rows:
+            identity_errors.append("Quellzeilen ohne Ticker=" + ",".join(map(str, missing_ticker_rows)))
+        if invalid_entry_date_rows:
+            identity_errors.append("Quellzeilen ohne parsebares Einstiegsdatum=" + ",".join(map(str, invalid_entry_date_rows)))
+        position_keys = []
+        for _, row in selected:
+            ticker = str(row.get("Ticker", "")).strip().casefold()
+            entry_date = parse_date(row.get("Einstiegsdatum"))
+            if ticker and entry_date:
+                position_keys.append((ticker, entry_date.isoformat()))
+        duplicate_keys = sorted(
+            f"{ticker}|{entry_date}"
+            for ticker, entry_date in set(position_keys)
+            if position_keys.count((ticker, entry_date)) > 1
+        )
+        if duplicate_keys:
+            identity_errors.append("doppelte Positionsschluessel Ticker+Einstiegsdatum=" + ",".join(duplicate_keys))
+
+        if identity_errors:
+            print("10.5 TAB-2-VALIDIERUNG FEHLER: " + "; ".join(identity_errors))
+            # Diagnosebericht bewahrt jede gelesene Quellzeile. Die kanonischen
+            # Marker werden bewusst nicht gesetzt; das Report-Gate blockiert
+            # eine Freigabe, ohne die Historie aus dem Bericht zu verlieren.
+            return "\n".join(
+                ["TAB-2-QUELLE NICHT VERIFIZIERBAR: " + "; ".join(identity_errors)]
+                + position_lines
+            )
+
+        selected_tickers = [str(row.get("Ticker", "")).strip() for _, row in selected]
         print(
             f"HISTORIE 10.5: {len(selected)} geschlossene Position(en) vollständig aus Tab 2 übernommen | "
             f"Ticker={selected_tickers}"
         )
-        return "\n".join(out)
+        return "\n".join(
+            [f"TAB-2-ANZAHL={len(selected)}", "TAB-2-QUELLE=Geschlossene Positionen"]
+            + position_lines
+        )
 
     except Exception as exc:
         if isinstance(exc, RuntimeError):
@@ -4994,6 +5044,10 @@ Gib diese acht Abschnitte aus:
 8. Daten-/Prüfanhang
 
 REPORT-GATE-VERTRAG (Felder exakt und einzeln ausweisen; keine Werte erfinden):
+WICHTIG: Die Feldnamen unten ohne Markdown-Fettschrift/Codeformatierung exakt als
+"Feld: Wert" ausgeben. Ereignisse jeweils als eigenen Listenpunkt mit den
+zugehörigen Feldern direkt darunter ausgeben; keine Felder eines Ereignisses
+für ein anderes Ereignis mitverwenden.
 - Abschnitt 2: Thesen-ID, Version und Status je aktualisierter These. Wenn keine
   These neu/aktualisiert wurde, schreibe exakt: "Keine neue oder aktualisierte
   These; Thesenregister geprüft, keine Änderung." Erfinde dafür keine ID/Version.
@@ -5199,7 +5253,18 @@ def gemini_auswertung_starten():
     # API-Versuch erneut aus Drive/CSV beschafft werden.
     offene_quelle = _offene_positionen_quellblock(eingabedateien.get("Offene Positionen+Check.csv"))
     global _GEMINI_GESCHLOSSENE_10_5_FINAL
-    geschlossene_10_5 = lade_offenen_positionen_check_tab2()
+    try:
+        geschlossene_10_5 = lade_offenen_positionen_check_tab2()
+    except Exception as exc:
+        # Ein Tab-2-Quellenfehler darf den Bericht nicht technisch verhindern.
+        # Der Bericht wird mit explizitem Fehlerstatus erstellt; das Report-Gate
+        # blockiert die reguläre Freigabe, und es werden keine Marker/Hashes
+        # fuer einen nicht verifizierten Export erfunden.
+        geschlossene_10_5 = (
+            "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
+            f"Lesen von Offene Positionen+Check / Tab Geschlossene Positionen fehlgeschlagen: {exc}"
+        )
+        print("WARNUNG 10.5: " + geschlossene_10_5)
     _GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_10_5 or ""
 
     # Fuer die finale Synthese wird weiterhin der autoritative Faktenblock erzeugt.
@@ -16298,44 +16363,137 @@ def _trading_radar_berichtsfelder_normalisieren(text):
                 body = body.rstrip() + f"\n{canonical}: NICHT VERFÜGBAR (keine belegte Berechnungsgrundlage)\n"
         text = text[:body_start] + body + text[body_end:]
 
-    # M-08: require each event field to be sourced or explicitly unavailable.
+    # M-08: normalize each event record independently. A valid first event
+    # must never mask missing fields in a later event. Only explicit unavailable
+    # values are inserted; no calendar values are fabricated.
     section = locate_section(text, 3, "Ereignisradar", 4)
     if section:
         _, body_start, body_end = section
         body = text[body_start:body_end]
-        required = (
-            ("Uhrzeit", (r"Uhrzeit", r"Zeit")),
-            ("Zeitzone", (r"Zeitzone",)),
-            ("Kennzahl", (r"Kennzahl", r"Indikator")),
-            ("Berichtszeitraum", (r"Berichtszeitraum", r"Zeitraum")),
+        body_trailing_newline = body.endswith("\n")
+        no_events = re.fullmatch(
+            r"(?is)\s*(?:[-*•]\s*)?(?:Ereignisradar\s*:\s*)?"
+            r"keine\s+(?:(?:relevanten|anstehenden)\s+)?ereignisse"
+            r"(?:\s+im\s+[^.!?\r\n]+)?[.!]?\s*",
+            body,
         )
-        for canonical, labels in required:
-            label = r"(?:" + "|".join(labels) + r")"
-            matches = list(re.finditer(
-                rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)", body
-            ))
-            valid = bool(matches) and all(
-                match.group(1).strip() and not re.fullmatch(
-                    r"(?i)(?:TBD|TBA|N/?A|NA|PLATZHALTER|UNBEKANNT|NICHT VERFÜGBAR|FEHLT|UNKLAR)",
-                    match.group(1).strip(),
+        if not no_events:
+            field_only = re.compile(
+                r"(?i)^\s*(?:[-•]\s+|\d+[.)]\s+)?(?:\*\*)?"
+                r"(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+                r"Letzter Wert|Vorwert|Konsens|Istwert)(?:\*\*)?\s*[:=](?:\*\*)?"
+            )
+            bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
+            named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
+            lines = body.splitlines()
+            records = []
+            current = []
+            started = False
+            for line in lines:
+                match = bullet.match(line)
+                starts_record = (
+                    (bool(match) and not field_only.match(line))
+                    or (bool(named_event.match(line)) and not field_only.match(line))
                 )
-                for match in matches
+                if starts_record:
+                    if current:
+                        records.append(current)
+                    current = [line]
+                    started = True
+                elif started:
+                    current.append(line)
+            if current:
+                records.append(current)
+            # Plain prose with no detectable event list is one record. Introductory
+            # prose is not promoted to a separate event when bullets are present.
+            if not records and body.strip():
+                records = [body.splitlines()]
+
+            required = (
+                ("Uhrzeit", (r"Uhrzeit", r"Zeit"), False),
+                ("Zeitzone", (r"Zeitzone",), True),
+                ("Kennzahl", (r"Kennzahl", r"Indikator"), False),
+                ("Berichtszeitraum", (r"Berichtszeitraum", r"Zeitraum"), False),
             )
-            match = matches[0] if matches else None
-            if not valid and not re.search(rf"(?i){label}\s+(?:NICHT VERFÜGBAR|nicht verfügbar)", body):
-                if match:
-                    body = re.sub(
-                        rf"(?im)((?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*)([^|;\r\n]+)",
-                        rf"\1NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)", body,
-                    )
+            unavailable = "NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)"
+            missing_value = re.compile(
+                r"(?i)^(?:|[-–—]|TBD|TBA|N/?A|NA|PLATZHALTER|UNBEKANNT|"
+                r"NICHT VERFÜGBAR|FEHLT|UNKLAR|TODO|XXX)$"
+            )
+            timezone_value = re.compile(
+                r"(?i)(?:\b(?:ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|CET|CEST|GMT)\b|"
+                r"\b(?:UTC|GMT)?[+-]\d{1,2}(?::?\d{2})?\b|"
+                r"\b[A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?\b)"
+            )
+            observation_labels = (r"Letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
+
+            def field_pattern(labels):
+                label = r"(?:" + "|".join(labels) + r")"
+                return re.compile(
+                    rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-•]\s+|\d+[.)]\s+)?"
+                    rf"(?:\*\*)?{label}(?:\*\*)?\s*[:=](?:\*\*)?\s*([^|;\r\n]+)"
+                )
+
+            def normalize_record(record_lines):
+                record = "\n".join(record_lines)
+                for canonical, labels, is_timezone in required:
+                    pattern = field_pattern(labels)
+                    matches = list(pattern.finditer(record))
+                    if not matches:
+                        record = record.rstrip() + f"\n{canonical}: {unavailable}"
+                        continue
+                    for match in reversed(matches):
+                        value = match.group(1).strip().strip(". ")
+                        valid = bool(value) and not missing_value.fullmatch(value)
+                        if is_timezone and valid:
+                            valid = bool(timezone_value.search(value))
+                        if not valid:
+                            raw_value = match.group(1)
+                            trailing_space = " " if raw_value.endswith(" ") else ""
+                            record = (
+                                record[:match.start(1)]
+                                + unavailable + trailing_space
+                                + record[match.end(1):]
+                            )
+
+                obs_matches = []
+                for label in observation_labels:
+                    obs_matches.extend(field_pattern((label,)).finditer(record))
+                valid_obs = [
+                    match for match in obs_matches
+                    if match.group(1).strip()
+                    and not missing_value.fullmatch(match.group(1).strip().strip(". "))
+                ]
+                if not valid_obs:
+                    if obs_matches:
+                        for match in reversed(obs_matches):
+                            value = match.group(1).strip().strip(". ")
+                            if missing_value.fullmatch(value):
+                                raw_value = match.group(1)
+                                trailing_space = " " if raw_value.endswith(" ") else ""
+                                record = (
+                                    record[:match.start(1)]
+                                    + unavailable + trailing_space
+                                    + record[match.end(1):]
+                                )
+                    else:
+                        record = record.rstrip() + f"\nLetzter Wert: {unavailable}\nKonsens: {unavailable}"
+                return record.splitlines()
+
+            normalized_records = [normalize_record(record) for record in records]
+            if records:
+                first_event_index = next(
+                    (i for i, line in enumerate(lines)
+                     if (bullet.match(line) and not field_only.match(line)) or named_event.match(line)),
+                    None,
+                )
+                if first_event_index is not None:
+                    prefix = lines[:first_event_index]
+                    body = "\n".join(prefix + [line for record in normalized_records for line in record])
                 else:
-                    body = body.rstrip() + f"\n{canonical}: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
-        observation_labels = (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
-        if not re.search(r"(?im)(?:^|[|;]\s*|\n)\s*(?:" + "|".join(observation_labels) + r")\s*[:=]\s*[^|;\r\n]+", body):
-            body = body.rstrip() + (
-                "\nLetzter Wert: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)"
-                "\nKonsens: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
-            )
+                    body = "\n".join(line for record in normalized_records for line in record)
+        if body_trailing_newline and body and not body.endswith("\n"):
+            body += "\n"
         text = text[:body_start] + body + text[body_end:]
     return text
 
@@ -16384,7 +16542,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         # deshalb an jeder eigenständigen 11er-Kapitelüberschrift, nicht nur an
         # einem exakten Wortlaut.
         old_closed_section = re.compile(
-            r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5\s+Geschlossene Positionen[^\r\n]*\r?\n.*?"
+            r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5[.]?\s+Geschlossene Positionen[^\r\n]*\r?\n.*?"
             r"(?=^[ \t]*(?:#{1,6}\s*)?11(?:\s*[.·](?!\d)|\s+)[^\r\n]*$"
             r"|^[ \t]*TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)[ \t]*$|\Z)"
         )
@@ -16392,25 +16550,72 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Alte, frei formulierte Tab-2-Fehlerzeilen aus Gemini ebenfalls entfernen.
         text = re.sub(r"(?im)^TAB-2-QUELLE NICHT VERIFIZIERBAR:.*(?:\r?\n|$)", "", text)
         closed_block = (geschlossene_positionen_fakten or "TAB-2-QUELLE NICHT VERIFIZIERBAR: Quellenblock fehlt")
-        # M-01/M-12: Quellenblock vor Einbau deterministisch validieren.
-        # Eine Zeilenanzahl allein reicht nicht; Ticker muessen eindeutig sein.
+        # M-01/M-12: Den vollstaendigen Quellenblock vor der Freigabe validieren.
+        # Bei Fehlern bleiben alle Positionszeilen als Diagnosebeleg erhalten,
+        # aber Quellenmarker, Anzahl und Fingerabdruck werden nicht ausgegeben.
+        raw_closed_lines = closed_block.splitlines()
+        closed_rows = [
+            line.strip() for line in raw_closed_lines
+            if re.search(r"(?:^|\s)Quellzeile:\s*\d+\b", line)
+            or re.search(r"(?:^|\s)Ticker:\s*\S+", line)
+        ]
         closed_count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", closed_block)
+        validation_errors = []
         closed_tickers = re.findall(r"(?:^|\s)Ticker:\s*([^|\r\n]+)", closed_block, flags=re.M)
-        if not closed_count_match or int(closed_count_match.group(1)) != len(closed_tickers):
-            closed_block = (
-                "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
-                "Quellenblock hat keine konsistente TAB-2-ANZAHL/Ticker-Zeilen-Pruefung"
+        if not closed_count_match:
+            validation_errors.append("TAB-2-ANZAHL fehlt")
+        elif int(closed_count_match.group(1)) != len(closed_tickers):
+            validation_errors.append(
+                f"Anzahl weicht ab: gemeldet={closed_count_match.group(1)}, erkannt={len(closed_tickers)}"
             )
-        else:
-            closed_rows = [
-                line.strip() for line in closed_block.splitlines()
-                if re.search(r"(?:^|\s)Ticker:\s*\S+", line)
-            ]
-            if len({line.casefold() for line in closed_rows}) != len(closed_rows):
-                closed_block = (
-                    "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
-                    "identische Positionszeilen im geschlossenen Positionsblock"
-                )
+
+        # Fachlicher Positionsschluessel ist Ticker + Einstiegsdatum.
+        # Gleiche sonstige Fakten oder gleiche Ticker allein reichen nicht als
+        # Duplikatnachweis. Zwei Zeilen mit demselben Ticker und Kaufdatum sind
+        # nach dem vereinbarten Datenvertrag dagegen nicht eindeutig.
+        position_keys = []
+        invalid_identity_rows = []
+        for line in closed_rows:
+            ticker_match = re.search(r"(?:^|\s)Ticker:\s*([^|\r\n]+)", line)
+            entry_match = re.search(r"(?:^|\s)Einstiegsdatum:\s*([^|\r\n]+)", line)
+            source_row_match = re.search(r"(?:^|\s)Quellzeile:\s*(\d+)\b", line)
+            ticker = ticker_match.group(1).strip().casefold() if ticker_match else ""
+            entry_date = entry_match.group(1).strip() if entry_match else ""
+            source_row = source_row_match.group(1) if source_row_match else "?"
+            parsed_entry_date = _parse_tab2_entry_date_text(entry_date)
+            if not ticker or parsed_entry_date is None:
+                invalid_identity_rows.append(source_row)
+            else:
+                position_keys.append((ticker, parsed_entry_date.isoformat()))
+        if invalid_identity_rows:
+            validation_errors.append(
+                "Ticker+Einstiegsdatum fehlen/ungueltig bei Quellzeilen="
+                + ", ".join(invalid_identity_rows)
+            )
+        duplicate_keys = sorted(
+            f"{ticker}|{entry_date}"
+            for ticker, entry_date in set(position_keys)
+            if position_keys.count((ticker, entry_date)) > 1
+        )
+        if duplicate_keys:
+            validation_errors.append(
+                "Positionsschluessel Ticker+Einstiegsdatum doppelt: "
+                + ", ".join(duplicate_keys)
+            )
+
+        if validation_errors or str(closed_block).startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
+            existing_reason = (
+                closed_block.splitlines()[0]
+                if str(closed_block).startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR")
+                else ""
+            )
+            reason = "; ".join(([existing_reason] if existing_reason else []) + validation_errors)
+            # Keine Position verlieren: alle erkannten Zeilen bleiben lesbar
+            # im Diagnosebericht; Gate blockiert wegen fehlender kanonischer
+            # Marker und des expliziten Nicht-verifizierbar-Markers.
+            closed_block = "\n".join(
+                ["TAB-2-QUELLE NICHT VERIFIZIERBAR: " + reason] + closed_rows
+            )
 
         # M-06: Abschnitt 7 muss beide Performance-Kennzahlen explizit enthalten.
         # Fehlende Daten werden als nicht verfügbar ausgewiesen, niemals geschätzt.
@@ -16503,7 +16708,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Genau ein Statusmarker, stets als letzte Zeile. Ohne eindeutigen FINAL-
         # Marker bleibt der Bericht gesperrt; der Report-Gate entscheidet separat.
         final_status = "FINAL" if original_status_matches and all(x == "FINAL" for x in original_status_matches) else "NICHT_FINAL"
-        if str(geschlossene_positionen_fakten or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
+        if str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
             final_status = "NICHT_FINAL"
         text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text).rstrip()
         text += f"\nTRADING_RADAR_FACHLICH_FINAL={final_status}\n"

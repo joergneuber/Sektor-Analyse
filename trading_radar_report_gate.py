@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import sys
 import hashlib
+import datetime
 from pathlib import Path
 
 SECTION_NAMES = (
@@ -39,6 +40,19 @@ def _section_body(text: str, number: int, title: str) -> str:
 def _has_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
 
+def _normalize_tab2_entry_date(value: str) -> str | None:
+    """Return an ISO date only for dates accepted by the Tab-2 data contract."""
+    raw = str(value or "").strip()
+    if not raw or _MISSING_VALUE_RE.fullmatch(raw):
+        return None
+    for date_format in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.datetime.strptime(raw, date_format).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
 _MISSING_VALUE_RE = re.compile(
     r"^(?:|[-–—]|n/?a|na|tbd|todo|xxx|placeholder|platzhalter|unbekannt|"
     r"nicht\s+(?:vorhanden|verfügbar|verifizierbar|bekannt)|fehlt|unklar)$",
@@ -55,7 +69,9 @@ def _label_value(text: str, labels: tuple[str, ...]) -> str | None:
     """
     label = r"(?:" + "|".join(labels) + r")"
     match = re.search(
-        rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*(?:([^|;\r\n]+)|(?:\r?\n\s*([^|;\r\n]+)))",
+        rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-•]\s+|\d+[.)]\s+)?"
+        rf"(?:\*\*)?{label}(?:\*\*)?\s*[:=](?:\*\*)?\s*"
+        rf"(?:([^|;\r\n]+)|(?:\r?\n\s*([^|;\r\n]+)))",
         text,
     )
     if not match:
@@ -70,7 +86,8 @@ def _is_explicit_unavailable(text: str, labels: tuple[str, ...]) -> bool:
     """Allow an explicit unavailable state, but not a blank or vague mention."""
     label = r"(?:" + "|".join(labels) + r")"
     return bool(re.search(
-        rf"(?i)(?:{label})\s*(?:[:=]\s*)?(?:nicht\s+(?:verfügbar|verifizierbar|vorhanden)|fehlt|unklar|FEHLT)\b",
+        rf"(?i)(?:\*\*)?(?:{label})(?:\*\*)?\s*(?:[:=](?:\*\*)?\s*)?"
+        rf"(?:nicht\s+(?:verfügbar|verifizierbar|vorhanden)|fehlt|unklar)\b",
         text,
     ))
 
@@ -167,8 +184,15 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         status,
     ))
     no_thesis_update = _has_any(thesis, (
-        r"keine neue oder aktualisierte these;?\s*thesenregister geprüft, keine änderung",
-        r"keine neue oder aktualisierte these;?\s*thesenregister geprueft, keine aenderung",
+        r"keine\s+neue\s+oder\s+aktualisierte\s+these\s*[;,.]?\s*"
+        r"thesenregister\s+geprüft,?\s*keine\s+änderung",
+        r"keine\s+neue\s+oder\s+aktualisierte\s+these\s*[;,.]?\s*"
+        r"thesenregister\s+geprueft,?\s*keine\s+aenderung",
+        r"(?:keine\s+neuen?\s+thesen|keine\s+thesenaktualisierung|"
+        r"keine\s+aktualisierung\s+der\s+thesen).{0,120}"
+        r"(?:thesenregister.{0,60}(?:geprüft|geprueft|unverändert|unveraendert|keine\s+änderung|keine\s+aenderung)|"
+        r"keine\s+änderung(?:en)?\s+am\s+thesenregister)",
+        r"thesenregister.{0,80}(?:unverändert|unveraendert|keine\s+änderung|keine\s+aenderung)",
     ))
     if not no_thesis_update and not (
         thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok
@@ -185,11 +209,11 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         (r"Berichtszeitraum", r"Zeitraum"),
     )
     observation_labels = (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
-    no_relevant_events = _has_any(events, (
-        r"keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?Ereignisse",
-        r"Ereignisradar\s*:\s*keine",
-        r"keine relevanten Ereignisse im geprüften Zeitraum",
-        r"keine relevanten Ereignisse im geprueften Zeitraum",
+    no_relevant_events = bool(re.fullmatch(
+        r"(?is)\s*(?:[-*•]\s*)?(?:Ereignisradar\s*:\s*)?"
+        r"keine\s+(?:(?:relevanten|anstehenden)\s+)?ereignisse"
+        r"(?:\s+im\s+[^.!?\r\n]+)?[.!]?\s*",
+        events,
     ))
 
     def event_records(section_body):
@@ -197,9 +221,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         records = []
         current = []
         field_only = re.compile(
-            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?"
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
             r"(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
-            r"letzter Wert|Vorwert|Konsens|Istwert)\s*[:=]"
+            r"letzter Wert|Vorwert|Konsens|Istwert)(?:\*\*)?\s*[:=](?:\*\*)?"
         )
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
@@ -221,7 +245,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     def field_ok(record, labels, timezone=False):
         label = r"(?:" + "|".join(labels) + r")"
         matches = list(re.finditer(
-            rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)",
+            rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-•]\s+|\d+[.)]\s+)?"
+            rf"(?:\*\*)?{label}(?:\*\*)?\s*[:=](?:\*\*)?\s*([^|;\r\n]+)",
             record,
         ))
         if not matches:
@@ -354,15 +379,30 @@ def validate_report(text: str) -> list[str]:
     # Bound the block at chapter 11, not only at the final status marker.
     # Otherwise method/data-appendix lines are accidentally included in the
     # export digest and a correct SHA-256 appears invalid.
-    closed = re.search(
-        r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5 Geschlossene Positionen[^\r\n]*\r?\n(.*?)"
+    closed_pattern = re.compile(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5[.]?\s+Geschlossene Positionen[^\r\n]*\r?\n(.*?)"
         r"(?=^[ \t]*(?:#{1,6}\s*)?11(?:\s*[.·](?!\d)|\s+)[^\r\n]*$"
-        r"|^[ \t]*TRADING_RADAR_FACHLICH_FINAL=|\Z)",
-        text,
+        r"|^[ \t]*TRADING_RADAR_FACHLICH_FINAL=|\Z)"
     )
-    if not closed:
+    closed_sections = list(closed_pattern.finditer(text))
+    if len(closed_sections) > 1:
+        errors.append("Mehrere Abschnitte 10.5 Geschlossene Positionen gefunden")
+    canonical_sections = [
+        match for match in closed_sections
+        if re.search(r"(?m)^TAB-2-ANZAHL=\d+\s*$", match.group(1))
+        and re.search(r"(?m)^TAB-2-QUELLE=[^\r\n]+\s*$", match.group(1))
+    ]
+    if len(canonical_sections) == 1:
+        closed = canonical_sections[0]
+    elif not closed_sections:
+        closed = None
         errors.append("Geschlossene-Positionen-Abschnitt 10.5 fehlt")
+    elif not canonical_sections:
+        closed = closed_sections[0]
     else:
+        closed = None
+        errors.append("Mehrere kanonische Tab-2-Exportblöcke gefunden")
+    if closed is not None:
         body = closed.group(1)
         count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", body)
         source_match = re.search(r"(?m)^TAB-2-QUELLE=([^\r\n]+)\s*$", body)
@@ -379,12 +419,51 @@ def validate_report(text: str) -> list[str]:
         elif int(count_match.group(1)) != len(rows):
             errors.append(f"Tab-2-Zählung widerspricht Positionszeilen: gemeldet={count_match.group(1)}, erkannt={len(rows)}")
         position_lines = [
-            re.sub(r"\s+", " ", line.strip()).casefold()
-            for line in body.splitlines()
+            line for line in body.splitlines()
             if re.search(r"(?:^|\s)Ticker:\s*\S+", line)
         ]
-        if len(set(position_lines)) != len(position_lines):
-            errors.append("Tab-2 enthält identische Positionszeilen; Quellen-/Exportidentität nicht eindeutig")
+        # Jede Position muss ueber den vereinbarten Schluessel Ticker +
+        # Einstiegsdatum identifizierbar sein. Der komplette Zeilentext ist
+        # kein geeigneter Schluessel, da Quellzeilennummern unterschiedlich
+        # sein koennen und weitere Faktenfelder sich wiederholen duerfen.
+        position_keys = []
+        invalid_identity_rows = []
+        for line in position_lines:
+            ticker_match = re.search(r"(?:^|\s)Ticker:\s*([^|\r\n]+)", line)
+            entry_match = re.search(r"(?:^|\s)Einstiegsdatum:\s*([^|\r\n]+)", line)
+            source_row_match = re.search(r"(?:^|\s)Quellzeile:\s*(\d+)\b", line)
+            ticker = ticker_match.group(1).strip().casefold() if ticker_match else ""
+            entry_date = entry_match.group(1).strip() if entry_match else ""
+            source_row = source_row_match.group(1) if source_row_match else "?"
+            normalized_date = _normalize_tab2_entry_date(entry_date)
+            if not ticker or normalized_date is None:
+                invalid_identity_rows.append(source_row)
+            else:
+                position_keys.append((ticker, normalized_date))
+        if invalid_identity_rows:
+            errors.append(
+                "Tab-2-Positionsidentitaet fehlt: Ticker+Einstiegsdatum "
+                "nicht verifizierbar bei Quellzeilen " + ", ".join(invalid_identity_rows)
+            )
+        duplicate_keys = sorted(
+            f"{ticker}|{entry_date}"
+            for ticker, entry_date in set(position_keys)
+            if position_keys.count((ticker, entry_date)) > 1
+        )
+        if duplicate_keys:
+            errors.append(
+                "Tab-2-Positionsschluessel Ticker+Einstiegsdatum doppelt: "
+                + ", ".join(duplicate_keys)
+            )
+        source_rows = []
+        for line in position_lines:
+            source_match_row = re.search(r"(?:^|\s)Quellzeile:\s*(\d+)\b", line)
+            if source_match_row:
+                source_rows.append(int(source_match_row.group(1)))
+        if position_lines and len(source_rows) != len(position_lines):
+            errors.append("Tab-2-Quellzeilennummer fehlt bei mindestens einem Positionsdatensatz")
+        if len(set(source_rows)) != len(source_rows):
+            errors.append("Tab-2-Quellzeilennummer ist doppelt; Quellen-/Exportidentität nicht eindeutig")
         if "TAB-2-QUELLE NICHT VERIFIZIERBAR" in body:
             errors.append("Tab-2-Quelle im Bericht als nicht verifizierbar markiert")
         digest_match = re.search(r"(?m)^TAB-2-EXPORT-SHA256=([0-9a-f]{64})\s*$", body)

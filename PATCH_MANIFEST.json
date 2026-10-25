@@ -1,21 +1,83 @@
 {
   "date": "2026-10-25",
-  "purpose": "Allow delivery of a clearly marked NICHT_FINAL Trading-Radar report by email while keeping Google Drive publication blocked unless FINAL and report gate success.",
+  "purpose": "Reject nonempty but invalid entry dates consistently in the Report Gate and generator/save path; preserve all source rows in a non-verifiable diagnostic and withhold canonical export markers on failure.",
+  "basis_archive": "Trading-Radar-Positionsschluessel-Ticker-Kaufdatum-20261025(3).zip",
   "files": [
     {
-      "path": ".github/workflows/main.yml",
-      "bytes": 34946,
-      "sha256": "75bd3a4a2a2267052b4616f09f22d3a9a1c6ebb86fa1646b5333dca5b20e91a5"
+      "path": "Trading_Radar_Alleinauswertung.py",
+      "change": "modified",
+      "old": {
+        "bytes": 899545,
+        "lines": 17408,
+        "sha256": "86e4f2e9d4be68b785bc1775104b25b93f97a92204bab665b411854349789a76"
+      },
+      "new": {
+        "bytes": 899472,
+        "lines": 17409,
+        "sha256": "79e9038ff9df44da943ba75fc82164fc97bd8c99b9f9169cb15e19b8ababb92f"
+      }
     },
     {
-      "path": "send_mail.py",
-      "bytes": 6864,
-      "sha256": "0024b731b644418c4a64ba5354e28e72ddf3f426fed6499f92bd3918415de234"
+      "path": "trading_radar_report_gate.py",
+      "change": "modified",
+      "old": {
+        "bytes": 24633,
+        "lines": 503,
+        "sha256": "baca9c8af662be7c83324fb1e34dd3d132c0439fecafdb8db062a3be0817fdf9"
+      },
+      "new": {
+        "bytes": 24726,
+        "lines": 508,
+        "sha256": "e50d6ade7b0ab927f8312d6452e2e19255e3539c61fbef2490d95f5e7ae8dad4"
+      }
     },
     {
-      "path": "tests/test_gemini_status_delivery.py",
-      "bytes": 3506,
-      "sha256": "45ac9ec227b0520e61c5a0588c96c29a00ef070173dab186248dbba2a8e02e57"
+      "path": "tests/test_trading_radar_report_gate.py",
+      "change": "modified",
+      "old": {
+        "bytes": 16635,
+        "lines": 284,
+        "sha256": "cb9d1f80c90211acd6b0d3bfb7e187e694424db97b4c198c6537be63d0011dbd"
+      },
+      "new": {
+        "bytes": 17779,
+        "lines": 306,
+        "sha256": "f3ab7afa1d18b987357684775781605afe3a5c87635a495d2ff632b0162e4c72"
+      }
+    },
+    {
+      "path": "tests/test_trading_radar_data_contract.py",
+      "change": "modified",
+      "old": {
+        "bytes": 22613,
+        "lines": 381,
+        "sha256": "4fde478f8568c5fe12d09528066adf907ad6b7b0e3a70901172edaca83dabeab"
+      },
+      "new": {
+        "bytes": 26104,
+        "lines": 439,
+        "sha256": "d18cba8815c75b8bc39334f0dd0953958d29d92e1c588c3dc095f63d697d303e"
+      }
     }
+  ],
+  "validation": {
+    "py_compile": "PASS",
+    "test_trading_radar_report_gate.py": {
+      "result": "PASS",
+      "tests": 34
+    },
+    "test_trading_radar_data_contract.py": {
+      "result": "PASS",
+      "tests": 18,
+      "skipped": 3
+    },
+    "total_passed": 52,
+    "total_skipped": 3,
+    "live_google_sheets": "NOT_RUN: Google Drive connector unavailable in this session; no live 51-row export was provided.",
+    "github_actions": "NOT_RUN: .github/workflows/main.yml is not included in the attached patch archive and no GitHub connection is active."
+  },
+  "untouched_files": [
+    "send_mail.py",
+    ".github/workflows/main.yml (not present in attached baseline archive)"
   ]
 }
