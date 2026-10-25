@@ -120,6 +120,21 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertIn("nicht zuordenbar", section)
         self.assertIn("Keine offenen Positionen exportiert", section)
 
+
+    def test_tab2_source_row_numbers_survive_blank_rows(self):
+        radar = load_radar_module()
+        source_rows = [
+            ["AAA", "Closed"],  # sheet row 3
+            ["", ""],           # sheet row 4 is blank and omitted
+            ["", "Closed"],     # sheet row 5 is populated but missing ticker
+            ["BBB", "Closed"],  # sheet row 6
+        ]
+        nonempty, row_numbers = radar._tab2_nonempty_rows_with_source_numbers(
+            source_rows, start_sheet_row=3
+        )
+        self.assertEqual(nonempty, [source_rows[0], source_rows[2], source_rows[3]])
+        self.assertEqual(row_numbers, [3, 5, 6])
+
     def test_report_section_boundaries_are_robust_and_source_has_no_bom(self):
         source_bytes = RADAR.read_bytes()
         self.assertFalse(source_bytes.startswith(b"\xef\xbb\xbf"))

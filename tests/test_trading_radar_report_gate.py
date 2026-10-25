@@ -63,6 +63,24 @@ class ReportGateTests(unittest.TestCase):
         errors = gate.validate_report(text)
         self.assertTrue(any("M-08" in e for e in errors), errors)
 
+
+    def test_m08_validates_each_event_record_independently(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "- CPI Veröffentlichung | Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.\n"
+            "- Arbeitsmarktdaten | Uhrzeit: TBD | Zeitzone: ET | Kennzahl: NFP | Berichtszeitraum: Oktober 2026 | Konsens: 150000.",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-08: Ereignisdatensatz 2" in e for e in errors), errors)
+
+    def test_m08_accepts_separate_complete_event_records(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "- CPI Veröffentlichung | Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.\n"
+            "- Arbeitsmarktdaten | Uhrzeit: 08:30 | Zeitzone: ET | Kennzahl: NFP | Berichtszeitraum: Oktober 2026 | letzter Wert: 140000 | Konsens: 150000.",
+        )
+        self.assertFalse(any("M-08" in e for e in gate.validate_report(text)))
+
     def test_m09_requires_actionable_candidate_fields(self):
         text = report_fixture().replace("JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Datenlücke geprüft; Regelstatus: valide.", "Ein technischer Kandidat ist vorhanden, aber ohne konkrete Handlungsfelder.")
         errors = gate.validate_report(text)
