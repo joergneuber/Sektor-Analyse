@@ -1,0 +1,66 @@
+[
+  {
+    "file": ".github/workflows/main.yml",
+    "bytes": 34524,
+    "sha256": "12a20c364d273da590a4acef26ebd990d52c7d3547a9c9777ec5e58f8421ac0a",
+    "lines": 732,
+    "bom": true,
+    "line_endings": "LF"
+  },
+  {
+    "file": "analyse.py",
+    "bytes": 261936,
+    "sha256": "f9dec474d2d4579171bba005bb2e144ed4c590b9a84aaed16a778bb3b61fd82a",
+    "lines": 4879,
+    "bom": false,
+    "line_endings": "LF"
+  },
+  {
+    "file": "Trading_Radar_Alleinauswertung.py",
+    "bytes": 881939,
+    "sha256": "ca2126250d074f72cca3e39c5a2e00aab8c2c2a862b6dbe062845e508f0f1d7b",
+    "lines": 17051,
+    "bom": false,
+    "line_endings": "LF"
+  },
+  {
+    "file": "trading_radar_report_gate.py",
+    "bytes": 17752,
+    "sha256": "f8fda686b3271403640a281c21d9d2ee2eed1fd9a41159d0c04dc8c72e80d2f1",
+    "lines": 341,
+    "bom": false,
+    "line_endings": "LF"
+  },
+  {
+    "file": "trading_radar_thesen.py",
+    "bytes": 6684,
+    "sha256": "334ba4b787c060f0388e5f30dad41a6a6ed54ccf44046fefdced3bb7a19248e6",
+    "lines": 140,
+    "bom": false,
+    "line_endings": "LF"
+  },
+  {
+    "file": "tests/test_trading_radar_report_gate.py",
+    "bytes": 9971,
+    "sha256": "6ffd2350c961a02c2d3bd463af0984c3113efc3d634839d111d3e19aab5ed501",
+    "lines": 173,
+    "bom": false,
+    "line_endings": "LF"
+  },
+  {
+    "file": "tests/test_trading_radar_thesen.py",
+    "bytes": 3950,
+    "sha256": "a4f9596518ce78951bcb9f0d4bf0d034cc6938f13721ecdcaed52d79c3c34dd4",
+    "lines": 102,
+    "bom": false,
+    "line_endings": "LF"
+  },
+  {
+    "file": "tests/test_firma_name_cache.py",
+    "bytes": 3389,
+    "sha256": "4ea6be3be8d5f4d07b223d9642c5f525e5d5c9b06990fb78dfde8cf1609789eb",
+    "lines": 85,
+    "bom": false,
+    "line_endings": "LF"
+  }
+]

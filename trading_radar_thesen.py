@@ -98,9 +98,20 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     for item in theses:
         old = old_by_id.get(item["thesis_id"], {})
         entry = dict(item)
-        entry["version"] = int(old.get("version", 0)) + 1
+        # Versionen repraesentieren fachliche Aenderungen, nicht jeden Lauf.
+        # Vergleich nur ueber den inhaltlichen Thesen-Payload; Laufzeitfelder
+        # und Daten-Cutoff werden separat aktualisiert.
+        content_fields = (
+            "thesis", "expected_movement", "horizon", "time_horizon", "evidence",
+            "counter_evidence", "confidence", "confirm_triggers",
+            "invalidate_triggers", "event_dependencies", "asset_classes",
+            "candidates", "status",
+        )
+        changed = not old or any(old.get(field) != entry.get(field) for field in content_fields)
+        old_version = int(old.get("version", 0) or 0)
+        entry["version"] = old_version + 1 if changed else max(1, old_version)
         entry["created_at"] = old.get("created_at", now)
-        entry["updated_at"] = now
+        entry["updated_at"] = now if changed else old.get("updated_at", now)
         entry["data_cutoff"] = cutoff
         entry["active"] = True
         entry["last_seen_at"] = now

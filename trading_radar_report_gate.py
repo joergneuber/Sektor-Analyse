@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sys
+import hashlib
 from pathlib import Path
 
 SECTION_NAMES = (
@@ -203,8 +204,13 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         r"keine\s+Kandidaten\s+(?:mit\s+)?(?:belastbarem|konkretem)\s+Setup",
     r"kein\s+belastbarer\s+technischer\s+Kandidat",
     ))
-    if not no_actionable_candidates and (not all(candidate_required) or not numeric_fields_ok):
-        errors.append("M-09: Technische Kandidaten benötigen nichtleere Werte für Asset/Ticker, Trigger, Einstieg, Stop, TP1/TP2, CRV, Gegenargument und Regel-/Datenstatus; Einstieg/Stop/TP1/TP2/CRV müssen numerisch sein. Alternativ muss ausdrücklich ausgewiesen sein, dass keine belastbaren Kandidaten vorliegen.")
+    allowed_candidate_status = (
+        r"JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|"
+        r"NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT"
+    )
+    candidate_status_ok = bool(re.search(allowed_candidate_status, candidates, re.IGNORECASE))
+    if not no_actionable_candidates and (not all(candidate_required) or not numeric_fields_ok or not candidate_status_ok):
+        errors.append("M-09: Technische Kandidaten benötigen Asset/Ticker, Trigger, Einstieg, Stop, TP1/TP2, CRV, Gegenargument, Regel-/Datenstatus und einen zulässigen Kandidatenstatus; Zahlenfelder müssen numerisch sein. Alternativ muss ausdrücklich ausgewiesen sein, dass keine belastbaren Kandidaten vorliegen.")
 
     # M-10: a concrete OHLCV issue and its candidate impact must both be stated.
     appendix = _section_body(text, 8, SECTION_NAMES[7])
@@ -274,13 +280,36 @@ def validate_report(text: str) -> list[str]:
     else:
         body = closed.group(1)
         count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", body)
-        rows = [line for line in body.splitlines() if re.search(r"(?m)(?:^|\s)Ticker:\s*\S+", line)]
+        ticker_values = [
+            match.group(1).strip()
+            for line in body.splitlines()
+            if (match := re.search(r"(?:^|\s)Ticker:\s*([^|\r\n]+)", line))
+        ]
+        rows = ticker_values
         if not count_match:
             errors.append("Tab-2-Quellen-/Exportzählung fehlt")
         elif int(count_match.group(1)) != len(rows):
             errors.append(f"Tab-2-Zählung widerspricht Positionszeilen: gemeldet={count_match.group(1)}, erkannt={len(rows)}")
+        position_lines = [
+            re.sub(r"\s+", " ", line.strip()).casefold()
+            for line in body.splitlines()
+            if re.search(r"(?:^|\s)Ticker:\s*\S+", line)
+        ]
+        if len(set(position_lines)) != len(position_lines):
+            errors.append("Tab-2 enthält identische Positionszeilen; Quellen-/Exportidentität nicht eindeutig")
         if "TAB-2-QUELLE NICHT VERIFIZIERBAR" in body:
             errors.append("Tab-2-Quelle im Bericht als nicht verifizierbar markiert")
+        digest_match = re.search(r"(?m)^TAB-2-EXPORT-SHA256=([0-9a-f]{64})\s*$", body)
+        if not digest_match:
+            errors.append("Tab-2-Export-Fingerabdruck fehlt oder ist ungueltig")
+        else:
+            export_lines = [line.rstrip() for line in body.strip().splitlines()
+                            if not line.startswith("TAB-2-EXPORT-SHA256=")]
+            actual_digest = hashlib.sha256("\n".join(export_lines).encode("utf-8")).hexdigest()
+            if actual_digest != digest_match.group(1):
+                errors.append("Tab-2-Export-Fingerabdruck stimmt nicht mit gespeicherten Zeilen ueberein")
+        if count_match and int(count_match.group(1)) > 0 and not ticker_values:
+            errors.append("Tab-2 meldet Positionen, aber keine konkreten Ticker-Datensätze")
 
     if r"\n" in text:
         errors.append("Bericht enthält literal \\n statt physischer Zeilenumbrüche")

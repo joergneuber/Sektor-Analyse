@@ -699,43 +699,162 @@ def berechne_indikatoren(df):
     
     return df
     
+# Lokale Namen haben Vorrang vor Netzwerk-Lookups. Die Indexierung ist lazy und
+# berücksichtigt bestehende CSV-Dateien mit Ticker-/Name-Spalten, ohne Yahoo aufzurufen.
+_FIRMA_NAME_LOCAL_INDEX = None
+
+def _firma_name_local_index():
+    global _FIRMA_NAME_LOCAL_INDEX
+    if _FIRMA_NAME_LOCAL_INDEX is not None:
+        return _FIRMA_NAME_LOCAL_INDEX
+    index = {}
+    try:
+        import csv
+        from pathlib import Path
+        root = Path(__file__).resolve().parent
+        for path in list(root.glob("*.csv")) + list(root.glob("*.CSV")):
+            try:
+                with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    sample = handle.read(4096)
+                    handle.seek(0)
+                    try:
+                        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+                    except csv.Error:
+                        dialect = csv.excel
+                    reader = csv.DictReader(handle, dialect=dialect)
+                    if not reader.fieldnames:
+                        continue
+                    columns = {str(col).strip().casefold(): col for col in reader.fieldnames if col}
+                    ticker_col = next((columns[k] for k in ("ticker", "symbol", "symbol yahoo", "yahoo ticker") if k in columns), None)
+                    name_col = next((columns[k] for k in ("name", "unternehmen", "firma", "company", "longname") if k in columns), None)
+                    if not ticker_col or not name_col:
+                        continue
+                    for row in reader:
+                        ticker = str(row.get(ticker_col) or "").strip()
+                        name = re.sub(r"\s+", " ", str(row.get(name_col) or "")).strip()
+                        if ticker and name and ticker.casefold() != name.casefold():
+                            index.setdefault(ticker, name)
+            except (OSError, UnicodeError, csv.Error):
+                continue
+    except Exception as exc:
+        print(f"WARNUNG-NAMENSQUELLEN: lokale Namensindexierung fehlgeschlagen: {exc}")
+    _FIRMA_NAME_LOCAL_INDEX = index
+    return index
+
+# Persistenter Namenscache: erfolgreiche Treffer ueberleben neue Prozesse.
+# Fehlgeschlagene Yahoo-Lookups werden nicht sofort mehrfach wiederholt;
+# das verhindert Request-Stuerme bei HTTP 429 / "Too Many Requests".
+_FIRMA_NAME_CACHE_PATH = os.environ.get(
+    "FIRMA_NAME_CACHE_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".firma_name_cache.json"),
+)
+_FIRMA_NAME_CACHE = None
+_FIRMA_NAME_CACHE_DIRTY = False
+_FIRMA_NAME_LAST_REQUEST = 0.0
+_FIRMA_NAME_MIN_INTERVAL = max(0.0, float(os.environ.get("FIRMA_NAME_MIN_INTERVAL_SECONDS", "2.0")))
+_FIRMA_NAME_FAILURE_TTL = max(3600, int(os.environ.get("FIRMA_NAME_FAILURE_TTL_SECONDS", str(24 * 3600))))
+_FIRMA_NAME_LOCK = threading.RLock()
+
+def _firma_name_serialized(function):
+    """Serialize lookups so concurrent ticker workers cannot burst Yahoo."""
+    def wrapped(*args, **kwargs):
+        with _FIRMA_NAME_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+def _firma_name_cache_load():
+    global _FIRMA_NAME_CACHE
+    if _FIRMA_NAME_CACHE is not None:
+        return _FIRMA_NAME_CACHE
+    try:
+        with open(_FIRMA_NAME_CACHE_PATH, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        _FIRMA_NAME_CACHE = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError, TypeError):
+        _FIRMA_NAME_CACHE = {}
+    return _FIRMA_NAME_CACHE
+
+
+def _firma_name_cache_save():
+    global _FIRMA_NAME_CACHE_DIRTY
+    if not _FIRMA_NAME_CACHE_DIRTY:
+        return
+    cache = _firma_name_cache_load()
+    try:
+        directory = os.path.dirname(_FIRMA_NAME_CACHE_PATH)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        temporary = _FIRMA_NAME_CACHE_PATH + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(cache, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, _FIRMA_NAME_CACHE_PATH)
+        _FIRMA_NAME_CACHE_DIRTY = False
+    except OSError as exc:
+        print(f"WARNUNG: Namenscache konnte nicht gespeichert werden: {exc}")
+
+
+@_firma_name_serialized
 @lru_cache(maxsize=2048)
 def _hole_firma_name(ticker, retries=2):
-    """NEU (09.08.2026, Nutzerfund: seit dem Universum-Neubau vom selben Tag
-    zeigte die Auswertung bei manchen sonst unproblematischen Titeln (z.B.
-    FNV, CDW, TWLO) nur den Ticker statt des Firmennamens). URSACHE: der
-    Namens-Lookup lief bisher OHNE Retry und OHNE Buendelung - ein eigener
-    yf.Ticker(ticker).info-Request PRO Ticker im Tagesuniversum, direkt am
-    Funktionsanfang von analyze_a_setup/_eu, unabhaengig davon ob der Titel
-    spaeter ueberhaupt angezeigt wird. Mit dem gewachsenen Universum (605 US
-    + 159 EU statt vorher 334) steigt die Zahl dieser Einzel-Requests
-    entsprechend, und yfinance drosselt .info informell - ein einzelner
-    fehlgeschlagener Call fiel bisher sofort auf den Ticker als Namen zurueck.
-    Gleiche, bewusst zurueckhaltende Retry-Konvention wie get_analyst_target
-    (2 Versuche, 1s Pause - mehr Versuche wuerden sich bei hunderten Tickern
-    spuerbar summieren, siehe dortige Begruendung). Batching wie bei den
-    Kursdaten (fetch_us_batch/fetch_eu_batch) ist hier NICHT moeglich -
-    yfinance bietet fuer .info keinen Sammel-Endpunkt, nur fuer .history()."""
-    for i in range(retries):
-        try:
-            info = yf.Ticker(ticker).info
-            # GEAENDERT (30.07.2026): longName ODER shortName, erst dann der
-            # Ticker als Notnagel. Vorher fiel die Auswertung bei fehlendem
-            # longName direkt auf den Ticker zurueck - im Lauf vom 30.07.
-            # standen deshalb "APD", "CL", "SIE.DE" und "CON.DE" statt der
-            # Firmennamen in der Watchlist. shortName ist bei yfinance
-            # deutlich zuverlaessiger verfuegbar als longName.
-            firma_name = info.get('longName') or info.get('shortName') or ticker
-            firma_name = re.sub(r'\s+', ' ', str(firma_name)).strip()
-            # abgeschnittenes Rest-Fragment am Ende entfernen (yfinance
-            # kuerzt shortName hart, z.B. "VOLKSWAGEN AG                 V")
-            firma_name = re.sub(r'\s+[A-Za-z]$', '', firma_name).strip(' ,;-')
-            return firma_name if firma_name else ticker
-        except Exception as e:
-            if i < retries - 1:
-                print(f"DEBUG: Namens-Lookup für {ticker} fehlgeschlagen (Versuch {i+1}/{retries}): {e}. Warte 1s...")
-                time.sleep(1)
-    print(f"DEBUG: Namens-Lookup für {ticker} nach {retries} Versuchen endgueltig fehlgeschlagen - nutze Ticker als Name.")
+    """Liefert Firmennamen aus persistentem Cache; Yahoo nur als gedrosselter Fallback.
+
+    Erfolgreiche Namen werden laufuebergreifend gespeichert. Bei Fehlern wird
+    ein zeitlich begrenzter Negativcache geschrieben und nicht sofort erneut
+    angefragt. Ticker als Fallback bleiben als fehlender Name protokollierbar.
+    """
+    global _FIRMA_NAME_CACHE_DIRTY, _FIRMA_NAME_LAST_REQUEST
+    ticker = str(ticker or "").strip()
+    if not ticker:
+        return ""
+    local_name = _firma_name_local_index().get(ticker)
+    if local_name:
+        return local_name
+    cache = _firma_name_cache_load()
+    entry = cache.get(ticker)
+    now = time.time()
+    if isinstance(entry, dict):
+        name = str(entry.get("name") or "").strip()
+        if name and not entry.get("missing"):
+            return name
+        retry_after = float(entry.get("retry_after") or 0)
+        if entry.get("missing") and now < retry_after:
+            return ticker
+
+    # Eine einzelne Anfrage; keine schnellen 1-Sekunden-Retries bei 429.
+    if _FIRMA_NAME_LAST_REQUEST:
+        wait = _FIRMA_NAME_MIN_INTERVAL - (now - _FIRMA_NAME_LAST_REQUEST)
+        if wait > 0:
+            time.sleep(wait)
+    _FIRMA_NAME_LAST_REQUEST = time.time()
+    try:
+        info = yf.Ticker(ticker).info
+        firma_name = info.get("longName") or info.get("shortName")
+        firma_name = re.sub(r"\s+", " ", str(firma_name or "")).strip()
+        firma_name = re.sub(r"\s+[A-Za-z]$", "", firma_name).strip(" ,;-")
+        if firma_name and firma_name.casefold() != ticker.casefold():
+            cache[ticker] = {"name": firma_name, "updated_at": int(time.time())}
+            _FIRMA_NAME_CACHE_DIRTY = True
+            _firma_name_cache_save()
+            return firma_name
+        error = "Yahoo lieferte keinen belastbaren Firmennamen"
+    except Exception as exc:
+        error = str(exc)
+    # Fehlgeschlagene Lookups 24h pausieren; Rate-Limit wird nicht durch
+    # unmittelbare Wiederholungen fuer denselben Ticker verstaerkt.
+    cache[ticker] = {
+        "name": "",
+        "missing": True,
+        "last_error": error[:300],
+        "updated_at": int(time.time()),
+        "retry_after": int(time.time()) + _FIRMA_NAME_FAILURE_TTL,
+    }
+    _FIRMA_NAME_CACHE_DIRTY = True
+    _firma_name_cache_save()
+    missing = sorted(key for key, value in cache.items() if isinstance(value, dict) and value.get("missing"))
+    print(f"DATENQUALITAET-NAMENSLOOKUP: fehlende_namen={len(missing)}; ticker={','.join(missing[:80])}; weitere={max(0, len(missing)-80)}")
+    print(f"WARNUNG-NAMENSLOOKUP: ticker={ticker} status=NICHT_VERFUEGBAR; Grund={error[:180]}")
     return ticker
 
 

@@ -16242,6 +16242,25 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Alte, frei formulierte Tab-2-Fehlerzeilen aus Gemini ebenfalls entfernen.
         text = re.sub(r"(?im)^TAB-2-QUELLE NICHT VERIFIZIERBAR:.*(?:\r?\n|$)", "", text)
         closed_block = (geschlossene_positionen_fakten or "TAB-2-QUELLE NICHT VERIFIZIERBAR: Quellenblock fehlt")
+        # M-01/M-12: Quellenblock vor Einbau deterministisch validieren.
+        # Eine Zeilenanzahl allein reicht nicht; Ticker muessen eindeutig sein.
+        closed_count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", closed_block)
+        closed_tickers = re.findall(r"(?:^|\s)Ticker:\s*([^|\r\n]+)", closed_block, flags=re.M)
+        if not closed_count_match or int(closed_count_match.group(1)) != len(closed_tickers):
+            closed_block = (
+                "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
+                "Quellenblock hat keine konsistente TAB-2-ANZAHL/Ticker-Zeilen-Pruefung"
+            )
+        else:
+            closed_rows = [
+                line.strip() for line in closed_block.splitlines()
+                if re.search(r"(?:^|\s)Ticker:\s*\S+", line)
+            ]
+            if len({line.casefold() for line in closed_rows}) != len(closed_rows):
+                closed_block = (
+                    "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
+                    "identische Positionszeilen im geschlossenen Positionsblock"
+                )
 
         # M-06: Abschnitt 7 muss beide Performance-Kennzahlen explizit enthalten.
         # Fehlende Daten werden als nicht verfügbar ausgewiesen, niemals geschätzt.
@@ -16270,6 +16289,43 @@ def speichere_ergebnis(text, eingabedateien=None):
                     missing.append("Ø Positionsperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
                 if missing:
                     text = text[:section_end].rstrip() + "\n" + "; ".join(missing) + ".\n" + text[section_end:]
+
+        # Fingerabdruck des deterministischen Exports: Das Gate berechnet ihn
+        # aus dem gespeicherten Block erneut. Damit werden nachtraegliche
+        # Veraenderungen, verlorene Zeilen und Duplikate in der Berichtskette sichtbar.
+        if not str(closed_block).startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
+            closed_lines = [line.rstrip() for line in closed_block.splitlines()
+                            if not line.startswith("TAB-2-EXPORT-SHA256=")]
+            closed_digest = hashlib.sha256("\n".join(closed_lines).encode("utf-8")).hexdigest()
+            closed_block = "\n".join(closed_lines + [f"TAB-2-EXPORT-SHA256={closed_digest}"])
+
+        # Datenqualitaet: fehlende Firmennamen werden im fachlichen Datenanhang
+        # sichtbar gemacht, nicht nur in Runner-Logs. Der Ticker bleibt als
+        # Identitaetsschluessel erhalten; es wird kein Name erfunden.
+        try:
+            name_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".firma_name_cache.json")
+            with open(name_cache_path, "r", encoding="utf-8") as name_cache_file:
+                name_cache = json.load(name_cache_file)
+            missing_names = sorted(
+                str(key) for key, value in name_cache.items()
+                if isinstance(value, dict) and value.get("missing")
+            ) if isinstance(name_cache, dict) else []
+            if missing_names:
+                disclosure = (
+                    f"Firmennamen-Datenqualitaet: {len(missing_names)} Ticker ohne bestaetigten Unternehmensnamen; "
+                    f"Ticker: {', '.join(missing_names[:80])}"
+                    + (f"; weitere={len(missing_names)-80}" if len(missing_names) > 80 else "")
+                    + ". Namen fehlen wegen nicht erfolgreicher Quellenaufloesung; Ticker werden nicht als bestaetigte Firmennamen gewertet."
+                )
+                section8 = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang[^\r\n]*$", text)
+                if section8:
+                    tail = text[section8.end():]
+                    next_heading = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?(?:9|10|11)(?:\s*[.·](?!\d)|\s+)[^\r\n]*$", tail)
+                    pos = section8.end() + next_heading.start() if next_heading else len(text)
+                    if "Firmennamen-Datenqualitaet:" not in text[section8.end():pos]:
+                        text = text[:pos].rstrip() + "\n" + disclosure + "\n" + text[pos:]
+        except (OSError, ValueError, TypeError):
+            pass
 
         # Der Quellenblock 10.5 gehört unmittelbar VOR Abschnitt 11 (Methodik).
         # So bleiben die Kapitel in ihrer fachlichen Reihenfolge; zugleich wird
@@ -16301,7 +16357,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         temp_output = None
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8-sig", dir=os.path.dirname(radar_output),
+                mode="w", encoding="utf-8", dir=os.path.dirname(radar_output),
                 prefix=f".{Path(radar_datei).name}.", suffix=".tmp", delete=False,
             ) as f:
                 temp_output = f.name
