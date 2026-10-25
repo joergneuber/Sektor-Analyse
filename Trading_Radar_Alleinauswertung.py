@@ -1,4 +1,4 @@
-"""
+﻿"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
@@ -16225,21 +16225,63 @@ def speichere_ergebnis(text, eingabedateien=None):
                 "TAB-2-QUELLE NICHT VERIFIZIERBAR: "
                 "geschlossene Positionsquelle wurde im Lauf nicht geladen"
             )
-        # M-01: Die Gemini-Sektion wird stets entfernt und deterministisch aus
-        # der geladenen Tab-2-Faktenbasis neu aufgebaut. Gemini darf die Quelle
-        # weder ersetzen noch eine widersprüchliche Fehlermeldung stehen lassen.
-        closed_heading = r"(?m)^\s*10\.5\s+Geschlossene Positionen[^\r\n]*\r?\n"
-        text = re.sub(closed_heading, "", text)
+        # M-01: Den gesamten alten Gemini-Abschnitt 10.5 entfernen, nicht nur
+        # seine Überschrift. Andernfalls bleiben alte/ungeprüfte Positionszeilen
+        # im Bericht stehen und vermischen sich mit dem deterministischen Tab-2-Block.
+        # Abschnitt 10.5 endet an der Methodik (11), am Statusmarker oder am Dateiende.
+        old_closed_section = re.compile(
+            r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5\s+Geschlossene Positionen[^\r\n]*\r?\n.*?"
+            r"(?=^[ \t]*(?:#{1,6}\s*)?11\.\s*METHODIK\s*/\s*DATENQUALITÄT[ \t]*$"
+            r"|^[ \t]*TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)[ \t]*$|\Z)"
+        )
+        text = old_closed_section.sub("", text)
         # Alte, frei formulierte Tab-2-Fehlerzeilen aus Gemini ebenfalls entfernen.
         text = re.sub(r"(?im)^TAB-2-QUELLE NICHT VERIFIZIERBAR:.*(?:\r?\n|$)", "", text)
         closed_block = (geschlossene_positionen_fakten or "TAB-2-QUELLE NICHT VERIFIZIERBAR: Quellenblock fehlt")
-        text = text.rstrip() + "\n\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n" + closed_block + "\n"
+
+        # M-06: Abschnitt 7 muss beide Performance-Kennzahlen explizit enthalten.
+        # Fehlende Daten werden als nicht verfügbar ausgewiesen, niemals geschätzt.
+        section7 = re.search(
+            r"(?im)^(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich\s*$", text
+        )
+        if section7:
+            next_section = re.search(r"(?im)^\s*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang\s*$", text[section7.end():])
+            section_end = section7.end() + next_section.start() if next_section else len(text)
+            section_body = text[section7.end():section_end]
+            has_portfolio = re.search(r"(?i)Portfolio(?:-Gesamt)?performance|Gesamtperformance\s+Portfolio", section_body)
+            has_average = re.search(r"(?i)(?:Ø|durchschnitt(?:liche|s)?|mittelwert)\s*Positionsperformance|Positionsperformance\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?", section_body)
+            missing = []
+            if not has_portfolio:
+                missing.append("Portfolio-Gesamtperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
+            if not has_average:
+                missing.append("Ø Positionsperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
+            if missing:
+                text = text[:section_end].rstrip() + "\n" + "; ".join(missing) + ".\n" + text[section_end:]
+
+        # Der Quellenblock 10.5 gehört unmittelbar VOR Abschnitt 11 (Methodik).
+        # So bleiben die Kapitel in ihrer fachlichen Reihenfolge; zugleich wird
+        # garantiert, dass der vollständige Tab-2-Block vor dem Statusmarker liegt.
+        original_status_matches = re.findall(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text)
+        text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text)
+        canonical_closed = (
+            "\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n"
+            + closed_block.rstrip() + "\n\n"
+        )
+        section11 = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?11\.\s*METHODIK\s*/\s*DATENQUALITÄT[ \t]*$",
+            text,
+        )
+        if section11:
+            text = text[:section11.start()].rstrip() + "\n\n" + canonical_closed.lstrip("\n") + text[section11.start():]
+        else:
+            text = text.rstrip() + "\n\n" + canonical_closed.lstrip("\n")
+        # Genau ein Statusmarker, stets als letzte Zeile. Ohne eindeutigen FINAL-
+        # Marker bleibt der Bericht gesperrt; der Report-Gate entscheidet separat.
+        final_status = "FINAL" if original_status_matches and all(x == "FINAL" for x in original_status_matches) else "NICHT_FINAL"
         if str(geschlossene_positionen_fakten or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
-            text = re.sub(
-                r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\s*$",
-                "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL",
-                text,
-            )
+            final_status = "NICHT_FINAL"
+        text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text).rstrip()
+        text += f"\nTRADING_RADAR_FACHLICH_FINAL={final_status}\n"
         temp_output = None
         try:
             with tempfile.NamedTemporaryFile(
