@@ -452,5 +452,50 @@ class TradingRadarDataContractTests(unittest.TestCase):
         )
 
 
+    def test_valid_tab2_overrides_model_non_final_marker_after_deterministic_validation(self):
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                csv_path = Path(temp_dir) / "Offene Positionen+Check.csv"
+                with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(
+                        handle, delimiter=";",
+                        fieldnames=["Name", "Ticker", "Status", "Einstieg", "Einstiegsdatum", "Stop"],
+                    )
+                    writer.writeheader()
+                    writer.writerow({
+                        "Name": "Alpha", "Ticker": "AAA", "Status": "Offen",
+                        "Einstieg": "10", "Einstiegsdatum": "01.01.2026", "Stop": "9",
+                    })
+                radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
+                radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
+                radar._GEMINI_GESCHlossene_10_5_FINAL = ""
+                radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
+                    "TAB-2-ANZAHL=1\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                    "Quellzeile: 3 | Ticker: AAA | Einstiegsdatum: 01.02.2026 | Status: Verkauft"
+                )
+                report = "\n".join(
+                    f"{i}. {title}\n" + ("Ausreichend dokumentierter Abschnittsinhalt und Prüfkontext." * 2)
+                    for i, title in enumerate([
+                        "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                        "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
+                    ], start=1)
+                ) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                with redirect_stdout(StringIO()):
+                    output = radar.speichere_ergebnis(
+                        report, {"Offene Positionen+Check.csv": str(csv_path)}
+                    )
+                saved = Path(output).read_text(encoding="utf-8-sig")
+                self.assertIn("TAB-2-ANZAHL=1", saved)
+                self.assertIn("TAB-2-QUELLE=Geschlossene Positionen", saved)
+                self.assertRegex(saved, r"(?m)^TAB-2-EXPORT-SHA256=[0-9a-f]{64}$")
+                self.assertTrue(saved.rstrip().endswith("TRADING_RADAR_FACHLICH_FINAL=FINAL"))
+            finally:
+                os.chdir(previous_cwd)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
