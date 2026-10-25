@@ -74,6 +74,22 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertIn("steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar.outputs.fachlich_final == 'FINAL'", workflow)
         self.assertIn("steps.trading-radar.outputs.fachlich_final == 'FINAL'", workflow)
 
+    def test_report_field_normalizer_explicitly_marks_missing_m06_m08_values(self):
+        radar = load_radar_module()
+        report = (
+            "3. Ereignisradar\nEin Ereignis wird beobachtet, aber Quellenwerte fehlen.\n"
+            "4. Assetklassenvergleich\nAssetklassen werden verglichen.\n"
+            "7. MSCI-Vergleich\nPortfolio-Gesamtperformance: TBD; Ø Positionsperformance: Platzhalter.\n"
+            "8. Daten-/Prüfanhang\nDatenstatus dokumentiert.\n"
+        )
+        normalized = radar._trading_radar_berichtsfelder_normalisieren(report)
+        for field in ("Uhrzeit", "Zeitzone", "Kennzahl", "Berichtszeitraum", "Letzter Wert", "Konsens"):
+            self.assertIn(f"{field}: NICHT VERFÜGBAR", normalized)
+        self.assertIn("Portfolio-Gesamtperformance: NICHT VERFÜGBAR", normalized)
+        self.assertIn("Ø Positionsperformance: NICHT VERFÜGBAR", normalized)
+        self.assertNotIn(": TBD", normalized)
+        self.assertNotIn(": Platzhalter", normalized)
+
     def test_radar_prompt_keeps_a_b_c_as_non_authorization(self):
         self.assertIn("interne Kategorisierungen der Setups", self.radar_source)
         self.assertIn("KEINE finale Kaufentscheidung", self.radar_source)

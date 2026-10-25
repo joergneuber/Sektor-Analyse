@@ -168,6 +168,35 @@ class ReportGateTests(unittest.TestCase):
         errors = gate.validate_report(text)
         self.assertTrue(any("Fingerabdruck stimmt nicht" in e for e in errors), errors)
 
+    def test_m05_fingerprint_excludes_following_chapter_11(self):
+        text = report_fixture().replace(
+            "10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)",
+            "10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n",
+        ).replace(
+            "TRADING_RADAR_FACHLICH_FINAL=FINAL",
+            "11. Methodische Hinweise und Datenqualität\nMethodik ist dokumentiert und gehört nicht zum Tab-2-Export.\n\nTRADING_RADAR_FACHLICH_FINAL=FINAL",
+        )
+        errors = gate.validate_report(text)
+        self.assertFalse(any("Fingerabdruck" in e for e in errors), errors)
+
+    def test_m06_rejects_placeholder_even_if_unavailable_prose_also_exists(self):
+        text = report_fixture().replace(
+            "Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).",
+            "Portfolio-Gesamtperformance: TBD; Ø Positionsperformance: Platzhalter.\n"
+            "Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar.",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("M-06" in e for e in errors), errors)
+
+    def test_m08_accepts_explicit_unavailable_status_for_each_event_field(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "Uhrzeit: NICHT VERFÜGBAR | Zeitzone: NICHT VERFÜGBAR | "
+            "Kennzahl: NICHT VERFÜGBAR | Berichtszeitraum: NICHT VERFÜGBAR | "
+            "Letzter Wert: NICHT VERFÜGBAR | Konsens: NICHT VERFÜGBAR",
+        )
+        self.assertFalse(any("M-08" in e for e in gate.validate_report(text)))
+
 
 if __name__ == "__main__":
     unittest.main()
