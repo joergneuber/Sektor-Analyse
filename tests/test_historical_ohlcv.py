@@ -111,3 +111,28 @@ def test_market_cache_normalises_mixed_timezone_indices():
     assert combined.index.tz is None
     assert len(combined) == 2
 
+
+
+def test_excluded_26_tickers_are_removed_from_all_universe_sources(tmp_path):
+    import historical_ohlcv as ho
+    source = tmp_path / "analyse.py"
+    dynamic = tmp_path / "dynamic.json"
+    source.write_text('sektoren_map={"10O.DE":"x", "ABB":"y", "AAPL":"z"}\n', encoding="utf-8")
+    dynamic.write_text('{"tickers":["1TRA.DE", "ANSS", "ZZZ.TEST"]}', encoding="utf-8")
+    tickers = set(ho.discover_universe(source, dynamic))
+    assert len(ho.EXCLUDED_TICKERS) == 26
+    assert ho.EXCLUDED_TICKERS.isdisjoint(tickers)
+    assert {"AAPL", "ZZZ.TEST"}.issubset(tickers)
+    assert ho.register_ticker("MAXN", dynamic) is False
+    assert "MAXN" not in ho._load_dynamic_universe(dynamic)
+
+
+def test_exclusion_list_matches_logged_26_missing_tickers():
+    import historical_ohlcv as ho
+    expected = {
+        "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
+        "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
+        "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
+        "SNV", "STM1.DE", "WRK", "X",
+    }
+    assert ho.EXCLUDED_TICKERS == expected
