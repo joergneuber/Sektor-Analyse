@@ -4989,6 +4989,7 @@ def _gemini_503_aeussere_retry_aktion(
 def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien, bestehende_auswertung):
     """Erzeugt den Radar-Bericht durch einen eigenen quota-sicheren Gemini-Request."""
     global _GEMINI_TRADING_RADAR_TEXT, _GEMINI_TRADING_RADAR_STATUS
+    global _GEMINI_GESCHLOSSENE_10_5_FINAL
     _GEMINI_TRADING_RADAR_TEXT = None
     _GEMINI_TRADING_RADAR_STATUS = "NICHT_ERZEUGT"
     import hashlib as _hashlib
@@ -5013,6 +5014,11 @@ def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien
         geschlossene_positionen_fakten = (
             "TAB-2-QUELLE NICHT VERIFIZIERBAR: " + type(exc).__name__ + ": " + str(exc)
         )
+    # Der eigenstaendige Radar-Lauf muss dieselbe autoritative Faktenbasis an
+    # den Speicherpfad uebergeben wie der klassische Gemini-Pfad. Andernfalls
+    # sieht speichere_ergebnis() trotz erfolgreichem Tab-2-Lesen eine leere
+    # globale Variable und markiert den Bericht faelschlich als NICHT_FINAL.
+    _GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_positionen_fakten or ""
     prompt = """Du erstellst eine eigenstaendige Trading-Radar-Auswertung fuer Sektor-Analyse.
 Daten-Cutoff: CUTOFF
 Nutze die bereitgestellten Python-Quellen und den Altbericht nur als Kontext/Thesenstand.

@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-25",
+  "purpose": "Fix missing transfer of successfully loaded Tab-2 closed-position facts from standalone Trading-Radar path to report writer",
+  "changed_files": [
+    {
+      "path": "Trading_Radar_Alleinauswertung.py",
+      "bytes": 899899,
+      "sha256": "fb5409d326f016b2a2b5efa2f2ab3c2ce82d94152bfd8d7686f800dcddf35a0b"
+    },
+    {
+      "path": "tests/test_trading_radar_data_contract.py",
+      "bytes": 26958,
+      "sha256": "cff7e3b2c6aee0b9805bbbaedca5fdec0673fdb67619d88bcbba3f015f846fb1"
+    }
+  ],
+  "report": {
+    "path": "FORENSIK/Trading-Radar-Forensik-Tab2-Uebergabe-20261025.md",
+    "bytes": 2930,
+    "sha256": "80aabd8ac3340dad4fabceae4d589a19c09849c5bfe2ee5522cd93cefdf2c884"
+  }
+}
