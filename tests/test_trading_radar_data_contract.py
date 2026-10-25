@@ -435,5 +435,22 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
 
+    def test_independent_radar_passes_loaded_tab2_block_to_report_writer(self):
+        source = Path(__file__).resolve().parents[1] / "Trading_Radar_Alleinauswertung.py"
+        text = source.read_text(encoding="utf-8")
+        start = text.index("def _gemini_trading_radar_eigenstaendig(")
+        end = text.index("\ndef gemini_auswertung_starten(", start)
+        function = text[start:end]
+        self.assertIn("global _GEMINI_GESCHLOSSENE_10_5_FINAL", function)
+        self.assertIn(
+            "_GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_positionen_fakten or \"\"",
+            function,
+        )
+        self.assertLess(
+            function.index("_GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_positionen_fakten or \"\""),
+            function.index('prompt = """Du erstellst eine eigenstaendige Trading-Radar-Auswertung'),
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
