@@ -186,6 +186,22 @@ ANWEISUNG_DATEI = "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
 # Scanner-Ausgaben, von dort werden ggf. die Short-Dateien nachgeladen.
 DRIVE_FOLDER_ID = '1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL'
 BEOBACHTUNGSLISTE_DATEI = "einzel_check_beobachtung.json"
+
+
+def _tab2_nonempty_rows_with_source_numbers(values, start_sheet_row=3):
+    """Return nonempty row dictionaries and their original physical Sheet row numbers.
+
+    `values` contains rows beginning at `start_sheet_row`. Blank rows are
+    omitted from the export but never renumber the original source coordinates.
+    """
+    rows = []
+    source_row_numbers = []
+    for source_row_number, source_values in enumerate(values, start=start_sheet_row):
+        if not any(str(cell).strip() for cell in source_values):
+            continue
+        rows.append(source_values)
+        source_row_numbers.append(source_row_number)
+    return rows, source_row_numbers
 GEMINI_HISTORIE_DATEI = "Gemini_Auswertung_Historie.txt"
 GEMINI_A3_HISTORIE_DATEI = ".gemini_einzel_check_historie_a3.json"
 _GEMINI_GESCHLOSSENE_10_5_FINAL = ""  # Autoritative Tab-2-Fakten fuer den finalen Ausgabe-Gate.
@@ -467,13 +483,22 @@ def lade_offenen_positionen_check_tab2():
         # tatsächlich befüllte Quellzeile muss dagegen einen Ticker haben;
         # sonst darf der Export nicht mit einer scheinbar passenden Anzahl
         # und einem Fingerabdruck freigegeben werden.
+        # Preserve the physical Google Sheets row number before filtering.
+        # Enumerating the filtered `rows` list would renumber rows after blank
+        # gaps and report the wrong source coordinates in diagnostics.
+        nonempty_source_rows, source_row_numbers = _tab2_nonempty_rows_with_source_numbers(
+            values[2:], start_sheet_row=3
+        )
         rows = [
             dict(zip(headers, row + [""] * max(0, len(headers) - len(row))))
-            for row in values[2:]
-            if any(str(cell).strip() for cell in row)
+            for row in nonempty_source_rows
         ]
-        missing_ticker_rows = [index + 3 for index, row in enumerate(rows)
-                               if not str(row.get("Ticker", "")).strip()]
+
+        missing_ticker_rows = [
+            source_row_numbers[index]
+            for index, row in enumerate(rows)
+            if not str(row.get("Ticker", "")).strip()
+        ]
         if missing_ticker_rows:
             raise RuntimeError(
                 "10.5: Befuellte Tab-2-Quellzeilen ohne Ticker; "

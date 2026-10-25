@@ -175,8 +175,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     ):
         errors.append("M-07: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder den expliziten Nachweis, dass keine These aktualisiert wurde.")
 
-    # M-08: every field needs a non-placeholder value. Explicit FEHLT/UNKLAR
-    # remains visible as missing data, rather than being mistaken for a value.
+    # M-08: validate each event record independently. A complete event must
+    # not mask a second event that lacks its own time/zone/metric/period/value.
     events = _section_body(text, 3, SECTION_NAMES[2])
     event_labels = (
         (r"Uhrzeit", r"Zeit"),
@@ -184,17 +184,54 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         (r"Kennzahl", r"Indikator"),
         (r"Berichtszeitraum", r"Zeitraum"),
     )
-    def event_field_ok(labels, timezone=False):
+    observation_labels = (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
+    no_relevant_events = _has_any(events, (
+        r"keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?Ereignisse",
+        r"Ereignisradar\s*:\s*keine",
+        r"keine relevanten Ereignisse im geprüften Zeitraum",
+        r"keine relevanten Ereignisse im geprueften Zeitraum",
+    ))
+
+    def event_records(section_body):
+        """Split bullet/numbered event entries; field-only bullets continue a record."""
+        records = []
+        current = []
+        field_only = re.compile(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?"
+            r"(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+            r"letzter Wert|Vorwert|Konsens|Istwert)\s*[:=]"
+        )
+        bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
+        named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
+        for line in section_body.splitlines():
+            match = bullet.match(line)
+            starts_record = (
+                (bool(match) and not field_only.match(line))
+                or (bool(named_event.match(line)) and not field_only.match(line))
+            )
+            if starts_record and current:
+                records.append("\n".join(current).strip())
+                current = []
+            current.append(line)
+        if current:
+            records.append("\n".join(current).strip())
+        records = [record for record in records if record]
+        return records or ([section_body.strip()] if section_body.strip() else [])
+
+    def field_ok(record, labels, timezone=False):
         label = r"(?:" + "|".join(labels) + r")"
         matches = list(re.finditer(
             rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)",
-            events,
+            record,
         ))
         if not matches:
-            return _is_explicit_unavailable(events, labels)
+            return _is_explicit_unavailable(record, labels)
         for match in matches:
             value = match.group(1).strip().strip(". ")
-            if re.fullmatch(r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?", value):
+            if re.fullmatch(
+                r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?",
+                value,
+            ):
                 continue
             if _MISSING_VALUE_RE.fullmatch(value):
                 return False
@@ -206,23 +243,24 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 return False
         return True
 
-    values_ok = all(
-        event_field_ok(event_labels[i], timezone=(i == 1)) for i in range(4)
-    )
-    # Observation may be on the same line or a subsequent line. Require a
-    # non-placeholder value after the observation label.
-    observation_labels = (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
-    event_observation = any(
-        _label_value(events, (label,)) or _is_explicit_unavailable(events, (label,))
-        for label in observation_labels
-    )
-    no_relevant_events = _has_any(events, (
-        r"keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?Ereignisse",
-        r"Ereignisradar\s*:\s*keine",
-    ))
-    if not no_relevant_events and not (values_ok and event_observation):
-        errors.append("M-08: Ereignisdetails benötigen konkrete Uhrzeit, Zeitzone, Kennzahl, Zeitraum und einen ausgewiesenen Wert/Konsens oder expliziten Fehlstatus; alternativ muss ausdrücklich festgehalten sein, dass keine relevanten Ereignisse vorliegen.")
-
+    if not no_relevant_events:
+        records = event_records(events)
+        for event_index, record in enumerate(records, start=1):
+            values_ok = all(
+                field_ok(record, event_labels[i], timezone=(i == 1))
+                for i in range(4)
+            )
+            observation_ok = any(
+                _label_value(record, (label,)) is not None
+                or _is_explicit_unavailable(record, (label,))
+                for label in observation_labels
+            )
+            if not values_ok or not observation_ok:
+                errors.append(
+                    f"M-08: Ereignisdatensatz {event_index} benötigt eigene Uhrzeit, "
+                    "Zeitzone, Kennzahl, Zeitraum und einen ausgewiesenen Wert/Konsens "
+                    "oder expliziten Fehlstatus."
+                )
     # M-09: candidate labels need usable values. Numeric fields must contain
     # parseable numbers; explicit FEHLT is accepted only as a declared absence,
     # and does not silently become a numeric trade level.
