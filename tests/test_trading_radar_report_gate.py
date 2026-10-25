@@ -1,6 +1,7 @@
 """Focused regression coverage for the M-05..M-10 report contract."""
 import importlib.util
 import hashlib
+import re
 from pathlib import Path
 import unittest
 
@@ -14,8 +15,8 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
     tab2_lines = [
         f"TAB-2-ANZAHL={tab2_count}",
         "TAB-2-QUELLE=Geschlossene Positionen",
-        "Ticker: AAA | Status: Gestoppt",
-        "Ticker: BBB | Status: Verkauft",
+        "Quellzeile: 3 | Ticker: AAA | Einstiegsdatum: 01.08.2026 | Status: Gestoppt",
+        "Quellzeile: 4 | Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft",
     ]
     tab2_digest = hashlib.sha256("\n".join(tab2_lines).encode("utf-8")).hexdigest()
     sections = [
@@ -51,6 +52,20 @@ class ReportGateTests(unittest.TestCase):
         errors = gate.validate_report(text)
         self.assertTrue(any("M-07" in e for e in errors), errors)
 
+    def test_m07_accepts_explicit_unmodified_register_variant(self):
+        text = report_fixture().replace(
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Das Thesenregister wurde geprüft und ist unverändert; es gab keine Änderung.",
+        )
+        self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
+
+    def test_m07_accepts_markdown_bold_thesis_fields(self):
+        text = report_fixture().replace(
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "**Thesen-ID:** T-1 | **Version:** 2 | **Status:** BESTÄTIGT | gegenüber Vorversion unverändert.",
+        )
+        self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
+
     def test_m07_accepts_explicit_no_thesis_update_without_fabricated_id(self):
         text = report_fixture().replace(
             "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
@@ -72,6 +87,14 @@ class ReportGateTests(unittest.TestCase):
         )
         errors = gate.validate_report(text)
         self.assertTrue(any("M-08: Ereignisdatensatz 2" in e for e in errors), errors)
+
+    def test_m08_accepts_markdown_bold_field_labels(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "**Uhrzeit:** 14:30 | **Zeitzone:** ET | **Kennzahl:** CPI | "
+            "**Berichtszeitraum:** Q3 2026 | **letzter Wert:** 2.8 | **Konsens:** 2.9.",
+        )
+        self.assertFalse(any("M-08" in e for e in gate.validate_report(text)))
 
     def test_m08_accepts_separate_complete_event_records(self):
         text = report_fixture().replace(
@@ -172,17 +195,80 @@ class ReportGateTests(unittest.TestCase):
         self.assertTrue(any("NICHT_FINAL" in e for e in errors), errors)
 
 
-    def test_m05_rejects_identical_duplicate_position_rows(self):
-        text = report_fixture(tab2_count=2)
-        text = text.replace(
-            "Ticker: BBB | Status: Verkauft",
-            "Ticker: AAA | Status: Gestoppt",
+    def _recompute_tab2_digest(self, text):
+        start = text.index("10.5 Geschlossene Positionen")
+        status_start = text.index("TRADING_RADAR_FACHLICH_FINAL=")
+        block_lines = text[start:status_start].splitlines()[1:]
+        digest = hashlib.sha256("\n".join(
+            line.rstrip() for line in block_lines
+            if not line.startswith("TAB-2-EXPORT-SHA256=")
+        ).strip().encode("utf-8")).hexdigest()
+        return re.sub(
+            r"(?m)^TAB-2-EXPORT-SHA256=[0-9a-f]{64}$",
+            f"TAB-2-EXPORT-SHA256={digest}",
+            text,
         )
+
+    def test_m05_allows_same_ticker_with_distinct_entry_dates(self):
+        text = report_fixture(tab2_count=2).replace(
+            "Quellzeile: 4 | Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft",
+            "Quellzeile: 5 | Ticker: AAA | Einstiegsdatum: 02.08.2026 | Status: Gestoppt",
+        )
+        text = self._recompute_tab2_digest(text)
         errors = gate.validate_report(text)
-        self.assertTrue(any("identische Positionszeilen" in e for e in errors), errors)
+        self.assertFalse(any("Positionsschluessel" in e for e in errors), errors)
+        self.assertFalse(any("Fingerabdruck" in e for e in errors), errors)
+
+    def test_m05_rejects_same_ticker_and_same_entry_date(self):
+        text = report_fixture(tab2_count=2).replace(
+            "Quellzeile: 4 | Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft",
+                        "Quellzeile: 5 | Ticker: AAA | Einstiegsdatum: 2026-08-01 | Status: Gestoppt",
+        )
+        text = self._recompute_tab2_digest(text)
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Positionsschluessel Ticker+Einstiegsdatum doppelt" in e for e in errors), errors)
+
+    def test_m05_rejects_nonempty_but_invalid_entry_dates(self):
+        for invalid_date in ("32.13.2026", "2026-02-30", "Datum unbekannt", "TBD"):
+            with self.subTest(invalid_date=invalid_date):
+                text = report_fixture().replace(
+                    "Einstiegsdatum: 02.08.2026", f"Einstiegsdatum: {invalid_date}"
+                )
+                text = self._recompute_tab2_digest(text)
+                errors = gate.validate_report(text)
+                self.assertTrue(
+                    any("Positionsidentitaet fehlt" in e for e in errors), errors
+                )
+
+    def test_m05_accepts_all_contract_entry_date_formats(self):
+        for valid_date in ("02.08.2026", "2026-08-02", "02/08/2026"):
+            with self.subTest(valid_date=valid_date):
+                text = report_fixture().replace(
+                    "Einstiegsdatum: 02.08.2026", f"Einstiegsdatum: {valid_date}"
+                )
+                text = self._recompute_tab2_digest(text)
+                errors = gate.validate_report(text)
+                self.assertFalse(any("Positionsidentitaet fehlt" in e for e in errors), errors)
+
+    def test_m05_rejects_missing_entry_date(self):
+        text = report_fixture(tab2_count=2).replace(
+            "Einstiegsdatum: 02.08.2026 | ", ""
+        )
+        text = self._recompute_tab2_digest(text)
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Positionsidentitaet fehlt" in e for e in errors), errors)
+
+    def test_m05_rejects_duplicate_source_row_identity_even_with_distinct_trade_key(self):
+        text = report_fixture(tab2_count=2).replace(
+            "Quellzeile: 4 | Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft",
+            "Quellzeile: 3 | Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft",
+        )
+        text = self._recompute_tab2_digest(text)
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Quellzeilennummer ist doppelt" in e for e in errors), errors)
 
     def test_m12_rejects_tab2_export_fingerprint_mismatch(self):
-        text = report_fixture().replace("Ticker: BBB | Status: Verkauft", "Ticker: BBB | Status: Geaendert")
+        text = report_fixture().replace("Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft", "Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Geaendert")
         errors = gate.validate_report(text)
         self.assertTrue(any("Fingerabdruck stimmt nicht" in e for e in errors), errors)
 

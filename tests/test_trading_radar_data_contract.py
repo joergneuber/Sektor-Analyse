@@ -64,6 +64,54 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertIn("Portfolio-Gesamtperformance", self.radar_source)
         self.assertIn("OHLCV-Abdeckung", self.radar_source)
 
+    def test_duplicate_ticker_entry_date_keeps_all_source_rows_but_no_export_markers(self):
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                csv_path = Path(temp_dir) / "Offene Positionen+Check.csv"
+                with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(
+                        handle, delimiter=";",
+                        fieldnames=["Name", "Ticker", "Status", "Einstieg", "Einstiegsdatum", "Stop"]
+                    )
+                    writer.writeheader()
+                    writer.writerows([
+                        {"Name": "Alpha", "Ticker": "AAA", "Status": "Offen", "Einstieg": "10", "Einstiegsdatum": "01.01.2026", "Stop": "9"},
+                    ])
+                radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
+                radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
+                radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
+                    "TAB-2-ANZAHL=2\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                    "Quellzeile: 3 | Ticker: AAA | Einstiegsdatum: 01.01.2026 | Status: Gestoppt\n"
+                    "Quellzeile: 4 | Ticker: AAA | Einstiegsdatum: 01.01.2026 | Status: Verkauft"
+                )
+                report = "\n".join(
+                    f"{i}. {title}\n" + ("Ausreichend dokumentierter Abschnittsinhalt und Prüfkontext." * 2)
+                    for i, title in enumerate([
+                        "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                        "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
+                    ], start=1)
+                ) + "\nTRADING_RADAR_FACHLICH_FINAL=FINAL\n"
+                with redirect_stdout(StringIO()):
+                    output = radar.speichere_ergebnis(
+                        report, {"Offene Positionen+Check.csv": str(csv_path)}
+                    )
+                saved = Path(output).read_text(encoding="utf-8-sig")
+                closed_start = saved.index("10.5 Geschlossene Positionen")
+                closed_end = saved.rfind("TRADING_RADAR_FACHLICH_FINAL=")
+                closed_section = saved[closed_start:closed_end]
+                self.assertIn("TAB-2-QUELLE NICHT VERIFIZIERBAR", closed_section)
+                self.assertIn("Quellzeile: 3 | Ticker: AAA | Einstiegsdatum: 01.01.2026", closed_section)
+                self.assertIn("Quellzeile: 4 | Ticker: AAA | Einstiegsdatum: 01.01.2026", closed_section)
+                self.assertNotIn("TAB-2-ANZAHL=", closed_section)
+                self.assertNotIn("TAB-2-QUELLE=Geschlossene Positionen", closed_section)
+                self.assertNotIn("TAB-2-EXPORT-SHA256=", closed_section)
+                self.assertTrue(saved.rstrip().endswith("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"))
+            finally:
+                os.chdir(previous_cwd)
+
     def test_workflow_keeps_non_final_as_artifact_not_regular_publication(self):
         if not WORKFLOW.is_file():
             self.skipTest("Workflow fehlt in dieser Anlage")
@@ -90,6 +138,47 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertNotIn(": TBD", normalized)
         self.assertNotIn(": Platzhalter", normalized)
 
+    def test_m08_normalizer_fills_each_event_record_independently(self):
+        radar = load_radar_module()
+        report = (
+            "3. Ereignisradar\n"
+            "- CPI-Veröffentlichung | Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | "
+            "Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9\n"
+            "- Arbeitsmarktdaten | Uhrzeit: TBD | Zeitzone: ET | Kennzahl: NFP | "
+            "Berichtszeitraum: Oktober 2026\n"
+            "4. Assetklassenvergleich\nVergleich dokumentiert.\n"
+        )
+        normalized = radar._trading_radar_berichtsfelder_normalisieren(report)
+        event_section = normalized.split("3. Ereignisradar", 1)[1].split("4. Assetklassenvergleich", 1)[0]
+        event_bullets = re.findall(r"(?m)^- (?:CPI-Veröffentlichung|Arbeitsmarktdaten)", event_section)
+        self.assertEqual(len(event_bullets), 2)
+        self.assertIn("Uhrzeit: NICHT VERFÜGBAR", event_section)
+        self.assertIn("Letzter Wert: NICHT VERFÜGBAR", event_section)
+        self.assertIn("Zeitzone: ET", event_section)
+        self.assertIn("Kennzahl: NFP", event_section)
+        self.assertNotIn("Uhrzeit: TBD", event_section)
+
+    def test_m08_normalizer_output_passes_event_gate_for_each_record(self):
+        radar = load_radar_module()
+        gate_spec = importlib.util.spec_from_file_location(
+            "trading_radar_gate_m08_integration", ROOT / "trading_radar_report_gate.py"
+        )
+        gate_module = importlib.util.module_from_spec(gate_spec)
+        gate_spec.loader.exec_module(gate_module)
+        fixture_spec = importlib.util.spec_from_file_location(
+            "trading_radar_gate_fixture", ROOT / "tests" / "test_trading_radar_report_gate.py"
+        )
+        fixture_module = importlib.util.module_from_spec(fixture_spec)
+        fixture_spec.loader.exec_module(fixture_module)
+        report = fixture_module.report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "- CPI-Veröffentlichung | Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.\n"
+            "- Arbeitsmarktdaten | Uhrzeit: TBD | Zeitzone: ET | Kennzahl: NFP | Berichtszeitraum: Oktober 2026.",
+        )
+        normalized = radar._trading_radar_berichtsfelder_normalisieren(report)
+        errors = gate_module.validate_report(normalized)
+        self.assertFalse(any("M-08" in error for error in errors), errors)
+
     def test_radar_prompt_keeps_a_b_c_as_non_authorization(self):
         self.assertIn("interne Kategorisierungen der Setups", self.radar_source)
         self.assertIn("KEINE finale Kaufentscheidung", self.radar_source)
@@ -99,12 +188,70 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertIn(r"Trading_Radar\(\d{4}-\d{2}-\d{2}\)\.txt", self.radar_source)
         self.assertIn("TRADING_RADAR_ABLAGEPFAD_UNGUELTIG", self.radar_source)
 
+    def test_tab2_entry_date_text_parser_rejects_nonempty_invalid_dates(self):
+        radar = load_radar_module()
+        for invalid_date in ("32.13.2026", "2026-02-30", "Datum unbekannt", "TBD", ""):
+            with self.subTest(invalid_date=invalid_date):
+                self.assertIsNone(radar._parse_tab2_entry_date_text(invalid_date))
+        for valid_date in ("02.08.2026", "2026-08-02", "02/08/2026"):
+            with self.subTest(valid_date=valid_date):
+                self.assertEqual(
+                    radar._parse_tab2_entry_date_text(valid_date),
+                    datetime.date(2026, 8, 2),
+                )
+
+    def test_generator_marks_nonempty_invalid_entry_date_nonverifiable(self):
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                csv_path = Path(temp_dir) / "Offene Positionen+Check.csv"
+                with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(
+                        handle, delimiter=";",
+                        fieldnames=["Name", "Ticker", "Status", "Einstieg", "Einstiegsdatum", "Stop"],
+                    )
+                    writer.writeheader()
+                    writer.writerow({
+                        "Name": "Alpha", "Ticker": "AAA", "Status": "Offen",
+                        "Einstieg": "10", "Einstiegsdatum": "01.01.2026", "Stop": "9",
+                    })
+                radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
+                radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
+                radar._GEMINI_GESCHlossene_10_5_FINAL = ""
+                radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
+                    "TAB-2-ANZAHL=1\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                    "Quellzeile: 3 | Ticker: AAA | Einstiegsdatum: 32.13.2026 | Status: Verkauft"
+                )
+                report = "\n".join(
+                    f"{i}. {title}\n" + ("Ausreichend dokumentierter Abschnittsinhalt und Prüfkontext." * 2)
+                    for i, title in enumerate([
+                        "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                        "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
+                    ], start=1)
+                ) + "\nTRADING_RADAR_FACHLICH_FINAL=FINAL\n"
+                with redirect_stdout(StringIO()):
+                    output = radar.speichere_ergebnis(
+                        report, {"Offene Positionen+Check.csv": str(csv_path)}
+                    )
+                saved = Path(output).read_text(encoding="utf-8-sig")
+                closed_section = saved[saved.index("10.5 Geschlossene Positionen"):saved.rfind("TRADING_RADAR_FACHLICH_FINAL=")]
+                self.assertIn("TAB-2-QUELLE NICHT VERIFIZIERBAR", closed_section)
+                self.assertIn("Einstiegsdatum: 32.13.2026", closed_section)
+                self.assertNotIn("TAB-2-ANZAHL=", closed_section)
+                self.assertNotIn("TAB-2-QUELLE=Geschlossene Positionen", closed_section)
+                self.assertNotIn("TAB-2-EXPORT-SHA256=", closed_section)
+                self.assertTrue(saved.rstrip().endswith("TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"))
+            finally:
+                os.chdir(previous_cwd)
+
     def test_closed_positions_loader_has_no_date_filter_and_keeps_unparseable_dates(self):
         start = self.radar_source.find("def lade_offenen_positionen_check_tab2")
         end = self.radar_source.find("\ndef ", start + 5)
         section = self.radar_source[start:end if end >= 0 else None]
         self.assertGreaterEqual(start, 0)
-        self.assertIn("selected = list(rows)", section)
+        self.assertIn("selected = list(zip(source_row_numbers, rows))", section)
         self.assertNotIn("timedelta(days=2)", section)
         self.assertIn("TAB-2-ANZAHL", section)
         self.assertIn("Unparsebare Datumswerte", section)
@@ -220,10 +367,14 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
                 radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
                     "TAB-2-ANZAHL=51\nTAB-2-QUELLE=Geschlossene Positionen\n"
-                    "Ticker: OLD | Ausstiegsdatum: 2019-01-01\n"
-                    "Ticker: BADDATE | Ausstiegsdatum: unbekannt\n"
+                    "Quellzeile: 3 | Ticker: OLD | Einstiegsdatum: 01.01.2019 | Ausstiegsdatum: 2019-01-01\n"
+                    "Quellzeile: 4 | Ticker: BADDATE | Einstiegsdatum: 02.01.2019 | Ausstiegsdatum: unbekannt\n"
                     + "\n".join(
-                        f"Ticker: CLOSED{i:02d} | Ausstiegsdatum: 2026-10-24"
+                        (
+                            f"Quellzeile: {i + 4} | Ticker: OLD | Einstiegsdatum: {i + 2:02d}.01.2019 | Ausstiegsdatum: 2019-01-01"
+                            if i == 1 else
+                            f"Quellzeile: {i + 4} | Ticker: CLOSED{i:02d} | Einstiegsdatum: {(datetime.date(2026, 2, 1) + datetime.timedelta(days=i)).strftime('%d.%m.%Y')} | Ausstiegsdatum: 2026-10-24"
+                        )
                         for i in range(1, 50)
                     )
                 )
@@ -244,18 +395,29 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 self.assertEqual(output_path.name, f"Trading_Radar({datetime.date.today().isoformat()}).txt")
                 self.assertTrue(output_path.is_file())
                 saved = output_path.read_text(encoding="utf-8-sig")
+                gate_spec = importlib.util.spec_from_file_location(
+                    "trading_radar_gate_integration", ROOT / "trading_radar_report_gate.py"
+                )
+                gate_module = importlib.util.module_from_spec(gate_spec)
+                gate_spec.loader.exec_module(gate_module)
+                gate_errors = gate_module.validate_report(saved)
+                tab2_errors = [
+                    error for error in gate_errors
+                    if "Tab-2" in error or "Geschlossene-Positionen-Abschnitt" in error
+                ]
+                self.assertEqual(tab2_errors, [], gate_errors)
                 self.assertIn("OFFENE_POSITIONEN_QUELLANZAHL=2", saved)
                 self.assertIn("OFFENE_POSITIONEN_ANZAHL=2", saved)
                 self.assertIn("Alpha (AAA)", saved)
                 self.assertIn("Beta (BBB)", saved)
                 self.assertNotIn("Closed (CCC)", saved)
-                self.assertIn("Ticker: OLD | Ausstiegsdatum: 2019-01-01", saved)
-                self.assertIn("Ticker: BADDATE | Ausstiegsdatum: unbekannt", saved)
+                self.assertIn("Ticker: OLD | Einstiegsdatum: 01.01.2019 | Ausstiegsdatum: 2019-01-01", saved)
+                self.assertIn("Ticker: BADDATE | Einstiegsdatum: 02.01.2019 | Ausstiegsdatum: unbekannt", saved)
                 closed_start = saved.index("10.5 Geschlossene Positionen")
                 closed_end = saved.index("11. Methodische Hinweise und Datenqualität")
                 closed_section = saved[closed_start:closed_end]
                 self.assertIn("TAB-2-ANZAHL=51", closed_section)
-                self.assertEqual(len(re.findall(r"(?m)^Ticker:\s+\S+", closed_section)), 51)
+                self.assertEqual(len(re.findall(r"(?m)^Quellzeile:\s+\d+\s+\|\s+Ticker:\s+\S+", closed_section)), 51)
                 # Regression: alter Gemini-10.5-Inhalt muss vollständig weg,
                 # der deterministische Quellenblock steht vor Abschnitt 11 und Status.
                 self.assertNotIn("Ticker: STALE", saved)
