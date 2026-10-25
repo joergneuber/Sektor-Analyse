@@ -1,4 +1,4 @@
-﻿"""Ausfuehrbare Vertrags- und Integrationstests fuer den Trading-Radar-Handoff.
+"""Ausfuehrbare Vertrags- und Integrationstests fuer den Trading-Radar-Handoff.
 
 Die Tests benoetigen weder Gemini-Zugang noch Google-Drive-Credentials.
 Ein fehlender Workflow wird als explizite Skip-Meldung behandelt, nicht als
@@ -104,6 +104,70 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertIn("nicht zuordenbar", section)
         self.assertIn("Keine offenen Positionen exportiert", section)
 
+    def test_report_section_boundaries_are_robust_and_source_has_no_bom(self):
+        source_bytes = RADAR.read_bytes()
+        self.assertFalse(source_bytes.startswith(b"\xef\xbb\xbf"))
+        source = source_bytes.decode("utf-8")
+        self.assertIn(r"11(?:\s*[.·](?!\d)|\s+)", source)
+        self.assertIn("ohne belegte Grenze wird Abschnitt 7 nicht verändert", source)
+        self.assertIn("Niemals bis EOF erweitern", source)
+        self.assertIn(r"(?:\s*[.·](?!\d)|\s+(?!\d))", source)
+
+    def test_actual_report_writer_bounds_performance_section_when_section8_is_missing(self):
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                csv_path = Path(temp_dir) / "Offene Positionen+Check.csv"
+                with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(handle, delimiter=";", fieldnames=[
+                        "Name", "Ticker", "Status", "Einstieg", "Einstiegsdatum", "Stop"
+                    ])
+                    writer.writeheader()
+                    writer.writerow({
+                        "Name": "Alpha", "Ticker": "AAA", "Status": "Offen",
+                        "Einstieg": "10", "Einstiegsdatum": "01.01.2026", "Stop": "9"
+                    })
+                radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
+                radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
+                radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
+                    "TAB-2-ANZAHL=0\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                )
+                # Abschnitt 8 fehlt. Abschnitt 9 muss trotzdem die harte Grenze
+                # fuer Abschnitt 7 sein; die Kennzahlen duerfen nicht dahinter landen.
+                report = (
+                    "7. MSCI-Vergleich\n"
+                    "Nur bestehende Angaben aus Abschnitt 7.\n"
+                    "8.1 Unterkapitel mit ergänzenden Hinweisen\n"
+                    "Dieser Text gehört weiterhin zum Bericht und darf keine Abschnittsgrenze auslösen.\n"
+                    "9. Risikohinweise\n"
+                    "Dieser Text gehoert ausschliesslich zu Abschnitt 9.\n"
+                    "11. Methodische Hinweise und Datenqualität\n"
+                    "Methodik bleibt erhalten.\n"
+                    "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                )
+                with redirect_stdout(StringIO()):
+                    output = radar.speichere_ergebnis(
+                        report, {"Offene Positionen+Check.csv": str(csv_path)}
+                    )
+                saved = Path(output).read_text(encoding="utf-8-sig")
+                section7_start = saved.index("7. MSCI-Vergleich")
+                section9_start = saved.index("9. Risikohinweise")
+                section7 = saved[section7_start:section9_start]
+                section9_start = saved.index("9. Risikohinweise")
+                section11_start = saved.index("11. Methodische Hinweise und Datenqualität")
+                section9 = saved[section9_start:section11_start]
+                self.assertIn("Portfolio-Gesamtperformance nicht verfügbar", section7)
+                self.assertIn("Ø Positionsperformance nicht verfügbar", section7)
+                self.assertNotIn("Portfolio-Gesamtperformance nicht verfügbar", section9)
+                self.assertNotIn("Ø Positionsperformance nicht verfügbar", section9)
+                self.assertIn("8.1 Unterkapitel mit ergänzenden Hinweisen", section7)
+                self.assertIn("Dieser Text gehört weiterhin zum Bericht und darf keine Abschnittsgrenze auslösen.", section7)
+                self.assertIn("Dieser Text gehoert ausschliesslich zu Abschnitt 9.", section9)
+            finally:
+                os.chdir(previous_cwd)
+
     def test_actual_report_writer_creates_canonical_report_and_complete_facts(self):
         radar = load_radar_module()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -139,7 +203,7 @@ class TradingRadarDataContractTests(unittest.TestCase):
                     "\n10.5 Geschlossene Positionen\n"
                     "Ticker: STALE | alte Gemini-Zeile darf nicht erhalten bleiben\n"
                     "TAB-2-QUELLE NICHT VERIFIZIERBAR: alter Gemini-Platzhalter\n"
-                    "11. METHODIK / DATENQUALITÄT\n"
+                    "11. Methodische Hinweise und Datenqualität\n"
                     "11.1 Datenstatus\nMethodik-Inhalt muss erhalten bleiben.\n"
                     "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
                 )
@@ -157,7 +221,7 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 self.assertIn("Ticker: OLD | Ausstiegsdatum: 2019-01-01", saved)
                 self.assertIn("Ticker: BADDATE | Ausstiegsdatum: unbekannt", saved)
                 closed_start = saved.index("10.5 Geschlossene Positionen")
-                closed_end = saved.index("11. METHODIK / DATENQUALITÄT")
+                closed_end = saved.index("11. Methodische Hinweise und Datenqualität")
                 closed_section = saved[closed_start:closed_end]
                 self.assertIn("TAB-2-ANZAHL=51", closed_section)
                 self.assertEqual(len(re.findall(r"(?m)^Ticker:\s+\S+", closed_section)), 51)
@@ -165,7 +229,7 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 # der deterministische Quellenblock steht vor Abschnitt 11 und Status.
                 self.assertNotIn("Ticker: STALE", saved)
                 self.assertNotIn("alter Gemini-Platzhalter", saved)
-                self.assertLess(saved.index("10.5 Geschlossene Positionen"), saved.index("11. METHODIK / DATENQUALITÄT"))
+                self.assertLess(saved.index("10.5 Geschlossene Positionen"), saved.index("11. Methodische Hinweise und Datenqualität"))
                 self.assertLess(saved.index("10.5 Geschlossene Positionen"), saved.index("TRADING_RADAR_FACHLICH_FINAL="))
                 self.assertIn("11.1 Datenstatus", saved)
                 self.assertIn("Methodik-Inhalt muss erhalten bleiben.", saved)
