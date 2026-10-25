@@ -93,14 +93,22 @@ def main():
             f"Statusabweichung: Workflow={expected_status}, Report={report_status}"
         )
     report_check = os.environ.get("TRADING_RADAR_REPORT_CHECK_OUTCOME", "").strip()
-    if report_check != "success":
+    fachlich_nicht_final = report_status == "NICHT_FINAL"
+
+    # Ein FINAL-Bericht darf nur nach bestandenem Gate versendet werden.
+    # NICHT_FINAL darf als deutlich gekennzeichneter Diagnose-/Teilbericht per
+    # Mail zugestellt werden, damit der Nutzer die konkreten Befunde erhält.
+    # Diese Ausnahme gibt NICHT die Google-Drive-Veröffentlichung frei.
+    if not fachlich_nicht_final and report_check != "success":
         raise ValueError(f"Reportversand blockiert: Report-Check={report_check}")
+    erlaubte_report_check_status = ("success", "failure", "cancelled", "skipped")
+    if report_check not in erlaubte_report_check_status:
+        raise ValueError(
+            "Reportversand blockiert: fehlender oder unbekannter "
+            f"Report-Check-Status={report_check!r}"
+        )
 
     jetzt_berlin = datetime.now(ZoneInfo("Europe/Berlin"))
-    if report_status != "FINAL":
-        raise ValueError("Reportversand blockiert: fachlich NICHT_FINAL; Teilbericht nicht regulär versenden")
-
-    fachlich_nicht_final = report_status == "NICHT_FINAL"
 
     msg = EmailMessage()
     status_label = "NICHT_FINAL – fachlich eingeschränkt" if fachlich_nicht_final else "TRADING-RADAR – fachlich final"
@@ -117,10 +125,11 @@ def main():
     mail_body = text
     if fachlich_nicht_final:
         mail_body = (
-            "ACHTUNG: FACHLICH NICHT_FINAL\n"
-            "Die Auswertung wurde technisch erfolgreich erstellt, ist aber "
-            "fachlich nicht final freigegeben. Bitte Befunde/Unsicherheiten im "
-            "Report beachten. Dies ist KEIN technischer Gemini-Fallback.\n\n"
+            "ACHTUNG: FACHLICH NICHT_FINAL – NICHT ZUR HANDELSFREIGABE VERWENDEN\n"
+            "Die Auswertung wurde technisch erstellt, hat die fachliche Freigabe "
+            "aber nicht bestanden. Diese E-Mail dient der Fehlerdiagnose und "
+            "ist keine reguläre Veröffentlichung. Google-Drive-Upload bleibt gesperrt.\n"
+            f"Report-Gate-Ergebnis: {report_check or 'nicht verfügbar'}\n\n"
             + text
         )
     msg.set_content(mail_body)

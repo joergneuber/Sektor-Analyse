@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-25",
+  "purpose": "Allow delivery of a clearly marked NICHT_FINAL Trading-Radar report by email while keeping Google Drive publication blocked unless FINAL and report gate success.",
+  "files": [
+    {
+      "path": ".github/workflows/main.yml",
+      "bytes": 34946,
+      "sha256": "75bd3a4a2a2267052b4616f09f22d3a9a1c6ebb86fa1646b5333dca5b20e91a5"
+    },
+    {
+      "path": "send_mail.py",
+      "bytes": 6864,
+      "sha256": "0024b731b644418c4a64ba5354e28e72ddf3f426fed6499f92bd3918415de234"
+    },
+    {
+      "path": "tests/test_gemini_status_delivery.py",
+      "bytes": 3506,
+      "sha256": "45ac9ec227b0520e61c5a0588c96c29a00ef070173dab186248dbba2a8e02e57"
+    }
+  ]
+}
