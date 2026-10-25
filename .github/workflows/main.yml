@@ -26,6 +26,17 @@ jobs:
       - name: Code auschecken
         uses: actions/checkout@v5
 
+      # Persistenter Firmennamen-Cache wird vor analyse.py wiederhergestellt;
+      # dadurch muss der Hauptlauf bekannte Namen nicht erneut bei Yahoo anfragen.
+      - name: Firmennamen-Cache wiederherstellen
+        id: firma-name-cache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: .firma_name_cache.json
+          key: firma-name-cache-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            firma-name-cache-${{ runner.os }}-${{ github.ref_name }}-
+
       # Automatische Läufe nur zulassen, wenn heute (UTC) noch kein
       # erfolgreicher manueller oder automatischer Lauf dieses Workflows existiert.
       # Fehlgeschlagene Läufe zählen nicht. Manuelle Starts umgehen diese Prüfung.
@@ -243,6 +254,13 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python analyse.py
+
+      - name: Firmennamen-Cache dauerhaft speichern
+        if: ${{ always() && hashFiles('.firma_name_cache.json') != '' }}
+        uses: actions/cache/save@v5
+        with:
+          path: .firma_name_cache.json
+          key: firma-name-cache-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       # State erst NACH erfolgreicher analyse.py sichern. So kann ein
       # Cross nicht als "gemeldet" verloren gehen, falls die Analyse vorher
