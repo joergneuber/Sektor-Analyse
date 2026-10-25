@@ -1,4 +1,4 @@
-﻿
+
 name: tägliche Analyse Sektoren
 
 on:
@@ -649,8 +649,11 @@ jobs:
       # E-MAIL
       # ============================================================
 
-      - name: Auswertung per E-Mail versenden
-        if: ${{ steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && steps.trading-radar.outputs.fachlich_final == 'FINAL' && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && steps.trading-radar-report-check.outcome == 'success' }}
+      - name: Trading-Radar per E-Mail versenden (FINAL oder klar markiertes NICHT_FINAL)
+        # FINAL wird nur nach bestandenem Report-Gate regulär versendet.
+        # Ein technisch erzeugter NICHT_FINAL-Bericht wird trotzdem zugestellt,
+        # damit Fehler sichtbar sind; er bleibt klar als nicht freigegeben markiert.
+        if: ${{ always() && steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && (steps.trading-radar.outputs.fachlich_final == 'FINAL' || steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL') && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && (steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL' || steps.trading-radar-report-check.outcome == 'success') }}
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
