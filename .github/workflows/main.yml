@@ -1,4 +1,4 @@
-
+﻿
 name: tägliche Analyse Sektoren
 
 on:
@@ -580,16 +580,17 @@ jobs:
           echo "TRADING_RADAR_FACHLICH_FINAL=$report_status" >> "$GITHUB_OUTPUT"
           echo "REPORT_CHECK=PASS | frischer Bericht, acht Abschnitte und eindeutiger Status=$report_status"
 
-      # Fachlich vorläufige, aber technisch gültige Berichte als GitHub Artifact
-      # sichern. Das ist keine reguläre Veröffentlichung: Drive und E-Mail
-      # bleiben für NICHT_FINAL gesperrt.
-      - name: Vorläufigen Trading-Radar-Bericht als Artifact sichern
-        if: ${{ steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL' }}
+      # Unveraenderliche Laufhistorie: jeden erzeugten Bericht mit Run-ID sichern,
+      # auch wenn das Report-Gate ihn wegen NICHT_FINAL oder Strukturfehlern sperrt.
+      # Das Artifact ist ein Auditbeleg, keine Freigabe zur Drive-/E-Mail-Publikation.
+      - name: Trading-Radar-Laufbericht als Historien-Artifact sichern
+        if: ${{ always() && steps.trading-radar.outputs.status == 'SUCCESS' && steps.trading-radar.outputs.report_path != '' }}
         uses: actions/upload-artifact@v6
         with:
-          name: trading-radar-vorlaeufig-${{ github.run_id }}
+          name: trading-radar-${{ steps.trading-radar.outputs.fachlich_final || 'STATUS-UNBEKANNT' }}-${{ github.run_id }}
           path: ${{ steps.trading-radar.outputs.report_path }}
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 90
 
       # YouTube-States erst nach bestandenem Trading-Radar-Report-Gate sichern.
       # Ein Exit 0 allein genügt nicht: bei fehlendem/ungültigem Bericht bleiben
