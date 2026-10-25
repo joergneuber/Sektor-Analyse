@@ -47,6 +47,15 @@ EXPLICIT_BENCHMARKS = {
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 
+# Explizit ausgeschlossene Symbole aus dem OHLCV-Coverage-Lauf vom 2026-10-25.
+# Diese Kennungen sind fuer die laufende Auswertung nicht zu beruecksichtigen.
+EXCLUDED_TICKERS = frozenset({
+    "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
+    "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
+    "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
+    "SNV", "STM1.DE", "WRK", "X",
+})
+
 
 def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
     for i in range(0, len(items), size):
@@ -86,6 +95,9 @@ def _load_dynamic_universe(path: Path = DEFAULT_DYNAMIC_UNIVERSE) -> set[str]:
 def register_ticker(ticker: str, path: Path = DEFAULT_DYNAMIC_UNIVERSE) -> bool:
     """Registriert einen erfolgreich geprüften Einzel-Check-Ticker dauerhaft."""
     ticker = str(ticker or "").strip().upper()
+    if ticker in EXCLUDED_TICKERS:
+        print(f"HIST-OHLCV-UNIVERSUM: {ticker} bleibt gemaess Ausschlussliste ausgeschlossen")
+        return False
     if not ticker or len(ticker) > 30 or any(ch in ticker for ch in " \t\n"):
         return False
     values = _load_dynamic_universe(path)
@@ -148,7 +160,13 @@ def discover_universe(
             tickers.update(_string_values(node.args[0]))
 
     tickers.update(_load_dynamic_universe(dynamic_universe))
-    return sorted(t for t in tickers if t and len(t) <= 30 and not any(ch in t for ch in " \t\n"))
+    # Ausschluss gilt nach Zusammenfuehrung aller Quellen, damit dynamische
+    # Registrierungen die Liste nicht versehentlich wieder aufnehmen.
+    return sorted(
+        t for t in tickers
+        if t and t.upper() not in EXCLUDED_TICKERS
+        and len(t) <= 30 and not any(ch in t for ch in " \t\n")
+    )
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
