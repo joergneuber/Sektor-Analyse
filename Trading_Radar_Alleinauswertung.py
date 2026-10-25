@@ -16691,7 +16691,6 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Der Quellenblock 10.5 gehört unmittelbar VOR Abschnitt 11 (Methodik).
         # So bleiben die Kapitel in ihrer fachlichen Reihenfolge; zugleich wird
         # garantiert, dass der vollständige Tab-2-Block vor dem Statusmarker liegt.
-        original_status_matches = re.findall(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text)
         text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text)
         canonical_closed = (
             "\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n"
@@ -16713,8 +16712,13 @@ def speichere_ergebnis(text, eingabedateien=None):
         text = _trading_radar_berichtsfelder_normalisieren(text)
         # Genau ein Statusmarker, stets als letzte Zeile. Ohne eindeutigen FINAL-
         # Marker bleibt der Bericht gesperrt; der Report-Gate entscheidet separat.
-        final_status = "FINAL" if original_status_matches and all(x == "FINAL" for x in original_status_matches) else "NICHT_FINAL"
-        if str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
+        # Der vom Sprachmodell gelieferte Statusmarker ist kein Beleg fuer die
+        # technische/fachliche Freigabe: Gemini kann NICHT_FINAL aus Kontext
+        # oder aus einem vorherigen Entwurf uebernehmen. Die Freigabe wird hier
+        # deterministisch aus den validierten Pflichtdaten abgeleitet; weitere
+        # unabhaengige Report-Gates pruefen den fertigen Bericht anschliessend.
+        final_status = "FINAL"
+        if validation_errors or str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
             final_status = "NICHT_FINAL"
         text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text).rstrip()
         text += f"\nTRADING_RADAR_FACHLICH_FINAL={final_status}\n"

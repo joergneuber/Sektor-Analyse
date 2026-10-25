@@ -1,0 +1,21 @@
+{
+  "purpose": "Fix final status incorrectly inherited from Gemini model marker despite successful deterministic Tab-2 validation",
+  "date": "2026-10-25",
+  "changed_files": [
+    {
+      "path": "Trading_Radar_Alleinauswertung.py",
+      "bytes": 900101,
+      "sha256": "83ba2dfbbce879e888b61974af2ca894de255da3c8f643346fe5597e2f0d3567"
+    },
+    {
+      "path": "tests/test_trading_radar_data_contract.py",
+      "bytes": 29473,
+      "sha256": "4a64ad74337f801fc7e21fcaf07e16241a581dbf5ebf36aa2a256744e4f24da3"
+    }
+  ],
+  "forensic_report": {
+    "path": "FORENSIK/Trading-Radar-Forensik-Statusmarker-20261025.md",
+    "bytes": 5167,
+    "sha256": "6899a723ab2928dde5c8a32a172394bc7f98656818b26c02d75ddaa2323f2c4c"
+  }
+}
