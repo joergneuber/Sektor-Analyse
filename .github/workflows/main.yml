@@ -584,7 +584,14 @@ jobs:
             echo "FINALITY_CHECK=FAIL | Auswertung wurde in diesem Lauf nicht neu geschrieben"
             exit 1
           fi
-          python trading_radar_report_gate.py "$TRADING_RADAR_DATEI"
+          # Ein fehlgeschlagener Gate darf den erzeugten Bericht nicht als FINAL
+          # stehen lassen. Erst nach erfolgreicher Gate-Pruefung bleibt FINAL moeglich.
+          if ! python trading_radar_report_gate.py "$TRADING_RADAR_DATEI"; then
+            sed -i 's/^TRADING_RADAR_FACHLICH_FINAL=FINAL$/TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL/' "$TRADING_RADAR_DATEI"
+            echo "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" >> "$GITHUB_OUTPUT"
+            echo "REPORT_CHECK=FAIL | Bericht auf NICHT_FINAL herabgestuft; keine regulaere Freigabe."
+            exit 1
+          fi
           report_status_count=$(grep -Ec '^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$TRADING_RADAR_DATEI" || true)
           if [ "$report_status_count" -ne 1 ]; then
             echo "REPORT_CHECK=FAIL | eindeutiger Fachstatusmarker fehlt/dupliziert"
@@ -605,7 +612,9 @@ jobs:
         if: ${{ always() && steps.trading-radar.outputs.status == 'SUCCESS' && steps.trading-radar.outputs.report_path != '' }}
         uses: actions/upload-artifact@v6
         with:
-          name: trading-radar-${{ steps.trading-radar.outputs.fachlich_final || 'STATUS-UNBEKANNT' }}-${{ github.run_id }}
+          # Den FINAL-Namen ausschliesslich aus dem Gate-Schritt beziehen.
+          # Bei Gate-Fehler bleibt dessen Output leer und das Artifact wird NICHT_FINAL.
+          name: trading-radar-${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}-${{ github.run_id }}
           path: ${{ steps.trading-radar.outputs.report_path }}
           if-no-files-found: warn
           retention-days: 90
