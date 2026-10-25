@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-25",
+  "purpose": "Correct Tab-2 physical source row diagnostics and validate required event fields independently per event record.",
+  "basis_archive": "Trading_Radar_Alleinauswertung.py",
+  "changed_files": [
+    {
+      "path": "Trading_Radar_Alleinauswertung.py",
+      "old_bytes": 888135,
+      "new_bytes": 889154,
+      "old_lines": 17179,
+      "new_lines": 17204,
+      "old_sha256": "75af8bdfd6d70bf2f9273bd92c5875133150f9a5b1e80833748133a8afa37036",
+      "new_sha256": "49937a2298b197a52b8e61553100bfb5da0f66aa40c8de74082fd3d692dcf05f"
+    },
+    {
+      "path": "trading_radar_report_gate.py",
+      "old_bytes": 19326,
+      "new_bytes": 20802,
+      "old_lines": 391,
+      "new_lines": 429,
+      "old_sha256": "44123f6fd49c9317a9bdcb88f110c7ad1cf610830a1c21fffcc89fad577f81e7",
+      "new_sha256": "24f8f8335c1bd05b365c8c16dde08b082b93f2eefe2fb426c13e8e5ec2ebc6e5"
+    },
+    {
+      "path": "tests/test_trading_radar_report_gate.py",
+      "old_bytes": 11737,
+      "new_bytes": 13027,
+      "old_lines": 202,
+      "new_lines": 220,
+      "old_sha256": "19c3586a609907b366f61baf23c794175937abec0e18aa296938bb4ccdcea2f7",
+      "new_sha256": "90262075531da8a6c6e04b1686719596754925ca7f7dd47ebed18af03f3cbf63"
+    },
+    {
+      "path": "tests/test_trading_radar_data_contract.py",
+      "old_bytes": 15286,
+      "new_bytes": 15924,
+      "old_lines": 262,
+      "new_lines": 277,
+      "old_sha256": "6dc0beb5eee5c8828806d9949be0e13cd2c9ab09aee97994bd42d747b6231d1b",
+      "new_sha256": "6cb41c2fbe7942aa6f87e6d77d7217fd2f4e0f9c089d47932806658a39036809"
+    }
+  ],
+  "tests": {
+    "test_trading_radar_report_gate.py": {
+      "command": "python -m unittest tests.test_trading_radar_report_gate",
+      "result": "PASS",
+      "tests": 26
+    },
+    "test_trading_radar_data_contract.py": {
+      "command": "python -m unittest tests.test_trading_radar_data_contract",
+      "result": "PASS",
+      "tests": 13
+    },
+    "py_compile": {
+      "command": "python -m py_compile Trading_Radar_Alleinauswertung.py trading_radar_report_gate.py tests/test_trading_radar_report_gate.py tests/test_trading_radar_data_contract.py",
+      "result": "PASS"
+    }
+  },
+  "notes": [
+    "Full tests discovery was not completed: the run exceeded the execution window. No claim of full-suite success is made.",
+    "Python startup emitted an unrelated spreadsheet runtime warmup traceback; targeted test and compile commands nevertheless exited 0.",
+    "No live Google Sheets, Gemini, SMTP, or GitHub Actions run was performed."
+  ]
+}
