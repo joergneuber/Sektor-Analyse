@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-25",
+  "purpose": "Forensische Reparatur der vier Trading-Radar-Report-Gate-Punkte",
+  "files": [
+    {
+      "path": "Sektor-Analyse-main/Trading_Radar_Alleinauswertung.py",
+      "old_bytes": 881939,
+      "new_bytes": 888135,
+      "old_lines": 17051,
+      "new_lines": 17179,
+      "old_sha256": "ca2126250d074f72cca3e39c5a2e00aab8c2c2a862b6dbe062845e508f0f1d7b",
+      "new_sha256": "75af8bdfd6d70bf2f9273bd92c5875133150f9a5b1e80833748133a8afa37036",
+      "encoding": "UTF-8",
+      "line_endings": "LF",
+      "bom": false
+    },
+    {
+      "path": "Sektor-Analyse-main/trading_radar_report_gate.py",
+      "old_bytes": 17752,
+      "new_bytes": 19326,
+      "old_lines": 341,
+      "new_lines": 391,
+      "old_sha256": "f8fda686b3271403640a281c21d9d2ee2eed1fd9a41159d0c04dc8c72e80d2f1",
+      "new_sha256": "44123f6fd49c9317a9bdcb88f110c7ad1cf610830a1c21fffcc89fad577f81e7",
+      "encoding": "UTF-8",
+      "line_endings": "LF",
+      "bom": false
+    },
+    {
+      "path": "Sektor-Analyse-main/tests/test_trading_radar_report_gate.py",
+      "old_bytes": 9971,
+      "new_bytes": 11737,
+      "old_lines": 173,
+      "new_lines": 202,
+      "old_sha256": "6ffd2350c961a02c2d3bd463af0984c3113efc3d634839d111d3e19aab5ed501",
+      "new_sha256": "19c3586a609907b366f61baf23c794175937abec0e18aa296938bb4ccdcea2f7",
+      "encoding": "UTF-8",
+      "line_endings": "LF",
+      "bom": false
+    },
+    {
+      "path": "Sektor-Analyse-main/tests/test_trading_radar_data_contract.py",
+      "old_bytes": 14286,
+      "new_bytes": 15286,
+      "old_lines": 246,
+      "new_lines": 262,
+      "old_sha256": "b79fb845e5fad43730934bc4b7a2c0ce009d056246ccd3fc47e1be3d1cab6710",
+      "new_sha256": "6dc0beb5eee5c8828806d9949be0e13cd2c9ab09aee97994bd42d747b6231d1b",
+      "encoding": "UTF-8",
+      "line_endings": "LF",
+      "bom": false
+    }
+  ]
+}
