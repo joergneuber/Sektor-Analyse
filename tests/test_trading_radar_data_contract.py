@@ -1,4 +1,4 @@
-"""Ausfuehrbare Vertrags- und Integrationstests fuer den Trading-Radar-Handoff.
+﻿"""Ausfuehrbare Vertrags- und Integrationstests fuer den Trading-Radar-Handoff.
 
 Die Tests benoetigen weder Gemini-Zugang noch Google-Drive-Credentials.
 Ein fehlender Workflow wird als explizite Skip-Meldung behandelt, nicht als
@@ -68,10 +68,11 @@ class TradingRadarDataContractTests(unittest.TestCase):
         if not WORKFLOW.is_file():
             self.skipTest("Workflow fehlt in dieser Anlage")
         workflow = WORKFLOW.read_text(encoding="utf-8-sig")
-        self.assertIn("Vorläufigen Trading-Radar-Bericht als Artifact sichern", workflow)
-        self.assertIn("trading-radar-vorlaeufig-${{ github.run_id }}", workflow)
-        self.assertIn("fachlich_final == 'NICHT_FINAL'", workflow)
-        self.assertIn("steps.trading-radar-report-check.outcome == 'success'", workflow)
+        self.assertIn("Trading-Radar-Laufbericht als Historien-Artifact sichern", workflow)
+        self.assertIn("trading-radar-${{ steps.trading-radar.outputs.fachlich_final || 'STATUS-UNBEKANNT' }}-${{ github.run_id }}", workflow)
+        self.assertIn("retention-days: 90", workflow)
+        self.assertIn("steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar.outputs.fachlich_final == 'FINAL'", workflow)
+        self.assertIn("steps.trading-radar.outputs.fachlich_final == 'FINAL'", workflow)
 
     def test_radar_prompt_keeps_a_b_c_as_non_authorization(self):
         self.assertIn("interne Kategorisierungen der Setups", self.radar_source)
@@ -123,14 +124,25 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
                 radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
                 radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
-                    "TAB-2-ANZAHL=2\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                    "TAB-2-ANZAHL=51\nTAB-2-QUELLE=Geschlossene Positionen\n"
                     "Ticker: OLD | Ausstiegsdatum: 2019-01-01\n"
-                    "Ticker: BADDATE | Ausstiegsdatum: unbekannt"
+                    "Ticker: BADDATE | Ausstiegsdatum: unbekannt\n"
+                    + "\n".join(
+                        f"Ticker: CLOSED{i:02d} | Ausstiegsdatum: 2026-10-24"
+                        for i in range(1, 50)
+                    )
                 )
                 report = "\n".join(f"{i}. {title}" for i, title in enumerate([
                     "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
                     "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
-                ], start=1)) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                ], start=1)) + (
+                    "\n10.5 Geschlossene Positionen\n"
+                    "Ticker: STALE | alte Gemini-Zeile darf nicht erhalten bleiben\n"
+                    "TAB-2-QUELLE NICHT VERIFIZIERBAR: alter Gemini-Platzhalter\n"
+                    "11. METHODIK / DATENQUALITÄT\n"
+                    "11.1 Datenstatus\nMethodik-Inhalt muss erhalten bleiben.\n"
+                    "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                )
                 with redirect_stdout(StringIO()):
                     output = radar.speichere_ergebnis(report, {"Offene Positionen+Check.csv": str(csv_path)})
                 output_path = Path(output)
@@ -144,6 +156,23 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 self.assertNotIn("Closed (CCC)", saved)
                 self.assertIn("Ticker: OLD | Ausstiegsdatum: 2019-01-01", saved)
                 self.assertIn("Ticker: BADDATE | Ausstiegsdatum: unbekannt", saved)
+                closed_start = saved.index("10.5 Geschlossene Positionen")
+                closed_end = saved.index("11. METHODIK / DATENQUALITÄT")
+                closed_section = saved[closed_start:closed_end]
+                self.assertIn("TAB-2-ANZAHL=51", closed_section)
+                self.assertEqual(len(re.findall(r"(?m)^Ticker:\s+\S+", closed_section)), 51)
+                # Regression: alter Gemini-10.5-Inhalt muss vollständig weg,
+                # der deterministische Quellenblock steht vor Abschnitt 11 und Status.
+                self.assertNotIn("Ticker: STALE", saved)
+                self.assertNotIn("alter Gemini-Platzhalter", saved)
+                self.assertLess(saved.index("10.5 Geschlossene Positionen"), saved.index("11. METHODIK / DATENQUALITÄT"))
+                self.assertLess(saved.index("10.5 Geschlossene Positionen"), saved.index("TRADING_RADAR_FACHLICH_FINAL="))
+                self.assertIn("11.1 Datenstatus", saved)
+                self.assertIn("Methodik-Inhalt muss erhalten bleiben.", saved)
+                self.assertEqual(saved.count("10.5 Geschlossene Positionen"), 1)
+                self.assertEqual(saved.count("TRADING_RADAR_FACHLICH_FINAL="), 1)
+                self.assertIn("Portfolio-Gesamtperformance nicht verfügbar", saved)
+                self.assertIn("Ø Positionsperformance nicht verfügbar", saved)
                 self.assertEqual(output_path.parent, Path(temp_dir))
             finally:
                 os.chdir(previous_cwd)
