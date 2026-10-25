@@ -119,19 +119,40 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     # M-05: the deterministic Tab-2 source block and row/count comparison are
     # checked in validate_report. Quantity and fees are not contract fields.
 
-    # M-06: both values must be explicit and independently labeled. Either may
-    # be a numeric value or an explicit unavailable state.
+    # M-06: each field is evaluated independently. A placeholder cannot be
+    # rescued by an unrelated unavailable-status mention elsewhere in the section.
     benchmark = _section_body(text, 7, SECTION_NAMES[6])
     portfolio_labels = (r"Portfolio(?:-Gesamt)?performance", r"Gesamtperformance\s+Portfolio")
     average_labels = (r"(?:Ø|durchschnitt(?:liche|s)?|mittelwert)\s*Positionsperformance",
-                      r"Positionsperformance(?:\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?\))?")
-    portfolio_value = _label_value(benchmark, portfolio_labels)
-    average_value = _label_value(benchmark, average_labels)
-    portfolio_ok = _valid_numeric_value(portfolio_value) or _is_explicit_unavailable(benchmark, portfolio_labels)
-    average_ok = _valid_numeric_value(average_value) or _is_explicit_unavailable(benchmark, average_labels)
-    # Preserve compatibility with the report's established explicit prose form.
-    portfolio_ok = portfolio_ok or _has_any(benchmark, (r"Portfolio-Gesamtperformance\s+(?:nicht verfügbar|nicht verifizierbar)",))
-    average_ok = average_ok or _has_any(benchmark, (r"Positionsperformance\s+(?:nicht verfügbar|nicht verifizierbar)",))
+                      r"Positionsperformance(?:\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?)?")
+
+    def performance_field_ok(labels):
+        label = r"(?:" + "|".join(labels) + r")"
+        matches = list(re.finditer(
+            rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)",
+            benchmark,
+        ))
+        if matches:
+            for match in matches:
+                value = match.group(1).strip().strip(". ")
+                if _valid_numeric_value(value):
+                    continue
+                if re.fullmatch(
+                    r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?",
+                    value,
+                ):
+                    continue
+                return False
+            return True
+        # Legacy prose form remains accepted only if it is an explicit status.
+        return _is_explicit_unavailable(benchmark, labels) or _has_any(
+            benchmark,
+            (r"Portfolio-Gesamtperformance\s+(?:nicht verfügbar|nicht verifizierbar)",
+             r"Positionsperformance\s+(?:nicht verfügbar|nicht verifizierbar)"),
+        )
+
+    portfolio_ok = performance_field_ok(portfolio_labels)
+    average_ok = performance_field_ok(average_labels)
     if not (portfolio_ok and average_ok):
         errors.append("M-06: Portfolio-Gesamtperformance und durchschnittliche Positionsperformance müssen jeweils einen konkreten Zahlenwert oder einen ausdrücklichen Nichtverfügbarkeitsstatus haben.")
 
@@ -163,20 +184,38 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         (r"Kennzahl", r"Indikator"),
         (r"Berichtszeitraum", r"Zeitraum"),
     )
-    event_values = [_label_value(events, labels) for labels in event_labels]
-    timezone_value = event_values[1]
-    # Accept common named zones, UTC offsets, and IANA-style region names.
-    timezone_ok = bool(timezone_value and re.search(
-        r"(?i)(?:\b(?:ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|CET|CEST|GMT)\b|"
-        r"\b(?:UTC|GMT)?[+-]\d{1,2}(?::?\d{2})?\b|"
-        r"\b[A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?\b)", timezone_value))
-    values_ok = all(event_values[i] for i in (0, 2, 3)) and timezone_ok
+    def event_field_ok(labels, timezone=False):
+        label = r"(?:" + "|".join(labels) + r")"
+        matches = list(re.finditer(
+            rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)",
+            events,
+        ))
+        if not matches:
+            return _is_explicit_unavailable(events, labels)
+        for match in matches:
+            value = match.group(1).strip().strip(". ")
+            if re.fullmatch(r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?", value):
+                continue
+            if _MISSING_VALUE_RE.fullmatch(value):
+                return False
+            if timezone and not re.search(
+                r"(?i)(?:\b(?:ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|CET|CEST|GMT)\b|"
+                r"\b(?:UTC|GMT)?[+-]\d{1,2}(?::?\d{2})?\b|"
+                r"\b[A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?\b)", value
+            ):
+                return False
+        return True
+
+    values_ok = all(
+        event_field_ok(event_labels[i], timezone=(i == 1)) for i in range(4)
+    )
     # Observation may be on the same line or a subsequent line. Require a
     # non-placeholder value after the observation label.
-    event_observation = any(_label_value(events, (label,)) for label in
-                            (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")) or _has_any(events, (
-        r"(?:letzter Wert|Vorwert|Konsens|Istwert)\s+(?:nicht verfügbar|FEHLT|UNKLAR)",
-    ))
+    observation_labels = (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
+    event_observation = any(
+        _label_value(events, (label,)) or _is_explicit_unavailable(events, (label,))
+        for label in observation_labels
+    )
     no_relevant_events = _has_any(events, (
         r"keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?Ereignisse",
         r"Ereignisradar\s*:\s*keine",
@@ -274,12 +313,23 @@ def validate_report(text: str) -> list[str]:
 
     # Tab 2 muss im Bericht als deterministischer Quellenblock vorkommen und
     # die ausgewiesene Zeilenzahl muss mit den exportierten Datensätzen stimmen.
-    closed = re.search(r"(?ms)^10\.5 Geschlossene Positionen[^\r\n]*\r?\n(.*?)(?=^\s*TRADING_RADAR_FACHLICH_FINAL=|\Z)", text)
+    # Bound the block at chapter 11, not only at the final status marker.
+    # Otherwise method/data-appendix lines are accidentally included in the
+    # export digest and a correct SHA-256 appears invalid.
+    closed = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5 Geschlossene Positionen[^\r\n]*\r?\n(.*?)"
+        r"(?=^[ \t]*(?:#{1,6}\s*)?11(?:\s*[.·](?!\d)|\s+)[^\r\n]*$"
+        r"|^[ \t]*TRADING_RADAR_FACHLICH_FINAL=|\Z)",
+        text,
+    )
     if not closed:
         errors.append("Geschlossene-Positionen-Abschnitt 10.5 fehlt")
     else:
         body = closed.group(1)
         count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", body)
+        source_match = re.search(r"(?m)^TAB-2-QUELLE=([^\r\n]+)\s*$", body)
+        if not source_match or not source_match.group(1).strip():
+            errors.append("Tab-2-Quellenmarker fehlt oder ist leer")
         ticker_values = [
             match.group(1).strip()
             for line in body.splitlines()

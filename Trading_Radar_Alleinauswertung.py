@@ -463,7 +463,23 @@ def lade_offenen_positionen_check_tab2():
                 "10.5: Pflichtspalten in Tab 'Geschlossene Positionen' fehlen: "
                 + ", ".join(missing_headers)
             )
-        rows = [dict(zip(headers, row + [""] * max(0, len(headers) - len(row)))) for row in values[2:]]
+        # Leere Zwischen-/Endzeilen sind keine Positionsdatensätze. Jede
+        # tatsächlich befüllte Quellzeile muss dagegen einen Ticker haben;
+        # sonst darf der Export nicht mit einer scheinbar passenden Anzahl
+        # und einem Fingerabdruck freigegeben werden.
+        rows = [
+            dict(zip(headers, row + [""] * max(0, len(headers) - len(row))))
+            for row in values[2:]
+            if any(str(cell).strip() for cell in row)
+        ]
+        missing_ticker_rows = [index + 3 for index, row in enumerate(rows)
+                               if not str(row.get("Ticker", "")).strip()]
+        if missing_ticker_rows:
+            raise RuntimeError(
+                "10.5: Befuellte Tab-2-Quellzeilen ohne Ticker; "
+                "Quellen-/Exportzaehlung nicht sicher: "
+                + ", ".join(map(str, missing_ticker_rows))
+            )
 
         def parse_date(value):
             # UNFORMATTED_VALUE liefert Google-Sheets-Datumszellen als
@@ -16190,6 +16206,115 @@ def _gemini_report_bereichsstatus(report_text):
     status["GESAMT"] = gesamt
     return status, befunde
 
+
+
+def _trading_radar_berichtsfelder_normalisieren(text):
+    """Ergaenzt fehlende M-06/M-08-Pflichtfelder explizit, ohne Werte zu erfinden."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+
+    def locate_section(source, number, title, next_number):
+        start = re.search(
+            rf"(?im)^[ \t]*(?:#{{1,6}}\s*)?{number}\s*[.·]\s*{re.escape(title)}[^\r\n]*$",
+            source,
+        )
+        if not start:
+            return None
+        tail = source[start.end():]
+        end = re.search(
+            rf"(?im)^[ \t]*(?:#{{1,6}}\s*)?{next_number}(?:\s*[.·](?!\d)|\s+)[^\r\n]*$",
+            tail,
+        )
+        if not end:
+            return None
+        return start, start.end(), start.end() + end.start()
+
+    def field_value_ok(body, labels):
+        label = r"(?:" + "|".join(labels) + r")"
+        matches = list(re.finditer(
+            rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)", body
+        ))
+        if not matches:
+            return bool(re.search(
+                rf"(?i){label}\s+(?:nicht\s+(?:verfügbar|verifizierbar|vorhanden)|fehlt|unklar)", body
+            ))
+        for match in matches:
+            value = match.group(1).strip().strip(". ")
+            if re.fullmatch(r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?", value):
+                continue
+            value = re.sub(r"^(?:EUR|USD|GBP|€|\$|£)\s*", "", value, flags=re.I)
+            value = re.sub(r"\s*(?:EUR|USD|GBP|€|\$|£|%)$", "", value, flags=re.I).strip()
+            if not re.fullmatch(r"[-+]?(?:\d+(?:[,.]\d+)?|\d{1,3}(?:[ .’']\d{3})+(?:[,.]\d+)?)", value):
+                return False
+        return True
+
+    # M-06: replace malformed/placeholder values, not merely append a second
+    # status line that could conceal a contradictory placeholder.
+    section = locate_section(text, 7, "MSCI-Vergleich", 8)
+    if section:
+        start, body_start, body_end = section
+        body = text[body_start:body_end]
+        fields = (
+            ("Portfolio-Gesamtperformance", (r"Portfolio(?:-Gesamt)?performance", r"Gesamtperformance\s+Portfolio")),
+            ("Ø Positionsperformance", (r"(?:Ø|durchschnitt(?:liche|s)?|mittelwert)\s*Positionsperformance", r"Positionsperformance(?:\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?)?")),
+        )
+        for canonical, labels in fields:
+            if field_value_ok(body, labels):
+                continue
+            label = r"(?:" + "|".join(labels) + r")"
+            # Replace each labeled malformed value in-place so a stale TBD does
+            # not coexist with the explicit missing-data status.
+            body, substitutions = re.subn(
+                rf"(?im)((?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*)([^|;\r\n]+)",
+                rf"\1NICHT VERFÜGBAR (keine belegte Berechnungsgrundlage)",
+                body,
+            )
+            if not substitutions:
+                body = body.rstrip() + f"\n{canonical}: NICHT VERFÜGBAR (keine belegte Berechnungsgrundlage)\n"
+        text = text[:body_start] + body + text[body_end:]
+
+    # M-08: require each event field to be sourced or explicitly unavailable.
+    section = locate_section(text, 3, "Ereignisradar", 4)
+    if section:
+        _, body_start, body_end = section
+        body = text[body_start:body_end]
+        required = (
+            ("Uhrzeit", (r"Uhrzeit", r"Zeit")),
+            ("Zeitzone", (r"Zeitzone",)),
+            ("Kennzahl", (r"Kennzahl", r"Indikator")),
+            ("Berichtszeitraum", (r"Berichtszeitraum", r"Zeitraum")),
+        )
+        for canonical, labels in required:
+            label = r"(?:" + "|".join(labels) + r")"
+            matches = list(re.finditer(
+                rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)", body
+            ))
+            valid = bool(matches) and all(
+                match.group(1).strip() and not re.fullmatch(
+                    r"(?i)(?:TBD|TBA|N/?A|NA|PLATZHALTER|UNBEKANNT|NICHT VERFÜGBAR|FEHLT|UNKLAR)",
+                    match.group(1).strip(),
+                )
+                for match in matches
+            )
+            match = matches[0] if matches else None
+            if not valid and not re.search(rf"(?i){label}\s+(?:NICHT VERFÜGBAR|nicht verfügbar)", body):
+                if match:
+                    body = re.sub(
+                        rf"(?im)((?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*)([^|;\r\n]+)",
+                        rf"\1NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)", body,
+                    )
+                else:
+                    body = body.rstrip() + f"\n{canonical}: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        observation_labels = (r"letzter Wert", r"Vorwert", r"Konsens", r"Istwert")
+        if not re.search(r"(?im)(?:^|[|;]\s*|\n)\s*(?:" + "|".join(observation_labels) + r")\s*[:=]\s*[^|;\r\n]+", body):
+            body = body.rstrip() + (
+                "\nLetzter Wert: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)"
+                "\nKonsens: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+            )
+        text = text[:body_start] + body + text[body_end:]
+    return text
+
+
 def speichere_ergebnis(text, eingabedateien=None):
     heute = datetime.date.today().isoformat()
     if globals().get("_GEMINI_TRADING_RADAR_ONLY_MODE"):
@@ -16347,6 +16472,9 @@ def speichere_ergebnis(text, eingabedateien=None):
             text = text[:section11.start()].rstrip() + "\n\n" + canonical_closed.lstrip("\n") + text[section11.start():]
         else:
             text = text.rstrip() + "\n\n" + canonical_closed.lstrip("\n")
+        # M-06/M-08 nach allen Berichtsumstellungen deterministisch absichern.
+        # Unbelegte Werte werden als NICHT VERFÜGBAR markiert, nie erfunden.
+        text = _trading_radar_berichtsfelder_normalisieren(text)
         # Genau ein Statusmarker, stets als letzte Zeile. Ohne eindeutigen FINAL-
         # Marker bleibt der Bericht gesperrt; der Report-Gate entscheidet separat.
         final_status = "FINAL" if original_status_matches and all(x == "FINAL" for x in original_status_matches) else "NICHT_FINAL"
