@@ -1,4 +1,4 @@
-﻿"""
+"""
 gemini_auswertung.py
 
 Automatisierte Auswertung der Neuber Macro & Markets-Ergebnisse durch Gemini
@@ -16229,9 +16229,13 @@ def speichere_ergebnis(text, eingabedateien=None):
         # seine Überschrift. Andernfalls bleiben alte/ungeprüfte Positionszeilen
         # im Bericht stehen und vermischen sich mit dem deterministischen Tab-2-Block.
         # Abschnitt 10.5 endet an der Methodik (11), am Statusmarker oder am Dateiende.
+        # Abschnittsgrenzen robust über die Kapitelnummer erkennen. Gemini darf
+        # die Überschrift von Kapitel 11 variieren; der alte Abschnitt 10.5 endet
+        # deshalb an jeder eigenständigen 11er-Kapitelüberschrift, nicht nur an
+        # einem exakten Wortlaut.
         old_closed_section = re.compile(
             r"(?ims)^[ \t]*(?:#{1,6}\s*)?10\.5\s+Geschlossene Positionen[^\r\n]*\r?\n.*?"
-            r"(?=^[ \t]*(?:#{1,6}\s*)?11\.\s*METHODIK\s*/\s*DATENQUALITÄT[ \t]*$"
+            r"(?=^[ \t]*(?:#{1,6}\s*)?11(?:\s*[.·](?!\d)|\s+)[^\r\n]*$"
             r"|^[ \t]*TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)[ \t]*$|\Z)"
         )
         text = old_closed_section.sub("", text)
@@ -16242,21 +16246,30 @@ def speichere_ergebnis(text, eingabedateien=None):
         # M-06: Abschnitt 7 muss beide Performance-Kennzahlen explizit enthalten.
         # Fehlende Daten werden als nicht verfügbar ausgewiesen, niemals geschätzt.
         section7 = re.search(
-            r"(?im)^(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich\s*$", text
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich[^\r\n]*$", text
         )
         if section7:
-            next_section = re.search(r"(?im)^\s*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang\s*$", text[section7.end():])
-            section_end = section7.end() + next_section.start() if next_section else len(text)
-            section_body = text[section7.end():section_end]
-            has_portfolio = re.search(r"(?i)Portfolio(?:-Gesamt)?performance|Gesamtperformance\s+Portfolio", section_body)
-            has_average = re.search(r"(?i)(?:Ø|durchschnitt(?:liche|s)?|mittelwert)\s*Positionsperformance|Positionsperformance\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?", section_body)
-            missing = []
-            if not has_portfolio:
-                missing.append("Portfolio-Gesamtperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
-            if not has_average:
-                missing.append("Ø Positionsperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
-            if missing:
-                text = text[:section_end].rstrip() + "\n" + "; ".join(missing) + ".\n" + text[section_end:]
+            # Kapitel 8 darf anders heißen. Suche zuerst eine eigenständige
+            # Kapitel-8-Überschrift, danach ersatzweise die nächste nummerierte
+            # Hauptüberschrift (9., 10., 11. usw.). Niemals bis EOF erweitern:
+            # ohne belegte Grenze wird Abschnitt 7 nicht verändert.
+            remaining = text[section7.end():]
+            next_section = re.search(
+                r"(?im)^[ \t]*(?:#{1,6}\s*)?(?:8|9|[1-9][0-9])(?:\s*[.·](?!\d)|\s+(?!\d))[^\r\n]*$",
+                remaining,
+            )
+            if next_section:
+                section_end = section7.end() + next_section.start()
+                section_body = text[section7.end():section_end]
+                has_portfolio = re.search(r"(?i)Portfolio(?:-Gesamt)?performance|Gesamtperformance\s+Portfolio", section_body)
+                has_average = re.search(r"(?i)(?:Ø|durchschnitt(?:liche|s)?|mittelwert)\s*Positionsperformance|Positionsperformance\s*\(?(?:Ø|Durchschnitt|Mittelwert)\)?", section_body)
+                missing = []
+                if not has_portfolio:
+                    missing.append("Portfolio-Gesamtperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
+                if not has_average:
+                    missing.append("Ø Positionsperformance nicht verfügbar (keine belegte Berechnungsgrundlage)")
+                if missing:
+                    text = text[:section_end].rstrip() + "\n" + "; ".join(missing) + ".\n" + text[section_end:]
 
         # Der Quellenblock 10.5 gehört unmittelbar VOR Abschnitt 11 (Methodik).
         # So bleiben die Kapitel in ihrer fachlichen Reihenfolge; zugleich wird
@@ -16267,8 +16280,11 @@ def speichere_ergebnis(text, eingabedateien=None):
             "\n10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n"
             + closed_block.rstrip() + "\n\n"
         )
+        # Für die Einfügestelle zählt die Kapitelnummer, nicht der exakte
+        # Titel. Damit funktionieren auch Varianten wie "11. Methodische
+        # Hinweise und Datenqualität". Ein echtes Kapitel 11 wird bevorzugt.
         section11 = re.search(
-            r"(?im)^[ \t]*(?:#{1,6}\s*)?11\.\s*METHODIK\s*/\s*DATENQUALITÄT[ \t]*$",
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?11(?:\s*[.·](?!\d)|\s+)[^\r\n]*$",
             text,
         )
         if section11:
