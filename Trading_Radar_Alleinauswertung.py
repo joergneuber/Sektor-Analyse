@@ -16501,7 +16501,57 @@ def _trading_radar_berichtsfelder_normalisieren(text):
         if body_trailing_newline and body and not body.endswith("\n"):
             body += "\n"
         text = text[:body_start] + body + text[body_end:]
+
+    # Presentation contract: keep primary section headings visually separated
+    # even when Gemini emits adjacent sections without a blank line.
+    heading_pattern = re.compile(
+        r"(?m)^(?P<header>[ \t]*(?:#{1,6}[ \t]*)?(?:[1-8][.·][ \t]+"
+        r"(?:Trading-Radar|Thesen-Update|Ereignisradar|Assetklassenvergleich|"
+        r"Technische Kandidaten|Portfolio & Risiko|MSCI-Vergleich|Daten-/Prüfanhang)"
+        r"|9[.][ \t]+Vollständige offene Positionen))"
+    )
+    text = heading_pattern.sub(
+        lambda match: ("\n" if match.start() > 0 and not text[:match.start()].endswith("\n\n") else "")
+        + match.group("header"),
+        text,
+    )
+    # Keep the unchanged historical_ohlcv exclusion universe visible in the
+    # report so intentionally excluded tickers are not misreported as active
+    # universe/company-name resolution failures.
+    excluded_tickers = (
+        "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
+        "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
+        "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
+        "SNV", "STM1.DE", "WRK", "X",
+    )
+    exclusion_heading = "Bewusst ausgeschlossene Ticker (nicht Teil des aktiven Datenuniversums):"
+    exclusion_line = exclusion_heading + " " + ", ".join(excluded_tickers)
+    if exclusion_heading not in text:
+        section9 = re.search(r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?9[.][ \t]+Vollständige offene Positionen", text)
+        if section9:
+            insert_at = section9.start()
+            prefix = text[:insert_at]
+            if prefix and not prefix.endswith("\n\n"):
+                prefix += "\n" if prefix.endswith("\n") else "\n\n"
+            text = prefix + exclusion_line + "\n\n" + text[insert_at:]
+        else:
+            text = text.rstrip() + "\n\n" + exclusion_line + "\n"
     return text
+
+
+
+
+def _trading_radar_aktive_firmennamen_luecken(name_cache, excluded_tickers):
+    """Return unresolved company-name tickers in the active, non-excluded universe."""
+    excluded_set = {str(ticker).casefold() for ticker in excluded_tickers}
+    if not isinstance(name_cache, dict):
+        return []
+    return sorted(
+        str(key) for key, value in name_cache.items()
+        if isinstance(value, dict)
+        and value.get("missing")
+        and str(key).casefold() not in excluded_set
+    )
 
 
 def speichere_ergebnis(text, eingabedateien=None):
@@ -16667,10 +16717,19 @@ def speichere_ergebnis(text, eingabedateien=None):
             name_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".firma_name_cache.json")
             with open(name_cache_path, "r", encoding="utf-8") as name_cache_file:
                 name_cache = json.load(name_cache_file)
-            missing_names = sorted(
-                str(key) for key, value in name_cache.items()
-                if isinstance(value, dict) and value.get("missing")
-            ) if isinstance(name_cache, dict) else []
+            # Die Datenqualitaetsmeldung betrifft nur das aktive Datenuniversum.
+            # Diese Ausschlussmenge muss mit historical_ohlcv.EXCLUDED_TICKERS
+            # uebereinstimmen; ausgeschlossene Symbole sind kein aktiver
+            # Firmennamen-Aufloesungsfehler.
+            excluded_tickers_for_quality = (
+                "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
+                "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
+                "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
+                "SNV", "STM1.DE", "WRK", "X",
+            )
+            missing_names = _trading_radar_aktive_firmennamen_luecken(
+                name_cache, excluded_tickers_for_quality
+            )
             if missing_names:
                 disclosure = (
                     f"Firmennamen-Datenqualitaet: {len(missing_names)} Ticker ohne bestaetigten Unternehmensnamen; "
