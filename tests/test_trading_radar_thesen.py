@@ -88,3 +88,15 @@ def test_invalid_cutoff_is_rejected(tmp_path):
     data["data_cutoff"] = "gestern"
     with pytest.raises(ValueError, match="ISO-8601"):
         update_register(report(data), str(tmp_path / "register.json"))
+
+
+def test_identical_thesis_does_not_increment_version(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload()), str(path))
+    first_doc = json.loads(path.read_text())
+    first_updated = first_doc["theses"][0]["updated_at"]
+    update_register(report(payload()), str(path))
+    second_doc = json.loads(path.read_text())
+    assert second_doc["theses"][0]["version"] == 1
+    assert second_doc["theses"][0]["updated_at"] == first_updated
+    assert second_doc["theses"][0]["last_seen_at"] >= first_updated

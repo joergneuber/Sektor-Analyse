@@ -1,5 +1,6 @@
 """Focused regression coverage for the M-05..M-10 report contract."""
 import importlib.util
+import hashlib
 from pathlib import Path
 import unittest
 
@@ -10,6 +11,13 @@ spec.loader.exec_module(gate)
 
 
 def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
+    tab2_lines = [
+        f"TAB-2-ANZAHL={tab2_count}",
+        "TAB-2-QUELLE=Geschlossene Positionen",
+        "Ticker: AAA | Status: Gestoppt",
+        "Ticker: BBB | Status: Verkauft",
+    ]
+    tab2_digest = hashlib.sha256("\n".join(tab2_lines).encode("utf-8")).hexdigest()
     sections = [
         "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.",
         "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
@@ -19,7 +27,7 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
         "6. Portfolio & Risiko\nGeschlossene Positionen: Tab 2 | TAB-2-ANZAHL=2 | Stop-/TP-Bestand: dokumentiert | realisierte Ergebnisse: Performance vorhanden | Konzentration und Portfolio-Risiko bewertet. " + quantity_line,
         "7. MSCI-Vergleich\nPortfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).",
         "8. Daten-/Prüfanhang\n" + ("WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt." if ohlcv_warning else "Daten geprüft und dokumentiert, keine besonderen Datenqualitätsprobleme erkannt."),
-        "10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\nTAB-2-ANZAHL=%d\nTAB-2-QUELLE=Geschlossene Positionen\nTicker: AAA | Status: Gestoppt\nTicker: BBB | Status: Verkauft" % tab2_count,
+        "10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n" + "\n".join(tab2_lines).replace(f"TAB-2-ANZAHL={tab2_count}", f"TAB-2-ANZAHL={tab2_count}") + f"\nTAB-2-EXPORT-SHA256={tab2_digest}",
         "TRADING_RADAR_FACHLICH_FINAL=FINAL",
     ]
     return "\n\n".join(sections) + "\n"
@@ -144,6 +152,21 @@ class ReportGateTests(unittest.TestCase):
     def test_non_final_report_blocked(self):
         errors = gate.validate_report(report_fixture().replace("TRADING_RADAR_FACHLICH_FINAL=FINAL", "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"))
         self.assertTrue(any("NICHT_FINAL" in e for e in errors), errors)
+
+
+    def test_m05_rejects_identical_duplicate_position_rows(self):
+        text = report_fixture(tab2_count=2)
+        text = text.replace(
+            "Ticker: BBB | Status: Verkauft",
+            "Ticker: AAA | Status: Gestoppt",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("identische Positionszeilen" in e for e in errors), errors)
+
+    def test_m12_rejects_tab2_export_fingerprint_mismatch(self):
+        text = report_fixture().replace("Ticker: BBB | Status: Verkauft", "Ticker: BBB | Status: Geaendert")
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Fingerabdruck stimmt nicht" in e for e in errors), errors)
 
 
 if __name__ == "__main__":
