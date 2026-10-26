@@ -617,7 +617,7 @@ class TradingRadarDataContractTests(unittest.TestCase):
             text = "8. Daten-/Prüfanhang\nOHLCV-Abdeckung: vollständig für alle Quellen.\n\n9. Weitere Daten"
             result = module._trading_radar_ohlcv_abschnitt8_aktualisieren(text)
             self.assertIn("NICHT VERIFIZIERBAR", result)
-            self.assertIn("Kandidaten sind bis zum belegten OHLCV-Nachweis nicht prüfbar", result)
+            self.assertIn("Kandidaten sind bis zur Klärung nicht prüfbar und nicht freigegeben", result)
             self.assertNotIn("vollständig für alle Quellen", result)
         finally:
             if had_original:
@@ -651,6 +651,9 @@ class TradingRadarDataContractTests(unittest.TestCase):
             "status": "complete", "checked_at": "2026-10-26T12:00:00Z",
             "universe_count": 10, "covered_count": 10,
             "missing_tickers": [], "stale_tickers": [], "affected_candidates": [],
+            "invalid_ohlcv_tickers": [],
+            "candidate_impact": "none_detected_in_checked_candidates",
+            "candidate_mapping_complete": True,
         }
         try:
             result = module._trading_radar_ohlcv_nachweisblock()
