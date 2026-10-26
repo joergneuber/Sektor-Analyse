@@ -206,6 +206,14 @@ class ReportGateTests(unittest.TestCase):
         )
         self.assertEqual(gate.validate_report(text), [])
 
+    def test_m10_accepts_existing_complete_coverage_wording_without_analysis_restriction(self):
+        text = report_fixture().replace(
+            "WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt.",
+            "OHLCV vollständig für die definierten Scanner- und Benchmark-Universen; "
+            "keine technischen Datenlücken, welche die Sektor-Analyse einschränken.",
+        )
+        self.assertFalse(any("M-10" in error for error in gate.validate_report(text)), gate.validate_report(text))
+
     def test_non_final_report_blocked(self):
         errors = gate.validate_report(report_fixture().replace("TRADING_RADAR_FACHLICH_FINAL=FINAL", "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"))
         self.assertTrue(any("NICHT_FINAL" in e for e in errors), errors)
