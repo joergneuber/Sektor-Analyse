@@ -84,6 +84,12 @@ jobs:
         id: trading-radar-contract
         run: python -m unittest discover -s tests -p "test_trading_radar_data_contract.py"
 
+      # Pflicht-Integrationstest: technische Fehlerkette und Release-Vertrag
+      # müssen vor den produktiven Analyse- und Publikationsschritten bestehen.
+      - name: Trading-Radar technische Fehlerkette – Pflicht-Integrationstest
+        id: trading-radar-failure-chain
+        run: python -m unittest tests.test_trading_radar_failure_chain_integration tests.test_trading_radar_release_contract
+
       # BTC 50W-SMA: persistent state so a weekend cross is delivered by
       # the first regular Monday analysis and is not re-reported later.
       - name: BTC 50W-SMA State wiederherstellen
