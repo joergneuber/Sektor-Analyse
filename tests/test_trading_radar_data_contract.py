@@ -131,7 +131,8 @@ class TradingRadarDataContractTests(unittest.TestCase):
             isolated_radar = temp_root / "Trading_Radar_Alleinauswertung.py"
             shutil.copy2(RADAR, isolated_radar)
             (temp_root / ".firma_name_cache.json").write_text(
-                '{"MSCI": {"name": "MSCI Inc.", "missing": false}}',
+                '{"MSCI": {"name": "MSCI Inc.", "missing": false}, '
+                '"CME": {"name": "CME Group Inc.", "missing": false}}',
                 encoding="utf-8",
             )
             radar = load_radar_module(isolated_radar)
@@ -163,6 +164,8 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 ]
                 report = "\n".join(headings) + (
                     "\nMSCI wird im Fliesstext genannt.\n"
+                    "MSCI World ist der Benchmark.\n"
+                    "CME Group Inc. (CME) wird ebenfalls genannt.\n"
                     "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
                 )
                 with redirect_stdout(StringIO()):
@@ -175,6 +178,13 @@ class TradingRadarDataContractTests(unittest.TestCase):
                     with self.subTest(heading=heading):
                         self.assertIn(heading, saved_lines)
                 self.assertIn("MSCI Inc. (MSCI) wird im Fliesstext genannt.", saved)
+                self.assertIn("MSCI World ist der Benchmark.", saved)
+                self.assertNotIn("MSCI Inc. (MSCI) World", saved)
+                self.assertIn("CME Group Inc. (CME) wird ebenfalls genannt.", saved)
+                self.assertNotIn("CME Group Inc. (CME) Group Inc.", saved)
+                self.assertIn("TRADING_RADAR_OFFENE_POSITIONEN_BEGIN", saved)
+                self.assertNotIn("Name nicht aufgelöst (TRADING_RADAR_OFFENE)", saved)
+                self.assertNotIn("Name nicht aufgelöst (POSITIONEN_BEGIN)", saved)
                 self.assertIn("7. MSCI-Vergleich", saved_lines)
                 self.assertNotIn("7. MSCI Inc. (MSCI)-Vergleich", saved_lines)
             finally:
