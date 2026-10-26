@@ -5021,24 +5021,23 @@ def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien
     _GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_positionen_fakten or ""
     prompt = """Du erstellst eine eigenstaendige Trading-Radar-Auswertung fuer Sektor-Analyse.
 Daten-Cutoff: CUTOFF
-Nutze die bereitgestellten Python-Quellen und den Altbericht nur als Kontext/Thesenstand.
-Der Radar-Bericht muss neu analysieren und darf den Altbericht nicht kopieren/umbenennen.
-Keine Daten nach dem Cutoff verwenden. Fakten, Ableitungen und Unsicherheit trennen.
-Keine Prognose erzwingen. Keine erfundenen technischen Werte (Entry, Stop, Ziele, CRV).
-Keine automatischen Portfolio-/Trading-Aenderungen. Marktthese ist keine Handelsfreigabe.
-Bestehende Thesen anhand neuer Fakten aktualisieren. Kalender nur aus Quellen belegen.
-Portfolio und Watchlist-Kandidaten getrennt halten; Benchmark nur mit gelieferten Werten.
-Fehlende Datenbereiche klar als nicht verfuegbar markieren.
-Die Hebeltrader-Bewertungen A/B/C sind interne Kategorisierungen der Setups,
-KEINE finale Kaufentscheidung und KEINE automatische Handelsfreigabe. Behalte
-sie als Bewertung bei und erkläre ihre Bedeutung knapp.
-Thesen: Für jede wichtige These Daten/Fakten, Datenzeitraum, Gegenbelege,
-Konfidenz sowie konkrete Bestätigungs- und Widerlegungsbedingungen nennen.
-Ereignisse: Datum, Uhrzeit/Zeitzone und Quelle nur nennen, wenn belegt; mögliche
-Assetwirkung als Ableitung kennzeichnen. Fehlende Kalenderdaten explizit nennen.
-Portfolio: Keine verkürzte oder beispielhafte Positionsauswahl als vollständige
-Liste ausgeben. Die vollständige offene Positionsliste wird separat aus der
-autoritativen Faktenbasis ergänzt.
+AUFTRAG: Erstelle einen entscheidungsorientierten, fachlich nützlichen Trading-Radar-Bericht nach Spezifikation v2.0. Nicht bloß Daten paraphrasieren, sondern Zusammenhänge, Prioritäten, Gegenargumente und überprüfbare nächste Schritte herausarbeiten.
+Nutze bereitgestellte Python-Quellen und den Altbericht nur als Fakten-/Historienkontext. Analysiere neu; kopiere den Altbericht nicht. Keine Daten nach dem Cutoff verwenden.
+TRENNUNG: Kennzeichne Datenfakten mit Quelle/Zeitraum, daraus abgeleitete Interpretation und unbestätigte Hypothesen ausdrücklich getrennt. Erfinde weder Zahlen noch Kausalität oder technische Werte. Wenn Daten fehlen, benenne exakt, welche Schlussfolgerung dadurch nicht möglich ist und welche Quelle/Bestätigung fehlt.
+KERNFRAGE: Was ist angesichts der gelieferten Daten die wahrscheinlichste Marktbewegung im relevanten Zeithorizont, welche Assetklassen/Segmente sind relativ am attraktivsten bzw. schwächsten, wodurch wird die Einschätzung gestützt und wodurch widerlegt? Wenn keine belastbare Richtung ableitbar ist, sage das ausdrücklich und erkläre, welche Daten widersprüchlich oder unzureichend sind.
+ABSCHNITT 1 – EXECUTIVE ENTSCHEIDUNG: Beginne mit einer klaren Hauptthese oder "keine belastbare Hauptthese". Nenne Zeithorizont, Konfidenz qualitativ (niedrig/mittel/hoch), 2–4 wichtigste Veränderungen seit dem letzten Bericht, stärkste Belege, wichtigste Gegenbelege, Top-Profiteur-Kandidaten und Verlierer-Kandidaten sowie nächste beobachtbare Bestätigung/Invalidierung. Keine bloße Sammlung allgemeiner Marktkommentare.
+ABSCHNITT 2 – THESENKONTINUITÄT: Vergleiche jede relevante bestehende These mit dem letzten Register: BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT oder NEU. Erkläre konkret, welche neuen Zahlen/Beobachtungen die Statusänderung auslösen. Keine Änderung ist nur zulässig, wenn das Register tatsächlich geprüft wurde; nenne geprüften Registerstand und weshalb sich nichts änderte. IDs/Versionen niemals erfinden.
+ABSCHNITT 3 – EREIGNISSE: Nur belegte Ereignisse mit Datum, Uhrzeit/Zeitzone, Kennzahl, Zeitraum, letztem Wert, Konsens und Quelle nennen. Für jedes Ereignis: betroffene These/Assetklasse/konkrete offene Positionen (Name (Ticker)), Szenarien unter/entsprechend/über Konsens, Reaktionskanäle und was die These bestätigen/widerlegen würde. Fehlende Werte als NICHT VERFÜGBAR ausweisen und keine redundanten leeren Ereignisblöcke auffüllen.
+ABSCHNITT 4 – RELATIVE ASSETATTRAKTIVITÄT: Vergleiche Aktien/ETFs, Edelmetalle, Energie/Rohstoffe, Krypto und Zinsen/Dollar soweit Daten vorhanden. Ordne relativ (stärker/neutral/schwächer) ein, mit konkreten Belegen, Gegenargumenten, Zeithorizont und Auslösern. Keine pauschale Erklärung ohne Datenbezug.
+ABSCHNITT 5 – TECHNISCHE KANDIDATEN: Trenne (a) technisch valide Kandidaten, (b) interessante Werte mit konkretem noch fehlendem Trigger, (c) ereignisbedingt warten, (d) nicht handelbar/verwerfen. Nenne Name (Ticker), Richtung, Setup/These, belegten Trigger, Einstieg, Stop, TP1, TP2, CRV, Datenstand, Gegenargumente und Regelstatus, soweit vorhanden. Fehlende Werte nicht schätzen. "Keine belastbaren technischen Kandidaten" beendet NICHT die Gesamtanalyse: Nenne stattdessen nur dann Beobachtungskandidaten und konkrete fehlende Bestätigungen, wenn die Quellen das tragen; keine fiktiven Kandidaten erfinden.
+ABSCHNITT 6 – PORTFOLIO & RISIKO: Verknüpfe Marktthesen mit jeder relevanten offenen Position aus der vollständigen Quelle: Name (Ticker), Rückenwind/Gegenwind/neutral/These verletzt, konkrete Datenbegründung, relevantes Ereignis, bekannte Stop-/TP-Informationen nur aus Quelle und nächster Prüfschritt. Hebe Konzentrationen und gemeinsame Risikotreiber hervor. Keine Kauf-/Verkaufs- oder Stopänderungen anordnen.
+ABSCHNITT 7 – MSCI-VERGLEICH: Trenne Depot-/System-Gesamtperformance strikt von durchschnittlicher Einzelpositionsperformance. Gleicher Zeitraum und vergleichbare Basis; nenne Quelle, Start-/Enddatum, Ausschlüsse und Out-/Underperformance in Prozentpunkten. Erkläre, was die Kennzahl aussagt und was nicht. Keine Durchschnittsperformance als Depotperformance darstellen.
+ABSCHNITT 8 – DATEN-/PRÜFANHANG: Quelle, Datenstand/Cutoff, Aktualität, Vollständigkeit, Widersprüche, fehlende Werte und konkrete Auswirkungen auf die Analyse. "Vollständig" nur behaupten, wenn der Lauf es belegt.
+NAMENSREGEL (VERBINDLICH, GLOBAL): Bei JEDER Erwähnung eines konkreten Unternehmens, ETF, Rohstoffinstruments, Indexinstruments oder Kryptoassets immer "vollständiger Name (Ticker)" verwenden, z. B. "Siemens Energy AG (ENR.DE)". Niemals nur Name oder nur Ticker ausgeben. Das gilt für Überschriften, Fließtext, Tabellen, Kandidaten, Ereigniswirkungen, Portfolio, Vergleiche und Zusammenfassungen. Bei nicht auflösbarem Namen: "Name nicht aufgelöst (TICKER)" und im Datenanhang als Namensauflösungslücke nennen. Keine Ticker ohne Namen in narrativen Passagen.
+QUALITÄTSREGEL: Jeder Abschnitt muss eine fachliche Aussage und deren Begründung enthalten, sofern Quellen dies ermöglichen. Wiederhole Zahlen nicht mehrfach ohne Zusatznutzen. Keine Fülltexte, keine redundanten NICHT-VERFÜGBAR-Blöcke. Priorisiere die entscheidungsrelevanten Erkenntnisse.
+Keine automatischen Portfolio-/Trading-Änderungen. Eine Marktthese ist keine Handelsfreigabe. Bestehende Thesen anhand neuer Fakten aktualisieren. Kalender nur aus Quellen belegen. Portfolio und technische Kandidaten getrennt halten, aber über die Marktthese verbinden. Benchmark nur mit gelieferten/berechneten Werten.
+Die Hebeltrader-Bewertungen A/B/C sind interne Kategorisierungen der Setups, KEINE finale Kaufentscheidung und KEINE automatische Handelsfreigabe; erkläre sie nur, wenn sie tatsächlich im Bericht vorkommen.
+Portfolio: Keine verkürzte oder beispielhafte Positionsauswahl als vollständige Liste ausgeben. Die vollständige offene Positionsliste wird separat aus der gelieferten Faktenbasis ergänzt.
 Gib diese acht Abschnitte aus:
 1. Trading-Radar
 2. Thesen-Update
@@ -16542,6 +16541,244 @@ def _trading_radar_berichtsfelder_normalisieren(text):
 
 
 
+def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
+    """Ensure narrative asset references use Name (Ticker), preserving Tab-2 keys."""
+    if not isinstance(text, str) or not text:
+        return text
+
+    name_by_ticker = {
+        "GC=F": "Gold Future",
+        "SI=F": "Silber Future",
+        "BTC-USD": "Bitcoin USD",
+        "ETH-USD": "Ethereum USD",
+        "CL=F": "WTI Crude Oil Futures",
+        "BZ=F": "Brent Crude Oil Futures",
+        "^GSPC": "S&P 500 Index",
+        "^RUT": "Russell 2000 Index",
+        "^IXIC": "NASDAQ Composite Index",
+        "^DJI": "Dow Jones Industrial Average",
+    }
+    # Persistent company-name cache is available in the production workflow.
+    cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".firma_name_cache.json")
+    try:
+        with open(cache_path, "r", encoding="utf-8") as handle:
+            cache = json.load(handle)
+        if isinstance(cache, dict):
+            for ticker, entry in cache.items():
+                if isinstance(entry, dict):
+                    name = str(entry.get("name") or "").strip()
+                    if name and not entry.get("missing"):
+                        name_by_ticker[str(ticker).strip()] = name
+    except (OSError, ValueError, TypeError):
+        pass
+
+    # Resolve symbols from the actual structured inputs supplied to this run.
+    import csv as _csv
+
+    def add_source_name(ticker, name):
+        ticker = str(ticker or "").strip()
+        name = str(name or "").strip()
+        if ticker and name and name.casefold() != ticker.casefold():
+            name_by_ticker.setdefault(ticker, name)
+
+    def walk_json_names(value):
+        if isinstance(value, dict):
+            ticker = value.get("Ticker", value.get("ticker", value.get("symbol", value.get("Symbol"))))
+            name = value.get("Name", value.get("name", value.get("company_name", value.get("Company"))))
+            add_source_name(ticker, name)
+            for nested in value.values():
+                walk_json_names(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk_json_names(nested)
+
+    for source_path in (eingabedateien or {}).values():
+        if not source_path or not os.path.isfile(source_path):
+            continue
+        try:
+            suffix = os.path.splitext(str(source_path))[1].lower()
+            if suffix == ".csv":
+                with open(source_path, "r", encoding="utf-8-sig", newline="") as handle:
+                    sample = handle.read(4096)
+                    handle.seek(0)
+                    try:
+                        dialect = _csv.Sniffer().sniff(sample, delimiters=";,\t") if sample.strip() else None
+                    except _csv.Error:
+                        dialect = None
+                    reader = _csv.DictReader(handle, delimiter=dialect.delimiter if dialect else ";")
+                    columns = {str(column).strip().casefold(): column for column in (reader.fieldnames or [])}
+                    ticker_key = next((columns[key] for key in ("ticker", "symbol", "yahoo-ticker", "yahoo ticker") if key in columns), None)
+                    name_key = next((columns[key] for key in ("name", "firmenname", "unternehmen", "company", "company_name") if key in columns), None)
+                    if ticker_key and name_key:
+                        for row in reader:
+                            add_source_name(row.get(ticker_key), row.get(name_key))
+            elif suffix == ".json":
+                with open(source_path, "r", encoding="utf-8-sig") as handle:
+                    walk_json_names(json.load(handle))
+        except (OSError, ValueError, TypeError, _csv.Error):
+            # A broken auxiliary name source must not abort report generation.
+            continue
+
+    # Resolve names from explicit pairs already present in the report.
+    for match in re.finditer(
+        r"(?im)(?:^|\|\s*)Ticker:\s*([^|\r\n]+)\s*\|\s*Name:\s*([^|\r\n]+)",
+        text,
+    ):
+        ticker, name = match.group(1).strip(), match.group(2).strip()
+        if ticker and name and name.casefold() != ticker.casefold():
+            name_by_ticker.setdefault(ticker, name)
+
+    # Also resolve names from any explicit Name (Ticker) display.
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9])([^()|\r\n]{3,}?)\s+\(([A-Za-z0-9][A-Za-z0-9.=^/_-]*)\)",
+        text,
+    ):
+        name, ticker = match.group(1).strip(" -*"), match.group(2).strip()
+        if name and ticker and name.casefold() != ticker.casefold():
+            name_by_ticker.setdefault(ticker, name)
+
+    if not name_by_ticker:
+        return text
+
+    # Preserve the machine-readable Tab-2 payload byte-for-byte. Its source
+    # fields already carry Name and Ticker separately; do not rewrite them.
+    tab2_start = text.find("10.5 Geschlossene Positionen")
+    tab2_end = text.find("TAB-2-EXPORT-SHA256=", tab2_start) if tab2_start >= 0 else -1
+    if tab2_start >= 0:
+        if tab2_end < 0:
+            next_section = re.search(r"(?m)^\s*(?:#{1,6}\s*)?11[.][ \t]+", text[tab2_start + 1:])
+            tab2_end = tab2_start + 1 + next_section.start() if next_section else len(text)
+        else:
+            tab2_end = text.find("\n", tab2_end)
+            tab2_end = len(text) if tab2_end < 0 else tab2_end
+        before_tab2, tab2_block, after_tab2 = text[:tab2_start], text[tab2_start:tab2_end], text[tab2_end:]
+    else:
+        before_tab2, tab2_block, after_tab2 = text, "", ""
+
+    # Tab-2 is a machine-readable source payload. Never enrich or normalize it:
+    # preserve the complete block, including line endings and checksum, verbatim.
+
+    # Only prose lines are eligible for substitutions. Structured key/value
+    # lines, pipe-delimited records, section markers, excluded-ticker inventories,
+    # and the complete Tab-2 export are deliberately excluded.
+    structured_label = re.compile(
+        r"(?i)^\s*(?:[-*•]\s*)?(?:"
+        r"Ticker|Name|Asset|Einstieg|Einstiegsdatum|Aktueller Kurs|Stop|Stop-Loss|"
+        r"TP1|TP2|CRV|Status|Richtung|Quelle|Zeitraum|Uhrzeit|Zeitzone|Kennzahl|"
+        r"Berichtszeitraum|Letzter Wert|Konsens|Istwert|Vorwert|Performance|"
+        r"Portfolio-Gesamtperformance|Ø Positionsperformance|TAB-2-|"
+        r"TRADING_RADAR_|OFFENE_POSITIONEN_|Thesen-ID|Version|"
+        r"Portfolio|Datenstand|Methodik|OHLCV-Abdeckung|Lückenstatus)\s*[:=]"
+    )
+    # Recognize both legacy underscore tokens and ordinary exchange-style symbols.
+    # A small explicit acronym allowlist avoids classifying common report vocabulary
+    # (e.g. FOMC, MSCI, USD, SMA) as unresolved securities.
+    tickerish = re.compile(
+        r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]{1,15}_[A-Z0-9_]{1,20}|"
+        r"[A-Z]{2,6}(?:\.[A-Z]{1,3})?)(?![A-Za-z0-9.=^/])"
+    )
+    non_ticker_acronyms = {
+        "FOMC", "MSCI", "USD", "EUR", "SMA", "OHLCV", "ETF", "ETFS",
+        "TP1", "TP2", "CRV", "API", "CSV", "JSON", "SHA", "SHA256",
+        "REAL", "LIVE", "TAB", "LONG", "SHORT", "AG", "SE", "INC",
+        "CORP", "LLC", "NASDAQ", "SP", "US", "EU", "UK", "WTI", "BTC",
+        "ETH", "SPY", "VNA", "DAX", "EUR", "YTD", "WKN", "OS",
+        "NICHT", "VERF", "VERFÜGBAR", "KEINE", "CME", "UCITS", "SPDR",
+        "CRUDE", "OIL", "INDEX", "FUTURES", "FUTURE", "USD", "TIPS",
+    }
+    excluded_tickers = {
+        "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
+        "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
+        "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA", "SHELL.SO",
+        "SNV", "STM1.DE", "WRK", "X",
+    }
+
+    def normalize_prose_line(line):
+        if (not line.strip() or "|" in line or structured_label.search(line)
+                or re.match(r"^\s*[A-Z][A-Z0-9_]{5,}\s*=", line)):
+            return line
+        if re.match(r"(?i)^\s*(?:Bewusst ausgeschlossene Ticker|Ausgeschlossene Ticker)\s*[:(]", line):
+            return line
+        # Collapse common natural-language name + symbol pairs before token replacement.
+        paired_aliases = (
+            (r"\bGold\s+GC=F\b", "Gold Future (GC=F)"),
+            (r"\bSilber\s+SI=F\b", "Silber Future (SI=F)"),
+            (r"\bBitcoin\s+BTC-USD\b", "Bitcoin USD (BTC-USD)"),
+            (r"\bEthereum\s+ETH-USD\b", "Ethereum USD (ETH-USD)"),
+        )
+        for paired_pattern, paired_display in paired_aliases:
+            line = re.sub(paired_pattern, paired_display, line, flags=re.IGNORECASE)
+
+        # First normalize known symbols. Use boundaries and avoid duplicating an
+        # already complete Name (TICKER) pair.
+        for ticker, name in sorted(name_by_ticker.items(), key=lambda item: len(item[0]), reverse=True):
+            if not ticker or not name or len(ticker) < 2:
+                continue
+            pattern = re.compile(rf"(?<![A-Za-z0-9._=^/]){re.escape(ticker)}(?![A-Za-z0-9_=^/])")
+            def replace_known(match):
+                start_pos, end_pos = match.span()
+                before = line[max(0, start_pos - len(name) - 4):start_pos]
+                after = line[end_pos:end_pos + 2]
+                name_forms = {name.casefold(), name.split()[0].casefold()}
+                if any(before.casefold().endswith(form + " (") for form in name_forms) and after.startswith(")"):
+                    return match.group(0)
+                return f"{name} ({ticker})"
+            line = pattern.sub(replace_known, line)
+
+        # Known natural-language aliases are normalized only in prose, never
+        # in structured fields or source data.
+        aliases = (
+            (r"\bWTI\b(?!\s+(?:Crude Oil Futures)?\s*\(CL=F\))", "WTI Crude Oil Futures (CL=F)"),
+            (r"\bBrent\b(?!\s+(?:Crude Oil Futures)?\s*\(BZ=F\))", "Brent Crude Oil Futures (BZ=F)"),
+            (r"\bGold\b(?!\s+Future\s*\(GC=F\)|\s*\(GC=F\))", "Gold Future (GC=F)"),
+            (r"\bSilber\b(?!\s+Future\s*\(SI=F\)|\s*\(SI=F\))", "Silber Future (SI=F)"),
+            (r"\bBitcoin\b(?!\s+USD\s*\(BTC-USD\)|\s*\(BTC-USD\))", "Bitcoin USD (BTC-USD)"),
+            (r"\bEthereum\b(?!\s+USD\s*\(ETH-USD\)|\s*\(ETH-USD\))", "Ethereum USD (ETH-USD)"),
+        )
+        alias_tickers = {
+            "CL=F": r"\bCL=F\b", "BZ=F": r"\bBZ=F\b",
+            "GC=F": r"\bGC=F\b", "SI=F": r"\bSI=F\b",
+            "BTC-USD": r"\bBTC-USD\b", "ETH-USD": r"\bETH-USD\b",
+        }
+        for (alias_pattern, display), ticker in zip(aliases, alias_tickers.values()):
+            if re.search(ticker, line, flags=re.IGNORECASE):
+                continue
+            line = re.sub(alias_pattern, display, line, flags=re.IGNORECASE)
+
+        line = re.sub(
+            r"(?i)\b(Gold Future \(GC=F\)|Silber Future \(SI=F\)|"
+            r"Bitcoin USD \(BTC-USD\)|Ethereum USD \(ETH-USD\))\s+\1",
+            r"\1", line,
+        )
+
+        for duplicate in (
+            "Gold Future (GC=F) Gold Future (GC=F)",
+            "Silber Future (SI=F) Silber Future (SI=F)",
+            "Bitcoin USD (BTC-USD) Bitcoin USD (BTC-USD)",
+            "Ethereum USD (ETH-USD) Ethereum USD (ETH-USD)",
+        ):
+            line = line.replace(duplicate, duplicate.split(") ", 1)[0] + ")")
+
+        # F-01: ticker-like symbols that remain unresolved are made explicit.
+        # Do not treat ordinary acronyms (FOMC, MSCI) as tickers.
+        def mark_unresolved(match):
+            token = match.group(0)
+            if token in name_by_ticker or token in non_ticker_acronyms or token in excluded_tickers:
+                return token
+            # Existing Name (TICKER) pairs are already resolved, even if the
+            # ticker is not present in the cache/source map.
+            if re.search(r"\b[A-Za-z][A-Za-z0-9&.,'’ -]+\s+\(" + re.escape(token) + r"\)", line):
+                return token
+            # Avoid marking a token that is itself part of a larger recognized
+            # exchange symbol (e.g. the ALB part of ALB.DE).
+            return f"Name nicht aufgelöst ({token})"
+        line = tickerish.sub(mark_unresolved, line)
+        return line
+
+    normalized_before = "\n".join(normalize_prose_line(line) for line in before_tab2.split("\n"))
+    normalized_after = "\n".join(normalize_prose_line(line) for line in after_tab2.split("\n"))
+    return normalized_before + tab2_block + normalized_after
+
 def _trading_radar_nicht_handhabbare_kandidaten_normalisieren(text):
     """Do not present candidates as actionable when numeric trade levels are missing."""
     if not isinstance(text, str) or not text:
@@ -16841,6 +17078,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         # M-06/M-08 nach allen Berichtsumstellungen deterministisch absichern.
         # Unbelegte Werte werden als NICHT VERFÜGBAR markiert, nie erfunden.
         text = _trading_radar_berichtsfelder_normalisieren(text)
+        text = _trading_radar_name_ticker_normalisieren(text, eingabedateien)
         # Genau ein Statusmarker, stets als letzte Zeile. Ohne eindeutigen FINAL-
         # Marker bleibt der Bericht gesperrt; der Report-Gate entscheidet separat.
         # Der vom Sprachmodell gelieferte Statusmarker ist kein Beleg fuer die
