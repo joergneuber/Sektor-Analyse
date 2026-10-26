@@ -5100,12 +5100,69 @@ __QUELLEN__
             logical_request_id="Trading-Radar-Eigenlauf:" + datetime.date.today().isoformat(),
         )
         radar_text = str(getattr(response, "text", response) or "").strip()
-        required = ("1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar", "4. Assetklassenvergleich",
-                   "5. Technische Kandidaten", "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang")
+        required = (
+            "1. Trading-Radar",
+            "2. Thesen-Update",
+            "3. Ereignisradar",
+            "4. Assetklassenvergleich",
+            "5. Technische Kandidaten",
+            "6. Portfolio & Risiko",
+            "7. MSCI-Vergleich",
+            "8. Daten-/Prüfanhang",
+        )
         missing = [heading for heading in required if heading.casefold() not in radar_text.casefold()]
+
+        # Ein einzelner Vollstaendigkeits-Retry faengt ausgelassene Pflichtabschnitte
+        # ab. Die erste unvollstaendige Antwort wird nicht gespeichert oder publiziert.
+        if radar_text and missing:
+            print(
+                "TRADING_RADAR_RETRY | unvollstaendige Antwort; fehlend="
+                + ", ".join(missing)
+                + " | starte genau einen Vollstaendigkeits-Retry."
+            )
+            retry_prompt = (
+                prompt
+                + "\n\nVERBINDLICHER VOLLSTAENDIGKEITS-RETRY: Deine vorherige Antwort "
+                "hat folgende Pflichtabschnitte ausgelassen: "
+                + ", ".join(missing)
+                + ". Erzeuge den vollstaendigen Bericht erneut. Gib alle acht Pflichtabschnitte "
+                "mit den vorgegebenen Ueberschriften in korrekter Reihenfolge aus. "
+                "Keine Abschnitte auslassen; fehlende Daten ausdruecklich als nicht verfuegbar "
+                "kennzeichnen und nichts erfinden."
+            )
+            retry_contents = [retry_prompt]
+            retry_label = "Trading-Radar-Eigenlauf-Vollstaendigkeitsretry"
+            retry_token_count = _gemini_tokenzahl(
+                client, modell, retry_contents, None, label=retry_label
+            )
+            response = _gemini_generate_content_quota_safe(
+                client,
+                modell,
+                retry_contents,
+                {"temperature": 0.2},
+                retry_token_count,
+                retry_label,
+                logical_request_id=(
+                    "Trading-Radar-Eigenlauf:"
+                    + datetime.date.today().isoformat()
+                    + ":vollstaendigkeits-retry"
+                ),
+            )
+            radar_text = str(getattr(response, "text", response) or "").strip()
+            missing = [
+                heading for heading in required
+                if heading.casefold() not in radar_text.casefold()
+            ]
+
         if not radar_text or missing:
             _GEMINI_TRADING_RADAR_STATUS = "NICHT_FINAL"
-            print("TRADING_RADAR_STATUS=NICHT_FINAL | Fehlend=" + ", ".join(missing))
+            fehlermeldung = (
+                "Trading-Radar-Eigenlauf unvollstaendig nach einem Vollstaendigkeits-Retry; "
+                "fehlende Pflichtabschnitte: "
+                + (", ".join(missing) if missing else "leere Gemini-Antwort")
+            )
+            print("TRADING_RADAR_STATUS=NICHT_FINAL | " + fehlermeldung)
+            _gemini_fallback_status_datei("write", fehlermeldung)
             return None
         _GEMINI_TRADING_RADAR_TEXT = radar_text
         _GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
@@ -5123,6 +5180,17 @@ __QUELLEN__
         except OSError as log_exc:
             print(f"TRADING_RADAR_LOG_FEHLER | {type(log_exc).__name__}: {log_exc}")
         print(f"TRADING_RADAR_STATUS=REQUEST_FEHLER | {type(exc).__name__}: {exc}")
+        # Auch API-/Retry-Fehler muessen eine Statusdatei fuer den nachfolgenden
+        # technischen Fallback-Mail-Schritt erzeugen.
+        try:
+            _gemini_fallback_status_datei(
+                "write", f"{type(exc).__name__}: {exc}"
+            )
+        except Exception as status_exc:
+            print(
+                "TRADING_RADAR_STATUSDATEI_FEHLER | "
+                f"{type(status_exc).__name__}: {status_exc}"
+            )
         return None
 
 def gemini_auswertung_starten():
