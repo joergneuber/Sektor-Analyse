@@ -180,7 +180,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     status = _label_value(thesis, (r"Status", r"status"))
     version_match = re.search(r"\d+", version or "")
     status_ok = bool(status and re.search(
-        r"(?i)\b(?:NEU|BESTÄTIGT|ABGESCHWÄCHT|WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|FEHLT|UNKLAR|NICHT VERFÜGBAR)\b",
+        r"(?i)\b(?:NEU|AKTUALISIERT|BESTÄTIGT|ABGESCHWÄCHT|WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|FEHLT|UNKLAR|NICHT VERFÜGBAR)\b",
         status,
     ))
     no_thesis_update = _has_any(thesis, (

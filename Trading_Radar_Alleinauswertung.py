@@ -16536,9 +16536,81 @@ def _trading_radar_berichtsfelder_normalisieren(text):
             text = prefix + exclusion_line + "\n\n" + text[insert_at:]
         else:
             text = text.rstrip() + "\n\n" + exclusion_line + "\n"
+    text = _trading_radar_nicht_handhabbare_kandidaten_normalisieren(text)
     return text
 
 
+
+
+def _trading_radar_nicht_handhabbare_kandidaten_normalisieren(text):
+    """Do not present candidates as actionable when numeric trade levels are missing."""
+    if not isinstance(text, str) or not text:
+        return text
+    section5 = re.compile(
+        r"(?ms)(?P<head>^[ \t]*(?:#{1,6}[ \t]*)?5[.][ \t]+Technische Kandidaten[ \t]*\n)"
+        r"(?P<body>.*?)(?=^[ \t]*(?:#{1,6}[ \t]*)?6[.][ \t]+Portfolio[ \t]*&[ \t]*Risiko)"
+    )
+    match = section5.search(text)
+    if not match:
+        return text
+    body = match.group("body")
+    candidate_starts = list(re.finditer(r"(?im)^\s*(?:[-*]\s*)?(?:Asset/Ticker|Ticker|Asset)\s*:", body))
+    if not candidate_starts:
+        return text
+    blocks = []
+    for index, start in enumerate(candidate_starts):
+        end = candidate_starts[index + 1].start() if index + 1 < len(candidate_starts) else len(body)
+        blocks.append(body[start.start():end])
+    numeric_labels = (r"Einstieg", r"Stop(?:-Loss)?", r"TP1", r"TP2", r"CRV")
+    def has_complete_numeric_levels(block):
+        for label in numeric_labels:
+            found = re.search(rf"(?im)^\s*(?:[-*]\s*)?{label}\s*:\s*([^\r\n]+)", block)
+            if not found or not _trading_radar_numeric_wert_gueltig(found.group(1)):
+                return False
+        return True
+    actionable_blocks = [block for block in blocks if has_complete_numeric_levels(block)]
+    if len(actionable_blocks) == len(blocks):
+        return text
+
+    if not actionable_blocks:
+        replacement = (
+            "Keine belastbaren technischen Kandidaten; keine Handelsfreigabe. "
+            "Die erkannten Setups besitzen keine vollständig belegten numerischen "
+            "Einstiegs-, Stop-, TP1-, TP2- und CRV-Werte und werden daher nicht als "
+            "handelbare Kandidaten ausgewiesen.\n\n"
+        )
+    else:
+        # In gemischten Listen nur vollständig belegte Kandidaten behalten.
+        # Ein einzelner gültiger Kandidat darf unvollständige Kandidaten nicht
+        # versehentlich durch die M-09-Prüfung schleusen.
+        prefix = body[:candidate_starts[0].start()]
+        kept = "\n\n".join(block.rstrip() for block in actionable_blocks)
+        replacement = prefix + kept + "\n\n"
+    return text[:match.start("body")] + replacement + text[match.end("body"):]
+
+
+def _trading_radar_numeric_wert_gueltig(value):
+    """Match the report gate's numeric-field contract, including common units."""
+    if not isinstance(value, str):
+        return False
+    cleaned = value.strip()
+    if not cleaned or re.fullmatch(
+        r"(?i)(?:NICHT VERFÜGBAR|NICHT VERIFIZIERBAR|NICHT VORHANDEN|FEHLT|UNKLAR|N/A|NA|NONE|NULL|[-—–])",
+        cleaned,
+    ):
+        return False
+    # Accept only common, explicit currency/unit wrappers. Arbitrary prose
+    # remains invalid, even if it contains a number.
+    cleaned = re.sub(r"^(?:EUR|USD|GBP|€|\$|£)\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\s*(?:EUR|USD|GBP|€|\$|£|%|x|\b(?:Punkte|pts)\b)$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not re.fullmatch(r"[-+]?(?:\d{1,3}(?:[ .’']\d{3})+|\d+)(?:[,.]\d+)?", cleaned):
+        return False
+    return True
 
 
 def _trading_radar_aktive_firmennamen_luecken(name_cache, excluded_tickers):
