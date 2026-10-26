@@ -16741,9 +16741,12 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     # Recognize both legacy underscore tokens and ordinary exchange-style symbols.
     # A small explicit acronym allowlist avoids classifying common report vocabulary
     # (e.g. FOMC, MSCI, USD, SMA) as unresolved securities.
+    # Unicode-aware boundaries are essential: ASCII-only boundaries treated
+    # the suffix GBAR in the German word VERFÜGBAR as a standalone ticker.
     tickerish = re.compile(
-        r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]{1,15}_[A-Z0-9_]{1,20}|"
-        r"[A-Z]{2,6}(?:\.[A-Z]{1,3})?)(?![A-Za-z0-9.=^/])"
+        r"(?<![\w])(?:[A-Z][A-Z0-9]{1,15}_[A-Z0-9_]{1,20}|"
+        r"[A-Z]{2,6}(?:\.[A-Z]{1,3})?)(?![\w.=^/])",
+        flags=re.UNICODE,
     )
     non_ticker_acronyms = {
         "FOMC", "MSCI", "USD", "EUR", "SMA", "OHLCV", "ETF", "ETFS",
@@ -16753,6 +16756,8 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         "ETH", "SPY", "VNA", "DAX", "EUR", "YTD", "WKN", "OS",
         "NICHT", "VERF", "VERFÜGBAR", "KEINE", "CME", "UCITS", "SPDR",
         "CRUDE", "OIL", "INDEX", "FUTURES", "FUTURE", "USD", "TIPS",
+        # Macro/economic abbreviations are not security tickers.
+        "BIP", "GDP", "NFP", "CPI", "PCE", "PMI", "ISM", "ADP",
     }
     excluded_tickers = {
         "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
@@ -16864,6 +16869,13 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         ):
             line = line.replace(duplicate, duplicate.split(") ", 1)[0] + ")")
 
+        # Restore common macro abbreviations that an older normalizer may
+        # already have wrapped as unresolved pseudo-tickers. These are metrics,
+        # not company/security symbols.
+        line = re.sub(
+            r"(?i)Name nicht aufgelöst \((BIP|GDP|NFP|CPI|PCE|PMI|ISM|ADP)\)",
+            lambda m: m.group(1).upper(), line,
+        )
         # F-01: ticker-like symbols that remain unresolved are made explicit.
         # Do not treat ordinary acronyms (FOMC, MSCI) as tickers.
         def mark_unresolved(match):
@@ -16966,6 +16978,108 @@ def _trading_radar_aktive_firmennamen_luecken(name_cache, excluded_tickers):
         and value.get("missing")
         and str(key).casefold() not in excluded_set
     )
+
+
+def _trading_radar_ohlcv_nachweisblock():
+    """Erstellt den OHLCV-Nachweis ausschließlich aus strukturierten Prüfdaten.
+
+    Erwarteter Vertrag für den vorgelagerten OHLCV-Prüfer:
+      _TRADING_RADAR_OHLCV_AUDIT = {
+        "status": "complete" | "gaps" | "unavailable",
+        "checked_at": "ISO-Datum/Zeit oder Datenstand",
+        "universe_count": int, "covered_count": int,
+        "missing_tickers": [str, ...], "stale_tickers": [str, ...],
+        "affected_candidates": [str, ...]
+      }
+    Fehlt dieser Prüfnachweis, wird KEINE Vollständigkeit behauptet; Kandidaten
+    werden ausdrücklich als nicht verifizierbar gekennzeichnet.
+    """
+    audit = globals().get("_TRADING_RADAR_OHLCV_AUDIT")
+    if not isinstance(audit, dict):
+        return (
+            "OHLCV-Abdeckung: NICHT VERFÜGBAR / NICHT VERIFIZIERBAR; "
+            "im Lauf wurde kein strukturierter OHLCV-Prüfnachweis bereitgestellt.\n"
+            "Datenstand: NICHT VERFÜGBAR (Prüfquelle fehlt).\n"
+            "Lückenstatus und Kandidatenauswirkung: nicht verifizierbar; "
+            "Kandidaten sind bis zum belegten OHLCV-Nachweis nicht prüfbar und nicht freigegeben."
+        )
+
+    status = str(audit.get("status", "unavailable")).strip().casefold()
+    checked_at = str(audit.get("checked_at") or "NICHT VERFÜGBAR").strip()
+    universe = audit.get("universe_count")
+    covered = audit.get("covered_count")
+    missing = sorted({str(x).strip() for x in (audit.get("missing_tickers") or []) if str(x).strip()})
+    stale = sorted({str(x).strip() for x in (audit.get("stale_tickers") or []) if str(x).strip()})
+    affected = sorted({str(x).strip() for x in (audit.get("affected_candidates") or []) if str(x).strip()})
+    counts_valid = (isinstance(universe, int) and not isinstance(universe, bool)
+                    and isinstance(covered, int) and not isinstance(covered, bool)
+                    and universe >= 0 and 0 <= covered <= universe)
+    if not counts_valid:
+        return (
+            "OHLCV-Abdeckung: NICHT VERIFIZIERBAR; Prüfergebnis enthält keine gültigen "
+            "Universums-/Abdeckungszahlen.\n"
+            f"Datenstand: {checked_at}.\n"
+            "Lückenstatus und Kandidatenauswirkung: nicht verifizierbar; "
+            "Kandidaten sind bis zur Klärung nicht prüfbar und nicht freigegeben."
+        )
+
+    if status == "complete" and covered == universe and not missing and not stale:
+        return (
+            f"OHLCV-Abdeckung: vollständig ({covered}/{universe} geprüfte Symbole).\n"
+            f"Datenstand: {checked_at}.\n"
+            "Lückenstatus und Kandidatenauswirkung: keine fehlenden oder veralteten OHLCV-Daten; "
+            "Kandidaten nicht eingeschränkt."
+        )
+
+    if status not in {"gaps", "unavailable", "complete"}:
+        status = "unavailable"
+    details = []
+    if missing:
+        details.append("fehlende OHLCV-Daten: " + ", ".join(missing[:100]))
+    if stale:
+        details.append("veraltete OHLCV-Daten: " + ", ".join(stale[:100]))
+    if affected:
+        details.append("konkret betroffene Kandidaten: " + ", ".join(affected[:100]))
+    if not details:
+        details.append("Prüfer meldet keine konkretisierten Ticker; Kandidatenwirkung bleibt ungeklärt")
+    impact = (
+        "Kandidaten eingeschränkt/nicht prüfbar: " + "; ".join(details)
+        + ". Betroffene Setups bis zur Datenprüfung nicht freigeben."
+    )
+    return (
+        f"OHLCV-Abdeckung: {covered}/{universe} Symbole abgedeckt; Status={status}.\n"
+        f"Datenstand: {checked_at}.\n"
+        "Lückenstatus und Kandidatenauswirkung: " + impact
+    )
+
+
+def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
+    """Ersetzt Gemini-OHLCV-Behauptungen in Abschnitt 8 durch Prüferbelege."""
+    if not isinstance(text, str):
+        return text
+    section = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang[^\r\n]*$", text
+    )
+    if not section:
+        return text
+    tail = text[section.end():]
+    next_section = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?(?:9|10|11)(?:\s*[.·](?!\d)|\s+)[^\r\n]*$", tail
+    )
+    end = section.end() + next_section.start() if next_section else len(text)
+    body = text[section.end():end]
+    # Remove only existing OHLCV summary lines/paragraphs to avoid contradictory
+    # Gemini claims. Other section-8 content remains untouched.
+    body = re.sub(
+        r"(?im)^[ \t]*(?:OHLCV-Abdeckung|OHLCV-Abdeckung & Lückenstatus|OHLCV-Datenstand|Lückenstatus und Kandidatenauswirkung):[^\r\n]*(?:\r?\n)?",
+        "", body
+    )
+    body = re.sub(
+        r"(?im)^[ \t]*OHLCV[^\r\n]*(?:vollständig|vollstaendig|Datenlücken|Datenluecken|Datenlücken|Datenluecken)[^\r\n]*(?:\r?\n)?",
+        "", body
+    )
+    block = _trading_radar_ohlcv_nachweisblock()
+    return text[:section.end()] + "\n\n" + block + "\n" + body.lstrip("\r\n") + text[end:]
 
 
 def speichere_ergebnis(text, eingabedateien=None):
@@ -17180,6 +17294,8 @@ def speichere_ergebnis(text, eingabedateien=None):
             text = text[:section11.start()].rstrip() + "\n\n" + canonical_closed.lstrip("\n") + text[section11.start():]
         else:
             text = text.rstrip() + "\n\n" + canonical_closed.lstrip("\n")
+        # M-10: OHLCV-Aussagen ausschließlich aus dem strukturierten Prüfergebnis übernehmen.
+        text = _trading_radar_ohlcv_abschnitt8_aktualisieren(text)
         # M-06/M-08 nach allen Berichtsumstellungen deterministisch absichern.
         # Unbelegte Werte werden als NICHT VERFÜGBAR markiert, nie erfunden.
         text = _trading_radar_berichtsfelder_normalisieren(text)
