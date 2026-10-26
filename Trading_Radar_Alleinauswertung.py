@@ -16980,7 +16980,62 @@ def _trading_radar_aktive_firmennamen_luecken(name_cache, excluded_tickers):
     )
 
 
-def _trading_radar_ohlcv_nachweisblock():
+
+def _trading_radar_kandidaten_aus_abschnitt5(report_text):
+    """Extrahiert Kandidaten nur aus expliziten Ticker-Feldern/Tabellenspalten.
+
+    Freie Prosa wird absichtlich nicht nach beliebigen Großbuchstaben-Tokens
+    durchsucht: Das würde Makro-Kürzel und Firmennamen als Ticker fehlklassifizieren.
+    Wenn der Bericht keine strukturierte Tickerquelle enthält, ist das Ergebnis
+    leer und der Audit darf keine uneingeschränkte Entwarnung ausgeben.
+    """
+    if not isinstance(report_text, str):
+        return []
+    section_match = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?5\s*[.·]\s*Technische Kandidaten[^\r\n]*\r?\n"
+        r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?6\s*[.·]|\Z)",
+        report_text,
+    )
+    if not section_match:
+        return []
+    body = section_match.group(1)
+    found = set()
+    ticker_re = re.compile(
+        r"^(?:\^[A-Z0-9]{1,8}|[A-Z][A-Z0-9]{0,7}(?:[.-][A-Z0-9]{1,6})?(?:=X|-USD|=F)?)$"
+    )
+    # Nur explizite Labels: "Ticker: ABC" / "Symbol: ABC".
+    for match in re.finditer(
+        r"(?im)^[ \t]*(?:[-*]\s*)?(?:Ticker|Symbol)\s*:\s*"
+        r"(\^[A-Z0-9]{1,8}|[A-Z][A-Z0-9]{0,7}(?:[.-][A-Z0-9]{1,6})?(?:=X|-USD|=F)?)"
+        r"(?=[ \t]*(?:[,;|—–-]|$))",
+        body,
+    ):
+        found.add(match.group(1).upper())
+    # Tabellen nur dann auswerten, wenn die Kopfzeile die Ticker-Spalte
+    # ausdrücklich benennt. Andere Spalten und Prosa werden ignoriert.
+    lines = body.splitlines()
+    for i, line in enumerate(lines[:-1]):
+        if not line.lstrip().startswith("|"):
+            continue
+        headers = [c.strip().strip("*` ").casefold() for c in line.strip().strip("|").split("|")]
+        if not any(h in {"ticker", "symbol", "ticker/symbol", "symbol/ticker"} for h in headers):
+            continue
+        separator = lines[i + 1].strip()
+        if not separator.startswith("|") or not re.fullmatch(r"\|?[\s:|-]+\|?", separator):
+            continue
+        ticker_idx = next(j for j,h in enumerate(headers) if h in {"ticker", "symbol", "ticker/symbol", "symbol/ticker"})
+        for row in lines[i + 2:]:
+            if not row.lstrip().startswith("|"):
+                break
+            cells = [c.strip().strip("*` ") for c in row.strip().strip("|").split("|")]
+            if ticker_idx < len(cells):
+                candidate = cells[ticker_idx].upper()
+                if ticker_re.fullmatch(candidate):
+                    found.add(candidate)
+    return sorted(found)
+
+
+def _trading_radar_ohlcv_nachweisblock(report_text=""):
     """Erstellt den OHLCV-Nachweis ausschließlich aus strukturierten Prüfdaten.
 
     Erwarteter Vertrag für den vorgelagerten OHLCV-Prüfer:
@@ -16996,13 +17051,25 @@ def _trading_radar_ohlcv_nachweisblock():
     """
     audit = globals().get("_TRADING_RADAR_OHLCV_AUDIT")
     if not isinstance(audit, dict):
-        return (
-            "OHLCV-Abdeckung: NICHT VERFÜGBAR / NICHT VERIFIZIERBAR; "
-            "im Lauf wurde kein strukturierter OHLCV-Prüfnachweis bereitgestellt.\n"
-            "Datenstand: NICHT VERFÜGBAR (Prüfquelle fehlt).\n"
-            "Lückenstatus und Kandidatenauswirkung: nicht verifizierbar; "
-            "Kandidaten sind bis zum belegten OHLCV-Nachweis nicht prüfbar und nicht freigegeben."
-        )
+        # Produktive Anbindung: den Nachweis unmittelbar aus der persistenten
+        # historischen OHLCV-Datenbank lesen, statt einen unverbundenen globalen
+        # Datenvertrag vorauszusetzen. Fehlt DB/Quelle, wird keine Vollständigkeit
+        # behauptet.
+        try:
+            import historical_ohlcv
+            # Nur strukturierte Ticker-Felder aus Abschnitt 5 gelten als Kandidatenquelle.
+            # Freie Großbuchstaben-Tokens sind zu mehrdeutig (z. B. BIP/NFP/Firmennamen).
+            candidates = _trading_radar_kandidaten_aus_abschnitt5(report_text)
+            audit = historical_ohlcv.audit_snapshot(candidate_tickers=candidates)
+        except Exception as exc:
+            audit = {
+                "status": "unavailable",
+                "checked_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
+                "universe_count": 0, "covered_count": 0,
+                "missing_tickers": [], "stale_tickers": [],
+                "affected_candidates": [],
+                "error": f"OHLCV-Prüfung nicht ausführbar: {type(exc).__name__}: {exc}",
+            }
 
     status = str(audit.get("status", "unavailable")).strip().casefold()
     checked_at = str(audit.get("checked_at") or "NICHT VERFÜGBAR").strip()
@@ -17023,7 +17090,10 @@ def _trading_radar_ohlcv_nachweisblock():
             "Kandidaten sind bis zur Klärung nicht prüfbar und nicht freigegeben."
         )
 
-    if status == "complete" and covered == universe and not missing and not stale:
+    if (status == "complete" and covered == universe and not missing and not stale
+            and not audit.get("invalid_ohlcv_tickers")
+            and audit.get("candidate_impact") == "none_detected_in_checked_candidates"
+            and audit.get("candidate_mapping_complete") is True):
         return (
             f"OHLCV-Abdeckung: vollständig ({covered}/{universe} geprüfte Symbole).\n"
             f"Datenstand: {checked_at}.\n"
@@ -17038,12 +17108,22 @@ def _trading_radar_ohlcv_nachweisblock():
         details.append("fehlende OHLCV-Daten: " + ", ".join(missing[:100]))
     if stale:
         details.append("veraltete OHLCV-Daten: " + ", ".join(stale[:100]))
+    invalid_ohlcv = sorted({str(x).strip() for x in (audit.get("invalid_ohlcv_tickers") or []) if str(x).strip()})
+    if invalid_ohlcv:
+        details.append("ungültige/unvollständige OHLCV-Felder: " + ", ".join(invalid_ohlcv[:100]))
+    unmapped_candidates = sorted({str(x).strip() for x in (audit.get("unmapped_candidate_tickers") or []) if str(x).strip()})
+    if unmapped_candidates:
+        details.append("Kandidaten nicht im geprüften Universum: " + ", ".join(unmapped_candidates[:100]))
     if affected:
         details.append("konkret betroffene Kandidaten: " + ", ".join(affected[:100]))
+    if audit.get("candidate_impact") == "not_individually_mapped" and not affected:
+        details.append("Kandidatenwirkung: einzelne Kandidaten sind in diesem Universumsnachweis nicht zuordenbar")
+    if audit.get("error"):
+        details.append("Prüfhinweis: " + str(audit["error"]))
     if not details:
         details.append("Prüfer meldet keine konkretisierten Ticker; Kandidatenwirkung bleibt ungeklärt")
     impact = (
-        "Kandidaten eingeschränkt/nicht prüfbar: " + "; ".join(details)
+        "Kandidatenwirkung nicht als uneingeschränkt bestätigt: " + "; ".join(details)
         + ". Betroffene Setups bis zur Datenprüfung nicht freigeben."
     )
     return (
@@ -17078,7 +17158,7 @@ def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
         r"(?im)^[ \t]*OHLCV[^\r\n]*(?:vollständig|vollstaendig|Datenlücken|Datenluecken|Datenlücken|Datenluecken)[^\r\n]*(?:\r?\n)?",
         "", body
     )
-    block = _trading_radar_ohlcv_nachweisblock()
+    block = _trading_radar_ohlcv_nachweisblock(text)
     return text[:section.end()] + "\n\n" + block + "\n" + body.lstrip("\r\n") + text[end:]
 
 
