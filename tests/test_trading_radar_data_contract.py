@@ -616,9 +616,15 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 delattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
             text = "8. Daten-/Prüfanhang\nOHLCV-Abdeckung: vollständig für alle Quellen.\n\n9. Weitere Daten"
             result = module._trading_radar_ohlcv_abschnitt8_aktualisieren(text)
-            self.assertIn("NICHT VERIFIZIERBAR", result)
-            self.assertIn("Kandidaten sind bis zur Klärung nicht prüfbar und nicht freigegeben", result)
-            self.assertNotIn("vollständig für alle Quellen", result)
+            # The current implementation reports the concrete unavailable state
+            # and the actual reason; do not require the obsolete label
+            # "NICHT VERIFIZIERBAR".
+            self.assertIn("Status=unavailable", result)
+            self.assertIn("OHLCV-Datenbank fehlt: historical_ohlcv.sqlite", result)
+            self.assertIn("Betroffene Setups bis zur Datenprüfung nicht freigeben", result)
+            self.assertIn("Kandidatenwirkung nicht als uneingeschränkt bestätigt", result)
+            self.assertNotIn("OHLCV-Abdeckung: vollständig", result)
+            self.assertNotIn("keine fehlenden oder veralteten OHLCV-Daten", result)
         finally:
             if had_original:
                 module._TRADING_RADAR_OHLCV_AUDIT = original
