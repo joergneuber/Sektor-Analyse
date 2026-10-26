@@ -11,6 +11,7 @@ import datetime
 import importlib.util
 import os
 import re
+import shutil
 import sys
 import tempfile
 import types
@@ -24,7 +25,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
 BENCHMARK = ROOT / "performance_benchmark.py"
 
 
-def load_radar_module():
+def load_radar_module(radar_path=RADAR):
     """Importiert die Datei ohne optionale Projekt-/API-Abhaengigkeiten."""
     trade_story = types.ModuleType("trade_story_universum")
     trade_story.write_trade_story_universe = lambda *a, **k: None
@@ -35,7 +36,7 @@ def load_radar_module():
     sources.extract_metal_four_week_value = lambda *a, **k: None
     sys.modules.setdefault("trade_story_universum", trade_story)
     sys.modules.setdefault("quellenwert_vertrag", sources)
-    spec = importlib.util.spec_from_file_location("trading_radar_under_test", RADAR)
+    spec = importlib.util.spec_from_file_location("trading_radar_under_test", radar_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -123,6 +124,80 @@ class TradingRadarDataContractTests(unittest.TestCase):
         self.assertIn("retention-days: 90", workflow)
         self.assertIn("steps.trading-radar-report-check.outcome == 'success' && steps.trading-radar.outputs.fachlich_final == 'FINAL'", workflow)
         self.assertIn("steps.trading-radar.outputs.fachlich_final == 'FINAL'", workflow)
+
+    def test_actual_report_writer_preserves_all_chapter_headings_with_msci_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            isolated_radar = temp_root / "Trading_Radar_Alleinauswertung.py"
+            shutil.copy2(RADAR, isolated_radar)
+            (temp_root / ".firma_name_cache.json").write_text(
+                '{"MSCI": {"name": "MSCI Inc.", "missing": false}}',
+                encoding="utf-8",
+            )
+            radar = load_radar_module(isolated_radar)
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                csv_path = temp_root / "Offene Positionen+Check.csv"
+                with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                    writer = csv.DictWriter(
+                        handle, delimiter=";",
+                        fieldnames=["Name", "Ticker", "Status", "Einstieg", "Einstiegsdatum", "Stop"],
+                    )
+                    writer.writeheader()
+                    writer.writerow({
+                        "Name": "Alpha", "Ticker": "AAA", "Status": "Offen",
+                        "Einstieg": "10", "Einstiegsdatum": "01.01.2026", "Stop": "9",
+                    })
+                radar._GEMINI_TRADING_RADAR_ONLY_MODE = True
+                radar._GEMINI_TRADING_RADAR_STATUS = "EIGENSTAENDIG_ERZEUGT"
+                radar._GEMINI_GESCHLOSSENE_10_5_FINAL = (
+                    "TAB-2-ANZAHL=0\nTAB-2-QUELLE=Geschlossene Positionen\n"
+                )
+                headings = [
+                    "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+                    "4. Assetklassenvergleich", "5. Technische Kandidaten",
+                    "6. Portfolio & Risiko", "7. MSCI-Vergleich",
+                    "8. Daten-/Prüfanhang", "8.1 Unterkapitel",
+                    "9. Risikohinweise", "11. Methodische Hinweise",
+                ]
+                report = "\n".join(headings) + (
+                    "\nMSCI wird im Fliesstext genannt.\n"
+                    "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                )
+                with redirect_stdout(StringIO()):
+                    output = radar.speichere_ergebnis(
+                        report, {"Offene Positionen+Check.csv": str(csv_path)}
+                    )
+                saved = Path(output).read_text(encoding="utf-8-sig")
+                saved_lines = saved.splitlines()
+                for heading in headings:
+                    with self.subTest(heading=heading):
+                        self.assertIn(heading, saved_lines)
+                self.assertIn("MSCI Inc. (MSCI) wird im Fliesstext genannt.", saved)
+                self.assertIn("7. MSCI-Vergleich", saved_lines)
+                self.assertNotIn("7. MSCI Inc. (MSCI)-Vergleich", saved_lines)
+            finally:
+                os.chdir(previous_cwd)
+
+    def test_final_verification_has_separate_data_contract_failure_diagnostic(self):
+        self.assertTrue(WORKFLOW.is_file(), "main.yml fehlt; Workflow-Diagnose kann nicht verifiziert werden")
+        workflow = WORKFLOW.read_text(encoding="utf-8-sig")
+        self.assertIn(
+            "TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}",
+            workflow,
+        )
+        contract_check = 'if [ "${TRADING_RADAR_CONTRACT_OUTCOME:-}" != "success" ]; then'
+        gemini_check = 'if [ "$TRADING_RADAR_STEP_OUTCOME" != "success" ]; then'
+        self.assertIn(contract_check, workflow)
+        self.assertIn(gemini_check, workflow)
+        self.assertLess(workflow.index(contract_check), workflow.index(gemini_check))
+        self.assertIn(
+            "kein Gemini-Fehler diagnostiziert.",
+            workflow,
+            "Bei fehlgeschlagener Vorprüfung muss die Meldung den Fehler eindeutig vom Gemini-Ausfall abgrenzen.",
+        )
+        self.assertIn("REPORT_CHECK=FAIL | Trading-Radar-Datenvertrag-Vorprüfung fehlgeschlagen", workflow)
 
     def test_report_field_normalizer_explicitly_marks_missing_m06_m08_values(self):
         radar = load_radar_module()
