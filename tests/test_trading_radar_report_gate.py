@@ -42,6 +42,15 @@ class ReportGateTests(unittest.TestCase):
         errors = gate.validate_report(report_fixture(tab2_count=3))
         self.assertTrue(any("Tab-2-Zählung widerspricht" in e for e in errors), errors)
 
+    def test_m05_rejects_nonempty_but_invalid_tab2_entry_date(self):
+        text = report_fixture().replace(
+            "Einstiegsdatum: 01.08.2026",
+            "Einstiegsdatum: 31.02.2026",
+            1,
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Ticker+Einstiegsdatum nicht verifizierbar" in e for e in errors), errors)
+
     def test_m06_requires_separate_portfolio_performance_and_position_average(self):
         text = report_fixture().replace("Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).", "Keine Performancewerte vorhanden.")
         errors = gate.validate_report(text)
@@ -70,6 +79,13 @@ class ReportGateTests(unittest.TestCase):
         text = report_fixture().replace(
             "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
             "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.",
+        )
+        self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
+
+    def test_m07_accepts_updated_thesis_status(self):
+        text = report_fixture().replace(
+            "Status: BESTÄTIGT",
+            "Status: Aktualisiert",
         )
         self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
 
