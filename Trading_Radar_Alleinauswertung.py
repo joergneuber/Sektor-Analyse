@@ -16694,6 +16694,13 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     }
 
     def normalize_prose_line(line):
+        # Abschnitts-/Markdown-Ueberschriften sind Struktur und niemals
+        # Kandidaten fuer Cache- oder Ticker-Ersetzungen. Das gilt auch fuer
+        # Unterkapitel wie 8.1 und unabhaengig vom Inhalt des Namens-Caches.
+        if re.match(r"^\s*#{1,6}\s+\S", line):
+            return line
+        if re.match(r"^\s*(?:#{1,6}\s*)?\d{1,2}(?:\.\d+)*[.·]?\s+\S.*$", line):
+            return line
         if (not line.strip() or "|" in line or structured_label.search(line)
                 or re.match(r"^\s*[A-Z][A-Z0-9_]{5,}\s*=", line)):
             return line
