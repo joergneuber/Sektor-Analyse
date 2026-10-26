@@ -29,6 +29,11 @@ else:
         arg for arg in sys.argv[1:]
         if not arg.startswith("-") and Path(arg).is_file() and Path(arg).suffix.lower() == ".py"
     ]
+    # unittest.main() otherwise interprets the production source filename as
+    # a requested test, yielding AttributeError: __main__ has no such test.
+    if _args:
+        _source_arg = _args[0]
+        sys.argv[:] = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg != _source_arg]
     SOURCE = Path(_args[0]) if _args else _DEFAULT_SOURCE
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
 FUNCTIONS = {n.name: n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}

@@ -20,6 +20,11 @@ _source_override = next(
      if not arg.startswith("-") and Path(arg).is_file() and Path(arg).suffix.lower() == ".py"),
     None,
 )
+# unittest.main() interprets leftover positional arguments as test names.
+# Remove only the recognized source-file override before the test runner starts.
+if _source_override is not None:
+    _source_arg = str(_source_override)
+    sys.argv[:] = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg != _source_arg]
 SOURCE = _source_override.resolve() if _source_override else Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
 FUNCTIONS = {n.name: n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
