@@ -601,5 +601,62 @@ class TradingRadarDataContractTests(unittest.TestCase):
 
 
 
+    def test_unicode_word_boundary_does_not_split_german_verfuegbar_suffix(self):
+        source = Path(__file__).resolve().parents[1].joinpath("Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+        self.assertIn(r"(?<![\w])", source)
+        self.assertIn('"BIP", "GDP", "NFP", "CPI", "PCE", "PMI", "ISM", "ADP"', source)
+
+    def test_ohlcv_appendix_uses_structured_audit_and_never_invents_full_coverage(self):
+        module = load_radar_module()
+        original = getattr(module, "_TRADING_RADAR_OHLCV_AUDIT", None)
+        had_original = hasattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
+        try:
+            if had_original:
+                delattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
+            text = "8. Daten-/Prüfanhang\nOHLCV-Abdeckung: vollständig für alle Quellen.\n\n9. Weitere Daten"
+            result = module._trading_radar_ohlcv_abschnitt8_aktualisieren(text)
+            self.assertIn("NICHT VERIFIZIERBAR", result)
+            self.assertIn("Kandidaten sind bis zum belegten OHLCV-Nachweis nicht prüfbar", result)
+            self.assertNotIn("vollständig für alle Quellen", result)
+        finally:
+            if had_original:
+                module._TRADING_RADAR_OHLCV_AUDIT = original
+            elif hasattr(module, "_TRADING_RADAR_OHLCV_AUDIT"):
+                delattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
+
+    def test_ohlcv_appendix_reports_actual_gaps_and_affected_candidates(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "gaps", "checked_at": "2026-10-26T12:00:00Z",
+            "universe_count": 10, "covered_count": 8,
+            "missing_tickers": ["ABC", "XYZ"], "stale_tickers": ["DEF"],
+            "affected_candidates": ["ABC", "DEF"],
+        }
+        try:
+            result = module._trading_radar_ohlcv_abschnitt8_aktualisieren(
+                "8. Daten-/Prüfanhang\nOHLCV-Abdeckung: vollständig.\n\n9. Weitere Daten"
+            )
+            self.assertIn("8/10 Symbole abgedeckt", result)
+            self.assertIn("fehlende OHLCV-Daten: ABC, XYZ", result)
+            self.assertIn("veraltete OHLCV-Daten: DEF", result)
+            self.assertIn("konkret betroffene Kandidaten: ABC, DEF", result)
+            self.assertNotIn("OHLCV-Abdeckung: vollständig.", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
+    def test_ohlcv_complete_claim_requires_matching_counts_and_no_gaps(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "complete", "checked_at": "2026-10-26T12:00:00Z",
+            "universe_count": 10, "covered_count": 10,
+            "missing_tickers": [], "stale_tickers": [], "affected_candidates": [],
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("OHLCV-Abdeckung: vollständig (10/10 geprüfte Symbole)", result)
+            self.assertIn("Kandidaten nicht eingeschränkt", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
