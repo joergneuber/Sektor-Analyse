@@ -15,7 +15,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SOURCE = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).with_name("gemini_auswertung.py")
+_source_override = next(
+    (Path(arg) for arg in sys.argv[1:]
+     if not arg.startswith("-") and Path(arg).is_file() and Path(arg).suffix.lower() == ".py"),
+    None,
+)
+SOURCE = _source_override.resolve() if _source_override else Path(__file__).resolve().parents[1] / "gemini_auswertung.py"
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
 FUNCTIONS = {n.name: n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 

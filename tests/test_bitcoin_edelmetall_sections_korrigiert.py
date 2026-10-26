@@ -22,7 +22,13 @@ _DEFAULT_SOURCE = Path(__file__).resolve().parent.parent / "gemini_auswertung.py
 if "pytest" in sys.modules:
     SOURCE = _DEFAULT_SOURCE
 else:
-    _args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+    # unittest/pytest discovery options such as ``-s tests`` must not be
+    # mistaken for an explicit production source path. Only accept an
+    # existing Python file as the optional positional override.
+    _args = [
+        arg for arg in sys.argv[1:]
+        if not arg.startswith("-") and Path(arg).is_file() and Path(arg).suffix.lower() == ".py"
+    ]
     SOURCE = Path(_args[0]) if _args else _DEFAULT_SOURCE
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
 FUNCTIONS = {n.name: n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
