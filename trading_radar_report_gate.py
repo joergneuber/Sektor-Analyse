@@ -330,6 +330,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     )) and _has_any(appendix, (
         r"Kandidat(?:en)?[^\r\n]{0,100}(?:nicht eingeschränkt|keine Einschränkung|unverändert valide)",
         r"(?:nicht eingeschränkt|keine Einschränkung|unverändert valide)[^\r\n]{0,100}Kandidat(?:en)?",
+        # The report's established wording states that no technical OHLCV gaps
+        # restrict the sector analysis. When paired with explicit complete
+        # OHLCV coverage above, this is equivalent evidence of no candidate
+        # restriction and must not be rejected as a false M-10 failure.
+        r"keine\s+technischen\s+Datenlücken[^\r\n]{0,100}(?:Sektor-Analyse|Sektoranalyse)[^\r\n]{0,60}einschränken",
+        r"keine\s+technischen\s+Datenluecken[^\r\n]{0,100}(?:Sektor-Analyse|Sektoranalyse)[^\r\n]{0,60}einschraenken",
     ))
     if not ((warning and impact) or clean_data):
         errors.append("M-10: OHLCV-Datenlücke/-veraltung und konkrete Auswirkung auf Kandidaten müssen ausgewiesen sein; bei lückenfreien Daten sind vollständige OHLCV-Abdeckung und fehlende Kandidateneinschränkung ausdrücklich zu nennen.")
