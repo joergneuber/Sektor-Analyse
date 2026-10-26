@@ -1,5 +1,7 @@
 import ast
 import datetime
+import json
+import os
 import re
 import unittest
 from pathlib import Path
@@ -26,11 +28,12 @@ def load_normalizer():
             "_trading_radar_berichtsfelder_normalisieren",
             "_trading_radar_aktive_firmennamen_luecken",
             "_trading_radar_nicht_handhabbare_kandidaten_normalisieren",
+            "_trading_radar_name_ticker_normalisieren",
             "_trading_radar_numeric_wert_gueltig",
             "_parse_tab2_entry_date_text",
         }
     ]
-    namespace = {"re": re, "datetime": datetime}
+    namespace = {"re": re, "datetime": datetime, "json": json, "os": os, "__file__": str(GENERATOR)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(GENERATOR), "exec"), namespace)
     return namespace
 
@@ -45,6 +48,9 @@ class TradingRadarReportFormattingTests(unittest.TestCase):
         )
         cls.normalize_unactionable_candidates = staticmethod(
             helpers["_trading_radar_nicht_handhabbare_kandidaten_normalisieren"]
+        )
+        cls.normalize_name_ticker = staticmethod(
+            helpers["_trading_radar_name_ticker_normalisieren"]
         )
         cls.parse_tab2_entry_date = staticmethod(helpers["_parse_tab2_entry_date_text"])
         cls.numeric_value_valid = staticmethod(helpers["_trading_radar_numeric_wert_gueltig"])
@@ -126,6 +132,70 @@ class TradingRadarReportFormattingTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(self.numeric_value_valid(value))
 
+    def test_name_ticker_normalizer_expands_known_tickers_and_preserves_tab2_contract(self):
+        report = (
+            "1. Trading-Radar\n"
+            "Siemens Energy AG (ENR.DE) ist im Portfolio; ENR.DE beobachten.\n"
+            "10.5 Geschlossene Positionen\n"
+            "Quellzeile: 3 | Ticker: MDLZ | Name: Mondelez International, Inc. | "
+            "Einstiegsdatum: 17.07.2026 | Status: Verkauft\n"
+            "TAB-2-EXPORT-SHA256=abc\n"
+        )
+        result = self.normalize_name_ticker(report)
+        self.assertIn("Siemens Energy AG (ENR.DE) ist im Portfolio; Siemens Energy AG (ENR.DE) beobachten.", result)
+        original_tab2 = (
+            "10.5 Geschlossene Positionen\n"
+            "Quellzeile: 3 | Ticker: MDLZ | Name: Mondelez International, Inc. | "
+            "Einstiegsdatum: 17.07.2026 | Status: Verkauft\n"
+            "TAB-2-EXPORT-SHA256=abc\n"
+        )
+        self.assertIn(original_tab2, result)
+        self.assertNotIn("Asset: Mondelez International, Inc. (MDLZ)", result)
+
+    def test_name_ticker_normalizer_expands_known_market_instruments(self):
+        report = "1. Trading-Radar\nGold GC=F und Silber SI=F; Bitcoin BTC-USD; WTI und Brent.\n"
+        result = self.normalize_name_ticker(report)
+        self.assertIn("Gold Future (GC=F)", result)
+        self.assertIn("Silber Future (SI=F)", result)
+        self.assertIn("Bitcoin USD (BTC-USD)", result)
+        self.assertIn("WTI Crude Oil Futures (CL=F)", result)
+        self.assertIn("Brent Crude Oil Futures (BZ=F)", result)
+
+    def test_name_ticker_normalizer_marks_unresolved_tickers(self):
+        report = (
+            "1. Trading-Radar\n"
+            "XYZ_UNKNOWN und QXZQ sind im Bericht relevant; FOMC und MSCI sind Kontextbegriffe.\n"
+        )
+        result = self.normalize_name_ticker(report)
+        self.assertIn("Name nicht aufgelöst (XYZ_UNKNOWN)", result)
+        self.assertIn("Name nicht aufgelöst (QXZQ)", result)
+        self.assertIn("FOMC und MSCI", result)
+        self.assertNotIn("Name nicht aufgelöst (FOMC)", result)
+        self.assertNotIn("Name nicht aufgelöst (MSCI)", result)
+
+    def test_name_ticker_normalizer_does_not_mutate_structured_values(self):
+        report = (
+            "1. Trading-Radar\nGold und ENR.DE beobachten.\n"
+            "Aktueller Kurs: 100 Gold\n"
+            "Ticker: ENR.DE | Name: Siemens Energy AG | Aktueller Kurs: 100\n"
+            "Bewusst ausgeschlossene Ticker (nicht aktiv): SHELL.SO, STM1.DE\n"
+            "10.5 Geschlossene Positionen\n"
+            "Quellzeile: 3 | Ticker: MDLZ | Name: Mondelez International, Inc. | Status: Verkauft\n"
+            "TAB-2-EXPORT-SHA256=abc\n"
+        )
+        result = self.normalize_name_ticker(report)
+        self.assertIn("Gold Future (GC=F) und Siemens Energy AG (ENR.DE) beobachten.", result)
+        self.assertIn("Aktueller Kurs: 100 Gold", result)
+        self.assertIn("Ticker: ENR.DE | Name: Siemens Energy AG | Aktueller Kurs: 100", result)
+        self.assertIn("Bewusst ausgeschlossene Ticker (nicht aktiv): SHELL.SO, STM1.DE", result)
+        original_tab2 = (
+            "10.5 Geschlossene Positionen\n"
+            "Quellzeile: 3 | Ticker: MDLZ | Name: Mondelez International, Inc. | Status: Verkauft\n"
+            "TAB-2-EXPORT-SHA256=abc\n"
+        )
+        self.assertIn(original_tab2, result)
+        self.assertIn("TAB-2-EXPORT-SHA256=abc", result)
+
     def test_generator_rejects_nonempty_invalid_tab2_entry_date(self):
         self.assertIsNone(self.parse_tab2_entry_date("31.02.2026"))
         self.assertIsNone(self.parse_tab2_entry_date("2026-13-01"))
@@ -149,6 +219,62 @@ class TradingRadarReportFormattingTests(unittest.TestCase):
         for ticker in EXPECTED_EXCLUSIONS:
             with self.subTest(ticker=ticker):
                 self.assertNotIn(ticker, result)
+
+
+    def test_name_ticker_normalizer_handles_plain_tickers_without_underscores(self):
+        report = (
+            "1. Trading-Radar\n"
+            "Albemarle Corporation (ALB) und Alibaba Group (BABA) bleiben im Fokus; "
+            "BABA beobachten.\n"
+        )
+        result = self.normalize_name_ticker(report)
+        self.assertIn("Albemarle Corporation (ALB)", result)
+        self.assertIn("Alibaba Group (BABA) bleiben im Fokus", result)
+        self.assertIn("Alibaba Group (BABA) beobachten", result)
+
+    @unittest.skipUnless(os.environ.get("TRADING_RADAR_HISTORICAL_REPORT"), "historischer Bericht nicht konfiguriert")
+    def test_full_historical_report_preserves_structured_invariants_independently(self):
+        report_path = Path(os.environ["TRADING_RADAR_HISTORICAL_REPORT"])
+        report = report_path.read_text(encoding="utf-8")
+        result = self.normalize_name_ticker(report)
+
+        # Independent source-to-output checks: the whole Tab-2 payload, from its
+        # heading through the checksum line, must be byte-for-byte identical.
+        heading = "10.5 Geschlossene Positionen"
+        checksum_prefix = "TAB-2-EXPORT-SHA256="
+        source_start = report.index(heading)
+        output_start = result.index(heading)
+        source_hash_start = report.index(checksum_prefix, source_start)
+        output_hash_start = result.index(checksum_prefix, output_start)
+        source_end = report.find("\n", source_hash_start)
+        output_end = result.find("\n", output_hash_start)
+        source_end = len(report) if source_end < 0 else source_end + 1
+        output_end = len(result) if output_end < 0 else output_end + 1
+        self.assertEqual(report[source_start:source_end], result[output_start:output_end])
+
+        # Required report invariants are checked independently of normalizer output.
+        invariants = (
+            "OFFENE_POSITIONEN_QUELLANZAHL=14",
+            "OFFENE_POSITIONEN_ANZAHL=14",
+            "TAB-2-ANZAHL=51",
+            "TAB-2-EXPORT-SHA256=847ba1d593ac488399c2ba005073ad9d95bae7388fce5238102317c90ec7d104",
+            "Alibaba Group Holding Limited (BABA) | Einstieg: 141,0",
+            "Albemarle Corporation (ALB) | Einstieg: 200,0",
+            "Bewusst ausgeschlossene Ticker (nicht Teil des aktiven Datenuniversums):",
+        )
+        for invariant in invariants:
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, result)
+
+        # Every source Tab-2 record and the hash must survive exactly once.
+        source_rows = [line for line in report[source_start:source_end].splitlines()
+                       if line.startswith("Quellzeile:")]
+        output_rows = [line for line in result[output_start:output_end].splitlines()
+                       if line.startswith("Quellzeile:")]
+        self.assertEqual(len(source_rows), 51)
+        self.assertEqual(source_rows, output_rows)
+        self.assertEqual(result.count(checksum_prefix), report.count(checksum_prefix))
+
 
 
 if __name__ == "__main__":
