@@ -16,6 +16,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 from io import StringIO
 
@@ -658,5 +659,107 @@ class TradingRadarDataContractTests(unittest.TestCase):
         finally:
             del module._TRADING_RADAR_OHLCV_AUDIT
 
+    def test_ohlcv_appendix_reads_persistent_database_audit_when_no_override(self):
+        module = load_radar_module()
+        original = getattr(module, "_TRADING_RADAR_OHLCV_AUDIT", None)
+        had_original = hasattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
+        if had_original:
+            delattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
+        try:
+            with patch(
+                "historical_ohlcv.audit_snapshot",
+                return_value={
+                    "status": "gaps", "checked_at": "2026-10-26T12:00:00Z",
+                    "universe_count": 10, "covered_count": 9,
+                    "missing_tickers": ["ABC"], "stale_tickers": ["DEF"],
+                    "affected_candidates": [],
+                    "candidate_impact": "not_individually_mapped",
+                },
+            ):
+                result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("9/10 Symbole abgedeckt", result)
+            self.assertIn("fehlende OHLCV-Daten: ABC", result)
+            self.assertIn("veraltete OHLCV-Daten: DEF", result)
+            self.assertIn("einzelne Kandidaten sind in diesem Universumsnachweis nicht zuordenbar", result)
+        finally:
+            if had_original:
+                module._TRADING_RADAR_OHLCV_AUDIT = original
+            elif hasattr(module, "_TRADING_RADAR_OHLCV_AUDIT"):
+                delattr(module, "_TRADING_RADAR_OHLCV_AUDIT")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TradingRadarCandidateSourceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.radar = load_radar_module()
+
+    def test_candidate_extraction_uses_explicit_ticker_column_only(self):
+        report = (
+            "5. Technische Kandidaten\n"
+            "BIP und NFP werden im Fliesstext erwaehnt; MSCI World ist Benchmark.\n"
+            "| Ticker | Setup | Risiko |\n"
+            "|---|---|---|\n"
+            "| AAPL | Breakout | mittel |\n"
+            "| CME | Pullback | niedrig |\n"
+            "6. Portfolio & Risiko\n"
+        )
+        self.assertEqual(
+            self.radar._trading_radar_kandidaten_aus_abschnitt5(report),
+            ["AAPL", "CME"],
+        )
+
+    def test_candidate_extraction_requires_explicit_source(self):
+        report = (
+            "5. Technische Kandidaten\n"
+            "AAPL ist interessant; CME Group und MSCI World werden diskutiert.\n"
+            "6. Portfolio & Risiko\n"
+        )
+        self.assertEqual(
+            self.radar._trading_radar_kandidaten_aus_abschnitt5(report), []
+        )
+
+    def test_no_structured_candidate_source_cannot_emit_positive_ohlcv_clearance(self):
+        report = (
+            "5. Technische Kandidaten\n"
+            "BIP und NFP werden im Fliesstext erwaehnt; MSCI World ist Benchmark.\n"
+            "6. Portfolio & Risiko\n"
+        )
+        fake_audit = types.ModuleType("historical_ohlcv")
+
+        def audit_snapshot(candidate_tickers):
+            self.assertEqual(candidate_tickers, [])
+            return {
+                "status": "complete",
+                "checked_at": "2026-10-26T12:00:00Z",
+                "universe_count": 10,
+                "covered_count": 10,
+                "missing_tickers": [],
+                "stale_tickers": [],
+                "invalid_ohlcv_tickers": [],
+                "affected_candidates": [],
+                "candidate_impact": "candidate_mapping_incomplete",
+                "candidate_mapping_complete": False,
+            }
+
+        fake_audit.audit_snapshot = audit_snapshot
+        original = sys.modules.get("historical_ohlcv")
+        had_global = hasattr(self.radar, "_TRADING_RADAR_OHLCV_AUDIT")
+        original_global = getattr(self.radar, "_TRADING_RADAR_OHLCV_AUDIT", None)
+        try:
+            sys.modules["historical_ohlcv"] = fake_audit
+            if had_global:
+                delattr(self.radar, "_TRADING_RADAR_OHLCV_AUDIT")
+            block = self.radar._trading_radar_ohlcv_nachweisblock(report)
+            self.assertNotIn("Kandidaten nicht eingeschränkt", block)
+            self.assertNotIn("keine fehlenden oder veralteten OHLCV-Daten", block)
+            self.assertIn("Kandidaten", block)
+        finally:
+            if original is None:
+                sys.modules.pop("historical_ohlcv", None)
+            else:
+                sys.modules["historical_ohlcv"] = original
+            if had_global:
+                self.radar._TRADING_RADAR_OHLCV_AUDIT = original_global
