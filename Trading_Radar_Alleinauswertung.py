@@ -1134,8 +1134,31 @@ def analysiere_api_fehler(fehlertext):
     UEBERLAST_WARTEZEITEN oben).
     Gibt (abbrechen: bool, empfohlene_wartezeit_sekunden: float|None,
     kategorie: str) zurueck. Kategorien: "tageskontingent", "modellpool_temporaer",
-    "ueberlast", "netzwerk", "sonstiges"."""
+    "ueberlast", "netzwerk", "sonstiges", "konfiguration", "quota_unbekannt"."""
     text_klein = fehlertext.lower()
+
+    # Provider-Retry-Hinweise koennen als Python-Exception-Text (einfache
+    # Quotes) oder als JSON (doppelte Quotes) eintreffen. Wartezeiten bleiben
+    # begrenzt, damit fehlerhafte Providerdaten keine endlose Pause ausloesen.
+    max_provider_retry_delay = 300.0
+
+    def _provider_retry_delay():
+        match = re.search(
+            r"""["']?retryDelay["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)s["']?""",
+            fehlertext,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        return min(value, max_provider_retry_delay)
+
+    empfohlene_wartezeit = _provider_retry_delay()
     if "gemini_technischer_fallback_503_terminal" in text_klein:
         return True, None, "modellpool_temporaer"
     # Interne Budget-/Chunking-Fehler sind deterministisch: denselben Request
@@ -1150,6 +1173,30 @@ def analysiere_api_fehler(fehlertext):
     )
     if any(marker in text_klein for marker in interne_budget_marker):
         return True, None, "request_budget"
+
+    # Konfigurations-/Berechtigungsfehler haben Vorrang vor einem
+    # gleichzeitig genannten 429/RESOURCE_EXHAUSTED. Ein Modellwechsel
+    # behebt weder deaktiviertes Billing noch einen ungueltigen API-Key.
+    nicht_retrybare_konfiguration = (
+        "billing disabled",
+        "billing is disabled",
+        "billing account is not enabled",
+        "billing account disabled",
+        "billing not enabled",
+        "api key not valid",
+        "invalid api key",
+        "invalid_api_key",
+        "permission_denied",
+        "permission denied",
+        "service_disabled",
+        "service disabled",
+        "api has not been used",
+        "not authorized",
+        "unauthorized",
+        "access denied",
+    )
+    if re.search(r"\b403\b", text_klein) or any(marker in text_klein for marker in nicht_retrybare_konfiguration):
+        return True, None, "konfiguration"
 
     ist_cache_free_tier = (
         "totalcachedcontentstoragetokenspermodelfreetier" in text_klein
@@ -1201,16 +1248,8 @@ def analysiere_api_fehler(fehlertext):
         # Google einen retryDelay liefert, wird dieser mindestens auf
         # 65 Sekunden angehoben, damit das 60-Sekunden-Fenster sicher
         # verlassen wird.
-        treffer_250k = re.search(
-            r"retryDelay['\"]?\s*[:=]\s*['\"](\d+(?:\.\d+)?)s['\"]",
-            fehlertext,
-            flags=re.IGNORECASE,
-        )
-        server_wartezeit = float(treffer_250k.group(1)) if treffer_250k else 0.0
-        return False, max(65.0, server_wartezeit), "input_token_limit"
-
-    treffer = re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", fehlertext)
-    empfohlene_wartezeit = float(treffer.group(1)) if treffer else None
+        server_wartezeit = empfohlene_wartezeit or 0.0
+        return False, min(max(65.0, server_wartezeit), max_provider_retry_delay), "input_token_limit"
 
     if ist_modellpool_temporaer:
         return False, empfohlene_wartezeit, "modellpool_temporaer"
@@ -1219,8 +1258,48 @@ def analysiere_api_fehler(fehlertext):
     if "503" in fehlertext or "unavailable" in text_klein or "high demand" in text_klein:
         return False, empfohlene_wartezeit, "ueberlast"
     if ("connection reset" in text_klein or "connection aborted" in text_klein
-            or "timed out" in text_klein or "temporarily unavailable" in text_klein):
+            or "timed out" in text_klein or "timeout" in text_klein
+            or "temporarily unavailable" in text_klein):
         return False, empfohlene_wartezeit, "netzwerk"
+
+    # Nur bekannte minutenbezogene Quota-Metriken gelten als temporaer.
+    # Ein unbekanntes quotaId oder ein nacktes 429/RESOURCE_EXHAUSTED reicht
+    # nicht fuer einen Modellwechsel: das kann auch Billing-/Projektkonfiguration
+    # oder eine neue, noch nicht klassifizierte Provider-Metrik bedeuten.
+    quota_id_match = re.search(
+        r"""quotaId["']?\s*[:=]\s*["']?([A-Za-z0-9_.-]+)""",
+        fehlertext,
+        flags=re.IGNORECASE,
+    )
+    quota_id = quota_id_match.group(1).lower() if quota_id_match else ""
+    bekannte_rpm_quota_ids = (
+        "generaterequestsperminuteperprojectpermodel",
+        "generaterequestsperminutepermodel",
+        "generaterequestsperminuteperproject",
+        "generaterequestsperminute",
+    )
+    bekannte_rpm_signale = (
+        "requests per minute",
+        "requestsperminute",
+        "requests per minute quota",
+        "per-minute request quota",
+        "per minute request quota",
+        "rpm quota",
+    )
+    if quota_id:
+        if any(marker in quota_id for marker in bekannte_rpm_quota_ids):
+            return False, empfohlene_wartezeit, "quota_temporär"
+        # PerDay und Input-Token-Limits wurden oben abgefangen. Jede andere
+        # explizite quotaId bleibt konservativ terminal, auch wenn die Meldung
+        # zusaetzlich allgemein RESOURCE_EXHAUSTED enthaelt.
+        return True, None, "quota_unbekannt"
+
+    if any(marker in text_klein for marker in bekannte_rpm_signale):
+        if "429" in text_klein or "resource_exhausted" in text_klein or "quota" in text_klein:
+            return False, empfohlene_wartezeit, "quota_temporär"
+
+    if "429" in text_klein or "resource_exhausted" in text_klein or "resource exhausted" in text_klein:
+        return True, None, "quota_unbekannt"
     return False, empfohlene_wartezeit, "sonstiges"
 
 
@@ -4914,7 +4993,7 @@ def _gemini_503_aeussere_entscheidung(fehlertext, aktuelles_modell, modell_reihe
     if "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in str(fehlertext):
         return "terminal", None
     _, _, kategorie = analysiere_api_fehler(str(fehlertext))
-    if kategorie not in ("ueberlast", "netzwerk"):
+    if kategorie not in ("ueberlast", "netzwerk", "quota_temporär"):
         return "other", None
     kandidat = _gemini_503_naechstes_modell(
         aktuelles_modell, modell_reihenfolge, fehlgeschlagene_modelle
@@ -5094,11 +5173,47 @@ __QUELLEN__
     modell = preferred_modell or globals().get("_gemini_last_request_model") or MODELL
     try:
         token_count = _gemini_tokenzahl(client, modell, contents, None, label="Trading-Radar-Eigenlauf")
-        response = _gemini_generate_content_quota_safe(
-            client, modell, contents, {"temperature": 0.2}, token_count,
-            "Trading-Radar-Eigenlauf",
-            logical_request_id="Trading-Radar-Eigenlauf:" + datetime.date.today().isoformat(),
-        )
+        # Der eigenstaendige Radar-Request liegt nach der klassischen Hauptauswertung
+        # und durchlaeuft deren aeussere Retry-Schleife nicht. Deshalb braucht er
+        # einen eigenen, begrenzten Modellwechsel fuer transiente 503-/Netzwerkfehler.
+        # Der Request-Inhalt und die logische Request-ID bleiben dabei identisch.
+        radar_failed_models = set()
+        radar_pool_passes = 0
+        while True:
+            try:
+                response = _gemini_generate_content_quota_safe(
+                    client, modell, contents, {"temperature": 0.2}, token_count,
+                    "Trading-Radar-Eigenlauf",
+                    logical_request_id="Trading-Radar-Eigenlauf:" + datetime.date.today().isoformat(),
+                )
+                break
+            except Exception as send_exc:
+                action, next_model = _gemini_503_aeussere_retry_aktion(
+                    str(send_exc), modell,
+                    modell_reihenfolge=GEMINI_MODELLREIHENFOLGE,
+                    fehlgeschlagene_modelle=radar_failed_models,
+                )
+                if (
+                    action != "switch"
+                    or not next_model
+                    or radar_pool_passes >= GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN - 1
+                ):
+                    raise
+                radar_pool_passes += 1
+                wait_seconds = GEMINI_503_POOL_BACKOFF_SECONDS * (2 ** (radar_pool_passes - 1))
+                print(
+                    f"TRADING_RADAR_RETRY | transient={type(send_exc).__name__}: {send_exc} | "
+                    f"Modellwechsel={modell}->{next_model} | "
+                    f"Pool-Runde={radar_pool_passes + 1}/"
+                    f"{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN} | "
+                    f"Backoff={wait_seconds:.0f}s"
+                )
+                time.sleep(wait_seconds)
+                modell = next_model
+                token_count = _gemini_tokenzahl(
+                    client, modell, contents, None,
+                    label=f"Trading-Radar-Eigenlauf Modellwechsel {modell}",
+                )
         radar_text = str(getattr(response, "text", response) or "").strip()
         required = (
             "1. Trading-Radar",

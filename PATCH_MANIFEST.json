@@ -1,83 +1,40 @@
 {
-  "date": "2026-10-25",
-  "purpose": "Reject nonempty but invalid entry dates consistently in the Report Gate and generator/save path; preserve all source rows in a non-verifiable diagnostic and withhold canonical export markers on failure.",
-  "basis_archive": "Trading-Radar-Positionsschluessel-Ticker-Kaufdatum-20261025(3).zip",
-  "files": [
-    {
-      "path": "Trading_Radar_Alleinauswertung.py",
-      "change": "modified",
-      "old": {
-        "bytes": 899545,
-        "lines": 17408,
-        "sha256": "86e4f2e9d4be68b785bc1775104b25b93f97a92204bab665b411854349789a76"
-      },
-      "new": {
-        "bytes": 899472,
-        "lines": 17409,
-        "sha256": "79e9038ff9df44da943ba75fc82164fc97bd8c99b9f9169cb15e19b8ababb92f"
-      }
-    },
-    {
-      "path": "trading_radar_report_gate.py",
-      "change": "modified",
-      "old": {
-        "bytes": 24633,
-        "lines": 503,
-        "sha256": "baca9c8af662be7c83324fb1e34dd3d132c0439fecafdb8db062a3be0817fdf9"
-      },
-      "new": {
-        "bytes": 24726,
-        "lines": 508,
-        "sha256": "e50d6ade7b0ab927f8312d6452e2e19255e3539c61fbef2490d95f5e7ae8dad4"
-      }
-    },
-    {
-      "path": "tests/test_trading_radar_report_gate.py",
-      "change": "modified",
-      "old": {
-        "bytes": 16635,
-        "lines": 284,
-        "sha256": "cb9d1f80c90211acd6b0d3bfb7e187e694424db97b4c198c6537be63d0011dbd"
-      },
-      "new": {
-        "bytes": 17779,
-        "lines": 306,
-        "sha256": "f3ab7afa1d18b987357684775781605afe3a5c87635a495d2ff632b0162e4c72"
-      }
-    },
-    {
-      "path": "tests/test_trading_radar_data_contract.py",
-      "change": "modified",
-      "old": {
-        "bytes": 22613,
-        "lines": 381,
-        "sha256": "4fde478f8568c5fe12d09528066adf907ad6b7b0e3a70901172edaca83dabeab"
-      },
-      "new": {
-        "bytes": 26104,
-        "lines": 439,
-        "sha256": "d18cba8815c75b8bc39334f0dd0953958d29d92e1c588c3dc095f63d697d303e"
-      }
-    }
+  "base_archive": "Sektor-Analyse-main(20261026-204158).zip",
+  "base_sha256": "d5775e1a07c7b5da85e3543905149cf0ad9b2aad6359c70034ca24aa44913bae",
+  "input_patch_archive": "Trading_Radar_Konsolidierter_Patch_GitHub(2).zip",
+  "input_patch_sha256": "124ed0a0c923103f739bfd0a115ec629bc13b6483487b71299914cc700df38b0",
+  "files_in_patch": [
+    "Trading_Radar_Alleinauswertung.py",
+    "tests/test_trading_radar_failure_contract.py",
+    "tests/test_trading_radar_failure_chain_integration.py",
+    "tests/test_trading_radar_release_contract.py",
+    "tests/test_bitcoin_edelmetall_sections.py",
+    "tests/test_bitcoin_edelmetall_sections_korrigiert.py",
+    ".github/workflows/main.yml",
+    "legacy_trading_radar_data_contract_snapshot.py"
   ],
-  "validation": {
-    "py_compile": "PASS",
-    "test_trading_radar_report_gate.py": {
-      "result": "PASS",
-      "tests": 34
-    },
-    "test_trading_radar_data_contract.py": {
-      "result": "PASS",
-      "tests": 18,
-      "skipped": 3
-    },
-    "total_passed": 52,
-    "total_skipped": 3,
-    "live_google_sheets": "NOT_RUN: Google Drive connector unavailable in this session; no live 51-row export was provided.",
-    "github_actions": "NOT_RUN: .github/workflows/main.yml is not included in the attached patch archive and no GitHub connection is active."
+  "delete_files": [
+    "test_trading_radar_data_contract.py"
+  ],
+  "sha256_current_files": {
+    "Trading_Radar_Alleinauswertung.py": "66dd9276fc1a7cd6e8701c44b954976c95830ced14fd4abd5baea234e8a7683a",
+    "tests/test_trading_radar_failure_contract.py": "3b3980aa7e4894fad5bc347a85abe009cbf9c735b33207c661b68595a29818db",
+    "tests/test_trading_radar_failure_chain_integration.py": "c2b3231f78cd4a5a1a148865a8b2c289d4258bfa06c2f9dcd60c03ce974109b9",
+    "tests/test_trading_radar_release_contract.py": "539accc2b392b632b72104d0f08b5623b39116895b0721d11f9f3c39833655a5",
+    "tests/test_bitcoin_edelmetall_sections.py": "1e07b9360360ae7a0f1214d2951803beae81938b3808b34fe15b184386c67246",
+    "tests/test_bitcoin_edelmetall_sections_korrigiert.py": "151cea0c31ac816b31fe10c5f0640dd72ba920c0f4a0e3236e1e726bf6cfb7d1",
+    ".github/workflows/main.yml": "f2922ac608a590887f358284d5066596d5d53831d6803ebd415fdee1445eec97",
+    "legacy_trading_radar_data_contract_snapshot.py": "c8e4224fd0d05f06868b205900f16a9be1c4f512c1447209c1f100001c75fd95"
   },
-  "untouched_files": [
-    "send_mail.py",
-    ".github/workflows/main.yml (not present in attached baseline archive)"
+  "tests": {
+    "targeted": "54 tests passed; 0 failures; 0 skipped",
+    "full_discovery": "249 tests run; OK; 1 skipped",
+    "command": "python -m unittest discover -s tests"
+  },
+  "limits": [
+    "No live Gemini call",
+    "No real SMTP send",
+    "No Google Drive upload",
+    "No real GitHub Actions run"
   ]
 }
