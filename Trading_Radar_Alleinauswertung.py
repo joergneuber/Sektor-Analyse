@@ -16704,6 +16704,16 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         if (not line.strip() or "|" in line or structured_label.search(line)
                 or re.match(r"^\s*[A-Z][A-Z0-9_]{5,}\s*=", line)):
             return line
+        # Bare machine markers are structure, not securities. Without this
+        # guard, underscore-delimited markers such as
+        # TRADING_RADAR_OFFENE_POSITIONEN_BEGIN are falsely split into
+        # "unresolved tickers" by the generic ticker detector.
+        if re.match(
+            r"^\s*(?:TRADING_RADAR_[A-Z0-9_]+|OFFENE_POSITIONEN_[A-Z0-9_]+|"
+            r"TAB-2-[A-Z0-9_-]+)(?:\s*[:=].*)?\s*$",
+            line,
+        ):
+            return line
         if re.match(r"(?i)^\s*(?:Bewusst ausgeschlossene Ticker|Ausgeschlossene Ticker)\s*[:(]", line):
             return line
         # Collapse common natural-language name + symbol pairs before token replacement.
@@ -16729,6 +16739,26 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
                 name_forms = {name.casefold(), name.split()[0].casefold()}
                 if any(before.casefold().endswith(form + " (") for form in name_forms) and after.startswith(")"):
                     return match.group(0)
+
+                # A ticker may also be the beginning of its own company name
+                # (e.g. CME in "CME Group Inc."). Do not expand that prefix
+                # inside the already-written company name.
+                if name.casefold().startswith(ticker.casefold()):
+                    suffix = name[len(ticker):]
+                    if suffix and line[end_pos:end_pos + len(suffix)].casefold() == suffix.casefold():
+                        return match.group(0)
+
+                # MSCI is both the company ticker and the prefix of benchmark
+                # names. In those contexts it means the index family, not MSCI
+                # Inc.; expanding it corrupts references such as "MSCI World".
+                if ticker.casefold() == "msci" and re.match(
+                    r"(?i)\s+(?:World|ACWI|EAFE|Emerging\s+Markets|Frontier\s+Markets|"
+                    r"Europe|USA|Japan|China|India|Pacific|World\s+ex\s+USA|"
+                    r"World\s+Small\s+Cap|All\s+Country)(?:\b|$)",
+                    line[end_pos:],
+                ):
+                    return match.group(0)
+
                 return f"{name} ({ticker})"
             line = pattern.sub(replace_known, line)
 
