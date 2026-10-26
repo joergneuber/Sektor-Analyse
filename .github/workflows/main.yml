@@ -73,6 +73,7 @@ jobs:
 
       # Pflicht-Regression: Trading-Radar-Datenvertrag vor produktiven Schritten prüfen.
       - name: Trading-Radar Datenvertrag Regressionstest
+        id: trading-radar-contract
         run: python -m unittest discover -s tests -p "test_trading_radar_data_contract.py"
 
       # BTC 50W-SMA: persistent state so a weekend cross is delivered by
@@ -498,8 +499,22 @@ jobs:
           TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
           TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
           TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
+          TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
         run: |
           set -euo pipefail
+
+          # Ein Fehler in der verpflichtenden Vorpruefung ist kein Gemini-Ausfall.
+          # Der urspruengliche Jobfehler bleibt erhalten; es wird kein Fallback-
+          # Paket aus einem Lauf erzeugt, in dem der Radar-Schritt uebersprungen wurde.
+          if [ "${TRADING_RADAR_CONTRACT_OUTCOME:-}" != "success" ]; then
+            echo "CHATGPT_FALLBACK_ERZEUGT=false" >> "$GITHUB_ENV"
+            echo "SKIP_TRADING_RADAR_UPLOAD=true" >> "$GITHUB_ENV"
+            echo "SKIP_AUSWERTUNG_UPLOAD=true" >> "$GITHUB_ENV"
+            echo "TRADING_RADAR_PREFLIGHT_FAILED=true" >> "$GITHUB_ENV"
+            echo "::warning::Vorpruefung fehlgeschlagen (Outcome=${TRADING_RADAR_CONTRACT_OUTCOME:-missing}); Gemini-Fallback wird nicht gestartet."
+            exit 0
+          fi
+
           fallback_needed=false
 
           # SUCCESS + FINAL und SUCCESS + NICHT_FINAL sind technisch gültig.
@@ -561,12 +576,17 @@ jobs:
         id: trading-radar-report-check
         if: always()
         env:
+          TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
           TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
           TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
           TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
         run: |
           set -euo pipefail
+          if [ "${TRADING_RADAR_CONTRACT_OUTCOME:-}" != "success" ]; then
+            echo "REPORT_CHECK=FAIL | Trading-Radar-Datenvertrag-Vorprüfung fehlgeschlagen (Outcome=${TRADING_RADAR_CONTRACT_OUTCOME:-missing}); Verifikation abgebrochen; kein Gemini-Fehler diagnostiziert."
+            exit 1
+          fi
           if [ "$TRADING_RADAR_STEP_OUTCOME" != "success" ]; then
             echo "FINALITY_CHECK=FAIL | Gemini-Schritt endete mit $TRADING_RADAR_STEP_OUTCOME"
             exit 1
