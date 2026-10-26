@@ -71,6 +71,14 @@ jobs:
         with:
           python-version: '3.13'
 
+      # Die Datenvertragstests importieren historische OHLCV-Module und deren
+      # Laufzeitabhängigkeiten. Diese müssen vor dem Pflicht-Regressionstest
+      # installiert sein; bei Testfehlern wird weiterhin vor produktiven Schritten abgebrochen.
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py "pandas<3.1" google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
+
       # Pflicht-Regression: Trading-Radar-Datenvertrag vor produktiven Schritten prüfen.
       - name: Trading-Radar Datenvertrag Regressionstest
         id: trading-radar-contract
@@ -86,11 +94,6 @@ jobs:
           key: btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-
-
-      - name: Abhängigkeiten installieren
-        run: |
-          python -m pip install --upgrade pip
-          pip install alpaca-py "pandas<3.1" google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
 
       # Persistenter historischer OHLCV-Bestand. Die Action-Cache-Schicht ist
       # nur der Speichertransport; die fachliche Datenbank bleibt getrennt vom
