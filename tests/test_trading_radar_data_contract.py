@@ -522,6 +522,23 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
 
+    def test_independent_radar_retries_missing_section_and_writes_fallback_status(self):
+        source = RADAR.read_text(encoding="utf-8")
+        start = source.index("def _gemini_trading_radar_eigenstaendig(")
+        end = source.index("\ndef gemini_auswertung_starten(", start)
+        function = source[start:end]
+
+        self.assertIn("Trading-Radar-Eigenlauf-Vollstaendigkeitsretry", function)
+        self.assertIn(":vollstaendigkeits-retry", function)
+        self.assertIn("if radar_text and missing:", function)
+        self.assertIn("_gemini_fallback_status_datei(\"write\", fehlermeldung)", function)
+        self.assertIn('_gemini_fallback_status_datei(\n                "write", f"{type(exc).__name__}: {exc}"', function)
+        self.assertIn(
+            "fehlende Pflichtabschnitte:",
+            function,
+            "Ein zweiter unvollstaendiger Gemini-Bericht muss nachvollziehbar diagnostiziert werden.",
+        )
+
     def test_independent_radar_passes_loaded_tab2_block_to_report_writer(self):
         source = Path(__file__).resolve().parents[1] / "Trading_Radar_Alleinauswertung.py"
         text = source.read_text(encoding="utf-8")
