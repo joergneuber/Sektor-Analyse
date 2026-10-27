@@ -8,6 +8,7 @@ import math
 import datetime
 from pathlib import Path
 
+
 SECTION_NAMES = (
     "Trading-Radar",
     "Thesen-Update",

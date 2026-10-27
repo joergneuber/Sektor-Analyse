@@ -85,6 +85,9 @@ else:
     _GOOGLE_DRIVE_IMPORT_ERROR = None
 import io
 from collections import defaultdict
+from trading_radar_neuauswertung import audit_market_first_content
+from trading_radar_market_first import normalize_event_section, validate_ohlcv_audit
+
 from quellenwert_vertrag import (
     values_match_display, find_exact_labeled_line, extract_four_week_percent,
     extract_metal_four_week_value,
@@ -5100,15 +5103,21 @@ def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien
     _GEMINI_GESCHLOSSENE_10_5_FINAL = geschlossene_positionen_fakten or ""
     prompt = """Du erstellst eine eigenstaendige Trading-Radar-Auswertung fuer Sektor-Analyse.
 Daten-Cutoff: CUTOFF
-AUFTRAG: Erstelle einen entscheidungsorientierten, fachlich nützlichen Trading-Radar-Bericht nach Spezifikation v2.0. Nicht bloß Daten paraphrasieren, sondern Zusammenhänge, Prioritäten, Gegenargumente und überprüfbare nächste Schritte herausarbeiten.
-Nutze bereitgestellte Python-Quellen und den Altbericht nur als Fakten-/Historienkontext. Analysiere neu; kopiere den Altbericht nicht. Keine Daten nach dem Cutoff verwenden.
+AUFTRAG: Erstelle einen entscheidungsorientierten Trading-Radar-Bericht nach Zielarchitektur v2.1. Die fachliche Reihenfolge ist verbindlich und darf NICHT durch das Portfolio umgekehrt werden:
+1) GESAMTMARKT/MARKTREGIME: Indizes, Marktbreite, Volatilität, nominale/reale Renditen, Dollar, Liquidität, Konjunktur und Ereignisse zu einem gemeinsamen Marktbild verbinden.
+2) RELATIVE STÄRKE/KAPITALROTATION: Märkte, Regionen, Sektoren und Assetklassen über vergleichbare Zeitfenster vergleichen; Divergenzen, Gewinner, Verlierer und mögliche Trendwechsel benennen.
+3) THESEN/VORSCHAU: Basisszenario plus Alternativen, Horizont, Profiteure/Verlierer, Belege/Gegenbelege, beobachtbare Bestätigungstrigger und Invalidierung.
+4) TECHNISCHE KANDIDATEN/TRADING: Scanner-Kandidaten UND Chancen außerhalb des aktuellen Portfolios prüfen. Watchlist strikt von freigegebenen Setups trennen. Keine Einstiegskurse, Stops, Ziele oder CRV erfinden.
+5) PORTFOLIO-AUSWIRKUNG: Erst danach bestehende Positionen anhand der unabhängig ermittelten Marktthesen bewerten. Das Portfolio darf das Marktuniversum und neue Chancen nicht begrenzen.
+Nicht bloß Daten paraphrasieren: Delta zur letzten Version, konkrete Evidenz und überprüfbare nächste Schritte herausarbeiten.
+Nutze bereitgestellte Python-Quellen und den Altbericht nur als Fakten-/Historienkontext. Analysiere neu; kopiere den Altbericht nicht. Keine Daten nach dem Cutoff verwenden. Die fünf fachlichen Schritte sind in genau dieser Reihenfolge abzuarbeiten; das Portfolio darf weder Marktregime noch Thesen noch Kandidaten vorgeben.
 TRENNUNG: Kennzeichne Datenfakten mit Quelle/Zeitraum, daraus abgeleitete Interpretation und unbestätigte Hypothesen ausdrücklich getrennt. Erfinde weder Zahlen noch Kausalität oder technische Werte. Wenn Daten fehlen, benenne exakt, welche Schlussfolgerung dadurch nicht möglich ist und welche Quelle/Bestätigung fehlt.
 KERNFRAGE: Was ist angesichts der gelieferten Daten die wahrscheinlichste Marktbewegung im relevanten Zeithorizont, welche Assetklassen/Segmente sind relativ am attraktivsten bzw. schwächsten, wodurch wird die Einschätzung gestützt und wodurch widerlegt? Wenn keine belastbare Richtung ableitbar ist, sage das ausdrücklich und erkläre, welche Daten widersprüchlich oder unzureichend sind.
 ABSCHNITT 1 – EXECUTIVE ENTSCHEIDUNG: Beginne mit einer klaren Hauptthese oder "keine belastbare Hauptthese". Nenne Zeithorizont, Konfidenz qualitativ (niedrig/mittel/hoch), 2–4 wichtigste Veränderungen seit dem letzten Bericht, stärkste Belege, wichtigste Gegenbelege, Top-Profiteur-Kandidaten und Verlierer-Kandidaten sowie nächste beobachtbare Bestätigung/Invalidierung. Keine bloße Sammlung allgemeiner Marktkommentare.
 ABSCHNITT 2 – THESENKONTINUITÄT: Vergleiche jede relevante bestehende These mit dem letzten Register: BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT oder NEU. Erkläre konkret, welche neuen Zahlen/Beobachtungen die Statusänderung auslösen. Keine Änderung ist nur zulässig, wenn das Register tatsächlich geprüft wurde; nenne geprüften Registerstand und weshalb sich nichts änderte. IDs/Versionen niemals erfinden.
 ABSCHNITT 3 – EREIGNISSE: Nur belegte Ereignisse mit Datum, Uhrzeit/Zeitzone, Kennzahl, Zeitraum, letztem Wert, Konsens und Quelle nennen. Für jedes Ereignis: betroffene These/Assetklasse/konkrete offene Positionen (Name (Ticker)), Szenarien unter/entsprechend/über Konsens, Reaktionskanäle und was die These bestätigen/widerlegen würde. Fehlende Werte als NICHT VERFÜGBAR ausweisen und keine redundanten leeren Ereignisblöcke auffüllen.
 ABSCHNITT 4 – RELATIVE ASSETATTRAKTIVITÄT: Vergleiche Aktien/ETFs, Edelmetalle, Energie/Rohstoffe, Krypto und Zinsen/Dollar soweit Daten vorhanden. Ordne relativ (stärker/neutral/schwächer) ein, mit konkreten Belegen, Gegenargumenten, Zeithorizont und Auslösern. Keine pauschale Erklärung ohne Datenbezug.
-ABSCHNITT 5 – TECHNISCHE KANDIDATEN: Trenne (a) technisch valide Kandidaten, (b) interessante Werte mit konkretem noch fehlendem Trigger, (c) ereignisbedingt warten, (d) nicht handelbar/verwerfen. Nenne Name (Ticker), Richtung, Setup/These, belegten Trigger, Einstieg, Stop, TP1, TP2, CRV, Datenstand, Gegenargumente und Regelstatus, soweit vorhanden. Fehlende Werte nicht schätzen. "Keine belastbaren technischen Kandidaten" beendet NICHT die Gesamtanalyse: Nenne stattdessen nur dann Beobachtungskandidaten und konkrete fehlende Bestätigungen, wenn die Quellen das tragen; keine fiktiven Kandidaten erfinden.
+ABSCHNITT 5 – TECHNISCHE KANDIDATEN: Das Kandidatenuniversum ist unabhängig vom Portfolio. Trenne (a) technisch valide Kandidaten, (b) interessante Werte mit konkretem noch fehlendem Trigger, (c) ereignisbedingt warten, (d) nicht handelbar/verwerfen. Nenne Name (Ticker), Richtung, Setup/These, belegten Trigger, Einstieg, Stop, TP1, TP2, CRV, Datenstand, Gegenargumente und Regelstatus, soweit vorhanden. Fehlende Werte nicht schätzen. "Keine belastbaren technischen Kandidaten" beendet NICHT die Gesamtanalyse: Nenne stattdessen nur dann Beobachtungskandidaten und konkrete fehlende Bestätigungen, wenn die Quellen das tragen; keine fiktiven Kandidaten erfinden.
 ABSCHNITT 6 – PORTFOLIO & RISIKO: Verknüpfe Marktthesen mit jeder relevanten offenen Position aus der vollständigen Quelle: Name (Ticker), Rückenwind/Gegenwind/neutral/These verletzt, konkrete Datenbegründung, relevantes Ereignis, bekannte Stop-/TP-Informationen nur aus Quelle und nächster Prüfschritt. Hebe Konzentrationen und gemeinsame Risikotreiber hervor. Keine Kauf-/Verkaufs- oder Stopänderungen anordnen.
 ABSCHNITT 7 – MSCI-VERGLEICH: Trenne Depot-/System-Gesamtperformance strikt von durchschnittlicher Einzelpositionsperformance. Gleicher Zeitraum und vergleichbare Basis; nenne Quelle, Start-/Enddatum, Ausschlüsse und Out-/Underperformance in Prozentpunkten. Erkläre, was die Kennzahl aussagt und was nicht. Keine Durchschnittsperformance als Depotperformance darstellen.
 ABSCHNITT 8 – DATEN-/PRÜFANHANG: Quelle, Datenstand/Cutoff, Aktualität, Vollständigkeit, Widersprüche, fehlende Werte und konkrete Auswirkungen auf die Analyse. "Vollständig" nur behaupten, wenn der Lauf es belegt.
@@ -17491,6 +17500,25 @@ def speichere_ergebnis(text, eingabedateien=None):
             text = text.rstrip() + "\n\n" + canonical_closed.lstrip("\n")
         # M-10: OHLCV-Aussagen ausschließlich aus dem strukturierten Prüfergebnis übernehmen.
         text = _trading_radar_ohlcv_abschnitt8_aktualisieren(text)
+        # Produktionsintegration: Ereignisdatensätze vor dem Speichern deterministisch
+        # normalisieren/deduplizieren. Fehlende Quelle/Datum blockiert FINAL.
+        text, event_quality_findings = normalize_event_section(text)
+        validation_errors.extend("Ereignisradar: " + item for item in event_quality_findings)
+        # Dieselbe persistente OHLCV-DB wie der Berichtsnachweis prüfen. Widersprüche
+        # zwischen Status und Detailzahlen sind ein harter fachlicher Fehler.
+        try:
+            import historical_ohlcv
+            candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)
+            ohlcv_audit = historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)
+            ohlcv_findings = validate_ohlcv_audit(ohlcv_audit)
+        except Exception as exc:
+            ohlcv_audit = {"status": "unavailable", "universe_count": None, "covered_count": None}
+            ohlcv_findings = [f"OHLCV-Prüfung nicht ausführbar: {type(exc).__name__}: {exc}"]
+        validation_errors.extend("OHLCV: " + item for item in ohlcv_findings)
+        if ohlcv_findings:
+            text += "\nDaten-/Freigabeprüfung: NICHT_FINAL – " + "; ".join(ohlcv_findings) + "\n"
+        if event_quality_findings:
+            text += "\nEreignis-/Freigabeprüfung: NICHT_FINAL – " + "; ".join(event_quality_findings) + "\n"
         # M-06/M-08 nach allen Berichtsumstellungen deterministisch absichern.
         # Unbelegte Werte werden als NICHT VERFÜGBAR markiert, nie erfunden.
         text = _trading_radar_berichtsfelder_normalisieren(text)
@@ -18131,6 +18159,23 @@ if __name__ == "__main__":
             print("TRADING_RADAR_STATUS=FEHLER | eindeutiger Fachstatusmarker fehlt")
             raise SystemExit(4)
         fachlich_final = status_matches[0]
+        # Markt-First-Inhaltsaudit auf dem tatsächlich gespeicherten Produktionsbericht.
+        # Bei Befunden wird FINAL auf NICHT_FINAL herabgestuft; nichts wird erfunden.
+        market_first_findings = audit_market_first_content(report_text)
+        if market_first_findings:
+            fachlich_final = "NICHT_FINAL"
+            report_text = re.sub(
+                r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\\s*$",
+                "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL",
+                report_text,
+            )
+            with open(ausgabe_pfad, "w", encoding="utf-8") as report_handle:
+                report_handle.write(report_text)
+            print("TRADING_RADAR_MARKET_FIRST_GATE=FAIL")
+            for finding in market_first_findings:
+                print("TRADING_RADAR_MARKET_FIRST_FINDING=" + finding)
+        else:
+            print("TRADING_RADAR_MARKET_FIRST_GATE=PASS")
         print("TRADING_RADAR_STATUS=SUCCESS")
         print("TRADING_RADAR_FACHLICH_FINAL=" + fachlich_final)
         print("TRADING_RADAR_EXIT_STATUS=0")
