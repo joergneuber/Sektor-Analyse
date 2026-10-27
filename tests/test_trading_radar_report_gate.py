@@ -326,5 +326,27 @@ class ReportGateTests(unittest.TestCase):
         self.assertFalse(any("M-08" in e for e in gate.validate_report(text)))
 
 
+    def test_m09_rejects_implausible_long_stop_above_entry(self):
+        text = report_fixture().replace(
+            "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Ticker: AAA | Richtung: LONG | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 105 | TP1: 110 | TP2: 120 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("unplausible Stop-Lage" in error for error in errors), errors)
+
+    def test_m09_candidate_fields_are_not_borrowed_from_another_record(self):
+        candidate_block = (
+            "5. Technische Kandidaten\n"
+            "- Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Risiko vorhanden | Regelstatus: valide\n"
+            "- Ticker: BBB | AUF TRIGGER WARTEN | Trigger: fehlt"
+        )
+        text = report_fixture().replace(
+            "5. Technische Kandidaten\nTicker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Datenlücke geprüft; Regelstatus: valide.",
+            candidate_block,
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Kandidat 2" in error and "M-09" in error for error in errors), errors)
+
+
 if __name__ == "__main__":
     unittest.main()
