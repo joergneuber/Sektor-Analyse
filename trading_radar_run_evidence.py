@@ -60,16 +60,36 @@ def _read_text(path: Path, limit: int = 1_000_000) -> str:
         return ""
 
 
+def _csv_dialect(sample: str):
+    """Choose the dominant delimiter from the header before sniffing body text.
+
+    Company names often contain commas, so csv.Sniffer can misclassify a
+    semicolon-delimited export as comma-delimited. Header frequency is a more
+    stable signal for these project exports.
+    """
+    first_line = sample.splitlines()[0] if sample.splitlines() else sample
+    candidates = [",", ";", "\t", "|"]
+    counts = {delimiter: first_line.count(delimiter) for delimiter in candidates}
+    delimiter = max(candidates, key=lambda item: counts[item])
+    if counts[delimiter] > 0:
+        return csv.excel_tab if delimiter == "\t" else type("Dialect", (csv.Dialect,), {
+            "delimiter": delimiter, "quotechar": '"', "doublequote": True,
+            "skipinitialspace": False, "lineterminator": "\r\n", "quoting": csv.QUOTE_MINIMAL,
+            "strict": False,
+        })
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        return csv.excel
+
+
 def _csv_metadata(path: Path) -> dict:
     result = {"row_count": None, "columns": [], "read_error": None}
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             sample = handle.read(8192)
             handle.seek(0)
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            except csv.Error:
-                dialect = csv.excel
+            dialect = _csv_dialect(sample)
             reader = csv.DictReader(handle, dialect=dialect)
             result["columns"] = [str(x).strip() for x in (reader.fieldnames or [])]
             result["row_count"] = sum(1 for _ in reader)
@@ -94,13 +114,17 @@ def _metadata(path: Path) -> dict:
         item.update(_csv_metadata(path))
     elif path.suffix.lower() == ".json":
         try:
-            parsed = json.loads(_read_text(path))
+            # Parse the complete file. _read_text intentionally caps ordinary
+            # text scans, but applying that cap to JSON creates false corruption
+            # reports whenever a valid cache exceeds one megabyte.
+            with path.open("r", encoding="utf-8-sig") as handle:
+                parsed = json.load(handle)
             item["json_top_level_type"] = type(parsed).__name__
             if isinstance(parsed, list):
                 item["row_count"] = len(parsed)
             elif isinstance(parsed, dict):
                 item["json_top_level_keys"] = sorted(str(k) for k in parsed.keys())[:100]
-        except (json.JSONDecodeError, TypeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
             item["read_error"] = f"{type(exc).__name__}: {exc}"
     elif path.suffix.lower() in {".xlsx", ".xls"}:
         # Do not require spreadsheet libraries for evidence collection; record
@@ -181,74 +205,100 @@ def _classify(path: Path, meta: dict, text: str) -> set[str]:
 def _risk_metrics(path: Path, meta: dict) -> dict | None:
     if "portfolio" not in _classify(path, meta, _read_text(path, 200_000)):
         return None
+    name = path.name.casefold()
+    closed_source = "geschlossene position" in name or "initialbestand" in name
     columns = {c.casefold().strip(): c for c in meta.get("columns", [])}
     stop_key = next((columns[k] for k in ("stop", "stop_loss", "stop-loss") if k in columns), None)
     entry_key = next((columns[k] for k in ("einstieg", "einstiegskurs", "entry", "entry_price") if k in columns), None)
+    current_key = next((columns[k] for k in ("aktueller_kurs", "aktueller kurs", "current_price", "last_price", "kurs") if k in columns), None)
     direction_key = next((columns[k] for k in ("richtung", "side", "richtung (long/short)", "typ") if k in columns), None)
-    qty_key = next((columns[k] for k in ("stückzahl", "stueckzahl", "menge", "quantity", "qty", "shares") if k in columns), None)
     result = {
         "source": _safe_relative(path),
+        "scope": "CLOSED_HISTORY_EXCLUDED_FROM_OPEN_RISK" if closed_source else "OPEN_PORTFOLIO",
+        "assumed_position_quantity_per_position": 1,
         "stop_distance_per_unit": [],
         "monetary_risk": None,
-        "monetary_risk_status": "NOT_CALCULABLE_MISSING_POSITION_SIZE",
+        "monetary_risk_status": "EXCLUDED_CLOSED_POSITION_HISTORY" if closed_source else "NOT_CALCULABLE_MISSING_ENTRY_OR_STOP",
         "invalid_stop_rows": [],
+        "locked_in_profit_per_unit": [],
     }
+    if closed_source:
+        # Historical trades are inventoried, but must not contaminate current
+        # open portfolio risk totals.
+        return result
     if not stop_key or not entry_key:
-        result["monetary_risk_status"] = "NOT_CALCULABLE_MISSING_ENTRY_OR_STOP"
         return result
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             sample = handle.read(8192); handle.seek(0)
-            try: dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            except csv.Error: dialect = csv.excel
-            rows = list(csv.DictReader(handle, dialect=dialect))
+            rows = list(csv.DictReader(handle, dialect=_csv_dialect(sample)))
     except (OSError, UnicodeError, csv.Error):
         result["monetary_risk_status"] = "NOT_CALCULABLE_SOURCE_READ_ERROR"
         return result
 
+    def number(value):
+        raw = str(value or "").strip().replace(" ", "").replace("’", "").replace("'", "")
+        if not raw: return None
+        if "," in raw and "." in raw:
+            raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
+        elif "," in raw: raw = raw.replace(",", ".")
+        try:
+            val = float(raw)
+            return val if math.isfinite(val) else None
+        except ValueError:
+            return None
+
     monetary = 0.0
-    monetary_complete = bool(qty_key)
+    complete = True
+    counted = 0
     for index, row in enumerate(rows, start=2):
-        def number(value):
-            raw = str(value or "").strip().replace(" ", "").replace("’", "").replace("'", "")
-            if not raw: return None
-            if "," in raw and "." in raw:
-                raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
-            elif "," in raw: raw = raw.replace(",", ".")
-            try:
-                val = float(raw)
-                return val if math.isfinite(val) else None
-            except ValueError:
-                return None
+        ticker = str(row.get(columns.get("ticker", columns.get("symbol", "")), "") or "").strip()
+        status_key = columns.get("status")
+        status = str(row.get(status_key, "") if status_key else "").strip().casefold()
+        if status and any(token in status for token in ("geschlossen", "verkauft", "gestoppt", "closed", "sold", "stopped")):
+            continue
         entry, stop = number(row.get(entry_key)), number(row.get(stop_key))
+        current = number(row.get(current_key)) if current_key else None
         direction = str(row.get(direction_key, "") if direction_key else "").strip().casefold()
         if entry is None or stop is None:
+            complete = False
             continue
-        if direction in {"short", "sell", "shortposition", "short-position"}:
-            invalid = stop < entry
-            distance = stop - entry
-        else:
-            # Unknown direction is not silently treated as a verified long.
-            invalid = stop >= entry if direction in {"long", "buy", "longposition", "long-position"} else None
-            distance = entry - stop
-        if invalid is True:
-            result["invalid_stop_rows"].append({"row": index, "direction": direction, "entry": entry, "stop": stop})
+        is_short = direction in {"short", "sell", "shortposition", "short-position"}
+        is_long = direction in {"long", "buy", "longposition", "long-position"}
+        if not (is_long or is_short):
+            result["stop_distance_per_unit"].append({"row": index, "ticker": ticker, "status": "DIRECTION_UNKNOWN"})
+            complete = False
             continue
-        if invalid is None:
-            result["stop_distance_per_unit"].append({"row": index, "distance": abs(distance), "status": "DIRECTION_UNKNOWN"})
+        # A trailing stop may cross the entry price. It is only invalid when it
+        # is on the wrong side of the current market price (if known).
+        invalid = current is not None and ((is_long and stop > current) or (is_short and stop < current))
+        if invalid:
+            result["invalid_stop_rows"].append({"row": index, "ticker": ticker, "direction": direction,
+                                                "entry": entry, "current_price": current, "stop": stop,
+                                                "reason": "STOP_WRONG_SIDE_OF_CURRENT_PRICE"})
+            complete = False
+            continue
+        if is_long:
+            risk = max(0.0, current - stop) if current is not None else max(0.0, entry - stop)
+            locked = max(0.0, stop - entry)
         else:
-            result["stop_distance_per_unit"].append({"row": index, "distance": distance, "status": "VALID"})
-        if qty_key:
-            qty = number(row.get(qty_key))
-            if qty is None or invalid is None or invalid is True:
-                monetary_complete = False
-            else:
-                monetary += distance * qty
+            risk = max(0.0, stop - current) if current is not None else max(0.0, stop - entry)
+            locked = max(0.0, entry - stop)
+        result["stop_distance_per_unit"].append({"row": index, "ticker": ticker, "distance": round(risk, 6),
+                                                 "status": "VALID", "basis": "CURRENT_PRICE_TO_STOP" if current is not None else "ENTRY_TO_STOP"})
+        result["locked_in_profit_per_unit"].append({"row": index, "ticker": ticker, "amount": round(locked, 6)})
+        monetary += risk  # fixed assumption: one unit per open position
+        counted += 1
+    result["positions_counted"] = counted
     if result["invalid_stop_rows"]:
-        result["monetary_risk_status"] = "INVALID_STOP_PRESENT"
-    elif monetary_complete and qty_key:
+        result["monetary_risk_status"] = "INVALID_STOP_RELATIVE_TO_CURRENT_PRICE"
+    elif not complete:
+        result["monetary_risk_status"] = "PARTIAL_MISSING_OR_UNVERIFIED_FIELDS"
+    elif counted:
         result["monetary_risk"] = round(monetary, 6)
-        result["monetary_risk_status"] = "CALCULATED_FROM_AVAILABLE_ROWS"
+        result["monetary_risk_status"] = "CALCULATED_ASSUMING_ONE_UNIT_PER_POSITION"
+    else:
+        result["monetary_risk_status"] = "NOT_CALCULABLE_NO_VALID_OPEN_POSITIONS"
     return result
 
 
@@ -346,8 +396,10 @@ def collect_snapshot(phase: str) -> dict:
         "limitations": [
             "AVAILABLE requires portfolio, candidate and event coverage to be complete.",
             "Spreadsheet files are fingerprinted but not row-count parsed.",
-            "Monetary risk is calculated only where entry, stop, direction and position size are available.",
-            "Unknown position direction or missing position size prevents a complete monetary-risk claim.",
+            "Risk calculations assume exactly one unit per open position; recorded quantities do not change this assumption.",
+            "A trailing stop beyond entry is allowed; a stop is flagged only when it is on the wrong side of the current price when that price is available.",
+            "Closed-position history is inventoried but excluded from current open portfolio risk.",
+            "Unknown direction, missing entry/stop, or unavailable current price limits the strength of risk validation.",
         ],
     }
 
