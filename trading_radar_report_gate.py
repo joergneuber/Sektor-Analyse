@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import sys
 import hashlib
+import math
 import datetime
 from pathlib import Path
 
@@ -286,33 +287,136 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                     "Zeitzone, Kennzahl, Zeitraum und einen ausgewiesenen Wert/Konsens "
                     "oder expliziten Fehlstatus."
                 )
-    # M-09: candidate labels need usable values. Numeric fields must contain
-    # parseable numbers; explicit FEHLT is accepted only as a declared absence,
-    # and does not silently become a numeric trade level.
+    # M-09: isolate candidate records. A complete candidate must never supply
+    # fields for another candidate via section-wide/global label searches.
     candidates = _section_body(text, 5, SECTION_NAMES[4])
-    asset = _label_value(candidates, (r"Ticker", r"Asset"))
-    trigger = _label_value(candidates, (r"Trigger", r"Bestätigung", r"Bestaetigung"))
-    entry = _label_value(candidates, (r"Einstieg", r"Entry"))
-    stop = _label_value(candidates, (r"Stop", r"Stop-Loss"))
-    tp1 = _label_value(candidates, (r"TP1", r"Ziel\s*1"))
-    tp2 = _label_value(candidates, (r"TP2", r"Ziel\s*2"))
-    crv = _label_value(candidates, (r"CRV", r"Chance-Risiko"))
-    counter = _label_value(candidates, (r"Gegenargument", r"Risiko"))
-    rule_data = _label_value(candidates, (r"Regelstatus", r"Datenstatus"))
-    candidate_required = (asset, trigger, entry, stop, tp1, tp2, crv, counter, rule_data)
-    numeric_fields_ok = all(_valid_numeric_value(value) for value in (entry, stop, tp1, tp2, crv))
+
+    def split_candidate_records(section_body: str) -> list[str]:
+        records: list[str] = []
+        current: list[str] = []
+        bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
+        field_start = re.compile(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
+            r"(?:Trigger|Bestätigung|Bestaetigung|Einstieg|Entry|Stop|Stop-Loss|"
+            r"TP1|Ziel\s*1|TP2|Ziel\s*2|CRV|Chance-Risiko|Gegenargument|Risiko|"
+            r"Regelstatus|Datenstatus|Richtung|Side)(?:\*\*)?\s*[:=]"
+        )
+        for line in section_body.splitlines():
+            match = bullet.match(line)
+            starts = bool(match) and not field_start.match(line)
+            # A line naming a new ticker/asset starts a new candidate even when
+            # it isn't a markdown bullet. Field continuation lines remain local.
+            if re.match(r"(?i)^\s*(?:Ticker|Asset)\s*[:=]", line) and current:
+                starts = True
+            if starts and current:
+                records.append("\n".join(current).strip())
+                current = []
+            current.append(match.group(1) if starts and match else line)
+        if current:
+            records.append("\n".join(current).strip())
+        # The report's established one-candidate inline format is a single
+        # record. Empty records are ignored, but an explicit no-candidate
+        # declaration is handled separately below.
+        return [record for record in records if record.strip()]
+
+    def parse_number(value: str | None) -> float | None:
+        if value is None or not _valid_numeric_value(value):
+            return None
+        cleaned = re.sub(r"^(?:EUR|USD|GBP|€|\$|£)\s*", "", value.strip(), flags=re.I)
+        cleaned = re.sub(r"\s*(?:EUR|USD|GBP|€|\$|£|%|x|\b(?:Punkte|pts)\b)$", "", cleaned, flags=re.I).strip()
+        cleaned = cleaned.replace(" ", "").replace("’", "").replace("'", "")
+        if "," in cleaned and "." in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".") if cleaned.rfind(",") > cleaned.rfind(".") else cleaned.replace(",", "")
+        elif "," in cleaned:
+            cleaned = cleaned.replace(",", ".")
+        try:
+            number = float(cleaned)
+            return number if math.isfinite(number) else None
+        except (ValueError, NameError):
+            return None
+
     no_actionable_candidates = _has_any(candidates, (
         r"keine\s+(?:belastbaren\s+)?(?:technischen\s+)?Kandidaten",
         r"keine\s+Kandidaten\s+(?:mit\s+)?(?:belastbarem|konkretem)\s+Setup",
-    r"kein\s+belastbarer\s+technischer\s+Kandidat",
+        r"kein\s+belastbarer\s+technischer\s+Kandidat",
     ))
-    allowed_candidate_status = (
+    allowed_candidate_status = re.compile(
         r"JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|"
-        r"NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT"
+        r"NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT",
+        re.IGNORECASE,
     )
-    candidate_status_ok = bool(re.search(allowed_candidate_status, candidates, re.IGNORECASE))
-    if not no_actionable_candidates and (not all(candidate_required) or not numeric_fields_ok or not candidate_status_ok):
-        errors.append("M-09: Technische Kandidaten benötigen Asset/Ticker, Trigger, Einstieg, Stop, TP1/TP2, CRV, Gegenargument, Regel-/Datenstatus und einen zulässigen Kandidatenstatus; Zahlenfelder müssen numerisch sein. Alternativ muss ausdrücklich ausgewiesen sein, dass keine belastbaren Kandidaten vorliegen.")
+    if not no_actionable_candidates:
+        records = split_candidate_records(candidates)
+        if not records:
+            errors.append("M-09: Keine separat prüfbaren Kandidatendatensätze gefunden.")
+        for candidate_index, record in enumerate(records, start=1):
+            def field(labels: tuple[str, ...]) -> str | None:
+                return _label_value(record, labels)
+
+            asset = field((r"Ticker", r"Asset"))
+            trigger = field((r"Trigger", r"Bestätigung", r"Bestaetigung"))
+            entry_text = field((r"Einstieg", r"Entry"))
+            stop_text = field((r"Stop", r"Stop-Loss"))
+            tp1_text = field((r"TP1", r"Ziel\s*1"))
+            tp2_text = field((r"TP2", r"Ziel\s*2"))
+            crv_text = field((r"CRV", r"Chance-Risiko"))
+            counter = field((r"Gegenargument", r"Risiko"))
+            rule_data = field((r"Regelstatus", r"Datenstatus"))
+            status_ok = bool(allowed_candidate_status.search(record))
+            entry_num, stop_num = parse_number(entry_text), parse_number(stop_text)
+            tp1_num, crv_num = parse_number(tp1_text), parse_number(crv_text)
+            required = (asset, trigger, entry_text, stop_text, tp1_text, tp2_text,
+                        crv_text, counter, rule_data)
+            numeric_ok = all(parse_number(value) is not None for value in
+                             (entry_text, stop_text, tp1_text, tp2_text, crv_text))
+            if not all(required) or not numeric_ok or not status_ok:
+                errors.append(
+                    f"M-09: Kandidat {candidate_index} benötigt eigene Asset-/Trigger-/Einstiegs-/Stop-/TP-/CRV-/"
+                    "Gegenargument-/Regelstatusfelder und einen zulässigen Status; Zahlen müssen numerisch sein."
+                )
+                continue
+
+            direction_text = field((r"Richtung", r"Side", r"Positionstyp")) or ""
+            direction = direction_text.strip().casefold()
+            is_short = direction in {"short", "verkauf", "sell"}
+            is_long = direction in {"long", "kauf", "buy"}
+            # Explicit direction enables deterministic stop-side validation.
+            # If omitted, infer only from the common directional relationship;
+            # equal entry/stop is always invalid.
+            invalid_stop = stop_num == entry_num
+            if is_long and stop_num >= entry_num:
+                invalid_stop = True
+            elif is_short and stop_num <= entry_num:
+                invalid_stop = True
+            elif not is_long and not is_short:
+                if stop_num > entry_num and tp1_num > entry_num:
+                    invalid_stop = True
+                elif stop_num < entry_num and tp1_num < entry_num:
+                    invalid_stop = True
+            if invalid_stop:
+                errors.append(
+                    f"M-09: Kandidat {candidate_index} ({asset}) hat eine unplausible Stop-Lage "
+                    f"(Einstieg={entry_num:g}, Stop={stop_num:g}, Richtung={direction_text or 'nicht angegeben'})."
+                )
+                continue
+
+            if is_short:
+                risk = stop_num - entry_num
+                reward = entry_num - tp1_num
+            else:
+                risk = entry_num - stop_num
+                reward = tp1_num - entry_num
+            if risk <= 0:
+                errors.append(f"M-09: Kandidat {candidate_index} ({asset}) hat kein positives Risiko zwischen Einstieg und Stop.")
+                continue
+            computed_crv = reward / risk
+            if abs(computed_crv - crv_num) > max(0.35, abs(computed_crv) * 0.20):
+                errors.append(
+                    f"M-09: Kandidat {candidate_index} ({asset}) weist CRV={crv_num:g} aus, "
+                    f"aus Einstieg/Stop/TP1 ergibt sich jedoch {computed_crv:.2f}."
+                )
+            if crv_num < 1 and re.search(r"JETZT TECHNISCH PRÜFEN", record, re.IGNORECASE):
+                errors.append(f"M-09: Kandidat {candidate_index} ({asset}) hat CRV<1 und darf nicht als JETZT TECHNISCH PRÜFEN gelten.")
 
     # M-10: a concrete OHLCV issue and its candidate impact must both be stated.
     appendix = _section_body(text, 8, SECTION_NAMES[7])
