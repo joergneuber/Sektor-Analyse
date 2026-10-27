@@ -120,5 +120,36 @@ class RunEvidenceTests(unittest.TestCase):
             self.assertIn("items", meta["json_top_level_keys"])
 
 
+    def test_trailing_short_stop_below_entry_is_valid_and_quantity_is_fixed_one(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "Offene_Positionen.csv"
+            self._write_csv(path, ["Ticker", "Einstieg", "Aktueller_Kurs", "Stop", "Richtung", "Stückzahl"],
+                            [{"Ticker": "AAA", "Einstieg": "100", "Aktueller_Kurs": "90",
+                              "Stop": "95", "Richtung": "SHORT", "Stückzahl": "99"}])
+            with patch.object(evidence, "ROOT", root):
+                risk = evidence._risk_metrics(path, evidence._metadata(path))
+            self.assertEqual(risk["monetary_risk"], 5.0)
+            self.assertEqual(risk["monetary_risk_status"], "CALCULATED_ASSUMING_ONE_UNIT_PER_POSITION")
+            self.assertEqual(risk["assumed_position_quantity_per_position"], 1)
+            self.assertEqual(risk["locked_in_profit_per_unit"][0]["amount"], 5.0)
+            self.assertEqual(risk["invalid_stop_rows"], [])
+
+    def test_short_stop_below_current_price_is_invalid(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "Offene_Positionen.csv"
+            self._write_csv(path, ["Ticker", "Einstieg", "Aktueller_Kurs", "Stop", "Richtung"],
+                            [{"Ticker": "AAA", "Einstieg": "100", "Aktueller_Kurs": "94",
+                              "Stop": "93", "Richtung": "SHORT"}])
+            with patch.object(evidence, "ROOT", root):
+                risk = evidence._risk_metrics(path, evidence._metadata(path))
+            self.assertIsNone(risk["monetary_risk"])
+            self.assertEqual(risk["monetary_risk_status"], "INVALID_STOP_RELATIVE_TO_CURRENT_PRICE")
+            self.assertEqual(len(risk["invalid_stop_rows"]), 1)
+            self.assertEqual(risk["invalid_stop_rows"][0]["reason"], "STOP_WRONG_SIDE_OF_CURRENT_PRICE")
+
+
+
 if __name__ == "__main__":
     unittest.main()
