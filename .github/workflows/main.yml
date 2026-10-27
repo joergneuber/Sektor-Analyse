@@ -84,6 +84,11 @@ jobs:
         id: trading-radar-contract
         run: python -m unittest discover -s tests -p "test_trading_radar_data_contract.py"
 
+      # Neue deterministische Markt-First- und Ereignis-/OHLCV-Regressionen.
+      - name: Trading-Radar Markt-First-Qualitätsregression
+        id: trading-radar-market-first
+        run: python -m unittest tests.test_trading_radar_market_first tests.test_trading_radar_market_first_prompt
+
       # Pflicht-Integrationstest: technische Fehlerkette und Release-Vertrag
       # müssen vor den produktiven Analyse- und Publikationsschritten bestehen.
       - name: Trading-Radar technische Fehlerkette – Pflicht-Integrationstest
