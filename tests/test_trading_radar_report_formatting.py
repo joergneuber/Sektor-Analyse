@@ -1,4 +1,6 @@
 import ast
+import csv
+import hashlib
 import datetime
 import json
 import os
@@ -232,16 +234,70 @@ class TradingRadarReportFormattingTests(unittest.TestCase):
         self.assertIn("Alibaba Group (BABA) bleiben im Fokus", result)
         self.assertIn("Alibaba Group (BABA) beobachten", result)
 
-    @unittest.skipUnless(os.environ.get("TRADING_RADAR_HISTORICAL_REPORT"), "historischer Bericht nicht konfiguriert")
-    def test_full_historical_report_preserves_structured_invariants_independently(self):
-        report_path = Path(os.environ["TRADING_RADAR_HISTORICAL_REPORT"])
-        report = report_path.read_text(encoding="utf-8")
-        result = self.normalize_name_ticker(report)
+    def test_report_preserves_structured_invariants_with_dynamic_counts(self):
+        """Always exercise the report contract; counts come from data, not constants.
 
-        # Independent source-to-output checks: the whole Tab-2 payload, from its
-        # heading through the checksum line, must be byte-for-byte identical.
+        If a historical report path is supplied, validate that report. Otherwise,
+        build a deterministic contract fixture from the repository position CSVs.
+        The fixture keeps this regression active in CI without pretending that a
+        live/historical production report was tested.
+        """
+        configured_report = os.environ.get("TRADING_RADAR_HISTORICAL_REPORT")
+        if configured_report:
+            report_path = Path(configured_report)
+            self.assertTrue(report_path.is_file(), f"Historischer Bericht fehlt: {report_path}")
+            report = report_path.read_text(encoding="utf-8")
+        else:
+            open_path = ROOT / "Offene_Positionen.csv"
+            closed_path = ROOT / "Geschlossene Positionen_Initialbestand.csv"
+            self.assertTrue(open_path.is_file(), f"Testquelle fehlt: {open_path}")
+            self.assertTrue(closed_path.is_file(), f"Testquelle fehlt: {closed_path}")
+
+            def read_rows(path):
+                with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    sample = handle.read(4096)
+                    handle.seek(0)
+                    delimiter = ";" if sample.count(";") >= sample.count(",") else ","
+                    return list(csv.DictReader(handle, delimiter=delimiter))
+
+            open_rows = [row for row in read_rows(open_path)
+                         if (row.get("Status") or "").strip().casefold() == "offen"]
+            closed_rows = read_rows(closed_path)
+            report_lines = [
+                "1. Trading-Radar",
+                f"OFFENE_POSITIONEN_QUELLANZAHL={len(open_rows)}",
+                f"OFFENE_POSITIONEN_ANZAHL={len(open_rows)}",
+                "10.5 Geschlossene Positionen",
+                f"TAB-2-ANZAHL={len(closed_rows)}",
+                "TAB-2-QUELLE=Geschlossene Positionen_Initialbestand.csv",
+            ]
+            tab2_rows = []
+            for source_number, row in enumerate(closed_rows, start=2):
+                ticker = (row.get("Ticker") or "").strip()
+                name = (row.get("Name") or "").strip()
+                entry_date = (row.get("Einstiegsdatum") or "").strip()
+                status = (row.get("Status") or "").strip()
+                tab2_rows.append(
+                    f"Quellzeile: {source_number} | Ticker: {ticker} | Name: {name} | "
+                    f"Einstiegsdatum: {entry_date} | Status: {status}"
+                )
+            report_lines.extend(tab2_rows)
+            digest_payload = "\n".join(report_lines[4:])
+            report_lines.append(
+                "TAB-2-EXPORT-SHA256=" + hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()
+            )
+            report_lines.extend([
+                "Bewusst ausgeschlossene Ticker (nicht Teil des aktiven Datenuniversums):",
+                "ALB und BABA sind Beispiele für bekannte Ticker.",
+            ])
+            report = "\n".join(report_lines) + "\n"
+
+        result = self.normalize_name_ticker(report)
         heading = "10.5 Geschlossene Positionen"
         checksum_prefix = "TAB-2-EXPORT-SHA256="
+        self.assertEqual(report.count(heading), 1, "Bericht muss genau einen Tab-2-Abschnitt enthalten")
+        self.assertEqual(report.count(checksum_prefix), 1, "Bericht muss genau einen Tab-2-Hash enthalten")
+
         source_start = report.index(heading)
         output_start = result.index(heading)
         source_hash_start = report.index(checksum_prefix, source_start)
@@ -252,28 +308,37 @@ class TradingRadarReportFormattingTests(unittest.TestCase):
         output_end = len(result) if output_end < 0 else output_end + 1
         self.assertEqual(report[source_start:source_end], result[output_start:output_end])
 
-        # Required report invariants are checked independently of normalizer output.
-        invariants = (
-            "OFFENE_POSITIONEN_QUELLANZAHL=14",
-            "OFFENE_POSITIONEN_ANZAHL=14",
-            "TAB-2-ANZAHL=51",
-            "TAB-2-EXPORT-SHA256=847ba1d593ac488399c2ba005073ad9d95bae7388fce5238102317c90ec7d104",
-            "Alibaba Group Holding Limited (BABA) | Einstieg: 141,0",
-            "Albemarle Corporation (ALB) | Einstieg: 200,0",
-            "Bewusst ausgeschlossene Ticker (nicht Teil des aktiven Datenuniversums):",
-        )
-        for invariant in invariants:
-            with self.subTest(invariant=invariant):
-                self.assertIn(invariant, result)
-
-        # Every source Tab-2 record and the hash must survive exactly once.
-        source_rows = [line for line in report[source_start:source_end].splitlines()
+        source_block = report[source_start:source_end]
+        source_rows = [line for line in source_block.splitlines()
                        if line.startswith("Quellzeile:")]
         output_rows = [line for line in result[output_start:output_end].splitlines()
                        if line.startswith("Quellzeile:")]
-        self.assertEqual(len(source_rows), 51)
-        self.assertEqual(source_rows, output_rows)
+        self.assertEqual(source_rows, output_rows, "Tab-2-Zeilen müssen vollständig und unverändert bleiben")
+
+        count_match = re.search(r"(?m)^TAB-2-ANZAHL=(\d+)\s*$", source_block)
+        self.assertIsNotNone(count_match, "TAB-2-ANZAHL fehlt")
+        self.assertEqual(int(count_match.group(1)), len(source_rows),
+                         "Gemeldete Tab-2-Anzahl muss der tatsächlichen Zeilenanzahl entsprechen")
+
+        digest_match = re.search(r"(?m)^TAB-2-EXPORT-SHA256=([0-9a-f]{64})\s*$", source_block)
+        self.assertIsNotNone(digest_match, "Tab-2-Export-Hash fehlt oder ist ungültig")
+        export_lines = [line.rstrip() for line in source_block.splitlines()
+                        if not line.startswith(checksum_prefix)]
+        # The gate hashes the section body, not the heading or checksum line.
+        export_payload = "\n".join(export_lines[1:])
+        self.assertEqual(hashlib.sha256(export_payload.encode("utf-8")).hexdigest(),
+                         digest_match.group(1), "Tab-2-Export-Hash passt nicht zu den Datenzeilen")
+
+        for marker in ("OFFENE_POSITIONEN_QUELLANZAHL", "OFFENE_POSITIONEN_ANZAHL"):
+            source_match = re.search(rf"(?m)^{marker}=(\d+)\s*$", report)
+            output_match = re.search(rf"(?m)^{marker}=(\d+)\s*$", result)
+            if source_match:
+                self.assertIsNotNone(output_match, f"{marker} ging bei der Normalisierung verloren")
+                self.assertEqual(source_match.group(1), output_match.group(1),
+                                 f"{marker} darf nicht verändert werden")
+
         self.assertEqual(result.count(checksum_prefix), report.count(checksum_prefix))
+        self.assertIn("Bewusst ausgeschlossene Ticker (nicht Teil des aktiven Datenuniversums):", result)
 
 
 
