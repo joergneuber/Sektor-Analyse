@@ -783,3 +783,45 @@ class TradingRadarCandidateSourceTests(unittest.TestCase):
                 sys.modules["historical_ohlcv"] = original
             if had_global:
                 self.radar._TRADING_RADAR_OHLCV_AUDIT = original_global
+
+class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
+    def test_historical_only_anomalies_are_reported_but_do_not_block_current_candidate_status(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "complete", "checked_at": "2026-10-27T12:00:00Z",
+            "universe_count": 802, "covered_count": 802,
+            "missing_tickers": [], "stale_tickers": [],
+            "invalid_ohlcv_tickers": ["BC8.DE", "BOSS.DE"],
+            "recent_invalid_ohlcv_tickers": [],
+            "historical_only_invalid_ohlcv_tickers": ["BC8.DE", "BOSS.DE"],
+            "affected_candidates": [],
+            "candidate_impact": "none_detected_in_checked_candidates",
+            "candidate_mapping_complete": True,
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("OHLCV-Abdeckung: vollständig (802/802 geprüfte Symbole)", result)
+            self.assertIn("Kandidaten nicht eingeschränkt", result)
+            self.assertIn("Historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters", result)
+            self.assertIn("BC8.DE, BOSS.DE", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
+    def test_recent_anomalies_still_prevent_complete_claim(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "gaps", "checked_at": "2026-10-27T12:00:00Z",
+            "universe_count": 802, "covered_count": 802,
+            "missing_tickers": [], "stale_tickers": [],
+            "invalid_ohlcv_tickers": ["BC8.DE"],
+            "recent_invalid_ohlcv_tickers": ["BC8.DE"],
+            "historical_only_invalid_ohlcv_tickers": [],
+            "affected_candidates": ["BC8.DE"],
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("Status=gaps", result)
+            self.assertIn("ungültige OHLCV-Felder im jüngsten 90-Tage-Fenster: BC8.DE", result)
+            self.assertNotIn("Kandidaten nicht eingeschränkt", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
