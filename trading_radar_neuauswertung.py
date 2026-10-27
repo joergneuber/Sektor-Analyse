@@ -19,6 +19,28 @@ LIST_FIELDS = {"evidence", "counter_evidence", "confirm_triggers", "invalidate_t
 RADAR_INSTRUCTION = r'''Erzeuge eine eigenstaendige Trading-Radar-Marktanalyse aus dem validierten, kompakten
 Python-Datenpaket und dem bisherigen Thesenregister. Wiederhole NICHT den alten Bericht.
 
+VERBINDLICHE FACHLICHE DENKREIHENFOLGE (nicht vom Portfolio umkehren lassen):
+A. GESAMTMARKT UND MARKTREGIME: zuerst Indizes, Marktbreite, Volatilitaet,
+   nominale/realen Renditen, Dollar, Liquiditaet, Konjunktur und bevorstehende Ereignisse
+   zusammenfuehren. Formuliere ein gemeinsames Regime und benenne widerspruechliche Signale.
+B. RELATIVE STAERKE UND KAPITALROTATION: Maerkte, Regionen, Sektoren und Assetklassen
+   vergleichbar bewerten; Gewinner, Verlierer, Divergenzen und moegliche Trendwechsel nennen.
+C. THESEN, SZENARIEN UND VORSCHAU: Basisszenario plus Alternativen, Zeithorizont,
+   Profiteure/Verlierer, Belege/Gegenbelege sowie beobachtbare Bestaetigungs- und
+   Invalidierungsausloeser. Gegenueber der Vorversion nur relevante Deltas erklaeren.
+D. TECHNISCHE KANDIDATEN UND TRADING: scannerbasierte Kandidaten und breitere
+   Marktchancen getrennt auffuehren. Ohne bestaetigtes Setup Watchlist-Status statt Freigabe.
+E. PORTFOLIO-AUSWIRKUNG: erst danach bestehende Positionen anhand der unabhaengigen
+   Markteinschaetzung bewerten. Das Portfolio darf weder Marktuniversum noch Thesen
+   begrenzen. Auch Chancen ausserhalb vorhandener Positionen sichtbar machen.
+
+MARKT-FIRST-ABNAHME:
+- Ein Bericht, der vor allem Positionen kommentiert und kein zusammenhaengendes Marktregime,
+  keine relative Staerke/Rotation und keine bedingte Vorschau liefert, ist fachlich unzureichend.
+- Keine erzwungene These oder Handelsfreigabe. Eine begruendete Watchlist ist ein Ergebnis.
+- Datenluecken muessen genau den betroffenen Vergleich, die These oder den Kandidaten begrenzen;
+  sie duerfen nicht durch allgemeine Textwarnungen verdeckt werden.
+
 REGELN:
 - Fakten, plausible Zusammenhaenge und unbestaetigte Thesen sichtbar trennen.
 - Fehlende Kurs-, Kalender-, Portfolio-, Stop-, Ziel-, CRV- oder Benchmarkwerte nicht
@@ -136,6 +158,52 @@ def validate_radar_report(report: str) -> list[str]:
     except ValueError as exc:
         errors.append(str(exc))
     return errors
+
+def audit_market_first_content(report: str) -> list[str]:
+    """Check whether a report actually contains market-led analysis, not only headings.
+
+    This is a semantic presence gate, not a claim that a thesis is financially correct.
+    It deliberately returns actionable findings rather than generating missing content.
+    """
+    text = str(report or "")
+    errors: list[str] = []
+    headings = list(re.finditer(
+        r"(?im)^\s*(?:#{1,6}\s*)?(?:[1-8])\s*[·.]\s*(.+?)\s*$", text
+    ))
+    bodies: dict[str, str] = {}
+    for i, match in enumerate(headings):
+        title = match.group(1).strip().casefold()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
+        bodies[title] = text[match.end():end]
+    def body_for(fragment: str) -> str:
+        return next((body for title, body in bodies.items() if fragment in title), "")
+    market = body_for("trading-radar")
+    rotation = body_for("assetklassenvergleich")
+    thesis = body_for("thesen-update")
+    candidates = body_for("technische kandidaten")
+    portfolio = body_for("portfolio")
+    if not market:
+        errors.append("MARKT-FIRST: Marktregime-Abschnitt fehlt")
+    else:
+        groups = {
+            "Indizes/Marktbreite": r"index|indices|marktbreite|breadth|S&P|Nasdaq|DAX",
+            "Zinsen/Renditen": r"rendite|zins|treasury|realzins|real yield",
+            "Dollar/Liquiditaet/Volatilitaet": r"dollar|DXY|liquidit|volatil|VIX",
+            "Marktregime / gemeinsame Regimeeinschaetzung": r"regime|risk.on|risk.off|marktbild|basisszenario",
+        }
+        for label, pattern in groups.items():
+            if not re.search(pattern, market, re.IGNORECASE):
+                errors.append(f"MARKT-FIRST: Trading-Radar belegt {label} nicht erkennbar")
+    if not rotation or not re.search(r"staerke|stärke|rotation|divergenz|gewinner|verlierer|relativ", rotation, re.I):
+        errors.append("MARKT-FIRST: relative Staerke/Kapitalrotation fehlt")
+    if not thesis or not re.search(r"gegenbeleg|counter.evidence|invalidier|trigger|alternativ|szenario", thesis, re.I):
+        errors.append("MARKT-FIRST: Thesen brauchen Gegenbelege, Alternativen und beobachtbare Trigger")
+    if not candidates or not re.search(r"watchlist|trigger|nicht handelbar|technisch pruefen|technisch prüfen", candidates, re.I):
+        errors.append("MARKT-FIRST: Kandidaten muessen Watchlist/Trigger/Handelsstatus unterscheiden")
+    if portfolio and len(portfolio) > len(market) * 2 and len(portfolio.strip()) > 1200:
+        errors.append("MARKT-FIRST: Portfolio-Abschnitt ist deutlich umfangreicher als das Marktbild; fachlich pruefen")
+    return errors
+
 
 def save_thesis_register(payload: dict[str, Any], path: str | Path) -> None:
     """Atomically save only a valid register; never overwrite on validation failure."""
@@ -307,8 +375,9 @@ def validate_thesis_lifecycle(previous: Any, current: Any) -> list[str]:
 
 
 def validate_radar_report_against_register(report: str, previous_register: Any = None) -> tuple[dict[str, Any], list[str]]:
-    """Validate report sections, JSON schema, and register lifecycle before release."""
+    """Validate structure, market-first content, JSON schema and lifecycle before release."""
     errors = validate_radar_report_strict(report)
+    errors.extend(audit_market_first_content(report))
     try:
         payload = extract_thesis_json(report)
         errors.extend(validate_thesis_lifecycle(previous_register, payload))
