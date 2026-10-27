@@ -581,14 +581,25 @@ class TradingRadarDataContractTests(unittest.TestCase):
                     "TAB-2-ANZAHL=1\nTAB-2-QUELLE=Geschlossene Positionen\n"
                     "Quellzeile: 3 | Ticker: AAA | Einstiegsdatum: 01.02.2026 | Status: Verkauft"
                 )
-                report = "\n".join(
-                    f"{i}. {title}\n" + ("Ausreichend dokumentierter Abschnittsinhalt und Prüfkontext." * 2)
-                    for i, title in enumerate([
-                        "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
-                        "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
-                    ], start=1)
-                ) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
-                with redirect_stdout(StringIO()):
+                report_parts = []
+                for i, title in enumerate([
+                    "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                    "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
+                ], start=1):
+                    if i == 3:
+                        body = "- Ereignis: Testtermin\n  Datum: 2026-10-28\n  Quelle: Testquelle\n  Uhrzeit: 10:00\n  Zeitzone: UTC"
+                    elif i == 5:
+                        body = "Keine technischen Kandidaten; Watchlist geprüft."
+                    else:
+                        body = "Ausreichend dokumentierter Abschnittsinhalt und Prüfkontext. " * 2
+                    report_parts.append(f"{i}. {title}\n{body}")
+                report = "\n".join(report_parts) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                with patch("historical_ohlcv.audit_snapshot", return_value={
+                    "status": "complete", "checked_at": "2026-10-27T00:00:00+00:00",
+                    "universe_count": 1, "covered_count": 1, "missing_tickers": [],
+                    "stale_tickers": [], "invalid_ohlcv_tickers": [], "affected_candidates": [],
+                    "candidate_mapping_complete": True, "candidate_impact": "none_detected_in_checked_candidates",
+                }), redirect_stdout(StringIO()):
                     output = radar.speichere_ergebnis(
                         report, {"Offene Positionen+Check.csv": str(csv_path)}
                     )
