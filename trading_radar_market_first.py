@@ -199,9 +199,14 @@ def validate_ohlcv_audit(audit: Mapping[str, Any]) -> list[str]:
     status = str(audit.get("status", "unavailable")).casefold()
     missing = list(audit.get("missing_tickers") or [])
     stale = list(audit.get("stale_tickers") or [])
-    invalid = list(audit.get("invalid_ohlcv_tickers") or [])
+    # Prefer the setup-relevant recent window when supplied. Older historical
+    # anomalies remain reported by the audit but do not alone block current setups.
+    invalid = list(audit.get(
+        "recent_invalid_ohlcv_tickers",
+        audit.get("invalid_ohlcv_tickers") or [],
+    ) or [])
     if status != "complete" or covered != universe or missing or stale or invalid:
-        findings.append("OHLCV-Abdeckung nicht vollständig oder enthält Datenlücken")
+        findings.append("OHLCV-Abdeckung nicht vollständig oder enthält aktuelle Datenlücken")
     if status == "complete" and (covered != universe or missing or stale or invalid):
-        findings.append("OHLCV-Status complete widerspricht den Detaildaten")
+        findings.append("OHLCV-Status complete widerspricht den aktuellen Detaildaten")
     return sorted(set(findings))

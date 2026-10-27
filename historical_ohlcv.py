@@ -438,28 +438,42 @@ def audit_snapshot(
                                         b.high < b.close OR b.low > b.open OR
                                         b.low > b.close)
                                    THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN b.date >= date('now', '-90 days') AND
+                                       (b.open IS NULL OR b.high IS NULL OR b.low IS NULL OR
+                                        b.close IS NULL OR b.volume IS NULL OR
+                                        b.open <= 0 OR b.high <= 0 OR b.low <= 0 OR
+                                        b.close <= 0 OR b.volume < 0 OR
+                                        b.high < b.low OR b.high < b.open OR
+                                        b.high < b.close OR b.low > b.open OR
+                                        b.low > b.close)
+                                   THEN 1 ELSE 0 END),
                           COUNT(b.date)
                    FROM instruments i LEFT JOIN bars b ON b.ticker=i.ticker
                    GROUP BY i.ticker, i.row_count"""
             ).fetchall()
-        existing = {str(t): (int(n or 0), last, int(invalid or 0), int(actual or 0))
-                    for t, n, last, invalid, actual in rows}
+        existing = {str(t): (int(n or 0), last, int(invalid or 0),
+                             int(recent_invalid or 0), int(actual or 0))
+                    for t, n, last, invalid, recent_invalid, actual in rows}
         missing = sorted(t for t in tickers if t not in existing or existing[t][0] <= 0
-                         or not existing[t][1] or existing[t][3] <= 0)
+                         or not existing[t][1] or existing[t][4] <= 0)
         invalid_tickers = sorted(t for t in tickers if t in existing and existing[t][2] > 0)
+        recent_invalid_tickers = sorted(t for t in tickers if t in existing and existing[t][3] > 0)
+        historical_only_invalid_tickers = sorted(set(invalid_tickers) - set(recent_invalid_tickers))
         expected = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
         cutoff = expected - pd.Timedelta(days=max(0, int(stale_after_days) - 1))
         stale = sorted(t for t in tickers if t in existing and existing[t][0] > 0
                        and existing[t][1] and pd.Timestamp(existing[t][1]) < cutoff)
         covered = sum(1 for t in tickers if t in existing and existing[t][0] > 0
-                      and existing[t][1] and existing[t][3] > 0 and existing[t][2] == 0)
+                      and existing[t][1] and existing[t][4] > 0)
         invalid_tickers = sorted(set(invalid_tickers))
         candidate_set = sorted({str(t).strip().upper() for t in (candidate_tickers or []) if str(t).strip()})
         mapped_candidates = bool(candidate_set)
-        problem_tickers = set(missing) | set(stale) | set(invalid_tickers)
+        # Historical anomalies remain visible, but only anomalies in the last
+        # 90 calendar days affect current candidate eligibility.
+        problem_tickers = set(missing) | set(stale) | set(recent_invalid_tickers)
         affected = sorted(set(candidate_set) & problem_tickers)
         unmapped_candidates = sorted(set(candidate_set) - set(tickers))
-        status = "complete" if tickers and covered == len(tickers) and not missing and not stale and not invalid_tickers else "gaps"
+        status = "complete" if tickers and covered == len(tickers) and not missing and not stale and not recent_invalid_tickers else "gaps"
         candidate_mapping_complete = mapped_candidates and not unmapped_candidates
         candidate_impact = ("none_detected_in_checked_candidates"
                             if candidate_mapping_complete and not affected and status == "complete"
@@ -470,6 +484,9 @@ def audit_snapshot(
             "universe_count": len(tickers), "covered_count": covered,
             "missing_tickers": missing, "stale_tickers": stale,
             "invalid_ohlcv_tickers": invalid_tickers,
+            "recent_invalid_ohlcv_tickers": recent_invalid_tickers,
+            "historical_only_invalid_ohlcv_tickers": historical_only_invalid_tickers,
+            "invalid_ohlcv_policy_days": 90,
             "affected_candidates": affected,
             "candidate_tickers_checked": candidate_set,
             "unmapped_candidate_tickers": unmapped_candidates,

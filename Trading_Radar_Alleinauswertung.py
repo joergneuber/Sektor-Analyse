@@ -17214,15 +17214,28 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
             "Kandidaten sind bis zur Klärung nicht prüfbar und nicht freigegeben."
         )
 
+    historical_only_invalid = sorted({
+        str(x).strip() for x in (audit.get("historical_only_invalid_ohlcv_tickers") or [])
+        if str(x).strip()
+    })
+    recent_invalid = sorted({
+        str(x).strip() for x in (audit.get("recent_invalid_ohlcv_tickers") or [])
+        if str(x).strip()
+    })
     if (status == "complete" and covered == universe and not missing and not stale
-            and not audit.get("invalid_ohlcv_tickers")
+            and not recent_invalid
             and audit.get("candidate_impact") == "none_detected_in_checked_candidates"
             and audit.get("candidate_mapping_complete") is True):
+        historical_note = (
+            " Historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters bleiben dokumentiert: "
+            + ", ".join(historical_only_invalid[:100]) + "."
+        ) if historical_only_invalid else ""
         return (
             f"OHLCV-Abdeckung: vollständig ({covered}/{universe} geprüfte Symbole).\n"
             f"Datenstand: {checked_at}.\n"
             "Lückenstatus und Kandidatenauswirkung: keine fehlenden oder veralteten OHLCV-Daten; "
-            "Kandidaten nicht eingeschränkt."
+            "im jüngsten 90-Tage-Fenster keine ungültigen OHLCV-Kerzen; Kandidaten nicht eingeschränkt."
+            + historical_note
         )
 
     if status not in {"gaps", "unavailable", "complete"}:
@@ -17233,8 +17246,15 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     if stale:
         details.append("veraltete OHLCV-Daten: " + ", ".join(stale[:100]))
     invalid_ohlcv = sorted({str(x).strip() for x in (audit.get("invalid_ohlcv_tickers") or []) if str(x).strip()})
-    if invalid_ohlcv:
-        details.append("ungültige/unvollständige OHLCV-Felder: " + ", ".join(invalid_ohlcv[:100]))
+    recent_invalid = sorted({str(x).strip() for x in (audit.get("recent_invalid_ohlcv_tickers") or []) if str(x).strip()})
+    historical_only_invalid = sorted({str(x).strip() for x in (audit.get("historical_only_invalid_ohlcv_tickers") or []) if str(x).strip()})
+    if recent_invalid:
+        details.append("ungültige OHLCV-Felder im jüngsten 90-Tage-Fenster: " + ", ".join(recent_invalid[:100]))
+    if historical_only_invalid:
+        details.append("historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters (weiterhin dokumentiert): " + ", ".join(historical_only_invalid[:100]))
+    elif invalid_ohlcv and not recent_invalid:
+        # Compatibility with older audit payloads that do not yet split historical/current findings.
+        details.append("ungültige/unvollständige OHLCV-Felder (Zeitraum nicht getrennt nachgewiesen): " + ", ".join(invalid_ohlcv[:100]))
     unmapped_candidates = sorted({str(x).strip() for x in (audit.get("unmapped_candidate_tickers") or []) if str(x).strip()})
     if unmapped_candidates:
         details.append("Kandidaten nicht im geprüften Universum: " + ", ".join(unmapped_candidates[:100]))
