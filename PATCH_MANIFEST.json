@@ -1,40 +1,62 @@
 {
-  "base_archive": "Sektor-Analyse-main(20261026-204158).zip",
-  "base_sha256": "d5775e1a07c7b5da85e3543905149cf0ad9b2aad6359c70034ca24aa44913bae",
-  "input_patch_archive": "Trading_Radar_Konsolidierter_Patch_GitHub(2).zip",
-  "input_patch_sha256": "124ed0a0c923103f739bfd0a115ec629bc13b6483487b71299914cc700df38b0",
-  "files_in_patch": [
-    "Trading_Radar_Alleinauswertung.py",
-    "tests/test_trading_radar_failure_contract.py",
-    "tests/test_trading_radar_failure_chain_integration.py",
-    "tests/test_trading_radar_release_contract.py",
-    "tests/test_bitcoin_edelmetall_sections.py",
-    "tests/test_bitcoin_edelmetall_sections_korrigiert.py",
-    ".github/workflows/main.yml",
-    "legacy_trading_radar_data_contract_snapshot.py"
-  ],
-  "delete_files": [
-    "test_trading_radar_data_contract.py"
-  ],
-  "sha256_current_files": {
-    "Trading_Radar_Alleinauswertung.py": "66dd9276fc1a7cd6e8701c44b954976c95830ced14fd4abd5baea234e8a7683a",
-    "tests/test_trading_radar_failure_contract.py": "3b3980aa7e4894fad5bc347a85abe009cbf9c735b33207c661b68595a29818db",
-    "tests/test_trading_radar_failure_chain_integration.py": "c2b3231f78cd4a5a1a148865a8b2c289d4258bfa06c2f9dcd60c03ce974109b9",
-    "tests/test_trading_radar_release_contract.py": "539accc2b392b632b72104d0f08b5623b39116895b0721d11f9f3c39833655a5",
-    "tests/test_bitcoin_edelmetall_sections.py": "1e07b9360360ae7a0f1214d2951803beae81938b3808b34fe15b184386c67246",
-    "tests/test_bitcoin_edelmetall_sections_korrigiert.py": "151cea0c31ac816b31fe10c5f0640dd72ba920c0f4a0e3236e1e726bf6cfb7d1",
-    ".github/workflows/main.yml": "f2922ac608a590887f358284d5066596d5d53831d6803ebd415fdee1445eec97",
-    "legacy_trading_radar_data_contract_snapshot.py": "c8e4224fd0d05f06868b205900f16a9be1c4f512c1447209c1f100001c75fd95"
+  "artifact": "Trading_Radar_Fachkorrektur_20261027_045553",
+  "created_date": "2026-10-27",
+  "basis_zip": {
+    "filename": "Sektor-Analyse-main(20261027-045553).zip",
+    "sha256": "d08b8480e8e6ba914c860876b74835bcd5500d1028ad2e9c0cb06355dd9fc989"
   },
+  "workflow_input": {
+    "filename": "main(20261027-045551).yml",
+    "sha256_before_edits": "5612fbaf059bf674f9bac5125846f9beed153cba66188d9570746dc7dd822150",
+    "note": "Used as the workflow base and augmented with a pre-production regression step."
+  },
+  "matrix_input": {
+    "filename": "Trading_Radar_Loesungsmatrix_Fachliche_Restpunkte_212154(2).xlsx",
+    "sha256": "84afb28fd0b33cbf2c423f3da6626354194291b965f6683535ecdcb95b08b4e6"
+  },
+  "files": [
+    {
+      "path": ".github/workflows/main.yml",
+      "status": "modified",
+      "base_sha256": "5a2a66f8be879371eb1ad1051e23843d009606fffedfd8b6dd6cb9fa83bf219e",
+      "result_sha256": "c3aef688f8bc0ad4b17c1a58990aaf72af7058b0c639c64f02becc4decce1d57"
+    },
+    {
+      "path": "trading_radar_report_gate.py",
+      "status": "modified",
+      "base_sha256": "577c23d61c3d9ad7599f1a7607214e16988b71b4c0fc59cca241af8fef3902a1",
+      "result_sha256": "5909c5657e38d4370f433f7b6d6a822c856b2cb31da5ab609405bd65a7c98207"
+    },
+    {
+      "path": "tests/test_trading_radar_report_gate.py",
+      "status": "modified",
+      "base_sha256": "02fca6a7559f24d5f0967c596cff391dc895ae289f8aa1e5eef031840e730a66",
+      "result_sha256": "8e711eb53f3c6482e36ec3952937f9e846baea68c036efe8311bfbd721c137f5"
+    },
+    {
+      "path": "trading_radar_run_evidence.py",
+      "status": "added",
+      "base_sha256": null,
+      "result_sha256": "2df784d9670f668cb988d87929403dd4a5358cc5ae8cdd960d8e5a57f789e71e"
+    },
+    {
+      "path": "tests/test_trading_radar_run_evidence.py",
+      "status": "added",
+      "base_sha256": null,
+      "result_sha256": "e571517d01d1dd122ee7d1b85e8256587acb47aa1d03cbd76ca5c478f50a34a0"
+    }
+  ],
   "tests": {
-    "targeted": "54 tests passed; 0 failures; 0 skipped",
-    "full_discovery": "249 tests run; OK; 1 skipped",
-    "command": "python -m unittest discover -s tests"
+    "targeted": "42 passed, 0 failed, 0 skipped",
+    "full_discovery": "254 tests, OK, 1 skipped",
+    "compileall_exit_code": 0,
+    "workflow_yaml_parse": "PASS",
+    "live_github_gemini_smtp_drive": "NOT RUN",
+    "undefined_symbol_linter": "NOT AVAILABLE in this environment"
   },
-  "limits": [
-    "No live Gemini call",
-    "No real SMTP send",
-    "No Google Drive upload",
-    "No real GitHub Actions run"
+  "known_limits": [
+    "Workspace inventory cannot prove accessibility of Drive-only sources unless downloaded.",
+    "Monetary portfolio risk is not calculable without position size.",
+    "Local success is not a substitute for a new GitHub Actions run."
   ]
 }
