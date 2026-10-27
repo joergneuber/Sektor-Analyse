@@ -207,6 +207,16 @@ jobs:
       - name: ForexFactory Produktions-Normalizer Regressionstest
         run: python tests/test_forexfactory_production.py
 
+      # Coverage- und Risikonachweis müssen vor dem produktiven Lauf regressionsgeprüft sein.
+      - name: Trading-Radar Snapshot-/Risiko-Regressionstest
+        run: python -m unittest tests.test_trading_radar_run_evidence tests.test_trading_radar_report_gate
+
+      # Laufweiter Snapshot vor dem Positionstracker: bekannte Produktionspfade
+      # plus Quelleninventar über CSV/TSV/JSON/XLSX/XLS/TXT/MD. Kategorien werden
+      # getrennt bewertet; AVAILABLE ist nur bei vollständiger Dreifachabdeckung zulässig.
+      - name: Trading-Radar Portfolio-/Risiko-Snapshot Start
+        run: python trading_radar_run_evidence.py start
+
       - name: Offene Positionen aktualisieren
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
@@ -581,6 +591,25 @@ jobs:
       # Technischen Erfolg und fachlichen Status getrennt prüfen.
       # FINAL und NICHT_FINAL sind technisch gültig; NICHT_FINAL wird nur als
       # vorläufiges Artifact gesichert und nicht regulär veröffentlicht.
+      # End-Snapshot nach den produktiven Scans und der Berichtserstellung.
+      # Fehlende Kategorien/Quellen bleiben INCOMPLETE; unplausible Stops und
+      # fehlende Positionsgrößen verhindern eine unberechtigte Risiko-Freigabe.
+      - name: Trading-Radar Portfolio-/Risiko-Snapshot Ende
+        if: ${{ always() }}
+        run: python trading_radar_run_evidence.py end
+
+      - name: Trading-Radar Laufnachweis als Artifact sichern
+        if: ${{ always() && hashFiles('trading_radar_run_evidence_start.json') != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: trading-radar-run-evidence-${{ github.run_id }}
+          path: |
+            trading_radar_run_evidence_start.json
+            trading_radar_run_evidence_end.json
+            trading_radar_run_evidence.json
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Neue Trading-Radar technisch gültig und frisch verifizieren
         id: trading-radar-report-check
         if: always()
