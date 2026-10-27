@@ -17275,11 +17275,11 @@ def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
     # Remove only existing OHLCV summary lines/paragraphs to avoid contradictory
     # Gemini claims. Other section-8 content remains untouched.
     body = re.sub(
-        r"(?im)^[ \t]*(?:OHLCV-Abdeckung|OHLCV-Abdeckung & Lückenstatus|OHLCV-Datenstand|Lückenstatus und Kandidatenauswirkung):[^\r\n]*(?:\r?\n)?",
+        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?(?:OHLCV-Abdeckung(?:\s*&\s*Lückenstatus)?|OHLCV-Datenstand|Lückenstatus und Kandidatenauswirkung)(?:\*\*)?\s*:[^\r\n]*(?:\r?\n)?",
         "", body
     )
     body = re.sub(
-        r"(?im)^[ \t]*OHLCV[^\r\n]*(?:vollständig|vollstaendig|Datenlücken|Datenluecken|Datenlücken|Datenluecken)[^\r\n]*(?:\r?\n)?",
+        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?OHLCV[^\r\n]*(?:vollständig|vollstaendig|Datenlücken|Datenluecken)[^\r\n]*(?:\r?\n)?",
         "", body
     )
     block = _trading_radar_ohlcv_nachweisblock(text)

@@ -71,7 +71,7 @@ def _label_value(text: str, labels: tuple[str, ...]) -> str | None:
     """
     label = r"(?:" + "|".join(labels) + r")"
     match = re.search(
-        rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-•]\s+|\d+[.)]\s+)?"
+        rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-*•]\s+|\d+[.)]\s+)?"
         rf"(?:\*\*)?{label}(?:\*\*)?\s*[:=](?:\*\*)?\s*"
         rf"(?:([^|;\r\n]+)|(?:\r?\n\s*([^|;\r\n]+)))",
         text,
@@ -581,7 +581,16 @@ def validate_report(text: str) -> list[str]:
         if not digest_match:
             errors.append("Tab-2-Export-Fingerabdruck fehlt oder ist ungueltig")
         else:
-            export_lines = [line.rstrip() for line in body.strip().splitlines()
+            # Hash only the exact Tab-2 payload before its fingerprint line.
+            # Report-level findings appended after the fingerprint are outside
+            # the exported payload and must not invalidate its digest.
+            payload = body[:digest_match.start()]
+            export_lines = [line.rstrip() for line in payload.splitlines()]
+            while export_lines and not export_lines[0].strip():
+                export_lines.pop(0)
+            while export_lines and not export_lines[-1].strip():
+                export_lines.pop()
+            export_lines = [line for line in export_lines
                             if not line.startswith("TAB-2-EXPORT-SHA256=")]
             actual_digest = hashlib.sha256("\n".join(export_lines).encode("utf-8")).hexdigest()
             if actual_digest != digest_match.group(1):

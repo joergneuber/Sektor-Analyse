@@ -105,6 +105,25 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
         return report_text, ["Ereignisradar-Ende nicht eindeutig auffindbar"]
     end = start + next_heading.start()
     body = report_text[start:end]
+    no_events = bool(re.search(
+        r"(?im)^\s*[-*•]?\s*keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?ereignisse[^\r\n]*$",
+        body,
+    ))
+    if no_events:
+        # A no-events statement must not be followed by orphaned event-field
+        # placeholders; they otherwise get misread as a malformed event record.
+        nonempty = [line.strip() for line in body.splitlines() if line.strip()]
+        allowed = re.compile(
+            r"(?i)^(?:[-*•]\s*)?(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|"
+            r"Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|Konsens|Istwert|Quelle)\s*[:=]\s*"
+            r"(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|[-–—]|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR).*$"
+        )
+        if all(re.search(
+            r"(?i)^[-*•]?\s*keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?ereignisse",
+            line,
+        ) or allowed.fullmatch(line) or line in {"---"} for line in nonempty):
+            clean_body = "\n\n* Keine relevanten Ereignisse im geprüften Zeitraum.\n\n"
+            return report_text[:start] + clean_body + report_text[end:], []
     if re.fullmatch(r"(?is)\s*(?:keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?ereignisse[^\n]*\s*)?", body):
         return report_text, []
     # A record starts at a bullet or numbered line that is not a field label.
