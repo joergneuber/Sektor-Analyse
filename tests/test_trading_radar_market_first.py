@@ -621,3 +621,119 @@ def test_fomc_official_calendar_failure_diagnostic_includes_both_urls():
     assert "connection reset" in detail
     assert "2026-december.htm?view=calendar" in detail
     assert "2026-december.htm" in detail
+
+
+def test_ohlcv_audit_accepts_complete_candidate_mapping_with_no_affected_candidates():
+    from trading_radar_market_first import validate_ohlcv_audit
+    audit = {
+        "status": "gaps",
+        "universe_count": 862,
+        "covered_count": 862,
+        "affected_candidates": [],
+        "candidate_tickers_checked": ["AEP", "REGN"],
+        "candidate_mapping_complete": True,
+        "unmapped_candidate_tickers": [],
+    }
+    assert validate_ohlcv_audit(audit) == []
+
+
+def test_ohlcv_audit_does_not_accept_empty_affected_list_without_mapping_proof():
+    from trading_radar_market_first import validate_ohlcv_audit
+    audit = {
+        "status": "gaps",
+        "universe_count": 862,
+        "covered_count": 862,
+        "affected_candidates": [],
+        "candidate_tickers_checked": [],
+        "candidate_mapping_complete": False,
+        "unmapped_candidate_tickers": [],
+    }
+    findings = validate_ohlcv_audit(audit)
+    assert any("Kandidaten-Mapping-Nachweis" in item for item in findings)
+
+
+def test_ohlcv_audit_keeps_affected_candidate_rows_visible():
+    from trading_radar_market_first import validate_ohlcv_audit
+    audit = {
+        "status": "gaps",
+        "universe_count": 862,
+        "covered_count": 862,
+        "affected_candidates": ["AEP"],
+        "candidate_tickers_checked": ["AEP", "REGN"],
+        "candidate_mapping_complete": True,
+        "unmapped_candidate_tickers": [],
+    }
+    assert validate_ohlcv_audit(audit) == []
+
+
+def test_report_candidate_parser_reads_ticker_from_asset_ticker_field():
+    import Trading_Radar_Alleinauswertung as report_module
+    report = """# 5. Technische Kandidaten
+- **Asset/Ticker**: American Electric Power Company, Inc. (AEP)
+  - **Regel-/Datenstatus**: NICHT HANDELBAR
+
+- **Asset/Ticker**: Regeneron Pharmaceuticals, Inc. (REGN)
+  - **Regel-/Datenstatus**: NICHT HANDELBAR
+
+# 6. Portfolio & Risiko
+"""
+    assert report_module._trading_radar_kandidaten_aus_abschnitt5(report) == ["AEP", "REGN"]
+
+
+def test_market_first_normalizer_adds_evidence_labels_and_groups_nontradable_records():
+    from trading_radar_neuauswertung import normalize_market_first_report_structure, audit_market_first_content
+    report = """# 1. Trading-Radar
+**Hauptthese**: Moderate Marktstabilisierung.
+- **Stärkste Belege**: S&P 500 stabil.
+- **Wichtigste Gegenbelege**: Small Caps schwach.
+- **Nächste beobachtbare Bestätigung/Invalidierung**: Qualitätshoch bestätigen; Rendite über 5,20% invalidiert.
+
+Live-Marktbelege:
+- Index S&P 500 (^GSPC): letzter Schluss 100; 1M +1%; 3M +2%.
+- Volatilität VIX: 17.
+- Dollar-Proxy DXY: 102.
+- US-10J-Rendite (^TNX): 5,00%.
+- Marktbreite-Proxy: 8/11 Sektor-ETFs über 50-Tage-Durchschnitt.
+
+# 2. Thesen-Update
+**Thesen-ID**: TH-1
+**Version**: 1
+**Status**: BESTÄTIGT
+**Begründung**: Defensive Rotation bleibt sichtbar.
+**Gegenbelege**: Small Caps schwach.
+**Alternative**: Rotation endet.
+**Bestätigungstrigger**: Qualitäts-ETF überschreitet Hoch.
+**Invalidierungstrigger**: Rendite über 5,20%.
+
+# 3. Ereignisradar
+Keine relevanten Ereignisse im geprüften Zeitraum.
+
+# 4. Assetklassenvergleich
+Aktien zeigen relative Stärke.
+
+# 5. Technische Kandidaten
+- **Asset/Ticker**: American Electric Power Company, Inc. (AEP)
+  - **Trigger**: A-Status gemeldet, Setup nicht bestätigt.
+  - **Einstieg**: NICHT VERFÜGBAR
+  - **Stop**: NICHT VERFÜGBAR
+  - **TP1**: NICHT VERFÜGBAR
+  - **TP2**: NICHT VERFÜGBAR
+  - **CRV**: NICHT VERFÜGBAR
+  - **Gegenargument**: Levels fehlen.
+  - **Regel-/Datenstatus**: NICHT HANDELBAR – Statusmeldung ist kein Kauf.
+
+# 6. Portfolio & Risiko
+Keine offenen Positionen.
+
+# 7. MSCI-Vergleich
+Kennzahlen nicht verfügbar.
+
+# 8. Daten-/Prüfanhang
+OHLCV-Abdeckung: 862/862; Status=gaps.
+"""
+    normalized = normalize_market_first_report_structure(report)
+    assert "Indizes/Marktbreite:" in normalized
+    assert "Dollar/Liquidität/Volatilität:" in normalized
+    assert "Statusgruppe: NICHT HANDELBAR" in normalized
+    findings = audit_market_first_content(normalized)
+    assert not any("Kandidatengruppe" in finding or "Statusgruppe fehlt" in finding for finding in findings), findings

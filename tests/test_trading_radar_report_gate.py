@@ -366,3 +366,57 @@ class ReportGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_nontradable_candidate_with_explicit_unavailable_levels_is_not_a_m09_trade_failure():
+    from trading_radar_report_gate import validate_report
+    report = """# 1. Trading-Radar
+**Hauptthese**: Beispielthese mit Marktbelegen.
+Indizes/Marktbreite: Index stabil.
+Zinsen/Renditen: Rendite bleibt restriktiv.
+Dollar/Liquidität/Volatilität: VIX stabil, Dollar hoch.
+Marktregime: Selektiv.
+Basisszenario: Defensive Rotation.
+
+# 2. Thesen-Update
+**Thesen-ID**: TH-1
+**Version**: 1
+**Status**: WARTET AUF EREIGNIS
+**Gegenbelege**: Marktbreite schwach.
+**Alternative**: Rotation setzt sich nicht fort.
+**Bestätigungstrigger**: Qualitätsindex bricht über Hoch.
+**Invalidierungstrigger**: Rendite steigt über Schwelle.
+
+# 3. Ereignisradar
+Keine relevanten Ereignisse im geprüften Zeitraum.
+
+# 4. Assetklassenvergleich
+Aktien relativ stärker.
+
+# 5. Technische Kandidaten
+NICHT HANDELBAR:
+- **Asset/Ticker**: American Electric Power Company, Inc. (AEP)
+  - **Statusgruppe**: NICHT HANDELBAR
+  - **Trigger**: A-Status gemeldet; unabhängiges technisches Setup nicht bestätigt.
+  - **Einstieg**: NICHT VERFÜGBAR
+  - **Stop**: NICHT VERFÜGBAR
+  - **TP1**: NICHT VERFÜGBAR
+  - **TP2**: NICHT VERFÜGBAR
+  - **CRV**: NICHT VERFÜGBAR
+  - **Gegenargument**: Handelslevels fehlen.
+  - **Regel-/Datenstatus**: NICHT HANDELBAR – Statusmeldung ist kein Kauf.
+
+# 6. Portfolio & Risiko
+Keine offenen Positionen.
+
+# 7. MSCI-Vergleich
+Kennzahlen nicht verfügbar.
+
+# 8. Daten-/Prüfanhang
+OHLCV-Abdeckung: 862/862 Symbole abgedeckt; Status=gaps.
+Lückenstatus und Kandidatenauswirkung: Kandidaten-Mapping vollständig; keine direkte Überschneidung mit geprüften Kandidaten.
+
+TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL
+"""
+    findings = validate_report(report)
+    assert not any("M-09:" in finding for finding in findings), findings
