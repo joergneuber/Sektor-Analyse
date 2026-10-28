@@ -52,7 +52,9 @@ Marktbild.
     assert result.count("Uhrzeit:") == 1
     assert result.count("Zeitzone:") == 1
     assert "4. Assetklassenvergleich" in result
-    assert findings == []
+    # FOMC ohne LIVE_VERIFIZIERT muss trotz erfolgreicher Deduplizierung
+    # als Freigabebefund bestehen bleiben; unbekannte Uhrzeiten werden nicht erfunden.
+    assert any("nicht live" in item.lower() for item in findings)
 
 
 def test_event_section_missing_source_or_date_returns_findings():
@@ -80,3 +82,37 @@ def test_ohlcv_status_inconsistency_blocks_final():
 def test_ohlcv_missing_or_invalid_counts_fail_closed():
     assert validate_ohlcv_audit({"status": "unavailable", "universe_count": None, "covered_count": None})
     assert validate_ohlcv_audit({"status": "gaps", "universe_count": 4, "covered_count": 3, "missing_tickers": ["ABC"]})
+
+
+
+def test_ohlcv_empty_affected_candidates_fails_closed():
+    audit = {
+        "status": "gaps",
+        "universe_count": 4,
+        "covered_count": 3,
+        "affected_candidates": [],
+    }
+    findings = validate_ohlcv_audit(audit)
+    assert any("nicht vollständig" in item.lower() for item in findings)
+    assert any("kandidatenfolgen fehlen" in item.lower() for item in findings)
+
+
+def test_ohlcv_null_or_wrong_type_affected_candidates_fails_closed():
+    for value in (None, "", {}, 0):
+        findings = validate_ohlcv_audit({
+            "status": "gaps",
+            "universe_count": 4,
+            "covered_count": 3,
+            "affected_candidates": value,
+        })
+        assert any("kandidatenfolgen fehlen" in item.lower() for item in findings)
+
+
+def test_ohlcv_nonempty_candidate_assessment_allows_documented_universe_gap():
+    findings = validate_ohlcv_audit({
+        "status": "gaps",
+        "universe_count": 4,
+        "covered_count": 3,
+        "affected_candidates": [{"ticker": "ABC", "tradeability": "NICHT HANDELBAR"}],
+    })
+    assert not any("kandidatenfolgen fehlen" in item.lower() for item in findings)

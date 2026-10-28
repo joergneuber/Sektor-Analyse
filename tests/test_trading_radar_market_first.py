@@ -136,7 +136,8 @@ def test_ohlcv_universe_gaps_are_not_a_blanket_report_veto():
     audit = {
         "status": "gaps", "universe_count": 862, "covered_count": 846,
         "missing_tickers": ["ADYEN.AS"], "stale_tickers": [],
-        "recent_invalid_ohlcv_tickers": [], "affected_candidates": [],
+        "recent_invalid_ohlcv_tickers": [],
+        "affected_candidates": [{"ticker": "ADYEN.AS", "tradeability": "NICHT HANDELBAR"}],
     }
     assert validate_ohlcv_audit(audit) == []
 
