@@ -17,7 +17,8 @@ def test_production_path_normalizes_events_and_validates_real_ohlcv_snapshot():
     source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
     assert "normalize_event_section(text)" in source
     assert "historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)" in source
-    assert "validate_ohlcv_audit(ohlcv_audit)" in source
+    assert "validate_ohlcv_audit(" in source
+    assert "explicit_no_candidates=explicit_no_candidates" in source
     assert "validation_errors.extend(\"OHLCV: \" + item for item in ohlcv_findings)" in source
 
 
@@ -116,3 +117,19 @@ def test_ohlcv_nonempty_candidate_assessment_allows_documented_universe_gap():
         "affected_candidates": [{"ticker": "ABC", "tradeability": "NICHT HANDELBAR"}],
     })
     assert not any("kandidatenfolgen fehlen" in item.lower() for item in findings)
+
+
+def test_explicit_zero_candidate_set_allows_documented_universe_ohlcv_gaps():
+    from trading_radar_market_first import validate_ohlcv_audit
+
+    audit = {
+        "status": "gaps", "universe_count": 862, "covered_count": 862,
+        "missing_tickers": [], "stale_tickers": ["ABC"],
+        "recent_invalid_ohlcv_tickers": ["XYZ"], "affected_candidates": [],
+        "candidate_tickers_checked": [], "candidate_mapping_complete": False,
+        "candidate_impact": "candidate_mapping_incomplete",
+    }
+    # This exception is only valid when the report separately declares all four
+    # candidate groups explicitly empty; an empty list alone must still fail closed.
+    assert validate_ohlcv_audit(audit)
+    assert validate_ohlcv_audit(audit, explicit_no_candidates=True) == []

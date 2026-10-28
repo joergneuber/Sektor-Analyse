@@ -522,3 +522,102 @@ Vergleich.
 8 · Daten-/Prüfanhang
 Daten."""
     assert audit_market_first_content(report) == []
+
+
+def test_fomc_official_calendar_accepts_bounded_category_markup():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source
+
+    html = """<html><body>
+    <h2>FOMC Meetings</h2><div>Time</div><div>Release Date(s)</div>
+    <div>2:00 p.m.</div><div>FOMC Meeting</div>
+    <div>Two-day meeting, October 27 - 28, 2026</div>
+    <div>Press Conference</div><div>2:30 p.m.</div>
+    <div>FOMC Press Conference</div><div>28</div>
+    <h2>Beige Book</h2><div>2:00 p.m.</div>
+    </body></html>"""
+
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+        text = html
+
+    verified, detail = _verify_fomc_official_source(date(2026, 10, 28), requester=lambda *a, **k: Response())
+    assert verified
+    assert "PRESSEKONFERENZ_VERIFIZIERT" in detail
+
+
+def test_event_scenario_bullets_remain_in_same_event_record(monkeypatch):
+    import trading_radar_market_first as market_first
+
+    monkeypatch.setattr(market_first, "_enrich_fomc_event", lambda body, report_text: body)
+    report = """3. Ereignisradar
+- Ereignis: FOMC-Zinsentscheid
+  Datum: 2026-10-28
+  Quelle: Federal Reserve, offizieller Kalender
+  Uhrzeit: 14:00
+  Zeitzone: America/New_York
+  Kennzahl: Fed Funds Rate
+  Zeitraum: Sitzungstermin 2026-10-28
+  Letzter Wert: 3,75%-4,00%
+  Konsens: 3,75%-4,00%
+- Szenarien unter Konsens: unerwartete Zinssenkung
+- Szenarien entsprechend Konsens: Korridor bleibt unverändert
+- Szenarien über Konsens: unerwartete Zinserhöhung
+- Reaktionskanäle: Anleihen, Devisen, Aktien
+
+4. Assetklassenvergleich
+"""
+    result, findings = market_first.normalize_event_section(report)
+    assert result.count("- Ereignis: FOMC-Zinsentscheid") == 1
+    assert not any("ohne Datum" in item or "ohne verifizierte Quelle" in item for item in findings)
+
+
+def test_fomc_official_calendar_retries_canonical_month_url_after_http_error():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source
+
+    requested = []
+    class ErrorResponse:
+        status_code = 403
+        url = "https://www.federalreserve.gov/newsevents/2026-december.htm?view=calendar"
+        text = "blocked"
+
+    class SuccessResponse:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-december.htm"
+        text = """<html><head><title>Calendar December 2026</title></head><body>
+        <h2>FOMC Meetings</h2><div>Time</div><div>Release Date(s)</div>
+        <div>2:00 p.m.</div><div>FOMC Meeting</div>
+        <div>Two-day meeting, December 8 - 9</div>
+        <div>Press Conference</div><div>2:30 p.m.</div>
+        <div>FOMC Press Conference</div><div>9</div>
+        <h2>Beige Book</h2><div>2:00 p.m.</div>
+        </body></html>"""
+
+    def requester(url, **kwargs):
+        requested.append(url)
+        return ErrorResponse() if len(requested) == 1 else SuccessResponse()
+
+    verified, detail = _verify_fomc_official_source(date(2026, 12, 9), requester=requester)
+    assert verified
+    assert len(requested) == 2
+    assert "HTTP 403" in detail
+    assert "PRESSEKONFERENZ_VERIFIZIERT" in detail
+
+
+def test_fomc_official_calendar_failure_diagnostic_includes_both_urls():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source
+
+    requested = []
+    def requester(url, **kwargs):
+        requested.append(url)
+        raise OSError("connection reset")
+
+    verified, detail = _verify_fomc_official_source(date(2026, 12, 9), requester=requester)
+    assert not verified
+    assert len(requested) == 2
+    assert "connection reset" in detail
+    assert "2026-december.htm?view=calendar" in detail
+    assert "2026-december.htm" in detail

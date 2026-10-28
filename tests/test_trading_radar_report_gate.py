@@ -112,6 +112,22 @@ class ReportGateTests(unittest.TestCase):
         )
         self.assertFalse(any("M-08" in e for e in gate.validate_report(text)))
 
+    def test_m08_scenario_bullets_are_continuations_of_the_fomc_record(self):
+        text = report_fixture().replace(
+            "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+            "- Ereignis: FOMC-Zinsentscheid\n"
+            "  Datum: 2026-10-28\n"
+            "  Quelle: Federal Reserve, offizieller Kalender\n"
+            "  Uhrzeit: 14:00 | Zeitzone: America/New_York | Kennzahl: Fed Funds Rate | "
+            "Zeitraum: Sitzung 2026-10-28 | letzter Wert: 3,75%-4,00% | Konsens: 3,75%-4,00%.\n"
+            "- Szenarien unter Konsens: unerwartete Zinssenkung\n"
+            "- Szenarien entsprechend Konsens: Korridor bleibt unverändert\n"
+            "- Szenarien über Konsens: unerwartete Zinserhöhung\n"
+            "- Reaktionskanäle: Anleihen, Devisen, Aktien",
+        )
+        errors = gate.validate_report(text)
+        self.assertFalse(any("M-08" in e for e in errors), errors)
+
     def test_m08_accepts_separate_complete_event_records(self):
         text = report_fixture().replace(
             "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
