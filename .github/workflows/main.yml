@@ -483,6 +483,47 @@ jobs:
           restore-keys: |
             gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-
 
+      # Finaler OHLCV-Abgleich NACH den Scannern: neue/aktualisierte Symbole
+      # aus dem Tageslauf muessen vor Erstellung des Trading-Radars erfasst sein.
+      - name: Finale OHLCV-Synchronisierung und Coverage
+        id: ohlcv-final-sync
+        continue-on-error: true
+        env:
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+          NMM_USE_HISTORICAL_OHLCV: "1"
+        run: |
+          set -euo pipefail
+          python historical_ohlcv.py update
+          python historical_ohlcv.py coverage --summary
+          echo "status=complete" >> "$GITHUB_OUTPUT"
+
+      - name: Finale OHLCV-Datenbank im Actions-Cache sichern
+        id: ohlcv-final-cache-save
+        if: ${{ always() && hashFiles('historical_ohlcv.sqlite') != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            historical_ohlcv.sqlite*
+          key: nmm-historical-ohlcv-final-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Finale OHLCV-Datenbank im Dauerarchiv sichern
+        id: ohlcv-final-release-save
+        if: ${{ always() && hashFiles('historical_ohlcv.sqlite') != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view historical-ohlcv >/dev/null 2>&1; then
+            gh release create historical-ohlcv --title "Historical OHLCV Database" --notes "Automatisch gepflegter historischer OHLCV-Research-Bestand."
+          fi
+          gh release upload historical-ohlcv historical_ohlcv.sqlite --clobber
+          if [ -f historical_ohlcv_universe.json ]; then
+            gh release upload historical-ohlcv historical_ohlcv_universe.json --clobber
+          fi
+
       - name: Trading-Radar-Laufmarker setzen
         run: |
           rm -f Gemini_Fallback_Status*.txt
@@ -495,6 +536,9 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          OHLCV_FINAL_SYNC: ${{ steps.ohlcv-final-sync.outputs.status || steps.ohlcv-final-sync.outcome || 'missing' }}
+          OHLCV_RELEASE_PERSISTENCE: ${{ steps.ohlcv-final-release-save.outcome || 'missing' }}
+          OHLCV_CACHE_PERSISTENCE: ${{ steps.ohlcv-final-cache-save.outcome || 'missing' }}
         run: python Trading_Radar_Alleinauswertung.py
 
       # Auch bei kontrolliertem Gemini-Fallback sichern: erfolgreiche Split-
