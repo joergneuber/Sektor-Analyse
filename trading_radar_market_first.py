@@ -571,8 +571,33 @@ def validate_ohlcv_audit(audit: Mapping[str, Any]) -> list[str]:
     if status == "unavailable":
         return [str(audit.get("error") or "OHLCV-Datenbank oder Audit nicht verfügbar")]
     if status == "complete" and covered != universe:
-        return ["OHLCV-Status complete widerspricht den aktuellen Abdeckungszahlen"]
-    # Incomplete coverage is a reportable data-quality finding, not a blanket
-    # block. Candidate-specific missing/stale/recent-invalid data must be reflected
-    # in each candidate's status and the report appendix.
+        findings.append("OHLCV-Status complete widerspricht den aktuellen Abdeckungszahlen")
+        findings.append(f"OHLCV-Abdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt")
+        return findings
+    if covered < universe or status in {"gaps", "partial", "incomplete"}:
+        # Universe-Lücken dürfen nur dann rein dokumentarisch bleiben, wenn
+        # das Audit eine tatsächlich nichtleere, verwertbare Kandidatenbewertung
+        # mitliefert. Ein vorhandener Schlüssel mit []/None/falschem Typ ist
+        # kein Nachweis, dass Kandidatenfolgen geprüft wurden.
+        affected_candidates = audit.get("affected_candidates")
+        has_candidate_assessment = (
+            isinstance(affected_candidates, (list, tuple, set))
+            and any(
+                (isinstance(item, str) and item.strip())
+                or (
+                    isinstance(item, Mapping)
+                    and any(
+                        isinstance(item.get(key), str) and item.get(key).strip()
+                        for key in ("ticker", "symbol", "asset", "candidate")
+                    )
+                )
+                for item in affected_candidates
+            )
+        )
+        if not has_candidate_assessment:
+            findings.append(f"OHLCV-Abdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt")
+            findings.append("OHLCV-Kandidatenfolgen fehlen oder enthalten keine verwertbare Kandidatenbewertung")
+    # Kandidatenbezogene Auswirkungen werden zusätzlich einzeln markiert; eine
+    # globale Datenlücke darf nicht dazu führen, dass betroffene Kandidaten
+    # stillschweigend als handelbar erscheinen.
     return findings
