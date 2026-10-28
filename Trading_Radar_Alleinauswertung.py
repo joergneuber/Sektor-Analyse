@@ -85,8 +85,8 @@ else:
     _GOOGLE_DRIVE_IMPORT_ERROR = None
 import io
 from collections import defaultdict
-from trading_radar_neuauswertung import audit_market_first_content
-from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, validate_ohlcv_audit
+from trading_radar_neuauswertung import audit_market_first_content, normalize_market_first_report_structure
+from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, report_explicitly_declares_no_technical_candidates, report_has_explicit_empty_candidate_groups, validate_ohlcv_audit
 from trading_radar_report_gate import validate_report as validate_trading_radar_report
 
 from quellenwert_vertrag import (
@@ -17337,12 +17337,19 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
         details.append("Kandidatenwirkung: einzelne Kandidaten sind in diesem Universumsnachweis nicht zuordenbar")
     if audit.get("error"):
         details.append("Prüfhinweis: " + str(audit["error"]))
-    if not details:
-        details.append("Prüfer meldet keine konkretisierten Ticker; Kandidatenwirkung bleibt ungeklärt")
-    impact = (
-        "Kandidatenwirkung nicht als uneingeschränkt bestätigt: " + "; ".join(details)
-        + ". Betroffene Setups bis zur Datenprüfung nicht freigeben."
-    )
+    explicit_zero_candidates = report_explicitly_declares_no_technical_candidates(report_text)
+    if explicit_zero_candidates and not affected and not unmapped_candidates:
+        impact = (
+            "keine technischen Kandidaten im Bericht ausgewiesen; daher derzeit keine Kandidatenfreigabe. "
+            "Die universumsweiten OHLCV-Lücken bleiben dokumentiert; künftig erkannte Kandidaten bleiben bis zur Datenprüfung gesperrt."
+        )
+    else:
+        if not details:
+            details.append("Prüfer meldet keine konkretisierten Ticker; Kandidatenwirkung bleibt ungeklärt")
+        impact = (
+            "Kandidatenwirkung nicht als uneingeschränkt bestätigt: " + "; ".join(details)
+            + ". Betroffene Setups bis zur Datenprüfung nicht freigeben."
+        )
     return (
         f"OHLCV-Abdeckung: {covered}/{universe} Symbole abgedeckt; Status={status}.\n"
         f"Datenstand: {checked_at}.\n"
@@ -17605,8 +17612,11 @@ def speichere_ergebnis(text, eingabedateien=None):
             # aktive Universumsbasis und DB prüfen wie im unmittelbar vorherigen Workflow-Update.
             candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)
             ohlcv_audit = historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)
+            explicit_no_candidates = not candidate_tickers and report_explicitly_declares_no_technical_candidates(text)
             text = downgrade_ohlcv_affected_candidates(text, ohlcv_audit)
-            ohlcv_findings = validate_ohlcv_audit(ohlcv_audit)
+            ohlcv_findings = validate_ohlcv_audit(
+                ohlcv_audit, explicit_no_candidates=explicit_no_candidates
+            )
         except Exception as exc:
             ohlcv_audit = {"status": "unavailable", "universe_count": None, "covered_count": None}
             ohlcv_findings = [f"OHLCV-Prüfung nicht ausführbar: {type(exc).__name__}: {exc}"]
@@ -17632,6 +17642,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         try:
             text, market_snapshot_findings = append_live_market_snapshot(text)
             validation_errors.extend("Markt-Snapshot: " + item for item in market_snapshot_findings)
+            text = normalize_market_first_report_structure(text)
         except Exception as snapshot_exc:
             validation_errors.append(
                 f"Markt-Snapshot nicht verfügbar: {type(snapshot_exc).__name__}: {snapshot_exc}"

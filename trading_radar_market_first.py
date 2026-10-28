@@ -219,69 +219,127 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
 
 
 def _verify_fomc_official_source(event_date: date, *, requester=None) -> tuple[bool, str]:
-    """Verify date, FOMC label and 14:00 in the same official calendar event block.
+    """Verify the FOMC date/time against a live, official Federal Reserve page.
 
-    A page-wide match is deliberately insufficient: unrelated text elsewhere on
-    the monthly calendar must not validate the selected event. The press
-    conference time is reported as verified only when it appears in that block.
+    Try the month view first and the same official page without its view query
+    second. A failed first URL must not prevent verification when the canonical
+    page is reachable. No stale/local calendar is used as proof of live
+    verification. All errors are retained in the returned diagnostic.
     """
-    month_url = f"https://www.federalreserve.gov/newsevents/{event_date:%Y-%B}.htm?view=calendar".replace(
-        event_date.strftime("%B"), event_date.strftime("%B").lower()
-    )
-    try:
-        if requester is None:
-            import requests
-            requester = requests.get
-        response = requester(month_url, timeout=12, headers={"User-Agent": "TradingRadar/1.0 (event-source-verification)"})
-        status_code = int(getattr(response, "status_code", 0))
-        final_url = str(getattr(response, "url", month_url) or month_url)
-        html = str(getattr(response, "text", "") or "")
-        if status_code != 200:
-            return False, f"Fed-Kalender HTTP {status_code}"
-        if not re.match(r"^https://www\.federalreserve\.gov/newsevents/", final_url, re.I):
-            return False, "Weiterleitung auf nicht zugelassene Quelldomain"
+    month_slug = f"{event_date:%Y}-{event_date.strftime('%B').lower()}"
+    urls = [
+        f"https://www.federalreserve.gov/newsevents/{month_slug}.htm?view=calendar",
+        f"https://www.federalreserve.gov/newsevents/{month_slug}.htm",
+    ]
+    if requester is None:
+        import requests
+        requester = requests.get
 
-        # Prefer semantic event rows/items. If no such blocks are present, fail
-        # closed rather than combining unrelated page-wide text.
+    errors = []
+    responses = []
+    for url in urls:
+        try:
+            response = requester(
+                url, timeout=12,
+                headers={"User-Agent": "TradingRadar/1.1 (official-event-verification)"},
+            )
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            final_url = str(getattr(response, "url", url) or url)
+            if status_code != 200:
+                errors.append(f"{url} -> HTTP {status_code}")
+                continue
+            if not re.match(r"^https://www\.federalreserve\.gov/newsevents/", final_url, re.I):
+                errors.append(f"{url} -> unzulässige Weiterleitungsdomain: {final_url}")
+                continue
+            html = str(getattr(response, "text", "") or "")
+            if not html.strip():
+                errors.append(f"{url} -> HTTP 200, aber leerer Antworttext")
+                continue
+            responses.append((url, final_url, html))
+        except Exception as exc:
+            errors.append(f"{url} -> {type(exc).__name__}: {exc}")
+
+    def plain_text(fragment: str) -> str:
+        fragment = re.sub(r"(?is)<script\b.*?</script>|<style\b.*?</style>", " ", fragment)
+        fragment = re.sub(r"(?is)<[^>]+>", " ", fragment)
+        return re.sub(r"\s+", " ", fragment).casefold()
+
+    month = event_date.strftime("%B").casefold()
+    day = str(event_date.day)
+    year = str(event_date.year)
+    # The Fed's month page often represents the release date as a bare day
+    # number and the meeting range as "Two-day meeting, October 27 - 28".
+    # Validate the year/month from the official page title/URL and the target
+    # day from that bounded FOMC Meetings category, rather than requiring the
+    # year to be repeated in every child element.
+    full_date_pattern = re.compile(
+        rf"\b{re.escape(month)}\s+(?:\d{{1,2}}\s*[-–]\s*)?{re.escape(day)}"
+        rf"(?:\s*[-–]\s*\d{{1,2}})?[,]?\s+{re.escape(year)}\b"
+    )
+    range_pattern = re.compile(
+        rf"\b{re.escape(month)}\s+\d{{1,2}}\s*[-–]\s*{re.escape(day)}\b"
+    )
+    bare_day_pattern = re.compile(rf"(?<!\d){re.escape(day)}(?!\d)")
+
+    for requested_url, final_url, html in responses:
         blocks = re.findall(r"(?is)<tr\b[^>]*>.*?</tr\s*>", html)
         if not blocks:
             blocks = re.findall(r"(?is)<li\b[^>]*>.*?</li\s*>", html)
-
-        def plain_text(fragment: str) -> str:
-            fragment = re.sub(r"(?is)<script\b.*?</script>|<style\b.*?</style>", " ", fragment)
-            fragment = re.sub(r"(?is)<[^>]+>", " ", fragment)
-            return re.sub(r"\s+", " ", fragment).casefold()
-
-        month = event_date.strftime("%B").casefold()
-        day = str(event_date.day)
-        year = str(event_date.year)
-        date_pattern = re.compile(
-            rf"\b{re.escape(month)}\s+(?:\d{{1,2}}\s*[-–]\s*)?{re.escape(day)}"
-            rf"(?:\s*[-–]\s*\d{{1,2}})?[,]?\s+{year}\b"
-        )
         matching_blocks = []
         for block in blocks:
-            text = plain_text(block)
+            block_text = plain_text(block)
             if (
-                date_pattern.search(text)
-                and re.search(r"\bfomc\b", text)
-                and re.search(r"\b2\s*:\s*00\s*p\.?\s*m\.?\b", text)
+                (full_date_pattern.search(block_text) or range_pattern.search(block_text))
+                and re.search(r"\bfomc\b", block_text)
+                and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", block_text)
             ):
-                matching_blocks.append(text)
+                matching_blocks.append(block_text)
+
+        page_text = plain_text(html)
         if not matching_blocks:
-            return False, "Kein einzelner offizieller Kalender-Eintrag enthält gleichzeitig Datum, FOMC und 14:00 Uhr"
-        press_verified = any(
-            re.search(r"\b2\s*:\s*30\s*p\.?\s*m\.?\b", block)
-            for block in matching_blocks
-        )
-        detail = f"Datum, FOMC und 14:00 Uhr im selben offiziellen Kalender-Eintrag bestätigt ({final_url})"
-        if press_verified:
-            detail += "; PRESSEKONFERENZ_VERIFIZIERT"
-        else:
-            detail += "; Pressekonferenzzeit im Eintrag nicht separat bestätigt"
-        return True, detail
-    except Exception as exc:
-        return False, f"Fed-Kalenderprüfung fehlgeschlagen: {type(exc).__name__}: {exc}"
+            group_match = re.search(
+                r"\bfomc meetings\b(.*?)(?=\bbeige book\b|\bstatistical releases\b|\bspeeches\b|\btestimony\b|\bother\b)",
+                page_text,
+            )
+            if group_match:
+                group_text = re.sub(r"\s+", " ", group_match.group(1)).strip()
+                # Confirm page context identifies the correct month and year.
+                page_context_ok = (
+                    month in page_text and year in page_text
+                    and re.search(rf"\b{re.escape(year)}\b", page_text)
+                )
+                target_day_ok = bool(
+                    full_date_pattern.search(group_text)
+                    or range_pattern.search(group_text)
+                )
+                if (
+                    page_context_ok and target_day_ok
+                    and re.search(r"\bfomc\b", group_text)
+                    and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", group_text)
+                ):
+                    matching_blocks.append(group_text)
+
+        if matching_blocks:
+            press_verified = any(
+                re.search(r"\b2\s*:\s*30\s*p\.?m\.?\b", block)
+                for block in matching_blocks
+            )
+            detail = (
+                f"Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt "
+                f"({final_url}; Abruf: {requested_url})"
+            )
+            if press_verified:
+                detail += "; PRESSEKONFERENZ_VERIFIZIERT"
+            else:
+                detail += "; Pressekonferenzzeit im Eintrag nicht separat bestätigt"
+            if errors:
+                detail += "; vorherige Abrufversuche fehlgeschlagen: " + " | ".join(errors)
+            return True, detail
+
+        errors.append(f"{requested_url} -> HTTP 200, aber kein passender FOMC-Eintrag für {event_date.isoformat()}")
+
+    diagnostic = " | ".join(errors) if errors else "keine offizielle Kalenderantwort erhalten"
+    return False, f"Fed-Kalenderprüfung fehlgeschlagen; {diagnostic}"
 
 
 def _enrich_fomc_event(
@@ -400,7 +458,8 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
         "Ereignis-Uhrzeit|Ereignis Uhrzeit|Datum|Date|Uhrzeit|Zeit|Zeitzone|"
         "Kennzahl|Indikator|Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|"
         "Konsens|Istwert|Quelle|Source|Betroffene These/Assetklasse/konkrete offene Positionen|"
-        "Szenarien|Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|Quellenprüfung|Quellenpruefung"
+        "Szenarien(?:\\s+(?:unter|entsprechend|über|ueber)\\s+Konsens)?|"
+        "Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|Quellenprüfung|Quellenpruefung"
     )
     field = re.compile(rf"(?i)^\s*(?:{field_labels})\s*[:=]")
     def is_field_line(line: str) -> bool:
@@ -565,7 +624,7 @@ def downgrade_ohlcv_affected_candidates(report_text: str, audit: Mapping[str, An
 
 
 
-def validate_ohlcv_audit(audit: Mapping[str, Any]) -> list[str]:
+def validate_ohlcv_audit(audit: Mapping[str, Any], *, explicit_no_candidates: bool = False) -> list[str]:
     """Validate audit integrity; universe-wide gaps are disclosed, not an automatic report veto.
 
     Candidate-specific consequences belong to the candidate's own tradeability status.
@@ -603,10 +662,31 @@ def validate_ohlcv_audit(audit: Mapping[str, Any]) -> list[str]:
                 for item in affected_candidates
             )
         )
-        if not has_candidate_assessment:
+        if not has_candidate_assessment and not explicit_no_candidates:
             findings.append(f"OHLCV-Abdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt")
             findings.append("OHLCV-Kandidatenfolgen fehlen: affected_candidates ist leer, ungültig oder enthält keine verwertbare Kandidatenbewertung")
     # Kandidatenbezogene Auswirkungen werden zusätzlich einzeln markiert; eine
     # globale Datenlücke darf nicht dazu führen, dass betroffene Kandidaten
     # stillschweigend als handelbar erscheinen.
     return findings
+
+
+def report_explicitly_declares_no_technical_candidates(report_text: str) -> bool:
+    """Detect a plain-language zero-candidate declaration without guessing from an empty parse."""
+    if not isinstance(report_text, str):
+        return False
+    section = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?5\s*[.·]\s*Technische Kandidaten[^\r\n]*\r?\n"
+        r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?6(?:\s*[.·](?!\d)|\s+)|\Z)", report_text
+    )
+    if not section:
+        return False
+    body = section.group(1)
+    explicit = re.search(
+        r"(?i)keine belastbaren technischen kandidaten|keine technischen kandidaten|"
+        r"keine kandidaten|kein kandidat|keine handelsfreigabe", body
+    )
+    structured_candidate = re.search(
+        r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)\s*[:=]", body
+    )
+    return bool(explicit and not structured_candidate)

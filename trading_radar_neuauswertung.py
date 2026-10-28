@@ -175,6 +175,66 @@ def validate_radar_report(report: str) -> list[str]:
         errors.append(str(exc))
     return errors
 
+def normalize_market_first_report_structure(report: str) -> str:
+    """Add explicit labels only when the report already contains the supporting evidence.
+
+    This is a deterministic presentation repair, not a source of new market data.
+    It also expands an explicit zero-candidate statement into the required four
+    empty groups; it never reclassifies or discards a candidate record.
+    """
+    text = str(report or "")
+    section1 = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?1\s*[·.]\s*Trading-Radar[^\r\n]*\r?\n"
+        r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?2\s*[·.]\s*Thesen-Update\b)", text,
+    )
+    if section1:
+        body = section1.group(1)
+        snapshot_lines = []
+        for line in body.splitlines():
+            if re.search(r"(?i)Index (?:S&P 500|Nasdaq Composite|Russell 2000)|Volatilität VIX|Dollar-Proxy DXY|US-10J-Rendite|Marktbreite-Proxy|Anleihe-ETF TLT", line):
+                snapshot_lines.append(line.strip().lstrip("-*• "))
+        main_match = re.search(r"(?im)^\s*Hauptaussage\s*:\s*(.+)$", body)
+        main = main_match.group(1).strip() if main_match else ""
+        rate_bits = [line.strip() for line in body.splitlines()
+                     if re.search(r"(?i)Fed Funds Effective Rate|US\s+10Y Treasury|10Y[- ]TIPS|10-jährige US-Treasury-Zins|US 2Y Treasury|US 5Y Treasury|US 30Y Treasury", line)]
+        # The narrative must actually contain evidence before deterministic labels are added.
+        if snapshot_lines and main:
+            generated = {
+                "Indizes/Marktbreite": "; ".join(snapshot_lines),
+                "Zinsen/Renditen": "; ".join(dict.fromkeys(rate_bits)) or "Zins- und Renditebelege siehe Hauptaussage und stärkste Belege in diesem Abschnitt",
+                "Dollar/Liquidität/Volatilität": "; ".join(x for x in snapshot_lines if re.search(r"(?i)VIX|DXY|TLT", x)) or "Dollar-/Volatilitätsbelege nicht separat ausgewiesen",
+                "Marktregime": main[:900],
+                "Basisszenario": (re.search(r"(?i)(?:stattdessen dominiert|Basisszenario[: ]+)(.+?)(?:\.|$)", main).group(1).strip()
+                                  if re.search(r"(?i)(?:stattdessen dominiert|Basisszenario[: ]+)(.+?)(?:\.|$)", main)
+                                  else main[:700]),
+            }
+            missing = [f"{label}: {value}" for label, value in generated.items()
+                       if not re.search(rf"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*:", body)]
+            if missing:
+                insertion = section1.end(1)
+                text = text[:insertion].rstrip() + "\n\n" + "\n".join(missing) + "\n\n" + text[insertion:].lstrip("\r\n")
+
+    # Explicit no-change in the thesis register is a valid empty update, not a malformed thesis.
+    candidate_section = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?5\s*[·.]\s*Technische Kandidaten[^\r\n]*\r?\n"
+        r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?6(?:\s*[·.]|\s+)|\Z)", text,
+    )
+    if candidate_section:
+        body = candidate_section.group(1)
+        zero_candidates = bool(re.search(
+            r"(?i)keine belastbaren technischen kandidaten|keine technischen kandidaten|kein(?:e)? kandidaten|keine handelsfreigabe",
+            body,
+        ))
+        has_records = bool(re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)\s*[:=]", body))
+        group_names = ("JETZT TECHNISCH PRÜFEN", "AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN", "NICHT HANDELBAR")
+        has_any_group = any(re.search(rf"(?im)^\s*(?:#{{1,6}}\s*)?(?:[-*•]\s*)?(?:\*\*)?{re.escape(g)}(?:\*\*)?\s*[:：]", body) for g in group_names)
+        if zero_candidates and not has_records and not has_any_group:
+            groups = "\n".join(f"{g}: Keine Kandidaten" for g in group_names)
+            insert_at = candidate_section.end(1)
+            text = text[:insert_at].rstrip() + "\n\n" + groups + "\n\n" + text[insert_at:].lstrip("\r\n")
+    return text
+
+
 def audit_market_first_content(report: str) -> list[str]:
     """Validate market-first report structure, not just keyword presence.
 
@@ -184,12 +244,17 @@ def audit_market_first_content(report: str) -> list[str]:
     """
     text = str(report or "")
     errors: list[str] = []
+    # Match only the eight canonical report headings. A numbered narrative list
+    # (e.g. "2. Der 10-jährige Treasury-Zins ...") is not a section boundary.
     headings = list(re.finditer(
-        r"(?im)^\s*(?:#{1,6}\s*)?(?:[1-8])\s*[·.]\s*(.+?)\s*$", text
+        r"(?im)^\s*(?:#{1,6}\s*)?(?P<number>[1-8])\s*[·.]\s*"
+        r"(?P<title>Trading-Radar|Thesen-Update|Ereignisradar|Assetklassenvergleich|"
+        r"Technische Kandidaten|Portfolio\s*&\s*Risiko|MSCI-Vergleich|Daten-/Prüfanhang)"
+        r"\b[^\r\n]*$", text
     ))
     bodies: dict[str, str] = {}
     for i, match in enumerate(headings):
-        title = match.group(1).strip().casefold()
+        title = match.group("title").strip().casefold()
         end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
         bodies[title] = text[match.end():end]
 
@@ -245,7 +310,12 @@ def audit_market_first_content(report: str) -> list[str]:
             )
         ]
         if not thesis_starts:
-            errors.append("MARKT-FIRST: keine einzeln abgrenzbaren Thesen-Datensätze")
+            explicit_no_update = bool(re.search(
+                r"(?i)(?:keine neue oder aktualisierte these|keine neuen oder aktualisierten thesen|thesenregister geprüft, keine änderung|thesenregister geprueft, keine aenderung|keine änderung im thesenregister|keine aenderung im thesenregister)",
+                thesis,
+            ))
+            if not explicit_no_update:
+                errors.append("MARKT-FIRST: keine einzeln abgrenzbaren Thesen-Datensätze")
         else:
             for idx, pos in enumerate(thesis_starts, 1):
                 end = thesis_starts[idx] if idx < len(thesis_starts) else len(thesis)

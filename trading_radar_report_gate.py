@@ -224,8 +224,11 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         current = []
         field_only = re.compile(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-            r"(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
-            r"letzter Wert|Vorwert|Konsens|Istwert)(?:\*\*)?\s*[:=](?:\*\*)?"
+            r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+            r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
+            r"Szenarien(?:\s+(?:unter|entsprechend|über|ueber)\s+Konsens)?|"
+            r"Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|Quellenprüfung|Quellenpruefung|"
+            r"Betroffene These/Assetklasse/konkrete offene Positionen)(?:\*\*)?\s*[:=](?:\*\*)?"
         )
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
