@@ -596,7 +596,7 @@ def validate_ohlcv_audit(audit: Mapping[str, Any]) -> list[str]:
         )
         if not has_candidate_assessment:
             findings.append(f"OHLCV-Abdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt")
-            findings.append("OHLCV-Kandidatenfolgen fehlen oder enthalten keine verwertbare Kandidatenbewertung")
+            findings.append("OHLCV-Kandidatenfolgen fehlen: affected_candidates ist leer, ungültig oder enthält keine verwertbare Kandidatenbewertung")
     # Kandidatenbezogene Auswirkungen werden zusätzlich einzeln markiert; eine
     # globale Datenlücke darf nicht dazu führen, dass betroffene Kandidaten
     # stillschweigend als handelbar erscheinen.
