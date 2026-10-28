@@ -175,3 +175,343 @@ def test_live_market_snapshot_adds_real_numeric_market_evidence():
     assert not findings
     assert "Index S&P 500" in result
     assert "Marktbreite-Proxy: 11/11" in result
+
+
+def test_live_market_snapshot_inserts_inside_section_one_with_decorated_heading():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = ["^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+               "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
+    index = pd.date_range("2026-06-01", periods=80, freq="B")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    data = pd.DataFrame({col: [100 + i * 0.2 for i in range(len(index))] for col in columns}, index=index)
+    report = "### 1. Trading-Radar — Executive-Entscheidung\nMarktregime: konstruktiv.\n\n### 2. Thesen-Update (Register)\n"
+    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    assert findings == []
+    assert result.index("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") < result.index("### 2. Thesen-Update")
+    assert "Index S&P 500" in result.split("### 2. Thesen-Update")[0]
+    assert result.count("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") == 1
+
+
+def test_market_first_audit_does_not_fail_only_on_portfolio_length():
+    from trading_radar_neuauswertung import audit_market_first_content
+    long_portfolio = "Position mit dokumentiertem Datenstand. " * 100
+    report = f"""1 · Trading-Radar
+Marktregime: risk-off. Indizes/Marktbreite: S&P 500 und Nasdaq schwach; Marktbreite rückläufig.
+Zinsen/Renditen: Treasury-Renditen steigen. Dollar/Liquidität/Volatilität: Dollar und VIX ziehen an; Liquidität eng.
+Basisszenario: defensives Marktbild.
+2 · Thesen-Update
+Thesen-Name: T1
+Gegenbelege: Gewinne stabilisieren sich trotz schwacher Breite.
+Alternative: Seitwärtsmarkt bei nachlassender Volatilität.
+Bestätigungstrigger: Marktbreite verbessert sich über mehrere Sitzungen.
+Invalidierungstrigger: S&P 500 fällt unter das letzte bestätigte Swing-Tief.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke zeigt Rotation aus Growth in Energie; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: Kandidat A
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: Kandidat B
+Asset/Ticker: Beispiel AG (ABC)
+Statusgruppe: AUF TRIGGER WARTEN
+Trigger: Ausbruch über bestätigten Widerstand
+Gegenargument: Volumen bestätigt den Ausbruch noch nicht
+Regel-/Datenstatus: Watchlist; nicht freigegeben.
+6 · Portfolio & Risiko
+{long_portfolio}
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    errors = audit_market_first_content(report)
+    assert not any("Portfolio-Abschnitt ist deutlich umfangreicher" in error for error in errors)
+
+
+def test_market_first_audit_requires_fields_per_thesis_and_candidate():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Begründung: Markt bleibt konstruktiv; Trigger und Alternative wurden irgendwo erwähnt.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: Beispiel AG (ABC).
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+Asset/Ticker: Beispiel AG (ABC)
+Trigger: Ausbruch
+Gegenargument: Volumen fehlt
+Regel-/Datenstatus: Watchlist
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    errors = audit_market_first_content(report)
+    assert any("Gegenbelege" in e for e in errors)
+    assert any("Alternative" in e for e in errors)
+    assert any("Bestätigungstrigger" in e for e in errors)
+    assert any("Invalidierungstrigger" in e for e in errors)
+    assert any("Statusgruppe" in e for e in errors)
+
+
+def test_market_first_audit_accepts_structurally_complete_thesis_and_candidate():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: Beispiel AG (ABC).
+Asset/Ticker: Beispiel AG (ABC)
+Statusgruppe: AUF TRIGGER WARTEN
+Trigger: Ausbruch über Widerstand
+Gegenargument: Volumen bestätigt nicht
+Regel-/Datenstatus: Watchlist, nicht freigegeben.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    assert audit_market_first_content(report) == []
+
+
+def test_market_first_audit_accepts_four_explicitly_empty_candidate_groups():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    assert audit_market_first_content(report) == []
+
+
+def test_market_first_audit_rejects_candidate_in_wrong_group():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+Asset/Ticker: Beispiel AG (ABC)
+Statusgruppe: NICHT HANDELBAR
+Trigger: Ausbruch über Widerstand
+Gegenargument: Volumen bestätigt nicht
+Regel-/Datenstatus: Watchlist.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    errors = audit_market_first_content(report)
+    assert any("stimmt nicht mit der umgebenden Kandidatengruppe" in e for e in errors)
+
+
+def test_market_first_audit_rejects_explicitly_empty_group_with_candidate():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+Asset/Ticker: Beispiel AG (ABC)
+Statusgruppe: AUF TRIGGER WARTEN
+Trigger: Ausbruch über Widerstand
+Gegenargument: Volumen bestätigt nicht
+Regel-/Datenstatus: Watchlist.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    errors = audit_market_first_content(report)
+    assert any("als leer markiert" in e for e in errors)
+
+
+def test_market_first_audit_accepts_markdown_group_headings_with_empty_markers():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+### JETZT TECHNISCH PRÜFEN
+Keine Kandidaten.
+### AUF TRIGGER WARTEN
+0 Kandidaten
+### EREIGNIS ABWARTEN
+Explizit leer
+### NICHT HANDELBAR
+Keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    assert audit_market_first_content(report) == []
+
+
+def test_market_first_audit_rejects_duplicate_candidate_group_headings():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    errors = audit_market_first_content(report)
+    assert any("kommt mehrfach vor" in error for error in errors)
+
+
+def test_market_first_audit_handles_optional_rejected_group_consistently():
+    from trading_radar_neuauswertung import audit_market_first_content
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth improves.
+Zinsen/Renditen: Treasury yields stable.
+Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Basisszenario: selective risk-on.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow.
+Alternative: sideways market if yields rise.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energie outperformt Growth; Gewinner und Verlierer divergieren.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+### VERWERFEN / INVALIDIERT
+Keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio.
+7 · MSCI-Vergleich
+Vergleich.
+8 · Daten-/Prüfanhang
+Daten."""
+    assert audit_market_first_content(report) == []
