@@ -37,6 +37,22 @@ E. PORTFOLIO-AUSWIRKUNG: erst danach bestehende Positionen anhand der unabhaengi
 MARKT-FIRST-ABNAHME:
 - Ein Bericht, der vor allem Positionen kommentiert und kein zusammenhaengendes Marktregime,
   keine relative Staerke/Rotation und keine bedingte Vorschau liefert, ist fachlich unzureichend.
+- Abschnitt 1 muss explizit die Felder "Marktregime:", "Indizes/Marktbreite:",
+  "Zinsen/Renditen:", "Dollar/Liquidität/Volatilität:" und "Basisszenario:" enthalten.
+  Die eingefuegten Live-Marktbelege sind Datenfakten; Interpretation klar davon trennen.
+- Abschnitt 2 muss JEDE These als eigenen Datensatz mit "Thesen-Name:", "Gegenbelege:",
+  "Alternative:", "Bestätigungstrigger:" und "Invalidierungstrigger:" ausgeben. Jedes
+  Feld muss pro These konkret und nichtleer sein; Erwähnungen außerhalb des Datensatzes
+  zählen nicht. Fehlende Evidenz und bedingte Trigger ausdrücklich benennen.
+- Abschnitt 5 muss alle vier Statusgruppen ausdrücklich ausgeben: "JETZT TECHNISCH PRÜFEN",
+  "AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN" und "NICHT HANDELBAR". Markdown-Überschriften
+  sind zulässig; jede der vier Pflichtgruppen muss genau einmal erscheinen. Leere Gruppen
+  erhalten den Eintrag "keine Kandidaten". Optional darf "VERWERFEN / INVALIDIERT" als
+  eigene Gruppe erscheinen. Jeder Kandidat ist ein eigener Datensatz mit "Asset/Ticker:",
+  "Statusgruppe:", "Trigger:", "Gegenargument:" und "Regel-/Datenstatus:". Die Statusgruppe
+  muss exakt zur umgebenden Gruppe passen; allgemeine Erwähnungen reichen nicht.
+  Nur wenn Einstieg, Stop, TP1, TP2 und CRV belegt sind, darf ein Kandidat als
+  "JETZT TECHNISCH PRÜFEN" geführt werden. Sonst fehlende Werte als NICHT VERFÜGBAR markieren.
 - Keine erzwungene These oder Handelsfreigabe. Eine begruendete Watchlist ist ein Ergebnis.
 - Datenluecken muessen genau den betroffenen Vergleich, die These oder den Kandidaten begrenzen;
   sie duerfen nicht durch allgemeine Textwarnungen verdeckt werden.
@@ -160,10 +176,11 @@ def validate_radar_report(report: str) -> list[str]:
     return errors
 
 def audit_market_first_content(report: str) -> list[str]:
-    """Check whether a report actually contains market-led analysis, not only headings.
+    """Validate market-first report structure, not just keyword presence.
 
-    This is a semantic presence gate, not a claim that a thesis is financially correct.
-    It deliberately returns actionable findings rather than generating missing content.
+    This gate checks required fields per thesis and per candidate record. It does
+    not judge the financial truth of the claims; it prevents headings or generic
+    keywords elsewhere from masking missing record-level evidence.
     """
     text = str(report or "")
     errors: list[str] = []
@@ -175,33 +192,201 @@ def audit_market_first_content(report: str) -> list[str]:
         title = match.group(1).strip().casefold()
         end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
         bodies[title] = text[match.end():end]
+
     def body_for(fragment: str) -> str:
         return next((body for title, body in bodies.items() if fragment in title), "")
+
+    def has_value(block: str, label_pattern: str) -> bool:
+        match = re.search(
+            rf"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:{label_pattern})(?:\*\*)?\s*[:=]\s*([^\r\n]+)",
+            block,
+        )
+        if not match:
+            return False
+        value = match.group(1).strip().strip("*` ")
+        return bool(value) and not re.fullmatch(
+            r"(?i)(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|UNKLAR|TBD|TBA|N/?A|[-—])",
+            value,
+        )
+
     market = body_for("trading-radar")
     rotation = body_for("assetklassenvergleich")
     thesis = body_for("thesen-update")
     candidates = body_for("technische kandidaten")
-    portfolio = body_for("portfolio")
     if not market:
         errors.append("MARKT-FIRST: Marktregime-Abschnitt fehlt")
     else:
         groups = {
-            "Indizes/Marktbreite": r"index|indices|marktbreite|breadth|S&P|Nasdaq|DAX",
-            "Zinsen/Renditen": r"rendite|zins|treasury|realzins|real yield",
-            "Dollar/Liquiditaet/Volatilitaet": r"dollar|DXY|liquidit|volatil|VIX",
-            "Marktregime / gemeinsame Regimeeinschaetzung": r"regime|risk.on|risk.off|marktbild|basisszenario",
+            "Indizes/Marktbreite": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Indizes/Marktbreite(?:\*\*)?\s*:",
+            "Zinsen/Renditen": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Zinsen/Renditen(?:\*\*)?\s*:",
+            "Dollar/Liquidität/Volatilität": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Dollar/Liquidität/Volatilität(?:\*\*)?\s*:",
+            "Marktregime": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Marktregime(?:\*\*)?\s*:",
+            "Basisszenario": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Basisszenario(?:\*\*)?\s*:",
         }
         for label, pattern in groups.items():
-            if not re.search(pattern, market, re.IGNORECASE):
-                errors.append(f"MARKT-FIRST: Trading-Radar belegt {label} nicht erkennbar")
+            m = re.search(pattern + r"\s*([^\r\n]+)", market)
+            if not m or not m.group(1).strip() or re.fullmatch(
+                r"(?i)\s*(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|TBD|TBA)\s*", m.group(1)
+            ):
+                errors.append(f"MARKT-FIRST: Trading-Radar-Feld '{label}' fehlt oder ist unbelegt")
+
     if not rotation or not re.search(r"staerke|stärke|rotation|divergenz|gewinner|verlierer|relativ", rotation, re.I):
-        errors.append("MARKT-FIRST: relative Staerke/Kapitalrotation fehlt")
-    if not thesis or not re.search(r"gegenbeleg|counter.evidence|invalidier|trigger|alternativ|szenario", thesis, re.I):
-        errors.append("MARKT-FIRST: Thesen brauchen Gegenbelege, Alternativen und beobachtbare Trigger")
-    if not candidates or not re.search(r"watchlist|trigger|nicht handelbar|technisch pruefen|technisch prüfen", candidates, re.I):
-        errors.append("MARKT-FIRST: Kandidaten muessen Watchlist/Trigger/Handelsstatus unterscheiden")
-    if portfolio and len(portfolio) > len(market) * 2 and len(portfolio.strip()) > 1200:
-        errors.append("MARKT-FIRST: Portfolio-Abschnitt ist deutlich umfangreicher als das Marktbild; fachlich pruefen")
+        errors.append("MARKT-FIRST: relative Stärke/Kapitalrotation fehlt")
+
+    # Require one or more individually parseable thesis records. Each record
+    # must carry all four decision fields; generic mentions elsewhere do not pass.
+    if not thesis:
+        errors.append("MARKT-FIRST: Thesen-Update fehlt")
+    else:
+        thesis_starts = [
+            m.start() for m in re.finditer(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Thesen-Name|These(?:n)?(?:-ID)?|Thesis(?:\s+ID)?)\b[^:\r\n]*(?:\*\*)?\s*[:(]",
+                thesis,
+            )
+        ]
+        if not thesis_starts:
+            errors.append("MARKT-FIRST: keine einzeln abgrenzbaren Thesen-Datensätze")
+        else:
+            for idx, pos in enumerate(thesis_starts, 1):
+                end = thesis_starts[idx] if idx < len(thesis_starts) else len(thesis)
+                block = thesis[pos:end]
+                label = f"These {idx}"
+                for field, pattern in (
+                    ("Gegenbelege", r"Gegenbelege|Gegenbeleg"),
+                    ("Alternative", r"Alternative(?:szenario)?"),
+                    ("Bestätigungstrigger", r"Bestätigungstrigger|Bestaetigungstrigger"),
+                    ("Invalidierungstrigger", r"Invalidierungstrigger"),
+                ):
+                    if not has_value(block, pattern):
+                        errors.append(f"MARKT-FIRST: {label}: Pflichtfeld '{field}' fehlt oder ist unbelegt")
+
+    # Candidate groups are parsed as sections. Every candidate must belong to
+    # the group in which its record occurs; explicit empty groups are valid.
+    required_group_labels = (
+        "JETZT TECHNISCH PRÜFEN",
+        "AUF TRIGGER WARTEN",
+        "EREIGNIS ABWARTEN",
+        "NICHT HANDELBAR",
+    )
+    optional_group_labels = ("VERWERFEN / INVALIDIERT",)
+    group_labels = required_group_labels + optional_group_labels
+    if not candidates:
+        errors.append("MARKT-FIRST: Technische Kandidaten fehlen")
+    else:
+        group_pattern = re.compile(
+            r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:[-*•][ \t]*)?(?:\*\*)?("
+            + "|".join(re.escape(g) for g in sorted(group_labels, key=len, reverse=True))
+            + r")(?:\*\*)?[ \t]*(?::|：)?[ \t]*([^\r\n]*)$"
+        )
+        group_matches = list(group_pattern.finditer(candidates))
+        # Keep every occurrence: silently overwriting duplicate headings could
+        # hide malformed reports and attach candidates to the wrong group.
+        group_occurrences: dict[str, list[re.Match[str]]] = {}
+        for match in group_matches:
+            group = re.sub(r"\s+", " ", match.group(1)).strip().upper()
+            group_occurrences.setdefault(group, []).append(match)
+        for group, matches in group_occurrences.items():
+            if len(matches) > 1:
+                errors.append(
+                    f"MARKT-FIRST: Kandidatengruppe '{group}' kommt mehrfach vor "
+                    f"({len(matches)} Überschriften; genau eine ist zulässig)"
+                )
+        group_sections: dict[str, tuple[int, int, str]] = {}
+        for idx, match in enumerate(group_matches):
+            group = re.sub(r"\s+", " ", match.group(1)).strip().upper()
+            section_end = group_matches[idx + 1].start() if idx + 1 < len(group_matches) else len(candidates)
+            # First occurrence is retained deterministically; duplicates already fail closed.
+            group_sections.setdefault(group, (match.end(), section_end, match.group(2).strip()))
+
+        empty_markers = re.compile(
+            r"(?i)^(?:keine kandidaten(?: in dieser gruppe)?|0 kandidaten|"
+            r"explizit leer|leer)\s*[.!—-]*$"
+        )
+        for group in group_labels:
+            if group not in group_sections:
+                if group in required_group_labels:
+                    errors.append(
+                        f"MARKT-FIRST: Kandidatengruppe '{group}' fehlt "
+                        "(leere Gruppen müssen ausdrücklich als 'keine Kandidaten' markiert sein)"
+                    )
+                continue
+            body_start, body_end, heading_value = group_sections[group]
+            section = candidates[body_start:body_end].strip()
+            # Candidate records are bounded by their Asset/Ticker label.
+            starts = [
+                m.start() + body_start for m in re.finditer(
+                    r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)"
+                    r"(?:\*\*)?\s*[:=]",
+                    candidates[body_start:body_end],
+                )
+            ]
+            explicit_empty = bool(empty_markers.fullmatch(heading_value.strip())) or bool(
+                empty_markers.fullmatch(section)
+            )
+            if explicit_empty and starts:
+                errors.append(
+                    f"MARKT-FIRST: Kandidatengruppe '{group}' ist als leer markiert, "
+                    "enthält aber Kandidaten-Datensätze"
+                )
+            elif not starts and not explicit_empty:
+                errors.append(
+                    f"MARKT-FIRST: Kandidatengruppe '{group}' enthält weder Kandidaten "
+                    "noch eine ausdrückliche Leer-Markierung ('keine Kandidaten')"
+                )
+
+        candidate_starts = [
+            m.start() for m in re.finditer(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)"
+                r"(?:\*\*)?\s*[:=]",
+                candidates,
+            )
+        ]
+        allowed_statuses = {
+            "JETZT TECHNISCH PRÜFEN", "AUF TRIGGER WARTEN",
+            "EREIGNIS ABWARTEN", "NICHT HANDELBAR", "VERWERFEN / INVALIDIERT",
+        }
+        for idx, pos in enumerate(candidate_starts, 1):
+            end = candidate_starts[idx] if idx < len(candidate_starts) else len(candidates)
+            block = candidates[pos:end]
+            label = f"Kandidat {idx}"
+            # Find the last group heading before this record, so a candidate
+            # cannot claim a status that differs from its containing section.
+            enclosing = [
+                (m.start(), re.sub(r"\s+", " ", m.group(1)).strip().upper())
+                for m in group_matches if m.start() < pos
+            ]
+            enclosing_group = enclosing[-1][1] if enclosing else ""
+            for field, pattern in (
+                ("Trigger", r"Trigger"),
+                ("Gegenargument", r"Gegenargument|Gegenargumente"),
+                ("Regel-/Datenstatus", r"Regel-/Datenstatus|Regelstatus|Datenstatus"),
+            ):
+                if not has_value(block, pattern):
+                    errors.append(f"MARKT-FIRST: {label}: Pflichtfeld '{field}' fehlt oder ist unbelegt")
+            status = re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Statusgruppe(?:\*\*)?\s*[:=]\s*([^\r\n]+)",
+                block,
+            )
+            status_value = status.group(1).strip().strip("*` ") if status else ""
+            normalized_status = re.sub(r"\s+", " ", status_value).strip().upper()
+            matched_status = next(
+                (allowed for allowed in allowed_statuses
+                 if normalized_status == allowed
+                 or normalized_status.startswith(allowed + " —")
+                 or normalized_status.startswith(allowed + " -")),
+                None,
+            )
+            if not matched_status:
+                errors.append(
+                    f"MARKT-FIRST: {label}: Statusgruppe fehlt oder ist nicht eindeutig; "
+                    f"zulässig: {', '.join(sorted(allowed_statuses))}"
+                )
+            elif enclosing_group and matched_status != enclosing_group:
+                errors.append(
+                    f"MARKT-FIRST: {label}: Statusgruppe '{matched_status}' stimmt nicht "
+                    f"mit der umgebenden Kandidatengruppe '{enclosing_group}' überein"
+                )
+    # Portfolio length is not evidence of analytical quality.
     return errors
 
 
