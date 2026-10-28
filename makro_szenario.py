@@ -2457,15 +2457,36 @@ def get_public_fed_futures():
 
 
 def _fomc_meeting_dates(year):
-    # Quelle/Terminplan: lokale JSON-Datei aus dem Repository. Die Datei wird
-    # jaehrlich gepflegt und entspricht dem offiziellen Fed-Kalender.
+    """Read the project-maintained FOMC schedule independent of the process CWD.
+
+    The repository JSON is a maintained schedule, not proof that a live
+    Federal Reserve page was successfully checked during this run. Invalid
+    entries are ignored individually; a malformed/missing file fails closed.
+    """
+    import json
+
+    schedule_file = Path(__file__).resolve().with_name("fomc_termine.json")
     try:
-        import json
-        with open("fomc_termine.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return [dt.date.fromisoformat(x) for x in data.get("termine", []) if x.startswith(str(year))]
-    except Exception:
+        data = json.loads(schedule_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"WARNUNG-FOMC-TERMINE: lokale Terminliste nicht lesbar: {type(exc).__name__}: {exc}")
         return []
+
+    if not isinstance(data, dict) or not isinstance(data.get("termine"), list):
+        print("WARNUNG-FOMC-TERMINE: ungueltiges JSON-Schema in fomc_termine.json")
+        return []
+
+    dates = set()
+    for raw_date in data["termine"]:
+        if not isinstance(raw_date, str):
+            continue
+        try:
+            parsed = dt.date.fromisoformat(raw_date)
+        except ValueError:
+            continue
+        if parsed.year == int(year):
+            dates.add(parsed)
+    return sorted(dates)
 
 
 def _next_fomc_date(today):
@@ -5601,7 +5622,15 @@ def macro_events_snapshot(today):
     else:
         for date, title, source in events:
             days = (date - today).days
-            out.append(f"{title}: {('HEUTE' if days == 0 else 'in ' + str(days) + ' Tag(en)')} ({date.isoformat()}) | SOURCE={source} | STATUS=REAL_PUBLIC_SECONDARY")
+            status = (
+                "REPOSITORY_SCHEDULE_LIVE_CHECK_NOT_CONFIRMED"
+                if "fomc_termine.json" in source
+                else "REAL_PUBLIC_SECONDARY"
+            )
+            out.append(
+                f"{title}: {('HEUTE' if days == 0 else 'in ' + str(days) + ' Tag(en)')} "
+                f"({date.isoformat()}) | SOURCE={source} | STATUS={status}"
+            )
 
     focus, candidates = _macro_focus_from_calendar(today, ff_events)
     out.append(f"FOREXFACTORY-EVENTDISCOVERY: STATUS={ff_status} | EVENTS={len(ff_events)}")
