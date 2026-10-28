@@ -86,7 +86,8 @@ else:
 import io
 from collections import defaultdict
 from trading_radar_neuauswertung import audit_market_first_content
-from trading_radar_market_first import normalize_event_section, validate_ohlcv_audit
+from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, validate_ohlcv_audit
+from trading_radar_report_gate import validate_report as validate_trading_radar_report
 
 from quellenwert_vertrag import (
     values_match_display, find_exact_labeled_line, extract_four_week_percent,
@@ -16733,6 +16734,78 @@ def _trading_radar_berichtsfelder_normalisieren(text):
 
 
 
+
+
+def _trading_radar_unvollstaendige_kandidaten_nicht_handelsbar(text):
+    """Downgrade candidates without source-backed numeric levels to watch-only.
+
+    No levels are invented. Incomplete setups remain visible for context but
+    cannot retain a buy-candidate status or pass as actionable candidates.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    match = re.search(
+        r"(?ims)^(?P<header>[ \t]*(?:#{1,6}\s*)?5\s*[.·]\s*Technische Kandidaten[^\r\n]*\r?\n)"
+        r"(?P<body>.*?)(?=^[ \t]*(?:#{1,6}\s*)?6(?:\s*[.·](?!\d)|\s+)|\Z)",
+        text,
+    )
+    if not match:
+        return text
+    body = match.group("body")
+    lines = body.splitlines()
+    starts = [
+        i for i, line in enumerate(lines)
+        if re.match(r"(?i)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?\s*[:=]", line)
+    ]
+    if not starts:
+        return text
+    rebuilt = []
+    cursor = 0
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        rebuilt.extend(lines[cursor:start])
+        record = lines[start:end]
+        record_text = "\n".join(record)
+        def numeric_field(label):
+            m = re.search(
+                rf"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?{label}(?:\*\*)?\s*[:=]\s*([^\r\n|;]+)",
+                record_text,
+            )
+            if not m:
+                return False
+            value = m.group(1).strip()
+            if re.search(r"(?i)NICHT VERFÜGBAR|FEHLT|UNBEKANNT|UNKLAR|TBD|TBA", value):
+                return False
+            value = re.sub(r"^(?:EUR|USD|GBP|€|\$|£)\s*", "", value, flags=re.I)
+            value = re.sub(r"\s*(?:EUR|USD|GBP|€|\$|£|%|x)$", "", value, flags=re.I).strip()
+            try:
+                float(value.replace(".", "").replace(",", ".") if "," in value else value)
+                return True
+            except ValueError:
+                return False
+        complete = all(numeric_field(label) for label in ("Einstieg", "Stop", "TP1", "TP2", "CRV"))
+        if not complete:
+            status_idx = next(
+                (j for j, line in enumerate(record)
+                 if re.search(r"(?i)(?:Regelstatus|Datenstatus|Regel[-/]Datenstatus)", line)),
+                None,
+            )
+            if status_idx is None:
+                record.append("- **Regelstatus:** NICHT HANDELBAR – Handelslevels/CRV nicht vollständig verifiziert")
+            else:
+                record[status_idx] = re.sub(
+                    r"(?i)(?:KAUFKANDIDAT(?:\s+[A-Z])?|JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT).*?$",
+                    "NICHT HANDELBAR – Handelslevels/CRV nicht vollständig verifiziert",
+                    record[status_idx],
+                )
+            record_text = "\n".join(record)
+        rebuilt.extend(record)
+        cursor = end
+    rebuilt.extend(lines[cursor:])
+    new_body = "\n".join(rebuilt)
+    return text[:match.start("body")] + new_body + text[match.end("body"):]
+
+
 def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     """Ensure narrative asset references use Name (Ticker), preserving Tab-2 keys."""
     if not isinstance(text, str) or not text:
@@ -17520,16 +17593,19 @@ def speichere_ergebnis(text, eingabedateien=None):
             text = text.rstrip() + "\n\n" + canonical_closed.lstrip("\n")
         # M-10: OHLCV-Aussagen ausschließlich aus dem strukturierten Prüfergebnis übernehmen.
         text = _trading_radar_ohlcv_abschnitt8_aktualisieren(text)
-        # Produktionsintegration: Ereignisdatensätze vor dem Speichern deterministisch
-        # normalisieren/deduplizieren. Fehlende Quelle/Datum blockiert FINAL.
+        # Ereignisradar normalisieren und bekannte FOMC-Termine aus dem gepflegten
+        # Projektkalender mit offizieller Fed-Quelle anreichern.
         text, event_quality_findings = normalize_event_section(text)
         validation_errors.extend("Ereignisradar: " + item for item in event_quality_findings)
         # Dieselbe persistente OHLCV-DB wie der Berichtsnachweis prüfen. Widersprüche
         # zwischen Status und Detailzahlen sind ein harter fachlicher Fehler.
         try:
             import historical_ohlcv
+            # Erst Kandidaten aus dem finalen Report extrahieren, dann exakt dieselbe
+            # aktive Universumsbasis und DB prüfen wie im unmittelbar vorherigen Workflow-Update.
             candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)
             ohlcv_audit = historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)
+            text = downgrade_ohlcv_affected_candidates(text, ohlcv_audit)
             ohlcv_findings = validate_ohlcv_audit(ohlcv_audit)
         except Exception as exc:
             ohlcv_audit = {"status": "unavailable", "universe_count": None, "covered_count": None}
@@ -17543,6 +17619,38 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Unbelegte Werte werden als NICHT VERFÜGBAR markiert, nie erfunden.
         text = _trading_radar_berichtsfelder_normalisieren(text)
         text = _trading_radar_name_ticker_normalisieren(text, eingabedateien)
+        # Canonicalize model Markdown labels ("**Label:**" -> "**Label**:")
+        # before validators parse them. This fixes field recognition at source,
+        # rather than weakening the report gate.
+        text = re.sub(r"\*\*([^*\n:]+):\*\*", r"**\1**:", text)
+        # Entity-name resolution must never rewrite schema labels such as Thesen-ID.
+        text = re.sub(r"(?i)Thesen-Name\s+nicht\s+aufgelöst\s*\(ID\)", "Thesen-ID", text)
+        text = re.sub(r"(?i)Thesen-Name\s+nicht\s+aufgeloest\s*\(ID\)", "Thesen-ID", text)
+        # Nach der Namensnormalisierung einsetzen: Der generische Entity-Resolver
+        # darf die festen Marktbeleg-Labels/Ticker (VIX, DXY, ^GSPC usw.) nicht
+        # in "Name nicht aufgelöst" umschreiben.
+        try:
+            text, market_snapshot_findings = append_live_market_snapshot(text)
+            validation_errors.extend("Markt-Snapshot: " + item for item in market_snapshot_findings)
+        except Exception as snapshot_exc:
+            validation_errors.append(
+                f"Markt-Snapshot nicht verfügbar: {type(snapshot_exc).__name__}: {snapshot_exc}"
+            )
+        # Incomplete candidate rows remain visible but are explicitly downgraded
+        # to non-tradable watchlist status before the final report gate.
+        text = _trading_radar_unvollstaendige_kandidaten_nicht_handelsbar(text)
+        # M-07 bis M-10: den fertig normalisierten Bericht selbst prüfen.
+        # Vorher wurden nur vorgelagerte Teilprüfungen ausgewertet; damit
+        # konnten strukturell ungültige Thesen/Kandidaten den FINAL-Marker umgehen.
+        try:
+            report_gate_findings = validate_trading_radar_report(text)
+        except Exception as exc:
+            report_gate_findings = [
+                f"Report-Gate nicht ausführbar: {type(exc).__name__}: {exc}"
+            ]
+        validation_errors.extend(
+            f"Report-Gate: {finding}" for finding in report_gate_findings
+        )
         # Genau ein Statusmarker, stets als letzte Zeile. Ohne eindeutigen FINAL-
         # Marker bleibt der Bericht gesperrt; der Report-Gate entscheidet separat.
         # Der vom Sprachmodell gelieferte Statusmarker ist kein Beleg fuer die
@@ -18179,13 +18287,53 @@ if __name__ == "__main__":
             print("TRADING_RADAR_STATUS=FEHLER | eindeutiger Fachstatusmarker fehlt")
             raise SystemExit(4)
         fachlich_final = status_matches[0]
+        # GitHub Actions passes the outcomes of the final sync and persistence
+        # steps. A missing/failed persistence step is an explicit audit finding,
+        # not a silent best-effort success. Local runs without these variables
+        # remain unaffected.
+        persistence_checks = {
+            "Finale OHLCV-Synchronisierung": os.environ.get("OHLCV_FINAL_SYNC", "").strip().casefold(),
+            "OHLCV-Release-Persistenz": os.environ.get("OHLCV_RELEASE_PERSISTENCE", "").strip().casefold(),
+            "OHLCV-Cache-Persistenz": os.environ.get("OHLCV_CACHE_PERSISTENCE", "").strip().casefold(),
+        }
+        persistence_findings = []
+        if persistence_checks["Finale OHLCV-Synchronisierung"] and persistence_checks["Finale OHLCV-Synchronisierung"] != "complete":
+            persistence_findings.append(
+                "Finale OHLCV-Synchronisierung nicht vollständig: "
+                + persistence_checks["Finale OHLCV-Synchronisierung"]
+            )
+        for check_name in ("OHLCV-Release-Persistenz", "OHLCV-Cache-Persistenz"):
+            outcome = persistence_checks[check_name]
+            if outcome and outcome != "success":
+                persistence_findings.append(f"{check_name} nicht erfolgreich: {outcome}")
+        if persistence_findings:
+            persistence_section = (
+                "\n\n### Audit: finale OHLCV-Synchronisierung und Persistenz\n"
+                + "\n".join(f"- {finding}" for finding in persistence_findings)
+                + "\n"
+            )
+            if "### Audit: finale OHLCV-Synchronisierung und Persistenz" not in report_text:
+                report_text = report_text.rstrip() + persistence_section
+            report_text = re.sub(
+                r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\s*$",
+                "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL",
+                report_text,
+            )
+            with open(ausgabe_pfad, "w", encoding="utf-8") as report_handle:
+                report_handle.write(report_text)
+            fachlich_final = "NICHT_FINAL"
+            print("TRADING_RADAR_OHLCV_PERSISTENCE_GATE=FAIL")
+            for finding in persistence_findings:
+                print("TRADING_RADAR_OHLCV_PERSISTENCE_FINDING=" + finding)
+        elif any(persistence_checks.values()):
+            print("TRADING_RADAR_OHLCV_PERSISTENCE_GATE=PASS")
         # Markt-First-Inhaltsaudit auf dem tatsächlich gespeicherten Produktionsbericht.
         # Bei Befunden wird FINAL auf NICHT_FINAL herabgestuft; nichts wird erfunden.
         market_first_findings = audit_market_first_content(report_text)
         if market_first_findings:
             fachlich_final = "NICHT_FINAL"
             report_text = re.sub(
-                r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\\s*$",
+                r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\s*$",
                 "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL",
                 report_text,
             )
