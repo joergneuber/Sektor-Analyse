@@ -352,8 +352,8 @@ Scanner abzuleiten. Übernimm die aktuell enthaltenen Titel mit
 Unternehmensname, Ticker, Status und „letzter_check”. Da die JSON-Datei
 nur den Ticker enthält, darf der eindeutige Unternehmensname aus dem
 Ticker abgeleitet werden; keine weiteren Werte oder Kandidaten ergänzen. Die Bedeutung der
-Statuswerte ist: KAUFKANDIDAT A = bestätigtes technisches Setup + CRV >= 1,0;
-KAUFKANDIDAT B = starke Trigger-Nähe; KAUFKANDIDAT C = frühe technische Vorbereitung;
+Statuswerte sind ausschließlich interne Status-/Klassifikationsangaben und keine Kaufentscheidung oder automatische Handelsfreigabe. Insbesondere bedeutet KAUFKANDIDAT A nicht automatisch ein bestätigtes technisches Setup, kein bestätigtes CRV und keinen sofort handelbaren Trade; technische Bestätigung und CRV müssen separat aus einer aktuellen, unabhängigen Technikquelle nachgewiesen werden.
+KAUFKANDIDAT B = Status für Triggernähe; KAUFKANDIDAT C = Status für frühe technische Beobachtung;
 KEIN KANDIDAT = aktuell kein A/B/C, bleibt aber nach der bestehenden Beobachtungslogik
 solange in der Liste, bis die bestehende Bereinigungsregel greift. Zusätzlich kann die
 Datei „Einzel_Check_A_Meldungen(<Datum>).txt” echte A-Kandidaten aus der

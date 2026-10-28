@@ -301,16 +301,32 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         field_start = re.compile(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-            r"(?:Trigger|Bestätigung|Bestaetigung|Einstieg|Entry|Stop|Stop-Loss|"
-            r"TP1|Ziel\s*1|TP2|Ziel\s*2|CRV|Chance-Risiko|Gegenargument|Risiko|"
-            r"Regelstatus|Datenstatus|Richtung|Side)(?:\*\*)?\s*[:=]"
+            r"(?:Asset/Ticker|Ticker|Asset|Trigger|Bestätigung|Bestaetigung|Einstieg|Entry|"
+            r"Stop|Stop-Loss|TP1|Ziel\s*1|TP2|Ziel\s*2|CRV|Chance-Risiko|"
+            r"Gegenargument|Risiko|Statusgruppe|Regel-/Datenstatus|Regelstatus|Datenstatus|"
+            r"Richtung|Side)(?:\*\*)?\s*[:=]"
         )
         for line in section_body.splitlines():
+            if re.match(
+                r"(?i)^\s*(?:JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|"
+                r"NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT)\s*[:：]",
+                line,
+            ):
+                if current:
+                    records.append("\n".join(current).strip())
+                    current = []
+                continue
+            if re.fullmatch(r"(?i)\s*(?:keine kandidaten(?: in dieser gruppe)?|0 kandidaten|explizit leer|leer)[.!—-]*\s*", line):
+                continue
             match = bullet.match(line)
             starts = bool(match) and not field_start.match(line)
             # A line naming a new ticker/asset starts a new candidate even when
             # it isn't a markdown bullet. Field continuation lines remain local.
-            if re.match(r"(?i)^\s*(?:Ticker|Asset)\s*[:=]", line) and current:
+            if re.match(
+                r"(?i)^\s*(?:[-*•]\s+)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)"
+                r"(?:\*\*)?\s*[:=]",
+                line,
+            ) and current:
                 starts = True
             if starts and current:
                 records.append("\n".join(current).strip())
@@ -357,7 +373,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             def field(labels: tuple[str, ...]) -> str | None:
                 return _label_value(record, labels)
 
-            asset = field((r"Ticker", r"Asset"))
+            asset = field((r"Asset/Ticker", r"Ticker", r"Asset"))
             trigger = field((r"Trigger", r"Bestätigung", r"Bestaetigung"))
             entry_text = field((r"Einstieg", r"Entry"))
             stop_text = field((r"Stop", r"Stop-Loss"))
@@ -365,15 +381,39 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             tp2_text = field((r"TP2", r"Ziel\s*2"))
             crv_text = field((r"CRV", r"Chance-Risiko"))
             counter = field((r"Gegenargument", r"Risiko"))
-            rule_data = field((r"Regelstatus", r"Datenstatus"))
+            rule_data = field((r"Regel-/Datenstatus", r"Regelstatus", r"Datenstatus"))
             status_ok = bool(allowed_candidate_status.search(record))
+            nontradable = bool(re.search(r"NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT", record, re.IGNORECASE))
+            level_labels = (
+                (r"Einstieg", r"Entry"),
+                (r"Stop", r"Stop-Loss"),
+                (r"TP1", r"Ziel\s*1"),
+                (r"TP2", r"Ziel\s*2"),
+                (r"CRV", r"Chance-Risiko"),
+            )
+            explicit_level_states = all(
+                parse_number(field(labels)) is not None
+                or _is_explicit_unavailable(record, labels)
+                for labels in level_labels
+            )
+            required = (asset, trigger, counter, rule_data)
+            numeric_values = (entry_text, stop_text, tp1_text, tp2_text, crv_text)
+            numeric_ok = all(parse_number(value) is not None for value in numeric_values)
             entry_num, stop_num = parse_number(entry_text), parse_number(stop_text)
             tp1_num, crv_num = parse_number(tp1_text), parse_number(crv_text)
-            required = (asset, trigger, entry_text, stop_text, tp1_text, tp2_text,
-                        crv_text, counter, rule_data)
-            numeric_ok = all(parse_number(value) is not None for value in
-                             (entry_text, stop_text, tp1_text, tp2_text, crv_text))
-            if not all(required) or not numeric_ok or not status_ok:
+            if nontradable:
+                # A non-tradable/status-only record may correctly lack levels.
+                # It must still name its asset, evidence/trigger, counterargument,
+                # explicit non-tradable status, and explicitly account for every
+                # unavailable numeric level. No trading math is run for it.
+                if not all(required) or not status_ok or not explicit_level_states:
+                    errors.append(
+                        f"M-09: Nicht handelbarer Kandidat {candidate_index} benötigt Asset, "
+                        "Trigger, Gegenargument, Regel-/Datenstatus und explizite numerische Werte "
+                        "oder NICHT VERFÜGBAR für Einstieg/Stop/TP1/TP2/CRV."
+                    )
+                continue
+            if not all((asset, trigger, entry_text, stop_text, tp1_text, tp2_text, crv_text, counter, rule_data)) or not numeric_ok or not status_ok:
                 errors.append(
                     f"M-09: Kandidat {candidate_index} benötigt eigene Asset-/Trigger-/Einstiegs-/Stop-/TP-/CRV-/"
                     "Gegenargument-/Regelstatusfelder und einen zulässigen Status; Zahlen müssen numerisch sein."

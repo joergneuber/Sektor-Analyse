@@ -193,7 +193,7 @@ def normalize_market_first_report_structure(report: str) -> str:
         for line in body.splitlines():
             if re.search(r"(?i)Index (?:S&P 500|Nasdaq Composite|Russell 2000)|Volatilität VIX|Dollar-Proxy DXY|US-10J-Rendite|Marktbreite-Proxy|Anleihe-ETF TLT", line):
                 snapshot_lines.append(line.strip().lstrip("-*• "))
-        main_match = re.search(r"(?im)^\s*Hauptaussage\s*:\s*(.+)$", body)
+        main_match = re.search(r"(?im)^\s*(?:\*\*)?(?:Hauptaussage|Hauptthese)(?:\*\*)?\s*:\s*(.+)$", body)
         main = main_match.group(1).strip() if main_match else ""
         rate_bits = [line.strip() for line in body.splitlines()
                      if re.search(r"(?i)Fed Funds Effective Rate|US\s+10Y Treasury|10Y[- ]TIPS|10-jährige US-Treasury-Zins|US 2Y Treasury|US 5Y Treasury|US 30Y Treasury", line)]
@@ -225,13 +225,52 @@ def normalize_market_first_report_structure(report: str) -> str:
             r"(?i)keine belastbaren technischen kandidaten|keine technischen kandidaten|kein(?:e)? kandidaten|keine handelsfreigabe",
             body,
         ))
-        has_records = bool(re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)\s*[:=]", body))
+        has_records = bool(re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?\s*[:=]", body))
         group_names = ("JETZT TECHNISCH PRÜFEN", "AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN", "NICHT HANDELBAR")
         has_any_group = any(re.search(rf"(?im)^\s*(?:#{{1,6}}\s*)?(?:[-*•]\s*)?(?:\*\*)?{re.escape(g)}(?:\*\*)?\s*[:：]", body) for g in group_names)
         if zero_candidates and not has_records and not has_any_group:
             groups = "\n".join(f"{g}: Keine Kandidaten" for g in group_names)
             insert_at = candidate_section.end(1)
             text = text[:insert_at].rstrip() + "\n\n" + groups + "\n\n" + text[insert_at:].lstrip("\r\n")
+        elif has_records and not has_any_group:
+            # Deterministically place each existing candidate into the group
+            # explicitly named by its own status. Do not infer a trading signal.
+            body = candidate_section.group(1)
+            starts = list(re.finditer(
+                r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?[ \t]*[:=]",
+                body,
+            ))
+            records = []
+            for idx, match in enumerate(starts):
+                end = starts[idx + 1].start() if idx + 1 < len(starts) else len(body)
+                record = body[match.start():end].strip()
+                status_match = re.search(
+                    r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Regel-/Datenstatus|Regelstatus|Datenstatus)(?:\*\*)?\s*[:=]\s*([^\r\n]+)",
+                    record,
+                )
+                status_value = status_match.group(1).upper() if status_match else ""
+                group = next((g for g in group_names if g in status_value), None)
+                if group is None and "VERWERFEN" in status_value and "INVALIDIERT" in status_value:
+                    group = "VERWERFEN / INVALIDIERT"
+                if group is None:
+                    records = []
+                    break
+                if not re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Statusgruppe(?:\*\*)?\s*[:=]", record):
+                    record_lines = record.splitlines()
+                    if record_lines:
+                        record = record_lines[0] + "\n  - Statusgruppe: " + group + ("\n" + "\n".join(record_lines[1:]) if len(record_lines) > 1 else "")
+                records.append((group, record))
+            if records and len(records) == len(starts):
+                grouped = []
+                for group in group_names:
+                    grouped.append(f"{group}:")
+                    matching = [record for item_group, record in records if item_group == group]
+                    grouped.append("\n\n".join(matching) if matching else "Keine Kandidaten")
+                if any(group == "VERWERFEN / INVALIDIERT" for group, _ in records):
+                    grouped.append("VERWERFEN / INVALIDIERT:")
+                    grouped.append("\n\n".join(record for group, record in records if group == "VERWERFEN / INVALIDIERT"))
+                body_start, body_end = candidate_section.start(1), candidate_section.end(1)
+                text = text[:body_start] + "\n".join(grouped).strip() + "\n\n" + text[body_end:]
     return text
 
 

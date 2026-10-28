@@ -4777,9 +4777,11 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "Keine Titel aus dem Rohuniversum oder offenen Positionen als neues Trendfolge-Setup ausgeben; bei fehlendem aktuellen gültigen Export keine neuen Trendfolge-Setups behaupten. "
         "2.2 Trendwende mit Abwärtsbewegung, Boden-/Wendezeichen, Entry, Stop, Ziele, CRV und bestätigten/fehlenden Kriterien; "
         "2.3 Short mit Abwärtsthese, technischer Bestätigung, Entry, Stop, TP1/TP2, CRV, Makro-/Sektorunterstützung und Risiken; "
-        "2.4 HebelTrader darf AUSSCHLIESSLICH aktuelle KAUFKANDIDAT-A-Titel als A-Kandidaten in diesem Abschnitt wiedergeben. "
-        "Ein KAUFKANDIDAT-A-Status ist allein weder bestätigtes technisches Setup noch Kaufempfehlung oder sofort handelbarer Trade. "
-        "Wenn der aktuelle Einzel-Check Hauptfilter verwirft oder InZone/Breakout nicht bestätigt, muss der Titel ausdrücklich als 'A-Status vorhanden, technisches Setup nicht bestätigt – kein sofort handelbarer Trade' gekennzeichnet werden. "
+        "2.4 HebelTrader darf aktuelle KAUFKANDIDAT-A-Titel ausschließlich als STATUSMELDUNG/Beobachtungsstatus wiedergeben. "
+        "VERBINDLICH: 'Einzel_Check_A_Meldungen' und 'KAUFKANDIDAT A' sind Status-/Klassifikationsangaben, KEIN Kauf, KEINE Kaufempfehlung, KEIN bestätigtes Setup und KEINE automatische Handelsfreigabe. "
+        "Ein Titel aus dieser Statusquelle darf NICHT allein deshalb als Top-Profiteur, technische Chance, technischer Kandidat oder Trade erscheinen. "
+        "Er darf nur dann zusätzlich in die technischen Kandidaten aufgenommen werden, wenn eine unabhängige aktuelle Scanner-/Technikquelle den Kandidaten ausdrücklich bestätigt; die Statusmeldung allein genügt nicht. "
+        "Ohne unabhängige technische Bestätigung nur 'A-Status gemeldet; technisches Setup/Handelbarkeit nicht bestätigt' als Statuskontext nennen und aus technischen Kandidaten/Top-Profiteuren heraushalten. "
         "Entry, Stop, Ziele, CRV und technische Bestätigung dürfen nur aus einem aktuellen autoritativen Technikbefund übernommen werden; fehlende Werte bleiben NICHT VERFUEGBAR. "
         "KAUFKANDIDAT B/C, KEIN KANDIDAT, KEIN SETUP, VALIDE/VORBEREITET ohne A sowie reine Universums-/Kontextmitglieder dürfen NICHT als Trade in 2.4 erscheinen. "
         "Aufstiege/Abstiege zwischen A/B/C oder C→KEIN KANDIDAT dürfen ausschließlich qualitativ interpretiert werden und erlauben erst bei aktuellem Status KAUFKANDIDAT A einen Eintrag als A-Kandidat in 2.4; die technische Handelbarkeit muss separat belegt werden. "
@@ -5114,11 +5116,11 @@ Nicht bloß Daten paraphrasieren: Delta zur letzten Version, konkrete Evidenz un
 Nutze bereitgestellte Python-Quellen und den Altbericht nur als Fakten-/Historienkontext. Analysiere neu; kopiere den Altbericht nicht. Keine Daten nach dem Cutoff verwenden. Die fünf fachlichen Schritte sind in genau dieser Reihenfolge abzuarbeiten; das Portfolio darf weder Marktregime noch Thesen noch Kandidaten vorgeben.
 TRENNUNG: Kennzeichne Datenfakten mit Quelle/Zeitraum, daraus abgeleitete Interpretation und unbestätigte Hypothesen ausdrücklich getrennt. Erfinde weder Zahlen noch Kausalität oder technische Werte. Wenn Daten fehlen, benenne exakt, welche Schlussfolgerung dadurch nicht möglich ist und welche Quelle/Bestätigung fehlt.
 KERNFRAGE: Was ist angesichts der gelieferten Daten die wahrscheinlichste Marktbewegung im relevanten Zeithorizont, welche Assetklassen/Segmente sind relativ am attraktivsten bzw. schwächsten, wodurch wird die Einschätzung gestützt und wodurch widerlegt? Wenn keine belastbare Richtung ableitbar ist, sage das ausdrücklich und erkläre, welche Daten widersprüchlich oder unzureichend sind.
-ABSCHNITT 1 – EXECUTIVE ENTSCHEIDUNG: Beginne mit einer klaren Hauptthese oder "keine belastbare Hauptthese". Nenne Zeithorizont, Konfidenz qualitativ (niedrig/mittel/hoch), 2–4 wichtigste Veränderungen seit dem letzten Bericht, stärkste Belege, wichtigste Gegenbelege, Top-Profiteur-Kandidaten und Verlierer-Kandidaten sowie nächste beobachtbare Bestätigung/Invalidierung. Keine bloße Sammlung allgemeiner Marktkommentare.
-ABSCHNITT 2 – THESENKONTINUITÄT: Vergleiche jede relevante bestehende These mit dem letzten Register: BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT oder NEU. Erkläre konkret, welche neuen Zahlen/Beobachtungen die Statusänderung auslösen. Keine Änderung ist nur zulässig, wenn das Register tatsächlich geprüft wurde; nenne geprüften Registerstand und weshalb sich nichts änderte. IDs/Versionen niemals erfinden.
+ABSCHNITT 1 – EXECUTIVE ENTSCHEIDUNG: Beginne mit einer klaren Hauptthese oder "keine belastbare Hauptthese". Nenne Zeithorizont, Konfidenz qualitativ (niedrig/mittel/hoch), 2–4 wichtigste Veränderungen seit dem letzten Bericht, stärkste Belege, wichtigste Gegenbelege, belegte Top-Profiteur-Kandidaten und Verlierer-Kandidaten sowie nächste beobachtbare Bestätigung/Invalidierung. Einzel_Check_A_Meldungen/KAUFKANDIDAT-A-Status sind kein Beleg für Profiteur- oder Kaufstatus; dafür ist unabhängige Markt-/Sektor-/Technikevidenz erforderlich. Keine bloße Sammlung allgemeiner Marktkommentare.
+ABSCHNITT 2 – THESENKONTINUITÄT: Vergleiche jede relevante bestehende These mit dem letzten Register: BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT oder NEU. Für JEDE einzelne These müssen die Felder Gegenbelege, Alternative, Bestätigungstrigger und Invalidierungstrigger ausdrücklich im selben Thesenblock stehen; nutze nur belegbare Inhalte, andernfalls nenne konkret, was aus den Quellen nicht ableitbar ist und lasse die Freigabe scheitern statt Werte zu erfinden. Erkläre konkret, welche neuen Zahlen/Beobachtungen die Statusänderung auslösen. Keine Änderung ist nur zulässig, wenn das Register tatsächlich geprüft wurde; nenne geprüften Registerstand und weshalb sich nichts änderte. IDs/Versionen niemals erfinden.
 ABSCHNITT 3 – EREIGNISSE: Nur belegte Ereignisse mit Datum, Uhrzeit/Zeitzone, Kennzahl, Zeitraum, letztem Wert, Konsens und Quelle nennen. Für jedes Ereignis: betroffene These/Assetklasse/konkrete offene Positionen (Name (Ticker)), Szenarien unter/entsprechend/über Konsens, Reaktionskanäle und was die These bestätigen/widerlegen würde. Fehlende Werte als NICHT VERFÜGBAR ausweisen und keine redundanten leeren Ereignisblöcke auffüllen.
 ABSCHNITT 4 – RELATIVE ASSETATTRAKTIVITÄT: Vergleiche Aktien/ETFs, Edelmetalle, Energie/Rohstoffe, Krypto und Zinsen/Dollar soweit Daten vorhanden. Ordne relativ (stärker/neutral/schwächer) ein, mit konkreten Belegen, Gegenargumenten, Zeithorizont und Auslösern. Keine pauschale Erklärung ohne Datenbezug.
-ABSCHNITT 5 – TECHNISCHE KANDIDATEN: Das Kandidatenuniversum ist unabhängig vom Portfolio. Trenne (a) technisch valide Kandidaten, (b) interessante Werte mit konkretem noch fehlendem Trigger, (c) ereignisbedingt warten, (d) nicht handelbar/verwerfen. Nenne Name (Ticker), Richtung, Setup/These, belegten Trigger, Einstieg, Stop, TP1, TP2, CRV, Datenstand, Gegenargumente und Regelstatus, soweit vorhanden. Fehlende Werte nicht schätzen. "Keine belastbaren technischen Kandidaten" beendet NICHT die Gesamtanalyse: Nenne stattdessen nur dann Beobachtungskandidaten und konkrete fehlende Bestätigungen, wenn die Quellen das tragen; keine fiktiven Kandidaten erfinden.
+ABSCHNITT 5 – TECHNISCHE KANDIDATEN: Das Kandidatenuniversum ist unabhängig vom Portfolio. Trenne (a) technisch valide Kandidaten, (b) interessante Werte mit konkretem noch fehlendem Trigger, (c) ereignisbedingt warten, (d) nicht handelbar/verwerfen. Nenne Name (Ticker), Richtung, Setup/These, belegten Trigger, Einstieg, Stop, TP1, TP2, CRV, Datenstand, Gegenargumente und Regelstatus, soweit vorhanden. Fehlende Werte nicht schätzen. Einzel_Check_A_Meldungen und KAUFKANDIDAT-A-Status sind nur Status, niemals alleinige Kandidatengrundlage; ohne unabhängigen aktuellen Scanner-/Technikbeleg gehören solche Titel nicht in Abschnitt 5. "Keine belastbaren technischen Kandidaten" beendet NICHT die Gesamtanalyse: Nenne stattdessen nur dann Beobachtungskandidaten und konkrete fehlende Bestätigungen, wenn unabhängige Quellen das tragen; keine fiktiven Kandidaten erfinden.
 ABSCHNITT 6 – PORTFOLIO & RISIKO: Verknüpfe Marktthesen mit jeder relevanten offenen Position aus der vollständigen Quelle: Name (Ticker), Rückenwind/Gegenwind/neutral/These verletzt, konkrete Datenbegründung, relevantes Ereignis, bekannte Stop-/TP-Informationen nur aus Quelle und nächster Prüfschritt. Hebe Konzentrationen und gemeinsame Risikotreiber hervor. Keine Kauf-/Verkaufs- oder Stopänderungen anordnen.
 ABSCHNITT 7 – MSCI-VERGLEICH: Trenne Depot-/System-Gesamtperformance strikt von durchschnittlicher Einzelpositionsperformance. Gleicher Zeitraum und vergleichbare Basis; nenne Quelle, Start-/Enddatum, Ausschlüsse und Out-/Underperformance in Prozentpunkten. Erkläre, was die Kennzahl aussagt und was nicht. Keine Durchschnittsperformance als Depotperformance darstellen.
 ABSCHNITT 8 – DATEN-/PRÜFANHANG: Quelle, Datenstand/Cutoff, Aktualität, Vollständigkeit, Widersprüche, fehlende Werte und konkrete Auswirkungen auf die Analyse. "Vollständig" nur behaupten, wenn der Lauf es belegt.
@@ -17200,11 +17202,19 @@ def _trading_radar_kandidaten_aus_abschnitt5(report_text):
     ticker_re = re.compile(
         r"^(?:\^[A-Z0-9]{1,8}|[A-Z][A-Z0-9]{0,7}(?:[.-][A-Z0-9]{1,6})?(?:=X|-USD|=F)?)$"
     )
-    # Nur explizite Labels: "Ticker: ABC" / "Symbol: ABC".
+    # Strukturierte Tickerlabels: "Ticker: ABC" / "Symbol: ABC".
     for match in re.finditer(
-        r"(?im)^[ \t]*(?:[-*]\s*)?(?:Ticker|Symbol)\s*:\s*"
+        r"(?im)^[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:Ticker|Symbol)(?:\*\*)?\s*:\s*"
         r"(\^[A-Z0-9]{1,8}|[A-Z][A-Z0-9]{0,7}(?:[.-][A-Z0-9]{1,6})?(?:=X|-USD|=F)?)"
         r"(?=[ \t]*(?:[,;|—–-]|$))",
+        body,
+    ):
+        found.add(match.group(1).upper())
+    # Das festgelegte Format "Asset/Ticker: Vollständiger Name (TICKER)" ist
+    # ebenfalls eine strukturierte Tickerquelle. Freie Prosa bleibt ausgeschlossen.
+    for match in re.finditer(
+        r"(?im)^[ \t]*(?:[-*]\s*)?(?:\*\*)?(?:Asset/Ticker|Asset)(?:\*\*)?\s*:\s*[^\r\n]*"
+        r"\(([A-Z][A-Z0-9]{0,7}(?:[.-][A-Z0-9]{1,6})?(?:=X|-USD|=F)?)\)[ \t]*$",
         body,
     ):
         found.add(match.group(1).upper())
@@ -17338,7 +17348,14 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     if audit.get("error"):
         details.append("Prüfhinweis: " + str(audit["error"]))
     explicit_zero_candidates = report_explicitly_declares_no_technical_candidates(report_text)
-    if explicit_zero_candidates and not affected and not unmapped_candidates:
+    candidate_mapping_complete = audit.get("candidate_mapping_complete") is True
+    if candidate_mapping_complete and not affected and not unmapped_candidates:
+        impact = (
+            "Kandidaten-Mapping vollständig; bei den explizit geprüften Kandidaten wurde keine direkte "
+            "Überschneidung mit fehlenden, veralteten oder im jüngsten 90-Tage-Fenster ungültigen OHLCV-Daten festgestellt. "
+            "Die universumsweiten OHLCV-Lücken bleiben separat dokumentiert und begründen allein keine Sperre dieser geprüften Kandidaten."
+        )
+    elif explicit_zero_candidates and not affected and not unmapped_candidates:
         impact = (
             "keine technischen Kandidaten im Bericht ausgewiesen; daher derzeit keine Kandidatenfreigabe. "
             "Die universumsweiten OHLCV-Lücken bleiben dokumentiert; künftig erkannte Kandidaten bleiben bis zur Datenprüfung gesperrt."

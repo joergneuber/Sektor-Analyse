@@ -475,10 +475,12 @@ def audit_snapshot(
         unmapped_candidates = sorted(set(candidate_set) - set(tickers))
         status = "complete" if tickers and covered == len(tickers) and not missing and not stale and not recent_invalid_tickers else "gaps"
         candidate_mapping_complete = mapped_candidates and not unmapped_candidates
-        candidate_impact = ("none_detected_in_checked_candidates"
-                            if candidate_mapping_complete and not affected and status == "complete"
-                            else "affected_candidates_detected" if affected
-                            else "candidate_mapping_incomplete")
+        candidate_impact = (
+            "affected_candidates_detected" if affected
+            else "none_detected_in_checked_candidates"
+            if candidate_mapping_complete
+            else "candidate_mapping_incomplete"
+        )
         return {
             "status": status, "checked_at": checked_at,
             "universe_count": len(tickers), "covered_count": covered,

@@ -648,7 +648,7 @@ def validate_ohlcv_audit(audit: Mapping[str, Any], *, explicit_no_candidates: bo
         # mitliefert. Ein vorhandener Schlüssel mit []/None/falschem Typ ist
         # kein Nachweis, dass Kandidatenfolgen geprüft wurden.
         affected_candidates = audit.get("affected_candidates")
-        has_candidate_assessment = (
+        has_affected_rows = (
             isinstance(affected_candidates, (list, tuple, set))
             and any(
                 (isinstance(item, str) and item.strip())
@@ -662,9 +662,25 @@ def validate_ohlcv_audit(audit: Mapping[str, Any], *, explicit_no_candidates: bo
                 for item in affected_candidates
             )
         )
+        # A complete candidate mapping with an explicitly empty affected list is
+        # a valid assessment: the named candidates were checked and none overlaps
+        # current missing/stale/recent-invalid OHLCV symbols. Universe-wide gaps
+        # remain disclosed; they must not block unrelated, fully mapped candidates.
+        checked = audit.get("candidate_tickers_checked")
+        unmapped = audit.get("unmapped_candidate_tickers")
+        has_complete_zero_impact_assessment = (
+            audit.get("candidate_mapping_complete") is True
+            and isinstance(checked, (list, tuple, set))
+            and any(isinstance(item, str) and item.strip() for item in checked)
+            and isinstance(unmapped, (list, tuple, set))
+            and not any(isinstance(item, str) and item.strip() for item in unmapped)
+            and isinstance(affected_candidates, (list, tuple, set))
+            and len(affected_candidates) == 0
+        )
+        has_candidate_assessment = has_affected_rows or has_complete_zero_impact_assessment
         if not has_candidate_assessment and not explicit_no_candidates:
             findings.append(f"OHLCV-Abdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt")
-            findings.append("OHLCV-Kandidatenfolgen fehlen: affected_candidates ist leer, ungültig oder enthält keine verwertbare Kandidatenbewertung")
+            findings.append("OHLCV-Kandidatenfolgen fehlen: affected_candidates ist leer/ungültig und es liegt kein vollständiger Kandidaten-Mapping-Nachweis vor")
     # Kandidatenbezogene Auswirkungen werden zusätzlich einzeln markiert; eine
     # globale Datenlücke darf nicht dazu führen, dass betroffene Kandidaten
     # stillschweigend als handelbar erscheinen.
