@@ -118,6 +118,34 @@ def test_upcoming_macro_events_does_not_duplicate_official_fomc():
     _assert(fomc[0][2].startswith("Federal Reserve"), "official FOMC entry must remain authoritative")
 
 
+
+
+def test_fomc_schedule_is_resolved_relative_to_module_not_cwd():
+    import os
+    import tempfile
+
+    expected = dt.date(2026, 10, 28)
+    original_cwd = os.getcwd()
+    try:
+        with tempfile.TemporaryDirectory() as other_cwd:
+            os.chdir(other_cwd)
+            dates = m._fomc_meeting_dates(2026)
+        _assert(expected in dates, "FOMC schedule must load from the project directory")
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_fomc_snapshot_does_not_claim_live_verification_for_repository_schedule():
+    today = dt.date(2026, 10, 27)
+    with patch.object(m, "_forexfactory_events", return_value=([], "UNAVAILABLE")), \
+         patch.object(m.requests, "get", side_effect=RuntimeError("offline test")):
+        lines = m.macro_events_snapshot(today)
+    fomc_lines = [line for line in lines if "fomc_termine.json" in line]
+    _assert(fomc_lines, "repository FOMC event should be listed")
+    _assert("LIVE_CHECK_NOT_CONFIRMED" in fomc_lines[0],
+            "repository schedule must not be labeled as live-verified")
+
+
 if __name__ == "__main__":
     tests = [
         test_normalizer_core_aliases,
@@ -127,6 +155,8 @@ if __name__ == "__main__":
         test_forexfactory_fetch_is_cached_for_same_day,
         test_upcoming_macro_events_does_not_duplicate_official_fomc,
         test_macro_events_snapshot_contains_focus,
+        test_fomc_schedule_is_resolved_relative_to_module_not_cwd,
+        test_fomc_snapshot_does_not_claim_live_verification_for_repository_schedule,
     ]
     for test in tests:
         test()
