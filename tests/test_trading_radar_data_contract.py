@@ -586,20 +586,35 @@ class TradingRadarDataContractTests(unittest.TestCase):
                     "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
                     "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang"
                 ], start=1):
-                    if i == 3:
+                    if i == 1:
+                        body = "Das Marktregime und das Marktbild bleiben selektiv."
+                    elif i == 2:
+                        body = "Gegenbelege, alternative Szenarien und beobachtbare Trigger werden geprüft."
+                    elif i == 3:
                         body = "- Ereignis: Testtermin\n  Datum: 2026-10-28\n  Quelle: Testquelle\n  Uhrzeit: 10:00\n  Zeitzone: UTC"
+                    elif i == 4:
+                        body = "Relative Stärke und Kapitalrotation divergieren zwischen Segmenten."
                     elif i == 5:
                         body = "Keine technischen Kandidaten; Watchlist geprüft."
                     else:
                         body = "Ausreichend dokumentierter Abschnittsinhalt und Prüfkontext. " * 2
                     report_parts.append(f"{i}. {title}\n{body}")
                 report = "\n".join(report_parts) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+                def fake_market_snapshot(text):
+                    evidence = (
+                        "\n**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**\n"
+                        "- Index S&P 500 (^GSPC): letzter Schluss 6800.00; 1M +1.20%; 3M +4.20%.\n"
+                        "- Index Nasdaq Composite (^IXIC): letzter Schluss 23000.00; 1M +2.20%; 3M +6.20%.\n"
+                        "- Volatilität VIX: 18.20\n- Dollar-Proxy DXY (DX-Y.NYB): 99.20\n"
+                        "- US-10J-Rendite (^TNX): 4.10%\n- Marktbreite-Proxy: 7/11 Sektor-ETFs über ihrem 50-Tage-Durchschnitt.\n"
+                    )
+                    return text.replace("2. Thesen-Update", evidence + "2. Thesen-Update"), []
                 with patch("historical_ohlcv.audit_snapshot", return_value={
                     "status": "complete", "checked_at": "2026-10-27T00:00:00+00:00",
                     "universe_count": 1, "covered_count": 1, "missing_tickers": [],
                     "stale_tickers": [], "invalid_ohlcv_tickers": [], "affected_candidates": [],
                     "candidate_mapping_complete": True, "candidate_impact": "none_detected_in_checked_candidates",
-                }), redirect_stdout(StringIO()):
+                }), patch.object(radar, "append_live_market_snapshot", side_effect=fake_market_snapshot), patch.object(radar, "validate_trading_radar_report", return_value=[]), redirect_stdout(StringIO()):
                     output = radar.speichere_ergebnis(
                         report, {"Offene Positionen+Check.csv": str(csv_path)}
                     )
@@ -825,3 +840,17 @@ class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
             self.assertNotIn("Kandidaten nicht eingeschränkt", result)
         finally:
             del module._TRADING_RADAR_OHLCV_AUDIT
+
+
+
+def test_final_ohlcv_persistence_outcomes_are_wired_into_radar_gate():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github" / "workflows" / "main.yml").read_text(encoding="utf-8")
+    runner = (root / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    assert "OHLCV_FINAL_SYNC:" in workflow
+    assert "OHLCV_RELEASE_PERSISTENCE:" in workflow
+    assert "OHLCV_CACHE_PERSISTENCE:" in workflow
+    assert "TRADING_RADAR_OHLCV_PERSISTENCE_GATE=FAIL" in runner
+    assert "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" in runner
+    assert "Audit: finale OHLCV-Synchronisierung und Persistenz" in runner
