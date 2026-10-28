@@ -192,6 +192,13 @@ def test_live_market_snapshot_inserts_inside_section_one_with_decorated_heading(
     assert "Index S&P 500" in result.split("### 2. Thesen-Update")[0]
     assert result.count("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") == 1
 
+    # Reprocessing must replace the previous snapshot, not duplicate it,
+    # even when section 2 has a decorated heading suffix.
+    repeated, repeated_findings = append_live_market_snapshot(result, fetcher=lambda requested: data)
+    assert repeated_findings == []
+    assert repeated.count("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") == 1
+    assert "### 2. Thesen-Update (Register)" in repeated
+
 
 def test_market_first_audit_does_not_fail_only_on_portfolio_length():
     from trading_radar_neuauswertung import audit_market_first_content
