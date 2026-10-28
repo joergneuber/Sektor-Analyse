@@ -199,11 +199,20 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
     lines.append("- Quelle: Yahoo Finance (Ticker in den Zeilen; Tages-Schlusskurse).")
     block = "\n".join(lines) + "\n"
     # Avoid duplicating the live snapshot if the report is reprocessed.
+    # Accept decorated Markdown section headings such as
+    # "### 2. Thesen-Update (Register)" while still requiring a standalone
+    # heading line. Use the same boundary for cleanup and insertion so a
+    # repeated run cannot leave a duplicate snapshot behind.
+    section_two_heading = (
+        r"^[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*"
+        r"Thesen-Update\b[^\r\n]*$"
+    )
     report_text = re.sub(
-        r"(?ms)\n\*\*Live-Marktbelege \(Yahoo Finance; Schlusskurse, keine Prognose\):\*\*.*?(?=\n###\s*2[.·]\s*Thesen-Update)",
+        r"(?ms)\n\*\*Live-Marktbelege \(Yahoo Finance; Schlusskurse, keine Prognose\):\*\*"
+        r".*?(?=\n[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*Thesen-Update\b[^\r\n]*$)",
         "", report_text,
     )
-    insertion = re.search(r"(?im)^\s*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update\s*$", report_text)
+    insertion = re.search(section_two_heading, report_text, re.I | re.M)
     if not insertion:
         return report_text, ["Markt-Snapshot vorhanden, aber Abschnitt 2 für Einfügung nicht auffindbar"]
     return report_text[:insertion.start()] + block + "\n" + report_text[insertion.start():], []
