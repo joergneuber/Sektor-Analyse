@@ -690,3 +690,61 @@ def report_explicitly_declares_no_technical_candidates(report_text: str) -> bool
         r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)\s*[:=]", body
     )
     return bool(explicit and not structured_candidate)
+
+
+def report_has_explicit_empty_candidate_groups(report_text: str) -> bool:
+    """Return True only when all four required candidate groups explicitly declare zero records.
+
+    This is deliberately stricter than a plain-language no-candidate sentence:
+    the report must contain section 5, all four required groups exactly once,
+    each group must explicitly be empty, and no candidate record may appear.
+    """
+    if not isinstance(report_text, str):
+        return False
+    section_match = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?5\s*[.·]\s*Technische Kandidaten[^\r\n]*\r?\n"
+        r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?6(?:\s*[.·](?!\d)|\s+)|\Z)",
+        report_text,
+    )
+    if not section_match:
+        return False
+    body = section_match.group(1)
+    required_groups = (
+        "JETZT TECHNISCH PRÜFEN",
+        "AUF TRIGGER WARTEN",
+        "EREIGNIS ABWARTEN",
+        "NICHT HANDELBAR",
+    )
+    group_pattern = re.compile(
+        r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:[-*•][ \t]*)?(?:\*\*)?("
+        + "|".join(re.escape(group) for group in sorted(required_groups, key=len, reverse=True))
+        + r")(?:\*\*)?[ \t]*[:：][ \t]*([^\r\n]*)$"
+    )
+    matches = list(group_pattern.finditer(body))
+    if len(matches) != len(required_groups):
+        return False
+    by_group = {}
+    for match in matches:
+        group = re.sub(r"\s+", " ", match.group(1)).strip().upper()
+        by_group.setdefault(group, []).append(match)
+    if set(by_group) != set(required_groups) or any(len(v) != 1 for v in by_group.values()):
+        return False
+    if re.search(
+        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?[ \t]*[:=]",
+        body,
+    ):
+        return False
+    empty_markers = re.compile(
+        r"(?i)^(?:keine kandidaten(?: in dieser gruppe)?|0 kandidaten|explizit leer|leer)[ \t.!—-]*$"
+    )
+    for match in matches:
+        group_body_start = match.end()
+        later = [m.start() for m in matches if m.start() > match.start()]
+        group_body_end = min(later) if later else len(body)
+        group_content = body[group_body_start:group_body_end].strip()
+        # The inline heading marker is the preferred canonical form. For a
+        # multiline section, accept a single explicit empty marker and nothing else.
+        if not empty_markers.fullmatch(match.group(2).strip()):
+            if not empty_markers.fullmatch(group_content):
+                return False
+    return True

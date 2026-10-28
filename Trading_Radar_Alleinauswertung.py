@@ -17612,7 +17612,11 @@ def speichere_ergebnis(text, eingabedateien=None):
             # aktive Universumsbasis und DB prüfen wie im unmittelbar vorherigen Workflow-Update.
             candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)
             ohlcv_audit = historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)
-            explicit_no_candidates = not candidate_tickers and report_explicitly_declares_no_technical_candidates(text)
+            explicit_no_candidates = (
+                not candidate_tickers
+                and report_explicitly_declares_no_technical_candidates(text)
+                and report_has_explicit_empty_candidate_groups(text)
+            )
             text = downgrade_ohlcv_affected_candidates(text, ohlcv_audit)
             ohlcv_findings = validate_ohlcv_audit(
                 ohlcv_audit, explicit_no_candidates=explicit_no_candidates
