@@ -405,11 +405,22 @@ def audit_market_first_content(report: str) -> list[str]:
 
         for label in groups:
             value = market_field_value(market, label)
+            # Regime labels are intentionally concise in the report contract:
+            # "risk-on" and "risk-off" are meaningful categorical states, not
+            # missing evidence merely because they are shorter than prose fields.
+            compact_regime = bool(
+                label == "Marktregime"
+                and value
+                and re.fullmatch(
+                    r"(?i)(?:risk[ -]?(?:on|off)|neutral|mixed|transition(?:al)?)\.?",
+                    value.strip(),
+                )
+            )
             invalid = (
                 value is None
-                or len(value.strip()) < 12
-                or bool(unavailable.search(value))
-                or bool(generic_only.fullmatch(value.strip()))
+                or (len(value.strip()) < 12 and not compact_regime)
+                or bool(unavailable.search(value or ""))
+                or bool(generic_only.fullmatch((value or "").strip()))
             )
             if label == "Indizes/Marktbreite" and value:
                 invalid = invalid or not re.search(r"[-+]?\d+(?:[.,]\d+)?", value)
