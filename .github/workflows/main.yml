@@ -588,6 +588,19 @@ jobs:
             exit 0
           fi
 
+          # Ein uebersprungener Radar-Schritt ist kein Gemini-Ausfall. Er kann
+          # durch eine vorgelagerte fehlgeschlagene Regression verursacht sein.
+          # In diesem Fall weder ein Fallback-Paket aus alten Dateien bauen noch
+          # eine technische Gemini-Fallback-Mail ausloesen.
+          if [ "${{ steps.trading-radar.outcome }}" = "skipped" ]; then
+            echo "CHATGPT_FALLBACK_ERZEUGT=false" >> "$GITHUB_ENV"
+            echo "SKIP_TRADING_RADAR_UPLOAD=true" >> "$GITHUB_ENV"
+            echo "SKIP_AUSWERTUNG_UPLOAD=true" >> "$GITHUB_ENV"
+            echo "TRADING_RADAR_UPSTREAM_SKIPPED=true" >> "$GITHUB_ENV"
+            echo "::warning::Trading-Radar wurde uebersprungen; Ursache vor dem Gemini-Schritt pruefen. Kein Gemini-Fallback wird erzeugt."
+            exit 0
+          fi
+
           fallback_needed=false
 
           # SUCCESS + FINAL und SUCCESS + NICHT_FINAL sind technisch gültig.
