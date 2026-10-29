@@ -5090,41 +5090,70 @@ def _gemini_radar_response_diagnose(response, label):
 
 
 def _gemini_radar_abschnitte(text, required):
-    """Extrahiert exakt benannte Radar-Abschnitte anhand eigener Überschriftenzeilen."""
+    """Extrahiert Pflichtabschnitte zeilenbasiert und formatierungstolerant.
+
+    Die Produktionsanweisung verwendet sowohl Punkt ("2.") als auch Mittelpunkt
+    ("2 ·"). Beide Schreibweisen sind gleichwertig. Eine bloße Überschrift wird
+    hier als Struktur erkannt; ob der Abschnitt tatsächlich Inhalt hat, wird
+    beim Übernehmen einer Retry-Ergänzung separat geprüft.
+    """
     text = str(text or "")
     starts = []
     for heading in required:
+        heading_match = re.match(r"^\s*(?P<number>[1-8])\s*[.·]\s*(?P<title>.+?)\s*$", heading)
+        if not heading_match:
+            continue
+        number = heading_match.group("number")
+        title = heading_match.group("title")
         pattern = re.compile(
             r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?"
-            + re.escape(heading)
+            + re.escape(number)
+            + r"[ \t]*[.·][ \t]*"
+            + re.escape(title)
             + r"(?:\*\*)?[ \t]*$"
         )
-        match = pattern.search(text)
-        if match:
+        for match in pattern.finditer(text):
             starts.append((match.start(), match.end(), heading))
     starts.sort(key=lambda item: item[0])
     sections = {}
     for index, (start, _end, heading) in enumerate(starts):
         stop = starts[index + 1][0] if index + 1 < len(starts) else len(text)
-        sections[heading] = text[start:stop].strip()
+        # Preserve all occurrences for the final report gate to diagnose
+        # duplicates; for completeness detection the first matching section is
+        # enough to avoid treating duplicate headers as missing content.
+        sections.setdefault(heading, text[start:stop].strip())
     return sections
 
-
 def _gemini_radar_abschnitte_zusammenfuehren(original, ergaenzung, required, fehlend):
-    """Erhält vorhandene Abschnitte und ergänzt nur angeforderte fehlende Abschnitte."""
+    """Erhält vorhandene Abschnitte und ergänzt fehlende nur mit echtem Inhalt."""
     original_sections = _gemini_radar_abschnitte(original, required)
     retry_sections = _gemini_radar_abschnitte(ergaenzung, required)
+
+    def retry_section_has_content(section_text):
+        lines = str(section_text or "").splitlines()
+        body = "\n".join(lines[1:]).strip()
+        meaningful = re.sub(r"[\W_]", "", body, flags=re.UNICODE)
+        explicit_empty = bool(re.search(
+            r"(?i)keine\s+(?:neue[nr]?\s+oder\s+aktualisierte\s+these|"
+            r"relevanten\s+ereignisse|belastbaren\s+technischen\s+kandidaten)",
+            body,
+        ))
+        return len(meaningful) >= 20 or explicit_empty
+
     merged = {}
     for heading in required:
         if heading in original_sections:
             merged[heading] = original_sections[heading]
-        elif heading in fehlend and heading in retry_sections:
+        elif (
+            heading in fehlend
+            and heading in retry_sections
+            and retry_section_has_content(retry_sections[heading])
+        ):
             merged[heading] = retry_sections[heading]
     remaining = [heading for heading in required if heading not in merged]
     if remaining:
         return None, remaining
     return "\n\n".join(merged[heading] for heading in required), []
-
 
 def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien, bestehende_auswertung):
     """Erzeugt den Radar-Bericht durch einen eigenen quota-sicheren Gemini-Request."""
@@ -17737,8 +17766,14 @@ def speichere_ergebnis(text, eingabedateien=None):
         # M-07 bis M-10: den fertig normalisierten Bericht selbst prüfen.
         # Vorher wurden nur vorgelagerte Teilprüfungen ausgewertet; damit
         # konnten strukturell ungültige Thesen/Kandidaten den FINAL-Marker umgehen.
+        # The persisted status marker is intentionally removed before this
+        # point and re-added only after validation. The report gate also checks
+        # that a status marker exists, so validate a temporary FINAL marker
+        # here; otherwise every otherwise-valid report is guaranteed to fail
+        # with "Fachstatusmarker fehlt" and be downgraded to NICHT_FINAL.
+        report_gate_input = text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=FINAL\n"
         try:
-            report_gate_findings = validate_trading_radar_report(text)
+            report_gate_findings = validate_trading_radar_report(report_gate_input)
         except Exception as exc:
             report_gate_findings = [
                 f"Report-Gate nicht ausführbar: {type(exc).__name__}: {exc}"
@@ -17753,6 +17788,19 @@ def speichere_ergebnis(text, eingabedateien=None):
         # oder aus einem vorherigen Entwurf uebernehmen. Die Freigabe wird hier
         # deterministisch aus den validierten Pflichtdaten abgeleitet; weitere
         # unabhaengige Report-Gates pruefen den fertigen Bericht anschliessend.
+        # Make the actual blocking reason visible in GitHub Actions. Previously
+        # the aggregate status was set to NICHT_FINAL while the individual
+        # validation_errors were not printed, leaving only the downstream
+        # status-only REPORT_CHECK failure for diagnosis.
+        if validation_errors:
+            print(f"TRADING_RADAR_FINALITY_FINDINGS_COUNT={len(validation_errors)}")
+            for finding in validation_errors:
+                safe_finding = re.sub(r"[\r\n]+", " ", str(finding)).strip()
+                print("TRADING_RADAR_FINALITY_FINDING=" + safe_finding)
+        if str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR") and not validation_errors:
+            print("TRADING_RADAR_FINALITY_FINDINGS_COUNT=1")
+            print("TRADING_RADAR_FINALITY_FINDING=Geschlossene Positionen: TAB-2-QUELLE NICHT VERIFIZIERBAR")
+
         final_status = "FINAL"
         if validation_errors or str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
             final_status = "NICHT_FINAL"
