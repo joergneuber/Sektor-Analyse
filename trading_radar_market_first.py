@@ -449,7 +449,15 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             return report_text[:start] + clean_body + report_text[end:], []
     if re.fullmatch(r"(?is)\s*(?:keine\s+(?:relevanten\s+)?(?:anstehenden\s+)?ereignisse[^\n]*\s*)?", body):
         return report_text, []
-    body = _enrich_fomc_event(body, report_text)
+    # Enrich only an undated FOMC mention. If the report already contains an
+    # explicit event date, preserve that record and its verification state:
+    # enrichment must not silently replace a dated, unverified event with the
+    # next calendar entry and thereby erase the original unknowns.
+    fomc_has_explicit_date = bool(
+        re.search(r"(?is)\bFOMC\b.{0,1200}?^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*\d{4}-\d{2}-\d{2}", body, re.MULTILINE)
+    )
+    if not fomc_has_explicit_date:
+        body = _enrich_fomc_event(body, report_text)
     # A record starts at a bullet or numbered line that is not a field label.
     lines = body.splitlines()
     # Markdown labels (including "- **Quelle:**") are continuation fields,
