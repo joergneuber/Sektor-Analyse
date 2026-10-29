@@ -175,8 +175,16 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             f"- Index {label} ({symbol}): NICHT VERFÜGBAR."
         )
     vix, dxy, tnx_raw, tlt = latest("^VIX"), latest("DX-Y.NYB"), latest("^TNX"), pct("TLT", 20)
-    # Yahoo ^TNX quotes the 10-year yield in tenths of a percentage point.
-    tnx = (tnx_raw / 10.0) if tnx_raw is not None else None
+    # Yahoo ^TNX has appeared in both percentage-point form (e.g. 5.0 for
+    # 5.0%) and tenths form (e.g. 50.0 for 5.0%) in downloaded payloads.
+    # Use a documented plausibility boundary rather than 20.0: modern US 10Y
+    # yields are not plausibly >=10%; values >=10 are interpreted as tenths
+    # (19.5 -> 1.95%; 50.0 -> 5.00%). Values below 10 remain percentage points
+    # (5.0 -> 5.00%). This is a heuristic, not provider-supplied unit metadata.
+    tnx = (
+        tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw
+    ) if tnx_raw is not None else None
+
     lines.append(f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR.")
     lines.append(f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR.")
     lines.append(f"- US-10J-Rendite (^TNX): {tnx:.2f}%" if tnx is not None else "- US-10J-Rendite: NICHT VERFÜGBAR.")

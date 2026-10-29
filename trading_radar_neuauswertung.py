@@ -192,24 +192,71 @@ def normalize_market_first_report_structure(report: str) -> str:
         snapshot_lines = []
         for line in body.splitlines():
             if re.search(r"(?i)Index (?:S&P 500|Nasdaq Composite|Russell 2000)|Volatilität VIX|Dollar-Proxy DXY|US-10J-Rendite|Marktbreite-Proxy|Anleihe-ETF TLT", line):
-                snapshot_lines.append(line.strip().lstrip("-*• "))
-        main_match = re.search(r"(?im)^\s*(?:\*\*)?(?:Hauptaussage|Hauptthese)(?:\*\*)?\s*:\s*(.+)$", body)
+                # Keep only lines carrying an actual numeric observation. A
+                # "NICHT VERFÜGBAR" marker is disclosure, not evidence for a
+                # market field.
+                if re.search(r"[-+]?\d+(?:[.,]\d+)?", line) and not re.search(
+                    r"(?i)NICHT VERFÜGBAR", line
+                ):
+                    snapshot_lines.append(line.strip().lstrip("-*• "))
+        # Gemini often formats the main thesis as a nested Markdown list, e.g.
+        # "*   **Hauptthese**: ...". Accept that presentation without weakening
+        # the requirement that the line actually contain a non-empty thesis.
+        main_match = re.search(
+            r"(?im)^[ \t]*(?:(?:[-*•])[ \t]*)*(?:\*\*|__|\*)?"
+            r"(?:Hauptaussage|Hauptthese)(?:\*\*|__|\*)?[ \t]*:[ \t]*(.+)$",
+            body,
+        )
         main = main_match.group(1).strip() if main_match else ""
-        rate_bits = [line.strip() for line in body.splitlines()
-                     if re.search(r"(?i)Fed Funds Effective Rate|US\s+10Y Treasury|10Y[- ]TIPS|10-jährige US-Treasury-Zins|US 2Y Treasury|US 5Y Treasury|US 30Y Treasury", line)]
+        rate_bits = [
+            line.strip() for line in body.splitlines()
+            if re.search(
+                r"(?i)Fed Funds Effective Rate|US\s+10Y Treasury|10Y[- ]TIPS|"
+                r"10-jährige US-Treasury-Zins|US 2Y Treasury|US 5Y Treasury|US 30Y Treasury|"
+                r"US-10J-Rendite|Zins(?:en)?/Renditen",
+                line,
+            )
+            and re.search(r"[-+]?\d+(?:[.,]\d+)?", line)
+            and not re.search(r"(?i)NICHT VERFÜGBAR", line)
+        ]
         # The narrative must actually contain evidence before deterministic labels are added.
-        if snapshot_lines and main:
-            generated = {
-                "Indizes/Marktbreite": "; ".join(snapshot_lines),
-                "Zinsen/Renditen": "; ".join(dict.fromkeys(rate_bits)) or "Zins- und Renditebelege siehe Hauptaussage und stärkste Belege in diesem Abschnitt",
-                "Dollar/Liquidität/Volatilität": "; ".join(x for x in snapshot_lines if re.search(r"(?i)VIX|DXY|TLT", x)) or "Dollar-/Volatilitätsbelege nicht separat ausgewiesen",
-                "Marktregime": main[:900],
-                "Basisszenario": (re.search(r"(?i)(?:stattdessen dominiert|Basisszenario[: ]+)(.+?)(?:\.|$)", main).group(1).strip()
-                                  if re.search(r"(?i)(?:stattdessen dominiert|Basisszenario[: ]+)(.+?)(?:\.|$)", main)
-                                  else main[:700]),
-            }
-            missing = [f"{label}: {value}" for label, value in generated.items()
-                       if not re.search(rf"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*:", body)]
+        if main:
+            dollar_bits = [
+                x for x in snapshot_lines
+                if re.search(r"(?i)VIX|DXY|TLT", x)
+            ]
+            # Only derive fields where the original report contains concrete
+            # supporting observations. Never fill gaps with explanatory prose
+            # that merely sounds like a completed field.
+            generated = {}
+            if snapshot_lines:
+                generated["Indizes/Marktbreite"] = "; ".join(snapshot_lines)
+            if rate_bits:
+                generated["Zinsen/Renditen"] = "; ".join(dict.fromkeys(rate_bits))
+            if dollar_bits:
+                generated["Dollar/Liquidität/Volatilität"] = "; ".join(dollar_bits)
+            if len(main) >= 20 and not re.fullmatch(
+                r"(?i)(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|UNKLAR|TBD|TBA|N/?A|[-—])",
+                main.strip(),
+            ):
+                generated["Marktregime"] = main[:900]
+                scenario_match = re.search(
+                    r"(?i)(?:stattdessen dominiert|Basisszenario[: ]+)(.+?)(?:\.|$)", main
+                )
+                scenario = scenario_match.group(1).strip() if scenario_match else main.strip()
+                if len(scenario) >= 15 and not re.fullmatch(
+                    r"(?i)(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|UNKLAR|TBD|TBA|N/?A|[-—])",
+                    scenario,
+                ):
+                    generated["Basisszenario"] = scenario[:700]
+            missing = [
+                f"{label}: {value}" for label, value in generated.items()
+                if not re.search(
+                    rf"(?im)^[ \t]*(?:(?:[-*•])[ \t]*)*(?:\*\*|__|\*)?"
+                    rf"{re.escape(label)}(?:\*\*|__|\*)?[ \t]*:",
+                    body,
+                )
+            ]
             if missing:
                 insertion = section1.end(1)
                 text = text[:insertion].rstrip() + "\n\n" + "\n".join(missing) + "\n\n" + text[insertion:].lstrip("\r\n")
@@ -301,15 +348,21 @@ def audit_market_first_content(report: str) -> list[str]:
         return next((body for title, body in bodies.items() if fragment in title), "")
 
     def has_value(block: str, label_pattern: str) -> bool:
+        # Support nested bullets and Markdown bold/italic around field labels
+        # (e.g. "    *   *Gegenbelege:* ...") while still requiring a labeled,
+        # non-empty value within the same thesis record.
         match = re.search(
-            rf"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:{label_pattern})(?:\*\*)?\s*[:=]\s*([^\r\n]+)",
+            rf"(?im)^[ \t]*(?:(?:[-*•])[ \t]*)*(?:\*\*|__|\*)?"
+            rf"(?:{label_pattern})(?:\*\*|__|\*)?[ \t]*[:=][ \t]*([^\r\n]+)",
             block,
         )
         if not match:
             return False
         value = match.group(1).strip().strip("*` ")
         return bool(value) and not re.fullmatch(
-            r"(?i)(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|UNKLAR|TBD|TBA|N/?A|[-—])",
+            r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|NICHT BELEGT(?:\s*\([^)]*\))?|"
+            r"FEHLT|UNBEKANNT|UNKLAR|TBD|TBA|N/?A|NA|KEINE DATEN|KEINE KONKRETEN DATEN|"
+            r"NICHT ANGEGEBEN|NICHT ERMITTELT|[-–—])",
             value,
         )
 
@@ -320,18 +373,58 @@ def audit_market_first_content(report: str) -> list[str]:
     if not market:
         errors.append("MARKT-FIRST: Marktregime-Abschnitt fehlt")
     else:
-        groups = {
-            "Indizes/Marktbreite": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Indizes/Marktbreite(?:\*\*)?\s*:",
-            "Zinsen/Renditen": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Zinsen/Renditen(?:\*\*)?\s*:",
-            "Dollar/Liquidität/Volatilität": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Dollar/Liquidität/Volatilität(?:\*\*)?\s*:",
-            "Marktregime": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Marktregime(?:\*\*)?\s*:",
-            "Basisszenario": r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Basisszenario(?:\*\*)?\s*:",
-        }
-        for label, pattern in groups.items():
-            m = re.search(pattern + r"\s*([^\r\n]+)", market)
-            if not m or not m.group(1).strip() or re.fullmatch(
-                r"(?i)\s*(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|TBD|TBA)\s*", m.group(1)
-            ):
+        groups = (
+            "Indizes/Marktbreite",
+            "Zinsen/Renditen",
+            "Dollar/Liquidität/Volatilität",
+            "Marktregime",
+            "Basisszenario",
+        )
+        unavailable = re.compile(
+            r"(?i)(?:^|[;,. ]+)("
+            r"NICHT VERFÜGBAR(?:\s*\([^)]*\))?|NICHT BELEGT|FEHLT|UNBEKANNT|"
+            r"UNKLAR|TBD|TBA|N/?A|NA|KEINE DATEN|NICHT SEPARAT AUSGEWIESEN"
+            r")(?:$|[;,. ]+)"
+        )
+        generic_only = re.compile(
+            r"(?i)^(?:siehe (?:hauptaussage|stärkste belege)|"
+            r"belege siehe .+|nicht separat ausgewiesen|"
+            r"keine (?:konkreten )?(?:daten|belege)|"
+            r"wird nicht ausgewiesen)[.! ]*$"
+        )
+
+        def market_field_value(section: str, label: str) -> str | None:
+            # Same grammar as the normalizer: nested bullets and bold/italic
+            # Markdown around labels are presentation, not missing fields.
+            match = re.search(
+                rf"(?im)^[ \t]*(?:(?:[-*•])[ \t]*)*(?:\*\*|__|\*)?"
+                rf"{re.escape(label)}(?:\*\*|__|\*)?[ \t]*:[ \t]*([^\r\n]*)",
+                section,
+            )
+            return match.group(1).strip().strip("*` ") if match else None
+
+        for label in groups:
+            value = market_field_value(market, label)
+            invalid = (
+                value is None
+                or len(value.strip()) < 12
+                or bool(unavailable.search(value))
+                or bool(generic_only.fullmatch(value.strip()))
+            )
+            if label == "Indizes/Marktbreite" and value:
+                invalid = invalid or not re.search(r"[-+]?\d+(?:[.,]\d+)?", value)
+            elif label == "Zinsen/Renditen" and value:
+                invalid = invalid or not re.search(
+                    r"(?i)(?:\d+(?:[.,]\d+)?\s*%|\b\d+(?:[.,]\d+)?\b.*(?:Zins|Rendite|Treasury|Fed Funds)|"
+                    r"(?:Zins|Rendite|Treasury|Fed Funds).*\b\d+(?:[.,]\d+)?\b)",
+                    value,
+                )
+            elif label == "Dollar/Liquidität/Volatilität" and value:
+                invalid = invalid or not (
+                    re.search(r"(?i)VIX|DXY|TLT|Dollar|Volatilität|Liquidität", value)
+                    and re.search(r"[-+]?\d+(?:[.,]\d+)?", value)
+                )
+            if invalid:
                 errors.append(f"MARKT-FIRST: Trading-Radar-Feld '{label}' fehlt oder ist unbelegt")
 
     if not rotation or not re.search(r"staerke|stärke|rotation|divergenz|gewinner|verlierer|relativ", rotation, re.I):
