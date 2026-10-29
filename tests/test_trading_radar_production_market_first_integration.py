@@ -133,3 +133,87 @@ def test_explicit_zero_candidate_set_allows_documented_universe_ohlcv_gaps():
     # candidate groups explicitly empty; an empty list alone must still fail closed.
     assert validate_ohlcv_audit(audit)
     assert validate_ohlcv_audit(audit, explicit_no_candidates=True) == []
+
+
+def test_zero_candidate_normalizer_fills_missing_group_even_if_other_groups_exist():
+    from trading_radar_neuauswertung import normalize_market_first_report_structure, audit_market_first_content
+    from trading_radar_market_first import report_has_explicit_empty_candidate_groups
+
+    report = """1. Trading-Radar
+Marktregime: neutraler Markt mit uneinheitlichen Signalen
+Indizes/Marktbreite: S&P 500 6800; Marktbreite 6/11
+Zinsen/Renditen: US Treasury Rendite 4.1%
+Dollar/Liquidität/Volatilität: M2 23413.9 Mrd. USD
+Basisszenario: Seitwärtsbewegung solange keine Bestätigung vorliegt
+2. Thesen-Update
+Thesenregister geprüft, keine Änderung.
+3. Ereignisradar
+Keine relevanten Ereignisse.
+4. Assetklassenvergleich
+Relative Stärke und Kapitalrotation zeigen divergierende Signale.
+5. Technische Kandidaten
+Keine belastbaren technischen Kandidaten vorhanden.
+AUF TRIGGER WARTEN: Keine Kandidaten
+EREIGNIS ABWARTEN: Keine Kandidaten
+NICHT HANDELBAR: Keine Kandidaten
+6. Portfolio & Risiko
+Risiko bleibt datenabhängig.
+7. MSCI-Vergleich
+Portfolio-Gesamtperformance: NICHT VERFÜGBAR
+Ø Positionsperformance: NICHT VERFÜGBAR
+8. Daten-/Prüfanhang
+Quellen und Datenstände dokumentiert.
+"""
+    normalized = normalize_market_first_report_structure(report)
+    assert report_has_explicit_empty_candidate_groups(normalized)
+    findings = audit_market_first_content(normalized)
+    assert not any("Kandidatengruppe" in finding and "fehlt" in finding for finding in findings), findings
+    assert "JETZT TECHNISCH PRÜFEN: Keine Kandidaten" in normalized
+
+
+def test_post_save_market_first_gate_uses_findings_available_in_main_scope():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    main = source.split('if __name__ == "__main__":', 1)[1]
+    assert "finality_findings = list(globals().get(\"_TRADING_RADAR_FINALITY_FINDINGS\", []))" in main
+    assert 'finality_findings.append("Market-First: " + str(finding))' in main
+    assert "TRADING_RADAR_FINALITY_FINDINGS_COUNT={len(finality_findings)}" in main
+    assert 'validation_errors.append("Market-First: " + str(finding))' not in main
+
+
+
+def test_market_first_audit_does_not_silently_overwrite_duplicate_section_bodies():
+    from trading_radar_neuauswertung import audit_market_first_content
+
+    report = """1. Trading-Radar
+Marktregime: neutraler Markt mit uneinheitlichen Signalen
+Indizes/Marktbreite: S&P 500 6800; Marktbreite 6/11
+Zinsen/Renditen: US Treasury Rendite 4.1%
+Dollar/Liquidität/Volatilität: M2 23413.9 Mrd. USD
+Basisszenario: Seitwärtsbewegung solange keine Bestätigung vorliegt
+2. Thesen-Update
+Thesenregister geprüft, keine Änderung.
+3. Ereignisradar
+Keine relevanten Ereignisse.
+4. Assetklassenvergleich
+Relative Stärke und Kapitalrotation zeigen divergierende Signale.
+5. Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: Keine Kandidaten
+AUF TRIGGER WARTEN: Keine Kandidaten
+EREIGNIS ABWARTEN: Keine Kandidaten
+NICHT HANDELBAR: Keine Kandidaten
+6. Portfolio & Risiko
+Risiko bleibt datenabhängig.
+7. MSCI-Vergleich
+Portfolio-Gesamtperformance: NICHT VERFÜGBAR
+Ø Positionsperformance: NICHT VERFÜGBAR
+8. Daten-/Prüfanhang
+Quellen und Datenstände dokumentiert.
+5. Technische Kandidaten
+AUF TRIGGER WARTEN: Keine Kandidaten
+EREIGNIS ABWARTEN: Keine Kandidaten
+NICHT HANDELBAR: Keine Kandidaten
+"""
+    findings = audit_market_first_content(report)
+    assert any("Pflichtabschnitt" in finding and "mehrfach vorhanden" in finding for finding in findings), findings
+    # First section's group evidence remains available; duplicate structure is the explicit blocker.
+    assert not any("Kandidatengruppe 'JETZT TECHNISCH PRÜFEN' fehlt" in finding for finding in findings), findings
