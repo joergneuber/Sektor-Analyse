@@ -523,6 +523,67 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
 
+    def test_independent_radar_section_parser_accepts_middle_dot_and_markdown(self):
+        radar = load_radar_module()
+        required = (
+            "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+            "4. Assetklassenvergleich", "5. Technische Kandidaten",
+            "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+        )
+        report = "\n\n".join(
+            f"### {i} · {title}\nDieser Abschnitt enthält ausreichende konkrete Inhalte für die Vollständigkeitsprüfung."
+            for i, title in enumerate((
+                "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang",
+            ), start=1)
+        )
+        parsed = radar._gemini_radar_abschnitte(report, required)
+        self.assertEqual(set(parsed), set(required))
+        self.assertIn("2 · Thesen-Update", parsed["2. Thesen-Update"])
+
+    def test_independent_radar_section_parser_does_not_count_header_only_retry(self):
+        radar = load_radar_module()
+        required = (
+            "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+            "4. Assetklassenvergleich", "5. Technische Kandidaten",
+            "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+        )
+        report = "\n\n".join(
+            f"{i}. {title}\n"
+            + ("\n" if title == "Thesen-Update" else "Dieser Abschnitt enthält ausreichende konkrete Inhalte für die Vollständigkeitsprüfung.\n")
+            for i, title in enumerate((
+                "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang",
+            ), start=1)
+        )
+        original = "\n\n".join(
+            f"{i}. {title}\nDieser Abschnitt enthält ausreichende konkrete Inhalte für die Vollständigkeitsprüfung."
+            for i, title in enumerate((
+                "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+                "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang",
+            ), start=1)
+            if title != "Thesen-Update"
+        )
+        merged, missing = radar._gemini_radar_abschnitte_zusammenfuehren(
+            original, report, required, ["2. Thesen-Update"]
+        )
+        self.assertIsNone(merged)
+        self.assertEqual(missing, ["2. Thesen-Update"])
+
+    def test_report_gate_gets_temporary_status_marker_before_final_status_is_written(self):
+        # speichere_ergebnis removes model-provided status markers and calculates
+        # its own status after validation. The validator requires exactly one
+        # marker, so the pre-write validation needs a temporary FINAL marker.
+        self.assertIn(
+            'report_gate_input = text.rstrip() + "\\nTRADING_RADAR_FACHLICH_FINAL=FINAL\\n"',
+            self.radar_source,
+        )
+        self.assertIn("validate_trading_radar_report(report_gate_input)", self.radar_source)
+
+    def test_finality_findings_are_written_to_github_log(self):
+        self.assertIn("TRADING_RADAR_FINALITY_FINDINGS_COUNT=", self.radar_source)
+        self.assertIn("TRADING_RADAR_FINALITY_FINDING=", self.radar_source)
+
     def test_independent_radar_retries_missing_section_and_writes_fallback_status(self):
         source = RADAR.read_text(encoding="utf-8")
         start = source.index("def _gemini_trading_radar_eigenstaendig(")
