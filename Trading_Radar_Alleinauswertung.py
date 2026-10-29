@@ -5071,6 +5071,61 @@ def _gemini_503_aeussere_retry_aktion(
     return "terminal", None
 
 
+def _gemini_radar_response_diagnose(response, label):
+    """Loggt Abschlussgrund und Token-Nutzung, sofern das SDK sie bereitstellt."""
+    candidates = getattr(response, "candidates", None) or []
+    finish_reason = "NICHT_VERFUEGBAR"
+    if candidates:
+        finish_reason = str(getattr(candidates[0], "finish_reason", None) or "NICHT_VERFUEGBAR")
+    usage = getattr(response, "usage_metadata", None)
+    prompt_tokens = getattr(usage, "prompt_token_count", None) if usage is not None else None
+    output_tokens = getattr(usage, "candidates_token_count", None) if usage is not None else None
+    total_tokens = getattr(usage, "total_token_count", None) if usage is not None else None
+    print(
+        f"GEMINI_RESPONSE_META | {label} | finish_reason={finish_reason} | "
+        f"prompt_tokens={prompt_tokens if prompt_tokens is not None else 'NICHT_VERFUEGBAR'} | "
+        f"output_tokens={output_tokens if output_tokens is not None else 'NICHT_VERFUEGBAR'} | "
+        f"total_tokens={total_tokens if total_tokens is not None else 'NICHT_VERFUEGBAR'}"
+    )
+
+
+def _gemini_radar_abschnitte(text, required):
+    """Extrahiert exakt benannte Radar-Abschnitte anhand eigener Überschriftenzeilen."""
+    text = str(text or "")
+    starts = []
+    for heading in required:
+        pattern = re.compile(
+            r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?"
+            + re.escape(heading)
+            + r"(?:\*\*)?[ \t]*$"
+        )
+        match = pattern.search(text)
+        if match:
+            starts.append((match.start(), match.end(), heading))
+    starts.sort(key=lambda item: item[0])
+    sections = {}
+    for index, (start, _end, heading) in enumerate(starts):
+        stop = starts[index + 1][0] if index + 1 < len(starts) else len(text)
+        sections[heading] = text[start:stop].strip()
+    return sections
+
+
+def _gemini_radar_abschnitte_zusammenfuehren(original, ergaenzung, required, fehlend):
+    """Erhält vorhandene Abschnitte und ergänzt nur angeforderte fehlende Abschnitte."""
+    original_sections = _gemini_radar_abschnitte(original, required)
+    retry_sections = _gemini_radar_abschnitte(ergaenzung, required)
+    merged = {}
+    for heading in required:
+        if heading in original_sections:
+            merged[heading] = original_sections[heading]
+        elif heading in fehlend and heading in retry_sections:
+            merged[heading] = retry_sections[heading]
+    remaining = [heading for heading in required if heading not in merged]
+    if remaining:
+        return None, remaining
+    return "\n\n".join(merged[heading] for heading in required), []
+
+
 def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien, bestehende_auswertung):
     """Erzeugt den Radar-Bericht durch einen eigenen quota-sicheren Gemini-Request."""
     global _GEMINI_TRADING_RADAR_TEXT, _GEMINI_TRADING_RADAR_STATUS
@@ -5226,6 +5281,7 @@ __QUELLEN__
                     client, modell, contents, None,
                     label=f"Trading-Radar-Eigenlauf Modellwechsel {modell}",
                 )
+        _gemini_radar_response_diagnose(response, "Trading-Radar-Eigenlauf")
         radar_text = str(getattr(response, "text", response) or "").strip()
         required = (
             "1. Trading-Radar",
@@ -5237,10 +5293,12 @@ __QUELLEN__
             "7. MSCI-Vergleich",
             "8. Daten-/Prüfanhang",
         )
-        missing = [heading for heading in required if heading.casefold() not in radar_text.casefold()]
+        parsed_sections = _gemini_radar_abschnitte(radar_text, required)
+        missing = [heading for heading in required if heading not in parsed_sections]
 
-        # Ein einzelner Vollstaendigkeits-Retry faengt ausgelassene Pflichtabschnitte
-        # ab. Die erste unvollstaendige Antwort wird nicht gespeichert oder publiziert.
+        # Ein gezielter Abschnitts-Retry ergänzt nur fehlende Pflichtabschnitte.
+        # Bereits gelieferte Abschnitte bleiben erhalten; unvollständige Antworten
+        # werden weiterhin nicht gespeichert oder publiziert.
         if radar_text and missing:
             print(
                 "TRADING_RADAR_RETRY | unvollstaendige Antwort; fehlend="
@@ -5249,13 +5307,13 @@ __QUELLEN__
             )
             retry_prompt = (
                 prompt
-                + "\n\nVERBINDLICHER VOLLSTAENDIGKEITS-RETRY: Deine vorherige Antwort "
-                "hat folgende Pflichtabschnitte ausgelassen: "
+                + "\n\nVERBINDLICHER ABSCHNITTS-RETRY: Die vorherige Antwort enthielt "
+                "bereits einen Bericht, aber folgende Pflichtabschnitte fehlten: "
                 + ", ".join(missing)
-                + ". Erzeuge den vollstaendigen Bericht erneut. Gib alle acht Pflichtabschnitte "
-                "mit den vorgegebenen Ueberschriften in korrekter Reihenfolge aus. "
-                "Keine Abschnitte auslassen; fehlende Daten ausdruecklich als nicht verfuegbar "
-                "kennzeichnen und nichts erfinden."
+                + ". Gib NUR diese fehlenden Abschnitte vollständig aus und verwende dafür "
+                "die exakten vorgegebenen Überschriften. Wiederhole keine anderen Abschnitte. "
+                "Halte die Antwort auf die angeforderten Abschnitte beschränkt. Fehlende Daten "
+                "ausdrücklich als nicht verfügbar kennzeichnen und nichts erfinden."
             )
             retry_contents = [retry_prompt]
             retry_label = "Trading-Radar-Eigenlauf-Vollstaendigkeitsretry"
@@ -5275,11 +5333,16 @@ __QUELLEN__
                     + ":vollstaendigkeits-retry"
                 ),
             )
-            radar_text = str(getattr(response, "text", response) or "").strip()
-            missing = [
-                heading for heading in required
-                if heading.casefold() not in radar_text.casefold()
-            ]
+            _gemini_radar_response_diagnose(response, retry_label)
+            retry_text = str(getattr(response, "text", response) or "").strip()
+            radar_text, missing = _gemini_radar_abschnitte_zusammenfuehren(
+                radar_text, retry_text, required, missing
+            )
+            if missing:
+                print(
+                    "TRADING_RADAR_RETRY_SECTION_MISSING | fehlend nach gezielter Ergänzung="
+                    + ", ".join(missing)
+                )
 
         if not radar_text or missing:
             _GEMINI_TRADING_RADAR_STATUS = "NICHT_FINAL"
