@@ -805,3 +805,151 @@ OHLCV-Abdeckung: 862/862; Status=gaps.
     assert "Statusgruppe: NICHT HANDELBAR" in normalized
     findings = audit_market_first_content(normalized)
     assert not any("Kandidatengruppe" in finding or "Statusgruppe fehlt" in finding for finding in findings), findings
+
+
+
+def test_market_first_audit_accepts_numeric_m2_as_liquidity_evidence():
+    from trading_radar_neuauswertung import audit_market_first_content
+
+    report = """1 · Trading-Radar
+Marktregime: Restriktives, zinsgetriebenes Makroregime mit defensiver Rotation.
+Indizes/Marktbreite: S&P 500 7/11 Sektor-ETFs über ihrem 50-Tage-Durchschnitt.
+Zinsen/Renditen: US 10Y Treasury bei 5,00%.
+Dollar/Liquidität/Volatilität: M2 bei 23.413,9 Mrd. USD (Stand 01.09.2026).
+Basisszenario: Seitwärts bis moderat aufwärts bei erhöhtem Selektionsdruck.
+2 · Thesen-Update
+Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.
+3 · Ereignisradar
+Keine relevanten Ereignisse im geprüften Zeitraum.
+4 · Assetklassenvergleich
+Relative Stärke: defensive Sektoren stärker, zyklische Segmente schwächer.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: Keine Kandidaten
+AUF TRIGGER WARTEN: Keine Kandidaten
+EREIGNIS ABWARTEN: Keine Kandidaten
+NICHT HANDELBAR: Keine Kandidaten
+6 · Portfolio & Risiko
+Portfolio-Risiken geprüft.
+7 · MSCI-Vergleich
+Benchmark-Vergleich geprüft.
+8 · Daten-/Prüfanhang
+Datenstand geprüft."""
+    errors = audit_market_first_content(report)
+    assert not any("Dollar/Liquidität/Volatilität" in error for error in errors)
+
+
+def test_ohlcv_gaps_with_full_symbol_coverage_are_not_misreported_as_missing_symbols():
+    from trading_radar_market_first import validate_ohlcv_audit
+
+    audit = {
+        "status": "gaps",
+        "universe_count": 862,
+        "covered_count": 862,
+        "affected_candidates": [],
+        "candidate_tickers_checked": [],
+        "candidate_mapping_complete": False,
+        "unmapped_candidate_tickers": [],
+    }
+    findings = validate_ohlcv_audit(audit)
+    assert any("Datenqualitätsstatus 'gaps' trotz Symbolabdeckung 862/862" in item for item in findings)
+    assert not any("Abdeckung nicht vollständig: 862/862" in item for item in findings)
+
+
+def test_ohlcv_gaps_allow_explicit_zero_candidate_report_without_candidate_mapping():
+    from trading_radar_market_first import validate_ohlcv_audit
+
+    audit = {
+        "status": "gaps",
+        "universe_count": 862,
+        "covered_count": 862,
+        "affected_candidates": [],
+        "candidate_tickers_checked": [],
+        "candidate_mapping_complete": False,
+        "unmapped_candidate_tickers": [],
+    }
+    assert validate_ohlcv_audit(audit, explicit_no_candidates=True) == []
+
+
+def test_noncanonical_numbered_heading_does_not_get_swallowed_into_previous_section():
+    import Trading_Radar_Alleinauswertung as production
+
+    required = (
+        "1. Trading-Radar",
+        "2. Thesen-Update",
+        "3. Ereignisradar",
+        "4. Assetklassenvergleich",
+        "5. Technische Kandidaten",
+        "6. Portfolio & Risiko",
+        "7. MSCI-Vergleich",
+        "8. Daten-/Prüfanhang",
+    )
+    raw = """### 1. Trading-Radar
+Marktüberblick.
+### 2. Thesenkontinuität
+Alter/abweichender Abschnittstitel.
+### 3. Ereignisradar
+Ereignisse.
+### 4. Assetklassenvergleich
+Rotation.
+### 5. Technische Kandidaten
+Keine Kandidaten.
+### 6. Portfolio & Risiko
+Risiko.
+### 7. MSCI-Vergleich
+Benchmark.
+### 8. Daten-/Prüfanhang
+Daten."""
+    sections = production._gemini_radar_abschnitte(raw, required)
+    assert "2. Thesen-Update" not in sections
+    assert "Thesenkontinuität" not in sections["1. Trading-Radar"]
+    retry = "### 2. Thesen-Update\nKeine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung."
+    merged, missing = production._gemini_radar_abschnitte_zusammenfuehren(
+        raw, retry, required, ["2. Thesen-Update"]
+    )
+    assert missing == []
+    assert merged.count("### 2.") == 1
+    assert "### 2. Thesen-Update" in merged
+    assert "Thesenkontinuität" not in merged
+
+
+
+def test_empty_candidate_groups_are_normalized_before_ohlcv_assessment():
+    import Trading_Radar_Alleinauswertung as production
+    from trading_radar_neuauswertung import normalize_market_first_report_structure
+    from trading_radar_market_first import (
+        report_explicitly_declares_no_technical_candidates,
+        report_has_explicit_empty_candidate_groups,
+        validate_ohlcv_audit,
+    )
+
+    report = """### 1. Trading-Radar
+Marktregime: Restriktives Marktregime mit defensiver Rotation.
+### 2. Thesen-Update
+Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.
+### 3. Ereignisradar
+Keine relevanten Ereignisse im geprüften Zeitraum.
+### 4. Assetklassenvergleich
+Relative Stärke: defensive Werte stärker als zyklische Werte.
+### 5. Technische Kandidaten
+Keine belastbaren technischen Kandidaten; keine Handelsfreigabe.
+### 6. Portfolio & Risiko
+Risiko geprüft.
+### 7. MSCI-Vergleich
+Benchmark geprüft.
+### 8. Daten-/Prüfanhang
+Daten geprüft."""
+    normalized = normalize_market_first_report_structure(report)
+    assert report_explicitly_declares_no_technical_candidates(normalized)
+    assert report_has_explicit_empty_candidate_groups(normalized)
+    assert production._trading_radar_kandidaten_aus_abschnitt5(normalized) == []
+
+    audit = {
+        "status": "gaps",
+        "universe_count": 862,
+        "covered_count": 862,
+        "affected_candidates": [],
+        "candidate_tickers_checked": [],
+        "candidate_mapping_complete": False,
+        "unmapped_candidate_tickers": [],
+    }
+    assert validate_ohlcv_audit(audit, explicit_no_candidates=True) == []

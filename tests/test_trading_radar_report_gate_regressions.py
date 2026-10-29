@@ -48,9 +48,16 @@ def test_ohlcv_appendix_normalizer_removes_markdown_prefixed_contradictory_claim
     report = """### 8. Daten-/Prüfanhang
 OHLCV-Abdeckung: 738/862 Symbole abgedeckt; Status=gaps.
 * **OHLCV-Abdeckung:** OHLCV vollständig, keine Datenlücken; Kandidaten nicht eingeschränkt.
+* **Lückenstatus:** OHLCV vollständig, keine Datenlücken; Kandidaten nicht eingeschränkt.
 * **Datenstand / Cutoff:** 2026-10-27T17:47:03+00:00
 
 9. Vollständige offene Positionen
 """
     normalized = production._trading_radar_ohlcv_abschnitt8_aktualisieren(report)
     assert "OHLCV vollständig, keine Datenlücken" not in normalized
+    assert "**OHLCV-Abdeckung:**" not in normalized
+    assert "**Lückenstatus:**" not in normalized
+    # The structured audit may be unavailable in an isolated test environment;
+    # regardless of its result, only one authoritative OHLCV-Abdeckung line remains.
+    assert normalized.count("OHLCV-Abdeckung:") == 1
+    assert "Datenstand / Cutoff" not in normalized
