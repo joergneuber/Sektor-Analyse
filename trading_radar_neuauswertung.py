@@ -274,11 +274,54 @@ def normalize_market_first_report_structure(report: str) -> str:
         ))
         has_records = bool(re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?\s*[:=]", body))
         group_names = ("JETZT TECHNISCH PRÜFEN", "AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN", "NICHT HANDELBAR")
-        has_any_group = any(re.search(rf"(?im)^\s*(?:#{{1,6}}\s*)?(?:[-*•]\s*)?(?:\*\*)?{re.escape(g)}(?:\*\*)?\s*[:：]", body) for g in group_names)
-        if zero_candidates and not has_records and not has_any_group:
-            groups = "\n".join(f"{g}: Keine Kandidaten" for g in group_names)
-            insert_at = candidate_section.end(1)
-            text = text[:insert_at].rstrip() + "\n\n" + groups + "\n\n" + text[insert_at:].lstrip("\r\n")
+        group_heading_pattern = re.compile(
+            r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:[-*•][ \t]*)?(?:\*\*)?("
+            + "|".join(re.escape(g) for g in sorted(group_names, key=len, reverse=True))
+            + r")(?:\*\*)?[ \t]*(?::|：)?[ \t]*([^\r\n]*)$"
+        )
+        group_matches = list(group_heading_pattern.finditer(body))
+        has_any_group = bool(group_matches)
+        if zero_candidates and not has_records:
+            # A global, explicit no-candidate declaration plus zero structured
+            # candidate records is sufficient to normalize every required group.
+            # The old branch only ran when NO group heading existed at all; if
+            # Gemini emitted three of four groups, the missing group survived
+            # into the production audit. Keep commentary, but make every existing
+            # group explicitly empty and append only missing group headings.
+            present = [re.sub(r"\s+", " ", m.group(1)).strip().upper() for m in group_matches]
+            for group in group_names:
+                if present.count(group) > 1:
+                    # Preserve duplicates so the independent audit can fail closed.
+                    continue
+            rebuilt_body = body
+            for group in group_names:
+                pattern = re.compile(
+                    rf"(?im)^([ \t]*(?:#{{1,6}}[ \t]*)?(?:[-*•][ \t]*)?(?:\*\*)?{re.escape(group)}(?:\*\*)?[ \t]*)(?::|：)?[ \t]*([^\r\n]*)$"
+                )
+                matches_for_group = list(pattern.finditer(rebuilt_body))
+                if len(matches_for_group) == 1:
+                    match = matches_for_group[0]
+                    # Only change the heading line; following explanatory text
+                    # is retained and no candidate or trading signal is invented.
+                    line_end = rebuilt_body.find("\n", match.start())
+                    if line_end < 0:
+                        line_end = len(rebuilt_body)
+                    rebuilt_body = (
+                        rebuilt_body[:match.start()]
+                        + match.group(1) + ": Keine Kandidaten"
+                        + rebuilt_body[line_end:]
+                    )
+            present_after = [
+                re.sub(r"\s+", " ", m.group(1)).strip().upper()
+                for m in group_heading_pattern.finditer(rebuilt_body)
+            ]
+            missing_groups = [group for group in group_names if group not in present_after]
+            if missing_groups:
+                rebuilt_body = rebuilt_body.rstrip() + "\n\n" + "\n".join(
+                    f"{group}: Keine Kandidaten" for group in missing_groups
+                ) + "\n"
+            body_start, body_end = candidate_section.start(1), candidate_section.end(1)
+            text = text[:body_start] + rebuilt_body + text[body_end:]
         elif has_records and not has_any_group:
             # Deterministically place each existing candidate into the group
             # explicitly named by its own status. Do not infer a trading signal.
@@ -339,10 +382,22 @@ def audit_market_first_content(report: str) -> list[str]:
         r"\b[^\r\n]*$", text
     ))
     bodies: dict[str, str] = {}
+    heading_counts: dict[str, int] = {}
     for i, match in enumerate(headings):
         title = match.group("title").strip().casefold()
+        heading_counts[title] = heading_counts.get(title, 0) + 1
         end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
-        bodies[title] = text[match.end():end]
+        # Keep the first canonical section deterministically. The old assignment
+        # silently overwrote it when a later duplicate heading appeared, so the
+        # audit could inspect a different/incomplete body than the one used by
+        # the pre-save empty-candidate check.
+        if title not in bodies:
+            bodies[title] = text[match.end():end]
+    for title, count in heading_counts.items():
+        if count > 1:
+            errors.append(
+                f"MARKT-FIRST: Pflichtabschnitt '{title}' mehrfach vorhanden ({count} Überschriften)"
+            )
 
     def body_for(fragment: str) -> str:
         return next((body for title, body in bodies.items() if fragment in title), "")

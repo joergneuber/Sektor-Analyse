@@ -89,6 +89,9 @@ from trading_radar_neuauswertung import audit_market_first_content, normalize_ma
 from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, report_explicitly_declares_no_technical_candidates, report_has_explicit_empty_candidate_groups, validate_ohlcv_audit
 from trading_radar_report_gate import validate_report as validate_trading_radar_report
 
+# Findings from the report-save validation stage are carried to post-save gates.
+_TRADING_RADAR_FINALITY_FINDINGS = []
+
 from quellenwert_vertrag import (
     values_match_display, find_exact_labeled_line, extract_four_week_percent,
     extract_metal_four_week_value,
@@ -17545,6 +17548,8 @@ def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
 
 
 def speichere_ergebnis(text, eingabedateien=None):
+    global _TRADING_RADAR_FINALITY_FINDINGS
+    _TRADING_RADAR_FINALITY_FINDINGS = []
     heute = datetime.date.today().isoformat()
     if globals().get("_GEMINI_TRADING_RADAR_ONLY_MODE"):
         radar_status = globals().get("_GEMINI_TRADING_RADAR_STATUS", "NICHT_ERZEUGT")
@@ -17901,6 +17906,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         print(f"Trading-Radar-Eigenbericht gespeichert: {radar_datei}")
         print("TRADING_RADAR_DATEI=" + radar_output)
         print("TRADING_RADAR_FACHLICH_FINAL=" + radar_final)
+        _TRADING_RADAR_FINALITY_FINDINGS = list(validation_errors)
         return radar_output
     ausgabe_datei = f"Auswertung({heute}).txt"
     fachliche_mindesttiefe_offen = False
@@ -18494,6 +18500,25 @@ if __name__ == "__main__":
             print("TRADING_RADAR_STATUS=FEHLER | eindeutiger Fachstatusmarker fehlt")
             raise SystemExit(4)
         fachlich_final = status_matches[0]
+        finality_findings = list(globals().get("_TRADING_RADAR_FINALITY_FINDINGS", []))
+        # Normalize the actual persisted report immediately before its independent
+        # post-save audit. This closes the gap where the pre-save version had all
+        # explicit empty candidate groups but the stored text did not.
+        try:
+            normalized_saved_report = normalize_market_first_report_structure(report_text)
+            if normalized_saved_report != report_text:
+                report_text = normalized_saved_report
+                with open(ausgabe_pfad, "w", encoding="utf-8") as report_handle:
+                    report_handle.write(report_text)
+                status_matches = re.findall(
+                    r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", report_text
+                )
+                if len(status_matches) == 1:
+                    fachlich_final = status_matches[0]
+        except Exception as normalize_exc:
+            finality_findings.append(
+                f"Market-First-Normalisierung nach Speicherung fehlgeschlagen: {type(normalize_exc).__name__}: {normalize_exc}"
+            )
         # GitHub Actions passes the outcomes of the final sync and persistence
         # steps. A missing/failed persistence step is an explicit audit finding,
         # not a silent best-effort success. Local runs without these variables
@@ -18532,6 +18557,7 @@ if __name__ == "__main__":
             print("TRADING_RADAR_OHLCV_PERSISTENCE_GATE=FAIL")
             for finding in persistence_findings:
                 print("TRADING_RADAR_OHLCV_PERSISTENCE_FINDING=" + finding)
+                finality_findings.append("OHLCV-Persistenz: " + str(finding))
         elif any(persistence_checks.values()):
             print("TRADING_RADAR_OHLCV_PERSISTENCE_GATE=PASS")
         # Markt-First-Inhaltsaudit auf dem tatsächlich gespeicherten Produktionsbericht.
@@ -18549,11 +18575,12 @@ if __name__ == "__main__":
             print("TRADING_RADAR_MARKET_FIRST_GATE=FAIL")
             for finding in market_first_findings:
                 print("TRADING_RADAR_MARKET_FIRST_FINDING=" + finding)
-                validation_errors.append("Market-First: " + str(finding))
+                finality_findings.append("Market-First: " + str(finding))
         else:
             print("TRADING_RADAR_MARKET_FIRST_GATE=PASS")
-        print(f"TRADING_RADAR_FINALITY_FINDINGS_COUNT={len(validation_errors)}")
-        for finding in validation_errors:
+        _TRADING_RADAR_FINALITY_FINDINGS = list(finality_findings)
+        print(f"TRADING_RADAR_FINALITY_FINDINGS_COUNT={len(finality_findings)}")
+        for finding in finality_findings:
             safe_finding = re.sub(r"[\r\n]+", " ", str(finding)).strip()
             print("TRADING_RADAR_FINALITY_FINDING=" + safe_finding)
         print("TRADING_RADAR_STATUS=SUCCESS")
