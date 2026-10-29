@@ -31,6 +31,87 @@ def load_module(name: str, path: Path):
 
 
 class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
+    def test_missing_section_is_completed_and_merged_without_rewriting_valid_sections(self):
+        """A targeted retry fills only the missing section and keeps the original seven."""
+        import types
+
+        trade_story = types.ModuleType("trade_story_universum")
+        trade_story.write_trade_story_universe = lambda *a, **k: None
+        sources = types.ModuleType("quellenwert_vertrag")
+        sources.values_match_display = lambda *a, **k: False
+        sources.find_exact_labeled_line = lambda *a, **k: None
+        sources.extract_four_week_percent = lambda *a, **k: None
+        sources.extract_metal_four_week_value = lambda *a, **k: None
+        sys.modules.setdefault("trade_story_universum", trade_story)
+        sys.modules.setdefault("quellenwert_vertrag", sources)
+        radar = load_module(
+            "trading_radar_partial_section_retry_under_test",
+            ROOT / "Trading_Radar_Alleinauswertung.py",
+        )
+
+        required = (
+            "1. Trading-Radar",
+            "2. Thesen-Update",
+            "3. Ereignisradar",
+            "4. Assetklassenvergleich",
+            "5. Technische Kandidaten",
+            "6. Portfolio & Risiko",
+            "7. MSCI-Vergleich",
+            "8. Daten-/Prüfanhang",
+        )
+        first_response = "\n\n".join(
+            f"{heading}\nOriginalinhalt für Abschnitt {required.index(heading) + 1}"
+            for heading in required if heading != "2. Thesen-Update"
+        )
+        second_response = "2. Thesen-Update\nGezielte Ergänzung der fehlenden Thesen."
+        responses = iter([
+            types.SimpleNamespace(text=first_response),
+            types.SimpleNamespace(text=second_response),
+        ])
+        calls = []
+
+        with tempfile.TemporaryDirectory() as td:
+            previous = Path.cwd()
+            try:
+                os.chdir(td)
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                radar._gemini_tokenzahl = lambda *a, **k: 100
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a",)
+                radar.GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 1
+                radar._gemini_503_failed_models_by_request.clear()
+                radar._gemini_503_failures_this_run.clear()
+
+                def fake_send(*args, **kwargs):
+                    calls.append((args[5] if len(args) > 5 else kwargs.get("label"), args[2]))
+                    return next(responses)
+
+                radar._gemini_generate_content_quota_safe = fake_send
+                radar._speichere_gemini_input_manifest = lambda *_: None
+
+                from contextlib import redirect_stdout
+                from io import StringIO
+                with redirect_stdout(StringIO()) as output:
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=object(), preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+
+                self.assertIsInstance(result, str)
+                for heading in required:
+                    self.assertIn(heading, result)
+                self.assertIn("Originalinhalt für Abschnitt 1", result)
+                self.assertIn("Originalinhalt für Abschnitt 4", result)
+                self.assertIn("Gezielte Ergänzung der fehlenden Thesen.", result)
+                self.assertEqual(result.count("1. Trading-Radar"), 1)
+                self.assertEqual(result.count("4. Assetklassenvergleich"), 1)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+                self.assertIn("ABSCHNITTS-RETRY", calls[1][1][0])
+                self.assertIn("GEMINI_RESPONSE_META", output.getvalue())
+            finally:
+                os.chdir(previous)
+
     def test_fallback_package_is_built_from_exact_manifest_after_failure(self):
         """The real packager creates an auditable ZIP from the same manifest inputs."""
         with tempfile.TemporaryDirectory() as td:
