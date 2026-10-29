@@ -237,13 +237,81 @@ Daten."""
     assert not any("Portfolio-Abschnitt ist deutlich umfangreicher" in error for error in errors)
 
 
+def test_market_first_audit_accepts_compact_risk_regime_with_numeric_market_evidence():
+    from trading_radar_neuauswertung import audit_market_first_content
+
+    report = """1 · Trading-Radar
+Marktregime: risk-on.
+Indizes/Marktbreite: S&P 500 breadth 7/11 sectors above their 50-day averages.
+Zinsen/Renditen: US 10Y Treasury yield 4.2%.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4.
+Basisszenario: selective risk-on with narrow breadth.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: breadth remains narrow across several sectors.
+Alternative: sideways market if yields rise further.
+Bestätigungstrigger: breadth improves for three sessions.
+Invalidierungstrigger: S&P 500 closes below confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke: Energy outperforms growth; winners and losers diverge.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Portfolio impacts reviewed.
+7 · MSCI-Vergleich
+Comparison reviewed.
+8 · Daten-/Prüfanhang
+Data reviewed."""
+    assert audit_market_first_content(report) == []
+
+
+def test_market_first_audit_still_rejects_qualitative_only_rates_and_dollar_fields():
+    from trading_radar_neuauswertung import audit_market_first_content
+
+    report = """1 · Trading-Radar
+Marktregime: risk-off.
+Indizes/Marktbreite: S&P 500 breadth weakens across 7/11 sectors.
+Zinsen/Renditen: Treasury yields stable across the curve.
+Dollar/Liquidität/Volatilität: DXY stable and VIX lower, liquidity tight.
+Basisszenario: defensive market conditions with weak breadth.
+2 · Thesen-Update
+Thesen-Name: T-01
+Gegenbelege: earnings remain resilient despite weak breadth.
+Alternative: sideways market if volatility fades.
+Bestätigungstrigger: breadth improves across several sessions.
+Invalidierungstrigger: S&P 500 falls below the last confirmed swing low.
+3 · Ereignisradar
+FOMC.
+4 · Assetklassenvergleich
+Relative Stärke shows rotation from growth into energy; winners and losers diverge.
+5 · Technische Kandidaten
+JETZT TECHNISCH PRÜFEN: keine Kandidaten.
+AUF TRIGGER WARTEN: keine Kandidaten.
+EREIGNIS ABWARTEN: keine Kandidaten.
+NICHT HANDELBAR: keine Kandidaten.
+6 · Portfolio & Risiko
+Relevant impacts reviewed.
+7 · MSCI-Vergleich
+Comparison reviewed.
+8 · Daten-/Prüfanhang
+Data reviewed."""
+    errors = audit_market_first_content(report)
+    assert any("Zinsen/Renditen" in error for error in errors)
+    assert any("Dollar/Liquidität/Volatilität" in error for error in errors)
+    assert not any("Marktregime" in error for error in errors)
+
 def test_market_first_audit_requires_fields_per_thesis_and_candidate():
     from trading_radar_neuauswertung import audit_market_first_content
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -280,8 +348,8 @@ def test_market_first_audit_accepts_structurally_complete_thesis_and_candidate()
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -317,8 +385,8 @@ def test_market_first_audit_accepts_four_explicitly_empty_candidate_groups():
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -349,8 +417,8 @@ def test_market_first_audit_rejects_candidate_in_wrong_group():
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -387,8 +455,8 @@ def test_market_first_audit_rejects_explicitly_empty_group_with_candidate():
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -425,8 +493,8 @@ def test_market_first_audit_accepts_markdown_group_headings_with_empty_markers()
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -461,8 +529,8 @@ def test_market_first_audit_rejects_duplicate_candidate_group_headings():
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01
@@ -495,8 +563,8 @@ def test_market_first_audit_handles_optional_rejected_group_consistently():
     report = """1 · Trading-Radar
 Marktregime: risk-on.
 Indizes/Marktbreite: S&P 500 breadth improves.
-Zinsen/Renditen: Treasury yields stable.
-Dollar/Liquidität/Volatilität: DXY stable, VIX lower.
+Zinsen/Renditen: US 10Y Treasury yield 4.2% remains stable.
+Dollar/Liquidität/Volatilität: DXY 102.3; VIX 18.4, both below prior readings.
 Basisszenario: selective risk-on.
 2 · Thesen-Update
 Thesen-Name: T-01

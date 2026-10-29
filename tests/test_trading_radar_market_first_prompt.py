@@ -36,8 +36,8 @@ def test_market_first_audit_accepts_market_led_structure():
     # four required candidate groups explicitly represented (empty is valid).
     report = """### 1. Trading-Radar
 Indizes/Marktbreite: S&P 500 and Nasdaq breadth weaken.
-Zinsen/Renditen: Treasury yields rise.
-Dollar/Liquidität/Volatilität: Dollar and VIX rise; liquidity remains tight.
+Zinsen/Renditen: US 10Y Treasury yield rises to 4.2%.
+Dollar/Liquidität/Volatilität: DXY 102.3 and VIX 18.4 rise; liquidity remains tight.
 Marktregime: risk-off.
 Basisszenario: defensive market conditions.
 ### 2. Thesen-Update
