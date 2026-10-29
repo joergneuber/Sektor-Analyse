@@ -2,7 +2,7 @@ from pathlib import Path
 
 from trading_radar_market_first import normalize_event_section, validate_ohlcv_audit
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "Trading_Radar_Alleinauswertung.py").is_file())
 
 
 def test_production_entrypoint_runs_market_first_audit_on_saved_report():
