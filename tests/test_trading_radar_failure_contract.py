@@ -152,7 +152,7 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                     radar._gemini_503_failed_models_by_request.clear()
                     radar._gemini_503_failures_this_run.clear()
                     calls = []
-                    report = "\\n".join((
+                    report = "\n".join((
                         "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
                         "4. Assetklassenvergleich", "5. Technische Kandidaten",
                         "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
