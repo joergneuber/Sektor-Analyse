@@ -5090,14 +5090,18 @@ def _gemini_radar_response_diagnose(response, label):
 
 
 def _gemini_radar_abschnitte(text, required):
-    """Extrahiert Pflichtabschnitte zeilenbasiert und formatierungstolerant.
+    """Extrahiert kanonische Pflichtabschnitte und trennt auch falsche Kapitelüberschriften.
 
-    Die Produktionsanweisung verwendet sowohl Punkt ("2.") als auch Mittelpunkt
-    ("2 ·"). Beide Schreibweisen sind gleichwertig. Eine bloße Überschrift wird
-    hier als Struktur erkannt; ob der Abschnitt tatsächlich Inhalt hat, wird
-    beim Übernehmen einer Retry-Ergänzung separat geprüft.
+    Punkt ("2.") und Mittelpunkt ("2 ·") sind gleichwertig. Jede echte
+    Kapitelüberschrift 1–8 beendet den vorigen Abschnitt, auch wenn ihr Titel
+    nicht dem Vertrag entspricht. Dadurch wird z. B. "2. Thesenkontinuität"
+    nicht versehentlich in Abschnitt 1 verschluckt und später neben einem
+    nachgereichten "2. Thesen-Update" als doppelte Kapitelnummer ausgegeben.
+    Nicht-kanonische Überschriften begrenzen den Abschnitt, gelten aber selbst
+    nicht als erfüllter Pflichtabschnitt.
     """
     text = str(text or "")
+    canonical = {}
     starts = []
     for heading in required:
         heading_match = re.match(r"^\s*(?P<number>[1-8])\s*[.·]\s*(?P<title>.+?)\s*$", heading)
@@ -5105,6 +5109,7 @@ def _gemini_radar_abschnitte(text, required):
             continue
         number = heading_match.group("number")
         title = heading_match.group("title")
+        canonical.setdefault(number, []).append((title, heading))
         pattern = re.compile(
             r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?"
             + re.escape(number)
@@ -5114,13 +5119,45 @@ def _gemini_radar_abschnitte(text, required):
         )
         for match in pattern.finditer(text):
             starts.append((match.start(), match.end(), heading))
-    starts.sort(key=lambda item: item[0])
+
+    # Add boundary-only entries for non-canonical numbered headings. Require a
+    # Markdown heading marker or column-zero heading so indented numbered
+    # sub-lists in the executive summary are not mistaken for chapter breaks.
+    generic_heading = re.compile(
+        r"(?im)^(?:[ \t]*#{1,6}[ \t]*|)(?P<number>[1-8])[ \t]*[.·][ \t]+"
+        r"(?P<title>[^\r\n]+?)[ \t]*$"
+    )
+    for match in generic_heading.finditer(text):
+        number = match.group("number")
+        title = match.group("title").strip().strip("* ")
+        line = text[match.start():match.end()]
+        has_markdown_heading = bool(re.match(r"^[ \t]*#{1,6}[ \t]*", line))
+        # For unmarked headings require a compact title-like line. This avoids
+        # treating ordinary top-level numbered prose/list items as chapters.
+        if not has_markdown_heading and (
+            len(title) > 80 or title.endswith((".", "!", "?", ";", ":"))
+        ):
+            continue
+        is_canonical = any(
+            title.casefold() == expected.casefold()
+            for expected, _heading in canonical.get(number, [])
+        )
+        if not is_canonical:
+            starts.append((match.start(), match.end(), None))
+
+    # A heading may be matched both by the exact and generic expression.
+    unique = {}
+    for item in starts:
+        unique[(item[0], item[2])] = item
+    starts = sorted(unique.values(), key=lambda item: item[0])
     sections = {}
     for index, (start, _end, heading) in enumerate(starts):
         stop = starts[index + 1][0] if index + 1 < len(starts) else len(text)
-        # Preserve all occurrences for the final report gate to diagnose
-        # duplicates; for completeness detection the first matching section is
-        # enough to avoid treating duplicate headers as missing content.
+        if heading is None:
+            continue
+        # For completeness detection the first canonical occurrence is enough;
+        # duplicate canonical headings remain visible in the merged report and
+        # are caught by the downstream report gate.
         sections.setdefault(heading, text[start:stop].strip())
     return sections
 
@@ -17483,12 +17520,24 @@ def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
     body = text[section.end():end]
     # Remove only existing OHLCV summary lines/paragraphs to avoid contradictory
     # Gemini claims. Other section-8 content remains untouched.
+    # Remove model-generated OHLCV claims before inserting the structured audit.
+    # Markdown commonly places the colon inside bold markers (e.g.
+    # "**OHLCV-Abdeckung:** ..."), and the model may also emit a standalone
+    # "**Lückenstatus:** OHLCV vollständig ..." line. Both must be removed or
+    # they can contradict the authoritative audit later in this same section.
+    ohlcv_labels = (
+        r"OHLCV-Abdeckung(?:\s*&\s*Lückenstatus)?|OHLCV-Datenstand|"
+        r"Datenstand\s*/\s*Cutoff|Lückenstatus(?:\s+und\s+Kandidatenauswirkung)?"
+    )
     body = re.sub(
-        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?(?:OHLCV-Abdeckung(?:\s*&\s*Lückenstatus)?|OHLCV-Datenstand|Lückenstatus und Kandidatenauswirkung)(?:\*\*)?\s*:[^\r\n]*(?:\r?\n)?",
+        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:"
+        r"\*\*(?:" + ohlcv_labels + r"):\*\*|"
+        r"(?:(?:\*\*|__)?(?:" + ohlcv_labels + r")(?:\*\*|__)?)[ \t]*[:：]"
+        r")[^\r\n]*(?:\r?\n)?",
         "", body
     )
     body = re.sub(
-        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?OHLCV[^\r\n]*(?:vollständig|vollstaendig|Datenlücken|Datenluecken)[^\r\n]*(?:\r?\n)?",
+        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*)?OHLCV[^\r\n]*(?:vollständig|vollstaendig|Datenlücken|Datenluecken)[^\r\n]*(?:\r?\n)?",
         "", body
     )
     block = _trading_radar_ohlcv_nachweisblock(text)
@@ -17717,8 +17766,14 @@ def speichere_ergebnis(text, eingabedateien=None):
         # zwischen Status und Detailzahlen sind ein harter fachlicher Fehler.
         try:
             import historical_ohlcv
-            # Erst Kandidaten aus dem finalen Report extrahieren, dann exakt dieselbe
-            # aktive Universumsbasis und DB prüfen wie im unmittelbar vorherigen Workflow-Update.
+            # Canonicalize section 5 BEFORE deriving candidate emptiness. Previously
+            # the OHLCV audit ran before the later Market-First normalizer added the
+            # four explicit empty candidate groups. A genuinely empty candidate
+            # report was therefore treated as "mapping missing" and downgraded,
+            # even though the saved report later showed all four groups empty.
+            text = normalize_market_first_report_structure(text)
+            # Then extract only structured candidate tickers and audit the exact
+            # same active universe/DB as the workflow's immediately preceding update.
             candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)
             ohlcv_audit = historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)
             explicit_no_candidates = (
@@ -17729,6 +17784,17 @@ def speichere_ergebnis(text, eingabedateien=None):
             text = downgrade_ohlcv_affected_candidates(text, ohlcv_audit)
             ohlcv_findings = validate_ohlcv_audit(
                 ohlcv_audit, explicit_no_candidates=explicit_no_candidates
+            )
+            print(
+                "TRADING_RADAR_OHLCV_AUDIT_DIAGNOSTIC="
+                f"status={ohlcv_audit.get('status', 'unavailable')}; "
+                f"covered={ohlcv_audit.get('covered_count', 'NA')}/"
+                f"{ohlcv_audit.get('universe_count', 'NA')}; "
+                f"candidate_tickers={len(candidate_tickers)}; "
+                f"explicit_no_candidates={str(explicit_no_candidates).lower()}; "
+                f"candidate_mapping_complete="
+                f"{str(ohlcv_audit.get('candidate_mapping_complete') is True).lower()}; "
+                f"findings={len(ohlcv_findings)}"
             )
         except Exception as exc:
             ohlcv_audit = {"status": "unavailable", "universe_count": None, "covered_count": None}
@@ -17788,18 +17854,16 @@ def speichere_ergebnis(text, eingabedateien=None):
         # oder aus einem vorherigen Entwurf uebernehmen. Die Freigabe wird hier
         # deterministisch aus den validierten Pflichtdaten abgeleitet; weitere
         # unabhaengige Report-Gates pruefen den fertigen Bericht anschliessend.
-        # Make the actual blocking reason visible in GitHub Actions. Previously
-        # the aggregate status was set to NICHT_FINAL while the individual
-        # validation_errors were not printed, leaving only the downstream
-        # status-only REPORT_CHECK failure for diagnosis.
-        if validation_errors:
-            print(f"TRADING_RADAR_FINALITY_FINDINGS_COUNT={len(validation_errors)}")
-            for finding in validation_errors:
-                safe_finding = re.sub(r"[\r\n]+", " ", str(finding)).strip()
-                print("TRADING_RADAR_FINALITY_FINDING=" + safe_finding)
-        if str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR") and not validation_errors:
-            print("TRADING_RADAR_FINALITY_FINDINGS_COUNT=1")
-            print("TRADING_RADAR_FINALITY_FINDING=Geschlossene Positionen: TAB-2-QUELLE NICHT VERIFIZIERBAR")
+        # Aggregate all blockers only after the independent Market-First gate
+        # has run. Printing the count here used to omit later Market-First
+        # findings, so the count could disagree with the total logged blockers.
+        if (
+            str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR")
+            and not validation_errors
+        ):
+            validation_errors.append(
+                "Geschlossene Positionen: TAB-2-QUELLE NICHT VERIFIZIERBAR"
+            )
 
         final_status = "FINAL"
         if validation_errors or str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
@@ -18485,8 +18549,13 @@ if __name__ == "__main__":
             print("TRADING_RADAR_MARKET_FIRST_GATE=FAIL")
             for finding in market_first_findings:
                 print("TRADING_RADAR_MARKET_FIRST_FINDING=" + finding)
+                validation_errors.append("Market-First: " + str(finding))
         else:
             print("TRADING_RADAR_MARKET_FIRST_GATE=PASS")
+        print(f"TRADING_RADAR_FINALITY_FINDINGS_COUNT={len(validation_errors)}")
+        for finding in validation_errors:
+            safe_finding = re.sub(r"[\r\n]+", " ", str(finding)).strip()
+            print("TRADING_RADAR_FINALITY_FINDING=" + safe_finding)
         print("TRADING_RADAR_STATUS=SUCCESS")
         print("TRADING_RADAR_FACHLICH_FINAL=" + fachlich_final)
         print("TRADING_RADAR_EXIT_STATUS=0")

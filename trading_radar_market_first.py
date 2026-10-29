@@ -695,8 +695,22 @@ def validate_ohlcv_audit(audit: Mapping[str, Any], *, explicit_no_candidates: bo
         )
         has_candidate_assessment = has_affected_rows or has_complete_zero_impact_assessment
         if not has_candidate_assessment and not explicit_no_candidates:
-            findings.append(f"OHLCV-Abdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt")
-            findings.append("OHLCV-Kandidatenfolgen fehlen: affected_candidates ist leer/ungültig und es liegt kein vollständiger Kandidaten-Mapping-Nachweis vor")
+            if covered < universe:
+                findings.append(
+                    f"OHLCV-Symbolabdeckung nicht vollständig: {covered}/{universe} Symbole abgedeckt"
+                )
+            else:
+                # Symbol coverage and candle quality are separate dimensions:
+                # all symbols may exist while stale/invalid/gapped history still
+                # requires disclosure. Never call 862/862 "not fully covered".
+                findings.append(
+                    f"OHLCV-Datenqualitätsstatus '{status}' trotz Symbolabdeckung "
+                    f"{covered}/{universe}; Datenlücken/Veraltung/ungültige Kerzen separat prüfen"
+                )
+            findings.append(
+                "OHLCV-Kandidatenfolgen fehlen: affected_candidates ist leer/ungültig "
+                "und es liegt kein vollständiger Kandidaten-Mapping-Nachweis vor"
+            )
     # Kandidatenbezogene Auswirkungen werden zusätzlich einzeln markiert; eine
     # globale Datenlücke darf nicht dazu führen, dass betroffene Kandidaten
     # stillschweigend als handelbar erscheinen.

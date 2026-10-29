@@ -431,8 +431,15 @@ def audit_market_first_content(report: str) -> list[str]:
                     value,
                 )
             elif label == "Dollar/Liquidität/Volatilität" and value:
+                # M2 is a direct quantitative liquidity indicator. Accept it as
+                # evidence for this combined Dollar/Liquidität/Volatilität field,
+                # but still require a concrete numeric observation. Qualitative
+                # statements such as "liquidity tight" remain insufficient.
                 invalid = invalid or not (
-                    re.search(r"(?i)VIX|DXY|TLT|Dollar|Volatilität|Liquidität", value)
+                    re.search(
+                        r"(?i)\b(?:VIX|DXY|TLT|M2)\b|Dollar|Volatilität|Liquidität|Geldmenge",
+                        value,
+                    )
                     and re.search(r"[-+]?\d+(?:[.,]\d+)?", value)
                 )
             if invalid:
