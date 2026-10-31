@@ -424,10 +424,10 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 section9_start = saved.index("9. Risikohinweise")
                 section11_start = saved.index("11. Methodische Hinweise und Datenqualität")
                 section9 = saved[section9_start:section11_start]
-                self.assertIn("Portfolio-Gesamtperformance nicht verfügbar", section7)
-                self.assertIn("Ø Positionsperformance nicht verfügbar", section7)
-                self.assertNotIn("Portfolio-Gesamtperformance nicht verfügbar", section9)
-                self.assertNotIn("Ø Positionsperformance nicht verfügbar", section9)
+                self.assertIn("Portfolio-Gesamtperformance: NICHT VERFÜGBAR", section7)
+                self.assertIn("Ø Positionsperformance: NICHT VERFÜGBAR", section7)
+                self.assertNotIn("Portfolio-Gesamtperformance: NICHT VERFÜGBAR", section9)
+                self.assertNotIn("Ø Positionsperformance: NICHT VERFÜGBAR", section9)
                 self.assertIn("8.1 Unterkapitel mit ergänzenden Hinweisen", section7)
                 self.assertIn("Dieser Text gehört weiterhin zum Bericht und darf keine Abschnittsgrenze auslösen.", section7)
                 self.assertIn("Dieser Text gehoert ausschliesslich zu Abschnitt 9.", section9)
@@ -516,8 +516,8 @@ class TradingRadarDataContractTests(unittest.TestCase):
                 self.assertIn("Methodik-Inhalt muss erhalten bleiben.", saved)
                 self.assertEqual(saved.count("10.5 Geschlossene Positionen"), 1)
                 self.assertEqual(saved.count("TRADING_RADAR_FACHLICH_FINAL="), 1)
-                self.assertIn("Portfolio-Gesamtperformance nicht verfügbar", saved)
-                self.assertIn("Ø Positionsperformance nicht verfügbar", saved)
+                self.assertIn("Portfolio-Gesamtperformance: NICHT VERFÜGBAR", saved)
+                self.assertIn("Ø Positionsperformance: NICHT VERFÜGBAR", saved)
                 self.assertEqual(output_path.parent, Path(temp_dir))
             finally:
                 os.chdir(previous_cwd)
@@ -674,7 +674,9 @@ class TradingRadarDataContractTests(unittest.TestCase):
                     "status": "complete", "checked_at": "2026-10-27T00:00:00+00:00",
                     "universe_count": 1, "covered_count": 1, "missing_tickers": [],
                     "stale_tickers": [], "invalid_ohlcv_tickers": [], "affected_candidates": [],
-                    "candidate_mapping_complete": True, "candidate_impact": "none_detected_in_checked_candidates",
+                     "candidate_mapping_complete": True, "candidate_impact": "none_detected_in_checked_candidates",
+                    "quality_status_counts": {"VALID": 1, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 1},
+                    "quality_status_by_ticker": {"AAA": "VALID"},
                 }), patch.object(radar, "append_live_market_snapshot", side_effect=fake_market_snapshot), patch.object(radar, "validate_trading_radar_report", return_value=[]), redirect_stdout(StringIO()):
                     output = radar.speichere_ergebnis(
                         report, {"Offene Positionen+Check.csv": str(csv_path)}
@@ -745,12 +747,15 @@ class TradingRadarDataContractTests(unittest.TestCase):
             "universe_count": 10, "covered_count": 10,
             "missing_tickers": [], "stale_tickers": [], "affected_candidates": [],
             "invalid_ohlcv_tickers": [],
+            "quality_status_counts": {"VALID": 10, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 10},
+            "quality_status_by_ticker": {f"T{i}": "VALID" for i in range(10)},
             "candidate_impact": "none_detected_in_checked_candidates",
             "candidate_mapping_complete": True,
         }
         try:
             result = module._trading_radar_ohlcv_nachweisblock()
             self.assertIn("OHLCV-Abdeckung: vollständig (10/10 geprüfte Symbole)", result)
+            self.assertIn("OHLCV-Qualitätsstatus: VALID=10, MISSING=0, STALE=0, INVALID=0; Summe=10/10.", result)
             self.assertIn("Kandidaten nicht eingeschränkt", result)
         finally:
             del module._TRADING_RADAR_OHLCV_AUDIT
@@ -825,8 +830,9 @@ class TradingRadarCandidateSourceTests(unittest.TestCase):
         )
         fake_audit = types.ModuleType("historical_ohlcv")
 
-        def audit_snapshot(candidate_tickers):
+        def audit_snapshot(candidate_tickers, explicit_no_candidates=False):
             self.assertEqual(candidate_tickers, [])
+            self.assertFalse(explicit_no_candidates)
             return {
                 "status": "complete",
                 "checked_at": "2026-10-26T12:00:00Z",
@@ -870,6 +876,8 @@ class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
             "invalid_ohlcv_tickers": ["BC8.DE", "BOSS.DE"],
             "recent_invalid_ohlcv_tickers": [],
             "historical_only_invalid_ohlcv_tickers": ["BC8.DE", "BOSS.DE"],
+            "quality_status_counts": {"VALID": 800, "MISSING": 0, "STALE": 0, "INVALID": 2, "TOTAL": 802},
+            "quality_status_by_ticker": {**{f"V{i}": "VALID" for i in range(800)}, "BAD1": "INVALID", "BAD2": "INVALID"},
             "affected_candidates": [],
             "candidate_impact": "none_detected_in_checked_candidates",
             "candidate_mapping_complete": True,

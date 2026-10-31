@@ -953,3 +953,83 @@ Daten geprüft."""
         "unmapped_candidate_tickers": [],
     }
     assert validate_ohlcv_audit(audit, explicit_no_candidates=True) == []
+
+
+def test_relative_strength_matrix_uses_common_cutoff_and_identical_21_63_day_windows():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = [
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
+    ]
+    index = pd.date_range("2026-05-01", periods=100, freq="B")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    data = pd.DataFrame({
+        col: [100.0 + i * (0.1 + j * 0.001) for i in range(len(index))]
+        for j, col in enumerate(columns)
+    }, index=index)
+    report = (
+        "### 1. Trading-Radar\nMarktregime: neutral.\n"
+        "### 2. Thesen-Update\nThesenstatus: keine neue These.\n"
+        "### 4. Assetklassenvergleich\nVergleich.\n"
+        "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
+    )
+    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    assert findings == []
+    assert "Relative-Stärke-Matrix" in result
+    assert "Gemeinsamer Datenstichtag: 2026-" in result
+    for group in ("Indizes:", "Regionen:", "Sektoren:", "Anlageklassen:"):
+        assert group in result
+    assert "Gewinner:" in result and "Verlierer:" in result and "Divergenz:" in result
+    matrix = result.split("Relative-Stärke-Matrix", 1)[1].split("### 5.", 1)[0]
+    assert "1M " in matrix and "3M " in matrix
+    assert "1M NICHT VERFÜGBAR" not in matrix
+
+
+def test_live_snapshot_marks_unresolved_treasury_difference_as_open_conflict():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = [
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
+    ]
+    index = pd.date_range("2026-05-01", periods=100, freq="B")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    data = pd.DataFrame({col: [100.0] * len(index) for col in columns}, index=index)
+    data[("^TNX", "Close")] = 4.99
+    report = (
+        "### 1. Trading-Radar\n10-jährige US-Treasury-Rendite: 5,0000%.\n"
+        "### 2. Thesen-Update\nThesen.\n"
+        "### 4. Assetklassenvergleich\nVergleich.\n"
+        "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
+    )
+    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    assert findings == []
+    assert "QUELLENKONFLIKT: OFFEN" in result
+    assert "Makro-Wert: 5.0000%" in result
+    assert "Live-Wert: 4.9900%" in result
+
+
+
+def test_relative_strength_excludes_series_without_exact_common_cutoff():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = [
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
+    ]
+    index = pd.date_range("2026-05-01", periods=100, freq="B")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    data = pd.DataFrame({col: [100.0 + i * 0.1 for i in range(99)] for col in columns}, index=index[:-1]).reindex(index)
+    # Other series define the common cutoff at index[-2]. ^GSPC has a later
+    # maximum but is missing exactly the common-cutoff observation.
+    data[("^GSPC", "Close")] = pd.Series(
+        [100.0 + i * 0.1 for i in list(range(98)) + [99]], index=index[:-2].append(index[-1:])
+    )
+    report = "### 1. Trading-Radar\nMarktregime: neutral.\n### 2. Thesen-Update\nKeine neue These.\n### 4. Assetklassenvergleich\nVergleich.\n### 5. Technische Kandidaten\nKeine Kandidaten.\n"
+    result, _ = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    matrix = result.split("Relative-Stärke-Matrix", 1)[1].split("### 5.", 1)[0]
+    assert "S&P 500 (^GSPC) 1M NICHT VERFÜGBAR" in matrix

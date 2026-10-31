@@ -136,3 +136,45 @@ def test_exclusion_list_matches_logged_26_missing_tickers():
         "SNV", "STM1.DE", "WRK", "X",
     }
     assert ho.EXCLUDED_TICKERS == expected
+
+
+def test_audit_snapshot_returns_four_disjoint_quality_states(tmp_path):
+    import historical_ohlcv as ho
+    db = tmp_path / "quality.sqlite"
+    source = tmp_path / "universe.py"
+    dynamic = tmp_path / "dynamic.json"
+    source.write_text('sektoren_map={"VALID":"x","MISSING":"x","STALE":"x","INVALID":"x"}\n', encoding="utf-8")
+    ho.init_db(db)
+    import datetime
+    today = datetime.date.today()
+    recent = today - datetime.timedelta(days=1)
+    old = today - datetime.timedelta(days=30)
+    with sqlite3.connect(db) as conn:
+        for ticker, date_value, values in (
+            ("VALID", recent.isoformat(), (10, 12, 9, 11, 100)),
+            ("STALE", old.isoformat(), (10, 12, 9, 11, 100)),
+            ("INVALID", recent.isoformat(), (10, 8, 9, 11, 100)),
+        ):
+            conn.execute(
+                "INSERT INTO instruments(ticker, first_date, last_date, row_count, last_update_utc, source) VALUES(?,?,?,?,?,?)",
+                (ticker, date_value, date_value, 1, datetime.datetime.now(datetime.timezone.utc).isoformat(), "test"),
+            )
+            conn.execute(
+                "INSERT INTO bars(ticker,date,open,high,low,close,volume,source) VALUES(?,?,?,?,?,?,?,?)",
+                (ticker, date_value, *values, "test"),
+            )
+        conn.commit()
+    audit = ho.audit_snapshot(db, source, dynamic, candidate_tickers=[], explicit_no_candidates=True)
+    counts = audit["quality_status_counts"]
+    assert counts["VALID"] >= 1
+    assert counts["MISSING"] >= 1
+    assert counts["STALE"] >= 1
+    assert counts["INVALID"] >= 1
+    assert counts["TOTAL"] == audit["universe_count"]
+    assert sum(counts[key] for key in ("VALID", "MISSING", "STALE", "INVALID")) == audit["universe_count"]
+    assert len(audit["quality_status_by_ticker"]) == audit["universe_count"]
+    assert audit["quality_status_by_ticker"]["VALID"] == "VALID"
+    assert audit["quality_status_by_ticker"]["MISSING"] == "MISSING"
+    assert audit["quality_status_by_ticker"]["STALE"] == "STALE"
+    assert audit["quality_status_by_ticker"]["INVALID"] == "INVALID"
+    assert audit["candidate_mapping_complete"] is True

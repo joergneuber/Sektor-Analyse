@@ -20,14 +20,32 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
     ]
     tab2_digest = hashlib.sha256("\n".join(tab2_lines).encode("utf-8")).hexdigest()
     sections = [
-        "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.",
-        "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+        "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
+        "Index S&P 500: 1M +1,0%; 3M +2,0%.\nIndex Nasdaq: 1M +0,5%; 3M +1,5%.\n"
+        "Basisszenario: Seitwärts bis aufwärts. Eintritt: Marktbreite stabil. Bestätigungstrigger: Ausbruch. Invalidierungstrigger: Bruch 200-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite. Konsequenz: selektive Longs.\n"
+        "Positives Alternativszenario: Beschleunigter Aufwärtstrend. Eintritt: Renditen fallen. Bestätigungstrigger: neue Hochs. Invalidierungstrigger: Rückfall unter Ausbruchsniveau. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko erhöhen.\n"
+        "Negatives Alternativszenario: Korrektur. Eintritt: Renditen steigen. Bestätigungstrigger: Marktbreite bricht. Invalidierungstrigger: Rückeroberung 50-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko reduzieren.",
+        "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.\n"
+        "THESENREGISTER-VERGLEICH: PASS\nVORHER-SHA256: " + "a"*64 + "\nNACHHER-SHA256: " + "b"*64 + "\n"
+        "THESEN_NEU: KEINE\nTHESEN_AKTUALISIERT: KEINE\nTHESEN_UNVERAENDERT: T-1\nTHESEN_ARCHIVIERT: KEINE\n"
+        "THESIS_ID: T-1\nVERSION: 2",
         "3. Ereignisradar\nUhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
-        "4. Assetklassenvergleich\nVergleich von Assetklassen und Marktregimen.",
-        "5. Technische Kandidaten\nTicker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Datenlücke geprüft; Regelstatus: valide.",
+        "4. Assetklassenvergleich\nRelative-Stärke-Matrix / Kapitalrotationsvergleich\nDatenstichtag: 2026-10-30. Fenster: 1M und 3M.\n"
+        "Gewinner: NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen). Verlierer: NICHT VERFÜGBAR. Divergenzen: keine belastbaren Daten.\n"
+        "Indizes: 1M/3M NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen).\n"
+        "Regionen: 1M/3M NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen).\n"
+        "Sektoren: 1M/3M NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen).\n"
+        "Anlageklassen: 1M/3M NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen).\n"
+        "Vergleich von Assetklassen und Marktregimen.",
+        "5. Technische Kandidaten\nTicker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Datenlücke geprüft; Regelstatus: valide.\n"
+        "Kandidatenquellen: Scanner-Quellen geprüft (2 Quellen).\n"
+        "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.\n"
+        "WATCHLIST: Keine Watchlist-Einträge. Begründung: Keine belastbaren Kurs-/Strukturtrigger aus den verfügbaren Daten ableitbar.\n"
+        "VERWORFENE KANDIDATEN: Keine verworfenen Kandidaten. Begründung: Es lagen keine formal geprüften Kandidaten vor.",
         "6. Portfolio & Risiko\nGeschlossene Positionen: Tab 2 | TAB-2-ANZAHL=2 | Stop-/TP-Bestand: dokumentiert | realisierte Ergebnisse: Performance vorhanden | Konzentration und Portfolio-Risiko bewertet. " + quantity_line,
-        "7. MSCI-Vergleich\nPortfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).",
-        "8. Daten-/Prüfanhang\n" + ("WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt." if ohlcv_warning else "Daten geprüft und dokumentiert, keine besonderen Datenqualitätsprobleme erkannt."),
+         "7. MSCI-Vergleich\nPortfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        "8. Daten-/Prüfanhang\n" + ("OHLCV-Abdeckung: 10/10 Symbole abgedeckt; Status=gaps.\nOHLCV-Qualitätsstatus: VALID=8, MISSING=1, STALE=1, INVALID=0; Summe=10/10.\nOHLCV-Symbole-VALID: A,B,C,D,E,F,G,H\nOHLCV-Symbole-MISSING: I\nOHLCV-Symbole-STALE: J\nOHLCV-Symbole-INVALID: KEINE\nKandidaten-Mapping: vollständig.\nWARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt." if ohlcv_warning else "OHLCV-Abdeckung: 10/10 Symbole abgedeckt; Status=complete.\nOHLCV-Qualitätsstatus: VALID=10, MISSING=0, STALE=0, INVALID=0; Summe=10/10.\nOHLCV-Symbole-VALID: A,B,C,D,E,F,G,H,I,J\nOHLCV-Symbole-MISSING: KEINE\nOHLCV-Symbole-STALE: KEINE\nOHLCV-Symbole-INVALID: KEINE\nKandidaten-Mapping: vollständig.\nDaten geprüft und dokumentiert, keine besonderen Datenqualitätsprobleme erkannt."),
         "10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)\n" + "\n".join(tab2_lines).replace(f"TAB-2-ANZAHL={tab2_count}", f"TAB-2-ANZAHL={tab2_count}") + f"\nTAB-2-EXPORT-SHA256={tab2_digest}",
         "TRADING_RADAR_FACHLICH_FINAL=FINAL",
     ]
@@ -52,9 +70,10 @@ class ReportGateTests(unittest.TestCase):
         self.assertTrue(any("Ticker+Einstiegsdatum nicht verifizierbar" in e for e in errors), errors)
 
     def test_m06_requires_separate_portfolio_performance_and_position_average(self):
-        text = report_fixture().replace("Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).", "Keine Performancewerte vorhanden.")
+        text = report_fixture().replace("Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.", "Keine Performancewerte vorhanden.")
         errors = gate.validate_report(text)
-        self.assertTrue(any("M-06" in e for e in errors), errors)
+        self.assertTrue(any("M-01" in e for e in errors), errors)
 
     def test_m07_requires_versioned_thesis(self):
         text = report_fixture().replace("Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.", "Keine Theseninformationen dokumentiert.")
@@ -148,11 +167,12 @@ class ReportGateTests(unittest.TestCase):
 
     def test_m06_rejects_placeholder_performance_values(self):
         text = report_fixture().replace(
-            "Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).",
+            "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
             "Portfolio-Gesamtperformance: TBD; Ø Positionsperformance: Platzhalter.",
         )
         errors = gate.validate_report(text)
-        self.assertTrue(any("M-06" in e for e in errors), errors)
+        self.assertTrue(any("M-01" in e for e in errors), errors)
 
     def test_m07_rejects_empty_identity_and_invalid_status(self):
         text = report_fixture().replace(
@@ -325,12 +345,13 @@ class ReportGateTests(unittest.TestCase):
 
     def test_m06_rejects_placeholder_even_if_unavailable_prose_also_exists(self):
         text = report_fixture().replace(
-            "Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar (getrennte Kennzahlen).",
+            "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
             "Portfolio-Gesamtperformance: TBD; Ø Positionsperformance: Platzhalter.\n"
             "Portfolio-Gesamtperformance nicht verfügbar; Ø Positionsperformance nicht verfügbar.",
         )
         errors = gate.validate_report(text)
-        self.assertTrue(any("M-06" in e for e in errors), errors)
+        self.assertTrue(any("M-01" in e for e in errors), errors)
 
     def test_m08_accepts_explicit_unavailable_status_for_each_event_field(self):
         text = report_fixture().replace(
@@ -420,3 +441,128 @@ TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL
 """
     findings = validate_report(report)
     assert not any("M-09:" in finding for finding in findings), findings
+
+
+def test_m01_reconstructs_equal_weighted_portfolio_from_auditable_trade_rows(tmp_path):
+    from trading_radar_portfolio_performance import calculate_portfolio_performance, format_performance_block
+    source = tmp_path / "positions.csv"
+    source.write_text(
+        "Ticker;Richtung;Einstiegsdatum;Einstieg;Aktueller_Kurs;Status;Ausstiegskurs\n"
+        "AAA;Long;01.01.2026;100;110;Offen;\n"
+        "BBB;Short;02.01.2026;100;105;Gestoppt;105\n",
+        encoding="utf-8",
+    )
+    result = calculate_portfolio_performance([source])
+    block = format_performance_block(result)
+    text = report_fixture()
+    text = text.replace(
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        block,
+    )
+    assert gate.validate_report(text) == []
+
+
+def test_m01_rejects_tampered_trade_detail_hash(tmp_path):
+    from trading_radar_portfolio_performance import calculate_portfolio_performance, format_performance_block
+    source = tmp_path / "positions.csv"
+    source.write_text(
+        "Ticker;Richtung;Einstiegsdatum;Einstieg;Aktueller_Kurs;Status;Ausstiegskurs\n"
+        "AAA;Long;01.01.2026;100;110;Offen;\n",
+        encoding="utf-8",
+    )
+    block = format_performance_block(calculate_portfolio_performance([source]))
+    digest_match = re.search(r"(?m)^Performance-Einzelrenditen-SHA256: ([0-9a-f]{64})$", block)
+    assert digest_match
+    digest = digest_match.group(1)
+    tampered_digest = ("0" if digest[0] != "0" else "1") + digest[1:]
+    tampered_block = block.replace(digest, tampered_digest)
+    text = report_fixture().replace(
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        tampered_block,
+    )
+    errors = gate.validate_report(text)
+    assert any("SHA256 der Einzelrenditen stimmt nicht" in error for error in errors)
+
+
+def test_m01_rejects_outperformance_not_derived_from_portfolio_and_benchmark(tmp_path):
+    from trading_radar_portfolio_performance import calculate_portfolio_performance, format_performance_block
+    source = tmp_path / "positions.csv"
+    source.write_text(
+        "Ticker;Richtung;Einstiegsdatum;Einstieg;Aktueller_Kurs;Status;Ausstiegskurs\n"
+        "AAA;Long;01.01.2026;100;110;Offen;\n",
+        encoding="utf-8",
+    )
+    block = format_performance_block(calculate_portfolio_performance([source]))
+    replacement = (
+        "Benchmark-Performance: +2,00 %\n"
+        "Out-/Underperformance: +5,00 Prozentpunkte\n\n" + block
+    )
+    text = report_fixture().replace(
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        replacement,
+    )
+    errors = gate.validate_report(text)
+    assert any("Out-/Underperformance stimmt nicht" in error for error in errors)
+
+
+def test_numeric_portfolio_result_requires_explicit_benchmark_exclusion():
+    import hashlib
+
+    payload = (
+        "AAA|2026-01-01|aaaaaaaaaaaaaaaa|OPEN|LONG|100.0000000000|110.0000000000|10.0000000000;"
+        "BBB|2026-01-02|bbbbbbbbbbbbbbbb|CLOSED|LONG|100.0000000000|90.0000000000|-10.0000000000"
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    block = (
+        "Portfolio-Gesamtperformance: +0,00 %\n"
+        "Ø Positionsperformance: +10,00 %\n"
+        "Performance-Datenbasis: 2 eindeutige Trades; abgeschlossen=1; offen=1\n"
+        "Berechnungsmethode: gleichgewichteten arithmetischen Mittelwert der individuellen prozentualen Renditen aller eindeutigen offenen und abgeschlossenen Trades; jeder Trade zählt genau einmal; genau 1 Stück je Trade; abgeschlossene Trades zum Ausstiegskurs; offene Trades zum aktuellen Kurs; Kosten=0; keine Kapitalgewichtung und keine Währungsumrechnung.\n"
+        "Formel je Trade: Long=(Kurs-Einstieg)/Einstieg*100; Short=(Einstieg-Kurs)/Einstieg*100. Portfolio-Gesamtperformance=Summe der Einzelrenditen geteilt durch Anzahl eindeutiger Trades.\n"
+        f"Performance-Einzelrenditen: {payload}\n"
+        f"Performance-Einzelrenditen-SHA256: {digest}\n"
+    )
+    text = report_fixture().replace(
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        block,
+    )
+    errors_without = gate.validate_report(text)
+    assert any("Benchmark-Abgrenzung" in error for error in errors_without), errors_without
+
+    text = text.replace(
+        "Performance-Einzelrenditen-SHA256: " + digest,
+        "Performance-Einzelrenditen-SHA256: " + digest + "\nBenchmarkpositionen ausgeschlossen: EUNL.DE (Anzahl=1); externe Vergleichspositionen zählen nicht als System-Trades.",
+    )
+    errors_with = gate.validate_report(text)
+    assert not any("Benchmark-Abgrenzung" in error for error in errors_with), errors_with
+
+
+def test_numeric_portfolio_audit_rows_cannot_contain_eunl_benchmark():
+    import hashlib
+
+    payload = (
+        "EUNL.DE|2026-01-01|aaaaaaaaaaaaaaaa|OPEN|LONG|100.0000000000|110.0000000000|10.0000000000;"
+        "BBB|2026-01-02|bbbbbbbbbbbbbbbb|CLOSED|LONG|100.0000000000|90.0000000000|-10.0000000000"
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    block = (
+        "Portfolio-Gesamtperformance: +0,00 %\n"
+        "Ø Positionsperformance: +10,00 %\n"
+        "Performance-Datenbasis: 2 eindeutige Trades; abgeschlossen=1; offen=1\n"
+        "Berechnungsmethode: gleichgewichteten arithmetischen Mittelwert der individuellen prozentualen Renditen aller eindeutigen offenen und abgeschlossenen Trades; jeder Trade zählt genau einmal; genau 1 Stück je Trade; abgeschlossene Trades zum Ausstiegskurs; offene Trades zum aktuellen Kurs; Kosten=0; keine Kapitalgewichtung und keine Währungsumrechnung.\n"
+        "Formel je Trade: Long=(Kurs-Einstieg)/Einstieg*100; Short=(Einstieg-Kurs)/Einstieg*100. Portfolio-Gesamtperformance=Summe der Einzelrenditen geteilt durch Anzahl eindeutiger Trades.\n"
+        f"Performance-Einzelrenditen: {payload}\n"
+        f"Performance-Einzelrenditen-SHA256: {digest}\n"
+        "Benchmarkpositionen ausgeschlossen: EUNL.DE (Anzahl=1); externe Vergleichspositionen zählen nicht als System-Trades.\n"
+    )
+    text = report_fixture().replace(
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        block,
+    )
+    errors = gate.validate_report(text)
+    assert any("EUNL.DE darf nicht als System-Trade" in error for error in errors), errors

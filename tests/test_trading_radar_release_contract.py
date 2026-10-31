@@ -79,7 +79,8 @@ class TradingRadarReleaseContractTests(unittest.TestCase):
                 "theses": [{
                     "thesis_id": "T-1", "thesis": "Test thesis", "horizon": "short",
                     "evidence": ["source"], "counter_evidence": ["counter"],
-                    "confidence": "low", "confirm_triggers": [], "invalidate_triggers": [],
+                    "confidence": "low", "confirm_triggers": ["Preis schließt oberhalb des bestätigten Widerstands."],
+            "invalidate_triggers": ["Preis schließt unterhalb des bestätigten Swing-Tiefs."],
                     "event_dependencies": [], "asset_classes": ["equity"], "candidates": ["AAA"],
                     "status": "NEU",
                 }],

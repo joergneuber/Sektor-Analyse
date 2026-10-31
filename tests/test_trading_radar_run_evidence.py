@@ -108,6 +108,66 @@ class RunEvidenceTests(unittest.TestCase):
             self.assertEqual(risk["monetary_risk"], None)
             self.assertEqual(risk["monetary_risk_status"], "EXCLUDED_CLOSED_POSITION_HISTORY")
 
+    def _valid_final_evidence_payloads(self):
+        source_files = (
+            "Trading_Radar_Alleinauswertung.py", "trading_radar_neuauswertung.py",
+            "trading_radar_report_gate.py", "trading_radar_market_first.py",
+            "trading_radar_run_evidence.py", "trading_radar_thesen.py",
+            "trading_radar_portfolio_performance.py", "offene_positionen_check.py",
+            "historical_ohlcv.py", ".github/workflows/main.yml",
+        )
+        hashes = {name: "a" * 64 for name in source_files}
+        common = {
+            "repository": "owner/repository", "ref": "refs/heads/main",
+            "commit_sha": "b" * 40, "workflow_run_id": "41002340994",
+            "workflow_run_attempt": "1", "workflow_name": "Trading Radar",
+            "source_file_hashes": hashes,
+        }
+        start_id = dict(common)
+        end_id = dict(common)
+        end_id["gate_results"] = {
+            "TRADING_RADAR_CONTRACT_OUTCOME": "success",
+            "TRADING_RADAR_STEP_OUTCOME": "success",
+            "TRADING_RADAR_OHLCV_PERSISTENCE_GATE": "PASS",
+            "TRADING_RADAR_MARKET_FIRST_GATE": "PASS",
+            "TRADING_RADAR_REPORT_GATE": "PASS",
+            "TRADING_RADAR_REPORT_GATE_OUTCOME": "success",
+            "TRADING_RADAR_FACHLICH_FINAL": "FINAL",
+        }
+        start = {"run_identity": start_id, "sources": []}
+        end = {
+            "run_identity": end_id,
+            "sources": [{"path": "Offene_Positionen.csv", "sha256": "c" * 64}],
+        }
+        summary = {"start": start, "end": end, "run_identity": end_id}
+        return end, summary
+
+    def test_final_evidence_requires_complete_run_identity_and_matching_code_hashes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            end, summary = self._valid_final_evidence_payloads()
+            end_file, summary_file = root / "end.json", root / "summary.json"
+            end_file.write_text(json.dumps(end), encoding="utf-8")
+            summary_file.write_text(json.dumps(summary), encoding="utf-8")
+            with patch.object(evidence, "END_FILE", end_file), patch.object(evidence, "SUMMARY_FILE", summary_file):
+                self.assertEqual(evidence.validate_final_evidence(), 0)
+                summary["start"]["run_identity"]["source_file_hashes"]["historical_ohlcv.py"] = "d" * 64
+                summary_file.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertEqual(evidence.validate_final_evidence(), 1)
+
+    def test_final_evidence_rejects_missing_repository_or_commit_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            end, summary = self._valid_final_evidence_payloads()
+            end["run_identity"]["repository"] = None
+            summary["end"] = end
+            summary["run_identity"] = end["run_identity"]
+            end_file, summary_file = root / "end.json", root / "summary.json"
+            end_file.write_text(json.dumps(end), encoding="utf-8")
+            summary_file.write_text(json.dumps(summary), encoding="utf-8")
+            with patch.object(evidence, "END_FILE", end_file), patch.object(evidence, "SUMMARY_FILE", summary_file):
+                self.assertEqual(evidence.validate_final_evidence(), 1)
+
     def test_large_valid_json_is_not_misreported_as_truncated_corruption(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "large_cache.json"
