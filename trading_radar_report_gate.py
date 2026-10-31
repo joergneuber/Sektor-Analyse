@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sys
+import json
 import hashlib
 import math
 import datetime
@@ -30,7 +31,11 @@ HEADER_RE = re.compile(
 
 def _section_body(text: str, number: int, title: str) -> str:
     """Return the body of one canonical numbered section, bounded by the next heading."""
-    headings = list(HEADER_RE.finditer(text))
+    expected = {index: name.casefold() for index, name in enumerate(SECTION_NAMES, start=1)}
+    headings = [
+        match for match in HEADER_RE.finditer(text)
+        if expected.get(int(match.group("number"))) == match.group("title").strip().casefold()
+    ]
     start = next((m for m in headings if int(m.group("number")) == number
                   and m.group("title").strip().casefold() == title.casefold()), None)
     if start is None:
@@ -148,21 +153,33 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     def performance_field_ok(labels):
         label = r"(?:" + "|".join(labels) + r")"
         matches = list(re.finditer(
-            rf"(?im)(?:^|[|;]\s*|\n)\s*{label}\s*[:=]\s*([^|;\r\n]+)",
+            rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-*•]\s*)?{label}\s*[:=]\s*([^|;\r\n]+)",
             benchmark,
         ))
         if matches:
+            normalized_values = []
             for match in matches:
                 value = match.group(1).strip().strip(". ")
                 if _valid_numeric_value(value):
+                    numeric = value.strip().replace("%", "").replace(" ", "").replace("’", "").replace("'", "")
+                    if "," in numeric and "." in numeric:
+                        numeric = numeric.replace(".", "").replace(",", ".") if numeric.rfind(",") > numeric.rfind(".") else numeric.replace(",", "")
+                    elif "," in numeric:
+                        numeric = numeric.replace(",", ".")
+                    try:
+                        canonical = f"{float(numeric):.10f}".rstrip("0").rstrip(".")
+                    except ValueError:
+                        return False
+                    normalized_values.append(("numeric", canonical))
                     continue
                 if re.fullmatch(
-                    r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?",
+                    r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\\([^)]*\\))?",
                     value,
                 ):
+                    normalized_values.append(("unavailable", "NICHT VERFÜGBAR"))
                     continue
                 return False
-            return True
+            return len(set(normalized_values)) == 1
         # Legacy prose form remains accepted only if it is an explicit status.
         return _is_explicit_unavailable(benchmark, labels) or _has_any(
             benchmark,
@@ -173,7 +190,165 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     portfolio_ok = performance_field_ok(portfolio_labels)
     average_ok = performance_field_ok(average_labels)
     if not (portfolio_ok and average_ok):
-        errors.append("M-06: Portfolio-Gesamtperformance und durchschnittliche Positionsperformance müssen jeweils einen konkreten Zahlenwert oder einen ausdrücklichen Nichtverfügbarkeitsstatus haben.")
+        errors.append("M-01: Portfolio-Gesamtperformance und durchschnittliche Positionsperformance müssen jeweils einen eindeutigen Zahlenwert oder einen ausdrücklichen Nichtverfügbarkeitsstatus haben.")
+    portfolio_numeric = bool(re.search(
+        r"(?im)Portfolio(?:-Gesamt)?performance\s*[:=]\s*[-+]?\d",
+        benchmark,
+    ))
+    # The user-defined portfolio metric is the equal-weighted arithmetic mean
+    # of each unique trade's percentage return (one unit per trade).
+    # Capital weighting and summing percentage points are explicitly forbidden.
+    if portfolio_numeric:
+        method_ok = bool(
+            re.search(
+                r"(?is)Berechnungsmethode:.*arithmetischen Mittelwert.*"
+                r"individuellen prozentualen Renditen.*jeder Trade zählt genau einmal.*"
+                r"genau 1 Stück je Trade.*abgeschlossene Trades zum Ausstiegskurs.*"
+                r"offene Trades zum aktuellen Kurs.*Kosten=0.*keine Kapitalgewichtung.*keine Währungsumrechnung",
+                benchmark,
+            )
+            and re.search(
+                r"(?im)^Performance-Datenbasis:\s*(\d+) eindeutige Trades; abgeschlossen=(\d+); offen=(\d+)",
+                benchmark,
+            )
+            and re.search(
+                r"(?im)^Formel je Trade:.*Long=.*Short=.*Portfolio-Gesamtperformance=.*Anzahl eindeutiger Trades",
+                benchmark,
+            )
+            and re.search(
+                r"(?im)^Benchmarkpositionen ausgeschlossen:\s*(?:EUNL\.DE|KEINE)(?:[^\r\n]*)$",
+                benchmark,
+            )
+        )
+        count_match = re.search(
+            r"(?im)^Performance-Datenbasis:\s*(\d+) eindeutige Trades; abgeschlossen=(\d+); offen=(\d+)",
+            benchmark,
+        )
+        counts_ok = bool(count_match and int(count_match.group(1)) == int(count_match.group(2)) + int(count_match.group(3)))
+        if not method_ok or not counts_ok:
+            errors.append("M-01: Numerische Gesamtperformance benötigt den dokumentierten gleichgewichteten Mittelwert der Einzelrenditen, genau 1 Stück je Trade, vollständige offene/geschlossene Datenbasis, Benchmark-Abgrenzung und Kosten=0.")
+        # Recompute the reported portfolio metric from the per-trade audit rows.
+        detail_match = re.search(r"(?im)^Performance-Einzelrenditen:\s*(.+)$", benchmark)
+        digest_match = re.search(r"(?im)^Performance-Einzelrenditen-SHA256:\s*([0-9a-f]{64})\s*$", benchmark)
+        if not detail_match or detail_match.group(1).strip().upper() == "NICHT VERFÜGBAR":
+            errors.append("M-01: Einzelrenditen-Nachweis für die reproduzierbare Portfolioaggregation fehlt.")
+        elif not digest_match:
+            errors.append("M-01: SHA256-Fingerabdruck der Einzelrenditen fehlt.")
+        else:
+            detail_payload = detail_match.group(1).strip()
+            actual_detail_hash = hashlib.sha256(detail_payload.encode("utf-8")).hexdigest()
+            if actual_detail_hash != digest_match.group(1).lower():
+                errors.append("M-01: SHA256 der Einzelrenditen stimmt nicht mit dem Detailblock überein.")
+            detail_returns = []
+            open_returns = []
+            detail_keys = set()
+            try:
+                for item in detail_payload.split(";"):
+                    fields = item.split("|")
+                    if len(fields) != 8:
+                        raise ValueError("falsche Feldanzahl")
+                    ticker, entry_date, identity_hash, trade_status, direction, entry_raw, mark_raw, return_raw = fields
+                    if ticker.upper() == "EUNL.DE":
+                        raise ValueError("externe MSCI-World-Benchmarkposition EUNL.DE darf nicht als System-Trade einfließen")
+                    if (not ticker or not _normalize_tab2_entry_date(entry_date)
+                            or not re.fullmatch(r"[0-9a-f]{16}", identity_hash)
+                            or trade_status not in {"OPEN", "CLOSED"}
+                            or direction not in {"LONG", "SHORT"}):
+                        raise ValueError("ungültige Trade-Identität/Status/Richtung")
+                    identity = (ticker.upper(), entry_date, identity_hash)
+                    if identity in detail_keys:
+                        raise ValueError("Trade-Identität doppelt")
+                    detail_keys.add(identity)
+                    entry_value = float(entry_raw)
+                    mark_value = float(mark_raw)
+                    stated_return = float(return_raw)
+                    if not math.isfinite(entry_value) or not math.isfinite(mark_value) or not math.isfinite(stated_return) or entry_value <= 0 or mark_value <= 0:
+                        raise ValueError("ungültiger Einstieg/Kurs/Rendite")
+                    calculated = ((mark_value - entry_value) if direction == "LONG" else (entry_value - mark_value)) / entry_value * 100.0
+                    if abs(calculated - stated_return) > 0.0001:
+                        raise ValueError("Einzelrendite stimmt nicht mit Einstieg/Kurs/Richtung überein")
+                    detail_returns.append(stated_return)
+                    if trade_status == "OPEN":
+                        open_returns.append(stated_return)
+                if len(detail_returns) != int(count_match.group(1)):
+                    raise ValueError("Einzelrenditenanzahl stimmt nicht mit Datenbasis überein")
+                if len(detail_returns) != int(count_match.group(2)) + int(count_match.group(3)):
+                    raise ValueError("offene/geschlossene Einzelrenditenanzahl widerspricht Datenbasis")
+                reproduced = sum(detail_returns) / len(detail_returns)
+                portfolio_value_match = re.search(
+                    r"(?im)^Portfolio-Gesamtperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+                    benchmark,
+                )
+                if not portfolio_value_match:
+                    raise ValueError("numerische Portfolio-Gesamtperformance fehlt")
+                reported = float(portfolio_value_match.group(1).replace(",", "."))
+                if abs(reproduced - reported) > 0.01:
+                    raise ValueError("gleichgewichteter Mittelwert stimmt nicht mit Portfolio-Gesamtperformance überein")
+                open_value_match = re.search(
+                    r"(?im)^Ø Positionsperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+                    benchmark,
+                )
+                if open_returns:
+                    if not open_value_match:
+                        raise ValueError("offener Positionsdurchschnitt fehlt trotz offener Trades")
+                    if abs(sum(open_returns) / len(open_returns) - float(open_value_match.group(1).replace(",", "."))) > 0.01:
+                        raise ValueError("offener Positionsdurchschnitt stimmt nicht mit offenen Einzelrenditen überein")
+                elif open_value_match:
+                    raise ValueError("offener Positionsdurchschnitt numerisch trotz null offener Trades")
+            except (ValueError, TypeError, OverflowError) as exc:
+                errors.append(f"M-01: Einzelrenditen-/Portfolio-Rekonstruktion fehlgeschlagen: {exc}")
+        benchmark_match = re.search(
+            r"(?im)^\s*(?:[-*•]\s*)?Benchmark-Performance[^\r\n]*?([+-]?\d+(?:[,.]\d+)?)\s*%",
+            benchmark,
+        )
+        outperformance_match = re.search(
+            r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*Prozentpunkte",
+            benchmark,
+        )
+        if benchmark_match or re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:", benchmark):
+            portfolio_match = re.search(
+                r"(?im)^Portfolio-Gesamtperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+                benchmark,
+            )
+            if benchmark_match and portfolio_match:
+                expected_delta = float(portfolio_match.group(1).replace(",", ".")) - float(benchmark_match.group(1).replace(",", "."))
+                if not outperformance_match or abs(
+                    expected_delta - float(outperformance_match.group(1).replace(",", "."))
+                ) > 0.02:
+                    errors.append("M-01: Out-/Underperformance stimmt nicht mit Portfolio-Gesamtperformance minus Benchmark überein.")
+            elif outperformance_match:
+                errors.append("M-01: Out-/Underperformance darf ohne Portfolio- und Benchmarkwert nicht numerisch ausgewiesen werden.")
+            elif not re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*NICHT VERFÜGBAR", benchmark):
+                errors.append("M-01: Fehlende Portfolio-/Benchmarkgrundlage muss Out-/Underperformance als NICHT VERFÜGBAR ausweisen.")
+
+    # M-01: the same metric may not be numeric in one place and unavailable
+    # elsewhere. Detect this report-wide, not only inside the MSCI subsection.
+    for metric_label, pattern in (
+        ("Portfolio-Gesamtperformance", r"Portfolio(?:-Gesamt)?performance"),
+        ("Ø Positionsperformance", r"(?:Ø|durchschnitt(?:liche|s)?)\\s*Positionsperformance"),
+    ):
+        observations = []
+        for line in text.splitlines():
+            if re.search(pattern, line, re.I) and re.search(r"(?i)(?:NICHT VERFÜGBAR|FEHLT|UNKLAR)", line):
+                observations.append(("unavailable", line.strip()))
+            elif re.search(pattern, line, re.I):
+                numeric = re.search(r"[-+]?\\d+(?:[,.]\\d+)?\\s*%", line)
+                if numeric:
+                    raw_number = numeric.group(0).replace("%", "").replace(",", ".").strip()
+                    try:
+                        canonical = f"{float(raw_number):.10f}".rstrip("0").rstrip(".")
+                    except ValueError:
+                        canonical = raw_number
+                    observations.append(("numeric", canonical))
+        kinds = {kind for kind, _ in observations}
+        if len(kinds) > 1:
+            errors.append(f"M-01: {metric_label} wird im Bericht zugleich numerisch und als NICHT VERFÜGBAR ausgewiesen.")
+        numeric_values = []
+        for kind, value in observations:
+            if kind == "numeric":
+                numeric_values.append(value)
+        if len(set(numeric_values)) > 1:
+            errors.append(f"M-01: {metric_label} hat widersprüchliche numerische Mehrfachangaben.")
 
     # M-07: identity/version/status values must be populated, not merely labels.
     thesis = _section_body(text, 2, SECTION_NAMES[1])
@@ -196,10 +371,31 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         r"keine\s+änderung(?:en)?\s+am\s+thesenregister)",
         r"thesenregister.{0,80}(?:unverändert|unveraendert|keine\s+änderung|keine\s+aenderung)",
     ))
-    if not no_thesis_update and not (
+    register_evidence_ok = bool(
+        re.search(r"(?im)^THESENREGISTER-VERGLEICH:\s*PASS\s*$", thesis)
+        and re.search(r"(?im)^VORHER-SHA256:\s*[0-9a-f]{64}\s*$", thesis)
+        and re.search(r"(?im)^NACHHER-SHA256:\s*[0-9a-f]{64}\s*$", thesis)
+    )
+    if not register_evidence_ok:
+        errors.append("M-05: Deterministischer Thesenregistervergleich mit PASS sowie Vorher-/Nachher-SHA256 fehlt.")
+    change_labels = ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_UNVERAENDERT", "THESEN_ARCHIVIERT")
+    change_values = {}
+    for label in change_labels:
+        matches = re.findall(rf"(?im)^{label}:\s*([^\r\n]+)\s*$", thesis)
+        if len(matches) != 1 or not matches[0].strip():
+            errors.append(f"M-05: Deterministischer Änderungsnachweis {label} fehlt oder ist nicht eindeutig.")
+        else:
+            change_values[label] = matches[0].strip()
+    if no_thesis_update and change_values:
+        if any(change_values.get(label, "").upper() != "KEINE"
+               for label in ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_ARCHIVIERT")):
+            errors.append("M-05: Bericht behauptet 'keine Änderung', Registervergleich weist aber neue/aktualisierte/archivierte Thesen aus.")
+    if not (
         thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok
-    ):
-        errors.append("M-07: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder den expliziten Nachweis, dass keine These aktualisiert wurde.")
+    ) and not (no_thesis_update and register_evidence_ok):
+        errors.append("M-05: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder einen technisch belegten unveränderten Registervergleich.")
+        if not thesis_id or not version_match or not status_ok:
+            errors.append("M-07: Thesen-Identität, positive Version und zulässiger Status sind nicht vollständig belegt.")
 
     # M-08: validate each event record independently. A complete event must
     # not mask a second event that lacks its own time/zone/metric/period/value.
@@ -355,10 +551,11 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         except (ValueError, NameError):
             return None
 
-    no_actionable_candidates = _has_any(candidates, (
-        r"keine\s+(?:belastbaren\s+)?(?:technischen\s+)?Kandidaten",
-        r"keine\s+Kandidaten\s+(?:mit\s+)?(?:belastbarem|konkretem)\s+Setup",
-        r"kein\s+belastbarer\s+technischer\s+Kandidat",
+    no_actionable_candidates = bool(re.search(
+        r"(?im)^\s*(?:Keine belastbaren technischen Kandidaten|"
+        r"Keine Kandidaten mit (?:belastbarem|konkretem) Setup|"
+        r"Kein belastbarer technischer Kandidat)\b",
+        candidates,
     ))
     allowed_candidate_status = re.compile(
         r"JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|"
@@ -488,6 +685,233 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     if not ((warning and impact) or clean_data):
         errors.append("M-10: OHLCV-Datenlücke/-veraltung und konkrete Auswirkung auf Kandidaten müssen ausgewiesen sein; bei lückenfreien Daten sind vollständige OHLCV-Abdeckung und fehlende Kandidateneinschränkung ausdrücklich zu nennen.")
 
+    # M-03: four mutually exclusive state lists must be present and complete.
+    state_names = ("VALID", "MISSING", "STALE", "INVALID")
+    state_rows = {}
+    for state_name in state_names:
+        match = re.search(
+            rf"(?im)^OHLCV-Symbole-{state_name}:\s*(.+?)\s*$",
+            appendix,
+        )
+        if match:
+            raw_values = match.group(1).strip()
+            state_rows[state_name] = [] if raw_values.upper() == "KEINE" else [
+                item.strip().upper() for item in raw_values.split(",") if item.strip()
+            ]
+    if len(state_rows) != 4:
+        errors.append("M-03: vollständige OHLCV-Symbolzuordnung für VALID/MISSING/STALE/INVALID fehlt.")
+    else:
+        flattened = [ticker for values in state_rows.values() for ticker in values]
+        if len(flattened) != len(set(flattened)):
+            errors.append("M-03: mindestens ein OHLCV-Symbol ist mehreren Statusklassen zugeordnet.")
+        counts_match = re.search(
+            r"(?i)OHLCV-Qualitätsstatus:.*VALID=(\d+).*MISSING=(\d+).*STALE=(\d+).*INVALID=(\d+).*Summe=(\d+)/(\d+)",
+            appendix,
+        )
+        if not counts_match:
+            errors.append("M-03: OHLCV-Zustandszahlen mit Gesamtuniversum fehlen.")
+        else:
+            expected = [int(counts_match.group(i)) for i in range(1, 5)]
+            actual = [len(state_rows[name]) for name in state_names]
+            if actual != expected or sum(actual) != int(counts_match.group(6)):
+                errors.append("M-03: OHLCV-Symbolzuordnung stimmt nicht mit den vier Zustandszahlen überein.")
+
+
+    # M-04: comparable 1M/3M windows must be present for the market-rotation
+    # comparison. Do not infer a ranking from qualitative or mismatched periods.
+    executive = _section_body(text, 1, SECTION_NAMES[0])
+    live_lines = [line for line in executive.splitlines()
+                  if re.search(r"(?i)\bIndex\b", line)]
+    comparable_index_rows = [
+        line for line in live_lines
+        if re.search(r"(?i)\b1M\b[^;\r\n]*[-+]?\d", line)
+        and re.search(r"(?i)\b3M\b[^;\r\n]*[-+]?\d", line)
+    ]
+    if len(comparable_index_rows) < 2:
+        errors.append("M-04: Relative-Stärke-Vergleich benötigt mindestens zwei Indexreihen mit vergleichbaren 1M- und 3M-Werten oder explizit begründeten Datenlücken.")
+    rotation = _section_body(text, 4, SECTION_NAMES[3])
+    if not re.search(r"(?i)Relative[- ]Stärke[- ]Matrix", rotation):
+        errors.append("M-04: Relative-Stärke-Matrix für Indizes, Regionen, Sektoren und Anlageklassen fehlt.")
+    for category, label in (
+        ("Regionen", r"Region(?:en)?"),
+        ("Sektoren", r"Sektor(?:en)?"),
+        ("Anlageklassen", r"Anlageklassen|Assetklassen"),
+    ):
+        category_rows = [
+            line for line in rotation.splitlines()
+            if re.search(rf"(?i)\b(?:{label})\b", line)
+        ]
+        has_periods = any(
+            re.search(r"(?i)\b1M\b[^|;\r\n]*[-+]?\d", line)
+            and re.search(r"(?i)\b3M\b[^|;\r\n]*[-+]?\d", line)
+            for line in category_rows
+        )
+        explicit_gap = any(
+            re.search(r"(?i)NICHT VERFÜGBAR[^\r\n]*(?:Datenlücke|Daten fehlen|keine Vergleichsdaten)", line)
+            for line in category_rows
+        )
+        if not (has_periods or explicit_gap):
+            errors.append(f"M-04: {category} benötigen vergleichbare 1M-/3M-Werte oder eine ausdrücklich begründete Datenlücke.")
+
+    # M-05: a generic 'no changes' sentence is not evidence of a deterministic
+    # register comparison. Require stable IDs/versions and before/after hashes.
+    thesis_evidence = re.search(
+        r"(?is)THESENREGISTER-VERGLEICH\s*:\s*PASS.*?"
+        r"(?:VORHER|PREVIOUS)[-_ ]SHA256\s*[:=]\s*[0-9a-f]{64}.*?"
+        r"(?:NACHHER|CURRENT)[-_ ]SHA256\s*[:=]\s*[0-9a-f]{64}.*?"
+        r"(?:(?:THESIS_ID|THESEN-ID)\s*[:=]\s*[A-Za-z0-9_.:-]+.*?"
+        r"(?:VERSION|REGISTER-VERSION)\s*[:=]\s*\d+|"
+        r"AKTIVE_THESEN\s*[:=]\s*0\b)",
+        text,
+    )
+    if not thesis_evidence:
+        errors.append("M-05: Deterministischer Thesenregistervergleich mit Vorher-/Nachher-SHA256, thesis_id und Version ist nicht belegt.")
+
+    # M-07: differing Treasury observations need provenance and reconciliation,
+    # or must remain explicitly open as a source conflict.
+    treasury_values = re.findall(
+        r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|US[- ]?10[ JY](?:[- ]?Rendite)?)[^\r\n]{0,80}?(\d+(?:[,.]\d+)?)\s*%",
+        text,
+    )
+    if len(treasury_values) >= 2:
+        normalized = [value.replace(",", ".") for value in treasury_values]
+        distinct = sorted(set(normalized))
+        if len(distinct) > 1:
+            observation_lines = [
+                line for line in text.splitlines()
+                if not re.search(r"(?i)QUELLENKONFLIKT\s*:", line)
+                and re.search(r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|US[- ]?10[ JY](?:[- ]?Rendite)?)", line)
+                and re.search(r"\d+(?:[,.]\d+)?\s*%", line)
+            ]
+            def has_provenance(line):
+                # Every observation needs its own source, retrieval timestamp,
+                # observation/data date, unit and delay metadata. A conflict
+                # label alone must never compensate for missing provenance.
+                return bool(
+                    re.search(r"(?i)(?:Quelle|Source)\s*[:=]\s*[^;|,]+", line)
+                    and re.search(r"(?i)(?:Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)\s*[:=]\s*[^;|,]+", line)
+                    and re.search(r"(?i)(?:Datenstichtag|Beobachtungsdatum|Observation_Date)\s*[:=]\s*[^;|,]+", line)
+                    and re.search(r"(?i)(?:Einheit|Unit)\s*[:=]\s*(?:%|Prozent|percent)", line)
+                    and re.search(r"(?i)(?:Verzögerung|Verzoegerung|Delay)\s*[:=]\s*[^;|,]+", line)
+                )
+            provenance_complete = len(observation_lines) >= 2 and all(has_provenance(line) for line in observation_lines)
+            explicit_open = any(
+                re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)
+                and re.search(r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?\s+(?:US[- ]?)?Treasury|US[- ]?10[ JY])", line)
+                and all(
+                    value in re.sub(r"(?<=\d),(?=\d)", ".", line)
+                    for value in distinct
+                )
+                for line in text.splitlines()
+            )
+            if not provenance_complete:
+                suffix = " Der Konflikt ist ausdrücklich offen ausgewiesen." if explicit_open else ""
+                errors.append("M-07: Jede abweichende 10Y-Treasury-Beobachtung benötigt separat Quelle, Abrufzeit, Datenstichtag, Einheit und Verzögerung; eine offene Konfliktmarkierung ersetzt diese Provenienz nicht." + suffix)
+
+    # M-04: Relative strength must use comparable 1M/3M windows and a common cutoff.
+    rotation = _section_body(text, 4, SECTION_NAMES[3])
+    if rotation:
+        if not re.search(r"(?i)(?:Relative[- ]Stärke|Kapitalrotation).{0,100}(?:Matrix|Vergleich|Ranking)", rotation):
+            errors.append("M-04: Relative-Stärke-/Kapitalrotationsvergleich fehlt.")
+        for window in ("1M", "3M"):
+            if not re.search(rf"(?i)\b{window}\b", rotation):
+                errors.append(f"M-04: Vergleichsfenster {window} fehlt im Assetklassenvergleich.")
+        if not re.search(r"(?i)(?:gemeinsamer\s+)?Datenstichtag\s*[:=]", rotation):
+            errors.append("M-04: gemeinsamer Datenstichtag des Relative-Stärke-Vergleichs fehlt.")
+        for concept in ("Gewinner", "Verlierer", "Divergenz"):
+            if not re.search(rf"(?i){concept}", rotation):
+                errors.append(f"M-04: {concept} im vergleichbaren Rotationsbild nicht ausgewiesen.")
+        for group in ("Regionen", "Indizes", "Sektoren", "Anlageklassen"):
+            group_match = re.search(rf"(?im)^\s*{group}\s*:\s*([^\r\n]+)", rotation)
+            if not group_match:
+                errors.append(f"M-04: {group} fehlen als eigener Vergleichsbereich.")
+                continue
+            value = group_match.group(1)
+            comparable = bool(re.search(r"(?i)1M.{0,40}3M|3M.{0,40}1M", value))
+            unavailable = bool(re.search(r"(?i)NICHT VERFÜGBAR.{0,100}(?:Datenlücke|keine vergleichbaren Reihen|Daten fehlen)", value))
+            if not (comparable or unavailable):
+                errors.append(f"M-04: {group} benötigen vergleichbare 1M-/3M-Werte oder eine konkrete Datenlücke.")
+
+
+    # M-06: candidate sources, confirmed setups, watchlist and rejected candidates
+    # must be distinguishable. A source count is not a candidate count.
+    candidate_section = _section_body(text, 5, SECTION_NAMES[4])
+    if candidate_section:
+        if not re.search(r"(?i)Kandidatenquellen\s*:", candidate_section):
+            errors.append("M-06: Verfügbare Kandidatenquellen müssen mit Quelle/Bestand nachvollziehbar ausgewiesen werden.")
+        group_patterns = (
+            ("bestätigte Setups", r"(?i)(?:BESTÄTIGTE\s+SETUPS|FREIGEGEBENE\s+SETUPS)"),
+            ("Watchlist", r"(?i)WATCHLIST"),
+            ("verworfene Kandidaten", r"(?i)(?:VERWORFENE\s+KANDIDATEN|ABGELEHNTE\s+KANDIDATEN)"),
+        )
+        group_matches = []
+        for label, pattern in group_patterns:
+            match = re.search(pattern, candidate_section)
+            if not match:
+                errors.append(f"M-06: Abschnitt 5 muss den Bereich '{label}' separat ausweisen (auch explizit leer).")
+            else:
+                group_matches.append((label, match))
+        for label, match in group_matches:
+            later = [other.start() for _, other in group_matches if other.start() > match.start()]
+            end = min(later) if later else min(len(candidate_section), match.end() + 1600)
+            content = candidate_section[match.end():end].strip(" :|;.-\n\r")
+            explicit_empty = bool(re.search(
+                r"(?i)(?:keine|0)\s+(?:bestätigten?\s+)?(?:setups?|kandidaten?|watchlist-einträge|verworfenen kandidaten)|leer|nicht vorhanden",
+                content[:400],
+            ))
+            if len(re.sub(r"\W", "", content)) < 1:
+                errors.append(f"M-06: Bereich '{label}' ist leer.")
+            elif explicit_empty:
+                if not re.search(r"(?i)(?:Begründung|Grund|weil|Datenlücke|keine belastbaren Trigger|nicht ableitbar)\s*[:=]?", content):
+                    errors.append(f"M-06: Nullmeldung für '{label}' benötigt eine konkrete Begründung.")
+            else:
+                has_identity = bool(re.search(r"(?i)(?:Ticker|Symbol|Name)\s*[:=]", content))
+                has_source = bool(re.search(r"(?i)(?:Quelle|Source)\s*[:=]", content))
+                has_reason = bool(re.search(r"(?i)(?:Begründung|Grund|Setup|Status)\s*[:=]", content))
+                has_trigger = bool(re.search(r"(?i)(?:Trigger|Kurslevel|Strukturlevel|Auslöser)\s*[:=]", content))
+                if not (has_identity and has_source and has_reason and (has_trigger or label.casefold() == "verworfene kandidaten")):
+                    errors.append(f"M-06: Einträge in '{label}' benötigen Identität, Quelle, Begründung/Status und bei Watchlist/Setups einen überprüfbaren Trigger.")
+
+
+    # M-09: scenario alternatives are an explicit content contract. An
+    # unavailable scenario is acceptable only with a concrete data-gap reason.
+    scenario_section = executive
+    scenario_patterns = (
+        ("Basisszenario", r"(?i)Basisszenario\s*:"),
+        ("positives Alternativszenario", r"(?i)(?:positives|positiv(?:es)?s?)\s+Alternativszenario\s*:"),
+        ("negatives Alternativszenario", r"(?i)(?:negatives|negativ(?:es)?s?)\s+Alternativszenario\s*:"),
+    )
+    scenario_matches = []
+    for label, pattern in scenario_patterns:
+        match = re.search(pattern, scenario_section)
+        if not match:
+            errors.append(f"M-09-SZENARIO: {label} fehlt.")
+        else:
+            scenario_matches.append((label, match))
+    for label, match in scenario_matches:
+        later_starts = [other.start() for _, other in scenario_matches if other.start() > match.start()]
+        block_end = min(later_starts) if later_starts else min(len(scenario_section), match.end() + 1400)
+        tail = scenario_section[match.end():block_end]
+        has_triggers = all(
+            re.search(pattern, tail)
+            for pattern in (
+                r"(?i)(?:Eintrittsbedingung|Eintritt)\s*:",
+                r"(?i)Bestätigungstrigger\s*:",
+                r"(?i)Invalidierungstrigger\s*:",
+            )
+        )
+        has_context = (
+            re.search(r"(?i)Zeithorizont\s*:", tail)
+            and re.search(r"(?i)(?:Indikatoren|relevante\s+Indikatoren)\s*:", tail)
+            and re.search(r"(?i)(?:Konsequenz|Auswirkung)\s*:", tail)
+        )
+        explicit_gap = bool(re.search(
+            r"(?i)(?:NICHT ABLEITBAR|NICHT VERFÜGBAR)[^\r\n]{0,180}(?:Datenlücke|Daten fehlen|keine belastbare Datenbasis|Begründung)",
+            tail,
+        ))
+        if not ((has_triggers and has_context) or explicit_gap):
+            errors.append(f"M-09-SZENARIO: {label} benötigt Trigger, Zeithorizont, Indikatoren und Konsequenz oder eine begründete Datenlücke.")
+
 def validate_report(text: str) -> list[str]:
     errors: list[str] = []
     if not text.strip():
@@ -511,7 +935,11 @@ def validate_report(text: str) -> list[str]:
     for number, title, start, end in found:
         if number < 1 or number > 8 or title.casefold() != expected[number - 1].casefold():
             continue
-        later = [item[2] for item in found if item[2] > start and item[0] in range(number + 1, 9)]
+        later = [
+            item[2] for item in found
+            if item[2] > start and item[0] in range(number + 1, 9)
+            and item[1].casefold() == expected[item[0] - 1].casefold()
+        ]
         body_end = min(later) if later else len(text)
         body = text[end:body_end].strip()
         body = re.sub(r"(?im)^TRADING_RADAR_FACHLICH_FINAL=.*$", "", body).strip()
@@ -645,12 +1073,119 @@ def validate_report(text: str) -> list[str]:
         errors.append("Bericht enthält literal \\n statt physischer Zeilenumbrüche")
 
     _validate_m05_m10(text, errors)
+    appendix = _section_body(text, 8, SECTION_NAMES[7])
+    quality_match = re.search(
+        r"(?i)OHLCV-Qualitätsstatus\s*:\s*VALID\s*=\s*(\d+)\s*[,;]\s*"
+        r"MISSING\s*=\s*(\d+)\s*[,;]\s*STALE\s*=\s*(\d+)\s*[,;]\s*"
+        r"INVALID\s*=\s*(\d+).*?Summe\s*=\s*(\d+)\s*/\s*(\d+)",
+        appendix,
+    )
+    if not quality_match:
+        errors.append("M-03: OHLCV-Qualitätsstatus VALID/MISSING/STALE/INVALID mit vollständiger Summenkontrolle fehlt.")
+    else:
+        valid, missing, stale, invalid, total, universe = map(int, quality_match.groups())
+        if valid + missing + stale + invalid != total or total != universe:
+            errors.append("M-03: OHLCV-Zustandsklassen sind nicht disjunkt/vollständig oder ihre Summe entspricht nicht dem geprüften Universum.")
+        state_lists = {}
+        for state in ("VALID", "MISSING", "STALE", "INVALID"):
+            match = re.search(rf"(?im)^OHLCV-Symbole-{state}:\s*(.+)$", appendix)
+            if not match or match.group(1).strip().casefold() in {"nicht verifizierbar", "fehlt"}:
+                errors.append(f"M-03: vollständige Symbolzuordnung für {state} fehlt.")
+                continue
+            values = [] if match.group(1).strip().upper() == "KEINE" else [
+                item.strip().upper() for item in match.group(1).split(",") if item.strip()
+            ]
+            state_lists[state] = values
+            expected_count = {"VALID": valid, "MISSING": missing, "STALE": stale, "INVALID": invalid}[state]
+            if len(values) != expected_count:
+                errors.append(f"M-03: Symbolanzahl der Klasse {state} stimmt nicht mit der Statuszählung überein.")
+        flattened = [ticker for values in state_lists.values() for ticker in values]
+        if len(flattened) != len(set(flattened)):
+            errors.append("M-03: Ein Symbol ist mehreren OHLCV-Zustandsklassen zugeordnet.")
+        if len(flattened) != universe:
+            errors.append("M-03: Symbolstatusliste deckt das geprüfte Universum nicht exakt ab.")
+    if not re.search(r"(?i)Kandidaten-Mapping\s*:\s*(?:vollständig|vollstaendig|unvollständig|unvollstaendig|NICHT VERIFIZIERBAR)", appendix):
+        errors.append("M-03: Vollständigkeit des Kandidaten-Mappings muss ausdrücklich ausgewiesen werden.")
+    return errors
+
+
+def validate_run_evidence(path: Path, *, require_report_gate: bool = True) -> list[str]:
+    errors = []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"M-08: Run-Evidence fehlt oder ist unlesbar: {exc}"]
+    identity = payload.get("run_identity") if isinstance(payload, dict) else None
+    if not isinstance(identity, dict):
+        return ["M-08: Run-Evidence enthält keine run_identity."]
+    commit = str(identity.get("commit_sha") or "")
+    run_id = str(identity.get("workflow_run_id") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit, re.I):
+        errors.append("M-08: Commit-SHA fehlt oder ist kein vollständiger Git-SHA.")
+    if not run_id.isdigit():
+        errors.append("M-08: GitHub-Workflow-Run-ID fehlt.")
+    if not str(identity.get("repository") or "").strip() or not str(identity.get("ref") or "").strip():
+        errors.append("M-08: Repository und Git-Ref müssen im Run-Evidence-Nachweis vorhanden sein.")
+    hashes = identity.get("source_file_hashes")
+    required_source_hashes = {
+        "Trading_Radar_Alleinauswertung.py",
+        "trading_radar_neuauswertung.py",
+        "trading_radar_market_first.py",
+        "trading_radar_thesen.py",
+        "trading_radar_report_gate.py",
+        "trading_radar_run_evidence.py",
+        "trading_radar_portfolio_performance.py",
+        "offene_positionen_check.py",
+        "historical_ohlcv.py",
+        ".github/workflows/main.yml",
+    }
+    if not isinstance(hashes, dict) or not required_source_hashes.issubset(set(hashes or {})) or any(
+        not re.fullmatch(r"[0-9a-f]{64}", str(value or ""), re.I)
+        for value in (hashes or {}).values()
+    ):
+        errors.append("M-08: SHA256 der vollständigen kritischen Quellcodedateien fehlen oder sind unvollständig.")
+    gates = identity.get("gate_results")
+    required_gates = (
+        "TRADING_RADAR_CONTRACT_OUTCOME", "TRADING_RADAR_STEP_OUTCOME",
+        "TRADING_RADAR_OHLCV_PERSISTENCE_GATE", "TRADING_RADAR_MARKET_FIRST_GATE",
+        "TRADING_RADAR_FACHLICH_FINAL",
+    ) + (("TRADING_RADAR_REPORT_GATE", "TRADING_RADAR_REPORT_GATE_OUTCOME")
+         if require_report_gate else ())
+    if not isinstance(gates, dict) or any(not gates.get(key) for key in required_gates):
+        errors.append("M-08: Datenvertrags-, Lauf-, OHLCV-Persistenz- und Market-First-Gate-Ergebnisse sind nicht vollständig mit dem Laufnachweis verknüpft.")
+    elif (
+        gates.get("TRADING_RADAR_CONTRACT_OUTCOME") != "success"
+        or gates.get("TRADING_RADAR_STEP_OUTCOME") != "success"
+        or gates.get("TRADING_RADAR_OHLCV_PERSISTENCE_GATE") != "PASS"
+        or gates.get("TRADING_RADAR_MARKET_FIRST_GATE") != "PASS"
+        or (require_report_gate and gates.get("TRADING_RADAR_REPORT_GATE") not in {"PASS", "FAIL"})
+        or (require_report_gate and gates.get("TRADING_RADAR_REPORT_GATE_OUTCOME") not in {"success", "failure"})
+        or gates.get("TRADING_RADAR_FACHLICH_FINAL") not in {"FINAL", "NICHT_FINAL"}
+    ):
+        errors.append("M-08: Mindestens ein verpflichtendes technisches Gate ist nicht PASS/success.")
+    start = payload.get("start")
+    end = payload.get("end")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        errors.append("M-08: Start- und Endnachweis sind beide verpflichtend.")
+        start = start if isinstance(start, dict) else {}
+        end = end if isinstance(end, dict) else {}
+    source_entries = end.get("sources") if isinstance(end, dict) else None
+    if not isinstance(source_entries, list) or not source_entries or any(
+        not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256") or ""), re.I)
+        for item in source_entries if isinstance(item, dict)
+    ) or any(not isinstance(item, dict) for item in (source_entries or [])):
+        errors.append("M-08: Eingangsdaten-/Quellen-SHA256 fehlen im Endnachweis.")
+    if start and end:
+        start_identity = start.get("run_identity") or {}
+        end_identity = end.get("run_identity") or {}
+        if start_identity.get("commit_sha") != end_identity.get("commit_sha") or start_identity.get("workflow_run_id") != end_identity.get("workflow_run_id"):
+            errors.append("M-08: Start- und Endnachweis stammen nicht vom selben Commit/Lauf.")
     return errors
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: python trading_radar_report_gate.py REPORT.txt", file=sys.stderr)
+    if len(sys.argv) not in (2, 4) or (len(sys.argv) == 4 and sys.argv[2] != "--evidence"):
+        print("Usage: python trading_radar_report_gate.py REPORT.txt [--evidence RUN_EVIDENCE.json]", file=sys.stderr)
         return 2
     path = Path(sys.argv[1])
     try:
@@ -659,6 +1194,8 @@ def main() -> int:
         print(f"REPORT_CHECK=FAIL | Bericht nicht lesbar: {exc}")
         return 1
     errors = validate_report(text)
+    if len(sys.argv) == 4:
+        errors.extend(validate_run_evidence(Path(sys.argv[3])))
     if errors:
         for error in errors:
             print(f"REPORT_CHECK=FAIL | {error}")

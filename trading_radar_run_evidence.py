@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sys
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,7 @@ PORTFOLIO_PATHS = (
     "Offene_Positionen_Check.csv",
     "Offene_Positionen_Check.xlsx",
     "Geschlossene Positionen_Initialbestand.csv",
+    "Geschlossene Positionen_Tab2.csv",
 )
 EVENT_PATHS = (
     "fomc_termine.json",
@@ -35,7 +37,7 @@ EVENT_PATHS = (
     "forexfactory_calendar.json",
     "event_calendar.json",
 )
-SUPPORTED = {".csv", ".tsv", ".json", ".xlsx", ".xls", ".txt", ".md"}
+SUPPORTED = {".csv", ".tsv", ".json", ".xlsx", ".xls", ".txt", ".md", ".sqlite", ".db"}
 
 
 def sha256(path: Path) -> str:
@@ -302,6 +304,59 @@ def _risk_metrics(path: Path, meta: dict) -> dict | None:
     return result
 
 
+def _git_value(*args: str) -> str | None:
+    try:
+        value = subprocess.check_output(
+            ["git", *args], cwd=ROOT, stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        return value or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _run_identity() -> dict:
+    commit = os.environ.get("GITHUB_SHA") or _git_value("rev-parse", "HEAD")
+    return {
+        "repository": os.environ.get("GITHUB_REPOSITORY"),
+        "ref": os.environ.get("GITHUB_REF"),
+        "commit_sha": commit,
+        "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+        "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
+        "source_file_hashes": {
+            name: sha256(ROOT / name)
+            for name in (
+                "Trading_Radar_Alleinauswertung.py",
+                "trading_radar_neuauswertung.py",
+                "trading_radar_report_gate.py",
+                "trading_radar_market_first.py",
+                "trading_radar_run_evidence.py",
+                "trading_radar_thesen.py",
+                "trading_radar_portfolio_performance.py",
+                "offene_positionen_check.py",
+                "historical_ohlcv.py",
+                ".github/workflows/main.yml",
+            )
+            if (ROOT / name).is_file()
+        },
+        "gate_results": {
+            key: os.environ.get(key)
+            for key in (
+                "TRADING_RADAR_CONTRACT_OUTCOME",
+                "TRADING_RADAR_STEP_OUTCOME",
+                "TRADING_RADAR_OHLCV_PERSISTENCE_GATE",
+                "TRADING_RADAR_MARKET_FIRST_GATE",
+                "TRADING_RADAR_REPORT_GATE",
+                "TRADING_RADAR_REPORT_GATE_OUTCOME",
+                "TRADING_RADAR_FACHLICH_FINAL",
+                "TRADING_RADAR_REPORT_GATE",
+                "TRADING_RADAR_REPORT_GATE_OUTCOME",
+            )
+            if os.environ.get(key) is not None
+        },
+    }
+
+
 def collect_snapshot(phase: str) -> dict:
     files = _all_files()
     entries = []
@@ -381,8 +436,9 @@ def collect_snapshot(phase: str) -> dict:
         "supported_inventory_formats": sorted(SUPPORTED),
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "phase": phase,
+        "run_identity": _run_identity(),
         "production_io_contract": production_io_contract,
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
         "root": ".",
@@ -404,12 +460,139 @@ def collect_snapshot(phase: str) -> dict:
     }
 
 
+def finalize_gate_result() -> int:
+    try:
+        end = json.loads(END_FILE.read_text(encoding="utf-8"))
+        summary = json.loads(SUMMARY_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"TRADING_RADAR_EVIDENCE_FINALIZE=FAIL | {exc}", file=sys.stderr)
+        return 1
+    result = os.environ.get("TRADING_RADAR_REPORT_GATE", "").strip().casefold()
+    final_status = os.environ.get("TRADING_RADAR_FACHLICH_FINAL", "").strip()
+    if result not in {"success", "failure", "cancelled", "skipped"}:
+        result = "missing"
+    status = "PASS" if result == "success" else "FAIL"
+    for payload in (end, summary.get("end", {})):
+        identity = payload.setdefault("run_identity", {})
+        gates = identity.setdefault("gate_results", {})
+        gates["TRADING_RADAR_REPORT_GATE"] = status
+        gates["TRADING_RADAR_REPORT_GATE_OUTCOME"] = result
+        if final_status in {"FINAL", "NICHT_FINAL"}:
+            gates["TRADING_RADAR_FACHLICH_FINAL"] = final_status
+    summary["run_identity"] = end.get("run_identity", {})
+    END_FILE.write_text(json.dumps(end, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    SUMMARY_FILE.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"TRADING_RADAR_REPORT_GATE={status}")
+    return 0
+
+
+
+def validate_final_evidence() -> int:
+    """Validate the final run-evidence artifact after the report-gate result is attached."""
+    try:
+        end = json.loads(END_FILE.read_text(encoding="utf-8"))
+        summary = json.loads(SUMMARY_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | {exc}", file=sys.stderr)
+        return 1
+    identity = end.get("run_identity") if isinstance(end, dict) else None
+    if not isinstance(identity, dict):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | run_identity fehlt", file=sys.stderr)
+        return 1
+    # A run identity is useful only when it identifies one immutable GitHub
+    # checkout and one workflow execution. Empty-but-equal values are not proof.
+    identity_fields = ("repository", "ref", "commit_sha", "workflow_run_id", "workflow_run_attempt")
+    missing_identity = [key for key in identity_fields if not str(identity.get(key) or "").strip()]
+    if missing_identity:
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Laufidentität unvollständig: " + ", ".join(missing_identity), file=sys.stderr)
+        return 1
+    if not re.fullmatch(r"[0-9a-f]{40,64}", str(identity.get("commit_sha") or ""), re.I):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Commit-SHA fehlt oder ist ungültig", file=sys.stderr)
+        return 1
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", str(identity.get("repository") or "")):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Repository-Identität ist ungültig", file=sys.stderr)
+        return 1
+    if not re.fullmatch(r"[0-9]+", str(identity.get("workflow_run_id") or "")) or not re.fullmatch(r"[0-9]+", str(identity.get("workflow_run_attempt") or "")):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Workflow-Run-ID/Attempt ist ungültig", file=sys.stderr)
+        return 1
+    gates = identity.get("gate_results") or {}
+    required = (
+        "TRADING_RADAR_CONTRACT_OUTCOME", "TRADING_RADAR_STEP_OUTCOME",
+        "TRADING_RADAR_OHLCV_PERSISTENCE_GATE", "TRADING_RADAR_MARKET_FIRST_GATE",
+        "TRADING_RADAR_REPORT_GATE", "TRADING_RADAR_REPORT_GATE_OUTCOME",
+        "TRADING_RADAR_FACHLICH_FINAL",
+    )
+    missing = [key for key in required if not gates.get(key)]
+    if missing:
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Gate-Ergebnisse fehlen: " + ", ".join(missing), file=sys.stderr)
+        return 1
+    if gates["TRADING_RADAR_REPORT_GATE"] != "PASS" or gates["TRADING_RADAR_REPORT_GATE_OUTCOME"] != "success":
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Report-Gate nicht erfolgreich", file=sys.stderr)
+        return 1
+    if gates["TRADING_RADAR_FACHLICH_FINAL"] == "FINAL":
+        expected = {
+            "TRADING_RADAR_CONTRACT_OUTCOME": "success",
+            "TRADING_RADAR_STEP_OUTCOME": "success",
+            "TRADING_RADAR_OHLCV_PERSISTENCE_GATE": "PASS",
+            "TRADING_RADAR_MARKET_FIRST_GATE": "PASS",
+        }
+        failed = [key for key, value in expected.items() if gates.get(key) != value]
+        if failed:
+            print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | FINAL trotz fehlgeschlagener Gates: " + ", ".join(failed), file=sys.stderr)
+            return 1
+    start = summary.get("start") if isinstance(summary, dict) else None
+    end_payload = summary.get("end") if isinstance(summary, dict) else None
+    if not isinstance(start, dict) or not isinstance(end_payload, dict):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Start-/End-Snapshot fehlt", file=sys.stderr)
+        return 1
+    start_id = start.get("run_identity") or {}
+    end_id = end_payload.get("run_identity") or {}
+    summary_identity = summary.get("run_identity") or {}
+    if summary_identity != identity or end_id.get("gate_results") != gates:
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Zusammenfassender Laufnachweis widerspricht End-Snapshot/Gate-Ergebnis", file=sys.stderr)
+        return 1
+    if any(
+        start_id.get(key) != identity.get(key) or end_id.get(key) != identity.get(key)
+        for key in ("repository", "ref", "commit_sha", "workflow_run_id", "workflow_run_attempt")
+    ):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Start/End/Gate-Nachweis nicht demselben Lauf zugeordnet", file=sys.stderr)
+        return 1
+    required_source_files = {
+        "Trading_Radar_Alleinauswertung.py", "trading_radar_neuauswertung.py",
+        "trading_radar_report_gate.py", "trading_radar_market_first.py",
+        "trading_radar_run_evidence.py", "trading_radar_thesen.py",
+        "trading_radar_portfolio_performance.py", "offene_positionen_check.py",
+        "historical_ohlcv.py", ".github/workflows/main.yml",
+    }
+    end_code_hashes = identity.get("source_file_hashes")
+    start_code_hashes = start_id.get("source_file_hashes")
+    if not isinstance(end_code_hashes, dict) or not required_source_files.issubset(end_code_hashes):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Quellcode-Hashes unvollständig", file=sys.stderr)
+        return 1
+    if not isinstance(start_code_hashes, dict) or start_code_hashes != end_code_hashes:
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Quellcode-Hashes zwischen Start und Ende weichen ab", file=sys.stderr)
+        return 1
+    if any(not re.fullmatch(r"[0-9a-f]{64}", str(end_code_hashes.get(name) or ""), re.I) for name in required_source_files):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | mindestens ein Quellcode-Hash ist ungültig", file=sys.stderr)
+        return 1
+    sources = end_payload.get("sources")
+    if not isinstance(sources, list) or not sources or any(
+        not isinstance(item, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256") or ""), re.I)
+        for item in sources
+    ):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Eingabedaten-Hashes fehlen", file=sys.stderr)
+        return 1
+    print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=PASS | Run-ID, Commit, Quellen-Hashes und sämtliche Gate-Ergebnisse sind verknüpft")
+    return 0
+
+
 def run(phase: str) -> int:
     snapshot = collect_snapshot(phase)
     target = START_FILE if phase == "start" else END_FILE
     target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if phase == "end":
-        summary = {"schema_version": 2, "start": None, "end": snapshot}
+        summary = {"schema_version": 3, "start": None, "end": snapshot,
+                   "run_identity": snapshot.get("run_identity", {})}
         try:
             start = json.loads(START_FILE.read_text(encoding="utf-8"))
             summary["start"] = start
@@ -445,7 +628,11 @@ def run(phase: str) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "gate-result":
+        raise SystemExit(finalize_gate_result())
+    if len(sys.argv) == 2 and sys.argv[1] == "validate-final":
+        raise SystemExit(validate_final_evidence())
     if len(sys.argv) != 2 or sys.argv[1] not in {"start", "end"}:
-        print("Usage: python trading_radar_run_evidence.py start|end", file=sys.stderr)
+        print("Usage: python trading_radar_run_evidence.py start|end|gate-result|validate-final", file=sys.stderr)
         raise SystemExit(2)
     raise SystemExit(run(sys.argv[1]))

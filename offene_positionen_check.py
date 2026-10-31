@@ -1847,6 +1847,36 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         if [str(x).strip() for x in hist_rows[1]] != expected_hist_header:
             raise RuntimeError("Historien-Verifikation fehlgeschlagen: Header der Historie stimmt nicht.")
 
+        # Vollständigen append-only Tab 2 lokal exportieren. Die lokale
+        # Initialhistorie kann älter/kleiner sein als die produktive Historie
+        # im Google Sheet; der Trading Radar muss deshalb exakt den verifizierten
+        # produktiven Tab-2-Bestand als Performance-Eingabe verwenden.
+        tab2_export_path = os.path.join(os.getcwd(), "Geschlossene Positionen_Tab2.csv")
+        with open(tab2_export_path, "w", encoding="utf-8-sig", newline="") as export_handle:
+            writer = csv.writer(export_handle, delimiter=";")
+            writer.writerow(expected_hist_header)
+            exported_rows = 0
+            for raw in hist_rows[2:]:
+                normalized_row = list(raw[:len(expected_hist_header)])
+                normalized_row.extend([""] * (len(expected_hist_header) - len(normalized_row)))
+                if not str(normalized_row[0] if normalized_row else "").strip():
+                    continue
+                writer.writerow(normalized_row)
+                exported_rows += 1
+        expected_export_rows = sum(
+            1 for raw in hist_rows[2:]
+            if raw and str(raw[0]).strip()
+        )
+        if exported_rows != expected_export_rows or exported_rows <= 0:
+            raise RuntimeError(
+                "Tab-2-CSV-Export unvollständig: "
+                f"exportiert={exported_rows}, erwartet={expected_export_rows}"
+            )
+        print(
+            "TRADING_RADAR_TAB2_EXPORT=AVAILABLE | "
+            f"path={os.path.basename(tab2_export_path)} | rows={exported_rows}"
+        )
+
         if not closed_for_append.empty:
             hist_keys = []
             for raw in hist_rows[2:]:

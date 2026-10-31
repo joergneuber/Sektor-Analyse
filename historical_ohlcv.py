@@ -407,6 +407,7 @@ def audit_snapshot(
     *,
     stale_after_days: int = STALE_AFTER_DAYS,
     candidate_tickers: Iterable[str] | None = None,
+    explicit_no_candidates: bool = False,
 ) -> dict:
     """Liefert den strukturierten OHLCV-Prüfnachweis direkt aus der Research-DB.
 
@@ -474,7 +475,28 @@ def audit_snapshot(
         affected = sorted(set(candidate_set) & problem_tickers)
         unmapped_candidates = sorted(set(candidate_set) - set(tickers))
         status = "complete" if tickers and covered == len(tickers) and not missing and not stale and not recent_invalid_tickers else "gaps"
-        candidate_mapping_complete = mapped_candidates and not unmapped_candidates
+        candidate_mapping_complete = (mapped_candidates or explicit_no_candidates) and not unmapped_candidates
+        # Exactly one mutually exclusive quality state per universe symbol.
+        # Missing takes precedence, then invalid (any malformed stored candle),
+        # then stale, otherwise valid. Historical invalid candles remain visible.
+        status_by_ticker = {}
+        missing_set = set(missing)
+        invalid_set = set(invalid_tickers)
+        stale_set = set(stale)
+        for ticker in tickers:
+            if ticker in missing_set:
+                status_by_ticker[ticker] = "MISSING"
+            elif ticker in invalid_set:
+                status_by_ticker[ticker] = "INVALID"
+            elif ticker in stale_set:
+                status_by_ticker[ticker] = "STALE"
+            else:
+                status_by_ticker[ticker] = "VALID"
+        status_counts = {
+            state: sum(1 for value in status_by_ticker.values() if value == state)
+            for state in ("VALID", "MISSING", "STALE", "INVALID")
+        }
+        status_counts["TOTAL"] = sum(status_counts.values())
         candidate_impact = (
             "affected_candidates_detected" if affected
             else "none_detected_in_checked_candidates"
@@ -494,6 +516,8 @@ def audit_snapshot(
             "unmapped_candidate_tickers": unmapped_candidates,
             "candidate_mapping_complete": candidate_mapping_complete,
             "candidate_impact": candidate_impact,
+            "quality_status_counts": status_counts,
+            "quality_status_by_ticker": status_by_ticker,
             "source": str(db_path),
         }
     except Exception as exc:

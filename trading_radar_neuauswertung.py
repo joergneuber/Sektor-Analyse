@@ -39,11 +39,30 @@ MARKT-FIRST-ABNAHME:
   keine relative Staerke/Rotation und keine bedingte Vorschau liefert, ist fachlich unzureichend.
 - Abschnitt 1 muss explizit die Felder "Marktregime:", "Indizes/Marktbreite:",
   "Zinsen/Renditen:", "Dollar/Liquidität/Volatilität:" und "Basisszenario:" enthalten.
+  Zusätzlich "Positives Alternativszenario:" und "Negatives Alternativszenario:" mit
+  Eintrittsbedingungen, Bestätigungs- und Invalidierungstriggern ausweisen. Wenn Daten fehlen,
+  "NICHT ABLEITBAR" plus konkrete Datenlücke/Begründung nennen.
   Die eingefuegten Live-Marktbelege sind Datenfakten; Interpretation klar davon trennen.
-- Abschnitt 2 muss JEDE These als eigenen Datensatz mit "Thesen-Name:", "Gegenbelege:",
-  "Alternative:", "Bestätigungstrigger:" und "Invalidierungstrigger:" ausgeben. Jedes
-  Feld muss pro These konkret und nichtleer sein; Erwähnungen außerhalb des Datensatzes
+- Abschnitt 2 muss JEDE These als eigenen Datensatz mit stabiler "thesis_id", positiver
+  "version", "updated_at", "data_cutoff", "Thesen-Name:", "Gegenbelege:", "Alternative:",
+  "Bestätigungstrigger:", "Invalidierungstrigger:", "Konfidenz:" und "Status:" ausgeben.
+  Jedes Feld muss pro These konkret und nichtleer sein; Erwähnungen außerhalb des Datensatzes
   zählen nicht. Fehlende Evidenz und bedingte Trigger ausdrücklich benennen.
+- Abschnitt 1 muss Basisszenario, positives Alternativszenario und negatives Alternativszenario
+  getrennt ausweisen. Jedes Szenario benötigt Eintrittsbedingung, Bestätigungstrigger,
+  Invalidierungstrigger, Zeithorizont, relevante Indikatoren und Konsequenz für die
+  Markteinschätzung. Nicht belastbar ableitbare Szenarien ausdrücklich mit konkreter Datenlücke
+  begründen; keine Szenariowerte erfinden.
+- Abschnitt 4 muss eine explizite Relative-Stärke-Matrix für Regionen, Indizes, Sektoren und
+  Anlageklassen mit EINEM gemeinsamen Datenstichtag und identischen 1M-/3M-Fenstern enthalten.
+  Je Bereich beide Fenster als Werte oder als konkrete Datenlücke ausweisen; nicht vergleichbare
+  Reihen aus Rangfolgen ausschließen. Gewinner, Verlierer und Divergenzen nur aus dieser
+  vergleichbaren Datenbasis ableiten.
+- Abschnitt 5 muss zusätzlich "Kandidatenquellen:", "BESTÄTIGTE SETUPS:", "WATCHLIST:" und
+   "VERWORFENE KANDIDATEN:" separat ausgeben. Jeder Eintrag benötigt Identität, Quelle,
+   Status/Begründung und bei Setups/Watchlist einen überprüfbaren Kurs- oder Strukturtrigger.
+   Leere Bereiche benötigen eine konkrete Begründung, warum keine Kandidaten/Trigger vorliegen.
+   Quellenanzahl, Kandidatenanzahl und bestätigte Setups niemals gleichsetzen.
 - Abschnitt 5 muss alle vier Statusgruppen ausdrücklich ausgeben: "JETZT TECHNISCH PRÜFEN",
   "AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN" und "NICHT HANDELBAR". Markdown-Überschriften
   sind zulässig; jede der vier Pflichtgruppen muss genau einmal erscheinen. Leere Gruppen
@@ -64,8 +83,27 @@ REGELN:
 - Daten-Cutoff und Zeit/Zeitzone aus Quellen nutzen; spaetere Daten nicht rueckwirkend.
 - Keine Trades, Stops, Positionsgroessen, Portfoliohistorie oder Handelsregeln aendern.
 - Technische Kandidaten von tatsaechlichen Portfolio-Positionen trennen.
-- Thesenregister vergleichen: relevante Datenveraenderungen, betroffene Trigger,
-  Belege/Gegenbelege, Alternativen und fehlende Voraussetzungen.
+- Thesenregister deterministisch mit Vorzustand vergleichen: stabile thesis_id, Version,
+  updated_at, Daten-Cutoff, Belege/Gegenbelege, Alternativen und Trigger. Eine Aussage
+  "keine Änderung" darf nur nach tatsächlichem Registervergleich erfolgen.
+- Bei abweichenden Makro-/Live-Werten (insbesondere 10Y Treasury) für jede konkrete Beobachtung
+  Quelle, Abrufzeit, Datenstichtag und Einheit dokumentieren. Alternativ eine einzelne Zeile
+  "QUELLENKONFLIKT: OFFEN" ausgeben, die das Instrument und beide abweichenden Zahlenwerte
+  ausdrücklich nennt. Ein allgemeiner Konfliktmarker ohne konkrete Werte ist kein Nachweis.
+- Portfolio-Gesamtperformance wird ausschließlich aus allen eindeutigen abgeschlossenen und offenen
+  Trades berechnet: genau 1 Stück je Trade, abgeschlossene Trades zum Ausstiegskurs, offene Trades
+  zum aktuellen Kurs, Kosten=0. Berechne je Trade zuerst die prozentuale Rendite:
+  Long=(Kurs-Einstieg)/Einstieg*100; Short=(Einstieg-Kurs)/Einstieg*100.
+  Portfolio-Gesamtperformance ist der gleichgewichtete arithmetische Durchschnitt dieser
+  Einzelrenditen in Prozent. Formel: Summe aller Einzelrenditen geteilt durch Anzahl eindeutiger
+  Trades. Beispiel: +5 % EUR-Trade plus +2 % USD-Trade ergibt +3,50 % Portfolio-Gesamtperformance.
+  Jeder eindeutige Trade zählt exakt einmal und mit Gewicht 1. Währungen sind für die
+  prozentuale Trade-Rendite unerheblich; keine Währungsumrechnung, keine Kapitalgewichtung,
+  keine Addition der Einzelrenditen als Prozentpunkte und keine Ersetzung durch den
+  Durchschnitt ausschließlich offener Positionen.
+  Bei fehlendem/ungültigem Ticker, Einstiegsdatum, Einstiegskurs, Status, Richtung oder Exit-/Aktuellkurs
+  NICHT VERFÜGBAR ausweisen; keine Zeile still überspringen. Ø Positionsperformance bleibt separat
+  das arithmetische Mittel ausschließlich der aktuell offenen Einzelrenditen.
 - Keine These/Trade erzwingen; „unklar / keine belastbare These“ ist zulaessig.
 - Nur diese Thesenstatus verwenden: NEU, BESTÄTIGT, ABGESCHWÄCHT,
   WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT. IDs nicht still ueberschreiben;
@@ -86,6 +124,9 @@ AUSGABE mit genau diesen acht Ueberschriften:
 7 · MSCI-Vergleich — vorhandene Benchmark-Quelle, gleicher Zeitraum, Portfolio- und
    durchschnittliche System-Performance trennen; Prozentpunkte nur aus Berechnungen.
 8 · Daten-/Pruefanhang — Quellen/Datenstaende, Luecken/Konflikte, Validierung/Laufdetails.
+   OHLCV-Qualitaet mit vier disjunkten Klassen VALID/MISSING/STALE/INVALID ausweisen;
+   die Summe muss der Symbolmenge entsprechen. Commit-SHA, Workflow-Run-ID, Datei-/Eingabe-
+   Hashes und Gate-Ergebnisse im Laufnachweis zusammenfuehren.
 
 Am Ende genau einen JSON-Block:
 ```TRADING_RADAR_THESEN_JSON

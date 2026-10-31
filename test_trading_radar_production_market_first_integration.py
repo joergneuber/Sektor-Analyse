@@ -2,7 +2,7 @@ from pathlib import Path
 
 from trading_radar_market_first import normalize_event_section, validate_ohlcv_audit
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 
 
 def test_production_entrypoint_runs_market_first_audit_on_saved_report():
@@ -16,8 +16,10 @@ def test_production_entrypoint_runs_market_first_audit_on_saved_report():
 def test_production_path_normalizes_events_and_validates_real_ohlcv_snapshot():
     source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
     assert "normalize_event_section(text)" in source
-    assert "historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)" in source
-    assert "validate_ohlcv_audit(ohlcv_audit)" in source
+    assert "explicit_no_candidates=explicit_no_candidates" in source
+    assert "historical_ohlcv.audit_snapshot(" in source
+    assert "validate_ohlcv_audit(" in source
+    assert "ohlcv_audit, explicit_no_candidates=explicit_no_candidates" in source
     assert "validation_errors.extend(\"OHLCV: \" + item for item in ohlcv_findings)" in source
 
 

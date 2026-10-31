@@ -94,11 +94,7 @@ def summarize_ohlcv_status(statuses: Iterable[str]) -> dict[str, int]:
 
 
 def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str, list[str]]:
-    """Add a compact, source-stamped market snapshot using live Yahoo Finance data.
-
-    The snapshot is evidence, not a forecast. Missing instruments are reported as
-    unavailable; no values are inferred. An injectable fetcher keeps tests offline.
-    """
+    """Append source-stamped live market data and a common-cutoff 1M/3M matrix."""
     import pandas as pd
     if fetcher is None:
         try:
@@ -106,13 +102,12 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
         except ImportError:
             return report_text, ["Markt-Snapshot nicht erstellt: yfinance nicht installiert"]
         def fetcher(symbols):
-            return yf.download(
-                tickers=symbols, period="4mo", interval="1d", auto_adjust=True,
-                group_by="ticker", progress=False, threads=True,
-            )
+            return yf.download(tickers=symbols, period="6mo", interval="1d",
+                               auto_adjust=True, group_by="ticker", progress=False, threads=True)
     symbols = [
         "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
     ]
     try:
         data = fetcher(symbols)
@@ -124,7 +119,6 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
     def series_for(symbol):
         try:
             if isinstance(data.columns, pd.MultiIndex):
-                # yfinance group_by='ticker' generally yields (ticker, field).
                 if (symbol, "Close") in data.columns:
                     values = data[(symbol, "Close")].dropna()
                 elif ("Close", symbol) in data.columns:
@@ -135,8 +129,18 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
                 values = data["Close"].dropna() if "Close" in data else None
             if values is None or len(values) < 2:
                 return None
-            return values
+            values = values.copy()
+            values.index = pd.to_datetime(values.index, utc=True, errors="coerce")
+            values = values[~values.index.isna()].sort_index()
+            return values[~values.index.duplicated(keep="last")]
         except (KeyError, TypeError, AttributeError):
+            return None
+
+    def latest(symbol):
+        values = series_for(symbol)
+        try:
+            return float(values.iloc[-1]) if values is not None else None
+        except (ValueError, TypeError, IndexError):
             return None
 
     def pct(symbol, periods):
@@ -144,86 +148,145 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
         if values is None or len(values) <= periods:
             return None
         try:
-            return (float(values.iloc[-1]) / float(values.iloc[-1-periods]) - 1) * 100
+            base = float(values.iloc[-1-periods])
+            return (float(values.iloc[-1]) / base - 1) * 100 if base else None
         except (ValueError, TypeError, ZeroDivisionError):
-            return None
-
-    def latest(symbol):
-        values = series_for(symbol)
-        if values is None:
-            return None
-        try:
-            return float(values.iloc[-1])
-        except (ValueError, TypeError):
             return None
 
     def fmt(value, suffix=""):
         return f"{value:+.2f}{suffix}" if value is not None else "NICHT VERFÜGBAR"
 
-    lines = [
-        "",
-        "**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**",
-        f"- Datenstand UTC: {datetime.now().astimezone().astimezone(__import__('datetime').timezone.utc).replace(microsecond=0).isoformat()}",
-    ]
-    labels = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq Composite", "^RUT": "Russell 2000"}
-    for symbol, label in labels.items():
-        close = latest(symbol)
-        r20, r60 = pct(symbol, 20), pct(symbol, 60)
+    now = datetime.now().astimezone().astimezone(__import__("datetime").timezone.utc).replace(microsecond=0).isoformat()
+    lines = ["", "**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**",
+             f"- Datenstand UTC: {now}"]
+    for symbol, label in (("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq Composite"), ("^RUT", "Russell 2000")):
+        close, r1, r3 = latest(symbol), pct(symbol, 21), pct(symbol, 63)
         lines.append(
-            f"- Index {label} ({symbol}): letzter Schluss {close:.2f}; 1M {fmt(r20, '%')}; 3M {fmt(r60, '%')}."
-            if close is not None else
-            f"- Index {label} ({symbol}): NICHT VERFÜGBAR."
+            f"- Index {label} ({symbol}): letzter Schluss {close:.2f}; 1M {fmt(r1, '%')}; 3M {fmt(r3, '%')}."
+            if close is not None else f"- Index {label} ({symbol}): NICHT VERFÜGBAR."
         )
-    vix, dxy, tnx_raw, tlt = latest("^VIX"), latest("DX-Y.NYB"), latest("^TNX"), pct("TLT", 20)
-    # Yahoo ^TNX has appeared in both percentage-point form (e.g. 5.0 for
-    # 5.0%) and tenths form (e.g. 50.0 for 5.0%) in downloaded payloads.
-    # Use a documented plausibility boundary rather than 20.0: modern US 10Y
-    # yields are not plausibly >=10%; values >=10 are interpreted as tenths
-    # (19.5 -> 1.95%; 50.0 -> 5.00%). Values below 10 remain percentage points
-    # (5.0 -> 5.00%). This is a heuristic, not provider-supplied unit metadata.
-    tnx = (
-        tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw
-    ) if tnx_raw is not None else None
-
-    lines.append(f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR.")
-    lines.append(f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR.")
-    lines.append(f"- US-10J-Rendite (^TNX): {tnx:.2f}%" if tnx is not None else "- US-10J-Rendite: NICHT VERFÜGBAR.")
-    lines.append(f"- Anleihe-ETF TLT 1M: {fmt(tlt, '%')}.")
+    vix, dxy, tnx_raw, tlt = latest("^VIX"), latest("DX-Y.NYB"), latest("^TNX"), pct("TLT", 21)
+    tnx = (tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw) if tnx_raw is not None else None
+    lines.extend([
+        f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR.",
+        f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR.",
+        f"- US-10J-Rendite (^TNX): {tnx:.2f}%" if tnx is not None else "- US-10J-Rendite: NICHT VERFÜGBAR.",
+        f"- Anleihe-ETF TLT 1M: {fmt(tlt, '%')}.",
+    ])
     sector_etfs = ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
     above = total = 0
     for symbol in sector_etfs:
         values = series_for(symbol)
-        if values is None or len(values) < 50:
-            continue
-        try:
+        if values is not None and len(values) >= 50:
             total += 1
             above += int(float(values.iloc[-1]) > float(values.iloc[-50:].mean()))
-        except (ValueError, TypeError):
-            total -= 1
-    lines.append(
-        f"- Marktbreite-Proxy: {above}/{total} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
-        if total else "- Marktbreite-Proxy: NICHT VERFÜGBAR."
-    )
+    lines.append(f"- Marktbreite-Proxy: {above}/{total} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
+                 if total else "- Marktbreite-Proxy: NICHT VERFÜGBAR.")
     lines.append("- Quelle: Yahoo Finance (Ticker in den Zeilen; Tages-Schlusskurse).")
+
+    # M-07: when the narrative contains a different 10Y Treasury value, never
+    # silently overwrite it. Emit a concrete open conflict with both values
+    # and provenance limits; the report gate will block FINAL until reconciled.
+    macro_observations = []
+    for source_line in report_text.splitlines():
+        if "Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose)" in source_line:
+            continue
+        match = re.search(
+            r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?)[^\r\n]{0,100}?(?:US[- ]?)?Treasury[^\r\n]{0,60}?(\d+(?:[,.]\d+)?)\s*%",
+            source_line,
+        )
+        if match:
+            try:
+                macro_observations.append((float(match.group(1).replace(",", ".")), source_line.strip()))
+            except ValueError:
+                pass
+    if tnx is not None:
+        distinct_macro = sorted({round(value, 6) for value, _ in macro_observations})
+        differing = [value for value in distinct_macro if abs(value - tnx) >= 0.001]
+        if differing:
+            macro_value = differing[0]
+            lines.append(
+                f"- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+                f"Makro-Wert: {macro_value:.4f}% (Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar) | "
+                f"Live-Wert: {tnx:.4f}% (Quelle: Yahoo Finance ^TNX; Abruf: {now}) | "
+                "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
+            )
+
+    groups = {
+        "Indizes": [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^RUT", "Russell 2000")],
+        "Regionen": [("SPY", "USA"), ("VGK", "Europa"), ("EEM", "Emerging Markets"), ("EWJ", "Japan")],
+        "Sektoren": [(x, x) for x in sector_etfs],
+        "Anlageklassen": [("GLD", "Gold"), ("SLV", "Silber"), ("USO", "Öl"),
+                          ("TLT", "US-Anleihen"), ("UUP", "US-Dollar"), ("BTC-USD", "Bitcoin")],
+    }
+    all_series = {sym: series_for(sym) for rows in groups.values() for sym, _ in rows}
+    all_series = {sym: ser for sym, ser in all_series.items() if ser is not None and not ser.empty}
+    common_cutoff = min((ser.index.max() for ser in all_series.values()), default=None)
+    matrix_results = {}
+    matrix_lines = ["Relative-Stärke-Matrix (adjusted close; 1M=21 Handelstage, 3M=63 Handelstage):"]
+    matrix_lines.append(f"Gemeinsamer Datenstichtag: {common_cutoff.isoformat()}" if common_cutoff is not None
+                        else "Gemeinsamer Datenstichtag: NICHT VERFÜGBAR")
+    for group, rows in groups.items():
+        row_text = []
+        for sym, label in rows:
+            ser = all_series.get(sym)
+            eligible = ser.loc[ser.index <= common_cutoff] if ser is not None and common_cutoff is not None else None
+            # A common cutoff is only comparable when every included series has
+            # an observation exactly at that cutoff. Do not silently substitute
+            # an older last close for a missing market session.
+            if (eligible is None or eligible.empty or common_cutoff is None
+                    or eligible.index[-1] != common_cutoff or len(eligible) <= 63):
+                row_text.append(
+                    f"{label} ({sym}) 1M NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Stichtag); "
+                    "3M NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Stichtag)"
+                )
+                continue
+            last = float(eligible.iloc[-1])
+            base1, base3 = float(eligible.iloc[-22]), float(eligible.iloc[-64])
+            if last <= 0 or base1 <= 0 or base3 <= 0:
+                row_text.append(f"{label} ({sym}) 1M NICHT VERFÜGBAR (Datenlücke); 3M NICHT VERFÜGBAR (Datenlücke)")
+                continue
+            r1, r3 = (last/base1-1)*100, (last/base3-1)*100
+            matrix_results[sym] = (r1, r3)
+            row_text.append(f"{label} ({sym}) 1M {r1:+.2f}%; 3M {r3:+.2f}%")
+        matrix_lines.append(f"{group}: " + " | ".join(row_text))
+    if matrix_results:
+        ranked = sorted(matrix_results.items(), key=lambda item: item[1][1])
+        matrix_lines.extend([
+            "Gewinner: " + ", ".join(f"{sym} ({v[1]:+.2f}% 3M)" for sym, v in ranked[-3:]),
+            "Verlierer: " + ", ".join(f"{sym} ({v[1]:+.2f}% 3M)" for sym, v in ranked[:3]),
+            f"Divergenz: {max(v[1] for v in matrix_results.values())-min(v[1] for v in matrix_results.values()):.2f} Prozentpunkte (3M-Spannweite)",
+        ])
+    else:
+        matrix_lines.extend([
+            "Gewinner: NICHT VERFÜGBAR (Datenlücke)",
+            "Verlierer: NICHT VERFÜGBAR (Datenlücke)",
+            "Divergenz: NICHT VERFÜGBAR (Datenlücke)",
+        ])
     block = "\n".join(lines) + "\n"
-    # Avoid duplicating the live snapshot if the report is reprocessed.
-    # Accept decorated Markdown section headings such as
-    # "### 2. Thesen-Update (Register)" while still requiring a standalone
-    # heading line. Use the same boundary for cleanup and insertion so a
-    # repeated run cannot leave a duplicate snapshot behind.
-    section_two_heading = (
-        r"^[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*"
-        r"Thesen-Update\b[^\r\n]*$"
-    )
+    matrix_block = "\n".join(matrix_lines) + "\n"
+
+    # Idempotent: remove prior live block and prior matrix before insertion.
     report_text = re.sub(
         r"(?ms)\n\*\*Live-Marktbelege \(Yahoo Finance; Schlusskurse, keine Prognose\):\*\*"
         r".*?(?=\n[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*Thesen-Update\b[^\r\n]*$)",
         "", report_text,
     )
+    report_text = re.sub(
+        r"(?ms)\nRelative-Stärke-Matrix \(adjusted close;.*?(?=\n[ \t]*(?:#{1,6}[ \t]*)?5[ \t]*[.·][ \t]*Technische Kandidaten\b)",
+        "", report_text,
+    )
+    section_two_heading = r"^[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*Thesen-Update\b[^\r\n]*$"
     insertion = re.search(section_two_heading, report_text, re.I | re.M)
     if not insertion:
         return report_text, ["Markt-Snapshot vorhanden, aber Abschnitt 2 für Einfügung nicht auffindbar"]
-    return report_text[:insertion.start()] + block + "\n" + report_text[insertion.start():], []
+    report_text = report_text[:insertion.start()] + block + "\n" + report_text[insertion.start():]
+    section4 = re.search(r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?4[ \t]*[.·][ \t]*Assetklassenvergleich[^\r\n]*$", report_text)
+    section5 = re.search(r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?5[ \t]*[.·][ \t]*Technische Kandidaten[^\r\n]*$", report_text)
+    if section4 and section5 and section4.start() < section5.start():
+        report_text = report_text[:section5.start()] + "\n" + matrix_block + "\n" + report_text[section5.start():]
+    return report_text, []
+
 
 
 def _verify_fomc_official_source(event_date: date, *, requester=None) -> tuple[bool, str]:
