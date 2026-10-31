@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 from trading_radar_market_first import normalize_event_section, validate_ohlcv_audit
@@ -16,9 +17,26 @@ def test_production_entrypoint_runs_market_first_audit_on_saved_report():
 def test_production_path_normalizes_events_and_validates_real_ohlcv_snapshot():
     source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
     assert "normalize_event_section(text)" in source
-    assert "historical_ohlcv.audit_snapshot(candidate_tickers=candidate_tickers)" in source
+    # Inspect the executable call instead of matching a one-line spelling.
+    # The production path deliberately passes explicit_no_candidates as a second
+    # keyword so the zero-candidate exception is evaluated by the same snapshot.
+    tree = ast.parse(source)
+    audit_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "audit_snapshot"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "historical_ohlcv"
+    ]
+    assert any(
+        any(k.arg == "candidate_tickers" and isinstance(k.value, ast.Name)
+            and k.value.id == "candidate_tickers" for k in call.keywords)
+        and any(k.arg == "explicit_no_candidates" and isinstance(k.value, ast.Name)
+                and k.value.id == "explicit_no_candidates" for k in call.keywords)
+        for call in audit_calls
+    ), "Production-OHLCV-Audit muss Kandidaten und expliziten Null-Kandidaten-Status gemeinsam übergeben"
     assert "validate_ohlcv_audit(" in source
-    assert "explicit_no_candidates=explicit_no_candidates" in source
     assert "validation_errors.extend(\"OHLCV: \" + item for item in ohlcv_findings)" in source
 
 
