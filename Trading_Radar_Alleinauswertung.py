@@ -5341,6 +5341,21 @@ für ein anderes Ereignis mitverwenden.
 - Abschnitt 2: Thesen-ID, Version und Status je aktualisierter These. Wenn keine
   These neu/aktualisiert wurde, schreibe exakt: "Keine neue oder aktualisierte
   These; Thesenregister geprüft, keine Änderung." Erfinde dafür keine ID/Version.
+  Direkt nach Abschnitt 2 und VOR Abschnitt 3 muss zusätzlich genau ein
+  JSON-Codeblock mit dem exakten Fence-Marker TRADING_RADAR_THESEN_JSON stehen:
+  {"data_cutoff":"ISO-Zeitstempel aus den Quellen","theses":[{"thesis_id":"stabile ID",
+  "version":1,"updated_at":"ISO-Zeitstempel","data_cutoff":"ISO-Zeitstempel",
+  "thesis":"belegte These","horizon":"belegter Zeithorizont",
+  "evidence":["Quellenbeleg"],"counter_evidence":["Gegenbeleg"],
+  "confidence":"niedrig|mittel|hoch","confirm_triggers":["beobachtbarer Trigger"],
+  "invalidate_triggers":["beobachtbarer Invalidierungstrigger"],
+  "event_dependencies":[],"asset_classes":[],"candidates":[],
+  "status":"NEU|BESTAETIGT|VERSTAERKT|ABGESCHWAECHT|WARTET_AUF_EVENT|WIDERLEGT|ERSETZT|UNKLAR"}]}.
+  Alle Werte müssen aus Abschnitt 1/4 und den bereitgestellten Quellen ableitbar sein.
+  Bestehende aktive Thesen mit identischer ID fortführen. Neue thesis_id deterministisch aus Themenbereich und Datenstichtag bilden; neue Version=1, bei unveränderter These bestehende Version übernehmen und bei inhaltlicher Aktualisierung um 1 erhöhen.
+  Wenn keine belastbare These und kein nachweislich leerer Registerstand vorliegt,
+  keine leere Liste als scheinbaren Registervergleich ausgeben: ausdrücklich
+  NICHT VERIFIZIERBAR und keine Freigabe.
 - Abschnitt 3: Ereignis-Uhrzeit, Zeitzone, Kennzahl, Zeitraum sowie letzter
   Wert/Konsens einzeln beschriften. Wenn die Werte aus den Quellen fehlen,
   kennzeichne das konkrete Feld ausdrücklich als NICHT VERFÜGBAR. Wenn keine
@@ -5481,6 +5496,138 @@ __QUELLEN__
                 print(
                     "TRADING_RADAR_RETRY_SECTION_MISSING | fehlend nach gezielter Ergänzung="
                     + ", ".join(missing)
+                )
+
+        # The standalone Radar prompt must produce the structured thesis payload
+        # consumed by update_register(). It is requested immediately after section 2;
+        # a bounded second pass recovers it if the long report response omitted it.
+        thesis_block_pattern = re.compile(
+            r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```",
+            re.DOTALL,
+        )
+
+        def _valid_thesis_block(candidate_text):
+            blocks = thesis_block_pattern.findall(candidate_text or "")
+            if len(blocks) != 1:
+                return False
+            try:
+                payload = json.loads(blocks[0])
+            except (TypeError, ValueError):
+                return False
+            return (
+                isinstance(payload, dict)
+                and isinstance(payload.get("data_cutoff"), str)
+                and bool(payload.get("data_cutoff").strip())
+                and isinstance(payload.get("theses"), list)
+            )
+
+        def _has_substantive_thesis_context(candidate_text):
+            for section_number, next_number in ((1, 2), (4, 5)):
+                section_match = re.search(
+                    rf"(?ims)^[ \t]*(?:#{{1,6}}\s*)?{section_number}\s*[.·][^\r\n]*\r?\n"
+                    rf"(.*?)(?=^[ \t]*(?:#{{1,6}}\s*)?{next_number}\s*[.·]|\Z)",
+                    candidate_text or "",
+                )
+                if not section_match or len(section_match.group(1).strip()) < 250:
+                    return False
+            return True
+
+        if radar_text and _has_substantive_thesis_context(radar_text) and not _valid_thesis_block(radar_text):
+            try:
+                register_context = "KEIN VORHANDENES REGISTER; Vorzustand nicht nachweisbar."
+                register_path = os.path.join(os.getcwd(), ".trading_radar_thesen.json")
+                if os.path.isfile(register_path):
+                    with open(register_path, "r", encoding="utf-8") as register_handle:
+                        register_payload = json.load(register_handle)
+                    if isinstance(register_payload, dict) and isinstance(register_payload.get("theses"), list):
+                        register_context = json.dumps(
+                            register_payload, ensure_ascii=False, sort_keys=True
+                        )[:40000]
+                section_context = []
+                for section_number, next_number in ((1, 2), (2, 3), (4, 5)):
+                    section_match = re.search(
+                        rf"(?ims)^[ \t]*(?:#{{1,6}}\s*)?{section_number}\s*[.·][^\r\n]*\r?\n"
+                        rf"(.*?)(?=^[ \t]*(?:#{{1,6}}\s*)?{next_number}\s*[.·]|\Z)",
+                        radar_text,
+                    )
+                    if section_match:
+                        section_context.append(
+                            f"ABSCHNITT {section_number}:\n{section_match.group(1)[:9000]}"
+                        )
+                thesis_retry_prompt = (
+                    "Erzeuge ausschließlich den fehlenden strukturierten Trading-Radar-Thesenblock. "
+                    "Gib genau einen fenced Block mit dem Marker TRADING_RADAR_THESEN_JSON und "
+                    "gültigem JSON aus; keine Einleitung und keinen weiteren Bericht. "
+                    "Schema: {\"data_cutoff\":\"ISO-Zeitstempel\",\"theses\":["
+                    "{\"thesis_id\":\"stabile ID\",\"version\":1,\"updated_at\":\"ISO-Zeitstempel\","
+                    "\"data_cutoff\":\"ISO-Zeitstempel\",\"thesis\":\"These\","
+                    "\"horizon\":\"Zeithorizont\",\"evidence\":[\"Beleg\"],"
+                    "\"counter_evidence\":[\"Gegenbeleg\"],\"confidence\":\"niedrig|mittel|hoch\","
+                    "\"confirm_triggers\":[\"Bestätigungstrigger\"],"
+                    "\"invalidate_triggers\":[\"Invalidierungstrigger\"],"
+                    "\"event_dependencies\":[],\"asset_classes\":[],\"candidates\":[],"
+                    "\"status\":\"NEU|BESTAETIGT|VERSTAERKT|ABGESCHWAECHT|WARTET_AUF_EVENT|WIDERLEGT|ERSETZT|UNKLAR\"}]}. "
+                    "Nutze ausschließlich die folgenden Berichtsfakten und das Register. "
+                    "Erfinde keine Zahl, Schwelle, Ereignis oder Gegenbeleg. Nutze bestehende thesis_id/version; ""für eine neue These eine deterministische ID aus Thema und Datenstichtag sowie version=1. "
+                    "Wenn eine belastbare These nicht ableitbar ist, liefere theses=[]; "
+                    "ein fehlender Register-Vorzustand darf niemals als unverändert gelten.\n\n"
+                    + "VORHANDENES REGISTER:\n" + register_context + "\n\n"
+                    + "\n\n".join(section_context)
+                )
+                retry_contents = [thesis_retry_prompt]
+                retry_label = "Trading-Radar-Thesenregister-Struktur-Retry"
+                retry_token_count = _gemini_tokenzahl(
+                    client, modell, retry_contents, None, label=retry_label
+                )
+                thesis_response = _gemini_generate_content_quota_safe(
+                    client,
+                    modell,
+                    retry_contents,
+                    {"temperature": 0.1},
+                    retry_token_count,
+                    retry_label,
+                    logical_request_id=(
+                        "Trading-Radar-Eigenlauf:"
+                        + datetime.date.today().isoformat()
+                        + ":thesen-json-retry"
+                    ),
+                )
+                _gemini_radar_response_diagnose(thesis_response, retry_label)
+                thesis_retry_text = str(getattr(thesis_response, "text", thesis_response) or "").strip()
+                if _valid_thesis_block(thesis_retry_text):
+                    section3 = re.search(
+                        r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+                        radar_text,
+                    )
+                    if section3:
+                        # Replace any malformed/duplicate model block before inserting
+                        # the single validated retry result; never leave two registers.
+                        radar_text = re.sub(
+                            r"```TRADING_RADAR_THESEN_JSON.*?```",
+                            "",
+                            radar_text,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        )
+                        section3 = re.search(
+                            r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+                            radar_text,
+                        )
+                        if not section3:
+                            raise RuntimeError("Abschnitt 3 nach Bereinigung des Thesenblocks nicht gefunden")
+                        radar_text = (
+                            radar_text[:section3.start()].rstrip()
+                            + "\n\n" + thesis_retry_text + "\n\n"
+                            + radar_text[section3.start():]
+                        )
+                        print("TRADING_RADAR_THESEN_JSON_RETRY=PASS")
+                    else:
+                        print("TRADING_RADAR_THESEN_JSON_RETRY=FAIL | Abschnitt 3 fehlt")
+                else:
+                    print("TRADING_RADAR_THESEN_JSON_RETRY=FAIL | kein eindeutiger gültiger JSON-Block")
+            except Exception as thesis_retry_exc:
+                print(
+                    "TRADING_RADAR_THESEN_JSON_RETRY=FAIL | "
+                    f"{type(thesis_retry_exc).__name__}: {thesis_retry_exc}"
                 )
 
         if not radar_text or missing:
@@ -17897,6 +18044,8 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
             "OHLCV-Abdeckung: NICHT VERIFIZIERBAR; Prüfergebnis enthält keine gültigen "
             "Universums-/Abdeckungszahlen.\n"
             f"Datenstand: {checked_at}.\n"
+            "Kandidaten-Mapping: NICHT VERIFIZIERBAR – OHLCV-Prüfergebnis enthält keine "
+            "belastbare Kandidaten-/Universumszuordnung.\n"
             "Lückenstatus und Kandidatenauswirkung: nicht verifizierbar; "
             "Kandidaten sind bis zur Klärung nicht prüfbar und nicht freigegeben."
         )
@@ -18001,6 +18150,13 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
         details.append("Prüfhinweis: " + str(audit["error"]))
     explicit_zero_candidates = report_explicitly_declares_no_technical_candidates(report_text)
     candidate_mapping_complete = audit.get("candidate_mapping_complete") is True
+    candidate_mapping_line = (
+        "Kandidaten-Mapping: VOLLSTÄNDIG – alle im Bericht ausgewiesenen Kandidaten "
+        "wurden einzeln dem geprüften Universum zugeordnet."
+        if candidate_mapping_complete
+        else "Kandidaten-Mapping: NICHT VERIFIZIERBAR – mindestens eine Kandidatenzuordnung "
+        "fehlt oder ist nicht eindeutig."
+    )
     if candidate_mapping_complete and not affected and not unmapped_candidates:
         quality_summary = (
             f"VALID={quality_counts.get('VALID', 0)}, MISSING={quality_counts.get('MISSING', 0)}, "
@@ -18028,6 +18184,7 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
         f"OHLCV-Abdeckung: {covered}/{universe} Symbole abgedeckt; Status={status}.\n"
         + quality_line + "\n" + symbol_status_block + "\n"
         + f"Datenstand: {checked_at}.\n"
+        + candidate_mapping_line + "\n"
         + "Lückenstatus und Kandidatenauswirkung: " + impact
     )
 
@@ -18189,11 +18346,16 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         # Both the actual macro schema (number without %) and report prose
         # (number followed by %) are accepted.
         treasury_name = bool(re.search(
-            r"(?i)(?:(?:US\s+)?10Y\s+Treasury|10Y\s+US\s+Treasury|US[- ]?10Y(?:[- ]?Treasury)?|10-jährige[rn]?\s+US[- ]?Treasury)",
+            r"(?i)(?:(?:US\s+)?10Y\s+Treasury|10Y\s+US\s+Treasury|US[- ]?10Y(?:[- ]?Treasury)?|"
+            r"10-jährige[rn]?\s+US[- ]?Treasury|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
+            r"(?:Staatsanleihen?zins|Rendite))",
             line,
         ))
         value_match = re.search(
-            r"(?i)(?:US\s+10Y\s+Treasury|10Y\s+US\s+Treasury|(?:US\s+)?10Y\s+Treasury(?:\s*\([^)]*\))?|US[- ]?10Y(?:[- ]?Treasury)?|10-jährige[rn]?\s+US[- ]?Treasury)\s*(?::|bei)\s*([-+]?\d+(?:[.,]\d+)?)\s*%?",
+            r"(?i)(?:US\s+10Y\s+Treasury|10Y\s+US\s+Treasury|(?:US\s+)?10Y\s+Treasury(?:\s*\([^)]*\))?|"
+            r"US[- ]?10Y(?:[- ]?Treasury)?|10-jährige[rn]?\s+US[- ]?Treasury|"
+            r"10[- ]?jährig(?:er|e|en)?\s+US[- ]?(?:Staatsanleihen?zins|Rendite))"
+            r"\s*(?::|bei)\s*([-+]?\d+(?:[.,]\d+)?)\s*%?",
             line,
         ) if treasury_name else None
         if not treasury_name or not value_match:
@@ -18219,8 +18381,12 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             metadata for metadata in matching
             if metadata.get("Quelle") and metadata.get("Datenstichtag")
         ]
-        if len(complete_matching) == 1:
-            source_metadata = complete_matching[0]
+        if complete_matching:
+            signatures = {
+                tuple(sorted((key, value) for key, value in metadata.items() if value))
+                for metadata in complete_matching
+            }
+            source_metadata = complete_matching[0] if len(signatures) == 1 else {}
         elif len(matching) == 1:
             source_metadata = matching[0]
         else:
@@ -18580,7 +18746,32 @@ def _trading_radar_benchmark_live_bericht_einsetzen(text, eingabedateien=None):
         r"Out-/Underperformance|Benchmark-Quelle|Benchmark-Datenstatus|Benchmark-Zählkontrolle)\s*[:=][^\r\n]*(?:\r?\n|$)",
         "", body,
     )
-    return text[:section.end()] + "\n" + "\n".join(lines) + "\n\n" + body.lstrip("\n") + text[end:]
+    updated = text[:section.end()] + "\n" + "\n".join(lines) + "\n\n" + body.lstrip("\n") + text[end:]
+    # Entity-name enrichment can mistake the index brand "MSCI World" for the
+    # listed company MSCI Inc. Keep the correction scoped to comparison sections.
+    for section_number, next_number in ((4, 5), (7, 8)):
+        start_match = re.search(
+            rf"(?im)^[ \t]*(?:#{{1,6}}\s*)?{section_number}\s*[.·]\s*",
+            updated,
+        )
+        if not start_match:
+            continue
+        tail = updated[start_match.end():]
+        end_match = re.search(
+            rf"(?im)^[ \t]*(?:#{{1,6}}\s*)?{next_number}\s*[.·]\s*",
+            tail,
+        )
+        if not end_match:
+            continue
+        stop = start_match.end() + end_match.start()
+        section_text = updated[start_match.start():stop]
+        section_text = re.sub(
+            r"(?i)MSCI\s+Inc\.\s*\(MSCI\)(?=\s*(?:-Performance|Performance|[),.;]|$))",
+            "MSCI World",
+            section_text,
+        )
+        updated = updated[:start_match.start()] + section_text + updated[stop:]
+    return updated
 
 def _trading_radar_performance_aussagen_vereinheitlichen(text, performance_result):
     """Reconcile narrative system returns with the validated Python trade records."""

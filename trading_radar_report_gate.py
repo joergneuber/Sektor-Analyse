@@ -865,7 +865,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     # M-07: differing Treasury observations need provenance and reconciliation,
     # or must remain explicitly open as a source conflict.
     treasury_values = re.findall(
-        r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|US[- ]?10[ JY](?:[- ]?Rendite)?)[^\r\n]{0,80}?(\d+(?:[,.]\d+)?)\s*%",
+        r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|"
+        r"US[- ]?10[ JY](?:[- ]?Rendite)?|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
+        r"(?:Staatsanleihen?zins|Rendite))[^\r\n]{0,80}?(\d+(?:[,.]\d+)?)\s*%",
         text,
     )
     if len(treasury_values) >= 2:
@@ -875,7 +877,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             observation_lines = [
                 line for line in text.splitlines()
                 if not re.search(r"(?i)QUELLENKONFLIKT\s*:", line)
-                and re.search(r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|US[- ]?10[ JY](?:[- ]?Rendite)?)", line)
+                and re.search(
+                    r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|"
+                    r"US[- ]?10[ JY](?:[- ]?Rendite)?|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
+                    r"(?:Staatsanleihen?zins|Rendite))",
+                    line,
+                )
                 and re.search(r"\d+(?:[,.]\d+)?\s*%", line)
             ]
             def has_provenance(line):
@@ -898,7 +905,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             provenance_complete = len(observation_lines) >= 2 and all(has_provenance(line) for line in observation_lines)
             explicit_open = any(
                 re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)
-                and re.search(r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?\s+(?:US[- ]?)?Treasury|US[- ]?10[ JY])", line)
+                and re.search(
+                    r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?\s+(?:US[- ]?)?Treasury|"
+                    r"US[- ]?10[ JY]|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
+                    r"(?:Staatsanleihen?zins|Rendite))",
+                    line,
+                )
                 and all(
                     value in re.sub(r"(?<=\d),(?=\d)", ".", line)
                     for value in distinct
@@ -1116,7 +1128,12 @@ def validate_report(text: str) -> list[str]:
         (line for line in executive.splitlines() if re.search(r"(?i)Zinsen/Renditen\s*:", line)),
         "",
     )
-    if not re.search(r"(?i)(?:US\s*10Y|10-jährige US-Rendite).{0,40}\d+(?:[,.]\d+)?\s*%", rates_line):
+    if not re.search(
+        r"(?i)(?:US\s*10Y|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
+        r"(?:Rendite|Staatsanleihen?zins)|10-jährige[rn]?\s+US-Rendite)"
+        r".{0,60}\d+(?:[,.]\d+)?\s*%",
+        rates_line,
+    ):
         errors.append("M-02: US-10Y-Rendite fehlt als numerische Beobachtung.")
     risk_line = next(
         (line for line in executive.splitlines()
