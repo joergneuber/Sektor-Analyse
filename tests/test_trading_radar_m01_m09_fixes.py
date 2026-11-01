@@ -794,3 +794,238 @@ def test_candidate_inventory_preserves_explicit_no_actionable_candidates_when_so
     assert "Keine belastbaren technischen Kandidaten; keine Handelsfreigabe." in result
     assert "Kandidatenquellen-Prüfstatus: VOLLSTÄNDIG" in result
     assert all(label in result for label in ("BESTÄTIGTE SETUPS:", "WATCHLIST:", "VERWORFENE KANDIDATEN:"))
+
+
+def test_m02_accepts_actual_german_us_treasury_wording_from_run413():
+    import importlib.util
+    from trading_radar_report_gate import validate_report
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m02_run413", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: 10-jähriger US-Staatsanleihenzins bei 4,98%.",
+    )
+    errors = validate_report(report)
+    assert not any("M-02: US-10Y-Rendite" in error for error in errors), errors
+
+
+def test_m03_mapping_status_is_emitted_even_when_ohlcv_quality_has_gaps(monkeypatch):
+    audit = {
+        "status": "gaps", "checked_at": "2026-11-01T19:30:00+00:00",
+        "universe_count": 4, "covered_count": 4,
+        "missing_tickers": [], "stale_tickers": ["STALE"],
+        "affected_candidates": [], "unmapped_candidate_tickers": [],
+        "candidate_mapping_complete": True,
+        "quality_status_counts": {"VALID": 2, "MISSING": 0, "STALE": 1, "INVALID": 1, "TOTAL": 4},
+        "quality_status_by_ticker": {
+            "AAA": "VALID", "BBB": "VALID", "STALE": "STALE", "BAD": "INVALID",
+        },
+        "invalid_ohlcv_tickers": ["BAD"], "recent_invalid_ohlcv_tickers": [],
+        "historical_only_invalid_ohlcv_tickers": ["BAD"],
+    }
+    monkeypatch.setattr(production, "_TRADING_RADAR_OHLCV_AUDIT", audit, raising=False)
+    result = production._trading_radar_ohlcv_nachweisblock(
+        "5. Technische Kandidaten\nAsset/Ticker: Example AG (AAA)\n"
+    )
+    assert "Kandidaten-Mapping: VOLLSTÄNDIG" in result
+    assert "OHLCV-Qualitätsstatus:" in result
+    assert "STALE=1" in result
+
+
+def test_m03_mapping_is_explicitly_not_verifiable_when_candidate_map_is_incomplete(monkeypatch):
+    audit = {
+        "status": "unavailable", "checked_at": "2026-11-01T19:30:00+00:00",
+        "universe_count": 1, "covered_count": 1,
+        "missing_tickers": [], "stale_tickers": [], "affected_candidates": [],
+        "candidate_mapping_complete": False, "unmapped_candidate_tickers": ["ABC"],
+        "quality_status_counts": {"VALID": 1, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 1},
+        "quality_status_by_ticker": {"ABC": "VALID"},
+    }
+    monkeypatch.setattr(production, "_TRADING_RADAR_OHLCV_AUDIT", audit, raising=False)
+    result = production._trading_radar_ohlcv_nachweisblock(
+        "5. Technische Kandidaten\nAsset/Ticker: Example AG (ABC)\n"
+    )
+    assert "Kandidaten-Mapping: NICHT VERIFIZIERBAR" in result
+
+
+def test_m07_provenance_recognizes_run413_german_treasury_label():
+    macro = (
+        "US 10Y Treasury: 4.9800 | Datenstand=2026-10-30 | STATUS=REAL | "
+        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "RETRIEVED_AT=2026-11-01T19:20:00+00:00 | DELAY_DAYS=2 | UNIT=%"
+    )
+    report = "Zinsen/Renditen: 10-jähriger US-Staatsanleihenzins bei 4,98%."
+    result = production._trading_radar_treasury_provenienz_ergänzen(
+        report, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
+    )
+    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Abrufzeit: 2026-11-01T19:20:00+00:00" in result
+    assert "Datenstichtag: 2026-10-30" in result
+    assert "Einheit: %" in result
+    assert "Verzögerung: 2 Kalendertage" in result
+
+
+def test_m05_standalone_radar_prompt_requires_structured_block_after_section2():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    marker = "Direkt nach Abschnitt 2 und VOR Abschnitt 3 muss zusätzlich genau ein"
+    assert marker in source
+    assert "TRADING_RADAR_THESEN_JSON" in source
+    assert "Trading-Radar-Thesenregister-Struktur-Retry" in source
+    assert "thesis_id" in source and "confirm_triggers" in source
+
+
+def test_m01_benchmark_section_does_not_call_msc_world_msc_inc():
+    source = ROOT / "tests" / "fixtures" / "Benchmark_Live_run413_2026-11-01.txt"
+    report = (
+        "4. Assetklassenvergleich\nRelative Stabilität gegenüber +0,80% MSCI Inc. (MSCI).\n"
+        "5. Technische Kandidaten\nKeine Kandidaten.\n"
+        "7. MSCI-Vergleich\nOut-/Underperformance: -6,54 Prozentpunkte (MSCI Inc. (MSCI)-Performance).\n"
+        "8. Daten-/Prüfanhang\n"
+    )
+    result = production._trading_radar_benchmark_live_bericht_einsetzen(
+        report, {"Benchmark_Live.txt": str(source)}
+    )
+    assert "MSCI World" in result
+    assert "MSCI Inc. (MSCI)" not in result
+
+
+def test_m05_missing_thesis_json_uses_one_bounded_structured_retry(monkeypatch, tmp_path):
+    import os
+    import types
+    headings = (
+        "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+        "4. Assetklassenvergleich", "5. Technische Kandidaten",
+        "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+    )
+    report_parts = []
+    for index, heading in enumerate(headings, start=1):
+        content = (
+            "Marktbeobachtung mit belastbaren gelieferten Zahlen und relativer Stärke. " * 30
+            if index in (1, 4) else f"Vorhandener Abschnitt {index}."
+        )
+        report_parts.append(heading + "\n" + content)
+    first_report = "\n\n".join(report_parts)
+    structured = {
+        "data_cutoff": "2026-11-01T19:30:53+00:00",
+        "theses": [{
+            "thesis_id": "ROTATION-2026-11-01",
+            "version": 1,
+            "updated_at": "2026-11-01T19:30:53+00:00",
+            "data_cutoff": "2026-11-01T19:30:53+00:00",
+            "thesis": "Defensive Qualität und Energie zeigen relative Stärke.",
+            "horizon": "4 bis 8 Wochen",
+            "evidence": ["XLE 3M +19.81%", "XLP 3M +6.07%"],
+            "counter_evidence": ["Nasdaq 3M -1.84%"],
+            "confidence": "mittel",
+            "confirm_triggers": ["Defensive Sektoren halten ihre relative Stärke."],
+            "invalidate_triggers": ["Breite Marktrotation zurück in Wachstumssektoren."],
+            "event_dependencies": [],
+            "asset_classes": ["Aktien", "Energie"],
+            "candidates": [],
+            "status": "NEU",
+        }],
+    }
+    from trading_radar_neuauswertung import validate_thesis_register
+    assert validate_thesis_register(structured) == []
+    second_response = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(structured) + "\n```"
+    responses = iter([
+        types.SimpleNamespace(text=first_report),
+        types.SimpleNamespace(text=second_response),
+    ])
+    calls = []
+
+    monkeypatch.setattr(production, "_offene_positionen_quellblock", lambda *_: "OFFENE POSITIONEN")
+    monkeypatch.setattr(production, "lade_offenen_positionen_check_tab2", lambda: "TAB 2")
+    monkeypatch.setattr(production, "_gemini_tokenzahl", lambda *a, **k: 100)
+    monkeypatch.setattr(production, "_gemini_radar_response_diagnose", lambda *a, **k: None)
+    monkeypatch.setattr(production, "GEMINI_MODELLREIHENFOLGE", ("model-a",))
+    monkeypatch.setattr(production, "GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN", 1)
+    monkeypatch.setattr(production, "_gemini_generate_content_quota_safe",
+                        lambda *a, **k: (calls.append(a[5] if len(a) > 5 else k.get("label")) or next(responses)))
+    monkeypatch.setattr(production, "_speichere_gemini_input_manifest", lambda *_: None)
+    production._gemini_503_failed_models_by_request.clear()
+    production._gemini_503_failures_this_run.clear()
+
+    previous = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        result = production._gemini_trading_radar_eigenstaendig(
+            client=object(), preferred_modell="model-a",
+            eingabedateien={}, bestehende_auswertung="",
+        )
+    finally:
+        os.chdir(previous)
+
+    assert len(calls) == 2
+    assert calls[1] == "Trading-Radar-Thesenregister-Struktur-Retry"
+    assert result.count("```TRADING_RADAR_THESEN_JSON") == 1
+    assert result.index("2. Thesen-Update") < result.index("```TRADING_RADAR_THESEN_JSON")
+    assert result.index("```TRADING_RADAR_THESEN_JSON") < result.index("3. Ereignisradar")
+
+
+def test_m07_gate_catches_unprovenanced_german_treasury_conflict():
+    import importlib.util
+    from trading_radar_report_gate import validate_report
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_conflict", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: 10-jähriger US-Staatsanleihenzins bei 4,98%.",
+    )
+    report = report.replace(
+        "Dollar/Liquidität/Volatilität:",
+        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance; "
+        "Abrufzeit: 2026-11-01T19:30:53+00:00; Datenstichtag: 2026-10-30; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
+    )
+    errors = validate_report(report)
+    assert not any("M-02: US-10Y-Rendite" in error for error in errors)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
+
+
+def test_m03_unavailable_ohlcv_snapshot_still_labels_candidate_mapping_unverifiable(monkeypatch):
+    monkeypatch.setattr(production, "_TRADING_RADAR_OHLCV_AUDIT", {
+        "status": "unavailable", "checked_at": "NICHT VERFÜGBAR",
+        "universe_count": None, "covered_count": None,
+    }, raising=False)
+    result = production._trading_radar_ohlcv_nachweisblock(
+        "5. Technische Kandidaten\nAsset/Ticker: Example AG (EXA)\n"
+    )
+    assert "Kandidaten-Mapping: NICHT VERIFIZIERBAR" in result
+
+
+def test_m07_provenance_reconciles_both_run413_treasury_observations():
+    import importlib.util
+    from trading_radar_report_gate import validate_report
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_provenance", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: 10-jähriger US-Staatsanleihenzins bei 4,98%.",
+    )
+    report = report.replace(
+        "Dollar/Liquidität/Volatilität:",
+        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance; "
+        "Abrufzeit: 2026-11-01T19:30:53+00:00; Datenstichtag: 2026-10-30; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
+    )
+    macro = (
+        "US 10Y Treasury: 4.9800 | Datenstand=2026-10-30 | STATUS=REAL | "
+        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "RETRIEVED_AT=2026-11-01T19:20:00+00:00 | DELAY_DAYS=2 | UNIT=%"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(
+        report, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
+    )
+    errors = validate_report(result)
+    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
