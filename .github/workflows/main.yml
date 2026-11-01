@@ -26,6 +26,18 @@ jobs:
       - name: Code auschecken
         uses: actions/checkout@v5
 
+      # Das Thesenregister ist Lauf-zu-Lauf-State. Ein fehlender Cache ist
+      # ausdrücklich kein leerer/abgeglichener Vorzustand; der erste Lauf
+      # erzeugt nur einen Baseline-Snapshot und bleibt bis zum Folgelauf NICHT_FINAL.
+      - name: Trading-Radar-Thesenregister wiederherstellen
+        id: trading-radar-thesen-cache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: .trading_radar_thesen.json
+          key: trading-radar-thesen-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            trading-radar-thesen-${{ runner.os }}-${{ github.ref_name }}-
+
       # Persistenter Firmennamen-Cache wird vor analyse.py wiederhergestellt;
       # dadurch muss der Hauptlauf bekannte Namen nicht erneut bei Yahoo anfragen.
       - name: Firmennamen-Cache wiederherstellen
@@ -541,6 +553,17 @@ jobs:
           OHLCV_CACHE_PERSISTENCE: ${{ steps.ohlcv-final-cache-save.outcome || 'missing' }}
         run: python Trading_Radar_Alleinauswertung.py
 
+      # Auch bei NICHT_FINAL sichern: der erzeugte Registerstand wird zum
+      # nachvollziehbaren Vorzustand des nächsten Laufs. Ein fehlender Cache
+      # darf nicht als "keine Änderung" durchgewunken werden.
+      - name: Trading-Radar-Thesenregister dauerhaft im Actions-Cache sichern
+        if: ${{ always() && hashFiles('.trading_radar_thesen.json') != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: .trading_radar_thesen.json
+          key: trading-radar-thesen-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
       # Auch bei kontrolliertem Gemini-Fallback sichern: erfolgreiche Split-
       # Antworten und Fehlerstatus dienen dem nächsten Lauf als Resume.
       - name: Gemini Split Resume nach Lauf sichern
@@ -729,7 +752,7 @@ jobs:
           TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.fachlich_final }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL }}
         run: python trading_radar_run_evidence.py gate-result
 
       - name: Trading-Radar Evidence final validieren
@@ -741,7 +764,7 @@ jobs:
           TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.fachlich_final }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL }}
         run: python trading_radar_run_evidence.py validate-final
 
       - name: Trading-Radar Laufnachweis als Artifact sichern
