@@ -665,18 +665,6 @@ jobs:
         if: ${{ always() }}
         run: python trading_radar_run_evidence.py end
 
-      - name: Trading-Radar Laufnachweis als Artifact sichern
-        if: ${{ always() && hashFiles('trading_radar_run_evidence_start.json') != '' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: trading-radar-run-evidence-${{ github.run_id }}
-          path: |
-            trading_radar_run_evidence_start.json
-            trading_radar_run_evidence_end.json
-            trading_radar_run_evidence.json
-          if-no-files-found: warn
-          retention-days: 90
-
       - name: Neue Trading-Radar technisch gültig und frisch verifizieren
         id: trading-radar-report-check
         if: always()
@@ -729,6 +717,44 @@ jobs:
           fi
           echo "TRADING_RADAR_FACHLICH_FINAL=$report_status" >> "$GITHUB_OUTPUT"
           echo "REPORT_CHECK=PASS | frischer Bericht, acht Abschnitte und eindeutiger Status=$report_status"
+
+      # Das Gate-Ergebnis wird erst nach dem Report-Check in den End-Snapshot
+      # geschrieben. NICHT_FINAL ist ein wahrheitsgemäßer Audit-Ausgang und
+      # darf die Evidence-Validierung nicht verhindern.
+      - name: Trading-Radar Evidence nach Report-Gate finalisieren
+        if: ${{ always() && hashFiles('trading_radar_run_evidence_start.json') != '' && hashFiles('trading_radar_run_evidence_end.json') != '' }}
+        env:
+          TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
+          TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
+          TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
+          TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
+          TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.fachlich_final }}
+        run: python trading_radar_run_evidence.py gate-result
+
+      - name: Trading-Radar Evidence final validieren
+        id: trading-radar-evidence-final
+        if: ${{ always() && hashFiles('trading_radar_run_evidence_end.json') != '' }}
+        env:
+          TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
+          TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
+          TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
+          TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
+          TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.fachlich_final }}
+        run: python trading_radar_run_evidence.py validate-final
+
+      - name: Trading-Radar Laufnachweis als Artifact sichern
+        if: ${{ always() && hashFiles('trading_radar_run_evidence_start.json') != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: trading-radar-run-evidence-${{ github.run_id }}
+          path: |
+            trading_radar_run_evidence_start.json
+            trading_radar_run_evidence_end.json
+            trading_radar_run_evidence.json
+          if-no-files-found: warn
+          retention-days: 90
 
       # Unveraenderliche Laufhistorie: jeden erzeugten Bericht mit Run-ID sichern,
       # auch wenn das Report-Gate ihn wegen NICHT_FINAL oder Strukturfehlern sperrt.
