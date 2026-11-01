@@ -1,0 +1,34 @@
+LIVE-BENCHMARK vs. MSCI WORLD
+============================================================
+Start der Systemrechnung / Trading-Engine: 07.08.2026
+Benchmark: iShares Core MSCI World UCITS ETF USD (Acc) | Ticker: EUNL.DE
+Methode: gleichgewichteter Trade-/Signalvergleich; kein Backtest.
+EUNL.DE selbst ist aus dem Systemkorb ausgeschlossen, damit der Benchmark nicht mit sich selbst verglichen wird.
+
+AKTUELLER OFFENER KORB
+------------------------------------------------------------
+Ø Performance aktuell offener Positionen (ohne EUNL.DE): -14,68%
+Anzahl berücksichtigter offener Positionen: 11
+
+LIVE-SYSTEM SEIT 07.08.2026
+------------------------------------------------------------
+Ø System-Performance: -5,74%
+Ø MSCI-World-Performance im jeweils gleichen Zeitraum: +0,80%
+Out-/Underperformance: -6,54%
+Positionen besser als MSCI World: 4/11
+Positionen schlechter als MSCI World: 7/11
+Positionen gleichauf: 0/11
+
+TRADE-DETAILS
+------------------------------------------------------------
+VNA.DE | Long | Manuell | 07.08.2026–01.11.2026 | System -23,14% | MSCI +0,80% | Delta -23,94%
+5LA1.F | Long | Manuell | 07.08.2026–01.11.2026 | System -20,00% | MSCI +0,80% | Delta -20,80%
+4LL.F | Long | Manuell | 07.08.2026–01.11.2026 | System +28,61% | MSCI +0,80% | Delta +27,80%
+XDEQ.DE | Long | Langfrist | 07.08.2026–01.11.2026 | System +2,69% | MSCI +0,80% | Delta +1,89%
+NRJ.PA | Long | Manuell | 07.08.2026–01.11.2026 | System -10,63% | MSCI +0,80% | Delta -11,43%
+PPFD.SG | Long | Langfrist | 07.08.2026–01.11.2026 | System -20,02% | MSCI +0,80% | Delta -20,82%
+DRH.F | Long | Manuell | 07.08.2026–01.11.2026 | System -37,11% | MSCI +0,80% | Delta -37,92%
+LSUG.MI | Long | Manuell | 07.08.2026–01.11.2026 | System +28,83% | MSCI +0,80% | Delta +28,03%
+SIX2.DE | Long | Manuell | 07.08.2026–01.11.2026 | System +4,85% | MSCI +0,80% | Delta +4,04%
+SPYI.DE | Long | Langfrist | 07.08.2026–01.11.2026 | System +0,12% | MSCI +0,80% | Delta -0,68%
+ENR.DE | Long | Manuell | 07.08.2026–01.11.2026 | System -17,34% | MSCI +0,80% | Delta -18,14%
