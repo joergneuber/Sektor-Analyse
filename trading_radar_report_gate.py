@@ -243,6 +243,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             open_returns = []
             detail_keys = set()
             try:
+                if count_match is None:
+                    raise ValueError("Performance-Datenbasis mit Trade-/Statusanzahl fehlt")
                 for item in detail_payload.split(";"):
                     fields = item.split("|")
                     if len(fields) != 8:

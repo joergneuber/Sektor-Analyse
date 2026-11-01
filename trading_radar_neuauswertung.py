@@ -204,9 +204,35 @@ def validate_thesis_register(payload: Any) -> list[str]:
                 errors.append(f"{prefix}: {field} muss JSON-Array sein")
     return errors
 
+def _canonicalize_radar_heading_style(report: str) -> str:
+    """Normalize only numbered section-heading punctuation for validation.
+
+    Production reports historically use both ``1. Title`` and ``1 · Title``.
+    This normalization is validation-only; the user's report text is preserved.
+    """
+    text = str(report or "")
+    titles = {
+        1: "Trading-Radar", 2: "Thesen-Update", 3: "Ereignisradar",
+        4: "Assetklassenvergleich", 5: "Technische Kandidaten",
+        6: "Portfolio & Risiko", 7: "MSCI-Vergleich", 8: "Daten-/Prüfanhang",
+    }
+    pattern = re.compile(
+        r"(?im)^(?P<prefix>[ \t]*(?:#{1,6}[ \t]*)?)(?P<number>[1-8])[ \t]*[.·][ \t]*"
+        r"(?P<title>Trading-Radar|Thesen-Update|Ereignisradar|Assetklassenvergleich|"
+        r"Technische Kandidaten|Portfolio\s*&\s*Risiko|MSCI-Vergleich|Daten-/Prüfanhang)[ \t]*$"
+    )
+    def replace(match):
+        number = int(match.group("number"))
+        title = titles[number]
+        if re.sub(r"\s+", " ", match.group("title")).casefold() != title.casefold():
+            return match.group(0)
+        return f"{match.group('prefix')}{number} · {title}"
+    return pattern.sub(replace, text)
+
+
 def validate_radar_report(report: str) -> list[str]:
     """Hard-check report headings and embedded JSON register."""
-    text = str(report or "")
+    text = _canonicalize_radar_heading_style(str(report or ""))
     errors = [f"Pflichtabschnitt fehlt: {h}" for h in RADAR_SECTIONS if h.casefold() not in text.casefold()]
     if not text.strip():
         return ["Radar-Bericht ist leer"] + errors
@@ -807,35 +833,158 @@ def compare_thesis_registers(previous: Any, current: Any) -> dict[str, Any]:
                 changes["errors"].append(f"These {thesis.get('thesis_id')}: ERSETZT benötigt replaced_by")
     return changes
 
-def validate_radar_report_strict(report: str) -> list[str]:
-    """Strict gate: exact ordered sections, nonempty bodies, and validated JSON."""
+def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
+    """Build the required thesis JSON from explicit report fields when Gemini omits it.
+
+    No thesis is invented: all mandatory values must be present in the report's
+    executive and thesis-update sections. A missing prior register is handled
+    separately by the persistence layer as BASELINE_MISSING.
+    """
+    import json
     text = str(report or "")
-    errors = []
+    if re.search(r"```\s*TRADING_RADAR_THESEN_JSON\s*\n.*?\n```", text, re.I | re.S):
+        return text, False
+
+    heading = re.compile(r"(?im)^[ \t]*(?:#{1,6}\s*)?(\d+)\s*[.·]\s*([^\r\n]+?)\s*$")
+    found = list(heading.finditer(text))
+    def section(number, expected):
+        start = next((m for m in found if int(m.group(1)) == number and
+                      re.sub(r"\s+", " ", m.group(2)).strip().casefold() == expected.casefold()), None)
+        if start is None:
+            return ""
+        end = next((m.start() for m in found if m.start() > start.start() and int(m.group(1)) > number), len(text))
+        return text[start.end():end]
+
+    executive = section(1, "Trading-Radar")
+    thesis_section = section(2, "Thesen-Update")
+    if not executive or not thesis_section:
+        return text, False
+
+    def one(pattern, body):
+        match = re.search(pattern, body, re.I | re.M)
+        return match.group(1).strip().strip(" -*") if match else ""
+
+    thesis_id = one(r"^\s*(?:[-*•]\s*)?(?:Thesen-ID|thesis_id)\s*:\s*([^\r\n]+)", thesis_section)
+    version_raw = one(r"^\s*(?:[-*•]\s*)?Version\s*:\s*([^\r\n]+)", thesis_section)
+    status = one(r"^\s*(?:[-*•]\s*)?Status\s*:\s*([^\r\n]+)", thesis_section).upper()
+    version_match = re.search(r"\d+", version_raw)
+    thesis = one(r"^\s*(?:Hauptanalyse|Hauptthese)\s*:\s*([^\r\n]+)", executive)
+    horizon = one(r"^\s*Zeithorizont\s*:\s*([^\r\n]+)", executive)
+    confidence = one(r"^\s*Konfidenz\s*:\s*([^\r\n]+)", executive)
+    confirmation = one(r"^\s*Bestätigungstrigger\s*:\s*([^\r\n]+)", thesis_section)
+    invalidation = one(r"^\s*Invalidierungstrigger\s*:\s*([^\r\n]+)", thesis_section)
+    counter = one(r"^\s*Gegenbelege\s*:\s*([^\r\n]+)", thesis_section)
+
+    def bullet_section(body, start_label, end_label):
+        match = re.search(rf"(?ims)^\s*{start_label}\s*:\s*\n?(.*?)(?=^\s*{end_label}\s*:|\Z)", body)
+        if not match:
+            return []
+        return [re.sub(r"^\s*[-*•]\s*", "", line).strip()
+                for line in match.group(1).splitlines()
+                if re.match(r"^\s*[-*•]\s+\S", line)]
+
+    evidence = bullet_section(executive, "Stärkste Belege", "Wichtigste Gegenbelege")
+    counter_evidence = bullet_section(executive, "Wichtigste Gegenbelege", "Belegte Top-Profiteur-Kandidaten")
+    if counter:
+        counter_evidence.append(counter)
+    # Only derive categories explicitly named in the thesis/evidence text.
+    source_text = " ".join([thesis, *evidence, *counter_evidence])
+    category_terms = ("Aktien", "Sektoren", "Rohstoffe", "Edelmetalle", "Anleihen", "Währungen", "Krypto")
+    asset_classes = [term for term in category_terms if re.search(re.escape(term), source_text, re.I)]
+    if not asset_classes and re.search(r"Sektor", source_text, re.I):
+        asset_classes = ["Sektoren"]
+
+    candidates = []
+    for label in ("Belegte Top-Profiteur-Kandidaten", "Verlierer-Kandidaten"):
+        block = re.search(rf"(?ims)^\s*{label}\s*:\s*\n?(.*?)(?=^\s*(?:Verlierer-Kandidaten|Nächste beobachtbare Bestätigung|Invalidierung)\s*:|\Z)", executive)
+        if block:
+            for ticker in re.findall(r"\(([A-Z0-9.^=_/-]{2,30})\)", block.group(1)):
+                if ticker not in candidates:
+                    candidates.append(ticker)
+
+    cutoff = one(r"^\s*Gemeinsamer Datenstichtag\s*:\s*(\d{4}-\d{2}-\d{2}(?:T[^\s]+)?)", text)
+    if not cutoff:
+        cutoff = one(r"^\s*Datenstand UTC\s*:\s*(\d{4}-\d{2}-\d{2}T[^\s]+)", executive)
+    updated_at = one(r"^\s*Datenstand UTC\s*:\s*(\d{4}-\d{2}-\d{2}T[^\s]+)", executive) or cutoff
+    if cutoff and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
+        cutoff += "T00:00:00+00:00"
+    if updated_at and updated_at.endswith("Z"):
+        updated_at = updated_at[:-1] + "+00:00"
+
+    required = [thesis_id, version_match.group(0) if version_match else "", status,
+                thesis, horizon, confidence, confirmation, invalidation, cutoff, updated_at]
+    if not all(value and value.strip() for value in required) or not evidence or not counter_evidence or not asset_classes:
+        return text, False
+    if status not in THESIS_STATUSES:
+        return text, False
+
+    payload = {
+        "data_cutoff": cutoff,
+        "theses": [{
+            "thesis_id": thesis_id,
+            "version": int(version_match.group(0)),
+            "updated_at": updated_at,
+            "data_cutoff": cutoff,
+            "thesis": thesis,
+            "horizon": horizon,
+            "evidence": evidence,
+            "counter_evidence": counter_evidence,
+            "confidence": confidence,
+            "confirm_triggers": [confirmation],
+            "invalidate_triggers": [invalidation],
+            "event_dependencies": [],
+            "asset_classes": asset_classes,
+            "candidates": candidates,
+            "status": status,
+        }],
+    }
+    block = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```\n\n"
+    section2_match = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$", text)
+    section3_match = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$", text)
+    if not section2_match or not section3_match or section2_match.start() >= section3_match.start():
+        return text, False
+    return text[:section3_match.start()].rstrip() + "\n\n" + block + text[section3_match.start():], True
+
+
+def validate_radar_report_strict(report: str) -> list[str]:
+    """Strictly validate real numbered heading lines, section bodies and thesis JSON."""
+    text = _canonicalize_radar_heading_style(str(report or ""))
+    errors: list[str] = []
     if not text.strip():
         return ["Radar-Bericht ist leer"]
-    positions = []
-    for heading in RADAR_SECTIONS:
-        matches = list(re.finditer(re.escape(heading), text, flags=re.IGNORECASE))
-        if len(matches) != 1:
-            errors.append(f"Abschnitt {heading}: erwartet genau einmal, gefunden {len(matches)}")
-            continue
-        positions.append(matches[0].start())
-    if len(positions) == len(RADAR_SECTIONS) and positions != sorted(positions):
-        errors.append("Radar-Abschnitte sind nicht in Soll-Reihenfolge")
-    # Extract section bodies and reject blank/placeholder-only content.
-    for idx, heading in enumerate(RADAR_SECTIONS):
-        match = re.search(re.escape(heading), text, flags=re.IGNORECASE)
+
+    heading_re = re.compile(
+        r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?(?P<number>[1-8])[ \t]*·[ \t]*"
+        r"(?P<title>Trading-Radar|Thesen-Update|Ereignisradar|Assetklassenvergleich|"
+        r"Technische Kandidaten|Portfolio\s*&\s*Risiko|MSCI-Vergleich|Daten-/Prüfanhang)[ \t]*$"
+    )
+    headings = list(heading_re.finditer(text))
+    expected_titles = {i: title.split(" · ", 1)[1] for i, title in enumerate(RADAR_SECTIONS, 1)}
+    selected: dict[int, re.Match] = {}
+    for number, expected_title in expected_titles.items():
+        matching = [m for m in headings if int(m.group("number")) == number
+                    and re.sub(r"\s+", " ", m.group("title")).strip().casefold() == expected_title.casefold()]
+        if len(matching) != 1:
+            errors.append(f"Abschnitt {number} · {expected_title}: erwartet genau einmal, gefunden {len(matching)}")
+        elif matching:
+            selected[number] = matching[0]
+
+    if len(selected) == len(RADAR_SECTIONS):
+        positions = [selected[number].start() for number in range(1, 9)]
+        if positions != sorted(positions):
+            errors.append("Radar-Abschnitte sind nicht in Soll-Reihenfolge")
+
+    for number, expected_title in expected_titles.items():
+        match = selected.get(number)
         if not match:
             continue
-        end = len(text)
-        later = [re.search(re.escape(h), text[match.end():], flags=re.IGNORECASE) for h in RADAR_SECTIONS[idx+1:]]
-        later = [m for m in later if m]
-        if later:
-            end = match.end() + min(m.start() for m in later)
+        next_heading = next((m for m in headings if m.start() > match.start()
+                             and int(m.group("number")) > number), None)
+        end = next_heading.start() if next_heading else len(text)
         body = text[match.end():end].strip()
-        body = re.sub(r"```TRADING_RADAR_THESEN_JSON.*?```", "", body, flags=re.DOTALL|re.IGNORECASE).strip()
+        body = re.sub(r"```TRADING_RADAR_THESEN_JSON.*?```", "", body, flags=re.DOTALL | re.IGNORECASE).strip()
         if len(re.sub(r"[\W_]+", "", body)) < 20:
-            errors.append(f"Abschnitt {heading}: Inhalt fehlt/zu kurz")
+            errors.append(f"Abschnitt {number} · {expected_title}: Inhalt fehlt/zu kurz")
     try:
         payload = extract_thesis_json(text)
         errors.extend(validate_thesis_register(payload))

@@ -241,8 +241,73 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
                           ("TLT", "US-Anleihen"), ("UUP", "US-Dollar"), ("BTC-USD", "Bitcoin")],
     }
     all_series = {sym: series_for(sym) for rows in groups.values() for sym, _ in rows}
+    # Volatility and dollar observations are part of the same regime snapshot,
+    # so they participate in (and must match) the common observation cutoff.
+    all_series["^VIX"] = series_for("^VIX")
+    all_series["DX-Y.NYB"] = series_for("DX-Y.NYB")
     all_series = {sym: ser for sym, ser in all_series.items() if ser is not None and not ser.empty}
     common_cutoff = min((ser.index.max() for ser in all_series.values()), default=None)
+    if common_cutoff is not None:
+        def close_at_common_cutoff(symbol):
+            series = all_series.get(symbol)
+            if series is None:
+                return None
+            eligible = series.loc[series.index <= common_cutoff]
+            if eligible.empty or eligible.index[-1] != common_cutoff:
+                return None
+            try:
+                return float(eligible.iloc[-1])
+            except (TypeError, ValueError):
+                return None
+        vix = close_at_common_cutoff("^VIX")
+        dxy = close_at_common_cutoff("DX-Y.NYB")
+        for index, line in enumerate(lines):
+            if line.startswith("- Volatilität VIX:"):
+                lines[index] = f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR."
+            elif line.startswith("- Dollar-Proxy DXY"):
+                lines[index] = f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR."
+    # M-02 consumes the same real market-data cutoff as the relative-strength
+    # matrix. Retrieval time is not substituted for an observation date.
+    if common_cutoff is not None:
+        cutoff_date = common_cutoff.date().isoformat()
+        report_text = re.sub(
+            r"(?im)^\s*Marktregime-Datenstichtag\s*:[^\r\n]*\n?", "", report_text
+        )
+        regime_heading = re.search(
+            r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Marktregime(?:\*\*)?\s*:",
+            report_text,
+        )
+        if regime_heading:
+            line_end = report_text.find("\n", regime_heading.start())
+            if line_end < 0:
+                line_end = len(report_text)
+            report_text = (
+                report_text[:line_end] + "\nMarktregime-Datenstichtag: " + cutoff_date
+                + report_text[line_end:]
+            )
+    # The report gate deliberately validates the canonical risk field, not a
+    # detached appendix. Copy only the measured VIX/DXY values into that field.
+    if vix is not None or dxy is not None:
+        def enrich_risk_line(match):
+            original = match.group(0)
+            suffix = []
+            if vix is not None:
+                suffix.append(f"VIX: {vix:.2f}")
+            else:
+                suffix.append("VIX: NICHT VERFÜGBAR")
+            if dxy is not None:
+                suffix.append(f"DXY: {dxy:.2f}")
+            else:
+                suffix.append("DXY: NICHT VERFÜGBAR")
+            # Keep the original M2/liquidity narrative while replacing only
+            # the broken entity-resolver placeholder for VIX.
+            original = re.sub(r"(?i)Name nicht aufgelöst\s*\(VIX\)", "VIX", original)
+            original = re.sub(r"(?i)Name nicht aufgeloest\s*\(VIX\)", "VIX", original)
+            return original.rstrip(". ") + "; " + "; ".join(suffix)
+        report_text = re.sub(
+            r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Dollar/Liquidität/Volatilität(?:\*\*)?\s*:[^\r\n]*$",
+            enrich_risk_line, report_text, count=1,
+        )
     matrix_results = {}
     matrix_lines = ["Relative-Stärke-Matrix (adjusted close; 1M=21 Handelstage, 3M=63 Handelstage):"]
     matrix_lines.append(f"Gemeinsamer Datenstichtag: {common_cutoff.isoformat()}" if common_cutoff is not None

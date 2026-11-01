@@ -17310,7 +17310,8 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     ]
     group_order = ("JETZT TECHNISCH PRÜFEN", "AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN",
                    "NICHT HANDELBAR", "VERWERFEN / INVALIDIERT")
-    blocks = [inventory]
+    blocks = (["Keine belastbaren technischen Kandidaten; keine Handelsfreigabe.", inventory]
+              if not records else [inventory])
     for group in group_order:
         selected = [item for item in records if item["group"] == group]
         if not selected:
@@ -17516,7 +17517,8 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     # and the complete Tab-2 export are deliberately excluded.
     structured_label = re.compile(
         r"(?i)^\s*(?:[-*•]\s*)?(?:"
-        r"Ticker|Name|Asset|Einstieg|Einstiegsdatum|Aktueller Kurs|Stop|Stop-Loss|"
+        r"Ticker|Name|Asset|Berechnungsmethode|Portfolio-Gesamtperformance|Positionsdurchschnitt|"
+        r"Einstieg|Einstiegsdatum|Aktueller Kurs|Stop|Stop-Loss|"
         r"TP1|TP2|CRV|Status|Richtung|Quelle|Zeitraum|Uhrzeit|Zeitzone|Kennzahl|"
         r"Berichtszeitraum|Letzter Wert|Konsens|Istwert|Vorwert|Performance|"
         r"Portfolio-Gesamtperformance|Ø Positionsperformance|TAB-2-|"
@@ -17965,6 +17967,7 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
             f"OHLCV-Abdeckung: vollständig ({covered}/{universe} geprüfte Symbole).\n"
             + quality_line + "\n" + symbol_status_block + "\n"
             + f"Datenstand: {checked_at}.\n"
+            + "Kandidaten-Mapping: VOLLSTÄNDIG – alle im Bericht ausgewiesenen Kandidaten wurden dem geprüften Universum zugeordnet.\n"
             + "Lückenstatus und Kandidatenauswirkung: keine fehlenden oder veralteten OHLCV-Daten; "
             "im jüngsten 90-Tage-Fenster keine ungültigen OHLCV-Kerzen; Kandidaten nicht eingeschränkt."
             + historical_note
@@ -17999,10 +18002,15 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     explicit_zero_candidates = report_explicitly_declares_no_technical_candidates(report_text)
     candidate_mapping_complete = audit.get("candidate_mapping_complete") is True
     if candidate_mapping_complete and not affected and not unmapped_candidates:
+        quality_summary = (
+            f"VALID={quality_counts.get('VALID', 0)}, MISSING={quality_counts.get('MISSING', 0)}, "
+            f"STALE={quality_counts.get('STALE', 0)}, INVALID={quality_counts.get('INVALID', 0)}"
+        )
         impact = (
-            "Kandidaten-Mapping vollständig; bei den explizit geprüften Kandidaten wurde keine direkte "
-            "Überschneidung mit fehlenden, veralteten oder im jüngsten 90-Tage-Fenster ungültigen OHLCV-Daten festgestellt. "
-            "Die universumsweiten OHLCV-Lücken bleiben separat dokumentiert und begründen allein keine Sperre dieser geprüften Kandidaten."
+            f"Universumsweite OHLCV-Datenlücken/-veraltung und Qualitätsauffälligkeiten ({quality_summary}) "
+            "bleiben dokumentiert. Das vollständige Kandidaten-Mapping zeigt keine direkte Überschneidung "
+            "der geprüften Kandidaten mit fehlenden, veralteten oder im jüngsten 90-Tage-Fenster ungültigen "
+            "OHLCV-Daten; die geprüften Kandidaten sind deshalb durch diese OHLCV-Befunde nicht eingeschränkt."
         )
     elif explicit_zero_candidates and not affected and not unmapped_candidates:
         impact = (
@@ -18268,7 +18276,8 @@ def _trading_radar_szenarien_ergänzen(text):
         )
         rotation_body = rotation_tail[:next_rotation.start()] if next_rotation else rotation_tail
     cutoff_match = re.search(
-        r"(?im)^[ \t]*(?:Gemeinsamer\s+)?Datenstichtag\s*[:=]\s*(\d{4}-\d{2}-\d{2})\s*$",
+        r"(?im)^[ \t]*(?:Gemeinsamer\s+)?Datenstichtag\s*[:=]\s*"
+        r"(\d{4}-\d{2}-\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?\s*$",
         rotation_body,
     )
     common_cutoff = cutoff_match.group(1) if cutoff_match else None
@@ -18324,7 +18333,9 @@ def _trading_radar_szenarien_ergänzen(text):
     if xle is None: missing.append("XLE-3M-Relative-Stärke")
     if vix is None: missing.append("VIX")
     if not horizon: missing.append("Zeithorizont")
-    if not baseline: missing.append("Basisszenario aus dem Bericht")
+    regime_match = re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Marktregime(?:\*\*)?\s*:\s*([^\r\n]+)", body)
+    regime_text = regime_match.group(1).strip() if regime_match else None
+    if not baseline and not regime_text: missing.append("Marktregime/Basisszenario")
     if not common_cutoff: missing.append("gemeinsamer Datenstichtag der Relative-Stärke-Matrix")
 
 
@@ -18372,7 +18383,10 @@ def _trading_radar_szenarien_ergänzen(text):
         "Konsequenz: keine neuen technischen Freigaben aus dem Szenario ableiten; "
         "bestehende Positionen nach den jeweiligen Stop-Regeln führen."
     )
-    baseline_text = baseline.group(1).split(":", 1)[1].strip() if baseline else "Fortsetzung des beobachteten Marktregimes"
+    baseline_text = baseline.group(1).split(":", 1)[1].strip() if baseline else ""
+    if not baseline_text or re.match(r"(?i)^NICHT ABLEITBAR\b", baseline_text):
+        baseline_text = regime_text or "Fortsetzung des beobachteten Marktregimes"
+    baseline_text = baseline_text.rstrip(". ")
     baseline_block = (
         "Basisszenario: " + baseline_text + ". "
         f"Eintrittsbedingung: Marktbreite mindestens {breadth_label} und "
@@ -19144,7 +19158,12 @@ def speichere_ergebnis(text, eingabedateien=None):
         # Auswertung gelesen werden. Ein fehlender Vorzustand bleibt BASELINE_MISSING.
         try:
             from trading_radar_thesen import update_register
-            from trading_radar_neuauswertung import validate_radar_report_strict
+            from trading_radar_neuauswertung import (
+                validate_radar_report_strict, ensure_structured_thesis_block,
+            )
+            text, thesis_block_synthesized = ensure_structured_thesis_block(text)
+            if thesis_block_synthesized:
+                print("TRADING_RADAR_THESEN_JSON=DETERMINISTISCH_AUS_BERICHTSFELDER_ERZEUGT")
             strict_thesis_findings = validate_radar_report_strict(text)
             cutoff_match = re.search(
                 r"(?im)^\s*(?:Gemeinsamer Datenstichtag|Datenstand UTC|Datenstand):\s*"
@@ -19162,13 +19181,11 @@ def speichere_ergebnis(text, eingabedateien=None):
                     "comparison_status": "NOT_UPDATED",
                     "reason": "Bericht-/Thesenprüfung nicht bestanden: " + " | ".join(strict_thesis_findings),
                 }
-            elif validation_errors:
-                register_result = {
-                    "updated": False,
-                    "comparison_status": "NOT_UPDATED",
-                    "reason": "Vorgelagerte Berichtprüfungen nicht bestanden: " + " | ".join(validation_errors),
-                }
             else:
+                # Thesis lifecycle is independent of unrelated report blockers
+                # (e.g. missing event times or OHLCV gaps). Persist a validated
+                # thesis baseline even when the overall report remains NICHT_FINAL;
+                # the report gate still controls publication separately.
                 register_result = update_register(
                     text, os.path.join(os.getcwd(), ".trading_radar_thesen.json"),
                     data_cutoff=report_cutoff,
@@ -19225,6 +19242,15 @@ def speichere_ergebnis(text, eingabedateien=None):
         # that a status marker exists, so validate a temporary FINAL marker
         # here; otherwise every otherwise-valid report is guaranteed to fail
         # with "Fachstatusmarker fehlt" and be downgraded to NICHT_FINAL.
+        # Final producer-side assertion: later entity/event/appendix normalization
+        # must not silently drop the deterministic M-06 source inventory and its
+        # three independent status groups.
+        try:
+            text = _trading_radar_kandidatenquellen_absichern(text, eingabedateien)
+        except Exception as candidate_exc:
+            validation_errors.append(
+                f"Kandidateninventar nicht finalisierbar: {type(candidate_exc).__name__}: {candidate_exc}"
+            )
         report_gate_input = text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=FINAL\n"
         try:
             report_gate_findings = validate_trading_radar_report(report_gate_input)

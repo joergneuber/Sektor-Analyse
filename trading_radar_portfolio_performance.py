@@ -82,6 +82,7 @@ def calculate_portfolio_performance(source_paths: Iterable[str | Path]) -> dict:
     benchmark_excluded: set[str] = set()
     benchmark_excluded_ids: set[tuple[str, ...]] = set()
     rows_seen = 0
+    open_source_identities: set[tuple[str, str, str]] = set()
 
     for raw_path in source_paths:
         path = Path(raw_path)
@@ -139,6 +140,8 @@ def calculate_portfolio_performance(source_paths: Iterable[str | Path]) -> dict:
                 f"{entry:.12g}" if entry is not None else ""
             ) + "|" + direction_raw
             key = (ticker, entry_date or "", identity_tail)
+            if status_raw in OPEN and ticker:
+                open_source_identities.add(key)
             if key in seen_in_source:
                 duplicate_conflicts.append(
                     f"{ticker}/{entry_date}: mehrfacher Eintrag derselben Trade-Identität innerhalb "
@@ -220,6 +223,7 @@ def calculate_portfolio_performance(source_paths: Iterable[str | Path]) -> dict:
             record = {
                 "ticker": ticker, "entry_date": entry_date,
                 "trade_identity_hash": hashlib.sha256("|".join(key).encode("utf-8")).hexdigest()[:16],
+                "identity_key": key,
                 "entry": (option_entry if is_option else entry),
                 "identity_entry": entry, "mark": mark, "status": "CLOSED" if is_closed else "OPEN",
                 "direction": "SHORT" if sign < 0 else "LONG", "sign": sign,
@@ -259,6 +263,9 @@ def calculate_portfolio_performance(source_paths: Iterable[str | Path]) -> dict:
     if duplicate_conflicts:
         issues.extend(duplicate_conflicts)
 
+    valid_open_identities = {tuple(record["identity_key"]) for record in opened}
+    unusable_open_identities = open_source_identities - valid_open_identities
+    unusable_open_tickers = sorted({item[0] for item in unusable_open_identities})
     complete = bool(records) and not issues and not duplicate_conflicts
     portfolio_pct = (
         sum(r["return_pct"] for r in records) / len(records)
@@ -276,6 +283,8 @@ def calculate_portfolio_performance(source_paths: Iterable[str | Path]) -> dict:
         "average_trade_return_pct": portfolio_pct,
         "average_position_pct": average_open_pct,
         "trade_count": len(records), "closed_count": len(closed), "open_count": len(opened),
+        "unusable_open_count": len(unusable_open_identities),
+        "unusable_open_tickers": unusable_open_tickers,
         "rows_seen": rows_seen, "source_row_counts": source_row_counts,
         "unit_per_trade": 1, "costs": 0,
         "aggregation": "arithmetic_mean_of_individual_trade_return_percentages",
@@ -314,7 +323,9 @@ def format_performance_block(result: dict) -> str:
         "Portfolio-Performance (Python-Berechnung):",
         f"Portfolio-Gesamtperformance: {portfolio}",
         f"Ø Positionsperformance: {average}",
-        f"Performance-Datenbasis: {result['trade_count']} eindeutige Trades; abgeschlossen={result['closed_count']}; offen={result['open_count']}",
+        f"Performance-Datenbasis: {result['trade_count']} eindeutige Trades; abgeschlossen={result['closed_count']}; offen={result['open_count']}; "
+        f"zusätzlich nicht aggregierbare offene Quellpositionen={result.get('unusable_open_count', 0)} "
+        f"({', '.join(result.get('unusable_open_tickers', [])) or 'keine'}); Quellzeilen={result.get('rows_seen', 0)}",
         "Berechnungsmethode: gleichgewichteten arithmetischen Mittelwert der individuellen prozentualen Renditen aller eindeutigen offenen und abgeschlossenen System-Trades; jeder Trade zählt genau einmal; genau 1 Stück je Trade; abgeschlossene Trades zum Ausstiegskurs; offene Trades zum aktuellen Kurs; Kosten=0; keine Kapitalgewichtung und keine Währungsumrechnung.",
         "Benchmarkpositionen ausgeschlossen: " + (", ".join(result.get("benchmark_excluded_tickers", [])) if result.get("benchmark_excluded_tickers") else "KEINE") + f" (Anzahl={result.get('benchmark_excluded_count', 0)}); externe Vergleichspositionen zählen nicht als System-Trades.",
         "Formel je Trade: Long=(Kurs-Einstieg)/Einstieg*100; Short=(Einstieg-Kurs)/Einstieg*100. Portfolio-Gesamtperformance=Summe der Einzelrenditen geteilt durch Anzahl eindeutiger Trades; Stückzahl 1; Kosten 0.",
