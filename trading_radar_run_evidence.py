@@ -333,6 +333,7 @@ def _run_identity() -> dict:
                 "trading_radar_run_evidence.py",
                 "trading_radar_thesen.py",
                 "trading_radar_portfolio_performance.py",
+                "makro_szenario.py",
                 "offene_positionen_check.py",
                 "historical_ohlcv.py",
                 ".github/workflows/main.yml",

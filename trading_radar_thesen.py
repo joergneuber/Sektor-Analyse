@@ -95,6 +95,16 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     path = Path(register_path)
     previous: dict[str, Any] = {"schema_version": 1, "theses": []}
     previous_exists = path.exists()
+    # An absent register is not evidence that the historical thesis set was
+    # empty. Do not create an empty baseline from a model-generated theses=[];
+    # the prior state must first be supplied or a substantive first snapshot
+    # must be created and explicitly marked BASELINE_MISSING.
+    if not previous_exists and not theses:
+        return {
+            "updated": False,
+            "reason": "Vorzustand fehlt; leeres theses[] darf nicht als leeres Register-Baseline ausgegeben werden",
+            "comparison_status": "BASELINE_MISSING",
+        }
     previous_sha256 = None
     if previous_exists:
         previous_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()

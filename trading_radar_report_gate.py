@@ -306,20 +306,67 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             benchmark,
         )
         if benchmark_match or re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:", benchmark):
-            portfolio_match = re.search(
-                r"(?im)^Portfolio-Gesamtperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
-                benchmark,
-            )
-            if benchmark_match and portfolio_match:
-                expected_delta = float(portfolio_match.group(1).replace(",", ".")) - float(benchmark_match.group(1).replace(",", "."))
-                if not outperformance_match or abs(
-                    expected_delta - float(outperformance_match.group(1).replace(",", "."))
-                ) > 0.02:
-                    errors.append("M-01: Out-/Underperformance stimmt nicht mit Portfolio-Gesamtperformance minus Benchmark überein.")
-            elif outperformance_match:
-                errors.append("M-01: Out-/Underperformance darf ohne Portfolio- und Benchmarkwert nicht numerisch ausgewiesen werden.")
-            elif not re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*NICHT VERFÜGBAR", benchmark):
-                errors.append("M-01: Fehlende Portfolio-/Benchmarkgrundlage muss Out-/Underperformance als NICHT VERFÜGBAR ausweisen.")
+            live_basis = bool(re.search(
+                r"(?im)^Benchmark-Vergleichsbasis:\s*LIVE-SYSTEM\b", benchmark
+            ))
+            if live_basis:
+                system_live_match = re.search(
+                    r"(?im)^System-Performance-Live:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+                    benchmark,
+                )
+                if benchmark_match and system_live_match:
+                    expected_delta = float(system_live_match.group(1).replace(",", ".")) - float(benchmark_match.group(1).replace(",", "."))
+                    if not outperformance_match or abs(
+                        expected_delta - float(outperformance_match.group(1).replace(",", "."))
+                    ) > 0.02:
+                        errors.append("M-01: Live-System-Out-/Underperformance stimmt nicht mit System-Ø minus MSCI-Ø im gleichen Trade-Zeitraum überein.")
+                elif outperformance_match:
+                    errors.append("M-01: Live-System-Out-/Underperformance benötigt belegte System- und MSCI-Werte.")
+                elif not re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*NICHT VERFÜGBAR", benchmark):
+                    errors.append("M-01: Fehlende Live-System-/Benchmarkgrundlage muss Out-/Underperformance als NICHT VERFÜGBAR ausweisen.")
+            else:
+                portfolio_match = re.search(
+                    r"(?im)^Portfolio-Gesamtperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+                    benchmark,
+                )
+                if benchmark_match and portfolio_match:
+                    expected_delta = float(portfolio_match.group(1).replace(",", ".")) - float(benchmark_match.group(1).replace(",", "."))
+                    if not outperformance_match or abs(
+                        expected_delta - float(outperformance_match.group(1).replace(",", "."))
+                    ) > 0.02:
+                        errors.append("M-01: Out-/Underperformance stimmt nicht mit Portfolio-Gesamtperformance minus Benchmark überein.")
+                elif outperformance_match:
+                    errors.append("M-01: Out-/Underperformance darf ohne Portfolio- und Benchmarkwert nicht numerisch ausgewiesen werden.")
+                elif not re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*NICHT VERFÜGBAR", benchmark):
+                    errors.append("M-01: Fehlende Portfolio-/Benchmarkgrundlage muss Out-/Underperformance als NICHT VERFÜGBAR ausweisen.")
+
+    # M-01: the LIVE-SYSTEM aggregate must reconcile with the independently
+    # counted better/worse/tied trade population, not only with its delta.
+    benchmark_section = _section_body(text, 7, SECTION_NAMES[6])
+    live_basis_marker = re.search(
+        r"(?im)^Benchmark-Vergleichsbasis:\s*LIVE-SYSTEM\b", benchmark_section
+    )
+    if live_basis_marker:
+        count_control = re.search(
+            r"(?im)^Benchmark-Zählkontrolle:\s*besser=(\d+);\s*schlechter=(\d+);"
+            r"\s*gleichauf=(\d+);\s*gesamt=(\d+)\s*\.?$",
+            benchmark_section,
+        )
+        if not count_control:
+            errors.append("M-01: Live-Benchmark benötigt eine vollständige Zählkontrolle besser/schlechter/gleichauf/gesamt.")
+        else:
+            better, worse, tied, total = map(int, count_control.groups())
+            if total <= 0 or better + worse + tied != total:
+                errors.append("M-01: Live-Benchmark-Zählkontrolle ist rechnerisch inkonsistent.")
+            source_counts = []
+            for label in ("besser", "schlechter", "gleichauf"):
+                match = re.search(rf"(?im)^Positionen {label} als MSCI World:\s*(\d+)/(\d+)\s*$", benchmark_section)
+                if match:
+                    source_counts.append((int(match.group(1)), int(match.group(2))))
+            if len(source_counts) == 3 and (
+                source_counts != [(better, total), (worse, total), (tied, total)]
+            ):
+                errors.append("M-01: Live-Benchmark-Zählkontrolle widerspricht den Quellzählungen.")
 
     # M-01: aggregate system-performance claims outside the canonical
     # section are forbidden when the canonical portfolio metric is unavailable.
@@ -335,8 +382,23 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"Systemperformance\s*[+-]\d+(?:[,.]\d+)?\s*%",
             r"Out-/Underperformance\s*[:=]\s*[+-]?\d",
         )
+        section7_heading = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich[^\r\n]*$",
+            text,
+        )
+        section8_heading = (
+            re.search(
+                r"(?im)^[ \t]*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang[^\r\n]*$",
+                text[section7_heading.end():],
+            ) if section7_heading else None
+        )
+        if section7_heading and section8_heading:
+            section7_end = section7_heading.end() + section8_heading.start()
+            text_outside_benchmark = text[:section7_heading.start()] + text[section7_end:]
+        else:
+            text_outside_benchmark = text
         for pattern in forbidden_aggregate_claims:
-            if re.search(pattern, text, re.I):
+            if re.search(pattern, text_outside_benchmark, re.I):
                 errors.append("M-01: Numerische System-/Benchmark-Performance außerhalb der verfügbaren kanonischen Berechnungsgrundlage.")
                 break
 
@@ -521,6 +583,18 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"Gegenargument|Risiko|Statusgruppe|Regel-/Datenstatus|Regelstatus|Datenstatus|"
             r"Richtung|Side)(?:\*\*)?\s*[:=]"
         )
+        def flush_candidate():
+            nonlocal current
+            candidate_text = "\n".join(current).strip()
+            # Source inventories, section preambles and M-06 summaries are not
+            # candidate records. A record starts only with its own identity key.
+            if re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?\s*[:=]",
+                candidate_text,
+            ):
+                records.append(candidate_text)
+            current = []
+
         for line in section_body.splitlines():
             if re.match(
                 r"(?i)^\s*(?:JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|"
@@ -528,8 +602,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 line,
             ):
                 if current:
-                    records.append("\n".join(current).strip())
-                    current = []
+                    flush_candidate()
                 continue
             if re.fullmatch(r"(?i)\s*(?:keine kandidaten(?: in dieser gruppe)?|0 kandidaten|explizit leer|leer)[.!—-]*\s*", line):
                 continue
@@ -548,7 +621,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 current = []
             current.append(match.group(1) if starts and match else line)
         if current:
-            records.append("\n".join(current).strip())
+            flush_candidate()
         # The report's established one-candidate inline format is a single
         # record. Empty records are ignored, but an explicit no-candidate
         # declaration is handled separately below.
@@ -613,7 +686,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 for labels in level_labels
             )
             required = (asset, trigger, counter, rule_data)
-            numeric_values = (entry_text, stop_text, tp1_text, tp2_text, crv_text)
+            # TP2 is optional at entry; CRV1 is measured against TP1.
+            numeric_values = (entry_text, stop_text, tp1_text, crv_text)
             numeric_ok = all(parse_number(value) is not None for value in numeric_values)
             entry_num, stop_num = parse_number(entry_text), parse_number(stop_text)
             tp1_num, crv_num = parse_number(tp1_text), parse_number(crv_text)
@@ -629,7 +703,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                         "oder NICHT VERFÜGBAR für Einstieg/Stop/TP1/TP2/CRV."
                     )
                 continue
-            if not all((asset, trigger, entry_text, stop_text, tp1_text, tp2_text, crv_text, counter, rule_data)) or not numeric_ok or not status_ok:
+            if not all((asset, trigger, entry_text, stop_text, tp1_text, crv_text, counter, rule_data)) or not numeric_ok or not status_ok:
                 errors.append(
                     f"M-09: Kandidat {candidate_index} benötigt eigene Asset-/Trigger-/Einstiegs-/Stop-/TP-/CRV-/"
                     "Gegenargument-/Regelstatusfelder und einen zulässigen Status; Zahlen müssen numerisch sein."
@@ -809,7 +883,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 return bool(
                     re.search(r"(?i)(?:Quelle|Source)\s*[:=]\s*[^;|,]+", line)
                     and re.search(r"(?i)(?:Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)\s*[:=]\s*[^;|,]+", line)
-                    and re.search(r"(?i)(?:Datenstichtag|Beobachtungsdatum|Observation_Date)\s*[:=]\s*[^;|,]+", line)
+                    and re.search(r"(?i)(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)\s*[:=]\s*[^;|,]+", line)
                     and re.search(r"(?i)(?:Einheit|Unit)\s*[:=]\s*(?:%|Prozent|percent)", line)
                     and re.search(r"(?i)(?:Verzögerung|Verzoegerung|Delay)\s*[:=]\s*[^;|,]+", line)
                     and not re.search(
@@ -882,9 +956,20 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             later_starts = [other.start() for _, other in group_matches if other.start() > match.start()]
             group_end = min(later_starts) if later_starts else len(candidate_section)
             group_body = candidate_section[match.end():group_end]
-            tickers = re.findall(r"(?i)Asset/Ticker:\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)", group_body)
-            if len(tickers) != len(set(t.upper() for t in tickers)):
-                errors.append(f"M-06: Doppelte Ticker im Bereich '{label}' sind nicht konsolidiert.")
+            candidate_lines = re.findall(
+                r"(?im)^\s*[-•]?\s*Asset/Ticker:\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)([^\r\n]*)",
+                group_body,
+            )
+            # Ticker alone is not a candidate identity: one instrument may have
+            # several independent setups. The producer emits a stable Setup-ID.
+            # Legacy reports without Setup-ID retain the conservative ticker key.
+            identities = []
+            for ticker, tail in candidate_lines:
+                setup_match = re.search(r"(?i)Setup-ID\s*:\s*([^|;]+)", tail)
+                setup_id = re.sub(r"\s+", " ", setup_match.group(1)).strip().casefold() if setup_match else ""
+                identities.append((ticker.upper(), setup_id or "<legacy-ticker-only>"))
+            if len(identities) != len(set(identities)):
+                errors.append(f"M-06: Doppelte Kandidatenidentität im Bereich '{label}' ist nicht konsolidiert.")
         for label, match in group_matches:
             later = [other.start() for _, other in group_matches if other.start() > match.start()]
             end = min(later) if later else min(len(candidate_section), match.end() + 1600)
@@ -1005,6 +1090,41 @@ def validate_report(text: str) -> list[str]:
         errors.append("Fachstatusmarker fehlt oder ist nicht eindeutig")
     elif status[0] != "FINAL":
         errors.append("Fachstatus NICHT_FINAL: reguläre Veröffentlichung gesperrt")
+
+    # M-02: a market-regime label must be tied to the actual market snapshot.
+    # A qualitative label alone is insufficient: breadth, rates and
+    # dollar/liquidity/volatility observations must be independently visible.
+    executive = _section_body(text, 1, SECTION_NAMES[0])
+    regime_match = re.search(r"(?im)^\s*Marktregime\s*:\s*([^\r\n]+)", executive)
+    if not regime_match or _MISSING_VALUE_RE.fullmatch(regime_match.group(1).strip()):
+        errors.append("M-02: explizite, nichtleere Marktregime-Einstufung fehlt.")
+    cutoff_match = re.search(
+        r"(?im)^\s*Marktregime-Datenstichtag\s*:\s*(\d{4}-\d{2}-\d{2})\s*$",
+        executive,
+    )
+    if not cutoff_match:
+        errors.append("M-02: Datenstichtag der Marktregime-Einstufung fehlt oder ist nicht ISO-datiert.")
+    breadth_line = next(
+        (line for line in executive.splitlines() if re.search(r"(?i)Indizes/Marktbreite\s*:", line)),
+        "",
+    )
+    if not re.search(r"\b\d+\s*/\s*\d+\b", breadth_line):
+        errors.append("M-02: Marktbreite benötigt einen numerischen Zähler/Nenner-Nachweis.")
+    rates_line = next(
+        (line for line in executive.splitlines() if re.search(r"(?i)Zinsen/Renditen\s*:", line)),
+        "",
+    )
+    if not re.search(r"(?i)(?:US\s*10Y|10-jährige US-Rendite).{0,40}\d+(?:[,.]\d+)?\s*%", rates_line):
+        errors.append("M-02: US-10Y-Rendite fehlt als numerische Beobachtung.")
+    risk_line = next(
+        (line for line in executive.splitlines()
+         if re.search(r"(?i)Dollar/Liquidität/Volatilität\s*:", line)),
+        "",
+    )
+    if not re.search(r"(?i)\bVIX\b.{0,40}\d+(?:[,.]\d+)?", risk_line):
+        errors.append("M-02: numerische VIX-Beobachtung fehlt.")
+    if not re.search(r"(?i)\bDXY\b.{0,40}\d+(?:[,.]\d+)?", risk_line):
+        errors.append("M-02: numerische DXY-/Dollarproxy-Beobachtung fehlt.")
 
     # Tab 2 muss im Bericht als deterministischer Quellenblock vorkommen und
     # die ausgewiesene Zeilenzahl muss mit den exportierten Datensätzen stimmen.
@@ -1189,6 +1309,7 @@ def validate_run_evidence(path: Path, *, require_report_gate: bool = True) -> li
         "trading_radar_report_gate.py",
         "trading_radar_run_evidence.py",
         "trading_radar_portfolio_performance.py",
+        "makro_szenario.py",
         "offene_positionen_check.py",
         "historical_ohlcv.py",
         ".github/workflows/main.yml",

@@ -1330,12 +1330,25 @@ def fred_snapshot(name, series_id):
     if df.empty:
         return f"{name}: NICHT VERFUEGBAR | STATUS=UNAVAILABLE | SOURCE=FRED {series_id} | {FRED_URL.format(series_id)}"
     value = _clean_num(df[series_id].iloc[-1])
-    date = df["DATE"].iloc[-1].strftime("%Y-%m-%d")
+    observation_date = pd.Timestamp(df["DATE"].iloc[-1]).date()
+    date = observation_date.isoformat()
     cache = _cache_load()
     entry = cache.get("fred", {}).get(series_id, {})
     source = entry.get("source", FRED_URL.format(series_id))
     status = entry.get("status", "REAL")
     base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
+    if name == "US 10Y Treasury":
+        # saved_at is written atomically with the FRED cache entry after the
+        # actual source request. A missing timestamp remains unavailable;
+        # report-generation time is never substituted for retrieval time.
+        saved_at = entry.get("saved_at")
+        if isinstance(saved_at, (int, float)) and math.isfinite(saved_at) and saved_at > 0:
+            retrieved_at = dt.datetime.fromtimestamp(saved_at, tz=dt.timezone.utc)
+            base += f" | RETRIEVED_AT={retrieved_at.isoformat(timespec='seconds')}"
+        else:
+            base += " | RETRIEVED_AT=NICHT VERFUEGBAR"
+        delay_days = (dt.datetime.now(dt.timezone.utc).date() - observation_date).days
+        base += f" | DELAY_DAYS={max(0, delay_days)} | UNIT=%"
     if name in {"CPI", "Core CPI", "PCE", "Core PCE", "PPI"}:
         yoy, prior_date = _fred_yoy(df, series_id)
         if yoy is not None:
@@ -1343,7 +1356,6 @@ def fred_snapshot(name, series_id):
         else:
             base += " | YOY=NICHT VERFUEGBAR | YOY_STATUS=UNAVAILABLE"
     return base
-
 def _lme_official_prices(target_date=None):
     """LME Official Prices mit einem Abruf pro Prozess und sicherem Fallback.
 
