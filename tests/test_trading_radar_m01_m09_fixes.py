@@ -653,6 +653,144 @@ def test_m05_exclusive_mode_uses_one_register_update_and_never_overwrites_proces
     validation_guard = source.rfind("elif validation_errors:", 0, first_update)
     second_save_guard = source.index('and not globals().get("_GEMINI_TRADING_RADAR_ONLY_MODE")')
     exclusive_skip = source.index("kein zweites Registerupdate")
-    assert strict_check >= 0 and validation_guard > strict_check
+    assert strict_check >= 0 and validation_guard < strict_check
+    assert "Thesis lifecycle is independent of unrelated report blockers" in source
     assert second_save_guard > first_update
     assert exclusive_skip > second_save_guard
+
+
+
+def test_report_section_heading_validator_accepts_dot_and_middle_dot_styles():
+    from trading_radar_neuauswertung import _canonicalize_radar_heading_style
+    report = "\n".join([
+        "### 1. Trading-Radar", "2. Thesen-Update", "### 3. Ereignisradar",
+        "### 4. Assetklassenvergleich", "### 5. Technische Kandidaten",
+        "### 6. Portfolio & Risiko", "### 7. MSCI-Vergleich",
+        "### 8. Daten-/Prüfanhang",
+    ])
+    normalized = _canonicalize_radar_heading_style(report)
+    for heading in (
+        "1 · Trading-Radar", "2 · Thesen-Update", "3 · Ereignisradar",
+        "4 · Assetklassenvergleich", "5 · Technische Kandidaten",
+        "6 · Portfolio & Risiko", "7 · MSCI-Vergleich", "8 · Daten-/Prüfanhang",
+    ):
+        assert heading in normalized
+
+
+def test_structured_thesis_block_is_built_only_from_complete_explicit_fields():
+    from trading_radar_neuauswertung import ensure_structured_thesis_block, validate_radar_report_strict
+    report = """### 1. Trading-Radar
+Hauptanalyse: Defensive Sektorrotation mit selektiver Stärke in Energie und Rohstoffen.
+Zeithorizont: Kurz- bis mittelfristig (4 bis 8 Wochen)
+Konfidenz: Mittel
+Datenstand UTC: 2026-11-01T18:09:41+00:00
+Stärkste Belege:
+- VIX bei 19,42 und DXY bei 101,88.
+- Acht von elf Sektor-ETFs über dem 50-Tage-Durchschnitt.
+Wichtigste Gegenbelege:
+- Nasdaq auf 3M-Basis schwächer.
+Belegte Top-Profiteur-Kandidaten:
+- Beispiel AG (ABC)
+### 2. Thesen-Update
+- Thesen-ID: ROTATION-01
+- Version: 1.0
+- Status: BESTÄTIGT
+Gegenbelege: Nasdaq-Schwäche bleibt ein Gegenargument.
+Bestätigungstrigger: Energie und Qualität schlagen den MSCI World weiter.
+Invalidierungstrigger: Breiter Rückfall unter die 200-Tage-Linien.
+### 3. Ereignisradar
+Ereignisdetails fehlen und werden ausdrücklich nicht geschätzt.
+### 4. Assetklassenvergleich
+Relative Stärke zwischen Regionen, Indizes, Sektoren und Anlageklassen.
+Gemeinsamer Datenstichtag: 2026-10-30T00:00:00+00:00
+### 5. Technische Kandidaten
+Keine Kandidaten mit vollständig bestätigten Handelslevels und CRV.
+### 6. Portfolio & Risiko
+Das Portfolio wird anhand der verfügbaren Positionsdaten und Risiken bewertet.
+### 7. MSCI-Vergleich
+Der Benchmarkvergleich wird separat mit gleicher Zeitbasis ausgewiesen.
+### 8. Daten-/Prüfanhang
+Datenqualität, Quellenstände und verbleibende Einschränkungen werden dokumentiert.
+"""
+    result, created = ensure_structured_thesis_block(report)
+    assert created is True
+    assert "TRADING_RADAR_THESEN_JSON" in result
+    assert validate_radar_report_strict(result) == []
+
+
+def test_structured_thesis_block_not_synthesized_when_required_evidence_is_missing():
+    from trading_radar_neuauswertung import ensure_structured_thesis_block
+    report = """1. Trading-Radar
+Hauptanalyse: These.
+2. Thesen-Update
+Thesen-ID: X
+Version: 1
+Status: BESTÄTIGT
+3. Ereignisradar
+"""
+    result, created = ensure_structured_thesis_block(report)
+    assert created is False
+    assert "TRADING_RADAR_THESEN_JSON" not in result
+
+
+def test_ohlcv_appendix_emits_machine_readable_candidate_mapping_label():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    assert "Kandidaten-Mapping: VOLLSTÄNDIG" in source
+    assert "NICHT VERIFIZIERBAR" in source
+    assert "Universumsweite OHLCV-Datenlücken/-veraltung" in source
+
+
+def test_thesis_baseline_persistence_is_not_blocked_by_unrelated_report_findings():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    start = source.index("strict_thesis_findings = validate_radar_report_strict(text)")
+    end = source.index("if register_result.get(\"updated\"):", start)
+    block = source[start:end]
+    assert "if strict_thesis_findings:" in block
+    assert "update_register(" in block
+    assert "elif validation_errors:" not in block
+    assert "overall report remains NICHT_FINAL" in block
+
+
+def test_scenarios_accept_full_iso_timestamp_for_common_matrix_cutoff():
+    report = (
+        "1. Trading-Radar\n"
+        "Zeithorizont: 4 bis 8 Wochen\n"
+        "Basisszenario: NICHT ABLEITBAR – Datenlücke: gemeinsamer Datenstichtag der Relative-Stärke-Matrix\n"
+        "Marktregime: Selektives defensives Rotationsregime.\n"
+        "Indizes/Marktbreite: 8/11 Sektor-ETFs über ihrem 50-Tage-Durchschnitt.\n"
+        "Volatilität VIX: 19.42\n"
+        "\n4. Assetklassenvergleich\n"
+        "Relative-Stärke-Matrix mit gemeinsamem Datenstichtag.\n"
+        "Gemeinsamer Datenstichtag: 2026-10-30T00:00:00+00:00\n"
+        "Sektoren: XLV (XLV) 1M +11.23%; 3M +14.38% | XLE (XLE) 1M +11.67%; 3M +19.81%\n"
+        "\n5. Technische Kandidaten\nKeine Kandidaten.\n"
+        "\n2. Thesen-Update\n"
+    )
+    result = production._trading_radar_szenarien_ergänzen(report)
+    assert "Gemeinsamer Datenstichtag: 2026-10-30." in result
+    assert "Basisszenario: Selektives defensives Rotationsregime." in result
+    assert "Basisszenario: NICHT ABLEITBAR" not in result
+    assert "Eintrittsbedingung:" in result
+    assert "XLV 3M +14.38%" in result
+    assert "XLE 3M +19.81%" in result
+
+
+def test_candidate_inventory_preserves_explicit_no_actionable_candidates_when_sources_are_empty(tmp_path):
+    files = {}
+    for name in ("Setups.csv", "Trendwende_Setups.csv", "Edelmetalle_Setups.csv"):
+        path = tmp_path / name
+        path.write_text("Ticker;Name;Status2;Setup_Typ;Einstieg;Stop;TP1;CRV1\n", encoding="utf-8")
+        files[name] = str(path)
+    report = (
+        "5. Technische Kandidaten\nVorherige Kandidatenprosa.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\n"
+        "AUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\n"
+        "NICHT HANDELBAR: Keine Kandidaten\n"
+        "6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(report, files)
+    assert "Keine belastbaren technischen Kandidaten; keine Handelsfreigabe." in result
+    assert "Kandidatenquellen-Prüfstatus: VOLLSTÄNDIG" in result
+    assert all(label in result for label in ("BESTÄTIGTE SETUPS:", "WATCHLIST:", "VERWORFENE KANDIDATEN:"))

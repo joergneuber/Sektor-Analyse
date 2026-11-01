@@ -602,3 +602,22 @@ def test_m06_rejects_duplicate_same_setup_identity_for_same_ticker():
     assert old in base
     errors = gate.validate_report(base.replace(old, duplicate))
     assert any("Doppelte Kandidatenidentität" in error for error in errors), errors
+
+
+def test_m01_malformed_numeric_block_without_trade_counts_fails_closed_without_crashing():
+    import hashlib
+    from trading_radar_report_gate import _validate_m05_m10
+    detail = "AAA|2026-01-01|0123456789abcdef|OPEN|LONG|100.0000000000|110.0000000000|10.0000000000"
+    digest = hashlib.sha256(detail.encode("utf-8")).hexdigest()
+    report = """### 7. MSCI-Vergleich
+Portfolio-Gesamtperformance: +10.00 %
+Ø Positionsperformance: +10.00 %
+Berechnungsmethode: gleichgewichteten arithmetischen Mittelwert der individuellen prozentualen Renditen; jeder Trade zählt genau einmal; genau 1 Stück je Trade; abgeschlossene Trades zum Ausstiegskurs; offene Trades zum aktuellen Kurs; Kosten=0; keine Kapitalgewichtung und keine Währungsumrechnung.
+Benchmarkpositionen ausgeschlossen: KEINE (Anzahl=0)
+Formel je Trade: Long=(Kurs-Einstieg)/Einstieg*100; Short=(Einstieg-Kurs)/Einstieg*100. Portfolio-Gesamtperformance=Summe der Einzelrenditen geteilt durch Anzahl eindeutiger Trades.
+Performance-Einzelrenditen: AAA|2026-01-01|0123456789abcdef|OPEN|LONG|100.0000000000|110.0000000000|10.0000000000
+Performance-Einzelrenditen-SHA256: DIGEST
+""".replace("DIGEST", digest)
+    errors = []
+    _validate_m05_m10(report, errors)
+    assert any("Performance-Datenbasis mit Trade-/Statusanzahl fehlt" in item for item in errors)

@@ -280,3 +280,20 @@ def test_stored_trade_return_with_rounding_difference_is_accepted(tmp_path):
     result = calculate_portfolio_performance([source])
     assert result["status"] == "AVAILABLE"
     assert result["portfolio_total_pct"] == 10.0
+
+
+def test_unusable_open_source_positions_are_counted_separately_from_valid_open_trades(tmp_path):
+    source = tmp_path / "open_positions.csv"
+    source.write_text(
+        "Ticker;Richtung;Einstiegsdatum;Einstieg;Aktueller_Kurs;Status\n"
+        "AAA;;01.01.2026;100;110;Offen\n"
+        "BBB;Long;02.01.2026;200;;Offen\n",
+        encoding="utf-8",
+    )
+    result = calculate_portfolio_performance([source])
+    assert result["status"] == "NOT_AVAILABLE"
+    assert result["open_count"] == 0
+    assert result["unusable_open_count"] == 2
+    assert result["unusable_open_tickers"] == ["AAA", "BBB"]
+    block = format_performance_block(result)
+    assert "nicht aggregierbare offene Quellpositionen=2 (AAA, BBB)" in block

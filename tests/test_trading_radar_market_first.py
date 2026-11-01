@@ -177,6 +177,30 @@ def test_live_market_snapshot_adds_real_numeric_market_evidence():
     assert "Marktbreite-Proxy: 11/11" in result
 
 
+def test_live_market_snapshot_populates_canonical_m02_fields_from_real_snapshot():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = ["^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+               "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
+    index = pd.date_range("2026-06-01", periods=80, freq="B", tz="UTC")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    values = {col: [100.0 + i * 0.2 for i in range(len(index))] for col in columns}
+    values[("^VIX", "Close")] = [18.0 + i * 0.01 for i in range(len(index))]
+    values[("DX-Y.NYB", "Close")] = [101.0 + i * 0.01 for i in range(len(index))]
+    data = pd.DataFrame(values, index=index)
+    report = (
+        "### 1. Trading-Radar\nMarktregime: konstruktiv.\n"
+        "Dollar/Liquidität/Volatilität: M2-Geldmenge 23.413,90 Mrd. USD; Name nicht aufgelöst (VIX).\n"
+        "### 2. Thesen-Update\n"
+    )
+    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    assert findings == []
+    risk = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
+    assert "VIX: 18.79" in risk
+    assert "DXY: 101.79" in risk
+    assert "Marktregime-Datenstichtag: 2026-09-18" in result
+
+
 def test_live_market_snapshot_inserts_inside_section_one_with_decorated_heading():
     import pandas as pd
     from trading_radar_market_first import append_live_market_snapshot
@@ -1033,3 +1057,29 @@ def test_relative_strength_excludes_series_without_exact_common_cutoff():
     result, _ = append_live_market_snapshot(report, fetcher=lambda requested: data)
     matrix = result.split("Relative-Stärke-Matrix", 1)[1].split("### 5.", 1)[0]
     assert "S&P 500 (^GSPC) 1M NICHT VERFÜGBAR" in matrix
+
+
+def test_m02_dxy_is_not_carried_forward_when_missing_on_common_cutoff():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = ["^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+               "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+               "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD"]
+    index = pd.date_range("2026-06-01", periods=80, freq="B", tz="UTC")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    data = pd.DataFrame({col: [100.0 + i * 0.2 for i in range(len(index))] for col in columns}, index=index)
+    # Force the shared cutoff to the penultimate session, while DXY has a later
+    # close but no observation on that exact shared date.
+    data.loc[index[-1], ("BTC-USD", "Close")] = float("nan")
+    data.loc[index[-2], ("DX-Y.NYB", "Close")] = float("nan")
+    report = (
+        "### 1. Trading-Radar\nMarktregime: konstruktiv.\n"
+        "Dollar/Liquidität/Volatilität: M2-Liquidität wird beobachtet.\n"
+        "### 2. Thesen-Update\n"
+    )
+    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    assert findings == []
+    assert "Marktregime-Datenstichtag: 2026-09-17" in result
+    assert "Dollar-Proxy DXY: NICHT VERFÜGBAR" in result
+    risk = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
+    assert "DXY: NICHT VERFÜGBAR" in risk
