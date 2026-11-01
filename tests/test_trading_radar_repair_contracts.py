@@ -82,7 +82,7 @@ def test_run_evidence_requires_commit_run_and_gate_binding():
                         "Trading_Radar_Alleinauswertung.py", "trading_radar_neuauswertung.py",
                         "trading_radar_market_first.py", "trading_radar_thesen.py",
                         "trading_radar_report_gate.py", "trading_radar_run_evidence.py",
-                        "trading_radar_portfolio_performance.py", "offene_positionen_check.py",
+                        "trading_radar_portfolio_performance.py", "makro_szenario.py", "offene_positionen_check.py",
                         "historical_ohlcv.py", ".github/workflows/main.yml",
                     )
                 },
@@ -222,10 +222,11 @@ def test_report_gate_requires_all_three_scenario_triggers():
 def test_thesis_register_evidence_is_inserted_inside_section_two(tmp_path):
     source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                and n.name == "_trading_radar_thesenregister_nachweis_einfuegen")
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+             and n.name in {"_trading_radar_thesenregister_nachweis_text", "_trading_radar_thesenregister_nachweis_einfuegen"}]
+    node = next(n for n in nodes if n.name == "_trading_radar_thesenregister_nachweis_einfuegen")
     namespace = {"os": os, "re": __import__("re"), "tempfile": __import__("tempfile")}
-    exec(compile(ast.Module(body=[node], type_ignores=[]), "thesis_evidence.py", "exec"), namespace)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "thesis_evidence.py", "exec"), namespace)
     report_path = tmp_path / "radar.txt"
     report_path.write_text(
         "1. Trading-Radar\nMarktregime und Kontext.\n"
@@ -285,7 +286,7 @@ def test_run_evidence_hashes_portfolio_performance_and_position_export_code():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     hashes = module._run_identity()["source_file_hashes"]
-    for name in ("trading_radar_portfolio_performance.py", "offene_positionen_check.py"):
+    for name in ("trading_radar_portfolio_performance.py", "offene_positionen_check.py", "makro_szenario.py"):
         assert hashes[name] == hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
 
 

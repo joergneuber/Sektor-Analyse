@@ -1,0 +1,658 @@
+import ast
+import json
+import re
+from pathlib import Path
+
+import Trading_Radar_Alleinauswertung as production
+from trading_radar_report_gate import validate_report
+from trading_radar_neuauswertung import audit_market_first_content
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_scenarios_do_not_fabricate_thresholds_when_indicators_are_missing():
+    report = (
+        "1. Trading-Radar\n"
+        "Zeithorizont: 4 bis 12 Wochen\n"
+        "Basisszenario: Fortsetzung der Seitwärtsbewegung\n"
+        "\n2. Thesen-Update\n"
+    )
+    result = production._trading_radar_szenarien_ergänzen(report)
+    assert result.count("NICHT ABLEITBAR – Datenlücke:") == 3
+    assert "0,00%" not in result
+    assert "NICHT VERFÜGBAR" not in result
+    assert "200-Tage-Linie" not in result
+
+
+def test_scenarios_use_measured_market_data_only():
+    report = (
+        "1. Trading-Radar\n"
+        "Zeithorizont: 4 bis 12 Wochen\n"
+        "Basisszenario: Fortsetzung der Seitwärtsbewegung\n"
+        "Marktbreite-Proxy: 8/11 Sektor-ETFs über 50T\n"
+        "Volatilität VIX: 19.42\n"
+        "\n4. Assetklassenvergleich\n"
+        "Datenstichtag: 2026-10-30\n"
+        "Sektoren: XLV (XLV) 1M +11.23%; 3M +14.38% | XLE (XLE) 1M +11.67%; 3M +19.81%\n"
+        "\n2. Thesen-Update\n"
+    )
+    result = production._trading_radar_szenarien_ergänzen(report)
+    assert "XLV 3M +14.38%" in result
+    assert "XLE 3M +19.81%" in result
+    assert "VIX 19.42" in result
+    assert "Eintrittsbedingung:" in result
+    assert "Bestätigungstrigger:" in result
+    assert "Invalidierungstrigger:" in result
+    assert "Zeithorizont: 4 bis 12 Wochen" in result
+    assert "NICHT VERFÜGBAR" not in result
+
+
+def test_section7_heading_is_canonicalized_and_unverified_claims_removed():
+    report = (
+        "7. MSCI-Vergleich- Durchschnittliche Positionsperformance: -14,68%\n"
+        "- Erläuterung: Portfolio-Gesamtperformance -5,74%; Underperformance -6,54 Prozentpunkte.\n"
+        "8. Daten-/Prüfanhang\nOHLCV-Daten.\n"
+    )
+    result = production._trading_radar_mscivergleich_ueberschrift_normalisieren(report)
+    assert result.startswith("7. MSCI-Vergleich\n")
+    assert "-14,68%" not in result
+    assert "-5,74%" not in result
+    assert "-6,54 Prozentpunkte" not in result
+    assert "Benchmark-Performance: NICHT VERFÜGBAR" in result
+
+
+def test_candidate_source_normalizer_preserves_distinct_setups_for_same_ticker():
+    source = ROOT / "tests" / "fixtures" / "hebeltrader_candidates_fixture.json"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(json.dumps({
+        "candidates": [
+            {"name": "Example AG", "ticker": "EXA", "einzel_check": {
+                "ticker": "EXA", "status": "KAUFKANDIDAT C",
+                "risiken": ["kein bestätigtes Einstiegssignal"],
+            }},
+            {"name": "Rejected AG", "ticker": "REJ", "einzel_check": {
+                "ticker": "REJ", "status": "KEIN KANDIDAT",
+                "risiken": ["Momentum zu schwach"],
+            }},
+        ]
+    }), encoding="utf-8")
+    try:
+        report = (
+            "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+            "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\n"
+            "AUF TRIGGER WARTEN: Keine Kandidaten\n"
+            "EREIGNIS ABWARTEN: Keine Kandidaten\n"
+            "NICHT HANDELBAR: Keine Kandidaten\n\n"
+            "6. Portfolio & Risiko\n"
+        )
+        result = production._trading_radar_kandidatenquellen_absichern(
+            report, {source.name: str(source)}
+        )
+        assert production._trading_radar_kandidaten_aus_abschnitt5(result) == ["EXA", "REJ"]
+        assert result.count("Asset/Ticker:") == 2
+        assert result.count("Setup-ID:") >= 2
+        assert result.count("Statusgruppe: NICHT HANDELBAR") == 1
+        assert result.count("Statusgruppe: VERWERFEN / INVALIDIERT") == 1
+        assert "Einstieg: NICHT VERFÜGBAR" in result
+        assert "Regel-/Datenstatus:" in result
+    finally:
+        source.unlink(missing_ok=True)
+
+
+
+def test_same_ticker_with_trend_and_reversal_setups_is_not_collapsed(tmp_path):
+    trend = tmp_path / "Setups(2026-10-30).csv"
+    trend.write_text(
+        "Ticker;Name;Strategie;Setup_Typ;Pattern;Status2;CRV1;Einstieg;Stop;TP1\n"
+        "ABC;Alpha AG;Trendfolge;Pullback;Hammer;ACHTUNG;1,5;100;95;110\n",
+        encoding="utf-8",
+    )
+    reversal = tmp_path / "Trendwende_Setups(2026-10-30).csv"
+    reversal.write_text(
+        "Ticker;Name;Strategie;Setup_Typ;Pattern;Status2;CRV1;Einstieg;Stop;TP1\n"
+        "ABC;Alpha AG;Trendwende;Bodenbildung;Doppelboden;ACHTUNG;1,8;90;85;105\n",
+        encoding="utf-8",
+    )
+    metals = tmp_path / "Edelmetalle_Setups(2026-10-30).csv"
+    metals.write_text("Ticker;Name;Status2;Setup_Typ;Einstieg;Stop;TP1;CRV1\n", encoding="utf-8")
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(report, {
+        trend.name: str(trend), reversal.name: str(reversal), metals.name: str(metals),
+    })
+    assert result.count("Asset/Ticker: Alpha AG (ABC)") == 2
+    assert "Strategie" not in result or "Trendfolge" in result
+    assert "Quelle: Setups(2026-10-30).csv" in result
+    assert "Quelle: Trendwende_Setups(2026-10-30).csv" in result
+    assert "Scanner-Setup: Pullback" in result
+    assert "Scanner-Setup: Bodenbildung" in result
+    setup_ids = re.findall(r"Setup-ID: ([0-9a-f]{16})", result)
+    assert len(set(setup_ids)) == 2
+
+
+def test_same_ticker_same_strategy_different_setup_types_get_distinct_identity(tmp_path):
+    source = tmp_path / "Setups.csv"
+    source.write_text(
+        "Ticker;Name;Strategie;Setup_Typ;Pattern;Status2;CRV1;Einstieg;Stop;TP1\n"
+        "ABC;Alpha AG;Trendfolge;Pullback;Hammer;ACHTUNG;1,5;100;95;110\n"
+        "ABC;Alpha AG;Trendfolge;Breakout;Range-Ausbruch;ACHTUNG;1,7;102;97;115\n",
+        encoding="utf-8",
+    )
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(report, {source.name: str(source)})
+    setup_ids = re.findall(r"Setup-ID: ([0-9a-f]{16})", result)
+    assert len(set(setup_ids)) == 2
+
+
+def test_exact_same_ticker_and_setup_from_overlapping_exports_is_deduplicated(tmp_path):
+    first = tmp_path / "Setups(2026-10-30).csv"
+    second = tmp_path / "Setups_backup(2026-10-30).csv"
+    header = "Ticker;Name;Strategie;Setup_Typ;Pattern;Status2;CRV1;Einstieg;Stop;TP1\n"
+    row = "ABC;Alpha AG;Trendfolge;Pullback;Hammer;ACHTUNG;1,5;100;95;110\n"
+    first.write_text(header + row, encoding="utf-8")
+    second.write_text(header + row, encoding="utf-8")
+    report = "5. Technische Kandidaten\nAlt\n6. Portfolio & Risiko\n"
+    result = production._trading_radar_kandidatenquellen_absichern(report, {
+        first.name: str(first), second.name: str(second),
+    })
+    assert result.count("Asset/Ticker: Alpha AG (ABC)") == 1
+
+def test_report_gate_ignores_candidate_section_preamble_as_a_candidate_record():
+    report = (
+        "5. Technische Kandidaten\n"
+        "Kandidatenquellen: source.json\nQuellen-Prüstatus: Quelle inventarisiert\n\n"
+        "NICHT HANDELBAR:\n"
+        "- Asset/Ticker: Example AG (EXA)\n"
+        "  - Trigger: Kein quellenbelegter Trigger; nicht freigegeben.\n"
+        "  - Einstieg: NICHT VERFÜGBAR (nicht in der Quelle)\n"
+        "  - Stop: NICHT VERFÜGBAR (nicht in der Quelle)\n"
+        "  - TP1: NICHT VERFÜGBAR (nicht in der Quelle)\n"
+        "  - TP2: NICHT VERFÜGBAR (nicht in der Quelle)\n"
+        "  - CRV: NICHT VERFÜGBAR (nicht in der Quelle)\n"
+        "  - Gegenargument: kein bestätigtes Einstiegssignal.\n"
+        "  - Regel-/Datenstatus: Quelle liefert keine Handelslevels.\n"
+        "  - Statusgruppe: NICHT HANDELBAR\n"
+        "BESTÄTIGTE SETUPS: 0 bestätigte Setups – Begründung: kein bestätigter Trigger.\n"
+        "WATCHLIST: 0 Watchlist-Einträge – Begründung: kein überprüfbarer Trigger.\n"
+        "VERWORFENE KANDIDATEN: 0 Kandidaten – Begründung: keine.\n"
+    )
+    # The report-gate candidate parser is intentionally exercised through the
+    # candidate sub-validator; the inventory preamble must not become record 1.
+    errors = []
+    gate_source = (ROOT / "trading_radar_report_gate.py").read_text(encoding="utf-8")
+    tree = ast.parse(gate_source)
+    validate = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "validate_report")
+    assert validate is not None
+    # Validate the full fixture with a report that has the remaining headings.
+    full = (
+        "1. Trading-Radar\nIndizes/Marktbreite: S&P 500 +1.0%; Marktbreite 8/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury bei 4.5%.\nDollar/Liquidität/Volatilität: VIX 18.0 und Dollarproxy DXY 100.0.\n"
+        "Marktregime: Restriktives Zinsregime mit selektiver Rotation.\n"
+        "Basisszenario: NICHT ABLEITBAR – Datenlücke: Indikatoren fehlen.\n"
+        "Positives Alternativszenario: NICHT ABLEITBAR – Datenlücke: Indikatoren fehlen.\n"
+        "Negatives Alternativszenario: NICHT ABLEITBAR – Datenlücke: Indikatoren fehlen.\n"
+        "2. Thesen-Update\nKeine neue oder aktualisierte These.\n"
+        "3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+        "4. Assetklassenvergleich\nRelative Stärke und Rotation der Anlageklassen.\n"
+        + "5. Technische Kandidaten\nKandidatenquellen: source.json\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\n"
+        "AUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\n" + report.split("5. Technische Kandidaten\n", 1)[1] +
+        "6. Portfolio & Risiko\nRisiko und Konzentration sind beschrieben.\n"
+        "7. MSCI-Vergleich\nPortfolio-Gesamtperformance: NICHT VERFÜGBAR.\n"
+        "Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "8. Daten-/Prüfanhang\nOHLCV-Abdeckung: 100/100. Keine Datenlücken; Kandidaten nicht eingeschränkt.\n"
+        "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+    )
+    errors = validate_report(full)
+    assert not any("M-09: Kandidat 1 benötigt" in error for error in errors)
+    assert not any("M-06:" in error for error in errors)
+    assert audit_market_first_content(full) == [] or not any(
+        "Kandidat" in error or "Kandidatengruppe" in error
+        for error in audit_market_first_content(full)
+    )
+
+
+def test_treasury_provenance_uses_real_newlines():
+    report = "US 10Y Treasury: 4.98%.\nUS 10Y Treasury: 4.93%."
+    result = production._trading_radar_treasury_provenienz_ergänzen(report)
+    assert "\\nUS 10Y Treasury" not in result
+    assert result.count("\n") >= 1
+    assert result.count("Quelle: NICHT VERFÜGBAR") == 2
+
+
+def test_main_workflow_persists_thesis_register_and_reads_uppercase_gate_output():
+    workflow = (ROOT / ".github" / "workflows" / "main.yml").read_text(encoding="utf-8")
+    assert "Trading-Radar-Thesenregister wiederherstellen" in workflow
+    assert "Trading-Radar-Thesenregister dauerhaft im Actions-Cache sichern" in workflow
+    assert "steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL" in workflow
+    assert "steps.trading-radar-report-check.outputs.fachlich_final" not in workflow
+
+
+def test_thesis_register_does_not_infer_empty_baseline_from_missing_history(tmp_path):
+    from trading_radar_thesen import update_register
+    payload = {"data_cutoff": "2026-11-01T12:00:00+00:00", "theses": []}
+    report = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload) + "\n```"
+    path = tmp_path / ".trading_radar_thesen.json"
+    result = update_register(report, str(path))
+    assert result["updated"] is False
+    assert result["comparison_status"] == "BASELINE_MISSING"
+    assert not path.exists()
+
+
+def test_thesis_register_baseline_missing_is_explicit_then_next_run_compares(tmp_path):
+    from trading_radar_thesen import update_register
+    thesis = {
+        "thesis_id": "macro-001", "thesis": "Belegte Markthese", "horizon": "2-4 Wochen",
+        "evidence": ["Messwert A"], "counter_evidence": ["Gegenbeleg B"],
+        "confidence": "mittel", "confirm_triggers": ["Trigger A"],
+        "invalidate_triggers": ["Trigger B"], "event_dependencies": [],
+        "asset_classes": ["Aktien"], "candidates": [], "status": "NEU",
+    }
+    payload = {"data_cutoff": "2026-11-01T12:00:00+00:00", "theses": [thesis]}
+    report = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload) + "\n```"
+    path = tmp_path / ".trading_radar_thesen.json"
+    first = update_register(report, str(path))
+    assert first["updated"] is True
+    assert first["comparison_status"] == "BASELINE_MISSING"
+    second = update_register(report, str(path))
+    assert second["updated"] is True
+    assert second["comparison_status"] == "PASS"
+
+
+def test_thesis_evidence_replaces_false_no_change_claim_when_baseline_missing():
+    result = production._trading_radar_thesenregister_nachweis_text(
+        "2. Thesen-Update\nKeine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.\n"
+        "3. Ereignisradar\n",
+        ["THESENREGISTER-VERGLEICH: BASELINE_MISSING", "THESENREGISTER-GRUND: Vorzustand fehlt"],
+    )
+    assert "Thesenregister geprüft, keine Änderung" not in result
+    assert "Vorzustand/strukturierter Nachweis fehlt" in result
+    assert "THESENREGISTER-VERGLEICH: BASELINE_MISSING" in result
+
+
+def test_thesis_register_update_in_exclusive_radar_branch_uses_radar_text():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    start = source.index("# M-05: Register aus genau diesem eigenständigen Radar-Bericht")
+    end = source.index("# The persisted status marker", start)
+    block = source[start:end]
+    assert "update_register(" in block
+    assert "text, os.path.join(os.getcwd(), \".trading_radar_thesen.json\")" in block
+    assert "_trading_radar_thesenregister_nachweis_text" in block
+
+
+def test_performance_tab2_presence_checks_actual_supplied_source_path():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    assert "os.path.basename(source_path).casefold() == \"geschlossene positionen_tab2.csv\"" in source
+    assert "if not tab2_sources_available:" in source
+
+
+def test_candidate_sources_are_normalized_before_ohlcv_candidate_mapping():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    start = source.index("def speichere_ergebnis(")
+    end = source.index("def _write_github_output", start) if "def _write_github_output" in source[start:] else len(source)
+    branch = source[start:end]
+    assert branch.index("_trading_radar_kandidatenquellen_absichern(text, eingabedateien)") < branch.index("candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)")
+
+
+def test_treasury_provenance_is_applied_in_the_exclusive_radar_branch():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    start = source.index("def speichere_ergebnis(")
+    end = source.index("def _write_github_output", start) if "def _write_github_output" in source[start:] else len(source)
+    branch = source[start:end]
+    assert "_trading_radar_treasury_provenienz_ergänzen(" in branch
+    assert branch.index("_trading_radar_treasury_provenienz_ergänzen(") < branch.index("report_gate_input =")
+
+
+def test_benchmark_live_source_is_parsed_and_hash_bound(tmp_path):
+    source = tmp_path / "Benchmark_Live.txt"
+    source.write_text(
+        "LIVE-BENCHMARK vs. MSCI WORLD\n"
+        "Start der Systemrechnung / Trading-Engine: 07.08.2026\n"
+        "Benchmark: iShares Core MSCI World UCITS ETF USD (Acc) | Ticker: EUNL.DE\n"
+        "Methode: gleichgewichteter Trade-/Signalvergleich; kein Backtest.\n"
+        "LIVE-SYSTEM SEIT 07.08.2026\n"
+        "Ø System-Performance: +8,00%\n"
+        "Ø MSCI-World-Performance im jeweils gleichen Zeitraum: +5,00%\n"
+        "Out-/Underperformance: +3,00%\n"
+        "Positionen besser als MSCI World: 4/4\n"
+        "Positionen schlechter als MSCI World: 0/4\n"
+        "Positionen gleichauf: 0/4\n"
+        "TRADE-DETAILS\n"
+        "AAA | Long | Scanner | 07.08.2026–01.11.2026 | System +8.00% | MSCI +5.00% | Delta +3.00%\n"
+        "BBB | Long | Scanner | 07.08.2026–01.11.2026 | System +10.00% | MSCI +8.00% | Delta +2.00%\n"
+        "CCC | Short | Scanner | 07.08.2026–01.11.2026 | System +6.00% | MSCI +4.00% | Delta +2.00%\n"
+        "DDD | Long | Scanner | 07.08.2026–01.11.2026 | System +8.00% | MSCI +3.00% | Delta +5.00%\n",
+        encoding="utf-8",
+    )
+    report = (
+        "7. MSCI-Vergleich\nBenchmark-Performance: NICHT VERFÜGBAR\n"
+        "8. Daten-/Prüfanhang\n"
+    )
+    result = production._trading_radar_benchmark_live_bericht_einsetzen(
+        report, {"Benchmark_Live.txt": str(source)}
+    )
+    assert "Benchmark-Performance: +5.00%" in result
+    assert "Benchmark-Vergleichsbasis: LIVE-SYSTEM" in result
+    assert "System-Performance-Live: +8.00%" in result
+    assert "Out-/Underperformance: +3.00 Prozentpunkte" in result
+    assert "SHA256:" in result
+
+
+def test_m01_gate_validates_live_system_delta_separately_from_portfolio_total():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("live_benchmark_fixture", ROOT / "tests/test_trading_radar_report_gate.py")
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR; Ø Positionsperformance: NICHT VERFÜGBAR.\n"
+        "Performance-Datenlücken: Berechnungswährung fehlt; keine belegte gemeinsame Währung.",
+        "Benchmark-Performance: +5,00%\n"
+        "Benchmark-Vergleichsbasis: LIVE-SYSTEM; gleichgewichteter Trade-/Signalvergleich; gleicher Zeitraum je Trade.\n"
+        "System-Performance-Live: +8,00%\n"
+        "Out-/Underperformance: +3,00 Prozentpunkte\n"
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
+        "Ø Positionsperformance: NICHT VERFÜGBAR\n"
+        "Performance-Datenlücken: vollständiger Tab-2-Export fehlt.",
+    )
+    errors = validate_report(report)
+    assert not any("Out-/Underperformance" in error for error in errors)
+
+
+def test_treasury_provenance_matches_real_macro_schema_without_percent_sign():
+    macro = (
+        "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL | "
+        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "RETRIEVED_AT=2026-10-30T07:12:00+00:00 | DELAY_DAYS=7 | UNIT=%"
+    )
+    report = "US 10Y Treasury: 5.0000%."
+    result = production._trading_radar_treasury_provenienz_ergänzen(
+        report, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
+    )
+    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Abrufzeit: 2026-10-30T07:12:00+00:00" in result
+    assert "Datenstichtag: 2026-10-23" in result
+    assert "Einheit: %" in result
+    assert "Verzögerung: 7 Kalendertage" in result
+    assert "Quelle: NICHT VERFÜGBAR" not in result
+
+
+def test_treasury_provenance_does_not_invent_missing_retrieval_metadata():
+    macro = (
+        "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL | "
+        "SOURCE=https://api.stlouisfed.org/fred/series/observations\n"
+        "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(
+        "US 10Y Treasury: 5.0000%.", macro, {}
+    )
+    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Datenstichtag: 2026-10-23" in result
+    assert "Abrufzeit: NICHT VERFÜGBAR" in result
+    assert "Verzögerung: NICHT VERFÜGBAR" in result
+
+
+def test_fred_snapshot_emits_saved_retrieval_time_and_delay_for_treasury(monkeypatch):
+    import datetime as dt
+    import sys
+    import types
+    import pandas as pd
+    sys.modules.setdefault("yfinance", types.SimpleNamespace(download=lambda *a, **k: pd.DataFrame()))
+    import makro_szenario as macro_module
+    saved_at = dt.datetime(2026, 10, 30, 7, 12, tzinfo=dt.timezone.utc).timestamp()
+    monkeypatch.setattr(
+        macro_module, "fred_series",
+        lambda series_id: pd.DataFrame({"DATE": [pd.Timestamp("2026-10-23")], series_id: [5.0]}),
+    )
+    monkeypatch.setattr(
+        macro_module, "_cache_load",
+        lambda: {"fred": {"DGS10": {
+            "saved_at": saved_at, "source": "https://api.stlouisfed.org/fred/series/observations",
+            "status": "REAL",
+        }}},
+    )
+    monkeypatch.setattr(macro_module.dt, "datetime", dt.datetime)
+    result = macro_module.fred_snapshot("US 10Y Treasury", "DGS10")
+    assert "RETRIEVED_AT=2026-10-30T07:12:00+00:00" in result
+    assert "DELAY_DAYS=" in result
+    assert "UNIT=%" in result
+
+
+def test_benchmark_live_rejects_aggregate_counts_that_do_not_reconcile(tmp_path):
+    source = tmp_path / "Benchmark_Live.txt"
+    source.write_text(
+        "Start der Systemrechnung / Trading-Engine: 07.08.2026\n"
+        "Benchmark: iShares Core MSCI World UCITS ETF USD (Acc) | Ticker: EUNL.DE\n"
+        "Methode: gleichgewichteter Trade-/Signalvergleich; kein Backtest.\n"
+        "Ø System-Performance: +8,00%\n"
+        "Ø MSCI-World-Performance im jeweils gleichen Zeitraum: +5,00%\n"
+        "Out-/Underperformance: +3,00%\n"
+        "Positionen besser als MSCI World: 3/4\n"
+        "Positionen schlechter als MSCI World: 0/4\n"
+        "Positionen gleichauf: 0/4\n"
+        "TRADE-DETAILS\n"
+        "AAA | Long | Scanner | 07.08.2026–01.11.2026 | System +8.00% | MSCI +5.00% | Delta +3.00%\n"
+        "BBB | Long | Scanner | 07.08.2026–01.11.2026 | System +10.00% | MSCI +8.00% | Delta +2.00%\n"
+        "CCC | Short | Scanner | 07.08.2026–01.11.2026 | System +6.00% | MSCI +4.00% | Delta +2.00%\n"
+        "DDD | Long | Scanner | 07.08.2026–01.11.2026 | System +8.00% | MSCI +3.00% | Delta +5.00%\n",
+        encoding="utf-8",
+    )
+    report = "7. MSCI-Vergleich\nBenchmark-Performance: NICHT VERFÜGBAR\n\n8. Daten-/Prüfanhang\n"
+    result = production._trading_radar_benchmark_live_bericht_einsetzen(
+        report, {"Benchmark_Live.txt": str(source)}
+    )
+    assert "Benchmark-Performance: NICHT VERFÜGBAR" in result
+    assert "rechnerisch inkonsistent" in result
+
+
+def test_m02_market_regime_requires_a_common_data_cutoff_and_all_core_observations():
+    from trading_radar_report_gate import validate_report
+    report = (
+        "1. Trading-Radar\n"
+        "Marktregime: Selektives Risk-on mit defensiver Rotation.\n"
+        "Indizes/Marktbreite: S&P 500 +1,0%; Marktbreite 8/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury bei 4,20%.\n"
+        "Dollar/Liquidität/Volatilität: VIX 18,0; DXY 100,0.\n"
+        "\n2. Thesen-Update\n"
+    )
+    full = report + "\n".join(
+        f"{i}. {title}\nAbschnitt mit ausreichendem Inhalt und nachvollziehbarer Datenlage."
+        for i, title in enumerate([
+            "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+            "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang",
+        ], start=2)
+    ) + "\nTRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL\n"
+    errors = validate_report(full)
+    assert any("M-02: Datenstichtag" in error for error in errors)
+
+
+def test_m04_gate_rejects_relative_strength_without_shared_cutoff():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m04_cutoff", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    text = report.report_fixture().replace(
+        "Datenstichtag: 2026-10-30. Fenster: 1M und 3M.",
+        "Fenster: 1M und 3M.",
+    )
+    errors = validate_report(text)
+    assert any("M-04: gemeinsamer Datenstichtag" in error for error in errors)
+
+
+def test_m06_event_dependency_is_assigned_to_event_wait_group(tmp_path):
+    source = tmp_path / "hebeltrader_candidates.json"
+    source.write_text(json.dumps({
+        "candidates": [{
+            "ticker": "EVT",
+            "name": "Event Candidate",
+            "status": "WARTET AUF EREIGNIS",
+            "event_dependencies": ["FOMC 2026-11-05"],
+            "risiken": ["Zinsentscheid kann Volatilität auslösen"],
+        }]
+    }), encoding="utf-8")
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(
+        report, {source.name: str(source)}
+    )
+    assert "EREIGNIS ABWARTEN:\n" in result
+    assert "Ereignisabhängigkeit: FOMC 2026-11-05" in result
+    assert "WATCHLIST: Name: Event Candidate (EVT)" in result
+
+
+def test_m09_tp2_is_optional_when_entry_plan_has_crv1_at_least_one():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_tp2_optional", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    text = fixture.report_fixture().replace(
+        "TP2: 120 | ", "TP2: NICHT VERFÜGBAR (nicht erforderlich) | "
+    )
+    errors = validate_report(text)
+    assert not any("M-09: Kandidat 1 benötigt" in error for error in errors), errors
+
+
+def test_m08_run_evidence_rejects_missing_run_identity_and_source_hashes(tmp_path):
+    from trading_radar_report_gate import validate_run_evidence
+    path = tmp_path / "run_evidence.json"
+    path.write_text(json.dumps({"start": {}, "end": {}}), encoding="utf-8")
+    errors = validate_run_evidence(path)
+    assert any("M-08: Run-Evidence enthält keine run_identity" in error for error in errors)
+
+
+def test_m01_reconciles_the_actual_run413_live_benchmark_snapshot():
+    fixture = ROOT / "tests" / "fixtures" / "Benchmark_Live_run413_2026-11-01.txt"
+    report = (
+        "7. MSCI-Vergleich\nBenchmark-Performance: NICHT VERFÜGBAR\n\n"
+        "8. Daten-/Prüfanhang\n"
+    )
+    result = production._trading_radar_benchmark_live_bericht_einsetzen(
+        report, {"Benchmark_Live.txt": str(fixture)}
+    )
+    assert "Benchmark-Performance: +0.80%" in result
+    assert "System-Performance-Live: -5.74%" in result
+    assert "Out-/Underperformance: -6.54 Prozentpunkte" in result
+    assert "Trades=11" in result
+    assert "besser=4; schlechter=7; gleichauf=0; gesamt=11" in result
+
+
+def test_m03_m06_parse_actual_scanner_csv_schema_status2_setup_pattern_and_crv1(tmp_path):
+    source = tmp_path / "Setups(2026-10-30).csv"
+    source.write_text(
+        "Ticker;Name;Setup_Typ;Pattern;Status2;Status_Grund;CRV1;Einstieg;Stop;TP1;TP2;Risikohinweis\n"
+        "AAA;Alpha AG;Pullback-Zone;Hammer;VALIDE;Alles ok;1,95;100;95;110;;Risiko bleibt Marktlage\n"
+        "BBB;Beta AG;EMA-Breakout;Kein;ACHTUNG;Bärischer MACD-Trend;1,20;50;47;54;;Momentum schwach\n",
+        encoding="utf-8",
+    )
+    trendwende = tmp_path / "Trendwende_Setups(2026-10-30).csv"
+    trendwende.write_text("Ticker;Name;Kurs;Stop;TP1;CRV1\n", encoding="utf-8")
+    metals = tmp_path / "Edelmetalle_Setups(2026-10-30).csv"
+    metals.write_text("Ticker;Name;Kurs;Stop;TP1;CRV1\n", encoding="utf-8")
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(
+        report, {
+            source.name: str(source),
+            trendwende.name: str(trendwende),
+            metals.name: str(metals),
+        }
+    )
+    assert "Kandidatenquellen-Prüfstatus: VOLLSTÄNDIG" in result
+    assert "Asset/Ticker: Alpha AG (AAA)" in result
+    assert "Scanner-Setup: Pullback-Zone; Chartmuster: Hammer" in result
+    assert "Statusgruppe: JETZT TECHNISCH PRÜFEN" in result
+    assert "Asset/Ticker: Beta AG (BBB)" in result
+    assert "Statusgruppe: AUF TRIGGER WARTEN" in result
+    assert "TP2: NICHT VERFÜGBAR" in result
+
+
+def test_m01_live_benchmark_in_section7_is_not_misclassified_as_external_portfolio_claim():
+    import importlib.util
+    from trading_radar_report_gate import validate_report
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_live_benchmark_gate", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture()
+    start = report.index("7. MSCI-Vergleich")
+    end = report.index("8. Daten-/Prüfanhang")
+    section = production._trading_radar_benchmark_live_bericht_einsetzen(
+        "7. MSCI-Vergleich\nBenchmark-Performance: NICHT VERFÜGBAR\n\n8. Daten-/Prüfanhang\n",
+        {"Benchmark_Live.txt": str(ROOT / "tests/fixtures/Benchmark_Live_run413_2026-11-01.txt")},
+    )
+    replacement = section[section.index("7. MSCI-Vergleich"):section.index("8. Daten-/Prüfanhang")]
+    replacement += (
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
+        "Ø Positionsperformance: NICHT VERFÜGBAR\n"
+        "Performance-Datenlücken: vollständiger Tab-2-Export fehlt.\n"
+    )
+    report = report[:start] + replacement + report[end:]
+    errors = validate_report(report)
+    assert not any("M-01: Numerische System-/Benchmark-Performance außerhalb" in error for error in errors)
+
+
+def test_m07_prefers_one_complete_macro_observation_over_duplicate_summary_line():
+    macro = (
+        "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL | "
+        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "RETRIEVED_AT=2026-10-30T07:12:00+00:00 | DELAY_DAYS=7 | UNIT=%\n"
+        "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(
+        "US 10Y Treasury: 5.00%.", macro, {}
+    )
+    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Abrufzeit: 2026-10-30T07:12:00+00:00" in result
+    assert "Verzögerung: 7 Kalendertage" in result
+
+
+def test_m03_source_inventory_cannot_be_complete_when_required_scanner_family_is_missing(tmp_path):
+    source = tmp_path / "Setups(2026-10-30).csv"
+    source.write_text("Ticker;Name;Status2;Setup_Typ;Einstieg;Stop;TP1;CRV1\n", encoding="utf-8")
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(
+        report, {source.name: str(source)}
+    )
+    assert "Kandidatenquellen-Prüfstatus: UNVOLLSTÄNDIG" in result
+    assert "Pflicht-Scannerquellen fehlen" in result
+
+
+def test_m05_exclusive_mode_uses_one_register_update_and_never_overwrites_processed_report():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    first_update = source.index("register_result = update_register(")
+    strict_check = source.rfind("strict_thesis_findings = validate_radar_report_strict(text)", 0, first_update)
+    validation_guard = source.rfind("elif validation_errors:", 0, first_update)
+    second_save_guard = source.index('and not globals().get("_GEMINI_TRADING_RADAR_ONLY_MODE")')
+    exclusive_skip = source.index("kein zweites Registerupdate")
+    assert strict_check >= 0 and validation_guard > strict_check
+    assert second_save_guard > first_update
+    assert exclusive_skip > second_save_guard

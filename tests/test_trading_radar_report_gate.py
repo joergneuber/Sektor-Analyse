@@ -21,6 +21,11 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
     tab2_digest = hashlib.sha256("\n".join(tab2_lines).encode("utf-8")).hexdigest()
     sections = [
         "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
+        "Marktregime: Selektives Risk-on mit defensiver Rotation.\n"
+        "Marktregime-Datenstichtag: 2026-10-30\n"
+        "Indizes/Marktbreite: S&P 500 +1,0%; Marktbreite 8/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.\n"
+        "Dollar/Liquidität/Volatilität: VIX 18,0; DXY 100,0.\n"
         "Index S&P 500: 1M +1,0%; 3M +2,0%.\nIndex Nasdaq: 1M +0,5%; 3M +1,5%.\n"
         "Basisszenario: Seitwärts bis aufwärts. Eintritt: Marktbreite stabil. Bestätigungstrigger: Ausbruch. Invalidierungstrigger: Bruch 200-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite. Konsequenz: selektive Longs.\n"
         "Positives Alternativszenario: Beschleunigter Aufwärtstrend. Eintritt: Renditen fallen. Bestätigungstrigger: neue Hochs. Invalidierungstrigger: Rückfall unter Ausbruchsniveau. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko erhöhen.\n"
@@ -566,3 +571,34 @@ def test_numeric_portfolio_audit_rows_cannot_contain_eunl_benchmark():
     )
     errors = gate.validate_report(text)
     assert any("EUNL.DE darf nicht als System-Trade" in error for error in errors), errors
+
+
+def test_m06_allows_distinct_setup_ids_for_same_ticker_in_same_group():
+    base = report_fixture()
+    old = (
+        "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup."
+    )
+    new = (
+        "BESTÄTIGTE SETUPS:\n"
+        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Status: bestätigt | Begründung: Trendfolge-Setup | Trigger: 100\n"
+        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendwende|bodenbildung|doppelboden | Quelle: Trendwende_Setups.csv | Status: bestätigt | Begründung: Trendwende-Setup | Trigger: 95"
+    )
+    assert old in base
+    report = base.replace(old, new)
+    errors = gate.validate_report(report)
+    assert not any("Doppelte Kandidatenidentität" in error for error in errors), errors
+
+
+def test_m06_rejects_duplicate_same_setup_identity_for_same_ticker():
+    base = report_fixture()
+    old = (
+        "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup."
+    )
+    duplicate = (
+        "BESTÄTIGTE SETUPS:\n"
+        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Status: bestätigt | Begründung: Setup | Trigger: 100\n"
+        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups_backup.csv | Status: bestätigt | Begründung: Setup | Trigger: 100"
+    )
+    assert old in base
+    errors = gate.validate_report(base.replace(old, duplicate))
+    assert any("Doppelte Kandidatenidentität" in error for error in errors), errors
