@@ -19083,8 +19083,8 @@ if __name__ == "__main__":
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:
             with open(output_path, "a", encoding="utf-8") as handle:
-                handle.write(f"ohlcv_persistence_gate={persistence_gate_status}\\n")
-                handle.write(f"market_first_gate={market_first_gate_status}\\n")
+                handle.write(f"ohlcv_persistence_gate={persistence_gate_status}\n")
+                handle.write(f"market_first_gate={market_first_gate_status}\n")
                 handle.write(f"status=SUCCESS\nfachlich_final={fachlich_final}\nreport_path={Path(ausgabe_pfad).name}\n")
         raise SystemExit(0)
     if str(ergebnis_text or "").startswith("[GEMINI_TECHNISCHER_FALLBACK]"):
