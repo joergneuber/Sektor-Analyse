@@ -4795,6 +4795,22 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         _gemini_stufen_cache["A3"] = historie_analyse
         print(f"  Gemini A3 Historie erfolgreich | Zeichen: {len(historie_analyse)}")
 
+    thesenregister_context = "Kein vorhandenes Thesenregister im Runner gefunden; Vorzustand ist nicht nachweisbar."
+    thesenregister_path = os.path.join(os.getcwd(), ".trading_radar_thesen.json")
+    try:
+        if os.path.isfile(thesenregister_path):
+            with open(thesenregister_path, "r", encoding="utf-8") as register_handle:
+                register_payload = json.load(register_handle)
+            if isinstance(register_payload, dict) and isinstance(register_payload.get("theses"), list):
+                thesenregister_context = json.dumps(
+                    register_payload, ensure_ascii=False, sort_keys=True
+                )[:80000]
+    except (OSError, ValueError, TypeError) as register_context_exc:
+        thesenregister_context = (
+            "Vorhandenes Thesenregister konnte nicht gelesen werden: "
+            + type(register_context_exc).__name__
+        )
+
     final_prompt = (
         "FINALE SYNTHESE. Erstelle die vollstaendige finale Auswertung aus den drei fachlichen "
         "Voranalysen, dem autoritativen Faktenblock UND dem vollstaendigen aktuellen Quelldaten-Handoff "
@@ -4810,7 +4826,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "die bereits verdichteten A1/A2/A3-Ergebnisse, sondern pruefe bei relevanten Aussagen auch den "
         "zugrunde liegenden aktuellen Quelldatenbestand. Persistent gespeicherte Historien bleiben davon "
         "getrennt und werden ueber A3 bzw. den bestehenden Historienmechanismus verarbeitet. "
-        "THESENREGISTER: Gib am Ende einen optionalen, exakt markierten Block ```TRADING_RADAR_THESEN_JSON\n{\"data_cutoff\":\"Zeitstempel aus den aktuellen Daten, sonst leer\",\"theses\":[...]}\n``` aus. Jede These hat thesis_id (bei Fortführung dieselbe ID), thesis, horizon, evidence[], counter_evidence[], confidence, confirm_triggers[], invalidate_triggers[], event_dependencies[], asset_classes[], candidates[] und status. Zulässige Status: NEU, BESTAETIGT, VERSTAERKT, ABGESCHWAECHT, WARTET_AUF_EVENT, WIDERLEGT, ERSETZT, UNKLAR. Eventdetails (Name, Datum/Uhrzeit/Zeitzone, Konsens, Vorwert, Istwert und Marktreaktion) nur aus bereitgestellten Fakten; fehlende Angaben leer/null, nicht schätzen. Keine technische Handelsfreigabe daraus ableiten. Wenn keine belastbaren Thesen vorliegen, theses=[] ausgeben. Der Block darf keine neuen Fakten gegenüber dem Bericht einführen. "
+        "THESENREGISTER: Gib am Ende einen verpflichtenden, exakt markierten Block ```TRADING_RADAR_THESEN_JSON\n{\"data_cutoff\":\"Zeitstempel aus den aktuellen Daten, sonst leer\",\"theses\":[...]}\n``` aus. Jede These hat thesis_id (bei Fortführung dieselbe ID), thesis, horizon, evidence[], counter_evidence[], confidence, confirm_triggers[], invalidate_triggers[], event_dependencies[], asset_classes[], candidates[] und status. Zulässige Status: NEU, BESTAETIGT, VERSTAERKT, ABGESCHWAECHT, WARTET_AUF_EVENT, WIDERLEGT, ERSETZT, UNKLAR. Eventdetails (Name, Datum/Uhrzeit/Zeitzone, Konsens, Vorwert, Istwert und Marktreaktion) nur aus bereitgestellten Fakten; fehlende Angaben leer/null, nicht schätzen. Keine technische Handelsfreigabe daraus ableiten. Wenn keine neuen Thesen vorliegen, alle aktiven Thesen aus dem unten bereitgestellten Register mit identischer thesis_id und unverändertem Inhalt übernehmen; theses=[] ist nur zulässig, wenn das Register nachweislich leer ist und keine belastbare These besteht. Der Block darf keine neuen Fakten gegenüber dem Bericht einführen. Vorhandenes Register (technischer Vorzustand): " + thesenregister_context + ". Ein fehlender Vorzustand darf niemals als unverändert bewertet werden. "
         "Gemini darf die vollstaendige B-/C-/A-Historie interpretieren; in der fuer den Nutzer hervorgehobenen Statusmeldung stehen aber aktuelle A-Einstufungen, Aufstiege zu A und Statusverluste aus A im Vordergrund. Unveraendertes B (B→B) ist fuer den Nutzer irrelevant und darf nicht als eigene Meldung hervorgehoben werden. C→B kann als Vorstufe intern eingeordnet werden, ist aber kein A-Aufstieg. Statusverläufe müssen, wenn sie genannt werden, als exakter Vorheriger-Status → aktueller Status wiedergegeben werden. Fehlende Statuswerte bedeuten „Statusverlauf nicht verifiziert“ und niemals „stabil“. Das Wort stabil/gleichbleibend ist nur zulässig, wenn beide vorhandenen Statuswerte identisch sind; ein Wechsel wie C→B ist als Verbesserung und nicht als stabil zu beschreiben.\n\n"
         "DARSTELLUNGSREGEL: Jede genannte Aktie bzw. jedes Unternehmen muss immer mit Firmenname und Ticker im Format Name (TICKER) erscheinen. "
         "Keine Aktiennennung nur über den Ticker oder nur über den Namen. Dies gilt insbesondere für 1.3, 1.4, 2.1–2.5, 3.x, 4, 5, 6.x, 8.x und 9.x.\n\n"
@@ -17026,11 +17042,14 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     import json as _json
 
     body = match.group("body")
-    sources, records = [], []
+    sources, records, source_parse_errors = [], [], []
     ticker_aliases = ("ticker", "symbol", "asset", "instrument", "yahoo_ticker")
     name_aliases = ("name", "firmenname", "unternehmen", "company", "asset_name")
     status_aliases = ("status", "setup_status", "signal_status", "entscheidung")
-    trigger_aliases = ("trigger", "kurs_trigger", "struktur_trigger", "entry_trigger", "ausloeser")
+    trigger_aliases = (
+        "trigger", "kurs_trigger", "struktur_trigger", "entry_trigger", "ausloeser",
+        "breakout_trigger", "trigger_price", "trigger_level", "resistance_trigger",
+    )
     reason_aliases = ("reason", "begruendung", "ablehnungsgrund", "grund")
 
     def normrow(row):
@@ -17056,10 +17075,19 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
         entry = first(row, ("entry", "einstieg", "entry_price", "einstiegskurs"))
         stop = first(row, ("stop", "stop_loss", "stopp"))
         target = first(row, ("tp1", "target", "kursziel", "take_profit"))
+        resistance = first(row, ("resistance", "widerstand", "breakout_level", "ausbruchsniveau"))
+        support = first(row, ("support", "unterstützung", "unterstuetzung", "support_level"))
+        if not trigger and resistance:
+            trigger = f"Tagesschlusskurs über dem quellenbasierten Widerstand {resistance}"
+        elif not trigger and support:
+            trigger = f"Bestätigte Rückeroberung des quellenbasierten Unterstützungslevels {support}"
         # A row is a confirmed setup only when the source itself explicitly
         # says so and provides a verifiable trigger. No status is inferred from
         # the mere presence of entry/stop/target numbers.
-        rejected = any(token in status for token in ("reject", "verworfen", "invalid", "nicht handelbar", "abgelehnt"))
+        rejected = any(token in status for token in (
+            "reject", "verworfen", "invalid", "nicht handelbar", "abgelehnt",
+            "kein kandidat", "keine kandidaten",
+        ))
         confirmed = any(token in status for token in ("confirmed", "bestaetigt", "bestätigt", "freigegeben")) and bool(trigger)
         if rejected:
             bucket = "VERWORFENE KANDIDATEN"
@@ -17077,7 +17105,8 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
             detail += f"; Trigger: {trigger}" if trigger else "; überprüfbarer Kurs-/Strukturtrigger fehlt"
             if reason: detail += f"; Hinweis: {reason}"
         records.append({"ticker": ticker, "name": name, "source": source_name,
-                        "row": row_no, "bucket": bucket, "detail": detail})
+                        "row": row_no, "bucket": bucket, "status": status,
+                        "reason": reason, "detail": detail})
 
     for label, raw_path in (eingabedateien or {}).items():
         if not isinstance(raw_path, (str, os.PathLike)):
@@ -17087,6 +17116,7 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
         if not os.path.isfile(path) or not re.search(r"(?i)(scanner|kandidat|trendfolge|trendwende|hebeltrader|charttechnik|watchlist)", name):
             continue
         sources.append(name)
+        records_before_source = len(records)
         try:
             suffix = os.path.splitext(path)[1].lower()
             if suffix in {".csv", ".tsv"}:
@@ -17107,44 +17137,111 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
                     elif isinstance(value, list):
                         for index, nested in enumerate(value, start=1): walk(nested, index)
                 walk(payload)
-        except (OSError, ValueError, TypeError, _csv.Error):
-            # Source remains listed, but a parse failure is made explicit below.
-            records.append({"ticker": "", "name": "", "source": name, "row": 0,
-                            "bucket": "WATCHLIST", "detail": "Quelle nicht lesbar; manuelle Prüfung erforderlich"})
+            if len(records) == records_before_source:
+                source_parse_errors.append(
+                    f"{name}: keine auswertbaren Datensätze mit eindeutigem Ticker/Symbol-Feld erkannt"
+                )
+        except (OSError, ValueError, TypeError, _csv.Error) as exc:
+            source_parse_errors.append(
+                f"{name}: Quelle nicht lesbar ({type(exc).__name__}: {exc})"
+            )
+
+    if source_parse_errors:
+        body = (
+            "Quellen-Prüfstatus: NICHT VERIFIZIERBAR; "
+            + " | ".join(source_parse_errors)
+            + "\n"
+            + body
+        )
 
     if not re.search(r"(?im)^\s*Kandidatenquellen\s*:", body):
         source_line = "Kandidatenquellen: " + ("; ".join(sorted(set(sources), key=str.casefold))
                      if sources else "NICHT VERFÜGBAR (keine passende Scanner-/Kandidatenquelle im Eingabepaket)")
         body = source_line + "\n" + body.lstrip("\n")
 
-    # Keep existing model-generated records; append source-derived records with
-    # provenance so the gate can distinguish scanner facts from narrative text.
-    if records:
-        for bucket in ("BESTÄTIGTE SETUPS", "WATCHLIST", "VERWORFENE KANDIDATEN"):
-            rows = [r for r in records if r["bucket"] == bucket]
-            if not rows:
-                continue
-            existing = re.search(rf"(?im)^\s*(?:#{{1,6}}\s*)?{re.escape(bucket)}\s*:\s*", body)
-            rendered = []
-            for row in rows:
-                if row["ticker"]:
-                    rendered.append(
-                        f"- Asset/Ticker: {row['name']} ({row['ticker']}) | Quelle: {row['source']}"
-                        f" | Quellzeile: {row['row']} | Statusgruppe: {bucket} | {row['detail']}"
-                    )
-                else:
-                    rendered.append(f"- Quelle: {row['source']} | {row['detail']}")
-            if existing:
-                insert_at = existing.end()
-                body = body[:insert_at] + "\n" + "\n".join(rendered) + body[insert_at:]
+    # Deduplicate source rows by canonical ticker + status group. Keep the most
+    # informative row, while retaining every source-row reference for audit.
+    deduplicated = {}
+    for row in records:
+        if not row.get("ticker"):
+            continue
+        key = (row["ticker"].upper(), row["bucket"])
+        current = deduplicated.get(key)
+        detail_folded = row.get("detail", "").casefold()
+        score = (
+            bool(re.search(r"(?i)Trigger:\s*(?!NICHT VERFÜGBAR|fehlt)", row.get("detail", ""))),
+            not any(token in detail_folded for token in ("nicht ausgelesen", "nicht ausgelesen", "unbekannt")),
+            bool(re.search(r"(?i)kaufkandidat|bestätigt|bestaetigt|kein kandidat|verworfen", detail_folded)),
+            len(row.get("detail", "")),
+        )
+        if current is None:
+            deduplicated[key] = dict(row, source_rows=[row["row"]])
+        else:
+            current["source_rows"].append(row["row"])
+            old_detail_folded = current.get("detail", "").casefold()
+            old_score = (
+                bool(re.search(r"(?i)Trigger:\s*(?!NICHT VERFÜGBAR|fehlt)", current.get("detail", ""))),
+                not any(token in old_detail_folded for token in ("nicht ausgelesen", "unbekannt")),
+                bool(re.search(r"(?i)kaufkandidat|bestätigt|bestaetigt|kein kandidat|verworfen", old_detail_folded)),
+                len(current.get("detail", "")),
+            )
+            if score > old_score:
+                source_rows = current["source_rows"]
+                deduplicated[key] = dict(row, source_rows=source_rows)
+    records = list(deduplicated.values())
+
+    # The source-derived inventory replaces model-generated rows in these
+    # machine-audited groups. This prevents duplicate tickers from surviving
+    # alongside the deterministic source records.
+    body = re.sub(
+        r"(?ims)^\s*(?:#{1,6}\s*)?(?:BESTÄTIGTE SETUPS|WATCHLIST|VERWORFENE KANDIDATEN)\s*:\s*.*?(?=^\s*(?:#{1,6}\s*)?(?:RISIKO-WATCH|[A-ZÄÖÜ][^\r\n]{0,50}:)\s*$|\Z)",
+        "",
+        body,
+    )
+    for bucket in ("BESTÄTIGTE SETUPS", "WATCHLIST", "VERWORFENE KANDIDATEN"):
+        rows = [r for r in records if r["bucket"] == bucket]
+        rendered = []
+        for row in rows:
+            row_refs = sorted(set(row.get("source_rows", [row["row"]])))
+            row_ref_text = " | ".join(f"Quellzeile: {int(x)}" for x in row_refs)
+            detail = row["detail"]
+            if bucket == "WATCHLIST" and not re.search(r"(?i)Trigger:", detail):
+                detail += "; Trigger: NICHT VERFÜGBAR – aus den gelieferten Quelldaten nicht belastbar ableitbar"
+            rendered.append(
+                f"- Asset/Ticker: {row['name']} ({row['ticker']}) | Quelle: {row['source']}"
+                f" | {row_ref_text} | Statusgruppe: {bucket}"
+                f" | Status: {row.get('status') or 'NICHT AUSGELESEN'}"
+                f" | Begründung: {row.get('reason') or ('Quelle meldet ' + (row.get('status') or 'keinen Status'))}"
+                f" | {detail}"
+            )
+        if not rendered:
+            empty_labels = {
+                "BESTÄTIGTE SETUPS": "Keine bestätigten Setups",
+                "WATCHLIST": "Keine Watchlist-Einträge",
+                "VERWORFENE KANDIDATEN": "Keine verworfenen Kandidaten",
+            }
+            if source_parse_errors or not sources:
+                reason = (
+                    "; ".join(source_parse_errors)
+                    if source_parse_errors
+                    else "keine passende Kandidatenquelle im Eingabepaket vorhanden"
+                )
+                rendered = [
+                    f"- Status NICHT VERIFIZIERBAR; Quelle: {', '.join(sources) or 'NICHT VERFÜGBAR'}"
+                    f" | Begründung: {reason}; Gruppe kann nicht als leer bestätigt werden."
+                ]
             else:
-                body += f"\n\n{bucket}:\n" + "\n".join(rendered) + "\n"
+                rendered = [
+                    f"- {empty_labels[bucket]}; Begründung: Quelleninventur durchgeführt, "
+                    "keine Datensätze dieser Statusgruppe."
+                ]
+        body += f"\n\n{bucket}:\n" + "\n".join(rendered) + "\n"
 
     # Empty groups are only legitimate when no source-derived or report candidate
     # exists. Never fabricate a zero-candidate result merely because the parser
     # did not recognize a source schema.
     has_records = bool(records) or bool(re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:Asset/Ticker|Ticker|Symbol)\s*[:=]\s*\S+", body))
-    if not has_records:
+    if not has_records and sources and not source_parse_errors:
         empty_reason = "keine Kandidatendatensätze in den verfügbaren Quellen gefunden; Quelleninventur durchgeführt"
         for heading, content in (
             ("BESTÄTIGTE SETUPS", f"0 – {empty_reason}."),
@@ -17178,9 +17275,9 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     import csv as _csv
 
     def add_source_name(ticker, name):
-        ticker = str(ticker or "").strip()
+        ticker = str(ticker or "").strip().upper()
         name = str(name or "").strip()
-        if ticker and ticker.upper() not in protected_words and name and name.casefold() != ticker.casefold():
+        if ticker and ticker not in protected_words and name and name.casefold() != ticker.casefold():
             name_by_ticker.setdefault(ticker, name)
 
     def walk_json_names(value):
@@ -17229,17 +17326,37 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         r"(?im)(?:^|\|\s*)Ticker:\s*([^|\r\n]+)\s*\|\s*Name:\s*([^|\r\n]+)",
         text,
     ):
-        ticker, name = match.group(1).strip(), match.group(2).strip()
-        if ticker and ticker.upper() not in protected_words and name and name.casefold() != ticker.casefold():
+        ticker, name = match.group(1).strip().upper(), match.group(2).strip()
+        if ticker and ticker not in protected_words and name and name.casefold() != ticker.casefold():
             name_by_ticker.setdefault(ticker, name)
 
-    # Also resolve names from any explicit Name (Ticker) display.
+    # Only accept compact, standalone entity pairs as a secondary mapping.
+    # Unbounded matching captured arbitrary preceding prose as company names,
+    # poisoning ticker mappings and corrupting OHLCV inventories.
+    rejected_pair_names = {
+        "wichtigste gegenbelege", "fortgesetzte underperformance",
+        "underperformance gegenüber dem", "name nicht aufgelöst",
+        "starke sektor-reliance", "aktien/etfs", "gold futures",
+    }
     for match in re.finditer(
-        r"(?<![A-Za-z0-9])([^()|\r\n]{3,}?)\s+\(([A-Za-z0-9][A-Za-z0-9.=^/_-]*)\)",
+        r"(?<![A-Za-z0-9])([^()|;\r\n]{3,80}?)\s+"
+        r"\(([A-Za-z0-9][A-Za-z0-9.=^/_-]{1,20})\)",
         text,
     ):
-        name, ticker = match.group(1).strip(" -*"), match.group(2).strip()
-        if name and ticker.upper() not in protected_words and name.casefold() != ticker.casefold():
+        name, ticker = match.group(1).strip(" -*"), match.group(2).strip().upper()
+        # A leading report label such as "Top-Profiteur:" is not part of the
+        # company name; retain only the entity text after the final label colon.
+        if ":" in name:
+            name = name.rsplit(":", 1)[-1].strip()
+        folded_name = re.sub(r"\s+", " ", name).casefold()
+        if (
+            name and len(name) <= 80 and ticker.upper() not in protected_words
+            and name.casefold() != ticker.casefold()
+            and folded_name not in rejected_pair_names
+            and not re.search(r"(?i)\b(?:gegenbelege|underperformance|wichtigste|datenstand|quelle|ticker|statusgruppe)\b", name)
+            and ":" not in name
+            and not re.search(r"[!?]\s", name)
+        ):
             name_by_ticker.setdefault(ticker, name)
 
     # Cache is strictly a last-resort source: structured input rows and explicit
@@ -17344,7 +17461,8 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         if re.match(r"^\s*(?:#{1,6}\s*)?\d{1,2}(?:\.\d+)*[.·]?\s+\S.*$", line):
             return line
         if (not line.strip() or "|" in line or structured_label.search(line)
-                or re.match(r"^\s*[A-Z][A-Z0-9_]{5,}\s*=", line)):
+                or re.match(r"^\s*[A-Z][A-Z0-9_]{5,}\s*=", line)
+                or re.match(r"(?i)^\s*OHLCV-(?:Symbole|Symbolstatus)", line)):
             return line
         if re.match(r"(?i)^\s*(?:JETZT TECHNISCH PRÜFEN|AUF TRIGGER WARTEN|EREIGNIS ABWARTEN|NICHT HANDELBAR|VERWERFEN\s*/\s*INVALIDIERT)\s*:", line):
             return line
@@ -17375,7 +17493,10 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         for ticker, name in sorted(name_by_ticker.items(), key=lambda item: len(item[0]), reverse=True):
             if not ticker or not name or len(ticker) < 2:
                 continue
-            pattern = re.compile(rf"(?<![A-Za-z0-9._=^/]){re.escape(ticker)}(?![A-Za-z0-9_=^/])")
+            pattern = re.compile(
+                rf"(?<![A-Za-z0-9._=^/]){re.escape(ticker)}(?![A-Za-z0-9_=^/])",
+                flags=re.IGNORECASE,
+            )
             def replace_known(match):
                 start_pos, end_pos = match.span()
                 before = line[max(0, start_pos - len(name) - 4):start_pos]
@@ -17459,9 +17580,9 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
             token = match.group(0)
             if token in name_by_ticker or token in non_ticker_acronyms or token in excluded_tickers:
                 return token
-            # Existing Name (TICKER) pairs are already resolved, even if the
-            # ticker is not present in the cache/source map.
-            if re.search(r"\b[A-Za-z][A-Za-z0-9&.,'’ -]+\s+\(" + re.escape(token) + r"\)", line):
+            # Existing parenthesized ticker pairs are already resolved, even
+            # when the company name itself contains a nested legal suffix.
+            if re.search(r"[^\r\n]{1,120}\(" + re.escape(token) + r"\)", line):
                 return token
             # Avoid marking a token that is itself part of a larger recognized
             # exchange symbol (e.g. the ALB part of ALB.DE).
@@ -17696,18 +17817,24 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     )
     symbol_status = audit.get("quality_status_by_ticker") or {}
     symbol_status_lines = []
+    ticker_pattern = re.compile(r"(?:\^[A-Z0-9][A-Z0-9._=/\-]{0,29}|[A-Z0-9][A-Z0-9._=/\-]{0,29})")
     if isinstance(symbol_status, dict) and len(symbol_status) == universe:
         normalized_states = {state: [] for state in ("VALID", "MISSING", "STALE", "INVALID")}
         unknown_symbols = []
+        canonical_symbols = []
         for ticker, state_value in symbol_status.items():
+            canonical_ticker = str(ticker).strip().upper()
             state = str(state_value).strip().upper()
-            if state not in normalized_states:
+            if not ticker_pattern.fullmatch(canonical_ticker) or state not in normalized_states:
                 unknown_symbols.append(str(ticker))
             else:
-                normalized_states[state].append(str(ticker).strip().upper())
-        if not unknown_symbols and all(
-            len(normalized_states[state]) == quality_counts.get(state, -1)
-            for state in normalized_states
+                canonical_symbols.append(canonical_ticker)
+                normalized_states[state].append(canonical_ticker)
+        if (
+            not unknown_symbols
+            and len(set(canonical_symbols)) == universe
+            and all(len(normalized_states[state]) == quality_counts.get(state, -1)
+                    for state in normalized_states)
         ):
             for state in normalized_states:
                 symbol_status_lines.append(
@@ -17880,6 +18007,300 @@ def _trading_radar_thesenregister_nachweis_einfuegen(report_path, evidence_lines
             os.unlink(temp_path)
 
 
+
+
+def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedateien=None):
+    """Attach complete per-observation provenance; never infer missing metadata."""
+    if not isinstance(text, str) or not text:
+        return text
+
+    source_file = None
+    for label, path in (eingabedateien or {}).items():
+        if "makro" in str(label).casefold() and path:
+            source_file = os.path.basename(os.fspath(path))
+            break
+
+    def extract_metadata(source_line):
+        patterns = {
+            "Quelle": r"(?i)\b(?:Quelle|Source)\s*[:=]\s*([^;|]+)",
+            "Abrufzeit": r"(?i)\b(?:Abrufzeit|Retrieved(?:\s+at)?)\s*[:=]\s*([^;|]+)",
+            "Datenstichtag": r"(?i)\b(?:Datenstichtag|Beobachtungsdatum|Observation(?:\s+date)?)\s*[:=]\s*([^;|]+)",
+            "Einheit": r"(?i)\b(?:Einheit|Unit)\s*[:=]\s*([^;|]+)",
+            "Verzögerung": r"(?i)\b(?:Verzögerung|Delay)\s*[:=]\s*([^;|]+)",
+        }
+        values = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, source_line or "")
+            if match:
+                values[key] = match.group(1).strip().rstrip(".")
+        return values
+
+    macro_lines = str(makro_text or "").splitlines()
+    output = []
+    for line in text.splitlines():
+        is_treasury = bool(
+            re.search(
+                r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|US[- ]?10[ JY](?:[- ]?Rendite)?)",
+                line,
+            )
+            and re.search(r"\d+(?:[,.]\d+)?\s*%", line)
+        )
+        if not is_treasury:
+            output.append(line)
+            continue
+
+        value_match = re.search(r"(\d+(?:[,.]\d+)?)\s*%", line)
+        value = value_match.group(1).replace(",", ".") if value_match else None
+        matching_source_lines = [
+            source_line for source_line in macro_lines
+            if re.search(r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?).*Treasury", source_line)
+            and (
+                value is None
+                or any(
+                    candidate.replace(",", ".") == value
+                    for candidate in re.findall(r"\d+(?:[,.]\d+)?(?=\s*%)", source_line)
+                )
+            )
+        ]
+        source_metadata = {}
+        for source_line in matching_source_lines:
+            source_metadata.update(extract_metadata(source_line))
+
+        # A source filename identifies the supplied document, not the market
+        # data provider. Keep that distinction explicit.
+        defaults = {
+            "Quelle": "NICHT VERFÜGBAR",
+            "Abrufzeit": "NICHT VERFÜGBAR",
+            "Datenstichtag": "NICHT VERFÜGBAR",
+            "Einheit": "%",
+            "Verzögerung": "NICHT VERFÜGBAR",
+        }
+        if source_file:
+            defaults["Quelldatei"] = source_file
+        for key in defaults:
+            existing = extract_metadata(line)
+            if key in existing:
+                continue
+            if key in source_metadata:
+                defaults[key] = source_metadata[key]
+        # Preserve any source fields already present; add only missing fields.
+        existing = extract_metadata(line)
+        fields = []
+        for key in ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung"):
+            if key not in existing:
+                fields.append(f"{key}: {defaults[key]}")
+        if source_file and not re.search(r"(?i)\bQuelldatei\s*[:=]", line):
+            fields.append(f"Quelldatei: {source_file}")
+        if fields:
+            line += " | " + "; ".join(fields) + "."
+        output.append(line)
+    return "\\n".join(output)
+
+
+def _trading_radar_szenarien_ergänzen(text):
+    """Add explicit scenarios using only observations present in this report."""
+    if not isinstance(text, str) or not text:
+        return text
+    section = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?1\s*[.·]\s*Trading-Radar[^\r\n]*$",
+        text,
+    )
+    if not section:
+        return text
+    tail = text[section.end():]
+    next_section = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+        tail,
+    )
+    if not next_section:
+        return text
+    end = section.end() + next_section.start()
+    body = text[section.end():end]
+    body = re.sub(
+        r"(?ims)^[ \t]*(?:Positives Alternativszenario|Negatives Alternativszenario):[^\r\n]*"
+        r"(?:\r?\n(?:[ \t]+(?:Eintritt|Eintrittsbedingung|Bestätigungstrigger|"
+        r"Invalidierungstrigger|Zeithorizont|Indikatoren|Konsequenz):[^\r\n]*)?)*",
+        "",
+        body,
+    )
+
+    def first(pattern, default="NICHT VERFÜGBAR"):
+        match = re.search(pattern, text, re.I | re.M)
+        return next((group.strip() for group in match.groups() if group), default) if match else default
+
+    breadth = first(
+        r"Marktbreite(?:-Proxy)?[^:\r\n]*:\s*([0-9]+\s*/\s*[0-9]+)"
+        r"|Quantitative Marktbreite:\s*([0-9]+\s*/\s*[0-9]+)"
+    )
+    # The alternation above can capture group 2; normalize to a single value.
+    if breadth == "NICHT VERFÜGBAR":
+        breadth_match = re.search(
+            r"(?i)(?:Marktbreite(?:-Proxy)?[^:\r\n]*:\s*|Quantitative Marktbreite:\s*)"
+            r"([0-9]+\s*/\s*[0-9]+)", text
+        )
+        if breadth_match:
+            breadth = breadth_match.group(1).replace(" ", "")
+    else:
+        breadth = breadth.replace(" ", "")
+    vix = first(r"Volatilität VIX:\s*([0-9]+(?:[.,][0-9]+)?)")
+    real_yield = first(r"(?:10Y[- ]TIPS[- ]Realzins|Realzins\s*\(10Y\s*TIPS\))(?:\s+bei)?\s*(?:bei\s*)?([0-9]+(?:[.,][0-9]+)?)\s*%?")
+    real_yield_display = f"{real_yield}%" if real_yield != "NICHT VERFÜGBAR" else real_yield
+    xlv = first(r"XLV\s*\([^)]*\)[^\r\n|]*?3M\s*([+-]?[0-9]+(?:[.,][0-9]+)?%)")
+    xle = first(r"XLE\s*\([^)]*\)[^\r\n|]*?3M\s*([+-]?[0-9]+(?:[.,][0-9]+)?%)")
+
+    baseline = re.search(r"(?im)^([ \t]*Basisszenario\s*:[^\r\n]*)$", body)
+    if baseline:
+        baseline_text = (
+            baseline.group(1).rstrip()
+            + f" Eintrittsbedingung: defensive Qualitätssektoren behaupten ihre relative Stärke "
+              f"bei dem dokumentierten Zinsumfeld. Bestätigungstrigger: Marktbreite bleibt "
+              f"mindestens bei {breadth}; 3M-Relative-Stärke von XLV ({xlv}) und XLE ({xle}) "
+              f"bleibt jeweils über 0,00 %. Invalidierungstrigger: S&P 500 schließt unter seiner "
+              f"200-Tage-Linie oder VIX steigt über den dokumentierten Ausgangswert {vix}. "
+              f"Zeithorizont: 4 bis 12 Wochen. "
+              f"Indikatoren: Marktbreite {breadth}, XLV {xlv}, XLE {xle}, VIX {vix}, "
+              f"10Y-TIPS-Realzins {real_yield_display}. Konsequenz: selektive Long-Ausrichtung mit "
+              f"striktem Risikomanagement."
+        )
+        body = body[:baseline.start()] + baseline_text + body[baseline.end():]
+
+    positive = (
+        "Positives Alternativszenario: Breitere Aufwärtsrotation in Qualitäts- und "
+        "Energiesektoren bei nachlassendem Zinsdruck. "
+        f"Eintrittsbedingung: Marktbreite bleibt mindestens bei {breadth} und die "
+        f"positive 3M-Relative-Stärke von XLV ({xlv}) und XLE ({xle}) bleibt jeweils über 0,00 %. "
+        f"Bestätigungstrigger: Marktbreite mindestens {breadth} und 3M-Relative-Stärke XLV "
+        f"({xlv}) sowie XLE ({xle}) jeweils größer 0,00 %. "
+        f"Invalidierungstrigger: Marktbreite fällt unter {breadth} oder die 3M-Relative-Stärke "
+        "von XLV oder XLE fällt auf 0,00 % oder darunter. "
+        "Zeithorizont: 4 bis 12 Wochen. "
+        f"Indikatoren: Marktbreite {breadth}, XLV {xlv}, XLE {xle}, "
+        f"US-10Y-Rendite und 10Y-TIPS-Realzins {real_yield_display}. "
+        "Konsequenz: selektive Long-Ausrichtung nur bei bestätigter Sektor- und Kursstärke."
+    )
+    negative = (
+        "Negatives Alternativszenario: Erneute breite Risikoaversion durch anhaltend hohe "
+        "Realrenditen und eine Verschlechterung der Marktbreite. "
+        f"Eintrittsbedingung: Marktbreite fällt unter {breadth} oder der S&P 500 schließt "
+        f"unter seiner 200-Tage-Linie oder VIX steigt über {vix}. "
+        f"Bestätigungstrigger: mindestens zwei dieser drei Bedingungen treten gleichzeitig ein: "
+        f"Marktbreite unter {breadth}, S&P 500 unter 200-Tage-Linie, VIX über {vix}. "
+        f"Invalidierungstrigger: Marktbreite erreicht wieder mindestens {breadth}, der S&P 500 "
+        f"schließt wieder über seiner 200-Tage-Linie und VIX fällt auf {vix} oder darunter. "
+        "Zeithorizont: 1 bis 12 Wochen. "
+        f"Indikatoren: S&P 500, VIX {vix}, Marktbreite {breadth}, "
+        f"10Y-TIPS-Realzins {real_yield_display}. "
+        "Konsequenz: Neupositionierungen zurückstellen und bestehende Risiken enger prüfen."
+    )
+    body = body.rstrip() + "\n\n" + positive + "\n\n" + negative + "\n\n"
+    return text[:section.end()] + body + text[end:]
+
+
+def _trading_radar_performance_aussagen_vereinheitlichen(text, performance_result):
+    """Reconcile narrative system returns with the validated Python trade records."""
+    if not isinstance(text, str) or not text or not isinstance(performance_result, dict):
+        return text
+    records = performance_result.get("records") or []
+    open_by_ticker = {}
+    for record in records:
+        if not isinstance(record, dict) or record.get("status") != "OPEN":
+            continue
+        ticker = str(record.get("ticker") or "").strip().upper()
+        if ticker:
+            open_by_ticker.setdefault(ticker, []).append(record)
+
+    aggregate_markers = (
+        "live-system-performance", "system-offenpositionen",
+        "out-/underperformance", "underperformance gegenüber dem msci",
+        "system vs. msci", "system vs msci",
+    )
+    normalized_lines = []
+    for line in text.splitlines():
+        folded = line.casefold()
+        if any(marker in folded for marker in aggregate_markers):
+            normalized_lines.append(
+                "Live-System-/Benchmark-Performance: siehe Abschnitt 7 "
+                "(einheitliche Python-Berechnungsgrundlage)."
+            )
+            continue
+        if re.search(r"(?i)positionen\s+(?:besser|schlechter)\s+als\s+msci", line):
+            normalized_lines.append(
+                "Positionsvergleich zum MSCI World: NICHT VERFÜGBAR "
+                "(keine einheitliche Positions-/Benchmark-Zeitraumbasis)."
+            )
+            continue
+
+        if not re.search(r"(?i)systemperformance|underperformance\s+im\s+system|\bsystem\s*[+-]\s*\d", line):
+            normalized_lines.append(line)
+            continue
+
+        ticker_matches = re.findall(r"\(([A-Z0-9.^=_/-]{2,30})\)", line)
+        candidates = [
+            ticker for ticker in ticker_matches
+            if ticker.upper() in open_by_ticker
+        ]
+        if len(candidates) == 1 and len(open_by_ticker[candidates[0].upper()]) == 1:
+            record = open_by_ticker[candidates[0].upper()][0]
+            value = float(record["return_pct"])
+            replacement = f"Systemperformance {value:+.2f}% (Python-Berechnung; Trade-ID {record['trade_identity_hash']})"
+        else:
+            replacement = "Systemperformance: NICHT VERFÜGBAR (keine eindeutige offene Trade-Zuordnung)"
+        line = re.sub(
+            r"(?i)(?:deutliche\s+)?underperformance\s+im\s+system\s*\([^)]*\)|"
+            r"systemperformance\s*[+-]\s*\d+(?:[,.]\d+)?\s*%|"
+            r"\bsystem\s*[+-]\s*\d+(?:[,.]\d+)?\s*%",
+            replacement,
+            line,
+        )
+        normalized_lines.append(line)
+    return "\n".join(normalized_lines)
+
+
+def _trading_radar_performance_aussagen_sperren(text):
+    """Fail closed for every system/portfolio comparison if calculation failed."""
+    if not isinstance(text, str) or not text:
+        return text
+    cleaned = []
+    aggregate_markers = (
+        "live-system-performance", "system-offenpositionen",
+        "out-/underperformance", "underperformance gegenüber dem msci",
+        "system vs. msci", "system vs msci",
+    )
+    for line in text.splitlines():
+        folded = line.casefold()
+        if any(marker in folded for marker in aggregate_markers):
+            continue
+        line = re.sub(
+            r"(?i)(?:deutliche\s+)?underperformance\s+im\s+system\s*\([^)]*\)",
+            "Systemperformance: NICHT VERFÜGBAR", line,
+        )
+        line = re.sub(
+            r"(?i)systemperformance\s*[+-]\s*\d+(?:[,.]\d+)?\s*%|"
+            r"\bsystem\s*[+-]\s*\d+(?:[,.]\d+)?\s*%",
+            "Systemperformance: NICHT VERFÜGBAR", line,
+        )
+        if re.search(r"(?i)positionen\s+(?:besser|schlechter)\s+als\s+msci", line):
+            line = "Positionsvergleich zum MSCI World: NICHT VERFÜGBAR (Richtungs-/Renditebasis nicht vollständig belegt)."
+        cleaned.append(line)
+    text = "\n".join(cleaned)
+    section = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich[^\r\n]*$", text)
+    if section:
+        tail = text[section.end():]
+        next_section = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?(?:8|9|[1-9][0-9])(?:\s*[.·](?!\d)|\s+(?!\d))[^\r\n]*$", tail)
+        end = section.end() + next_section.start() if next_section else len(text)
+        body = text[section.end():end]
+        body = re.sub(r"(?im)^\s*(?:[-*•]\s*)?Portfolio-Gesamtperformance\s*[:=].*(?:\r?\n|$)", "", body)
+        body = re.sub(r"(?im)^\s*(?:[-*•]\s*)?Ø Positionsperformance\s*[:=].*(?:\r?\n|$)", "", body)
+        body = re.sub(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance\s*[:=].*(?:\r?\n|$)", "", body)
+        body = body.rstrip() + (
+            "\nPortfolio-Gesamtperformance: NICHT VERFÜGBAR"
+            "\nØ Positionsperformance: NICHT VERFÜGBAR"
+            "\nOut-/Underperformance: NICHT VERFÜGBAR (keine belegte Portfolio- und Benchmarkberechnungsgrundlage).\n"
+        )
+        text = text[:section.end()] + body + text[end:]
+    return text
+
+
 def speichere_ergebnis(text, eingabedateien=None):
     global _TRADING_RADAR_FINALITY_FINDINGS
     _TRADING_RADAR_FINALITY_FINDINGS = []
@@ -18045,6 +18466,10 @@ def speichere_ergebnis(text, eingabedateien=None):
                 key=lambda item: (priority.get(os.path.basename(item).casefold(), 4), item.casefold()),
             )
             performance_result = calculate_portfolio_performance(performance_sources)
+            if performance_result.get("status") == "AVAILABLE":
+                text = _trading_radar_performance_aussagen_vereinheitlichen(
+                    text, performance_result
+                )
             # Die lokal erzeugte Initialhistorie kann kleiner sein als der
             # append-only Google-Sheets-Tab 2. Ohne vollständigen Tab-2-Export
             # darf deshalb keine scheinbar vollständige Gesamtperformance
@@ -18057,6 +18482,11 @@ def speichere_ergebnis(text, eingabedateien=None):
                     "Vollständiger produktiver Tab-2-Export fehlt; lokale Initialhistorie ist kein Ersatz."
                 )
             performance_block = format_performance_block(performance_result)
+            if performance_result.get("status") != "AVAILABLE":
+                # Remove every model-written aggregate comparison outside the
+                # canonical performance block. Individual trade returns remain
+                # visible, but no portfolio/open-position aggregate may survive.
+                text = _trading_radar_performance_aussagen_sperren(text)
             text = re.sub(
                 r"(?im)^\s*(?:[-*•]\s*)?(?:Portfolio-Gesamtperformance|Ø Positionsperformance|"
                 r"durchschnittliche Positionsperformance|Performance-Datenbasis|Berechnungsmethode|"
@@ -18099,6 +18529,7 @@ def speichere_ergebnis(text, eingabedateien=None):
             # Kennzahlenblock, nicht zu einer erfundenen Ersatzrendite. Die
             # Datenlücke bleibt sichtbar; das Report-Gate prüft Eindeutigkeit.
         except Exception as performance_exc:
+            text = _trading_radar_performance_aussagen_sperren(text)
             validation_errors.append(
                 f"Portfolio-Performanceberechnung nicht ausführbar: {type(performance_exc).__name__}: {performance_exc}"
             )
@@ -18212,6 +18643,7 @@ def speichere_ergebnis(text, eingabedateien=None):
             # report was therefore treated as "mapping missing" and downgraded,
             # even though the saved report later showed all four groups empty.
             text = normalize_market_first_report_structure(text)
+            text = _trading_radar_szenarien_ergänzen(text)
             # Then extract only structured candidate tickers and audit the exact
             # same active universe/DB as the workflow's immediately preceding update.
             candidate_tickers = _trading_radar_kandidaten_aus_abschnitt5(text)
@@ -18586,6 +19018,9 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_text, konflikt_reparaturen = _repariere_auswertung_quellenkonflikte(
             final_text, eingabedateien, briefing_text, makro_text_fx, edelmetall_text
         )
+        final_text = _trading_radar_treasury_provenienz_ergänzen(
+            final_text, makro_text_fx, eingabedateien
+        )
         if konflikt_reparaturen:
             print("ZAHLENKONSISTENZ-GATE: " + " | ".join(konflikt_reparaturen))
 
@@ -18837,8 +19272,20 @@ def speichere_ergebnis(text, eingabedateien=None):
                         "Thesenregister wird wegen nicht bestandener Bericht-/Thesenprüfung "
                         "nicht fortgeschrieben: " + " | ".join(strict_thesis_findings)
                     )
+                report_cutoff_match = re.search(
+                    r"(?im)^\s*(?:Gemeinsamer Datenstichtag|Datenstand UTC|Datenstand):\s*"
+                    r"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\+00:00|Z)?)?)",
+                    final_text,
+                )
+                report_cutoff = report_cutoff_match.group(1) if report_cutoff_match else None
+                if report_cutoff and "T" not in report_cutoff:
+                    report_cutoff += "T00:00:00+00:00"
+                elif report_cutoff and report_cutoff.endswith("Z"):
+                    report_cutoff = report_cutoff[:-1] + "+00:00"
                 register_result = update_register(
-                    final_text, os.path.join(output_dir, ".trading_radar_thesen.json")
+                    final_text,
+                    os.path.join(output_dir, ".trading_radar_thesen.json"),
+                    data_cutoff=report_cutoff,
                 )
                 if register_result.get("updated"):
                     print(f"Trading-Radar-Thesenregister aktualisiert: {register_result.get('count')} Thesen")
@@ -18862,12 +19309,18 @@ def speichere_ergebnis(text, eingabedateien=None):
                         radar_output, evidence_lines
                     )
                 else:
-                    print("INFO: Trading-Radar-Thesenregister unveraendert: kein strukturierter Thesenblock")
+                    print("WARNUNG: Thesenregistervergleich nicht nachweisbar: strukturierter Thesenblock fehlt.")
                     _trading_radar_thesenregister_nachweis_einfuegen(
                         radar_output,
                         [
                             "THESENREGISTER-VERGLEICH: NICHT_NACHWEISBAR",
-                            "Grund: kein strukturierter Thesenblock oder kein belastbarer Vorzustand.",
+                            "VORHER-SHA256: NICHT VERFÜGBAR",
+                            "NACHHER-SHA256: NICHT VERFÜGBAR",
+                            "THESEN_NEU: NICHT NACHWEISBAR",
+                            "THESEN_AKTUALISIERT: NICHT NACHWEISBAR",
+                            "THESEN_UNVERAENDERT: NICHT NACHWEISBAR",
+                            "THESEN_ARCHIVIERT: NICHT NACHWEISBAR",
+                            "Grund: strukturierter Thesenblock oder belastbarer Vorzustand fehlt; es wird keine Aussage 'keine Änderung' getroffen.",
                         ],
                     )
             except Exception as register_exc:

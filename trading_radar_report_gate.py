@@ -173,7 +173,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                     normalized_values.append(("numeric", canonical))
                     continue
                 if re.fullmatch(
-                    r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\\([^)]*\\))?",
+                    r"(?i)(?:NICHT\s+VERFÜGBAR|nicht\s+verifizierbar|nicht\s+vorhanden|fehlt|unklar)(?:\s*\([^)]*\))?",
                     value,
                 ):
                     normalized_values.append(("unavailable", "NICHT VERFÜGBAR"))
@@ -321,18 +321,37 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             elif not re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*NICHT VERFÜGBAR", benchmark):
                 errors.append("M-01: Fehlende Portfolio-/Benchmarkgrundlage muss Out-/Underperformance als NICHT VERFÜGBAR ausweisen.")
 
+    # M-01: aggregate system-performance claims outside the canonical
+    # section are forbidden when the canonical portfolio metric is unavailable.
+    canonical_portfolio = re.search(
+        r"(?im)^Portfolio-Gesamtperformance:\s*(NICHT VERFÜGBAR|[+-]?\d+(?:[,.]\d+)?)",
+        benchmark,
+    )
+    if canonical_portfolio and canonical_portfolio.group(1).upper() == "NICHT VERFÜGBAR":
+        forbidden_aggregate_claims = (
+            r"Live-System-Performance\s*[:=]?\s*[+-]?\d",
+            r"System-Offenpositionen[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
+            r"Underperformance gegenüber dem MSCI[^\r\n]*[+-]?\d",
+            r"Systemperformance\s*[+-]\d+(?:[,.]\d+)?\s*%",
+            r"Out-/Underperformance\s*[:=]\s*[+-]?\d",
+        )
+        for pattern in forbidden_aggregate_claims:
+            if re.search(pattern, text, re.I):
+                errors.append("M-01: Numerische System-/Benchmark-Performance außerhalb der verfügbaren kanonischen Berechnungsgrundlage.")
+                break
+
     # M-01: the same metric may not be numeric in one place and unavailable
     # elsewhere. Detect this report-wide, not only inside the MSCI subsection.
     for metric_label, pattern in (
         ("Portfolio-Gesamtperformance", r"Portfolio(?:-Gesamt)?performance"),
-        ("Ø Positionsperformance", r"(?:Ø|durchschnitt(?:liche|s)?)\\s*Positionsperformance"),
+        ("Ø Positionsperformance", r"(?:Ø|durchschnitt(?:liche|s)?)\s*Positionsperformance"),
     ):
         observations = []
         for line in text.splitlines():
             if re.search(pattern, line, re.I) and re.search(r"(?i)(?:NICHT VERFÜGBAR|FEHLT|UNKLAR)", line):
                 observations.append(("unavailable", line.strip()))
             elif re.search(pattern, line, re.I):
-                numeric = re.search(r"[-+]?\\d+(?:[,.]\\d+)?\\s*%", line)
+                numeric = re.search(r"[-+]?\d+(?:[,.]\d+)?\s*%", line)
                 if numeric:
                     raw_number = numeric.group(0).replace("%", "").replace(",", ".").strip()
                     try:
@@ -793,6 +812,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                     and re.search(r"(?i)(?:Datenstichtag|Beobachtungsdatum|Observation_Date)\s*[:=]\s*[^;|,]+", line)
                     and re.search(r"(?i)(?:Einheit|Unit)\s*[:=]\s*(?:%|Prozent|percent)", line)
                     and re.search(r"(?i)(?:Verzögerung|Verzoegerung|Delay)\s*[:=]\s*[^;|,]+", line)
+                    and not re.search(
+                        r"(?i)(?:Quelle|Abrufzeit|Abrufzeitpunkt|Datenstichtag|Beobachtungsdatum|"
+                        r"Observation_Date|Verzögerung|Verzoegerung|Delay)\s*[:=]\s*"
+                        r"(?:NICHT VERFÜGBAR|UNBEKANNT|FEHLT|NICHT BEKANNT)",
+                        line,
+                    )
                 )
             provenance_complete = len(observation_lines) >= 2 and all(has_provenance(line) for line in observation_lines)
             explicit_open = any(
@@ -851,6 +876,15 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 errors.append(f"M-06: Abschnitt 5 muss den Bereich '{label}' separat ausweisen (auch explizit leer).")
             else:
                 group_matches.append((label, match))
+        # A ticker may appear once per status group. Duplicate source rows are
+        # consolidated upstream and retained as multiple Quellzeile references.
+        for label, match in group_matches:
+            later_starts = [other.start() for _, other in group_matches if other.start() > match.start()]
+            group_end = min(later_starts) if later_starts else len(candidate_section)
+            group_body = candidate_section[match.end():group_end]
+            tickers = re.findall(r"(?i)Asset/Ticker:\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)", group_body)
+            if len(tickers) != len(set(t.upper() for t in tickers)):
+                errors.append(f"M-06: Doppelte Ticker im Bereich '{label}' sind nicht konsolidiert.")
         for label, match in group_matches:
             later = [other.start() for _, other in group_matches if other.start() > match.start()]
             end = min(later) if later else min(len(candidate_section), match.end() + 1600)
@@ -868,7 +902,18 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 has_identity = bool(re.search(r"(?i)(?:Ticker|Symbol|Name)\s*[:=]", content))
                 has_source = bool(re.search(r"(?i)(?:Quelle|Source)\s*[:=]", content))
                 has_reason = bool(re.search(r"(?i)(?:Begründung|Grund|Setup|Status)\s*[:=]", content))
-                has_trigger = bool(re.search(r"(?i)(?:Trigger|Kurslevel|Strukturlevel|Auslöser)\s*[:=]", content))
+                trigger_match = re.search(
+                    r"(?i)(?:Trigger|Kurslevel|Strukturlevel|Auslöser)\s*[:=]\s*([^|;\r\n]+)",
+                    content,
+                )
+                has_trigger = bool(
+                    trigger_match
+                    and not re.fullmatch(
+                        r"(?i)(?:NICHT VERFÜGBAR|FEHLT|UNBEKANNT|UNKLAR|"
+                        r"überprüfbarer Kurs-/Strukturtrigger fehlt|nicht ableitbar)[.! ]*",
+                        trigger_match.group(1).strip(),
+                    )
+                )
                 if not (has_identity and has_source and has_reason and (has_trigger or label.casefold() == "verworfene kandidaten")):
                     errors.append(f"M-06: Einträge in '{label}' benötigen Identität, Quelle, Begründung/Status und bei Watchlist/Setups einen überprüfbaren Trigger.")
 
@@ -892,13 +937,18 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         later_starts = [other.start() for _, other in scenario_matches if other.start() > match.start()]
         block_end = min(later_starts) if later_starts else min(len(scenario_section), match.end() + 1400)
         tail = scenario_section[match.end():block_end]
-        has_triggers = all(
-            re.search(pattern, tail)
-            for pattern in (
-                r"(?i)(?:Eintrittsbedingung|Eintritt)\s*:",
-                r"(?i)Bestätigungstrigger\s*:",
-                r"(?i)Invalidierungstrigger\s*:",
+        trigger_patterns = (
+            r"(?i)(?:Eintrittsbedingung|Eintritt)\s*:\s*([^\r\n]+)",
+            r"(?i)Bestätigungstrigger\s*:\s*([^\r\n]+)",
+            r"(?i)Invalidierungstrigger\s*:\s*([^\r\n]+)",
+        )
+        trigger_values = [re.search(pattern, tail) for pattern in trigger_patterns]
+        has_triggers = all(trigger_values) and all(
+            not re.search(
+                r"(?i)^(?:NICHT VERFÜGBAR|NICHT ABLEITBAR|FEHLT|UNBEKANNT|UNKLAR)",
+                match.group(1).strip(),
             )
+            for match in trigger_values if match
         )
         has_context = (
             re.search(r"(?i)Zeithorizont\s*:", tail)
@@ -1096,6 +1146,10 @@ def validate_report(text: str) -> list[str]:
                 item.strip().upper() for item in match.group(1).split(",") if item.strip()
             ]
             state_lists[state] = values
+            ticker_pattern = re.compile(r"(?:\^[A-Z0-9][A-Z0-9._=/\-]{0,29}|[A-Z0-9][A-Z0-9._=/\-]{0,29})")
+            malformed = [ticker for ticker in values if not ticker_pattern.fullmatch(ticker)]
+            if malformed:
+                errors.append(f"M-03: Symbolzuordnung {state} enthält keine tickerreinen Identitäten: " + ", ".join(malformed[:10]))
             expected_count = {"VALID": valid, "MISSING": missing, "STALE": stale, "INVALID": invalid}[state]
             if len(values) != expected_count:
                 errors.append(f"M-03: Symbolanzahl der Klasse {state} stimmt nicht mit der Statuszählung überein.")

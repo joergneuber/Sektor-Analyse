@@ -475,6 +475,15 @@ def finalize_gate_result() -> int:
     for payload in (end, summary.get("end", {})):
         identity = payload.setdefault("run_identity", {})
         gates = identity.setdefault("gate_results", {})
+        for key in (
+            "TRADING_RADAR_CONTRACT_OUTCOME",
+            "TRADING_RADAR_STEP_OUTCOME",
+            "TRADING_RADAR_OHLCV_PERSISTENCE_GATE",
+            "TRADING_RADAR_MARKET_FIRST_GATE",
+        ):
+            value = os.environ.get(key)
+            if value is not None and value.strip():
+                gates[key] = value.strip()
         gates["TRADING_RADAR_REPORT_GATE"] = status
         gates["TRADING_RADAR_REPORT_GATE_OUTCOME"] = result
         if final_status in {"FINAL", "NICHT_FINAL"}:
@@ -526,8 +535,21 @@ def validate_final_evidence() -> int:
     if missing:
         print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Gate-Ergebnisse fehlen: " + ", ".join(missing), file=sys.stderr)
         return 1
-    if gates["TRADING_RADAR_REPORT_GATE"] != "PASS" or gates["TRADING_RADAR_REPORT_GATE_OUTCOME"] != "success":
-        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Report-Gate nicht erfolgreich", file=sys.stderr)
+    # A failed report gate is a valid recorded outcome for a NICHT_FINAL run.
+    # Evidence validation verifies completeness and truthful status; it must not
+    # require a failed quality gate to be rewritten as success.
+    report_gate_passed = (
+        gates["TRADING_RADAR_REPORT_GATE"] == "PASS"
+        and gates["TRADING_RADAR_REPORT_GATE_OUTCOME"] == "success"
+    )
+    report_gate_failed = (
+        gates["TRADING_RADAR_REPORT_GATE"] == "FAIL"
+        and gates["TRADING_RADAR_REPORT_GATE_OUTCOME"] in {"failure", "cancelled", "skipped"}
+    )
+    if not (report_gate_passed or (
+        report_gate_failed and gates["TRADING_RADAR_FACHLICH_FINAL"] == "NICHT_FINAL"
+    )):
+        print("TRADING_RADAR_EVIDENCE_FINAL_CHECK=FAIL | Report-Gate-Ausgang widerspricht Fachstatus", file=sys.stderr)
         return 1
     if gates["TRADING_RADAR_FACHLICH_FINAL"] == "FINAL":
         expected = {

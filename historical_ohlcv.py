@@ -19,6 +19,7 @@ import argparse
 import ast
 import datetime as dt
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -62,6 +63,16 @@ def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
         yield items[i:i + size]
 
 
+def _normalize_market_ticker(value: object) -> str | None:
+    """Return a canonical exchange symbol; reject prose/name fragments."""
+    ticker = str(value or "").strip().upper()
+    if not ticker or len(ticker) > 30 or any(ch.isspace() for ch in ticker):
+        return None
+    if not re.fullmatch(r"(?:\^[A-Z0-9][A-Z0-9._=/\-]{0,29}|[A-Z0-9][A-Z0-9._=/\-]{0,29})", ticker):
+        return None
+    return ticker
+
+
 def _string_values(node: ast.AST) -> set[str]:
     values: set[str] = set()
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -94,7 +105,9 @@ def _load_dynamic_universe(path: Path = DEFAULT_DYNAMIC_UNIVERSE) -> set[str]:
 
 def register_ticker(ticker: str, path: Path = DEFAULT_DYNAMIC_UNIVERSE) -> bool:
     """Registriert einen erfolgreich geprüften Einzel-Check-Ticker dauerhaft."""
-    ticker = str(ticker or "").strip().upper()
+    ticker = _normalize_market_ticker(ticker)
+    if not ticker:
+        return False
     if ticker in EXCLUDED_TICKERS:
         print(f"HIST-OHLCV-UNIVERSUM: {ticker} bleibt gemaess Ausschlussliste ausgeschlossen")
         return False
@@ -160,13 +173,15 @@ def discover_universe(
             tickers.update(_string_values(node.args[0]))
 
     tickers.update(_load_dynamic_universe(dynamic_universe))
+    # Canonical identity is always the exchange ticker, never a company-name
+    # fragment or report prose. Normalize before de-duplication and exclusion.
+    normalized = {
+        ticker for raw in tickers
+        if (ticker := _normalize_market_ticker(raw)) is not None
+    }
     # Ausschluss gilt nach Zusammenfuehrung aller Quellen, damit dynamische
     # Registrierungen die Liste nicht versehentlich wieder aufnehmen.
-    return sorted(
-        t for t in tickers
-        if t and t.upper() not in EXCLUDED_TICKERS
-        and len(t) <= 30 and not any(ch in t for ch in " \t\n")
-    )
+    return sorted(t for t in normalized if t not in EXCLUDED_TICKERS)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:

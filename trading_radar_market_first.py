@@ -167,12 +167,25 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
         )
     vix, dxy, tnx_raw, tlt = latest("^VIX"), latest("DX-Y.NYB"), latest("^TNX"), pct("TLT", 21)
     tnx = (tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw) if tnx_raw is not None else None
+    tnx_series = series_for("^TNX")
+    tnx_observation_date = (
+        tnx_series.index[-1].isoformat() if tnx_series is not None and len(tnx_series)
+        else "NICHT VERFÜGBAR"
+    )
     lines.extend([
         f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR.",
         f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR.",
-        f"- US-10J-Rendite (^TNX): {tnx:.2f}%" if tnx is not None else "- US-10J-Rendite: NICHT VERFÜGBAR.",
+        (
+            f"- US-10J-Rendite (^TNX): {tnx:.2f}% | Quelle: Yahoo Finance (^TNX); "
+            f"Abrufzeit: {now}; Datenstichtag: {tnx_observation_date}; Einheit: %; "
+            "Verzögerung: Tages-Schlusskurs; keine Intraday-Aktualität im gelieferten Snapshot."
+        ) if tnx is not None else "- US-10J-Rendite: NICHT VERFÜGBAR.",
         f"- Anleihe-ETF TLT 1M: {fmt(tlt, '%')}.",
     ])
+
+    # Keep the quantitative breadth observation inside the canonical Market-First
+    # field as well as in the live-evidence appendix; the validator intentionally
+    # does not borrow numbers from unrelated sections.
     sector_etfs = ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
     above = total = 0
     for symbol in sector_etfs:
@@ -182,6 +195,14 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             above += int(float(values.iloc[-1]) > float(values.iloc[-50:].mean()))
     lines.append(f"- Marktbreite-Proxy: {above}/{total} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
                  if total else "- Marktbreite-Proxy: NICHT VERFÜGBAR.")
+    if total:
+        breadth_fact = f" Quantitative Marktbreite: {above}/{total} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
+        report_text = re.sub(
+            r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?Indizes/Marktbreite(?:\*\*)?\s*:\s*)([^\r\n]*)$",
+            lambda m: m.group(1) + m.group(2).rstrip(". ") + ";" + breadth_fact,
+            report_text,
+            count=1,
+        )
     lines.append("- Quelle: Yahoo Finance (Ticker in den Zeilen; Tages-Schlusskurse).")
 
     # M-07: when the narrative contains a different 10Y Treasury value, never
