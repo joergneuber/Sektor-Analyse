@@ -29,14 +29,26 @@ jobs:
       # Das Thesenregister ist Lauf-zu-Lauf-State. Ein fehlender Cache ist
       # ausdrücklich kein leerer/abgeglichener Vorzustand; der erste Lauf
       # erzeugt nur einen Baseline-Snapshot und bleibt bis zum Folgelauf NICHT_FINAL.
-      - name: Trading-Radar-Thesenregister wiederherstellen
+      - name: Trading-Radar-Thesenregister wiederherstellen (Actions-Cache)
         id: trading-radar-thesen-cache-restore
         uses: actions/cache/restore@v5
+        continue-on-error: true
         with:
-          path: .trading_radar_thesen.json
+          path: |
+            .trading_radar_thesen.json
+            .trading_radar_thesen.json.manifest.json
           key: trading-radar-thesen-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             trading-radar-thesen-${{ runner.os }}-${{ github.ref_name }}-
+
+      # Cache ist der schnelle Pfad. Fehlt er oder ist sein Hash/Schema ungueltig,
+      # wird das juengste unverfallene Run-Artifact desselben Branches geladen.
+      - name: Trading-Radar-Thesenregister bei Bedarf aus Artifact wiederherstellen
+        id: trading-radar-thesen-artifact-restore
+        if: ${{ always() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python trading_radar_thesen_persistence.py restore
 
       # Persistenter Firmennamen-Cache wird vor analyse.py wiederhergestellt;
       # dadurch muss der Hauptlauf bekannte Namen nicht erneut bei Yahoo anfragen.
@@ -556,13 +568,35 @@ jobs:
       # Auch bei NICHT_FINAL sichern: der erzeugte Registerstand wird zum
       # nachvollziehbaren Vorzustand des nächsten Laufs. Ein fehlender Cache
       # darf nicht als "keine Änderung" durchgewunken werden.
-      - name: Trading-Radar-Thesenregister dauerhaft im Actions-Cache sichern
+      - name: Trading-Radar-Thesenregister-Snapshot und Integritaetsmanifest pruefen
+        id: trading-radar-thesen-snapshot
         if: ${{ always() && hashFiles('.trading_radar_thesen.json') != '' }}
+        run: python trading_radar_thesen_persistence.py prepare
+
+      - name: Trading-Radar-Thesenregister dauerhaft im Actions-Cache sichern
+        if: ${{ always() && steps.trading-radar-thesen-snapshot.outcome == 'success' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
-          path: .trading_radar_thesen.json
+          path: |
+            .trading_radar_thesen.json
+            .trading_radar_thesen.json.manifest.json
           key: trading-radar-thesen-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      # Zusaetzlicher Wiederherstellungspunkt, falls Actions-Caches fehlen oder
+      # evicted wurden. Das Artifact bleibt 90 Tage verfuegbar und wird im
+      # naechsten Lauf ueber die GitHub-API als Fallback gelesen.
+      - name: Trading-Radar-Thesenregister als Run-Artifact archivieren
+        if: ${{ always() && steps.trading-radar-thesen-snapshot.outcome == 'success' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: trading-radar-thesen-register-${{ github.run_id }}
+          path: |
+            .trading_radar_thesen.json
+            .trading_radar_thesen.json.manifest.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
 
       # Auch bei kontrolliertem Gemini-Fallback sichern: erfolgreiche Split-
       # Antworten und Fehlerstatus dienen dem nächsten Lauf als Resume.
