@@ -5600,8 +5600,28 @@ __QUELLEN__
                         radar_text,
                     )
                     if section3:
-                        # Replace any malformed/duplicate model block before inserting
-                        # the single validated retry result; never leave two registers.
+                        # The validated retry is the sole machine-readable thesis
+                        # payload. Remove malformed marked blocks and unmarked JSON
+                        # drafts from section 2 while retaining surrounding prose.
+                        section2 = re.search(
+                            r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+                            radar_text,
+                        )
+                        if section2:
+                            section2_end = re.search(
+                                r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+                                radar_text[section2.end():],
+                            )
+                            if section2_end:
+                                section2_body_end = section2.end() + section2_end.start()
+                                section2_body = radar_text[section2.end():section2_body_end]
+                                section2_body = re.sub(
+                                    r"(?ms)^```(?:TRADING_RADAR_THESEN_JSON|json)?[ \t]*\r?\n.*?^```[ \t]*$",
+                                    "",
+                                    section2_body,
+                                    flags=re.IGNORECASE,
+                                )
+                                radar_text = radar_text[:section2.end()] + section2_body + radar_text[section2_body_end:]
                         radar_text = re.sub(
                             r"```TRADING_RADAR_THESEN_JSON.*?```",
                             "",
@@ -16950,7 +16970,12 @@ def _trading_radar_berichtsfelder_normalisieren(text):
             field_only = re.compile(
                 r"(?i)^\s*(?:[-•]\s+|\d+[.)]\s+)?(?:\*\*)?"
                 r"(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
-                r"Letzter Wert|Vorwert|Konsens|Istwert)(?:\*\*)?\s*[:=](?:\*\*)?"
+                r"Letzter Wert|Vorwert|Konsens|Istwert|"
+                r"Betroffene These/Assetklasse/konkrete offene Positionen|"
+                r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
+                r"Reaktionskanäle|Was die These bestätigen/widerlegen würde|"
+                r"Bestaetigung/Widerlegung|Bestätigung/Widerlegung|Quellenprüfung|Quellenpruefung)"
+                r"(?:\*\*)?\s*[:=](?:\*\*)?"
             )
             bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
             named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
@@ -16979,6 +17004,7 @@ def _trading_radar_berichtsfelder_normalisieren(text):
                 records = [body.splitlines()]
 
             required = (
+                ("Datum", (r"Datum", r"Date"), False),
                 ("Uhrzeit", (r"Uhrzeit", r"Zeit"), False),
                 ("Zeitzone", (r"Zeitzone",), True),
                 ("Kennzahl", (r"Kennzahl", r"Indikator"), False),
@@ -17008,6 +17034,12 @@ def _trading_radar_berichtsfelder_normalisieren(text):
                 for canonical, labels, is_timezone in required:
                     pattern = field_pattern(labels)
                     matches = list(pattern.finditer(record))
+                    if not matches and canonical == "Datum":
+                        header = record_lines[0] if record_lines else ""
+                        explicit_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", header)
+                        if explicit_date:
+                            record = record.rstrip() + f"\nDatum: {explicit_date.group(1)}"
+                            matches = list(pattern.finditer(record))
                     if not matches:
                         record = record.rstrip() + f"\n{canonical}: {unavailable}"
                         continue
@@ -17501,11 +17533,25 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     if not isinstance(text, str) or not text:
         return text
 
+    # Fenced machine-data blocks must not participate in name-map extraction.
+    # Otherwise a JSON date such as (2026-11-02) or a quoted Name (Ticker)
+    # inside JSON can poison the prose lookup table before the block is restored.
+    fenced_blocks = []
+    def _protect_fenced_block(match):
+        token = f"\uE000{len(fenced_blocks)}\uE001"
+        fenced_blocks.append(match.group(0))
+        return token
+    text = re.sub(r"(?ms)^```[^\r\n]*\r?\n.*?^```[ \t]*$", _protect_fenced_block, text)
+
     protected_words = {
         "FRED", "KGV", "OPEC", "JETZT", "AUF", "TRIGGER", "WARTEN",
         "BESTÄTIGTE", "SETUPS", "WATCHLIST", "KANDIDATEN", "VERWORFENE",
         "VERWERFEN", "INVALIDIERT", "HANDELBAR", "PRÜFEN", "EREIGNIS",
-        "ABWARTEN", "NICHT",
+        "ABWARTEN", "NICHT", "LIVE", "SYSTEM", "FINAL", "PASS", "FAIL",
+        "WORLD", "MARKET", "SOURCE", "JSON", "NEU", "BESTAETIGT",
+        "VERSTAERKT", "ABGESCHWAECHT", "WIDERLEGT", "UNKLAR",
+        "FOMC", "ETF", "USD", "EUR", "INDEX", "OFFICIAL", "NFP", "CPI",
+        "PCE", "PMI", "ISM", "ADP", "DXY", "VIX", "TIPS", "NFCI", "FX",
     }
     name_by_ticker = {
         "GC=F": "Gold Future",
@@ -17518,6 +17564,9 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         "^RUT": "Russell 2000 Index",
         "^IXIC": "NASDAQ Composite Index",
         "^DJI": "Dow Jones Industrial Average",
+        "^GDAXI": "DAX Index",
+        "^VIX": "CBOE Volatility Index",
+        "^TNX": "US 10Y Treasury Yield",
     }
     # Resolve symbols from the actual structured inputs supplied to this run.
     import csv as _csv
@@ -17587,11 +17636,18 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         "starke sektor-reliance", "aktien/etfs", "gold futures",
     }
     for match in re.finditer(
-        r"(?<![A-Za-z0-9])([^()|;\r\n]{3,80}?)\s+"
-        r"\(([A-Za-z0-9][A-Za-z0-9.=^/_-]{1,20})\)",
+        r"(?<![A-Za-z0-9(])([^()|;\r\n]{3,80}?)\s+"
+        r"\(([A-Z0-9][A-Z0-9.=^/_-]{1,20})\)"
+        r"(?![ \t]+(?:New\s+Energy|UCITS|ETF|ETC|Dist|Acc|USD|EUR|Hedged|Unhedged|"
+        r"Daily|Leveraged|Inverse|Fund|Index|Class|Share|Shares|Portfolio)\b)",
         text,
     ):
         name, ticker = match.group(1).strip(" -*"), match.group(2).strip().upper()
+        # Dates such as (2026-11-02) are not ticker/name pairs. Without this
+        # guard a date is cached as a pseudo-security and inserted into JSON
+        # strings, breaking their quoting and machine-readable structure.
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", ticker) or not re.search(r"[A-Z]", ticker):
+            continue
         # A leading report label such as "Top-Profiteur:" is not part of the
         # company name; retain only the entity text after the final label colon.
         if ":" in name:
@@ -17639,6 +17695,8 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         pass
 
     if not name_by_ticker:
+        for index, block in enumerate(fenced_blocks):
+            text = text.replace(f"\uE000{index}\uE001", block)
         return text
 
     # Preserve the machine-readable Tab-2 payload byte-for-byte. Its source
@@ -17678,7 +17736,8 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     # Unicode-aware boundaries are essential: ASCII-only boundaries treated
     # the suffix GBAR in the German word VERFÜGBAR as a standalone ticker.
     tickerish = re.compile(
-        r"(?<![\w])(?:[A-Z][A-Z0-9]{1,15}_[A-Z0-9_]{1,20}|"
+        r"(?<![\w])(?:\^[A-Z0-9][A-Z0-9._=/-]{1,20}|"
+        r"[A-Z][A-Z0-9]{1,15}_[A-Z0-9_]{1,20}|"
         r"[A-Z]{2,6}(?:\.[A-Z]{1,3})?)(?![\w.=^/])",
         flags=re.UNICODE,
     )
@@ -17690,6 +17749,9 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         "ETH", "SPY", "VNA", "DAX", "EUR", "YTD", "WKN", "OS",
         "NICHT", "VERF", "VERFÜGBAR", "KEINE", "CME", "UCITS", "SPDR",
         "CRUDE", "OIL", "INDEX", "FUTURES", "FUTURE", "USD", "TIPS",
+        "SYSTEM", "FINAL", "PASS", "FAIL", "WORLD", "MARKET", "SOURCE",
+        "NEU", "BESTAETIGT", "VERSTAERKT", "ABGESCHWAECHT", "WIDERLEGT",
+        "UNKLAR", "OFFICIAL", "FX", "NFCI",
         # Macro/economic abbreviations are not security tickers.
         "BIP", "GDP", "NFP", "CPI", "PCE", "PMI", "ISM", "ADP",
         "FRED", "KGV", "OPEC", "JETZT", "AUF", "TRIGGER", "WARTEN",
@@ -17743,8 +17805,8 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
             if not ticker or not name or len(ticker) < 2:
                 continue
             pattern = re.compile(
-                rf"(?<![A-Za-z0-9._=^/]){re.escape(ticker)}(?![A-Za-z0-9_=^/])",
-                flags=re.IGNORECASE,
+                rf"(?<![\w.=^/]){re.escape(ticker)}(?![\w.=^/])",
+                flags=re.UNICODE,
             )
             def replace_known(match):
                 start_pos, end_pos = match.span()
@@ -17766,9 +17828,10 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
                 # names. In those contexts it means the index family, not MSCI
                 # Inc.; expanding it corrupts references such as "MSCI World".
                 if ticker.casefold() == "msci" and re.match(
-                    r"(?i)\s+(?:World|ACWI|EAFE|Emerging\s+Markets|Frontier\s+Markets|"
+                    r"(?i)[\s-]+(?:World|ACWI|EAFE|Emerging\s+Markets|Frontier\s+Markets|"
                     r"Europe|USA|Japan|China|India|Pacific|World\s+ex\s+USA|"
-                    r"World\s+Small\s+Cap|All\s+Country)(?:\b|$)",
+                    r"World\s+Small\s+Cap|World\s+Quality|New\s+Energy|All\s+Country)"
+                    r"(?:\b|$)",
                     line[end_pos:],
                 ):
                     return match.group(0)
@@ -17827,7 +17890,7 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
         # Do not treat ordinary acronyms (FOMC, MSCI) as tickers.
         def mark_unresolved(match):
             token = match.group(0)
-            if token in name_by_ticker or token in non_ticker_acronyms or token in excluded_tickers:
+            if token in name_by_ticker or token in protected_words or token in non_ticker_acronyms or token in excluded_tickers:
                 return token
             # Existing parenthesized ticker pairs are already resolved, even
             # when the company name itself contains a nested legal suffix.
@@ -17841,7 +17904,10 @@ def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
 
     normalized_before = "\n".join(normalize_prose_line(line) for line in before_tab2.split("\n"))
     normalized_after = "\n".join(normalize_prose_line(line) for line in after_tab2.split("\n"))
-    return normalized_before + tab2_block + normalized_after
+    normalized = normalized_before + tab2_block + normalized_after
+    for index, block in enumerate(fenced_blocks):
+        normalized = normalized.replace(f"\uE000{index}\uE001", block)
+    return normalized
 
 def _trading_radar_nicht_handhabbare_kandidaten_normalisieren(text):
     """Do not present candidates as actionable when numeric trade levels are missing."""
@@ -18342,7 +18408,15 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         source_observations.append((source_value, fields(source_line)))
 
     output = []
+    in_fenced_block = False
     for line in text.splitlines():
+        if re.match(r"^\s*```", line):
+            in_fenced_block = not in_fenced_block
+            output.append(line)
+            continue
+        if in_fenced_block:
+            output.append(line)
+            continue
         # Both the actual macro schema (number without %) and report prose
         # (number followed by %) are accepted.
         treasury_name = bool(re.search(
@@ -19354,7 +19428,7 @@ def speichere_ergebnis(text, eingabedateien=None):
             )
             text, thesis_block_synthesized = ensure_structured_thesis_block(text)
             if thesis_block_synthesized:
-                print("TRADING_RADAR_THESEN_JSON=DETERMINISTISCH_AUS_BERICHTSFELDER_ERZEUGT")
+                print("TRADING_RADAR_THESEN_JSON=DETERMINISTISCH_VERVOLLSTAENDIGT")
             strict_thesis_findings = validate_radar_report_strict(text)
             cutoff_match = re.search(
                 r"(?im)^\s*(?:Gemeinsamer Datenstichtag|Datenstand UTC|Datenstand):\s*"
@@ -20017,81 +20091,35 @@ def speichere_ergebnis(text, eingabedateien=None):
             with open(GEMINI_HISTORIE_DATEI, "w", encoding="utf-8") as f:
                 f.write(historie)
             print(f"Persistente Gemini-Historie aktualisiert: {GEMINI_HISTORIE_DATEI}")
-            try:
-                from trading_radar_thesen import update_register
-                from trading_radar_neuauswertung import validate_radar_report_strict
-                # Das Register gehört zum eigenständigen Trading-Radar-Bericht,
-                # nicht zur separaten allgemeinen Auswertung. Prüfung, Cutoff und
-                # Update müssen deshalb dieselbe radar_text-Quelle verwenden.
-                strict_thesis_findings = validate_radar_report_strict(radar_text)
-                if strict_thesis_findings:
-                    raise RuntimeError(
-                        "Thesenregister wird wegen nicht bestandener Bericht-/Thesenprüfung "
-                        "nicht fortgeschrieben: " + " | ".join(strict_thesis_findings)
-                    )
-                report_cutoff_match = re.search(
-                    r"(?im)^\s*(?:Gemeinsamer Datenstichtag|Datenstand UTC|Datenstand):\s*"
-                    r"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\+00:00|Z)?)?)",
-                    radar_text,
-                )
-                report_cutoff = report_cutoff_match.group(1) if report_cutoff_match else None
-                if report_cutoff and "T" not in report_cutoff:
-                    report_cutoff += "T00:00:00+00:00"
-                elif report_cutoff and report_cutoff.endswith("Z"):
-                    report_cutoff = report_cutoff[:-1] + "+00:00"
-                register_result = update_register(
-                    radar_text,
-                    os.path.join(output_dir, ".trading_radar_thesen.json"),
-                    data_cutoff=report_cutoff,
-                )
-                if register_result.get("updated"):
-                    print(f"Trading-Radar-Thesenregister aktualisiert: {register_result.get('count')} Thesen")
-                    evidence_lines = [
-                        f"THESENREGISTER-VERGLEICH: {register_result.get('comparison_status', 'NICHT_NACHWEISBAR')}",
-                        f"VORHER-SHA256: {register_result.get('previous_sha256') or 'NICHT VERFÜGBAR'}",
-                        f"NACHHER-SHA256: {register_result.get('current_sha256') or 'NICHT VERFÜGBAR'}",
-                        f"AKTIVE_THESEN: {register_result.get('active_count', 0)}",
-                        "THESEN_NEU: " + (", ".join(register_result.get("new_theses", [])) or "KEINE"),
-                        "THESEN_AKTUALISIERT: " + (", ".join(register_result.get("updated_theses", [])) or "KEINE"),
-                        "THESEN_UNVERAENDERT: " + (", ".join(register_result.get("unchanged_theses", [])) or "KEINE"),
-                        "THESEN_ARCHIVIERT: " + (", ".join(register_result.get("archived_theses", [])) or "KEINE"),
-                    ]
-                    for item in register_result.get("thesis_versions", []):
-                        evidence_lines.extend([
-                            f"THESIS_ID: {item['thesis_id']}",
-                            f"VERSION: {item['version']}",
-                            f"THESIS_ACTIVE: {'YES' if item.get('active', True) else 'NO'}",
-                        ])
-                    _trading_radar_thesenregister_nachweis_einfuegen(
-                        radar_output, evidence_lines
-                    )
+            # The independent Trading-Radar path has already validated and
+            # persisted the thesis register exactly once before saving its report.
+            # Re-running update_register here would compare a just-created
+            # BASELINE_MISSING snapshot against itself and falsely turn the first
+            # run into PASS. Preserve the evidence already written to radar_output.
+            saved_radar_path = locals().get("radar_output")
+            if isinstance(saved_radar_path, str) and os.path.isfile(saved_radar_path):
+                with open(saved_radar_path, "r", encoding="utf-8-sig") as radar_handle:
+                    saved_radar = radar_handle.read()
+                if "THESENREGISTER-VERGLEICH:" not in saved_radar:
+                    if "TRADING_RADAR_THESEN_JSON" in saved_radar:
+                        print("WARNUNG: Erststufiger Thesenregister-Nachweis fehlt; kein zweites Registerupdate.")
+                        _trading_radar_thesenregister_nachweis_einfuegen(
+                            saved_radar_path,
+                            [
+                                "THESENREGISTER-VERGLEICH: NOT_UPDATED",
+                                "VORHER-SHA256: NICHT VERFÜGBAR",
+                                "NACHHER-SHA256: NICHT VERFÜGBAR",
+                                "THESEN_NEU: NICHT NACHWEISBAR",
+                                "THESEN_AKTUALISIERT: NICHT NACHWEISBAR",
+                                "THESEN_UNVERAENDERT: NICHT NACHWEISBAR",
+                                "THESEN_ARCHIVIERT: NICHT NACHWEISBAR",
+                                "Grund: Erststufiger Registerlauf lieferte keinen Nachweis; kein zweiter Vergleich im selben Lauf.",
+                            ],
+                        )
+                    else:
+                        print("Trading-Radar-Thesenregister: kein strukturierter Thesenblock; Registerupdate entfällt.")
                 else:
-                    print("WARNUNG: Thesenregistervergleich nicht nachweisbar: strukturierter Thesenblock fehlt.")
-                    _trading_radar_thesenregister_nachweis_einfuegen(
-                        radar_output,
-                        [
-                            "THESENREGISTER-VERGLEICH: NICHT_NACHWEISBAR",
-                            "VORHER-SHA256: NICHT VERFÜGBAR",
-                            "NACHHER-SHA256: NICHT VERFÜGBAR",
-                            "THESEN_NEU: NICHT NACHWEISBAR",
-                            "THESEN_AKTUALISIERT: NICHT NACHWEISBAR",
-                            "THESEN_UNVERAENDERT: NICHT NACHWEISBAR",
-                            "THESEN_ARCHIVIERT: NICHT NACHWEISBAR",
-                            "Grund: strukturierter Thesenblock oder belastbarer Vorzustand fehlt; es wird keine Aussage 'keine Änderung' getroffen.",
-                        ],
-                    )
-            except Exception as register_exc:
-                print(f"WARNUNG: Thesenregister nicht aktualisiert ({type(register_exc).__name__}: {register_exc})")
-                try:
-                    _trading_radar_thesenregister_nachweis_einfuegen(
-                        radar_output,
-                        [
-                            "THESENREGISTER-VERGLEICH: NICHT_NACHWEISBAR",
-                            f"Grund: {type(register_exc).__name__}: {register_exc}",
-                        ],
-                    )
-                except Exception as evidence_exc:
-                    print(f"WARNUNG: Thesenregister-Nachweis konnte nicht in Abschnitt 2 geschrieben werden ({type(evidence_exc).__name__}: {evidence_exc})")
+                    print("Trading-Radar-Thesenregister: bereits im Eigenlauf verarbeitet; kein zweites Update.")
         except Exception as exc:
             # Die Tagesauswertung darf durch einen reinen Historienfehler nicht
             # unbrauchbar werden; der Fehler bleibt im Log sichtbar.

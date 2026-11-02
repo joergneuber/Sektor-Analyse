@@ -342,9 +342,42 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 elif not re.search(r"(?im)^\s*(?:[-*•]\s*)?Out-/Underperformance:\s*NICHT VERFÜGBAR", benchmark):
                     errors.append("M-01: Fehlende Portfolio-/Benchmarkgrundlage muss Out-/Underperformance als NICHT VERFÜGBAR ausweisen.")
 
+    # M-01: numeric live-system/benchmark comparisons are independent of the
+    # portfolio-wide aggregate. Validate their identity and arithmetic even
+    # when Portfolio-Gesamtperformance is explicitly unavailable.
+    benchmark_section = _section_body(text, 7, SECTION_NAMES[6])
+    if not portfolio_numeric:
+        numeric_benchmark = re.search(
+            r"(?im)^Benchmark-Performance[^\r\n]*?([+-]?\d+(?:[,.]\d+)?)\s*%",
+            benchmark_section,
+        )
+        numeric_delta = re.search(
+            r"(?im)^Out-/Underperformance:\s*([+-]?\d+(?:[,.]\d+)?)\s*Prozentpunkte",
+            benchmark_section,
+        )
+        system_live = re.search(
+            r"(?im)^System-Performance-Live:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+            benchmark_section,
+        )
+        if numeric_benchmark and (system_live or numeric_delta):
+            live_basis = bool(re.search(
+                r"(?im)^Benchmark-Vergleichsbasis:\s*LIVE-SYSTEM\b", benchmark_section
+            ))
+            basis_line = re.search(r"(?im)^Benchmark-Vergleichsbasis:\s*([^\r\n]+)$", benchmark_section)
+            if not live_basis or not basis_line or "Benchmark=EUNL.DE" not in basis_line.group(1):
+                errors.append("M-01: Numerischer Benchmarkvergleich benötigt die eindeutige Basis LIVE-SYSTEM gegen MSCI World (EUNL.DE).")
+            if not system_live:
+                errors.append("M-01: Numerischer Live-Systemvergleich benötigt System-Performance-Live.")
+            if not numeric_delta:
+                errors.append("M-01: Numerischer Live-System-/Benchmarkvergleich benötigt die berechnete Out-/Underperformance in Prozentpunkten.")
+            if system_live and numeric_delta:
+                expected_delta = float(system_live.group(1).replace(",", ".")) - float(numeric_benchmark.group(1).replace(",", "."))
+                stated_delta = float(numeric_delta.group(1).replace(",", "."))
+                if abs(expected_delta - stated_delta) > 0.02:
+                    errors.append("M-01: Live-System-Out-/Underperformance stimmt nicht mit System-Ø minus MSCI-Ø im gleichen Trade-Zeitraum überein.")
+
     # M-01: the LIVE-SYSTEM aggregate must reconcile with the independently
     # counted better/worse/tied trade population, not only with its delta.
-    benchmark_section = _section_body(text, 7, SECTION_NAMES[6])
     live_basis_marker = re.search(
         r"(?im)^Benchmark-Vergleichsbasis:\s*LIVE-SYSTEM\b", benchmark_section
     )
@@ -438,7 +471,35 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     thesis_id = _label_value(thesis, (r"Thesen-ID", r"thesis_id"))
     version = _label_value(thesis, (r"Version", r"version"))
     status = _label_value(thesis, (r"Status", r"status"))
-    version_match = re.search(r"\d+", version or "")
+    # The validated machine-readable register is also a valid source for these
+    # identity fields. JSON keys are quoted, so the prose label parser above
+    # intentionally cannot see them; parse only the exact marked block.
+    structured_identity_valid = False
+    if not (thesis_id and version and status):
+        blocks = re.findall(
+            r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", thesis,
+            flags=re.DOTALL,
+        )
+        if len(blocks) == 1:
+            try:
+                payload = json.loads(blocks[0])
+                records = payload.get("theses", []) if isinstance(payload, dict) else []
+                if isinstance(records, list) and records and all(isinstance(item, dict) for item in records):
+                    allowed_statuses = {"NEU", "BESTÄTIGT", "WIDERLEGT", "ABGESCHWÄCHT", "ARCHIVIERT", "UNVERÄNDERT"}
+                    valid_records = all(
+                        str(item.get("thesis_id", "")).strip()
+                        and isinstance(item.get("version"), int) and item.get("version", 0) >= 1
+                        and str(item.get("status", "")).strip().upper() in allowed_statuses
+                        for item in records
+                    )
+                    if valid_records:
+                        thesis_id = thesis_id or ", ".join(str(item["thesis_id"]).strip() for item in records)
+                        version = version or ", ".join(str(item["version"]) for item in records)
+                        status = status or ", ".join(str(item["status"]).strip() for item in records)
+                        structured_identity_valid = True
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    version_match = re.search(r"\d+", str(version or ""))
     status_ok = bool(status and re.search(
         r"(?i)\b(?:NEU|AKTUALISIERT|BESTÄTIGT|ABGESCHWÄCHT|WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|FEHLT|UNKLAR|NICHT VERFÜGBAR)\b",
         status,
@@ -505,9 +566,11 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
             r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
-            r"Szenarien(?:\s+(?:unter|entsprechend|über|ueber)\s+Konsens)?|"
-            r"Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|Quellenprüfung|Quellenpruefung|"
-            r"Betroffene These/Assetklasse/konkrete offene Positionen)(?:\*\*)?\s*[:=](?:\*\*)?"
+            r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
+            r"Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+            r"Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|"
+            r"Betroffene These/Assetklasse/konkrete offene Positionen|"
+            r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?)(?:\*\*)?\s*[:=](?:\*\*)?"
         )
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")

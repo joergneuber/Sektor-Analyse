@@ -17,7 +17,7 @@ from typing import Any
 
 BLOCK_RE = re.compile(r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", re.S)
 REQUIRED = {
-    "thesis_id", "thesis", "horizon", "evidence", "counter_evidence",
+    "thesis_id", "thesis", "horizon", "alternative", "evidence", "counter_evidence",
     "confidence", "confirm_triggers", "invalidate_triggers",
     "event_dependencies", "asset_classes", "candidates", "status",
 }
@@ -64,7 +64,7 @@ def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for field in ("evidence", "counter_evidence", "confirm_triggers", "invalidate_triggers", "event_dependencies", "asset_classes", "candidates"):
             if not isinstance(thesis[field], list):
                 raise ValueError(f"These {tid}: {field} muss eine Liste sein")
-        for field in ("thesis", "horizon", "confidence"):
+        for field in ("thesis", "horizon", "alternative", "confidence"):
             if not isinstance(thesis[field], str) or not thesis[field].strip():
                 raise ValueError(f"These {tid}: {field} darf nicht leer sein")
         for field in ("evidence", "counter_evidence", "confirm_triggers", "invalidate_triggers", "asset_classes"):
@@ -127,7 +127,7 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
         # Vergleich nur ueber den inhaltlichen Thesen-Payload; Laufzeitfelder
         # und Daten-Cutoff werden separat aktualisiert.
         content_fields = (
-            "thesis", "expected_movement", "horizon", "time_horizon", "evidence",
+            "thesis", "expected_movement", "horizon", "time_horizon", "alternative", "evidence",
             "counter_evidence", "confidence", "confirm_triggers",
             "invalidate_triggers", "event_dependencies", "asset_classes",
             "candidates", "status",

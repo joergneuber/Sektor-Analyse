@@ -623,8 +623,9 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
         "Ereignis-Uhrzeit|Ereignis Uhrzeit|Datum|Date|Uhrzeit|Zeit|Zeitzone|"
         "Kennzahl|Indikator|Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|"
         "Konsens|Istwert|Quelle|Source|Betroffene These/Assetklasse/konkrete offene Positionen|"
-        "Szenarien(?:\\s+(?:unter|entsprechend|über|ueber)\\s+Konsens)?|"
-        "Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|Quellenprüfung|Quellenpruefung"
+        "Szenarien(?:\\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\\s+Konsens)?|"
+        "Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+        "Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung"
     )
     field = re.compile(rf"(?i)^\s*(?:{field_labels})\s*[:=]")
     def is_field_line(line: str) -> bool:
@@ -634,7 +635,8 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
     starts = []
     for i, line in enumerate(lines):
         m = re.match(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.+)$", line)
-        if m and not is_field_line(line):
+        is_event_header = bool(m and re.match(r"(?i)^Ereignis[- ]Uhrzeit\s*[:=]", m.group(1).strip()))
+        if m and (is_event_header or not is_field_line(line)):
             starts.append(i)
     if not starts:
         # Single non-empty paragraph is treated as one event only if explicitly named.
@@ -664,8 +666,12 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             r"(?im)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*([^\r\n|;]+)",
             plain_rec,
         )
+        if not date_m:
+            header_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", plain_rec.splitlines()[0] if plain_rec.splitlines() else "")
+            if header_date:
+                date_m = header_date
         source_m = re.search(
-            r"(?im)^\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=]\s*([^\r\n|;]+)",
+            r"(?im)(?:^|[|;])\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=]\s*([^\r\n|;]+)",
             plain_rec,
         )
         key = (name, (date_m.group(1).strip().casefold() if date_m else ""), (source_m.group(1).strip().casefold() if source_m else ""))
@@ -699,14 +705,27 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             if remove:
                 rec_lines = [line for i, line in enumerate(rec_lines) if i not in remove]
         rec = "\n".join(rec_lines)
-        source_present = bool(source_m and source_m.group(1).strip())
-        if not source_present and len(records) == 1:
+        source_value = source_m.group(1).strip() if source_m else ""
+        if not source_value and len(records) == 1:
             # In a single-event section, tolerate a source line retained in
             # the section body even if malformed markdown confused record slicing.
-            source_present = bool(re.search(
-                r"(?im)^\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=]\s*\S",
+            fallback_source = re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=]\s*([^\r\n|;]+)",
                 re.sub(r"\*\*([^*]+)\*\*", r"\1", body),
-            ))
+            )
+            source_value = fallback_source.group(1).strip() if fallback_source else ""
+        source_is_placeholder = bool(re.fullmatch(
+            r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|[-–—]|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR)",
+            source_value,
+        ))
+        source_has_evidence = bool(re.search(
+            r"(?i)(?:https?://|forexfactory|\bfred\b|federal reserve|official|"
+            r"\bbls\b|bureau of labor|\bbea\b|\becb\b|\beia\b|"
+            r"\bism\b|\badp\b|\bcme\b|\bsec\b|treasury|"
+            r"opec|world bank|imf|yahoo finance|trading economics)",
+            source_value,
+        ))
+        source_present = bool(source_value and not source_is_placeholder and source_has_evidence)
         if not source_present:
             findings.append("Ereignis ohne verifizierte Quelle")
         if not date_m or not date_m.group(1).strip():

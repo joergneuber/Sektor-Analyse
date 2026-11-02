@@ -10,7 +10,7 @@ RADAR_SECTIONS = (
     "6 · Portfolio & Risiko", "7 · MSCI-Vergleich", "8 · Daten-/Prüfanhang",
 )
 THESIS_STATUSES = {"NEU", "BESTÄTIGT", "ABGESCHWÄCHT", "WARTET AUF EREIGNIS", "INVALIDIERT", "ERSETZT"}
-REQUIRED = {"thesis_id", "version", "updated_at", "data_cutoff", "thesis", "horizon", "evidence",
+REQUIRED = {"thesis_id", "version", "updated_at", "data_cutoff", "thesis", "horizon", "alternative", "evidence",
             "counter_evidence", "confidence", "confirm_triggers", "invalidate_triggers",
             "event_dependencies", "asset_classes", "candidates", "status"}
 LIST_FIELDS = {"evidence", "counter_evidence", "confirm_triggers", "invalidate_triggers",
@@ -133,7 +133,7 @@ Am Ende genau einen JSON-Block:
 {"data_cutoff":"...","theses":[...]}
 ```
 Jede These enthaelt thesis_id, version, updated_at, data_cutoff, thesis, horizon,
-evidence, counter_evidence, confidence, confirm_triggers, invalidate_triggers,
+alternative, evidence, counter_evidence, confidence, confirm_triggers, invalidate_triggers,
 event_dependencies, asset_classes, candidates, status. Listen als JSON-Arrays;
 confidence qualitativ begruenden, keine scheinexakte Wahrscheinlichkeit. JSON muss gueltig sein.
 '''
@@ -199,6 +199,8 @@ def validate_thesis_register(payload: Any) -> list[str]:
             errors.append(f"{prefix}: version muss positive Ganzzahl sein")
         if thesis.get("status") not in THESIS_STATUSES:
             errors.append(f"{prefix}: unzulaessiger Status {thesis.get('status')!r}; erlaubt: {sorted(THESIS_STATUSES)}")
+        if not isinstance(thesis.get("alternative"), str) or not thesis.get("alternative", "").strip():
+            errors.append(f"{prefix}: alternative muss ein nichtleerer String sein")
         for field in LIST_FIELDS:
             if field in thesis and not isinstance(thesis[field], list):
                 errors.append(f"{prefix}: {field} muss JSON-Array sein")
@@ -586,8 +588,34 @@ def audit_market_first_content(report: str) -> list[str]:
                 r"(?i)(?:keine neue oder aktualisierte these|keine neuen oder aktualisierten thesen|thesenregister geprüft, keine änderung|thesenregister geprueft, keine aenderung|keine änderung im thesenregister|keine aenderung im thesenregister)",
                 thesis,
             ))
+            structured_theses = []
             if not explicit_no_update:
+                try:
+                    structured_payload = extract_thesis_json(text)
+                    candidate_theses = structured_payload.get("theses", [])
+                    if isinstance(candidate_theses, list):
+                        structured_theses = [item for item in candidate_theses if isinstance(item, dict)]
+                except (ValueError, TypeError, AttributeError):
+                    structured_theses = []
+            if explicit_no_update:
+                pass
+            elif not structured_theses:
                 errors.append("MARKT-FIRST: keine einzeln abgrenzbaren Thesen-Datensätze")
+            else:
+                for idx, item in enumerate(structured_theses, 1):
+                    required_structured = (
+                        ("Gegenbelege", item.get("counter_evidence")),
+                        ("Alternative", item.get("alternative")),
+                        ("Bestätigungstrigger", item.get("confirm_triggers")),
+                        ("Invalidierungstrigger", item.get("invalidate_triggers")),
+                    )
+                    for field, value in required_structured:
+                        populated = (
+                            isinstance(value, str) and bool(value.strip())
+                            or isinstance(value, list) and any(isinstance(v, str) and v.strip() for v in value)
+                        )
+                        if not populated:
+                            errors.append(f"MARKT-FIRST: These {idx}: Pflichtfeld '{field}' fehlt oder ist unbelegt")
         else:
             for idx, pos in enumerate(thesis_starts, 1):
                 end = thesis_starts[idx] if idx < len(thesis_starts) else len(thesis)
@@ -842,8 +870,9 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
     """
     import json
     text = str(report or "")
-    if re.search(r"```\s*TRADING_RADAR_THESEN_JSON\s*\n.*?\n```", text, re.I | re.S):
-        return text, False
+    existing_blocks = list(re.finditer(
+        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", text, re.I | re.S
+    ))
 
     heading = re.compile(r"(?im)^[ \t]*(?:#{1,6}\s*)?(\d+)\s*[.·]\s*([^\r\n]+?)\s*$")
     found = list(heading.finditer(text))
@@ -864,6 +893,61 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         match = re.search(pattern, body, re.I | re.M)
         return match.group(1).strip().strip(" -*") if match else ""
 
+    def remove_unmarked_json_drafts(source: str) -> tuple[str, bool]:
+        section2_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+            source,
+        )
+        if not section2_match:
+            return source, False
+        section3_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+            source[section2_match.end():],
+        )
+        if not section3_match:
+            return source, False
+        body_end = section2_match.end() + section3_match.start()
+        body = source[section2_match.end():body_end]
+        cleaned = re.sub(
+            r"(?ms)^```(?:json)?[ \t]*\r?\n(?=\s*\{).*?^```[ \t]*$",
+            "",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if cleaned == body:
+            return source, False
+        return source[:section2_match.end()] + cleaned + source[body_end:], True
+
+    if existing_blocks:
+        if len(existing_blocks) != 1:
+            return text, False
+        try:
+            existing_payload = json.loads(existing_blocks[0].group(1).strip())
+        except (TypeError, ValueError):
+            return text, False
+        theses = existing_payload.get("theses") if isinstance(existing_payload, dict) else None
+        if not isinstance(theses, list) or len(theses) != 1 or not isinstance(theses[0], dict):
+            return text, False
+        thesis_item = theses[0]
+        if isinstance(thesis_item.get("alternative"), str) and thesis_item["alternative"].strip():
+            cleaned_text, cleaned = remove_unmarked_json_drafts(text)
+            return cleaned_text, cleaned
+        positive = one(r"^\s*Positives Alternativszenario\s*:\s*([^\r\n]+)", executive)
+        negative = one(r"^\s*Negatives Alternativszenario\s*:\s*([^\r\n]+)", executive)
+        if not positive or not negative:
+            return text, False
+        thesis_item["alternative"] = (
+            "Positives Alternativszenario: " + positive +
+            " | Negatives Alternativszenario: " + negative
+        )
+        replacement = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(
+            existing_payload, ensure_ascii=False, indent=2
+        ) + "\n```"
+        start, end = existing_blocks[0].span()
+        updated_text = text[:start] + replacement + text[end:]
+        cleaned_text, _ = remove_unmarked_json_drafts(updated_text)
+        return cleaned_text, True
+
     thesis_id = one(r"^\s*(?:[-*•]\s*)?(?:Thesen-ID|thesis_id)\s*:\s*([^\r\n]+)", thesis_section)
     version_raw = one(r"^\s*(?:[-*•]\s*)?Version\s*:\s*([^\r\n]+)", thesis_section)
     status = one(r"^\s*(?:[-*•]\s*)?Status\s*:\s*([^\r\n]+)", thesis_section).upper()
@@ -874,6 +958,13 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
     confirmation = one(r"^\s*Bestätigungstrigger\s*:\s*([^\r\n]+)", thesis_section)
     invalidation = one(r"^\s*Invalidierungstrigger\s*:\s*([^\r\n]+)", thesis_section)
     counter = one(r"^\s*Gegenbelege\s*:\s*([^\r\n]+)", thesis_section)
+    positive_alternative = one(r"^\s*Positives Alternativszenario\s*:\s*([^\r\n]+)", executive)
+    negative_alternative = one(r"^\s*Negatives Alternativszenario\s*:\s*([^\r\n]+)", executive)
+    alternative = (
+        "Positives Alternativszenario: " + positive_alternative
+        + " | Negatives Alternativszenario: " + negative_alternative
+        if positive_alternative and negative_alternative else ""
+    )
 
     def bullet_section(body, start_label, end_label):
         match = re.search(rf"(?ims)^\s*{start_label}\s*:\s*\n?(.*?)(?=^\s*{end_label}\s*:|\Z)", body)
@@ -912,7 +1003,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         updated_at = updated_at[:-1] + "+00:00"
 
     required = [thesis_id, version_match.group(0) if version_match else "", status,
-                thesis, horizon, confidence, confirmation, invalidation, cutoff, updated_at]
+                thesis, horizon, confidence, confirmation, invalidation, cutoff, updated_at, alternative]
     if not all(value and value.strip() for value in required) or not evidence or not counter_evidence or not asset_classes:
         return text, False
     if status not in THESIS_STATUSES:
@@ -927,6 +1018,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
             "data_cutoff": cutoff,
             "thesis": thesis,
             "horizon": horizon,
+            "alternative": alternative,
             "evidence": evidence,
             "counter_evidence": counter_evidence,
             "confidence": confidence,
