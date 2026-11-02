@@ -9,6 +9,7 @@ from trading_radar_thesen import extract_thesis_payload, update_register
 def payload(status="NEU"):
     return {"data_cutoff": "2026-10-21T18:00:00+02:00", "theses": [{
         "thesis_id": "macro-usd-001", "thesis": "Dollarthese", "horizon": "2-4 Wochen",
+        "alternative": "DXY stabilisiert sich trotz Renditedifferenz.",
         "evidence": ["Renditedifferenz"], "counter_evidence": ["Risiko"],
         "confidence": "mittel", "confirm_triggers": ["DXY bestaetigt"],
         "invalidate_triggers": ["DXY bricht"], "event_dependencies": [],
@@ -100,3 +101,26 @@ def test_identical_thesis_does_not_increment_version(tmp_path):
     assert second_doc["theses"][0]["version"] == 1
     assert second_doc["theses"][0]["updated_at"] == first_updated
     assert second_doc["theses"][0]["last_seen_at"] >= first_updated
+
+
+def test_alternative_change_increments_thesis_version(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload()), str(path))
+    changed = payload()
+    changed["theses"][0]["alternative"] = "Die defensive Rotation wird vollständig zurückgenommen."
+    result = update_register(report(changed), str(path))
+    saved = json.loads(path.read_text())
+    assert result["updated_theses"] == ["macro-usd-001"]
+    assert saved["theses"][0]["version"] == 2
+    assert saved["theses"][0]["alternative"] == changed["theses"][0]["alternative"]
+
+
+def test_missing_alternative_is_rejected_without_register_overwrite(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload()), str(path))
+    before = path.read_bytes()
+    invalid = payload()
+    invalid["theses"][0].pop("alternative")
+    with pytest.raises(ValueError, match="alternative"):
+        update_register(report(invalid), str(path))
+    assert path.read_bytes() == before

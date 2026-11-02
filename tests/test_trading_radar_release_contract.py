@@ -42,6 +42,7 @@ class TradingRadarReleaseContractTests(unittest.TestCase):
         def thesis(text="Rates stay restrictive", status="NEU"):
             return {
                 "thesis_id": "T-RATES-01", "thesis": text, "horizon": "1-3 months",
+                "alternative": "Inflation falls and yields ease.",
                 "evidence": ["policy statement"], "counter_evidence": ["inflation falling"],
                 "confidence": "medium, conflicting indicators", "confirm_triggers": ["yields rise"],
                 "invalidate_triggers": ["cuts accelerate"], "event_dependencies": ["FOMC"],
@@ -78,6 +79,7 @@ class TradingRadarReleaseContractTests(unittest.TestCase):
                 "data_cutoff": "2026-10-26T15:00:00+00:00",
                 "theses": [{
                     "thesis_id": "T-1", "thesis": "Test thesis", "horizon": "short",
+                    "alternative": "The market stabilizes instead of continuing lower.",
                     "evidence": ["source"], "counter_evidence": ["counter"],
                     "confidence": "low", "confirm_triggers": ["Preis schließt oberhalb des bestätigten Widerstands."],
             "invalidate_triggers": ["Preis schließt unterhalb des bestätigten Swing-Tiefs."],

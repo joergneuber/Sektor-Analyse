@@ -253,6 +253,7 @@ def test_thesis_register_baseline_missing_is_explicit_then_next_run_compares(tmp
     from trading_radar_thesen import update_register
     thesis = {
         "thesis_id": "macro-001", "thesis": "Belegte Markthese", "horizon": "2-4 Wochen",
+        "alternative": "Defensive Sektoren verlieren ihre relative Stärke.",
         "evidence": ["Messwert A"], "counter_evidence": ["Gegenbeleg B"],
         "confidence": "mittel", "confirm_triggers": ["Trigger A"],
         "invalidate_triggers": ["Trigger B"], "event_dependencies": [],
@@ -683,6 +684,8 @@ def test_structured_thesis_block_is_built_only_from_complete_explicit_fields():
 Hauptanalyse: Defensive Sektorrotation mit selektiver Stärke in Energie und Rohstoffen.
 Zeithorizont: Kurz- bis mittelfristig (4 bis 8 Wochen)
 Konfidenz: Mittel
+Positives Alternativszenario: Energie und Gesundheit halten ihre relative Stärke.
+Negatives Alternativszenario: Technologie gewinnt die relative Stärke zurück.
 Datenstand UTC: 2026-11-01T18:09:41+00:00
 Stärkste Belege:
 - VIX bei 19,42 und DXY bei 101,88.
@@ -917,6 +920,7 @@ def test_m05_missing_thesis_json_uses_one_bounded_structured_retry(monkeypatch, 
             "data_cutoff": "2026-11-01T19:30:53+00:00",
             "thesis": "Defensive Qualität und Energie zeigen relative Stärke.",
             "horizon": "4 bis 8 Wochen",
+            "alternative": "Wachstumssektoren gewinnen ihre relative Stärke zurück.",
             "evidence": ["XLE 3M +19.81%", "XLP 3M +6.07%"],
             "counter_evidence": ["Nasdaq 3M -1.84%"],
             "confidence": "mittel",
