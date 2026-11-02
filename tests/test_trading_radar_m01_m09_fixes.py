@@ -5,7 +5,7 @@ from pathlib import Path
 
 import Trading_Radar_Alleinauswertung as production
 from trading_radar_report_gate import validate_report
-from trading_radar_neuauswertung import audit_market_first_content
+from trading_radar_neuauswertung import audit_market_first_content, ensure_structured_thesis_block, validate_thesis_register
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1033,3 +1033,43 @@ def test_m07_provenance_reconciles_both_run413_treasury_observations():
     errors = validate_report(result)
     assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
     assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
+
+
+
+def test_multi_thesis_json_repairs_missing_alternatives_by_thesis_id_and_status_alias():
+    report = """1. Trading-Radar
+Datenstand UTC: 2026-11-02T08:11:03+00:00
+Positives Alternativszenario: Kein Zeithorizont belegt.
+Negatives Alternativszenario: Kein Zeithorizont belegt.
+
+2. Thesen-Update
+- Thesen-ID: T-QUALITY
+  - Version: 2
+  - Status: BESTAETIGT
+  - Alternative: Rezession führt zu defensiver Umschichtung.
+- Thesen-ID: T-ENERGY
+  - Version: 3
+  - Status: BESTAETIGT
+  - Alternative: Industrieflaute belastet Energie- und Rohstoffwerte.
+
+```TRADING_RADAR_THESEN_JSON
+{"data_cutoff":"2026-11-02T08:11:03+00:00","theses":[
+{"thesis_id":"T-QUALITY","version":2,"updated_at":"2026-11-02T08:11:03+00:00","data_cutoff":"2026-11-02T08:11:03+00:00","thesis":"Qualität outperformt","horizon":"4 Wochen","evidence":["Qualitätsstärke"],"counter_evidence":["Zinsrisiko"],"confidence":"mittel","confirm_triggers":["Outperformance"],"invalidate_triggers":["Gewinneinbruch"],"event_dependencies":[],"asset_classes":["Aktien"],"candidates":["AAA"],"status":"BESTAETIGT"},
+{"thesis_id":"T-ENERGY","version":3,"updated_at":"2026-11-02T08:11:03+00:00","data_cutoff":"2026-11-02T08:11:03+00:00","thesis":"Energie hält sich","horizon":"4 Wochen","evidence":["Energienachfrage"],"counter_evidence":["Industrieflaute"],"confidence":"mittel","confirm_triggers":["Stärke"],"invalidate_triggers":["200T-Bruch"],"event_dependencies":[],"asset_classes":["Energie"],"candidates":["XOM"],"status":"BESTAETIGT"}
+]}
+```
+
+3. Ereignisradar
+Keine relevanten Ereignisse.
+"""
+    repaired, changed = ensure_structured_thesis_block(report)
+    assert changed
+    block = re.search(r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", repaired, re.S)
+    payload = json.loads(block.group(1))
+    assert [item["alternative"] for item in payload["theses"]] == [
+        "Rezession führt zu defensiver Umschichtung.",
+        "Industrieflaute belastet Energie- und Rohstoffwerte.",
+    ]
+    assert [item["status"] for item in payload["theses"]] == ["BESTÄTIGT", "BESTÄTIGT"]
+    assert "Status: BESTÄTIGT" in repaired
+    assert validate_thesis_register(payload) == []

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from trading_radar_thesen import extract_thesis_payload, update_register
+from trading_radar_thesen import extract_thesis_payload, update_register, synchronize_report_versions
 
 
 def payload(status="NEU"):
@@ -40,7 +40,7 @@ def test_register_is_written_and_versions_stable_ids(tmp_path):
     assert second["updated"] is True
     assert second_doc["theses"][0]["version"] == 2
     assert second_doc["theses"][0]["created_at"] == created
-    assert second_doc["theses"][0]["status"] == "BESTAETIGT"
+    assert second_doc["theses"][0]["status"] == "BESTÄTIGT"
 
 
 def test_invalid_payload_does_not_overwrite_existing_register(tmp_path):
@@ -124,3 +124,40 @@ def test_missing_alternative_is_rejected_without_register_overwrite(tmp_path):
     with pytest.raises(ValueError, match="alternative"):
         update_register(report(invalid), str(path))
     assert path.read_bytes() == before
+
+
+
+def test_ascii_status_alias_is_canonicalized_before_persistence(tmp_path):
+    path = tmp_path / "register.json"
+    result = update_register(report(payload("BESTAETIGT")), str(path))
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert result["updated"] is True
+    assert saved["theses"][0]["status"] == "BESTÄTIGT"
+
+
+def test_report_versions_are_synchronized_to_persisted_register_versions():
+    report_text = """2. Thesen-Update
+- Thesen-ID: T-1
+  - Version: 12
+- Thesen-ID: T-2
+  - Version: 2
+
+```TRADING_RADAR_THESEN_JSON
+{"data_cutoff":"2026-10-21T18:00:00+02:00","theses":[
+{"thesis_id":"T-1","version":12,"status":"BESTÄTIGT"},
+{"thesis_id":"T-2","version":2,"status":"NEU"}
+]}
+```
+
+3. Ereignisradar
+"""
+    result = synchronize_report_versions(report_text, {
+        "thesis_versions": [
+            {"thesis_id": "T-1", "version": 1, "active": True},
+            {"thesis_id": "T-2", "version": 10, "active": True},
+        ]
+    })
+    assert "- Version: 1" in result
+    assert "- Version: 10" in result
+    payload = extract_thesis_payload(result)
+    assert [item["version"] for item in payload["theses"]] == [1, 10]

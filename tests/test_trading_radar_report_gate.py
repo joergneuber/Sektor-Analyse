@@ -621,3 +621,26 @@ Performance-Einzelrenditen-SHA256: DIGEST
     errors = []
     _validate_m05_m10(report, errors)
     assert any("Performance-Datenbasis mit Trade-/Statusanzahl fehlt" in item for item in errors)
+
+
+
+def test_m07_allows_repeated_narrative_value_when_each_distinct_treasury_observation_is_sourced():
+    report = report_fixture()
+    report = report.replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag.\\n"
+        "US-10J-Rendite (^TNX): 4,95% | Quelle: Yahoo Finance (^TNX) | "
+        "Abrufzeit: 2026-10-30T20:00:00Z | Datenstichtag: 2026-10-30 | "
+        "Einheit: % | Verzögerung: Tages-Schlusskurs."
+    )
+    report = report.replace(
+        "Vergleich von Assetklassen und Marktregimen.",
+        "Vergleich von Assetklassen und Marktregimen. "
+        "Interpretation: US-10Y-Treasury bleibt mit 5,0000% erhöht."
+    )
+    errors = gate.validate_report(report)
+    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
