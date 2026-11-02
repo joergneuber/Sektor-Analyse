@@ -4826,7 +4826,7 @@ def _gemini_mehrstufige_gesamtanalyse(client, modell, hochgeladene_teile, anweis
         "die bereits verdichteten A1/A2/A3-Ergebnisse, sondern pruefe bei relevanten Aussagen auch den "
         "zugrunde liegenden aktuellen Quelldatenbestand. Persistent gespeicherte Historien bleiben davon "
         "getrennt und werden ueber A3 bzw. den bestehenden Historienmechanismus verarbeitet. "
-        "THESENREGISTER: Gib am Ende einen verpflichtenden, exakt markierten Block ```TRADING_RADAR_THESEN_JSON\n{\"data_cutoff\":\"Zeitstempel aus den aktuellen Daten, sonst leer\",\"theses\":[...]}\n``` aus. Jede These hat thesis_id (bei Fortführung dieselbe ID), thesis, horizon, evidence[], counter_evidence[], confidence, confirm_triggers[], invalidate_triggers[], event_dependencies[], asset_classes[], candidates[] und status. Zulässige Status: NEU, BESTAETIGT, VERSTAERKT, ABGESCHWAECHT, WARTET_AUF_EVENT, WIDERLEGT, ERSETZT, UNKLAR. Eventdetails (Name, Datum/Uhrzeit/Zeitzone, Konsens, Vorwert, Istwert und Marktreaktion) nur aus bereitgestellten Fakten; fehlende Angaben leer/null, nicht schätzen. Keine technische Handelsfreigabe daraus ableiten. Wenn keine neuen Thesen vorliegen, alle aktiven Thesen aus dem unten bereitgestellten Register mit identischer thesis_id und unverändertem Inhalt übernehmen; theses=[] ist nur zulässig, wenn das Register nachweislich leer ist und keine belastbare These besteht. Der Block darf keine neuen Fakten gegenüber dem Bericht einführen. Vorhandenes Register (technischer Vorzustand): " + thesenregister_context + ". Ein fehlender Vorzustand darf niemals als unverändert bewertet werden. "
+        "THESENREGISTER: Gib am Ende einen verpflichtenden, exakt markierten Block ```TRADING_RADAR_THESEN_JSON\n{\"data_cutoff\":\"Zeitstempel aus den aktuellen Daten, sonst leer\",\"theses\":[...]}\n``` aus. Jede These hat thesis_id (bei Fortführung dieselbe ID), thesis, horizon, alternative (nichtleerer String aus der ausdrücklich beschriebenen Alternativthese), evidence[], counter_evidence[], confidence, confirm_triggers[], invalidate_triggers[], event_dependencies[], asset_classes[], candidates[] und status. Zulässige Status ausschließlich exakt: NEU, BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT. Keine ASCII-Umschreibungen wie BESTAETIGT und keine zusätzlichen Statuswerte. Eventdetails (Name, Datum/Uhrzeit/Zeitzone, Konsens, Vorwert, Istwert und Marktreaktion) nur aus bereitgestellten Fakten; fehlende Angaben leer/null, nicht schätzen. Keine technische Handelsfreigabe daraus ableiten. Wenn keine neuen Thesen vorliegen, alle aktiven Thesen aus dem unten bereitgestellten Register mit identischer thesis_id und unverändertem Inhalt übernehmen; theses=[] ist nur zulässig, wenn das Register nachweislich leer ist und keine belastbare These besteht. Der Block darf keine neuen Fakten gegenüber dem Bericht einführen. Vorhandenes Register (technischer Vorzustand): " + thesenregister_context + ". Ein fehlender Vorzustand darf niemals als unverändert bewertet werden. "
         "Gemini darf die vollstaendige B-/C-/A-Historie interpretieren; in der fuer den Nutzer hervorgehobenen Statusmeldung stehen aber aktuelle A-Einstufungen, Aufstiege zu A und Statusverluste aus A im Vordergrund. Unveraendertes B (B→B) ist fuer den Nutzer irrelevant und darf nicht als eigene Meldung hervorgehoben werden. C→B kann als Vorstufe intern eingeordnet werden, ist aber kein A-Aufstieg. Statusverläufe müssen, wenn sie genannt werden, als exakter Vorheriger-Status → aktueller Status wiedergegeben werden. Fehlende Statuswerte bedeuten „Statusverlauf nicht verifiziert“ und niemals „stabil“. Das Wort stabil/gleichbleibend ist nur zulässig, wenn beide vorhandenen Statuswerte identisch sind; ein Wechsel wie C→B ist als Verbesserung und nicht als stabil zu beschreiben.\n\n"
         "DARSTELLUNGSREGEL: Jede genannte Aktie bzw. jedes Unternehmen muss immer mit Firmenname und Ticker im Format Name (TICKER) erscheinen. "
         "Keine Aktiennennung nur über den Ticker oder nur über den Namen. Dies gilt insbesondere für 1.3, 1.4, 2.1–2.5, 3.x, 4, 5, 6.x, 8.x und 9.x.\n\n"
@@ -19422,7 +19422,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         # fortschreiben. Das Register darf nicht aus der separaten allgemeinen
         # Auswertung gelesen werden. Ein fehlender Vorzustand bleibt BASELINE_MISSING.
         try:
-            from trading_radar_thesen import update_register
+            from trading_radar_thesen import update_register, synchronize_report_versions
             from trading_radar_neuauswertung import (
                 validate_radar_report_strict, ensure_structured_thesis_block,
             )
@@ -19456,6 +19456,9 @@ def speichere_ergebnis(text, eingabedateien=None):
                     data_cutoff=report_cutoff,
                 )
             if register_result.get("updated"):
+                # The register's deterministic lifecycle version is the
+                # persisted source of truth; keep prose and JSON in sync.
+                text = synchronize_report_versions(text, register_result)
                 thesis_evidence = [
                     f"THESENREGISTER-VERGLEICH: {register_result.get('comparison_status', 'NICHT_NACHWEISBAR')}",
                     f"VORHER-SHA256: {register_result.get('previous_sha256') or 'NICHT VERFÜGBAR'}",

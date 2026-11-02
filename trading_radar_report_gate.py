@@ -7,6 +7,7 @@ import json
 import hashlib
 import math
 import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 
@@ -934,7 +935,13 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         text,
     )
     if len(treasury_values) >= 2:
-        normalized = [value.replace(",", ".") for value in treasury_values]
+        def normalize_percent(value):
+            try:
+                return format(Decimal(value.replace(",", ".")).normalize(), "f")
+            except (InvalidOperation, ValueError):
+                return value.replace(",", ".")
+
+        normalized = [normalize_percent(value) for value in treasury_values]
         distinct = sorted(set(normalized))
         if len(distinct) > 1:
             observation_lines = [
@@ -965,7 +972,18 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                         line,
                     )
                 )
-            provenance_complete = len(observation_lines) >= 2 and all(has_provenance(line) for line in observation_lines)
+            # A value may be repeated later in narrative interpretation. Such a
+            # repetition is not a new market observation and must not require a
+            # second source record. Every distinct numeric observation still
+            # needs at least one separately identifiable, provenance-complete line.
+            provenance_complete = len(observation_lines) >= 2 and all(
+                any(
+                    has_provenance(line)
+                    and value in re.sub(r"(?<=\d),(?=\d)", ".", line)
+                    for line in observation_lines
+                )
+                for value in distinct
+            )
             explicit_open = any(
                 re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)
                 and re.search(

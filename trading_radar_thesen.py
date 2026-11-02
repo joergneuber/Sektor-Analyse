@@ -30,6 +30,19 @@ VALID_STATUS = {
 }
 
 
+STATUS_ALIASES = {
+    "BESTAETIGT": "BESTÄTIGT",
+    "ABGESCHWAECHT": "ABGESCHWÄCHT",
+    "WARTET_AUF_EVENT": "WARTET AUF EREIGNIS",
+}
+
+
+def canonicalize_thesis_status(value: Any) -> str:
+    """Store one canonical Unicode spelling for known legacy ASCII aliases."""
+    raw = re.sub(r"\\s+", " ", str(value or "").strip()).upper()
+    return STATUS_ALIASES.get(raw, raw)
+
+
 def extract_thesis_payload(report: str) -> dict[str, Any] | None:
     """Liest den optionalen, klar abgegrenzten JSON-Block; sonst None."""
     match = BLOCK_RE.search(report or "")
@@ -59,6 +72,7 @@ def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if tid in seen:
             raise ValueError(f"Doppelte thesis_id im Lauf: {tid}")
         seen.add(tid)
+        thesis["status"] = canonicalize_thesis_status(thesis["status"])
         if thesis["status"] not in VALID_STATUS:
             raise ValueError(f"These {tid}: ungueltiger Status {thesis['status']!r}")
         for field in ("evidence", "counter_evidence", "confirm_triggers", "invalidate_triggers", "event_dependencies", "asset_classes", "candidates"):
@@ -73,6 +87,76 @@ def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
         checked.append(thesis)
     return checked
 
+
+
+def synchronize_report_versions(report: str, register_result: dict[str, Any]) -> str:
+    """Align visible and JSON thesis versions with the versions actually persisted."""
+    versions = {
+        str(item.get("thesis_id")): int(item["version"])
+        for item in register_result.get("thesis_versions", [])
+        if isinstance(item, dict)
+        and item.get("thesis_id")
+        and isinstance(item.get("version"), int)
+        and not isinstance(item.get("version"), bool)
+        and item.get("version", 0) >= 1
+    }
+    if not versions:
+        return report
+
+    text = str(report or "")
+    block_match = BLOCK_RE.search(text)
+    if block_match:
+        try:
+            payload = json.loads(block_match.group(1))
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("theses"), list):
+            changed = False
+            for thesis in payload["theses"]:
+                if not isinstance(thesis, dict):
+                    continue
+                version = versions.get(str(thesis.get("thesis_id", "")))
+                if version is not None and thesis.get("version") != version:
+                    thesis["version"] = version
+                    changed = True
+            if changed:
+                replacement = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(
+                    payload, ensure_ascii=False, indent=2
+                ) + "\n```"
+                text = text[:block_match.start()] + replacement + text[block_match.end():]
+
+    section2 = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+        text,
+    )
+    section3 = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+        text,
+    )
+    if not section2 or not section3 or section2.start() >= section3.start():
+        return text
+    body_start, body_end = section2.end(), section3.start()
+    body = text[body_start:body_end]
+    markers = list(re.finditer(
+        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Thesen-ID(?:\*\*|__)?\s*:\s*([^\r\n]+)",
+        body,
+    ))
+    for index, marker in reversed(list(enumerate(markers))):
+        thesis_id = marker.group(1).strip()
+        version = versions.get(thesis_id)
+        if version is None:
+            continue
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(body)
+        block = body[marker.start():end]
+        updated_block, count = re.subn(
+            r"(?im)^([ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Version(?:\*\*|__)?\s*:\s*)\d+",
+            lambda match: match.group(1) + str(version),
+            block,
+            count=1,
+        )
+        if count:
+            body = body[:marker.start()] + updated_block + body[end:]
+    return text[:body_start] + body + text[body_end:]
 
 def update_register(report: str, register_path: str, *, data_cutoff: str | None = None) -> dict[str, Any]:
     """Validiert und schreibt Register atomar; ohne Block bleibt Datei unangetastet."""

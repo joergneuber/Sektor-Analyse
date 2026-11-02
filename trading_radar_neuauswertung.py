@@ -10,6 +10,18 @@ RADAR_SECTIONS = (
     "6 · Portfolio & Risiko", "7 · MSCI-Vergleich", "8 · Daten-/Prüfanhang",
 )
 THESIS_STATUSES = {"NEU", "BESTÄTIGT", "ABGESCHWÄCHT", "WARTET AUF EREIGNIS", "INVALIDIERT", "ERSETZT"}
+THESIS_STATUS_ALIASES = {
+    "BESTAETIGT": "BESTÄTIGT",
+    "ABGESCHWAECHT": "ABGESCHWÄCHT",
+    "WARTET_AUF_EVENT": "WARTET AUF EREIGNIS",
+}
+
+
+def canonicalize_thesis_status(value: Any) -> str:
+    """Map known ASCII prompt spellings to the single canonical report status."""
+    raw = re.sub(r"\s+", " ", str(value or "").strip()).upper()
+    return THESIS_STATUS_ALIASES.get(raw, raw)
+
 REQUIRED = {"thesis_id", "version", "updated_at", "data_cutoff", "thesis", "horizon", "alternative", "evidence",
             "counter_evidence", "confidence", "confirm_triggers", "invalidate_triggers",
             "event_dependencies", "asset_classes", "candidates", "status"}
@@ -135,6 +147,8 @@ Am Ende genau einen JSON-Block:
 Jede These enthaelt thesis_id, version, updated_at, data_cutoff, thesis, horizon,
 alternative, evidence, counter_evidence, confidence, confirm_triggers, invalidate_triggers,
 event_dependencies, asset_classes, candidates, status. Listen als JSON-Arrays;
+status ausschließlich exakt aus NEU, BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT wählen.
+Keine ASCII-Umschreibungen wie BESTAETIGT und keine zusätzlichen Statuswerte verwenden.
 confidence qualitativ begruenden, keine scheinexakte Wahrscheinlichkeit. JSON muss gueltig sein.
 '''
 
@@ -197,7 +211,7 @@ def validate_thesis_register(payload: Any) -> list[str]:
         ver = thesis.get("version")
         if not isinstance(ver, int) or isinstance(ver, bool) or ver < 1:
             errors.append(f"{prefix}: version muss positive Ganzzahl sein")
-        if thesis.get("status") not in THESIS_STATUSES:
+        if canonicalize_thesis_status(thesis.get("status")) not in THESIS_STATUSES:
             errors.append(f"{prefix}: unzulaessiger Status {thesis.get('status')!r}; erlaubt: {sorted(THESIS_STATUSES)}")
         if not isinstance(thesis.get("alternative"), str) or not thesis.get("alternative", "").strip():
             errors.append(f"{prefix}: alternative muss ein nichtleerer String sein")
@@ -926,27 +940,86 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         except (TypeError, ValueError):
             return text, False
         theses = existing_payload.get("theses") if isinstance(existing_payload, dict) else None
-        if not isinstance(theses, list) or len(theses) != 1 or not isinstance(theses[0], dict):
+        if not isinstance(theses, list) or any(not isinstance(item, dict) for item in theses):
             return text, False
-        thesis_item = theses[0]
-        if isinstance(thesis_item.get("alternative"), str) and thesis_item["alternative"].strip():
-            cleaned_text, cleaned = remove_unmarked_json_drafts(text)
-            return cleaned_text, cleaned
-        positive = one(r"^\s*Positives Alternativszenario\s*:\s*([^\r\n]+)", executive)
-        negative = one(r"^\s*Negatives Alternativszenario\s*:\s*([^\r\n]+)", executive)
-        if not positive or not negative:
-            return text, False
-        thesis_item["alternative"] = (
-            "Positives Alternativszenario: " + positive +
-            " | Negatives Alternativszenario: " + negative
+
+        # The readable thesis section is the source for a missing alternative.
+        # Match by thesis_id; never copy one thesis' alternative to another.
+        thesis_markers = list(re.finditer(
+            r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Thesen-ID(?:\*\*|__)?\s*:\s*([^\r\n]+)",
+            thesis_section,
+        ))
+        prose_by_id = {}
+        for marker_index, marker in enumerate(thesis_markers):
+            block_end = thesis_markers[marker_index + 1].start() if marker_index + 1 < len(thesis_markers) else len(thesis_section)
+            prose_by_id[marker.group(1).strip()] = thesis_section[marker.end():block_end]
+
+        changed = False
+        for thesis_item in theses:
+            raw_status = thesis_item.get("status")
+            canonical_status = canonicalize_thesis_status(raw_status)
+            if canonical_status != raw_status and canonical_status in THESIS_STATUSES:
+                thesis_item["status"] = canonical_status
+                changed = True
+
+            alternative = thesis_item.get("alternative")
+            if not isinstance(alternative, str) or not alternative.strip():
+                thesis_id = str(thesis_item.get("thesis_id", "")).strip()
+                prose_block = prose_by_id.get(thesis_id, "")
+                alternative_match = re.search(
+                    r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Alternative(?:\*\*|__)?\s*:\s*([^\r\n]+)",
+                    prose_block,
+                )
+                if alternative_match:
+                    thesis_item["alternative"] = alternative_match.group(1).strip()
+                    changed = True
+                elif len(theses) == 1:
+                    # Backward-compatible fallback for older one-thesis reports.
+                    positive = one(r"^\s*Positives Alternativszenario\s*:\s*([^\r\n]+)", executive)
+                    negative = one(r"^\s*Negatives Alternativszenario\s*:\s*([^\r\n]+)", executive)
+                    if positive and negative:
+                        thesis_item["alternative"] = (
+                            "Positives Alternativszenario: " + positive +
+                            " | Negatives Alternativszenario: " + negative
+                        )
+                        changed = True
+
+        if changed:
+            replacement = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(
+                existing_payload, ensure_ascii=False, indent=2
+            ) + "\n```"
+            start, end = existing_blocks[0].span()
+            text = text[:start] + replacement + text[end:]
+        # Keep the human-readable status lines aligned with the canonical JSON.
+        section2_start = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+            text,
         )
-        replacement = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(
-            existing_payload, ensure_ascii=False, indent=2
-        ) + "\n```"
-        start, end = existing_blocks[0].span()
-        updated_text = text[:start] + replacement + text[end:]
-        cleaned_text, _ = remove_unmarked_json_drafts(updated_text)
-        return cleaned_text, True
+        section3_start = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+            text,
+        )
+        if section2_start and section3_start and section2_start.start() < section3_start.start():
+            body_start, body_end = section2_start.end(), section3_start.start()
+            body = text[body_start:body_end]
+
+            def normalize_status_line(match):
+                normalized = canonicalize_thesis_status(match.group(2))
+                if normalized in THESIS_STATUSES:
+                    return match.group(1) + normalized
+                return match.group(0)
+
+            normalized_body = re.sub(
+                r"(?im)^([ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Status(?:\*\*|__)?\s*:\s*)([^\r\n]+)$",
+                normalize_status_line,
+                body,
+            )
+            if normalized_body != body:
+                text = text[:body_start] + normalized_body + text[body_end:]
+                changed = True
+
+        cleaned_text, cleaned = remove_unmarked_json_drafts(text)
+        return cleaned_text, bool(changed or cleaned)
 
     thesis_id = one(r"^\s*(?:[-*•]\s*)?(?:Thesen-ID|thesis_id)\s*:\s*([^\r\n]+)", thesis_section)
     version_raw = one(r"^\s*(?:[-*•]\s*)?Version\s*:\s*([^\r\n]+)", thesis_section)
