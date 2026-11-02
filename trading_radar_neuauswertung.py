@@ -9,7 +9,13 @@ RADAR_SECTIONS = (
     "4 · Assetklassenvergleich", "5 · Technische Kandidaten",
     "6 · Portfolio & Risiko", "7 · MSCI-Vergleich", "8 · Daten-/Prüfanhang",
 )
-THESIS_STATUSES = {"NEU", "BESTÄTIGT", "ABGESCHWÄCHT", "WARTET AUF EREIGNIS", "INVALIDIERT", "ERSETZT"}
+# Keep the strict report gate aligned with trading_radar_thesen.VALID_STATUS.
+# The three legacy lifecycle values are still accepted by the persistence layer;
+# rejecting them here would make a valid register impossible to persist.
+THESIS_STATUSES = {
+    "NEU", "BESTÄTIGT", "ABGESCHWÄCHT", "WARTET AUF EREIGNIS",
+    "INVALIDIERT", "ERSETZT", "VERSTAERKT", "WIDERLEGT", "UNKLAR",
+}
 THESIS_STATUS_ALIASES = {
     "BESTAETIGT": "BESTÄTIGT",
     "ABGESCHWAECHT": "ABGESCHWÄCHT",
@@ -932,6 +938,109 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
             return source, False
         return source[:section2_match.end()] + cleaned + source[body_end:], True
 
+    # Recover a single generic JSON fence in section 2 only when its complete
+    # schema is valid or the sole missing field (alternative) can be copied from
+    # the explicitly printed positive/negative scenarios in section 1. This
+    # handles older Gemini replies that emitted ```json instead of the required
+    # machine-readable fence without accepting arbitrary or incomplete JSON.
+    recovered_unmarked = False
+    if not existing_blocks:
+        section2_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+            text,
+        )
+        section3_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+            text,
+        )
+        if section2_match and section3_match and section2_match.start() < section3_match.start():
+            body_start, body_end = section2_match.end(), section3_match.start()
+            body = text[body_start:body_end]
+            generic_blocks = list(re.finditer(
+                r"(?ms)^```json[ \t]*\r?\n(.*?)^```[ \t]*$",
+                body,
+                flags=re.IGNORECASE,
+            ))
+            if len(generic_blocks) > 1:
+                return text, False
+            if len(generic_blocks) == 1:
+                try:
+                    generic_payload = json.loads(generic_blocks[0].group(1).strip())
+                except (TypeError, ValueError):
+                    generic_payload = None
+                generic_theses = (
+                    generic_payload.get("theses")
+                    if isinstance(generic_payload, dict) else None
+                )
+                if not isinstance(generic_theses, list) or not all(
+                    isinstance(item, dict) for item in generic_theses
+                ):
+                    return text, False
+                if isinstance(generic_theses, list) and all(
+                    isinstance(item, dict) for item in generic_theses
+                ):
+                    positive = one(
+                        r"^\s*Positives Alternativszenario\s*:\s*([^\r\n]+)",
+                        executive,
+                    )
+                    negative = one(
+                        r"^\s*Negatives Alternativszenario\s*:\s*([^\r\n]+)",
+                        executive,
+                    )
+                    thesis_markers = list(re.finditer(
+                        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Thesen-ID(?:\*\*|__)?\s*:\s*([^\r\n]+)",
+                        body,
+                    ))
+                    prose_by_id = {}
+                    for marker_index, marker in enumerate(thesis_markers):
+                        block_end = (
+                            thesis_markers[marker_index + 1].start()
+                            if marker_index + 1 < len(thesis_markers) else len(body)
+                        )
+                        prose_by_id[marker.group(1).strip()] = body[marker.end():block_end]
+
+                    recovered = True
+                    for thesis_item in generic_theses:
+                        raw_status = thesis_item.get("status")
+                        canonical_status = canonicalize_thesis_status(raw_status)
+                        if canonical_status in THESIS_STATUSES:
+                            thesis_item["status"] = canonical_status
+                        alternative = thesis_item.get("alternative")
+                        if not isinstance(alternative, str) or not alternative.strip():
+                            thesis_id = str(thesis_item.get("thesis_id", "")).strip()
+                            prose_block = prose_by_id.get(thesis_id, "")
+                            alternative_match = re.search(
+                                r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Alternative(?:\*\*|__)?\s*:\s*([^\r\n]+)",
+                                prose_block,
+                            )
+                            if alternative_match:
+                                thesis_item["alternative"] = alternative_match.group(1).strip()
+                            elif len(generic_theses) == 1 and positive and negative:
+                                thesis_item["alternative"] = (
+                                    "Positives Alternativszenario: " + positive
+                                    + " | Negatives Alternativszenario: " + negative
+                                )
+                            else:
+                                recovered = False
+                                break
+
+                    if not recovered or validate_thesis_register(generic_payload):
+                        return text, False
+                    replacement = (
+                        "```TRADING_RADAR_THESEN_JSON\n"
+                        + json.dumps(generic_payload, ensure_ascii=False, indent=2)
+                        + "\n```"
+                    )
+                    block = generic_blocks[0]
+                    body = body[:block.start()] + replacement + body[block.end():]
+                    text = text[:body_start] + body + text[body_end:]
+                    recovered_unmarked = True
+                    existing_blocks = list(re.finditer(
+                        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```",
+                        text,
+                        re.I | re.S,
+                    ))
+
     if existing_blocks:
         if len(existing_blocks) != 1:
             return text, False
@@ -1019,7 +1128,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                 changed = True
 
         cleaned_text, cleaned = remove_unmarked_json_drafts(text)
-        return cleaned_text, bool(changed or cleaned)
+        return cleaned_text, bool(changed or cleaned or recovered_unmarked)
 
     thesis_id = one(r"^\s*(?:[-*•]\s*)?(?:Thesen-ID|thesis_id)\s*:\s*([^\r\n]+)", thesis_section)
     version_raw = one(r"^\s*(?:[-*•]\s*)?Version\s*:\s*([^\r\n]+)", thesis_section)

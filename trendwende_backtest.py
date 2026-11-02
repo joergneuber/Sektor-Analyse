@@ -21,6 +21,7 @@ Bewusst nicht Teil des produktiven Scanners:
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import itertools
 import json
 import math
@@ -116,7 +117,7 @@ def variant_matrix() -> list[Variant]:
 
 
 def load_history(db_path: Path, ticker: str) -> pd.DataFrame:
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         df = pd.read_sql_query(
             """SELECT date, open AS Open, high AS High, low AS Low, close AS Close,
                       adj_close AS "Adj Close", volume AS Volume
@@ -129,7 +130,7 @@ def load_history(db_path: Path, ticker: str) -> pd.DataFrame:
 
 
 def list_tickers(db_path: Path) -> list[str]:
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         return [r[0] for r in conn.execute(
             "SELECT ticker FROM instruments WHERE row_count >= 300 ORDER BY ticker"
         )]

@@ -5346,6 +5346,7 @@ für ein anderes Ereignis mitverwenden.
   {"data_cutoff":"ISO-Zeitstempel aus den Quellen","theses":[{"thesis_id":"stabile ID",
   "version":1,"updated_at":"ISO-Zeitstempel","data_cutoff":"ISO-Zeitstempel",
   "thesis":"belegte These","horizon":"belegter Zeithorizont",
+  "alternative":"belegte Alternative oder ausdrücklich benannte Datenlücke",
   "evidence":["Quellenbeleg"],"counter_evidence":["Gegenbeleg"],
   "confidence":"niedrig|mittel|hoch","confirm_triggers":["beobachtbarer Trigger"],
   "invalidate_triggers":["beobachtbarer Invalidierungstrigger"],
@@ -5501,25 +5502,63 @@ __QUELLEN__
         # The standalone Radar prompt must produce the structured thesis payload
         # consumed by update_register(). It is requested immediately after section 2;
         # a bounded second pass recovers it if the long report response omitted it.
-        thesis_block_pattern = re.compile(
-            r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```",
-            re.DOTALL,
-        )
+        def _normalize_valid_thesis_block(candidate_text):
+            """Return a marked, schema-valid thesis block; otherwise None."""
+            text_candidate = str(candidate_text or "")
+            marked_pattern = re.compile(
+                r"```[ \t]*TRADING_RADAR_THESEN_JSON[ \t]*\r?\n(.*?)\r?\n```",
+                re.IGNORECASE | re.DOTALL,
+            )
+            marked = list(marked_pattern.finditer(text_candidate))
+            if len(marked) > 1:
+                return None
+            if marked:
+                match = marked[0]
+                raw_json = match.group(1).strip()
+                generic_match = None
+            else:
+                generic_pattern = re.compile(
+                    r"(?ms)^```(?:json)?[ \t]*\r?\n(.*?)^```[ \t]*$",
+                    re.IGNORECASE,
+                )
+                generic = list(generic_pattern.finditer(text_candidate))
+                if len(generic) != 1:
+                    return None
+                generic_match = generic[0]
+                raw_json = generic_match.group(1).strip()
+
+            try:
+                payload = json.loads(raw_json)
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(payload, dict):
+                return None
+
+            # The same schema validator used by the report gate must accept the
+            # retry before it can be inserted into a production report.
+            try:
+                from trading_radar_neuauswertung import validate_thesis_register
+                if validate_thesis_register(payload):
+                    return None
+            except Exception:
+                return None
+
+            if generic_match is not None:
+                replacement = (
+                    "```TRADING_RADAR_THESEN_JSON\n"
+                    + json.dumps(payload, ensure_ascii=False, indent=2)
+                    + "\n```"
+                )
+                return (
+                    text_candidate[:generic_match.start()]
+                    + replacement
+                    + text_candidate[generic_match.end():]
+                )
+            return text_candidate
 
         def _valid_thesis_block(candidate_text):
-            blocks = thesis_block_pattern.findall(candidate_text or "")
-            if len(blocks) != 1:
-                return False
-            try:
-                payload = json.loads(blocks[0])
-            except (TypeError, ValueError):
-                return False
-            return (
-                isinstance(payload, dict)
-                and isinstance(payload.get("data_cutoff"), str)
-                and bool(payload.get("data_cutoff").strip())
-                and isinstance(payload.get("theses"), list)
-            )
+            return _normalize_valid_thesis_block(candidate_text) is not None
+
 
         def _has_substantive_thesis_context(candidate_text):
             for section_number, next_number in ((1, 2), (4, 5)):
@@ -5561,7 +5600,8 @@ __QUELLEN__
                     "Schema: {\"data_cutoff\":\"ISO-Zeitstempel\",\"theses\":["
                     "{\"thesis_id\":\"stabile ID\",\"version\":1,\"updated_at\":\"ISO-Zeitstempel\","
                     "\"data_cutoff\":\"ISO-Zeitstempel\",\"thesis\":\"These\","
-                    "\"horizon\":\"Zeithorizont\",\"evidence\":[\"Beleg\"],"
+                    "\"horizon\":\"Zeithorizont\",\"alternative\":\"belegte Alternative oder konkrete Datenluecke\","
+                    "\"evidence\":[\"Beleg\"],"
                     "\"counter_evidence\":[\"Gegenbeleg\"],\"confidence\":\"niedrig|mittel|hoch\","
                     "\"confirm_triggers\":[\"Bestätigungstrigger\"],"
                     "\"invalidate_triggers\":[\"Invalidierungstrigger\"],"
@@ -5594,7 +5634,9 @@ __QUELLEN__
                 )
                 _gemini_radar_response_diagnose(thesis_response, retry_label)
                 thesis_retry_text = str(getattr(thesis_response, "text", thesis_response) or "").strip()
-                if _valid_thesis_block(thesis_retry_text):
+                normalized_thesis_retry = _normalize_valid_thesis_block(thesis_retry_text)
+                if normalized_thesis_retry is not None:
+                    thesis_retry_text = normalized_thesis_retry
                     section3 = re.search(
                         r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
                         radar_text,

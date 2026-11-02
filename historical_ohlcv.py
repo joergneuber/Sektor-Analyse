@@ -16,6 +16,7 @@ NICHT importiert und daher auch nicht ausgefuehrt.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ast
 import datetime as dt
 import os
@@ -24,7 +25,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import pandas as pd
 
@@ -184,13 +185,26 @@ def discover_universe(
     return sorted(t for t in normalized if t not in EXCLUDED_TICKERS)
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open one database connection and always close it after the context.
+
+    sqlite3.Connection.__exit__ commits/rolls back but does not close the
+    connection. The explicit outer close prevents descriptor leaks and keeps
+    stale handles from retaining SQLite locks across workflow stages.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=60000")
-    return conn
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=60000")
+        # Preserve sqlite3's transaction semantics while adding deterministic
+        # connection closure on both normal and exceptional exits.
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db(db_path: Path = DEFAULT_DB) -> None:
