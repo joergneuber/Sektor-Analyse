@@ -1,4 +1,7 @@
 import sys
+import sqlite3
+from contextlib import closing
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -64,3 +67,42 @@ def test_variant_filter_only_removes_current_signals():
         assert bt.variant_accepts(v, False, state) is False
     if current_ok:
         assert bt.variant_accepts(bt.Variant("CURRENT"), True, state) is True
+
+
+
+def test_read_connections_are_closed_after_history_and_ticker_queries(tmp_path):
+    db = tmp_path / "trendwende-read.sqlite"
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            conn.execute(
+                "CREATE TABLE bars (ticker TEXT, date TEXT, open REAL, high REAL, "
+                "low REAL, close REAL, adj_close REAL, volume REAL)"
+            )
+            conn.execute(
+                "INSERT INTO bars VALUES ('TEST','2026-10-30',10,12,9,11,11,100)"
+            )
+            conn.execute("CREATE TABLE instruments (ticker TEXT, row_count INTEGER)")
+            conn.execute("INSERT INTO instruments VALUES ('TEST', 300)")
+
+    original_connect = sqlite3.connect
+    opened = []
+
+    def capture_connection(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    with patch("trendwende_backtest.sqlite3.connect", side_effect=capture_connection):
+        history = bt.load_history(db, "TEST")
+        tickers = bt.list_tickers(db)
+
+    assert len(history) == 1
+    assert tickers == ["TEST"]
+    assert len(opened) == 2
+    for connection in opened:
+        try:
+            connection.execute("SELECT 1")
+        except sqlite3.ProgrammingError as exc:
+            assert "closed" in str(exc).lower()
+        else:
+            raise AssertionError("Trendwende-Backtest ließ eine SQLite-Verbindung offen")

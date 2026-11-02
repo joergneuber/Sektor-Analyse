@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pandas as pd
@@ -26,9 +27,9 @@ def test_database_upsert_and_load(tmp_path):
         "Open": [100, 101], "High": [102, 103], "Low": [99, 100],
         "Close": [101, 102], "Adj Close": [101, 102], "Volume": [1000, 1100],
     }, index=idx)
-    with sqlite3.connect(db) as conn:
-        assert ho._upsert_frames(conn, {"TEST": frame}) == 2
-        conn.commit()
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": frame}) == 2
     out = ho.load_history("TEST", db)
     assert list(out.columns) == ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
     assert len(out) == 2
@@ -149,21 +150,22 @@ def test_audit_snapshot_returns_four_disjoint_quality_states(tmp_path):
     today = datetime.date.today()
     recent = today - datetime.timedelta(days=1)
     old = today - datetime.timedelta(days=30)
-    with sqlite3.connect(db) as conn:
-        for ticker, date_value, values in (
-            ("VALID", recent.isoformat(), (10, 12, 9, 11, 100)),
-            ("STALE", old.isoformat(), (10, 12, 9, 11, 100)),
-            ("INVALID", recent.isoformat(), (10, 8, 9, 11, 100)),
-        ):
-            conn.execute(
-                "INSERT INTO instruments(ticker, first_date, last_date, row_count, last_update_utc, source) VALUES(?,?,?,?,?,?)",
-                (ticker, date_value, date_value, 1, datetime.datetime.now(datetime.timezone.utc).isoformat(), "test"),
-            )
-            conn.execute(
-                "INSERT INTO bars(ticker,date,open,high,low,close,volume,source) VALUES(?,?,?,?,?,?,?,?)",
-                (ticker, date_value, *values, "test"),
-            )
-        conn.commit()
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            for ticker, date_value, values in (
+                ("VALID", recent.isoformat(), (10, 12, 9, 11, 100)),
+                ("STALE", old.isoformat(), (10, 12, 9, 11, 100)),
+                ("INVALID", recent.isoformat(), (10, 8, 9, 11, 100)),
+            ):
+                conn.execute(
+                    "INSERT INTO instruments(ticker, first_date, last_date, row_count, last_update_utc, source) VALUES(?,?,?,?,?,?)",
+                    (ticker, date_value, date_value, 1, datetime.datetime.now(datetime.timezone.utc).isoformat(), "test"),
+                )
+                conn.execute(
+                    "INSERT INTO bars(ticker,date,open,high,low,close,volume,source) VALUES(?,?,?,?,?,?,?,?)",
+                    (ticker, date_value, *values, "test"),
+                )
+            conn.commit()
     audit = ho.audit_snapshot(db, source, dynamic, candidate_tickers=[], explicit_no_candidates=True)
     counts = audit["quality_status_counts"]
     assert counts["VALID"] >= 1
@@ -178,3 +180,36 @@ def test_audit_snapshot_returns_four_disjoint_quality_states(tmp_path):
     assert audit["quality_status_by_ticker"]["STALE"] == "STALE"
     assert audit["quality_status_by_ticker"]["INVALID"] == "INVALID"
     assert audit["candidate_mapping_complete"] is True
+
+
+
+def test_connect_closes_database_handle_after_normal_and_exceptional_exit(tmp_path):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "connection-lifecycle.sqlite"
+    with ho._connect(db) as conn:
+        conn.execute("CREATE TABLE sample (value INTEGER)")
+        conn.execute("INSERT INTO sample(value) VALUES (1)")
+    closed_after_success = conn
+
+    try:
+        closed_after_success.execute("SELECT 1")
+    except sqlite3.ProgrammingError as exc:
+        assert "closed" in str(exc).lower()
+    else:
+        raise AssertionError("SQLite-Verbindung blieb nach normalem Exit offen")
+
+    exceptional_conn = None
+    try:
+        with ho._connect(db) as conn:
+            exceptional_conn = conn
+            raise RuntimeError("test rollback")
+    except RuntimeError as exc:
+        assert str(exc) == "test rollback"
+
+    try:
+        exceptional_conn.execute("SELECT 1")
+    except sqlite3.ProgrammingError as exc:
+        assert "closed" in str(exc).lower()
+    else:
+        raise AssertionError("SQLite-Verbindung blieb nach Exception offen")

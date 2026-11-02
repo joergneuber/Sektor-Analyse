@@ -281,3 +281,168 @@ Relative Stärke.
 """
     _, findings = normalize_event_section(report)
     assert "Ereignis ohne verifizierte Quelle" in findings
+
+
+def _run1269_unmarked_thesis_report():
+    payload = {
+        "data_cutoff": "2026-11-02T18:12:52+00:00",
+        "theses": [{
+            "thesis_id": "makro_stagflation_2026",
+            "version": 1,
+            "updated_at": "2026-11-02T18:12:52+00:00",
+            "data_cutoff": "2026-11-02T18:12:52+00:00",
+            "thesis": (
+                "Erhöhte Realzinsen und hartnäckige Inflation belasten zinslose "
+                "Assetklassen sowie zyklische Segmente, während infrastrukturnahe "
+                "Versorger und Energiekonzerne als Profiteure agieren."
+            ),
+            "horizon": "4-6 Wochen",
+            # This is the exact defect in Run 1269: alternative is absent.
+            "evidence": [
+                "US 10Y Treasury bei 4,98%",
+                "Realzins 10Y TIPS bei 2,63%",
+                "PPI YoY bei 12,84%",
+            ],
+            "counter_evidence": [
+                "Stabiler US-Arbeitsmarkt mit Claims bei 194.000",
+                "Robuste Nachfrage nach KI-Infrastruktur bei Versorgern",
+            ],
+            "confidence": "mittel",
+            "confirm_triggers": [
+                "Anhalten der 10Y-Renditen über 4,90%",
+                "Outperformance von US-Versorgern wie Duke Energy Corporation (DUK)",
+            ],
+            "invalidate_triggers": [
+                "Rückgang der 10Y-Renditen unter 4,50%",
+                "Signifikantes Absinken der Inflation unter die Fed-Zielmarke",
+            ],
+            "event_dependencies": [],
+            "asset_classes": ["Aktien", "Zinsen", "Edelmetalle"],
+            "candidates": [
+                "Duke Energy Corporation (DUK)",
+                "Southern Company (SO)",
+            ],
+            "status": "BESTAETIGT",
+        }],
+    }
+    report = """1. Trading-Radar
+Positives Alternativszenario: NICHT ABLEITBAR – Datenlücke: Zeithorizont. Es werden keine Trigger-Schwellen, Zeiträume oder Indikatorwerte geschätzt.
+Negatives Alternativszenario: NICHT ABLEITBAR – Datenlücke: Zeithorizont. Es werden keine Trigger-Schwellen, Zeiträume oder Indikatorwerte geschätzt.
+
+2. Thesen-Update
+Register-Vergleich nicht möglich; Vorzustand/strukturierter Nachweis fehlt.
+
+```json
+""" + json.dumps(payload, ensure_ascii=False, indent=2) + """
+```
+
+3. Ereignisradar
+Keine relevanten Ereignisse im geprüften Zeitraum.
+"""
+    return report, payload
+
+
+def test_run1269_unmarked_json_is_recovered_from_explicit_alternative_data_gaps():
+    report, _ = _run1269_unmarked_thesis_report()
+    recovered, changed = ensure_structured_thesis_block(report)
+    assert changed is True
+    assert recovered.count("```TRADING_RADAR_THESEN_JSON") == 1
+    assert "```json" not in recovered
+    match = re.search(
+        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", recovered, re.S
+    )
+    payload = json.loads(match.group(1))
+    thesis = payload["theses"][0]
+    assert thesis["status"] == "BESTÄTIGT"
+    assert "Positives Alternativszenario: NICHT ABLEITBAR" in thesis["alternative"]
+    assert "Negatives Alternativszenario: NICHT ABLEITBAR" in thesis["alternative"]
+    from trading_radar_neuauswertung import validate_thesis_register
+    assert validate_thesis_register(payload) == []
+    assert not any(
+        "keine einzeln abgrenzbaren Thesen-Datensätze" in finding
+        for finding in audit_market_first_content(recovered)
+    )
+
+
+def test_run1269_recovery_does_not_invent_missing_alternative_scenarios():
+    report, _ = _run1269_unmarked_thesis_report()
+    report = re.sub(
+        r"(?m)^Positives Alternativszenario:.*\n|^Negatives Alternativszenario:.*\n",
+        "",
+        report,
+    )
+    recovered, changed = ensure_structured_thesis_block(report)
+    assert changed is False
+    assert "```TRADING_RADAR_THESEN_JSON" not in recovered
+    assert "```json" in recovered
+
+
+def test_run1269_recovery_creates_first_baseline_without_claiming_comparison_pass(tmp_path):
+    report, payload = _run1269_unmarked_thesis_report()
+    recovered, changed = ensure_structured_thesis_block(report)
+    assert changed is True
+    from trading_radar_thesen import update_register
+    register = tmp_path / ".trading_radar_thesen.json"
+    result = update_register(
+        recovered,
+        str(register),
+        data_cutoff=payload["data_cutoff"],
+    )
+    assert result["updated"] is True
+    assert result["comparison_status"] == "BASELINE_MISSING"
+    assert result["previous_sha256"] is None
+    assert len(result["current_sha256"]) == 64
+    assert register.is_file()
+
+
+def test_trading_radar_prompt_and_structural_retry_both_require_alternative():
+    source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
+    assert '"alternative":"belegte Alternative oder ausdrücklich benannte Datenlücke"' in source
+    assert '\\"alternative\\":\\"belegte Alternative oder konkrete Datenluecke\\"' in source
+
+
+
+def test_report_status_validator_matches_persistence_status_taxonomy():
+    from trading_radar_neuauswertung import (
+        THESIS_STATUSES,
+        canonicalize_thesis_status,
+        validate_thesis_register,
+    )
+    from trading_radar_thesen import VALID_STATUS as PERSISTENCE_STATUSES
+
+    # Canonical statuses must not be rejected by the report gate if persistence accepts them.
+    canonical_persistence_statuses = {
+        canonicalize_thesis_status(status) for status in PERSISTENCE_STATUSES
+    }
+    assert canonical_persistence_statuses == THESIS_STATUSES
+
+    template = {
+        "thesis_id": "STATUS-CHECK",
+        "version": 1,
+        "updated_at": "2026-11-02T00:00:00+00:00",
+        "data_cutoff": "2026-11-02T00:00:00+00:00",
+        "thesis": "Testthese",
+        "horizon": "Mittelfristig",
+        "alternative": "Alternative bleibt offen.",
+        "evidence": ["Beleg"],
+        "counter_evidence": ["Gegenbeleg"],
+        "confidence": "Mittel",
+        "confirm_triggers": ["Trigger A"],
+        "invalidate_triggers": ["Trigger B"],
+        "event_dependencies": [],
+        "asset_classes": ["Aktien"],
+        "candidates": [],
+        "status": "NEU",
+    }
+    for status in sorted(PERSISTENCE_STATUSES):
+        payload = {"data_cutoff": template["data_cutoff"],
+                   "theses": [dict(template, status=status)]}
+        assert validate_thesis_register(payload) == [], status
+
+    assert canonicalize_thesis_status("BESTAETIGT") == "BESTÄTIGT"
+    assert canonicalize_thesis_status("ABGESCHWAECHT") == "ABGESCHWÄCHT"
+    assert canonicalize_thesis_status("WARTET_AUF_EVENT") == "WARTET AUF EREIGNIS"
+    assert validate_thesis_register({
+        "data_cutoff": template["data_cutoff"],
+        "theses": [dict(template, status="UNBEKANNTER_STATUS")],
+    })
