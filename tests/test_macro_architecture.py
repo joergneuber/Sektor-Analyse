@@ -673,3 +673,25 @@ def test_trade_story_name_lookup_is_deferred_and_cached():
     source=(ROOT/"analyse.py").read_text(encoding="utf-8")
     _assert("@lru_cache(maxsize=2048)" in source,"Name lookup cache missing")
     _assert("firma_name = _hole_firma_name(ticker) if collect_hebeltrader else ticker" in source,"Name lookup still unconditional")
+
+
+def test_dgs10_fallback_is_fred_only(monkeypatch):
+    import pandas as pd
+    calls = []
+    expected = (pd.DataFrame({"DATE": [pd.Timestamp("2026-10-29")], "DGS10": [4.98]}),
+                "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10")
+
+    def fred_csv(series_id):
+        calls.append(series_id)
+        return expected
+
+    def forbidden_secondary(_series_id):
+        raise AssertionError("DGS10 must not fall back to Treasury.gov or H.15")
+
+    monkeypatch.setattr(m, "_fred_direct_csv_series", fred_csv)
+    monkeypatch.setattr(m, "_treasury_series", forbidden_secondary)
+    monkeypatch.setattr(m, "_h15_series", forbidden_secondary)
+    frame, source = m._alternate_series("DGS10")
+    _assert(calls == ["DGS10"], "DGS10 did not use the FRED CSV fallback")
+    _assert(frame.iloc[-1]["DGS10"] == 4.98, "FRED DGS10 value was not preserved")
+    _assert(source == expected[1], "FRED source URL was not preserved")
