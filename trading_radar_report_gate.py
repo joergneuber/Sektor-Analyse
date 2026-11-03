@@ -1918,14 +1918,13 @@ def reconcile_thesis_update_narrative(text: str) -> tuple[str, bool]:
     if comparison_ids[0] != expected_comparison_id:
         return text, False
 
-    def rows(prefix: str) -> dict[str, tuple[int, bool]] | None:
-        ids = re.findall(rf"(?im)^{prefix}THESIS-ID:\s*([A-Za-z0-9_.:-]+)\s*$", text)
-        versions = re.findall(rf"(?im)^{prefix}REGISTER-VERSION:\s*(\d+)\s*$", text)
-        active = re.findall(rf"(?im)^{prefix}THESIS-ACTIVE:\s*(YES|NO)\s*$", text)
-        count_label = "VORHER_THESEN_COUNT" if prefix else "NACHHER_THESEN_COUNT"
-        active_label = "VORHER_AKTIVE_THESEN" if prefix else "NACHHER_AKTIVE_THESEN"
+    def rows(id_label: str, version_label: str, active_label: str,
+             count_label: str, active_count_label: str) -> dict[str, tuple[int, bool]] | None:
+        ids = re.findall(rf"(?im)^{id_label}:\s*([A-Za-z0-9_.:-]+)\s*$", text)
+        versions = re.findall(rf"(?im)^{version_label}:\s*(\d+)\s*$", text)
+        active = re.findall(rf"(?im)^{active_label}:\s*(YES|NO)\s*$", text)
         count_values = re.findall(rf"(?im)^{count_label}:\s*(\d+)\s*$", text)
-        active_counts = re.findall(rf"(?im)^{active_label}:\s*(\d+)\s*$", text)
+        active_counts = re.findall(rf"(?im)^{active_count_label}:\s*(\d+)\s*$", text)
         if not (
             len(count_values) == len(active_counts) == 1
             and len(ids) == len(versions) == len(active) == int(count_values[0])
@@ -1937,8 +1936,10 @@ def reconcile_thesis_update_narrative(text: str) -> tuple[str, bool]:
         return {thesis_id: (int(version), is_active == "YES")
                 for thesis_id, version, is_active in zip(ids, versions, active)}
 
-    previous = rows("VORHER-")
-    current = rows("")
+    previous = rows("VORHER-THESIS-ID", "VORHER-REGISTER-VERSION", "VORHER-THESIS-ACTIVE",
+                    "VORHER_THESEN_COUNT", "VORHER_AKTIVE_THESEN")
+    current = rows("THESIS_ID", "REGISTER-VERSION", "THESIS_ACTIVE",
+                   "NACHHER_THESEN_COUNT", "NACHHER_AKTIVE_THESEN")
     if previous is None or current is None:
         return text, False
 
