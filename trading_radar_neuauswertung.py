@@ -104,10 +104,14 @@ REGELN:
 - Thesenregister deterministisch mit Vorzustand vergleichen: stabile thesis_id, Version,
   updated_at, Daten-Cutoff, Belege/Gegenbelege, Alternativen und Trigger. Eine Aussage
   "keine Änderung" darf nur nach tatsächlichem Registervergleich erfolgen.
-- Bei abweichenden Makro-/Live-Werten (insbesondere 10Y Treasury) für jede konkrete Beobachtung
-  Quelle, Abrufzeit, Datenstichtag und Einheit dokumentieren. Alternativ eine einzelne Zeile
-  "QUELLENKONFLIKT: OFFEN" ausgeben, die das Instrument und beide abweichenden Zahlenwerte
-  ausdrücklich nennt. Ein allgemeiner Konfliktmarker ohne konkrete Werte ist kein Nachweis.
+- Die nominale US-10Y-Treasury-Rendite ausschließlich aus dem Makrodatenpaket
+  FRED-Serie DGS10 übernehmen. Yahoo Finance ^TNX und andere parallele Live-Quellen
+  dürfen für diese Kennzahl nicht als zweite Beobachtung in den Bericht gelangen.
+  Quelle, FRED-Serienkennung, Abrufzeit, Datenstichtag, Einheit und Verzögerung der
+  FRED-Beobachtung vollständig aus dem Makrodatenpaket übernehmen. Wenn FRED DGS10
+  fehlt, den Wert als NICHT VERFÜGBAR kennzeichnen; nicht durch Yahoo oder eine andere
+  Quelle ersetzen. Einen Quellenkonflikt nur ausweisen, wenn im Eingangsmaterial
+  tatsächlich eine weitere ausdrücklich benannte Beobachtung vorhanden ist.
 - Portfolio-Gesamtperformance wird ausschließlich aus allen eindeutigen abgeschlossenen und offenen
   Trades berechnet: genau 1 Stück je Trade, abgeschlossene Trades zum Ausstiegskurs, offene Trades
   zum aktuellen Kurs, Kosten=0. Berechne je Trade zuerst die prozentuale Rendite:
