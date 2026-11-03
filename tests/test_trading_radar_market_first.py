@@ -1024,10 +1024,10 @@ def test_live_snapshot_does_not_fetch_or_emit_yahoo_tnx():
     data = pd.DataFrame({col: [100.0] * len(index) for col in columns}, index=index)
     requested = []
     report = (
-        "### 1. Trading-Radar\\n10-jährige US-Treasury-Rendite: 5,0000%.\\n"
-        "### 2. Thesen-Update\\nThesen.\\n"
-        "### 4. Assetklassenvergleich\\nVergleich.\\n"
-        "### 5. Technische Kandidaten\\nKeine Kandidaten.\\n"
+        "### 1. Trading-Radar\n10-jährige US-Treasury-Rendite: 5,0000%.\n"
+        "### 2. Thesen-Update\nThesen.\n"
+        "### 4. Assetklassenvergleich\nVergleich.\n"
+        "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
     )
     result, findings = append_live_market_snapshot(
         report, fetcher=lambda requested_symbols: (requested.extend(requested_symbols) or data)
