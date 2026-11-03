@@ -1005,7 +1005,7 @@ def test_m03_unavailable_ohlcv_snapshot_still_labels_candidate_mapping_unverifia
     assert "Kandidaten-Mapping: NICHT VERIFIZIERBAR" in result
 
 
-def test_m07_provenance_reconciles_both_run413_treasury_observations():
+def test_m07_rejects_yahoo_tnx_even_when_both_observations_have_provenance():
     import importlib.util
     from trading_radar_report_gate import validate_report
     spec = importlib.util.spec_from_file_location(
@@ -1033,7 +1033,7 @@ def test_m07_provenance_reconciles_both_run413_treasury_observations():
     )
     errors = validate_report(result)
     assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
-    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
+    assert any("US-10Y wird ausschließlich aus FRED DGS10" in error for error in errors), errors
 
 
 
