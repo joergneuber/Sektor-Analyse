@@ -1011,29 +1011,31 @@ def test_relative_strength_matrix_uses_common_cutoff_and_identical_21_63_day_win
     assert "1M NICHT VERFÜGBAR" not in matrix
 
 
-def test_live_snapshot_marks_unresolved_treasury_difference_as_open_conflict():
+def test_live_snapshot_does_not_fetch_or_emit_yahoo_tnx():
     import pandas as pd
     from trading_radar_market_first import append_live_market_snapshot
     symbols = [
-        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "TLT",
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
         "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
     ]
     index = pd.date_range("2026-05-01", periods=100, freq="B")
     columns = pd.MultiIndex.from_product([symbols, ["Close"]])
     data = pd.DataFrame({col: [100.0] * len(index) for col in columns}, index=index)
-    data[("^TNX", "Close")] = 4.99
+    requested = []
     report = (
-        "### 1. Trading-Radar\n10-jährige US-Treasury-Rendite: 5,0000%.\n"
-        "### 2. Thesen-Update\nThesen.\n"
-        "### 4. Assetklassenvergleich\nVergleich.\n"
-        "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
+        "### 1. Trading-Radar\\n10-jährige US-Treasury-Rendite: 5,0000%.\\n"
+        "### 2. Thesen-Update\\nThesen.\\n"
+        "### 4. Assetklassenvergleich\\nVergleich.\\n"
+        "### 5. Technische Kandidaten\\nKeine Kandidaten.\\n"
     )
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested_symbols: (requested.extend(requested_symbols) or data)
+    )
     assert findings == []
-    assert "QUELLENKONFLIKT: OFFEN" in result
-    assert "Makro-Wert: 5.0000%" in result
-    assert "Live-Wert: 4.9900%" in result
+    assert "^TNX" not in requested
+    assert "US-10J-Rendite (^TNX)" not in result
+    assert "QUELLENKONFLIKT: OFFEN" not in result
 
 
 
