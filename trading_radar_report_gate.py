@@ -1356,12 +1356,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     distinct_treasury_values = sorted({value for value, _ in observation_records})
     non_fred_observations = [
         line for _, line in observation_records
-        if re.search(r"(?i)Yahoo\\s+Finance|\\^TNX", line)
+        if re.search(r"(?i)Yahoo\s+Finance|\^TNX", line)
     ]
     non_fred_conflicts = [
         line for line in text.splitlines()
         if _is_us10y_conflict_line(line)
-        and re.search(r"(?i)Yahoo\\s+Finance|\\^TNX", line)
+        and re.search(r"(?i)Yahoo\s+Finance|\^TNX", line)
     ]
     if non_fred_observations or non_fred_conflicts:
         errors.append(
