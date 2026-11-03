@@ -1354,6 +1354,20 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             observation_records.append((value, line))
 
     distinct_treasury_values = sorted({value for value, _ in observation_records})
+    non_fred_observations = [
+        line for _, line in observation_records
+        if re.search(r"(?i)Yahoo\\s+Finance|\\^TNX", line)
+    ]
+    non_fred_conflicts = [
+        line for line in text.splitlines()
+        if _is_us10y_conflict_line(line)
+        and re.search(r"(?i)Yahoo\\s+Finance|\\^TNX", line)
+    ]
+    if non_fred_observations or non_fred_conflicts:
+        errors.append(
+            "M-07: US-10Y wird ausschließlich aus FRED DGS10 übernommen; "
+            "Yahoo-Finance-/^TNX-Beobachtungen sind keine konkurrierende Berichtsdatenquelle."
+        )
     if observation_records or conflict_observation_records:
         # Every distinct value must have a complete source record, even when
         # the report contains only one US-10Y observation.
