@@ -66,7 +66,6 @@ def parse_and_validate_register(data: bytes) -> dict:
     if type(payload.get("schema_version")) is not int:
         raise ValueError("Thesenregister besitzt keine numerische schema_version")
     seen = set()
-    active = 0
     for index, thesis in enumerate(payload["theses"]):
         if not isinstance(thesis, dict):
             raise ValueError(f"These[{index}] ist kein Objekt")
@@ -78,10 +77,10 @@ def parse_and_validate_register(data: bytes) -> dict:
         seen.add(thesis_id)
         if type(thesis.get("version")) is not int or thesis["version"] < 1:
             raise ValueError(f"These {thesis_id} besitzt keine gültige Version")
-        if thesis.get("active", True):
-            active += 1
-    if not payload["theses"] or active < 1:
-        raise ValueError("Thesenregister enthält keine aktive These; Snapshot wird nicht persistiert")
+        if type(thesis.get("active", True)) is not bool:
+            raise ValueError(f"These {thesis_id} besitzt keinen booleschen active-Status")
+    if not payload["theses"]:
+        raise ValueError("Thesenregister enthält keine Einträge; Snapshot wird nicht persistiert")
     return payload
 
 
@@ -118,8 +117,15 @@ def validate_manifest_against_register(
     cache entries predate the sidecar. Artifact restores are never legacy:
     repository, branch and source run ID must all be present and match exactly.
     """
-    if not isinstance(manifest, dict) or manifest.get("manifest_schema_version") != 1:
+    if not isinstance(manifest, dict) or type(manifest.get("manifest_schema_version")) is not int or manifest.get("manifest_schema_version") != 1:
         raise ValueError("Manifest hat ein ungültiges Schema")
+    if not isinstance(register, dict) or type(register.get("schema_version")) is not int or register.get("schema_version") != 1:
+        raise ValueError("Thesenregister besitzt ein ungültiges Schema")
+    if not isinstance(register.get("theses"), list) or not register["theses"]:
+        raise ValueError("Thesenregister besitzt keine gültigen Einträge")
+    for index, thesis in enumerate(register["theses"]):
+        if not isinstance(thesis, dict) or type(thesis.get("active", True)) is not bool:
+            raise ValueError(f"These[{index}] besitzt keinen booleschen active-Status")
     if manifest.get("register_sha256") != sha256_bytes(register_bytes):
         raise ValueError("Manifest-Hash stimmt nicht mit Register überein")
     if manifest.get("register_schema_version") != register.get("schema_version"):

@@ -158,6 +158,53 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
             body = body[:marker.start()] + updated_block + body[end:]
     return text[:body_start] + body + text[body_end:]
 
+def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, Any]]:
+    """Validate a persisted register before it can be used as comparison baseline."""
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+    ):
+        raise ValueError(f"{label}: ungueltiges Register-Schema")
+    theses = payload.get("theses")
+    if not isinstance(theses, list) or not theses:
+        raise ValueError(f"{label}: theses[] fehlt oder ist leer")
+    seen = set()
+    active_count = 0
+    for index, item in enumerate(theses):
+        if not isinstance(item, dict):
+            raise ValueError(f"{label}: These[{index}] ist kein Objekt")
+        thesis_id = item.get("thesis_id")
+        version = item.get("version")
+        if not isinstance(thesis_id, str) or not thesis_id.strip():
+            raise ValueError(f"{label}: These[{index}] besitzt keine thesis_id")
+        if thesis_id in seen:
+            raise ValueError(f"{label}: doppelte thesis_id {thesis_id}")
+        seen.add(thesis_id)
+        if type(version) is not int or version < 1:
+            raise ValueError(f"{label}: {thesis_id} besitzt keine positive Version")
+        active = item.get("active", True)
+        if type(active) is not bool:
+            raise ValueError(f"{label}: {thesis_id} besitzt keinen booleschen active-Status")
+        if active:
+            active_count += 1
+    return [
+        {"thesis_id": item["thesis_id"], "version": item["version"],
+         "active": item.get("active", True)}
+        for item in theses
+    ]
+
+
+def _register_comparison_sha256(previous_sha256: str, current_sha256: str) -> str:
+    payload = {
+        "previous_sha256": previous_sha256,
+        "current_sha256": current_sha256,
+        "schema": "trading-radar-thesis-register-comparison-v1",
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def update_register(report: str, register_path: str, *, data_cutoff: str | None = None) -> dict[str, Any]:
     """Validiert und schreibt Register atomar; ohne Block bleibt Datei unangetastet."""
     payload = extract_thesis_payload(report)
@@ -178,24 +225,31 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     theses = validate_theses(payload)
     path = Path(register_path)
     previous: dict[str, Any] = {"schema_version": 1, "theses": []}
-    previous_exists = path.exists()
+    previous_exists = path.is_file()
+    previous_sha256 = None
+    previous_thesis_versions: list[dict[str, Any]] = []
+    previous_thesis_count = 0
+    previous_active_count = 0
     # An absent register is not evidence that the historical thesis set was
-    # empty. Do not create an empty baseline from a model-generated theses=[];
-    # the prior state must first be supplied or a substantive first snapshot
-    # must be created and explicitly marked BASELINE_MISSING.
+    # empty. The first substantive snapshot is a bootstrap only, never PASS.
     if not previous_exists and not theses:
         return {
             "updated": False,
             "reason": "Vorzustand fehlt; leeres theses[] darf nicht als leeres Register-Baseline ausgegeben werden",
             "comparison_status": "BASELINE_MISSING",
         }
-    previous_sha256 = None
     if previous_exists:
-        previous_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-        with path.open("r", encoding="utf-8") as handle:
-            previous = json.load(handle)
-        if not isinstance(previous, dict) or not isinstance(previous.get("theses"), list):
-            raise ValueError("bestehendes Register hat kein gueltiges theses[]-Schema")
+        previous_bytes = path.read_bytes()
+        previous_sha256 = hashlib.sha256(previous_bytes).hexdigest()
+        try:
+            previous = json.loads(previous_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"bestehendes Register ist nicht lesbares JSON: {exc}") from exc
+        previous_thesis_versions = _validate_register_snapshot(
+            previous, label="Vorzustand"
+        )
+        previous_thesis_count = len(previous_thesis_versions)
+        previous_active_count = sum(1 for item in previous_thesis_versions if item["active"])
     old_by_id = {item.get("thesis_id"): item for item in previous["theses"] if isinstance(item, dict)}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     current = []
@@ -238,9 +292,11 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
             archived["active"] = False
             archived["archived_at"] = now
             archived["archive_reason"] = "Im aktuellen Thesenblock nicht enthalten; nicht stillschweigend gelöscht."
-            archived_ids.append(str(old_id))
+            if old.get("active", True) is True:
+                archived_ids.append(str(old_id))
             current.append(archived)
     merged = {"schema_version": 1, "updated_at": now, "theses": current}
+    _validate_register_snapshot(merged, label="Nachzustand")
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_name = None
     try:
@@ -255,20 +311,30 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     finally:
         if temp_name and os.path.exists(temp_name):
             os.unlink(temp_name)
-    current_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    current_bytes = path.read_bytes()
+    current_payload = json.loads(current_bytes.decode("utf-8"))
+    current_thesis_versions = _validate_register_snapshot(
+        current_payload, label="Nachzustand"
+    )
+    current_sha256 = hashlib.sha256(current_bytes).hexdigest()
+    comparison_sha256 = (
+        _register_comparison_sha256(previous_sha256, current_sha256)
+        if previous_exists and previous_sha256 else None
+    )
     return {
         "updated": True, "count": len(current), "path": str(path),
-        "comparison_status": "PASS" if previous_exists else "BASELINE_MISSING",
+        "comparison_status": "PASS" if comparison_sha256 else "BASELINE_MISSING",
         "previous_sha256": previous_sha256,
         "current_sha256": current_sha256,
-        "active_count": sum(1 for item in current if item.get("active", True)),
+        "comparison_sha256": comparison_sha256,
+        "previous_thesis_count": previous_thesis_count,
+        "previous_active_count": previous_active_count,
+        "previous_thesis_versions": previous_thesis_versions,
+        "current_thesis_count": len(current_thesis_versions),
+        "active_count": sum(1 for item in current_thesis_versions if item["active"]),
         "new_theses": sorted(new_ids),
         "updated_theses": sorted(updated_ids),
         "unchanged_theses": sorted(unchanged_ids),
         "archived_theses": sorted(archived_ids),
-        "thesis_versions": [
-            {"thesis_id": item["thesis_id"], "version": item["version"],
-             "active": bool(item.get("active", True))}
-            for item in current
-        ],
+        "thesis_versions": current_thesis_versions,
     }

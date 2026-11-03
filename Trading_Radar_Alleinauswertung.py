@@ -87,7 +87,10 @@ import io
 from collections import defaultdict
 from trading_radar_neuauswertung import audit_market_first_content, normalize_market_first_report_structure
 from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, report_explicitly_declares_no_technical_candidates, report_has_explicit_empty_candidate_groups, validate_ohlcv_audit
-from trading_radar_report_gate import validate_report as validate_trading_radar_report
+from trading_radar_report_gate import (
+    validate_report as validate_trading_radar_report,
+    extract_us10y_observations,
+)
 
 # Findings from the report-save validation stage are carried to post-save gates.
 _TRADING_RADAR_FINALITY_FINDINGS = []
@@ -5502,8 +5505,8 @@ __QUELLEN__
         # The standalone Radar prompt must produce the structured thesis payload
         # consumed by update_register(). It is requested immediately after section 2;
         # a bounded second pass recovers it if the long report response omitted it.
-        def _normalize_valid_thesis_block(candidate_text):
-            """Return a marked, schema-valid thesis block; otherwise None."""
+        def _normalize_valid_thesis_block(candidate_text, report_context=None):
+            """Return a marked, schema- and readable-ID-valid block; otherwise None."""
             text_candidate = str(candidate_text or "")
             marked_pattern = re.compile(
                 r"```[ \t]*TRADING_RADAR_THESEN_JSON[ \t]*\r?\n(.*?)\r?\n```",
@@ -5526,6 +5529,12 @@ __QUELLEN__
                     return None
                 generic_match = generic[0]
                 raw_json = generic_match.group(1).strip()
+                # Gemini may place the required marker inside a generic
+                # ```json fence. Strip only that marker line before decoding;
+                # the shared production parser below validates the same form.
+                raw_json = re.sub(
+                    r"(?i)^TRADING_RADAR_THESEN_JSON\s*\r?\n", "", raw_json, count=1
+                )
 
             try:
                 payload = json.loads(raw_json)
@@ -5537,9 +5546,19 @@ __QUELLEN__
             # The same schema validator used by the report gate must accept the
             # retry before it can be inserted into a production report.
             try:
-                from trading_radar_neuauswertung import validate_thesis_register
-                if validate_thesis_register(payload):
+                from trading_radar_neuauswertung import (
+                    extract_thesis_json, validate_thesis_register,
+                    validate_thesis_ids_match_report,
+                )
+                # Validate with the exact production parser, not a retry-local
+                # approximation of its fence grammar.
+                parsed = extract_thesis_json(text_candidate)
+                if parsed != payload or validate_thesis_register(parsed):
                     return None
+                comparison_report = str(report_context if report_context is not None else text_candidate)
+                if validate_thesis_ids_match_report(comparison_report, parsed):
+                    return None
+                payload = parsed
             except Exception:
                 return None
 
@@ -5557,7 +5576,9 @@ __QUELLEN__
             return text_candidate
 
         def _valid_thesis_block(candidate_text):
-            return _normalize_valid_thesis_block(candidate_text) is not None
+            return _normalize_valid_thesis_block(
+                candidate_text, report_context=candidate_text
+            ) is not None
 
 
         def _has_substantive_thesis_context(candidate_text):
@@ -5608,7 +5629,12 @@ __QUELLEN__
                     "\"event_dependencies\":[],\"asset_classes\":[],\"candidates\":[],"
                     "\"status\":\"NEU|BESTAETIGT|VERSTAERKT|ABGESCHWAECHT|WARTET_AUF_EVENT|WIDERLEGT|ERSETZT|UNKLAR\"}]}. "
                     "Nutze ausschließlich die folgenden Berichtsfakten und das Register. "
-                    "Erfinde keine Zahl, Schwelle, Ereignis oder Gegenbeleg. Nutze bestehende thesis_id/version; ""für eine neue These eine deterministische ID aus Thema und Datenstichtag sowie version=1. "
+                    "Erfinde keine Zahl, Schwelle, Ereignis oder Gegenbeleg. Nutze bestehende thesis_id/version; "
+                    "für eine neue These eine deterministische ID aus Thema und Datenstichtag sowie version=1. "
+                    "WICHTIG: Übernimm JEDE im lesbaren Abschnitt 2 ausdrücklich genannte Thesen-ID "
+                    "genau einmal in theses[].thesis_id. Keine lesbare These darf im JSON fehlen; "
+                    "keine zusätzliche JSON-These ohne lesbaren Datensatz. Gleiche die ID-Mengen "
+                    "vor Ausgabe exakt ab. Bei nicht auflösbarer Abweichung keinen Registerblock liefern. "
                     "Wenn eine belastbare These nicht ableitbar ist, liefere theses=[]; "
                     "ein fehlender Register-Vorzustand darf niemals als unverändert gelten.\n\n"
                     + "VORHANDENES REGISTER:\n" + register_context + "\n\n"
@@ -5634,7 +5660,9 @@ __QUELLEN__
                 )
                 _gemini_radar_response_diagnose(thesis_response, retry_label)
                 thesis_retry_text = str(getattr(thesis_response, "text", thesis_response) or "").strip()
-                normalized_thesis_retry = _normalize_valid_thesis_block(thesis_retry_text)
+                normalized_thesis_retry = _normalize_valid_thesis_block(
+                    thesis_retry_text, report_context=radar_text
+                )
                 if normalized_thesis_retry is not None:
                     thesis_retry_text = normalized_thesis_retry
                     section3 = re.search(
@@ -18338,6 +18366,37 @@ def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
     return text[:section.end()] + "\n\n" + block + "\n" + body.lstrip("\r\n") + text[end:]
 
 
+def _trading_radar_thesenregister_evidence_lines(register_result):
+    """Format the persisted before/after comparison as auditable report fields."""
+    lines = [
+        f"THESENREGISTER-VERGLEICH: {register_result.get('comparison_status', 'NICHT_NACHWEISBAR')}",
+        f"VORHER-SHA256: {register_result.get('previous_sha256') or 'NICHT VERFÜGBAR'}",
+        f"NACHHER-SHA256: {register_result.get('current_sha256') or 'NICHT VERFÜGBAR'}",
+        f"THESENREGISTER-VERGLEICH-ID: {register_result.get('comparison_sha256') or 'NICHT VERFÜGBAR'}",
+        f"VORHER_THESEN_COUNT: {register_result.get('previous_thesis_count', 'NICHT VERFÜGBAR')}",
+        f"VORHER_AKTIVE_THESEN: {register_result.get('previous_active_count', 'NICHT VERFÜGBAR')}",
+        f"NACHHER_THESEN_COUNT: {register_result.get('current_thesis_count', register_result.get('count', 0))}",
+        f"NACHHER_AKTIVE_THESEN: {register_result.get('active_count', 0)}",
+        "THESEN_NEU: " + (", ".join(register_result.get("new_theses", [])) or "KEINE"),
+        "THESEN_AKTUALISIERT: " + (", ".join(register_result.get("updated_theses", [])) or "KEINE"),
+        "THESEN_UNVERAENDERT: " + (", ".join(register_result.get("unchanged_theses", [])) or "KEINE"),
+        "THESEN_ARCHIVIERT: " + (", ".join(register_result.get("archived_theses", [])) or "KEINE"),
+    ]
+    for item in register_result.get("previous_thesis_versions", []):
+        lines.extend([
+            f"VORHER-THESIS-ID: {item['thesis_id']}",
+            f"VORHER-REGISTER-VERSION: {item['version']}",
+            f"VORHER-THESIS-ACTIVE: {'YES' if item.get('active', True) else 'NO'}",
+        ])
+    for item in register_result.get("thesis_versions", []):
+        lines.extend([
+            f"THESIS_ID: {item['thesis_id']}",
+            f"REGISTER-VERSION: {item['version']}",
+            f"THESIS_ACTIVE: {'YES' if item.get('active', True) else 'NO'}",
+        ])
+    return lines
+
+
 def _trading_radar_thesenregister_nachweis_text(report, evidence_lines):
     """Return report text with deterministic thesis-register evidence in section 2."""
     if not isinstance(report, str):
@@ -18368,7 +18427,10 @@ def _trading_radar_thesenregister_nachweis_text(report, evidence_lines):
         )
     body = re.sub(
         r"(?im)^[ \t]*(?:THESENREGISTER-VERGLEICH|VORHER-SHA256|NACHHER-SHA256|"
-        r"AKTIVE_THESEN|THESEN_NEU|THESEN_AKTUALISIERT|THESEN_UNVERAENDERT|THESEN_ARCHIVIERT|THESIS_ID|VERSION|THESIS_ACTIVE|THESENREGISTER-GRUND|Grund)\s*[:=][^\r\n]*(?:\r?\n|$)",
+        r"AKTIVE_THESEN|VORHER_THESEN_COUNT|VORHER_AKTIVE_THESEN|NACHHER_THESEN_COUNT|NACHHER_AKTIVE_THESEN|"
+        r"THESENREGISTER-VERGLEICH-ID|VORHER_THESIS_ID|VORHER_VERSION|VORHER_THESIS_ACTIVE|"
+        r"VORHER-THESIS-ID|VORHER-REGISTER-VERSION|VORHER-THESIS-ACTIVE|REGISTER-VERSION|"
+        r"THESEN_NEU|THESEN_AKTUALISIERT|THESEN_UNVERAENDERT|THESEN_ARCHIVIERT|THESIS_ID|VERSION|THESIS_ACTIVE|THESENREGISTER-GRUND|Grund)\s*[:=][^\r\n]*(?:\r?\n|$)",
         "", body,
     )
     evidence = "\n".join(evidence_values)
@@ -18399,12 +18461,12 @@ def _trading_radar_thesenregister_nachweis_einfuegen(report_path, evidence_lines
             os.unlink(temp_path)
 
 def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedateien=None):
-    """Attach per-observation FRED provenance using the actual macro snapshot schema.
+    """Attach source metadata to each explicit nominal US-10Y observation.
 
-    The macro source uses e.g. ``US 10Y Treasury: 4.1234 | Datenstand=... |
-    STATUS=REAL | SOURCE=...`` (the numeric rate has no percent sign). Retrieval
-    timestamp and delay are emitted by makro_szenario.fred_snapshot. Missing
-    source metadata is never inferred from the report-generation time.
+    The report parser and this enricher share the same instrument/value
+    recognizer. Source metadata is matched by the observed numeric value;
+    missing or ambiguous metadata is never filled from the report-generation
+    time or from an unrelated Treasury observation.
     """
     if not isinstance(text, str) or not text:
         return text
@@ -18415,16 +18477,21 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             source_file = os.path.basename(os.fspath(raw_path))
             break
 
+    field_patterns = {
+        "Quelle": r"(?:SOURCE|Quelle)",
+        "Abrufzeit": r"(?:RETRIEVED_AT|Abrufzeitpunkt|Abrufzeit)",
+        "Datenstichtag": r"(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)",
+        "Einheit": r"(?:UNIT|Einheit)",
+        "Verzögerung": r"(?:DELAY_DAYS|Verzögerung|Verzoegerung|Delay(?:_Days)?)",
+    }
+
     def fields(line):
         result = {}
-        for key, pattern in {
-            "Quelle": r"(?i)(?:SOURCE|Quelle)\s*[:=]\s*([^|;]+)",
-            "Abrufzeit": r"(?i)(?:RETRIEVED_AT|Abrufzeit)\s*[:=]\s*([^|;]+)",
-            "Datenstichtag": r"(?i)(?:Datenstand|Datenstichtag|Beobachtungsdatum)\s*[:=]\s*([^|;]+)",
-            "Einheit": r"(?i)(?:UNIT|Einheit)\s*[:=]\s*([^|;]+)",
-            "Verzögerung": r"(?i)(?:DELAY_DAYS|Verzögerung)\s*[:=]\s*([^|;]+)",
-        }.items():
-            match = re.search(pattern, line or "")
+        for key, pattern in field_patterns.items():
+            match = re.search(
+                rf"(?i)(?:^|[|;])\s*{pattern}\s*[:=]\s*([^|;]+)",
+                line or "",
+            )
             if match:
                 value = match.group(1).strip().rstrip(".")
                 if key == "Verzögerung" and re.fullmatch(r"\d+", value):
@@ -18432,11 +18499,14 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                 result[key] = value
         return result
 
-    macro_lines = str(makro_text or "").splitlines()
-    # Match the canonical named observation from the macro source, not any
-    # arbitrary line that happens to mention a 10-year Treasury.
-    source_observations = []
-    for source_line in macro_lines:
+    def is_missing(value):
+        return str(value or "").strip().casefold() in {
+            "", "nicht verfügbar", "nicht verfuegbar", "unbekannt",
+            "fehlt", "nicht bekannt", "n/a", "na", "tbd",
+        }
+
+    macro_observations = []
+    for source_line in str(makro_text or "").splitlines():
         match = re.match(
             r"(?i)^\s*US\s+10Y\s+Treasury\s*:\s*([-+]?\d+(?:[.,]\d+)?)\s*(?:%?)\s*\|",
             source_line,
@@ -18447,7 +18517,43 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             source_value = float(match.group(1).replace(",", "."))
         except ValueError:
             continue
-        source_observations.append((source_value, fields(source_line)))
+        if math.isfinite(source_value):
+            macro_observations.append((source_value, fields(source_line)))
+
+    def source_metadata_for(report_value, decimals):
+        tolerance = (0.5 * (10 ** (-decimals))) + 1e-8
+        matching = [
+            metadata for source_value, metadata in macro_observations
+            if abs(source_value - report_value) <= tolerance
+        ]
+        # Prefer one unambiguous source record with source + observation date.
+        # Duplicate compact summaries may omit the other fields; they must not
+        # mask a single complete record.
+        complete_matching = [
+            metadata for metadata in matching
+            if not is_missing(metadata.get("Quelle"))
+            and not is_missing(metadata.get("Datenstichtag"))
+        ]
+        if complete_matching:
+            signatures = {
+                tuple(sorted((key, value) for key, value in metadata.items() if value))
+                for metadata in complete_matching
+            }
+            return complete_matching[0] if len(signatures) == 1 else {}
+        return matching[0] if len(matching) == 1 else {}
+
+    def set_or_fill_field(line, key, value):
+        pattern = field_patterns[key]
+        match = re.search(
+            rf"(?i)(?P<prefix>(?:^|[|;])\s*{pattern}\s*[:=]\s*)(?P<value>[^|;]+)",
+            line,
+        )
+        if match:
+            current = match.group("value").strip().rstrip(".")
+            if is_missing(current) and not is_missing(value):
+                return line[:match.start("value")] + str(value) + line[match.end("value"):]
+            return line
+        return line.rstrip() + f" | {key}: {value}"
 
     output = []
     in_fenced_block = False
@@ -18459,74 +18565,95 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         if in_fenced_block:
             output.append(line)
             continue
-        # Both the actual macro schema (number without %) and report prose
-        # (number followed by %) are accepted.
-        treasury_name = bool(re.search(
-            r"(?i)(?:(?:US\s+)?10Y\s+Treasury|10Y\s+US\s+Treasury|US[- ]?10Y(?:[- ]?Treasury)?|"
-            r"10-jährige[rn]?\s+US[- ]?Treasury|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
-            r"(?:Staatsanleihen?zins|Rendite))",
-            line,
-        ))
-        value_match = re.search(
-            r"(?i)(?:US\s+10Y\s+Treasury|10Y\s+US\s+Treasury|(?:US\s+)?10Y\s+Treasury(?:\s*\([^)]*\))?|"
-            r"US[- ]?10Y(?:[- ]?Treasury)?|10-jährige[rn]?\s+US[- ]?Treasury|"
-            r"10[- ]?jährig(?:er|e|en)?\s+US[- ]?(?:Staatsanleihen?zins|Rendite))"
-            r"\s*(?::|bei)\s*([-+]?\d+(?:[.,]\d+)?)\s*%?",
-            line,
-        ) if treasury_name else None
-        if not treasury_name or not value_match:
-            output.append(line)
-            continue
-        try:
-            raw_report_value = value_match.group(1).replace(",", ".")
-            report_value = float(raw_report_value)
-            decimals = len(raw_report_value.split(".", 1)[1]) if "." in raw_report_value else 0
-            rounding_tolerance = (0.5 * (10 ** (-decimals))) + 1e-8
-        except ValueError:
+
+        if re.search(r"(?i)QUELLENKONFLIKT\s*:", line):
+            conflict_value = re.search(
+                r"(?i)Makro-Wert\s*:\s*([-+]?\d+(?:[,.]\d+)?)\s*%",
+                line,
+            )
+            if conflict_value:
+                raw_conflict_value = conflict_value.group(1).replace(",", ".")
+                decimals = len(raw_conflict_value.split(".", 1)[1]) if "." in raw_conflict_value else 0
+                try:
+                    conflict_metadata = source_metadata_for(float(raw_conflict_value), decimals)
+                except (TypeError, ValueError, OverflowError):
+                    conflict_metadata = {}
+                if conflict_metadata:
+                    provenance = "; ".join(
+                        f"{key}={conflict_metadata.get(key, 'NICHT VERFÜGBAR')}"
+                        for key in ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+                    )
+                    line = re.sub(
+                        r"(?i)\(Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar\)",
+                        f"(Makro-Provenienz: {provenance})",
+                        line,
+                    )
             output.append(line)
             continue
 
-        matching = [
-            metadata for source_value, metadata in source_observations
-            if abs(source_value - report_value) <= rounding_tolerance
-        ]
-        # The macro briefing may repeat the same observation in a compact
-        # summary line without SOURCE metadata. Prefer one uniquely complete
-        # source record; do not let an unprovenanced duplicate mask it.
-        complete_matching = [
-            metadata for metadata in matching
-            if metadata.get("Quelle") and metadata.get("Datenstichtag")
-        ]
-        if complete_matching:
-            signatures = {
-                tuple(sorted((key, value) for key, value in metadata.items() if value))
-                for metadata in complete_matching
-            }
-            source_metadata = complete_matching[0] if len(signatures) == 1 else {}
-        elif len(matching) == 1:
-            source_metadata = matching[0]
-        else:
-            source_metadata = {}
+        allow_run1270_context = bool(
+            re.search(r"(?i)^\s*Zinsen/Renditen\s*:", line)
+            and re.search(r"(?i)\bTIPS\b", line)
+        )
+        observations = extract_us10y_observations(
+            line, allow_run1270_context=allow_run1270_context
+        )
+        if not observations:
+            output.append(line)
+            continue
+        if len(set(observations)) > 1:
+            # A single line cannot safely map multiple different values to one
+            # source record. Keep it visibly unresolved; the report gate blocks
+            # FINAL rather than reusing one provenance record for both values.
+            line = line.rstrip() + (
+                " | Treasury-Provenienzprüfung: MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR"
+            )
+            output.append(line)
+            continue
+
+        report_decimal = observations[0]
+        raw_match = re.search(
+            r"(?i)(?:US\s*[- ]?\s*10Y(?:\s*[- ]?Treasury)?"
+            r"|US\s*[- ]?\s*10J(?:\s*[- ]?Rendite)?"
+            r"|10Y\s*\)?\s*[- ]?\s*(?:US\s*[- ]?\s*)?Treasury"
+            r"|10Y\s*\)\s*[- ]?\s*Rendite"
+            r"|10\s*[- ]?year(?:\s+US)?\s+Treasury"
+            r"|10\s*[- ]?year(?:\s+US)?\s+yield"
+            r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury|Staatsanleihen?zins|Rendite))"
+            r"\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
+            r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)",
+            line,
+        )
+        raw_value = raw_match.group("value") if raw_match else format(report_decimal, "f")
+        decimals = len(raw_value.replace(",", ".").split(".", 1)[1]) if "." in raw_value.replace(",", ".") else 0
+        try:
+            report_value = float(report_decimal)
+        except (TypeError, ValueError, OverflowError):
+            output.append(line)
+            continue
+
+        source_metadata = source_metadata_for(report_value, decimals)
         existing = fields(line)
         defaults = {
             "Quelle": "NICHT VERFÜGBAR",
             "Abrufzeit": "NICHT VERFÜGBAR",
             "Datenstichtag": "NICHT VERFÜGBAR",
-            "Einheit": "%",
+            "Einheit": "NICHT VERFÜGBAR",
             "Verzögerung": "NICHT VERFÜGBAR",
         }
         for key, value in source_metadata.items():
-            if value:
+            if value and not is_missing(value):
                 defaults[key] = value
-        additions = []
+
         for key in ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung"):
-            if key not in existing:
-                additions.append(f"{key}: {existing.get(key) or defaults[key]}")
-        if source_file and not re.search(r"(?i)\bQuelldatei\s*[:=]", line):
-            additions.append(f"Quelldatei: {source_file}")
-        if additions:
-            line += " | " + "; ".join(additions) + "."
+            current_value = existing.get(key)
+            replacement_value = defaults[key] if is_missing(current_value) else current_value
+            line = set_or_fill_field(line, key, replacement_value)
+
+        if source_file and not re.search(r"(?i)(?:^|[|;])\s*Quelldatei\s*[:=]", line):
+            line += f" | Quelldatei: {source_file}"
         output.append(line)
+
     return "\n".join(output)
 
 def _trading_radar_szenarien_ergänzen(text):
@@ -19501,22 +19628,7 @@ def speichere_ergebnis(text, eingabedateien=None):
                 # The register's deterministic lifecycle version is the
                 # persisted source of truth; keep prose and JSON in sync.
                 text = synchronize_report_versions(text, register_result)
-                thesis_evidence = [
-                    f"THESENREGISTER-VERGLEICH: {register_result.get('comparison_status', 'NICHT_NACHWEISBAR')}",
-                    f"VORHER-SHA256: {register_result.get('previous_sha256') or 'NICHT VERFÜGBAR'}",
-                    f"NACHHER-SHA256: {register_result.get('current_sha256') or 'NICHT VERFÜGBAR'}",
-                    f"AKTIVE_THESEN: {register_result.get('active_count', 0)}",
-                    "THESEN_NEU: " + (", ".join(register_result.get("new_theses", [])) or "KEINE"),
-                    "THESEN_AKTUALISIERT: " + (", ".join(register_result.get("updated_theses", [])) or "KEINE"),
-                    "THESEN_UNVERAENDERT: " + (", ".join(register_result.get("unchanged_theses", [])) or "KEINE"),
-                    "THESEN_ARCHIVIERT: " + (", ".join(register_result.get("archived_theses", [])) or "KEINE"),
-                ]
-                for item in register_result.get("thesis_versions", []):
-                    thesis_evidence.extend([
-                        f"THESIS_ID: {item['thesis_id']}",
-                        f"VERSION: {item['version']}",
-                        f"THESIS_ACTIVE: {'YES' if item.get('active', True) else 'NO'}",
-                    ])
+                thesis_evidence = _trading_radar_thesenregister_evidence_lines(register_result)
             else:
                 thesis_evidence = [
                     f"THESENREGISTER-VERGLEICH: {register_result.get('comparison_status', 'NICHT_NACHWEISBAR')}",

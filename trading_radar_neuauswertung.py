@@ -176,19 +176,124 @@ def build_radar_prompt(input_files: dict[str, str | Path], thesis_register: str 
         chunks.append("\n### LETZTES THESENREGISTER (Kontext, nicht blind bestaetigen)\n" + thesis_register)
     return "\n".join(chunks)
 
+def _thesis_json_fences(report: str) -> list[tuple[re.Match, str, str]]:
+    """Return recognized thesis fences as (match, raw_json, format).
+
+    Accepted forms are the canonical marker fence, a generic ```json fence
+    whose first content line is the marker, and a plain generic JSON fence.
+    The latter is retained for backward compatibility but only accepted when
+    it is the sole JSON fence in the thesis section/report.
+    """
+    text = str(report or "")
+    pattern = re.compile(r"(?ms)^```([^\r\n]*)\r?\n(.*?)^```[ \t]*$")
+    found = []
+    for match in pattern.finditer(text):
+        language = match.group(1).strip()
+        body = match.group(2).strip()
+        if language.casefold() == "trading_radar_thesen_json":
+            found.append((match, body, "canonical"))
+            continue
+        if language.casefold() == "json":
+            if re.match(r"(?i)^TRADING_RADAR_THESEN_JSON\s*\r?\n", body):
+                body = re.sub(r"(?i)^TRADING_RADAR_THESEN_JSON\s*\r?\n", "", body, count=1)
+                found.append((match, body.strip(), "json_marker"))
+            else:
+                found.append((match, body, "json"))
+    return found
+
+
 def extract_thesis_json(report: str) -> dict[str, Any]:
-    """Extract the single fenced register block; reject missing/duplicate/invalid JSON."""
-    matches = re.findall(r"```\s*TRADING_RADAR_THESEN_JSON\s*\n(.*?)\n```", str(report or ""),
-                        flags=re.IGNORECASE | re.DOTALL)
+    """Extract exactly one canonical or supported legacy thesis JSON fence."""
+    matches = _thesis_json_fences(report)
     if len(matches) != 1:
-        raise ValueError(f"Erwartet genau einen TRADING_RADAR_THESEN_JSON-Block, gefunden: {len(matches)}")
+        raise ValueError(
+            "Erwartet genau einen TRADING_RADAR_THESEN_JSON-Block "
+            f"(kanonisch oder unterstütztes ```json-Format), gefunden: {len(matches)}"
+        )
     try:
-        payload = json.loads(matches[0])
+        payload = json.loads(matches[0][1])
     except json.JSONDecodeError as exc:
         raise ValueError(f"Thesen-JSON syntaktisch ungueltig: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("Thesen-JSON muss ein Objekt sein")
     return payload
+
+
+def validate_thesis_ids_match_report(report: str, payload: Any | None = None) -> list[str]:
+    """Require a fail-closed, exact one-to-one match of readable and JSON thesis IDs.
+
+    Production reports may render IDs inside nested name-normalizer annotations,
+    e.g. ``(Name nicht aufgelöst (ID): Name nicht aufgelöst (AI_ENERGY_2026))``.
+    Therefore the parser extracts stable uppercase underscore IDs from the whole
+    readable section 2, not only from a narrow label/status line.
+    """
+    text = str(report or "")
+    if payload is None:
+        try:
+            payload = extract_thesis_json(text)
+        except ValueError as exc:
+            return [str(exc)]
+    section2 = re.search(
+        r"(?ims)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*\r?\n"
+        r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar\b)", text,
+    )
+    if not section2:
+        return ["Thesen-ID-Abgleich: lesbarer Abschnitt 2 fehlt"]
+    section2_text = section2.group(1)
+    # IDs in the machine-readable fence are not readable-section IDs.
+    readable_text = re.sub(r"(?ms)^```.*?^```[ \t]*$", "", section2_text)
+    readable_text = re.sub(r"(?i)TRADING_RADAR_THESEN_JSON", "", readable_text)
+
+    # Capture IDs only from lines that actually represent a readable thesis
+    # record or an explicit thesis-ID declaration. This avoids treating IDs in
+    # diagnostics, explanatory prose, or code-marker names as thesis records.
+    id_pattern = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+){2,})(?![A-Za-z0-9])")
+    candidate_lines = []
+    for line in readable_text.splitlines():
+        is_numbered_thesis = re.search(r"(?i)\bThese\s+\d+\s*:", line)
+        is_explicit_id = re.search(r"(?i)\b(?:Thesen-ID|thesis_id)\b", line)
+        is_compact_status = re.search(
+            r"(?i)\b(?:NEU|BESTÄTIGT|BESTAETIGT|ABGESCHWÄCHT|ABGESCHWAECHT|"
+            r"WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|VERSTAERKT|WIDERLEGT|UNKLAR)\b",
+            line,
+        )
+        if is_numbered_thesis or is_explicit_id or (is_compact_status and id_pattern.search(line)):
+            candidate_lines.append(line)
+    prose_ids = [value.strip() for value in id_pattern.findall("\n".join(candidate_lines))]
+
+    theses = payload.get("theses") if isinstance(payload, dict) else None
+    if not isinstance(theses, list):
+        return ["Thesen-ID-Abgleich: JSON theses[] fehlt oder ist ungültig"]
+    json_ids = [item.get("thesis_id") for item in theses if isinstance(item, dict)]
+    if len(json_ids) != len(theses) or any(not isinstance(value, str) or not value.strip() for value in json_ids):
+        return ["Thesen-ID-Abgleich: JSON enthält einen Datensatz ohne gültige thesis_id"]
+
+    # A readable thesis record without an extractable ID is ambiguous and must
+    # never be interpreted as an empty, successful comparison.
+    readable_records = re.findall(
+        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?These\s+\d+\s*:", readable_text
+    )
+    if readable_records and not prose_ids:
+        return ["Thesen-ID-Abgleich: lesbare Thesen vorhanden, aber keine eindeutigen These-IDs extrahierbar"]
+    # Older reports sometimes contain only a structured payload and no separate
+    # readable thesis records. Preserve that legacy form; fail closed whenever
+    # readable thesis records are present but their IDs cannot be reconciled.
+    if not prose_ids and not readable_records:
+        return []
+    if len(prose_ids) != len(set(prose_ids)):
+        duplicates = sorted({value for value in prose_ids if prose_ids.count(value) > 1})
+        return [f"Thesen-ID-Abgleich: lesbarer Abschnitt 2 enthält doppelte These-IDs: {duplicates}"]
+    if len(json_ids) != len(set(json_ids)):
+        duplicates = sorted({value for value in json_ids if json_ids.count(value) > 1})
+        return [f"Thesen-ID-Abgleich: JSON enthält doppelte thesis_id: {duplicates}"]
+    if set(prose_ids) != set(json_ids):
+        missing = sorted(set(prose_ids) - set(json_ids))
+        extra = sorted(set(json_ids) - set(prose_ids))
+        return [
+            "Thesen-ID-Abgleich fehlgeschlagen: "
+            f"im JSON fehlend={missing or 'KEINE'}; nur im JSON vorhanden={extra or 'KEINE'}"
+        ]
+    return []
 
 def validate_thesis_register(payload: Any) -> list[str]:
     """Validate register shape, required fields, IDs, versions, statuses and list types."""
@@ -890,9 +995,8 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
     """
     import json
     text = str(report or "")
-    existing_blocks = list(re.finditer(
-        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", text, re.I | re.S
-    ))
+    existing_blocks = [item[0] for item in _thesis_json_fences(text)
+                       if item[2] in {"canonical", "json_marker"}]
 
     heading = re.compile(r"(?im)^[ \t]*(?:#{1,6}\s*)?(\d+)\s*[.·]\s*([^\r\n]+?)\s*$")
     found = list(heading.finditer(text))
@@ -965,7 +1069,11 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                 return text, False
             if len(generic_blocks) == 1:
                 try:
-                    generic_payload = json.loads(generic_blocks[0].group(1).strip())
+                    generic_raw = generic_blocks[0].group(1).strip()
+                    generic_raw = re.sub(
+                        r"(?i)^TRADING_RADAR_THESEN_JSON\s*\r?\n", "", generic_raw, count=1
+                    )
+                    generic_payload = json.loads(generic_raw)
                 except (TypeError, ValueError):
                     generic_payload = None
                 generic_theses = (
@@ -1026,6 +1134,8 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
 
                     if not recovered or validate_thesis_register(generic_payload):
                         return text, False
+                    if validate_thesis_ids_match_report(text, generic_payload):
+                        return text, False
                     replacement = (
                         "```TRADING_RADAR_THESEN_JSON\n"
                         + json.dumps(generic_payload, ensure_ascii=False, indent=2)
@@ -1035,18 +1145,17 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                     body = body[:block.start()] + replacement + body[block.end():]
                     text = text[:body_start] + body + text[body_end:]
                     recovered_unmarked = True
-                    existing_blocks = list(re.finditer(
-                        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```",
-                        text,
-                        re.I | re.S,
-                    ))
+                    existing_blocks = [item[0] for item in _thesis_json_fences(text)
+                                       if item[2] == "canonical"]
 
     if existing_blocks:
         if len(existing_blocks) != 1:
             return text, False
         try:
-            existing_payload = json.loads(existing_blocks[0].group(1).strip())
-        except (TypeError, ValueError):
+            parsed_fences = _thesis_json_fences(text)
+            selected_fence = next(item for item in parsed_fences if item[0].span() == existing_blocks[0].span())
+            existing_payload = json.loads(selected_fence[1])
+        except (TypeError, ValueError, StopIteration):
             return text, False
         theses = existing_payload.get("theses") if isinstance(existing_payload, dict) else None
         if not isinstance(theses, list) or any(not isinstance(item, dict) for item in theses):
@@ -1063,7 +1172,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
             block_end = thesis_markers[marker_index + 1].start() if marker_index + 1 < len(thesis_markers) else len(thesis_section)
             prose_by_id[marker.group(1).strip()] = thesis_section[marker.end():block_end]
 
-        changed = False
+        changed = selected_fence[2] != "canonical"
         for thesis_item in theses:
             raw_status = thesis_item.get("status")
             canonical_status = canonicalize_thesis_status(raw_status)
@@ -1128,6 +1237,13 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                 changed = True
 
         cleaned_text, cleaned = remove_unmarked_json_drafts(text)
+        try:
+            id_payload = extract_thesis_json(cleaned_text)
+        except ValueError:
+            return text, False
+        if validate_thesis_ids_match_report(cleaned_text, id_payload):
+            # Never normalize or promote a structurally incomplete report.
+            return text, False
         return cleaned_text, bool(changed or cleaned or recovered_unmarked)
 
     thesis_id = one(r"^\s*(?:[-*•]\s*)?(?:Thesen-ID|thesis_id)\s*:\s*([^\r\n]+)", thesis_section)
@@ -1262,6 +1378,7 @@ def validate_radar_report_strict(report: str) -> list[str]:
     try:
         payload = extract_thesis_json(text)
         errors.extend(validate_thesis_register(payload))
+        errors.extend(validate_thesis_ids_match_report(text, payload))
     except ValueError as exc:
         errors.append(str(exc))
     return errors

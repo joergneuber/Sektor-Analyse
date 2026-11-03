@@ -139,6 +139,268 @@ def _valid_numeric_value(value: str | None) -> bool:
         return False
 
 
+
+# Canonical recognizer shared with the production provenance enricher.
+# Explicit US labels are accepted everywhere. The historical entity-resolver
+# form "(10Y) Treasury" is accepted only inside the executive Zinsen/Renditen
+# curve row when that same row contains the US-specific TIPS anchor.
+_US10Y_EXPLICIT_LABEL_RE = re.compile(
+    r"(?i)(?:"
+    r"US\s*[- ]?\s*10Y(?:\s*[- ]?Treasury)?"
+    r"|US\s*[- ]?\s*10J(?:\s*[- ]?Rendite)?"
+    r"|10Y\s*[- ]?\s*US\s*[- ]?Treasury"
+    r"|10\s*[- ]?year\s+US\s+Treasury"
+    r"|10\s*[- ]?year\s+US\s+yield"
+    r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury|Staatsanleihen?zins|Rendite)"
+    r")"
+)
+_US10Y_RESOLVER_LABEL_RE = re.compile(
+    r"(?i)(?:\(\s*10Y\s*\)\s*[- ]?\s*Treasury|10Y\s*\)\s*[- ]?\s*Rendite)"
+)
+_US10Y_VALUE_AFTER_LABEL_RE = re.compile(
+    r"(?i)^\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
+    r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)"
+)
+_FOREIGN_10Y_LABEL_RE = re.compile(
+    r"(?i)\b(?:UK|U\.K\.|United\s+Kingdom|Britain|British|Japan(?:ese)?|"
+    r"Germany|German|Bund(?:es)?|France|French|Italy|Italian|Canada|Canadian|"
+    r"Australia|Australian|China|Chinese|India|Indian|Spain|Spanish|"
+    r"Switzerland|Swiss)\b[^\r\n]{0,35}\b(?:10Y|10J|10\s*[- ]?year|10\s*[- ]?jährig)"
+)
+
+
+def _is_run1270_us_curve_context(line: str) -> bool:
+    """Recognize only the known normalized US curve row from Run #1270."""
+    return bool(
+        isinstance(line, str)
+        and re.search(r"(?i)^\s*Zinsen/Renditen\s*:", line)
+        and re.search(r"(?i)\bTIPS\b", line)
+        and not _FOREIGN_10Y_LABEL_RE.search(line)
+    )
+
+
+
+def _is_us10y_conflict_line(line: str) -> bool:
+    return bool(
+        isinstance(line, str)
+        and re.search(r"(?i)QUELLENKONFLIKT\s*:", line)
+        and re.search(r"(?i)Instrument\s*:\s*US\s*[- ]?10Y\s+Treasury", line)
+    )
+
+
+def _balanced_parenthetical(text: str, start: int) -> str:
+    """Return balanced parenthetical content starting at ``start``; nested pairs are supported."""
+    while start < len(text) and text[start].isspace():
+        start += 1
+    if start >= len(text) or text[start] != "(":
+        return ""
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:index]
+    return ""
+
+
+def _us10y_conflict_observation_records(line: str) -> list[tuple[str, Decimal, str]]:
+    """Return independently attributable Makro/Live records, retaining their role."""
+    if not _is_us10y_conflict_line(line):
+        return []
+
+    records = []
+    field_patterns = {
+        "Quelle": r"(?:Quelle|Source)",
+        "Abrufzeit": r"(?:Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)",
+        "Datenstichtag": r"(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)",
+        "Einheit": r"(?:Einheit|Unit)",
+        "Verzögerung": r"(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)",
+    }
+    for role in ("Makro", "Live"):
+        value_match = re.search(
+            rf"(?i)\b{role}-Wert\s*:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+            line,
+        )
+        if not value_match:
+            continue
+        try:
+            value = Decimal(value_match.group(1).replace(",", "."))
+        except InvalidOperation:
+            continue
+        if not value.is_finite():
+            continue
+
+        provenance_text = ""
+        after_value = line[value_match.end():]
+        if role == "Makro":
+            explicit = re.search(r"(?i)Makro-Provenienz\s*:\s*", after_value)
+            if explicit:
+                candidate = after_value[explicit.end():]
+                # Macro metadata ends before the Live role, not at the first
+                # closing parenthesis (sources may themselves contain "(...)").
+                candidate = re.split(r"(?i)\|\s*Live-Wert\s*:", candidate, maxsplit=1)[0]
+                candidate = candidate.strip()
+                if candidate.startswith("("):
+                    provenance_text = _balanced_parenthetical(candidate, 0)
+                else:
+                    provenance_text = candidate
+            else:
+                # Some producers place the macro annotation directly after
+                # Makro-Wert. Parse it, but do not infer metadata from the Live side.
+                provenance_text = _balanced_parenthetical(after_value, 0)
+        else:
+            provenance_text = _balanced_parenthetical(after_value, 0)
+
+        fields = []
+        for key, label in field_patterns.items():
+            match = re.search(
+                rf"(?i)(?:^|[|;])\s*{label}\s*[:=]\s*([^|;]+)",
+                provenance_text,
+            )
+            if match:
+                fields.append(f"{key}: {match.group(1).strip().rstrip('. )')}")
+        synthetic = f"US 10Y Treasury {value}%"
+        if fields:
+            synthetic += " | " + " | ".join(fields)
+        records.append((role, value.normalize(), synthetic))
+    return records
+
+def extract_us10y_observations(
+    line: str, *, allow_run1270_context: bool = False
+) -> list[Decimal]:
+    """Extract nominal US-10Y observations with an explicit geographic basis.
+
+    Normal US labels must say US. The one historical entity-resolver form
+    "(10Y) Treasury 4,98%" is allowed only when the caller has established the
+    Run #1270 US yield-curve row, whose same line contains the US-specific TIPS
+    observation. Foreign-country 10Y labels are never treated as US yields.
+    """
+    if not isinstance(line, str) or not line.strip():
+        return []
+    if _is_us10y_conflict_line(line):
+        # Conflict rows contain two independent observations. Extract each
+        # role explicitly; never let the Live-Wert's metadata stand in for
+        # the Makro-Wert's provenance.
+        return [value for _, value, _ in _us10y_conflict_observation_records(line)]
+    label_matches = list(_US10Y_EXPLICIT_LABEL_RE.finditer(line))
+    if allow_run1270_context and _is_run1270_us_curve_context(line):
+        label_matches.extend(_US10Y_RESOLVER_LABEL_RE.finditer(line))
+    values: list[Decimal] = []
+    for label_match in label_matches:
+        tail = line[label_match.end():label_match.end() + 100]
+        value_match = _US10Y_VALUE_AFTER_LABEL_RE.match(tail)
+        if not value_match:
+            continue
+        try:
+            value = Decimal(value_match.group("value").replace(",", "."))
+        except InvalidOperation:
+            continue
+        if value.is_finite():
+            values.append(value.normalize())
+    return values
+
+
+def _treasury_observation_has_complete_provenance(line: str) -> bool:
+    """Require concrete, complete provenance values on the same observation line."""
+    if "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" in line:
+        return False
+    patterns = {
+        "source": r"(?:Quelle|Source)",
+        "retrieved": r"(?:Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)",
+        "observed": r"(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)",
+        "unit": r"(?:Einheit|Unit)",
+        "delay": r"(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)",
+    }
+    extracted = {}
+    for key, label in patterns.items():
+        match = re.search(
+            rf"(?i)(?:^|[|;])\s*{label}\s*[:=]\s*([^|;]+)",
+            line,
+        )
+        extracted[key] = match.group(1).strip().rstrip(".") if match else ""
+
+    placeholder_re = re.compile(
+        r"(?i)\b(?:NICHT\s+VERF(?:Ü|UE)GBAR|NICHT\s+VERFUEGBAR|"
+        r"NICHT\s+BEKANNT|UNBEKANNT|FEHLT|OFFEN|"
+        r"SIEHE\s+OBEN|WIE\s+OBEN|UNKNOWN|NOT\s+AVAILABLE|"
+        r"N/?A|TBD|NONE|NULL|KEINE\s+ANGABE|WIRD\s+NACHGEREICHT|"
+        r"NOCH\s+ZU\s+PRÜFEN|NOCH\s+ZU\s+PRUEFEN|"
+        r"QUELLE\s+VORHANDEN|DATENQUELLE\s+INTERN)\b"
+    )
+    if any(not value or placeholder_re.search(value) for value in extracted.values()):
+        return False
+
+    # A source must identify both a recognizable provider and a concrete
+    # series/ticker/instrument. A bare URL, provider name, or generic label is
+    # not source provenance. Provider + identifier may include a URL as a
+    # supporting locator, but the URL alone is insufficient.
+    source = extracted["source"]
+    provider_re = re.compile(
+        r"(?i)\b(?:FRED|Federal\s+Reserve\s+Economic\s+Data|"
+        r"Yahoo\s+Finance|Bloomberg|Refinitiv|LSEG|U\.?S\.?\s+Treasury|"
+        r"US\s+Treasury|Treasury\.gov|Investing\.com|Trading\s+Economics|"
+        r"MarketWatch|Stooq)\b"
+    )
+    provider_match = provider_re.search(source)
+    if not provider_match:
+        return False
+    source_without_url = re.sub(r"(?i)https?://\S+", " ", source)
+    source_without_provider = provider_re.sub(" ", source_without_url)
+    # A concrete series/ticker normally contains a digit or a ticker marker
+    # (e.g. DGS10, USGG10YR, ^TNX). Provider + URL does not meet this test.
+    if not re.search(r"(?i)(?:\b[A-Z]{0,8}\d+[A-Z0-9._-]*\b|\^[A-Z0-9.^_-]{2,})", source_without_provider):
+        return False
+    if extracted["unit"].casefold() not in {"%", "prozent", "percent"}:
+        return False
+
+    try:
+        retrieved = datetime.datetime.fromisoformat(
+            extracted["retrieved"].replace("Z", "+00:00")
+        )
+        if retrieved.tzinfo is None or retrieved.utcoffset() is None:
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    try:
+        observed_raw = extracted["observed"]
+        if "T" in observed_raw:
+            observed = datetime.datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+            if observed.tzinfo is None or observed.utcoffset() is None:
+                return False
+        else:
+            datetime.date.fromisoformat(observed_raw)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+    # Delay must be a concrete numeric duration or one of the explicitly
+    # supported market-data cadences. Free-form explanations/statuses are not
+    # accepted as a substitute for a measurable lag.
+    delay = extracted["delay"].strip()
+    delay_match = re.search(
+        r"(?i)(?:^|[|;])\s*(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*([^|;\r\n]+)(?P<tail>[^|\r\n]*)",
+        line,
+    )
+    if delay_match and placeholder_re.search(delay_match.group("tail")):
+        return False
+    numeric_delay = re.fullmatch(
+        r"(?i)\d+(?:[.,]\d+)?\s*(?:kalendertage?n?|tage?n?|"
+        r"börsentage?n?|handelstage?n?|minuten?|stunden?|sekunden?|"
+        r"days?|business\s+days?|minutes?|hours?)",
+        delay,
+    )
+    cadence_delay = re.fullmatch(
+        r"(?i)(?:Tages[- ]Schlusskurs|Tagesabschluss|End[- ]of[- ]Day|EOD|"
+        r"Realtime|Echtzeit|Intraday)",
+        delay,
+    )
+    if not (numeric_delay or cadence_delay):
+        return False
+    return True
+
+
 def _validate_m05_m10(text: str, errors: list[str]) -> None:
     """Check concrete M-05..M-10 report evidence; reject blank placeholders."""
     # M-05: the deterministic Tab-2 source block and row/count comparison are
@@ -516,10 +778,72 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         r"keine\s+änderung(?:en)?\s+am\s+thesenregister)",
         r"thesenregister.{0,80}(?:unverändert|unveraendert|keine\s+änderung|keine\s+aenderung)",
     ))
+    def _one_register_value(label: str) -> str | None:
+        matches = re.findall(rf"(?im)^{re.escape(label)}:\s*([^\r\n]+)\s*$", thesis)
+        return matches[0].strip() if len(matches) == 1 else None
+
+    before_hash = _one_register_value("VORHER-SHA256")
+    after_hash = _one_register_value("NACHHER-SHA256")
+    comparison_id = _one_register_value("THESENREGISTER-VERGLEICH-ID")
+
+    def _register_rows(id_label: str, version_label: str, active_label: str):
+        ids = re.findall(rf"(?im)^{re.escape(id_label)}:\s*([A-Za-z0-9_.:-]+)\s*$", thesis)
+        versions = re.findall(rf"(?im)^{re.escape(version_label)}:\s*(\d+)\s*$", thesis)
+        active = re.findall(rf"(?im)^{re.escape(active_label)}:\s*(YES|NO)\s*$", thesis)
+        return ids, versions, active
+
+    previous_ids, previous_versions, previous_active = _register_rows(
+        "VORHER-THESIS-ID", "VORHER-REGISTER-VERSION", "VORHER-THESIS-ACTIVE"
+    )
+    current_ids, current_versions, current_active = _register_rows(
+        "THESIS_ID", "REGISTER-VERSION", "THESIS_ACTIVE"
+    )
+
+    def _count(label: str) -> int | None:
+        raw = _one_register_value(label)
+        return int(raw) if raw is not None and re.fullmatch(r"\d+", raw) else None
+
+    before_count = _count("VORHER_THESEN_COUNT")
+    before_active_count = _count("VORHER_AKTIVE_THESEN")
+    after_count = _count("NACHHER_THESEN_COUNT")
+    after_active_count = _count("NACHHER_AKTIVE_THESEN")
+
+    comparison_hash_valid = False
+    if before_hash and after_hash and comparison_id:
+        comparison_payload = {
+            "previous_sha256": before_hash,
+            "current_sha256": after_hash,
+            "schema": "trading-radar-thesis-register-comparison-v1",
+        }
+        expected_comparison_id = hashlib.sha256(
+            json.dumps(comparison_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        comparison_hash_valid = comparison_id == expected_comparison_id
+
+    previous_rows_valid = bool(
+        before_count is not None and before_active_count is not None
+        and before_count > 0 and 0 <= before_active_count <= before_count
+        and len(previous_ids) == len(previous_versions) == len(previous_active) == before_count
+        and len(set(previous_ids)) == len(previous_ids)
+        and all(int(version) >= 1 for version in previous_versions)
+        and sum(value == "YES" for value in previous_active) == before_active_count
+    )
+    current_rows_valid = bool(
+        after_count is not None and after_active_count is not None
+        and after_count > 0 and 0 <= after_active_count <= after_count
+        and len(current_ids) == len(current_versions) == len(current_active) == after_count
+        and len(set(current_ids)) == len(current_ids)
+        and all(int(version) >= 1 for version in current_versions)
+        and sum(value == "YES" for value in current_active) == after_active_count
+    )
+
     register_evidence_ok = bool(
         re.search(r"(?im)^THESENREGISTER-VERGLEICH:\s*PASS\s*$", thesis)
-        and re.search(r"(?im)^VORHER-SHA256:\s*[0-9a-f]{64}\s*$", thesis)
-        and re.search(r"(?im)^NACHHER-SHA256:\s*[0-9a-f]{64}\s*$", thesis)
+        and before_hash and re.fullmatch(r"[0-9a-f]{64}", before_hash)
+        and after_hash and re.fullmatch(r"[0-9a-f]{64}", after_hash)
+        and comparison_hash_valid
+        and previous_rows_valid
+        and current_rows_valid
     )
     if not register_evidence_ok:
         errors.append("M-05: Deterministischer Thesenregistervergleich mit PASS sowie Vorher-/Nachher-SHA256 fehlt.")
@@ -531,6 +855,89 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             errors.append(f"M-05: Deterministischer Änderungsnachweis {label} fehlt oder ist nicht eindeutig.")
         else:
             change_values[label] = matches[0].strip()
+    if change_values and previous_rows_valid and current_rows_valid:
+        def _change_ids(label: str) -> set[str] | None:
+            raw = change_values.get(label, "").strip()
+            if raw.upper() == "KEINE":
+                return set()
+            values = [item.strip() for item in raw.split(",")]
+            if not values or any(not re.fullmatch(r"[A-Za-z0-9_.:-]+", item) for item in values):
+                return None
+            if len(values) != len(set(values)):
+                return None
+            return set(values)
+
+        reported_changes = {
+            label: _change_ids(label)
+            for label in change_labels
+        }
+        previous_by_id = {
+            thesis_id: (int(version), active == "YES")
+            for thesis_id, version, active in zip(
+                previous_ids, previous_versions, previous_active
+            )
+        }
+        current_by_id = {
+            thesis_id: (int(version), active == "YES")
+            for thesis_id, version, active in zip(
+                current_ids, current_versions, current_active
+            )
+        }
+        expected_changes = {
+            "THESEN_NEU": set(),
+            "THESEN_AKTUALISIERT": set(),
+            "THESEN_UNVERAENDERT": set(),
+            "THESEN_ARCHIVIERT": set(),
+        }
+        semantic_errors = []
+        dropped_ids = set(previous_by_id) - set(current_by_id)
+        if dropped_ids:
+            semantic_errors.append(
+                "Vorherige Thesen wurden ohne Archivierung aus dem Nachregister entfernt: "
+                               + ", ".join(sorted(dropped_ids))
+            )
+        for thesis_id, (current_version, current_active) in current_by_id.items():
+            previous_record = previous_by_id.get(thesis_id)
+            if previous_record is None:
+                if current_version != 1 or not current_active:
+                    semantic_errors.append(
+                        f"Neue These {thesis_id} muss aktiv mit Version 1 beginnen"
+                    )
+                expected_changes["THESEN_NEU"].add(thesis_id)
+                continue
+            previous_version, previous_active = previous_record
+            if current_version == previous_version + 1:
+                if not current_active:
+                    semantic_errors.append(
+                        f"Archivierte These {thesis_id} darf beim Archivieren keine neue Version erhalten"
+                    )
+                else:
+                    expected_changes["THESEN_AKTUALISIERT"].add(thesis_id)
+            elif current_version == previous_version:
+                if previous_active and not current_active:
+                    expected_changes["THESEN_ARCHIVIERT"].add(thesis_id)
+                elif current_active:
+                    expected_changes["THESEN_UNVERAENDERT"].add(thesis_id)
+            else:
+                semantic_errors.append(
+                    f"These {thesis_id}: unplausibler Versionsübergang "
+                    f"{previous_version} -> {current_version}"
+                )
+        if any(value is None for value in reported_changes.values()):
+            semantic_errors.append("Änderungslisten enthalten ungültige oder doppelte IDs")
+        else:
+            for label in change_labels:
+                if reported_changes[label] != expected_changes[label]:
+                    semantic_errors.append(
+                        f"{label} widerspricht dem Vorher-/Nachher-Register "
+                        f"(gemeldet={sorted(reported_changes[label])}, "
+                        f"ermittelt={sorted(expected_changes[label])})"
+                    )
+        if semantic_errors:
+            errors.append(
+                "M-05: Semantischer Thesenregistervergleich widersprüchlich: "
+                + " | ".join(semantic_errors)
+            )
     if no_thesis_update and change_values:
         if any(change_values.get(label, "").upper() != "KEINE"
                for label in ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_ARCHIVIERT")):
@@ -926,81 +1333,100 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     if not thesis_evidence:
         errors.append("M-05: Deterministischer Thesenregistervergleich mit Vorher-/Nachher-SHA256, thesis_id und Version ist nicht belegt.")
 
-    # M-07: differing Treasury observations need provenance and reconciliation,
-    # or must remain explicitly open as a source conflict.
-    treasury_values = re.findall(
-        r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|"
-        r"US[- ]?10[ JY](?:[- ]?Rendite)?|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
-        r"(?:Staatsanleihen?zins|Rendite))[^\r\n]{0,80}?(\d+(?:[,.]\d+)?)\s*%",
-        text,
-    )
-    if len(treasury_values) >= 2:
-        def normalize_percent(value):
-            try:
-                return format(Decimal(value.replace(",", ".")).normalize(), "f")
-            except (InvalidOperation, ValueError):
-                return value.replace(",", ".")
+    # M-07: every distinct nominal US-10Y Treasury observation must have
+    # complete provenance on at least one line carrying that exact value.
+    # Narrative repetitions of an already sourced value are not new observations.
+    observation_records = []
+    conflict_observation_records = []
+    conflict_observation_groups = []
+    for line in text.splitlines():
+        if _is_us10y_conflict_line(line):
+            # Keep the role as part of the identity. Equal numeric values do
+            # not make Makro and Live interchangeable provenance records.
+            role_records = _us10y_conflict_observation_records(line)
+            conflict_observation_records.extend(role_records)
+            conflict_observation_groups.append(role_records)
+            continue
+        contextual = _is_run1270_us_curve_context(line)
+        for value in extract_us10y_observations(
+            line, allow_run1270_context=contextual
+        ):
+            observation_records.append((value, line))
 
-        normalized = [normalize_percent(value) for value in treasury_values]
-        distinct = sorted(set(normalized))
-        if len(distinct) > 1:
-            observation_lines = [
-                line for line in text.splitlines()
-                if not re.search(r"(?i)QUELLENKONFLIKT\s*:", line)
-                and re.search(
-                    r"(?i)(?:(?:10Y|10J|10[- ]?year|10-jährige[rn]?)\s*(?:US[- ]?)?Treasury|"
-                    r"US[- ]?10[ JY](?:[- ]?Rendite)?|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
-                    r"(?:Staatsanleihen?zins|Rendite))",
-                    line,
-                )
-                and re.search(r"\d+(?:[,.]\d+)?\s*%", line)
-            ]
-            def has_provenance(line):
-                # Every observation needs its own source, retrieval timestamp,
-                # observation/data date, unit and delay metadata. A conflict
-                # label alone must never compensate for missing provenance.
-                return bool(
-                    re.search(r"(?i)(?:Quelle|Source)\s*[:=]\s*[^;|,]+", line)
-                    and re.search(r"(?i)(?:Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)\s*[:=]\s*[^;|,]+", line)
-                    and re.search(r"(?i)(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)\s*[:=]\s*[^;|,]+", line)
-                    and re.search(r"(?i)(?:Einheit|Unit)\s*[:=]\s*(?:%|Prozent|percent)", line)
-                    and re.search(r"(?i)(?:Verzögerung|Verzoegerung|Delay)\s*[:=]\s*[^;|,]+", line)
-                    and not re.search(
-                        r"(?i)(?:Quelle|Abrufzeit|Abrufzeitpunkt|Datenstichtag|Beobachtungsdatum|"
-                        r"Observation_Date|Verzögerung|Verzoegerung|Delay)\s*[:=]\s*"
-                        r"(?:NICHT VERFÜGBAR|UNBEKANNT|FEHLT|NICHT BEKANNT)",
-                        line,
-                    )
-                )
-            # A value may be repeated later in narrative interpretation. Such a
-            # repetition is not a new market observation and must not require a
-            # second source record. Every distinct numeric observation still
-            # needs at least one separately identifiable, provenance-complete line.
-            provenance_complete = len(observation_lines) >= 2 and all(
-                any(
-                    has_provenance(line)
-                    and value in re.sub(r"(?<=\d),(?=\d)", ".", line)
-                    for line in observation_lines
-                )
-                for value in distinct
+    distinct_treasury_values = sorted({value for value, _ in observation_records})
+    if observation_records or conflict_observation_records:
+        # Every distinct value must have a complete source record, even when
+        # the report contains only one US-10Y observation.
+        provenance_complete = all(
+            any(
+                observed_value == expected_value
+                and _treasury_observation_has_complete_provenance(line)
+                for observed_value, line in observation_records
             )
-            explicit_open = any(
-                re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)
-                and re.search(
-                    r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?\s+(?:US[- ]?)?Treasury|"
-                    r"US[- ]?10[ JY]|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
-                    r"(?:Staatsanleihen?zins|Rendite))",
-                    line,
-                )
+            for expected_value in distinct_treasury_values
+        )
+        # Conflict rows require exactly one complete record for each role.
+        # Do not collapse by Decimal value: Makro=Live is still two sources.
+        def conflict_group_complete(role_records):
+            roles = [role for role, _, _ in role_records]
+            return (
+                len(role_records) == 2
+                and sorted(roles) == ["Live", "Makro"]
                 and all(
-                    value in re.sub(r"(?<=\d),(?=\d)", ".", line)
-                    for value in distinct
+                    _treasury_observation_has_complete_provenance(record)
+                    for _, _, record in role_records
                 )
-                for line in text.splitlines()
             )
-            if not provenance_complete:
-                suffix = " Der Konflikt ist ausdrücklich offen ausgewiesen." if explicit_open else ""
-                errors.append("M-07: Jede abweichende 10Y-Treasury-Beobachtung benötigt separat Quelle, Abrufzeit, Datenstichtag, Einheit und Verzögerung; eine offene Konfliktmarkierung ersetzt diese Provenienz nicht." + suffix)
+
+        conflict_roles_complete = all(
+            conflict_group_complete(group)
+            for group in conflict_observation_groups
+        )
+        if conflict_observation_groups:
+            provenance_complete = provenance_complete and conflict_roles_complete
+        provenance_labels = re.compile(
+            r"(?i)(?:^|[|;])\s*(?:Quelle|Source|Abrufzeit|Abrufzeitpunkt|"
+            r"Retrieved(?:_At)?|Datenstand|Datenstichtag|Beobachtungsdatum|"
+            r"Observation_Date|Einheit|Unit|Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]"
+        )
+        # A source-like record with partial metadata must not be hidden by a
+        # second complete line carrying the same numeric value. Plain narrative
+        # repetitions without provenance fields remain harmless.
+        partial_source_records = [
+            line for _, line in observation_records
+            if provenance_labels.search(line)
+            and not _treasury_observation_has_complete_provenance(line)
+        ]
+        ambiguous_multi_value_lines = []
+        for line in text.splitlines():
+            if _is_us10y_conflict_line(line):
+                # Makro-Wert and Live-Wert are expected to differ; their
+                # provenance is checked independently above.
+                continue
+            values = extract_us10y_observations(
+                line, allow_run1270_context=_is_run1270_us_curve_context(line)
+            )
+            if len(set(values)) > 1:
+                ambiguous_multi_value_lines.append(line)
+        provenance_complete = (
+            provenance_complete
+            and not partial_source_records
+            and not ambiguous_multi_value_lines
+        )
+        explicit_open = any(
+            re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)
+            and "US-10Y" in line.upper()
+            for line in text.splitlines()
+        )
+        if not provenance_complete:
+            suffix = " Der Konflikt ist ausdrücklich offen ausgewiesen." if explicit_open else ""
+            errors.append(
+                "M-07: Jede abweichende 10Y-Treasury-Beobachtung benötigt separat "
+                "Quelle, Abrufzeit, Datenstichtag, Einheit und Verzögerung; "
+                "eine offene Konfliktmarkierung ersetzt diese Provenienz nicht."
+                + suffix
+            )
+
 
     # M-04: Relative strength must use comparable 1M/3M windows and a common cutoff.
     rotation = _section_body(text, 4, SECTION_NAMES[3])
@@ -1209,11 +1635,8 @@ def validate_report(text: str) -> list[str]:
         (line for line in executive.splitlines() if re.search(r"(?i)Zinsen/Renditen\s*:", line)),
         "",
     )
-    if not re.search(
-        r"(?i)(?:US\s*10Y|10[- ]?jährig(?:er|e|en)?\s+US[- ]?"
-        r"(?:Rendite|Staatsanleihen?zins)|10-jährige[rn]?\s+US-Rendite)"
-        r".{0,60}\d+(?:[,.]\d+)?\s*%",
-        rates_line,
+    if not extract_us10y_observations(
+        rates_line, allow_run1270_context=_is_run1270_us_curve_context(rates_line)
     ):
         errors.append("M-02: US-10Y-Rendite fehlt als numerische Beobachtung.")
     risk_line = next(
