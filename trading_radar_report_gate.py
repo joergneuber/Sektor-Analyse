@@ -1882,47 +1882,105 @@ def validate_run_evidence(path: Path, *, require_report_gate: bool = True) -> li
 
 
 def reconcile_thesis_update_narrative(text: str) -> tuple[str, bool]:
-    """Replace a stale generic no-change sentence using the verified register delta.
-
-    The machine-readable before/after comparison is the source of truth. This
-    repair changes only the contradictory narrative sentence; it never edits
-    register rows, hashes, IDs, versions, or status values.
-    """
+    """Replace a stale no-change sentence only when register deltas are verified."""
     labels = ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_UNVERAENDERT", "THESEN_ARCHIVIERT")
-    values = {}
+    values: dict[str, set[str]] = {}
     for label in labels:
-        matches = re.findall(rf"(?im)^{label}:\\s*([^\\r\\n]+)\\s*$", text)
+        matches = re.findall(rf"(?im)^{label}:\s*([^\r\n]+)\s*$", text)
         if len(matches) != 1:
             return text, False
         raw = matches[0].strip()
         if raw.upper() == "KEINE":
-            values[label] = []
+            values[label] = set()
             continue
-        ids = [item.strip() for item in raw.split(",")]
+        ids = {item.strip() for item in raw.split(",")}
         if not ids or any(not re.fullmatch(r"[A-Za-z0-9_.:-]+", item) for item in ids):
             return text, False
         values[label] = ids
+
+    before_hashes = re.findall(r"(?im)^VORHER-SHA256:\s*([0-9a-f]{64})\s*$", text)
+    after_hashes = re.findall(r"(?im)^NACHHER-SHA256:\s*([0-9a-f]{64})\s*$", text)
+    comparison_ids = re.findall(r"(?im)^THESENREGISTER-VERGLEICH-ID:\s*([0-9a-f]{64})\s*$", text)
+    if not (
+        re.search(r"(?im)^THESENREGISTER-VERGLEICH:\s*PASS\s*$", text)
+        and len(before_hashes) == len(after_hashes) == len(comparison_ids) == 1
+    ):
+        return text, False
+
+    payload = {
+        "previous_sha256": before_hashes[0],
+        "current_sha256": after_hashes[0],
+        "schema": "trading-radar-thesis-register-comparison-v1",
+    }
+    expected_comparison_id = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if comparison_ids[0] != expected_comparison_id:
+        return text, False
+
+    def rows(prefix: str) -> dict[str, tuple[int, bool]] | None:
+        ids = re.findall(rf"(?im)^{prefix}THESIS-ID:\s*([A-Za-z0-9_.:-]+)\s*$", text)
+        versions = re.findall(rf"(?im)^{prefix}REGISTER-VERSION:\s*(\d+)\s*$", text)
+        active = re.findall(rf"(?im)^{prefix}THESIS-ACTIVE:\s*(YES|NO)\s*$", text)
+        count_label = "VORHER_THESEN_COUNT" if prefix else "NACHHER_THESEN_COUNT"
+        active_label = "VORHER_AKTIVE_THESEN" if prefix else "NACHHER_AKTIVE_THESEN"
+        count_values = re.findall(rf"(?im)^{count_label}:\s*(\d+)\s*$", text)
+        active_counts = re.findall(rf"(?im)^{active_label}:\s*(\d+)\s*$", text)
+        if not (
+            len(count_values) == len(active_counts) == 1
+            and len(ids) == len(versions) == len(active) == int(count_values[0])
+            and len(set(ids)) == len(ids)
+            and sum(item == "YES" for item in active) == int(active_counts[0])
+            and all(int(version) >= 1 for version in versions)
+        ):
+            return None
+        return {thesis_id: (int(version), is_active == "YES")
+                for thesis_id, version, is_active in zip(ids, versions, active)}
+
+    previous = rows("VORHER-")
+    current = rows("")
+    if previous is None or current is None:
+        return text, False
+
+    expected = {label: set() for label in labels}
+    if set(previous) - set(current):
+        return text, False
+    for thesis_id, (version, active) in current.items():
+        prior = previous.get(thesis_id)
+        if prior is None:
+            if version != 1 or not active:
+                return text, False
+            expected["THESEN_NEU"].add(thesis_id)
+        elif version == prior[0] + 1 and active:
+            expected["THESEN_AKTUALISIERT"].add(thesis_id)
+        elif version == prior[0] and prior[1] and not active:
+            expected["THESEN_ARCHIVIERT"].add(thesis_id)
+        elif version == prior[0] and active:
+            expected["THESEN_UNVERAENDERT"].add(thesis_id)
+        else:
+            return text, False
+    if any(values[label] != expected[label] for label in labels):
+        return text, False
 
     changed = any(values[label] for label in ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_ARCHIVIERT"))
     if not changed:
         return text, False
 
     sentence = re.compile(
-        r"(?im)^\\s*(?:[-*•]\\s*)?Keine neue oder aktualisierte These;\\s*"
-        r"Thesenregister geprüft, keine Änderung\\.?\\s*$"
+        r"(?im)^\s*(?:[-*•]\s*)?Keine neue oder aktualisierte These;\s*"
+        r"Thesenregister geprüft, keine Änderung\.?\s*$"
     )
     if not sentence.search(text):
         return text, False
 
-    descriptions = (
+    parts = []
+    for label, key in (
         ("neu", "THESEN_NEU"),
         ("aktualisiert", "THESEN_AKTUALISIERT"),
         ("unverändert", "THESEN_UNVERAENDERT"),
         ("archiviert", "THESEN_ARCHIVIERT"),
-    )
-    parts = []
-    for label, key in descriptions:
-        ids = values[key]
+    ):
+        ids = sorted(values[key])
         parts.append(f"{label}: {', '.join(ids)}" if ids else f"{label}: keine")
     replacement = "Registeränderungen laut geprüftem Vorher-/Nachher-Vergleich: " + "; ".join(parts) + "."
     repaired, count = sentence.subn(replacement, text, count=1)
