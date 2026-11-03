@@ -446,3 +446,153 @@ def test_report_status_validator_matches_persistence_status_taxonomy():
         "data_cutoff": template["data_cutoff"],
         "theses": [dict(template, status="UNBEKANNTER_STATUS")],
     })
+
+
+def test_v3_extracts_json_fence_with_marker_as_first_content_line():
+    from trading_radar_neuauswertung import extract_thesis_json
+    report, expected = _run1269_unmarked_thesis_report()
+    marker_json = report.replace(
+        "```json\n" + json.dumps(expected, ensure_ascii=False, indent=2),
+        "```json\nTRADING_RADAR_THESEN_JSON\n" + json.dumps(expected, ensure_ascii=False, indent=2),
+    )
+    parsed = extract_thesis_json(marker_json)
+    assert parsed == expected
+
+
+def test_v3_rejects_readable_thesis_missing_from_structured_json():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+    report, payload = _run1269_unmarked_thesis_report()
+    report = report.replace(
+        "2. Thesen-Update\nRegister-Vergleich",
+        "2. Thesen-Update\nThesen-ID: AI_ENERGY_2026\nStatus: BESTÄTIGT\n"
+        "Thesen-ID: METALS_BOTTOM_2026\nStatus: WIDERLEGT\nRegister-Vergleich",
+    )
+    payload["theses"][0]["thesis_id"] = "AI_ENERGY_2026"
+    findings = validate_thesis_ids_match_report(report, payload)
+    assert findings
+    assert "METALS_BOTTOM_2026" in findings[0]
+
+
+def test_v3_accepts_exact_readable_and_json_thesis_id_match():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+    report, payload = _run1269_unmarked_thesis_report()
+    report = report.replace(
+        "2. Thesen-Update\nRegister-Vergleich",
+        "2. Thesen-Update\nThesen-ID: makro_stagflation_2026\nRegister-Vergleich",
+    )
+    assert validate_thesis_ids_match_report(report, payload) == []
+
+
+def test_v3_first_baseline_still_persists_after_structural_recovery(tmp_path):
+    from trading_radar_thesen import update_register
+    report, payload = _run1269_unmarked_thesis_report()
+    # Exercise the alternate ```json + marker form used by the failed production report.
+    report = report.replace("```json\n", "```json\nTRADING_RADAR_THESEN_JSON\n", 1)
+    recovered, changed = ensure_structured_thesis_block(report)
+    assert changed is True
+    assert recovered.count("```TRADING_RADAR_THESEN_JSON") == 1
+    register = tmp_path / ".trading_radar_thesen.json"
+    result = update_register(recovered, str(register), data_cutoff=payload["data_cutoff"])
+    assert result["updated"] is True
+    assert result["comparison_status"] == "BASELINE_MISSING"
+    assert register.is_file()
+
+
+def test_v3_compact_readable_thesis_ids_are_compared_even_without_thesen_id_labels():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+    report, payload = _run1269_unmarked_thesis_report()
+    report = report.replace(
+        "2. Thesen-Update\nRegister-Vergleich",
+        "2. Thesen-Update\nAI_ENERGY_2026 – BESTÄTIGT\n"
+        "METALS_BOTTOM_2026 – WIDERLEGT\nRegister-Vergleich",
+    )
+    payload["theses"][0]["thesis_id"] = "AI_ENERGY_2026"
+    findings = validate_thesis_ids_match_report(report, payload)
+    assert findings and "METALS_BOTTOM_2026" in findings[0]
+
+
+def test_v3_explicit_id_and_compact_status_on_same_line_are_not_double_counted():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+    report, payload = _run1269_unmarked_thesis_report()
+    report = report.replace(
+        "2. Thesen-Update\nRegister-Vergleich",
+        "2. Thesen-Update\nThesen-ID: makro_stagflation_2026 | BESTÄTIGT\nRegister-Vergleich",
+    )
+    assert validate_thesis_ids_match_report(report, payload) == []
+
+
+# V4: exact production report from GitHub Actions run #1270 is the regression oracle.
+def test_v4_original_run1270_report_fails_closed_on_missing_second_thesis():
+    from trading_radar_neuauswertung import (
+        extract_thesis_json, validate_thesis_ids_match_report,
+        validate_radar_report_strict,
+    )
+    report = (ROOT / "tests/fixtures/trading_radar_run1270_original.txt").read_text(encoding="utf-8")
+    payload = extract_thesis_json(report)
+    findings = validate_thesis_ids_match_report(report, payload)
+    assert findings
+    assert "METALS_BOTTOM_2026" in findings[0]
+    assert any("METALS_BOTTOM_2026" in item for item in validate_radar_report_strict(report))
+
+
+def test_v4_original_run1270_ids_are_extracted_from_nested_name_normalizer_format():
+    from trading_radar_neuauswertung import extract_thesis_json, validate_thesis_ids_match_report
+    report = (ROOT / "tests/fixtures/trading_radar_run1270_original.txt").read_text(encoding="utf-8")
+    payload = extract_thesis_json(report)
+    section2 = report.split("### 2. Thesen-Update", 1)[1].split("### 3. Ereignisradar", 1)[0]
+    assert "AI_ENERGY_2026" in section2
+    assert "METALS_BOTTOM_2026" in section2
+    assert validate_thesis_ids_match_report(report, payload)
+
+
+def test_v4_complete_run1270_baseline_persists_both_readable_theses(tmp_path):
+    from trading_radar_neuauswertung import (
+        extract_thesis_json, validate_thesis_ids_match_report,
+        validate_radar_report_strict,
+    )
+    from trading_radar_thesen import update_register
+    report = (ROOT / "tests/fixtures/trading_radar_run1270_original.txt").read_text(encoding="utf-8")
+    payload = extract_thesis_json(report)
+    first = dict(payload["theses"][0])
+    second = dict(first)
+    second.update({
+        "thesis_id": "METALS_BOTTOM_2026", "version": 1,
+        "thesis": "Edelmetall-Bodenbildung",
+        "evidence": ["Originalbericht: alle vier Edelmetalle unter EMA200/WMA200"],
+        "counter_evidence": ["Originalbericht: keine bestätigte bullische Divergenz"],
+        "status": "WIDERLEGT",
+    })
+    complete = {"data_cutoff": payload["data_cutoff"], "theses": [first, second]}
+    assert validate_thesis_ids_match_report(report, complete) == []
+    register = tmp_path / ".trading_radar_thesen.json"
+    repaired_block = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(complete, ensure_ascii=False, indent=2) + "\n```"
+    repaired, count = re.subn(
+        r"(?ms)^```json\s*\nTRADING_RADAR_THESEN_JSON\s*\n.*?^```[ \t]*$",
+        repaired_block,
+        report,
+        count=1,
+    )
+    assert count == 1
+    assert validate_radar_report_strict(repaired) == []
+    result = update_register(repaired, str(register), data_cutoff=complete["data_cutoff"])
+    assert result["updated"] is True
+    saved = json.loads(register.read_text(encoding="utf-8"))
+    assert {item["thesis_id"] for item in saved["theses"]} == {"AI_ENERGY_2026", "METALS_BOTTOM_2026"}
+    assert result["comparison_status"] == "BASELINE_MISSING"
+
+
+def test_v4_readable_thesis_without_any_extractable_id_is_rejected():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+    payload = {"theses": []}
+    report = "### 2. Thesen-Update\n* These 1: Edelmetall-Bodenbildung – WIDERLEGT\n### 3. Ereignisradar\nKeine Ereignisse."
+    findings = validate_thesis_ids_match_report(report, payload)
+    assert findings and "keine eindeutigen These-IDs" in findings[0]
+
+
+def test_v4_duplicate_json_thesis_ids_are_rejected():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+    thesis = {"thesis_id": "AI_ENERGY_2026"}
+    payload = {"theses": [dict(thesis), dict(thesis)]}
+    report = "### 2. Thesen-Update\nAI_ENERGY_2026 – BESTÄTIGT\n### 3. Ereignisradar\nKeine Ereignisse."
+    findings = validate_thesis_ids_match_report(report, payload)
+    assert findings and "doppelte thesis_id" in findings[0]

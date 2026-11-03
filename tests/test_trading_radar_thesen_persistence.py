@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+import hashlib
 
 import pytest
 
@@ -138,17 +139,17 @@ def test_artifact_restore_requires_expected_context(tmp_path):
         )
 
 
-def test_empty_or_inactive_register_is_not_persistable():
+def test_empty_register_is_not_persistable_but_archived_history_is():
     empty = json.dumps({"schema_version": 1, "theses": []}).encode()
-    with pytest.raises(ValueError, match="keine aktive These"):
+    with pytest.raises(ValueError, match="keine Einträge"):
         persistence.parse_and_validate_register(empty)
 
-    inactive = json.dumps({
+    archived = json.dumps({
         "schema_version": 1,
         "theses": [{"thesis_id": "T1", "version": 1, "active": False}],
     }).encode()
-    with pytest.raises(ValueError, match="keine aktive These"):
-        persistence.parse_and_validate_register(inactive)
+    validated = persistence.parse_and_validate_register(archived)
+    assert validated["theses"][0]["active"] is False
 
 
 def test_restore_uses_valid_cache_without_calling_github_api(tmp_path, monkeypatch):
@@ -357,3 +358,68 @@ def test_command_restore_passes_current_repository_and_branch_to_local_validatio
     assert persistence.command_restore(type("Args", (), {"register": str(path)})()) == 0
     assert captured["expected_repo"] == "owner/repo"
     assert captured["expected_branch"] == "main"
+
+
+def test_restored_run_artifact_becomes_real_before_after_comparison_baseline(tmp_path):
+    from trading_radar_thesen import update_register
+
+    payload = {
+        "data_cutoff": "2026-11-02T00:00:00+00:00",
+        "theses": [{
+            "thesis_id": "THESIS_ARTIFACT_BASELINE",
+            "thesis": "Persistierte Testthese",
+            "horizon": "4 Wochen",
+            "alternative": "Alternative Testthese",
+            "evidence": ["Beleg"],
+            "counter_evidence": ["Gegenbeleg"],
+            "confidence": "mittel",
+            "confirm_triggers": ["Trigger"],
+            "invalidate_triggers": ["Invalidierung"],
+            "event_dependencies": [],
+            "asset_classes": ["Aktien"],
+            "candidates": [],
+            "status": "NEU",
+        }],
+    }
+    report = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload) + "\n```"
+    path = tmp_path / ".trading_radar_thesen.json"
+
+    bootstrap = update_register(report, str(path))
+    assert bootstrap["comparison_status"] == "BASELINE_MISSING"
+    assert bootstrap["comparison_sha256"] is None
+
+    prior_bytes = path.read_bytes()
+    prior_sha = hashlib.sha256(prior_bytes).hexdigest()
+    archive = _artifact_bytes(prior_bytes)
+    path.unlink()
+    persistence.manifest_path(path).unlink(missing_ok=True)
+
+    persistence.restore_from_artifact(
+        path, archive, "12345", expected_repo="owner/repo", expected_branch="main"
+    )
+    assert path.read_bytes() == prior_bytes
+    assert persistence.verify_local_snapshot(path) == (True, "CACHE_VERIFIED")
+
+    compared = update_register(report, str(path))
+    assert compared["comparison_status"] == "PASS"
+    assert compared["previous_sha256"] == prior_sha
+    assert compared["current_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert compared["comparison_sha256"]
+    assert compared["previous_thesis_versions"] == [
+        {"thesis_id": "THESIS_ARTIFACT_BASELINE", "version": 1, "active": True}
+    ]
+
+
+
+@pytest.mark.parametrize(
+    "register",
+    [
+        {"schema_version": True, "theses": [{"thesis_id": "T", "version": 1, "active": True}]},
+        {"schema_version": 1, "theses": [{"thesis_id": "T", "version": 1, "active": "false"}]},
+        {"schema_version": 1, "theses": [{"thesis_id": "T", "version": 1, "active": 0}]},
+    ],
+)
+def test_parse_and_validate_register_rejects_non_strict_schema_and_active_types(register):
+    raw = json.dumps(register).encode("utf-8")
+    with pytest.raises(ValueError):
+        persistence.parse_and_validate_register(raw)

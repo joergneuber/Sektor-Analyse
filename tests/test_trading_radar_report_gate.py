@@ -1,6 +1,7 @@
 """Focused regression coverage for the M-05..M-10 report contract."""
 import importlib.util
 import hashlib
+import json
 import re
 from pathlib import Path
 import unittest
@@ -19,6 +20,15 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
         "Quellzeile: 4 | Ticker: BBB | Einstiegsdatum: 02.08.2026 | Status: Verkauft",
     ]
     tab2_digest = hashlib.sha256("\n".join(tab2_lines).encode("utf-8")).hexdigest()
+    before_hash, after_hash = "a" * 64, "b" * 64
+    comparison_payload = {
+        "previous_sha256": before_hash,
+        "current_sha256": after_hash,
+        "schema": "trading-radar-thesis-register-comparison-v1",
+    }
+    comparison_id = hashlib.sha256(
+        json.dumps(comparison_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     sections = [
         "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
         "Marktregime: Selektives Risk-on mit defensiver Rotation.\n"
@@ -30,10 +40,13 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
         "Basisszenario: Seitwärts bis aufwärts. Eintritt: Marktbreite stabil. Bestätigungstrigger: Ausbruch. Invalidierungstrigger: Bruch 200-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite. Konsequenz: selektive Longs.\n"
         "Positives Alternativszenario: Beschleunigter Aufwärtstrend. Eintritt: Renditen fallen. Bestätigungstrigger: neue Hochs. Invalidierungstrigger: Rückfall unter Ausbruchsniveau. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko erhöhen.\n"
         "Negatives Alternativszenario: Korrektur. Eintritt: Renditen steigen. Bestätigungstrigger: Marktbreite bricht. Invalidierungstrigger: Rückeroberung 50-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko reduzieren.",
-        "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.\n"
-        "THESENREGISTER-VERGLEICH: PASS\nVORHER-SHA256: " + "a"*64 + "\nNACHHER-SHA256: " + "b"*64 + "\n"
-        "THESEN_NEU: KEINE\nTHESEN_AKTUALISIERT: KEINE\nTHESEN_UNVERAENDERT: T-1\nTHESEN_ARCHIVIERT: KEINE\n"
-        "THESIS_ID: T-1\nVERSION: 2",
+        "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.\n"
+        "THESENREGISTER-VERGLEICH: PASS\nVORHER-SHA256: " + before_hash + "\nNACHHER-SHA256: " + after_hash + "\n"
+        "THESENREGISTER-VERGLEICH-ID: " + comparison_id + "\n"
+        "VORHER_THESEN_COUNT: 1\nVORHER_AKTIVE_THESEN: 1\nNACHHER_THESEN_COUNT: 1\nNACHHER_AKTIVE_THESEN: 1\n"
+        "VORHER-THESIS-ID: T-1\nVORHER-REGISTER-VERSION: 1\nVORHER-THESIS-ACTIVE: YES\n"
+        "THESEN_NEU: KEINE\nTHESEN_AKTUALISIERT: T-1\nTHESEN_UNVERAENDERT: KEINE\nTHESEN_ARCHIVIERT: KEINE\n"
+        "THESIS_ID: T-1\nREGISTER-VERSION: 2\nTHESIS_ACTIVE: YES\nVERSION: 2",
         "3. Ereignisradar\nUhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
         "4. Assetklassenvergleich\nRelative-Stärke-Matrix / Kapitalrotationsvergleich\nDatenstichtag: 2026-10-30. Fenster: 1M und 3M.\n"
         "Gewinner: NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen). Verlierer: NICHT VERFÜGBAR. Divergenzen: keine belastbaren Daten.\n"
@@ -81,27 +94,27 @@ class ReportGateTests(unittest.TestCase):
         self.assertTrue(any("M-01" in e for e in errors), errors)
 
     def test_m07_requires_versioned_thesis(self):
-        text = report_fixture().replace("Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.", "Keine Theseninformationen dokumentiert.")
+        text = report_fixture().replace("Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.", "Keine Theseninformationen dokumentiert.")
         errors = gate.validate_report(text)
         self.assertTrue(any("M-07" in e for e in errors), errors)
 
     def test_m07_accepts_explicit_unmodified_register_variant(self):
         text = report_fixture().replace(
-            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
             "Das Thesenregister wurde geprüft und ist unverändert; es gab keine Änderung.",
         )
         self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
 
     def test_m07_accepts_markdown_bold_thesis_fields(self):
         text = report_fixture().replace(
-            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
-            "**Thesen-ID:** T-1 | **Version:** 2 | **Status:** BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
+            "**Thesen-ID:** T-1 | **Version:** 2 | **Status:** BESTÄTIGT | gegenüber Vorversion aktualisiert.",
         )
         self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
 
     def test_m07_accepts_explicit_no_thesis_update_without_fabricated_id(self):
         text = report_fixture().replace(
-            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
             "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.",
         )
         self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
@@ -181,7 +194,7 @@ class ReportGateTests(unittest.TestCase):
 
     def test_m07_rejects_empty_identity_and_invalid_status(self):
         text = report_fixture().replace(
-            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion unverändert.",
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
             "Thesen-ID: | Version: 0 | Status: vielleicht.",
         )
         errors = gate.validate_report(text)
@@ -632,7 +645,7 @@ def test_m07_allows_repeated_narrative_value_when_each_distinct_treasury_observa
         "Einheit: % | Verzögerung: 1 Börsentag.",
         "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
         "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
-        "Einheit: % | Verzögerung: 1 Börsentag.\\n"
+        "Einheit: % | Verzögerung: 1 Börsentag.\n"
         "US-10J-Rendite (^TNX): 4,95% | Quelle: Yahoo Finance (^TNX) | "
         "Abrufzeit: 2026-10-30T20:00:00Z | Datenstichtag: 2026-10-30 | "
         "Einheit: % | Verzögerung: Tages-Schlusskurs."
@@ -644,3 +657,119 @@ def test_m07_allows_repeated_narrative_value_when_each_distinct_treasury_observa
     )
     errors = gate.validate_report(report)
     assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
+
+
+def test_m05_rejects_tampered_register_comparison_digest():
+    text = report_fixture().replace(
+        "THESENREGISTER-VERGLEICH-ID: 03ad73fb6916f8c1d10706e17fd4e1a260ead1c02fb21797d8316756cc4f0c96",
+        "THESENREGISTER-VERGLEICH-ID: " + "0" * 64,
+    )
+    errors = gate.validate_report(text)
+    assert any("M-05" in error for error in errors), errors
+
+
+def test_m05_requires_complete_previous_register_ids_and_versions():
+    text = report_fixture().replace(
+        "VORHER-REGISTER-VERSION: 1\n",
+        "",
+    )
+    errors = gate.validate_report(text)
+    assert any("M-05" in error for error in errors), errors
+
+
+def test_m05_rejects_change_lists_that_disagree_with_register_versions():
+    text = report_fixture().replace(
+        "THESEN_AKTUALISIERT: T-1", "THESEN_AKTUALISIERT: KEINE"
+    ).replace(
+        "THESEN_UNVERAENDERT: KEINE", "THESEN_UNVERAENDERT: T-1"
+    )
+    errors = gate.validate_report(text)
+    assert any("Semantischer Thesenregistervergleich" in error for error in errors), errors
+
+
+def test_m05_rejects_version_jump_not_matching_single_update():
+    text = report_fixture().replace(
+        "REGISTER-VERSION: 2", "REGISTER-VERSION: 3"
+    )
+    errors = gate.validate_report(text)
+    assert any("Semantischer Thesenregistervergleich" in error for error in errors), errors
+
+
+def test_m05_rejects_removed_previous_thesis_without_archive_row():
+    text = report_fixture().replace(
+        "THESIS_ID: T-1\nREGISTER-VERSION: 2\nTHESIS_ACTIVE: YES",
+        "THESIS_ID: T-2\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: YES",
+    )
+    errors = gate.validate_report(text)
+    assert any("Semantischer Thesenregistervergleich" in error for error in errors), errors
+
+
+def test_m05_producer_writes_machine_checkable_before_after_comparison():
+    import json
+    import tempfile
+    from trading_radar_thesen import update_register
+    import Trading_Radar_Alleinauswertung as production
+
+    thesis_payload = {
+        "data_cutoff": "2026-10-30T00:00:00+00:00",
+        "theses": [{
+            "thesis_id": "T-1",
+            "thesis": "Defensive Rotation",
+            "horizon": "4 Wochen",
+            "alternative": "Wachstum gewinnt relative Stärke zurück.",
+            "evidence": ["Sektorrelative Stärke"],
+            "counter_evidence": ["Renditeanstieg"],
+            "confidence": "mittel",
+            "confirm_triggers": ["Defensive Stärke hält."],
+            "invalidate_triggers": ["Wachstum outperformt."],
+            "event_dependencies": [],
+            "asset_classes": ["Aktien"],
+            "candidates": [],
+            "status": "NEU",
+        }],
+    }
+    def thesis_report(data):
+        return "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(data) + "\n```"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        register_path = str(Path(tmp) / "register.json")
+        first = update_register(thesis_report(thesis_payload), register_path)
+        assert first["comparison_status"] == "BASELINE_MISSING"
+        thesis_payload["theses"][0]["status"] = "BESTAETIGT"
+        second = update_register(thesis_report(thesis_payload), register_path)
+        assert second["comparison_status"] == "PASS"
+        evidence = production._trading_radar_thesenregister_evidence_lines(second)
+        report = production._trading_radar_thesenregister_nachweis_text(report_fixture(), evidence)
+        errors = gate.validate_report(report)
+        assert not any("M-05" in error for error in errors), errors
+        assert "VORHER-THESIS-ID: T-1" in report
+        assert "VORHER-REGISTER-VERSION: 1" in report
+        assert "THESIS_ID: T-1" in report
+        assert "REGISTER-VERSION: 2" in report
+        assert "THESENREGISTER-VERGLEICH-ID:" in report
+
+
+def test_m05_bootstrap_snapshot_is_never_misreported_as_comparison_pass():
+    import json
+    import tempfile
+    from trading_radar_thesen import update_register
+    import Trading_Radar_Alleinauswertung as production
+
+    data = {
+        "data_cutoff": "2026-10-30T00:00:00+00:00",
+        "theses": [{
+            "thesis_id": "T-BOOTSTRAP", "thesis": "These", "horizon": "4 Wochen",
+            "alternative": "Alternative", "evidence": ["Beleg"], "counter_evidence": ["Gegenbeleg"],
+            "confidence": "mittel", "confirm_triggers": ["Trigger"], "invalidate_triggers": ["Invalidierung"],
+            "event_dependencies": [], "asset_classes": ["Aktien"], "candidates": [], "status": "NEU",
+        }],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        result = update_register(
+            "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(data) + "\n```",
+            str(Path(tmp) / "register.json"),
+        )
+        evidence = production._trading_radar_thesenregister_evidence_lines(result)
+        report = production._trading_radar_thesenregister_nachweis_text(report_fixture(), evidence)
+        errors = gate.validate_report(report)
+        assert any("M-05" in error for error in errors), errors

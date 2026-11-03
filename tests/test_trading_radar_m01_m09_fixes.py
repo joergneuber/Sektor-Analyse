@@ -1,5 +1,6 @@
 import ast
 import json
+from decimal import Decimal
 import re
 from pathlib import Path
 
@@ -372,14 +373,14 @@ def test_m01_gate_validates_live_system_delta_separately_from_portfolio_total():
 def test_treasury_provenance_matches_real_macro_schema_without_percent_sign():
     macro = (
         "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL | "
-        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
         "RETRIEVED_AT=2026-10-30T07:12:00+00:00 | DELAY_DAYS=7 | UNIT=%"
     )
     report = "US 10Y Treasury: 5.0000%."
     result = production._trading_radar_treasury_provenienz_ergänzen(
         report, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
     )
-    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
     assert "Abrufzeit: 2026-10-30T07:12:00+00:00" in result
     assert "Datenstichtag: 2026-10-23" in result
     assert "Einheit: %" in result
@@ -390,13 +391,13 @@ def test_treasury_provenance_matches_real_macro_schema_without_percent_sign():
 def test_treasury_provenance_does_not_invent_missing_retrieval_metadata():
     macro = (
         "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL | "
-        "SOURCE=https://api.stlouisfed.org/fred/series/observations\n"
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)\n"
         "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL"
     )
     result = production._trading_radar_treasury_provenienz_ergänzen(
         "US 10Y Treasury: 5.0000%.", macro, {}
     )
-    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
     assert "Datenstichtag: 2026-10-23" in result
     assert "Abrufzeit: NICHT VERFÜGBAR" in result
     assert "Verzögerung: NICHT VERFÜGBAR" in result
@@ -619,14 +620,14 @@ def test_m01_live_benchmark_in_section7_is_not_misclassified_as_external_portfol
 def test_m07_prefers_one_complete_macro_observation_over_duplicate_summary_line():
     macro = (
         "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL | "
-        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
         "RETRIEVED_AT=2026-10-30T07:12:00+00:00 | DELAY_DAYS=7 | UNIT=%\n"
         "US 10Y Treasury: 5.0000 | Datenstand=2026-10-23 | STATUS=REAL"
     )
     result = production._trading_radar_treasury_provenienz_ergänzen(
         "US 10Y Treasury: 5.00%.", macro, {}
     )
-    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
     assert "Abrufzeit: 2026-10-30T07:12:00+00:00" in result
     assert "Verzögerung: 7 Kalendertage" in result
 
@@ -857,14 +858,14 @@ def test_m03_mapping_is_explicitly_not_verifiable_when_candidate_map_is_incomple
 def test_m07_provenance_recognizes_run413_german_treasury_label():
     macro = (
         "US 10Y Treasury: 4.9800 | Datenstand=2026-10-30 | STATUS=REAL | "
-        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
         "RETRIEVED_AT=2026-11-01T19:20:00+00:00 | DELAY_DAYS=2 | UNIT=%"
     )
     report = "Zinsen/Renditen: 10-jähriger US-Staatsanleihenzins bei 4,98%."
     result = production._trading_radar_treasury_provenienz_ergänzen(
         report, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
     )
-    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
     assert "Abrufzeit: 2026-11-01T19:20:00+00:00" in result
     assert "Datenstichtag: 2026-10-30" in result
     assert "Einheit: %" in result
@@ -984,7 +985,7 @@ def test_m07_gate_catches_unprovenanced_german_treasury_conflict():
     )
     report = report.replace(
         "Dollar/Liquidität/Volatilität:",
-        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance; "
+        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance (^TNX); "
         "Abrufzeit: 2026-11-01T19:30:53+00:00; Datenstichtag: 2026-10-30; "
         "Einheit: %; Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
     )
@@ -1018,20 +1019,20 @@ def test_m07_provenance_reconciles_both_run413_treasury_observations():
     )
     report = report.replace(
         "Dollar/Liquidität/Volatilität:",
-        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance; "
+        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance (^TNX); "
         "Abrufzeit: 2026-11-01T19:30:53+00:00; Datenstichtag: 2026-10-30; "
         "Einheit: %; Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
     )
     macro = (
         "US 10Y Treasury: 4.9800 | Datenstand=2026-10-30 | STATUS=REAL | "
-        "SOURCE=https://api.stlouisfed.org/fred/series/observations | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
         "RETRIEVED_AT=2026-11-01T19:20:00+00:00 | DELAY_DAYS=2 | UNIT=%"
     )
     result = production._trading_radar_treasury_provenienz_ergänzen(
         report, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
     )
     errors = validate_report(result)
-    assert "Quelle: https://api.stlouisfed.org/fred/series/observations" in result
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
     assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
 
 
@@ -1073,3 +1074,399 @@ Keine relevanten Ereignisse.
     assert [item["status"] for item in payload["theses"]] == ["BESTÄTIGT", "BESTÄTIGT"]
     assert "Status: BESTÄTIGT" in repaired
     assert validate_thesis_register(payload) == []
+
+
+def test_m02_m07_run1270_entity_normalized_treasury_observation_is_repaired_end_to_end():
+    from trading_radar_report_gate import validate_report
+    original = (
+        ROOT / "tests" / "fixtures" / "trading_radar_run1270_original.txt"
+    ).read_text(encoding="utf-8")
+    macro = (
+        "US 10Y Treasury: 4.9800 | Datenstand=2026-11-02 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-02T19:57:03+00:00 | DELAY_DAYS=0 | UNIT=%"
+    )
+    repaired = production._trading_radar_treasury_provenienz_ergänzen(
+        original, macro, {"Makro_Briefing.txt": "/tmp/Makro_Briefing.txt"}
+    )
+    rates_line = next(line for line in repaired.splitlines() if line.startswith("Zinsen/Renditen:"))
+    assert "(10Y) Treasury 4,98%" in rates_line
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in rates_line
+    assert "Abrufzeit: 2026-11-02T19:57:03+00:00" in rates_line
+    assert "Datenstichtag: 2026-11-02" in rates_line
+    assert "Einheit: %" in rates_line
+    assert "Verzögerung: 0 Kalendertage" in rates_line
+    assert "Makro-Provenienz: Quelle=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in repaired
+    findings = validate_report(repaired)
+    assert not any("M-02: US-10Y-Rendite" in item for item in findings), findings
+    # M-02 keeps the original normalized Treasury wording; M-07 correctly
+    # remains blocked because the conflict row's Live-Wert is only partially
+    # sourced and cannot borrow metadata from the rounded live snapshot.
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_treasury_provenance_second_pass_replaces_unavailable_placeholders():
+    macro = (
+        "US 10Y Treasury: 4.9800 | Datenstand=2026-11-02 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-02T19:57:03+00:00 | DELAY_DAYS=0 | UNIT=%"
+    )
+    report = (
+        "US 10Y Treasury: 4.98% | Quelle: NICHT VERFÜGBAR | "
+        "Abrufzeit: NICHT VERFÜGBAR | Datenstichtag: NICHT VERFÜGBAR | "
+        "Einheit: NICHT VERFÜGBAR | Verzögerung: NICHT VERFÜGBAR"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    assert "Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in result
+    assert "Abrufzeit: 2026-11-02T19:57:03+00:00" in result
+    assert "Datenstichtag: 2026-11-02" in result
+    assert "Einheit: %" in result
+    assert "Verzögerung: 0 Kalendertage" in result
+    assert "NICHT VERFÜGBAR" not in result
+
+
+def test_m07_rejects_invalid_retrieval_timestamp_even_when_other_fields_exist():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_invalid_timestamp", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: gestern | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+    )
+    report = report.replace(
+        "Dollar/Liquidität/Volatilität:",
+        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance (^TNX); "
+        "Abrufzeit: 2026-11-01T19:30:53+00:00; Datenstichtag: 2026-10-30; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
+    )
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_us10y_recognizer_does_not_treat_tips_or_thresholds_as_nominal_observations():
+    from trading_radar_report_gate import extract_us10y_observations
+    assert extract_us10y_observations("10Y TIPS 2,63%") == []
+    assert extract_us10y_observations("10Y-Rendite über 5,05%") == []
+    # Bare normalized labels are not geographically identifiable on their own.
+    assert extract_us10y_observations("(10Y) Treasury 4,98%") == []
+    run1270_curve = (
+        "Zinsen/Renditen: ... (10Y) Treasury 4,98%, 2Y Treasury 4,61%, "
+        "Realzins ... (10Y) TIPS 2,63%."
+    )
+    assert extract_us10y_observations(
+        run1270_curve, allow_run1270_context=True
+    ) == [Decimal("4.98")]
+
+
+def test_us10y_recognizer_rejects_foreign_uk_and_japan_treasuries():
+    from trading_radar_report_gate import extract_us10y_observations
+    assert extract_us10y_observations("UK 10Y Treasury 4,25%") == []
+    assert extract_us10y_observations("Japan 10Y Treasury 1,10%") == []
+    assert extract_us10y_observations(
+        "Zinsen/Renditen: UK 10Y Treasury 4,25%, 10Y TIPS 2,63%.",
+        allow_run1270_context=True,
+    ) == []
+    assert extract_us10y_observations(
+        "Zinsen/Renditen: Japan 10Y Treasury 1,10%, 10Y TIPS 2,63%.",
+        allow_run1270_context=True,
+    ) == []
+    assert extract_us10y_observations("US 10Y Treasury 4,98%") == [Decimal("4.98")]
+
+
+def test_m07_requires_provenance_even_for_a_single_treasury_value():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_single_unprovenanced_value", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00%.",
+    )
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_m07_deduplicates_identical_treasury_values_without_false_ambiguity():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_duplicate_identical_values", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% und US 10Y Treasury bei 5,00% | "
+        "Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+    )
+    findings = validate_report(report)
+    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+    duplicate_line = (
+        "US 10Y Treasury 5.00% und US 10Y Treasury 5.00% | "
+        "Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | "
+        "Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag"
+    )
+    enriched = production._trading_radar_treasury_provenienz_ergänzen(duplicate_line)
+    assert "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" not in enriched
+
+
+def test_m07_rejects_placeholder_sources_with_explanatory_suffixes():
+    from trading_radar_report_gate import (
+        _treasury_observation_has_complete_provenance, validate_report
+    )
+    import importlib.util
+    line = (
+        "US 10Y Treasury 4.98% | Quelle: NICHT VERFÜGBAR (unbekannt) | "
+        "Abrufzeit: 2026-11-02T20:00:00+00:00 | Datenstichtag: 2026-11-02 | "
+        "Einheit: % | Verzögerung: NICHT VERFÜGBAR (nicht ermittelt)"
+    )
+    assert not _treasury_observation_has_complete_provenance(line)
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_placeholder_suffix", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z",
+        "Quelle: NICHT VERFÜGBAR (unbekannt) | Abrufzeit: 2026-10-30T04:30:00Z",
+    )
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_m07_rejects_non_informative_source_and_delay_values():
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+    base = (
+        "US 10Y Treasury 4.98% | Quelle: {source} | "
+        "Abrufzeit: 2026-11-02T20:00:00+00:00 | Datenstichtag: 2026-11-02 | "
+        "Einheit: % | Verzögerung: {delay}"
+    )
+    assert not _treasury_observation_has_complete_provenance(
+        base.format(source="siehe oben", delay="0 Kalendertage")
+    )
+    assert not _treasury_observation_has_complete_provenance(
+        base.format(source="FRED DGS10", delay="offen")
+    )
+
+
+
+def test_m07_run1271_conflict_row_extracts_macro_and_live_values_independently():
+    from trading_radar_report_gate import extract_us10y_observations, validate_report
+    import importlib.util
+
+    conflict_line = (
+        "- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+        "Makro-Wert: 4.0000% (Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar) | "
+        "Live-Wert: 4.8940% (Quelle: Yahoo Finance ^TNX; Abruf: 2026-11-03T04:35:08+00:00) | "
+        "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
+    )
+    assert extract_us10y_observations(conflict_line) == [Decimal("4"), Decimal("4.894")]
+
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_run1271_conflict", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: 2026-11-01T04:50:54+00:00 | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 5 Kalendertage.",
+    )
+    report = report.replace(
+        "Dollar/Liquidität/Volatilität:",
+        "US-10J-Rendite (^TNX): 4.89% | Quelle: Yahoo Finance (^TNX); "
+        "Abrufzeit: 2026-11-03T04:35:08+00:00; Datenstichtag: 2026-11-02; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs.\n"
+        + conflict_line + "\nDollar/Liquidität/Volatilität:",
+    )
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+
+def test_m07_live_conflict_provenance_cannot_cover_missing_macro_provenance():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_role_separation", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: 2026-11-01T04:50:54+00:00 | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 5 Kalendertage.",
+    )
+    conflict = (
+        "- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+        "Makro-Wert: 4.0000% (Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar) | "
+        "Live-Wert: 4.8940% (Quelle: Yahoo Finance ^TNX; Abrufzeit: 2026-11-03T04:35:08+00:00; "
+        "Datenstichtag: 2026-11-02; Einheit: %; Verzögerung: Tages-Schlusskurs) | "
+        "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
+    )
+    report = report.replace("Dollar/Liquidität/Volatilität:", conflict + "\nDollar/Liquidität/Volatilität:")
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_m07_accepts_conflict_only_when_both_role_specific_provenance_blocks_are_complete():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_both_roles", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: 2026-11-01T04:50:54+00:00 | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 5 Kalendertage.",
+    )
+    conflict = (
+        "- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+        "Makro-Wert: 4.0000% (Makro-Provenienz: Quelle=FRED DGS10; "
+        "Abrufzeit=2026-11-02T20:00:00+00:00; Datenstichtag=2026-11-02; Einheit=%; Verzögerung=0 Kalendertage) | "
+        "Live-Wert: 4.8940% (Quelle: Yahoo Finance ^TNX; Abrufzeit: 2026-11-03T04:35:08+00:00; "
+        "Datenstichtag: 2026-11-02; Einheit: %; Verzögerung: Tages-Schlusskurs) | "
+        "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
+    )
+    report = report.replace("Dollar/Liquidität/Volatilität:", conflict + "\nDollar/Liquidität/Volatilität:")
+    findings = validate_report(report)
+    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+def test_m07_rejects_url_only_generic_and_placeholder_source_suffixes():
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+    base = (
+        "US 10Y Treasury 4.98% | Quelle: {source} | "
+        "Abrufzeit: 2026-11-02T20:00:00+00:00 | Datenstichtag: 2026-11-02 | "
+        "Einheit: % | Verzögerung: 1 Börsentag"
+    )
+    rejected = (
+        "https://api.stlouisfed.org/fred/series/observations",
+        "FRED",
+        "Yahoo Finance",
+        "Datenquelle intern",
+        "Quelle vorhanden",
+        "FRED DGS10 (unbekannt)",
+        "FRED DGS10 – Quelle vorhanden",
+    )
+    for source in rejected:
+        assert not _treasury_observation_has_complete_provenance(base.format(source=source)), source
+    assert _treasury_observation_has_complete_provenance(
+        base.format(source="FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)")
+    )
+    assert _treasury_observation_has_complete_provenance(
+        base.format(source="Yahoo Finance (^TNX)")
+    )
+
+
+def test_m07_accepts_only_numeric_delay_or_explicit_market_data_cadence():
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+    base = (
+        "US 10Y Treasury 4.98% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-11-02T20:00:00+00:00 | Datenstichtag: 2026-11-02 | "
+        "Einheit: % | Verzögerung: {delay}"
+    )
+    for delay in (
+        "wird nachgereicht", "noch zu prüfen", "tagesaktuell", "aktuell",
+        "verzögert", "5 Kalendertage (wird nachgereicht)", "0 Tage; Quelle offen",
+    ):
+        assert not _treasury_observation_has_complete_provenance(base.format(delay=delay)), delay
+    for delay in ("0 Kalendertage", "1 Börsentag", "15 Minuten", "Tages-Schlusskurs", "Realtime"):
+        assert _treasury_observation_has_complete_provenance(base.format(delay=delay)), delay
+
+def test_m07_partial_source_record_is_not_masked_by_complete_duplicate_of_same_value():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_partial_duplicate", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: NICHT VERFÜGBAR | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+    )
+    report = report.replace(
+        "Dollar/Liquidität/Volatilität:",
+        "US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | "
+        "Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.\n"
+        "US-10J-Rendite (^TNX): 4.93% | Quelle: Yahoo Finance (^TNX); "
+        "Abrufzeit: 2026-11-01T19:30:53+00:00; Datenstichtag: 2026-10-30; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
+    )
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_m07_rejects_two_distinct_treasury_values_sharing_one_provenance_line():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_shared_provenance_line", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury 4,98% und US 10Y Treasury 4,93% | "
+        "Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | "
+        "Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+    )
+    findings = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+
+def test_m07_identical_macro_live_values_still_require_both_role_provenances():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_identical_role_values", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: 2026-11-01T04:50:54+00:00 | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 5 Kalendertage.",
+    )
+    conflict = (
+        "- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+        "Makro-Wert: 4.8940% (Quellzeile vorhanden; Makro-Provenienz fehlt) | "
+        "Live-Wert: 4.8940% (Quelle: Yahoo Finance (^TNX); Abruf: 2026-11-03T04:35:08+00:00; "
+        "Datenstichtag: 2026-11-02; Einheit: %; Verzögerung: Tages-Schlusskurs) | "
+        "Abgleich: nicht aufgelöst."
+    )
+    report = report.replace("Dollar/Liquidität/Volatilität:", conflict + "\nDollar/Liquidität/Volatilität:")
+    errors = validate_report(report)
+    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors), errors
+
+
+def test_m07_identical_macro_live_values_pass_only_with_two_complete_role_sources():
+    from trading_radar_report_gate import validate_report
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "fixture_for_m07_identical_role_values_complete", ROOT / "tests/test_trading_radar_report_gate.py"
+    )
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    report = fixture.report_fixture().replace(
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.",
+        "Zinsen/Renditen: US 10Y Treasury bei 4,98% | Quelle: FRED DGS10 | Abrufzeit: 2026-11-01T04:50:54+00:00 | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 5 Kalendertage.",
+    )
+    conflict = (
+        "- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+        "Makro-Wert: 4.8940% (Makro-Provenienz: Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations); "
+        "Abruf: 2026-11-03T04:30:00+00:00; Datenstichtag: 2026-11-02; Einheit: %; Verzögerung: 1 Börsentag) | "
+        "Live-Wert: 4.8940% (Quelle: Yahoo Finance (^TNX); Abruf: 2026-11-03T04:35:08+00:00; "
+        "Datenstichtag: 2026-11-02; Einheit: %; Verzögerung: Tages-Schlusskurs) | "
+        "Abgleich: nicht aufgelöst."
+    )
+    report = report.replace("Dollar/Liquidität/Volatilität:", conflict + "\nDollar/Liquidität/Volatilität:")
+    errors = validate_report(report)
+    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors), errors

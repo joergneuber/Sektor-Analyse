@@ -150,23 +150,23 @@ def test_report_gate_requires_treasury_conflict_to_be_open_or_reconciled():
     spec.loader.exec_module(fixture_module)
     report = fixture_module.report_fixture().replace(
         "Index S&P 500: 1M +1,0%; 3M +2,0%.",
-        "10Y Treasury (Makroquelle): 5,00%.\n10Y Treasury (Livequelle): 4,99%.\nIndex S&P 500: 1M +1,0%; 3M +2,0%.",
+        "US 10Y Treasury (Makroquelle): 5,00%.\nUS 10Y Treasury (Livequelle): 4,99%.\nIndex S&P 500: 1M +1,0%; 3M +2,0%.",
     )
     errors = gate.validate_report(report)
     assert any("M-07" in error for error in errors)
     report = report.replace(
-        "10Y Treasury (Livequelle): 4,99%.",
-        "10Y Treasury (Livequelle): 4,99%.\n"
+        "US 10Y Treasury (Livequelle): 4,99%.",
+        "US 10Y Treasury (Livequelle): 4,99%.\n"
         "QUELLENKONFLIKT: OFFEN | 10Y Treasury 5,00% vs. 4,99%; Quellen-/Zeitstempelabgleich ausstehend."
     )
     # An open-conflict label is not a substitute for provenance of each source row.
     assert any("M-07" in error for error in gate.validate_report(report))
     report = report.replace(
-        "10Y Treasury (Makroquelle): 5,00%.",
-        "10Y Treasury (Makroquelle): 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag."
+        "US 10Y Treasury (Makroquelle): 5,00%.",
+        "US 10Y Treasury (Makroquelle): 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag."
     ).replace(
-        "10Y Treasury (Livequelle): 4,99%.",
-        "10Y Treasury (Livequelle): 4,99% | Quelle: Yahoo Finance ^TNX | Abrufzeit: 2026-10-30T04:35:10Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag."
+        "US 10Y Treasury (Livequelle): 4,99%.",
+        "US 10Y Treasury (Livequelle): 4,99% | Quelle: Yahoo Finance ^TNX | Abrufzeit: 2026-10-30T04:35:10Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag."
     )
     assert not any("M-07" in error for error in gate.validate_report(report))
 
@@ -187,15 +187,18 @@ def test_report_gate_accepts_proven_empty_active_thesis_register():
     gate = load_gate()
     text = (
         "2. Thesen-Update\n"
-        "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.\n"
+        "Thesen-ID: T-1 | Version: 1 | Status: INVALIDIERT. Alle Thesen sind archiviert; keine aktive These verbleibt.\n"
         "THESENREGISTER-VERGLEICH: PASS\n"
         "VORHER-SHA256: " + "a" * 64 + "\n"
         "NACHHER-SHA256: " + "b" * 64 + "\n"
-        "AKTIVE_THESEN: 0\n"
+        "THESENREGISTER-VERGLEICH-ID: 03ad73fb6916f8c1d10706e17fd4e1a260ead1c02fb21797d8316756cc4f0c96\n"
+        "VORHER_THESEN_COUNT: 1\nVORHER_AKTIVE_THESEN: 1\nNACHHER_THESEN_COUNT: 1\nNACHHER_AKTIVE_THESEN: 0\n"
+        "VORHER-THESIS-ID: T-1\nVORHER-REGISTER-VERSION: 1\nVORHER-THESIS-ACTIVE: YES\n"
         "THESEN_NEU: KEINE\n"
         "THESEN_AKTUALISIERT: KEINE\n"
         "THESEN_UNVERAENDERT: KEINE\n"
-        "THESEN_ARCHIVIERT: KEINE\n"
+        "THESEN_ARCHIVIERT: T-1\n"
+        "THESIS_ID: T-1\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: NO\n"
         "7. MSCI-Vergleich\n"
         "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
         "Ø Positionsperformance: NICHT VERFÜGBAR\n"
