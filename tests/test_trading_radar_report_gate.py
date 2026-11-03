@@ -803,7 +803,7 @@ def test_m07_rejects_yahoo_tnx_even_when_provenance_is_complete():
         "Dollar/Liquidität/Volatilität:",
         "US-10J-Rendite (^TNX): 4.95% | Quelle: Yahoo Finance ^TNX | "
         "Abrufzeit: 2026-10-30T20:00:00Z | Datenstichtag: 2026-10-30 | "
-        "Einheit: % | Verzögerung: Tages-Schlusskurs.\\nDollar/Liquidität/Volatilität:",
+        "Einheit: % | Verzögerung: Tages-Schlusskurs.\nDollar/Liquidität/Volatilität:",
     )
     errors = gate.validate_report(text)
     assert any("US-10Y wird ausschließlich aus FRED DGS10" in error for error in errors), errors
