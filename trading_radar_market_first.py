@@ -105,7 +105,7 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             return yf.download(tickers=symbols, period="6mo", interval="1d",
                                auto_adjust=True, group_by="ticker", progress=False, threads=True)
     symbols = [
-        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "TLT",
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
         "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
     ]
@@ -165,21 +165,10 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             f"- Index {label} ({symbol}): letzter Schluss {close:.2f}; 1M {fmt(r1, '%')}; 3M {fmt(r3, '%')}."
             if close is not None else f"- Index {label} ({symbol}): NICHT VERFÜGBAR."
         )
-    vix, dxy, tnx_raw, tlt = latest("^VIX"), latest("DX-Y.NYB"), latest("^TNX"), pct("TLT", 21)
-    tnx = (tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw) if tnx_raw is not None else None
-    tnx_series = series_for("^TNX")
-    tnx_observation_date = (
-        tnx_series.index[-1].isoformat() if tnx_series is not None and len(tnx_series)
-        else "NICHT VERFÜGBAR"
-    )
+    vix, dxy, tlt = latest("^VIX"), latest("DX-Y.NYB"), pct("TLT", 21)
     lines.extend([
         f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR.",
         f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR.",
-        (
-            f"- US-10J-Rendite (^TNX): {tnx:.2f}% | Quelle: Yahoo Finance (^TNX); "
-            f"Abrufzeit: {now}; Datenstichtag: {tnx_observation_date}; Einheit: %; "
-            "Verzögerung: Tages-Schlusskurs; keine Intraday-Aktualität im gelieferten Snapshot."
-        ) if tnx is not None else "- US-10J-Rendite: NICHT VERFÜGBAR.",
         f"- Anleihe-ETF TLT 1M: {fmt(tlt, '%')}.",
     ])
 
@@ -205,33 +194,8 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
         )
     lines.append("- Quelle: Yahoo Finance (Ticker in den Zeilen; Tages-Schlusskurse).")
 
-    # M-07: when the narrative contains a different 10Y Treasury value, never
-    # silently overwrite it. Emit a concrete open conflict with both values
-    # and provenance limits; the report gate will block FINAL until reconciled.
-    macro_observations = []
-    for source_line in report_text.splitlines():
-        if "Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose)" in source_line:
-            continue
-        match = re.search(
-            r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?)[^\r\n]{0,100}?(?:US[- ]?)?Treasury[^\r\n]{0,60}?(\d+(?:[,.]\d+)?)\s*%",
-            source_line,
-        )
-        if match:
-            try:
-                macro_observations.append((float(match.group(1).replace(",", ".")), source_line.strip()))
-            except ValueError:
-                pass
-    if tnx is not None:
-        distinct_macro = sorted({round(value, 6) for value, _ in macro_observations})
-        differing = [value for value in distinct_macro if abs(value - tnx) >= 0.001]
-        if differing:
-            macro_value = differing[0]
-            lines.append(
-                f"- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
-                f"Makro-Wert: {macro_value:.4f}% (Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar) | "
-                f"Live-Wert: {tnx:.4f}% (Quelle: Yahoo Finance ^TNX; Abruf: {now}) | "
-                "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
-            )
+    # US 10Y nominal yield is sourced exclusively from FRED DGS10 in the
+    # macro data package. Do not fetch or append a second Yahoo ^TNX observation.
 
     groups = {
         "Indizes": [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^RUT", "Russell 2000")],
