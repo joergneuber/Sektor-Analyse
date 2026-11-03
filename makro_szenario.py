@@ -1118,7 +1118,11 @@ def _dbnomics_series(series_id):
 def _alternate_series(series_id):
     if series_id in {"DFEDTARU","DFEDTARL"}:
         return _official_fomc_target_series(series_id)
-    if series_id in {"DGS2","DGS5","DGS10","DGS30","DFII10"}:
+    if series_id == "DGS10":
+        # US 10Y nominal yield has one canonical source: FRED DGS10.
+        # The CSV endpoint is a FRED-only fallback when the keyed API is down.
+        return _fred_direct_csv_series("DGS10")
+    if series_id in {"DGS2","DGS5","DGS30","DFII10"}:
         treasury, source = _treasury_series(series_id)
         if not treasury.empty:
             return treasury, source
@@ -1253,7 +1257,15 @@ def fred_series(series_id, limit_days=5000):
         if not df.empty:
             latest = df["DATE"].iloc[-1].date().isoformat()
             cache_requires_refresh = _fred_cache_requires_release_refresh(series_id, latest)
-            if _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60)) and not cache_requires_refresh:
+            cached_source = str(entry.get("source") or "").casefold()
+            # DGS10 is deliberately FRED-only. A legacy Treasury.gov/H.15
+            # cache entry must not masquerade as a current FRED observation.
+            dgs10_cache_is_fred = (
+                series_id != "DGS10"
+                or "stlouisfed.org" in cached_source
+                or "fred.stlouisfed.org" in cached_source
+            )
+            if _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60)) and not cache_requires_refresh and dgs10_cache_is_fred:
                 print(f"INFO: FRED-Cache-Hit fuer {series_id} (Datenstand={latest})")
                 return df
             if cache_requires_refresh:
@@ -1336,7 +1348,8 @@ def fred_snapshot(name, series_id):
     entry = cache.get("fred", {}).get(series_id, {})
     source = entry.get("source", FRED_URL.format(series_id))
     status = entry.get("status", "REAL")
-    base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
+    source_label = f"FRED {series_id} ({source})" if series_id == "DGS10" else source
+    base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source_label}"
     if name == "US 10Y Treasury":
         # saved_at is written atomically with the FRED cache entry after the
         # actual source request. A missing timestamp remains unavailable;
