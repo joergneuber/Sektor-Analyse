@@ -1099,10 +1099,9 @@ def test_m02_m07_run1270_entity_normalized_treasury_observation_is_repaired_end_
     assert "Makro-Provenienz: Quelle=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations)" in repaired
     findings = validate_report(repaired)
     assert not any("M-02: US-10Y-Rendite" in item for item in findings), findings
-    # M-02 keeps the original normalized Treasury wording; M-07 correctly
-    # remains blocked because the conflict row's Live-Wert is only partially
-    # sourced and cannot borrow metadata from the rounded live snapshot.
-    assert any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+    # The legacy fixture still contains Yahoo ^TNX. The FRED-only policy
+    # rejects that second US-10Y source even after the FRED value is repaired.
+    assert any("US-10Y wird ausschließlich aus FRED DGS10" in item for item in findings), findings
 
 
 def test_treasury_provenance_second_pass_replaces_unavailable_placeholders():
