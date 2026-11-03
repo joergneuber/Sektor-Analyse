@@ -637,7 +637,7 @@ Performance-Einzelrenditen-SHA256: DIGEST
 
 
 
-def test_m07_allows_repeated_narrative_value_when_each_distinct_treasury_observation_is_sourced():
+def test_m07_rejects_yahoo_tnx_even_when_both_treasury_values_are_sourced():
     report = report_fixture()
     report = report.replace(
         "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
@@ -656,7 +656,7 @@ def test_m07_allows_repeated_narrative_value_when_each_distinct_treasury_observa
         "Interpretation: US-10Y-Treasury bleibt mit 5,0000% erhöht."
     )
     errors = gate.validate_report(report)
-    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors)
+    assert any("US-10Y wird ausschließlich aus FRED DGS10" in error for error in errors), errors
 
 
 def test_m05_rejects_tampered_register_comparison_digest():
