@@ -1881,6 +1881,54 @@ def validate_run_evidence(path: Path, *, require_report_gate: bool = True) -> li
     return errors
 
 
+def reconcile_thesis_update_narrative(text: str) -> tuple[str, bool]:
+    """Replace a stale generic no-change sentence using the verified register delta.
+
+    The machine-readable before/after comparison is the source of truth. This
+    repair changes only the contradictory narrative sentence; it never edits
+    register rows, hashes, IDs, versions, or status values.
+    """
+    labels = ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_UNVERAENDERT", "THESEN_ARCHIVIERT")
+    values = {}
+    for label in labels:
+        matches = re.findall(rf"(?im)^{label}:\\s*([^\\r\\n]+)\\s*$", text)
+        if len(matches) != 1:
+            return text, False
+        raw = matches[0].strip()
+        if raw.upper() == "KEINE":
+            values[label] = []
+            continue
+        ids = [item.strip() for item in raw.split(",")]
+        if not ids or any(not re.fullmatch(r"[A-Za-z0-9_.:-]+", item) for item in ids):
+            return text, False
+        values[label] = ids
+
+    changed = any(values[label] for label in ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_ARCHIVIERT"))
+    if not changed:
+        return text, False
+
+    sentence = re.compile(
+        r"(?im)^\\s*(?:[-*•]\\s*)?Keine neue oder aktualisierte These;\\s*"
+        r"Thesenregister geprüft, keine Änderung\\.?\\s*$"
+    )
+    if not sentence.search(text):
+        return text, False
+
+    descriptions = (
+        ("neu", "THESEN_NEU"),
+        ("aktualisiert", "THESEN_AKTUALISIERT"),
+        ("unverändert", "THESEN_UNVERAENDERT"),
+        ("archiviert", "THESEN_ARCHIVIERT"),
+    )
+    parts = []
+    for label, key in descriptions:
+        ids = values[key]
+        parts.append(f"{label}: {', '.join(ids)}" if ids else f"{label}: keine")
+    replacement = "Registeränderungen laut geprüftem Vorher-/Nachher-Vergleich: " + "; ".join(parts) + "."
+    repaired, count = sentence.subn(replacement, text, count=1)
+    return repaired, bool(count)
+
+
 def main() -> int:
     if len(sys.argv) not in (2, 4) or (len(sys.argv) == 4 and sys.argv[2] != "--evidence"):
         print("Usage: python trading_radar_report_gate.py REPORT.txt [--evidence RUN_EVIDENCE.json]", file=sys.stderr)
@@ -1891,6 +1939,11 @@ def main() -> int:
     except OSError as exc:
         print(f"REPORT_CHECK=FAIL | Bericht nicht lesbar: {exc}")
         return 1
+    repaired_text, repaired = reconcile_thesis_update_narrative(text)
+    if repaired:
+        path.write_text(repaired_text, encoding="utf-8")
+        text = repaired_text
+        print("REPORT_REPAIR=M05 | widersprüchliche Keine-Änderung-Aussage anhand des geprüften Registervergleichs korrigiert")
     errors = validate_report(text)
     if len(sys.argv) == 4:
         errors.extend(validate_run_evidence(Path(sys.argv[3])))
