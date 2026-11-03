@@ -194,14 +194,16 @@ def _balanced_parenthetical(text: str, start: int) -> str:
         start += 1
     if start >= len(text) or text[start] != "(":
         return ""
-    depth = 0
+    stack = []
     for index in range(start, len(text)):
         char = text[index]
         if char == "(":
-            depth += 1
+            stack.append(index)
         elif char == ")":
-            depth -= 1
-            if depth == 0:
+            if not stack:
+                return ""
+            stack.pop()
+            if not stack:
                 return text[start + 1:index]
     return ""
 
@@ -238,15 +240,22 @@ def _us10y_conflict_observation_records(line: str) -> list[tuple[str, Decimal, s
         if role == "Makro":
             explicit = re.search(r"(?i)Makro-Provenienz\s*:\s*", after_value)
             if explicit:
-                candidate = after_value[explicit.end():]
-                # Macro metadata ends before the Live role, not at the first
-                # closing parenthesis (sources may themselves contain "(...)").
-                candidate = re.split(r"(?i)\|\s*Live-Wert\s*:", candidate, maxsplit=1)[0]
-                candidate = candidate.strip()
-                if candidate.startswith("("):
-                    provenance_text = _balanced_parenthetical(candidate, 0)
+                # The marker itself is inside the Makro annotation. Extract
+                # the complete outer balanced group first, then remove only
+                # the marker; otherwise its closing ')' is misread as a
+                # malformed field value (and URL parentheses can confuse a
+                # naive first-close split).
+                outer = _balanced_parenthetical(after_value, 0)
+                if outer:
+                    provenance_text = re.sub(
+                        r"(?i)^\s*Makro-Provenienz\s*:\s*", "", outer, count=1
+                    )
                 else:
-                    provenance_text = candidate
+                    candidate = after_value[explicit.end():]
+                    candidate = re.split(
+                        r"(?i)\|\s*Live-Wert\s*:", candidate, maxsplit=1
+                    )[0]
+                    provenance_text = candidate.strip().rstrip(")").strip()
             else:
                 # Some producers place the macro annotation directly after
                 # Makro-Wert. Parse it, but do not infer metadata from the Live side.
@@ -254,17 +263,26 @@ def _us10y_conflict_observation_records(line: str) -> list[tuple[str, Decimal, s
         else:
             provenance_text = _balanced_parenthetical(after_value, 0)
 
-        fields = []
-        for key, label in field_patterns.items():
-            match = re.search(
-                rf"(?i)(?:^|[|;])\s*{label}\s*[:=]\s*([^|;]+)",
-                provenance_text,
-            )
-            if match:
-                fields.append(f"{key}: {match.group(1).strip().rstrip('. )')}")
+        parsed_fields, field_conflicts = _top_level_provenance_values(
+            provenance_text, allow_first=True
+        )
+        field_names = {
+            "source": "Quelle",
+            "retrieved": "Abrufzeit",
+            "observed": "Datenstichtag",
+            "unit": "Einheit",
+            "delay": "Verzögerung",
+        }
+        fields = [
+            f"{field_names[key]}: {parsed_fields[key]}"
+            for key in field_names if key in parsed_fields
+        ]
+        if field_conflicts:
+            fields.append("Quelle: MEHRFACH WIDERSPRÜCHLICHE ANGABEN")
         synthetic = f"US 10Y Treasury {value}%"
         if fields:
             synthetic += " | " + " | ".join(fields)
+
         records.append((role, value.normalize(), synthetic))
     return records
 
@@ -303,24 +321,186 @@ def extract_us10y_observations(
     return values
 
 
+
+_US10Y_PROVENANCE_FIELD_RE = re.compile(
+    r"(?i)^\s*(Quelle|Source|Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?|"
+    r"Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date|DATA_DATE|"
+    r"Einheit|Unit|Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*(.*?)\s*$"
+)
+
+
+def _balanced_parenthetical_span(text: str, start: int):
+    """Return (open, close, content) for a genuinely balanced nested group."""
+    if start >= len(text) or text[start] != "(":
+        return None
+    stack = []
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "(":
+            stack.append(index)
+        elif char == ")":
+            if not stack:
+                return None
+            stack.pop()
+            if not stack:
+                return start, index, text[start + 1:index]
+    return None
+
+
+def _is_opaque_parenthetical_segment(value: str) -> bool:
+    stripped = (value or "").strip()
+    span = _balanced_parenthetical_span(stripped, 0) if stripped.startswith("(") else None
+    return bool(span and span[1] == len(stripped) - 1)
+
+
+def _top_level_provenance_values(fragment: str, *, allow_first: bool):
+    """Parse only complete fields at top-level segment starts; retain duplicates."""
+    values = {}
+    conflicts = set()
+    stack = []
+    start = 0
+    delimiter = ""
+    parts = []
+    malformed = False
+    for index, char in enumerate(fragment):
+        if char == "(":
+            stack.append(index)
+        elif char == ")":
+            if not stack:
+                malformed = True
+                break
+            stack.pop()
+        elif char in "|;" and not stack:
+            parts.append((delimiter, fragment[start:index]))
+            delimiter = char
+            start = index + 1
+    if stack:
+        malformed = True
+    if malformed:
+        return {}, {"MALFORMED"}
+    parts.append((delimiter, fragment[start:]))
+    started = False
+    first_segment = True
+    for delim, part in parts:
+        if first_segment and not allow_first:
+            first_segment = False
+            if part.strip().strip(".!?"):
+                # Only an opaque parenthetical or malformed group is a hard
+                # foreign-context boundary. Ordinary trailing prose stops
+                # row-tail parsing but does not invalidate an adjacent local
+                # provenance annotation.
+                if _is_opaque_parenthetical_segment(part):
+                    return {}, {"FOREIGN_CONTEXT"}
+                stack_check = []
+                malformed = False
+                for char in part:
+                    if char == "(":
+                        stack_check.append(char)
+                    elif char == ")":
+                        if not stack_check:
+                            malformed = True
+                            break
+                        stack_check.pop()
+                if malformed or stack_check:
+                    return {}, {"MALFORMED"}
+                return {}, {"UNSCOPED_CONTEXT"}
+            continue
+        first_segment = False
+        match = _US10Y_PROVENANCE_FIELD_RE.fullmatch(part)
+        if not match:
+            # Once an unrelated top-level segment appears, later fields may
+            # belong to another indicator. Never resume provenance parsing.
+            if _is_opaque_parenthetical_segment(part):
+                # Opaque notes may describe another indicator. Invalidate
+                # fields already seen as well as every field after the note.
+                values.clear()
+                conflicts.add("FOREIGN_CONTEXT")
+                break
+            if part.strip():
+                break
+            continue
+        started = True
+        raw_key = match.group(1).casefold()
+        if raw_key in {"quelle", "source"}:
+            key = "source"
+        elif raw_key in {"abruf", "abrufzeit", "abrufzeitpunkt", "retrieved_at"}:
+            key = "retrieved"
+        elif raw_key in {"datenstand", "datenstichtag", "beobachtungsdatum", "observation_date", "data_date"}:
+            key = "observed"
+        elif raw_key in {"einheit", "unit"}:
+            key = "unit"
+        else:
+            key = "delay"
+        value = match.group(2).strip().rstrip(".")
+        normalized = re.sub(r"\s+", " ", value).casefold()
+        if key in values and values[key][1] != normalized:
+            conflicts.add(key)
+        elif key not in values:
+            values[key] = (value, normalized)
+    return {key: item[0] for key, item in values.items()}, conflicts
+
+
+def _us10y_provenance_fields(line: str):
+    """Read local US10Y annotation and top-level row-tail fields only."""
+    if not isinstance(line, str):
+        return {}, {"MALFORMED"}
+    label_matches = list(_US10Y_EXPLICIT_LABEL_RE.finditer(line))
+    if not label_matches and _is_run1270_us_curve_context(line):
+        label_matches = list(_US10Y_RESOLVER_LABEL_RE.finditer(line))
+    if not label_matches:
+        return {}, set()
+    # When the same observation is repeated narratively before one shared
+    # row-end provenance block, the metadata follows the final occurrence.
+    # Parsing from the first label would treat the intervening prose as an
+    # unscoped foreign context and incorrectly discard that shared block.
+    for label in reversed(label_matches):
+        value_match = _US10Y_VALUE_AFTER_LABEL_RE.match(line[label.end():label.end() + 100])
+        if not value_match:
+            continue
+        value_end = label.end() + value_match.end()
+        cursor = value_end
+        while cursor < len(line) and line[cursor].isspace():
+            cursor += 1
+        combined = {}
+        conflicts = set()
+        annotation = _balanced_parenthetical_span(line, cursor) if cursor < len(line) and line[cursor] == "(" else None
+        if annotation:
+            local, local_conflicts = _top_level_provenance_values(annotation[2], allow_first=True)
+            # An adjacent parenthetical comment with no US10Y provenance is
+            # an attribution boundary, not a harmless wrapper around later
+            # row-tail fields.
+            if annotation[2].strip() and not local:
+                return {}, {"FOREIGN_CONTEXT"}
+            combined.update(local)
+            conflicts.update(local_conflicts)
+            suffix_start = annotation[1] + 1
+        else:
+            suffix_start = value_end
+        suffix, suffix_conflicts = _top_level_provenance_values(line[suffix_start:], allow_first=False)
+        # Ordinary prose after a complete local annotation terminates row-tail
+        # parsing, but is not itself a provenance conflict. The parser returns
+        # no suffix fields at that boundary, so later metadata cannot be
+        # borrowed. Keep hard foreign-context and malformed conflicts fatal.
+        if annotation and local and suffix_conflicts == {"UNSCOPED_CONTEXT"}:
+            suffix_conflicts = set()
+        for key, value in suffix.items():
+            if key in combined and re.sub(r"\s+", " ", combined[key]).casefold() != re.sub(r"\s+", " ", value).casefold():
+                conflicts.add(key)
+            elif key not in combined:
+                combined[key] = value
+        conflicts.update(suffix_conflicts)
+        return combined, conflicts
+    return {}, set()
+
+
 def _treasury_observation_has_complete_provenance(line: str) -> bool:
     """Require concrete, complete provenance values on the same observation line."""
     if "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" in line:
         return False
-    patterns = {
-        "source": r"(?:Quelle|Source)",
-        "retrieved": r"(?:Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)",
-        "observed": r"(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)",
-        "unit": r"(?:Einheit|Unit)",
-        "delay": r"(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)",
-    }
-    extracted = {}
-    for key, label in patterns.items():
-        match = re.search(
-            rf"(?i)(?:^|[|;])\s*{label}\s*[:=]\s*([^|;]+)",
-            line,
-        )
-        extracted[key] = match.group(1).strip().rstrip(".") if match else ""
+    extracted, conflicting_fields = _us10y_provenance_fields(line)
+    if conflicting_fields:
+        return False
+
 
     placeholder_re = re.compile(
         r"(?i)\b(?:NICHT\s+VERF(?:Ü|UE)GBAR|NICHT\s+VERFUEGBAR|"
@@ -328,9 +508,14 @@ def _treasury_observation_has_complete_provenance(line: str) -> bool:
         r"SIEHE\s+OBEN|WIE\s+OBEN|UNKNOWN|NOT\s+AVAILABLE|"
         r"N/?A|TBD|NONE|NULL|KEINE\s+ANGABE|WIRD\s+NACHGEREICHT|"
         r"NOCH\s+ZU\s+PRÜFEN|NOCH\s+ZU\s+PRUEFEN|"
-        r"QUELLE\s+VORHANDEN|DATENQUELLE\s+INTERN)\b"
+        r"QUELLE\s+VORHANDEN|DATENQUELLE\s+INTERN|"
+        r"MEHRFACH\s+WIDERSPRÜCHLICHE(?:\s+ANGABEN)?)\b"
     )
-    if any(not value or placeholder_re.search(value) for value in extracted.values()):
+    required_fields = {"source", "retrieved", "observed", "unit", "delay"}
+    if not required_fields.issubset(extracted) or any(
+        not extracted[key] or placeholder_re.search(extracted[key])
+        for key in required_fields
+    ):
         return False
 
     # A source must identify both a recognizable provider and a concrete
@@ -338,6 +523,20 @@ def _treasury_observation_has_complete_provenance(line: str) -> bool:
     # not source provenance. Provider + identifier may include a URL as a
     # supporting locator, but the URL alone is insufficient.
     source = extracted["source"]
+    # DFII10 is the 10-year TIPS real yield, never nominal US10Y.
+    # Reject it independently of provider naming, including mixed identifiers.
+    if re.search(r"(?i)(?<![A-Z0-9])DFII10(?![A-Z0-9])", source):
+        return False
+    series_ids = re.findall(
+        r"(?i)(?<![A-Z0-9])[A-Z]{1,8}\d+[A-Z0-9._-]*(?![A-Z0-9])", source
+    )
+    normalized_series_ids = {series_id.upper() for series_id in series_ids}
+    if "DGS10" in normalized_series_ids and normalized_series_ids != {"DGS10"}:
+        return False
+    # A FRED-sourced nominal US10Y observation must identify DGS10 exactly.
+    if re.search(r"(?i)\b(?:FRED|Federal\s+Reserve\s+Economic\s+Data)\b", source):
+        if normalized_series_ids != {"DGS10"}:
+            return False
     provider_re = re.compile(
         r"(?i)\b(?:FRED|Federal\s+Reserve\s+Economic\s+Data|"
         r"Yahoo\s+Finance|Bloomberg|Refinitiv|LSEG|U\.?S\.?\s+Treasury|"
@@ -380,7 +579,7 @@ def _treasury_observation_has_complete_provenance(line: str) -> bool:
     # accepted as a substitute for a measurable lag.
     delay = extracted["delay"].strip()
     delay_match = re.search(
-        r"(?i)(?:^|[|;])\s*(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*([^|;\r\n]+)(?P<tail>[^|\r\n]*)",
+        r"(?i)(?:^|[|;(])\s*(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*([^|;\r\n]+)(?P<tail>[^|\r\n]*)",
         line,
     )
     if delay_match and placeholder_re.search(delay_match.group("tail")):
@@ -1385,7 +1584,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         if conflict_observation_groups:
             provenance_complete = provenance_complete and conflict_roles_complete
         provenance_labels = re.compile(
-            r"(?i)(?:^|[|;])\s*(?:Quelle|Source|Abrufzeit|Abrufzeitpunkt|"
+            r"(?i)(?:^|[|;(])\s*(?:Quelle|Source|Abrufzeit|Abrufzeitpunkt|"
             r"Retrieved(?:_At)?|Datenstand|Datenstichtag|Beobachtungsdatum|"
             r"Observation_Date|Einheit|Unit|Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]"
         )

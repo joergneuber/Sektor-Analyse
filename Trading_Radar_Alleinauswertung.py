@@ -18416,15 +18416,46 @@ def _trading_radar_thesenregister_nachweis_text(report, evidence_lines):
         for line in evidence_values
         if line.upper().startswith("THESENREGISTER-VERGLEICH:")
     ), "NICHT_NACHWEISBAR")
+    no_change_claim_pattern = (
+        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:Keine neue oder aktualisierte These|"
+        r"Keine neuen oder aktualisierten Thesen|Thesenregister geprüft, keine Änderung|"
+        r"Thesenregister geprueft, keine aenderung|Keine Änderung im Thesenregister|"
+        r"Keine Aenderung im Thesenregister)(?:;[^\r\n]*)?[^\r\n]*$"
+    )
     if comparison_status != "PASS":
         body = re.sub(
-            r"(?im)^[ \t]*(?:[-*•]\s*)?(?:Keine neue oder aktualisierte These|"
-            r"Keine neuen oder aktualisierten Thesen|Thesenregister geprüft, keine Änderung|"
-            r"Thesenregister geprueft, keine aenderung|Keine Änderung im Thesenregister|"
-            r"Keine Aenderung im Thesenregister)(?:;[^\r\n]*)?[^\r\n]*$",
+            no_change_claim_pattern,
             "Register-Vergleich nicht möglich; Vorzustand/strukturierter Nachweis fehlt.",
             body,
         )
+    else:
+        evidence_map = {}
+        for item in evidence_values:
+            if ":" in item:
+                key, value = item.split(":", 1)
+                evidence_map[key.strip().upper()] = value.strip()
+        change_labels = (
+            ("THESEN_NEU", "Neue"),
+            ("THESEN_AKTUALISIERT", "Aktualisiert"),
+            ("THESEN_ARCHIVIERT", "Archiviert"),
+        )
+        reported_changes = [
+            (label, evidence_map.get(key, "NICHT VERFÜGBAR"))
+            for key, label in change_labels
+        ]
+        changed = [
+            f"{label}: {value}"
+            for label, value in reported_changes
+            if value.strip().upper() not in {"", "KEINE", "NICHT VERFÜGBAR"}
+        ]
+        if changed:
+            # Deterministic register evidence outranks a model-generated
+            # no-change sentence. Keep the gate strict; repair the prose.
+            body = re.sub(
+                no_change_claim_pattern,
+                "Registeränderungen laut Vergleich: " + "; ".join(changed) + ".",
+                body,
+            )
     body = re.sub(
         r"(?im)^[ \t]*(?:THESENREGISTER-VERGLEICH|VORHER-SHA256|NACHHER-SHA256|"
         r"AKTIVE_THESEN|VORHER_THESEN_COUNT|VORHER_AKTIVE_THESEN|NACHHER_THESEN_COUNT|NACHHER_AKTIVE_THESEN|"
@@ -18477,33 +18508,277 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             source_file = os.path.basename(os.fspath(raw_path))
             break
 
-    field_patterns = {
-        "Quelle": r"(?:SOURCE|Quelle)",
-        "Abrufzeit": r"(?:RETRIEVED_AT|Abrufzeitpunkt|Abrufzeit)",
-        "Datenstichtag": r"(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date)",
-        "Einheit": r"(?:UNIT|Einheit)",
-        "Verzögerung": r"(?:DELAY_DAYS|Verzögerung|Verzoegerung|Delay(?:_Days)?)",
-    }
+    def _top_level_segments(segment):
+        """Return (delimiter, start, end) segments split only outside parentheses."""
+        parts = []
+        source = segment or ""
+        stack = []
+        segment_start = 0
+        delimiter = ""
+        malformed = False
+        for pos, char in enumerate(source):
+            if char == "(":
+                stack.append(pos)
+            elif char == ")":
+                if not stack:
+                    malformed = True
+                    break
+                stack.pop()
+            elif char in "|;" and not stack:
+                parts.append((delimiter, segment_start, pos))
+                delimiter = char
+                segment_start = pos + 1
+        if malformed or stack:
+            # Fail closed: malformed nesting makes the entire fragment opaque.
+            return [("", 0, len(source))]
+        parts.append((delimiter, segment_start, len(source)))
+        return parts
 
-    def fields(line):
+    def _field_from_segment(segment):
+        """Recognize one complete provenance field at a top-level segment start."""
+        match = re.match(
+            r"(?i)^\s*(Quelle|Abrufzeitpunkt|Abrufzeit|Datenstand|Datenstichtag|"
+            r"Beobachtungsdatum|Observation_Date|DATA_DATE|Einheit|Verzögerung|Verzoegerung|"
+            r"SOURCE|RETRIEVED_AT|UNIT|DELAY_DAYS|Delay(?:_Days)?)\s*[:=]\s*(.*?)\s*$",
+            segment or "",
+        )
+        if not match:
+            return None
+        raw_key = match.group(1).casefold()
+        if raw_key in {"quelle", "source"}:
+            key = "Quelle"
+        elif raw_key in {"abrufzeit", "abrufzeitpunkt", "retrieved_at"}:
+            key = "Abrufzeit"
+        elif raw_key in {"datenstand", "datenstichtag", "beobachtungsdatum", "observation_date", "data_date"}:
+            key = "Datenstichtag"
+        elif raw_key == "unit" or raw_key == "einheit":
+            key = "Einheit"
+        else:
+            key = "Verzögerung"
+        value = match.group(2).strip().rstrip(".")
+        if key == "Verzögerung" and re.fullmatch(r"\d+", value):
+            value += " Kalendertage"
+        return key, value
+
+    def fields(segment, allow_initial=True):
+        """Read provenance only from top-level delimiter-separated fields."""
         result = {}
-        for key, pattern in field_patterns.items():
-            match = re.search(
-                rf"(?i)(?:^|[|;])\s*{pattern}\s*[:=]\s*([^|;]+)",
-                line or "",
-            )
-            if match:
-                value = match.group(1).strip().rstrip(".")
-                if key == "Verzögerung" and re.fullmatch(r"\d+", value):
-                    value += " Kalendertage"
+        conflicts = set()
+        source = segment or ""
+        first_segment = True
+        for delimiter, begin, finish in _top_level_segments(source):
+            piece = source[begin:finish]
+            if first_segment and not allow_initial:
+                first_segment = False
+                if piece.strip().strip(".!?"):
+                    # A genuinely foreign parenthetical or malformed group
+                    # closes attribution. Ordinary prose merely ends the
+                    # row-tail field run; it does not suppress matching macro
+                    # fallback for the separately identified US10Y value.
+                    if _is_opaque_parenthetical_note(piece) or _has_malformed_parentheses(piece):
+                        result.clear()
+                        conflicts.add("FOREIGN_CONTEXT")
+                    break
+                continue
+            first_segment = False
+            parsed = _field_from_segment(piece)
+            if not parsed:
+                # Known macro status markers and opaque parenthetical notes do
+                # not claim provenance. Other text ends the attributable run.
+                if re.match(r"(?i)^\s*STATUS\s*[:=]", piece):
+                    continue
+                if _is_opaque_parenthetical_note(piece):
+                    # A foreign/opaque note invalidates the entire field run,
+                    # including fields parsed before the note.
+                    result.clear()
+                    conflicts.add("FOREIGN_CONTEXT")
+                    break
+                if piece.strip():
+                    break
+                continue
+            key, value = parsed
+            if key in result and result[key].strip().casefold() != value.strip().casefold():
+                conflicts.add(key)
+            elif key not in result:
                 result[key] = value
+        # Preserve a visible invalid marker instead of silently choosing the
+        # first of two contradictory values. The report gate rejects it.
+        for key in conflicts:
+            result[key] = "MEHRFACH WIDERSPRÜCHLICHE ANGABEN"
         return result
 
+    def _has_malformed_parentheses(value):
+        stack = []
+        for char in value or "":
+            if char == "(":
+                stack.append(char)
+            elif char == ")":
+                if not stack:
+                    return True
+                stack.pop()
+        return bool(stack)
+
+    def _is_opaque_parenthetical_note(piece):
+        stripped = (piece or "").strip()
+        if not stripped.startswith("("):
+            return False
+        stack = []
+        for index, char in enumerate(stripped):
+            if char == "(":
+                stack.append(index)
+            elif char == ")":
+                if not stack:
+                    return False
+                stack.pop()
+                if not stack and index == len(stripped) - 1:
+                    return True
+                if not stack:
+                    return False
+        return False
+
+    def _has_opaque_parenthetical_context(segment):
+        """Return True when a balanced parenthetical note interrupts attribution."""
+        source = segment or ""
+        for _delimiter, begin, finish in _top_level_segments(source):
+            piece = source[begin:finish]
+            if not _is_opaque_parenthetical_note(piece):
+                continue
+            # A directly attached annotation beginning with a recognized
+            # provenance field is structured US10Y metadata, not an opaque
+            # context note. All other balanced notes close attribution.
+            inner = piece.strip()[1:-1].strip()
+            inner_parts = _top_level_segments(inner)
+            first_piece = inner[inner_parts[0][1]:inner_parts[0][2]] if inner_parts else ""
+            if _field_from_segment(first_piece):
+                if any(
+                    _is_opaque_parenthetical_note(inner[part_start:part_end])
+                    for _inner_delimiter, part_start, part_end in inner_parts[1:]
+                ):
+                    return True
+                continue
+            return True
+        return False
+
+    def _unknown_local_annotation_text(segment):
+        """Return every non-provenance top-level fragment without rewriting it."""
+        source = segment or ""
+        unknown = []
+        for delimiter, begin, finish in _top_level_segments(source):
+            piece = source[begin:finish]
+            if _field_from_segment(piece) is None:
+                unknown.append(delimiter + piece)
+        return "".join(unknown)
+
     def is_missing(value):
-        return str(value or "").strip().casefold() in {
+        return str(value or "").strip().rstrip(".)").casefold() in {
             "", "nicht verfügbar", "nicht verfuegbar", "unbekannt",
             "fehlt", "nicht bekannt", "n/a", "na", "tbd",
         }
+
+    def _local_parenthesized_annotation(line, value_end):
+        """Return only the immediately adjacent, fully balanced annotation."""
+        cursor = value_end
+        while cursor < len(line) and line[cursor].isspace():
+            cursor += 1
+        if cursor >= len(line) or line[cursor] != "(":
+            return None
+        stack = []
+        for pos in range(cursor, len(line)):
+            if line[pos] == "(":
+                stack.append(pos)
+            elif line[pos] == ")":
+                if not stack:
+                    return None
+                stack.pop()
+                if not stack:
+                    return cursor, pos, line[cursor + 1:pos]
+        return None
+
+    def _remove_row_end_provenance(suffix, *, preserve_ambiguous=False):
+        """Remove scoped row-tail fields; retain ambiguous fields without a delimiter."""
+        source = suffix or ""
+        # A foreign-context boundary makes the entire row tail ambiguous. Do
+        # not migrate, normalize, or delete any part of it: retain it exactly
+        # as supplied while keeping it unavailable as US10Y provenance.
+        if preserve_ambiguous:
+            return source
+        punctuation_match = re.search(r"([.!?])([ \t]*)$", source)
+        punctuation = punctuation_match.group(1) if punctuation_match else ""
+        trailing_space = punctuation_match.group(2) if punctuation_match else ""
+        core_end = punctuation_match.start() if punctuation_match else len(source)
+        core = source[:core_end]
+        kept = []
+        provenance_sequence_open = True
+        first_segment = True
+        for delimiter, begin, finish in _top_level_segments(core):
+            piece = core[begin:finish]
+            if first_segment:
+                first_segment = False
+                kept.append(piece)
+                if piece.strip():
+                    # Any note/context before row-tail fields closes the
+                    # removable provenance run; preserve all following text.
+                    provenance_sequence_open = False
+                continue
+            # Remove only one contiguous top-level provenance run. Once
+            # unrelated context appears, all following text belongs to that
+            # context and must remain byte-for-byte intact.
+            parsed_field = _field_from_segment(piece) if delimiter else None
+            if delimiter and parsed_field:
+                if provenance_sequence_open:
+                    # A contiguous top-level provenance run is migrated into
+                    # the immediate US10Y annotation and removed from the tail.
+                    continue
+                if preserve_ambiguous:
+                    # Preserve ambiguous top-level text byte-for-byte. The
+                    # gate independently sees the foreign-context boundary
+                    # and must not attribute these fields to US10Y.
+                    kept.append(delimiter + piece)
+                continue
+            if piece.strip():
+                provenance_sequence_open = False
+            kept.append(delimiter + piece)
+        cleaned = "".join(kept)
+        # Do not run a global separator cleanup here: even a cosmetic regex
+        # could alter repeated separators inside an unrelated parenthetical note.
+        if punctuation and not cleaned.rstrip().endswith((".", "!", "?")):
+            cleaned = cleaned.rstrip() + punctuation + trailing_space
+        elif punctuation:
+            cleaned = cleaned.rstrip()
+        return cleaned
+
+    def _format_local_provenance(values):
+        return "; ".join(
+            f"{key}: {values.get(key, 'NICHT VERFÜGBAR')}"
+            for key in ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+        )
+
+    def _is_valid_nominal_us10y_macro_source(metadata):
+        """Reject foreign scope and non-nominal FRED series before macro fallback."""
+        if not isinstance(metadata, dict) or not metadata:
+            return False
+        if "FOREIGN_CONTEXT" in metadata:
+            return False
+        if any(
+            "MEHRFACH WIDERSPRÜCHLICHE" in str(value).upper()
+            for value in metadata.values()
+        ):
+            return False
+        source = str(metadata.get("Quelle") or "").strip()
+        if not source or is_missing(source):
+            return False
+        # DFII10 is the 10-year TIPS real yield, never nominal US10Y.
+        # Reject it regardless of provider wording (FRED, Yahoo, or none).
+        if re.search(r"(?i)(?<![A-Z0-9])DFII10(?![A-Z0-9])", source):
+            return False
+        series_ids = re.findall(r"(?i)(?<![A-Z0-9])[A-Z]{1,8}\d+[A-Z0-9._-]*(?![A-Z0-9])", source)
+        normalized_series_ids = {item.upper() for item in series_ids}
+        if "DGS10" in normalized_series_ids and normalized_series_ids != {"DGS10"}:
+            return False
+        if re.search(r"(?i)\b(?:FRED|Federal\s+Reserve\s+Economic\s+Data)\b", source):
+            if normalized_series_ids != {"DGS10"}:
+                return False
+        return True
 
     macro_observations = []
     for source_line in str(makro_text or "").splitlines():
@@ -18518,13 +18793,25 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         except ValueError:
             continue
         if math.isfinite(source_value):
-            macro_observations.append((source_value, fields(source_line)))
+            provenance_start = re.search(
+                r"(?i)(?:^|[|;])\s*(?:Quelle|SOURCE|Abrufzeitpunkt|Abrufzeit|"
+                r"RETRIEVED_AT|Datenstand|Datenstichtag|Observation_Date|"
+                r"Einheit|UNIT|Verzögerung|Verzoegerung|DELAY_DAYS)\s*[:=]",
+                source_line,
+            )
+            provenance_fragment = (
+                source_line[provenance_start.start():] if provenance_start else ""
+            )
+            metadata = fields(provenance_fragment)
+            if _is_valid_nominal_us10y_macro_source(metadata):
+                macro_observations.append((source_value, metadata))
 
     def source_metadata_for(report_value, decimals):
         tolerance = (0.5 * (10 ** (-decimals))) + 1e-8
         matching = [
             metadata for source_value, metadata in macro_observations
             if abs(source_value - report_value) <= tolerance
+            and _is_valid_nominal_us10y_macro_source(metadata)
         ]
         # Prefer one unambiguous source record with source + observation date.
         # Duplicate compact summaries may omit the other fields; they must not
@@ -18542,18 +18829,6 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             return complete_matching[0] if len(signatures) == 1 else {}
         return matching[0] if len(matching) == 1 else {}
 
-    def set_or_fill_field(line, key, value):
-        pattern = field_patterns[key]
-        match = re.search(
-            rf"(?i)(?P<prefix>(?:^|[|;])\s*{pattern}\s*[:=]\s*)(?P<value>[^|;]+)",
-            line,
-        )
-        if match:
-            current = match.group("value").strip().rstrip(".")
-            if is_missing(current) and not is_missing(value):
-                return line[:match.start("value")] + str(value) + line[match.end("value"):]
-            return line
-        return line.rstrip() + f" | {key}: {value}"
 
     output = []
     in_fenced_block = False
@@ -18632,8 +18907,49 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             output.append(line)
             continue
 
-        source_metadata = source_metadata_for(report_value, decimals)
-        existing = fields(line)
+        # A parenthetical context interrupts attribution. Do not fill from a
+        # matching macro record or later row-tail fields after this boundary.
+        attribution_tail = line[raw_match.end():] if raw_match else ""
+        foreign_indicator_context = bool(re.search(
+            r"(?i)\b(?:anderer|fremder|ausländischer|auslaendischer|foreign|other)\s+"
+            r"(?:10Y\s+)?(?:Indikator|indicator)\b",
+            attribution_tail,
+        ))
+
+        local_candidate = _local_parenthesized_annotation(line, raw_match.end()) if raw_match else None
+        local_candidate_fields = fields(local_candidate[2]) if local_candidate else {}
+        local_annotation = (
+            local_candidate
+            if local_candidate and local_candidate_fields
+            else None
+        )
+        if local_annotation:
+            ann_open, ann_close, ann_content = local_annotation
+            existing_local = local_candidate_fields
+            tail_start = ann_close + 1
+            tail_fields = fields(line[tail_start:], allow_initial=False)
+        else:
+            existing_local = {}
+            tail_start = raw_match.end() if raw_match else len(line)
+            tail_fields = fields(line[tail_start:], allow_initial=False)
+
+        # FOREIGN_CONTEXT is a terminal attribution boundary. It invalidates
+        # fields seen before the note and forbids every later recovery path:
+        # local fields, row-tail fields, and matching macro fallback.
+        foreign_context_boundary = bool(
+            foreign_indicator_context
+            or _has_opaque_parenthetical_context(attribution_tail)
+            or "FOREIGN_CONTEXT" in existing_local
+            or "FOREIGN_CONTEXT" in tail_fields
+        )
+        source_metadata = (
+            {} if foreign_context_boundary
+            else source_metadata_for(report_value, decimals)
+        )
+        if foreign_context_boundary:
+            existing_local = {}
+            tail_fields = {}
+
         defaults = {
             "Quelle": "NICHT VERFÜGBAR",
             "Abrufzeit": "NICHT VERFÜGBAR",
@@ -18645,12 +18961,47 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             if value and not is_missing(value):
                 defaults[key] = value
 
-        for key in ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung"):
-            current_value = existing.get(key)
-            replacement_value = defaults[key] if is_missing(current_value) else current_value
-            line = set_or_fill_field(line, key, replacement_value)
+        # A value already attached to the local US10Y annotation wins. If it is
+        # missing, a row-end field may be migrated here, then matching DGS10
+        # metadata may fill the remaining gaps.
+        merged = {}
+        for key in defaults:
+            local_value = existing_local.get(key)
+            tail_value = tail_fields.get(key)
+            if not is_missing(local_value):
+                merged[key] = local_value
+            elif not is_missing(tail_value):
+                merged[key] = tail_value
+            else:
+                merged[key] = defaults[key]
 
-        if source_file and not re.search(r"(?i)(?:^|[|;])\s*Quelldatei\s*[:=]", line):
+        annotation_text = _format_local_provenance(merged)
+        if local_annotation:
+            # Preserve unknown text inside the immediate annotation verbatim;
+            # only recognized provenance fields are normalized.
+            unknown_local_text = _unknown_local_annotation_text(ann_content)
+            if unknown_local_text:
+                annotation_text += unknown_local_text
+            # Replace the existing local annotation as one balanced unit. This
+            # prevents partial field replacement from consuming its closing ')'.
+            line = line[:ann_open + 1] + annotation_text + line[ann_close:]
+            suffix_start = ann_open + 1 + len(annotation_text) + 1
+            suffix = line[suffix_start:]
+            suffix = _remove_row_end_provenance(
+                suffix, preserve_ambiguous=foreign_context_boundary
+            )
+            line = line[:suffix_start] + suffix
+        else:
+            insertion = raw_match.end() if raw_match else len(line)
+            line = line[:insertion] + " (" + annotation_text + ")" + line[insertion:]
+            suffix_start = insertion + len(annotation_text) + 3
+            suffix = line[suffix_start:]
+            suffix = _remove_row_end_provenance(
+                suffix, preserve_ambiguous=foreign_context_boundary
+            )
+            line = line[:suffix_start] + suffix
+
+        if source_file and not re.search(r"(?i)(?:^|[|;(])\s*Quelldatei\s*[:=]", line):
             line += f" | Quelldatei: {source_file}"
         output.append(line)
 
