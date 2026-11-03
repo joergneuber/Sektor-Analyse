@@ -1470,3 +1470,351 @@ def test_m07_identical_macro_live_values_pass_only_with_two_complete_role_source
     report = report.replace("Dollar/Liquidität/Volatilität:", conflict + "\nDollar/Liquidität/Volatilität:")
     errors = validate_report(report)
     assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors), errors
+
+
+def test_m07_parenthesized_us10y_provenance_is_recognized_without_duplicate_fields():
+    macro = (
+        "US 10Y Treasury: 4.0000 | Datenstand=2026-11-02 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | DELAY_DAYS=1 | UNIT=%"
+    )
+    report = (
+        "Zinsen/Renditen: US 10Y Treasury bei 4.00% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR)."
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(
+        report, macro, {}
+    )
+    # The parenthesized local annotation is completed from the matching DGS10
+    # observation; fields must not be duplicated at the end of the row.
+    assert result.count("Quelle:") == 1, result
+    assert "Quelle: FRED DGS10" in result
+    assert "Abrufzeit: 2026-11-03T07:00:00+00:00" in result
+    assert "Datenstichtag: 2026-11-02" in result
+    assert "Einheit: %" in result
+    assert "Verzögerung: 1 Kalendertage" in result
+    assert result.count("Abrufzeit:") == 1, result
+    assert result.count("Datenstichtag:") == 1, result
+    assert result.count("Einheit:") == 1, result
+    assert result.count("Verzögerung:") == 1, result
+    findings = validate_report(result)
+    assert not any("M-07: Jede abweichende 10Y-Treasury-Beobachtung" in item for item in findings), findings
+
+def test_m07_row_end_provenance_is_migrated_into_us10y_local_annotation():
+    macro = (
+        "US 10Y Treasury: 4.0000 | STATUS=REAL | SOURCE=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | "
+        "DELAY_DAYS=1 | UNIT=% | Datenstand=2026-11-02"
+    )
+    report = (
+        "Zinsen/Renditen: US 10Y Treasury bei 4.00% "
+        "| Quelle: FRED DGS10 | Abrufzeit: 2026-11-03T07:00:00+00:00 "
+        "| Datenstichtag: 2026-11-02 | Einheit: % | Verzögerung: 1 Kalendertage."
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    assert "4.00% (Quelle: FRED DGS10;" in result, result
+    assert result.count("Quelle:") == 1, result
+    assert result.count("Abrufzeit:") == 1, result
+    assert result.count("Datenstichtag:") == 1, result
+    assert result.count("Einheit:") == 1, result
+    assert result.count("Verzögerung:") == 1, result
+    assert "| Quelle:" not in result, result
+    assert result.endswith(")."), result
+    assert production._trading_radar_treasury_provenienz_ergänzen(result, macro, {}) == result
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+    assert _treasury_observation_has_complete_provenance(result), result
+
+
+def test_m07_local_placeholders_are_filled_from_row_end_without_duplicate_provenance():
+    macro = (
+        "US 10Y Treasury: 4.0000 | STATUS=REAL | SOURCE=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | "
+        "DELAY_DAYS=1 | UNIT=% | Datenstand=2026-11-02"
+    )
+    report = (
+        "Zinsen/Renditen: US 10Y Treasury bei 4.00% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR). "
+        "| Quelle: FRED DGS10 | Abrufzeit: 2026-11-03T07:00:00+00:00 "
+        "| Datenstichtag: 2026-11-02 | Einheit: % | Verzögerung: 1 Kalendertage."
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    assert result.count("Quelle:") == 1, result
+    assert result.count("Abrufzeit:") == 1, result
+    assert result.count("Datenstichtag:") == 1, result
+    assert result.count("Einheit:") == 1, result
+    assert result.count("Verzögerung:") == 1, result
+    assert "Quelle: FRED DGS10" in result, result
+    assert "NICHT VERFÜGBAR" not in result, result
+    assert "| Quelle:" not in result, result
+    assert result.endswith(")."), result
+    assert production._trading_radar_treasury_provenienz_ergänzen(result, macro, {}) == result
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+    assert _treasury_observation_has_complete_provenance(result), result
+
+def test_m07_unrelated_parenthetical_note_is_preserved_when_provenance_is_inserted():
+    report = "Zinsen/Renditen: US 10Y Treasury bei 4.00% (vorläufiger Hinweis)."
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, "", {})
+    assert "(Quelle: NICHT VERFÜGBAR;" in result, result
+    assert "(vorläufiger Hinweis)" in result, result
+    assert result.count("vorläufiger Hinweis") == 1, result
+
+
+
+def _assert_parentheses_are_stack_balanced(value):
+    depth = 0
+    for index, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            assert depth >= 0, f"Klammer-Unterlauf an Position {index}: {value!r}"
+    assert depth == 0, f"Nicht geschlossene Klammer(n): {value!r}"
+
+
+def test_m07_adversarial_foreign_nested_provenance_is_never_borrowed_or_removed():
+    macro = (
+        "US 10Y Treasury: 4.0000 | STATUS=REAL | SOURCE=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | DELAY_DAYS=1 | UNIT=% | "
+        "Datenstand=2026-11-02"
+    )
+    foreign_note = (
+        "(anderer Indikator (Quelle: Yahoo Finance ^TNX; "
+        "Abrufzeit: 2026-11-03T07:01:00+00:00; Datenstichtag: 2026-11-02; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs))"
+    )
+    report = (
+        "Zinsen/Renditen: US 10Y Treasury bei 4.00% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR) " + foreign_note + "."
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    # The foreign note is a terminal attribution boundary: matching macro
+    # provenance must not be borrowed across it.
+    assert "Quelle: FRED DGS10" not in result, result
+    assert "Quelle: Yahoo Finance ^TNX" not in result.split("US 10Y Treasury bei 4.00%", 1)[1].split(foreign_note, 1)[0], result
+    assert foreign_note in result, result
+    assert result.count("anderer Indikator") == 1, result
+    assert result.count("Quelle:") == 2, result
+    _assert_parentheses_are_stack_balanced(result)
+
+
+def test_m07_only_top_level_row_end_fields_are_migrated_and_removed():
+    macro = (
+        "US 10Y Treasury: 4.0000 | STATUS=REAL | SOURCE=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | DELAY_DAYS=1 | UNIT=% | "
+        "Datenstand=2026-11-02"
+    )
+    foreign_note = (
+        "(anderer Indikator (Quelle: Yahoo Finance ^TNX; "
+        "Abrufzeit: 2026-11-03T07:01:00+00:00; Datenstichtag: 2026-11-02; "
+        "Einheit: %; Verzögerung: Tages-Schlusskurs))"
+    )
+    report = (
+        "Zinsen/Renditen: US 10Y Treasury bei 4.00% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR) " + foreign_note +
+        " | Quelle: FRED DGS10 | Abrufzeit: 2026-11-03T07:00:00+00:00 "
+        "| Datenstichtag: 2026-11-02 | Einheit: % | Verzögerung: 1 Kalendertage."
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    assert foreign_note in result, result
+    # Top-level row-end fields after a foreign note remain verbatim but are
+    # not migrated into the local US10Y annotation.
+    assert "Quelle: FRED DGS10" in result, result
+    assert "Quelle: Yahoo Finance ^TNX" in result, result
+    assert result.count("Quelle: FRED DGS10") == 1, result
+    assert "| Quelle: FRED DGS10" in result, result
+    _assert_parentheses_are_stack_balanced(result)
+
+
+def test_m07_provenance_migration_preserves_unrelated_parenthetical_text_byte_for_byte():
+    macro = (
+        "US 10Y Treasury: 4.0000 | STATUS=REAL | SOURCE=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | DELAY_DAYS=1 | UNIT=% | "
+        "Datenstand=2026-11-02"
+    )
+    unrelated = "(Kommentar: vorläufig; andere Quelle (nicht US10Y: Yahoo Finance ^TNX))"
+    report = "Zinsen/Renditen: US 10Y Treasury bei 4.00% " + unrelated + "."
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    assert unrelated in result, result
+    assert result.index(unrelated) > result.index("US 10Y Treasury bei 4.00%"), result
+    assert result.count("Kommentar: vorläufig") == 1, result
+    _assert_parentheses_are_stack_balanced(result)
+
+
+def test_m07_local_annotation_preserves_unknown_nested_text_verbatim():
+    macro = (
+        "US 10Y Treasury: 4.0000 | STATUS=REAL | SOURCE=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations) | "
+        "RETRIEVED_AT=2026-11-03T07:00:00+00:00 | DELAY_DAYS=1 | UNIT=% | "
+        "Datenstand=2026-11-02"
+    )
+    unknown = "FREITEXT-UNBEKANNT (verschachtelte Notiz; Yahoo Finance ^TNX)"
+    report = (
+        "US 10Y Treasury bei 4.00% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR; " + unknown + ")"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro, {})
+    assert unknown in result, result
+    assert result.count(unknown) == 1, result
+    assert "Quelle: FRED DGS10" in result, result
+
+
+def test_m07_conflicting_duplicate_local_sources_are_not_silently_reduced():
+    report = (
+        "US 10Y Treasury bei 4.00% "
+        "(Quelle: FRED DGS10; Quelle: Yahoo Finance ^TNX; "
+        "Abrufzeit: 2026-11-03T07:00:00+00:00; Datenstichtag: 2026-11-02; "
+        "Einheit: %; Verzögerung: 1 Kalendertage)"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, "", {})
+    assert "MEHRFACH WIDERSPRÜCHLICHE ANGABEN" in result, result
+    assert "Quelle: FRED DGS10" not in result, result
+
+
+def test_m07_unbalanced_local_annotation_is_not_rewritten_or_used_as_provenance():
+    malformed = (
+        "US 10Y Treasury bei 4.00% "
+        "(Quelle: FRED DGS10; Abrufzeit: 2026-11-03T07:00:00+00:00; "
+        "Datenstichtag: 2026-11-02; Einheit: %; Verzögerung: 1 Kalendertage "
+        "(fremde Klammer)"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(malformed, "", {})
+    assert "Quelle: FRED DGS10" in result, result
+    assert "(fremde Klammer)" in result, result
+
+
+
+def test_m07_foreign_top_level_provenance_is_not_borrowed_or_deleted():
+    foreign = (
+        "US 10Y Treasury bei 4.00% | anderer Indikator: 10Y TIPS "
+        "| Quelle: Yahoo Finance ^TNX "
+        "| Abrufzeit: 2026-11-03T07:00:00+00:00 "
+        "| Datenstichtag: 2026-11-02 | Einheit: % | Verzögerung: 1 Kalendertage"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(foreign, "", {})
+    assert "Quelle: NICHT VERFÜGBAR" in result, result
+    assert "| anderer Indikator: 10Y TIPS" in result, result
+    assert "| Quelle: Yahoo Finance ^TNX" in result, result
+    assert "| Abrufzeit: 2026-11-03T07:00:00+00:00" in result, result
+
+
+
+def test_m05_deterministic_register_changes_override_model_no_change_claim():
+    evidence = [
+        "THESENREGISTER-VERGLEICH: PASS",
+        "VORHER-SHA256: " + "a" * 64,
+        "NACHHER-SHA256: " + "b" * 64,
+        "THESEN_NEU: TH-NEW",
+        "THESEN_AKTUALISIERT: TH-OLD",
+        "THESEN_UNVERAENDERT: TH-STABLE",
+        "THESEN_ARCHIVIERT: KEINE",
+        "THESIS_ID: TH-NEW",
+        "REGISTER-VERSION: 1",
+    ]
+    report = (
+        "2. Thesen-Update\n"
+        "Keine neue oder aktualisierte These.\n\n"
+        "3. Ereignisradar\n"
+        "Ereignisse werden separat bewertet.\n"
+    )
+    result = production._trading_radar_thesenregister_nachweis_text(report, evidence)
+    assert "Keine neue oder aktualisierte These" not in result, result
+    assert "Registeränderungen laut Vergleich: Neue: TH-NEW; Aktualisiert: TH-OLD." in result, result
+    assert "THESEN_NEU: TH-NEW" in result
+    assert "THESEN_AKTUALISIERT: TH-OLD" in result
+
+
+def test_m05_no_change_claim_remains_when_persisted_register_has_no_changes():
+    evidence = [
+        "THESENREGISTER-VERGLEICH: PASS",
+        "VORHER-SHA256: " + "a" * 64,
+        "NACHHER-SHA256: " + "a" * 64,
+        "THESEN_NEU: KEINE",
+        "THESEN_AKTUALISIERT: KEINE",
+        "THESEN_UNVERAENDERT: TH-STABLE",
+        "THESEN_ARCHIVIERT: KEINE",
+    ]
+    report = (
+        "2. Thesen-Update\n"
+        "Keine neue oder aktualisierte These.\n\n"
+        "3. Ereignisradar\n"
+        "Ereignisse werden separat bewertet.\n"
+    )
+    result = production._trading_radar_thesenregister_nachweis_text(report, evidence)
+    assert "Keine neue oder aktualisierte These" in result, result
+    assert "Registeränderungen laut Vergleich:" not in result, result
+
+
+
+def test_m05_report_gate_accepts_deterministic_change_summary_instead_of_no_change_claim():
+    import hashlib
+    import json
+    from trading_radar_report_gate import _validate_m05_m10
+
+    previous_hash = "a" * 64
+    current_hash = "b" * 64
+    comparison_payload = {
+        "previous_sha256": previous_hash,
+        "current_sha256": current_hash,
+        "schema": "trading-radar-thesis-register-comparison-v1",
+    }
+    comparison_id = hashlib.sha256(
+        json.dumps(comparison_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    evidence = [
+        "THESENREGISTER-VERGLEICH: PASS",
+        f"VORHER-SHA256: {previous_hash}",
+        f"NACHHER-SHA256: {current_hash}",
+        f"THESENREGISTER-VERGLEICH-ID: {comparison_id}",
+        "VORHER_THESEN_COUNT: 2",
+        "VORHER_AKTIVE_THESEN: 2",
+        "NACHHER_THESEN_COUNT: 3",
+        "NACHHER_AKTIVE_THESEN: 3",
+        "THESEN_NEU: TH-NEW",
+        "THESEN_AKTUALISIERT: TH-OLD",
+        "THESEN_UNVERAENDERT: TH-STABLE",
+        "THESEN_ARCHIVIERT: KEINE",
+        "VORHER-THESIS-ID: TH-OLD",
+        "VORHER-REGISTER-VERSION: 1",
+        "VORHER-THESIS-ACTIVE: YES",
+        "VORHER-THESIS-ID: TH-STABLE",
+        "VORHER-REGISTER-VERSION: 1",
+        "VORHER-THESIS-ACTIVE: YES",
+        "THESIS_ID: TH-OLD",
+        "REGISTER-VERSION: 2",
+        "THESIS_ACTIVE: YES",
+        "THESIS_ID: TH-STABLE",
+        "REGISTER-VERSION: 1",
+        "THESIS_ACTIVE: YES",
+        "THESIS_ID: TH-NEW",
+        "REGISTER-VERSION: 1",
+        "THESIS_ACTIVE: YES",
+    ]
+    report = (
+        "2. Thesen-Update\n"
+        "Status: BESTÄTIGT\n"
+        "Keine neue oder aktualisierte These.\n\n"
+        "3. Ereignisradar\n"
+        "Ereignisse werden separat bewertet.\n"
+    )
+    repaired = production._trading_radar_thesenregister_nachweis_text(report, evidence)
+    assert "Keine neue oder aktualisierte These" not in repaired
+    assert "Registeränderungen laut Vergleich: Neue: TH-NEW; Aktualisiert: TH-OLD." in repaired
+    errors = []
+    _validate_m05_m10(repaired, errors)
+    assert not any("Bericht behauptet 'keine Änderung'" in error for error in errors), errors
+    assert not any("Semantischer Thesenregistervergleich widersprüchlich" in error for error in errors), errors

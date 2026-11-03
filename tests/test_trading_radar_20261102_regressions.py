@@ -50,7 +50,7 @@ def test_name_normalizer_preserves_words_dates_markers_and_fenced_json(tmp_path)
 def test_treasury_provenance_never_mutates_json_code_fences():
     code = '```json\n{"note":"US 10Y Treasury bei 4.98%"}\n```'
     source = (
-        "US 10Y Treasury: 4.98 | SOURCE=FRED | DATA_DATE=2026-10-30 | "
+        "US 10Y Treasury: 4.98 | SOURCE=FRED DGS10 | DATA_DATE=2026-10-30 | "
         "RETRIEVED_AT=2026-11-02T04:00:00Z | UNIT=% | DELAY_DAYS=3"
     )
     report = code + "\nUS 10Y Treasury bei 4.98%\n"
