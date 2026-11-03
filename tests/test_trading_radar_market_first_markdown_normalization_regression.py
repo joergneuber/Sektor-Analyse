@@ -158,29 +158,31 @@ def test_production_prompt_uses_one_canonical_section_four_and_explicit_fields()
 
 
 
-def test_yahoo_tnx_percent_scale_is_not_divided_twice():
+def test_yahoo_tnx_is_not_fetched_or_emitted_under_fred_only_policy():
     import pandas as pd
     from trading_radar_market_first import append_live_market_snapshot
 
     symbols = [
-        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "TLT",
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
     ]
     dates = pd.date_range("2026-06-01", periods=80, freq="B")
-    expected_tnx = ((5.0, "5.00%"), (50.0, "5.00%"), (19.5, "1.95%"), (10.0, "1.00%"))
-    for raw_tnx, expected in expected_tnx:
-        columns = pd.MultiIndex.from_product([symbols, ["Close"]])
-        data = pd.DataFrame(
-            {column: [100.0 + i * 0.2 for i in range(len(dates))] for column in columns},
-            index=dates,
-        )
-        data[("^TNX", "Close")] = [raw_tnx] * len(dates)
-        report = (
-            "### 1. Trading-Radar\n"
-            "* **Hauptthese**: US-Zinsen bleiben restriktiv.\n"
-            "### 2. Thesen-Update\n"
-        )
-        result, findings = append_live_market_snapshot(report, fetcher=lambda requested, d=data: d)
-        assert findings == []
-        assert f"- US-10J-Rendite (^TNX): {expected}" in result
-        assert "- US-10J-Rendite (^TNX): 0.50%" not in result
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    data = pd.DataFrame(
+        {column: [100.0 + i * 0.2 for i in range(len(dates))] for column in columns},
+        index=dates,
+    )
+    requested = []
+    report = (
+        "### 1. Trading-Radar\n"
+        "* **Hauptthese**: US-Zinsen bleiben restriktiv.\n"
+        "### 2. Thesen-Update\n"
+    )
+    result, findings = append_live_market_snapshot(
+        report,
+        fetcher=lambda requested_symbols: (requested.extend(requested_symbols) or data),
+    )
+    assert findings == []
+    assert "^TNX" not in requested
+    assert "^TNX" not in result
+    assert "US-10J-Rendite" not in result
