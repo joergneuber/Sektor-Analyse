@@ -773,3 +773,37 @@ def test_m05_bootstrap_snapshot_is_never_misreported_as_comparison_pass():
         report = production._trading_radar_thesenregister_nachweis_text(report_fixture(), evidence)
         errors = gate.validate_report(report)
         assert any("M-05" in error for error in errors), errors
+
+
+def test_m05_repairs_false_no_change_sentence_from_verified_register_delta():
+    text = report_fixture().replace(
+        "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
+        "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.",
+    )
+    repaired, changed = gate.reconcile_thesis_update_narrative(text)
+    assert changed
+    assert "Registeränderungen laut geprüftem Vorher-/Nachher-Vergleich:" in repaired
+    assert "aktualisiert: T-1" in repaired
+    assert "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung." not in repaired
+    assert not any("M-05: Bericht behauptet 'keine Änderung'" in error for error in gate.validate_report(repaired))
+
+
+def test_m05_does_not_repair_when_comparison_digest_is_tampered():
+    text = report_fixture().replace(
+        "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
+        "Keine neue oder aktualisierte These; Thesenregister geprüft, keine Änderung.",
+    ).replace("THESENREGISTER-VERGLEICH-ID: ", "THESENREGISTER-VERGLEICH-ID: " + "0" * 64 + " #")
+    repaired, changed = gate.reconcile_thesis_update_narrative(text)
+    assert not changed
+    assert repaired == text
+
+
+def test_m07_rejects_yahoo_tnx_even_when_provenance_is_complete():
+    text = report_fixture().replace(
+        "Dollar/Liquidität/Volatilität:",
+        "US-10J-Rendite (^TNX): 4.95% | Quelle: Yahoo Finance ^TNX | "
+        "Abrufzeit: 2026-10-30T20:00:00Z | Datenstichtag: 2026-10-30 | "
+        "Einheit: % | Verzögerung: Tages-Schlusskurs.\\nDollar/Liquidität/Volatilität:",
+    )
+    errors = gate.validate_report(text)
+    assert any("US-10Y wird ausschließlich aus FRED DGS10" in error for error in errors), errors
