@@ -8,6 +8,12 @@ def test_prompt_declares_market_first_and_portfolio_last():
     assert RADAR_INSTRUCTION.index("TECHNISCHE KANDIDATEN") < RADAR_INSTRUCTION.index("PORTFOLIO-AUSWIRKUNG")
 
 
+def test_prompt_uses_fred_dgs10_as_only_us_10y_source():
+    assert "FRED-Serie DGS10" in RADAR_INSTRUCTION
+    assert "Yahoo Finance ^TNX" in RADAR_INSTRUCTION
+    assert "nicht durch Yahoo oder eine andere" in RADAR_INSTRUCTION
+
+
 def test_market_first_audit_flags_missing_rotation_and_regime():
     report = """1 · Trading-Radar
 Portfolio war schwach.
