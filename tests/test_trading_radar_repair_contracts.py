@@ -143,7 +143,7 @@ def test_section_parser_does_not_treat_numbered_list_items_as_section_headings()
     assert "Thesenregistervergleich folgt." not in body
 
 
-def test_report_gate_requires_treasury_conflict_to_be_open_or_reconciled():
+def test_report_gate_rejects_yahoo_as_second_us10y_source():
     gate = load_gate()
     spec = importlib.util.spec_from_file_location("report_fixture_mod", ROOT / "tests/test_trading_radar_report_gate.py")
     fixture_module = importlib.util.module_from_spec(spec)
@@ -168,7 +168,7 @@ def test_report_gate_requires_treasury_conflict_to_be_open_or_reconciled():
         "US 10Y Treasury (Livequelle): 4,99%.",
         "US 10Y Treasury (Livequelle): 4,99% | Quelle: Yahoo Finance ^TNX | Abrufzeit: 2026-10-30T04:35:10Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag."
     )
-    assert not any("M-07" in error for error in gate.validate_report(report))
+    assert any("US-10Y wird ausschließlich aus FRED DGS10" in error for error in gate.validate_report(report))
 
 
 def test_run_identity_hashes_workflow_configuration():
