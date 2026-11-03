@@ -1251,20 +1251,20 @@ def fred_series(series_id, limit_days=5000):
 
     cache = _cache_load()
     entry = cache.get("fred", {}).get(series_id)
+    cached_source = str((entry or {}).get("source") or "").casefold()
+    # DGS10 is deliberately FRED-only. A legacy Treasury.gov/H.15 cache entry
+    # must not be used either as a fresh hit or as a last-resort stale value.
+    dgs10_cache_is_fred = (
+        series_id != "DGS10"
+        or "stlouisfed.org" in cached_source
+        or "fred.stlouisfed.org" in cached_source
+    )
     cache_requires_refresh = False
     if entry and entry.get("payload"):
         df = _df_from_cache_entry(entry, series_id)
         if not df.empty:
             latest = df["DATE"].iloc[-1].date().isoformat()
             cache_requires_refresh = _fred_cache_requires_release_refresh(series_id, latest)
-            cached_source = str(entry.get("source") or "").casefold()
-            # DGS10 is deliberately FRED-only. A legacy Treasury.gov/H.15
-            # cache entry must not masquerade as a current FRED observation.
-            dgs10_cache_is_fred = (
-                series_id != "DGS10"
-                or "stlouisfed.org" in cached_source
-                or "fred.stlouisfed.org" in cached_source
-            )
             if _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60)) and not cache_requires_refresh and dgs10_cache_is_fred:
                 print(f"INFO: FRED-Cache-Hit fuer {series_id} (Datenstand={latest})")
                 return df
@@ -1313,7 +1313,7 @@ def fred_series(series_id, limit_days=5000):
     # Nur ein noch innerhalb der Datenaltersgrenze liegender echter Cachewert.
     if entry and entry.get("payload"):
         df = _df_from_cache_entry(entry, series_id)
-        if not df.empty and _cache_valid(df["DATE"].iloc[-1].date().isoformat(), FRED_MAX_AGE_DAYS.get(series_id,60)):
+        if not df.empty and dgs10_cache_is_fred and _cache_valid(df["DATE"].iloc[-1].date().isoformat(), FRED_MAX_AGE_DAYS.get(series_id,60)):
             return df
     return pd.DataFrame()
 def _fred_yoy(df, series_id):
