@@ -21,15 +21,19 @@ def _install_import_stubs():
             "normalize_market_first_report_structure": lambda *args, **kwargs: None,
         },
         "trading_radar_market_first": {
-            name: (lambda *args, **kwargs: None)
-            for name in (
-                "append_live_market_snapshot",
-                "downgrade_ohlcv_affected_candidates",
-                "normalize_event_section",
-                "report_explicitly_declares_no_technical_candidates",
-                "report_has_explicit_empty_candidate_groups",
-                "validate_ohlcv_audit",
-            )
+            # Match the production module's imported public constant.
+            "SECTOR_ETF_LABELS": {},
+            **{
+                name: (lambda *args, **kwargs: None)
+                for name in (
+                    "append_live_market_snapshot",
+                    "downgrade_ohlcv_affected_candidates",
+                    "normalize_event_section",
+                    "report_explicitly_declares_no_technical_candidates",
+                    "report_has_explicit_empty_candidate_groups",
+                    "validate_ohlcv_audit",
+                )
+            },
         },
         "quellenwert_vertrag": {
             name: (lambda *args, **kwargs: None)
