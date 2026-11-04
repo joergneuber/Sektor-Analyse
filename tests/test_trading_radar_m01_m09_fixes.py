@@ -38,8 +38,8 @@ def test_scenarios_use_measured_market_data_only():
         "\n2. Thesen-Update\n"
     )
     result = production._trading_radar_szenarien_ergänzen(report)
-    assert "XLV 3M +14.38%" in result
-    assert "XLE 3M +19.81%" in result
+    assert "Gesundheit-ETF (XLV) 3M +14.38%" in result
+    assert "Energie-ETF (XLE) 3M +19.81%" in result
     assert "VIX 19.42" in result
     assert "Eintrittsbedingung:" in result
     assert "Bestätigungstrigger:" in result
@@ -776,8 +776,8 @@ def test_scenarios_accept_full_iso_timestamp_for_common_matrix_cutoff():
     assert "Basisszenario: Selektives defensives Rotationsregime." in result
     assert "Basisszenario: NICHT ABLEITBAR" not in result
     assert "Eintrittsbedingung:" in result
-    assert "XLV 3M +14.38%" in result
-    assert "XLE 3M +19.81%" in result
+    assert "Gesundheit-ETF (XLV) 3M +14.38%" in result
+    assert "Energie-ETF (XLE) 3M +19.81%" in result
 
 
 def test_candidate_inventory_preserves_explicit_no_actionable_candidates_when_sources_are_empty(tmp_path):

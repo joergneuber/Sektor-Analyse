@@ -1011,7 +1011,7 @@ def test_relative_strength_matrix_uses_common_cutoff_and_identical_21_63_day_win
     assert "1M NICHT VERFÜGBAR" not in matrix
 
 
-def test_live_snapshot_marks_unresolved_treasury_difference_as_open_conflict():
+def test_live_snapshot_labels_distinct_treasury_dates_as_temporal_observations():
     import pandas as pd
     from trading_radar_market_first import append_live_market_snapshot
     symbols = [
@@ -1031,7 +1031,8 @@ def test_live_snapshot_marks_unresolved_treasury_difference_as_open_conflict():
     )
     result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
     assert findings == []
-    assert "QUELLENKONFLIKT: OFFEN" in result
+    assert "GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN" in result
+    assert "QUELLENKONFLIKT: OFFEN" not in result
     assert "Makro-Wert: 5.0000%" in result
     assert "Live-Wert: 4.9900%" in result
 

@@ -71,15 +71,15 @@ def test_thesis_trigger_450_is_not_market_observation_and_live_provenance_is_com
         "und signifikante Zinssenkungssignale\n"
     )
     result, _warnings = append_live_market_snapshot(report, fetcher=lambda _symbols: data)
-    conflicts = [line for line in result.splitlines() if "QUELLENKONFLIKT: OFFEN" in line]
-    assert len(conflicts) == 1
-    conflict = conflicts[0]
-    assert "Makro-Wert: 4.9800%" in conflict
-    assert "Makro-Wert: 4.5000%" not in conflict
+    paired = [line for line in result.splitlines() if "GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN" in line]
+    assert len(paired) == 1
+    observation = paired[0]
+    assert "Makro-Wert: 4.9800%" in observation
+    assert "Makro-Wert: 4.5000%" not in observation
     for field in ("Quelle:", "Abrufzeit:", "Datenstichtag:", "Einheit:", "Verzögerung:"):
-        assert conflict.count(field) >= 2
-    assert "Yahoo Finance (^TNX)" in conflict
-    assert "Tages-Schlusskurs" in conflict
+        assert observation.count(field) >= 2
+    assert "Yahoo Finance (^TNX)" in observation
+    assert "Tages-Schlusskurs" in observation
 
 
 def test_m07_does_not_borrow_live_provenance_for_macro_observation():
