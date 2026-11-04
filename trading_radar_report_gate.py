@@ -151,7 +151,7 @@ _US10Y_EXPLICIT_LABEL_RE = re.compile(
     r"|10Y\s*[- ]?\s*US\s*[- ]?Treasury"
     r"|10\s*[- ]?year\s+US\s+Treasury"
     r"|10\s*[- ]?year\s+US\s+yield"
-    r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury|Staatsanleihen?zins|Rendite)"
+    r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury(?:\s*[- ]?\s*Zins)?|Staatsanleihen?zins|Rendite)"
     r")"
 )
 _US10Y_RESOLVER_LABEL_RE = re.compile(
@@ -539,7 +539,7 @@ def _treasury_observation_has_complete_provenance(line: str) -> bool:
             return False
     provider_re = re.compile(
         r"(?i)\b(?:FRED|Federal\s+Reserve\s+Economic\s+Data|"
-        r"Yahoo\s+Finance|Bloomberg|Refinitiv|LSEG|U\.?S\.?\s+Treasury|"
+        r"Yahoo\s+Finance|Bloomberg|Refinitiv|LSEG|Federal\s+Reserve(?:\s+Board)?(?:\s+H\.?15)?|U\.?S\.?\s+Treasury|"
         r"US\s+Treasury|Treasury\.gov|Investing\.com|Trading\s+Economics|"
         r"MarketWatch|Stooq)\b"
     )

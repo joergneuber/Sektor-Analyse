@@ -18854,15 +18854,57 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                 except (TypeError, ValueError, OverflowError):
                     conflict_metadata = {}
                 if conflict_metadata:
-                    provenance = "; ".join(
-                        f"{key}={conflict_metadata.get(key, 'NICHT VERFÜGBAR')}"
-                        for key in ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+                    provenance_keys = ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+                    # Conflict rows are handled before the ordinary observation
+                    # path. Update the existing Makro-Provenienz group in place;
+                    # otherwise a prior all-NICHT-VERFÜGBAR annotation prevents
+                    # the value-matched FRED record from ever reaching M-07.
+                    local_annotation = _local_parenthesized_annotation(
+                        line, conflict_value.end()
                     )
-                    line = re.sub(
-                        r"(?i)\(Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar\)",
-                        f"(Makro-Provenienz: {provenance})",
-                        line,
-                    )
+                    if local_annotation:
+                        ann_open, ann_close, ann_content = local_annotation
+                        marker = re.match(
+                            r"(?is)^\s*Makro-Provenienz\s*:\s*", ann_content
+                        )
+                    else:
+                        marker = None
+                    if local_annotation and marker:
+                        existing_macro_fields = fields(ann_content[marker.end():])
+                        # Explicit, already supplied values remain untouched.
+                        # Only missing fields are filled from the independently
+                        # matched nominal DGS10 observation. Contradictions and
+                        # foreign-context markers remain visible and blocking.
+                        merged_macro_fields = {}
+                        for key in provenance_keys:
+                            existing_value = existing_macro_fields.get(key)
+                            source_value = conflict_metadata.get(key)
+                            if not is_missing(existing_value):
+                                merged_macro_fields[key] = existing_value
+                            elif not is_missing(source_value):
+                                merged_macro_fields[key] = source_value
+                            else:
+                                merged_macro_fields[key] = "NICHT VERFÜGBAR"
+                        provenance = "; ".join(
+                            f"{key}={merged_macro_fields[key]}" for key in provenance_keys
+                        )
+                        unknown_macro_text = _unknown_local_annotation_text(
+                            ann_content[marker.end():]
+                        )
+                        replacement = "Makro-Provenienz: " + provenance + unknown_macro_text
+                        line = line[:ann_open + 1] + replacement + line[ann_close:]
+                    else:
+                        # Backward compatibility for the legacy placeholder
+                        # used by earlier report versions.
+                        provenance = "; ".join(
+                            f"{key}={conflict_metadata.get(key, 'NICHT VERFÜGBAR')}"
+                            for key in provenance_keys
+                        )
+                        line = re.sub(
+                            r"(?i)\(Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar\)",
+                            f"(Makro-Provenienz: {provenance})",
+                            line,
+                        )
             output.append(line)
             continue
 
@@ -18894,7 +18936,7 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             r"|10Y\s*\)\s*[- ]?\s*Rendite"
             r"|10\s*[- ]?year(?:\s+US)?\s+Treasury"
             r"|10\s*[- ]?year(?:\s+US)?\s+yield"
-            r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury|Staatsanleihen?zins|Rendite))"
+            r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury(?:\s*[- ]?\s*Zins)?|Staatsanleihen?zins|Rendite))"
             r"\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
             r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)",
             line,
