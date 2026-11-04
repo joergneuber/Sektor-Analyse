@@ -71,6 +71,7 @@ jobs:
         # unten betrifft nur den Benchmarks-Snapshot.
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python positionen_tracker.py

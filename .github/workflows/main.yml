@@ -254,6 +254,7 @@ jobs:
       - name: Offene Positionen aktualisieren
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -272,6 +273,7 @@ jobs:
       - name: Offene Positionen + Check erstellen und in Drive aktualisieren
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: python offene_positionen_check.py
 
       # Live-Benchmark gegen iShares Core MSCI World (EUNL.DE),
