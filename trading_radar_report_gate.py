@@ -181,9 +181,14 @@ def _is_run1270_us_curve_context(line: str) -> bool:
 
 
 def _is_us10y_conflict_line(line: str) -> bool:
+    """Recognize paired US-10Y observations, including the temporal form."""
     return bool(
         isinstance(line, str)
-        and re.search(r"(?i)QUELLENKONFLIKT\s*:", line)
+        and re.search(
+            r"(?i)(?:QUELLENKONFLIKT\s*:|ZEITLICH UNTERSCHIEDLICHE BEOBACHTUNGEN|"
+            r"GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN)",
+            line,
+        )
         and re.search(r"(?i)Instrument\s*:\s*US\s*[- ]?10Y\s+Treasury", line)
     )
 
@@ -221,9 +226,13 @@ def _us10y_conflict_observation_records(line: str) -> list[tuple[str, Decimal, s
         "Einheit": r"(?:Einheit|Unit)",
         "Verzögerung": r"(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)",
     }
+    role_labels = {
+        "Makro": r"(?:Makro-Wert|FRED-Beobachtung)",
+        "Live": r"(?:Live-Wert|Yahoo-Beobachtung)",
+    }
     for role in ("Makro", "Live"):
         value_match = re.search(
-            rf"(?i)\b{role}-Wert\s*:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
+            rf"(?i)\b{role_labels[role]}\s*:\s*([+-]?\d+(?:[,.]\d+)?)\s*%",
             line,
         )
         if not value_match:
@@ -238,7 +247,7 @@ def _us10y_conflict_observation_records(line: str) -> list[tuple[str, Decimal, s
         provenance_text = ""
         after_value = line[value_match.end():]
         if role == "Makro":
-            explicit = re.search(r"(?i)Makro-Provenienz\s*:\s*", after_value)
+            explicit = re.search(r"(?i)(?:Makro-Provenienz|Provenienz)\s*:\s*", after_value)
             if explicit:
                 # The marker itself is inside the Makro annotation. Extract
                 # the complete outer balanced group first, then remove only
@@ -248,7 +257,7 @@ def _us10y_conflict_observation_records(line: str) -> list[tuple[str, Decimal, s
                 outer = _balanced_parenthetical(after_value, 0)
                 if outer:
                     provenance_text = re.sub(
-                        r"(?i)^\s*Makro-Provenienz\s*:\s*", "", outer, count=1
+                        r"(?i)^\s*(?:Makro-Provenienz|Provenienz)\s*:\s*", "", outer, count=1
                     )
                 else:
                     candidate = after_value[explicit.end():]
@@ -299,9 +308,9 @@ def extract_us10y_observations(
     if not isinstance(line, str) or not line.strip():
         return []
     if _is_us10y_conflict_line(line):
-        # Conflict rows contain two independent observations. Extract each
-        # role explicitly; never let the Live-Wert's metadata stand in for
-        # the Makro-Wert's provenance.
+        # Paired observation rows contain two independent observations.
+        # Extract each role explicitly; never let Yahoo metadata stand in for
+        # FRED provenance, even when the dates differ.
         return [value for _, value, _ in _us10y_conflict_observation_records(line)]
     label_matches = list(_US10Y_EXPLICIT_LABEL_RE.finditer(line))
     if allow_run1270_context and _is_run1270_us_curve_context(line):
@@ -938,6 +947,22 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     # intentionally cannot see them; parse only the exact marked block.
     structured_identity_valid = False
     if not (thesis_id and version and status):
+        # Readable report variant: one compact line per thesis, e.g.
+        # "- THESIS_ID | Version 3 | Status BESTÄTIGT | Konfidenz mittel".
+        compact_rows = re.findall(
+            r"(?im)^\s*-\s*([A-Za-z0-9_.:-]+)\s*\|\s*Version\s+(\d+)\s*"
+            r"\|\s*Status\s+([A-ZÄÖÜ]+)\b",
+            thesis,
+        )
+        allowed_statuses = {"NEU", "BESTÄTIGT", "WIDERLEGT", "ABGESCHWÄCHT", "ARCHIVIERT", "UNVERÄNDERT"}
+        if compact_rows and all(
+            int(row_version) >= 1 and row_status.upper() in allowed_statuses
+            for _row_id, row_version, row_status in compact_rows
+        ):
+            thesis_id = thesis_id or ", ".join(row_id for row_id, _version, _status in compact_rows)
+            version = version or ", ".join(row_version for _row_id, row_version, _status in compact_rows)
+            status = status or ", ".join(row_status for _row_id, _version, row_status in compact_rows)
+            structured_identity_valid = True
         blocks = re.findall(
             r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", thesis,
             flags=re.DOTALL,
@@ -1564,8 +1589,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             )
             for expected_value in distinct_treasury_values
         )
-        # Conflict rows require exactly one complete record for each role.
-        # Do not collapse by Decimal value: Makro=Live is still two sources.
+        # Paired rows require exactly one complete record for each role.
+        # Do not collapse by Decimal value: equal values still have two sources.
         def conflict_group_complete(role_records):
             roles = [role for role, _, _ in role_records]
             return (
@@ -1599,8 +1624,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         ambiguous_multi_value_lines = []
         for line in text.splitlines():
             if _is_us10y_conflict_line(line):
-                # Makro-Wert and Live-Wert are expected to differ; their
-                # provenance is checked independently above.
+                # The two paired observations are checked independently above.
                 continue
             values = extract_us10y_observations(
                 line, allow_run1270_context=_is_run1270_us_curve_context(line)

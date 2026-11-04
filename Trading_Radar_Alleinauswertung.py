@@ -86,7 +86,7 @@ else:
 import io
 from collections import defaultdict
 from trading_radar_neuauswertung import audit_market_first_content, normalize_market_first_report_structure
-from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, report_explicitly_declares_no_technical_candidates, report_has_explicit_empty_candidate_groups, validate_ohlcv_audit
+from trading_radar_market_first import append_live_market_snapshot, downgrade_ohlcv_affected_candidates, normalize_event_section, report_explicitly_declares_no_technical_candidates, report_has_explicit_empty_candidate_groups, validate_ohlcv_audit, SECTOR_ETF_LABELS
 from trading_radar_report_gate import (
     validate_report as validate_trading_radar_report,
     extract_us10y_observations,
@@ -1967,6 +1967,21 @@ def _offene_positionen_quellblock(csv_pfad):
 
     rows = []
     offene_quellzeilen = 0
+
+    def _position_number(raw):
+        value = str(raw or "").strip().replace("%", "").replace(" ", "")
+        if not value:
+            return None
+        if "," in value and "." in value:
+            value = value.replace(".", "").replace(",", ".") if value.rfind(",") > value.rfind(".") else value.replace(",", "")
+        else:
+            value = value.replace(",", ".")
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError):
+            return None
+
     for index, row in enumerate(source_rows, start=2):
         status = str(row.get(status_k, "")).strip().lower() if status_k else ""
         if status in {"geschlossen", "closed", "close"}:
@@ -1984,12 +1999,72 @@ def _offene_positionen_quellblock(csv_pfad):
         stop = str(row.get(stop_k, "") or "").strip() if stop_k else ""
         tp1 = str(row.get(tp1_k, "") or "").strip() if tp1_k else ""
         tp2 = str(row.get(tp2_k, "") or "").strip() if tp2_k else ""
-        parts = [f"- {name} ({ticker})", f"Einstieg: {entry}", f"Einstiegsdatum: {date}"]
+
+        # Prefer the traded instrument's own return for warrants/options.
+        # For ordinary positions use the stored position return; derive only
+        # when the corresponding entry/current pair is actually present.
+        product_type = _csv_value(row, ["Produkt_Typ", "Produkt Typ", "Produkt"]).casefold()
+        is_derivative = (
+            any(token in product_type for token in ("optionsschein", "option", "warrant", "hebelprodukt"))
+            or bool(_csv_value(row, ["OS_WKN", "OS_Einstiegskurs", "OS_Performance%", "OS_Aktueller_Kurs", "OS_Manueller_Kurs"]))
+        )
+        performance = None
+        performance_source = "Quellwert"
+        if is_derivative:
+            performance = _position_number(_csv_value(row, ["OS_Performance%", "OS Performance%", "Optionsschein_Performance% "]))
+            if performance is not None:
+                performance_source = "OS-Quellwert"
+            else:
+                os_entry = _position_number(_csv_value(row, ["OS_Einstiegskurs", "OS Einstiegskurs"]))
+                os_current = _position_number(_csv_value(row, ["OS_Aktueller_Kurs", "OS_Manueller_Kurs", "OS Aktueller Kurs"]))
+                if os_entry is not None and os_current is not None and os_entry > 0:
+                    performance = (os_current / os_entry - 1.0) * 100.0
+                    performance_source = "aus OS-Einstieg und OS-Kurs berechnet"
+        else:
+            performance = _position_number(_csv_value(row, ["Performance_Seit_Einstieg%", "Performance Seit Einstieg%", "Performance%"]))
+            if performance is None:
+                entry_value = _position_number(entry)
+                current_value = _position_number(current)
+                if entry_value is not None and current_value is not None and entry_value > 0:
+                    direction = _csv_value(row, ["Richtung", "Direction", "Side"]).casefold()
+                    if direction in {"short", "sell", "short position"}:
+                        performance = (entry_value / current_value - 1.0) * 100.0 if current_value > 0 else None
+                    elif direction in {"long", "buy", "long position"}:
+                        performance = (current_value / entry_value - 1.0) * 100.0
+                    else:
+                        performance = None
+                    if performance is not None:
+                        performance_source = "aus Einstieg, aktuellem Kurs und Richtung berechnet"
+        performance_text = (
+            f"{performance:+.2f}%" if performance is not None else "NICHT VERFÜGBAR"
+        )
+        performance_label = (
+            "Optionsschein-Performance seit Einstieg" if is_derivative
+            else "Performance seit Einstieg"
+        )
+        parts = [f"- {name} ({ticker})", f"{performance_label}: {performance_text}",
+                 f"Einstieg: {entry}", f"Einstiegsdatum: {date}"]
+        if is_derivative:
+            os_entry_display = _csv_value(row, ["OS_Einstiegskurs", "OS Einstiegskurs"])
+            os_current_display = _csv_value(row, ["OS_Aktueller_Kurs", "OS_Manueller_Kurs", "OS Aktueller Kurs"])
+            if os_entry_display:
+                parts.append(f"OS-Einstieg: {os_entry_display}")
+            if os_current_display:
+                parts.append(f"OS-Kurs: {os_current_display}")
+        if performance is not None:
+            parts.append(f"Performance-Quelle: {performance_source}")
         if current: parts.append(f"Aktueller Kurs: {current}")
         if stop: parts.append(f"Stop: {stop}")
         if tp1: parts.append(f"TP1: {tp1}")
         if tp2: parts.append(f"TP2: {tp2}")
-        rows.append(" | ".join(parts))
+        rows.append({"text": " | ".join(parts), "performance": performance, "source_index": index})
+
+    # Highest return first; positions without a defensible return stay at the end.
+    rows.sort(key=lambda item: (
+        item["performance"] is None,
+        -(item["performance"] if item["performance"] is not None else 0.0),
+        item["source_index"],
+    ))
 
     export_count = len(rows)
     print(f"OFFENE_POSITIONEN_QUELLVERGLEICH: quelle={offene_quellzeilen} | export={export_count}")
@@ -1997,7 +2072,12 @@ def _offene_positionen_quellblock(csv_pfad):
         raise RuntimeError(f"Offene Positionsquelle: Quellen-/Exportzählung abweichend: Quelle={offene_quellzeilen}, Export={export_count}.")
     if export_count == 0:
         raise RuntimeError("Keine offenen Positionen exportiert; Vollständigkeit nicht bestätigt.")
-    return f"OFFENE_POSITIONEN_QUELLANZAHL={offene_quellzeilen}\nOFFENE_POSITIONEN_ANZAHL={export_count}\n" + "\n".join(rows)
+    return (
+        f"OFFENE_POSITIONEN_QUELLANZAHL={offene_quellzeilen}\n"
+        f"OFFENE_POSITIONEN_ANZAHL={export_count}\n"
+        "SORTIERUNG=Performance seit Einstieg absteigend; nicht verfügbare Werte am Ende\n"
+        + "\n".join(item["text"] for item in rows)
+    )
 
 def _technische_zielzonen_quelle(csv_pfad):
     """Liest die technischen Check-Felder verbindlich aus der Check-Datei.
@@ -17332,6 +17412,10 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
         if not ticker:
             return
         name = first(row, name_aliases) or ticker
+        sector = first(row, ("sektor", "sector", "branche", "industry"))
+        direction = first(row, ("richtung", "direction", "side", "trade_direction"))
+        thesis_id = first(row, ("thesis_id", "linked_thesis", "linked_thesis_id", "thesis", "thesen_id", "these_id", "these"))
+        data_cutoff = first(row, ("data_cutoff", "datenstichtag", "data_date", "observation_date", "timestamp"))
         status = first(row, ("status", "status2", "setup_status", "signal_status", "scanner_status", "entscheidung")).casefold()
         reason = first(row, ("reason", "begruendung", "ablehnungsgrund", "grund", "status_grund", "risikohinweis"))
         risks = row.get("risiken")
@@ -17416,6 +17500,8 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
             "candidate_identity": (ticker, setup_identity),
             "setup_identity": setup_identity,
             "status": status or "NICHT AUSGELESEN", "reason": reason,
+            "sector": sector, "direction": direction, "thesis_id": thesis_id,
+            "data_cutoff": data_cutoff,
             "trigger": trigger, "entry": entry, "stop": stop, "tp1": tp1,
             "tp2": tp2, "crv": crv, "event_dependencies": event_dependencies, "group": group,
         })
@@ -17498,6 +17584,10 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     rank = {"JETZT TECHNISCH PRÜFEN": 5, "AUF TRIGGER WARTEN": 4,
             "EREIGNIS ABWARTEN": 3, "NICHT HANDELBAR": 2,
             "VERWERFEN / INVALIDIERT": 1}
+
+    def display_setup_id(item):
+        identity = f"{item['ticker']}|{item['setup_identity']}"
+        return _hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     dedup: dict[tuple[str, str], dict] = {}
     for item in records:
         identity = item["candidate_identity"]
@@ -17545,15 +17635,15 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     rejected_rows = [item for item in records if item["group"] == "VERWERFEN / INVALIDIERT"]
     m06_blocks = [
         "BESTÄTIGTE SETUPS: " + ("0 bestätigte Setups – Begründung: keine Quelle liefert einen ausdrücklich bestätigten Trigger zusammen mit vollständigen Handelslevels und CRV." if not confirmed_rows else "\n".join(
-            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {_hashlib.sha256(x['setup_identity'].encode('utf-8')).hexdigest()[:16]} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Quelle bestätigt Setup'} | Trigger: {x['trigger']}"
+            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {display_setup_id(x)} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Quelle bestätigt Setup'} | Trigger: {x['trigger']}"
             for x in confirmed_rows
         )),
         "WATCHLIST: " + ("0 Watchlist-Einträge – Begründung: keine Quelle liefert einen überprüfbaren Kurs-/Strukturtrigger für eine Watchlist-Freigabe." if not watch_rows else "\n".join(
-            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {_hashlib.sha256(x['setup_identity'].encode('utf-8')).hexdigest()[:16]} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Trigger wird abgewartet'} | Trigger: {x['trigger'] or x.get('event_dependencies', 'Ereignisabhängigkeit')}"
+            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {display_setup_id(x)} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Trigger wird abgewartet'} | Trigger: {x['trigger'] or x.get('event_dependencies', 'Ereignisabhängigkeit')}"
             for x in watch_rows
         )),
         "VERWORFENE KANDIDATEN: " + ("0 Kandidaten – Begründung: keine Quelle kennzeichnet einen Kandidaten ausdrücklich als verworfen." if not rejected_rows else "\n".join(
-            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {_hashlib.sha256(x['setup_identity'].encode('utf-8')).hexdigest()[:16]} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Quelle kennzeichnet den Datensatz als kein Kandidat'}"
+            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {display_setup_id(x)} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Quelle kennzeichnet den Datensatz als kein Kandidat'}"
             for x in rejected_rows
         )),
     ]
@@ -17584,8 +17674,14 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
             tp2 = item["tp2"] or "NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)"
             crv = item["crv"] or "NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)"
             rule = f"Status aus Quelle: {item['status']}; Quelle/Zeile: {item['source']} / {refs}; keine Handelsfreigabe ohne vollständige Level und CRV."
+            sector_text = item["sector"] or "NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)"
+            direction_text = item["direction"] or "NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)"
+            thesis_text = item["thesis_id"] or "NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)"
+            cutoff_text = item["data_cutoff"] or "NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)"
             rendered.append(
-                f"- Asset/Ticker: {item['name']} ({item['ticker']}) | Setup-ID: {_hashlib.sha256(item['setup_identity'].encode('utf-8')).hexdigest()[:16]} | Quelle: {item['source']} | Quellzeile: {refs}\n"
+                f"- Asset/Ticker: {item['name']} ({item['ticker']}) | Setup-ID: {display_setup_id(item)} | Quelle: {item['source']} | Quellzeile: {refs}\n"
+                f"  - Sektor: {sector_text}\n  - Richtung: {direction_text}\n"
+                f"  - Verknüpfte These: {thesis_text}\n  - Datenstichtag: {cutoff_text}\n"
                 f"  - Trigger: {trigger}\n"
                 f"  - Einstieg: {entry}\n  - Stop: {stop}\n"
                 f"  - TP1: {tp1}\n  - TP2: {tp2}\n  - CRV: {crv}\n"
@@ -17597,6 +17693,261 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     blocks.extend(m06_blocks)
     new_body = "\n\n".join(blocks) + "\n"
     return text[:match.start("body")] + new_body + text[match.end("body"):]
+
+def _trading_radar_marktrotation_zu_kandidaten(text):
+    """Connect measured sector rotation to source-backed scanner candidates.
+
+    This is a presentation/linkage layer only: it never creates a candidate,
+    changes a scanner status, or alters entry/stop/target/CRV values.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    matrix = re.search(
+        r"(?ims)^Relative-Stärke-Matrix\s*\(.*?\n(?P<body>.*?)(?=^\s*Gewinner:|^\s*Verlierer:|^\s*Divergenz:|^\s*5[.]\s*Technische Kandidaten)",
+        text,
+    )
+    if not matrix:
+        return text
+    etf_rows = {}
+    row_re = re.compile(
+        r"(?im)^\s*-\s*(?P<label>[^\r\n]+?)\s*\((?P<ticker>XL[A-Z]|XLRE)\)"
+        r"\s+1M\s+(?:[+-]?[0-9]+(?:[.,][0-9]+)?%?|NICHT VERFÜGBAR[^;]*)"
+        r";\s*3M\s+(?P<ret>[+-]?[0-9]+(?:[.,][0-9]+)?)%"
+    )
+    for match in row_re.finditer(matrix.group("body")):
+        ticker = match.group("ticker").upper()
+        try:
+            value = float(match.group("ret").replace(",", "."))
+        except ValueError:
+            continue
+        etf_rows[ticker] = {"label": match.group("label").strip(), "return": value}
+    if not etf_rows:
+        return text
+
+    sector_to_etf = {
+        "rohstoffe": "XLB", "materials": "XLB", "basic materials": "XLB", "grundstoffe": "XLB",
+        "kommunikation": "XLC", "telekommunikation": "XLC", "communication services": "XLC",
+        "energie": "XLE", "energy": "XLE",
+        "finanzen": "XLF", "financials": "XLF", "finanz": "XLF", "finanzdienstleistungen": "XLF",
+        "industrie": "XLI", "industrials": "XLI",
+        "technologie": "XLK", "information technology": "XLK", "technology": "XLK",
+        "basiskonsum": "XLP", "consumer staples": "XLP",
+        "immobilien": "XLRE", "real estate": "XLRE",
+        "versorger": "XLU", "utilities": "XLU",
+        "gesundheit": "XLV", "gesundheitswesen": "XLV", "healthcare": "XLV", "health care": "XLV",
+        "zyklischer konsum": "XLY", "consumer discretionary": "XLY",
+    }
+    section = re.search(
+        r"(?ims)^(?P<header>[ \t]*(?:#{1,6}\s*)?5[.]\s*Technische Kandidaten[^\r\n]*\r?\n)"
+        r"(?P<body>.*?)(?=^[ \t]*(?:#{1,6}\s*)?6(?:\s*[.]|\s+)|\Z)",
+        text,
+    )
+    if not section:
+        return text
+    counts = {ticker: {"valid": 0, "watch": 0, "other": 0} for ticker in etf_rows}
+    for block in re.finditer(
+        r"(?ims)^- Asset/Ticker:.*?(?=^- Asset/Ticker:|^[A-ZÄÖÜ /-]+:\s*(?:Keine Kandidaten)?$|\Z)",
+        section.group("body"),
+    ):
+        candidate = block.group(0)
+        sector_match = re.search(r"(?im)^\s*- Sektor:\s*(.+)$", candidate)
+        status_match = re.search(r"(?im)^\s*- Statusgruppe:\s*(.+)$", candidate)
+        if not sector_match:
+            continue
+        raw_sector = sector_match.group(1).split("|", 1)[0].strip()
+        sector_key = re.sub(r"[-_/]+", " ", raw_sector.casefold())
+        sector_key = re.sub(r"\s+", " ", sector_key).strip()
+        etf = sector_to_etf.get(sector_key)
+        if not etf or etf not in counts:
+            continue
+        status = status_match.group(1).strip().upper() if status_match else ""
+        bucket = "valid" if status == "JETZT TECHNISCH PRÜFEN" else (
+            "watch" if status in {"AUF TRIGGER WARTEN", "EREIGNIS ABWARTEN"} else "other"
+        )
+        counts[etf][bucket] += 1
+
+    # Enrich each source-backed candidate with the readable sector ETF label
+    # and measured 3M strength. This is descriptive only; it does not change
+    # candidate status or any trading level.
+    candidate_block_pattern = re.compile(
+        r"(?ims)^- Asset/Ticker:.*?(?=^- Asset/Ticker:|^[A-ZÄÖÜ /-]+:\s*(?:Keine Kandidaten)?$|\Z)"
+    )
+    def enrich_candidate_sector(match):
+        candidate = match.group(0)
+        sector_match = re.search(r"(?im)^\s*- Sektor:\s*(.+)$", candidate)
+        if not sector_match:
+            return candidate
+        raw_sector = sector_match.group(1).split("|", 1)[0].strip()
+        sector_key = re.sub(r"[-_/]+", " ", raw_sector.casefold())
+        sector_key = re.sub(r"\s+", " ", sector_key).strip()
+        etf = sector_to_etf.get(sector_key)
+        if not etf:
+            return candidate
+        label = SECTOR_ETF_LABELS.get(etf, "Sektor-ETF")
+        strength = etf_rows.get(etf, {}).get("return")
+        strength_text = f"{strength:+.2f}%" if strength is not None else "NICHT VERFÜGBAR"
+        replacement = (
+            f"  - Sektor: {raw_sector} | US-Sektor-ETF-Referenz: {label} ({etf}) | "
+            f"3M-Relative-Stärke: {strength_text}"
+        )
+        return candidate[:sector_match.start()] + replacement + candidate[sector_match.end():]
+
+    section_body = candidate_block_pattern.sub(enrich_candidate_sector, section.group("body"))
+    ranked = sorted(etf_rows.items(), key=lambda item: item[1]["return"], reverse=True)
+    lines = [
+        "MARKTROTATION → AKTIENPRÜFUNG",
+        "Die Sektor-Rangfolge basiert auf der gemeinsamen 3M-Relative-Stärke-Matrix. "
+        "Aktienstatus und Handelslevels stammen ausschließlich aus den strukturierten Scannerquellen.",
+        "Stärkste Sektoren (3M):",
+    ]
+    for ticker, data in ranked[:3]:
+        c = counts[ticker]
+        lines.append(
+            f"- {data['label']} ({ticker}): {data['return']:+.2f}% | "
+            f"Scanner-Abgleich: {c['valid']} prüfbare Setups, {c['watch']} Watchlist-/Trigger-Kandidaten, "
+            f"{c['other']} nicht freigegebene Kandidaten"
+        )
+        if c["valid"] == 0 and c["watch"] == 0 and c["other"] > 0:
+            lines.append(
+                "  - Kandidaten sind vorhanden, aber in den strukturierten Quellen ausschließlich "
+                "als nicht handelbar oder verworfen eingestuft; daraus wird keine Tradeidee abgeleitet."
+            )
+        elif c["valid"] == 0 and c["watch"] == 0:
+            lines.append(
+                "  - Im strukturierten Scannerregister ist diesem Sektor kein Kandidat zugeordnet; "
+                "daher wird hier keine Tradeidee abgeleitet."
+            )
+    lines.append(
+        "Konsequenz: Die Marktrotation priorisiert die technische Prüfung, ersetzt aber weder "
+        "Scannerbestätigung noch CRV1 ≥ 1 und erzeugt keine zusätzliche Handelsfreigabe."
+    )
+    body = section_body
+    body = re.sub(r"(?ims)^MARKTROTATION → AKTIENPRÜFUNG\n.*?(?=^[A-ZÄÖÜ /-]+:\s*(?:Keine Kandidaten)?$|\Z)", "", body).lstrip("\n")
+    replacement = section.group("header") + "\n".join(lines) + "\n\n" + body
+    return text[:section.start()] + replacement + text[section.end():]
+
+
+def _trading_radar_lesefassung_komprimieren(text):
+    """Remove machine-heavy appendix payloads after all validation has run."""
+    if not isinstance(text, str) or not text:
+        return text
+    thesis_pattern = re.compile(
+        r"(?is)^```TRADING_RADAR_THESEN_JSON\s*\r?\n(.*?)\r?\n```[ \t]*$",
+        re.M,
+    )
+    thesis_duplicate_lines = []
+    def _thesis_summary(match):
+        try:
+            payload = json.loads(match.group(1))
+            theses = payload.get("theses", []) if isinstance(payload, dict) else []
+            out = ["Thesenregister – kompakte Übersicht:"]
+            for thesis in theses:
+                if not isinstance(thesis, dict):
+                    continue
+                out.append(
+                    f"- {thesis.get('thesis_id', 'ID nicht verfügbar')} | Version {thesis.get('version', 'n/a')} | "
+                    f"Status {thesis.get('status', 'nicht angegeben')} | Konfidenz {thesis.get('confidence', 'n/a')}"
+                )
+                cutoff = thesis.get("data_cutoff") or payload.get("data_cutoff")
+                updated = thesis.get("updated_at")
+                if cutoff:
+                    out.append(f"  - Datenstichtag: {cutoff}")
+                if updated:
+                    out.append(f"  - Aktualisiert: {updated}")
+                for label, key in (("These", "thesis"), ("Horizont", "horizon"), ("Alternative", "alternative")):
+                    value = thesis.get(key)
+                    if value:
+                        out.append(f"  - {label}: {value}")
+                        thesis_duplicate_lines.append(f"{label}: {value}")
+                for label, key in (("Belege", "evidence"), ("Gegenbelege", "counter_evidence"),
+                                   ("Bestätigungstrigger", "confirm_triggers"), ("Invalidierungstrigger", "invalidate_triggers")):
+                    values = thesis.get(key) or []
+                    if values:
+                        joined = "; ".join(str(value) for value in values)
+                        out.append(f"  - {label}: {joined}")
+                        thesis_duplicate_lines.append(f"{label}: {joined}")
+                dependencies = thesis.get("event_dependencies") or []
+                asset_classes = thesis.get("asset_classes") or []
+                candidates = thesis.get("candidates") or []
+                candidate_names = [
+                    str(item.get("ticker") or item.get("name") or "") if isinstance(item, dict) else str(item)
+                    for item in candidates
+                ]
+                out.append("  - Ereignisabhängigkeiten: " + ("; ".join(map(str, dependencies)) if dependencies else "keine"))
+                out.append("  - Assetklassen: " + ("; ".join(map(str, asset_classes)) if asset_classes else "keine"))
+                out.append("  - Verknüpfte Kandidaten: " + ("; ".join(value for value in candidate_names if value) if any(candidate_names) else "keine"))
+            return "\n".join(out) if len(out) > 1 else "Thesenregister: keine strukturierten Thesen vorhanden."
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return match.group(0)
+    text = thesis_pattern.sub(_thesis_summary, text)
+    for duplicate_line in thesis_duplicate_lines:
+        text = re.sub(
+            r"(?im)^\s*" + re.escape(duplicate_line) + r"\s*(?:\r?\n|$)",
+            "",
+            text,
+        )
+
+    # Section 6 is the portfolio-impact summary; section 9 remains the complete
+    # performance-sorted inventory. Keep only positions with an explicit thesis
+    # violation or stop/target event in section 6, plus all aggregate risk text.
+    section6 = re.search(
+        r"(?ims)^(?P<header>[ \t]*(?:#{1,6}\s*)?6[.]\s*Portfolio & Risiko[^\r\n]*\r?\n)"
+        r"(?P<body>.*?)(?=^[ \t]*(?:#{1,6}\s*)?7[.]\s*MSCI-Vergleich|\Z)",
+        text,
+    )
+    if section6:
+        source_lines = section6.group("body").splitlines()
+        position_pattern = re.compile(
+            r"^\s*[-*•]\s+.+\([^()\r\n]+\)\s*:\s*Einstieg\s*:", re.I
+        )
+        position_lines = [line for line in source_lines if position_pattern.search(line)]
+        affected_lines = [
+            line for line in position_lines
+            if re.search(
+                r"(?i)(?:These\s+verletzt\s*:\s*Ja|STOP\s+(?:ERREICHT|VERÄNDERT)|"
+                r"TP[12]\s+ERREICHT|konkreter\s+Handlungsbedarf)",
+                line,
+            )
+        ]
+        retained_lines = [line for line in source_lines if not position_pattern.search(line)]
+        if position_lines:
+            total_match = re.search(r"(?im)^OFFENE_POSITIONEN_ANZAHL=(\d+)\s*$", text)
+            total_positions = int(total_match.group(1)) if total_match else len(position_lines)
+            compact_lines = [
+                f"Vollständige Positionsübersicht: Abschnitt 9 ({total_positions} offene Positionen, nach Performance absteigend).",
+                f"Im Risikoabschnitt hervorgehoben: {len(affected_lines)} Positionen mit expliziter Theseverletzung oder Stop-/TP-Ereignis.",
+            ]
+            if affected_lines:
+                compact_lines.append("Positionsbezogene Auswirkungen:")
+                compact_lines.extend(affected_lines)
+            else:
+                compact_lines.append(
+                    "Keine offene Position mit expliziter Theseverletzung oder Stop-/TP-Eskalation aus den vorliegenden Angaben hervorgehoben."
+                )
+            compact_body = "\n".join(compact_lines)
+            other_body = "\n".join(retained_lines).strip()
+            if other_body:
+                compact_body += "\n\n" + other_body
+            text = text[:section6.start()] + section6.group("header") + compact_body + "\n\n" + text[section6.end():]
+
+    # Keep the four complete OHLCV symbol lists: the independent post-save M-03
+    # gate verifies exact, disjoint coverage from these lines. Only the redundant
+    # exclusion inventory below is shortened for readability.
+    def _excluded_ticker_summary(match):
+        raw = match.group(0).split(":", 1)[1].strip()
+        tickers = [value.strip() for value in raw.split(",") if value.strip()]
+        return f"Bewusst ausgeschlossene Ticker: {len(tickers)} (nicht Teil des aktiven Datenuniversums).\n"
+    text = re.sub(
+        r"(?im)^Bewusst ausgeschlossene Ticker \(nicht Teil des aktiven Datenuniversums\):.*(?:\r?\n|$)",
+        _excluded_ticker_summary,
+        text,
+    )
+    text = re.sub(r"(?i)Name nicht aufgelöst\s*\(DHL\)\s*AG", "DHL Group", text)
+    text = re.sub(r"(?i)Name nicht aufgeloest\s*\(DHL\)\s*AG", "DHL Group", text)
+    text = re.sub(r"(?i)Silber\s+Name nicht aufgelöst\s*\(ETC\)", "Silber-ETC", text)
+    text = re.sub(r"(?i)Silber\s+Name nicht aufgeloest\s*\(ETC\)", "Silber-ETC", text)
+    return text
+
 
 def _trading_radar_name_ticker_normalisieren(text, eingabedateien=None):
     """Ensure narrative asset references use Name (Ticker), preserving Tab-2 keys."""
@@ -18841,7 +19192,11 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             output.append(line)
             continue
 
-        if re.search(r"(?i)QUELLENKONFLIKT\s*:", line):
+        if re.search(
+            r"(?i)(?:QUELLENKONFLIKT\s*:|ZEITLICH UNTERSCHIEDLICHE BEOBACHTUNGEN|"
+            r"GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN)",
+            line,
+        ):
             conflict_value = re.search(
                 r"(?i)Makro-Wert\s*:\s*([-+]?\d+(?:[,.]\d+)?)\s*%",
                 line,
@@ -19109,11 +19464,11 @@ def _trading_radar_szenarien_ergänzen(text):
         if denominator > 0 and 0 <= numerator <= denominator:
             breadth = (numerator, denominator)
     xlv = number(
-        r"(?i)XLV\s*\(XLV\)\s*1M\s*[+-]?[0-9]+(?:[.,][0-9]+)?%?\s*;\s*3M\s*([+-]?[0-9]+(?:[.,][0-9]+)?)%",
+        r"(?i)(?:Gesundheit-ETF|XLV)\s*\(XLV\)\s*1M\s*[+-]?[0-9]+(?:[.,][0-9]+)?%?\s*;\s*3M\s*([+-]?[0-9]+(?:[.,][0-9]+)?)%",
         rotation_body,
     )
     xle = number(
-        r"(?i)XLE\s*\(XLE\)\s*1M\s*[+-]?[0-9]+(?:[.,][0-9]+)?%?\s*;\s*3M\s*([+-]?[0-9]+(?:[.,][0-9]+)?)%",
+        r"(?i)(?:Energie-ETF|XLE)\s*\(XLE\)\s*1M\s*[+-]?[0-9]+(?:[.,][0-9]+)?%?\s*;\s*3M\s*([+-]?[0-9]+(?:[.,][0-9]+)?)%",
         rotation_body,
     )
     vix = number(
@@ -19159,29 +19514,29 @@ def _trading_radar_szenarien_ergänzen(text):
     breadth_label = f"{breadth[0]}/{breadth[1]}"
     positive = (
         "Positives Alternativszenario: Fortsetzung der beobachteten relativen Stärke "
-        "von Gesundheits- und Energiesektor. "
+        "von Gesundheit-ETF (XLV) und Energie-ETF (XLE). "
         f"Eintrittsbedingung: Marktbreite mindestens {breadth_label} und "
-        "3M-Relative-Stärke XLV und XLE jeweils über 0,00%. "
+        "3M-Relative-Stärke Gesundheit-ETF (XLV) und Energie-ETF (XLE) jeweils über 0,00%. "
         "Bestätigungstrigger: Die drei Bedingungen bleiben zum nächsten gemeinsamen "
         "Tagesdatenstichtag erfüllt. Invalidierungstrigger: Marktbreite fällt unter "
-        f"{breadth_label} oder XLV bzw. XLE fällt auf 0,00% oder darunter. "
+        f"{breadth_label} oder Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter. "
         f"Zeithorizont: {horizon}. Gemeinsamer Datenstichtag: {common_cutoff}. "
-        f"Indikatoren: Marktbreite {breadth_label}; XLV 3M {xlv:+.2f}%; "
-        f"XLE 3M {xle:+.2f}%; VIX {vix:.2f}. "
+        f"Indikatoren: Marktbreite {breadth_label}; Gesundheit-ETF (XLV) 3M {xlv:+.2f}%; "
+        f"Energie-ETF (XLE) 3M {xle:+.2f}%; VIX {vix:.2f}. "
         "Konsequenz: keine technische Handelsfreigabe; Kandidaten bleiben den separaten "
         "Scanner- und CRV-Regeln unterworfen."
     )
     negative = (
         "Negatives Alternativszenario: Abschwächung der aktuellen Sektorrotation. "
-        f"Eintrittsbedingung: Marktbreite fällt unter {breadth_label} oder XLV bzw. "
-        "XLE weist eine nicht-positive 3M-Relative-Stärke auf. "
+        f"Eintrittsbedingung: Marktbreite fällt unter {breadth_label} oder Gesundheit-ETF (XLV) bzw. "
+        "Energie-ETF (XLE) weist eine nicht-positive 3M-Relative-Stärke auf. "
         "Bestätigungstrigger: mindestens eine dieser gemessenen Bedingungen wird am "
         "nächsten gemeinsamen Tagesdatenstichtag bestätigt. "
         f"Invalidierungstrigger: Marktbreite erreicht wieder mindestens {breadth_label} "
-        f"und XLV sowie XLE weisen erneut positive 3M-Werte auf. "
+        f"und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen erneut positive 3M-Werte auf. "
         f"Zeithorizont: {horizon}. Gemeinsamer Datenstichtag: {common_cutoff}. "
-        f"Indikatoren: Marktbreite {breadth_label}; XLV 3M {xlv:+.2f}%; "
-        f"XLE 3M {xle:+.2f}%; VIX {vix:.2f}. "
+        f"Indikatoren: Marktbreite {breadth_label}; Gesundheit-ETF (XLV) 3M {xlv:+.2f}%; "
+        f"Energie-ETF (XLE) 3M {xle:+.2f}%; VIX {vix:.2f}. "
         "Konsequenz: keine neuen technischen Freigaben aus dem Szenario ableiten; "
         "bestehende Positionen nach den jeweiligen Stop-Regeln führen."
     )
@@ -19189,17 +19544,19 @@ def _trading_radar_szenarien_ergänzen(text):
     if not baseline_text or re.match(r"(?i)^NICHT ABLEITBAR\b", baseline_text):
         baseline_text = regime_text or "Fortsetzung des beobachteten Marktregimes"
     baseline_text = baseline_text.rstrip(". ")
+    baseline_text = re.sub(r"(?i)\bXLV\b(?!\s*\()", "Gesundheit-ETF (XLV)", baseline_text)
+    baseline_text = re.sub(r"(?i)\bXLE\b(?!\s*\()", "Energie-ETF (XLE)", baseline_text)
     baseline_block = (
         "Basisszenario: " + baseline_text + ". "
         f"Eintrittsbedingung: Marktbreite mindestens {breadth_label} und "
-        "XLV sowie XLE weisen positive 3M-Relative-Stärke auf. "
+        "Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
         f"Bestätigungstrigger: Marktbreite mindestens {breadth_label}; "
-        "XLV und XLE bleiben über 0,00%. "
+        "Gesundheit-ETF (XLV) und Energie-ETF (XLE) bleiben über 0,00%. "
         f"Invalidierungstrigger: Marktbreite fällt unter {breadth_label} oder "
-        "XLV bzw. XLE fällt auf 0,00% oder darunter. "
+        "Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter. "
         f"Zeithorizont: {horizon}. Gemeinsamer Datenstichtag: {common_cutoff}. "
-        f"Indikatoren: Marktbreite {breadth_label}; XLV 3M {xlv:+.2f}%; "
-        f"XLE 3M {xle:+.2f}%; VIX {vix:.2f}. "
+        f"Indikatoren: Marktbreite {breadth_label}; Gesundheit-ETF (XLV) 3M {xlv:+.2f}%; "
+        f"Energie-ETF (XLE) 3M {xle:+.2f}%; VIX {vix:.2f}. "
         "Konsequenz: Marktregime weiter beobachten; technische Einzelfreigaben "
         "bleiben den Scanner- und CRV-Regeln vorbehalten."
     )
@@ -20062,6 +20419,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         # three independent status groups.
         try:
             text = _trading_radar_kandidatenquellen_absichern(text, eingabedateien)
+            text = _trading_radar_marktrotation_zu_kandidaten(text)
         except Exception as candidate_exc:
             validation_errors.append(
                 f"Kandidateninventar nicht finalisierbar: {type(candidate_exc).__name__}: {candidate_exc}"
@@ -20097,6 +20455,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_status = "FINAL"
         if validation_errors or str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
             final_status = "NICHT_FINAL"
+        text = _trading_radar_lesefassung_komprimieren(text)
         text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text).rstrip()
         text += f"\nTRADING_RADAR_FACHLICH_FINAL={final_status}\n"
         temp_output = None

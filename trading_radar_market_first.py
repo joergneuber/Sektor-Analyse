@@ -15,6 +15,20 @@ MISSING_TOKENS = {"", "-", "—", "n/a", "na", "nicht verfügbar", "nicht verfue
                   "unbekannt", "fehlt", "unklar", "none", "null"}
 OHLCV_STATUSES = {"VALID", "MISSING", "STALE", "INVALID"}
 
+SECTOR_ETF_LABELS = {
+    "XLB": "Rohstoff-ETF",
+    "XLC": "Kommunikations-ETF",
+    "XLE": "Energie-ETF",
+    "XLF": "Finanz-ETF",
+    "XLI": "Industrie-ETF",
+    "XLK": "Technologie-ETF",
+    "XLP": "Basiskonsum-ETF",
+    "XLRE": "Immobilien-ETF",
+    "XLU": "Versorger-ETF",
+    "XLV": "Gesundheit-ETF",
+    "XLY": "Zyklischer-Konsum-ETF",
+}
+
 
 def _clean(value: Any) -> str | None:
     if value is None:
@@ -225,17 +239,30 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
     def _macro_provenance(source_line: str, value_match) -> dict[str, str]:
         annotation = _balanced_local_parenthetical(source_line[value_match.end():])
         patterns = {
-            "source": r"(?i)(?:^|[;|])\s*(?:Quelle|Source)\s*[:=]\s*([^;|)]+)",
-            "retrieved": r"(?i)(?:^|[;|])\s*(?:Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)\s*[:=]\s*([^;|)]+)",
-            "observed": r"(?i)(?:^|[;|])\s*(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date|DATA_DATE)\s*[:=]\s*([^;|)]+)",
-            "unit": r"(?i)(?:^|[;|])\s*(?:Einheit|Unit)\s*[:=]\s*([^;|)]+)",
-            "delay": r"(?i)(?:^|[;|])\s*(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*([^;|)]+)",
+            "source": r"(?i)(?:^|[;|])\s*(?:Quelle|Source)\s*[:=]\s*",
+            "retrieved": r"(?i)(?:^|[;|])\s*(?:Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)\s*[:=]\s*",
+            "observed": r"(?i)(?:^|[;|])\s*(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date|DATA_DATE)\s*[:=]\s*",
+            "unit": r"(?i)(?:^|[;|])\s*(?:Einheit|Unit)\s*[:=]\s*",
+            "delay": r"(?i)(?:^|[;|])\s*(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*",
         }
-        result = {}
-        for key, pattern in patterns.items():
+
+        def field_value(pattern):
             match = re.search(pattern, annotation)
-            result[key] = match.group(1).strip() if match else "NICHT VERFÜGBAR"
-        return result
+            if not match:
+                return "NICHT VERFÜGBAR"
+            start = match.end()
+            depth = 0
+            for index in range(start, len(annotation)):
+                char = annotation[index]
+                if char == "(":
+                    depth += 1
+                elif char == ")" and depth:
+                    depth -= 1
+                elif char in ";|" and depth == 0:
+                    return annotation[start:index].strip()
+            return annotation[start:].strip().rstrip(")").strip()
+
+        return {key: field_value(pattern) for key, pattern in patterns.items()}
 
     macro_observations = []
     treasury_value_pattern = re.compile(
@@ -291,18 +318,29 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
                 f"Datenstichtag: {tnx_observation_date}; Einheit: %; "
                 "Verzögerung: Tages-Schlusskurs"
             )
+            macro_date_match = re.search(r"\d{4}-\d{2}-\d{2}", provenance["observed"])
+            live_date_match = re.search(r"\d{4}-\d{2}-\d{2}", tnx_observation_date)
+            dates_differ = bool(
+                macro_date_match and live_date_match
+                and macro_date_match.group(0) != live_date_match.group(0)
+            )
+            observation_label = (
+                "ZEITLICH UNTERSCHIEDLICHE BEOBACHTUNGEN"
+                if dates_differ else "GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN"
+            )
             lines.append(
-                f"- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
+                f"- {observation_label} | Instrument: US-10Y Treasury | "
                 f"Makro-Wert: {macro_value:.4f}% "
                 f"(Makro-Provenienz: {macro_fields}) | "
                 f"Live-Wert: {tnx:.4f}% ({live_fields}) | "
-                "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
+                "Beide Werte bleiben mit eigenem Datenstichtag und eigener Provenienz erhalten; "
+                "sie werden nicht als gleichzeitige Messung verglichen und nicht überschrieben."
             )
 
     groups = {
         "Indizes": [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^RUT", "Russell 2000")],
         "Regionen": [("SPY", "USA"), ("VGK", "Europa"), ("EEM", "Emerging Markets"), ("EWJ", "Japan")],
-        "Sektoren": [(x, x) for x in sector_etfs],
+        "Sektoren": [(x, SECTOR_ETF_LABELS.get(x, "Sektor-ETF")) for x in sector_etfs],
         "Anlageklassen": [("GLD", "Gold"), ("SLV", "Silber"), ("USO", "Öl"),
                           ("TLT", "US-Anleihen"), ("UUP", "US-Dollar"), ("BTC-USD", "Bitcoin")],
     }
@@ -401,12 +439,16 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             r1, r3 = (last/base1-1)*100, (last/base3-1)*100
             matrix_results[sym] = (r1, r3)
             row_text.append(f"{label} ({sym}) 1M {r1:+.2f}%; 3M {r3:+.2f}%")
-        matrix_lines.append(f"{group}: " + " | ".join(row_text))
+        matrix_lines.append(f"{group}:")
+        matrix_lines.extend(f"- {row}" for row in row_text)
     if matrix_results:
         ranked = sorted(matrix_results.items(), key=lambda item: item[1][1])
+        def display_matrix_symbol(symbol):
+            label = SECTOR_ETF_LABELS.get(symbol)
+            return f"{label} ({symbol})" if label else symbol
         matrix_lines.extend([
-            "Gewinner: " + ", ".join(f"{sym} ({v[1]:+.2f}% 3M)" for sym, v in ranked[-3:]),
-            "Verlierer: " + ", ".join(f"{sym} ({v[1]:+.2f}% 3M)" for sym, v in ranked[:3]),
+            "Gewinner: " + ", ".join(f"{display_matrix_symbol(sym)} ({v[1]:+.2f}% 3M)" for sym, v in ranked[-3:]),
+            "Verlierer: " + ", ".join(f"{display_matrix_symbol(sym)} ({v[1]:+.2f}% 3M)" for sym, v in ranked[:3]),
             f"Divergenz: {max(v[1] for v in matrix_results.values())-min(v[1] for v in matrix_results.values()):.2f} Prozentpunkte (3M-Spannweite)",
         ])
     else:
