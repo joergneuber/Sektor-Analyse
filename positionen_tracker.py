@@ -7,6 +7,7 @@ import smtplib
 import socket
 import time
 import uuid
+import requests
 import numpy as np
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
@@ -33,6 +34,14 @@ DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native G
 DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
 SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 GOLD_FUTURES_TICKER = 'GC=F'  # Yahoo Finance: Gold Future (COMEX) / USD
+GOLD_SPOT_TICKER = 'XAU/USD'  # Twelve Data: Gold Spot / USD
+GOLD_SPOT_TICKER_ALIASES = {'XAU/USD', 'XAUUSD'}
+TWELVEDATA_BASE_URL = 'https://api.twelvedata.com'
+
+
+def _ist_gold_spot_ticker(ticker):
+    """Erkennt XAU/USD und die gebräuchliche Eingabevariante XAUUSD."""
+    return str(ticker or '').strip().upper() in GOLD_SPOT_TICKER_ALIASES
 ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
@@ -313,6 +322,111 @@ def normalisiere_zahlen(df):
     return df
 
 
+def _twelvedata_api_key():
+    """Liest den repository-eigenen Twelve-Data-Key, ohne ihn auszugeben."""
+    return str(os.getenv("TWELVEDATA_API_KEY", "")).strip()
+
+
+def _twelvedata_json(endpoint, params, max_attempts=4):
+    """Twelve-Data-GET mit Retry für Rate-Limits und temporäre Serverfehler."""
+    api_key = _twelvedata_api_key()
+    if not api_key:
+        raise RuntimeError("TWELVEDATA_API_KEY fehlt in den Repository-Secrets.")
+    request_params = dict(params)
+    request_params["apikey"] = api_key
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(
+                f"{TWELVEDATA_BASE_URL}/{endpoint.lstrip('/')}",
+                params=request_params,
+                timeout=60,
+                headers={"User-Agent": "Sektor-Analyse/1.0"},
+            )
+        except requests.RequestException:
+            if attempt < max_attempts:
+                time.sleep(10 * (2 ** (attempt - 1)))
+                continue
+            raise
+
+        if response.status_code == 429:
+            time.sleep(65)
+            continue
+        if response.status_code in (500, 502, 503, 504, 522) and attempt < max_attempts:
+            time.sleep(10 * (2 ** (attempt - 1)))
+            continue
+
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Twelve Data lieferte kein JSON-Objekt.")
+        expected_field = "price" if endpoint.strip("/") == "price" else "values"
+        if payload.get("status") == "error" or expected_field not in payload:
+            message = str(payload.get("message") or payload.get("status") or "unbekannter API-Fehler")
+            raise RuntimeError(f"Twelve Data API-Fehler: {message}")
+        # Wie im Gold-Mini-Projekt: erfolgreiche Calls takten, damit mehrere
+        # Abrufe desselben API-Accounts nicht unmittelbar ins Minutenlimit laufen.
+        time.sleep(8)
+        return payload
+
+    raise RuntimeError(f"Twelve Data: Rate-Limit/Serverfehler nach {max_attempts} Versuchen ({endpoint}).")
+
+
+def _hole_gold_spot_kurs():
+    """Liefert den aktuellen XAU/USD-Spotpreis; kein Futures-Fallback."""
+    payload = _twelvedata_json("price", {"symbol": GOLD_SPOT_TICKER})
+    value = pd.to_numeric(payload.get("price"), errors="coerce")
+    if pd.isna(value) or not np.isfinite(float(value)) or float(value) <= 0:
+        raise RuntimeError("Twelve Data lieferte keinen gültigen XAU/USD-Spotpreis.")
+    return float(value)
+
+
+def _hole_gold_spot_tageshistorie(tage=45):
+    """Liefert abgeschlossene XAU/USD-Tagesbars im Schema des Trendfolge-Moduls."""
+    outputsize = min(5000, max(60, int(tage) + 20))
+    payload = _twelvedata_json(
+        "time_series",
+        {
+            "symbol": GOLD_SPOT_TICKER,
+            "interval": "1day",
+            "outputsize": outputsize,
+            "order": "ASC",
+        },
+    )
+    values = payload.get("values")
+    if not isinstance(values, list) or not values:
+        raise RuntimeError("Twelve Data lieferte keine XAU/USD-Tageshistorie.")
+    hist = pd.DataFrame(values)
+    required = {"datetime", "open", "high", "low", "close"}
+    if not required.issubset(hist.columns):
+        raise RuntimeError("XAU/USD-Historie enthält nicht alle benötigten OHLC-Felder.")
+    hist = hist.rename(
+        columns={"datetime": "Date", "open": "Open", "high": "High", "low": "Low",
+                 "close": "Close", "volume": "Volume"}
+    )
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+    if hist["Date"].dt.tz is not None:
+        hist["Date"] = hist["Date"].dt.tz_localize(None)
+    hist["Date"] = hist["Date"].dt.normalize()
+    for column in ("Open", "High", "Low", "Close"):
+        hist[column] = pd.to_numeric(hist[column], errors="coerce")
+    hist = hist.dropna(subset=["Date", "High", "Low", "Close"]).copy()
+    hist = hist.sort_values("Date").drop_duplicates("Date", keep="last")
+    # Gleiche Wochenendbereinigung wie im Gold-Mini-Daily-Projekt: Twelve Data
+    # kann am Wochenende Tageszeilen mit unplausibel breiten Ranges liefern.
+    hist = hist[hist["Date"].dt.dayofweek < 5]
+    last_completed_spot_date = (
+        pd.Timestamp.now(tz="Australia/Sydney").tz_localize(None).normalize()
+        - pd.Timedelta(days=1)
+    )
+    hist = hist[hist["Date"] <= last_completed_spot_date]
+    if hist.empty:
+        raise RuntimeError("Keine abgeschlossenen XAU/USD-Tagesbars verfügbar.")
+    if "Volume" not in hist.columns:
+        hist["Volume"] = 0
+    return hist.reset_index(drop=True)
+
+
 def vervollstaendige_stammdaten(df):
     """Füllt fehlende Stammdaten (Markt, Waehrung, ggf. Name, ggf. Sektor) für
     ALLE echten Positionszeilen nach - auch für bereits aktive (Status Offen/
@@ -344,19 +458,28 @@ def vervollstaendige_stammdaten(df):
             continue
 
         ticker_upper = ticker.upper()
+        if _ist_gold_spot_ticker(ticker_upper):
+            ticker = GOLD_SPOT_TICKER
+            ticker_upper = GOLD_SPOT_TICKER
+            df.at[idx, 'Ticker'] = GOLD_SPOT_TICKER
         markt_leer = str(row['Markt']).strip() in ("", "nan")
         waehrung_leer = str(row['Waehrung']).strip() in ("", "nan")
         name_leer = str(row['Name']).strip() in ("", "nan")
         sektor_leer = str(row.get('Sektor', '')).strip() in ("", "nan")
 
         if ticker_upper == GOLD_FUTURES_TICKER:
-            # GC=F definiert eindeutig einen Gold-Future. Diese Metadaten
-            # werden deshalb auch bei einer bereits vorhandenen Position
-            # auf den aktuellen Instrumententyp synchronisiert.
+            # GC=F bleibt eindeutig ein Gold-Future.
             df.at[idx, 'Markt'] = 'FUTURES'
             df.at[idx, 'Waehrung'] = 'USD'
             df.at[idx, 'Name'] = 'Gold Future'
             df.at[idx, 'Produkt_Typ'] = 'Gold Future'
+        elif _ist_gold_spot_ticker(ticker_upper):
+            # XAU/USD ist Spotpreis, ausdrücklich kein Futures-Ersatz.
+            df.at[idx, 'Markt'] = 'SPOT'
+            df.at[idx, 'Waehrung'] = 'USD'
+            df.at[idx, 'Name'] = 'Gold Spot'
+            df.at[idx, 'Sektor'] = 'Edelmetalle / Gold (Spot)'
+            df.at[idx, 'Produkt_Typ'] = 'Gold Spot'
         else:
             if markt_leer:
                 df.at[idx, 'Markt'] = 'EU' if '.' in ticker_upper else 'US'
@@ -365,7 +488,7 @@ def vervollstaendige_stammdaten(df):
                     df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
                 else:
                     df.at[idx, 'Waehrung'] = 'USD'
-        if (name_leer or sektor_leer) and ticker_upper != GOLD_FUTURES_TICKER:
+        if (name_leer or sektor_leer) and ticker_upper != GOLD_FUTURES_TICKER and not _ist_gold_spot_ticker(ticker_upper):
             try:
                 info = yf.Ticker(ticker).info
             except Exception:
@@ -427,12 +550,23 @@ def ergaenze_neue_zeilen(df):
         # Ticker gelten als US-Titel (Alpaca). Die Waehrung wird grob aus dem
         # Suffix abgeleitet (.L = GBP-Sonderfall, sonst EUR fuer EU-Boersen).
         ticker_upper = ticker.upper()
+        if _ist_gold_spot_ticker(ticker_upper):
+            ticker = GOLD_SPOT_TICKER
+            ticker_upper = GOLD_SPOT_TICKER
+            df.at[idx, 'Ticker'] = GOLD_SPOT_TICKER
+
         if ticker_upper == GOLD_FUTURES_TICKER:
             markt = 'FUTURES'
             waehrung = 'USD'
             name = 'Gold Future'
             if str(row.get('Produkt_Typ', '')).strip() in ("", "nan"):
                 df.at[idx, 'Produkt_Typ'] = 'Gold Future'
+        elif _ist_gold_spot_ticker(ticker_upper):
+            markt = 'SPOT'
+            waehrung = 'USD'
+            name = 'Gold Spot'
+            df.at[idx, 'Sektor'] = 'Edelmetalle / Gold (Spot)'
+            df.at[idx, 'Produkt_Typ'] = 'Gold Spot'
         else:
             if '.' in ticker_upper:
                 markt = 'EU'
@@ -636,9 +770,12 @@ def lade_positionen_herunter(service, file_id, mime_type):
 def hole_aktuellen_kurs(ticker, markt):
     """Holt den letzten verfügbaren Schlusskurs - via Alpaca für US-Werte
     (suffixlose Ticker), via yfinance für europäische Titel und Gold Future
-    (GC=F), inkl. NaN-Bereinigung."""
+    (GC=F), sowie Twelve Data für Gold Spot (XAU/USD), inkl. NaN-Bereinigung."""
     try:
-        if str(ticker).upper() in {"BTC-USD", "ETH-USD"}:
+        ticker_upper = str(ticker).strip().upper()
+        if _ist_gold_spot_ticker(ticker_upper):
+            return _hole_gold_spot_kurs()
+        if ticker_upper in {"BTC-USD", "ETH-USD"}:
             crypto_ticker = str(ticker).upper().replace("-", "/")
             start_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)
             request = CryptoBarsRequest(
@@ -847,6 +984,11 @@ def _hole_tageshistorie(ticker, markt, tage=45):
         ticker = str(ticker).strip()
         markt = str(markt).strip().upper()
         ticker_upper = ticker.upper()
+
+        # Gold Spot wird ausschließlich über Twelve Data bezogen.
+        # Kein Fallback auf GC=F: Spot und Future sind unterschiedliche Instrumente.
+        if _ist_gold_spot_ticker(ticker_upper):
+            return _hole_gold_spot_tageshistorie(tage=tage)
 
         # Krypto muss über den Alpaca-Crypto-Client abgefragt werden.
         # BTC-USD/ETH-USD sind keine Stock-Symbole; der Stock-Client

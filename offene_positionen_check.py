@@ -31,6 +31,7 @@ import os
 import re
 import ast
 import time
+import requests
 from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -57,6 +58,14 @@ OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
 GOLD_FUTURES_TICKER = "GC=F"
+GOLD_SPOT_TICKER = "XAU/USD"
+GOLD_SPOT_TICKER_ALIASES = {"XAU/USD", "XAUUSD"}
+TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
+
+
+def _ist_gold_spot_ticker(ticker: str) -> bool:
+    """Erkennt XAU/USD und die gebräuchliche Eingabevariante XAUUSD."""
+    return str(ticker or "").strip().upper() in GOLD_SPOT_TICKER_ALIASES
 # Ein Widerstand kann die Fibonacci-Sperre nur dann beeinflussen, wenn er
 # maximal 10 % oberhalb des aktuellen Kurses liegt. Weiter entfernte
 # laengerfristige/historische Widerstaende bleiben eigenstaendige Referenzen
@@ -210,8 +219,86 @@ def clean_history(hist: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def _fetch_twelvedata_gold_spot_history() -> pd.DataFrame:
+    """Lädt XAU/USD-Tageshistorie von Twelve Data; ohne Futures-Fallback."""
+    api_key = str(os.getenv("TWELVEDATA_API_KEY", "")).strip()
+    if not api_key:
+        raise RuntimeError("TWELVEDATA_API_KEY fehlt in den Repository-Secrets.")
+    params = {
+        "symbol": GOLD_SPOT_TICKER,
+        "interval": "1day",
+        "outputsize": 5000,
+        "order": "ASC",
+        "apikey": api_key,
+    }
+    for attempt in range(1, 5):
+        try:
+            response = requests.get(
+                f"{TWELVEDATA_BASE_URL}/time_series",
+                params=params,
+                timeout=60,
+                headers={"User-Agent": "Sektor-Analyse/1.0"},
+            )
+        except requests.RequestException:
+            if attempt < 4:
+                time.sleep(10 * (2 ** (attempt - 1)))
+                continue
+            raise
+        if response.status_code == 429:
+            time.sleep(65)
+            continue
+        if response.status_code in (500, 502, 503, 504, 522) and attempt < 4:
+            time.sleep(10 * (2 ** (attempt - 1)))
+            continue
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Twelve Data lieferte kein JSON-Objekt.")
+        if payload.get("status") == "error" or "values" not in payload:
+            raise RuntimeError(f"Twelve Data API-Fehler: {payload.get('message') or payload.get('status')}")
+        break
+    else:
+        raise RuntimeError("Twelve Data: Rate-Limit/Serverfehler nach 4 Versuchen (time_series).")
+
+    # Wie im Gold-Mini-Daily-Projekt: kurze Pause nach erfolgreichem Call,
+    # Wochenendbars entfernen und nur vollständig abgeschlossene Tage nutzen.
+    time.sleep(8)
+    values = payload.get("values")
+    if not isinstance(values, list) or not values:
+        raise RuntimeError("Twelve Data lieferte keine XAU/USD-Tageshistorie.")
+    hist = pd.DataFrame(values)
+    required = {"datetime", "open", "high", "low", "close"}
+    if not required.issubset(hist.columns):
+        raise RuntimeError("XAU/USD-Historie enthält nicht alle benötigten OHLC-Felder.")
+    hist = hist.rename(
+        columns={"datetime": "Date", "open": "Open", "high": "High", "low": "Low",
+                 "close": "Close", "volume": "Volume"}
+    )
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+    if hist["Date"].dt.tz is not None:
+        hist["Date"] = hist["Date"].dt.tz_localize(None)
+    hist["Date"] = hist["Date"].dt.normalize()
+    for column in ("Open", "High", "Low", "Close"):
+        hist[column] = pd.to_numeric(hist[column], errors="coerce")
+    hist = hist.dropna(subset=["Date", "High", "Low", "Close"]).copy()
+    hist = hist.sort_values("Date").drop_duplicates("Date", keep="last")
+    hist = hist[hist["Date"].dt.dayofweek < 5]
+    last_completed_spot_date = (
+        pd.Timestamp.now(tz="Australia/Sydney").tz_localize(None).normalize()
+        - pd.Timedelta(days=1)
+    )
+    hist = hist[hist["Date"] <= last_completed_spot_date]
+    if hist.empty:
+        raise RuntimeError("Keine abgeschlossenen XAU/USD-Tagesbars verfügbar.")
+    if "Volume" not in hist.columns:
+        hist["Volume"] = 0
+    return clean_history(hist.set_index("Date"))
+
+
 def fetch_history(ticker: str) -> pd.DataFrame:
     try:
+        if _ist_gold_spot_ticker(ticker):
+            return _fetch_twelvedata_gold_spot_history()
         hist = yf.Ticker(ticker).history(period="max", auto_adjust=False, actions=False)
         return clean_history(hist)
     except Exception as exc:
@@ -901,6 +988,10 @@ def performance(entry: Optional[float], close: Optional[float], direction: str) 
 def make_row(row, tech: TechnicalResult) -> dict:
     ticker = str(row.get("Ticker", "")).strip()
     name = str(row.get("Name", "")).strip() or ticker
+    if _ist_gold_spot_ticker(ticker):
+        ticker = GOLD_SPOT_TICKER
+        if not str(row.get("Name", "")).strip():
+            name = "Gold Spot"
     entry = parse_number(row.get("Einstieg"))
     close = tech.close
     perf = performance(entry, close, str(row.get("Richtung", "Long")))
@@ -914,6 +1005,8 @@ def make_row(row, tech: TechnicalResult) -> dict:
         sector = "Edelmetalle / Silber"
     elif ticker.upper() == GOLD_FUTURES_TICKER:
         sector = "Edelmetalle / Gold (Future)"
+    elif _ist_gold_spot_ticker(ticker):
+        sector = "Edelmetalle / Gold (Spot)"
 
     target_zone = ""
     # Feste Zielzonen-Hierarchie:
