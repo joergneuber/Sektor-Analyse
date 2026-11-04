@@ -1248,16 +1248,36 @@ def fred_series(series_id, limit_days=5000):
     cache = _cache_load()
     entry = cache.get("fred", {}).get(series_id)
     cache_requires_refresh = False
+    provenance_requires_refresh = False
     if entry and entry.get("payload"):
         df = _df_from_cache_entry(entry, series_id)
         if not df.empty:
             latest = df["DATE"].iloc[-1].date().isoformat()
             cache_requires_refresh = _fred_cache_requires_release_refresh(series_id, latest)
-            if _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60)) and not cache_requires_refresh:
+            if series_id == "DGS10":
+                saved_at = entry.get("saved_at")
+                source = entry.get("source")
+                provenance_requires_refresh = not (
+                    isinstance(saved_at, (int, float))
+                    and math.isfinite(saved_at)
+                    and saved_at > 0
+                    and isinstance(source, str)
+                    and bool(source.strip())
+                )
+            if (
+                _cache_valid(latest, FRED_MAX_AGE_DAYS.get(series_id, 60))
+                and not cache_requires_refresh
+                and not provenance_requires_refresh
+            ):
                 print(f"INFO: FRED-Cache-Hit fuer {series_id} (Datenstand={latest})")
                 return df
             if cache_requires_refresh:
                 print(f"INFO: FRED-Cache-Refresh fuer {series_id}: Monatsdaten koennen aktualisiert sein (Cache={latest})")
+            elif provenance_requires_refresh:
+                print(
+                    f"INFO: FRED-Cache-Refresh fuer {series_id}: "
+                    "Abrufzeit/Quelle im Cache unvollstaendig"
+                )
 
     try:
         api_key = os.environ.get("FRED_API_KEY")
@@ -1336,7 +1356,29 @@ def fred_snapshot(name, series_id):
     entry = cache.get("fred", {}).get(series_id, {})
     source = entry.get("source", FRED_URL.format(series_id))
     status = entry.get("status", "REAL")
-    base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source}"
+    source_label = str(source or FRED_URL.format(series_id)).strip()
+    if series_id == "DGS10":
+        # Cache entries store the actual request URL. The URL alone does not
+        # identify the provider and nominal series to downstream validation.
+        # Add that identity without changing or mislabelling the source.
+        is_fred_source = bool(re.search(
+            r"(?i)\bFRED\b|(?:api\.)?stlouisfed\.org", source_label
+        ))
+        if is_fred_source:
+            if not (
+                re.search(r"(?i)\bFRED\b", source_label)
+                and re.search(r"(?i)(?<![A-Z0-9])DGS10(?![A-Z0-9])", source_label)
+            ):
+                source_label = f"FRED DGS10 ({source_label})"
+        elif re.search(r"(?i)treasury\.gov", source_label):
+            # A Treasury.gov fallback is not relabelled as FRED. Identify the
+            # nominal 10-year instrument and retain the exact official URL.
+            source_label = f"U.S. Treasury 10Y yield ({source_label})"
+        elif re.search(r"(?i)federalreserve\.gov", source_label):
+            # The H.15 fallback is an official Federal Reserve Board source,
+            # but not a FRED API observation. Keep that distinction explicit.
+            source_label = f"Federal Reserve Board H.15 10Y Treasury yield ({source_label})"
+    base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source_label}"
     if name == "US 10Y Treasury":
         # saved_at is written atomically with the FRED cache entry after the
         # actual source request. A missing timestamp remains unavailable;
