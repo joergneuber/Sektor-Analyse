@@ -668,7 +668,12 @@ def audit_market_first_content(report: str) -> list[str]:
             invalid = (
                 value is None
                 or (len(value.strip()) < 12 and not compact_regime)
-                or bool(unavailable.search(value or ""))
+                # Missing provenance does not erase an otherwise numeric rate.
+                # M-07 remains responsible for the strict five-field provenance gate.
+                or (
+                    bool(unavailable.search(value or ""))
+                    and label != "Zinsen/Renditen"
+                )
                 or bool(generic_only.fullmatch((value or "").strip()))
             )
             if label == "Indizes/Marktbreite" and value:

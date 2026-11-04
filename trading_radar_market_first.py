@@ -205,31 +205,97 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
         )
     lines.append("- Quelle: Yahoo Finance (Ticker in den Zeilen; Tages-Schlusskurse).")
 
-    # M-07: when the narrative contains a different 10Y Treasury value, never
-    # silently overwrite it. Emit a concrete open conflict with both values
-    # and provenance limits; the report gate will block FINAL until reconciled.
+    # M-07: only the canonical Zinsen/Renditen observation is a market source.
+    # Thesis triggers, invalidation levels and other narrative percentages are
+    # not observations and must never create a Treasury source conflict.
+    def _balanced_local_parenthetical(value: str) -> str:
+        value = value.lstrip()
+        if not value.startswith("("):
+            return ""
+        depth = 0
+        for index, char in enumerate(value):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return value[1:index]
+        return ""
+
+    def _macro_provenance(source_line: str, value_match) -> dict[str, str]:
+        annotation = _balanced_local_parenthetical(source_line[value_match.end():])
+        patterns = {
+            "source": r"(?i)(?:^|[;|])\s*(?:Quelle|Source)\s*[:=]\s*([^;|)]+)",
+            "retrieved": r"(?i)(?:^|[;|])\s*(?:Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?)\s*[:=]\s*([^;|)]+)",
+            "observed": r"(?i)(?:^|[;|])\s*(?:Datenstand|Datenstichtag|Beobachtungsdatum|Observation_Date|DATA_DATE)\s*[:=]\s*([^;|)]+)",
+            "unit": r"(?i)(?:^|[;|])\s*(?:Einheit|Unit)\s*[:=]\s*([^;|)]+)",
+            "delay": r"(?i)(?:^|[;|])\s*(?:Verzögerung|Verzoegerung|Delay(?:_Days)?)\s*[:=]\s*([^;|)]+)",
+        }
+        result = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, annotation)
+            result[key] = match.group(1).strip() if match else "NICHT VERFÜGBAR"
+        return result
+
     macro_observations = []
+    treasury_value_pattern = re.compile(
+        r"(?i)(?:US\s*[- ]?\s*10Y(?:\s*[- ]?Treasury)?"
+        r"|10Y\s*[- ]?US\s*[- ]?Treasury"
+        r"|10\s*[- ]?year\s+US\s+Treasury"
+        r"|10\s*[- ]?year\s+US\s+yield"
+        r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?(?:Treasury|Rendite))"
+        r"[^\r\n]{0,100}?(\d+(?:[,.]\d+)?)\s*%"
+    )
     for source_line in report_text.splitlines():
-        if "Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose)" in source_line:
-            continue
-        match = re.search(
-            r"(?i)(?:10Y|10J|10[- ]?year|10-jährige[rn]?)[^\r\n]{0,100}?(?:US[- ]?)?Treasury[^\r\n]{0,60}?(\d+(?:[,.]\d+)?)\s*%",
+        canonical_rate_line = bool(re.match(
+            r"(?i)^\s*(?:[-*•]\s*)?(?:\*\*)?Zinsen/Renditen(?:\*\*)?\s*:",
             source_line,
-        )
-        if match:
+        ))
+        # Also retain an explicitly labelled standalone Treasury observation
+        # used by older report layouts; generic prose and thesis triggers remain
+        # excluded because they do not begin with an observation label.
+        legacy_explicit_observation = bool(re.match(
+            r"(?i)^\s*(?:[-*•]\s*)?(?:10[- ]?jährige[rn]?\s+US[- ]?Treasury(?:[- ]?Rendite)?"
+            r"|US[- ]?10Y(?:[- ]?Treasury)?(?:[- ]?Rendite)?"
+            r"|10Y[- ]?US[- ]?Treasury)\s*[:=]",
+            source_line,
+        ))
+        if not (canonical_rate_line or legacy_explicit_observation):
+            continue
+        for match in treasury_value_pattern.finditer(source_line):
             try:
-                macro_observations.append((float(match.group(1).replace(",", ".")), source_line.strip()))
+                observed_value = float(match.group(1).replace(",", "."))
             except ValueError:
-                pass
+                continue
+            macro_observations.append((observed_value, _macro_provenance(source_line, match)))
+
     if tnx is not None:
-        distinct_macro = sorted({round(value, 6) for value, _ in macro_observations})
-        differing = [value for value in distinct_macro if abs(value - tnx) >= 0.001]
-        if differing:
-            macro_value = differing[0]
+        # Keep every distinct value/provenance pair; conflicting metadata must
+        # remain visible so M-07 can reject ambiguity instead of hiding it.
+        distinct_records = {}
+        for value, provenance in macro_observations:
+            key = (round(value, 6), tuple(provenance.items()))
+            distinct_records[key] = (value, provenance)
+        for macro_value, provenance in sorted(distinct_records.values(), key=lambda item: item[0]):
+            if abs(macro_value - tnx) < 0.001:
+                continue
+            macro_fields = (
+                f"Quelle: {provenance['source']}; "
+                f"Abrufzeit: {provenance['retrieved']}; "
+                f"Datenstichtag: {provenance['observed']}; "
+                f"Einheit: {provenance['unit']}; "
+                f"Verzögerung: {provenance['delay']}"
+            )
+            live_fields = (
+                f"Quelle: Yahoo Finance (^TNX); Abrufzeit: {now}; "
+                f"Datenstichtag: {tnx_observation_date}; Einheit: %; "
+                "Verzögerung: Tages-Schlusskurs"
+            )
             lines.append(
                 f"- QUELLENKONFLIKT: OFFEN | Instrument: US-10Y Treasury | "
-                f"Makro-Wert: {macro_value:.4f}% (Quellzeile vorhanden; Quelle/Zeitstempel nicht eindeutig zuordenbar) | "
-                f"Live-Wert: {tnx:.4f}% (Quelle: Yahoo Finance ^TNX; Abruf: {now}) | "
+                f"Makro-Wert: {macro_value:.4f}% "
+                f"(Makro-Provenienz: {macro_fields}) | "
+                f"Live-Wert: {tnx:.4f}% ({live_fields}) | "
                 "Abgleich: nicht aufgelöst; keine der Beobachtungen wird überschrieben."
             )
 
