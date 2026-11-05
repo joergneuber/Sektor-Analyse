@@ -1813,13 +1813,21 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             )
             confirmed_end = (confirmed_heading.end() + next_heading.start()) if next_heading else len(candidate_section)
             confirmed_body = candidate_section[confirmed_heading.end():confirmed_end]
-            if not re.search(r"(?i)keine\s+bestätigten\s+setups", confirmed_body):
-                summary_starts = [
-                    match.start() for match in re.finditer(
-                        r"(?im)^\s*(?:[-*•]\s*)?(?:Name|Asset/Ticker|Ticker)\s*:",
-                        confirmed_body,
-                    )
-                ]
+            explicit_no_confirmed_setups = bool(re.search(
+                r"(?i)(?:keine\s+bestätigten\s+setups|0\s+bestätigte\s+setups)\b",
+                confirmed_body,
+            ))
+            summary_starts = [
+                match.start() for match in re.finditer(
+                    r"(?im)^\s*(?:[-*•]\s*)?(?:Name|Asset/Ticker|Ticker)\s*:",
+                    confirmed_body,
+                )
+            ]
+            if explicit_no_confirmed_setups and summary_starts:
+                errors.append(
+                    "M-06: BESTÄTIGTE SETUPS meldet null Setups, enthält aber zugleich Setup-Datensätze."
+                )
+            if not explicit_no_confirmed_setups:
                 summary_records = [
                     confirmed_body[start:(summary_starts[index + 1] if index + 1 < len(summary_starts) else len(confirmed_body))].strip()
                     for index, start in enumerate(summary_starts)
