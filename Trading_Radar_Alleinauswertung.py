@@ -17118,25 +17118,52 @@ def _trading_radar_berichtsfelder_normalisieren(text):
         )
         if not no_events:
             field_only = re.compile(
-                r"(?i)^\s*(?:[-•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-                r"(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+                r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
+                r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
                 r"Letzter Wert|Vorwert|Konsens|Istwert|"
                 r"Betroffene These/Assetklasse/konkrete offene Positionen|"
                 r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
-                r"Reaktionskanäle|Was die These bestätigen/widerlegen würde|"
+                r"Reaktionskanäle|Wirkung|Quelle|Source|Was die These bestätigen/widerlegen würde|"
                 r"Bestaetigung/Widerlegung|Bestätigung/Widerlegung|Quellenprüfung|Quellenpruefung)"
                 r"(?:\*\*)?\s*[:=](?:\*\*)?"
             )
             bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
             named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
+
+            def fomc_event_kind(value):
+                """Classify FOMC event type; unknown types must remain separate."""
+                if not re.search(r"(?i)\bFOMC\b", value):
+                    return None
+                if re.search(r"(?i)\b(?:minutes|meeting\s+minutes|protokoll(?:s)?|sitzungsprotokoll)\b", value):
+                    return "minutes"
+                # Decision takes precedence because the decision record may also mention its press conference.
+                if re.search(r"(?i)\b(?:zinsentscheid(?:ung)?|rate\s+decision|target\s+range|fed\s+funds\s+rate|statement|geldpolitische\s+entscheidung)\b", value):
+                    return "decision"
+                if re.search(r"(?i)\b(?:press\s+conference|pressekonferenz)\b", value):
+                    return "press_conference"
+                return None
+
             lines = body.splitlines()
             records = []
             current = []
             started = False
             for line in lines:
                 match = bullet.match(line)
+                same_fomc_event = False
+                if match and current:
+                    current_text = "\n".join(current)
+                    current_date = re.search(r"\b20\d{2}-\d{2}-\d{2}\b", current_text)
+                    next_date = re.search(r"\b20\d{2}-\d{2}-\d{2}\b", match.group(1))
+                    current_kind = fomc_event_kind(current_text)
+                    next_kind = fomc_event_kind(match.group(1))
+                    same_fomc_event = bool(
+                        current_date and next_date
+                        and current_date.group(0) == next_date.group(0)
+                        and current_kind is not None
+                        and current_kind == next_kind
+                    )
                 starts_record = (
-                    (bool(match) and not field_only.match(line))
+                    (bool(match) and not field_only.match(line) and not same_fomc_event)
                     or (bool(named_event.match(line)) and not field_only.match(line))
                 )
                 if starts_record:
@@ -17175,7 +17202,7 @@ def _trading_radar_berichtsfelder_normalisieren(text):
             def field_pattern(labels):
                 label = r"(?:" + "|".join(labels) + r")"
                 return re.compile(
-                    rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-•]\s+|\d+[.)]\s+)?"
+                    rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-*•]\s+|\d+[.)]\s+)?"
                     rf"(?:\*\*)?{label}(?:\*\*)?\s*[:=](?:\*\*)?\s*([^|;\r\n]+)"
                 )
 

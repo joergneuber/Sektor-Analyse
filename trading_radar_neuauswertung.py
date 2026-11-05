@@ -202,6 +202,74 @@ def _thesis_json_fences(report: str) -> list[tuple[re.Match, str, str]]:
     return found
 
 
+# Explicit compatibility mapping for the known Run-1280 legacy ID. This is
+# a technical compatibility decision, not an independently proven semantic
+# identity: the register also contains the thematically related archived thesis
+# ``makro_zinsregime_2026``. Keep the mapping outside format-specific recovery
+# paths so every accepted JSON representation receives the same normalization.
+_THESIS_ID_MIGRATIONS = {
+    "MARKET_REGIME_2026_Q4": "MARKTREGIME_2026_11",
+}
+
+
+def _canonical_thesis_id(value: Any) -> str:
+    """Unwrap a resolver annotation and apply an explicit legacy-ID migration."""
+    raw = str(value or "").strip()
+    wrapped = re.fullmatch(
+        r"(?i)Name nicht aufgelöst\s*\(([A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,})\)",
+        raw,
+    ) or re.fullmatch(
+        r"(?i)Name nicht aufgeloest\s*\(([A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,})\)",
+        raw,
+    )
+    if wrapped:
+        raw = wrapped.group(1)
+    return _THESIS_ID_MIGRATIONS.get(raw, raw)
+
+
+def _migrate_thesis_payload_ids(payload: Any) -> bool:
+    """Normalize IDs in a parsed thesis payload, independent of its source format."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("theses"), list):
+        return False
+    changed = False
+    for item in payload["theses"]:
+        if not isinstance(item, dict):
+            continue
+        old_value = item.get("thesis_id")
+        if not isinstance(old_value, str):
+            continue
+        canonical = _canonical_thesis_id(old_value)
+        if canonical != old_value:
+            item["thesis_id"] = canonical
+            changed = True
+    return changed
+
+
+def _migrate_thesis_id_references(report: str) -> str:
+    """Apply the same explicit ID mapping only inside the readable thesis section."""
+    section2 = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+        report,
+    )
+    section3 = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+        report[section2.end():] if section2 else "",
+    )
+    if not section2 or not section3:
+        return report
+    start = section2.end()
+    end = start + section3.start()
+    body = report[start:end]
+    for old_id, new_id in _THESIS_ID_MIGRATIONS.items():
+        body = re.sub(
+            rf"(?i)Name nicht aufgelöst\s*\(\s*{re.escape(old_id)}\s*\)",
+            new_id,
+            body,
+        )
+        body = re.sub(rf"(?<![A-Z0-9_]){re.escape(old_id)}(?![A-Z0-9_])", new_id, body)
+    return report[:start] + body + report[end:]
+
+
 def extract_thesis_json(report: str) -> dict[str, Any]:
     """Extract exactly one canonical or supported legacy thesis JSON fence."""
     matches = _thesis_json_fences(report)
@@ -240,8 +308,30 @@ def validate_thesis_ids_match_report(report: str, payload: Any | None = None) ->
     if not section2:
         return ["Thesen-ID-Abgleich: lesbarer Abschnitt 2 fehlt"]
     section2_text = section2.group(1)
-    # IDs in the machine-readable fence are not readable-section IDs.
+    # Machine-readable JSON IDs are never readable-section IDs, regardless of
+    # representation (canonical fence, generic JSON fence, or naked marker +
+    # raw object). For naked JSON, decode exactly one object after the marker
+    # and remove only that object; readable thesis fields before/after it remain
+    # available for the one-to-one identity comparison.
     readable_text = re.sub(r"(?ms)^```.*?^```[ \t]*$", "", section2_text)
+    naked_marker = re.search(
+        r"(?im)^[ \t]*TRADING_RADAR_THESEN_JSON[ \t]*\r?$",
+        readable_text,
+    )
+    if naked_marker:
+        json_start = naked_marker.end()
+        while json_start < len(readable_text) and readable_text[json_start] in " \t\r\n":
+            json_start += 1
+        try:
+            _, json_length = json.JSONDecoder().raw_decode(readable_text[json_start:])
+        except (TypeError, ValueError):
+            json_length = 0
+        if json_length:
+            json_end = json_start + json_length
+            readable_text = readable_text[:naked_marker.start()] + readable_text[json_end:]
+        else:
+            # Keep malformed payload text visible to the fail-closed parser.
+            readable_text = readable_text[:naked_marker.start()] + readable_text[naked_marker.end():]
     readable_text = re.sub(r"(?i)TRADING_RADAR_THESEN_JSON", "", readable_text)
 
     # Capture IDs only from lines that actually represent a readable thesis
@@ -1047,12 +1137,78 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
             return source, False
         return source[:section2_match.end()] + cleaned + source[body_end:], True
 
-    # Recover a single generic JSON fence in section 2 only when its complete
-    # schema is valid or the sole missing field (alternative) can be copied from
-    # the explicitly printed positive/negative scenarios in section 1. This
-    # handles older Gemini replies that emitted ```json instead of the required
-    # machine-readable fence without accepting arbitrary or incomplete JSON.
+    # Gemini occasionally emits the marker and a valid JSON object as plain
+    # text instead of a fenced code block. Recover only one marker in section 2,
+    # parse exactly one complete object, validate the full register schema, and
+    # then promote it to the canonical fence. Never guess at malformed/truncated
+    # JSON or repair arbitrary thesis IDs.
     recovered_unmarked = False
+    if not existing_blocks:
+        section2_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
+            text,
+        )
+        section3_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$",
+            text,
+        )
+        if section2_match and section3_match and section2_match.start() < section3_match.start():
+            body_start, body_end = section2_match.end(), section3_match.start()
+            body = text[body_start:body_end]
+            markers = list(re.finditer(
+                r"(?im)^[ \t]*TRADING_RADAR_THESEN_JSON[ \t]*$",
+                body,
+            ))
+            if len(markers) == 1:
+                marker = markers[0]
+                json_start = marker.end()
+                while json_start < len(body) and body[json_start] in " \t\r\n":
+                    json_start += 1
+                try:
+                    naked_payload, consumed = json.JSONDecoder().raw_decode(body[json_start:])
+                except (TypeError, ValueError):
+                    naked_payload, consumed = None, 0
+                if isinstance(naked_payload, dict) and consumed > 0:
+                    # Normalize resolver wrappers and legacy IDs before any
+                    # report/JSON identity comparison. This runs for naked JSON
+                    # as well as already-fenced payloads below.
+                    migrated_ids = _migrate_thesis_payload_ids(naked_payload)
+                    validation_text = (
+                        _migrate_thesis_id_references(text) if migrated_ids else text
+                    )
+                    trailing = body[json_start + consumed:]
+                    # Allow the production register-evidence lines that follow
+                    # the payload, but reject any second JSON object (including
+                    # an adjacent object on the same line), marker, or fence.
+                    stripped_tail = trailing.lstrip()
+                    has_second_object = stripped_tail.startswith("{") or any(
+                        line.lstrip().startswith("{") for line in trailing.splitlines()
+                    )
+                    has_second_marker = bool(re.search(
+                        r"(?im)^[ \t]*(?:TRADING_RADAR_THESEN_JSON|```)[ \t]*$",
+                        trailing,
+                    ))
+                    ambiguous_tail = has_second_object or has_second_marker
+                    if (
+                        not ambiguous_tail
+                        and not validate_thesis_register(naked_payload)
+                        and not validate_thesis_ids_match_report(validation_text, naked_payload)
+                    ):
+                        replacement = (
+                            "```TRADING_RADAR_THESEN_JSON\n"
+                            + json.dumps(naked_payload, ensure_ascii=False, indent=2)
+                            + "\n```"
+                        )
+                        body = body[:marker.start()] + replacement + trailing
+                        text = text[:body_start] + body + text[body_end:]
+                        if migrated_ids:
+                            text = _migrate_thesis_id_references(text)
+                        recovered_unmarked = True
+                        existing_blocks = [
+                            item[0] for item in _thesis_json_fences(text)
+                            if item[2] == "canonical"
+                        ]
+
     if not existing_blocks:
         section2_match = re.search(
             r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
@@ -1089,6 +1245,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                     isinstance(item, dict) for item in generic_theses
                 ):
                     return text, False
+                migrated_ids = _migrate_thesis_payload_ids(generic_payload)
                 if isinstance(generic_theses, list) and all(
                     isinstance(item, dict) for item in generic_theses
                 ):
@@ -1110,7 +1267,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                             thesis_markers[marker_index + 1].start()
                             if marker_index + 1 < len(thesis_markers) else len(body)
                         )
-                        prose_by_id[marker.group(1).strip()] = body[marker.end():block_end]
+                        prose_by_id[_canonical_thesis_id(marker.group(1))] = body[marker.end():block_end]
 
                     recovered = True
                     for thesis_item in generic_theses:
@@ -1139,7 +1296,10 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
 
                     if not recovered or validate_thesis_register(generic_payload):
                         return text, False
-                    if validate_thesis_ids_match_report(text, generic_payload):
+                    validation_text = (
+                        _migrate_thesis_id_references(text) if migrated_ids else text
+                    )
+                    if validate_thesis_ids_match_report(validation_text, generic_payload):
                         return text, False
                     replacement = (
                         "```TRADING_RADAR_THESEN_JSON\n"
@@ -1149,6 +1309,8 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                     block = generic_blocks[0]
                     body = body[:block.start()] + replacement + body[block.end():]
                     text = text[:body_start] + body + text[body_end:]
+                    if migrated_ids:
+                        text = _migrate_thesis_id_references(text)
                     recovered_unmarked = True
                     existing_blocks = [item[0] for item in _thesis_json_fences(text)
                                        if item[2] == "canonical"]
@@ -1165,6 +1327,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         theses = existing_payload.get("theses") if isinstance(existing_payload, dict) else None
         if not isinstance(theses, list) or any(not isinstance(item, dict) for item in theses):
             return text, False
+        migrated_ids = _migrate_thesis_payload_ids(existing_payload)
 
         # The readable thesis section is the source for a missing alternative.
         # Match by thesis_id; never copy one thesis' alternative to another.
@@ -1175,9 +1338,9 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         prose_by_id = {}
         for marker_index, marker in enumerate(thesis_markers):
             block_end = thesis_markers[marker_index + 1].start() if marker_index + 1 < len(thesis_markers) else len(thesis_section)
-            prose_by_id[marker.group(1).strip()] = thesis_section[marker.end():block_end]
+            prose_by_id[_canonical_thesis_id(marker.group(1))] = thesis_section[marker.end():block_end]
 
-        changed = selected_fence[2] != "canonical"
+        changed = selected_fence[2] != "canonical" or migrated_ids
         for thesis_item in theses:
             raw_status = thesis_item.get("status")
             canonical_status = canonicalize_thesis_status(raw_status)
@@ -1241,6 +1404,8 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                 text = text[:body_start] + normalized_body + text[body_end:]
                 changed = True
 
+        if migrated_ids:
+            text = _migrate_thesis_id_references(text)
         cleaned_text, cleaned = remove_unmarked_json_drafts(text)
         try:
             id_payload = extract_thesis_json(cleaned_text)

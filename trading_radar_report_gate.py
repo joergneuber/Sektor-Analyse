@@ -1199,17 +1199,51 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
-            r"Reaktionskanäle|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+            r"Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
             r"Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|"
             r"Betroffene These/Assetklasse/konkrete offene Positionen|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?)(?:\*\*)?\s*[:=](?:\*\*)?"
         )
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
+
+        def fomc_event_kind(value):
+            """Return a conservative FOMC event identity; unknown kinds never merge."""
+            if not re.search(r"(?i)\bFOMC\b", value):
+                return None
+            if re.search(
+                r"(?i)\b(?:minutes|meeting\s+minutes|protokoll(?:s)?|sitzungsprotokoll)\b",
+                value,
+            ):
+                return "minutes"
+            # A decision record may also mention its associated press conference.
+            if re.search(
+                r"(?i)\b(?:zinsentscheid(?:ung)?|rate\s+decision|target\s+range|"
+                r"fed\s+funds\s+rate|statement|geldpolitische\s+entscheidung)\b",
+                value,
+            ):
+                return "decision"
+            if re.search(r"(?i)\b(?:press\s+conference|pressekonferenz)\b", value):
+                return "press_conference"
+            return None
+
         for line in section_body.splitlines():
             match = bullet.match(line)
+            same_fomc_event = False
+            if match and current:
+                current_text = "\n".join(current)
+                current_date = re.search(r"\b20\d{2}-\d{2}-\d{2}\b", current_text)
+                summary_date = re.search(r"\b20\d{2}-\d{2}-\d{2}\b", match.group(1))
+                current_kind = fomc_event_kind(current_text)
+                summary_kind = fomc_event_kind(match.group(1))
+                same_fomc_event = bool(
+                    current_date and summary_date
+                    and current_date.group(0) == summary_date.group(0)
+                    and current_kind is not None
+                    and current_kind == summary_kind
+                )
             starts_record = (
-                (bool(match) and not field_only.match(line))
+                ((bool(match) and not field_only.match(line)) and not same_fomc_event)
                 or (bool(named_event.match(line)) and not field_only.match(line))
             )
             if starts_record and current:
@@ -1272,13 +1306,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     def split_candidate_records(section_body: str) -> list[str]:
         records: list[str] = []
         current: list[str] = []
-        bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
-        field_start = re.compile(
+        # Candidate boundaries are identity-based. Nested metadata bullets
+        # (Sektor, Richtung, Datenstichtag, Quelle, ...) belong to the current
+        # candidate and must never split it into synthetic records.
+        identity_start = re.compile(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-            r"(?:Asset/Ticker|Ticker|Asset|Trigger|Bestätigung|Bestaetigung|Einstieg|Entry|"
-            r"Stop|Stop-Loss|TP1|Ziel\s*1|TP2|Ziel\s*2|CRV|Chance-Risiko|"
-            r"Gegenargument|Risiko|Statusgruppe|Regel-/Datenstatus|Regelstatus|Datenstatus|"
-            r"Richtung|Side)(?:\*\*)?\s*[:=]"
+            r"(?:Asset/Ticker|Ticker|Asset)(?:\*\*)?\s*[:=]"
         )
         def flush_candidate():
             nonlocal current
@@ -1303,20 +1336,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 continue
             if re.fullmatch(r"(?i)\s*(?:keine kandidaten(?: in dieser gruppe)?|0 kandidaten|explizit leer|leer)[.!—-]*\s*", line):
                 continue
-            match = bullet.match(line)
-            starts = bool(match) and not field_start.match(line)
-            # A line naming a new ticker/asset starts a new candidate even when
-            # it isn't a markdown bullet. Field continuation lines remain local.
-            if re.match(
-                r"(?i)^\s*(?:[-*•]\s+)?(?:\*\*)?(?:Asset/Ticker|Ticker|Asset)"
-                r"(?:\*\*)?\s*[:=]",
-                line,
-            ) and current:
-                starts = True
+            starts = bool(identity_start.match(line))
             if starts and current:
-                records.append("\n".join(current).strip())
-                current = []
-            current.append(match.group(1) if starts and match else line)
+                flush_candidate()
+            # Preserve original indentation and bullet markers: _label_value()
+            # accepts them and they are useful forensic evidence in diagnostics.
+            current.append(line)
         if current:
             flush_candidate()
         # The report's established one-candidate inline format is a single
@@ -1522,27 +1547,6 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     rotation = _section_body(text, 4, SECTION_NAMES[3])
     if not re.search(r"(?i)Relative[- ]Stärke[- ]Matrix", rotation):
         errors.append("M-04: Relative-Stärke-Matrix für Indizes, Regionen, Sektoren und Anlageklassen fehlt.")
-    for category, label in (
-        ("Regionen", r"Region(?:en)?"),
-        ("Sektoren", r"Sektor(?:en)?"),
-        ("Anlageklassen", r"Anlageklassen|Assetklassen"),
-    ):
-        category_rows = [
-            line for line in rotation.splitlines()
-            if re.search(rf"(?i)\b(?:{label})\b", line)
-        ]
-        has_periods = any(
-            re.search(r"(?i)\b1M\b[^|;\r\n]*[-+]?\d", line)
-            and re.search(r"(?i)\b3M\b[^|;\r\n]*[-+]?\d", line)
-            for line in category_rows
-        )
-        explicit_gap = any(
-            re.search(r"(?i)NICHT VERFÜGBAR[^\r\n]*(?:Datenlücke|Daten fehlen|keine Vergleichsdaten)", line)
-            for line in category_rows
-        )
-        if not (has_periods or explicit_gap):
-            errors.append(f"M-04: {category} benötigen vergleichbare 1M-/3M-Werte oder eine ausdrücklich begründete Datenlücke.")
-
     # M-05: a generic 'no changes' sentence is not evidence of a deterministic
     # register comparison. Require stable IDs/versions and before/after hashes.
     thesis_evidence = re.search(
@@ -1664,16 +1668,59 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         for concept in ("Gewinner", "Verlierer", "Divergenz"):
             if not re.search(rf"(?i){concept}", rotation):
                 errors.append(f"M-04: {concept} im vergleichbaren Rotationsbild nicht ausgewiesen.")
-        for group in ("Regionen", "Indizes", "Sektoren", "Anlageklassen"):
-            group_match = re.search(rf"(?im)^\s*{group}\s*:\s*([^\r\n]+)", rotation)
-            if not group_match:
+        group_aliases = {
+            "Regionen": {"regionen", "region"},
+            "Indizes": {"indizes", "index"},
+            "Sektoren": {"sektoren", "sektor"},
+            "Anlageklassen": {"anlageklassen", "assetklassen"},
+        }
+        category_heading = re.compile(
+            r"(?i)^\s*(?:[-*•]\s*)?(?:\*\*)?"
+            r"(Regionen|Region|Indizes|Index|Sektoren|Sektor|Anlageklassen|Assetklassen)"
+            r"(?:\*\*)?\s*[:：]\s*(.*)$"
+        )
+        headings = []
+        for line_no, line in enumerate(rotation.splitlines()):
+            match = category_heading.match(line)
+            if match:
+                label = match.group(1).casefold()
+                canonical = next(
+                    name for name, aliases in group_aliases.items() if label in aliases
+                )
+                headings.append((line_no, canonical, match.group(2)))
+        rotation_lines = rotation.splitlines()
+        for group in group_aliases:
+            matching = [item for item in headings if item[1] == group]
+            if not matching:
                 errors.append(f"M-04: {group} fehlen als eigener Vergleichsbereich.")
                 continue
-            value = group_match.group(1)
-            comparable = bool(re.search(r"(?i)1M.{0,40}3M|3M.{0,40}1M", value))
-            unavailable = bool(re.search(r"(?i)NICHT VERFÜGBAR.{0,100}(?:Datenlücke|keine vergleichbaren Reihen|Daten fehlen)", value))
+            # Each category is a bounded block: heading text plus all following
+            # rows until the next category heading. This supports both legacy
+            # inline summaries and current multi-row Markdown matrices.
+            blocks = []
+            for line_no, _canonical, inline_value in matching:
+                later = [h[0] for h in headings if h[0] > line_no]
+                block_end = min(later) if later else len(rotation_lines)
+                block_lines = ([inline_value] if inline_value.strip() else [])
+                block_lines.extend(rotation_lines[line_no + 1:block_end])
+                blocks.append(block_lines)
+            comparable = any(
+                re.search(r"(?i)\b1M\b[^\r\n]*?[-+]?\d", line)
+                and re.search(r"(?i)\b3M\b[^\r\n]*?[-+]?\d", line)
+                for block in blocks for line in block
+            )
+            unavailable = any(
+                re.search(
+                    r"(?i)NICHT VERFÜGBAR[^\r\n]*(?:Datenlücke|keine vergleichbaren Reihen|Daten fehlen|keine Vergleichsdaten)",
+                    line,
+                )
+                for block in blocks for line in block
+            )
             if not (comparable or unavailable):
-                errors.append(f"M-04: {group} benötigen vergleichbare 1M-/3M-Werte oder eine konkrete Datenlücke.")
+                errors.append(
+                    f"M-04: {group} benötigen vergleichbare 1M-/3M-Werte "
+                    "oder eine konkrete Datenlücke innerhalb ihres Matrixblocks."
+                )
 
 
     # M-06: candidate sources, confirmed setups, watchlist and rejected candidates
