@@ -253,12 +253,13 @@ class ReportGateTests(unittest.TestCase):
         )
         self.assertEqual(gate.validate_report(text), [])
 
-    def test_m10_accepts_explicit_complete_ohlcv_and_unrestricted_candidates(self):
+    def test_m10_rejects_no_gap_claim_when_status_counts_include_non_valid_symbols(self):
         text = report_fixture().replace(
             "WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt.",
             "OHLCV vollständig und keine Datenlücken; Kandidaten nicht eingeschränkt und unverändert valide.",
         )
-        self.assertEqual(gate.validate_report(text), [])
+        errors = gate.validate_report(text)
+        self.assertTrue(any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors)
 
     def test_m10_accepts_existing_complete_coverage_wording_without_analysis_restriction(self):
         text = report_fixture().replace(
@@ -401,6 +402,78 @@ class ReportGateTests(unittest.TestCase):
         )
         errors = gate.validate_report(text)
         self.assertTrue(any("Kandidat 2" in error and "M-09" in error for error in errors), errors)
+
+
+    def test_m09_scenario_data_gaps_block_final_but_are_preserved_for_non_final(self):
+        report = report_fixture()
+        for label in (
+            "Basisszenario: Seitwärts bis aufwärts.",
+            "Positives Alternativszenario: Beschleunigter Aufwärtstrend.",
+            "Negatives Alternativszenario: Korrektur.",
+        ):
+            report = report.replace(label, label.split(":", 1)[0] + ": NICHT ABLEITBAR – Datenlücke: Zeithorizont.")
+        errors_final = gate.validate_report(report)
+        scenario_errors = [error for error in errors_final if "M-09-SZENARIO" in error and "darf nicht FINAL sein" in error]
+        self.assertEqual(len(scenario_errors), 3, errors_final)
+        non_final = report.replace("TRADING_RADAR_FACHLICH_FINAL=FINAL", "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL")
+        errors_non_final = gate.validate_report(non_final)
+        self.assertFalse(any("darf nicht FINAL sein" in error for error in errors_non_final), errors_non_final)
+
+    def test_m06_rejects_source_validity_as_substitute_for_confirmed_setup_evidence(self):
+        report = report_fixture().replace(
+            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
+            "BESTÄTIGTE SETUPS:\n- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv | Status: valide | Begründung: Alles ok | Trigger: Breakout",
+        )
+        errors = gate.validate_report(report)
+        self.assertTrue(any("Bestätigtes Setup 1 ist nicht technisch nachgewiesen" in error for error in errors), errors)
+
+    def test_m06_accepts_complete_multiline_confirmed_setup_summary(self):
+        complete = (
+            "BESTÄTIGTE SETUPS:\n"
+            "- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv\n"
+            "  Richtung: LONG | Verknüpfte These: TH-1\n"
+            "  Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30\n"
+            "  Einstieg: 100 | Stop: 95 | CRV: 2.0\n"
+            "  Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: Breakout"
+        )
+        report = report_fixture().replace(
+            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
+            complete,
+        )
+        errors = gate.validate_report(report)
+        self.assertFalse(any("Bestätigtes Setup 1" in error for error in errors), errors)
+
+    def test_m06_rejects_confirmed_setup_below_crv1_minimum(self):
+        complete = (
+            "BESTÄTIGTE SETUPS:\n"
+            "- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv | Richtung: LONG | "
+            "Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | "
+            "Einstieg: 100 | Stop: 95 | CRV: 0.9 | Gegenargument: keines | Datenlücken: keine | "
+            "Regel-/Datenstatus: PASS | Trigger: Breakout"
+        )
+        report = report_fixture().replace(
+            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
+            complete,
+        )
+        errors = gate.validate_report(report)
+        self.assertTrue(any("unterschreitet CRV1 >= 1" in error for error in errors), errors)
+
+    def test_m03_rejects_unverifiable_candidate_mapping_claimed_unrestricted(self):
+        report = report_fixture().replace(
+            "Kandidaten-Mapping: vollständig.",
+            "Kandidaten-Mapping: NICHT VERIFIZIERBAR.\nKandidaten nicht eingeschränkt.",
+        )
+        errors = gate.validate_report(report)
+        self.assertTrue(any("Kandidaten-Mapping ist NICHT VERIFIZIERBAR" in error for error in errors), errors)
+
+    def test_m01_rejects_portfolio_underperformance_claim_when_portfolio_metric_unavailable(self):
+        report = report_fixture().replace(
+            "Basis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.",
+            "Basis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
+            "Underperformance des Portfolios (-9,62% vs. MSCI World Benchmark seit 07.08.2026).",
+        )
+        errors = gate.validate_report(report)
+        self.assertTrue(any("Numerische System-/Benchmark-Performance außerhalb" in error for error in errors), errors)
 
 
 if __name__ == "__main__":
@@ -593,8 +666,8 @@ def test_m06_allows_distinct_setup_ids_for_same_ticker_in_same_group():
     )
     new = (
         "BESTÄTIGTE SETUPS:\n"
-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Status: bestätigt | Begründung: Trendfolge-Setup | Trigger: 100\n"
-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendwende|bodenbildung|doppelboden | Quelle: Trendwende_Setups.csv | Status: bestätigt | Begründung: Trendwende-Setup | Trigger: 95"
+        "- Name: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Richtung: LONG | Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 100\n"
+        "- Name: Alpha AG (ABC) | Setup-ID: trendwende|bodenbildung|doppelboden | Quelle: Trendwende_Setups.csv | Richtung: LONG | Verknüpfte These: TH-2 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 95"
     )
     assert old in base
     report = base.replace(old, new)
@@ -609,8 +682,8 @@ def test_m06_rejects_duplicate_same_setup_identity_for_same_ticker():
     )
     duplicate = (
         "BESTÄTIGTE SETUPS:\n"
-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Status: bestätigt | Begründung: Setup | Trigger: 100\n"
-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups_backup.csv | Status: bestätigt | Begründung: Setup | Trigger: 100"
+        "- Name: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Richtung: LONG | Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 100\n"
+        "- Name: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups_backup.csv | Richtung: LONG | Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 100"
     )
     assert old in base
     errors = gate.validate_report(base.replace(old, duplicate))
