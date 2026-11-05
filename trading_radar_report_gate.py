@@ -611,6 +611,10 @@ def _treasury_observation_has_complete_provenance(line: str) -> bool:
 
 def _validate_m05_m10(text: str, errors: list[str]) -> None:
     """Check concrete M-05..M-10 report evidence; reject blank placeholders."""
+    status_markers = re.findall(
+        r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text
+    )
+    report_claims_final = len(status_markers) == 1 and status_markers[0] == "FINAL"
     # M-05: the deterministic Tab-2 source block and row/count comparison are
     # checked in validate_report. Quantity and fees are not contract fields.
 
@@ -885,6 +889,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"Live-System-Performance\s*[:=]?\s*[+-]?\d",
             r"System-Offenpositionen[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
             r"Underperformance gegenüber dem MSCI[^\r\n]*[+-]?\d",
+            r"Underperformance\s+(?:des\s+)?Portfolios?[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
+            r"Portfolio[^\r\n]*(?:vs\.?|gegenüber|im\s+Vergleich\s+zu)[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
             r"Systemperformance\s*[+-]\d+(?:[,.]\d+)?\s*%",
             r"Out-/Underperformance\s*[:=]\s*[+-]?\d",
         )
@@ -1748,7 +1754,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             group_end = min(later_starts) if later_starts else len(candidate_section)
             group_body = candidate_section[match.end():group_end]
             candidate_lines = re.findall(
-                r"(?im)^\s*[-•]?\s*Asset/Ticker:\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)([^\r\n]*)",
+                r"(?im)^\s*[-•]?\s*(?:Asset/Ticker|Name|Ticker|Symbol):\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)([^\r\n]*)",
                 group_body,
             )
             # Ticker alone is not a candidate identity: one instrument may have
@@ -1792,6 +1798,92 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 )
                 if not (has_identity and has_source and has_reason and (has_trigger or label.casefold() == "verworfene kandidaten")):
                     errors.append(f"M-06: Einträge in '{label}' benötigen Identität, Quelle, Begründung/Status und bei Watchlist/Setups einen überprüfbaren Trigger.")
+
+        # A source-level status such as "valide" is not a technical confirmation.
+        # The compact confirmed-setups summary must carry the evidence required
+        # by Zielarchitektur v2.1; otherwise it may only remain a scanner candidate.
+        confirmed_heading = re.search(
+            r"(?im)^\s*(?:BESTÄTIGTE\s+SETUPS|FREIGEGEBENE\s+SETUPS)\s*:",
+            candidate_section,
+        )
+        if confirmed_heading:
+            next_heading = re.search(
+                r"(?im)^\s*(?:WATCHLIST|VERWORFENE\s+KANDIDATEN|ABGELEHNTE\s+KANDIDATEN)\s*:",
+                candidate_section[confirmed_heading.end():],
+            )
+            confirmed_end = (confirmed_heading.end() + next_heading.start()) if next_heading else len(candidate_section)
+            confirmed_body = candidate_section[confirmed_heading.end():confirmed_end]
+            if not re.search(r"(?i)keine\s+bestätigten\s+setups", confirmed_body):
+                summary_starts = [
+                    match.start() for match in re.finditer(
+                        r"(?im)^\s*(?:[-*•]\s*)?(?:Name|Asset/Ticker|Ticker)\s*:",
+                        confirmed_body,
+                    )
+                ]
+                summary_records = [
+                    confirmed_body[start:(summary_starts[index + 1] if index + 1 < len(summary_starts) else len(confirmed_body))].strip()
+                    for index, start in enumerate(summary_starts)
+                ]
+                if not summary_records:
+                    errors.append("M-06: BESTÄTIGTE SETUPS enthält keine einzeln prüfbaren Datensätze.")
+                required_confirmation_fields = {
+                    "Setup-ID": r"Setup-ID\s*:",
+                    "Quelle": r"Quelle\s*:",
+                    "Richtung": r"Richtung\s*:",
+                    "These": r"(?:Verknüpfte\s+These|Thesen-ID)\s*:",
+                    "technische Bestätigung": r"Technische\s+Bestätigung\s*:",
+                    "Daten-Cut-off": r"(?:Datenstichtag|Daten-Cut-?off)\s*:",
+                    "Einstieg": r"Einstieg\s*:",
+                    "Stop": r"Stop\s*:",
+                    "CRV": r"CRV\s*:",
+                    "Gegenargument": r"Gegenargument\s*:",
+                    "Datenlücken": r"Datenlücken?\s*:",
+                    "Regelstatus": r"Regel-/Datenstatus\s*:",
+                }
+                for index, record in enumerate(summary_records, 1):
+                    missing_fields = [
+                        field for field, pattern in required_confirmation_fields.items()
+                        if not re.search(pattern, record, re.I)
+                    ]
+                    if missing_fields:
+                        errors.append(
+                            f"M-06: Bestätigtes Setup {index} ist nicht technisch nachgewiesen; "
+                            "fehlende Felder: " + ", ".join(missing_fields)
+                        )
+                        continue
+                    technical = _label_value(record, (r"Technische\s+Bestätigung",))
+                    if not technical or not re.search(r"(?i)^(?:BESTÄTIGT|CONFIRMED)\b", technical.strip()):
+                        errors.append(f"M-06: Bestätigtes Setup {index} hat keine explizite technische Bestätigung.")
+                    direction = _label_value(record, (r"Richtung",))
+                    if not direction or direction.strip().upper() not in {"LONG", "SHORT"}:
+                        errors.append(f"M-06: Bestätigtes Setup {index} hat keine gültige Handelsrichtung LONG/SHORT.")
+                    thesis_value = _label_value(record, (r"Verknüpfte\s+These", r"Thesen-ID"))
+                    if not thesis_value or _MISSING_VALUE_RE.fullmatch(thesis_value.strip()):
+                        errors.append(f"M-06: Bestätigtes Setup {index} ist keiner belastbaren These zugeordnet.")
+                    cutoff = _label_value(record, (r"Datenstichtag", r"Daten-Cut-?off"))
+                    if not cutoff or not re.search(r"\d{4}-\d{2}-\d{2}", cutoff):
+                        errors.append(f"M-06: Bestätigtes Setup {index} hat keinen ISO-Datenstichtag.")
+                    for price_label in ("Einstieg", "Stop"):
+                        price = _label_value(record, (price_label,))
+                        if not price or not _valid_numeric_value(price):
+                            errors.append(f"M-06: Bestätigtes Setup {index} hat keinen numerischen {price_label}.")
+                        else:
+                            try:
+                                numeric_price = price.strip().replace(",", ".").replace("€", "").replace("USD", "").strip()
+                                if float(numeric_price) <= 0:
+                                    errors.append(f"M-06: Bestätigtes Setup {index} hat einen nicht-positiven {price_label}.")
+                            except ValueError:
+                                errors.append(f"M-06: Bestätigtes Setup {index} hat einen ungültigen {price_label}.")
+                    crv_value = _label_value(record, (r"CRV",))
+                    if not crv_value or not _valid_numeric_value(crv_value):
+                        errors.append(f"M-06: Bestätigtes Setup {index} hat kein numerisches CRV.")
+                    else:
+                        numeric_crv = crv_value.strip().replace(",", ".").lower().removesuffix("x")
+                        try:
+                            if float(numeric_crv) < 1.0:
+                                errors.append(f"M-06: Bestätigtes Setup {index} unterschreitet CRV1 >= 1.")
+                        except ValueError:
+                            errors.append(f"M-06: Bestätigtes Setup {index} hat ein ungültiges CRV.")
 
 
     # M-09: scenario alternatives are an explicit content contract. An
@@ -1837,6 +1929,15 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         ))
         if not ((has_triggers and has_context) or explicit_gap):
             errors.append(f"M-09-SZENARIO: {label} benötigt Trigger, Zeithorizont, Indikatoren und Konsequenz oder eine begründete Datenlücke.")
+        scenario_declares_unavailable = bool(re.match(
+            r"(?i)\s*(?:NICHT ABLEITBAR|NICHT VERFÜGBAR|FEHLT|UNBEKANNT|UNKLAR)\b",
+            tail,
+        ))
+        if report_claims_final and (scenario_declares_unavailable or (explicit_gap and not (has_triggers and has_context))):
+            errors.append(
+                f"M-09-SZENARIO: {label} ist wegen einer ausgewiesenen Datenlücke nicht ableitbar; "
+                "ein solcher Bericht darf nicht FINAL sein."
+            )
 
 def validate_report(text: str) -> list[str]:
     errors: list[str] = []
@@ -2071,6 +2172,26 @@ def validate_report(text: str) -> list[str]:
             errors.append("M-03: Ein Symbol ist mehreren OHLCV-Zustandsklassen zugeordnet.")
         if len(flattened) != universe:
             errors.append("M-03: Symbolstatusliste deckt das geprüfte Universum nicht exakt ab.")
+        non_valid = missing + stale + invalid
+        if non_valid > 0 and re.search(
+            r"(?i)(?:OHLCV\s+)?(?:vollständig\s*,?\s*)?keine\s+(?:historischen\s+)?Datenlücken|"
+            r"keine\s+fehlenden\s+(?:OHLCV[- ]?)?(?:Daten|Kerzen|Handelstage)",
+            appendix,
+        ):
+            errors.append(
+                "M-03: Freitext behauptet Datenlückenfreiheit, obwohl die OHLCV-Statuszählung "
+                f"{non_valid} nicht-VALID Symbole ausweist."
+            )
+        mapping_unverifiable = bool(re.search(
+            r"(?i)Kandidaten-Mapping\s*:\s*NICHT VERIFIZIERBAR", appendix
+        ))
+        if mapping_unverifiable and re.search(
+            r"(?i)Kandidaten\s+nicht\s+eingeschränkt", appendix
+        ):
+            errors.append(
+                "M-03: Kandidaten-Mapping ist NICHT VERIFIZIERBAR, zugleich werden Kandidaten "
+                "als nicht eingeschränkt bezeichnet."
+            )
     if not re.search(r"(?i)Kandidaten-Mapping\s*:\s*(?:vollständig|vollstaendig|unvollständig|unvollstaendig|NICHT VERIFIZIERBAR)", appendix):
         errors.append("M-03: Vollständigkeit des Kandidaten-Mappings muss ausdrücklich ausgewiesen werden.")
     return errors
