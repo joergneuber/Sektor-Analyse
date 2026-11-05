@@ -419,6 +419,27 @@ class ReportGateTests(unittest.TestCase):
         errors_non_final = gate.validate_report(non_final)
         self.assertFalse(any("darf nicht FINAL sein" in error for error in errors_non_final), errors_non_final)
 
+    def test_m06_accepts_explicit_zero_confirmed_setups(self):
+        report = report_fixture().replace(
+            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
+            "BESTÄTIGTE SETUPS: 0 bestätigte Setups – Begründung: kein bestätigter Trigger.",
+        )
+        errors = gate.validate_report(report)
+        self.assertFalse(any("M-06:" in error for error in errors), errors)
+
+    def test_m06_rejects_zero_confirmed_setups_with_setup_record(self):
+        report = report_fixture().replace(
+            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
+            "BESTÄTIGTE SETUPS: 0 bestätigte Setups – Begründung: kein bestätigter Trigger.\n"
+            "- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv | Status: valide | "
+            "Begründung: Alles ok | Trigger: Breakout",
+        )
+        errors = gate.validate_report(report)
+        self.assertTrue(
+            any("meldet null Setups, enthält aber zugleich Setup-Datensätze" in error for error in errors),
+            errors,
+        )
+
     def test_m06_rejects_source_validity_as_substitute_for_confirmed_setup_evidence(self):
         report = report_fixture().replace(
             "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
