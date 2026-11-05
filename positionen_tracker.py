@@ -958,6 +958,23 @@ def _ist_trendfolge_position(row):
     return quelle == 'trendfolge'
 
 
+def _ist_buy_hold_position(row):
+    """Erkennt Langfrist-/Buy-&-Hold-Positionen anhand der Ideenquelle.
+
+    Für diese Positionen sind Stop-Werte ausschließlich manuell zu ändern.
+    TP1/TP2 bleiben Informations- und Warnschwellen; die Stop-Überwachung
+    und Stop-Auslösung laufen unverändert weiter.
+    """
+    quelle = str(row.get('Ideen_Quelle', '')).strip().casefold()
+    return quelle in {
+        'langfrist',
+        'buy & hold',
+        'buy and hold',
+        'buy_hold',
+        'buyhold',
+    }
+
+
 def _parse_entry_date(value):
     """Robustes Parsing des Einstiegsdatums; None bei ungültigem Wert."""
     if value is None:
@@ -1375,6 +1392,13 @@ def aktualisiere_positionen(df):
         if status != 'offen':
             continue
 
+        ist_buy_hold = _ist_buy_hold_position(row)
+        if ist_buy_hold:
+            print(
+                f"BUY & HOLD – manueller Stop geschützt, "
+                f"automatisches Nachziehen deaktiviert. Ticker={ticker}"
+            )
+
         markt = row['Markt']
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
@@ -1538,7 +1562,8 @@ def aktualisiere_positionen(df):
         # --- STUFENREGEL STOP-NACHZIEHEN (28.07.2026, Nutzerwunsch, zweistufig) ---
         # Fuer Trendfolge ist diese historische Stufenregel deaktiviert:
         # dort gilt ausschliesslich die neue adaptive Stop-/Swing-Trailing-Logik.
-        if not _ist_trendfolge_position(row):
+        # Fuer Buy & Hold bleibt der Stop ausschliesslich manuell steuerbar.
+        if not _ist_trendfolge_position(row) and not ist_buy_hold:
                 # Stufe 1: TP1 (oder TP2) erreicht -> Stop EINMALIG auf Breakeven
             #          (= Einstiegskurs): der Trade kann nicht mehr in die
             #          Verlustzone zurueckfallen (Anlass: Ross Stores +10,9% nach
