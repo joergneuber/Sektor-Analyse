@@ -1,0 +1,326 @@
+--- a/trading_radar_report_gate.py
++++ b/trading_radar_report_gate.py
+@@ -609,10 +609,14 @@
+     return True
+ 
+ 
+ def _validate_m05_m10(text: str, errors: list[str]) -> None:
+     """Check concrete M-05..M-10 report evidence; reject blank placeholders."""
++    status_markers = re.findall(
++        r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)\s*$", text
++    )
++    report_claims_final = len(status_markers) == 1 and status_markers[0] == "FINAL"
+     # M-05: the deterministic Tab-2 source block and row/count comparison are
+     # checked in validate_report. Quantity and fees are not contract fields.
+ 
+     # M-06: each field is evaluated independently. A placeholder cannot be
+     # rescued by an unrelated unavailable-status mention elsewhere in the section.
+@@ -883,10 +887,12 @@
+     if canonical_portfolio and canonical_portfolio.group(1).upper() == "NICHT VERFÜGBAR":
+         forbidden_aggregate_claims = (
+             r"Live-System-Performance\s*[:=]?\s*[+-]?\d",
+             r"System-Offenpositionen[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
+             r"Underperformance gegenüber dem MSCI[^\r\n]*[+-]?\d",
++            r"Underperformance\s+(?:des\s+)?Portfolios?[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
++            r"Portfolio[^\r\n]*(?:vs\.?|gegenüber|im\s+Vergleich\s+zu)[^\r\n]*[+-]?\d+(?:[,.]\d+)?\s*%",
+             r"Systemperformance\s*[+-]\d+(?:[,.]\d+)?\s*%",
+             r"Out-/Underperformance\s*[:=]\s*[+-]?\d",
+         )
+         section7_heading = re.search(
+             r"(?im)^[ \t]*(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich[^\r\n]*$",
+@@ -1746,11 +1752,11 @@
+         for label, match in group_matches:
+             later_starts = [other.start() for _, other in group_matches if other.start() > match.start()]
+             group_end = min(later_starts) if later_starts else len(candidate_section)
+             group_body = candidate_section[match.end():group_end]
+             candidate_lines = re.findall(
+-                r"(?im)^\s*[-•]?\s*Asset/Ticker:\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)([^\r\n]*)",
++                r"(?im)^\s*[-•]?\s*(?:Asset/Ticker|Name|Ticker|Symbol):\s*[^|\r\n]*?\(([A-Z0-9.^=_/-]{2,30})\)([^\r\n]*)",
+                 group_body,
+             )
+             # Ticker alone is not a candidate identity: one instrument may have
+             # several independent setups. The producer emits a stable Setup-ID.
+             # Legacy reports without Setup-ID retain the conservative ticker key.
+@@ -1791,10 +1797,96 @@
+                     )
+                 )
+                 if not (has_identity and has_source and has_reason and (has_trigger or label.casefold() == "verworfene kandidaten")):
+                     errors.append(f"M-06: Einträge in '{label}' benötigen Identität, Quelle, Begründung/Status und bei Watchlist/Setups einen überprüfbaren Trigger.")
+ 
++        # A source-level status such as "valide" is not a technical confirmation.
++        # The compact confirmed-setups summary must carry the evidence required
++        # by Zielarchitektur v2.1; otherwise it may only remain a scanner candidate.
++        confirmed_heading = re.search(
++            r"(?im)^\s*(?:BESTÄTIGTE\s+SETUPS|FREIGEGEBENE\s+SETUPS)\s*:",
++            candidate_section,
++        )
++        if confirmed_heading:
++            next_heading = re.search(
++                r"(?im)^\s*(?:WATCHLIST|VERWORFENE\s+KANDIDATEN|ABGELEHNTE\s+KANDIDATEN)\s*:",
++                candidate_section[confirmed_heading.end():],
++            )
++            confirmed_end = (confirmed_heading.end() + next_heading.start()) if next_heading else len(candidate_section)
++            confirmed_body = candidate_section[confirmed_heading.end():confirmed_end]
++            if not re.search(r"(?i)keine\s+bestätigten\s+setups", confirmed_body):
++                summary_starts = [
++                    match.start() for match in re.finditer(
++                        r"(?im)^\s*(?:[-*•]\s*)?(?:Name|Asset/Ticker|Ticker)\s*:",
++                        confirmed_body,
++                    )
++                ]
++                summary_records = [
++                    confirmed_body[start:(summary_starts[index + 1] if index + 1 < len(summary_starts) else len(confirmed_body))].strip()
++                    for index, start in enumerate(summary_starts)
++                ]
++                if not summary_records:
++                    errors.append("M-06: BESTÄTIGTE SETUPS enthält keine einzeln prüfbaren Datensätze.")
++                required_confirmation_fields = {
++                    "Setup-ID": r"Setup-ID\s*:",
++                    "Quelle": r"Quelle\s*:",
++                    "Richtung": r"Richtung\s*:",
++                    "These": r"(?:Verknüpfte\s+These|Thesen-ID)\s*:",
++                    "technische Bestätigung": r"Technische\s+Bestätigung\s*:",
++                    "Daten-Cut-off": r"(?:Datenstichtag|Daten-Cut-?off)\s*:",
++                    "Einstieg": r"Einstieg\s*:",
++                    "Stop": r"Stop\s*:",
++                    "CRV": r"CRV\s*:",
++                    "Gegenargument": r"Gegenargument\s*:",
++                    "Datenlücken": r"Datenlücken?\s*:",
++                    "Regelstatus": r"Regel-/Datenstatus\s*:",
++                }
++                for index, record in enumerate(summary_records, 1):
++                    missing_fields = [
++                        field for field, pattern in required_confirmation_fields.items()
++                        if not re.search(pattern, record, re.I)
++                    ]
++                    if missing_fields:
++                        errors.append(
++                            f"M-06: Bestätigtes Setup {index} ist nicht technisch nachgewiesen; "
++                            "fehlende Felder: " + ", ".join(missing_fields)
++                        )
++                        continue
++                    technical = _label_value(record, (r"Technische\s+Bestätigung",))
++                    if not technical or not re.search(r"(?i)^(?:BESTÄTIGT|CONFIRMED)\b", technical.strip()):
++                        errors.append(f"M-06: Bestätigtes Setup {index} hat keine explizite technische Bestätigung.")
++                    direction = _label_value(record, (r"Richtung",))
++                    if not direction or direction.strip().upper() not in {"LONG", "SHORT"}:
++                        errors.append(f"M-06: Bestätigtes Setup {index} hat keine gültige Handelsrichtung LONG/SHORT.")
++                    thesis_value = _label_value(record, (r"Verknüpfte\s+These", r"Thesen-ID"))
++                    if not thesis_value or _MISSING_VALUE_RE.fullmatch(thesis_value.strip()):
++                        errors.append(f"M-06: Bestätigtes Setup {index} ist keiner belastbaren These zugeordnet.")
++                    cutoff = _label_value(record, (r"Datenstichtag", r"Daten-Cut-?off"))
++                    if not cutoff or not re.search(r"\d{4}-\d{2}-\d{2}", cutoff):
++                        errors.append(f"M-06: Bestätigtes Setup {index} hat keinen ISO-Datenstichtag.")
++                    for price_label in ("Einstieg", "Stop"):
++                        price = _label_value(record, (price_label,))
++                        if not price or not _valid_numeric_value(price):
++                            errors.append(f"M-06: Bestätigtes Setup {index} hat keinen numerischen {price_label}.")
++                        else:
++                            try:
++                                numeric_price = price.strip().replace(",", ".").replace("€", "").replace("USD", "").strip()
++                                if float(numeric_price) <= 0:
++                                    errors.append(f"M-06: Bestätigtes Setup {index} hat einen nicht-positiven {price_label}.")
++                            except ValueError:
++                                errors.append(f"M-06: Bestätigtes Setup {index} hat einen ungültigen {price_label}.")
++                    crv_value = _label_value(record, (r"CRV",))
++                    if not crv_value or not _valid_numeric_value(crv_value):
++                        errors.append(f"M-06: Bestätigtes Setup {index} hat kein numerisches CRV.")
++                    else:
++                        numeric_crv = crv_value.strip().replace(",", ".").lower().removesuffix("x")
++                        try:
++                            if float(numeric_crv) < 1.0:
++                                errors.append(f"M-06: Bestätigtes Setup {index} unterschreitet CRV1 >= 1.")
++                        except ValueError:
++                            errors.append(f"M-06: Bestätigtes Setup {index} hat ein ungültiges CRV.")
++
+ 
+     # M-09: scenario alternatives are an explicit content contract. An
+     # unavailable scenario is acceptable only with a concrete data-gap reason.
+     scenario_section = executive
+     scenario_patterns = (
+@@ -1835,10 +1927,19 @@
+             r"(?i)(?:NICHT ABLEITBAR|NICHT VERFÜGBAR)[^\r\n]{0,180}(?:Datenlücke|Daten fehlen|keine belastbare Datenbasis|Begründung)",
+             tail,
+         ))
+         if not ((has_triggers and has_context) or explicit_gap):
+             errors.append(f"M-09-SZENARIO: {label} benötigt Trigger, Zeithorizont, Indikatoren und Konsequenz oder eine begründete Datenlücke.")
++        scenario_declares_unavailable = bool(re.match(
++            r"(?i)\s*(?:NICHT ABLEITBAR|NICHT VERFÜGBAR|FEHLT|UNBEKANNT|UNKLAR)\b",
++            tail,
++        ))
++        if report_claims_final and (scenario_declares_unavailable or (explicit_gap and not (has_triggers and has_context))):
++            errors.append(
++                f"M-09-SZENARIO: {label} ist wegen einer ausgewiesenen Datenlücke nicht ableitbar; "
++                "ein solcher Bericht darf nicht FINAL sein."
++            )
+ 
+ def validate_report(text: str) -> list[str]:
+     errors: list[str] = []
+     if not text.strip():
+         return ["Radar-Bericht ist leer"]
+@@ -2069,10 +2170,30 @@
+         flattened = [ticker for values in state_lists.values() for ticker in values]
+         if len(flattened) != len(set(flattened)):
+             errors.append("M-03: Ein Symbol ist mehreren OHLCV-Zustandsklassen zugeordnet.")
+         if len(flattened) != universe:
+             errors.append("M-03: Symbolstatusliste deckt das geprüfte Universum nicht exakt ab.")
++        non_valid = missing + stale + invalid
++        if non_valid > 0 and re.search(
++            r"(?i)(?:OHLCV\s+)?(?:vollständig\s*,?\s*)?keine\s+(?:historischen\s+)?Datenlücken|"
++            r"keine\s+fehlenden\s+(?:OHLCV[- ]?)?(?:Daten|Kerzen|Handelstage)",
++            appendix,
++        ):
++            errors.append(
++                "M-03: Freitext behauptet Datenlückenfreiheit, obwohl die OHLCV-Statuszählung "
++                f"{non_valid} nicht-VALID Symbole ausweist."
++            )
++        mapping_unverifiable = bool(re.search(
++            r"(?i)Kandidaten-Mapping\s*:\s*NICHT VERIFIZIERBAR", appendix
++        ))
++        if mapping_unverifiable and re.search(
++            r"(?i)Kandidaten\s+nicht\s+eingeschränkt", appendix
++        ):
++            errors.append(
++                "M-03: Kandidaten-Mapping ist NICHT VERIFIZIERBAR, zugleich werden Kandidaten "
++                "als nicht eingeschränkt bezeichnet."
++            )
+     if not re.search(r"(?i)Kandidaten-Mapping\s*:\s*(?:vollständig|vollstaendig|unvollständig|unvollstaendig|NICHT VERIFIZIERBAR)", appendix):
+         errors.append("M-03: Vollständigkeit des Kandidaten-Mappings muss ausdrücklich ausgewiesen werden.")
+     return errors
+ 
+ 
+--- a/tests/test_trading_radar_report_gate.py
++++ b/tests/test_trading_radar_report_gate.py
+@@ -251,16 +251,17 @@
+             "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2 | Gegenargument: Datenlücke geprüft; Regelstatus: valide.",
+             "Keine belastbaren technischen Kandidaten; fehlende Voraussetzungen werden nicht als Setup ausgegeben.",
+         )
+         self.assertEqual(gate.validate_report(text), [])
+ 
+-    def test_m10_accepts_explicit_complete_ohlcv_and_unrestricted_candidates(self):
++    def test_m10_rejects_no_gap_claim_when_status_counts_include_non_valid_symbols(self):
+         text = report_fixture().replace(
+             "WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt.",
+             "OHLCV vollständig und keine Datenlücken; Kandidaten nicht eingeschränkt und unverändert valide.",
+         )
+-        self.assertEqual(gate.validate_report(text), [])
++        errors = gate.validate_report(text)
++        self.assertTrue(any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors)
+ 
+     def test_m10_accepts_existing_complete_coverage_wording_without_analysis_restriction(self):
+         text = report_fixture().replace(
+             "WARNUNG-HIST-OHLCV: missing Daten; OHLCV fehlend: Scanner/Kandidaten technisch eingeschränkt.",
+             "OHLCV vollständig für die definierten Scanner- und Benchmark-Universen; "
+@@ -401,10 +402,82 @@
+         )
+         errors = gate.validate_report(text)
+         self.assertTrue(any("Kandidat 2" in error and "M-09" in error for error in errors), errors)
+ 
+ 
++    def test_m09_scenario_data_gaps_block_final_but_are_preserved_for_non_final(self):
++        report = report_fixture()
++        for label in (
++            "Basisszenario: Seitwärts bis aufwärts.",
++            "Positives Alternativszenario: Beschleunigter Aufwärtstrend.",
++            "Negatives Alternativszenario: Korrektur.",
++        ):
++            report = report.replace(label, label.split(":", 1)[0] + ": NICHT ABLEITBAR – Datenlücke: Zeithorizont.")
++        errors_final = gate.validate_report(report)
++        scenario_errors = [error for error in errors_final if "M-09-SZENARIO" in error and "darf nicht FINAL sein" in error]
++        self.assertEqual(len(scenario_errors), 3, errors_final)
++        non_final = report.replace("TRADING_RADAR_FACHLICH_FINAL=FINAL", "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL")
++        errors_non_final = gate.validate_report(non_final)
++        self.assertFalse(any("darf nicht FINAL sein" in error for error in errors_non_final), errors_non_final)
++
++    def test_m06_rejects_source_validity_as_substitute_for_confirmed_setup_evidence(self):
++        report = report_fixture().replace(
++            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
++            "BESTÄTIGTE SETUPS:\n- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv | Status: valide | Begründung: Alles ok | Trigger: Breakout",
++        )
++        errors = gate.validate_report(report)
++        self.assertTrue(any("Bestätigtes Setup 1 ist nicht technisch nachgewiesen" in error for error in errors), errors)
++
++    def test_m06_accepts_complete_multiline_confirmed_setup_summary(self):
++        complete = (
++            "BESTÄTIGTE SETUPS:\n"
++            "- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv\n"
++            "  Richtung: LONG | Verknüpfte These: TH-1\n"
++            "  Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30\n"
++            "  Einstieg: 100 | Stop: 95 | CRV: 2.0\n"
++            "  Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: Breakout"
++        )
++        report = report_fixture().replace(
++            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
++            complete,
++        )
++        errors = gate.validate_report(report)
++        self.assertFalse(any("Bestätigtes Setup 1" in error for error in errors), errors)
++
++    def test_m06_rejects_confirmed_setup_below_crv1_minimum(self):
++        complete = (
++            "BESTÄTIGTE SETUPS:\n"
++            "- Name: Alpha AG (ABC) | Setup-ID: S-1 | Quelle: Setups.csv | Richtung: LONG | "
++            "Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | "
++            "Einstieg: 100 | Stop: 95 | CRV: 0.9 | Gegenargument: keines | Datenlücken: keine | "
++            "Regel-/Datenstatus: PASS | Trigger: Breakout"
++        )
++        report = report_fixture().replace(
++            "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup.",
++            complete,
++        )
++        errors = gate.validate_report(report)
++        self.assertTrue(any("unterschreitet CRV1 >= 1" in error for error in errors), errors)
++
++    def test_m03_rejects_unverifiable_candidate_mapping_claimed_unrestricted(self):
++        report = report_fixture().replace(
++            "Kandidaten-Mapping: vollständig.",
++            "Kandidaten-Mapping: NICHT VERIFIZIERBAR.\nKandidaten nicht eingeschränkt.",
++        )
++        errors = gate.validate_report(report)
++        self.assertTrue(any("Kandidaten-Mapping ist NICHT VERIFIZIERBAR" in error for error in errors), errors)
++
++    def test_m01_rejects_portfolio_underperformance_claim_when_portfolio_metric_unavailable(self):
++        report = report_fixture().replace(
++            "Basis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.",
++            "Basis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
++            "Underperformance des Portfolios (-9,62% vs. MSCI World Benchmark seit 07.08.2026).",
++        )
++        errors = gate.validate_report(report)
++        self.assertTrue(any("Numerische System-/Benchmark-Performance außerhalb" in error for error in errors), errors)
++
++
+ if __name__ == "__main__":
+     unittest.main()
+ 
+ 
+ def test_nontradable_candidate_with_explicit_unavailable_levels_is_not_a_m09_trade_failure():
+@@ -591,12 +664,12 @@
+     old = (
+         "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup."
+     )
+     new = (
+         "BESTÄTIGTE SETUPS:\n"
+-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Status: bestätigt | Begründung: Trendfolge-Setup | Trigger: 100\n"
+-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendwende|bodenbildung|doppelboden | Quelle: Trendwende_Setups.csv | Status: bestätigt | Begründung: Trendwende-Setup | Trigger: 95"
++        "- Name: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Richtung: LONG | Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 100\n"
++        "- Name: Alpha AG (ABC) | Setup-ID: trendwende|bodenbildung|doppelboden | Quelle: Trendwende_Setups.csv | Richtung: LONG | Verknüpfte These: TH-2 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 95"
+     )
+     assert old in base
+     report = base.replace(old, new)
+     errors = gate.validate_report(report)
+     assert not any("Doppelte Kandidatenidentität" in error for error in errors), errors
+@@ -607,12 +680,12 @@
+     old = (
+         "BESTÄTIGTE SETUPS: Keine bestätigten Setups. Begründung: Im geprüften Datenstand kein vollständig bestätigtes Setup."
+     )
+     duplicate = (
+         "BESTÄTIGTE SETUPS:\n"
+-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Status: bestätigt | Begründung: Setup | Trigger: 100\n"
+-        "- Asset/Ticker: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups_backup.csv | Status: bestätigt | Begründung: Setup | Trigger: 100"
++        "- Name: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups.csv | Richtung: LONG | Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 100\n"
++        "- Name: Alpha AG (ABC) | Setup-ID: trendfolge|pullback|hammer | Quelle: Setups_backup.csv | Richtung: LONG | Verknüpfte These: TH-1 | Technische Bestätigung: BESTÄTIGT | Datenstichtag: 2026-10-30 | Einstieg: 100 | Stop: 95 | CRV: 2.0 | Gegenargument: keines | Datenlücken: keine | Regel-/Datenstatus: PASS | Trigger: 100"
+     )
+     assert old in base
+     errors = gate.validate_report(base.replace(old, duplicate))
+     assert any("Doppelte Kandidatenidentität" in error for error in errors), errors
+ 
