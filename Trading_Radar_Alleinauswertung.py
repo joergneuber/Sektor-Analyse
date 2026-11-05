@@ -19181,6 +19181,9 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                 source_line[provenance_start.start():] if provenance_start else ""
             )
             metadata = fields(provenance_fragment)
+            status_match = re.search(r"(?i)(?:^|[|;])\s*STATUS\s*[:=]\s*([^|;]+)", source_line)
+            if status_match:
+                metadata["Status"] = status_match.group(1).strip()
             if _is_valid_nominal_us10y_macro_source(metadata):
                 macro_observations.append((source_value, metadata))
 
@@ -19428,6 +19431,135 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         if source_file and not re.search(r"(?i)(?:^|[|;(])\s*Quelldatei\s*[:=]", line):
             line += f" | Quelldatei: {source_file}"
         output.append(line)
+
+    # Promote the fully sourced live ^TNX close into the canonical executive
+    # rates line. The Gemini narrative may contain an unqualified "10Y Treasury"
+    # value while the explicit US observation exists only in the live appendix;
+    # the report gate reads the executive line and must see that same evidence.
+    # Keep any matching FRED DGS10 value as a separate dated observation;
+    # select the newest fully sourced observation for the executive field.
+    live_index = None
+    live_field = None
+    live_value = None
+    live_metadata = None
+    for index, candidate_line in enumerate(output):
+        if not re.search(r"(?i)^\s*[-*•]\s+US-10J-Rendite\s*\(\^TNX\)", candidate_line):
+            continue
+        live_match = re.search(
+            r"(?i)US-10J-Rendite\s*\(\^TNX\)\s*:\s*"
+            r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*%",
+            candidate_line,
+        )
+        if not live_match:
+            continue
+        annotation = _local_parenthesized_annotation(candidate_line, live_match.end())
+        if not annotation:
+            continue
+        live_metadata = fields(annotation[2])
+        if (
+            not re.search(r"(?i)Yahoo Finance\s*\(\^TNX\)", live_metadata.get("Quelle", ""))
+            or any(is_missing(live_metadata.get(key)) for key in ("Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung"))
+            or live_metadata.get("Einheit", "").strip() != "%"
+        ):
+            continue
+        live_index = index
+        live_value = float(live_match.group("value").replace(",", "."))
+        # Keep the observation and its complete local provenance only. The
+        # trailing source-file note is not part of the canonical field value.
+        live_field = candidate_line[:annotation[1] + 1].strip().lstrip("-*• ")
+        if source_file:
+            live_field += f" | Quelldatei: {source_file}"
+        break
+
+    rates_index = next(
+        (index for index, line in enumerate(output)
+         if re.match(r"(?i)^\s*(?:[-*•]\s*)?Zinsen/Renditen\s*:", line)),
+        None,
+    )
+    if live_index is not None and rates_index is not None and live_field:
+        rates_line = output[rates_index]
+        rates_match = re.match(r"(?i)^([ \t]*(?:[-*•]\s*)?Zinsen/Renditen\s*:\s*)(.*)$", rates_line)
+        if rates_match:
+            current_rates_value = rates_match.group(2).strip()
+            # A previous pass already promoted the same live observation.
+            # Do not prepend it again when this function is called after a save.
+            already_promoted = bool(re.search(
+                r"(?i)US-10J-Rendite\s*\(\^TNX\)\s*:\s*"
+                + re.escape(str(live_value)).replace(r"\.", r"[.,]") + r"\s*%|"
+                r"US\s+10Y\s+Treasury\s*\(\s*FRED\s+DGS10",
+                current_rates_value,
+            ))
+            if already_promoted:
+                return "\n".join(output)
+            remainder = current_rates_value
+            generic_match = re.search(
+                r"(?i)(?:^|[,;]\s*)10Y Treasury\s+(?:bei\s+)?"
+                r"(?P<value>[+-]?\d+(?:[.,]\d+)?)\s*%",
+                remainder,
+            )
+            macro_note = None
+            if generic_match:
+                raw_generic = generic_match.group("value").replace(",", ".")
+                decimals = len(raw_generic.split(".", 1)[1]) if "." in raw_generic else 0
+                try:
+                    generic_value = float(raw_generic)
+                except ValueError:
+                    generic_value = None
+                matched_metadata = (
+                    source_metadata_for(generic_value, decimals)
+                    if generic_value is not None else {}
+                )
+                matched_macro_value = next((
+                    source_value for source_value, metadata in macro_observations
+                    if abs(source_value - generic_value) <= (0.5 * (10 ** (-decimals)) + 1e-8)
+                    and metadata == matched_metadata
+                ), None) if generic_value is not None and matched_metadata else None
+                remaining = (remainder[:generic_match.start()] + remainder[generic_match.end():]).strip(" ,;")
+                if matched_macro_value is not None:
+                    required_macro = ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+                    complete_macro = all(not is_missing(matched_metadata.get(key)) for key in required_macro)
+                    complete_macro = complete_macro and matched_metadata.get("Einheit", "").strip() == "%"
+                    if complete_macro:
+                        fred_field = (
+                            f"US 10Y Treasury (FRED DGS10; Status={matched_metadata.get('Status', 'UNBEKANNT')}): "
+                            f"{matched_macro_value:.4f}% ("
+                            + _format_local_provenance(matched_metadata) + ")"
+                            + (f" | Quelldatei: {source_file}" if source_file else "")
+                        )
+                        try:
+                            live_date = datetime.date.fromisoformat(str(live_metadata.get("Datenstichtag", ""))[:10])
+                            fred_date = datetime.date.fromisoformat(str(matched_metadata.get("Datenstichtag", ""))[:10])
+                        except (TypeError, ValueError):
+                            live_date = fred_date = None
+                        if live_date is not None and fred_date is not None and fred_date >= live_date:
+                            # The newest complete observation is the executive
+                            # value. The other sourced observation remains in
+                            # its own line (Yahoo in the live appendix).
+                            live_field = fred_field
+                        else:
+                            macro_note = "- " + fred_field + "."
+                    else:
+                        missing_fields = [key for key in required_macro if is_missing(matched_metadata.get(key))]
+                        macro_note = (
+                            f"- Makro-Cache DGS10 (FRED-Serie): {matched_macro_value:.4f}% "
+                            f"(Datenstichtag: {matched_metadata.get('Datenstichtag', 'NICHT VERFÜGBAR')}; "
+                            f"Status: {matched_metadata.get('Status', 'UNBEKANNT')}; "
+                            f"fehlende Provenienzfelder: {', '.join(missing_fields) or 'Einheit'}; "
+                            "nicht als vollständige Quellenbeobachtung gewertet)."
+                        )
+                else:
+                    macro_note = (
+                        f"- Nicht zugeordneter Makro-Textwert: 10Y Treasury {raw_generic}% "
+                        "(keine wertgleiche DGS10-Quellenbeobachtung im geladenen Makro-Briefing)."
+                    )
+            else:
+                remaining = remainder
+
+            # The newest complete observation is first on the canonical field
+            # line (M-02); the other source remains separate for M-07 validation.
+            output[rates_index] = rates_match.group(1) + live_field + (f"; {remaining}" if remaining else "")
+            if macro_note and not any(macro_note.split(":", 1)[0] in line for line in output):
+                output.insert(rates_index + 1, macro_note)
 
     return "\n".join(output)
 
