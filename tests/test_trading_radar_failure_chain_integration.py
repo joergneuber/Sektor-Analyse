@@ -30,6 +30,33 @@ def load_module(name: str, path: Path):
     return module
 
 
+def position_csv(rows: list[tuple[str, str, str, str, str]]) -> str:
+    """Builds the same five identity/status fields used by normal position handling."""
+    header = "Ticker;Name;Einstieg;Einstiegsdatum;Status\n"
+    return header + "".join(
+        f"{ticker};{name};{entry};{date};{status}\n"
+        for ticker, name, entry, date, status in rows
+    )
+
+
+def add_position_sources(work: Path, manifest: dict) -> None:
+    """Adds a small matching fixture; production holdings are always dynamic."""
+    rows = [
+        ("TEST01", "Test Company 01", "10,00", "01.11.2026", "Offen"),
+        ("TEST02", "Test Company 02", "20,00", "02.11.2026", "Offen"),
+        ("TEST03", "Test Company 03", "30,00", "03.11.2026", "Offen"),
+    ]
+    for logical, filename in (("Offene Positionen+Check.csv", "Offene Positionen+Check.csv"),
+                              ("Offene_Positionen.csv", "Offene_Positionen.csv")):
+        path = work / filename
+        path.write_text(position_csv(rows), encoding="utf-8-sig")
+        manifest.setdefault("files", []).append({
+            "logical_name": logical, "path": str(path.resolve()), "filename": filename,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        })
+
+
+
 class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
     def test_missing_section_is_completed_and_merged_without_rewriting_valid_sections(self):
         """A targeted retry fills only the missing section and keeps the original seven."""
@@ -127,6 +154,7 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                 "master_sha256": sha(master),
                 "files": [{"path": str(source), "sha256": sha(source)}],
             }
+            add_position_sources(work, manifest)
             (work / ".gemini_input_manifest.json").write_text(
                 json.dumps(manifest), encoding="utf-8"
             )
@@ -143,9 +171,269 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                 self.assertIn(source.name, names)
                 self.assertIn("GEMINI_INPUT_MANIFEST.json", names)
                 self.assertIn("CHATGPT_FALLBACK_ANWEISUNG.txt", names)
+                self.assertIn("CHATGPT_FALLBACK_BERICHTSSTRUKTUR.txt", names)
+                report_spec = archive.read("CHATGPT_FALLBACK_BERICHTSSTRUKTUR.txt").decode("utf-8")
+                required_headings = (
+                    "DOKUMENTENKOPF",
+                    "BLICK AUF WICHTIGE INDIZES",
+                    "LIVE-PERFORMANCE VS. MSCI WORLD",
+                    "KURZ-ZUSAMMENFASSUNG",
+                    "RISIKO-WATCH",
+                    "WOCHENAUSBLICK",
+                    "1. MARKTUMFELD & GLOBALE RISIKOLAGE",
+                    "2. MAKRO-ZUKUNFTSSZENARIO",
+                    "3. TRENDFOLGE-SETUPS",
+                    "4. TRENDWENDE-SETUPS",
+                    "5. HEBELTRADER-SETUPS",
+                    "6. SHORT-SETUPS",
+                    "7. EDELMETALLE-SETUPS",
+                    "OFFENE POSITIONEN",
+                    "GESCHLOSSENE POSITIONEN",
+                    "METHODIK & LESEHILFE",
+                )
+                for heading in required_headings:
+                    self.assertIn(heading, report_spec)
+                self.assertLess(report_spec.index("DOKUMENTENKOPF"),
+                                report_spec.index("BLICK AUF WICHTIGE INDIZES"))
+                self.assertLess(report_spec.index("WOCHENAUSBLICK"),
+                                report_spec.index("1. MARKTUMFELD & GLOBALE RISIKOLAGE"))
+                self.assertIn("Bei einem Widerspruch gilt immer die Master-Spezifikation.", report_spec)
+                self.assertIn("Keine Markdown-Syntax", report_spec)
+                self.assertIn("FALLBACK_MANIFEST.txt", report_spec)
                 self.assertIn("FALLBACK_MANIFEST.txt", names)
-                self.assertIn("QUELLE=GEMINI-INPUT-MANIFEST",
-                              archive.read("FALLBACK_MANIFEST.txt").decode("utf-8"))
+                self.assertNotIn("POSITIONSABGLEICH.txt", names)
+                fallback_manifest = archive.read("FALLBACK_MANIFEST.txt").decode("utf-8")
+                self.assertIn("QUELLE=GEMINI-INPUT-MANIFEST", fallback_manifest)
+                self.assertIn("POSITIONSABGLEICH – Fallback-Sicherheitsprüfung", fallback_manifest)
+                self.assertIn("Offene Positionen+Check.csv", names)
+                self.assertIn("Offene_Positionen.csv", names)
+                self.assertEqual(archive.read("Offene Positionen+Check.csv"),
+                                 (work / "Offene Positionen+Check.csv").read_bytes())
+
+    def test_fallback_reports_position_differences_without_selecting_backend_as_current(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            shutil.copy2(ROOT / "chatgpt_fallback_paket.py", work / "chatgpt_fallback_paket.py")
+            master = work / "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
+            master.write_text("# Master\n", encoding="utf-8")
+            base = work / "Makro.txt"
+            base.write_text("fixture\n", encoding="utf-8")
+            manifest = {"master_instruction": master.name, "created_at": "2026-11-04T20:00:00+00:00", "files": [{"path": str(base), "sha256": hashlib.sha256(base.read_bytes()).hexdigest()}]}
+            add_position_sources(work, manifest)
+            check = work / "Offene Positionen+Check.csv"
+            backend = work / "Offene_Positionen.csv"
+            check_rows = [(f"T{i:02d}", f"Company {i:02d}", str(10+i), f"2026-11-{i+1:02d}", "Offen") for i in range(6)]
+            backend_rows = [(f"T{i:02d}", f"Company {i:02d}", str(10+i), f"2026-11-{i+1:02d}", "Offen") for i in range(5)]
+            backend_rows.append(("BACKEND_ONLY", "Backend Only Ltd", "99,00", "2026-11-20", "Offen"))
+            check.write_text(position_csv(check_rows), encoding="utf-8-sig")
+            backend.write_text(position_csv(backend_rows), encoding="utf-8-sig")
+            for entry in manifest["files"]:
+                path = Path(entry["path"])
+                entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            (work / ".gemini_input_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            run = subprocess.run([sys.executable, "chatgpt_fallback_paket.py"], cwd=work, capture_output=True, text=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            package = next(work.glob("CHATGPT_FALLBACK_*.zip"))
+            with zipfile.ZipFile(package) as archive:
+                self.assertNotIn("POSITIONSABGLEICH.txt", archive.namelist())
+                report = archive.read("FALLBACK_MANIFEST.txt").decode("utf-8")
+                self.assertIn("ERGEBNIS: ABWEICHUNG", report)
+                self.assertIn("Nur/zusätzlich in Drive-Checkquelle: T05 | company 05 | Einstieg=15 | Einstiegsdatum=2026-11-06", report)
+                self.assertIn("Nur/zusätzlich in Backend-CSV: BACKEND_ONLY | backend only ltd | Einstieg=99 | Einstiegsdatum=2026-11-20", report)
+                self.assertIn("KEIN BESTAND WIRD AUTOMATISCH ALS AKTUELL AUSGEWÄHLT", report)
+                self.assertIn("Offene Positionen Drive-Checkquelle: 6", report)
+                self.assertIn("Offene Positionen+Check.csv", archive.namelist())
+
+    def test_position_reader_accepts_variable_and_empty_daily_holdings(self):
+        """The number of open positions is dynamic; zero is a valid daily state."""
+        import importlib.util
+
+        module_path = ROOT / "chatgpt_fallback_paket.py"
+        spec = importlib.util.spec_from_file_location("fallback_positions_dynamic_test", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            for count in (0, 1, 6, 18):
+                csv_path = work / f"positions_{count}.csv"
+                rows = [(f"T{i:02d}", f"Company {i:02d}", str(i+1), f"2026-10-{(i%28)+1:02d}", "Offen") for i in range(count)]
+                csv_path.write_text(position_csv(rows), encoding="utf-8-sig")
+                positions = module._read_open_positions(csv_path, "Testbestand")
+                self.assertEqual(len(positions), count)
+
+    def test_fallback_is_created_when_optional_backend_csv_is_missing(self):
+        """The mandatory Drive check CSV remains usable; missing backend is explicit, not fatal."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            shutil.copy2(ROOT / "chatgpt_fallback_paket.py", work / "chatgpt_fallback_paket.py")
+            master = work / "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
+            master.write_text("# Master\n", encoding="utf-8")
+            check = work / "Offene Positionen+Check.csv"
+            check.write_text(position_csv([
+                ("AAA", "Alpha AG", "10,00", "01.11.2026", "Offen"),
+                ("BBB", "Beta AG", "20,00", "02.11.2026", "Offen"),
+            ]), encoding="utf-8-sig")
+            sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+            manifest = {
+                "master_instruction": master.name,
+                "master_sha256": sha(master),
+                "created_at": "2026-11-05T04:00:00+00:00",
+                "files": [{
+                    "logical_name": "Offene Positionen+Check.csv",
+                    "filename": check.name,
+                    "path": str(check.resolve()),
+                    "sha256": sha(check),
+                }],
+            }
+            (work / ".gemini_input_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            run = subprocess.run(
+                [sys.executable, "chatgpt_fallback_paket.py"],
+                cwd=work, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            package = next(work.glob("CHATGPT_FALLBACK_*.zip"))
+            with zipfile.ZipFile(package) as archive:
+                names = set(archive.namelist())
+                self.assertIn(check.name, names)
+                self.assertNotIn("Offene_Positionen.csv", names)
+                report = archive.read("FALLBACK_MANIFEST.txt").decode("utf-8")
+                self.assertIn("ERGEBNIS: NICHT VERGLEICHBAR", report)
+                self.assertIn("Backend-CSV fehlt", report)
+                self.assertIn("Drive-Abrufzeitpunkt: im Quellmanifest nicht separat erfasst", report)
+                self.assertIn("Gemini-Input-Snapshot erstellt (UTC): 2026-11-05T04:00:00+00:00", report)
+                self.assertIn("kein belegter Drive-Abrufzeitpunkt", report)
+
+    def test_fallback_rejects_empty_or_unknown_position_status(self):
+        """Only exact Offen is active; malformed statuses and missing identity fields fail closed."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fallback_status_validation_test", ROOT / "chatgpt_fallback_paket.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "positions.csv"
+            for status in ("", "unbekannt", "Aktiv"):
+                path.write_text(position_csv([("AAA", "Alpha AG", "10,00", "01.11.2026", status)]), encoding="utf-8-sig")
+                with self.subTest(status=status):
+                    with self.assertRaises(SystemExit):
+                        module._read_open_positions(path, "Testbestand")
+            path.write_text("Ticker;Name;Einstieg;Status\nAAA;Alpha AG;10,00;Offen\n", encoding="utf-8-sig")
+            with self.assertRaisesRegex(SystemExit, "Einstiegsdatum"):
+                module._read_open_positions(path, "Testbestand")
+            path.write_text(position_csv([("ANLEITUNG", "Vorlage", "", "", "")]), encoding="utf-8-sig")
+            self.assertEqual(module._read_open_positions(path, "Testbestand"), set())
+
+    def test_same_ticker_with_different_entry_dates_is_compared_as_two_positions(self):
+        """Same ticker is not the identity: each complete position key is compared separately."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            shutil.copy2(ROOT / "chatgpt_fallback_paket.py", work / "chatgpt_fallback_paket.py")
+            master = work / "Sicherung_Gemini_Engine_Trading-Setups_Automatisierung.md"
+            master.write_text("# Master\n", encoding="utf-8")
+            check = work / "Offene Positionen+Check.csv"
+            backend = work / "Offene_Positionen.csv"
+            check.write_text(position_csv([
+                ("AAA", "Alpha AG", "10,00", "01.11.2026", "Offen"),
+                ("AAA", "Alpha AG", "12,00", "03.11.2026", "Offen"),
+                ("BBB", "Beta AG", "20,00", "02.11.2026", "Offen"),
+            ]), encoding="utf-8-sig")
+            backend.write_text(position_csv([
+                ("AAA", "Alpha AG", "10.00", "01.11.2026", "Offen"),
+                ("BBB", "Beta AG", "20,00", "02.11.2026", "Offen"),
+            ]), encoding="utf-8-sig")
+            sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+            manifest = {
+                "master_instruction": master.name,
+                "master_sha256": sha(master),
+                "files": [
+                    {"logical_name": "Offene Positionen+Check.csv", "path": str(check.resolve()), "filename": check.name, "sha256": sha(check)},
+                    {"logical_name": "Offene_Positionen.csv", "path": str(backend.resolve()), "filename": backend.name, "sha256": sha(backend)},
+                ],
+            }
+            (work / ".gemini_input_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            run = subprocess.run(
+                [sys.executable, "chatgpt_fallback_paket.py"], cwd=work,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            package = next(work.glob("CHATGPT_FALLBACK_*.zip"))
+            with zipfile.ZipFile(package) as archive:
+                report = archive.read("FALLBACK_MANIFEST.txt").decode("utf-8")
+            self.assertIn("ERGEBNIS: ABWEICHUNG", report)
+            self.assertIn("Offene Positionen Drive-Checkquelle: 3", report)
+            self.assertIn("Offene Positionen Backend-CSV: 2", report)
+            self.assertIn("AAA | alpha ag | Einstieg=12 | Einstiegsdatum=03.11.2026", report)
+            self.assertIn("Ticker", report)  # Ticker is explicitly part of the position key.
+
+    def test_position_key_normalization_matches_normal_position_manager(self):
+        """Name normalization and German/US numeric formatting follow parse_number/_position_key."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fallback_position_key_normalization_test", ROOT / "chatgpt_fallback_paket.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "positions.csv"
+            path.write_text(position_csv([
+                (" aaa ", "  Example   Company  ", "1.234,50", "01.11.2026", "Offen"),
+            ]), encoding="utf-8-sig")
+            first = module._read_open_positions(path, "Testbestand")
+            path.write_text(position_csv([
+                ("AAA", "example company", "1234.5", "01.11.2026", "Offen"),
+            ]), encoding="utf-8-sig")
+            second = module._read_open_positions(path, "Testbestand")
+            self.assertEqual(first, second)
+
+    def test_position_number_normalization_matches_parse_number_numeric_finiteness(self):
+        """Numeric objects follow parse_number's finite check; text keeps its text-path behavior."""
+        import importlib.util
+        import math
+        spec = importlib.util.spec_from_file_location(
+            "fallback_position_number_finiteness_test", ROOT / "chatgpt_fallback_paket.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(value=value):
+                self.assertIsNone(module._parse_position_number(value))
+
+        self.assertEqual(module._parse_position_number(1234.5), 1234.5)
+        self.assertEqual(module._parse_position_number(True), 1.0)
+
+        # The production parse_number() checks finiteness in its numeric-object
+        # branch, but returns float(text) directly in its string branch.
+        self.assertTrue(math.isinf(module._parse_position_number("inf")))
+        self.assertTrue(math.isinf(module._parse_position_number("1e309")))
+        self.assertIsNone(module._parse_position_number("nan"))
+
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+        if np is not None:
+            self.assertIsNone(module._parse_position_number(np.float64("inf")))
+            self.assertIsNone(module._parse_position_number(np.float32("nan")))
+            self.assertEqual(module._parse_position_number(np.int64(7)), 7.0)
+            self.assertIsNone(module._parse_position_number(np.timedelta64(1, "D")))
+            self.assertEqual(module._parse_position_number(np.array(7)), 7.0)
+
+    def test_identical_duplicate_position_key_is_rejected(self):
+        """The normal position manager rejects duplicate complete position keys too."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fallback_duplicate_position_key_test", ROOT / "chatgpt_fallback_paket.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "positions.csv"
+            row = ("AAA", "Alpha AG", "10,00", "01.11.2026", "Offen")
+            path.write_text(position_csv([row, row]), encoding="utf-8-sig")
+            with self.assertRaisesRegex(SystemExit, "doppelter identischer Positionsschlüssel"):
+                module._read_open_positions(path, "Testbestand")
 
     def test_fallback_packager_rejects_input_changed_after_manifest(self):
         """A stale/changed source must stop packaging, not create a misleading fallback."""
@@ -162,6 +450,7 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                 "master_sha256": sha(master),
                 "files": [{"path": str(source), "sha256": sha(source)}],
             }
+            add_position_sources(work, manifest)
             (work / ".gemini_input_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             source.write_text("changed after Gemini input\n", encoding="utf-8")
             run = subprocess.run(
@@ -286,6 +575,7 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                     "master_sha256": sha(master),
                     "files": [{"path": str(source), "sha256": sha(source)}],
                 }
+                add_position_sources(work, manifest)
                 (work / ".gemini_input_manifest.json").write_text(
                     json.dumps(manifest), encoding="utf-8"
                 )
@@ -407,6 +697,8 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                 self.assertEqual(manifest["files"][0]["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
                 self.assertEqual(manifest["files"][0]["path"], str(source.resolve()))
 
+                add_position_sources(work, manifest)
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
                 shutil.copy2(ROOT / "chatgpt_fallback_paket.py", work / "chatgpt_fallback_paket.py")
                 packaged = subprocess.run(
                     [sys.executable, "chatgpt_fallback_paket.py"],
