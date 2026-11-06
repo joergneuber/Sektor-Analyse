@@ -811,3 +811,102 @@ def test_update_database_does_not_fallback_to_generic_bday_outside_ifeu_coverage
 
     assert download_calls == []
     assert stats["gap_calendar_unverified"] == 1
+
+
+def test_upsert_rejects_structurally_invalid_ohlc_without_storing_it(tmp_path, capsys):
+    import historical_ohlcv as ho
+    db = tmp_path / "historical_ohlcv.sqlite"
+    ho.init_db(db)
+    idx = pd.date_range("2026-11-03", periods=3, freq="B")
+    frame = pd.DataFrame({
+        "Open": [10.0, 11.0, 12.0],
+        "High": [12.0, 10.5, 13.0],
+        "Low": [9.0, 10.0, 11.0],
+        "Close": [11.0, 11.5, 12.5],
+        "Adj Close": [11.0, 11.5, 12.5],
+        "Volume": [100, 110, 120],
+    }, index=idx)
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": frame}) == 2
+        rows = conn.execute(
+            "SELECT date, open, high, low, close FROM bars ORDER BY date"
+        ).fetchall()
+    assert [row[0] for row in rows] == ["2026-11-03", "2026-11-05"]
+    assert "TEST: 1 strukturell ungueltige Kerze" in capsys.readouterr().err
+
+
+def test_invalid_upsert_cannot_replace_existing_valid_bar(tmp_path):
+    import historical_ohlcv as ho
+    db = tmp_path / "historical_ohlcv.sqlite"
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05"])
+    valid = pd.DataFrame({
+        "Open": [10.0], "High": [12.0], "Low": [9.0], "Close": [11.0],
+        "Adj Close": [11.0], "Volume": [100],
+    }, index=idx)
+    invalid = valid.copy()
+    invalid.loc[idx[0], "Low"] = 11.5
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": valid}) == 1
+            assert ho._upsert_frames(conn, {"TEST": invalid}) == 0
+        row = conn.execute(
+            "SELECT open, high, low, close FROM bars WHERE ticker='TEST' AND date='2026-11-05'"
+        ).fetchone()
+    assert row == (10.0, 12.0, 9.0, 11.0)
+
+
+def test_insert_missing_rejects_invalid_bars_and_keeps_existing_rows(tmp_path):
+    import historical_ohlcv as ho
+    db = tmp_path / "historical_ohlcv.sqlite"
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05", "2026-11-06"])
+    initial = pd.DataFrame({
+        "Open": [10.0], "High": [12.0], "Low": [9.0],
+        "Close": [11.0], "Adj Close": [11.0], "Volume": [100],
+    }, index=idx[:1])
+    incoming = pd.DataFrame({
+        "Open": [10.0, 20.0], "High": [12.0, 19.0], "Low": [9.0, 18.0],
+        "Close": [11.0, 20.0], "Adj Close": [11.0, 20.0], "Volume": [100, 200],
+    }, index=idx)
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": initial}) == 1
+            assert ho._insert_missing_frames(conn, {"TEST": incoming}) == 0
+        rows = conn.execute(
+            "SELECT date, open, high, low, close FROM bars ORDER BY date"
+        ).fetchall()
+    assert rows == [("2026-11-05", 10.0, 12.0, 9.0, 11.0)]
+
+
+def test_ohlcv_validator_rejects_non_positive_and_non_finite_prices():
+    import historical_ohlcv as ho
+    base = pd.Series({"Open": 10.0, "High": 12.0, "Low": 9.0, "Close": 11.0})
+    non_positive = base.copy()
+    non_positive["Open"] = 0.0
+    assert ho._ohlcv_validation_reasons(non_positive) == ["open_non_positive"]
+    non_finite = base.copy()
+    non_finite["Close"] = float("inf")
+    assert ho._ohlcv_validation_reasons(non_finite) == ["close_not_finite"]
+    inverted_range = base.copy()
+    inverted_range["High"] = 8.0
+    assert "high_below_low" in ho._ohlcv_validation_reasons(inverted_range)
+
+
+def test_invalid_only_ticker_does_not_receive_fresh_instrument_metadata(tmp_path):
+    import historical_ohlcv as ho
+    db = tmp_path / "historical_ohlcv.sqlite"
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05"])
+    valid = pd.DataFrame({
+        "Open": [10.0], "High": [12.0], "Low": [9.0], "Close": [11.0],
+        "Adj Close": [11.0], "Volume": [100],
+    }, index=idx)
+    invalid = valid.copy()
+    invalid.loc[idx[0], "High"] = 8.0
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"GOOD": valid, "BAD": invalid}) == 1
+        tickers = {row[0] for row in conn.execute("SELECT ticker FROM instruments")}
+    assert tickers == {"GOOD"}
