@@ -101,7 +101,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py "pandas<3.1" google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
+          pip install alpaca-py "pandas<3.1" exchange-calendars google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd cme-fedwatch openpyxl
 
       # Pflicht-Regression: Trading-Radar-Datenvertrag vor produktiven Schritten prüfen.
       - name: Trading-Radar Datenvertrag Regressionstest
