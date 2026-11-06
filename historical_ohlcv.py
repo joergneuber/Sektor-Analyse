@@ -8,7 +8,9 @@ Die Datenbank ist bewusst von market_cache.py getrennt:
 Quelle: yfinance/Yahoo Finance, mit auto_adjust=False, damit rohe OHLCV-Werte
 und Adj Close getrennt nachvollziehbar bleiben. Der Loader ist inkrementell:
 beim Erstaufbau werden fehlende Ticker mit period='max' geladen; danach werden
-nur Ticker mit fehlendem/zu altem letzten Handelstag aktualisiert.
+nur Ticker mit fehlendem/zu altem letzten Handelstag aktualisiert. Die
+Pruefung der Datenqualitaet vergleicht die gespeicherten Tage zusaetzlich mit
+dem jeweiligen Handelskalender, um innere Handelstagsluecken zu erkennen.
 
 Die Tickerliste wird sicher per AST aus analyse.py gelesen. analyse.py wird dabei
 NICHT importiert und daher auch nicht ausgefuehrt.
@@ -26,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterable, Iterator
+from functools import lru_cache
 
 import pandas as pd
 
@@ -57,6 +60,190 @@ EXCLUDED_TICKERS = frozenset({
     "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
     "SNV", "STM1.DE", "WRK", "X",
 })
+
+# Handelskalender-Zuordnung fuer das aktuelle Research-Universum. Suffixlose
+# Aktien/ETFs sind gemaess Projektkonvention US-Werte; XNYS dient als
+# US-Aktienkalender-Proxy. Bekannte Nasdaq-/Indexserien sind separat markiert.
+# ^STOXX50E/^STOXX sind pan-europaeische Indizes; XETR ist dafuer der
+# explizite Referenzmarkt-Proxy, kein behaupteter Einzelhandelsplatz.
+EXPLICIT_CALENDAR_BY_TICKER = {
+    "^GSPC": "XNYS", "^IXIC": "XNAS", "^DJI": "XNYS", "^GDAXI": "XETR",
+    "^STOXX50E": "XETR", "^STOXX": "XETR", "^RUT": "XNYS", "^N225": "XTKS",
+    "^HSI": "XHKG", "^VIX": "XNYS",
+    "CL=F": "NYMEX", "BZ=F": "ICEUS", "GC=F": "COMEX", "SI=F": "COMEX",
+    "PL=F": "NYMEX", "PA=F": "NYMEX", "HG=F": "COMEX",
+    "EURUSD=X": "24/5", "BTC-USD": "24/7",
+    "SPY": "XNYS", "QQQ": "XNAS", "LIT": "XNYS",
+}
+SUFFIX_CALENDAR_MAP = {
+    "DE": "XETR", "F": "XFRA", "PA": "XPAR", "AS": "XAMS",
+    "MI": "XMIL", "L": "XLON", "T": "XTKS", "HK": "XHKG",
+    "TO": "XTSE", "SW": "XSWX",
+}
+# Historische Abdeckung beginnt erst mit der tatsaechlichen/unterstuetzten
+# Handelsplatz-Historie: Nasdaq 1971, Xetra/Tokio 1997. Aeltere gespeicherte
+# Kurse bleiben sichtbar, werden aber nicht mit einem juengeren Kalender
+# rueckwirkend als vollstaendig verifiziert.
+CALENDAR_EARLIEST_DATES = {
+    "XNAS": "1971-02-08", "XETR": "1997-01-01", "XTKS": "1997-01-01",
+}
+
+
+def _calendar_name_for_ticker(ticker: str) -> str | None:
+    """Resolve a Yahoo ticker to its exchange/session calendar without guessing unknown suffixes."""
+    symbol = str(ticker or "").strip().upper()
+    if symbol in EXPLICIT_CALENDAR_BY_TICKER:
+        return EXPLICIT_CALENDAR_BY_TICKER[symbol]
+    if symbol.startswith("^") or "=" in symbol:
+        return None
+    if "." in symbol:
+        suffix = symbol.rsplit(".", 1)[-1]
+        return SUFFIX_CALENDAR_MAP.get(suffix)
+    # Project convention: symbols without an exchange suffix are US listings.
+    return "XNYS"
+
+
+@lru_cache(maxsize=256)
+def _previous_completed_session_date(calendar_name: str, as_of_date: str) -> str | None:
+    """Return the last calendar session strictly before the supplied local date."""
+    import exchange_calendars as exchange_cal
+
+    today = pd.Timestamp(as_of_date).normalize()
+    start = today - pd.Timedelta(days=20)
+    earliest = pd.Timestamp(CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01"))
+    start = max(start, earliest)
+    if start >= today:
+        return None
+    calendar = exchange_cal.get_calendar(calendar_name, start=start, end=today)
+    sessions = calendar.sessions[calendar.sessions < today]
+    return sessions[-1].date().isoformat() if len(sessions) else None
+
+
+def _analyse_trading_day_gaps(
+    observed_dates_by_ticker: dict[str, set[str]],
+    *,
+    as_of_date: str | None = None,
+    recent_days: int = 90,
+) -> dict:
+    """Compare stored daily bars with each instrument's own exchange sessions.
+
+    Only sessions strictly between the first and last stored bars can be
+    classified as interior gaps. Missing trailing sessions remain the separate
+    stale-data concern.
+    """
+    import exchange_calendars as exchange_cal
+
+    today = pd.Timestamp(as_of_date or dt.date.today().isoformat()).normalize()
+    recent_cutoff = (today - pd.Timedelta(days=max(0, int(recent_days)))).date().isoformat()
+    groups: dict[str, list[str]] = {}
+    unverified: set[str] = set()
+    coverage_incomplete: set[str] = set()
+    reasons: dict[str, str] = {}
+    calendars_by_ticker: dict[str, str] = {}
+    normalized_dates: dict[str, set[str]] = {}
+
+    for ticker, raw_dates in observed_dates_by_ticker.items():
+        dates = {pd.Timestamp(value).date().isoformat() for value in raw_dates if value}
+        if not dates:
+            continue
+        normalized_dates[ticker] = dates
+        calendar_name = _calendar_name_for_ticker(ticker)
+        if not calendar_name:
+            unverified.add(ticker)
+            reasons[ticker] = "Kein eindeutig zugeordneter Handelskalender"
+            continue
+        calendars_by_ticker[ticker] = calendar_name
+        groups.setdefault(calendar_name, []).append(ticker)
+
+    gap_tickers: set[str] = set()
+    recent_gap_tickers: set[str] = set()
+    historical_gap_tickers: set[str] = set()
+    details: dict[str, dict] = {}
+
+    for calendar_name, tickers in groups.items():
+        first_dates = {ticker: min(normalized_dates[ticker]) for ticker in tickers}
+        last_dates = {ticker: max(normalized_dates[ticker]) for ticker in tickers}
+        earliest_supported = CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01")
+        requested_start = min(first_dates.values())
+        calendar_start = max(requested_start, earliest_supported)
+        calendar_end = max(last_dates.values())
+        if requested_start < earliest_supported:
+            for ticker in tickers:
+                if first_dates[ticker] < earliest_supported:
+                    coverage_incomplete.add(ticker)
+                    reasons[ticker] = (
+                        f"Kalender {calendar_name} deckt die Historie erst ab {earliest_supported} ab"
+                    )
+        if calendar_end < calendar_start:
+            for ticker in tickers:
+                unverified.add(ticker)
+                reasons.setdefault(ticker, f"Keine Kalenderabdeckung fuer {calendar_name}")
+            continue
+        try:
+            calendar = exchange_cal.get_calendar(
+                calendar_name, start=calendar_start, end=calendar_end
+            )
+        except Exception as exc:
+            for ticker in tickers:
+                unverified.add(ticker)
+                reasons[ticker] = f"Kalender {calendar_name} nicht ladbar: {type(exc).__name__}"
+            continue
+
+        for ticker in tickers:
+            first_date = max(
+                first_dates[ticker], earliest_supported,
+                calendar.first_session.date().isoformat(),
+            )
+            last_date = last_dates[ticker]
+            if last_date < first_date:
+                continue
+            try:
+                session_labels = calendar.sessions
+                sessions = session_labels[
+                    (session_labels >= pd.Timestamp(first_date))
+                    & (session_labels <= pd.Timestamp(last_date))
+                ]
+            except Exception as exc:
+                unverified.add(ticker)
+                reasons[ticker] = f"Kalendersitzungen nicht abrufbar: {type(exc).__name__}"
+                continue
+            expected_dates = {session.date().isoformat() for session in sessions}
+            missing_dates = sorted(expected_dates - normalized_dates[ticker])
+            recent_missing = [value for value in missing_dates if value >= recent_cutoff]
+            historical_missing = [value for value in missing_dates if value < recent_cutoff]
+            if missing_dates:
+                gap_tickers.add(ticker)
+            if recent_missing:
+                recent_gap_tickers.add(ticker)
+            if historical_missing:
+                historical_gap_tickers.add(ticker)
+            if missing_dates:
+                details[ticker] = {
+                    "calendar": calendar_name,
+                    "first_date": first_dates[ticker],
+                    "last_date": last_dates[ticker],
+                    "expected_sessions": len(expected_dates),
+                    "missing_sessions": len(missing_dates),
+                    "recent_missing_sessions": len(recent_missing),
+                    "historical_missing_sessions": len(historical_missing),
+                    "missing_dates_sample": missing_dates[:20],
+                    "recent_missing_dates_sample": recent_missing[:20],
+                    "historical_missing_dates_sample": historical_missing[:20],
+                    "dates_truncated": len(missing_dates) > 20,
+                }
+
+    return {
+        "gap_tickers": sorted(gap_tickers),
+        "recent_gap_tickers": sorted(recent_gap_tickers),
+        "historical_gap_tickers": sorted(historical_gap_tickers),
+        "historical_only_gap_tickers": sorted(gap_tickers - recent_gap_tickers),
+        "calendar_unverified_tickers": sorted(unverified),
+        "calendar_coverage_incomplete_tickers": sorted(coverage_incomplete),
+        "calendar_unverified_reasons": reasons,
+        "calendar_by_ticker": calendars_by_ticker,
+        "trading_day_gap_details": details,
+        "trading_day_gap_policy_days": int(recent_days),
+    }
 
 
 def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
@@ -367,12 +554,28 @@ def update_database(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOUR
             if REQUEST_PAUSE_SECONDS:
                 time.sleep(REQUEST_PAUSE_SECONDS)
 
-        # Inkrementell: nur Reihen aktualisieren, die hinter dem erwarteten
-        # letzten abgeschlossenen Handelstag liegen. Ein 5-Tage-Puffer deckt
-        # Wochenenden und einzelne Feiertage ab.
-        expected = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
+        # Inkrementell: je Symbol den letzten abgeschlossenen Handelstag des
+        # zugeordneten Marktes verwenden. Unbekannte Symbole behalten als
+        # Fallback die bisherige BDay-Heuristik; audit_snapshot weist sie separat
+        # als nicht verifizierten Handelskalender aus.
+        as_of_date = dt.date.today().isoformat()
+        legacy_expected = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
         current_latest = _db_latest(conn)
-        stale = [t for t in tickers if t in current_latest and pd.Timestamp(current_latest[t]) < expected - pd.Timedelta(days=STALE_AFTER_DAYS - 1)]
+        stale = []
+        for ticker in tickers:
+            if ticker not in current_latest:
+                continue
+            calendar_name = _calendar_name_for_ticker(ticker)
+            expected_text = None
+            if calendar_name:
+                try:
+                    expected_text = _previous_completed_session_date(calendar_name, as_of_date)
+                except Exception:
+                    expected_text = None
+            expected = pd.Timestamp(expected_text) if expected_text else legacy_expected
+            cutoff = expected - pd.Timedelta(days=max(0, STALE_AFTER_DAYS - 1))
+            if pd.Timestamp(current_latest[ticker]) < cutoff:
+                stale.append(ticker)
         for batch in _chunks(stale, BATCH_SIZE):
             min_date = min(pd.Timestamp(current_latest[t]) for t in batch) - pd.Timedelta(days=5)
             try:
@@ -429,6 +632,17 @@ def coverage(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOURCE_FILE
     return pd.DataFrame(out).sort_values(["Status", "Ticker"])
 
 
+def _load_bar_dates_by_ticker(db_path: Path) -> dict[str, set[str]]:
+    """Load stored date labels once for the full-history session-gap audit."""
+    result: dict[str, set[str]] = {}
+    with _connect(db_path) as conn:
+        for ticker, date_value in conn.execute(
+            "SELECT ticker, date FROM bars ORDER BY ticker, date"
+        ):
+            result.setdefault(str(ticker), set()).add(str(date_value))
+    return result
+
+
 def audit_snapshot(
     db_path: Path = DEFAULT_DB,
     source_file: Path = DEFAULT_SOURCE_FILE,
@@ -442,9 +656,12 @@ def audit_snapshot(
 
     Ein Symbol gilt nur dann als abgedeckt, wenn eine gespeicherte Historie
     vorhanden ist. Als veraltet gilt ein letzter Kursstand, der hinter dem
-    letzten abgeschlossenen Börsentag um mehr als den konfigurierten Puffer
-    zurückliegt. Die Funktion behauptet keine Kandidatenwirkung, die sie nicht
-    aus dem Datenbestand ableiten kann.
+    letzten abgeschlossenen Handelstag seines Marktkalenders um mehr als den
+    konfigurierten Puffer zurückliegt. Zusaetzlich werden fehlende Sitzungen
+    innerhalb der vorhandenen Historie als eigene Luecken-Dimension erfasst;
+    Wochenenden und marktspezifische Feiertage gelten dabei nicht als Luecke.
+    Die Funktion behauptet keine Kandidatenwirkung, die sie nicht aus dem
+    Datenbestand ableiten kann.
     """
     checked_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
     if not db_path.exists():
@@ -452,6 +669,10 @@ def audit_snapshot(
             "status": "unavailable", "checked_at": checked_at,
             "universe_count": 0, "covered_count": 0,
             "missing_tickers": [], "stale_tickers": [], "affected_candidates": [],
+            "gap_tickers": [], "recent_gap_tickers": [], "historical_gap_tickers": [],
+            "historical_only_gap_tickers": [], "calendar_unverified_tickers": [],
+            "calendar_coverage_incomplete_tickers": [],
+            "trading_day_gap_details": {},
             "error": f"OHLCV-Datenbank fehlt: {db_path}",
         }
     try:
@@ -489,10 +710,44 @@ def audit_snapshot(
         invalid_tickers = sorted(t for t in tickers if t in existing and existing[t][2] > 0)
         recent_invalid_tickers = sorted(t for t in tickers if t in existing and existing[t][3] > 0)
         historical_only_invalid_tickers = sorted(set(invalid_tickers) - set(recent_invalid_tickers))
-        expected = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
-        cutoff = expected - pd.Timedelta(days=max(0, int(stale_after_days) - 1))
-        stale = sorted(t for t in tickers if t in existing and existing[t][0] > 0
-                       and existing[t][1] and pd.Timestamp(existing[t][1]) < cutoff)
+        # Die Aktualitaet wird gegen den letzten abgeschlossenen Handelstag
+        # des jeweiligen Marktes geprueft, nicht gegen einen globalen BDay.
+        as_of_date = dt.date.today().isoformat()
+        stale_values = []
+        stale_calendar_unverified = set()
+        for ticker in tickers:
+            if ticker not in existing or existing[ticker][0] <= 0 or not existing[ticker][1]:
+                continue
+            calendar_name = _calendar_name_for_ticker(ticker)
+            if not calendar_name:
+                stale_calendar_unverified.add(ticker)
+                continue
+            try:
+                expected_text = _previous_completed_session_date(calendar_name, as_of_date)
+            except Exception:
+                expected_text = None
+            if not expected_text:
+                stale_calendar_unverified.add(ticker)
+                continue
+            cutoff = pd.Timestamp(expected_text) - pd.Timedelta(
+                days=max(0, int(stale_after_days) - 1)
+            )
+            if pd.Timestamp(existing[ticker][1]) < cutoff:
+                stale_values.append(ticker)
+        stale = sorted(stale_values)
+        gap_audit = _analyse_trading_day_gaps(
+            observed_dates_by_ticker={
+                ticker: dates
+                for ticker, dates in _load_bar_dates_by_ticker(db_path).items()
+                if ticker in set(tickers)
+            },
+            as_of_date=as_of_date,
+            recent_days=90,
+        )
+        calendar_unverified = sorted(
+            set(gap_audit["calendar_unverified_tickers"]) | stale_calendar_unverified
+        )
+        gap_audit["calendar_unverified_tickers"] = calendar_unverified
         covered = sum(1 for t in tickers if t in existing and existing[t][0] > 0
                       and existing[t][1] and existing[t][4] > 0)
         invalid_tickers = sorted(set(invalid_tickers))
@@ -500,10 +755,20 @@ def audit_snapshot(
         mapped_candidates = bool(candidate_set)
         # Historical anomalies remain visible, but only anomalies in the last
         # 90 calendar days affect current candidate eligibility.
-        problem_tickers = set(missing) | set(stale) | set(recent_invalid_tickers)
+        problem_tickers = (
+            set(missing) | set(stale) | set(recent_invalid_tickers)
+            | set(gap_audit["recent_gap_tickers"])
+            | set(calendar_unverified)
+        )
         affected = sorted(set(candidate_set) & problem_tickers)
         unmapped_candidates = sorted(set(candidate_set) - set(tickers))
-        status = "complete" if tickers and covered == len(tickers) and not missing and not stale and not recent_invalid_tickers else "gaps"
+        status = (
+            "complete"
+            if tickers and covered == len(tickers) and not missing and not stale
+            and not recent_invalid_tickers and not gap_audit["recent_gap_tickers"]
+            and not calendar_unverified
+            else "gaps"
+        )
         candidate_mapping_complete = (mapped_candidates or explicit_no_candidates) and not unmapped_candidates
         # Exactly one mutually exclusive quality state per universe symbol.
         # Missing takes precedence, then invalid (any malformed stored candle),
@@ -540,6 +805,7 @@ def audit_snapshot(
             "recent_invalid_ohlcv_tickers": recent_invalid_tickers,
             "historical_only_invalid_ohlcv_tickers": historical_only_invalid_tickers,
             "invalid_ohlcv_policy_days": 90,
+            **gap_audit,
             "affected_candidates": affected,
             "candidate_tickers_checked": candidate_set,
             "unmapped_candidate_tickers": unmapped_candidates,
@@ -554,6 +820,10 @@ def audit_snapshot(
             "status": "unavailable", "checked_at": checked_at,
             "universe_count": 0, "covered_count": 0,
             "missing_tickers": [], "stale_tickers": [], "affected_candidates": [],
+            "gap_tickers": [], "recent_gap_tickers": [], "historical_gap_tickers": [],
+            "historical_only_gap_tickers": [], "calendar_unverified_tickers": [],
+            "calendar_coverage_incomplete_tickers": [],
+            "trading_day_gap_details": {},
             "error": f"OHLCV-Prüfung fehlgeschlagen: {type(exc).__name__}: {exc}",
         }
 

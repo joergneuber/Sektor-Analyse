@@ -18513,6 +18513,10 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
         "checked_at": "ISO-Datum/Zeit oder Datenstand",
         "universe_count": int, "covered_count": int,
         "missing_tickers": [str, ...], "stale_tickers": [str, ...],
+        "gap_tickers": [str, ...], "recent_gap_tickers": [str, ...],
+        "historical_only_gap_tickers": [str, ...],
+        "calendar_unverified_tickers": [str, ...],
+        "calendar_coverage_incomplete_tickers": [str, ...],
         "affected_candidates": [str, ...]
       }
     Fehlt dieser Prüfnachweis, wird KEINE Vollständigkeit behauptet; Kandidaten
@@ -18549,6 +18553,18 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     covered = audit.get("covered_count")
     missing = sorted({str(x).strip() for x in (audit.get("missing_tickers") or []) if str(x).strip()})
     stale = sorted({str(x).strip() for x in (audit.get("stale_tickers") or []) if str(x).strip()})
+    recent_gaps = sorted({
+        str(x).strip() for x in (audit.get("recent_gap_tickers") or []) if str(x).strip()
+    })
+    historical_only_gaps = sorted({
+        str(x).strip() for x in (audit.get("historical_only_gap_tickers") or []) if str(x).strip()
+    })
+    calendar_unverified = sorted({
+        str(x).strip() for x in (audit.get("calendar_unverified_tickers") or []) if str(x).strip()
+    })
+    calendar_coverage_incomplete = sorted({
+        str(x).strip() for x in (audit.get("calendar_coverage_incomplete_tickers") or []) if str(x).strip()
+    })
     affected = sorted({str(x).strip() for x in (audit.get("affected_candidates") or []) if str(x).strip()})
     counts_valid = (isinstance(universe, int) and not isinstance(universe, bool)
                     and isinstance(covered, int) and not isinstance(covered, bool)
@@ -18619,20 +18635,34 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
         if str(x).strip()
     })
     if (status == "complete" and quality_counts_valid and covered == universe and not missing and not stale
-            and not recent_invalid
+            and not recent_invalid and not recent_gaps and not calendar_unverified
             and audit.get("candidate_impact") == "none_detected_in_checked_candidates"
             and audit.get("candidate_mapping_complete") is True):
-        historical_note = (
-            " Historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters bleiben dokumentiert: "
-            + ", ".join(historical_only_invalid[:100]) + "."
-        ) if historical_only_invalid else ""
+        historical_notes = []
+        if historical_only_invalid:
+            historical_notes.append(
+                "Historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters: "
+                + ", ".join(historical_only_invalid[:100])
+            )
+        if historical_only_gaps:
+            historical_notes.append(
+                "Historische Handelstagslücken außerhalb des 90-Tage-Fensters: "
+                + ", ".join(historical_only_gaps[:100])
+            )
+        if calendar_coverage_incomplete:
+            historical_notes.append(
+                "Kalender-Historie vor dem jeweiligen unterstützten Startdatum nicht vollständig prüfbar: "
+                + ", ".join(calendar_coverage_incomplete[:100])
+            )
+        historical_note = (" " + "; ".join(historical_notes) + ".") if historical_notes else ""
         return (
             f"OHLCV-Abdeckung: vollständig ({covered}/{universe} geprüfte Symbole).\n"
             + quality_line + "\n" + symbol_status_block + "\n"
             + f"Datenstand: {checked_at}.\n"
             + "Kandidaten-Mapping: VOLLSTÄNDIG – alle im Bericht ausgewiesenen Kandidaten wurden dem geprüften Universum zugeordnet.\n"
             + "Lückenstatus und Kandidatenauswirkung: keine fehlenden oder veralteten OHLCV-Daten; "
-            "im jüngsten 90-Tage-Fenster keine ungültigen OHLCV-Kerzen; Kandidaten nicht eingeschränkt."
+            "im jüngsten 90-Tage-Fenster keine ungültigen OHLCV-Kerzen oder fehlenden Handelstage; "
+            "alle verwendeten Handelskalender sind zugeordnet; Kandidaten nicht eingeschränkt."
             + historical_note
         )
 
@@ -18648,6 +18678,14 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     historical_only_invalid = sorted({str(x).strip() for x in (audit.get("historical_only_invalid_ohlcv_tickers") or []) if str(x).strip()})
     if recent_invalid:
         details.append("ungültige OHLCV-Felder im jüngsten 90-Tage-Fenster: " + ", ".join(recent_invalid[:100]))
+    if recent_gaps:
+        details.append("fehlende Handelstage im jüngsten 90-Tage-Fenster: " + ", ".join(recent_gaps[:100]))
+    if calendar_unverified:
+        details.append("Handelskalender nicht verifiziert: " + ", ".join(calendar_unverified[:100]))
+    if calendar_coverage_incomplete:
+        details.append("Kalender-Historie nur teilweise abgedeckt: " + ", ".join(calendar_coverage_incomplete[:100]))
+    if historical_only_gaps:
+        details.append("historische Handelstagslücken außerhalb des 90-Tage-Fensters: " + ", ".join(historical_only_gaps[:100]))
     if historical_only_invalid:
         details.append("historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters (weiterhin dokumentiert): " + ", ".join(historical_only_invalid[:100]))
     elif invalid_ohlcv and not recent_invalid:
@@ -18679,8 +18717,9 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
         impact = (
             f"Universumsweite OHLCV-Datenlücken/-veraltung und Qualitätsauffälligkeiten ({quality_summary}) "
             "bleiben dokumentiert. Das vollständige Kandidaten-Mapping zeigt keine direkte Überschneidung "
-            "der geprüften Kandidaten mit fehlenden, veralteten oder im jüngsten 90-Tage-Fenster ungültigen "
-            "OHLCV-Daten; die geprüften Kandidaten sind deshalb durch diese OHLCV-Befunde nicht eingeschränkt."
+            "der geprüften Kandidaten mit fehlenden, veralteten, im jüngsten 90-Tage-Fenster ungültigen "
+            "OHLCV-Daten oder fehlenden Handelstagen; die geprüften Kandidaten sind deshalb durch diese "
+            "OHLCV-Befunde nicht eingeschränkt."
         )
     elif explicit_zero_candidates and not affected and not unmapped_candidates:
         impact = (
