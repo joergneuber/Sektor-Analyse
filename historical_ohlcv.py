@@ -8,9 +8,10 @@ Die Datenbank ist bewusst von market_cache.py getrennt:
 Quelle: yfinance/Yahoo Finance, mit auto_adjust=False, damit rohe OHLCV-Werte
 und Adj Close getrennt nachvollziehbar bleiben. Der Loader ist inkrementell:
 beim Erstaufbau werden fehlende Ticker mit period='max' geladen; danach werden
-nur Ticker mit fehlendem/zu altem letzten Handelstag aktualisiert. Die
-Pruefung der Datenqualitaet vergleicht die gespeicherten Tage zusaetzlich mit
-dem jeweiligen Handelskalender, um innere Handelstagsluecken zu erkennen.
+nur Ticker mit fehlendem/zu altem letzten Handelstag aktualisiert. Zusaetzlich
+werden erkannte fehlende Handelstage im konfigurierten Lookback-Fenster
+automatisch nachgeladen. Die Datenqualitaetspruefung vergleicht gespeicherte
+Tage mit dem jeweiligen Handelskalender.
 
 Die Tickerliste wird sicher per AST aus analyse.py gelesen. analyse.py wird dabei
 NICHT importiert und daher auch nicht ausgefuehrt.
@@ -39,6 +40,7 @@ SCHEMA_VERSION = 1
 BATCH_SIZE = int(os.environ.get("NMM_HISTORICAL_OHLCV_BATCH_SIZE", "40"))
 REQUEST_PAUSE_SECONDS = float(os.environ.get("NMM_HISTORICAL_OHLCV_PAUSE", "1.0"))
 STALE_AFTER_DAYS = int(os.environ.get("NMM_HISTORICAL_OHLCV_STALE_DAYS", "3"))
+DEFAULT_GAP_LOOKBACK_DAYS = int(os.environ.get("NMM_HISTORICAL_OHLCV_GAP_LOOKBACK_DAYS", "365"))
 
 # Explizite zusaetzliche Benchmarks/Marktserien, die in analyse.py direkt per
 # get_index_benchmark_yf() abgefragt werden. Sie werden unabhaengig von der
@@ -72,13 +74,13 @@ EXPLICIT_CALENDAR_BY_TICKER = {
     "^HSI": "XHKG", "^VIX": "XNYS",
     "CL=F": "NYMEX", "BZ=F": "ICEUS", "GC=F": "COMEX", "SI=F": "COMEX",
     "PL=F": "NYMEX", "PA=F": "NYMEX", "HG=F": "COMEX",
-    "EURUSD=X": "24/5", "BTC-USD": "24/7",
+    "EURUSD=X": "24/5", "BTC-USD": "24/7", "ETH-USD": "24/7",
     "SPY": "XNYS", "QQQ": "XNAS", "LIT": "XNYS",
 }
 SUFFIX_CALENDAR_MAP = {
     "DE": "XETR", "F": "XFRA", "PA": "XPAR", "AS": "XAMS",
     "MI": "XMIL", "L": "XLON", "T": "XTKS", "HK": "XHKG",
-    "TO": "XTSE", "SW": "XSWX",
+    "TO": "XTSE", "SW": "XSWX", "KS": "XKRX", "CO": "XCSE", "MC": "XMAD",
 }
 # Historische Abdeckung beginnt erst mit der tatsaechlichen/unterstuetzten
 # Handelsplatz-Historie: Nasdaq 1971, Xetra/Tokio 1997. Aeltere gespeicherte
@@ -88,12 +90,25 @@ CALENDAR_EARLIEST_DATES = {
     "XNAS": "1971-02-08", "XETR": "1997-01-01", "XTKS": "1997-01-01",
 }
 
+# CME hat fuer den US-Labor-Day 2026 keine taeglichen Settlementpreise fuer
+# COMEX/NYMEX veroeffentlicht. exchange_calendars fuehrt den Tag dennoch als
+# Session. Solche bekannten Nicht-Publikationstage duerfen nicht endlos als
+# reparierbare Datenluecke behandelt werden. Weitere Ausnahmen nur nach
+# belastbarer Quellenpruefung ergaenzen.
+NON_PUBLISHED_DAILY_BAR_SESSIONS = {
+    "COMEX": frozenset({"2026-09-07"}),
+    "NYMEX": frozenset({"2026-09-07"}),
+}
+
 
 def _calendar_name_for_ticker(ticker: str) -> str | None:
     """Resolve a Yahoo ticker to its exchange/session calendar without guessing unknown suffixes."""
     symbol = str(ticker or "").strip().upper()
     if symbol in EXPLICIT_CALENDAR_BY_TICKER:
         return EXPLICIT_CALENDAR_BY_TICKER[symbol]
+    # Yahoo crypto pairs quoted in USD trade continuously, including weekends.
+    if symbol.endswith("-USD"):
+        return "24/7"
     if symbol.startswith("^") or "=" in symbol:
         return None
     if "." in symbol:
@@ -208,6 +223,9 @@ def _analyse_trading_day_gaps(
                 reasons[ticker] = f"Kalendersitzungen nicht abrufbar: {type(exc).__name__}"
                 continue
             expected_dates = {session.date().isoformat() for session in sessions}
+            expected_dates.difference_update(
+                NON_PUBLISHED_DAILY_BAR_SESSIONS.get(calendar_name, ())
+            )
             missing_dates = sorted(expected_dates - normalized_dates[ticker])
             recent_missing = [value for value in missing_dates if value >= recent_cutoff]
             historical_missing = [value for value in missing_dates if value < recent_cutoff]
@@ -532,10 +550,29 @@ def _upsert_frames(conn: sqlite3.Connection, frames: dict[str, pd.DataFrame]) ->
     return len(rows)
 
 
-def update_database(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOURCE_FILE, dynamic_universe: Path = DEFAULT_DYNAMIC_UNIVERSE, *, force_bootstrap: bool = False) -> dict:
+def update_database(
+    db_path: Path = DEFAULT_DB,
+    source_file: Path = DEFAULT_SOURCE_FILE,
+    dynamic_universe: Path = DEFAULT_DYNAMIC_UNIVERSE,
+    *,
+    force_bootstrap: bool = False,
+    repair_gaps: bool = True,
+    gap_lookback_days: int = DEFAULT_GAP_LOOKBACK_DAYS,
+) -> dict:
+    """Update current bars and automatically repair recent missing sessions."""
+    if gap_lookback_days < 1:
+        raise ValueError("gap_lookback_days muss mindestens 1 sein")
     init_db(db_path)
     tickers = discover_universe(source_file, dynamic_universe)
-    stats = {"tickers": len(tickers), "missing": 0, "updated": 0, "rows": 0, "errors": 0}
+    stats = {
+        "tickers": len(tickers), "missing": 0, "updated": 0, "rows": 0,
+        "errors": 0, "gap_repair_enabled": bool(repair_gaps),
+        "gap_lookback_days": int(gap_lookback_days),
+        "gap_tickers_found": 0, "gap_sessions_found": 0,
+        "gap_tickers_attempted": 0, "gap_rows_added": 0,
+        "gap_repair_errors": 0, "gap_sessions_remaining": 0,
+        "gap_tickers_remaining": 0, "gap_calendar_unverified": 0,
+    }
     with _connect(db_path) as conn:
         latest = _db_latest(conn)
         missing = tickers if force_bootstrap else [t for t in tickers if t not in latest]
@@ -547,10 +584,13 @@ def update_database(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOUR
                 frames = _download_batch(batch)
                 with conn:
                     stats["rows"] += _upsert_frames(conn, frames)
-                stats["updated"] += sum(1 for f in frames.values() if not f.empty)
+                stats["updated"] += sum(1 for frame in frames.values() if not frame.empty)
             except Exception as exc:
                 stats["errors"] += 1
-                print(f"WARNUNG-HIST-OHLCV: Bootstrap-Batch fehlgeschlagen ({len(batch)}): {exc}", file=sys.stderr)
+                print(
+                    f"WARNUNG-HIST-OHLCV: Bootstrap-Batch fehlgeschlagen ({len(batch)}): {exc}",
+                    file=sys.stderr,
+                )
             if REQUEST_PAUSE_SECONDS:
                 time.sleep(REQUEST_PAUSE_SECONDS)
 
@@ -581,15 +621,82 @@ def update_database(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOUR
             try:
                 frames = _download_batch(batch, start=min_date.strftime("%Y-%m-%d"))
                 with conn:
-                    # Nur neue Zeilen werden uebernommen; bereits vorhandene
-                    # Werte duerfen durch Yahoo-Aktualisierungen korrigiert werden.
+                    # Bestehendes inkrementelles Update-Verhalten bleibt erhalten:
+                    # Yahoo darf aktuelle Werte im normalen Stale-Update korrigieren.
                     stats["rows"] += _upsert_frames(conn, frames)
-                stats["updated"] += sum(1 for f in frames.values() if not f.empty)
+                stats["updated"] += sum(1 for frame in frames.values() if not frame.empty)
             except Exception as exc:
                 stats["errors"] += 1
-                print(f"WARNUNG-HIST-OHLCV: Update-Batch fehlgeschlagen ({len(batch)}): {exc}", file=sys.stderr)
+                print(
+                    f"WARNUNG-HIST-OHLCV: Update-Batch fehlgeschlagen ({len(batch)}): {exc}",
+                    file=sys.stderr,
+                )
             if REQUEST_PAUSE_SECONDS:
                 time.sleep(REQUEST_PAUSE_SECONDS)
+
+        # Selbstheilung: alle erwarteten, aber fehlenden Sessions im begrenzten
+        # Lookback-Fenster ermitteln. Nur diese Symbole werden erneut geladen;
+        # die Reparatur schreibt ausschliesslich noch nicht vorhandene Tage.
+        if repair_gaps:
+            gap_scan = _detect_recent_trading_day_gaps(
+                db_path,
+                tickers,
+                lookback_days=gap_lookback_days,
+                as_of_date=as_of_date,
+            )
+            initial_gap_dates = gap_scan["gap_dates_by_ticker"]
+            stats["gap_tickers_found"] = gap_scan["gap_ticker_count"]
+            stats["gap_sessions_found"] = gap_scan["gap_session_count"]
+            stats["gap_calendar_unverified"] = len(gap_scan["calendar_unverified_tickers"])
+
+            gap_tickers = sorted(initial_gap_dates)
+            for batch in _chunks(gap_tickers, BATCH_SIZE):
+                batch_dates = [
+                    date_value
+                    for ticker in batch
+                    for date_value in initial_gap_dates[ticker]
+                ]
+                if not batch_dates:
+                    continue
+                download_start = min(batch_dates)
+                download_end = (
+                    pd.Timestamp(max(batch_dates)) + pd.Timedelta(days=1)
+                ).date().isoformat()
+                try:
+                    frames = _download_batch(
+                        batch, start=download_start, end=download_end
+                    )
+                    with conn:
+                        inserted = _insert_missing_frames(conn, frames)
+                    stats["gap_rows_added"] += inserted
+                    stats["gap_tickers_attempted"] += len(batch)
+                    stats["updated"] += sum(
+                        1 for frame in frames.values() if not frame.empty
+                    )
+                except Exception as exc:
+                    stats["errors"] += 1
+                    stats["gap_repair_errors"] += 1
+                    stats["gap_tickers_attempted"] += len(batch)
+                    print(
+                        f"WARNUNG-HIST-OHLCV: Kursluecken-Reparatur fehlgeschlagen "
+                        f"({len(batch)} Ticker, {download_start} bis {download_end}): {exc}",
+                        file=sys.stderr,
+                    )
+                if REQUEST_PAUSE_SECONDS:
+                    time.sleep(REQUEST_PAUSE_SECONDS)
+
+            # Nachpruefung: nicht lieferbare Kurse bleiben sichtbar und werden
+            # beim naechsten Lauf erneut versucht, statt als repariert zu gelten.
+            remaining = _detect_recent_trading_day_gaps(
+                db_path,
+                tickers,
+                lookback_days=gap_lookback_days,
+                as_of_date=as_of_date,
+            )
+            stats["gap_sessions_remaining"] = remaining["gap_session_count"]
+            stats["gap_tickers_remaining"] = remaining["gap_ticker_count"]
+        else:
+            stats["gap_repair_skipped"] = True
 
     with _connect(db_path) as check_conn:
         current_latest = _db_latest(check_conn)
@@ -597,7 +704,9 @@ def update_database(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOUR
     stats["missing_after"] = len(tickers) - stats["ok"]
     print(
         "HIST-OHLCV: tickers={tickers} missing_initial={missing} updated={updated} "
-        "rows={rows} errors={errors} coverage_ok={ok} coverage_missing={missing_after} db={db}".format(
+        "rows={rows} errors={errors} coverage_ok={ok} coverage_missing={missing_after} "
+        "gap_found={gap_sessions_found} gap_added={gap_rows_added} "
+        "gap_remaining={gap_sessions_remaining} gap_unverified={gap_calendar_unverified} db={db}".format(
             **stats, db=db_path
         )
     )
@@ -605,6 +714,12 @@ def update_database(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOUR
         print(
             f"WARNUNG-HIST-OHLCV: Datenbank unvollstaendig: "
             f"expected={len(tickers)} ok={stats['ok']} missing={stats['missing_after']} errors={stats['errors']}",
+            file=sys.stderr,
+        )
+    if stats["gap_sessions_remaining"]:
+        print(
+            f"WARNUNG-HIST-OHLCV: {stats['gap_sessions_remaining']} erwartete Handelstagskurse "
+            f"bleiben nach Reparatur offen; betroffene Ticker={stats['gap_tickers_remaining']}.",
             file=sys.stderr,
         )
     return stats
@@ -641,6 +756,170 @@ def _load_bar_dates_by_ticker(db_path: Path) -> dict[str, set[str]]:
         ):
             result.setdefault(str(ticker), set()).add(str(date_value))
     return result
+
+
+def _detect_recent_trading_day_gaps(
+    db_path: Path,
+    tickers: Iterable[str],
+    *,
+    lookback_days: int = DEFAULT_GAP_LOOKBACK_DAYS,
+    as_of_date: str | None = None,
+) -> dict:
+    """Find missing expected sessions in a bounded recent window.
+
+    The check includes trailing sessions up to the last completed session,
+    unlike the historical audit which only classifies interior gaps. Unknown
+    calendars are reported and never guessed.
+    """
+    import exchange_calendars as exchange_cal
+
+    symbols = sorted({str(t).strip().upper() for t in tickers if str(t).strip()})
+    today = pd.Timestamp(as_of_date or dt.date.today().isoformat()).normalize()
+    cutoff = (today - pd.Timedelta(days=max(1, int(lookback_days)))).date().isoformat()
+    bounds: dict[str, tuple[str, str]] = {}
+    observed: dict[str, set[str]] = {}
+    if not symbols:
+        return {
+            "gap_dates_by_ticker": {},
+            "gap_ticker_count": 0,
+            "gap_session_count": 0,
+            "calendar_unverified_tickers": [],
+            "calendar_unverified_reasons": {},
+            "lookback_start": cutoff,
+            "lookback_end": None,
+        }
+
+    with _connect(db_path) as conn:
+        for ticker, first_date, last_date in conn.execute(
+            "SELECT ticker, MIN(date), MAX(date) FROM bars GROUP BY ticker"
+        ):
+            if ticker in symbols and first_date and last_date:
+                bounds[str(ticker)] = (str(first_date), str(last_date))
+        for ticker, date_value in conn.execute(
+            "SELECT ticker, date FROM bars WHERE date >= ? ORDER BY ticker, date",
+            (cutoff,),
+        ):
+            if ticker in symbols:
+                observed.setdefault(str(ticker), set()).add(str(date_value))
+
+    gap_dates: dict[str, list[str]] = {}
+    unverified: set[str] = set()
+    reasons: dict[str, str] = {}
+    completed_by_calendar: dict[str, str | None] = {}
+
+    for ticker in symbols:
+        date_bounds = bounds.get(ticker)
+        if not date_bounds:
+            continue
+        first_date, last_date = date_bounds
+        # A ticker far behind the recent window is handled by the existing
+        # stale-tail downloader first; its refreshed history is checked below.
+        if last_date < cutoff:
+            continue
+        calendar_name = _calendar_name_for_ticker(ticker)
+        if not calendar_name:
+            unverified.add(ticker)
+            reasons[ticker] = "Kein eindeutig zugeordneter Handelskalender"
+            continue
+        if calendar_name not in completed_by_calendar:
+            try:
+                completed_by_calendar[calendar_name] = _previous_completed_session_date(
+                    calendar_name, today.date().isoformat()
+                )
+            except Exception as exc:
+                completed_by_calendar[calendar_name] = None
+                reasons[f"__calendar__:{calendar_name}"] = (
+                    f"Letzte abgeschlossene Session nicht ermittelbar: {type(exc).__name__}"
+                )
+        expected_end = completed_by_calendar[calendar_name]
+        if not expected_end:
+            unverified.add(ticker)
+            reasons[ticker] = (
+                reasons.get(f"__calendar__:{calendar_name}")
+                or f"Letzte abgeschlossene Session fuer {calendar_name} nicht ermittelbar"
+            )
+            continue
+
+        earliest_supported = CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01")
+        range_start = max(cutoff, first_date, earliest_supported)
+        if range_start > expected_end:
+            continue
+        try:
+            calendar = exchange_cal.get_calendar(
+                calendar_name, start=range_start, end=expected_end
+            )
+            sessions = calendar.sessions
+            expected_dates = {
+                session.date().isoformat()
+                for session in sessions
+                if range_start <= session.date().isoformat() <= expected_end
+            }
+        except Exception as exc:
+            unverified.add(ticker)
+            reasons[ticker] = f"Kalender {calendar_name} nicht auswertbar: {type(exc).__name__}"
+            continue
+
+        expected_dates.difference_update(
+            NON_PUBLISHED_DAILY_BAR_SESSIONS.get(calendar_name, ())
+        )
+        missing_dates = sorted(expected_dates - observed.get(ticker, set()))
+        if missing_dates:
+            gap_dates[ticker] = missing_dates
+
+    return {
+        "gap_dates_by_ticker": gap_dates,
+        "gap_ticker_count": len(gap_dates),
+        "gap_session_count": sum(len(values) for values in gap_dates.values()),
+        "calendar_unverified_tickers": sorted(unverified),
+        "calendar_unverified_reasons": {
+            key: value for key, value in reasons.items() if not key.startswith("__calendar__:")
+        },
+        "lookback_start": cutoff,
+        "lookback_end": max(completed_by_calendar.values(), default=None),
+    }
+
+
+def _insert_missing_frames(
+    conn: sqlite3.Connection,
+    frames: dict[str, pd.DataFrame],
+) -> int:
+    """Insert downloaded bars only where (ticker, date) is not already stored.
+
+    Existing OHLCV values are intentionally immutable in this repair path.
+    """
+    rows = []
+    for ticker, frame in frames.items():
+        df = _normalise_frame(frame)
+        for idx, row in df.iterrows():
+            date_value = pd.Timestamp(idx).strftime("%Y-%m-%d")
+            rows.append((
+                ticker,
+                date_value,
+                *[None if pd.isna(row[column]) else float(row[column]) for column in REQUIRED_COLUMNS],
+                "yfinance",
+            ))
+    if not rows:
+        return 0
+
+    before = conn.total_changes
+    conn.executemany(
+        """INSERT OR IGNORE INTO bars
+           (ticker,date,open,high,low,close,adj_close,volume,source)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        rows,
+    )
+    inserted = conn.total_changes - before
+
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    for ticker in frames:
+        conn.execute(
+            """INSERT INTO instruments(ticker,first_date,last_date,row_count,last_update_utc,source)
+               SELECT ?, MIN(date), MAX(date), COUNT(*), ?, 'yfinance' FROM bars WHERE ticker=?
+               ON CONFLICT(ticker) DO UPDATE SET first_date=excluded.first_date,last_date=excluded.last_date,
+               row_count=excluded.row_count,last_update_utc=excluded.last_update_utc,source=excluded.source""",
+            (ticker, now, ticker),
+        )
+    return inserted
 
 
 def audit_snapshot(
@@ -852,10 +1131,17 @@ def main() -> int:
     parser.add_argument("--summary", action="store_true", help="bei coverage nur die Coverage-Zusammenfassung ausgeben")
     parser.add_argument("--ticker")
     parser.add_argument("--bootstrap", action="store_true", help="beim Update alle Ticker als fehlend behandeln")
+    parser.add_argument("--no-gap-repair", action="store_true", help="automatische Reparatur erkannter Kursluecken deaktivieren")
+    parser.add_argument("--gap-lookback-days", type=int, default=DEFAULT_GAP_LOOKBACK_DAYS, help="Rueckblick fuer die automatische Kursluecken-Reparatur (Kalendertage)")
     args = parser.parse_args()
 
     if args.command == "update":
-        update_database(args.db, args.source, args.dynamic_universe, force_bootstrap=args.bootstrap)
+        update_database(
+            args.db, args.source, args.dynamic_universe,
+            force_bootstrap=args.bootstrap,
+            repair_gaps=not args.no_gap_repair,
+            gap_lookback_days=args.gap_lookback_days,
+        )
         return 0
     if args.command == "coverage":
         if not args.db.exists():
