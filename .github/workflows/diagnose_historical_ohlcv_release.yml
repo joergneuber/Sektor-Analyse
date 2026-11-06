@@ -37,7 +37,7 @@ jobs:
           set -euo pipefail
           test -s historical_ohlcv.py
           test -s analyse.py
-          test -s tools/diagnose_historical_ohlcv_release.py
+          test -s diagnose_historical_ohlcv_release.py
           grep -q "def _analyse_trading_day_gaps" historical_ohlcv.py
           grep -q "def audit_snapshot" historical_ohlcv.py
 
@@ -61,7 +61,7 @@ jobs:
         id: diagnose
         env:
           PYTHONPATH: .
-        run: python tools/diagnose_historical_ohlcv_release.py
+        run: python diagnose_historical_ohlcv_release.py
 
       - name: Diagnosebericht immer hochladen
         if: always()
