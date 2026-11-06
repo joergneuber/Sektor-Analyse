@@ -73,7 +73,7 @@ EXPLICIT_CALENDAR_BY_TICKER = {
     "^GSPC": "XNYS", "^IXIC": "XNAS", "^DJI": "XNYS", "^GDAXI": "XETR",
     "^STOXX50E": "XETR", "^STOXX": "XETR", "^RUT": "XNYS", "^N225": "XTKS",
     "^HSI": "XHKG", "^VIX": "XNYS",
-    "CL=F": "NYMEX", "BZ=F": "ICEUS", "GC=F": "COMEX", "SI=F": "COMEX",
+    "CL=F": "NYMEX", "BZ=F": "IFEU", "GC=F": "COMEX", "SI=F": "COMEX",
     "PL=F": "NYMEX", "PA=F": "NYMEX", "HG=F": "COMEX",
     "EURUSD=X": "24/5", "BTC-USD": "24/7", "ETH-USD": "24/7",
     "SPY": "XNYS", "QQQ": "XNAS", "LIT": "XNYS",
@@ -89,7 +89,22 @@ SUFFIX_CALENDAR_MAP = {
 # rueckwirkend als vollstaendig verifiziert.
 CALENDAR_EARLIEST_DATES = {
     "XNAS": "1971-02-08", "XETR": "1997-01-01", "XTKS": "1997-01-01",
+    # Fuer IFEU liegt hier nur der durch offizielle ICE-Unterlagen
+    # verifizierte Kalenderzeitraum vor; aeltere/juengere Daten bleiben sichtbar,
+    # werden aber nicht mit einem unbestaetigten Kalender als vollstaendig bewertet.
+    "IFEU": "2025-01-01",
 }
+IFEU_CALENDAR_VERIFIED_END = "2027-12-31"
+IFEU_CLOSED_SESSIONS = frozenset({
+    # ICE Futures Europe: New Year's Day, Good Friday and Christmas Day.
+    # Die Jahresplaene 2026/2027 bestaetigen zudem, dass US-Feiertage sowie
+    # UK-Bankfeiertage (z.B. Easter Monday, May/Spring Bank Holiday,
+    # Summer Bank Holiday und Boxing Day observed) fuer Brent keine
+    # vollstaendigen Schliessungen sind; fruehe Schliessungen bleiben Sessions.
+    "2025-01-01", "2025-04-18", "2025-12-25",
+    "2026-01-01", "2026-04-03", "2026-12-25",
+    "2027-01-01", "2027-03-26",
+})
 
 # CME veroeffentlicht an bestimmten US-Feiertagen keine taeglichen
 # Settlementpreise fuer COMEX/NYMEX. exchange_calendars fuehrt diese Tage
@@ -145,6 +160,33 @@ def _expected_daily_bar_dates(calendar_name: str, session_dates: Iterable[str]) 
     return expected
 
 
+def _calendar_session_dates(
+    calendar_name: str, start_date: str, end_date: str
+) -> list[str]:
+    """Return verified session labels for an exchange calendar.
+
+    IFEU is deliberately handled from the ICE-published Brent trading schedule
+    rather than an unrelated London/US proxy calendar. Its verified date range
+    is bounded; callers must surface data outside that range as incomplete.
+    """
+    start = max(str(start_date), CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01"))
+    end = str(end_date)
+    if calendar_name == "IFEU":
+        end = min(end, IFEU_CALENDAR_VERIFIED_END)
+        if start > end:
+            return []
+        weekdays = pd.bdate_range(start=start, end=end)
+        return [
+            day.date().isoformat()
+            for day in weekdays
+            if day.date().isoformat() not in IFEU_CLOSED_SESSIONS
+        ]
+
+    import exchange_calendars as exchange_cal
+    calendar = exchange_cal.get_calendar(calendar_name, start=start, end=end)
+    return [session.date().isoformat() for session in calendar.sessions]
+
+
 def _calendar_name_for_ticker(ticker: str) -> str | None:
     """Resolve a Yahoo ticker to its exchange/session calendar without guessing unknown suffixes."""
     symbol = str(ticker or "").strip().upper()
@@ -165,17 +207,23 @@ def _calendar_name_for_ticker(ticker: str) -> str | None:
 @lru_cache(maxsize=256)
 def _previous_completed_session_date(calendar_name: str, as_of_date: str) -> str | None:
     """Return the last calendar session strictly before the supplied local date."""
-    import exchange_calendars as exchange_cal
-
     today = pd.Timestamp(as_of_date).normalize()
     start = today - pd.Timedelta(days=20)
     earliest = pd.Timestamp(CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01"))
     start = max(start, earliest)
     if start >= today:
         return None
-    calendar = exchange_cal.get_calendar(calendar_name, start=start, end=today)
-    sessions = calendar.sessions[calendar.sessions < today]
-    return sessions[-1].date().isoformat() if len(sessions) else None
+    if (
+        calendar_name == "IFEU"
+        and (today - pd.Timedelta(days=1)).date().isoformat() > IFEU_CALENDAR_VERIFIED_END
+    ):
+        return None
+    sessions = _calendar_session_dates(
+        calendar_name, start.date().isoformat(),
+        min((today - pd.Timedelta(days=1)).date().isoformat(), IFEU_CALENDAR_VERIFIED_END)
+        if calendar_name == "IFEU" else (today - pd.Timedelta(days=1)).date().isoformat(),
+    )
+    return sessions[-1] if sessions else None
 
 
 def _analyse_trading_day_gaps(
@@ -190,8 +238,6 @@ def _analyse_trading_day_gaps(
     classified as interior gaps. Missing trailing sessions remain the separate
     stale-data concern.
     """
-    import exchange_calendars as exchange_cal
-
     today = pd.Timestamp(as_of_date or dt.date.today().isoformat()).normalize()
     recent_cutoff = (today - pd.Timedelta(days=max(0, int(recent_days)))).date().isoformat()
     groups: dict[str, list[str]] = {}
@@ -226,6 +272,9 @@ def _analyse_trading_day_gaps(
         requested_start = min(first_dates.values())
         calendar_start = max(requested_start, earliest_supported)
         calendar_end = max(last_dates.values())
+        latest_supported = (
+            IFEU_CALENDAR_VERIFIED_END if calendar_name == "IFEU" else None
+        )
         if requested_start < earliest_supported:
             for ticker in tickers:
                 if first_dates[ticker] < earliest_supported:
@@ -233,14 +282,21 @@ def _analyse_trading_day_gaps(
                     reasons[ticker] = (
                         f"Kalender {calendar_name} deckt die Historie erst ab {earliest_supported} ab"
                     )
+        if latest_supported and calendar_end > latest_supported:
+            for ticker in tickers:
+                if last_dates[ticker] > latest_supported:
+                    coverage_incomplete.add(ticker)
+                    reasons[ticker] = (
+                        f"Kalender {calendar_name} ist nur bis {latest_supported} verifiziert"
+                    )
         if calendar_end < calendar_start:
             for ticker in tickers:
                 unverified.add(ticker)
                 reasons.setdefault(ticker, f"Keine Kalenderabdeckung fuer {calendar_name}")
             continue
         try:
-            calendar = exchange_cal.get_calendar(
-                calendar_name, start=calendar_start, end=calendar_end
+            group_session_dates = _calendar_session_dates(
+                calendar_name, calendar_start, calendar_end
             )
         except Exception as exc:
             for ticker in tickers:
@@ -249,26 +305,17 @@ def _analyse_trading_day_gaps(
             continue
 
         for ticker in tickers:
-            first_date = max(
-                first_dates[ticker], earliest_supported,
-                calendar.first_session.date().isoformat(),
-            )
+            first_date = max(first_dates[ticker], earliest_supported)
             last_date = last_dates[ticker]
+            if latest_supported:
+                last_date = min(last_date, latest_supported)
             if last_date < first_date:
                 continue
-            try:
-                session_labels = calendar.sessions
-                sessions = session_labels[
-                    (session_labels >= pd.Timestamp(first_date))
-                    & (session_labels <= pd.Timestamp(last_date))
-                ]
-            except Exception as exc:
-                unverified.add(ticker)
-                reasons[ticker] = f"Kalendersitzungen nicht abrufbar: {type(exc).__name__}"
-                continue
-            expected_dates = _expected_daily_bar_dates(
-                calendar_name, (session.date().isoformat() for session in sessions)
-            )
+            session_dates = [
+                value for value in group_session_dates
+                if first_date <= value <= last_date
+            ]
+            expected_dates = _expected_daily_bar_dates(calendar_name, session_dates)
             missing_dates = sorted(expected_dates - normalized_dates[ticker])
             recent_missing = [value for value in missing_dates if value >= recent_cutoff]
             historical_missing = [value for value in missing_dates if value < recent_cutoff]
@@ -655,6 +702,16 @@ def update_database(
                     expected_text = _previous_completed_session_date(calendar_name, as_of_date)
                 except Exception:
                     expected_text = None
+            # IFEU ist nur bis zum letzten offiziell verifizierten Kalenderjahr
+            # abgedeckt. In diesem Fall nicht still auf einen generischen BDay
+            # zurueckfallen und damit unbestaetigte Brent-Sessions behaupten.
+            if calendar_name == "IFEU" and not expected_text:
+                print(
+                    "WARNUNG-HIST-OHLCV: IFEU-Stale-Pruefung uebersprungen; "
+                    "kein verifizierter Brent-Kalendertag verfuegbar.",
+                    file=sys.stderr,
+                )
+                continue
             expected = pd.Timestamp(expected_text) if expected_text else legacy_expected
             cutoff = expected - pd.Timedelta(days=max(0, STALE_AFTER_DAYS - 1))
             if pd.Timestamp(current_latest[ticker]) < cutoff:
@@ -814,8 +871,6 @@ def _detect_recent_trading_day_gaps(
     unlike the historical audit which only classifies interior gaps. Unknown
     calendars are reported and never guessed.
     """
-    import exchange_calendars as exchange_cal
-
     symbols = sorted({str(t).strip().upper() for t in tickers if str(t).strip()})
     today = pd.Timestamp(as_of_date or dt.date.today().isoformat()).normalize()
     cutoff = (today - pd.Timedelta(days=max(1, int(lookback_days)))).date().isoformat()
@@ -888,14 +943,18 @@ def _detect_recent_trading_day_gaps(
         if range_start > expected_end:
             continue
         try:
-            calendar = exchange_cal.get_calendar(
-                calendar_name, start=range_start, end=expected_end
+            if calendar_name == "IFEU" and expected_end > IFEU_CALENDAR_VERIFIED_END:
+                unverified.add(ticker)
+                reasons[ticker] = (
+                    f"IFEU-Kalender nur fuer {earliest_supported} bis "
+                    f"{IFEU_CALENDAR_VERIFIED_END} verifiziert"
+                )
+                continue
+            session_dates = _calendar_session_dates(
+                calendar_name, range_start, expected_end
             )
-            sessions = calendar.sessions
             expected_dates = {
-                session.date().isoformat()
-                for session in sessions
-                if range_start <= session.date().isoformat() <= expected_end
+                value for value in session_dates if range_start <= value <= expected_end
             }
         except Exception as exc:
             unverified.add(ticker)
@@ -1087,6 +1146,7 @@ def audit_snapshot(
             if tickers and covered == len(tickers) and not missing and not stale
             and not recent_invalid_tickers and not gap_audit["recent_gap_tickers"]
             and not calendar_unverified
+            and not gap_audit["calendar_coverage_incomplete_tickers"]
             else "gaps"
         )
         candidate_mapping_complete = (mapped_candidates or explicit_no_candidates) and not unmapped_candidates
