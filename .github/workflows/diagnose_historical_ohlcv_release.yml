@@ -42,9 +42,11 @@ jobs:
           grep -q "def audit_snapshot" historical_ohlcv.py
           grep -q "def collect_invalid_candle_details" diagnose_historical_ohlcv_release.py
           grep -q "def collect_missing_instrument_details" diagnose_historical_ohlcv_release.py
+          test -s ohlcv_invalid_crosscheck.py
+          grep -q "def run_crosscheck" ohlcv_invalid_crosscheck.py
 
       - name: Diagnose-Code und Regressionstests pruefen
-        run: python -m pytest -q tests/test_diagnose_historical_ohlcv_release.py
+        run: python -m pytest -q tests/test_diagnose_historical_ohlcv_release.py tests/test_ohlcv_invalid_crosscheck.py
 
       - name: Echte OHLCV-Datenbank aus Release laden
         env:
@@ -68,6 +70,14 @@ jobs:
           PYTHONPATH: .
         run: python diagnose_historical_ohlcv_release.py
 
+      - name: INVALID-Kerzen mit Yahoo repair und Stooq abgleichen (read-only)
+        if: steps.diagnose.outcome == 'success'
+        env:
+          PYTHONPATH: .
+          NMM_OHLCV_SOURCE_TIMEOUT: "25"
+          NMM_OHLCV_SOURCE_PAUSE: "0.15"
+        run: python ohlcv_invalid_crosscheck.py
+
       - name: Diagnosebericht immer hochladen
         if: always()
         uses: actions/upload-artifact@v6
@@ -82,5 +92,8 @@ jobs:
             OHLCV_Invalid_Zusammenfassung.json
             OHLCV_Missing_Instruments.csv
             OHLCV_Quality_Report.md
+            OHLCV_Invalid_Quellenvergleich.csv
+            OHLCV_Invalid_Quellenvergleich.json
+            OHLCV_Invalid_Quellenvergleich.md
           if-no-files-found: warn
           retention-days: 30
