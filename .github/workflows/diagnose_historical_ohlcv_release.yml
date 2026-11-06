@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install "pandas<3.1" exchange-calendars
+          python -m pip install "pandas<3.1" exchange-calendars yfinance pytest
 
       - name: Paket-2-Code vor Datenbankdownload verifizieren
         run: |
@@ -40,6 +40,9 @@ jobs:
           test -s diagnose_historical_ohlcv_release.py
           grep -q "def _analyse_trading_day_gaps" historical_ohlcv.py
           grep -q "def audit_snapshot" historical_ohlcv.py
+
+      - name: Diagnose-Code und Regressionstests pruefen
+        run: python -m pytest -q tests/test_diagnose_historical_ohlcv_release.py
 
       - name: Echte OHLCV-Datenbank aus Release laden
         env:
@@ -68,6 +71,10 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: historical-ohlcv-release-diagnostic-${{ github.run_id }}
-          path: historical_ohlcv_release_diagnostic.json
+          path: |
+            historical_ohlcv_release_diagnostic.json
+            OHLCV_Gap_Detail.csv
+            OHLCV_Gap_Ursachen.json
+            OHLCV_Gap_Report.md
           if-no-files-found: warn
           retention-days: 30
