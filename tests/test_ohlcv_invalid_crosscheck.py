@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 
+import requests
+
 import ohlcv_invalid_crosscheck as diag
 
 
@@ -123,3 +125,49 @@ def test_run_crosscheck_uses_provider_results_without_touching_database(monkeypa
     assert result["invalid_candle_count_checked"] == 1
     assert result["classification_counts"] == {"BESTÄTIGT_FEHLERHAFT": 1}
     assert len(calls) == 2
+
+
+
+def test_stooq_circuit_breaker_stops_after_consecutive_transport_errors(monkeypatch):
+    sources = [
+        row(ticker="TESTA.DE"),
+        row(ticker="TESTB.DE"),
+        row(ticker="TESTC.DE"),
+        row(ticker="TESTD.DE"),
+    ]
+    stooq_calls = []
+
+    def yahoo(ticker, start, end):
+        return {}
+
+    def stooq(symbol, start, end):
+        stooq_calls.append(symbol)
+        raise requests.exceptions.ConnectTimeout("simulated timeout")
+
+    monkeypatch.setattr(diag, "REQUEST_PAUSE", 0)
+    monkeypatch.setattr(diag, "STOOQ_CIRCUIT_BREAKER_FAILURES", 2)
+    monkeypatch.setattr(diag, "_load_overrides", lambda: {})
+    result = diag.run_crosscheck(
+        sources, yahoo_fetch=yahoo, stooq_fetch=stooq, sleep=lambda _: None
+    )
+
+    assert stooq_calls == ["testa.de", "testb.de"]
+    assert result["stooq_circuit_breaker_open"] is True
+    assert result["stooq_consecutive_transport_errors"] == 2
+    assert result["provider_ticker_status_counts"]["stooq"] == {
+        "request_error": 2,
+        "provider_unavailable_after_consecutive_errors": 2,
+    }
+    assert all(
+        item["classification"] == "ABWEICHUNG_UNGEKLÄRT"
+        for item in result["rows"]
+    )
+    assert "ausgesetzt" in result["rows"][2]["classification_basis"]
+    assert [
+        item["stooq_status"] for item in result["rows"]
+    ] == [
+        "request_error:ConnectTimeout:simulated timeout",
+        "request_error:ConnectTimeout:simulated timeout",
+        "provider_unavailable_after_consecutive_errors",
+        "provider_unavailable_after_consecutive_errors",
+    ]
