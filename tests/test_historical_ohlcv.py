@@ -910,3 +910,173 @@ def test_invalid_only_ticker_does_not_receive_fresh_instrument_metadata(tmp_path
             assert ho._upsert_frames(conn, {"GOOD": valid, "BAD": invalid}) == 1
         tickers = {row[0] for row in conn.execute("SELECT ticker FROM instruments")}
     assert tickers == {"GOOD"}
+
+
+def test_volume_validation_rejects_missing_negative_and_non_finite_values():
+    import historical_ohlcv as ho
+
+    base = pd.Series({
+        "Open": 10.0, "High": 12.0, "Low": 9.0, "Close": 11.0,
+        "Adj Close": 11.0, "Volume": 100.0,
+    })
+    missing = base.copy()
+    missing["Volume"] = float("nan")
+    assert ho._ohlcv_validation_reasons(missing) == ["volume_missing"]
+
+    negative = base.copy()
+    negative["Volume"] = -1.0
+    assert ho._ohlcv_validation_reasons(negative) == ["volume_negative"]
+
+    infinite = base.copy()
+    infinite["Volume"] = float("inf")
+    assert ho._ohlcv_validation_reasons(infinite) == ["volume_not_finite"]
+
+    zero = base.copy()
+    zero["Volume"] = 0.0
+    assert ho._ohlcv_validation_reasons(zero) == []
+
+
+def test_upsert_rejects_invalid_volume_without_overwriting_valid_bar(tmp_path, capsys):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "volume-validation.sqlite"
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05", "2026-11-06", "2026-11-09"])
+    valid = pd.DataFrame({
+        "Open": [10.0, 10.0, 10.0],
+        "High": [12.0, 12.0, 12.0],
+        "Low": [9.0, 9.0, 9.0],
+        "Close": [11.0, 11.0, 11.0],
+        "Adj Close": [11.0, 11.0, 11.0],
+        "Volume": [100.0, 100.0, 100.0],
+    }, index=idx)
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": valid}) == 3
+        malformed = valid.copy()
+        malformed.loc[idx[0], "Volume"] = -10.0
+        malformed.loc[idx[1], "Volume"] = float("inf")
+        malformed.loc[idx[2], "Volume"] = float("nan")
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": malformed}) == 0
+        rows = conn.execute(
+            "SELECT date, volume FROM bars WHERE ticker='TEST' ORDER BY date"
+        ).fetchall()
+
+    assert rows == [
+        ("2026-11-05", 100.0),
+        ("2026-11-06", 100.0),
+        ("2026-11-09", 100.0),
+    ]
+    warning = capsys.readouterr().err
+    assert "volume_negative" in warning
+    assert "volume_not_finite" in warning
+    assert "volume_missing" in warning
+
+
+def test_insert_missing_rejects_invalid_volume(tmp_path):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "volume-repair-validation.sqlite"
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05", "2026-11-06"])
+    frame = pd.DataFrame({
+        "Open": [10.0, 10.0], "High": [12.0, 12.0],
+        "Low": [9.0, 9.0], "Close": [11.0, 11.0],
+        "Adj Close": [11.0, 11.0], "Volume": [-1.0, 100.0],
+    }, index=idx)
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._insert_missing_frames(conn, {"TEST": frame}) == 1
+        rows = conn.execute(
+            "SELECT date, volume FROM bars WHERE ticker='TEST' ORDER BY date"
+        ).fetchall()
+    assert rows == [("2026-11-06", 100.0)]
+
+
+def test_update_database_updated_stat_excludes_tickers_with_only_invalid_volume(
+    tmp_path, monkeypatch
+):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "invalid-volume-only.sqlite"
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAPL":"US"}\n', encoding="utf-8")
+    idx = pd.DatetimeIndex(["2026-11-05"])
+    malformed = pd.DataFrame({
+        "Open": [10.0], "High": [12.0], "Low": [9.0],
+        "Close": [11.0], "Adj Close": [11.0], "Volume": [-1.0],
+    }, index=idx)
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["AAPL"])
+    monkeypatch.setattr(ho, "_download_batch", lambda tickers, start=None, end=None: {"AAPL": malformed})
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.update_database(db, source, repair_gaps=False)
+
+    assert stats["rows"] == 0
+    assert stats["updated"] == 0
+    assert ho.load_history("AAPL", db).empty
+
+
+def test_gap_repair_updated_stat_counts_only_tickers_with_inserted_rows(tmp_path):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "gap-updated-stat.sqlite"
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05"])
+    frame = pd.DataFrame({
+        "Open": [10.0], "High": [12.0], "Low": [9.0],
+        "Close": [11.0], "Adj Close": [11.0], "Volume": [100.0],
+    }, index=idx)
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"TEST": frame}) == 1
+            updated = set()
+            assert ho._insert_missing_frames(
+                conn, {"TEST": frame}, updated_tickers=updated
+            ) == 0
+        assert updated == set()
+
+
+def test_update_database_gap_repair_does_not_count_already_stored_rows_as_updated(
+    tmp_path, monkeypatch
+):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "gap-duplicate-stat.sqlite"
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAPL":"US"}\n', encoding="utf-8")
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-11-05"])
+    existing = pd.DataFrame({
+        "Open": [10.0], "High": [12.0], "Low": [9.0],
+        "Close": [11.0], "Adj Close": [11.0], "Volume": [100.0],
+    }, index=idx)
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"AAPL": existing}) == 1
+
+    scans = iter([
+        {
+            "gap_dates_by_ticker": {"AAPL": ["2026-11-05"]},
+            "gap_ticker_count": 1,
+            "gap_session_count": 1,
+            "calendar_unverified_tickers": [],
+        },
+        {
+            "gap_dates_by_ticker": {},
+            "gap_ticker_count": 0,
+            "gap_session_count": 0,
+            "calendar_unverified_tickers": [],
+        },
+    ])
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["AAPL"])
+    monkeypatch.setattr(ho, "_detect_recent_trading_day_gaps", lambda *args, **kwargs: next(scans))
+    monkeypatch.setattr(ho, "_download_batch", lambda tickers, start=None, end=None: {"AAPL": existing})
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.update_database(db, source, repair_gaps=True)
+
+    assert stats["gap_tickers_attempted"] == 1
+    assert stats["gap_rows_added"] == 0
+    assert stats["updated"] == 0
