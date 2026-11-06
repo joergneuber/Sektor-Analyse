@@ -44,9 +44,15 @@ jobs:
           grep -q "def collect_missing_instrument_details" diagnose_historical_ohlcv_release.py
           test -s ohlcv_invalid_crosscheck.py
           grep -q "def run_crosscheck" ohlcv_invalid_crosscheck.py
+          test -s ohlcv_target_independent_crosscheck.py
+          grep -q "def run_crosscheck" ohlcv_target_independent_crosscheck.py
 
       - name: Diagnose-Code und Regressionstests pruefen
-        run: python -m pytest -q tests/test_diagnose_historical_ohlcv_release.py tests/test_ohlcv_invalid_crosscheck.py
+        run: >-
+          python -m pytest -q
+          tests/test_diagnose_historical_ohlcv_release.py
+          tests/test_ohlcv_invalid_crosscheck.py
+          tests/test_ohlcv_target_independent_crosscheck.py
 
       - name: Echte OHLCV-Datenbank aus Release laden
         env:
@@ -79,6 +85,15 @@ jobs:
           NMM_OHLCV_SOURCE_PAUSE: "0.15"
         run: python ohlcv_invalid_crosscheck.py
 
+      - name: Fuenf aktuelle INVALID-Faelle unabhaengig mit Alpha Vantage pruefen (read-only)
+        if: steps.diagnose.outcome == 'success'
+        env:
+          PYTHONPATH: .
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+          NMM_OHLCV_ALPHAVANTAGE_TIMEOUT: "20"
+          NMM_OHLCV_ALPHAVANTAGE_PAUSE_SECONDS: "12"
+        run: python ohlcv_target_independent_crosscheck.py
+
       - name: Diagnosebericht immer hochladen
         if: always()
         uses: actions/upload-artifact@v6
@@ -96,5 +111,8 @@ jobs:
             OHLCV_Invalid_Quellenvergleich.csv
             OHLCV_Invalid_Quellenvergleich.json
             OHLCV_Invalid_Quellenvergleich.md
+            OHLCV_Invalid_AlphaVantage.csv
+            OHLCV_Invalid_AlphaVantage.json
+            OHLCV_Invalid_AlphaVantage.md
           if-no-files-found: warn
           retention-days: 30
