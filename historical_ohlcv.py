@@ -22,6 +22,7 @@ import argparse
 from contextlib import contextmanager
 import ast
 import datetime as dt
+import math
 import os
 import re
 import sqlite3
@@ -614,14 +615,80 @@ def _db_latest(conn: sqlite3.Connection) -> dict[str, str]:
     return {row[0]: row[1] for row in conn.execute("SELECT ticker, MAX(date) FROM bars GROUP BY ticker")}
 
 
+def _ohlcv_validation_reasons(row: pd.Series) -> list[str]:
+    """Return structural OHLC violations for one already-normalised bar."""
+    values = {}
+    for column in ("Open", "High", "Low", "Close"):
+        try:
+            value = float(row[column])
+        except (TypeError, ValueError, OverflowError):
+            return [f"{column.lower()}_not_numeric"]
+        if not math.isfinite(value):
+            return [f"{column.lower()}_not_finite"]
+        if value <= 0:
+            return [f"{column.lower()}_non_positive"]
+        values[column] = value
+
+    reasons = []
+    if values["High"] < values["Low"]:
+        reasons.append("high_below_low")
+    if values["High"] < values["Open"]:
+        reasons.append("high_below_open")
+    if values["High"] < values["Close"]:
+        reasons.append("high_below_close")
+    if values["Low"] > values["Open"]:
+        reasons.append("low_above_open")
+    if values["Low"] > values["Close"]:
+        reasons.append("low_above_close")
+    return reasons
+
+
+def _validated_frames(
+    frames: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """Normalise downloaded frames and exclude structurally invalid OHLC bars.
+
+    Invalid rows are never sent to INSERT OR REPLACE/INSERT OR IGNORE. This
+    protects existing database rows from being overwritten by malformed
+    provider data while allowing valid rows in the same ticker batch through.
+    """
+    accepted: dict[str, pd.DataFrame] = {}
+    for ticker, frame in frames.items():
+        normalised = _normalise_frame(frame)
+        valid_indices = []
+        invalid_samples = []
+        invalid_count = 0
+        for idx, row in normalised.iterrows():
+            reasons = _ohlcv_validation_reasons(row)
+            if reasons:
+                invalid_count += 1
+                if len(invalid_samples) < 5:
+                    day = pd.Timestamp(idx).strftime("%Y-%m-%d")
+                    invalid_samples.append(f"{day}: {','.join(reasons)}")
+            else:
+                valid_indices.append(idx)
+        accepted[ticker] = normalised.loc[valid_indices].copy()
+        if invalid_count:
+            sample_text = "; ".join(invalid_samples)
+            print(
+                f"WARNUNG-HIST-OHLCV: {ticker}: {invalid_count} strukturell "
+                f"ungueltige Kerze(n) vor Speicherung verworfen"
+                + (f"; Beispiele: {sample_text}" if sample_text else ""),
+                file=sys.stderr,
+            )
+    return accepted
+
+
 def _upsert_frames(conn: sqlite3.Connection, frames: dict[str, pd.DataFrame]) -> int:
     rows = []
+    valid_frames = _validated_frames(frames)
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
-    for ticker, frame in frames.items():
-        df = _normalise_frame(frame)
+    tickers_with_valid_rows = set()
+    for ticker, df in valid_frames.items():
         for idx, row in df.iterrows():
             date = pd.Timestamp(idx).strftime("%Y-%m-%d")
             rows.append((ticker, date, *[None if pd.isna(row[c]) else float(row[c]) for c in REQUIRED_COLUMNS], "yfinance"))
+            tickers_with_valid_rows.add(ticker)
     if not rows:
         return 0
     conn.executemany(
@@ -629,7 +696,7 @@ def _upsert_frames(conn: sqlite3.Connection, frames: dict[str, pd.DataFrame]) ->
            (ticker,date,open,high,low,close,adj_close,volume,source)
            VALUES (?,?,?,?,?,?,?,?,?)""", rows
     )
-    for ticker in frames:
+    for ticker in tickers_with_valid_rows:
         conn.execute(
             """INSERT INTO instruments(ticker,first_date,last_date,row_count,last_update_utc,source)
                SELECT ?, MIN(date), MAX(date), COUNT(*), ?, 'yfinance' FROM bars WHERE ticker=?
@@ -988,8 +1055,9 @@ def _insert_missing_frames(
     Existing OHLCV values are intentionally immutable in this repair path.
     """
     rows = []
-    for ticker, frame in frames.items():
-        df = _normalise_frame(frame)
+    valid_frames = _validated_frames(frames)
+    tickers_with_valid_rows = set()
+    for ticker, df in valid_frames.items():
         for idx, row in df.iterrows():
             date_value = pd.Timestamp(idx).strftime("%Y-%m-%d")
             rows.append((
@@ -998,6 +1066,7 @@ def _insert_missing_frames(
                 *[None if pd.isna(row[column]) else float(row[column]) for column in REQUIRED_COLUMNS],
                 "yfinance",
             ))
+            tickers_with_valid_rows.add(ticker)
     if not rows:
         return 0
 
@@ -1011,7 +1080,7 @@ def _insert_missing_frames(
     inserted = conn.total_changes - before
 
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
-    for ticker in frames:
+    for ticker in tickers_with_valid_rows:
         conn.execute(
             """INSERT INTO instruments(ticker,first_date,last_date,row_count,last_update_utc,source)
                SELECT ?, MIN(date), MAX(date), COUNT(*), ?, 'yfinance' FROM bars WHERE ticker=?
