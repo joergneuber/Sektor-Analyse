@@ -499,7 +499,7 @@ sektoren_aktien = {
         "CTSH", "DDOG", "FFIV", "FLEX", "FSLR", "FTNT", "GDDY", "GEN", "GLW", "HPE", "HPQ", "IBM",
         "INTC", "INTU", "IT", "JBL", "JNPR", "KEYS", "KLAC", "LITE", "LRCX", "MCHP", "MDB", "MPWR",
         "MRVL", "MSFT", "MSI", "MSTR", "MU", "NBIS", "NOW", "NTAP", "NVDA", "NXPI", "ON", "ORCL",
-        "PANW", "PLTR", "PTC", "Q", "QCOM", "QRVO", "ROP", "SHOP", "SMCI", "SNDK", "SNPS", "STX",
+        "PANW", "PLTR", "PTC", "Q", "QCOM", "ROP", "SHOP", "SMCI", "SNDK", "SNPS", "STX",
         "SWKS", "TDY", "TEL", "TER", "TRMB", "TXN", "TYL", "VRSN", "WDAY", "WDC", "ZBRA"
     ],
     "XLF": [
@@ -527,7 +527,7 @@ sektoren_aktien = {
     ],
     "XLP": [
         "ADM", "BF-B", "BG", "CASY", "CCEP", "CHD", "CL", "CLX", "COST", "DG", "DLTR", "EL", "GIS",
-        "HRL", "HSY", "KDP", "KHC", "KMB", "KO", "KR", "KVUE", "MDLZ", "MKC", "MNST", "MO", "PEP",
+        "HRL", "HSY", "KDP", "KHC", "KMB", "KO", "KR", "MDLZ", "MKC", "MNST", "MO", "PEP",
         "PG", "PM", "SJM", "STZ", "SYY", "TAP", "TGT", "TSN", "WMT"
     ],
     "XLE": [
@@ -554,13 +554,13 @@ sektoren_aktien = {
         "SRE", "VST", "WEC", "XEL"
     ],
     "XLRE": [
-        "AMT", "ARE", "AVB", "CBRE", "CCI", "CPT", "CSGP", "DLR", "DOC", "EQIX", "EQR", "ESS",
+        "AMT", "ARE", "CBRE", "CCI", "CPT", "CSGP", "DLR", "DOC", "EQIX", "ESS",
         "EXR", "FRT", "HST", "INVH", "IRM", "KIM", "MAA", "O", "PLD", "PSA", "REG", "SBAC", "SPG",
-        "UDR", "VICI", "VTR", "WELL", "WY"
+        "UDR", "VICI", "VTR", "VMRK", "WELL", "WY"
     ],
     "XLC": [
-        "APP", "CHTR", "CMCSA", "DIS", "EA", "ECHO", "FOX", "FOXA", "GOOG", "GOOGL", "LYV", "META",
-        "NFLX", "NWS", "NWSA", "OMC", "PSKY", "T", "TMUS", "TTD", "TTWO", "VZ", "WBD"
+        "APP", "CHTR", "CMCSA", "DIS", "ECHO", "FOX", "FOXA", "GOOG", "GOOGL", "LYV", "META",
+        "NFLX", "NWS", "NWSA", "OMC", "SKYD", "T", "TMUS", "TTD", "TTWO", "VZ"
     ],
     "AIQ": ["NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMD", "TSM", "ORCL", "ADBE", "CRM",
             "PLTR", "SNOW", "NOW", "CRWD", "MRVL"],
@@ -575,7 +575,7 @@ sektoren_aktien = {
             "CRWD", "ZS", "DDOG", "TEAM", "HUBS", "VEEV", "PTC", "BSY"],
     "IHI": ["ABT", "DHR", "MDT", "BSX", "SYK", "ZBH", "EW", "BAX", "RMD", "ALGN", "PODD", "DXCM", "GEHC"],
     "ITA": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HWM", "TDG", "HEI", "AXON", "TXT", "HII"],
-    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "WBS", "EWBC", "PNFP", "WAL"],
+    "KRE": ["FITB", "HBAN", "CFG", "KEY", "ZION", "RF", "CMA", "SNV", "FLG", "EWBC", "PNFP", "WAL"],
     "OIH": ["SLB", "HAL", "BKR", "FTI", "NOV", "WFRD", "RIG", "HP", "PTEN", "LBRT", "VAL"],
     "PAVE": ["DE", "CAT", "ETN", "JCI", "PH", "IR", "CMI", "XYL", "ITW", "EMR", "PWR", "MLM", "URI"],
     "SMH": ["NVDA", "TSM", "ASML", "AVGO", "QCOM", "TXN", "AMAT", "AMD", "LRCX", "MU",
@@ -643,7 +643,7 @@ dax_aktien = {
         "PAH3.DE", "RHM.DE", "SFQ.DE", "SHA.DE", "STM1.DE", "VOW3.DE", "P911.DE"
     ],
     "Chemie": [
-        "ACT.DE", "BAS.DE", "EVK.DE", "FPE3.DE", "LXS.DE", "SY1.DE", "WCH.DE"
+        "ACT0.DE", "BAS.DE", "EVK.DE", "FPE3.DE", "LXS.DE", "SY1.DE", "WCH.DE"
     ],
     "Energie": [
         "VBK.DE"

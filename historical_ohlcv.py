@@ -54,13 +54,14 @@ EXPLICIT_BENCHMARKS = {
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 
-# Explizit ausgeschlossene Symbole aus dem OHLCV-Coverage-Lauf vom 2026-10-25.
-# Diese Kennungen sind fuer die laufende Auswertung nicht zu beruecksichtigen.
+# Explizit ausgeschlossene obsolete oder nicht mehr relevante Instrumentenkennungen.
+# Diese Kennungen bleiben aus dem aktiven OHLCV-Universum ausgeschlossen.
 EXCLUDED_TICKERS = frozenset({
-    "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
-    "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
-    "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
-    "SNV", "STM1.DE", "WRK", "X",
+    "10O.DE", "1TRA.DE", "ABB", "ACT.DE", "ANSS", "ARND.DE", "ASTA.DE",
+    "AUM.DE", "AVB", "CMA", "DFS", "EA", "EQR", "FLIR", "FRAG.DE", "HES",
+    "JNPR", "KCOG.DE", "KVUE", "MAXN", "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE",
+    "PSKY", "QRVO", "RTL.DE", "SHA.DE", "SHELL.SO", "SNV", "STM1.DE", "WBS",
+    "WBD", "WRK", "X",
 })
 
 # Handelskalender-Zuordnung fuer das aktuelle Research-Universum. Suffixlose
