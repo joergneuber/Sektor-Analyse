@@ -1,0 +1,391 @@
+--- a/historical_ohlcv.py
++++ b/historical_ohlcv.py
+@@ -73,7 +73,7 @@
+     "^GSPC": "XNYS", "^IXIC": "XNAS", "^DJI": "XNYS", "^GDAXI": "XETR",
+     "^STOXX50E": "XETR", "^STOXX": "XETR", "^RUT": "XNYS", "^N225": "XTKS",
+     "^HSI": "XHKG", "^VIX": "XNYS",
+-    "CL=F": "NYMEX", "BZ=F": "ICEUS", "GC=F": "COMEX", "SI=F": "COMEX",
++    "CL=F": "NYMEX", "BZ=F": "IFEU", "GC=F": "COMEX", "SI=F": "COMEX",
+     "PL=F": "NYMEX", "PA=F": "NYMEX", "HG=F": "COMEX",
+     "EURUSD=X": "24/5", "BTC-USD": "24/7", "ETH-USD": "24/7",
+     "SPY": "XNYS", "QQQ": "XNAS", "LIT": "XNYS",
+@@ -89,7 +89,22 @@
+ # rueckwirkend als vollstaendig verifiziert.
+ CALENDAR_EARLIEST_DATES = {
+     "XNAS": "1971-02-08", "XETR": "1997-01-01", "XTKS": "1997-01-01",
++    # Fuer IFEU liegt hier nur der durch offizielle ICE-Unterlagen
++    # verifizierte Kalenderzeitraum vor; aeltere/juengere Daten bleiben sichtbar,
++    # werden aber nicht mit einem unbestaetigten Kalender als vollstaendig bewertet.
++    "IFEU": "2025-01-01",
+ }
++IFEU_CALENDAR_VERIFIED_END = "2027-12-31"
++IFEU_CLOSED_SESSIONS = frozenset({
++    # ICE Futures Europe: New Year's Day, Good Friday and Christmas Day.
++    # Die Jahresplaene 2026/2027 bestaetigen zudem, dass US-Feiertage sowie
++    # UK-Bankfeiertage (z.B. Easter Monday, May/Spring Bank Holiday,
++    # Summer Bank Holiday und Boxing Day observed) fuer Brent keine
++    # vollstaendigen Schliessungen sind; fruehe Schliessungen bleiben Sessions.
++    "2025-01-01", "2025-04-18", "2025-12-25",
++    "2026-01-01", "2026-04-03", "2026-12-25",
++    "2027-01-01", "2027-03-26",
++})
+ 
+ # CME veroeffentlicht an bestimmten US-Feiertagen keine taeglichen
+ # Settlementpreise fuer COMEX/NYMEX. exchange_calendars fuehrt diese Tage
+@@ -145,6 +160,33 @@
+     return expected
+ 
+ 
++def _calendar_session_dates(
++    calendar_name: str, start_date: str, end_date: str
++) -> list[str]:
++    """Return verified session labels for an exchange calendar.
++
++    IFEU is deliberately handled from the ICE-published Brent trading schedule
++    rather than an unrelated London/US proxy calendar. Its verified date range
++    is bounded; callers must surface data outside that range as incomplete.
++    """
++    start = max(str(start_date), CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01"))
++    end = str(end_date)
++    if calendar_name == "IFEU":
++        end = min(end, IFEU_CALENDAR_VERIFIED_END)
++        if start > end:
++            return []
++        weekdays = pd.bdate_range(start=start, end=end)
++        return [
++            day.date().isoformat()
++            for day in weekdays
++            if day.date().isoformat() not in IFEU_CLOSED_SESSIONS
++        ]
++
++    import exchange_calendars as exchange_cal
++    calendar = exchange_cal.get_calendar(calendar_name, start=start, end=end)
++    return [session.date().isoformat() for session in calendar.sessions]
++
++
+ def _calendar_name_for_ticker(ticker: str) -> str | None:
+     """Resolve a Yahoo ticker to its exchange/session calendar without guessing unknown suffixes."""
+     symbol = str(ticker or "").strip().upper()
+@@ -165,17 +207,23 @@
+ @lru_cache(maxsize=256)
+ def _previous_completed_session_date(calendar_name: str, as_of_date: str) -> str | None:
+     """Return the last calendar session strictly before the supplied local date."""
+-    import exchange_calendars as exchange_cal
+-
+     today = pd.Timestamp(as_of_date).normalize()
+     start = today - pd.Timedelta(days=20)
+     earliest = pd.Timestamp(CALENDAR_EARLIEST_DATES.get(calendar_name, "1980-01-01"))
+     start = max(start, earliest)
+     if start >= today:
+         return None
+-    calendar = exchange_cal.get_calendar(calendar_name, start=start, end=today)
+-    sessions = calendar.sessions[calendar.sessions < today]
+-    return sessions[-1].date().isoformat() if len(sessions) else None
++    if (
++        calendar_name == "IFEU"
++        and (today - pd.Timedelta(days=1)).date().isoformat() > IFEU_CALENDAR_VERIFIED_END
++    ):
++        return None
++    sessions = _calendar_session_dates(
++        calendar_name, start.date().isoformat(),
++        min((today - pd.Timedelta(days=1)).date().isoformat(), IFEU_CALENDAR_VERIFIED_END)
++        if calendar_name == "IFEU" else (today - pd.Timedelta(days=1)).date().isoformat(),
++    )
++    return sessions[-1] if sessions else None
+ 
+ 
+ def _analyse_trading_day_gaps(
+@@ -190,8 +238,6 @@
+     classified as interior gaps. Missing trailing sessions remain the separate
+     stale-data concern.
+     """
+-    import exchange_calendars as exchange_cal
+-
+     today = pd.Timestamp(as_of_date or dt.date.today().isoformat()).normalize()
+     recent_cutoff = (today - pd.Timedelta(days=max(0, int(recent_days)))).date().isoformat()
+     groups: dict[str, list[str]] = {}
+@@ -226,6 +272,9 @@
+         requested_start = min(first_dates.values())
+         calendar_start = max(requested_start, earliest_supported)
+         calendar_end = max(last_dates.values())
++        latest_supported = (
++            IFEU_CALENDAR_VERIFIED_END if calendar_name == "IFEU" else None
++        )
+         if requested_start < earliest_supported:
+             for ticker in tickers:
+                 if first_dates[ticker] < earliest_supported:
+@@ -233,14 +282,21 @@
+                     reasons[ticker] = (
+                         f"Kalender {calendar_name} deckt die Historie erst ab {earliest_supported} ab"
+                     )
++        if latest_supported and calendar_end > latest_supported:
++            for ticker in tickers:
++                if last_dates[ticker] > latest_supported:
++                    coverage_incomplete.add(ticker)
++                    reasons[ticker] = (
++                        f"Kalender {calendar_name} ist nur bis {latest_supported} verifiziert"
++                    )
+         if calendar_end < calendar_start:
+             for ticker in tickers:
+                 unverified.add(ticker)
+                 reasons.setdefault(ticker, f"Keine Kalenderabdeckung fuer {calendar_name}")
+             continue
+         try:
+-            calendar = exchange_cal.get_calendar(
+-                calendar_name, start=calendar_start, end=calendar_end
++            group_session_dates = _calendar_session_dates(
++                calendar_name, calendar_start, calendar_end
+             )
+         except Exception as exc:
+             for ticker in tickers:
+@@ -249,26 +305,17 @@
+             continue
+ 
+         for ticker in tickers:
+-            first_date = max(
+-                first_dates[ticker], earliest_supported,
+-                calendar.first_session.date().isoformat(),
+-            )
++            first_date = max(first_dates[ticker], earliest_supported)
+             last_date = last_dates[ticker]
++            if latest_supported:
++                last_date = min(last_date, latest_supported)
+             if last_date < first_date:
+                 continue
+-            try:
+-                session_labels = calendar.sessions
+-                sessions = session_labels[
+-                    (session_labels >= pd.Timestamp(first_date))
+-                    & (session_labels <= pd.Timestamp(last_date))
+-                ]
+-            except Exception as exc:
+-                unverified.add(ticker)
+-                reasons[ticker] = f"Kalendersitzungen nicht abrufbar: {type(exc).__name__}"
+-                continue
+-            expected_dates = _expected_daily_bar_dates(
+-                calendar_name, (session.date().isoformat() for session in sessions)
+-            )
++            session_dates = [
++                value for value in group_session_dates
++                if first_date <= value <= last_date
++            ]
++            expected_dates = _expected_daily_bar_dates(calendar_name, session_dates)
+             missing_dates = sorted(expected_dates - normalized_dates[ticker])
+             recent_missing = [value for value in missing_dates if value >= recent_cutoff]
+             historical_missing = [value for value in missing_dates if value < recent_cutoff]
+@@ -655,6 +702,16 @@
+                     expected_text = _previous_completed_session_date(calendar_name, as_of_date)
+                 except Exception:
+                     expected_text = None
++            # IFEU ist nur bis zum letzten offiziell verifizierten Kalenderjahr
++            # abgedeckt. In diesem Fall nicht still auf einen generischen BDay
++            # zurueckfallen und damit unbestaetigte Brent-Sessions behaupten.
++            if calendar_name == "IFEU" and not expected_text:
++                print(
++                    "WARNUNG-HIST-OHLCV: IFEU-Stale-Pruefung uebersprungen; "
++                    "kein verifizierter Brent-Kalendertag verfuegbar.",
++                    file=sys.stderr,
++                )
++                continue
+             expected = pd.Timestamp(expected_text) if expected_text else legacy_expected
+             cutoff = expected - pd.Timedelta(days=max(0, STALE_AFTER_DAYS - 1))
+             if pd.Timestamp(current_latest[ticker]) < cutoff:
+@@ -814,8 +871,6 @@
+     unlike the historical audit which only classifies interior gaps. Unknown
+     calendars are reported and never guessed.
+     """
+-    import exchange_calendars as exchange_cal
+-
+     symbols = sorted({str(t).strip().upper() for t in tickers if str(t).strip()})
+     today = pd.Timestamp(as_of_date or dt.date.today().isoformat()).normalize()
+     cutoff = (today - pd.Timedelta(days=max(1, int(lookback_days)))).date().isoformat()
+@@ -888,14 +943,18 @@
+         if range_start > expected_end:
+             continue
+         try:
+-            calendar = exchange_cal.get_calendar(
+-                calendar_name, start=range_start, end=expected_end
++            if calendar_name == "IFEU" and expected_end > IFEU_CALENDAR_VERIFIED_END:
++                unverified.add(ticker)
++                reasons[ticker] = (
++                    f"IFEU-Kalender nur fuer {earliest_supported} bis "
++                    f"{IFEU_CALENDAR_VERIFIED_END} verifiziert"
++                )
++                continue
++            session_dates = _calendar_session_dates(
++                calendar_name, range_start, expected_end
+             )
+-            sessions = calendar.sessions
+             expected_dates = {
+-                session.date().isoformat()
+-                for session in sessions
+-                if range_start <= session.date().isoformat() <= expected_end
++                value for value in session_dates if range_start <= value <= expected_end
+             }
+         except Exception as exc:
+             unverified.add(ticker)
+@@ -1087,6 +1146,7 @@
+             if tickers and covered == len(tickers) and not missing and not stale
+             and not recent_invalid_tickers and not gap_audit["recent_gap_tickers"]
+             and not calendar_unverified
++            and not gap_audit["calendar_coverage_incomplete_tickers"]
+             else "gaps"
+         )
+         candidate_mapping_complete = (mapped_candidates or explicit_no_candidates) and not unmapped_candidates
+--- a/tests/test_historical_ohlcv.py
++++ b/tests/test_historical_ohlcv.py
+@@ -238,7 +238,7 @@
+     assert ho._calendar_name_for_ticker("SAP.DE") == "XETR"
+     assert ho._calendar_name_for_ticker("^GDAXI") == "XETR"
+     assert ho._calendar_name_for_ticker("GC=F") == "COMEX"
+-    assert ho._calendar_name_for_ticker("BZ=F") == "ICEUS"
++    assert ho._calendar_name_for_ticker("BZ=F") == "IFEU"
+     assert ho._calendar_name_for_ticker("EURUSD=X") == "24/5"
+     assert ho._calendar_name_for_ticker("BTC-USD") == "24/7"
+     assert ho._calendar_name_for_ticker("ABC.UNKNOWN") is None
+@@ -669,3 +669,145 @@
+ 
+     assert result["gap_dates_by_ticker"] == {}
+     assert result["gap_session_count"] == 0
++
++
++
++def test_ifeu_calendar_uses_ice_brent_schedule_not_us_or_london_proxy_days():
++    import historical_ohlcv as ho
++
++    sessions = set(ho._calendar_session_dates("IFEU", "2026-01-01", "2026-12-31"))
++
++    # ICE's 2026 IFEU schedule marks these US/UK holidays as trading days
++    # for Brent, including early-close sessions (A/B/C/D).
++    expected_open = {
++        "2026-01-19", "2026-02-16", "2026-04-06", "2026-05-04",
++        "2026-05-25", "2026-06-19", "2026-07-03", "2026-08-31",
++        "2026-09-07", "2026-11-26", "2026-11-27", "2026-12-28",
++    }
++    assert expected_open.issubset(sessions)
++
++    # ICE's annual schedule marks New Year's Day, Good Friday and Christmas
++    # as full IFEU closures. 26 December remains open for Brent.
++    assert not {"2026-01-01", "2026-04-03", "2026-12-25"}.intersection(sessions)
++    assert "2025-12-26" in ho._calendar_session_dates("IFEU", "2025-12-24", "2025-12-29")
++    assert "2026-12-28" in sessions
++
++    sessions_2027 = set(ho._calendar_session_dates("IFEU", "2027-03-25", "2027-12-28"))
++    assert "2027-03-26" not in sessions_2027  # Good Friday
++    assert "2027-03-29" in sessions_2027     # Easter Monday: Brent trading day
++    assert "2027-12-27" in sessions_2027     # Boxing Day observed: Brent trading day
++    assert ho._calendar_session_dates("IFEU", "2027-12-30", "2028-01-04") == [
++        "2027-12-30", "2027-12-31"
++    ]
++    assert ho._previous_completed_session_date("IFEU", "2028-01-01") == "2027-12-31"
++    assert ho._previous_completed_session_date("IFEU", "2028-01-04") is None
++
++
++def test_ifeu_previous_completed_session_respects_brent_calendar():
++    import historical_ohlcv as ho
++
++    # Thanksgiving Thursday is a shortened IFEU Brent trading day, not a closure.
++    assert ho._previous_completed_session_date("IFEU", "2026-11-27") == "2026-11-26"
++    # On Good Friday, the prior completed Brent session is Thursday.
++    assert ho._previous_completed_session_date("IFEU", "2026-04-04") == "2026-04-02"
++
++
++def test_ifeu_gap_analysis_keeps_us_holiday_sessions_as_real_gaps():
++    import historical_ohlcv as ho
++
++    result = ho._analyse_trading_day_gaps(
++        {"BZ=F": {"2026-01-16", "2026-01-20"}},
++        as_of_date="2026-01-21",
++        recent_days=30,
++    )
++
++    assert result["calendar_by_ticker"]["BZ=F"] == "IFEU"
++    assert result["trading_day_gap_details"]["BZ=F"]["missing_dates_sample"] == [
++        "2026-01-19"
++    ]
++
++
++def test_ifeu_recent_gap_detector_uses_ifeu_sessions(tmp_path):
++    import historical_ohlcv as ho
++
++    db = tmp_path / "ifeu-gap.sqlite"
++    ho.init_db(db)
++    frame = pd.DataFrame(
++        {
++            "Open": [100.0, 102.0], "High": [102.0, 104.0],
++            "Low": [99.0, 101.0], "Close": [101.0, 103.0],
++            "Adj Close": [101.0, 103.0], "Volume": [1000.0, 1100.0],
++        },
++        index=pd.DatetimeIndex(["2026-01-16", "2026-01-20"]),
++    )
++    with closing(sqlite3.connect(db)) as conn:
++        with conn:
++            ho._upsert_frames(conn, {"BZ=F": frame})
++
++    result = ho._detect_recent_trading_day_gaps(
++        db, ["BZ=F"], lookback_days=10, as_of_date="2026-01-21"
++    )
++
++    assert result["gap_dates_by_ticker"] == {"BZ=F": ["2026-01-19"]}
++    assert result["gap_session_count"] == 1
++
++
++def test_ifeu_calendar_marks_history_outside_verified_period_as_incomplete():
++    import historical_ohlcv as ho
++
++    result = ho._analyse_trading_day_gaps(
++        {"BZ=F": {"2024-12-31", "2025-01-02", "2026-01-16", "2026-01-20"}},
++        as_of_date="2026-11-06",
++        recent_days=365,
++    )
++
++    assert result["calendar_coverage_incomplete_tickers"] == ["BZ=F"]
++    assert result["calendar_unverified_tickers"] == []
++    assert "2025-01-01" not in result["trading_day_gap_details"].get("BZ=F", {}).get(
++        "missing_dates_sample", []
++    )
++
++
++
++def test_update_database_does_not_fallback_to_generic_bday_outside_ifeu_coverage(
++    tmp_path, monkeypatch
++):
++    import historical_ohlcv as ho
++
++    db = tmp_path / "ifeu-outside-coverage.sqlite"
++    source = tmp_path / "analyse.py"
++    source.write_text('sektoren_map={"BZ=F":"Brent"}\n', encoding="utf-8")
++    ho.init_db(db)
++    frame = pd.DataFrame(
++        {
++            "Open": [100.0], "High": [102.0], "Low": [99.0],
++            "Close": [101.0], "Adj Close": [101.0], "Volume": [1000.0],
++        },
++        index=pd.DatetimeIndex(["2027-12-31"]),
++    )
++    with closing(sqlite3.connect(db)) as conn:
++        with conn:
++            ho._upsert_frames(conn, {"BZ=F": frame})
++
++    real_date = ho.dt.date
++
++    class FrozenDate(real_date):
++        @classmethod
++        def today(cls):
++            return cls(2028, 1, 4)
++
++    monkeypatch.setattr(ho.dt, "date", FrozenDate)
++    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["BZ=F"])
++    download_calls = []
++
++    def fail_if_downloaded(*args, **kwargs):
++        download_calls.append((args, kwargs))
++        return {}
++
++    monkeypatch.setattr(ho, "_download_batch", fail_if_downloaded)
++    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
++
++    stats = ho.update_database(db, source, repair_gaps=True, gap_lookback_days=10)
++
++    assert download_calls == []
++    assert stats["gap_calendar_unverified"] == 1
