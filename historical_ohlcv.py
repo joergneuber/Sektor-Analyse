@@ -616,7 +616,7 @@ def _db_latest(conn: sqlite3.Connection) -> dict[str, str]:
 
 
 def _ohlcv_validation_reasons(row: pd.Series) -> list[str]:
-    """Return structural OHLC violations for one already-normalised bar."""
+    """Return OHLCV violations for one already-normalised bar."""
     values = {}
     for column in ("Open", "High", "Low", "Close"):
         try:
@@ -640,6 +640,22 @@ def _ohlcv_validation_reasons(row: pd.Series) -> list[str]:
         reasons.append("low_above_open")
     if values["Low"] > values["Close"]:
         reasons.append("low_above_close")
+
+    # Direct OHLC-only callers remain supported; normalised provider frames
+    # always contain Volume, with missing values represented as NaN.
+    if "Volume" in row.index:
+        if pd.isna(row["Volume"]):
+            reasons.append("volume_missing")
+        else:
+            try:
+                volume = float(row["Volume"])
+            except (TypeError, ValueError, OverflowError):
+                reasons.append("volume_not_numeric")
+            else:
+                if not math.isfinite(volume):
+                    reasons.append("volume_not_finite")
+                elif volume < 0:
+                    reasons.append("volume_negative")
     return reasons
 
 
@@ -651,6 +667,7 @@ def _validated_frames(
     Invalid rows are never sent to INSERT OR REPLACE/INSERT OR IGNORE. This
     protects existing database rows from being overwritten by malformed
     provider data while allowing valid rows in the same ticker batch through.
+    OHLC prices must be finite and positive; volume must be finite and non-negative.
     """
     accepted: dict[str, pd.DataFrame] = {}
     for ticker, frame in frames.items():
@@ -672,14 +689,19 @@ def _validated_frames(
             sample_text = "; ".join(invalid_samples)
             print(
                 f"WARNUNG-HIST-OHLCV: {ticker}: {invalid_count} strukturell "
-                f"ungueltige Kerze(n) vor Speicherung verworfen"
+                f"ungueltige Kerze(n) (OHLCV) vor Speicherung verworfen"
                 + (f"; Beispiele: {sample_text}" if sample_text else ""),
                 file=sys.stderr,
             )
     return accepted
 
 
-def _upsert_frames(conn: sqlite3.Connection, frames: dict[str, pd.DataFrame]) -> int:
+def _upsert_frames(
+    conn: sqlite3.Connection,
+    frames: dict[str, pd.DataFrame],
+    *,
+    updated_tickers: set[str] | None = None,
+) -> int:
     rows = []
     valid_frames = _validated_frames(frames)
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -696,6 +718,8 @@ def _upsert_frames(conn: sqlite3.Connection, frames: dict[str, pd.DataFrame]) ->
            (ticker,date,open,high,low,close,adj_close,volume,source)
            VALUES (?,?,?,?,?,?,?,?,?)""", rows
     )
+    if updated_tickers is not None:
+        updated_tickers.update(tickers_with_valid_rows)
     for ticker in tickers_with_valid_rows:
         conn.execute(
             """INSERT INTO instruments(ticker,first_date,last_date,row_count,last_update_utc,source)
@@ -739,9 +763,12 @@ def update_database(
         for batch in _chunks(missing, BATCH_SIZE):
             try:
                 frames = _download_batch(batch)
+                updated_tickers = set()
                 with conn:
-                    stats["rows"] += _upsert_frames(conn, frames)
-                stats["updated"] += sum(1 for frame in frames.values() if not frame.empty)
+                    stats["rows"] += _upsert_frames(
+                        conn, frames, updated_tickers=updated_tickers
+                    )
+                stats["updated"] += len(updated_tickers)
             except Exception as exc:
                 stats["errors"] += 1
                 print(
@@ -787,11 +814,14 @@ def update_database(
             min_date = min(pd.Timestamp(current_latest[t]) for t in batch) - pd.Timedelta(days=5)
             try:
                 frames = _download_batch(batch, start=min_date.strftime("%Y-%m-%d"))
+                updated_tickers = set()
                 with conn:
                     # Bestehendes inkrementelles Update-Verhalten bleibt erhalten:
                     # Yahoo darf aktuelle Werte im normalen Stale-Update korrigieren.
-                    stats["rows"] += _upsert_frames(conn, frames)
-                stats["updated"] += sum(1 for frame in frames.values() if not frame.empty)
+                    stats["rows"] += _upsert_frames(
+                        conn, frames, updated_tickers=updated_tickers
+                    )
+                stats["updated"] += len(updated_tickers)
             except Exception as exc:
                 stats["errors"] += 1
                 print(
@@ -833,13 +863,14 @@ def update_database(
                     frames = _download_batch(
                         batch, start=download_start, end=download_end
                     )
+                    updated_tickers = set()
                     with conn:
-                        inserted = _insert_missing_frames(conn, frames)
+                        inserted = _insert_missing_frames(
+                            conn, frames, updated_tickers=updated_tickers
+                        )
                     stats["gap_rows_added"] += inserted
                     stats["gap_tickers_attempted"] += len(batch)
-                    stats["updated"] += sum(
-                        1 for frame in frames.values() if not frame.empty
-                    )
+                    stats["updated"] += len(updated_tickers)
                 except Exception as exc:
                     stats["errors"] += 1
                     stats["gap_repair_errors"] += 1
@@ -1049,15 +1080,17 @@ def _detect_recent_trading_day_gaps(
 def _insert_missing_frames(
     conn: sqlite3.Connection,
     frames: dict[str, pd.DataFrame],
+    *,
+    updated_tickers: set[str] | None = None,
 ) -> int:
     """Insert downloaded bars only where (ticker, date) is not already stored.
 
     Existing OHLCV values are intentionally immutable in this repair path.
     """
-    rows = []
     valid_frames = _validated_frames(frames)
-    tickers_with_valid_rows = set()
+    rows_by_ticker = {}
     for ticker, df in valid_frames.items():
+        rows = []
         for idx, row in df.iterrows():
             date_value = pd.Timestamp(idx).strftime("%Y-%m-%d")
             rows.append((
@@ -1066,21 +1099,30 @@ def _insert_missing_frames(
                 *[None if pd.isna(row[column]) else float(row[column]) for column in REQUIRED_COLUMNS],
                 "yfinance",
             ))
-            tickers_with_valid_rows.add(ticker)
-    if not rows:
+        if rows:
+            rows_by_ticker[ticker] = rows
+    if not rows_by_ticker:
         return 0
 
-    before = conn.total_changes
-    conn.executemany(
-        """INSERT OR IGNORE INTO bars
-           (ticker,date,open,high,low,close,adj_close,volume,source)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        rows,
-    )
-    inserted = conn.total_changes - before
+    inserted = 0
+    actually_updated = set()
+    for ticker, rows in rows_by_ticker.items():
+        before = conn.total_changes
+        conn.executemany(
+            """INSERT OR IGNORE INTO bars
+               (ticker,date,open,high,low,close,adj_close,volume,source)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        ticker_inserted = conn.total_changes - before
+        inserted += ticker_inserted
+        if ticker_inserted:
+            actually_updated.add(ticker)
+    if updated_tickers is not None:
+        updated_tickers.update(actually_updated)
 
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
-    for ticker in tickers_with_valid_rows:
+    for ticker in actually_updated:
         conn.execute(
             """INSERT INTO instruments(ticker,first_date,last_date,row_count,last_update_utc,source)
                SELECT ?, MIN(date), MAX(date), COUNT(*), ?, 'yfinance' FROM bars WHERE ticker=?
