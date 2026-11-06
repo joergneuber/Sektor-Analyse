@@ -91,15 +91,58 @@ CALENDAR_EARLIEST_DATES = {
     "XNAS": "1971-02-08", "XETR": "1997-01-01", "XTKS": "1997-01-01",
 }
 
-# CME hat fuer den US-Labor-Day 2026 keine taeglichen Settlementpreise fuer
-# COMEX/NYMEX veroeffentlicht. exchange_calendars fuehrt den Tag dennoch als
-# Session. Solche bekannten Nicht-Publikationstage duerfen nicht endlos als
-# reparierbare Datenluecke behandelt werden. Weitere Ausnahmen nur nach
-# belastbarer Quellenpruefung ergaenzen.
+# CME veroeffentlicht an bestimmten US-Feiertagen keine taeglichen
+# Settlementpreise fuer COMEX/NYMEX. exchange_calendars fuehrt diese Tage
+# teilweise trotzdem als verkürzte Globex-Sessions. Ohne Settlementpreis
+# entsteht bei Yahoo kein regulaerer Tagesbalken; diese Tage sind daher keine
+# reparierbaren OHLCV-Luecken. Die unten aufgefuehrten Daten sind durch CME-
+# Settlement-Mitteilungen fuer 2025/2026 belegt.
 NON_PUBLISHED_DAILY_BAR_SESSIONS = {
-    "COMEX": frozenset({"2026-09-07"}),
-    "NYMEX": frozenset({"2026-09-07"}),
+    "COMEX": frozenset({
+        "2025-11-27",  # Thanksgiving: keine Settlementpreise fuer NYMEX/COMEX
+        "2026-01-19",  # Martin Luther King Day
+        "2026-02-16",  # Presidents' Day
+        "2026-05-25",  # Memorial Day
+        "2026-06-19",  # Juneteenth
+        "2026-07-03",  # Independence Day (observed)
+        "2026-09-07",  # Labor Day
+    }),
+    "NYMEX": frozenset({
+        "2025-11-27",
+        "2026-01-19",
+        "2026-02-16",
+        "2026-05-25",
+        "2026-06-19",
+        "2026-07-03",
+        "2026-09-07",
+    }),
 }
+
+# Zusätzliche vollständige Marktschließungen, die in den generischen
+# exchange_calendars-Kalendern bzw. im 24/5-Wochentagskalender nicht enthalten
+# sind. Nur konkret bestätigte Sondertage eintragen.
+NON_TRADING_SESSIONS_BY_CALENDAR = {
+    "XKRX": frozenset({
+        "2026-06-03",  # Korea: landesweiter Wahltag
+        "2026-07-17",  # Korea: Constitution Day wieder gesetzlicher Feiertag
+    }),
+    "24/5": frozenset({
+        "2025-12-25",  # Weihnachten
+        "2026-01-01",  # Neujahr
+    }),
+}
+
+
+def _expected_daily_bar_dates(calendar_name: str, session_dates: Iterable[str]) -> set[str]:
+    """Return sessions on which a daily Yahoo OHLCV bar is actually expected.
+
+    This deliberately distinguishes a full exchange closure from a shortened
+    session on which the exchange does not publish a daily settlement price.
+    """
+    expected = set(session_dates)
+    expected.difference_update(NON_TRADING_SESSIONS_BY_CALENDAR.get(calendar_name, ()))
+    expected.difference_update(NON_PUBLISHED_DAILY_BAR_SESSIONS.get(calendar_name, ()))
+    return expected
 
 
 def _calendar_name_for_ticker(ticker: str) -> str | None:
@@ -223,9 +266,8 @@ def _analyse_trading_day_gaps(
                 unverified.add(ticker)
                 reasons[ticker] = f"Kalendersitzungen nicht abrufbar: {type(exc).__name__}"
                 continue
-            expected_dates = {session.date().isoformat() for session in sessions}
-            expected_dates.difference_update(
-                NON_PUBLISHED_DAILY_BAR_SESSIONS.get(calendar_name, ())
+            expected_dates = _expected_daily_bar_dates(
+                calendar_name, (session.date().isoformat() for session in sessions)
             )
             missing_dates = sorted(expected_dates - normalized_dates[ticker])
             recent_missing = [value for value in missing_dates if value >= recent_cutoff]
@@ -860,9 +902,7 @@ def _detect_recent_trading_day_gaps(
             reasons[ticker] = f"Kalender {calendar_name} nicht auswertbar: {type(exc).__name__}"
             continue
 
-        expected_dates.difference_update(
-            NON_PUBLISHED_DAILY_BAR_SESSIONS.get(calendar_name, ())
-        )
+        expected_dates = _expected_daily_bar_dates(calendar_name, expected_dates)
         missing_dates = sorted(expected_dates - observed.get(ticker, set()))
         if missing_dates:
             gap_dates[ticker] = missing_dates
