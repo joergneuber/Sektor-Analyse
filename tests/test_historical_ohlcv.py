@@ -10,12 +10,13 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_universe_is_discovered_without_importing_analyse():
+def test_universe_is_discovered_without_importing_analyse(tmp_path):
     import historical_ohlcv as ho
-    tickers = ho.discover_universe(ROOT / "analyse.py")
+    tickers = ho.discover_universe(ROOT / "analyse.py", tmp_path / "empty-dynamic-universe.json")
     assert len(tickers) >= 800
     for ticker in ("AAPL", "NVDA", "SAP.DE", "EXSA.DE", "^GSPC", "GC=F", "BTC-USD"):
         assert ticker in tickers
+    assert all(ho._calendar_name_for_ticker(ticker) for ticker in tickers)
 
 
 def test_database_upsert_and_load(tmp_path):
@@ -213,3 +214,139 @@ def test_connect_closes_database_handle_after_normal_and_exceptional_exit(tmp_pa
         assert "closed" in str(exc).lower()
     else:
         raise AssertionError("SQLite-Verbindung blieb nach Exception offen")
+
+
+
+def test_calendar_resolver_uses_exchange_specific_and_continuous_market_calendars():
+    import historical_ohlcv as ho
+
+    assert ho._calendar_name_for_ticker("AAPL") == "XNYS"
+    assert ho._calendar_name_for_ticker("QQQ") == "XNAS"
+    assert ho._calendar_name_for_ticker("SAP.DE") == "XETR"
+    assert ho._calendar_name_for_ticker("^GDAXI") == "XETR"
+    assert ho._calendar_name_for_ticker("GC=F") == "COMEX"
+    assert ho._calendar_name_for_ticker("BZ=F") == "ICEUS"
+    assert ho._calendar_name_for_ticker("EURUSD=X") == "24/5"
+    assert ho._calendar_name_for_ticker("BTC-USD") == "24/7"
+    assert ho._calendar_name_for_ticker("ABC.UNKNOWN") is None
+
+
+def test_previous_completed_session_is_market_specific_on_us_thanksgiving():
+    import historical_ohlcv as ho
+
+    # 2026-11-26 is Thanksgiving: US exchanges are closed, Xetra is open.
+    assert ho._previous_completed_session_date("XNYS", "2026-11-27") == "2026-11-25"
+    assert ho._previous_completed_session_date("XETR", "2026-11-27") == "2026-11-26"
+    assert ho._previous_completed_session_date("24/7", "2026-11-27") == "2026-11-26"
+
+
+def test_trading_day_gap_analysis_respects_exchange_holidays_and_crypto_weekends():
+    import historical_ohlcv as ho
+
+    result = ho._analyse_trading_day_gaps(
+        {
+            # US Thanksgiving 2025-11-27 is not an XNYS session: no gap.
+            "AAPL": {"2025-11-26", "2025-11-28", "2025-12-01"},
+            # XETR traded on 2025-11-27: that absent bar is a real gap.
+            "SAP.DE": {"2025-11-26", "2025-11-28", "2025-12-01"},
+            # A continuous 24/7 instrument also expects Saturday/Sunday bars.
+            "BTC-USD": {"2026-10-30", "2026-11-02"},
+        },
+        as_of_date="2026-11-05",
+        recent_days=90,
+    )
+
+    assert "AAPL" not in result["gap_tickers"]
+    assert "SAP.DE" in result["gap_tickers"]
+    assert result["trading_day_gap_details"]["SAP.DE"]["calendar"] == "XETR"
+    assert result["trading_day_gap_details"]["SAP.DE"]["missing_dates_sample"] == ["2025-11-27"]
+    assert "BTC-USD" in result["recent_gap_tickers"]
+    assert result["trading_day_gap_details"]["BTC-USD"]["calendar"] == "24/7"
+    assert result["trading_day_gap_details"]["BTC-USD"]["missing_dates_sample"] == [
+        "2026-10-31", "2026-11-01"
+    ]
+
+
+def test_calendar_history_before_exchange_start_is_reported_as_partial_not_unmapped():
+    import historical_ohlcv as ho
+
+    result = ho._analyse_trading_day_gaps(
+        {"SAP.DE": {"1996-12-30", "1997-01-06"}},
+        as_of_date="2026-11-05",
+        recent_days=90,
+    )
+
+    assert result["calendar_coverage_incomplete_tickers"] == ["SAP.DE"]
+    assert result["calendar_unverified_tickers"] == []
+    assert result["calendar_unverified_reasons"]["SAP.DE"].endswith("1997-01-01 ab")
+    assert result["gap_tickers"] == ["SAP.DE"]
+
+
+def test_audit_snapshot_detects_recent_gaps_and_candidate_impact(tmp_path, monkeypatch):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "gaps.sqlite"
+    source = tmp_path / "universe.py"
+    dynamic = tmp_path / "dynamic.json"
+    source.write_text("sektoren_map={}\\n", encoding="utf-8")
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-10-26", "2026-10-28"])
+    frame = pd.DataFrame(
+        {
+            "Open": [100, 101], "High": [102, 103], "Low": [99, 100],
+            "Close": [101, 102], "Adj Close": [101, 102], "Volume": [1000, 1100],
+        },
+        index=idx,
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(
+                conn,
+                {"AAPL": frame, "SAP.DE": frame, "BTC-USD": frame},
+            )
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["AAPL", "SAP.DE", "BTC-USD"])
+
+    audit = ho.audit_snapshot(
+        db, source, dynamic, stale_after_days=90, candidate_tickers=["AAPL"]
+    )
+
+    assert audit["status"] == "gaps"
+    assert audit["recent_gap_tickers"] == ["AAPL", "BTC-USD", "SAP.DE"]
+    assert audit["affected_candidates"] == ["AAPL"]
+    assert audit["candidate_impact"] == "affected_candidates_detected"
+    # Gap detection is an orthogonal dimension; the four legacy quality states remain disjoint.
+    assert audit["quality_status_counts"] == {
+        "VALID": 3, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 3
+    }
+    assert set(audit["quality_status_by_ticker"].values()) == {"VALID"}
+
+
+def test_audit_snapshot_fails_closed_for_unknown_exchange_suffix(tmp_path, monkeypatch):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "unknown-calendar.sqlite"
+    source = tmp_path / "universe.py"
+    dynamic = tmp_path / "dynamic.json"
+    source.write_text("sektoren_map={}\\n", encoding="utf-8")
+    ho.init_db(db)
+    idx = pd.DatetimeIndex(["2026-10-26", "2026-10-28"])
+    frame = pd.DataFrame(
+        {
+            "Open": [100, 101], "High": [102, 103], "Low": [99, 100],
+            "Close": [101, 102], "Adj Close": [101, 102], "Volume": [1000, 1100],
+        },
+        index=idx,
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"ABC.UNKNOWN": frame})
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["ABC.UNKNOWN"])
+
+    audit = ho.audit_snapshot(
+        db, source, dynamic, stale_after_days=90, candidate_tickers=["ABC.UNKNOWN"]
+    )
+
+    assert audit["status"] == "gaps"
+    assert audit["calendar_unverified_tickers"] == ["ABC.UNKNOWN"]
+    assert audit["affected_candidates"] == ["ABC.UNKNOWN"]
+    assert "ABC.UNKNOWN" in audit["calendar_unverified_reasons"]

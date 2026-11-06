@@ -891,6 +891,105 @@ class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
         finally:
             del module._TRADING_RADAR_OHLCV_AUDIT
 
+    def test_recent_trading_day_gaps_prevent_complete_claim_and_are_reported(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "gaps", "checked_at": "2026-11-05T12:00:00Z",
+            "universe_count": 1, "covered_count": 1,
+            "missing_tickers": [], "stale_tickers": [],
+            "invalid_ohlcv_tickers": [], "recent_invalid_ohlcv_tickers": [],
+            "historical_only_invalid_ohlcv_tickers": [],
+            "recent_gap_tickers": ["AAPL"],
+            "historical_only_gap_tickers": [],
+            "calendar_unverified_tickers": [],
+            "quality_status_counts": {"VALID": 1, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 1},
+            "quality_status_by_ticker": {"AAPL": "VALID"},
+            "affected_candidates": ["AAPL"],
+            "candidate_impact": "affected_candidates_detected",
+            "candidate_mapping_complete": True,
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("Status=gaps", result)
+            self.assertIn("fehlende Handelstage im jüngsten 90-Tage-Fenster: AAPL", result)
+            self.assertIn("konkret betroffene Kandidaten: AAPL", result)
+            self.assertNotIn("Kandidaten nicht eingeschränkt", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
+    def test_historical_only_trading_day_gaps_are_documented_without_current_block(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "complete", "checked_at": "2026-11-05T12:00:00Z",
+            "universe_count": 1, "covered_count": 1,
+            "missing_tickers": [], "stale_tickers": [],
+            "invalid_ohlcv_tickers": [], "recent_invalid_ohlcv_tickers": [],
+            "historical_only_invalid_ohlcv_tickers": [],
+            "recent_gap_tickers": [],
+            "historical_only_gap_tickers": ["AAPL"],
+            "calendar_unverified_tickers": [],
+            "quality_status_counts": {"VALID": 1, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 1},
+            "quality_status_by_ticker": {"AAPL": "VALID"},
+            "affected_candidates": [],
+            "candidate_impact": "none_detected_in_checked_candidates",
+            "candidate_mapping_complete": True,
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("OHLCV-Abdeckung: vollständig (1/1 geprüfte Symbole)", result)
+            self.assertIn("Historische Handelstagslücken außerhalb des 90-Tage-Fensters: AAPL", result)
+            self.assertIn("Kandidaten nicht eingeschränkt", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
+    def test_partial_historical_calendar_coverage_is_documented_without_current_gap_claim(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "complete", "checked_at": "2026-11-05T12:00:00Z",
+            "universe_count": 1, "covered_count": 1,
+            "missing_tickers": [], "stale_tickers": [],
+            "invalid_ohlcv_tickers": [], "recent_invalid_ohlcv_tickers": [],
+            "historical_only_invalid_ohlcv_tickers": [],
+            "recent_gap_tickers": [], "historical_only_gap_tickers": [],
+            "calendar_unverified_tickers": [],
+            "calendar_coverage_incomplete_tickers": ["SAP.DE"],
+            "quality_status_counts": {"VALID": 1, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 1},
+            "quality_status_by_ticker": {"SAP.DE": "VALID"},
+            "affected_candidates": [],
+            "candidate_impact": "none_detected_in_checked_candidates",
+            "candidate_mapping_complete": True,
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("OHLCV-Abdeckung: vollständig (1/1 geprüfte Symbole)", result)
+            self.assertIn("Kalender-Historie vor dem jeweiligen unterstützten Startdatum nicht vollständig prüfbar: SAP.DE", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
+    def test_unknown_trading_calendar_prevents_complete_claim(self):
+        module = load_radar_module()
+        module._TRADING_RADAR_OHLCV_AUDIT = {
+            "status": "gaps", "checked_at": "2026-11-05T12:00:00Z",
+            "universe_count": 1, "covered_count": 1,
+            "missing_tickers": [], "stale_tickers": [],
+            "invalid_ohlcv_tickers": [], "recent_invalid_ohlcv_tickers": [],
+            "historical_only_invalid_ohlcv_tickers": [],
+            "recent_gap_tickers": [],
+            "historical_only_gap_tickers": [],
+            "calendar_unverified_tickers": ["ABC.UNKNOWN"],
+            "quality_status_counts": {"VALID": 1, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 1},
+            "quality_status_by_ticker": {"ABC.UNKNOWN": "VALID"},
+            "affected_candidates": ["ABC.UNKNOWN"],
+            "candidate_impact": "affected_candidates_detected",
+            "candidate_mapping_complete": True,
+        }
+        try:
+            result = module._trading_radar_ohlcv_nachweisblock()
+            self.assertIn("Handelskalender nicht verifiziert: ABC.UNKNOWN", result)
+            self.assertNotIn("Kandidaten nicht eingeschränkt", result)
+        finally:
+            del module._TRADING_RADAR_OHLCV_AUDIT
+
     def test_recent_anomalies_still_prevent_complete_claim(self):
         module = load_radar_module()
         module._TRADING_RADAR_OHLCV_AUDIT = {
