@@ -13,9 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_universe_is_discovered_without_importing_analyse(tmp_path):
     import historical_ohlcv as ho
     tickers = ho.discover_universe(ROOT / "analyse.py", tmp_path / "empty-dynamic-universe.json")
-    assert len(tickers) >= 800
-    for ticker in ("AAPL", "NVDA", "SAP.DE", "EXSA.DE", "^GSPC", "GC=F", "BTC-USD"):
+    assert len(tickers) >= 790
+    for ticker in ("AAPL", "NVDA", "SAP.DE", "EXSA.DE", "^GSPC", "GC=F", "BTC-USD",
+                   "VMRK", "SKYD", "ACT0.DE"):
         assert ticker in tickers
+    assert not {"EA", "AVB", "EQR", "WBS", "QRVO", "WBD", "PSKY", "KVUE", "ACT.DE"}.intersection(tickers)
     assert all(ho._calendar_name_for_ticker(ticker) for ticker in tickers)
 
 
@@ -115,27 +117,38 @@ def test_market_cache_normalises_mixed_timezone_indices():
 
 
 
-def test_excluded_26_tickers_are_removed_from_all_universe_sources(tmp_path):
+def test_excluded_35_tickers_are_removed_from_all_universe_sources(tmp_path):
     import historical_ohlcv as ho
     source = tmp_path / "analyse.py"
     dynamic = tmp_path / "dynamic.json"
-    source.write_text('sektoren_map={"10O.DE":"x", "ABB":"y", "AAPL":"z"}\n', encoding="utf-8")
-    dynamic.write_text('{"tickers":["1TRA.DE", "ANSS", "ZZZ.TEST"]}', encoding="utf-8")
+    source.write_text(
+        'sektoren_map={"10O.DE":"x", "ABB":"y", "AAPL":"z"}\n'
+        'sektoren_aktien={"XLRE":["AVB","EQR","VMRK"], "XLC":["EA","SKYD"]}\n'
+        'dax_aktien={"Chemie":["ACT.DE","ACT0.DE"]}\n',
+        encoding="utf-8",
+    )
+    dynamic.write_text(
+        '{"tickers":["1TRA.DE", "ANSS", "EA", "AVB", "EQR", "WBS", '
+        '"QRVO", "WBD", "PSKY", "KVUE", "ACT.DE", "ZZZ.TEST"]}',
+        encoding="utf-8",
+    )
     tickers = set(ho.discover_universe(source, dynamic))
-    assert len(ho.EXCLUDED_TICKERS) == 26
+    assert len(ho.EXCLUDED_TICKERS) == 35
     assert ho.EXCLUDED_TICKERS.isdisjoint(tickers)
-    assert {"AAPL", "ZZZ.TEST"}.issubset(tickers)
-    assert ho.register_ticker("MAXN", dynamic) is False
-    assert "MAXN" not in ho._load_dynamic_universe(dynamic)
+    assert {"AAPL", "VMRK", "SKYD", "ACT0.DE", "ZZZ.TEST"}.issubset(tickers)
+    for old_ticker in ("EA", "AVB", "EQR", "WBS", "QRVO", "WBD", "PSKY", "KVUE", "ACT.DE"):
+        assert ho.register_ticker(old_ticker, dynamic) is False
+        assert old_ticker not in ho.discover_universe(source, dynamic)
 
 
-def test_exclusion_list_matches_logged_26_missing_tickers():
+def test_exclusion_list_matches_35_obsolete_tickers():
     import historical_ohlcv as ho
     expected = {
-        "10O.DE", "1TRA.DE", "ABB", "ANSS", "ARND.DE", "ASTA.DE", "AUM.DE",
-        "CMA", "DFS", "FLIR", "FRAG.DE", "HES", "JNPR", "KCOG.DE", "MAXN",
-        "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE", "RTL.DE", "SHA.DE", "SHELL.SO",
-        "SNV", "STM1.DE", "WRK", "X",
+        "10O.DE", "1TRA.DE", "ABB", "ACT.DE", "ANSS", "ARND.DE", "ASTA.DE",
+        "AUM.DE", "AVB", "CMA", "DFS", "EA", "EQR", "FLIR", "FRAG.DE", "HES",
+        "JNPR", "KCOG.DE", "KVUE", "MAXN", "MRO", "NAFG.DE", "PNE.DE", "PSAG.DE",
+        "PSKY", "QRVO", "RTL.DE", "SHA.DE", "SHELL.SO", "SNV", "STM1.DE", "WBS",
+        "WBD", "WRK", "X",
     }
     assert ho.EXCLUDED_TICKERS == expected
 
@@ -518,3 +531,34 @@ def test_crypto_and_additional_exchange_calendar_mappings():
     assert ho._calendar_name_for_ticker("005930.KS") == "XKRX"
     assert ho._calendar_name_for_ticker("DSV.CO") == "XCSE"
     assert ho._calendar_name_for_ticker("IBE.MC") == "XMAD"
+
+
+
+def test_current_analyse_sector_universe_uses_replacement_tickers():
+    import ast
+    from pathlib import Path
+
+    source_path = Path(__file__).resolve().parents[1] / "analyse.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8-sig"), filename=str(source_path))
+    assignments = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in {"sektoren_aktien", "dax_aktien"}:
+                    assignments[target.id] = ast.literal_eval(node.value)
+
+    us_tickers = {
+        ticker
+        for values in assignments["sektoren_aktien"].values()
+        for ticker in values
+    }
+    eu_tickers = {
+        ticker
+        for values in assignments["dax_aktien"].values()
+        for ticker in values
+    }
+
+    assert {"VMRK", "SKYD"}.issubset(us_tickers)
+    assert "ACT0.DE" in eu_tickers
+    assert not {"EA", "AVB", "EQR", "WBS", "QRVO", "WBD", "PSKY", "KVUE"}.intersection(us_tickers)
+    assert "ACT.DE" not in eu_tickers
