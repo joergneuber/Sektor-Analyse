@@ -238,7 +238,7 @@ def test_calendar_resolver_uses_exchange_specific_and_continuous_market_calendar
     assert ho._calendar_name_for_ticker("SAP.DE") == "XETR"
     assert ho._calendar_name_for_ticker("^GDAXI") == "XETR"
     assert ho._calendar_name_for_ticker("GC=F") == "COMEX"
-    assert ho._calendar_name_for_ticker("BZ=F") == "ICEUS"
+    assert ho._calendar_name_for_ticker("BZ=F") == "IFEU"
     assert ho._calendar_name_for_ticker("EURUSD=X") == "24/5"
     assert ho._calendar_name_for_ticker("BTC-USD") == "24/7"
     assert ho._calendar_name_for_ticker("ABC.UNKNOWN") is None
@@ -669,3 +669,145 @@ def test_recent_gap_detector_applies_market_closure_overrides(tmp_path, monkeypa
 
     assert result["gap_dates_by_ticker"] == {}
     assert result["gap_session_count"] == 0
+
+
+
+def test_ifeu_calendar_uses_ice_brent_schedule_not_us_or_london_proxy_days():
+    import historical_ohlcv as ho
+
+    sessions = set(ho._calendar_session_dates("IFEU", "2026-01-01", "2026-12-31"))
+
+    # ICE's 2026 IFEU schedule marks these US/UK holidays as trading days
+    # for Brent, including early-close sessions (A/B/C/D).
+    expected_open = {
+        "2026-01-19", "2026-02-16", "2026-04-06", "2026-05-04",
+        "2026-05-25", "2026-06-19", "2026-07-03", "2026-08-31",
+        "2026-09-07", "2026-11-26", "2026-11-27", "2026-12-28",
+    }
+    assert expected_open.issubset(sessions)
+
+    # ICE's annual schedule marks New Year's Day, Good Friday and Christmas
+    # as full IFEU closures. 26 December remains open for Brent.
+    assert not {"2026-01-01", "2026-04-03", "2026-12-25"}.intersection(sessions)
+    assert "2025-12-26" in ho._calendar_session_dates("IFEU", "2025-12-24", "2025-12-29")
+    assert "2026-12-28" in sessions
+
+    sessions_2027 = set(ho._calendar_session_dates("IFEU", "2027-03-25", "2027-12-28"))
+    assert "2027-03-26" not in sessions_2027  # Good Friday
+    assert "2027-03-29" in sessions_2027     # Easter Monday: Brent trading day
+    assert "2027-12-27" in sessions_2027     # Boxing Day observed: Brent trading day
+    assert ho._calendar_session_dates("IFEU", "2027-12-30", "2028-01-04") == [
+        "2027-12-30", "2027-12-31"
+    ]
+    assert ho._previous_completed_session_date("IFEU", "2028-01-01") == "2027-12-31"
+    assert ho._previous_completed_session_date("IFEU", "2028-01-04") is None
+
+
+def test_ifeu_previous_completed_session_respects_brent_calendar():
+    import historical_ohlcv as ho
+
+    # Thanksgiving Thursday is a shortened IFEU Brent trading day, not a closure.
+    assert ho._previous_completed_session_date("IFEU", "2026-11-27") == "2026-11-26"
+    # On Good Friday, the prior completed Brent session is Thursday.
+    assert ho._previous_completed_session_date("IFEU", "2026-04-04") == "2026-04-02"
+
+
+def test_ifeu_gap_analysis_keeps_us_holiday_sessions_as_real_gaps():
+    import historical_ohlcv as ho
+
+    result = ho._analyse_trading_day_gaps(
+        {"BZ=F": {"2026-01-16", "2026-01-20"}},
+        as_of_date="2026-01-21",
+        recent_days=30,
+    )
+
+    assert result["calendar_by_ticker"]["BZ=F"] == "IFEU"
+    assert result["trading_day_gap_details"]["BZ=F"]["missing_dates_sample"] == [
+        "2026-01-19"
+    ]
+
+
+def test_ifeu_recent_gap_detector_uses_ifeu_sessions(tmp_path):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "ifeu-gap.sqlite"
+    ho.init_db(db)
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0, 102.0], "High": [102.0, 104.0],
+            "Low": [99.0, 101.0], "Close": [101.0, 103.0],
+            "Adj Close": [101.0, 103.0], "Volume": [1000.0, 1100.0],
+        },
+        index=pd.DatetimeIndex(["2026-01-16", "2026-01-20"]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"BZ=F": frame})
+
+    result = ho._detect_recent_trading_day_gaps(
+        db, ["BZ=F"], lookback_days=10, as_of_date="2026-01-21"
+    )
+
+    assert result["gap_dates_by_ticker"] == {"BZ=F": ["2026-01-19"]}
+    assert result["gap_session_count"] == 1
+
+
+def test_ifeu_calendar_marks_history_outside_verified_period_as_incomplete():
+    import historical_ohlcv as ho
+
+    result = ho._analyse_trading_day_gaps(
+        {"BZ=F": {"2024-12-31", "2025-01-02", "2026-01-16", "2026-01-20"}},
+        as_of_date="2026-11-06",
+        recent_days=365,
+    )
+
+    assert result["calendar_coverage_incomplete_tickers"] == ["BZ=F"]
+    assert result["calendar_unverified_tickers"] == []
+    assert "2025-01-01" not in result["trading_day_gap_details"].get("BZ=F", {}).get(
+        "missing_dates_sample", []
+    )
+
+
+
+def test_update_database_does_not_fallback_to_generic_bday_outside_ifeu_coverage(
+    tmp_path, monkeypatch
+):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "ifeu-outside-coverage.sqlite"
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"BZ=F":"Brent"}\n', encoding="utf-8")
+    ho.init_db(db)
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0], "High": [102.0], "Low": [99.0],
+            "Close": [101.0], "Adj Close": [101.0], "Volume": [1000.0],
+        },
+        index=pd.DatetimeIndex(["2027-12-31"]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"BZ=F": frame})
+
+    real_date = ho.dt.date
+
+    class FrozenDate(real_date):
+        @classmethod
+        def today(cls):
+            return cls(2028, 1, 4)
+
+    monkeypatch.setattr(ho.dt, "date", FrozenDate)
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["BZ=F"])
+    download_calls = []
+
+    def fail_if_downloaded(*args, **kwargs):
+        download_calls.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(ho, "_download_batch", fail_if_downloaded)
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.update_database(db, source, repair_gaps=True, gap_lookback_days=10)
+
+    assert download_calls == []
+    assert stats["gap_calendar_unverified"] == 1
