@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Read-only diagnosis of the historical OHLCV release database.
-
-The downloaded release asset is inspected read-only. The application audit is
-run against a byte-for-byte working copy because historical_ohlcv._connect()
-sets SQLite journal pragmas and is not a read-only connection helper.
-"""
+"""Read-only release-DB diagnosis for Paket 2 (GitHub Actions runner)."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import resource
 import shutil
 import sqlite3
 import sys
@@ -20,12 +14,16 @@ from pathlib import Path
 import historical_ohlcv
 
 ROOT = Path.cwd()
-SOURCE_DB = ROOT / "historical_ohlcv.sqlite"
+SOURCE_DB = ROOT / os.environ.get("NMM_HISTORICAL_OHLCV_DB", "historical_ohlcv.sqlite")
 AUDIT_DB = ROOT / "historical_ohlcv_diagnostic_copy.sqlite"
 REPORT = ROOT / "historical_ohlcv_release_diagnostic.json"
+SOURCE_FILE = ROOT / "analyse.py"
+DYNAMIC_UNIVERSE = ROOT / os.environ.get(
+    "NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE", "historical_ohlcv_universe.json"
+)
 
 
-def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+def sha256_file(path: Path, chunk_size: int = 8 *  1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while chunk := handle.read(chunk_size):
@@ -35,9 +33,8 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 def inspect_database(path: Path) -> dict:
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=120) as conn:
-        integrity_rows = conn.execute("PRAGMA integrity_check").fetchall()
-        integrity = [str(row[0]) for row in integrity_rows]
+    with sqlite3.connect(uri, uri=True, timeout=180) as conn:
+        integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
         tables = [row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )]
@@ -49,7 +46,7 @@ def inspect_database(path: Path) -> dict:
             "instruments": {"ticker", "row_count"},
             "bars": {"ticker", "date", "open", "high", "low", "close", "volume"},
         }
-        missing_schema = {
+        missing = {
             table: sorted(columns - set(schema.get(table, [])))
             for table, columns in required.items()
             if columns - set(schema.get(table, []))
@@ -59,9 +56,9 @@ def inspect_database(path: Path) -> dict:
             "integrity_ok": integrity == ["ok"],
             "tables": tables,
             "schema": schema,
-            "missing_required_columns": missing_schema,
+            "missing_required_columns": missing,
         }
-        if not missing_schema and "bars" in tables and "instruments" in tables:
+        if not missing:
             result["instrument_count"] = conn.execute(
                 "SELECT COUNT(*) FROM instruments"
             ).fetchone()[0]
@@ -78,62 +75,97 @@ def inspect_database(path: Path) -> dict:
                 {"ticker": row[0], "rows": row[1], "first_date": row[2], "last_date": row[3]}
                 for row in conn.execute(
                     "SELECT ticker, COUNT(*), MIN(date), MAX(date) FROM bars "
-                    "GROUP BY ticker ORDER BY COUNT(*) DESC LIMIT 15"
+                    "GROUP BY ticker ORDER BY COUNT(*) DESC LIMIT 20"
                 )
             ]
         return result
+
+
+def max_rss_kib() -> int | None:
+    try:
+        import resource
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (ImportError, AttributeError, OSError):
+        return None
 
 
 def main() -> int:
     started = time.monotonic()
     result: dict = {
         "diagnostic": "historical_ohlcv_release_database",
+        "diagnostic_version": 2,
         "python": sys.version,
         "platform": sys.platform,
         "database_path": str(SOURCE_DB),
+        "package2_api_present": all(hasattr(historical_ohlcv, name) for name in (
+            "audit_snapshot", "_analyse_trading_day_gaps", "_load_bar_dates_by_ticker"
+        )),
     }
     try:
-        if not SOURCE_DB.is_file():
-            raise FileNotFoundError(f"Release-Datenbank fehlt: {SOURCE_DB}")
-        result["file_size_bytes"] = SOURCE_DB.stat().st_size
+        if not result["package2_api_present"]:
+            raise RuntimeError(
+                "Paket-2-Version von historical_ohlcv.py fehlt. Bitte zuerst die Paket-2-Dateien auf main hochladen."
+            )
+        if not SOURCE_FILE.is_file():
+            raise FileNotFoundError(f"Universe-Quelldatei fehlt: {SOURCE_FILE}")
+        if not SOURCE_DB.is_file() or SOURCE_DB.stat().st_size <= 0:
+            raise FileNotFoundError(f"Release-Datenbank fehlt oder ist leer: {SOURCE_DB}")
+
+        size = SOURCE_DB.stat().st_size
+        free = shutil.disk_usage(ROOT).free
+        result["file_size_bytes"] = size
+        result["free_disk_bytes_before_copy"] = free
+        if free < size + 512 * 1024 * 1024:
+            raise OSError(
+                f"Zu wenig freier Speicher fuer sichere Arbeitskopie: {free} Bytes frei, {size} Bytes benoetigt."
+            )
+
         result["file_sha256"] = sha256_file(SOURCE_DB)
         result["database"] = inspect_database(SOURCE_DB)
         if not result["database"].get("integrity_ok"):
-            raise RuntimeError("SQLite integrity_check ist nicht erfolgreich")
+            raise RuntimeError("SQLite PRAGMA integrity_check ist nicht erfolgreich")
         if result["database"].get("missing_required_columns"):
-            raise RuntimeError("Das SQLite-Schema weicht vom erwarteten OHLCV-Schema ab")
+            raise RuntimeError("SQLite-Schema weicht vom erwarteten OHLCV-Schema ab")
 
-        # Audit runs on a copy to ensure the downloaded release asset is never
-        # modified by the module's normal read/write connection helper.
+        # Run the application audit on an exact copy; its connection helper may
+        # configure SQLite pragmas. The downloaded release asset stays untouched.
         shutil.copyfile(SOURCE_DB, AUDIT_DB)
-        copy_hash = sha256_file(AUDIT_DB)
-        result["audit_copy_sha256"] = copy_hash
-        if copy_hash != result["file_sha256"]:
-            raise RuntimeError("Arbeitskopie stimmt nicht bytegenau mit Release-Datei überein")
+        result["audit_copy_sha256"] = sha256_file(AUDIT_DB)
+        if result["audit_copy_sha256"] != result["file_sha256"]:
+            raise RuntimeError("Arbeitskopie stimmt nicht bytegenau mit dem Release-Asset ueberein")
 
         audit_started = time.monotonic()
         audit = historical_ohlcv.audit_snapshot(
             db_path=AUDIT_DB,
-            source_file=ROOT / "analyse.py",
-            dynamic_universe=ROOT / "historical_ohlcv_universe.json",
+            source_file=SOURCE_FILE,
+            dynamic_universe=DYNAMIC_UNIVERSE,
         )
         result["audit_elapsed_seconds"] = round(time.monotonic() - audit_started, 2)
         result["audit"] = audit
         result["audit_status"] = audit.get("status")
         result["audit_error"] = audit.get("error")
-        result["audit_gap_ticker_count"] = len(audit.get("gap_tickers", []))
-        result["audit_recent_gap_ticker_count"] = len(audit.get("recent_gap_tickers", []))
-        result["audit_unverified_calendar_count"] = len(audit.get("calendar_unverified_tickers", []))
-        result["audit_coverage_incomplete_count"] = len(audit.get("calendar_coverage_incomplete_tickers", []))
-        result["audit_quality_status_counts"] = audit.get("quality_status_counts", {})
+        for key in (
+            "universe_count", "covered_count", "gap_tickers", "recent_gap_tickers",
+            "historical_gap_tickers", "historical_only_gap_tickers",
+            "calendar_unverified_tickers", "calendar_coverage_incomplete_tickers",
+            "quality_status_counts", "affected_candidates",
+        ):
+            if key in audit:
+                value = audit[key]
+                result[f"audit_{key}"] = len(value) if isinstance(value, list) else value
         result["success"] = audit.get("status") in {"complete", "gaps"} and not audit.get("error")
-        result["audit_copy_removed"] = False
-    except Exception as exc:  # report diagnostic failures as an artifact
+        if not result["success"]:
+            raise RuntimeError(
+                f"audit_snapshot lieferte keinen verwertbaren Status: {audit.get('status')}; {audit.get('error')}"
+            )
+        result["source_sha256_after_audit"] = sha256_file(SOURCE_DB)
+        result["source_unchanged"] = result["source_sha256_after_audit"] == result["file_sha256"]
+        if not result["source_unchanged"]:
+            raise RuntimeError("Das heruntergeladene Release-Asset wurde unerwartet veraendert")
+    except Exception as exc:
         result["success"] = False
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
-        result["elapsed_seconds_total"] = round(time.monotonic() - started, 2)
-        result["max_rss_kib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         try:
             if AUDIT_DB.exists():
                 AUDIT_DB.unlink()
@@ -144,17 +176,23 @@ def main() -> int:
             result["audit_copy_removed"] = not AUDIT_DB.exists()
         except OSError as exc:
             result["cleanup_warning"] = str(exc)
-        REPORT.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-        print(json.dumps({
-            key: result.get(key) for key in (
-                "success", "file_size_bytes", "file_sha256", "database",
-                "audit_status", "audit_error", "audit_elapsed_seconds",
-                "audit_gap_ticker_count", "audit_recent_gap_ticker_count",
-                "audit_unverified_calendar_count", "audit_coverage_incomplete_count",
-                "audit_quality_status_counts", "elapsed_seconds_total", "max_rss_kib",
-                "error", "cleanup_warning",
-            ) if key in result
-        }, ensure_ascii=False, indent=2, default=str))
+        result["elapsed_seconds_total"] = round(time.monotonic() - started, 2)
+        result["max_rss_kib"] = max_rss_kib()
+        REPORT.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        summary_keys = (
+            "success", "file_size_bytes", "file_sha256", "database", "audit_status",
+            "audit_error", "audit_elapsed_seconds", "audit_universe_count",
+            "audit_covered_count", "audit_gap_tickers", "audit_recent_gap_tickers",
+            "audit_historical_gap_tickers", "audit_calendar_unverified_tickers",
+            "audit_calendar_coverage_incomplete_tickers", "audit_quality_status_counts",
+            "elapsed_seconds_total", "max_rss_kib", "audit_copy_removed", "error",
+            "cleanup_warning",
+        )
+        print(json.dumps({k: result[k] for k in summary_keys if k in result},
+                         ensure_ascii=False, indent=2, default=str))
     return 0 if result.get("success") else 1
 
 
