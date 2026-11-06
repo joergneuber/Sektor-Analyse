@@ -100,3 +100,175 @@ def test_recent_gap_scan_includes_trailing_sessions_without_mutating_db(tmp_path
     after = hashlib.sha256(db.read_bytes()).hexdigest()
     assert result["gap_dates_by_ticker"]["AAA"] == ["2026-11-04"]
     assert before == after
+
+
+def test_collect_invalid_candle_details_reports_exact_reasons_and_90_day_split(tmp_path):
+    import datetime as dt
+    import historical_ohlcv as ho
+
+    db = tmp_path / "invalid-detail.sqlite"
+    ho.init_db(db)
+    recent = (dt.date.today() - dt.timedelta(days=2)).isoformat()
+    historical = (dt.date.today() - dt.timedelta(days=120)).isoformat()
+    with ho._connect(db) as conn:
+        conn.execute(
+            "INSERT INTO instruments(ticker,first_date,last_date,row_count,source) VALUES(?,?,?,?,?)",
+            ("BAD", historical, recent, 2, "test"),
+        )
+        conn.executemany(
+            "INSERT INTO bars(ticker,date,open,high,low,close,adj_close,volume,source) VALUES(?,?,?,?,?,?,?,?,?)",
+            [
+                ("BAD", recent, 10, 8, 9, 11, 11, -1, "test"),
+                ("BAD", historical, 10, 8, 9, 11, 11, 100, "test"),
+            ],
+        )
+        conn.commit()
+
+    result = DIAG.collect_invalid_candle_details(db, ["BAD"])
+    assert result["ticker_count"] == 1
+    assert result["invalid_candle_count"] == 2
+    assert result["recent_90d_count"] == 1
+    assert result["historical_only_count"] == 1
+    recent_row = next(row for row in result["rows"] if row["date"] == recent)
+    assert recent_row["invalid_reasons"] == "volume_negative|high_below_low|high_below_open|high_below_close"
+    assert result["tickers"][0]["first_invalid_date"] == historical
+    assert result["tickers"][0]["last_invalid_date"] == recent
+
+
+def test_collect_missing_instrument_details_includes_absent_tickers(tmp_path):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "missing-detail.sqlite"
+    ho.init_db(db)
+    with ho._connect(db) as conn:
+        conn.execute(
+            "INSERT INTO instruments(ticker,first_date,last_date,row_count,source) VALUES(?,?,?,?,?)",
+            ("HASDATA", "2026-01-01", "2026-01-02", 1, "test"),
+        )
+        conn.execute(
+            "INSERT INTO bars(ticker,date,open,high,low,close,adj_close,volume,source) VALUES(?,?,?,?,?,?,?,?,?)",
+            ("HASDATA", "2026-01-02", 10, 11, 9, 10, 10, 100, "test"),
+        )
+        conn.commit()
+    probe = {
+        "ABSENT": {"provider_status": "provider_has_recent_data", "provider_row_count": 2},
+        "HASDATA": {"provider_status": "no_provider_rows", "provider_row_count": 0},
+    }
+    rows = DIAG.collect_missing_instrument_details(db, ["ABSENT", "HASDATA"], probe)
+    assert [row["ticker"] for row in rows] == ["ABSENT", "HASDATA"]
+    assert rows[0]["instrument_record_exists"] == 0
+    assert rows[0]["bar_count"] == 0
+    assert rows[0]["provider_status"] == "provider_has_recent_data"
+    assert rows[1]["instrument_record_exists"] == 1
+    assert rows[1]["bar_count"] == 1
+
+
+def test_probe_yahoo_missing_tickers_isolates_provider_errors(monkeypatch):
+    def fake_download(tickers, *, start=None, end=None):
+        ticker = tickers[0]
+        if ticker == "ERR":
+            raise TimeoutError("provider timeout")
+        if ticker == "EMPTY":
+            return {ticker: pd.DataFrame()}
+        return {ticker: pd.DataFrame({"Close": [10.0]}, index=pd.to_datetime(["2026-11-05"]))}
+
+    monkeypatch.setattr(DIAG.historical_ohlcv, "_download_batch", fake_download)
+    result = DIAG.probe_yahoo_missing_tickers(["HASDATA", "EMPTY", "ERR"])
+    assert result["HASDATA"]["provider_status"] == "provider_has_recent_data"
+    assert result["HASDATA"]["provider_row_count"] == 1
+    assert result["EMPTY"]["provider_status"] == "no_provider_rows"
+    assert result["ERR"]["provider_status"] == "request_error"
+    assert "provider timeout" in result["ERR"]["provider_error"]
+
+
+def test_quality_detail_outputs_write_all_requested_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setattr(DIAG, "INVALID_DETAIL_CSV", tmp_path / "invalid.csv")
+    monkeypatch.setattr(DIAG, "INVALID_SUMMARY_JSON", tmp_path / "invalid.json")
+    monkeypatch.setattr(DIAG, "MISSING_INSTRUMENTS_CSV", tmp_path / "missing.csv")
+    monkeypatch.setattr(DIAG, "QUALITY_REPORT_MD", tmp_path / "quality.md")
+    invalid = {
+        "ticker_count": 1, "invalid_candle_count": 1, "recent_90d_count": 1,
+        "historical_only_count": 0, "reason_counts": {"high_below_open": 1},
+        "tickers": [{"ticker": "BAD", "invalid_candle_count": 1,
+                     "recent_90d_count": 1, "historical_only_count": 0}],
+        "rows": [{"ticker": "BAD", "date": "2026-11-05", "open": 10,
+                  "high": 8, "low": 9, "close": 9, "volume": 100,
+                  "source": "test", "invalid_reasons": "high_below_open", "recent_90d": 1}],
+    }
+    missing = [{"ticker": "NEW", "instrument_record_exists": 0, "bar_count": 0,
+                "last_date": None, "provider_status": "provider_has_recent_data", "provider_row_count": 2}]
+    DIAG.write_quality_detail_outputs(invalid, missing)
+    assert all((tmp_path / name).is_file() for name in
+               ("invalid.csv", "invalid.json", "missing.csv", "quality.md"))
+    assert "high_below_open" in (tmp_path / "quality.md").read_text(encoding="utf-8")
+    assert "provider_has_recent_data" in (tmp_path / "missing.csv").read_text(encoding="utf-8-sig")
+
+
+def test_main_runs_quality_details_against_copy_and_keeps_release_db_unchanged(tmp_path, monkeypatch):
+    import hashlib
+    import historical_ohlcv as ho
+
+    source_db = tmp_path / "release.sqlite"
+    ho.init_db(source_db)
+    old = "2026-01-01"
+    with ho._connect(source_db) as conn:
+        conn.execute(
+            "INSERT INTO instruments(ticker,first_date,last_date,row_count,source) VALUES(?,?,?,?,?)",
+            ("BAD", old, old, 1, "test"),
+        )
+        conn.execute(
+            "INSERT INTO bars(ticker,date,open,high,low,close,adj_close,volume,source) VALUES(?,?,?,?,?,?,?,?,?)",
+            ("BAD", old, 10, 8, 9, 11, 11, 100, "test"),
+        )
+        conn.commit()
+    source_file = tmp_path / "analyse.py"
+    source_file.write_text('sektoren_map={"BAD":"x","NEW":"x"}\n', encoding="utf-8")
+    before = hashlib.sha256(source_db.read_bytes()).hexdigest()
+
+    for name, value in {
+        "ROOT": tmp_path,
+        "SOURCE_DB": source_db,
+        "AUDIT_DB": tmp_path / "audit-copy.sqlite",
+        "REPORT": tmp_path / "diagnostic.json",
+        "SOURCE_FILE": source_file,
+        "DYNAMIC_UNIVERSE": tmp_path / "universe.json",
+        "GAP_DETAIL_JSON": tmp_path / "gap.json",
+        "GAP_DETAIL_CSV": tmp_path / "gap.csv",
+        "GAP_DETAIL_MD": tmp_path / "gap.md",
+        "INVALID_DETAIL_CSV": tmp_path / "invalid.csv",
+        "INVALID_SUMMARY_JSON": tmp_path / "invalid.json",
+        "MISSING_INSTRUMENTS_CSV": tmp_path / "missing.csv",
+        "QUALITY_REPORT_MD": tmp_path / "quality.md",
+    }.items():
+        monkeypatch.setattr(DIAG, name, value)
+
+    audit = {
+        "status": "gaps", "error": None, "universe": ["BAD", "NEW"],
+        "invalid_ohlcv_tickers": ["BAD"], "missing_tickers": ["NEW"],
+        "quality_status_counts": {"VALID": 0, "MISSING": 1, "STALE": 0, "INVALID": 1, "TOTAL": 2},
+    }
+    monkeypatch.setattr(ho, "audit_snapshot", lambda **kwargs: audit)
+    monkeypatch.setattr(DIAG, "probe_yahoo_missing_tickers", lambda tickers: {
+        "NEW": {"provider_status": "provider_has_recent_data", "provider_row_count": 1}
+    })
+    monkeypatch.setattr(ho, "_detect_recent_trading_day_gaps", lambda *args, **kwargs: {
+        "gap_ticker_count": 0, "gap_session_count": 0,
+        "lookback_start": "2026-01-01", "lookback_end": "2026-11-06",
+        "gap_dates_by_ticker": {}, "calendar_unverified_tickers": [],
+        "calendar_unverified_reasons": {},
+    })
+    monkeypatch.setattr(DIAG, "probe_yahoo_gap_responses", lambda gaps: {
+        "probe_type": "current_yahoo_read_only_probe", "status_counts": {},
+        "batch_errors": [], "tickers": {},
+    })
+
+    assert DIAG.main() == 0
+    after = hashlib.sha256(source_db.read_bytes()).hexdigest()
+    assert before == after
+    assert not (tmp_path / "audit-copy.sqlite").exists()
+    assert all((tmp_path / name).is_file() for name in
+               ("diagnostic.json", "invalid.csv", "invalid.json", "missing.csv", "quality.md"))
+    result = __import__("json").loads((tmp_path / "diagnostic.json").read_text(encoding="utf-8"))
+    assert result["source_unchanged"] is True
+    assert result["invalid_detail_summary"]["invalid_candle_count"] == 1
+    assert result["missing_instrument_details"][0]["ticker"] == "NEW"
