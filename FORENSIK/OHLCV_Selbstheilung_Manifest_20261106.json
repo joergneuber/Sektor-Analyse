@@ -1,0 +1,78 @@
+{
+  "project": "joergneuber/Sektor-Analyse",
+  "branch": "main",
+  "date": "2026-11-06",
+  "source_archive": {
+    "name": "Sektor-Analyse-main(20261106-053847).zip",
+    "size_bytes": 1899011,
+    "sha256": "0007066b9d53863d622ec84d143de2b5133ab114f4418e99277bdb3c169fd389"
+  },
+  "github_base_verified": true,
+  "github_mutated": false,
+  "changed_files": {
+    "historical_ohlcv.py": {
+      "old_bytes": 40939,
+      "new_bytes": 53064,
+      "old_lines": 888,
+      "new_lines": 1174,
+      "old_sha256": "9a495f6d52d897a433834cf9071fcc0c5ac585347bd7b8b1e8c66829c4936c2f",
+      "new_sha256": "4807e5120eaa2204b204d24002c1b600d984627b018392cabce13efc2b43e9c0",
+      "old_git_blob_sha1": "d65b4a6a551a11e47d6c65807a6cc95876e54201",
+      "new_git_blob_sha1": "5e2ea578711d8a6757d8780a43c817a21cf78434",
+      "added_lines": 301,
+      "removed_lines": 15,
+      "old_encoding": "UTF-8",
+      "new_encoding": "UTF-8",
+      "old_line_endings": "LF",
+      "new_line_endings": "LF"
+    },
+    ".github/workflows/main.yml": {
+      "old_bytes": 47489,
+      "new_bytes": 47560,
+      "old_lines": 954,
+      "new_lines": 955,
+      "old_sha256": "465aed1bbff112d91556615e7e6380277e9f6482f37abf1ed01e61523c1ea835",
+      "new_sha256": "a6daaa89467650b3c1d8a327de1ba11c19324b2688ec0d2e68d792d44404b2dd",
+      "old_git_blob_sha1": "a2f3b5af0389b57e5bcc0fe2c1021ec3c01164f8",
+      "new_git_blob_sha1": "1c8b2a8f7a47996c438b9aad185bb07485d363ca",
+      "added_lines": 2,
+      "removed_lines": 1,
+      "old_encoding": "UTF-8",
+      "new_encoding": "UTF-8",
+      "old_line_endings": "LF",
+      "new_line_endings": "LF"
+    },
+    "tests/test_historical_ohlcv.py": {
+      "old_bytes": 15073,
+      "new_bytes": 21277,
+      "old_lines": 352,
+      "new_lines": 520,
+      "old_sha256": "16a131146213e969232a8ff9d529c538d6038da05c2c98344959d1d1201bc2bd",
+      "new_sha256": "dc180616e004fcc6b95ead3b39d04aad1bfa4042e625b1328bd88c1eb9ab15a7",
+      "old_git_blob_sha1": "74896bd276e181af59838b1daaa5b35ab0b878a7",
+      "new_git_blob_sha1": "061e857ba74c353df758cdfc031ec89e78bd209a",
+      "added_lines": 168,
+      "removed_lines": 0,
+      "old_encoding": "UTF-8",
+      "new_encoding": "UTF-8",
+      "old_line_endings": "LF",
+      "new_line_endings": "LF"
+    }
+  },
+  "tests": {
+    "historical_ohlcv": "22 passed",
+    "targeted_regressions": "126 passed, 19 subtests passed",
+    "additional_architecture_workflow": "54 passed",
+    "total": "180 passed, 19 subtests passed",
+    "full_suite": "attempted but interrupted by 60-second execution limit"
+  },
+  "limitations": [
+    "No historical_ohlcv.sqlite was present in uploaded ZIP.",
+    "No live Yahoo Finance download or production database repair was executed."
+  ],
+  "upload_paths": [
+    "historical_ohlcv.py",
+    ".github/workflows/main.yml",
+    "tests/test_historical_ohlcv.py"
+  ]
+}
