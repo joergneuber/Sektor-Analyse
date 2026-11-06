@@ -1,0 +1,180 @@
+--- a/.github/workflows/diagnose_historical_ohlcv_release.yml
++++ b/.github/workflows/diagnose_historical_ohlcv_release.yml
+@@ -30,7 +30,7 @@
+         run: |
+           set -euo pipefail
+           python -m pip install --upgrade pip
+-          python -m pip install "pandas<3.1" exchange-calendars yfinance pytest
++          python -m pip install "pandas<3.1" exchange-calendars yfinance scipy scikit-learn pytest
+ 
+       - name: Paket-2-Code vor Datenbankdownload verifizieren
+         run: |
+@@ -74,7 +74,8 @@
+         if: steps.diagnose.outcome == 'success'
+         env:
+           PYTHONPATH: .
+-          NMM_OHLCV_SOURCE_TIMEOUT: "25"
++          NMM_OHLCV_STOOQ_TIMEOUT: "10"
++          NMM_OHLCV_STOOQ_CIRCUIT_BREAKER_FAILURES: "2"
+           NMM_OHLCV_SOURCE_PAUSE: "0.15"
+         run: python ohlcv_invalid_crosscheck.py
+ 
+--- a/ohlcv_invalid_crosscheck.py
++++ b/ohlcv_invalid_crosscheck.py
+@@ -24,8 +24,13 @@
+ SUMMARY_JSON = ROOT / "OHLCV_Invalid_Quellenvergleich.json"
+ REPORT_MD = ROOT / "OHLCV_Invalid_Quellenvergleich.md"
+ STOOQ_URL = "https://stooq.com/q/d/l/"
+-REQUEST_TIMEOUT = max(5, int(os.environ.get("NMM_OHLCV_SOURCE_TIMEOUT", "25")))
++STOOQ_REQUEST_TIMEOUT = max(5, int(os.environ.get(
++    "NMM_OHLCV_STOOQ_TIMEOUT", os.environ.get("NMM_OHLCV_SOURCE_TIMEOUT", "25")
++)))
+ REQUEST_PAUSE = max(0.0, float(os.environ.get("NMM_OHLCV_SOURCE_PAUSE", "0.15")))
++STOOQ_CIRCUIT_BREAKER_FAILURES = max(
++    1, int(os.environ.get("NMM_OHLCV_STOOQ_CIRCUIT_BREAKER_FAILURES", "2"))
++)
+ MAX_TICKERS = max(0, int(os.environ.get("NMM_OHLCV_SOURCE_MAX_TICKERS", "0")))
+ PRICE_TOLERANCE = float(os.environ.get("NMM_OHLCV_PRICE_TOLERANCE", "0.0001"))
+ 
+@@ -148,7 +153,7 @@
+         "d2": end.replace("-", ""),
+         "i": "d",
+     }
+-    response = requests.get(STOOQ_URL, params=params, timeout=REQUEST_TIMEOUT,
++    response = requests.get(STOOQ_URL, params=params, timeout=STOOQ_REQUEST_TIMEOUT,
+                             headers={"User-Agent": "Mozilla/5.0 OHLCV-read-only-diagnostic"})
+     response.raise_for_status()
+     content = response.text.strip()
+@@ -201,8 +206,17 @@
+     if yahoo and _valid_ohlc(yahoo) and not _price_match(row, yahoo):
+         return "ABWEICHUNG_UNGEKLÄRT", "Yahoo repair=True liefert eine gueltige, abweichende Kerze; gleicher Datenanbieter, daher keine unabhaengige Bestaetigung."
+ 
+-    if stooq_status in {"request_error", "no_data", "unsupported_mapping"}:
+-        return "ABWEICHUNG_UNGEKLÄRT", f"Keine belastbare Zweitquellenbestaetigung (Stooq: {stooq_status})."
++    if stooq_status == "provider_unavailable_after_consecutive_errors":
++        return "ABWEICHUNG_UNGEKLÄRT", (
++            "Stooq wurde nach aufeinanderfolgenden Transportfehlern fuer diesen Lauf "
++            "ausgesetzt; keine belastbare Zweitquellenbestaetigung."
++        )
++    if stooq_status.startswith("request_error:") or stooq_status in {
++        "request_error", "no_data", "unsupported_mapping"
++    }:
++        return "ABWEICHUNG_UNGEKLÄRT", (
++            f"Keine belastbare Zweitquellenbestaetigung (Stooq: {stooq_status})."
++        )
+     return "ABWEICHUNG_UNGEKLÄRT", "Die verfuegbaren Quellen bestaetigen weder eine Korrektur noch die gespeicherten Werte."
+ 
+ 
+@@ -218,6 +232,8 @@
+     details: list[dict[str, Any]] = []
+     provider_summary: dict[str, Counter] = {"yahoo_repair": Counter(), "stooq": Counter()}
+     ticker_provider_cache: dict[str, tuple[dict, dict, str, str, str]] = {}
++    stooq_consecutive_transport_errors = 0
++    stooq_circuit_open = False
+ 
+     for ticker in tickers:
+         ticker_rows = by_ticker[ticker]
+@@ -232,12 +248,22 @@
+         stooq_symbol, mapping_method = stooq_symbol_for_ticker(ticker, overrides)
+         if not stooq_symbol:
+             stooq_rows, stooq_status = {}, "unsupported_mapping"
++        elif stooq_circuit_open:
++            stooq_rows = {}
++            stooq_status = "provider_unavailable_after_consecutive_errors"
+         else:
+             try:
+                 stooq_rows = stooq_fetch(stooq_symbol, start, end)
+                 stooq_status = "rows_returned" if stooq_rows else "no_data"
++                stooq_consecutive_transport_errors = 0
+             except Exception as exc:
+                 stooq_rows, stooq_status = {}, f"request_error:{type(exc).__name__}:{exc}"
++                if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
++                    stooq_consecutive_transport_errors += 1
++                    if stooq_consecutive_transport_errors >= STOOQ_CIRCUIT_BREAKER_FAILURES:
++                        stooq_circuit_open = True
++                else:
++                    stooq_consecutive_transport_errors = 0
+         provider_summary["yahoo_repair"][yahoo_status.split(":", 1)[0]] += 1
+         provider_summary["stooq"][stooq_status.split(":", 1)[0]] += 1
+         ticker_provider_cache[ticker] = (yahoo_rows, stooq_rows, yahoo_status, stooq_status, mapping_method)
+@@ -273,7 +299,7 @@
+     counts = Counter(row["classification"] for row in details)
+     return {
+         "diagnostic": "OHLCV_invalid_external_crosscheck",
+-        "diagnostic_version": 1,
++        "diagnostic_version": 2,
+         "created_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+         "read_only": True,
+         "database_access": "none; input is the exported invalid-candle CSV",
+@@ -282,6 +308,10 @@
+         "invalid_candle_count_checked": len(details),
+         "invalid_candle_count_skipped_by_max_tickers": sum(len(by_ticker[t]) for t in set(by_ticker) - set(tickers)),
+         "price_tolerance_relative": PRICE_TOLERANCE,
++        "stooq_request_timeout_seconds": STOOQ_REQUEST_TIMEOUT,
++        "stooq_circuit_breaker_threshold": STOOQ_CIRCUIT_BREAKER_FAILURES,
++        "stooq_circuit_breaker_open": stooq_circuit_open,
++        "stooq_consecutive_transport_errors": stooq_consecutive_transport_errors,
+         "provider_ticker_status_counts": {key: dict(value) for key, value in provider_summary.items()},
+         "classification_counts": dict(counts),
+         "limitations": [
+--- a/tests/test_ohlcv_invalid_crosscheck.py
++++ b/tests/test_ohlcv_invalid_crosscheck.py
+@@ -3,6 +3,8 @@
+ import csv
+ import json
+ from pathlib import Path
++
++import requests
+ 
+ import ohlcv_invalid_crosscheck as diag
+ 
+@@ -123,3 +125,49 @@
+     assert result["invalid_candle_count_checked"] == 1
+     assert result["classification_counts"] == {"BESTÄTIGT_FEHLERHAFT": 1}
+     assert len(calls) == 2
++
++
++
++def test_stooq_circuit_breaker_stops_after_consecutive_transport_errors(monkeypatch):
++    sources = [
++        row(ticker="TESTA.DE"),
++        row(ticker="TESTB.DE"),
++        row(ticker="TESTC.DE"),
++        row(ticker="TESTD.DE"),
++    ]
++    stooq_calls = []
++
++    def yahoo(ticker, start, end):
++        return {}
++
++    def stooq(symbol, start, end):
++        stooq_calls.append(symbol)
++        raise requests.exceptions.ConnectTimeout("simulated timeout")
++
++    monkeypatch.setattr(diag, "REQUEST_PAUSE", 0)
++    monkeypatch.setattr(diag, "STOOQ_CIRCUIT_BREAKER_FAILURES", 2)
++    monkeypatch.setattr(diag, "_load_overrides", lambda: {})
++    result = diag.run_crosscheck(
++        sources, yahoo_fetch=yahoo, stooq_fetch=stooq, sleep=lambda _: None
++    )
++
++    assert stooq_calls == ["testa.de", "testb.de"]
++    assert result["stooq_circuit_breaker_open"] is True
++    assert result["stooq_consecutive_transport_errors"] == 2
++    assert result["provider_ticker_status_counts"]["stooq"] == {
++        "request_error": 2,
++        "provider_unavailable_after_consecutive_errors": 2,
++    }
++    assert all(
++        item["classification"] == "ABWEICHUNG_UNGEKLÄRT"
++        for item in result["rows"]
++    )
++    assert "ausgesetzt" in result["rows"][2]["classification_basis"]
++    assert [
++        item["stooq_status"] for item in result["rows"]
++    ] == [
++        "request_error:ConnectTimeout:simulated timeout",
++        "request_error:ConnectTimeout:simulated timeout",
++        "provider_unavailable_after_consecutive_errors",
++        "provider_unavailable_after_consecutive_errors",
++    ]
