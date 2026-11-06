@@ -22,6 +22,10 @@ REPORT = ROOT / "historical_ohlcv_release_diagnostic.json"
 GAP_DETAIL_JSON = ROOT / "OHLCV_Gap_Ursachen.json"
 GAP_DETAIL_CSV = ROOT / "OHLCV_Gap_Detail.csv"
 GAP_DETAIL_MD = ROOT / "OHLCV_Gap_Report.md"
+INVALID_DETAIL_CSV = ROOT / "OHLCV_Invalid_Detail.csv"
+INVALID_SUMMARY_JSON = ROOT / "OHLCV_Invalid_Zusammenfassung.json"
+MISSING_INSTRUMENTS_CSV = ROOT / "OHLCV_Missing_Instruments.csv"
+QUALITY_REPORT_MD = ROOT / "OHLCV_Quality_Report.md"
 GAP_LOOKBACK_DAYS = int(os.environ.get("NMM_HISTORICAL_OHLCV_GAP_LOOKBACK_DAYS", "365"))
 YAHOO_PROBE_BATCH_SIZE = max(1, int(os.environ.get("NMM_HISTORICAL_OHLCV_YAHOO_PROBE_BATCH_SIZE", "20")))
 SOURCE_FILE = ROOT / "analyse.py"
@@ -250,11 +254,185 @@ def write_gap_detail_outputs(gap_audit: dict, yahoo_probe: dict) -> None:
     GAP_DETAIL_MD.write_text("\n".join(lines), encoding="utf-8")
 
 
+
+INVALID_REASON_SQL = """
+    trim(
+        CASE WHEN open IS NULL THEN 'open_null|' ELSE '' END ||
+        CASE WHEN high IS NULL THEN 'high_null|' ELSE '' END ||
+        CASE WHEN low IS NULL THEN 'low_null|' ELSE '' END ||
+        CASE WHEN close IS NULL THEN 'close_null|' ELSE '' END ||
+        CASE WHEN volume IS NULL THEN 'volume_null|' ELSE '' END ||
+        CASE WHEN open <= 0 THEN 'open_non_positive|' ELSE '' END ||
+        CASE WHEN high <= 0 THEN 'high_non_positive|' ELSE '' END ||
+        CASE WHEN low <= 0 THEN 'low_non_positive|' ELSE '' END ||
+        CASE WHEN close <= 0 THEN 'close_non_positive|' ELSE '' END ||
+        CASE WHEN volume < 0 THEN 'volume_negative|' ELSE '' END ||
+        CASE WHEN high < low THEN 'high_below_low|' ELSE '' END ||
+        CASE WHEN high < open THEN 'high_below_open|' ELSE '' END ||
+        CASE WHEN high < close THEN 'high_below_close|' ELSE '' END ||
+        CASE WHEN low > open THEN 'low_above_open|' ELSE '' END ||
+        CASE WHEN low > close THEN 'low_above_close|' ELSE '' END,
+        '|'
+    )
+"""
+
+
+def collect_invalid_candle_details(db_path: Path, invalid_tickers: list[str]) -> dict:
+    """Return every invalid candle using the exact predicates in audit_snapshot."""
+    tickers = sorted({str(t).strip().upper() for t in invalid_tickers if str(t).strip()})
+    if not tickers:
+        return {"diagnostic": "OHLCV_invalid_candle_detail", "ticker_count": 0,
+                "invalid_candle_count": 0, "recent_90d_count": 0,
+                "historical_only_count": 0, "tickers": [], "reason_counts": {}, "rows": []}
+    placeholders = ",".join("?" for _ in tickers)
+    invalid_predicate = """
+        open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL OR volume IS NULL OR
+        open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR volume < 0 OR
+        high < low OR high < open OR high < close OR low > open OR low > close
+    """
+    with sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=180) as conn:
+        rows = conn.execute(
+            f"""SELECT ticker, date, open, high, low, close, volume, source,
+                       {INVALID_REASON_SQL} AS invalid_reasons,
+                       CASE WHEN date >= date('now', '-90 days') THEN 1 ELSE 0 END AS recent_90d
+                FROM bars
+                WHERE ticker IN ({placeholders}) AND ({invalid_predicate})
+                ORDER BY ticker, date""",
+            tickers,
+        ).fetchall()
+    columns = ["ticker", "date", "open", "high", "low", "close", "volume", "source", "invalid_reasons", "recent_90d"]
+    records = [dict(zip(columns, row)) for row in rows]
+    reason_counts: dict[str, int] = {}
+    by_ticker: dict[str, dict] = {}
+    for row in records:
+        ticker = row["ticker"]
+        item = by_ticker.setdefault(ticker, {"ticker": ticker, "invalid_candle_count": 0,
+                                             "recent_90d_count": 0, "historical_only_count": 0,
+                                             "first_invalid_date": row["date"], "last_invalid_date": row["date"]})
+        item["invalid_candle_count"] += 1
+        if row["recent_90d"]:
+            item["recent_90d_count"] += 1
+        else:
+            item["historical_only_count"] += 1
+        item["last_invalid_date"] = row["date"]
+        for reason in filter(None, row["invalid_reasons"].split("|")):
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return {
+        "diagnostic": "OHLCV_invalid_candle_detail",
+        "diagnostic_version": 1,
+        "classification_window_days": 90,
+        "ticker_count": len(by_ticker),
+        "invalid_candle_count": len(records),
+        "recent_90d_count": sum(int(row["recent_90d"]) for row in records),
+        "historical_only_count": sum(1 for row in records if not row["recent_90d"]),
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "tickers": [by_ticker[key] for key in sorted(by_ticker)],
+        "rows": records,
+        "predicate_note": "Die Fehlerbedingungen entsprechen den INVALID-Prädikaten aus historical_ohlcv.audit_snapshot.",
+    }
+
+
+def probe_yahoo_missing_tickers(tickers: list[str], *, lookback_days: int = 90) -> dict[str, dict]:
+    """Probe each missing universe ticker separately; never writes to SQLite."""
+    start = (dt.date.today() - dt.timedelta(days=lookback_days)).isoformat()
+    end = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    results: dict[str, dict] = {}
+    for ticker in sorted(set(tickers)):
+        try:
+            frames = historical_ohlcv._download_batch([ticker], start=start, end=end)
+            frame = frames.get(ticker)
+            dates = sorted({_iso_date(value) for value in frame.index}) if frame is not None and not frame.empty else []
+            results[ticker] = {
+                "provider_status": "provider_has_recent_data" if dates else "no_provider_rows",
+                "provider_row_count": len(dates),
+                "provider_first_date": dates[0] if dates else None,
+                "provider_last_date": dates[-1] if dates else None,
+                "provider_error": None,
+                "requested_start": start, "requested_end_exclusive": end,
+            }
+        except Exception as exc:
+            results[ticker] = {
+                "provider_status": "request_error", "provider_row_count": 0,
+                "provider_first_date": None, "provider_last_date": None,
+                "provider_error": f"{type(exc).__name__}: {exc}",
+                "requested_start": start, "requested_end_exclusive": end,
+            }
+    return results
+
+
+def collect_missing_instrument_details(db_path: Path, missing_tickers: list[str], provider_probe: dict[str, dict]) -> list[dict]:
+    tickers = sorted({str(t).strip().upper() for t in missing_tickers if str(t).strip()})
+    if not tickers:
+        return []
+    values_select = " UNION ALL ".join("SELECT ? AS ticker" if index == 0 else "SELECT ?" for index in range(len(tickers)))
+    with sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=180) as conn:
+        rows = conn.execute(
+            f"""SELECT u.ticker, i.ticker IS NOT NULL AS instrument_record_exists,
+                       COALESCE(i.row_count, 0), COUNT(b.date), MIN(b.date), MAX(b.date)
+                FROM ({values_select}) u
+                LEFT JOIN instruments i ON i.ticker=u.ticker
+                LEFT JOIN bars b ON b.ticker=u.ticker
+                GROUP BY u.ticker, i.ticker, i.row_count
+                ORDER BY u.ticker""",
+            tickers,
+        ).fetchall()
+    columns = ["ticker", "instrument_record_exists", "instrument_row_count", "bar_count", "first_date", "last_date"]
+    details = []
+    for row in rows:
+        item = dict(zip(columns, row))
+        item.update(provider_probe.get(item["ticker"], {}))
+        details.append(item)
+    return details
+
+
+def write_quality_detail_outputs(invalid_detail: dict, missing_details: list[dict]) -> None:
+    summary = {key: value for key, value in invalid_detail.items() if key != "rows"}
+    INVALID_SUMMARY_JSON.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    invalid_columns = ["ticker", "date", "open", "high", "low", "close", "volume", "source", "invalid_reasons", "recent_90d"]
+    with INVALID_DETAIL_CSV.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=invalid_columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(invalid_detail.get("rows", []))
+    missing_columns = ["ticker", "instrument_record_exists", "instrument_row_count", "bar_count", "first_date", "last_date",
+                       "provider_status", "provider_row_count", "provider_first_date", "provider_last_date",
+                       "provider_error", "requested_start", "requested_end_exclusive"]
+    with MISSING_INSTRUMENTS_CSV.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=missing_columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(missing_details)
+    lines = [
+        "# OHLCV-Qualitätsdetails", "",
+        "## INVALID-Kerzen", "",
+        f"- Betroffene Ticker: {invalid_detail.get('ticker_count', 0)}",
+        f"- Fehlerhafte Kerzen insgesamt: {invalid_detail.get('invalid_candle_count', 0)}",
+        f"- Davon innerhalb der letzten 90 Tage: {invalid_detail.get('recent_90d_count', 0)}",
+        f"- Davon älter als 90 Tage: {invalid_detail.get('historical_only_count', 0)}",
+        "", "### Fehlerursachen (Mehrfachnennungen pro Kerze möglich)", "",
+        "| Fehlergrund | Anzahl betroffener Kerzen |", "|---|---:|",
+    ]
+    for reason, count in sorted(invalid_detail.get("reason_counts", {}).items()):
+        lines.append(f"| `{reason}` | {count} |")
+    lines += ["", "### Tickerübersicht", "", "| Ticker | Fehlerhafte Kerzen | letzte 90 Tage | älter als 90 Tage |", "|---|---:|---:|---:|"]
+    for item in invalid_detail.get("tickers", []):
+        lines.append(f"| {item['ticker']} | {item['invalid_candle_count']} | {item['recent_90d_count']} | {item['historical_only_count']} |")
+    lines += ["", "## Fehlende Universums-Ticker", "",
+              "| Ticker | Instrument-Datensatz | gespeicherte Bars | letzte Bar | Yahoo-Probe | Yahoo-Bars |",
+              "|---|---|---:|---|---|---:|"]
+    for item in missing_details:
+        lines.append(f"| {item['ticker']} | {'ja' if item['instrument_record_exists'] else 'nein'} | {item['bar_count']} | {item['last_date'] or '—'} | {item.get('provider_status', 'nicht geprüft')} | {item.get('provider_row_count', 0)} |")
+    lines += [
+        "", "Die Yahoo-Probe ist eine aktuelle, read-only Verfügbarkeitsprüfung über die letzten 90 Kalendertage.",
+        "Sie belegt nicht rückwirkend, ob ein Symbol beim früheren Datenbanklauf verfügbar war.",
+        "Die Diagnose liest die Arbeitskopie; die Release-Quelldatenbank bleibt unverändert.",
+        "", "Ein INVALID-Ticker kann mehrere fehlerhafte Kerzen enthalten. Die CSV enthält jede betroffene Kerze einzeln.", "",
+    ]
+    QUALITY_REPORT_MD.write_text("\n".join(lines), encoding="utf-8")
+
 def main() -> int:
     started = time.monotonic()
     result: dict = {
         "diagnostic": "historical_ohlcv_release_database",
-        "diagnostic_version": 3,
+        "diagnostic_version": 4,
         "python": sys.version,
         "platform": sys.platform,
         "database_path": str(SOURCE_DB),
@@ -320,6 +498,33 @@ def main() -> int:
             raise RuntimeError(
                 f"audit_snapshot lieferte keinen verwertbaren Status: {audit.get('status')}; {audit.get('error')}"
             )
+
+        # Explain every INVALID ticker at candle level, using the same predicates
+        # as audit_snapshot. All detail files are written from the audit copy.
+        invalid_tickers = audit.get("invalid_ohlcv_tickers", [])
+        invalid_detail = collect_invalid_candle_details(AUDIT_DB, invalid_tickers)
+        if invalid_detail.get("ticker_count") != len(invalid_tickers):
+            raise RuntimeError(
+                "INVALID-Detail passt nicht zur audit_snapshot-Tickerliste: "
+                f"{invalid_detail.get('ticker_count')} Detail-Ticker bei {len(invalid_tickers)} Audit-Tickern"
+            )
+        result["invalid_detail_summary"] = {
+            key: invalid_detail.get(key) for key in (
+                "ticker_count", "invalid_candle_count", "recent_90d_count",
+                "historical_only_count", "reason_counts"
+            )
+        }
+        missing_tickers = audit.get("missing_tickers", [])
+        missing_provider_probe = probe_yahoo_missing_tickers(missing_tickers)
+        missing_details = collect_missing_instrument_details(
+            AUDIT_DB, missing_tickers, missing_provider_probe
+        )
+        result["missing_instrument_details"] = missing_details
+        write_quality_detail_outputs(invalid_detail, missing_details)
+        result["quality_detail_outputs"] = [
+            INVALID_DETAIL_CSV.name, INVALID_SUMMARY_JSON.name,
+            MISSING_INSTRUMENTS_CSV.name, QUALITY_REPORT_MD.name,
+        ]
 
         # Separate trailing+interior recent-gap scan. The historical audit above
         # intentionally only classifies interior gaps and therefore cannot
@@ -388,7 +593,8 @@ def main() -> int:
             "audit_calendar_coverage_incomplete_tickers", "audit_quality_status_counts",
             "recent_gap_ticker_count", "recent_gap_session_count", "recent_gap_lookback_start",
             "recent_gap_lookback_end", "yahoo_probe_error", "yahoo_probe_elapsed_seconds",
-            "gap_detail_outputs", "elapsed_seconds_total", "max_rss_kib", "audit_copy_removed", "error",
+            "gap_detail_outputs", "quality_detail_outputs", "invalid_detail_summary",
+            "missing_instrument_details", "elapsed_seconds_total", "max_rss_kib", "audit_copy_removed", "error",
             "cleanup_warning",
         )
         print(json.dumps({k: result[k] for k in summary_keys if k in result},
