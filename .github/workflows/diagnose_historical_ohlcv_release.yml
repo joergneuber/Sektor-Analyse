@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install "pandas<3.1" exchange-calendars yfinance pytest
+          python -m pip install "pandas<3.1" exchange-calendars yfinance scipy scikit-learn pytest
 
       - name: Paket-2-Code vor Datenbankdownload verifizieren
         run: |
@@ -74,7 +74,8 @@ jobs:
         if: steps.diagnose.outcome == 'success'
         env:
           PYTHONPATH: .
-          NMM_OHLCV_SOURCE_TIMEOUT: "25"
+          NMM_OHLCV_STOOQ_TIMEOUT: "10"
+          NMM_OHLCV_STOOQ_CIRCUIT_BREAKER_FAILURES: "2"
           NMM_OHLCV_SOURCE_PAUSE: "0.15"
         run: python ohlcv_invalid_crosscheck.py
 
