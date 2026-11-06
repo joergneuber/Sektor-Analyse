@@ -40,6 +40,8 @@ jobs:
           test -s diagnose_historical_ohlcv_release.py
           grep -q "def _analyse_trading_day_gaps" historical_ohlcv.py
           grep -q "def audit_snapshot" historical_ohlcv.py
+          grep -q "def collect_invalid_candle_details" diagnose_historical_ohlcv_release.py
+          grep -q "def collect_missing_instrument_details" diagnose_historical_ohlcv_release.py
 
       - name: Diagnose-Code und Regressionstests pruefen
         run: python -m pytest -q tests/test_diagnose_historical_ohlcv_release.py
@@ -76,5 +78,9 @@ jobs:
             OHLCV_Gap_Detail.csv
             OHLCV_Gap_Ursachen.json
             OHLCV_Gap_Report.md
+            OHLCV_Invalid_Detail.csv
+            OHLCV_Invalid_Zusammenfassung.json
+            OHLCV_Missing_Instruments.csv
+            OHLCV_Quality_Report.md
           if-no-files-found: warn
           retention-days: 30
