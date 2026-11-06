@@ -266,6 +266,15 @@ def test_trading_day_gap_analysis_respects_exchange_holidays_and_crypto_weekends
         "2026-10-31", "2026-11-01"
     ]
 
+    # CME published no COMEX settlement on Labor Day 2026; do not classify it
+    # as a missing bar even though the generic exchange calendar has a session.
+    cme_result = ho._analyse_trading_day_gaps(
+        {"GC=F": {"2026-09-04", "2026-09-08", "2026-09-09"}},
+        as_of_date="2026-09-10",
+        recent_days=90,
+    )
+    assert "GC=F" not in cme_result["gap_tickers"]
+
 
 def test_calendar_history_before_exchange_start_is_reported_as_partial_not_unmapped():
     import historical_ohlcv as ho
@@ -350,3 +359,162 @@ def test_audit_snapshot_fails_closed_for_unknown_exchange_suffix(tmp_path, monke
     assert audit["calendar_unverified_tickers"] == ["ABC.UNKNOWN"]
     assert audit["affected_candidates"] == ["ABC.UNKNOWN"]
     assert "ABC.UNKNOWN" in audit["calendar_unverified_reasons"]
+
+
+
+def test_gap_repair_inserts_only_missing_rows_and_preserves_existing_values(tmp_path):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "gap-insert.sqlite"
+    ho.init_db(db)
+    existing = pd.DataFrame(
+        {
+            "Open": [100.0], "High": [102.0], "Low": [99.0],
+            "Close": [101.0], "Adj Close": [101.0], "Volume": [1000.0],
+        },
+        index=pd.DatetimeIndex(["2026-11-02"]),
+    )
+    downloaded = pd.DataFrame(
+        {
+            "Open": [900.0, 102.0], "High": [902.0, 104.0], "Low": [899.0, 101.0],
+            "Close": [901.0, 103.0], "Adj Close": [901.0, 103.0], "Volume": [9000.0, 1100.0],
+        },
+        index=pd.DatetimeIndex(["2026-11-02", "2026-11-03"]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            assert ho._upsert_frames(conn, {"AAPL": existing}) == 1
+            assert ho._insert_missing_frames(conn, {"AAPL": downloaded}) == 1
+
+    result = ho.load_history("AAPL", db)
+    assert len(result) == 2
+    assert float(result.loc[pd.Timestamp("2026-11-02"), "Close"]) == 101.0
+    assert float(result.loc[pd.Timestamp("2026-11-03"), "Close"]) == 103.0
+
+
+def test_recent_gap_detector_uses_exchange_sessions_and_detects_missing_session(tmp_path, monkeypatch):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "gap-detection.sqlite"
+    ho.init_db(db)
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0, 102.0, 103.0], "High": [102.0, 104.0, 105.0],
+            "Low": [99.0, 101.0, 102.0], "Close": [101.0, 103.0, 104.0],
+            "Adj Close": [101.0, 103.0, 104.0], "Volume": [1000.0, 1100.0, 1200.0],
+        },
+        index=pd.DatetimeIndex(["2026-11-02", "2026-11-04", "2026-11-05"]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"AAPL": frame})
+
+    monkeypatch.setattr(
+        ho, "_previous_completed_session_date",
+        lambda calendar_name, as_of_date: "2026-11-05",
+    )
+    result = ho._detect_recent_trading_day_gaps(
+        db, ["AAPL"], lookback_days=4, as_of_date="2026-11-06"
+    )
+
+    assert result["gap_dates_by_ticker"] == {"AAPL": ["2026-11-03"]}
+    assert result["gap_session_count"] == 1
+
+
+def test_update_database_automatically_repairs_recent_gap_without_overwriting_existing_data(
+    tmp_path, monkeypatch
+):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "self-healing.sqlite"
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAPL":"US"}\n', encoding="utf-8")
+    ho.init_db(db)
+    initial = pd.DataFrame(
+        {
+            "Open": [100.0, 102.0, 103.0], "High": [102.0, 104.0, 105.0],
+            "Low": [99.0, 101.0, 102.0], "Close": [101.0, 103.0, 104.0],
+            "Adj Close": [101.0, 103.0, 104.0], "Volume": [1000.0, 1100.0, 1200.0],
+        },
+        index=pd.DatetimeIndex(["2026-11-02", "2026-11-04", "2026-11-05"]),
+    )
+    repaired = pd.DataFrame(
+        {
+            "Open": [101.0], "High": [103.0], "Low": [100.0],
+            "Close": [102.0], "Adj Close": [102.0], "Volume": [1050.0],
+        },
+        index=pd.DatetimeIndex(["2026-11-03"]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"AAPL": initial})
+
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["AAPL"])
+    monkeypatch.setattr(
+        ho, "_previous_completed_session_date",
+        lambda calendar_name, as_of_date: "2026-11-05",
+    )
+    calls = []
+
+    def fake_download(tickers, start=None, end=None):
+        calls.append((list(tickers), start, end))
+        return {"AAPL": repaired}
+
+    monkeypatch.setattr(ho, "_download_batch", fake_download)
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.update_database(
+        db, source, repair_gaps=True, gap_lookback_days=4
+    )
+
+    history = ho.load_history("AAPL", db)
+    assert len(history) == 4
+    assert float(history.loc[pd.Timestamp("2026-11-02"), "Close"]) == 101.0
+    assert float(history.loc[pd.Timestamp("2026-11-03"), "Close"]) == 102.0
+    assert stats["gap_sessions_found"] == 1
+    assert stats["gap_rows_added"] == 1
+    assert stats["gap_sessions_remaining"] == 0
+    assert stats["gap_tickers_remaining"] == 0
+    assert calls == [(["AAPL"], "2026-11-03", "2026-11-04")]
+
+
+def test_recent_gap_detector_skips_unmapped_calendars_and_known_nonpublication_sessions(
+    tmp_path, monkeypatch
+):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "calendar-skip.sqlite"
+    ho.init_db(db)
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0], "High": [102.0, 103.0],
+            "Low": [99.0, 100.0], "Close": [101.0, 102.0],
+            "Adj Close": [101.0, 102.0], "Volume": [1000.0, 1100.0],
+        },
+        index=pd.DatetimeIndex(["2026-09-04", "2026-09-08"]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"GC=F": frame, "ABC.UNKNOWN": frame})
+
+    monkeypatch.setattr(
+        ho, "_previous_completed_session_date",
+        lambda calendar_name, as_of_date: "2026-09-08",
+    )
+    result = ho._detect_recent_trading_day_gaps(
+        db, ["GC=F", "ABC.UNKNOWN"], lookback_days=10, as_of_date="2026-09-09"
+    )
+
+    assert "ABC.UNKNOWN" in result["calendar_unverified_tickers"]
+    assert "GC=F" not in result["gap_dates_by_ticker"]
+    assert "GC=F" not in result["calendar_unverified_tickers"]
+
+
+def test_crypto_and_additional_exchange_calendar_mappings():
+    import historical_ohlcv as ho
+
+    assert ho._calendar_name_for_ticker("ETH-USD") == "24/7"
+    assert ho._calendar_name_for_ticker("SOL-USD") == "24/7"
+    assert ho._calendar_name_for_ticker("005930.KS") == "XKRX"
+    assert ho._calendar_name_for_ticker("DSV.CO") == "XCSE"
+    assert ho._calendar_name_for_ticker("IBE.MC") == "XMAD"
