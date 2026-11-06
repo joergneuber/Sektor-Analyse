@@ -562,3 +562,110 @@ def test_current_analyse_sector_universe_uses_replacement_tickers():
     assert "ACT0.DE" in eu_tickers
     assert not {"EA", "AVB", "EQR", "WBS", "QRVO", "WBD", "PSKY", "KVUE"}.intersection(us_tickers)
     assert "ACT.DE" not in eu_tickers
+
+
+def test_expected_daily_bar_dates_apply_only_confirmed_calendar_overrides():
+    import historical_ohlcv as ho
+
+    cme_dates = {
+        "2025-11-27", "2026-01-19", "2026-02-16", "2026-05-25",
+        "2026-06-19", "2026-07-03", "2026-09-07",
+    }
+    assert ho._expected_daily_bar_dates("COMEX", cme_dates) == set()
+    assert ho._expected_daily_bar_dates("NYMEX", cme_dates) == set()
+    assert ho._expected_daily_bar_dates("ICEUS", cme_dates) == cme_dates
+    assert ho._expected_daily_bar_dates("XKRX", {"2026-06-03", "2026-07-17"}) == set()
+    assert ho._expected_daily_bar_dates("24/5", {"2025-12-25", "2026-01-01"}) == set()
+
+
+def test_known_exchange_closures_and_cme_nonpublication_days_are_not_gap_sessions():
+    import historical_ohlcv as ho
+
+    import exchange_calendars as exchange_cal
+
+    krx_calendar = exchange_cal.get_calendar("XKRX", start="2026-06-01", end="2026-07-20")
+    krx_dates = {session.date().isoformat() for session in krx_calendar.sessions}
+    fx_calendar = exchange_cal.get_calendar("24/5", start="2025-12-22", end="2026-01-02")
+    fx_dates = {session.date().isoformat() for session in fx_calendar.sessions}
+
+    result = ho._analyse_trading_day_gaps(
+        {
+            # CME did not disseminate COMEX/NYMEX settlement prices on these dates.
+            "GC=F": {"2026-01-16", "2026-01-20"},
+            "CL=F": {"2026-02-13", "2026-02-17"},
+            "HG=F": {"2026-05-22", "2026-05-26"},
+            "PL=F": {"2026-06-18", "2026-06-22"},
+            "PA=F": {"2026-07-02", "2026-07-06"},
+            # All KRX sessions are present except the two confirmed closures.
+            "005930.KS": krx_dates - {"2026-06-03", "2026-07-17"},
+            # All 24/5 weekdays are present except Christmas and New Year's Day.
+            "EURUSD=X": fx_dates - {"2025-12-25", "2026-01-01"},
+        },
+        as_of_date="2026-11-06",
+        recent_days=365,
+    )
+
+    assert not {"GC=F", "CL=F", "HG=F", "PL=F", "PA=F", "005930.KS", "EURUSD=X"}.intersection(
+        result["gap_tickers"]
+    )
+
+
+def test_real_sessions_remain_gaps_even_when_they_fall_on_us_or_european_holidays():
+    import historical_ohlcv as ho
+
+    result = ho._analyse_trading_day_gaps(
+        {
+            # ICE Futures Europe Brent has trading and settlement on US holidays.
+            "BZ=F": {"2026-01-16", "2026-01-20"},
+            # Xetra explicitly trades on Ascension Day and Whit Monday in 2026.
+            "^STOXX": {
+                "2026-05-13", "2026-05-15", "2026-05-18", "2026-05-19",
+                "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-26",
+            },
+            # Ordinary Copenhagen and Xetra sessions: these remain genuine gaps.
+            "DSV.CO": {"2026-03-20", "2026-03-24"},
+            "PPFB.DE": {"2026-03-05", "2026-03-09"},
+        },
+        as_of_date="2026-11-06",
+        recent_days=365,
+    )
+
+    assert result["trading_day_gap_details"]["BZ=F"]["missing_dates_sample"] == ["2026-01-19"]
+    assert result["trading_day_gap_details"]["^STOXX"]["missing_dates_sample"] == [
+        "2026-05-14", "2026-05-25"
+    ]
+    assert result["trading_day_gap_details"]["DSV.CO"]["missing_dates_sample"] == ["2026-03-23"]
+    assert result["trading_day_gap_details"]["PPFB.DE"]["missing_dates_sample"] == ["2026-03-06"]
+
+
+def test_recent_gap_detector_applies_market_closure_overrides(tmp_path, monkeypatch):
+    import historical_ohlcv as ho
+
+    db = tmp_path / "krx-holiday.sqlite"
+    ho.init_db(db)
+    calendar = __import__("exchange_calendars").get_calendar(
+        "XKRX", start="2026-05-26", end="2026-06-04"
+    )
+    dates = [session for session in calendar.sessions if session.date().isoformat() != "2026-06-03"]
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0] * len(dates), "High": [102.0] * len(dates),
+            "Low": [99.0] * len(dates), "Close": [101.0] * len(dates),
+            "Adj Close": [101.0] * len(dates), "Volume": [1000.0] * len(dates),
+        },
+        index=pd.DatetimeIndex(dates),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"005930.KS": frame})
+
+    monkeypatch.setattr(
+        ho, "_previous_completed_session_date",
+        lambda calendar_name, as_of_date: "2026-06-04",
+    )
+    result = ho._detect_recent_trading_day_gaps(
+        db, ["005930.KS"], lookback_days=10, as_of_date="2026-06-05"
+    )
+
+    assert result["gap_dates_by_ticker"] == {}
+    assert result["gap_session_count"] == 0
