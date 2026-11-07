@@ -141,18 +141,22 @@ def fetch_alpaca(
     tickers: list[str],
     start: dt.datetime,
     end: dt.datetime,
+    feed_name: str = "iex",
 ) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
-    """Fetch all US symbols with the same unspecified feed as production.
+    """Fetch US symbols from an explicitly selected Alpaca stock feed.
 
-    Production StockBarsRequest currently omits `feed`; this diagnostic does
-    the same (API default), and explicitly requests RAW adjustment, which is
-    also the API default. Invalid-symbol chunks are recursively isolated.
+    IEX is the real-time Basic feed. SIP is queried only through the last
+    completed UTC date, keeping the request outside Basic's latest-15-minute
+    historical restriction. Invalid-symbol chunks are isolated.
     """
-    from alpaca.data.enums import Adjustment
+    from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
     aliases = {"BRK-B": "BRK.B", "BF-B": "BF.B"}
+    feed = {"iex": DataFeed.IEX, "sip": DataFeed.SIP}.get(feed_name.lower())
+    if feed is None:
+        raise ValueError(f"Unsupported Alpaca feed: {feed_name!r}")
     frames: dict[str, pd.DataFrame] = {}
     statuses: dict[str, str] = {}
 
@@ -166,7 +170,7 @@ def fetch_alpaca(
             end=end,
             timeframe=TimeFrame.Day,
             adjustment=Adjustment.RAW,
-            # Deliberately no feed=...: mirror production's current default.
+            feed=feed,
         )
         response = None
         last_error: Exception | None = None
@@ -242,6 +246,59 @@ def fetch_yahoo(
             else:
                 statuses[ticker] = "no_rows"
     return frames, statuses
+
+
+def _compare_ohlcv_frames(
+    left: pd.DataFrame | None, right: pd.DataFrame | None, left_name: str, right_name: str
+) -> dict[str, Any]:
+    """Compare overlapping daily OHLCV bars and EMA20/ATR14 values."""
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if left is None or right is None or left.empty or right.empty:
+        return {"left": left_name, "right": right_name, "overlap_bars": 0, "status": "insufficient_data"}
+
+    def keyed(frame: pd.DataFrame) -> pd.DataFrame:
+        data = frame.copy()
+        data = data.rename(columns={c: str(c).capitalize() for c in data.columns})
+        if not required.issubset(data.columns):
+            return pd.DataFrame()
+        index = pd.to_datetime(data.index, utc=True, errors="coerce")
+        data.index = index.date.astype(str)
+        data = data.loc[~data.index.duplicated(keep="last"), list(required)].sort_index()
+        return data.apply(pd.to_numeric, errors="coerce")
+
+    a_all, b_all = keyed(left), keyed(right)
+    common = a_all.index.intersection(b_all.index)
+    if a_all.empty or b_all.empty or len(common) == 0:
+        return {"left": left_name, "right": right_name, "overlap_bars": 0, "status": "no_common_dates"}
+    # Calculate indicators on each provider's full own sequence first.
+    # Only the final comparison is aligned to common dates; missing sessions
+    # must not be silently compressed out of an indicator's lookback.
+    def indicators(frame: pd.DataFrame) -> dict[str, pd.Series]:
+        tr = pd.concat([
+            frame["High"] - frame["Low"],
+            (frame["High"] - frame["Close"].shift()).abs(),
+            (frame["Low"] - frame["Close"].shift()).abs(),
+        ], axis=1).max(axis=1)
+        return {
+            "ema20": frame["Close"].ewm(span=20, adjust=False).mean(),
+            "atr14": tr.rolling(14, min_periods=14).mean(),
+        }
+    ind_a, ind_b = indicators(a_all), indicators(b_all)
+    a, b = a_all.loc[common], b_all.loc[common]
+    result: dict[str, Any] = {
+        "left": left_name, "right": right_name, "overlap_bars": int(len(common)),
+        "last_common_date": str(common[-1]), "status": "compared",
+    }
+    for column in ("Open", "High", "Low", "Close", "Volume"):
+        denom = b[column].abs().replace(0, float("nan"))
+        pct = ((a[column] - b[column]).abs() / denom * 100).dropna()
+        result[f"{column.lower()}_mean_abs_diff_pct"] = round(float(pct.mean()), 6) if not pct.empty else None
+        result[f"{column.lower()}_max_abs_diff_pct"] = round(float(pct.max()), 6) if not pct.empty else None
+    for label in ("ema20", "atr14"):
+        av, bv = ind_a[label].reindex(common).iloc[-1], ind_b[label].reindex(common).iloc[-1]
+        result[f"{label}_last_abs_diff"] = round(float(abs(av - bv)), 8) if pd.notna(av) and pd.notna(bv) else None
+        result[f"{label}_last_abs_diff_pct"] = round(float(abs(av - bv) / abs(bv) * 100), 6) if pd.notna(av) and pd.notna(bv) and bv != 0 else None
+    return result
 
 
 def _invalid_bar_count(frame: pd.DataFrame | None, ticker: str) -> int:
@@ -328,7 +385,7 @@ def _probe_historical_gaps(
 ) -> dict[str, dict[str, Any]]:
     """Probe exact old gap dates outside the rolling coverage window."""
     import historical_ohlcv
-    from alpaca.data.enums import Adjustment
+    from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
@@ -376,6 +433,7 @@ def _probe_historical_gaps(
                         end=dt.datetime.combine(dt.date.fromisoformat(end_date), dt.time.min),
                         timeframe=TimeFrame.Day,
                         adjustment=Adjustment.RAW,
+                        feed=DataFeed.IEX,
                     )
                     raw = client.get_stock_bars(request).df
                     targeted_frame = _normalise_alpaca_frames(raw, [ticker], [request_symbol]).get(ticker)
@@ -458,8 +516,16 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
         yahoo_end = end_day.isoformat()
 
         alpaca_client = StockHistoricalDataClient(api_key, api_secret)
-        alpaca_frames, alpaca_status = fetch_alpaca(
-            alpaca_client, us_equity_tickers, start_dt, end_dt
+        alpaca_iex_frames, alpaca_iex_status = fetch_alpaca(
+            alpaca_client, us_equity_tickers, start_dt, end_dt, feed_name="iex"
+        )
+        # Basic permits historical SIP data only when it is at least 15 minutes
+        # old. End at today's UTC midnight: only completed historical dates are
+        # requested, and the current session is not mixed into this comparison.
+        sip_end_dt = dt.datetime.combine(today, dt.time.min)
+        sip_end_date = today.isoformat()
+        alpaca_sip_frames, alpaca_sip_status = fetch_alpaca(
+            alpaca_client, us_equity_tickers, start_dt, sip_end_dt, feed_name="sip"
         )
         yahoo_frames, yahoo_status = fetch_yahoo(us_universe, yahoo_start, yahoo_end)
 
@@ -485,9 +551,14 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
                 latest_expected = expected[-1]
 
             is_index = ticker.startswith("^")
-            alpaca_summary = _provider_summary(
-                alpaca_frames.get(ticker),
-                "not_applicable_index_symbol" if is_index else alpaca_status.get(ticker, "missing_status"),
+            alpaca_iex_summary = _provider_summary(
+                alpaca_iex_frames.get(ticker),
+                "not_applicable_index_symbol" if is_index else alpaca_iex_status.get(ticker, "missing_status"),
+                expected, ticker,
+            )
+            alpaca_sip_summary = _provider_summary(
+                alpaca_sip_frames.get(ticker),
+                "not_applicable_index_symbol" if is_index else alpaca_sip_status.get(ticker, "missing_status"),
                 expected, ticker,
             )
             yahoo_summary = _provider_summary(
@@ -505,15 +576,23 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
                 "expected_sessions": len(expected),
                 "latest_expected_session": latest_expected,
                 "db_has_latest_expected": bool(latest_expected and db_last and str(db_last)[:10] >= latest_expected),
-                "alpaca_status": alpaca_summary["status"],
                 "alpaca_applicable": not is_index,
-                "alpaca_bar_count": alpaca_summary["bar_count"],
-                "alpaca_first_date": alpaca_summary["first_date"],
-                "alpaca_last_date": alpaca_summary["last_date"],
-                "alpaca_sessions_covered": alpaca_summary["expected_sessions_covered"],
-                "alpaca_sessions_missing": alpaca_summary["expected_sessions_missing"],
-                "alpaca_invalid_bars": alpaca_summary["invalid_bars"],
-                "alpaca_has_latest_expected": alpaca_summary["has_latest_expected_session"],
+                "alpaca_iex_status": alpaca_iex_summary["status"],
+                "alpaca_iex_bar_count": alpaca_iex_summary["bar_count"],
+                "alpaca_iex_first_date": alpaca_iex_summary["first_date"],
+                "alpaca_iex_last_date": alpaca_iex_summary["last_date"],
+                "alpaca_iex_sessions_covered": alpaca_iex_summary["expected_sessions_covered"],
+                "alpaca_iex_sessions_missing": alpaca_iex_summary["expected_sessions_missing"],
+                "alpaca_iex_invalid_bars": alpaca_iex_summary["invalid_bars"],
+                "alpaca_iex_has_latest_expected": alpaca_iex_summary["has_latest_expected_session"],
+                "alpaca_sip_status": alpaca_sip_summary["status"],
+                "alpaca_sip_bar_count": alpaca_sip_summary["bar_count"],
+                "alpaca_sip_first_date": alpaca_sip_summary["first_date"],
+                "alpaca_sip_last_date": alpaca_sip_summary["last_date"],
+                "alpaca_sip_sessions_covered": alpaca_sip_summary["expected_sessions_covered"],
+                "alpaca_sip_sessions_missing": alpaca_sip_summary["expected_sessions_missing"],
+                "alpaca_sip_invalid_bars": alpaca_sip_summary["invalid_bars"],
+                "alpaca_sip_has_latest_expected": alpaca_sip_summary["has_latest_expected_session"],
                 "yahoo_status": yahoo_summary["status"],
                 "yahoo_bar_count": yahoo_summary["bar_count"],
                 "yahoo_first_date": yahoo_summary["first_date"],
@@ -522,19 +601,25 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
                 "yahoo_sessions_missing": yahoo_summary["expected_sessions_missing"],
                 "yahoo_invalid_bars": yahoo_summary["invalid_bars"],
                 "yahoo_has_latest_expected": yahoo_summary["has_latest_expected_session"],
+                "comparison_iex_vs_sip": _compare_ohlcv_frames(
+                    alpaca_iex_frames.get(ticker), alpaca_sip_frames.get(ticker), "IEX", "SIP"
+                ),
+                "comparison_sip_vs_yahoo": _compare_ohlcv_frames(
+                    alpaca_sip_frames.get(ticker), yahoo_frames.get(ticker), "SIP", "Yahoo"
+                ),
                 "historical_gap_count": len(gap_dates),
                 "historical_gap_dates": ";".join(gap_dates),
                 "historical_gap_dates_truncated": False,
-                "alpaca_historical_gap_dates_returned": "",
+                "alpaca_iex_historical_gap_dates_returned": "",
                 "yahoo_historical_gap_dates_returned": "",
             })
 
         targeted_gaps = _probe_historical_gaps(
-            alpaca_client, yahoo_frames, alpaca_frames, historical_gaps
+            alpaca_client, yahoo_frames, alpaca_iex_frames, historical_gaps
         )
         row_by_ticker = {row["ticker"]: row for row in rows}
         for ticker, provider_results in targeted_gaps.items():
-            for provider, key in (("alpaca", "alpaca_historical_gap_dates_returned"),
+            for provider, key in (("alpaca", "alpaca_iex_historical_gap_dates_returned"),
                                   ("yahoo", "yahoo_historical_gap_dates_returned")):
                 item = provider_results.get(provider, {})
                 row_by_ticker[ticker][key] = ";".join(item.get("returned_gap_dates", []))
@@ -555,25 +640,37 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
         "index_benchmark_count_excluded_from_alpaca_stock_endpoint": len(us_index_tickers),
         "us_historical_gap_ticker_count": len(historical_gaps),
         "us_historical_gap_session_count": sum(len(v) for v in historical_gaps.values()),
-        "alpaca_rows_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_status"] == "rows_returned" for row in rows),
-        "alpaca_no_rows_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_status"] == "no_rows" for row in rows),
-        "alpaca_invalid_symbol_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_status"] == "invalid_symbol" for row in rows),
-        "alpaca_request_error_ticker_count": sum(row["alpaca_applicable"] and str(row["alpaca_status"]).startswith("request_error") for row in rows),
-        "alpaca_latest_session_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_has_latest_expected"] for row in rows),
-        "alpaca_missing_expected_sessions": sum(int(row["alpaca_sessions_missing"] or 0) for row in rows if row["alpaca_applicable"]),
-        "alpaca_invalid_bars": sum(int(row["alpaca_invalid_bars"] or 0) for row in rows if row["alpaca_applicable"]),
+        "alpaca_iex_rows_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_iex_status"] == "rows_returned" for row in rows),
+        "alpaca_iex_no_rows_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_iex_status"] == "no_rows" for row in rows),
+        "alpaca_iex_invalid_symbol_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_iex_status"] == "invalid_symbol" for row in rows),
+        "alpaca_iex_request_error_ticker_count": sum(row["alpaca_applicable"] and str(row["alpaca_iex_status"]).startswith("request_error") for row in rows),
+        "alpaca_iex_latest_session_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_iex_has_latest_expected"] for row in rows),
+        "alpaca_iex_missing_expected_sessions": sum(int(row["alpaca_iex_sessions_missing"] or 0) for row in rows if row["alpaca_applicable"]),
+        "alpaca_iex_invalid_bars": sum(int(row["alpaca_iex_invalid_bars"] or 0) for row in rows if row["alpaca_applicable"]),
+        "alpaca_sip_rows_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_sip_status"] == "rows_returned" for row in rows),
+        "alpaca_sip_no_rows_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_sip_status"] == "no_rows" for row in rows),
+        "alpaca_sip_invalid_symbol_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_sip_status"] == "invalid_symbol" for row in rows),
+        "alpaca_sip_request_error_ticker_count": sum(row["alpaca_applicable"] and str(row["alpaca_sip_status"]).startswith("request_error") for row in rows),
+        "alpaca_sip_latest_session_ticker_count": sum(row["alpaca_applicable"] and row["alpaca_sip_has_latest_expected"] for row in rows),
+        "alpaca_sip_missing_expected_sessions": sum(int(row["alpaca_sip_sessions_missing"] or 0) for row in rows if row["alpaca_applicable"]),
+        "alpaca_sip_invalid_bars": sum(int(row["alpaca_sip_invalid_bars"] or 0) for row in rows if row["alpaca_applicable"]),
         "yahoo_rows_ticker_count": sum(row["yahoo_status"] == "rows_returned" for row in rows),
         "yahoo_no_rows_ticker_count": sum(row["yahoo_status"] == "no_rows" for row in rows),
         "yahoo_request_error_ticker_count": sum(str(row["yahoo_status"]).startswith("request_error") for row in rows),
         "yahoo_latest_session_ticker_count": count_true("yahoo_has_latest_expected"),
         "yahoo_missing_expected_sessions": sum_field("yahoo_sessions_missing"),
         "yahoo_invalid_bars": sum_field("yahoo_invalid_bars"),
+        "iex_sip_comparable_ticker_count": sum(row["comparison_iex_vs_sip"].get("status") == "compared" for row in rows),
+        "sip_yahoo_comparable_ticker_count": sum(row["comparison_sip_vs_yahoo"].get("status") == "compared" for row in rows),
         "db_latest_session_ticker_count": count_true("db_has_latest_expected"),
-        "alpaca_only_latest": sum(row["alpaca_applicable"] and row["alpaca_has_latest_expected"] and not row["yahoo_has_latest_expected"] for row in rows),
-        "yahoo_only_latest": sum(row["alpaca_applicable"] and row["yahoo_has_latest_expected"] and not row["alpaca_has_latest_expected"] for row in rows),
-        "both_latest": sum(row["alpaca_applicable"] and row["alpaca_has_latest_expected"] and row["yahoo_has_latest_expected"] for row in rows),
-        "neither_latest": sum(row["alpaca_applicable"] and not row["alpaca_has_latest_expected"] and not row["yahoo_has_latest_expected"] for row in rows),
-        "alpaca_feed": "API default (feed omitted to mirror production StockBarsRequest)",
+        "alpaca_iex_only_latest_vs_yahoo": sum(row["alpaca_applicable"] and row["alpaca_iex_has_latest_expected"] and not row["yahoo_has_latest_expected"] for row in rows),
+        "alpaca_sip_only_latest_vs_yahoo": sum(row["alpaca_applicable"] and row["alpaca_sip_has_latest_expected"] and not row["yahoo_has_latest_expected"] for row in rows),
+        "iex_and_yahoo_latest": sum(row["alpaca_applicable"] and row["alpaca_iex_has_latest_expected"] and row["yahoo_has_latest_expected"] for row in rows),
+        "sip_and_yahoo_latest": sum(row["alpaca_applicable"] and row["alpaca_sip_has_latest_expected"] and row["yahoo_has_latest_expected"] for row in rows),
+        "neither_iex_nor_yahoo_latest": sum(row["alpaca_applicable"] and not row["alpaca_iex_has_latest_expected"] and not row["yahoo_has_latest_expected"] for row in rows),
+        "alpaca_iex_feed": "IEX (explicit DataFeed.IEX; free Basic real-time feed)",
+        "alpaca_sip_feed": "SIP (explicit DataFeed.SIP; historical only through last completed UTC date)",
+        "alpaca_sip_end_exclusive": sip_end_date,
         "alpaca_adjustment": "RAW",
         "yahoo_auto_adjust": False,
         "lookback_days": lookback_days,
@@ -582,7 +679,7 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
     }
     report = {
         "diagnostic": "US_Alpaca_Yahoo_Provider_Coverage",
-        "diagnostic_version": 1,
+        "diagnostic_version": 2,
         "created_at_utc": started.isoformat(),
         "github_sha": os.environ.get("GITHUB_SHA"),
         "github_run_id": os.environ.get("GITHUB_RUN_ID"),
@@ -605,7 +702,8 @@ def run_comparison(lookback_days: int) -> dict[str, Any]:
         "provider_comparison_summary": summary,
         "ticker_results": rows,
         "interpretation": [
-            "Alpaca wird ohne explizites feed-Argument abgefragt, um den aktuellen Produktionsaufruf nachzubilden.",
+            "Alpaca IEX wird ausdrücklich mit DataFeed.IEX abgefragt (Basic-Echtzeitfeed).",
+            "Alpaca SIP wird separat mit DataFeed.SIP abgefragt; der Endzeitpunkt liegt auf UTC-Tagesbeginn, damit nur abgeschlossene historische Tage und keine Daten aus den letzten 15 Minuten angefordert werden.",
             "Fünf Index-Benchmarks mit ^-Präfix bleiben im Yahoo-/DB-Vergleich sichtbar, werden aber nicht als Aktien beim Alpaca-Stock-Endpunkt angefragt.",
             "Alpaca adjustment=RAW und Yahoo auto_adjust=False werden verwendet.",
             "Ein leerer Provider-Abruf ist kein Beweis für generelle Nichtunterstützung; Request-Fehler werden separat ausgewiesen.",
@@ -634,25 +732,29 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Originaldatenbank unverändert: **{report['database_unchanged']}**",
         f"- Vollständiges US-Universum: **{s['universe_count']} Symbole**, davon **{s['alpaca_equity_universe_count']} Aktien/ETFs** und **{s['index_benchmark_count_excluded_from_alpaca_stock_endpoint']} Index-Benchmarks** (nicht an Alpaca Stock API gesendet)",
         f"- Vergleichsfenster: {s['lookback_start']} bis {s['lookback_end_exclusive']} (Ende exklusiv)",
-        f"- Alpaca-Feed: {s['alpaca_feed']}; Adjustment: {s['alpaca_adjustment']}",
+        f"- Alpaca IEX: {s['alpaca_iex_feed']}",
+        f"- Alpaca SIP: {s['alpaca_sip_feed']}; Ende exklusiv: {s['alpaca_sip_end_exclusive']}",
+        f"- Adjustment: {s['alpaca_adjustment']}",
         f"- Yahoo auto_adjust: `{s['yahoo_auto_adjust']}`",
         "",
         "## Zusammenfassung",
         "",
-        "| Kennzahl | Alpaca | Yahoo |",
-        "|---|---:|---:|",
-        f"| Ticker mit Daten | {s['alpaca_rows_ticker_count']} | {s['yahoo_rows_ticker_count']} |",
-        f"| Ticker ohne Daten | {s['alpaca_no_rows_ticker_count']} | {s['yahoo_no_rows_ticker_count']} |",
-        f"| Von Alpaca als ungültiges Symbol abgelehnt | {s['alpaca_invalid_symbol_ticker_count']} | – |",
-        f"| Ticker mit Request-Fehler | {s['alpaca_request_error_ticker_count']} | {s['yahoo_request_error_ticker_count']} |",
-        f"| Ticker mit letztem erwarteten Handelstag | {s['alpaca_latest_session_ticker_count']} | {s['yahoo_latest_session_ticker_count']} |",
-        f"| Fehlende erwartete Sitzungen im Fenster | {s['alpaca_missing_expected_sessions']} | {s['yahoo_missing_expected_sessions']} |",
-        f"| Strukturell ungültige Bars | {s['alpaca_invalid_bars']} | {s['yahoo_invalid_bars']} |",
+        "| Kennzahl | Alpaca IEX | Alpaca SIP (historisch) | Yahoo |",
+        "|---|---:|---:|---:|",
+        f"| Ticker mit Daten | {s['alpaca_iex_rows_ticker_count']} | {s['alpaca_sip_rows_ticker_count']} | {s['yahoo_rows_ticker_count']} |",
+        f"| Ticker ohne Daten | {s['alpaca_iex_no_rows_ticker_count']} | {s['alpaca_sip_no_rows_ticker_count']} | {s['yahoo_no_rows_ticker_count']} |",
+        f"| Ungültiges Symbol | {s['alpaca_iex_invalid_symbol_ticker_count']} | {s['alpaca_sip_invalid_symbol_ticker_count']} | – |",
+        f"| Ticker mit Request-Fehler | {s['alpaca_iex_request_error_ticker_count']} | {s['alpaca_sip_request_error_ticker_count']} | {s['yahoo_request_error_ticker_count']} |",
+        f"| Ticker mit letztem erwarteten Handelstag | {s['alpaca_iex_latest_session_ticker_count']} | {s['alpaca_sip_latest_session_ticker_count']} | {s['yahoo_latest_session_ticker_count']} |",
+        f"| Fehlende erwartete Sitzungen | {s['alpaca_iex_missing_expected_sessions']} | {s['alpaca_sip_missing_expected_sessions']} | {s['yahoo_missing_expected_sessions']} |",
+        f"| Strukturell ungültige Bars | {s['alpaca_iex_invalid_bars']} | {s['alpaca_sip_invalid_bars']} | {s['yahoo_invalid_bars']} |",
         "",
-        f"- Beide Provider liefern den letzten erwarteten Handelstag: **{s['both_latest']}**",
-        f"- Nur Alpaca liefert ihn: **{s['alpaca_only_latest']}**",
-        f"- Nur Yahoo liefert ihn: **{s['yahoo_only_latest']}**",
-        f"- Keiner liefert ihn: **{s['neither_latest']}**",
+        f"- Ticker mit direktem IEX↔SIP-OHLCV/EMA20/ATR14-Vergleich: **{s['iex_sip_comparable_ticker_count']}**",
+        f"- Ticker mit SIP↔Yahoo-OHLCV/EMA20/ATR14-Vergleich: **{s['sip_yahoo_comparable_ticker_count']}**",
+        "- Die vollständigen Abweichungswerte je Ticker stehen im JSON- und CSV-Report.",
+        "",
+        f"- IEX und Yahoo liefern den letzten erwarteten Handelstag: **{s['iex_and_yahoo_latest']}**",
+        f"- SIP und Yahoo liefern ihn: **{s['sip_and_yahoo_latest']}**",
         "",
         "## Offene historische US-Lücken",
         "",
@@ -678,6 +780,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "- `no_rows` bedeutet: der Provider hat in diesem Request keine Bars zurückgegeben; es ist keine definitive Aussage über die generelle Symbolunterstützung.",
         "- `request_error` wird getrennt gezählt und darf nicht als fehlende Marktabdeckung interpretiert werden.",
         "- Der Vergleich prüft Abdeckung und einfache OHLCV-Struktur, keine Preisparität zwischen den Anbietern.",
+        "- IEX ist der kostenlose Echtzeitfeed des Basic-Tarifs und bildet nur IEX-Handel ab; er ist nicht mit dem konsolidierten SIP-Gesamtmarkt gleichzusetzen.",
+        "- SIP wird als separate historische Abfrage bis zum letzten abgeschlossenen UTC-Tag getestet; dies vermeidet den Basic-Zugriffsschutz auf die jüngsten 15 Minuten. Ein SIP-Request-Fehler wird separat berichtet und nicht als fehlende Bars gewertet.",
         "- ^-Indexbenchmarks sind im Projektuniversum enthalten, werden aber nicht beim Alpaca-Stock-Endpunkt angefragt.",
         "- Die SQLite wurde nicht aktualisiert, repariert oder überschrieben.",
         "",
@@ -702,7 +806,8 @@ def main() -> int:
     if not report["database_unchanged"]:
         return 2
     summary = report["provider_comparison_summary"]
-    if summary["alpaca_request_error_ticker_count"] or summary["yahoo_request_error_ticker_count"]:
+    if (summary["alpaca_iex_request_error_ticker_count"] or summary["alpaca_sip_request_error_ticker_count"]
+            or summary["yahoo_request_error_ticker_count"]):
         return 1  # Reports are still uploaded by the workflow's always() artifact step.
     return 0
 

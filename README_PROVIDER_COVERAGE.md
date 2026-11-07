@@ -1,4 +1,4 @@
-# US Provider Coverage – Alpaca vs Yahoo
+# US Provider Coverage – Alpaca IEX + delayed SIP vs Yahoo
 
 ## Zweck
 
@@ -24,10 +24,21 @@ diesen Tag für alle 661 Symbole zurückliefern. Diese Werte sind eine Baseline,
 keine Vorwegnahme des neuen Alpaca-Vergleichs. Siehe
 `BASELINE_AUSGANGSLAGE_2026-11-07.md`.
 
-Alpaca wird ohne `feed`-Argument abgefragt, damit der Test den derzeitigen
-Produktionsaufruf in `market_data.py`/`analyse.py` nachbildet. `adjustment=RAW`
-ist explizit gesetzt (API-Standard). Yahoo wird mit `auto_adjust=False` über den
-bestehenden `_download_batch`-Pfad abgefragt.
+Alpaca wird in zwei getrennten Abrufen abgefragt:
+
+- `feed=DataFeed.IEX`: kostenloser Echtzeitfeed des Basic-Tarifs, nur IEX-Handel.
+- `feed=DataFeed.SIP`: separater historischer Abruf mit Ende exklusiv am Beginn
+  des aktuellen UTC-Tages. Dadurch werden nur abgeschlossene historische Tage
+  und keine Daten aus den jüngsten 15 Minuten angefordert. Der Basic-Tarif
+  erlaubt historische Daten mit einer Verzögerung von mindestens 15 Minuten.
+
+Beide Abrufe verwenden `adjustment=RAW`. Yahoo wird mit `auto_adjust=False`
+über den bestehenden `_download_batch`-Pfad abgefragt. Der Report vergleicht
+pro Ticker Abdeckung, fehlende Handelssitzungen und ungültige OHLCV-Bars sowie
+auf gemeinsamen Tagen Open/High/Low/Close/Volume-Abweichungen und die daraus
+berechneten EMA20-/ATR14-Abweichungen. IEX ist kein Ersatz für SIP:
+IEX repräsentiert nur den Handel an der IEX-Börse. Der historische SIP-Abruf
+ist separat und ausdrücklich kein Echtzeit-SIP-Zugriff.
 
 ## Sicherheitsgrenzen
 
@@ -52,8 +63,9 @@ Die Dateien aus diesem Paket manuell in das Repository übernehmen:
 3. `.github/workflows/us_provider_coverage.yml` in `.github/workflows/`.
 4. `README_PROVIDER_COVERAGE.md` optional ins Repo-Root.
 
-Anschließend die neue Action **US Provider Coverage – Alpaca vs Yahoo** manuell
-über GitHub Actions starten. Es werden die bestehenden GitHub Secrets
+Anschließend die neue Action **US Provider Coverage – Alpaca IEX + delayed SIP vs Yahoo** manuell
+über GitHub Actions starten. Der Lauf fragt IEX und den verzögerten historischen SIP-Zugriff getrennt ab;
+es entstehen keine zusätzlichen Kosten und es wird kein Tarifwechsel ausgelöst. Es werden die bestehenden GitHub Secrets
 `ALPACA_KEY` und `ALPACA_SECRET` verwendet. Standardfenster 365 Tage.
 
 ## Erwartete Ausgaben
@@ -61,6 +73,9 @@ Anschließend die neue Action **US Provider Coverage – Alpaca vs Yahoo** manue
 - `US_Provider_Coverage.json`: vollständiger Maschinenreport und alle Ticker.
 - `US_Provider_Coverage.csv`: eine Zeile je US-Ticker.
 - `US_Provider_Coverage.md`: kompakte Zusammenfassung.
+
+Die CSV/JSON-Ergebnisse enthalten getrennte Felder für Alpaca IEX, Alpaca SIP
+(historisch) und Yahoo sowie pro Ticker OHLCV-/EMA20-/ATR14-Abweichungen.
 
 `no_rows` ist nicht gleichbedeutend mit "Symbol grundsätzlich nicht
 unterstützt". Request-Fehler, leere Datenantworten und echte fehlende
