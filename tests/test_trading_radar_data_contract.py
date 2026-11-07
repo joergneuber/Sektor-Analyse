@@ -876,8 +876,10 @@ class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
             "invalid_ohlcv_tickers": ["BC8.DE", "BOSS.DE"],
             "recent_invalid_ohlcv_tickers": [],
             "historical_only_invalid_ohlcv_tickers": ["BC8.DE", "BOSS.DE"],
-            "quality_status_counts": {"VALID": 800, "MISSING": 0, "STALE": 0, "INVALID": 2, "TOTAL": 802},
-            "quality_status_by_ticker": {**{f"V{i}": "VALID" for i in range(800)}, "BAD1": "INVALID", "BAD2": "INVALID"},
+            "quality_status_counts": {"VALID": 802, "MISSING": 0, "STALE": 0, "INVALID": 0, "TOTAL": 802},
+            "quality_status_by_ticker": {**{f"V{i}": "VALID" for i in range(800)}, "BAD1": "VALID", "BAD2": "VALID"},
+            "historical_only_invalid_ohlcv_ticker_count": 2,
+            "historical_only_invalid_ohlcv_candle_count": 5953,
             "affected_candidates": [],
             "candidate_impact": "none_detected_in_checked_candidates",
             "candidate_mapping_complete": True,
@@ -886,8 +888,10 @@ class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
             result = module._trading_radar_ohlcv_nachweisblock()
             self.assertIn("OHLCV-Abdeckung: vollständig (802/802 geprüfte Symbole)", result)
             self.assertIn("Kandidaten nicht eingeschränkt", result)
-            self.assertIn("Historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters", result)
-            self.assertIn("BC8.DE, BOSS.DE", result)
+            self.assertIn("Bekannter historischer INVALID-Bestand außerhalb des 90-Tage-Fensters", result)
+            self.assertIn("2 Ticker / 5953 Kerzen", result)
+            self.assertIn("keine pauschale Sperre aktueller Handelssignale", result)
+            self.assertNotIn("BC8.DE, BOSS.DE", result)
         finally:
             del module._TRADING_RADAR_OHLCV_AUDIT
 

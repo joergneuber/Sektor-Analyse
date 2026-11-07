@@ -153,13 +153,27 @@ def test_exclusion_list_matches_35_obsolete_tickers():
     assert ho.EXCLUDED_TICKERS == expected
 
 
-def test_audit_snapshot_returns_four_disjoint_quality_states(tmp_path):
+def test_audit_snapshot_separates_historical_invalid_from_current_quality_states(tmp_path, monkeypatch):
     import historical_ohlcv as ho
     db = tmp_path / "quality.sqlite"
     source = tmp_path / "universe.py"
     dynamic = tmp_path / "dynamic.json"
-    source.write_text('sektoren_map={"VALID":"x","MISSING":"x","STALE":"x","INVALID":"x"}\n', encoding="utf-8")
+    source.write_text(
+        'sektoren_map={"VALID":"x","MISSING":"x","STALE":"x","INVALID":"x","HISTORICAL":"x"}\n',
+        encoding="utf-8",
+    )
     ho.init_db(db)
+    monkeypatch.setattr(
+        ho, "_analyse_trading_day_gaps",
+        lambda **kwargs: {
+            "gap_tickers": [], "recent_gap_tickers": [],
+            "historical_gap_tickers": [], "historical_only_gap_tickers": [],
+            "calendar_unverified_tickers": [],
+            "calendar_coverage_incomplete_tickers": [],
+            "calendar_unverified_reasons": {}, "calendar_by_ticker": {},
+            "trading_day_gap_details": {}, "trading_day_gap_policy_days": 90,
+        },
+    )
     import datetime
     today = datetime.date.today()
     recent = today - datetime.timedelta(days=1)
@@ -179,8 +193,23 @@ def test_audit_snapshot_returns_four_disjoint_quality_states(tmp_path):
                     "INSERT INTO bars(ticker,date,open,high,low,close,volume,source) VALUES(?,?,?,?,?,?,?,?)",
                     (ticker, date_value, *values, "test"),
                 )
+            historical_date = today - datetime.timedelta(days=365)
+            conn.execute(
+                "INSERT INTO instruments(ticker, first_date, last_date, row_count, last_update_utc, source) VALUES(?,?,?,?,?,?)",
+                ("HISTORICAL", historical_date.isoformat(), recent.isoformat(), 2,
+                 datetime.datetime.now(datetime.timezone.utc).isoformat(), "test"),
+            )
+            conn.executemany(
+                "INSERT INTO bars(ticker,date,open,high,low,close,volume,source) VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    ("HISTORICAL", historical_date.isoformat(), 10, 8, 9, 11, 100, "test"),
+                    ("HISTORICAL", recent.isoformat(), 10, 12, 9, 11, 100, "test"),
+                ],
+            )
             conn.commit()
-    audit = ho.audit_snapshot(db, source, dynamic, candidate_tickers=[], explicit_no_candidates=True)
+    audit = ho.audit_snapshot(
+        db, source, dynamic, candidate_tickers=["HISTORICAL", "INVALID"]
+    )
     counts = audit["quality_status_counts"]
     assert counts["VALID"] >= 1
     assert counts["MISSING"] >= 1
@@ -193,6 +222,13 @@ def test_audit_snapshot_returns_four_disjoint_quality_states(tmp_path):
     assert audit["quality_status_by_ticker"]["MISSING"] == "MISSING"
     assert audit["quality_status_by_ticker"]["STALE"] == "STALE"
     assert audit["quality_status_by_ticker"]["INVALID"] == "INVALID"
+    assert audit["quality_status_by_ticker"]["HISTORICAL"] == "VALID"
+    assert audit["historical_only_invalid_ohlcv_tickers"] == ["HISTORICAL"]
+    assert audit["historical_only_invalid_ohlcv_candle_count"] == 1
+    assert audit["recent_invalid_ohlcv_candle_count"] == 1
+    assert audit["invalid_ohlcv_candle_count"] == 2
+    assert audit["affected_candidates"] == ["INVALID"]
+    assert audit["candidate_impact"] == "affected_candidates_detected"
     assert audit["candidate_mapping_complete"] is True
 
 

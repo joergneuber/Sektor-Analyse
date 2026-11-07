@@ -823,9 +823,9 @@ def test_m03_mapping_status_is_emitted_even_when_ohlcv_quality_has_gaps(monkeypa
         "missing_tickers": [], "stale_tickers": ["STALE"],
         "affected_candidates": [], "unmapped_candidate_tickers": [],
         "candidate_mapping_complete": True,
-        "quality_status_counts": {"VALID": 2, "MISSING": 0, "STALE": 1, "INVALID": 1, "TOTAL": 4},
+        "quality_status_counts": {"VALID": 3, "MISSING": 0, "STALE": 1, "INVALID": 0, "TOTAL": 4},
         "quality_status_by_ticker": {
-            "AAA": "VALID", "BBB": "VALID", "STALE": "STALE", "BAD": "INVALID",
+            "AAA": "VALID", "BBB": "VALID", "STALE": "STALE", "BAD": "VALID",
         },
         "invalid_ohlcv_tickers": ["BAD"], "recent_invalid_ohlcv_tickers": [],
         "historical_only_invalid_ohlcv_tickers": ["BAD"],
