@@ -492,3 +492,58 @@ def test_quality_gate_is_explicitly_daily_and_rejects_unsupported_timeframes():
         as_of="2026-10-29T23:59:00Z",
     )
     assert result.timeframe == "1d"
+
+
+def test_setup_normalization_keeps_missing_rsi_missing_and_blocks_false_oversold():
+    source = (ROOT / "analyse.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    names = {"_normalisiere_setup_numerik", "update_status_logic"}
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    assert {node.name for node in functions} == names
+    module = ast.Module(body=functions, type_ignores=[])
+    namespace = {"pd": pd}
+    exec(compile(module, "analyse.py", "exec"), namespace)
+
+    frame = pd.DataFrame({
+        "RSI": [float("nan"), "not-a-number"],
+        "Vol_Ratio": [1.0, float("nan")],
+        "Kurs": [100.0, 100.0],
+        "TP1": [200.0, 200.0],
+        "Pattern": ["Kein", "Kein"],
+        "MACD_Trend": ["Neutral", "Neutral"],
+        "Divergenz": ["Keine", "Keine"],
+    }, index=["MISSING_RSI", "INVALID_RSI"])
+    normalized = namespace["_normalisiere_setup_numerik"](frame)
+
+    assert normalized["RSI"].isna().all()
+    assert normalized["Vol_Ratio"].tolist() == [1.0, 0.0]
+    for _, row in normalized.iterrows():
+        status = namespace["update_status_logic"](row)
+        assert status.iloc[0] == "ACHTUNG"
+        assert "RSI nicht verfügbar" in status.iloc[1]
+
+    without_rsi = namespace["_normalisiere_setup_numerik"](
+        pd.DataFrame({"Kurs": [100.0], "TP1": [200.0]}, index=["NO_RSI_COLUMN"])
+    )
+    assert pd.isna(without_rsi["RSI"].iloc[0])
+    status = namespace["update_status_logic"](without_rsi.iloc[0])
+    assert status.iloc[0] == "ACHTUNG"
+    assert "RSI nicht verfügbar" in status.iloc[1]
+
+    # Kontrollfaelle: echte RSI-Werte und die bisherige TP1-Prioritaet bleiben erhalten.
+    oversold = namespace["update_status_logic"](pd.Series({
+        "RSI": 25.0, "Pattern": "Kein", "Vol_Ratio": 1.0,
+        "MACD_Trend": "Neutral", "Kurs": 100.0, "TP1": 200.0,
+        "Divergenz": "Keine",
+    }))
+    assert oversold.iloc[0] == "VALIDE"
+    assert "überverkauft" in oversold.iloc[1]
+
+    tp1_reached_without_rsi = namespace["update_status_logic"](pd.Series({
+        "Pattern": "Kein", "Vol_Ratio": 1.0, "MACD_Trend": "Neutral",
+        "Kurs": 210.0, "TP1": 200.0,
+    }))
+    assert tp1_reached_without_rsi.iloc[0] == "GELAUFEN"

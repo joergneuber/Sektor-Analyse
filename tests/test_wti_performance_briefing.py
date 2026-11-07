@@ -2,22 +2,33 @@
 import ast
 import datetime
 import unittest
+import numpy as np
 import pandas as pd
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / "analyse.py"
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"))
-NODE = next(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == "get_rohstoff_performance_yf")
+NODES = {
+    n.name: n for n in TREE.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name in {"_return_over_expected_sessions", "get_rohstoff_performance_yf"}
+}
 
 class WTIPerformanceTests(unittest.TestCase):
     def setUp(self):
         # 400 tägliche Datenpunkte mit linear steigendem Schlusskurs.
         dates = pd.date_range("2025-01-01", periods=400, freq="B")
         self.hist = pd.DataFrame({"Close": range(100, 500)}, index=dates)
-        self.env = {"pd": pd, "datetime": datetime,
+        self.env = {"pd": pd, "np": np, "datetime": datetime,
                    "_hole_kursdaten_gecached": lambda ticker: self.hist.copy(),
                    "_nur_abgeschlossene_tagesbalken": lambda hist, ticker: (hist, hist.index[-1].date())}
-        exec(compile(ast.Module(body=[NODE], type_ignores=[]), str(SOURCE), "exec"), self.env)
+        # Produktionsfunktion und verwendeter Helper werden gemeinsam isoliert
+        # geladen; die Testumgebung stellt damit alle echten Globals bereit.
+        module = ast.Module(
+            body=[NODES["_return_over_expected_sessions"], NODES["get_rohstoff_performance_yf"]],
+            type_ignores=[],
+        )
+        exec(compile(module, str(SOURCE), "exec"), self.env)
 
     def test_output_contains_all_periods_and_source_date(self):
         line = self.env["get_rohstoff_performance_yf"]("CL=F", "WTI")
@@ -52,7 +63,7 @@ class WTIPerformanceTests(unittest.TestCase):
         self.assertIn("yfinance/CL=F", line)
 
     def test_five_trading_day_return_uses_sixth_close(self):
-        # Letzter Schluss 500; Schluss vor fünf Handelssitzungen 494.
+        # Letzter Schluss 499; Schluss vor fünf Handelssitzungen 494.
         line = self.env["get_rohstoff_performance_yf"]("CL=F", "WTI")
         import re
         match = re.search(r"([-+]?[0-9]+,[0-9]{2})%\s*5T", line)
