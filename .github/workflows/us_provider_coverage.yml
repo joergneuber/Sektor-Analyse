@@ -1,0 +1,68 @@
+name: US Provider Coverage – Alpaca vs Yahoo
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Vergleichsfenster in Kalendertagen (30–730)"
+        required: true
+        default: "365"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: us-provider-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  provider-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v5
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py pandas yfinance exchange-calendars requests
+
+      - name: Historische OHLCV Release-Dateien read-only herunterladen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download historical-ohlcv --pattern historical_ohlcv.sqlite --dir . --clobber
+          gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber
+          test -s historical_ohlcv.sqlite
+          test -s historical_ohlcv_universe.json
+          sha256sum historical_ohlcv.sqlite historical_ohlcv_universe.json
+
+      - name: Alpaca-vs-Yahoo Coverage-Vergleich (read-only)
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_SOURCE: analyse.py
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+          LOOKBACK_DAYS: ${{ inputs.lookback_days }}
+        run: python provider_coverage_us.py --lookback-days "$LOOKBACK_DAYS"
+
+      - name: Provider-Coverage-Berichte hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-provider-coverage-${{ github.run_id }}
+          path: |
+            US_Provider_Coverage.json
+            US_Provider_Coverage.csv
+            US_Provider_Coverage.md
+          if-no-files-found: warn
+          retention-days: 30
