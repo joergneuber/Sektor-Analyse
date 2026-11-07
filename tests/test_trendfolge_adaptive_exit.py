@@ -114,7 +114,7 @@ def test_tp2_is_dynamic_and_not_entry_requirement(monkeypatch):
     h = _hist()
     # Force enough history for ATR and a clean dynamic target.
     df = pd.DataFrame([_row()])
-    monkeypatch.setattr(mod, "_trendfolge_atr14", lambda hist: 1.0)
+    monkeypatch.setattr(mod, "_trendfolge_atr14", lambda hist, ticker=None: 1.0)
     stop, tp1, tp2 = mod._aktualisiere_trendfolge_management(
         df, 0, df.iloc[0], h, 100.0, 106.0, 95.0, 105.0, False, "22.09.2026"
     )
@@ -126,3 +126,31 @@ def test_tp2_is_dynamic_and_not_entry_requirement(monkeypatch):
     assert pd.api.types.is_numeric_dtype(df["TP2"].dtype)
     assert float(stop) >= 100.0
     assert "Teilverkauf" not in df.at[0, "TF_Management"]
+
+
+def test_development_phase_counts_only_valid_completed_sessions():
+    h = _hist(5)
+    h.loc[2, ["Open", "High", "Low", "Close"]] = np.nan
+    row = _row(Einstiegsdatum=h.loc[0, "Date"].strftime("%d.%m.%Y"))
+    days, done, end = mod._trendfolge_entwicklungsstatus(row, h)
+    assert days == 3
+    assert done is True
+    assert end == h.loc[4, "Date"]
+
+
+def test_swing_confirmation_does_not_cross_invalid_bar():
+    h = _hist()
+    candidate = len(h) - 4
+    h.loc[candidate - 1, "Low"] = np.nan
+    h.loc[candidate - 1, "High"] = np.nan
+    lows = mod._trendfolge_bestatigte_swing_lows(h, order=2)
+    highs = mod._trendfolge_bestatigte_swing_highs(h, order=2)
+    assert candidate not in lows
+    assert candidate not in highs
+
+
+def test_trendfolge_history_uses_central_cutoff_not_calendar_yesterday():
+    source = (ROOT / "positionen_tracker.py").read_text(encoding="utf-8")
+    assert "nur Bars bis gestern" not in source
+    assert "apply_ohlcv_quality_gate(" in source
+    assert "require_structure=True" in source
