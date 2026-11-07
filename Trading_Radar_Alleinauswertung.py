@@ -18640,9 +18640,19 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
             and audit.get("candidate_mapping_complete") is True):
         historical_notes = []
         if historical_only_invalid:
+            historical_ticker_count = audit.get(
+                "historical_only_invalid_ohlcv_ticker_count", len(historical_only_invalid)
+            )
+            historical_candle_count = audit.get("historical_only_invalid_ohlcv_candle_count")
+            historical_detail = (
+                f"{historical_ticker_count} Ticker / {historical_candle_count} Kerzen"
+                if isinstance(historical_candle_count, int) and historical_candle_count >= 0
+                else f"{historical_ticker_count} Ticker"
+            )
             historical_notes.append(
-                "Historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters: "
-                + ", ".join(historical_only_invalid[:100])
+                "Bekannter historischer INVALID-Bestand außerhalb des 90-Tage-Fensters: "
+                + historical_detail
+                + "; dokumentarisch erfasst, keine pauschale Sperre aktueller Handelssignale"
             )
         if historical_only_gaps:
             historical_notes.append(
@@ -18687,7 +18697,19 @@ def _trading_radar_ohlcv_nachweisblock(report_text=""):
     if historical_only_gaps:
         details.append("historische Handelstagslücken außerhalb des 90-Tage-Fensters: " + ", ".join(historical_only_gaps[:100]))
     if historical_only_invalid:
-        details.append("historische OHLCV-Auffälligkeiten außerhalb des 90-Tage-Fensters (weiterhin dokumentiert): " + ", ".join(historical_only_invalid[:100]))
+        historical_ticker_count = audit.get(
+            "historical_only_invalid_ohlcv_ticker_count", len(historical_only_invalid)
+        )
+        historical_candle_count = audit.get("historical_only_invalid_ohlcv_candle_count")
+        historical_detail = (
+            f"{historical_ticker_count} Ticker / {historical_candle_count} Kerzen"
+            if isinstance(historical_candle_count, int) and historical_candle_count >= 0
+            else f"{historical_ticker_count} Ticker"
+        )
+        details.append(
+            "bekannter historischer INVALID-Bestand außerhalb des 90-Tage-Fensters: "
+            + historical_detail + " (dokumentarisch; keine pauschale Sperre aktueller Handelssignale)"
+        )
     elif invalid_ohlcv and not recent_invalid:
         # Compatibility with older audit payloads that do not yet split historical/current findings.
         details.append("ungültige/unvollständige OHLCV-Felder (Zeitraum nicht getrennt nachgewiesen): " + ", ".join(invalid_ohlcv[:100]))

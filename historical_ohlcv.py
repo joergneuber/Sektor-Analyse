@@ -1270,6 +1270,20 @@ def audit_snapshot(
         invalid_tickers = sorted(t for t in tickers if t in existing and existing[t][2] > 0)
         recent_invalid_tickers = sorted(t for t in tickers if t in existing and existing[t][3] > 0)
         historical_only_invalid_tickers = sorted(set(invalid_tickers) - set(recent_invalid_tickers))
+        # Historische Befunde bleiben vollständig nachvollziehbar, bestimmen
+        # aber nicht mehr den aktuellen Symbolstatus. Für aktuelle Trading-
+        # Freigaben zählen INVALID-Kerzen im jüngsten 90-Tage-Fenster; ältere
+        # Kerzen werden separat als historischer Bestand ausgewiesen.
+        historical_only_invalid_candle_count = sum(
+            max(0, existing[ticker][2] - existing[ticker][3])
+            for ticker in tickers if ticker in existing
+        )
+        recent_invalid_candle_count = sum(
+            existing[ticker][3] for ticker in tickers if ticker in existing
+        )
+        invalid_candle_count = sum(
+            existing[ticker][2] for ticker in tickers if ticker in existing
+        )
         # Die Aktualitaet wird gegen den letzten abgeschlossenen Handelstag
         # des jeweiligen Marktes geprueft, nicht gegen einen globalen BDay.
         as_of_date = dt.date.today().isoformat()
@@ -1331,17 +1345,18 @@ def audit_snapshot(
             else "gaps"
         )
         candidate_mapping_complete = (mapped_candidates or explicit_no_candidates) and not unmapped_candidates
-        # Exactly one mutually exclusive quality state per universe symbol.
-        # Missing takes precedence, then invalid (any malformed stored candle),
-        # then stale, otherwise valid. Historical invalid candles remain visible.
+        # Exactly one mutually exclusive, trading-relevant quality state per
+        # universe symbol. Missing takes precedence, then recent INVALID,
+        # then stale, otherwise valid. Historical-only INVALID candles remain
+        # in the dedicated historical lists/counts and do not block the symbol.
         status_by_ticker = {}
         missing_set = set(missing)
-        invalid_set = set(invalid_tickers)
+        recent_invalid_set = set(recent_invalid_tickers)
         stale_set = set(stale)
         for ticker in tickers:
             if ticker in missing_set:
                 status_by_ticker[ticker] = "MISSING"
-            elif ticker in invalid_set:
+            elif ticker in recent_invalid_set:
                 status_by_ticker[ticker] = "INVALID"
             elif ticker in stale_set:
                 status_by_ticker[ticker] = "STALE"
@@ -1366,6 +1381,10 @@ def audit_snapshot(
             "recent_invalid_ohlcv_tickers": recent_invalid_tickers,
             "historical_only_invalid_ohlcv_tickers": historical_only_invalid_tickers,
             "invalid_ohlcv_policy_days": 90,
+            "invalid_ohlcv_candle_count": invalid_candle_count,
+            "recent_invalid_ohlcv_candle_count": recent_invalid_candle_count,
+            "historical_only_invalid_ohlcv_candle_count": historical_only_invalid_candle_count,
+            "historical_only_invalid_ohlcv_ticker_count": len(historical_only_invalid_tickers),
             **gap_audit,
             "affected_candidates": affected,
             "candidate_tickers_checked": candidate_set,
