@@ -37,6 +37,24 @@ class ProviderCoverageHelpersTests(unittest.TestCase):
         self.assertIn("Close", result["BRK-B"].columns)
         self.assertEqual(len(result["AAPL"]), 2)
 
+    def test_ohlcv_comparison_reports_price_volume_and_indicator_differences(self):
+        idx = pd.date_range("2026-01-01", periods=30, freq="B")
+        left = pd.DataFrame({
+            "Open": range(100, 130), "High": range(102, 132),
+            "Low": range(99, 129), "Close": range(101, 131),
+            "Volume": [1000] * 30,
+        }, index=idx)
+        right = left.copy()
+        right["Close"] = right["Close"] * 1.01
+        right["Volume"] = right["Volume"] * 2
+        result = module._compare_ohlcv_frames(left, right, "IEX", "SIP")
+        self.assertEqual(result["status"], "compared")
+        self.assertEqual(result["overlap_bars"], 30)
+        self.assertGreater(result["close_mean_abs_diff_pct"], 0)
+        self.assertGreater(result["volume_mean_abs_diff_pct"], 0)
+        self.assertIsNotNone(result["ema20_last_abs_diff_pct"])
+        self.assertIsNotNone(result["atr14_last_abs_diff_pct"])
+
     def test_provider_summary_counts_missing_expected_sessions(self):
         frame = pd.DataFrame({
             "Open": [10.0], "High": [12.0], "Low": [9.0],
@@ -59,7 +77,7 @@ class ProviderCoverageHelpersTests(unittest.TestCase):
         self.assertFalse(summary["has_latest_expected_session"])
 
 
-    def test_alpaca_invalid_symbol_isolated_and_production_default_feed_preserved(self):
+    def test_alpaca_invalid_symbol_isolated_and_explicit_iex_feed_used(self):
         requests_seen = []
 
         class FakeRequest:
@@ -85,7 +103,10 @@ class ProviderCoverageHelpersTests(unittest.TestCase):
         fake_alpaca = {
             "alpaca": types.ModuleType("alpaca"),
             "alpaca.data": types.ModuleType("alpaca.data"),
-            "alpaca.data.enums": types.SimpleNamespace(Adjustment=types.SimpleNamespace(RAW="raw")),
+            "alpaca.data.enums": types.SimpleNamespace(
+                Adjustment=types.SimpleNamespace(RAW="raw"),
+                DataFeed=types.SimpleNamespace(IEX="iex", SIP="sip"),
+            ),
             "alpaca.data.requests": types.SimpleNamespace(StockBarsRequest=FakeRequest),
             "alpaca.data.timeframe": types.SimpleNamespace(TimeFrame=types.SimpleNamespace(Day="1Day")),
         }
@@ -98,28 +119,89 @@ class ProviderCoverageHelpersTests(unittest.TestCase):
         self.assertIn("GOOD", frames)
         self.assertEqual(statuses["GOOD"], "rows_returned")
         self.assertEqual(statuses["BAD"], "invalid_symbol")
-        self.assertTrue(all("feed" not in request for request in requests_seen))
+        self.assertTrue(all(request["feed"] == "iex" for request in requests_seen))
         self.assertTrue(all(request["adjustment"] == "raw" for request in requests_seen))
+        requests_seen.clear()
+        with patch.dict("sys.modules", fake_alpaca):
+            module.fetch_alpaca(
+                FakeClient(), ["GOOD"],
+                pd.Timestamp("2025-01-01").to_pydatetime(),
+                pd.Timestamp("2026-11-07").to_pydatetime(),
+                feed_name="sip",
+            )
+        self.assertTrue(all(request["feed"] == "sip" for request in requests_seen))
 
-    def test_markdown_report_identifies_read_only_database(self):
+    def test_targeted_historical_gap_probe_uses_explicit_iex_feed(self):
+        requests_seen = []
+
+        class FakeRequest:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                requests_seen.append(kwargs)
+
+        class FakeClient:
+            def get_stock_bars(self, request):
+                symbols = request.kwargs["symbol_or_symbols"]
+                index = pd.MultiIndex.from_product(
+                    [symbols, pd.to_datetime(["2025-01-02"])],
+                    names=["symbol", "timestamp"],
+                )
+                frame = pd.DataFrame({
+                    "open": [10.0], "high": [12.0], "low": [9.0],
+                    "close": [11.0], "volume": [100],
+                }, index=index)
+                return types.SimpleNamespace(df=frame)
+
+        fake_history = types.SimpleNamespace(
+            _download_batch=lambda *args, **kwargs: {"AAPL": pd.DataFrame()}
+        )
+        fake_alpaca = {
+            "alpaca": types.ModuleType("alpaca"),
+            "alpaca.data": types.ModuleType("alpaca.data"),
+            "alpaca.data.enums": types.SimpleNamespace(
+                Adjustment=types.SimpleNamespace(RAW="raw"),
+                DataFeed=types.SimpleNamespace(IEX="iex", SIP="sip"),
+            ),
+            "alpaca.data.requests": types.SimpleNamespace(StockBarsRequest=FakeRequest),
+            "alpaca.data.timeframe": types.SimpleNamespace(TimeFrame=types.SimpleNamespace(Day="1Day")),
+        }
+        with patch.dict("sys.modules", {**fake_alpaca, "historical_ohlcv": fake_history}):
+            result = module._probe_historical_gaps(
+                FakeClient(), {}, {}, {"AAPL": ["2025-01-02"]}
+            )
+        self.assertEqual(requests_seen[0]["feed"], "iex")
+        self.assertEqual(result["AAPL"]["alpaca"]["returned_gap_dates"], ["2025-01-02"])
+
+    def test_markdown_report_identifies_read_only_database_and_both_feeds(self):
         report = {
             "created_at_utc": "2026-11-07T00:00:00+00:00", "github_sha": "abc",
             "database_sha256_before": "a" * 64, "database_unchanged": True,
             "provider_comparison_summary": {
                 "universe_count": 1, "alpaca_equity_universe_count": 1,
                 "index_benchmark_count_excluded_from_alpaca_stock_endpoint": 0,
-                "lookback_start": "2025-11-07",
-                "lookback_end_exclusive": "2026-11-08", "alpaca_feed": "API default",
-                "alpaca_adjustment": "RAW", "yahoo_auto_adjust": False,
-                "alpaca_rows_ticker_count": 1, "yahoo_rows_ticker_count": 1,
-                "alpaca_no_rows_ticker_count": 0, "yahoo_no_rows_ticker_count": 0,
-                "alpaca_invalid_symbol_ticker_count": 0,
-                "alpaca_request_error_ticker_count": 0, "yahoo_request_error_ticker_count": 0,
-                "alpaca_latest_session_ticker_count": 1, "yahoo_latest_session_ticker_count": 1,
-                "alpaca_missing_expected_sessions": 0, "yahoo_missing_expected_sessions": 0,
-                "alpaca_invalid_bars": 0, "yahoo_invalid_bars": 0,
-                "both_latest": 1, "alpaca_only_latest": 0, "yahoo_only_latest": 0,
-                "neither_latest": 0, "us_historical_gap_ticker_count": 0,
+                "lookback_start": "2025-11-07", "lookback_end_exclusive": "2026-11-08",
+                "alpaca_iex_feed": "IEX Basic", "alpaca_sip_feed": "SIP historical",
+                "alpaca_sip_end_exclusive": "2026-11-07", "alpaca_adjustment": "RAW",
+                "yahoo_auto_adjust": False,
+                "alpaca_iex_rows_ticker_count": 1, "alpaca_sip_rows_ticker_count": 1,
+                "yahoo_rows_ticker_count": 1,
+                "alpaca_iex_no_rows_ticker_count": 0, "alpaca_sip_no_rows_ticker_count": 0,
+                "yahoo_no_rows_ticker_count": 0,
+                "alpaca_iex_invalid_symbol_ticker_count": 0,
+                "alpaca_sip_invalid_symbol_ticker_count": 0,
+                "alpaca_iex_request_error_ticker_count": 0,
+                "alpaca_sip_request_error_ticker_count": 0,
+                "yahoo_request_error_ticker_count": 0,
+                "alpaca_iex_latest_session_ticker_count": 1,
+                "alpaca_sip_latest_session_ticker_count": 1,
+                "yahoo_latest_session_ticker_count": 1,
+                "alpaca_iex_missing_expected_sessions": 0,
+                "alpaca_sip_missing_expected_sessions": 0,
+                "yahoo_missing_expected_sessions": 0,
+                "alpaca_iex_invalid_bars": 0, "alpaca_sip_invalid_bars": 0,
+                "yahoo_invalid_bars": 0, "iex_and_yahoo_latest": 1,
+                "sip_and_yahoo_latest": 1, "iex_sip_comparable_ticker_count": 1,
+                "sip_yahoo_comparable_ticker_count": 1, "us_historical_gap_ticker_count": 0,
                 "us_historical_gap_session_count": 0,
             },
             "targeted_historical_gap_probe": {},
@@ -127,6 +209,9 @@ class ProviderCoverageHelpersTests(unittest.TestCase):
         rendered = module.render_markdown(report)
         self.assertIn("Originaldatenbank unverändert: **True**", rendered)
         self.assertIn("Keine offenen historischen US-Lücken", rendered)
+        self.assertIn("Alpaca IEX", rendered)
+        self.assertIn("Alpaca SIP (historisch)", rendered)
+
 
 
 if __name__ == "__main__":
