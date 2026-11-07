@@ -915,6 +915,23 @@ def get_safe_rsi(df, period=14):
 
 
 # --- FUNKTIONEN ---
+def _normalisiere_setup_numerik(df_s):
+    """Normalisiert Setup-Zahlen; ein fehlender RSI bleibt ausdruecklich NaN.
+
+    Andere historische Anzeige-/Sortierfelder behalten ihre bisherige
+    Null-Fallback-Behandlung. RSI ist davon ausgenommen, weil 0 als
+    ueberverkauftes Signal fehlinterpretiert werden koennte.
+    """
+    numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'Stoch_K', 'RS_vs_Benchmark%', 'Abstand_52W_Hoch%']
+    for col in numeric_cols:
+        if col in df_s.columns:
+            values = pd.to_numeric(df_s[col], errors='coerce')
+        else:
+            values = pd.Series(float('nan') if col == 'RSI' else 0, index=df_s.index)
+        df_s[col] = values if col == 'RSI' else values.fillna(0)
+    return df_s
+
+
 def update_status_logic(row):
     """Bestimmt Status2 (VALIDE/ACHTUNG/GELAUFEN) und die Begruendung fuer
     ein bereits gefundenes Setup (df_s hat den Haupt-Pattern-Filter schon
@@ -937,7 +954,7 @@ def update_status_logic(row):
     schwaches Volumen, baerischer MACD) - erst danach der Oversold-Hinweis,
     der jetzt keine ACHTUNG-Einstufung mehr ueberschreiben kann, sondern nur
     noch greift, wenn keines der Warnkriterien zutrifft."""
-    rsi = row.get('RSI', 50)  # Standard 50, falls was schiefgeht
+    rsi = pd.to_numeric(row.get('RSI', float('nan')), errors='coerce')
     pattern = row.get('Pattern', "Kein")
     vol_ratio = row.get('Vol_Ratio', 1.0)  # Standard 1.0, damit kein Fehler bei < 0.5
     macd_trend = row.get('MACD_Trend', "Neutral")
@@ -953,6 +970,8 @@ def update_status_logic(row):
         return pd.Series(["ACHTUNG", f"Schwaches Volumen ({round(float(vol_ratio), 2)}x SMA20)"])
     elif macd_trend == "Bärisch":
         return pd.Series(["ACHTUNG", "Bärischer MACD-Trend"])
+    elif pd.isna(rsi):
+        return pd.Series(["ACHTUNG", "RSI nicht verfügbar - Datenprüfung erforderlich"])
     elif rsi < 30:
         return pd.Series(["VALIDE", "RSI überverkauft (<30) - zusätzliches Kaufsignal"])
     elif divergenz == "Bullisch":
@@ -4277,27 +4296,17 @@ if __name__ == "__main__":
         # --- VORBEREITUNG FÜR DAS APPLY ---
 
         # Sicherstellen, dass alle benötigten Spalten existieren, falls der Fetch fehlgeschlagen ist
-        for col in ['Divergenz', 'RSI', 'Pattern', 'Vol_Ratio', 'MACD_Trend', 'TP1']:
+        for col in ['Divergenz', 'Pattern', 'Vol_Ratio', 'MACD_Trend', 'TP1']:
             if col not in df_s.columns:
-                # Falls es eine Zahlenspalte ist: 0 setzen
-                if col in ['RSI', 'Vol_Ratio', 'TP1']:
+                # Text-/Anzeige- und Volumenfelder behalten ihre bisherigen Defaults.
+                if col in ['Vol_Ratio', 'TP1']:
                     df_s[col] = 0
-                # Falls es eine Textspalte ist: "Kein" oder "Neutral" setzen
                 else:
                     df_s[col] = "Kein"
 
-        # --- SICHERE VORBEREITUNG FÜR APPLY ---
-
-        # Spalten, die sicher numerisch sein müssen
-        numeric_cols = ['RSI', 'Vol_Ratio', 'Kurs', 'TP1', 'Stoch_K', 'RS_vs_Benchmark%', 'Abstand_52W_Hoch%']
-        
-        for col in numeric_cols:
-            if col in df_s.columns:
-                # Konvertiere in Zahl, Fehler werden zu NaN, diese füllen wir mit 0
-                df_s[col] = pd.to_numeric(df_s[col], errors='coerce').fillna(0)
-            else:
-                # Falls die Spalte komplett fehlt, erstelle sie mit 0
-                df_s[col] = 0
+        # RSI bleibt bei fehlendem/ungueltigem Input NaN und wird nicht als 0
+        # (ueberverkauft) oder 50 (neutral) fehlinterpretiert.
+        df_s = _normalisiere_setup_numerik(df_s)
 
         # Spalten, die Text sein müssen
         text_cols = ['Pattern', 'MACD_Trend', 'Divergenz']
