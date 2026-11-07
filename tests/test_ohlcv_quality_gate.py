@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import sqlite3
+from contextlib import closing
 import sys
 from pathlib import Path
 
@@ -222,14 +223,14 @@ def test_historical_loader_masks_confirmed_invalid_without_mutating_sqlite(tmp_p
     monkeypatch.setattr(gate, '_last_completed_session_date', lambda ticker, as_of=None: '2026-11-05')
     db = tmp_path / "historical_ohlcv.sqlite"
     ho.init_db(db)
-    with sqlite3.connect(db) as conn:
-        conn.execute(
-            """INSERT INTO bars
-               (ticker,date,open,high,low,close,adj_close,volume,source)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            ("ABBNY", "2026-11-05", 84.59, 84.59, 81.48, 81.36, 81.36, 46733, "test"),
-        )
-        conn.commit()
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            conn.execute(
+                """INSERT INTO bars
+                   (ticker,date,open,high,low,close,adj_close,volume,source)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                ("ABBNY", "2026-11-05", 84.59, 84.59, 81.48, 81.36, 81.36, 46733, "test"),
+            )
     before = hashlib.sha256(db.read_bytes()).hexdigest()
     loaded = ho.load_history("ABBNY", db)
     after = hashlib.sha256(db.read_bytes()).hexdigest()
@@ -237,7 +238,7 @@ def test_historical_loader_masks_confirmed_invalid_without_mutating_sqlite(tmp_p
     assert pd.isna(loaded.iloc[0]["Open"])
     assert pd.isna(loaded.iloc[0]["Close"])
     assert before == after
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
