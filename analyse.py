@@ -123,7 +123,7 @@ def lade_geschlossene_historie_google() -> pd.DataFrame:
             "Historien-Import aus Tab 2 'Geschlossene Positionen' fehlgeschlagen."
         ) from exc
 
-from market_cache import get_yf_history, get_or_fetch_series
+from market_cache import get_yf_history, get_yf_history_from_yahoo, get_or_fetch_series
 from pi_cycle_bottom import get_pi_cycle_bottom_text, calculate_pi_cycle_bottom
 from bitcoin_50w_sma import get_bitcoin_50w_sma_text, calculate_bitcoin_50w_sma
 
@@ -321,17 +321,23 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
     sektor_5t = {}
     sektor_rotation = {}
     try:
-        top_8 = set(df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist())
-        for _, z in df_perf.iterrows():
-            sektor_5t[str(z['Sektor'])] = float(z['5T'])
-            sektor_rotation[str(z['Sektor'])] = (float(z['Rotation-Score']), str(z['Sektor']) in top_8)
+        us_valid = df_perf.dropna(subset=["Rotation-Score", "5T"])
+        top_8 = set(us_valid.nlargest(8, "Rotation-Score")["Sektor"].tolist())
+        for _, z in us_valid.iterrows():
+            sektor_5t[str(z["Sektor"])] = float(z["5T"])
+            sektor_rotation[str(z["Sektor"])] = (
+                float(z["Rotation-Score"]), str(z["Sektor"]) in top_8
+            )
     except Exception:
         top_8 = set()
     try:
-        top_5_eu = set(df_perf_eu.nlargest(5, 'Rotation-Score')['Sektor'].tolist())
-        for _, z in df_perf_eu.iterrows():
-            sektor_5t[str(z['Sektor'])] = float(z['5T'])
-            sektor_rotation[str(z['Sektor'])] = (float(z['Rotation-Score']), str(z['Sektor']) in top_5_eu)
+        eu_valid = df_perf_eu.dropna(subset=["Rotation-Score", "5T"])
+        top_5_eu = set(eu_valid.nlargest(5, "Rotation-Score")["Sektor"].tolist())
+        for _, z in eu_valid.iterrows():
+            sektor_5t[str(z["Sektor"])] = float(z["5T"])
+            sektor_rotation[str(z["Sektor"])] = (
+                float(z["Rotation-Score"]), str(z["Sektor"]) in top_5_eu
+            )
     except Exception:
         top_5_eu = set()
 
@@ -885,36 +891,27 @@ def get_analyst_target(ticker, retries=2):
     return None
 
 def get_safe_rsi(df, period=14):
-    # GEAENDERT (05.08.2026, externe Code-Review, Punkt 4): df.diff()
-    # verliert die erste Zeile (NaN), ewm(min_periods=period) braucht
-    # also period+1 Rohwerte, um wirklich period gueltige Delta-Werte zu
-    # bekommen - vorher liess die Pruefung `len(df) < period` einen Fall
-    # mit genau `period` Zeilen durch, der aber intern schon in den
-    # NaN->50.0-Fallback gelaufen waere. Mathematisch konsistenter jetzt.
-    """Berechnet RSI und gibt immer eine saubere Series zurück.
-    GEAENDERT (05.08.2026, externe Code-Review): Wilder's Glaettung
-    (exponentiell, alpha=1/period) statt eines einfachen gleitenden
-    Durchschnitts - das ist der Branchenstandard (TradingView, TA-Lib) und
-    macht den angezeigten RSI-Wert direkt mit anderen Plattformen
-    vergleichbar. Vorher wich der eigene RSI-Wert sichtbar von TradingView
-    & Co. ab, obwohl beide "RSI(14)" hiessen. `adjust=False` ist Pflicht -
-    sonst gewichtet pandas die juengsten Punkte staerker als Wilder's
-    Definition es vorsieht."""
-    if 'Close' not in df.columns or len(df) < period + 1:
-        return pd.Series([50.0] * len(df), index=df.index)
-    
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    
-    # Division durch Null verhindern
-    # GEAENDERT (05.08.2026, externe Code-Review, Punkt 2): clip() statt
-    # replace(0, ...) - faengt auch extrem kleine, aber nicht exakt-null
-    # Verlustwerte ab (replace(0, ...) liesse z.B. 1e-15 unveraendert
-    # durch und wuerde einen unnoetig riesigen RS-Wert erzeugen).
-    rs = gain / loss.clip(lower=1e-9)
+    """Berechnet Wilder-RSI ohne fehlende Deltas als Nullbewegung zu werten.
+
+    Fehlende/gesperrte Schlusskurse bleiben NaN. Ein neutraler RSI von 50 wird
+    ausschliesslich bei einer tatsaechlich beobachteten Nullbewegung (keine
+    Gewinne und keine Verluste) gesetzt, niemals als Datenmangel-Fallback.
+    """
+    if "Close" not in df.columns or len(df) < period + 1:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+
+    delta = pd.to_numeric(df["Close"], errors="coerce").diff()
+    gain = delta.clip(lower=0).ewm(
+        alpha=1 / period, adjust=False, min_periods=period, ignore_na=False
+    ).mean()
+    loss = (-delta.clip(upper=0)).ewm(
+        alpha=1 / period, adjust=False, min_periods=period, ignore_na=False
+    ).mean()
+    rs = gain / loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50.0)
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+    rsi = rsi.mask((loss == 0) & (gain == 0) & delta.notna(), 50.0)
+    return rsi.where(delta.notna())
 
 
 # --- FUNKTIONEN ---
@@ -1105,6 +1102,9 @@ def get_earnings_rueckblick(ticker, rueckblick_tage=5):
             # Vorlauf aber 20 Handelstage VOR dem Bericht (siehe Docstring).
             hist = yf.Ticker(ticker).history(period="3mo")
             if not hist.empty:
+                from ohlcv_quality_gate import quality_checked_frame
+                hist = quality_checked_frame(hist, ticker, window_sessions=63)
+            if not hist.empty:
                 hist.index = [i.date() if hasattr(i, 'date') else i for i in hist.index]
                 tage = [d for d in hist.index if d >= letzter_termin]
                 if tage:
@@ -1220,6 +1220,9 @@ def get_eurusd_wechselkurs():
     Setup-Quelle, KEINE Abwertungsgrundlage."""
     try:
         hist = yf.Ticker("EURUSD=X").history(period="5d")
+        if not hist.empty:
+            from ohlcv_quality_gate import quality_checked_frame
+            hist = quality_checked_frame(hist, "EURUSD=X", window_sessions=5)
         if hist.empty:
             return "EUR/USD-Wechselkurs: Daten unvollständig"
         kurs = hist["Close"].iloc[-1]
@@ -1666,22 +1669,34 @@ def _markt_heutiges_datum(ticker):
 
 
 def _nur_abgeschlossene_tagesbalken(hist, ticker):
-    """Verwendet fuer bekannte Boersen nur vollstaendig abgeschlossene Tageskerzen."""
-    if hist is None or hist.empty:
+    """Liefert abgeschlossene, bereits zentral gepruefte Sessions ohne NaN-Kompression.
+
+    Fehlende/gesperrte erwartete Sessions bleiben im Index. Die zentrale
+    OHLCV-Gate-Pruefung entfernt eine noch laufende Session bereits anhand
+    des Boersenschluss-Cutoffs; hier wird sie nicht durch dropna() versteckt.
+    """
+    if hist is None or hist.empty or "Close" not in hist.columns:
         return hist, None
-    data = hist.dropna(subset=["Close"]).copy()
-    if data.empty:
-        return data, None
-    regel = _ABGESCHLOSSENE_TAGESMAERKTE.get(ticker)
-    if regel:
-        tz_name, schlusszeit = regel
-        jetzt_lokal = datetime.datetime.now(ZoneInfo(tz_name))
-        letzter_datum = data.index[-1].date()
-        if letzter_datum == jetzt_lokal.date() and jetzt_lokal.time() < schlusszeit:
-            data = data.iloc[:-1]
-    if data.empty:
-        return data, None
+    data = hist.copy()
+    if pd.isna(data["Close"].iloc[-1]):
+        return data.iloc[0:0], None
     return data, data.index[-1].date()
+
+
+def _return_over_expected_sessions(close, lookback_sessions):
+    """Rendite ueber exakt n erwartete Sessions; fehlende Werte sperren das Fenster."""
+    if close is None or len(close) < int(lookback_sessions) + 1:
+        return None
+    window = pd.to_numeric(close.iloc[-(int(lookback_sessions) + 1):], errors="coerce")
+    if window.isna().any() or not np.isfinite(window.to_numpy(dtype=float)).all():
+        return None
+    base = float(window.iloc[0])
+    latest = float(window.iloc[-1])
+    # Prozent-Renditen sind bei nicht-positiven Futurespreisen bzw. Fenstern,
+    # die negative Preise enthalten, wirtschaftlich nicht sinnvoll definiert.
+    if (window <= 0).any() or base <= 0 or latest <= 0:
+        return None
+    return (latest / base - 1) * 100
 
 
 def _hole_kursdaten_gecached(ticker):
@@ -1882,11 +1897,11 @@ def get_kurzfrist_kontext_text(ticker, label, wochen=4, naehe_schwelle_prozent=1
         if data.empty:
             return None
 
-        close = data["Close"].dropna()
+        close = pd.to_numeric(data["Close"], errors="coerce")
         sessions = int(wochen) * 5
         # Eine Rendite ueber 20 abgeschlossene Handelssitzungen benoetigt
         # 21 Schlusskurse (Startschluss + 20 abgeschlossene Intervalle).
-        if len(close) < sessions + 1:
+        if len(close) < sessions + 1 or close.iloc[-sessions - 1:].isna().any():
             return None
         kurs = float(close.iloc[-1])
         veraenderung = four_week_return(close.tolist(), sessions=sessions)
@@ -1928,11 +1943,13 @@ def get_markt_kurzfrist_kontext_text(ticker, label):
         if data.empty or len(data) < 25:
             return None
 
-        close = data["Close"].dropna()
+        close = pd.to_numeric(data["Close"], errors="coerce")
+        if close.empty or pd.isna(close.iloc[-1]):
+            return None
         kurs = float(close.iloc[-1])
 
         v5 = None
-        if len(close) >= 6 and float(close.iloc[-6]):
+        if len(close) >= 6 and close.iloc[-6:].notna().all() and float(close.iloc[-6]):
             v5 = (kurs / float(close.iloc[-6]) - 1) * 100
 
         v4 = four_week_return(close.tolist(), sessions=20)
@@ -2166,7 +2183,7 @@ def get_rohstoff_performance_yf(ticker, label):
         if hist is None or hist.empty or 'Close' not in hist:
             return f"- {label}: Kurs/Performance nicht verfügbar | Quelle=yfinance/{ticker} | Datenstand=nicht verfügbar"
         hist, last_date = _nur_abgeschlossene_tagesbalken(hist, ticker)
-        close = pd.to_numeric(hist['Close'], errors='coerce').dropna()
+        close = pd.to_numeric(hist['Close'], errors='coerce')
         if close.empty or last_date is None:
             return f"- {label}: Kurs/Performance nicht verfügbar | Quelle=yfinance/{ticker} | Datenstand=nicht verfügbar"
         close = close.loc[~close.index.duplicated(keep='last')].sort_index()
@@ -2174,7 +2191,7 @@ def get_rohstoff_performance_yf(ticker, label):
         last_ts = close.index[-1]
         values = {}
         # 5 abgeschlossene Handelstage als Kursbewegung, nicht als 5 Datenpunkte.
-        values['5T'] = (latest / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 else None
+        values['5T'] = _return_over_expected_sessions(close, 5)
         periods = [('4W', datetime.timedelta(days=28)), ('1M', None), ('3M', None), ('6M', None), ('1J', None)]
         for name, delta in periods:
             if name == '1M': target = last_ts - pd.DateOffset(months=1)
@@ -2183,8 +2200,20 @@ def get_rohstoff_performance_yf(ticker, label):
             elif name == '1J': target = last_ts - pd.DateOffset(years=1)
             else: target = last_ts - delta
             eligible = close.loc[close.index <= target]
-            base = float(eligible.iloc[-1]) if not eligible.empty else None
-            values[name] = (latest / base - 1) * 100 if base and base > 0 else None
+            base_value = eligible.iloc[-1] if not eligible.empty else np.nan
+            base = float(base_value) if pd.notna(base_value) else None
+            period_window = close.loc[(close.index >= target) & (close.index <= last_ts)]
+            positive_window = (
+                not period_window.empty
+                and period_window.notna().all()
+                and np.isfinite(period_window.to_numpy(dtype=float)).all()
+                and (period_window > 0).all()
+            )
+            values[name] = (
+                (latest / base - 1) * 100
+                if base is not None and base > 0 and latest > 0 and positive_window
+                else None
+            )
         fmt = lambda v: 'nicht verfügbar' if v is None else f"{v:+.2f}%".replace('.', ',')
         line = f"- {label}: Kurs {latest:.2f} | " + " | ".join(f"{fmt(v)} {k}" for k,v in values.items())
         return line + f" | Quelle=yfinance/{ticker} | Datenstand {last_date.strftime('%d.%m.%Y')}"
@@ -2277,11 +2306,19 @@ def get_benchmark_close():
             if hist.empty:
                 return pd.Series(dtype=float)
             hist = hist.reset_index(level=0, drop=True)
-            if 'close' in hist.columns:
-                hist = hist.rename(columns={'close': 'Close'})
-            return hist['Close']
+            hist = hist.rename(columns={
+                'open': 'Open', 'high': 'High', 'low': 'Low',
+                'close': 'Close', 'volume': 'Volume',
+            })
+            from ohlcv_quality_gate import quality_checked_frame
+            hist = quality_checked_frame(hist, "SPY", window_sessions=252)
+            if hist.empty:
+                return pd.Series(dtype=float)
+            series = hist['Close'].copy()
+            series.attrs["ohlcv_quality"] = hist.attrs.get("ohlcv_quality", {})
+            return series
 
-        series = get_or_fetch_series("alpaca:SPY:close", _fetch)
+        series = get_or_fetch_series("alpaca:SPY:close:ohlcv-quality-v1.3", _fetch)
         if series is None or series.empty:
             print("DEBUG: SPY-Benchmark leer, Relative Stärke wird übersprungen.")
             return None
@@ -2300,9 +2337,8 @@ def get_eu_benchmark_close():
         if hist.empty:
             print("DEBUG: EU-Benchmark (EXSA.DE) leer, Relative Stärke EU wird übersprungen.")
             return None
-        hist = hist.dropna(subset=['Close'])
-        if hist.empty:
-            print("DEBUG: EU-Benchmark (EXSA.DE) nach NaN-Bereinigung leer, Relative Stärke EU wird übersprungen.")
+        if hist["Close"].isna().iloc[-1]:
+            print("DEBUG: EU-Benchmark (EXSA.DE) letzte erwartete Session ungueltig, Relative Staerke EU wird uebersprungen.")
             return None
         stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
         if getattr(hist.index, 'tz', None) is not None:
@@ -2325,83 +2361,222 @@ def get_perf_yf(ticker, name):
             hist = hist[hist.index >= stichtag]
 
         if hist.empty:
-            return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+            return {"Ticker": ticker, "Sektor": name, "5T": None, "12T": None, "30T": None, "60T": None, "YTD": None, "Rotation-Score": None}
 
-        # NaN-Platzhalterzeilen entfernen (siehe get_index_benchmark_yf)
-        hist = hist.dropna(subset=['Close'])
-
-        if hist.empty:
-            return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
-
-        close = hist['Close']
-        last = close.iloc[-1]
+        close = pd.to_numeric(hist['Close'], errors='coerce')
+        if close.empty or pd.isna(close.iloc[-1]):
+            return {"Ticker": ticker, "Sektor": name, "5T": None, "12T": None, "30T": None, "60T": None, "YTD": None, "Rotation-Score": None}
+        last = float(close.iloc[-1])
 
         def p(d):
-            if len(close) > d:
-                return round(((last / close.iloc[-d]) - 1) * 100, 2)
-            return 0
+            # EU und US verwenden dieselbe Session-Semantik: Eine Rendite
+            # ueber d abgeschlossene Handelssitzungen benoetigt d+1 Schlusskurse.
+            # Das Quality Gate fuegt erwartete, aber fehlende Sessions als NaN
+            # ein; _return_over_expected_sessions sperrt solche Fenster strikt.
+            value = _return_over_expected_sessions(close, d)
+            return round(value, 2) if value is not None else None
 
         current_year = datetime.datetime.now().year
         ytd_data = close[close.index.year == current_year]
-        ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2) if not ytd_data.empty else 0
+        ytd_perf = (
+            round(((last / float(ytd_data.iloc[0])) - 1) * 100, 2)
+            if not ytd_data.empty and ytd_data.notna().all() and (ytd_data > 0).all()
+            and float(ytd_data.iloc[0]) > 0 and last > 0
+            else None
+        )
 
         res = {
             "Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60), "YTD": ytd_perf
         }
-        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+        res["Rotation-Score"] = (
+            round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+            if res["5T"] is not None and res["12T"] is not None else None
+        )
         return res
 
     except Exception as e:
         print(f"FEHLER bei EU-Performance-Berechnung für {ticker}: {e}")
-        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+        return {"Ticker": ticker, "Sektor": name, "5T": None, "12T": None, "30T": None, "60T": None, "YTD": None, "Rotation-Score": None}
 
 def get_perf(ticker, name):
+    """Berechnet US-Sektorperformance mit Alpaca primaer und Yahoo als geprueftem Fallback.
+
+    Beide Quellen muessen das zentrale OHLCV-Quality-Gate bestehen. Fehlende
+    erwartete Sessions bleiben als NaN erhalten; insbesondere 5T/12T duerfen
+    niemals durch Nullwerte ersetzt werden, weil daraus sonst ein scheinbar
+    gueltiger Rotation-Score entstehen wuerde.
+    """
+    from ohlcv_quality_gate import (
+        apply_ohlcv_quality_gate,
+        DEFAULT_REGISTRY,
+        DEFAULT_GAP_REGISTRY,
+    )
+
+    def _empty_result():
+        return {
+            "Ticker": ticker, "Sektor": name, "5T": None, "12T": None,
+            "30T": None, "60T": None, "YTD": None, "Rotation-Score": None,
+        }
+
+    def _normalise_alpaca_frame(frame):
+        if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+            return pd.DataFrame()
+        hist = frame.copy()
+        if isinstance(hist.index, pd.MultiIndex):
+            names = list(hist.index.names)
+            symbol_level = names.index("symbol") if "symbol" in names else 0
+            try:
+                hist = hist.xs(ticker, level=symbol_level, drop_level=True).copy()
+            except KeyError:
+                # Eine MultiIndex-Antwort mit Symbol-Ebene darf nur verwendet
+                # werden, wenn exakt der angeforderte Ticker enthalten ist.
+                # Auch ein einzelnes fremdes Symbol ist kein gueltiger Ersatz.
+                return pd.DataFrame()
+        rename = {
+            "open": "Open", "high": "High", "low": "Low",
+            "close": "Close", "volume": "Volume",
+        }
+        hist = hist.rename(columns=rename)
+        hist.index = pd.to_datetime(hist.index, errors="coerce")
+        hist = hist.loc[~hist.index.isna()].sort_index()
+        hist = hist.loc[~hist.index.duplicated(keep="last")]
+        return hist
+
+    def _calculate(frame):
+        if frame is None or frame.empty or "Close" not in frame.columns:
+            return _empty_result()
+        close = pd.to_numeric(frame["Close"], errors="coerce")
+        if close.empty or pd.isna(close.iloc[-1]):
+            return _empty_result()
+
+        res = {"Ticker": ticker, "Sektor": name}
+        for label, sessions in (("5T", 5), ("12T", 12), ("30T", 30), ("60T", 60)):
+            value = _return_over_expected_sessions(close, sessions)
+            res[label] = round(value, 2) if value is not None else None
+
+        current_year = datetime.datetime.now().year
+        ytd_data = close[close.index.year == current_year]
+        if (
+            not ytd_data.empty
+            and ytd_data.notna().all()
+            and np.isfinite(ytd_data.to_numpy(dtype=float)).all()
+            and (ytd_data > 0).all()
+            and float(ytd_data.iloc[0]) > 0
+            and float(close.iloc[-1]) > 0
+        ):
+            res["YTD"] = round(
+                ((float(close.iloc[-1]) / float(ytd_data.iloc[0])) - 1) * 100, 2
+            )
+        else:
+            res["YTD"] = None
+
+        res["Rotation-Score"] = (
+            round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
+            if res["5T"] is not None and res["12T"] is not None
+            else None
+        )
+        return res
+
+    def _gate_alpaca(frame):
+        gated, quality = apply_ohlcv_quality_gate(
+            frame,
+            ticker,
+            registry_path=DEFAULT_REGISTRY,
+            gap_registry_path=DEFAULT_GAP_REGISTRY,
+            window_sessions=252,
+            preserve_expected_sessions=True,
+        )
+        return gated, quality
+
+    # 1. Primaerquelle: Alpaca. Ein leerer Abruf, Gate-Fehler oder ein
+    # unvollstaendiges Quality-Gate-Ergebnis loest den Yahoo-Fallback aus.
+    alpaca_quality = None
     try:
-        # Zeitraum für 1 Jahr (ca. 260 Handelstage reichen für 60T Performance)
         start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-        
         request = StockBarsRequest(
             symbol_or_symbols=[ticker],
             start=start_date,
-            timeframe=TimeFrame.Day
+            timeframe=TimeFrame.Day,
         )
-        
         bars = alpaca_client.get_stock_bars(request)
-        hist = bars.df
-        
-        if hist.empty:
-            return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
-        
-        # Index bereinigen und sicherstellen, dass 'close' vorhanden ist
-        hist = hist.reset_index(level=0, drop=True)
-        if 'close' in hist.columns:
-            hist = hist.rename(columns={'close': 'Close'})
-            
-        close = hist['Close']
-        last = close.iloc[-1]
-        
-        # Hilfsfunktion für prozentuale Performance
-        # Sicherstellen, dass wir nicht über das Ende hinaus greifen
-        def p(d): 
-            if len(close) > d:
-                return round(((last / close.iloc[-d]) - 1) * 100, 2)
-            return 0
-        
-        # YTD Performance berechnen
-        current_year = datetime.datetime.now().year
-        # Wir nutzen den Index (Timestamp) um YTD zu filtern
-        ytd_data = close[hist.index.year == current_year]
-        ytd_perf = round(((last / ytd_data.iloc[0]) - 1) * 100, 2) if not ytd_data.empty else 0
-            
-        res = {
-            "Ticker": ticker, "Sektor": name, "5T": p(5), "12T": p(12), "30T": p(30), "60T": p(60), "YTD": ytd_perf
-        }
-        res["Rotation-Score"] = round((res["5T"] * 0.7 + res["12T"] * 0.3), 3)
-        return res
-        
-    except Exception as e:
-        print(f"FEHLER bei Performance-Berechnung für {ticker}: {e}")
-        return {"Ticker": ticker, "Sektor": name, "5T": 0, "12T": 0, "30T": 0, "60T": 0, "YTD": 0, "Rotation-Score": 0}
+        alpaca_raw = _normalise_alpaca_frame(getattr(bars, "df", None))
+        if not alpaca_raw.empty:
+            alpaca_checked, alpaca_quality = _gate_alpaca(alpaca_raw)
+            if getattr(alpaca_quality, "quality_status", "INCOMPLETE") != "INCOMPLETE":
+                alpaca_result = _calculate(alpaca_checked)
+                if alpaca_result["Rotation-Score"] is not None:
+                    print(
+                        f"INFO-SEKTOR-PERFORMANCE: {ticker} Quelle=Alpaca "
+                        f"Quality-Gate={alpaca_quality.quality_status}"
+                    )
+                    return alpaca_result
+                print(
+                    f"WARNUNG-SEKTOR-PERFORMANCE: {ticker} Alpaca-Performancefenster "
+                    "5T/12T unvollstaendig - pruefe Yahoo-Fallback."
+                )
+            else:
+                print(
+                    f"WARNUNG-SEKTOR-PERFORMANCE: {ticker} Alpaca Quality Gate "
+                    f"INCOMPLETE ({','.join(alpaca_quality.reason_codes)}) - "
+                    "pruefe Yahoo-Fallback."
+                )
+        else:
+            print(
+                f"WARNUNG-SEKTOR-PERFORMANCE: {ticker} Alpaca lieferte keine "
+                "brauchbaren Kursdaten - pruefe Yahoo-Fallback."
+            )
+    except Exception as exc:
+        print(
+            f"WARNUNG-SEKTOR-PERFORMANCE: {ticker} Alpaca-Abruf/Quality-Gate "
+            f"fehlgeschlagen ({type(exc).__name__}) - pruefe Yahoo-Fallback."
+        )
+
+    # 2. Ersatzquelle: direkter Yahoo-Finance-Abruf, nicht der persistente
+    # Projekt-/SQLite-Kursbestand. Auch diese Rohdaten durchlaufen dasselbe Gate.
+    try:
+        yahoo_hist = get_yf_history_from_yahoo(ticker)
+        yahoo_quality = (
+            yahoo_hist.attrs.get("ohlcv_quality")
+            if isinstance(yahoo_hist, pd.DataFrame) else None
+        )
+        yahoo_status = (
+            str(yahoo_quality.get("quality_status", "")).upper()
+            if isinstance(yahoo_quality, dict) else ""
+        )
+        if (
+            not isinstance(yahoo_hist, pd.DataFrame)
+            or yahoo_hist.empty
+            or yahoo_status not in {"PASS", "PASS_WITH_EXCLUSIONS"}
+        ):
+            reasons = (
+                ",".join(yahoo_quality.get("reason_codes", []))
+                if isinstance(yahoo_quality, dict) else "QUALITY_STATUS_MISSING"
+            )
+            print(
+                f"FEHLER-SEKTOR-PERFORMANCE: {ticker} Yahoo-Fallback nicht "
+                f"verwendbar (Quality-Gate={yahoo_status or 'UNBEKANNT'}; {reasons})."
+            )
+            return _empty_result()
+
+        yahoo_result = _calculate(yahoo_hist)
+        if yahoo_result["Rotation-Score"] is None:
+            print(
+                f"FEHLER-SEKTOR-PERFORMANCE: {ticker} auch Yahoo hat kein "
+                "vollstaendiges 5T-/12T-Rotationsfenster geliefert."
+            )
+            return yahoo_result
+
+        print(
+            f"INFO-SEKTOR-PERFORMANCE: {ticker} Quelle=Yahoo-Finance-Fallback "
+            f"Quality-Gate={yahoo_status}"
+        )
+        return yahoo_result
+    except Exception as exc:
+        print(
+            f"FEHLER-SEKTOR-PERFORMANCE: {ticker} Alpaca und Yahoo nicht "
+            f"verwendbar ({type(exc).__name__})."
+        )
+        return _empty_result()
 
 def calculate_retest_entry(hist, breakout_level):
     close = hist['Close']
@@ -2935,7 +3110,7 @@ def fetch_us_batch(ticker_liste):
     return fetch_us_batch_robust(
         alpaca_client,
         ticker_liste,
-        chunk_size=CHUNK_SIZE_US if 'CHUNK_SIZE_US' in globals() else CHUNK_SIZE,
+        chunk_size=CHUNK_SIZE_US,
         days=365,
     )
 
@@ -2972,10 +3147,11 @@ def fetch_eu_batch(ticker_liste):
                     data = df_alle.copy()
             except KeyError:
                 continue
-            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-            if data.empty:
+            from ohlcv_quality_gate import quality_checked_frame
+            checked = quality_checked_frame(data, ticker, window_sessions=252, require_structure=True)
+            if checked.empty:
                 continue
-            ergebnis[ticker] = data
+            ergebnis[ticker] = checked
 
     print(f"DEBUG: EU-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
     return ergebnis
@@ -3022,6 +3198,14 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrad
             data = data.reset_index(level=0, drop=True)
             if 'close' in data.columns:
                 data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
+            from ohlcv_quality_gate import quality_checked_frame
+            data = quality_checked_frame(
+                data, ticker, window_sessions=252, require_structure=True
+            )
+            if data.empty:
+                print(f"WARNUNG-OHLCV-QUALITY: {ticker} Alpaca-Einzelabruf gesperrt.")
+                funnel_zaehle("keine_kursdaten")
+                return None
         elif data.empty:
             print(f"DEBUG: {ticker} -> Daten von Alpaca leer.")
             funnel_zaehle("keine_kursdaten")
@@ -3034,16 +3218,23 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrad
             return None
             
         # RSI Berechnung
-        delta = data['Close'].diff()
-        # GEAENDERT (05.08.2026): Wilder's Glaettung statt einfachem
-        # rollierendem Mittel - Konsistenz mit get_safe_rsi() weiter oben,
-        # siehe dortige Begruendung.
-        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        # GEAENDERT (05.08.2026, siehe get_safe_rsi fuer die Begruendung)
-        rs = gain / loss.clip(lower=1e-9)
-        data['RSI'] = 100 - (100 / (1 + rs))
-        data['RSI'] = data['RSI'].fillna(50)
+        delta = pd.to_numeric(data['Close'], errors='coerce').diff()
+        # Fehlende Schlusskurse/Delta-Werte bleiben fehlend und duerfen weder
+        # als Nullbewegung noch als neutraler RSI=50 in die Glattung eingehen.
+        gain = delta.clip(lower=0).ewm(
+            alpha=1/14, adjust=False, min_periods=14, ignore_na=False
+        ).mean()
+        loss = (-delta.clip(upper=0)).ewm(
+            alpha=1/14, adjust=False, min_periods=14, ignore_na=False
+        ).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+        rsi = rsi.mask((loss == 0) & (gain == 0) & delta.notna(), 50.0)
+        data['RSI'] = rsi.where(delta.notna())
+        if pd.isna(data['RSI'].iloc[-1]):
+            funnel_zaehle("zu_wenig_daten")
+            return None
         divergenz = check_rsi_divergence(data)
 
         # 1. Indikatoren berechnen
@@ -3418,53 +3609,55 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None, collect_h
 
     try:
         if data is None:
-            # Fallback: Einzelabruf (siehe analyze_a_setup US-Version fuer
-            # die volle Begruendung - greift nur bei einzel_check.py's
-            # Ad-hoc-Einzeltickerpruefung, wo kein Sammel-Abruf stattfindet)
+            # Ad-hoc-Einzelabruf muss denselben Strukturvertrag wie der Batchpfad
+            # erzwingen; der Gate-Cutoff entfernt noch laufende Tageskerzen.
             data = get_yf_history(ticker)
-            if not data.empty:
-                stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
-                if getattr(data.index, 'tz', None) is not None:
-                    stichtag = stichtag.tz_localize(data.index.tz)
-                data = data[data.index >= stichtag]
-
-            if data.empty:
-                print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
-                funnel_zaehle("keine_kursdaten")
-                return None
-
-            # NaN-Platzhalterzeilen entfernen: yfinance legt vor Xetra-Handelsbeginn
-            # teils schon eine leere Zeile für den aktuellen Tag an (NaN in Close/High/
-            # Low/Volume). Ohne diese Bereinigung würde iloc[-1] auf diese Platzhalter-
-            # Zeile zeigen statt auf den letzten echten Schlusskurs, was RSI, Stochastik,
-            # EMAs etc. komplett auf NaN kippen lässt (siehe Log vom 2026-07-14).
-            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-
-            if data.empty:
-                print(f"DEBUG: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
-                funnel_zaehle("keine_kursdaten")
-                return None
         elif data.empty:
             print(f"DEBUG: {ticker} -> Daten von yfinance leer.")
             funnel_zaehle("keine_kursdaten")
             return None
 
-        # yfinance liefert bereits 'Close','High','Low','Open','Volume' - keine Umbenennung nötig
+        from ohlcv_quality_gate import quality_checked_frame
+        data = quality_checked_frame(
+            data, ticker, window_sessions=252, require_structure=True
+        )
+        if data.empty:
+            print(f"WARNUNG-OHLCV-QUALITY: {ticker} EU-Abruf gesperrt.")
+            funnel_zaehle("keine_kursdaten")
+            return None
+
+        stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
+        if getattr(data.index, 'tz', None) is not None:
+            stichtag = stichtag.tz_localize(data.index.tz)
+        data = data[data.index >= stichtag]
+        if data.empty:
+            funnel_zaehle("keine_kursdaten")
+            return None
+
+        # yfinance liefert bereits 'Close','High','Low','Open','Volume'; NaN-
+        # Platzhalter-/Gapsitzungen bleiben im Index und werden nicht komprimiert.
         if len(data) < 15:
             print(f"Zu wenig Daten für {ticker}: {len(data)} Zeilen")
             funnel_zaehle("zu_wenig_daten")
             return None
 
-        delta = data['Close'].diff()
-        # GEAENDERT (05.08.2026): Wilder's Glaettung statt einfachem
-        # rollierendem Mittel - Konsistenz mit get_safe_rsi() weiter oben,
-        # siehe dortige Begruendung.
-        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        # GEAENDERT (05.08.2026, siehe get_safe_rsi fuer die Begruendung)
-        rs = gain / loss.clip(lower=1e-9)
-        data['RSI'] = 100 - (100 / (1 + rs))
-        data['RSI'] = data['RSI'].fillna(50)
+        delta = pd.to_numeric(data['Close'], errors='coerce').diff()
+        # Fehlende Schlusskurse/Delta-Werte bleiben fehlend und duerfen weder
+        # als Nullbewegung noch als neutraler RSI=50 in die Glattung eingehen.
+        gain = delta.clip(lower=0).ewm(
+            alpha=1/14, adjust=False, min_periods=14, ignore_na=False
+        ).mean()
+        loss = (-delta.clip(upper=0)).ewm(
+            alpha=1/14, adjust=False, min_periods=14, ignore_na=False
+        ).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+        rsi = rsi.mask((loss == 0) & (gain == 0) & delta.notna(), 50.0)
+        data['RSI'] = rsi.where(delta.notna())
+        if pd.isna(data['RSI'].iloc[-1]):
+            funnel_zaehle("zu_wenig_daten")
+            return None
         divergenz = check_rsi_divergence(data)
 
         data['EMA8'] = data['Close'].ewm(span=8, adjust=False).mean()
@@ -3589,10 +3782,11 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None, collect_h
 
         # Relative Stärke vs. STOXX Europe 600 (statt SPY)
         rel_staerke = None
-        if eu_bench_close is not None and len(eu_bench_close) > 60 and len(data) > 60:
-            stock_perf_60 = ((data['Close'].iloc[-1] / data['Close'].iloc[-60]) - 1) * 100
-            bench_perf_60 = ((eu_bench_close.iloc[-1] / eu_bench_close.iloc[-60]) - 1) * 100
-            rel_staerke = round(stock_perf_60 - bench_perf_60, 2)
+        if eu_bench_close is not None and len(eu_bench_close) >= 61 and len(data) >= 61:
+            stock_return = _return_over_expected_sessions(data['Close'], 60)
+            bench_return = _return_over_expected_sessions(eu_bench_close, 60)
+            if stock_return is not None and bench_return is not None:
+                rel_staerke = round(stock_return - bench_return, 2)
 
             if rel_staerke <= -10:
                 print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Relative Stärke vs. STOXX600 <= -10% ({rel_staerke}%)")
@@ -3852,11 +4046,16 @@ if __name__ == "__main__":
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+    # Nur vollstaendige Rotationswerte duerfen die Top-Sektor-Auswahl steuern.
+    # Unvollstaendige Zeilen bleiben in der CSV-Diagnose sichtbar, werden aber
+    # nicht durch .head(8) versehentlich in die HebelTrader-Topauswahl gezogen.
+    df_perf_valid = df_perf.dropna(subset=["Rotation-Score", "5T", "12T"]).copy()
 
     # 2a. EU-Sektor-Rotation separat berechnen (STOXX-Europe-600-Sektor-ETFs über yfinance,
     # da Alpaca diese nicht abdeckt). Läuft unabhängig von der US-Rotation.
     print("Berechne EU-Sektor-Rotation (STOXX Europe 600)...")
     df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()]).sort_values("Rotation-Score", ascending=False)
+    df_perf_eu_valid = df_perf_eu.dropna(subset=["Rotation-Score", "5T", "12T"]).copy()
 
     # 2b. Benchmarks für die Relative-Stärke-Berechnung laden (einmalig, US + EU getrennt)
     spy_close = get_benchmark_close()
@@ -3872,13 +4071,13 @@ if __name__ == "__main__":
     # valide Setups aus Nicht-Top-Sektoren nicht schon bei der Datenerhebung
     # verloren gehen. Die spaetere Setups.csv-Filterung bleibt unveraendert.
     top_tasks = []
-    for _, row in df_perf.head(8).iterrows():
+    for _, row in df_perf_valid.head(8).iterrows():
         aktien_liste = sektoren_aktien.get(row['Ticker'], [])
         for s in aktien_liste:
             if s not in blacklist:
                 top_tasks.append((s, row['Sektor']))
     top_tasks_eu = []
-    for _, row in df_perf_eu.head(5).iterrows():
+    for _, row in df_perf_eu_valid.head(5).iterrows():
         aktien_liste_eu = dax_aktien.get(row['Sektor'], [])
         for s in aktien_liste_eu:
             top_tasks_eu.append((s, row['Sektor']))
@@ -3997,8 +4196,8 @@ if __name__ == "__main__":
                 # authoritative lookup; the ticker remains the immutable key.
                 firma_name = _hole_firma_name(key)
             try:
-                close_series = data["Close"].dropna()
-                if not close_series.empty:
+                close_series = pd.to_numeric(data["Close"], errors="coerce")
+                if not close_series.empty and pd.notna(close_series.iloc[-1]):
                     close = float(close_series.iloc[-1])
                     idx = close_series.index[-1]
                     datenstand = str(idx.date() if hasattr(idx, "date") else idx)
@@ -4143,7 +4342,7 @@ if __name__ == "__main__":
     # nachgetragen werden. Unabhaengig von df_s/setups_vor_filter oben -
     # Hebeltrader-Kandidaten kommen aus ALLEN geprueften Tickern, nicht nur
     # den als Trendfolge-Setup erkannten.
-    hebeltrader_treffer = _hebeltrader_finalisieren(df_perf, df_perf_eu)
+    hebeltrader_treffer = _hebeltrader_finalisieren(df_perf_valid, df_perf_eu_valid)
     print(f"DEBUG: {len(hebeltrader_treffer)} Hebeltrader-Treffer (Schwelle "
           f"{HEBELTRADER_SCHWELLE}/5) von {len(HEBELTRADER_KANDIDATEN)} geprueften Titeln.")
     print("HEBELTRADER-FUNNEL:")
@@ -4166,8 +4365,8 @@ if __name__ == "__main__":
 
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
-        top_8_sektoren = df_perf.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
-        top_5_eu_sektoren = df_perf_eu.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
+        top_8_sektoren = df_perf_valid.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
+        top_5_eu_sektoren = df_perf_eu_valid.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
 
         # DEBUG: Zeigt, an welchem der beiden Kriterien (Sektor oder Trend) die
         # gefundenen Setups vor dem Filter stehen. Marktbewusst, da US- und EU-

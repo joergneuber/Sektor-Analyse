@@ -378,11 +378,16 @@ def yahoo_validiere(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 item["yahoo_valid"] = False
                 item["yahoo_reason"] = "keine Yahoo-Kursdaten"
                 continue
-            close = hist["Close"].dropna()
-            if close.empty:
+            from ohlcv_quality_gate import quality_checked_frame
+            checked = quality_checked_frame(
+                hist, ticker, window_sessions=5, require_structure=True,
+                full_history=True,
+            )
+            if checked.empty or checked["Close"].isna().iloc[-1]:
                 item["yahoo_valid"] = False
-                item["yahoo_reason"] = "keine gültigen Schlusskurse"
+                item["yahoo_reason"] = "OHLCV-Quality-Gate INCOMPLETE"
                 continue
+            close = checked["Close"]
             item["yahoo_valid"] = True
             item["yahoo_last_close"] = float(close.iloc[-1])
             item["yahoo_last_date"] = str(close.index[-1].date())

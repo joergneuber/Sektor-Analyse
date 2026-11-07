@@ -2342,10 +2342,20 @@ def lme_snapshot(today, _target_override=None, _allow_previous_fallback=True, _a
 def _parse_market_cache_entry(entry):
     if not entry or not entry.get("payload"):
         return pd.Series(dtype=float)
+    quality = entry.get("ohlcv_quality")
+    if not isinstance(quality, dict) or quality.get("quality_status") not in {
+        "PASS", "PASS_WITH_EXCLUSIONS"
+    }:
+        # Altbestand ohne Quality-Metadaten darf nicht als REAL_CACHED gelten.
+        return pd.Series(dtype=float)
     try:
-        series = pd.read_json(StringIO(entry["payload"]), orient="split")
-        series.index = pd.to_datetime(series.index)
-        return pd.to_numeric(series.iloc[:, 0], errors="coerce").dropna()
+        frame = pd.read_json(StringIO(entry["payload"]), orient="split")
+        frame.index = pd.to_datetime(frame.index)
+        if frame.empty:
+            return pd.Series(dtype=float)
+        series = pd.to_numeric(frame.iloc[:, 0], errors="coerce")
+        series.attrs["ohlcv_quality"] = quality
+        return series
     except Exception as exc:
         print(f"WARNUNG-MAKRO-CACHE: Markt-Cache unlesbar ({type(exc).__name__}: {exc})")
         return pd.Series(dtype=float)
@@ -2375,11 +2385,27 @@ def _market_history(ticker, fetcher=None, today=None):
         if hist is None or hist.empty:
             raise ValueError("keine Daten")
         if isinstance(hist.columns, pd.MultiIndex):
-            close = hist["Close"].iloc[:, 0]
+            if ticker in hist.columns.get_level_values(0):
+                frame = hist.xs(ticker, axis=1, level=0, drop_level=True).copy()
+            elif ticker in hist.columns.get_level_values(1):
+                frame = hist.xs(ticker, axis=1, level=1, drop_level=True).copy()
+            else:
+                frame = hist.copy()
+                if isinstance(frame.columns, pd.MultiIndex):
+                    frame.columns = frame.columns.get_level_values(0)
         else:
-            close = hist["Close"]
-        close = pd.to_numeric(close, errors="coerce").dropna()
-        if close.empty:
+            frame = hist.copy()
+        from ohlcv_quality_gate import apply_ohlcv_quality_gate
+        frame, quality = apply_ohlcv_quality_gate(
+            frame, ticker, window_sessions=252, preserve_expected_sessions=True,
+            full_history=True, require_structure=False,
+        )
+        if quality.quality_status == "INCOMPLETE" or "Close" not in frame.columns:
+            raise ValueError(
+                f"OHLCV-Quality-Gate INCOMPLETE: {quality.reason_codes}"
+            )
+        close = pd.to_numeric(frame["Close"], errors="coerce")
+        if close.notna().sum() == 0:
             raise ValueError("keine Close-Daten")
         with CACHE_WRITE_LOCK:
             cache = _cache_load()
@@ -2387,6 +2413,7 @@ def _market_history(ticker, fetcher=None, today=None):
                 "saved_at": time.time(),
                 "data_date": pd.Timestamp(close.index[-1]).date().isoformat(),
                 "payload": close.to_frame("Close").to_json(orient="split", date_format="iso"),
+                "ohlcv_quality": quality.to_dict(),
                 "status": "REAL",
             }
             _cache_save(cache)

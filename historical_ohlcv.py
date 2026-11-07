@@ -76,7 +76,8 @@ EXPLICIT_CALENDAR_BY_TICKER = {
     "^HSI": "XHKG", "^VIX": "XNYS",
     "CL=F": "NYMEX", "BZ=F": "IFEU", "GC=F": "COMEX", "SI=F": "COMEX",
     "PL=F": "NYMEX", "PA=F": "NYMEX", "HG=F": "COMEX",
-    "EURUSD=X": "24/5", "BTC-USD": "24/7", "ETH-USD": "24/7",
+    "EURUSD=X": "24/5", "XAU/USD": "24/5", "XAUUSD": "24/5",
+    "BTC-USD": "24/7", "ETH-USD": "24/7",
     "SPY": "XNYS", "QQQ": "XNAS", "LIT": "XNYS",
 }
 SUFFIX_CALENDAR_MAP = {
@@ -615,9 +616,20 @@ def _db_latest(conn: sqlite3.Connection) -> dict[str, str]:
     return {row[0]: row[1] for row in conn.execute("SELECT ticker, MAX(date) FROM bars GROUP BY ticker")}
 
 
-def _ohlcv_validation_reasons(row: pd.Series) -> list[str]:
-    """Return OHLCV violations for one already-normalised bar."""
+def _ohlcv_validation_reasons(
+    row: pd.Series, *, allowed_negative_codes: set[str] | None = None,
+    ticker: str | None = None, date_key: str | None = None,
+) -> list[str]:
+    """Return OHLCV violations; negatives need exact field/value approval."""
     values = {}
+    allowed_negative_codes = {str(code).strip().upper() for code in (allowed_negative_codes or set())}
+    negative_value_check = None
+    if allowed_negative_codes and ticker and date_key:
+        try:
+            from ohlcv_quality_gate import _negative_value_is_evidenced
+            negative_value_check = _negative_value_is_evidenced
+        except Exception:
+            negative_value_check = None
     for column in ("Open", "High", "Low", "Close"):
         try:
             value = float(row[column])
@@ -625,8 +637,17 @@ def _ohlcv_validation_reasons(row: pd.Series) -> list[str]:
             return [f"{column.lower()}_not_numeric"]
         if not math.isfinite(value):
             return [f"{column.lower()}_not_finite"]
+        reason_code = f"{column.upper()}_NON_POSITIVE"
         if value <= 0:
-            return [f"{column.lower()}_non_positive"]
+            if not (
+                value < 0 and reason_code in allowed_negative_codes
+                and negative_value_check is not None
+                and negative_value_check(
+                    str(ticker).upper(), str(date_key), column, value,
+                    allowed_negative_codes,
+                )
+            ):
+                return [f"{column.lower()}_non_positive"]
         values[column] = value
 
     reasons = []
@@ -667,8 +688,23 @@ def _validated_frames(
     Invalid rows are never sent to INSERT OR REPLACE/INSERT OR IGNORE. This
     protects existing database rows from being overwritten by malformed
     provider data while allowing valid rows in the same ticker batch through.
-    OHLC prices must be finite and positive; volume must be finite and non-negative.
+    OHLC prices must be finite and positive except for an exact, versioned,
+    instrument/date/field special-case approval from the Quality Gate registry.
+    Volume must be finite and non-negative. Registry errors fail closed.
     """
+    try:
+        # Local import avoids a module-level cycle: the Quality Gate consults
+        # historical_ohlcv for exchange calendars at runtime.
+        from ohlcv_quality_gate import (
+            DEFAULT_REGISTRY, _approved_negative_reason_codes,
+            _negative_value_is_evidenced, _load_registry,
+        )
+        quality_registry = _load_registry(DEFAULT_REGISTRY)
+    except Exception:
+        quality_registry = {}
+        _approved_negative_reason_codes = None
+        _negative_value_is_evidenced = None
+
     accepted: dict[str, pd.DataFrame] = {}
     for ticker, frame in frames.items():
         normalised = _normalise_frame(frame)
@@ -676,7 +712,18 @@ def _validated_frames(
         invalid_samples = []
         invalid_count = 0
         for idx, row in normalised.iterrows():
-            reasons = _ohlcv_validation_reasons(row)
+            allowed_negative_codes = set()
+            if _approved_negative_reason_codes is not None:
+                date_key = pd.Timestamp(idx).date().isoformat()
+                record = quality_registry.get((str(ticker).strip().upper(), date_key))
+                allowed_negative_codes = _approved_negative_reason_codes(
+                    str(ticker).strip().upper(), date_key, record
+                )
+            reasons = _ohlcv_validation_reasons(
+                row, allowed_negative_codes=allowed_negative_codes,
+                ticker=str(ticker).strip().upper(),
+                date_key=pd.Timestamp(idx).date().isoformat(),
+            )
             if reasons:
                 invalid_count += 1
                 if len(invalid_samples) < 5:
@@ -1167,26 +1214,49 @@ def audit_snapshot(
         }
     try:
         tickers = discover_universe(source_file, dynamic_universe)
+
+        # Audit und Import muessen denselben OHLCV-Vertrag verwenden. Eine
+        # reine SQL-Pruefung auf <= 0 wuerde die eng begrenzten, im Quality
+        # Gate belegten WTI-Werte erneut als INVALID markieren. Die SQLite-
+        # Funktion delegiert deshalb an dieselbe Registry- und Evidenzlogik.
+        from ohlcv_quality_gate import (
+            DEFAULT_REGISTRY, _approved_negative_reason_codes,
+            _load_registry,
+        )
+        quality_registry = _load_registry(DEFAULT_REGISTRY)
+
+        def _audit_row_invalid(ticker, date_key, open_value, high_value,
+                               low_value, close_value, volume_value):
+            ticker_key = str(ticker or "").strip().upper()
+            date_text = str(date_key or "")[:10]
+            record = quality_registry.get((ticker_key, date_text))
+            allowed_codes = _approved_negative_reason_codes(
+                ticker_key, date_text, record
+            )
+            row = pd.Series({
+                "Open": open_value, "High": high_value, "Low": low_value,
+                "Close": close_value, "Volume": volume_value,
+            })
+            return int(bool(_ohlcv_validation_reasons(
+                row, allowed_negative_codes=allowed_codes,
+                ticker=ticker_key, date_key=date_text,
+            )))
+
         with _connect(db_path) as conn:
+            conn.create_function("ohlcv_row_invalid", 7, _audit_row_invalid)
             rows = conn.execute(
                 """SELECT i.ticker, i.row_count, MAX(b.date),
                           SUM(CASE WHEN b.date IS NOT NULL AND
-                                       (b.open IS NULL OR b.high IS NULL OR b.low IS NULL OR
-                                        b.close IS NULL OR b.volume IS NULL OR
-                                        b.open <= 0 OR b.high <= 0 OR b.low <= 0 OR
-                                        b.close <= 0 OR b.volume < 0 OR
-                                        b.high < b.low OR b.high < b.open OR
-                                        b.high < b.close OR b.low > b.open OR
-                                        b.low > b.close)
+                                       ohlcv_row_invalid(
+                                           b.ticker, b.date, b.open, b.high,
+                                           b.low, b.close, b.volume
+                                       ) = 1
                                    THEN 1 ELSE 0 END),
                           SUM(CASE WHEN b.date >= date('now', '-90 days') AND
-                                       (b.open IS NULL OR b.high IS NULL OR b.low IS NULL OR
-                                        b.close IS NULL OR b.volume IS NULL OR
-                                        b.open <= 0 OR b.high <= 0 OR b.low <= 0 OR
-                                        b.close <= 0 OR b.volume < 0 OR
-                                        b.high < b.low OR b.high < b.open OR
-                                        b.high < b.close OR b.low > b.open OR
-                                        b.low > b.close)
+                                       ohlcv_row_invalid(
+                                           b.ticker, b.date, b.open, b.high,
+                                           b.low, b.close, b.volume
+                                       ) = 1
                                    THEN 1 ELSE 0 END),
                           COUNT(b.date)
                    FROM instruments i LEFT JOIN bars b ON b.ticker=i.ticker
@@ -1331,7 +1401,27 @@ def load_history(ticker: str, db_path: Path = DEFAULT_DB) -> pd.DataFrame:
         )
     if df.empty:
         return df
-    return df.set_index("date")
+    frame = df.set_index("date")
+    # Qualitäts-Overlay bleibt strikt read-only: die SQLite-Quelldaten werden
+    # weder korrigiert noch überschrieben. Der vollständige Zeitindex bleibt
+    # erhalten; die öffentliche Market-Cache-Schicht entscheidet anschließend,
+    # ob ein INCOMPLETE-Fenster für Signale freigegeben werden darf.
+    try:
+        from ohlcv_quality_gate import apply_ohlcv_quality_gate, historical_frame_as_of
+        frame, quality = apply_ohlcv_quality_gate(
+            frame, ticker, window_sessions=252,
+            require_structure=False, preserve_expected_sessions=True,
+            full_history=True, as_of=historical_frame_as_of(frame, ticker),
+        )
+        frame.attrs["ohlcv_quality"] = quality.to_dict()
+    except Exception as exc:
+        frame.attrs["ohlcv_quality"] = {
+            "ticker": str(ticker).strip().upper(),
+            "quality_status": "INCOMPLETE",
+            "reason_codes": [f"QUALITY_GATE_ERROR:{type(exc).__name__}"],
+            "rule_version": "1.3",
+        }
+    return frame
 
 
 def main() -> int:

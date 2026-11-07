@@ -182,8 +182,8 @@ def get_or_fetch_series(
         else:
             return None
 
-    series = series.dropna()
-    if series.empty:
+    series = pd.to_numeric(series, errors="coerce")
+    if series.empty or not series.notna().any():
         return None
 
     payload = series.to_frame("Close").to_json(orient="split", date_format="iso")
@@ -204,7 +204,53 @@ def get_or_fetch_series(
 
 
 
-def get_yf_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
+def _quality_checked_frame(ticker: str, frame: pd.DataFrame, *, require_structure: bool = False,
+                           window_sessions: int = 252, as_of=None) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    try:
+        from ohlcv_quality_gate import apply_ohlcv_quality_gate, _calendar_sessions
+        idx = pd.to_datetime(frame.index, errors="coerce")
+        idx = idx[~idx.isna()]
+        if len(idx):
+            start = pd.Timestamp(idx.min()).date().isoformat()
+            end = pd.Timestamp(idx.max()).date().isoformat()
+            expected = _calendar_sessions(str(ticker).strip().upper(), start, end)
+            effective_window = min(int(window_sessions), len(expected)) if expected else int(window_sessions)
+        else:
+            effective_window = int(window_sessions)
+        gated, quality = apply_ohlcv_quality_gate(
+            frame, ticker, require_structure=require_structure,
+            window_sessions=max(1, effective_window), preserve_expected_sessions=True,
+            as_of=as_of,
+        )
+        if quality.quality_status == "INCOMPLETE":
+            blocked = pd.DataFrame()
+            blocked.attrs["ohlcv_quality"] = quality.to_dict()
+            print(f"WARNUNG-OHLCV-QUALITY: {ticker} gesperrt ({','.join(quality.reason_codes)}).")
+            return blocked
+        return gated
+    except Exception as exc:
+        blocked = pd.DataFrame()
+        blocked.attrs["ohlcv_quality"] = {
+            "ticker": ticker, "quality_status": "INCOMPLETE",
+            "reason_codes": [f"QUALITY_GATE_ERROR:{type(exc).__name__}"],
+            "rule_version": "1.3",
+        }
+        print(f"WARNUNG-OHLCV-QUALITY: {ticker}: Gate-Fehler ({type(exc).__name__}: {exc}).")
+        return blocked
+
+
+def _quality_checked_histories(result: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    checked = {}
+    for ticker, frame in result.items():
+        gated = _quality_checked_frame(ticker, frame)
+        if gated is not None and not gated.empty:
+            checked[ticker] = gated
+    return checked
+
+
+def _get_yf_histories_raw(tickers: list[str]) -> dict[str, pd.DataFrame]:
     """Liefert gemeinsame yfinance-Historien fuer mehrere Ticker.
 
     Bereits im prozessuebergreifenden Cache vorhandene Reihen werden direkt
@@ -306,8 +352,8 @@ def get_yf_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
                     series = hist[(ticker, "Close")]
                 if series is None:
                     continue
-                close = pd.to_numeric(series, errors="coerce").dropna()
-                if close.empty:
+                close = pd.to_numeric(series, errors="coerce")
+                if close.empty or not close.notna().any():
                     continue
                 # Bei yfinance.download() ist das Batch-Ergebnis ein MultiIndex.
                 # Pro Cache-Key darf aber ausschliesslich der angeforderte Ticker
@@ -325,13 +371,15 @@ def get_yf_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
                 if "Close" not in frame.columns:
                     continue
                 frame["Close"] = pd.to_numeric(frame["Close"], errors="coerce")
-                frame = frame.dropna(subset=["Close"])
                 # Der gemeinsame Cache braucht die komplette Historie,
                 # nicht nur Close; technische Scanner verwenden High/Low.
                 if not frame.empty:
                     batch[ticker] = frame
         elif len(missing) == 1 and "Close" in hist.columns:
-            batch[missing[0]] = hist.dropna(subset=["Close"]).copy()
+            frame = hist.copy()
+            frame["Close"] = pd.to_numeric(frame["Close"], errors="coerce")
+            if frame["Close"].notna().any():
+                batch[missing[0]] = frame
 
     if batch:
         if _acquire_lock():
@@ -365,8 +413,7 @@ def _write_yf_dataframe_cache(ticker: str, df: pd.DataFrame) -> None:
         if "Close" not in frame.columns:
             return
         frame["Close"] = pd.to_numeric(frame["Close"], errors="coerce")
-        frame = frame.dropna(subset=["Close"])
-        if frame.empty:
+        if frame.empty or not frame["Close"].notna().any():
             return
         payload = frame.to_json(orient="split", date_format="iso")
         if _acquire_lock():
@@ -425,7 +472,7 @@ def _normalise_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
         return frame
 
 
-def get_yf_history(ticker: str) -> pd.DataFrame:
+def _get_yf_history_raw(ticker: str) -> pd.DataFrame:
     """Gemeinsame yfinance-Historie pro Ticker; immer period='max'.
 
     FALLBACK GEGEN VERALTETE 'max'-ANTWORTEN (NEU, Anlass: Auswertung vom
@@ -560,6 +607,69 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     _write_yf_dataframe_cache(ticker, kombiniert)
     return kombiniert
 
+
+
+def get_yf_history(ticker: str) -> pd.DataFrame:
+    """Gibt nur nach dem zentralen Tages-OHLCV-Quality-Gate Daten frei."""
+    return _quality_checked_frame(ticker, _get_yf_history_raw(ticker))
+
+
+def get_yf_history_from_yahoo(ticker: str, *, period: str = "1y") -> pd.DataFrame:
+    """Direkter Yahoo-Finance-Fallback ohne SQLite-/Projektcache.
+
+    Diese Funktion ist bewusst vom persistenten historischen Bestand und vom
+    gemeinsamen yfinance-Cache entkoppelt: Sie fragt Yahoo direkt ab und gibt
+    Daten erst nach demselben zentralen OHLCV-Quality-Gate frei. Ein leerer,
+    fehlerhafter oder vom Gate gesperrter Abruf bleibt explizit INCOMPLETE.
+    """
+    symbol = str(ticker or "").strip().upper()
+    try:
+        import yfinance as yf
+
+        raw = yf.Ticker(symbol).history(
+            period=period,
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+        )
+    except Exception as exc:
+        blocked = pd.DataFrame()
+        blocked.attrs["ohlcv_quality"] = {
+            "ticker": symbol,
+            "quality_status": "INCOMPLETE",
+            "reason_codes": [f"YAHOO_PROVIDER_ERROR:{type(exc).__name__}"],
+            "rule_version": "1.3",
+        }
+        print(
+            f"WARNUNG-YAHOO-FALLBACK: {symbol} direkter Abruf fehlgeschlagen "
+            f"({type(exc).__name__})."
+        )
+        return blocked
+
+    if raw is None or raw.empty:
+        blocked = pd.DataFrame()
+        blocked.attrs["ohlcv_quality"] = {
+            "ticker": symbol,
+            "quality_status": "INCOMPLETE",
+            "reason_codes": ["YAHOO_NO_DATA"],
+            "rule_version": "1.3",
+        }
+        print(f"WARNUNG-YAHOO-FALLBACK: {symbol} Yahoo lieferte keine Daten.")
+        return blocked
+
+    checked = _quality_checked_frame(symbol, raw, window_sessions=252)
+    quality = checked.attrs.get("ohlcv_quality", {})
+    status = str(quality.get("quality_status", "INCOMPLETE")).upper()
+    print(
+        f"INFO-YAHOO-FALLBACK: {symbol} Quality-Gate={status} "
+        f"Zeilen={len(checked)}."
+    )
+    return checked
+
+
+def get_yf_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """Batch-Pendant zu get_yf_history mit identischer Quality-Prüfung."""
+    return _quality_checked_histories(_get_yf_histories_raw(tickers))
 
 def clear_stale_cache() -> None:
     """Entfernt abgelaufene Eintraege; Fehler werden bewusst ignoriert."""

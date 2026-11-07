@@ -211,10 +211,10 @@ def clean_history(hist: pd.DataFrame) -> pd.DataFrame:
     required = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in data.columns]
     if "Close" not in required or "High" not in required or "Low" not in required:
         return pd.DataFrame()
-    data = data.dropna(subset=["Close", "High", "Low"]).copy()
-    if data.empty:
-        return data
-    data.index = pd.to_datetime(data.index)
+    # Keine OHLCV-dropna-Kompression: fehlerhafte Bars bleiben als NaN-Zeilen
+    # sichtbar und werden anschließend durch das Quality-Gate bewertet.
+    data.index = pd.to_datetime(data.index, errors="coerce")
+    data = data.loc[~data.index.isna()]
     data = data[~data.index.duplicated(keep="last")].sort_index()
     return data
 
@@ -292,7 +292,12 @@ def _fetch_twelvedata_gold_spot_history() -> pd.DataFrame:
         raise RuntimeError("Keine abgeschlossenen XAU/USD-Tagesbars verfügbar.")
     if "Volume" not in hist.columns:
         hist["Volume"] = 0
-    return clean_history(hist.set_index("Date"))
+    cleaned = clean_history(hist.set_index("Date"))
+    from ohlcv_quality_gate import quality_checked_frame
+    return quality_checked_frame(
+        cleaned, GOLD_SPOT_TICKER, window_sessions=252,
+        require_structure=True, preserve_expected_sessions=True,
+    )
 
 
 def fetch_history(ticker: str) -> pd.DataFrame:
@@ -300,7 +305,12 @@ def fetch_history(ticker: str) -> pd.DataFrame:
         if _ist_gold_spot_ticker(ticker):
             return _fetch_twelvedata_gold_spot_history()
         hist = yf.Ticker(ticker).history(period="max", auto_adjust=False, actions=False)
-        return clean_history(hist)
+        cleaned = clean_history(hist)
+        from ohlcv_quality_gate import quality_checked_frame
+        return quality_checked_frame(
+            cleaned, ticker, window_sessions=252,
+            require_structure=True, preserve_expected_sessions=True,
+        )
     except Exception as exc:
         print(f"WARNUNG: {ticker}: Kursdaten nicht abrufbar: {exc}")
         return pd.DataFrame()

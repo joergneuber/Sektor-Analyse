@@ -115,7 +115,10 @@ def fetch_us_batch(ticker_liste):
             if data.empty:
                 continue
             data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
-            ergebnis[ticker] = data
+            from ohlcv_quality_gate import quality_checked_frame
+            checked = quality_checked_frame(data, ticker, window_sessions=252, require_structure=True)
+            if not checked.empty:
+                ergebnis[ticker] = checked
     print(f"DEBUG: US-Sammel-Abruf (Short) lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
     return ergebnis
 
@@ -135,10 +138,11 @@ def fetch_eu_batch(ticker_liste):
                 data = df_alle[ticker].copy() if isinstance(df_alle.columns, pd.MultiIndex) else df_alle.copy()
             except KeyError:
                 continue
-            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-            if data.empty:
+            from ohlcv_quality_gate import quality_checked_frame
+            checked = quality_checked_frame(data, ticker, window_sessions=252, require_structure=True)
+            if checked.empty:
                 continue
-            ergebnis[ticker] = data
+            ergebnis[ticker] = checked
     print(f"DEBUG: EU-Sammel-Abruf (Short) lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
     return ergebnis
 

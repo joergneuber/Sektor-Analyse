@@ -108,8 +108,33 @@ def fetch_us_batch_robust(client: Any, ticker_liste: list[str], *,
     for chunk in _chunks(ticker_liste, chunk_size):
         _request_chunk(client, chunk, start_date, ergebnis)
 
+    # Alpaca-Rohdaten duerfen die zentrale Qualitaetspruefung nicht umgehen.
+    # Die angeforderte Kalenderlaenge wird in erwartete Tages-Sitzungen
+    # umgerechnet; bei Gate-Fehlern wird fail-closed nur der betroffene Ticker
+    # aus diesem Abruf entfernt.
+    try:
+        from ohlcv_quality_gate import quality_checked_frame
+        window_sessions = min(252, max(20, int(days * 5 / 7)))
+        geprueft = {}
+        for ticker, frame in ergebnis.items():
+            checked = quality_checked_frame(
+                frame, ticker, window_sessions=window_sessions,
+                require_structure=True, preserve_expected_sessions=True,
+            )
+            if checked is not None and not checked.empty:
+                geprueft[ticker] = checked
+            else:
+                quality = getattr(checked, "attrs", {}).get("ohlcv_quality", {})
+                print(f"WARNUNG-OHLCV-QUALITY: {ticker} Alpaca gesperrt: "
+                      f"{quality.get('reason_codes', ['INCOMPLETE'])}")
+        ergebnis = geprueft
+    except Exception as exc:
+        print(f"WARNUNG-OHLCV-QUALITY: Alpaca-Batch fail-closed "
+              f"({type(exc).__name__}: {exc})")
+        ergebnis = {}
+
     print(
         f"DEBUG: Robuster US-Sammel-Abruf lieferte Daten fuer "
-        f"{len(ergebnis)}/{len(ticker_liste)} Ticker."
+        f"{len(ergebnis)}/{len(ticker_liste)} Ticker nach Quality-Gate."
     )
     return ergebnis

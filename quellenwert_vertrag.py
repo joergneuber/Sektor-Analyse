@@ -76,9 +76,14 @@ def four_week_return(closes: Sequence[float], sessions: int = 20) -> Optional[fl
     if sessions < 1 or len(closes) < sessions + 1:
         return None
     try:
-        last = Decimal(str(closes[-1]))
-        base = Decimal(str(closes[-(sessions + 1)]))
-        if base == 0:
+        window = [Decimal(str(value)) for value in closes[-(sessions + 1):]]
+        if len(window) != sessions + 1 or any(not value.is_finite() for value in window):
+            return None
+        last = window[-1]
+        base = window[0]
+        # Einfache Prozent-Renditen sind fuer Futuresfenster mit Null- oder
+        # Negativpreisen nicht sinnvoll definiert (z.B. WTI April 2020).
+        if base <= 0 or last <= 0 or any(value <= 0 for value in window):
             return None
         return float((last / base - Decimal("1")) * Decimal("100"))
     except (InvalidOperation, TypeError, ValueError):

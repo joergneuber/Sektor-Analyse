@@ -126,7 +126,17 @@ def load_history(db_path: Path, ticker: str) -> pd.DataFrame:
         )
     if df.empty:
         return df
-    return df.set_index("date").sort_index()
+    frame = df.set_index("date").sort_index()
+    # Backtest verwendet dasselbe Quality-Overlay wie der Live-Datenpfad.
+    # Vollständige Zeitachse inklusive fehlender erwarteter Sitzungen; kein
+    # synthetisches Auffüllen und keine Änderung an der SQLite-Datei.
+    from ohlcv_quality_gate import apply_ohlcv_quality_gate, historical_frame_as_of
+    frame, quality = apply_ohlcv_quality_gate(
+        frame, ticker, window_sessions=252, preserve_expected_sessions=True,
+        full_history=True, as_of=historical_frame_as_of(frame, ticker),
+    )
+    frame.attrs["ohlcv_quality"] = quality.to_dict()
+    return frame
 
 
 def list_tickers(db_path: Path) -> list[str]:
@@ -378,7 +388,7 @@ def evaluate_forward(d: pd.DataFrame, signal_pos: int, horizons: tuple[int, ...]
     for h in horizons:
         end = min(len(d) - 1, signal_pos + h)
         future = d.iloc[signal_pos + 1:end + 1]
-        if future.empty:
+        if future.empty or future[["Open", "High", "Low", "Close"]].isna().any().any():
             out[f"ret_{h}d"] = np.nan
             out[f"mfe_{h}d"] = np.nan
             out[f"mae_{h}d"] = np.nan
@@ -387,6 +397,25 @@ def evaluate_forward(d: pd.DataFrame, signal_pos: int, horizons: tuple[int, ...]
         out[f"mfe_{h}d"] = float(future["High"].max() / entry - 1) * 100
         out[f"mae_{h}d"] = float(future["Low"].min() / entry - 1) * 100
     return out
+
+
+def _backtest_quality_window_ok(frame: pd.DataFrame, pos: int, window: int = 252) -> bool:
+    """Gleiche 95%-/Gap-/letzte-3-Regeln wie das Live-Quality-Gate."""
+    start = max(0, pos - window + 1)
+    sample = frame.iloc[start:pos + 1]
+    if len(sample) < math.ceil(window * 0.95):
+        return False
+    required = [c for c in ("Open", "High", "Low", "Close") if c in sample.columns]
+    if len(required) != 4:
+        return False
+    invalid = sample[required].isna().any(axis=1).to_numpy()
+    if not len(invalid) or invalid[-1] or invalid[-3:].any():
+        return False
+    run = max_run = 0
+    for flag in invalid:
+        run = run + 1 if flag else 0
+        max_run = max(max_run, run)
+    return int((~invalid).sum()) / len(invalid) >= 0.95 and max_run <= 1
 
 
 def backtest_ticker(ticker: str, df: pd.DataFrame, start: str | None, end: str | None,
@@ -407,6 +436,8 @@ def backtest_ticker(ticker: str, df: pd.DataFrame, start: str | None, end: str |
     # Minimum history = 252d 52W + WMA200 + divergence/kumo buffers.
     first = max(252, 220)
     for pos in range(first, len(d)):
+        if not _backtest_quality_window_ok(d, pos, 252):
+            continue
         window = d.iloc[:pos + 1]
         current_ok, diag = current_trigger(window)
         if not current_ok:

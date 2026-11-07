@@ -791,17 +791,28 @@ def hole_aktuellen_kurs(ticker, markt):
             if 'symbol' in hist.columns:
                 hist = hist.drop(columns=['symbol'])
             if 'close' in hist.columns:
-                hist = hist.rename(columns={'close': 'Close'})
-            hist = hist.dropna(subset=['Close'])
-            if hist.empty:
+                hist = hist.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
+            if "timestamp" in hist.columns:
+                hist.index = pd.to_datetime(hist["timestamp"], utc=True).dt.tz_localize(None).dt.normalize()
+                hist = hist.drop(columns=["timestamp"])
+            from ohlcv_quality_gate import apply_ohlcv_quality_gate
+            hist, quality = apply_ohlcv_quality_gate(
+                hist, ticker, window_sessions=10,
+                preserve_expected_sessions=True, full_history=True,
+            )
+            if quality.quality_status == "INCOMPLETE" or hist.empty:
                 return None
             return float(hist['Close'].iloc[-1])
         if str(ticker).upper() == GOLD_FUTURES_TICKER:
             hist = yf.Ticker(ticker).history(period="10d")
             if hist.empty:
                 return None
-            hist = hist.dropna(subset=['Close'])
-            if hist.empty:
+            from ohlcv_quality_gate import apply_ohlcv_quality_gate
+            hist, quality = apply_ohlcv_quality_gate(
+                hist, ticker, window_sessions=10,
+                preserve_expected_sessions=True, full_history=True,
+            )
+            if quality.quality_status == "INCOMPLETE" or hist.empty:
                 return None
             return float(hist['Close'].iloc[-1])
         if markt == 'US' and '.' not in str(ticker):
@@ -813,14 +824,26 @@ def hole_aktuellen_kurs(ticker, markt):
                 return None
             hist = hist.reset_index(level=0, drop=True)
             if 'close' in hist.columns:
-                hist = hist.rename(columns={'close': 'Close'})
+                hist = hist.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low',
+                                            'open': 'Open', 'volume': 'Volume'})
+            from ohlcv_quality_gate import apply_ohlcv_quality_gate
+            hist, quality = apply_ohlcv_quality_gate(
+                hist, ticker, window_sessions=10,
+                preserve_expected_sessions=True, full_history=True,
+            )
+            if quality.quality_status == "INCOMPLETE" or hist.empty:
+                return None
             return float(hist['Close'].iloc[-1])
         else:  # Europäische Börsen (jedes Punkt-Suffix) via yfinance
             hist = yf.Ticker(ticker).history(period="10d")
             if hist.empty:
                 return None
-            hist = hist.dropna(subset=['Close'])
-            if hist.empty:
+            from ohlcv_quality_gate import apply_ohlcv_quality_gate
+            hist, quality = apply_ohlcv_quality_gate(
+                hist, ticker, window_sessions=10,
+                preserve_expected_sessions=True, full_history=True,
+            )
+            if quality.quality_status == "INCOMPLETE" or hist.empty:
                 return None
             return float(hist['Close'].iloc[-1])
     except Exception as e:
@@ -1059,33 +1082,40 @@ def _hole_tageshistorie(ticker, markt, tage=45):
             hist = hist.reset_index()
             date_col = 'Date' if 'Date' in hist.columns else hist.columns[0]
             hist['Date'] = pd.to_datetime(hist[date_col], errors='coerce').dt.tz_localize(None).dt.normalize()
-        hist = hist.dropna(subset=['Date', 'High', 'Low', 'Close']).copy()
+        hist = hist.dropna(subset=['Date']).copy()
         hist = hist.sort_values('Date').drop_duplicates('Date')
-        # Sicherheit gegen einen noch offenen Tagesbalken: nur Bars bis gestern.
-        gestern = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-        hist = hist[hist['Date'] <= gestern]
-        return hist.reset_index(drop=True)
+        # Der zentrale Quality-Gate-Cutoff entscheidet anhand des echten
+        # Boersen-/Session-Schlusses, ob die letzte Tageskerze abgeschlossen ist.
+        if hist.empty:
+            return pd.DataFrame()
+        from ohlcv_quality_gate import apply_ohlcv_quality_gate
+        indexed = hist.set_index('Date')
+        gated, quality = apply_ohlcv_quality_gate(
+            indexed, ticker, window_sessions=252,
+            require_structure=True, preserve_expected_sessions=True,
+            full_history=True,
+        )
+        if quality.quality_status == "INCOMPLETE":
+            print(f"WARNUNG-OHLCV-QUALITY: Positionsmanagement {ticker} gesperrt: "
+                  f"{quality.reason_codes}")
+            return pd.DataFrame()
+        out = gated.reset_index().rename(columns={gated.index.name or "index": "Date"})
+        out.attrs["ohlcv_quality"] = quality.to_dict()
+        return out
     except Exception as e:
         print(f"WARNUNG: Tageshistorie für Trendfolge {ticker} nicht verfügbar: {e}")
         return pd.DataFrame()
 
 
-def _trendfolge_atr14(hist):
-    """Wilder-nahe ATR14-Berechnung; liefert letzte abgeschlossene ATR."""
-    if len(hist) < 15:
+def _trendfolge_atr14(hist, ticker=None):
+    """ATR14 nur aus 14 gültigen TRs mit unmittelbar gültigem Vortages-Close."""
+    if hist is None or hist.empty or "Date" not in hist.columns:
         return None
-    high = hist['High'].astype(float)
-    low = hist['Low'].astype(float)
-    close = hist['Close'].astype(float)
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-    value = atr.iloc[-1]
-    return float(value) if pd.notna(value) and value > 0 else None
+    from ohlcv_quality_gate import calculate_valid_atr14
+    indexed = hist.set_index(pd.to_datetime(hist["Date"], errors="coerce"))
+    indexed = indexed.drop(columns=["Date"], errors="ignore")
+    value, status = calculate_valid_atr14(indexed, ticker=ticker)
+    return value if status == "PASS" else None
 
 
 def _trendfolge_bestatigte_swing_lows(hist, order=2):
@@ -1096,20 +1126,34 @@ def _trendfolge_bestatigte_swing_lows(hist, order=2):
     """
     if len(hist) < (2 * order + 1):
         return []
-    lows = hist['Low'].to_numpy(dtype=float)
+    lows = pd.to_numeric(hist['Low'], errors='coerce').to_numpy(dtype=float)
     idxs = argrelextrema(lows, np.less_equal, order=order)[0]
     max_confirmed = len(hist) - 1 - order
-    return [int(i) for i in idxs if i <= max_confirmed]
+    confirmed = []
+    for i in idxs:
+        if i > max_confirmed:
+            continue
+        window = lows[i - order:i + order + 1]
+        if len(window) == 2 * order + 1 and np.isfinite(window).all():
+            confirmed.append(int(i))
+    return confirmed
 
 
 def _trendfolge_bestatigte_swing_highs(hist, order=2):
     """Bestätigte Swing-Highs; identische Look-ahead-Sperre wie bei Swing-Lows."""
     if len(hist) < (2 * order + 1):
         return []
-    highs = hist['High'].to_numpy(dtype=float)
+    highs = pd.to_numeric(hist['High'], errors='coerce').to_numpy(dtype=float)
     idxs = argrelextrema(highs, np.greater_equal, order=order)[0]
     max_confirmed = len(hist) - 1 - order
-    return [int(i) for i in idxs if i <= max_confirmed]
+    confirmed = []
+    for i in idxs:
+        if i > max_confirmed:
+            continue
+        window = highs[i - order:i + order + 1]
+        if len(window) == 2 * order + 1 and np.isfinite(window).all():
+            confirmed.append(int(i))
+    return confirmed
 
 
 def _trendfolge_entwicklungsstatus(row, hist):
@@ -1117,7 +1161,10 @@ def _trendfolge_entwicklungsstatus(row, hist):
     entry_date = _parse_entry_date(row.get('Einstiegsdatum'))
     if entry_date is None or hist.empty:
         return None, None, None
-    future_bars = hist.loc[hist['Date'] > entry_date, 'Date']
+    valid_ohlc = hist[["Open", "High", "Low", "Close"]].apply(
+        pd.to_numeric, errors="coerce"
+    ).notna().all(axis=1)
+    future_bars = hist.loc[(hist['Date'] > entry_date) & valid_ohlc, 'Date']
     completed_days = int(future_bars.nunique())
     phase_done = completed_days >= 3
     # Das Datum, ab dem die Phase beendet ist: nach dem dritten abgeschlossenen
@@ -1143,7 +1190,7 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
     # TF_Management wird am Ende des Durchlaufs als kompakter aktueller
     # Zustand geschrieben; Zwischenwerte bleiben ausschließlich lokal.
 
-    atr14 = _trendfolge_atr14(hist)
+    atr14 = _trendfolge_atr14(hist, ticker=ticker)
     # TP1-Erkennung bleibt EOD-basiert wie der bestehende Tracker.
     tp1_erreicht = tp1 is not None and (
         aktueller_kurs <= tp1 if ist_short else aktueller_kurs >= tp1

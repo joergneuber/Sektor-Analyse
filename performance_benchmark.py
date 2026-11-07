@@ -85,19 +85,54 @@ def _download_close(ticker: str, start: dt.date, end: dt.date) -> pd.Series:
         return pd.Series(dtype=float)
 
     if isinstance(data.columns, pd.MultiIndex):
-        if "Close" in data.columns.get_level_values(0):
-            data = data["Close"]
-            if isinstance(data, pd.DataFrame):
-                data = data.iloc[:, 0]
+        if ticker in data.columns.get_level_values(0):
+            frame = data.xs(ticker, axis=1, level=0, drop_level=True).copy()
+        elif ticker in data.columns.get_level_values(1):
+            frame = data.xs(ticker, axis=1, level=1, drop_level=True).copy()
         else:
             return pd.Series(dtype=float)
-    elif "Close" in data.columns:
-        data = data["Close"]
     else:
-        return pd.Series(dtype=float)
+        frame = data.copy()
 
-    series = pd.to_numeric(data, errors="coerce").dropna()
+    # Benchmark-Performance darf keine Rohdaten-Luecke unbemerkt ueberspringen.
+    # Das Ende des angeforderten historischen Fensters ist ein eigener
+    # reproduzierbarer Stichtag und darf nicht gegen den heutigen Cutoff
+    # geprueft werden.
+    from ohlcv_quality_gate import (
+        apply_ohlcv_quality_gate, _calendar_sessions, _last_completed_session_date,
+    )
+    frame.index = pd.to_datetime(frame.index, errors="coerce")
+    frame = frame.loc[~frame.index.isna()].sort_index()
+    frame = frame.loc[(frame.index.date >= start) & (frame.index.date <= end)].copy()
+    as_of = pd.Timestamp(end) + pd.Timedelta(days=1, hours=12)
+    as_of = as_of.tz_localize("UTC")
+    completed_end = _last_completed_session_date(ticker, as_of=as_of)
+    expected = (
+        _calendar_sessions(ticker, start.isoformat(), completed_end)
+        if completed_end and completed_end >= start.isoformat() else None
+    )
+    if not expected:
+        blocked = pd.Series(dtype=float)
+        blocked.attrs["ohlcv_quality"] = {
+            "ticker": ticker, "quality_status": "INCOMPLETE",
+            "reason_codes": ["HISTORICAL_BENCHMARK_CALENDAR_UNAVAILABLE"],
+            "rule_version": "1.3",
+        }
+        return blocked
+    window_sessions = min(252, len(expected))
+    gated, quality = apply_ohlcv_quality_gate(
+        frame, ticker, window_sessions=window_sessions,
+        preserve_expected_sessions=True, full_history=True,
+        require_structure=False, as_of=as_of,
+    )
+    if quality.quality_status == "INCOMPLETE" or "Close" not in gated.columns:
+        blocked = pd.Series(dtype=float)
+        blocked.attrs["ohlcv_quality"] = quality.to_dict()
+        return blocked
+
+    series = pd.to_numeric(gated["Close"], errors="coerce")
     series.index = pd.to_datetime(series.index).tz_localize(None)
+    series.attrs["ohlcv_quality"] = quality.to_dict()
     return series
 
 
@@ -105,20 +140,22 @@ def _price_on_or_after(series: pd.Series, date: dt.date):
     if series.empty:
         return None, None
     mask = series.index.date >= date
-    if not mask.any():
+    candidates = series.loc[mask]
+    if candidates.empty or pd.isna(candidates.iloc[0]):
         return None, None
-    idx = series.index[mask][0]
-    return float(series.loc[idx]), idx.date()
+    idx = candidates.index[0]
+    return float(candidates.iloc[0]), idx.date()
 
 
 def _price_on_or_before(series: pd.Series, date: dt.date):
     if series.empty:
         return None, None
     mask = series.index.date <= date
-    if not mask.any():
+    candidates = series.loc[mask]
+    if candidates.empty or pd.isna(candidates.iloc[-1]):
         return None, None
-    idx = series.index[mask][-1]
-    return float(series.loc[idx]), idx.date()
+    idx = candidates.index[-1]
+    return float(candidates.iloc[-1]), idx.date()
 
 
 def _system_return(start_price, end_price, short=False):

@@ -233,9 +233,8 @@ def get_commodity_benchmark_close():
         if hist.empty:
             print("DEBUG: Rohstoff-Benchmark (DBC) leer, Relative Stärke wird übersprungen.")
             return None
-        hist = hist.dropna(subset=['Close'])
-        if hist.empty:
-            print("DEBUG: Rohstoff-Benchmark (DBC) nach NaN-Bereinigung leer, Relative Stärke wird übersprungen.")
+        if hist['Close'].notna().sum() < 60:
+            print("DEBUG: Rohstoff-Benchmark (DBC) hat weniger als 60 gültige Schlusskurse.")
             return None
         return hist['Close']
     except Exception as e:
@@ -261,10 +260,13 @@ def lade_kursdaten(ticker):
         if data.empty:
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
             return None, "keine_kursdaten"
-        data = data.dropna(subset=['Close', 'High', 'Low'])
+        from ohlcv_quality_gate import quality_checked_frame
+        data = quality_checked_frame(
+            data, ticker, window_sessions=252, require_structure=True,
+        )
         if data.empty:
-            print(f"DEBUG-EDELMETALL: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
-            return None, "keine_kursdaten"
+            print(f"WARNUNG-OHLCV-QUALITY: {ticker} -> Strukturfenster unvollständig.")
+            return None, "ohlcv_quality_incomplete"
         if len(data) < 210:
             print(f"DEBUG-EDELMETALL: {ticker} -> Zu wenig Daten ({len(data)} Zeilen) für WMA200.")
             return None, "zu_wenig_daten"
@@ -365,10 +367,13 @@ def analyze_edelmetall(ticker, name, bench_close=None, data=None):
             print(f"DEBUG-EDELMETALL: {ticker} -> Daten von yfinance leer.")
             return None, "keine_kursdaten"
 
-        data = data.dropna(subset=['Close', 'High', 'Low'])
+        from ohlcv_quality_gate import quality_checked_frame
+        data = quality_checked_frame(
+            data, ticker, window_sessions=252, require_structure=True,
+        )
         if data.empty:
-            print(f"DEBUG-EDELMETALL: {ticker} -> Nach NaN-Bereinigung keine Daten mehr übrig.")
-            return None, "keine_kursdaten"
+            print(f"WARNUNG-OHLCV-QUALITY: {ticker} -> Strukturfenster unvollständig.")
+            return None, "ohlcv_quality_incomplete"
 
         if len(data) < 210:  # WMA200 braucht mind. 200 Zeilen, etwas Puffer
             print(f"DEBUG-EDELMETALL: {ticker} -> Zu wenig Daten ({len(data)} Zeilen) für WMA200.")

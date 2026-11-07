@@ -844,8 +844,12 @@ def hole_kursdaten(ticker):
         raise RuntimeError("Yahoo lieferte vorübergehend keine Kursdaten")
 
     required = ["Close", "High", "Low", "Volume"]
-    data = data.dropna(subset=required)
-
+    if not all(column in data.columns for column in required):
+        return None
+    from ohlcv_quality_gate import quality_checked_frame
+    data = quality_checked_frame(
+        data, ticker, window_sessions=252, require_structure=True,
+    )
     if data.empty:
         return None
 
@@ -909,9 +913,11 @@ def hole_sektor_etf_5t(etf):
             SEKTOR_ETF_CACHE[etf] = None
             return None
 
-        hist = hist.dropna(subset=["Close"])
-
-        if len(hist) < 6:
+        from ohlcv_quality_gate import quality_checked_frame
+        hist = quality_checked_frame(
+            hist, etf, window_sessions=60, require_structure=False,
+        )
+        if hist.empty or len(hist) < 6 or hist["Close"].iloc[-6:].isna().any():
             SEKTOR_ETF_CACHE[etf] = None
             return None
 

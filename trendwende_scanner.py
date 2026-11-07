@@ -457,7 +457,7 @@ def fetch_us_batch(ticker_liste):
     return fetch_us_batch_robust(
         alpaca_client,
         ticker_liste,
-        chunk_size=CHUNK_SIZE_US if 'CHUNK_SIZE_US' in globals() else CHUNK_SIZE,
+        chunk_size=CHUNK_SIZE,
         days=365,
     )
 
@@ -491,10 +491,11 @@ def fetch_eu_batch(ticker_liste):
                     data = df_alle.copy()
             except KeyError:
                 continue
-            data = data.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-            if data.empty:
+            from ohlcv_quality_gate import quality_checked_frame
+            checked = quality_checked_frame(data, ticker, window_sessions=252, require_structure=True)
+            if checked.empty:
                 continue
-            ergebnis[ticker] = data
+            ergebnis[ticker] = checked
 
     print(f"DEBUG: EU-Sammel-Abruf lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
     return ergebnis
