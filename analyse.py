@@ -932,6 +932,38 @@ def _normalisiere_setup_numerik(df_s):
     return df_s
 
 
+def _trend_status_200d(close, wma200, ema200):
+    """Kennzeichnet fehlende 200-Tage-Mittelwerte ausdrücklich als unvollständig."""
+    try:
+        close_value, wma_value, ema_value = map(float, (close, wma200, ema200))
+    except (TypeError, ValueError, OverflowError):
+        return "Daten unvollständig (WMA200/EMA200)"
+    if not all(np.isfinite(value) for value in (close_value, wma_value, ema_value)):
+        return "Daten unvollständig (WMA200/EMA200)"
+    if close_value < wma_value or close_value < ema_value:
+        return "Unter WMA200/EMA200"
+    return "OK"
+
+
+def _berechne_risiko_crv1_fail_closed(entry, stop, tp1):
+    """Berechnet Risiko/CRV1 nur aus endlichen Werten; fehlender Stop sperrt."""
+    try:
+        entry_value, stop_value, tp1_value = map(float, (entry, stop, tp1))
+    except (TypeError, ValueError, OverflowError):
+        return None, None
+    if not all(np.isfinite(value) for value in (entry_value, stop_value, tp1_value)):
+        return None, None
+    if entry_value <= 0:
+        return None, None
+    risiko = entry_value - stop_value
+    if not np.isfinite(risiko) or risiko <= 0:
+        return None, None
+    crv1 = (tp1_value - entry_value) / risiko
+    if not np.isfinite(crv1):
+        return None, None
+    return risiko, round(crv1, 2)
+
+
 def update_status_logic(row):
     """Bestimmt Status2 (VALIDE/ACHTUNG/GELAUFEN) und die Begruendung fuer
     ein bereits gefundenes Setup (df_s hat den Haupt-Pattern-Filter schon
@@ -3311,7 +3343,9 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrad
         macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
 
         # 2. Trend-Status
-        trend_status = "Unter WMA200/EMA200" if (data['Close'].iloc[-1] < data['WMA200'].iloc[-1] or data['Close'].iloc[-1] < data['EMA200'].iloc[-1]) else "OK"
+        trend_status = _trend_status_200d(
+            data['Close'].iloc[-1], data['WMA200'].iloc[-1], data['EMA200'].iloc[-1]
+        )
 
         # 3. Candlestick-Muster
         c1, c2 = data.iloc[-1], data.iloc[-2]
@@ -3471,7 +3505,9 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrad
 
         if is_pullback_setup:
             # Engerer, setup-naher Stop: Tief der letzten 5 Kerzen
-            swing_low_stop = data['Low'].iloc[-5:].min()
+            # Rolling(5) bleibt bei einer fehlenden erwarteten Sitzung NaN;
+            # Series.min() auf dem Slice wuerde die Luecke still ueberspringen.
+            swing_low_stop = data['Low'].rolling(5).min().iloc[-1]
             if swing_low_stop < entry:
                 stop = swing_low_stop
 
@@ -3511,16 +3547,15 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrad
         target_value = analysten_ziel if analysten_ziel > 0 else tp1
         upside_potenzial = round(((target_value - entry) / entry) * 100, 2) if entry > 0 else 0.0
 
-        risiko = entry - stop
-        if risiko <= 0:
-            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
+        risiko, crv1 = _berechne_risiko_crv1_fail_closed(entry, stop, tp1)
+        if risiko is None or crv1 is None:
+            print(f"DEBUG-VERWORFEN: {ticker} | Grund: Risiko/CRV1 nicht valide (Entry={entry}, Stop={stop}, TP1={tp1})")
             funnel_zaehle("risiko_ungueltig")
             return None
         
         # TREND FOLGE: Nur CRV1 ist ein Entry-Filter.
         # CRV2 wird bewusst NICHT mehr beim Einstieg verlangt: TP2 entsteht
         # später dynamisch aus bestätigter Marktstruktur im Positions-Tracker.
-        crv1 = round((tp1 - entry) / risiko, 2)
         chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
         crv2 = None
         chance2_perc = None
@@ -3722,7 +3757,9 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None, collect_h
         signal = macd.ewm(span=9, adjust=False).mean()
         macd_trend = "Bullisch" if macd.iloc[-1] > signal.iloc[-1] else "Bärisch"
 
-        trend_status = "Unter WMA200/EMA200" if (data['Close'].iloc[-1] < data['WMA200'].iloc[-1] or data['Close'].iloc[-1] < data['EMA200'].iloc[-1]) else "OK"
+        trend_status = _trend_status_200d(
+            data['Close'].iloc[-1], data['WMA200'].iloc[-1], data['EMA200'].iloc[-1]
+        )
 
         c1, c2 = data.iloc[-1], data.iloc[-2]
         body = abs(c1['Close'] - c1['Open'])
@@ -3833,7 +3870,9 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None, collect_h
         is_pullback_setup = (not ema_breakout) and in_ema_zone and is_higher_low
 
         if is_pullback_setup:
-            swing_low_stop = data['Low'].iloc[-5:].min()
+            # Rolling(5) bleibt bei einer fehlenden erwarteten Sitzung NaN;
+            # Series.min() auf dem Slice wuerde die Luecke still ueberspringen.
+            swing_low_stop = data['Low'].rolling(5).min().iloc[-1]
             if swing_low_stop < entry:
                 stop = swing_low_stop
 
@@ -3869,15 +3908,14 @@ def analyze_a_setup_eu(ticker, sektor, eu_bench_close=None, data=None, collect_h
         target_value = analysten_ziel if analysten_ziel > 0 else tp1
         upside_potenzial = round(((target_value - entry) / entry) * 100, 2) if entry > 0 else 0.0
 
-        risiko = entry - stop
-        if risiko <= 0:
-            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Risiko <= 0 (Entry={entry:.2f}, Stop={stop:.2f})")
+        risiko, crv1 = _berechne_risiko_crv1_fail_closed(entry, stop, tp1)
+        if risiko is None or crv1 is None:
+            print(f"DEBUG-VERWORFEN-EU: {ticker} | Grund: Risiko/CRV1 nicht valide (Entry={entry}, Stop={stop}, TP1={tp1})")
             funnel_zaehle("risiko_ungueltig")
             return None
 
         # TREND FOLGE: Nur CRV1 ist ein Entry-Filter.
         # CRV2 entsteht später dynamisch und ist beim Einstieg nicht erforderlich.
-        crv1 = round((tp1 - entry) / risiko, 2)
         chance1_perc = round(((tp1 - entry) / entry) * 100, 2)
         crv2 = None
         chance2_perc = None
