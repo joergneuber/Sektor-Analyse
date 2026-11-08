@@ -1,7 +1,7 @@
 diff --git a/tests/test_historical_ohlcv.py b/tests/test_historical_ohlcv.py
 --- a/tests/test_historical_ohlcv.py
 +++ b/tests/test_historical_ohlcv.py
-@@ -1,5 +1,23 @@
+@@ -501,6 +501,24 @@
      monkeypatch.setattr(
          ho, "_previous_completed_session_date",
          lambda calendar_name, as_of_date: "2026-11-05",
