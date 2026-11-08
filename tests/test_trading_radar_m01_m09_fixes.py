@@ -1818,3 +1818,66 @@ def test_m05_report_gate_accepts_deterministic_change_summary_instead_of_no_chan
     _validate_m05_m10(repaired, errors)
     assert not any("Bericht behauptet 'keine Änderung'" in error for error in errors), errors
     assert not any("Semantischer Thesenregistervergleich widersprüchlich" in error for error in errors), errors
+
+
+def test_m06_source_status_valide_does_not_create_confirmed_setup_without_explicit_technical_confirmation(tmp_path):
+    source = tmp_path / "Setups(2026-11-06).csv"
+    source.write_text(
+        "Ticker;Name;Setup_Typ;Pattern;Status2;Status_Grund;CRV1;Einstieg;Stop;TP1;TP2;Risikohinweis\n"
+        "AAA;Alpha AG;Pullback-Zone;Hammer;VALIDE;Risiko bleibt Marktlage;1,95;100;95;110;;Risiko bleibt Marktlage\n",
+        encoding="utf-8",
+    )
+    trendwende = tmp_path / "Trendwende_Setups(2026-11-06).csv"
+    trendwende.write_text("Ticker;Name;Kurs;Stop;TP1;CRV1\n", encoding="utf-8")
+    metals = tmp_path / "Edelmetalle_Setups(2026-11-06).csv"
+    metals.write_text("Ticker;Name;Kurs;Stop;TP1;CRV1\n", encoding="utf-8")
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(
+        report, {
+            source.name: str(source),
+            trendwende.name: str(trendwende),
+            metals.name: str(metals),
+        }
+    )
+    assert "Statusgruppe: JETZT TECHNISCH PRÜFEN" in result
+    assert "BESTÄTIGTE SETUPS: 0 bestätigte Setups" in result
+    assert "Technische Bestätigung: VALIDE" not in result
+
+
+def test_m06_complete_explicit_technical_confirmation_is_preserved_in_confirmed_summary(tmp_path):
+    source = tmp_path / "Setups(2026-11-06).csv"
+    source.write_text(
+        "Ticker;Name;Setup_Typ;Pattern;Status2;CRV1;Einstieg;Stop;TP1;Richtung;Thesis_ID;Datenstichtag;"
+        "Technische_Bestaetigung;Gegenargument;Datenluecken;Regel_Datenstatus\n"
+        "AAA;Alpha AG;Pullback-Zone;Hammer;BESTÄTIGT;1,95;100,00 EUR;95,00 EUR;110;LONG;TH-1;2026-11-06;"
+        "BESTÄTIGT;Momentum kann nachlassen;keine;PASS\n",
+        encoding="utf-8",
+    )
+    trendwende = tmp_path / "Trendwende_Setups(2026-11-06).csv"
+    trendwende.write_text("Ticker;Name;Kurs;Stop;TP1;CRV1\n", encoding="utf-8")
+    metals = tmp_path / "Edelmetalle_Setups(2026-11-06).csv"
+    metals.write_text("Ticker;Name;Kurs;Stop;TP1;CRV1\n", encoding="utf-8")
+    report = (
+        "5. Technische Kandidaten\nKeine belastbaren technischen Kandidaten.\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\nAUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\nNICHT HANDELBAR: Keine Kandidaten\n"
+        "VERWERFEN / INVALIDIERT: Keine Kandidaten\n6. Portfolio & Risiko\n"
+    )
+    result = production._trading_radar_kandidatenquellen_absichern(
+        report, {
+            source.name: str(source),
+            trendwende.name: str(trendwende),
+            metals.name: str(metals),
+        }
+    )
+    assert "BESTÄTIGTE SETUPS:" in result
+    assert "Technische Bestätigung: BESTÄTIGT" in result
+    assert "Richtung: LONG" in result
+    assert "Verknüpfte These: TH-1" in result
+    assert "Datenlücken: keine" in result
+    assert "Regel-/Datenstatus: PASS" in result

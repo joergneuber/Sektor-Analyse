@@ -272,3 +272,27 @@ def test_m07_gate_rejects_mixed_dgs10_dfii10_without_fred_provider_name():
 def test_m07_gate_accepts_yahoo_dgs10_without_fred_provider_name():
     line = _complete_us10y_line("Yahoo Finance DGS10")
     assert not _m07_gate_errors(line)
+
+
+def test_m07_accepts_two_distinct_us10y_values_with_separate_complete_provenance():
+    line = (
+        "Zinsen/Renditen: US-10J-Rendite (^TNX): 4.85% "
+        "(Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-06T17:18:23+00:00; "
+        "Datenstichtag: 2026-11-06T00:00:00+00:00; Einheit: %; "
+        "Verzögerung: Tages-Schlusskurs) | Quelldatei: Makro_Briefing(2026-11-06).txt; "
+        "US 10Y Treasury bei 4.9000% "
+        "(Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations); "
+        "Abrufzeit: 2026-11-06T04:31:01+00:00; Datenstichtag: 2026-11-04; "
+        "Einheit: %; Verzögerung: 2 Kalendertage)"
+    )
+    assert not _m07_gate_errors(line)
+
+
+def test_m07_does_not_borrow_first_us10y_provenance_for_second_value_on_same_line():
+    line = (
+        "Zinsen/Renditen: US-10J-Rendite (^TNX): 4.85% "
+        "(Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-06T17:18:23+00:00; "
+        "Datenstichtag: 2026-11-06T00:00:00+00:00; Einheit: %; "
+        "Verzögerung: Tages-Schlusskurs); US 10Y Treasury bei 4.9000%"
+    )
+    assert _m07_gate_errors(line)
