@@ -503,6 +503,24 @@ def test_update_database_automatically_repairs_recent_gap_without_overwriting_ex
         ho, "_previous_completed_session_date",
         lambda calendar_name, as_of_date: "2026-11-05",
     )
+
+    # update_database() uses the real current date when it invokes the recent
+    # gap detector. Keep this integration fixture anchored to the same
+    # reference date as the standalone detector test above; otherwise the
+    # 2026-11-03 gap eventually falls outside the four-calendar-day lookback.
+    original_gap_detector = ho._detect_recent_trading_day_gaps
+
+    def fixed_reference_date_gap_detector(
+        db_path, tickers, *, lookback_days, as_of_date=None
+    ):
+        return original_gap_detector(
+            db_path, tickers, lookback_days=lookback_days,
+            as_of_date="2026-11-06",
+        )
+
+    monkeypatch.setattr(
+        ho, "_detect_recent_trading_day_gaps", fixed_reference_date_gap_detector
+    )
     calls = []
 
     def fake_download(tickers, start=None, end=None):
