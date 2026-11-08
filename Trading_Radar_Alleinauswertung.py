@@ -17443,6 +17443,23 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
         direction = first(row, ("richtung", "direction", "side", "trade_direction"))
         thesis_id = first(row, ("thesis_id", "linked_thesis", "linked_thesis_id", "thesis", "thesen_id", "these_id", "these"))
         data_cutoff = first(row, ("data_cutoff", "datenstichtag", "data_date", "observation_date", "timestamp"))
+        # A scanner status such as VALIDE describes the source row; it is not
+        # the explicit technical confirmation required for the confirmed-setups
+        # summary. Keep the latter evidence fields separate and source-backed.
+        technical_confirmation = first(row, (
+            "technical_confirmation", "technische_bestaetigung",
+            "technische_best_tigung", "confirmation_status", "setup_confirmation",
+        ))
+        counterargument = first(row, (
+            "counterargument", "gegenargument", "risiko", "risk", "risikohinweis",
+        ))
+        data_gaps = first(row, (
+            "data_gaps", "data_gap", "datenluecken", "datenl_cken", "datenluecke",
+        ))
+        rule_status = first(row, (
+            "rule_data_status", "regel_datenstatus", "regel_daten_status",
+            "rule_status", "regelstatus", "regel_status",
+        ))
         status = first(row, ("status", "status2", "setup_status", "signal_status", "scanner_status", "entscheidung")).casefold()
         reason = first(row, ("reason", "begruendung", "ablehnungsgrund", "grund", "status_grund", "risikohinweis"))
         risks = row.get("risiken")
@@ -17529,6 +17546,9 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
             "status": status or "NICHT AUSGELESEN", "reason": reason,
             "sector": sector, "direction": direction, "thesis_id": thesis_id,
             "data_cutoff": data_cutoff,
+            "technical_confirmation": technical_confirmation,
+            "counterargument": counterargument, "data_gaps": data_gaps,
+            "rule_status": rule_status,
             "trigger": trigger, "entry": entry, "stop": stop, "tp1": tp1,
             "tp2": tp2, "crv": crv, "event_dependencies": event_dependencies, "group": group,
         })
@@ -17653,7 +17673,56 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     # M-06 inventory lists are separate from the five mutually exclusive
     # Market-First candidate groups. Use Name: (not Asset/Ticker:) here so
     # these source summaries are not parsed a second time as trade records.
-    confirmed_rows = [item for item in records if item["group"] == "JETZT TECHNISCH PRÜFEN"]
+    def has_confirmed_setup_evidence(item):
+        """Require every M-06 confirmation field from the structured source."""
+        def present(value):
+            normalized = str(value or "").strip().casefold()
+            if not normalized:
+                return False
+            return not bool(re.fullmatch(
+                r"(?:nicht\s+verfügbar|nicht\s+verfuegbar|unbekannt|fehlt|"
+                r"n/?a|tbd|nicht\s+verknüpft|nicht\s+verknuepft)"
+                r"(?:\s*\([^)]*\))?",
+                normalized,
+                re.I,
+            ))
+
+        confirmation = str(item.get("technical_confirmation") or "").strip()
+        if not re.match(r"(?i)^(?:BESTÄTIGT|BESTAETIGT|CONFIRMED)\b", confirmation):
+            return False
+        if str(item.get("direction") or "").strip().upper() not in {"LONG", "SHORT"}:
+            return False
+        if not present(item.get("thesis_id")) or not re.search(r"\d{4}-\d{2}-\d{2}", str(item.get("data_cutoff") or "")):
+            return False
+        if not all(present(item.get(key)) for key in ("trigger", "counterargument", "data_gaps", "rule_status")):
+            return False
+        numeric_values = {}
+        for key in ("entry", "stop", "crv"):
+            raw = str(item.get(key) or "").strip()
+            raw = re.sub(r"^(?:EUR|USD|GBP|€|\$|£)\s*", "", raw, flags=re.I)
+            raw = re.sub(r"\s*(?:EUR|USD|GBP|€|\$|£|%|x)\s*$", "", raw, flags=re.I)
+            raw = raw.replace(" ", "").replace("’", "").replace("'", "")
+            if "," in raw and "." in raw:
+                raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
+            elif "," in raw:
+                raw = raw.replace(",", ".")
+            if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", raw):
+                return False
+            try:
+                numeric_values[key] = float(raw)
+            except ValueError:
+                return False
+            if not math.isfinite(numeric_values[key]):
+                return False
+        return numeric_values["entry"] > 0 and numeric_values["stop"] > 0 and numeric_values["crv"] >= 1.0
+
+    # JETZT TECHNISCH PRÜFEN is a candidate workflow state, not confirmation.
+    # Only a separately sourced, complete technical-confirmation record may
+    # populate BESTÄTIGTE SETUPS.
+    confirmed_rows = [
+        item for item in records
+        if item["group"] == "JETZT TECHNISCH PRÜFEN" and has_confirmed_setup_evidence(item)
+    ]
     watch_rows = [item for item in records if (
         item["group"] == "AUF TRIGGER WARTEN" and item["trigger"]
     ) or (
@@ -17661,8 +17730,8 @@ def _trading_radar_kandidatenquellen_absichern(text, eingabedateien=None):
     )]
     rejected_rows = [item for item in records if item["group"] == "VERWERFEN / INVALIDIERT"]
     m06_blocks = [
-        "BESTÄTIGTE SETUPS: " + ("0 bestätigte Setups – Begründung: keine Quelle liefert einen ausdrücklich bestätigten Trigger zusammen mit vollständigen Handelslevels und CRV." if not confirmed_rows else "\n".join(
-            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {display_setup_id(x)} | Quelle: {x['source']} | Status: {x['status']} | Begründung: {x['reason'] or 'Quelle bestätigt Setup'} | Trigger: {x['trigger']}"
+        "BESTÄTIGTE SETUPS: " + ("0 bestätigte Setups – Begründung: keine Quelle liefert eine explizite technische Bestätigung mit vollständigen, quellenbelegten Pflichtfeldern." if not confirmed_rows else "\n".join(
+            f"Name: {x['name']} ({x['ticker']}) | Setup-ID: {display_setup_id(x)} | Quelle: {x['source']} | Richtung: {x['direction']} | Verknüpfte These: {x['thesis_id']} | Technische Bestätigung: {x['technical_confirmation']} | Datenstichtag: {x['data_cutoff']} | Einstieg: {x['entry']} | Stop: {x['stop']} | CRV: {x['crv']} | Gegenargument: {x['counterargument']} | Datenlücken: {x['data_gaps']} | Regel-/Datenstatus: {x['rule_status']} | Trigger: {x['trigger']}"
             for x in confirmed_rows
         )),
         "WATCHLIST: " + ("0 Watchlist-Einträge – Begründung: keine Quelle liefert einen überprüfbaren Kurs-/Strukturtrigger für eine Watchlist-Freigabe." if not watch_rows else "\n".join(

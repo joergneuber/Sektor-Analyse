@@ -330,6 +330,60 @@ def extract_us10y_observations(
     return values
 
 
+def _us10y_observation_records(
+    line: str, *, allow_run1270_context: bool = False
+) -> list[tuple[Decimal, str]]:
+    """Return value-scoped records when one line contains multiple US-10Y values.
+
+    A single repeated value retains the established whole-line behavior for
+    narrative duplicates. Distinct values are scoped independently up to the
+    next US-10Y label, so each observation must carry its own local provenance.
+    """
+    if not isinstance(line, str) or not line.strip():
+        return []
+    label_matches = list(_US10Y_EXPLICIT_LABEL_RE.finditer(line))
+    if allow_run1270_context and _is_run1270_us_curve_context(line):
+        label_matches.extend(_US10Y_RESOLVER_LABEL_RE.finditer(line))
+    label_matches.sort(key=lambda match: match.start())
+
+    parsed = []
+    for match in label_matches:
+        value_match = _US10Y_VALUE_AFTER_LABEL_RE.match(line[match.end():match.end() + 100])
+        if not value_match:
+            continue
+        try:
+            value = Decimal(value_match.group("value").replace(",", "."))
+        except InvalidOperation:
+            continue
+        if value.is_finite():
+            parsed.append((match, value.normalize()))
+
+    if not parsed:
+        return []
+    distinct_values = {value for _, value in parsed}
+    if len(distinct_values) == 1:
+        # Preserve the existing rule: narrative repetitions of one already
+        # sourced value are not treated as independent observations.
+        value = next(iter(distinct_values))
+        return [(value, line)]
+
+    # For each distinct value, use its final occurrence. This preserves the
+    # established support for repeated narrative mentions before the actual
+    # source-stamped occurrence, while preventing metadata from a later,
+    # different Treasury value from being borrowed.
+    last_by_value = {}
+    for match, value in parsed:
+        last_by_value[value] = match
+    records = []
+    for value, match in last_by_value.items():
+        next_labels = [candidate.start() for candidate in label_matches if candidate.start() > match.start()]
+        end = min(next_labels) if next_labels else len(line)
+        # Keep the original row prefix for the Run #1270 resolver context and
+        # let _us10y_provenance_fields select this final label in the slice.
+        records.append((value, line[:end]))
+    return records
+
+
 
 _US10Y_PROVENANCE_FIELD_RE = re.compile(
     r"(?i)^\s*(Quelle|Source|Abruf|Abrufzeit|Abrufzeitpunkt|Retrieved(?:_At)?|"
@@ -1582,10 +1636,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             conflict_observation_groups.append(role_records)
             continue
         contextual = _is_run1270_us_curve_context(line)
-        for value in extract_us10y_observations(
-            line, allow_run1270_context=contextual
-        ):
-            observation_records.append((value, line))
+        observation_records.extend(
+            _us10y_observation_records(line, allow_run1270_context=contextual)
+        )
 
     distinct_treasury_values = sorted({value for value, _ in observation_records})
     if observation_records or conflict_observation_records:
@@ -1631,21 +1684,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             if provenance_labels.search(line)
             and not _treasury_observation_has_complete_provenance(line)
         ]
-        ambiguous_multi_value_lines = []
-        for line in text.splitlines():
-            if _is_us10y_conflict_line(line):
-                # The two paired observations are checked independently above.
-                continue
-            values = extract_us10y_observations(
-                line, allow_run1270_context=_is_run1270_us_curve_context(line)
-            )
-            if len(set(values)) > 1:
-                ambiguous_multi_value_lines.append(line)
-        provenance_complete = (
-            provenance_complete
-            and not partial_source_records
-            and not ambiguous_multi_value_lines
-        )
+        provenance_complete = provenance_complete and not partial_source_records
         explicit_open = any(
             re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)
             and "US-10Y" in line.upper()
