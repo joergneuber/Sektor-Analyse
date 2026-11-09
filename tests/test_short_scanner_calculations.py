@@ -26,6 +26,7 @@ def _load_calculation_functions():
         "get_swing_lows_below",
         "get_round_number_targets",
         "sammle_abwaerts_ziele",
+        "sammle_abwaerts_ziele_mit_quellen",
         "waehle_short_ziele",
     }
     nodes = [
@@ -154,6 +155,29 @@ class ShortScannerCalculationTests(unittest.TestCase):
         self.assertEqual(
             namespace["waehle_short_ziele"](None, 100.0),
             (95.0, 90.0),
+        )
+
+    def test_target_collection_keeps_source_labels_without_changing_selected_levels(self):
+        frame = pd.DataFrame({
+            "High": np.full(120, 55.0),
+            "Low": np.full(120, 45.0),
+            "Close": np.full(120, 50.0),
+            "SenkouA": np.full(120, 46.0),
+            "SenkouB": np.full(120, 47.0),
+            "EMA20": np.full(120, 48.0),
+            "EMA50": np.full(120, 47.5),
+            "EMA100": np.full(120, 47.0),
+            "EMA200": np.full(120, 46.5),
+            "WMA200": np.full(120, 46.0),
+        })
+        plain = self.functions["sammle_abwaerts_ziele"](frame, 50.0)
+        detailed = self.functions["sammle_abwaerts_ziele_mit_quellen"](frame, 50.0)
+
+        self.assertEqual([item["wert"] for item in detailed], plain)
+        self.assertIn("Runde Kursmarke", detailed[0]["quellen"])
+        self.assertTrue({"EMA20", "Runde Kursmarke"}.issubset(set(detailed[1]["quellen"])))
+        self.assertTrue(
+            {"Ichimoku-Senkou-B", "EMA100"}.issubset(set(detailed[2]["quellen"]))
         )
 
     def test_target_collection_never_returns_nonpositive_prices(self):
