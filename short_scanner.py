@@ -618,17 +618,67 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
 # HAUPTPROGRAMM
 # ---------------------------------------------------------------------------
 
+def _bereite_rotation_scores_vor(df_perf, markt, anzahl):
+    """Bereitet Rotation-Scores numerisch auf und verhindert stille Fehlselektion.
+
+    Fehlende/ungueltige Scores bleiben fuer das Momentum-Briefing erhalten,
+    werden aber niemals in die Bottom-Sektor-Auswahl aufgenommen.
+    """
+    erforderliche_spalten = {"Sektor", "Rotation-Score"}
+    fehlend = erforderliche_spalten.difference(df_perf.columns)
+    if fehlend:
+        raise RuntimeError(
+            f"Short-Scanner: {markt}-Sektorperformance ohne Pflichtspalten "
+            f"{sorted(fehlend)}."
+        )
+
+    df_perf = df_perf.copy()
+    scores = pd.to_numeric(df_perf["Rotation-Score"], errors="coerce")
+    endliche_scores = scores.notna() & np.isfinite(scores.to_numpy(dtype=float, na_value=np.nan))
+    scores = scores.where(endliche_scores, np.nan)
+    df_perf["Rotation-Score"] = scores
+    gueltig = df_perf.loc[endliche_scores].copy()
+
+    if gueltig.empty:
+        ticker_anzahl = len(df_perf)
+        raise RuntimeError(
+            f"Short-Scanner: keine gueltigen numerischen Rotation-Scores fuer "
+            f"{markt} ({ticker_anzahl} Sektor-ETFs geprueft). "
+            "Sektorperformance/Quality-Gate und Datenquellen-Logs pruefen; "
+            "Bottom-Sektor-Auswahl wird sicher abgebrochen."
+        )
+
+    if len(gueltig) < int(anzahl):
+        print(
+            f"WARNUNG-SHORT-SEKTOR-SCORES: {markt} nur {len(gueltig)} "
+            f"gueltige Rotation-Scores fuer angeforderte {anzahl} Bottom-Sektoren."
+        )
+
+    return df_perf.sort_values("Rotation-Score", ascending=False), gueltig
+
+
 def bestimme_bottom_sektoren():
     """Analog zu Top-8/Top-5 im Long-Scanner, aber die SCHWAECHSTEN Sektoren
     (nlargest -> nsmallest). Gibt (bottom_us_sektoren, bottom_eu_sektoren,
     momentum_us, momentum_eu) - die beiden momentum-Dicts liefern je
     Sektor-Name {5T, 12T, Rotation-Score} fuer die Briefing-Ausgabe (NEU,
     analog zum Sektor-Momentum-Feld bei den normalen Setups)."""
-    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
-    df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()]).sort_values("Rotation-Score", ascending=False)
+    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()])
+    df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()])
 
-    bottom_us = df_perf.nsmallest(BOTTOM_SEKTOREN_US, 'Rotation-Score')['Sektor'].tolist()
-    bottom_eu = df_perf_eu.nsmallest(BOTTOM_SEKTOREN_EU, 'Rotation-Score')['Sektor'].tolist()
+    df_perf, gueltige_us_scores = _bereite_rotation_scores_vor(
+        df_perf, "US", BOTTOM_SEKTOREN_US
+    )
+    df_perf_eu, gueltige_eu_scores = _bereite_rotation_scores_vor(
+        df_perf_eu, "EU", BOTTOM_SEKTOREN_EU
+    )
+
+    bottom_us = gueltige_us_scores.nsmallest(
+        BOTTOM_SEKTOREN_US, "Rotation-Score"
+    )["Sektor"].tolist()
+    bottom_eu = gueltige_eu_scores.nsmallest(
+        BOTTOM_SEKTOREN_EU, "Rotation-Score"
+    )["Sektor"].tolist()
 
     momentum_us = df_perf.set_index('Sektor')[['5T', '12T', 'Rotation-Score']].to_dict('index')
     momentum_eu = df_perf_eu.set_index('Sektor')[['5T', '12T', 'Rotation-Score']].to_dict('index')
