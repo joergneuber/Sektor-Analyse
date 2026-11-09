@@ -20,6 +20,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+from alpaca.data.enums import Adjustment
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from os_kurse import aktualisiere_optionsscheine
@@ -816,8 +817,13 @@ def hole_aktuellen_kurs(ticker, markt):
                 return None
             return float(hist['Close'].iloc[-1])
         if markt == 'US' and '.' not in str(ticker):
+            # Historische Alpaca-Bars werden auf die aktuelle Aktien-Stueckelung
+            # split-adjustiert. Manuell gespeicherte Einstieg-/Stop-/TP-Werte in
+            # Offene_Positionen.csv werden hier NICHT automatisch umgeschrieben;
+            # Positionen, die einen Split ueberspannen, muessen mechanisch auf die
+            # neue Stueckelungsbasis umgestellt werden (siehe README).
             start_date = datetime.datetime.now() - datetime.timedelta(days=10)
-            request = StockBarsRequest(symbol_or_symbols=[ticker], start=start_date, timeframe=TimeFrame.Day)
+            request = StockBarsRequest(symbol_or_symbols=[ticker], start=start_date, timeframe=TimeFrame.Day, adjustment=Adjustment.SPLIT)
             bars = _get_alpaca_client().get_stock_bars(request)
             hist = bars.df
             if hist.empty:
@@ -1059,7 +1065,8 @@ def _hole_tageshistorie(ticker, markt, tage=45):
             req = StockBarsRequest(
                 symbol_or_symbols=[ticker],
                 start=start,
-                timeframe=TimeFrame.Day
+                timeframe=TimeFrame.Day,
+                adjustment=Adjustment.SPLIT,
             )
             bars = _get_alpaca_client().get_stock_bars(req).df
             if bars.empty:

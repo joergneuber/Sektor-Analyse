@@ -71,6 +71,7 @@ from collections import Counter
 # Beinahe-Treffer der letzten Stufe (NEU 30.07.2026) - siehe Kommentar
 # an der Sammelstelle in _pruefe_short_setup.
 BEINAHE_SHORT = []
+from alpaca.data.enums import Adjustment
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
@@ -100,7 +101,7 @@ def fetch_us_batch(ticker_liste):
     start_date = datetime.datetime.now() - datetime.timedelta(days=365)
     for chunk in _chunks(ticker_liste, CHUNK_SIZE):
         try:
-            request = StockBarsRequest(symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day)
+            request = StockBarsRequest(symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day, adjustment=Adjustment.SPLIT)
             df_alle = alpaca_client.get_stock_bars(request).df
         except Exception as e:
             print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")

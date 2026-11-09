@@ -15,6 +15,7 @@ import datetime
 from typing import Any
 
 import pandas as pd
+from alpaca.data.enums import Adjustment
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
@@ -43,6 +44,7 @@ def _request_chunk(client: Any, original_symbols: list[str], start_date: datetim
             symbol_or_symbols=request_symbols,
             start=start_date,
             timeframe=TimeFrame.Day,
+            adjustment=Adjustment.SPLIT,
         )
         df_alle = client.get_stock_bars(request).df
     except Exception as exc:
@@ -108,7 +110,7 @@ def fetch_us_batch_robust(client: Any, ticker_liste: list[str], *,
     for chunk in _chunks(ticker_liste, chunk_size):
         _request_chunk(client, chunk, start_date, ergebnis)
 
-    # Alpaca-Rohdaten duerfen die zentrale Qualitaetspruefung nicht umgehen.
+    # Alpaca-OHLCV-Daten duerfen die zentrale Qualitaetspruefung nicht umgehen.
     # Die angeforderte Kalenderlaenge wird in erwartete Tages-Sitzungen
     # umgerechnet; bei Gate-Fehlern wird fail-closed nur der betroffene Ticker
     # aus diesem Abruf entfernt.

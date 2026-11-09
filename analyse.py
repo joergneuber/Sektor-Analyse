@@ -129,6 +129,7 @@ from bitcoin_50w_sma import get_bitcoin_50w_sma_text, calculate_bitcoin_50w_sma
 
 # Importe für Alpaca
 from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.enums import Adjustment
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 # News-API (Benzinga-Feed, in den bestehenden Alpaca-Keys enthalten) - defensiv
@@ -2350,7 +2351,7 @@ def get_index_benchmark_yf(ticker, label):
         return f"{label}: Fehler beim Abruf ({e})"
 
 def get_benchmark_close():
-    """Lädt die rohen SPY-Schlusskurse (ca. 1 Jahr) als Series.
+    """Lädt split-adjustierte SPY-Schlusskurse (ca. 1 Jahr) als Series.
 
     SPY wird pro Workflow nur einmal aus Alpaca geladen und anschließend
     prozessuebergreifend aus market_cache.json wiederverwendet. Damit holen
@@ -2360,7 +2361,7 @@ def get_benchmark_close():
     try:
         def _fetch():
             start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-            request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day)
+            request = StockBarsRequest(symbol_or_symbols=["SPY"], start=start_date, timeframe=TimeFrame.Day, adjustment=Adjustment.SPLIT)
             bars = alpaca_client.get_stock_bars(request)
             hist = bars.df
             if hist.empty:
@@ -2378,7 +2379,7 @@ def get_benchmark_close():
             series.attrs["ohlcv_quality"] = hist.attrs.get("ohlcv_quality", {})
             return series
 
-        series = get_or_fetch_series("alpaca:SPY:close:ohlcv-quality-v1.3", _fetch)
+        series = get_or_fetch_series("alpaca:SPY:close:ohlcv-quality-v1.4-split", _fetch)
         if series is None or series.empty:
             print("DEBUG: SPY-Benchmark leer, Relative Stärke wird übersprungen.")
             return None
@@ -2557,6 +2558,7 @@ def get_perf(ticker, name):
             symbol_or_symbols=[ticker],
             start=start_date,
             timeframe=TimeFrame.Day,
+            adjustment=Adjustment.SPLIT,
         )
         bars = alpaca_client.get_stock_bars(request)
         alpaca_raw = _normalise_alpaca_frame(getattr(bars, "df", None))
@@ -3243,7 +3245,8 @@ def analyze_a_setup(ticker, sektor, spy_close=None, data=None, collect_hebeltrad
             request = StockBarsRequest(
                 symbol_or_symbols=[ticker],
                 start=start_date,
-                timeframe=TimeFrame.Day
+                timeframe=TimeFrame.Day,
+                adjustment=Adjustment.SPLIT,
             )
             bars = alpaca_client.get_stock_bars(request)
             data = bars.df
