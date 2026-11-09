@@ -32,8 +32,10 @@ jobs:
 
       # Verhindert eine erneute unkontrollierte Pandas-nsmallest-Exception,
       # wenn die Datenqualitaet keine numerischen Sektor-Scores liefert.
-      - name: Short-Scanner Sektorauswahl Regressionstest
-        run: python -m unittest discover -s tests -p "test_short_scanner_sector_selection.py"
+      - name: Short-Scanner Berechnungs- und Sektorauswahl-Regressionstests
+        run: |
+          python -m unittest discover -s tests -p "test_short_scanner_sector_selection.py"
+          python -m unittest discover -s tests -p "test_short_scanner_calculations.py"
 
       - name: Short-Scan ausführen
         # Läuft NACH analyse.py-Import (siehe short_scanner.py) - braucht
