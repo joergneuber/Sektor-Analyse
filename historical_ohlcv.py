@@ -84,6 +84,7 @@ SUFFIX_CALENDAR_MAP = {
     "DE": "XETR", "F": "XFRA", "PA": "XPAR", "AS": "XAMS",
     "MI": "XMIL", "L": "XLON", "T": "XTKS", "HK": "XHKG",
     "TO": "XTSE", "SW": "XSWX", "KS": "XKRX", "CO": "XCSE", "MC": "XMAD",
+    "SS": "XSHG", "ST": "XSTO",
 }
 # Historische Abdeckung beginnt erst mit der tatsaechlichen/unterstuetzten
 # Handelsplatz-Historie: Nasdaq 1971, Xetra/Tokio 1997. Aeltere gespeicherte
