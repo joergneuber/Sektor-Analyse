@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import sys
 import unittest
 
 try:
@@ -9,8 +10,12 @@ try:
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     ALPACA_SDK_AVAILABLE = True
+    _ALPACA_TIMEFRAME_MODULE = sys.modules.get("alpaca.data.timeframe")
+    _REAL_TIMEFRAME_CLASS = TimeFrame
 except ImportError:
     Adjustment = StockBarsRequest = TimeFrame = TimeFrameUnit = None
+    _ALPACA_TIMEFRAME_MODULE = None
+    _REAL_TIMEFRAME_CLASS = None
     ALPACA_SDK_AVAILABLE = False
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,19 +31,27 @@ class AlpacaSplitAdjustmentContractTests(unittest.TestCase):
     @unittest.skipUnless(ALPACA_SDK_AVAILABLE, "alpaca-py is not installed in this local environment")
     def test_sdk_exposes_split_adjustment_and_request_accepts_it(self):
         self.assertEqual(Adjustment.SPLIT.value, "split")
-        # Other test modules stub alpaca.data.timeframe.TimeFrame after collection.
-        # TimeFrame.Day resolves that module global and can therefore hit the stub.
-        # Constructing the preset explicitly uses the real class imported above
-        # while preserving the same one-day timeframe contract.
-        daily_timeframe = TimeFrame(amount=1, unit=TimeFrameUnit.Day)
-        request = StockBarsRequest(
-            symbol_or_symbols=["AAPL"],
-            timeframe=daily_timeframe,
-            adjustment=Adjustment.SPLIT,
-        )
-        self.assertEqual(request.adjustment, Adjustment.SPLIT)
-        self.assertEqual(request.timeframe.amount, 1)
-        self.assertEqual(request.timeframe.unit, TimeFrameUnit.Day)
+        # Another test module mutates the shared Alpaca timeframe module and
+        # replaces its TimeFrame global with a stub. The SDK class methods also
+        # resolve that global at runtime, so restore the genuine class only for
+        # this SDK contract check and then put the test stub back.
+        self.assertIsNotNone(_ALPACA_TIMEFRAME_MODULE)
+        previous_timeframe = _ALPACA_TIMEFRAME_MODULE.TimeFrame
+        try:
+            _ALPACA_TIMEFRAME_MODULE.TimeFrame = _REAL_TIMEFRAME_CLASS
+            daily_timeframe = _REAL_TIMEFRAME_CLASS(
+                amount=1, unit=TimeFrameUnit.Day
+            )
+            request = StockBarsRequest(
+                symbol_or_symbols=["AAPL"],
+                timeframe=daily_timeframe,
+                adjustment=Adjustment.SPLIT,
+            )
+            self.assertEqual(request.adjustment, Adjustment.SPLIT)
+            self.assertEqual(request.timeframe.amount, 1)
+            self.assertEqual(request.timeframe.unit, TimeFrameUnit.Day)
+        finally:
+            _ALPACA_TIMEFRAME_MODULE.TimeFrame = previous_timeframe
 
     def test_every_productive_stock_bars_request_is_explicitly_split_adjusted(self):
         checked = 0
