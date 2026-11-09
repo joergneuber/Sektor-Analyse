@@ -1,0 +1,80 @@
+{
+  "project": "Sektor-Analyse / Short Scanner",
+  "date": "2026-11-09",
+  "base_commit": "07a505ca3083d198490809cba1829d23c1250c6d",
+  "base_archive": "SHORT_SCANNER_BERECHNUNGSFIX_20261109.zip",
+  "base_archive_sha256": "053bbb44b5873f8929a7db32181b90efa3ca1e5238818c3407afcc945ecc16d6",
+  "changed_files": {
+    "short_scanner.py": {
+      "before": {
+        "bytes": 50838,
+        "lines": 1067,
+        "sha256": "5c961ae2b4a4a4e70f5bce2666b77a1d40e1dcfcad2d6b1e76cbc653dbd190c1",
+        "encoding": "UTF-8",
+        "bom": false,
+        "line_endings": "LF"
+      },
+      "after": {
+        "bytes": 53500,
+        "lines": 1123,
+        "sha256": "1cd2892e6ffaf311cb165463e931fabf908a68e9d9edd2d369ca560325d14367",
+        "encoding": "UTF-8",
+        "bom": false,
+        "line_endings": "LF"
+      }
+    },
+    "tests/test_short_scanner_calculations.py": {
+      "before": {
+        "bytes": 6407,
+        "lines": 179,
+        "sha256": "b34a8f25d090161367efbf52c6271f10d603205ee8e4a71fb08bd3624274d9a5",
+        "encoding": "UTF-8",
+        "bom": false,
+        "line_endings": "LF"
+      },
+      "after": {
+        "bytes": 7497,
+        "lines": 203,
+        "sha256": "ddf69e7a7b2cb05e98fcc703b2499a0ae2239bf29da9b523530e77be165c52f5",
+        "encoding": "UTF-8",
+        "bom": false,
+        "line_endings": "LF"
+      }
+    }
+  },
+  "unchanged_files": {
+    ".github/workflows/short_check.yml": {
+      "bytes": 2376,
+      "lines": 57,
+      "sha256": "34a1e4e2f2ea9bfe39335b91a8fd62e95eef1687ce8d649c2085ab6ccade04df",
+      "encoding": "UTF-8",
+      "bom": false,
+      "line_endings": "LF"
+    }
+  },
+  "ast": {
+    "added": [
+      "sammle_abwaerts_ziele_mit_quellen"
+    ],
+    "modified": [
+      "_pruefe_short_setup",
+      "main",
+      "sammle_abwaerts_ziele"
+    ],
+    "removed": [],
+    "imports_unchanged": true
+  },
+  "validation": {
+    "calculation_tests": 10,
+    "sector_tests": 5,
+    "full_project_tests": 316,
+    "full_project_tests_status": "PASS",
+    "python_files_syntax_checked": 139,
+    "syntax_status": "PASS",
+    "workflow_yaml": "PASS",
+    "target_selection_parity_cases": 100,
+    "target_selection_parity_status": "PASS"
+  },
+  "github_modified": false,
+  "live_scan_performed": false
+}
