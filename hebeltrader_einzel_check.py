@@ -373,7 +373,11 @@ def yahoo_validiere(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for item in kandidaten:
         ticker = item["ticker"]
         try:
-            hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
+            # Fuenf Handelssitzungen sind keine fuenf Kalendertage.
+            # 1mo stellt ausreichend Provider-Abdeckung bereit, damit das
+            # kalenderbasierte Quality-Gate seine 5 abgeschlossenen Sessions
+            # einschließlich erwarteter Feiertags-/Wochenendstruktur pruefen kann.
+            hist = yf.Ticker(ticker).history(period="1mo", auto_adjust=False)
             if hist is None or hist.empty:
                 item["yahoo_valid"] = False
                 item["yahoo_reason"] = "keine Yahoo-Kursdaten"
@@ -384,8 +388,16 @@ def yahoo_validiere(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 full_history=True,
             )
             if checked.empty or checked["Close"].isna().iloc[-1]:
+                quality = checked.attrs.get("ohlcv_quality", {})
+                reason_codes = quality.get("reason_codes", [])
+                reason_suffix = (
+                    f" ({', '.join(str(code) for code in reason_codes)})"
+                    if reason_codes else ""
+                )
                 item["yahoo_valid"] = False
-                item["yahoo_reason"] = "OHLCV-Quality-Gate INCOMPLETE"
+                item["yahoo_reason"] = (
+                    f"OHLCV-Quality-Gate INCOMPLETE{reason_suffix}"
+                )
                 continue
             close = checked["Close"]
             item["yahoo_valid"] = True
@@ -534,8 +546,16 @@ def main() -> int:
     valid = yahoo_validiere(kandidaten)
     print(f"Yahoo-validierte Kandidaten: {len(valid)}")
     if not valid:
+        rejection_details = [
+            f"{item.get('ticker', '?')}: {item.get('yahoo_reason', 'unbekannter Ablehnungsgrund')}"
+            for item in kandidaten
+        ]
+        details = "; ".join(rejection_details) or "keine Kandidaten geliefert"
+        print("Yahoo-Validierung ohne Treffer: " + details)
         raise RuntimeError(
-            "Keine Yahoo-validierten Kandidaten. Der persistente Stand bleibt unverändert."
+            "Keine Yahoo-validierten Kandidaten. "
+            f"Pruefgruende: {details}. "
+            "Der persistente Stand bleibt unverändert."
         )
 
     tickers = [x["ticker"] for x in valid]
