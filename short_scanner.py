@@ -235,7 +235,15 @@ def check_pullback_zone_short(data, ticker=None, require_volume=True):
         if ticker:
             print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: Volumen zu duenn ({vol_ratio_heute:.2f}x < 0.7))")
         return False
-    ilocs_max = argrelextrema(data['High'].tail(20).values, np.greater_equal, order=3)[0]
+    pullback_highs = data['High'].tail(20).to_numpy(dtype=float)
+    ilocs_max = argrelextrema(
+        pullback_highs, np.greater_equal, order=3
+    )[0]
+    # scipy mode="clip" kann Randpunkte trotz fehlender rechter Kerzen
+    # als Extremum melden; nur voll bestaetigte Pivot-Indizes verwenden.
+    ilocs_max = ilocs_max[
+        (ilocs_max >= 3) & (ilocs_max < len(pullback_highs) - 3)
+    ]
     if len(ilocs_max) < 2:
         if ticker:
             print(f"DEBUG-SHORT-PULLBACK: {ticker} -> InZone: False (Grund: zu wenig Swing-Hochs fuer Lower-High-Pruefung)")
@@ -251,13 +259,17 @@ def check_kumo_breakdown(data, require_volume=True):
     if len(data) < 5 or 'SenkouA' not in data.columns or 'SenkouB' not in data.columns:
         return False, None
     kumo_unter = data[['SenkouA', 'SenkouB']].min(axis=1)
+    kumo_ober = data[['SenkouA', 'SenkouB']].max(axis=1)
     heute_unter = kumo_unter.iloc[-1]
     close_heute = data['Close'].iloc[-1]
     if pd.isna(heute_unter) or close_heute >= heute_unter:
         return False, None
+    # Ein frischer Breakdown muss von OBERHALB der gesamten Wolke kommen.
+    # Ein vorheriger Schlusskurs innerhalb der Wolke reicht nicht.
     frischer_bruch = any(
-        pd.notna(kumo_unter.iloc[-1 - i]) and data['Close'].iloc[-1 - i] >= kumo_unter.iloc[-1 - i]
-        for i in range(1, FRISCHE_TAGE + 1) if abs(-1 - i) <= len(data)
+        pd.notna(kumo_ober.iloc[-1 - i])
+        and data['Close'].iloc[-1 - i] >= kumo_ober.iloc[-1 - i]
+        for i in range(1, FRISCHE_TAGE + 1) if abs(-1 - i) < len(data)
     )
     if not frischer_bruch:
         return False, None
@@ -268,6 +280,75 @@ def check_kumo_breakdown(data, require_volume=True):
     if not vol_ok:
         return False, None
     return True, round(float(heute_unter), 2)
+
+
+def berechne_atr14(data):
+    """Wilder-nahe ATR14 aus OHLC; liefert None bei unzureichenden/ungueltigen Daten."""
+    if len(data) < 15 or not {"High", "Low", "Close"}.issubset(data.columns):
+        return None
+    high = pd.to_numeric(data["High"], errors="coerce")
+    low = pd.to_numeric(data["Low"], errors="coerce")
+    close = pd.to_numeric(data["Close"], errors="coerce")
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1, skipna=True)
+    atr = true_range.ewm(
+        alpha=1 / 14, adjust=False, min_periods=14
+    ).mean().iloc[-1]
+    if pd.isna(atr) or not np.isfinite(float(atr)) or float(atr) <= 0:
+        return None
+    return float(atr)
+
+
+def get_swing_highs_above(data, entry, lookback=120, order=5):
+    """Nur bestaetigte Pivot-Hochs oberhalb des Einstiegs (order Folgekerzen)."""
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < (2 * order + 1):
+        return []
+    highs = pd.to_numeric(fenster["High"], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(highs).all():
+        return []
+    idx_swings = argrelextrema(highs, np.greater, order=order)[0]
+    # Explizite Randbegrenzung: ein Pivot benoetigt order Kerzen links UND
+    # rechts; scipy mode="clip" allein garantiert diese Bestaetigung nicht.
+    idx_swings = idx_swings[
+        (idx_swings >= order) & (idx_swings < len(highs) - order)
+    ]
+    kandidaten = sorted(
+        {
+            float(highs[i])
+            for i in idx_swings
+            if np.isfinite(highs[i]) and highs[i] > float(entry)
+        }
+    )
+    return kandidaten
+
+
+def berechne_strukturellen_stop_short(
+    data, entry, atr_puffer=0.5, lookback=120, order=5
+):
+    """Stop oberhalb des naechsten bestaetigten Swing-Hochs plus ATR-Puffer.
+
+    Kein synthetischer Ersatzstop: ohne bestaetigte Struktur oder ATR kein Setup.
+    """
+    if pd.isna(entry) or not np.isfinite(float(entry)) or float(entry) <= 0:
+        return None
+    swing_highs = get_swing_highs_above(
+        data, float(entry), lookback=lookback, order=order
+    )
+    atr = berechne_atr14(data)
+    if not swing_highs or atr is None:
+        return None
+    stop = swing_highs[0] + (float(atr_puffer) * atr)
+    if not np.isfinite(stop) or stop <= float(entry):
+        return None
+    return round(float(stop), 2)
 
 
 def get_fib_levels_short(data):
@@ -295,6 +376,9 @@ def get_swing_lows_below(data, entry, lookback=120, order=5, max_n=3):
         return []
     lows = fenster['Low'].values
     idx_swings = argrelextrema(lows, np.less_equal, order=order)[0]
+    idx_swings = idx_swings[
+        (idx_swings >= order) & (idx_swings < len(lows) - order)
+    ]
     kandidaten = sorted(
         {round(float(lows[i]), 4) for i in idx_swings if pd.notna(lows[i]) and lows[i] < entry},
         reverse=True,
@@ -363,7 +447,13 @@ def sammle_abwaerts_ziele(data, entry, mindest_abstand_perc=1.0, dedupe_abstand_
 
     alle_kandidaten = [fib1, fib2, tief_52w] + kumo_werte + swing_lows + ema_werte + runde_zahlen
     roh = sorted(
-        {round(float(v), 4) for v in alle_kandidaten if pd.notna(v) and v < entry},
+        {
+            round(float(v), 4)
+            for v in alle_kandidaten
+            if pd.notna(v)
+            and np.isfinite(float(v))
+            and 0 < float(v) < float(entry)
+        },
         reverse=True,
     )
 
@@ -404,6 +494,35 @@ def check_bearish_confirmation(df):
 # ---------------------------------------------------------------------------
 # SETUP-QUALITAETS-MATRIX (gespiegelt, siehe Modul-Docstring)
 # ---------------------------------------------------------------------------
+
+def waehle_short_ziele(data, entry):
+    """Liefert TP1/TP2 nur, wenn zwei echte Abwaertsziele vorhanden sind."""
+    ziele = sammle_abwaerts_ziele(data, entry)
+    if len(ziele) < 2:
+        return None
+    return ziele[0], ziele[1]
+
+
+def berechne_short_crv(entry, stop, tp1, tp2):
+    """Liefert ungerundete CRVs oder None bei ungueltiger Geometrie."""
+    werte = (entry, stop, tp1, tp2)
+    if any(pd.isna(v) or not np.isfinite(float(v)) for v in werte):
+        return None
+    entry, stop, tp1, tp2 = map(float, werte)
+    if entry <= 0 or stop <= entry or not (0 < tp2 < tp1 < entry):
+        return None
+    risiko = stop - entry
+    return (entry - tp1) / risiko, (entry - tp2) / risiko
+
+
+def short_crv_erfuellt(crv1, crv2):
+    """Beide ungerundeten CRVs muessen strikt groesser als 1,0 sein."""
+    werte = (crv1, crv2)
+    return all(
+        not pd.isna(v) and np.isfinite(float(v)) and float(v) > 1.0
+        for v in werte
+    )
+
 
 def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_momentum=None, require_volume=True):
     """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
@@ -526,27 +645,37 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
             print(f"DEBUG-SHORT-VERWORFEN: {ticker} -> RS zu stark fuer Short ({rel_staerke}% > {RS_MAX}%)")
             return None, "rs_zu_stark"
 
-    # Stop OBERHALB, Ziele UNTERHALB (Widerstaende von oben werden zu Zielen)
-    juengstes_hoch = round(float(data['High'].iloc[-10:].max()) * 1.02, 2)
-    stop = juengstes_hoch
+    # Struktureller Stop: naechstes bestaetigtes Swing-Hoch oberhalb des
+    # Einstiegs plus 0,5 ATR14 Puffer. Ohne belastbare Struktur kein Setup.
+    stop = berechne_strukturellen_stop_short(data, entry)
+    if stop is None:
+        return None, "kein_struktureller_stop"
     risk_perc = round(((stop - entry) / entry) * 100, 2)
 
-    abwaerts_ziele = sammle_abwaerts_ziele(data, entry)
-    tp1 = abwaerts_ziele[0] if abwaerts_ziele else entry * 0.92
-    tp2 = abwaerts_ziele[1] if len(abwaerts_ziele) >= 2 else (tp1 * 0.95)
-    tech_kursziel = tp1  # analog zu analyse.py, wo Tech-Kursziel = TP1 gesetzt wird
+    # Ausschliesslich echte, positive Abwaerts-Zielkandidaten. TP1 und TP2
+    # muessen beide aus der Zielstruktur kommen; keine Prozent-Fallbacks.
+    short_ziele = waehle_short_ziele(data, entry)
+    if short_ziele is None:
+        return None, "zu_wenig_abwaertsziele"
+    tp1, tp2 = short_ziele
+    tech_kursziel = tp1
 
-    crv1 = round((entry - tp1) / (stop - entry), 2) if stop > entry else 0
-    crv2 = round((entry - tp2) / (stop - entry), 2) if stop > entry else 0
+    crv_werte = berechne_short_crv(entry, stop, tp1, tp2)
+    if crv_werte is None:
+        return None, "ungueltige_crv_basis"
+    crv1_roh, crv2_roh = crv_werte
+    # Ungerundete Werte entscheiden; Rundung ist ausschliesslich Anzeigeformat.
+    crv1 = round(crv1_roh, 2)
+    crv2 = round(crv2_roh, 2)
     chance1_perc = round(((entry - tp1) / entry) * 100, 2)
     chance2_perc = round(((entry - tp2) / entry) * 100, 2)
 
     # NEU (25.07.2026): Risiko-Filter, analog zur bestehenden Konvention bei
     # Long-Setups und Edelmetalle-Setups ("CRV muss bei TP1 UND TP2 jeweils
-    # >= 1.0 sein") - vorher gab es diesen Filter bei Shorts noch nicht,
+    # > 1.0 sein") - vorher gab es diesen Filter bei Shorts noch nicht,
     # wodurch auch Setups mit deutlich schlechterem Chance/Risiko-Verhaeltnis
     # ausgegeben wurden.
-    if crv1 < 1.0 or crv2 < 1.0:
+    if not short_crv_erfuellt(crv1_roh, crv2_roh):
         print(f"DEBUG-SHORT-VERWORFEN: {ticker} -> CRV zu niedrig (CRV1={crv1}, CRV2={crv2})")
         # BEINAHE-KANDIDAT (NEU 30.07.2026): beim Short faellt seit Wochen
         # praktisch alles an dieser Stufe - dann soll wenigstens sichtbar sein,
@@ -771,7 +900,10 @@ def main():
         ("kein_setup_muster", "Keines der 4 gespiegelten Setup-Muster erfuellt"),
         ("macd_bullisch_ohne_divergenz", "Bullischer MACD ohne baerische Divergenz (widerspricht Short-These)"),
         ("rs_zu_stark", f"Relative Staerke > +{RS_MAX}% (Marktfuehrer werden nicht geshortet)"),
-        ("crv_unter_1", "CRV-Filter (TP1 oder TP2 unter 1.0)"),
+        ("kein_struktureller_stop", "Kein bestaetigter struktureller Stop oberhalb des Einstiegs"),
+        ("zu_wenig_abwaertsziele", "Weniger als zwei belastbare Abwaertsziele"),
+        ("ungueltige_crv_basis", "Ungueltige Kurs-/Stop-/Zielgeometrie"),
+        ("crv_unter_1", "CRV-Filter (CRV1 und CRV2 muessen jeweils > 1.0 sein)"),
         ("kandidat", "KANDIDAT (vor Dedupe/Status-Split)"),
     ]
     funnel_zeilen = [f"Universum gesamt (Bottom-Sektoren): {gesamt_universum} Titel"]
@@ -866,12 +998,10 @@ def main():
         f.write("  Sektor) | dazwischen neutral.\n")
         f.write("- RISIKOHINWEIS: Short-Positionen haben ein theoretisch unbegrenztes Verlust-\n")
         f.write("  risiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht).\n")
-        f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils >= 1.0 sein (NEU,\n")
-        f.write("  25.07.2026, analog zu Setups.csv/Edelmetalle_Setups.csv) - Ziele (TP1/TP2)\n")
-        f.write("  kommen aus echten Abwaerts-Levels (Fib-Retracement nach unten, 52-Wochen-\n")
-        f.write("  Tief, Pivot-Tiefs, Ichimoku-Wolke, ggf. gleitende Durchschnitte/runde Zahlen),\n")
-        f.write("  nicht mehr aus einem pauschalen 8%/12,6%-Fallback - dadurch fallen an manchen\n")
-        f.write("  Tagen ALLE Kandidaten durch dieses Kriterium (kein Fehler, siehe unten).\n")
+        f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils > 1.0 sein.\n")
+        f.write("  Ziele (TP1/TP2) kommen aus echten Abwaerts-Levels (Fib, 52-Wochen-Tief, Pivot-Tiefs,\n")
+        f.write("  Ichimoku, gleitende Durchschnitte und runde Zahlen), keine synthetischen Fallbacks.\n")
+        f.write("  Stop: bestaetigtes Swing-Hoch plus 0,5 ATR14. Ohne Stop oder zwei Ziele kein Setup.\n")
         f.write("- Sektor-Momentum: NICHT in dieser Datei enthalten (genau wie bei Setups.csv) -\n")
         f.write("  wird aus Performance.csv/Performance_EU.csv per Sektor-Name nachgeschlagen (dort\n")
         f.write("  stehen ALLE Sektoren, nicht nur die Top-Sektoren, die Bottom-Sektoren sind also\n")
