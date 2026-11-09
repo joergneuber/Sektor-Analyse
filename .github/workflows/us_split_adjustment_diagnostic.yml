@@ -33,7 +33,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas yfinance exchange-calendars requests
+          pip install alpaca-py==0.45.0 pandas yfinance exchange-calendars requests
 
       - name: Historische OHLCV Release-Dateien read-only herunterladen
         env:
