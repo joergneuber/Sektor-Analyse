@@ -99,16 +99,21 @@ def _bars_for(ticker, frame):
 def _namespace_for_perf(monkeypatch, ticker, alpaca_frame, yahoo_fetch):
     ns = _load_analysis_functions()
 
+    requests_seen = []
+
     class FakeRequest:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            requests_seen.append(kwargs)
 
     ns["StockBarsRequest"] = FakeRequest
     ns["TimeFrame"] = SimpleNamespace(Day="1Day")
+    ns["Adjustment"] = SimpleNamespace(SPLIT="split")
     ns["alpaca_client"] = SimpleNamespace(
         get_stock_bars=lambda request: _bars_for(ticker, alpaca_frame)
     )
     ns["get_yf_history_from_yahoo"] = yahoo_fetch
+    ns["_alpaca_requests_seen"] = requests_seen
     return ns
 
 
@@ -373,6 +378,7 @@ def test_alpaca_exact_symbol_is_still_accepted_after_strict_symbol_check(
     result = ns["get_perf"]("XLK", "Technologie")
     assert result["Rotation-Score"] is not None
     assert yahoo_calls == []
+    assert ns["_alpaca_requests_seen"][0]["adjustment"] == "split"
 
 
 

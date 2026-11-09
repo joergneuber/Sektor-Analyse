@@ -36,6 +36,7 @@ _stub_module("googleapiclient.http", {
     "MediaIoBaseDownload": type("MediaIoBaseDownload", (), {}),
     "MediaIoBaseUpload": type("MediaIoBaseUpload", (), {}),
 })
+_stub_module("alpaca.data.enums", {"Adjustment": type("Adjustment", (), {"SPLIT": "split"})})
 _stub_module("alpaca.data.historical", {
     "StockHistoricalDataClient": type("StockHistoricalDataClient", (), {}),
     "CryptoHistoricalDataClient": type("CryptoHistoricalDataClient", (), {}),

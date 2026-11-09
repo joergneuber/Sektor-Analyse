@@ -122,7 +122,7 @@ def test_ad_hoc_alpaca_signal_fallback_is_quality_gated():
 
 def test_spy_benchmark_cache_key_is_quality_versioned():
     source = (ROOT / "analyse.py").read_text(encoding="utf-8")
-    assert 'alpaca:SPY:close:ohlcv-quality-v1.3' in source
+    assert 'alpaca:SPY:close:ohlcv-quality-v1.4-split' in source
 
 
 def test_exchange_cutoff_excludes_open_session_until_actual_close():
