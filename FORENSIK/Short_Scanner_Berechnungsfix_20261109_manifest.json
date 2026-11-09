@@ -1,0 +1,95 @@
+{
+  "project": "Sektor-Analyse / Short Scanner",
+  "date": "2026-11-09",
+  "baseline_archive": "Sektor-Analyse-main(20261109-083114).zip",
+  "baseline_archive_sha256": "4f0cf9ec2de5aa28ec7071d48789b075ffe667c5136dfa81b669e9675de9181d",
+  "changed_project_files": [
+    {
+      "path": "short_scanner.py",
+      "status": "modified",
+      "old": {
+        "bytes": 46271,
+        "lines": 937,
+        "sha256": "f37334d6bbdd077b84ba55d25144d1bdba8bcf24b3269eb62b735b70256348e0",
+        "utf8_bom": false,
+        "line_endings": "LF"
+      },
+      "new": {
+        "bytes": 50838,
+        "lines": 1067,
+        "sha256": "5c961ae2b4a4a4e70f5bce2666b77a1d40e1dcfcad2d6b1e76cbc653dbd190c1",
+        "utf8_bom": false,
+        "line_endings": "LF"
+      }
+    },
+    {
+      "path": ".github/workflows/short_check.yml",
+      "status": "modified",
+      "old": {
+        "bytes": 2259,
+        "lines": 55,
+        "sha256": "400efe0331b14dab07c4b8840f103529489a73d5eb4c3d5f5997bba01f124d17",
+        "utf8_bom": false,
+        "line_endings": "LF"
+      },
+      "new": {
+        "bytes": 2376,
+        "lines": 57,
+        "sha256": "34a1e4e2f2ea9bfe39335b91a8fd62e95eef1687ce8d649c2085ab6ccade04df",
+        "utf8_bom": false,
+        "line_endings": "LF"
+      }
+    },
+    {
+      "path": "tests/test_short_scanner_calculations.py",
+      "status": "new",
+      "new": {
+        "bytes": 6407,
+        "lines": 179,
+        "sha256": "b34a8f25d090161367efbf52c6271f10d603205ee8e4a71fb08bd3624274d9a5",
+        "utf8_bom": false,
+        "line_endings": "LF"
+      }
+    }
+  ],
+  "ast": {
+    "added_functions": [
+      "berechne_atr14",
+      "berechne_short_crv",
+      "berechne_strukturellen_stop_short",
+      "get_swing_highs_above",
+      "short_crv_erfuellt",
+      "waehle_short_ziele"
+    ],
+    "removed_functions": [],
+    "modified_functions": [
+      "_pruefe_short_setup",
+      "check_kumo_breakdown",
+      "check_pullback_zone_short",
+      "get_swing_lows_below",
+      "main",
+      "sammle_abwaerts_ziele"
+    ],
+    "imports_unchanged": true
+  },
+  "validation": {
+    "new_calculation_tests": 9,
+    "existing_short_sector_tests": 5,
+    "full_project_tests": 315,
+    "full_project_tests_status": "PASS",
+    "python_files_syntax_checked": 139,
+    "python_syntax_status": "PASS",
+    "workflow_yaml_status": "PASS"
+  },
+  "scope": {
+    "original_archive_files_missing": 0,
+    "project_files_changed_or_added": 3,
+    "github_modified": false,
+    "live_short_scan_performed": false
+  },
+  "diff": {
+    "added_lines": 336,
+    "removed_lines": 25,
+    "path": "FORENSIK/Short_Scanner_Berechnungsfix_20261109.diff"
+  }
+}
