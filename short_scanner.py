@@ -415,6 +415,61 @@ def get_round_number_targets(entry, anzahl=2):
     return marken
 
 
+def sammle_abwaerts_ziele_mit_quellen(
+    data, entry, mindest_abstand_perc=1.0, dedupe_abstand_perc=1.5
+):
+    """Wie sammle_abwaerts_ziele, erhaelt aber fuer Diagnosezwecke die Level-Quellen.
+
+    Die Filter-, Rundungs- und Dedupe-Reihenfolge entspricht der bisherigen
+    Zielauswahl. Der Rueckgabewert enthaelt nur die tatsaechlich verwendbaren
+    Ziele nach Mindestabstand und Deduplizierung.
+    """
+    fib1, fib2 = get_fib_levels_short(data)
+    kumo_werte = [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]]
+    tief_52w = float(data['Low'].min())
+    swing_lows = get_swing_lows_below(data, entry)
+    ema_werte = [
+        data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1],
+        data['EMA200'].iloc[-1], data['WMA200'].iloc[-1],
+    ]
+    runde_zahlen = get_round_number_targets(entry)
+
+    kandidaten_mit_quelle = [
+        (fib1, "Fib-Retracement-0.618"),
+        (fib2, "Fib-Extension-0.618"),
+        (tief_52w, "52-Wochen-Tief"),
+        (kumo_werte[0], "Ichimoku-Senkou-A"),
+        (kumo_werte[1], "Ichimoku-Senkou-B"),
+        *[(v, "Pivot-Swing-Tief") for v in swing_lows],
+        *[(v, name) for v, name in zip(
+            ema_werte,
+            ("EMA20", "EMA50", "EMA100", "EMA200", "WMA200"),
+        )],
+        *[(v, "Runde Kursmarke") for v in runde_zahlen],
+    ]
+
+    quellen_pro_wert = {}
+    for wert, quelle in kandidaten_mit_quelle:
+        if pd.isna(wert) or not np.isfinite(float(wert)):
+            continue
+        wert = round(float(wert), 4)
+        if 0 < wert < float(entry):
+            quellen_pro_wert.setdefault(wert, set()).add(quelle)
+
+    roh = sorted(quellen_pro_wert, reverse=True)
+    mindest_wert = entry * (1 - mindest_abstand_perc / 100)
+    gefiltert = [v for v in roh if v <= mindest_wert]
+
+    ziele = []
+    for wert in gefiltert:
+        if not ziele or (ziele[-1]["wert"] - wert) / entry * 100 >= dedupe_abstand_perc:
+            ziele.append({
+                "wert": wert,
+                "quellen": sorted(quellen_pro_wert[wert]),
+            })
+    return ziele
+
+
 def sammle_abwaerts_ziele(data, entry, mindest_abstand_perc=1.0, dedupe_abstand_perc=1.5):
     """NEU (24.07.2026, erweitert 25.07.2026): ersetzt die zuvor 1:1 aus
     analyse.py uebernommenen Long-Zielfunktionen (EMA20/50/100/200/WMA200 +
@@ -435,39 +490,14 @@ def sammle_abwaerts_ziele(data, entry, mindest_abstand_perc=1.0, dedupe_abstand_
       wird nur der naeher am Kurs liegende behalten (sonst koennten TP1 und
       TP2 praktisch identisch werden, z.B. eine runde Zahl direkt neben einem
       Swing-Tief)."""
-    fib1, fib2 = get_fib_levels_short(data)
-    kumo_werte = [data['SenkouA'].iloc[-1], data['SenkouB'].iloc[-1]]
-    tief_52w = float(data['Low'].min())
-    swing_lows = get_swing_lows_below(data, entry)
-    ema_werte = [
-        data['EMA20'].iloc[-1], data['EMA50'].iloc[-1], data['EMA100'].iloc[-1],
-        data['EMA200'].iloc[-1], data['WMA200'].iloc[-1],
+    return [
+        eintrag["wert"]
+        for eintrag in sammle_abwaerts_ziele_mit_quellen(
+            data, entry,
+            mindest_abstand_perc=mindest_abstand_perc,
+            dedupe_abstand_perc=dedupe_abstand_perc,
+        )
     ]
-    runde_zahlen = get_round_number_targets(entry)
-
-    alle_kandidaten = [fib1, fib2, tief_52w] + kumo_werte + swing_lows + ema_werte + runde_zahlen
-    roh = sorted(
-        {
-            round(float(v), 4)
-            for v in alle_kandidaten
-            if pd.notna(v)
-            and np.isfinite(float(v))
-            and 0 < float(v) < float(entry)
-        },
-        reverse=True,
-    )
-
-    # Mindestabstand zum Kurs (Rauschen direkt unter dem Einstieg raus)
-    mindest_wert = entry * (1 - mindest_abstand_perc / 100)
-    gefiltert = [v for v in roh if v <= mindest_wert]
-
-    # Dedupe: zu nah beieinander liegende Kandidaten zusammenfassen
-    ziele = []
-    for v in gefiltert:
-        if not ziele or (ziele[-1] - v) / entry * 100 >= dedupe_abstand_perc:
-            ziele.append(v)
-
-    return ziele
 
 
 def check_bearish_confirmation(df):
@@ -693,12 +723,37 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
         # der ERSTE Short-Titel am CRV-Filter scheiterte - traf also praktisch
         # jeden Lauf, da CRV-Ablehnungen der Normalfall sind (siehe Funnel-
         # Statistik der letzten Tage).
+        # Reine Diagnose: dieselben Struktur-/ATR-/Zielwerte offenlegen, die
+        # den unveraenderten CRV-Filter gespeist haben. Keine Handelsregel wird
+        # durch diese Zusatzberechnung oder Ausgabe veraendert.
+        swing_highs_diag = get_swing_highs_above(data, entry)
+        swing_high_diag = swing_highs_diag[0] if swing_highs_diag else None
+        atr14_diag = berechne_atr14(data)
+        ziel_diag = sammle_abwaerts_ziele_mit_quellen(data, entry)
+        tp1_quellen = next(
+            (z["quellen"] for z in ziel_diag if abs(z["wert"] - tp1) < 0.00011), []
+        )
+        tp2_quellen = next(
+            (z["quellen"] for z in ziel_diag if abs(z["wert"] - tp2) < 0.00011), []
+        )
+        puffer_diag = (0.5 * atr14_diag) if atr14_diag is not None else None
+        abstand_tp1 = ((entry - tp1) / entry * 100) if entry else 0.0
+        abstand_tp2 = ((entry - tp2) / entry * 100) if entry else 0.0
+        diagnose_text = (
+            f"{firma_name} ({ticker}): CRV-Filter -> Einstieg={entry:.4f} | "
+            f"Stop-Struktur-SwingHigh={swing_high_diag:.4f} | "
+            f"ATR14={atr14_diag:.4f} | ATR-Puffer(0.5x)={puffer_diag:.4f} | "
+            f"Stop={stop:.4f} | Stop-Abstand={risk_perc:.2f}% | "
+            f"TP1={tp1:.4f} ({abstand_tp1:.2f}% unter Einstieg; "
+            f"Quelle={', '.join(tp1_quellen) if tp1_quellen else 'nicht zugeordnet'}) | "
+            f"CRV1 roh={crv1_roh:.4f} / Anzeige={crv1} | "
+            f"TP2={tp2:.4f} ({abstand_tp2:.2f}% unter Einstieg; "
+            f"Quelle={', '.join(tp2_quellen) if tp2_quellen else 'nicht zugeordnet'}) | "
+            f"CRV2 roh={crv2_roh:.4f} / Anzeige={crv2}"
+        )
         BEINAHE_SHORT.append({
             "ticker": ticker,
-            "text": f"{firma_name} ({ticker}): CRV-Filter -> Kurs={entry:.2f} | TP1={tp1:.2f} | "
-                   f"Chance1={chance1_perc:.2f}% | CRV1={crv1} | TP2={tp2:.2f} | "
-                   f"Chance2={chance2_perc:.2f}% | CRV2={crv2} | Stop={stop:.2f} | "
-                   f"Risiko={risk_perc:.2f}%",
+            "text": diagnose_text,
             "crv_sortier": min(crv1, crv2),
         })
         return None, "crv_unter_1"
@@ -1013,9 +1068,10 @@ def main():
         f.write("-" * 50 + "\n")
         f.write(funnel_text + "\n")
         if BEINAHE_SHORT:
-            f.write("\nBEINAHE-KANDIDATEN (Muster erfuellt, erst am CRV-Filter gescheitert)\n")
-            f.write("-" * 50 + "\n")
-            f.write("(nur Beobachtung, KEINE Setups)\n")
+            f.write("\nCRV-DIAGNOSE / BEINAHE-KANDIDATEN (Muster erfuellt, am CRV-Filter gescheitert)\n")
+            f.write("-" * 70 + "\n")
+            f.write("Nur Diagnose und Beobachtung, KEINE Setups. Stop-Struktur, ATR14, ")
+            f.write("Zielquellen, Zielabstaende und ungerundete CRVs; Filter unveraendert.\n")
             # Leerzeile zwischen den Eintraegen (NEU 31.07.2026, Nutzerwunsch
             # "Uebersichtlichkeit") - analog zur Watchlist im Hauptscanner.
             # Dedupe wie bei den echten Short-Kandidaten: ein Ticker nur einmal,
