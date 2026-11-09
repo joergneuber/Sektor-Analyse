@@ -28,7 +28,12 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy requests
+          pip install alpaca-py "pandas<3.1" exchange-calendars google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy requests
+
+      # Verhindert eine erneute unkontrollierte Pandas-nsmallest-Exception,
+      # wenn die Datenqualitaet keine numerischen Sektor-Scores liefert.
+      - name: Short-Scanner Sektorauswahl Regressionstest
+        run: python -m unittest discover -s tests -p "test_short_scanner_sector_selection.py"
 
       - name: Short-Scan ausführen
         # Läuft NACH analyse.py-Import (siehe short_scanner.py) - braucht
