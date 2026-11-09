@@ -7,10 +7,10 @@ import unittest
 try:
     from alpaca.data.enums import Adjustment
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     ALPACA_SDK_AVAILABLE = True
 except ImportError:
-    Adjustment = StockBarsRequest = TimeFrame = None
+    Adjustment = StockBarsRequest = TimeFrame = TimeFrameUnit = None
     ALPACA_SDK_AVAILABLE = False
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,12 +26,19 @@ class AlpacaSplitAdjustmentContractTests(unittest.TestCase):
     @unittest.skipUnless(ALPACA_SDK_AVAILABLE, "alpaca-py is not installed in this local environment")
     def test_sdk_exposes_split_adjustment_and_request_accepts_it(self):
         self.assertEqual(Adjustment.SPLIT.value, "split")
+        # Other test modules stub alpaca.data.timeframe.TimeFrame after collection.
+        # TimeFrame.Day resolves that module global and can therefore hit the stub.
+        # Constructing the preset explicitly uses the real class imported above
+        # while preserving the same one-day timeframe contract.
+        daily_timeframe = TimeFrame(amount=1, unit=TimeFrameUnit.Day)
         request = StockBarsRequest(
             symbol_or_symbols=["AAPL"],
-            timeframe=TimeFrame.Day,
+            timeframe=daily_timeframe,
             adjustment=Adjustment.SPLIT,
         )
         self.assertEqual(request.adjustment, Adjustment.SPLIT)
+        self.assertEqual(request.timeframe.amount, 1)
+        self.assertEqual(request.timeframe.unit, TimeFrameUnit.Day)
 
     def test_every_productive_stock_bars_request_is_explicitly_split_adjusted(self):
         checked = 0
