@@ -74,7 +74,18 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd
+          pip install alpaca-py pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests lxml xlrd exchange-calendars==4.13.2
+
+      - name: Börsenkalender-Abhängigkeit und Projektkalender prüfen
+        run: |
+          python - <<'PY'
+          import exchange_calendars as xc
+
+          print(f"exchange_calendars: {xc.__version__}")
+          for name in ("XNYS", "XNAS", "XETR", "XCSE", "XMAD", "XSHG", "XSTO"):
+              xc.get_calendar(name)
+              print(f"Kalender {name}: OK")
+          PY
 
       # Die bestehende Einzel-Check-Watchlist bleibt Teil des normalen
       # Einzel-Checks und wird vor dem HEBELTRADER-Lauf geladen.
