@@ -91,3 +91,45 @@ def test_yahoo_validation_reports_quality_gate_reasons_without_bypassing_gate(mo
     assert candidates[0]["yahoo_reason"] == (
         "OHLCV-Quality-Gate INCOMPLETE (INSUFFICIENT_EXPECTED_SESSIONS)"
     )
+
+def test_hebeltrader_candidate_calendars_produce_validated_cutoffs():
+    """Real calendar integration: supported Yahoo suffixes must yield cutoffs."""
+    import exchange_calendars as xc
+    import historical_ohlcv as ho
+    from ohlcv_quality_gate import (
+        _calendar_sessions, _last_completed_session_date, quality_checked_frame,
+    )
+
+    ticker_calendars = {
+        "GE": "XNYS", "HXL": "XNYS", "TKR": "XNYS", "NEE": "XNYS",
+        "NDX1.DE": "XETR", "ENR.DE": "XETR", "EOAN.DE": "XETR",
+        "VWS.CO": "XCSE", "ACX.MC": "XMAD",
+        "600011.SS": "XSHG", "SKF-B.ST": "XSTO",
+    }
+    as_of = "2026-11-06T23:00:00Z"
+    dates = pd.DatetimeIndex([
+        "2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06",
+    ])
+    bars = pd.DataFrame(
+        {
+            "Open": [10.0] * 5, "High": [11.0] * 5, "Low": [9.0] * 5,
+            "Close": [10.5] * 5, "Volume": [100.0] * 5,
+        },
+        index=dates,
+    )
+
+    for ticker, calendar_name in ticker_calendars.items():
+        assert ho._calendar_name_for_ticker(ticker) == calendar_name
+        assert calendar_name in xc.get_calendar_names()
+        # Verifies both the close-time cutoff and the expected session axis.
+        assert _last_completed_session_date(ticker, as_of=as_of) == "2026-11-06"
+        sessions = _calendar_sessions(ticker, "2026-11-02", "2026-11-06")
+        assert sessions and sessions[-1] == "2026-11-06"
+        checked = quality_checked_frame(
+            bars, ticker, window_sessions=5, require_structure=True,
+            full_history=True, as_of=as_of,
+        )
+        assert len(checked) == 5
+        assert checked["Close"].notna().all()
+        assert checked.attrs["ohlcv_quality"]["quality_status"] == "PASS"
+
