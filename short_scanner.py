@@ -331,6 +331,44 @@ def get_swing_highs_above(data, entry, lookback=120, order=5):
     return kandidaten
 
 
+def get_swing_high_candidates(data, entry, lookback=120, order=5):
+    """Return every confirmed local high in the window with its pivot date.
+
+    Diagnostic-only companion to get_swing_highs_above. The same window,
+    strict-extremum comparison and left/right confirmation are used.
+    """
+    fenster = data.iloc[-lookback:] if len(data) > lookback else data.copy()
+    if len(fenster) < (2 * order + 1):
+        return []
+    highs = pd.to_numeric(fenster["High"], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(highs).all():
+        return []
+    idx_swings = argrelextrema(highs, np.greater, order=order)[0]
+    idx_swings = idx_swings[
+        (idx_swings >= order) & (idx_swings < len(highs) - order)
+    ]
+    candidates = []
+    for i in idx_swings:
+        price = float(highs[i])
+        if not np.isfinite(price):
+            continue
+        stamp = pd.Timestamp(fenster.index[i])
+        candidates.append({
+            "pivot_date": stamp.date().isoformat(),
+            "price": price,
+            "window_index": int(i),
+            "eligible_for_stop": price > float(entry),
+            "selected": False,
+        })
+    candidates.sort(key=lambda item: (item["price"], item["pivot_date"], item["window_index"]))
+    eligible = [item for item in candidates if item["eligible_for_stop"]]
+    if eligible:
+        # The stop rule selects the lowest distinct eligible price. For ties,
+        # mark the earliest pivot as the representative diagnostic pivot.
+        eligible[0]["selected"] = True
+    return candidates
+
+
 def berechne_strukturellen_stop_short(
     data, entry, atr_puffer=0.5, lookback=120, order=5
 ):
@@ -729,6 +767,10 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
         # durch diese Zusatzberechnung oder Ausgabe veraendert.
         swing_highs_diag = get_swing_highs_above(data, entry)
         swing_high_diag = swing_highs_diag[0] if swing_highs_diag else None
+        swing_candidates_diag = get_swing_high_candidates(data, entry)
+        selected_pivot = next(
+            (item for item in swing_candidates_diag if item["selected"]), None
+        )
         atr14_diag = berechne_atr14(data)
         ziel_diag = sammle_abwaerts_ziele_mit_quellen(data, entry)
         tp1_quellen = next(
@@ -740,9 +782,18 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
         puffer_diag = (0.5 * atr14_diag) if atr14_diag is not None else None
         abstand_tp1 = ((entry - tp1) / entry * 100) if entry else 0.0
         abstand_tp2 = ((entry - tp2) / entry * 100) if entry else 0.0
+        kandidaten_text = "; ".join(
+            f"{'[AUSGEWAEHLT] ' if item['selected'] else ''}"
+            f"{'[oberhalb Einstieg] ' if item['eligible_for_stop'] else '[unter Einstieg] '}"
+            f"{item['pivot_date']}={item['price']:.4f}"
+            for item in swing_candidates_diag
+        ) or "keine bestaetigten Kandidaten"
+        pivot_datum_text = selected_pivot["pivot_date"] if selected_pivot else "N/A"
         diagnose_text = (
             f"{firma_name} ({ticker}): CRV-Filter -> Einstieg={entry:.4f} | "
             f"Stop-Struktur-SwingHigh={swing_high_diag:.4f} | "
+            f"SwingHigh-Pivot-Datum={pivot_datum_text} | "
+            f"SwingHigh-Kandidaten-120S={kandidaten_text} | "
             f"ATR14={atr14_diag:.4f} | ATR-Puffer(0.5x)={puffer_diag:.4f} | "
             f"Stop={stop:.4f} | Stop-Abstand={risk_perc:.2f}% | "
             f"TP1={tp1:.4f} ({abstand_tp1:.2f}% unter Einstieg; "
@@ -1072,7 +1123,7 @@ def main():
             f.write("\nCRV-DIAGNOSE / BEINAHE-KANDIDATEN (Muster erfuellt, am CRV-Filter gescheitert)\n")
             f.write("-" * 70 + "\n")
             f.write("Nur Diagnose und Beobachtung, KEINE Setups. Stop-Struktur, ATR14, ")
-            f.write("Zielquellen, Zielabstaende und ungerundete CRVs; Filter unveraendert.\n")
+            f.write("SwingHigh-Pivot-Daten/Kandidaten, Zielquellen und ungerundete CRVs; Filter unveraendert.\n")
             # Leerzeile zwischen den Eintraegen (NEU 31.07.2026, Nutzerwunsch
             # "Uebersichtlichkeit") - analog zur Watchlist im Hauptscanner.
             # Dedupe wie bei den echten Short-Kandidaten: ein Ticker nur einmal,
