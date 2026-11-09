@@ -1021,6 +1021,15 @@ NON_EQUITY_TICKERS = {
     "CC=F", "LE=F", "HE=F",
 }
 
+def _trade_story_status_label(status):
+    """Mappt den Scanner-Zwischenstatus auf eine eindeutige Rohuniversum-Ebene."""
+    normalized = str(status or "").strip().upper()
+    return {
+        "VALIDE": "VORFILTER_VALIDE",
+        "ACHTUNG": "VORFILTER_ACHTUNG",
+    }.get(normalized, "NICHT_FINAL_QUALIFIZIERT")
+
+
 def ist_nicht_aktien_instrument(ticker):
     return str(ticker or "").strip().upper() in NON_EQUITY_TICKERS
 
@@ -4366,6 +4375,14 @@ if __name__ == "__main__":
     # Setup nur wegen der Präsentationsfilter für die Trade-Story verloren geht.
     try:
         _trade_story_raw = df_s.copy()
+        # Die originale Scanner-Einstufung in Status2 bleibt unveraendert.
+        # Zusaetzlich wird die fachliche Ebene explizit benannt, damit VALIDE
+        # aus dem Vorfilter nicht mit einer finalen Setup-Bestaetigung
+        # verwechselt werden kann.
+        if "Status2" in _trade_story_raw.columns:
+            _trade_story_raw["Trade_Story_Status"] = (
+                _trade_story_raw["Status2"].map(_trade_story_status_label)
+            )
         # Der Ticker ist die technische Identitaet des Rohuniversums. Der
         # bestehende df_s verwendet ihn als Index; reset_index(drop=True) wuerde
         # diese Identitaet unwiederbringlich entfernen und gleichnamige

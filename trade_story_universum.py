@@ -14,11 +14,14 @@ from datetime import date
 from typing import Any
 
 
-VALID_STATUS = "VALIDE SETUP"
+FINAL_VALID_STATUS = "FINAL_VALIDE"
+VALID_STATUS = FINAL_VALID_STATUS
 PREPARED_STATUS = "VORBEREITET"
+PREFILTER_VALID_STATUS = "VORFILTER_VALIDE"
+PREFILTER_ATTENTION_STATUS = "VORFILTER_ACHTUNG"
 EXCLUDED_HEBEL = {"NICHT AUSGELESEN"}
 UNIVERSE_ONLY_HEBEL_STATUS = "KEIN KANDIDAT"
-NO_SETUP_STATUS = "KEIN SETUP"
+NO_SETUP_STATUS = "NICHT_FINAL_QUALIFIZIERT"
 NAME_FIELDS = ("Name", "Firmenname", "name", "firmenname")
 TICKER_FIELDS = ("Ticker", "ticker", "Yahoo-Ticker", "Yahoo_Ticker", "yahoo-ticker")
 
@@ -103,8 +106,8 @@ def _merge(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> None:
             old["sources"].append(source)
     # Confirmed always dominates prepared. A later source may also add details.
     if old.get("trade_story_status") != "STATUSKONFLIKT":
-        if item.get("trade_story_status") == VALID_STATUS:
-            old["trade_story_status"] = VALID_STATUS
+        if item.get("trade_story_status") == FINAL_VALID_STATUS:
+            old["trade_story_status"] = FINAL_VALID_STATUS
         elif (old.get("trade_story_status") == NO_SETUP_STATUS and
               item.get("trade_story_status") == PREPARED_STATUS):
             old["trade_story_status"] = PREPARED_STATUS
@@ -146,7 +149,7 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
 
     # Discovery order: the successfully-read stock universe is the primary
     # membership source. Technical setup exports remain enrichment sources and
-    # may upgrade a member from KEIN SETUP to VORBEREITET/VALIDE, but may never
+    # may enrich a member with VORFILTER_VALIDE/VORFILTER_ACHTUNG and may assign FINAL_VALIDE only from final Setups.csv, but may never
     # remove a successfully-read stock from the universe.
     discovery_rows: list[tuple[dict[str, Any], str]] = []
     for row in stock_universe:
@@ -190,40 +193,58 @@ def _normal_setup_rows(paths: dict[str, str]) -> list[dict[str, Any]]:
                     existing[field] = value
 
     out = []
-    final_by_ticker = {
-        _ticker(_value(r, *TICKER_FIELDS)): r for r in final
-        if _ticker(_value(r, *TICKER_FIELDS))
+    def identity_key(source_row: dict[str, Any]) -> str:
+        ticker = _ticker(_value(source_row, *TICKER_FIELDS))
+        name = _value(source_row, *NAME_FIELDS)
+        return ticker or name.casefold()
+
+    raw_by_identity = {
+        identity_key(r): r for r in raw if identity_key(r)
+    }
+    final_by_identity = {
+        identity_key(r): r for r in final if identity_key(r)
     }
 
     for row, sources in by_ticker.values():
         tk = _ticker(_value(row, *TICKER_FIELDS))
-        status = _value(row, "Status2").upper()
-        effective = final_by_ticker.get(tk, {})
+        key = identity_key(row)
+        raw_status = _value(raw_by_identity.get(key, {}), "Trade_Story_Status", "Status2").upper()
+        effective = final_by_identity.get(key, {})
         final_status = _value(effective, "Status2").upper()
-        if final_status in {"VALIDE", "ACHTUNG"}:
-            status = final_status
 
-        # Technical qualification is downstream of universe membership.
-        if status == "VALIDE":
-            story_status = VALID_STATUS
-        elif status == "ACHTUNG":
+        # Status2 aus dem Rohuniversum ist ausschließlich ein Vorfilter-
+        # Zwischenstatus. Er darf niemals als finale Setup-Bestätigung gelten.
+        if raw_status in {"VALIDE", PREFILTER_VALID_STATUS}:
+            prefilter_status = PREFILTER_VALID_STATUS
+        elif raw_status in {"ACHTUNG", PREFILTER_ATTENTION_STATUS}:
+            prefilter_status = PREFILTER_ATTENTION_STATUS
+        else:
+            prefilter_status = NO_SETUP_STATUS
+
+        # Nur die finale Setups.csv darf ein normales Setup final bestätigen.
+        # ACHTUNG bleibt ein vorbereiteter, nicht kaufbarer Zustand.
+        if final_status == "VALIDE":
+            story_status = FINAL_VALID_STATUS
+        elif final_status == "ACHTUNG":
             story_status = PREPARED_STATUS
         else:
             story_status = NO_SETUP_STATUS
 
         item = _candidate_from_row(
             row, sources[0], story_status, "Long",
-            {"normal_setup_status": status or NO_SETUP_STATUS},
+            {"normal_setup_status": prefilter_status},
         )
         if not item:
             continue
         if len(sources) > 1:
             item["sources"] = sources
-        if final_status in {"VALIDE", "ACHTUNG"}:
-            item["final_setup_status"] = final_status
-            reason = _value(effective, "Status_Grund")
-            if reason:
-                item["Status_Grund"] = reason
+        if final_status == "VALIDE":
+            item["final_setup_status"] = FINAL_VALID_STATUS
+        elif final_status == "ACHTUNG":
+            item["final_setup_status"] = "ACHTUNG"
+        reason = _value(effective, "Status_Grund") if final_status in {"VALIDE", "ACHTUNG"} else ""
+        if reason:
+            item["Status_Grund"] = reason
 
         markt = str(item.get("Markt") or "").strip().upper()
         sektor = str(item.get("Sektor") or "").strip()
@@ -432,7 +453,7 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
             print(f"WARNUNG: HEBELTRADER-Beobachtungsliste fuer Trade-Story-Universum unlesbar: {exc}")
 
     # Latest technical confirmation per ticker. HEBELTRADER-A alone is not
-    # sufficient to label a story "VALIDE SETUP": the Einzel-Check must have
+    # sufficient to assign FINAL_VALIDE: the Einzel-Check must have
     # recorded a confirmed Trendfolge- oder Trendwende-Setup on the same
     # candidate date. This prevents A-status and technische ACHTUNG/absence
     # from being semantically mixed.
@@ -568,12 +589,14 @@ def build_trade_story_universe(paths: dict[str, str], observation_path: str | No
                        str(x.get("ticker") or x.get("name") or ""))
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": date.today().isoformat(),
         "principles": {
-            "valid": VALID_STATUS,
+            "valid": FINAL_VALID_STATUS,
             "prepared": PREPARED_STATUS,
             "no_setup": NO_SETUP_STATUS,
+            "prefilter_valid": PREFILTER_VALID_STATUS,
+            "prefilter_attention": PREFILTER_ATTENTION_STATUS,
             "universe_rule": "Trade_Story_Aktienuniversum: AUSGELESEN -> UNIVERSUM; NICHT AUSGELESEN -> ausgeschlossen",
             "hebeltrader_excluded": sorted(EXCLUDED_HEBEL),
             "hebeltrader_universe_only_status": UNIVERSE_ONLY_HEBEL_STATUS,

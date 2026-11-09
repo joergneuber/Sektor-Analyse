@@ -2059,6 +2059,13 @@ Datenbestand. NUR TEILW. VOLLSTAENDIG = bestehender Kandidat vorhanden, aber das
 vollstaendige technische Setup-Regelwerk ist noch nicht bestaetigt. VALIDER SETUP =
 ausschliesslich ein bereits vom bestehenden Regelwerk bestaetigtes Setup.
 
+VERBINDLICHER JSON-STATUSVERTRAG DES TRADE-STORY-UNIVERSUMS:
+- VORFILTER_VALIDE: Rohuniversum-Scanner-Zwischenstatus ohne Warnkriterien; keine finale Setup-Bestaetigung.
+- VORFILTER_ACHTUNG: Rohuniversum-Scanner-Zwischenstatus mit Warnkriterien; keine finale Setup-Bestaetigung.
+- FINAL_VALIDE: ausschließlich aus einer tatsächlich final qualifizierten Zeile der Setups.csv oder einer eigenständig final bestätigten Setup-Quelle.
+- NICHT_FINAL_QUALIFIZIERT: Discovery-Mitglied ohne finale Setup-Bestaetigung. Es bleibt im Universum, darf aber niemals als VALIDER SETUP, Kauf oder Entry behandelt werden.
+Die JSON-Felder normal_setup_status, final_setup_status und trade_story_status sind getrennt zu interpretieren. Ein Rohuniversum-Status darf trade_story_status=FINAL_VALIDE niemals erzeugen.
+
 WICHTIG: Gemini darf aus einer Discovery, aus ENTDECKT, BEOBACHTUNG, NICHT VORHANDEN
 oder NUR TEILW. VOLLSTAENDIG niemals selbst einen VALIDEN SETUP, einen Kauf oder einen
 Entry machen. Ebenso darf Gemini keinen VALIDEN SETUP aus der Discovery-Ebene ableiten. Ebenso darf Gemini keine bestehenden Filter, CRV-Regeln oder technischen
