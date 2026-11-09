@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GEMINI = ROOT / "gemini_auswertung.py"
+GEMINI = ROOT / "Trading_Radar_Alleinauswertung.py"
 
 
 def load_validator_namespace():
@@ -151,13 +151,25 @@ Risiko: Risiko
         ok, errors = ns["_trade_story_validierung"](repaired, files, str(obs))
         assert ok, errors
 
+        # Legacy central status must not be interpreted as a final confirmation.
+        legacy_central = td / "Trade_Story_Universum(2026-09-10)-legacy.json"
+        legacy_central.write_text(json.dumps({
+            "schema_version": 1,
+            "candidates": [
+                {"ticker":"NBIS","name":"Nebius Group N.V.","trade_story_status":"VALIDE SETUP"},
+            ]
+        }), encoding="utf-8")
+        files["Trade_Story_Universum(...).json"] = str(legacy_central)
+        ok, errors = ns["_trade_story_validierung"](valid, files, str(obs))
+        assert not ok and any("VALIDE SETUP" in e for e in errors), errors
+
         # Central daily universe is authoritative when present and can contain
         # a prepared candidate that is not merely an A/B observation fallback.
         central = td / "Trade_Story_Universum(2026-09-10).json"
         central.write_text(json.dumps({
             "schema_version": 1,
             "candidates": [
-                {"ticker":"NBIS","name":"Nebius Group N.V.","trade_story_status":"VALIDE SETUP"},
+                {"ticker":"NBIS","name":"Nebius Group N.V.","trade_story_status":"FINAL_VALIDE"},
                 {"ticker":"EOG","name":"EOG Resources, Inc.","trade_story_status":"VORBEREITET"},
             ]
         }), encoding="utf-8")

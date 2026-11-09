@@ -102,6 +102,9 @@ def test_trade_story_layer_is_explicit_and_does_not_create_setups():
         _assert(term in master, f"Master instruction missing Trade-Story term: {term}")
     _assert("Gemini darf niemals aus einer Discovery" in prompt or "Gemini darf neue Themen" in prompt, "Gemini setup boundary missing")
     _assert("Gemini darf aus einer Discovery, aus ENTDECKT, BEOBACHTUNG, NICHT VORHANDEN" in master, "Master setup boundary missing")
+    for term in ("VORFILTER_VALIDE", "VORFILTER_ACHTUNG", "FINAL_VALIDE", "NICHT_FINAL_QUALIFIZIERT"):
+        _assert(term in prompt, f"Gemini prompt missing explicit JSON status: {term}")
+        _assert(term in master, f"Master instruction missing explicit JSON status: {term}")
     _assert("Discovery-Status: ENTDECKT | BEOBACHTUNG" in master, "Discovery status field missing")
     _assert("Technischer Status: NICHT VORHANDEN | NUR TEILW. VOLLSTAENDIG | VALIDER SETUP" in master, "Technical status field missing")
 
@@ -236,7 +239,7 @@ def test_trade_story_validator_enforces_status_and_setup_authority():
     _assert("def _trade_story_validierung(" in gem, "Trade-Story validator function missing")
     _assert("Discovery-Status" in gem and "ENTDECKT" in gem and "BEOBACHTUNG" in gem, "Discovery status contract missing")
     _assert("Technischer Status" in gem and "NICHT VORHANDEN" in gem and "NUR TEILW. VOLLSTAENDIG" in gem and "VALIDER SETUP" in gem, "Technical status contract missing")
-    _assert("VALIDE SETUP" in gem and "autoritativen Setup-Dateien" in gem, "VALIDE SETUP authority check missing")
+    _assert("FINAL_VALIDE" in gem and "autoritativen Setup-Dateien" in gem, "FINAL_VALIDE authority check missing")
     _assert("Kauf-/Entry" in gem, "Purchase boundary check missing")
 
 

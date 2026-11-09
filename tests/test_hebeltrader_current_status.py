@@ -105,7 +105,7 @@ def test_a_requires_same_day_technical_confirmation_and_name_fallback():
             "Einzel-Check-Technikhistorie": str(hist),
         }, str(obs))
         assert b["DHL.DE"]["name"] == "DHL AG"
-        assert b["DHL.DE"]["trade_story_status"] == "VALIDE SETUP"
+        assert b["DHL.DE"]["trade_story_status"] == "FINAL_VALIDE"
         assert b["AMD"]["name"] == "Advanced Micro Devices, Inc."
         assert b["AMD"]["trade_story_status"] == "VORBEREITET"
 
