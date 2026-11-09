@@ -368,8 +368,41 @@ ZU AUDITIERENDE KANDIDATEN:
     return normalized[:MAX_LLM_KANDIDATEN]
 
 
+def normalisiere_yahoo_alias(item: dict[str, Any]) -> dict[str, Any]:
+    """Korrigiert ausschließlich drei bekannte Tipp-/Aliasfälle bei passendem Firmennamen.
+
+    Die Prüfung des Namens verhindert, dass ein gleichlautender Ticker eines
+    anderen Unternehmens pauschal auf einen fremden Basiswert umgebogen wird.
+    Der ursprünglich vom LLM gelieferte Ticker bleibt nachvollziehbar erhalten.
+    """
+    ticker = str(item.get("ticker") or "").strip().upper()
+    name = _clean(str(item.get("name") or "")).casefold()
+    aliases = {
+        "02208.HK": ("2208.HK", (r"goldwind", r"金風", r"金风")),
+        "SZL.NS": ("SUZLON.NS", (r"suzlon",)),
+        # Wortgrenze verhindert insbesondere eine Fehlzuordnung von AbbVie.
+        "ABB": ("ABBN.SW", (r"\babb(?:\s+ltd\.?)?\b",)),
+    }
+    alias = aliases.get(ticker)
+    if not alias:
+        return item
+    replacement, expected_name_patterns = alias
+    if not any(re.search(pattern, name, flags=re.I) for pattern in expected_name_patterns):
+        item["yahoo_alias_review"] = (
+            f"Ticker-Alias {ticker} nicht automatisch angewendet: "
+            "Unternehmensname passt nicht eindeutig."
+        )
+        return item
+    item.setdefault("ticker_original", ticker)
+    item["ticker"] = replacement
+    item["ticker_alias_applied"] = f"{ticker} -> {replacement}"
+    return item
+
+
 def yahoo_validiere(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
     valid = []
+    for item in kandidaten:
+        normalisiere_yahoo_alias(item)
     for item in kandidaten:
         ticker = item["ticker"]
         try:
@@ -412,6 +445,14 @@ def yahoo_validiere(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
     role_order = {"primary": 0, "peer": 1, "supplier": 2, "beneficiary": 3, "thematic": 4}
     valid.sort(key=lambda x: (role_order.get(x["role"], 9), -x["confidence"], x["ticker"]))
     return valid[:MAX_VALIDIERTE_KANDIDATEN]
+
+
+def yahoo_ablehnungen(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Liefert alle tatsächlich von Yahoo/Quality-Gate abgelehnten Kandidaten."""
+    return [
+        dict(item) for item in kandidaten
+        if item.get("yahoo_valid") is False
+    ]
 
 
 def _parse_einzel_ergebnisse(stdout: str, tickers: list[str]) -> list[dict[str, Any]]:
@@ -544,7 +585,24 @@ def main() -> int:
     kandidaten = extrahiere_kandidaten(issue)
     print(f"LLM-Kandidaten: {len(kandidaten)}")
     valid = yahoo_validiere(kandidaten)
+    abgelehnt = yahoo_ablehnungen(kandidaten)
     print(f"Yahoo-validierte Kandidaten: {len(valid)}")
+    print(f"Yahoo-abgelehnte Kandidaten: {len(abgelehnt)}")
+    if abgelehnt:
+        print("Yahoo-Ablehnungsdetails:")
+        for item in abgelehnt:
+            print(
+                f"  - {item.get('name', '?')} | "
+                f"{item.get('ticker_original', item.get('ticker', '?'))}"
+                f" -> {item.get('ticker', '?')}: "
+                f"{item.get('yahoo_reason', 'unbekannter Ablehnungsgrund')}"
+            )
+    alias_hinweise = [x for x in kandidaten if x.get("ticker_alias_applied") or x.get("yahoo_alias_review")]
+    for item in alias_hinweise:
+        print(
+            "Ticker-Alias: "
+            f"{item.get('ticker_alias_applied') or item.get('yahoo_alias_review')}"
+        )
     if not valid:
         rejection_details = [
             f"{item.get('ticker', '?')}: {item.get('yahoo_reason', 'unbekannter Ablehnungsgrund')}"
@@ -594,7 +652,14 @@ def main() -> int:
         "processed_at": berlin_now().isoformat(),
         "candidate_count_llm": len(kandidaten),
         "candidate_count_yahoo_valid": len(valid),
+        "candidate_count_yahoo_rejected": len(abgelehnt),
+        # Rückwärtskompatibel: candidates enthält weiterhin ausschließlich
+        # Yahoo-validierte Werte, wie es die bestehenden Verbraucher erwarten.
         "candidates": valid,
+        # Neue Diagnosefelder: künftig lassen sich alle LLM-Kandidaten und
+        # sämtliche Yahoo-/Quality-Gate-Ablehnungen nachträglich rekonstruieren.
+        "llm_candidates": kandidaten,
+        "rejected_candidates": abgelehnt,
         # Vollständiger Einzel-Check-Output bleibt für spätere forensische
         # Rückprüfung erhalten; die Auswertung verwendet die strukturierten
         # Kernfelder oben.
