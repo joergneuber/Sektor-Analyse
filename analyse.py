@@ -499,12 +499,14 @@ sektoren_map = {
     "OIH": "Öl-Services", "TAN": "Solar/Clean Energy"
 }
 
+# Nicht mehr handelbare US-Titel nach abgeschlossenen Uebernahmen entfernt:
+# ANSS (Synopsys), JNPR (HPE), HES (Chevron), MRO (ConocoPhillips).
 sektoren_aktien = {
     "XLK": [
-        "AAPL", "ACN", "ADBE", "ADI", "ADSK", "AKAM", "ALAB", "AMAT", "AMD", "ANET", "ANSS", "APH",
+        "AAPL", "ACN", "ADBE", "ADI", "ADSK", "AKAM", "ALAB", "AMAT", "AMD", "ANET", "APH",
         "ARM", "ASML", "AVGO", "BR", "CDNS", "CDW", "CIEN", "COHR", "CRM", "CRWD", "CRWV", "CSCO",
         "CTSH", "DDOG", "FFIV", "FLEX", "FSLR", "FTNT", "GDDY", "GEN", "GLW", "HPE", "HPQ", "IBM",
-        "INTC", "INTU", "IT", "JBL", "JNPR", "KEYS", "KLAC", "LITE", "LRCX", "MCHP", "MDB", "MPWR",
+        "INTC", "INTU", "IT", "JBL", "KEYS", "KLAC", "LITE", "LRCX", "MCHP", "MDB", "MPWR",
         "MRVL", "MSFT", "MSI", "MSTR", "MU", "NBIS", "NOW", "NTAP", "NVDA", "NXPI", "ON", "ORCL",
         "PANW", "PLTR", "PTC", "Q", "QCOM", "ROP", "SHOP", "SMCI", "SNDK", "SNPS", "STX",
         "SWKS", "TDY", "TEL", "TER", "TRMB", "TXN", "TYL", "VRSN", "WDAY", "WDC", "ZBRA"
@@ -538,7 +540,7 @@ sektoren_aktien = {
         "PG", "PM", "SJM", "STZ", "SYY", "TAP", "TGT", "TSN", "WMT"
     ],
     "XLE": [
-        "APA", "BKR", "COP", "CVX", "DVN", "EOG", "EQT", "FANG", "HAL", "HES", "KMI", "MPC", "MRO",
+        "APA", "BKR", "COP", "CVX", "DVN", "EOG", "EQT", "FANG", "HAL", "KMI", "MPC",
         "OKE", "OXY", "PSX", "SLB", "TRGP", "VLO", "WMB", "XOM"
     ],
     "XLI": [
