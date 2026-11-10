@@ -1126,10 +1126,24 @@ def test_update_database_gap_repair_does_not_count_already_stored_rows_as_update
     ])
     monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["AAPL"])
     monkeypatch.setattr(ho, "_detect_recent_trading_day_gaps", lambda *args, **kwargs: next(scans))
-    monkeypatch.setattr(ho, "_download_batch", lambda tickers, start=None, end=None: {"AAPL": existing})
+    # Isolate the gap-repair path: the pre-existing bar is deliberately the
+    # latest completed session, so the normal stale-update path must not run.
+    monkeypatch.setattr(
+        ho, "_previous_completed_session_date",
+        lambda calendar_name, as_of_date: "2026-11-05",
+    )
+    download_calls = []
+
+    def download_gap_only(tickers, start=None, end=None):
+        download_calls.append((list(tickers), start, end))
+        return {"AAPL": existing}
+
+    monkeypatch.setattr(ho, "_download_batch", download_gap_only)
     monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
 
     stats = ho.update_database(db, source, repair_gaps=True)
+
+    assert download_calls == [(["AAPL"], "2026-11-05", "2026-11-06")]
 
     assert stats["gap_tickers_attempted"] == 1
     assert stats["gap_rows_added"] == 0
