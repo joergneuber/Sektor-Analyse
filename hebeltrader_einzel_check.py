@@ -267,7 +267,7 @@ vollständiges Kandidatenuniversum.
 Regeln:
 - Recall ist wichtiger als Precision: lieber plausible Kandidaten zu viel als
   eine plausible Aktie zu wenig.
-- Liefere 10 bis 18 Kandidaten, sofern die Faktenlage das zulässt.
+- Liefere 10 bis 25 Kandidaten, sofern die Faktenlage das zulässt.
 - Berücksichtige: wahrscheinlichster Basiswert, direkte Peers/Konkurrenten,
   relevante Zulieferer, Profiteure derselben Nachfrage, angrenzende
   Halbleiter-/Technologie-Werte und Unternehmen, die sehr gut zu den
