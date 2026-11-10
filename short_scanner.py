@@ -854,18 +854,26 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
 # HAUPTPROGRAMM
 # ---------------------------------------------------------------------------
 
-def _bereite_rotation_scores_vor(df_perf, markt, anzahl):
+def _bereite_rotation_scores_vor(df_perf, markt, anzahl, *, allow_empty=False):
     """Bereitet Rotation-Scores numerisch auf und verhindert stille Fehlselektion.
 
     Fehlende/ungueltige Scores bleiben fuer das Momentum-Briefing erhalten,
-    werden aber niemals in die Bottom-Sektor-Auswahl aufgenommen.
+    werden aber niemals in die Bottom-Sektor-Auswahl aufgenommen. Mit
+    ``allow_empty=True`` darf ein einzelner Markt ohne gueltige Scores leer
+    zurueckgegeben werden, damit der jeweils andere Markt weiterlaufen kann.
     """
     erforderliche_spalten = {"Sektor", "Rotation-Score"}
     fehlend = erforderliche_spalten.difference(df_perf.columns)
     if fehlend:
-        raise RuntimeError(
+        meldung = (
             f"Short-Scanner: {markt}-Sektorperformance ohne Pflichtspalten "
             f"{sorted(fehlend)}."
+        )
+        if not allow_empty:
+            raise RuntimeError(meldung)
+        print(f"WARNUNG-SHORT-MARKT-UEBERSPRUNGEN: {meldung} Markt wird uebersprungen.")
+        return pd.DataFrame(columns=["Sektor", "5T", "12T", "Rotation-Score"]), pd.DataFrame(
+            columns=["Sektor", "5T", "12T", "Rotation-Score"]
         )
 
     df_perf = df_perf.copy()
@@ -877,12 +885,14 @@ def _bereite_rotation_scores_vor(df_perf, markt, anzahl):
 
     if gueltig.empty:
         ticker_anzahl = len(df_perf)
-        raise RuntimeError(
+        meldung = (
             f"Short-Scanner: keine gueltigen numerischen Rotation-Scores fuer "
             f"{markt} ({ticker_anzahl} Sektor-ETFs geprueft). "
-            "Sektorperformance/Quality-Gate und Datenquellen-Logs pruefen; "
-            "Bottom-Sektor-Auswahl wird sicher abgebrochen."
+            "Sektorperformance/Quality-Gate und Datenquellen-Logs pruefen."
         )
+        if not allow_empty:
+            raise RuntimeError(meldung + " Bottom-Sektor-Auswahl wird sicher abgebrochen.")
+        print(f"WARNUNG-SHORT-MARKT-UEBERSPRUNGEN: {meldung} Markt wird uebersprungen.")
 
     if len(gueltig) < int(anzahl):
         print(
@@ -902,19 +912,31 @@ def bestimme_bottom_sektoren():
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()])
     df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()])
 
+    # US und EU werden unabhaengig voneinander bewertet. Ein vollstaendiger
+    # Datenausfall in einem Markt darf den gueltigen anderen Markt nicht stoppen.
+    # Ungueltige Scores bleiben ausgeschlossen; es werden keine Ersatzwerte erzeugt.
     df_perf, gueltige_us_scores = _bereite_rotation_scores_vor(
-        df_perf, "US", BOTTOM_SEKTOREN_US
+        df_perf, "US", BOTTOM_SEKTOREN_US, allow_empty=True
     )
     df_perf_eu, gueltige_eu_scores = _bereite_rotation_scores_vor(
-        df_perf_eu, "EU", BOTTOM_SEKTOREN_EU
+        df_perf_eu, "EU", BOTTOM_SEKTOREN_EU, allow_empty=True
     )
 
-    bottom_us = gueltige_us_scores.nsmallest(
-        BOTTOM_SEKTOREN_US, "Rotation-Score"
-    )["Sektor"].tolist()
-    bottom_eu = gueltige_eu_scores.nsmallest(
-        BOTTOM_SEKTOREN_EU, "Rotation-Score"
-    )["Sektor"].tolist()
+    if gueltige_us_scores.empty and gueltige_eu_scores.empty:
+        raise RuntimeError(
+            "Short-Scanner: weder US noch EU verfuegen ueber gueltige numerische "
+            "Rotation-Scores. Beide Markt-Scans werden sicher abgebrochen; "
+            "Sektorperformance/Quality-Gate und Datenquellen-Logs pruefen."
+        )
+
+    bottom_us = (
+        gueltige_us_scores.nsmallest(BOTTOM_SEKTOREN_US, "Rotation-Score")["Sektor"].tolist()
+        if not gueltige_us_scores.empty else []
+    )
+    bottom_eu = (
+        gueltige_eu_scores.nsmallest(BOTTOM_SEKTOREN_EU, "Rotation-Score")["Sektor"].tolist()
+        if not gueltige_eu_scores.empty else []
+    )
 
     momentum_us = df_perf.set_index('Sektor')[['5T', '12T', 'Rotation-Score']].to_dict('index')
     momentum_eu = df_perf_eu.set_index('Sektor')[['5T', '12T', 'Rotation-Score']].to_dict('index')
