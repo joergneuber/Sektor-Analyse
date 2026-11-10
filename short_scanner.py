@@ -92,6 +92,39 @@ def _chunks(liste, groesse):
         yield liste[i:i + groesse]
 
 
+def _funnel_universum_kennzahlen(us_tasks, eu_tasks, us_daten, eu_daten):
+    """Liefert Funnel-Bezugsgrößen getrennt nach Sektor-Mitgliedschaft und Ticker.
+
+    Der Short-Funnel prüft jedes (Ticker, Sektor)-Paar separat. Deshalb bleiben
+    seine Ablehnungs- und Kandidatenzahlen sektorbezogene Mitgliedschaften.
+    Diese Kennzahlen ergänzen die eindeutigen Tickerzahlen, ohne den Funnel
+    oder die Sektorzuordnung umzudeuten.
+    """
+    us_ticker = {ticker for ticker, _sektor in us_tasks}
+    eu_ticker = {ticker for ticker, _sektor in eu_tasks}
+    us_ohne_daten = {ticker for ticker in us_ticker if ticker not in us_daten}
+    eu_ohne_daten = {ticker for ticker in eu_ticker if ticker not in eu_daten}
+    keine_daten_mitgliedschaften = (
+        sum(1 for ticker, _sektor in us_tasks if ticker not in us_daten)
+        + sum(1 for ticker, _sektor in eu_tasks if ticker not in eu_daten)
+    )
+    return {
+        "us_mitgliedschaften": len(us_tasks),
+        "eu_mitgliedschaften": len(eu_tasks),
+        "us_eindeutige_ticker": len(us_ticker),
+        "eu_eindeutige_ticker": len(eu_ticker),
+        "us_mehrfachmitgliedschaften": len(us_tasks) - len(us_ticker),
+        "eu_mehrfachmitgliedschaften": len(eu_tasks) - len(eu_ticker),
+        "gesamt_mitgliedschaften": len(us_tasks) + len(eu_tasks),
+        "gesamt_eindeutige_markt_ticker": len(us_ticker) + len(eu_ticker),
+        "gesamt_mehrfachmitgliedschaften": (
+            len(us_tasks) - len(us_ticker) + len(eu_tasks) - len(eu_ticker)
+        ),
+        "keine_daten_mitgliedschaften": keine_daten_mitgliedschaften,
+        "keine_daten_eindeutige_markt_ticker": len(us_ohne_daten) + len(eu_ohne_daten),
+    }
+
+
 # ---------------------------------------------------------------------------
 # SAMMEL-ABRUFE (identisches Prinzip wie trendwende_scanner.py - ein
 # Request pro Chunk statt einem Request pro Ticker)
@@ -100,64 +133,164 @@ def _chunks(liste, groesse):
 def fetch_us_batch(ticker_liste):
     """US-Primärabruf plus gezielter historischer SIP-Nachabruf.
 
-    Der bestehende split-adjustierte Primärabruf bleibt unverändert. Nur Titel,
-    die dort fehlen oder am Quality-Gate scheitern, werden anschließend explizit
-    über den historischen SIP-Feed erneut angefordert. Das Ende liegt auf
-    UTC-Tagesbeginn, damit auch Basic-Konten den verzögerten historischen SIP-
-    Zugriff außerhalb der letzten 15 Minuten nutzen können.
+    Sektor-Mitgliedschaften werden für die Scanner-Zuordnung nicht verändert.
+    Für den Marktdatenabruf zählt jedoch jeder Ticker genau einmal. So werden
+    Mehrfachmitgliedschaften nicht als fehlende Daten interpretiert und jeder
+    eindeutige Request erhält genau einen Primärstatus.
     """
-    ergebnis = {}
-    primaer_ohne_bars = set()
-    primaer_quality_blocked = set()
-    primaer_request_error = set()
-    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
-    for chunk in _chunks(ticker_liste, CHUNK_SIZE):
-        try:
-            request = StockBarsRequest(symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day, adjustment=Adjustment.SPLIT)
-            df_alle = alpaca_client.get_stock_bars(request).df
-        except Exception as e:
-            primaer_request_error.update(chunk)
-            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
+    ticker_eingaben = list(ticker_liste)
+    gueltige_mitgliedschaften = []
+    for ticker in ticker_eingaben:
+        # Das Universum besteht aus Ticker-Strings. None, NaN, Zahlen und
+        # andere Nicht-Strings dürfen nicht durch str() zu API-Symbolen werden.
+        if not isinstance(ticker, str):
             continue
-        if df_alle is None or df_alle.empty:
-            primaer_ohne_bars.update(chunk)
-            continue
-        for ticker in chunk:
-            try:
-                data = df_alle.loc[ticker].copy()
-            except KeyError:
-                primaer_ohne_bars.add(ticker)
-                continue
-            if data.empty:
-                primaer_ohne_bars.add(ticker)
-                continue
-            data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
-            from ohlcv_quality_gate import quality_checked_frame
-            checked = quality_checked_frame(data, ticker, window_sessions=252, require_structure=True)
-            if checked is not None and not checked.empty:
-                ergebnis[ticker] = checked
-            else:
-                primaer_quality_blocked.add(ticker)
-                quality = getattr(checked, "attrs", {}).get("ohlcv_quality", {})
-                print(
-                    f"WARNUNG-OHLCV-QUALITY: {ticker} Primärabruf gesperrt: "
-                    f"{quality.get('reason_codes', ['INCOMPLETE'])}"
-                )
+        ticker_normalisiert = ticker.strip()
+        if ticker_normalisiert:
+            gueltige_mitgliedschaften.append(ticker_normalisiert)
+    sektor_mitgliedschaften = len(gueltige_mitgliedschaften)
+    ungueltige_mitgliedschaften = len(ticker_eingaben) - sektor_mitgliedschaften
+    angefordert = list(dict.fromkeys(gueltige_mitgliedschaften))
+    mehrfachmitgliedschaften = sektor_mitgliedschaften - len(angefordert)
 
-    fehlend = [ticker for ticker in ticker_liste if ticker not in ergebnis]
+    ergebnis = {}
+    status = {}
+    start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+
+    for chunk in _chunks(angefordert, CHUNK_SIZE):
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=chunk,
+                start=start_date,
+                timeframe=TimeFrame.Day,
+                adjustment=Adjustment.SPLIT,
+            )
+            df_alle = alpaca_client.get_stock_bars(request).df
+        except Exception as exc:
+            for ticker in chunk:
+                status[ticker] = "request_error"
+            print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {exc}")
+            continue
+
+        try:
+            primaerantwort_leer = df_alle is None or df_alle.empty
+        except Exception as exc:
+            for ticker in chunk:
+                status[ticker] = "symbol_error"
+            print(
+                f"WARNUNG-US-CHUNK-ANTWORT: Antwort für {len(chunk)} Ticker "
+                f"konnte nicht geprüft werden ({type(exc).__name__}: {exc})."
+            )
+            continue
+        if primaerantwort_leer:
+            for ticker in chunk:
+                status[ticker] = "no_bars"
+            continue
+
+        for ticker in chunk:
+            # Nur ein fehlender Indexeintrag bedeutet "nicht in Response".
+            # Andere Fehler beim Zugriff auf die Provider-Antwort sind echte
+            # tickerbezogene Verarbeitungsfehler und müssen in den SIP-Fallback.
+            try:
+                if ticker not in df_alle.index:
+                    status[ticker] = "not_in_response"
+                    continue
+                data = df_alle.loc[ticker].copy()
+            except Exception as exc:
+                status[ticker] = "symbol_error"
+                print(
+                    f"WARNUNG-US-SYMBOL-VERARBEITUNG: {ticker} konnte nicht "
+                    f"aus der Primärantwort gelesen werden "
+                    f"({type(exc).__name__}: {exc})."
+                )
+                continue
+
+            try:
+                if data.empty:
+                    status[ticker] = "no_bars"
+                    continue
+
+                data = data.rename(
+                    columns={
+                        "close": "Close",
+                        "high": "High",
+                        "low": "Low",
+                        "open": "Open",
+                        "volume": "Volume",
+                    }
+                )
+                from ohlcv_quality_gate import quality_checked_frame
+                checked = quality_checked_frame(
+                    data, ticker, window_sessions=252, require_structure=True
+                )
+                if checked is not None and not checked.empty:
+                    ergebnis[ticker] = checked
+                    status[ticker] = "accepted_primary"
+                else:
+                    status[ticker] = "quality_rejected"
+                    quality = getattr(checked, "attrs", {}).get("ohlcv_quality", {})
+                    print(
+                        f"WARNUNG-OHLCV-QUALITY: {ticker} Primärabruf gesperrt: "
+                        f"{quality.get('reason_codes', ['INCOMPLETE'])}"
+                    )
+            except Exception as exc:
+                status[ticker] = "symbol_error"
+                print(
+                    f"WARNUNG-US-SYMBOL-VERARBEITUNG: {ticker} konnte nicht "
+                    f"normalisiert/geprüft werden "
+                    f"({type(exc).__name__}: {exc})."
+                )
+                continue
+
+    # Vollständige, disjunkte Primärbilanz über eindeutige angeforderte Symbole.
+    # Die Mengenprüfung verhindert, dass fehlende/unerwartete Statusschlüssel
+    # durch eine bloße Zählung verdeckt werden.
+    status_counts = Counter(status.values())
+    klassifiziert = sum(status_counts.values())
+    angefordert_set = set(angefordert)
+    if (
+        set(status) != angefordert_set
+        or klassifiziert != len(angefordert_set)
+        or not set(ergebnis).issubset(angefordert_set)
+    ):
+        nicht_klassifiziert = sorted(angefordert_set - set(status))
+        unerwartete_status = sorted(set(status) - angefordert_set)
+        unerwartete_ergebnisse = sorted(set(ergebnis) - angefordert_set)
+        raise RuntimeError(
+            "US-Primärstatus/Bilanz inkonsistent: "
+            f"{klassifiziert}/{len(angefordert_set)} klassifiziert; "
+            f"ohne Status={nicht_klassifiziert}; "
+            f"unerwartete Status={unerwartete_status}; "
+            f"unerwartete Ergebnisse={unerwartete_ergebnisse}."
+        )
+
+    fehlend = [ticker for ticker in angefordert if ticker not in ergebnis]
     print(
-        f"DEBUG-US-PRIMARY-STATUS: ohne Bars={len(primaer_ohne_bars)}, "
-        f"Quality-Gate gesperrt={len(primaer_quality_blocked)}, "
-        f"Request-Fehler={len(primaer_request_error)}."
+        "DEBUG-US-UNIVERSE: "
+        f"Sektor-Mitgliedschaften={sektor_mitgliedschaften}, "
+        f"eindeutige US-Ticker={len(angefordert)}, "
+        f"Mehrfachmitgliedschaften={mehrfachmitgliedschaften}, "
+        f"ungültig/leer={ungueltige_mitgliedschaften}."
+    )
+    print(
+        "DEBUG-US-PRIMARY-STATUS: "
+        f"akzeptiert={status_counts.get('accepted_primary', 0)}, "
+        f"ohne Bars={status_counts.get('no_bars', 0)}, "
+        f"nicht in Response={status_counts.get('not_in_response', 0)}, "
+        f"Quality-Gate gesperrt={status_counts.get('quality_rejected', 0)}, "
+        f"Request-Fehler={status_counts.get('request_error', 0)}, "
+        f"Symbolfehler={status_counts.get('symbol_error', 0)}; "
+        f"Bilanz={klassifiziert}/{len(angefordert)}."
     )
     print(
         f"DEBUG: US-Primärabruf (Short) lieferte Daten fuer "
-        f"{len(ergebnis)}/{len(ticker_liste)} Ticker; SIP-Nachabruf fuer "
-        f"{len(fehlend)} fehlende Titel."
+        f"{len(ergebnis)}/{len(angefordert)} eindeutige Ticker; "
+        f"SIP-Nachabruf fuer {len(fehlend)} fehlende Titel."
     )
+
+    sip_akzeptiert = 0
     if fehlend:
         print("DEBUG-US-SIP-FALLBACK-TICKER: " + ", ".join(fehlend))
-    if fehlend:
         # Alpaca Basic erlaubt historische SIP-Abfragen, sofern der angefragte
         # Zeitraum mindestens 15 Minuten zurückliegt. UTC-Tagesbeginn ist ein
         # stabiler Stichtag und schließt die laufende Sitzung bewusst aus.
@@ -179,18 +312,49 @@ def fetch_us_batch(ticker_liste):
                 f"({type(exc).__name__}: {exc}); Primärergebnisse bleiben erhalten."
             )
             sip_daten = {}
-        wiederhergestellt = [ticker for ticker in fehlend if ticker in sip_daten]
-        ergebnis.update({ticker: sip_daten[ticker] for ticker in wiederhergestellt})
+
+        wiederhergestellt = [
+            ticker for ticker in fehlend
+            if ticker in sip_daten and ticker not in ergebnis
+        ]
+        # Nur zuvor fehlende Ticker übernehmen; akzeptierte Primärdaten bleiben
+        # unverändert und können durch SIP niemals überschrieben werden.
+        for ticker in wiederhergestellt:
+            ergebnis[ticker] = sip_daten[ticker]
+            status[ticker] = "accepted_sip"
+        sip_akzeptiert = len(wiederhergestellt)
         weiterhin_fehlend = [ticker for ticker in fehlend if ticker not in ergebnis]
         print(
-            f"DEBUG-US-SIP-FALLBACK: {len(wiederhergestellt)}/{len(fehlend)} "
+            f"DEBUG-US-SIP-FALLBACK: {sip_akzeptiert}/{len(fehlend)} "
             f"fehlende Titel nach Quality-Gate wiederhergestellt; "
             f"weiterhin fehlend: {len(weiterhin_fehlend)}."
         )
         if weiterhin_fehlend:
             print("DEBUG-US-SIP-REST: " + ", ".join(weiterhin_fehlend))
 
-    print(f"DEBUG: US-Sammel-Abruf (Short) lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
+    final_akzeptiert_ticker = set(ergebnis).intersection(angefordert_set)
+    final_fehlend_ticker = angefordert_set - final_akzeptiert_ticker
+    if (
+        set(ergebnis) - angefordert_set
+        or final_akzeptiert_ticker & final_fehlend_ticker
+        or final_akzeptiert_ticker | final_fehlend_ticker != angefordert_set
+    ):
+        raise RuntimeError("US-Datenbilanz nach SIP-Fallback ist inkonsistent.")
+    final_akzeptiert = len(final_akzeptiert_ticker)
+    final_fehlend = len(final_fehlend_ticker)
+
+    print(
+        "DEBUG-US-FINAL-STATUS: "
+        f"Primär akzeptiert={status_counts.get('accepted_primary', 0)}, "
+        f"SIP akzeptiert={sip_akzeptiert}, "
+        f"weiterhin fehlend={final_fehlend}; "
+        f"Bilanz={final_akzeptiert}+{final_fehlend}={len(angefordert)}."
+    )
+    print(
+        f"DEBUG: US-Sammel-Abruf (Short) lieferte Daten fuer "
+        f"{final_akzeptiert}/{len(angefordert)} eindeutige Ticker "
+        f"(bei {sektor_mitgliedschaften} Sektor-Mitgliedschaften)."
+    )
     return ergebnis
 
 
@@ -1062,10 +1226,13 @@ def main():
     # Funnel-Statistik (NEU 28.07.2026): zaehlt je Ablehnungsstufe, wie viele
     # Ticker dort rausfallen - macht "0 Kandidaten" interpretierbar.
     funnel = Counter()
-    funnel["keine_kursdaten"] = (
-        sum(1 for t, _ in us_tasks if t not in us_daten)
-        + sum(1 for t, _ in eu_tasks if t not in eu_daten)
+    funnel_universum = _funnel_universum_kennzahlen(
+        us_tasks, eu_tasks, us_daten, eu_daten
     )
+    # Die Funnel-Stufen zählen (Ticker, Sektor)-Mitgliedschaften, weil jedes
+    # Paar separat geprüft wird. Die eindeutigen Tickerzahlen werden daneben
+    # ausgewiesen und nicht mit den sektorbezogenen Stufen vermischt.
+    funnel["keine_kursdaten"] = funnel_universum["keine_daten_mitgliedschaften"]
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
             executor.submit(_pruefe_short_setup, t, s, "US", us_daten[t], spy_close, momentum_us.get(s))
@@ -1091,7 +1258,7 @@ def main():
     print(f"DEBUG: {len(ergebnisse)} Short-Kandidaten gefunden.")
 
     # Funnel für Konsole + Briefing aufbereiten (Reihenfolge = Pruefstufen)
-    gesamt_universum = len(us_tasks) + len(eu_tasks)
+    gesamt_universum = funnel_universum["gesamt_mitgliedschaften"]
     funnel_stufen = [
         ("keine_kursdaten", "Keine Kursdaten geliefert (API)"),
         ("zu_wenig_daten", "Zu wenig Kurshistorie"),
@@ -1105,7 +1272,24 @@ def main():
         ("crv_unter_1", "CRV-Filter (CRV1 und CRV2 muessen jeweils > 1.0 sein)"),
         ("kandidat", "KANDIDAT (vor Dedupe/Status-Split)"),
     ]
-    funnel_zeilen = [f"Universum gesamt (Bottom-Sektoren): {gesamt_universum} Titel"]
+    funnel_zeilen = [
+        f"Universum: {gesamt_universum} Sektor-Mitgliedschaften",
+        "Eindeutige Markt-Ticker: "
+        f"{funnel_universum['gesamt_eindeutige_markt_ticker']} "
+        f"(US: {funnel_universum['us_eindeutige_ticker']}, "
+        f"EU: {funnel_universum['eu_eindeutige_ticker']})",
+        "Mehrfachmitgliedschaften: "
+        f"{funnel_universum['gesamt_mehrfachmitgliedschaften']} "
+        f"(US: {funnel_universum['us_mehrfachmitgliedschaften']}, "
+        f"EU: {funnel_universum['eu_mehrfachmitgliedschaften']})",
+        "Keine Kursdaten: "
+        f"{funnel_universum['keine_daten_mitgliedschaften']} fehlende "
+        "Sektor-Mitgliedschaften bei "
+        f"{funnel_universum['keine_daten_eindeutige_markt_ticker']} "
+        "eindeutigen Markt-Tickern",
+        "Hinweis: Ablehnungsstufen und Kandidaten zählen Sektor-Mitgliedschaften; "
+        "Kandidaten vor Ticker-Deduplizierung.",
+    ]
     verbleibend = gesamt_universum
     for _key, _beschreibung in funnel_stufen:
         _anzahl = funnel.get(_key, 0)
