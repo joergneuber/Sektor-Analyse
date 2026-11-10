@@ -32,9 +32,21 @@ def _chunks(items: list[str], size: int):
         yield items[i:i + size]
 
 
-def _request_chunk(client: Any, original_symbols: list[str], start_date: datetime.datetime,
-                   ergebnis: dict[str, pd.DataFrame], depth: int = 0) -> None:
-    """Fordert einen Chunk an; bei invalid-symbol-Fehlern wird er geteilt."""
+def _request_chunk(
+    client: Any,
+    original_symbols: list[str],
+    start_date: datetime.datetime,
+    ergebnis: dict[str, pd.DataFrame],
+    depth: int = 0,
+    *,
+    end_date: datetime.datetime | None = None,
+    feed: Any = None,
+) -> None:
+    """Fordert einen Chunk an; bei invalid-symbol-Fehlern wird er geteilt.
+
+    Optionaler Feed-/Endzeitpunkt erlaubt gezielte historische Nachabrufe,
+    ohne das bisherige Default-Verhalten der bestehenden Aufrufer zu ändern.
+    """
     if not original_symbols:
         return
 
@@ -45,6 +57,8 @@ def _request_chunk(client: Any, original_symbols: list[str], start_date: datetim
             start=start_date,
             timeframe=TimeFrame.Day,
             adjustment=Adjustment.SPLIT,
+            **({"end": end_date} if end_date is not None else {}),
+            **({"feed": feed} if feed is not None else {}),
         )
         df_alle = client.get_stock_bars(request).df
     except Exception as exc:
@@ -53,8 +67,14 @@ def _request_chunk(client: Any, original_symbols: list[str], start_date: datetim
 
         if invalid_symbol and len(original_symbols) > 1:
             mitte = len(original_symbols) // 2
-            _request_chunk(client, original_symbols[:mitte], start_date, ergebnis, depth + 1)
-            _request_chunk(client, original_symbols[mitte:], start_date, ergebnis, depth + 1)
+            _request_chunk(
+                client, original_symbols[:mitte], start_date, ergebnis, depth + 1,
+                end_date=end_date, feed=feed,
+            )
+            _request_chunk(
+                client, original_symbols[mitte:], start_date, ergebnis, depth + 1,
+                end_date=end_date, feed=feed,
+            )
             return
 
         if invalid_symbol and len(original_symbols) == 1:
@@ -94,8 +114,15 @@ def _request_chunk(client: Any, original_symbols: list[str], start_date: datetim
         ergebnis[original] = data
 
 
-def fetch_us_batch_robust(client: Any, ticker_liste: list[str], *,
-                          chunk_size: int = 100, days: int = 365) -> dict[str, pd.DataFrame]:
+def fetch_us_batch_robust(
+    client: Any,
+    ticker_liste: list[str],
+    *,
+    chunk_size: int = 100,
+    days: int = 365,
+    end: datetime.datetime | None = None,
+    feed: Any = None,
+) -> dict[str, pd.DataFrame]:
     """Robuster Alpaca-Sammelabruf.
 
     Ein invalides Symbol verwirft nicht mehr den gesamten Chunk. Nur echte
@@ -104,11 +131,17 @@ def fetch_us_batch_robust(client: Any, ticker_liste: list[str], *,
     kaschiert.
     """
     ergebnis: dict[str, pd.DataFrame] = {}
-    start_date = datetime.datetime.now() - datetime.timedelta(days=days)
+    # Bei einem expliziten Endzeitpunkt wird das Fenster relativ zu diesem
+    # Stichtag berechnet. Ohne end bleibt das bisherige Verhalten unverändert.
+    end_date = end
+    start_date = (end_date or datetime.datetime.now()) - datetime.timedelta(days=days)
     ticker_liste = list(dict.fromkeys(str(t).strip() for t in ticker_liste if str(t).strip()))
 
     for chunk in _chunks(ticker_liste, chunk_size):
-        _request_chunk(client, chunk, start_date, ergebnis)
+        _request_chunk(
+            client, chunk, start_date, ergebnis,
+            end_date=end_date, feed=feed,
+        )
 
     # Alpaca-OHLCV-Daten duerfen die zentrale Qualitaetspruefung nicht umgehen.
     # Die angeforderte Kalenderlaenge wird in erwartete Tages-Sitzungen

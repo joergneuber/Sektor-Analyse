@@ -71,9 +71,10 @@ from collections import Counter
 # Beinahe-Treffer der letzten Stufe (NEU 30.07.2026) - siehe Kommentar
 # an der Sammelstelle in _pruefe_short_setup.
 BEINAHE_SHORT = []
-from alpaca.data.enums import Adjustment
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from market_data import fetch_us_batch_robust
 
 # ---------------------------------------------------------------------------
 # KONFIGURATION
@@ -97,29 +98,98 @@ def _chunks(liste, groesse):
 # ---------------------------------------------------------------------------
 
 def fetch_us_batch(ticker_liste):
+    """US-Primärabruf plus gezielter historischer SIP-Nachabruf.
+
+    Der bestehende split-adjustierte Primärabruf bleibt unverändert. Nur Titel,
+    die dort fehlen oder am Quality-Gate scheitern, werden anschließend explizit
+    über den historischen SIP-Feed erneut angefordert. Das Ende liegt auf
+    UTC-Tagesbeginn, damit auch Basic-Konten den verzögerten historischen SIP-
+    Zugriff außerhalb der letzten 15 Minuten nutzen können.
+    """
     ergebnis = {}
+    primaer_ohne_bars = set()
+    primaer_quality_blocked = set()
+    primaer_request_error = set()
     start_date = datetime.datetime.now() - datetime.timedelta(days=365)
     for chunk in _chunks(ticker_liste, CHUNK_SIZE):
         try:
             request = StockBarsRequest(symbol_or_symbols=chunk, start=start_date, timeframe=TimeFrame.Day, adjustment=Adjustment.SPLIT)
             df_alle = alpaca_client.get_stock_bars(request).df
         except Exception as e:
+            primaer_request_error.update(chunk)
             print(f"FEHLER beim Sammel-Abruf US-Chunk ({len(chunk)} Ticker): {e}")
             continue
-        if df_alle.empty:
+        if df_alle is None or df_alle.empty:
+            primaer_ohne_bars.update(chunk)
             continue
         for ticker in chunk:
             try:
                 data = df_alle.loc[ticker].copy()
             except KeyError:
+                primaer_ohne_bars.add(ticker)
                 continue
             if data.empty:
+                primaer_ohne_bars.add(ticker)
                 continue
             data = data.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open', 'volume': 'Volume'})
             from ohlcv_quality_gate import quality_checked_frame
             checked = quality_checked_frame(data, ticker, window_sessions=252, require_structure=True)
-            if not checked.empty:
+            if checked is not None and not checked.empty:
                 ergebnis[ticker] = checked
+            else:
+                primaer_quality_blocked.add(ticker)
+                quality = getattr(checked, "attrs", {}).get("ohlcv_quality", {})
+                print(
+                    f"WARNUNG-OHLCV-QUALITY: {ticker} Primärabruf gesperrt: "
+                    f"{quality.get('reason_codes', ['INCOMPLETE'])}"
+                )
+
+    fehlend = [ticker for ticker in ticker_liste if ticker not in ergebnis]
+    print(
+        f"DEBUG-US-PRIMARY-STATUS: ohne Bars={len(primaer_ohne_bars)}, "
+        f"Quality-Gate gesperrt={len(primaer_quality_blocked)}, "
+        f"Request-Fehler={len(primaer_request_error)}."
+    )
+    print(
+        f"DEBUG: US-Primärabruf (Short) lieferte Daten fuer "
+        f"{len(ergebnis)}/{len(ticker_liste)} Ticker; SIP-Nachabruf fuer "
+        f"{len(fehlend)} fehlende Titel."
+    )
+    if fehlend:
+        print("DEBUG-US-SIP-FALLBACK-TICKER: " + ", ".join(fehlend))
+    if fehlend:
+        # Alpaca Basic erlaubt historische SIP-Abfragen, sofern der angefragte
+        # Zeitraum mindestens 15 Minuten zurückliegt. UTC-Tagesbeginn ist ein
+        # stabiler Stichtag und schließt die laufende Sitzung bewusst aus.
+        sip_end = datetime.datetime.now(datetime.timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+        )
+        try:
+            sip_daten = fetch_us_batch_robust(
+                alpaca_client,
+                fehlend,
+                chunk_size=CHUNK_SIZE,
+                days=365,
+                end=sip_end,
+                feed=DataFeed.SIP,
+            )
+        except Exception as exc:
+            print(
+                f"WARNUNG-US-SIP-FALLBACK: Nachabruf fehlgeschlagen "
+                f"({type(exc).__name__}: {exc}); Primärergebnisse bleiben erhalten."
+            )
+            sip_daten = {}
+        wiederhergestellt = [ticker for ticker in fehlend if ticker in sip_daten]
+        ergebnis.update({ticker: sip_daten[ticker] for ticker in wiederhergestellt})
+        weiterhin_fehlend = [ticker for ticker in fehlend if ticker not in ergebnis]
+        print(
+            f"DEBUG-US-SIP-FALLBACK: {len(wiederhergestellt)}/{len(fehlend)} "
+            f"fehlende Titel nach Quality-Gate wiederhergestellt; "
+            f"weiterhin fehlend: {len(weiterhin_fehlend)}."
+        )
+        if weiterhin_fehlend:
+            print("DEBUG-US-SIP-REST: " + ", ".join(weiterhin_fehlend))
+
     print(f"DEBUG: US-Sammel-Abruf (Short) lieferte Daten fuer {len(ergebnis)}/{len(ticker_liste)} Ticker.")
     return ergebnis
 
