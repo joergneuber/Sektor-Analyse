@@ -53,8 +53,8 @@ BERLIN = ZoneInfo("Europe/Berlin")
 # Bewusst großzügig. Die zweite LLM-Stufe und Yahoo-Validierung reduzieren
 # Halluzinationen; die recall-lastige Vorauswahl soll dagegen keine plausible
 # Aktie zu früh verlieren.
-MAX_LLM_KANDIDATEN = 18
-MAX_VALIDIERTE_KANDIDATEN = 15
+MAX_LLM_KANDIDATEN = 25
+MAX_VALIDIERTE_KANDIDATEN = 25
 
 # Bekannte Nicht-Aktien, die der Kandidaten-LLM gelegentlich als Ticker nennt.
 AUSSCHLUSS_TICKER = {
