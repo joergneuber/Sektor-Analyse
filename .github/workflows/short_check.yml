@@ -40,6 +40,7 @@ jobs:
           python -m unittest discover -s tests -p "test_short_scanner_sector_selection.py"
           python -m unittest discover -s tests -p "test_short_scanner_calculations.py"
           python -m unittest discover -s tests -p "test_short_scanner_adjustment_and_swing_diagnostics.py"
+          python -m unittest discover -s tests -p "test_short_scanner_us_data_fallback.py"
 
       - name: Short-Scan ausführen
         # Läuft NACH analyse.py-Import (siehe short_scanner.py) - braucht
