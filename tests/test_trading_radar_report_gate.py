@@ -867,3 +867,22 @@ def test_m05_bootstrap_snapshot_is_never_misreported_as_comparison_pass():
         report = production._trading_radar_thesenregister_nachweis_text(report_fixture(), evidence)
         errors = gate.validate_report(report)
         assert any("M-05" in error for error in errors), errors
+
+def test_m05_accepts_unicode_thesis_ids_in_register_rows_and_change_lists():
+    unicode_id = "makro-zinsen-liquidität-2026-11"
+    report = report_fixture()
+    report = report.replace("T-1", unicode_id)
+    errors = gate.validate_report(report)
+    assert not any("M-05" in error for error in errors), errors
+
+
+def test_m07_accepts_unicode_thesis_id_in_compact_identity_row():
+    unicode_id = "makro-zinsen-liquidität-2026-11"
+    report = report_fixture()
+    report = report.replace(
+        "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
+        f"- {unicode_id} | Version 1 | Status BESTÄTIGT",
+    )
+    errors = gate.validate_report(report)
+    assert not any("M-07" in error for error in errors), errors
+
