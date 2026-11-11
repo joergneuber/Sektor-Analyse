@@ -307,6 +307,59 @@ def _hebeltrader_teilkriterien(ticker, name, sektor, markt, waehrung, data, entr
         print(f"DEBUG-HEBELTRADER: {ticker} -> Teilkriterien nicht berechenbar ({type(e).__name__}: {e})")
 
 
+def _normalisiere_rotationsdaten(df_perf):
+    """Validiert Rotationskennzahlen numerisch, ohne fehlende Werte zu ersetzen.
+
+    Nicht numerisch lesbare Werte werden NaN. Insbesondere werden fehlende
+    Sektordaten niemals als Rotation-Score 0 interpretiert.
+    """
+    if df_perf is None:
+        return pd.DataFrame(columns=["Sektor", "5T", "12T", "Rotation-Score"])
+
+    result = df_perf.copy()
+    for spalte in ("Rotation-Score", "5T", "12T"):
+        if spalte not in result.columns:
+            result[spalte] = np.nan
+        else:
+            result[spalte] = pd.to_numeric(result[spalte], errors="coerce")
+        # Einheitlicher Float-Datentyp verhindert auch bei nullable Integer-
+        # oder Extension-Dtypes Probleme bei der Endlichkeitspruefung.
+        result[spalte] = result[spalte].astype(float)
+        # Inf/-Inf sind zwar numerisch, aber keine gueltigen Messwerte.
+        # Sie duerfen weder in nlargest() noch in eine Sektorfreigabe gelangen.
+        result[spalte] = result[spalte].where(np.isfinite(result[spalte]), np.nan)
+    return result
+
+
+def _top_rotation_sektoren(
+    df_perf, anzahl, pflicht_spalten=("Rotation-Score", "5T", "12T")
+):
+    """Liefert nur numerisch belegte Top-Sektoren; leer bleibt leer."""
+    valid = _normalisiere_rotationsdaten(df_perf).dropna(
+        subset=list(pflicht_spalten)
+    )
+    if valid.empty:
+        return []
+    return (
+        valid.nlargest(anzahl, "Rotation-Score")["Sektor"]
+        .dropna()
+        .astype(str)
+        .tolist()
+    )
+
+
+def _filter_setups_nach_rotation(df_setups, df_perf_us, df_perf_eu):
+    """Filtert Setups marktbewusst; fehlende Rotation gibt keinen Sektor frei."""
+    top_us = _top_rotation_sektoren(df_perf_us, 8)
+    top_eu = _top_rotation_sektoren(df_perf_eu, 5)
+    sektor_ok = (
+        ((df_setups["Markt"] == "US") & (df_setups["Sektor"].isin(top_us)))
+        | ((df_setups["Markt"] == "EU") & (df_setups["Sektor"].isin(top_eu)))
+    )
+    gefiltert = df_setups[sektor_ok & (df_setups["Trend"] == "OK")].copy()
+    return gefiltert, top_us, top_eu
+
+
 def _hebeltrader_finalisieren(df_perf, df_perf_eu):
     """Stufe 2: finalisiert den HebelTrader-Score und baut parallel einen
     transparenten Funnel auf.
@@ -322,8 +375,10 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
     sektor_5t = {}
     sektor_rotation = {}
     try:
-        us_valid = df_perf.dropna(subset=["Rotation-Score", "5T"])
-        top_8 = set(us_valid.nlargest(8, "Rotation-Score")["Sektor"].tolist())
+        us_valid = _normalisiere_rotationsdaten(df_perf).dropna(
+            subset=["Rotation-Score", "5T"]
+        )
+        top_8 = set(_top_rotation_sektoren(us_valid, 8, ("Rotation-Score", "5T")))
         for _, z in us_valid.iterrows():
             sektor_5t[str(z["Sektor"])] = float(z["5T"])
             sektor_rotation[str(z["Sektor"])] = (
@@ -332,8 +387,10 @@ def _hebeltrader_finalisieren(df_perf, df_perf_eu):
     except Exception:
         top_8 = set()
     try:
-        eu_valid = df_perf_eu.dropna(subset=["Rotation-Score", "5T"])
-        top_5_eu = set(eu_valid.nlargest(5, "Rotation-Score")["Sektor"].tolist())
+        eu_valid = _normalisiere_rotationsdaten(df_perf_eu).dropna(
+            subset=["Rotation-Score", "5T"]
+        )
+        top_5_eu = set(_top_rotation_sektoren(eu_valid, 5, ("Rotation-Score", "5T")))
         for _, z in eu_valid.iterrows():
             sektor_5t[str(z["Sektor"])] = float(z["5T"])
             sektor_rotation[str(z["Sektor"])] = (
@@ -4116,7 +4173,9 @@ if __name__ == "__main__":
         print(f"WARNUNG: Trade-Story-Bitcoin-Export fehlgeschlagen: {_e}")
     
     # 2. Performance berechnen (US-Sektor-Rotation über Alpaca)
-    df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()]).sort_values("Rotation-Score", ascending=False)
+    df_perf = _normalisiere_rotationsdaten(
+        pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()])
+    ).sort_values("Rotation-Score", ascending=False)
     # Nur vollstaendige Rotationswerte duerfen die Top-Sektor-Auswahl steuern.
     # Unvollstaendige Zeilen bleiben in der CSV-Diagnose sichtbar, werden aber
     # nicht durch .head(8) versehentlich in die HebelTrader-Topauswahl gezogen.
@@ -4125,8 +4184,15 @@ if __name__ == "__main__":
     # 2a. EU-Sektor-Rotation separat berechnen (STOXX-Europe-600-Sektor-ETFs über yfinance,
     # da Alpaca diese nicht abdeckt). Läuft unabhängig von der US-Rotation.
     print("Berechne EU-Sektor-Rotation (STOXX Europe 600)...")
-    df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()]).sort_values("Rotation-Score", ascending=False)
+    df_perf_eu = _normalisiere_rotationsdaten(
+        pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()])
+    ).sort_values("Rotation-Score", ascending=False)
     df_perf_eu_valid = df_perf_eu.dropna(subset=["Rotation-Score", "5T", "12T"]).copy()
+    if df_perf_eu_valid.empty:
+        print(
+            "WARNUNG: Keine gueltigen EU-Sektor-Rotationsdaten vorhanden. "
+            "Es werden keine EU-Sektoren freigegeben; die US-Rotation laeuft unabhaengig weiter."
+        )
 
     # 2b. Benchmarks für die Relative-Stärke-Berechnung laden (einmalig, US + EU getrennt)
     spy_close = get_benchmark_close()
@@ -4434,25 +4500,27 @@ if __name__ == "__main__":
 
     # 5. FILTERN (Erweitert um Trend-Check)
     if not df_s.empty:
-        top_8_sektoren = df_perf_valid.nlargest(8, 'Rotation-Score')['Sektor'].tolist()
-        top_5_eu_sektoren = df_perf_eu_valid.nlargest(5, 'Rotation-Score')['Sektor'].tolist()
+        # Diagnosebasis VOR dem Filter sichern: Die Debug-Ausgabe soll auch
+        # abgelehnte Kandidaten zeigen und nicht nur die verbleibenden Setups.
+        df_s_vor_rotation_filter = df_s.copy()
+
+        # Beide Maerkte werden unabhaengig gefiltert. Eine leere EU-Rotation
+        # bleibt bewusst [] und kann daher keine EU-Setups freigeben.
+        df_s, top_8_sektoren, top_5_eu_sektoren = _filter_setups_nach_rotation(
+            df_s, df_perf_valid, df_perf_eu_valid
+        )
 
         # DEBUG: Zeigt, an welchem der beiden Kriterien (Sektor oder Trend) die
         # gefundenen Setups vor dem Filter stehen. Marktbewusst, da US- und EU-
         # Sektornamen sich überschneiden können (z.B. "Technologie" in beiden).
         print(f"DEBUG: Top-8-US-Sektoren laut Rotation-Score: {top_8_sektoren}")
         print(f"DEBUG: Top-5-EU-Sektoren laut Rotation-Score: {top_5_eu_sektoren}")
-        for tk, r in df_s[['Sektor', 'Markt', 'Trend']].iterrows():
+        for tk, r in df_s_vor_rotation_filter[['Sektor', 'Markt', 'Trend']].iterrows():
             erlaubte_liste = top_8_sektoren if r['Markt'] == 'US' else top_5_eu_sektoren
             print(f"DEBUG: Setup vor Filter -> {tk} | Markt: {r['Markt']} | Sektor: {r['Sektor']} (in Top: {r['Sektor'] in erlaubte_liste}) | Trend: {r['Trend']}")
 
-        # NEU: Nur Sektoren-Treffer UND nur Aktien, die im Aufwärtstrend (über WMA200) sind.
-        # Marktbewusst: US-Setups gegen US-Top-8, DAX-Setups gegen EU-Top-5 (separate Rotationen).
-        sektor_ok = (
-            ((df_s['Markt'] == 'US') & (df_s['Sektor'].isin(top_8_sektoren))) |
-            ((df_s['Markt'] == 'EU') & (df_s['Sektor'].isin(top_5_eu_sektoren)))
-        )
-        df_s = df_s[sektor_ok & (df_s['Trend'] == 'OK')].copy()
+        # _filter_setups_nach_rotation hat Sektor- und Trendfilter bereits
+        # marktbewusst und unabhaengig angewendet.
         
         print(f"DEBUG: Setups nach Sektor-Filter & Trend-Check: {len(df_s)}")
 
