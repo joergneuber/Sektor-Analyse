@@ -1595,7 +1595,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             if invalid_geometry:
                 errors.append(
                     f"M-09: Kandidat {candidate_index} ({asset}) hat eine unplausible "
-                    f"Stop-Lage bzw. Stop-/TP1-Lage (Einstieg={entry_num:g}, Stop={stop_num:g}, "
+                    f"Stop-/TP1-Lage bzw. Stop-Lage (Einstieg={entry_num:g}, Stop={stop_num:g}, "
                     f"TP1={tp1_num:g}, Richtung={direction_text or 'nicht angegeben'})."
                 )
                 continue
