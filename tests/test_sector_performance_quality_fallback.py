@@ -72,7 +72,7 @@ def _install_real_gate(monkeypatch, tmp_path, dates):
 def _load_analysis_functions():
     source = (ROOT / "analyse.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    wanted = {"_return_over_expected_sessions", "get_perf", "get_perf_yf", "_hebeltrader_finalisieren"}
+    wanted = {"_return_over_expected_sessions", "get_perf", "get_perf_yf", "_normalisiere_rotationsdaten", "_top_rotation_sektoren", "_filter_setups_nach_rotation", "_hebeltrader_finalisieren"}
     nodes = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in wanted
@@ -398,3 +398,132 @@ def test_eu_missing_expected_session_is_blocked_after_real_quality_gate(
 
     assert result["12T"] is None
     assert result["Rotation-Score"] is None
+
+
+
+def test_rotation_score_is_normalized_to_numeric_and_invalid_values_stay_missing():
+    ns = _load_analysis_functions()
+    raw = pd.DataFrame([
+        {"Sektor": "US-Tech", "5T": "2.5", "12T": "4.0", "Rotation-Score": "2.95"},
+        {"Sektor": "EU-Finanz", "5T": None, "12T": "3.0", "Rotation-Score": "n/a"},
+    ])
+
+    normalized = ns["_normalisiere_rotationsdaten"](raw)
+
+    assert pd.api.types.is_numeric_dtype(normalized["Rotation-Score"])
+    assert normalized.loc[0, "Rotation-Score"] == 2.95
+    assert pd.isna(normalized.loc[1, "Rotation-Score"])
+    assert pd.isna(normalized.loc[1, "5T"])
+
+
+def test_empty_eu_rotation_returns_no_sectors_without_breaking_us_rotation():
+    ns = _load_analysis_functions()
+    us = pd.DataFrame([
+        {"Sektor": "US-Tech", "5T": 2.0, "12T": 4.0, "Rotation-Score": 2.6},
+        {"Sektor": "US-Health", "5T": 1.0, "12T": 2.0, "Rotation-Score": 1.3},
+    ])
+    eu_empty = pd.DataFrame([
+        {"Sektor": "EU-Tech", "5T": None, "12T": None, "Rotation-Score": None},
+        {"Sektor": "EU-Finance", "5T": None, "12T": None, "Rotation-Score": None},
+    ])
+
+    assert ns["_top_rotation_sektoren"](us, 8) == ["US-Tech", "US-Health"]
+    assert ns["_top_rotation_sektoren"](eu_empty, 5) == []
+
+
+def test_empty_or_invalid_eu_rotation_never_synthetically_releases_eu_sector():
+    ns = _load_analysis_functions()
+    eu_invalid = pd.DataFrame([
+        {"Sektor": "EU-Tech", "5T": "n/a", "12T": None, "Rotation-Score": None},
+        {"Sektor": "EU-Finance", "5T": None, "12T": None, "Rotation-Score": "0"},
+    ])
+
+    assert ns["_top_rotation_sektoren"](eu_invalid, 5) == []
+
+
+def test_zero_is_valid_numeric_rotation_but_missing_data_is_not_zero():
+    ns = _load_analysis_functions()
+    frame = pd.DataFrame([
+        {"Sektor": "EU-Flat", "5T": 0, "12T": 0, "Rotation-Score": 0},
+        {"Sektor": "EU-Missing", "5T": None, "12T": None, "Rotation-Score": None},
+    ])
+
+    assert ns["_top_rotation_sektoren"](frame, 5) == ["EU-Flat"]
+
+
+
+def test_empty_eu_rotation_filters_eu_setups_but_keeps_valid_us_setups():
+    ns = _load_analysis_functions()
+    setups = pd.DataFrame([
+        {"Ticker": "US1", "Markt": "US", "Sektor": "US-Tech", "Trend": "OK"},
+        {"Ticker": "EU1", "Markt": "EU", "Sektor": "EU-Tech", "Trend": "OK"},
+        {"Ticker": "US2", "Markt": "US", "Sektor": "US-Outside", "Trend": "OK"},
+    ])
+    us = pd.DataFrame([
+        {"Sektor": "US-Tech", "5T": 2.0, "12T": 3.0, "Rotation-Score": 2.3},
+    ])
+    eu_empty = pd.DataFrame([
+        {"Sektor": "EU-Tech", "5T": None, "12T": None, "Rotation-Score": None},
+    ])
+
+    filtered, top_us, top_eu = ns["_filter_setups_nach_rotation"](
+        setups, us, eu_empty
+    )
+
+    assert top_us == ["US-Tech"]
+    assert top_eu == []
+    assert filtered["Ticker"].tolist() == ["US1"]
+
+
+def test_non_finite_rotation_metrics_are_rejected_from_sector_selection():
+    ns = _load_analysis_functions()
+    frame = pd.DataFrame([
+        {"Sektor": "EU-PositiveInfScore", "5T": 1.0, "12T": 1.0, "Rotation-Score": np.inf},
+        {"Sektor": "EU-NegativeInf5T", "5T": -np.inf, "12T": 1.0, "Rotation-Score": 2.0},
+        {"Sektor": "EU-PositiveInf12T", "5T": 1.0, "12T": np.inf, "Rotation-Score": 3.0},
+        {"Sektor": "EU-Valid", "5T": 1.0, "12T": 1.0, "Rotation-Score": 0.5},
+    ])
+
+    normalized = ns["_normalisiere_rotationsdaten"](frame)
+
+    assert pd.isna(normalized.loc[0, "Rotation-Score"])
+    assert pd.isna(normalized.loc[1, "5T"])
+    assert pd.isna(normalized.loc[2, "12T"])
+    assert ns["_top_rotation_sektoren"](frame, 5) == ["EU-Valid"]
+
+
+def test_rotation_filter_debug_iterates_over_unfiltered_setup_snapshot():
+    source = (ROOT / "analyse.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "df_s_vor_rotation_filter"
+            for target in node.targets
+        )
+    ]
+    assert assignments, "Ungefilterte Diagnosekopie fehlt"
+    snapshot_assignment = assignments[0]
+    assert isinstance(snapshot_assignment.value, ast.Call)
+    assert isinstance(snapshot_assignment.value.func, ast.Attribute)
+    assert snapshot_assignment.value.func.attr == "copy"
+    assert snapshot_assignment.lineno < next(
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_filter_setups_nach_rotation"
+    )
+
+    debug_loops = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.For)
+        and isinstance(node.iter, ast.Call)
+        and isinstance(node.iter.func, ast.Attribute)
+        and node.iter.func.attr == "iterrows"
+        and isinstance(node.iter.func.value, ast.Subscript)
+        and isinstance(node.iter.func.value.value, ast.Name)
+        and node.iter.func.value.value.id == "df_s_vor_rotation_filter"
+    ]
+    assert debug_loops, "DEBUG-Schleife verwendet nicht die ungefilterte Diagnosekopie"
