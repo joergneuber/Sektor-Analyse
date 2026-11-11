@@ -1010,7 +1010,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         # Readable report variant: one compact line per thesis, e.g.
         # "- THESIS_ID | Version 3 | Status BESTÄTIGT | Konfidenz mittel".
         compact_rows = re.findall(
-            r"(?im)^\s*-\s*([A-Za-z0-9_.:-]+)\s*\|\s*Version\s+(\d+)\s*"
+            r"(?im)^\s*-\s*([\w.:-]+)\s*\|\s*Version\s+(\d+)\s*"
             r"\|\s*Status\s+([A-ZÄÖÜ]+)\b",
             thesis,
         )
@@ -1071,7 +1071,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     comparison_id = _one_register_value("THESENREGISTER-VERGLEICH-ID")
 
     def _register_rows(id_label: str, version_label: str, active_label: str):
-        ids = re.findall(rf"(?im)^{re.escape(id_label)}:\s*([A-Za-z0-9_.:-]+)\s*$", thesis)
+        ids = re.findall(rf"(?im)^{re.escape(id_label)}:\s*([\w.:-]+)\s*$", thesis)
         versions = re.findall(rf"(?im)^{re.escape(version_label)}:\s*(\d+)\s*$", thesis)
         active = re.findall(rf"(?im)^{re.escape(active_label)}:\s*(YES|NO)\s*$", thesis)
         return ids, versions, active
@@ -1145,7 +1145,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             if raw.upper() == "KEINE":
                 return set()
             values = [item.strip() for item in raw.split(",")]
-            if not values or any(not re.fullmatch(r"[A-Za-z0-9_.:-]+", item) for item in values):
+            if not values or any(not re.fullmatch(r"[\w.:-]+", item) for item in values):
                 return None
             if len(values) != len(set(values)):
                 return None
@@ -1613,7 +1613,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         r"(?is)THESENREGISTER-VERGLEICH\s*:\s*PASS.*?"
         r"(?:VORHER|PREVIOUS)[-_ ]SHA256\s*[:=]\s*[0-9a-f]{64}.*?"
         r"(?:NACHHER|CURRENT)[-_ ]SHA256\s*[:=]\s*[0-9a-f]{64}.*?"
-        r"(?:(?:THESIS_ID|THESEN-ID)\s*[:=]\s*[A-Za-z0-9_.:-]+.*?"
+        r"(?:(?:THESIS_ID|THESEN-ID)\s*[:=]\s*[\w.:-]+.*?"
         r"(?:VERSION|REGISTER-VERSION)\s*[:=]\s*\d+|"
         r"AKTIVE_THESEN\s*[:=]\s*0\b)",
         text,
