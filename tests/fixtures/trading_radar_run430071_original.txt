@@ -1,0 +1,1159 @@
+1. Trading-Radar
+
+Hauptthese: Der Gesamtmarkt bewegt sich in einem rezessiven, aber durch robuste Industriestätigkeit (ISM Manufacturing PMI bei 55.5) gestützten Umfeld, in dem steigende Nominalrenditen (10-Jahres-Treasury bei 4,90 %) und hohe Realzinsen (10Y TIPS bei 2,64 %) kontinuierlich Druck auf zinssensitive Sektoren und ungedeckte Wachstumswerte ausüben.
+Zeithorizont: Mittelfristig (4 bis 12 Wochen).
+Konfidenz: Mittel.
+Veränderungen seit dem letzten Bericht:
+1. Anstieg der 10-jährigen US-Staatsanleihen-Rendite auf 4,90 % (zuvor 5,15 % im Vormonat, jedoch strukturell hohe Realzinsen von 2,64 %).
+2. Der ISM Manufacturing PMI zeigt sich mit 55.5 weiterhin expansiv, während der Verbraucherindex mit 48.1 auf eine anhaltende Konsum-Divergenz hinweist.
+3. Die Marktbreite zeigt eine selektive Stärke in zinssicheren Large-Caps und Energie-/Versorgerwerten, während Edelmetalle in einer ausgeprägten Konsolidierungsphase verharren.
+4. CME-FedWatch-Erwartungen für die FOMC-Sitzung am 2026-12-09 preisen primär eine Beibehaltung oder Zinsanpassung ein (92 % Erwartung für 4,00 %–4,25 %).
+Stärkste Belege: Solider ISM Manufacturing PMI (55.5) und robuste Arbeitsmarktdaten (NFP +165.000 bei 4,1 % Arbeitslosenquote).
+Wichtigste Gegenbelege: Hoher Realzins von 2,64 % und anhaltende Belastungen im Konsumentenklima (Consumer Sentiment bei 48.1).
+Belegte Top-Profiteur-Kandidaten: Microsoft Corporation (MSFT), EOG Resources, Inc. (EOG), Siemens Aktiengesellschaft (SIE.DE).
+Verlierer-Kandidaten: Amerikanische Lithium Corp. (American Lithium Corp. (5LA1.F)), DroneShield Limited (DRH.F), Vonovia SE (VNA.DE).
+Nächste beobachtbare Bestätigung/Invalidierung: Bestätigung durch stabile oder sinkende Kerninflation (Core CPI aktuell YoY +2,87 %); Invalidierung bei einem plötzlichen Anstieg der Initial Jobless Claims über 250.000 oder einem Bruch wichtiger technischer Unterstützungen in den Leitindizes.
+
+Indizes/Marktbreite: Gemischte Marktbreite mit Stärke in zinssicheren Sektoren und industriellen Standardwerten; verifizierte Leitindizes weisen selektive Dynamik auf; Quantitative Marktbreite: 7/11 Sektor-ETFs über ihrem 50-Tage-Durchschnitt.
+Zinsen/Renditen: US-10J-Rendite (^TNX): 4.98% (Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-11T11:35:49+00:00; Datenstichtag: 2026-11-10T00:00:00+00:00; Einheit: %; Verzögerung: Tages-Schlusskurs) | Quelldatei: Makro_Briefing(2026-11-11).txt; Fed Funds Effective Rate bei 3,8800 %, US 2Y Treasury bei 4,5800 %, US 10Y Treasury bei 4,9000 % (Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations); Abrufzeit: 2026-11-06T04:31:01+00:00; Datenstichtag: 2026-11-04; Einheit: %; Verzögerung: 7 Kalendertage), Realzins 10Y TIPS bei 2,6400 %. | Quelldatei: Makro_Briefing(2026-11-11).txt
+Dollar/Liquidität/Volatilität: M2 bei 23413,9000 Milliarden USD, Chicago Fed NFCI bei -0,4590 (lockere Finanzierungsbedingungen trotz hoher Zinsen); VIX: 19.46; DXY: 102.23
+Marktregime: Selektives, zinsreaktives Umfeld mit Fokus auf Cashflow-starke Large-Caps und Energie/Industrie.
+Marktregime-Datenstichtag: 2026-11-10
+
+
+
+**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**
+- Datenstand UTC: 2026-11-11T11:35:49+00:00
+- Index S&P 500 (^GSPC): letzter Schluss 7520.93; 1M -3.67%; 3M -2.94%.
+- Index Nasdaq Composite (^IXIC): letzter Schluss 25065.87; 1M -8.00%; 3M -5.73%.
+- Index Russell 2000 (^RUT): letzter Schluss 2821.38; 1M +0.96%; 3M -7.36%.
+- Volatilität VIX: 19.46
+- Dollar-Proxy DXY (DX-Y.NYB): 102.23
+- US-10J-Rendite (^TNX): 4.98% (Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-11T11:35:49+00:00; Datenstichtag: 2026-11-10T00:00:00+00:00; Einheit: %; Verzögerung: Tages-Schlusskurs) ; keine Intraday-Aktualität im gelieferten Snapshot. | Quelldatei: Makro_Briefing(2026-11-11).txt
+- Anleihe-ETF TLT 1M: +3.63%.
+- Marktbreite-Proxy: 7/11 Sektor-ETFs über ihrem 50-Tage-Durchschnitt.
+- Quelle: Yahoo Finance (Ticker in den Zeilen; Tages-Schlusskurse).
+- GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN | Instrument: US-10Y Treasury | Makro-Wert: 4.9000% (Makro-Provenienz: Quelle=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations); Abrufzeit=2026-11-06T04:31:01+00:00; Datenstichtag=2026-11-04; Einheit=%; Verzögerung=7 Kalendertage) | Live-Wert: 4.9830% (Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-11T11:35:49+00:00; Datenstichtag: 2026-11-10T00:00:00+00:00; Einheit: %; Verzögerung: Tages-Schlusskurs) | Beide Werte bleiben mit eigenem Datenstichtag und eigener Provenienz erhalten; sie werden nicht als gleichzeitige Messung verglichen und nicht überschrieben.
+
+Basisszenario: Seitwärts bis moderat aufwärts gerichtete Märkte mit Sektorrotation weg von zinssensitiven Small-Caps hin zu kapitalstarken Unternehmen mit verifizierter Preissetzungsmacht. Eintrittsbedingung: Marktbreite mindestens 7/11 und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. Bestätigungstrigger: Marktbreite mindestens 7/11; Gesundheit-ETF (XLV) und Energie-ETF (XLE) bleiben über 0,00%. Invalidierungstrigger: Marktbreite fällt unter 7/11 oder Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter. Zeithorizont: Mittelfristig (4 bis 12 Wochen).. Gemeinsamer Datenstichtag: 2026-11-10. Indikatoren: Marktbreite 7/11; Gesundheit-ETF (XLV) 3M +12.56%; Energie-ETF (XLE) 3M +2.54%; VIX 19.46. Konsequenz: Marktregime weiter beobachten; technische Einzelfreigaben bleiben den Scanner- und CRV-Regeln vorbehalten.
+
+Positives Alternativszenario: Fortsetzung der beobachteten relativen Stärke von Gesundheit-ETF (XLV) und Energie-ETF (XLE). Eintrittsbedingung: Marktbreite mindestens 7/11 und 3M-Relative-Stärke Gesundheit-ETF (XLV) und Energie-ETF (XLE) jeweils über 0,00%. Bestätigungstrigger: Die drei Bedingungen bleiben zum nächsten gemeinsamen Tagesdatenstichtag erfüllt. Invalidierungstrigger: Marktbreite fällt unter 7/11 oder Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter. Zeithorizont: Mittelfristig (4 bis 12 Wochen).. Gemeinsamer Datenstichtag: 2026-11-10. Indikatoren: Marktbreite 7/11; Gesundheit-ETF (XLV) 3M +12.56%; Energie-ETF (XLE) 3M +2.54%; VIX 19.46. Konsequenz: keine technische Handelsfreigabe; Kandidaten bleiben den separaten Scanner- und CRV-Regeln unterworfen.
+
+Negatives Alternativszenario: Abschwächung der aktuellen Sektorrotation. Eintrittsbedingung: Marktbreite fällt unter 7/11 oder Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) weist eine nicht-positive 3M-Relative-Stärke auf. Bestätigungstrigger: mindestens eine dieser gemessenen Bedingungen wird am nächsten gemeinsamen Tagesdatenstichtag bestätigt. Invalidierungstrigger: Marktbreite erreicht wieder mindestens 7/11 und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen erneut positive 3M-Werte auf. Zeithorizont: Mittelfristig (4 bis 12 Wochen).. Gemeinsamer Datenstichtag: 2026-11-10. Indikatoren: Marktbreite 7/11; Gesundheit-ETF (XLV) 3M +12.56%; Energie-ETF (XLE) 3M +2.54%; VIX 19.46. Konsequenz: keine neuen technischen Freigaben aus dem Szenario ableiten; bestehende Positionen nach den jeweiligen Stop-Regeln führen.
+
+2. Thesen-Update
+
+These 1: Zins- und Inflationsdruck begünstigt defensive Cashflow-Generatoren und Rohstoff-/Industriewerte.
+- Thesen-ID: THESIS-01
+- Version: 2
+- Status: BESTAETIGT
+- Gegenbelege: Anhaltend hohe Realzinsen (10Y TIPS bei 2,64 %) dämpfen die Bewertung multiplikatorabhängiger Aktien.
+- Alternative: Rasche, unerwartete Zinssenkungen der Fed könnten eine breite Tech-Rallye auslösen.
+- Bestätigungstrigger: Stabiler ISM Manufacturing PMI über 50 und robuste Unternehmensgewinne in zyklischen Sektoren.
+- Invalidierungstrigger: Starke Rezessionssignale im ISM Services PMI oder ein drastischer Einbruch der Industrieproduktion.
+
+Gegenbelege: Hohe Realzinsen erhöhen die Kapitalkosten für kapitalintensive Sektoren.
+Alternative: Technologiewerte dominieren trotz hoher Zinsen bei anhaltendem Name nicht aufgelöst (KI)-Infrastruktur-Boom.
+Bestätigungstrigger: Fortgesetzter Margenanstieg bei Industrie- und Energiewerten sowie stabile Arbeitsmarktzahlen.
+Invalidierungstrigger: Rückgang des ISM Manufacturing PMI unter die Kontraktionsschwelle von 50,0.
+
+```json
+{"data_cutoff":"2026-11-11T11:17:53+00:00","theses":[{"thesis_id":"THESIS-01","version":2,"updated_at":"2026-11-11T11:17:53+00:00","data_cutoff":"2026-11-11T11:17:53+00:00","thesis":"Zins- und Inflationsdruck begünstigt defensive Cashflow-Generatoren und Rohstoff-/Industriewerte.","horizon":"4 bis 12 Wochen","alternative":"Rasche, unerwartete Zinssenkungen der Fed könnten eine breite Tech-Rallye auslösen.","evidence":["ISM Manufacturing PMI bei 55.5","US 10Y Treasury bei 4,90 %"],"counter_evidence":["Anhaltend hohe Realzinsen (10Y TIPS bei 2,64 %) dämpfen die Bewertung."],"confidence":"mittel","confirm_triggers":["Stabiler ISM Manufacturing PMI über 50","robuste Gewinne in zyklischen Sektoren"],"invalidate_triggers":["Rückgang des ISM Manufacturing PMI unter 50,0"],"event_dependencies":[],"asset_classes":["Aktien","Zinsen"],"candidates":["Siemens Aktiengesellschaft (SIE.DE)","EOG Resources, Inc. (EOG)"],"status":"BESTAETIGT"}]}
+```
+THESENREGISTER-VERGLEICH: NOT_UPDATED
+VORHER-SHA256: NICHT VERFÜGBAR
+NACHHER-SHA256: NICHT VERFÜGBAR
+AKTIVE_THESEN: NICHT VERFÜGBAR
+THESEN_NEU: NICHT NACHWEISBAR
+THESEN_AKTUALISIERT: NICHT NACHWEISBAR
+THESEN_UNVERAENDERT: NICHT NACHWEISBAR
+THESEN_ARCHIVIERT: NICHT NACHWEISBAR
+THESENREGISTER-GRUND: Bericht-/Thesenprüfung nicht bestanden: Thesen-ID-Abgleich: lesbare Thesen vorhanden, aber keine eindeutigen These-IDs extrahierbar
+
+3. Ereignisradar
+
+- Ereignis-Uhrzeit: NICHT VERFÜGBAR
+- Zeitzone: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Kennzahl: Unemployment Claims (Initial Jobless Claims)
+- Zeitraum: Wöchentlich (Datenstand 2026-10-31: 189.000)
+- Letzter Wert: 189.000
+- Konsens: NICHT VERFÜGBAR
+- Quelle: ForexFactory (CACHE) / FRED
+Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Uhrzeit: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Betroffene Thesen/Assetklassen/Positionen: Gesamtmarkt, Arbeitsmarkt, iShares Core MSCI World UCITS ETF USD (Acc) (EUNL.DE)
+- Szenarien unter/entsprechend/über Konsens: Ein unerwarteter Anstieg über 220.000 signalisiert Arbeitsmarktschwäche; Werte um 190.000 bestätigen die aktuelle Robustheit.
+- Reaktionskanäle: US-Staatsanleihen, Aktien-Futures, USD.
+- Bestätigung/Widerlegung: Bestätigt die These einer widerstandsfähigen US-Wirtschaft bei Werten im historischen Normbereich.
+Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Uhrzeit: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Zeitzone: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Kennzahl: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Berichtszeitraum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Letzter Wert: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Konsens: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Ereignis-Uhrzeit: NICHT VERFÜGBAR
+- Zeitzone: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Kennzahl: Core PPI m/m & PPI m/m
+- Zeitraum: Monatlich
+- Letzter Wert: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Konsens: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Quelle: ForexFactory (CACHE)
+Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Uhrzeit: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+- Betroffene Thesen/Assetklassen/Positionen: Anleihenmarkt, Rohstoffe, Xtrackers MSCI World Quality UCITS ETF 1C (XDEQ.DE)
+- Szenarien unter/entsprechend/über Konsens: Inflationsabkühlung stärkt Anleihen; Name nicht aufgelöst (PPI)-Überraschungen belasten margenschwache Sektoren.
+- Reaktionskanäle: US 10Y Treasury, EUR/USD, S&P 500.
+- Bestätigung/Widerlegung: Bestätigt oder widerlegt den anhaltenden Inflationsdruck (CPI YoY +4,08 %).
+Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Uhrzeit: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Zeitzone: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Kennzahl: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Berichtszeitraum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Letzter Wert: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+Konsens: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+
+4. Assetklassenvergleich
+
+- Aktien / ETFs: Relativ stärker in zinssicheren, cashflow-starken Sektoren (Industrie, Energie, hochwertige Large-Caps); schwächer in hoch bewerteten, ungedeckten Wachstumswerten. Konkrete Belege: S&P 500 nahe Allzeithoch-Regionen, während Small-Caps (Russell 2000) unter Druck stehen. Zeithorizont: 4–12 Wochen. Auslöser: Zins- und Inflationsdaten.
+- Edelmetalle: Relativ schwächer durch hohe Realzinsen (10Y TIPS bei 2,64 %) und Opportunitätskosten. Gold-Futures (Gold Future (GC=F)) bei 4030,42 USD, Silber (SI=F) nahe 52-Wochen-Tiefs. Auslöser: Zinsentwicklung und USD-Stärke.
+- Energie / Rohstoffe: Relativ stärker, gestützt durch robuste Industrieproduktion und saisonale Faktoren. Kupfer bei 6,61 USD, Ölpreise stabil. Auslöser: Globale Nachfrage und Industrieproduktion (ISM PMI 55.5).
+- Krypto: Neutral bis leicht volatil. Bitcoin (BTC-USD) notiert über dem 50W-SMA, zeigt jedoch Konsolidierungstendenzen.
+- Zinsen / Dollar: Zinsen verbleiben auf erhöhtem Niveau (US 10Y bei 4,90 % (Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR), 2Y bei 4,58 %). Dollar-Index (DXY) zeigt Stärke durch relative Zinsvorteile. | Quelldatei: Makro_Briefing(2026-11-11).txt
+
+
+Relative-Stärke-Matrix (adjusted close; 1M=21 Handelstage, 3M=63 Handelstage):
+Gemeinsamer Datenstichtag: 2026-11-10T00:00:00+00:00
+Indizes:
+- S&P 500 (^GSPC) 1M -3.67%; 3M -2.94%
+- Nasdaq (^IXIC) 1M -8.00%; 3M -5.73%
+- Russell 2000 (^RUT) 1M +0.96%; 3M -7.36%
+Regionen:
+- USA (SPY) 1M -3.62%; 3M -2.68%
+- Europa (VGK) 1M +4.46%; 3M -2.58%
+- Emerging Markets (EEM) 1M -8.44%; 3M -8.86%
+- Japan (EWJ) 1M -7.12%; 3M -7.57%
+Sektoren:
+- Rohstoff-ETF (XLB) 1M +6.90%; 3M +0.98%
+- Kommunikations-ETF (XLC) 1M -3.31%; 3M -1.95%
+- Energie-ETF (XLE) 1M -5.76%; 3M +2.54%
+- Finanz-ETF (XLF) 1M +5.89%; 3M +0.99%
+- Industrie-ETF (XLI) 1M -0.25%; 3M -8.98%
+- Technologie-ETF (XLK) 1M -13.98%; 3M -10.46%
+- Basiskonsum-ETF (XLP) 1M +7.84%; 3M +7.70%
+- Immobilien-ETF (XLRE) 1M +6.35%; 3M +1.05%
+- Versorger-ETF (XLU) 1M +5.04%; 3M +0.48%
+- Gesundheit-ETF (XLV) 1M +9.82%; 3M +12.56%
+- Zyklischer-Konsum-ETF (XLY) 1M +7.82%; 3M +2.91%
+Anlageklassen:
+- Gold (GLD) 1M -3.35%; 3M -8.78%
+- Silber (SLV) 1M -14.48%; 3M -21.30%
+- Öl (USO) 1M -6.34%; 3M +11.12%
+- US-Anleihen (TLT) 1M +3.63%; 3M -0.72%
+- US-Dollar (UUP) 1M +0.07%; 3M +3.37%
+- Bitcoin (BTC-USD) 1M -11.12%; 3M -6.02%
+Gewinner: Basiskonsum-ETF (XLP) (+7.70% 3M), USO (+11.12% 3M), Gesundheit-ETF (XLV) (+12.56% 3M)
+Verlierer: SLV (-21.30% 3M), Technologie-ETF (XLK) (-10.46% 3M), Industrie-ETF (XLI) (-8.98% 3M)
+Divergenz: 33.86 Prozentpunkte (3M-Spannweite)
+
+5. Technische Kandidaten
+MARKTROTATION → AKTIENPRÜFUNG
+Die Sektor-Rangfolge basiert auf der gemeinsamen 3M-Relative-Stärke-Matrix. Aktienstatus und Handelslevels stammen ausschließlich aus den strukturierten Scannerquellen.
+Stärkste Sektoren (3M):
+- Gesundheit-ETF (XLV): +12.56% | Scanner-Abgleich: 0 prüfbare Setups, 3 Watchlist-/Trigger-Kandidaten, 0 nicht freigegebene Kandidaten
+- Basiskonsum-ETF (XLP): +7.70% | Scanner-Abgleich: 0 prüfbare Setups, 1 Watchlist-/Trigger-Kandidaten, 0 nicht freigegebene Kandidaten
+- Zyklischer-Konsum-ETF (XLY): +2.91% | Scanner-Abgleich: 0 prüfbare Setups, 0 Watchlist-/Trigger-Kandidaten, 0 nicht freigegebene Kandidaten
+  - Im strukturierten Scannerregister ist diesem Sektor kein Kandidat zugeordnet; daher wird hier keine Tradeidee abgeleitet.
+Konsequenz: Die Marktrotation priorisiert die technische Prüfung, ersetzt aber weder Scannerbestätigung noch CRV1 ≥ 1 und erzeugt keine zusätzliche Handelsfreigabe.
+
+Kandidatenquellen: Edelmetalle_Setups(2026-11-11).csv; hebeltrader_einzel_check.json; Setups(2026-11-11).csv; Short_Setups(2026-11-11).csv; Trade_Story_Setup_Rohuniversum(2026-11-11).csv; Trendwende_Briefing(2026-11-11).txt; Trendwende_Setups(2026-11-11).csv
+Kandidatenquellen-Prüfstatus: VOLLSTÄNDIG
+Quellen-Prüstatus: Trendwende_Setups(2026-11-11).csv: Tabellenkopf vorhanden, aber 0 Kandidatenzeilen | Trendwende_Briefing(2026-11-11).txt: Textbriefing inventarisiert; keine strukturierten Kandidatenzeilen erwartet | Short_Setups(2026-11-11).csv: Tabellenkopf vorhanden, aber 0 Kandidatenzeilen | Edelmetalle_Setups(2026-11-11).csv: Tabellenkopf vorhanden, aber 0 Kandidatenzeilen
+
+JETZT TECHNISCH PRÜFEN:
+- Asset/Ticker: Amphenol Corporation (APH) | Setup-ID: d04a6914dd2bc76c | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 28
+  - Sektor: Technologie | US-Sektor-ETF-Referenz: Technologie-ETF (XLK) | 3M-Relative-Stärke: -10.46%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 79.95
+  - Stop: 71.39
+  - TP1: 89.93
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.17
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 28; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: American Express Company (AXP) | Setup-ID: ec36547ef9326a65 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 7
+  - Sektor: Finanzen | US-Sektor-ETF-Referenz: Finanz-ETF (XLF) | 3M-Relative-Stärke: +0.99%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 323.46
+  - Stop: 316.57
+  - TP1: 343.885
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.96
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 7; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: CBRE Group, Inc. (CBRE) | Setup-ID: 4daf8ea51be4407e | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 5
+  - Sektor: Immobilien | US-Sektor-ETF-Referenz: Immobilien-ETF (XLRE) | 3M-Relative-Stärke: +1.05%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 134.79
+  - Stop: 133.27
+  - TP1: 144.5699
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 6.43
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 5; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Commercial Metals Company (CMC) | Setup-ID: a14364278e823948 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 22
+  - Sektor: Minen/Metalle
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 64.24
+  - Stop: 61.87
+  - TP1: 69.5
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.22
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 22; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Essex Property Trust, Inc. (ESS) | Setup-ID: 69c8be2dc8f6514b | Quelle: Setups(2026-11-11).csv | Quellzeile: 4, 6
+  - Sektor: Immobilien | US-Sektor-ETF-Referenz: Immobilien-ETF (XLRE) | 3M-Relative-Stärke: +1.05%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 275.75
+  - Stop: 265.32
+  - TP1: 286.47
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.03
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Setups(2026-11-11).csv / 4, 6; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Hamborner REIT AG (HABA.DE) | Setup-ID: 8d4d45852d436ea3 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 34
+  - Sektor: Immobilien | US-Sektor-ETF-Referenz: Immobilien-ETF (XLRE) | 3M-Relative-Stärke: +1.05%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 4.1
+  - Stop: 4.0
+  - TP1: 4.304999828338623
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.05
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 34; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Invesco Ltd. (IVZ) | Setup-ID: e02d3e92b0337f71 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 8
+  - Sektor: Finanzen | US-Sektor-ETF-Referenz: Finanz-ETF (XLF) | 3M-Relative-Stärke: +0.99%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 28.87
+  - Stop: 26.885
+  - TP1: 31.63
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.39
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 8; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Knorr-Bremse AG (KBX.DE) | Setup-ID: 0903fa92dcc8a463 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 36
+  - Sektor: Automobil
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 96.5
+  - Stop: 91.8499984741211
+  - TP1: 108.5999984741211
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.6
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 36; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: KWS SAAT SE & Co. KGaA (KWS.DE) | Setup-ID: 1ae3b376e5535b34 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 35
+  - Sektor: Konsum
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 68.0
+  - Stop: 66.0
+  - TP1: 78.69999694824219
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 5.35
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 35; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Live Nation Entertainment, Inc. (LYV) | Setup-ID: 76346bf1df0821f1 | Quelle: Setups(2026-11-11).csv | Quellzeile: 2
+  - Sektor: Kommunikation | US-Sektor-ETF-Referenz: Kommunikations-ETF (XLC) | 3M-Relative-Stärke: -1.95%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone; Chartmuster: Engulfing
+  - Einstieg: 178.25
+  - Stop: 171.19
+  - TP1: 187.88
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.36
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Setups(2026-11-11).csv / 2; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: NXP Semiconductors N.V. (NXPI) | Setup-ID: 3501ab2823fca62b | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 29
+  - Sektor: Technologie | US-Sektor-ETF-Referenz: Technologie-ETF (XLK) | 3M-Relative-Stärke: -10.46%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch
+  - Einstieg: 261.56
+  - Stop: 235.0
+  - TP1: 290.5891
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.09
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 29; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: The PNC Financial Services Group, Inc. (PNC) | Setup-ID: 80178a1458d2e72b | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 10
+  - Sektor: Finanzen | US-Sektor-ETF-Referenz: Finanz-ETF (XLF) | 3M-Relative-Stärke: +0.99%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 231.3
+  - Stop: 224.36
+  - TP1: 240.905
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.38
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 10; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Pinnacle Financial Partners, Inc. (PNFP) | Setup-ID: d1f90c04e40e1a1a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 20
+  - Sektor: Regionalbanken
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch
+  - Einstieg: 102.8
+  - Stop: 98.535
+  - TP1: 110.33
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.77
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 20; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Regions Financial Corporation (RF) | Setup-ID: 5883e735ae719d55 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 11
+  - Sektor: Finanzen | US-Sektor-ETF-Referenz: Finanz-ETF (XLF) | 3M-Relative-Stärke: +0.99%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 28.7
+  - Stop: 28.03
+  - TP1: 29.76
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.58
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 11; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: RWE AG (RWE.DE) | Setup-ID: 9d3cd864c4c613b9 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 6, 31
+  - Sektor: Versorger | US-Sektor-ETF-Referenz: Versorger-ETF (XLU) | 3M-Relative-Stärke: +0.48%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 58.14
+  - Stop: 56.36000061035156
+  - TP1: 60.959999084472656
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.58
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 6, 31; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Siemens Aktiengesellschaft (SIE.DE) | Setup-ID: 2a0388177550b87f | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 39
+  - Sektor: Industrie | US-Sektor-ETF-Referenz: Industrie-ETF (XLI) | 3M-Relative-Stärke: -8.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 271.55
+  - Stop: 261.45001220703125
+  - TP1: 286.29998779296875
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.46
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 39; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: State Street Corporation (STT) | Setup-ID: 6be21de606b0d3c6 | Quelle: Setups(2026-11-11).csv | Quellzeile: 3, 12
+  - Sektor: Finanzen | US-Sektor-ETF-Referenz: Finanz-ETF (XLF) | 3M-Relative-Stärke: +0.99%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 171.62
+  - Stop: 164.66
+  - TP1: 187.11
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.23
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Setups(2026-11-11).csv / 3, 12; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: TransDigm Group Incorporated (TDG) | Setup-ID: 59c6c35873695796 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 14
+  - Sektor: Rüstung/Aerospace
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch; Chartmuster: Engulfing
+  - Einstieg: 1225.54
+  - Stop: 1128.85
+  - TP1: 1361.765
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.41
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 14; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Textron Inc. (TXT) | Setup-ID: 851d3e8a7207772b | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 15
+  - Sektor: Rüstung/Aerospace
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch
+  - Einstieg: 86.82
+  - Stop: 77.57
+  - TP1: 97.32
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.14
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 15; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: United Parcel Service, Inc. (UPS) | Setup-ID: 5ab7af69f891be6f | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 25
+  - Sektor: Industrie | US-Sektor-ETF-Referenz: Industrie-ETF (XLI) | 3M-Relative-Stärke: -8.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Trendlinien-Ausbruch; Chartmuster: Hammer
+  - Einstieg: 111.05
+  - Stop: 104.0
+  - TP1: 118.42
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.05
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 25; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: United Internet AG (UTDI.DE) | Setup-ID: 1e34a6815299e1c9 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 40
+  - Sektor: Kommunikation | US-Sektor-ETF-Referenz: Kommunikations-ETF (XLC) | 3M-Relative-Stärke: -1.95%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 24.56
+  - Stop: 24.200000762939453
+  - TP1: 28.040000915527344
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 9.67
+  - Gegenargument: Alles ok
+  - Regel-/Datenstatus: Status aus Quelle: valide; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 40; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+
+AUF TRIGGER WARTEN:
+- Asset/Ticker: Analog Devices, Inc. (ADI) | Setup-ID: 00e4003519345dd3 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 27
+  - Sektor: Technologie | US-Sektor-ETF-Referenz: Technologie-ETF (XLK) | 3M-Relative-Stärke: -10.46%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone
+  - Einstieg: 393.3
+  - Stop: 354.72
+  - TP1: 433.72
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.05
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 27; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: American Electric Power Company, Inc. (AEP) | Setup-ID: fd3848020a25b4ac | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 16
+  - Sektor: Versorger | US-Sektor-ETF-Referenz: Versorger-ETF (XLU) | 3M-Relative-Stärke: +0.48%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone
+  - Einstieg: 127.84
+  - Stop: 123.72
+  - TP1: 132.17
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.05
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 16; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: CenterPoint Energy, Inc. (CNP) | Setup-ID: f576c64a26041f64 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 17
+  - Sektor: Versorger | US-Sektor-ETF-Referenz: Versorger-ETF (XLU) | 3M-Relative-Stärke: +0.48%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch
+  - Einstieg: 41.24
+  - Stop: 39.02
+  - TP1: 45.063230000000004
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.72
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 17; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: CSX Corporation (CSX) | Setup-ID: 7ab2b4149587ef4b | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 23
+  - Sektor: Industrie | US-Sektor-ETF-Referenz: Industrie-ETF (XLI) | 3M-Relative-Stärke: -8.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch
+  - Einstieg: 51.08
+  - Stop: 49.06
+  - TP1: 53.6
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.25
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 23; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: DHL AG (DHL.DE) | Setup-ID: 885dddd879d65ef1 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 37
+  - Sektor: Industrie | US-Sektor-ETF-Referenz: Industrie-ETF (XLI) | 3M-Relative-Stärke: -8.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 58.74
+  - Stop: 57.099998474121094
+  - TP1: 61.29999923706055
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.56
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 37; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: EOG Resources, Inc. (EOG) | Setup-ID: 5690918b65438083 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 30
+  - Sektor: Energie | US-Sektor-ETF-Referenz: Energie-ETF (XLE) | 3M-Relative-Stärke: +2.54%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 151.51
+  - Stop: 144.14
+  - TP1: 165.93
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.96
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 30; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: FirstEnergy Corp. (FE) | Setup-ID: 8abb27a552c5bc8e | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 18
+  - Sektor: Versorger | US-Sektor-ETF-Referenz: Versorger-ETF (XLU) | 3M-Relative-Stärke: +0.48%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 46.48
+  - Stop: 45.82
+  - TP1: 47.71
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.86
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 18; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Fuchs SE (FPE3.DE) | Setup-ID: 5978c9187eb9bac5 | Quelle: Setups(2026-11-11).csv | Quellzeile: 8, 33
+  - Sektor: Chemie
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+  - Einstieg: 43.3
+  - Stop: 42.52
+  - TP1: 46.6
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 4.23
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Setups(2026-11-11).csv / 8, 33; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Loews Corporation (L) | Setup-ID: 5490a64197f01a76 | Quelle: Setups(2026-11-11).csv | Quellzeile: 9
+  - Sektor: Finanzen | US-Sektor-ETF-Referenz: Finanz-ETF (XLF) | 3M-Relative-Stärke: +0.99%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 110.93
+  - Stop: 107.39
+  - TP1: 114.52
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.01
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Setups(2026-11-11).csv / 9; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Monster Beverage Corporation (MNST) | Setup-ID: 39a924e7068bf32a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 13
+  - Sektor: Basiskonsum | US-Sektor-ETF-Referenz: Basiskonsum-ETF (XLP) | 3M-Relative-Stärke: +7.70%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 45.34
+  - Stop: 43.9329
+  - TP1: 49.5
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.96
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 13; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Microsoft Corporation (MSFT) | Setup-ID: 67d91767e1ced701 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 26
+  - Sektor: Künstliche Intelligenz
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 533.16
+  - Stop: 524.47
+  - TP1: 559.15
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.99
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 26; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Nucor Corporation (NUE) | Setup-ID: 6fc14a15b869d7d0 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 19
+  - Sektor: Rohstoffe | US-Sektor-ETF-Referenz: Rohstoff-ETF (XLB) | 3M-Relative-Stärke: +0.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone; Chartmuster: Engulfing
+  - Einstieg: 256.47
+  - Stop: 244.64
+  - TP1: 287.7
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.64
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 19; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Pfizer Inc. (PFE) | Setup-ID: f1f0071c0ea479ac | Quelle: Setups(2026-11-11).csv | Quellzeile: 3, 10
+  - Sektor: Gesundheit | US-Sektor-ETF-Referenz: Gesundheit-ETF (XLV) | 3M-Relative-Stärke: +12.56%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 29.36
+  - Stop: 28.54
+  - TP1: 31.44
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 2.54
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Setups(2026-11-11).csv / 3, 10; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: RATIONAL Aktiengesellschaft (RAA.DE) | Setup-ID: 38070381435f0914 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 38
+  - Sektor: Industrie | US-Sektor-ETF-Referenz: Industrie-ETF (XLI) | 3M-Relative-Stärke: -8.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 625.5
+  - Stop: 616.5
+  - TP1: 686.0
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 6.72
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 38; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Redcare Pharmacy NV (RDC.DE) | Setup-ID: b78b9a0182e66deb | Quelle: Setups(2026-11-11).csv | Quellzeile: 5, 32
+  - Sektor: Gesundheitswesen | US-Sektor-ETF-Referenz: Gesundheit-ETF (XLV) | 3M-Relative-Stärke: +12.56%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 73.65
+  - Stop: 70.05
+  - TP1: 79.9
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.74
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Setups(2026-11-11).csv / 5, 32; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Reliance, Inc. (RS) | Setup-ID: cd4b6928b3e4825a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 21
+  - Sektor: Minen/Metalle
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Engulfing
+  - Einstieg: 427.15
+  - Stop: 412.59
+  - TP1: 454.93
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.91
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 21; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: UnitedHealth Group Incorporated (UNH) | Setup-ID: b330e116bbe83859 | Quelle: Setups(2026-11-11).csv | Quellzeile: 4, 7
+  - Sektor: Gesundheit | US-Sektor-ETF-Referenz: Gesundheit-ETF (XLV) | 3M-Relative-Stärke: +12.56%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Pullback-Zone
+  - Einstieg: 405.12
+  - Stop: 388.0
+  - TP1: 426.55
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.25
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Setups(2026-11-11).csv / 4, 7; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+- Asset/Ticker: Union Pacific Corporation (UNP) | Setup-ID: 213d707ce6eda04a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Quellzeile: 24
+  - Sektor: Industrie | US-Sektor-ETF-Referenz: Industrie-ETF (XLI) | 3M-Relative-Stärke: -8.98%
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Scanner-Setup: Kumo-Ausbruch
+  - Einstieg: 300.62
+  - Stop: 289.41
+  - TP1: 315.99
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: 1.37
+  - Gegenargument: Bärischer MACD-Trend
+  - Regel-/Datenstatus: Status aus Quelle: achtung; Quelle/Zeile: Trade_Story_Setup_Rohuniversum(2026-11-11).csv / 24; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: AUF TRIGGER WARTEN
+
+EREIGNIS ABWARTEN: Keine Kandidaten
+
+NICHT HANDELBAR:
+- Asset/Ticker: Amazon.com Inc. (AMZN) | Setup-ID: 3b5a92e29e885658 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 3
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: noch kein bestätigtes Einstiegssignal; noch keine ausreichende B-Trigger-Konstellation
+  - Regel-/Datenstatus: Status aus Quelle: kaufkandidat c; Quelle/Zeile: hebeltrader_einzel_check.json / 3; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: NICHT HANDELBAR
+- Asset/Ticker: Microsoft Corp. (MSFT) | Setup-ID: b4a6ce631e15b7bb | Quelle: hebeltrader_einzel_check.json | Quellzeile: 1
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS positiv (+6.6 %-Pkt.); Trendfolge-Setup bestätigt, CRV >= 1.0; bestes vorhandenes CRV 2.99
+  - Regel-/Datenstatus: Status aus Quelle: kaufkandidat a; Quelle/Zeile: hebeltrader_einzel_check.json / 1; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: NICHT HANDELBAR
+
+VERWERFEN / INVALIDIERT:
+- Asset/Ticker: Apple Inc. (AAPL) | Setup-ID: 5f2d2eb03f899ba0 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 4
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.60x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 4; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Advanced Micro Devices Inc. (AMD) | Setup-ID: 7b9e8cdc75778fad | Quelle: hebeltrader_einzel_check.json | Quellzeile: 12
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (1/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 12; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: ASML Holding NV (ASML.AS) | Setup-ID: 054ffdbec728f62e | Quelle: hebeltrader_einzel_check.json | Quellzeile: 14
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS nicht verfügbar; Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.98x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 14; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Broadcom Inc. (AVGO) | Setup-ID: 9fa018660e0811b7 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 15
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (1.11x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 15; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Alibaba Group Holding Ltd. (BABA) | Setup-ID: 31ac3b3a2e52dd74 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 5
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS nicht verfügbar; Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.91x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 5; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Alphabet Inc. (GOOGL) | Setup-ID: ad88af260f56d46a | Quelle: hebeltrader_einzel_check.json | Quellzeile: 2
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS negativ (-3.6 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.71x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 2; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: IBM Corp. (IBM) | Setup-ID: 3e5e733cbfbab446 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 7
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.57x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 7; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Intel Corp. (INTC) | Setup-ID: 76401d9a9a74d8f4 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 13
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.68x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 13; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Meta Platforms Inc. (META) | Setup-ID: 17babf95a2d8a6ea | Quelle: hebeltrader_einzel_check.json | Quellzeile: 6
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS negativ (-3.0 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.53x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 6; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: NVIDIA Corp. (NVDA) | Setup-ID: 0d86c722a957a1dd | Quelle: hebeltrader_einzel_check.json | Quellzeile: 10
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS negativ (-14.0 %-Pkt.); Momentum zu schwach (1/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 10; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Oracle Corp. (ORCL) | Setup-ID: 73cb04fc8e98e57f | Quelle: hebeltrader_einzel_check.json | Quellzeile: 9
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS negativ (-2.2 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.53x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 9; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Palantir Technologies Inc. (PLTR) | Setup-ID: f911dbb4ebae0a11 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 18
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.74x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 18; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Qualcomm Inc. (QCOM) | Setup-ID: 36f072d087f11909 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 16
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.69x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 16; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Snowflake Inc. (SNOW) | Setup-ID: 4408763303680e49 | Quelle: hebeltrader_einzel_check.json | Quellzeile: 17
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.81x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 17; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Tencent Holdings Ltd. (TCEHY) | Setup-ID: 3e60e93937b113df | Quelle: hebeltrader_einzel_check.json | Quellzeile: 8
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS nicht verfügbar; Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.58x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 8; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+- Asset/Ticker: Taiwan Semiconductor Manufacturing Co. Ltd. (TSM) | Setup-ID: f7feea7a0b4d856c | Quelle: hebeltrader_einzel_check.json | Quellzeile: 11
+  - Sektor: NICHT VERFÜGBAR (keine Sektorzuordnung in der Scannerquelle)
+  - Richtung: NICHT VERFÜGBAR (keine Richtungsangabe in der Scannerquelle)
+  - Verknüpfte These: NICHT VERKNÜPFT (keine Thesen-ID in der Scannerquelle)
+  - Datenstichtag: NICHT VERFÜGBAR (kein Datenstichtag in der Scannerquelle)
+  - Trigger: Kein quellenbelegter Kurs-/Strukturtrigger; daher keine technische Freigabe.
+  - Einstieg: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Stop: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP1: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - TP2: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - CRV: NICHT VERFÜGBAR (nicht in der strukturierten Quelle enthalten)
+  - Gegenargument: Sektor-RS negativ (-0.1 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.94x SMA20)
+  - Regel-/Datenstatus: Status aus Quelle: kein kandidat; Quelle/Zeile: hebeltrader_einzel_check.json / 11; keine Handelsfreigabe ohne vollständige Level und CRV.
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+
+BESTÄTIGTE SETUPS: 0 bestätigte Setups – Begründung: keine Quelle liefert eine explizite technische Bestätigung mit vollständigen, quellenbelegten Pflichtfeldern.
+
+WATCHLIST: Name: Analog Devices, Inc. (ADI) | Setup-ID: 00e4003519345dd3 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone
+Name: American Electric Power Company, Inc. (AEP) | Setup-ID: fd3848020a25b4ac | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone
+Name: CenterPoint Energy, Inc. (CNP) | Setup-ID: f576c64a26041f64 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Kumo-Ausbruch
+Name: CSX Corporation (CSX) | Setup-ID: 7ab2b4149587ef4b | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Kumo-Ausbruch
+Name: DHL AG (DHL.DE) | Setup-ID: 885dddd879d65ef1 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: EOG Resources, Inc. (EOG) | Setup-ID: 5690918b65438083 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: FirstEnergy Corp. (FE) | Setup-ID: 8abb27a552c5bc8e | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+Name: Fuchs SE (FPE3.DE) | Setup-ID: 5978c9187eb9bac5 | Quelle: Setups(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Hammer
+Name: Loews Corporation (L) | Setup-ID: 5490a64197f01a76 | Quelle: Setups(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: Monster Beverage Corporation (MNST) | Setup-ID: 39a924e7068bf32a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: Microsoft Corporation (MSFT) | Setup-ID: 67d91767e1ced701 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: Nucor Corporation (NUE) | Setup-ID: 6fc14a15b869d7d0 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Kumo-Ausbruch + Pullback-Zone; Chartmuster: Engulfing
+Name: Pfizer Inc. (PFE) | Setup-ID: f1f0071c0ea479ac | Quelle: Setups(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: RATIONAL Aktiengesellschaft (RAA.DE) | Setup-ID: 38070381435f0914 | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: Redcare Pharmacy NV (RDC.DE) | Setup-ID: b78b9a0182e66deb | Quelle: Setups(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: Reliance, Inc. (RS) | Setup-ID: cd4b6928b3e4825a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone; Chartmuster: Engulfing
+Name: UnitedHealth Group Incorporated (UNH) | Setup-ID: b330e116bbe83859 | Quelle: Setups(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Pullback-Zone
+Name: Union Pacific Corporation (UNP) | Setup-ID: 213d707ce6eda04a | Quelle: Trade_Story_Setup_Rohuniversum(2026-11-11).csv | Status: achtung | Begründung: Bärischer MACD-Trend | Trigger: Scanner-Setup: Kumo-Ausbruch
+
+VERWORFENE KANDIDATEN: Name: Apple Inc. (AAPL) | Setup-ID: 5f2d2eb03f899ba0 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.60x SMA20)
+Name: Advanced Micro Devices Inc. (AMD) | Setup-ID: 7b9e8cdc75778fad | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (1/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs
+Name: ASML Holding NV (ASML.AS) | Setup-ID: 054ffdbec728f62e | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS nicht verfügbar; Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.98x SMA20)
+Name: Broadcom Inc. (AVGO) | Setup-ID: 9fa018660e0811b7 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (1.11x SMA20)
+Name: Alibaba Group Holding Ltd. (BABA) | Setup-ID: 31ac3b3a2e52dd74 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS nicht verfügbar; Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.91x SMA20)
+Name: Alphabet Inc. (GOOGL) | Setup-ID: ad88af260f56d46a | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS negativ (-3.6 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.71x SMA20)
+Name: IBM Corp. (IBM) | Setup-ID: 3e5e733cbfbab446 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.57x SMA20)
+Name: Intel Corp. (INTC) | Setup-ID: 76401d9a9a74d8f4 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.68x SMA20)
+Name: Meta Platforms Inc. (META) | Setup-ID: 17babf95a2d8a6ea | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS negativ (-3.0 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.53x SMA20)
+Name: NVIDIA Corp. (NVDA) | Setup-ID: 0d86c722a957a1dd | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS negativ (-14.0 %-Pkt.); Momentum zu schwach (1/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs
+Name: Oracle Corp. (ORCL) | Setup-ID: 73cb04fc8e98e57f | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS negativ (-2.2 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.53x SMA20)
+Name: Palantir Technologies Inc. (PLTR) | Setup-ID: f911dbb4ebae0a11 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.74x SMA20)
+Name: Qualcomm Inc. (QCOM) | Setup-ID: 36f072d087f11909 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.69x SMA20)
+Name: Snowflake Inc. (SNOW) | Setup-ID: 4408763303680e49 | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.81x SMA20)
+Name: Tencent Holdings Ltd. (TCEHY) | Setup-ID: 3e60e93937b113df | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS nicht verfügbar; Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.58x SMA20)
+Name: Taiwan Semiconductor Manufacturing Co. Ltd. (TSM) | Setup-ID: f7feea7a0b4d856c | Quelle: hebeltrader_einzel_check.json | Status: kein kandidat | Begründung: Sektor-RS negativ (-0.1 %-Pkt.); Momentum zu schwach (0/4); kein bestätigtes Einstiegssignal; kein Ausbruch in Nähe des 3-Monats-Hochs; Volumen nicht bestätigt (0.94x SMA20)
+6. Portfolio & Risiko
+
+- Xtrackers MSCI World Quality UCITS ETF 1C (XDEQ.DE) | Performance seit Einstieg: +20.84% | Einstieg: 67,71 | Einstiegsdatum: 01.09.2022 | Aktueller Kurs: 81.82 | Rückenwind: Hohe Qualität und Preissetzungsmacht großer Unternehmen kompensieren den Zinsdruck. | Relevantes Ereignis: Kerninflation und Zinsentscheide. | Stop/TP: Nur aus Quelle (keine Angabe). | Nächster Prüfschritt: Überprüfung der Sektor-Allokation bei anhaltend hohen Realzinsen.
+- iShares Core MSCI World UCITS ETF USD (Acc) (EUNL.DE) | Performance seit Einstieg: +19.08% | Einstieg: 108,04 | Einstiegsdatum: 02.02.2022 | Aktueller Kurs: 128.65 | Rückenwind: Breiter Marktfilter; solider Kernbestandteil. | Relevantes Ereignis: Globale Makrodaten. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Benchmark-Abgleich mit dem Live-System.
+- State Street SPDR MSCI All Country World Investable Market UCITS ETF (SPYI.DE) | Performance seit Einstieg: +1.50% | Einstieg: 11,37 | Einstiegsdatum: 01.07.2026 | Aktueller Kurs: 11.54 | Neutral: Globale Diversifikation federt regionale Schwankungen ab. | Relevantes Ereignis: Zinsentscheidungen der Fed. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Positionsgröße bei Marktschwankungen validieren.
+- Amundi MSCI New Energy UCITS ETF Dist (NRJ.PA) | Performance seit Einstieg: -1.09% | Einstieg: 38,04 | Einstiegsdatum: 03.0,2.2026 | Aktueller Kurs: 37.62 | Gegenwind: Hohe Kapitalkosten und Zinsen belasten den Sektor für erneuerbare Energien. | Relevantes Ereignis: Zinsentwicklung (US 10Y Treasury). | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Relative Stärke im Sektor überwachen.
+- Teladoc Health, Inc. (4LL.F) | Performance seit Einstieg: -5.08% | Einstieg: 8,31 | Einstiegsdatum: 10.02.2025 | Aktueller Kurs: 7.89 | Gegenwind: Zinssensitive, unrentable Wachstumswerte stehen unter permanentem Bewertungsdruck. | Relevantes Ereignis: Quartalszahlen / Gesundheitssektor-Trends. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Fortlaufende Trendüberwachung.
+- Vonovia SE (VNA.DE) | Performance seit Einstieg: -34.58% | Einstieg: 26,14 | Einstiegsdatum: 06.10.2025 | Aktueller Kurs: 17.1 | Gegenwind: Hohe Renditen am Anleihenmarkt (10Y bei 4,90 %) belasten den Immobiliensektor massiv. | Relevantes Ereignis: EZB-Zinsentscheidungen und Immobilienmärkte. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Risiko- und Expositionsanalyse im Gesamtportfolio.
+- American Lithium Corp. (5LA1.F) | Performance seit Einstieg: -61.42% | Einstieg: 0,53 | Einstiegsdatum: 11.07.2026 | Aktueller Kurs: 0.2 | Gegenwind: Schwache Lithiumpreise und spekulativer Abverkauf. | Relevantes Ereignis: Rohstoffmarktentwicklung. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Fundamentale Bodenbildung abwarten.
+- DroneShield Limited (DRH.F) | Performance seit Einstieg: -63.67% | Einstieg: 2,16 | Einstiegsdatum: 06.03.2026 | Aktueller Kurs: 0.78 | Gegenwind: Starker Kursverlust nach anfänglicher Euphorie. | Relevantes Ereignis: Unternehmensnachrichten. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Überprüfung des Investment-Case.
+- iShares Physical Metals plc - iShares Physical Silver ETC (PPFD.SG) | Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 57,2 | Einstiegsdatum: 17.02.2026 | Gegenwind: Hohe Realzinsen (10Y TIPS bei 2,64 %) belasten Edelmetalle. | Relevantes Ereignis: Zins- und Inflationsdaten. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Charttechnische Unterstützungslinien prüfen.
+- WisdomTree Sugar 2x Daily Leveraged (LSUG.MI) | Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 2,06 | Einstiegsdatum: 18.03.2026 | Neutral: Rohstoffspezifische Preisschwankungen. | Relevantes Ereignis: Agrarmarktberichte. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Volatilitäts- und Risikokontrolle.
+- Sixt SE (SIX2.DE) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 72,0 | Einstiegsdatum: 24.04.2026 | OS-Einstieg: 0.51 | Aktueller Kurs: 75.1 | Rückenwind: Stabiler Aktienkurs über Einstiegsniveau. | Relevantes Ereignis: Konjunkturdaten (Consumer Sentiment). | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Optionsschein-Laufzeit und Hebelwirkung überwachen.
+- Siemens Energy AG (ENR.DE) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 175,0 | Einstiegsdatum: 27.04.2026 | OS-Einstieg: 1.75 | Aktueller Kurs: 119.84 | Gegenwind: Kursrückgang unter den Einstiegspreis. | Relevantes Ereignis: Industriewachstum (ISM PMI). | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Technische Erholung abwarten.
+- Alibaba Group Holding Limited (BABA) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 141,0 | Einstiegsdatum: 07.05.2026 | OS-Einstieg: 2.2 | Aktueller Kurs: 102.72 | Gegenwind: Fortgesetzter Druck auf chinesische Tech-Terte. | Relevantes Ereignis: Geopolitische Meldungen (China/Taiwan). | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Risikobegrenzung prüfen.
+- Albemarle Corporation (ALB) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 200,0 | Einstiegsdatum: 12.05.2026 | OS-Einstieg: 3.99 | Aktueller Kurs: 94.93 | Gegenwind: Schwaches Marktumfeld für Lithiumproduzenten. | Relevantes Ereignis: Rohstoffpreise. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Positionsüberprüfung.
+- Freeport-McMoRan Inc. (FCX) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 66,32 | Einstiegsdatum: 02.10.2026 | OS-Einstieg: 1.19 | Aktueller Kurs: 60.31 | Neutral: Industriemetallnachfrage durch ISM PMI gestützt, kurzfristiger Preisdruck. | Relevantes Ereignis: Industriemetallpreise (Kuper). | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Trendfolge-Status prüfen.
+- Gold Spot (XAU/USD) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 4037,0 | Einstiegsdatum: 04.11.2026 | OS-Einstieg: 2.29 | Aktueller Kurs: 4030.42 | Gegenwind: Hohe Realzinsen belasten kurzfristig. | Relevantes Ereignis: Zinsentscheidungen. | Stop/TP: Keine Angabe. | Nächster Prüfschritt: Laufzeit und Hebel überwachen.
+
+Konzentrationen und gemeinsame Risikotreiber: Deutliche Konzentration von Risiken in zinssensitiven Werten (Vonovia SE (VNA.DE), Albemarle Corporation (ALB), American Lithium Corp. (5LA1.F)) durch das anhaltende Hochzinsregime (US 10Y bei 4,90 % (Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR)). | Quelldatei: Makro_Briefing(2026-11-11).txt
+
+7. MSCI-Vergleich
+Benchmark-Performance: NICHT VERFÜGBAR (Quellenwerte, Zählung oder Trade-Details sind unvollständig bzw. rechnerisch inkonsistent)
+Benchmark-Vergleichsbasis: NICHT VERIFIZIERBAR
+System-Performance-Live: NICHT VERFÜGBAR
+Benchmark-Quelle: Benchmark_Live.txt; SHA256: f105a46942557e12e48fafcace15497da212ac8e0df53108245687236a41783e
+Out-/Underperformance: NICHT VERFÜGBAR (keine belegte vergleichbare Portfolio-/Benchmarkgrundlage).
+
+Portfolio-Performance (Python-Berechnung):
+Portfolio-Gesamtperformance: NICHT VERFÜGBAR (keine belegte Portfolioaggregation)
+Ø Positionsperformance: NICHT VERFÜGBAR
+Performance-Datenbasis: 52 eindeutige Trades; abgeschlossen=52; offen=0; zusätzlich nicht aggregierbare offene Quellpositionen=34 (Teladoc Health, Inc. (4LL.F), American Lithium Corp. (5LA1.F), Archer-Daniels-Midland Company (ADM), Albemarle Corporation (ALB), argenx SE (ARGX), B, Alibaba Group Holding Limited (BABA), DroneShield Limited (DRH.F), Siemens Energy AG (ENR.DE), Freeport-McMoRan Inc. (FCX), Johnson & Johnson (JNJ), WisdomTree Sugar 2x Daily Leveraged (LSUG.MI), Newmont Corporation (NEM), Amundi MSCI New Energy UCITS ETF Dist (NRJ.PA), iShares Physical Metals plc - iShares Physical Silver Name nicht aufgelöst (ETC) (PPFD.SG), Sixt SE (SIX2.DE), State Street SPDR MSCI All Country World Investable Market UCITS ETF (SPYI.DE), Vonovia SE (VNA.DE), Gold Future (GC=F) Spot (XAU/USD), Xtrackers MSCI World Quality UCITS ETF 1C (XDEQ.DE)); Quellzeilen=194
+Berechnungsmethode: gleichgewichteten arithmetischen Mittelwert der individuellen prozentualen Renditen aller eindeutigen offenen und abgeschlossenen System-Trades; jeder Trade zählt genau einmal; genau 1 Stück je Trade; abgeschlossene Trades zum Ausstiegskurs; offene Trades zum aktuellen Kurs; Kosten=0; keine Kapitalgewichtung und keine Währungsumrechnung.
+Benchmarkpositionen ausgeschlossen: iShares Core MSCI World UCITS ETF USD (Acc) (EUNL.DE) (Anzahl=2); externe Vergleichspositionen zählen nicht als System-Trades.
+Formel je Trade: Long=(Kurs-Einstieg)/Einstieg*100; Short=(Einstieg-Kurs)/Einstieg*100. Portfolio-Gesamtperformance=Summe der Einzelrenditen geteilt durch Anzahl eindeutiger Trades; Stückzahl 1; Kosten 0.
+Positionsdurchschnitt: arithmetisches Mittel ausschließlich der aktuell offenen Einzelrenditen; kein Ersatz für die Portfolio-Gesamtperformance.
+Performance-Einzelrenditen: NICHT VERFÜGBAR
+Performance-Einzelrenditen-SHA256: NICHT VERFÜGBAR
+Datenquellen: Geschlossene Positionen.csv, Geschlossene Positionen_Tab2.csv, Offene Positionen+Check.csv, Offene_Positionen.csv
+Performance-Datenlücken: Geschlossene Positionen_Tab2.csv:2 MDLZ: gespeicherte Einzelrendite +0.03% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +2.72% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:3 DUK: gespeicherte Einzelrendite -0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.05% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:4 AI.PA: gespeicherte Einzelrendite -0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.20% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:5 IRM: gespeicherte Einzelrendite +0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +0.66% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:6 ROST: gespeicherte Einzelrendite +0.15% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +14.81% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:7 AVGO: gespeicherte Einzelrendite -0.06% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -5.64% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:8 EXR: gespeicherte Einzelrendite -0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -1.00% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:9 TXT: gespeicherte Einzelrendite -0.08% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -7.60% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:11 NVDA: gespeicherte Einzelrendite -0.05% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.70% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:12 SRT3.DE: gespeicherte Einzelrendite -0.12% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -12.39% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:13 OXY: gespeicherte Einzelrendite +0.06% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +5.86% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:14 BAS.DE: gespeicherte Einzelrendite +0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +1.21% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:16 STLD: gespeicherte Einzelrendite +0.08% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +7.63% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:17 VRTX: gespeicherte Einzelrendite +0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +4.44% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:18 GEN: gespeicherte Einzelrendite -0.05% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.66% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:20 TXN: gespeicherte Einzelrendite -0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.20% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:21 LIN: gespeicherte Einzelrendite -0.00% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -0.47% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:22 MTX.DE: gespeicherte Einzelrendite +0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +1.35% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:23 SDF.DE: gespeicherte Einzelrendite -0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -0.94% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:24 GC=F: gespeicherte Einzelrendite +0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +4.21% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:25 ARGX: gespeicherte Einzelrendite +0.16% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +15.55% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:26 ADM: gespeicherte Einzelrendite -0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -3.63% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:27 NEM: gespeicherte Einzelrendite +0.10% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +9.65% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:28 ADSK: gespeicherte Einzelrendite -0.12% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -12.22% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:29 JST.DE: gespeicherte Einzelrendite +0.00% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +0.17% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:31 B: gespeicherte Einzelrendite +0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +0.98% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:33 MU: gespeicherte Einzelrendite -0.11% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -11.00% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:34 JNJ: gespeicherte Einzelrendite +0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +0.56% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:35 NBIX: gespeicherte Einzelrendite -0.05% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -5.25% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:36 CVS: gespeicherte Einzelrendite -0.06% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -5.67% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:37 IOS.DE: gespeicherte Einzelrendite -0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.16% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:38 WAC.DE: gespeicherte Einzelrendite +0.02% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +2.40% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:41 ETH-USD: gespeicherte Einzelrendite -0.06% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -5.91% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:42 MTX.DE: gespeicherte Einzelrendite +0.02% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +2.13% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:43 BTC-USD: gespeicherte Einzelrendite +0.02% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +1.88% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:44 TSM: gespeicherte Einzelrendite +0.07% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +6.67% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:45 FIX: gespeicherte Einzelrendite -0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -1.02% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:46 ROK: gespeicherte Einzelrendite -0.02% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -2.37% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:47 PWR: gespeicherte Einzelrendite +0.01% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +1.13% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:48 S92.DE: gespeicherte Einzelrendite -0.03% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -3.10% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:49 FSLY: gespeicherte Einzelrendite -0.14% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -14.37% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:50 SCCO: gespeicherte Einzelrendite -0.03% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -3.41% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:51 GOOGL: gespeicherte Einzelrendite -0.04% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -3.60% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen_Tab2.csv:52 CRM: gespeicherte Einzelrendite -0.06% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -5.99% (Toleranz 0,15 Prozentpunkte). | Offene Positionen+Check.csv:2 VNA.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:3 5LA1.F: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:5 XDEQ.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:6 NRJ.PA: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:7 PPFD.SG: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:8 4LL.F: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:9 DRH.F: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:10 LSUG.MI: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:11 SIX2.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:12 SPYI.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:13 ENR.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:14 BABA: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:15 ALB: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:16 FCX: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:17 XAU/USD: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:2 VNA.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:3 5LA1.F: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:5 XDEQ.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:6 NRJ.PA: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:7 PPFD.SG: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:8 4LL.F: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:9 DRH.F: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:10 LSUG.MI: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:11 SIX2.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:12 SPYI.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:13 ENR.DE: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:14 BABA: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:15 ALB: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:16 FCX: fehlend/ungültig: eindeutige Richtung | Offene Positionen+Check.csv:17 XAU/USD: fehlend/ungültig: eindeutige Richtung | Offene_Positionen.csv:4 XDEQ.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:5 LSUG.MI: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:6 NRJ.PA: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:11 SPYI.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:13 SIX2.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:14 PPFD.SG: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:15 BABA: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:16 ENR.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:17 VNA.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:18 ALB: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:19 4LL.F: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:20 DRH.F: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:21 5LA1.F: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:23 AIR.PA: gespeicherte Einzelrendite -4.63% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.20% (Toleranz 0,15 Prozentpunkte). | Offene_Positionen.csv:26 AVGO: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:28 DUK: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:29 EXR: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:30 TXT: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:33 STLD: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:34 VRTX: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:38 GEN: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:39 SDF.DE: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:42 LIN: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:43 TXN: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:4 XDEQ.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:5 LSUG.MI: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:6 NRJ.PA: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:11 SPYI.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:13 SIX2.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:14 PPFD.SG: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:15 BABA: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:16 ENR.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:17 VNA.DE: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:18 ALB: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:19 4LL.F: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:20 DRH.F: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:21 5LA1.F: aktueller Kurs fehlt/ungültig | Offene_Positionen.csv:23 AIR.PA: gespeicherte Einzelrendite -4.63% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.20% (Toleranz 0,15 Prozentpunkte). | Offene_Positionen.csv:26 AVGO: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:28 DUK: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:29 EXR: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:30 TXT: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:33 STLD: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:34 VRTX: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:38 GEN: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:39 SDF.DE: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:42 LIN: fehlend/ungültig: gültiges Einstiegsdatum | Offene_Positionen.csv:43 TXN: fehlend/ungültig: gültiges Einstiegsdatum | Geschlossene Positionen.csv:4 AI.PA: gespeicherte Einzelrendite -4.63% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -4.20% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen.csv:19 TSM: gespeicherte Einzelrendite -1.54% widerspricht der aus Einstieg und Kurs reproduzierten Rendite -0.10% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen.csv:22 MTX.DE: gespeicherte Einzelrendite -1.11% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +1.35% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen.csv:24 GC=F: gespeicherte Einzelrendite +4.47% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +4.21% (Toleranz 0,15 Prozentpunkte). | Geschlossene Positionen.csv:27 NEM: gespeicherte Einzelrendite +9.87% widerspricht der aus Einstieg und Kurs reproduzierten Rendite +9.65% (Toleranz 0,15 Prozentpunkte).
+
+8. Daten-/Prüfanhang
+
+OHLCV-Abdeckung: 857/857 Symbole abgedeckt; Status=gaps.
+OHLCV-Qualitätsstatus: VALID=856, MISSING=0, STALE=0, INVALID=1; Summe=857/857.
+OHLCV-Symbole-VALID: 005930.KS, 0700.HK, 1SXP.DE, 1U1.DE, 2GB.F, 3402.T, A, AA, AAPL, ABBV, ABNB, ABT, ACGL, ACN, ACT0.DE, ADBE, ADI, ADM, ADN1.DE, ADP, ADS.DE, ADSK, ADV.DE, ADYEN.AS, AEE, AEM, AEP, AES, AFL, AFX.DE, AG1.DE, AI, AIG, AIQ, AIR.DE, AIXA.DE, AIZ, AJG, AKAM, ALAB, ALB, ALGN, ALL, ALLE, ALNY, ALV.DE, AMAT, AMC, AMCR, AMD, AME, AMGN, AMP, AMRC, AMT, AMZN, ANET, AOF.DE, AON, AOS, APA, APD, APH, APO, APP, APTV, ARE, ARES, ARM, ARRY, ASML, ASML.AS, ATI, ATO, AU, AVAV, AVGO, AVY, AWK, AXON, AXP, AZN, AZO, BA, BABA, BAC, BALL, BAS.DE, BAX, BAYN.DE, BBWI, BBY, BC8.DE, BDX, BEI.DE, BEN, BF-B, BFSA.DE, BG, BHP, BIDU, BIIB, BILL, BKNG, BKR, BLDR, BLK, BMRN, BMW.DE, BMY, BNR.DE, BNTX, BNY, BOSS.DE, BOTZ, BP, BP.L, BR, BRK-B, BRO, BSX, BSY, BTC-USD, BTG, BURL, BVB.DE, BWA, BX, BZ=F, C, CAH, CARR, CASY, CAT, CB, CBK.DE, CBOE, CBRE, CCEP, CCI, CCL, CDNS, CDW, CE, CEBT.DE, CEG, CF, CFG, CGNX, CHD, CHKP, CHRW, CHTR, CI, CIEN, CIG, CINF, CL, CL=F, CLF, CLOU, CLX, CMC, CMCSA, CME, CMG, CMI, CMS, CNC, CNP, COF, COHR, COIN, COK.DE, CON.DE, COO, COP, COR, COST, CPAY, CPRT, CPT, CRH, CRL, CRM, CRS, CRSP, CRWD, CRWV, CSCO, CSGP, CSIQ, CSX, CTAS, CTSH, CTVA, CVNA, CVS, CVX, CWC.DE, D, DAL, DASH, DB1.DE, DBAN.DE, DBK.DE, DD, DDOG, DE, DECK, DELL, DEQ.DE, DEZ.DE, DG, DGX, DHER.DE, DHI, DHL.DE, DHR, DIS, DKS, DLR, DLTR, DMP.DE, DOC, DOCU, DOU.DE, DOV, DOW, DPZ, DQ, DRI, DRW3.DE, DSV.CO, DTE, DTE.DE, DTG.DE, DUE.DE, DUK, DVA, DVN, DWNI.DE, DWS.DE, DXCM, EBAY, ECHO, ECL, ED, EDIT, EFX, EG, EGO, EIX, EKT.DE, EL, ELG.DE, ELV, EME, EMR, ENEL.MI, ENPH, ENR.DE, ENTG, EOAN.DE, EOG, EQIX, EQT, ERIE, ERO, ES, ESS, ESTC, ETN, EUZ.DE, EVD.DE, EVK.DE, EVRG, EVT.DE, EW, EWBC, EXC, EXEL, EXH1.DE, EXH4.DE, EXH5.DE, EXH7.DE, EXH9.DE, EXI5.DE, EXPD, EXPE, EXR, EXSA.DE, EXV1.DE, EXV2.DE, EXV3.DE, EXV4.DE, EXV5.DE, EXV6.DE, EXV7.DE, F, F3C.DE, FANG, FAST, FCX, FDX, FDXF, FE, FER, FERG, FFIV, FIS, FISV, FITB, FIVE, FIX, FLEX, FLG, FLNC, FMC, FME.DE, FNTN.DE, FNV, FOX, FOXA, FPE3.DE, FRE.DE, FRT, FSLR, FSLY, FTI, FTK.DE, FTNT, FTV, G1A.DE, G24.DE, GBF.DE, GC=F, GD, GDDY, GDX, GE, GEHC, GEN, GEV, GFI, GFT.DE, GH, GILD, GIS, GL, GLJ.DE, GLW, GM, GME, GNRC, GOLD, GOOG, GOOGL, GPC, GPN, GRMN, GS, GWW, GXI.DE, GYC.DE, HABA.DE, HACK, HAG.DE, HAL, HAS, HBAN, HBH.DE, HCA, HD, HDD.DE, HEI, HEI.DE, HEN3.DE, HFG.DE, HG=F, HIG, HII, HL, HLT, HMY, HNR1.DE, HON, HONA, HOOD, HOT.DE, HP, HPE, HPQ, HRL, HSIC, HST, HSY, HUBB, HUBS, HUM, HWM, HYQ.DE, IAG, IBB, IBE.MC, IBKR, IBM, ICE, IDXX, IEX, IFF, IFX.DE, IGV, IHI, ILM1.DE, ILMN, INCY, INH.DE, INTC, INTU, INVH, IOS.DE, IP, IQV, IR, IRM, ISRG, IT, ITA, ITW, IVZ, J, JBHT, JBL, JCI, JEN.DE, JKHY, JKS, JNJ, JPM, JST.DE, JUN3.DE, KBX.DE, KDP, KEY, KEYS, KGC, KGX.DE, KHC, KIM, KKR, KLAC, KMB, KMI, KNIN.SW, KO, KR, KRE, KRN.DE, KSB3.DE, KTN.DE, KTOS, KWS.DE, L, LBRT, LDOS, LEG.DE, LEN, LH, LHA.DE, LHX, LIN, LIT, LITE, LKQ, LLY, LMT, LNT, LOW, LRCX, LSCC, LULU, LUV, LVS, LXS.DE, LYB, LYV, LZAGF, MA, MAA, MAR, MAS, MBB.DE, MBG.DE, MCD, MCHP, MCK, MCO, MDB, MDLZ, MDT, MELI, MET, META, MGM, MHK, MKC, MLM, MLP.DE, MMM, MNST, MO, MOS, MP, MPC, MPWR, MRK, MRK.DE, MRNA, MRSH, MRVL, MS, MSCI, MSFT, MSI, MSTR, MT, MTB, MTD, MTX.DE, MU, MUV2.DE, MUX.DE, NA9.DE, NBIS, NBIX, NCLH, NDAQ, NDSN, NDX1.DE, NEE, NEM, NEM.DE, NET, NFLX, NI, NIO, NKE, NOC, NOEJ.DE, NOV, NOW, NRG, NSC, NTAP, NTRA, NTRS, NUE, NVDA, NVR, NVS, NWS, NWSA, NXPI, NXT, O, ODFL, OIH, OKE, OKTA, OMC, ON, ORCL, ORLY, ORSTED.CO, OTIS, OXY, P911.DE, PA=F, PAAS, PAH3.DE, PANW, PAT.DE, PATH, PAVE, PAYX, PBB.DE, PCAR, PCG, PDD, PEG, PEP, PFE, PFG, PG, PGR, PH, PHM, PKG, PL=F, PLD, PLTR, PLUG, PM, PNC, PNFP, PNR, PNW, PODD, PPFB.DE, PPG, PPL, PRU, PRU.L, PSA, PSM.DE, PSX, PTC, PTEN, PUM.DE, PWR, PYPL, Q, QCOM, QIA.DE, QLYS, QQQ, R, R3NK.DE, RAA.DE, RCL, RDC.DE, REG, REGN, RF, RGLD, RHHBY, RHM.DE, RIG, RIO, RIOT, RIVN, RJF, RKLB, RL, RMD, ROK, ROL, ROP, ROST, RPD, RS, RSG, RTX, RUN, RVTY, RWE.DE, S, S92.DE, SAP.DE, SAX.DE, SBAC, SBUX, SCCO, SCHW, SDF.DE, SEDG, SFQ.DE, SHEL, SHL.DE, SHLS, SHOP, SHW, SI=F, SIE.DE, SIEGY, SIX2.DE, SJM, SKYD, SLB, SMCI, SMH, SMHN.DE, SNA, SNDK, SNOW, SNPS, SNY, SO, SOLV, SOXX, SPCX, SPG, SPG.DE, SPGI, SPY, SRE, SREN.SW, SRT3.DE, SSRM, STE, STLD, STO3.DE, STT, STX, STZ, SWK, SWKS, SY1.DE, SYF, SYK, SYM, SYY, SZG.DE, SZU.DE, T, TAN, TAP, TCEHY, TDG, TDOC, TDY, TEAM, TECH, TEG.DE, TEL, TEM, TENB, TER, TFC, TFX, TGT, TJX, TKA.DE, TLX.DE, TMO, TMUS, TMV.DE, TNIE.DE, TPE.DE, TPR, TRGP, TRI, TRMB, TROW, TRV, TSCO, TSLA, TSM, TSN, TT, TTD, TTE, TTWO, TUI1.DE, TWLO, TXN, TXT, TYL, UAL, UBER, UDR, UHS, ULTA, UNH, UNP, UPS, URI, USB, UTDI.DE, UTHR, V, VAL, VBK.DE, VEEV, VH2.DE, VICI, VKTX, VLO, VLTO, VMC, VMRK, VNA.DE, VOS.DE, VOW3.DE, VRNS, VRSK, VRSN, VRT, VRTX, VRV.DE, VST, VTR, VTRS, VWS.CO, VZ, WAB, WAC.DE, WAF.DE, WAL, WAT, WCH.DE, WDAY, WDC, WEC, WELL, WFC, WFRD, WM, WMB, WMT, WPM, WRB, WST, WTW, WUW.DE, WY, WYNN, XBI, XEL, XLB, XLC, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY, XME, XOM, XPO, XRT, XYL, XYZ, YSN.DE, YUM, ZAL.DE, ZBH, ZBRA, ZION, ZS, ZTS, ZURN.SW, ^DJI, ^GDAXI, ^GSPC, ^HSI, ^IXIC, ^N225, ^RUT, ^STOXX, ^STOXX50E, ^VIX
+OHLCV-Symbole-MISSING: KEINE
+OHLCV-Symbole-STALE: KEINE
+OHLCV-Symbole-INVALID: EURUSD=X
+Datenstand: 2026-11-11T11:18:12+00:00.
+Kandidaten-Mapping: VOLLSTÄNDIG – alle im Bericht ausgewiesenen Kandidaten wurden einzeln dem geprüften Universum zugeordnet.
+Lückenstatus und Kandidatenauswirkung: Universumsweite OHLCV-Datenlücken/-veraltung und Qualitätsauffälligkeiten (VALID=856, MISSING=0, STALE=0, INVALID=1) bleiben dokumentiert. Das vollständige Kandidaten-Mapping zeigt keine direkte Überschneidung der geprüften Kandidaten mit fehlenden, veralteten, im jüngsten 90-Tage-Fenster ungültigen OHLCV-Daten oder fehlenden Handelstagen; die geprüften Kandidaten sind deshalb durch diese OHLCV-Befunde nicht eingeschränkt.
+- Quelle: Mehrere primäre Makro-, Setup- und Portfoliodateien (Makro_Briefing, Edelmetalle_Briefing, Einzel-Check, Benchmark_Live).
+- Aktualität: Aktualisiert auf Basis der neuesten verfügbaren Berichte vom November 2026.
+- Vollständigkeit: Sektoren- und Makrodaten vollständig; vereinzelte Kennzahlen in spezifischen Berichten (wie exakte TP/Stops bei bestimmten Portfolio-Positionen) als nicht verfügbar ausgewiesen.
+- Widersprüche: Keine signifikanten methodischen Widersprüche; Divergenz zwischen robustem ISM-Index und verhaltenem Konsumentenklima fachlich dokumentiert.
+- Fehlende Werte: Bestimmte Optionsschein-Performances im Portfolio sowie exakte Konsenswerte für Nebenkalendertermine als NICHT VERFÜGBAR gekennzeichnet.
+- Konkrete Auswirkungen auf die Analyse: Keine Schätzung von Werten; strikte Einhaltung der Datenvorgaben führt zum Verzicht auf hypothetische Kursziele bei unvollständigen Positionen.
+
+Bewusst ausgeschlossene Ticker: 26 (nicht Teil des aktiven Datenuniversums).
+
+9. Vollständige offene Positionen (Quelle: Offene Positionen+Check.csv)
+OFFENE_POSITIONEN_QUELLANZAHL=16
+OFFENE_POSITIONEN_ANZAHL=16
+SORTIERUNG=Performance seit Einstieg absteigend; nicht verfügbare Werte am Ende
+- Xtrackers MSCI World Quality UCITS ETF 1C (XDEQ.DE) | Performance seit Einstieg: +20.84% | Einstieg: 67,71 | Einstiegsdatum: 01.09.2022 | Performance-Quelle: Quellwert | Aktueller Kurs: 81.82
+- iShares Core MSCI World UCITS ETF USD (Acc) (EUNL.DE) | Performance seit Einstieg: +19.08% | Einstieg: 108,04 | Einstiegsdatum: 02.02.2022 | Performance-Quelle: Quellwert | Aktueller Kurs: 128.65
+- State Street SPDR MSCI All Country World Investable Market UCITS ETF (SPYI.DE) | Performance seit Einstieg: +1.50% | Einstieg: 11,37 | Einstiegsdatum: 01.07.2026 | Performance-Quelle: Quellwert | Aktueller Kurs: 11.54
+- Amundi MSCI New Energy UCITS ETF Dist (NRJ.PA) | Performance seit Einstieg: -1.09% | Einstieg: 38,04 | Einstiegsdatum: 03.02.2026 | Performance-Quelle: Quellwert | Aktueller Kurs: 37.62
+- Teladoc Health, Inc. (4LL.F) | Performance seit Einstieg: -5.08% | Einstieg: 8,31 | Einstiegsdatum: 10.02.2025 | Performance-Quelle: Quellwert | Aktueller Kurs: 7.89
+- Vonovia SE (VNA.DE) | Performance seit Einstieg: -34.58% | Einstieg: 26,14 | Einstiegsdatum: 06.10.2025 | Performance-Quelle: Quellwert | Aktueller Kurs: 17.1
+- American Lithium Corp. (5LA1.F) | Performance seit Einstieg: -61.42% | Einstieg: 0,53 | Einstiegsdatum: 11.07.2026 | Performance-Quelle: Quellwert | Aktueller Kurs: 0.2
+- DroneShield Limited (DRH.F) | Performance seit Einstieg: -63.67% | Einstieg: 2,16 | Einstiegsdatum: 06.03.2026 | Performance-Quelle: Quellwert | Aktueller Kurs: 0.78
+- iShares Physical Metals plc - iShares Physical Silver ETC (PPFD.SG) | Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 57,2 | Einstiegsdatum: 17.02.2026
+- WisdomTree Sugar 2x Daily Leveraged (LSUG.MI) | Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 2,06 | Einstiegsdatum: 18.03.2026
+- Sixt SE (SIX2.DE) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 72,0 | Einstiegsdatum: 24.04.2026 | OS-Einstieg: 0.51 | Aktueller Kurs: 75.1
+- Siemens Energy AG (ENR.DE) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 175,0 | Einstiegsdatum: 27.04.2026 | OS-Einstieg: 1.75 | Aktueller Kurs: 119.84
+- Alibaba Group Holding Limited (BABA) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 141,0 | Einstiegsdatum: 07.05.2026 | OS-Einstieg: 2.2 | Aktueller Kurs: 102.72
+- Albemarle Corporation (ALB) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 200,0 | Einstiegsdatum: 12.05.2026 | OS-Einstieg: 3.99 | Aktueller Kurs: 94.93
+- Freeport-McMoRan Inc. (FCX) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 66,32 | Einstiegsdatum: 02.10.2026 | OS-Einstieg: 1.19 | Aktueller Kurs: 60.31
+- Gold Spot (XAU/USD) | Optionsschein-Performance seit Einstieg: NICHT VERFÜGBAR | Einstieg: 4037,0 | Einstiegsdatum: 04.11.2026 | OS-Einstieg: 2.29 | Aktueller Kurs: 4030.42
+TRADING_RADAR_OFFENE_POSITIONEN_BEGIN
+
+10.5 Geschlossene Positionen (Quelle: Tab 2 / Geschlossene Positionen)
+TAB-2-ANZAHL=51
+TAB-2-QUELLE=Geschlossene Positionen
+Quellzeile: 3 | Ticker: MDLZ | Name: Mondelez International, Inc. | Waehrung: USD | Einstiegsdatum: 17.07.2026 | Einstieg: 61 | Ausstiegsdatum: 05.08.2026 | Ausstiegskurs: 62.66 | Performance_Seit_Einstieg%: 0.0272 | Status: Verkauft | Richtung: Long
+Quellzeile: 4 | Ticker: DUK | Name: Duke Energy Corporation | Waehrung: USD | Einstiegsdatum: 24.07.2026 | Einstieg: 129.26 | Ausstiegsdatum: 03.08.2026 | Ausstiegskurs: 124.03 | Performance_Seit_Einstieg%: -0.0405 | Status: Gestoppt | Richtung: Long
+Quellzeile: 5 | Ticker: AI.PA | Name: L'Air Liquide S.A. | Waehrung: EUR | Einstiegsdatum: 03.07.2026 | Einstieg: 179 | Ausstiegsdatum: 31.07.2026 | Ausstiegskurs: 171.48 | Performance_Seit_Einstieg%: -0.042 | Status: Verkauft | Richtung: Long
+Quellzeile: 6 | Ticker: IRM | Name: Iron Mountain Incorporated | Waehrung: USD | Einstiegsdatum: 17.07.2026 | Einstieg: 123.82 | Ausstiegsdatum: 31.07.2026 | Ausstiegskurs: 124.64 | Performance_Seit_Einstieg%: 0.0066 | Status: Verkauft | Richtung: Long
+Quellzeile: 7 | Ticker: ROST | Name: Ross Stores, Inc. | Waehrung: USD | Einstiegsdatum: 16.07.2026 | Einstieg: 219.46 | Ausstiegsdatum: 30.07.2026 | Ausstiegskurs: 251.96 | Performance_Seit_Einstieg%: 0.1481 | Status: Verkauft | Richtung: Long
+Quellzeile: 8 | Ticker: AVGO | Name: Broadcom Inc. | Waehrung: USD | Einstiegsdatum: 24.07.2026 | Einstieg: 392.47 | Ausstiegsdatum: 30.07.2026 | Ausstiegskurs: 370.32 | Performance_Seit_Einstieg%: -0.0564 | Status: Verkauft | Richtung: Long
+Quellzeile: 9 | Ticker: EXR | Name: Extra Space Storage Inc. | Waehrung: USD | Einstiegsdatum: 28.07.2026 | Einstieg: 148.29 | Ausstiegsdatum: 30.07.2026 | Ausstiegskurs: 146.8 | Performance_Seit_Einstieg%: -0.01 | Status: Gestoppt | Richtung: Long
+Quellzeile: 10 | Ticker: TXT | Name: Textron Inc. | Waehrung: USD | Einstiegsdatum: 24.07.2026 | Einstieg: 93.19 | Ausstiegsdatum: 29.07.2026 | Ausstiegskurs: 86.11 | Performance_Seit_Einstieg%: -0.076 | Status: Gestoppt | Richtung: Long
+Quellzeile: 11 | Ticker: RWE.DE | Name: RWE AG | Waehrung: EUR | Einstiegsdatum: 13.07.2026 | Einstieg: 56.24 | Ausstiegsdatum: 28.07.2026 | Ausstiegskurs: 56.22 | Performance_Seit_Einstieg%: -0.0004 | Status: Gestoppt | Richtung: Long
+Quellzeile: 12 | Ticker: NVDA | Name: NVIDIA Corporation | Waehrung: USD | Einstiegsdatum: 16.07.2026 | Einstieg: 203.53 | Ausstiegsdatum: 28.07.2026 | Ausstiegskurs: 193.96 | Performance_Seit_Einstieg%: -0.047 | Status: Gestoppt | Richtung: Long
+Quellzeile: 13 | Ticker: SRT3.DE | Name: Sartorius Aktiengesellschaft | Waehrung: EUR | Einstiegsdatum: 13.07.2026 | Einstieg: 247 | Ausstiegsdatum: 21.07.2026 | Ausstiegskurs: 216.4 | Performance_Seit_Einstieg%: -0.1239 | Status: Gestoppt | Richtung: Long
+Quellzeile: 14 | Ticker: OXY | Name: Occidental Petroleum Corporation | Waehrung: USD | Einstiegsdatum: 15.07.2026 | Einstieg: 54.57 | Ausstiegsdatum: 13.08.2026 | Ausstiegskurs: 57.77 | Performance_Seit_Einstieg%: 0.0586 | Status: Gestoppt | Richtung: Long
+Quellzeile: 15 | Ticker: BAS.DE | Name: BASF SE | Waehrung: EUR | Einstiegsdatum: 16.07.2026 | Einstieg: 49.42 | Ausstiegsdatum: 13.08.2026 | Ausstiegskurs: 50.02 | Performance_Seit_Einstieg%: 0.0121 | Status: Gestoppt | Richtung: Long
+Quellzeile: 16 | Ticker: DEZ.DE | Name: DEUTZ Aktiengesellschaft | Waehrung: EUR | Einstiegsdatum: 09.08.2026 | Einstieg: 10.31 | Ausstiegsdatum: 13.08.2026 | Ausstiegskurs: 10.3 | Performance_Seit_Einstieg%: -0.001 | Status: Gestoppt | Richtung: Long
+Quellzeile: 17 | Ticker: STLD | Name: Steel Dynamics, Inc. | Waehrung: USD | Einstiegsdatum: 23.07.2026 | Einstieg: 238.64 | Ausstiegsdatum: 14.08.2026 | Ausstiegskurs: 256.86 | Performance_Seit_Einstieg%: 0.0763 | Status: Gestoppt | Richtung: Long
+Quellzeile: 18 | Ticker: VRTX | Name: Vertex Pharmaceuticals Incorporated | Waehrung: USD | Einstiegsdatum: 07.08.2026 | Einstieg: 484.03 | Ausstiegsdatum: 14.08.2026 | Ausstiegskurs: 505.5 | Performance_Seit_Einstieg%: 0.0444 | Status: Gestoppt | Richtung: Long
+Quellzeile: 19 | Ticker: GEN | Name: Gen Digital Inc. | Waehrung: USD | Einstiegsdatum: 09.08.2026 | Einstieg: 29.17 | Ausstiegsdatum: 17.08.2026 | Ausstiegskurs: 27.81 | Performance_Seit_Einstieg%: -0.0466 | Status: Gestoppt | Richtung: Long
+Quellzeile: 20 | Ticker: TSM | Name: Taiwan Semiconductor Manufacturing Company Limited | Waehrung: USD | Einstiegsdatum: 06.08.2026 | Einstieg: 414 | Ausstiegsdatum: 18.08.2026 | Ausstiegskurs: 413.57 | Performance_Seit_Einstieg%: -0.001 | Status: Gestoppt | Richtung: Long
+Quellzeile: 21 | Ticker: TXN | Name: Texas Instruments Incorporated | Waehrung: USD | Einstiegsdatum: 17.08.2026 | Einstieg: 282.92 | Ausstiegsdatum: 18.08.2026 | Ausstiegskurs: 271.05 | Performance_Seit_Einstieg%: -0.042 | Status: Gestoppt | Richtung: Long
+Quellzeile: 22 | Ticker: LIN | Name: Linde plc | Waehrung: USD | Einstiegsdatum: 18.08.2026 | Einstieg: 478.2 | Ausstiegsdatum: 18.08.2026 | Ausstiegskurs: 480.43 | Performance_Seit_Einstieg%: -0.0047 | Status: Gestoppt | Richtung: Short
+Quellzeile: 23 | Ticker: MTX.DE | Name: MTU Aero Engines | Waehrung: EUR | Einstiegsdatum: 04.08.2026 | Einstieg: 361.8 | Ausstiegsdatum: 19.08.2026 | Ausstiegskurs: 366.7 | Performance_Seit_Einstieg%: 0.0135 | Status: Gestoppt | Richtung: Long
+Quellzeile: 24 | Ticker: SDF.DE | Name: K+S Aktiengesellschaft | Waehrung: EUR | Einstiegsdatum: 14.08.2026 | Einstieg: 14.83 | Ausstiegsdatum: 20.08.2026 | Ausstiegskurs: 14.69 | Performance_Seit_Einstieg%: -0.0094 | Status: Gestoppt | Richtung: Long
+Quellzeile: 25 | Ticker: GC=F | Name: Gold Future | Waehrung: USD | Einstiegsdatum: 20.08.2026 | Einstieg: 4516 | Ausstiegsdatum: 24.08.2026 | Ausstiegskurs: 4706 | Performance_Seit_Einstieg%: 0.0421 | Status: Verkauft | Richtung: Long
+Quellzeile: 26 | Ticker: ARGX | Name: argenx SE | Waehrung: USD | Einstiegsdatum: 07.08.2026 | Einstieg: 875.3 | Ausstiegsdatum: 24.08.2026 | Ausstiegskurs: 1011.37 | Performance_Seit_Einstieg%: 0.1555 | Status: Gestoppt | Richtung: Long
+Quellzeile: 27 | Ticker: ADM | Name: Archer-Daniels-Midland Company | Waehrung: USD | Einstiegsdatum: 20.08.2026 | Einstieg: 80.76 | Ausstiegsdatum: 24.08.2026 | Ausstiegskurs: 77.83 | Performance_Seit_Einstieg%: -0.0363 | Status: Gestoppt | Richtung: Long
+Quellzeile: 28 | Ticker: NEM | Name: Newmont Corporation | Waehrung: USD | Einstiegsdatum: 12.05.2026 | Einstieg: 120 | Ausstiegsdatum: 24.08.2026 | Ausstiegskurs: 131.58 | Performance_Seit_Einstieg%: 0.0965 | Status: Verkauft | Richtung: Long
+Quellzeile: 29 | Ticker: ADSK | Name: Autodesk, Inc. | Waehrung: USD | Einstiegsdatum: 28.08.2026 | Einstieg: 270.58 | Ausstiegsdatum: 04.09.2026 | Ausstiegskurs: 237.52 | Performance_Seit_Einstieg%: -0.1222 | Status: Gestoppt | Richtung: Long
+Quellzeile: 30 | Ticker: JST.DE | Name: JOST Werke SE | Waehrung: EUR | Einstiegsdatum: 21.08.2026 | Einstieg: 59.4 | Ausstiegsdatum: 10.09.2026 | Ausstiegskurs: 59.5 | Performance_Seit_Einstieg%: 0.0017 | Status: Gestoppt | Richtung: Long
+Quellzeile: 31 | Ticker: UNH | Name: UnitedHealth Group Incorporated | Waehrung: USD | Einstiegsdatum: 21.08.2026 | Einstieg: 399.66 | Ausstiegsdatum: 11.09.2026 | Ausstiegskurs: 384.59 | Performance_Seit_Einstieg%: -0.0377 | Status: Verkauft | Richtung: Long | Produkt_Typ: Optionsschein | OS_WKN: HM0ZHD | OS_Einstiegskurs: 5.01 | OS_Aktueller_Kurs: 3.71 | OS_Performance%: -25.95 | OS_Quelle: Börse Stuttgart | OS_Kurszeit: 11.09.2026 / 12:03:49
+Quellzeile: 32 | Ticker: B | Name: Barrick Mining | Waehrung: USD | Einstiegsdatum: 14.08.2026 | Einstieg: 41.64 | Ausstiegsdatum: 14.09.2026 | Ausstiegskurs: 42.05 | Performance_Seit_Einstieg%: 0.0098 | Status: Gestoppt | Richtung: Long
+Quellzeile: 33 | Ticker: NEM | Name: Newmont Corporation | Waehrung: USD | Einstiegsdatum: 24.08.2026 | Einstieg: 131.58 | Ausstiegsdatum: 14.09.2026 | Ausstiegskurs: 122.27 | Performance_Seit_Einstieg%: -0.0708 | Status: Gestoppt | Richtung: Long | Produkt_Typ: Optionsschein | OS_WKN: GW5GT1 | OS_Einstiegskurs: 2.18 | OS_Aktueller_Kurs: 1.62 | OS_Performance%: -25.69 | OS_Quelle: Börse Stuttgart | OS_Kurszeit: 14.09.2026 / 13:59:35
+Quellzeile: 34 | Ticker: MU | Name: Micron Technology | Waehrung: USD | Einstiegsdatum: 08.09.2026 | Einstieg: 1018.58 | Ausstiegsdatum: 14.09.2026 | Ausstiegskurs: 906.53 | Performance_Seit_Einstieg%: -0.11 | Status: Gestoppt | Richtung: Long
+Quellzeile: 35 | Ticker: JNJ | Name: Johnson & Johnson | Waehrung: USD | Einstiegsdatum: 12.08.2026 | Einstieg: 259.8 | Ausstiegsdatum: 15.09.2026 | Ausstiegskurs: 261.25 | Performance_Seit_Einstieg%: 0.0056 | Status: Gestoppt | Richtung: Long
+Quellzeile: 36 | Ticker: NBIX | Name: Neurocrine Biosciences, Inc. | Waehrung: USD | Einstiegsdatum: 03.09.2026 | Einstieg: 157.79 | Ausstiegsdatum: 16.09.2026 | Ausstiegskurs: 149.5 | Performance_Seit_Einstieg%: -0.0525 | Status: Gestoppt | Richtung: Long
+Quellzeile: 37 | Ticker: CVS | Name: CVS Health Corporation | Waehrung: USD | Einstiegsdatum: 03.09.2026 | Einstieg: 97.23 | Ausstiegsdatum: 16.09.2026 | Ausstiegskurs: 91.72 | Performance_Seit_Einstieg%: -0.0567 | Status: Gestoppt | Richtung: Long
+Quellzeile: 38 | Ticker: IOS.DE | Name: IONOS Group SE | Waehrung: EUR | Einstiegsdatum: 28.08.2026 | Einstieg: 35.12 | Ausstiegsdatum: 18.09.2026 | Ausstiegskurs: 33.66 | Performance_Seit_Einstieg%: -0.0416 | Status: Gestoppt | Richtung: Long
+Quellzeile: 39 | Ticker: WAC.DE | Name: Wacker Neuson SE | Waehrung: EUR | Einstiegsdatum: 28.08.2026 | Einstieg: 22.9 | Ausstiegsdatum: 24.09.2026 | Ausstiegskurs: 23.45 | Performance_Seit_Einstieg%: 0.024 | Status: Gestoppt | Richtung: Long
+Quellzeile: 40 | Ticker: SIE.DE | Name: Siemens Aktiengesellschaft | Waehrung: EUR | Einstiegsdatum: 23.09.2026 | Einstieg: 272 | Ausstiegsdatum: 01.10.2026 | Ausstiegskurs: 272.15 | Performance_Seit_Einstieg%: 0.0006 | Status: Gestoppt | Richtung: Long
+Quellzeile: 41 | Ticker: FCX | Name: Freeport-McMoRan | Waehrung: USD | Einstiegsdatum: 19.08.2026 | Einstieg: 66.32 | Ausstiegsdatum: 01.10.2026 | Ausstiegskurs: 69.05 | Performance_Seit_Einstieg%: 0.0412 | Status: Gestoppt | Richtung: Long | Produkt_Typ: Optionsschein | OS_WKN: PK9UHB | OS_Einstiegskurs: 1.19 | OS_Aktueller_Kurs: 1.29 | OS_Quelle: Börse Stuttgart | OS_Kurszeit: 01.10.2026 / 10:57:49
+Quellzeile: 42 | Ticker: ETH-USD | Name: Ethereum USD | Waehrung: USD | Einstiegsdatum: 21.09.2026 | Einstieg: 2770 | Ausstiegsdatum: 07.10.2026 | Ausstiegskurs: 2606.16 | Performance_Seit_Einstieg%: -0.0591 | Status: Gestoppt | Richtung: Long
+Quellzeile: 43 | Ticker: MTX.DE | Name: MTU Aero Engines AG | Waehrung: EUR | Einstiegsdatum: 23.09.2026 | Einstieg: 350.2 | Ausstiegsdatum: 07.10.2026 | Ausstiegskurs: 357.65 | Performance_Seit_Einstieg%: 0.0213 | Status: Gestoppt | Richtung: Long
+Quellzeile: 44 | Ticker: BTC-USD | Name: Bitcoin USD | Waehrung: USD | Einstiegsdatum: 21.09.2026 | Einstieg: 81800 | Ausstiegsdatum: 07.10.2026 | Ausstiegskurs: 83334.77 | Performance_Seit_Einstieg%: 0.0188 | Status: Gestoppt | Richtung: Long
+Quellzeile: 45 | Ticker: TSM | Name: Taiwan Semiconductor | Waehrung: USD | Einstiegsdatum: 08.09.2026 | Einstieg: 435.59 | Ausstiegsdatum: 08.10.2026 | Ausstiegskurs: 464.63 | Performance_Seit_Einstieg%: 0.0667 | Status: Gestoppt | Richtung: Long
+Quellzeile: 46 | Ticker: FIX | Name: Comfort Systems USA, Inc. | Waehrung: USD | Einstiegsdatum: 01.10.2026 | Einstieg: 1654.09 | Ausstiegsdatum: 12.10.2026 | Ausstiegskurs: 1637.28 | Performance_Seit_Einstieg%: -0.0102 | Status: Gestoppt | Richtung: Long
+Quellzeile: 47 | Ticker: ROK | Name: Rockwell Automation, Inc. | Waehrung: USD | Einstiegsdatum: 01.10.2026 | Einstieg: 435.33 | Ausstiegsdatum: 14.10.2026 | Ausstiegskurs: 425 | Performance_Seit_Einstieg%: -0.0237 | Status: Gestoppt | Richtung: Long
+Quellzeile: 48 | Ticker: PWR | Name: Quanta Services, Inc. | Waehrung: USD | Einstiegsdatum: 01.10.2026 | Einstieg: 642.51 | Ausstiegsdatum: 14.10.2026 | Ausstiegskurs: 649.76 | Performance_Seit_Einstieg%: 0.0113 | Status: Gestoppt | Richtung: Long
+Quellzeile: 49 | Ticker: S92.DE | Name: SMA Solar Technology AG | Waehrung: EUR | Einstiegsdatum: 23.09.2026 | Einstieg: 58 | Ausstiegsdatum: 15.10.2026 | Ausstiegskurs: 56.2 | Performance_Seit_Einstieg%: -0.031 | Status: Gestoppt | Richtung: Long
+Quellzeile: 50 | Ticker: FSLY | Name: Fastly, Inc. | Waehrung: USD | Einstiegsdatum: 23.09.2026 | Einstieg: 27.34 | Ausstiegsdatum: 15.10.2026 | Ausstiegskurs: 23.41 | Performance_Seit_Einstieg%: -0.1437 | Status: Gestoppt | Richtung: Long
+Quellzeile: 51 | Ticker: SCCO | Name: Southern Copper Corporation | Waehrung: USD | Einstiegsdatum: 01.10.2026 | Einstieg: 202.64 | Ausstiegsdatum: 15.10.2026 | Ausstiegskurs: 195.72 | Performance_Seit_Einstieg%: -0.0341 | Status: Gestoppt | Richtung: Long
+Quellzeile: 52 | Ticker: GOOGL | Name: Alphabet Inc. | Waehrung: USD | Einstiegsdatum: 01.10.2026 | Einstieg: 344.08 | Ausstiegsdatum: 21.10.2026 | Ausstiegskurs: 331.68 | Performance_Seit_Einstieg%: -0.036 | Status: Gestoppt | Richtung: Long
+Quellzeile: 53 | Ticker: CRM | Name: Salesforce, Inc. | Waehrung: USD | Einstiegsdatum: 26.10.2026 | Einstieg: 245.83 | Ausstiegsdatum: 29.10.2026 | Ausstiegskurs: 231.1 | Performance_Seit_Einstieg%: -0.0599 | Status: Gestoppt | Richtung: Long
+TAB-2-EXPORT-SHA256=f36ac49003e26d3d81a4f5bb7c7cc902683058986eaffc5220ab0ea8163e5a58
+
+
+Ereignis-/Freigabeprüfung: Name nicht aufgelöst (NICHT_FINAL) – Ereignis ohne Datum; Ereignis ohne verifizierte Quelle
+TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL
