@@ -1881,3 +1881,35 @@ def test_m06_complete_explicit_technical_confirmation_is_preserved_in_confirmed_
     assert "Verknüpfte These: TH-1" in result
     assert "Datenlücken: keine" in result
     assert "Regel-/Datenstatus: PASS" in result
+
+def test_short_scanner_direction_is_carried_into_trading_radar_candidate(tmp_path):
+    source = tmp_path / "Short_Setups(2026-11-11).csv"
+    source.write_text(
+        "Ticker;Name;Markt;Waehrung;Sektor;Setup_Typ;Pattern;Status2;Kurs;Einstieg;Stop;TP1;TP2;CRV1;Richtung\n"
+        "XYZ;Example Corp;US;USD;Technology;EMA-Breakdown;Kein;VALIDE;100;100;105;90;80;2;SHORT\n",
+        encoding="utf-8-sig",
+    )
+    candidates = production._lade_aktuelle_scanner_kandidaten(
+        {"Short_Setups(...).csv": str(source)},
+        "Datum der Auswertung: 11.11.2026",
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["direction"] == "SHORT"
+    rendered = production._formatiere_scanner_chance(candidates[0])
+    assert "Richtung: SHORT" in rendered
+
+
+def test_short_scanner_direction_defaults_to_short_for_legacy_csv(tmp_path):
+    source = tmp_path / "Short_Setups(2026-11-11).csv"
+    source.write_text(
+        "Ticker;Name;Markt;Waehrung;Sektor;Setup_Typ;Pattern;Status2;Kurs;Einstieg;Stop;TP1;TP2;CRV1\n"
+        "XYZ;Example Corp;US;USD;Technology;EMA-Breakdown;Kein;VALIDE;100;100;105;90;80;2\n",
+        encoding="utf-8-sig",
+    )
+    candidates = production._lade_aktuelle_scanner_kandidaten(
+        {"Short_Setups(...).csv": str(source)},
+        "Datum der Auswertung: 11.11.2026",
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["direction"] == "SHORT"
+

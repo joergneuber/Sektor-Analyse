@@ -388,7 +388,83 @@ class ReportGateTests(unittest.TestCase):
             "Ticker: AAA | Richtung: LONG | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 105 | TP1: 110 | TP2: 120 | CRV: 2",
         )
         errors = gate.validate_report(text)
-        self.assertTrue(any("unplausible Stop-Lage" in error for error in errors), errors)
+        self.assertTrue(any("unplausible Stop-/TP1-Lage" in error for error in errors), errors)
+
+    def test_m09_accepts_explicit_short_direction_and_short_crv_geometry(self):
+        text = report_fixture().replace(
+            "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Ticker: AAA | Richtung: SHORT | JETZT TECHNISCH PRÜFEN | Trigger: Breakdown | Einstieg: 100 | Stop: 105 | TP1: 90 | TP2: 80 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertFalse(any("M-09" in error for error in errors), errors)
+
+    def test_m09_accepts_explicit_long_direction_and_long_crv_geometry(self):
+        text = report_fixture().replace(
+            "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Ticker: AAA | Richtung: LONG | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertFalse(any("M-09" in error for error in errors), errors)
+
+    def test_m09_infers_short_direction_when_direction_is_missing(self):
+        # Regression for the former bug: the valid SHORT geometry used the
+        # LONG risk formula and produced a negative risk.
+        text = report_fixture().replace(
+            "Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Einstieg: 100 | Stop: 105 | TP1: 90 | TP2: 80 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertFalse(any("M-09" in error for error in errors), errors)
+
+    def test_m09_infers_long_direction_when_direction_is_missing(self):
+        errors = gate.validate_report(report_fixture())
+        self.assertFalse(any("M-09" in error for error in errors), errors)
+
+    def test_m09_rejects_missing_direction_with_ambiguous_geometry(self):
+        baseline = "Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2"
+        invalid_geometries = (
+            "Einstieg: 100 | Stop: 105 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Einstieg: 100 | Stop: 95 | TP1: 90 | TP2: 80 | CRV: 2",
+        )
+        for geometry in invalid_geometries:
+            with self.subTest(geometry=geometry):
+                text = report_fixture().replace(baseline, geometry)
+                errors = gate.validate_report(text)
+                self.assertTrue(
+                    any("unplausible Stop-/TP1-Lage" in error for error in errors),
+                    errors,
+                )
+
+    def test_m09_rejects_unknown_explicit_direction_instead_of_inferring(self):
+        text = report_fixture().replace(
+            "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Ticker: AAA | Richtung: NEUTRAL | JETZT TECHNISCH PRÜFEN | Trigger: Breakdown | Einstieg: 100 | Stop: 105 | TP1: 90 | TP2: 80 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("unplausible Stop-/TP1-Lage" in error for error in errors), errors)
+
+    def test_m09_rejects_explicit_direction_contradicting_tp1_geometry(self):
+        text = report_fixture().replace(
+            "Ticker: AAA | JETZT TECHNISCH PRÜFEN | Trigger: Breakout | Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Ticker: AAA | Richtung: SHORT | JETZT TECHNISCH PRÜFEN | Trigger: Breakdown | Einstieg: 100 | Stop: 105 | TP1: 110 | TP2: 120 | CRV: 2",
+        )
+        errors = gate.validate_report(text)
+        self.assertTrue(any("unplausible Stop-/TP1-Lage" in error for error in errors), errors)
+
+    def test_m09_rejects_missing_direction_when_stop_or_tp1_equals_entry(self):
+        baseline = "Einstieg: 100 | Stop: 95 | TP1: 110 | TP2: 120 | CRV: 2"
+        invalid_geometries = (
+            "Einstieg: 100 | Stop: 100 | TP1: 110 | TP2: 120 | CRV: 2",
+            "Einstieg: 100 | Stop: 95 | TP1: 100 | TP2: 120 | CRV: 2",
+        )
+        for geometry in invalid_geometries:
+            with self.subTest(geometry=geometry):
+                text = report_fixture().replace(baseline, geometry)
+                errors = gate.validate_report(text)
+                self.assertTrue(
+                    any("unplausible Stop-/TP1-Lage" in error for error in errors),
+                    errors,
+                )
 
     def test_m09_candidate_fields_are_not_borrowed_from_another_record(self):
         candidate_block = (
