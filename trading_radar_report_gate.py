@@ -1496,23 +1496,31 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             direction = direction_text.strip().casefold()
             is_short = direction in {"short", "verkauf", "sell"}
             is_long = direction in {"long", "kauf", "buy"}
-            # Explicit direction enables deterministic stop-side validation.
-            # If omitted, infer only from the common directional relationship;
-            # equal entry/stop is always invalid.
-            invalid_stop = stop_num == entry_num
-            if is_long and stop_num >= entry_num:
-                invalid_stop = True
-            elif is_short and stop_num <= entry_num:
-                invalid_stop = True
-            elif not is_long and not is_short:
-                if stop_num > entry_num and tp1_num > entry_num:
-                    invalid_stop = True
-                elif stop_num < entry_num and tp1_num < entry_num:
-                    invalid_stop = True
-            if invalid_stop:
+
+            # Explicit direction is authoritative. Without one, infer direction
+            # only from a fully consistent stop/TP1 geometry; never default to LONG.
+            if direction_text.strip() and not (is_short or is_long):
+                invalid_geometry = True
+            else:
+                invalid_geometry = False
+                if not direction_text.strip():
+                    if stop_num > entry_num and tp1_num < entry_num:
+                        is_short = True
+                    elif stop_num < entry_num and tp1_num > entry_num:
+                        is_long = True
+                    else:
+                        invalid_geometry = True
+
+            if is_long and (stop_num >= entry_num or tp1_num <= entry_num):
+                invalid_geometry = True
+            elif is_short and (stop_num <= entry_num or tp1_num >= entry_num):
+                invalid_geometry = True
+
+            if invalid_geometry:
                 errors.append(
-                    f"M-09: Kandidat {candidate_index} ({asset}) hat eine unplausible Stop-Lage "
-                    f"(Einstieg={entry_num:g}, Stop={stop_num:g}, Richtung={direction_text or 'nicht angegeben'})."
+                    f"M-09: Kandidat {candidate_index} ({asset}) hat eine unplausible "
+                    f"Stop-/TP1-Lage (Einstieg={entry_num:g}, Stop={stop_num:g}, "
+                    f"TP1={tp1_num:g}, Richtung={direction_text or 'nicht angegeben'})."
                 )
                 continue
 

@@ -1898,7 +1898,6 @@ def pruefe(
             "EU" if ist_eu else "US",
             data.copy(),
             eu_close if ist_eu else spy_close,
-            sektor_momentum=None,
         )
 
         if res:
@@ -1908,8 +1907,7 @@ def pruefe(
                 f"Kurs {res.get('Kurs')} | "
                 f"Stop {res.get('Stop')} | "
                 f"TP1 {res.get('TP1')} "
-                f"(CRV {res.get('CRV1')}) | "
-                f"Qualitaet {res.get('Setup_Qualitaet')}"
+                f"(CRV {res.get('CRV1')})"
             )
         else:
             print(

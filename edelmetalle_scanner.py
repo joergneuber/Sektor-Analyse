@@ -319,16 +319,15 @@ def analyze_edelmetall_short(ticker, name, data, bench_close=None):
     """Short fuer ein Metall - ruft die IDENTISCHE Pruef-Funktion des
     Aktien-Short-Scanners auf (Kurs unter WMA200, vier gespiegelte Muster,
     RS-Filter invertiert gegen DBC, CRV >= 1.0 aus echten Abwaerts-Levels).
-    Fuer Edelmetalle entfaellt der Sektor-Modifikator, weil es keine Sektor-Rotation
-    und damit keinen Rotation-Score gibt (sektor_momentum=None -> der Modifikator
-    wird in der Aktien-Funktion defensiv uebersprungen). Ein globales Marktumfeld
-    wird dem Short-Scanner nicht mehr als Modifikator uebergeben. Die Setup-Qualitaet
-    stuetzt sich hier auf Preis-/Musterlogik; Volumen ist bei Edelmetall-Futures nicht erforderlich.
+    Fuer Edelmetalle wird keine Buchstabennote vergeben. Da keine
+    Sektor-Rotation ausgewertet wird, gibt es keinen sektorbezogenen
+    Bewertungsmodifikator.
+    Volumen ist bei Edelmetall-Futures nicht erforderlich.
     RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko (wie bei Aktien)."""
     try:
         res, grund = _pruefe_short_setup(
             ticker, "Edelmetalle", "Global", data, bench_close,
-            sektor_momentum=None, require_volume=False,
+            require_volume=False,
         )
         if res is None:
             return None, grund
@@ -906,7 +905,7 @@ SPALTEN = [
     "RSI", "MACD_Trend", "CRV1", "CRV2", "Chance1_Perc", "Chance2_Perc", "Kurs", "Einstieg",
     "Einstieg2(EMA 20)", "Stop", "Risk_Perc", "TP1", "TP2", "Stoch_K", "Vol_Ratio",
     "Ideales_Delta", "RS_vs_Benchmark%", "Abstand_52W_Hoch%", "Abstand_52W_Tief%",
-    "Divergenz", "Golden_Cross_Status", "Qualitaets_Bonus", "Setup_Qualitaet",
+    "Divergenz", "Golden_Cross_Status", "Qualitaets_Bonus",
     "Fundamental_Ampel", "Fundamental_Hinweis", "Risikohinweis",
 ]
 
@@ -938,8 +937,6 @@ def _schreibe_setup_block(f, r):
         f.write(f"Golden-/Death-Cross (frischer Death Cross führt zu ACHTUNG): {r['Golden_Cross_Status']}\n")
     if r.get('Qualitaets_Bonus'):
         f.write(f"Qualitaets-Bonus: {r['Qualitaets_Bonus']}\n")
-    if r.get('Setup_Qualitaet'):
-        f.write(f"Setup-Qualitaet: {r['Setup_Qualitaet']}\n")
     f.write(f"Setup-Typ: {r['Setup_Typ']}")
     if r.get('Pattern'):
         f.write(f" | Muster: {r['Pattern']}")
@@ -991,10 +988,8 @@ STRATEGIE_TEXTE = {
         "  Pullback-Zone short, Trendlinien-Bruch, Kumo-Ausbruch nach unten),\n"
         "  RS-Filter invertiert (kein Short auf Marktfuehrer), CRV >= 1.0 aus\n"
         "  echten Abwaerts-Levels.\n"
-        "- Sektor-Modifikator entfällt: Metalle haben keine Sektor-Rotation und damit\n"
-        "  keinen Rotation-Score. Ein globales Marktumfeld wird dem Short-Scanner\n"
-        "  nicht als Modifikator übergeben. Die Setup-Qualitaet stuetzt sich hier\n"
-        "  auf Preis-/Musterlogik; Volumen ist bei Edelmetall-Futures nicht erforderlich.\n"
+        "- Keine Buchstabennote oder Setup-Qualitäts-Feinstufe für Edelmetall-Shorts.\n"
+        "  Metalle haben keine Sektor-Rotation; Volumen ist bei Futures nicht erforderlich.\n"
         "- RISIKOHINWEIS: theoretisch unbegrenztes Verlustrisiko bei Kursanstieg.\n"
     ),
 }

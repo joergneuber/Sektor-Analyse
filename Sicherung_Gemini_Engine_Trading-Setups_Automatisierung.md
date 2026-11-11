@@ -182,7 +182,7 @@ keine Wiederholung der ausführlichen Definitionen aus Abschnitt 2 –
 nur eine knappe Gedächtnisstütze für Leser, die mit der Terminologie
 nicht vertraut sind. Mindestens diese Begriffe müssen enthalten sein
 (weitere nur, falls im jeweiligen Tagesbericht tatsächlich
-verwendet): CRV, Setup-Qualität (B- bis A+), Kumo-Ausbruch,
+verwendet): CRV, Setup-Qualität der normalen Long-Trendfolge (B- bis A+), Kumo-Ausbruch,
 Pullback-Zone, Trendlinien-Ausbruch, EMA/WMA, RSI, MACD-Trend,
 Divergenz, Fundamental-Ampel, Golden-/Death-Cross, KGV und KGV-Näherung vs. aktuellem KGV.
 
@@ -567,9 +567,12 @@ finale Zahl übernimmst.
 
 Risiko-Einordnung (Risk_Perc) – liefert KEINEN Buchstaben
 
-Wichtig: Dieser Abschnitt bestimmt nicht die Feinstufe in Setup-Qualität
-[B-/B/B+/A-/A/A+] – diese kommt ausschließlich aus der
-Setup-Qualitäts-Matrix samt Modifikatoren weiter unten (nach Setup_Typ).
+Geltungsbereich: Die nachfolgende Setup-Qualitäts-Matrix samt Modifikatoren
+(B-/B/B+/A-/A/A+) gilt ausschließlich für normale Long-Trendfolge-Aktien-
+Setups aus Abschnitt 2. Sie gilt NICHT für Short-Setups und NICHT für
+Edelmetall-Setups (weder Trendfolge noch Trendwende noch Short). Für diese
+Kategorien darf keine Buchstabennote ausgegeben oder aus anderen Feldern
+abgeleitet werden.
 Risk_Perc liefert nur eine textuelle Risiko-Einordnung, die du
 zusätzlich im Fließtext erwähnen kannst, aber nicht als eigene Stufe
 ausgibst:
@@ -578,13 +581,11 @@ ausgibst:
 • 5% bis 12% → „Standard-Risiko”
 • > 12% → „hohes Risiko, engere Stops erforderlich”
 
-Ebenfalls wichtig: Der Status2-Wert (VALIDE/ACHTUNG) beeinflusst die
-Setup-Qualität nicht automatisch. Ein Ticker mit ACHTUNG (z. B. wegen
-bärischem MACD oder schwachem Volumen) kann trotzdem ein A-Setup sein,
-wenn sein Setup_Typ das hergibt – die Setup-Qualität bewertet die
-Signalstärke des Einstiegsmusters, der ACHTUNG-Status warnt separat vor
-einem aktuellen Störfaktor. Beides gehört in die Ausgabe, aber nicht
-vermischt.
+Ebenfalls wichtig für normale Long-Trendfolge-Aktien-Setups: Der
+Status2-Wert (VALIDE/ACHTUNG) beeinflusst die dortige Setup-Qualität
+nicht automatisch. Diese Regel und die nachfolgende Matrix gelten nicht
+für Short- oder Edelmetall-Setups. Der Trendwende-Qualitäts-Bonus bleibt
+ein eigenständiges, davon getrenntes Feld.
 
 Setup-Qualitäts-Matrix (Setup_Typ) – komplett neu (komponenten-basiert)
 
@@ -1366,14 +1367,11 @@ Zusätzlich ggf. zwei weitere Datei-Anhänge: Short_Setups(…).csv und
 Short_Briefing(…).txt, von einem eigenen, früheren Scan (separater
 Workflow, ca. 04 Uhr). Diese Titel sind das Spiegelbild der normalen
 Trendfolge-Setups: Wette auf FALLENDE statt steigende Kurse
-(Put-Optionsschein/KO statt Call), Bottom- statt Top-Sektoren,
-gespiegelter Sektor-Modifikator: Rotation-Score des Setup-Sektors
-≤ -2,0 → +1 Stufe | Score > 0 → -1 Stufe). Ein globales Marktumfeld-Urteil
-wird nicht als Short-Modifikator vorgegeben; die Short-Feinstufe kommt bereits
-berechnet aus der CSV.
-WICHTIG: Bei Short-Setups ist die Feinstufe bereits fertig berechnet in
-der CSV-Spalte Setup_Qualitaet enthalten - übernimm sie wörtlich und
-rechne die Modifikatoren dort NICHT selbst nach.
+(Put-Optionsschein/KO statt Call), Bottom- statt Top-Sektoren.
+Für Short-Setups gibt es KEINE Buchstabennote und keine Setup-Qualitäts-
+Feinstufe. Leite auch aus Setup-Typ, Volumen, Sektor-Momentum oder anderen
+Feldern keine Note ab. Sektor-Momentum darf nur als separater Kontext
+beschrieben werden.
 
 • Strikte Trennung (Pflicht): Short-Setups gehören NIEMALS in den
 Abschnitt „Trendfolge-Setups” – eigener Abschnitt „SHORT-SETUPS
@@ -1437,8 +1435,7 @@ Sektor-Momentum: {{5T aus Performance.csv}}% (5 Tage) / {{12T aus
 Performance.csv}}% (12 Tage), Rotation-Score {{Rotation-Score aus
 Performance.csv}}
 
-Setup-Typ: {{Setup_Typ}} | Setup-Qualität: [{{Setup_Qualitaet}}] |
-Muster: {{Pattern}}
+Setup-Typ: {{Setup_Typ}} | Muster: {{Pattern}}
 
 Ereignis-Kontext: {{Earnings-Warnung falls vorhanden}} |
 {{Earnings-Rückblick „📊 Zahlen …” falls vorhanden, wörtlich}} |
@@ -1458,11 +1455,13 @@ deswegen.
 Zusätzlich ggf. zwei weitere Datei-Anhänge: Edelmetalle_Setups(…).csv
 und Edelmetalle_Briefing(…).txt, von einem eigenen Scanner (feste
 4er-Liste: Gold, Silber, Platin, Palladium – keine Sektor-Rotation,
-immer alle 4 geprüft). Diese Titel folgen den IDENTISCHEN Kriterien wie
-die normalen Trendfolge-Setups aus Abschnitt 2/3 (gleiche Setup-Typen,
-gleiche CRV-Logik, gleiche Setup-Qualitäts-Matrix samt Modifikatoren) –
-der einzige Unterschied ist der Basiswert (Rohstoff-Future statt Aktie)
-und zwei entfallende Felder:
+immer alle 4 geprüft). Diese Titel folgen den normalen Trendfolge-Setups
+aus Abschnitt 2/3 hinsichtlich Setup-Typen und CRV-Logik. Für ALLE drei
+Edelmetall-Strategien (Trendfolge, Trendwende und Short) gilt jedoch:
+KEINE Buchstabennote und KEINE Setup-Qualitäts-Feinstufe ausgeben oder
+ableiten. Der Trendwende-Qualitäts-Bonus bleibt als eigenständiges Feld
+erhalten. Die Long-Trendfolge-Matrix gilt nur für normale Aktien-Setups,
+nicht für Edelmetalle. Weitere Unterschiede:
 
 • Kein Fundamental-Ampel/KGV: Rohstoffe haben keine
 Unternehmensgewinne – erwähne dieses Feld für Edelmetalle NICHT,
@@ -1530,9 +1529,6 @@ Nachkommastellen}}%
 RSI: {{RSI, 2 Nachkommastellen}} | MACD-Trend: {{MACD_Trend}} |
 Vol-Ratio: {{Vol_Ratio, 2 Nachkommastellen}}x | Divergenz:
 {{Divergenz}}
-
-Setup-Qualität: [{{Feinstufe aus der 6-stufigen Skala, nach derselben
-Matrix wie Abschnitt 2 berechnet}}]
 
 Golden-/Death-Cross (Info – ein frischer Death Cross wird seit
 28.07.2026 bereits im Scanner auf ACHTUNG abgestuft):

@@ -3155,8 +3155,8 @@ def berechne_fundamental_ampel(ticker, sektor=None, markt=None, richtung="long")
     bewertetes Papier hat fundamental WENIGER Abwaertspotenzial (spricht
     GEGEN den Short), waehrend eine teure Bewertung die Short-These STUETZT
     (Korrekturpotenzial nach unten). Ohne diese Umkehr laese sich z.B. ein
-    A+-Short-Setup mit der Ampel GUENSTIG faelschlich wie ein Kaufargument
-    neben der Short-Einstufung."""
+    Short-Setup mit der Ampel GUENSTIG faelschlich wie ein Kaufargument
+    neben der Short-These zu behandeln."""
     if ist_nicht_aktien_instrument(ticker):
         return "N/A", "Keine Unternehmens-Fundamentaldaten fuer Futures/Commodities."
 

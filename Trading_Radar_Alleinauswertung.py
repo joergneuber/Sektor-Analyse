@@ -10809,8 +10809,12 @@ def _lade_aktuelle_scanner_kandidaten(eingabedateien, text=""):
             )
             setup_type = normalized.get("setup_typ", "") or "NICHT VERFUEGBAR"
             pattern = normalized.get("pattern", "") or "NICHT VERFUEGBAR"
+            direction = normalized.get("richtung", "").strip().upper()
+            if not direction:
+                direction = "SHORT" if strategy == "Short" else "LONG"
             candidates.append({
                 "strategy": strategy,
+                "direction": direction,
                 "source_label": source_label,
                 "source_file": os.path.basename(path),
                 "source_date": source_date or report_date or "NICHT VERFUEGBAR",
@@ -10861,7 +10865,7 @@ def _formatiere_scanner_chance(candidate):
     risk_text = f"{risk}%" if risk != "NICHT VERFUEGBAR" else risk
     lines_out = [
         f"{c['name']} ({c['ticker']}) | Ticker: {c['ticker']} | Scanner: {c['source_label']} | Markt: {c['market']} | Sektor: {c['sector']}",
-        f"Setup: {c['setup_type']} | Pattern: {c['pattern']} | Status: {c['status']} | Richtung: {'Short' if c['strategy'] == 'Short' else 'Long'}",
+        f"Setup: {c['setup_type']} | Pattern: {c['pattern']} | Status: {c['status']} | Richtung: {c['direction']}",
         f"Aktueller Kurs: {course_text} | Einstieg: {entry}{currency}"
         + (f" | EMA20-Referenz: {entry2}{currency}" if entry2 != "NICHT VERFUEGBAR" else ""),
         f"Stop: {stop}{currency} | Risiko: {risk_text} | TP1: {tp1}{currency} "
@@ -10901,7 +10905,7 @@ def _formatiere_scanner_chance_kurz(candidate):
     risk = f"{risk}%" if risk != "NICHT VERFUEGBAR" else risk
     tp2 = _scanner_dezahl(c.get("tp2")) if c.get("tp2") else "NICHT VERFUEGBAR"
     tp2 = f"{tp2}{currency}" if tp2 != "NICHT VERFUEGBAR" else tp2
-    direction = "Short" if c["strategy"] == "Short" else "Long"
+    direction = c["direction"]
     return "\n".join([
         f"{c['name']} ({c['ticker']}) | Ticker: {c['ticker']} | Quelle: {c['source_label']} ({c['source_file']})",
         f"Richtung: {direction} | Sektor: {c['sector']} | Setup: {c['setup_type']} | Status: {c['status']}",

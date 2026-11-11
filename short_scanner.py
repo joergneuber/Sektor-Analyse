@@ -13,14 +13,13 @@ Architektur-Entscheidung (Stand 21.07.2026):
     - laedt sein Ergebnis wie die anderen Scanner zu Drive hoch.
     gemini_auswertung.py laedt die Dateien von dort automatisch nach (siehe
     lade_short_dateien_von_drive dort) - kein gemeinsames Dateisystem noetig.
-  - Gespiegelte Muster (alle vier, analog zur Long-Setup-Qualitaets-Matrix):
+  - Gespiegelte Muster (alle vier; fuer Short wird keine Buchstabennote vergeben):
       EMA-Breakdown       <-> EMA-Breakout
       Pullback-Zone short <-> Pullback-Zone
       Trendlinien-Bruch   <-> Trendlinien-Ausbruch
       Kumo-Ausbruch unten <-> Kumo-Ausbruch
   - RS-Filter INVERTIERT: verwirft Titel mit RS_vs_Benchmark > +10% (nur
     Nachzuegler shorten, keine Marktfuehrer).
-    Short-Setups AUF (+1 Stufe), nicht ab - Rueckenwind fuer die Idee.
   - Stop OBERHALB des Einstiegs, Kursziele UNTERHALB (Widerstaende von oben
     werden zu Zielen, siehe potenzial_targets_unterhalb).
 
@@ -827,10 +826,13 @@ def short_crv_erfuellt(crv1, crv2):
     )
 
 
-def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_momentum=None, require_volume=True):
-    """Gibt (ergebnis_dict_oder_None, funnel_grund) zurueck - der zweite Wert
-    speist die Funnel-Statistik (NEU 28.07.2026, Nutzerwunsch: '0 Kandidaten'
-    soll interpretierbar sein)."""
+def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, require_volume=True):
+    """Prueft ein Short-Setup und gibt (Ergebnis, Funnel-Grund) zurueck.
+
+    Die Sektor-Rotation bestimmt nur das Short-Universum (Bottom-Sektoren),
+    nicht die Bewertung einzelner Kandidaten. Short-Setups erhalten keine
+    Buchstabennote.
+    """
     if len(data) < 60:
         return None, "zu_wenig_daten"
 
@@ -875,11 +877,6 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
         return None, "kein_setup_muster"
     setup_typ = " + ".join(pfade)
 
-    # Basis-Einstufung (gespiegelte Matrix aus Gemini-Anleitung Abschnitt 2):
-    # Trendlinien-Bruch ODER Kumo-Ausbruch unten -> A, Pullback-Zone-short
-    # UND Muster -> A, alles andere -> B
-    basis = "A" if ("Trendlinien-Bruch" in pfade or "Kumo-Ausbruch unten" in pfade or "Pullback-Zone short" in pfade) else "B"
-
     # Divergenz (NEU): echte check_rsi_divergence-Funktion wiederverwendet
     # (deckt beide Richtungen ab). Bärische Divergenz validiert das Setup
     # analog zur Long-Logik unabhängig von anderen ACHTUNG-Kriterien.
@@ -893,38 +890,6 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
     # dieser Stelle komplett verworfen.
     if data['MACD_Trend'].iloc[-1] == "Bullisch" and not divergenz_bearish:
         return None, "macd_bullisch_ohne_divergenz"
-
-    stufen = ["B-", "B", "B+", "A-", "A", "A+"]
-    idx = stufen.index("B" if basis == "B" else "A")
-    verschiebung = 0
-    if require_volume:
-        if data['Vol_Ratio'].iloc[-1] > 1.0:
-            verschiebung += 1
-        elif data['Vol_Ratio'].iloc[-1] < 0.5:
-            verschiebung -= 1
-    # Sektor-Score des Setup-Sektors aus Performance.csv-Momentum ziehen
-    sektor_score = None
-    if sektor_momentum:
-        try:
-            sektor_score = float(sektor_momentum.get('Rotation-Score'))
-        except (TypeError, ValueError):
-            sektor_score = None
-
-    # SEKTOR-MODIFIKATOR (NEU 28.07.2026, Nutzerentscheidung, gespiegelt zum
-    # Long-Scanner): das Setup wird danach beurteilt, ob sein EIGENER Sektor
-    # Abwaerts-Rueckenwind hat - nicht nur, ob der Gesamtmarkt schwach ist.
-    #   Rotation-Score <= -2.0 -> +1 Stufe (klarer Abwaerts-Rueckenwind)
-    #   Rotation-Score >  0    -> -1 Stufe (Sektor dreht nach oben - Short
-    #                                       gegen den Sektortrend)
-    #   dazwischen             ->  0
-    if sektor_score is not None:
-        if sektor_score <= -2.0:
-            verschiebung += 1
-        elif sektor_score > 0:
-            verschiebung -= 1
-
-    idx = max(0, min(len(stufen) - 1, idx + verschiebung))
-    feinstufe = stufen[idx]
 
     # Status2/Status_Grund (GEÄNDERT 23.07.2026): der bullische-MACD-Fall
     # wird jetzt schon weiter oben komplett verworfen (return None), taucht
@@ -1075,7 +1040,7 @@ def _pruefe_short_setup(ticker, sektor, markt, data, bench_close=None, sektor_mo
         "Abstand_52W_Tief%": abstand_52w_tief,
         "Divergenz": divergenz or "Keine",
         "Golden_Cross_Status": get_golden_cross_status(data),
-        "Setup_Qualitaet": feinstufe,
+        "Richtung": "SHORT",
         "Risikohinweis": (
             "Short-Setup - setzt auf fallende Kurse (Put-Optionsschein/KO). "
             "Theoretisch unbegrenztes Verlustrisiko bei Kursanstieg (anders als bei Long, "
@@ -1139,10 +1104,10 @@ def _bereite_rotation_scores_vor(df_perf, markt, anzahl, *, allow_empty=False):
 
 def bestimme_bottom_sektoren():
     """Analog zu Top-8/Top-5 im Long-Scanner, aber die SCHWAECHSTEN Sektoren
-    (nlargest -> nsmallest). Gibt (bottom_us_sektoren, bottom_eu_sektoren,
-    momentum_us, momentum_eu) - die beiden momentum-Dicts liefern je
-    Sektor-Name {5T, 12T, Rotation-Score} fuer die Briefing-Ausgabe (NEU,
-    analog zum Sektor-Momentum-Feld bei den normalen Setups)."""
+    (nlargest -> nsmallest). Gibt Bottom-Sektoren und separate Momentum-Dicts
+    zurueck. Die Rotation bestimmt die Universumsauswahl, nicht die Bewertung
+    einzelner Short-Kandidaten.
+    """
     df_perf = pd.DataFrame([get_perf(t, n) for t, n in sektoren_map.items()])
     df_perf_eu = pd.DataFrame([get_perf_yf(t, n) for t, n in eu_sektoren_etf.items()])
 
@@ -1212,7 +1177,7 @@ def main():
     # Benchmark-Reihen bleiben als objektive Vergleichsdaten erhalten.
     # Es wird daraus kein globales Marktumfeld vorinterpretiert.
 
-    bottom_us, bottom_eu, momentum_us, momentum_eu = bestimme_bottom_sektoren()
+    bottom_us, bottom_eu, _momentum_us, _momentum_eu = bestimme_bottom_sektoren()
     us_tasks, eu_tasks = sammle_universum(bottom_us, bottom_eu)
     us_tickers = [t for t, _ in us_tasks]
     eu_tickers = [t for t, _ in eu_tasks]
@@ -1235,7 +1200,7 @@ def main():
     funnel["keine_kursdaten"] = funnel_universum["keine_daten_mitgliedschaften"]
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
-            executor.submit(_pruefe_short_setup, t, s, "US", us_daten[t], spy_close, momentum_us.get(s))
+            executor.submit(_pruefe_short_setup, t, s, "US", us_daten[t], spy_close)
             for t, s in us_tasks if t in us_daten
         ]
         for f in futures:
@@ -1246,7 +1211,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
-            executor.submit(_pruefe_short_setup, t, s, "EU", eu_daten[t], eu_bench_close, momentum_eu.get(s))
+            executor.submit(_pruefe_short_setup, t, s, "EU", eu_daten[t], eu_bench_close)
             for t, s in eu_tasks if t in eu_daten
         ]
         for f in futures:
@@ -1339,7 +1304,7 @@ def main():
     # Spaltenreihenfolge EXAKT wie Setups.csv (siehe analyse.py), Ticker
     # vorangestellt (fehlt dort, da index=False - hier bewusst behalten,
     # nuetzlicher Bezug), Abstand_52W_Hoch% -> Abstand_52W_Tief% (gespiegelt),
-    # Setup_Qualitaet/Risikohinweis als Short-spezifische Zusatzfelder ans Ende.
+    # Richtung/Risikohinweis als Short-spezifische Zusatzfelder ans Ende.
     SPALTEN = [
         "Ticker", "Name", "Sektor", "Markt", "Waehrung", "Trend", "Setup_Typ", "Pattern",
         "Tech-Kursziel", "Analysten-Kursziel", "Upside_%_vs_Aktuell", "Status2", "Status_Grund",
@@ -1347,7 +1312,7 @@ def main():
         "Einstieg", "Einstieg2(EMA 20)", "Stop", "Risk_Perc", "TP1", "TP2", "Stoch_K",
         "Vol_Ratio", "Ideales_Delta", "RS_vs_Benchmark%", "Abstand_52W_Tief%", "Divergenz",
         "Golden_Cross_Status",
-        "Fundamental_Ampel", "Fundamental_Hinweis", "Setup_Qualitaet", "Risikohinweis",
+        "Fundamental_Ampel", "Fundamental_Hinweis", "Risikohinweis", "Richtung",
     ]
     df = pd.DataFrame(ergebnisse, columns=SPALTEN)
     if not df.empty:
@@ -1376,9 +1341,9 @@ def main():
         f.write("  Bruch, Kumo-Ausbruch nach unten (Details: siehe Gemini-Anleitung Abschnitt 9).\n")
         f.write(f"- RS-Filter invertiert: Titel mit RS vs. Benchmark > +{RS_MAX}% werden verworfen\n")
         f.write("  (nur Nachzuegler shorten, keine Marktfuehrer).\n")
-        f.write("- Sektor-Modifikator (NEU 28.07.2026): Rotation-Score des Setup-Sektors <= -2,0\n")
-        f.write("  -> +1 Stufe (Abwaerts-Rueckenwind) | Score > 0 -> -1 Stufe (Short gegen drehenden\n")
-        f.write("  Sektor) | dazwischen neutral.\n")
+        f.write("- Sektor-Rotation: Der Rotation-Score dient der Auswahl der Bottom-Sektoren\n")
+        f.write("  und als separater Kontext; er veraendert weder Setup-Erkennung noch\n")
+        f.write("  Kandidatenbewertung und fuehrt zu keiner Buchstabennote.\n")
         f.write("- RISIKOHINWEIS: Short-Positionen haben ein theoretisch unbegrenztes Verlust-\n")
         f.write("  risiko bei Kursanstieg (anders als Long, wo maximal der Einsatz verloren geht).\n")
         f.write("- Risiko: CRV (Chance/Risiko) muss bei TP1 und TP2 jeweils > 1.0 sein.\n")
@@ -1434,7 +1399,7 @@ def main():
                     f"RS vs. Benchmark: {row['RS_vs_Benchmark%']}% | Abstand 52W-Tief: {row['Abstand_52W_Tief%']}%\n"
                     f"Fundamental-Ampel: {row['Fundamental_Ampel']} ({row['Fundamental_Hinweis']})\n"
                     f"Golden-/Death-Cross (nur Info, keine Bewertung): {row['Golden_Cross_Status']}\n"
-                    f"Setup-Typ: {row['Setup_Typ']} | Setup-Qualitaet: [{row['Setup_Qualitaet']}] | Muster: {row['Pattern']}\n"
+                    f"Setup-Typ: {row['Setup_Typ']} | Muster: {row['Pattern']} | Richtung: {row['Richtung']}\n"
                 )
                 earnings = get_earnings_warnung(row['Ticker'])
                 if earnings:
