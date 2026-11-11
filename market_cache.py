@@ -610,8 +610,74 @@ def _get_yf_history_raw(ticker: str) -> pd.DataFrame:
 
 
 def get_yf_history(ticker: str) -> pd.DataFrame:
-    """Gibt nur nach dem zentralen Tages-OHLCV-Quality-Gate Daten frei."""
-    return _quality_checked_frame(ticker, _get_yf_history_raw(ticker))
+    """Gibt nur nach dem zentralen Tages-OHLCV-Quality-Gate Daten frei.
+
+    EXSA.DE ist der gemeinsame EU-Benchmark. Wenn die Cache-/SQLite-/Yahoo-
+    Primaerkette an einer aktuellen erwarteten Session scheitert, wird genau
+    fuer diesen Benchmark ein direkter, cachefreier Yahoo-Abruf versucht.
+    Auch dieser Abruf muss dasselbe Quality Gate bestehen; ein ungueltiger
+    oder unvollstaendiger Fallback bleibt gesperrt.
+    """
+    ticker_key = str(ticker or "").strip().upper()
+    primary_exception = None
+    try:
+        checked = _quality_checked_frame(
+            ticker_key,
+            _get_yf_history_raw(ticker_key),
+        )
+    except Exception as exc:
+        # Nur der gemeinsame EU-Benchmark erhaelt diesen zusaetzlichen
+        # Recovery-Pfad. Fuer alle anderen Ticker bleibt das bisherige
+        # Exception-Verhalten unveraendert.
+        if ticker_key != "EXSA.DE":
+            raise
+        primary_exception = f"{type(exc).__name__}: {exc}"
+        checked = pd.DataFrame()
+        checked.attrs["ohlcv_quality"] = {
+            "ticker": ticker_key,
+            "quality_status": "INCOMPLETE",
+            "reason_codes": [f"PRIMARY_FETCH_ERROR:{type(exc).__name__}"],
+            "rule_version": "1.3",
+        }
+        print(
+            "INFO: EU-BENCHMARK-DIRECT-FALLBACK EXSA.DE nach "
+            f"Primaerabruf-Ausnahme ({primary_exception})."
+        )
+
+    if ticker_key != "EXSA.DE" or (checked is not None and not checked.empty):
+        return checked
+
+    primary_quality = getattr(checked, "attrs", {}).get("ohlcv_quality", {})
+    primary_reasons = primary_quality.get("reason_codes", [])
+    if primary_exception is None:
+        print(
+            "INFO: EU-BENCHMARK-DIRECT-FALLBACK EXSA.DE nach Primaer-Gate-Ablehnung "
+            f"(Gruende={primary_reasons or ['KEIN_GUELTIGER_PRIMAERDATENSATZ']})."
+        )
+
+    # Die Funktion fragt Yahoo ohne Projekt-/SQLite-Cache ab und fuehrt
+    # _quality_checked_frame erneut aus. Sie darf deshalb nur einen Datensatz
+    # zurueckgeben, der das zentrale Gate tatsaechlich bestanden hat.
+    fallback = get_yf_history_from_yahoo(ticker_key, period="1y")
+    fallback_quality = getattr(fallback, "attrs", {}).get("ohlcv_quality", {})
+    fallback_status = str(fallback_quality.get("quality_status", "")).strip().upper()
+    if (
+        fallback is not None
+        and not fallback.empty
+        and fallback_status in {"PASS", "PASS_WITH_EXCLUSIONS"}
+    ):
+        print(
+            "INFO: EU-BENCHMARK-DIRECT-FALLBACK EXSA.DE akzeptiert "
+            f"(Status={fallback_status})."
+        )
+        return fallback
+
+    fallback_reasons = fallback_quality.get("reason_codes", [])
+    print(
+        "WARNUNG-OHLCV-QUALITY: EXSA.DE bleibt nach direktem Yahoo-Fallback "
+        f"gesperrt (Gruende={fallback_reasons or ['FALLBACK_OHNE_GUELTIGE_DATEN']})."
+    )
+    return checked if checked is not None else pd.DataFrame()
 
 
 def get_yf_history_from_yahoo(ticker: str, *, period: str = "1y") -> pd.DataFrame:

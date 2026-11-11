@@ -70,6 +70,9 @@ KAUF_A_MIN_CRV = 1.0
 # Extrem überkaufte Titel dürfen trotz bestätigtem Setup nicht A werden.
 KAUF_A_MAX_STOCH = 95.0
 
+# Krypto-Sonderassets werden nicht an den aktienbasierten Alpaca-Scanner geroutet.
+KRYPTOTICKER = frozenset({"BTC-USD", "ETH-USD"})
+
 
 # Cache für Sektor-ETF-Kurse.
 # Wichtig: Bei mehreren Titeln desselben Sektors wird der ETF nur einmal
@@ -1472,6 +1475,26 @@ A_MELDUNGEN_DATEI = os.path.join(
 )
 
 
+def _trendfolge_einzelcheck(ticker, sektor, ist_eu, spy_close, eu_close):
+    """Ruft die aktienbasierte Trendfolge nur fuer Aktien/ETFs auf.
+
+    BTC/ETH werden im Einzel-Check separat ueber ihre Krypto-Datenquelle und
+    die dedizierten Bitcoin-Signale bewertet. Sie duerfen nicht an den
+    Alpaca-Stock-Client von analyze_a_setup() uebergeben werden.
+    """
+    ticker_key = str(ticker or "").strip().upper()
+    if ticker_key in KRYPTOTICKER:
+        print(
+            f"  TRENDFOLGE: {ticker_key} nicht anwendbar "
+            "(Krypto-Sonderasset; keine Aktien-Scanner-Abfrage)."
+        )
+        return None
+
+    if ist_eu:
+        return analyze_a_setup_eu(ticker, sektor, eu_close)
+    return analyze_a_setup(ticker, sektor, spy_close)
+
+
 def pruefe(
     ticker,
     spy_close,
@@ -1544,18 +1567,12 @@ def pruefe(
     # --------------------------------------------------------
 
     try:
-        trendfolge_res = (
-            analyze_a_setup_eu(
-                ticker,
-                sektor,
-                eu_close,
-            )
-            if ist_eu
-            else analyze_a_setup(
-                ticker,
-                sektor,
-                spy_close,
-            )
+        trendfolge_res = _trendfolge_einzelcheck(
+            ticker,
+            sektor,
+            ist_eu,
+            spy_close,
+            eu_close,
         )
 
         if trendfolge_res:
@@ -1585,7 +1602,7 @@ def pruefe(
                 f"Ampel {trendfolge_res.get('Fundamental_Ampel')}"
             )
 
-        else:
+        elif str(ticker or "").strip().upper() not in KRYPTOTICKER:
             print(
                 "  TRENDFOLGE: kein Setup "
                 "(Grund siehe DEBUG-Zeilen oben)"
