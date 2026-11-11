@@ -43,15 +43,57 @@ def canonicalize_thesis_status(value: Any) -> str:
     return STATUS_ALIASES.get(raw, raw)
 
 
-def extract_thesis_payload(report: str) -> dict[str, Any] | None:
-    """Liest den optionalen, klar abgegrenzten JSON-Block; sonst None."""
-    match = BLOCK_RE.search(report or "")
-    if not match:
+def _find_thesis_json_block(report: str):
+    """Find one canonical thesis fence or one unambiguous legacy JSON fence."""
+    text = str(report or "")
+    canonical = list(BLOCK_RE.finditer(text))
+    if len(canonical) > 1:
+        raise ValueError("Mehrere TRADING_RADAR_THESEN_JSON-Blöcke sind nicht zulässig")
+    if canonical:
+        match = canonical[0]
+        payload = json.loads(match.group(1))
+        if not isinstance(payload, dict) or not isinstance(payload.get("theses"), list):
+            raise ValueError("TRADING_RADAR_THESEN_JSON muss ein Objekt mit theses[] sein")
+        return match, payload
+
+    # Backward compatibility for Gemini's plain ```json fence. Limit recovery
+    # to section 2 and require a single object with the thesis-register shape;
+    # unrelated JSON elsewhere in the report is never adopted as a register.
+    section2_matches = list(re.finditer(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$", text
+    ))
+    section3_matches = list(re.finditer(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*$", text
+    ))
+    # Fail closed: a generic JSON fence is recoverable only inside a complete,
+    # unambiguous section-2 body. Missing/duplicate/out-of-order boundaries must
+    # never widen the search to the entire report or into later sections.
+    if len(section2_matches) != 1 or len(section3_matches) != 1:
         return None
-    payload = json.loads(match.group(1))
-    if not isinstance(payload, dict) or not isinstance(payload.get("theses"), list):
-        raise ValueError("TRADING_RADAR_THESEN_JSON muss ein Objekt mit theses[] sein")
-    return payload
+    section2, section3 = section2_matches[0], section3_matches[0]
+    if section2.start() >= section3.start():
+        return None
+    region_start, region_end = section2.end(), section3.start()
+    generic_pattern = re.compile(r"(?ms)^```json[ \t]*\r?\n(.*?)^```[ \t]*$", re.IGNORECASE)
+    candidates = []
+    for match in generic_pattern.finditer(text, region_start, region_end):
+        try:
+            payload = json.loads(match.group(1).strip())
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("theses"), list):
+            candidates.append((match, payload))
+    if len(candidates) > 1:
+        raise ValueError("Mehrere generische JSON-Blöcke mit theses[] sind nicht eindeutig")
+    if not candidates:
+        return None
+    return candidates[0]
+
+
+def extract_thesis_payload(report: str) -> dict[str, Any] | None:
+    """Read one canonical thesis block or one unambiguous legacy JSON fence."""
+    found = _find_thesis_json_block(report)
+    return found[1] if found else None
 
 
 def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -104,26 +146,22 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
         return report
 
     text = str(report or "")
-    block_match = BLOCK_RE.search(text)
-    if block_match:
-        try:
-            payload = json.loads(block_match.group(1))
-        except (TypeError, ValueError):
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get("theses"), list):
-            changed = False
-            for thesis in payload["theses"]:
-                if not isinstance(thesis, dict):
-                    continue
-                version = versions.get(str(thesis.get("thesis_id", "")))
-                if version is not None and thesis.get("version") != version:
-                    thesis["version"] = version
-                    changed = True
-            if changed:
-                replacement = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(
-                    payload, ensure_ascii=False, indent=2
-                ) + "\n```"
-                text = text[:block_match.start()] + replacement + text[block_match.end():]
+    found = _find_thesis_json_block(text)
+    if found:
+        block_match, payload = found
+        changed = False
+        for thesis in payload["theses"]:
+            if not isinstance(thesis, dict):
+                continue
+            version = versions.get(str(thesis.get("thesis_id", "")))
+            if version is not None and thesis.get("version") != version:
+                thesis["version"] = version
+                changed = True
+        if changed:
+            replacement = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(
+                payload, ensure_ascii=False, indent=2
+            ) + "\n```"
+            text = text[:block_match.start()] + replacement + text[block_match.end():]
 
     section2 = re.search(
         r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
@@ -137,17 +175,43 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
         return text
     body_start, body_end = section2.end(), section3.start()
     body = text[body_start:body_end]
-    markers = list(re.finditer(
-        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Thesen-ID(?:\*\*|__)?\s*:\s*([^\r\n]+)",
-        body,
-    ))
-    for index, marker in reversed(list(enumerate(markers))):
-        thesis_id = marker.group(1).strip()
+    heading_pattern = re.compile(
+        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?"
+        r"(?:These(?:s)?(?:\s+\d+)?|Thesen(?:\s+\d+)?|Thesis|Thesen-Name)"
+        r"(?:\*\*|__)?\s*[:=]"
+    )
+    id_pattern = re.compile(
+        r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?"
+        r"Thesen-ID(?:\*\*|__)?\s*:\s*([^\r\n]+)"
+    )
+    boundaries = []
+    current_has_id = False
+    for line_match in re.finditer(r"(?m)^.*$", body):
+        line = line_match.group(0)
+        heading = heading_pattern.match(line)
+        id_match = id_pattern.match(line)
+        if heading:
+            boundaries.append((line_match.start(), None))
+            current_has_id = False
+        elif id_match:
+            if not boundaries or current_has_id:
+                boundaries.append((line_match.start(), id_match.group(1).strip()))
+                current_has_id = True
+            else:
+                # First ID field after a heading belongs to that heading record.
+                current_has_id = True
+
+    for index, (record_start, boundary_id) in reversed(list(enumerate(boundaries))):
+        record_end = boundaries[index + 1][0] if index + 1 < len(boundaries) else len(body)
+        block = body[record_start:record_end]
+        if boundary_id is None:
+            id_match = id_pattern.search(block)
+            thesis_id = id_match.group(1).strip() if id_match else ""
+        else:
+            thesis_id = boundary_id
         version = versions.get(thesis_id)
         if version is None:
             continue
-        end = markers[index + 1].start() if index + 1 < len(markers) else len(body)
-        block = body[marker.start():end]
         updated_block, count = re.subn(
             r"(?im)^([ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?Version(?:\*\*|__)?\s*:\s*)\d+",
             lambda match: match.group(1) + str(version),
@@ -155,7 +219,7 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
             count=1,
         )
         if count:
-            body = body[:marker.start()] + updated_block + body[end:]
+            body = body[:record_start] + updated_block + body[record_end:]
     return text[:body_start] + body + text[body_end:]
 
 def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, Any]]:

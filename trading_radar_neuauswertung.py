@@ -337,7 +337,16 @@ def validate_thesis_ids_match_report(report: str, payload: Any | None = None) ->
     # Capture IDs only from lines that actually represent a readable thesis
     # record or an explicit thesis-ID declaration. This avoids treating IDs in
     # diagnostics, explanatory prose, or code-marker names as thesis records.
+    # Explicit labels are authoritative and may use stable IDs with hyphens
+    # (e.g. THESIS-01) as well as underscore-separated IDs. Restrict extraction
+    # to thesis-record/ID lines so ordinary hyphenated prose is not promoted.
+    # Legacy compact records may contain underscore IDs beside a status but
+    # no explicit field label. Keep that conservative grammar; hyphenated IDs
+    # are accepted only through an explicit Thesen-ID/thesis_id field.
     id_pattern = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+){2,})(?![A-Za-z0-9])")
+    explicit_id_pattern = re.compile(
+        r"(?i)\b(?:Thesen-ID|thesis_id)\s*[:=]\s*([A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*)"
+    )
     candidate_lines = []
     for line in readable_text.splitlines():
         is_numbered_thesis = re.search(r"(?i)\bThese\s+\d+\s*:", line)
@@ -349,7 +358,19 @@ def validate_thesis_ids_match_report(report: str, payload: Any | None = None) ->
         )
         if is_numbered_thesis or is_explicit_id or (is_compact_status and id_pattern.search(line)):
             candidate_lines.append(line)
-    prose_ids = [value.strip() for value in id_pattern.findall("\n".join(candidate_lines))]
+    prose_ids = []
+    for line in candidate_lines:
+        # Only a labelled field proves a hyphenated identity. Legacy compact
+        # status rows retain the stricter underscore-only compatibility path.
+        explicit = explicit_id_pattern.search(line)
+        if explicit:
+            prose_ids.append(explicit.group(1).strip())
+        elif re.search(
+            r"(?i)\b(?:NEU|BESTÄTIGT|BESTAETIGT|ABGESCHWÄCHT|ABGESCHWAECHT|"
+            r"WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|VERSTAERKT|WIDERLEGT|UNKLAR)\b",
+            line,
+        ):
+            prose_ids.extend(value.strip() for value in id_pattern.findall(line))
 
     theses = payload.get("theses") if isinstance(payload, dict) else None
     if not isinstance(theses, list):
@@ -797,12 +818,25 @@ def audit_market_first_content(report: str) -> list[str]:
     if not thesis:
         errors.append("MARKT-FIRST: Thesen-Update fehlt")
     else:
+        # Thesen-ID is a field inside a thesis record, not a new record.
+        # Only explicit record headings start a new block.
         thesis_starts = [
             m.start() for m in re.finditer(
-                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:Thesen-Name|These(?:n)?(?:-ID)?|Thesis(?:\s+ID)?)\b[^:\r\n]*(?:\*\*)?\s*[:(]",
+                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:These\b|Thesen-Name|Thesis(?:\s+ID|\s+Name)?)\b[^:\r\n]*(?:\*\*)?\s*[:(]",
                 thesis,
             )
         ]
+        if not thesis_starts:
+            # Some legacy report layouts begin each thesis record directly
+            # with its explicit ID field under an "Aktualisierte Thesen" label.
+            # In that layout the first Thesen-ID is the record boundary; when
+            # a "These 1:" heading exists, Thesen-ID remains an ordinary field.
+            thesis_starts = [
+                m.start() for m in re.finditer(
+                    r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Thesen-ID(?:\*\*)?\s*:",
+                    thesis,
+                )
+            ]
         if not thesis_starts:
             explicit_no_update = bool(re.search(
                 r"(?i)(?:keine neue oder aktualisierte these|keine neuen oder aktualisierten thesen|thesenregister geprüft, keine änderung|thesenregister geprueft, keine aenderung|keine änderung im thesenregister|keine aenderung im thesenregister)",

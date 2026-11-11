@@ -180,6 +180,46 @@ def _is_run1270_us_curve_context(line: str) -> bool:
 
 
 
+def _is_narrative_placeholder_us10y_reference(line: str) -> bool:
+    """Identify abbreviated prose mentions, not separately asserted market observations.
+
+    The legacy report contains explanatory phrases such as "Zinsen verbleiben ...
+    (US 10Y bei 4,90 %)" and portfolio commentary such as "... Hochzinsregime
+    (US 10Y bei 4,90 %)". Those are narrative references only when all five
+    provenance fields are explicit placeholders, the label is the abbreviated
+    ``US 10Y`` form (not ``US 10Y Treasury``/``US-10Y-Rendite``), and the line
+    contains a recognized explanatory context. A formally labelled Treasury
+    observation is never exempted, regardless of whether its value matches a
+    previously sourced observation.
+    """
+    if not isinstance(line, str) or not line.strip():
+        return False
+    labels = list(_US10Y_EXPLICIT_LABEL_RE.finditer(line))
+    if not labels:
+        return False
+    # The record may be a prefix ending at the next label. Only its final label
+    # is the current observation; earlier prose must not exempt a later quote.
+    label = labels[-1]
+    if re.search(r"(?i)\b(?:Treasury|Rendite|Yield|Staatsanleihen?)\b", label.group(0)):
+        return False
+    previous_label_end = labels[-2].end() if len(labels) > 1 else 0
+    local_context = line[previous_label_end:label.start()]
+    # A separately asserted observation is a data record, not an explanatory
+    # repetition. Do not let nearby narrative wording grant it an exemption.
+    if re.search(
+        r"(?i)\b(?:separate|eigenständige|unabhängige|zusätzliche)\s+"
+        r"(?:US[- ]?10Y[- ]?)?(?:Beobachtung|Messung|Datenpunkt|Quelle|Angabe)\b|"
+        r"\b(?:separate\s+Beobachtung|eigener\s+Messwert|neue\s+Beobachtung)\b",
+        local_context,
+    ):
+        return False
+    return bool(re.search(
+        r"(?i)\b(?:Zinsen\s+verbleib\w*|Hochzinsregime|Konzentration\w*|"
+        r"Risikotreiber|zinssensitiv\w*|belast\w*|Gegenwind|Reaktionskanäle)\b",
+        local_context,
+    ))
+
+
 def _is_us10y_conflict_line(line: str) -> bool:
     """Recognize paired US-10Y observations, including the temporal form."""
     return bool(
@@ -333,11 +373,12 @@ def extract_us10y_observations(
 def _us10y_observation_records(
     line: str, *, allow_run1270_context: bool = False
 ) -> list[tuple[Decimal, str]]:
-    """Return value-scoped records when one line contains multiple US-10Y values.
+    """Return one value-scoped record for every labelled US-10Y occurrence.
 
-    A single repeated value retains the established whole-line behavior for
-    narrative duplicates. Distinct values are scoped independently up to the
-    next US-10Y label, so each observation must carry its own local provenance.
+    Equal numeric values remain separate records because they can represent
+    different sources, retrieval times or data cutoffs. Each occurrence is
+    bounded by the next US-10Y label so provenance cannot be borrowed from a
+    later observation on the same line.
     """
     if not isinstance(line, str) or not line.strip():
         return []
@@ -360,26 +401,16 @@ def _us10y_observation_records(
 
     if not parsed:
         return []
-    distinct_values = {value for _, value in parsed}
-    if len(distinct_values) == 1:
-        # Preserve the existing rule: narrative repetitions of one already
-        # sourced value are not treated as independent observations.
-        value = next(iter(distinct_values))
-        return [(value, line)]
 
-    # For each distinct value, use its final occurrence. This preserves the
-    # established support for repeated narrative mentions before the actual
-    # source-stamped occurrence, while preventing metadata from a later,
-    # different Treasury value from being borrowed.
-    last_by_value = {}
-    for match, value in parsed:
-        last_by_value[value] = match
+    # Keep every labelled occurrence separate, including equal numeric values.
+    # A repeated value is not an observation identity: a second observation
+    # can have the same yield but a different source, retrieval time or cutoff.
+    # Keep the original row prefix so the legacy Run #1270 resolver context
+    # remains recognizable; provenance parsing selects the final label in
+    # each progressively bounded slice.
     records = []
-    for value, match in last_by_value.items():
-        next_labels = [candidate.start() for candidate in label_matches if candidate.start() > match.start()]
-        end = min(next_labels) if next_labels else len(line)
-        # Keep the original row prefix for the Run #1270 resolver context and
-        # let _us10y_provenance_fields select this final label in the slice.
+    for index, (match, value) in enumerate(parsed):
+        end = parsed[index + 1][0].start() if index + 1 < len(parsed) else len(line)
         records.append((value, line[:end]))
     return records
 
@@ -1493,6 +1524,47 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 continue
 
             direction_text = field((r"Richtung", r"Side", r"Positionstyp")) or ""
+            direction_value = direction_text.strip()
+            # Accept a canonical direction token with one explanatory
+            # parenthetical note, but never infer the token from arbitrary
+            # trailing prose.
+            explicit_direction = re.fullmatch(
+                r"(?i)(long|short|kauf|verkauf|buy|sell)(?:\s*\(([^()\r\n]*)\))?",
+                direction_value,
+            )
+            if explicit_direction:
+                canonical_token = explicit_direction.group(1).casefold()
+                note = explicit_direction.group(2) or ""
+                opposite_tokens = (
+                    {"long", "kauf", "buy"}
+                    if canonical_token in {"short", "verkauf", "sell"}
+                    else {"short", "verkauf", "sell"}
+                )
+                if any(
+                    re.search(rf"(?i)\b{re.escape(token)}\b", note)
+                    for token in opposite_tokens
+                ):
+                    explicit_direction = None
+            unavailable_direction = re.fullmatch(
+                r"(?i)(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|UNBEKANNT|FEHLT|UNKLAR|N/?A|NA)"
+                r"(?:\s*\(([^\r\n]*)\))?",
+                direction_value,
+            )
+            direction_is_unavailable = bool(unavailable_direction) or bool(re.fullmatch(
+                r"(?i)keine Richtungsangabe in der Scannerquelle",
+                direction_value,
+            ))
+            unavailable_note = unavailable_direction.group(1) if unavailable_direction else ""
+            unavailable_note_has_direction = bool(re.search(
+                r"(?i)\b(?:LONG|SHORT|KAUF|VERKAUF|BUY|SELL)\b",
+                unavailable_note,
+            ))
+            if explicit_direction:
+                direction_text = explicit_direction.group(1).casefold()
+            elif direction_is_unavailable:
+                # The unavailable marker does not neutralize an explicit
+                # direction token embedded in its parenthetical note.
+                direction_text = ""
             direction = direction_text.strip().casefold()
             is_short = direction in {"short", "verkauf", "sell"}
             is_long = direction in {"long", "kauf", "buy"}
@@ -1515,11 +1587,15 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 invalid_geometry = True
             elif is_short and (stop_num <= entry_num or tp1_num >= entry_num):
                 invalid_geometry = True
+            if unavailable_note_has_direction:
+                # A direction token inside an unavailable field is itself a
+                # contradictory assertion, even if the price geometry agrees.
+                invalid_geometry = True
 
             if invalid_geometry:
                 errors.append(
                     f"M-09: Kandidat {candidate_index} ({asset}) hat eine unplausible "
-                    f"Stop-/TP1-Lage (Einstieg={entry_num:g}, Stop={stop_num:g}, "
+                    f"Stop-Lage bzw. Stop-/TP1-Lage (Einstieg={entry_num:g}, Stop={stop_num:g}, "
                     f"TP1={tp1_num:g}, Richtung={direction_text or 'nicht angegeben'})."
                 )
                 continue
@@ -1687,11 +1763,39 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         # A source-like record with partial metadata must not be hidden by a
         # second complete line carrying the same numeric value. Plain narrative
         # repetitions without provenance fields remain harmless.
-        partial_source_records = [
-            line for _, line in observation_records
-            if provenance_labels.search(line)
-            and not _treasury_observation_has_complete_provenance(line)
-        ]
+        # Do not use numeric equality as observation identity: two distinct
+        # observations can share the same yield. Only a narrowly recognizable
+        # abbreviated prose reference may omit provenance; a formal Treasury
+        # observation with placeholder provenance remains a gate failure.
+        partial_source_records = []
+        for observed_value, line in observation_records:
+            if not provenance_labels.search(line) or _treasury_observation_has_complete_provenance(line):
+                continue
+            _fields, conflicts = _us10y_provenance_fields(line)
+            # Placeholder provenance must belong to this exact observation.
+            # Searching the full prefix line can otherwise borrow the five
+            # placeholder fields from an earlier US-10Y label.
+            placeholder_value_re = re.compile(
+                r"(?i)^(?:NICHT\s+VERF(?:Ü|UE)GBAR|NICHT\s+VERFUEGBAR|"
+                r"NICHT\s+BEKANNT|UNBEKANNT|FEHLT|OFFEN|UNKNOWN|"
+                r"NOT\s+AVAILABLE|N/?A|TBD|NONE|NULL)(?:\s*\([^()\r\n]*\))?$"
+            )
+            required_placeholder_fields = {
+                "source", "retrieved", "observed", "unit", "delay"
+            }
+            placeholder_only = (
+                required_placeholder_fields.issubset(_fields)
+                and all(
+                    placeholder_value_re.fullmatch(str(_fields[key]).strip())
+                    for key in required_placeholder_fields
+                )
+                and not (conflicts - {"MALFORMED"})
+            )
+            # Exempt only clearly abbreviated explanatory prose references.
+            # Never infer identity from an equal numeric value: a second
+            # formal US-10Y Treasury observation needs its own provenance.
+            if not (placeholder_only and _is_narrative_placeholder_us10y_reference(line)):
+                partial_source_records.append(line)
         provenance_complete = provenance_complete and not partial_source_records
         explicit_open = any(
             re.search(r"(?i)QUELLENKONFLIKT\s*:\s*OFFEN", line)

@@ -30,6 +30,26 @@ SECTOR_ETF_LABELS = {
 }
 
 
+def _is_valid_calendar_event_date(value: str) -> bool:
+    """Accept supported ISO/German date forms only when the calendar date exists."""
+    candidate = str(value or "").strip()
+    if not candidate:
+        return False
+    iso_candidate = re.sub(r"\s+(?:UTC|GMT)$", "+00:00", candidate, flags=re.I)
+    try:
+        datetime.fromisoformat(iso_candidate.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        pass
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", candidate):
+        try:
+            date.fromisoformat(f"{candidate[6:10]}-{candidate[3:5]}-{candidate[0:2]}")
+            return True
+        except ValueError:
+            return False
+    return False
+
+
 def _clean(value: Any) -> str | None:
     if value is None:
         return None
@@ -732,8 +752,9 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
         "Kennzahl|Indikator|Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|"
         "Konsens|Istwert|Quelle|Source|Betroffene These/Assetklasse/konkrete offene Positionen|"
         "Szenarien(?:\\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\\s+Konsens)?|"
+        "Betroffene Thesen/Assetklassen/Positionen|"
         "Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
-        "Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung"
+        "Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|Status"
     )
     field = re.compile(rf"(?i)^\s*(?:{field_labels})\s*[:=]")
     def is_field_line(line: str) -> bool:
@@ -852,6 +873,9 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|[-–—]|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR)",
             source_value,
         ))
+        # Cached calendar snapshots and stale source labels do not verify an
+        # upcoming event date, even when the provider name itself is known.
+        source_is_cached = bool(re.search(r"(?i)\b(?:CACHE|CACHED|STALE|VERALTET)\b", source_value))
         source_has_evidence = bool(re.search(
             r"(?i)(?:https?://|forexfactory|\bfred\b|federal reserve|official|"
             r"\bbls\b|bureau of labor|\bbea\b|\becb\b|\beia\b|"
@@ -859,11 +883,41 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             r"opec|world bank|imf|yahoo finance|trading economics)",
             source_value,
         ))
-        source_present = bool(source_value and not source_is_placeholder and source_has_evidence)
+        source_present = bool(
+            source_value and not source_is_placeholder and not source_is_cached and source_has_evidence
+        )
+        date_value = date_m.group(1).strip() if date_m else ""
+        date_is_placeholder = bool(re.match(
+            r"(?i)^(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|NICHT BEKANNT|UNBEKANNT|FEHLT|UNKLAR|TBD|TBA|N/?A|NA)(?:\b|\s*\()",
+            date_value,
+        ))
+        date_present = bool(date_value) and not date_is_placeholder and _is_valid_calendar_event_date(date_value)
         if not source_present:
             findings.append("Ereignis ohne verifizierte Quelle")
-        if not date_m or not date_m.group(1).strip():
+        if not date_present:
             findings.append("Ereignis ohne Datum")
+        if not source_present or not date_present:
+            reason = []
+            if not date_present:
+                reason.append("Datum nicht belegt")
+            if not source_present:
+                reason.append("Quelle fehlt, ist nicht verifiziert oder stammt aus Cache")
+            status_pattern = re.compile(
+                r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*(?:Quellenprüfung|Quellenpruefung):\*\*|\*\*(?:Quellenprüfung|Quellenpruefung)\*\*|(?:Quellenprüfung|Quellenpruefung))\s*[:=]?\s*)[^\r\n]*$"
+            )
+            downgraded_status = "NICHT VERIFIZIERT (" + "; ".join(reason) + ")"
+            if status_pattern.search(rec):
+                # Normalize every duplicate status field. A later LIVE_VERIFIZIERT
+                # marker must not contradict the authoritative downgrade.
+                rec = status_pattern.sub(
+                    lambda match: match.group(1) + downgraded_status,
+                    rec,
+                )
+            else:
+                rec = rec.rstrip() + "\n- Quellenprüfung: " + downgraded_status
+        # Re-evaluate the normalized record, not the pre-normalization copy;
+        # an earlier LIVE_VERIFIZIERT marker may have been downgraded above.
+        plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
         if re.search(r"(?i)\bFOMC\b", plain_rec) and not re.search(
             r"(?im)^\s*(?:[-*•]\s*)?Quellenprüfung\s*[:=]\s*[^\r\n]*\bLIVE_VERIFIZIERT\b",
             plain_rec,
