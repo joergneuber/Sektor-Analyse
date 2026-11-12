@@ -70,7 +70,13 @@ EXCLUDED_TICKERS = frozenset({
 # US-Aktienkalender-Proxy. Bekannte Nasdaq-/Indexserien sind separat markiert.
 # ^STOXX50E/^STOXX sind pan-europaeische Indizes; XETR ist dafuer der
 # explizite Referenzmarkt-Proxy, kein behaupteter Einzelhandelsplatz.
+# Yahoo-Finance-Suffix .SG bezeichnet hier die Stuttgarter Notierung (STU).
+# exchange_calendars bietet keinen nativen XSTU-Kalender; XFRA wird deshalb
+# ausdrücklich nur als deutscher Börsenkalender-Proxy fuer Handelstage/Feiertage
+# verwendet. Es wird damit kein identischer Handelsplatz oder Intraday-Zeitplan
+# behauptet. Die Zuordnung ist auf PPFD.SG begrenzt, nicht pauschal fuer .SG.
 EXPLICIT_CALENDAR_BY_TICKER = {
+    "PPFD.SG": "XFRA",
     "^GSPC": "XNYS", "^IXIC": "XNAS", "^DJI": "XNYS", "^GDAXI": "XETR",
     "^STOXX50E": "XETR", "^STOXX": "XETR", "^RUT": "XNYS", "^N225": "XTKS",
     "^HSI": "XHKG", "^VIX": "XNYS",

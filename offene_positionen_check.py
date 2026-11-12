@@ -202,6 +202,42 @@ def is_open(row) -> bool:
     return str(row.get("Status", "")).strip().lower() == "offen"
 
 
+def select_open_positions(df: pd.DataFrame) -> pd.DataFrame:
+    """Liefert ausschließlich die offenen Positionen aus dem aktuellen Laufbestand.
+
+    Die Funktion kennt bewusst keine feste Symbol- oder Positionsliste. Sie wird
+    von run_local() auf der Datei ausgeführt, die der Positionen-Tracker direkt
+    zuvor im Workflow aktualisiert hat. Mehrere Positionen desselben Tickers
+    bleiben als separate Positionen erhalten.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("Positionsbestand muss ein pandas.DataFrame sein.")
+    if "Status" not in df.columns or "Ticker" not in df.columns:
+        raise ValueError("Positionsbestand benötigt die Spalten 'Status' und 'Ticker'.")
+
+    open_df = df[df.apply(is_open, axis=1)].copy()
+    if open_df.empty:
+        return open_df
+
+    raw_tickers = open_df["Ticker"]
+    tickers = raw_tickers.fillna("").astype(str).str.strip()
+    is_instruction_row = tickers.str.upper().eq("ANLEITUNG")
+    # pandas liest leere CSV-Zellen standardmäßig als NaN. Diese müssen
+    # genauso als fehlender Ticker behandelt werden wie leere Textfelder.
+    missing_ticker = (raw_tickers.isna() | tickers.eq("")) & ~is_instruction_row
+    if missing_ticker.any():
+        row_numbers = [str(i + 2) for i in open_df.index[missing_ticker]]
+        raise ValueError(
+            "Offene Position(en) ohne Ticker in Offene_Positionen.csv "
+            f"(CSV-Zeilen: {', '.join(row_numbers)}); technischer Check abgebrochen."
+        )
+
+    # Die ANLEITUNG-Zeile ist ein Sheet-Hinweis, keine handelbare Position.
+    open_df = open_df.loc[~is_instruction_row].copy()
+    open_df["Ticker"] = open_df["Ticker"].astype(str).str.strip()
+    return open_df
+
+
 def clean_history(hist: pd.DataFrame) -> pd.DataFrame:
     if hist is None or hist.empty:
         return pd.DataFrame()
@@ -300,20 +336,193 @@ def _fetch_twelvedata_gold_spot_history() -> pd.DataFrame:
     )
 
 
-def fetch_history(ticker: str) -> pd.DataFrame:
+def _valid_ohlc_history(frame: pd.DataFrame) -> pd.DataFrame:
+    """Validate bars without compressing the expected-session time axis.
+
+    Invalid/missing sessions remain represented as NaN. Only the contiguous
+    valid tail after the most recent invalid session is returned for indicators.
+    Quality/source metadata is retained even for empty results.
+    """
+    attrs = dict(getattr(frame, "attrs", {}) or {}) if isinstance(frame, pd.DataFrame) else {}
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        empty = pd.DataFrame()
+        empty.attrs.update(attrs)
+        return empty
+    data = clean_history(frame)
+    if data.empty:
+        data.attrs.update(attrs)
+        return data
+    required = ["Open", "High", "Low", "Close"]
+    if not set(required).issubset(data.columns):
+        empty = pd.DataFrame()
+        empty.attrs.update(attrs)
+        return empty
+    for column in required:
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    values = data[required]
+    valid = values.notna().all(axis=1)
+    valid &= np.isfinite(values).all(axis=1)
+    valid &= (values > 0).all(axis=1)
+    valid &= (data["High"] >= data["Low"])
+    valid &= (data["High"] >= data[["Open", "Close"]].max(axis=1))
+    valid &= (data["Low"] <= data[["Open", "Close"]].min(axis=1))
+    # Do not drop invalid rows: that would make non-adjacent sessions look
+    # consecutive to EMA/RSI/swing calculations.
+    for column in required:
+        data.loc[~valid, column] = np.nan
+    # Only a gap inside the current 252-session analysis window requires
+    # shortening the usable tail. Older gaps stay as NaN rows: pandas'
+    # time-aware rolling/ewm logic can see the missing observation, while the
+    # current swing/structure window remains uninterrupted.
+    recent_start = max(0, len(data) - 252)
+    invalid_positions = np.flatnonzero(~valid.to_numpy()[recent_start:])
+    if len(invalid_positions):
+        last_invalid_position = recent_start + int(invalid_positions[-1])
+        data = data.iloc[last_invalid_position + 1:].copy()
+    data.attrs.update(attrs)
+    return data
+
+
+def _quality_payload(frame: pd.DataFrame) -> dict:
+    quality = (getattr(frame, "attrs", {}) or {}).get("ohlcv_quality", {})
+    return quality if isinstance(quality, dict) else {}
+
+
+def _quality_is_current_and_usable(frame: pd.DataFrame, ticker: str) -> tuple[bool, str]:
+    """Require a current last session and three valid final sessions."""
+    quality = _quality_payload(frame)
+    status = str(quality.get("quality_status") or "").upper()
+    reasons = quality.get("reason_codes") or []
+    if status not in {"PASS", "PASS_WITH_EXCLUSIONS"}:
+        return False, f"Quality-Gate={status or 'UNBEKANNT'} ({', '.join(map(str, reasons[:5]))})"
+    if quality.get("latest_bar_valid") is not True:
+        return False, "LATEST_EXPECTED_BAR_INVALID"
+    if quality.get("last_3_bars_valid") is not True:
+        return False, "LAST_3_EXPECTED_BARS_INVALID"
     try:
-        if _ist_gold_spot_ticker(ticker):
-            return _fetch_twelvedata_gold_spot_history()
-        hist = yf.Ticker(ticker).history(period="max", auto_adjust=False, actions=False)
+        from ohlcv_quality_gate import _last_completed_session_date
+        expected_latest = _last_completed_session_date(ticker)
+    except Exception as exc:
+        return False, f"EXPECTED_SESSION_LOOKUP_ERROR:{type(exc).__name__}"
+    if expected_latest is None:
+        return False, "EXPECTED_LATEST_SESSION_UNAVAILABLE"
+    if frame is None or frame.empty:
+        return False, "NO_VALID_HISTORY"
+    actual_latest = pd.Timestamp(frame.index.max()).date()
+    expected_latest = pd.Timestamp(expected_latest).date()
+    if actual_latest < expected_latest:
+        return False, (
+            f"STALE_HISTORY: letzter Kurs {actual_latest.isoformat()}, "
+            f"erwartete abgeschlossene Session {expected_latest.isoformat()}"
+        )
+    if len(frame) < 60:
+        return False, f"INSUFFICIENT_CONTIGUOUS_HISTORY ({0 if frame is None else len(frame)} Bars)"
+    tail = frame[["Open", "High", "Low", "Close"]].tail(3)
+    if tail.isna().any().any() or not np.isfinite(tail.to_numpy(dtype=float)).all():
+        return False, "LAST_3_BARS_CONTAIN_INVALID_OHLC"
+    return True, ""
+
+
+def _quality_diagnostic(frame: pd.DataFrame) -> str:
+    quality = _quality_payload(frame)
+    status = str(quality.get("quality_status") or "").upper()
+    reasons = quality.get("reason_codes") or []
+    if status and status != "PASS":
+        reason_text = ", ".join(str(reason) for reason in reasons[:5]) or "keine Detailcodes"
+        return f"Quality-Gate={status} ({reason_text})"
+    if not status:
+        return "Quality-Gate=UNBEKANNT"
+    return ""
+
+
+def _empty_history_with_diagnostics(source: str, quality: dict | None = None,
+                                    error: str | None = None) -> pd.DataFrame:
+    frame = pd.DataFrame()
+    frame.attrs["history_source"] = source
+    if quality:
+        frame.attrs["ohlcv_quality"] = dict(quality)
+    if error:
+        frame.attrs["history_error"] = str(error)
+    return frame
+
+
+def fetch_history(ticker: str) -> pd.DataFrame:
+    """Load DB-first, then use a quality-gated provider fallback.
+
+    A source is accepted only when the latest expected session and the last
+    three expected sessions are valid. Missing sessions are never silently
+    dropped: indicator calculations use only the uninterrupted valid tail.
+    """
+    db_quality = {}
+    db_error = ""
+    if _ist_gold_spot_ticker(ticker):
+        try:
+            raw = _fetch_twelvedata_gold_spot_history()
+            quality = _quality_payload(raw)
+            frame = _valid_ohlc_history(raw)
+            frame.attrs["history_source"] = "TwelveData"
+            usable, reason = _quality_is_current_and_usable(frame, ticker)
+            if usable:
+                return frame
+            return _empty_history_with_diagnostics(
+                "TwelveData", quality, reason or "TwelveData-Historie nicht aktuell/vollständig"
+            )
+        except Exception as exc:
+            return _empty_history_with_diagnostics("TwelveData", error=str(exc))
+
+    # 1) Persistent OHLCV database is the canonical project-wide source.
+    try:
+        from historical_ohlcv import load_history
+        raw_db = load_history(ticker)
+        db_quality = dict(_quality_payload(raw_db))
+        db_frame = _valid_ohlc_history(raw_db)
+        db_frame.attrs["history_source"] = "historical_ohlcv.sqlite"
+        usable, reason = _quality_is_current_and_usable(db_frame, ticker)
+        if usable:
+            print(
+                f"DATENQUELLE: {ticker}: historical_ohlcv.sqlite | "
+                f"{len(db_frame)} zusammenhängende gültige OHLC-Bars"
+                + (f" | {_quality_diagnostic(db_frame)}" if _quality_diagnostic(db_frame) else "")
+            )
+            return db_frame
+        db_error = reason or "SQLite-Historie nicht aktuell/vollständig"
+        print(f"WARNUNG: {ticker}: SQLite nicht freigegeben: {db_error}")
+    except Exception as exc:
+        db_error = f"SQLite_LOAD_ERROR:{type(exc).__name__}:{exc}"
+        print(f"WARNUNG: {ticker}: SQLite-Historie nicht lesbar: {exc}")
+
+    # 2) Yahoo fallback is subjected to the same strict quality contract.
+    try:
+        hist = yf.Ticker(ticker).history(
+            period="max", auto_adjust=False, actions=False
+        )
         cleaned = clean_history(hist)
-        from ohlcv_quality_gate import quality_checked_frame
-        return quality_checked_frame(
+        from ohlcv_quality_gate import apply_ohlcv_quality_gate
+        gated, quality = apply_ohlcv_quality_gate(
             cleaned, ticker, window_sessions=252,
             require_structure=True, preserve_expected_sessions=True,
         )
+        gated.attrs["ohlcv_quality"] = quality.to_dict()
+        gated.attrs["history_source"] = "Yahoo-Fallback"
+        frame = _valid_ohlc_history(gated)
+        usable, reason = _quality_is_current_and_usable(frame, ticker)
+        if usable:
+            print(
+                f"DATENQUELLE: {ticker}: Yahoo-Fallback | "
+                f"{len(frame)} zusammenhängende gültige OHLC-Bars"
+                + (f" | {_quality_diagnostic(frame)}" if _quality_diagnostic(frame) else "")
+            )
+            return frame
+        diagnostic = dict(_quality_payload(frame) or quality.to_dict())
+        return _empty_history_with_diagnostics(
+            "Yahoo-Fallback", diagnostic,
+            f"Yahoo nicht freigegeben: {reason}; SQLite: {db_error or 'nicht verfügbar'}"
+        )
     except Exception as exc:
-        print(f"WARNUNG: {ticker}: Kursdaten nicht abrufbar: {exc}")
-        return pd.DataFrame()
+        return _empty_history_with_diagnostics(
+            "Yahoo-Fallback", db_quality,
+            f"Yahoo_ERROR:{type(exc).__name__}:{exc}; SQLite: {db_error or 'nicht verfügbar'}"
+        )
 
 
 def last_completed_close(data: pd.DataFrame) -> Optional[float]:
@@ -729,14 +938,40 @@ def immediate_resistance_within_10pct(future_highs: Iterable[float], close: floa
 
 def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     result = TechnicalResult()
+    quality_diagnostic = _quality_diagnostic(data)
+    history_source = str((getattr(data, "attrs", {}) or {}).get("history_source") or "")
+    quality_payload = _quality_payload(data)
+    quality_status = str(quality_payload.get("quality_status") or "").upper()
+    if quality_status == "INCOMPLETE":
+        result.data_quality = "Datenqualität unvollständig – Chartanalyse gesperrt"
+        error = str((getattr(data, "attrs", {}) or {}).get("history_error") or "")
+        result.note = "Keine technische Zustandsbewertung: Die aktuelle Kursreihe hat die Qualitäts- oder Aktualitätsprüfung nicht bestanden."
+        if quality_diagnostic:
+            result.note += f" Datenprüfung: {quality_diagnostic}."
+        if error:
+            result.note += f" Abrufdiagnose: {error}."
+        if history_source:
+            result.note += f" Quelle geprüft: {history_source}."
+        return result
     if data.empty:
         result.data_quality = "Keine Kursdaten"
         result.note = "Technische Analyse nicht möglich; keine belastbare Kursreihe verfügbar."
+        if quality_diagnostic:
+            result.note += f" Datenprüfung: {quality_diagnostic}."
+        history_error = str((getattr(data, "attrs", {}) or {}).get("history_error") or "")
+        if history_error:
+            result.note += f" Abrufdiagnose: {history_error}."
+        if history_source:
+            result.note += f" Quelle geprüft: {history_source}."
         return result
     if len(data) < 60:
         result.data_quality = f"Zu wenig Kursdaten ({len(data)} Handelstage)"
         result.close = last_completed_close(data)
         result.note = "Für eine vollständige technische Zustandsanalyse sind mindestens 60 Handelstage erforderlich."
+        if quality_diagnostic:
+            result.note += f" Datenprüfung: {quality_diagnostic}."
+        if history_source:
+            result.note += f" Quelle: {history_source}."
         return result
 
     close = last_completed_close(data)
@@ -976,6 +1211,10 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
     except Exception:
         last_date = str(data.index[-1])
     result.data_quality = f"{quality}; {len(data)} Handelstage; letzter Schluss {last_date}"
+    if quality_diagnostic:
+        result.data_quality += f"; {quality_diagnostic}"
+    if history_source:
+        result.data_quality += f"; Quelle={history_source}"
     # Der bereits berechnete Zielzonen-/Konfluenzhinweis bleibt erhalten.
     # Nur wenn noch kein spezifischer Hinweis gesetzt wurde, verwenden wir
     # die allgemeine Regelmeldung.
@@ -985,6 +1224,8 @@ def analyze_technical(data: pd.DataFrame, row=None) -> TechnicalResult:
             "Fibonacci nur bei bestätigter A-B-C-Struktur. "
             "historischer Widerstand bleibt separat erhalten."
         )
+    if quality_diagnostic:
+        result.note += f" Datenhinweis: {quality_diagnostic}; technische Werte sind entsprechend vorläufig."
     return result
 
 
@@ -1125,10 +1366,13 @@ def load_initial_history(initial_csv: str = "Geschlossene Positionen_Initialbest
 
 def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
               history_csv: str = "Geschlossene Positionen.csv"):
+    # input_file ist im GitHub-Workflow die vom unmittelbar vorherigen
+    # positionen_tracker.py erzeugte/aktualisierte Laufzeitdatei – keine
+    # historische CSV aus dem Repository.
     df = read_positions(input_file)
     if "Einstiegsdatum" not in df.columns:
         raise ValueError("Offene_Positionen.csv enthält keine Spalte 'Einstiegsdatum'.")
-    open_df = df[df.apply(is_open, axis=1)].copy()
+    open_df = select_open_positions(df)
     current_closed_df = extract_closed_history(df)
     initial_closed_df = load_initial_history()
     closed_df = pd.concat([initial_closed_df, current_closed_df], ignore_index=True)
@@ -1144,7 +1388,16 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
         closed_df = pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
 
     results = []
-    print(f"OFFENE POSITIONEN+CHECK: {len(open_df)} offene Positionen gefunden.")
+    runtime_tickers = list(dict.fromkeys(
+        str(value).strip() for value in open_df["Ticker"].tolist()
+        if str(value).strip()
+    ))
+    print(
+        "OFFENE POSITIONEN+CHECK: "
+        f"{len(open_df)} offene Position(en) aus {input_file} geladen | "
+        f"{len(runtime_tickers)} unterschiedliche Symbole: "
+        f"{', '.join(runtime_tickers) if runtime_tickers else '(keine)'}"
+    )
     print(
         f"HISTORIE: {len(closed_df)} geschlossene Positionen uebernommen "
         f"(Initialbestand={len(initial_closed_df)}, aktuell={len(current_closed_df)})."
@@ -1153,8 +1406,11 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
 
     for _, row in open_df.iterrows():
         ticker = str(row.get("Ticker", "")).strip()
-        if not ticker or ticker.upper() == "ANLEITUNG":
-            continue
+        # select_open_positions() garantiert einen verwertbaren Ticker.
+        # Nicht stillschweigend überspringen: jede offene Position muss in
+        # diesem Lauf sichtbar durch den Daten-/Quality-Gate-Pfad laufen.
+        if not ticker:
+            raise RuntimeError("Interner Fehler: offene Position ohne Ticker nach Validierung.")
         print(f"CHECK: {ticker} | {row.get('Name','')}")
         hist = fetch_history(ticker)
         tech = analyze_technical(hist, row)
