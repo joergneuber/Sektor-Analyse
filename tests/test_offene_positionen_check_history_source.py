@@ -77,6 +77,7 @@ def test_stale_or_incomplete_db_uses_yahoo_fallback(monkeypatch):
         "ohlcv_quality_gate.apply_ohlcv_quality_gate",
         lambda data, *args, **kwargs: (data.copy(), Quality()),
     )
+    monkeypatch.setattr(checker, "_persist_usable_provider_history", lambda *args: len(yahoo))
     result = checker.fetch_history("TEST.DE")
     assert len(result) == 100
     assert result.attrs["history_source"] == "Yahoo-Fallback"
@@ -183,6 +184,7 @@ def test_known_ticker_fixtures_route_through_mocked_history_sources(monkeypatch)
     _install_db(monkeypatch, frame)
     monkeypatch.setattr(checker, "_fetch_twelvedata_gold_spot_history",
                         lambda: frame.copy())
+    monkeypatch.setattr(checker, "_persist_usable_provider_history", lambda *args: len(frame))
     class ForbiddenYahoo:
         def __init__(self, ticker):
             raise AssertionError(f"Yahoo unerwartet für {ticker}")
@@ -406,3 +408,114 @@ def test_duplicate_open_ticker_positions_are_not_collapsed():
     selected = checker.select_open_positions(frame)
     assert len(selected) == 2
     assert selected["Ticker"].tolist() == ["AAA.DE", "AAA.DE"]
+
+
+
+def test_gold_twelvedata_fallback_is_persisted_after_quality_pass(monkeypatch):
+    frame = _history(100)
+    frame.attrs["ohlcv_quality"] = _quality()
+    monkeypatch.setattr(checker, "_fetch_twelvedata_gold_spot_history", lambda: frame.copy())
+    monkeypatch.setattr(
+        "ohlcv_quality_gate._last_completed_session_date",
+        lambda ticker: frame.index.max().date(),
+    )
+    persisted = []
+    monkeypatch.setattr(
+        checker, "_persist_usable_provider_history",
+        lambda ticker, data, source: persisted.append((ticker, source)) or len(data),
+    )
+
+    result = checker.fetch_history("XAU/USD")
+
+    assert len(result) == 100
+    assert persisted == [("XAU/USD", "TwelveData")]
+
+
+def test_provider_fallback_is_not_returned_as_usable_when_persistence_fails(monkeypatch):
+    db = _history(99)
+    db.attrs["ohlcv_quality"] = _quality()
+    yahoo = _history(100)
+    monkeypatch.setattr("historical_ohlcv.load_history", lambda ticker: db.copy())
+    monkeypatch.setattr(
+        "ohlcv_quality_gate._last_completed_session_date",
+        lambda ticker: yahoo.index.max().date(),
+    )
+
+    class YahooTicker:
+        def __init__(self, ticker):
+            pass
+
+        def history(self, **kwargs):
+            return yahoo.copy()
+
+    class Quality:
+        def to_dict(self):
+            return _quality()
+
+    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker, raising=False)
+    monkeypatch.setattr(
+        "ohlcv_quality_gate.apply_ohlcv_quality_gate",
+        lambda data, *args, **kwargs: (data.copy(), Quality()),
+    )
+    monkeypatch.setattr(
+        checker, "_persist_usable_provider_history",
+        lambda *args: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+
+    result = checker.fetch_history("TEST.DE")
+
+    assert result.empty
+    assert "PERSISTENCE_ERROR:OSError" in result.attrs["history_error"]
+
+
+
+def test_yahoo_fallback_persists_full_quality_frame_not_truncated_analysis_tail(monkeypatch):
+    db = _history(99)
+    db.attrs["ohlcv_quality"] = _quality()
+    yahoo = _history(100)
+    yahoo.iloc[-70, yahoo.columns.get_loc("High")] = 1.0
+    monkeypatch.setattr("historical_ohlcv.load_history", lambda ticker: db.copy())
+    monkeypatch.setattr(
+        "ohlcv_quality_gate._last_completed_session_date",
+        lambda ticker: yahoo.index.max().date(),
+    )
+
+    class YahooTicker:
+        def __init__(self, ticker):
+            pass
+        def history(self, **kwargs):
+            return yahoo.copy()
+
+    class Quality:
+        def to_dict(self):
+            return _quality("PASS_WITH_EXCLUSIONS", reason_codes=["ISOLATED_BAD_BAR"])
+
+    persisted = []
+    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker, raising=False)
+    monkeypatch.setattr(
+        "ohlcv_quality_gate.apply_ohlcv_quality_gate",
+        lambda data, *args, **kwargs: (data.copy(), Quality()),
+    )
+    monkeypatch.setattr(checker, "_persist_usable_provider_history",
+                        lambda ticker, data, source: persisted.append((len(data), source)) or len(data))
+
+    result = checker.fetch_history("TEST.DE")
+
+    assert len(result) == 69
+    assert persisted == [(100, "Yahoo-Fallback")]
+
+
+def test_twelvedata_persists_full_quality_frame_not_truncated_analysis_tail(monkeypatch):
+    frame = _history(100)
+    frame.iloc[-70, frame.columns.get_loc("High")] = 1.0
+    frame.attrs["ohlcv_quality"] = _quality("PASS_WITH_EXCLUSIONS", reason_codes=["ISOLATED_BAD_BAR"])
+    monkeypatch.setattr(checker, "_fetch_twelvedata_gold_spot_history", lambda: frame.copy())
+    monkeypatch.setattr(checker, "_quality_is_current_and_usable", lambda analysis_frame, ticker: (True, ""))
+    persisted = []
+    monkeypatch.setattr(checker, "_persist_usable_provider_history",
+                        lambda ticker, data, source: persisted.append((len(data), source)) or len(data))
+
+    result = checker.fetch_history("XAU/USD")
+
+    assert len(result) == 69
+    assert persisted == [(100, "TwelveData")]

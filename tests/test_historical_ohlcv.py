@@ -1148,3 +1148,279 @@ def test_update_database_gap_repair_does_not_count_already_stored_rows_as_update
     assert stats["gap_tickers_attempted"] == 1
     assert stats["gap_rows_added"] == 0
     assert stats["updated"] == 0
+
+
+
+def test_open_positions_csv_registers_only_unique_open_tickers(tmp_path):
+    import csv
+    import historical_ohlcv as ho
+
+    positions = tmp_path / "Offene_Positionen.csv"
+    rows = [
+        {"Ticker": " aaa.de ", "Status": " Offen "},
+        {"Ticker": "AAA.DE", "Status": "offen"},
+        {"Ticker": "CLOSED.DE", "Status": "Verkauft"},
+        {"Ticker": "ANLEITUNG", "Status": "Offen"},
+        {"Ticker": "XAU/USD", "Status": "Offen"},
+    ]
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    assert ho.load_open_position_tickers(positions) == ["AAA.DE", "XAU/USD"]
+
+
+def test_open_position_csv_fails_closed_for_missing_ticker(tmp_path):
+    import csv
+    import historical_ohlcv as ho
+    import pytest
+
+    positions = tmp_path / "Offene_Positionen.csv"
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerow({"Ticker": "", "Status": "Offen"})
+        writer.writerow({"Ticker": "", "Status": "Verkauft"})
+
+    with pytest.raises(ValueError, match="ohne gueltigen Ticker"):
+        ho.load_open_position_tickers(positions)
+
+
+def test_sync_open_positions_registers_and_bootstraps_only_open_tickers(tmp_path, monkeypatch):
+    import csv
+    import json
+    import sqlite3
+    import historical_ohlcv as ho
+
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"BASE.DE":"Basis"}\n', encoding="utf-8")
+    positions = tmp_path / "Offene_Positionen.csv"
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerows([
+            {"Ticker": "AAA.DE", "Status": "Offen"},
+            {"Ticker": "AAA.DE", "Status": "Offen"},
+            {"Ticker": "CLOSED.DE", "Status": "Verkauft"},
+            {"Ticker": "XAU/USD", "Status": "Offen"},
+        ])
+
+    idx = pd.DatetimeIndex(["2026-11-10", "2026-11-11"])
+    frame = pd.DataFrame({
+        "Open": [100.0, 101.0], "High": [102.0, 103.0],
+        "Low": [99.0, 100.0], "Close": [101.0, 102.0],
+        "Adj Close": [101.0, 102.0], "Volume": [1000.0, 1100.0],
+    }, index=idx)
+    download_calls = []
+
+    def fake_download(tickers, start=None, end=None):
+        download_calls.append((list(tickers), start, end))
+        return {ticker: frame.copy() for ticker in tickers}
+
+    monkeypatch.setattr(ho, "_download_batch", fake_download)
+    monkeypatch.setattr(ho, "_previous_completed_session_date", lambda cal, as_of: "2026-11-11")
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    db = tmp_path / "historical_ohlcv.sqlite"
+    dynamic = tmp_path / "historical_ohlcv_universe.json"
+    stats = ho.sync_open_positions(
+        db, source, dynamic, positions, repair_gaps=False
+    )
+
+    assert stats["open_position_tickers"] == 2
+    assert stats["registered"] == 2
+    assert stats["deferred_provider_tickers"] == 1
+    assert download_calls == [(["AAA.DE"], None, None)]
+    payload = json.loads(dynamic.read_text(encoding="utf-8"))
+    assert payload["tickers"] == ["AAA.DE", "XAU/USD"]
+
+    with sqlite3.connect(db) as conn:
+        stored = {
+            row[0]: (row[1], row[2], row[3])
+            for row in conn.execute(
+                "SELECT ticker, first_date, last_date, row_count FROM instruments"
+            )
+        }
+    assert set(stored) == {"AAA.DE", "XAU/USD"}
+    assert stored["AAA.DE"][2] == 2
+    assert stored["XAU/USD"] == (None, None, 0)
+    assert stats["instrument_placeholders_created"] == 2
+    assert "CLOSED.DE" not in payload["tickers"]
+
+
+def test_update_database_only_tickers_rejects_unregistered_symbols(tmp_path):
+    import pytest
+    import historical_ohlcv as ho
+
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"BASE.DE":"Basis"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="nicht registrierte Ticker"):
+        ho.update_database(
+            tmp_path / "db.sqlite", source, tmp_path / "dynamic.json",
+            only_tickers=["UNKNOWN.DE"], repair_gaps=False,
+        )
+
+
+def test_persist_quality_accepted_history_records_provider_and_rejects_failed_gate(tmp_path):
+    import sqlite3
+    import pytest
+    import historical_ohlcv as ho
+
+    idx = pd.bdate_range("2026-08-20", periods=60)
+    close = pd.Series(range(100, 160), index=idx, dtype=float)
+    frame = pd.DataFrame({
+        "Open": close - 0.5, "High": close + 1.0,
+        "Low": close - 1.0, "Close": close,
+        "Adj Close": close, "Volume": 1000.0,
+    }, index=idx)
+    frame.attrs["ohlcv_quality"] = {
+        "quality_status": "PASS", "latest_bar_valid": True, "last_3_bars_valid": True,
+    }
+
+    db = tmp_path / "persist.sqlite"
+    dynamic = tmp_path / "dynamic.json"
+    stored = ho.persist_quality_accepted_history(
+        "AAA.DE", frame, source="Yahoo-Fallback", db_path=db, dynamic_universe=dynamic
+    )
+    assert stored == 60
+    with sqlite3.connect(db) as conn:
+        bar_sources = {row[0] for row in conn.execute("SELECT DISTINCT source FROM bars")}
+        instrument_source = conn.execute(
+            "SELECT source FROM instruments WHERE ticker='AAA.DE'"
+        ).fetchone()[0]
+    assert bar_sources == {"Yahoo-Fallback"}
+    assert instrument_source == "Yahoo-Fallback"
+
+    rejected = frame.copy()
+    rejected.attrs["ohlcv_quality"] = {
+        "quality_status": "INCOMPLETE", "latest_bar_valid": False,
+        "last_3_bars_valid": False,
+    }
+    with pytest.raises(ValueError, match="nicht freigegeben"):
+        ho.persist_quality_accepted_history(
+            "BAD.DE", rejected, source="Yahoo-Fallback",
+            db_path=db, dynamic_universe=dynamic,
+        )
+    assert "BAD.DE" not in ho._load_dynamic_universe(dynamic)
+
+
+
+def test_update_database_defers_gold_spot_to_twelvedata_without_yahoo_request(tmp_path, monkeypatch):
+    import historical_ohlcv as ho
+
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"BASE.DE":"Basis"}\n', encoding="utf-8")
+    dynamic = tmp_path / "dynamic.json"
+    ho.register_ticker("XAU/USD", dynamic)
+
+    def forbidden_yahoo(*args, **kwargs):
+        raise AssertionError("XAU/USD darf nicht an yfinance uebergeben werden")
+
+    monkeypatch.setattr(ho, "_download_batch", forbidden_yahoo)
+    stats = ho.update_database(
+        tmp_path / "db.sqlite", source, dynamic,
+        only_tickers=["XAU/USD"], repair_gaps=True,
+    )
+
+    assert stats["deferred_provider_tickers"] == 1
+    assert stats["provider_tickers"] == 0
+    assert stats["errors"] == 0
+    assert stats["missing_after"] == 0
+
+
+
+def test_corrupt_dynamic_universe_fails_closed_without_overwriting(tmp_path):
+    import historical_ohlcv as ho
+    import pytest
+
+    dynamic = tmp_path / "dynamic.json"
+    original = b'{"version":1,"tickers":["KEEP.DE"], broken'
+    dynamic.write_bytes(original)
+    with pytest.raises(RuntimeError, match="nicht lesbar"):
+        ho.register_ticker("NEW.DE", dynamic)
+    assert dynamic.read_bytes() == original
+
+
+def test_dynamic_universe_rejects_unknown_schema_without_overwriting(tmp_path):
+    import historical_ohlcv as ho
+    import pytest
+
+    dynamic = tmp_path / "dynamic.json"
+    original = '{"version":99,"tickers":["KEEP.DE"]}\n'
+    dynamic.write_text(original, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unbekanntes Schema"):
+        ho.register_ticker("NEW.DE", dynamic)
+    assert dynamic.read_text(encoding="utf-8") == original
+
+
+def test_open_position_placeholder_is_created_without_fabricating_bars(tmp_path):
+    import sqlite3
+    import historical_ohlcv as ho
+
+    db = tmp_path / "history.sqlite"
+    created = ho._ensure_instrument_placeholders(db, ["NEW.DE", "XAU/USD"])
+    assert created == 2
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT ticker, first_date, last_date, row_count, source FROM instruments ORDER BY ticker"
+        ).fetchall()
+        bars = conn.execute("SELECT COUNT(*) FROM bars").fetchone()[0]
+    assert rows == [
+        ("NEW.DE", None, None, 0, "pending-provider"),
+        ("XAU/USD", None, None, 0, "pending-provider"),
+    ]
+    assert bars == 0
+
+
+def test_verify_open_positions_fails_when_history_is_missing(tmp_path):
+    import csv
+    import historical_ohlcv as ho
+
+    positions = tmp_path / "Offene_Positionen.csv"
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerow({"Ticker": "MISSING.DE", "Status": "Offen"})
+    report = ho.verify_open_positions(tmp_path / "empty.sqlite", positions)
+    assert report["ok"] is False
+    assert report["failures"]["MISSING.DE"] == ["NO_STORED_BARS"]
+
+
+def test_verify_open_positions_accepts_current_quality_gated_history(tmp_path, monkeypatch):
+    import csv
+    import historical_ohlcv as ho
+
+    positions = tmp_path / "Offene_Positionen.csv"
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerow({"Ticker": "READY.DE", "Status": "Offen"})
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0] * 60,
+            "High": [102.0] * 60,
+            "Low": [99.0] * 60,
+            "Close": [101.0] * 60,
+            "Adj Close": [101.0] * 60,
+            "Volume": [1000.0] * 60,
+        },
+        index=pd.bdate_range("2026-08-01", periods=60),
+    )
+    frame.attrs["ohlcv_quality"] = {
+        "quality_status": "PASS",
+        "latest_bar_valid": True,
+        "last_3_bars_valid": True,
+    }
+    monkeypatch.setattr(ho, "load_history", lambda ticker, db_path: frame.copy())
+    monkeypatch.setattr(
+        "ohlcv_quality_gate._last_completed_session_date",
+        lambda ticker: frame.index.max().date(),
+    )
+
+    report = ho.verify_open_positions(tmp_path / "unused.sqlite", positions)
+
+    assert report["ok"] is True
+    assert report["checked"] == 1
+    assert report["results"]["READY.DE"]["rows"] == 60
+    assert report["failures"] == {}
