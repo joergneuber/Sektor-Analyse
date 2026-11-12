@@ -157,6 +157,19 @@ Ergebnis: KEIN KANDIDAT (Momentum 1/4)
                 "einzel_check": {"ticker": "RGLD", "status": "KEIN KANDIDAT"},
             },
         ],
+        "llm_candidates": [
+            {
+                "ticker": "SSNLF",
+                "name": "Samsung Electronics Co., Ltd.",
+                "einzel_check": {"ticker": "SSNLF", "status": "KEIN KANDIDAT", "momentum": "1/4"},
+                "llm_metadata": "muss erhalten bleiben",
+            },
+            {
+                "ticker": "RGLD",
+                "name": "Royal Gold, Inc.",
+                "einzel_check": {"ticker": "RGLD", "status": "KEIN KANDIDAT", "momentum": "1/4"},
+            },
+        ],
     }
 
     repaired = module.wiederaufbereite_gespeicherten_state(state)
@@ -170,9 +183,60 @@ Ergebnis: KEIN KANDIDAT (Momentum 1/4)
     assert by_ticker["SSNLF"]["role"] == "peer"
     assert repaired["issue_number"] == 211
     assert repaired["custom_metadata"] == {"must_survive": True}
+    llm_by_ticker = {row["ticker"]: row for row in repaired["llm_candidates"]}
+    assert llm_by_ticker["SSNLF"]["einzel_check"]["status"] == "NICHT AUSGELESEN"
+    assert llm_by_ticker["SSNLF"]["einzel_check"]["momentum"] is None
+    assert llm_by_ticker["SSNLF"]["llm_metadata"] == "muss erhalten bleiben"
+    assert llm_by_ticker["RGLD"]["einzel_check"]["status"] == "KEIN KANDIDAT"
 
     reparsed_again = module.wiederaufbereite_gespeicherten_state(repaired)
     assert reparsed_again == repaired
+
+
+def test_llm_candidate_sync_preserves_all_non_parser_metadata(monkeypatch):
+    module = _module(monkeypatch)
+    state = {
+        "schema_version": 3,
+        "issue_number": 211,
+        "einzel_check_stdout": """AAA - Alpha Inc. (Sektor: Technologie)
+Ergebnis: KAUFKANDIDAT A (Momentum 4/4)
+  ✓ Setup bestätigt
+""",
+        "candidates": [{
+            "ticker": "AAA",
+            "name": "Alpha Inc.",
+            "einzel_check": {
+                "ticker": "AAA",
+                "status": "KEIN KANDIDAT",
+                "momentum": "0/4",
+                "candidate_only": "candidate-value",
+            },
+        }],
+        "llm_candidates": [{
+            "ticker": "AAA",
+            "name": "Alpha Inc.",
+            "llm_only": "top-level-llm-value",
+            "einzel_check": {
+                "ticker": "AAA",
+                "status": "KEIN KANDIDAT",
+                "momentum": "0/4",
+                "legacy_extra": "llm-value-must-survive",
+                "candidate_only": "conflicting-candidate-value",
+                "llm_nested_extra": {"keep": True},
+            },
+        }],
+    }
+
+    repaired = module.wiederaufbereite_gespeicherten_state(state)
+    llm_check = repaired["llm_candidates"][0]["einzel_check"]
+
+    assert llm_check["status"] == "KAUFKANDIDAT A"
+    assert llm_check["momentum"] == "4/4"
+    assert llm_check["ticker"] == "AAA"
+    assert llm_check["legacy_extra"] == "llm-value-must-survive"
+    assert llm_check["candidate_only"] == "conflicting-candidate-value"
+    assert llm_check["llm_nested_extra"] == {"keep": True}
+    assert repaired["llm_candidates"][0]["llm_only"] == "top-level-llm-value"
 
 
 def test_persisted_raw_to_candidate_json_to_trade_story_universe_and_next_run_recovery(
@@ -208,6 +272,18 @@ Ergebnis: KEIN KANDIDAT (Momentum 1/4)
                 "einzel_check": {"ticker": "RGLD", "status": "KEIN KANDIDAT"},
             },
         ],
+        "llm_candidates": [
+            {
+                "ticker": "SSNLF",
+                "name": "Samsung Electronics Co., Ltd.",
+                "einzel_check": {"ticker": "SSNLF", "status": "KEIN KANDIDAT", "momentum": "1/4"},
+            },
+            {
+                "ticker": "RGLD",
+                "name": "Royal Gold, Inc.",
+                "einzel_check": {"ticker": "RGLD", "status": "KEIN KANDIDAT", "momentum": "1/4"},
+            },
+        ],
     }
     state_path = Path(tmp_path) / "hebeltrader_einzel_check.json"
     state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
@@ -234,6 +310,11 @@ Ergebnis: KEIN KANDIDAT (Momentum 1/4)
         "issue_number": 212,
         "einzel_check_stdout": next_raw,
         "candidates": [{
+            "ticker": "SSNLF",
+            "name": "Samsung Electronics Co., Ltd.",
+            "einzel_check": next_parsed,
+        }],
+        "llm_candidates": [{
             "ticker": "SSNLF",
             "name": "Samsung Electronics Co., Ltd.",
             "einzel_check": next_parsed,
