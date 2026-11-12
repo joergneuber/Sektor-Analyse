@@ -4,10 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       fallback:
-        description:   'Fallback-Abruf durch cron-job.org'
-        required: false  
-        default: false    
-        type: boolean        
+        description: 'Fallback-Abruf durch cron-job.org'
+        required: false
+        default: false
+        type: boolean
+      reparse_stored:
+        description: 'Gespeicherten HEBELTRADER-Roh-Output ohne LLM-/Yahoo-Abfragen erneut parsen'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '30 9 * * 1-5'
       timezone: 'Europe/Berlin'
@@ -102,6 +107,7 @@ jobs:
         run: python hebeltrader_sync.py
 
       - name: Neue HEBELTRADER-Ausgabe forensisch prüfen und Einzel-Check ausführen
+        if: ${{ !inputs.reparse_stored }}
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
@@ -109,8 +115,28 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python hebeltrader_einzel_check.py
 
-      # Erst nach erfolgreichem Kandidaten-/Einzel-Check wird der neue State
-      # nach Drive geschrieben. Bei Fehlern bleibt der letzte gute Stand erhalten.
+      # Expliziter manueller Reparaturpfad: nutzt ausschließlich den zuvor aus
+      # Drive geladenen State samt gespeichertem Roh-Output. Keine LLM-, Yahoo-
+      # oder Alpaca-Abfragen und keine erneute Einzel-Check-Ausführung.
+      - name: Gespeicherten HEBELTRADER-Roh-Output kontrolliert wiederaufbereiten
+        if: ${{ inputs.reparse_stored }}
+        run: python hebeltrader_einzel_check.py --reparse-stored
+
+      # Die unveränderte Vorversion bleibt als Workflow-Artefakt verfügbar.
+      # Schlägt die Sicherung fehl, wird der Drive-Upload des reparierten States
+      # nicht gestartet.
+      - name: Originalen HEBELTRADER-State als Backup-Artefakt sichern
+        if: ${{ inputs.reparse_stored }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hebeltrader-state-before-reparse-${{ github.run_id }}
+          path: hebeltrader_einzel_check.json.pre-reparse.bak
+          if-no-files-found: error
+          retention-days: 30
+
+      # Erst nach erfolgreichem normalen Einzel-Check oder erfolgreicher
+      # Wiederaufbereitung wird der State nach Drive geschrieben.
+      # Bei Fehlern bleibt der letzte gute Stand erhalten.
       - name: HEBELTRADER-Ergebnis und Watchlist in Drive sichern
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
