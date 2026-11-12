@@ -632,6 +632,41 @@ def wiederaufbereite_gespeicherten_state(state: dict[str, Any]) -> dict[str, Any
         repaired_candidates.append(updated_candidate)
 
     repaired["candidates"] = repaired_candidates
+
+    # Trade Story traversiert den gesamten JSON-Baum. Da ``llm_candidates``
+    # dieselben Ticker zusätzlich enthalten kann, würde ein dort verbliebener
+    # Altstatus den gerade korrigierten Status wegen gleicher Quellenpriorität
+    # wieder überschreiben. Deshalb werden ausschließlich die vom Parser
+    # verantworteten Felder für passende Ticker auch dort synchronisiert.
+    llm_candidates = repaired.get("llm_candidates")
+    if isinstance(llm_candidates, list):
+        repaired_checks = {
+            str(candidate.get("ticker") or "").strip().upper(): candidate["einzel_check"]
+            for candidate in repaired_candidates
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("einzel_check"), dict)
+        }
+        synchronized_llm_candidates = []
+        for index, candidate in enumerate(llm_candidates):
+            if not isinstance(candidate, dict):
+                synchronized_llm_candidates.append(candidate)
+                continue
+            ticker = str(candidate.get("ticker") or "").strip().upper()
+            parsed_check = repaired_checks.get(ticker)
+            if parsed_check is None:
+                synchronized_llm_candidates.append(candidate)
+                continue
+            updated_candidate = dict(candidate)
+            previous_check = candidate.get("einzel_check")
+            check = dict(previous_check) if isinstance(previous_check, dict) else {}
+            for field in parser_fields:
+                check.pop(field, None)
+                if field in parsed_check:
+                    check[field] = parsed_check[field]
+            updated_candidate["einzel_check"] = check
+            synchronized_llm_candidates.append(updated_candidate)
+        repaired["llm_candidates"] = synchronized_llm_candidates
+
     return repaired
 
 
