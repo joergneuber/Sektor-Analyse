@@ -46,7 +46,7 @@ def test_db_first_accepts_current_quality_pass(monkeypatch):
         def __init__(self, ticker):
             raise AssertionError("Yahoo darf bei aktueller DB-Historie nicht laufen.")
 
-    monkeypatch.setattr(checker.yf, "Ticker", ForbiddenYahoo)
+    monkeypatch.setattr(checker.yf, "Ticker", ForbiddenYahoo, raising=False)
     result = checker.fetch_history("TEST.DE")
     assert len(result) == 100
     assert result.attrs["history_source"] == "historical_ohlcv.sqlite"
@@ -72,7 +72,7 @@ def test_stale_or_incomplete_db_uses_yahoo_fallback(monkeypatch):
         def to_dict(self):
             return _quality()
 
-    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker)
+    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker, raising=False)
     monkeypatch.setattr(
         "ohlcv_quality_gate.apply_ohlcv_quality_gate",
         lambda data, *args, **kwargs: (data.copy(), Quality()),
@@ -103,7 +103,7 @@ def test_if_both_sources_fail_quality_empty_result_keeps_diagnostics(monkeypatch
                 reason_codes=["CALENDAR_UNVERIFIED_OR_UNAVAILABLE"],
             )
 
-    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker)
+    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker, raising=False)
     monkeypatch.setattr(
         "ohlcv_quality_gate.apply_ohlcv_quality_gate",
         lambda data, *args, **kwargs: (data.copy(), Quality()),
@@ -150,7 +150,7 @@ def test_latest_invalid_bar_is_rejected_even_if_60_bars_exist(monkeypatch):
                 reason_codes=["LATEST_EXPECTED_BAR_INVALID"],
             )
 
-    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker)
+    monkeypatch.setattr(checker.yf, "Ticker", YahooTicker, raising=False)
     monkeypatch.setattr(
         "ohlcv_quality_gate.apply_ohlcv_quality_gate",
         lambda data, *args, **kwargs: (data.copy(), Quality()),
@@ -186,7 +186,7 @@ def test_known_ticker_fixtures_route_through_mocked_history_sources(monkeypatch)
     class ForbiddenYahoo:
         def __init__(self, ticker):
             raise AssertionError(f"Yahoo unerwartet für {ticker}")
-    monkeypatch.setattr(checker.yf, "Ticker", ForbiddenYahoo)
+    monkeypatch.setattr(checker.yf, "Ticker", ForbiddenYahoo, raising=False)
 
     for ticker in tickers:
         result = checker.fetch_history(ticker)
