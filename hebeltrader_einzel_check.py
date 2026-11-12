@@ -456,43 +456,114 @@ def yahoo_ablehnungen(kandidaten: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _parse_einzel_ergebnisse(stdout: str, tickers: list[str]) -> list[dict[str, Any]]:
+    """Liest Ergebnisse ausschließlich aus dem jeweiligen Ticker-Abschnitt.
+
+    Die Ausgabe von einzel_check.py enthält viele Titel aus der Beobachtungsliste.
+    Ein Ticker-Abschnitt beginnt mit einer eigenen Kopfzeile
+    ``TICKER - Firmenname (Sektor: ...)`` und endet unmittelbar vor der nächsten
+    solchen Kopfzeile. Fehlt innerhalb dieses Abschnitts eine Ergebniszeile,
+    darf niemals das Ergebnis des nachfolgenden Titels übernommen werden.
+    """
     result = []
-    # Einzel-Check druckt pro Titel einen klaren Kopf und später die
-    # KAUFKANDIDATEN-BEWERTUNG. Wir extrahieren nur diese maschinenlesbaren
-    # Kernfelder; die vollständige Rohprüfung bleibt zusätzlich gespeichert.
+    lines = stdout.splitlines(keepends=True)
+    text = "".join(lines)
+
+    # Ausschließlich echte Titel-Kopfzeilen erfassen. Die Regex ist absichtlich
+    # enger als eine Suche nach einem Tickerwort: Listen, DEBUG-Zeilen und
+    # Firmenname-Hinweise sind keine Abschnittsgrenzen.
+    header_pattern = re.compile(
+        r"^\s*(?P<ticker>[A-Z0-9^][A-Z0-9.^_-]*)\s+-\s+.+?\s+\(Sektor:",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    headers = list(header_pattern.finditer(text))
+    blocks_by_ticker: dict[str, list[str]] = {}
+    for index, header in enumerate(headers):
+        block_end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        block = text[header.start():block_end]
+        key = header.group("ticker").upper()
+        blocks_by_ticker.setdefault(key, []).append(block)
+
+    result_pattern = re.compile(
+        r"^\s*Ergebnis:\s*(KAUFKANDIDAT [ABC]|KEIN KANDIDAT)"
+        r"\s*\(Momentum\s*([^)]+)\)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def technical_lines(block: str) -> list[str]:
+        found = []
+        for line in block.splitlines():
+            clean = _clean(line)
+            if not clean:
+                continue
+            if re.search(
+                r"(?:TRENDFOLGE:|Setup:|Kurs |Stop |TP1 |TP2 |RSI |MACD |"
+                r"TRENDWENDE .*TREFFER|KAUFKANDIDATEN-BEWERTUNG|Ergebnis:|✓|⚠|"
+                r"Daten von Alpaca leer|Kursdaten nicht verfügbar)",
+                clean,
+                re.IGNORECASE,
+            ):
+                found.append(clean)
+        return found[:30]
+
     for ticker in tickers:
-        pattern = re.compile(
-            rf"(?ms)^\s*{re.escape(ticker)}(?:\s+-[^\n]*)?\s+\(Sektor:.*?^\s*Ergebnis:\s*(KAUFKANDIDAT [ABC]|KEIN KANDIDAT)"
-            rf"\s*\(Momentum\s*([^)]+)\)(.*?)(?=^\s*=+\s*$|\Z)"
-        )
-        m = pattern.search(stdout)
-        if not m:
+        ticker_key = str(ticker).strip().upper()
+        ticker_blocks = blocks_by_ticker.get(ticker_key, [])
+        if not ticker_blocks:
             result.append({
                 "ticker": ticker,
                 "status": "NICHT AUSGELESEN",
                 "momentum": None,
                 "gruende": [],
                 "risiken": [],
+                "technischer_zustand": [],
+                "auslesegrund": "Kein eigener Ticker-Abschnitt im Einzel-Check-Output gefunden.",
             })
             continue
-        block = m.group(0)
-        tail = m.group(3)
-        reasons = [_clean(x) for x in re.findall(r"^\s*✓\s*(.+)$", tail, re.M)]
-        risks = [_clean(x) for x in re.findall(r"^\s*⚠\s*(.+)$", tail, re.M)]
-        technical_lines = []
-        for line in block.splitlines():
-            clean = _clean(line)
-            if not clean:
-                continue
-            if re.search(r"(?:TRENDFOLGE:|Setup:|Kurs |Stop |TP1 |TP2 |RSI |MACD |TRENDWENDE .*TREFFER|KAUFKANDIDATEN-BEWERTUNG|Ergebnis:|✓|⚠)", clean, re.I):
-                technical_lines.append(clean)
+
+        if len(ticker_blocks) != 1:
+            result.append({
+                "ticker": ticker,
+                "status": "NICHT AUSGELESEN",
+                "momentum": None,
+                "gruende": [],
+                "risiken": [],
+                "technischer_zustand": [],
+                "auslesegrund": (
+                    f"Mehrdeutig: {len(ticker_blocks)} eigene Ticker-Abschnitte gefunden."
+                ),
+            })
+            continue
+
+        block = ticker_blocks[0]
+        matches = list(result_pattern.finditer(block))
+        if len(matches) != 1:
+            reason = (
+                "Kein Ergebnis im eigenen Ticker-Abschnitt gefunden."
+                if not matches
+                else f"Mehrdeutig: {len(matches)} Ergebniszeilen im eigenen Ticker-Abschnitt gefunden."
+            )
+            result.append({
+                "ticker": ticker,
+                "status": "NICHT AUSGELESEN",
+                "momentum": None,
+                "gruende": [],
+                "risiken": [],
+                "technischer_zustand": technical_lines(block),
+                "auslesegrund": reason,
+            })
+            continue
+
+        match = matches[0]
+        tail = block[match.end():]
+        reasons = [_clean(x) for x in re.findall(r"^\s*✓\s*(.+)$", tail, re.MULTILINE)]
+        risks = [_clean(x) for x in re.findall(r"^\s*⚠\s*(.+)$", tail, re.MULTILINE)]
         result.append({
             "ticker": ticker,
-            "status": m.group(1),
-            "momentum": _clean(m.group(2)),
+            "status": match.group(1).upper(),
+            "momentum": _clean(match.group(2)),
             "gruende": reasons[:6],
             "risiken": risks[:6],
-            "technischer_zustand": technical_lines[:30],
+            "technischer_zustand": technical_lines(block),
         })
     return result
 
