@@ -5,8 +5,9 @@ Die Datenbank ist bewusst von market_cache.py getrennt:
 - market_cache.py = kurzlebiger Workflow-Cache
 - historical_ohlcv.sqlite = dauerhafter Research-/Backtest-Bestand
 
-Quelle: yfinance/Yahoo Finance, mit auto_adjust=False, damit rohe OHLCV-Werte
-und Adj Close getrennt nachvollziehbar bleiben. Der Loader ist inkrementell:
+Standardquelle: yfinance/Yahoo Finance mit auto_adjust=False. Provider-Fallbacks
+werden nach bestandenem Quality-Gate ebenfalls persistent gespeichert; die
+tatsaechliche Quelle bleibt je Bar in bars.source nachvollziehbar. Der Loader ist inkrementell:
 beim Erstaufbau werden fehlende Ticker mit period='max' geladen; danach werden
 nur Ticker mit fehlendem/zu altem letzten Handelstag aktualisiert. Zusaetzlich
 werden erkannte fehlende Handelstage im konfigurierten Lookback-Fenster
@@ -37,6 +38,7 @@ import pandas as pd
 DEFAULT_DB = Path(os.environ.get("NMM_HISTORICAL_OHLCV_DB", "historical_ohlcv.sqlite"))
 DEFAULT_SOURCE_FILE = Path(os.environ.get("NMM_HISTORICAL_OHLCV_SOURCE", "analyse.py"))
 DEFAULT_DYNAMIC_UNIVERSE = Path(os.environ.get("NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE", "historical_ohlcv_universe.json"))
+DEFAULT_OPEN_POSITIONS_FILE = Path(os.environ.get("NMM_OPEN_POSITIONS_FILE", "Offene_Positionen.csv"))
 SCHEMA_VERSION = 1
 BATCH_SIZE = int(os.environ.get("NMM_HISTORICAL_OHLCV_BATCH_SIZE", "40"))
 REQUEST_PAUSE_SECONDS = float(os.environ.get("NMM_HISTORICAL_OHLCV_PAUSE", "1.0"))
@@ -54,6 +56,9 @@ EXPLICIT_BENCHMARKS = {
 }
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+
+# XAU/USD wird im Positionscheck ausschliesslich ueber TwelveData geladen.
+NON_YFINANCE_POSITION_TICKERS = frozenset({"XAU/USD", "XAUUSD"})
 
 # Explizit ausgeschlossene obsolete oder nicht mehr relevante Instrumentenkennungen.
 # Diese Kennungen bleiben aus dem aktiven OHLCV-Universum ausgeschlossen.
@@ -393,23 +398,43 @@ def _string_values(node: ast.AST) -> set[str]:
 
 
 def _load_dynamic_universe(path: Path = DEFAULT_DYNAMIC_UNIVERSE) -> set[str]:
-    """Liest zusaetzlich dauerhaft registrierte Einzel-Check-Ticker."""
+    """Liest das persistente Zusatzuniversum; defekte Dateien sperren Schreibzugriffe."""
     if not path.exists():
+        # Eine fehlende Datei ist nur beim erstmaligen Aufbau ein leerer Stand.
         return set()
+    import json
     try:
-        import json
         payload = json.loads(path.read_text(encoding="utf-8"))
-        values = payload.get("tickers", []) if isinstance(payload, dict) else payload
-        if not isinstance(values, list):
-            return set()
-        return {str(t).strip().upper() for t in values if str(t).strip()}
     except (OSError, ValueError, TypeError) as exc:
-        print(f"WARNUNG-HIST-OHLCV: dynamisches Universum konnte nicht gelesen werden: {exc}", file=sys.stderr)
-        return set()
+        raise RuntimeError(
+            f"Dynamisches OHLCV-Universum ist nicht lesbar; Schreibzugriff gesperrt: {path}: {exc}"
+        ) from exc
+    if isinstance(payload, dict):
+        if payload.get("version") not in (None, 1):
+            raise RuntimeError(
+                f"Dynamisches OHLCV-Universum hat ein unbekanntes Schema/Version: {path}"
+            )
+        values = payload.get("tickers")
+    else:
+        # Rueckwaertskompatibilitaet fuer das fruehere reine JSON-Listenformat.
+        values = payload
+    if not isinstance(values, list):
+        raise RuntimeError(
+            f"Dynamisches OHLCV-Universum enthaelt keine gueltige Tickerliste: {path}"
+        )
+    normalized: set[str] = set()
+    for raw in values:
+        ticker = _normalize_market_ticker(raw)
+        if not ticker:
+            raise RuntimeError(
+                f"Dynamisches OHLCV-Universum enthaelt einen ungueltigen Ticker: {raw!r}"
+            )
+        normalized.add(ticker)
+    return normalized
 
 
 def register_ticker(ticker: str, path: Path = DEFAULT_DYNAMIC_UNIVERSE) -> bool:
-    """Registriert einen erfolgreich geprüften Einzel-Check-Ticker dauerhaft."""
+    """Registriert einen validierten Ticker dauerhaft im dynamischen OHLCV-Universum."""
     ticker = _normalize_market_ticker(ticker)
     if not ticker:
         return False
@@ -436,7 +461,7 @@ def discover_universe(
     source_file: Path = DEFAULT_SOURCE_FILE,
     dynamic_universe: Path = DEFAULT_DYNAMIC_UNIVERSE,
 ) -> list[str]:
-    """Ermittelt Ticker aus analyse.py plus dauerhaft registrierte Einzel-Checks."""
+    """Ermittelt Ticker aus analyse.py plus dauerhaft registrierte Zusatzquellen."""
     source = source_file.read_text(encoding="utf-8-sig")
     tree = ast.parse(source, filename=str(source_file))
     wanted = {"sektoren_map", "sektoren_aktien", "eu_sektoren_etf", "dax_aktien", "eu_benchmark_ticker"}
@@ -487,6 +512,120 @@ def discover_universe(
     # Ausschluss gilt nach Zusammenfuehrung aller Quellen, damit dynamische
     # Registrierungen die Liste nicht versehentlich wieder aufnehmen.
     return sorted(t for t in normalized if t not in EXCLUDED_TICKERS)
+
+
+def load_open_position_tickers(positions_file: Path = DEFAULT_OPEN_POSITIONS_FILE) -> list[str]:
+    """Liest ausschliesslich Status=Offen aus der aktuellen Positions-CSV."""
+    positions_file = Path(positions_file)
+    if not positions_file.exists():
+        raise FileNotFoundError(f"Offene-Positionen-Datei fehlt: {positions_file}")
+    frame = pd.read_csv(
+        positions_file, sep=";", dtype=str, encoding="utf-8-sig",
+        keep_default_na=False,
+    )
+    frame.columns = [str(column).strip() for column in frame.columns]
+    if not {"Status", "Ticker"}.issubset(frame.columns):
+        raise ValueError("Offene_Positionen.csv benoetigt die Spalten 'Status' und 'Ticker'.")
+    open_rows = frame[frame["Status"].astype(str).str.strip().str.lower() == "offen"]
+    tickers: set[str] = set()
+    for row_index, raw_ticker in open_rows["Ticker"].items():
+        row_number = int(row_index) + 2
+        ticker_text = str(raw_ticker or "").strip()
+        if ticker_text.upper() == "ANLEITUNG":
+            continue
+        ticker = _normalize_market_ticker(ticker_text)
+        if not ticker:
+            raise ValueError(
+                f"Offene Position ohne gueltigen Ticker in {positions_file} "
+                f"(ungefaehre CSV-Zeile {row_number})."
+            )
+        if ticker in EXCLUDED_TICKERS:
+            raise ValueError(
+                f"Offener Positionsticker {ticker} steht auf EXCLUDED_TICKERS. "
+                "Bitte Ausschlussgrund explizit klaeren; keine stille Auslassung."
+            )
+        tickers.add(ticker)
+    return sorted(tickers)
+
+
+def _ensure_instrument_placeholders(
+    db_path: Path, tickers: Iterable[str], *, source: str = "pending-provider"
+) -> int:
+    """Legt Instrument-Stammsaetze ohne Kurs-Fakes fuer offene Ticker an."""
+    symbols = sorted({
+        symbol for raw in tickers
+        if (symbol := _normalize_market_ticker(raw)) is not None
+    })
+    if not symbols:
+        return 0
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        before = conn.total_changes
+        conn.executemany(
+            """INSERT OR IGNORE INTO instruments
+               (ticker, first_date, last_date, row_count, last_update_utc, source)
+               VALUES (?, NULL, NULL, 0, NULL, ?)""",
+            [(symbol, source) for symbol in symbols],
+        )
+        return conn.total_changes - before
+
+
+def sync_open_positions(
+    db_path: Path = DEFAULT_DB,
+    source_file: Path = DEFAULT_SOURCE_FILE,
+    dynamic_universe: Path = DEFAULT_DYNAMIC_UNIVERSE,
+    positions_file: Path = DEFAULT_OPEN_POSITIONS_FILE,
+    *,
+    repair_gaps: bool = True,
+    gap_lookback_days: int = DEFAULT_GAP_LOOKBACK_DAYS,
+) -> dict:
+    """Registriert offene Positionsticker und baut/aktualisiert deren Historie."""
+    open_tickers = load_open_position_tickers(positions_file)
+    if not open_tickers:
+        print("HIST-OHLCV-OPEN: keine offenen Positionsticker gefunden.")
+        return {"open_position_tickers": 0, "registered": 0, "updated": 0, "rows": 0}
+    registered = sum(
+        1 for ticker in open_tickers if register_ticker(ticker, dynamic_universe)
+    )
+    placeholders_created = _ensure_instrument_placeholders(db_path, open_tickers)
+    stats = update_database(
+        db_path, source_file, dynamic_universe,
+        repair_gaps=repair_gaps,
+        gap_lookback_days=gap_lookback_days,
+        only_tickers=open_tickers,
+    )
+    stats["open_position_tickers"] = len(open_tickers)
+    stats["registered"] = registered
+    stats["instrument_placeholders_created"] = placeholders_created
+    stats["open_ticker_list"] = open_tickers
+    deferred = [ticker for ticker in open_tickers if ticker in NON_YFINANCE_POSITION_TICKERS]
+    stats["open_tickers_deferred"] = deferred
+    with _connect(db_path) as conn:
+        latest = _db_latest(conn)
+    unresolved = [
+        ticker for ticker in open_tickers
+        if ticker not in NON_YFINANCE_POSITION_TICKERS and ticker not in latest
+    ]
+    stats["open_tickers_without_bars"] = unresolved
+    print(
+        f"HIST-OHLCV-OPEN: offen={len(open_tickers)} neu_registriert={registered} "
+        f"Yahoo-verwaltet={stats.get('provider_tickers', 0)} "
+        f"Spezialprovider={stats.get('deferred_provider_tickers', 0)}"
+    )
+    if deferred:
+        print(
+            "HIST-OHLCV-OPEN: Spezialprovider wird im technischen Positionscheck "
+            "geladen und nach bestandenem Quality-Gate gespeichert: "
+            + ", ".join(deferred)
+        )
+    if unresolved:
+        print(
+            "WARNUNG-HIST-OHLCV-OPEN: noch ohne gespeicherte Historie; "
+            "technischer Check versucht den qualitätsgeprüften Provider-Fallback: "
+            + ", ".join(unresolved),
+            file=sys.stderr,
+        )
+    return stats
 
 
 @contextmanager
@@ -544,7 +683,10 @@ def init_db(db_path: Path = DEFAULT_DB) -> None:
             """
         )
         conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
-        conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('source_convention',?)", ("yfinance;auto_adjust=False;interval=1d",))
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES('source_convention',?)",
+            ("daily_ohlcv;provider_per_bar=bars.source;yfinance:auto_adjust=False;TwelveData:XAU/USD",),
+        )
 
 
 def _normalise_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -755,6 +897,7 @@ def _upsert_frames(
     frames: dict[str, pd.DataFrame],
     *,
     updated_tickers: set[str] | None = None,
+    source: str = "yfinance",
 ) -> int:
     rows = []
     valid_frames = _validated_frames(frames)
@@ -763,7 +906,7 @@ def _upsert_frames(
     for ticker, df in valid_frames.items():
         for idx, row in df.iterrows():
             date = pd.Timestamp(idx).strftime("%Y-%m-%d")
-            rows.append((ticker, date, *[None if pd.isna(row[c]) else float(row[c]) for c in REQUIRED_COLUMNS], "yfinance"))
+            rows.append((ticker, date, *[None if pd.isna(row[c]) else float(row[c]) for c in REQUIRED_COLUMNS], str(source)))
             tickers_with_valid_rows.add(ticker)
     if not rows:
         return 0
@@ -777,12 +920,56 @@ def _upsert_frames(
     for ticker in tickers_with_valid_rows:
         conn.execute(
             """INSERT INTO instruments(ticker,first_date,last_date,row_count,last_update_utc,source)
-               SELECT ?, MIN(date), MAX(date), COUNT(*), ?, 'yfinance' FROM bars WHERE ticker=?
+               SELECT ?, MIN(date), MAX(date), COUNT(*), ?, ? FROM bars WHERE ticker=?
                ON CONFLICT(ticker) DO UPDATE SET first_date=excluded.first_date,last_date=excluded.last_date,
                row_count=excluded.row_count,last_update_utc=excluded.last_update_utc,source=excluded.source""",
-            (ticker, now, ticker),
+            (ticker, now, str(source), ticker),
         )
     return len(rows)
+
+
+def persist_quality_accepted_history(
+    ticker: str,
+    frame: pd.DataFrame,
+    *,
+    source: str,
+    db_path: Path = DEFAULT_DB,
+    dynamic_universe: Path = DEFAULT_DYNAMIC_UNIVERSE,
+) -> int:
+    """Persistiert nur bereits vom produktiven Quality-Gate freigegebene Historie."""
+    normalized_ticker = _normalize_market_ticker(ticker)
+    if not normalized_ticker:
+        raise ValueError(f"Ungueltiger Persistenz-Ticker: {ticker!r}")
+    if normalized_ticker in EXCLUDED_TICKERS:
+        raise ValueError(f"Ausgeschlossener Ticker darf nicht persistiert werden: {normalized_ticker}")
+    if frame is None or frame.empty:
+        raise ValueError(f"Keine Historie zum Persistieren fuer {normalized_ticker}")
+    if len(frame) < 60:
+        raise ValueError(
+            f"Zu wenig zusammenhaengende Historie fuer {normalized_ticker}: "
+            f"{len(frame)} Bars; mindestens 60 erforderlich"
+        )
+    quality = (getattr(frame, "attrs", {}) or {}).get("ohlcv_quality", {})
+    if not isinstance(quality, dict):
+        raise ValueError(f"Quality-Gate-Metadaten fehlen fuer {normalized_ticker}")
+    if str(quality.get("quality_status") or "").upper() not in {"PASS", "PASS_WITH_EXCLUSIONS"}:
+        raise ValueError(
+            f"Quality-Gate hat {normalized_ticker} nicht freigegeben: "
+            f"{quality.get('quality_status') or 'UNBEKANNT'}"
+        )
+    if quality.get("latest_bar_valid") is not True or quality.get("last_3_bars_valid") is not True:
+        raise ValueError(f"Letzte/letzte drei Bars fuer {normalized_ticker} sind nicht freigegeben")
+    register_ticker(normalized_ticker, dynamic_universe)
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        stored_rows = _upsert_frames(conn, {normalized_ticker: frame}, source=source)
+    if stored_rows <= 0:
+        raise RuntimeError(f"Keine strukturell gueltigen Bars fuer {normalized_ticker} gespeichert")
+    print(
+        f"HIST-OHLCV-PERSIST: {normalized_ticker} | source={source} "
+        f"rows={stored_rows} | Quality-Gate={quality.get('quality_status')}"
+    )
+    return stored_rows
 
 
 def update_database(
@@ -793,14 +980,35 @@ def update_database(
     force_bootstrap: bool = False,
     repair_gaps: bool = True,
     gap_lookback_days: int = DEFAULT_GAP_LOOKBACK_DAYS,
+    only_tickers: Iterable[str] | None = None,
 ) -> dict:
     """Update current bars and automatically repair recent missing sessions."""
     if gap_lookback_days < 1:
         raise ValueError("gap_lookback_days muss mindestens 1 sein")
     init_db(db_path)
-    tickers = discover_universe(source_file, dynamic_universe)
+    discovered = discover_universe(source_file, dynamic_universe)
+    if only_tickers is None:
+        tickers = discovered
+    else:
+        requested = set()
+        for raw_ticker in only_tickers:
+            normalized = _normalize_market_ticker(raw_ticker)
+            if not normalized:
+                raise ValueError(f"Ungueltiger Ticker in only_tickers: {raw_ticker!r}")
+            requested.add(normalized)
+        undiscovered = sorted(requested - set(discovered))
+        if undiscovered:
+            raise ValueError(
+                "Gezielte OHLCV-Aktualisierung enthaelt nicht registrierte Ticker: "
+                + ", ".join(undiscovered)
+            )
+        tickers = sorted(requested)
+    provider_tickers = [t for t in tickers if t not in NON_YFINANCE_POSITION_TICKERS]
+    deferred_provider_tickers = [t for t in tickers if t in NON_YFINANCE_POSITION_TICKERS]
     stats = {
-        "tickers": len(tickers), "missing": 0, "updated": 0, "rows": 0,
+        "tickers": len(tickers), "provider_tickers": len(provider_tickers),
+        "deferred_provider_tickers": len(deferred_provider_tickers),
+        "missing": 0, "updated": 0, "rows": 0,
         "errors": 0, "gap_repair_enabled": bool(repair_gaps),
         "gap_lookback_days": int(gap_lookback_days),
         "gap_tickers_found": 0, "gap_sessions_found": 0,
@@ -810,7 +1018,7 @@ def update_database(
     }
     with _connect(db_path) as conn:
         latest = _db_latest(conn)
-        missing = tickers if force_bootstrap else [t for t in tickers if t not in latest]
+        missing = provider_tickers if force_bootstrap else [t for t in provider_tickers if t not in latest]
         stats["missing"] = len(missing)
 
         # Erstaufbau: period=max in kontrollierten Batches.
@@ -840,7 +1048,7 @@ def update_database(
         legacy_expected = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
         current_latest = _db_latest(conn)
         stale = []
-        for ticker in tickers:
+        for ticker in provider_tickers:
             if ticker not in current_latest:
                 continue
             calendar_name = _calendar_name_for_ticker(ticker)
@@ -891,7 +1099,7 @@ def update_database(
         if repair_gaps:
             gap_scan = _detect_recent_trading_day_gaps(
                 db_path,
-                tickers,
+                provider_tickers,
                 lookback_days=gap_lookback_days,
                 as_of_date=as_of_date,
             )
@@ -941,7 +1149,7 @@ def update_database(
             # beim naechsten Lauf erneut versucht, statt als repariert zu gelten.
             remaining = _detect_recent_trading_day_gaps(
                 db_path,
-                tickers,
+                provider_tickers,
                 lookback_days=gap_lookback_days,
                 as_of_date=as_of_date,
             )
@@ -952,8 +1160,8 @@ def update_database(
 
     with _connect(db_path) as check_conn:
         current_latest = _db_latest(check_conn)
-    stats["ok"] = sum(1 for ticker in tickers if ticker in current_latest)
-    stats["missing_after"] = len(tickers) - stats["ok"]
+    stats["ok"] = sum(1 for ticker in provider_tickers if ticker in current_latest)
+    stats["missing_after"] = len(provider_tickers) - stats["ok"]
     print(
         "HIST-OHLCV: tickers={tickers} missing_initial={missing} updated={updated} "
         "rows={rows} errors={errors} coverage_ok={ok} coverage_missing={missing_after} "
@@ -965,7 +1173,7 @@ def update_database(
     if stats["missing_after"]:
         print(
             f"WARNUNG-HIST-OHLCV: Datenbank unvollstaendig: "
-            f"expected={len(tickers)} ok={stats['ok']} missing={stats['missing_after']} errors={stats['errors']}",
+            f"expected={len(provider_tickers)} ok={stats['ok']} missing={stats['missing_after']} errors={stats['errors']}",
             file=sys.stderr,
         )
     if stats["gap_sessions_remaining"]:
@@ -975,6 +1183,72 @@ def update_database(
             file=sys.stderr,
         )
     return stats
+
+
+def verify_open_positions(
+    db_path: Path = DEFAULT_DB,
+    positions_file: Path = DEFAULT_OPEN_POSITIONS_FILE,
+    *,
+    min_rows: int = 60,
+) -> dict:
+    """Prueft nach dem Provider-Fallback jede offene Position auf aktuelle, freigegebene Historie."""
+    tickers = load_open_position_tickers(positions_file)
+    failures: dict[str, list[str]] = {}
+    results: dict[str, dict] = {}
+    if not tickers:
+        print("HIST-OHLCV-VERIFY: keine offenen Positionen; Pruefung erfolgreich.")
+        return {"ok": True, "checked": 0, "failures": {}, "results": {}}
+
+    from ohlcv_quality_gate import _last_completed_session_date
+    for ticker in tickers:
+        reasons: list[str] = []
+        frame = load_history(ticker, db_path)
+        if frame.empty:
+            reasons.append("NO_STORED_BARS")
+            quality = {}
+        else:
+            quality = (getattr(frame, "attrs", {}) or {}).get("ohlcv_quality", {})
+            if not isinstance(quality, dict):
+                quality = {}
+            if len(frame) < int(min_rows):
+                reasons.append(f"INSUFFICIENT_HISTORY:{len(frame)}<{int(min_rows)}")
+            status = str(quality.get("quality_status") or "").upper()
+            if status not in {"PASS", "PASS_WITH_EXCLUSIONS"}:
+                reasons.append(f"QUALITY_GATE:{status or 'UNKNOWN'}")
+            if quality.get("latest_bar_valid") is not True:
+                reasons.append("LATEST_BAR_NOT_VALID")
+            if quality.get("last_3_bars_valid") is not True:
+                reasons.append("LAST_3_BARS_NOT_VALID")
+            try:
+                expected = _last_completed_session_date(ticker)
+            except Exception as exc:
+                expected = None
+                reasons.append(f"EXPECTED_SESSION_ERROR:{type(exc).__name__}")
+            if expected is None:
+                if not any(reason.startswith("EXPECTED_SESSION_ERROR:") for reason in reasons):
+                    reasons.append("EXPECTED_SESSION_UNAVAILABLE")
+            elif pd.Timestamp(frame.index.max()).date() < pd.Timestamp(expected).date():
+                reasons.append(
+                    f"STALE_HISTORY:{pd.Timestamp(frame.index.max()).date().isoformat()}"
+                    f"<{pd.Timestamp(expected).date().isoformat()}"
+                )
+        results[ticker] = {
+            "rows": int(len(frame)),
+            "last_date": None if frame.empty else pd.Timestamp(frame.index.max()).date().isoformat(),
+            "quality_status": str(quality.get("quality_status") or "UNKNOWN"),
+            "reasons": reasons,
+        }
+        if reasons:
+            failures[ticker] = reasons
+
+    ok = not failures
+    print(
+        f"HIST-OHLCV-VERIFY: checked={len(tickers)} ok={len(tickers) - len(failures)} "
+        f"failed={len(failures)}"
+    )
+    for ticker, reasons in failures.items():
+        print(f"HIST-OHLCV-VERIFY-FAIL: {ticker}: {'; '.join(reasons)}", file=sys.stderr)
+    return {"ok": ok, "checked": len(tickers), "failures": failures, "results": results}
 
 
 def coverage(db_path: Path = DEFAULT_DB, source_file: Path = DEFAULT_SOURCE_FILE, dynamic_universe: Path = DEFAULT_DYNAMIC_UNIVERSE) -> pd.DataFrame:
@@ -1452,12 +1726,13 @@ def load_history(ticker: str, db_path: Path = DEFAULT_DB) -> pd.DataFrame:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Persistente historische OHLCV-Datenbank")
-    parser.add_argument("command", choices=["update", "coverage", "query"], nargs="?", default="update")
+    parser.add_argument("command", choices=["update", "sync-open-positions", "verify-open-positions", "coverage", "query"], nargs="?", default="update")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE_FILE)
     parser.add_argument("--dynamic-universe", type=Path, default=DEFAULT_DYNAMIC_UNIVERSE)
     parser.add_argument("--summary", action="store_true", help="bei coverage nur die Coverage-Zusammenfassung ausgeben")
     parser.add_argument("--ticker")
+    parser.add_argument("--positions-file", type=Path, default=DEFAULT_OPEN_POSITIONS_FILE)
     parser.add_argument("--bootstrap", action="store_true", help="beim Update alle Ticker als fehlend behandeln")
     parser.add_argument("--no-gap-repair", action="store_true", help="automatische Reparatur erkannter Kursluecken deaktivieren")
     parser.add_argument("--gap-lookback-days", type=int, default=DEFAULT_GAP_LOOKBACK_DAYS, help="Rueckblick fuer die automatische Kursluecken-Reparatur (Kalendertage)")
@@ -1471,6 +1746,16 @@ def main() -> int:
             gap_lookback_days=args.gap_lookback_days,
         )
         return 0
+    if args.command == "sync-open-positions":
+        sync_open_positions(
+            args.db, args.source, args.dynamic_universe, args.positions_file,
+            repair_gaps=not args.no_gap_repair,
+            gap_lookback_days=args.gap_lookback_days,
+        )
+        return 0
+    if args.command == "verify-open-positions":
+        report = verify_open_positions(args.db, args.positions_file)
+        return 0 if report["ok"] else 1
     if args.command == "coverage":
         if not args.db.exists():
             print(f"Datenbank fehlt: {args.db}")

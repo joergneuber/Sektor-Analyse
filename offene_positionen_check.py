@@ -446,6 +446,15 @@ def _empty_history_with_diagnostics(source: str, quality: dict | None = None,
     return frame
 
 
+def _persist_usable_provider_history(ticker: str, frame: pd.DataFrame, source: str) -> int:
+    """Persistiert einen Provider-Fallback erst nach bestandenem Nutzbarkeits-Gate."""
+    from historical_ohlcv import persist_quality_accepted_history
+    rows = persist_quality_accepted_history(ticker, frame, source=source)
+    if rows <= 0:
+        raise RuntimeError(f"Provider-Historie fuer {ticker} wurde nicht dauerhaft gespeichert.")
+    return rows
+
+
 def fetch_history(ticker: str) -> pd.DataFrame:
     """Load DB-first, then use a quality-gated provider fallback.
 
@@ -459,10 +468,23 @@ def fetch_history(ticker: str) -> pd.DataFrame:
         try:
             raw = _fetch_twelvedata_gold_spot_history()
             quality = _quality_payload(raw)
+            quality_frame = raw.copy()
+            quality_frame.attrs.update(getattr(raw, "attrs", {}) or {})
             frame = _valid_ohlc_history(raw)
             frame.attrs["history_source"] = "TwelveData"
             usable, reason = _quality_is_current_and_usable(frame, ticker)
             if usable:
+                try:
+                    _persist_usable_provider_history(ticker, quality_frame, "TwelveData")
+                except Exception as persist_exc:
+                    print(
+                        f"WARNUNG-HIST-OHLCV: {ticker}: TwelveData-Historie "
+                        f"Quality-Gate bestanden, Persistierung fehlgeschlagen: {persist_exc}"
+                    )
+                    return _empty_history_with_diagnostics(
+                        "TwelveData", quality,
+                        f"PERSISTENCE_ERROR:{type(persist_exc).__name__}:{persist_exc}",
+                    )
                 return frame
             return _empty_history_with_diagnostics(
                 "TwelveData", quality, reason or "TwelveData-Historie nicht aktuell/vollständig"
@@ -504,9 +526,22 @@ def fetch_history(ticker: str) -> pd.DataFrame:
         )
         gated.attrs["ohlcv_quality"] = quality.to_dict()
         gated.attrs["history_source"] = "Yahoo-Fallback"
+        quality_frame = gated.copy()
+        quality_frame.attrs.update(getattr(gated, "attrs", {}) or {})
         frame = _valid_ohlc_history(gated)
         usable, reason = _quality_is_current_and_usable(frame, ticker)
         if usable:
+            try:
+                _persist_usable_provider_history(ticker, quality_frame, "Yahoo-Fallback")
+            except Exception as persist_exc:
+                print(
+                    f"WARNUNG-HIST-OHLCV: {ticker}: Yahoo-Fallback "
+                    f"Quality-Gate bestanden, Persistierung fehlgeschlagen: {persist_exc}"
+                )
+                return _empty_history_with_diagnostics(
+                    "Yahoo-Fallback", quality.to_dict(),
+                    f"PERSISTENCE_ERROR:{type(persist_exc).__name__}:{persist_exc}; SQLite: {db_error or 'nicht verfügbar'}",
+                )
             print(
                 f"DATENQUELLE: {ticker}: Yahoo-Fallback | "
                 f"{len(frame)} zusammenhängende gültige OHLC-Bars"
