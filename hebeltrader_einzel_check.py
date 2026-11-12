@@ -22,10 +22,12 @@ Wichtig:
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -166,15 +168,16 @@ def lade_neueste_ausgabe() -> dict[str, Any]:
     }
 
 
-def lade_state() -> dict[str, Any]:
-    if not os.path.exists(STATE_FILE):
+def lade_state(state_path: str | None = None) -> dict[str, Any]:
+    target_path = state_path or STATE_FILE
+    if not os.path.exists(target_path):
         return {}
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(target_path, "r", encoding="utf-8") as f:
             value = json.load(f)
         return value if isinstance(value, dict) else {}
     except Exception as exc:
-        raise RuntimeError(f"{STATE_FILE} ist nicht lesbares JSON: {exc}") from exc
+        raise RuntimeError(f"{target_path} ist nicht lesbares JSON: {exc}") from exc
 
 
 def _groq_client() -> Any:
@@ -568,6 +571,87 @@ def _parse_einzel_ergebnisse(stdout: str, tickers: list[str]) -> list[dict[str, 
     return result
 
 
+def wiederaufbereite_gespeicherten_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Reparst den gespeicherten Roh-Output ohne externe Abfragen.
+
+    Ausschließlich die parser-eigenen Felder in ``candidates[*].einzel_check``
+    werden aktualisiert. Kandidaten-, Issue- und sonstige Metadaten bleiben
+    erhalten. Die Funktion ist deterministisch und damit idempotent.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("Gespeicherter HEBELTRADER-State ist kein JSON-Objekt.")
+
+    stdout = state.get("einzel_check_stdout")
+    if not isinstance(stdout, str) or not stdout.strip():
+        raise ValueError("Gespeicherter State enthält keinen verwendbaren einzel_check_stdout.")
+
+    candidates = state.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("Gespeicherter State enthält keine Kandidatenliste.")
+
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            raise ValueError(f"Kandidat an Position {index} ist kein JSON-Objekt.")
+        ticker = str(candidate.get("ticker") or "").strip().upper()
+        if not ticker:
+            raise ValueError(f"Kandidat an Position {index} hat keinen Ticker.")
+        if ticker in seen:
+            raise ValueError(f"Ticker {ticker} ist in der Kandidatenliste mehrfach vorhanden.")
+        seen.add(ticker)
+        tickers.append(ticker)
+
+    parsed_rows = _parse_einzel_ergebnisse(stdout, tickers)
+    parsed_by_ticker = {str(row.get("ticker") or "").strip().upper(): row for row in parsed_rows}
+    if set(parsed_by_ticker) != set(tickers) or len(parsed_rows) != len(tickers):
+        raise RuntimeError("Parser lieferte keine eindeutige 1:1-Zuordnung zur gespeicherten Kandidatenliste.")
+
+    # Diese Felder werden vollständig vom Parser verantwortet. Alte, inzwischen
+    # überholte Werte (insbesondere Status/Momentum/Auslesegrund) dürfen nicht
+    # aus dem fehlerhaften gespeicherten JSON stehen bleiben.
+    parser_fields = {
+        "ticker", "status", "momentum", "gruende", "risiken",
+        "technischer_zustand", "auslesegrund",
+    }
+    repaired = dict(state)
+    repaired_candidates = []
+    for candidate in candidates:
+        ticker = str(candidate["ticker"]).strip().upper()
+        previous_check = candidate.get("einzel_check")
+        check = dict(previous_check) if isinstance(previous_check, dict) else {}
+        for field in parser_fields:
+            check.pop(field, None)
+        check.update(parsed_by_ticker[ticker])
+        check["ticker"] = ticker
+        if candidate.get("name"):
+            check["name"] = candidate["name"]
+
+        updated_candidate = dict(candidate)
+        updated_candidate["einzel_check"] = check
+        repaired_candidates.append(updated_candidate)
+
+    repaired["candidates"] = repaired_candidates
+    return repaired
+
+
+def reparsiere_gespeicherten_state(state_path: str | None = None) -> dict[str, Any]:
+    """Sichere Einmal-Wiederaufbereitung mit Backup und atomarem Austausch."""
+    target_path = state_path or STATE_FILE
+    state = lade_state(target_path)
+    repaired = wiederaufbereite_gespeicherten_state(state)
+    backup_path = target_path + ".pre-reparse.bak"
+    if os.path.exists(backup_path):
+        raise FileExistsError(
+            f"Backup existiert bereits ({backup_path}); vorhandene Sicherung wird nicht überschrieben."
+        )
+    shutil.copy2(target_path, backup_path)
+    # Der atomare Austausch ersetzt den Zielpfad erst, wenn die vollständige
+    # neue JSON-Datei geschrieben wurde. Das Original bleibt bei Fehlern intakt.
+    speichere_atomar(repaired, target_path)
+    return repaired
+
+
 def fuehre_einzel_check_aus(tickers: list[str], kandidaten: list[dict[str, Any]] | None = None) -> tuple[int, str, list[dict[str, Any]]]:
     if not tickers:
         return 0, "", []
@@ -596,12 +680,13 @@ def fuehre_einzel_check_aus(tickers: list[str], kandidaten: list[dict[str, Any]]
     return completed.returncode, stdout, _parse_einzel_ergebnisse(stdout, tickers)
 
 
-def speichere_atomar(daten: dict[str, Any]) -> None:
-    temp = STATE_FILE + ".tmp"
+def speichere_atomar(daten: dict[str, Any], state_path: str | None = None) -> None:
+    target_path = state_path or STATE_FILE
+    temp = target_path + ".tmp"
     with open(temp, "w", encoding="utf-8") as f:
         json.dump(daten, f, ensure_ascii=False, indent=2, sort_keys=False)
         f.write("\n")
-    os.replace(temp, STATE_FILE)
+    os.replace(temp, target_path)
 
 
 def markiere_hebeltrader_quelle(ticker_liste: list[str], issue_label: str) -> None:
@@ -637,7 +722,28 @@ def markiere_hebeltrader_quelle(ticker_liste: list[str], issue_label: str) -> No
         raise RuntimeError(f"HEBELTRADER-Quelle konnte nicht in der Beobachtungsliste gespeichert werden: {exc}") from exc
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argument_parser = argparse.ArgumentParser(description="HEBELTRADER-Kandidaten und Einzel-Check")
+    argument_parser.add_argument(
+        "--reparse-stored",
+        action="store_true",
+        help="Gespeicherten Einzel-Check-Roh-Output erneut parsen; keine LLM-/Yahoo-Abfragen.",
+    )
+    args = argument_parser.parse_args(argv)
+
+    if args.reparse_stored:
+        repaired = reparsiere_gespeicherten_state()
+        statuses = {}
+        for candidate in repaired["candidates"]:
+            status = candidate.get("einzel_check", {}).get("status", "NICHT AUSGELESEN")
+            statuses[status] = statuses.get(status, 0) + 1
+        print(
+            f"Gespeicherter HEBELTRADER-State reparst: {repaired.get('issue_label', 'unbekannte Ausgabe')} | "
+            f"{len(repaired['candidates'])} Kandidaten | Statusverteilung: {statuses}"
+        )
+        print(f"Backup: {STATE_FILE}.pre-reparse.bak")
+        return 0
+
     issue = lade_neueste_ausgabe()
     state = lade_state()
     previous_nr = int(state.get("issue_number", 0) or 0)
