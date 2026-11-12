@@ -154,24 +154,37 @@ jobs:
       - name: Historische OHLCV-Datenbank und dynamisches Universum aus Dauerarchiv wiederherstellen
         env:
           GH_TOKEN: ${{ github.token }}
+          NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP: ${{ vars.NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP }}
         run: |
           if [ ! -f historical_ohlcv.sqlite ]; then
             gh release download historical-ohlcv --pattern historical_ohlcv.sqlite --dir . --clobber || true
           else
             echo "OHLCV-Dauerarchiv: vorhandene historische DB aus Cache bleibt Primärstand."
           fi
-          # Das dynamische Universum darf NICHT aus dem Actions-Cache stammen:
-          # der Einzel-Check aktualisiert es in einem separaten Workflow und
-          # archiviert danach die neue JSON im Release. Ein alter Actions-Cache
-          # konnte sonst eine frisch registrierte Aktie (z.B. ABBNY) verdecken.
-          # Die Release-Datei ist deshalb die autoritative Quelle für diesen
-          # kleinen, persistenten State.
+          # Das dynamische Universum darf NICHT aus dem Actions-Cache stammen.
+          # Die Release-Datei ist die autoritative Quelle fuer diesen persistenten State.
           rm -f historical_ohlcv_universe.json
-          gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber || true
-          if [ -f historical_ohlcv_universe.json ]; then
-            echo "OHLCV-Dauerarchiv: dynamisches Universum aus aktuellem Release geladen."
+          release_list="$(gh release list --limit 1000 --json tagName)"
+          # Eine erfolgreiche CLI-Antwort muss auch strukturell gueltiges JSON sein.
+          printf '%s' "$release_list" | jq -e 'type == "array"' >/dev/null
+          if printf '%s' "$release_list" | jq -e 'any(.[]; .tagName == "historical-ohlcv")' >/dev/null; then
+            release_assets="$(gh release view historical-ohlcv --json assets)"
+            printf '%s' "$release_assets" | jq -e 'type == "object" and (.assets | type == "array")' >/dev/null
+            if printf '%s' "$release_assets" | jq -e 'any(.assets[]; .name == "historical_ohlcv_universe.json")' >/dev/null; then
+              gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber
+              test -s historical_ohlcv_universe.json
+              echo "OHLCV-Dauerarchiv: dynamisches Universum aus aktuellem Release geladen."
+            elif [ "${NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP:-0}" = "1" ]; then
+              echo "::warning::OHLCV-Universums-Asset fehlt im bestehenden Release; expliziter Bootstrap ist aktiviert."
+            else
+              echo "::error::Das Release historical-ohlcv existiert, aber historical_ohlcv_universe.json fehlt. Abbruch zum Schutz des bestehenden dynamischen Universums. Fuer einen bewusst gewollten Neuaufbau Repository Variable NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP=1 setzen."
+              exit 1
+            fi
+          elif [ "${NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP:-0}" = "1" ]; then
+            echo "::warning::OHLCV-Release existiert noch nicht; expliziter Erstaufbau ist aktiviert."
           else
-            echo "OHLCV-Dauerarchiv: noch kein dynamisches Universum vorhanden; Basisuniversum wird verwendet."
+            echo "::error::Das OHLCV-Release existiert nicht. Erstaufbau ist gesperrt, bis Repository Variable NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP=1 bewusst gesetzt wird."
+            exit 1
           fi
 
       - name: Historische OHLCV-Datenbank aktualisieren
@@ -221,8 +234,14 @@ jobs:
       - name: Gemeinsamen Marktdaten-Cache initialisieren
         run: rm -f market_cache.json market_cache.json.lock
 
-      - name: Historische OHLCV Regressionstest
-        run: python tests/test_historical_ohlcv.py
+      - name: Historische OHLCV Regressionstests
+        env:
+          PYTHONPATH: .
+        run: >-
+          pytest -q
+          tests/test_historical_ohlcv.py
+          tests/test_offene_positionen_check_history_source.py
+          tests/test_workflow_dynamic_universe.py
 
       # ============================================================
       # EXTERNER DATENQUELLEN-TEST – GDELT + LME
@@ -267,6 +286,16 @@ jobs:
           MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
         run: python positionen_tracker.py
 
+      # Der Tracker hat die aktuelle Offene_Positionen.csv gerade aus Drive
+      # geladen/aktualisiert. Diese offene Positionenliste wird vor dem
+      # technischen Check verbindlich im persistenten OHLCV-Universum registriert.
+      - name: Offene Positionen ins historische OHLCV-Universum übernehmen
+        env:
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+          NMM_USE_HISTORICAL_OHLCV: "1"
+        run: python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv
+
       # ============================================================
       # OFFENE POSITIONEN + TECHNISCHER CHECK
       # Die alte Offene_Positionen.csv bleibt Backend-Datenquelle des
@@ -278,6 +307,15 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: python offene_positionen_check.py
+
+      # Nach dem Provider-Fallback muessen alle offenen Positionen mit einer
+      # aktuellen, vom Quality Gate freigegebenen Historie in SQLite vorliegen.
+      - name: Offene OHLCV-Historien abschliessend qualitaetspruefen
+        env:
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+          NMM_USE_HISTORICAL_OHLCV: "1"
+        run: python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv
 
       # Live-Benchmark gegen iShares Core MSCI World (EUNL.DE),
       # Stichtag 07.08.2026. Kein Backtest: verarbeitet ausschließlich
