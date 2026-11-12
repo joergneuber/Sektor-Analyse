@@ -50,7 +50,7 @@ jobs:
         # braucht (alpaca-py==0.45.0, yfinance, Google-Drive-Bibliotheken).
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py==0.45.0 pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
+          pip install alpaca-py==0.45.0 "pandas<3.1" exchange-calendars google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
 
       - name: Stop-Check (Huckepack, NEU 28.07.2026)
         # HINTERGRUND: stop_check.yml faellt trotz zweier redundanter Cron-
