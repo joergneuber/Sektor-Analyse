@@ -2385,7 +2385,13 @@ def validate_run_evidence(path: Path, *, require_report_gate: bool = True) -> li
         "makro_szenario.py",
         "offene_positionen_check.py",
         "historical_ohlcv.py",
+        "historical_ohlcv_pending_queue.py",
+        "einzel_check.py",
+        "ohlcv_release_bundle.py",
+        "scripts/get_gh_release_assets.sh",
+        "scripts/restore_ohlcv_release_bundle.sh",
         ".github/workflows/main.yml",
+        ".github/workflows/einzel_check.yml",
     }
     if not isinstance(hashes, dict) or not required_source_hashes.issubset(set(hashes or {})) or any(
         not re.fullmatch(r"[0-9a-f]{64}", str(value or ""), re.I)
@@ -2395,22 +2401,24 @@ def validate_run_evidence(path: Path, *, require_report_gate: bool = True) -> li
     gates = identity.get("gate_results")
     required_gates = (
         "TRADING_RADAR_CONTRACT_OUTCOME", "TRADING_RADAR_STEP_OUTCOME",
-        "TRADING_RADAR_OHLCV_PERSISTENCE_GATE", "TRADING_RADAR_MARKET_FIRST_GATE",
+        "TRADING_RADAR_OHLCV_PERSISTENCE_GATE", "TRADING_RADAR_OHLCV_QUEUE_GATE",
+        "TRADING_RADAR_MARKET_FIRST_GATE",
         "TRADING_RADAR_FACHLICH_FINAL",
     ) + (("TRADING_RADAR_REPORT_GATE", "TRADING_RADAR_REPORT_GATE_OUTCOME")
          if require_report_gate else ())
     if not isinstance(gates, dict) or any(not gates.get(key) for key in required_gates):
-        errors.append("M-08: Datenvertrags-, Lauf-, OHLCV-Persistenz- und Market-First-Gate-Ergebnisse sind nicht vollständig mit dem Laufnachweis verknüpft.")
+        errors.append("M-08: Datenvertrags-, Lauf-, OHLCV-Persistenz-, Pending-Queue- und Market-First-Gate-Ergebnisse sind nicht vollständig mit dem Laufnachweis verknüpft.")
     elif (
         gates.get("TRADING_RADAR_CONTRACT_OUTCOME") != "success"
         or gates.get("TRADING_RADAR_STEP_OUTCOME") != "success"
         or gates.get("TRADING_RADAR_OHLCV_PERSISTENCE_GATE") != "PASS"
+        or gates.get("TRADING_RADAR_OHLCV_QUEUE_GATE") != "PASS"
         or gates.get("TRADING_RADAR_MARKET_FIRST_GATE") != "PASS"
         or (require_report_gate and gates.get("TRADING_RADAR_REPORT_GATE") not in {"PASS", "FAIL"})
         or (require_report_gate and gates.get("TRADING_RADAR_REPORT_GATE_OUTCOME") not in {"success", "failure"})
         or gates.get("TRADING_RADAR_FACHLICH_FINAL") not in {"FINAL", "NICHT_FINAL"}
     ):
-        errors.append("M-08: Mindestens ein verpflichtendes technisches Gate ist nicht PASS/success.")
+        errors.append("M-08: Mindestens ein verpflichtendes technisches Gate (einschliesslich Pending-Queue) ist nicht PASS/success.")
     start = payload.get("start")
     end = payload.get("end")
     if not isinstance(start, dict) or not isinstance(end, dict):

@@ -95,6 +95,19 @@ from trading_radar_report_gate import (
 # Findings from the report-save validation stage are carried to post-save gates.
 _TRADING_RADAR_FINALITY_FINDINGS = []
 
+
+def _ohlcv_pre_scan_findings(environ=None):
+    """Return mandatory pre-scanner OHLCV failures from GitHub step outcomes."""
+    environ = os.environ if environ is None else environ
+    checks = {
+        "OHLCV-Pre-Scan-Datenbankupdate": environ.get("OHLCV_PRE_SCAN_UPDATE", "").strip().casefold(),
+        "OHLCV-Pre-Scan-Coverage": environ.get("OHLCV_PRE_SCAN_COVERAGE", "").strip().casefold(),
+        "OHLCV-Pre-Scan-Positionsuniversum": environ.get("OHLCV_PRE_SCAN_POSITION_SYNC", "").strip().casefold(),
+        "OHLCV-Pre-Scan-Positionshistorien": environ.get("OHLCV_PRE_SCAN_POSITION_VERIFY", "").strip().casefold(),
+    }
+    return [f"{name} nicht erfolgreich: {outcome}" for name, outcome in checks.items()
+            if outcome and outcome != "success"]
+
 from quellenwert_vertrag import (
     values_match_display, find_exact_labeled_line, extract_four_week_percent,
     extract_metal_four_week_value,
@@ -21458,8 +21471,11 @@ if __name__ == "__main__":
             "OHLCV-Release-Persistenz": os.environ.get("OHLCV_RELEASE_PERSISTENCE", "").strip().casefold(),
             "OHLCV-Cache-Persistenz": os.environ.get("OHLCV_CACHE_PERSISTENCE", "").strip().casefold(),
         }
-        persistence_findings = []
+        queue_import_status = os.environ.get("OHLCV_QUEUE_IMPORT", "").strip().upper()
+        persistence_findings = _ohlcv_pre_scan_findings()
+        queue_findings = []
         persistence_gate_status = "PASS"
+        queue_gate_status = "NOT_RUN"
         market_first_gate_status = "PASS"
         if persistence_checks["Finale OHLCV-Synchronisierung"] and persistence_checks["Finale OHLCV-Synchronisierung"] != "complete":
             persistence_findings.append(
@@ -21470,6 +21486,90 @@ if __name__ == "__main__":
             outcome = persistence_checks[check_name]
             if outcome and outcome != "success":
                 persistence_findings.append(f"{check_name} nicht erfolgreich: {outcome}")
+        if queue_import_status:
+            queue_gate_status = "PASS" if queue_import_status == "COMPLETE" else "FAIL"
+            queue_findings.append("Importstatus: " + queue_import_status)
+            queue_status_path = Path("historical_ohlcv_pending_queue_status.json")
+            queue_payload = None
+            if queue_status_path.is_file():
+                try:
+                    queue_payload = json.loads(queue_status_path.read_text(encoding="utf-8"))
+                    if not isinstance(queue_payload, dict):
+                        raise ValueError("Queue-Status ist kein JSON-Objekt")
+                    payload_status = str(queue_payload.get("status") or "").upper()
+                    if payload_status != queue_import_status:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append(
+                            f"Queue-Statusdatei widerspricht Step-Output: {payload_status or 'missing'}"
+                        )
+                    if queue_payload.get("after_scanners") is not True:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append("Finaler Queue-Checkpoint nach den Scannern fehlt")
+                    expected_repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+                    expected_branch = os.environ.get("GITHUB_REF_NAME", "").strip()
+                    if expected_repo and queue_payload.get("repository") != expected_repo:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append("Queue-Status gehoert zu einem anderen Repository")
+                    if expected_branch and queue_payload.get("branch") != expected_branch:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append("Queue-Status gehoert zu einem anderen Branch")
+                    metric_labels = (
+                        ("runs_scanned", "Runs geprüft"),
+                        ("runs_imported", "Runs importiert"),
+                        ("runs_already_imported", "Runs bereits importiert"),
+                        ("tickers_seen", "Ticker in Queues"),
+                        ("tickers_added", "Neu registrierte Ticker"),
+                        ("active_runs_detected", "Noch aktive Producer"),
+                        ("recovered_registration_errors", "Wiederhergestellte Registrierungsfehler"),
+                    )
+                    for metric_key, metric_label in metric_labels:
+                        metric_value = queue_payload.get(metric_key, 0)
+                        if type(metric_value) is not int or metric_value < 0:
+                            queue_gate_status = "FAIL"
+                            queue_findings.append(f"Ungültiger Queue-Messwert: {metric_key}")
+                        else:
+                            queue_findings.append(f"{metric_label}: {metric_value}")
+                    details = queue_payload.get("errors")
+                    if not isinstance(details, list):
+                        raise ValueError("Queue-Fehlerliste fehlt oder ist ungueltig")
+                    if details:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append(f"Queue-Status meldet {len(details)} offene Fehler")
+                    if queue_payload.get("active_runs_detected") != 0:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append("Es existieren noch aktive/queued Queue-Producer")
+                    if queue_payload.get("tickers_added") != 0:
+                        queue_gate_status = "FAIL"
+                        queue_findings.append("Nach den Scannern wurden noch Ticker uebernommen")
+                    for detail in details[:10]:
+                        safe_detail = str(detail).replace("\r", " ").replace("\n", " ")[:500]
+                        queue_findings.append("Queue-Detail: " + safe_detail)
+                except (OSError, ValueError, TypeError):
+                    queue_gate_status = "FAIL"
+                    queue_findings.append("Queue-Statusdatei ist nicht lesbar")
+            else:
+                queue_gate_status = "FAIL"
+                queue_findings.append("Queue-Statusdatei fehlt")
+            if queue_gate_status != "PASS":
+                if not any(item.startswith("Pending-Queue-Import nicht vollständig") for item in queue_findings):
+                    queue_findings.insert(0, "Pending-Queue-Import nicht vollständig: " + queue_import_status)
+                report_text = re.sub(
+                    r"(?m)^TRADING_RADAR_FACHLICH_FINAL=FINAL\s*$",
+                    "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL",
+                    report_text,
+                )
+                fachlich_final = "NICHT_FINAL"
+                finality_findings.extend("OHLCV Pending-Queue: " + finding for finding in queue_findings)
+            queue_section = (
+                "\n\n### Audit: OHLCV-Pending-Queue\n"
+                + "\n".join("- " + finding for finding in queue_findings)
+                + "\n"
+            )
+            if "### Audit: OHLCV-Pending-Queue" not in report_text:
+                report_text = report_text.rstrip() + queue_section
+            with open(ausgabe_pfad, "w", encoding="utf-8") as report_handle:
+                report_handle.write(report_text)
+            print("TRADING_RADAR_OHLCV_QUEUE_GATE=" + queue_gate_status)
         if persistence_findings:
             persistence_section = (
                 "\n\n### Audit: finale OHLCV-Synchronisierung und Persistenz\n"
@@ -21528,6 +21628,7 @@ if __name__ == "__main__":
         if output_path:
             with open(output_path, "a", encoding="utf-8") as handle:
                 handle.write(f"ohlcv_persistence_gate={persistence_gate_status}\n")
+                handle.write(f"ohlcv_queue_gate={queue_gate_status}\n")
                 handle.write(f"market_first_gate={market_first_gate_status}\n")
                 handle.write(f"status=SUCCESS\nfachlich_final={fachlich_final}\nreport_path={Path(ausgabe_pfad).name}\n")
         raise SystemExit(0)

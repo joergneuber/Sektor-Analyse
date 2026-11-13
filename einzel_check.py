@@ -50,7 +50,10 @@ from trendwende_scanner import _pruefe_trendwende, _indikatoren_berechnen
 from short_scanner import _pruefe_short_setup
 from edelmetalle_scanner import SPANNEN_POSITION_MAX
 from upload_to_drive import get_drive_service
-from historical_ohlcv import register_ticker as register_historical_ticker
+from historical_ohlcv_pending_queue import (
+    register_pending_ticker as register_historical_ticker,
+    record_queue_error as record_historical_queue_error,
+)
 
 
 # ============================================================
@@ -1636,17 +1639,31 @@ def pruefe(
         )
         return
 
-    # Erfolgreich geladene Einzel-Check-Ticker werden dauerhaft in das
-    # historische OHLCV-Universum aufgenommen. Der historische Loader baut
-    # sie beim naechsten Lauf rueckwirkend auf und aktualisiert sie danach
-    # taeglich inkrementell. Technisch ungueltige/fehlende Ticker erreichen
-    # diesen Punkt nicht.
+    # Erfolgreich geladene Einzel-Check-Ticker werden in die separate
+    # Pending-Queue dieses Runs aufgenommen. Ausschliesslich der naechste
+    # Hauptworkflow uebernimmt sie in das authoritative OHLCV-Universum.
+    # Technisch ungueltige/fehlende Ticker erreichen diesen Punkt nicht.
     try:
         register_historical_ticker(ticker)
     except Exception as exc:
+        # Step-output is a second, independent failure marker. If writing the
+        # queue file itself fails, the next workflow step can still carry the
+        # affected ticker into the artifact finalizer.
+        output_path = os.environ.get("GITHUB_OUTPUT")
+        if output_path:
+            with open(output_path, "a", encoding="utf-8") as output_handle:
+                output_handle.write("queue_registration_failed=true\n")
+                output_handle.write(f"queue_registration_error_ticker={str(ticker).replace(chr(10), ' ')[:40]}\n")
+        try:
+            record_historical_queue_error(ticker, exc)
+        except Exception as record_exc:
+            raise RuntimeError(
+                f"Pending-Queue-Fehler fuer {ticker} konnte nicht revisionssicher protokolliert werden: "
+                f"{type(record_exc).__name__}: {record_exc}"
+            ) from exc
         print(
-            f"  WARNUNG-HIST-OHLCV-UNIVERSUM: {ticker} konnte nicht "
-            f"registriert werden ({type(exc).__name__}: {exc})"
+            f"  WARNUNG-HIST-OHLCV-PENDING-QUEUE: {ticker} konnte nicht "
+            f"registriert werden ({type(exc).__name__}: {exc}); Queue wird als unvollstaendig markiert"
         )
 
     # --------------------------------------------------------

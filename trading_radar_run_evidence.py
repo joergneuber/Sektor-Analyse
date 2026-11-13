@@ -336,7 +336,13 @@ def _run_identity() -> dict:
                 "makro_szenario.py",
                 "offene_positionen_check.py",
                 "historical_ohlcv.py",
+                "historical_ohlcv_pending_queue.py",
+                "einzel_check.py",
+                "ohlcv_release_bundle.py",
+                "scripts/get_gh_release_assets.sh",
+                "scripts/restore_ohlcv_release_bundle.sh",
                 ".github/workflows/main.yml",
+                ".github/workflows/einzel_check.yml",
             )
             if (ROOT / name).is_file()
         },
@@ -346,6 +352,7 @@ def _run_identity() -> dict:
                 "TRADING_RADAR_CONTRACT_OUTCOME",
                 "TRADING_RADAR_STEP_OUTCOME",
                 "TRADING_RADAR_OHLCV_PERSISTENCE_GATE",
+                "TRADING_RADAR_OHLCV_QUEUE_GATE",
                 "TRADING_RADAR_MARKET_FIRST_GATE",
                 "TRADING_RADAR_REPORT_GATE",
                 "TRADING_RADAR_REPORT_GATE_OUTCOME",
@@ -480,6 +487,7 @@ def finalize_gate_result() -> int:
             "TRADING_RADAR_CONTRACT_OUTCOME",
             "TRADING_RADAR_STEP_OUTCOME",
             "TRADING_RADAR_OHLCV_PERSISTENCE_GATE",
+            "TRADING_RADAR_OHLCV_QUEUE_GATE",
             "TRADING_RADAR_MARKET_FIRST_GATE",
         ):
             value = os.environ.get(key)
@@ -528,7 +536,8 @@ def validate_final_evidence() -> int:
     gates = identity.get("gate_results") or {}
     required = (
         "TRADING_RADAR_CONTRACT_OUTCOME", "TRADING_RADAR_STEP_OUTCOME",
-        "TRADING_RADAR_OHLCV_PERSISTENCE_GATE", "TRADING_RADAR_MARKET_FIRST_GATE",
+        "TRADING_RADAR_OHLCV_PERSISTENCE_GATE", "TRADING_RADAR_OHLCV_QUEUE_GATE",
+        "TRADING_RADAR_MARKET_FIRST_GATE",
         "TRADING_RADAR_REPORT_GATE", "TRADING_RADAR_REPORT_GATE_OUTCOME",
         "TRADING_RADAR_FACHLICH_FINAL",
     )
@@ -557,6 +566,7 @@ def validate_final_evidence() -> int:
             "TRADING_RADAR_CONTRACT_OUTCOME": "success",
             "TRADING_RADAR_STEP_OUTCOME": "success",
             "TRADING_RADAR_OHLCV_PERSISTENCE_GATE": "PASS",
+            "TRADING_RADAR_OHLCV_QUEUE_GATE": "PASS",
             "TRADING_RADAR_MARKET_FIRST_GATE": "PASS",
         }
         failed = [key for key, value in expected.items() if gates.get(key) != value]
@@ -585,7 +595,10 @@ def validate_final_evidence() -> int:
         "trading_radar_report_gate.py", "trading_radar_market_first.py",
         "trading_radar_run_evidence.py", "trading_radar_thesen.py",
         "trading_radar_portfolio_performance.py", "offene_positionen_check.py",
-        "historical_ohlcv.py", ".github/workflows/main.yml",
+        "historical_ohlcv.py", "historical_ohlcv_pending_queue.py", "einzel_check.py",
+        "ohlcv_release_bundle.py", "scripts/get_gh_release_assets.sh",
+        "scripts/restore_ohlcv_release_bundle.sh",
+        ".github/workflows/main.yml", ".github/workflows/einzel_check.yml",
     }
     end_code_hashes = identity.get("source_file_hashes")
     start_code_hashes = start_id.get("source_file_hashes")

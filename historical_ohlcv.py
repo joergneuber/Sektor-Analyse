@@ -34,6 +34,7 @@ from typing import Iterable, Iterator
 from functools import lru_cache
 
 import pandas as pd
+from ohlcv_ticker import normalize_market_ticker as _normalize_market_ticker
 
 DEFAULT_DB = Path(os.environ.get("NMM_HISTORICAL_OHLCV_DB", "historical_ohlcv.sqlite"))
 DEFAULT_SOURCE_FILE = Path(os.environ.get("NMM_HISTORICAL_OHLCV_SOURCE", "analyse.py"))
@@ -371,16 +372,6 @@ def _analyse_trading_day_gaps(
 def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
     for i in range(0, len(items), size):
         yield items[i:i + size]
-
-
-def _normalize_market_ticker(value: object) -> str | None:
-    """Return a canonical exchange symbol; reject prose/name fragments."""
-    ticker = str(value or "").strip().upper()
-    if not ticker or len(ticker) > 30 or any(ch.isspace() for ch in ticker):
-        return None
-    if not re.fullmatch(r"(?:\^[A-Z0-9][A-Z0-9._=/\-]{0,29}|[A-Z0-9][A-Z0-9._=/\-]{0,29})", ticker):
-        return None
-    return ticker
 
 
 def _string_values(node: ast.AST) -> set[str]:
@@ -1734,17 +1725,29 @@ def main() -> int:
     parser.add_argument("--ticker")
     parser.add_argument("--positions-file", type=Path, default=DEFAULT_OPEN_POSITIONS_FILE)
     parser.add_argument("--bootstrap", action="store_true", help="beim Update alle Ticker als fehlend behandeln")
+    parser.add_argument("--strict", action="store_true", help="beim Update bei Batch-Fehlern, fehlenden Tickern oder offenen Kursluecken Exitcode 1 liefern")
     parser.add_argument("--no-gap-repair", action="store_true", help="automatische Reparatur erkannter Kursluecken deaktivieren")
     parser.add_argument("--gap-lookback-days", type=int, default=DEFAULT_GAP_LOOKBACK_DAYS, help="Rueckblick fuer die automatische Kursluecken-Reparatur (Kalendertage)")
     args = parser.parse_args()
 
     if args.command == "update":
-        update_database(
+        stats = update_database(
             args.db, args.source, args.dynamic_universe,
             force_bootstrap=args.bootstrap,
             repair_gaps=not args.no_gap_repair,
             gap_lookback_days=args.gap_lookback_days,
         )
+        if args.strict:
+            errors = int(stats.get("errors", 0) or 0)
+            missing_after = int(stats.get("missing_after", 0) or 0)
+            gap_sessions_remaining = int(stats.get("gap_sessions_remaining", 0) or 0)
+            strict_status = "PARTIAL" if errors or missing_after or gap_sessions_remaining else "COMPLETE"
+            print(
+                "HIST-OHLCV-STRICT="
+                f"{strict_status}|errors={errors}|missing={missing_after}|"
+                f"gap_sessions_remaining={gap_sessions_remaining}"
+            )
+            return 1 if strict_status != "COMPLETE" else 0
         return 0
     if args.command == "sync-open-positions":
         sync_open_positions(
