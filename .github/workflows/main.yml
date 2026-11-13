@@ -395,6 +395,7 @@ jobs:
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          CLOSED_POSITIONS_INITIAL_HISTORY_B64: ${{ secrets.CLOSED_POSITIONS_INITIAL_HISTORY_B64 }}
         run: python offene_positionen_check.py
 
       # Nach dem Provider-Fallback muessen alle offenen Positionen mit einer
