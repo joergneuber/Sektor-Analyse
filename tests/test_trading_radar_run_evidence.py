@@ -114,7 +114,10 @@ class RunEvidenceTests(unittest.TestCase):
             "trading_radar_report_gate.py", "trading_radar_market_first.py",
             "trading_radar_run_evidence.py", "trading_radar_thesen.py",
             "trading_radar_portfolio_performance.py", "offene_positionen_check.py",
-            "historical_ohlcv.py", ".github/workflows/main.yml",
+            "historical_ohlcv.py", "historical_ohlcv_pending_queue.py", "einzel_check.py",
+            "ohlcv_release_bundle.py", "scripts/get_gh_release_assets.sh",
+            "scripts/restore_ohlcv_release_bundle.sh",
+            ".github/workflows/main.yml", ".github/workflows/einzel_check.yml",
         )
         hashes = {name: "a" * 64 for name in source_files}
         common = {
@@ -129,6 +132,7 @@ class RunEvidenceTests(unittest.TestCase):
             "TRADING_RADAR_CONTRACT_OUTCOME": "success",
             "TRADING_RADAR_STEP_OUTCOME": "success",
             "TRADING_RADAR_OHLCV_PERSISTENCE_GATE": "PASS",
+            "TRADING_RADAR_OHLCV_QUEUE_GATE": "PASS",
             "TRADING_RADAR_MARKET_FIRST_GATE": "PASS",
             "TRADING_RADAR_REPORT_GATE": "PASS",
             "TRADING_RADAR_REPORT_GATE_OUTCOME": "success",
@@ -141,6 +145,19 @@ class RunEvidenceTests(unittest.TestCase):
         }
         summary = {"start": start, "end": end, "run_identity": end_id}
         return end, summary
+
+    def test_final_evidence_rejects_final_when_pending_queue_gate_failed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            end, summary = self._valid_final_evidence_payloads()
+            end["run_identity"]["gate_results"]["TRADING_RADAR_OHLCV_QUEUE_GATE"] = "FAIL"
+            summary["end"]["run_identity"]["gate_results"]["TRADING_RADAR_OHLCV_QUEUE_GATE"] = "FAIL"
+            summary["run_identity"]["gate_results"]["TRADING_RADAR_OHLCV_QUEUE_GATE"] = "FAIL"
+            end_file, summary_file = root / "end.json", root / "summary.json"
+            end_file.write_text(json.dumps(end), encoding="utf-8")
+            summary_file.write_text(json.dumps(summary), encoding="utf-8")
+            with patch.object(evidence, "ROOT", root), patch.object(evidence, "END_FILE", end_file), patch.object(evidence, "SUMMARY_FILE", summary_file):
+                self.assertEqual(evidence.validate_final_evidence(), 1)
 
     def test_final_evidence_requires_complete_run_identity_and_matching_code_hashes(self):
         with tempfile.TemporaryDirectory() as temp:

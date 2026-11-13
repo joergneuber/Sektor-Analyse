@@ -1424,3 +1424,39 @@ def test_verify_open_positions_accepts_current_quality_gated_history(tmp_path, m
     assert report["checked"] == 1
     assert report["results"]["READY.DE"]["rows"] == 60
     assert report["failures"] == {}
+
+
+def test_update_cli_strict_returns_partial_for_internal_update_errors(monkeypatch):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {"errors": 1, "missing_after": 0, "gap_sessions_remaining": 0},
+    )
+    assert ho.main() == 1
+
+
+def test_update_cli_strict_accepts_complete_update(monkeypatch):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {"errors": 0, "missing_after": 0, "gap_sessions_remaining": 0},
+    )
+    assert ho.main() == 0
+
+
+def test_update_cli_default_keeps_existing_best_effort_exit_behavior(monkeypatch):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {"errors": 3, "missing_after": 4, "gap_sessions_remaining": 5},
+    )
+    assert ho.main() == 0

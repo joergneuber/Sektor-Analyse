@@ -1015,6 +1015,24 @@ class TradingRadarHistoricalOnlyOHLCVReportTests(unittest.TestCase):
 
 
 
+def test_pre_scan_ohlcv_failure_is_a_mandatory_finality_finding():
+    module = load_radar_module()
+    all_success = {
+        "OHLCV_PRE_SCAN_UPDATE": "success",
+        "OHLCV_PRE_SCAN_COVERAGE": "success",
+        "OHLCV_PRE_SCAN_POSITION_SYNC": "success",
+        "OHLCV_PRE_SCAN_POSITION_VERIFY": "success",
+    }
+    assert module._ohlcv_pre_scan_findings(all_success) == []
+
+    failed_update = dict(all_success, OHLCV_PRE_SCAN_UPDATE="failure")
+    findings = module._ohlcv_pre_scan_findings(failed_update)
+    assert findings == ["OHLCV-Pre-Scan-Datenbankupdate nicht erfolgreich: failure"]
+
+    missing_coverage = dict(all_success, OHLCV_PRE_SCAN_COVERAGE="missing")
+    assert "OHLCV-Pre-Scan-Coverage nicht erfolgreich: missing" in module._ohlcv_pre_scan_findings(missing_coverage)
+
+
 def test_final_ohlcv_persistence_outcomes_are_wired_into_radar_gate():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
@@ -1022,7 +1040,25 @@ def test_final_ohlcv_persistence_outcomes_are_wired_into_radar_gate():
     runner = (root / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
     assert "OHLCV_FINAL_SYNC:" in workflow
     assert "OHLCV_RELEASE_PERSISTENCE:" in workflow
-    assert "OHLCV_CACHE_PERSISTENCE:" in workflow
+    assert "OHLCV_QUEUE_IMPORT:" in workflow
+    assert "OHLCV_PRE_SCAN_UPDATE:" in workflow
+    assert "run: python historical_ohlcv.py update --strict" in workflow
+    assert "OHLCV_PRE_SCAN_COVERAGE:" in workflow
+    assert "OHLCV_PRE_SCAN_POSITION_SYNC:" in workflow
+    assert "OHLCV_PRE_SCAN_POSITION_VERIFY:" in workflow
+    assert "TRADING_RADAR_OHLCV_QUEUE_GATE:" in workflow
+    assert "OHLCV_CACHE_PERSISTENCE:" not in workflow
     assert "TRADING_RADAR_OHLCV_PERSISTENCE_GATE=FAIL" in runner
+    assert '"OHLCV-Pre-Scan-Datenbankupdate": environ.get("OHLCV_PRE_SCAN_UPDATE"' in runner
+    assert '"OHLCV-Pre-Scan-Coverage": environ.get("OHLCV_PRE_SCAN_COVERAGE"' in runner
+    assert '"OHLCV-Pre-Scan-Positionsuniversum": environ.get("OHLCV_PRE_SCAN_POSITION_SYNC"' in runner
+    assert '"OHLCV-Pre-Scan-Positionshistorien": environ.get("OHLCV_PRE_SCAN_POSITION_VERIFY"' in runner
+    assert "TRADING_RADAR_OHLCV_QUEUE_GATE=" in runner
+    assert 'details = queue_payload.get("errors")' in runner
+    assert "if details:" in runner
+    assert 'queue_payload.get("active_runs_detected") != 0' in runner
+    assert 'queue_payload.get("tickers_added") != 0' in runner
+    assert 'queue_payload.get("repository") != expected_repo' in runner
+    assert 'queue_payload.get("branch") != expected_branch' in runner
     assert "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" in runner
     assert "Audit: finale OHLCV-Synchronisierung und Persistenz" in runner
