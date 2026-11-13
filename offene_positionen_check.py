@@ -22,8 +22,10 @@ Feste Regeln:
 
 from __future__ import annotations
 
+import base64
 import csv
 import datetime as dt
+import hashlib
 import io
 import json
 import math
@@ -56,7 +58,11 @@ except Exception:
 INPUT_FILE = "Offene_Positionen.csv"
 OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
+RECOVERY_HISTORY_SHA256 = "78937e29edd19050c1dc024f1b8ce28a945f872f379570b1be59250ae36cf648"
+RECOVERY_HISTORY_ENV = "CLOSED_POSITIONS_INITIAL_HISTORY_B64"
+MASTER_INIT_PREFIX = f"{DRIVE_NAME}.__INIT_"
 FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
+GOOGLE_SHEETS_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 GOLD_FUTURES_TICKER = "GC=F"
 GOLD_SPOT_TICKER = "XAU/USD"
 GOLD_SPOT_TICKER_ALIASES = {"XAU/USD", "XAUUSD"}
@@ -104,6 +110,8 @@ HISTORY_HEADERS = [
     "OS_Performance%", "OS_Quelle", "OS_Kurszeit",
 ]
 
+
+MINIMUM_PROTECTED_HISTORY_ROWS = 51
 
 HISTORY_NUMERIC_COLUMNS = {
     "Einstieg", "Aktueller_Kurs", "Stop", "TP1", "TP2", "Ausstiegskurs",
@@ -1382,8 +1390,59 @@ def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
     return closed[HISTORY_HEADERS].copy()
 
 
+def _load_private_recovery_history(encoded_payload: str) -> pd.DataFrame:
+    """Lädt die private 51er-Wiederherstellung ausschließlich aus einem Actions-Secret."""
+    compact = re.sub(r"\s+", "", str(encoded_payload or ""))
+    if not compact:
+        raise RuntimeError("Privater Wiederherstellungsbestand ist leer.")
+    try:
+        raw = base64.b64decode(compact, validate=True)
+    except Exception as exc:
+        raise RuntimeError("Privater Wiederherstellungsbestand ist kein gültiges Base64.") from exc
+
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != RECOVERY_HISTORY_SHA256:
+        raise RuntimeError(
+            "Privater Wiederherstellungsbestand hat einen unerwarteten SHA-256-Hash; "
+            "Import aus Sicherheitsgründen abgebrochen."
+        )
+
+    try:
+        initial = pd.read_csv(
+            io.BytesIO(raw), sep=";", dtype=str, encoding="utf-8-sig",
+            keep_default_na=False,
+        )
+    except Exception as exc:
+        raise RuntimeError("Private Wiederherstellungs-CSV konnte nicht gelesen werden.") from exc
+
+    initial.columns = [str(column).strip() for column in initial.columns]
+    if initial.columns.tolist() != HISTORY_HEADERS:
+        raise RuntimeError(
+            "Private Wiederherstellungs-CSV besitzt nicht exakt das erwartete "
+            "Positionsschema/Spaltenlayout."
+        )
+    initial = initial[
+        initial["Status"].astype(str).str.strip().str.lower().isin({"gestoppt", "verkauft"})
+    ].copy()
+    if len(initial) < MINIMUM_PROTECTED_HISTORY_ROWS:
+        raise RuntimeError(
+            "Private Wiederherstellungs-CSV enthält weniger als den geschützten "
+            f"Mindestbestand ({len(initial)} < {MINIMUM_PROTECTED_HISTORY_ROWS})."
+        )
+    _closed_position_keys(initial)
+    print(
+        "HISTORIE: privater Wiederherstellungsbestand geladen und SHA-256 verifiziert | "
+        f"{len(initial)} geschlossene Positionen"
+    )
+    return initial[HISTORY_HEADERS].copy()
+
+
 def load_initial_history(initial_csv: str = "Geschlossene Positionen_Initialbestand.csv") -> pd.DataFrame:
-    """Lädt den versionierten historischen Initialbestand als Faktenbasis."""
+    """Lädt die private Wiederherstellung, sofern per Secret bereitgestellt, sonst den Repo-Bestand."""
+    private_payload = os.getenv(RECOVERY_HISTORY_ENV, "").strip()
+    if private_payload:
+        return _load_private_recovery_history(private_payload)
+
     if not os.path.exists(initial_csv):
         print(f"HISTORIE: Initialbestand nicht vorhanden: {initial_csv}")
         return pd.DataFrame(columns=HISTORY_HEADERS)
@@ -1587,7 +1646,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     return sheet_id
 
 
-def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str]) -> list[int]:
+def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str]) -> dict[str, str]:
     """Tauscht vollständig vorbereitete temporäre Tabs gegen Produktivtabs.
 
     Der Austausch erfolgt in EINEM batchUpdate. Bei einem Fehler vor diesem
@@ -1601,7 +1660,7 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
     ).execute()
     props = {x["properties"]["title"]: x["properties"] for x in ss["sheets"]}
     requests = []
-    old_ids = []
+    backup_titles: dict[str, str] = {}
 
     for temp_title, target_title in temp_to_target.items():
         temp = props.get(temp_title)
@@ -1609,19 +1668,23 @@ def _swap_temp_tabs(sheets, spreadsheet_id: str, temp_to_target: dict[str, str])
             raise RuntimeError(f"Temporärer Tab fehlt vor dem Austausch: {temp_title}")
         old = props.get(target_title)
         if old is not None:
-            backup_title = f"_BACKUP_{target_title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # Den tatsächlich vergebenen Backup-Namen zurückgeben. Der Aufrufer
+            # darf den Namen nicht mit einem zweiten Zeitstempel nachbilden.
+            backup_title = f"_BACKUP_{target_title}_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+            if backup_title in props or backup_title in backup_titles.values():
+                raise RuntimeError(f"Backup-Tabname ist bereits vergeben: {backup_title}")
             requests.append({"updateSheetProperties": {
                 "properties": {"sheetId": old["sheetId"], "title": backup_title},
                 "fields": "title"
             }})
-            old_ids.append(old["sheetId"])
+            backup_titles[target_title] = backup_title
         requests.append({"updateSheetProperties": {
             "properties": {"sheetId": temp["sheetId"], "title": target_title},
             "fields": "title"
         }})
 
     _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context="Produktiver Swap")
-    return old_ids
+    return backup_titles
 
 
 def _enforce_productive_tab_order(sheets, spreadsheet_id: str):
@@ -1679,73 +1742,6 @@ def _enforce_productive_tab_order(sheets, spreadsheet_id: str):
     print("PERSISTENZ: Tabellenreiter verifiziert | 1=Offene Positionen+Check | 2=Geschlossene Positionen")
 
 
-def _cleanup_backups(sheets, spreadsheet_id: str):
-    """Bereinigt verwaiste Sicherungs-/TMP-Tabs nach erfolgreichem Swap.
-
-    Diese Bereinigung darf nur NACH erfolgreichem Produktiv-Swap aufgerufen
-    werden. Dann werden ausschließlich technische Altlasten entfernt:
-    _BACKUP_..., __TMP_OFFEN_..., __TMP_GESCHLOSSEN_... sowie das unbenutzte
-    Standardblatt "Tabellenblatt1". Produktive Tabs bleiben unangetastet.
-    """
-    ss = sheets.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute()
-    delete_ids = [
-        s["properties"]["sheetId"] for s in ss["sheets"]
-        if (
-            str(s["properties"]["title"]).startswith("_BACKUP_")
-            or str(s["properties"]["title"]).startswith("__TMP_OFFEN_")
-            or str(s["properties"]["title"]).startswith("__TMP_GESCHLOSSEN_")
-            or str(s["properties"]["title"]) == "Tabellenblatt1"
-        )
-    ]
-    if not delete_ids:
-        return
-    requests = [{"deleteSheet": {"sheetId": sid}} for sid in delete_ids]
-    _google_batch_update_with_retry(
-        sheets, spreadsheet_id, {"requests": requests}, context="Backup-/TMP-Cleanup"
-    )
-
-
-def _cleanup_drive_backups(drive):
-    """Löscht nach erfolgreichem Swap alle alten Drive-Backups dieses Sheets.
-
-    Die Funktion wird ausschließlich nach erfolgreichem Produktiv-Swap
-    aufgerufen. Bei einem vorherigen Fehler bleiben die Backups unangetastet
-    und stehen damit weiterhin als Notfallstand zur Verfügung.
-    """
-    q = (
-        f"'{FOLDER_ID}' in parents and trashed = false "
-        f"and name contains '{DRIVE_NAME} - Backup '"
-    )
-    page_token = None
-    backups = []
-    prefix = f"{DRIVE_NAME} - Backup "
-    while True:
-        response = drive.files().list(
-            q=q,
-            spaces="drive",
-            fields="nextPageToken, files(id,name)",
-            pageToken=page_token,
-            pageSize=100,
-        ).execute()
-        for item in response.get("files", []):
-            name = str(item.get("name", ""))
-            if name.startswith(prefix) and item.get("id"):
-                backups.append(item)
-        page_token = response.get("nextPageToken")
-        if not page_token:
-            break
-
-    deleted = 0
-    for item in backups:
-        file_id = item["id"]
-        drive.files().delete(fileId=file_id).execute()
-        deleted += 1
-        print(f"DATENSCHUTZ: Drive-Backup gelöscht | {item.get('name', file_id)}")
-    print(f"DATENSCHUTZ: Drive-Backup-Cleanup abgeschlossen | gelöscht={deleted}")
-
-
 def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
     """Lokale Plausibilitätsprüfung als letzte Schranke vor Google-Änderungen."""
     if df is None or not isinstance(df, pd.DataFrame):
@@ -1769,9 +1765,8 @@ def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
 def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
     """Erstellt vor dem produktiven Austausch eine temporäre Drive-Sicherung.
 
-    Die Sicherung bleibt bis zum erfolgreichen Swap bestehen. Danach wird sie
-    durch _cleanup_drive_backups() entfernt. Bei einem fehlgeschlagenen Swap
-    bleibt sie als Notfallstand erhalten.
+    Die Sicherung bleibt dauerhaft als Notfallstand erhalten – auch nach
+    erfolgreichem Swap. Eine automatische Löschung ist ausdrücklich untersagt.
     """
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     copied = drive.files().copy(
@@ -1952,33 +1947,36 @@ def extract_disappeared_open_positions(existing_open_rows: list[list], current_d
     return pd.DataFrame(disappeared, columns=HISTORY_HEADERS).fillna("")
 
 
-def read_existing_history(sheets, spreadsheet_id: str) -> list[list]:
-    """Liest den Historien-Tab nur, wenn er tatsächlich vorhanden ist.
-
-    Beim Erstlauf existiert der produktive Tab ggf. noch nicht. In diesem Fall
-    wird bewusst keine ungültige A1-Range abgefragt, damit Google Sheets keinen
-    400-Fehler wegen eines nicht vorhandenen Tabs erzeugt.
-    """
+def read_existing_history(sheets, spreadsheet_id: str, *, allow_missing: bool = False) -> list[list]:
+    """Liest Tab 2 fail-closed: Fehler/fehlender Tab sind kein leeres Archiv."""
     try:
         existing = sheets.spreadsheets().get(
             spreadsheetId=spreadsheet_id,
             fields="sheets.properties",
         ).execute().get("sheets", [])
-        titles = {
-            str(s.get("properties", {}).get("title", "")).strip()
-            for s in existing
-        }
+        titles = [
+            str(item.get("properties", {}).get("title", "")).strip()
+            for item in existing
+        ]
+        if titles.count("Geschlossene Positionen") > 1:
+            raise RuntimeError("Mehrere Tabs 'Geschlossene Positionen' gefunden.")
         if "Geschlossene Positionen" not in titles:
-            return []
+            if allow_missing:
+                return []
+            raise RuntimeError("Sicherheitsabbruch: Tab 'Geschlossene Positionen' fehlt im bestehenden Master.")
 
         response = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range="'Geschlossene Positionen'!A:AA",
         ).execute()
-        return response.get("values", [])
+        values = response.get("values")
+        if values is None:
+            raise RuntimeError("Google Sheets lieferte für Tab 2 keine Werte-Struktur.")
+        return values
     except Exception as exc:
-        print(f"WARNUNG: Bestehende Historie konnte nicht gelesen werden: {exc}")
-        return []
+        if isinstance(exc, RuntimeError) and str(exc).startswith("Sicherheitsabbruch"):
+            raise
+        raise RuntimeError(f"Sicherheitsabbruch: Bestehende Historie konnte nicht zuverlässig gelesen werden: {exc}") from exc
 
 
 
@@ -2010,7 +2008,7 @@ def _format_history_range(sheets, spreadsheet_id: str, sheet_id: int, start_row_
         )
 
 
-def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.DataFrame) -> int:
+def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.DataFrame, *, allow_initialize: bool = False) -> int:
     """Fügt neue Gestoppt/Verkauft-Positionen dauerhaft an Tab 2 an.
 
     Tab 2 ist unverlierbares APPEND-ONLY-Archiv. Bestehende Zeilen werden niemals
@@ -2020,7 +2018,7 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
     if new_closed_df is None or new_closed_df.empty:
         return 0
 
-    existing_rows = read_existing_history(sheets, spreadsheet_id)
+    existing_rows = read_existing_history(sheets, spreadsheet_id, allow_missing=allow_initialize)
     existing_keys = set()
     existing_data_count = 0
     history_sheet_id = None
@@ -2033,15 +2031,37 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
     if hist_props:
         history_sheet_id = hist_props["sheetId"]
 
+    if not allow_initialize:
+        if history_sheet_id is None:
+            raise RuntimeError("Sicherheitsabbruch: Historien-Tab fehlt im bestehenden Master.")
+        if len(existing_rows) < 2:
+            raise RuntimeError("Sicherheitsabbruch: Historien-Tab ist leer oder hat keinen Header.")
+        if [str(x).strip() for x in existing_rows[1]] != HISTORY_HEADERS:
+            raise RuntimeError("Sicherheitsabbruch: Historien-Header stimmt nicht exakt.")
+
     if existing_rows and len(existing_rows) >= 2:
-        old_headers = [str(x).strip() for x in existing_rows[1]]
         for raw in existing_rows[2:]:
             if not any(str(x).strip() for x in raw):
                 continue
             existing_data_count += 1
-            item = {old_headers[i]: raw[i] if i < len(raw) else "" for i in range(len(old_headers))}
-            if str(item.get("Ticker", "")).strip():
-                existing_keys.add(_history_key(item))
+            item = {col: (raw[i] if i < len(raw) else "") for i, col in enumerate(HISTORY_HEADERS)}
+            key = _history_key(item)
+            if key in existing_keys:
+                raise RuntimeError(f"Sicherheitsabbruch: doppelter Positionsschlüssel in Tab 2: {key}")
+            existing_keys.add(key)
+
+    if not allow_initialize and existing_data_count < MINIMUM_PROTECTED_HISTORY_ROWS:
+        raise RuntimeError(
+            "Sicherheitsabbruch: Historie unter Mindestbestand "
+            f"({existing_data_count} < {MINIMUM_PROTECTED_HISTORY_ROWS}); kein Schreiben erlaubt."
+        )
+
+    incoming_keys = set()
+    for _, row in new_closed_df.iterrows():
+        key = _history_key({c: row.get(c, "") for c in HISTORY_HEADERS})
+        if key in incoming_keys:
+            raise RuntimeError(f"Sicherheitsabbruch: doppelter Positionsschlüssel in Eingangsdaten: {key}")
+        incoming_keys.add(key)
 
     rows_to_append = []
     seen_new = set()
@@ -2143,6 +2163,139 @@ def _rollback_productive_swap(sheets, spreadsheet_id: str, target_title: str, ba
             context="Rollback Altprodukt löschen",
         )
 
+def _validate_new_master_history(closed_df: pd.DataFrame) -> None:
+    """Verhindert das Anlegen eines neuen Masters ohne vollständige 51er-Historie."""
+    if closed_df is None or len(closed_df) < MINIMUM_PROTECTED_HISTORY_ROWS:
+        count = 0 if closed_df is None else len(closed_df)
+        raise RuntimeError(
+            "Sicherheitsabbruch: neuer Google-Master darf nur mit vollständigem "
+            f"historischem Initialbestand angelegt werden ({count} < "
+            f"{MINIMUM_PROTECTED_HISTORY_ROWS}); Google Drive bleibt unverändert."
+        )
+    # Auch beim Erstaufbau muss jeder historische Trade eindeutig identifizierbar sein.
+    statuses = closed_df["Status"].astype(str).str.strip().str.lower()
+    if not statuses.isin({"gestoppt", "verkauft"}).all():
+        raise RuntimeError(
+            "Sicherheitsabbruch: Initialhistorie enthält Positionen ohne abgeschlossenen Status."
+        )
+    _closed_position_keys(closed_df)
+
+
+def _assert_no_incomplete_master_initializations(drive) -> None:
+    """Blockiert einen neuen Aufbau, solange ein abgebrochener INIT-Master existiert."""
+    query = (
+        f"name contains '{MASTER_INIT_PREFIX}' and '{FOLDER_ID}' in parents "
+        f"and trashed=false and mimeType='{GOOGLE_SHEETS_MIME_TYPE}'"
+    )
+    pending = drive.files().list(
+        q=query, fields="files(id,name,mimeType)"
+    ).execute().get("files", [])
+    pending = [item for item in pending if item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE]
+    if pending:
+        details = ", ".join(
+            f"{item.get('name', '(ohne Namen)')} [{item.get('id', 'ohne ID')}]"
+            for item in pending
+        )
+        raise RuntimeError(
+            "Sicherheitsabbruch: unvollständige Master-Erstinitialisierung(en) vorhanden; "
+            f"keinen weiteren Master anlegen. Erstinitialisierung manuell prüfen: {details}"
+        )
+
+
+def _find_or_initialize_master(drive, closed_df: pd.DataFrame):
+    """Findet den produktiven Master oder initialisiert sicher einen neuen.
+
+    INIT-Reste blockieren ausschließlich eine neue Erstinitialisierung. Ein bereits
+    vorhandener produktiver Master darf trotz solcher Reste normal weiterlaufen.
+    """
+    query = (
+        f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false "
+        f"and mimeType='{GOOGLE_SHEETS_MIME_TYPE}'"
+    )
+    files = drive.files().list(
+        q=query, fields="files(id,name,mimeType)"
+    ).execute().get("files", [])
+    # Drive-Suchabfragen sind die erste Schranke; die Antwort wird zusätzlich
+    # lokal geprüft, damit gleichnamige Nicht-Sheets niemals als Master gelten.
+    files = [item for item in files if item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE]
+    if len(files) > 1:
+        raise RuntimeError(
+            "Sicherheitsabbruch: mehrere gleichnamige Master-Sheets gefunden; "
+            "es wird keines davon automatisch ausgewählt."
+        )
+    if files:
+        return files[0]["id"], False, None
+
+    # Erst wenn kein produktiver Master existiert, dürfen INIT-Reste die
+    # Erstellung eines neuen Masters blockieren.
+    _assert_no_incomplete_master_initializations(drive)
+    _validate_new_master_history(closed_df)
+    init_name = f"{MASTER_INIT_PREFIX}{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    created = drive.files().create(
+        body={
+            "name": init_name,
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+            "parents": [FOLDER_ID],
+        },
+        fields="id,name",
+    ).execute()
+    return created["id"], True, init_name
+
+
+def _finalize_new_master(drive, spreadsheet_id: str, init_name: str) -> None:
+    """Veröffentlicht einen neu aufgebauten Master erst nach vollständiger Verifikation."""
+    query = (
+        f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false "
+        f"and mimeType='{GOOGLE_SHEETS_MIME_TYPE}'"
+    )
+    current = drive.files().list(
+        q=query, fields="files(id,name,mimeType)"
+    ).execute().get("files", [])
+    current = [item for item in current if item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE]
+    conflicts = [item for item in current if item.get("id") != spreadsheet_id]
+    if conflicts:
+        raise RuntimeError(
+            "Sicherheitsabbruch: während der Erstinitialisierung ist ein anderer "
+            "gleichnamiger Master entstanden; INIT-Datei bleibt unveröffentlicht."
+        )
+
+    try:
+        drive.files().update(
+            fileId=spreadsheet_id,
+            body={"name": DRIVE_NAME},
+            fields="id,name",
+        ).execute()
+
+        verified = drive.files().list(
+            q=query, fields="files(id,name,mimeType)"
+        ).execute().get("files", [])
+        verified = [item for item in verified if item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE]
+        if len(verified) != 1 or verified[0].get("id") != spreadsheet_id:
+            raise RuntimeError(
+                "Produktiver Mastername konnte nach der Umbenennung nicht eindeutig "
+                "anhand der Drive-Datei-ID bestätigt werden."
+            )
+    except Exception as finalize_exc:
+        quarantine_name = f"{MASTER_INIT_PREFIX}FAILED_{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        try:
+            drive.files().update(
+                fileId=spreadsheet_id,
+                body={"name": quarantine_name},
+                fields="id,name",
+            ).execute()
+        except Exception as quarantine_exc:
+            raise RuntimeError(
+                "Master-Erstinitialisierung konnte nicht eindeutig verifiziert werden; "
+                f"Quarantäne-Umbenennung fehlgeschlagen. Datei-ID={spreadsheet_id}; "
+                f"INIT-Name={init_name}; Freigabefehler={finalize_exc}; "
+                f"Quarantänefehler={quarantine_exc}"
+            ) from finalize_exc
+        raise RuntimeError(
+            "Master-Erstinitialisierung konnte nicht sicher freigegeben werden; "
+            f"Datei bleibt als {quarantine_name} erhalten. Ursache: {finalize_exc}"
+        ) from finalize_exc
+
+
 def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
     if creds is None:
         print("INFO: Keine Google-Credentials – lokale CSVs bleiben die Ausgabe.")
@@ -2152,16 +2305,41 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
-    q = f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false"
-    files = drive.files().list(q=q, fields="files(id,name,mimeType)").execute().get("files", [])
-    if files:
-        spreadsheet_id = files[0]["id"]
-    else:
-        created = drive.files().create(
-            body={"name": DRIVE_NAME, "mimeType": "application/vnd.google-apps.spreadsheet", "parents": [FOLDER_ID]},
-            fields="id,name",
-        ).execute()
-        spreadsheet_id = created["id"]
+    spreadsheet_id, is_new_master, init_name = _find_or_initialize_master(
+        drive, closed_df
+    )
+
+    existing = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute().get("sheets", [])
+    existing_titles = [s["properties"]["title"] for s in existing]
+
+    # Fail-closed Preflight: vor Snapshot, Locale-Update oder irgendeinem Sheet-Schreibzugriff.
+    if not is_new_master:
+        if existing_titles.count("Geschlossene Positionen") != 1:
+            raise RuntimeError(
+                "Sicherheitsabbruch: bestehender Master besitzt nicht genau einen Tab "
+                "'Geschlossene Positionen'."
+            )
+        preflight_rows = read_existing_history(sheets, spreadsheet_id, allow_missing=False)
+        if len(preflight_rows) < 2 or [str(x).strip() for x in preflight_rows[1]] != HISTORY_HEADERS:
+            raise RuntimeError("Sicherheitsabbruch: Tab-2-Header fehlt oder ist nicht exakt.")
+        preflight_keys = set()
+        preflight_count = 0
+        for raw in preflight_rows[2:]:
+            if not any(str(value).strip() for value in raw):
+                continue
+            preflight_count += 1
+            item = {col: (raw[i] if i < len(raw) else "") for i, col in enumerate(HISTORY_HEADERS)}
+            key = _history_key(item)
+            if key in preflight_keys:
+                raise RuntimeError(f"Sicherheitsabbruch: doppelter Positionsschlüssel in Tab 2: {key}")
+            preflight_keys.add(key)
+        if preflight_count < MINIMUM_PROTECTED_HISTORY_ROWS:
+            raise RuntimeError(
+                "Sicherheitsabbruch: Historie unter Mindestbestand "
+                f"({preflight_count} < {MINIMUM_PROTECTED_HISTORY_ROWS}); Google-Sheet bleibt unverändert."
+            )
 
     # Deutsches Locale + echte numerische Werte = stabile Anzeige ohne String-Parsing.
     sheets.spreadsheets().batchUpdate(
@@ -2170,11 +2348,6 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             "properties": {"locale": "de_DE"}, "fields": "locale"
         }}]},
     ).execute()
-
-    existing = sheets.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute().get("sheets", [])
-    existing_titles = [s["properties"]["title"] for s in existing]
 
     # Verbindliche Abschlussquelle: ausschließlich aktuell Gestoppt/Verkauft in der Masterquelle.
     # Ein bloßes Verschwinden aus Tab 1 ist niemals ein Abschlussereignis.
@@ -2210,7 +2383,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     swapped = False
 
     try:
-        if existing:
+        if existing and not is_new_master:
             backup_id = _snapshot_google_sheet(drive, spreadsheet_id)
             print(f"DATENSCHUTZ: Backup des bisherigen Google Sheets erstellt | ID={backup_id}")
 
@@ -2218,7 +2391,9 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         _write_sheet(sheets, spreadsheet_id, temp_open, values, widths, 2, target_title=temp_open)
 
         # 2) Historie append-only vorbereiten/verifizieren – niemals durch Snapshot ersetzen.
-        appended_history = _append_missing_history_rows(sheets, spreadsheet_id, closed_for_append)
+        appended_history = _append_missing_history_rows(
+            sheets, spreadsheet_id, closed_for_append, allow_initialize=is_new_master
+        )
         if appended_history:
             print(f"PERSISTENZ: {appended_history} neue geschlossene Position(en) append-only in Tab 2 archiviert.")
 
@@ -2271,26 +2446,35 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             f"path={os.path.basename(tab2_export_path)} | rows={exported_rows}"
         )
 
-        if not closed_for_append.empty:
-            hist_keys = []
-            for raw in hist_rows[2:]:
-                item = {col: (raw[i] if i < len(raw) else "") for i, col in enumerate(expected_hist_header)}
-                if str(item.get("Ticker", "")).strip():
-                    hist_keys.append(_history_key(item))
-            persisted_counts = Counter(hist_keys)
-            for _, closed_row in closed_for_append.iterrows():
-                key = _history_key(closed_row)
-                if persisted_counts.get(key, 0) != 1:
-                    raise RuntimeError(
-                        "Historien-Verifikation fehlgeschlagen: aktuell geschlossene Position "
-                        f"nicht genau einmal in Tab 2 archiviert: {key}"
-                    )
+        hist_keys = []
+        for raw in hist_rows[2:]:
+            if not any(str(value).strip() for value in raw):
+                continue
+            item = {col: (raw[i] if i < len(raw) else "") for i, col in enumerate(expected_hist_header)}
+            hist_keys.append(_history_key(item))
+        persisted_counts = Counter(hist_keys)
+        if len(persisted_counts) != len(hist_keys):
+            raise RuntimeError("Historien-Verifikation fehlgeschlagen: doppelte Positionsschlüssel nach dem Schreiben.")
+        if not is_new_master:
+            missing_existing = preflight_keys - set(hist_keys)
+            if missing_existing:
+                raise RuntimeError(
+                    "Historien-Verifikation fehlgeschlagen: bestehende Trades sind nach dem Append verschwunden: "
+                    f"{len(missing_existing)} Schlüssel."
+                )
+        for _, closed_row in closed_for_append.iterrows():
+            key = _history_key(closed_row)
+            if persisted_counts.get(key, 0) != 1:
+                raise RuntimeError(
+                    "Historien-Verifikation fehlgeschlagen: aktuell geschlossene Position "
+                    f"nicht genau einmal in Tab 2 archiviert: {key}"
+                )
 
         # 4) Erst jetzt Tab 1 produktiv tauschen. _swap_temp_tabs hinterlegt den alten Tab als Backup-Tab.
-        if "Offene Positionen+Check" in existing_titles:
-            stamp = dt.datetime.now().strftime('%Y%m%d%H%M%S')
-            backup_tab_title = f"_BACKUP_Offene Positionen+Check_{stamp}"
-        _swap_temp_tabs(sheets, spreadsheet_id, {temp_open: "Offene Positionen+Check"})
+        backup_titles = _swap_temp_tabs(
+            sheets, spreadsheet_id, {temp_open: "Offene Positionen+Check"}
+        )
+        backup_tab_title = backup_titles.get("Offene Positionen+Check")
         swapped = True
 
         # 5) Produktiven Tab 1 direkt nach dem Swap prüfen.
@@ -2344,12 +2528,13 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         #    und unmittelbar danach verifizieren. Die Sheet-Inhalte/IDs bleiben erhalten.
         _enforce_productive_tab_order(sheets, spreadsheet_id)
 
-        # 7) Nur nach vollständiger Verifikation technische Altlasten entfernen.
-        _cleanup_backups(sheets, spreadsheet_id)
-        try:
-            _cleanup_drive_backups(drive)
-        except Exception as cleanup_exc:
-            print(f"WARNUNG: Drive-Backups konnten nicht vollständig bereinigt werden; Backup bleibt erhalten: {cleanup_exc}")
+        # Erst nach vollständiger Sheets-Verifikation wird ein neuer Master produktiv benannt.
+        if is_new_master:
+            _finalize_new_master(drive, spreadsheet_id, init_name)
+            print("SICHERHEIT: neuer Google-Master vollständig verifiziert und produktiv freigegeben.")
+
+        # 7) Sicherungen bleiben dauerhaft erhalten; keine automatische Löschung.
+        print("DATENSCHUTZ: Produktiv- und Drive-Backups bleiben dauerhaft erhalten.")
 
         print(
             f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | "
@@ -2454,12 +2639,16 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
         fields="files(id,name,mimeType,parents)",
     ).execute().get("files", [])
 
-    old_file = next(
-        (f for f in files if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"),
-        None,
-    )
-    if old_file is None and files:
-        old_file = files[0]
+    sheet_files = [
+        f for f in files
+        if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
+    ]
+    if len(sheet_files) > 1 or (not sheet_files and len(files) > 1):
+        raise RuntimeError(
+            "Sicherheitsabbruch: mehrere gleichnamige Quelldateien in Google Drive; "
+            "es wird keine Datei willkürlich ausgewählt."
+        )
+    old_file = sheet_files[0] if sheet_files else (files[0] if files else None)
 
     # Die exakt bereinigte CSV als Zellmatrix lesen.
     with open(source_file, "r", encoding="utf-8-sig", newline="") as fh:
@@ -2575,9 +2764,9 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
                 "Nachkontrolle der produktiven Drive-Quelldatei fehlgeschlagen."
             )
 
-        # Erst jetzt darf die alte Quelle endgültig gelöscht werden.
+        # Die bisherige Quelle bleibt dauerhaft als Backup erhalten.
         if backup_id:
-            drive.files().delete(fileId=backup_id).execute()
+            print(f"DATENSCHUTZ: Drive-Quellbackup bleibt dauerhaft erhalten | ID={backup_id}")
 
         print(
             "GOOGLE DRIVE QUELLE AKTUALISIERT: Offene_Positionen | "
