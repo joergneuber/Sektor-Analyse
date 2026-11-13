@@ -12,6 +12,8 @@ concurrency:
 
 jobs:
   run-scripts:
+    # Nur main darf den gemeinsamen OHLCV-Release und den strukturellen Cache schreiben.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -138,47 +140,139 @@ jobs:
           restore-keys: |
             btc-50w-sma-state-${{ runner.os }}-${{ github.ref_name }}-
 
-      # Persistenter historischer OHLCV-Bestand. Die Action-Cache-Schicht ist
-      # nur der Speichertransport; die fachliche Datenbank bleibt getrennt vom
-      # kurzlebigen market_cache.json. Bei einem Fehler darf der bestehende
-      # Tageslauf weiterlaufen und auf die bisherigen Quellen zurueckfallen.
-      - name: Historische OHLCV-Datenbank wiederherstellen
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            historical_ohlcv.sqlite*
-          key: nmm-historical-ohlcv-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            nmm-historical-ohlcv-v1-${{ runner.os }}-${{ github.ref_name }}-
+      # Der GitHub-Release-Asset ist die einzige dauerhafte OHLCV-Speicherung.
+      # Fuer OHLCV wird bewusst kein Actions-Cache wiederhergestellt: Er waere
+      # gegenueber dem Release nicht autoritativ und wuerde nur einen zusaetzlichen
+      # grossen Download verursachen. Die DB bleibt getrennt vom market_cache.json.
 
       - name: Historische OHLCV-Datenbank und dynamisches Universum aus Dauerarchiv wiederherstellen
         env:
           GH_TOKEN: ${{ github.token }}
           NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP: ${{ vars.NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP }}
+          NMM_ALLOW_OHLCV_LEGACY_MIGRATION: ${{ vars.NMM_ALLOW_OHLCV_LEGACY_MIGRATION }}
         run: |
-          if [ ! -f historical_ohlcv.sqlite ]; then
-            gh release download historical-ohlcv --pattern historical_ohlcv.sqlite --dir . --clobber || true
-          else
-            echo "OHLCV-Dauerarchiv: vorhandene historische DB aus Cache bleibt Primärstand."
-          fi
-          # Das dynamische Universum darf NICHT aus dem Actions-Cache stammen.
-          # Die Release-Datei ist die autoritative Quelle fuer diesen persistenten State.
-          rm -f historical_ohlcv_universe.json
+          set -euo pipefail
+          # Das Release ist die einzige dauerhafte Quelle. Lokale Reste duerfen
+          # keinen nicht verifizierten OHLCV-Stand in den Lauf einschleusen.
+          rm -f historical_ohlcv.sqlite historical_ohlcv.sqlite-wal historical_ohlcv.sqlite-shm historical_ohlcv.sqlite-journal historical_ohlcv_universe.json
           release_list="$(gh release list --limit 1000 --json tagName)"
-          # Eine erfolgreiche CLI-Antwort muss auch strukturell gueltiges JSON sein.
           printf '%s' "$release_list" | jq -e 'type == "array"' >/dev/null
           if printf '%s' "$release_list" | jq -e 'any(.[]; .tagName == "historical-ohlcv")' >/dev/null; then
-            release_assets="$(gh release view historical-ohlcv --json assets)"
-            printf '%s' "$release_assets" | jq -e 'type == "object" and (.assets | type == "array")' >/dev/null
-            if printf '%s' "$release_assets" | jq -e 'any(.assets[]; .name == "historical_ohlcv_universe.json")' >/dev/null; then
-              gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber
-              test -s historical_ohlcv_universe.json
-              echo "OHLCV-Dauerarchiv: dynamisches Universum aus aktuellem Release geladen."
-            elif [ "${NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP:-0}" = "1" ]; then
-              echo "::warning::OHLCV-Universums-Asset fehlt im bestehenden Release; expliziter Bootstrap ist aktiviert."
-            else
-              echo "::error::Das Release historical-ohlcv existiert, aber historical_ohlcv_universe.json fehlt. Abbruch zum Schutz des bestehenden dynamischen Universums. Fuer einen bewusst gewollten Neuaufbau Repository Variable NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP=1 setzen."
-              exit 1
+            release_assets="$(bash scripts/get_gh_release_assets.sh "$GITHUB_REPOSITORY" historical-ohlcv)"
+            printf '%s' "$release_assets" | jq -e 'type == "array"' >/dev/null
+            release_asset_count="$(printf '%s' "$release_assets" | jq 'length')"
+            release_bundle_count="$(printf '%s' "$release_assets" | jq '[.[] | select(.name | test("^historical_ohlcv_bundle_[A-Za-z0-9_.-]+\\.zip$"))] | length')"
+            legacy_db_present="$(printf '%s' "$release_assets" | jq -r 'any(.[]; .name == "historical_ohlcv.sqlite")')"
+            legacy_universe_present="$(printf '%s' "$release_assets" | jq -r 'any(.[]; .name == "historical_ohlcv_universe.json")')"
+            echo "::notice::OHLCV_RELEASE_METADATA | uploaded_assets=${release_asset_count} | bundles=${release_bundle_count} | legacy_db=${legacy_db_present} | legacy_universe=${legacy_universe_present} | legacy_migration_opt_in=${NMM_ALLOW_OHLCV_LEGACY_MIGRATION:-0}"
+            MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024 - 1))
+            mapfile -t bundle_names < <(printf '%s' "$release_assets" | jq -r '[.[] | select(.name | test("^historical_ohlcv_bundle_[A-Za-z0-9_.-]+\\.zip$"))] | sort_by([.created_at, .name]) | reverse | .[].name')
+            restored=0
+            for bundle_name in "${bundle_names[@]}"; do
+              remote_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].digest // empty')"
+              remote_size="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].size // empty')"
+              if ! [[ "$remote_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] ||
+                 ! [[ "$remote_size" =~ ^[0-9]+$ ]] ||
+                 (( remote_size > MAX_RELEASE_ASSET_BYTES )); then
+                echo "::warning::Bundle ${bundle_name} besitzt keinen gueltigen Digest oder verletzt die GitHub-Groessengrenze (<2 GiB); Asset wird nicht verwendet."
+                continue
+              fi
+              rm -f "$bundle_name"
+              if ! gh release download historical-ohlcv --pattern "$bundle_name" --dir . --clobber; then
+                echo "::warning::OHLCV-Bundle ${bundle_name} konnte nicht geladen werden; pruefe den vorherigen Snapshot."
+                rm -f "$bundle_name"
+                continue
+              fi
+              local_size="$(stat -c '%s' "$bundle_name")"
+              local_sha="$(sha256sum "$bundle_name" | awk '{print $1}')"
+              if (( local_size > MAX_RELEASE_ASSET_BYTES )) ||
+                 [ "$local_size" != "$remote_size" ] ||
+                 [ "$local_sha" != "${remote_digest#sha256:}" ]; then
+                echo "::warning::Remote-Digest und heruntergeladene Datei von ${bundle_name} stimmen nicht ueberein; Asset wird uebersprungen."
+                rm -f "$bundle_name"
+                continue
+              fi
+              if python ohlcv_release_bundle.py extract --bundle "$bundle_name" --db historical_ohlcv.sqlite --universe historical_ohlcv_universe.json; then
+                restored=1
+                echo "OHLCV-Release-Verifikation PASS: gemeinsamer Snapshot ${bundle_name}"
+                rm -f "$bundle_name"
+                break
+              fi
+              echo "::warning::OHLCV-Bundle ${bundle_name} ist inhaltlich ungueltig; pruefe den vorherigen Snapshot."
+              rm -f "$bundle_name"
+            done
+
+            # Die getrennten Legacy-Assets koennen keinen gemeinsamen Snapshot
+            # beweisen. Ihre Nutzung erfordert deshalb einen ausdruecklichen
+            # einmaligen Betreiberentscheid und korrekte Remote-Digests beider Assets.
+            if [ "$restored" -ne 1 ] && [ "${NMM_ALLOW_OHLCV_LEGACY_MIGRATION:-0}" = "1" ]; then
+              legacy_db_digest="$(printf '%s' "$release_assets" | jq -r '[.[] | select(.name == "historical_ohlcv.sqlite")][0].digest // empty')"
+              legacy_universe_digest="$(printf '%s' "$release_assets" | jq -r '[.[] | select(.name == "historical_ohlcv_universe.json")][0].digest // empty')"
+              if [[ "$legacy_db_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] && [[ "$legacy_universe_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+                legacy_db_size="$(printf '%s' "$release_assets" | jq -r '[.[] | select(.name == "historical_ohlcv.sqlite")][0].size // empty')"
+                legacy_universe_size="$(printf '%s' "$release_assets" | jq -r '[.[] | select(.name == "historical_ohlcv_universe.json")][0].size // empty')"
+                legacy_db_updated="$(printf '%s' "$release_assets" | jq -r '[.[] | select(.name == "historical_ohlcv.sqlite")][0].updated_at // empty')"
+                legacy_universe_updated="$(printf '%s' "$release_assets" | jq -r '[.[] | select(.name == "historical_ohlcv_universe.json")][0].updated_at // empty')"
+                if ! [[ "$legacy_db_size" =~ ^[0-9]+$ ]] ||
+                   ! [[ "$legacy_universe_size" =~ ^[0-9]+$ ]] ||
+                   (( legacy_db_size > MAX_RELEASE_ASSET_BYTES || legacy_universe_size > MAX_RELEASE_ASSET_BYTES )); then
+                  echo "::error::Legacy-Assets besitzen keine gültigen Größenangaben oder überschreiten die GitHub-Grenze (<2 GiB)."
+                  exit 1
+                fi
+                if [ -z "$legacy_db_updated" ] || [ -z "$legacy_universe_updated" ]; then
+                  echo "::error::Legacy-Assets besitzen keine Upload-Zeitstempel; Migration wird abgebrochen."
+                  exit 1
+                fi
+                legacy_db_epoch="$(date -d "$legacy_db_updated" +%s)"
+                legacy_universe_epoch="$(date -d "$legacy_universe_updated" +%s)"
+                legacy_asset_skew=$((legacy_db_epoch - legacy_universe_epoch))
+                legacy_asset_skew=${legacy_asset_skew#-}
+                if [ "$legacy_asset_skew" -gt 120 ]; then
+                  echo "::error::Legacy-Assets liegen mehr als 120 Sekunden auseinander; Migration wird abgebrochen."
+                  exit 1
+                fi
+                gh release download historical-ohlcv --pattern historical_ohlcv.sqlite --dir . --clobber
+                gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber
+                local_db_size="$(stat -c '%s' historical_ohlcv.sqlite)"
+                local_universe_size="$(stat -c '%s' historical_ohlcv_universe.json)"
+                local_db_sha="$(sha256sum historical_ohlcv.sqlite | awk '{print $1}')"
+                local_universe_sha="$(sha256sum historical_ohlcv_universe.json | awk '{print $1}')"
+                if [ "$local_db_size" = "$legacy_db_size" ] &&
+                   [ "$local_universe_size" = "$legacy_universe_size" ] &&
+                   [ "$local_db_sha" = "${legacy_db_digest#sha256:}" ] &&
+                   [ "$local_universe_sha" = "${legacy_universe_digest#sha256:}" ]; then
+                  python ohlcv_release_bundle.py verify-files --db historical_ohlcv.sqlite --universe historical_ohlcv_universe.json
+                  restored=1
+                  echo "::warning::Legacy-OHLCV-Migration explizit freigegeben. Die getrennten Assets koennen keinen gemeinsamen Transaktionsstand beweisen; der naechste erfolgreiche Lauf erstellt ein gemeinsames Bundle."
+                else
+                  echo "::error::Legacy-Asset-Digest stimmt nicht mit dem heruntergeladenen Inhalt ueberein."
+                  exit 1
+                fi
+              else
+                echo "::error::Legacy-Migration freigegeben, aber Remote-Digests der beiden Assets fehlen oder sind ungueltig."
+                exit 1
+              fi
+            fi
+
+            if [ "$restored" -ne 1 ]; then
+              # Ein Bootstrap ist ausschliesslich fuer einen wirklich leeren
+              # OHLCV-Release zulaessig. Vorhandene Legacy-Assets oder Bundle-
+              # Assets duerfen nicht durch einen Bootstrap umgangen werden:
+              # sie koennen einen noch zu rettenden oder nur defekten Bestand
+              # repraesentieren. In diesem Fall muss der Restore fehlschlagen.
+              if [ "$release_bundle_count" -gt 0 ] ||
+                 [ "$legacy_db_present" = "true" ] ||
+                 [ "$legacy_universe_present" = "true" ]; then
+                echo "::error::OHLCV-Assets sind im Release vorhanden, aber kein gueltiger Snapshot konnte wiederhergestellt werden. Bootstrap ist zum Schutz der vorhandenen Historie gesperrt."
+                exit 1
+              fi
+              if [ "${NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP:-0}" = "1" ]; then
+                rm -f historical_ohlcv.sqlite historical_ohlcv_universe.json
+                echo "::warning::Das OHLCV-Release enthaelt keine Bundle- oder Legacy-Assets; der ausdruecklich freigegebene Erstaufbau ist aktiviert."
+              else
+                echo "::error::Kein remote-digest-verifiziertes gemeinsames OHLCV-Bundle und kein ausdruecklich freigegebenes Legacy-Paar. Bootstrap ist gesperrt."
+                exit 1
+              fi
             fi
           elif [ "${NMM_ALLOW_OHLCV_UNIVERSE_BOOTSTRAP:-0}" = "1" ]; then
             echo "::warning::OHLCV-Release existiert noch nicht; expliziter Erstaufbau ist aktiviert."
@@ -187,46 +281,36 @@ jobs:
             exit 1
           fi
 
+      # Einzel-Check-Runs liefern ausschliesslich Pending-Queue-Artifacts.
+      # Der Import ist idempotent; Run-Receipts liegen in SQLite und werden
+      # mit dem authoritative Bundle persistiert. Queue-Probleme blockieren
+      # nicht die Diagnose, verhindern aber den FINAL-Status.
+      - name: OHLCV Pending-Queues aus Einzel-Checks importieren
+        id: ohlcv-pending-queue
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+        run: python historical_ohlcv_pending_queue.py import --lookback-days 90
+
       - name: Historische OHLCV-Datenbank aktualisieren
+        id: ohlcv-pre-scan-update
         continue-on-error: true
         env:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
           NMM_USE_HISTORICAL_OHLCV: "1"
-        run: python historical_ohlcv.py update
+        run: python historical_ohlcv.py update --strict
 
       - name: Historische OHLCV Coverage prüfen
+        id: ohlcv-pre-scan-coverage
         continue-on-error: true
         env:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
         run: python historical_ohlcv.py coverage --summary
-
-      - name: Historische OHLCV-Datenbank speichern
-        if: always()
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            historical_ohlcv.sqlite*
-          key: nmm-historical-ohlcv-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-
-      # Zusaetzlich wird der aktuelle Research-Bestand als Release-Asset
-      # dauerhaft ausserhalb der Git-Historie archiviert. So ist die Datenbank
-      # nicht allein von der evtl. spaeter evictierten Actions-Cache-Schicht
-      # abhaengig. GITHUB_TOKEN reicht mit contents: write.
-      - name: Historische OHLCV-Datenbank dauerhaft archivieren
-        if: ${{ always() && hashFiles('historical_ohlcv.sqlite') != '' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! gh release view historical-ohlcv >/dev/null 2>&1; then
-            gh release create historical-ohlcv --title "Historical OHLCV Database" --notes "Automatisch gepflegter historischer OHLCV-Research-Bestand."
-          fi
-          gh release upload historical-ohlcv historical_ohlcv.sqlite --clobber
-          if [ -f historical_ohlcv_universe.json ]; then
-            gh release upload historical-ohlcv historical_ohlcv_universe.json --clobber
-          fi
 
       # Gemeinsamer Markt-Datenstand fuer alle Python-Prozesse dieses Jobs.
       # Der Cache bleibt bewusst job-lokal: kein alter Run darf als aktueller
@@ -240,7 +324,10 @@ jobs:
         run: >-
           pytest -q
           tests/test_historical_ohlcv.py
+          tests/test_historical_ohlcv_pending_queue.py
           tests/test_offene_positionen_check_history_source.py
+          tests/test_ohlcv_release_bundle.py
+          tests/test_ohlcv_release_consumers.py
           tests/test_workflow_dynamic_universe.py
 
       # ============================================================
@@ -290,6 +377,8 @@ jobs:
       # geladen/aktualisiert. Diese offene Positionenliste wird vor dem
       # technischen Check verbindlich im persistenten OHLCV-Universum registriert.
       - name: Offene Positionen ins historische OHLCV-Universum übernehmen
+        id: ohlcv-pre-scan-position-sync
+        continue-on-error: true
         env:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
@@ -311,6 +400,8 @@ jobs:
       # Nach dem Provider-Fallback muessen alle offenen Positionen mit einer
       # aktuellen, vom Quality Gate freigegebenen Historie in SQLite vorliegen.
       - name: Offene OHLCV-Historien abschliessend qualitaetspruefen
+        id: ohlcv-pre-scan-position-verify
+        continue-on-error: true
         env:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
@@ -550,45 +641,160 @@ jobs:
           restore-keys: |
             gemini-split-resume-${{ runner.os }}-${{ github.ref_name }}-
 
-      # Finaler OHLCV-Abgleich NACH den Scannern: neue/aktualisierte Symbole
-      # aus dem Tageslauf muessen vor Erstellung des Trading-Radars erfasst sein.
-      - name: Finale OHLCV-Synchronisierung und Coverage
+      # Finaler Queue-Checkpoint NACH den Scannern: waehrend des Hauptlaufs
+      # neu eingetroffene Ticker werden gespeichert, erzwingen aber NICHT_FINAL,
+      # weil die Scanner sie erst im naechsten Hauptlauf auswerten koennen.
+      - name: OHLCV Pending-Queues nach Scannerläufen erneut importieren
+        id: ohlcv-pending-queue-final
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+        run: python historical_ohlcv_pending_queue.py import --lookback-days 90 --after-scanners
+
+      - name: Finale OHLCV-Synchronisierung, Coverage und Positionsprüfung
         id: ohlcv-final-sync
+        if: always()
         continue-on-error: true
         env:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
           NMM_USE_HISTORICAL_OHLCV: "1"
         run: |
-          set -euo pipefail
-          python historical_ohlcv.py update
+          set +e
+          python historical_ohlcv.py update --strict
+          update_rc=$?
           python historical_ohlcv.py coverage --summary
-          echo "status=complete" >> "$GITHUB_OUTPUT"
+          coverage_rc=$?
+          python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv
+          positions_rc=$?
+          set -e
+          if [ -s historical_ohlcv.sqlite ] && [ -s historical_ohlcv_universe.json ]; then
+            if [ "$update_rc" -eq 0 ] && [ "$coverage_rc" -eq 0 ] && [ "$positions_rc" -eq 0 ]; then
+              sync_status="complete"
+            else
+              sync_status="partial"
+            fi
+          else
+            sync_status="failed"
+          fi
+          echo "status=${sync_status}" >> "$GITHUB_OUTPUT"
+          echo "update_exit=${update_rc}" >> "$GITHUB_OUTPUT"
+          echo "coverage_exit=${coverage_rc}" >> "$GITHUB_OUTPUT"
+          echo "positions_exit=${positions_rc}" >> "$GITHUB_OUTPUT"
+          echo "OHLCV_FINAL_SYNC_STATUS=${sync_status}|update=${update_rc}|coverage=${coverage_rc}|positions=${positions_rc}"
 
-      - name: Finale OHLCV-Datenbank im Actions-Cache sichern
-        id: ohlcv-final-cache-save
-        if: ${{ always() && hashFiles('historical_ohlcv.sqlite') != '' }}
-        continue-on-error: true
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            historical_ohlcv.sqlite*
-          key: nmm-historical-ohlcv-final-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Finale OHLCV-Datenbank im Dauerarchiv sichern
+      - name: Finale OHLCV-Datenbank und Universum atomar im Dauerarchiv sichern und verifizieren
         id: ohlcv-final-release-save
-        if: ${{ always() && hashFiles('historical_ohlcv.sqlite') != '' }}
+        if: ${{ always() && hashFiles('historical_ohlcv.sqlite') != '' && hashFiles('historical_ohlcv_universe.json') != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! gh release view historical-ohlcv >/dev/null 2>&1; then
-            gh release create historical-ohlcv --title "Historical OHLCV Database" --notes "Automatisch gepflegter historischer OHLCV-Research-Bestand."
+          test -s historical_ohlcv.sqlite
+          test -s historical_ohlcv_universe.json
+          # Vor jedem Release-Update: vollstaendiger SQLite-Integritaetscheck
+          # und konsistenter Snapshot ueber SQLite Backup API.
+          bundle_name="historical_ohlcv_bundle_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.zip"
+          python ohlcv_release_bundle.py create \
+            --db historical_ohlcv.sqlite \
+            --universe historical_ohlcv_universe.json \
+            --output "$bundle_name"
+          python ohlcv_release_bundle.py verify --bundle "$bundle_name"
+          MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024 - 1))
+          bundle_size="$(stat -c '%s' "$bundle_name")"
+          if ! [[ "$bundle_size" =~ ^[0-9]+$ ]] || (( bundle_size > MAX_RELEASE_ASSET_BYTES )); then
+            echo "::error::OHLCV-Bundle ist ${bundle_size} Bytes groß; GitHub Release Assets müssen kleiner als 2 GiB sein. Upload wird vorab verhindert."
+            exit 1
           fi
-          gh release upload historical-ohlcv historical_ohlcv.sqlite --clobber
-          if [ -f historical_ohlcv_universe.json ]; then
-            gh release upload historical-ohlcv historical_ohlcv_universe.json --clobber
+          if ! gh release view historical-ohlcv >/dev/null 2>&1; then
+            gh release create historical-ohlcv --title "Historical OHLCV Database" --notes "Einziger dauerhafter Speicher fuer gemeinsame, integritaetsgepruefte OHLCV-Snapshots."
+          fi
+          # Unveraenderlicher Asset-Name. Vorhandene Snapshots werden erst
+          # nach Remote-Digest UND inhaltlicher Bundle-Pruefung bereinigt.
+          gh release upload historical-ohlcv "$bundle_name"
+
+          # GitHub kann den Asset-Digest kurz nach Upload noch nicht ausliefern.
+          # In diesem Fall wird abgebrochen; es wird nichts Altes geloescht.
+          local_sha="$(sha256sum "$bundle_name" | awk '{print $1}')"
+          remote_digest=""
+          for attempt in 1 2 3 4 5; do
+            release_assets="$(bash scripts/get_gh_release_assets.sh "$GITHUB_REPOSITORY" historical-ohlcv)"
+            printf '%s' "$release_assets" | jq -e 'type == "array"' >/dev/null
+            MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024 - 1))
+            remote_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].digest // empty')"
+            if [[ "$remote_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+              break
+            fi
+            sleep 2
+          done
+          if ! [[ "$remote_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || [ "$local_sha" != "${remote_digest#sha256:}" ]; then
+            echo "::error::Remote-SHA-256 des neuen OHLCV-Bundles fehlt oder stimmt nicht ueberein. Vorherige Assets bleiben unangetastet."
+            exit 1
+          fi
+          python ohlcv_release_bundle.py verify --bundle "$bundle_name"
+          echo "OHLCV-Release-Verifikation PASS: $bundle_name"
+
+          # Vor jeder Bereinigung ALLE Kandidaten anhand Remote-Digest und
+          # Bundle-Manifest/SQLite-Integritaet pruefen. Es bleiben die zwei
+          # neuesten gueltigen Bundles, nicht bloss die zwei neuesten Dateinamen.
+          validation_dir="$(mktemp -d)"
+          trap 'rm -rf "$validation_dir"' EXIT
+          mapfile -t all_bundle_names < <(printf '%s' "$release_assets" | jq -r '[.[] | select(.name | test("^historical_ohlcv_bundle_[A-Za-z0-9_.-]+\\.zip$"))] | sort_by([.created_at, .name]) | reverse | .[].name')
+          valid_bundle_names=()
+          for asset_name in "${all_bundle_names[@]}"; do
+            asset_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$asset_name" '[.[] | select(.name == $name)][0].digest // empty')"
+            asset_size="$(printf '%s' "$release_assets" | jq -r --arg name "$asset_name" '[.[] | select(.name == $name)][0].size // empty')"
+            if ! [[ "$asset_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] ||
+               ! [[ "$asset_size" =~ ^[0-9]+$ ]] ||
+               (( asset_size > MAX_RELEASE_ASSET_BYTES )); then
+              echo "::warning::Bundle ${asset_name} ohne gueltigen Remote-Digest oder oberhalb der GitHub-Groessengrenze wird nicht als Rollback-Stand gezaehlt."
+              continue
+            fi
+            if ! gh release download historical-ohlcv --pattern "$asset_name" --dir "$validation_dir" --clobber; then
+              echo "::warning::Bundle ${asset_name} konnte zur Bereinigung nicht geladen werden."
+              continue
+            fi
+            downloaded_size="$(stat -c '%s' "$validation_dir/$asset_name")"
+            downloaded_sha="$(sha256sum "$validation_dir/$asset_name" | awk '{print $1}')"
+            if (( downloaded_size > MAX_RELEASE_ASSET_BYTES )) ||
+               [ "$downloaded_size" != "$asset_size" ] ||
+               [ "$downloaded_sha" != "${asset_digest#sha256:}" ]; then
+              echo "::warning::Remote-Digest-Abweichung bei ${asset_name}; Asset wird nicht als gueltiger Rollback-Stand gezaehlt."
+              rm -f "$validation_dir/$asset_name"
+              continue
+            fi
+            if python ohlcv_release_bundle.py verify --bundle "$validation_dir/$asset_name" >/dev/null; then
+              valid_bundle_names+=("$asset_name")
+            else
+              echo "::warning::Inhaltlich ungueltiges Bundle ${asset_name}; Asset wird nicht als Rollback-Stand gezaehlt."
+            fi
+            rm -f "$validation_dir/$asset_name"
+          done
+
+          if [ "${#valid_bundle_names[@]}" -ge 2 ]; then
+            keep_bundle_names=("${valid_bundle_names[@]:0:2}")
+            for asset_name in "${all_bundle_names[@]}"; do
+              keep=0
+              for keep_name in "${keep_bundle_names[@]}"; do
+                [ "$asset_name" != "$keep_name" ] || keep=1
+              done
+              if [ "$keep" -eq 0 ]; then
+                gh release delete-asset historical-ohlcv "$asset_name" --yes
+              fi
+            done
+            # Legacy-Assets erst entfernen, wenn zwei unabhaengig verifizierte
+            # Bundle-Versionen als aktueller und Rollback-Stand erhalten bleiben.
+            for legacy_asset in historical_ohlcv.sqlite historical_ohlcv_universe.json; do
+              if printf '%s' "$release_assets" | jq -e --arg name "$legacy_asset" 'any(.[]; .name == $name)' >/dev/null; then
+                gh release delete-asset historical-ohlcv "$legacy_asset" --yes
+              fi
+            done
+            echo "OHLCV-Release-Bereinigung PASS: zwei inhaltlich und remote verifizierte Bundles bleiben erhalten."
+          else
+            echo "::warning::Nur ${#valid_bundle_names[@]} gueltige Bundle-Version(en) vorhanden. Alte Bundles und Legacy-Assets bleiben vollstaendig erhalten."
           fi
 
       - name: Trading-Radar-Laufmarker setzen
@@ -605,7 +811,11 @@ jobs:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           OHLCV_FINAL_SYNC: ${{ steps.ohlcv-final-sync.outputs.status || steps.ohlcv-final-sync.outcome || 'missing' }}
           OHLCV_RELEASE_PERSISTENCE: ${{ steps.ohlcv-final-release-save.outcome || 'missing' }}
-          OHLCV_CACHE_PERSISTENCE: ${{ steps.ohlcv-final-cache-save.outcome || 'missing' }}
+          OHLCV_QUEUE_IMPORT: ${{ steps.ohlcv-pending-queue-final.outputs.status || steps.ohlcv-pending-queue-final.outcome || 'missing' }}
+          OHLCV_PRE_SCAN_UPDATE: ${{ steps.ohlcv-pre-scan-update.outcome || 'missing' }}
+          OHLCV_PRE_SCAN_COVERAGE: ${{ steps.ohlcv-pre-scan-coverage.outcome || 'missing' }}
+          OHLCV_PRE_SCAN_POSITION_SYNC: ${{ steps.ohlcv-pre-scan-position-sync.outcome || 'missing' }}
+          OHLCV_PRE_SCAN_POSITION_VERIFY: ${{ steps.ohlcv-pre-scan-position-verify.outcome || 'missing' }}
         run: python Trading_Radar_Alleinauswertung.py
 
       # Auch bei NICHT_FINAL sichern: der erzeugte Registerstand wird zum
@@ -827,6 +1037,7 @@ jobs:
           TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
           TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
+          TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate }}
           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
           TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL }}
@@ -839,6 +1050,7 @@ jobs:
           TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
           TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
+          TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate }}
           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
           TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL }}

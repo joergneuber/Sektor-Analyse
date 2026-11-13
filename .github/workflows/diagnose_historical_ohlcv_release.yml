@@ -11,6 +11,7 @@ env:
   PYTHONUNBUFFERED: "1"
   NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
   NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+  NMM_ALLOW_OHLCV_LEGACY_MIGRATION: ${{ vars.NMM_ALLOW_OHLCV_LEGACY_MIGRATION }}
 
 jobs:
   diagnose-release-db:
@@ -54,21 +55,13 @@ jobs:
           tests/test_ohlcv_invalid_crosscheck.py
           tests/test_ohlcv_target_independent_crosscheck.py
 
-      - name: Echte OHLCV-Datenbank aus Release laden
+      - name: Verifiziertes OHLCV-Release-Bundle wiederherstellen
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release download historical-ohlcv \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern historical_ohlcv.sqlite \
-            --dir .
-          gh release download historical-ohlcv \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern historical_ohlcv_universe.json \
-            --dir . || echo "WARNUNG: Optionales Universe-Asset nicht vorhanden; analyse.py wird als Universe-Quelle verwendet."
-          test -s historical_ohlcv.sqlite
-          ls -lh historical_ohlcv.sqlite
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+        run: bash scripts/restore_ohlcv_release_bundle.sh
 
       - name: Datenbankintegrität, Schema, Handelstagslücken und Ressourcen prüfen
         id: diagnose

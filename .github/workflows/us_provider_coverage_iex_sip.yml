@@ -35,15 +35,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install alpaca-py==0.45.0 pandas yfinance exchange-calendars requests
 
-      - name: Historische OHLCV Release-Dateien read-only herunterladen
+      - name: Verifiziertes OHLCV-Release-Bundle wiederherstellen
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download historical-ohlcv --pattern historical_ohlcv.sqlite --dir . --clobber
-          gh release download historical-ohlcv --pattern historical_ohlcv_universe.json --dir . --clobber
-          test -s historical_ohlcv.sqlite
-          test -s historical_ohlcv_universe.json
-          sha256sum historical_ohlcv.sqlite historical_ohlcv_universe.json
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+          NMM_ALLOW_OHLCV_LEGACY_MIGRATION: ${{ vars.NMM_ALLOW_OHLCV_LEGACY_MIGRATION }}
+        run: bash scripts/restore_ohlcv_release_bundle.sh
 
       - name: Alpaca-IEX-und-historischer-SIP-vs-Yahoo Coverage-Vergleich (read-only)
         env:

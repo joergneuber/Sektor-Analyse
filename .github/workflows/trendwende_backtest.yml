@@ -19,8 +19,9 @@ on:
 jobs:
   trendwende-backtest:
     runs-on: ubuntu-latest
+    # Research-Workflow liest das verifizierte Bundle; nur main.yml darf Releases schreiben.
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Code auschecken
@@ -36,13 +37,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy scipy yfinance alpaca-py==0.45.0 google-auth-oauthlib google-api-python-client google-auth-httplib2 groq google-genai requests lxml xlrd cme-fedwatch openpyxl pytest
 
-      - name: Historische OHLCV-Datenbank aus Release laden
+      - name: Verifiziertes OHLCV-Release-Bundle wiederherstellen
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download historical-ohlcv \
-            --pattern historical_ohlcv.sqlite \
-            --dir . --clobber
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+          NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+          NMM_ALLOW_OHLCV_LEGACY_MIGRATION: ${{ vars.NMM_ALLOW_OHLCV_LEGACY_MIGRATION }}
+        run: bash scripts/restore_ohlcv_release_bundle.sh
 
       - name: Backtest-Regressions-Unit-Tests
         run: python -m pytest -q tests/test_trendwende_backtest.py

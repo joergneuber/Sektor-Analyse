@@ -13,8 +13,11 @@ on:
 
 jobs:
   einzel-check:
+    # Queue-Producer nur auf main; andere Branches werden vom produktiven
+    # Hauptlauf bewusst nicht importiert.
+    if: github.ref == 'refs/heads/main'
     permissions:
-      contents: write
+      contents: read
     runs-on: ubuntu-latest
     env:
       NODE_OPTIONS: "--no-deprecation"
@@ -33,6 +36,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install alpaca-py==0.45.0 pandas google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy google-genai requests
 
+      # NMM_OHLCV_PENDING_QUEUE_SCHEMA: 1
+      # Pro Run wird eine eigene, schema-validierte Pending-Queue angelegt.
+      # Auch eine leere Queue wird archiviert: fehlendes Artifact ist dadurch
+      # von "keine neuen Ticker" unterscheidbar.
+      - name: OHLCV Pending-Queue initialisieren
+        run: python historical_ohlcv_pending_queue.py init
+
       # ----------------------------------------------------------
       # WICHTIG:
       # Vor dem Einzel-Check die bestehende B/C-Beobachtungsliste
@@ -47,6 +57,7 @@ jobs:
         run: python beobachtungsliste_sync.py
 
       - name: Ticker gegen alle drei Strategien prüfen
+        id: einzel-check
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -54,22 +65,30 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python einzel_check.py ${{ github.event.inputs.ticker }}
 
+      # Die Queue wird auch bei einem fehlgeschlagenen Einzel-Check als
+      # Run-Artifact gesichert. Erfolgreich geladene Ticker werden nachgeholt;
+      # ein fehlgeschlagener neuester Scanner-Attempt bleibt im Hauptlauf PARTIAL.
+      - name: OHLCV Pending-Queue finalisieren
+        if: always()
+        env:
+          NMM_PENDING_QUEUE_PRODUCER_OUTCOME: ${{ steps.einzel-check.outcome }}
+          NMM_PENDING_QUEUE_REGISTRATION_FAILED: ${{ steps.einzel-check.outputs.queue_registration_failed || 'false' }}
+          NMM_PENDING_QUEUE_ERROR_TICKER: ${{ steps.einzel-check.outputs.queue_registration_error_ticker || '' }}
+        run: python historical_ohlcv_pending_queue.py finalize --outcome "$NMM_PENDING_QUEUE_PRODUCER_OUTCOME"
+
+      - name: Pending-Queue als Run-Artifact sichern
+        id: pending-queue-artifact
+        if: ${{ always() && hashFiles('historical_ohlcv_pending_queue.json') != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: historical-ohlcv-pending-${{ github.run_id }}-${{ github.run_attempt }}
+          path: historical_ohlcv_pending_queue.json
+          if-no-files-found: error
+          retention-days: 90
+
       # Die von einzel_check.py aktualisierte JSON wird anschließend
       # wieder nach Google Drive gespiegelt.
       - name: Einzel-Check-Beobachtungsliste in Drive sichern
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: python upload_to_drive.py
-
-      # Das dynamische historische Universum wird ebenfalls ausserhalb des
-      # kurzlebigen Runner-Dateisystems persistiert. Der Hauptworkflow kann
-      # denselben Release-Stand beim naechsten Lauf wiederherstellen.
-      - name: Historisches dynamisches Universum dauerhaft archivieren
-        if: ${{ hashFiles('historical_ohlcv_universe.json') != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! gh release view historical-ohlcv >/dev/null 2>&1; then
-            gh release create historical-ohlcv --title "Historical OHLCV Database" --notes "Automatisch gepflegter historischer OHLCV-Research-Bestand."
-          fi
-          gh release upload historical-ohlcv historical_ohlcv_universe.json --clobber
