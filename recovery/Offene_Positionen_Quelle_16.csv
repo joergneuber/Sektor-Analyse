@@ -1,0 +1,17 @@
+﻿Ticker;Name;Sektor;Markt;Waehrung;Richtung;Ideen_Quelle;Einstiegsdatum;Einstieg;Aktueller_Kurs;Stop;TP1;TP2;Status;Ausstiegsdatum;Ausstiegskurs;Performance_Seit_Einstieg%;TP_Hinweis;Alert_Hinweis;TF_Management;Produkt_Typ;OS_WKN;OS_Einstiegskurs;OS_Aktueller_Kurs;OS_Performance%;OS_Quelle;OS_Kurszeit
+VNA.DE;Vonovia SE;Real Estate;EU;EUR;Long;Manuell;06.10.2025;26,14;16,9;1,0;26,14;30,0;Offen;;;;;;;;;;;;;
+5LA1.F;American Lithium Corp.;Basic Materials;EU;EUR;Long;Manuell;11.07.2026;0,53;0,21;0,01;0,53;1,0;Offen;;;;;;;;;;;;;
+EUNL.DE;iShares Core MSCI World UCITS ETF USD (Acc);ETF;EU;EUR;Long;Langfrist;02.02.2022;108,04;127,32;1,0;135,0;150,0;Offen;;;;;;;;;;;;;
+XDEQ.DE;Xtrackers MSCI World Quality UCITS ETF 1C;ETF;EU;EUR;Long;Langfrist;01.09.2022;67,71;81,1;1,0;85,0;100,0;Offen;;;;;;;;;;;;;
+NRJ.PA;Amundi MSCI New Energy UCITS ETF Dist;ETF;EU;EUR;Long;Manuell;03.02.2026;38,04;37,9;1,0;45,0;50,0;Offen;;;;;;;;;;;;;
+PPFD.SG;iShares Physical Metals plc - iShares Physical Silver ETC;;EU;EUR;Long;Langfrist;17.02.2026;57,2;43,93;1,0;57,2;75,0;Offen;;;;;;;;;;;;;
+4LL.F;Teladoc Health, Inc.;Healthcare;EU;EUR;Long;Manuell;10.02.2025;8,31;8,16;6,0;9,0;10,0;Offen;;;;;;;;;;;;;
+DRH.F;DroneShield Limited;Industrials;EU;EUR;Long;Manuell;06.03.2026;2,16;0,78;0,01;2,16;2,5;Offen;;;;;;;;;;;;;
+LSUG.MI;WisdomTree Sugar 2x Daily Leveraged;ETF;EU;EUR;Long;Manuell;18.03.2026;2,06;2,35;2,06;3,0;6,5;Offen;;;;TP1 erreicht am 05.10.2026 | Stop auf Breakeven (2.06) nachgezogen am 05.10.2026;TP1 gemeldet am 05.10.2026;;;;;;;;
+SIX2.DE;Sixt SE;Industrials;EU;EUR;Long;Manuell;24.04.2026;72,0;75,4;72,0;74,0;80,0;Offen;;;;TP1 erreicht am 28.10.2026 | Stop auf Breakeven (72.0) nachgezogen am 28.10.2026;TP1 gemeldet am 28.10.2026;;Optionsschein;UN68EW;0,51;;;nicht_verfügbar;
+SPYI.DE;State Street SPDR MSCI All Country World Investable Market UCITS ETF;ETF;EU;EUR;Long;Langfrist;01.07.2026;11,37;11,42;9,0;15,0;20,0;Offen;;;;;;;;;;;;;
+ENR.DE;Siemens Energy AG;Industrials;EU;EUR;Long;Manuell;27.04.2026;175,0;118,1;1,0;180,0;200,0;Offen;;;;;;;Optionsschein;UN4N9T;1,75;;;nicht_verfügbar;
+BABA;Alibaba Group Holding Limited;Manuell;US;USD;Long;Manuell;07.05.2026;141,0;109,45;90,0;141,0;160,0;Offen;;;;;;;Optionsschein;PM0216;2,2;;;nicht_verfügbar;
+ALB;Albemarle Corporation;Manuell;US;USD;Long;Manuell;12.05.2026;200,0;99,25;85,0;200,0;220,0;Offen;;;;;;;Optionsschein;PM026C;3,99;;;nicht_verfügbar;
+FCX;Freeport-McMoRan Inc.;Basic Materials;US;USD;Long;Manuell;02.10.2026;66,32;59,42;50,0;70,0;75,0;Offen;;;;;;;Optionsschein;PK9UHB;1,19;;;nicht_verfügbar;
+XAU/USD;Gold Spot;Edelmetalle / Gold (Spot);SPOT;USD;Long;Manuell;04.11.2026;4037,0;4023,17;3800,0;4185,0;4270,0;Offen;;;-0,34;;;;Optionsschein;VH2JCC;2,29;;;nicht_verfügbar;

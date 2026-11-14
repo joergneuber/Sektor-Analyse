@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "purpose": "Verified recovery source inventory; counts describe this recovery package, not permanent program constants.",
+  "open_positions": {
+    "source_file": "recovery/Offene_Positionen_Quelle_16.csv",
+    "expected_count": 16,
+    "sha256": "e4b214554b97559a64456679784a576dfdd0df9bc75035c9c6f4ed1ecf8f4d44"
+  },
+  "closed_positions": {
+    "secret_env": "CLOSED_POSITIONS_INITIAL_HISTORY_B64",
+    "expected_count": 51,
+    "sha256": "78937e29edd19050c1dc024f1b8ce28a945f872f379570b1be59250ae36cf648"
+  },
+  "safety": {
+    "minimum_closed_positions": 51,
+    "require_unique_position_keys": true,
+    "require_exact_source_hashes": true,
+    "append_only_history": true
+  }
+}
