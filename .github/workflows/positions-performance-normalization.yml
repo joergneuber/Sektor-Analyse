@@ -19,7 +19,7 @@ on:
 permissions:
   actions: read
   contents: read
-
+l
 concurrency:
   group: positions-performance-normalization-${{ github.ref }}
   cancel-in-progress: false
@@ -79,8 +79,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install \
-            "pandas<3.1" numpy scipy yfinance requests \
+                    pip install \
+            "pandas<3.1" numpy scipy yfinance requests exchange-calendars \
             google-auth-oauthlib google-api-python-client google-auth-httplib2 \
             pytest pyyaml
 
