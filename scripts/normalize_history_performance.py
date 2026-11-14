@@ -27,6 +27,22 @@ PERFORMANCE_COLUMN = "Performance_Seit_Einstieg%"
 PERFORMANCE_INDEX = opc.HISTORY_HEADERS.index(PERFORMANCE_COLUMN)
 SHEET_TITLE = "Geschlossene Positionen"
 TOLERANCE = 0.000001
+
+# Explicit one-time repair authorization for the six discrepancies identified
+# by the read-only preflight on 2026-11-14. Keys use the canonical four-part
+# trade identity; values are the exact currently observed Sheet values in
+# percentage points. A repair is eligible only when every other history field
+# matches the SHA-256-verified private baseline and the independently
+# recalculated target is valid. Any different key/value remains fail-closed.
+AUTHORIZED_PERFORMANCE_REPAIRS = {
+    ("newmont corporation", "NEM", 120.0, "2026-05-12"): 9.87,
+    ("linde plc", "LIN", 478.2, "2026-08-18"): -0.46,
+    ("gold future", "GC=F", 4516.0, "2026-08-20"): 4.47,
+    ("l'air liquide s.a.", "AI.PA", 179.0, "2026-07-03"): -4.63,
+    ("mtu aero engines", "MTX.DE", 361.8, "2026-08-04"): -1.11,
+    ("taiwan semiconductor manufacturing company limited", "TSM", 414.0, "2026-08-06"): -1.54,
+}
+
 if len(opc.HISTORY_HEADERS) != 26 or PERFORMANCE_INDEX != 16:
     raise RuntimeError(
         "Sicherheitsabbruch: Historien-Spaltenvertrag hat sich geändert; "
@@ -41,6 +57,7 @@ class NormalizationPlan:
     expected_by_key: dict[tuple, float]
     existing_by_key: dict[tuple, tuple[int, dict]]
     ratio_keys: list[tuple]
+    repair_keys: list[tuple]
     canonical_keys: list[tuple]
     missing_keys: list[tuple]
     extra_keys: list[tuple]
@@ -127,6 +144,7 @@ def build_normalization_plan(existing_rows: list[list], trusted_history: pd.Data
         existing_by_key[key] = (sheet_row_number, item)
 
     ratio_keys: list[tuple] = []
+    repair_keys: list[tuple] = []
     canonical_keys: list[tuple] = []
     for key in trusted_by_key.keys() & existing_by_key.keys():
         trusted_item = trusted_by_key[key]
@@ -145,11 +163,29 @@ def build_normalization_plan(existing_rows: list[list], trusted_history: pd.Data
             continue
         if key not in expected_by_key:
             continue
+        stored_value = existing_item.get(PERFORMANCE_COLUMN, "")
         try:
             classification = classify_performance_value(
-                existing_item.get(PERFORMANCE_COLUMN, ""), expected_by_key[key]
+                stored_value, expected_by_key[key]
             )
         except RuntimeError as exc:
+            # Repair is deliberately narrower than general normalization:
+            # only the six exact key/value pairs independently evidenced by
+            # the 2026-11-14 read-only preflight may be corrected. The trusted
+            # source itself was validated above against the same independent
+            # calculation; all non-performance fields were compared already.
+            authorized_old_value = AUTHORIZED_PERFORMANCE_REPAIRS.get(key)
+            try:
+                observed_value = _number(stored_value, PERFORMANCE_COLUMN)
+            except RuntimeError:
+                observed_value = None
+            if (
+                authorized_old_value is not None
+                and observed_value is not None
+                and abs(observed_value - authorized_old_value) <= TOLERANCE
+            ):
+                repair_keys.append(key)
+                continue
             validation_errors.append(f"Performance {key!r}: {exc}")
             continue
         (ratio_keys if classification == "ratio" else canonical_keys).append(key)
@@ -191,6 +227,7 @@ def build_normalization_plan(existing_rows: list[list], trusted_history: pd.Data
         expected_by_key=expected_by_key,
         existing_by_key=existing_by_key,
         ratio_keys=sorted(ratio_keys, key=repr),
+        repair_keys=sorted(repair_keys, key=repr),
         canonical_keys=sorted(canonical_keys, key=repr),
         missing_keys=sorted(missing_keys, key=repr),
         extra_keys=sorted(extra_keys, key=repr),
@@ -235,12 +272,19 @@ def _print_report(plan: NormalizationPlan) -> None:
     print("PERFORMANCE_NORMALIZATION_PREFLIGHT")
     print(f"Baseline-Datensätze: {len(plan.trusted_by_key)}")
     print(f"Vorhandene Verhältniswerte: {len(plan.ratio_keys)}")
+    print(f"Explizit autorisierte Performance-Korrekturen: {len(plan.repair_keys)}")
     print(f"Bereits kanonische Prozentpunktwerte: {len(plan.canonical_keys)}")
     print(f"Fehlende Baseline-Datensätze (append-only): {len(plan.missing_keys)}")
     print(f"Zusätzliche spätere Trades (unverändert): {len(plan.extra_keys)}")
     print("Fehler: 0")
     for key in plan.ratio_keys:
-        print(f"UMZUWANDELN: {key!r} -> {plan.expected_by_key[key]:.2f}")
+        print(f"UMZUWANDELN_RATIO: {key!r} -> {plan.expected_by_key[key]:.2f}")
+    for key in plan.repair_keys:
+        print(
+            f"KORRIGIEREN_Q: {key!r} | vorher="
+            f"{AUTHORIZED_PERFORMANCE_REPAIRS[key]:.2f} | "
+            f"nachher={plan.expected_by_key[key]:.2f}"
+        )
     for key in plan.missing_keys:
         print(f"APPEND_FEHLT: {key!r} -> {plan.expected_by_key[key]:.2f}")
     print("Keine Live-Werte außerhalb der ausgelesenen Sheet-Zeilen werden unterstellt.")
@@ -312,10 +356,11 @@ def _append_missing(sheets, spreadsheet_id: str, plan: NormalizationPlan) -> int
 
 
 def _write_performance_cells(sheets, spreadsheet_id: str, plan: NormalizationPlan) -> int:
-    if not plan.ratio_keys:
+    keys_to_write = sorted(set(plan.ratio_keys) | set(plan.repair_keys), key=repr)
+    if not keys_to_write:
         return 0
     data = []
-    for key in plan.ratio_keys:
+    for key in keys_to_write:
         row_number = plan.existing_by_key[key][0]
         data.append({
             "range": f"'{SHEET_TITLE}'!Q{row_number}",
@@ -348,14 +393,15 @@ def verify_post_write(
     if len(after_rows) != len(before_rows) + len(plan.missing_keys):
         raise RuntimeError("LIVE-VERIFIKATION FEHLER: unerwartete Änderung der Historienzeilenanzahl.")
     # Every pre-existing row must remain byte/value-identical outside Q.
-    ratio_row_numbers = {
-        plan.existing_by_key[key][0] for key in plan.ratio_keys
+    performance_row_numbers = {
+        plan.existing_by_key[key][0]
+        for key in set(plan.ratio_keys) | set(plan.repair_keys)
     }
     for index, before in enumerate(before_rows):
         after = after_rows[index]
         before_padded = _pad(before, len(headers))
         after_padded = _pad(after, len(headers))
-        if index >= 2 and index + 1 in ratio_row_numbers:
+        if index >= 2 and index + 1 in performance_row_numbers:
             for col in range(len(headers)):
                 if col != PERFORMANCE_INDEX and before_padded[col] != after_padded[col]:
                     raise RuntimeError(
@@ -371,7 +417,7 @@ def verify_post_write(
         [plan.trusted_by_key[key] for key in plan.trusted_by_key],
         columns=headers,
     ))
-    if after_plan.ratio_keys or after_plan.missing_keys:
+    if after_plan.ratio_keys or after_plan.repair_keys or after_plan.missing_keys:
         raise RuntimeError("LIVE-VERIFIKATION FEHLER: nicht alle Baseline-Werte sind kanonisch vorhanden.")
     if len(after_plan.canonical_keys) != len(plan.trusted_by_key):
         raise RuntimeError("LIVE-VERIFIKATION FEHLER: Baseline-Anzahl/Identität stimmt nicht.")
@@ -408,7 +454,7 @@ def run(*, migrate: bool) -> None:
     if not migrate:
         print("PERFORMANCE_NORMALIZATION_PREFLIGHT=SUCCESS | read-only; keine Schreibzugriffe.")
         return
-    if not plan.ratio_keys and not plan.missing_keys:
+    if not plan.ratio_keys and not plan.repair_keys and not plan.missing_keys:
         print("PERFORMANCE_NORMALIZATION=ALREADY_CANONICAL | keine Schreibzugriffe erforderlich.")
         return
     _backup_and_verify(drive, spreadsheet_id)
@@ -420,7 +466,8 @@ def run(*, migrate: bool) -> None:
     verify_post_write(before_rows, after_rows, plan)
     print(
         "PERFORMANCE_NORMALIZATION=SUCCESS | "
-        f"performance_cells_updated={updated_cells} | appended_rows={appended_rows} | "
+        f"performance_cells_updated={updated_cells} | repaired_cells={len(plan.repair_keys)} | "
+        f"appended_rows={appended_rows} | "
         "all baseline rows verified; backup retained."
     )
 
