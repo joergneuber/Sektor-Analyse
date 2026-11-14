@@ -53,19 +53,39 @@ def _trusted_history(count: int = 51) -> pd.DataFrame:
 
 
 def _sheet_rows(frame: pd.DataFrame, count: int) -> list[list]:
-    live = frame.iloc[:count].copy()
-    for index, row in live.iterrows():
+    """Erzeugt Google-Sheets-Zeilen ohne typisierte Pandas-Zellmutationen.
+
+    Google Sheets liefert formatierte Zellwerte als Strings. Die Berechnung
+    erfolgt deshalb auf Python-Dictionaries und wird anschließend explizit
+    als String serialisiert. Das ist auch mit Pandas 3.x StringDtype kompatibel.
+    """
+    live_rows = frame.iloc[:count].to_dict(orient="records")
+    for row in live_rows:
         entry = opc.parse_number(row.get("Einstieg"))
         close = opc.parse_number(row.get("Ausstiegskurs"))
         direction = str(row.get("Richtung", "Long")).strip().lower()
-        live.at[index, "Performance_Seit_Einstieg%"] = round(
-            opc.performance(entry, close, direction), 2
+        row["Performance_Seit_Einstieg%"] = str(
+            round(opc.performance(entry, close, direction), 2)
         )
     return [
         ["Geschlossene Positionen | Test"],
         opc.HISTORY_HEADERS,
-        *live.values.tolist(),
+        *[
+            [row.get(column, "") for column in opc.HISTORY_HEADERS]
+            for row in live_rows
+        ],
     ]
+
+
+def test_sheet_rows_supports_string_dtype_without_mutating_source():
+    trusted = _trusted_history().astype("str")
+    before = trusted.copy(deep=True)
+
+    rows = _sheet_rows(trusted, 1)
+
+    performance_index = opc.HISTORY_HEADERS.index("Performance_Seit_Einstieg%")
+    assert isinstance(rows[2][performance_index], str)
+    pd.testing.assert_frame_equal(trusted, before)
 
 
 def test_verified_recovery_source_matches_manifest():
@@ -150,7 +170,7 @@ def test_partial_history_with_unknown_record_fails_closed():
     rows = _sheet_rows(trusted, 26)
     outsider = trusted.iloc[0].to_dict()
     outsider.update({"Ticker": "UNKNOWN", "Name": "Not in baseline"})
-    outsider["Performance_Seit_Einstieg%"] = 10.0
+    outsider["Performance_Seit_Einstieg%"] = "10.0"
     rows.append([outsider.get(column, "") for column in opc.HISTORY_HEADERS])
     with pytest.raises(RuntimeError, match="mögliche Schlüsselbeschädigung"):
         plan_history_recovery(
@@ -352,13 +372,13 @@ def test_preflight_only_is_read_only_and_checks_manifest_sources(monkeypatch, ca
         pass
 
     creds = SimpleNamespace(scopes=scopes)
-    monkeypatch.setenv(opc.RECOVERY_HISTORY_ENV, "test-only-placeholder")
+    monkeypatch.setenv(recovery.opc.RECOVERY_HISTORY_ENV, "test-only-placeholder")
     monkeypatch.setenv("TWELVEDATA_API_KEY", "test-only-placeholder")
     monkeypatch.setattr(recovery, "load_recovery_manifest", lambda: manifest)
     monkeypatch.setattr(recovery, "validate_open_recovery_source", lambda manifest: open_frame)
-    monkeypatch.setattr(opc, "_load_private_recovery_history", lambda *args, **kwargs: trusted)
-    monkeypatch.setattr(opc, "google_credentials", lambda: creds)
-    monkeypatch.setattr(opc, "build", lambda api, version, credentials: _Drive() if api == "drive" else _Sheets(), raising=False)
+    monkeypatch.setattr(recovery.opc, "_load_private_recovery_history", lambda *args, **kwargs: trusted)
+    monkeypatch.setattr(recovery.opc, "google_credentials", lambda: creds)
+    monkeypatch.setattr(recovery.opc, "build", lambda api, version, credentials: _Drive() if api == "drive" else _Sheets(), raising=False)
 
     recovery.preflight_only()
     assert "POSITIONS_RECOVERY_PREFLIGHT=SUCCESS" in capsys.readouterr().out
@@ -505,13 +525,13 @@ def test_preflight_rejects_drive_file_scope_without_full_drive_scope(monkeypatch
     manifest = load_recovery_manifest()
     open_frame = validate_open_recovery_source(OPEN_SOURCE_PATH, manifest=manifest)
     trusted = _trusted_history()
-    monkeypatch.setenv(opc.RECOVERY_HISTORY_ENV, "placeholder")
+    monkeypatch.setenv(recovery.opc.RECOVERY_HISTORY_ENV, "placeholder")
     monkeypatch.setenv("TWELVEDATA_API_KEY", "placeholder")
     monkeypatch.setattr(recovery, "load_recovery_manifest", lambda: manifest)
     monkeypatch.setattr(recovery, "validate_open_recovery_source", lambda manifest: open_frame)
-    monkeypatch.setattr(opc, "_load_private_recovery_history", lambda *args, **kwargs: trusted)
+    monkeypatch.setattr(recovery.opc, "_load_private_recovery_history", lambda *args, **kwargs: trusted)
     monkeypatch.setattr(
-        opc, "google_credentials",
+        recovery.opc, "google_credentials",
         lambda: SimpleNamespace(scopes=[
             "https://www.googleapis.com/auth/drive.file",
             "https://www.googleapis.com/auth/spreadsheets",
