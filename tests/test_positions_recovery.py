@@ -298,7 +298,18 @@ def test_recovery_module_entrypoint_uses_project_root_without_pythonpath_injecti
 
 
 
-def test_preflight_only_is_read_only_and_checks_manifest_sources(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        ["https://www.googleapis.com/auth/drive"],
+        [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+        ],
+    ],
+    ids=["full-drive-scope-alone", "drive-and-sheets-scopes"],
+)
+def test_preflight_only_is_read_only_and_checks_manifest_sources(monkeypatch, capsys, scopes):
     from types import SimpleNamespace
     from scripts import restore_positions as recovery
 
@@ -323,10 +334,7 @@ def test_preflight_only_is_read_only_and_checks_manifest_sources(monkeypatch, ca
     class _Sheets:
         pass
 
-    creds = SimpleNamespace(scopes=[
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/spreadsheets",
-    ])
+    creds = SimpleNamespace(scopes=scopes)
     monkeypatch.setenv(opc.RECOVERY_HISTORY_ENV, "test-only-placeholder")
     monkeypatch.setenv("TWELVEDATA_API_KEY", "test-only-placeholder")
     monkeypatch.setattr(recovery, "load_recovery_manifest", lambda: manifest)
