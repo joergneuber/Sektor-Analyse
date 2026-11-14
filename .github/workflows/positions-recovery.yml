@@ -1,0 +1,119 @@
+name: Positionswiederherstellung – manifestgesteuert
+
+on:
+  workflow_dispatch:
+    inputs:
+      bestaetigung:
+        description: "Zuerst PREFLIGHT_ONLY ausführen; erst nach erfolgreicher Prüfung RESTORE auswählen."
+        required: true
+        type: choice
+        default: PREFLIGHT_ONLY
+        options:
+          - PREFLIGHT_ONLY
+          - RESTORE_VERIFIED_POSITIONS
+      preflight_run_id:
+        description: "Pflicht bei RESTORE: Run-ID eines zuvor erfolgreichen PREFLIGHT_ONLY-Laufs auf exakt demselben main-Commit."
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: positions-recovery-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  restore-positions:
+    if: ${{ github.ref == 'refs/heads/main' && (inputs.bestaetigung == 'PREFLIGHT_ONLY' || inputs.bestaetigung == 'RESTORE_VERIFIED_POSITIONS') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+      CLOSED_POSITIONS_INITIAL_HISTORY_B64: ${{ secrets.CLOSED_POSITIONS_INITIAL_HISTORY_B64 }}
+      TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+      PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+      GH_TOKEN: ${{ github.token }}
+      ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+      ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+
+    steps:
+      - name: Vorherigen erfolgreichen Read-only-Preflight nachweisen
+        if: ${{ inputs.bestaetigung == 'RESTORE_VERIFIED_POSITIONS' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREFLIGHT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RESTORE erfordert die Run-ID eines separaten erfolgreichen PREFLIGHT_ONLY-Laufs."
+            exit 1
+          fi
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}")"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .path == ".github/workflows/positions-recovery.yml" and
+            .event == "workflow_dispatch" and
+            .head_branch == "main" and
+            .head_sha == $sha and
+            .status == "completed" and
+            .conclusion == "success"
+          ' <<<"$run_json" >/dev/null || {
+            echo "::error::Preflight-Run fehlt, ist nicht erfolgreich oder gehört nicht zu exakt diesem main-Commit."
+            exit 1
+          }
+          jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}/jobs?per_page=100")"
+          jq -e '
+            [.jobs[].steps[]? | select(.name == "Read-only Preflight – Manifest, Hashes, Secrets und Google-Zugriff")][0].conclusion == "success" and
+            ([.jobs[].steps[]? | select(.name == "Wiederherstellung nur nach separater expliziter Freigabe")][0].conclusion // "missing") == "skipped"
+          ' <<<"$jobs_json" >/dev/null || {
+            echo "::error::Der angegebene Run war kein reiner PREFLIGHT_ONLY-Lauf."
+            exit 1
+          }
+          echo "Separater erfolgreicher Read-only-Preflight für Commit $GITHUB_SHA bestätigt."
+
+      - name: Code auschecken
+        uses: actions/checkout@v5
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install \
+            alpaca-py==0.45.0 \
+            "pandas<3.1" \
+            numpy scipy yfinance requests \
+            exchange-calendars \
+            google-auth-oauthlib google-api-python-client google-auth-httplib2 \
+            pytest pyyaml
+
+      - name: Pflicht-Secrets auf Vorhandensein prüfen
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          required = ("GDRIVE_TOKEN", "CLOSED_POSITIONS_INITIAL_HISTORY_B64")
+          missing = [name for name in required if not os.environ.get(name, "").strip()]
+          if missing:
+              raise SystemExit(
+                  "Sicherheitsabbruch: erforderliche Repository-Secrets fehlen: "
+                  + ", ".join(missing)
+              )
+          print("Pflicht-Secrets vorhanden; Secret-Werte werden nicht ausgegeben.")
+          PY
+
+      - name: Positions-Recovery-Regressionstests
+        run: |
+          python -m pytest -q -W error \
+            tests/test_positions_recovery.py \
+            tests/test_positions_lifecycle.py \
+            tests/test_offene_positionen_check_history_source.py
+
+      - name: Read-only Preflight – Manifest, Hashes, Secrets und Google-Zugriff
+        run: python -m scripts.restore_positions --preflight-only
+
+      - name: Wiederherstellung nur nach separater expliziter Freigabe
+        if: ${{ inputs.bestaetigung == 'RESTORE_VERIFIED_POSITIONS' }}
+        run: python -m scripts.restore_positions
