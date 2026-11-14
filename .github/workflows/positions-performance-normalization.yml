@@ -19,7 +19,7 @@ on:
 permissions:
   actions: read
   contents: read
-l
+
 concurrency:
   group: positions-performance-normalization-${{ github.ref }}
   cancel-in-progress: false
