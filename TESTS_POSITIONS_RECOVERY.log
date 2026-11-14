@@ -1,0 +1,56 @@
+POSITIONS RECOVERY – TESTPROTOKOLL KORRIGIERTE VERSION
+Datum: 2026-11-14
+Repository: joergneuber/Sektor-Analyse
+Branch: main
+Verifizierter Basis-HEAD: aa60b9f134a0b3f683e79ed104a09884de4c0961
+
+1) ZIP / Eingangsdatei
+- ZIP-CRC: PASS
+- Ursprüngliches Paket: 13 Dateien
+- Ursprüngliches ZIP-SHA-256: 691566049e4279b18a8d48c4393aa76736b2ad75d007388e21ef4b1af3e90369
+
+2) Gezielte Positions-/Recovery-Suite
+Command:
+python -m pytest -q -W error tests/test_positions_recovery.py tests/test_positions_lifecycle.py tests/test_offene_positionen_check_history_source.py
+Result:
+109 passed
+Exit: 0
+
+3) Erweiterte Regression
+Command:
+python -m pytest -q tests/test_positions_recovery.py tests/test_positions_lifecycle.py tests/test_offene_positionen_check_history_source.py tests/test_trading_radar_run_evidence.py tests/test_trading_radar_repair_contracts.py tests/test_workflow_dynamic_universe.py
+Result:
+180 passed
+Exit: 0
+
+4) Strenger Zusatzlauf
+Gleiche erweiterte Suite mit -W error:
+180 Tests bestanden, Exit 1 wegen bestehender sqlite3.Connection ResourceWarnings / PytestUnraisableExceptionWarning in OHLCV-/SQLite-Tests.
+Kein Fehler in den gezielten Positions-/Recovery-Tests; diese bestehen mit -W error und Exit 0.
+
+5) Gezielte neue Sicherheitsregressionen
+- Identischer Positionsschlüssel, veränderter Ausstiegskurs: FAIL-CLOSED
+- Identischer Positionsschlüssel, verändertes Ausstiegsdatum: FAIL-CLOSED
+- Identischer Positionsschlüssel, veränderter Status: FAIL-CLOSED
+- Identischer Positionsschlüssel, veränderter Sektor / OS_WKN: FAIL-CLOSED
+- Zahlen-/Datumsdarstellung äquivalent: akzeptiert
+- Zusätzlicher späterer Trade außerhalb Initialbestand: erhalten
+- Doppelte Position nach Datumsnormalisierung: FAIL-CLOSED
+- drive.file ohne vollständigen drive-Scope: FAIL-CLOSED
+- Offener Master mit abweichendem Einstieg: FAIL-CLOSED
+- Workflow ohne gültigen separaten PREFLIGHT_ONLY-Nachweis: blockiert laut YAML-Vertragsprüfung
+
+6) Statische Prüfungen
+- Python compile(): PASS
+- YAML BaseLoader: PASS
+- JSON Manifest: PASS
+- SHA256SUMS: PASS nach Paketfinalisierung
+- Git-Blob-SHA: PASS nach Paketfinalisierung
+- actionlint: nicht installiert
+- vollständige Repository-Suite: nicht abgeschlossen
+- Live Google Drive/Sheets: nicht ausgeführt
+
+7) Schreibaktionen
+- GitHub: keine
+- GitHub Actions Starts: keine
+- Google Drive/Sheets: keine
