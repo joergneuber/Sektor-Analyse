@@ -550,3 +550,155 @@ def test_missing_baseline_rows_append_in_points_and_existing_extra_trades_stay_u
     norm.verify_post_write(before_rows, after_rows, plan)
     q_values = [row[norm.PERFORMANCE_INDEX] for row in captured["payload"]]
     assert all(isinstance(value, (int, float)) for value in q_values)
+
+
+def _six_authorized_mismatch_baseline():
+    """Build the exact six preflight identities with independently valid ratios."""
+    trusted = _baseline()
+    records = [
+        (0, "Newmont Corporation", "NEM", "120.0", "12.05.2026", "131.58", "Long", 9.87, 9.65),
+        (1, "Linde plc", "LIN", "478.2", "18.08.2026", "480.43", "Short", -0.46, -0.47),
+        (2, "Gold Future", "GC=F", "4516.0", "20.08.2026", "4706.0", "Long", 4.47, 4.21),
+        (3, "L'Air Liquide S.A.", "AI.PA", "179.0", "03.07.2026", "171.48", "Long", -4.63, -4.20),
+        (4, "MTU Aero Engines", "MTX.DE", "361.8", "04.08.2026", "366.7", "Long", -1.11, 1.35),
+        (5, "Taiwan Semiconductor Manufacturing Company Limited", "TSM", "414.0", "06.08.2026", "413.57", "Long", -1.54, -0.10),
+    ]
+    old_values = {}
+    for idx, name, ticker, entry, entry_date, close, direction, old, expected in records:
+        trusted.at[idx, "Name"] = name
+        trusted.at[idx, "Ticker"] = ticker
+        trusted.at[idx, "Einstieg"] = entry
+        trusted.at[idx, "Einstiegsdatum"] = entry_date
+        trusted.at[idx, "Ausstiegskurs"] = close
+        trusted.at[idx, "Richtung"] = direction
+        trusted.at[idx, "Performance_Seit_Einstieg%"] = str(expected / 100.0)
+        old_values[ticker] = old
+    rows = _sheet_rows(trusted)
+    # Model the live state from the failing preflight: all unaffected baseline
+    # rows are already canonical percentage points; only the six listed cells
+    # retain their known-wrong values.
+    for idx, row in trusted.iterrows():
+        if idx >= len(records):
+            rows[idx + 2][norm.PERFORMANCE_INDEX] = str(
+                norm.expected_performance_points(row.to_dict())
+            )
+    for idx, *_ in enumerate(records):
+        rows[idx + 2][norm.PERFORMANCE_INDEX] = str(records[idx][7])
+    return trusted, rows, old_values
+
+
+def test_only_six_explicitly_authorized_performance_mismatches_are_repairable():
+    trusted, rows, old_values = _six_authorized_mismatch_baseline()
+    plan = norm.build_normalization_plan(rows, trusted)
+    assert len(plan.repair_keys) == 6
+    assert plan.ratio_keys == []
+    assert plan.missing_keys == []
+    expected_by_ticker = {
+        "NEM": 9.65,
+        "LIN": -0.47,
+        "GC=F": 4.21,
+        "AI.PA": -4.20,
+        "MTX.DE": 1.35,
+        "TSM": -0.10,
+    }
+    assert {key[1]: plan.expected_by_key[key] for key in plan.repair_keys} == expected_by_ticker
+    assert old_values == {"NEM": 9.87, "LIN": -0.46, "GC=F": 4.47,
+                          "AI.PA": -4.63, "MTX.DE": -1.11, "TSM": -1.54}
+
+
+def test_unlisted_performance_mismatch_still_fails_closed():
+    trusted, rows, _ = _six_authorized_mismatch_baseline()
+    rows[8][norm.PERFORMANCE_INDEX] = "99.99"  # unrelated baseline row
+    with pytest.raises(RuntimeError, match="Performance-Preflight"):
+        norm.build_normalization_plan(rows, trusted)
+
+
+def test_authorized_identity_with_unexpected_old_value_still_fails_closed():
+    trusted, rows, _ = _six_authorized_mismatch_baseline()
+    rows[2][norm.PERFORMANCE_INDEX] = "9.88"  # NEM identity, but not the observed value
+    with pytest.raises(RuntimeError, match="Performance-Preflight"):
+        norm.build_normalization_plan(rows, trusted)
+
+
+def test_repair_post_write_verification_allows_only_q_for_six_authorized_rows():
+    trusted, before, _ = _six_authorized_mismatch_baseline()
+    plan = norm.build_normalization_plan(before, trusted)
+    after = [list(row) for row in before]
+    for key in plan.repair_keys:
+        sheet_row = plan.existing_by_key[key][0]
+        after[sheet_row - 1][norm.PERFORMANCE_INDEX] = str(plan.expected_by_key[key])
+    norm.verify_post_write(before, after, plan)
+    tampered = [list(row) for row in after]
+    tampered[2][1] = "tampered"
+    with pytest.raises(RuntimeError, match="außerhalb Q geändert"):
+        norm.verify_post_write(before, tampered, plan)
+
+
+def test_repair_write_targets_only_q_cells_and_expected_values():
+    trusted, rows, _ = _six_authorized_mismatch_baseline()
+    plan = norm.build_normalization_plan(rows, trusted)
+    captured = {}
+
+    class Request:
+        def execute(self):
+            return {"totalUpdatedCells": 6}
+
+    class Values:
+        def batchUpdate(self, **kwargs):
+            captured.update(kwargs)
+            return Request()
+
+    class Spreadsheets:
+        def values(self):
+            return Values()
+
+    sheets = type("Sheets", (), {"spreadsheets": lambda self: Spreadsheets()})()
+    assert norm._write_performance_cells(sheets, "master", plan) == 6
+    data = captured["body"]["data"]
+    assert len(data) == 6
+    assert all(item["range"].startswith("'Geschlossene Positionen'!Q") for item in data)
+    assert {float(item["values"][0][0]) for item in data} == {
+        9.65, -0.47, 4.21, -4.20, 1.35, -0.10
+    }
+
+
+def test_migration_repairs_six_cells_only_after_verified_backup(monkeypatch):
+    trusted, before, _ = _six_authorized_mismatch_baseline()
+    live_rows = [list(row) for row in before]
+    events = []
+    monkeypatch.setattr(norm, "_load_trusted_history", lambda: trusted)
+    monkeypatch.setattr(
+        opc, "google_credentials",
+        lambda: type("Creds", (), {"scopes": ["https://www.googleapis.com/auth/drive"]})(),
+    )
+    monkeypatch.setattr(opc, "build", lambda *a, **k: object(), raising=False)
+    monkeypatch.setattr(norm, "_get_master", lambda drive: {"id": "master"})
+    monkeypatch.setattr(norm, "_sheet_id", lambda sheets, spreadsheet_id: 7)
+    monkeypatch.setattr(norm, "_read_history", lambda sheets, spreadsheet_id: live_rows)
+
+    def verified_backup(*args, **kwargs):
+        events.append("backup")
+        return {"id": "verified-backup"}
+
+    def write_cells(sheets, spreadsheet_id, plan):
+        assert events == ["backup"]
+        events.append("write")
+        for key in plan.repair_keys:
+            row_number = plan.existing_by_key[key][0]
+            live_rows[row_number - 1][norm.PERFORMANCE_INDEX] = str(
+                plan.expected_by_key[key]
+            )
+        return len(plan.repair_keys)
+
+    def append_missing(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(norm, "_backup_and_verify", verified_backup)
+    monkeypatch.setattr(norm, "_write_performance_cells", write_cells)
+    monkeypatch.setattr(norm, "_append_missing", append_missing)
+    norm.run(migrate=True)
+    assert events == ["backup", "write"]
+    final_plan = norm.build_normalization_plan(live_rows, trusted)
+    assert final_plan.repair_keys == []
+    assert final_plan.ratio_keys == []
+    assert len(final_plan.canonical_keys) == 51
