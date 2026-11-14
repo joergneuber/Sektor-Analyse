@@ -1280,6 +1280,35 @@ def performance(entry: Optional[float], close: Optional[float], direction: str) 
     return -raw if str(direction).strip().lower() == "short" else raw
 
 
+def canonical_closed_performance_points(row) -> float:
+    """Validiert und liefert Performance in Prozentpunkten für eine neue Archivzeile.
+
+    Die Einheit wird ausschließlich durch den Vergleich beider möglichen
+    Darstellungen mit der unabhängigen Long-/Short-Neuberechnung erkannt.
+    Es gibt keine Betragsschwelle oder automatische Skalierungsheuristik.
+    """
+    entry = parse_number(row.get("Einstieg"))
+    close = parse_number(row.get("Ausstiegskurs"))
+    direction = str(row.get("Richtung", "")).strip().lower()
+    stored = parse_number(row.get("Performance_Seit_Einstieg%"))
+    if entry is None or close is None or entry <= 0 or close <= 0:
+        raise RuntimeError("Sicherheitsabbruch: neue Historienzeile benötigt gültigen positiven Einstieg und Ausstiegskurs.")
+    if direction not in {"long", "short"}:
+        raise RuntimeError("Sicherheitsabbruch: neue Historienzeile benötigt Richtung Long oder Short.")
+    if stored is None:
+        raise RuntimeError("Sicherheitsabbruch: neue Historienzeile besitzt keinen gültigen Performance-Wert.")
+    expected = round(performance(entry, close, direction), 2)
+    ratio_matches = round(float(stored) * 100.0, 2) == expected
+    points_match = round(float(stored), 2) == expected
+    if ratio_matches == points_match:
+        reason = "mehrdeutig" if ratio_matches else "weder Verhältniswert noch Prozentpunktwert"
+        raise RuntimeError(
+            f"Sicherheitsabbruch: neue Historienzeile hat einen {reason} "
+            f"(gespeichert={stored!r}, Soll={expected:.2f})."
+        )
+    return expected
+
+
 def make_row(row, tech: TechnicalResult) -> dict:
     ticker = str(row.get("Ticker", "")).strip()
     name = str(row.get("Name", "")).strip() or ticker
@@ -2139,6 +2168,7 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
         key = _history_key(item)
         if key in existing_keys or key in seen_new:
             continue
+        item["Performance_Seit_Einstieg%"] = canonical_closed_performance_points(item)
         seen_new.add(key)
         rows_to_append.append(item)
 
@@ -2151,6 +2181,7 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
             key = _history_key(item)
             if not str(item.get("Ticker", "")).strip() or key in seen:
                 continue
+            item["Performance_Seit_Einstieg%"] = canonical_closed_performance_points(item)
             seen.add(key)
             all_items.append(item)
         if not all_items:
