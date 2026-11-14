@@ -56,6 +56,8 @@ def test_update_database_bootstrap_and_incremental_without_network(tmp_path, mon
     import historical_ohlcv as ho
     db = tmp_path / "historical_ohlcv.sqlite"
     source = tmp_path / "analyse.py"
+    dynamic_universe = tmp_path / "historical_ohlcv_universe.json"
+    dynamic_universe.write_text('{"version":1,"tickers":[]}\n', encoding="utf-8")
     source.write_text('sektoren_map={"XLK":"Technologie"}\nsektoren_aktien={"XLK":["AAA"]}\neu_sektoren_etf={"EXSA.DE":"EU"}\ndax_aktien={"EU":["SAP.DE"]}\neu_benchmark_ticker="EXSA.DE"\ndef get_index_benchmark_yf(t,l): pass\n', encoding="utf-8")
     idx = pd.date_range("2026-09-17", periods=2, freq="B")
     frame = pd.DataFrame({"Open":[1,2],"High":[2,3],"Low":[0,1],"Close":[1.5,2.5],"Adj Close":[1.5,2.5],"Volume":[10,11]}, index=idx)
@@ -67,12 +69,12 @@ def test_update_database_bootstrap_and_incremental_without_network(tmp_path, mon
     monkeypatch.setattr(ho, "BATCH_SIZE", 10)
     monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
     monkeypatch.setattr(ho, "_download_batch", lambda tickers, start=None, end=None: {t: frame for t in tickers})
-    stats = ho.update_database(db, source)
+    stats = ho.update_database(db, source, dynamic_universe)
     assert stats["missing"] >= 2
     assert stats["updated"] >= 2
-    cov = ho.coverage(db, source)
+    cov = ho.coverage(db, source, dynamic_universe)
     assert (cov["Status"] == "OK").all()
-    stats2 = ho.update_database(db, source)
+    stats2 = ho.update_database(db, source, dynamic_universe)
     assert stats2["missing"] == 0
 
 
