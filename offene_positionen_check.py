@@ -58,6 +58,7 @@ except Exception:
 INPUT_FILE = "Offene_Positionen.csv"
 OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
+# Legacy-Fallback nur solange kein recovery/recovery_manifest.json vorhanden ist.
 RECOVERY_HISTORY_SHA256 = "78937e29edd19050c1dc024f1b8ce28a945f872f379570b1be59250ae36cf648"
 RECOVERY_HISTORY_ENV = "CLOSED_POSITIONS_INITIAL_HISTORY_B64"
 MASTER_INIT_PREFIX = f"{DRIVE_NAME}.__INIT_"
@@ -1390,8 +1391,18 @@ def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
     return closed[HISTORY_HEADERS].copy()
 
 
-def _load_private_recovery_history(encoded_payload: str) -> pd.DataFrame:
-    """Lädt die private 51er-Wiederherstellung ausschließlich aus einem Actions-Secret."""
+def _load_private_recovery_history(
+    encoded_payload: str,
+    *,
+    expected_sha256: str | None = None,
+    minimum_rows: int | None = None,
+) -> pd.DataFrame:
+    """Lädt die private Wiederherstellung aus einem Actions-Secret.
+
+    Standardaufrufe behalten den bisherigen Hash und Mindestbestand. Der
+    dedizierte Recovery-Workflow darf beides ausschließlich aus seinem
+    versionierten Recovery-Manifest übergeben.
+    """
     compact = re.sub(r"\s+", "", str(encoded_payload or ""))
     if not compact:
         raise RuntimeError("Privater Wiederherstellungsbestand ist leer.")
@@ -1401,7 +1412,12 @@ def _load_private_recovery_history(encoded_payload: str) -> pd.DataFrame:
         raise RuntimeError("Privater Wiederherstellungsbestand ist kein gültiges Base64.") from exc
 
     actual_sha256 = hashlib.sha256(raw).hexdigest()
-    if actual_sha256 != RECOVERY_HISTORY_SHA256:
+    expected_sha256 = expected_sha256 or RECOVERY_HISTORY_SHA256
+    minimum_rows = max(
+        MINIMUM_PROTECTED_HISTORY_ROWS,
+        MINIMUM_PROTECTED_HISTORY_ROWS if minimum_rows is None else int(minimum_rows),
+    )
+    if actual_sha256 != expected_sha256:
         raise RuntimeError(
             "Privater Wiederherstellungsbestand hat einen unerwarteten SHA-256-Hash; "
             "Import aus Sicherheitsgründen abgebrochen."
@@ -1424,10 +1440,10 @@ def _load_private_recovery_history(encoded_payload: str) -> pd.DataFrame:
     initial = initial[
         initial["Status"].astype(str).str.strip().str.lower().isin({"gestoppt", "verkauft"})
     ].copy()
-    if len(initial) < MINIMUM_PROTECTED_HISTORY_ROWS:
+    if len(initial) < minimum_rows:
         raise RuntimeError(
             "Private Wiederherstellungs-CSV enthält weniger als den geschützten "
-            f"Mindestbestand ({len(initial)} < {MINIMUM_PROTECTED_HISTORY_ROWS})."
+            f"Mindestbestand ({len(initial)} < {minimum_rows})."
         )
     _closed_position_keys(initial)
     print(
@@ -1437,11 +1453,64 @@ def _load_private_recovery_history(encoded_payload: str) -> pd.DataFrame:
     return initial[HISTORY_HEADERS].copy()
 
 
+
+def _private_recovery_integrity_config() -> tuple[str, int]:
+    """Liefert Hash und exakte Anzahl aus dem Recovery-Manifest.
+
+    Das Manifest ist nach Installation des Recovery-Pakets die gemeinsame
+    Quelle für den Recovery-Workflow und spätere reguläre Läufe. Ohne Manifest
+    bleibt die bisherige Hash-/Mindestbestandsregel als Rückwärtskompatibilität.
+    """
+    manifest_path = os.path.join("recovery", "recovery_manifest.json")
+    if not os.path.isfile(manifest_path):
+        return RECOVERY_HISTORY_SHA256, MINIMUM_PROTECTED_HISTORY_ROWS
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if manifest.get("schema_version") != 1:
+            raise ValueError("unbekannte schema_version")
+        closed = manifest["closed_positions"]
+        expected_hash = str(closed["sha256"]).lower()
+        expected_count = closed["expected_count"]
+        safety = manifest.get("safety") or {}
+        if (
+            safety.get("minimum_closed_positions") != MINIMUM_PROTECTED_HISTORY_ROWS
+            or safety.get("require_unique_position_keys") is not True
+            or safety.get("require_exact_source_hashes") is not True
+            or safety.get("append_only_history") is not True
+        ):
+            raise ValueError("Sicherheitsregeln im Manifest sind nicht unverändert")
+    except Exception as exc:
+        raise RuntimeError("Recovery-Manifest für private Historie ist ungültig oder unvollständig.") from exc
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        raise RuntimeError("Recovery-Manifest enthält keinen gültigen SHA-256-Hash der privaten Historie.")
+    if (
+        not isinstance(expected_count, int)
+        or isinstance(expected_count, bool)
+        or expected_count < MINIMUM_PROTECTED_HISTORY_ROWS
+    ):
+        raise RuntimeError(
+            "Recovery-Manifest unterschreitet den geschützten Mindestbestand "
+            f"von {MINIMUM_PROTECTED_HISTORY_ROWS} geschlossenen Positionen."
+        )
+    return expected_hash, expected_count
+
 def load_initial_history(initial_csv: str = "Geschlossene Positionen_Initialbestand.csv") -> pd.DataFrame:
     """Lädt die private Wiederherstellung, sofern per Secret bereitgestellt, sonst den Repo-Bestand."""
     private_payload = os.getenv(RECOVERY_HISTORY_ENV, "").strip()
     if private_payload:
-        return _load_private_recovery_history(private_payload)
+        expected_hash, expected_count = _private_recovery_integrity_config()
+        initial = _load_private_recovery_history(
+            private_payload,
+            expected_sha256=expected_hash,
+            minimum_rows=expected_count,
+        )
+        if len(initial) != expected_count:
+            raise RuntimeError(
+                "Private Wiederherstellungshistorie weicht in der Anzahl vom "
+                f"Recovery-Manifest ab ({len(initial)} != {expected_count})."
+            )
+        return initial
 
     if not os.path.exists(initial_csv):
         print(f"HISTORIE: Initialbestand nicht vorhanden: {initial_csv}")
@@ -2164,7 +2233,7 @@ def _rollback_productive_swap(sheets, spreadsheet_id: str, target_title: str, ba
         )
 
 def _validate_new_master_history(closed_df: pd.DataFrame) -> None:
-    """Verhindert das Anlegen eines neuen Masters ohne vollständige 51er-Historie."""
+    """Verhindert neue Master ohne den geschützten Mindestbestand an Historie."""
     if closed_df is None or len(closed_df) < MINIMUM_PROTECTED_HISTORY_ROWS:
         count = 0 if closed_df is None else len(closed_df)
         raise RuntimeError(
@@ -2643,7 +2712,10 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
         f for f in files
         if f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
     ]
-    if len(sheet_files) > 1 or (not sheet_files and len(files) > 1):
+    # Bereits zwei Treffer sind mehrdeutig – auch Google-Sheet + CSV.
+    # Ein MIME-Vorrang würde eine konkurrierende Quelle verdecken und kann
+    # beim anschließenden Backup/Swap die falsche Datei unangetastet lassen.
+    if len(files) > 1:
         raise RuntimeError(
             "Sicherheitsabbruch: mehrere gleichnamige Quelldateien in Google Drive; "
             "es wird keine Datei willkürlich ausgewählt."
