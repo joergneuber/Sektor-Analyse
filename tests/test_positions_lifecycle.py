@@ -373,7 +373,7 @@ def test_source_sync_refuses_ambiguous_master_and_keeps_old_source_backup():
     start = source.index("def _sync_cleaned_source_to_drive")
     end = source.index("def _remove_closed_from_source", start)
     active = source[start:end]
-    assert "if len(sheet_files) > 1" in active
+    assert "if len(files) > 1" in active
     assert "es wird keine Datei willkürlich ausgewählt" in active
     assert "Drive-Quellbackup bleibt dauerhaft erhalten" in active
     assert "drive.files().delete(fileId=backup_id)" not in active
@@ -433,6 +433,7 @@ def _recovery_fixture_frame(count=51, status="Gestoppt"):
 
 
 def test_private_recovery_history_loads_51_records_from_verified_secret(monkeypatch):
+    monkeypatch.setattr(mod, "_private_recovery_integrity_config", lambda: (mod.RECOVERY_HISTORY_SHA256, 51))
     import base64
     import hashlib
     frame = _recovery_fixture_frame(51)
@@ -448,6 +449,7 @@ def test_private_recovery_history_loads_51_records_from_verified_secret(monkeypa
 
 
 def test_private_recovery_history_accepts_base64_whitespace(monkeypatch):
+    monkeypatch.setattr(mod, "_private_recovery_integrity_config", lambda: (mod.RECOVERY_HISTORY_SHA256, 51))
     import base64
     import hashlib
 
@@ -466,6 +468,7 @@ def test_private_recovery_history_accepts_base64_whitespace(monkeypatch):
 
 
 def test_private_recovery_history_rejects_wrong_sha256(monkeypatch):
+    monkeypatch.setattr(mod, "_private_recovery_integrity_config", lambda: (mod.RECOVERY_HISTORY_SHA256, 51))
     import base64
     raw = _recovery_fixture_frame(51).to_csv(sep=";", index=False).encode("utf-8")
     monkeypatch.setenv(mod.RECOVERY_HISTORY_ENV, base64.b64encode(raw).decode("ascii"))
@@ -476,6 +479,7 @@ def test_private_recovery_history_rejects_wrong_sha256(monkeypatch):
 
 
 def test_private_recovery_history_rejects_less_than_51_and_open_status(monkeypatch):
+    monkeypatch.setattr(mod, "_private_recovery_integrity_config", lambda: (mod.RECOVERY_HISTORY_SHA256, 51))
     import base64
     import hashlib
     short = _recovery_fixture_frame(50)
@@ -738,3 +742,48 @@ def test_upsert_new_master_with_27_records_aborts_before_drive_create(monkeypatc
     short_history = _recovery_fixture_frame(27)
     with pytest.raises(RuntimeError, match="27 < 51"):
         mod.upsert_google_sheet(open_df, short_history, creds=object())
+
+
+@pytest.mark.parametrize(
+    "candidate_files",
+    [
+        [
+            {"id": "sheet-1", "name": "Offene_Positionen", "mimeType": mod.GOOGLE_SHEETS_MIME_TYPE},
+            {"id": "csv-1", "name": "Offene_Positionen.csv", "mimeType": "text/csv"},
+        ],
+        [
+            {"id": "sheet-1", "name": "Offene_Positionen", "mimeType": mod.GOOGLE_SHEETS_MIME_TYPE},
+            {"id": "sheet-2", "name": "Offene_Positionen.csv", "mimeType": mod.GOOGLE_SHEETS_MIME_TYPE},
+        ],
+    ],
+)
+def test_source_sync_rejects_mixed_or_duplicate_candidates_before_any_drive_write(
+    monkeypatch, tmp_path, candidate_files
+):
+    class Request:
+        def execute(self):
+            return {"files": candidate_files}
+
+    class Files:
+        def list(self, **kwargs):
+            return Request()
+
+        def create(self, **kwargs):
+            raise AssertionError("Bei mehrdeutiger Quelle darf keine Datei erstellt werden.")
+
+        def update(self, **kwargs):
+            raise AssertionError("Bei mehrdeutiger Quelle darf keine Datei umbenannt werden.")
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    def fake_build(service, version, credentials=None):
+        return Drive() if service == "drive" else object()
+
+    monkeypatch.setattr(mod, "build", fake_build, raising=False)
+    source = tmp_path / "Offene_Positionen.csv"
+    source.write_text("Ticker;Status\nAAA;Offen\n", encoding="utf-8-sig")
+
+    with pytest.raises(RuntimeError, match="mehrere gleichnamige Quelldateien"):
+        mod._sync_cleaned_source_to_drive(str(source), creds=object())
