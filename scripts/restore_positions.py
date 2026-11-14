@@ -453,7 +453,13 @@ def preflight_only() -> None:
             "PREFLIGHT-Abbruch: GDRIVE_TOKEN benötigt den vollständigen "
             f"Google-Drive-Scope {required_drive_scope}.{hint}"
         )
-    if granted_scopes and required_sheets_scope not in granted_scopes:
+    # Der vollständige Drive-Scope umfasst auch den Zugriff auf Google Sheets.
+    # Ein zusätzlicher spreadsheets-Scope ist daher nicht zwingend erforderlich.
+    has_sheets_access = (
+        required_sheets_scope in granted_scopes
+        or required_drive_scope in granted_scopes
+    )
+    if not has_sheets_access:
         raise RuntimeError("PREFLIGHT-Abbruch: GDRIVE_TOKEN besitzt keinen bestätigten Sheets-Schreibscope.")
     if not granted_scopes:
         raise RuntimeError(
