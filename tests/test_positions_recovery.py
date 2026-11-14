@@ -37,8 +37,8 @@ def _trusted_history(count: int = 51) -> pd.DataFrame:
             "TP2": "",
             "Status": "Gestoppt",
             "Ausstiegsdatum": "02.02.2026",
-            "Ausstiegskurs": f"{index + 1},00",
-            "Performance_Seit_Einstieg%": "",
+            "Ausstiegskurs": f"{(index + 1) * 1.1:.2f}",
+            "Performance_Seit_Einstieg%": "0,10",
             "TP_Hinweis": "",
             "Alert_Hinweis": "",
             "Produkt_Typ": "",
@@ -53,10 +53,18 @@ def _trusted_history(count: int = 51) -> pd.DataFrame:
 
 
 def _sheet_rows(frame: pd.DataFrame, count: int) -> list[list]:
+    live = frame.iloc[:count].copy()
+    for index, row in live.iterrows():
+        entry = opc.parse_number(row.get("Einstieg"))
+        close = opc.parse_number(row.get("Ausstiegskurs"))
+        direction = str(row.get("Richtung", "Long")).strip().lower()
+        live.at[index, "Performance_Seit_Einstieg%"] = round(
+            opc.performance(entry, close, direction), 2
+        )
     return [
         ["Geschlossene Positionen | Test"],
         opc.HISTORY_HEADERS,
-        *frame.iloc[:count].values.tolist(),
+        *live.values.tolist(),
     ]
 
 
@@ -142,8 +150,9 @@ def test_partial_history_with_unknown_record_fails_closed():
     rows = _sheet_rows(trusted, 26)
     outsider = trusted.iloc[0].to_dict()
     outsider.update({"Ticker": "UNKNOWN", "Name": "Not in baseline"})
+    outsider["Performance_Seit_Einstieg%"] = 10.0
     rows.append([outsider.get(column, "") for column in opc.HISTORY_HEADERS])
-    with pytest.raises(RuntimeError, match="weder eine Teilmenge"):
+    with pytest.raises(RuntimeError, match="mögliche Schlüsselbeschädigung"):
         plan_history_recovery(
             rows, trusted, headers=opc.HISTORY_HEADERS,
             key_fn=opc._history_key, minimum_count=len(trusted),
@@ -182,23 +191,31 @@ def test_history_must_be_exactly_51_rows():
         )
 
 
-def test_mixed_incomplete_history_fails_closed():
+def test_mixed_incomplete_history_with_later_trade_is_appendable():
     trusted = _trusted_history()
     mixed = trusted.iloc[:26].copy()
     outsider = trusted.iloc[0].to_dict()
-    outsider.update({"Ticker": "UNKNOWN", "Name": "Not in baseline"})
+    outsider.update({
+        "Ticker": "LATER", "Name": "Later additional trade",
+        "Ausstiegsdatum": "01.11.2026", "Ausstiegskurs": "150,00",
+        "Performance_Seit_Einstieg%": "0,10",
+    })
     mixed = pd.concat([mixed, pd.DataFrame([outsider])], ignore_index=True)
-    with pytest.raises(RuntimeError, match="weder eine Teilmenge"):
-        plan_history_recovery(
-            _sheet_rows(mixed, len(mixed)), trusted, headers=opc.HISTORY_HEADERS,
-            key_fn=opc._history_key, minimum_count=len(trusted),
-        )
+    existing_keys, missing = plan_history_recovery(
+        _sheet_rows(mixed, len(mixed)), trusted, headers=opc.HISTORY_HEADERS,
+        key_fn=opc._history_key, minimum_count=len(trusted),
+    )
+    assert len(existing_keys) == 27
+    assert len(missing) == 25
 
 
 def test_full_baseline_with_additional_closed_trades_is_preserved():
     trusted = _trusted_history()
     extra = trusted.iloc[0].to_dict()
-    extra.update({"Ticker": "LATER", "Name": "Later additional trade"})
+    extra.update({
+        "Ticker": "LATER", "Name": "Later additional trade",
+        "Ausstiegsdatum": "01.11.2026", "Ausstiegskurs": "150,00",
+    })
     existing = pd.concat([trusted, pd.DataFrame([extra])], ignore_index=True)
     existing_keys, missing = plan_history_recovery(
         _sheet_rows(existing, 52), trusted, headers=opc.HISTORY_HEADERS,
@@ -445,7 +462,7 @@ def test_existing_history_accepts_equivalent_sheet_number_and_date_rendering():
     rows = _sheet_rows(trusted, 51)
     rows[2][opc.HISTORY_HEADERS.index("Einstieg")] = "1.00"
     rows[2][opc.HISTORY_HEADERS.index("Einstiegsdatum")] = "2026-01-01"
-    rows[2][opc.HISTORY_HEADERS.index("Ausstiegskurs")] = "1.00"
+    rows[2][opc.HISTORY_HEADERS.index("Ausstiegskurs")] = "1.10"
     rows[2][opc.HISTORY_HEADERS.index("Ausstiegsdatum")] = "2026-02-02"
     existing_keys, missing = plan_history_recovery(
         rows,
@@ -587,3 +604,44 @@ def test_date_format_variants_do_not_hide_duplicate_historical_positions():
             key_fn=opc._history_key,
             minimum_count=len(trusted),
         )
+
+
+def test_recovery_requires_existing_master_performance_to_be_canonical_points():
+    trusted = _trusted_history()
+    rows = _sheet_rows(trusted, 51)
+    rows[2][opc.HISTORY_HEADERS.index("Performance_Seit_Einstieg%")] = "0,10"
+    with pytest.raises(RuntimeError, match="Sheet=ratio"):
+        plan_history_recovery(
+            rows, trusted, headers=opc.HISTORY_HEADERS,
+            key_fn=opc._history_key, minimum_count=len(trusted),
+        )
+
+
+def test_recovery_accepts_private_ratio_source_after_live_sheet_is_normalized():
+    trusted = _trusted_history()
+    existing_keys, missing = plan_history_recovery(
+        _sheet_rows(trusted, 51), trusted, headers=opc.HISTORY_HEADERS,
+        key_fn=opc._history_key, minimum_count=len(trusted),
+    )
+    assert len(existing_keys) == 51
+    assert missing == []
+
+
+def test_partial_baseline_with_real_later_trade_is_appendable_and_preserved():
+    trusted = _trusted_history()
+    partial = trusted.iloc[:26].copy()
+    later = trusted.iloc[0].to_dict()
+    later.update({
+        "Ticker": "LATER", "Name": "Later additional trade",
+        "Einstiegsdatum": "01.11.2026", "Einstieg": "150,00",
+        "Ausstiegskurs": "165,00", "Ausstiegsdatum": "10.11.2026",
+        "Performance_Seit_Einstieg%": "0,10",
+    })
+    existing = pd.concat([partial, pd.DataFrame([later])], ignore_index=True)
+    existing_keys, missing = plan_history_recovery(
+        _sheet_rows(existing, len(existing)), trusted,
+        headers=opc.HISTORY_HEADERS, key_fn=opc._history_key,
+        minimum_count=len(trusted),
+    )
+    assert len(existing_keys) == 27
+    assert len(missing) == 25

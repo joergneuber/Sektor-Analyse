@@ -18,9 +18,11 @@ def row(ticker, name, entry_date, entry, status="Gestoppt"):
         "Name": name,
         "Einstiegsdatum": entry_date,
         "Einstieg": entry,
+        "Richtung": "Long",
         "Status": status,
         "Ausstiegsdatum": "10.09.2026",
         "Ausstiegskurs": "60.00",
+        "Performance_Seit_Einstieg%": round((60.0 - float(entry)) / float(entry) * 100.0, 2),
     })
     return data
 
@@ -192,6 +194,8 @@ def test_productive_history_path_allows_same_exit_for_two_nem_trades(monkeypatch
     nem_2 = row("NEM", "Newmont Corporation", "05.09.2026", "140.00")
     nem_1["Ausstiegskurs"] = "110.00"
     nem_2["Ausstiegskurs"] = "110.00"
+    nem_1["Performance_Seit_Einstieg%"] = round((110.0 - 130.0) / 130.0 * 100.0, 2)
+    nem_2["Performance_Seit_Einstieg%"] = round((110.0 - 140.0) / 140.0 * 100.0, 2)
 
     fake = _FakeSheets(_history_sheet_rows())
     monkeypatch.setattr(mod, "_format_history_range", lambda *args, **kwargs: None)
