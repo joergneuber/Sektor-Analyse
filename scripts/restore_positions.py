@@ -82,6 +82,28 @@ def _normalize_history_value(column: str, value) -> tuple:
     return ("text", text)
 
 
+def _classify_performance_unit(row: dict) -> str | None:
+    """Classify a stored performance value against the trade's independent return.
+
+    The recovery source may contain ratio values, but an existing live Sheet
+    must already use canonical percentage points before normal recovery proceeds.
+    """
+    entry = opc.parse_number(row.get("Einstieg"))
+    close = opc.parse_number(row.get("Ausstiegskurs"))
+    stored = opc.parse_number(row.get("Performance_Seit_Einstieg%"))
+    direction = str(row.get("Richtung", "")).strip().lower()
+    if entry is None or close is None or entry <= 0 or close <= 0 or stored is None:
+        return None
+    if direction not in {"long", "short"}:
+        return None
+    expected = round(opc.performance(entry, close, direction), 2)
+    ratio_matches = round(float(stored) * 100.0, 2) == expected
+    points_match = round(float(stored), 2) == expected
+    if ratio_matches == points_match:
+        return None
+    return "ratio" if ratio_matches else "points"
+
+
 def plan_history_recovery(
     existing_rows: list[list],
     trusted_history: pd.DataFrame,
@@ -125,12 +147,8 @@ def plan_history_recovery(
             "Sicherheitsabbruch: vorhandene Historie enthält doppelte Positionsschlüssel "
             "nach Normalisierung der Datumsdarstellung."
         )
-    if not existing_keys.issubset(trusted_keys) and not trusted_keys.issubset(existing_keys):
-        raise RuntimeError(
-            "Sicherheitsabbruch: vorhandene Historie ist weder eine Teilmenge des "
-            "verifizierten Ausgangsbestands noch enthält sie dessen vollständige "
-            "Schlüssel. Keine automatische Zusammenführung."
-        )
+    # Zusätzliche spätere Trades bleiben erhalten. Auch bei einer nur teilweise
+    # vorhandenen Baseline dürfen sie die append-only Ergänzung nicht blockieren.
 
     # Schlüsselgleichheit beweist nicht die inhaltliche Integrität eines Trades.
     # Jeder bereits vorhandene Initialdatensatz muss deshalb über ALLE
@@ -148,15 +166,43 @@ def plan_history_recovery(
         key = _canonical_recovery_key(key_fn(item))
         existing_by_key[key] = item
 
+    identity_fields = {"Name", "Ticker", "Einstieg", "Einstiegsdatum", "Performance_Seit_Einstieg%"}
+    comparison_fields = [column for column in headers if column not in identity_fields]
+    for extra_key in existing_keys - trusted_keys:
+        extra_item = existing_by_key[extra_key]
+        for baseline_key, baseline_item in trusted_by_key.items():
+            if all(
+                _normalize_history_value(column, extra_item.get(column, ""))
+                == _normalize_history_value(column, baseline_item.get(column, ""))
+                for column in comparison_fields
+            ):
+                raise RuntimeError(
+                    "Sicherheitsabbruch: unbekannter Historien-Schlüssel ähnelt einer "
+                    "geschützten Baseline außerhalb der Identitätsfelder; mögliche "
+                    f"Schlüsselbeschädigung ({extra_key!r} gegenüber {baseline_key!r})."
+                )
+
     mismatches = []
     for key in existing_keys & trusted_keys:
         trusted_item = trusted_by_key[key]
         existing_item = existing_by_key[key]
-        differing = [
-            column for column in headers
-            if _normalize_history_value(column, existing_item.get(column, ""))
-            != _normalize_history_value(column, trusted_item.get(column, ""))
-        ]
+        differing = []
+        for column in headers:
+            if column == "Performance_Seit_Einstieg%":
+                source_unit = _classify_performance_unit(trusted_item)
+                live_unit = _classify_performance_unit(existing_item)
+                # The source is validated in either representation. Existing
+                # master rows, however, must be canonical percentage points.
+                if source_unit is None or live_unit != "points":
+                    differing.append(
+                        f"{column} (Quelle={source_unit or 'ungültig'}, "
+                        f"Sheet={live_unit or 'ungültig/nicht kanonisch'})"
+                    )
+            elif (
+                _normalize_history_value(column, existing_item.get(column, ""))
+                != _normalize_history_value(column, trusted_item.get(column, ""))
+            ):
+                differing.append(column)
         if differing:
             mismatches.append((key, differing))
     if mismatches:
@@ -352,6 +398,17 @@ def _preflight_and_recover_existing_master(drive, sheets, trusted_history: pd.Da
         if verified_count < expected_history_count:
             raise RuntimeError(
                 f"Sicherheitsabbruch: Historie bleibt unter {expected_history_count} Datensätzen."
+            )
+        _, still_missing = plan_history_recovery(
+            verified_rows,
+            trusted_history,
+            headers=opc.HISTORY_HEADERS,
+            key_fn=opc._history_key,
+            minimum_count=expected_history_count,
+        )
+        if still_missing:
+            raise RuntimeError(
+                "Sicherheitsabbruch: nach dem Append fehlen weiterhin Initialzeilen."
             )
         print(
             f"HISTORIE: append-only Wiederherstellung verifiziert | "
