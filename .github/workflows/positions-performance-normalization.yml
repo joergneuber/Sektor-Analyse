@@ -1,0 +1,101 @@
+name: Positionshistorie – Performance-Normalisierung
+
+on:
+  workflow_dispatch:
+    inputs:
+      modus:
+        description: "Zuerst ausschließlich READ_ONLY_PREFLIGHT ausführen. NORMALIZE erst nach erfolgreichem Preflight."
+        required: true
+        type: choice
+        default: READ_ONLY_PREFLIGHT
+        options:
+          - READ_ONLY_PREFLIGHT
+          - NORMALIZE_PERFORMANCE
+      preflight_run_id:
+        description: "Pflicht bei NORMALIZE: Run-ID eines erfolgreichen READ_ONLY_PREFLIGHT-Laufs auf exakt demselben main-Commit."
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: positions-performance-normalization-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  normalize-performance:
+    if: ${{ github.ref == 'refs/heads/main' && (inputs.modus == 'READ_ONLY_PREFLIGHT' || inputs.modus == 'NORMALIZE_PERFORMANCE') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+      CLOSED_POSITIONS_INITIAL_HISTORY_B64: ${{ secrets.CLOSED_POSITIONS_INITIAL_HISTORY_B64 }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Vorherigen erfolgreichen Read-only-Preflight nachweisen
+        if: ${{ inputs.modus == 'NORMALIZE_PERFORMANCE' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREFLIGHT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::NORMALIZE erfordert die Run-ID eines separaten erfolgreichen READ_ONLY_PREFLIGHT-Laufs."
+            exit 1
+          fi
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}")"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .path == ".github/workflows/positions-performance-normalization.yml" and
+            .event == "workflow_dispatch" and
+            .head_branch == "main" and
+            .head_sha == $sha and
+            .status == "completed" and
+            .conclusion == "success"
+          ' <<<"$run_json" >/dev/null || {
+            echo "::error::Preflight fehlt, ist nicht erfolgreich oder gehört nicht zu exakt diesem main-Commit."
+            exit 1
+          }
+          jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}/jobs?per_page=100")"
+          jq -e '
+            [.jobs[].steps[]? | select(.name == "Read-only Performance Preflight")][0].conclusion == "success" and
+            ([.jobs[].steps[]? | select(.name == "Explizite Performance-Normalisierung")][0].conclusion // "missing") == "skipped"
+          ' <<<"$jobs_json" >/dev/null || {
+            echo "::error::Der angegebene Run war kein reiner Read-only-Preflight."
+            exit 1
+          }
+          echo "Separater erfolgreicher Read-only-Preflight für Commit $GITHUB_SHA bestätigt."
+        env:
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+
+      - name: Code auschecken
+        uses: actions/checkout@v5
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install \
+            "pandas<3.1" numpy scipy yfinance requests \
+            google-auth-oauthlib google-api-python-client google-auth-httplib2 \
+            pytest pyyaml
+
+      - name: Performance-Normalisierungs-Regressionstests
+        run: |
+          python -m pytest -q -W error \
+            tests/test_history_performance_normalization.py \
+            tests/test_positions_recovery.py \
+            tests/test_positions_lifecycle.py \
+            tests/test_offene_positionen_check_history_source.py
+
+      - name: Read-only Performance Preflight
+        if: ${{ inputs.modus == 'READ_ONLY_PREFLIGHT' }}
+        run: python -m scripts.normalize_history_performance --preflight-only
+
+      - name: Explizite Performance-Normalisierung
+        if: ${{ inputs.modus == 'NORMALIZE_PERFORMANCE' }}
+        run: python -m scripts.normalize_history_performance --migrate
