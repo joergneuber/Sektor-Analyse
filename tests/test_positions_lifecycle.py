@@ -3,6 +3,10 @@ import pytest
 from pathlib import Path
 import importlib.util
 import sys
+import types
+
+# yfinance is only used by runtime market-data paths; lifecycle unit tests do not call it.
+sys.modules.setdefault("yfinance", types.ModuleType("yfinance"))
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("offene_positionen_check", ROOT / "offene_positionen_check.py")
@@ -181,7 +185,7 @@ def test_productive_history_path_keeps_two_nem_trades_separate(monkeypatch):
     assert len(history) == 2
     assert {r[mod.HISTORY_HEADERS.index("Einstieg")] for r in history} == {130.0, 140.0}
     assert {r[mod.HISTORY_HEADERS.index("Einstiegsdatum")] for r in history} == {
-        "01.09.2026", "05.09.2026"
+        46266.0, 46270.0
     }
 
 
@@ -791,3 +795,48 @@ def test_source_sync_rejects_mixed_or_duplicate_candidates_before_any_drive_writ
 
     with pytest.raises(RuntimeError, match="mehrere gleichnamige Quelldateien"):
         mod._sync_cleaned_source_to_drive(str(source), creds=object())
+
+
+
+def test_google_sheets_history_dates_are_numeric_serials():
+    values = [
+        ["Geschlossene Positionen | historische Faktenbasis", ""],
+        ["Einstiegsdatum", "Ausstiegsdatum"],
+        ["15.07.2026", "2026-08-01"],
+    ]
+    result = mod._canonicalize_sheet_dates(values)
+    assert result[2][0] == pytest.approx(46218.0)
+    assert result[2][1] == pytest.approx(46235.0)
+
+
+def test_invalid_new_history_date_is_rejected_before_archive_write(monkeypatch):
+    class NeverCalledSheets:
+        def __getattr__(self, name):
+            raise AssertionError("Sheets API darf bei ungueltigem Datum nicht aufgerufen werden")
+
+    bad = row("BAD", "Bad Date", "31.02.2026", "10.00")
+    with pytest.raises(RuntimeError, match="Ungueltiges Datum"):
+        mod._append_missing_history_rows(
+            NeverCalledSheets(), "TEST", pd.DataFrame([bad], columns=mod.HISTORY_HEADERS),
+            allow_initialize=True,
+        )
+
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("46218", 46218.0),
+    ("46218.5", 46218.5),
+    (46218, 46218.0),
+    (46218.5, 46218.5),
+])
+def test_date_to_sheets_serial_accepts_numeric_serial_strings_and_numbers(value, expected):
+    assert mod._date_to_sheets_serial(
+        value, "Einstiegsdatum", 2, strict=True
+    ) == pytest.approx(expected)
+
+
+def test_date_to_sheets_serial_still_rejects_invalid_calendar_date():
+    with pytest.raises(RuntimeError, match="Ungueltiges Datum"):
+        mod._date_to_sheets_serial(
+            "31.02.2026", "Einstiegsdatum", 2, strict=True
+        )
