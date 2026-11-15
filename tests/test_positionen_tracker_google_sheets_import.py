@@ -53,3 +53,31 @@ def test_invalid_date_aborts(tmp_path):
     csv.write_text("Ticker;Einstiegsdatum\nABC;31.02.2026\n", encoding="utf-8-sig")
     with pytest.raises(ValueError, match="Ungueltiges Datum"):
         erstelle_sheet_upload_stream(str(csv), [], datumsspalten=("Einstiegsdatum",))
+
+
+def test_invalid_iso_date_does_not_fall_back_to_dayfirst_parsing(tmp_path):
+    csv = tmp_path / "positions.csv"
+    csv.write_text(
+        "Ticker;Einstiegsdatum\nABC;2026-31-01\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="Ungueltiges Datum"):
+        erstelle_sheet_upload_stream(
+            str(csv), [], datumsspalten=("Einstiegsdatum",)
+        )
+
+
+@pytest.mark.parametrize(
+    "date_value",
+    ["2026-08-01T12:30:00Z", "2026-08-01T12:30:00+02:00"],
+)
+def test_timezone_aware_iso_datetime_is_rejected_for_xlsx_dates(tmp_path, date_value):
+    csv = tmp_path / "positions.csv"
+    csv.write_text(
+        f"Ticker;Einstiegsdatum\nABC;{date_value}\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="Zeitzonenangaben sind"):
+        erstelle_sheet_upload_stream(
+            str(csv), [], datumsspalten=("Einstiegsdatum",)
+        )

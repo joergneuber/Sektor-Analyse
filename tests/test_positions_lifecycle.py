@@ -840,3 +840,28 @@ def test_date_to_sheets_serial_still_rejects_invalid_calendar_date():
         mod._date_to_sheets_serial(
             "31.02.2026", "Einstiegsdatum", 2, strict=True
         )
+
+
+def test_invalid_iso_history_date_is_rejected_in_strict_mode():
+    with pytest.raises(RuntimeError, match="Ungueltiges Datum"):
+        mod._date_to_sheets_serial(
+            "2026-31-01", "Einstiegsdatum", 2, strict=True
+        )
+
+
+@pytest.mark.parametrize(
+    "date_value",
+    ["2026-08-01T12:30:00Z", "2026-08-01T12:30:00+02:00"],
+)
+@pytest.mark.parametrize("strict", [False, True])
+def test_timezone_aware_history_date_is_rejected(date_value, strict):
+    with pytest.raises(RuntimeError, match="Zeitzonenangaben sind"):
+        mod._date_to_sheets_serial(
+            date_value, "Einstiegsdatum", 2, strict=strict
+        )
+
+
+def test_naive_iso_datetime_remains_supported():
+    assert mod._date_to_sheets_serial(
+        "2026-08-01T12:30:00", "Einstiegsdatum", 2, strict=True
+    ) == pytest.approx(46235.5208333333)
