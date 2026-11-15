@@ -13,6 +13,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 import pandas as pd
 from positionen_sheet_upload import erstelle_sheet_upload_stream
+from positionen_datum import parse_position_date
 import yfinance as yf
 from scipy.signal import argrelextrema
 from google.oauth2.credentials import Credentials
@@ -197,6 +198,55 @@ def friere_erste_zwei_zeilen_ein(creds, spreadsheet_id):
             }
         }]
 
+        # Optische Annäherung an "Offene Positionen+Check": klarer grüner
+        # Tabellenkopf, dezente zweite Zeile und ausgeblendete Gitternetzlinien.
+        # Die bestehende CSV-Zeilenstruktur (Header in Zeile 1, Anleitung in
+        # Zeile 2) bleibt unverändert, damit Tracker/Archiv kompatibel bleiben.
+        requests.extend([
+            {
+                'updateSheetProperties': {
+                    'properties': {
+                        'sheetId': sheet_id,
+                        'gridProperties': {'hideGridlines': True}
+                    },
+                    'fields': 'gridProperties.hideGridlines'
+                }
+            },
+            {
+                'repeatCell': {
+                    'range': {
+                        'sheetId': sheet_id, 'startRowIndex': 0,
+                        'endRowIndex': 1, 'startColumnIndex': 0,
+                        'endColumnIndex': len(SPALTEN)
+                    },
+                    'cell': {'userEnteredFormat': {
+                        'backgroundColor': {'red': 0.89, 'green': 0.96, 'blue': 0.93},
+                        'horizontalAlignment': 'LEFT',
+                        'verticalAlignment': 'MIDDLE',
+                        'textFormat': {'bold': True, 'foregroundColor': {
+                            'red': 0.08, 'green': 0.36, 'blue': 0.22}, 'fontSize': 11}
+                    }},
+                    'fields': 'userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)'
+                }
+            },
+            {
+                'repeatCell': {
+                    'range': {
+                        'sheetId': sheet_id, 'startRowIndex': 1,
+                        'endRowIndex': 2, 'startColumnIndex': 0,
+                        'endColumnIndex': len(SPALTEN)
+                    },
+                    'cell': {'userEnteredFormat': {
+                        'backgroundColor': {'red': 0.89, 'green': 0.95, 'blue': 0.92},
+                        'textFormat': {'italic': True, 'foregroundColor': {
+                            'red': 0.20, 'green': 0.30, 'blue': 0.25}, 'fontSize': 9},
+                        'verticalAlignment': 'MIDDLE'
+                    }},
+                    'fields': 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment)'
+                }
+            }
+        ])
+
         for spalte in NUMERISCHE_SPALTEN:
             if spalte not in spalten_index:
                 continue
@@ -272,31 +322,13 @@ def finde_datei(service, folder_id):
 
 
 def _datum_vereinheitlichen(wert):
-    """Wandelt einen einzelnen Datumswert - egal in welchem Format Google
-    Sheets ihn beim CSV-Export geschrieben hat (z.B. '15/7', '2026-07-15',
-    '7/15/2026') - ins einheitliche Format TT.MM.JJJJ um. Unbekannte/leere
-    Werte bleiben unverändert, statt verworfen zu werden."""
-    if wert is None or (isinstance(wert, float) and pd.isna(wert)):
-        return wert
-    text = str(wert).strip()
-    if text == "" or text.lower() == "nan":
-        return text
-    try:
-        # ISO-Format YYYY-MM-DD muss vor der allgemeinen dayfirst-Interpretation
-        # explizit erkannt werden; sonst kann Pandas z.B. 2026-09-04 als
-        # 09.04.2026 fehlinterpretieren.
-        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
-            datum = pd.to_datetime(text, format='%Y-%m-%d', errors='raise')
-        else:
-            datum = pd.to_datetime(text, dayfirst=True, errors='raise')
-        if datum.year < 1970:
-            # Ursprungswert hatte keine Jahresangabe (z.B. '15/7') - Pandas
-            # setzt dann ein unplausibles Platzhalter-Jahr; aktuelles Jahr
-            # ist die sinnvollste Annahme für ein Positions-Tracking
-            datum = datum.replace(year=datetime.datetime.now().year)
-        return datum.strftime("%d.%m.%Y")
-    except Exception:
-        return text  # Unbekanntes Format - lieber unverändert lassen als verwerfen
+    """Normalisiert Kalenderdaten deterministisch auf TT.MM.JJJJ.
+
+    Unbekannte Werte und Zeitzonen werden nicht stillschweigend durchgereicht:
+    ein fehlerhaftes Positionsdatum muss vor dem Upload sichtbar scheitern.
+    """
+    parsed = parse_position_date(wert, field="Einstiegs-/Ausstiegsdatum")
+    return "" if parsed is None else parsed.strftime("%d.%m.%Y")
 
 
 def normalisiere_daten(df):

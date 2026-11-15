@@ -50,6 +50,25 @@ def _is_valid_calendar_event_date(value: str) -> bool:
     return False
 
 
+def _explicit_date_from_period(value: Any) -> str | None:
+    """Return one unambiguous, valid calendar date explicitly present in a period field."""
+    if value is None:
+        return None
+    text = str(value)
+    candidates = re.findall(
+        r"(?<!\d)(?:20\d{2}-\d{2}-\d{2}|\d{2}\.\d{2}\.20\d{2})(?!\d)",
+        text,
+    )
+    valid_candidates = [
+        candidate for candidate in candidates
+        if _is_valid_calendar_event_date(candidate)
+    ]
+    if len(valid_candidates) != len(candidates):
+        return None
+    valid = list(dict.fromkeys(valid_candidates))
+    return valid[0] if len(valid) == 1 else None
+
+
 def _clean(value: Any) -> str | None:
     if value is None:
         return None
@@ -62,7 +81,10 @@ def normalize_event(event: Mapping[str, Any]) -> dict[str, Any]:
     out = {
         "event_id": _clean(event.get("event_id") or event.get("id")),
         "name": _clean(event.get("name") or event.get("event") or event.get("kennzahl")),
-        "date": _clean(event.get("date") or event.get("datum")),
+        "date": (
+            _clean(event.get("date") or event.get("datum"))
+            or _explicit_date_from_period(event.get("period") or event.get("berichtszeitraum"))
+        ),
         "time": _clean(event.get("time") or event.get("uhrzeit")),
         "timezone": _clean(event.get("timezone") or event.get("zeitzone")),
         "period": _clean(event.get("period") or event.get("berichtszeitraum")),
@@ -825,6 +847,38 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             header_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", plain_rec.splitlines()[0] if plain_rec.splitlines() else "")
             if header_date:
                 date_m = header_date
+
+        # Some event providers place the explicit calendar date inside the
+        # event's Zeitraum field (e.g. "Wöchentlich / In 2 Tagen (2026-11-17)")
+        # while leaving Datum as an unavailable placeholder. Reuse that date
+        # only when exactly one valid date occurs in this same record. Never
+        # infer a date from relative wording alone or choose between a range.
+        period_m = re.search(
+            r"(?im)^\s*(?:[-*•]\s*)?(?:Zeitraum|Berichtszeitraum)\s*[:=]\s*([^\r\n|;]+)",
+            plain_rec,
+        )
+        period_date = _explicit_date_from_period(period_m.group(1)) if period_m else None
+        date_placeholder = bool(date_m and re.match(
+            r"(?i)^\s*(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|NICHT BEKANNT|UNBEKANNT|FEHLT|UNKLAR|TBD|TBA|N/?A|NA)(?:\b|\s*\()",
+            date_m.group(1).strip(),
+        ))
+        date_inferred_from_period = False
+        if period_date and (date_m is None or date_placeholder):
+            date_inferred_from_period = True
+            datum_line = re.compile(
+                r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?(?:Datum|Date)(?:\*\*)?\s*[:=]\s*)"
+                r"(?:NICHT VERFÜGBAR(?:\s*\([^\r\n]*?\))?|NICHT VERFUEGBAR(?:\s*\([^\r\n]*?\))?|"
+                r"NICHT BEKANNT|UNBEKANNT|FEHLT|UNKLAR|TBD|TBA|N/?A|NA)\s*$"
+            )
+            if datum_line.search(rec):
+                rec = datum_line.sub(lambda match: match.group(1) + period_date, rec, count=1)
+            else:
+                rec = rec.rstrip() + f"\n- Datum: {period_date}"
+            plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
+            date_m = re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*([^\r\n|;]+)",
+                plain_rec,
+            )
         source_m = re.search(
             r"(?im)(?:^|[|;\n])\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=]\s*([^\r\n|;]+)",
             plain_rec,
@@ -860,6 +914,15 @@ def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
             if remove:
                 rec_lines = [line for i, line in enumerate(rec_lines) if i not in remove]
         rec = "\n".join(rec_lines)
+        if date_inferred_from_period and date_m and _is_valid_calendar_event_date(date_m.group(1).strip()):
+            # Preserve that the source was not independently live-checked,
+            # but remove the now-false claim that the event date is unavailable.
+            rec = re.sub(
+                r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?(?:Quellenprüfung|Quellenpruefung)(?:\*\*)?\s*[:=]\s*)"
+                r"NICHT VERIFIZIERT\s*\(\s*Datum nicht belegt\s*\)\s*$",
+                lambda match: match.group(1) + "DATUM AUS ZEITRAUM ÜBERNOMMEN (Quelle nicht separat live verifiziert)",
+                rec,
+            )
         source_value = source_m.group(1).strip() if source_m else ""
         if not source_value and len(records) == 1:
             # In a single-event section, tolerate a source line retained in

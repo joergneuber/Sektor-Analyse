@@ -10,6 +10,7 @@ artifacts are explicit incomplete outcomes; they are never treated as empty.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import base64
 import hashlib
 import io
@@ -442,7 +443,7 @@ def _read_queue_archive(data: bytes, artifact_name: str, run: dict, branch: str,
 
 def _ensure_receipts(db_path: Path) -> None:
     init_db(db_path)
-    with sqlite3.connect(str(db_path), timeout=60) as connection:
+    with closing(sqlite3.connect(str(db_path), timeout=60)) as connection, connection:
         connection.execute(
             f"CREATE TABLE IF NOT EXISTS {RECEIPT_TABLE} ("
             "run_id TEXT NOT NULL, run_attempt INTEGER NOT NULL, queue_sha256 TEXT NOT NULL, "
@@ -463,7 +464,7 @@ def _ensure_receipts(db_path: Path) -> None:
 
 
 def _receipt_info(db_path: Path, run_id: str, attempt: int) -> dict | None:
-    with sqlite3.connect(str(db_path), timeout=60) as connection:
+    with closing(sqlite3.connect(str(db_path), timeout=60)) as connection, connection:
         row = connection.execute(
             f"SELECT producer_outcome, ticker_count, recovered_error_count FROM {RECEIPT_TABLE} "
             "WHERE run_id=? AND run_attempt=?",
@@ -494,7 +495,7 @@ def _record_receipt(
     normalized_outcome = str(producer_outcome or "failure").casefold()
     if normalized_outcome not in {"success", "failure", "cancelled", "skipped"}:
         normalized_outcome = "failure"
-    with sqlite3.connect(str(db_path), timeout=60) as connection:
+    with closing(sqlite3.connect(str(db_path), timeout=60)) as connection, connection:
         connection.execute(
             f"INSERT OR IGNORE INTO {RECEIPT_TABLE} "
             "(run_id, run_attempt, queue_sha256, imported_at_utc, ticker_count, producer_outcome, recovered_error_count) "

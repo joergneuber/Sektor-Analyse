@@ -90,6 +90,8 @@ from trading_radar_market_first import append_live_market_snapshot, downgrade_oh
 from trading_radar_report_gate import (
     validate_report as validate_trading_radar_report,
     extract_us10y_observations,
+    _us10y_observation_records,
+    _treasury_observation_has_complete_provenance,
 )
 
 # Findings from the report-save validation stage are carried to post-save gates.
@@ -19338,6 +19340,60 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             if _is_valid_nominal_us10y_macro_source(metadata):
                 macro_observations.append((source_value, metadata))
 
+    def explicit_conflict_metadata_for(report_value, decimals):
+        """Use only a complete, value-bound Makro-Provenienz in an explicit conflict record.
+
+        A generated report can contain the same rounded DGS10 value in more than
+        one macro summary row. If those rows carry different retrieval metadata,
+        the ordinary source lookup correctly treats them as ambiguous. An
+        explicit conflict record may still disambiguate the *Makro-Wert* because
+        it binds that exact value to its own complete Makro-Provenienz. Multiple
+        contradictory conflict records remain unresolved.
+        """
+        tolerance = (0.5 * (10 ** (-decimals))) + 1e-8
+        matching = []
+        for evidence_line in str(text or "").splitlines():
+            if not re.search(
+                r"(?i)(?:QUELLENKONFLIKT\s*:|ZEITLICH UNTERSCHIEDLICHE BEOBACHTUNGEN|"
+                r"GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN)",
+                evidence_line,
+            ) or not re.search(
+                r"(?i)\bInstrument\s*:\s*US\s*[- ]?10Y\s+Treasury\b",
+                evidence_line,
+            ):
+                continue
+            value_match = re.search(
+                r"(?i)Makro-Wert\s*:\s*([-+]?\d+(?:[,.]\d+)?)\s*%",
+                evidence_line,
+            )
+            if not value_match:
+                continue
+            try:
+                evidence_value = float(value_match.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            if abs(evidence_value - report_value) > tolerance:
+                continue
+            annotation = _local_parenthesized_annotation(evidence_line, value_match.end())
+            if not annotation:
+                continue
+            marker = re.match(r"(?is)^\s*Makro-Provenienz\s*:\s*", annotation[2])
+            if not marker:
+                continue
+            metadata = fields(annotation[2][marker.end():])
+            required = ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+            if (
+                _is_valid_nominal_us10y_macro_source(metadata)
+                and all(not is_missing(metadata.get(key)) for key in required)
+                and metadata.get("Einheit", "").strip() == "%"
+            ):
+                matching.append(metadata)
+        signatures = {
+            tuple(sorted((key, value) for key, value in metadata.items() if value))
+            for metadata in matching
+        }
+        return matching[0] if len(signatures) == 1 and matching else {}
+
     def source_metadata_for(report_value, decimals):
         tolerance = (0.5 * (10 ** (-decimals))) + 1e-8
         matching = [
@@ -19358,8 +19414,12 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                 tuple(sorted((key, value) for key, value in metadata.items() if value))
                 for metadata in complete_matching
             }
-            return complete_matching[0] if len(signatures) == 1 else {}
-        return matching[0] if len(matching) == 1 else {}
+            if len(signatures) == 1:
+                return complete_matching[0]
+            return explicit_conflict_metadata_for(report_value, decimals)
+        if len(matching) == 1:
+            return matching[0]
+        return explicit_conflict_metadata_for(report_value, decimals)
 
 
     output = []
@@ -19455,14 +19515,27 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             output.append(line)
             continue
         if len(set(observations)) > 1:
-            # A single line cannot safely map multiple different values to one
-            # source record. Keep it visibly unresolved; the report gate blocks
-            # FINAL rather than reusing one provenance record for both values.
-            line = line.rstrip() + (
-                " | Treasury-Provenienzprüfung: MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR"
+            # Multiple observations on one rates line are safe only when the
+            # canonical report-gate parser can prove complete, separately
+            # scoped provenance for every labelled occurrence. This permits
+            # the explicit FRED-vs-live split while retaining fail-closed
+            # behavior for unscoped or contradictory values.
+            records = _us10y_observation_records(
+                line, allow_run1270_context=allow_run1270_context
             )
-            output.append(line)
-            continue
+            independently_sourced = (
+                len(records) == len(observations)
+                and all(
+                    _treasury_observation_has_complete_provenance(record_line)
+                    for _value, record_line in records
+                )
+            )
+            if not independently_sourced:
+                line = line.rstrip() + (
+                    " | Treasury-Provenienzprüfung: MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR"
+                )
+                output.append(line)
+                continue
 
         report_decimal = observations[0]
         raw_match = re.search(
@@ -19505,18 +19578,41 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             ann_open, ann_close, ann_content = local_annotation
             existing_local = local_candidate_fields
             tail_start = ann_close + 1
-            tail_fields = fields(line[tail_start:], allow_initial=False)
+            tail_source = line[tail_start:]
+            # The US10Y value can be embedded in a larger narrative
+            # parenthetical, e.g. "(US 10Y Treasury 4.88% (provenance))".
+            # Its closing delimiter appears immediately after the local
+            # provenance annotation and is not malformed trailing metadata.
+            enclosing_depth = 0
+            for char in line[:raw_match.start()]:
+                if char == "(":
+                    enclosing_depth += 1
+                elif char == ")" and enclosing_depth:
+                    enclosing_depth -= 1
+            leading_closures = re.match(r"^(\s*)(\)+)", tail_source)
+            if leading_closures and enclosing_depth:
+                removable = min(enclosing_depth, len(leading_closures.group(2)))
+                tail_source = (
+                    leading_closures.group(1)
+                    + tail_source[leading_closures.end(1) + removable:]
+                )
+            tail_fields = fields(tail_source, allow_initial=False)
+            context_tail = "(" + ann_content + ")" + tail_source
         else:
             existing_local = {}
             tail_start = raw_match.end() if raw_match else len(line)
-            tail_fields = fields(line[tail_start:], allow_initial=False)
+            tail_source = line[tail_start:]
+            tail_fields = fields(tail_source, allow_initial=False)
+            context_tail = attribution_tail
 
         # FOREIGN_CONTEXT is a terminal attribution boundary. It invalidates
         # fields seen before the note and forbids every later recovery path:
-        # local fields, row-tail fields, and matching macro fallback.
+        # local fields, row-tail fields, and matching macro fallback. Only
+        # unmatched closing delimiters that close a narrative parenthetical
+        # opened before the US10Y label are excluded from the tail parser.
         foreign_context_boundary = bool(
             foreign_indicator_context
-            or _has_opaque_parenthetical_context(attribution_tail)
+            or _has_opaque_parenthetical_context(context_tail)
             or "FOREIGN_CONTEXT" in existing_local
             or "FOREIGN_CONTEXT" in tail_fields
         )

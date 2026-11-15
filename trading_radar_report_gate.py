@@ -570,7 +570,26 @@ def _us10y_provenance_fields(line: str):
             suffix_start = annotation[1] + 1
         else:
             suffix_start = value_end
-        suffix, suffix_conflicts = _top_level_provenance_values(line[suffix_start:], allow_first=False)
+        suffix_text = line[suffix_start:]
+        # A labelled observation may itself be enclosed by a narrative
+        # parenthetical: "(US 10Y Treasury 4.88% (source fields))".
+        # The closing delimiter belongs to the wrapper opened before the
+        # label, not to malformed row-tail provenance. Skip only the matching
+        # leading closing delimiters; all remaining text is parsed unchanged.
+        enclosing_depth = 0
+        for char in line[:label.start()]:
+            if char == "(":
+                enclosing_depth += 1
+            elif char == ")" and enclosing_depth:
+                enclosing_depth -= 1
+        leading_closures = re.match(r"^(\s*)(\)+)", suffix_text)
+        if leading_closures and enclosing_depth:
+            removable = min(enclosing_depth, len(leading_closures.group(2)))
+            suffix_text = (
+                leading_closures.group(1)
+                + suffix_text[leading_closures.end(1) + removable:]
+            )
+        suffix, suffix_conflicts = _top_level_provenance_values(suffix_text, allow_first=False)
         # Ordinary prose after a complete local annotation terminates row-tail
         # parsing, but is not itself a provenance conflict. The parser returns
         # no suffix fields at that boundary, so later metadata cannot be

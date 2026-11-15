@@ -6,6 +6,7 @@ copy is used for the existing OHLCV audit. Provider requests are read-only.
 Reports are written as JSON/CSV/Markdown in the current working directory.
 """
 from __future__ import annotations
+from contextlib import closing
 
 import argparse
 import csv
@@ -46,7 +47,7 @@ def sha256_file(path: Path) -> str:
 
 def sqlite_readonly_check(path: Path) -> dict[str, Any]:
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=180) as conn:
+    with closing(sqlite3.connect(uri, uri=True, timeout=180)) as conn, conn:
         integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
         tables = {str(row[0]) for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -65,7 +66,7 @@ def load_db_ranges(db_path: Path, tickers: list[str]) -> dict[str, dict[str, Any
         return {}
     placeholders = ",".join("?" for _ in tickers)
     uri = f"file:{db_path.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=180) as conn:
+    with closing(sqlite3.connect(uri, uri=True, timeout=180)) as conn, conn:
         rows = conn.execute(
             f"""SELECT ticker, MIN(date), MAX(date), COUNT(*)
                 FROM bars WHERE ticker IN ({placeholders}) GROUP BY ticker""",
@@ -79,7 +80,7 @@ def load_db_ranges(db_path: Path, tickers: list[str]) -> dict[str, dict[str, Any
 
 def load_observed_dates(db_path: Path, ticker: str) -> set[str]:
     uri = f"file:{db_path.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=180) as conn:
+    with closing(sqlite3.connect(uri, uri=True, timeout=180)) as conn, conn:
         rows = conn.execute("SELECT date FROM bars WHERE ticker=? ORDER BY date", (ticker,)).fetchall()
     return {str(row[0])[:10] for row in rows}
 

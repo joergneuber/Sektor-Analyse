@@ -40,6 +40,8 @@ from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
+
+from positionen_datum import parse_position_date, position_date_to_sheets_serial
 import yfinance as yf
 from scipy.signal import argrelextrema
 
@@ -1950,43 +1952,25 @@ def merge_closed_history(existing_rows: list[list] | pd.DataFrame, new_df: pd.Da
 
 
 def _date_to_sheets_serial(value, column: str, row_number: int, *, strict: bool = False):
-    """Konvertiert ein Datum strikt in eine Google-Sheets-Datumsseriennummer."""
-    if value is None or str(value).strip() == "":
-        return ""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        # Bereits numerische Sheets-/Excel-Seriennummern nicht als Textdatum parsen.
-        if 1 <= float(value) <= 100000:
-            return float(value)
-    text = str(value).strip()
-    if re.fullmatch(r"\d+(?:\.\d+)?", text):
-        serial = float(text)
-        if 1 <= serial <= 100000:
-            return serial
-    # ISO-Datumsstrings (YYYY-MM-DD) sind eindeutig und duerfen nicht
-    # durch dayfirst=True als YYYY-DD-MM fehlinterpretiert werden.
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-        parsed = pd.to_datetime(text, errors="coerce", format="%Y-%m-%d")
-    elif re.match(r"^\d{4}-\d{2}-\d{2}[T ]", text):
-        parsed = pd.to_datetime(text, errors="coerce", format="ISO8601")
-    else:
-        parsed = pd.to_datetime(text, errors="coerce", dayfirst=True, format="mixed")
-    if pd.isna(parsed):
-        if strict:
+    """Konvertiert ein Positionsdatum mit dem zentralen Parser in eine Sheets-Seriennummer.
+
+    ``strict`` bleibt als kompatibler Parameter erhalten. Nichtleere ungültige
+    Werte werden in allen Pfaden abgelehnt, damit sie nie als Positionsschlüssel
+    oder Rohwert weiterverwendet werden.
+    """
+    try:
+        serial = position_date_to_sheets_serial(value, field=column)
+    except ValueError as exc:
+        if "Zeitzonenangaben" in str(exc):
             raise RuntimeError(
-                f"Ungueltiges Datum in {column!r}, Datenzeile {row_number}: {value!r}"
-            )
-        # Reine Lese-/Preflight-Pfade duerfen historische Rohwerte vergleichen.
-        return value
-    if parsed.tzinfo is not None:
+                f"Zeitzonenangaben sind in {column!r}, Datenzeile {row_number}, "
+                f"nicht zulaessig: {value!r}. Bitte ein Kalenderdatum bzw. "
+                "eine Datums-/Zeitangabe ohne Zeitzone verwenden."
+            ) from exc
         raise RuntimeError(
-            f"Zeitzonenangaben sind in {column!r}, Datenzeile {row_number}, "
-            f"nicht zulaessig: {value!r}. Bitte ein Kalenderdatum bzw. "
-            "eine Datums-/Zeitangabe ohne Zeitzone verwenden."
-        )
-    # Google Sheets serial epoch: 1899-12-30. Preserve naive time if present.
-    stamp = parsed.to_pydatetime()
-    epoch = dt.datetime(1899, 12, 30)
-    return (stamp - epoch).total_seconds() / 86400.0
+            f"Ungueltiges Datum in {column!r}, Datenzeile {row_number}: {value!r}"
+        ) from exc
+    return "" if serial is None else float(serial)
 
 
 def _canonicalize_history_values(values: list[list]) -> list[list]:
@@ -2038,8 +2022,21 @@ def _parse_sheet_stand_date(rows: list[list]) -> str:
     if not rows or not rows[0]:
         return ""
     text = str(rows[0][0])
-    m = re.search(r"Stand\s+(\d{2}\.\d{2}\.\d{4})", text)
-    return m.group(1) if m else ""
+    m = re.search(r"Stand\s+(.+?)\s*$", text)
+    if not m:
+        return ""
+    raw_date = m.group(1).strip()
+    try:
+        parsed = parse_position_date(raw_date, field="Sheet-Standdatum")
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Ungueltiges Sheet-Standdatum in Metazeile: {raw_date!r}"
+        ) from exc
+    if parsed is None:
+        raise RuntimeError(
+            f"Ungueltiges Sheet-Standdatum in Metazeile: {raw_date!r} (leerer/NaN-Wert)"
+        )
+    return parsed.strftime("%d.%m.%Y")
 
 
 def read_existing_open_rows(sheets, spreadsheet_id: str) -> list[list]:
@@ -2185,14 +2182,9 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
         for date_column in ("Einstiegsdatum", "Ausstiegsdatum"):
             raw_date = row.get(date_column, "")
             if str(raw_date).strip():
-                parsed_date = pd.to_datetime(
-                    str(raw_date).strip(), errors="coerce", dayfirst=True, format="mixed"
+                _date_to_sheets_serial(
+                    raw_date, date_column, row_number, strict=True
                 )
-                if pd.isna(parsed_date):
-                    raise RuntimeError(
-                        f"Ungueltiges Datum in neuer Historienzeile {row_number}, "
-                        f"{date_column}: {raw_date!r}"
-                    )
 
     existing_rows = read_existing_history(sheets, spreadsheet_id, allow_missing=allow_initialize)
     existing_keys = set()
@@ -2749,7 +2741,7 @@ def _position_key(row) -> tuple:
     ticker = str(row.get("Ticker", "")).strip().upper()
     entry_raw = str(row.get("Einstieg", "")).strip()
     date_raw = row.get("Einstiegsdatum", "")
-    date_value = _date_to_sheets_serial(date_raw, "Einstiegsdatum", 0)
+    date_value = _date_to_sheets_serial(date_raw, "Einstiegsdatum", 0, strict=True)
     if date_value == "":
         date = ""
     else:

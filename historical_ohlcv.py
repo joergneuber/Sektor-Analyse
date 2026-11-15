@@ -737,12 +737,26 @@ def _extract_ticker_frame(hist: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _download_batch(tickers: list[str], *, start: str | None = None, end: str | None = None) -> dict[str, pd.DataFrame]:
+def _download_batch(
+    tickers: list[str],
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    repair: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """Download daily bars; optionally ask Yahoo to repair known price-data defects."""
     import yfinance as yf
 
     if not tickers:
         return {}
-    kwargs = dict(tickers=tickers if len(tickers) > 1 else tickers[0], interval="1d", auto_adjust=False, progress=False, threads=True)
+    kwargs = dict(
+        tickers=tickers if len(tickers) > 1 else tickers[0],
+        interval="1d",
+        auto_adjust=False,
+        repair=bool(repair),
+        progress=False,
+        threads=True,
+    )
     if start is None:
         kwargs["period"] = "max"
     else:
@@ -1113,8 +1127,14 @@ def update_database(
                     pd.Timestamp(max(batch_dates)) + pd.Timedelta(days=1)
                 ).date().isoformat()
                 try:
+                    # Yahoo liefert bei einzelnen internationalen Titeln
+                    # fehlerhafte/fehlende Tagesbars (z. B. Close ausserhalb
+                    # High/Low nach fehlerhafter Adjustierung). Nur im gezielten
+                    # Gap-Reparaturpfad den offiziellen yfinance-Price-Repair
+                    # aktivieren. Die anschliessende Projekt-Validierung bleibt
+                    # unverändert fail-closed; ungeprüfte Bars werden nie gespeichert.
                     frames = _download_batch(
-                        batch, start=download_start, end=download_end
+                        batch, start=download_start, end=download_end, repair=True
                     )
                     updated_tickers = set()
                     with conn:

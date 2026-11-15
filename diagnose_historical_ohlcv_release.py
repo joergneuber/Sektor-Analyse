@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only release-DB diagnosis for Paket 2 (GitHub Actions runner)."""
 from __future__ import annotations
+from contextlib import closing
 
 import csv
 import datetime as dt
@@ -44,7 +45,7 @@ def sha256_file(path: Path, chunk_size: int = 8 *  1024 * 1024) -> str:
 
 def inspect_database(path: Path) -> dict:
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=180) as conn:
+    with closing(sqlite3.connect(uri, uri=True, timeout=180)) as conn, conn:
         integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
         tables = [row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -290,7 +291,7 @@ def collect_invalid_candle_details(db_path: Path, invalid_tickers: list[str]) ->
         open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR volume < 0 OR
         high < low OR high < open OR high < close OR low > open OR low > close
     """
-    with sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=180) as conn:
+    with closing(sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=180)) as conn, conn:
         rows = conn.execute(
             f"""SELECT ticker, date, open, high, low, close, volume, source,
                        {INVALID_REASON_SQL} AS invalid_reasons,
@@ -365,7 +366,7 @@ def collect_missing_instrument_details(db_path: Path, missing_tickers: list[str]
     if not tickers:
         return []
     values_select = " UNION ALL ".join("SELECT ? AS ticker" if index == 0 else "SELECT ?" for index in range(len(tickers)))
-    with sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=180) as conn:
+    with closing(sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=180)) as conn, conn:
         rows = conn.execute(
             f"""SELECT u.ticker, i.ticker IS NOT NULL AS instrument_record_exists,
                        COALESCE(i.row_count, 0), COUNT(b.date), MIN(b.date), MAX(b.date)
