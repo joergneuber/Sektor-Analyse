@@ -25,6 +25,7 @@ from typing import Callable
 import pandas as pd
 
 import offene_positionen_check as opc
+from positionen_datum import parse_position_date
 
 
 RECOVERY_MANIFEST_PATH = Path("recovery/recovery_manifest.json")
@@ -79,8 +80,8 @@ def _normalize_history_value(column: str, value) -> tuple:
         if number is not None:
             return ("number", round(float(number), 10))
     if column in {"Einstiegsdatum", "Ausstiegsdatum"}:
-        parsed = pd.to_datetime(text, dayfirst=True, errors="coerce")
-        if not pd.isna(parsed):
+        parsed = parse_position_date(value, field=column)
+        if parsed is not None:
             return ("date", parsed.date().isoformat())
     return ("text", text)
 
