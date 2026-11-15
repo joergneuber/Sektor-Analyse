@@ -1717,6 +1717,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     ).execute()
     is_history_sheet = len(values) >= 2 and list(values[1]) == HISTORY_HEADERS
     upload_values = _canonicalize_history_values(values) if is_history_sheet else values
+    upload_values = _canonicalize_sheet_dates(upload_values)
     # Bewährter Zahlenpfad: echte numerische Werte an Google Sheets übergeben.
     # RAW verhindert lokale String-Interpretation; das de_DE-Sheet-Locale steuert
     # anschließend die Anzeige als deutsches Dezimalkomma.
@@ -1737,6 +1738,8 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     ]
     format_numeric = HISTORY_NUMERIC_COLUMNS if is_history_sheet else NUMERIC_COLUMNS
     for i,col in enumerate(values[1]):
+        if col in {"Einstiegsdatum", "Ausstiegsdatum"}:
+            requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"DATE","pattern":"dd.MM.yyyy"}}},"fields":"userEnteredFormat.numberFormat"}})
         if col in format_numeric or col.endswith("%"):
             requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":'0.00" %"' if col.endswith("%") else "0.00"}}},"fields":"userEnteredFormat.numberFormat"}})
         requests.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":widths.get(col,120)},"fields":"pixelSize"}})
@@ -1946,14 +1949,40 @@ def merge_closed_history(existing_rows: list[list] | pd.DataFrame, new_df: pd.Da
     return pd.DataFrame(rows, columns=HISTORY_HEADERS).fillna("")
 
 
+def _date_to_sheets_serial(value, column: str, row_number: int, *, strict: bool = False):
+    """Konvertiert ein Datum strikt in eine Google-Sheets-Datumsseriennummer."""
+    if value is None or str(value).strip() == "":
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Bereits numerische Sheets-/Excel-Seriennummern nicht als Textdatum parsen.
+        if 1 <= float(value) <= 100000:
+            return float(value)
+    text = str(value).strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        serial = float(text)
+        if 1 <= serial <= 100000:
+            return serial
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=True, format="mixed")
+    if pd.isna(parsed):
+        if strict:
+            raise RuntimeError(
+                f"Ungueltiges Datum in {column!r}, Datenzeile {row_number}: {value!r}"
+            )
+        # Reine Lese-/Preflight-Pfade duerfen historische Rohwerte vergleichen.
+        return value
+    # Google Sheets serial epoch: 1899-12-30. Preserve time if present.
+    stamp = parsed.to_pydatetime()
+    epoch = dt.datetime(1899, 12, 30)
+    return (stamp - epoch).total_seconds() / 86400.0
+
+
 def _canonicalize_history_values(values: list[list]) -> list[list]:
-    """Kanonisiert historische Zahlen fuer den Google-Sheet-Upload."""
+    """Kanonisiert Zahlen und Datumswerte fuer den Google-Sheet-Upload."""
     if len(values) < 2:
         return values
 
     headers = [str(x).strip() for x in values[1]]
     numeric_indices = {i for i, col in enumerate(headers) if col in HISTORY_NUMERIC_COLUMNS}
-
     result = [list(row) for row in values[:2]]
     for row in values[2:]:
         normalized = list(row)
@@ -1968,6 +1997,25 @@ def _canonicalize_history_values(values: list[list]) -> list[list]:
                 # RAW + echter Python-float => Google Sheets erhält einen
                 # numerischen JSON-Wert statt eines lokalisierten Strings.
                 normalized[i] = float(parsed)
+        result.append(normalized)
+    return result
+
+
+def _canonicalize_sheet_dates(values: list[list]) -> list[list]:
+    """Wandelt Datumsfelder unmittelbar vor dem Sheets-Write in Seriennummern."""
+    if len(values) < 2:
+        return values
+    headers = [str(x).strip() for x in values[1]]
+    date_indices = {i: col for i, col in enumerate(headers)
+                    if col in {"Einstiegsdatum", "Ausstiegsdatum"}}
+    result = [list(row) for row in values[:2]]
+    for row_number, row in enumerate(values[2:], start=3):
+        normalized = list(row)
+        for index, column in date_indices.items():
+            if index < len(normalized):
+                normalized[index] = _date_to_sheets_serial(
+                    normalized[index], column, row_number, strict=True
+                )
         result.append(normalized)
     return result
 
@@ -2084,9 +2132,13 @@ def _format_history_range(sheets, spreadsheet_id: str, sheet_id: int, start_row_
         return
     requests = []
     for i, col in enumerate(HISTORY_HEADERS):
-        if col not in HISTORY_NUMERIC_COLUMNS:
+        if col in {"Einstiegsdatum", "Ausstiegsdatum"}:
+            number_format = {"type": "DATE", "pattern": "dd.MM.yyyy"}
+        elif col in HISTORY_NUMERIC_COLUMNS:
+            pattern = '0.00" %"' if col.endswith('%') else '0.00'
+            number_format = {"type": "NUMBER", "pattern": pattern}
+        else:
             continue
-        pattern = '0.00" %"' if col.endswith('%') else '0.00'
         requests.append({
             "repeatCell": {
                 "range": {
@@ -2096,7 +2148,7 @@ def _format_history_range(sheets, spreadsheet_id: str, sheet_id: int, start_row_
                     "startColumnIndex": i,
                     "endColumnIndex": i + 1,
                 },
-                "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": pattern}}},
+                "cell": {"userEnteredFormat": {"numberFormat": number_format}},
                 "fields": "userEnteredFormat.numberFormat",
             }
         })
@@ -2115,6 +2167,19 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
     """
     if new_closed_df is None or new_closed_df.empty:
         return 0
+
+    for row_number, (_, row) in enumerate(new_closed_df.iterrows(), start=1):
+        for date_column in ("Einstiegsdatum", "Ausstiegsdatum"):
+            raw_date = row.get(date_column, "")
+            if str(raw_date).strip():
+                parsed_date = pd.to_datetime(
+                    str(raw_date).strip(), errors="coerce", dayfirst=True, format="mixed"
+                )
+                if pd.isna(parsed_date):
+                    raise RuntimeError(
+                        f"Ungueltiges Datum in neuer Historienzeile {row_number}, "
+                        f"{date_column}: {raw_date!r}"
+                    )
 
     existing_rows = read_existing_history(sheets, spreadsheet_id, allow_missing=allow_initialize)
     existing_keys = set()
@@ -2205,7 +2270,8 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
     values = [[item.get(c, "") for c in HISTORY_HEADERS] for item in rows_to_append]
     payload = _canonicalize_history_values(
         [[f"Geschlossene Positionen | historische Faktenbasis"] + [""] * (len(HISTORY_HEADERS)-1), HISTORY_HEADERS] + values
-    )[2:]
+    )
+    payload = _canonicalize_sheet_dates(payload)[2:]
     response = sheets.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
         range="'Geschlossene Positionen'!A:Z",
@@ -2669,7 +2735,16 @@ def _position_key(row) -> tuple:
     name = re.sub(r"\s+", " ", str(row.get("Name", "")).strip()).casefold()
     ticker = str(row.get("Ticker", "")).strip().upper()
     entry_raw = str(row.get("Einstieg", "")).strip()
-    date = str(row.get("Einstiegsdatum", "")).strip()
+    date_raw = row.get("Einstiegsdatum", "")
+    date_value = _date_to_sheets_serial(date_raw, "Einstiegsdatum", 0)
+    if date_value == "":
+        date = ""
+    else:
+        try:
+            serial = float(date_value)
+            date = (dt.datetime(1899, 12, 30) + dt.timedelta(days=serial)).strftime("%d.%m.%Y")
+        except (TypeError, ValueError, OverflowError):
+            date = str(date_value).strip()
 
     if not name or not ticker or not entry_raw or not date:
         raise RuntimeError(

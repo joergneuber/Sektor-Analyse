@@ -12,6 +12,7 @@ import numpy as np
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 import pandas as pd
+from positionen_sheet_upload import erstelle_sheet_upload_stream
 import yfinance as yf
 from scipy.signal import argrelextrema
 from google.oauth2.credentials import Credentials
@@ -34,6 +35,7 @@ DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native G
                                                  # Kopie mehr, wie es bei einer echten .csv-Datei passiert)
 DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
 SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
+XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 GOLD_FUTURES_TICKER = 'GC=F'  # Yahoo Finance: Gold Future (COMEX) / USD
 GOLD_SPOT_TICKER = 'XAU/USD'  # Twelve Data: Gold Spot / USD
 GOLD_SPOT_TICKER_ALIASES = {'XAU/USD', 'XAUUSD'}
@@ -1751,20 +1753,23 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
                     f"gefunden (ID: {neue_datei.get('id')}); verwende diese Datei."
                 )
             else:
-                # Datei bei jedem neuen Request frisch öffnen. So startet ein
-                # Retry nicht versehentlich am EOF des alten Datei-Handles.
-                with open(lokale_datei, 'rb') as datei_handle:
-                    media = MediaIoBaseUpload(
-                        datei_handle,
-                        mimetype='text/csv',
-                        resumable=True,
-                        chunksize=5 * 1024 * 1024
-                    )
-                    neue_datei = service.files().create(
-                        body=file_metadata,
-                        media_body=media,
-                        fields='id,name,mimeType,appProperties'
-                    ).execute(num_retries=3)
+                # Typisiertes XLSX verhindert locale-abhaengige CSV-Fehlinterpretation.
+                # Datumsfelder werden als echte Excel-Datumszellen serialisiert.
+                upload_stream = erstelle_sheet_upload_stream(
+                    lokale_datei, NUMERISCHE_SPALTEN,
+                    erforderliche_spalten=("Ticker", "Einstiegsdatum", "Status"),
+                )
+                media = MediaIoBaseUpload(
+                    upload_stream,
+                    mimetype=XLSX_MIME,
+                    resumable=True,
+                    chunksize=5 * 1024 * 1024
+                )
+                neue_datei = service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id,name,mimeType,appProperties'
+                ).execute(num_retries=3)
 
             neue_file_id = neue_datei.get('id') if neue_datei else None
             if not neue_file_id:
