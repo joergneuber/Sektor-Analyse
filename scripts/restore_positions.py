@@ -52,7 +52,10 @@ def _key_rows_from_sheet(
         item = {column: (raw[index] if index < len(raw) else "") for index, column in enumerate(headers)}
         keys.append(key_fn(item))
     if len(keys) != len(set(keys)):
-        raise RuntimeError("Sicherheitsabbruch: vorhandener Tab 2 enthält doppelte Positionsschlüssel.")
+        raise RuntimeError(
+            "Sicherheitsabbruch: vorhandener Tab 2 enthält doppelte Positionsschlüssel "
+            "nach Normalisierung der Datumsdarstellung."
+        )
     return keys, len(keys)
 
 
