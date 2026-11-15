@@ -1,8 +1,8 @@
 """Forensische Regressionstests fuer die historische OHLCV-Datenbank."""
 from __future__ import annotations
 
-import sqlite3
 from contextlib import closing
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -472,6 +472,35 @@ def test_recent_gap_detector_uses_exchange_sessions_and_detects_missing_session(
     assert result["gap_session_count"] == 1
 
 
+def test_download_batch_enables_yfinance_repair_only_when_requested(monkeypatch):
+    import sys
+    import types
+    import historical_ohlcv as ho
+
+    frame = pd.DataFrame(
+        {
+            "Open": [10.0], "High": [12.0], "Low": [9.0],
+            "Close": [11.0], "Adj Close": [11.0], "Volume": [100.0],
+        },
+        index=pd.DatetimeIndex(["2026-11-03"]),
+    )
+    calls = []
+
+    def fake_download(**kwargs):
+        calls.append(kwargs)
+        return frame
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(download=fake_download))
+    result = ho._download_batch(
+        ["AAPL"], start="2026-11-03", end="2026-11-04", repair=True
+    )
+
+    assert calls[0]["repair"] is True
+    assert calls[0]["auto_adjust"] is False
+    assert list(result["AAPL"].columns) == ho.REQUIRED_COLUMNS
+    assert len(result["AAPL"]) == 1
+
+
 def test_update_database_automatically_repairs_recent_gap_without_overwriting_existing_data(
     tmp_path, monkeypatch
 ):
@@ -525,8 +554,8 @@ def test_update_database_automatically_repairs_recent_gap_without_overwriting_ex
     )
     calls = []
 
-    def fake_download(tickers, start=None, end=None):
-        calls.append((list(tickers), start, end))
+    def fake_download(tickers, start=None, end=None, repair=False):
+        calls.append((list(tickers), start, end, repair))
         return {"AAPL": repaired}
 
     monkeypatch.setattr(ho, "_download_batch", fake_download)
@@ -544,7 +573,7 @@ def test_update_database_automatically_repairs_recent_gap_without_overwriting_ex
     assert stats["gap_rows_added"] == 1
     assert stats["gap_sessions_remaining"] == 0
     assert stats["gap_tickers_remaining"] == 0
-    assert calls == [(["AAPL"], "2026-11-03", "2026-11-04")]
+    assert calls == [(["AAPL"], "2026-11-03", "2026-11-04", True)]
 
 
 def test_recent_gap_detector_skips_unmapped_calendars_and_known_nonpublication_sessions(
@@ -1136,8 +1165,8 @@ def test_update_database_gap_repair_does_not_count_already_stored_rows_as_update
     )
     download_calls = []
 
-    def download_gap_only(tickers, start=None, end=None):
-        download_calls.append((list(tickers), start, end))
+    def download_gap_only(tickers, start=None, end=None, repair=False):
+        download_calls.append((list(tickers), start, end, repair))
         return {"AAPL": existing}
 
     monkeypatch.setattr(ho, "_download_batch", download_gap_only)
@@ -1145,7 +1174,7 @@ def test_update_database_gap_repair_does_not_count_already_stored_rows_as_update
 
     stats = ho.update_database(db, source, repair_gaps=True)
 
-    assert download_calls == [(["AAPL"], "2026-11-05", "2026-11-06")]
+    assert download_calls == [(["AAPL"], "2026-11-05", "2026-11-06", True)]
 
     assert stats["gap_tickers_attempted"] == 1
     assert stats["gap_rows_added"] == 0
@@ -1237,7 +1266,7 @@ def test_sync_open_positions_registers_and_bootstraps_only_open_tickers(tmp_path
     payload = json.loads(dynamic.read_text(encoding="utf-8"))
     assert payload["tickers"] == ["AAA.DE", "XAU/USD"]
 
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn, conn:
         stored = {
             row[0]: (row[1], row[2], row[3])
             for row in conn.execute(
@@ -1286,7 +1315,7 @@ def test_persist_quality_accepted_history_records_provider_and_rejects_failed_ga
         "AAA.DE", frame, source="Yahoo-Fallback", db_path=db, dynamic_universe=dynamic
     )
     assert stored == 60
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn, conn:
         bar_sources = {row[0] for row in conn.execute("SELECT DISTINCT source FROM bars")}
         instrument_source = conn.execute(
             "SELECT source FROM instruments WHERE ticker='AAA.DE'"
@@ -1363,7 +1392,7 @@ def test_open_position_placeholder_is_created_without_fabricating_bars(tmp_path)
     db = tmp_path / "history.sqlite"
     created = ho._ensure_instrument_placeholders(db, ["NEW.DE", "XAU/USD"])
     assert created == 2
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn, conn:
         rows = conn.execute(
             "SELECT ticker, first_date, last_date, row_count, source FROM instruments ORDER BY ticker"
         ).fetchall()

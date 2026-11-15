@@ -1084,3 +1084,64 @@ def test_m02_dxy_is_not_carried_forward_when_missing_on_common_cutoff():
     assert "Dollar-Proxy DXY: NICHT VERFÜGBAR" in result
     risk = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
     assert "DXY: NICHT VERFÜGBAR" in risk
+
+
+def test_event_date_is_recovered_from_one_explicit_iso_date_in_period():
+    row = normalize_event({
+        "name": "ADP Weekly Employment Change",
+        "period": "Wöchentlich / In 2 Tagen (2026-11-17)",
+        "source": "ForexFactory (LIVE) / Makro-Datenpaket",
+    })
+    assert row["date"] == "2026-11-17"
+    assert row["status"] == "READY"
+    assert row["missing_required"] == []
+
+
+def test_event_date_is_not_guessed_from_ambiguous_or_invalid_period():
+    from trading_radar_market_first import _explicit_date_from_period
+
+    assert _explicit_date_from_period("Wöchentlich / In 2 Tagen") is None
+    assert _explicit_date_from_period("2026-11-17 bis 2026-11-19") is None
+    assert _explicit_date_from_period("2026-02-30") is None
+    assert _explicit_date_from_period("2026-11-17 bis 2026-02-30") is None
+
+
+def test_event_section_promotes_explicit_period_date_and_clears_stale_missing_date_finding():
+    from trading_radar_market_first import normalize_event_section
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis-Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Kennzahl: ADP Weekly Employment Change\n"
+        "- Zeitraum: Wöchentlich / In 2 Tagen (2026-11-17)\n"
+        "- Quelle: ForexFactory (LIVE) / Makro-Datenpaket\n"
+        "Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        "Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt)\n"
+        "\n4. Assetklassenvergleich\nAktien und Anleihen werden verglichen.\n"
+    )
+    normalized, findings = normalize_event_section(report)
+
+    assert "Datum: 2026-11-17" in normalized
+    assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" in normalized
+    assert "Ereignis ohne Datum" not in findings
+    assert "Ereignis ohne verifizierte Quelle" not in findings
+
+
+def test_explicit_event_date_is_not_relabelled_as_inferred_from_period():
+    from trading_radar_market_first import normalize_event_section
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: FOMC-Zinsentscheid\n"
+        "- Datum: 2026-11-17\n"
+        "- Zeitraum: Sitzungstermin 2026-11-17\n"
+        "- Quelle: Federal Reserve, offizieller Kalender\n"
+        "- Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt)\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(report)
+
+    assert "Datum: 2026-11-17" in normalized
+    assert "NICHT VERIFIZIERT (Datum nicht belegt)" in normalized
+    assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" not in normalized
+    assert "Ereignis ohne Datum" not in findings

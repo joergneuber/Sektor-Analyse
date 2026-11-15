@@ -417,7 +417,7 @@ def test_upsert_aborts_on_multiple_same_named_master_sheets(monkeypatch):
 
 def test_new_master_requires_complete_51_trade_initial_history():
     short_history = pd.DataFrame(
-        [row(f"T{i}.DE", f"Trade {i}", f"{i+1:02d}.09.2026", str(10+i))
+        [row(f"T{i}.DE", f"Trade {i}", (pd.Timestamp("2026-09-01") + pd.Timedelta(days=i)).strftime("%d.%m.%Y"), str(10+i))
          for i in range(mod.MINIMUM_PROTECTED_HISTORY_ROWS - 1)],
         columns=mod.HISTORY_HEADERS,
     )
@@ -425,7 +425,7 @@ def test_new_master_requires_complete_51_trade_initial_history():
         mod._validate_new_master_history(short_history)
 
     complete_history = pd.DataFrame(
-        [row(f"T{i}.DE", f"Trade {i}", f"{i+1:02d}.09.2026", str(10+i))
+        [row(f"T{i}.DE", f"Trade {i}", (pd.Timestamp("2026-09-01") + pd.Timedelta(days=i)).strftime("%d.%m.%Y"), str(10+i))
          for i in range(mod.MINIMUM_PROTECTED_HISTORY_ROWS)],
         columns=mod.HISTORY_HEADERS,
     )
@@ -865,3 +865,9 @@ def test_naive_iso_datetime_remains_supported():
     assert mod._date_to_sheets_serial(
         "2026-08-01T12:30:00", "Einstiegsdatum", 2, strict=True
     ) == pytest.approx(46235.5208333333)
+
+
+def test_position_key_rejects_invalid_calendar_date_without_raw_fallback():
+    bad = row("BADKEY", "Bad Key", "2026-31-01", "10.00")
+    with pytest.raises(RuntimeError, match="Ungueltiges Datum"):
+        mod._position_key(bad)

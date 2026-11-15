@@ -1,4 +1,5 @@
 """Tests for integrity-checked and paired OHLCV release bundles."""
+from contextlib import closing
 import json
 import sqlite3
 from pathlib import Path
@@ -10,7 +11,7 @@ from ohlcv_release_bundle import create_bundle, extract_bundle, verify_bundle, v
 
 
 def _db(path: Path, value="AAA"):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE bars (ticker TEXT NOT NULL, close REAL NOT NULL)")
         connection.execute("INSERT INTO bars VALUES (?, 1.0)", (value,))
 
@@ -28,7 +29,7 @@ def test_create_verify_and_extract_bundle_round_trip(tmp_path):
     assert verify_bundle(bundle)["status"] == "ok"
     target_db, target_universe = tmp_path / "restored.sqlite", tmp_path / "restored.json"
     extract_bundle(bundle, target_db, target_universe)
-    with sqlite3.connect(target_db) as connection:
+    with closing(sqlite3.connect(target_db)) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "NEW"
     assert json.loads(target_universe.read_text())["tickers"] == ["NEW"]
 
@@ -99,7 +100,7 @@ def test_bundle_backup_includes_committed_wal_pages(tmp_path):
         create_bundle(db, universe, bundle)
         restored_db, restored_universe = tmp_path / "wal-restored.sqlite", tmp_path / "wal-restored.json"
         extract_bundle(bundle, restored_db, restored_universe)
-        with sqlite3.connect(restored_db) as restored:
+        with closing(sqlite3.connect(restored_db)) as restored, restored:
             assert restored.execute("SELECT ticker FROM bars").fetchone()[0] == "WAL.COMMITTED"
     finally:
         connection.close()
@@ -148,7 +149,7 @@ def test_extract_rolls_back_both_targets_if_second_replace_fails(tmp_path, monke
     with pytest.raises(RuntimeError, match="vorheriges DB/Universum-Paar"):
         extract_bundle(bundle, target_db, target_universe)
 
-    with sqlite3.connect(target_db) as connection:
+    with closing(sqlite3.connect(target_db)) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "OLD"
     assert json.loads(target_universe.read_text())["tickers"] == ["OLD.DE"]
 
@@ -198,7 +199,7 @@ def test_restore_files_transactionally_installs_verified_legacy_pair(tmp_path):
     _universe(target_universe, "OLD")
     result = restore_files(source_db, source_universe, target_db, target_universe)
     assert result["status"] == "restored"
-    with sqlite3.connect(target_db) as connection:
+    with closing(sqlite3.connect(target_db)) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "LEGACY"
     assert json.loads(target_universe.read_text())["tickers"] == ["LEGACY"]
 
@@ -224,7 +225,7 @@ def test_restore_files_rolls_back_both_targets_if_second_replace_fails(tmp_path,
     monkeypatch.setattr(bundle_module.os, "replace", fail_second_replace)
     with pytest.raises(RuntimeError, match="vorheriges DB/Universum-Paar"):
         bundle_module.restore_files(source_db, source_universe, target_db, target_universe)
-    with sqlite3.connect(target_db) as connection:
+    with closing(sqlite3.connect(target_db)) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "OLD"
     assert json.loads(target_universe.read_text())["tickers"] == ["OLD"]
 
@@ -274,7 +275,7 @@ def test_restore_files_rolls_back_when_installed_pair_verification_fails(tmp_pat
     monkeypatch.setattr(bundle_module, "verify_files", fail_installed_verification)
     with pytest.raises(RuntimeError, match="vorheriges DB/Universum-Paar"):
         bundle_module.restore_files(source_db, source_universe, target_db, target_universe)
-    with sqlite3.connect(target_db) as connection:
+    with closing(sqlite3.connect(target_db)) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "OLD"
     assert json.loads(target_universe.read_text())["tickers"] == ["OLD"]
 

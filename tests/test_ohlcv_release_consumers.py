@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -26,7 +27,7 @@ def _sha(path: Path) -> str:
 
 
 def _db(path: Path, marker: str) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE bars (ticker TEXT, close REAL)")
         connection.execute("INSERT INTO bars VALUES (?, ?)", (marker, 123.0))
 
@@ -174,7 +175,7 @@ fi
 
 
 def _read_marker(path: Path) -> str:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         return connection.execute("SELECT ticker FROM bars").fetchone()[0]
 
 

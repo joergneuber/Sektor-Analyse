@@ -1,4 +1,5 @@
 """Regression tests for the immutable, integrity-checked OHLCV release workflow."""
+from contextlib import closing
 from pathlib import Path
 import json
 import os
@@ -49,7 +50,7 @@ def _archive_shell() -> str:
 
 
 def _make_db(path: Path, marker: str = "original") -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE IF NOT EXISTS bars (ticker TEXT, date TEXT, close REAL)")
         connection.execute("INSERT INTO bars VALUES (?, ?, ?)", (marker, "2026-11-12", 123.45))
 
@@ -158,7 +159,7 @@ def test_restore_prefers_newest_valid_single_bundle_and_replaces_cache_pair(tmp_
     ]
     result = _run_restore(tmp_path, assets, {older.name: older, newer.name: newer})
     assert result.returncode == 0, result.stderr
-    with sqlite3.connect(tmp_path / "historical_ohlcv.sqlite") as connection:
+    with closing(sqlite3.connect(tmp_path / "historical_ohlcv.sqlite")) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "NEW"
     assert json.loads((tmp_path / "historical_ohlcv_universe.json").read_text())["tickers"] == ["NEW.DE"]
     for suffix in ("-wal", "-shm", "-journal"):
@@ -175,7 +176,7 @@ def test_restore_falls_back_to_previous_bundle_when_latest_is_corrupt(tmp_path):
     ]
     result = _run_restore(tmp_path, assets, {valid.name: valid, "historical_ohlcv_bundle_bad.zip": corrupt})
     assert result.returncode == 0, result.stderr
-    with sqlite3.connect(tmp_path / "historical_ohlcv.sqlite") as connection:
+    with closing(sqlite3.connect(tmp_path / "historical_ohlcv.sqlite")) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "GOOD"
 
 
@@ -197,7 +198,7 @@ def test_restore_legacy_two_asset_pair_is_checked_before_use(tmp_path):
     finally:
         os.environ.pop("TEST_LEGACY_MIGRATION", None)
     assert result.returncode == 0, result.stderr
-    with sqlite3.connect(tmp_path / "historical_ohlcv.sqlite") as connection:
+    with closing(sqlite3.connect(tmp_path / "historical_ohlcv.sqlite")) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "LEGACY"
     assert "Legacy-OHLCV-Migration explizit freigegeben" in result.stdout
 
@@ -271,7 +272,7 @@ def test_restore_rejects_remote_digest_mismatch_and_uses_previous_bundle(tmp_pat
     ]
     result = _run_restore(tmp_path, assets, {older.name: older, newer.name: newer})
     assert result.returncode == 0, result.stderr
-    with sqlite3.connect(tmp_path / "historical_ohlcv.sqlite") as connection:
+    with closing(sqlite3.connect(tmp_path / "historical_ohlcv.sqlite")) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "OLD"
 
 
@@ -284,7 +285,7 @@ def test_restore_skips_bundle_without_remote_digest_and_uses_previous(tmp_path):
     ]
     result = _run_restore(tmp_path, assets, {older.name: older, newer.name: newer})
     assert result.returncode == 0, result.stderr
-    with sqlite3.connect(tmp_path / "historical_ohlcv.sqlite") as connection:
+    with closing(sqlite3.connect(tmp_path / "historical_ohlcv.sqlite")) as connection, connection:
         assert connection.execute("SELECT ticker FROM bars").fetchone()[0] == "OLD"
 
 

@@ -359,3 +359,79 @@ def test_production_parser_accepts_yahoo_dgs10_without_fred_provider_name():
     result = production._trading_radar_treasury_provenienz_ergänzen(line, macro)
     assert "Quelle: Yahoo Finance DGS10" in result
     assert "NICHT VERFÜGBAR" not in result
+
+
+def test_m07_uses_explicit_value_bound_conflict_provenance_when_macro_cache_is_ambiguous():
+    report = (
+        "1. Die US-Leitzinsen bleiben stabil (US 10Y Treasury bei 4,88% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR)).\n"
+        "- GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN | Instrument: US-10Y Treasury | "
+        "Makro-Wert: 4.8800% (Makro-Provenienz: Quelle=FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations); "
+        "Abrufzeit=2026-11-12T07:11:41+00:00; Datenstichtag=2026-11-09; "
+        "Einheit=%; Verzögerung=6 Kalendertage) | Live-Wert: 5.1540% "
+        "(Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-15T12:47:41+00:00; "
+        "Datenstichtag: 2026-11-13T00:00:00+00:00; Einheit: %; "
+        "Verzögerung: Tages-Schlusskurs)."
+    )
+    macro = (
+        "US 10Y Treasury: 4.8800 | Datenstand=2026-11-09 | STATUS=REAL_CACHED "
+        "| SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) "
+        "| RETRIEVED_AT=2026-11-12T07:11:41+00:00 | DELAY_DAYS=6 | UNIT=%\n"
+        "US 10Y Treasury: 4.8800 | Datenstand=2026-11-08 | STATUS=REAL_CACHED "
+        "| SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) "
+        "| RETRIEVED_AT=2026-11-11T07:11:41+00:00 | DELAY_DAYS=7 | UNIT=%"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, macro)
+    first_line = result.splitlines()[0]
+    assert "Quelle: FRED DGS10" in first_line
+    assert "Abrufzeit: 2026-11-12T07:11:41+00:00" in first_line
+    assert "Datenstichtag: 2026-11-09" in first_line
+    assert "Einheit: %" in first_line
+    assert "Verzögerung: 6 Kalendertage" in first_line
+
+
+def test_m07_keeps_value_unresolved_when_explicit_conflict_records_disagree():
+    report = (
+        "US 10Y Treasury bei 4,88%\n"
+        "- GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN | Instrument: US-10Y Treasury | Makro-Wert: 4.8800% "
+        "(Makro-Provenienz: Quelle=FRED DGS10; Abrufzeit=2026-11-12T07:11:41+00:00; "
+        "Datenstichtag=2026-11-09; Einheit=%; Verzögerung=6 Kalendertage)\n"
+        "- GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN | Instrument: US-10Y Treasury | Makro-Wert: 4.8800% "
+        "(Makro-Provenienz: Quelle=FRED DGS10; Abrufzeit=2026-11-11T07:11:41+00:00; "
+        "Datenstichtag=2026-11-08; Einheit=%; Verzögerung=7 Kalendertage)"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(report, "")
+    assert "Quelle: NICHT VERFÜGBAR" in result.splitlines()[0]
+    assert "Abrufzeit: NICHT VERFÜGBAR" in result.splitlines()[0]
+
+
+def test_production_parser_accepts_multiple_separately_sourced_us10y_observations_on_one_rates_line():
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+
+    line = (
+        "Zinsen/Renditen: US-10J-Rendite (^TNX): 5.15% "
+        "(Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-15T12:47:41+00:00; "
+        "Datenstichtag: 2026-11-13T00:00:00+00:00; Einheit: %; "
+        "Verzögerung: Tages-Schlusskurs) | "
+        "US 10Y Treasury: 4.8800% "
+        "(Quelle: FRED DGS10 (https://api.stlouisfed.org/fred/series/observations); "
+        "Abrufzeit: 2026-11-12T07:11:41+00:00; Datenstichtag: 2026-11-09; "
+        "Einheit: %; Verzögerung: 6 Kalendertage)"
+    )
+    result = production._trading_radar_treasury_provenienz_ergänzen(line)
+    assert "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" not in result
+    assert _treasury_observation_has_complete_provenance(result)
+
+
+def test_report_gate_accepts_nested_narrative_parentheses_around_sourced_us10y():
+    from trading_radar_report_gate import _treasury_observation_has_complete_provenance
+
+    line = (
+        "1. Die US-Leitzinsen bleiben stabil (US 10Y Treasury bei 4,88% "
+        "(Quelle: FRED DGS10; Abrufzeit: 2026-11-12T07:11:41+00:00; "
+        "Datenstichtag: 2026-11-09; Einheit: %; Verzögerung: 6 Kalendertage))."
+    )
+    assert _treasury_observation_has_complete_provenance(line)

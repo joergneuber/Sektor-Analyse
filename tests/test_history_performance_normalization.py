@@ -34,7 +34,7 @@ def _baseline(count=51, *, zero_at=None):
             "Waehrung": "USD",
             "Richtung": direction,
             "Ideen_Quelle": "Test",
-            "Einstiegsdatum": f"{i + 1:02d}.01.2026",
+            "Einstiegsdatum": (pd.Timestamp("2026-01-01") + pd.Timedelta(days=i)).strftime("%d.%m.%Y"),
             "Einstieg": str(entry),
             "Aktueller_Kurs": "",
             "Stop": "",

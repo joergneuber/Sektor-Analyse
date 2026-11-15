@@ -15,9 +15,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+_test_file = Path(__file__).resolve()
 _source_override = next(
     (Path(arg) for arg in sys.argv[1:]
-     if not arg.startswith("-") and Path(arg).is_file() and Path(arg).suffix.lower() == ".py"),
+     if not arg.startswith("-")
+     and Path(arg).is_file()
+     and Path(arg).suffix.lower() == ".py"
+     and Path(arg).resolve() != _test_file
+     and not Path(arg).name.startswith("test_")),
     None,
 )
 # unittest.main() interprets leftover positional arguments as test names.

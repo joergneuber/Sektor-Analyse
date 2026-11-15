@@ -1062,3 +1062,20 @@ def test_final_ohlcv_persistence_outcomes_are_wired_into_radar_gate():
     assert 'queue_payload.get("branch") != expected_branch' in runner
     assert "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" in runner
     assert "Audit: finale OHLCV-Synchronisierung und Persistenz" in runner
+
+
+def test_final_ohlcv_sync_registers_current_positions_before_full_update():
+    workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "main.yml").read_text(encoding="utf-8")
+    start = workflow.index("id: ohlcv-final-sync")
+    end = workflow.index("- name: Finale OHLCV-Datenbank", start)
+    block = workflow[start:end]
+
+    register = "python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv"
+    update = "python historical_ohlcv.py update --strict"
+    assert register in block
+    assert update in block
+    assert block.index(register) < block.index(update)
+    assert "position_sync_rc=$?" in block
+    assert '"position_sync_exit=${position_sync_rc}"' in block
+    assert 'position_sync=${position_sync_rc}' in block
+    assert '[ "$position_sync_rc" -eq 0 ]' in block

@@ -81,3 +81,12 @@ def test_timezone_aware_iso_datetime_is_rejected_for_xlsx_dates(tmp_path, date_v
         erstelle_sheet_upload_stream(
             str(csv), [], datumsspalten=("Einstiegsdatum",)
         )
+
+
+def test_shared_date_parser_is_used_by_xlsx_uploader():
+    from positionen_sheet_upload import _parse_date
+
+    assert _parse_date("46235", "Einstiegsdatum", 2).date().isoformat() == "2026-08-01"
+    assert _parse_date("", "Einstiegsdatum", 2) is None
+    with pytest.raises(ValueError, match="Ungueltiges Datum"):
+        _parse_date("2026-31-01", "Einstiegsdatum", 2)

@@ -29,7 +29,7 @@ def _trusted_history(count: int = 51) -> pd.DataFrame:
             "Waehrung": "USD",
             "Richtung": "Long",
             "Ideen_Quelle": "Trendfolge",
-            "Einstiegsdatum": f"{index + 1:02d}.01.2026",
+            "Einstiegsdatum": (pd.Timestamp("2026-01-01") + pd.Timedelta(days=index)).strftime("%d.%m.%Y"),
             "Einstieg": f"{index + 1},00",
             "Aktueller_Kurs": "",
             "Stop": "",
@@ -665,3 +665,22 @@ def test_partial_baseline_with_real_later_trade_is_appendable_and_preserved():
     )
     assert len(existing_keys) == 27
     assert len(missing) == 25
+
+
+def test_recovery_history_date_normalization_rejects_invalid_and_timezone_values():
+    import pytest
+    from scripts.restore_positions import _normalize_history_value
+
+    for value in ("2026-31-01", "31.02.2026", "2026-08-01T00:00:00Z",
+                  "2026-08-01T00:00:00+02:00"):
+        with pytest.raises(ValueError):
+            _normalize_history_value("Einstiegsdatum", value)
+
+
+def test_recovery_history_date_normalization_matches_serial_and_iso():
+    from scripts.restore_positions import _normalize_history_value
+
+    expected = ("date", "2026-08-01")
+    assert _normalize_history_value("Einstiegsdatum", "46235") == expected
+    assert _normalize_history_value("Einstiegsdatum", "01.08.2026") == expected
+    assert _normalize_history_value("Einstiegsdatum", "2026-08-01") == expected

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import io
 import json
 import os
@@ -195,7 +196,7 @@ def test_import_merges_queue_once_and_persists_receipt_in_sqlite(tmp_path, monke
     assert second["runs_imported"] == 0
     assert second["tickers_seen"] == 2
     assert json.loads(universe.read_text(encoding="utf-8"))["tickers"] == ["AAPL", "BASE.DE", "MSFT"]
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         receipt_count = connection.execute(f"SELECT COUNT(*) FROM {queue.RECEIPT_TABLE}").fetchone()[0]
     assert receipt_count == 1
 
@@ -319,7 +320,7 @@ def test_failed_scan_with_queue_registration_error_is_not_treated_as_no_pending_
     assert repeated["tickers_seen"] == 2
     assert repeated["recovered_registration_errors"] == 1
     assert download.call_count == 1
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         stored_outcome = connection.execute(
             f"SELECT producer_outcome FROM {queue.RECEIPT_TABLE} WHERE run_id='12345' AND run_attempt=1"
         ).fetchone()[0]
@@ -466,7 +467,7 @@ def test_receipts_survive_authoritative_release_bundle_round_trip(tmp_path):
     restored_db = tmp_path / "restored.sqlite"
     restored_universe = tmp_path / "restored_universe.json"
     extract_bundle(bundle, restored_db, restored_universe)
-    with sqlite3.connect(restored_db) as connection:
+    with closing(sqlite3.connect(restored_db)) as connection, connection:
         row = connection.execute(
             f"SELECT run_id, run_attempt, producer_outcome FROM {queue.RECEIPT_TABLE}"
         ).fetchone()
@@ -476,7 +477,7 @@ def test_receipts_survive_authoritative_release_bundle_round_trip(tmp_path):
 def test_receipt_schema_migrates_existing_receipt_table(tmp_path):
     db = tmp_path / "historical_ohlcv.sqlite"
     queue.init_db(db) if hasattr(queue, "init_db") else None
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         connection.execute(
             f"CREATE TABLE {queue.RECEIPT_TABLE} ("
             "run_id TEXT NOT NULL, run_attempt INTEGER NOT NULL, queue_sha256 TEXT NOT NULL, "
@@ -484,7 +485,7 @@ def test_receipt_schema_migrates_existing_receipt_table(tmp_path):
             "PRIMARY KEY (run_id, run_attempt))"
         )
     queue._ensure_receipts(db)
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info({queue.RECEIPT_TABLE})")}
     assert {"producer_outcome", "recovered_error_count"}.issubset(columns)
 
@@ -574,6 +575,7 @@ def test_final_sync_workflow_shell_emits_complete_partial_and_failed(tmp_path):
     fake_python.write_text(r'''#!/usr/bin/env bash
 set -u
 case "$*" in
+  *" sync-open-positions "*) exit "${POSITION_SYNC_RC:-0}" ;;
   *" update"*) if [ "${CREATE_FILES:-0}" -eq 1 ]; then printf x > historical_ohlcv.sqlite; printf x > historical_ohlcv_universe.json; fi; exit "${UPDATE_RC:-0}" ;;
   *" coverage "*) exit "${COVERAGE_RC:-0}" ;;
   *" verify-open-positions "*) exit "${POSITIONS_RC:-0}" ;;
@@ -593,8 +595,11 @@ exit 99
         assert completed.returncode == 0, completed.stderr
         return output.read_text(encoding="utf-8")
 
-    assert "status=complete" in run_case("complete", CREATE_FILES=1)
+    complete = run_case("complete", CREATE_FILES=1)
+    assert "status=complete" in complete
+    assert "position_sync_exit=0" in complete
     assert "status=partial" in run_case("partial", CREATE_FILES=1, UPDATE_RC=1)
+    assert "status=partial" in run_case("position-sync-partial", CREATE_FILES=1, POSITION_SYNC_RC=1)
     assert "status=failed" in run_case("failed", UPDATE_RC=1)
 
 
