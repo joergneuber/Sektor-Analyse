@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import re
 import pandas as pd
 
 DATE_COLUMNS = ("Einstiegsdatum", "Ausstiegsdatum")
@@ -15,15 +16,25 @@ def _parse_date(value, column: str, row_number: int):
     text = str(value).strip()
     if not text or text.lower() in {"nan", "nat", "none"}:
         return None
-    parsed = pd.to_datetime(
-        text, errors="coerce", dayfirst=True,
-        format="mixed"
-    )
+    # ISO-JJJJ-MM-TT zuerst strikt als Jahr-Monat-Tag lesen.
+    # Der allgemeine dayfirst=True-Mixed-Parser vertauscht sonst Monat und Tag.
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        parsed = pd.to_datetime(text, errors="coerce", format="%Y-%m-%d")
+    elif re.match(r"^\d{4}-\d{2}-\d{2}[T ]", text):
+        parsed = pd.to_datetime(text, errors="coerce", format="ISO8601")
+    else:
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=True, format="mixed")
     if pd.isna(parsed):
         raise ValueError(
             f"Ungueltiges Datum in {column!r}, Datenzeile {row_number}: {value!r}"
         )
-    return parsed.to_pydatetime().replace(tzinfo=None)
+    if parsed.tzinfo is not None:
+        raise ValueError(
+            f"Zeitzonenangaben sind in {column!r}, Datenzeile {row_number}, "
+            f"nicht zulaessig: {value!r}. Bitte ein Kalenderdatum bzw. "
+            "eine Datums-/Zeitangabe ohne Zeitzone verwenden."
+        )
+    return parsed.to_pydatetime()
 
 
 def erstelle_sheet_upload_stream(

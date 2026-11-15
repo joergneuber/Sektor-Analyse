@@ -1962,7 +1962,14 @@ def _date_to_sheets_serial(value, column: str, row_number: int, *, strict: bool 
         serial = float(text)
         if 1 <= serial <= 100000:
             return serial
-    parsed = pd.to_datetime(text, errors="coerce", dayfirst=True, format="mixed")
+    # ISO-Datumsstrings (YYYY-MM-DD) sind eindeutig und duerfen nicht
+    # durch dayfirst=True als YYYY-DD-MM fehlinterpretiert werden.
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        parsed = pd.to_datetime(text, errors="coerce", format="%Y-%m-%d")
+    elif re.match(r"^\d{4}-\d{2}-\d{2}[T ]", text):
+        parsed = pd.to_datetime(text, errors="coerce", format="ISO8601")
+    else:
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=True, format="mixed")
     if pd.isna(parsed):
         if strict:
             raise RuntimeError(
@@ -1970,7 +1977,13 @@ def _date_to_sheets_serial(value, column: str, row_number: int, *, strict: bool 
             )
         # Reine Lese-/Preflight-Pfade duerfen historische Rohwerte vergleichen.
         return value
-    # Google Sheets serial epoch: 1899-12-30. Preserve time if present.
+    if parsed.tzinfo is not None:
+        raise RuntimeError(
+            f"Zeitzonenangaben sind in {column!r}, Datenzeile {row_number}, "
+            f"nicht zulaessig: {value!r}. Bitte ein Kalenderdatum bzw. "
+            "eine Datums-/Zeitangabe ohne Zeitzone verwenden."
+        )
+    # Google Sheets serial epoch: 1899-12-30. Preserve naive time if present.
     stamp = parsed.to_pydatetime()
     epoch = dt.datetime(1899, 12, 30)
     return (stamp - epoch).total_seconds() / 86400.0
