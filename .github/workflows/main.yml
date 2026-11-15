@@ -664,6 +664,11 @@ jobs:
           NMM_USE_HISTORICAL_OHLCV: "1"
         run: |
           set +e
+          # Nach allen Scannern kann Offene_Positionen.csv neue offene Ticker
+          # enthalten. Vor der finalen Gesamtaktualisierung zuerst das aktuelle
+          # Positionsuniversum registrieren und dessen Historien gezielt laden.
+          python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv
+          position_sync_rc=$?
           python historical_ohlcv.py update --strict
           update_rc=$?
           python historical_ohlcv.py coverage --summary
@@ -672,7 +677,7 @@ jobs:
           positions_rc=$?
           set -e
           if [ -s historical_ohlcv.sqlite ] && [ -s historical_ohlcv_universe.json ]; then
-            if [ "$update_rc" -eq 0 ] && [ "$coverage_rc" -eq 0 ] && [ "$positions_rc" -eq 0 ]; then
+            if [ "$position_sync_rc" -eq 0 ] && [ "$update_rc" -eq 0 ] && [ "$coverage_rc" -eq 0 ] && [ "$positions_rc" -eq 0 ]; then
               sync_status="complete"
             else
               sync_status="partial"
@@ -681,10 +686,11 @@ jobs:
             sync_status="failed"
           fi
           echo "status=${sync_status}" >> "$GITHUB_OUTPUT"
+          echo "position_sync_exit=${position_sync_rc}" >> "$GITHUB_OUTPUT"
           echo "update_exit=${update_rc}" >> "$GITHUB_OUTPUT"
           echo "coverage_exit=${coverage_rc}" >> "$GITHUB_OUTPUT"
           echo "positions_exit=${positions_rc}" >> "$GITHUB_OUTPUT"
-          echo "OHLCV_FINAL_SYNC_STATUS=${sync_status}|update=${update_rc}|coverage=${coverage_rc}|positions=${positions_rc}"
+          echo "OHLCV_FINAL_SYNC_STATUS=${sync_status}|position_sync=${position_sync_rc}|update=${update_rc}|coverage=${coverage_rc}|positions=${positions_rc}"
 
       - name: Finale OHLCV-Datenbank und Universum atomar im Dauerarchiv sichern und verifizieren
         id: ohlcv-final-release-save
