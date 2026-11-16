@@ -1,0 +1,22 @@
+Gezielte Regressionstests (12 Module):
+- Batch 1: 196 passed, 11 subtests passed
+- Batch 2: 264 passed, 19 subtests passed
+- Gesamt: 460 passed, 30 subtests passed, 0 failed
+
+Python compileall:
+- Exitcode 0
+- Keine Syntaxfehler
+
+AST:
+- Alle 17 geänderten Python-Dateien parsebar
+
+Tatsächlicher Report-Run 1314:
+- Vor Generator-Normalisierung: M-03 Freitextwiderspruch vorhanden
+- Nach Generator-Normalisierung: M-03 = 0 Fehler
+- Nach Event-Normalisierung und Report-Gate: M-08 = 0 Fehler
+- Event-Normalizer meldet weiterhin eine nicht live verifizierte Cache-Quelle
+- Report bleibt NICHT_FINAL wegen M-07 und nicht live verifizierter Ereignisquelle
+
+GitHub:
+- Nur Read-only-Abgleich
+- 0 Schreibaktionen

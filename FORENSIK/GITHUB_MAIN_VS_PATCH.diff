@@ -1,0 +1,3774 @@
+--- a/Trading_Radar_Alleinauswertung.py
++++ b/Trading_Radar_Alleinauswertung.py
+@@ -18894,6 +18894,54 @@
+         "", body
+     )
+     block = _trading_radar_ohlcv_nachweisblock(text)
++    # Model prose can repeat an unsupported "no gaps" claim outside section 8
++    # (e.g. in the executive summary). If the structured audit is not clean,
++    # neutralize that claim across the complete report before the gate runs.
++    structured_clean = block.startswith("OHLCV-Abdeckung: vollständig (")
++    if not structured_clean:
++        text = re.sub(
++            r"(?i)OHLCV\s+vollständig\s*,?\s*keine\s+Datenlücken\s*;\s*"
++            r"Kandidaten\s+nicht\s+eingeschränkt(?:\s*\([^)]*\))?",
++            "OHLCV-Datenqualität siehe Daten-/Prüfanhang; Lückenfreiheit nicht bestätigt",
++            text,
++        )
++        # Also neutralize standalone broad claims that bypass the canonical
++        # section-8 writer. The M-03 gate independently scans the full report.
++        text = re.sub(
++            r"(?i)OHLCV[^\r\n]{0,180}(?:vollständig\s*,?\s*)?keine\s+"
++            r"(?:historischen\s+)?Datenlücken|"
++            r"keine\s+(?:historischen\s+)?Datenlücken[^\r\n]{0,180}OHLCV",
++            "OHLCV-Lückenfreiheit nicht bestätigt",
++            text,
++        )
++        # ``body`` is a separately held section slice. Apply the same
++        # authoritative correction to it as well, otherwise rebuilding section
++        # 8 below would reinsert the stale pre-normalized text.
++        body = re.sub(
++            r"(?i)OHLCV\s+vollständig\s*,?\s*keine\s+Datenlücken\s*;\s*"
++            r"Kandidaten\s+nicht\s+eingeschränkt(?:\s*\([^)]*\))?",
++            "OHLCV-Datenqualität siehe Daten-/Prüfanhang; Lückenfreiheit nicht bestätigt",
++            body,
++        )
++        body = re.sub(
++            r"(?i)OHLCV[^\r\n]{0,180}(?:vollständig\s*,?\s*)?keine\s+"
++            r"(?:historischen\s+)?Datenlücken|"
++            r"keine\s+(?:historischen\s+)?Datenlücken[^\r\n]{0,180}OHLCV",
++            "OHLCV-Lückenfreiheit nicht bestätigt",
++            body,
++        )
++        # Recompute offsets because the full-report prose replacement can
++        # change text length before section 8.
++        section = re.search(
++            r"(?im)^[ \t]*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang[^\r\n]*$", text
++        )
++        if not section:
++            return text
++        tail = text[section.end():]
++        next_section = re.search(
++            r"(?im)^[ \t]*(?:#{1,6}\s*)?(?:9|10|11)(?:\s*[.·](?!\d)|\s+)[^\r\n]*$", tail
++        )
++        end = section.end() + next_section.start() if next_section else len(text)
+     return text[:section.end()] + "\n\n" + block + "\n" + body.lstrip("\r\n") + text[end:]
+ 
+ 
+--- a/offene_positionen_check.py
++++ b/offene_positionen_check.py
+@@ -41,7 +41,7 @@
+ import numpy as np
+ import pandas as pd
+ 
+-from positionen_datum import parse_position_date, position_date_to_sheets_serial
++from positionen_datum import parse_position_date, position_date_to_sheets_serial, reject_excel_date_serial_price
+ import yfinance as yf
+ from scipy.signal import argrelextrema
+ 
+@@ -200,12 +200,98 @@
+ 
+ 
+ def read_positions(path: str) -> pd.DataFrame:
+-    # Bewusst exakt das bestehende Projektformat: Semikolon + deutsches Dezimal-Komma.
++    """Read the canonical positions CSV and fail closed for actionable open rows.
++
++    Historical closed rows and the non-trading ANLEITUNG sheet row remain
++    compatible; they do not acquire open-position entry/stop requirements.
++    """
++    # pandas mangles duplicate CSV headers (for example Ticker -> Ticker.1)
++    # before exposing DataFrame.columns. Inspect the raw header first so a
++    # duplicate cannot silently become a different, apparently valid schema.
++    with open(path, "r", encoding="utf-8-sig", newline="") as header_file:
++        raw_header = next(csv.reader(header_file, delimiter=";"), [])
++    normalized_header = [str(column).strip() for column in raw_header]
++    folded_header = [column.casefold() for column in normalized_header]
++    if not normalized_header or any(not column for column in normalized_header):
++        raise ValueError("Offene_Positionen.csv enthält einen leeren oder fehlenden Spaltennamen.")
++    if len(folded_header) != len(set(folded_header)):
++        raise ValueError("Offene_Positionen.csv enthält doppelte Spaltennamen.")
++
+     df = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
+-    if "Status" not in df.columns or "Ticker" not in df.columns:
+-        raise ValueError("Offene_Positionen.csv hat nicht das erwartete Positionsschema.")
+     df.columns = [str(c).strip() for c in df.columns]
++    folded_columns = [str(column).casefold() for column in df.columns]
++    if len(folded_columns) != len(set(folded_columns)):
++        raise ValueError("Offene_Positionen.csv enthält doppelte Spaltennamen.")
++
++    # Status and Ticker are needed to distinguish live trades from the
++    # instruction row and historical closed records. Other mandatory fields
++    # are enforced only when at least one genuine open position exists.
++    base_missing = sorted({"Ticker", "Status"}.difference(df.columns))
++    if base_missing:
++        raise ValueError(
++            "Offene_Positionen.csv hat kein erkennbares Positionsschema; "
++            f"Pflichtspalten fehlen: {', '.join(base_missing)}."
++        )
++
+     df["Status"] = df["Status"].astype(str).str.strip()
++    tickers = df["Ticker"].astype(str).str.strip()
++    instruction_rows = tickers.str.upper().eq("ANLEITUNG")
++    open_rows = df["Status"].str.casefold().eq("offen")
++    actionable_open_rows = open_rows & ~instruction_rows
++
++    if actionable_open_rows.any():
++        required_open_columns = {
++            "Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg", "Stop"
++        }
++        missing_columns = sorted(required_open_columns.difference(df.columns))
++        if missing_columns:
++            raise ValueError(
++                "Offene_Positionen.csv hat ein unvollständiges Positionsschema für offene Positionen; "
++                f"Pflichtspalten fehlen: {', '.join(missing_columns)}."
++            )
++
++        required_values = ("Ticker", "Name", "Einstiegsdatum", "Einstieg", "Stop")
++        for column in required_values:
++            values = df.loc[actionable_open_rows, column].astype(str).str.strip()
++            missing_mask = values.str.casefold().isin({
++                "", "-", "—", "n/a", "na", "nan", "none", "null", "nat",
++                "tbd", "tba", "unbekannt", "fehlt", "unklar",
++                "nicht verfügbar", "nicht verfuegbar",
++            })
++            if missing_mask.any():
++                bad_indices = values.index[missing_mask].tolist()
++                csv_rows = [str(index + 2) for index in bad_indices]
++                raise ValueError(
++                    "Offene Position(en) ohne Pflichtwert in Offene_Positionen.csv: "
++                    f"{column} (CSV-Zeilen: {', '.join(csv_rows)})."
++                )
++
++        for column in ("Einstieg", "Stop"):
++            for row_index in df.index[actionable_open_rows]:
++                value = df.at[row_index, column]
++                ticker = df.at[row_index, "Ticker"]
++                reject_excel_date_serial_price(
++                    value, field=f"Offene_Positionen.csv Zeile {row_index + 2}: {column}",
++                    ticker=ticker,
++                )
++                number = parse_number(value)
++                if number is None or not math.isfinite(number) or number <= 0:
++                    raise ValueError(
++                        "Offene Position mit ungültigem Preis-Pflichtwert in "
++                        f"Offene_Positionen.csv Zeile {row_index + 2}: {column}={value!r}."
++                    )
++
++        for row_index in df.index[actionable_open_rows]:
++            raw_date = df.at[row_index, "Einstiegsdatum"]
++            parsed_date = parse_position_date(
++                raw_date, field=f"Offene_Positionen.csv Zeile {row_index + 2}: Einstiegsdatum"
++            )
++            if parsed_date is None:
++                raise ValueError(
++                    "Offene Position ohne gültiges Einstiegsdatum in "
++                    f"Offene_Positionen.csv Zeile {row_index + 2}."
++                )
++
+     return df
+ 
+ 
+--- a/positionen_datum.py
++++ b/positionen_datum.py
+@@ -31,6 +31,68 @@
+         return pd.Timestamp(_SHEETS_EPOCH + _dt.timedelta(days=number))
+     except (OverflowError, ValueError) as exc:
+         raise _invalid(field, original, "Ungueltige Sheets-Datumsseriennummer") from exc
++
++
++def reject_excel_date_serial_price(
++    value: Any, *, field: str = "Preis", ticker: Any = None
++) -> None:
++    """Reject likely spreadsheet date serials in price fields, without blocking
++    legitimate high-value crypto/index quotes.
++
++    This guard is intentionally limited to price-like fields and known
++    non-price numeric values must not be passed here. Crypto symbols and
++    exchange index symbols are exempt because values in the serial-number
++    interval are normal market prices/levels for those instruments.
++    """
++    if value is None:
++        return
++    if isinstance(value, bool) or (
++        type(value).__module__.startswith("numpy") and type(value).__name__ in {"bool", "bool_"}
++    ):
++        raise ValueError(
++            f"Boolescher Wert {value!r} in Preisfeld {field!r}; "
++            "Positionsimport aus Sicherheitsgruenden abgebrochen."
++        )
++    symbol = str(ticker or "").strip().upper()
++    compact_symbol = re.sub(r"[^A-Z0-9]", "", symbol)
++    if symbol.startswith("^") or compact_symbol in {
++        "BTCUSD", "XBTUSD", "ETHUSD", "BTC", "XBT", "ETH",
++    }:
++        return
++    try:
++        if pd.isna(value):
++            return
++    except (TypeError, ValueError):
++        pass
++    if isinstance(value, str):
++        text = value.strip().replace("%", "").replace("€", "").replace("$", "").strip()
++        if not text:
++            return
++        # Match the locale normalization used by offene_positionen_check.parse_number:
++        # when both separators exist, the rightmost one is the decimal separator.
++        if "," in text and "." in text:
++            if text.rfind(",") > text.rfind("."):
++                text = text.replace(".", "").replace(",", ".")
++            else:
++                text = text.replace(",", "")
++        else:
++            text = text.replace(",", ".")
++        try:
++            number = float(text)
++        except (TypeError, ValueError, OverflowError):
++            return
++    elif isinstance(value, numbers.Real):
++        number = float(value)
++    else:
++        return
++    if math.isfinite(number) and 20000 <= number <= 100000:
++        # Excel date-times can carry arbitrary fractional days (including
++        # 46175.5). Do not limit detection to whole-day serials; legitimate
++        # high-value crypto/index instruments are exempted above.
++        raise ValueError(
++            f"Excel-Datumsseriennummer {value!r} in Preisfeld {field!r}; "
++            "Positionsimport aus Sicherheitsgruenden abgebrochen."
++        )
+ 
+ 
+ def parse_position_date(value: Any, *, field: str = "Datum") -> pd.Timestamp | None:
+--- a/positionen_sheet_upload.py
++++ b/positionen_sheet_upload.py
+@@ -6,7 +6,7 @@
+ import re
+ import pandas as pd
+ 
+-from positionen_datum import parse_position_date
++from positionen_datum import parse_position_date, reject_excel_date_serial_price
+ 
+ DATE_COLUMNS = ("Einstiegsdatum", "Ausstiegsdatum")
+ 
+@@ -53,6 +53,15 @@
+         if spalte not in df.columns:
+             continue
+         original = df[spalte].astype(str).str.strip()
++        if spalte in {"Einstieg", "Stop"} and "Status" in df.columns:
++            tickers = df["Ticker"] if "Ticker" in df.columns else pd.Series("", index=df.index)
++            open_rows = df["Status"].astype(str).str.strip().str.casefold().eq("offen")
++            for index, value in enumerate(df[spalte].tolist(), start=2):
++                if bool(open_rows.iloc[index - 2]):
++                    reject_excel_date_serial_price(
++                        value, field=f"{spalte}, Datenzeile {index}",
++                        ticker=tickers.iloc[index - 2],
++                    )
+         leer = original.eq("") | original.str.lower().isin({"nan", "none"})
+         normalisiert = original.where(leer, original.str.replace(",", ".", regex=False))
+         numerisch = pd.to_numeric(normalisiert.where(~leer, pd.NA), errors="coerce")
+--- a/positionen_tracker.py
++++ b/positionen_tracker.py
+@@ -1,5 +1,6 @@
+ import os
+ import io
++import csv
+ import json
+ import datetime
+ import re
+@@ -13,7 +14,7 @@
+ from zoneinfo import ZoneInfo
+ import pandas as pd
+ from positionen_sheet_upload import erstelle_sheet_upload_stream
+-from positionen_datum import parse_position_date
++from positionen_datum import parse_position_date, reject_excel_date_serial_price
+ import yfinance as yf
+ from scipy.signal import argrelextrema
+ from google.oauth2.credentials import Credentials
+@@ -95,8 +96,7 @@
+     einem fehlerhaften/leeren manuellen Eintrag (z.B. beim Nachziehen des
+     Stops in Google Sheets) NICHT den kompletten Lauf abstuerzen laesst,
+     sondern None zurueckgibt - die aufrufende Stelle ueberspringt die
+-    betroffene Zeile dann gezielt, alle anderen Positionen werden trotzdem
+-    normal weiterverarbeitet."""
++    betroffene Zeile dann gezielt."""
+     try:
+         if val is None:
+             return None
+@@ -763,13 +763,105 @@
+     return pd.concat([pd.DataFrame([anleitung]), df], ignore_index=True)[SPALTEN]
+ 
+ 
++
++def validate_position_source_schema(df):
++    """Fail closed for incomplete open positions while retaining closed history."""
++    normalized_columns = [str(column).strip() for column in df.columns]
++    folded_columns = [column.casefold() for column in normalized_columns]
++    if any(not column for column in normalized_columns):
++        raise ValueError("Positionsquelle enthält einen leeren Spaltennamen.")
++    if len(folded_columns) != len(set(folded_columns)):
++        raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
++    df.columns = normalized_columns
++    required = {"Ticker", "Status"}
++    missing = sorted(required - set(df.columns))
++    if missing:
++        raise ValueError(
++            "Positionsquelle unvollstaendig; essentielle Spalten fehlen: "
++            + ", ".join(missing)
++        )
++    if df.empty:
++        raise ValueError("Positionsquelle enthält keine Datenzeilen.")
++
++    tickers = df["Ticker"].fillna("").astype(str).str.strip()
++    instruction_rows = tickers.str.upper().eq("ANLEITUNG")
++    missing_tokens = {
++        "", "nan", "none", "null", "na", "n/a", "nicht verfügbar",
++        "nicht verfuegbar", "-", "—", "tbd", "tba", "unbekannt", "fehlt", "unklar",
++    }
++    for column in ("Ticker", "Status"):
++        values = df[column]
++        absent = values.isna() | values.astype(str).str.strip().str.casefold().isin(missing_tokens)
++        absent &= ~instruction_rows
++        if absent.any():
++            rows = ", ".join(str(index + 2) for index in df.index[absent])
++            raise ValueError(
++                f"Positionsquelle mit fehlenden Pflichtwerten in {column} "
++                f"(CSV-Zeilen: {rows})"
++            )
++
++    open_rows = df["Status"].fillna("").astype(str).str.strip().str.casefold().eq("offen")
++    open_rows &= ~instruction_rows
++    if open_rows.any():
++        required_open_columns = {"Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg", "Stop"}
++        missing_open_columns = sorted(required_open_columns - set(df.columns))
++        if missing_open_columns:
++            raise ValueError(
++                "Positionsquelle unvollständig für offene Positionen; Pflichtspalten fehlen: "
++                + ", ".join(missing_open_columns)
++            )
++    if open_rows.any():
++        required_open_values = ("Ticker", "Name", "Einstiegsdatum", "Einstieg", "Stop")
++        for column in required_open_values:
++            values = df.loc[open_rows, column]
++            absent = values.isna() | values.astype(str).str.strip().str.casefold().isin(missing_tokens)
++            if absent.any():
++                rows = ", ".join(str(index + 2) for index in values.index[absent])
++                raise ValueError(
++                    f"Offene Position ohne Pflichtwert in {column} (CSV-Zeilen: {rows})"
++                )
++
++    for row_index in df.index[open_rows]:
++        ticker = df.at[row_index, "Ticker"]
++        raw_date = df.at[row_index, "Einstiegsdatum"]
++        try:
++            parsed_date = parse_position_date(
++                raw_date, field=f"Positionsquelle Zeile {row_index + 2}: Einstiegsdatum"
++            )
++        except ValueError as exc:
++            raise ValueError(str(exc)) from exc
++        if parsed_date is None:
++            raise ValueError(
++                f"Offene Position ohne gültiges Einstiegsdatum (CSV-Zeile {row_index + 2})"
++            )
++        for column in ("Einstieg", "Stop"):
++            raw_value = df.at[row_index, column]
++            reject_excel_date_serial_price(
++                raw_value, field=f"Positionsquelle Zeile {row_index + 2}: {column}",
++                ticker=ticker,
++            )
++            # Validate with the same conversion used by the downstream
++            # position-management code. A value accepted here must not later
++            # turn into None and silently skip the open position.
++            numeric = sicheres_float(raw_value, ticker, column)
++            if numeric is None or not np.isfinite(numeric) or numeric <= 0:
++                raise ValueError(
++                    f"Offene Position mit ungültigem numerischem Pflichtwert "
++                    f"in {column} (CSV-Zeile {row_index + 2}): {raw_value!r}"
++                )
++
++    return df
++
++
+ def lade_positionen_herunter(service, file_id, mime_type):
+     """Lädt die bestehende Positionen-Datei aus Drive herunter und gibt sie als
+     DataFrame zurück. Bei einer nativen Google-Sheets-Datei wird der Inhalt per
+     Export als CSV abgerufen (get_media funktioniert bei nativen Google-Typen
+     nicht); bei einer rohen .csv (Übergangsfall von der ersten Version) wird
+-    stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
+-    Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
++    stattdessen direkt heruntergeladen. Eine leere Struktur wird nur angelegt,
++    wenn noch keine Datei existiert (erster Lauf). Eine vorhandene, aber leere,
++    beschädigte oder nicht lesbare Quelle bricht fail-closed ab, damit ein
++    vorhandener Positionsbestand nicht durch einen leeren Upload ersetzt wird."""
+     if file_id is None:
+         print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
+         return pd.DataFrame(columns=SPALTEN)
+@@ -791,15 +883,29 @@
+         # semikolon-getrennt - beides abfangen
+         inhalt = buffer.getvalue().decode('utf-8-sig')
+         sep = ';' if inhalt.count(';') > inhalt.count(',') else ','
++        raw_header = next(csv.reader(io.StringIO(inhalt), delimiter=sep), [])
++        normalized_header = [str(column).strip() for column in raw_header]
++        folded_header = [column.casefold() for column in normalized_header]
++        if not normalized_header or any(not column for column in normalized_header):
++            raise ValueError("Positionsquelle enthält einen leeren oder fehlenden Header.")
++        if len(folded_header) != len(set(folded_header)):
++            raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
+         df = pd.read_csv(io.StringIO(inhalt), sep=sep)
++        normalized_columns = [str(column).strip() for column in df.columns]
++        if len(normalized_columns) != len(set(normalized_columns)):
++            raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
++        df.columns = normalized_columns
++        validate_position_source_schema(df)
+ 
+         for spalte in SPALTEN:
+             if spalte not in df.columns:
+                 df[spalte] = ""
+         return df[SPALTEN]
+     except Exception as e:
+-        print(f"FEHLER beim Herunterladen/Parsen von {DRIVE_NAME}: {e}. Starte mit leerer Liste.")
+-        return pd.DataFrame(columns=SPALTEN)
++        raise RuntimeError(
++            f"Positionsquelle {DRIVE_NAME} konnte nicht sicher gelesen werden; "
++            "bestehender Bestand wird nicht durch eine leere Datei ersetzt."
++        ) from e
+ 
+ 
+ def hole_aktuellen_kurs(ticker, markt):
+@@ -1219,15 +1325,35 @@
+     """Wendet die neue Trendfolge-Exitlogik auf genau eine offene Position an.
+ 
+     Die Funktion erzeugt KEINE Broker-Orders. TP1 und TP2 bleiben rein
+-    informative Kursziele; es gibt keinen Teilverkauf und keine künstliche
+-    Restposition. Der aktuelle Managementzustand wird ausschließlich in
++    informative Kursziele; es gibt keine automatische Verkaufs- oder
++    Mengenbuchung. Der aktuelle Managementzustand wird ausschließlich in
+     TF_Management kompakt persistiert.
+     """
+-    if not _ist_trendfolge_position(row) or hist.empty or einstieg is None:
++    if not _ist_trendfolge_position(row) or einstieg is None:
+         return stop, tp1, sicheres_float(row.get('TP2'), row.get('Ticker', '?'), 'TP2')
+ 
++    # Fehlende Historie darf die Entwicklungsphase niemals implizit als
++    # abgeschlossen behandeln. Der normale Stop-Ausgang bleibt gesperrt,
++    # bis drei gültige abgeschlossene Handelstage nachgewiesen sind.
++    if hist is None:
++        hist = pd.DataFrame()
+     ticker = row.get('Ticker', '?')
++    if hist.empty:
++        df.at[idx, 'TP2'] = np.nan
++        df.at[idx, 'TF_Management'] = (
++            "Entwicklung nicht verifizierbar | Historie fehlt | "
++            "normaler Stop-Ausgang ausgesetzt"
++        )
++        return stop, tp1, None
++
+     completed_days, phase_done, phase_end = _trendfolge_entwicklungsstatus(row, hist)
++    if completed_days is None or phase_done is None:
++        df.at[idx, 'TP2'] = np.nan
++        df.at[idx, 'TF_Management'] = (
++            "Entwicklung nicht verifizierbar | Einstiegsdatum fehlt/ungültig | "
++            "normaler Stop-Ausgang ausgesetzt"
++        )
++        return stop, tp1, None
+     # TF_Management wird am Ende des Durchlaufs als kompakter aktueller
+     # Zustand geschrieben; Zwischenwerte bleiben ausschließlich lokal.
+ 
+@@ -1242,8 +1368,8 @@
+         hinweis = ''
+     tp1_bereits = 'TP1 erreicht' in hinweis
+ 
+-    # TP1 bleibt rein informativ. Es gibt keinen Teilverkauf und keine
+-    # künstliche Restposition.
++    # TP1 bleibt rein informativ. Es gibt keine automatische Verkaufs- oder
++    # Mengenbuchung und keine künstliche Restposition.
+     if tp1_erreicht and not tp1_bereits:
+         df.at[idx, 'TP_Hinweis'] = f"{hinweis} | TP1 erreicht am {heute}".strip(" |")
+         hinweis = str(df.at[idx, 'TP_Hinweis'])
+@@ -1264,7 +1390,8 @@
+     # Nach der Entwicklungsphase: adaptiver Stop aus den letzten 3
+     # abgeschlossenen Bars minus 0.5*ATR14. Für Long wird der Stop angehoben,
+     # aber niemals abgesenkt. Nach TP1 gilt mindestens Break-even.
+-    if atr14 is not None and len(hist) >= 3:
++    atr14_verfuegbar = atr14 is not None
++    if atr14_verfuegbar and len(hist) >= 3:
+         if ist_short:
+             adaptive = float(hist['High'].iloc[-3:].max() + 0.5 * atr14)
+             if stop is None or adaptive < stop:
+@@ -1290,7 +1417,7 @@
+     # Nach TP1 nur bestätigte Swing-Lows als Trailing-Referenz verwenden.
+     # Der Pivot muss durch zwei vollständig abgeschlossene Folgebars bestätigt
+     # sein. Das ist absichtlich konservativ und verhindert Look-ahead.
+-    if tp1_erreicht or tp1_bereits:
++    if (tp1_erreicht or tp1_bereits) and atr14_verfuegbar:
+         if ist_short:
+             swing_idxs = _trendfolge_bestatigte_swing_highs(hist, order=2)
+             if swing_idxs:
+@@ -1354,7 +1481,14 @@
+             aktueller_kurs <= tp2 if ist_short else aktueller_kurs >= tp2
+         )
+     ) or ('TP2 erreicht' in hinweis)
+-    if tp2_erreicht_aktuell:
++    if not atr14_verfuegbar:
++        if tp2_erreicht_aktuell:
++            status_text = "ATR14 nicht verfügbar | TP2 erreicht | Position weiterhin offen"
++        elif tp1_erreicht_aktuell:
++            status_text = "ATR14 nicht verfügbar | TP1 erreicht"
++        else:
++            status_text = "ATR14 nicht verfügbar"
++    elif tp2_erreicht_aktuell:
+         status_text = "TP2 erreicht | Position weiterhin offen"
+     elif tp1_erreicht_aktuell:
+         status_text = "TP1 erreicht"
+@@ -1374,10 +1508,9 @@
+     Kursziele TP1/TP2. Wird der Stop erreicht oder unterschritten, wechselt
+     der Status auf 'Gestoppt' und Ausstiegsdatum/-kurs werden gesetzt.
+     Werden TP1/TP2 erreicht, wird das NUR als informativer Hinweis in
+-    TP_Hinweis vermerkt (NEU) - die Position bleibt bewusst offen, da ein
+-    Kursziel anders als der Stop keine automatische Order ist, sondern eine
+-    Entscheidungshilfe (Teilverkauf, Trailing-Stop, komplett raus - das
+-    entscheidet der Nutzer selbst manuell). Der Hinweis wird nur beim ERSTEN
++    TP_Hinweis vermerkt - die Position bleibt offen. Kursziele lösen weder
++    eine automatische Order noch eine Mengen-/Verkaufsbuchung aus. Der Hinweis
++    wird nur beim ERSTEN
+     Erreichen gesetzt (kein taeglicher Neu-Vermerk, falls schon vorhanden).
+     Für alle offenen Positionen wird zusätzlich der aktuelle Kurs und die
+     Performance seit Einstieg als Info-Spalte ergänzt (für die Briefing-
+@@ -1523,65 +1656,56 @@
+         # ------------------------------------------------------------------
+         # NEUE TREND FOLGE-EXITLOGIK
+         # ------------------------------------------------------------------
+-        # Nur Trendfolge. Trendwende/HEBELTRADER/Short/Manuell bleiben
+-        # vollständig bei der bisherigen Stop-/TP-Logik.
++        # Nur Trendfolge. Trendwende/HEBELTRADER sowie manuelle Positionen
++        # außerhalb Trendfolge bleiben bei der bisherigen Stop-/TP-Logik.
+         trendfolge_phase_aktiv = False
+         if _ist_trendfolge_position(row):
+             hist_tf = _hole_tageshistorie(ticker, markt, tage=45)
+-            if not hist_tf.empty:
+-                alter_stop = stop
+-                stop, tp1, tp2 = _aktualisiere_trendfolge_management(
+-                    df, idx, row, hist_tf, einstieg, aktueller_kurs,
+-                    stop, tp1, ist_short, heute
++            alter_stop = stop
++            stop, tp1, tp2 = _aktualisiere_trendfolge_management(
++                df, idx, row, hist_tf, einstieg, aktueller_kurs,
++                stop, tp1, ist_short, heute
++            )
++            df.at[idx, 'Stop'] = stop
++
++            # STOP VERÄNDERT nur bei tatsächlicher Verbesserung des Schutzlevels.
++            if (
++                stop is not None and alter_stop is not None
++                and round(float(stop), 2) != round(float(alter_stop), 2)
++                and (
++                    (not ist_short and float(stop) > float(alter_stop))
++                    or (ist_short and float(stop) < float(alter_stop))
+                 )
+-                df.at[idx, 'Stop'] = stop
+-
+-                # STOP VERÄNDERT nur bei tatsächlicher Verbesserung des
+-                # Schutzlevels. Gleicher Wert oder Verschlechterung erzeugt
+-                # keinen Alert. Ein bereits gemeldeter identischer Stop wird
+-                # ebenfalls nicht erneut gemeldet.
+-                if (
+-                    stop is not None and alter_stop is not None
+-                    and round(float(stop), 2) != round(float(alter_stop), 2)
+-                    and (
+-                        (not ist_short and float(stop) > float(alter_stop))
+-                        or (ist_short and float(stop) < float(alter_stop))
++            ):
++                alert_alt = str(row.get('Alert_Hinweis', '')).strip()
++                marker = f"STOP VERÄNDERT {float(stop):.2f}"
++                if marker.upper() not in alert_alt.upper():
++                    alert_events.append({
++                        'event': 'STOP VERÄNDERT', 'idx': idx, 'ticker': ticker,
++                        'kurs': aktueller_kurs, 'performance': performance,
++                        'stop': stop, 'tp1': tp1, 'tp2': tp2,
++                    })
++                basis = str(df.at[idx, 'TF_Management']).strip()
++                if basis:
++                    df.at[idx, 'TF_Management'] = (
++                        f"Stop nachgezogen: {float(alter_stop):.2f} → "
++                        f"{float(stop):.2f} | " + basis.split(" | ", 1)[1]
++                        if " | " in basis else
++                        f"Stop nachgezogen: {float(alter_stop):.2f} → {float(stop):.2f}"
+                     )
+-                ):
+-                    alert_alt = str(row.get('Alert_Hinweis', '')).strip()
+-                    marker = f"STOP VERÄNDERT {float(stop):.2f}"
+-                    if marker.upper() not in alert_alt.upper():
+-                        alert_events.append({
+-                            'event': 'STOP VERÄNDERT', 'idx': idx, 'ticker': ticker,
+-                            'kurs': aktueller_kurs, 'performance': performance,
+-                            'stop': stop, 'tp1': tp1, 'tp2': tp2,
+-                        })
+-                    # Der aktuelle Zustand wird auch für den Benutzer kompakt
+-                    # in TF_Management sichtbar gemacht.
+-                    basis = str(df.at[idx, 'TF_Management']).strip()
+-                    if basis:
+-                        df.at[idx, 'TF_Management'] = (
+-                            f"Stop nachgezogen: {float(alter_stop):.2f} → "
+-                            f"{float(stop):.2f} | " + basis.split(" | ", 1)[1]
+-                            if " | " in basis else
+-                            f"Stop nachgezogen: {float(alter_stop):.2f} → {float(stop):.2f}"
+-                        )
+-                if tp1 is not None:
+-                    df.at[idx, 'TP1'] = tp1
+-                # TP2 wird von der neuen Logik bewusst erst dynamisch gesetzt.
+-                if tp2 is None:
+-                    df.at[idx, 'TP2'] = np.nan
+-                else:
+-                    df.at[idx, 'TP2'] = tp2
+-                management_status = str(df.at[idx, 'TF_Management']).strip()
+-                trendfolge_phase_aktiv = management_status.lower().startswith('entwicklung aktiv')
+-                if trendfolge_phase_aktiv:
+-                    print(
+-                        f"DEBUG: {ticker} (Trendfolge) -> Entwicklungsphase aktiv "
+-                        f"({management_status}), kein normaler Stop-Ausgang."
+-                    )
++            if tp1 is not None:
++                df.at[idx, 'TP1'] = tp1
++            if tp2 is None:
++                df.at[idx, 'TP2'] = np.nan
+             else:
+-                print(f"WARNUNG: {ticker} (Trendfolge) -> keine Tageshistorie für neues Exit-Management; bestehender Stop bleibt aktiv.")
++                df.at[idx, 'TP2'] = tp2
++            management_status = str(df.at[idx, 'TF_Management']).strip()
++            trendfolge_phase_aktiv = management_status.lower().startswith('entwicklung')
++            if trendfolge_phase_aktiv:
++                print(
++                    f"DEBUG: {ticker} (Trendfolge) -> Entwicklungsphase nicht abgeschlossen "
++                    f"oder nicht verifizierbar ({management_status}), kein normaler Stop-Ausgang."
++                )
+ 
+         # Stop-Check GESPIEGELT bei Short: Stop liegt oberhalb, ausgeloest
+         # bei Kurs >= Stop (nicht <=)
+--- a/tests/test_offene_positionen_check_history_source.py
++++ b/tests/test_offene_positionen_check_history_source.py
+@@ -335,15 +335,15 @@
+     [
+         (
+             [
+-                {"Ticker": "AAA.DE", "Status": "Offen", "Einstiegsdatum": "01.01.2026"},
+-                {"Ticker": "BBB.N", "Status": " offen ", "Einstiegsdatum": "02.01.2026"},
++                {"Ticker": "AAA.DE", "Name": "Alpha", "Status": "Offen", "Einstiegsdatum": "01.01.2026", "Einstieg": "10", "Stop": "9"},
++                {"Ticker": "BBB.N", "Name": "Beta", "Status": " offen ", "Einstiegsdatum": "02.01.2026", "Einstieg": "20", "Stop": "18"},
+                 {"Ticker": "CLOSED.DE", "Status": "Verkauft", "Einstiegsdatum": "03.01.2026"},
+             ],
+             ["AAA.DE", "BBB.N"],
+         ),
+         (
+             [
+-                {"Ticker": "NEW1.DE", "Status": "Offen", "Einstiegsdatum": "01.01.2026"},
++                {"Ticker": "NEW1.DE", "Name": "New One", "Status": "Offen", "Einstiegsdatum": "01.01.2026", "Einstieg": "15", "Stop": "14"},
+             ],
+             ["NEW1.DE"],
+         ),
+@@ -365,7 +365,7 @@
+     input_path = tmp_path / "Offene_Positionen.csv"
+     output_path = tmp_path / "Offene Positionen+Check.csv"
+     history_path = tmp_path / "Geschlossene Positionen.csv"
+-    fieldnames = ["Ticker", "Status", "Einstiegsdatum", "Name"]
++    fieldnames = ["Ticker", "Status", "Einstiegsdatum", "Name", "Einstieg", "Stop"]
+     with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
+         writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter=";")
+         writer.writeheader()
+@@ -519,3 +519,15 @@
+ 
+     assert len(result) == 69
+     assert persisted == [(100, "TwelveData")]
++
++
++
++def test_read_positions_rejects_german_grouped_excel_date_serial_as_stop(tmp_path):
++    path = tmp_path / "Offene_Positionen.csv"
++    path.write_text(
++        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++        "AAPL;Apple;Offen;01.11.2026;250,00;46.175,50\n",
++        encoding="utf-8-sig",
++    )
++    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++        checker.read_positions(str(path))
+--- a/tests/test_positionen_datum.py
++++ b/tests/test_positionen_datum.py
+@@ -165,3 +165,37 @@
+         checker._parse_sheet_stand_date([["Stand 31.02.2026"]])
+     with pytest.raises(RuntimeError, match="NaN-Wert"):
+         checker._parse_sheet_stand_date([["Stand nan"]])
++
++
++@pytest.mark.parametrize("raw", [46175, 46175.125, 46175.25, 46175.5, 46175.75, "46175,5"])
++def test_excel_date_serial_in_price_field_is_rejected_including_time_fraction(raw):
++    from positionen_datum import reject_excel_date_serial_price
++
++    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++        reject_excel_date_serial_price(raw, field="Einstieg", ticker="LSUG.MI")
++
++
++@pytest.mark.parametrize("ticker", ["BTC-USD", "BTCUSD", "XBT-USD", "ETH/USD", "^GDAXI"])
++@pytest.mark.parametrize("price", [46175, 50000.0, 92000.0, 46175.5])
++def test_valid_high_value_crypto_and_index_prices_are_not_rejected(ticker, price):
++    from positionen_datum import reject_excel_date_serial_price
++
++    assert reject_excel_date_serial_price(price, field="Einstieg", ticker=ticker) is None
++
++
++def test_boolean_values_are_rejected_in_open_position_price_fields():
++    from positionen_datum import reject_excel_date_serial_price
++    import numpy as np
++
++    for value in (True, np.bool_(False)):
++        with pytest.raises(ValueError, match="Boolescher Wert"):
++            reject_excel_date_serial_price(value, field="Einstieg", ticker="TEST")
++
++
++
++@pytest.mark.parametrize("raw", ["46.175,50", "46.175,5", "46,175.50", "46175,5"])
++def test_excel_date_serial_price_rejects_locale_grouped_number_formats(raw):
++    from positionen_datum import reject_excel_date_serial_price
++
++    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++        reject_excel_date_serial_price(raw, field="Stop", ticker="AAPL")
+--- a/tests/test_positionen_tracker_google_sheets_import.py
++++ b/tests/test_positionen_tracker_google_sheets_import.py
+@@ -90,3 +90,230 @@
+     assert _parse_date("", "Einstiegsdatum", 2) is None
+     with pytest.raises(ValueError, match="Ungueltiges Datum"):
+         _parse_date("2026-31-01", "Einstiegsdatum", 2)
++
++
++def test_excel_date_serial_in_price_field_aborts_xlsx_upload(tmp_path):
++    csv = tmp_path / "positions_bad_price.csv"
++    csv.write_text(
++        "Ticker;Name;Status;Einstieg;Stop;Einstiegsdatum\nLSUG.MI;Sugar 2x;Offen;46175;2,06;18.03.2026\n",
++        encoding="utf-8-sig",
++    )
++    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++        erstelle_sheet_upload_stream(str(csv), NUMERIC)
++
++
++def _load_tracker_with_stubbed_integrations(monkeypatch):
++    """Load the tracker without contacting Google, Alpaca, Yahoo or Twelve Data."""
++    import importlib.util
++    import sys
++    import types
++    from pathlib import Path
++
++    names = [
++        "yfinance", "google", "google.oauth2", "google.oauth2.credentials",
++        "google.auth", "google.auth.transport", "google.auth.transport.requests",
++        "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
++        "alpaca", "alpaca.data", "alpaca.data.historical", "alpaca.data.enums",
++        "alpaca.data.requests", "alpaca.data.timeframe", "os_kurse",
++    ]
++    modules = {name: types.ModuleType(name) for name in names}
++    modules["yfinance"].Ticker = object
++    modules["google.oauth2.credentials"].Credentials = object
++    modules["google.auth.transport.requests"].Request = object
++    modules["googleapiclient.discovery"].build = lambda *a, **k: None
++    modules["googleapiclient.http"].MediaIoBaseDownload = object
++    modules["googleapiclient.http"].MediaIoBaseUpload = object
++    modules["alpaca.data.historical"].StockHistoricalDataClient = object
++    modules["alpaca.data.historical"].CryptoHistoricalDataClient = object
++    modules["alpaca.data.enums"].Adjustment = object
++    modules["alpaca.data.requests"].StockBarsRequest = object
++    modules["alpaca.data.requests"].CryptoBarsRequest = object
++    modules["alpaca.data.timeframe"].TimeFrame = object
++    modules["os_kurse"].aktualisiere_optionsscheine = lambda *a, **k: None
++    for name, module in modules.items():
++        monkeypatch.setitem(sys.modules, name, module)
++
++    root = Path(__file__).resolve().parents[1]
++    spec = importlib.util.spec_from_file_location(
++        "positionen_tracker_schema_test", root / "positionen_tracker.py"
++    )
++    tracker = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(tracker)
++    return tracker
++
++
++class _FakeDownloadRequest:
++    def __init__(self, payload):
++        self.payload = payload
++
++
++class _FakeMediaDownloader:
++    def __init__(self, buffer, request):
++        self.buffer = buffer
++        self.request = request
++        self.done = False
++
++    def next_chunk(self):
++        if not self.done:
++            self.buffer.write(self.request.payload)
++            self.done = True
++        return None, True
++
++
++class _FakeDriveFiles:
++    def __init__(self, payload):
++        self.payload = payload
++
++    def export(self, **kwargs):
++        return _FakeDownloadRequest(self.payload)
++
++    def get_media(self, **kwargs):
++        return _FakeDownloadRequest(self.payload)
++
++
++class _FakeDriveService:
++    def __init__(self, payload):
++        self._files = _FakeDriveFiles(payload)
++
++    def files(self):
++        return self._files
++
++
++def test_existing_drive_source_with_only_ticker_and_status_fails_closed(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = b"Ticker,Status\nLSUG.MI,Offen\n"
++    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
++        tracker.lade_positionen_herunter(
++            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++        )
++
++
++def test_existing_drive_source_missing_one_essential_price_field_fails_closed(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = b"Ticker,Status,Einstiegsdatum,Einstieg\nLSUG.MI,Offen,18.03.2026,2.06\n"
++    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
++        tracker.lade_positionen_herunter(
++            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++        )
++
++
++def test_existing_empty_drive_export_fails_closed(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = b"Ticker,Status,Einstiegsdatum,Einstieg,Stop\n"
++    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
++        tracker.lade_positionen_herunter(
++            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++        )
++
++
++def test_existing_legacy_drive_schema_with_essential_columns_remains_compatible(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = (
++        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop,TP1\n"
++        b"LSUG.MI,Lyxor ETF,Offen,18.03.2026,2.06,2.06,3.00\n"
++    )
++    frame = tracker.lade_positionen_herunter(
++        _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++    )
++    assert frame.loc[0, "Ticker"] == "LSUG.MI"
++    assert frame.loc[0, "Stop"] == 2.06
++    assert "TP2" in frame.columns
++    assert frame.loc[0, "TP2"] == ""
++
++
++
++def test_tracker_schema_requires_name_and_numeric_open_prices(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    base = {
++        "Ticker": ["LSUG.MI"], "Name": ["Lyxor ETF"], "Status": ["Offen"],
++        "Einstiegsdatum": ["2026-06-02"], "Einstieg": ["2.06"], "Stop": ["1.90"],
++    }
++    import pandas as pd
++    valid = pd.DataFrame(base)
++    assert tracker.validate_position_source_schema(valid.copy()).equals(valid)
++
++    for column in ("Name", "Einstieg", "Stop"):
++        broken = valid.drop(columns=[column])
++        with pytest.raises(ValueError, match="Pflichtspalten fehlen"):
++            tracker.validate_position_source_schema(broken)
++
++    for entry, stop in (
++        ("abc", "1.90"), ("2.06", "abc"),
++        ("46175", "1.90"), ("2.06", "46175.5"),
++        ("2,06", "1.90"), ("2.06", "inf"), ("0", "1.90"),
++    ):
++        broken = valid.copy()
++        broken.loc[0, "Einstieg"] = entry
++        broken.loc[0, "Stop"] = stop
++        with pytest.raises(ValueError):
++            tracker.validate_position_source_schema(broken)
++
++
++
++def test_drive_export_with_duplicate_headers_fails_closed(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = (
++        b"Ticker,Name,name,Status,Einstiegsdatum,Einstieg,Stop\n"
++        b"LSUG.MI,Lyxor,Lyxor,Offen,2026-06-02,2.06,1.90\n"
++    )
++    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
++        tracker.lade_positionen_herunter(
++            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++        )
++
++def test_tracker_schema_keeps_closed_legacy_and_instruction_rows_compatible(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    import pandas as pd
++    frame = pd.DataFrame([
++        {"Ticker": "ANLEITUNG", "Name": "Hinweis", "Status": "", "Einstiegsdatum": "", "Einstieg": "", "Stop": ""},
++        {"Ticker": "OLD.DE", "Name": "Legacy", "Status": "Gestoppt", "Einstiegsdatum": "", "Einstieg": "10.00", "Stop": "9.00"},
++    ])
++    result = tracker.validate_position_source_schema(frame)
++    assert len(result) == 2
++
++    closed_only = pd.DataFrame({
++        "Ticker": ["OLD.DE"], "Status": ["Verkauft"],
++        "Einstieg": ["46175"], "Stop": ["46175.5"],
++    })
++    assert len(tracker.validate_position_source_schema(closed_only)) == 1
++    instruction_only = pd.DataFrame({"Ticker": ["ANLEITUNG"], "Status": [""]})
++    assert len(tracker.validate_position_source_schema(instruction_only)) == 1
++
++def test_first_run_without_existing_drive_file_still_returns_empty_schema(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    frame = tracker.lade_positionen_herunter(None, None, tracker.SHEET_MIME)
++    assert frame.empty
++    assert list(frame.columns) == tracker.SPALTEN
++
++
++def test_existing_drive_source_with_required_headers_but_missing_stop_value_fails_closed(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = (
++        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
++        b"LSUG.MI,Lyxor ETF,Offen,2026-06-02,2.06,\n"
++    )
++    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
++        tracker.lade_positionen_herunter(
++            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++        )
++
++
++def test_instruction_row_is_exempt_from_position_value_requirements(monkeypatch):
++    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
++    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
++    payload = (
++        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
++        b"ANLEITUNG,,,,,\n"
++        b"LSUG.MI,Lyxor ETF,Offen,2026-06-02,2.06,2.06\n"
++    )
++    frame = tracker.lade_positionen_herunter(
++        _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
++    )
++    assert frame.loc[0, "Ticker"] == "ANLEITUNG"
++    assert frame.loc[1, "Ticker"] == "LSUG.MI"
+--- a/tests/test_positions_recovery.py
++++ b/tests/test_positions_recovery.py
+@@ -311,7 +311,7 @@
+     project_root = Path(__file__).resolve().parents[1]
+     stub_dir = tmp_path / "stubs"
+     stub_dir.mkdir()
+-    (stub_dir / "yfinance.py").write_text("# import-only stub for CLI bootstrap test\\n", encoding="utf-8")
++    (stub_dir / "yfinance.py").write_text("# import-only stub for CLI bootstrap test\n", encoding="utf-8")
+ 
+     env = os.environ.copy()
+     env.pop(opc.RECOVERY_HISTORY_ENV, None)
+@@ -684,3 +684,326 @@
+     assert _normalize_history_value("Einstiegsdatum", "46235") == expected
+     assert _normalize_history_value("Einstiegsdatum", "01.08.2026") == expected
+     assert _normalize_history_value("Einstiegsdatum", "2026-08-01") == expected
++
++
++def test_open_positions_reader_preserves_validated_stop_without_changing_output_schema(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "open_with_stop.csv"
++    source.write_text(
++        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++        "LSUG.MI;Sugar 2x;Offen;18.03.2026;2,06;1,90\n",
++        encoding="utf-8-sig",
++    )
++    result = checker.read_positions(str(source))
++    assert result.loc[0, "Stop"] == "1,90"
++    assert "Stop" not in checker.HEADERS
++
++
++def test_open_positions_reader_rejects_excel_date_serial_in_price_field(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "Offene_Positionen.csv"
++    source.write_text(
++        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++        "LSUG.MI;Sugar 2x;Offen;18.03.2026;46175;2,06\n",
++        encoding="utf-8-sig",
++    )
++    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++        checker.read_positions(str(source))
++
++
++def test_position_tracker_rejects_date_serials_at_open_position_source_boundary(monkeypatch):
++    import importlib.util
++    import sys
++    import types
++    from pathlib import Path
++
++    root = Path(__file__).resolve().parents[1]
++    names = [
++        "yfinance", "google", "google.oauth2", "google.oauth2.credentials",
++        "google.auth", "google.auth.transport", "google.auth.transport.requests",
++        "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
++        "alpaca", "alpaca.data", "alpaca.data.historical", "alpaca.data.enums",
++        "alpaca.data.requests", "alpaca.data.timeframe", "os_kurse",
++    ]
++    previous = {name: sys.modules.get(name) for name in names}
++    modules = {name: types.ModuleType(name) for name in names}
++    modules["yfinance"].Ticker = object
++    modules["google.oauth2.credentials"].Credentials = object
++    modules["google.auth.transport.requests"].Request = object
++    modules["googleapiclient.discovery"].build = lambda *a, **k: None
++    modules["googleapiclient.http"].MediaIoBaseDownload = object
++    modules["googleapiclient.http"].MediaIoBaseUpload = object
++    modules["alpaca.data.historical"].StockHistoricalDataClient = object
++    modules["alpaca.data.historical"].CryptoHistoricalDataClient = object
++    modules["alpaca.data.enums"].Adjustment = object
++    modules["alpaca.data.requests"].StockBarsRequest = object
++    modules["alpaca.data.requests"].CryptoBarsRequest = object
++    modules["alpaca.data.timeframe"].TimeFrame = object
++    modules["os_kurse"].aktualisiere_optionsscheine = lambda *a, **k: None
++    try:
++        sys.modules.update(modules)
++        spec = importlib.util.spec_from_file_location(
++            "positionen_tracker_serial_guard_test", root / "positionen_tracker.py"
++        )
++        tracker = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(tracker)
++        import pandas as pd
++
++        for entry, stop in ((46175, 2.06), (2.06, 46175.5)):
++            invalid = pd.DataFrame({
++                "Ticker": ["LSUG.MI"], "Name": ["Sugar 2x"], "Status": ["Offen"],
++                "Einstiegsdatum": ["18.03.2026"], "Einstieg": [entry], "Stop": [stop],
++            })
++            with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++                tracker.validate_position_source_schema(invalid)
++
++        crypto = pd.DataFrame({
++            "Ticker": ["BTC-USD"], "Name": ["Bitcoin"], "Status": ["Offen"],
++            "Einstiegsdatum": ["18.03.2026"], "Einstieg": [92000], "Stop": [80000],
++        })
++        assert len(tracker.validate_position_source_schema(crypto)) == 1
++    finally:
++        for name, module in previous.items():
++            if module is None:
++                sys.modules.pop(name, None)
++            else:
++                sys.modules[name] = module
++
++
++
++def _load_tracker_for_drive_import_tests(monkeypatch):
++    import importlib.util
++    from pathlib import Path
++
++    root = Path(__file__).resolve().parents[1]
++    names = [
++        "yfinance", "google", "google.oauth2", "google.oauth2.credentials",
++        "google.auth", "google.auth.transport", "google.auth.transport.requests",
++        "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
++        "alpaca", "alpaca.data", "alpaca.data.historical", "alpaca.data.enums",
++        "alpaca.data.requests", "alpaca.data.timeframe", "os_kurse",
++    ]
++    modules = {name: types.ModuleType(name) for name in names}
++    modules["yfinance"].Ticker = object
++    modules["google.oauth2.credentials"].Credentials = object
++    modules["google.auth.transport.requests"].Request = object
++    modules["googleapiclient.discovery"].build = lambda *a, **k: None
++    modules["googleapiclient.http"].MediaIoBaseUpload = object
++    modules["alpaca.data.historical"].StockHistoricalDataClient = object
++    modules["alpaca.data.historical"].CryptoHistoricalDataClient = object
++    modules["alpaca.data.enums"].Adjustment = object
++    modules["alpaca.data.requests"].StockBarsRequest = object
++    modules["alpaca.data.requests"].CryptoBarsRequest = object
++    modules["alpaca.data.timeframe"].TimeFrame = object
++    modules["os_kurse"].aktualisiere_optionsscheine = lambda *a, **k: None
++
++    class FakeDownload:
++        def __init__(self, buffer, request):
++            self.buffer = buffer
++            self.request = request
++
++        def next_chunk(self):
++            self.buffer.write(self.request.content)
++            return None, True
++
++    modules["googleapiclient.http"].MediaIoBaseDownload = FakeDownload
++    for name, module in modules.items():
++        monkeypatch.setitem(sys.modules, name, module)
++
++    spec = importlib.util.spec_from_file_location(
++        "positionen_tracker_drive_schema_test", root / "positionen_tracker.py"
++    )
++    tracker = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(tracker)
++    return tracker
++
++
++def test_drive_positions_loader_rejects_truncated_ticker_status_only_csv(monkeypatch):
++    from types import SimpleNamespace
++
++    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
++
++    class Files:
++        def export(self, **kwargs):
++            return SimpleNamespace(content=b"Ticker,Status\\nLSUG.MI,Offen\n")
++
++    class Service:
++        def files(self):
++            return Files()
++
++    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
++        tracker.lade_positionen_herunter(Service(), "existing-id", tracker.SHEET_MIME)
++
++
++def test_drive_positions_loader_accepts_legacy_core_schema_and_adds_optional_columns(monkeypatch):
++    from types import SimpleNamespace
++
++    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
++
++    class Files:
++        def export(self, **kwargs):
++            return SimpleNamespace(content=(
++                b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
++                b"LSUG.MI,Lyxor ETF,Offen,2026-06-02,2.06,2.06\n"
++            ))
++
++    class Service:
++        def files(self):
++            return Files()
++
++    frame = tracker.lade_positionen_herunter(Service(), "existing-id", tracker.SHEET_MIME)
++    assert list(frame.columns) == tracker.SPALTEN
++    assert frame.loc[0, "Ticker"] == "LSUG.MI"
++    assert frame.loc[0, "Einstieg"] == 2.06
++    assert frame.loc[0, "Stop"] == 2.06
++    assert frame.loc[0, "TP1"] == ""
++
++
++def test_position_source_schema_allows_closed_legacy_rows_without_entry_date(monkeypatch):
++    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
++    import pandas as pd
++
++    frame = pd.DataFrame({
++        "Ticker": ["LSUG.MI", "OLD.DE"],
++        "Name": ["Lyxor ETF", "Legacy"],
++        "Status": ["Offen", "Verkauft"],
++        "Einstiegsdatum": ["2026-06-02", ""],
++        "Einstieg": ["2.06", "10.00"],
++        "Stop": ["2.06", "9.00"],
++    })
++    assert len(tracker.validate_position_source_schema(frame)) == 2
++
++
++def test_position_source_schema_rejects_open_rows_without_entry_date(monkeypatch):
++    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
++    import pandas as pd
++
++    frame = pd.DataFrame({
++        "Ticker": ["LSUG.MI"], "Name": ["Lyxor ETF"], "Status": ["Offen"],
++        "Einstiegsdatum": [""], "Einstieg": ["2.06"], "Stop": ["2.06"],
++    })
++    with pytest.raises(ValueError, match="Einstiegsdatum"):
++        tracker.validate_position_source_schema(frame)
++
++
++def test_open_positions_reader_rejects_truncated_schema_at_entry(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "truncated.csv"
++    source.write_text("Ticker;Status\nLSUG.MI;Offen\n", encoding="utf-8-sig")
++    with pytest.raises(ValueError, match="unvollständiges Positionsschema"):
++        checker.read_positions(str(source))
++
++
++def test_open_positions_reader_accepts_supported_closed_history_schema(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "legacy_history.csv"
++    source.write_text(
++        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++        "OLD.DE;Legacy Position;Gestoppt;;46175;46175,5\n",
++        encoding="utf-8-sig",
++    )
++    result = checker.read_positions(str(source))
++    assert len(result) == 1
++    assert result.iloc[0]["Status"] == "Gestoppt"
++    assert result.iloc[0]["Einstiegsdatum"] == ""
++
++
++def test_open_positions_reader_requires_entry_and_stop_columns(tmp_path):
++    import offene_positionen_check as checker
++
++    for missing in ("Einstieg", "Stop"):
++        columns = ["Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg", "Stop"]
++        columns.remove(missing)
++        values = {"Ticker": "TEST.DE", "Name": "Test AG", "Status": "Offen",
++                  "Einstiegsdatum": "2026-01-02", "Einstieg": "10,00", "Stop": "9,00"}
++        source = tmp_path / f"missing_{missing}.csv"
++        source.write_text(";".join(columns) + "\n" + ";".join(values[c] for c in columns) + "\n", encoding="utf-8-sig")
++        with pytest.raises(ValueError, match="Pflichtspalten fehlen"):
++            checker.read_positions(str(source))
++
++
++def test_open_positions_reader_rejects_empty_or_non_numeric_required_prices(tmp_path):
++    import offene_positionen_check as checker
++
++    for entry, stop in (("", "9,00"), ("10,00", ""), ("x", "9,00"), ("10,00", "x")):
++        source = tmp_path / f"invalid_{len(list(tmp_path.iterdir()))}.csv"
++        source.write_text(
++            "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++            f"TEST.DE;Test AG;Offen;2026-01-02;{entry};{stop}\n",
++            encoding="utf-8-sig",
++        )
++        with pytest.raises(ValueError):
++            checker.read_positions(str(source))
++
++
++def test_open_positions_reader_rejects_integer_and_fractional_excel_serial_prices(tmp_path):
++    import offene_positionen_check as checker
++
++    for value in (46175, "46175", "46175,5"):
++        source = tmp_path / f"serial_{str(value).replace(',', '_')}.csv"
++        source.write_text(
++            "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++            f"TEST.DE;Test AG;Offen;2026-01-02;{value};9,00\n",
++            encoding="utf-8-sig",
++        )
++        with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
++            checker.read_positions(str(source))
++
++
++def test_open_positions_reader_keeps_instruction_and_closed_legacy_rows_compatible(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "legacy_and_instruction.csv"
++    source.write_text(
++        "Ticker;Name;Status\n"
++        "ANLEITUNG;Hinweis;Offen\n"
++        "OLD.DE;Geschlossene Altposition;Verkauft\n",
++        encoding="utf-8-sig",
++    )
++    result = checker.read_positions(str(source))
++    assert len(result) == 2
++    assert checker.select_open_positions(result).empty
++
++
++def test_open_positions_reader_accepts_complete_valid_open_position(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "valid_open.csv"
++    source.write_text(
++        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++        "TEST.DE;Test AG;Offen;2026-01-02;10,00;9,00\n",
++        encoding="utf-8-sig",
++    )
++    result = checker.read_positions(str(source))
++    assert len(checker.select_open_positions(result)) == 1
++
++
++def test_open_positions_reader_rejects_placeholder_ticker_or_name(tmp_path):
++    import offene_positionen_check as checker
++
++    for ticker, name in (("-", "Test AG"), ("TEST.DE", "NICHT VERFÜGBAR")):
++        source = tmp_path / f"placeholder_{len(list(tmp_path.iterdir()))}.csv"
++        source.write_text(
++            "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++            f"{ticker};{name};Offen;2026-01-02;10,00;9,00\n",
++            encoding="utf-8-sig",
++        )
++        with pytest.raises(ValueError, match="Pflichtwert"):
++            checker.read_positions(str(source))
++
++
++def test_open_positions_reader_rejects_duplicate_headers(tmp_path):
++    import offene_positionen_check as checker
++
++    source = tmp_path / "duplicate_headers.csv"
++    source.write_text(
++        "Ticker;ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
++        "TEST.DE;TEST.DE;Test AG;Offen;2026-01-02;10,00;9,00\n",
++        encoding="utf-8-sig",
++    )
++    with pytest.raises(ValueError, match="doppelte Spaltennamen"):
++        checker.read_positions(str(source))
+--- a/tests/test_trading_radar_20261102_regressions.py
++++ b/tests/test_trading_radar_20261102_regressions.py
+@@ -27,7 +27,7 @@
+         "1. Trading-Radar\n"
+         "Der Markt bleibt schwächer; alle Anleger warten.\n"
+         "MSCI-World-Performance bleibt die Benchmark. LIVE-SYSTEM ist die Vergleichsbasis.\n"
+-        "Quelle: ForexFactory (LIVE) / Official ISM.\n"
++        "Quelle: ForexFactory (LIVE).\n"
+         "ISM Manufacturing PMI (2026-11-02) wird beobachtet.\n"
+         "Fake ticker: FAKE\n"
+         + code + "\n"
+@@ -61,7 +61,8 @@
+ 
+ def test_event_parser_recognizes_inline_date_source_and_continuation_bullets():
+     report = """3. Ereignisradar
+-- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM Manufacturing PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE) / Official ISM
++- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM Manufacturing PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE)
++  Quellenprüfung: LIVE_VERIFIZIERT — aktueller Wochenkalender durch Projektadapter abgerufen
+   - Betroffene These/Assetklasse/konkrete offene Positionen: Sektorrotation / Aktien
+ - Szenarien unter/entsprechend/über Konsens: Über Konsens stützt zyklische Werte; unter Konsens belastet sie.
+ - Reaktionskanäle: Zyklische Aktien und Rohstofffutures.
+@@ -71,9 +72,10 @@
+ Relative Stärke und Rotation.
+ """
+     normalized, findings = normalize_event_section(report)
+-    assert findings == []
++    assert "Ereignis ohne verifizierte Quelle" in findings
+     assert normalized.count("Ereignis-Uhrzeit:") == 1
+     assert "Szenarien unter/entsprechend/über Konsens:" in normalized
++    assert "NICHT VERIFIZIERT" in normalized
+ 
+ 
+ def test_structured_thesis_json_is_market_first_record_when_complete():
+@@ -226,7 +228,8 @@
+ 
+ def test_production_event_normalizer_adds_only_explicit_header_date_and_keeps_scenario_as_field():
+     report = """3. Ereignisradar
+-- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE) / Official ISM
++- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE)
++  Quellenprüfung: LIVE_VERIFIZIERT — aktueller Wochenkalender durch Projektadapter abgerufen
+   - Betroffene These/Assetklasse/konkrete offene Positionen: Rotation / Aktien
+ - Szenarien unter/entsprechend/über Konsens: Über Konsens stützt zyklische Werte; unter Konsens belastet sie.
+ - Reaktionskanäle: Zyklische Aktien.
+@@ -240,7 +243,7 @@
+     assert normalized.count("Ereignis-Uhrzeit:") == 1
+     assert "Szenarien unter/entsprechend/über Konsens:" in normalized
+     _, findings = normalize_event_section(normalized)
+-    assert findings == []
++    assert "Ereignis ohne verifizierte Quelle" in findings
+ 
+ 
+ def test_structured_thesis_cleanup_keeps_one_marked_block_and_removes_unmarked_draft():
+--- a/tests/test_trading_radar_data_contract.py
++++ b/tests/test_trading_radar_data_contract.py
+@@ -652,7 +652,11 @@
+                     elif i == 2:
+                         body = "Gegenbelege, alternative Szenarien und beobachtbare Trigger werden geprüft."
+                     elif i == 3:
+-                        body = "- Ereignis: Testtermin\n  Datum: 2026-10-28\n  Quelle: FRED (Testquelle)\n  Uhrzeit: 10:00\n  Zeitzone: UTC"
++                        body = (
++                            "- Ereignis: Testtermin\n  Datum: 2026-10-28\n"
++                            "  Quelle: https://www.bls.gov/schedule/news_release/cpi.htm\n"
++                            "  Uhrzeit: 10:00\n  Zeitzone: UTC"
++                        )
+                     elif i == 4:
+                         body = "Relative Stärke und Kapitalrotation divergieren zwischen Segmenten."
+                     elif i == 5:
+--- a/tests/test_trading_radar_market_first.py
++++ b/tests/test_trading_radar_market_first.py
+@@ -1,21 +1,24 @@
+ from datetime import datetime, timezone, timedelta
++import json
+ import pytest
+ from trading_radar_market_first import normalize_event, deduplicate_events, classify_ohlcv_row, summarize_ohlcv_status
+ 
+ 
+ def test_event_missing_time_timezone_marked_once_and_not_verified():
+-    event = normalize_event({"name": "FOMC", "date": "2026-10-28", "source": "Fed",
++    event = normalize_event({"name": "FOMC", "date": "2026-10-28", "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++                             "source_verification": "LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-october.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-october.htm)",
+                              "time": "NICHT VERFÜGBAR", "timezone": "NICHT VERFÜGBAR"})
+     assert event["time"] is None
+     assert event["timezone"] is None
+     assert event["time_verified"] is False
+-    assert event["status"] == "READY"
+-    assert event["missing_required"] == []
++    # A historical report diagnostic is not proof of an executed verifier.
++    assert event["status"] == "INCOMPLETE"
++    assert event["missing_required"] == ["source"]
+ 
+ 
+ def test_event_duplicates_are_collapsed():
+-    rows = [{"name": "CPI", "date": "2026-11-12", "source": "BLS"},
+-            {"name": "CPI", "date": "2026-11-12", "source": "BLS"}]
++    rows = [{"name": "CPI", "date": "2026-11-12", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"},
++            {"name": "CPI", "date": "2026-11-12", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"}]
+     assert len(deduplicate_events(rows)) == 1
+ 
+ 
+@@ -60,8 +63,41 @@
+     assert "America/New_York" in result
+     assert "federalreserve.gov" in result
+     assert "Quellenprüfung: LIVE_VERIFIZIERT" in result
+-    assert "Pressekonferenz: 14:30 (im selben Eintrag bestätigt)" in result
+-
++    assert "Event-ID: FOMC_DECISION" in result
++    assert "Event-ID: FOMC_PRESS_CONFERENCE" in result
++    assert "Ereignis: FOMC Pressekonferenz" in result
++    assert "Uhrzeit: 14:30" in result
++
++
++
++def test_fomc_enrichment_emits_separate_press_conference_event_identity(tmp_path):
++    from trading_radar_market_first import _enrich_fomc_event, normalize_event_section
++    import json
++
++    calendar = tmp_path / "fomc_termine.json"
++    calendar.write_text(json.dumps({"termine": ["2026-10-28"]}), encoding="utf-8")
++    report = "Datenstand: 2026-10-28T04:29:51+00:00"
++    body = "- Ereignis: FOMC-Zinsentscheid\n- Kennzahl: FOMC Zinsentscheid"
++
++    class Response:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
++        text = "<table><tr><td>October 27-28, 2026</td><td>FOMC meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr></table>"
++
++    results = {}
++    enriched = _enrich_fomc_event(
++        body, report, calendar, source_requester=lambda *a, **k: Response(),
++        verification_results=results,
++    )
++    assert results[("2026-10-28", "DECISION")].event_id == "FOMC_DECISION"
++    assert results[("2026-10-28", "PRESS_CONFERENCE")].event_id == "FOMC_PRESS_CONFERENCE"
++    normalized, findings = normalize_event_section(
++        "3. Ereignisradar\n" + enriched + "\n4. Assetklassenvergleich\n",
++        fomc_requester=lambda *a, **k: Response(),
++    )
++    assert normalized.count("- Ereignis: FOMC-Zinsentscheid") == 1
++    assert normalized.count("- Ereignis: FOMC Pressekonferenz") == 1
++    assert "Ereignis ohne verifizierte Quelle" not in findings
+ 
+ def test_fomc_page_wide_matches_cannot_verify_different_calendar_rows(tmp_path):
+     from trading_radar_market_first import _verify_fomc_official_source
+@@ -91,7 +127,8 @@
+         text = "<table><tr><td>October 27-28, 2026</td><td>FOMC meeting</td><td>2:00 p.m.</td></tr></table>"
+     result = _enrich_fomc_event(body, report, calendar, source_requester=lambda *a, **k: FakeResponse())
+     assert "Quellenprüfung: LIVE_VERIFIZIERT" in result
+-    assert "Pressekonferenz: NICHT SEPARAT VERIFIZIERT" in result
++    assert "Ereignis: FOMC Pressekonferenz" not in result
++    assert "Event-ID: FOMC_DECISION" in result
+ 
+ 
+ def test_fomc_same_day_event_is_skipped_after_1400_new_york_time(tmp_path):
+@@ -616,7 +653,7 @@
+     assert audit_market_first_content(report) == []
+ 
+ 
+-def test_fomc_official_calendar_accepts_bounded_category_markup():
++def test_fomc_official_calendar_returns_separate_decision_and_press_evidence():
+     from datetime import date
+     from trading_radar_market_first import _verify_fomc_official_source
+ 
+@@ -634,19 +671,81 @@
+         url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+         text = html
+ 
+-    verified, detail = _verify_fomc_official_source(date(2026, 10, 28), requester=lambda *a, **k: Response())
+-    assert verified
+-    assert "PRESSEKONFERENZ_VERIFIZIERT" in detail
+-
++    requester = lambda *a, **k: Response()
++    decision = _verify_fomc_official_source(date(2026, 10, 28), requester=requester)
++    press = _verify_fomc_official_source(
++        date(2026, 10, 28), requester=requester, event_kind="PRESS_CONFERENCE"
++    )
++    assert decision.verified and decision.event_id == "FOMC_DECISION" and decision.event_time == "14:00"
++    assert press.verified and press.event_id == "FOMC_PRESS_CONFERENCE" and press.event_time == "14:30"
++    wrong_day = _verify_fomc_official_source(date(2026, 10, 27), requester=requester)
++    assert not wrong_day.verified
++
++
++
++
++def test_fomc_separate_press_row_is_bound_to_the_confirmed_meeting_end_date():
++    from datetime import date
++    from trading_radar_market_first import _verify_fomc_official_source
++
++    class Response:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
++        text = """<html><title>October 2026</title><table>
++        <tr><td>October 27 - 28</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr>
++        <tr><td>28</td><td>FOMC Press Conference</td><td>2:30 p.m.</td></tr>
++        </table></html>"""
++
++    requester = lambda *a, **k: Response()
++    decision = _verify_fomc_official_source(date(2026, 10, 28), requester=requester)
++    press = _verify_fomc_official_source(
++        date(2026, 10, 28), requester=requester, event_kind="PRESS_CONFERENCE"
++    )
++    wrong_day = _verify_fomc_official_source(
++        date(2026, 10, 27), requester=requester, event_kind="PRESS_CONFERENCE"
++    )
++    assert decision.verified
++    assert press.verified and press.event_id == "FOMC_PRESS_CONFERENCE"
++    assert not wrong_day.verified
++
++def test_fomc_decision_evidence_cannot_verify_press_conference_event():
++    from datetime import date
++    from trading_radar_market_first import _verify_fomc_official_source, normalize_event
++
++    class Response:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
++        text = "<tr><td>October 27-28, 2026</td><td>FOMC Meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr>"
++
++    decision = _verify_fomc_official_source(date(2026, 10, 28), requester=lambda *a, **k: Response())
++    press_event = normalize_event({
++        "name": "FOMC Pressekonferenz", "date": "2026-10-28",
++        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++        "source_verification": "LIVE_VERIFIZIERT",
++    }, verification_evidence=decision)
++    assert press_event["source_verified"] is False
++    press = _verify_fomc_official_source(
++        date(2026, 10, 28), requester=lambda *a, **k: Response(), event_kind="PRESS_CONFERENCE"
++    )
++    press_event = normalize_event({
++        "name": "FOMC Pressekonferenz", "date": "2026-10-28",
++        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++        "source_verification": "LIVE_VERIFIZIERT",
++    }, verification_evidence=press)
++    assert press_event["source_verified"] is True
+ 
+ def test_event_scenario_bullets_remain_in_same_event_record(monkeypatch):
+     import trading_radar_market_first as market_first
+ 
+-    monkeypatch.setattr(market_first, "_enrich_fomc_event", lambda body, report_text: body)
++    class FedResponse:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
++        text = "<html><title>October 2026</title><tr><td>October 27 - 28</td><td>FOMC Meeting</td><td>2:00 p.m.</td><td>2:30 p.m.</td></tr></html>"
+     report = """3. Ereignisradar
+ - Ereignis: FOMC-Zinsentscheid
+   Datum: 2026-10-28
+-  Quelle: Federal Reserve, offizieller Kalender
++  Quelle: Federal Reserve, offizieller Kalender (https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)
++  Quellenprüfung: NICHT VERIFIZIERT — vorhandener Reporttext ist kein Prüfergebnis
+   Uhrzeit: 14:00
+   Zeitzone: America/New_York
+   Kennzahl: Fed Funds Rate
+@@ -660,7 +759,9 @@
+ 
+ 4. Assetklassenvergleich
+ """
+-    result, findings = market_first.normalize_event_section(report)
++    result, findings = market_first.normalize_event_section(
++        report, fomc_requester=lambda *a, **k: FedResponse()
++    )
+     assert result.count("- Ereignis: FOMC-Zinsentscheid") == 1
+     assert not any("ohne Datum" in item or "ohne verifizierte Quelle" in item for item in findings)
+ 
+@@ -691,11 +792,16 @@
+         requested.append(url)
+         return ErrorResponse() if len(requested) == 1 else SuccessResponse()
+ 
+-    verified, detail = _verify_fomc_official_source(date(2026, 12, 9), requester=requester)
+-    assert verified
++    decision = _verify_fomc_official_source(date(2026, 12, 9), requester=requester)
++    assert decision.verified
+     assert len(requested) == 2
+-    assert "HTTP 403" in detail
+-    assert "PRESSEKONFERENZ_VERIFIZIERT" in detail
++    assert "HTTP 403" in decision.detail
++    press = _verify_fomc_official_source(
++        date(2026, 12, 9), requester=lambda *a, **k: SuccessResponse(),
++        event_kind="PRESS_CONFERENCE",
++    )
++    assert press.verified
++    assert press.event_id == "FOMC_PRESS_CONFERENCE"
+ 
+ 
+ def test_fomc_official_calendar_failure_diagnostic_includes_both_urls():
+@@ -1086,27 +1192,18 @@
+     assert "DXY: NICHT VERFÜGBAR" in risk
+ 
+ 
+-def test_event_date_is_recovered_from_one_explicit_iso_date_in_period():
++def test_event_date_is_promoted_from_one_explicit_valid_period_date():
+     row = normalize_event({
+         "name": "ADP Weekly Employment Change",
+         "period": "Wöchentlich / In 2 Tagen (2026-11-17)",
+-        "source": "ForexFactory (LIVE) / Makro-Datenpaket",
++        "source": "https://www.bls.gov/schedule/news_release/empsit.htm",
+     })
+     assert row["date"] == "2026-11-17"
+     assert row["status"] == "READY"
+-    assert row["missing_required"] == []
+-
+-
+-def test_event_date_is_not_guessed_from_ambiguous_or_invalid_period():
+-    from trading_radar_market_first import _explicit_date_from_period
+-
+-    assert _explicit_date_from_period("Wöchentlich / In 2 Tagen") is None
+-    assert _explicit_date_from_period("2026-11-17 bis 2026-11-19") is None
+-    assert _explicit_date_from_period("2026-02-30") is None
+-    assert _explicit_date_from_period("2026-11-17 bis 2026-02-30") is None
+-
+-
+-def test_event_section_promotes_explicit_period_date_and_clears_stale_missing_date_finding():
++    assert row["period"] == "Wöchentlich / In 2 Tagen (2026-11-17)"
++
++
++def test_event_section_promotes_only_one_explicit_period_date():
+     from trading_radar_market_first import normalize_event_section
+ 
+     report = (
+@@ -1114,17 +1211,25 @@
+         "- Ereignis-Uhrzeit: NICHT VERFÜGBAR\n"
+         "- Kennzahl: ADP Weekly Employment Change\n"
+         "- Zeitraum: Wöchentlich / In 2 Tagen (2026-11-17)\n"
+-        "- Quelle: ForexFactory (LIVE) / Makro-Datenpaket\n"
++        "- Quelle: https://www.bls.gov/schedule/news_release/empsit.htm\n"
+         "Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+-        "Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt)\n"
++        "Quellenprüfung: NICHT VERIFIZIERT (Quelle fehlt, ist nicht vertrauenswürdig oder nicht live verifiziert)\n"
+         "\n4. Assetklassenvergleich\nAktien und Anleihen werden verglichen.\n"
+     )
+     normalized, findings = normalize_event_section(report)
+-
+     assert "Datum: 2026-11-17" in normalized
+-    assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" in normalized
++    assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" not in normalized
+     assert "Ereignis ohne Datum" not in findings
+-    assert "Ereignis ohne verifizierte Quelle" not in findings
++    assert "Ereignis ohne verifizierte Quelle" in findings
++
++    relative = normalize_event({"name": "CPI", "period": "In 2 Tagen", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
++    ambiguous = normalize_event({"name": "CPI", "period": "2026-11-17 bis 2026-11-18", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
++    invalid = normalize_event({"name": "CPI", "period": "2026-02-30", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
++    assert relative["date"] is None
++    assert ambiguous["date"] is None
++    assert invalid["date"] is None
++    german = normalize_event({"name": "CPI", "period": "17.11.2026", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
++    assert german["date"] == "2026-11-17"
+ 
+ 
+ def test_explicit_event_date_is_not_relabelled_as_inferred_from_period():
+@@ -1135,13 +1240,592 @@
+         "- Ereignis: FOMC-Zinsentscheid\n"
+         "- Datum: 2026-11-17\n"
+         "- Zeitraum: Sitzungstermin 2026-11-17\n"
+-        "- Quelle: Federal Reserve, offizieller Kalender\n"
+-        "- Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt)\n"
++        "- Quelle: Federal Reserve, offizieller Kalender (https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)\n"
++        "- Quellenprüfung: NICHT VERIFIZIERT (Quelle fehlt, ist nicht vertrauenswürdig oder nicht live verifiziert)\n"
+         "\n4. Assetklassenvergleich\n"
+     )
+     normalized, findings = normalize_event_section(report)
+ 
+     assert "Datum: 2026-11-17" in normalized
+-    assert "NICHT VERIFIZIERT (Datum nicht belegt)" in normalized
++    assert "nicht live verifiziert" in normalized
+     assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" not in normalized
+     assert "Ereignis ohne Datum" not in findings
++
++
++def test_fred_observations_api_is_not_a_verified_release_calendar_source():
++    from trading_radar_market_first import normalize_event_section
++
++    report = (
++        "3. Ereignisradar\n"
++        "- Ereignis: Initial Jobless Claims\n"
++        "- Datum: 2026-11-19\n"
++        "- Zeitraum: Wöchentlich\n"
++        "- Quelle: https://api.stlouisfed.org/fred/series/observations\n"
++        "- Quellenprüfung: LIVE_VERIFIZIERT\n"
++        "\n4. Assetklassenvergleich\n"
++    )
++    normalized, findings = normalize_event_section(report)
++    assert "Ereignis ohne Datum" not in findings
++    assert "Ereignis ohne verifizierte Quelle" in findings
++    assert "NICHT VERIFIZIERT" in normalized
++    assert "LIVE_VERIFIZIERT" not in normalized
++
++
++def test_explicit_event_date_is_confirmed_only_by_real_forexfactory_adapter():
++    import json
++    from trading_radar_market_first import normalize_event_section
++
++    class FFResponse:
++        status_code = 200
++        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
++        text = json.dumps([{
++            "id": "ff-123", "country": "USD", "date": "2026-11-17T13:15:00-05:00",
++            "title": "ADP Employment Report", "time": "08:15am", "timezone": "America/New_York",
++        }])
++        def json(self):
++            return json.loads(self.text)
++
++    report = (
++        "3. Ereignisradar\n"
++        "- Ereignis: ADP: ADP Employment Report\n"
++        "- Datum: 2026-11-17\n"
++        "- Zeitraum: November 2026\n"
++        "- Quelle: ForexFactory (LIVE)\n"
++        "- Quellenprüfung: LIVE_VERIFIZIERT — Textmarker allein\n"
++        "\n4. Assetklassenvergleich\n"
++    )
++    normalized, findings = normalize_event_section(
++        report, forexfactory_requester=lambda *a, **k: FFResponse()
++    )
++    assert findings == []
++    assert "Datum: 2026-11-17" in normalized
++    assert "ForexFactory LIVE adapter" in normalized
++    assert "HTTP 200" in normalized
++
++
++
++def test_forexfactory_http_200_wrong_event_or_date_is_not_evidence():
++    import json
++    from trading_radar_market_first import normalize_event_section
++
++    class FFResponse:
++        status_code = 200
++        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
++        text = json.dumps([{"id": "x", "country": "USD", "date": "2026-11-18", "title": "CPI"}])
++        def json(self):
++            return json.loads(self.text)
++
++    report = (
++        "3. Ereignisradar\n- Ereignis: ADP Employment Report\n"
++        "- Datum: 2026-11-17\n- Quelle: ForexFactory (LIVE)\n"
++        "- Quellenprüfung: LIVE_VERIFIZIERT\n\n4. Assetklassenvergleich\n"
++    )
++    normalized, findings = normalize_event_section(
++        report, forexfactory_requester=lambda *a, **k: FFResponse()
++    )
++    assert "Ereignis ohne verifizierte Quelle" in findings
++    assert "NICHT VERIFIZIERT" in normalized
++
++
++
++def test_forexfactory_calendar_url_alone_does_not_verify_event():
++    row = normalize_event({
++        "name": "ADP Employment Report", "date": "2026-11-17",
++        "source": "https://www.forexfactory.com/calendar",
++        "source_verification": "LIVE_VERIFIZIERT",
++    })
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++
++
++
++def test_fomc_mixed_decision_and_press_conference_record_is_not_classified():
++    from trading_radar_market_first import _fomc_event_kind
++
++    assert _fomc_event_kind("FOMC-Zinsentscheid") == "DECISION"
++    assert _fomc_event_kind("FOMC Pressekonferenz") == "PRESS_CONFERENCE"
++    assert _fomc_event_kind("FOMC-Zinsentscheid und FOMC Pressekonferenz") is None
++    assert _fomc_event_kind("FOMC Minutes und FOMC Pressekonferenz") is None
++
++def test_fomc_diagnostic_without_verifier_is_rejected_even_when_date_is_present():
++    from trading_radar_market_first import normalize_event_section
++
++    report = (
++        "3. Ereignisradar\n- Ereignis: FOMC-Zinsentscheid\n"
++        "- Datum: 2026-12-09\n"
++        "- Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm\n"
++        "- Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum bestätigt\n\n"
++        "4. Assetklassenvergleich\n"
++    )
++    class BadResponse:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-october.htm"
++        text = "<html>October 2026; no matching meeting</html>"
++    normalized, findings = normalize_event_section(
++        report, fomc_requester=lambda *a, **k: BadResponse()
++    )
++    assert "FOMC-Ereignis nicht live" in " ".join(findings)
++    assert "NICHT VERIFIZIERT" in normalized
++
++def test_structured_event_normalizer_rejects_fred_observations_url_as_source():
++    row = normalize_event({
++        "name": "Initial Jobless Claims",
++        "date": "2026-11-19",
++        "source": "https://api.stlouisfed.org/fred/series/observations",
++    })
++    assert row["date"] == "2026-11-19"
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++    assert row["missing_required"] == ["source"]
++
++
++def test_structured_event_normalizer_rejects_invalid_explicit_calendar_date():
++    row = normalize_event({
++        "name": "Initial Jobless Claims",
++        "date": "2026-02-30",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++    })
++    assert row["date_valid"] is False
++    assert row["status"] == "INCOMPLETE"
++    assert row["missing_required"] == ["date"]
++
++
++def test_generic_untrusted_url_is_not_a_verified_event_source():
++    row = normalize_event({
++        "name": "CPI",
++        "date": "2026-12-10",
++        "source": "https://example.invalid/calendar",
++    })
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++    assert row["missing_required"] == ["source"]
++
++
++def test_event_source_requires_https_calendar_url_not_provider_name():
++    from trading_radar_market_first import _is_verified_event_source
++
++    assert _is_verified_event_source("https://www.bls.gov/schedule/news_release/empsit.htm")
++    assert _is_verified_event_source("https://www.forexfactory.com/calendar")
++    assert not _is_verified_event_source("FRED")
++    assert not _is_verified_event_source("Yahoo Finance")
++    assert not _is_verified_event_source("Official ADP Calendar")
++    assert not _is_verified_event_source("https://evil.example/fred")
++    assert not _is_verified_event_source("https://www.bls.gov:invalid/schedule/news_release/empsit.htm")
++    assert not _is_verified_event_source("https://user@www.bls.gov/schedule/news_release/empsit.htm")
++    assert not _is_verified_event_source("https://api.stlouisfed.org/fred/series/observations")
++
++
++def test_event_with_explicit_date_but_provider_name_only_remains_incomplete():
++    row = normalize_event({
++        "name": "Initial Jobless Claims",
++        "date": "2026-11-19",
++        "source": "FRED",
++    })
++    assert row["date_valid"] is True
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++    assert row["missing_required"] == ["source"]
++
++
++def test_generic_trusted_provider_calendar_source_keeps_existing_policy():
++    row = normalize_event({
++        "name": "CPI",
++        "date": "2026-11-19",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++    })
++    assert row["date_valid"] is True
++    assert row["source_verified"] is True
++    assert row["status"] == "READY"
++
++
++def test_bare_live_verified_marker_is_not_accepted_as_fetch_evidence():
++    row = normalize_event({
++        "name": "CPI", "date": "2026-11-19",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++        "source_verification": "LIVE_VERIFIZIERT",
++    })
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++
++
++def test_live_fetch_evidence_must_match_declared_source_and_calendar_path():
++    for fetched_url in ("https://evil.example/calendar", "https://www.bls.gov/"):
++        row = normalize_event({
++            "name": "CPI", "date": "2026-11-19",
++            "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++            "source_verification": f"LIVE_VERIFIZIERT — HTTP 200; Abruf: {fetched_url}",
++        })
++        assert row["source_verified"] is False
++        assert row["status"] == "INCOMPLETE"
++
++
++def test_trusted_calendar_url_without_live_verification_is_not_verified():
++    from trading_radar_market_first import normalize_event
++
++    row = normalize_event({
++        "name": "ADP Employment Report",
++        "date": "2026-11-17",
++        "source": "https://www.forexfactory.com/calendar",
++    })
++    assert row["date_valid"] is True
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++    assert row["missing_required"] == ["source"]
++
++
++def test_negative_wrapped_live_verification_marker_is_not_accepted():
++    from trading_radar_market_first import _has_live_verification
++
++    assert not _has_live_verification("NICHT LIVE_VERIFIZIERT")
++    assert not _has_live_verification("Quelle NICHT VERIFIZIERT (vorher LIVE_VERIFIZIERT)")
++    assert not _has_live_verification("Quelle wurde LIVE_VERIFIZIERT erwähnt")
++    assert not _has_live_verification(
++        "Name nicht aufgelöst (LIVE_VERIFIZIERT) — offizieller Kalender geprüft",
++        "ForexFactory (LIVE)", event_name="ADP", event_date="2026-11-17",
++    )
++
++
++def test_event_header_narrative_date_is_not_promoted_to_explicit_event_date():
++    from trading_radar_market_first import normalize_event_section
++
++    report = (
++        "3. Ereignisradar\n"
++        "- Ereignis: Initial Jobless Claims am 2026-11-19\n"
++        "- Zeitraum: Wöchentlich\n"
++        "- Quelle: https://www.dol.gov/newsroom/releases\n"
++        "- Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.dol.gov/newsroom/releases\n"
++        "\n4. Assetklassenvergleich\n"
++    )
++    normalized, findings = normalize_event_section(report)
++    assert "Ereignis ohne Datum" in findings
++    assert "Datum: NICHT VERFÜGBAR" in normalized
++    assert "Initial Jobless Claims am 2026-11-19" in normalized
++    assert "Datum: 2026-11-19" not in normalized
++
++
++@pytest.mark.parametrize(
++    "status",
++    ["NICHT LIVE_VERIFIZIERT", "Quelle wurde LIVE_VERIFIZIERT erwähnt", "UNVERIFIZIERT"],
++)
++def test_event_verification_requires_positive_status_token_at_start(status):
++    from trading_radar_market_first import normalize_event
++
++    row = normalize_event({
++        "name": "ADP Employment Report",
++        "date": "2026-11-17",
++        "source": "https://www.forexfactory.com/calendar",
++        "source_verification": status,
++    })
++    assert row["source_verified"] is False
++    assert row["status"] == "INCOMPLETE"
++
++
++@pytest.mark.parametrize(
++    "url",
++    [
++        "https://attacker@www.bls.gov/schedule/news_release/empsit.htm",
++        "https://www.bls.gov:8443/schedule/news_release/empsit.htm",
++        "https://www.bls.gov.evil.example/schedule/news_release/empsit.htm",
++    ],
++)
++def test_event_source_rejects_credential_port_and_lookalike_hosts(url):
++    from trading_radar_market_first import _is_verified_event_source
++
++    assert _is_verified_event_source(url) is False
++
++
++def test_narrative_date_in_event_title_is_not_promoted_to_release_date():
++    from trading_radar_market_first import normalize_event
++
++    row = normalize_event({
++        "name": "CPI-Veröffentlichung (2026-12-10)",
++        "period": "Dezember 2026",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++        "source_verification": "LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.bls.gov/schedule/news_release/cpi.htm",
++    })
++    assert row["date"] is None
++    assert row["date_valid"] is False
++    assert row["status"] == "INCOMPLETE"
++    assert row["missing_required"] == ["date", "source"]
++
++
++def test_project_forexfactory_live_stamp_requires_actual_adapter_evidence():
++    from trading_radar_market_first import _is_verified_event_source, normalize_event
++
++    assert _is_verified_event_source("ForexFactory (LIVE) / Makro-Datenpaket")
++    assert not _is_verified_event_source("ForexFactory")
++    assert not _is_verified_event_source("ForexFactory (CACHE)")
++
++    event = normalize_event({
++        "name": "ADP Weekly Employment Change",
++        "date": "2026-11-17",
++        "source": "ForexFactory (LIVE) / Makro-Datenpaket",
++        "source_verification": "LIVE_VERIFIZIERT",
++    })
++    assert event["status"] == "INCOMPLETE"
++    assert event["source_verified"] is False
++
++
++
++def test_generic_live_evidence_requires_matching_event_date_and_exact_release_url():
++    row = normalize_event({
++        "name": "CPI-Veröffentlichung", "date": "2026-11-19",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++        "source_verification": (
++            "LIVE_VERIFIZIERT — HTTP 200; Abruf: "
++            "https://www.bls.gov/schedule/news_release/cpi.htm; "
++            "bestätigt: CPI-Veröffentlichung am 2026-11-19"
++        ),
++    })
++    assert row["source_verified"] is True
++    assert row["status"] == "READY"
++
++def test_live_verification_rejects_unrelated_same_host_release_page():
++    from trading_radar_market_first import normalize_event
++
++    event = normalize_event({
++        "name": "CPI-Veröffentlichung",
++        "date": "2026-11-19",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++        "source_verification": (
++            "LIVE_VERIFIZIERT — HTTP 200; Abruf: "
++            "https://www.bls.gov/schedule/news_release/empsit.htm"
++        ),
++    })
++    assert event["source_verified"] is False
++    assert event["status"] == "INCOMPLETE"
++    assert "source" in event["missing_required"]
++
++
++def test_live_verification_requires_matching_event_and_date_in_fetched_evidence():
++    from trading_radar_market_first import normalize_event
++
++    event = normalize_event({
++        "name": "CPI-Veröffentlichung",
++        "date": "2026-11-19",
++        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
++        "source_verification": (
++            "LIVE_VERIFIZIERT — HTTP 200; Abruf: "
++            "https://www.bls.gov/schedule/news_release/cpi.htm; "
++            "bestätigt: Employment Situation am 2026-11-06"
++        ),
++    })
++    assert event["source_verified"] is False
++    assert event["status"] == "INCOMPLETE"
++
++
++def test_fomc_month_page_exception_is_bound_to_event_month_and_name():
++    from datetime import date
++    from trading_radar_market_first import _verify_fomc_official_source, normalize_event
++
++    class FedResponse:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-december.htm?view=calendar"
++        text = "<html><title>December 2026</title><tr><td>December 8 - 9</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr></html>"
++
++    evidence = _verify_fomc_official_source(
++        date(2026, 12, 9), requester=lambda *a, **k: FedResponse()
++    )
++    valid = normalize_event({
++        "name": "FOMC-Zinsentscheid", "date": "2026-12-09",
++        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++        "source_verification": "LIVE_VERIFIZIERT — report text is not evidence",
++    }, verification_evidence=evidence)
++    forged = normalize_event({
++        "name": "FOMC-Zinsentscheid", "date": "2026-12-09",
++        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++        "source_verification": "LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm",
++    })
++    wrong_event = normalize_event({
++        "name": "US-Arbeitsmarktbericht", "date": "2026-12-09",
++        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++        "source_verification": "LIVE_VERIFIZIERT",
++    }, verification_evidence=evidence)
++    assert valid["source_verified"] is True
++    assert forged["source_verified"] is False
++    assert wrong_event["source_verified"] is False
++
++
++def test_event_section_downgrades_same_host_but_wrong_release_page():
++    from trading_radar_market_first import normalize_event_section
++
++    report = """3. Ereignisradar
++- Ereignis: CPI-Veröffentlichung
++- Datum: 2026-11-19
++- Quelle: https://www.bls.gov/schedule/news_release/cpi.htm
++- Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.bls.gov/schedule/news_release/empsit.htm
++
++4. Assetklassenvergleich
++Relative Stärke.
++"""
++    normalized, findings = normalize_event_section(report)
++    event_section = normalized.split("3. Ereignisradar", 1)[1].split("4. Assetklassenvergleich", 1)[0]
++    assert "Ereignis ohne verifizierte Quelle" in findings
++    assert "Quellenprüfung: NICHT VERIFIZIERT" in event_section
++    assert "LIVE_VERIFIZIERT" not in event_section
++
++
++def test_caller_constructed_evidence_object_is_not_accepted_as_live_proof():
++    from trading_radar_market_first import _EventVerificationEvidence, normalize_event
++
++    forged = _EventVerificationEvidence(
++        kind="FOMC", event_id="FOMC_DECISION", event_name="FOMC Zinsentscheid",
++        event_date="2026-12-09", event_time="14:00", timezone="America/New_York",
++        requested_url="https://www.federalreserve.gov/newsevents/2026-december.htm",
++        final_url="https://www.federalreserve.gov/newsevents/2026-december.htm",
++        http_status=200, retrieved_at="2026-11-16T10:00:00+00:00",
++        content_match=True, adapter="federal_reserve_month_calendar_verifier",
++        response_sha256="not-a-real-response-hash", verified=True, detail="forged",
++    )
++    event = normalize_event({
++        "name": "FOMC-Zinsentscheid", "date": "2026-12-09",
++        "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
++        "source_verification": "LIVE_VERIFIZIERT",
++    }, verification_evidence=forged)
++    assert event["source_verified"] is False
++    assert event["status"] == "INCOMPLETE"
++
++
++def test_generic_bls_live_verification_still_accepts_matching_real_fetch_evidence():
++    """The ForexFactory/FOMC adapter changes must not disable other providers."""
++    source = "https://www.bls.gov/schedule/news_release/cpi.htm"
++    row = normalize_event({
++        "name": "CPI", "date": "2026-11-19", "source": source,
++        "source_verification": (
++            "LIVE_VERIFIZIERT — HTTP 200; Abruf: " + source
++            + "; Event: CPI am 2026-11-19"
++        ),
++    })
++    assert row["source_verified"] is True
++    assert row["status"] == "READY"
++
++
++def test_fomc_event_identity_classifier_does_not_prefer_decision_when_ambiguous():
++    from trading_radar_market_first import _fomc_event_kind
++
++    assert _fomc_event_kind("FOMC-Zinsentscheid") == "DECISION"
++    assert _fomc_event_kind("FOMC Pressekonferenz") == "PRESS_CONFERENCE"
++    assert _fomc_event_kind("FOMC-Zinsentscheid und FOMC Pressekonferenz") is None
++
++
++
++def test_fomc_press_conference_remains_same_day_at_1415_new_york_time(tmp_path):
++    from trading_radar_market_first import _enrich_fomc_event
++    import json
++
++    calendar = tmp_path / "fomc_termine.json"
++    calendar.write_text(json.dumps({"termine": ["2026-10-28", "2026-12-09"]}), encoding="utf-8")
++    report = "Datenstand: 2026-10-28T18:15:00+00:00"  # 14:15 EDT
++    body = "- Ereignis: FOMC Pressekonferenz"
++    requested = []
++
++    class Response:
++        status_code = 200
++        text = "<table><tr><td>October 27-28, 2026</td><td>FOMC meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr></table>"
++
++        @property
++        def url(self):
++            return requested[-1]
++
++    def requester(url, **kwargs):
++        requested.append(url)
++        return Response()
++
++    result = _enrich_fomc_event(body, report, calendar, source_requester=requester)
++    assert requested and "2026-october.htm" in requested[0]
++    assert "Event-ID: FOMC_PRESS_CONFERENCE" in result
++    assert "Datum: 2026-10-28" in result
++    assert "Uhrzeit: 14:30" in result
++
++
++@pytest.mark.parametrize(
++    "cutoff_utc",
++    ["2026-10-28T18:30:00+00:00", "2026-10-28T18:31:00+00:00"],
++)
++def test_fomc_press_conference_moves_to_next_meeting_at_or_after_1430_new_york_time(
++    tmp_path, cutoff_utc
++):
++    from trading_radar_market_first import _enrich_fomc_event
++    import json
++
++    calendar = tmp_path / "fomc_termine.json"
++    calendar.write_text(json.dumps({"termine": ["2026-10-28", "2026-12-09"]}), encoding="utf-8")
++    report = f"Datenstand: {cutoff_utc}"  # 14:30 / 14:31 EDT
++    body = "- Ereignis: FOMC Pressekonferenz"
++    requested = []
++
++    class Response:
++        status_code = 200
++        text = "<table><tr><td>December 8-9, 2026</td><td>FOMC meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr></table>"
++
++        @property
++        def url(self):
++            return requested[-1]
++
++    def requester(url, **kwargs):
++        requested.append(url)
++        return Response()
++
++    result = _enrich_fomc_event(body, report, calendar, source_requester=requester)
++    assert requested and "2026-december.htm" in requested[0]
++    assert "Datum: 2026-12-09" in result
++
++
++def test_fomc_press_row_day_30_is_not_matched_by_230pm_minute_digits():
++    from datetime import date
++    from trading_radar_market_first import _verify_fomc_official_source
++
++    class Response:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
++        text = """<html><title>October 2026</title><table>
++        <tr><td>October 29-30, 2026</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr>
++        <tr><td>2</td><td>FOMC Press Conference</td><td>2:30 p.m.</td></tr>
++        </table></html>"""
++
++    result = _verify_fomc_official_source(
++        date(2026, 10, 30), requester=lambda *a, **k: Response(),
++        event_kind="PRESS_CONFERENCE",
++    )
++    assert not result.verified
++
++
++def test_combined_event_time_zone_label_is_a_field_not_a_new_event_record():
++    from trading_radar_market_first import normalize_event_section
++    report = """3. Ereignisradar
++- Ereignis: ADP Weekly Employment Change
++  - Datum: 2026-11-17
++  - Quelle: ADP official calendar
++  - Uhrzeit/Zeitzone: 08:15 America/New_York
++  - Kennzahl: ADP Beschäftigungsänderung
++  - Berichtszeitraum: November 2026
++  - Letzter Wert: 42.000
++  - Konsens: 35.000
++
++4. Assetklassenvergleich
++"""
++    normalized, findings = normalize_event_section(report)
++    assert findings == []
++    assert normalized.count("Ereignis: ADP Weekly Employment Change") == 1
++    assert normalized.count("Uhrzeit/Zeitzone:") == 1
++    assert "4. Assetklassenvergleich" in normalized
++
++
++def test_combined_event_time_zone_unavailable_is_preserved_as_one_field():
++    from trading_radar_market_first import normalize_event_section
++    report = """3. Ereignisradar
++- Ereignis: ADP Weekly Employment Change
++  - Datum: 2026-11-17
++  - Quelle: ADP official calendar
++  - Uhrzeit/Zeitzone: NICHT VERFÜGBAR
++  - Kennzahl: ADP Beschäftigungsänderung
++  - Berichtszeitraum: November 2026
++  - Letzter Wert: NICHT VERFÜGBAR
++  - Konsens: NICHT VERFÜGBAR
++
++4. Assetklassenvergleich
++"""
++    normalized, findings = normalize_event_section(report)
++    assert findings == []
++    assert normalized.count("Ereignis: ADP Weekly Employment Change") == 1
++    assert normalized.count("Uhrzeit/Zeitzone:") == 1
+--- a/tests/test_trading_radar_report_gate.py
++++ b/tests/test_trading_radar_report_gate.py
+@@ -962,3 +962,118 @@
+     errors = gate.validate_report(report)
+     assert not any("M-07" in error for error in errors), errors
+ 
++
++
++def test_m08_treats_combined_time_zone_label_as_one_field_in_one_event():
++    from trading_radar_market_first import normalize_event_section
++    report = report_fixture().replace(
++        "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
++        "- Ereignis: ADP Weekly Employment Change\n"
++        "  - Datum: 2026-11-17\n"
++        "  - Quelle: ADP official calendar\n"
++        "  - Uhrzeit/Zeitzone: NICHT VERFÜGBAR\n"
++        "  - Kennzahl: ADP Beschäftigungsänderung\n"
++        "  - Berichtszeitraum: November 2026\n"
++        "  - Letzter Wert: NICHT VERFÜGBAR\n"
++        "  - Konsens: NICHT VERFÜGBAR.",
++    )
++    normalized, findings = normalize_event_section(report)
++    assert findings == []
++    errors = gate.validate_report(normalized)
++    m08 = [error for error in errors if "M-08:" in error]
++    assert len(m08) == 0, errors
++
++
++def test_m03_generator_and_gate_reject_contradictory_ohlcv_claims():
++    import Trading_Radar_Alleinauswertung as production
++    audit = {
++        "status": "gaps",
++        "checked_at": "2026-11-16T12:00:00Z",
++        "universe_count": 10,
++        "covered_count": 10,
++        "missing_tickers": ["AAA"],
++        "stale_tickers": [],
++        "recent_gap_tickers": [],
++        "historical_only_gap_tickers": [],
++        "calendar_unverified_tickers": [],
++        "calendar_coverage_incomplete_tickers": [],
++        "affected_candidates": ["AAA"],
++        "quality_status_counts": {"VALID": 9, "MISSING": 1, "STALE": 0, "INVALID": 0, "TOTAL": 10},
++        "quality_status_by_ticker": {
++            **{f"T{i}": "VALID" for i in range(9)},
++            "AAA": "MISSING",
++        },
++        "candidate_mapping_complete": True,
++        "candidate_impact": "affected_candidates_documented",
++    }
++    previous = getattr(production, "_TRADING_RADAR_OHLCV_AUDIT", None)
++    production._TRADING_RADAR_OHLCV_AUDIT = audit
++    try:
++        source_report = report_fixture(ohlcv_warning=True).replace(
++            "Basisszenario: Seitwärts bis aufwärts.",
++            "OHLCV vollständig, keine Datenlücken; Kandidaten nicht eingeschränkt.\\n"
++            "Basisszenario: Seitwärts bis aufwärts.",
++            1,
++        )
++        assert any(
++            "Freitext behauptet Datenlückenfreiheit" in error
++            for error in gate.validate_report(source_report)
++        )
++        generated = production._trading_radar_ohlcv_abschnitt8_aktualisieren(source_report)
++    finally:
++        if previous is None:
++            delattr(production, "_TRADING_RADAR_OHLCV_AUDIT")
++        else:
++            production._TRADING_RADAR_OHLCV_AUDIT = previous
++    assert "OHLCV vollständig, keine Datenlücken" not in generated
++    assert "OHLCV-Abdeckung: vollständig" not in generated
++    errors = gate.validate_report(generated)
++    assert not any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors
++    contradictory = generated.replace(
++        "Kandidaten-Mapping: VOLLSTÄNDIG",
++        "OHLCV vollständig, keine Datenlücken; Kandidaten nicht eingeschränkt.\nKandidaten-Mapping: VOLLSTÄNDIG",
++        1,
++    )
++    errors = gate.validate_report(contradictory)
++    assert any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors
++
++
++def test_m08_splits_date_led_legacy_events_and_keeps_combined_time_zone_as_field():
++    from trading_radar_market_first import normalize_event_section
++    event_body = (
++        "- Datum: 2026-11-17\n"
++        "- Uhrzeit/Zeitzone: NICHT VERFÜGBAR\n"
++        "- Kennzahl: ADP Weekly Employment Change\n"
++        "- Zeitraum: Wöchentlich\n"
++        "- Letzter Wert: NICHT VERFÜGBAR\n"
++        "- Konsens: NICHT VERFÜGBAR\n"
++        "- Quelle: ADP official calendar\n"
++        "- Datum: 2026-11-19\n"
++        "- Uhrzeit/Zeitzone: NICHT VERFÜGBAR\n"
++        "- Kennzahl: Unemployment Claims\n"
++        "- Zeitraum: Wöchentlich\n"
++        "- Letzter Wert: 200000\n"
++        "- Konsens: NICHT VERFÜGBAR\n"
++        "- Quelle: ForexFactory (CACHE)\n"
++    )
++    report = report_fixture().replace(
++        "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
++        event_body,
++    )
++    normalized, findings = normalize_event_section(report)
++    assert len([x for x in findings if "Ereignis ohne verifizierte Quelle" in x]) == 1
++    assert normalized.count("Datum: 2026-11-17") == 1
++    assert normalized.count("Datum: 2026-11-19") == 1
++    errors = gate.validate_report(normalized)
++    assert not any("M-08:" in error for error in errors), errors
++
++
++def test_m03_does_not_misclassify_unrelated_macro_gap_statement_as_ohlcv_claim():
++    text = report_fixture(ohlcv_warning=True).replace(
++        "Basisszenario: Seitwärts bis aufwärts.",
++        "Für die Makrozeitreihe liegen keine Datenlücken vor.\n"
++        "Basisszenario: Seitwärts bis aufwärts.",
++        1,
++    )
++    errors = gate.validate_report(text)
++    assert not any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors
+--- a/tests/test_trading_radar_run1280_gate_fixes.py
++++ b/tests/test_trading_radar_run1280_gate_fixes.py
+@@ -3,6 +3,18 @@
+ from pathlib import Path
+ 
+ from trading_radar_market_first import normalize_event_section
++
++
++def _fake_fomc_requester(url, **kwargs):
++    class Response:
++        status_code = 200
++        url = "https://www.federalreserve.gov/newsevents/2026-december.htm?view=calendar"
++        text = (
++            "<html><title>December 2026</title>"
++            "<tr><td>December 8 - 9</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr>"
++            "</html>"
++        )
++    return Response()
+ from trading_radar_report_gate import validate_report
+ 
+ 
+@@ -111,14 +123,14 @@
+   - Letzter Wert: 4.00
+   - Konsens: 4.00
+   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: Name nicht aufgelöst (LIVE_VERIFIZIERT) — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: Name nicht aufgelöst (LIVE_VERIFIZIERT) — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ *   **FOMC-Sitzung** | 2026-12-09 | Zinsentscheid | 2026-12-09 | Letzter Wert: 3,88% | Konsens: 4,00%-4,25% | Quelle: FRED/CME
+   - Wirkung: Höhere Zinsen belasten zinssensitive Sektoren.
+ 
+ 4. Assetklassenvergleich
+ Relative Stärke.
+ """
+-    normalized, findings = normalize_event_section(report)
++    normalized, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
+     assert findings == []
+     assert normalized.count("- Ereignis: FOMC-Sitzung") == 1
+     assert "Quelle: Federal Reserve official calendar" in normalized
+@@ -233,7 +245,7 @@
+   - Kennzahl: FOMC-Zinsentscheid
+   - Berichtszeitraum: Dezember 2026
+   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ * FOMC-Zinsentscheid | 2026-12-09 | Zinsentscheid | 2026-12-09
+   - Wirkung: Zinspfad beeinflusst Bewertungsmultiplikatoren.
+ * FOMC-Sitzungsprotokoll (Minutes) | 2026-12-09 | Protokollveröffentlichung
+@@ -244,14 +256,16 @@
+   - Berichtszeitraum: Dezember 2026
+   - Letzter Wert: NICHT VERFÜGBAR (Protokollveröffentlichung ohne Messwert)
+   - Quelle: Federal Reserve official minutes https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ 
+ 4. Assetklassenvergleich
+ Relative Stärke.
+ """
+-    normalized, findings = normalize_event_section(report)
+-    assert findings == [], findings
++    normalized, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
++    assert any("FOMC-Ereignis nicht live" in item for item in findings), findings
+     assert normalized.count("FOMC-Zinsentscheid") >= 2  # header plus continuation summary
++    assert "FOMC-Sitzungsprotokoll" in normalized
++    assert "NICHT VERIFIZIERT" in normalized
+     assert "FOMC-Sitzungsprotokoll (Minutes)" in normalized
+     assert normalized.count("Datum: 2026-12-09") == 2
+ 
+@@ -291,7 +305,7 @@
+   - Letzter Wert: 4.00%
+   - Konsens: 4.00%-4.25%
+   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ * FOMC-Zinsentscheid | 2026-12-09 | Zinsentscheid | 2026-12-09
+   * Wirkung: Höhere Zinsen belasten zinssensitive Sektoren.
+ * FOMC-Sitzungsprotokoll (Minutes) | 2026-12-09 | Protokollveröffentlichung
+@@ -302,7 +316,7 @@
+   - Berichtszeitraum: Dezember 2026
+   - Letzter Wert: NICHT VERFÜGBAR (Protokollveröffentlichung ohne Messwert)
+   - Quelle: Federal Reserve official minutes https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ 4. Assetklassenvergleich
+ Relative Stärke und Kapitalrotation.
+ 5. Technische Kandidaten
+@@ -316,8 +330,8 @@
+ Quellen und Datenstände dokumentiert.
+ """
+     # This is the exact relevant production order in Trading_Radar_Alleinauswertung.py.
+-    event_normalized, findings = normalize_event_section(report)
+-    assert findings == [], findings
++    event_normalized, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
++    assert any("FOMC-Ereignis nicht live" in item for item in findings), findings
+     production_normalizer = _load_production_event_normalizer()
+     production_normalized = production_normalizer(event_normalized)
+ 
+@@ -363,18 +377,18 @@
+   - Letzter Wert: 4.00%
+   - Konsens: 4.00%-4.25%
+   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ * FOMC-Zinsentscheid | 2026-12-09 | Zinsentscheid | 2026-12-09
+   - Wirkung: Höhere Zinsen belasten zinssensitive Sektoren.
+ * FOMC-Sitzungsprotokoll (Minutes) | 2026-12-09 | Protokollveröffentlichung
+   - Datum: 2026-12-09
+   - Kennzahl: FOMC-Sitzungsprotokoll
+   - Quelle: Federal Reserve official minutes https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
++  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
+ """
+     report = report[:event_start] + event_section + report[event_end:]
+-    market_first_text, findings = normalize_event_section(report)
+-    assert findings == [], findings
++    market_first_text, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
++    assert any("FOMC-Ereignis nicht live" in item for item in findings), findings
+     production_normalizer = _load_production_event_normalizer()
+     normalized = production_normalizer(market_first_text)
+     event_section = normalized[
+--- a/tests/test_trendfolge_adaptive_exit.py
++++ b/tests/test_trendfolge_adaptive_exit.py
+@@ -155,3 +155,81 @@
+     assert "nur Bars bis gestern" not in source
+     assert "apply_ohlcv_quality_gate(" in source
+     assert "require_structure=True" in source
++
++
++def test_missing_history_keeps_development_phase_protected_for_long_and_short(monkeypatch):
++    for is_short, current, stop_value in (
++        (False, 90.0, 95.0),
++        (True, 110.0, 105.0),
++    ):
++        row = _row(
++            Richtung="Short" if is_short else "Long",
++            Stop=stop_value,
++            TP1=85.0 if is_short else 115.0,
++            TP2=80.0 if is_short else 120.0,
++        )
++        frame = pd.DataFrame([row])
++        monkeypatch.setattr(mod, "_hole_tageshistorie", lambda *a, **k: pd.DataFrame())
++        monkeypatch.setattr(mod, "hole_aktuellen_kurs", lambda *a, **k: current)
++        result, _alerts = mod.aktualisiere_positionen(frame)
++        assert result.at[0, "Status"].lower() == "offen"
++        assert "Entwicklung nicht verifizierbar" in result.at[0, "TF_Management"]
++        assert "normaler Stop-Ausgang ausgesetzt" in result.at[0, "TF_Management"]
++
++
++def test_missing_atr14_is_an_explicit_management_state_for_long_and_short(monkeypatch):
++    h = _hist()
++    monkeypatch.setattr(mod, "_trendfolge_atr14", lambda hist, ticker=None: None)
++    for is_short in (False, True):
++        row = _row(
++            Richtung="Short" if is_short else "Long",
++            Einstiegsdatum=h.loc[0, "Date"].strftime("%d.%m.%Y"),
++            Stop=115.0 if is_short else 95.0,
++            TP1=95.0 if is_short else 105.0,
++        )
++        frame = pd.DataFrame([row])
++        old_stop = float(row["Stop"])
++        below_tp1 = 98.0 if is_short else 102.0
++        stop, _tp1, _tp2 = mod._aktualisiere_trendfolge_management(
++            frame, 0, frame.iloc[0], h,
++            float(row["Einstieg"]), below_tp1,
++            old_stop, float(row["TP1"]), is_short, "22.09.2026"
++        )
++        assert stop == old_stop
++        assert frame.at[0, "TF_Management"].startswith(
++            f"ATR14 nicht verfügbar | Stop: {old_stop:.2f} | TP1: {float(row['TP1']):.2f}"
++        )
++        assert float(frame.at[0, "Stop"]) == old_stop
++
++        # Auch nach erreichtem TP1 bleibt die Position unverändert offen;
++        # ohne ATR14 wird kein adaptiver/trailing Stop vorgetäuscht.
++        frame = pd.DataFrame([row])
++        reached_tp1 = 94.0 if is_short else 106.0
++        stop, _tp1, _tp2 = mod._aktualisiere_trendfolge_management(
++            frame, 0, frame.iloc[0], h,
++            float(row["Einstieg"]), reached_tp1,
++            old_stop, float(row["TP1"]), is_short, "22.09.2026"
++        )
++        assert stop == old_stop
++        assert "ATR14 nicht verfügbar | TP1 erreicht" in frame.at[0, "TF_Management"]
++        assert float(frame.at[0, "Stop"]) == old_stop
++        assert "Teilverkauf" not in frame.at[0, "TF_Management"]
++        assert "50%" not in frame.at[0, "TF_Management"]
++
++
++def test_no_partial_sale_or_position_quantity_mutation_at_tp1(monkeypatch):
++    h = _hist()
++    monkeypatch.setattr(mod, "_trendfolge_atr14", lambda hist, ticker=None: 1.0)
++    row = _row(Einstiegsdatum=h.loc[0, "Date"].strftime("%d.%m.%Y"))
++    frame = pd.DataFrame([row])
++    original_columns = list(frame.columns)
++    original_status = frame.at[0, "Status"]
++    mod._aktualisiere_trendfolge_management(
++        frame, 0, frame.iloc[0], h, 100.0, 106.0, 95.0, 105.0,
++        False, "22.09.2026"
++    )
++    assert list(frame.columns) == original_columns
++    assert frame.at[0, "Status"] == original_status
++    assert pd.isna(frame.at[0, "Ausstiegskurs"]) or frame.at[0, "Ausstiegskurs"] == ""
++    assert "TP1 erreicht" in frame.at[0, "TF_Management"]
++    assert "50%" not in frame.at[0, "TF_Management"]
+--- a/trading_radar_market_first.py
++++ b/trading_radar_market_first.py
+@@ -5,15 +5,241 @@
+ """
+ from __future__ import annotations
+ from collections.abc import Iterable, Mapping
+-from datetime import datetime, date
++from datetime import datetime, date, timezone
++from dataclasses import dataclass
++import hashlib
+ from pathlib import Path
+ import json
+ from typing import Any
+ import re
++from urllib.parse import urlsplit
+ 
+ MISSING_TOKENS = {"", "-", "—", "n/a", "na", "nicht verfügbar", "nicht verfuegbar",
+                   "unbekannt", "fehlt", "unklar", "none", "null"}
+ OHLCV_STATUSES = {"VALID", "MISSING", "STALE", "INVALID"}
++
++
++@dataclass(frozen=True, eq=False)
++class _EventVerificationEvidence:
++    """Opaque in-process evidence created only by a completed live verifier."""
++    kind: str
++    event_id: str
++    event_name: str
++    event_date: str
++    event_time: str | None
++    timezone: str | None
++    requested_url: str
++    final_url: str
++    http_status: int
++    retrieved_at: str
++    content_match: bool
++    adapter: str
++    response_sha256: str
++    verified: bool
++    detail: str
++    press_conference_verified: bool = False
++
++    def __iter__(self):
++        # Backward-compatible diagnostic unpacking; production validation uses
++        # the opaque evidence object itself, never this textual projection.
++        yield self.verified
++        yield self.detail
++
++
++# Identity registration prevents report text or caller-constructed dictionaries
++# from being mistaken for a result returned by this module's live verifier.
++_VERIFIED_EVIDENCE: dict[int, _EventVerificationEvidence] = {}
++
++
++def _register_verified_evidence(evidence: _EventVerificationEvidence):
++    if evidence.verified and evidence.content_match and evidence.http_status == 200:
++        _VERIFIED_EVIDENCE[id(evidence)] = evidence
++    return evidence
++
++
++def _normalized_event_identity(value: Any) -> str:
++    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
++
++
++def _is_forexfactory_source(value: Any) -> bool:
++    source = str(value or "")
++    if re.search(r"(?i)\bForexFactory\b", source):
++        return True
++    match = re.search(r"https://[^\s)<>]+", source, flags=re.I)
++    if not match:
++        return False
++    try:
++        host = (urlsplit(match.group(0).rstrip(".,;]")).hostname or "").lower().rstrip(".")
++    except ValueError:
++        return False
++    return host == "forexfactory.com" or host.endswith(".forexfactory.com")
++
++
++def _event_identity_matches(report_name: Any, source_name: Any) -> bool:
++    report_identity = _normalized_event_identity(report_name)
++    source_identity = _normalized_event_identity(source_name)
++    if report_identity == source_identity and report_identity:
++        return True
++    # The macro snapshot prefixes some event titles with its deterministic
++    # canonical category (for example "ADP: ADP Weekly Employment Change").
++    if ":" in str(report_name or ""):
++        prefix, suffix = str(report_name).split(":", 1)
++        if _normalized_event_identity(prefix) in {
++            "adp", "nfp", "cpi", "core cpi", "ppi", "pce", "gdp",
++            "jolts", "ism", "jobless claims", "fomc",
++        } and _normalized_event_identity(suffix) == source_identity:
++            return True
++    return False
++
++
++def _is_fomc_press_conference_event(value: Any) -> bool:
++    text = _normalized_event_identity(value)
++    return bool("fomc" in text and ("press conference" in text or "pressekonferenz" in text))
++
++
++def _is_fomc_minutes_event(value: Any) -> bool:
++    text = _normalized_event_identity(value)
++    return bool("fomc" in text and re.search(r"\b(?:minutes|protokoll|sitzungsprotokoll)\b", text))
++
++
++def _is_fomc_decision_event(value: Any) -> bool:
++    text = _normalized_event_identity(value)
++    if "fomc" not in text or _is_fomc_minutes_event(value) or _is_fomc_press_conference_event(value):
++        return False
++    return bool(re.search(r"\b(?:zinsentscheid(?:ung)?|entscheidung|decision|rate decision|statement|fed funds rate)\b", text))
++
++
++def _fomc_event_kind(value: Any) -> str | None:
++    text = _normalized_event_identity(value)
++    is_minutes = _is_fomc_minutes_event(value)
++    is_press = _is_fomc_press_conference_event(value)
++    is_decision_label = bool(
++        "fomc" in text
++        and re.search(r"\b(?:zinsentscheid(?:ung)?|entscheidung|decision|rate decision|statement|fed funds rate)\b", text)
++    )
++    if is_minutes:
++        return None if (is_press or is_decision_label) else "MINUTES"
++    if is_press and is_decision_label:
++        return None
++    if is_press:
++        return "PRESS_CONFERENCE"
++    if is_decision_label:
++        return "DECISION"
++    return None
++
++
++def _is_trusted_event_evidence(
++    evidence: Any, *, kind: str, event_name: Any, event_date: Any
++) -> bool:
++    if not isinstance(evidence, _EventVerificationEvidence):
++        return False
++    if _VERIFIED_EVIDENCE.get(id(evidence)) is not evidence:
++        return False
++    if (not evidence.verified or not evidence.content_match or evidence.http_status != 200
++            or evidence.kind != kind or not evidence.requested_url or not evidence.final_url
++            or not evidence.retrieved_at or not evidence.response_sha256):
++        return False
++    try:
++        expected_date = date.fromisoformat(str(event_date or "")[:10]).isoformat()
++        evidence_date = date.fromisoformat(evidence.event_date[:10]).isoformat()
++    except (TypeError, ValueError):
++        return False
++    if expected_date != evidence_date:
++        return False
++    if kind == "FOREXFACTORY":
++        return bool(
++            _normalized_event_identity(event_name)
++            and _event_identity_matches(event_name, evidence.event_name)
++            and evidence.adapter == "forexfactory_weekly_json_adapter"
++        )
++    if kind == "FOMC":
++        event_kind = _fomc_event_kind(event_name)
++        expected = {
++            "DECISION": ("FOMC_DECISION", "14:00"),
++            "PRESS_CONFERENCE": ("FOMC_PRESS_CONFERENCE", "14:30"),
++        }.get(event_kind)
++        if expected is None:
++            return False
++        expected_id, expected_time = expected
++        return bool(
++            evidence.event_id == expected_id
++            and evidence.event_time == expected_time
++            and evidence.adapter == "federal_reserve_month_calendar_verifier"
++            and _normalized_event_identity(evidence.event_name)
++            == ("fomc zinsentscheid" if event_kind == "DECISION" else "fomc press conference")
++        )
++    return False
++
++
++def _verify_forexfactory_event(event_name: str, event_date: str, *, requester=None):
++    """Perform a fresh ForexFactory weekly JSON adapter request and bind one event."""
++    requested_url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
++    if requester is None:
++        import requests
++        requester = requests.get
++    try:
++        response = requester(
++            requested_url, timeout=20,
++            headers={"User-Agent": "NeuberMacro/1.0 TradingRadar-event-verification"},
++        )
++        status = int(getattr(response, "status_code", 0) or 0)
++        final_url = str(getattr(response, "url", requested_url) or requested_url)
++        if status != 200:
++            return None, f"ForexFactory-Adapter HTTP {status}; Event nicht verifiziert"
++        final = urlsplit(final_url)
++        if (final.scheme.lower() != "https" or final.hostname != "nfs.faireconomy.media"
++                or final.path.rstrip("/") != "/ff_calendar_thisweek.json"):
++            return None, "ForexFactory-Adapter: unzulässige finale URL; Event nicht verifiziert"
++        payload = response.json()
++        if not isinstance(payload, list):
++            return None, "ForexFactory-Adapter: JSON-Antwort ist keine Eventliste"
++        retrieved_at = datetime.now(timezone.utc).isoformat()
++        raw_text = getattr(response, "text", None)
++        if not isinstance(raw_text, str) or not raw_text:
++            raw_text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++        response_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
++        expected_date = date.fromisoformat(str(event_date)[:10]).isoformat()
++        matches = []
++        for item in payload:
++            if not isinstance(item, Mapping):
++                continue
++            country = str(item.get("country") or "").strip().casefold()
++            if country not in {"usd", "us", "usa", "united states", "united states of america"}:
++                continue
++            title = _clean(item.get("title") or item.get("event") or item.get("name"))
++            raw_date = str(item.get("date") or "").strip()
++            try:
++                actual_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date().isoformat()
++            except ValueError:
++                try:
++                    actual_date = date.fromisoformat(raw_date[:10]).isoformat()
++                except ValueError:
++                    continue
++            if title and actual_date == expected_date and _event_identity_matches(event_name, title):
++                matches.append((item, title, actual_date))
++        if len(matches) != 1:
++            return None, (
++                f"ForexFactory-Adapter: {len(matches)} exakt passende Events für "
++                f"{event_name!r} am {expected_date}; Event nicht verifiziert"
++            )
++        item, title, actual_date = matches[0]
++        event_id = str(item.get("id") or _normalized_event_identity(title))
++        event_time = _clean(item.get("time"))
++        event_timezone = _clean(item.get("timezone") or item.get("tz"))
++        detail = (
++            f"ForexFactory LIVE-Adapter: HTTP 200; Event={title}; Datum={actual_date}; "
++            f"Abruf={requested_url}; Final={final_url}"
++        )
++        evidence = _EventVerificationEvidence(
++            kind="FOREXFACTORY", event_id=event_id, event_name=title, event_date=actual_date,
++            event_time=event_time, timezone=event_timezone, requested_url=requested_url,
++            final_url=final_url, http_status=status, retrieved_at=retrieved_at,
++            content_match=True, adapter="forexfactory_weekly_json_adapter",
++            response_sha256=response_hash, verified=True, detail=detail,
++        )
++        return _register_verified_evidence(evidence), detail
++    except Exception as exc:
++        return None, f"ForexFactory-Adapter fehlgeschlagen: {type(exc).__name__}: {exc}"
+ 
+ SECTOR_ETF_LABELS = {
+     "XLB": "Rohstoff-ETF",
+@@ -51,7 +277,11 @@
+ 
+ 
+ def _explicit_date_from_period(value: Any) -> str | None:
+-    """Return one unambiguous, valid calendar date explicitly present in a period field."""
++    """Return one unambiguous valid date explicitly stated in a period field.
++
++    Relative wording is never interpreted. Multiple dates/ranges and invalid
++    date tokens are rejected rather than guessed.
++    """
+     if value is None:
+         return None
+     text = str(value)
+@@ -59,14 +289,22 @@
+         r"(?<!\d)(?:20\d{2}-\d{2}-\d{2}|\d{2}\.\d{2}\.20\d{2})(?!\d)",
+         text,
+     )
+-    valid_candidates = [
+-        candidate for candidate in candidates
+-        if _is_valid_calendar_event_date(candidate)
+-    ]
+-    if len(valid_candidates) != len(candidates):
++    if len(candidates) == 0:
+         return None
+-    valid = list(dict.fromkeys(valid_candidates))
+-    return valid[0] if len(valid) == 1 else None
++    normalized = []
++    for candidate in candidates:
++        try:
++            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
++                parsed = date.fromisoformat(candidate)
++            else:
++                parsed = date.fromisoformat(
++                    f"{candidate[6:10]}-{candidate[3:5]}-{candidate[0:2]}"
++                )
++        except ValueError:
++            return None
++        normalized.append(parsed.isoformat())
++    unique = list(dict.fromkeys(normalized))
++    return unique[0] if len(unique) == 1 else None
+ 
+ 
+ def _clean(value: Any) -> str | None:
+@@ -76,7 +314,164 @@
+     return None if value.casefold() in MISSING_TOKENS else value
+ 
+ 
+-def normalize_event(event: Mapping[str, Any]) -> dict[str, Any]:
++def _legacy_event_source_evidence(value: Any) -> bool:
++    """Keep the pre-existing provider/source recognition for non-FF/FOMC events."""
++    source = _clean(value) or ""
++    if not source or re.search(r"(?i)\b(?:CACHE|CACHED|STALE|VERALTET)\b", source):
++        return False
++    if re.search(r"(?i)https://api\.stlouisfed\.org/fred/series/observations", source):
++        return False
++    if re.search(r"https?://", source, re.I):
++        return _is_verified_event_source(source)
++    return bool(re.search(
++        r"(?i)(?:forexfactory|\bfred\b|federal reserve|official|"
++        r"\bbls\b|bureau of labor|\bbea\b|\becb\b|\beia\b|"
++        r"\bism\b|\badp\b|\bcme\b|\bsec\b|treasury|"
++        r"opec|world bank|imf|yahoo finance|trading economics)",
++        source,
++    ))
++
++
++def _has_live_verification(
++    value: Any,
++    source_value: Any = None,
++    *,
++    event_name: Any = None,
++    event_date: Any = None,
++    evidence: Any = None,
++) -> bool:
++    """Validate structured evidence for FF/FOMC; retain legacy text checks elsewhere."""
++    source = _clean(source_value) or ""
++    if _is_forexfactory_source(source):
++        return _is_verified_event_source(source) and _is_trusted_event_evidence(
++            evidence, kind="FOREXFACTORY", event_name=event_name, event_date=event_date
++        )
++    if re.search(r"(?i)\bFOMC\b", str(event_name or "")):
++        return _is_trusted_event_evidence(
++            evidence, kind="FOMC", event_name=event_name, event_date=event_date
++        )
++
++    text = _clean(value)
++    if not text:
++        return _is_verified_event_source(source)
++    if re.search(r"(?i)\bNICHT\s+(?:LIVE[_ ]?)?VERIFIZIERT\b", text):
++        return False
++    if not re.match(r"(?i)^\s*(?:\(?\s*)LIVE_VERIFIZIERT\b", text):
++        return False
++    if not re.search(r"(?i)\bHTTP\s*200\b", text):
++        return False
++    fetched = re.search(r"(?i)\bAbruf\s*:\s*(https://[^\s)<>]+)", text)
++    declared = re.search(r"https://[^\s)<>]+", source, flags=re.I)
++    if not fetched or not declared:
++        return False
++    try:
++        fetched_url = urlsplit(fetched.group(1).rstrip(".,;]"))
++        declared_url = urlsplit(declared.group(0).rstrip(".,;]"))
++    except ValueError:
++        return False
++    if (
++        (fetched_url.hostname or "").lower().rstrip(".")
++        != (declared_url.hostname or "").lower().rstrip(".")
++        or (fetched_url.path or "/").rstrip("/").casefold()
++        != (declared_url.path or "/").rstrip("/").casefold()
++        or not _is_verified_event_source(fetched_url.geturl())
++    ):
++        return False
++    expected_name = _normalized_event_identity(event_name)
++    expected_date = str(event_date or "")[:10]
++    if not expected_name or not re.search(r"(?<!\d)20\d{2}-\d{2}-\d{2}(?!\d)", text):
++        return False
++    date_match = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)", text)
++    if not date_match or date_match.group(1) != expected_date:
++        return False
++    event_match = re.search(
++        r"(?i)(?:event|ereignis|bestätigt|bestaetigt)\s*[:=]\s*([^;|]+)", text
++    )
++    if not event_match:
++        return False
++    evidence_name = re.sub(r"\s+am\s+20\d{2}-\d{2}-\d{2}.*$", "", event_match.group(1)).strip()
++    return _event_identity_matches(event_name, evidence_name)
++
++
++def _is_verified_event_source(value: Any) -> bool:
++    """Accept only explicit HTTPS calendar/release URLs on trusted domains.
++
++    Provider names, search snippets, observation APIs and arbitrary URLs are
++    not evidence that an event's publication date was verified.
++    """
++    source = _clean(value)
++    if not source:
++        return False
++    if re.search(r"(?i)\b(?:CACHE|CACHED|STALE|VERALTET)\b", source):
++        return False
++    # The project's ForexFactory adapter stamps LIVE only after a successful
++    # calendar HTTP fetch; CACHE/UNAVAILABLE values are rejected above.
++    if re.search(r"(?i)\bForexFactory\s*\(\s*LIVE\s*\)", source):
++        return True
++    url_match = re.search(r"https://[^\s)<>]+", source, flags=re.I)
++    if not url_match:
++        return False
++    try:
++        parsed = urlsplit(url_match.group(0).rstrip(".,;]"))
++    except ValueError:
++        return False
++    try:
++        port = parsed.port
++    except ValueError:
++        return False
++    if (
++        parsed.scheme.lower() != "https"
++        or not parsed.hostname
++        or parsed.username is not None
++        or parsed.password is not None
++        or port not in (None, 443)
++    ):
++        return False
++    host = parsed.hostname.lower().rstrip(".")
++    path = (parsed.path or "/").lower()
++    if host == "fred.stlouisfed.org" or host.endswith(".fred.stlouisfed.org") or host == "api.stlouisfed.org":
++        return False
++
++    trusted_hosts = {
++        "forexfactory.com", "www.forexfactory.com",
++        "bls.gov", "www.bls.gov",
++        "dol.gov", "www.dol.gov",
++        "adp.com", "www.adp.com",
++        "federalreserve.gov", "www.federalreserve.gov",
++        "bea.gov", "www.bea.gov",
++        "ecb.europa.eu",
++        "eia.gov", "www.eia.gov",
++        "ismworld.org", "www.ismworld.org",
++        "cmegroup.com", "www.cmegroup.com",
++        "sec.gov", "www.sec.gov",
++        "treasury.gov", "home.treasury.gov",
++        "opec.org", "www.opec.org",
++        "worldbank.org", "www.worldbank.org",
++        "imf.org", "www.imf.org",
++    }
++    if host not in trusted_hosts:
++        return False
++
++    # A trusted domain is not sufficient: the URL must identify a calendar,
++    # schedule, release/newsroom page or a provider's calendar endpoint.
++    calendar_path = bool(re.search(
++        r"(?:calendar|schedule|release|releases|newsroom|press-release|press_release)",
++        path,
++    ))
++    if host.endswith("forexfactory.com"):
++        return path.rstrip("/") == "/calendar"
++    if host.endswith("bls.gov"):
++        return path.startswith("/schedule/news_release/")
++    if host.endswith("dol.gov"):
++        return calendar_path and ("release" in path or "newsroom" in path)
++    if host.endswith("adp.com"):
++        return calendar_path
++    if host.endswith("federalreserve.gov"):
++        return calendar_path or path.startswith("/newsevents/")
++    return calendar_path
++
++
++def normalize_event(event: Mapping[str, Any], *, verification_evidence=None) -> dict[str, Any]:
+     """Normalize one event. Missing fields are represented once as null/status."""
+     out = {
+         "event_id": _clean(event.get("event_id") or event.get("id")),
+@@ -92,8 +487,22 @@
+         "consensus": _clean(event.get("consensus") or event.get("konsens")),
+         "actual": _clean(event.get("actual") or event.get("istwert")),
+         "source": _clean(event.get("source") or event.get("quelle")),
++        "source_verification": _clean(
++            event.get("source_verification") or event.get("verification")
++            or event.get("quellenpruefung") or event.get("quellenprüfung")
++        ),
+     }
+-    missing = [key for key in ("name", "date", "source") if out[key] is None]
++    live_verified = _has_live_verification(
++        out["source_verification"], out["source"],
++        event_name=out["name"], event_date=out["date"], evidence=verification_evidence,
++    )
++    out["source_verified"] = _is_verified_event_source(out["source"]) and live_verified
++    out["date_valid"] = bool(out["date"] and _is_valid_calendar_event_date(out["date"]))
++    missing = [key for key in ("name",) if out[key] is None]
++    if not out["date_valid"]:
++        missing.append("date")
++    if not out["source_verified"]:
++        missing.append("source")
+     out["status"] = "INCOMPLETE" if missing else "READY"
+     out["missing_required"] = missing
+     out["time_verified"] = bool(out["time"] and out["timezone"])
+@@ -525,14 +934,63 @@
+ 
+ 
+ 
+-def _verify_fomc_official_source(event_date: date, *, requester=None) -> tuple[bool, str]:
+-    """Verify the FOMC date/time against a live, official Federal Reserve page.
+-
+-    Try the month view first and the same official page without its view query
+-    second. A failed first URL must not prevent verification when the canonical
+-    page is reachable. No stale/local calendar is used as proof of live
+-    verification. All errors are retained in the returned diagnostic.
+-    """
++def _contains_calendar_day_number(text: str, day: int) -> bool:
++    """Match a standalone calendar day without mistaking clock digits for a date."""
++    without_clock_times = re.sub(
++        r"\b\d{1,2}(?::\d{2})?\s*(?:a|p)\s*\.?\s*m\.?\b",
++        " ",
++        str(text or ""),
++        flags=re.I,
++    )
++    return bool(re.search(rf"(?<!\d){int(day)}(?!\d)", without_clock_times))
++
++
++def _fomc_calendar_date_match(
++    text: str, event_date: date, *, page_context: str = ""
++) -> bool:
++    """Match a single day or final day of an explicit range, using page month/year only as context."""
++    month = event_date.strftime("%B")
++    year = str(event_date.year)
++    patterns = [
++        re.compile(
++            rf"\b{re.escape(month)}\s+(\d{{1,2}})\s*(?:[-–]\s*(\d{{1,2}}))?\s*,?\s+{year}\b",
++            re.I,
++        ),
++    ]
++    for pattern in patterns:
++        for match in pattern.finditer(text):
++            start_day = int(match.group(1))
++            end_day = int(match.group(2) or match.group(1))
++            if event_date.day == end_day and start_day <= end_day:
++                return True
++    # Some Fed table rows omit the year because it is present in the page title.
++    page_has_month_year = bool(
++        re.search(rf"\b{re.escape(month)}\s+{year}\b", page_context, re.I)
++    )
++    if page_has_month_year:
++        no_year = re.compile(
++            rf"\b{re.escape(month)}\s+(\d{{1,2}})\s*(?:[-–]\s*(\d{{1,2}}))?\b", re.I
++        )
++        for match in no_year.finditer(text):
++            start_day = int(match.group(1))
++            end_day = int(match.group(2) or match.group(1))
++            if event_date.day == end_day and start_day <= end_day:
++                return True
++    return False
++
++
++def _verify_fomc_official_source(
++    event_date: date, *, requester=None, event_kind: str = "DECISION"
++) -> _EventVerificationEvidence:
++    """Return opaque evidence for one specific FOMC event from a real Fed request."""
++    event_kind = str(event_kind or "DECISION").strip().upper()
++    if event_kind not in {"DECISION", "PRESS_CONFERENCE"}:
++        raise ValueError("event_kind must be DECISION or PRESS_CONFERENCE")
++    expected_id, expected_name, expected_time = (
++        ("FOMC_DECISION", "FOMC Zinsentscheid", "14:00")
++        if event_kind == "DECISION"
++        else ("FOMC_PRESS_CONFERENCE", "FOMC Press Conference", "14:30")
++    )
+     month_slug = f"{event_date:%Y}-{event_date.strftime('%B').lower()}"
+     urls = [
+         f"https://www.federalreserve.gov/newsevents/{month_slug}.htm?view=calendar",
+@@ -544,109 +1002,135 @@
+ 
+     errors = []
+     responses = []
+-    for url in urls:
++    for requested_url in urls:
+         try:
+             response = requester(
+-                url, timeout=12,
++                requested_url, timeout=12,
+                 headers={"User-Agent": "TradingRadar/1.1 (official-event-verification)"},
+             )
+             status_code = int(getattr(response, "status_code", 0) or 0)
+-            final_url = str(getattr(response, "url", url) or url)
++            final_url = str(getattr(response, "url", requested_url) or requested_url)
+             if status_code != 200:
+-                errors.append(f"{url} -> HTTP {status_code}")
++                errors.append(f"{requested_url} -> HTTP {status_code}")
+                 continue
+-            if not re.match(r"^https://www\.federalreserve\.gov/newsevents/", final_url, re.I):
+-                errors.append(f"{url} -> unzulässige Weiterleitungsdomain: {final_url}")
++            parsed_final = urlsplit(final_url)
++            expected_final_path = f"/newsevents/{month_slug}.htm"
++            if (parsed_final.scheme.lower() != "https"
++                    or parsed_final.hostname != "www.federalreserve.gov"
++                    or parsed_final.path.lower() != expected_final_path.lower()):
++                errors.append(f"{requested_url} -> unzulässige finale URL: {final_url}")
+                 continue
+             html = str(getattr(response, "text", "") or "")
+             if not html.strip():
+-                errors.append(f"{url} -> HTTP 200, aber leerer Antworttext")
++                errors.append(f"{requested_url} -> HTTP 200, aber leerer Antworttext")
+                 continue
+-            responses.append((url, final_url, html))
++            retrieved_at = datetime.now(timezone.utc).isoformat()
++            responses.append((requested_url, final_url, html, status_code, retrieved_at))
+         except Exception as exc:
+-            errors.append(f"{url} -> {type(exc).__name__}: {exc}")
++            errors.append(f"{requested_url} -> {type(exc).__name__}: {exc}")
+ 
+     def plain_text(fragment: str) -> str:
+         fragment = re.sub(r"(?is)<script\b.*?</script>|<style\b.*?</style>", " ", fragment)
+         fragment = re.sub(r"(?is)<[^>]+>", " ", fragment)
+         return re.sub(r"\s+", " ", fragment).casefold()
+ 
+-    month = event_date.strftime("%B").casefold()
+-    day = str(event_date.day)
+-    year = str(event_date.year)
+-    # The Fed's month page often represents the release date as a bare day
+-    # number and the meeting range as "Two-day meeting, October 27 - 28".
+-    # Validate the year/month from the official page title/URL and the target
+-    # day from that bounded FOMC Meetings category, rather than requiring the
+-    # year to be repeated in every child element.
+-    full_date_pattern = re.compile(
+-        rf"\b{re.escape(month)}\s+(?:\d{{1,2}}\s*[-–]\s*)?{re.escape(day)}"
+-        rf"(?:\s*[-–]\s*\d{{1,2}})?[,]?\s+{re.escape(year)}\b"
+-    )
+-    range_pattern = re.compile(
+-        rf"\b{re.escape(month)}\s+\d{{1,2}}\s*[-–]\s*{re.escape(day)}\b"
+-    )
+-    bare_day_pattern = re.compile(rf"(?<!\d){re.escape(day)}(?!\d)")
+-
+-    for requested_url, final_url, html in responses:
++    for requested_url, final_url, html, status_code, retrieved_at in responses:
++        page_text = plain_text(html)
+         blocks = re.findall(r"(?is)<tr\b[^>]*>.*?</tr\s*>", html)
++        group_text = ""
+         if not blocks:
+-            blocks = re.findall(r"(?is)<li\b[^>]*>.*?</li\s*>", html)
+-        matching_blocks = []
++            group_match = re.search(
++                r"(?is)FOMC Meetings(.*?)(?=Beige Book|Statistical Releases|Speeches|Testimony|Other)",
++                html,
++            )
++            if group_match:
++                group_text = plain_text(group_match.group(1))
++                blocks = [group_match.group(1)]
++        meeting_date_context = any(
++            re.search(r"\bfomc\s+meeting\b", plain_text(block))
++            and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", plain_text(block))
++            and _fomc_calendar_date_match(plain_text(block), event_date, page_context=page_text)
++            for block in blocks
++        )
++        page_month_year_ok = bool(
++            re.search(rf"\b{re.escape(event_date.strftime('%B'))}\s+{event_date.year}\b", page_text, re.I)
++        )
++        matching = []
+         for block in blocks:
+             block_text = plain_text(block)
+-            if (
+-                (full_date_pattern.search(block_text) or range_pattern.search(block_text))
+-                and re.search(r"\bfomc\b", block_text)
+-                and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", block_text)
+-            ):
+-                matching_blocks.append(block_text)
+-
+-        page_text = plain_text(html)
+-        if not matching_blocks:
+-            group_match = re.search(
+-                r"\bfomc meetings\b(.*?)(?=\bbeige book\b|\bstatistical releases\b|\bspeeches\b|\btestimony\b|\bother\b)",
+-                page_text,
+-            )
+-            if group_match:
+-                group_text = re.sub(r"\s+", " ", group_match.group(1)).strip()
+-                # Confirm page context identifies the correct month and year.
+-                page_context_ok = (
+-                    month in page_text and year in page_text
+-                    and re.search(rf"\b{re.escape(year)}\b", page_text)
++            has_fomc_meeting = bool(re.search(r"\bfomc\s+meeting\b", block_text))
++            has_press_conference = bool(re.search(r"\bfomc\s+press\s+conference\b|\bpress\s+conference\b", block_text))
++            block_date_matches = _fomc_calendar_date_match(
++                block_text, event_date, page_context=page_text
++            )
++            if not block_date_matches:
++                # A separate press row may contain only the day number. It is
++                # accepted only when the same page has a matching FOMC meeting
++                # row whose explicit range ends on this date and the page title
++                # binds that day to the requested month/year.
++                separate_press_day_matches = bool(
++                    event_kind == "PRESS_CONFERENCE" and has_press_conference
++                    and meeting_date_context and page_month_year_ok
++                    and _contains_calendar_day_number(block_text, event_date.day)
+                 )
+-                target_day_ok = bool(
+-                    full_date_pattern.search(group_text)
+-                    or range_pattern.search(group_text)
++                group_day_matches = bool(
++                    group_text
++                    and _fomc_calendar_date_match(group_text, event_date, page_context=page_text)
++                    and (event_kind != "PRESS_CONFERENCE"
++                         or _contains_calendar_day_number(block_text, event_date.day))
+                 )
+-                if (
+-                    page_context_ok and target_day_ok
+-                    and re.search(r"\bfomc\b", group_text)
+-                    and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", group_text)
+-                ):
+-                    matching_blocks.append(group_text)
+-
+-        if matching_blocks:
+-            press_verified = any(
+-                re.search(r"\b2\s*:\s*30\s*p\.?m\.?\b", block)
+-                for block in matching_blocks
+-            )
++                if not (separate_press_day_matches or group_day_matches):
++                    continue
++            if event_kind == "DECISION":
++                if has_fomc_meeting and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", block_text):
++                    matching.append(block_text)
++                elif group_text and _fomc_calendar_date_match(group_text, event_date, page_context=page_text) and re.search(
++                    r"\bfomc\s+meeting\b", group_text
++                ) and re.search(r"\b2\s*:\s*00\s*p\.?m\.?\b", group_text):
++                    matching.append(group_text)
++            else:
++                if has_press_conference and re.search(r"\b2\s*:\s*30\s*p\.?m\.?\b", block_text):
++                    matching.append(block_text)
++                elif group_text and _fomc_calendar_date_match(group_text, event_date, page_context=page_text):
++                    press_segment = re.search(
++                        r"(?is)(?:press\s+conference|fomc\s+press\s+conference)(.{0,180})",
++                        group_text,
++                    )
++                    if press_segment and re.search(r"\b2\s*:\s*30\s*p\.?m\.?\b", press_segment.group(0)):
++                        if _contains_calendar_day_number(press_segment.group(0), event_date.day):
++                            matching.append(press_segment.group(0))
++        # Deduplicate the same logical row if both table and group parsing saw it.
++        matching = list(dict.fromkeys(matching))
++        if len(matching) == 1:
++            response_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+             detail = (
+-                f"Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt "
+-                f"({final_url}; Abruf: {requested_url})"
+-            )
+-            if press_verified:
+-                detail += "; PRESSEKONFERENZ_VERIFIZIERT"
+-            else:
+-                detail += "; Pressekonferenzzeit im Eintrag nicht separat bestätigt"
++                f"HTTP 200; {expected_name}; Datum={event_date.isoformat()}; Zeit={expected_time} "
++                f"America/New_York; offizieller Fed-Kalenderbereich; Final={final_url}; Abruf={requested_url}"
++            )
+             if errors:
+                 detail += "; vorherige Abrufversuche fehlgeschlagen: " + " | ".join(errors)
+-            return True, detail
+-
+-        errors.append(f"{requested_url} -> HTTP 200, aber kein passender FOMC-Eintrag für {event_date.isoformat()}")
++            evidence = _EventVerificationEvidence(
++                kind="FOMC", event_id=expected_id, event_name=expected_name,
++                event_date=event_date.isoformat(), event_time=expected_time,
++                timezone="America/New_York", requested_url=requested_url, final_url=final_url,
++                http_status=status_code, retrieved_at=retrieved_at, content_match=True,
++                adapter="federal_reserve_month_calendar_verifier", response_sha256=response_hash,
++                verified=True, detail=detail,
++            )
++            return _register_verified_evidence(evidence)
++        errors.append(
++            f"{requested_url} -> {len(matching)} passende {expected_name}-Einträge für {event_date.isoformat()}"
++        )
+ 
+     diagnostic = " | ".join(errors) if errors else "keine offizielle Kalenderantwort erhalten"
+-    return False, f"Fed-Kalenderprüfung fehlgeschlagen; {diagnostic}"
++    return _EventVerificationEvidence(
++        kind="FOMC", event_id=expected_id, event_name=expected_name,
++        event_date=event_date.isoformat(), event_time=expected_time, timezone="America/New_York",
++        requested_url=urls[-1], final_url="", http_status=0,
++        retrieved_at=datetime.now(timezone.utc).isoformat(), content_match=False,
++        adapter="federal_reserve_month_calendar_verifier", response_sha256="",
++        verified=False, detail=f"Fed-Kalenderprüfung fehlgeschlagen; {diagnostic}",
++    )
+ 
+ 
+ def _enrich_fomc_event(
+@@ -655,9 +1139,11 @@
+     calendar_path: str | Path = "fomc_termine.json",
+     *,
+     source_requester=None,
++    verification_results: dict | None = None,
+ ) -> str:
+     """Enrich FOMC record, marking it verified only after a live official-source check."""
+-    if not re.search(r"(?i)\bFOMC\b", body):
++    event_kind = _fomc_event_kind(body)
++    if event_kind not in {"DECISION", "PRESS_CONFERENCE"}:
+         return body
+     try:
+         calendar_file = Path(calendar_path)
+@@ -681,9 +1167,14 @@
+                 cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
+             cutoff_local = cutoff_dt.astimezone(ZoneInfo("America/New_York"))
+             cutoff = cutoff_local.date()
+-            # The 14:00 ET statement is no longer upcoming once the report
+-            # cutoff reaches or passes the scheduled release time.
+-            if cutoff_local.time().replace(tzinfo=None) >= datetime_time(14, 0):
++            # Each event has its own scheduled release time. The decision
++            # is at 14:00 ET; the press conference is at 14:30 ET.
++            scheduled_time = (
++                datetime_time(14, 30)
++                if event_kind == "PRESS_CONFERENCE"
++                else datetime_time(14, 0)
++            )
++            if cutoff_local.time().replace(tzinfo=None) >= scheduled_time:
+                 cutoff = date.fromordinal(cutoff.toordinal() + 1)
+         else:
+             cutoff = date.fromisoformat(cutoff_value) if cutoff_value else date.today()
+@@ -692,7 +1183,19 @@
+     event_date = next((value for value in dates if value >= cutoff), None)
+     if event_date is None:
+         return body + "\nQuellenprüfung: NICHT VERIFIZIERT (kein passender zukünftiger Termin im Projektkalender)\n"
+-    verified, verification_detail = _verify_fomc_official_source(event_date, requester=source_requester)
++    verification = _verify_fomc_official_source(
++        event_date, requester=source_requester, event_kind=event_kind
++    )
++    verified, verification_detail = verification.verified, verification.detail
++    press_verification = None
++    if event_kind == "DECISION":
++        press_verification = _verify_fomc_official_source(
++            event_date, requester=source_requester, event_kind="PRESS_CONFERENCE"
++        )
++    if verification_results is not None:
++        verification_results[(event_date.isoformat(), event_kind)] = verification
++        if press_verification is not None:
++            verification_results[(event_date.isoformat(), "PRESS_CONFERENCE")] = press_verification
+     month_url = f"https://www.federalreserve.gov/newsevents/{event_date:%Y-%B}.htm?view=calendar".replace(
+         event_date.strftime("%B"), event_date.strftime("%B").lower()
+     )
+@@ -704,22 +1207,42 @@
+             continue
+         clean.append(line)
+     values = "\n".join(clean).strip()
++    if event_kind == "PRESS_CONFERENCE":
++        title = "FOMC Pressekonferenz"
++        event_time = "14:30"
++        identity = "FOMC_PRESS_CONFERENCE"
++        metric = "FOMC Pressekonferenz / Erläuterung des Zinsentscheids"
++    else:
++        title = "FOMC-Zinsentscheid"
++        event_time = "14:00"
++        identity = "FOMC_DECISION"
++        metric = "FOMC-Zinsentscheid / Zielkorridor Fed Funds Rate"
+     fields = [
++        f"Event-ID: {identity}",
+         f"Datum: {event_date.isoformat()}",
+-        (("Uhrzeit: 14:00 (FOMC-Erklärung); Pressekonferenz: 14:30 (im selben Eintrag bestätigt)"
+-          if "PRESSEKONFERENZ_VERIFIZIERT" in verification_detail
+-          else "Uhrzeit: 14:00 (FOMC-Erklärung); Pressekonferenz: NICHT SEPARAT VERIFIZIERT")
+-         if verified else "Uhrzeit: NICHT VERIFIZIERT (offizieller Kalenderabruf fehlgeschlagen)"),
++        f"Uhrzeit: {event_time}",
+         "Zeitzone: America/New_York (EDT/EST gemäß Ereignisdatum)",
+-        "Kennzahl: FOMC-Zinsentscheid / Zielkorridor Fed Funds Rate",
++        f"Kennzahl: {metric}",
+         f"Quelle: Federal Reserve, offizieller Kalender ({month_url})",
+         f"Quellenprüfung: {'LIVE_VERIFIZIERT' if verified else 'NICHT VERIFIZIERT'} — {verification_detail}",
+     ]
+-    return "- Ereignis: FOMC-Zinsentscheid\n" + "\n".join(fields) + "\n" + values + "\n"
+-
+-
+-
+-def normalize_event_section(report_text: str) -> tuple[str, list[str]]:
++    decision_or_press_record = f"- Ereignis: {title}\n" + "\n".join(fields) + "\n" + values + "\n"
++    if event_kind == "DECISION" and press_verification is not None and press_verification.verified:
++        press_fields = [
++            "Event-ID: FOMC_PRESS_CONFERENCE",
++            f"Datum: {event_date.isoformat()}",
++            "Uhrzeit: 14:30",
++            "Zeitzone: America/New_York (EDT/EST gemäß Ereignisdatum)",
++            "Kennzahl: FOMC Pressekonferenz / Erläuterung des Zinsentscheids",
++            f"Quelle: Federal Reserve, offizieller Kalender ({month_url})",
++            f"Quellenprüfung: LIVE_VERIFIZIERT — {press_verification.detail}",
++        ]
++        decision_or_press_record += "\n- Ereignis: FOMC Pressekonferenz\n" + "\n".join(press_fields) + "\n"
++    return decision_or_press_record
++
++
++
++def normalize_event_section(report_text: str, *, forexfactory_requester=None, fomc_requester=None) -> tuple[str, list[str]]:
+     """Canonicalize event records in report section 3 and remove duplicates.
+ 
+     This is intentionally conservative: it does not invent values or infer dates.
+@@ -744,7 +1267,7 @@
+         # placeholders; they otherwise get misread as a malformed event record.
+         nonempty = [line.strip() for line in body.splitlines() if line.strip()]
+         allowed = re.compile(
+-            r"(?i)^(?:[-*•]\s*)?(?:Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|"
++            r"(?i)^(?:[-*•]\s*)?(?:Uhrzeit/Zeitzone|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|"
+             r"Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|Konsens|Istwert|Quelle)\s*[:=]\s*"
+             r"(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|[-–—]|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR).*$"
+         )
+@@ -763,14 +1286,18 @@
+     fomc_has_explicit_date = bool(
+         re.search(r"(?is)\bFOMC\b.{0,1200}?^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*\d{4}-\d{2}-\d{2}", body, re.MULTILINE)
+     )
++    fomc_verification_results = {}
+     if not fomc_has_explicit_date:
+-        body = _enrich_fomc_event(body, report_text)
++        body = _enrich_fomc_event(
++            body, report_text, source_requester=fomc_requester,
++            verification_results=fomc_verification_results,
++        )
+     # A record starts at a bullet or numbered line that is not a field label.
+     lines = body.splitlines()
+     # Markdown labels (including "- **Quelle:**") are continuation fields,
+     # not new event records. Strip formatting before classifying each line.
+     field_labels = (
+-        "Ereignis-Uhrzeit|Ereignis Uhrzeit|Datum|Date|Uhrzeit|Zeit|Zeitzone|"
++        "Ereignis-Uhrzeit|Ereignis Uhrzeit|Datum|Date|Uhrzeit/Zeitzone|Uhrzeit|Zeit|Zeitzone|"
+         "Kennzahl|Indikator|Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|"
+         "Konsens|Istwert|Quelle|Source|Betroffene These/Assetklasse/konkrete offene Positionen|"
+         "Szenarien(?:\\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\\s+Konsens)?|"
+@@ -784,22 +1311,24 @@
+         normalized = normalized.replace("**", "").replace("__", "")
+         return bool(field.match(normalized))
+     def fomc_event_kind(value: str) -> str | None:
+-        """Return a conservative FOMC event identity; unknown kinds never merge."""
+-        if not re.search(r"(?i)\bFOMC\b", value):
+-            return None
+-        if re.search(r"(?i)\b(?:minutes|meeting\s+minutes|protokoll(?:s)?|sitzungsprotokoll)\b", value):
+-            return "minutes"
+-        # Decision takes precedence because the decision record may also mention its press conference.
+-        if re.search(r"(?i)\b(?:zinsentscheid(?:ung)?|rate\s+decision|target\s+range|fed\s+funds\s+rate|statement|geldpolitische\s+entscheidung)\b", value):
+-            return "decision"
+-        if re.search(r"(?i)\b(?:press\s+conference|pressekonferenz)\b", value):
+-            return "press_conference"
+-        return None
++        """Use the canonical identity classifier; ambiguous labels never merge."""
++        return _fomc_event_kind(value)
+ 
+     starts = []
++    has_named_event_bullets = any(
++        re.match(r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)(?:Ereignis|Termin|Event)\s*[:=]", line)
++        for line in lines
++    )
+     for i, line in enumerate(lines):
+         m = re.match(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.+)$", line)
+         is_event_header = bool(m and re.match(r"(?i)^Ereignis[- ]Uhrzeit\s*[:=]", m.group(1).strip()))
++        # Legacy report layout: if no explicit Ereignis-/Termin-/Event header
++        # exists, each dated bullet begins one record; following labels remain
++        # fields of that record (including the combined Uhrzeit/Zeitzone field).
++        is_date_record = bool(
++            m and not has_named_event_bullets
++            and re.match(r"(?i)^Datum\s*[:=]", m.group(1).strip())
++        )
+         is_same_fomc_event = False
+         if m and starts:
+             current_text = "\n".join(lines[starts[-1]:i])
+@@ -813,7 +1342,7 @@
+                 and current_kind is not None
+                 and current_kind == summary_kind
+             )
+-        if m and (is_event_header or not is_field_line(line)) and not is_same_fomc_event:
++        if m and (is_event_header or is_date_record or not is_field_line(line)) and not is_same_fomc_event:
+             starts.append(i)
+     if not starts:
+         # Single non-empty paragraph is treated as one event only if explicitly named.
+@@ -839,20 +1368,30 @@
+         # Strip markdown emphasis before extracting labels. Both **Quelle:** and
+         # **Quelle**: are common generator outputs and mean the same field.
+         plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
++        if re.match(r"(?i)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]", rec_lines[0]):
++            metric_identity = re.search(
++                r"(?im)^\s*(?:[-*•]\s*)?(?:Kennzahl|Indikator)\s*[:=]\s*([^\r\n|;]+)",
++                plain_rec,
++            )
++            if metric_identity:
++                name = metric_identity.group(1).strip().casefold()
+         date_m = re.search(
+             r"(?im)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*([^\r\n|;]+)",
+             plain_rec,
+         )
+         if not date_m:
+-            header_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", plain_rec.splitlines()[0] if plain_rec.splitlines() else "")
+-            if header_date:
+-                date_m = header_date
+-
+-        # Some event providers place the explicit calendar date inside the
+-        # event's Zeitraum field (e.g. "Wöchentlich / In 2 Tagen (2026-11-17)")
+-        # while leaving Datum as an unavailable placeholder. Reuse that date
+-        # only when exactly one valid date occurs in this same record. Never
+-        # infer a date from relative wording alone or choose between a range.
++            # A date inside the structured event-time field is explicit event
++            # data. Dates embedded only in a narrative event title are not.
++            event_time_line = re.search(
++                r"(?im)^\s*(?:[-*•]\s*)?Ereignis-Uhrzeit\s*[:=]\s*([^\r\n]+)",
++                plain_rec,
++            )
++            event_time_date = (
++                re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", event_time_line.group(1))
++                if event_time_line else None
++            )
++            if event_time_date:
++                date_m = event_time_date
+         period_m = re.search(
+             r"(?im)^\s*(?:[-*•]\s*)?(?:Zeitraum|Berichtszeitraum)\s*[:=]\s*([^\r\n|;]+)",
+             plain_rec,
+@@ -914,16 +1453,12 @@
+             if remove:
+                 rec_lines = [line for i, line in enumerate(rec_lines) if i not in remove]
+         rec = "\n".join(rec_lines)
+-        if date_inferred_from_period and date_m and _is_valid_calendar_event_date(date_m.group(1).strip()):
+-            # Preserve that the source was not independently live-checked,
+-            # but remove the now-false claim that the event date is unavailable.
+-            rec = re.sub(
+-                r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?(?:Quellenprüfung|Quellenpruefung)(?:\*\*)?\s*[:=]\s*)"
+-                r"NICHT VERIFIZIERT\s*\(\s*Datum nicht belegt\s*\)\s*$",
+-                lambda match: match.group(1) + "DATUM AUS ZEITRAUM ÜBERNOMMEN (Quelle nicht separat live verifiziert)",
+-                rec,
+-            )
+         source_value = source_m.group(1).strip() if source_m else ""
++        verification_m = re.search(
++            r"(?im)^\s*(?:[-*•]\s*)?(?:Quellenprüfung|Quellenpruefung)\s*[:=]\s*([^\r\n]+)",
++            plain_rec,
++        )
++        verification_value = verification_m.group(1).strip() if verification_m else ""
+         if not source_value and len(records) == 1:
+             # In a single-event section, tolerate a source line retained in
+             # the section body even if malformed markdown confused record slicing.
+@@ -936,20 +1471,89 @@
+             r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|[-–—]|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR)",
+             source_value,
+         ))
+-        # Cached calendar snapshots and stale source labels do not verify an
+-        # upcoming event date, even when the provider name itself is known.
+-        source_is_cached = bool(re.search(r"(?i)\b(?:CACHE|CACHED|STALE|VERALTET)\b", source_value))
+-        source_has_evidence = bool(re.search(
+-            r"(?i)(?:https?://|forexfactory|\bfred\b|federal reserve|official|"
+-            r"\bbls\b|bureau of labor|\bbea\b|\becb\b|\beia\b|"
+-            r"\bism\b|\badp\b|\bcme\b|\bsec\b|treasury|"
+-            r"opec|world bank|imf|yahoo finance|trading economics)",
+-            source_value,
+-        ))
+-        source_present = bool(
+-            source_value and not source_is_placeholder and not source_is_cached and source_has_evidence
+-        )
+         date_value = date_m.group(1).strip() if date_m else ""
++        evidence = None
++        event_fomc_kind = _fomc_event_kind(plain_rec)
++        if event_fomc_kind and date_value and _is_valid_calendar_event_date(date_value):
++            evidence = fomc_verification_results.get((date_value[:10], event_fomc_kind))
++            if evidence is None:
++                try:
++                    evidence = _verify_fomc_official_source(
++                        date.fromisoformat(date_value[:10]), requester=fomc_requester,
++                        event_kind=event_fomc_kind,
++                    )
++                except ValueError:
++                    evidence = None
++            source_live_verified = _has_live_verification(
++                verification_value, source_value, event_name=plain_rec,
++                event_date=date_value, evidence=evidence,
++            )
++        elif re.search(r"(?i)\bFOMC\b", plain_rec):
++            source_live_verified = False
++        elif _is_forexfactory_source(source_value):
++            evidence, adapter_detail = _verify_forexfactory_event(
++                name, date_value, requester=forexfactory_requester
++            ) if date_value and _is_valid_calendar_event_date(date_value) else (None, "Eventdatum fehlt")
++            source_live_verified = _has_live_verification(
++                verification_value, source_value, event_name=name,
++                event_date=date_value, evidence=evidence,
++            )
++            if evidence is None:
++                verification_value = "NICHT VERIFIZIERT (" + adapter_detail + ")"
++        else:
++            source_live_verified = _has_live_verification(
++                verification_value, source_value, event_name=name, event_date=date_value
++            )
++        structured_fomc_verified = bool(
++            evidence is not None and _is_trusted_event_evidence(
++                evidence, kind="FOMC", event_name=plain_rec, event_date=date_value
++            )
++        )
++        structured_forexfactory_verified = bool(
++            evidence is not None and _is_trusted_event_evidence(
++                evidence, kind="FOREXFACTORY", event_name=name, event_date=date_value
++            )
++        )
++        if event_fomc_kind or re.search(r"(?i)\bFOMC\b", plain_rec):
++            source_present = structured_fomc_verified
++        elif _is_forexfactory_source(source_value):
++            source_present = structured_forexfactory_verified
++        else:
++            legacy_fred_source = bool(
++                re.search(r"(?i)\bfred\b", source_value)
++                and not re.search(r"(?i)https://api\.stlouisfed\.org/fred/series/observations", source_value)
++            )
++            source_present = bool(
++                not source_is_placeholder
++                and not re.search(r"(?i)\b(?:CACHE|CACHED|STALE|VERALTET)\b", source_value)
++                and (legacy_fred_source or (
++                    source_live_verified if verification_value else _legacy_event_source_evidence(source_value)
++                ))
++            )
++        if evidence is not None and evidence.verified:
++            canonical_source = (
++                f"Federal Reserve official calendar ({evidence.final_url})"
++                if evidence.kind == "FOMC"
++                else f"ForexFactory LIVE adapter ({evidence.final_url})"
++            )
++            source_line_pattern = re.compile(r"(?im)^\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=].*$")
++            if source_line_pattern.search(rec):
++                rec = source_line_pattern.sub("- Quelle: " + canonical_source, rec, count=1)
++            else:
++                rec = rec.rstrip() + "\n- Quelle: " + canonical_source
++            verification_line_pattern = re.compile(r"(?im)^\s*(?:[-*•]\s*)?(?:Quellenprüfung|Quellenpruefung)\s*[:=].*$")
++            verified_detail = "LIVE_VERIFIZIERT — " + evidence.detail
++            if verification_line_pattern.search(rec):
++                rec = verification_line_pattern.sub("- Quellenprüfung: " + verified_detail, rec)
++            else:
++                rec = rec.rstrip() + "\n- Quellenprüfung: " + verified_detail
++        if date_inferred_from_period and date_m and _is_valid_calendar_event_date(date_m.group(1).strip()):
++            rec = re.sub(
++                r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?(?:Quellenprüfung|Quellenpruefung)(?:\*\*)?\s*[:=]\s*)"
++                r"NICHT VERIFIZIERT\s*\(\s*Datum nicht belegt\s*\)\s*$",
++                lambda match: match.group(1) + "DATUM AUS ZEITRAUM ÜBERNOMMEN (Quelle nicht separat live verifiziert)",
++                rec,
++            )
+         date_is_placeholder = bool(re.match(
+             r"(?i)^(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|NICHT BEKANNT|UNBEKANNT|FEHLT|UNKLAR|TBD|TBA|N/?A|NA)(?:\b|\s*\()",
+             date_value,
+@@ -959,12 +1563,16 @@
+             findings.append("Ereignis ohne verifizierte Quelle")
+         if not date_present:
+             findings.append("Ereignis ohne Datum")
++        if not date_present and not date_m:
++            # Make the missing date explicit in the report rather than leaving
++            # the reader to infer it from a finding or from the period text.
++            rec = rec.rstrip() + "\n- Datum: NICHT VERFÜGBAR"
+         if not source_present or not date_present:
+             reason = []
+             if not date_present:
+                 reason.append("Datum nicht belegt")
+             if not source_present:
+-                reason.append("Quelle fehlt, ist nicht verifiziert oder stammt aus Cache")
++                reason.append("Quelle fehlt, ist nicht vertrauenswürdig oder nicht live verifiziert")
+             status_pattern = re.compile(
+                 r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*(?:Quellenprüfung|Quellenpruefung):\*\*|\*\*(?:Quellenprüfung|Quellenpruefung)\*\*|(?:Quellenprüfung|Quellenpruefung))\s*[:=]?\s*)[^\r\n]*$"
+             )
+@@ -981,7 +1589,7 @@
+         # Re-evaluate the normalized record, not the pre-normalization copy;
+         # an earlier LIVE_VERIFIZIERT marker may have been downgraded above.
+         plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
+-        if re.search(r"(?i)\bFOMC\b", plain_rec) and not re.search(
++        if _fomc_event_kind(plain_rec) and not re.search(
+             r"(?im)^\s*(?:[-*•]\s*)?Quellenprüfung\s*[:=]\s*[^\r\n]*\bLIVE_VERIFIZIERT\b",
+             plain_rec,
+         ):
+--- a/trading_radar_report_gate.py
++++ b/trading_radar_report_gate.py
+@@ -1287,8 +1287,8 @@
+     # not mask a second event that lacks its own time/zone/metric/period/value.
+     events = _section_body(text, 3, SECTION_NAMES[2])
+     event_labels = (
+-        (r"Uhrzeit", r"Zeit"),
+-        (r"Zeitzone",),
++        (r"Uhrzeit", r"Zeit", r"Uhrzeit/Zeitzone"),
++        (r"Zeitzone", r"Uhrzeit/Zeitzone"),
+         (r"Kennzahl", r"Indikator"),
+         (r"Berichtszeitraum", r"Zeitraum"),
+     )
+@@ -1306,7 +1306,7 @@
+         current = []
+         field_only = re.compile(
+             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
+-            r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
++            r"(?:Datum|Date|Uhrzeit/Zeitzone|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
+             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
+             r"Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+@@ -1315,7 +1315,9 @@
+             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?)(?:\*\*)?\s*[:=](?:\*\*)?"
+         )
+         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
+-        named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
++        named_event = re.compile(
++            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:Ereignis|Termin|Event)\s*[:=]"
++        )
+ 
+         def fomc_event_kind(value):
+             """Return a conservative FOMC event identity; unknown kinds never merge."""
+@@ -1337,7 +1339,9 @@
+                 return "press_conference"
+             return None
+ 
+-        for line in section_body.splitlines():
++        section_lines = section_body.splitlines()
++        has_named_event_records = any(named_event.match(line) for line in section_lines)
++        for line in section_lines:
+             match = bullet.match(line)
+             same_fomc_event = False
+             if match and current:
+@@ -1352,8 +1356,12 @@
+                     and current_kind is not None
+                     and current_kind == summary_kind
+                 )
++            date_led_record = bool(
++                match and not has_named_event_records
++                and re.match(r"(?i)^Datum\s*[:=]", match.group(1).strip())
++            )
+             starts_record = (
+-                ((bool(match) and not field_only.match(line)) and not same_fomc_event)
++                ((bool(match) and (not field_only.match(line) or date_led_record)) and not same_fomc_event)
+                 or (bool(named_event.match(line)) and not field_only.match(line))
+             )
+             if starts_record and current:
+@@ -2352,9 +2360,11 @@
+             errors.append("M-03: Symbolstatusliste deckt das geprüfte Universum nicht exakt ab.")
+         non_valid = missing + stale + invalid
+         if non_valid > 0 and re.search(
+-            r"(?i)(?:OHLCV\s+)?(?:vollständig\s*,?\s*)?keine\s+(?:historischen\s+)?Datenlücken|"
+-            r"keine\s+fehlenden\s+(?:OHLCV[- ]?)?(?:Daten|Kerzen|Handelstage)",
+-            appendix,
++            r"(?i)OHLCV[^\r\n]{0,180}(?:vollständig\s*,?\s*)?keine\s+"
++            r"(?:historischen\s+)?Datenlücken|"
++            r"keine\s+fehlenden\s+OHLCV[- ]?(?:Daten|Kerzen|Handelstage)|"
++            r"keine\s+(?:historischen\s+)?Datenlücken[^\r\n]{0,180}OHLCV",
++            text,
+         ):
+             errors.append(
+                 "M-03: Freitext behauptet Datenlückenfreiheit, obwohl die OHLCV-Statuszählung "
