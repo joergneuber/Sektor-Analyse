@@ -165,3 +165,37 @@ def test_sheet_stand_date_is_validated_by_shared_parser():
         checker._parse_sheet_stand_date([["Stand 31.02.2026"]])
     with pytest.raises(RuntimeError, match="NaN-Wert"):
         checker._parse_sheet_stand_date([["Stand nan"]])
+
+
+@pytest.mark.parametrize("raw", [46175, 46175.125, 46175.25, 46175.5, 46175.75, "46175,5"])
+def test_excel_date_serial_in_price_field_is_rejected_including_time_fraction(raw):
+    from positionen_datum import reject_excel_date_serial_price
+
+    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+        reject_excel_date_serial_price(raw, field="Einstieg", ticker="LSUG.MI")
+
+
+@pytest.mark.parametrize("ticker", ["BTC-USD", "BTCUSD", "XBT-USD", "ETH/USD", "^GDAXI"])
+@pytest.mark.parametrize("price", [46175, 50000.0, 92000.0, 46175.5])
+def test_valid_high_value_crypto_and_index_prices_are_not_rejected(ticker, price):
+    from positionen_datum import reject_excel_date_serial_price
+
+    assert reject_excel_date_serial_price(price, field="Einstieg", ticker=ticker) is None
+
+
+def test_boolean_values_are_rejected_in_open_position_price_fields():
+    from positionen_datum import reject_excel_date_serial_price
+    import numpy as np
+
+    for value in (True, np.bool_(False)):
+        with pytest.raises(ValueError, match="Boolescher Wert"):
+            reject_excel_date_serial_price(value, field="Einstieg", ticker="TEST")
+
+
+
+@pytest.mark.parametrize("raw", ["46.175,50", "46.175,5", "46,175.50", "46175,5"])
+def test_excel_date_serial_price_rejects_locale_grouped_number_formats(raw):
+    from positionen_datum import reject_excel_date_serial_price
+
+    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+        reject_excel_date_serial_price(raw, field="Stop", ticker="AAPL")

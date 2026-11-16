@@ -335,15 +335,15 @@ def test_ppfd_sg_is_explicit_stuttgart_listing_proxy_not_generic_sg_suffix():
     [
         (
             [
-                {"Ticker": "AAA.DE", "Status": "Offen", "Einstiegsdatum": "01.01.2026"},
-                {"Ticker": "BBB.N", "Status": " offen ", "Einstiegsdatum": "02.01.2026"},
+                {"Ticker": "AAA.DE", "Name": "Alpha", "Status": "Offen", "Einstiegsdatum": "01.01.2026", "Einstieg": "10", "Stop": "9"},
+                {"Ticker": "BBB.N", "Name": "Beta", "Status": " offen ", "Einstiegsdatum": "02.01.2026", "Einstieg": "20", "Stop": "18"},
                 {"Ticker": "CLOSED.DE", "Status": "Verkauft", "Einstiegsdatum": "03.01.2026"},
             ],
             ["AAA.DE", "BBB.N"],
         ),
         (
             [
-                {"Ticker": "NEW1.DE", "Status": "Offen", "Einstiegsdatum": "01.01.2026"},
+                {"Ticker": "NEW1.DE", "Name": "New One", "Status": "Offen", "Einstiegsdatum": "01.01.2026", "Einstieg": "15", "Stop": "14"},
             ],
             ["NEW1.DE"],
         ),
@@ -365,7 +365,7 @@ def test_run_local_uses_dynamic_current_input_universe(
     input_path = tmp_path / "Offene_Positionen.csv"
     output_path = tmp_path / "Offene Positionen+Check.csv"
     history_path = tmp_path / "Geschlossene Positionen.csv"
-    fieldnames = ["Ticker", "Status", "Einstiegsdatum", "Name"]
+    fieldnames = ["Ticker", "Status", "Einstiegsdatum", "Name", "Einstieg", "Stop"]
     with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter=";")
         writer.writeheader()
@@ -519,3 +519,15 @@ def test_twelvedata_persists_full_quality_frame_not_truncated_analysis_tail(monk
 
     assert len(result) == 69
     assert persisted == [(100, "TwelveData")]
+
+
+
+def test_read_positions_rejects_german_grouped_excel_date_serial_as_stop(tmp_path):
+    path = tmp_path / "Offene_Positionen.csv"
+    path.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        "AAPL;Apple;Offen;01.11.2026;250,00;46.175,50\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+        checker.read_positions(str(path))

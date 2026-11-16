@@ -3,6 +3,18 @@ import importlib.util
 from pathlib import Path
 
 from trading_radar_market_first import normalize_event_section
+
+
+def _fake_fomc_requester(url, **kwargs):
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-december.htm?view=calendar"
+        text = (
+            "<html><title>December 2026</title>"
+            "<tr><td>December 8 - 9</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr>"
+            "</html>"
+        )
+    return Response()
 from trading_radar_report_gate import validate_report
 
 
@@ -111,14 +123,14 @@ def test_event_source_newline_wirkung_and_wrapped_live_verification_are_continua
   - Letzter Wert: 4.00
   - Konsens: 4.00
   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: Name nicht aufgelöst (LIVE_VERIFIZIERT) — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: Name nicht aufgelöst (LIVE_VERIFIZIERT) — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 *   **FOMC-Sitzung** | 2026-12-09 | Zinsentscheid | 2026-12-09 | Letzter Wert: 3,88% | Konsens: 4,00%-4,25% | Quelle: FRED/CME
   - Wirkung: Höhere Zinsen belasten zinssensitive Sektoren.
 
 4. Assetklassenvergleich
 Relative Stärke.
 """
-    normalized, findings = normalize_event_section(report)
+    normalized, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
     assert findings == []
     assert normalized.count("- Ereignis: FOMC-Sitzung") == 1
     assert "Quelle: Federal Reserve official calendar" in normalized
@@ -233,7 +245,7 @@ def test_same_day_distinct_fomc_decision_and_minutes_remain_separate():
   - Kennzahl: FOMC-Zinsentscheid
   - Berichtszeitraum: Dezember 2026
   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 * FOMC-Zinsentscheid | 2026-12-09 | Zinsentscheid | 2026-12-09
   - Wirkung: Zinspfad beeinflusst Bewertungsmultiplikatoren.
 * FOMC-Sitzungsprotokoll (Minutes) | 2026-12-09 | Protokollveröffentlichung
@@ -244,14 +256,16 @@ def test_same_day_distinct_fomc_decision_and_minutes_remain_separate():
   - Berichtszeitraum: Dezember 2026
   - Letzter Wert: NICHT VERFÜGBAR (Protokollveröffentlichung ohne Messwert)
   - Quelle: Federal Reserve official minutes https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 
 4. Assetklassenvergleich
 Relative Stärke.
 """
-    normalized, findings = normalize_event_section(report)
-    assert findings == [], findings
+    normalized, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
+    assert any("FOMC-Ereignis nicht live" in item for item in findings), findings
     assert normalized.count("FOMC-Zinsentscheid") >= 2  # header plus continuation summary
+    assert "FOMC-Sitzungsprotokoll" in normalized
+    assert "NICHT VERIFIZIERT" in normalized
     assert "FOMC-Sitzungsprotokoll (Minutes)" in normalized
     assert normalized.count("Datum: 2026-12-09") == 2
 
@@ -291,7 +305,7 @@ Thesenregister geprüft.
   - Letzter Wert: 4.00%
   - Konsens: 4.00%-4.25%
   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 * FOMC-Zinsentscheid | 2026-12-09 | Zinsentscheid | 2026-12-09
   * Wirkung: Höhere Zinsen belasten zinssensitive Sektoren.
 * FOMC-Sitzungsprotokoll (Minutes) | 2026-12-09 | Protokollveröffentlichung
@@ -302,7 +316,7 @@ Thesenregister geprüft.
   - Berichtszeitraum: Dezember 2026
   - Letzter Wert: NICHT VERFÜGBAR (Protokollveröffentlichung ohne Messwert)
   - Quelle: Federal Reserve official minutes https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 4. Assetklassenvergleich
 Relative Stärke und Kapitalrotation.
 5. Technische Kandidaten
@@ -316,8 +330,8 @@ Portfolio-Gesamtperformance: NICHT VERFÜGBAR
 Quellen und Datenstände dokumentiert.
 """
     # This is the exact relevant production order in Trading_Radar_Alleinauswertung.py.
-    event_normalized, findings = normalize_event_section(report)
-    assert findings == [], findings
+    event_normalized, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
+    assert any("FOMC-Ereignis nicht live" in item for item in findings), findings
     production_normalizer = _load_production_event_normalizer()
     production_normalized = production_normalizer(event_normalized)
 
@@ -363,18 +377,18 @@ def test_report_gate_keeps_same_day_fomc_decision_and_minutes_as_separate_record
   - Letzter Wert: 4.00%
   - Konsens: 4.00%-4.25%
   - Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 * FOMC-Zinsentscheid | 2026-12-09 | Zinsentscheid | 2026-12-09
   - Wirkung: Höhere Zinsen belasten zinssensitive Sektoren.
 * FOMC-Sitzungsprotokoll (Minutes) | 2026-12-09 | Protokollveröffentlichung
   - Datum: 2026-12-09
   - Kennzahl: FOMC-Sitzungsprotokoll
   - Quelle: Federal Reserve official minutes https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - Quellenprüfung: LIVE_VERIFIZIERT — offizieller Fed-Kalender live geprüft
+  - Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-december.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm)
 """
     report = report[:event_start] + event_section + report[event_end:]
-    market_first_text, findings = normalize_event_section(report)
-    assert findings == [], findings
+    market_first_text, findings = normalize_event_section(report, fomc_requester=_fake_fomc_requester)
+    assert any("FOMC-Ereignis nicht live" in item for item in findings), findings
     production_normalizer = _load_production_event_normalizer()
     normalized = production_normalizer(market_first_text)
     event_section = normalized[

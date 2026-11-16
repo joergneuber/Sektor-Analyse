@@ -962,3 +962,118 @@ def test_m07_accepts_unicode_thesis_id_in_compact_identity_row():
     errors = gate.validate_report(report)
     assert not any("M-07" in error for error in errors), errors
 
+
+
+def test_m08_treats_combined_time_zone_label_as_one_field_in_one_event():
+    from trading_radar_market_first import normalize_event_section
+    report = report_fixture().replace(
+        "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+        "- Ereignis: ADP Weekly Employment Change\n"
+        "  - Datum: 2026-11-17\n"
+        "  - Quelle: ADP official calendar\n"
+        "  - Uhrzeit/Zeitzone: NICHT VERFÜGBAR\n"
+        "  - Kennzahl: ADP Beschäftigungsänderung\n"
+        "  - Berichtszeitraum: November 2026\n"
+        "  - Letzter Wert: NICHT VERFÜGBAR\n"
+        "  - Konsens: NICHT VERFÜGBAR.",
+    )
+    normalized, findings = normalize_event_section(report)
+    assert findings == []
+    errors = gate.validate_report(normalized)
+    m08 = [error for error in errors if "M-08:" in error]
+    assert len(m08) == 0, errors
+
+
+def test_m03_generator_and_gate_reject_contradictory_ohlcv_claims():
+    import Trading_Radar_Alleinauswertung as production
+    audit = {
+        "status": "gaps",
+        "checked_at": "2026-11-16T12:00:00Z",
+        "universe_count": 10,
+        "covered_count": 10,
+        "missing_tickers": ["AAA"],
+        "stale_tickers": [],
+        "recent_gap_tickers": [],
+        "historical_only_gap_tickers": [],
+        "calendar_unverified_tickers": [],
+        "calendar_coverage_incomplete_tickers": [],
+        "affected_candidates": ["AAA"],
+        "quality_status_counts": {"VALID": 9, "MISSING": 1, "STALE": 0, "INVALID": 0, "TOTAL": 10},
+        "quality_status_by_ticker": {
+            **{f"T{i}": "VALID" for i in range(9)},
+            "AAA": "MISSING",
+        },
+        "candidate_mapping_complete": True,
+        "candidate_impact": "affected_candidates_documented",
+    }
+    previous = getattr(production, "_TRADING_RADAR_OHLCV_AUDIT", None)
+    production._TRADING_RADAR_OHLCV_AUDIT = audit
+    try:
+        source_report = report_fixture(ohlcv_warning=True).replace(
+            "Basisszenario: Seitwärts bis aufwärts.",
+            "OHLCV vollständig, keine Datenlücken; Kandidaten nicht eingeschränkt.\\n"
+            "Basisszenario: Seitwärts bis aufwärts.",
+            1,
+        )
+        assert any(
+            "Freitext behauptet Datenlückenfreiheit" in error
+            for error in gate.validate_report(source_report)
+        )
+        generated = production._trading_radar_ohlcv_abschnitt8_aktualisieren(source_report)
+    finally:
+        if previous is None:
+            delattr(production, "_TRADING_RADAR_OHLCV_AUDIT")
+        else:
+            production._TRADING_RADAR_OHLCV_AUDIT = previous
+    assert "OHLCV vollständig, keine Datenlücken" not in generated
+    assert "OHLCV-Abdeckung: vollständig" not in generated
+    errors = gate.validate_report(generated)
+    assert not any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors
+    contradictory = generated.replace(
+        "Kandidaten-Mapping: VOLLSTÄNDIG",
+        "OHLCV vollständig, keine Datenlücken; Kandidaten nicht eingeschränkt.\nKandidaten-Mapping: VOLLSTÄNDIG",
+        1,
+    )
+    errors = gate.validate_report(contradictory)
+    assert any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors
+
+
+def test_m08_splits_date_led_legacy_events_and_keeps_combined_time_zone_as_field():
+    from trading_radar_market_first import normalize_event_section
+    event_body = (
+        "- Datum: 2026-11-17\n"
+        "- Uhrzeit/Zeitzone: NICHT VERFÜGBAR\n"
+        "- Kennzahl: ADP Weekly Employment Change\n"
+        "- Zeitraum: Wöchentlich\n"
+        "- Letzter Wert: NICHT VERFÜGBAR\n"
+        "- Konsens: NICHT VERFÜGBAR\n"
+        "- Quelle: ADP official calendar\n"
+        "- Datum: 2026-11-19\n"
+        "- Uhrzeit/Zeitzone: NICHT VERFÜGBAR\n"
+        "- Kennzahl: Unemployment Claims\n"
+        "- Zeitraum: Wöchentlich\n"
+        "- Letzter Wert: 200000\n"
+        "- Konsens: NICHT VERFÜGBAR\n"
+        "- Quelle: ForexFactory (CACHE)\n"
+    )
+    report = report_fixture().replace(
+        "Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+        event_body,
+    )
+    normalized, findings = normalize_event_section(report)
+    assert len([x for x in findings if "Ereignis ohne verifizierte Quelle" in x]) == 1
+    assert normalized.count("Datum: 2026-11-17") == 1
+    assert normalized.count("Datum: 2026-11-19") == 1
+    errors = gate.validate_report(normalized)
+    assert not any("M-08:" in error for error in errors), errors
+
+
+def test_m03_does_not_misclassify_unrelated_macro_gap_statement_as_ohlcv_claim():
+    text = report_fixture(ohlcv_warning=True).replace(
+        "Basisszenario: Seitwärts bis aufwärts.",
+        "Für die Makrozeitreihe liegen keine Datenlücken vor.\n"
+        "Basisszenario: Seitwärts bis aufwärts.",
+        1,
+    )
+    errors = gate.validate_report(text)
+    assert not any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors

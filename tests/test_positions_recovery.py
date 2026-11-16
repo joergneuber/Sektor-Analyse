@@ -311,7 +311,7 @@ def test_recovery_module_entrypoint_uses_project_root_without_pythonpath_injecti
     project_root = Path(__file__).resolve().parents[1]
     stub_dir = tmp_path / "stubs"
     stub_dir.mkdir()
-    (stub_dir / "yfinance.py").write_text("# import-only stub for CLI bootstrap test\\n", encoding="utf-8")
+    (stub_dir / "yfinance.py").write_text("# import-only stub for CLI bootstrap test\n", encoding="utf-8")
 
     env = os.environ.copy()
     env.pop(opc.RECOVERY_HISTORY_ENV, None)
@@ -684,3 +684,326 @@ def test_recovery_history_date_normalization_matches_serial_and_iso():
     assert _normalize_history_value("Einstiegsdatum", "46235") == expected
     assert _normalize_history_value("Einstiegsdatum", "01.08.2026") == expected
     assert _normalize_history_value("Einstiegsdatum", "2026-08-01") == expected
+
+
+def test_open_positions_reader_preserves_validated_stop_without_changing_output_schema(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "open_with_stop.csv"
+    source.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        "LSUG.MI;Sugar 2x;Offen;18.03.2026;2,06;1,90\n",
+        encoding="utf-8-sig",
+    )
+    result = checker.read_positions(str(source))
+    assert result.loc[0, "Stop"] == "1,90"
+    assert "Stop" not in checker.HEADERS
+
+
+def test_open_positions_reader_rejects_excel_date_serial_in_price_field(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "Offene_Positionen.csv"
+    source.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        "LSUG.MI;Sugar 2x;Offen;18.03.2026;46175;2,06\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+        checker.read_positions(str(source))
+
+
+def test_position_tracker_rejects_date_serials_at_open_position_source_boundary(monkeypatch):
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    names = [
+        "yfinance", "google", "google.oauth2", "google.oauth2.credentials",
+        "google.auth", "google.auth.transport", "google.auth.transport.requests",
+        "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
+        "alpaca", "alpaca.data", "alpaca.data.historical", "alpaca.data.enums",
+        "alpaca.data.requests", "alpaca.data.timeframe", "os_kurse",
+    ]
+    previous = {name: sys.modules.get(name) for name in names}
+    modules = {name: types.ModuleType(name) for name in names}
+    modules["yfinance"].Ticker = object
+    modules["google.oauth2.credentials"].Credentials = object
+    modules["google.auth.transport.requests"].Request = object
+    modules["googleapiclient.discovery"].build = lambda *a, **k: None
+    modules["googleapiclient.http"].MediaIoBaseDownload = object
+    modules["googleapiclient.http"].MediaIoBaseUpload = object
+    modules["alpaca.data.historical"].StockHistoricalDataClient = object
+    modules["alpaca.data.historical"].CryptoHistoricalDataClient = object
+    modules["alpaca.data.enums"].Adjustment = object
+    modules["alpaca.data.requests"].StockBarsRequest = object
+    modules["alpaca.data.requests"].CryptoBarsRequest = object
+    modules["alpaca.data.timeframe"].TimeFrame = object
+    modules["os_kurse"].aktualisiere_optionsscheine = lambda *a, **k: None
+    try:
+        sys.modules.update(modules)
+        spec = importlib.util.spec_from_file_location(
+            "positionen_tracker_serial_guard_test", root / "positionen_tracker.py"
+        )
+        tracker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tracker)
+        import pandas as pd
+
+        for entry, stop in ((46175, 2.06), (2.06, 46175.5)):
+            invalid = pd.DataFrame({
+                "Ticker": ["LSUG.MI"], "Name": ["Sugar 2x"], "Status": ["Offen"],
+                "Einstiegsdatum": ["18.03.2026"], "Einstieg": [entry], "Stop": [stop],
+            })
+            with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+                tracker.validate_position_source_schema(invalid)
+
+        crypto = pd.DataFrame({
+            "Ticker": ["BTC-USD"], "Name": ["Bitcoin"], "Status": ["Offen"],
+            "Einstiegsdatum": ["18.03.2026"], "Einstieg": [92000], "Stop": [80000],
+        })
+        assert len(tracker.validate_position_source_schema(crypto)) == 1
+    finally:
+        for name, module in previous.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+
+def _load_tracker_for_drive_import_tests(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    names = [
+        "yfinance", "google", "google.oauth2", "google.oauth2.credentials",
+        "google.auth", "google.auth.transport", "google.auth.transport.requests",
+        "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
+        "alpaca", "alpaca.data", "alpaca.data.historical", "alpaca.data.enums",
+        "alpaca.data.requests", "alpaca.data.timeframe", "os_kurse",
+    ]
+    modules = {name: types.ModuleType(name) for name in names}
+    modules["yfinance"].Ticker = object
+    modules["google.oauth2.credentials"].Credentials = object
+    modules["google.auth.transport.requests"].Request = object
+    modules["googleapiclient.discovery"].build = lambda *a, **k: None
+    modules["googleapiclient.http"].MediaIoBaseUpload = object
+    modules["alpaca.data.historical"].StockHistoricalDataClient = object
+    modules["alpaca.data.historical"].CryptoHistoricalDataClient = object
+    modules["alpaca.data.enums"].Adjustment = object
+    modules["alpaca.data.requests"].StockBarsRequest = object
+    modules["alpaca.data.requests"].CryptoBarsRequest = object
+    modules["alpaca.data.timeframe"].TimeFrame = object
+    modules["os_kurse"].aktualisiere_optionsscheine = lambda *a, **k: None
+
+    class FakeDownload:
+        def __init__(self, buffer, request):
+            self.buffer = buffer
+            self.request = request
+
+        def next_chunk(self):
+            self.buffer.write(self.request.content)
+            return None, True
+
+    modules["googleapiclient.http"].MediaIoBaseDownload = FakeDownload
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    spec = importlib.util.spec_from_file_location(
+        "positionen_tracker_drive_schema_test", root / "positionen_tracker.py"
+    )
+    tracker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tracker)
+    return tracker
+
+
+def test_drive_positions_loader_rejects_truncated_ticker_status_only_csv(monkeypatch):
+    from types import SimpleNamespace
+
+    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
+
+    class Files:
+        def export(self, **kwargs):
+            return SimpleNamespace(content=b"Ticker,Status\\nLSUG.MI,Offen\n")
+
+    class Service:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(Service(), "existing-id", tracker.SHEET_MIME)
+
+
+def test_drive_positions_loader_accepts_legacy_core_schema_and_adds_optional_columns(monkeypatch):
+    from types import SimpleNamespace
+
+    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
+
+    class Files:
+        def export(self, **kwargs):
+            return SimpleNamespace(content=(
+                b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
+                b"LSUG.MI,Lyxor ETF,Offen,2026-06-02,2.06,2.06\n"
+            ))
+
+    class Service:
+        def files(self):
+            return Files()
+
+    frame = tracker.lade_positionen_herunter(Service(), "existing-id", tracker.SHEET_MIME)
+    assert list(frame.columns) == tracker.SPALTEN
+    assert frame.loc[0, "Ticker"] == "LSUG.MI"
+    assert frame.loc[0, "Einstieg"] == 2.06
+    assert frame.loc[0, "Stop"] == 2.06
+    assert frame.loc[0, "TP1"] == ""
+
+
+def test_position_source_schema_allows_closed_legacy_rows_without_entry_date(monkeypatch):
+    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "Ticker": ["LSUG.MI", "OLD.DE"],
+        "Name": ["Lyxor ETF", "Legacy"],
+        "Status": ["Offen", "Verkauft"],
+        "Einstiegsdatum": ["2026-06-02", ""],
+        "Einstieg": ["2.06", "10.00"],
+        "Stop": ["2.06", "9.00"],
+    })
+    assert len(tracker.validate_position_source_schema(frame)) == 2
+
+
+def test_position_source_schema_rejects_open_rows_without_entry_date(monkeypatch):
+    tracker = _load_tracker_for_drive_import_tests(monkeypatch)
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "Ticker": ["LSUG.MI"], "Name": ["Lyxor ETF"], "Status": ["Offen"],
+        "Einstiegsdatum": [""], "Einstieg": ["2.06"], "Stop": ["2.06"],
+    })
+    with pytest.raises(ValueError, match="Einstiegsdatum"):
+        tracker.validate_position_source_schema(frame)
+
+
+def test_open_positions_reader_rejects_truncated_schema_at_entry(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "truncated.csv"
+    source.write_text("Ticker;Status\nLSUG.MI;Offen\n", encoding="utf-8-sig")
+    with pytest.raises(ValueError, match="unvollständiges Positionsschema"):
+        checker.read_positions(str(source))
+
+
+def test_open_positions_reader_accepts_supported_closed_history_schema(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "legacy_history.csv"
+    source.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        "OLD.DE;Legacy Position;Gestoppt;;46175;46175,5\n",
+        encoding="utf-8-sig",
+    )
+    result = checker.read_positions(str(source))
+    assert len(result) == 1
+    assert result.iloc[0]["Status"] == "Gestoppt"
+    assert result.iloc[0]["Einstiegsdatum"] == ""
+
+
+def test_open_positions_reader_requires_entry_and_stop_columns(tmp_path):
+    import offene_positionen_check as checker
+
+    for missing in ("Einstieg", "Stop"):
+        columns = ["Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg", "Stop"]
+        columns.remove(missing)
+        values = {"Ticker": "TEST.DE", "Name": "Test AG", "Status": "Offen",
+                  "Einstiegsdatum": "2026-01-02", "Einstieg": "10,00", "Stop": "9,00"}
+        source = tmp_path / f"missing_{missing}.csv"
+        source.write_text(";".join(columns) + "\n" + ";".join(values[c] for c in columns) + "\n", encoding="utf-8-sig")
+        with pytest.raises(ValueError, match="Pflichtspalten fehlen"):
+            checker.read_positions(str(source))
+
+
+def test_open_positions_reader_rejects_empty_or_non_numeric_required_prices(tmp_path):
+    import offene_positionen_check as checker
+
+    for entry, stop in (("", "9,00"), ("10,00", ""), ("x", "9,00"), ("10,00", "x")):
+        source = tmp_path / f"invalid_{len(list(tmp_path.iterdir()))}.csv"
+        source.write_text(
+            "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+            f"TEST.DE;Test AG;Offen;2026-01-02;{entry};{stop}\n",
+            encoding="utf-8-sig",
+        )
+        with pytest.raises(ValueError):
+            checker.read_positions(str(source))
+
+
+def test_open_positions_reader_rejects_integer_and_fractional_excel_serial_prices(tmp_path):
+    import offene_positionen_check as checker
+
+    for value in (46175, "46175", "46175,5"):
+        source = tmp_path / f"serial_{str(value).replace(',', '_')}.csv"
+        source.write_text(
+            "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+            f"TEST.DE;Test AG;Offen;2026-01-02;{value};9,00\n",
+            encoding="utf-8-sig",
+        )
+        with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+            checker.read_positions(str(source))
+
+
+def test_open_positions_reader_keeps_instruction_and_closed_legacy_rows_compatible(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "legacy_and_instruction.csv"
+    source.write_text(
+        "Ticker;Name;Status\n"
+        "ANLEITUNG;Hinweis;Offen\n"
+        "OLD.DE;Geschlossene Altposition;Verkauft\n",
+        encoding="utf-8-sig",
+    )
+    result = checker.read_positions(str(source))
+    assert len(result) == 2
+    assert checker.select_open_positions(result).empty
+
+
+def test_open_positions_reader_accepts_complete_valid_open_position(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "valid_open.csv"
+    source.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        "TEST.DE;Test AG;Offen;2026-01-02;10,00;9,00\n",
+        encoding="utf-8-sig",
+    )
+    result = checker.read_positions(str(source))
+    assert len(checker.select_open_positions(result)) == 1
+
+
+def test_open_positions_reader_rejects_placeholder_ticker_or_name(tmp_path):
+    import offene_positionen_check as checker
+
+    for ticker, name in (("-", "Test AG"), ("TEST.DE", "NICHT VERFÜGBAR")):
+        source = tmp_path / f"placeholder_{len(list(tmp_path.iterdir()))}.csv"
+        source.write_text(
+            "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+            f"{ticker};{name};Offen;2026-01-02;10,00;9,00\n",
+            encoding="utf-8-sig",
+        )
+        with pytest.raises(ValueError, match="Pflichtwert"):
+            checker.read_positions(str(source))
+
+
+def test_open_positions_reader_rejects_duplicate_headers(tmp_path):
+    import offene_positionen_check as checker
+
+    source = tmp_path / "duplicate_headers.csv"
+    source.write_text(
+        "Ticker;ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        "TEST.DE;TEST.DE;Test AG;Offen;2026-01-02;10,00;9,00\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="doppelte Spaltennamen"):
+        checker.read_positions(str(source))

@@ -652,7 +652,11 @@ class TradingRadarDataContractTests(unittest.TestCase):
                     elif i == 2:
                         body = "Gegenbelege, alternative Szenarien und beobachtbare Trigger werden geprüft."
                     elif i == 3:
-                        body = "- Ereignis: Testtermin\n  Datum: 2026-10-28\n  Quelle: FRED (Testquelle)\n  Uhrzeit: 10:00\n  Zeitzone: UTC"
+                        body = (
+                            "- Ereignis: Testtermin\n  Datum: 2026-10-28\n"
+                            "  Quelle: https://www.bls.gov/schedule/news_release/cpi.htm\n"
+                            "  Uhrzeit: 10:00\n  Zeitzone: UTC"
+                        )
                     elif i == 4:
                         body = "Relative Stärke und Kapitalrotation divergieren zwischen Segmenten."
                     elif i == 5:

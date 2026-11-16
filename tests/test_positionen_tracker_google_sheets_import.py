@@ -90,3 +90,230 @@ def test_shared_date_parser_is_used_by_xlsx_uploader():
     assert _parse_date("", "Einstiegsdatum", 2) is None
     with pytest.raises(ValueError, match="Ungueltiges Datum"):
         _parse_date("2026-31-01", "Einstiegsdatum", 2)
+
+
+def test_excel_date_serial_in_price_field_aborts_xlsx_upload(tmp_path):
+    csv = tmp_path / "positions_bad_price.csv"
+    csv.write_text(
+        "Ticker;Name;Status;Einstieg;Stop;Einstiegsdatum\nLSUG.MI;Sugar 2x;Offen;46175;2,06;18.03.2026\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
+        erstelle_sheet_upload_stream(str(csv), NUMERIC)
+
+
+def _load_tracker_with_stubbed_integrations(monkeypatch):
+    """Load the tracker without contacting Google, Alpaca, Yahoo or Twelve Data."""
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    names = [
+        "yfinance", "google", "google.oauth2", "google.oauth2.credentials",
+        "google.auth", "google.auth.transport", "google.auth.transport.requests",
+        "googleapiclient", "googleapiclient.discovery", "googleapiclient.http",
+        "alpaca", "alpaca.data", "alpaca.data.historical", "alpaca.data.enums",
+        "alpaca.data.requests", "alpaca.data.timeframe", "os_kurse",
+    ]
+    modules = {name: types.ModuleType(name) for name in names}
+    modules["yfinance"].Ticker = object
+    modules["google.oauth2.credentials"].Credentials = object
+    modules["google.auth.transport.requests"].Request = object
+    modules["googleapiclient.discovery"].build = lambda *a, **k: None
+    modules["googleapiclient.http"].MediaIoBaseDownload = object
+    modules["googleapiclient.http"].MediaIoBaseUpload = object
+    modules["alpaca.data.historical"].StockHistoricalDataClient = object
+    modules["alpaca.data.historical"].CryptoHistoricalDataClient = object
+    modules["alpaca.data.enums"].Adjustment = object
+    modules["alpaca.data.requests"].StockBarsRequest = object
+    modules["alpaca.data.requests"].CryptoBarsRequest = object
+    modules["alpaca.data.timeframe"].TimeFrame = object
+    modules["os_kurse"].aktualisiere_optionsscheine = lambda *a, **k: None
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "positionen_tracker_schema_test", root / "positionen_tracker.py"
+    )
+    tracker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tracker)
+    return tracker
+
+
+class _FakeDownloadRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+class _FakeMediaDownloader:
+    def __init__(self, buffer, request):
+        self.buffer = buffer
+        self.request = request
+        self.done = False
+
+    def next_chunk(self):
+        if not self.done:
+            self.buffer.write(self.request.payload)
+            self.done = True
+        return None, True
+
+
+class _FakeDriveFiles:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def export(self, **kwargs):
+        return _FakeDownloadRequest(self.payload)
+
+    def get_media(self, **kwargs):
+        return _FakeDownloadRequest(self.payload)
+
+
+class _FakeDriveService:
+    def __init__(self, payload):
+        self._files = _FakeDriveFiles(payload)
+
+    def files(self):
+        return self._files
+
+
+def test_existing_drive_source_with_only_ticker_and_status_fails_closed(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = b"Ticker,Status\nLSUG.MI,Offen\n"
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(
+            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+        )
+
+
+def test_existing_drive_source_missing_one_essential_price_field_fails_closed(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = b"Ticker,Status,Einstiegsdatum,Einstieg\nLSUG.MI,Offen,18.03.2026,2.06\n"
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(
+            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+        )
+
+
+def test_existing_empty_drive_export_fails_closed(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = b"Ticker,Status,Einstiegsdatum,Einstieg,Stop\n"
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(
+            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+        )
+
+
+def test_existing_legacy_drive_schema_with_essential_columns_remains_compatible(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = (
+        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop,TP1\n"
+        b"LSUG.MI,Lyxor ETF,Offen,18.03.2026,2.06,2.06,3.00\n"
+    )
+    frame = tracker.lade_positionen_herunter(
+        _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+    )
+    assert frame.loc[0, "Ticker"] == "LSUG.MI"
+    assert frame.loc[0, "Stop"] == 2.06
+    assert "TP2" in frame.columns
+    assert frame.loc[0, "TP2"] == ""
+
+
+
+def test_tracker_schema_requires_name_and_numeric_open_prices(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    base = {
+        "Ticker": ["LSUG.MI"], "Name": ["Lyxor ETF"], "Status": ["Offen"],
+        "Einstiegsdatum": ["2026-06-02"], "Einstieg": ["2.06"], "Stop": ["1.90"],
+    }
+    import pandas as pd
+    valid = pd.DataFrame(base)
+    assert tracker.validate_position_source_schema(valid.copy()).equals(valid)
+
+    for column in ("Name", "Einstieg", "Stop"):
+        broken = valid.drop(columns=[column])
+        with pytest.raises(ValueError, match="Pflichtspalten fehlen"):
+            tracker.validate_position_source_schema(broken)
+
+    for entry, stop in (
+        ("abc", "1.90"), ("2.06", "abc"),
+        ("46175", "1.90"), ("2.06", "46175.5"),
+        ("2,06", "1.90"), ("2.06", "inf"), ("0", "1.90"),
+    ):
+        broken = valid.copy()
+        broken.loc[0, "Einstieg"] = entry
+        broken.loc[0, "Stop"] = stop
+        with pytest.raises(ValueError):
+            tracker.validate_position_source_schema(broken)
+
+
+
+def test_drive_export_with_duplicate_headers_fails_closed(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = (
+        b"Ticker,Name,name,Status,Einstiegsdatum,Einstieg,Stop\n"
+        b"LSUG.MI,Lyxor,Lyxor,Offen,2026-06-02,2.06,1.90\n"
+    )
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(
+            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+        )
+
+def test_tracker_schema_keeps_closed_legacy_and_instruction_rows_compatible(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    import pandas as pd
+    frame = pd.DataFrame([
+        {"Ticker": "ANLEITUNG", "Name": "Hinweis", "Status": "", "Einstiegsdatum": "", "Einstieg": "", "Stop": ""},
+        {"Ticker": "OLD.DE", "Name": "Legacy", "Status": "Gestoppt", "Einstiegsdatum": "", "Einstieg": "10.00", "Stop": "9.00"},
+    ])
+    result = tracker.validate_position_source_schema(frame)
+    assert len(result) == 2
+
+    closed_only = pd.DataFrame({
+        "Ticker": ["OLD.DE"], "Status": ["Verkauft"],
+        "Einstieg": ["46175"], "Stop": ["46175.5"],
+    })
+    assert len(tracker.validate_position_source_schema(closed_only)) == 1
+    instruction_only = pd.DataFrame({"Ticker": ["ANLEITUNG"], "Status": [""]})
+    assert len(tracker.validate_position_source_schema(instruction_only)) == 1
+
+def test_first_run_without_existing_drive_file_still_returns_empty_schema(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    frame = tracker.lade_positionen_herunter(None, None, tracker.SHEET_MIME)
+    assert frame.empty
+    assert list(frame.columns) == tracker.SPALTEN
+
+
+def test_existing_drive_source_with_required_headers_but_missing_stop_value_fails_closed(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = (
+        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
+        b"LSUG.MI,Lyxor ETF,Offen,2026-06-02,2.06,\n"
+    )
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(
+            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+        )
+
+
+def test_instruction_row_is_exempt_from_position_value_requirements(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = (
+        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
+        b"ANLEITUNG,,,,,\n"
+        b"LSUG.MI,Lyxor ETF,Offen,2026-06-02,2.06,2.06\n"
+    )
+    frame = tracker.lade_positionen_herunter(
+        _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+    )
+    assert frame.loc[0, "Ticker"] == "ANLEITUNG"
+    assert frame.loc[1, "Ticker"] == "LSUG.MI"

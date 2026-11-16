@@ -155,3 +155,81 @@ def test_trendfolge_history_uses_central_cutoff_not_calendar_yesterday():
     assert "nur Bars bis gestern" not in source
     assert "apply_ohlcv_quality_gate(" in source
     assert "require_structure=True" in source
+
+
+def test_missing_history_keeps_development_phase_protected_for_long_and_short(monkeypatch):
+    for is_short, current, stop_value in (
+        (False, 90.0, 95.0),
+        (True, 110.0, 105.0),
+    ):
+        row = _row(
+            Richtung="Short" if is_short else "Long",
+            Stop=stop_value,
+            TP1=85.0 if is_short else 115.0,
+            TP2=80.0 if is_short else 120.0,
+        )
+        frame = pd.DataFrame([row])
+        monkeypatch.setattr(mod, "_hole_tageshistorie", lambda *a, **k: pd.DataFrame())
+        monkeypatch.setattr(mod, "hole_aktuellen_kurs", lambda *a, **k: current)
+        result, _alerts = mod.aktualisiere_positionen(frame)
+        assert result.at[0, "Status"].lower() == "offen"
+        assert "Entwicklung nicht verifizierbar" in result.at[0, "TF_Management"]
+        assert "normaler Stop-Ausgang ausgesetzt" in result.at[0, "TF_Management"]
+
+
+def test_missing_atr14_is_an_explicit_management_state_for_long_and_short(monkeypatch):
+    h = _hist()
+    monkeypatch.setattr(mod, "_trendfolge_atr14", lambda hist, ticker=None: None)
+    for is_short in (False, True):
+        row = _row(
+            Richtung="Short" if is_short else "Long",
+            Einstiegsdatum=h.loc[0, "Date"].strftime("%d.%m.%Y"),
+            Stop=115.0 if is_short else 95.0,
+            TP1=95.0 if is_short else 105.0,
+        )
+        frame = pd.DataFrame([row])
+        old_stop = float(row["Stop"])
+        below_tp1 = 98.0 if is_short else 102.0
+        stop, _tp1, _tp2 = mod._aktualisiere_trendfolge_management(
+            frame, 0, frame.iloc[0], h,
+            float(row["Einstieg"]), below_tp1,
+            old_stop, float(row["TP1"]), is_short, "22.09.2026"
+        )
+        assert stop == old_stop
+        assert frame.at[0, "TF_Management"].startswith(
+            f"ATR14 nicht verfügbar | Stop: {old_stop:.2f} | TP1: {float(row['TP1']):.2f}"
+        )
+        assert float(frame.at[0, "Stop"]) == old_stop
+
+        # Auch nach erreichtem TP1 bleibt die Position unverändert offen;
+        # ohne ATR14 wird kein adaptiver/trailing Stop vorgetäuscht.
+        frame = pd.DataFrame([row])
+        reached_tp1 = 94.0 if is_short else 106.0
+        stop, _tp1, _tp2 = mod._aktualisiere_trendfolge_management(
+            frame, 0, frame.iloc[0], h,
+            float(row["Einstieg"]), reached_tp1,
+            old_stop, float(row["TP1"]), is_short, "22.09.2026"
+        )
+        assert stop == old_stop
+        assert "ATR14 nicht verfügbar | TP1 erreicht" in frame.at[0, "TF_Management"]
+        assert float(frame.at[0, "Stop"]) == old_stop
+        assert "Teilverkauf" not in frame.at[0, "TF_Management"]
+        assert "50%" not in frame.at[0, "TF_Management"]
+
+
+def test_no_partial_sale_or_position_quantity_mutation_at_tp1(monkeypatch):
+    h = _hist()
+    monkeypatch.setattr(mod, "_trendfolge_atr14", lambda hist, ticker=None: 1.0)
+    row = _row(Einstiegsdatum=h.loc[0, "Date"].strftime("%d.%m.%Y"))
+    frame = pd.DataFrame([row])
+    original_columns = list(frame.columns)
+    original_status = frame.at[0, "Status"]
+    mod._aktualisiere_trendfolge_management(
+        frame, 0, frame.iloc[0], h, 100.0, 106.0, 95.0, 105.0,
+        False, "22.09.2026"
+    )
+    assert list(frame.columns) == original_columns
+    assert frame.at[0, "Status"] == original_status
+    assert pd.isna(frame.at[0, "Ausstiegskurs"]) or frame.at[0, "Ausstiegskurs"] == ""
+    assert "TP1 erreicht" in frame.at[0, "TF_Management"]
+    assert "50%" not in frame.at[0, "TF_Management"]

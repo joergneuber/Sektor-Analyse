@@ -27,7 +27,7 @@ def test_name_normalizer_preserves_words_dates_markers_and_fenced_json(tmp_path)
         "1. Trading-Radar\n"
         "Der Markt bleibt schwächer; alle Anleger warten.\n"
         "MSCI-World-Performance bleibt die Benchmark. LIVE-SYSTEM ist die Vergleichsbasis.\n"
-        "Quelle: ForexFactory (LIVE) / Official ISM.\n"
+        "Quelle: ForexFactory (LIVE).\n"
         "ISM Manufacturing PMI (2026-11-02) wird beobachtet.\n"
         "Fake ticker: FAKE\n"
         + code + "\n"
@@ -61,7 +61,8 @@ def test_treasury_provenance_never_mutates_json_code_fences():
 
 def test_event_parser_recognizes_inline_date_source_and_continuation_bullets():
     report = """3. Ereignisradar
-- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM Manufacturing PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE) / Official ISM
+- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM Manufacturing PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE)
+  Quellenprüfung: LIVE_VERIFIZIERT — aktueller Wochenkalender durch Projektadapter abgerufen
   - Betroffene These/Assetklasse/konkrete offene Positionen: Sektorrotation / Aktien
 - Szenarien unter/entsprechend/über Konsens: Über Konsens stützt zyklische Werte; unter Konsens belastet sie.
 - Reaktionskanäle: Zyklische Aktien und Rohstofffutures.
@@ -71,9 +72,10 @@ def test_event_parser_recognizes_inline_date_source_and_continuation_bullets():
 Relative Stärke und Rotation.
 """
     normalized, findings = normalize_event_section(report)
-    assert findings == []
+    assert "Ereignis ohne verifizierte Quelle" in findings
     assert normalized.count("Ereignis-Uhrzeit:") == 1
     assert "Szenarien unter/entsprechend/über Konsens:" in normalized
+    assert "NICHT VERIFIZIERT" in normalized
 
 
 def test_structured_thesis_json_is_market_first_record_when_complete():
@@ -226,7 +228,8 @@ def test_m01_accepts_reconciled_live_benchmark_when_portfolio_aggregate_is_unava
 
 def test_production_event_normalizer_adds_only_explicit_header_date_and_keeps_scenario_as_field():
     report = """3. Ereignisradar
-- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE) / Official ISM
+- Ereignis-Uhrzeit: HEUTE (2026-11-02) | Zeitzone: NICHT VERFÜGBAR | Kennzahl: ISM PMI | Zeitraum: September 2026 | Letzter Wert: 54,5 | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory (LIVE)
+  Quellenprüfung: LIVE_VERIFIZIERT — aktueller Wochenkalender durch Projektadapter abgerufen
   - Betroffene These/Assetklasse/konkrete offene Positionen: Rotation / Aktien
 - Szenarien unter/entsprechend/über Konsens: Über Konsens stützt zyklische Werte; unter Konsens belastet sie.
 - Reaktionskanäle: Zyklische Aktien.
@@ -240,7 +243,7 @@ Relative Stärke.
     assert normalized.count("Ereignis-Uhrzeit:") == 1
     assert "Szenarien unter/entsprechend/über Konsens:" in normalized
     _, findings = normalize_event_section(normalized)
-    assert findings == []
+    assert "Ereignis ohne verifizierte Quelle" in findings
 
 
 def test_structured_thesis_cleanup_keeps_one_marked_block_and_removes_unmarked_draft():

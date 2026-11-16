@@ -1,21 +1,24 @@
 from datetime import datetime, timezone, timedelta
+import json
 import pytest
 from trading_radar_market_first import normalize_event, deduplicate_events, classify_ohlcv_row, summarize_ohlcv_status
 
 
 def test_event_missing_time_timezone_marked_once_and_not_verified():
-    event = normalize_event({"name": "FOMC", "date": "2026-10-28", "source": "Fed",
+    event = normalize_event({"name": "FOMC", "date": "2026-10-28", "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+                             "source_verification": "LIVE_VERIFIZIERT — HTTP 200; Datum, FOMC und 14:00 Uhr im abgegrenzten offiziellen Kalenderbereich bestätigt (https://www.federalreserve.gov/newsevents/2026-october.htm; Abruf: https://www.federalreserve.gov/newsevents/2026-october.htm)",
                              "time": "NICHT VERFÜGBAR", "timezone": "NICHT VERFÜGBAR"})
     assert event["time"] is None
     assert event["timezone"] is None
     assert event["time_verified"] is False
-    assert event["status"] == "READY"
-    assert event["missing_required"] == []
+    # A historical report diagnostic is not proof of an executed verifier.
+    assert event["status"] == "INCOMPLETE"
+    assert event["missing_required"] == ["source"]
 
 
 def test_event_duplicates_are_collapsed():
-    rows = [{"name": "CPI", "date": "2026-11-12", "source": "BLS"},
-            {"name": "CPI", "date": "2026-11-12", "source": "BLS"}]
+    rows = [{"name": "CPI", "date": "2026-11-12", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"},
+            {"name": "CPI", "date": "2026-11-12", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"}]
     assert len(deduplicate_events(rows)) == 1
 
 
@@ -60,8 +63,41 @@ def test_fomc_event_is_enriched_from_project_calendar_and_official_source(tmp_pa
     assert "America/New_York" in result
     assert "federalreserve.gov" in result
     assert "Quellenprüfung: LIVE_VERIFIZIERT" in result
-    assert "Pressekonferenz: 14:30 (im selben Eintrag bestätigt)" in result
+    assert "Event-ID: FOMC_DECISION" in result
+    assert "Event-ID: FOMC_PRESS_CONFERENCE" in result
+    assert "Ereignis: FOMC Pressekonferenz" in result
+    assert "Uhrzeit: 14:30" in result
 
+
+
+def test_fomc_enrichment_emits_separate_press_conference_event_identity(tmp_path):
+    from trading_radar_market_first import _enrich_fomc_event, normalize_event_section
+    import json
+
+    calendar = tmp_path / "fomc_termine.json"
+    calendar.write_text(json.dumps({"termine": ["2026-10-28"]}), encoding="utf-8")
+    report = "Datenstand: 2026-10-28T04:29:51+00:00"
+    body = "- Ereignis: FOMC-Zinsentscheid\n- Kennzahl: FOMC Zinsentscheid"
+
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+        text = "<table><tr><td>October 27-28, 2026</td><td>FOMC meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr></table>"
+
+    results = {}
+    enriched = _enrich_fomc_event(
+        body, report, calendar, source_requester=lambda *a, **k: Response(),
+        verification_results=results,
+    )
+    assert results[("2026-10-28", "DECISION")].event_id == "FOMC_DECISION"
+    assert results[("2026-10-28", "PRESS_CONFERENCE")].event_id == "FOMC_PRESS_CONFERENCE"
+    normalized, findings = normalize_event_section(
+        "3. Ereignisradar\n" + enriched + "\n4. Assetklassenvergleich\n",
+        fomc_requester=lambda *a, **k: Response(),
+    )
+    assert normalized.count("- Ereignis: FOMC-Zinsentscheid") == 1
+    assert normalized.count("- Ereignis: FOMC Pressekonferenz") == 1
+    assert "Ereignis ohne verifizierte Quelle" not in findings
 
 def test_fomc_page_wide_matches_cannot_verify_different_calendar_rows(tmp_path):
     from trading_radar_market_first import _verify_fomc_official_source
@@ -91,7 +127,8 @@ def test_fomc_press_conference_not_claimed_without_same_event_time(tmp_path):
         text = "<table><tr><td>October 27-28, 2026</td><td>FOMC meeting</td><td>2:00 p.m.</td></tr></table>"
     result = _enrich_fomc_event(body, report, calendar, source_requester=lambda *a, **k: FakeResponse())
     assert "Quellenprüfung: LIVE_VERIFIZIERT" in result
-    assert "Pressekonferenz: NICHT SEPARAT VERIFIZIERT" in result
+    assert "Ereignis: FOMC Pressekonferenz" not in result
+    assert "Event-ID: FOMC_DECISION" in result
 
 
 def test_fomc_same_day_event_is_skipped_after_1400_new_york_time(tmp_path):
@@ -616,7 +653,7 @@ Daten."""
     assert audit_market_first_content(report) == []
 
 
-def test_fomc_official_calendar_accepts_bounded_category_markup():
+def test_fomc_official_calendar_returns_separate_decision_and_press_evidence():
     from datetime import date
     from trading_radar_market_first import _verify_fomc_official_source
 
@@ -634,19 +671,81 @@ def test_fomc_official_calendar_accepts_bounded_category_markup():
         url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
         text = html
 
-    verified, detail = _verify_fomc_official_source(date(2026, 10, 28), requester=lambda *a, **k: Response())
-    assert verified
-    assert "PRESSEKONFERENZ_VERIFIZIERT" in detail
+    requester = lambda *a, **k: Response()
+    decision = _verify_fomc_official_source(date(2026, 10, 28), requester=requester)
+    press = _verify_fomc_official_source(
+        date(2026, 10, 28), requester=requester, event_kind="PRESS_CONFERENCE"
+    )
+    assert decision.verified and decision.event_id == "FOMC_DECISION" and decision.event_time == "14:00"
+    assert press.verified and press.event_id == "FOMC_PRESS_CONFERENCE" and press.event_time == "14:30"
+    wrong_day = _verify_fomc_official_source(date(2026, 10, 27), requester=requester)
+    assert not wrong_day.verified
 
+
+
+
+def test_fomc_separate_press_row_is_bound_to_the_confirmed_meeting_end_date():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source
+
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+        text = """<html><title>October 2026</title><table>
+        <tr><td>October 27 - 28</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr>
+        <tr><td>28</td><td>FOMC Press Conference</td><td>2:30 p.m.</td></tr>
+        </table></html>"""
+
+    requester = lambda *a, **k: Response()
+    decision = _verify_fomc_official_source(date(2026, 10, 28), requester=requester)
+    press = _verify_fomc_official_source(
+        date(2026, 10, 28), requester=requester, event_kind="PRESS_CONFERENCE"
+    )
+    wrong_day = _verify_fomc_official_source(
+        date(2026, 10, 27), requester=requester, event_kind="PRESS_CONFERENCE"
+    )
+    assert decision.verified
+    assert press.verified and press.event_id == "FOMC_PRESS_CONFERENCE"
+    assert not wrong_day.verified
+
+def test_fomc_decision_evidence_cannot_verify_press_conference_event():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source, normalize_event
+
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+        text = "<tr><td>October 27-28, 2026</td><td>FOMC Meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr>"
+
+    decision = _verify_fomc_official_source(date(2026, 10, 28), requester=lambda *a, **k: Response())
+    press_event = normalize_event({
+        "name": "FOMC Pressekonferenz", "date": "2026-10-28",
+        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "source_verification": "LIVE_VERIFIZIERT",
+    }, verification_evidence=decision)
+    assert press_event["source_verified"] is False
+    press = _verify_fomc_official_source(
+        date(2026, 10, 28), requester=lambda *a, **k: Response(), event_kind="PRESS_CONFERENCE"
+    )
+    press_event = normalize_event({
+        "name": "FOMC Pressekonferenz", "date": "2026-10-28",
+        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "source_verification": "LIVE_VERIFIZIERT",
+    }, verification_evidence=press)
+    assert press_event["source_verified"] is True
 
 def test_event_scenario_bullets_remain_in_same_event_record(monkeypatch):
     import trading_radar_market_first as market_first
 
-    monkeypatch.setattr(market_first, "_enrich_fomc_event", lambda body, report_text: body)
+    class FedResponse:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+        text = "<html><title>October 2026</title><tr><td>October 27 - 28</td><td>FOMC Meeting</td><td>2:00 p.m.</td><td>2:30 p.m.</td></tr></html>"
     report = """3. Ereignisradar
 - Ereignis: FOMC-Zinsentscheid
   Datum: 2026-10-28
-  Quelle: Federal Reserve, offizieller Kalender
+  Quelle: Federal Reserve, offizieller Kalender (https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)
+  Quellenprüfung: NICHT VERIFIZIERT — vorhandener Reporttext ist kein Prüfergebnis
   Uhrzeit: 14:00
   Zeitzone: America/New_York
   Kennzahl: Fed Funds Rate
@@ -660,7 +759,9 @@ def test_event_scenario_bullets_remain_in_same_event_record(monkeypatch):
 
 4. Assetklassenvergleich
 """
-    result, findings = market_first.normalize_event_section(report)
+    result, findings = market_first.normalize_event_section(
+        report, fomc_requester=lambda *a, **k: FedResponse()
+    )
     assert result.count("- Ereignis: FOMC-Zinsentscheid") == 1
     assert not any("ohne Datum" in item or "ohne verifizierte Quelle" in item for item in findings)
 
@@ -691,11 +792,16 @@ def test_fomc_official_calendar_retries_canonical_month_url_after_http_error():
         requested.append(url)
         return ErrorResponse() if len(requested) == 1 else SuccessResponse()
 
-    verified, detail = _verify_fomc_official_source(date(2026, 12, 9), requester=requester)
-    assert verified
+    decision = _verify_fomc_official_source(date(2026, 12, 9), requester=requester)
+    assert decision.verified
     assert len(requested) == 2
-    assert "HTTP 403" in detail
-    assert "PRESSEKONFERENZ_VERIFIZIERT" in detail
+    assert "HTTP 403" in decision.detail
+    press = _verify_fomc_official_source(
+        date(2026, 12, 9), requester=lambda *a, **k: SuccessResponse(),
+        event_kind="PRESS_CONFERENCE",
+    )
+    assert press.verified
+    assert press.event_id == "FOMC_PRESS_CONFERENCE"
 
 
 def test_fomc_official_calendar_failure_diagnostic_includes_both_urls():
@@ -1086,27 +1192,18 @@ def test_m02_dxy_is_not_carried_forward_when_missing_on_common_cutoff():
     assert "DXY: NICHT VERFÜGBAR" in risk
 
 
-def test_event_date_is_recovered_from_one_explicit_iso_date_in_period():
+def test_event_date_is_promoted_from_one_explicit_valid_period_date():
     row = normalize_event({
         "name": "ADP Weekly Employment Change",
         "period": "Wöchentlich / In 2 Tagen (2026-11-17)",
-        "source": "ForexFactory (LIVE) / Makro-Datenpaket",
+        "source": "https://www.bls.gov/schedule/news_release/empsit.htm",
     })
     assert row["date"] == "2026-11-17"
     assert row["status"] == "READY"
-    assert row["missing_required"] == []
+    assert row["period"] == "Wöchentlich / In 2 Tagen (2026-11-17)"
 
 
-def test_event_date_is_not_guessed_from_ambiguous_or_invalid_period():
-    from trading_radar_market_first import _explicit_date_from_period
-
-    assert _explicit_date_from_period("Wöchentlich / In 2 Tagen") is None
-    assert _explicit_date_from_period("2026-11-17 bis 2026-11-19") is None
-    assert _explicit_date_from_period("2026-02-30") is None
-    assert _explicit_date_from_period("2026-11-17 bis 2026-02-30") is None
-
-
-def test_event_section_promotes_explicit_period_date_and_clears_stale_missing_date_finding():
+def test_event_section_promotes_only_one_explicit_period_date():
     from trading_radar_market_first import normalize_event_section
 
     report = (
@@ -1114,17 +1211,25 @@ def test_event_section_promotes_explicit_period_date_and_clears_stale_missing_da
         "- Ereignis-Uhrzeit: NICHT VERFÜGBAR\n"
         "- Kennzahl: ADP Weekly Employment Change\n"
         "- Zeitraum: Wöchentlich / In 2 Tagen (2026-11-17)\n"
-        "- Quelle: ForexFactory (LIVE) / Makro-Datenpaket\n"
+        "- Quelle: https://www.bls.gov/schedule/news_release/empsit.htm\n"
         "Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
-        "Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt)\n"
+        "Quellenprüfung: NICHT VERIFIZIERT (Quelle fehlt, ist nicht vertrauenswürdig oder nicht live verifiziert)\n"
         "\n4. Assetklassenvergleich\nAktien und Anleihen werden verglichen.\n"
     )
     normalized, findings = normalize_event_section(report)
-
     assert "Datum: 2026-11-17" in normalized
-    assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" in normalized
+    assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" not in normalized
     assert "Ereignis ohne Datum" not in findings
-    assert "Ereignis ohne verifizierte Quelle" not in findings
+    assert "Ereignis ohne verifizierte Quelle" in findings
+
+    relative = normalize_event({"name": "CPI", "period": "In 2 Tagen", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
+    ambiguous = normalize_event({"name": "CPI", "period": "2026-11-17 bis 2026-11-18", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
+    invalid = normalize_event({"name": "CPI", "period": "2026-02-30", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
+    assert relative["date"] is None
+    assert ambiguous["date"] is None
+    assert invalid["date"] is None
+    german = normalize_event({"name": "CPI", "period": "17.11.2026", "source": "https://www.bls.gov/schedule/news_release/cpi.htm"})
+    assert german["date"] == "2026-11-17"
 
 
 def test_explicit_event_date_is_not_relabelled_as_inferred_from_period():
@@ -1135,13 +1240,592 @@ def test_explicit_event_date_is_not_relabelled_as_inferred_from_period():
         "- Ereignis: FOMC-Zinsentscheid\n"
         "- Datum: 2026-11-17\n"
         "- Zeitraum: Sitzungstermin 2026-11-17\n"
-        "- Quelle: Federal Reserve, offizieller Kalender\n"
-        "- Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt)\n"
+        "- Quelle: Federal Reserve, offizieller Kalender (https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)\n"
+        "- Quellenprüfung: NICHT VERIFIZIERT (Quelle fehlt, ist nicht vertrauenswürdig oder nicht live verifiziert)\n"
         "\n4. Assetklassenvergleich\n"
     )
     normalized, findings = normalize_event_section(report)
 
     assert "Datum: 2026-11-17" in normalized
-    assert "NICHT VERIFIZIERT (Datum nicht belegt)" in normalized
+    assert "nicht live verifiziert" in normalized
     assert "DATUM AUS ZEITRAUM ÜBERNOMMEN" not in normalized
     assert "Ereignis ohne Datum" not in findings
+
+
+def test_fred_observations_api_is_not_a_verified_release_calendar_source():
+    from trading_radar_market_first import normalize_event_section
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: Initial Jobless Claims\n"
+        "- Datum: 2026-11-19\n"
+        "- Zeitraum: Wöchentlich\n"
+        "- Quelle: https://api.stlouisfed.org/fred/series/observations\n"
+        "- Quellenprüfung: LIVE_VERIFIZIERT\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(report)
+    assert "Ereignis ohne Datum" not in findings
+    assert "Ereignis ohne verifizierte Quelle" in findings
+    assert "NICHT VERIFIZIERT" in normalized
+    assert "LIVE_VERIFIZIERT" not in normalized
+
+
+def test_explicit_event_date_is_confirmed_only_by_real_forexfactory_adapter():
+    import json
+    from trading_radar_market_first import normalize_event_section
+
+    class FFResponse:
+        status_code = 200
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        text = json.dumps([{
+            "id": "ff-123", "country": "USD", "date": "2026-11-17T13:15:00-05:00",
+            "title": "ADP Employment Report", "time": "08:15am", "timezone": "America/New_York",
+        }])
+        def json(self):
+            return json.loads(self.text)
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: ADP: ADP Employment Report\n"
+        "- Datum: 2026-11-17\n"
+        "- Zeitraum: November 2026\n"
+        "- Quelle: ForexFactory (LIVE)\n"
+        "- Quellenprüfung: LIVE_VERIFIZIERT — Textmarker allein\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, forexfactory_requester=lambda *a, **k: FFResponse()
+    )
+    assert findings == []
+    assert "Datum: 2026-11-17" in normalized
+    assert "ForexFactory LIVE adapter" in normalized
+    assert "HTTP 200" in normalized
+
+
+
+def test_forexfactory_http_200_wrong_event_or_date_is_not_evidence():
+    import json
+    from trading_radar_market_first import normalize_event_section
+
+    class FFResponse:
+        status_code = 200
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        text = json.dumps([{"id": "x", "country": "USD", "date": "2026-11-18", "title": "CPI"}])
+        def json(self):
+            return json.loads(self.text)
+
+    report = (
+        "3. Ereignisradar\n- Ereignis: ADP Employment Report\n"
+        "- Datum: 2026-11-17\n- Quelle: ForexFactory (LIVE)\n"
+        "- Quellenprüfung: LIVE_VERIFIZIERT\n\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, forexfactory_requester=lambda *a, **k: FFResponse()
+    )
+    assert "Ereignis ohne verifizierte Quelle" in findings
+    assert "NICHT VERIFIZIERT" in normalized
+
+
+
+def test_forexfactory_calendar_url_alone_does_not_verify_event():
+    row = normalize_event({
+        "name": "ADP Employment Report", "date": "2026-11-17",
+        "source": "https://www.forexfactory.com/calendar",
+        "source_verification": "LIVE_VERIFIZIERT",
+    })
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+
+
+
+def test_fomc_mixed_decision_and_press_conference_record_is_not_classified():
+    from trading_radar_market_first import _fomc_event_kind
+
+    assert _fomc_event_kind("FOMC-Zinsentscheid") == "DECISION"
+    assert _fomc_event_kind("FOMC Pressekonferenz") == "PRESS_CONFERENCE"
+    assert _fomc_event_kind("FOMC-Zinsentscheid und FOMC Pressekonferenz") is None
+    assert _fomc_event_kind("FOMC Minutes und FOMC Pressekonferenz") is None
+
+def test_fomc_diagnostic_without_verifier_is_rejected_even_when_date_is_present():
+    from trading_radar_market_first import normalize_event_section
+
+    report = (
+        "3. Ereignisradar\n- Ereignis: FOMC-Zinsentscheid\n"
+        "- Datum: 2026-12-09\n"
+        "- Quelle: Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm\n"
+        "- Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Datum bestätigt\n\n"
+        "4. Assetklassenvergleich\n"
+    )
+    class BadResponse:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm"
+        text = "<html>October 2026; no matching meeting</html>"
+    normalized, findings = normalize_event_section(
+        report, fomc_requester=lambda *a, **k: BadResponse()
+    )
+    assert "FOMC-Ereignis nicht live" in " ".join(findings)
+    assert "NICHT VERIFIZIERT" in normalized
+
+def test_structured_event_normalizer_rejects_fred_observations_url_as_source():
+    row = normalize_event({
+        "name": "Initial Jobless Claims",
+        "date": "2026-11-19",
+        "source": "https://api.stlouisfed.org/fred/series/observations",
+    })
+    assert row["date"] == "2026-11-19"
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+    assert row["missing_required"] == ["source"]
+
+
+def test_structured_event_normalizer_rejects_invalid_explicit_calendar_date():
+    row = normalize_event({
+        "name": "Initial Jobless Claims",
+        "date": "2026-02-30",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+    })
+    assert row["date_valid"] is False
+    assert row["status"] == "INCOMPLETE"
+    assert row["missing_required"] == ["date"]
+
+
+def test_generic_untrusted_url_is_not_a_verified_event_source():
+    row = normalize_event({
+        "name": "CPI",
+        "date": "2026-12-10",
+        "source": "https://example.invalid/calendar",
+    })
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+    assert row["missing_required"] == ["source"]
+
+
+def test_event_source_requires_https_calendar_url_not_provider_name():
+    from trading_radar_market_first import _is_verified_event_source
+
+    assert _is_verified_event_source("https://www.bls.gov/schedule/news_release/empsit.htm")
+    assert _is_verified_event_source("https://www.forexfactory.com/calendar")
+    assert not _is_verified_event_source("FRED")
+    assert not _is_verified_event_source("Yahoo Finance")
+    assert not _is_verified_event_source("Official ADP Calendar")
+    assert not _is_verified_event_source("https://evil.example/fred")
+    assert not _is_verified_event_source("https://www.bls.gov:invalid/schedule/news_release/empsit.htm")
+    assert not _is_verified_event_source("https://user@www.bls.gov/schedule/news_release/empsit.htm")
+    assert not _is_verified_event_source("https://api.stlouisfed.org/fred/series/observations")
+
+
+def test_event_with_explicit_date_but_provider_name_only_remains_incomplete():
+    row = normalize_event({
+        "name": "Initial Jobless Claims",
+        "date": "2026-11-19",
+        "source": "FRED",
+    })
+    assert row["date_valid"] is True
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+    assert row["missing_required"] == ["source"]
+
+
+def test_generic_trusted_provider_calendar_source_keeps_existing_policy():
+    row = normalize_event({
+        "name": "CPI",
+        "date": "2026-11-19",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+    })
+    assert row["date_valid"] is True
+    assert row["source_verified"] is True
+    assert row["status"] == "READY"
+
+
+def test_bare_live_verified_marker_is_not_accepted_as_fetch_evidence():
+    row = normalize_event({
+        "name": "CPI", "date": "2026-11-19",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        "source_verification": "LIVE_VERIFIZIERT",
+    })
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+
+
+def test_live_fetch_evidence_must_match_declared_source_and_calendar_path():
+    for fetched_url in ("https://evil.example/calendar", "https://www.bls.gov/"):
+        row = normalize_event({
+            "name": "CPI", "date": "2026-11-19",
+            "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+            "source_verification": f"LIVE_VERIFIZIERT — HTTP 200; Abruf: {fetched_url}",
+        })
+        assert row["source_verified"] is False
+        assert row["status"] == "INCOMPLETE"
+
+
+def test_trusted_calendar_url_without_live_verification_is_not_verified():
+    from trading_radar_market_first import normalize_event
+
+    row = normalize_event({
+        "name": "ADP Employment Report",
+        "date": "2026-11-17",
+        "source": "https://www.forexfactory.com/calendar",
+    })
+    assert row["date_valid"] is True
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+    assert row["missing_required"] == ["source"]
+
+
+def test_negative_wrapped_live_verification_marker_is_not_accepted():
+    from trading_radar_market_first import _has_live_verification
+
+    assert not _has_live_verification("NICHT LIVE_VERIFIZIERT")
+    assert not _has_live_verification("Quelle NICHT VERIFIZIERT (vorher LIVE_VERIFIZIERT)")
+    assert not _has_live_verification("Quelle wurde LIVE_VERIFIZIERT erwähnt")
+    assert not _has_live_verification(
+        "Name nicht aufgelöst (LIVE_VERIFIZIERT) — offizieller Kalender geprüft",
+        "ForexFactory (LIVE)", event_name="ADP", event_date="2026-11-17",
+    )
+
+
+def test_event_header_narrative_date_is_not_promoted_to_explicit_event_date():
+    from trading_radar_market_first import normalize_event_section
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: Initial Jobless Claims am 2026-11-19\n"
+        "- Zeitraum: Wöchentlich\n"
+        "- Quelle: https://www.dol.gov/newsroom/releases\n"
+        "- Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.dol.gov/newsroom/releases\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(report)
+    assert "Ereignis ohne Datum" in findings
+    assert "Datum: NICHT VERFÜGBAR" in normalized
+    assert "Initial Jobless Claims am 2026-11-19" in normalized
+    assert "Datum: 2026-11-19" not in normalized
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["NICHT LIVE_VERIFIZIERT", "Quelle wurde LIVE_VERIFIZIERT erwähnt", "UNVERIFIZIERT"],
+)
+def test_event_verification_requires_positive_status_token_at_start(status):
+    from trading_radar_market_first import normalize_event
+
+    row = normalize_event({
+        "name": "ADP Employment Report",
+        "date": "2026-11-17",
+        "source": "https://www.forexfactory.com/calendar",
+        "source_verification": status,
+    })
+    assert row["source_verified"] is False
+    assert row["status"] == "INCOMPLETE"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://attacker@www.bls.gov/schedule/news_release/empsit.htm",
+        "https://www.bls.gov:8443/schedule/news_release/empsit.htm",
+        "https://www.bls.gov.evil.example/schedule/news_release/empsit.htm",
+    ],
+)
+def test_event_source_rejects_credential_port_and_lookalike_hosts(url):
+    from trading_radar_market_first import _is_verified_event_source
+
+    assert _is_verified_event_source(url) is False
+
+
+def test_narrative_date_in_event_title_is_not_promoted_to_release_date():
+    from trading_radar_market_first import normalize_event
+
+    row = normalize_event({
+        "name": "CPI-Veröffentlichung (2026-12-10)",
+        "period": "Dezember 2026",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        "source_verification": "LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.bls.gov/schedule/news_release/cpi.htm",
+    })
+    assert row["date"] is None
+    assert row["date_valid"] is False
+    assert row["status"] == "INCOMPLETE"
+    assert row["missing_required"] == ["date", "source"]
+
+
+def test_project_forexfactory_live_stamp_requires_actual_adapter_evidence():
+    from trading_radar_market_first import _is_verified_event_source, normalize_event
+
+    assert _is_verified_event_source("ForexFactory (LIVE) / Makro-Datenpaket")
+    assert not _is_verified_event_source("ForexFactory")
+    assert not _is_verified_event_source("ForexFactory (CACHE)")
+
+    event = normalize_event({
+        "name": "ADP Weekly Employment Change",
+        "date": "2026-11-17",
+        "source": "ForexFactory (LIVE) / Makro-Datenpaket",
+        "source_verification": "LIVE_VERIFIZIERT",
+    })
+    assert event["status"] == "INCOMPLETE"
+    assert event["source_verified"] is False
+
+
+
+def test_generic_live_evidence_requires_matching_event_date_and_exact_release_url():
+    row = normalize_event({
+        "name": "CPI-Veröffentlichung", "date": "2026-11-19",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        "source_verification": (
+            "LIVE_VERIFIZIERT — HTTP 200; Abruf: "
+            "https://www.bls.gov/schedule/news_release/cpi.htm; "
+            "bestätigt: CPI-Veröffentlichung am 2026-11-19"
+        ),
+    })
+    assert row["source_verified"] is True
+    assert row["status"] == "READY"
+
+def test_live_verification_rejects_unrelated_same_host_release_page():
+    from trading_radar_market_first import normalize_event
+
+    event = normalize_event({
+        "name": "CPI-Veröffentlichung",
+        "date": "2026-11-19",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        "source_verification": (
+            "LIVE_VERIFIZIERT — HTTP 200; Abruf: "
+            "https://www.bls.gov/schedule/news_release/empsit.htm"
+        ),
+    })
+    assert event["source_verified"] is False
+    assert event["status"] == "INCOMPLETE"
+    assert "source" in event["missing_required"]
+
+
+def test_live_verification_requires_matching_event_and_date_in_fetched_evidence():
+    from trading_radar_market_first import normalize_event
+
+    event = normalize_event({
+        "name": "CPI-Veröffentlichung",
+        "date": "2026-11-19",
+        "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        "source_verification": (
+            "LIVE_VERIFIZIERT — HTTP 200; Abruf: "
+            "https://www.bls.gov/schedule/news_release/cpi.htm; "
+            "bestätigt: Employment Situation am 2026-11-06"
+        ),
+    })
+    assert event["source_verified"] is False
+    assert event["status"] == "INCOMPLETE"
+
+
+def test_fomc_month_page_exception_is_bound_to_event_month_and_name():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source, normalize_event
+
+    class FedResponse:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-december.htm?view=calendar"
+        text = "<html><title>December 2026</title><tr><td>December 8 - 9</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr></html>"
+
+    evidence = _verify_fomc_official_source(
+        date(2026, 12, 9), requester=lambda *a, **k: FedResponse()
+    )
+    valid = normalize_event({
+        "name": "FOMC-Zinsentscheid", "date": "2026-12-09",
+        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "source_verification": "LIVE_VERIFIZIERT — report text is not evidence",
+    }, verification_evidence=evidence)
+    forged = normalize_event({
+        "name": "FOMC-Zinsentscheid", "date": "2026-12-09",
+        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "source_verification": "LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.federalreserve.gov/newsevents/2026-december.htm",
+    })
+    wrong_event = normalize_event({
+        "name": "US-Arbeitsmarktbericht", "date": "2026-12-09",
+        "source": "Federal Reserve official calendar https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "source_verification": "LIVE_VERIFIZIERT",
+    }, verification_evidence=evidence)
+    assert valid["source_verified"] is True
+    assert forged["source_verified"] is False
+    assert wrong_event["source_verified"] is False
+
+
+def test_event_section_downgrades_same_host_but_wrong_release_page():
+    from trading_radar_market_first import normalize_event_section
+
+    report = """3. Ereignisradar
+- Ereignis: CPI-Veröffentlichung
+- Datum: 2026-11-19
+- Quelle: https://www.bls.gov/schedule/news_release/cpi.htm
+- Quellenprüfung: LIVE_VERIFIZIERT — HTTP 200; Abruf: https://www.bls.gov/schedule/news_release/empsit.htm
+
+4. Assetklassenvergleich
+Relative Stärke.
+"""
+    normalized, findings = normalize_event_section(report)
+    event_section = normalized.split("3. Ereignisradar", 1)[1].split("4. Assetklassenvergleich", 1)[0]
+    assert "Ereignis ohne verifizierte Quelle" in findings
+    assert "Quellenprüfung: NICHT VERIFIZIERT" in event_section
+    assert "LIVE_VERIFIZIERT" not in event_section
+
+
+def test_caller_constructed_evidence_object_is_not_accepted_as_live_proof():
+    from trading_radar_market_first import _EventVerificationEvidence, normalize_event
+
+    forged = _EventVerificationEvidence(
+        kind="FOMC", event_id="FOMC_DECISION", event_name="FOMC Zinsentscheid",
+        event_date="2026-12-09", event_time="14:00", timezone="America/New_York",
+        requested_url="https://www.federalreserve.gov/newsevents/2026-december.htm",
+        final_url="https://www.federalreserve.gov/newsevents/2026-december.htm",
+        http_status=200, retrieved_at="2026-11-16T10:00:00+00:00",
+        content_match=True, adapter="federal_reserve_month_calendar_verifier",
+        response_sha256="not-a-real-response-hash", verified=True, detail="forged",
+    )
+    event = normalize_event({
+        "name": "FOMC-Zinsentscheid", "date": "2026-12-09",
+        "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "source_verification": "LIVE_VERIFIZIERT",
+    }, verification_evidence=forged)
+    assert event["source_verified"] is False
+    assert event["status"] == "INCOMPLETE"
+
+
+def test_generic_bls_live_verification_still_accepts_matching_real_fetch_evidence():
+    """The ForexFactory/FOMC adapter changes must not disable other providers."""
+    source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+    row = normalize_event({
+        "name": "CPI", "date": "2026-11-19", "source": source,
+        "source_verification": (
+            "LIVE_VERIFIZIERT — HTTP 200; Abruf: " + source
+            + "; Event: CPI am 2026-11-19"
+        ),
+    })
+    assert row["source_verified"] is True
+    assert row["status"] == "READY"
+
+
+def test_fomc_event_identity_classifier_does_not_prefer_decision_when_ambiguous():
+    from trading_radar_market_first import _fomc_event_kind
+
+    assert _fomc_event_kind("FOMC-Zinsentscheid") == "DECISION"
+    assert _fomc_event_kind("FOMC Pressekonferenz") == "PRESS_CONFERENCE"
+    assert _fomc_event_kind("FOMC-Zinsentscheid und FOMC Pressekonferenz") is None
+
+
+
+def test_fomc_press_conference_remains_same_day_at_1415_new_york_time(tmp_path):
+    from trading_radar_market_first import _enrich_fomc_event
+    import json
+
+    calendar = tmp_path / "fomc_termine.json"
+    calendar.write_text(json.dumps({"termine": ["2026-10-28", "2026-12-09"]}), encoding="utf-8")
+    report = "Datenstand: 2026-10-28T18:15:00+00:00"  # 14:15 EDT
+    body = "- Ereignis: FOMC Pressekonferenz"
+    requested = []
+
+    class Response:
+        status_code = 200
+        text = "<table><tr><td>October 27-28, 2026</td><td>FOMC meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr></table>"
+
+        @property
+        def url(self):
+            return requested[-1]
+
+    def requester(url, **kwargs):
+        requested.append(url)
+        return Response()
+
+    result = _enrich_fomc_event(body, report, calendar, source_requester=requester)
+    assert requested and "2026-october.htm" in requested[0]
+    assert "Event-ID: FOMC_PRESS_CONFERENCE" in result
+    assert "Datum: 2026-10-28" in result
+    assert "Uhrzeit: 14:30" in result
+
+
+@pytest.mark.parametrize(
+    "cutoff_utc",
+    ["2026-10-28T18:30:00+00:00", "2026-10-28T18:31:00+00:00"],
+)
+def test_fomc_press_conference_moves_to_next_meeting_at_or_after_1430_new_york_time(
+    tmp_path, cutoff_utc
+):
+    from trading_radar_market_first import _enrich_fomc_event
+    import json
+
+    calendar = tmp_path / "fomc_termine.json"
+    calendar.write_text(json.dumps({"termine": ["2026-10-28", "2026-12-09"]}), encoding="utf-8")
+    report = f"Datenstand: {cutoff_utc}"  # 14:30 / 14:31 EDT
+    body = "- Ereignis: FOMC Pressekonferenz"
+    requested = []
+
+    class Response:
+        status_code = 200
+        text = "<table><tr><td>December 8-9, 2026</td><td>FOMC meeting</td><td>2:00 p.m. Press Conference 2:30 p.m.</td></tr></table>"
+
+        @property
+        def url(self):
+            return requested[-1]
+
+    def requester(url, **kwargs):
+        requested.append(url)
+        return Response()
+
+    result = _enrich_fomc_event(body, report, calendar, source_requester=requester)
+    assert requested and "2026-december.htm" in requested[0]
+    assert "Datum: 2026-12-09" in result
+
+
+def test_fomc_press_row_day_30_is_not_matched_by_230pm_minute_digits():
+    from datetime import date
+    from trading_radar_market_first import _verify_fomc_official_source
+
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-october.htm?view=calendar"
+        text = """<html><title>October 2026</title><table>
+        <tr><td>October 29-30, 2026</td><td>FOMC Meeting</td><td>2:00 p.m.</td></tr>
+        <tr><td>2</td><td>FOMC Press Conference</td><td>2:30 p.m.</td></tr>
+        </table></html>"""
+
+    result = _verify_fomc_official_source(
+        date(2026, 10, 30), requester=lambda *a, **k: Response(),
+        event_kind="PRESS_CONFERENCE",
+    )
+    assert not result.verified
+
+
+def test_combined_event_time_zone_label_is_a_field_not_a_new_event_record():
+    from trading_radar_market_first import normalize_event_section
+    report = """3. Ereignisradar
+- Ereignis: ADP Weekly Employment Change
+  - Datum: 2026-11-17
+  - Quelle: ADP official calendar
+  - Uhrzeit/Zeitzone: 08:15 America/New_York
+  - Kennzahl: ADP Beschäftigungsänderung
+  - Berichtszeitraum: November 2026
+  - Letzter Wert: 42.000
+  - Konsens: 35.000
+
+4. Assetklassenvergleich
+"""
+    normalized, findings = normalize_event_section(report)
+    assert findings == []
+    assert normalized.count("Ereignis: ADP Weekly Employment Change") == 1
+    assert normalized.count("Uhrzeit/Zeitzone:") == 1
+    assert "4. Assetklassenvergleich" in normalized
+
+
+def test_combined_event_time_zone_unavailable_is_preserved_as_one_field():
+    from trading_radar_market_first import normalize_event_section
+    report = """3. Ereignisradar
+- Ereignis: ADP Weekly Employment Change
+  - Datum: 2026-11-17
+  - Quelle: ADP official calendar
+  - Uhrzeit/Zeitzone: NICHT VERFÜGBAR
+  - Kennzahl: ADP Beschäftigungsänderung
+  - Berichtszeitraum: November 2026
+  - Letzter Wert: NICHT VERFÜGBAR
+  - Konsens: NICHT VERFÜGBAR
+
+4. Assetklassenvergleich
+"""
+    normalized, findings = normalize_event_section(report)
+    assert findings == []
+    assert normalized.count("Ereignis: ADP Weekly Employment Change") == 1
+    assert normalized.count("Uhrzeit/Zeitzone:") == 1
