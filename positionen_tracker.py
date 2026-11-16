@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import json
 import datetime
 import re
@@ -13,7 +14,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 import pandas as pd
 from positionen_sheet_upload import erstelle_sheet_upload_stream
-from positionen_datum import parse_position_date
+from positionen_datum import parse_position_date, reject_excel_date_serial_price
 import yfinance as yf
 from scipy.signal import argrelextrema
 from google.oauth2.credentials import Credentials
@@ -95,8 +96,7 @@ def sicheres_float(val, ticker="?", feldname="?"):
     einem fehlerhaften/leeren manuellen Eintrag (z.B. beim Nachziehen des
     Stops in Google Sheets) NICHT den kompletten Lauf abstuerzen laesst,
     sondern None zurueckgibt - die aufrufende Stelle ueberspringt die
-    betroffene Zeile dann gezielt, alle anderen Positionen werden trotzdem
-    normal weiterverarbeitet."""
+    betroffene Zeile dann gezielt."""
     try:
         if val is None:
             return None
@@ -763,13 +763,105 @@ def stelle_anleitung_sicher(df):
     return pd.concat([pd.DataFrame([anleitung]), df], ignore_index=True)[SPALTEN]
 
 
+
+def validate_position_source_schema(df):
+    """Fail closed for incomplete open positions while retaining closed history."""
+    normalized_columns = [str(column).strip() for column in df.columns]
+    folded_columns = [column.casefold() for column in normalized_columns]
+    if any(not column for column in normalized_columns):
+        raise ValueError("Positionsquelle enthält einen leeren Spaltennamen.")
+    if len(folded_columns) != len(set(folded_columns)):
+        raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
+    df.columns = normalized_columns
+    required = {"Ticker", "Status"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(
+            "Positionsquelle unvollstaendig; essentielle Spalten fehlen: "
+            + ", ".join(missing)
+        )
+    if df.empty:
+        raise ValueError("Positionsquelle enthält keine Datenzeilen.")
+
+    tickers = df["Ticker"].fillna("").astype(str).str.strip()
+    instruction_rows = tickers.str.upper().eq("ANLEITUNG")
+    missing_tokens = {
+        "", "nan", "none", "null", "na", "n/a", "nicht verfügbar",
+        "nicht verfuegbar", "-", "—", "tbd", "tba", "unbekannt", "fehlt", "unklar",
+    }
+    for column in ("Ticker", "Status"):
+        values = df[column]
+        absent = values.isna() | values.astype(str).str.strip().str.casefold().isin(missing_tokens)
+        absent &= ~instruction_rows
+        if absent.any():
+            rows = ", ".join(str(index + 2) for index in df.index[absent])
+            raise ValueError(
+                f"Positionsquelle mit fehlenden Pflichtwerten in {column} "
+                f"(CSV-Zeilen: {rows})"
+            )
+
+    open_rows = df["Status"].fillna("").astype(str).str.strip().str.casefold().eq("offen")
+    open_rows &= ~instruction_rows
+    if open_rows.any():
+        required_open_columns = {"Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg", "Stop"}
+        missing_open_columns = sorted(required_open_columns - set(df.columns))
+        if missing_open_columns:
+            raise ValueError(
+                "Positionsquelle unvollständig für offene Positionen; Pflichtspalten fehlen: "
+                + ", ".join(missing_open_columns)
+            )
+    if open_rows.any():
+        required_open_values = ("Ticker", "Name", "Einstiegsdatum", "Einstieg", "Stop")
+        for column in required_open_values:
+            values = df.loc[open_rows, column]
+            absent = values.isna() | values.astype(str).str.strip().str.casefold().isin(missing_tokens)
+            if absent.any():
+                rows = ", ".join(str(index + 2) for index in values.index[absent])
+                raise ValueError(
+                    f"Offene Position ohne Pflichtwert in {column} (CSV-Zeilen: {rows})"
+                )
+
+    for row_index in df.index[open_rows]:
+        ticker = df.at[row_index, "Ticker"]
+        raw_date = df.at[row_index, "Einstiegsdatum"]
+        try:
+            parsed_date = parse_position_date(
+                raw_date, field=f"Positionsquelle Zeile {row_index + 2}: Einstiegsdatum"
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        if parsed_date is None:
+            raise ValueError(
+                f"Offene Position ohne gültiges Einstiegsdatum (CSV-Zeile {row_index + 2})"
+            )
+        for column in ("Einstieg", "Stop"):
+            raw_value = df.at[row_index, column]
+            reject_excel_date_serial_price(
+                raw_value, field=f"Positionsquelle Zeile {row_index + 2}: {column}",
+                ticker=ticker,
+            )
+            # Validate with the same conversion used by the downstream
+            # position-management code. A value accepted here must not later
+            # turn into None and silently skip the open position.
+            numeric = sicheres_float(raw_value, ticker, column)
+            if numeric is None or not np.isfinite(numeric) or numeric <= 0:
+                raise ValueError(
+                    f"Offene Position mit ungültigem numerischem Pflichtwert "
+                    f"in {column} (CSV-Zeile {row_index + 2}): {raw_value!r}"
+                )
+
+    return df
+
+
 def lade_positionen_herunter(service, file_id, mime_type):
     """Lädt die bestehende Positionen-Datei aus Drive herunter und gibt sie als
     DataFrame zurück. Bei einer nativen Google-Sheets-Datei wird der Inhalt per
     Export als CSV abgerufen (get_media funktioniert bei nativen Google-Typen
     nicht); bei einer rohen .csv (Übergangsfall von der ersten Version) wird
-    stattdessen direkt heruntergeladen. Legt eine leere Struktur an, falls die
-    Datei noch nicht existiert (erster Lauf) oder leer/beschädigt ist."""
+    stattdessen direkt heruntergeladen. Eine leere Struktur wird nur angelegt,
+    wenn noch keine Datei existiert (erster Lauf). Eine vorhandene, aber leere,
+    beschädigte oder nicht lesbare Quelle bricht fail-closed ab, damit ein
+    vorhandener Positionsbestand nicht durch einen leeren Upload ersetzt wird."""
     if file_id is None:
         print(f"DEBUG: {DRIVE_NAME} existiert noch nicht in Drive - starte mit leerer Liste.")
         return pd.DataFrame(columns=SPALTEN)
@@ -791,15 +883,29 @@ def lade_positionen_herunter(service, file_id, mime_type):
         # semikolon-getrennt - beides abfangen
         inhalt = buffer.getvalue().decode('utf-8-sig')
         sep = ';' if inhalt.count(';') > inhalt.count(',') else ','
+        raw_header = next(csv.reader(io.StringIO(inhalt), delimiter=sep), [])
+        normalized_header = [str(column).strip() for column in raw_header]
+        folded_header = [column.casefold() for column in normalized_header]
+        if not normalized_header or any(not column for column in normalized_header):
+            raise ValueError("Positionsquelle enthält einen leeren oder fehlenden Header.")
+        if len(folded_header) != len(set(folded_header)):
+            raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
         df = pd.read_csv(io.StringIO(inhalt), sep=sep)
+        normalized_columns = [str(column).strip() for column in df.columns]
+        if len(normalized_columns) != len(set(normalized_columns)):
+            raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
+        df.columns = normalized_columns
+        validate_position_source_schema(df)
 
         for spalte in SPALTEN:
             if spalte not in df.columns:
                 df[spalte] = ""
         return df[SPALTEN]
     except Exception as e:
-        print(f"FEHLER beim Herunterladen/Parsen von {DRIVE_NAME}: {e}. Starte mit leerer Liste.")
-        return pd.DataFrame(columns=SPALTEN)
+        raise RuntimeError(
+            f"Positionsquelle {DRIVE_NAME} konnte nicht sicher gelesen werden; "
+            "bestehender Bestand wird nicht durch eine leere Datei ersetzt."
+        ) from e
 
 
 def hole_aktuellen_kurs(ticker, markt):
@@ -1219,15 +1325,35 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
     """Wendet die neue Trendfolge-Exitlogik auf genau eine offene Position an.
 
     Die Funktion erzeugt KEINE Broker-Orders. TP1 und TP2 bleiben rein
-    informative Kursziele; es gibt keinen Teilverkauf und keine künstliche
-    Restposition. Der aktuelle Managementzustand wird ausschließlich in
+    informative Kursziele; es gibt keine automatische Verkaufs- oder
+    Mengenbuchung. Der aktuelle Managementzustand wird ausschließlich in
     TF_Management kompakt persistiert.
     """
-    if not _ist_trendfolge_position(row) or hist.empty or einstieg is None:
+    if not _ist_trendfolge_position(row) or einstieg is None:
         return stop, tp1, sicheres_float(row.get('TP2'), row.get('Ticker', '?'), 'TP2')
 
+    # Fehlende Historie darf die Entwicklungsphase niemals implizit als
+    # abgeschlossen behandeln. Der normale Stop-Ausgang bleibt gesperrt,
+    # bis drei gültige abgeschlossene Handelstage nachgewiesen sind.
+    if hist is None:
+        hist = pd.DataFrame()
     ticker = row.get('Ticker', '?')
+    if hist.empty:
+        df.at[idx, 'TP2'] = np.nan
+        df.at[idx, 'TF_Management'] = (
+            "Entwicklung nicht verifizierbar | Historie fehlt | "
+            "normaler Stop-Ausgang ausgesetzt"
+        )
+        return stop, tp1, None
+
     completed_days, phase_done, phase_end = _trendfolge_entwicklungsstatus(row, hist)
+    if completed_days is None or phase_done is None:
+        df.at[idx, 'TP2'] = np.nan
+        df.at[idx, 'TF_Management'] = (
+            "Entwicklung nicht verifizierbar | Einstiegsdatum fehlt/ungültig | "
+            "normaler Stop-Ausgang ausgesetzt"
+        )
+        return stop, tp1, None
     # TF_Management wird am Ende des Durchlaufs als kompakter aktueller
     # Zustand geschrieben; Zwischenwerte bleiben ausschließlich lokal.
 
@@ -1242,8 +1368,8 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
         hinweis = ''
     tp1_bereits = 'TP1 erreicht' in hinweis
 
-    # TP1 bleibt rein informativ. Es gibt keinen Teilverkauf und keine
-    # künstliche Restposition.
+    # TP1 bleibt rein informativ. Es gibt keine automatische Verkaufs- oder
+    # Mengenbuchung und keine künstliche Restposition.
     if tp1_erreicht and not tp1_bereits:
         df.at[idx, 'TP_Hinweis'] = f"{hinweis} | TP1 erreicht am {heute}".strip(" |")
         hinweis = str(df.at[idx, 'TP_Hinweis'])
@@ -1264,7 +1390,8 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
     # Nach der Entwicklungsphase: adaptiver Stop aus den letzten 3
     # abgeschlossenen Bars minus 0.5*ATR14. Für Long wird der Stop angehoben,
     # aber niemals abgesenkt. Nach TP1 gilt mindestens Break-even.
-    if atr14 is not None and len(hist) >= 3:
+    atr14_verfuegbar = atr14 is not None
+    if atr14_verfuegbar and len(hist) >= 3:
         if ist_short:
             adaptive = float(hist['High'].iloc[-3:].max() + 0.5 * atr14)
             if stop is None or adaptive < stop:
@@ -1290,7 +1417,7 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
     # Nach TP1 nur bestätigte Swing-Lows als Trailing-Referenz verwenden.
     # Der Pivot muss durch zwei vollständig abgeschlossene Folgebars bestätigt
     # sein. Das ist absichtlich konservativ und verhindert Look-ahead.
-    if tp1_erreicht or tp1_bereits:
+    if (tp1_erreicht or tp1_bereits) and atr14_verfuegbar:
         if ist_short:
             swing_idxs = _trendfolge_bestatigte_swing_highs(hist, order=2)
             if swing_idxs:
@@ -1354,7 +1481,14 @@ def _aktualisiere_trendfolge_management(df, idx, row, hist, einstieg, aktueller_
             aktueller_kurs <= tp2 if ist_short else aktueller_kurs >= tp2
         )
     ) or ('TP2 erreicht' in hinweis)
-    if tp2_erreicht_aktuell:
+    if not atr14_verfuegbar:
+        if tp2_erreicht_aktuell:
+            status_text = "ATR14 nicht verfügbar | TP2 erreicht | Position weiterhin offen"
+        elif tp1_erreicht_aktuell:
+            status_text = "ATR14 nicht verfügbar | TP1 erreicht"
+        else:
+            status_text = "ATR14 nicht verfügbar"
+    elif tp2_erreicht_aktuell:
         status_text = "TP2 erreicht | Position weiterhin offen"
     elif tp1_erreicht_aktuell:
         status_text = "TP1 erreicht"
@@ -1374,10 +1508,9 @@ def aktualisiere_positionen(df):
     Kursziele TP1/TP2. Wird der Stop erreicht oder unterschritten, wechselt
     der Status auf 'Gestoppt' und Ausstiegsdatum/-kurs werden gesetzt.
     Werden TP1/TP2 erreicht, wird das NUR als informativer Hinweis in
-    TP_Hinweis vermerkt (NEU) - die Position bleibt bewusst offen, da ein
-    Kursziel anders als der Stop keine automatische Order ist, sondern eine
-    Entscheidungshilfe (Teilverkauf, Trailing-Stop, komplett raus - das
-    entscheidet der Nutzer selbst manuell). Der Hinweis wird nur beim ERSTEN
+    TP_Hinweis vermerkt - die Position bleibt offen. Kursziele lösen weder
+    eine automatische Order noch eine Mengen-/Verkaufsbuchung aus. Der Hinweis
+    wird nur beim ERSTEN
     Erreichen gesetzt (kein taeglicher Neu-Vermerk, falls schon vorhanden).
     Für alle offenen Positionen wird zusätzlich der aktuelle Kurs und die
     Performance seit Einstieg als Info-Spalte ergänzt (für die Briefing-
@@ -1523,65 +1656,56 @@ def aktualisiere_positionen(df):
         # ------------------------------------------------------------------
         # NEUE TREND FOLGE-EXITLOGIK
         # ------------------------------------------------------------------
-        # Nur Trendfolge. Trendwende/HEBELTRADER/Short/Manuell bleiben
-        # vollständig bei der bisherigen Stop-/TP-Logik.
+        # Nur Trendfolge. Trendwende/HEBELTRADER sowie manuelle Positionen
+        # außerhalb Trendfolge bleiben bei der bisherigen Stop-/TP-Logik.
         trendfolge_phase_aktiv = False
         if _ist_trendfolge_position(row):
             hist_tf = _hole_tageshistorie(ticker, markt, tage=45)
-            if not hist_tf.empty:
-                alter_stop = stop
-                stop, tp1, tp2 = _aktualisiere_trendfolge_management(
-                    df, idx, row, hist_tf, einstieg, aktueller_kurs,
-                    stop, tp1, ist_short, heute
-                )
-                df.at[idx, 'Stop'] = stop
+            alter_stop = stop
+            stop, tp1, tp2 = _aktualisiere_trendfolge_management(
+                df, idx, row, hist_tf, einstieg, aktueller_kurs,
+                stop, tp1, ist_short, heute
+            )
+            df.at[idx, 'Stop'] = stop
 
-                # STOP VERÄNDERT nur bei tatsächlicher Verbesserung des
-                # Schutzlevels. Gleicher Wert oder Verschlechterung erzeugt
-                # keinen Alert. Ein bereits gemeldeter identischer Stop wird
-                # ebenfalls nicht erneut gemeldet.
-                if (
-                    stop is not None and alter_stop is not None
-                    and round(float(stop), 2) != round(float(alter_stop), 2)
-                    and (
-                        (not ist_short and float(stop) > float(alter_stop))
-                        or (ist_short and float(stop) < float(alter_stop))
+            # STOP VERÄNDERT nur bei tatsächlicher Verbesserung des Schutzlevels.
+            if (
+                stop is not None and alter_stop is not None
+                and round(float(stop), 2) != round(float(alter_stop), 2)
+                and (
+                    (not ist_short and float(stop) > float(alter_stop))
+                    or (ist_short and float(stop) < float(alter_stop))
+                )
+            ):
+                alert_alt = str(row.get('Alert_Hinweis', '')).strip()
+                marker = f"STOP VERÄNDERT {float(stop):.2f}"
+                if marker.upper() not in alert_alt.upper():
+                    alert_events.append({
+                        'event': 'STOP VERÄNDERT', 'idx': idx, 'ticker': ticker,
+                        'kurs': aktueller_kurs, 'performance': performance,
+                        'stop': stop, 'tp1': tp1, 'tp2': tp2,
+                    })
+                basis = str(df.at[idx, 'TF_Management']).strip()
+                if basis:
+                    df.at[idx, 'TF_Management'] = (
+                        f"Stop nachgezogen: {float(alter_stop):.2f} → "
+                        f"{float(stop):.2f} | " + basis.split(" | ", 1)[1]
+                        if " | " in basis else
+                        f"Stop nachgezogen: {float(alter_stop):.2f} → {float(stop):.2f}"
                     )
-                ):
-                    alert_alt = str(row.get('Alert_Hinweis', '')).strip()
-                    marker = f"STOP VERÄNDERT {float(stop):.2f}"
-                    if marker.upper() not in alert_alt.upper():
-                        alert_events.append({
-                            'event': 'STOP VERÄNDERT', 'idx': idx, 'ticker': ticker,
-                            'kurs': aktueller_kurs, 'performance': performance,
-                            'stop': stop, 'tp1': tp1, 'tp2': tp2,
-                        })
-                    # Der aktuelle Zustand wird auch für den Benutzer kompakt
-                    # in TF_Management sichtbar gemacht.
-                    basis = str(df.at[idx, 'TF_Management']).strip()
-                    if basis:
-                        df.at[idx, 'TF_Management'] = (
-                            f"Stop nachgezogen: {float(alter_stop):.2f} → "
-                            f"{float(stop):.2f} | " + basis.split(" | ", 1)[1]
-                            if " | " in basis else
-                            f"Stop nachgezogen: {float(alter_stop):.2f} → {float(stop):.2f}"
-                        )
-                if tp1 is not None:
-                    df.at[idx, 'TP1'] = tp1
-                # TP2 wird von der neuen Logik bewusst erst dynamisch gesetzt.
-                if tp2 is None:
-                    df.at[idx, 'TP2'] = np.nan
-                else:
-                    df.at[idx, 'TP2'] = tp2
-                management_status = str(df.at[idx, 'TF_Management']).strip()
-                trendfolge_phase_aktiv = management_status.lower().startswith('entwicklung aktiv')
-                if trendfolge_phase_aktiv:
-                    print(
-                        f"DEBUG: {ticker} (Trendfolge) -> Entwicklungsphase aktiv "
-                        f"({management_status}), kein normaler Stop-Ausgang."
-                    )
+            if tp1 is not None:
+                df.at[idx, 'TP1'] = tp1
+            if tp2 is None:
+                df.at[idx, 'TP2'] = np.nan
             else:
-                print(f"WARNUNG: {ticker} (Trendfolge) -> keine Tageshistorie für neues Exit-Management; bestehender Stop bleibt aktiv.")
+                df.at[idx, 'TP2'] = tp2
+            management_status = str(df.at[idx, 'TF_Management']).strip()
+            trendfolge_phase_aktiv = management_status.lower().startswith('entwicklung')
+            if trendfolge_phase_aktiv:
+                print(
+                    f"DEBUG: {ticker} (Trendfolge) -> Entwicklungsphase nicht abgeschlossen "
+                    f"oder nicht verifizierbar ({management_status}), kein normaler Stop-Ausgang."
+                )
 
         # Stop-Check GESPIEGELT bei Short: Stop liegt oberhalb, ausgeloest
         # bei Kurs >= Stop (nicht <=)

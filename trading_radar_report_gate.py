@@ -1287,8 +1287,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     # not mask a second event that lacks its own time/zone/metric/period/value.
     events = _section_body(text, 3, SECTION_NAMES[2])
     event_labels = (
-        (r"Uhrzeit", r"Zeit"),
-        (r"Zeitzone",),
+        (r"Uhrzeit", r"Zeit", r"Uhrzeit/Zeitzone"),
+        (r"Zeitzone", r"Uhrzeit/Zeitzone"),
         (r"Kennzahl", r"Indikator"),
         (r"Berichtszeitraum", r"Zeitraum"),
     )
@@ -1306,7 +1306,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         current = []
         field_only = re.compile(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-            r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+            r"(?:Datum|Date|Uhrzeit/Zeitzone|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
             r"Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
@@ -1315,7 +1315,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?)(?:\*\*)?\s*[:=](?:\*\*)?"
         )
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
-        named_event = re.compile(r"(?i)^\s*(?:Ereignis|Termin|Event)\s*[:=]")
+        named_event = re.compile(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:Ereignis|Termin|Event)\s*[:=]"
+        )
 
         def fomc_event_kind(value):
             """Return a conservative FOMC event identity; unknown kinds never merge."""
@@ -1337,7 +1339,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 return "press_conference"
             return None
 
-        for line in section_body.splitlines():
+        section_lines = section_body.splitlines()
+        has_named_event_records = any(named_event.match(line) for line in section_lines)
+        for line in section_lines:
             match = bullet.match(line)
             same_fomc_event = False
             if match and current:
@@ -1352,8 +1356,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                     and current_kind is not None
                     and current_kind == summary_kind
                 )
+            date_led_record = bool(
+                match and not has_named_event_records
+                and re.match(r"(?i)^Datum\s*[:=]", match.group(1).strip())
+            )
             starts_record = (
-                ((bool(match) and not field_only.match(line)) and not same_fomc_event)
+                ((bool(match) and (not field_only.match(line) or date_led_record)) and not same_fomc_event)
                 or (bool(named_event.match(line)) and not field_only.match(line))
             )
             if starts_record and current:
@@ -2352,9 +2360,11 @@ def validate_report(text: str) -> list[str]:
             errors.append("M-03: Symbolstatusliste deckt das geprüfte Universum nicht exakt ab.")
         non_valid = missing + stale + invalid
         if non_valid > 0 and re.search(
-            r"(?i)(?:OHLCV\s+)?(?:vollständig\s*,?\s*)?keine\s+(?:historischen\s+)?Datenlücken|"
-            r"keine\s+fehlenden\s+(?:OHLCV[- ]?)?(?:Daten|Kerzen|Handelstage)",
-            appendix,
+            r"(?i)OHLCV[^\r\n]{0,180}(?:vollständig\s*,?\s*)?keine\s+"
+            r"(?:historischen\s+)?Datenlücken|"
+            r"keine\s+fehlenden\s+OHLCV[- ]?(?:Daten|Kerzen|Handelstage)|"
+            r"keine\s+(?:historischen\s+)?Datenlücken[^\r\n]{0,180}OHLCV",
+            text,
         ):
             errors.append(
                 "M-03: Freitext behauptet Datenlückenfreiheit, obwohl die OHLCV-Statuszählung "

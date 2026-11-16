@@ -41,7 +41,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
-from positionen_datum import parse_position_date, position_date_to_sheets_serial
+from positionen_datum import parse_position_date, position_date_to_sheets_serial, reject_excel_date_serial_price
 import yfinance as yf
 from scipy.signal import argrelextrema
 
@@ -200,12 +200,98 @@ def steuerungsart(ideen_quelle: str) -> str:
 
 
 def read_positions(path: str) -> pd.DataFrame:
-    # Bewusst exakt das bestehende Projektformat: Semikolon + deutsches Dezimal-Komma.
+    """Read the canonical positions CSV and fail closed for actionable open rows.
+
+    Historical closed rows and the non-trading ANLEITUNG sheet row remain
+    compatible; they do not acquire open-position entry/stop requirements.
+    """
+    # pandas mangles duplicate CSV headers (for example Ticker -> Ticker.1)
+    # before exposing DataFrame.columns. Inspect the raw header first so a
+    # duplicate cannot silently become a different, apparently valid schema.
+    with open(path, "r", encoding="utf-8-sig", newline="") as header_file:
+        raw_header = next(csv.reader(header_file, delimiter=";"), [])
+    normalized_header = [str(column).strip() for column in raw_header]
+    folded_header = [column.casefold() for column in normalized_header]
+    if not normalized_header or any(not column for column in normalized_header):
+        raise ValueError("Offene_Positionen.csv enthält einen leeren oder fehlenden Spaltennamen.")
+    if len(folded_header) != len(set(folded_header)):
+        raise ValueError("Offene_Positionen.csv enthält doppelte Spaltennamen.")
+
     df = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
-    if "Status" not in df.columns or "Ticker" not in df.columns:
-        raise ValueError("Offene_Positionen.csv hat nicht das erwartete Positionsschema.")
     df.columns = [str(c).strip() for c in df.columns]
+    folded_columns = [str(column).casefold() for column in df.columns]
+    if len(folded_columns) != len(set(folded_columns)):
+        raise ValueError("Offene_Positionen.csv enthält doppelte Spaltennamen.")
+
+    # Status and Ticker are needed to distinguish live trades from the
+    # instruction row and historical closed records. Other mandatory fields
+    # are enforced only when at least one genuine open position exists.
+    base_missing = sorted({"Ticker", "Status"}.difference(df.columns))
+    if base_missing:
+        raise ValueError(
+            "Offene_Positionen.csv hat kein erkennbares Positionsschema; "
+            f"Pflichtspalten fehlen: {', '.join(base_missing)}."
+        )
+
     df["Status"] = df["Status"].astype(str).str.strip()
+    tickers = df["Ticker"].astype(str).str.strip()
+    instruction_rows = tickers.str.upper().eq("ANLEITUNG")
+    open_rows = df["Status"].str.casefold().eq("offen")
+    actionable_open_rows = open_rows & ~instruction_rows
+
+    if actionable_open_rows.any():
+        required_open_columns = {
+            "Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg", "Stop"
+        }
+        missing_columns = sorted(required_open_columns.difference(df.columns))
+        if missing_columns:
+            raise ValueError(
+                "Offene_Positionen.csv hat ein unvollständiges Positionsschema für offene Positionen; "
+                f"Pflichtspalten fehlen: {', '.join(missing_columns)}."
+            )
+
+        required_values = ("Ticker", "Name", "Einstiegsdatum", "Einstieg", "Stop")
+        for column in required_values:
+            values = df.loc[actionable_open_rows, column].astype(str).str.strip()
+            missing_mask = values.str.casefold().isin({
+                "", "-", "—", "n/a", "na", "nan", "none", "null", "nat",
+                "tbd", "tba", "unbekannt", "fehlt", "unklar",
+                "nicht verfügbar", "nicht verfuegbar",
+            })
+            if missing_mask.any():
+                bad_indices = values.index[missing_mask].tolist()
+                csv_rows = [str(index + 2) for index in bad_indices]
+                raise ValueError(
+                    "Offene Position(en) ohne Pflichtwert in Offene_Positionen.csv: "
+                    f"{column} (CSV-Zeilen: {', '.join(csv_rows)})."
+                )
+
+        for column in ("Einstieg", "Stop"):
+            for row_index in df.index[actionable_open_rows]:
+                value = df.at[row_index, column]
+                ticker = df.at[row_index, "Ticker"]
+                reject_excel_date_serial_price(
+                    value, field=f"Offene_Positionen.csv Zeile {row_index + 2}: {column}",
+                    ticker=ticker,
+                )
+                number = parse_number(value)
+                if number is None or not math.isfinite(number) or number <= 0:
+                    raise ValueError(
+                        "Offene Position mit ungültigem Preis-Pflichtwert in "
+                        f"Offene_Positionen.csv Zeile {row_index + 2}: {column}={value!r}."
+                    )
+
+        for row_index in df.index[actionable_open_rows]:
+            raw_date = df.at[row_index, "Einstiegsdatum"]
+            parsed_date = parse_position_date(
+                raw_date, field=f"Offene_Positionen.csv Zeile {row_index + 2}: Einstiegsdatum"
+            )
+            if parsed_date is None:
+                raise ValueError(
+                    "Offene Position ohne gültiges Einstiegsdatum in "
+                    f"Offene_Positionen.csv Zeile {row_index + 2}."
+                )
+
     return df
 
 

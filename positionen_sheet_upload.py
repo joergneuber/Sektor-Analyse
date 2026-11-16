@@ -6,7 +6,7 @@ import io
 import re
 import pandas as pd
 
-from positionen_datum import parse_position_date
+from positionen_datum import parse_position_date, reject_excel_date_serial_price
 
 DATE_COLUMNS = ("Einstiegsdatum", "Ausstiegsdatum")
 
@@ -53,6 +53,15 @@ def erstelle_sheet_upload_stream(
         if spalte not in df.columns:
             continue
         original = df[spalte].astype(str).str.strip()
+        if spalte in {"Einstieg", "Stop"} and "Status" in df.columns:
+            tickers = df["Ticker"] if "Ticker" in df.columns else pd.Series("", index=df.index)
+            open_rows = df["Status"].astype(str).str.strip().str.casefold().eq("offen")
+            for index, value in enumerate(df[spalte].tolist(), start=2):
+                if bool(open_rows.iloc[index - 2]):
+                    reject_excel_date_serial_price(
+                        value, field=f"{spalte}, Datenzeile {index}",
+                        ticker=tickers.iloc[index - 2],
+                    )
         leer = original.eq("") | original.str.lower().isin({"nan", "none"})
         normalisiert = original.where(leer, original.str.replace(",", ".", regex=False))
         numerisch = pd.to_numeric(normalisiert.where(~leer, pd.NA), errors="coerce")

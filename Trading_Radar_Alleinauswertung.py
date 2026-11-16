@@ -18894,6 +18894,54 @@ def _trading_radar_ohlcv_abschnitt8_aktualisieren(text):
         "", body
     )
     block = _trading_radar_ohlcv_nachweisblock(text)
+    # Model prose can repeat an unsupported "no gaps" claim outside section 8
+    # (e.g. in the executive summary). If the structured audit is not clean,
+    # neutralize that claim across the complete report before the gate runs.
+    structured_clean = block.startswith("OHLCV-Abdeckung: vollständig (")
+    if not structured_clean:
+        text = re.sub(
+            r"(?i)OHLCV\s+vollständig\s*,?\s*keine\s+Datenlücken\s*;\s*"
+            r"Kandidaten\s+nicht\s+eingeschränkt(?:\s*\([^)]*\))?",
+            "OHLCV-Datenqualität siehe Daten-/Prüfanhang; Lückenfreiheit nicht bestätigt",
+            text,
+        )
+        # Also neutralize standalone broad claims that bypass the canonical
+        # section-8 writer. The M-03 gate independently scans the full report.
+        text = re.sub(
+            r"(?i)OHLCV[^\r\n]{0,180}(?:vollständig\s*,?\s*)?keine\s+"
+            r"(?:historischen\s+)?Datenlücken|"
+            r"keine\s+(?:historischen\s+)?Datenlücken[^\r\n]{0,180}OHLCV",
+            "OHLCV-Lückenfreiheit nicht bestätigt",
+            text,
+        )
+        # ``body`` is a separately held section slice. Apply the same
+        # authoritative correction to it as well, otherwise rebuilding section
+        # 8 below would reinsert the stale pre-normalized text.
+        body = re.sub(
+            r"(?i)OHLCV\s+vollständig\s*,?\s*keine\s+Datenlücken\s*;\s*"
+            r"Kandidaten\s+nicht\s+eingeschränkt(?:\s*\([^)]*\))?",
+            "OHLCV-Datenqualität siehe Daten-/Prüfanhang; Lückenfreiheit nicht bestätigt",
+            body,
+        )
+        body = re.sub(
+            r"(?i)OHLCV[^\r\n]{0,180}(?:vollständig\s*,?\s*)?keine\s+"
+            r"(?:historischen\s+)?Datenlücken|"
+            r"keine\s+(?:historischen\s+)?Datenlücken[^\r\n]{0,180}OHLCV",
+            "OHLCV-Lückenfreiheit nicht bestätigt",
+            body,
+        )
+        # Recompute offsets because the full-report prose replacement can
+        # change text length before section 8.
+        section = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?8\s*[.·]\s*Daten-/Prüfanhang[^\r\n]*$", text
+        )
+        if not section:
+            return text
+        tail = text[section.end():]
+        next_section = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}\s*)?(?:9|10|11)(?:\s*[.·](?!\d)|\s+)[^\r\n]*$", tail
+        )
+        end = section.end() + next_section.start() if next_section else len(text)
     return text[:section.end()] + "\n\n" + block + "\n" + body.lstrip("\r\n") + text[end:]
 
 

@@ -33,6 +33,68 @@ def _serial(number: float, *, field: str, original: Any) -> pd.Timestamp:
         raise _invalid(field, original, "Ungueltige Sheets-Datumsseriennummer") from exc
 
 
+def reject_excel_date_serial_price(
+    value: Any, *, field: str = "Preis", ticker: Any = None
+) -> None:
+    """Reject likely spreadsheet date serials in price fields, without blocking
+    legitimate high-value crypto/index quotes.
+
+    This guard is intentionally limited to price-like fields and known
+    non-price numeric values must not be passed here. Crypto symbols and
+    exchange index symbols are exempt because values in the serial-number
+    interval are normal market prices/levels for those instruments.
+    """
+    if value is None:
+        return
+    if isinstance(value, bool) or (
+        type(value).__module__.startswith("numpy") and type(value).__name__ in {"bool", "bool_"}
+    ):
+        raise ValueError(
+            f"Boolescher Wert {value!r} in Preisfeld {field!r}; "
+            "Positionsimport aus Sicherheitsgruenden abgebrochen."
+        )
+    symbol = str(ticker or "").strip().upper()
+    compact_symbol = re.sub(r"[^A-Z0-9]", "", symbol)
+    if symbol.startswith("^") or compact_symbol in {
+        "BTCUSD", "XBTUSD", "ETHUSD", "BTC", "XBT", "ETH",
+    }:
+        return
+    try:
+        if pd.isna(value):
+            return
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        text = value.strip().replace("%", "").replace("€", "").replace("$", "").strip()
+        if not text:
+            return
+        # Match the locale normalization used by offene_positionen_check.parse_number:
+        # when both separators exist, the rightmost one is the decimal separator.
+        if "," in text and "." in text:
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        else:
+            text = text.replace(",", ".")
+        try:
+            number = float(text)
+        except (TypeError, ValueError, OverflowError):
+            return
+    elif isinstance(value, numbers.Real):
+        number = float(value)
+    else:
+        return
+    if math.isfinite(number) and 20000 <= number <= 100000:
+        # Excel date-times can carry arbitrary fractional days (including
+        # 46175.5). Do not limit detection to whole-day serials; legitimate
+        # high-value crypto/index instruments are exempted above.
+        raise ValueError(
+            f"Excel-Datumsseriennummer {value!r} in Preisfeld {field!r}; "
+            "Positionsimport aus Sicherheitsgruenden abgebrochen."
+        )
+
+
 def parse_position_date(value: Any, *, field: str = "Datum") -> pd.Timestamp | None:
     """Parse position dates deterministically; never silently discard timezone."""
     if value is None:
