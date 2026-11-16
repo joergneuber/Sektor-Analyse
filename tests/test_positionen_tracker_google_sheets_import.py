@@ -228,6 +228,39 @@ def test_existing_legacy_drive_schema_with_essential_columns_remains_compatible(
 
 
 
+def test_drive_export_normalizes_german_decimal_commas_before_open_position_validation(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = (
+        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop,TP1\n"
+        b'VNA.DE,"Vanguard Example ETF",Offen,2026-03-18,"26,14","24,00","30,00"\n'
+    )
+
+    frame = tracker.lade_positionen_herunter(
+        _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+    )
+
+    assert frame.loc[0, "Ticker"] == "VNA.DE"
+    assert frame.loc[0, "Einstieg"] == "26.14"
+    assert frame.loc[0, "Stop"] == "24.00"
+    assert frame.loc[0, "TP1"] == "30.00"
+    assert tracker.sicheres_float(frame.loc[0, "Einstieg"], "VNA.DE", "Einstieg") == pytest.approx(26.14)
+
+
+def test_drive_export_still_rejects_malformed_german_decimal_value(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "MediaIoBaseDownload", _FakeMediaDownloader)
+    payload = (
+        b"Ticker,Name,Status,Einstiegsdatum,Einstieg,Stop\n"
+        b'VNA.DE,"Vanguard Example ETF",Offen,2026-03-18,"26,14x","24,00"\n'
+    )
+
+    with pytest.raises(RuntimeError, match="nicht sicher gelesen"):
+        tracker.lade_positionen_herunter(
+            _FakeDriveService(payload), "existing-id", tracker.SHEET_MIME
+        )
+
+
 def test_tracker_schema_requires_name_and_numeric_open_prices(monkeypatch):
     tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
     base = {
