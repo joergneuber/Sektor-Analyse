@@ -83,7 +83,7 @@ IMMEDIATE_RESISTANCE_MAX_DISTANCE = 0.10
 
 HEADERS = [
     "Ticker", "Name", "Steuerungsart", "Sektor", "Markt", "Waehrung",
-    "Status", "Einstiegsdatum", "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
+    "Status", "Einstiegsdatum", "Einstieg", "Stop", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
     "Technischer_Zustand", "Trendrichtung", "Technische_Lage",
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
     "Widerstand_1_Label", "Widerstand_2_Label",
@@ -98,7 +98,7 @@ HEADERS = [
 ]
 
 NUMERIC_COLUMNS = {
-    "Einstieg", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
+    "Einstieg", "Stop", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
     "Fibonacci_Ziel_1", "Fibonacci_Ziel_2", "Fibonacci_Ziel_3", "Trendkanal_Obergrenze",
     "Measured_Move_Ziel", "Round_Number_Zone", "Uebergeordneter_Widerstand",
@@ -1458,6 +1458,8 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Status": "Offen",
         "Einstiegsdatum": str(row.get("Einstiegsdatum", "")).strip(),
         "Einstieg": fmt_num(entry),
+        # Ausschließlich den validierten Quellwert sichtbar machen; keine Stop-Neuberechnung.
+        "Stop": fmt_num(row.get("Stop")),
         "Aktueller_Kurs": fmt_num(close),
         "Performance_Seit_Einstieg%": fmt_num(perf),
         "Technischer_Zustand": tech.state,
@@ -2619,7 +2621,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     values.extend([[r.get(c, "") for c in HEADERS] for _, r in df.iterrows()])
     widths = {
         "Ticker": 95, "Name": 240, "Steuerungsart": 125, "Sektor": 150,
-        "Markt": 65, "Waehrung": 75, "Status": 75, "Einstieg": 85,
+        "Markt": 65, "Waehrung": 75, "Status": 75, "Einstieg": 85, "Stop": 85,
         "Aktueller_Kurs": 105, "Performance_Seit_Einstieg%": 120,
         "Technischer_Zustand": 190, "Trendrichtung": 125, "Technische_Lage": 220,
         "Support_1": 90, "Support_2": 90, "Widerstand_1": 100, "Widerstand_2": 100,

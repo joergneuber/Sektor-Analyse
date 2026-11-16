@@ -67,6 +67,20 @@ NUMERISCHE_SPALTEN = [
     'OS_Einstiegskurs', 'OS_Aktueller_Kurs', 'OS_Performance%'
 ]
 
+
+# Pixelbreiten an die Darstellung von "Offene Positionen+Check" angelehnt.
+# Alle vorhandenen Quellspalten bleiben in ihrer bisherigen Reihenfolge.
+SPALTENBREITEN = {
+    'Ticker': 95, 'Name': 240, 'Sektor': 150, 'Markt': 65, 'Waehrung': 75,
+    'Richtung': 75, 'Ideen_Quelle': 140, 'Einstiegsdatum': 110, 'Einstieg': 85,
+    'Aktueller_Kurs': 105, 'Stop': 85, 'TP1': 85, 'TP2': 85, 'Status': 75,
+    'Ausstiegsdatum': 110, 'Ausstiegskurs': 105,
+    'Performance_Seit_Einstieg%': 120, 'TP_Hinweis': 300, 'Alert_Hinweis': 300,
+    'TF_Management': 360, 'Produkt_Typ': 140, 'OS_WKN': 100,
+    'OS_Einstiegskurs': 120, 'OS_Aktueller_Kurs': 130,
+    'OS_Performance%': 120, 'OS_Quelle': 150, 'OS_Kurszeit': 150,
+}
+
 # Alpaca-Clients erst bei echtem Datenabruf initialisieren.
 # Dadurch können reine Berechnungs-/Regressionstests das Modul ohne API-Secrets importieren.
 _alpaca_client = None
@@ -290,6 +304,38 @@ def friere_erste_zwei_zeilen_ein(creds, spreadsheet_id):
                         }
                     },
                     'fields': 'userEnteredFormat.numberFormat'
+                }
+            })
+
+        # Spaltenbreiten werden bei JEDEM regulären Upload neu gesetzt.
+        # Damit bleiben sie auch erhalten, wenn der Tracker den Sheet-Inhalt
+        # durch eine neu hochgeladene Google-Sheets-Datei ersetzt.
+        for spalte, pixel_breite in SPALTENBREITEN.items():
+            requests.append({
+                'updateDimensionProperties': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'COLUMNS',
+                        'startIndex': spalten_index[spalte],
+                        'endIndex': spalten_index[spalte] + 1
+                    },
+                    'properties': {'pixelSize': pixel_breite},
+                    'fields': 'pixelSize'
+                }
+            })
+
+        # Lange manuelle Hinweise und Managementtexte sollen lesbar umbrechen.
+        for spalte in ('TP_Hinweis', 'Alert_Hinweis', 'TF_Management'):
+            requests.append({
+                'repeatCell': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'startRowIndex': 1,
+                        'startColumnIndex': spalten_index[spalte],
+                        'endColumnIndex': spalten_index[spalte] + 1
+                    },
+                    'cell': {'userEnteredFormat': {'wrapStrategy': 'WRAP'}},
+                    'fields': 'userEnteredFormat.wrapStrategy'
                 }
             })
 
