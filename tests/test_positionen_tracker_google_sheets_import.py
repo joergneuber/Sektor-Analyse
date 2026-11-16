@@ -24,6 +24,8 @@ def test_decimal_comma_and_dates_are_typed_xlsx_cells(tmp_path):
     sheet = openpyxl.load_workbook(stream, data_only=False).active
     assert sheet["B2"].value == pytest.approx(2.06)
     assert sheet["B2"].data_type == "n"
+    assert sheet["C2"].value == pytest.approx(1.90)
+    assert sheet["C2"].data_type == "n"
     assert sheet["D2"].value == dt.datetime(2026, 7, 15)
     assert sheet["D2"].is_date
     assert sheet["D2"].number_format == "dd.mm.yyyy"
@@ -317,3 +319,71 @@ def test_instruction_row_is_exempt_from_position_value_requirements(monkeypatch)
     )
     assert frame.loc[0, "Ticker"] == "ANLEITUNG"
     assert frame.loc[1, "Ticker"] == "LSUG.MI"
+
+
+def test_tracker_sheet_column_widths_are_reapplied_on_each_formatting_pass(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+
+    class _Request:
+        def execute(self):
+            return {}
+
+    class _Spreadsheets:
+        def __init__(self):
+            self.bodies = []
+        def get(self, **kwargs):
+            return _RequestWithResult({
+                "sheets": [{"properties": {
+                    "sheetId": 321, "title": "Offene_Positionen"
+                }}]
+            })
+        def batchUpdate(self, **kwargs):
+            self.bodies.append(kwargs["body"])
+            return _Request()
+
+    class _RequestWithResult:
+        def __init__(self, result):
+            self.result = result
+        def execute(self):
+            return self.result
+
+    class _SheetsService:
+        def __init__(self):
+            self.api = _Spreadsheets()
+        def spreadsheets(self):
+            return self.api
+
+    fake_service = _SheetsService()
+    monkeypatch.setattr(tracker, "build", lambda *args, **kwargs: fake_service)
+
+    # Der Tracker ruft diese Formatierung nach jedem erfolgreichen Datei-Upload auf.
+    tracker.friere_erste_zwei_zeilen_ein(object(), "spreadsheet-id")
+    tracker.friere_erste_zwei_zeilen_ein(object(), "spreadsheet-id")
+
+    assert len(fake_service.api.bodies) == 2
+    for body in fake_service.api.bodies:
+        requests = body["requests"]
+        width_requests = [
+            request["updateDimensionProperties"]
+            for request in requests
+            if "updateDimensionProperties" in request
+            and request["updateDimensionProperties"]["range"]["dimension"] == "COLUMNS"
+        ]
+        assert len(width_requests) == len(tracker.SPALTEN)
+        for column, pixel_width in tracker.SPALTENBREITEN.items():
+            index = tracker.SPALTEN.index(column)
+            matching = [
+                request for request in width_requests
+                if request["range"]["startIndex"] == index
+                and request["range"]["endIndex"] == index + 1
+            ]
+            assert matching
+            assert matching[0]["properties"]["pixelSize"] == pixel_width
+
+        wrapped = [
+            request["repeatCell"]
+            for request in requests
+            if "repeatCell" in request
+            and request["repeatCell"]["cell"].get("userEnteredFormat", {}).get("wrapStrategy") == "WRAP"
+        ]
+        assert len(wrapped) == 3

@@ -686,7 +686,7 @@ def test_recovery_history_date_normalization_matches_serial_and_iso():
     assert _normalize_history_value("Einstiegsdatum", "2026-08-01") == expected
 
 
-def test_open_positions_reader_preserves_validated_stop_without_changing_output_schema(tmp_path):
+def test_open_positions_reader_preserves_validated_stop_in_output_schema(tmp_path):
     import offene_positionen_check as checker
 
     source = tmp_path / "open_with_stop.csv"
@@ -697,7 +697,8 @@ def test_open_positions_reader_preserves_validated_stop_without_changing_output_
     )
     result = checker.read_positions(str(source))
     assert result.loc[0, "Stop"] == "1,90"
-    assert "Stop" not in checker.HEADERS
+    assert "Stop" in checker.HEADERS
+    assert "Stop" in checker.NUMERIC_COLUMNS
 
 
 def test_open_positions_reader_rejects_excel_date_serial_in_price_field(tmp_path):

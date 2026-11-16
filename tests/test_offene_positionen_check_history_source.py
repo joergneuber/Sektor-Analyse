@@ -531,3 +531,130 @@ def test_read_positions_rejects_german_grouped_excel_date_serial_as_stop(tmp_pat
     )
     with pytest.raises(ValueError, match="Excel-Datumsseriennummer"):
         checker.read_positions(str(path))
+
+
+def test_lsug_mi_stop_is_preserved_in_live_output_csv(tmp_path, monkeypatch):
+    source = tmp_path / "Offene_Positionen.csv"
+    output = tmp_path / "Offene Positionen+Check.csv"
+    history = tmp_path / "Geschlossene Positionen.csv"
+    source.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Aktueller_Kurs;Stop;TP1;TP2;Richtung\n"
+        "LSUG.MI;WisdomTree Sugar;Offen;18.03.2026;2,06;2,35;2,06;3,00;6,50;Long\n",
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(
+        checker, "load_initial_history",
+        lambda: pd.DataFrame(columns=checker.HISTORY_HEADERS),
+    )
+    monkeypatch.setattr(checker, "fetch_history", lambda ticker: pd.DataFrame())
+    monkeypatch.setattr(
+        checker, "analyze_technical",
+        lambda hist, row: checker.TechnicalResult(close=2.35),
+    )
+
+    out, closed = checker.run_local(
+        input_file=str(source), output_csv=str(output), history_csv=str(history)
+    )
+
+    assert "Stop" in checker.HEADERS
+    assert "Stop" in checker.NUMERIC_COLUMNS
+    assert out.loc[0, "Ticker"] == "LSUG.MI"
+    assert out.loc[0, "Einstiegsdatum"] == "18.03.2026"
+    assert out.loc[0, "Einstieg"] == pytest.approx(2.06)
+    assert out.loc[0, "Stop"] == pytest.approx(2.06)
+    assert out.loc[0, "Aktueller_Kurs"] == pytest.approx(2.35)
+
+    source_values = checker.read_positions(str(source)).iloc[0]
+    assert source_values["TP1"] == "3,00"
+    assert source_values["TP2"] == "6,50"
+
+    saved = pd.read_csv(output, sep=";", decimal=",", encoding="utf-8-sig")
+    assert saved.loc[0, "Stop"] == pytest.approx(2.06)
+    assert saved.loc[0, "Einstieg"] == pytest.approx(2.06)
+    assert saved.loc[0, "Aktueller_Kurs"] == pytest.approx(2.35)
+    assert closed.empty
+
+
+@pytest.mark.parametrize("stop_value", ["", "46.175,00", "ungueltig"])
+def test_open_position_rejects_empty_or_invalid_stop_values(tmp_path, stop_value):
+    path = tmp_path / "Offene_Positionen.csv"
+    path.write_text(
+        "Ticker;Name;Status;Einstiegsdatum;Einstieg;Stop\n"
+        f"LSUG.MI;WisdomTree Sugar;Offen;18.03.2026;2,06;{stop_value}\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError):
+        checker.read_positions(str(path))
+
+
+def test_write_sheet_uploads_stop_value_and_formats_it_as_numeric():
+    class _Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+
+    class _Values:
+        def __init__(self):
+            self.update_body = None
+        def clear(self, **kwargs):
+            return _Request()
+        def update(self, **kwargs):
+            self.update_body = kwargs["body"]
+            return _Request()
+
+    class _Sheets:
+        def __init__(self):
+            self.value_api = _Values()
+            self.batch_body = None
+        def get(self, **kwargs):
+            return _Request({"sheets": [{"properties": {
+                "title": "Offene Positionen+Check", "sheetId": 77
+            }}]})
+        def values(self):
+            return self.value_api
+        def batchUpdate(self, **kwargs):
+            self.batch_body = kwargs["body"]
+            return _Request()
+
+    class _Service:
+        def __init__(self):
+            self.api = _Sheets()
+        def spreadsheets(self):
+            return self.api
+
+    service = _Service()
+    values = [
+        ["Offene Positionen+Check | Test"] + [""] * (len(checker.HEADERS) - 1),
+        list(checker.HEADERS),
+        ["LSUG.MI", "WisdomTree Sugar", "", "", "", "", "Offen",
+         "18.03.2026", 2.06, 2.06, 2.35] + [""] * (len(checker.HEADERS) - 11),
+    ]
+    checker._write_sheet(
+        service, "spreadsheet-id", "Offene Positionen+Check", values,
+        {"Stop": 85},
+    )
+
+    uploaded = service.api.value_api.update_body["values"]
+    stop_index = checker.HEADERS.index("Stop")
+    assert uploaded[1][stop_index] == "Stop"
+    assert uploaded[2][stop_index] == pytest.approx(2.06)
+
+    requests = service.api.batch_body["requests"]
+    stop_width = [
+        request["updateDimensionProperties"]
+        for request in requests
+        if "updateDimensionProperties" in request
+        and request["updateDimensionProperties"]["range"]["dimension"] == "COLUMNS"
+        and request["updateDimensionProperties"]["range"]["startIndex"] == stop_index
+    ]
+    assert stop_width
+    assert stop_width[0]["properties"]["pixelSize"] == 85
+
+    stop_format = [
+        request for request in requests
+        if request.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == stop_index
+        and request.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat", {}).get("numberFormat")
+    ]
+    assert stop_format
+    assert stop_format[0]["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] == "0.00"
