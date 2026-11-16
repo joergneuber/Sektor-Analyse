@@ -169,6 +169,23 @@ def test_missing_history_keeps_development_phase_protected_for_long_and_short(mo
             TP2=80.0 if is_short else 120.0,
         )
         frame = pd.DataFrame([row])
+
+        # Pandas 3 infers empty CSV columns as StringDtype. Reproduce that
+        # strict input shape, then run the same normalization sequence as the
+        # production tracker before calling aktualisiere_positionen().
+        # This keeps the regression focused on missing-history stop protection
+        # instead of failing early on a test-only dtype mismatch.
+        for column in mod.NUMERISCHE_SPALTEN:
+            if column in frame.columns:
+                frame[column] = frame[column].astype(pd.StringDtype())
+        frame = mod.normalisiere_zahlen(frame)
+        frame = mod.normalisiere_daten(frame)
+        frame = mod.stelle_anleitung_sicher(frame)
+        frame = frame.loc[
+            frame["Ticker"].astype(str).str.upper() != mod.ANLEITUNG_TICKER
+        ].reset_index(drop=True)
+
+        assert not isinstance(frame["Aktueller_Kurs"].dtype, pd.StringDtype)
         monkeypatch.setattr(mod, "_hole_tageshistorie", lambda *a, **k: pd.DataFrame())
         monkeypatch.setattr(mod, "hole_aktuellen_kurs", lambda *a, **k: current)
         result, _alerts = mod.aktualisiere_positionen(frame)
