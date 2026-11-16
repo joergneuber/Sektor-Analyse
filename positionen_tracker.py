@@ -941,6 +941,10 @@ def lade_positionen_herunter(service, file_id, mime_type):
         if len(normalized_columns) != len(set(normalized_columns)):
             raise ValueError("Positionsquelle enthält doppelte Spaltennamen.")
         df.columns = normalized_columns
+        # Google-Sheets-CSV kann deutsche Dezimalkommas als Text exportieren.
+        # Vor der Pflichtwert-Validierung normalisieren, damit z.B. "26,14"
+        # als gueltiger Kurs erkannt wird und nicht erst spaeter im Hauptlauf.
+        df = normalisiere_zahlen(df)
         validate_position_source_schema(df)
 
         for spalte in SPALTEN:
