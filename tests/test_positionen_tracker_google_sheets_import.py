@@ -1,5 +1,6 @@
 import datetime as dt
 import openpyxl
+import pandas as pd
 import pytest
 
 from positionen_sheet_upload import erstelle_sheet_upload_stream
@@ -420,3 +421,42 @@ def test_tracker_sheet_column_widths_are_reapplied_on_each_formatting_pass(monke
             and request["repeatCell"]["cell"].get("userEnteredFormat", {}).get("wrapStrategy") == "WRAP"
         ]
         assert len(wrapped) == 3
+
+
+
+@pytest.mark.parametrize(
+    "direction,stop,current,expected",
+    [
+        ("Long", 90.0, 125.0, 25.0),
+        ("Short", 110.0, 90.0, 10.0),
+    ],
+)
+def test_tracker_recalculates_performance_from_stored_course_when_live_quote_missing(
+    monkeypatch, direction, stop, current, expected
+):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    monkeypatch.setattr(tracker, "hole_aktuellen_kurs", lambda ticker, markt: None)
+    frame = pd.DataFrame([{
+        column: "" for column in tracker.SPALTEN
+    }])
+    frame.loc[0, "Ticker"] = "TEST.DE"
+    frame.loc[0, "Name"] = "Test AG"
+    frame.loc[0, "Markt"] = "EU"
+    frame.loc[0, "Richtung"] = direction
+    frame.loc[0, "Status"] = "Offen"
+    frame.loc[0, "Einstieg"] = 100.0
+    frame.loc[0, "Aktueller_Kurs"] = current
+    frame.loc[0, "Stop"] = stop
+    frame.loc[0, "TP1"] = 110.0 if direction == "Long" else 95.0
+    frame.loc[0, "TP2"] = 120.0 if direction == "Long" else 85.0
+    frame.loc[0, "Status"] = "Offen"
+    original_management = {column: frame.loc[0, column] for column in ("Stop", "TP1", "TP2", "Status")}
+
+    updated, _ = tracker.aktualisiere_positionen(frame)
+
+    assert updated.loc[0, "Aktueller_Kurs"] == current
+    assert updated.loc[0, "Performance_Seit_Einstieg%"] == expected
+    # Kein frischer Kurs: gespeicherter Kurs dient nur Anzeige/Performance,
+    # darf aber weder Stop-/TP-Werte noch den Positionsstatus auslösen/verändern.
+    for column, original_value in original_management.items():
+        assert updated.loc[0, column] == original_value
