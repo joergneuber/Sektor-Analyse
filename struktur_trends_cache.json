@@ -1,7 +1,7 @@
 {
   "cache_version": "1.4",
   "cache_created_at": null,
-  "cache_updated_at": "2026-11-16T20:05:04+00:00",
+  "cache_updated_at": "2026-11-17T04:48:42+00:00",
   "OECD_STAN": {
     "value_added": {
       "source": "OECD",
@@ -11,8 +11,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:17+00:00",
-      "last_successful_update": "2026-11-16T20:03:17+00:00",
+      "retrieved_at": "2026-11-17T04:47:24+00:00",
+      "last_successful_update": "2026-11-17T04:47:24+00:00",
       "data": {
         "USA|C26": {
           "reference_area": "USA",
@@ -18607,8 +18607,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:19+00:00",
-      "last_successful_update": "2026-11-16T20:03:19+00:00",
+      "retrieved_at": "2026-11-17T04:47:24+00:00",
+      "last_successful_update": "2026-11-17T04:47:24+00:00",
       "data": {
         "FRA|_T": {
           "reference_area": "FRA",
@@ -35714,8 +35714,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:20+00:00",
-      "last_successful_update": "2026-11-16T20:03:20+00:00",
+      "retrieved_at": "2026-11-17T04:47:26+00:00",
+      "last_successful_update": "2026-11-17T04:47:26+00:00",
       "data": {
         "GBR|C26": {
           "reference_area": "GBR",
@@ -65400,8 +65400,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:20+00:00",
-      "last_successful_update": "2026-11-16T20:03:20+00:00",
+      "retrieved_at": "2026-11-17T04:47:26+00:00",
+      "last_successful_update": "2026-11-17T04:47:26+00:00",
       "series_count": 10,
       "observation_count": 498,
       "data": {
@@ -70956,8 +70956,8 @@
       "status": "REAL",
       "unit": null,
       "data_period": "2024",
-      "retrieved_at": "2026-11-16T20:03:21+00:00",
-      "last_successful_update": "2026-11-16T20:03:21+00:00",
+      "retrieved_at": "2026-11-17T04:47:26+00:00",
+      "last_successful_update": "2026-11-17T04:47:26+00:00",
       "series_count": 10,
       "observation_count": 235,
       "data": {
@@ -73622,8 +73622,8 @@
       "status": "REAL",
       "unit": "USD billion",
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:21+00:00",
-      "last_successful_update": "2026-11-16T20:03:21+00:00",
+      "retrieved_at": "2026-11-17T04:47:26+00:00",
+      "last_successful_update": "2026-11-17T04:47:26+00:00",
       "data": {
         "2025": {
           "value": 581.7,
@@ -73645,8 +73645,8 @@
       "status": "REAL",
       "unit": "percent of surveyed organizations",
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:21+00:00",
-      "last_successful_update": "2026-11-16T20:03:21+00:00",
+      "retrieved_at": "2026-11-17T04:47:26+00:00",
+      "last_successful_update": "2026-11-17T04:47:26+00:00",
       "data": {
         "2025": {
           "value": 88.0,
@@ -73668,8 +73668,8 @@
       "status": "REAL",
       "unit": "million H100-equivalents",
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:03:21+00:00",
-      "last_successful_update": "2026-11-16T20:03:21+00:00",
+      "retrieved_at": "2026-11-17T04:47:26+00:00",
+      "last_successful_update": "2026-11-17T04:47:26+00:00",
       "data": {
         "2025": {
           "value": 17.1,
@@ -73693,8 +73693,8 @@
       "status": "REAL",
       "unit": "GWH",
       "data_period": "2026-08",
-      "retrieved_at": "2026-11-16T20:03:24+00:00",
-      "last_successful_update": "2026-11-16T20:03:24+00:00",
+      "retrieved_at": "2026-11-17T04:47:29+00:00",
+      "last_successful_update": "2026-11-17T04:47:29+00:00",
       "data": {
         "DE": {
           "reference_area": "DE",
@@ -76368,56 +76368,56 @@
             },
             {
               "TIME_PERIOD": "2026-01",
-              "OBS_VALUE": 269598.633,
+              "OBS_VALUE": 269591.386,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-02",
-              "OBS_VALUE": 236870.933,
+              "OBS_VALUE": 236876.337,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-03",
-              "OBS_VALUE": 240843.85,
+              "OBS_VALUE": 240851.532,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-04",
-              "OBS_VALUE": 213023.864,
+              "OBS_VALUE": 213022.702,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-05",
-              "OBS_VALUE": 210620.568,
+              "OBS_VALUE": 210621.582,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-06",
-              "OBS_VALUE": 213981.596,
+              "OBS_VALUE": 213992.694,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 228021.99,
+              "OBS_VALUE": 228023.495,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
             },
             {
               "TIME_PERIOD": "2026-08",
-              "OBS_VALUE": 218963.303,
+              "OBS_VALUE": 218967.56,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "geo": "EU27_2020"
@@ -76442,8 +76442,8 @@
       "status": "REAL",
       "unit": "GWH",
       "data_period": "2026-08",
-      "retrieved_at": "2026-11-16T20:03:41+00:00",
-      "last_successful_update": "2026-11-16T20:03:41+00:00",
+      "retrieved_at": "2026-11-17T04:47:39+00:00",
+      "last_successful_update": "2026-11-17T04:47:39+00:00",
       "data": {
         "DE": {
           "reference_area": "DE",
@@ -94425,7 +94425,7 @@
             },
             {
               "TIME_PERIOD": "2026-01",
-              "OBS_VALUE": 244808.324,
+              "OBS_VALUE": 244801.077,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94433,7 +94433,7 @@
             },
             {
               "TIME_PERIOD": "2026-02",
-              "OBS_VALUE": 214946.267,
+              "OBS_VALUE": 214951.671,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94441,7 +94441,7 @@
             },
             {
               "TIME_PERIOD": "2026-03",
-              "OBS_VALUE": 217477.528,
+              "OBS_VALUE": 217485.21,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94449,7 +94449,7 @@
             },
             {
               "TIME_PERIOD": "2026-04",
-              "OBS_VALUE": 192702.468,
+              "OBS_VALUE": 192701.306,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94457,7 +94457,7 @@
             },
             {
               "TIME_PERIOD": "2026-05",
-              "OBS_VALUE": 190353.099,
+              "OBS_VALUE": 190354.113,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94465,7 +94465,7 @@
             },
             {
               "TIME_PERIOD": "2026-06",
-              "OBS_VALUE": 197240.306,
+              "OBS_VALUE": 197251.404,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94473,7 +94473,7 @@
             },
             {
               "TIME_PERIOD": "2026-07",
-              "OBS_VALUE": 208399.495,
+              "OBS_VALUE": 208401.0,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94481,7 +94481,7 @@
             },
             {
               "TIME_PERIOD": "2026-08",
-              "OBS_VALUE": 200721.589,
+              "OBS_VALUE": 200725.846,
               "OBS_FLAG": "",
               "OBS_STATUS": "",
               "nrg_bal": "AIM",
@@ -94510,8 +94510,8 @@
       "status": "REAL",
       "unit": "constant 2024 USD",
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:05:04+00:00",
-      "last_successful_update": "2026-11-16T20:05:04+00:00",
+      "retrieved_at": "2026-11-17T04:48:42+00:00",
+      "last_successful_update": "2026-11-17T04:48:42+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -129111,8 +129111,8 @@
       "status": "REAL",
       "unit": "% GDP",
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:05:04+00:00",
-      "last_successful_update": "2026-11-16T20:05:04+00:00",
+      "retrieved_at": "2026-11-17T04:48:42+00:00",
+      "last_successful_update": "2026-11-17T04:48:42+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
@@ -164131,8 +164131,8 @@
       "status": "REAL",
       "unit": "% government expenditure",
       "data_period": "2025",
-      "retrieved_at": "2026-11-16T20:05:04+00:00",
-      "last_successful_update": "2026-11-16T20:05:04+00:00",
+      "retrieved_at": "2026-11-17T04:48:42+00:00",
+      "last_successful_update": "2026-11-17T04:48:42+00:00",
       "data": {
         "Algeria": {
           "reference_area": "Algeria",
