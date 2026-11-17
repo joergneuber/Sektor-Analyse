@@ -30,6 +30,7 @@ import io
 import json
 import math
 import os
+import sys
 import re
 import ast
 import time
@@ -112,6 +113,17 @@ HISTORY_HEADERS = [
     "Produkt_Typ", "OS_WKN", "OS_Einstiegskurs", "OS_Aktueller_Kurs",
     "OS_Performance%", "OS_Quelle", "OS_Kurszeit",
 ]
+
+# Reine Anzeige-Erweiterung für den Google-Sheet-Tab 2. HISTORY_HEADERS
+# bleibt als kanonischer Archiv-/Recovery-Datenvertrag unverändert.
+HISTORY_DISPLAY_HEADERS = HISTORY_HEADERS + ["Nr."]
+# Vier temporäre Sortierschlüssel: die drei fachlichen Schlüssel plus die
+# ursprüngliche Zeilenposition als stabiler Gleichstands-Tie-Breaker.
+# Die Hilfswerte liegen ausschließlich in AB:AE und werden vollständig geleert.
+HISTORY_SORT_KEY_HEADERS = [
+    "SortKey_Ausstieg", "SortKey_Ticker", "SortKey_Einstieg", "SortKey_Originalzeile"
+]
+HISTORY_SORT_HEADERS = HISTORY_DISPLAY_HEADERS + HISTORY_SORT_KEY_HEADERS
 
 
 MINIMUM_PROTECTED_HISTORY_ROWS = 51
@@ -1405,8 +1417,17 @@ def make_row(row, tech: TechnicalResult) -> dict:
         if not str(row.get("Name", "")).strip():
             name = "Gold Spot"
     entry = parse_number(row.get("Einstieg"))
-    close = tech.close
-    perf = performance(entry, close, str(row.get("Richtung", "Long")))
+    # Die technische Analyse bleibt strikt an tech.close (Quality-Gate)
+    # gebunden. Für die sichtbare Kurs-/Performance-Spalte hat der vom
+    # unmittelbar vorherigen Tracker gelieferte aktuelle Kurs Vorrang.
+    technical_close = tech.close
+    tracker_close = parse_number(row.get("Aktueller_Kurs"))
+    display_close = (
+        tracker_close if tracker_close is not None and tracker_close > 0
+        else technical_close
+    )
+    perf = performance(entry, display_close, str(row.get("Richtung", "Long")))
+    close = technical_close
     if tech.close is None:
         quality = tech.data_quality
     else:
@@ -1460,7 +1481,7 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Einstieg": fmt_num(entry),
         # Ausschließlich den validierten Quellwert sichtbar machen; keine Stop-Neuberechnung.
         "Stop": fmt_num(row.get("Stop")),
-        "Aktueller_Kurs": fmt_num(close),
+        "Aktueller_Kurs": fmt_num(display_close),
         "Performance_Seit_Einstieg%": fmt_num(perf),
         "Technischer_Zustand": tech.state,
         "Trendrichtung": tech.trend,
@@ -1508,6 +1529,52 @@ def extract_closed_history(df: pd.DataFrame) -> pd.DataFrame:
         if col not in closed.columns:
             closed[col] = ""
     return closed[HISTORY_HEADERS].copy()
+
+
+def sort_closed_history_by_exit_date(df: pd.DataFrame) -> pd.DataFrame:
+    """Sortiert geschlossene Positionen deterministisch nach Ausstieg, Ticker, Einstieg.
+
+    Alle drei Schlüssel werden aufsteigend sortiert. Fehlende Datumswerte stehen
+    jeweils zuerst; identische vollständige Schlüssel behalten ihre Eingangsreihenfolge.
+    Historische Fakten werden nicht verändert.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=HISTORY_HEADERS) if df is None else df.copy()
+    result = df.copy()
+    required = ("Ausstiegsdatum", "Ticker", "Einstiegsdatum")
+    missing = [column for column in required if column not in result.columns]
+    if missing:
+        raise ValueError(f"Historie benötigt für die Sortierung die Spalten: {', '.join(missing)}.")
+
+    def _sort_date(value, field):
+        if value is None or str(value).strip() == "":
+            return pd.NaT
+        parsed = parse_position_date(value, field=f"Historie: {field}")
+        return pd.Timestamp(parsed) if parsed is not None else pd.NaT
+
+    result["__sort_exit_date"] = result["Ausstiegsdatum"].apply(
+        lambda value: _sort_date(value, "Ausstiegsdatum")
+    )
+    result["__sort_ticker"] = result["Ticker"].fillna("").astype(str).str.strip().str.casefold()
+    result["__sort_entry_date"] = result["Einstiegsdatum"].apply(
+        lambda value: _sort_date(value, "Einstiegsdatum")
+    )
+    result["__stable_order"] = range(len(result))
+    result = result.sort_values(
+        ["__sort_exit_date", "__sort_ticker", "__sort_entry_date", "__stable_order"],
+        ascending=[True, True, True, True],
+        na_position="first", kind="mergesort",
+    ).drop(columns=["__sort_exit_date", "__sort_ticker", "__sort_entry_date", "__stable_order"])
+    return result.reset_index(drop=True)
+
+
+def numbered_closed_history_rows(df: pd.DataFrame) -> list[list]:
+    """Erzeugt die sichtbaren Tab-2-Datenzeilen mit Nummer 1..N."""
+    ordered = sort_closed_history_by_exit_date(df)
+    return [
+        [row.get(column, "") for column in HISTORY_HEADERS] + [number]
+        for number, (_, row) in enumerate(ordered.iterrows(), start=1)
+    ]
 
 
 def _load_private_recovery_history(
@@ -1668,6 +1735,7 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
             seen.add(key)
             keep.append(row.to_dict())
         closed_df = pd.DataFrame(keep, columns=HISTORY_HEADERS).fillna("")
+    closed_df = sort_closed_history_by_exit_date(closed_df)
 
     results = []
     runtime_tickers = list(dict.fromkeys(
@@ -1805,7 +1873,21 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     sheets.spreadsheets().values().clear(
         spreadsheetId=spreadsheet_id, range=f"'{write_title}'!A:AZ", body={}
     ).execute()
-    is_history_sheet = len(values) >= 2 and list(values[1]) == HISTORY_HEADERS
+    is_history_sheet = len(values) >= 2 and list(values[1][:len(HISTORY_HEADERS)]) == HISTORY_HEADERS
+    if is_history_sheet and len(values[1]) >= len(HISTORY_DISPLAY_HEADERS):
+        _google_batch_update_with_retry(
+            sheets, spreadsheet_id,
+            {"requests": [{
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": {"columnCount": len(HISTORY_SORT_HEADERS)},
+                    },
+                    "fields": "gridProperties.columnCount",
+                }
+            }]},
+            context="Historien-Anzeige-/Sortierspalten vorbereiten",
+        )
     upload_values = _canonicalize_history_values(values) if is_history_sheet else values
     upload_values = _canonicalize_sheet_dates(upload_values)
     # Bewährter Zahlenpfad: echte numerische Werte an Google Sheets übergeben.
@@ -1830,7 +1912,9 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     for i,col in enumerate(values[1]):
         if col in {"Einstiegsdatum", "Ausstiegsdatum"}:
             requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"DATE","pattern":"dd.MM.yyyy"}}},"fields":"userEnteredFormat.numberFormat"}})
-        if col in format_numeric or col.endswith("%"):
+        if col == "Nr.":
+            requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":"0"}}},"fields":"userEnteredFormat.numberFormat"}})
+        elif col in format_numeric or col.endswith("%"):
             requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":'0.00" %"' if col.endswith("%") else "0.00"}}},"fields":"userEnteredFormat.numberFormat"}})
         requests.append({"updateDimensionProperties":{"range":{"sheetId":sheet_id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":widths.get(col,120)},"fields":"pixelSize"}})
     _google_batch_update_with_retry(sheets, spreadsheet_id, {"requests": requests}, context=f"Format {write_title}")
@@ -2005,10 +2089,11 @@ def merge_closed_history(existing_rows: list[list] | pd.DataFrame, new_df: pd.Da
                 None,
             )
             if header_index is not None:
-                data = values[header_index + 1:]
+                data = [list(row[:len(HISTORY_HEADERS)]) for row in values[header_index + 1:]]
                 frame = pd.DataFrame(data, columns=HISTORY_HEADERS)
             elif [str(x).strip() for x in values[0][:len(HISTORY_HEADERS)]] == HISTORY_HEADERS:
-                frame = pd.DataFrame(values[1:], columns=HISTORY_HEADERS)
+                data = [list(row[:len(HISTORY_HEADERS)]) for row in values[1:]]
+                frame = pd.DataFrame(data, columns=HISTORY_HEADERS)
             else:
                 # Headerless list input is accepted only when every row has the
                 # exact history width; this keeps the positional contract explicit.
@@ -2292,7 +2377,8 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
             raise RuntimeError("Sicherheitsabbruch: Historien-Tab fehlt im bestehenden Master.")
         if len(existing_rows) < 2:
             raise RuntimeError("Sicherheitsabbruch: Historien-Tab ist leer oder hat keinen Header.")
-        if [str(x).strip() for x in existing_rows[1]] != HISTORY_HEADERS:
+        existing_header = [str(x).strip() for x in existing_rows[1]]
+        if existing_header not in (HISTORY_HEADERS, HISTORY_DISPLAY_HEADERS):
             raise RuntimeError("Sicherheitsabbruch: Historien-Header stimmt nicht exakt.")
 
     if existing_rows and len(existing_rows) >= 2:
@@ -2346,13 +2432,15 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
             return 0
 
         values = [
-            [f"Geschlossene Positionen | historische Faktenbasis | Stand {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"] + [""] * (len(HISTORY_HEADERS)-1),
-            HISTORY_HEADERS,
+            [f"Geschlossene Positionen | historische Faktenbasis | Stand {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"] + [""] * len(HISTORY_HEADERS),
+            HISTORY_DISPLAY_HEADERS,
         ]
-        values.extend([[item.get(c, "") for c in HISTORY_HEADERS] for item in all_items])
+        values.extend(numbered_closed_history_rows(
+            pd.DataFrame(all_items, columns=HISTORY_HEADERS)
+        ))
         _write_sheet(
             sheets, spreadsheet_id, "Geschlossene Positionen", values,
-            {c: 140 for c in HISTORY_HEADERS}, 2,
+            {**{c: 140 for c in HISTORY_HEADERS}, "Nr.": 55}, 2,
             target_title="Geschlossene Positionen",
         )
         return len(all_items)
@@ -2379,6 +2467,212 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
         _format_history_range(sheets, spreadsheet_id, history_sheet_id, start_row, end_row)
 
     return len(rows_to_append)
+
+
+def _sort_and_number_closed_history(sheets, spreadsheet_id: str) -> int:
+    """Sortiert Tab 2 nach Ausstiegsdatum, Ticker und Einstiegsdatum; Nummer 1..N.
+
+    A:Z bleibt der kanonische Archiv-/Recovery-Datenvertrag; AA ist die
+    reine Anzeigenummer. AB:AE sind temporäre Sortierschlüssel. Der vierte
+    Schlüssel (ursprüngliche Zeilenposition) stabilisiert vollständige
+    Gleichstände und erhält die Eingangsreihenfolge.
+    """
+    # Ab dem Moment, in dem die Sheet-ID bekannt ist, muss jeder Fehlerpfad
+    # die temporären Hilfsspalten unabhängig leeren und ausblenden.
+    sheet_id = None
+    column_count = 0
+    count = 0
+    active_exception = None
+    cleanup_errors = []
+
+    try:
+        ss = sheets.spreadsheets().get(
+            spreadsheetId=spreadsheet_id, fields="sheets.properties"
+        ).execute()
+        history = next(
+            (item["properties"] for item in ss.get("sheets", [])
+             if item["properties"].get("title") == "Geschlossene Positionen"),
+            None,
+        )
+        if history is None:
+            raise RuntimeError("Sortierung/Nummerierung fehlgeschlagen: Tab 2 fehlt.")
+        sheet_id = history["sheetId"]
+        grid = history.get("gridProperties", {}) or {}
+        column_count = int(grid.get("columnCount", 0) or 0)
+        if column_count < len(HISTORY_SORT_HEADERS):
+            _google_batch_update_with_retry(
+                sheets, spreadsheet_id,
+                {"requests": [{
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "gridProperties": {"columnCount": len(HISTORY_SORT_HEADERS)},
+                        },
+                        "fields": "gridProperties.columnCount",
+                    }
+                }]},
+                context="Historien-Nummerierungsspalte vorbereiten",
+            )
+            # Erst nach bestätigter Erweiterung gelten alle Zielspalten als vorhanden.
+            column_count = len(HISTORY_SORT_HEADERS)
+
+        values = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="'Geschlossene Positionen'!A:AA",
+        ).execute().get("values", [])
+        if len(values) < 2:
+            raise RuntimeError("Sortierung/Nummerierung fehlgeschlagen: Tab 2 hat keinen Header.")
+        header = [str(value).strip() for value in values[1]]
+        if header not in (HISTORY_HEADERS, HISTORY_DISPLAY_HEADERS):
+            raise RuntimeError("Sortierung/Nummerierung fehlgeschlagen: Tab-2-Header ist unbekannt.")
+        if header == HISTORY_HEADERS:
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range="'Geschlossene Positionen'!AA2",
+                valueInputOption="RAW",
+                body={"values": [["Nr."]]},
+            ).execute()
+
+        # Alte Helper-Header und -Werte vor dem Lauf entfernen. Auch dieser
+        # erste Clear-Aufruf liegt bewusst innerhalb des geschützten Bereichs.
+        sheets.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range="'Geschlossene Positionen'!AB:AE",
+            body={},
+        ).execute()
+
+        data_rows = values[2:]
+        if any(not row or not str(row[0] if row else "").strip() for row in data_rows):
+            raise RuntimeError("Sortierung/Nummerierung fehlgeschlagen: leere Zwischenzeile im Historienbestand.")
+        count = len(data_rows)
+        if count:
+            exit_index = HISTORY_HEADERS.index("Ausstiegsdatum")
+            ticker_index = HISTORY_HEADERS.index("Ticker")
+            entry_index = HISTORY_HEADERS.index("Einstiegsdatum")
+            sort_keys = []
+            for row_number, row in enumerate(data_rows, start=3):
+                raw_exit = row[exit_index] if exit_index < len(row) else ""
+                raw_ticker = row[ticker_index] if ticker_index < len(row) else ""
+                raw_entry = row[entry_index] if entry_index < len(row) else ""
+                exit_key = (
+                    0.0 if raw_exit is None or str(raw_exit).strip() == ""
+                    else _date_to_sheets_serial(raw_exit, "Ausstiegsdatum", row_number, strict=True)
+                )
+                ticker_key = str(raw_ticker or "").strip().casefold()
+                entry_key = (
+                    0.0 if raw_entry is None or str(raw_entry).strip() == ""
+                    else _date_to_sheets_serial(raw_entry, "Einstiegsdatum", row_number, strict=True)
+                )
+                # Eindeutiger vierter Schlüssel: ursprüngliche Datenzeilenposition.
+                sort_keys.append([exit_key, ticker_key, entry_key, row_number - 2])
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'Geschlossene Positionen'!AB3:AE{count + 2}",
+                valueInputOption="RAW",
+                body={"values": sort_keys},
+            ).execute()
+            _google_batch_update_with_retry(
+                sheets, spreadsheet_id,
+                {"requests": [{
+                    "sortRange": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 2,
+                            "endRowIndex": 2 + count,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": len(HISTORY_SORT_HEADERS),
+                        },
+                        "sortSpecs": [
+                            {"dimensionIndex": len(HISTORY_DISPLAY_HEADERS), "sortOrder": "ASCENDING"},
+                            {"dimensionIndex": len(HISTORY_DISPLAY_HEADERS) + 1, "sortOrder": "ASCENDING"},
+                            {"dimensionIndex": len(HISTORY_DISPLAY_HEADERS) + 2, "sortOrder": "ASCENDING"},
+                            {"dimensionIndex": len(HISTORY_DISPLAY_HEADERS) + 3, "sortOrder": "ASCENDING"},
+                        ],
+                    }
+                }]},
+                context="Geschlossene Positionen nach Ausstieg, Ticker, Einstieg und stabilem Gleichstand sortieren",
+            )
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'Geschlossene Positionen'!AA3:AA{count + 2}",
+                valueInputOption="RAW",
+                body={"values": [[number] for number in range(1, count + 1)]},
+            ).execute()
+
+        format_requests = []
+        if count:
+            format_requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 2,
+                        "endRowIndex": 2 + count,
+                        "startColumnIndex": len(HISTORY_HEADERS),
+                        "endColumnIndex": len(HISTORY_DISPLAY_HEADERS),
+                    },
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0"}}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }
+            })
+        _google_batch_update_with_retry(
+            sheets, spreadsheet_id, {"requests": format_requests},
+            context="Historien-Nummerierung formatieren und SortKey ausblenden",
+        )
+        print(
+            "HISTORIE: chronologisch nach Ausstieg sortiert und nummeriert | "
+            f"1..{count} | Sortierung: Ausstiegsdatum, Ticker, Einstiegsdatum"
+        )
+        return count
+    finally:
+        # Wenn die Tab-ID bekannt ist, auf sämtlichen Erfolgs- und Fehlerpfaden
+        # unabhängig versuchen, AB:AE zu leeren und auszublenden.
+        active_exception = sys.exc_info()[1]
+        if sheet_id is not None:
+            try:
+                sheets.spreadsheets().values().clear(
+                    spreadsheetId=spreadsheet_id,
+                    range="'Geschlossene Positionen'!AB:AE",
+                    body={},
+                ).execute()
+            except Exception as exc:
+                cleanup_errors.append(("AB:AE leeren", exc))
+
+            # Google Sheets lehnt Dimension-Updates ab, deren endIndex über
+            # die vorhandene Spaltenzahl hinausgeht. Bei fehlgeschlagener
+            # Erweiterung dürfen daher nur bereits existierende Helper-Spalten
+            # (AB bis maximal AE) ausgeblendet werden.
+            hide_start_index = len(HISTORY_DISPLAY_HEADERS)
+            hide_end_index = min(column_count, len(HISTORY_SORT_HEADERS))
+            if hide_end_index > hide_start_index:
+                try:
+                    _google_batch_update_with_retry(
+                        sheets, spreadsheet_id,
+                        {"requests": [{
+                            "updateDimensionProperties": {
+                                "range": {
+                                    "sheetId": sheet_id,
+                                    "dimension": "COLUMNS",
+                                    "startIndex": hide_start_index,
+                                    "endIndex": hide_end_index,
+                                },
+                                "properties": {"hiddenByUser": True, "pixelSize": 20},
+                                "fields": "hiddenByUser,pixelSize",
+                            }
+                        }]},
+                        context="Temporäre Historien-Sortierspalten AB:AE ausblenden",
+                    )
+                except Exception as exc:
+                    cleanup_errors.append(("AB:AE ausblenden", exc))
+
+        if cleanup_errors:
+            details = "; ".join(f"{label}: {error}" for label, error in cleanup_errors)
+            if active_exception is not None:
+                # Den fachlichen Fehler nicht durch einen Cleanup-Fehler ersetzen.
+                if hasattr(active_exception, "add_note"):
+                    active_exception.add_note(f"Zusätzlicher Cleanup-Fehler: {details}")
+                print(f"WARNUNG: {details}")
+            else:
+                raise cleanup_errors[0][1]
 
 
 def _rollback_productive_swap(sheets, spreadsheet_id: str, target_title: str, backup_title: str) -> None:
@@ -2581,7 +2875,8 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 "'Geschlossene Positionen'."
             )
         preflight_rows = read_existing_history(sheets, spreadsheet_id, allow_missing=False)
-        if len(preflight_rows) < 2 or [str(x).strip() for x in preflight_rows[1]] != HISTORY_HEADERS:
+        preflight_header = [str(x).strip() for x in preflight_rows[1]] if len(preflight_rows) >= 2 else []
+        if preflight_header not in (HISTORY_HEADERS, HISTORY_DISPLAY_HEADERS):
             raise RuntimeError("Sicherheitsabbruch: Tab-2-Header fehlt oder ist nicht exakt.")
         preflight_keys = set()
         preflight_count = 0
@@ -2654,7 +2949,9 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             sheets, spreadsheet_id, closed_for_append, allow_initialize=is_new_master
         )
         if appended_history:
-            print(f"PERSISTENZ: {appended_history} neue geschlossene Position(en) append-only in Tab 2 archiviert.")
+            print(f"PERSISTENZ: {appended_history} neue geschlossene Position(en) in Tab 2 archiviert.")
+
+        _sort_and_number_closed_history(sheets, spreadsheet_id)
 
         def _column_letter(n: int) -> str:
             result = ""
@@ -2666,14 +2963,17 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # 3) Tab 2 VOR dem produktiven Tab-1-Swap verifizieren.
         hist_ss = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range=f"Geschlossene Positionen!A1:{_column_letter(len(HISTORY_HEADERS))}",
+            range=f"Geschlossene Positionen!A1:{_column_letter(len(HISTORY_DISPLAY_HEADERS))}",
         ).execute()
         hist_rows = hist_ss.get("values", [])
         if len(hist_rows) < 2:
             raise RuntimeError("Historien-Verifikation fehlgeschlagen: Geschlossene Positionen ist leer oder unvollständig.")
         expected_hist_header = [str(x).strip() for x in HISTORY_HEADERS]
-        if [str(x).strip() for x in hist_rows[1]] != expected_hist_header:
+        actual_hist_header = [str(x).strip() for x in hist_rows[1]]
+        if actual_hist_header not in (expected_hist_header, HISTORY_DISPLAY_HEADERS):
             raise RuntimeError("Historien-Verifikation fehlgeschlagen: Header der Historie stimmt nicht.")
+        if actual_hist_header != HISTORY_DISPLAY_HEADERS:
+            raise RuntimeError("Historien-Verifikation fehlgeschlagen: Nummerierungsspalte 'Nr.' fehlt.")
 
         # Vollständigen append-only Tab 2 lokal exportieren. Die lokale
         # Initialhistorie kann älter/kleiner sein als die produktive Historie

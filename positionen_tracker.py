@@ -1673,9 +1673,24 @@ def aktualisiere_positionen(df):
         markt = row['Markt']
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
-        ist_short = ermittle_richtung(row, stop, einstieg) if stop is not None and einstieg is not None else False
+        ist_short = ermittle_richtung(row, stop, einstieg) if stop is not None and einstieg is not None else str(row.get('Richtung', '')).strip().lower() == 'short'
         tp1 = sicheres_float(row['TP1'], ticker, 'TP1')
         tp2 = sicheres_float(row['TP2'], ticker, 'TP2')
+
+        # Performance immer aus den im Sheet sichtbaren Kursdaten aktualisieren.
+        # Falls der Live-Abruf ausfaellt, bleibt der letzte gespeicherte Kurs
+        # als Anzeige-/Performance-Basis erhalten; Stop/TP-Pruefungen laufen
+        # ohne einen frischen Kurs ausdrücklich NICHT weiter.
+        gespeicherter_kurs = sicheres_float(row.get('Aktueller_Kurs'), ticker, 'Aktueller_Kurs')
+        if einstieg is not None and einstieg > 0 and gespeicherter_kurs is not None and gespeicherter_kurs > 0:
+            if ist_short:
+                df.at[idx, 'Performance_Seit_Einstieg%'] = round(
+                    ((einstieg - gespeicherter_kurs) / einstieg) * 100, 2
+                )
+            else:
+                df.at[idx, 'Performance_Seit_Einstieg%'] = round(
+                    ((gespeicherter_kurs - einstieg) / einstieg) * 100, 2
+                )
 
         if stop is None or einstieg is None:
             # Bewusst NICHT den ganzen Lauf abbrechen: eine Zeile mit
@@ -1686,7 +1701,11 @@ def aktualisiere_positionen(df):
 
         aktueller_kurs = hole_aktuellen_kurs(ticker, markt)
         if aktueller_kurs is None:
-            print(f"DEBUG: Kein aktueller Kurs für {ticker} verfügbar - Status bleibt unverändert.")
+            print(
+                f"DEBUG: Kein neuer Kurs für {ticker} verfügbar - "
+                "gespeicherte Kurs-/Performance-Anzeige bleibt erhalten; "
+                "Stop/TP-Prüfung wird ausgelassen."
+            )
             continue
 
         # Auf 2 Nachkommastellen runden: yfinance liefert volle Float-Präzision
