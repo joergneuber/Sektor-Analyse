@@ -80,6 +80,14 @@ def _event_identity_matches(report_name: Any, source_name: Any) -> bool:
     source_identity = _normalized_event_identity(source_name)
     if report_identity == source_identity and report_identity:
         return True
+    # Some generated event metrics append a parenthetical canonical alias,
+    # e.g. "Unemployment Claims (Initial Jobless Claims)". Match only when the
+    # complete primary title before that explanatory suffix is exact.
+    primary_title = str(report_name or "").split(" (", 1)[0]
+    if primary_title != str(report_name or ""):
+        primary_identity = _normalized_event_identity(primary_title)
+        if primary_identity and primary_identity == source_identity:
+            return True
     # The macro snapshot prefixes some event titles with its deterministic
     # canonical category (for example "ADP: ADP Weekly Employment Change").
     if ":" in str(report_name or ""):
@@ -208,27 +216,39 @@ def _verify_forexfactory_event(event_name: str, event_date: str, *, requester=No
                 continue
             title = _clean(item.get("title") or item.get("event") or item.get("name"))
             raw_date = str(item.get("date") or "").strip()
+            event_datetime = None
             try:
-                actual_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date().isoformat()
+                event_datetime = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                actual_date = event_datetime.date().isoformat()
             except ValueError:
                 try:
                     actual_date = date.fromisoformat(raw_date[:10]).isoformat()
                 except ValueError:
                     continue
             if title and actual_date == expected_date and _event_identity_matches(event_name, title):
-                matches.append((item, title, actual_date))
+                matches.append((item, title, actual_date, event_datetime))
         if len(matches) != 1:
             return None, (
                 f"ForexFactory-Adapter: {len(matches)} exakt passende Events für "
                 f"{event_name!r} am {expected_date}; Event nicht verifiziert"
             )
-        item, title, actual_date = matches[0]
+        item, title, actual_date, event_datetime = matches[0]
         event_id = str(item.get("id") or _normalized_event_identity(title))
         event_time = _clean(item.get("time"))
         event_timezone = _clean(item.get("timezone") or item.get("tz"))
+        # The weekly JSON feed often encodes the local wall-clock time and UTC
+        # offset only in its ISO-8601 ``date`` field. Preserve that source data
+        # rather than leaving M-08 without a verifiable time/zone.
+        if not event_time and event_datetime is not None and event_datetime.tzinfo is not None:
+            event_time = event_datetime.strftime("%H:%M")
+        if not event_timezone and event_datetime is not None:
+            offset = event_datetime.strftime("%z")
+            if offset:
+                event_timezone = f"UTC{offset[:3]}:{offset[3:]}"
         detail = (
             f"ForexFactory LIVE-Adapter: HTTP 200; Event={title}; Datum={actual_date}; "
-            f"Abruf={requested_url}; Final={final_url}"
+            f"Uhrzeit={event_time or 'NICHT VERFÜGBAR'}; Zeitzone={event_timezone or 'NICHT VERFÜGBAR'}; "
+            f"Abrufzeit={retrieved_at}; Abruf={requested_url}; Final={final_url}"
         )
         evidence = _EventVerificationEvidence(
             kind="FOREXFACTORY", event_id=event_id, event_name=title, event_date=actual_date,
@@ -1301,6 +1321,7 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         "Kennzahl|Indikator|Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|"
         "Konsens|Istwert|Quelle|Source|Betroffene These/Assetklasse/konkrete offene Positionen|"
         "Szenarien(?:\\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\\s+Konsens)?|"
+        "Unter Konsens|Entsprechend Konsens|Über Konsens|Ueber Konsens|"
         "Betroffene Thesen/Assetklassen/Positionen|"
         "Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
         "Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|Status"
@@ -1316,7 +1337,10 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
 
     starts = []
     has_named_event_bullets = any(
-        re.match(r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)(?:Ereignis|Termin|Event)\s*[:=]", line)
+        re.match(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)(?:Ereignis(?:[- ]Uhrzeit)?|Termin|Event)\s*[:=]",
+            line,
+        )
         for line in lines
     )
     for i, line in enumerate(lines):
@@ -1368,7 +1392,13 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         # Strip markdown emphasis before extracting labels. Both **Quelle:** and
         # **Quelle**: are common generator outputs and mean the same field.
         plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
-        if re.match(r"(?i)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]", rec_lines[0]):
+        date_led_record = bool(re.match(
+            r"(?i)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]", rec_lines[0]
+        ))
+        event_clock_header = bool(re.match(
+            r"(?i)^\s*(?:[-*•]\s*)?Ereignis-Uhrzeit\s*[:=]", rec_lines[0]
+        ))
+        if date_led_record or event_clock_header:
             metric_identity = re.search(
                 r"(?im)^\s*(?:[-*•]\s*)?(?:Kennzahl|Indikator)\s*[:=]\s*([^\r\n|;]+)",
                 plain_rec,
@@ -1547,6 +1577,33 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
                 rec = verification_line_pattern.sub("- Quellenprüfung: " + verified_detail, rec)
             else:
                 rec = rec.rstrip() + "\n- Quellenprüfung: " + verified_detail
+
+            event_header_pattern = re.compile(
+                r"(?im)^(\s*(?:[-*•]\s*)?Ereignis-Uhrzeit\s*[:=]\s*)[^\r\n]*$"
+            )
+            if event_header_pattern.search(rec):
+                rec = event_header_pattern.sub(
+                    lambda match: (
+                        match.group(1) + f"{evidence.event_name} ({evidence.event_date})"
+                    ),
+                    rec,
+                    count=1,
+                )
+
+            def upsert_verified_event_field(record: str, label: str, value: str) -> str:
+                if not value:
+                    return record
+                field_pattern = re.compile(
+                    rf"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*[:=]\s*)[^\r\n]*$"
+                )
+                if field_pattern.search(record):
+                    return field_pattern.sub(
+                        lambda match: match.group(1) + value, record, count=1
+                    )
+                return record.rstrip() + f"\n- {label}: {value}"
+
+            rec = upsert_verified_event_field(rec, "Uhrzeit", evidence.event_time)
+            rec = upsert_verified_event_field(rec, "Zeitzone", evidence.timezone)
         if date_inferred_from_period and date_m and _is_valid_calendar_event_date(date_m.group(1).strip()):
             rec = re.sub(
                 r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?(?:Quellenprüfung|Quellenpruefung)(?:\*\*)?\s*[:=]\s*)"

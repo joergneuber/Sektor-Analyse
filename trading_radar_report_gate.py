@@ -1309,6 +1309,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"(?:Datum|Date|Uhrzeit/Zeitzone|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
+            r"Unter Konsens|Entsprechend Konsens|Über Konsens|Ueber Konsens|"
             r"Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
             r"Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|"
             r"Betroffene These/Assetklasse/konkrete offene Positionen|"
@@ -1316,7 +1317,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         )
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         named_event = re.compile(
-            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:Ereignis|Termin|Event)\s*[:=]"
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:Ereignis(?:[- ]Uhrzeit)?|Termin|Event)\s*[:=]"
         )
 
         def fomc_event_kind(value):
@@ -2173,7 +2174,9 @@ def validate_report(text: str) -> list[str]:
     # A qualitative label alone is insufficient: breadth, rates and
     # dollar/liquidity/volatility observations must be independently visible.
     executive = _section_body(text, 1, SECTION_NAMES[0])
-    regime_match = re.search(r"(?im)^\s*Marktregime\s*:\s*([^\r\n]+)", executive)
+    regime_match = re.search(
+        r"(?im)^\s*(?:[-*•]\s*)?Marktregime\s*:\s*([^\r\n]+)", executive
+    )
     if not regime_match or _MISSING_VALUE_RE.fullmatch(regime_match.group(1).strip()):
         errors.append("M-02: explizite, nichtleere Marktregime-Einstufung fehlt.")
     cutoff_match = re.search(

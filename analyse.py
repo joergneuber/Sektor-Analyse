@@ -40,6 +40,20 @@ GESCHLOSSENE_HISTORY_HEADERS = [
     "OS_Performance%", "OS_Quelle", "OS_Kurszeit",
 ]
 
+def _canonicalize_geschlossene_history_header(header):
+    """Accept the canonical archive header and its documented Nr. display variant.
+
+    ``offene_positionen_check.py`` writes ``HISTORY_DISPLAY_HEADERS`` to the
+    productive Google-Sheets tab. The trailing ``Nr.`` column is presentation
+    metadata, not part of the 26-column historical data contract.
+    """
+    normalized = [str(value).strip() for value in header]
+    display_header = GESCHLOSSENE_HISTORY_HEADERS + ["Nr."]
+    if normalized == display_header:
+        return list(GESCHLOSSENE_HISTORY_HEADERS)
+    return normalized
+
+
 def lade_geschlossene_historie_google() -> pd.DataFrame:
     """Laedt die komplette geschlossene Historie aus Tab 2.
 
@@ -101,11 +115,14 @@ def lade_geschlossene_historie_google() -> pd.DataFrame:
                 "Tab 2 'Geschlossene Positionen' ist leer oder enthaelt keinen Header."
             )
 
-        header = [str(x).strip() for x in values[1]]
+        raw_header = [str(x).strip() for x in values[1]]
+        header = _canonicalize_geschlossene_history_header(raw_header)
         if header != GESCHLOSSENE_HISTORY_HEADERS:
             raise RuntimeError(
                 "Header von Tab 2 'Geschlossene Positionen' stimmt nicht mit dem "
-                "produktiven Historien-Schema ueberein."
+                "produktiven Historien-Schema ueberein. "
+                f"Erhalten={raw_header!r}; erwartet={GESCHLOSSENE_HISTORY_HEADERS!r} "
+                f"oder={GESCHLOSSENE_HISTORY_HEADERS + ['Nr.']!r}."
             )
 
         rows = []

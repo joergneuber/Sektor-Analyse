@@ -1253,7 +1253,14 @@ def fred_series(series_id, limit_days=5000):
         df = _df_from_cache_entry(entry, series_id)
         if not df.empty:
             latest = df["DATE"].iloc[-1].date().isoformat()
-            cache_requires_refresh = _fred_cache_requires_release_refresh(series_id, latest)
+            # DGS10 is a daily market-yield series. A seven-day validity window
+            # is too permissive for the Trading Radar: refresh it on every
+            # production run so a newer daily observation cannot remain hidden
+            # behind a still-technically-valid cache entry.
+            cache_requires_refresh = (
+                series_id == "DGS10"
+                or _fred_cache_requires_release_refresh(series_id, latest)
+            )
             if series_id == "DGS10":
                 saved_at = entry.get("saved_at")
                 source = entry.get("source")
@@ -1272,7 +1279,13 @@ def fred_series(series_id, limit_days=5000):
                 print(f"INFO: FRED-Cache-Hit fuer {series_id} (Datenstand={latest})")
                 return df
             if cache_requires_refresh:
-                print(f"INFO: FRED-Cache-Refresh fuer {series_id}: Monatsdaten koennen aktualisiert sein (Cache={latest})")
+                if series_id == "DGS10":
+                    print(
+                        f"INFO: FRED-Cache-Refresh fuer DGS10: taegliche Renditedaten "
+                        f"werden je Lauf live aktualisiert (Cache={latest})"
+                    )
+                else:
+                    print(f"INFO: FRED-Cache-Refresh fuer {series_id}: Monatsdaten koennen aktualisiert sein (Cache={latest})")
             elif provenance_requires_refresh:
                 print(
                     f"INFO: FRED-Cache-Refresh fuer {series_id}: "
@@ -5565,9 +5578,9 @@ def _forexfactory_cache_save(today, events):
         print(f"WARNUNG-FOREXFACTORY: Cache konnte nicht gespeichert werden: {type(exc).__name__}: {exc}")
 
 
-def _forexfactory_events(today):
+def _forexfactory_events(today, *, force_refresh=False):
     cached = _forexfactory_cache_load(today)
-    if cached is not None:
+    if cached is not None and not force_refresh:
         return cached, "CACHE"
 
     try:
@@ -5585,6 +5598,9 @@ def _forexfactory_events(today):
         return events, "LIVE"
     except Exception as exc:
         print(f"WARNUNG-FOREXFACTORY: Kalender nicht verfuegbar: {type(exc).__name__}: {exc}")
+        if cached is not None:
+            print("WARNUNG-FOREXFACTORY: Verwende den zeitlich gueltigen Cache ausschliesslich als Fallback.")
+            return cached, "CACHE"
         return [], "UNAVAILABLE"
 
 
@@ -5695,7 +5711,9 @@ def _upcoming_macro_events(today, ff_events=None, ff_status=None):
 
 
 def macro_events_snapshot(today):
-    ff_events, ff_status = _forexfactory_events(today)
+    # Every production macro package must try a fresh calendar request first.
+    # A still-valid disk cache is only a fallback if the live endpoint fails.
+    ff_events, ff_status = _forexfactory_events(today, force_refresh=True)
     events = _upcoming_macro_events(today, ff_events=ff_events, ff_status=ff_status)
     out = ["MAKRO-EVENTS / WICHTIGE IMPULSE VORAUS"]
     if not events:
