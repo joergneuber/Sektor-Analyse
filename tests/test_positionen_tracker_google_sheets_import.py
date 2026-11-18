@@ -436,8 +436,13 @@ def test_tracker_recalculates_performance_from_stored_course_when_live_quote_mis
 ):
     tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
     monkeypatch.setattr(tracker, "hole_aktuellen_kurs", lambda ticker, markt: None)
+    # Match the tracker's real input normalization: numeric source columns
+    # are numeric before the update loop assigns float values. Pandas 3.x uses
+    # strict string dtypes for all-empty dict-built frames, so that fixture
+    # would otherwise fail before the production method is exercised.
     frame = pd.DataFrame([{
-        column: "" for column in tracker.SPALTEN
+        column: (float("nan") if column in tracker.NUMERISCHE_SPALTEN else "")
+        for column in tracker.SPALTEN
     }])
     frame.loc[0, "Ticker"] = "TEST.DE"
     frame.loc[0, "Name"] = "Test AG"
