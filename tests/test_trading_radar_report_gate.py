@@ -31,7 +31,7 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
     ).hexdigest()
     sections = [
         "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
-        "Marktregime: Selektives Risk-on mit defensiver Rotation.\n"
+        "- Marktregime: Selektives Risk-on mit defensiver Rotation.\n"
         "Marktregime-Datenstichtag: 2026-10-30\n"
         "Indizes/Marktbreite: S&P 500 +1,0%; Marktbreite 8/11.\n"
         "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.\n"
@@ -1066,6 +1066,43 @@ def test_m08_splits_date_led_legacy_events_and_keeps_combined_time_zone_as_field
     assert normalized.count("Datum: 2026-11-19") == 1
     errors = gate.validate_report(normalized)
     assert not any("M-08:" in error for error in errors), errors
+
+
+def test_m08_keeps_event_clock_records_and_consensus_scenarios_inside_each_event():
+    event_section = (
+        "3. Ereignisradar\n"
+        "- Ereignis-Uhrzeit: ADP Weekly Employment Change (2026-11-17)\n"
+        "  - Uhrzeit: 08:15\n"
+        "  - Zeitzone: UTC-05:00\n"
+        "  - Kennzahl: ADP Weekly Employment Change\n"
+        "  - Zeitraum: Wöchentlich\n"
+        "  - Datum: 2026-11-17\n"
+        "  - Letzter Wert: NICHT VERFÜGBAR\n"
+        "  - Konsens: NICHT VERFÜGBAR\n"
+        "  - Quelle: ForexFactory LIVE adapter (https://nfs.faireconomy.media/ff_calendar_thisweek.json)\n"
+        "  - Unter Konsens: Nachlassen des Lohndrucks\n"
+        "  - Datum: NICHT VERFÜGBAR (Szenariofeld, kein eigener Termin)\n"
+        "- Ereignis-Uhrzeit: Unemployment Claims (2026-11-19)\n"
+        "  - Uhrzeit: 08:30\n"
+        "  - Zeitzone: UTC-05:00\n"
+        "  - Kennzahl: Unemployment Claims (Initial Jobless Claims)\n"
+        "  - Zeitraum: Wöchentlich\n"
+        "  - Datum: 2026-11-19\n"
+        "  - Letzter Wert: 200000\n"
+        "  - Konsens: 198K\n"
+        "  - Quelle: ForexFactory LIVE adapter (https://nfs.faireconomy.media/ff_calendar_thisweek.json)\n"
+        "  - Entsprechend Konsens: Keine Überraschung\n"
+        "  - Datum: NICHT VERFÜGBAR (Szenariofeld, kein eigener Termin)\n"
+    )
+    report = report_fixture().replace(
+        "3. Ereignisradar\nUhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
+        event_section.rstrip(),
+        1,
+    )
+
+    errors = gate.validate_report(report)
+
+    assert not any(error.startswith("M-08:") for error in errors), errors
 
 
 def test_m03_does_not_misclassify_unrelated_macro_gap_statement_as_ohlcv_claim():

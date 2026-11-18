@@ -1304,6 +1304,69 @@ def test_explicit_event_date_is_confirmed_only_by_real_forexfactory_adapter():
 
 
 
+def test_unresolved_event_clock_headers_use_metric_for_live_forexfactory_verification():
+    import json
+    from trading_radar_market_first import normalize_event_section
+
+    class FFResponse:
+        status_code = 200
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        text = json.dumps([
+            {
+                "id": "ff-adp-20261117", "country": "USD",
+                "date": "2026-11-17T08:15:00-05:00",
+                "title": "ADP Weekly Employment Change",
+            },
+            {
+                "id": "ff-claims-20261119", "country": "USD",
+                "date": "2026-11-19T08:30:00-05:00",
+                "title": "Unemployment Claims",
+            },
+        ])
+
+        def json(self):
+            return json.loads(self.text)
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis-Uhrzeit: Name nicht aufgelöst (HEUTE) (2026-11-17)\n"
+        "  - Zeitzone: UTC\n"
+        "  - Kennzahl: ADP Weekly Employment Change\n"
+        "  - Zeitraum: Aktuelle Berichtsperiode\n"
+        "  - Datum: 2026-11-17\n"
+        "  - Unter Konsens: Nachlassen des Lohndrucks\n"
+        "  - Datum: NICHT VERFÜGBAR (Szenariofeld, kein eigener Termin)\n"
+        "  - Quelle: ForexFactory (CACHE) / Makro-Datenpaket\n"
+        "  - Quellenprüfung: NICHT VERIFIZIERT (Quelle fehlt)\n"
+        "- Ereignis-Uhrzeit: in 2 Tag(en) (2026-11-19)\n"
+        "  - Zeitzone: UTC\n"
+        "  - Kennzahl: Unemployment Claims (Initial Jobless Claims)\n"
+        "  - Zeitraum: Wöchentlich\n"
+        "  - Datum: 2026-11-19\n"
+        "  - Entsprechend Konsens: Keine Überraschung\n"
+        "  - Datum: NICHT VERFÜGBAR (Szenariofeld, kein eigener Termin)\n"
+        "  - Quelle: ForexFactory (CACHE) / Makro-Datenpaket\n"
+        "  - Quellenprüfung: NICHT VERIFIZIERT (Quelle fehlt)\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, forexfactory_requester=lambda *a, **k: FFResponse()
+    )
+
+    assert findings == []
+    assert normalized.count("ForexFactory LIVE adapter") == 2
+    assert normalized.count("LIVE_VERIFIZIERT") == 2
+    assert "Ereignis-Uhrzeit: ADP Weekly Employment Change (2026-11-17)" in normalized
+    assert "Ereignis-Uhrzeit: Unemployment Claims (2026-11-19)" in normalized
+    assert "Name nicht aufgelöst" not in normalized
+    assert "in 2 Tag(en)" not in normalized
+    assert normalized.count("Uhrzeit: 08:15") == 1
+    assert normalized.count("Uhrzeit: 08:30") == 1
+    assert normalized.count("Zeitzone: UTC-05:00") == 2
+    assert normalized.count("Abrufzeit=") == 2
+    assert "ForexFactory (CACHE)" not in normalized
+
+
 def test_forexfactory_http_200_wrong_event_or_date_is_not_evidence():
     import json
     from trading_radar_market_first import normalize_event_section

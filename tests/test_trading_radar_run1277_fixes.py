@@ -182,6 +182,57 @@ def test_federal_reserve_h15_fallback_keeps_its_own_provider_identity(monkeypatc
     assert _treasury_observation_has_complete_provenance(line)
 
 
+def test_dgs10_cache_is_refreshed_each_run_even_when_still_within_age_limit(monkeypatch, tmp_path):
+    import json
+    import sys
+    import types
+    import pandas as pd
+
+    sys.modules.setdefault("yfinance", types.SimpleNamespace(download=lambda *a, **k: pd.DataFrame()))
+    import makro_szenario as macro_module
+    cache_dir = tmp_path / ".macro_cache"
+    cache_file = cache_dir / "macro_cache.json"
+    cache_dir.mkdir()
+    stale_payload = pd.DataFrame({
+        "DATE": [pd.Timestamp("2026-11-13")], "DGS10": [5.15]
+    }).to_json(orient="split", date_format="iso")
+    cache_file.write_text(json.dumps({
+        "version": macro_module.CACHE_VERSION,
+        "fred": {"DGS10": {
+            "payload": stale_payload, "status": "REAL",
+            "saved_at": 1794564000.0,
+            "source": "https://api.stlouisfed.org/fred/series/observations",
+        }},
+    }), encoding="utf-8")
+    monkeypatch.setattr(macro_module, "MACRO_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(macro_module, "MACRO_CACHE_FILE", cache_file)
+    monkeypatch.setattr(macro_module, "_cache_valid", lambda *a, **k: True)
+    monkeypatch.setattr(macro_module, "_fred_cache_requires_release_refresh", lambda *a, **k: False)
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"observations": [
+                {"date": "2026-11-16", "value": "5.12"},
+            ]}
+
+    calls = []
+    monkeypatch.setattr(
+        macro_module.requests, "get",
+        lambda *a, **k: (calls.append((a, k)) or FakeResponse()),
+    )
+    result = macro_module.fred_series("DGS10")
+
+    assert len(calls) == 1
+    assert result.iloc[-1]["DGS10"] == 5.12
+    refreshed = json.loads(cache_file.read_text(encoding="utf-8"))["fred"]["DGS10"]
+    assert isinstance(refreshed.get("saved_at"), (int, float))
+    assert refreshed.get("source") == "https://api.stlouisfed.org/fred/series/observations"
+
+
 def test_dgs10_cache_without_saved_retrieval_metadata_is_refreshed(monkeypatch, tmp_path):
     import json
     import sys

@@ -87,13 +87,50 @@ def test_forexfactory_fetch_is_cached_for_same_day():
             cache_file.unlink(missing_ok=True)
 
 
+def test_forexfactory_force_refresh_bypasses_valid_cache():
+    today = dt.date(2026, 9, 15)
+    cached_payload = [{"country": "USD", "date": "2026-09-15", "title": "Old cached event"}]
+    live_payload = [{"country": "USD", "date": "2026-09-15", "title": "ADP Weekly Employment Change"}]
+    with patch.object(m, "FOREXFACTORY_CACHE_FILE", ROOT / ".test_ff_force_cache.json"):
+        cache_file = ROOT / ".test_ff_force_cache.json"
+        try:
+            m._forexfactory_cache_save(today, cached_payload)
+            response = types.SimpleNamespace(
+                status_code=200, json=lambda: live_payload, raise_for_status=lambda: None
+            )
+            with patch.object(m.requests, "get", return_value=response) as mocked:
+                events, status = m._forexfactory_events(today, force_refresh=True)
+            _assert(events == live_payload, "force refresh must return the live payload, not the cached payload")
+            _assert(status == "LIVE", "successful forced refresh must be labeled LIVE")
+            _assert(mocked.call_count == 1, "forced refresh must request the live endpoint")
+            _assert(m._forexfactory_cache_load(today) == live_payload, "live payload must replace the cache")
+        finally:
+            cache_file.unlink(missing_ok=True)
+
+
+def test_forexfactory_force_refresh_uses_valid_cache_only_as_fallback():
+    today = dt.date(2026, 9, 15)
+    cached_payload = [{"country": "USD", "date": "2026-09-15", "title": "Cached fallback event"}]
+    with patch.object(m, "FOREXFACTORY_CACHE_FILE", ROOT / ".test_ff_fallback_cache.json"):
+        cache_file = ROOT / ".test_ff_fallback_cache.json"
+        try:
+            m._forexfactory_cache_save(today, cached_payload)
+            with patch.object(m.requests, "get", side_effect=TimeoutError("offline")):
+                events, status = m._forexfactory_events(today, force_refresh=True)
+            _assert(events == cached_payload, "valid cache must remain available when live refresh fails")
+            _assert(status == "CACHE", "fallback data must never be mislabeled LIVE")
+        finally:
+            cache_file.unlink(missing_ok=True)
+
+
 def test_macro_events_snapshot_contains_focus(monkeypatch=None):
     today = dt.date(2026, 9, 15)
     payload = [{"country": "USD", "date": "2026-09-15", "title": "ADP Weekly Employment Change"}]
-    with patch.object(m, "_forexfactory_events", return_value=(payload, "LIVE")), \
+    with patch.object(m, "_forexfactory_events", return_value=(payload, "LIVE")) as ff_mock, \
          patch.object(m, "_next_fomc_date", return_value=None), \
          patch.object(m.requests, "get", side_effect=RuntimeError("ECB disabled in unit test")):
         lines = m.macro_events_snapshot(today)
+    ff_mock.assert_called_once_with(today, force_refresh=True)
     text = "\n".join(lines)
     _assert("MACRO_FOCUS=ADP" in text, "production snapshot missing ADP focus")
     _assert("FOCUS_EVENT=ADP Weekly Employment Change" in text, "focus event missing")
@@ -153,6 +190,8 @@ if __name__ == "__main__":
         test_macro_focus_prefers_today,
         test_macro_focus_has_no_directional_signal,
         test_forexfactory_fetch_is_cached_for_same_day,
+        test_forexfactory_force_refresh_bypasses_valid_cache,
+        test_forexfactory_force_refresh_uses_valid_cache_only_as_fallback,
         test_upcoming_macro_events_does_not_duplicate_official_fomc,
         test_macro_events_snapshot_contains_focus,
         test_fomc_schedule_is_resolved_relative_to_module_not_cwd,
