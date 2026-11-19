@@ -1144,7 +1144,20 @@ def update_database(
                     stats["gap_rows_added"] += inserted
                     stats["gap_tickers_attempted"] += len(batch)
                     stats["updated"] += len(updated_tickers)
+                except sqlite3.Error as exc:
+                    # SQLite-Schreib-/Commitfehler sind technische Persistenzfehler,
+                    # keine blossen Provider- oder Datenqualitaetsbefunde.
+                    stats["errors"] += 1
+                    stats["gap_tickers_attempted"] += len(batch)
+                    print(
+                        f"FEHLER-HIST-OHLCV: SQLite-Persistenz der Kursluecken-Reparatur "
+                        f"fehlgeschlagen ({len(batch)} Ticker, {download_start} bis {download_end}): {exc}",
+                        file=sys.stderr,
+                    )
                 except Exception as exc:
+                    # Provider-/Validierungsfehler im gezielten Reparaturpfad
+                    # bleiben Qualitaetsbefunde; Kandidaten und Positionen werden
+                    # anschliessend separat fail-closed geprueft.
                     stats["errors"] += 1
                     stats["gap_repair_errors"] += 1
                     stats["gap_tickers_attempted"] += len(batch)
@@ -1741,11 +1754,25 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE_FILE)
     parser.add_argument("--dynamic-universe", type=Path, default=DEFAULT_DYNAMIC_UNIVERSE)
-    parser.add_argument("--summary", action="store_true", help="bei coverage nur die Coverage-Zusammenfassung ausgeben")
+    parser.add_argument(
+        "--summary", action="store_true",
+        help=(
+            "bei coverage nur die globale Zusammenfassung ausgeben; fehlende "
+            "Symbole werden dokumentiert und fuehren weiterhin zu Exitcode 1"
+        ),
+    )
     parser.add_argument("--ticker")
     parser.add_argument("--positions-file", type=Path, default=DEFAULT_OPEN_POSITIONS_FILE)
     parser.add_argument("--bootstrap", action="store_true", help="beim Update alle Ticker als fehlend behandeln")
-    parser.add_argument("--strict", action="store_true", help="beim Update bei Batch-Fehlern, fehlenden Tickern oder offenen Kursluecken Exitcode 1 liefern")
+    parser.add_argument(
+        "--strict", action="store_true",
+        help=(
+            "bei primaeren technischen Update-/Bootstrap-Fehlern und fehlenden "
+            "globalen Symbolhistorien Exitcode 1 liefern; reine Gap-Reparaturfehler, "
+            "verbleibende Kursluecken und nicht verifizierte Kalender bleiben als "
+            "Qualitaetsbefund sichtbar und blockieren nicht allein den Exitcode"
+        ),
+    )
     parser.add_argument("--no-gap-repair", action="store_true", help="automatische Reparatur erkannter Kursluecken deaktivieren")
     parser.add_argument("--gap-lookback-days", type=int, default=DEFAULT_GAP_LOOKBACK_DAYS, help="Rueckblick fuer die automatische Kursluecken-Reparatur (Kalendertage)")
     args = parser.parse_args()
@@ -1759,15 +1786,64 @@ def main() -> int:
         )
         if args.strict:
             errors = int(stats.get("errors", 0) or 0)
+            gap_repair_errors = int(stats.get("gap_repair_errors", 0) or 0)
+            # Gap-Reparaturfehler sind ein Qualitaetsbefund fuer die betroffenen
+            # Handelstage. Sie duerfen nicht als technischer Fehler des
+            # primaeren Datenbankupdates gezaehlt werden; Kandidaten- und
+            # Positionspruefung entscheiden, ob die nicht reparierte Luecke
+            # aktuell relevant ist.
+            technical_errors = (
+                errors - gap_repair_errors
+                if gap_repair_errors <= errors
+                else errors + 1  # inkonsistente Fehlerzaehler: fail closed
+            )
             missing_after = int(stats.get("missing_after", 0) or 0)
             gap_sessions_remaining = int(stats.get("gap_sessions_remaining", 0) or 0)
-            strict_status = "PARTIAL" if errors or missing_after or gap_sessions_remaining else "COMPLETE"
+            calendar_unverified = int(stats.get("gap_calendar_unverified", 0) or 0)
+
+            # Der Qualitaetsstatus bleibt bewusst streng und universe-weit:
+            # offene Handelstagsluecken und nicht verifizierte Kalender werden
+            # weiterhin als PARTIAL ausgewiesen. Der Prozess-Exitcode bildet
+            # dagegen nur technische Aktualisierungsfehler ab. Ob globale
+            # Qualitaetsbefunde den Trading-Radar betreffen, entscheidet
+            # anschliessend das kandidatenbezogene OHLCV-Audit sowie die
+            # separate Pruefung offener Positionen.
+            strict_status = (
+                "PARTIAL"
+                if errors or gap_repair_errors or missing_after or gap_sessions_remaining or calendar_unverified
+                else "COMPLETE"
+            )
             print(
                 "HIST-OHLCV-STRICT="
-                f"{strict_status}|errors={errors}|missing={missing_after}|"
-                f"gap_sessions_remaining={gap_sessions_remaining}"
+                f"{strict_status}|errors={errors}|technical_errors={technical_errors}|"
+                f"gap_repair_errors={gap_repair_errors}|missing={missing_after}|"
+                f"gap_sessions_remaining={gap_sessions_remaining}|"
+                f"calendar_unverified={calendar_unverified}"
             )
-            return 1 if strict_status != "COMPLETE" else 0
+
+            if technical_errors:
+                print(
+                    "HIST-OHLCV-STRICT-EXIT=1|reason=technical_update_error"
+                )
+                return 1
+
+            # Fehlende Tickerhistorien bleiben ein harter Coverage-Fehler.
+            # Nur Kursluecken innerhalb bereits vorhandener Historien werden
+            # nachgelagert auf Kandidaten- und Positionsrelevanz geprueft.
+            if missing_after:
+                print(
+                    "HIST-OHLCV-STRICT-EXIT=1|reason=missing_symbol_history"
+                )
+                return 1
+
+            if gap_repair_errors or gap_sessions_remaining or calendar_unverified:
+                print(
+                    "HIST-OHLCV-STRICT-EXIT=0|"
+                    "reason=quality_findings_require_relevance_check"
+                )
+            else:
+                print("HIST-OHLCV-STRICT-EXIT=0|reason=complete")
+            return 0
         return 0
     if args.command == "sync-open-positions":
         sync_open_positions(
@@ -1794,6 +1870,9 @@ def main() -> int:
                 print(" ".join(report.loc[report["Status"] == "MISSING", "Ticker"].tolist()))
         else:
             print(report.to_string(index=False))
+        # --summary aendert nur die Darstellung, nicht die Fail-Closed-
+        # Semantik: fehlende Symbolhistorien bleiben auch im kompakten
+        # Workflow-Bericht ein harter Coverage-Fehler.
         return 0 if (report["Status"] == "OK").all() else 1
     if not args.ticker:
         parser.error("query benoetigt --ticker")
