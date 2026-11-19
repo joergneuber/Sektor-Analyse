@@ -689,3 +689,88 @@ def test_ohlcv_bundle_regressions_are_executed_in_ci():
     section = _section(text, "- name: Historische OHLCV Regressionstests", "# ============================================================\n      # EXTERNER DATENQUELLEN-TEST")
     assert "tests/test_ohlcv_release_bundle.py" in section
     assert "tests/test_workflow_dynamic_universe.py" in section
+
+def _cache_push_shell() -> str:
+    return _run_block(_section(
+        MAIN_WORKFLOW.read_text(encoding="utf-8"),
+        "- name: Struktur-Trends Cache speichern",
+        "# Bei einem fehlgeschlagenen C-Lauf",
+    ))
+
+
+@pytest.mark.parametrize("position_count", [8, 15, 20, 27])
+def test_structural_cache_push_preserves_dynamic_open_positions_and_retries_remote_race(tmp_path, position_count):
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    primary = tmp_path / "primary"
+    competitor = tmp_path / "competitor"
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], check=True, capture_output=True)
+    seed.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=seed, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=seed, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=seed, check=True)
+    (seed / "Offene_Positionen.csv").write_text("Ticker;Status\nSEED;Offen\n", encoding="utf-8")
+    (seed / "struktur_trends_cache.json").write_text('{"version": 1}\n', encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=seed, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=seed, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=seed, check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(primary)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(competitor)], check=True, capture_output=True)
+    for repo in (primary, competitor):
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+
+    rows = ["Ticker;Status"] + [f"TICKER{i:02d};Offen" for i in range(position_count)]
+    positions_path = primary / "Offene_Positionen.csv"
+    positions_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    expected_positions = positions_path.read_bytes()
+    (primary / "struktur_trends_cache.json").write_text(
+        '{"version": 2, "updated": "this-run"}\n', encoding="utf-8"
+    )
+    expected_cache = (primary / "struktur_trends_cache.json").read_bytes()
+
+    race_prefix = r'''git() {
+      if [[ "${1:-}" == "-C" && "${3:-}" == "push" && "${TEST_INJECT_RACE:-0}" == "1" && ! -f "$TEST_RACE_MARKER" ]]; then
+        touch "$TEST_RACE_MARKER"
+        command git -C "$TEST_RACE_CLONE" fetch origin "+refs/heads/main:refs/remotes/origin/main"
+        command git -C "$TEST_RACE_CLONE" reset --hard origin/main
+        printf 'concurrent remote update\n' > "$TEST_RACE_CLONE/concurrent_remote.txt"
+        command git -C "$TEST_RACE_CLONE" add concurrent_remote.txt
+        command git -C "$TEST_RACE_CLONE" commit -m "concurrent remote update"
+        command git -C "$TEST_RACE_CLONE" push origin refs/heads/main
+      fi
+      command git "$@"
+    }
+    '''
+    env = os.environ.copy()
+    env.update({
+        "GITHUB_REF_NAME": "main",
+        "TEST_INJECT_RACE": "1",
+        "TEST_RACE_CLONE": str(competitor),
+        "TEST_RACE_MARKER": str(tmp_path / "race-injected"),
+    })
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", race_prefix + "\n" + _cache_push_shell()],
+        cwd=primary, env=env, text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    assert (tmp_path / "race-injected").exists(), "concurrent update was not injected"
+
+    assert positions_path.read_bytes() == expected_positions
+    assert (primary / "struktur_trends_cache.json").read_bytes() == expected_cache
+    assert len(positions_path.read_text(encoding="utf-8").splitlines()) - 1 == position_count
+
+    verify = tmp_path / "verify"
+    subprocess.run(["git", "clone", str(remote), str(verify)], check=True, capture_output=True)
+    assert (verify / "struktur_trends_cache.json").read_bytes() == expected_cache
+    assert (verify / "concurrent_remote.txt").read_text(encoding="utf-8") == "concurrent remote update\n"
+
+
+def test_structural_cache_push_isolated_from_main_worktree():
+    shell = _cache_push_shell()
+    assert "git worktree add --detach" in shell
+    assert 'git -C "$cache_worktree" reset --hard "origin/${GITHUB_REF_NAME}"' in shell
+    assert 'git reset --hard "origin/${GITHUB_REF_NAME}"' not in shell
+    assert 'git -C "$cache_worktree" add -- struktur_trends_cache.json' in shell
+    assert 'git -C "$cache_worktree" push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"' in shell
