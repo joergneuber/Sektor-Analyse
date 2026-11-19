@@ -1103,6 +1103,50 @@ def test_update_database_updated_stat_excludes_tickers_with_only_invalid_volume(
     assert ho.load_history("AAPL", db).empty
 
 
+def test_gap_repair_sqlite_persistence_errors_remain_technical_errors(tmp_path, monkeypatch):
+    import datetime as dt
+    import sqlite3
+    import historical_ohlcv as ho
+
+    db = tmp_path / "gap-persistence-error.sqlite"
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAPL":"US"}\n', encoding="utf-8")
+    ho.init_db(db)
+    today = dt.date.today().isoformat()
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0], "High": [102.0], "Low": [99.0],
+            "Close": [101.0], "Adj Close": [101.0], "Volume": [1000.0],
+        },
+        index=pd.DatetimeIndex([today]),
+    )
+    with closing(sqlite3.connect(db)) as conn:
+        with conn:
+            ho._upsert_frames(conn, {"AAPL": frame})
+
+    scans = iter([
+        {"gap_dates_by_ticker": {"AAPL": [today]}, "gap_ticker_count": 1,
+         "gap_session_count": 1, "calendar_unverified_tickers": []},
+        {"gap_dates_by_ticker": {}, "gap_ticker_count": 0,
+         "gap_session_count": 0, "calendar_unverified_tickers": []},
+    ])
+    monkeypatch.setattr(ho, "discover_universe", lambda *args, **kwargs: ["AAPL"])
+    monkeypatch.setattr(ho, "_detect_recent_trading_day_gaps", lambda *args, **kwargs: next(scans))
+    monkeypatch.setattr(ho, "_download_batch", lambda *args, **kwargs: {"AAPL": frame})
+    monkeypatch.setattr(
+        ho, "_insert_missing_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")),
+    )
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.update_database(db, source, repair_gaps=True)
+
+    assert stats["errors"] == 1
+    assert stats["gap_repair_errors"] == 0
+    assert stats["missing_after"] == 0
+    assert stats["gap_tickers_attempted"] == 1
+
+
 def test_gap_repair_updated_stat_counts_only_tickers_with_inserted_rows(tmp_path):
     import historical_ohlcv as ho
 
@@ -1457,29 +1501,227 @@ def test_verify_open_positions_accepts_current_quality_gated_history(tmp_path, m
     assert report["failures"] == {}
 
 
-def test_update_cli_strict_returns_partial_for_internal_update_errors(monkeypatch):
+def test_update_cli_strict_returns_failure_for_internal_update_errors(monkeypatch, capsys):
     import sys
     import historical_ohlcv as ho
 
     monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
     monkeypatch.setattr(
         ho, "update_database",
-        lambda *args, **kwargs: {"errors": 1, "missing_after": 0, "gap_sessions_remaining": 0},
+        lambda *args, **kwargs: {
+            "errors": 1, "gap_repair_errors": 0, "missing_after": 0,
+            "gap_sessions_remaining": 100_000, "gap_calendar_unverified": 0,
+        },
     )
     assert ho.main() == 1
+    output = capsys.readouterr().out
+    assert (
+        "HIST-OHLCV-STRICT=PARTIAL|errors=1|technical_errors=1|"
+        "gap_repair_errors=0|missing=0|gap_sessions_remaining=100000|"
+        "calendar_unverified=0"
+    ) in output
+    assert "HIST-OHLCV-STRICT-EXIT=1|reason=technical_update_error" in output
 
 
-def test_update_cli_strict_accepts_complete_update(monkeypatch):
+def test_update_cli_strict_keeps_global_gap_quality_partial_without_failing_exit(monkeypatch, capsys):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    # Exercise a generated range of gap counts instead of encoding a
+    # production-relevant fixed threshold (e.g. 17). The same rule must hold
+    # for every positive count, including counts far above the current run.
+    generated_gap_counts = range(1, 257)
+    for gap_count in generated_gap_counts:
+        monkeypatch.setattr(
+            ho, "update_database",
+            lambda *args, _gap_count=gap_count, **kwargs: {
+                "errors": 0, "gap_repair_errors": 0, "missing_after": 0,
+                "gap_sessions_remaining": _gap_count,
+                "gap_calendar_unverified": 0,
+            },
+        )
+        assert ho.main() == 0
+        output = capsys.readouterr().out
+        assert (
+            "HIST-OHLCV-STRICT=PARTIAL|errors=0|technical_errors=0|"
+            "gap_repair_errors=0|missing=0|"
+            f"gap_sessions_remaining={gap_count}|calendar_unverified=0"
+        ) in output
+        assert (
+            "HIST-OHLCV-STRICT-EXIT=0|"
+            "reason=quality_findings_require_relevance_check"
+        ) in output
+
+    # An unusually large count also remains a quality-only finding.
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {
+            "errors": 0, "gap_repair_errors": 0, "missing_after": 0,
+            "gap_sessions_remaining": 100_000,
+            "gap_calendar_unverified": 0,
+        },
+    )
+    assert ho.main() == 0
+    assert "gap_sessions_remaining=100000" in capsys.readouterr().out
+
+
+def test_update_cli_strict_keeps_unverified_global_calendars_visible_without_failing_exit(monkeypatch, capsys):
     import sys
     import historical_ohlcv as ho
 
     monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
     monkeypatch.setattr(
         ho, "update_database",
-        lambda *args, **kwargs: {"errors": 0, "missing_after": 0, "gap_sessions_remaining": 0},
+        lambda *args, **kwargs: {
+            "errors": 0, "gap_repair_errors": 0, "missing_after": 0,
+            "gap_sessions_remaining": 0, "gap_calendar_unverified": 3,
+        },
     )
     assert ho.main() == 0
+    output = capsys.readouterr().out
+    assert (
+        "HIST-OHLCV-STRICT=PARTIAL|errors=0|technical_errors=0|"
+        "gap_repair_errors=0|missing=0|gap_sessions_remaining=0|"
+        "calendar_unverified=3"
+    ) in output
+    assert "HIST-OHLCV-STRICT-EXIT=0|reason=quality_findings_require_relevance_check" in output
 
+
+def test_update_cli_strict_fails_for_missing_global_histories(monkeypatch, capsys):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {
+            "errors": 0, "gap_repair_errors": 0, "missing_after": 23,
+            "gap_sessions_remaining": 100_000, "gap_calendar_unverified": 0,
+        },
+    )
+    assert ho.main() == 1
+    output = capsys.readouterr().out
+    assert (
+        "HIST-OHLCV-STRICT=PARTIAL|errors=0|technical_errors=0|"
+        "gap_repair_errors=0|missing=23|gap_sessions_remaining=100000|"
+        "calendar_unverified=0"
+    ) in output
+    assert "HIST-OHLCV-STRICT-EXIT=1|reason=missing_symbol_history" in output
+
+
+
+def test_update_cli_strict_treats_gap_repair_errors_as_quality_only(monkeypatch, capsys):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {
+            "errors": 2, "gap_repair_errors": 2, "missing_after": 0,
+            "gap_sessions_remaining": 2, "gap_calendar_unverified": 0,
+        },
+    )
+    assert ho.main() == 0
+    output = capsys.readouterr().out
+    assert "technical_errors=0|gap_repair_errors=2" in output
+    assert "HIST-OHLCV-STRICT-EXIT=0|reason=quality_findings_require_relevance_check" in output
+
+
+def test_update_cli_strict_fails_when_non_repair_update_error_remains(monkeypatch, capsys):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {
+            "errors": 3, "gap_repair_errors": 2, "missing_after": 0,
+            "gap_sessions_remaining": 2, "gap_calendar_unverified": 0,
+        },
+    )
+    assert ho.main() == 1
+    output = capsys.readouterr().out
+    assert "technical_errors=1|gap_repair_errors=2" in output
+    assert "HIST-OHLCV-STRICT-EXIT=1|reason=technical_update_error" in output
+
+
+def test_update_cli_strict_fails_closed_for_inconsistent_error_counters(monkeypatch, capsys):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {
+            "errors": 1, "gap_repair_errors": 2, "missing_after": 0,
+            "gap_sessions_remaining": 2, "gap_calendar_unverified": 0,
+        },
+    )
+    assert ho.main() == 1
+    output = capsys.readouterr().out
+    assert "technical_errors=2|gap_repair_errors=2" in output
+    assert "HIST-OHLCV-STRICT-EXIT=1|reason=technical_update_error" in output
+
+def test_update_cli_strict_accepts_complete_update(monkeypatch, capsys):
+    import sys
+    import historical_ohlcv as ho
+
+    monkeypatch.setattr(sys, "argv", ["historical_ohlcv.py", "update", "--strict"])
+    monkeypatch.setattr(
+        ho, "update_database",
+        lambda *args, **kwargs: {
+            "errors": 0, "gap_repair_errors": 0, "missing_after": 0,
+            "gap_sessions_remaining": 0, "gap_calendar_unverified": 0,
+        },
+    )
+    assert ho.main() == 0
+    output = capsys.readouterr().out
+    assert "HIST-OHLCV-STRICT=COMPLETE|errors=0|technical_errors=0|gap_repair_errors=0|missing=0|gap_sessions_remaining=0|calendar_unverified=0" in output
+    assert "HIST-OHLCV-STRICT-EXIT=0|reason=complete" in output
+
+
+
+def test_coverage_summary_reports_missing_universe_symbols_and_fails_closed(monkeypatch, capsys, tmp_path):
+    import sys
+    import historical_ohlcv as ho
+
+    db = tmp_path / "history.sqlite"
+    db.write_bytes(b"test-db-placeholder")
+    report = pd.DataFrame([
+        {"Ticker": "PRESENT.DE", "Status": "OK"},
+        {"Ticker": "IRRELEVANT.MISSING", "Status": "MISSING"},
+    ])
+    monkeypatch.setattr(ho, "coverage", lambda *args, **kwargs: report)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["historical_ohlcv.py", "coverage", "--summary", "--db", str(db)],
+    )
+
+    assert ho.main() == 1
+    output = capsys.readouterr().out
+    assert "HIST-OHLCV-COVERAGE: expected=2 ok=1 missing=1" in output
+    assert "IRRELEVANT.MISSING" in output
+    assert "HIST-OHLCV-COVERAGE-EXIT=0|reason=diagnostic_only" not in output
+
+
+def test_detailed_coverage_command_remains_fail_closed_for_missing_symbols(monkeypatch, tmp_path):
+    import sys
+    import historical_ohlcv as ho
+
+    db = tmp_path / "history.sqlite"
+    db.write_bytes(b"test-db-placeholder")
+    report = pd.DataFrame([
+        {"Ticker": "PRESENT.DE", "Status": "OK"},
+        {"Ticker": "MISSING.DE", "Status": "MISSING"},
+    ])
+    monkeypatch.setattr(ho, "coverage", lambda *args, **kwargs: report)
+    monkeypatch.setattr(
+        sys, "argv", ["historical_ohlcv.py", "coverage", "--db", str(db)]
+    )
+
+    assert ho.main() == 1
 
 def test_update_cli_default_keeps_existing_best_effort_exit_behavior(monkeypatch):
     import sys
