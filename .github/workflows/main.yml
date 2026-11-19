@@ -557,30 +557,52 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          cache_tmp="$(mktemp)"
+
+          # Den Cache-Commit in einem isolierten Worktree erstellen. Der Haupt-
+          # Worktree enthält ggf. gerade aus Google Drive aktualisierte Dateien
+          # (insbesondere Offene_Positionen.csv) und darf nicht zurückgesetzt werden.
+          tmp_root="$(mktemp -d)"
+          cache_tmp="${tmp_root}/struktur_trends_cache.json"
+          cache_worktree="${tmp_root}/worktree"
           cp struktur_trends_cache.json "$cache_tmp"
+
+          cleanup() {
+            if [ -d "$cache_worktree" ]; then
+              git worktree remove --force "$cache_worktree" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$tmp_root"
+          }
+          trap cleanup EXIT
+
           pushed=false
           for attempt in 1 2 3; do
             echo "Structural-trends cache push attempt ${attempt}/3"
-            git fetch origin "${GITHUB_REF_NAME}"
-            git reset --hard "origin/${GITHUB_REF_NAME}"
-            cp "$cache_tmp" struktur_trends_cache.json
-            git add struktur_trends_cache.json
-            if git diff --cached --quiet; then
+            git fetch origin "+refs/heads/${GITHUB_REF_NAME}:refs/remotes/origin/${GITHUB_REF_NAME}"
+
+            if [ ! -d "$cache_worktree" ]; then
+              git worktree add --detach "$cache_worktree" "origin/${GITHUB_REF_NAME}"
+              git -C "$cache_worktree" config user.name "github-actions[bot]"
+              git -C "$cache_worktree" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            else
+              git -C "$cache_worktree" reset --hard "origin/${GITHUB_REF_NAME}"
+            fi
+
+            cp "$cache_tmp" "$cache_worktree/struktur_trends_cache.json"
+            git -C "$cache_worktree" add -- struktur_trends_cache.json
+            if git -C "$cache_worktree" diff --cached --quiet; then
               echo "No structural trends cache changes to commit."
               pushed=true
               break
             fi
-            git commit -m "Update structural trends cache"
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+
+            git -C "$cache_worktree" commit -m "Update structural trends cache"
+            if git -C "$cache_worktree" push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"; then
               pushed=true
               break
             fi
             echo "Remote branch changed during push; retrying against the new remote head."
           done
-          rm -f "$cache_tmp"
+
           if [ "$pushed" != true ]; then
             echo "ERROR: structural trends cache could not be pushed after 3 attempts."
             exit 1
