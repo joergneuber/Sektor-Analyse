@@ -578,7 +578,7 @@ sektoren_map = {
 sektoren_aktien = {
     "XLK": [
         "AAPL", "ACN", "ADBE", "ADI", "ADSK", "AKAM", "ALAB", "AMAT", "AMD", "ANET", "APH",
-        "ARM", "ASML", "AVGO", "BR", "CDNS", "CDW", "CIEN", "COHR", "CRM", "CRWD", "CRWV", "CSCO",
+        "ANT", "ARM", "ASML", "AVGO", "BR", "CDNS", "CDW", "CIEN", "COHR", "CRM", "CRWD", "CRWV", "CSCO",
         "CTSH", "DDOG", "FFIV", "FLEX", "FSLR", "FTNT", "GDDY", "GEN", "GLW", "HPE", "HPQ", "IBM",
         "INTC", "INTU", "IT", "JBL", "KEYS", "KLAC", "LITE", "LRCX", "MCHP", "MDB", "MPWR",
         "MRVL", "MSFT", "MSI", "MSTR", "MU", "NBIS", "NOW", "NTAP", "NVDA", "NXPI", "ON", "ORCL",
