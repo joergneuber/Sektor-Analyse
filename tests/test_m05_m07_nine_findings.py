@@ -296,3 +296,99 @@ def test_m07_does_not_borrow_first_us10y_provenance_for_second_value_on_same_lin
         "Verzögerung: Tages-Schlusskurs); US 10Y Treasury bei 4.9000%"
     )
     assert _m07_gate_errors(line)
+
+
+def test_m07_recognizes_reported_us10y_prose_with_placeholder_provenance():
+    from trading_radar_report_gate import _is_narrative_placeholder_us10y_reference
+    lines = [
+        "Hauptthese: relativ hohes Zinsniveau (US 10Y bei 5,07% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR))",
+        "Gegenargumente: restriktives Zinsumfeld (US 10Y bei 5,07% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR))",
+    ]
+    assert all(_is_narrative_placeholder_us10y_reference(line) for line in lines)
+
+
+def test_m07_never_exempts_formally_labelled_treasury_observation():
+    from trading_radar_report_gate import _is_narrative_placeholder_us10y_reference
+    line = (
+        "US 10Y Treasury 5.07% (Quelle: NICHT VERFÜGBAR; "
+        "Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: NICHT VERFÜGBAR; "
+        "Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR)"
+    )
+    assert not _is_narrative_placeholder_us10y_reference(line)
+
+
+
+def test_m07_reaction_channel_us10y_treasury_is_not_a_second_formal_observation():
+    formal = _complete_us10y_line("FRED DGS10").replace("4.00%", "5.07%")
+    narrative = (
+        "Reaktionskanäle: Zinskurve und US-Dollar; US 10Y Treasury bei 5,07% "
+        "(Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR)"
+    )
+    assert not _m07_gate_errors(formal + "\n" + narrative)
+
+
+def test_m07_hauptthese_treasury_mention_is_not_a_second_formal_observation():
+    formal = _complete_us10y_line("FRED DGS10").replace("4.00%", "5.07%")
+    narrative = (
+        "Haupthese: restriktive Geldpolitik und erhöhte Realzinsen "
+        "(10Y US-Treasury bei 5,07% (Quelle: NICHT VERFÜGBAR; "
+        "Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: NICHT VERFÜGBAR; "
+        "Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR))"
+    )
+    assert not _m07_gate_errors(formal + "\n" + narrative)
+
+
+
+def test_m08_live_waller_enrichment_accepts_asterisk_bullets_and_narrative_treasury_context():
+    from datetime import date
+    from trading_radar_market_first import normalize_event_section
+
+    html = """<html><body>
+      <div>8:25 a.m.</div>
+      <div>Speech - Governor Christopher J. Waller</div>
+      <div>Welcoming Remarks</div>
+      <div>At the College Fed Challenge Finals</div>
+      <div>20</div>
+    </body></html>"""
+
+    class Response:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-November.htm"
+        text = html
+
+    report = """1. Trading-Radar
+## 3. Ereignisradar
+* Ereignis-Uhrzeit: 2026-11-20, Tageszeitpunkt (LIVE-Name nicht aufgelöst (STATUS))
+* Zeitzone: UTC
+* Kennzahl: FOMC Member Waller Speaks
+* Zeitraum: Aktueller Handelstag (2026-11-20)
+* Letzter Wert: NICHT VERFÜGBAR
+* Konsens: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)
+* Quelle: ForexFactory Event Discovery / Fed Official Schedule
+Reaktionskanäle: US 2Y Treasury und US 10Y Treasury bei 5,07% (Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR)
+US 10Y Treasury bei 5,07% (Quelle: FRED DGS10; Abrufzeit: 2026-11-20T11:59:36+00:00; Datenstichtag: 2026-11-18; Einheit: %; Verzögerung: 2 Kalendertage)
+US-10J-Rendite (^TNX): 5,05% (Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-20T12:44:19+00:00; Datenstichtag: 2026-11-19; Einheit: %; Verzögerung: Tages-Schlusskurs)
+## 4. Assetklassenvergleich
+"""
+    normalized, findings = normalize_event_section(
+        report,
+        fed_speaker_requester=lambda requested_url, **kwargs: Response(),
+        today=date(2026, 11, 20),
+    )
+    assert not findings
+    errors = []
+    from trading_radar_report_gate import _validate_m05_m10
+    _validate_m05_m10(normalized, errors)
+    assert not any("M-08:" in error for error in errors), errors
+    assert not any("Jede abweichende 10Y-Treasury-Beobachtung" in error for error in errors), errors
+    assert "Uhrzeit: 13:25" in normalized
+    assert "Zeitzone: UTC" in normalized
+    assert "Federal Reserve official calendar" in normalized

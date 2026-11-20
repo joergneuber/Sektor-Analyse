@@ -878,6 +878,20 @@ def test_report_candidate_parser_reads_ticker_from_asset_ticker_field():
     assert report_module._trading_radar_kandidaten_aus_abschnitt5(report) == ["AEP", "REGN"]
 
 
+def test_report_candidate_parser_excludes_explicit_nontradable_archive_rows():
+    import Trading_Radar_Alleinauswertung as report_module
+    report = """# 5. Technische Kandidaten
+- Asset/Ticker: Amazon.com, Inc. (AMZN)
+  - Statusgruppe: JETZT TECHNISCH PRÜFEN
+- Asset/Ticker: Paramount Global (PARA)
+  - Statusgruppe: NICHT HANDELBAR
+- Asset/Ticker: Sony Group Corporation (SONY)
+  - Statusgruppe: VERWERFEN / INVALIDIERT
+# 6. Portfolio & Risiko
+"""
+    assert report_module._trading_radar_kandidaten_aus_abschnitt5(report) == ["AMZN"]
+
+
 def test_market_first_normalizer_adds_evidence_labels_and_groups_nontradable_records():
     from trading_radar_neuauswertung import normalize_market_first_report_structure, audit_market_first_content
     report = """# 1. Trading-Radar
@@ -1892,3 +1906,86 @@ def test_combined_event_time_zone_unavailable_is_preserved_as_one_field():
     assert findings == []
     assert normalized.count("Ereignis: ADP Weekly Employment Change") == 1
     assert normalized.count("Uhrzeit/Zeitzone:") == 1
+
+
+def test_fed_waller_speaker_adapter_verifies_official_calendar_and_utc_time():
+    from datetime import date
+    from trading_radar_market_first import (
+        _is_trusted_event_evidence, _verify_fed_waller_speaker_event,
+    )
+
+    url = "https://www.federalreserve.gov/newsevents/2026-November.htm"
+    html = """
+    <html><body>
+      <h3>November 2026</h3>
+      <div>8:25 a.m.</div>
+      <div>Speech - Governor Christopher J. Waller</div>
+      <div>Welcoming Remarks</div>
+      <div>At the College Fed Challenge Finals</div>
+      <div>20</div>
+    </body></html>
+    """
+
+    class Response:
+        status_code = 200
+        def __init__(self, requested_url):
+            self.url = requested_url
+            self.text = html
+
+    evidence, detail = _verify_fed_waller_speaker_event(
+        "FOMC Member Waller Speaks", requester=lambda requested_url, **k: Response(requested_url),
+        today=date(2026, 11, 20),
+    )
+    assert evidence is not None
+    assert evidence.event_date == "2026-11-20"
+    assert evidence.event_time == "13:25"
+    assert evidence.timezone == "UTC"
+    assert _is_trusted_event_evidence(
+        evidence, kind="FED_SPEAKER",
+        event_name="FOMC Member Waller Speaks", event_date="2026-11-20",
+    )
+    assert "08:25 America/New_York" in detail
+    assert "13:25 UTC" in detail
+
+
+def test_event_normalizer_enriches_undated_waller_only_from_official_fed_calendar():
+    from datetime import date
+    from trading_radar_market_first import normalize_event_section
+
+    url = "https://www.federalreserve.gov/newsevents/2026-November.htm"
+    html = """
+    <html><body>
+      <div>8:25 a.m.</div>
+      <div>Speech - Governor Christopher J. Waller</div>
+      <div>Welcoming Remarks</div>
+      <div>At the College Fed Challenge Finals</div>
+      <div>20</div>
+    </body></html>
+    """
+
+    class Response:
+        status_code = 200
+        def __init__(self, requested_url):
+            self.url = requested_url
+            self.text = html
+
+    report = """3. Ereignisradar
+- Ereignis-Uhrzeit: HEUTE | Zeitzone: UTC | Kennzahl: FOMC Member Waller Speaks | Zeitraum: Aktuell | Letzter Wert: NICHT VERFÜGBAR | Konsens: NICHT VERFÜGBAR | Quelle: ForexFactory
+- Betroffene These/Assetklasse/konkrete offene Positionen: Zinsmärkte
+- Datum: NICHT VERFÜGBAR
+- Quellenprüfung: NICHT VERIFIZIERT
+4. Assetklassenvergleich
+"""
+    normalized, findings = normalize_event_section(
+        report,
+        fed_speaker_requester=lambda requested_url, **kwargs: Response(requested_url),
+        today=date(2026, 11, 20),
+    )
+    assert not findings
+    assert "Datum: 2026-11-20" in normalized
+    assert "Federal Reserve official calendar" in normalized
+    assert "Uhrzeit: 13:25" in normalized
+    assert "Zeitzone: UTC" in normalized
+    assert "Kennzahl: FOMC Member Waller Speaks" in normalized
+    assert "Quelle: ForexFactory" not in normalized
+    assert "Quellenprüfung: LIVE_VERIFIZIERT" in normalized

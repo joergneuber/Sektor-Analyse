@@ -1535,3 +1535,106 @@ def test_google_history_hide_failure_without_primary_error_is_raised(monkeypatch
 
     assert state["clear_calls"] == 2
     assert state["hide_attempts"] == 1
+
+
+def test_twelvedata_ppfd_accepts_only_verified_xstu_eur_metadata(monkeypatch):
+    class Response:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "meta": {
+                    "symbol": "PPFD", "mic_code": "XSTU", "currency": "EUR",
+                    "exchange_timezone": "Europe/Berlin",
+                },
+                "values": [
+                    {"datetime": "2026-11-18", "open": "39.0", "high": "40.0",
+                     "low": "38.5", "close": "39.5", "volume": "100"},
+                    {"datetime": "2026-11-19", "open": "39.5", "high": "41.0",
+                     "low": "39.0", "close": "40.5", "volume": "120"},
+                ],
+                "status": "ok",
+            }
+
+    captured = {}
+    def fake_get(url, params, **kwargs):
+        captured.update(params)
+        return Response()
+
+    monkeypatch.setenv("TWELVEDATA_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(checker.requests, "get", fake_get)
+    monkeypatch.setattr(checker.time, "sleep", lambda *_: None)
+    result = checker._fetch_twelvedata_ppfd_history()
+    assert captured["symbol"] == "PPFD"
+    assert captured["mic_code"] == "XSTU"
+    assert captured["interval"] == "1day"
+    assert list(result.index.strftime("%Y-%m-%d")) == ["2026-11-18", "2026-11-19"]
+    assert result.attrs["history_source"] == "TwelveData:XSTU"
+    assert result.attrs["provider_metadata"]["currency"] == "EUR"
+
+
+def test_twelvedata_ppfd_rejects_wrong_exchange_metadata(monkeypatch):
+    class Response:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "meta": {"symbol": "PPFD", "mic_code": "XFRA", "currency": "EUR"},
+                "values": [{"datetime": "2026-11-19", "open": "39", "high": "40",
+                            "low": "38", "close": "39.5"}],
+                "status": "ok",
+            }
+
+    monkeypatch.setenv("TWELVEDATA_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(checker.requests, "get", lambda *a, **k: Response())
+    with pytest.raises(RuntimeError, match="erwartet PPFD/XSTU/EUR"):
+        checker._fetch_twelvedata_ppfd_history()
+
+
+def test_twelvedata_ppfd_requires_existing_secret(monkeypatch):
+    monkeypatch.delenv("TWELVEDATA_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="TWELVEDATA_API_KEY fehlt"):
+        checker._fetch_twelvedata_ppfd_history()
+
+
+def test_fetch_history_uses_twelvedata_ppfd_after_stale_sqlite_and_persists_only_after_quality_pass(monkeypatch):
+    stale = _history(100)
+    stale.attrs["ohlcv_quality"] = _quality(
+        "INCOMPLETE", latest_bar_valid=False, reason_codes=["STALE_HISTORY"]
+    )
+    _install_db(monkeypatch, stale)
+    provider = _history(100)
+    provider.attrs["history_source"] = "TwelveData:XSTU"
+    monkeypatch.setattr(checker, "_fetch_twelvedata_ppfd_history", lambda: provider.copy())
+
+    class Quality:
+        def to_dict(self):
+            return _quality()
+
+    monkeypatch.setattr(
+        "ohlcv_quality_gate.apply_ohlcv_quality_gate",
+        lambda data, *args, **kwargs: (data.copy(), Quality()),
+    )
+    quality_calls = {"count": 0}
+    def quality_check(frame, ticker):
+        quality_calls["count"] += 1
+        if quality_calls["count"] == 1:
+            return False, "STALE_HISTORY"
+        return True, ""
+    monkeypatch.setattr(checker, "_quality_is_current_and_usable", quality_check)
+    persisted = []
+    monkeypatch.setattr(
+        checker, "_persist_usable_provider_history",
+        lambda ticker, frame, source: persisted.append((ticker, source)) or len(frame),
+    )
+    class ForbiddenYahoo:
+        def __init__(self, ticker):
+            raise AssertionError("Bei bestandenem Twelve-Data-Gate darf Yahoo nicht laufen.")
+    monkeypatch.setattr(checker.yf, "Ticker", ForbiddenYahoo, raising=False)
+
+    result = checker.fetch_history("PPFD.SG")
+    assert len(result) == 100
+    assert result.attrs["history_source"] == "TwelveData:XSTU"
+    assert persisted == [("PPFD.SG", "TwelveData:XSTU")]

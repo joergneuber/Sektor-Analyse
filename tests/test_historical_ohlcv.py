@@ -1733,3 +1733,23 @@ def test_update_cli_default_keeps_existing_best_effort_exit_behavior(monkeypatch
         lambda *args, **kwargs: {"errors": 3, "missing_after": 4, "gap_sessions_remaining": 5},
     )
     assert ho.main() == 0
+
+
+def test_ipo_bootstrap_uses_listing_date_instead_of_invalid_max_period(monkeypatch):
+    import sys
+    import types
+    import historical_ohlcv as ho
+
+    assert ho._bootstrap_download_groups(["AAPL", "ANT"]) == [
+        (["AAPL"], None), (["ANT"], "2026-11-19")
+    ]
+
+    captured = {}
+    fake_yf = types.SimpleNamespace(
+        download=lambda **kwargs: captured.update(kwargs) or pd.DataFrame()
+    )
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+    ho._download_batch(["ANT"], start=ho.IPO_LISTING_DATES["ANT"])
+    assert captured["start"] == "2026-11-19"
+    assert "period" not in captured
+    assert captured["tickers"] == "ANT"
