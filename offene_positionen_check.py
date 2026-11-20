@@ -364,6 +364,98 @@ def clean_history(hist: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def _fetch_twelvedata_ppfd_history() -> pd.DataFrame:
+    """Lädt PPFD ausschließlich von der verifizierten Stuttgarter Notierung XSTU.
+
+    Der Twelve-Data-Instrumentdatensatz führt PPFD als iShares Physical Silver
+    ETC an XSTU. Die Metadaten werden deshalb vor jeder Übernahme strikt geprüft;
+    ein gleichnamiger Treffer an einer anderen Börse wird nicht akzeptiert.
+    """
+    api_key = str(os.getenv("TWELVEDATA_API_KEY", "")).strip()
+    if not api_key:
+        raise RuntimeError("TWELVEDATA_API_KEY fehlt in den Repository-Secrets.")
+    params = {
+        "symbol": "PPFD",
+        "mic_code": "XSTU",
+        "interval": "1day",
+        "outputsize": 5000,
+        "order": "ASC",
+        "apikey": api_key,
+    }
+    payload = None
+    for attempt in range(1, 5):
+        try:
+            response = requests.get(
+                f"{TWELVEDATA_BASE_URL}/time_series",
+                params=params, timeout=60,
+                headers={"User-Agent": "Sektor-Analyse/1.0"},
+            )
+        except requests.RequestException:
+            if attempt < 4:
+                time.sleep(10 * (2 ** (attempt - 1)))
+                continue
+            raise
+        if response.status_code == 429:
+            if attempt < 4:
+                time.sleep(65)
+                continue
+            response.raise_for_status()
+        if response.status_code in (500, 502, 503, 504, 522) and attempt < 4:
+            time.sleep(10 * (2 ** (attempt - 1)))
+            continue
+        response.raise_for_status()
+        payload = response.json()
+        break
+    if not isinstance(payload, dict):
+        raise RuntimeError("Twelve Data lieferte für PPFD kein JSON-Objekt.")
+    if payload.get("status") == "error" or not isinstance(payload.get("values"), list):
+        message = payload.get("message") or payload.get("status") or "keine Zeitreihe"
+        raise RuntimeError(f"Twelve Data PPFD API-Fehler: {message}")
+
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    actual_symbol = str(meta.get("symbol") or "").strip().upper()
+    actual_mic = str(meta.get("mic_code") or "").strip().upper()
+    actual_currency = str(meta.get("currency") or "").strip().upper()
+    if actual_symbol != "PPFD" or actual_mic != "XSTU" or actual_currency != "EUR":
+        raise RuntimeError(
+            "Twelve Data PPFD-Metadaten stimmen nicht mit der Zielnotierung überein "
+            f"(symbol={actual_symbol or 'FEHLT'}, mic_code={actual_mic or 'FEHLT'}, "
+            f"currency={actual_currency or 'FEHLT'}; erwartet PPFD/XSTU/EUR)."
+        )
+
+    values = payload["values"]
+    if not values:
+        raise RuntimeError("Twelve Data lieferte keine PPFD-Tagesbars.")
+    hist = pd.DataFrame(values)
+    required = {"datetime", "open", "high", "low", "close"}
+    if not required.issubset(hist.columns):
+        raise RuntimeError("PPFD-Zeitreihe enthält nicht alle benötigten OHLC-Felder.")
+    hist = hist.rename(columns={
+        "datetime": "Date", "open": "Open", "high": "High",
+        "low": "Low", "close": "Close", "volume": "Volume",
+    })
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+    if hist["Date"].dt.tz is not None:
+        hist["Date"] = hist["Date"].dt.tz_localize(None)
+    hist["Date"] = hist["Date"].dt.normalize()
+    for column in ("Open", "High", "Low", "Close", "Volume"):
+        if column in hist.columns:
+            hist[column] = pd.to_numeric(hist[column], errors="coerce")
+    # Ungültige OHLC-Zeilen werden nicht entfernt oder aufgefüllt: Das
+    # Quality-Gate muss sie auf der ursprünglichen Zeitachse sehen können.
+    hist = hist.dropna(subset=["Date"]).sort_values("Date")
+    hist = hist.drop_duplicates("Date", keep="last")
+    if "Volume" not in hist.columns:
+        hist["Volume"] = np.nan
+    frame = clean_history(hist.set_index("Date"))
+    frame.attrs["history_source"] = "TwelveData:XSTU"
+    frame.attrs["provider_metadata"] = {
+        "symbol": actual_symbol, "mic_code": actual_mic, "currency": actual_currency,
+        "exchange_timezone": str(meta.get("exchange_timezone") or ""),
+    }
+    return frame
+
+
 def _fetch_twelvedata_gold_spot_history() -> pd.DataFrame:
     """Lädt XAU/USD-Tageshistorie von Twelve Data; ohne Futures-Fallback."""
     api_key = str(os.getenv("TWELVEDATA_API_KEY", "")).strip()
@@ -622,7 +714,47 @@ def fetch_history(ticker: str) -> pd.DataFrame:
         db_error = f"SQLite_LOAD_ERROR:{type(exc).__name__}:{exc}"
         print(f"WARNUNG: {ticker}: SQLite-Historie nicht lesbar: {exc}")
 
-    # 2) Yahoo fallback is subjected to the same strict quality contract.
+    # 2) PPFD.SG hat eine eindeutig verifizierte Twelve-Data-Notierung:
+    # PPFD an XSTU in EUR. Der Provider wird nur nach fehlender/ungültiger
+    # SQLite-Historie angesprochen; Metadaten und dieselben Qualitätsregeln
+    # wie bei allen anderen Quellen sind zwingend.
+    if str(ticker or "").strip().upper() == "PPFD.SG":
+        try:
+            raw = _fetch_twelvedata_ppfd_history()
+            from ohlcv_quality_gate import apply_ohlcv_quality_gate
+            gated, quality = apply_ohlcv_quality_gate(
+                raw, ticker, window_sessions=252,
+                require_structure=True, preserve_expected_sessions=True,
+            )
+            gated.attrs["ohlcv_quality"] = quality.to_dict()
+            gated.attrs["history_source"] = "TwelveData:XSTU"
+            quality_frame = gated.copy()
+            quality_frame.attrs.update(getattr(gated, "attrs", {}) or {})
+            frame = _valid_ohlc_history(gated)
+            frame.attrs["history_source"] = "TwelveData:XSTU"
+            usable, reason = _quality_is_current_and_usable(frame, ticker)
+            if usable:
+                try:
+                    _persist_usable_provider_history(ticker, quality_frame, "TwelveData:XSTU")
+                except Exception as persist_exc:
+                    return _empty_history_with_diagnostics(
+                        "TwelveData:XSTU", quality.to_dict(),
+                        f"PERSISTENCE_ERROR:{type(persist_exc).__name__}:{persist_exc}; SQLite: {db_error or 'nicht verfügbar'}",
+                    )
+                print(
+                    f"DATENQUELLE: {ticker}: TwelveData XSTU | "
+                    f"{len(frame)} zusammenhängende gültige OHLC-Bars"
+                )
+                return frame
+            td_error = reason or "Twelve Data PPFD-Historie nicht aktuell/vollständig"
+            print(f"WARNUNG: {ticker}: Twelve Data XSTU nicht freigegeben: {td_error}")
+        except Exception as exc:
+            td_error = f"TwelveData_ERROR:{type(exc).__name__}:{exc}"
+            print(f"WARNUNG: {ticker}: Twelve Data XSTU nicht verfügbar: {exc}")
+    else:
+        td_error = ""
+
+    # 3) Yahoo fallback is subjected to the same strict quality contract.
     try:
         hist = yf.Ticker(ticker).history(
             period="max", auto_adjust=False, actions=False
@@ -660,12 +792,12 @@ def fetch_history(ticker: str) -> pd.DataFrame:
         diagnostic = dict(_quality_payload(frame) or quality.to_dict())
         return _empty_history_with_diagnostics(
             "Yahoo-Fallback", diagnostic,
-            f"Yahoo nicht freigegeben: {reason}; SQLite: {db_error or 'nicht verfügbar'}"
+            f"Yahoo nicht freigegeben: {reason}; Twelve Data: {td_error or 'nicht verwendet'}; SQLite: {db_error or 'nicht verfügbar'}"
         )
     except Exception as exc:
         return _empty_history_with_diagnostics(
             "Yahoo-Fallback", db_quality,
-            f"Yahoo_ERROR:{type(exc).__name__}:{exc}; SQLite: {db_error or 'nicht verfügbar'}"
+            f"Yahoo_ERROR:{type(exc).__name__}:{exc}; Twelve Data: {td_error or 'nicht verwendet'}; SQLite: {db_error or 'nicht verfügbar'}"
         )
 
 

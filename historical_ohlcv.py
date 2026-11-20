@@ -58,6 +58,12 @@ EXPLICIT_BENCHMARKS = {
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 
+# Erstnotierungen mit begrenzter Historie: Der Provider darf fuer diese
+# Symbole nicht mit period="max" abgefragt werden. Das Startdatum ist durch
+# die offizielle Börsenmitteilung belegt; es werden ausschliesslich echte
+# seit dem Listing vorhandene Tagesbars importiert.
+IPO_LISTING_DATES = {"ANT": "2026-11-19"}
+
 # XAU/USD wird im Positionscheck ausschliesslich ueber TwelveData geladen.
 NON_YFINANCE_POSITION_TICKERS = frozenset({"XAU/USD", "XAUUSD"})
 
@@ -977,6 +983,16 @@ def persist_quality_accepted_history(
     return stored_rows
 
 
+def _bootstrap_download_groups(tickers: Iterable[str]) -> list[tuple[list[str], str | None]]:
+    """Separate IPO symbols so they use their first valid listing date, not period=max."""
+    tickers = list(tickers)
+    ipo = [ticker for ticker in tickers if ticker in IPO_LISTING_DATES]
+    regular = [ticker for ticker in tickers if ticker not in IPO_LISTING_DATES]
+    groups = [(regular, None)] if regular else []
+    groups.extend(([ticker], IPO_LISTING_DATES[ticker]) for ticker in ipo)
+    return groups
+
+
 def update_database(
     db_path: Path = DEFAULT_DB,
     source_file: Path = DEFAULT_SOURCE_FILE,
@@ -1026,24 +1042,31 @@ def update_database(
         missing = provider_tickers if force_bootstrap else [t for t in provider_tickers if t not in latest]
         stats["missing"] = len(missing)
 
-        # Erstaufbau: period=max in kontrollierten Batches.
+        # Erstaufbau: period=max in kontrollierten Batches. Neu gelistete
+        # Symbole werden separat ab ihrem belegten Listingdatum geladen; ein
+        # einzelner IPO darf dadurch nicht den regulären Batch-Import blockieren.
         for batch in _chunks(missing, BATCH_SIZE):
-            try:
-                frames = _download_batch(batch)
-                updated_tickers = set()
-                with conn:
-                    stats["rows"] += _upsert_frames(
-                        conn, frames, updated_tickers=updated_tickers
+            download_groups = _bootstrap_download_groups(batch)
+            for group_tickers, listing_start in download_groups:
+                if not group_tickers:
+                    continue
+                try:
+                    frames = _download_batch(group_tickers, start=listing_start)
+                    updated_tickers = set()
+                    with conn:
+                        stats["rows"] += _upsert_frames(
+                            conn, frames, updated_tickers=updated_tickers
+                        )
+                    stats["updated"] += len(updated_tickers)
+                except Exception as exc:
+                    stats["errors"] += 1
+                    print(
+                        f"WARNUNG-HIST-OHLCV: Bootstrap-Batch fehlgeschlagen "
+                        f"({','.join(group_tickers)}): {exc}",
+                        file=sys.stderr,
                     )
-                stats["updated"] += len(updated_tickers)
-            except Exception as exc:
-                stats["errors"] += 1
-                print(
-                    f"WARNUNG-HIST-OHLCV: Bootstrap-Batch fehlgeschlagen ({len(batch)}): {exc}",
-                    file=sys.stderr,
-                )
-            if REQUEST_PAUSE_SECONDS:
-                time.sleep(REQUEST_PAUSE_SECONDS)
+                if REQUEST_PAUSE_SECONDS:
+                    time.sleep(REQUEST_PAUSE_SECONDS)
 
         # Inkrementell: je Symbol den letzten abgeschlossenen Handelstag des
         # zugeordneten Marktes verwenden. Unbekannte Symbole behalten als

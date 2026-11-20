@@ -94,7 +94,7 @@ def _is_explicit_unavailable(text: str, labels: tuple[str, ...]) -> bool:
     """Allow an explicit unavailable state, but not a blank or vague mention."""
     label = r"(?:" + "|".join(labels) + r")"
     return bool(re.search(
-        rf"(?i)(?:\*\*)?(?:{label})(?:\*\*)?\s*(?:[:=](?:\*\*)?\s*)?"
+        rf"(?i)(?:[-*•]\s+)?(?:\*\*)?(?:{label})(?:\*\*)?\s*(?:[:=](?:\*\*)?\s*)?"
         rf"(?:nicht\s+(?:verfügbar|verifizierbar|vorhanden)|fehlt|unklar)\b",
         text,
     ))
@@ -183,14 +183,12 @@ def _is_run1270_us_curve_context(line: str) -> bool:
 def _is_narrative_placeholder_us10y_reference(line: str) -> bool:
     """Identify abbreviated prose mentions, not separately asserted market observations.
 
-    The legacy report contains explanatory phrases such as "Zinsen verbleiben ...
-    (US 10Y bei 4,90 %)" and portfolio commentary such as "... Hochzinsregime
-    (US 10Y bei 4,90 %)". Those are narrative references only when all five
-    provenance fields are explicit placeholders, the label is the abbreviated
-    ``US 10Y`` form (not ``US 10Y Treasury``/``US-10Y-Rendite``), and the line
-    contains a recognized explanatory context. A formally labelled Treasury
-    observation is never exempted, regardless of whether its value matches a
-    previously sourced observation.
+    Explanatory report prose may repeat an already sourced yield in the main
+    thesis, rate-regime commentary or reaction channels. The caller permits
+    this only when all five provenance fields on that exact mention are
+    explicit placeholders and the line has a recognized narrative context.
+    A Treasury/Rendite label without that explicit narrative context remains a
+    separate observation and must carry its own complete provenance.
     """
     if not isinstance(line, str) or not line.strip():
         return False
@@ -200,8 +198,6 @@ def _is_narrative_placeholder_us10y_reference(line: str) -> bool:
     # The record may be a prefix ending at the next label. Only its final label
     # is the current observation; earlier prose must not exempt a later quote.
     label = labels[-1]
-    if re.search(r"(?i)\b(?:Treasury|Rendite|Yield|Staatsanleihen?)\b", label.group(0)):
-        return False
     previous_label_end = labels[-2].end() if len(labels) > 1 else 0
     local_context = line[previous_label_end:label.start()]
     # A separately asserted observation is a data record, not an explanatory
@@ -213,11 +209,21 @@ def _is_narrative_placeholder_us10y_reference(line: str) -> bool:
         local_context,
     ):
         return False
-    return bool(re.search(
-        r"(?i)\b(?:Zinsen\s+verbleib\w*|Hochzinsregime|Konzentration\w*|"
-        r"Risikotreiber|zinssensitiv\w*|belast\w*|Gegenwind|Reaktionskanäle)\b",
+    # Some report versions repeat a sourced yield in prose that explicitly
+    # describes its role (main thesis or reaction channel). This is not a new
+    # observation when all five provenance fields are placeholders; the formal
+    # source observation for the same value remains independently required.
+    narrative_context = bool(re.search(
+        r"(?i)\b(?:Hauptthese|Executive\s+Entscheidung|Reaktionskanäle|Reaktionskanal|"
+        r"restriktiv\w*\s+Geldpolitik|Realzinsen|Zinsen\s+verbleib\w*|"
+        r"Hochzinsregime|Konzentration\w*|Risikotreiber|zinssensitiv\w*|"
+        r"belast\w*|Gegenwind|Zinsniveau|Zinsumfeld|Nominalrenditen|"
+        r"Realrenditen|hohe\s+Zinsen|restriktiv\w*\s+Zins\w*)\b",
         local_context,
     ))
+    if re.search(r"(?i)\b(?:Treasury|Rendite|Yield|Staatsanleihen?)\b", label.group(0)):
+        return narrative_context
+    return narrative_context
 
 
 def _is_us10y_conflict_line(line: str) -> bool:
@@ -1377,7 +1383,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     def field_ok(record, labels, timezone=False):
         label = r"(?:" + "|".join(labels) + r")"
         matches = list(re.finditer(
-            rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-•]\s+|\d+[.)]\s+)?"
+            rf"(?im)(?:^|[|;]\s*|\n)\s*(?:[-*•]\s+|\d+[.)]\s+)?"
             rf"(?:\*\*)?{label}(?:\*\*)?\s*[:=](?:\*\*)?\s*([^|;\r\n]+)",
             record,
         ))
@@ -1793,8 +1799,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         # repetitions without provenance fields remain harmless.
         # Do not use numeric equality as observation identity: two distinct
         # observations can share the same yield. Only a narrowly recognizable
-        # abbreviated prose reference may omit provenance; a formal Treasury
-        # observation with placeholder provenance remains a gate failure.
+        # explanatory prose reference may omit duplicate provenance; a formal
+        # Treasury observation outside that context remains a gate failure.
         partial_source_records = []
         for observed_value, line in observation_records:
             if not provenance_labels.search(line) or _treasury_observation_has_complete_provenance(line):

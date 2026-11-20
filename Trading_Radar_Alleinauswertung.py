@@ -18552,6 +18552,25 @@ def _trading_radar_kandidaten_aus_abschnitt5(report_text):
     if not section_match:
         return []
     body = section_match.group(1)
+    # OHLCV-Kandidaten sind nur Datensätze mit einer aktiven Prüfrolle.
+    # Explizit als NICHT HANDELBAR oder VERWERFEN/INVALIDIERT markierte
+    # Archiv-/Negativdatensätze bleiben im Bericht sichtbar, dürfen aber nicht
+    # als technische Kandidaten in die aktive OHLCV-Mapping-Vollständigkeit
+    # eingehen. Fehlt die Statusgruppe, bleibt der Datensatz fail-closed dabei.
+    record_starts = list(re.finditer(r"(?im)^\s*-\s*Asset/Ticker\s*:", body))
+    if record_starts:
+        eligible_chunks = [body[:record_starts[0].start()]]
+        for index, match in enumerate(record_starts):
+            end = record_starts[index + 1].start() if index + 1 < len(record_starts) else len(body)
+            chunk = body[match.start():end]
+            status_match = re.search(
+                r"(?im)^\s*-\s*Statusgruppe\s*:\s*([^\r\n]+)", chunk
+            )
+            status_group = status_match.group(1).strip().upper() if status_match else ""
+            if status_group in {"NICHT HANDELBAR", "VERWERFEN / INVALIDIERT", "VERWORFEN / INVALIDIERT"}:
+                continue
+            eligible_chunks.append(chunk)
+        body = "\n".join(eligible_chunks)
     found = set()
     ticker_re = re.compile(
         r"^(?:\^[A-Z0-9]{1,8}|[A-Z][A-Z0-9]{0,7}(?:[.-][A-Z0-9]{1,6})?(?:=X|-USD|=F)?)$"

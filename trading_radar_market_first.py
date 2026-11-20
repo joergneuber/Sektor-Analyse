@@ -160,6 +160,14 @@ def _is_trusted_event_evidence(
             and _event_identity_matches(event_name, evidence.event_name)
             and evidence.adapter == "forexfactory_weekly_json_adapter"
         )
+    if kind == "FED_SPEAKER":
+        return bool(
+            _is_fed_waller_speaker_event(event_name)
+            and evidence.event_id == "FED_WALLER_COLLEGE_FED_CHALLENGE"
+            and evidence.adapter == "federal_reserve_month_calendar_speaker_verifier"
+            and "christopher j waller" in _normalized_event_identity(evidence.event_name)
+            and "welcoming remarks" in _normalized_event_identity(evidence.event_name)
+        )
     if kind == "FOMC":
         event_kind = _fomc_event_kind(event_name)
         expected = {
@@ -260,6 +268,107 @@ def _verify_forexfactory_event(event_name: str, event_date: str, *, requester=No
         return _register_verified_evidence(evidence), detail
     except Exception as exc:
         return None, f"ForexFactory-Adapter fehlgeschlagen: {type(exc).__name__}: {exc}"
+
+
+def _is_fed_waller_speaker_event(value: Any) -> bool:
+    text = _normalized_event_identity(value)
+    return "waller" in text and bool(re.search(r"\b(?:speaks|speech|remarks|rede)\b", text))
+
+
+def _verify_fed_waller_speaker_event(
+    event_name: str, event_date: str | None = None, *, requester=None, today: date | None = None
+):
+    """Verify the exact Waller College Fed Challenge speech on the official Fed calendar."""
+    if not _is_fed_waller_speaker_event(event_name):
+        return None, "Kein eindeutig identifizierbares Waller-Sprecherereignis"
+    import html
+    from calendar import monthrange
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    if requester is None:
+        import requests
+        requester = requests.get
+    today = today or datetime.now(timezone.utc).date()
+    expected = None
+    if event_date and _is_valid_calendar_event_date(event_date):
+        try:
+            expected = date.fromisoformat(event_date[:10])
+        except ValueError:
+            expected = None
+    target = expected or today
+    requested_url = f"https://www.federalreserve.gov/newsevents/{target.year}-{target.strftime('%B')}.htm"
+    try:
+        response = requester(
+            requested_url, timeout=20,
+            headers={"User-Agent": "NeuberMacro/1.0 TradingRadar-Fed-calendar-verification"},
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        final_url = str(getattr(response, "url", requested_url) or requested_url)
+        if status != 200:
+            return None, f"Federal-Reserve-Kalender HTTP {status}; Event nicht verifiziert"
+        final = urlsplit(final_url)
+        if (final.scheme.lower() != "https" or final.hostname != "www.federalreserve.gov"
+                or final.path != f"/newsevents/{target.year}-{target.strftime('%B')}.htm"):
+            return None, "Federal-Reserve-Kalender: unzulässige finale URL"
+        raw = getattr(response, "text", "")
+        if not isinstance(raw, str) or not raw:
+            return None, "Federal-Reserve-Kalender: leere HTML-Antwort"
+        plain = html.unescape(re.sub(r"<[^>]+>", " ", raw))
+        plain = re.sub(r"\s+", " ", plain).strip()
+        segments = re.split(r"(?i)(?=\b\d{1,2}:\d{2}\s*[ap]\.m\.)", plain)
+        matches = []
+        for segment in segments:
+            if not re.search(r"(?i)\bSpeech\s*-\s*Governor\s+Christopher\s+J\.\s+Waller\b", segment):
+                continue
+            if not re.search(r"(?i)\bWelcoming\s+Remarks\b", segment):
+                continue
+            if not re.search(r"(?i)\bCollege\s+Fed\s+Challenge\s+Finals\b", segment):
+                continue
+            tm = re.search(r"(?i)\b(\d{1,2}):(\d{2})\s*([ap])\.m\.", segment)
+            dm = re.search(r"\b(\d{1,2})\s*$", segment)
+            if not tm or not dm:
+                continue
+            day = int(dm.group(1))
+            if not 1 <= day <= monthrange(target.year, target.month)[1]:
+                continue
+            actual_date = date(target.year, target.month, day)
+            if expected and actual_date != expected:
+                continue
+            if not expected and not (today <= actual_date <= today + timedelta(days=14)):
+                continue
+            hour = int(tm.group(1)) % 12
+            if tm.group(3).casefold() == "p":
+                hour += 12
+            local_dt = datetime(
+                actual_date.year, actual_date.month, actual_date.day, hour,
+                int(tm.group(2)), tzinfo=ZoneInfo("America/New_York")
+            )
+            utc_dt = local_dt.astimezone(timezone.utc)
+            matches.append((actual_date, local_dt, utc_dt))
+        if len(matches) != 1:
+            return None, f"Federal-Reserve-Kalender: {len(matches)} exakt passende Waller-Reden; Event nicht verifiziert"
+        actual_date, local_dt, utc_dt = matches[0]
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        response_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        title = "Speech - Governor Christopher J. Waller: Welcoming Remarks"
+        detail = (
+            f"Federal Reserve LIVE-Kalender: HTTP 200; Event={title}; Datum={actual_date.isoformat()}; "
+            f"Ortszeit={local_dt.strftime('%H:%M')} America/New_York; UTC={utc_dt.strftime('%H:%M')} UTC; "
+            f"Abrufzeit={retrieved_at}; Abruf={requested_url}; Final={final_url}"
+        )
+        evidence = _EventVerificationEvidence(
+            kind="FED_SPEAKER", event_id="FED_WALLER_COLLEGE_FED_CHALLENGE",
+            event_name=title, event_date=actual_date.isoformat(),
+            event_time=utc_dt.strftime("%H:%M"), timezone="UTC",
+            requested_url=requested_url, final_url=final_url, http_status=status,
+            retrieved_at=retrieved_at, content_match=True,
+            adapter="federal_reserve_month_calendar_speaker_verifier",
+            response_sha256=response_hash, verified=True, detail=detail,
+        )
+        return _register_verified_evidence(evidence), detail
+    except Exception as exc:
+        return None, f"Federal-Reserve-Kalender fehlgeschlagen: {type(exc).__name__}: {exc}"
+
 
 SECTOR_ETF_LABELS = {
     "XLB": "Rohstoff-ETF",
@@ -1262,7 +1371,7 @@ def _enrich_fomc_event(
 
 
 
-def normalize_event_section(report_text: str, *, forexfactory_requester=None, fomc_requester=None) -> tuple[str, list[str]]:
+def normalize_event_section(report_text: str, *, forexfactory_requester=None, fomc_requester=None, fed_speaker_requester=None, today=None) -> tuple[str, list[str]]:
     """Canonicalize event records in report section 3 and remove duplicates.
 
     This is intentionally conservative: it does not invent values or infer dates.
@@ -1400,7 +1509,7 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         ))
         if date_led_record or event_clock_header:
             metric_identity = re.search(
-                r"(?im)^\s*(?:[-*•]\s*)?(?:Kennzahl|Indikator)\s*[:=]\s*([^\r\n|;]+)",
+                r"(?im)(?:^|[|;\n])\s*(?:[-*•]\s*)?(?:Kennzahl|Indikator)\s*[:=]\s*([^\r\n|;]+)",
                 plain_rec,
             )
             if metric_identity:
@@ -1518,6 +1627,14 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
                 verification_value, source_value, event_name=plain_rec,
                 event_date=date_value, evidence=evidence,
             )
+        elif _is_fed_waller_speaker_event(name):
+            evidence, adapter_detail = _verify_fed_waller_speaker_event(
+                name, date_value if date_value and _is_valid_calendar_event_date(date_value) else None,
+                requester=fed_speaker_requester, today=today,
+            )
+            source_live_verified = bool(evidence is not None)
+            if evidence is None:
+                verification_value = "NICHT VERIFIZIERT (" + adapter_detail + ")"
         elif re.search(r"(?i)\bFOMC\b", plain_rec):
             source_live_verified = False
         elif _is_forexfactory_source(source_value):
@@ -1534,6 +1651,26 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
             source_live_verified = _has_live_verification(
                 verification_value, source_value, event_name=name, event_date=date_value
             )
+        if evidence is not None and evidence.kind == "FED_SPEAKER":
+            date_value = evidence.event_date
+            date_m = re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*([^\r\n|;]+)",
+                plain_rec,
+            )
+            date_line = re.compile(
+                r"(?im)^(\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=\s]+)"
+                r"(?:NICHT VERFÜGBAR(?:\s*\([^\r\n]*?\))?|NICHT VERFUEGBAR|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR)[^\r\n]*$"
+            )
+            if date_line.search(rec):
+                rec = date_line.sub(lambda match: match.group(1) + evidence.event_date, rec, count=1)
+            else:
+                rec = rec.rstrip() + f"\n- Datum: {evidence.event_date}"
+            plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
+            date_m = re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*([^\r\n|;]+)",
+                plain_rec,
+            )
+
         structured_fomc_verified = bool(
             evidence is not None and _is_trusted_event_evidence(
                 evidence, kind="FOMC", event_name=plain_rec, event_date=date_value
@@ -1544,7 +1681,16 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
                 evidence, kind="FOREXFACTORY", event_name=name, event_date=date_value
             )
         )
-        if event_fomc_kind or re.search(r"(?i)\bFOMC\b", plain_rec):
+        structured_fed_speaker_verified = bool(
+            evidence is not None and _is_trusted_event_evidence(
+                evidence, kind="FED_SPEAKER", event_name=name, event_date=date_value
+            )
+        )
+        if event_fomc_kind:
+            source_present = structured_fomc_verified
+        elif _is_fed_waller_speaker_event(name):
+            source_present = structured_fed_speaker_verified
+        elif re.search(r"(?i)\bFOMC\b", plain_rec):
             source_present = structured_fomc_verified
         elif _is_forexfactory_source(source_value):
             source_present = structured_forexfactory_verified
@@ -1563,12 +1709,15 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         if evidence is not None and evidence.verified:
             canonical_source = (
                 f"Federal Reserve official calendar ({evidence.final_url})"
-                if evidence.kind == "FOMC"
+                if evidence.kind in {"FOMC", "FED_SPEAKER"}
                 else f"ForexFactory LIVE adapter ({evidence.final_url})"
             )
             source_line_pattern = re.compile(r"(?im)^\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=].*$")
+            inline_source_pattern = re.compile(r"(?i)(\|\s*(?:Quelle|Source)\s*[:=]\s*)[^|;\r\n]*")
             if source_line_pattern.search(rec):
                 rec = source_line_pattern.sub("- Quelle: " + canonical_source, rec, count=1)
+            elif inline_source_pattern.search(rec):
+                rec = inline_source_pattern.sub(lambda match: match.group(1) + canonical_source, rec, count=1)
             else:
                 rec = rec.rstrip() + "\n- Quelle: " + canonical_source
             verification_line_pattern = re.compile(r"(?im)^\s*(?:[-*•]\s*)?(?:Quellenprüfung|Quellenpruefung)\s*[:=].*$")
@@ -1579,12 +1728,12 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
                 rec = rec.rstrip() + "\n- Quellenprüfung: " + verified_detail
 
             event_header_pattern = re.compile(
-                r"(?im)^(\s*(?:[-*•]\s*)?Ereignis-Uhrzeit\s*[:=]\s*)[^\r\n]*$"
+                r"(?im)^(\s*(?:[-*•]\s*)?Ereignis-Uhrzeit\s*[:=]\s*)([^|\r\n]*)(.*)$"
             )
             if event_header_pattern.search(rec):
                 rec = event_header_pattern.sub(
                     lambda match: (
-                        match.group(1) + f"{evidence.event_name} ({evidence.event_date})"
+                        match.group(1) + f"{evidence.event_name} ({evidence.event_date})" + match.group(3)
                     ),
                     rec,
                     count=1,
@@ -1593,6 +1742,11 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
             def upsert_verified_event_field(record: str, label: str, value: str) -> str:
                 if not value:
                     return record
+                inline_pattern = re.compile(
+                    rf"(?i)(\|\s*(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*[:=]\s*)[^|;\r\n]*"
+                )
+                if inline_pattern.search(record):
+                    return inline_pattern.sub(lambda match: match.group(1) + value, record, count=1)
                 field_pattern = re.compile(
                     rf"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*[:=]\s*)[^\r\n]*$"
                 )
