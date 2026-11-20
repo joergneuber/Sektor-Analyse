@@ -62,7 +62,7 @@ def test_section7_heading_is_canonicalized_and_unverified_claims_removed():
     assert "Benchmark-Performance: NICHT VERFÜGBAR" in result
 
 
-def test_candidate_source_normalizer_preserves_distinct_setups_for_same_ticker():
+def test_candidate_source_normalizer_preserves_distinct_records_and_filters_nontradable():
     source = ROOT / "tests" / "fixtures" / "hebeltrader_candidates_fixture.json"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(json.dumps({
@@ -75,6 +75,9 @@ def test_candidate_source_normalizer_preserves_distinct_setups_for_same_ticker()
                 "ticker": "REJ", "status": "KEIN KANDIDAT",
                 "risiken": ["Momentum zu schwach"],
             }},
+            {"name": "Active AG", "ticker": "ACT", "status": "ACHTUNG",
+             "trigger": "Breakout über bestätigten Widerstand",
+             "entry": "100", "stop": "95", "tp1": "110", "crv": "2.0"},
         ]
     }), encoding="utf-8")
     try:
@@ -89,11 +92,13 @@ def test_candidate_source_normalizer_preserves_distinct_setups_for_same_ticker()
         result = production._trading_radar_kandidatenquellen_absichern(
             report, {source.name: str(source)}
         )
-        assert production._trading_radar_kandidaten_aus_abschnitt5(result) == ["EXA", "REJ"]
-        assert result.count("Asset/Ticker:") == 2
-        assert result.count("Setup-ID:") >= 2
+        assert production._trading_radar_kandidaten_aus_abschnitt5(result) == ["ACT"]
+        assert result.count("Asset/Ticker:") == 3
+        setup_ids = re.findall(r"Setup-ID: ([0-9a-f]{16})", result)
+        assert len(set(setup_ids)) == 3
         assert result.count("Statusgruppe: NICHT HANDELBAR") == 1
         assert result.count("Statusgruppe: VERWERFEN / INVALIDIERT") == 1
+        assert result.count("Statusgruppe: AUF TRIGGER WARTEN") == 1
         assert "Einstieg: NICHT VERFÜGBAR" in result
         assert "Regel-/Datenstatus:" in result
     finally:
