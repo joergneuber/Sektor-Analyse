@@ -1638,3 +1638,491 @@ def test_fetch_history_uses_twelvedata_ppfd_after_stale_sqlite_and_persists_only
     assert len(result) == 100
     assert result.attrs["history_source"] == "TwelveData:XSTU"
     assert persisted == [("PPFD.SG", "TwelveData:XSTU")]
+
+
+@pytest.mark.parametrize("appended_history", [0, 1], ids=["ohne-neue-archivzeilen", "mit-neuen-archivzeilen"])
+@pytest.mark.parametrize("timestamp_fails", [False, True], ids=["zeitstempel-ok", "zeitstempel-fehler"])
+@pytest.mark.parametrize("is_new_master", [False, True], ids=["bestehender-master", "master-erstinitialisierung"])
+def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
+    monkeypatch, tmp_path, appended_history, timestamp_fails, is_new_master
+):
+    stale_title = "Geschlossene Positionen | historische Faktenbasis | Stand 01.01.2026 00:00"
+    state = {
+        "a1": stale_title, "updates": [], "enforce_called": False,
+        "rollback_calls": [], "finalize_calls": [], "quarantine_calls": [],
+    }
+
+    archive_rows = []
+    for number in range(checker.MINIMUM_PROTECTED_HISTORY_ROWS + 1):
+        row = {column: "" for column in checker.HISTORY_HEADERS}
+        row.update({
+            "Name": f"Unternehmen {number}",
+            "Ticker": f"AAA{number:02d}",
+            "Einstieg": str(100 + number),
+            "Einstiegsdatum": f"{(number % 28) + 1:02d}.01.{2025 + number // 28}",
+            "Ausstiegsdatum": "02.02.2026",
+            "Ausstiegskurs": str(101 + number),
+            "Status": "Verkauft",
+        })
+        archive_rows.append(row)
+
+    preflight_rows = [
+        [stale_title],
+        checker.HISTORY_DISPLAY_HEADERS,
+    ]
+    preflight_rows.extend(
+        [row[column] for column in checker.HISTORY_HEADERS] + [index + 1]
+        for index, row in enumerate(archive_rows[:checker.MINIMUM_PROTECTED_HISTORY_ROWS])
+    )
+    history_rows = list(preflight_rows)
+    if appended_history:
+        history_rows.append(
+            [archive_rows[checker.MINIMUM_PROTECTED_HISTORY_ROWS][column]
+             for column in checker.HISTORY_HEADERS]
+            + [checker.MINIMUM_PROTECTED_HISTORY_ROWS + 1]
+        )
+    closed_df = (
+        pd.DataFrame(
+            [archive_rows[checker.MINIMUM_PROTECTED_HISTORY_ROWS]],
+            columns=checker.HISTORY_HEADERS,
+        )
+        if appended_history
+        else pd.DataFrame(columns=checker.HISTORY_HEADERS)
+    )
+    history_snapshot = [list(row) for row in history_rows]
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+
+    class Values:
+        def get(self, **kwargs):
+            requested_range = kwargs["range"]
+            if requested_range == "'Geschlossene Positionen'!A1":
+                return Request({"values": [[state["a1"]]]})
+            if requested_range in {"Geschlossene Positionen!A1:Z", "Geschlossene Positionen!A1:AA"}:
+                return Request({"values": history_rows})
+            if requested_range.startswith("Offene Positionen+Check!A1:"):
+                return Request({"values": [["Offene Positionen+Check | Stand"], checker.HEADERS]})
+            raise AssertionError(f"Unerwarteter Google-Sheets-Read: {requested_range}")
+
+        def update(self, **kwargs):
+            state["updates"].append(kwargs)
+            if kwargs["range"] == "'Geschlossene Positionen'!A1":
+                state["a1"] = kwargs["body"]["values"][0][0]
+            return Request()
+
+        def clear(self, **kwargs):
+            raise AssertionError("A1-Clear ist in diesem erfolgreichen Pfad nicht erwartet.")
+
+    class SpreadsheetResource:
+        def get(self, **kwargs):
+            return Request({"sheets": [
+                {"properties": {"title": "Offene Positionen+Check", "sheetId": 1}},
+                {"properties": {"title": "Geschlossene Positionen", "sheetId": 2}},
+            ]})
+        def batchUpdate(self, **kwargs):
+            return Request()
+        def values(self):
+            return Values()
+
+    class Sheets:
+        def spreadsheets(self):
+            return SpreadsheetResource()
+
+    sheets = Sheets()
+    monkeypatch.setattr(checker, "_validate_output_before_upload", lambda *args: None)
+    monkeypatch.setattr(checker, "build", lambda *args, **kwargs: sheets, raising=False)
+    monkeypatch.setattr(
+        checker, "_find_or_initialize_master",
+        lambda drive, current_closed: (
+            "spreadsheet-id", is_new_master, "INIT-name" if is_new_master else None
+        ),
+    )
+    monkeypatch.setattr(checker, "read_existing_history", lambda *args, **kwargs: preflight_rows)
+    monkeypatch.setattr(checker, "_snapshot_google_sheet", lambda *args, **kwargs: "backup-id")
+    monkeypatch.setattr(checker, "_write_sheet", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: appended_history)
+    monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args, **kwargs: len(archive_rows))
+    monkeypatch.setattr(
+        checker, "_swap_temp_tabs",
+        lambda *args, **kwargs: {"Offene Positionen+Check": "__BACKUP_OFFEN__"},
+    )
+    monkeypatch.setattr(
+        checker, "_rollback_productive_swap",
+        lambda *args, **kwargs: state["rollback_calls"].append(args),
+    )
+    monkeypatch.setattr(
+        checker, "_finalize_new_master",
+        lambda *args, **kwargs: state["finalize_calls"].append(args),
+    )
+    monkeypatch.setattr(
+        checker, "_quarantine_finalized_new_master",
+        lambda *args, **kwargs: state["quarantine_calls"].append(args) or "INIT-FAILED",
+    )
+    if timestamp_fails:
+        monkeypatch.setattr(
+            checker, "_update_closed_history_timestamp",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulierter A1-Fehler")),
+        )
+    def enforce_order(*args, **kwargs):
+        assert state["a1"] == stale_title
+        state["enforce_called"] = True
+    monkeypatch.setattr(checker, "_enforce_productive_tab_order", enforce_order)
+    monkeypatch.chdir(tmp_path)
+
+    call = lambda: checker.upsert_google_sheet(
+        pd.DataFrame(columns=checker.HEADERS),
+        closed_df,
+        creds=object(),
+    )
+    if timestamp_fails:
+        with pytest.raises(
+            RuntimeError,
+            match="Google-Sheet-Daten wurden erfolgreich aktualisiert und verifiziert",
+        ):
+            call()
+        assert state["a1"] == stale_title
+        assert state["rollback_calls"] == []
+        if is_new_master:
+            assert len(state["finalize_calls"]) == 1
+            assert len(state["quarantine_calls"]) == 1
+        else:
+            assert state["finalize_calls"] == []
+            assert state["quarantine_calls"] == []
+    else:
+        result = call()
+        assert result == "spreadsheet-id"
+        assert state["a1"].startswith("Geschlossene Positionen | historische Faktenbasis | Stand ")
+        assert state["a1"] != stale_title
+        assert state["rollback_calls"] == []
+        assert state["quarantine_calls"] == []
+        assert len(state["finalize_calls"]) == (1 if is_new_master else 0)
+
+    assert state["enforce_called"] is True
+    assert history_rows == history_snapshot
+    if not timestamp_fails:
+        assert len(state["updates"]) == 1
+        assert state["updates"][0]["range"] == "'Geschlossene Positionen'!A1"
+        assert state["updates"][0]["body"]["values"] == [[state["a1"]]]
+        assert state["updates"][0]["valueInputOption"] == "RAW"
+
+
+
+def test_closed_history_timestamp_restores_previous_a1_when_readback_mismatches(monkeypatch):
+    previous_title = "Geschlossene Positionen | historische Faktenbasis | Stand 01.01.2026 00:00"
+    state = {"a1": previous_title, "writes": []}
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Values:
+        def get(self, **kwargs):
+            def result():
+                # First get is the previous value; second get simulates a stale/wrong read-back.
+                if len(state["writes"]) == 0:
+                    return {"values": [[state["a1"]]]}
+                return {"values": [["unerwarteter Wert"]]}
+            return Request(result)
+        def update(self, **kwargs):
+            def result():
+                value = kwargs["body"]["values"][0][0]
+                state["writes"].append(value)
+                state["a1"] = value
+                return {}
+            return Request(result)
+        def clear(self, **kwargs):
+            raise AssertionError("Clear ist bei vorhandenem vorherigem A1-Wert nicht erwartet.")
+
+    class Sheets:
+        def spreadsheets(self):
+            return self
+        def values(self):
+            return Values()
+
+    with pytest.raises(RuntimeError, match="nicht zuverlässig aktualisiert"):
+        checker._update_closed_history_timestamp(Sheets(), "spreadsheet-id")
+
+    assert len(state["writes"]) == 2
+    assert state["writes"][1] == previous_title
+    assert state["a1"] == previous_title
+
+
+def test_closed_history_timestamp_reports_restore_failure(monkeypatch):
+    previous_title = "Alter Titel"
+    writes = []
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Values:
+        def get(self, **kwargs):
+            def result():
+                if not writes:
+                    return {"values": [[previous_title]]}
+                return {"values": [["falscher Read-back"]]}
+            return Request(result)
+        def update(self, **kwargs):
+            def result():
+                writes.append(kwargs["body"]["values"][0][0])
+                if len(writes) == 2:
+                    raise RuntimeError("simulierter Restore-Fehler")
+                return {}
+            return Request(result)
+        def clear(self, **kwargs):
+            raise AssertionError("Clear nicht erwartet.")
+
+    class Sheets:
+        def spreadsheets(self):
+            return self
+        def values(self):
+            return Values()
+
+    with pytest.raises(RuntimeError, match="Wiederherstellung des vorherigen A1-Werts fehlgeschlagen"):
+        checker._update_closed_history_timestamp(Sheets(), "spreadsheet-id")
+
+    assert len(writes) == 2
+    assert writes[1] == previous_title
+
+
+def test_closed_history_timestamp_initial_a1_read_failure_does_not_write(monkeypatch):
+    state = {"updates": 0, "clears": 0}
+
+    class Request:
+        def execute(self):
+            raise RuntimeError("A1 initial read fehlgeschlagen")
+
+    class Values:
+        def get(self, **kwargs):
+            return Request()
+        def update(self, **kwargs):
+            state["updates"] += 1
+            return Request()
+        def clear(self, **kwargs):
+            state["clears"] += 1
+            return Request()
+
+    class Sheets:
+        def spreadsheets(self):
+            return self
+        def values(self):
+            return Values()
+
+    with pytest.raises(RuntimeError, match="A1 initial read fehlgeschlagen"):
+        checker._update_closed_history_timestamp(Sheets(), "spreadsheet-id")
+
+    assert state == {"updates": 0, "clears": 0}
+
+
+def test_closed_history_timestamp_update_failure_restores_previous_a1(monkeypatch):
+    previous_title = "Alter Tab-2-Zeitstempel"
+    state = {"a1": previous_title, "updates": []}
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Values:
+        def get(self, **kwargs):
+            return Request(lambda: {"values": [[state["a1"]]]})
+        def update(self, **kwargs):
+            def execute():
+                value = kwargs["body"]["values"][0][0]
+                state["updates"].append(value)
+                if len(state["updates"]) == 1:
+                    raise RuntimeError("A1 write fehlgeschlagen")
+                state["a1"] = value
+                return {}
+            return Request(execute)
+        def clear(self, **kwargs):
+            raise AssertionError("Bei vorhandenem vorherigem A1-Wert nicht erwartet.")
+
+    class Sheets:
+        def spreadsheets(self):
+            return self
+        def values(self):
+            return Values()
+
+    with pytest.raises(RuntimeError, match="nicht zuverlässig aktualisiert"):
+        checker._update_closed_history_timestamp(Sheets(), "spreadsheet-id")
+
+    assert len(state["updates"]) == 2
+    assert state["updates"][1] == previous_title
+    assert state["a1"] == previous_title
+
+
+def test_closed_history_timestamp_clears_a1_when_previous_value_was_empty(monkeypatch):
+    state = {"writes": [], "clears": 0, "read_count": 0}
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Values:
+        def get(self, **kwargs):
+            def execute():
+                state["read_count"] += 1
+                if state["read_count"] == 1:
+                    return {"values": []}
+                return {"values": [["falscher Read-back"]]}
+            return Request(execute)
+        def update(self, **kwargs):
+            return Request(lambda: state["writes"].append(kwargs["body"]["values"][0][0]) or {})
+        def clear(self, **kwargs):
+            def execute():
+                state["clears"] += 1
+                return {}
+            return Request(execute)
+
+    class Sheets:
+        def spreadsheets(self):
+            return self
+        def values(self):
+            return Values()
+
+    with pytest.raises(RuntimeError, match="nicht zuverlässig aktualisiert"):
+        checker._update_closed_history_timestamp(Sheets(), "spreadsheet-id")
+
+    assert len(state["writes"]) == 1
+    assert state["clears"] == 1
+
+
+def test_quarantine_finalized_new_master_renames_and_verifies_drive_file(monkeypatch):
+    state = {"name": checker.DRIVE_NAME, "updates": []}
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Files:
+        def update(self, **kwargs):
+            def execute():
+                state["name"] = kwargs["body"]["name"]
+                state["updates"].append(state["name"])
+                return {"id": kwargs["fileId"], "name": state["name"]}
+            return Request(execute)
+        def list(self, **kwargs):
+            def execute():
+                query = kwargs["q"]
+                if f"name='{state['name']}'" in query:
+                    items = [{"id": "new-master-id", "name": state["name"],
+                              "mimeType": checker.GOOGLE_SHEETS_MIME_TYPE}]
+                else:
+                    items = []
+                return {"files": items}
+            return Request(execute)
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    quarantine_name = checker._quarantine_finalized_new_master(
+        Drive(), "new-master-id", "INIT-original"
+    )
+
+    assert quarantine_name == state["name"]
+    assert quarantine_name.startswith(checker.MASTER_INIT_PREFIX + "FAILED_TIMESTAMP_")
+    assert state["updates"] == [quarantine_name]
+
+
+def test_quarantine_finalized_new_master_fails_closed_when_drive_readback_missing():
+    class Request:
+        def execute(self):
+            return {"files": []}
+
+    class Files:
+        def update(self, **kwargs):
+            return Request()
+        def list(self, **kwargs):
+            return Request()
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="nicht eindeutig aus dem Produktivnamen entfernt"):
+        checker._quarantine_finalized_new_master(
+            Drive(), "new-master-id", "INIT-original"
+        )
+
+
+def test_quarantine_finalized_new_master_accepts_timeout_when_drive_readback_confirms_rename():
+    state = {"name": checker.DRIVE_NAME}
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Files:
+        def update(self, **kwargs):
+            def execute():
+                state["name"] = kwargs["body"]["name"]
+                raise RuntimeError("simulierter Timeout nach serverseitiger Umbenennung")
+            return Request(execute)
+        def list(self, **kwargs):
+            def execute():
+                query = kwargs["q"]
+                if f"name='{state['name']}'" in query:
+                    return {"files": [{
+                        "id": "new-master-id", "name": state["name"],
+                        "mimeType": checker.GOOGLE_SHEETS_MIME_TYPE,
+                    }]}
+                return {"files": []}
+            return Request(execute)
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    result = checker._quarantine_finalized_new_master(
+        Drive(), "new-master-id", "INIT-original"
+    )
+    assert result == state["name"]
+    assert result.startswith(checker.MASTER_INIT_PREFIX + "FAILED_TIMESTAMP_")
+
+
+def test_quarantine_finalized_new_master_reports_when_rename_failed_and_master_remains_active():
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+        def execute(self):
+            return self.callback()
+
+    class Files:
+        def update(self, **kwargs):
+            return Request(lambda: (_ for _ in ()).throw(RuntimeError("Drive rename fehlgeschlagen")))
+        def list(self, **kwargs):
+            def execute():
+                query = kwargs["q"]
+                if f"name='{checker.DRIVE_NAME}'" in query:
+                    return {"files": [{
+                        "id": "new-master-id", "name": checker.DRIVE_NAME,
+                        "mimeType": checker.GOOGLE_SHEETS_MIME_TYPE,
+                    }]}
+                return {"files": []}
+            return Request(execute)
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="weiterhin_produktiv=True"):
+        checker._quarantine_finalized_new_master(
+            Drive(), "new-master-id", "INIT-original"
+        )
