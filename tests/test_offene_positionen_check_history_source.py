@@ -627,8 +627,8 @@ def test_write_sheet_uploads_stop_value_and_formats_it_as_numeric():
     values = [
         ["Offene Positionen+Check | Test"] + [""] * (len(checker.HEADERS) - 1),
         list(checker.HEADERS),
-        ["LSUG.MI", "WisdomTree Sugar", "", "", "", "", "Offen",
-         "18.03.2026", 2.06, 2.06, 2.35] + [""] * (len(checker.HEADERS) - 11),
+        ["LSUG.MI", "WisdomTree Sugar", "", "", "", "", "Long", "Offen",
+         "18.03.2026", 2.06, 2.06, 2.35] + [""] * (len(checker.HEADERS) - 12),
     ]
     checker._write_sheet(
         service, "spreadsheet-id", "Offene Positionen+Check", values,
