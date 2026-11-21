@@ -2,10 +2,12 @@
 
 Stichtag: 07.08.2026.
 
-Bewusst KEIN Backtest: Die Funktion arbeitet ausschließlich mit den in
-Offene_Positionen.csv vorhandenen echten Trades. Positionen, die am
-Stichtag bereits offen waren, beginnen für den Benchmark am 07.08.2026;
-später eröffnete Positionen beginnen am tatsächlichen Einstiegsdatum.
+Bewusst KEIN Backtest: Die Funktion liest echte Trades aus dem Google-Drive-
+Master „Offene Positionen+Check“. Offene Positionen stammen aus Tab 1
+(„Offene Positionen+Check“), abgeschlossene Positionen aus Tab 2
+(„Geschlossene Positionen“). Positionen, die am Stichtag bereits offen waren,
+beginnen für den Benchmark am 07.08.2026; später eröffnete Positionen beginnen
+am tatsächlichen Einstiegsdatum.
 
 Zwei Kennzahlen:
 1) Aktueller offener Korb: arithmetisches Mittel der Performance aller
@@ -21,6 +23,7 @@ gekennzeichnet und nicht als kapitalgewichtete Depotperformance.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 from pathlib import Path
 
@@ -31,8 +34,21 @@ import yfinance as yf
 BENCHMARK_TICKER = "EUNL.DE"
 BENCHMARK_NAME = "iShares Core MSCI World UCITS ETF USD (Acc)"
 STICHTAG = dt.date(2026, 8, 7)
-POSITIONS_FILE = Path("Offene_Positionen.csv")
+DRIVE_NAME = "Offene Positionen+Check"
+FOLDER_ID = "1BaKFsiqVVOP3uOrYDYXV4PPnFnWZBnjL"
+GOOGLE_SHEETS_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
+OPEN_TAB = "Offene Positionen+Check"
+CLOSED_TAB = "Geschlossene Positionen"
 OUTPUT_FILE = Path("Benchmark_Live.txt")
+
+OPEN_REQUIRED_COLUMNS = {
+    "Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg",
+    "Aktueller_Kurs", "Performance_Seit_Einstieg%", "Richtung",
+}
+CLOSED_REQUIRED_COLUMNS = {
+    "Ticker", "Name", "Status", "Einstiegsdatum", "Einstieg",
+    "Ausstiegsdatum", "Ausstiegskurs", "Richtung",
+}
 
 
 def _norm_num(value):
@@ -172,11 +188,140 @@ def _fmt(value):
     return f"{value:+.2f}%".replace(".", ",")
 
 
+def _sheet_values_to_frame(values, tab_name, required_columns):
+    """Wandelt den Google-Sheet-Aufbau (Titelzeile, Header, Daten) sicher in ein DataFrame um."""
+    if not values or len(values) < 2:
+        raise RuntimeError(f"Google-Sheet-Tab '{tab_name}' enthält keine Titel-/Headerstruktur.")
+    headers = [str(value).strip() for value in values[1]]
+    if not headers or any(not value for value in headers):
+        raise RuntimeError(f"Google-Sheet-Tab '{tab_name}' besitzt leere Headerfelder.")
+    if len(headers) != len(set(headers)):
+        raise RuntimeError(f"Google-Sheet-Tab '{tab_name}' besitzt doppelte Spaltennamen.")
+    missing = sorted(required_columns - set(headers))
+    if missing:
+        raise RuntimeError(
+            f"Google-Sheet-Tab '{tab_name}' hat nicht das erwartete Schema; "
+            f"fehlende Spalten: {', '.join(missing)}."
+        )
+    records = []
+    for row_number, raw in enumerate(values[2:], start=3):
+        if not any(str(value).strip() for value in raw if value is not None):
+            continue
+        padded = list(raw[:len(headers)]) + [""] * max(0, len(headers) - len(raw))
+        records.append(dict(zip(headers, padded)))
+    return pd.DataFrame(records, columns=headers)
+
+
+def _combine_position_tabs(open_values, closed_values):
+    """Kombiniert ausschließlich offene Tab-1-Daten mit der archivierten Tab-2-Historie."""
+    open_df = _sheet_values_to_frame(open_values, OPEN_TAB, OPEN_REQUIRED_COLUMNS)
+    closed_df = _sheet_values_to_frame(closed_values, CLOSED_TAB, CLOSED_REQUIRED_COLUMNS)
+
+    if not open_df.empty:
+        statuses = open_df["Status"].astype(str).str.strip().str.lower()
+        if not statuses.eq("offen").all():
+            bad = sorted(set(open_df.loc[~statuses.eq("offen"), "Status"].astype(str)))
+            raise RuntimeError(
+                f"Google-Sheet-Tab '{OPEN_TAB}' enthält nicht-offene Statuswerte: {bad[:5]}."
+            )
+        directions = open_df["Richtung"].astype(str).str.strip().str.lower()
+        if not directions.isin({"long", "short"}).all():
+            bad_tickers = open_df.loc[~directions.isin({"long", "short"}), "Ticker"].astype(str).tolist()
+            raise RuntimeError(
+                "Google-Sheet-Tab 1 enthält fehlende/ungültige Richtung Long/Short "
+                f"für: {bad_tickers[:10]}. Benchmark wird sicherheitshalber abgebrochen."
+            )
+
+    if not closed_df.empty:
+        statuses = closed_df["Status"].astype(str).str.strip().str.lower()
+        if not statuses.isin({"gestoppt", "verkauft"}).all():
+            bad = sorted(set(closed_df.loc[~statuses.isin({"gestoppt", "verkauft"}), "Status"].astype(str)))
+            raise RuntimeError(
+                f"Google-Sheet-Tab '{CLOSED_TAB}' enthält unerwartete Statuswerte: {bad[:5]}."
+            )
+        directions = closed_df["Richtung"].astype(str).str.strip().str.lower()
+        if not directions.isin({"long", "short"}).all():
+            bad_tickers = closed_df.loc[~directions.isin({"long", "short"}), "Ticker"].astype(str).tolist()
+            raise RuntimeError(
+                "Google-Sheet-Tab 2 enthält fehlende/ungültige Richtung Long/Short "
+                f"für: {bad_tickers[:10]}."
+            )
+
+    # Das offene Ausgabe-Tab enthält Steuerungsart, aber keine Ideen_Quelle.
+    # Keine fachlich andere Spalte als Ideen_Quelle ausgeben oder umdeuten.
+    if "Ideen_Quelle" not in open_df.columns:
+        open_df["Ideen_Quelle"] = ""
+    for column in ("Ausstiegsdatum", "Ausstiegskurs"):
+        if column not in open_df.columns:
+            open_df[column] = ""
+
+    # Archivdaten besitzen Ideen_Quelle bereits. Tab-1-/Tab-2-Schema wird vereinheitlicht,
+    # ohne bestehende Archivwerte zu überschreiben.
+    combined = pd.concat([open_df, closed_df], ignore_index=True, sort=False)
+    if combined.empty:
+        return pd.DataFrame()
+    return combined
+
+
 def _load_positions():
-    if not POSITIONS_FILE.exists():
-        raise FileNotFoundError(f"{POSITIONS_FILE} nicht gefunden")
-    df = pd.read_csv(POSITIONS_FILE, sep=";", encoding="utf-8-sig")
-    return df
+    """Lädt den Benchmark-Datenbestand ausschließlich aus dem produktiven Google-Drive-Master."""
+    token = os.getenv("GDRIVE_TOKEN")
+    if not token:
+        raise RuntimeError("GDRIVE_TOKEN fehlt; lokaler CSV-Fallback ist bewusst deaktiviert.")
+
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+    except Exception as exc:
+        raise RuntimeError(f"Google-API-Bibliotheken sind nicht verfügbar: {exc}") from exc
+
+    try:
+        info = json.loads(token)
+        credentials = Credentials.from_authorized_user_info(info)
+        if credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+        if not credentials.valid:
+            raise RuntimeError("GDRIVE_TOKEN ist nach Laden/Refresh nicht gültig.")
+    except Exception as exc:
+        raise RuntimeError(f"GDRIVE_TOKEN konnte nicht verwendet werden: {exc}") from exc
+
+    drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    sheets = build("sheets", "v4", credentials=credentials, cache_discovery=False)
+    query = (
+        f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false "
+        f"and mimeType='{GOOGLE_SHEETS_MIME_TYPE}'"
+    )
+    matches = drive.files().list(
+        q=query, fields="files(id,name,mimeType)"
+    ).execute().get("files", [])
+    matches = [
+        item for item in matches
+        if item.get("name") == DRIVE_NAME
+        and item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Google-Drive-Master nicht eindeutig: erwartet genau eine Datei "
+            f"'{DRIVE_NAME}' im konfigurierten Projektordner, gefunden: {len(matches)}."
+        )
+    spreadsheet_id = matches[0]["id"]
+
+    open_values = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="'Offene Positionen+Check'!A:AZ",
+    ).execute().get("values", [])
+    closed_values = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="'Geschlossene Positionen'!A:AA",
+    ).execute().get("values", [])
+    positions = _combine_position_tabs(open_values, closed_values)
+    print(
+        "BENCHMARK-DATENQUELLE: Google Drive | "
+        f"offen={sum(positions.get('Status', pd.Series(dtype=str)).astype(str).str.strip().str.lower() == 'offen')}, "
+        f"historisch={sum(positions.get('Status', pd.Series(dtype=str)).astype(str).str.strip().str.lower().isin({'gestoppt','verkauft'}))}"
+    )
+    return positions
 
 
 def calculate_benchmark():
@@ -270,7 +415,12 @@ def calculate_benchmark():
             "ticker": ticker,
             "name": str(row.get("Name", ticker)).strip(),
             "richtung": "Short" if short else "Long",
-            "quelle": str(row.get("Ideen_Quelle", "")).strip() or "Manuell",
+            "quelle": str(row.get("Ideen_Quelle", "")).strip()
+                or (
+                    f"Steuerungsart: {str(row.get('Steuerungsart', '')).strip()}"
+                    if str(row.get("Steuerungsart", "")).strip()
+                    else "Nicht angegeben"
+                ),
             "status": str(row.get("Status", "")).strip(),
             "from": system_start_date,
             "to": system_end_date,

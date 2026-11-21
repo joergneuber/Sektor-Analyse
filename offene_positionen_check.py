@@ -83,7 +83,7 @@ def _ist_gold_spot_ticker(ticker: str) -> bool:
 IMMEDIATE_RESISTANCE_MAX_DISTANCE = 0.10
 
 HEADERS = [
-    "Ticker", "Name", "Steuerungsart", "Sektor", "Markt", "Waehrung",
+    "Ticker", "Name", "Steuerungsart", "Sektor", "Markt", "Waehrung", "Richtung",
     "Status", "Einstiegsdatum", "Einstieg", "Stop", "Aktueller_Kurs", "Performance_Seit_Einstieg%",
     "Technischer_Zustand", "Trendrichtung", "Technische_Lage",
     "Support_1", "Support_2", "Widerstand_1", "Widerstand_2",
@@ -1558,7 +1558,13 @@ def make_row(row, tech: TechnicalResult) -> dict:
         tracker_close if tracker_close is not None and tracker_close > 0
         else technical_close
     )
-    perf = performance(entry, display_close, str(row.get("Richtung", "Long")))
+    direction = str(row.get("Richtung", "")).strip().capitalize()
+    if direction not in {"Long", "Short"}:
+        raise RuntimeError(
+            f"Sicherheitsabbruch: {ticker} besitzt keine gültige Richtung Long/Short "
+            "aus dem Positionen-Tracker."
+        )
+    perf = performance(entry, display_close, direction)
     close = technical_close
     if tech.close is None:
         quality = tech.data_quality
@@ -1608,6 +1614,7 @@ def make_row(row, tech: TechnicalResult) -> dict:
         "Sektor": sector,
         "Markt": str(row.get("Markt", "")).strip(),
         "Waehrung": str(row.get("Waehrung", "")).strip(),
+        "Richtung": direction,
         "Status": "Offen",
         "Einstiegsdatum": str(row.get("Einstiegsdatum", "")).strip(),
         "Einstieg": fmt_num(entry),
@@ -3048,7 +3055,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     values.extend([[r.get(c, "") for c in HEADERS] for _, r in df.iterrows()])
     widths = {
         "Ticker": 95, "Name": 240, "Steuerungsart": 125, "Sektor": 150,
-        "Markt": 65, "Waehrung": 75, "Status": 75, "Einstieg": 85, "Stop": 85,
+        "Markt": 65, "Waehrung": 75, "Richtung": 75, "Status": 75, "Einstieg": 85, "Stop": 85,
         "Aktueller_Kurs": 105, "Performance_Seit_Einstieg%": 120,
         "Technischer_Zustand": 190, "Trendrichtung": 125, "Technische_Lage": 220,
         "Support_1": 90, "Support_2": 90, "Widerstand_1": 100, "Widerstand_2": 100,
@@ -3196,6 +3203,21 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             raise RuntimeError(
                 "Produktiv-Verifikation fehlgeschlagen: Tab 1 enthält nicht-offene Statuswerte: "
                 f"{non_open[:5]}"
+            )
+
+        direction_idx = expected_header.index("Richtung")
+        expected_directions = [str(x).strip().capitalize() for x in df["Richtung"].tolist()]
+        actual_directions = [
+            str(row[direction_idx]).strip().capitalize()
+            if len(row) > direction_idx else ""
+            for row in verify_data
+        ]
+        if actual_directions != expected_directions or any(
+            value not in {"Long", "Short"} for value in actual_directions
+        ):
+            raise RuntimeError(
+                "Produktiv-Verifikation fehlgeschlagen: Richtung Long/Short wurde in Tab 1 "
+                "nicht vollständig und positionsgenau gespeichert."
             )
 
         ticker_idx = expected_header.index("Ticker")
