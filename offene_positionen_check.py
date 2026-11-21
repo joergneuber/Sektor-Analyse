@@ -2608,6 +2608,75 @@ def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.
     return len(rows_to_append)
 
 
+def _update_closed_history_timestamp(sheets, spreadsheet_id) -> str:
+    """Aktualisiert ausschließlich A1 von Tab 2 und verifiziert den Schreibvorgang.
+
+    Der Aufruf erfolgt erst nach erfolgreicher Archiv-, Tab-1- und Tab-Reihenfolge-
+    Verifikation. Bei einem fehlgeschlagenen Update/Read-back wird der bisherige
+    A1-Wert nach Möglichkeit wiederhergestellt.
+    """
+    title = (
+        "Geschlossene Positionen | historische Faktenbasis | Stand "
+        f"{dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    )
+    values_api = sheets.spreadsheets().values()
+    title_range = "'Geschlossene Positionen'!A1"
+
+    previous_response = values_api.get(
+        spreadsheetId=spreadsheet_id, range=title_range
+    ).execute()
+    previous_values = previous_response.get("values", [])
+    previous_title = (
+        previous_values[0][0]
+        if previous_values and previous_values[0]
+        else ""
+    )
+
+    try:
+        values_api.update(
+            spreadsheetId=spreadsheet_id,
+            range=title_range,
+            valueInputOption="RAW",
+            body={"values": [[title]]},
+        ).execute()
+        verified_response = values_api.get(
+            spreadsheetId=spreadsheet_id, range=title_range
+        ).execute()
+        verified_values = verified_response.get("values", [])
+        actual_title = (
+            verified_values[0][0]
+            if verified_values and verified_values[0]
+            else ""
+        )
+        if actual_title != title:
+            raise RuntimeError(
+                "A1-Read-back stimmt nicht mit dem geschriebenen Zeitstempel überein."
+            )
+    except Exception as exc:
+        try:
+            if previous_title:
+                values_api.update(
+                    spreadsheetId=spreadsheet_id,
+                    range=title_range,
+                    valueInputOption="RAW",
+                    body={"values": [[previous_title]]},
+                ).execute()
+            else:
+                values_api.clear(
+                    spreadsheetId=spreadsheet_id, range=title_range, body={}
+                ).execute()
+        except Exception as restore_exc:
+            raise RuntimeError(
+                "Tab-2-Zeitstempel konnte nicht verifiziert werden; "
+                f"Wiederherstellung des vorherigen A1-Werts fehlgeschlagen: {restore_exc}"
+            ) from exc
+        raise RuntimeError(
+            f"Tab-2-Zeitstempel konnte nicht zuverlässig aktualisiert werden: {exc}"
+        ) from exc
+
+    return title
+
+
 def _sort_and_number_closed_history(sheets, spreadsheet_id: str) -> int:
     """Sortiert Tab 2 nach Ausstiegsdatum, Ticker und Einstiegsdatum; Nummer 1..N.
 
@@ -2988,6 +3057,67 @@ def _finalize_new_master(drive, spreadsheet_id: str, init_name: str) -> None:
         ) from finalize_exc
 
 
+def _quarantine_finalized_new_master(drive, spreadsheet_id: str, init_name: str) -> str:
+    """Nimmt einen bereits veröffentlichten INIT-Master bei A1-Fehlern wieder aus dem Produktivnamen.
+
+    Die Datei bleibt vollständig erhalten, wird aber unter einem eindeutigen FAILED-
+    Namen abgelegt. Die Umbenennung wird anschließend über Drive-Listen verifiziert.
+    """
+    quarantine_name = (
+        f"{MASTER_INIT_PREFIX}FAILED_TIMESTAMP_"
+        f"{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    )
+    rename_error = None
+    try:
+        drive.files().update(
+            fileId=spreadsheet_id,
+            body={"name": quarantine_name},
+            fields="id,name",
+        ).execute()
+    except Exception as exc:
+        # Ein Timeout kann auftreten, obwohl Drive die Umbenennung serverseitig
+        # bereits ausgeführt hat. Deshalb entscheidet der anschließende Read-back.
+        rename_error = exc
+
+    quarantine_query = (
+        f"name='{quarantine_name}' and '{FOLDER_ID}' in parents and trashed=false "
+        f"and mimeType='{GOOGLE_SHEETS_MIME_TYPE}'"
+    )
+    quarantined = drive.files().list(
+        q=quarantine_query, fields="files(id,name,mimeType)"
+    ).execute().get("files", [])
+    quarantined = [
+        item for item in quarantined
+        if item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE
+    ]
+
+    active_query = (
+        f"name='{DRIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false "
+        f"and mimeType='{GOOGLE_SHEETS_MIME_TYPE}'"
+    )
+    active = drive.files().list(
+        q=active_query, fields="files(id,name,mimeType)"
+    ).execute().get("files", [])
+    still_active = any(item.get("id") == spreadsheet_id for item in active)
+
+    if (
+        len(quarantined) == 1
+        and quarantined[0].get("id") == spreadsheet_id
+        and not still_active
+    ):
+        return quarantine_name
+
+    raise RuntimeError(
+        "Veröffentlichter INIT-Master konnte nach dem Zeitstempel-Fehler nicht "
+        "eindeutig aus dem Produktivnamen entfernt und in Quarantäne bestätigt "
+        "werden; "
+        f"Datei-ID={spreadsheet_id}; INIT-Name={init_name}; "
+        f"Quarantäne-Name={quarantine_name}; "
+        f"weiterhin_produktiv={still_active}; "
+        f"Umbenennungsfehler={rename_error or 'keiner'}."
+    )
+
+
 def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
     if creds is None:
         print("INFO: Keine Google-Credentials – lokale CSVs bleiben die Ausgabe.")
@@ -3074,6 +3204,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     backup_id = None
     backup_tab_title = None
     swapped = False
+    timestamp_update_failed = False
 
     try:
         if existing and not is_new_master:
@@ -3246,7 +3377,40 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             _finalize_new_master(drive, spreadsheet_id, init_name)
             print("SICHERHEIT: neuer Google-Master vollständig verifiziert und produktiv freigegeben.")
 
-        # 7) Sicherungen bleiben dauerhaft erhalten; keine automatische Löschung.
+        # 7) A1 erst nach vollständig erfolgreicher Archiv- und Produktivverifikation
+        #    aktualisieren. Ein Fehler hier darf einen bereits verifizierten Tab-1-Swap
+        #    eines bestehenden Masters nicht zurückrollen: Tab 1 und Tab 2 sind fachlich
+        #    bereits konsistent, nur der Metadaten-Zeitstempel bleibt ggf. alt.
+        try:
+            _update_closed_history_timestamp(sheets, spreadsheet_id)
+        except Exception as timestamp_exc:
+            timestamp_update_failed = True
+            if is_new_master:
+                # Ein INIT-Master wurde unmittelbar zuvor veröffentlicht. Wenn A1
+                # danach nicht sicher aktualisiert werden kann, darf er nicht unter
+                # dem produktiven Drive-Namen verbleiben.
+                try:
+                    quarantine_name = _quarantine_finalized_new_master(
+                        drive, spreadsheet_id, init_name
+                    )
+                    print(
+                        "SICHERHEIT: INIT-Master nach fehlgeschlagenem Tab-2-Zeitstempel "
+                        f"in Quarantäne verschoben | name={quarantine_name}"
+                    )
+                except Exception as quarantine_exc:
+                    raise RuntimeError(
+                        "Tab-2-Zeitstempel nach Master-Veröffentlichung fehlgeschlagen; "
+                        "zusätzlich konnte der veröffentlichte INIT-Master nicht sicher "
+                        f"quarantänisiert werden: {quarantine_exc}"
+                    ) from timestamp_exc
+            raise RuntimeError(
+                "Tab-2-Zeitstempel fehlgeschlagen, nachdem Archiv und produktiver "
+                "Tab 1 bereits erfolgreich verifiziert wurden. Der verifizierte "
+                "Datenstand bleibt erhalten; es erfolgt kein Tab-1-Rollback. "
+                f"Ursache: {timestamp_exc}"
+            ) from timestamp_exc
+
+        # 8) Sicherungen bleiben dauerhaft erhalten; keine automatische Löschung.
         print("DATENSCHUTZ: Produktiv- und Drive-Backups bleiben dauerhaft erhalten.")
 
         print(
@@ -3256,8 +3420,10 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         return spreadsheet_id
 
     except Exception as exc:
-        # Falls der produktive Tab bereits getauscht wurde, aktiv zurückrollen.
-        if swapped and backup_tab_title:
+        # Ein reiner A1-Metadatenfehler kommt NACH erfolgreicher Tab-1-Verifikation.
+        # In diesem Sonderfall würde ein Rollback Tab 1 unnötig hinter den bereits
+        # append-only aktualisierten Tab 2 zurücksetzen.
+        if swapped and backup_tab_title and not timestamp_update_failed:
             try:
                 _rollback_productive_swap(sheets, spreadsheet_id, "Offene Positionen+Check", backup_tab_title)
                 print("SICHERHEIT: Produktiver Tab 1 auf den vorherigen Stand zurückgerollt.")
@@ -3268,6 +3434,12 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 ) from exc
         if backup_id:
             print(f"DATENSCHUTZ: Notfall-Backup bleibt erhalten | ID={backup_id}")
+        if timestamp_update_failed:
+            raise RuntimeError(
+                "Google-Sheet-Daten wurden erfolgreich aktualisiert und verifiziert, "
+                "aber der Tab-2-Zeitstempel konnte nicht bestätigt werden. "
+                f"Der verifizierte Tab-1-Stand wurde nicht zurückgerollt: {exc}"
+            ) from exc
         raise RuntimeError(f"Google-Upload sicher abgebrochen: {exc}") from exc
 
 def _position_key(row) -> tuple:
