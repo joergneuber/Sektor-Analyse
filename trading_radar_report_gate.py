@@ -1371,10 +1371,23 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         m05_thesis_id = _m05_label_value(thesis, (r"Thesen-ID", r"thesis_id"))
         m05_version = _m05_label_value(thesis, (r"Version", r"version"))
         m05_status = _m05_label_value(thesis, (r"Status", r"status"))
+        # A status field may carry an explanatory sentence after its canonical
+        # status token (for example, "INVALIDIERT. Alle Thesen sind archiviert").
+        # Validate the leading complete enum token, not the entire prose value.
+        m05_status_prefix = re.match(
+            r"(?i)^\s*("
+            + "|".join(
+                re.escape(value)
+                for value in sorted(m05_allowed_statuses, key=len, reverse=True)
+            )
+            + r")(?=$|[\s.,;:])",
+            str(m05_status or ""),
+        )
+        m05_status_value = m05_status_prefix.group(1).upper() if m05_status_prefix else m05_status
         m05_version_match = re.fullmatch(r"\d+", str(m05_version or "").strip())
         m05_identity_valid = bool(
             m05_thesis_id and m05_version_match
-            and _m05_record_valid(m05_thesis_id, m05_version_match.group(0), m05_status)
+            and _m05_record_valid(m05_thesis_id, m05_version_match.group(0), m05_status_value)
         )
 
     if not m05_identity_valid and not (no_thesis_update and register_evidence_ok):
