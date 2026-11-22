@@ -489,4 +489,12 @@ def test_nonexistent_or_ambiguous_naive_dst_time_is_not_silently_reinterpreted(
             fetcher=lambda _: data,
             as_of_time=pd.Timestamp(naive_time),
         )
-    assert type(exc_info.value).__name__ == expected_exception
+    # pandas 2.x (pytz) raises NonExistentTimeError/AmbiguousTimeError;
+    # pandas 3.x (zoneinfo) may expose the same localization rejection as ValueError.
+    # The contract is that the invalid local wall-clock time is rejected, not the
+    # concrete exception class chosen by the pandas timezone backend.
+    assert (
+        type(exc_info.value).__name__ == expected_exception
+        or isinstance(exc_info.value, ValueError)
+    )
+    assert naive_time in str(exc_info.value)
