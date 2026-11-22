@@ -1310,3 +1310,51 @@ def test_m05_compact_register_rejects_placeholder_identity_values():
         )
         errors = gate.validate_report(text)
         assert any("Thesen-Update benötigt" in item for item in errors), (placeholder, errors)
+
+
+def test_m05_accepts_fully_proven_archive_only_register_without_active_thesis():
+    text = (
+        "2. Thesen-Update\n"
+        "Thesen-ID: T-1 | Version: 1 | Status: INVALIDIERT. Alle Thesen sind archiviert; keine aktive These verbleibt.\n"
+        "THESENREGISTER-VERGLEICH: PASS\n"
+        "VORHER-SHA256: " + "a" * 64 + "\n"
+        "NACHHER-SHA256: " + "b" * 64 + "\n"
+        "THESENREGISTER-VERGLEICH-ID: 03ad73fb6916f8c1d10706e17fd4e1a260ead1c02fb21797d8316756cc4f0c96\n"
+        "VORHER_THESEN_COUNT: 1\nVORHER_AKTIVE_THESEN: 1\nNACHHER_THESEN_COUNT: 1\nNACHHER_AKTIVE_THESEN: 0\n"
+        "VORHER-THESIS-ID: T-1\nVORHER-REGISTER-VERSION: 1\nVORHER-THESIS-ACTIVE: YES\n"
+        "THESEN_NEU: KEINE\n"
+        "THESEN_AKTUALISIERT: KEINE\n"
+        "THESEN_UNVERAENDERT: KEINE\n"
+        "THESEN_ARCHIVIERT: T-1\n"
+        "THESIS_ID: T-1\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: NO\n"
+        "7. MSCI-Vergleich\n"
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
+        "Ø Positionsperformance: NICHT VERFÜGBAR\n"
+    )
+    errors = []
+    gate._validate_m05_m10(text, errors)
+    assert not any(error.startswith("M-05:") for error in errors), errors
+
+
+def test_m05_does_not_accept_archive_only_register_with_inconsistent_change_list():
+    text = (
+        "2. Thesen-Update\n"
+        "Thesen-ID: T-1 | Version: 1 | Status: INVALIDIERT. Alle Thesen sind archiviert; keine aktive These verbleibt.\n"
+        "THESENREGISTER-VERGLEICH: PASS\n"
+        "VORHER-SHA256: " + "a" * 64 + "\n"
+        "NACHHER-SHA256: " + "b" * 64 + "\n"
+        "THESENREGISTER-VERGLEICH-ID: 03ad73fb6916f8c1d10706e17fd4e1a260ead1c02fb21797d8316756cc4f0c96\n"
+        "VORHER_THESEN_COUNT: 1\nVORHER_AKTIVE_THESEN: 1\nNACHHER_THESEN_COUNT: 1\nNACHHER_AKTIVE_THESEN: 0\n"
+        "VORHER-THESIS-ID: T-1\nVORHER-REGISTER-VERSION: 1\nVORHER-THESIS-ACTIVE: YES\n"
+        "THESEN_NEU: KEINE\n"
+        "THESEN_AKTUALISIERT: KEINE\n"
+        "THESEN_UNVERAENDERT: KEINE\n"
+        "THESEN_ARCHIVIERT: KEINE\n"
+        "THESIS_ID: T-1\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: NO\n"
+        "7. MSCI-Vergleich\n"
+        "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
+        "Ø Positionsperformance: NICHT VERFÜGBAR\n"
+    )
+    errors = []
+    gate._validate_m05_m10(text, errors)
+    assert any(error.startswith("M-05:") for error in errors), errors
