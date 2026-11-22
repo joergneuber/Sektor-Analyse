@@ -17999,12 +17999,44 @@ def _trading_radar_lesefassung_komprimieren(text):
         except (TypeError, ValueError, json.JSONDecodeError):
             return match.group(0)
     text = thesis_pattern.sub(_thesis_summary, text)
-    for duplicate_line in thesis_duplicate_lines:
-        text = re.sub(
-            r"(?im)^\s*" + re.escape(duplicate_line) + r"\s*(?:\r?\n|$)",
-            "",
-            text,
-        )
+    # Preserve decision fields in the primary readable thesis records. The
+    # previous global de-duplication removed an exact Alternative line from
+    # section 2 merely because the same value also existed in the JSON payload.
+    # De-duplicate only outside section 2; the compact register summary itself
+    # already has distinct bullet-prefixed labels.
+    section2 = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[·.]\s*Thesen-Update[^\r\n]*$",
+        text,
+    )
+    section3 = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[·.]\s*Ereignisradar\b[^\r\n]*$",
+        text[section2.end():] if section2 else "",
+    )
+    if section2 and section3:
+        body_start = section2.end()
+        body_end = body_start + section3.start()
+        # Keep the three original slices separate while removing duplicate
+        # lines. Removing text from a concatenated `outside` string changes
+        # offsets; reusing body_start against that shortened string corrupts
+        # section boundaries (and can join headings together).
+        prefix = text[:body_start]
+        thesis_body = text[body_start:body_end]
+        suffix = text[body_end:]
+        for duplicate_line in thesis_duplicate_lines:
+            duplicate_pattern = (
+                r"(?im)^[ \t]*" + re.escape(duplicate_line)
+                + r"[ \t]*(?:\r?\n|$)"
+            )
+            prefix = re.sub(duplicate_pattern, "", prefix)
+            suffix = re.sub(duplicate_pattern, "", suffix)
+        text = prefix + thesis_body + suffix
+    else:
+        for duplicate_line in thesis_duplicate_lines:
+            text = re.sub(
+                r"(?im)^\s*" + re.escape(duplicate_line) + r"\s*(?:\r?\n|$)",
+                "",
+                text,
+            )
 
     # Section 6 is the portfolio-impact summary; section 9 remains the complete
     # performance-sorted inventory. Keep only positions with an explicit thesis
@@ -20819,6 +20851,10 @@ def speichere_ergebnis(text, eingabedateien=None):
                 validate_radar_report_strict, ensure_structured_thesis_block,
             )
             text, thesis_block_synthesized = ensure_structured_thesis_block(text)
+            # Run the thesis-field promotion only after the canonical structured
+            # payload is guaranteed to exist, and before strict validation or
+            # register persistence consumes the readable report.
+            text = normalize_market_first_report_structure(text)
             if thesis_block_synthesized:
                 print("TRADING_RADAR_THESEN_JSON=DETERMINISTISCH_VERVOLLSTAENDIGT")
             strict_thesis_findings = validate_radar_report_strict(text)

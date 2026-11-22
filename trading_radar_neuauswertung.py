@@ -488,6 +488,113 @@ def normalize_market_first_report_structure(report: str) -> str:
     empty groups; it never reclassifies or discards a candidate record.
     """
     text = str(report or "")
+
+    # A structured thesis payload is the authoritative source for thesis fields.
+    # Gemini can omit a field from the readable primary record while still
+    # supplying it correctly in JSON. Resolve records from explicit stable-ID
+    # lines, not from "These:" labels: those labels are ordinary fields and may
+    # occur before or after the ID depending on the Gemini rendering.
+    try:
+        structured_payload = extract_thesis_json(text)
+        structured_theses = structured_payload.get("theses", [])
+    except (ValueError, TypeError, AttributeError):
+        structured_theses = []
+    if isinstance(structured_theses, list):
+        thesis_section = re.search(
+            r"(?ims)^[ \t]*(?:#{1,6}\s*)?2\s*[·.]\s*Thesen-Update[^\r\n]*\r?\n"
+            r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?3\s*[·.]\s*Ereignisradar\b)",
+            text,
+        )
+        if thesis_section:
+            section_body = thesis_section.group(1)
+            # The compact register is a secondary rendering, not a primary
+            # Gemini record. Its nested "These:" labels must never be candidates.
+            compact = re.search(
+                r"(?im)^[ \t]*Thesenregister\s*[–-]\s*kompakte Übersicht\s*:",
+                section_body,
+            )
+            primary_body = section_body[:compact.start()] if compact else section_body
+            id_pattern = re.compile(
+                r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?"
+                r"(?:These-Name\s+nicht\s+aufgelöst\s*\(ID\)|"
+                r"These-Name\s+nicht\s+aufgeloest\s*\(ID\)|"
+                r"Name\s+nicht\s+aufgelöst\s*\(ID\)|"
+                r"Name\s+nicht\s+aufgeloest\s*\(ID\)|"
+                r"Thesen-ID|These-ID|Thesis-ID|thesis_id)"
+                r"(?:\*\*|__)?\s*:\s*(?P<thesis_id>[^\r\n]+)"
+            )
+            id_markers = list(id_pattern.finditer(primary_body))
+            replacements = []
+            for index, marker in enumerate(id_markers):
+                record_end = (
+                    id_markers[index + 1].start()
+                    if index + 1 < len(id_markers)
+                    else len(primary_body)
+                )
+                record = primary_body[marker.start():record_end]
+                raw_id = marker.group("thesis_id").strip()
+                # Some Gemini renderings append pipe-delimited metadata to the
+                # stable ID on the same line (for example, "| Version: 2 |
+                # Status: BESTÄTIGT"). The ID itself is the leading token;
+                # trailing metadata must not become part of the lookup key.
+                raw_id = raw_id.split("|", 1)[0].strip().strip("`* ")
+                thesis_id = _canonical_thesis_id(raw_id)
+                matches = [
+                    item for item in structured_theses
+                    if isinstance(item, dict)
+                    and isinstance(item.get("thesis_id"), str)
+                    and _canonical_thesis_id(item["thesis_id"]) == thesis_id
+                ]
+                # Missing, duplicated or ambiguous IDs are fail-closed.
+                if not thesis_id or len(matches) != 1:
+                    continue
+                alternative = matches[0].get("alternative")
+                if not isinstance(alternative, str):
+                    continue
+                alternative = re.sub(r"\s+", " ", alternative).strip()
+                placeholder = (
+                    r"(?i)(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|"
+                    r"UNKLAR|TBD|TBA|N/?A|[-–—])"
+                )
+                if not alternative or re.fullmatch(placeholder, alternative):
+                    continue
+                field_match = re.search(
+                    r"(?im)^([ \t]*(?:[-*•][ \t]*)?(?:\*\*)?"
+                    r"Alternative(?:szenario)?(?:\*\*)?\s*:\s*)([^\r\n]*)",
+                    record,
+                )
+                if field_match:
+                    existing = field_match.group(2).strip().strip("*` ")
+                    if existing and not re.fullmatch(placeholder, existing):
+                        continue
+                    updated_record = (
+                        record[:field_match.start(2)] + alternative
+                        + record[field_match.end(2):]
+                    )
+                else:
+                    marker_line_end = record.find("\n", marker.end() - marker.start())
+                    newline = "\r\n" if "\r\n" in record else "\n"
+                    if marker_line_end >= 0:
+                        insertion = marker_line_end + 1
+                        prefix = ""
+                    else:
+                        insertion = len(record)
+                        prefix = newline
+                    updated_record = (
+                        record[:insertion] + prefix + "Alternative: " + alternative
+                        + newline + record[insertion:]
+                    )
+                if updated_record != record:
+                    replacements.append((marker.start(), record_end, updated_record))
+            for start_pos, end_pos, updated_record in reversed(replacements):
+                primary_body = primary_body[:start_pos] + updated_record + primary_body[end_pos:]
+            if replacements:
+                new_section_body = primary_body + (section_body[compact.start():] if compact else "")
+                text = (
+                    text[:thesis_section.start(1)] + new_section_body
+                    + text[thesis_section.end(1):]
+                )
+
     section1 = re.search(
         r"(?ims)^[ \t]*(?:#{1,6}\s*)?1\s*[·.]\s*Trading-Radar[^\r\n]*\r?\n"
         r"(.*?)(?=^[ \t]*(?:#{1,6}\s*)?2\s*[·.]\s*Thesen-Update\b)", text,
@@ -729,6 +836,15 @@ def audit_market_first_content(report: str) -> list[str]:
     market = body_for("trading-radar")
     rotation = body_for("assetklassenvergleich")
     thesis = body_for("thesen-update")
+    # The compact register is a secondary appendix rendering. Its nested
+    # "These:" labels must not be interpreted as additional primary Gemini
+    # thesis records; the primary records above it remain subject to the gate.
+    compact_register = re.search(
+        r"(?im)^[ \t]*Thesenregister\s*[–-]\s*kompakte Übersicht\s*:",
+        thesis,
+    )
+    if compact_register:
+        thesis = thesis[:compact_register.start()]
     candidates = body_for("technische kandidaten")
     if not market:
         errors.append("MARKT-FIRST: Marktregime-Abschnitt fehlt")
@@ -818,14 +934,32 @@ def audit_market_first_content(report: str) -> list[str]:
     if not thesis:
         errors.append("MARKT-FIRST: Thesen-Update fehlt")
     else:
-        # Thesen-ID is a field inside a thesis record, not a new record.
-        # Only explicit record headings start a new block.
-        thesis_starts = [
+        # A stable thesis-ID declaration is the primary record boundary.
+        # Legacy reports without explicit IDs retain heading-based parsing.
+        # Explicit stable-ID lines define primary record boundaries whenever
+        # present. "These:" is a content field and may follow the ID; treating
+        # it as a new record start would exclude fields inserted after the ID.
+        id_record_starts = [
             m.start() for m in re.finditer(
-                r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:These\b|Thesen-Name|Thesis(?:\s+ID|\s+Name)?)\b[^:\r\n]*(?:\*\*)?\s*[:(]",
+                r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?"
+                r"(?:These-Name\s+nicht\s+aufgelöst\s*\(ID\)|"
+                r"These-Name\s+nicht\s+aufgeloest\s*\(ID\)|"
+                r"Name\s+nicht\s+aufgelöst\s*\(ID\)|"
+                r"Name\s+nicht\s+aufgeloest\s*\(ID\)|"
+                r"Thesen-ID|These-ID|Thesis-ID|thesis_id)"
+                r"(?:\*\*|__)?\s*:",
                 thesis,
             )
         ]
+        if id_record_starts:
+            thesis_starts = id_record_starts
+        else:
+            thesis_starts = [
+                m.start() for m in re.finditer(
+                    r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?(?:These\b|Thesen-Name|Thesis(?:\s+ID|\s+Name)?)\b[^:\r\n]*(?:\*\*)?\s*[:(]",
+                    thesis,
+                )
+            ]
         if not thesis_starts:
             # Some legacy report layouts begin each thesis record directly
             # with its explicit ID field under an "Aktualisierte Thesen" label.
