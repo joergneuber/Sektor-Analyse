@@ -9,6 +9,9 @@ import math
 import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from trading_radar_placeholders import is_placeholder_value
 
 
 SECTION_NAMES = (
@@ -86,6 +89,18 @@ def _label_value(text: str, labels: tuple[str, ...]) -> str | None:
         return None
     value = (match.group(1) or match.group(2) or "").strip().strip(". ")
     if _MISSING_VALUE_RE.fullmatch(value):
+        return None
+    return value
+
+
+def _m05_label_value(text: str, labels: tuple[str, ...]) -> str | None:
+    """Read a thesis field using the shared M-05 placeholder contract only.
+
+    The legacy _label_value parser remains untouched for the separate M-07
+    identity/version/status audit. This wrapper is deliberately M-05-scoped.
+    """
+    value = _label_value(text, labels)
+    if value is None or is_placeholder_value(value):
         return None
     return value
 
@@ -1282,10 +1297,93 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         if any(change_values.get(label, "").upper() != "KEINE"
                for label in ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_ARCHIVIERT")):
             errors.append("M-05: Bericht behauptet 'keine Änderung', Registervergleich weist aber neue/aktualisierte/archivierte Thesen aus.")
+    m05_allowed_statuses = {
+        "NEU", "AKTUALISIERT", "BESTÄTIGT", "WIDERLEGT", "ABGESCHWÄCHT",
+        "WARTET AUF EREIGNIS", "INVALIDIERT", "ERSETZT", "ARCHIVIERT",
+        "UNVERÄNDERT",
+    }
+
+    def _m05_record_valid(record_id, record_version, record_status) -> bool:
+        record_id = str(record_id or "").strip()
+        record_status = str(record_status or "").strip().upper()
+        if isinstance(record_version, bool):
+            return False
+        if isinstance(record_version, int):
+            parsed_version = record_version
+        elif isinstance(record_version, str) and re.fullmatch(r"\d+", record_version.strip()):
+            parsed_version = int(record_version.strip())
+        else:
+            return False
+        return bool(
+            record_id and not is_placeholder_value(record_id)
+            and parsed_version >= 1
+            and record_status in m05_allowed_statuses
+            and not is_placeholder_value(record_status)
+        )
+
+    # M-05 parses its own compact register/JSON representation. It deliberately
+    # does not depend on the separate M-07 parser, whose legacy status grammar
+    # and identity behavior must remain unchanged.
+    m05_compact_rows = re.findall(
+        r"(?im)^\s*[-*•]\s*([\w.:-]+)\s*\|\s*Version\s+(\d+)\s*"
+        r"\|\s*Status\s+([^|\r\n]+)",
+        thesis,
+    )
+    m05_json_blocks = re.findall(
+        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```",
+        thesis,
+        flags=re.DOTALL,
+    )
+    m05_structured_checks = []
+    if m05_compact_rows:
+        m05_structured_checks.append(
+            all(_m05_record_valid(row_id, row_version, row_status)
+                for row_id, row_version, row_status in m05_compact_rows)
+        )
+    if m05_json_blocks:
+        if len(m05_json_blocks) != 1:
+            m05_structured_checks.append(False)
+        else:
+            try:
+                m05_payload = json.loads(m05_json_blocks[0])
+                m05_records = (
+                    m05_payload.get("theses", [])
+                    if isinstance(m05_payload, dict) else []
+                )
+                m05_structured_checks.append(bool(
+                    isinstance(m05_records, list) and m05_records
+                    and all(isinstance(item, dict) for item in m05_records)
+                    and all(
+                        _m05_record_valid(
+                            item.get("thesis_id"),
+                            item.get("version"),
+                            item.get("status"),
+                        )
+                        for item in m05_records
+                    )
+                ))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                m05_structured_checks.append(False)
+
+    if m05_structured_checks:
+        m05_identity_valid = all(m05_structured_checks)
+    else:
+        m05_thesis_id = _m05_label_value(thesis, (r"Thesen-ID", r"thesis_id"))
+        m05_version = _m05_label_value(thesis, (r"Version", r"version"))
+        m05_status = _m05_label_value(thesis, (r"Status", r"status"))
+        m05_version_match = re.fullmatch(r"\d+", str(m05_version or "").strip())
+        m05_identity_valid = bool(
+            m05_thesis_id and m05_version_match
+            and _m05_record_valid(m05_thesis_id, m05_version_match.group(0), m05_status)
+        )
+
+    if not m05_identity_valid and not (no_thesis_update and register_evidence_ok):
+        errors.append("M-05: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder einen technisch belegten unveränderten Registervergleich.")
+    # Keep the pre-existing M-07 identity/version/status predicate and
+    # diagnostic unchanged; M-05 now performs its own placeholder-aware check.
     if not (
         thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok
     ) and not (no_thesis_update and register_evidence_ok):
-        errors.append("M-05: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder einen technisch belegten unveränderten Registervergleich.")
         if not thesis_id or not version_match or not status_ok:
             errors.append("M-07: Thesen-Identität, positive Version und zulässiger Status sind nicht vollständig belegt.")
 
@@ -2132,6 +2230,109 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 "ein solcher Bericht darf nicht FINAL sein."
             )
 
+# M-02 source calendars are intentionally independent of the host's local
+# timezone. Cboe VIX RTH ends at 16:15 ET; the published 2026/2027 Cboe
+# holiday schedule specifies 13:00 ET on its early-close dates. Yahoo labels
+# DX-Y.NYB as an ICE Futures delayed quote and timestamps its daily close at
+# 16:59:59 ET; the ICE DX futures session ends at 17:00 ET. This gate validates
+# the Yahoo feed's daily bar, not the separate ICE Data Indices DXY series,
+# which has a different published calculation window. Full ICE closures below
+# come from its 2026/2027 Currency/Index holiday calendars. Modified-hours ICE
+# sessions are conservatively accepted only after 17:00 ET.
+# Sources: cboe.com/about/hours/us-options/; finance.yahoo.com/quote/DX-Y.NYB/history/;
+# ice.com/products/194/US-Dollar-Index-USDX-Futures;
+# ICE Futures U.S. 2027 holiday calendar:
+# ice.com/publicdocs/futures_us/exchange_notices/ICE_Futures_US_Exchange_Notice-2027_Holiday_Calendar_20260604.pdf.
+_M02_NEW_YORK = ZoneInfo("America/New_York")
+_M02_CBOE_EARLY_CLOSE_DATES = frozenset({
+    "2026-11-27", "2026-12-24", "2027-11-26",
+})
+_M02_ICE_USDX_CLOSED_DATES = frozenset({
+    "2026-01-01", "2026-12-25",
+    "2027-01-01", "2027-12-24",
+})
+_M02_CALENDAR_START = datetime.date(2026, 1, 1)
+_M02_CALENDAR_END = datetime.date(2028, 1, 3)
+
+
+def _m02_expected_vix_session_date(at: datetime.datetime) -> datetime.date | None:
+    """Latest completed VIX daily session at an aware instant (Cboe/XNYS)."""
+    if at.tzinfo is None or at.utcoffset() is None:
+        return None
+    local_date = at.astimezone(_M02_NEW_YORK).date()
+    if not (_M02_CALENDAR_START <= local_date <= _M02_CALENDAR_END):
+        return None
+    try:
+        import exchange_calendars as exchange_cal
+        calendar = exchange_cal.get_calendar(
+            "XNYS", start=_M02_CALENDAR_START.isoformat(),
+            end=_M02_CALENDAR_END.isoformat(),
+        )
+        for session, row in reversed(list(calendar.schedule.iterrows())):
+            session_date = session.date()
+            if session_date > local_date:
+                continue
+            cash_close_local = row["close"].to_pydatetime().astimezone(_M02_NEW_YORK)
+            if session_date.isoformat() in _M02_CBOE_EARLY_CLOSE_DATES:
+                # Cboe's published holiday schedule gives a 13:00 ET close.
+                if cash_close_local.time() != datetime.time(13, 0):
+                    return None
+                vix_close_local = datetime.datetime.combine(
+                    session_date, datetime.time(13, 0), tzinfo=_M02_NEW_YORK
+                )
+            else:
+                # Normal VIX RTH closes at 16:15 ET. Unknown shortened sessions
+                # fail closed rather than borrowing the NYSE close or inventing
+                # a Cboe close time.
+                if cash_close_local.time() != datetime.time(16, 0):
+                    return None
+                vix_close_local = datetime.datetime.combine(
+                    session_date, datetime.time(16, 15), tzinfo=_M02_NEW_YORK
+                )
+            if vix_close_local <= at.astimezone(_M02_NEW_YORK):
+                return session_date
+    except Exception:
+        return None
+    return None
+
+
+def _m02_expected_dxy_session_date(at: datetime.datetime) -> datetime.date | None:
+    """Latest completed Yahoo DX-Y.NYB daily bar at an aware instant.
+
+    Yahoo labels the quote close at 16:59:59 America/New_York; the check uses
+    17:00 ET as the completion boundary for that Yahoo daily bar. ICE's
+    2026/2027 calendars distinguish currency/index contracts from US cash
+    equities: Veterans Day and several US holidays remain sessions. Only the
+    explicitly listed full closures are skipped. Outside the published calendar
+    window the gate fails closed rather than extrapolating holidays.
+    """
+    if at.tzinfo is None or at.utcoffset() is None:
+        return None
+    local = at.astimezone(_M02_NEW_YORK)
+    if not (_M02_CALENDAR_START <= local.date() <= _M02_CALENDAR_END):
+        return None
+    candidate = local.date()
+    while candidate >= _M02_CALENDAR_START:
+        iso_date = candidate.isoformat()
+        if candidate.weekday() < 5 and iso_date not in _M02_ICE_USDX_CLOSED_DATES:
+            regular_close = datetime.datetime.combine(
+                candidate, datetime.time(17, 0), tzinfo=_M02_NEW_YORK
+            )
+            if regular_close <= local:
+                return candidate
+        candidate -= datetime.timedelta(days=1)
+    return None
+
+
+def _m02_expected_common_session_date(at: datetime.datetime) -> datetime.date | None:
+    """Latest common completed daily-close date for VIX and ICE USDX."""
+    vix_date = _m02_expected_vix_session_date(at)
+    dxy_date = _m02_expected_dxy_session_date(at)
+    if vix_date is None or dxy_date is None:
+        return None
+    return min(vix_date, dxy_date)
+
+
 def validate_report(text: str) -> list[str]:
     errors: list[str] = []
     if not text.strip():
@@ -2205,15 +2406,83 @@ def validate_report(text: str) -> list[str]:
         rates_line, allow_run1270_context=_is_run1270_us_curve_context(rates_line)
     ):
         errors.append("M-02: US-10Y-Rendite fehlt als numerische Beobachtung.")
-    risk_line = next(
-        (line for line in executive.splitlines()
-         if re.search(r"(?i)Dollar/Liquidität/Volatilität\s*:", line)),
-        "",
+    risk_lines = [
+        line for line in executive.splitlines()
+        if re.search(r"(?i)Dollar/Liquidität/Volatilität\s*:", line)
+    ]
+    risk_line = risk_lines[0] if risk_lines else ""
+    if len(risk_lines) != 1:
+        errors.append("M-02: kanonisches Dollar/Liquidität/Volatilität-Feld muss genau einmal vorkommen.")
+    vix_risk_values = re.findall(r"(?i)(?<![A-Z0-9])VIX\s*[:=]?\s*([+-]?\d+(?:[,.]\d+)?)", risk_line)
+    dxy_risk_values = re.findall(r"(?i)(?<![A-Z0-9])DXY\s*[:=]?\s*([+-]?\d+(?:[,.]\d+)?)", risk_line)
+    if len(vix_risk_values) != 1:
+        errors.append("M-02: genau eine numerische VIX-Beobachtung im kanonischen Risikofeld erforderlich.")
+    if len(dxy_risk_values) != 1:
+        errors.append("M-02: genau eine numerische DXY-/Dollarproxy-Beobachtung im kanonischen Risikofeld erforderlich.")
+
+    # M-02 requires the last actually completed common VIX/USDX close.
+    # UTC date rollover is not a substitute for either market's local close.
+    run_match = re.search(
+        r"(?im)^\s*(?:[-*•]\s*)?Datenstand UTC\s*:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\s*$",
+        executive,
     )
-    if not re.search(r"(?i)\bVIX\b.{0,40}\d+(?:[,.]\d+)?", risk_line):
-        errors.append("M-02: numerische VIX-Beobachtung fehlt.")
-    if not re.search(r"(?i)\bDXY\b.{0,40}\d+(?:[,.]\d+)?", risk_line):
-        errors.append("M-02: numerische DXY-/Dollarproxy-Beobachtung fehlt.")
+    try:
+        run_dt = datetime.datetime.fromisoformat(run_match.group(1).replace("Z", "+00:00")) if run_match else None
+    except ValueError:
+        run_dt = None
+    if run_dt is None or run_dt.tzinfo is None:
+        errors.append("M-02: timezone-behafteter UTC-Report-/Run-Zeitstempel fehlt oder ist unparsebar.")
+
+    live_specs = (
+        ("VIX", r"(?i)^\s*[-*•]\s*Volatilität VIX\s*:", r"(?i)Quelle\s*:\s*Yahoo Finance\s*\(\^VIX\)", r"(?i)Volatilität VIX\s*:\s*([+-]?\d+(?:[,.]\d+)?)"),
+        ("DXY", r"(?i)^\s*[-*•]\s*Dollar-Proxy DXY(?:\s*\(DX-Y\.NYB\))?\s*:", r"(?i)Quelle\s*:\s*Yahoo Finance\s*\(DX-Y\.NYB\)", r"(?i)Dollar-Proxy DXY(?:\s*\(DX-Y\.NYB\))?\s*:\s*([+-]?\d+(?:[,.]\d+)?)"),
+    )
+    for label, line_re, source_re, value_re in live_specs:
+        source_lines = [line for line in executive.splitlines() if re.search(line_re, line)]
+        if len(source_lines) != 1:
+            errors.append(f"M-02: genau eine Live-Provenienzzeile für {label} erforderlich.")
+            continue
+        observation_line = source_lines[0]
+        retrieved_match = re.search(
+            r"(?i)Abrufzeit\s*:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
+            observation_line,
+        )
+        observed_match = re.search(r"(?i)Datenstichtag\s*:\s*(\d{4}-\d{2}-\d{2})(?![T\d])", observation_line)
+        try:
+            retrieved_dt = datetime.datetime.fromisoformat(retrieved_match.group(1).replace("Z", "+00:00")) if retrieved_match else None
+            observed_date = datetime.date.fromisoformat(observed_match.group(1)) if observed_match else None
+        except ValueError:
+            retrieved_dt = observed_date = None
+        snapshot_value = re.search(value_re, observation_line)
+        risk_values = vix_risk_values if label == "VIX" else dxy_risk_values
+        source_ok = bool(re.search(source_re, observation_line))
+        unit_ok = bool(re.search(r"(?i)Einheit\s*:\s*Indexpunkte\b", observation_line))
+        delay_ok = bool(re.search(r"(?i)Verzögerung\s*:\s*Tages-Schlusskurs\b", observation_line))
+        date_ok = bool(cutoff_match and observed_date is not None and observed_date.isoformat() == cutoff_match.group(1))
+        chronology_ok = False
+        if (
+            retrieved_dt is not None and retrieved_dt.tzinfo is not None
+            and observed_date is not None and run_dt is not None and run_dt.tzinfo is not None
+            and run_dt.utcoffset() == datetime.timedelta(0)
+        ):
+            retrieved_utc = retrieved_dt.astimezone(datetime.timezone.utc)
+            run_utc = run_dt.astimezone(datetime.timezone.utc)
+            expected_at_retrieval = _m02_expected_common_session_date(retrieved_utc)
+            expected_at_run = _m02_expected_common_session_date(run_utc)
+            chronology_ok = bool(
+                retrieved_utc <= run_utc
+                and expected_at_retrieval is not None
+                and expected_at_run is not None
+                and observed_date == expected_at_retrieval == expected_at_run
+            )
+        value_ok = False
+        if snapshot_value and len(risk_values) == 1:
+            try:
+                value_ok = abs(float(snapshot_value.group(1).replace(",", ".")) - float(risk_values[0].replace(",", "."))) <= 0.005
+            except (TypeError, ValueError, OverflowError):
+                value_ok = False
+        if not all((source_ok, unit_ok, delay_ok, date_ok, chronology_ok, value_ok)):
+            errors.append(f"M-02: {label}-Beobachtung ist nicht frisch oder ihre Quelle/Zeit-/Einheiten-/Wertprovenienz ist inkonsistent.")
 
     # Tab 2 muss im Bericht als deterministischer Quellenblock vorkommen und
     # die ausgewiesene Zeilenzahl muss mit den exportierten Datensätzen stimmen.

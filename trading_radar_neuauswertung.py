@@ -4,6 +4,8 @@ import json, re, os, tempfile
 from pathlib import Path
 from typing import Any
 
+from trading_radar_placeholders import is_placeholder_value
+
 RADAR_SECTIONS = (
     "1 · Trading-Radar", "2 · Thesen-Update", "3 · Ereignisradar",
     "4 · Assetklassenvergleich", "5 · Technische Kandidaten",
@@ -538,11 +540,14 @@ def normalize_market_first_report_structure(report: str) -> str:
                 # Status: BESTÄTIGT"). The ID itself is the leading token;
                 # trailing metadata must not become part of the lookup key.
                 raw_id = raw_id.split("|", 1)[0].strip().strip("`* ")
+                if is_placeholder_value(raw_id):
+                    continue
                 thesis_id = _canonical_thesis_id(raw_id)
                 matches = [
                     item for item in structured_theses
                     if isinstance(item, dict)
                     and isinstance(item.get("thesis_id"), str)
+                    and not is_placeholder_value(item["thesis_id"])
                     and _canonical_thesis_id(item["thesis_id"]) == thesis_id
                 ]
                 # Missing, duplicated or ambiguous IDs are fail-closed.
@@ -552,11 +557,7 @@ def normalize_market_first_report_structure(report: str) -> str:
                 if not isinstance(alternative, str):
                     continue
                 alternative = re.sub(r"\s+", " ", alternative).strip()
-                placeholder = (
-                    r"(?i)(?:NICHT VERFÜGBAR|NICHT BELEGT|FEHLT|UNBEKANNT|"
-                    r"UNKLAR|TBD|TBA|N/?A|[-–—])"
-                )
-                if not alternative or re.fullmatch(placeholder, alternative):
+                if is_placeholder_value(alternative):
                     continue
                 field_match = re.search(
                     r"(?im)^([ \t]*(?:[-*•][ \t]*)?(?:\*\*)?"
@@ -565,7 +566,7 @@ def normalize_market_first_report_structure(report: str) -> str:
                 )
                 if field_match:
                     existing = field_match.group(2).strip().strip("*` ")
-                    if existing and not re.fullmatch(placeholder, existing):
+                    if existing and not is_placeholder_value(existing):
                         continue
                     updated_record = (
                         record[:field_match.start(2)] + alternative
@@ -814,10 +815,13 @@ def audit_market_first_content(report: str) -> list[str]:
     def body_for(fragment: str) -> str:
         return next((body for title, body in bodies.items() if fragment in title), "")
 
-    def has_value(block: str, label_pattern: str) -> bool:
+    def has_value(
+        block: str, label_pattern: str, *, shared_placeholders: bool = False
+    ) -> bool:
         # Support nested bullets and Markdown bold/italic around field labels
         # (e.g. "    *   *Gegenbelege:* ...") while still requiring a labeled,
-        # non-empty value within the same thesis record.
+        # non-empty value within the same record. The shared classifier is
+        # explicitly limited to M-05 thesis fields; M-09 keeps its prior rules.
         match = re.search(
             rf"(?im)^[ \t]*(?:(?:[-*•])[ \t]*)*(?:\*\*|__|\*)?"
             rf"(?:{label_pattern})(?:\*\*|__|\*)?[ \t]*[:=][ \t]*([^\r\n]+)",
@@ -826,6 +830,8 @@ def audit_market_first_content(report: str) -> list[str]:
         if not match:
             return False
         value = match.group(1).strip().strip("*` ")
+        if shared_placeholders:
+            return bool(value) and not is_placeholder_value(value)
         return bool(value) and not re.fullmatch(
             r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|NICHT BELEGT(?:\s*\([^)]*\))?|"
             r"FEHLT|UNBEKANNT|UNKLAR|TBD|TBA|N/?A|NA|KEINE DATEN|KEINE KONKRETEN DATEN|"
@@ -1015,7 +1021,7 @@ def audit_market_first_content(report: str) -> list[str]:
                     ("Bestätigungstrigger", r"Bestätigungstrigger|Bestaetigungstrigger"),
                     ("Invalidierungstrigger", r"Invalidierungstrigger"),
                 ):
-                    if not has_value(block, pattern):
+                    if not has_value(block, pattern, shared_placeholders=True):
                         errors.append(f"MARKT-FIRST: {label}: Pflichtfeld '{field}' fehlt oder ist unbelegt")
 
     # Candidate groups are parsed as sections. Every candidate must belong to

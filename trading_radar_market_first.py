@@ -931,6 +931,9 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
     all_series["DX-Y.NYB"] = series_for("DX-Y.NYB")
     all_series = {sym: ser for sym, ser in all_series.items() if ser is not None and not ser.empty}
     common_cutoff = min((ser.index.max() for ser in all_series.values()), default=None)
+    # Never fall back to independently-latest VIX/DXY values when no common
+    # market observation cutoff can be established.
+    vix = dxy = None
     if common_cutoff is not None:
         def close_at_common_cutoff(symbol):
             series = all_series.get(symbol)
@@ -945,11 +948,20 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
                 return None
         vix = close_at_common_cutoff("^VIX")
         dxy = close_at_common_cutoff("DX-Y.NYB")
-        for index, line in enumerate(lines):
-            if line.startswith("- Volatilität VIX:"):
-                lines[index] = f"- Volatilität VIX: {vix:.2f}" if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR."
-            elif line.startswith("- Dollar-Proxy DXY"):
-                lines[index] = f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f}" if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR."
+    cutoff_date = common_cutoff.date().isoformat() if common_cutoff is not None else "NICHT VERFÜGBAR"
+    for index, line in enumerate(lines):
+        if line.startswith("- Volatilität VIX:"):
+            lines[index] = (
+                f"- Volatilität VIX: {vix:.2f} | Quelle: Yahoo Finance (^VIX); Abrufzeit: {now}; "
+                f"Datenstichtag: {cutoff_date}; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs."
+                if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Datenstichtag)."
+            )
+        elif line.startswith("- Dollar-Proxy DXY"):
+            lines[index] = (
+                f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f} | Quelle: Yahoo Finance (DX-Y.NYB); Abrufzeit: {now}; "
+                f"Datenstichtag: {cutoff_date}; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs."
+                if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Datenstichtag)."
+            )
     # M-02 consumes the same real market-data cutoff as the relative-strength
     # matrix. Retrieval time is not substituted for an observation date.
     if common_cutoff is not None:
@@ -969,29 +981,44 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
                 report_text[:line_end] + "\nMarktregime-Datenstichtag: " + cutoff_date
                 + report_text[line_end:]
             )
-    # The report gate deliberately validates the canonical risk field, not a
-    # detached appendix. Copy only the measured VIX/DXY values into that field.
-    if vix is not None or dxy is not None:
-        def enrich_risk_line(match):
-            original = match.group(0)
-            suffix = []
-            if vix is not None:
-                suffix.append(f"VIX: {vix:.2f}")
-            else:
-                suffix.append("VIX: NICHT VERFÜGBAR")
-            if dxy is not None:
-                suffix.append(f"DXY: {dxy:.2f}")
-            else:
-                suffix.append("DXY: NICHT VERFÜGBAR")
-            # Keep the original M2/liquidity narrative while replacing only
-            # the broken entity-resolver placeholder for VIX.
-            original = re.sub(r"(?i)Name nicht aufgelöst\s*\(VIX\)", "VIX", original)
-            original = re.sub(r"(?i)Name nicht aufgeloest\s*\(VIX\)", "VIX", original)
-            return original.rstrip(". ") + "; " + "; ".join(suffix)
-        report_text = re.sub(
-            r"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?Dollar/Liquidität/Volatilität(?:\*\*)?\s*:[^\r\n]*$",
-            enrich_risk_line, report_text, count=1,
+    # The report gate validates one canonical risk field. Remove only numeric
+    # values explicitly attached to VIX/DXY, never adjacent prose or numbers.
+    def enrich_risk_line(match):
+        context = match.group(2)
+        context = re.sub(
+            r"(?i)Name nicht aufgelöst\s*\(VIX\)|Name nicht aufgeloest\s*\(VIX\)",
+            "", context,
         )
+        for instrument in ("VIX", "DXY"):
+            context = re.sub(
+                rf"(?i)(?<![A-Z0-9]){instrument}\s*(?:[:=]\s*)?(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|UNBEKANNT|FEHLT)",
+                "", context,
+            )
+            context = re.sub(
+                rf"(?i)(?<![A-Z0-9]){instrument}\s*(?:[:=]\s*|\s+)[+-]?\d+(?:[.,]\d+)?",
+                "", context,
+            )
+        context = re.sub(
+            r"(?i)(?:[;|,]\s*)?gemeinsamer Datenstichtag\s*:\s*\d{4}-\d{2}-\d{2}",
+            "", context,
+        )
+        context = re.sub(r"(?:\s*[;|,]\s*){2,}", "; ", context)
+        context = re.sub(r"^[\s;|,]+|[\s;|,]+$", "", context).strip(" ;,.\t")
+        facts = [f"VIX: {vix:.2f}" if vix is not None else "VIX: NICHT VERFÜGBAR"]
+        facts.append(f"DXY: {dxy:.2f}" if dxy is not None else "DXY: NICHT VERFÜGBAR")
+        facts.append(
+            "gemeinsamer Datenstichtag: "
+            + (common_cutoff.date().isoformat() if common_cutoff is not None else "NICHT VERFÜGBAR")
+        )
+        joined = "; ".join(part for part in (context, "; ".join(facts)) if part)
+        return match.group(1) + joined.rstrip(" .;") + "."
+
+    risk_field_pattern = (
+        r"(?im)^([ \t]*(?:[-*•]\s*)?(?:\*\*)?Dollar/Liquidität/Volatilität"
+        r"(?:\*\*)?\s*:\s*)([^\r\n]*)$"
+    )
+    if re.search(risk_field_pattern, report_text):
+        report_text = re.sub(risk_field_pattern, enrich_risk_line, report_text, count=1)
     matrix_results = {}
     matrix_lines = ["Relative-Stärke-Matrix (adjusted close; 1M=21 Handelstage, 3M=63 Handelstage):"]
     matrix_lines.append(f"Gemeinsamer Datenstichtag: {common_cutoff.isoformat()}" if common_cutoff is not None
@@ -1037,23 +1064,42 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             "Verlierer: NICHT VERFÜGBAR (Datenlücke)",
             "Divergenz: NICHT VERFÜGBAR (Datenlücke)",
         ])
-    block = "\n".join(lines) + "\n"
+    snapshot_start = "<!-- TRADING_RADAR_LIVE_MARKET_SNAPSHOT_START -->"
+    snapshot_end = "<!-- TRADING_RADAR_LIVE_MARKET_SNAPSHOT_END -->"
+    block = snapshot_start + "\n" + "\n".join(lines) + "\n" + snapshot_end + "\n"
     matrix_block = "\n".join(matrix_lines) + "\n"
 
-    # Idempotent: remove prior live block and prior matrix before insertion.
-    report_text = re.sub(
-        r"(?ms)\n\*\*Live-Marktbelege \(Yahoo Finance; Schlusskurse, keine Prognose\):\*\*"
-        r".*?(?=\n[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*Thesen-Update\b[^\r\n]*$)",
-        "", report_text,
+    # Idempotent replacement is bounded to the explicit snapshot markers.
+    # Migrate the legacy unmarked block once, stopping before Basisszenario so
+    # all three scenario blocks remain outside the deletion range.
+    marked_snapshot_pattern = re.compile(
+        r"(?ms)^[ \t]*" + re.escape(snapshot_start)
+        + r"\r?\n.*?^[ \t]*" + re.escape(snapshot_end)
+        + r"[ \t]*(?:\r?\n)?"
     )
+    report_text = marked_snapshot_pattern.sub("", report_text)
+    legacy_snapshot_pattern = re.compile(
+        r"(?ims)\n[ \t]*\*\*Live-Marktbelege "
+        r"\(Yahoo Finance; Schlusskurse, keine Prognose\):\*\*"
+        r".*?(?=\n[ \t]*(?:[-*•]\s*)?Basisszenario\s*:"
+        r"|\n[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*Thesen-Update\b[^\r\n]*$)"
+    )
+    report_text = legacy_snapshot_pattern.sub("", report_text, count=1)
     report_text = re.sub(
         r"(?ms)\nRelative-Stärke-Matrix \(adjusted close;.*?(?=\n[ \t]*(?:#{1,6}[ \t]*)?5[ \t]*[.·][ \t]*Technische Kandidaten\b)",
         "", report_text,
     )
     section_two_heading = r"^[ \t]*(?:#{1,6}[ \t]*)?2[ \t]*[.·][ \t]*Thesen-Update\b[^\r\n]*$"
-    insertion = re.search(section_two_heading, report_text, re.I | re.M)
-    if not insertion:
+    section_two = re.search(section_two_heading, report_text, re.I | re.M)
+    if not section_two:
         return report_text, ["Markt-Snapshot vorhanden, aber Abschnitt 2 für Einfügung nicht auffindbar"]
+    # Keep the snapshot in section 1, immediately before the scenario block
+    # when present; otherwise fall back to the section-2 boundary.
+    scenario_heading = re.search(
+        r"(?im)^[ \t]*(?:[-*•]\s*)?Basisszenario\s*:",
+        report_text[:section_two.start()],
+    )
+    insertion = scenario_heading or section_two
     report_text = report_text[:insertion.start()] + block + "\n" + report_text[insertion.start():]
     section4 = re.search(r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?4[ \t]*[.·][ \t]*Assetklassenvergleich[^\r\n]*$", report_text)
     section5 = re.search(r"(?im)^[ \t]*(?:#{1,6}[ \t]*)?5[ \t]*[.·][ \t]*Technische Kandidaten[^\r\n]*$", report_text)
