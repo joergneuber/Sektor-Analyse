@@ -687,9 +687,40 @@ def summarize_ohlcv_status(statuses: Iterable[str]) -> dict[str, int]:
 
 
 
-def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str, list[str]]:
+def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=None) -> tuple[str, list[str]]:
     """Append source-stamped live market data and a common-cutoff 1M/3M matrix."""
     import pandas as pd
+    # Capture one immutable clock for every symbol, cutoff decision and report stamp.
+    snapshot_clock = pd.Timestamp.now(tz="UTC") if as_of_time is None else pd.Timestamp(as_of_time)
+    if snapshot_clock.tzinfo is None:
+        snapshot_clock = snapshot_clock.tz_localize("America/New_York")
+    snapshot_clock = snapshot_clock.tz_convert("UTC")
+    snapshot_ny = snapshot_clock.tz_convert("America/New_York")
+
+    def completed_nyse_session_cutoff(clock_utc):
+        """Latest NYSE session whose close plus 15-minute publication buffer elapsed."""
+        try:
+            import exchange_calendars as xc
+            calendar = xc.get_calendar("XNYS")
+            start = (clock_utc - pd.Timedelta(days=14)).date().isoformat()
+            end = clock_utc.date().isoformat()
+            schedule = calendar.schedule.loc[start:end]
+            eligible = schedule[schedule["close"] + pd.Timedelta(minutes=15) <= clock_utc]
+            if not eligible.empty:
+                return eligible.index[-1].date()
+            prior = calendar.schedule.loc[:start]
+            if not prior.empty:
+                return prior.index[-1].date()
+        except (ImportError, KeyError, ValueError, TypeError, AttributeError):
+            # Conservative compatibility fallback when the optional exchange
+            # calendar package is not installed: regular NYSE close + buffer.
+            pass
+        cutoff = snapshot_ny.date()
+        if (snapshot_ny.hour, snapshot_ny.minute) < (16, 15):
+            cutoff = (snapshot_ny.normalize() - pd.Timedelta(days=1)).date()
+        return cutoff
+
+    session_cutoff = completed_nyse_session_cutoff(snapshot_clock)
     if fetcher is None:
         try:
             import yfinance as yf
@@ -726,7 +757,11 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
             values = values.copy()
             values.index = pd.to_datetime(values.index, utc=True, errors="coerce")
             values = values[~values.index.isna()].sort_index()
-            return values[~values.index.duplicated(keep="last")]
+            values = values[~values.index.duplicated(keep="last")]
+            # All symbols use the same immutable NYSE-session cutoff. This also
+            # handles exchange holidays and shortened sessions via XNYS schedule.
+            values = values[values.index.date <= session_cutoff]
+            return values
         except (KeyError, TypeError, AttributeError):
             return None
 
@@ -750,7 +785,7 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
     def fmt(value, suffix=""):
         return f"{value:+.2f}{suffix}" if value is not None else "NICHT VERFÜGBAR"
 
-    now = datetime.now().astimezone().astimezone(__import__("datetime").timezone.utc).replace(microsecond=0).isoformat()
+    now = snapshot_clock.replace(microsecond=0).isoformat()
     lines = ["", "**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**",
              f"- Datenstand UTC: {now}"]
     for symbol, label in (("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq Composite"), ("^RUT", "Russell 2000")):
@@ -777,20 +812,185 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None) -> tuple[str,
         f"- Anleihe-ETF TLT 1M: {fmt(tlt, '%')}.",
     ])
 
-    # Keep the quantitative breadth observation inside the canonical Market-First
-    # field as well as in the live-evidence appendix; the validator intentionally
-    # does not borrow numbers from unrelated sections.
+    # Market breadth is descriptive evidence only: no entry/exit gate is changed.
+    # All sector ETFs are evaluated on the same set of completed trading dates.
     sector_etfs = ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
-    above = total = 0
-    for symbol in sector_etfs:
-        values = series_for(symbol)
-        if values is not None and len(values) >= 50:
-            total += 1
-            above += int(float(values.iloc[-1]) > float(values.iloc[-50:].mean()))
-    lines.append(f"- Marktbreite-Proxy: {above}/{total} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
-                 if total else "- Marktbreite-Proxy: NICHT VERFÜGBAR.")
-    if total:
-        breadth_fact = f" Quantitative Marktbreite: {above}/{total} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
+    sector_series = {symbol: series_for(symbol) for symbol in sector_etfs}
+    sector_series = {
+        symbol: values for symbol, values in sector_series.items()
+        if values is not None and not values.empty
+    }
+    common_sector_dates = None
+    for values in sector_series.values():
+        dates = set(values.index)
+        common_sector_dates = dates if common_sector_dates is None else common_sector_dates.intersection(dates)
+    common_sector_dates = sorted(common_sector_dates or [])
+    # A common intersection can be internally consistent but still stale when
+    # one ETF has stopped publishing observations. Disclose material lag rather
+    # than silently presenting an old date as a current market snapshot.
+    if common_sector_dates:
+        expected_cutoff = session_cutoff
+        common_cutoff_date = common_sector_dates[-1].date()
+        if (expected_cutoff - common_cutoff_date).days > 7:
+            lines.append(
+                f"- WARNUNG Marktbreite: gemeinsamer Datenstichtag {common_cutoff_date.isoformat()} "
+                f"liegt mehr als 7 Kalendertage vor dem erwarteten Stichtag "
+                f"{expected_cutoff.isoformat()}; Marktbreite ist möglicherweise veraltet."
+            )
+    aligned_sector = {
+        symbol: values.reindex(common_sector_dates)
+        for symbol, values in sector_series.items()
+    }
+    # A missing ETF is not forward-filled or silently counted. The denominator
+    # is the number of ETFs with a real observation on the common cutoff.
+    breadth_summary = {}
+    for window in (20, 50, 100):
+        current_flags = {}
+        historical_flags = {lookback: {} for lookback in (5, 10)}
+        if len(common_sector_dates) >= window:
+            for symbol, values in aligned_sector.items():
+                if len(values) < window or values.iloc[-window:].isna().any():
+                    continue
+                current_close = float(values.iloc[-1])
+                current_sma = float(values.iloc[-window:].mean())
+                current_flags[symbol] = current_close > current_sma
+                for lookback in (5, 10):
+                    point = len(values) - 1 - lookback
+                    if point + 1 >= window:
+                        hist_window = values.iloc[point-window+1:point+1]
+                        if len(hist_window) == window and not hist_window.isna().any():
+                            historical_close = float(values.iloc[point])
+                            historical_sma = float(hist_window.mean())
+                            historical_flags[lookback][symbol] = historical_close > historical_sma
+        if current_flags:
+            current_above = sum(current_flags.values())
+            breadth_summary[window] = {
+                "above": current_above, "total": len(current_flags),
+                "universe": len(sector_etfs), "cutoff": common_sector_dates[-1].date().isoformat(),
+            }
+            deltas = {}
+            for lookback in (5, 10):
+                common = set(current_flags).intersection(historical_flags[lookback])
+                if common:
+                    now_count = sum(current_flags[symbol] for symbol in common)
+                    then_count = sum(historical_flags[lookback][symbol] for symbol in common)
+                    deltas[lookback] = {
+                        "count": now_count - then_count,
+                        "total": len(common),
+                        "percentage_points": (now_count - then_count) / len(common) * 100.0,
+                    }
+                else:
+                    deltas[lookback] = None
+            breadth_summary[window]["deltas"] = deltas
+        else:
+            breadth_summary[window] = None
+
+    breadth_parts = []
+    for window in (20, 50, 100):
+        item = breadth_summary[window]
+        if item is None:
+            breadth_parts.append(f"SMA{window}: NICHT VERFÜGBAR")
+            continue
+        deltas = []
+        for lookback in (5, 10):
+            delta = item["deltas"][lookback]
+            deltas.append(
+                f"{lookback}S NICHT VERFÜGBAR" if delta is None else
+                f"{lookback}S {delta['count']:+d}/{delta['total']} ({delta['percentage_points']:+.1f} Prozentpunkte)"
+            )
+        breadth_parts.append(
+            f"SMA{window}: {item['above']}/{item['total']} von {item['universe']} ETFs; "
+            + ", ".join(deltas)
+        )
+    lines.append(
+        "- Marktbreite Sektor-ETFs (über SMA; gemeinsamer abgeschlossener Datenstichtag; "
+        "Veränderung in Anzahl/Prozentpunkten): " + " | ".join(breadth_parts) + "."
+    )
+    legacy_50 = breadth_summary[50]
+    lines.append(
+        f"- Marktbreite-Proxy: {legacy_50['above']}/{legacy_50['total']} Sektor-ETFs über ihrem 50-Tage-Durchschnitt."
+        if legacy_50 else "- Marktbreite-Proxy: NICHT VERFÜGBAR."
+    )
+
+    # Compare S&P 500 on the same completed cutoff as the sector breadth data.
+    sp_values = series_for("^GSPC")
+    sp_state = []
+    sp_returns = {}
+    sp_cutoff_value = None
+    if sp_values is not None and common_sector_dates:
+        common_cutoff = common_sector_dates[-1]
+        sp_at_cutoff = sp_values.loc[sp_values.index <= common_cutoff]
+        if not sp_at_cutoff.empty and sp_at_cutoff.index[-1] == common_cutoff:
+            sp_cutoff_value = sp_at_cutoff
+    if sp_cutoff_value is not None:
+        for window in (20, 50, 100):
+            if len(sp_cutoff_value) >= window:
+                sp_state.append(
+                    f"über SMA{window}" if float(sp_cutoff_value.iloc[-1]) > float(sp_cutoff_value.iloc[-window:].mean())
+                    else f"unter/auf SMA{window}"
+                )
+            else:
+                sp_state.append(f"SMA{window} NICHT VERFÜGBAR")
+        for lookback in (5, 10):
+            if len(sp_cutoff_value) > lookback and float(sp_cutoff_value.iloc[-1-lookback]) != 0:
+                sp_returns[lookback] = (
+                    float(sp_cutoff_value.iloc[-1]) / float(sp_cutoff_value.iloc[-1-lookback]) - 1
+                ) * 100
+            else:
+                sp_returns[lookback] = None
+        lines.append(
+            f"- S&P-500-Trendstruktur (Stichtag {common_sector_dates[-1].date().isoformat()}): "
+            + ", ".join(sp_state) + "; Rendite 5S " + fmt(sp_returns[5], "%")
+            + ", 10S " + fmt(sp_returns[10], "%") + "."
+        )
+        divergence = []
+        directions = {}
+        for lookback in (5, 10):
+            delta = breadth_summary[50]["deltas"][lookback] if breadth_summary[50] else None
+            ret = sp_returns[lookback]
+            if delta is None or ret is None:
+                divergence.append(f"{lookback}S nicht beurteilbar")
+                directions[lookback] = None
+                continue
+            opposite = (ret > 0 and delta["count"] < 0) or (ret < 0 and delta["count"] > 0)
+            directions[lookback] = opposite
+            direction_text = "gegenläufig" if opposite else "nicht gegenläufig"
+            divergence.append(
+                f"{lookback}S: S&P {ret:+.2f}%, Marktbreite {delta['count']:+d}/{delta['total']} "
+                f"({delta['percentage_points']:+.1f} Prozentpunkte), {direction_text}"
+            )
+        if directions[5] is True and directions[10] is True:
+            duration = "gegenläufig über beide geprüften Horizonte (5 und 10 Sitzungen)"
+        elif directions[5] is True or directions[10] is True:
+            duration = "gegenläufig nur in einem der geprüften Horizonte (5 oder 10 Sitzungen)"
+        elif directions[5] is False and directions[10] is False:
+            duration = "in beiden geprüften Horizonten keine Gegenläufigkeit"
+        else:
+            duration = "Dauer nicht vollständig beurteilbar"
+        lines.append(
+            "- S&P-500-/SMA50-Marktbreitenvergleich (deskriptiv, kein Signal; "
+            + duration + "): " + "; ".join(divergence) + "."
+        )
+    else:
+        lines.append(
+            "- S&P-500-Trendstruktur/Divergenz: NICHT VERFÜGBAR "
+            "(kein S&P-500-Schlusskurs exakt am gemeinsamen Sektor-Datenstichtag)."
+        )
+
+    # Keep the canonical SMA50 fact in the Market-First field for existing validators.
+    # Remove our previous generated suffix first so repeated report enrichment is idempotent.
+    report_text = re.sub(
+        r";\s*Quantitative Marktbreite: .*?siehe Live-Marktbelege\.",
+        "",
+        report_text,
+        flags=re.IGNORECASE,
+    )
+    legacy = breadth_summary[50]
+    if legacy:
+        breadth_fact = (f" Quantitative Marktbreite: {legacy['above']}/{legacy['total']} Sektor-ETFs "
+                        "über ihrem 50-Tage-Durchschnitt (gemeinsamer abgeschlossener Datenstichtag "
+                        f"{legacy['cutoff']}); ergänzend SMA20/SMA100 und 5-/10-Sitzungs-Dynamik "
+                        "siehe Live-Marktbelege.")
         report_text = re.sub(
             r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?Indizes/Marktbreite(?:\*\*)?\s*:\s*)([^\r\n]*)$",
             lambda m: m.group(1) + m.group(2).rstrip(". ") + ";" + breadth_fact,
