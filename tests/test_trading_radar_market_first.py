@@ -1989,3 +1989,91 @@ def test_event_normalizer_enriches_undated_waller_only_from_official_fed_calenda
     assert "Kennzahl: FOMC Member Waller Speaks" in normalized
     assert "Quelle: ForexFactory" not in normalized
     assert "Quellenprüfung: LIVE_VERIFIZIERT" in normalized
+
+
+def test_live_snapshot_replaces_only_attached_vix_dxy_values_and_preserves_neighbor_numbers():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+    symbols = ["^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT", "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
+    index = pd.date_range("2026-06-01", periods=80, freq="B", tz="UTC")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    values = {col: [100.0 + i * 0.2 for i in range(len(index))] for col in columns}
+    values[("^VIX", "Close")] = [18.0 + i * 0.01 for i in range(len(index))]
+    values[("DX-Y.NYB", "Close")] = [100.0 + i * 0.02 for i in range(len(index))]
+    data = pd.DataFrame(values, index=index)
+    report = ("### 1. Trading-Radar\nMarktregime: konstruktiv.\nIndizes/Marktbreite: S&P stabil.\n"
+              "Dollar/Liquidität/Volatilität: USD-Liquidität stabil; VIX NICHT VERFÜGBAR; Liquiditätsindikator 42; DXY 99,90; Treasury-Narrativ 4,5%.\n"
+              "\n### 2. Thesen-Update\n")
+    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    assert not findings
+    risk_line = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
+    assert risk_line.count("VIX:") == 1 and risk_line.count("DXY:") == 1
+    assert "Liquiditätsindikator 42" in risk_line and "Treasury-Narrativ 4,5%" in risk_line
+    assert "NICHT VERFÜGBAR" not in risk_line
+    assert sum("- Volatilität VIX:" in line for line in result.splitlines()) == 1
+    assert sum("- Dollar-Proxy DXY" in line for line in result.splitlines()) == 1
+    second_pass, second_findings = append_live_market_snapshot(result, fetcher=lambda requested: data)
+    assert not second_findings
+    second_risk_line = next(line for line in second_pass.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
+    assert second_risk_line == risk_line
+
+
+def test_live_snapshot_repetition_preserves_all_scenarios_and_eight_sections():
+    import pandas as pd
+    import re
+    from trading_radar_market_first import append_live_market_snapshot
+
+    symbols = [
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE",
+        "XLU", "XLV", "XLY",
+    ]
+    index = pd.date_range("2026-06-01", periods=80, freq="B", tz="UTC")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    values = {col: [100.0 + i * 0.2 for i in range(len(index))] for col in columns}
+    values[("^VIX", "Close")] = [18.0 + i * 0.01 for i in range(len(index))]
+    values[("DX-Y.NYB", "Close")] = [100.0 + i * 0.02 for i in range(len(index))]
+    data = pd.DataFrame(values, index=index)
+
+    report = (
+        "1. Trading-Radar\n"
+        "Marktregime: konstruktiv.\n"
+        "Indizes/Marktbreite: Marktbreite 8/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury bei 4,00%.\n"
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00.\n"
+        "**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**\n"
+        "- Altbestand, darf bei der Migration ersetzt werden.\n"
+        "Basisszenario: BASISSZENARIO_DAUERHAFT_ERHALTEN.\n"
+        "Positives Alternativszenario: POSITIVES_ALTERNATIVSZENARIO_DAUERHAFT_ERHALTEN.\n"
+        "Negatives Alternativszenario: NEGATIVES_ALTERNATIVSZENARIO_DAUERHAFT_ERHALTEN.\n\n"
+        "2. Thesen-Update\nThesen-ID: T-1 | Version: 1 | Status: BESTÄTIGT.\n\n"
+        "3. Ereignisradar\nKeine relevanten Ereignisse.\n\n"
+        "4. Assetklassenvergleich\nRelative-Stärke-Matrix folgt.\n\n"
+        "5. Technische Kandidaten\nKeine Kandidaten.\n\n"
+        "6. Portfolio & Risiko\nKeine offenen Positionen.\n\n"
+        "7. MSCI-Vergleich\nBenchmarkdaten.\n\n"
+        "8. Daten-/Prüfanhang\nPrüfprotokoll.\n"
+    )
+
+    first, first_findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    second, second_findings = append_live_market_snapshot(first, fetcher=lambda requested: data)
+
+    assert not first_findings and not second_findings
+    for marker in (
+        "BASISSZENARIO_DAUERHAFT_ERHALTEN",
+        "POSITIVES_ALTERNATIVSZENARIO_DAUERHAFT_ERHALTEN",
+        "NEGATIVES_ALTERNATIVSZENARIO_DAUERHAFT_ERHALTEN",
+    ):
+        assert first.count(marker) == 1
+        assert second.count(marker) == 1
+    assert second.count("TRADING_RADAR_LIVE_MARKET_SNAPSHOT_START") == 1
+    assert second.count("TRADING_RADAR_LIVE_MARKET_SNAPSHOT_END") == 1
+    assert second.count("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") == 1
+    for number, title in enumerate(
+        (
+            "Trading-Radar", "Thesen-Update", "Ereignisradar", "Assetklassenvergleich",
+            "Technische Kandidaten", "Portfolio & Risiko", "MSCI-Vergleich", "Daten-/Prüfanhang",
+        ),
+        start=1,
+    ):
+        assert re.search(rf"(?m)^{number}\. {re.escape(title)}$", second)

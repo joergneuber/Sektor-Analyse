@@ -33,9 +33,12 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
         "1. Trading-Radar\nBasis und Lagebild mit ausführlicher Markteinordnung und nachvollziehbarem Kontext.\n"
         "- Marktregime: Selektives Risk-on mit defensiver Rotation.\n"
         "Marktregime-Datenstichtag: 2026-10-30\n"
+        "- Datenstand UTC: 2026-10-30T21:30:00Z\n"
         "Indizes/Marktbreite: S&P 500 +1,0%; Marktbreite 8/11.\n"
         "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | Einheit: % | Verzögerung: 1 Börsentag.\n"
-        "Dollar/Liquidität/Volatilität: VIX 18,0; DXY 100,0.\n"
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00; Liquiditätslage stabil.\n"
+        "- Volatilität VIX: 18.00 | Quelle: Yahoo Finance (^VIX); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.\n"
+        "- Dollar-Proxy DXY (DX-Y.NYB): 100.00 | Quelle: Yahoo Finance (DX-Y.NYB); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.\n"
         "Index S&P 500: 1M +1,0%; 3M +2,0%.\nIndex Nasdaq: 1M +0,5%; 3M +1,5%.\n"
         "Basisszenario: Seitwärts bis aufwärts. Eintritt: Marktbreite stabil. Bestätigungstrigger: Ausbruch. Invalidierungstrigger: Bruch 200-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite. Konsequenz: selektive Longs.\n"
         "Positives Alternativszenario: Beschleunigter Aufwärtstrend. Eintritt: Renditen fallen. Bestätigungstrigger: neue Hochs. Invalidierungstrigger: Rückfall unter Ausbruchsniveau. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko erhöhen.\n"
@@ -1114,3 +1117,196 @@ def test_m03_does_not_misclassify_unrelated_macro_gap_statement_as_ohlcv_claim()
     )
     errors = gate.validate_report(text)
     assert not any("Freitext behauptet Datenlückenfreiheit" in error for error in errors), errors
+
+
+def test_m02_rejects_old_observation_with_recent_retrieval_timestamp():
+    text = report_fixture().replace("Datenstichtag: 2026-10-30; Einheit: Indexpunkte", "Datenstichtag: 2026-10-20; Einheit: Indexpunkte", 1)
+    text = text.replace("Marktregime-Datenstichtag: 2026-10-30", "Marktregime-Datenstichtag: 2026-10-20", 1)
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_rejects_retrieval_before_observation_date():
+    text = report_fixture().replace("Quelle: Yahoo Finance (^VIX); Abrufzeit: 2026-10-30T21:20:00Z", "Quelle: Yahoo Finance (^VIX); Abrufzeit: 2026-10-30T20:00:00Z", 1)
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_rejects_missing_timezone_on_retrieval_timestamp():
+    text = report_fixture().replace("Quelle: Yahoo Finance (^VIX); Abrufzeit: 2026-10-30T21:20:00Z", "Quelle: Yahoo Finance (^VIX); Abrufzeit: 2026-10-30T04:30:00", 1)
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_rejects_observation_date_in_future_of_report_run():
+    text = report_fixture().replace("Marktregime-Datenstichtag: 2026-10-30", "Marktregime-Datenstichtag: 2026-10-31", 1)
+    text = text.replace("Datenstichtag: 2026-10-30; Einheit: Indexpunkte", "Datenstichtag: 2026-10-31; Einheit: Indexpunkte")
+    text = text.replace("Abrufzeit: 2026-10-30T21:20:00Z", "Abrufzeit: 2026-10-31T04:30:00Z")
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_rejects_duplicate_vix_live_provenance_lines():
+    text = report_fixture()
+    line = next(line for line in text.splitlines() if "Volatilität VIX:" in line)
+    text = text.replace(line + "\n", line + "\n" + line + "\n", 1)
+    errors = gate.validate_report(text)
+    assert any("genau eine Live-Provenienzzeile für VIX" in item for item in errors), errors
+
+
+def test_m02_rejects_duplicate_numeric_values_in_canonical_risk_field():
+    text = report_fixture().replace(
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00; Liquiditätslage stabil.",
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; VIX: 18,10; DXY: 100,00; Liquiditätslage stabil.", 1,
+    )
+    errors = gate.validate_report(text)
+    assert any("genau eine numerische VIX-Beobachtung" in item for item in errors), errors
+
+
+def test_m02_rejects_same_day_utc_rollover_before_market_close():
+    text = report_fixture().replace(
+        "Datenstand UTC: 2026-10-30T21:30:00Z",
+        "Datenstand UTC: 2026-10-30T04:30:00Z",
+    ).replace(
+        "Abrufzeit: 2026-10-30T21:20:00Z",
+        "Abrufzeit: 2026-10-30T04:20:00Z",
+    )
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_accepts_last_completed_friday_close_on_sunday_after_utc_midnight():
+    text = report_fixture()
+    text = text.replace("2026-10-30", "2026-11-20")
+    text = text.replace("2026-11-20T21:30:00Z", "2026-11-22T09:02:00Z")
+    text = text.replace("2026-11-20T21:20:00Z", "2026-11-22T09:01:00Z")
+    assert not any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in gate.validate_report(text))
+
+
+def test_m02_requires_both_source_closes_and_handles_dst_and_ice_holidays():
+    from datetime import datetime, date
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-10-30T20:30:00+00:00")) == date(2026, 10, 29)
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-10-30T21:01:00+00:00")) == date(2026, 10, 30)
+    # After the US DST switch, ICE's 17:00 ET close is 22:00 UTC.
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-02T21:30:00+00:00")) == date(2026, 10, 30)
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-02T22:01:00+00:00")) == date(2026, 11, 2)
+    # Thanksgiving: VIX is closed while ICE currency/index contracts are a session.
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-26T22:30:00+00:00")) == date(2026, 11, 25)
+    # Cboe's published early close on Nov 27 is 13:00 ET; ICE is not
+    # considered complete until its regular 17:00 ET close.
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T18:01:00+00:00")) == date(2026, 11, 26)
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T22:01:00+00:00")) == date(2026, 11, 27)
+
+
+def test_m02_fails_closed_outside_verified_calendar_window():
+    from datetime import datetime
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2028-01-04T22:30:00+00:00")) is None
+
+
+def test_m05_thesis_identity_uses_shared_placeholder_rules_without_changing_m07_parser():
+    text = report_fixture().replace("Thesen-ID: T-1", "Thesen-ID: NICHT ANGEGEBEN", 1)
+    errors = gate.validate_report(text)
+    assert any(item.startswith("M-05") for item in errors), errors
+    assert not any(item.startswith("M-07") for item in errors), errors
+    # The old M-07 parser still treats this annotated phrase exactly as before;
+    # only the separate M-05 parser applies the shared extended placeholder set.
+    assert gate._label_value(
+        "Thesen-ID: NICHT VERFÜGBAR (keine ID)", (r"Thesen-ID",)
+    ) == "NICHT VERFÜGBAR (keine ID)"
+    assert gate._m05_label_value(
+        "Thesen-ID: NICHT VERFÜGBAR (keine ID)", (r"Thesen-ID",)
+    ) is None
+
+
+def test_m02_rejects_duplicate_canonical_risk_fields():
+    text = report_fixture().replace(
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00; Liquiditätslage stabil.",
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00; Liquiditätslage stabil.\n"
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00.", 1,
+    )
+    errors = gate.validate_report(text)
+    assert any("kanonisches Dollar/Liquidität/Volatilität-Feld muss genau einmal" in item for item in errors), errors
+
+
+def test_m02_rejects_observation_date_different_from_market_regime_cutoff():
+    text = report_fixture().replace("Datenstichtag: 2026-10-30; Einheit: Indexpunkte", "Datenstichtag: 2026-10-29; Einheit: Indexpunkte", 1)
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_rejects_missing_retrieval_timestamp():
+    text = report_fixture().replace("Abrufzeit: 2026-10-30T21:20:00Z; ", "", 1)
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m02_rejects_missing_utc_run_timestamp():
+    text = report_fixture().replace("- Datenstand UTC: 2026-10-30T21:30:00Z\n", "", 1)
+    errors = gate.validate_report(text)
+    assert any("timezone-behafteter UTC-Report-/Run-Zeitstempel fehlt" in item for item in errors), errors
+
+
+def test_m02_rejects_live_snapshot_value_that_disagrees_with_canonical_risk_field():
+    text = report_fixture().replace("Volatilität VIX: 18.00", "Volatilität VIX: 18.25", 1)
+    errors = gate.validate_report(text)
+    assert any("M-02: VIX-Beobachtung ist nicht frisch" in item for item in errors), errors
+
+
+def test_m05_gate_applies_shared_placeholder_rules_to_structured_identity_without_changing_m07():
+    import json
+    text = report_fixture().replace("T-1", "NICHT ANGEGEBEN")
+    payload = {
+        "schema_version": 1,
+        "theses": [{
+            "thesis_id": "NICHT ANGEGEBEN",
+            "version": 2,
+            "status": "BESTÄTIGT",
+            "alternative": "Eine plausible Gegenhypothese",
+        }],
+    }
+    text = text.replace(
+        "VERSION: 2",
+        "VERSION: 2\n```TRADING_RADAR_THESEN_JSON\n"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n```",
+        1,
+    )
+    errors = gate.validate_report(text)
+    assert any(item.startswith("M-05") for item in errors), errors
+    # M-07 continues to use its original parser and predicate.
+    assert not any(item.startswith("M-07") for item in errors), errors
+
+
+def test_m05_parses_multiword_compact_status_independently_of_m07():
+    text = report_fixture().replace(
+        "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
+        "Thesen-ID: T-1\nStatus: BESTÄTIGT\n"
+        "Thesenregister – kompakte Übersicht:\n"
+        "- T-1 | Version 2 | Status BESTÄTIGT | Konfidenz mittel\n"
+        "- T-2 | Version 1 | Status WARTET AUF EREIGNIS | Konfidenz mittel",
+        1,
+    )
+    text = text.replace("VORHER-REGISTER-VERSION: 1", "VORHER-REGISTER-VERSION: NICHT VERFÜGBAR")
+    text = text.replace("REGISTER-VERSION: 2", "REGISTER-VERSION: NICHT VERFÜGBAR")
+    text = text.replace("VERSION: 2", "VERSION: NICHT VERFÜGBAR")
+    errors = gate.validate_report(text)
+    assert not any("Thesen-Update benötigt" in item for item in errors), errors
+    # The legacy M-07 parser remains unchanged and still reports its
+    # pre-existing single-token compact-status limitation.
+    assert any(item.startswith("M-07") for item in errors), errors
+
+
+def test_m05_compact_register_rejects_placeholder_identity_values():
+    for placeholder in (
+        "NICHT ANGEGEBEN", "NICHT ERMITTELT", "NICHT VERFÜGBAR (keine ID)",
+        "UNBEKANNT", "TBD", "N/A",
+    ):
+        text = report_fixture().replace(
+            "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
+            "Thesen-ID: " + placeholder + "\nStatus: BESTÄTIGT\n"
+            "Thesenregister – kompakte Übersicht:\n"
+            "- " + placeholder + " | Version 2 | Status BESTÄTIGT | Konfidenz mittel",
+            1,
+        )
+        errors = gate.validate_report(text)
+        assert any("Thesen-Update benötigt" in item for item in errors), (placeholder, errors)
