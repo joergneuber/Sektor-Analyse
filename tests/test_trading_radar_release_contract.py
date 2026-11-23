@@ -37,9 +37,9 @@ class TradingRadarReleaseContractTests(unittest.TestCase):
         reordered = bad_order[:section7] + chunk8 + "\n\n" + chunk7 + bad_order[end8:]
         self.assertTrue(gate.validate_report(reordered), "out-of-order sections must fail the report gate")
 
-    def test_thesis_register_lifecycle_is_idempotent_versions_changes_and_archives_removed_theses(self):
+    def test_thesis_register_lifecycle_is_idempotent_and_requires_explicit_invalidation(self):
         thesen = load_module("release_thesen", "trading_radar_thesen.py")
-        def thesis(text="Rates stay restrictive", status="NEU"):
+        def thesis(text="Rates stay restrictive", status="BESTÄTIGT"):
             return {
                 "thesis_id": "T-RATES-01", "thesis": text, "horizon": "1-3 months",
                 "alternative": "Inflation falls and yields ease.",
@@ -64,9 +64,21 @@ class TradingRadarReleaseContractTests(unittest.TestCase):
             third = thesen.update_register(report([thesis(text="Yields remain elevated")]), path)
             third_doc = json.loads(Path(path).read_text(encoding="utf-8"))
             self.assertEqual(third_doc["theses"][0]["version"], 2, "material change must increment version")
-            thesen.update_register(report([]), path)
+            before_omission_attempt = Path(path).read_bytes()
+            with self.assertRaisesRegex(
+                ValueError, "Aktive Thesen fehlen im aktuellen JSON-Block"
+            ):
+                thesen.update_register(report([]), path)
+            self.assertEqual(
+                Path(path).read_bytes(), before_omission_attempt,
+                "failed silent-omission attempt must leave the register unchanged",
+            )
+            thesen.update_register(report([thesis(status="INVALIDIERT")]), path)
             archived = json.loads(Path(path).read_text(encoding="utf-8"))["theses"][0]
-            self.assertFalse(archived["active"], "removed thesis must be archived, not deleted")
+            self.assertFalse(archived["active"], "explicitly invalidated thesis must be archived")
+            self.assertEqual(archived["status"], "INVALIDIERT")
+            self.assertEqual(archived["version"], 3)
+            self.assertEqual(archived["archive_reason"], "Expliziter Status INVALIDIERT")
 
     def test_report_and_thesis_processing_do_not_mutate_portfolio_source(self):
         thesen = load_module("release_thesen_immutable", "trading_radar_thesen.py")

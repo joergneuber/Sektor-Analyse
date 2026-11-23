@@ -263,7 +263,7 @@ def test_thesis_register_baseline_missing_is_explicit_then_next_run_compares(tmp
         "evidence": ["Messwert A"], "counter_evidence": ["Gegenbeleg B"],
         "confidence": "mittel", "confirm_triggers": ["Trigger A"],
         "invalidate_triggers": ["Trigger B"], "event_dependencies": [],
-        "asset_classes": ["Aktien"], "candidates": [], "status": "NEU",
+        "asset_classes": ["Aktien"], "candidates": [], "status": "BESTÄTIGT",
     }
     payload = {"data_cutoff": "2026-11-01T12:00:00+00:00", "theses": [thesis]}
     report = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload) + "\n```"
@@ -1802,12 +1802,18 @@ def test_m05_report_gate_accepts_deterministic_change_summary_instead_of_no_chan
         "THESIS_ID: TH-OLD",
         "REGISTER-VERSION: 2",
         "THESIS_ACTIVE: YES",
+        "THESIS_STATUS: BESTÄTIGT",
+        "THESIS_REPLACED_BY: KEINE",
         "THESIS_ID: TH-STABLE",
         "REGISTER-VERSION: 1",
         "THESIS_ACTIVE: YES",
+        "THESIS_STATUS: BESTÄTIGT",
+        "THESIS_REPLACED_BY: KEINE",
         "THESIS_ID: TH-NEW",
         "REGISTER-VERSION: 1",
         "THESIS_ACTIVE: YES",
+        "THESIS_STATUS: NEU",
+        "THESIS_REPLACED_BY: KEINE",
     ]
     report = (
         "2. Thesen-Update\n"

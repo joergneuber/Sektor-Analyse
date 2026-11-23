@@ -203,6 +203,8 @@ def test_report_gate_accepts_proven_empty_active_thesis_register():
         "THESEN_UNVERAENDERT: KEINE\n"
         "THESEN_ARCHIVIERT: T-1\n"
         "THESIS_ID: T-1\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: NO\n"
+        "THESIS_STATUS: INVALIDIERT\n"
+        "THESIS_REPLACED_BY: KEINE\n"
         "7. MSCI-Vergleich\n"
         "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
         "Ø Positionsperformance: NICHT VERFÜGBAR\n"

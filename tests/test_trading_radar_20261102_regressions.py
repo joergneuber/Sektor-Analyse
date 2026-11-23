@@ -436,10 +436,21 @@ def test_report_status_validator_matches_persistence_status_taxonomy():
         "asset_classes": ["Aktien"],
         "candidates": [],
         "status": "NEU",
+        "replaced_by": None,
     }
     for status in sorted(PERSISTENCE_STATUSES):
+        thesis = dict(template, status=status)
+        theses = [thesis]
+        if canonicalize_thesis_status(status) == "ERSETZT":
+            thesis["replaced_by"] = "STATUS-CHECK-NEXT"
+            theses.append(dict(
+                template,
+                thesis_id="STATUS-CHECK-NEXT",
+                status="BESTÄTIGT",
+                replaced_by=None,
+            ))
         payload = {"data_cutoff": template["data_cutoff"],
-                   "theses": [dict(template, status=status)]}
+                   "theses": theses}
         assert validate_thesis_register(payload) == [], status
 
     assert canonicalize_thesis_status("BESTAETIGT") == "BESTÄTIGT"
@@ -541,6 +552,7 @@ def test_v4_original_run1270_report_fails_closed_on_missing_second_thesis():
 def test_v4_original_run1270_ids_are_extracted_from_nested_name_normalizer_format():
     from trading_radar_neuauswertung import extract_thesis_json, validate_thesis_ids_match_report
     report = (ROOT / "tests/fixtures/trading_radar_run1270_original.txt").read_text(encoding="utf-8")
+    report = report.replace("– **WIDERLEGT**.", "– **INVALIDIERT**.", 1)
     payload = extract_thesis_json(report)
     section2 = report.split("### 2. Thesen-Update", 1)[1].split("### 3. Ereignisradar", 1)[0]
     assert "AI_ENERGY_2026" in section2
@@ -563,7 +575,7 @@ def test_v4_complete_run1270_baseline_persists_both_readable_theses(tmp_path):
         "thesis": "Edelmetall-Bodenbildung",
         "evidence": ["Originalbericht: alle vier Edelmetalle unter EMA200/WMA200"],
         "counter_evidence": ["Originalbericht: keine bestätigte bullische Divergenz"],
-        "status": "WIDERLEGT",
+        "status": "INVALIDIERT",
     })
     complete = {"data_cutoff": payload["data_cutoff"], "theses": [first, second]}
     assert validate_thesis_ids_match_report(report, complete) == []

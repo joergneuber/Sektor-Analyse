@@ -222,6 +222,12 @@ def test_compact_thesis_summary_satisfies_post_save_identity_gate_for_multiple_t
         "THESIS_ID: T-2\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: YES",
         1,
     )
+    report = report.replace(
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE",
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE\n"
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE",
+        1,
+    )
     payload = {
         "data_cutoff": "2026-11-04T14:40:00+00:00",
         "theses": [
