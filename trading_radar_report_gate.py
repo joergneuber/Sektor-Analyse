@@ -12,6 +12,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trading_radar_placeholders import is_placeholder_value
+from trading_radar_thesen import (
+    CANONICAL_STATUSES,
+    TERMINAL_STATUSES,
+    LEGACY_ARCHIVE_STATUSES,
+    canonicalize_thesis_status,
+)
 
 
 SECTION_NAMES = (
@@ -50,6 +56,368 @@ def _section_body(text: str, number: int, title: str) -> str:
 
 def _has_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
+
+
+
+class _ScenarioEvaluation:
+    __slots__ = ("value", "missing_metrics")
+
+    def __init__(self, value: bool | None, missing_metrics: tuple[str, ...] = ()):
+        self.value = value
+        self.missing_metrics = missing_metrics
+
+class _ScenarioConditionError(ValueError):
+    pass
+
+def _scenario_number(value: str) -> float:
+    return float(str(value).replace(",", "."))
+
+def _scenario_metrics(indicators: str) -> dict[str, float | tuple[int, int]]:
+    metrics: dict[str, float | tuple[int, int]] = {}
+    breadth_matches = list(re.finditer(
+        r"(?i)\bMarktbreite\s*[:=]?\s*(\d+)\s*/\s*(\d+)",
+        indicators,
+    ))
+    if len(breadth_matches) > 1:
+        raise _ScenarioConditionError("mehrere widersprüchliche Marktbreitenwerte im Indikatorenfeld")
+    if breadth_matches:
+        breadth = breadth_matches[0]
+        numerator = int(breadth.group(1))
+        denominator = int(breadth.group(2))
+        if denominator <= 0 or numerator > denominator:
+            raise _ScenarioConditionError("Marktbreitenwert liegt außerhalb des gültigen Bereichs 0..Nenner")
+        metrics["MARKTBREITE"] = (numerator, denominator)
+    for ticker, aliases in (
+        ("XLV", r"(?:Gesundheit-ETF\s*\(\s*XLV\s*\)|\bXLV\b)"),
+        ("XLE", r"(?:Energie-ETF\s*\(\s*XLE\s*\)|\bXLE\b)"),
+    ):
+        found = list(re.finditer(
+            aliases + r"[^;\r\n]{0,120}?\b3M\s*([+-]?\d+(?:[.,]\d+)?)\s*%",
+            indicators, re.IGNORECASE,
+        ))
+        if len(found) > 1:
+            raise _ScenarioConditionError(f"mehrere widersprüchliche 3M-Werte für {ticker}")
+        if found:
+            metrics[ticker] = _scenario_number(found[0].group(1))
+    return metrics
+
+_BREADTH_ATOM = re.compile(
+    r"(?i)\bMarktbreite\s+(?:(?:liegt|fällt|faellt)\s+)?"
+    r"(?P<op>mindestens|mind\.?|>=|über|oberhalb\s+von|unter|unterhalb\s+von|höchstens|hoechstens|<=|<|>)\s*"
+    r"(?P<num>\d+)\s*/\s*(?P<den>\d+)"
+)
+_XLV = r"(?:Gesundheit-ETF\s*\(\s*XLV\s*\)|\bXLV\b)"
+_XLE = r"(?:Energie-ETF\s*\(\s*XLE\s*\)|\bXLE\b)"
+_JOIN = r"(?:und|sowie|oder|bzw\.?)"
+_SECTOR_PAIR_PATTERNS = [
+    re.compile(
+        rf"(?i){_XLV}\s*(?P<join>{_JOIN})\s*{_XLE}\s*"
+        r"(?:weisen(?:\s+jeweils)?|weist(?:\s+eine)?|zeigt|zeigen)?\s*"
+        r"(?P<pred>nicht[- ]positive|nicht\s+positiv|positive)\s*"
+        r"3M[- ]Relative[- ]Stärke(?:\s+auf)?"
+    ),
+    re.compile(
+        rf"(?i)(?P<pred>nicht[- ]positive|nicht\s+positiv|positive)\s*"
+        r"3M[- ]Relative[- ]Stärke\s*(?:von|bei)?\s*"
+        rf"{_XLV}\s*(?P<join>{_JOIN})\s*{_XLE}"
+    ),
+    re.compile(
+        rf"(?i)3M[- ]Relative[- ]Stärke\s*(?:von|bei)?\s*"
+        rf"{_XLV}\s*(?P<join>{_JOIN})\s*{_XLE}\s*"
+        r"(?:jeweils\s*)?(?P<op>über|oberhalb\s+von|unter|unterhalb\s+von|mindestens|höchstens|hoechstens|>=|<=|>|<)\s*"
+        r"0(?:[.,]0+)?\s*%"
+    ),
+]
+_SECTOR_SINGLE_PATTERNS = [
+    re.compile(
+        rf"(?i)(?P<ticker>{_XLV}|{_XLE})\s*"
+        r"(?:weist(?:\s+eine)?|zeigt(?:\s+eine)?|ist)?\s*(?P<pred>nicht[- ]positive|nicht\s+positiv|positive)\s*"
+        r"3M[- ]Relative[- ]Stärke(?:\s+auf)?"
+    ),
+    re.compile(
+        rf"(?i)(?P<pred>nicht[- ]positive|nicht\s+positiv|positive)\s*"
+        r"3M[- ]Relative[- ]Stärke\s*(?:von|bei)?\s*(?P<ticker>{_XLV}|{_XLE})"
+    ),
+    re.compile(
+        rf"(?i)3M[- ]Relative[- ]Stärke\s*(?:von|bei)?\s*(?P<ticker>{_XLV}|{_XLE})\s*"
+        r"(?P<op>über|oberhalb\s+von|unter|unterhalb\s+von|mindestens|höchstens|hoechstens|>=|<=|>|<)\s*"
+        r"0(?:[.,]0+)?\s*%"
+    ),
+]
+
+def _sector_predicate(value: float, pred: str | None, op: str | None = None) -> bool:
+    if pred:
+        return value <= 0.0 if re.search(r"(?i)nicht", pred) else value > 0.0
+    op = (op or "").casefold()
+    if op in {"über", "oberhalb von", ">"}:
+        return value > 0.0
+    if op in {">=", "mindestens"}:
+        return value >= 0.0
+    if op in {"unter", "unterhalb von", "<"}:
+        return value < 0.0
+    if op in {"<=", "höchstens", "hoechstens"}:
+        return value <= 0.0
+    raise _ScenarioConditionError("nicht unterstützter Sektorvergleich")
+
+def _scenario_atom_matches(entry: str, metrics: dict):
+    matches = []
+    for m in _BREADTH_ATOM.finditer(entry):
+        op = re.sub(r"\s+", " ", m.group("op").casefold())
+        num, den = int(m.group("num")), int(m.group("den"))
+        if den <= 0 or num > den:
+            raise _ScenarioConditionError("Marktbreiten-Schwelle liegt außerhalb des gültigen Bereichs 0..Nenner")
+        current = metrics.get("MARKTBREITE")
+        if not isinstance(current, tuple) or current[1] <= 0:
+            value = None
+            missing = ("Marktbreite",)
+        else:
+            lhs, rhs = current[0] / current[1], num / den
+            if op in {"mindestens", "mind.", ">="}: value = lhs >= rhs
+            elif op in {"über", "oberhalb von", ">"}: value = lhs > rhs
+            elif op in {"unter", "unterhalb von", "<"}: value = lhs < rhs
+            elif op in {"höchstens", "hoechstens", "<="}: value = lhs <= rhs
+            else: raise _ScenarioConditionError(f"unbekannter Marktbreitenoperator: {op}")
+            missing = ()
+        matches.append((m.start(), m.end(), value, missing, "breadth"))
+
+    for pattern in _SECTOR_PAIR_PATTERNS:
+        for m in pattern.finditer(entry):
+            join = m.groupdict().get("join")
+            pred = m.groupdict().get("pred")
+            op = m.groupdict().get("op")
+            values = []
+            missing = []
+            for ticker in ("XLV", "XLE"):
+                value = metrics.get(ticker)
+                if not isinstance(value, float):
+                    missing.append(ticker)
+                else:
+                    values.append(_sector_predicate(value, pred, op))
+            if join and re.fullmatch(r"(?i)(?:oder|bzw\.?)", join.strip()):
+                value = True if True in values else (False if not missing else None)
+            else:
+                value = False if False in values else (True if not missing else None)
+            matches.append((m.start(), m.end(), value, tuple(missing), "sector-pair"))
+
+    for pattern in _SECTOR_SINGLE_PATTERNS:
+        for m in pattern.finditer(entry):
+            ticker = "XLV" if re.search(r"\bXLV\b", m.group("ticker"), re.I) else "XLE"
+            raw = metrics.get(ticker)
+            missing = () if isinstance(raw, float) else (ticker,)
+            pred, op = m.groupdict().get("pred"), m.groupdict().get("op")
+            value = _sector_predicate(raw, pred, op) if not missing else None
+            matches.append((m.start(), m.end(), value, missing, ticker))
+
+    # Prefer the longest match at a given start; reject overlapping distinct atoms.
+    matches.sort(key=lambda x: (x[0], -(x[1]-x[0])))
+    selected = []
+    for item in matches:
+        if selected and item[0] < selected[-1][1]:
+            if item[1] <= selected[-1][1]:
+                continue
+            raise _ScenarioConditionError("überlappende oder mehrdeutige Eintrittsbedingungen")
+        selected.append(item)
+    return selected
+
+def _gap_tokens(gap: str):
+    tokens = []
+    pos = 0
+    token_re = re.compile(r"(?i)\s*(\(|\)|UND\b|ODER\b|SOWIE\b|[.,;])\s*")
+    while pos < len(gap):
+        if gap[pos:].strip() == "":
+            break
+        m = token_re.match(gap, pos)
+        if not m:
+            fragment = gap[pos:pos+60].strip()
+            raise _ScenarioConditionError(f"unbekannter Bedingungstext: {fragment!r}")
+        raw = m.group(1)
+        if raw in {"(", ")"}: tokens.append(raw)
+        elif raw.casefold() == "oder": tokens.append("OR")
+        elif raw.casefold() in {"und", "sowie"}: tokens.append("AND")
+        elif raw in {".", ",", ";"}: pass
+        pos = m.end()
+    return tokens
+
+def _evaluate_scenario_entry(entry: str, indicators: str) -> _ScenarioEvaluation:
+    metrics = _scenario_metrics(indicators)
+    atoms = _scenario_atom_matches(entry, metrics)
+    if not atoms:
+        raise _ScenarioConditionError("keine unterstützte quantitative Eintrittsbedingung erkannt")
+    tokens = []
+    cursor = 0
+    for start, end, value, missing, _label in atoms:
+        tokens.extend(_gap_tokens(entry[cursor:start]))
+        tokens.append(("ATOM", value, missing))
+        cursor = end
+    tokens.extend(_gap_tokens(entry[cursor:]))
+    # Recursive-descent parser: AND binds tighter than OR.
+    index = 0
+    missing_all = []
+    def primary():
+        nonlocal index
+        if index >= len(tokens):
+            raise _ScenarioConditionError("unvollständiger Ausdruck")
+        token = tokens[index]
+        if token == "(":
+            index += 1
+            value = parse_or()
+            if index >= len(tokens) or tokens[index] != ")":
+                raise _ScenarioConditionError("nicht geschlossene Klammer")
+            index += 1
+            return value
+        if isinstance(token, tuple) and token[0] == "ATOM":
+            index += 1
+            missing_all.extend(token[2])
+            return token[1]
+        raise _ScenarioConditionError(f"unerwartetes Token {token!r}")
+    def parse_and():
+        nonlocal index
+        value = primary()
+        while index < len(tokens) and tokens[index] == "AND":
+            index += 1
+            right = primary()
+            value = False if value is False or right is False else (True if value is True and right is True else None)
+        return value
+    def parse_or():
+        nonlocal index
+        value = parse_and()
+        while index < len(tokens) and tokens[index] == "OR":
+            index += 1
+            right = parse_and()
+            value = True if value is True or right is True else (False if value is False and right is False else None)
+        return value
+    result = parse_or()
+    if index != len(tokens):
+        if tokens[index] == ")":
+            raise _ScenarioConditionError("schließende Klammer ohne öffnende Klammer")
+        raise _ScenarioConditionError(f"unerwartetes Token {tokens[index]!r}")
+    return _ScenarioEvaluation(result, tuple(sorted(set(missing_all))) if result is None else ())
+
+
+def validate_scenario_condition_consistency(text: str) -> list[str]:
+    """Fail closed unless every declared scenario condition is fully understood."""
+    executive = _section_body(text, 1, SECTION_NAMES[0])
+    labels = (
+        ("Basisszenario", r"Basisszenario"),
+        ("Positives Alternativszenario", r"Positives\s+Alternativszenario"),
+        ("Negatives Alternativszenario", r"Negatives\s+Alternativszenario"),
+    )
+    starts = []
+    for display, pattern in labels:
+        found = list(re.finditer(r"(?im)^\s*" + pattern + r"\s*:", executive))
+        if len(found) > 1:
+            return [f"M-09-SZENARIO: {display} ist mehrfach definiert; eindeutiger Szenarioblock erforderlich."]
+        if found:
+            starts.append((found[0].start(), found[0].end(), display))
+    starts.sort()
+    errors = []
+    for index, (start, body_start, display) in enumerate(starts):
+        end = starts[index + 1][0] if index + 1 < len(starts) else len(executive)
+        block = executive[body_start:end].strip()
+        entry_field_count = len(re.findall(r"(?i)Eintrittsbedingung\s*:", block))
+        entry_matches = list(re.finditer(
+            r"(?is)Eintrittsbedingung\s*:\s*(.*?)(?=Bestätigungstrigger\s*:|Status\s*:|Invalidierungstrigger\s*:|Zeithorizont\s*:|Indikatoren\s*:|Konsequenz\s*:)",
+            block,
+        ))
+        indicators_matches = list(re.finditer(
+            r"(?is)Indikatoren\s*:\s*(.*?)(?=Konsequenz\s*:|$)",
+            block,
+        ))
+        status_field_count = len(re.findall(r"(?i)Status\s*:", block))
+        # Capture the complete status field up to the next known scenario label.
+        # Only a bare token, terminal full stop, explicit dash/pipe explanation,
+        # or a parenthetical explanation is permitted. Punctuation must never
+        # act as a loophole for arbitrary trailing prose (e.g. "ERFÜLLT; BOGUS").
+        status_matches = list(re.finditer(
+            r"(?is)Status\s*:\s*"
+            r"(?P<status>ERFÜLLT|NICHT\s+ERFÜLLT|TRIGGER\s+AUSGELÖST|NICHT\s+ABLEITBAR)"
+            r"(?P<suffix>.*?)"
+            r"(?=[ \t]*(?:Bestätigungstrigger|Invalidierungstrigger|Zeithorizont|Indikatoren|Konsequenz)\s*:|$)",
+            block,
+        ))
+        if len(status_matches) == 1:
+            suffix = status_matches[0].group("suffix").strip()
+            explanation_suffix = suffix[:-1].rstrip() if suffix.endswith(".") else suffix
+            allowed_suffix = (
+                not suffix
+                or suffix == "."
+                or bool(re.fullmatch(r"[|–—]\s*[^\r\n]+", explanation_suffix))
+                or bool(re.fullmatch(r"\([^\r\n()]+\)", explanation_suffix))
+            )
+            if not allowed_suffix:
+                status_matches = []
+        if entry_field_count != 1 or len(entry_matches) != 1:
+            errors.append(
+                f"M-09-SZENARIO: {display} benötigt genau eine explizite Eintrittsbedingung "
+                "mit vollständig prüfbarer UND-/ODER-Logik."
+            )
+            continue
+        if len(indicators_matches) != 1:
+            errors.append(
+                f"M-09-SZENARIO: {display} benötigt genau ein eigenes Indikatorenfeld "
+                "für alle in der Eintrittsbedingung verwendeten Kennzahlen."
+            )
+            continue
+        if status_field_count != 1 or len(status_matches) != 1:
+            errors.append(
+                f"M-09-SZENARIO: {display} benötigt einen expliziten Status genau einmal, "
+                "der gegen die Indikatorwerte geprüft wird."
+            )
+            continue
+        entry_match = entry_matches[0]
+        indicators_match = indicators_matches[0]
+        try:
+            evaluated = _evaluate_scenario_entry(
+                entry_match.group(1), indicators_match.group(1)
+            )
+        except _ScenarioConditionError as exc:
+            errors.append(
+                f"M-09-SZENARIO: {display} enthält eine unbekannte oder syntaktisch "
+                f"nicht eindeutige Eintrittsbedingung (Fail-Closed): {exc}."
+            )
+            continue
+
+        status = re.sub(r"\s+", " ", status_matches[0].group(1).upper())
+        if evaluated.value is None:
+            required_labels = {
+                "MARKTBREITE": "Marktbreite",
+                "XLV": "XLV",
+                "XLE": "XLE",
+            }
+            gap_match = re.search(
+                r"(?i)(?:Datenlücke|Datenluecke|Quelle fehlt|Wert fehlt)\s*[:=]?\s*([^\r\n.]+)",
+                block,
+            )
+            gap_text = gap_match.group(1) if gap_match else ""
+            missing_named = [
+                required_labels[item] for item in evaluated.missing_metrics
+                if required_labels[item].casefold() not in gap_text.casefold()
+            ]
+            if (
+                status != "NICHT ABLEITBAR"
+                or not re.search(r"(?i)Datenlücke|Datenluecke|Quelle fehlt|Wert fehlt", block)
+                or missing_named
+            ):
+                errors.append(
+                    f"M-09-SZENARIO: {display}: Indikatorwerte fehlen "
+                    f"{list(evaluated.missing_metrics)}; NICHT ABLEITBAR mit konkret "
+                    "benannter Datenlücke ist erforderlich."
+                )
+        else:
+            expected_status = (
+                "TRIGGER AUSGELÖST"
+                if display == "Negatives Alternativszenario" and evaluated.value
+                else "ERFÜLLT"
+                if evaluated.value
+                else "NICHT ERFÜLLT"
+            )
+            if status != expected_status:
+                errors.append(
+                    f"M-09-SZENARIO: {display} widerspricht den Messwerten: "
+                    f"Eintrittsbedingung {'erfüllt' if evaluated.value else 'nicht erfüllt'}, "
+                    f"erwarteter Status={expected_status}, Status={status}."
+                )
+    return errors
 
 def _normalize_tab2_entry_date(value: str) -> str | None:
     """Return an ISO date only for dates accepted by the Tab-2 data contract."""
@@ -1082,17 +1450,20 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         # "- THESIS_ID | Version 3 | Status BESTÄTIGT | Konfidenz mittel".
         compact_rows = re.findall(
             r"(?im)^\s*-\s*([\w.:-]+)\s*\|\s*Version\s+(\d+)\s*"
-            r"\|\s*Status\s+([A-ZÄÖÜ]+)\b",
+            r"\|\s*Status\s+([^|\r\n]+?)(?=\s*\||\s*$)",
             thesis,
         )
-        allowed_statuses = {"NEU", "BESTÄTIGT", "WIDERLEGT", "ABGESCHWÄCHT", "ARCHIVIERT", "UNVERÄNDERT"}
         if compact_rows and all(
-            int(row_version) >= 1 and row_status.upper() in allowed_statuses
+            int(row_version) >= 1
+            and canonicalize_thesis_status(row_status.strip().strip(" .;:")) in CANONICAL_STATUSES
             for _row_id, row_version, row_status in compact_rows
         ):
             thesis_id = thesis_id or ", ".join(row_id for row_id, _version, _status in compact_rows)
             version = version or ", ".join(row_version for _row_id, row_version, _status in compact_rows)
-            status = status or ", ".join(row_status for _row_id, _version, row_status in compact_rows)
+            status = status or ", ".join(
+                canonicalize_thesis_status(row_status.strip().strip(" .;:"))
+                for _row_id, _version, row_status in compact_rows
+            )
             structured_identity_valid = True
         blocks = re.findall(
             r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", thesis,
@@ -1103,25 +1474,57 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 payload = json.loads(blocks[0])
                 records = payload.get("theses", []) if isinstance(payload, dict) else []
                 if isinstance(records, list) and records and all(isinstance(item, dict) for item in records):
-                    allowed_statuses = {"NEU", "BESTÄTIGT", "WIDERLEGT", "ABGESCHWÄCHT", "ARCHIVIERT", "UNVERÄNDERT"}
-                    valid_records = all(
-                        str(item.get("thesis_id", "")).strip()
-                        and isinstance(item.get("version"), int) and item.get("version", 0) >= 1
-                        and str(item.get("status", "")).strip().upper() in allowed_statuses
+                    records_by_id = {
+                        str(item.get("thesis_id", "")).strip(): item
                         for item in records
+                        if str(item.get("thesis_id", "")).strip()
+                    }
+                    valid_records = (
+                        len(records_by_id) == len(records)
+                        and all(
+                            isinstance(item.get("version"), int)
+                            and not isinstance(item.get("version"), bool)
+                            and item.get("version", 0) >= 1
+                            and canonicalize_thesis_status(item.get("status")) in CANONICAL_STATUSES
+                            for item in records
+                        )
                     )
+                    if valid_records:
+                        for item in records:
+                            item_status = canonicalize_thesis_status(item.get("status"))
+                            if "replaced_by" not in item and item_status != "ERSETZT":
+                                item["replaced_by"] = None
+                            successor = item.get("replaced_by")
+                            if item_status == "ERSETZT":
+                                target = records_by_id.get(successor) if isinstance(successor, str) else None
+                                if (
+                                    not isinstance(successor, str) or not successor.strip()
+                                    or successor != successor.strip()
+                                    or successor == item.get("thesis_id")
+                                    or target is None
+                                    or canonicalize_thesis_status(target.get("status")) in TERMINAL_STATUSES
+                                ):
+                                    valid_records = False
+                                    break
+                            elif successor is not None:
+                                valid_records = False
+                                break
                     if valid_records:
                         thesis_id = thesis_id or ", ".join(str(item["thesis_id"]).strip() for item in records)
                         version = version or ", ".join(str(item["version"]) for item in records)
-                        status = status or ", ".join(str(item["status"]).strip() for item in records)
+                        status = status or ", ".join(canonicalize_thesis_status(item["status"]) for item in records)
                         structured_identity_valid = True
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
     version_match = re.search(r"\d+", str(version or ""))
-    status_ok = bool(status and re.search(
-        r"(?i)\b(?:NEU|AKTUALISIERT|BESTÄTIGT|ABGESCHWÄCHT|WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|FEHLT|UNKLAR|NICHT VERFÜGBAR)\b",
-        status,
-    ))
+    status_values = [
+        canonicalize_thesis_status(value.strip().strip(" .;:"))
+        for value in str(status or "").split(",")
+        if value.strip()
+    ]
+    status_ok = bool(status_values) and all(
+        value in CANONICAL_STATUSES for value in status_values
+    )
     no_thesis_update = _has_any(thesis, (
         r"keine\s+neue\s+oder\s+aktualisierte\s+these\s*[;,.]?\s*"
         r"thesenregister\s+geprüft,?\s*keine\s+änderung",
@@ -1141,17 +1544,22 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
     after_hash = _one_register_value("NACHHER-SHA256")
     comparison_id = _one_register_value("THESENREGISTER-VERGLEICH-ID")
 
-    def _register_rows(id_label: str, version_label: str, active_label: str):
+    def _register_rows(id_label: str, version_label: str, active_label: str,
+                       status_label: str | None = None, successor_label: str | None = None):
         ids = re.findall(rf"(?im)^{re.escape(id_label)}:\s*([\w.:-]+)\s*$", thesis)
         versions = re.findall(rf"(?im)^{re.escape(version_label)}:\s*(\d+)\s*$", thesis)
         active = re.findall(rf"(?im)^{re.escape(active_label)}:\s*(YES|NO)\s*$", thesis)
-        return ids, versions, active
+        statuses = (re.findall(rf"(?im)^{re.escape(status_label)}:\s*([^\r\n]+?)\s*$", thesis)
+                    if status_label else [])
+        successors = (re.findall(rf"(?im)^{re.escape(successor_label)}:\s*([^\r\n]+?)\s*$", thesis)
+                      if successor_label else [])
+        return ids, versions, active, statuses, successors
 
-    previous_ids, previous_versions, previous_active = _register_rows(
+    previous_ids, previous_versions, previous_active, _previous_statuses, _previous_successors = _register_rows(
         "VORHER-THESIS-ID", "VORHER-REGISTER-VERSION", "VORHER-THESIS-ACTIVE"
     )
-    current_ids, current_versions, current_active = _register_rows(
-        "THESIS_ID", "REGISTER-VERSION", "THESIS_ACTIVE"
+    current_ids, current_versions, current_active, current_statuses, current_successors = _register_rows(
+        "THESIS_ID", "REGISTER-VERSION", "THESIS_ACTIVE", "THESIS_STATUS", "THESIS_REPLACED_BY"
     )
 
     def _count(label: str) -> int | None:
@@ -1251,26 +1659,100 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 "Vorherige Thesen wurden ohne Archivierung aus dem Nachregister entfernt: "
                                + ", ".join(sorted(dropped_ids))
             )
+        if current_ids and len(current_statuses) != len(current_ids):
+            semantic_errors.append(
+                "Jede aktuelle These benötigt genau einen deterministischen THESIS_STATUS-Nachweis"
+            )
+        if current_ids and len(current_successors) != len(current_ids):
+            semantic_errors.append(
+                "Jede aktuelle These benötigt genau einen THESIS_REPLACED_BY-Nachweis (oder KEINE)"
+            )
+        current_status_by_id = (
+            {thesis_id: canonicalize_thesis_status(status)
+             for thesis_id, status in zip(current_ids, current_statuses)}
+            if len(current_statuses) == len(current_ids) else {}
+        )
+        current_successor_by_id = dict(zip(current_ids, current_successors)) if len(current_successors) == len(current_ids) else {}
         for thesis_id, (current_version, current_active) in current_by_id.items():
             previous_record = previous_by_id.get(thesis_id)
+            current_status = current_status_by_id.get(thesis_id, "").strip().upper()
+            current_successor = current_successor_by_id.get(thesis_id, "").strip()
+            if current_status not in CANONICAL_STATUSES and not (
+                current_active is False and current_status in LEGACY_ARCHIVE_STATUSES
+            ):
+                semantic_errors.append(
+                    f"These {thesis_id} besitzt einen nicht vertragskonformen Status {current_status!r}"
+                )
+            if current_status in TERMINAL_STATUSES and current_active:
+                semantic_errors.append(
+                    f"Terminale These {thesis_id} darf nicht als aktiv ausgewiesen werden"
+                )
+            if (
+                current_status in CANONICAL_STATUSES - TERMINAL_STATUSES
+                and not current_active
+            ):
+                semantic_errors.append(
+                    f"Nichtterminale These {thesis_id} darf nicht archiviert sein"
+                )
+            if current_status == "ERSETZT":
+                if (
+                    not current_successor or current_successor.upper() == "KEINE"
+                    or current_successor not in current_by_id
+                    or not current_by_id.get(current_successor, (0, False))[1]
+                ):
+                    semantic_errors.append(
+                        f"These {thesis_id}: ERSETZT benötigt eine vorhandene aktive replaced_by-Nachfolger-ID"
+                    )
+            elif current_successor.upper() != "KEINE":
+                semantic_errors.append(
+                    f"These {thesis_id}: replaced_by muss bei Status {current_status} als KEINE belegt sein"
+                )
             if previous_record is None:
                 if current_version != 1 or not current_active:
                     semantic_errors.append(
                         f"Neue These {thesis_id} muss aktiv mit Version 1 beginnen"
                     )
+                if current_status != "NEU":
+                    semantic_errors.append(f"Neue These {thesis_id} muss mit explizitem Status NEU belegt sein")
                 expected_changes["THESEN_NEU"].add(thesis_id)
                 continue
             previous_version, previous_active = previous_record
+            if not previous_active and current_active:
+                semantic_errors.append(
+                    f"Archivierte These {thesis_id} darf nicht reaktiviert werden; neue These benötigt eine neue ID"
+                )
+            if current_status == "NEU":
+                semantic_errors.append(f"Bestehende These {thesis_id} darf nicht erneut Status NEU tragen")
+            if current_status in {"INVALIDIERT", "ERSETZT"} and current_active:
+                semantic_errors.append(f"These {thesis_id} trägt terminalen Status {current_status}, ist aber weiterhin aktiv")
+            if previous_active and not current_active:
+                if current_status not in {"INVALIDIERT", "ERSETZT"}:
+                    semantic_errors.append(
+                        f"Aktive These {thesis_id} wurde ohne expliziten Status INVALIDIERT/ERSETZT archiviert"
+                    )
+                if current_status == "ERSETZT" and (
+                    current_successor not in current_by_id
+                    or not current_by_id.get(current_successor, (0, False))[1]
+                ):
+                    semantic_errors.append(
+                        f"These {thesis_id}: ERSETZT benötigt eine aktive vorhandene Nachfolger-ID"
+                    )
             if current_version == previous_version + 1:
                 if not current_active:
-                    semantic_errors.append(
-                        f"Archivierte These {thesis_id} darf beim Archivieren keine neue Version erhalten"
-                    )
+                    if current_status not in {"INVALIDIERT", "ERSETZT"}:
+                        semantic_errors.append(
+                            f"Archivierte These {thesis_id} benötigt beim Versionsübergang einen expliziten terminalen Status"
+                        )
+                    else:
+                        expected_changes["THESEN_ARCHIVIERT"].add(thesis_id)
                 else:
                     expected_changes["THESEN_AKTUALISIERT"].add(thesis_id)
             elif current_version == previous_version:
                 if previous_active and not current_active:
-                    expected_changes["THESEN_ARCHIVIERT"].add(thesis_id)
+                    if current_status in {"INVALIDIERT", "ERSETZT"}:
+                        expected_changes["THESEN_ARCHIVIERT"].add(thesis_id)
+                    else:
+                        semantic_errors.append(f"These {thesis_id} wurde ohne explizite Invalidierung archiviert")
                 elif current_active:
                     expected_changes["THESEN_UNVERAENDERT"].add(thesis_id)
             else:
@@ -1297,15 +1779,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         if any(change_values.get(label, "").upper() != "KEINE"
                for label in ("THESEN_NEU", "THESEN_AKTUALISIERT", "THESEN_ARCHIVIERT")):
             errors.append("M-05: Bericht behauptet 'keine Änderung', Registervergleich weist aber neue/aktualisierte/archivierte Thesen aus.")
-    m05_allowed_statuses = {
-        "NEU", "AKTUALISIERT", "BESTÄTIGT", "WIDERLEGT", "ABGESCHWÄCHT",
-        "WARTET AUF EREIGNIS", "INVALIDIERT", "ERSETZT", "ARCHIVIERT",
-        "UNVERÄNDERT",
-    }
-
     def _m05_record_valid(record_id, record_version, record_status) -> bool:
         record_id = str(record_id or "").strip()
-        record_status = str(record_status or "").strip().upper()
+        record_status = canonicalize_thesis_status(record_status)
         if isinstance(record_version, bool):
             return False
         if isinstance(record_version, int):
@@ -1317,13 +1793,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         return bool(
             record_id and not is_placeholder_value(record_id)
             and parsed_version >= 1
-            and record_status in m05_allowed_statuses
+            and record_status in CANONICAL_STATUSES
             and not is_placeholder_value(record_status)
         )
 
-    # M-05 parses its own compact register/JSON representation. It deliberately
-    # does not depend on the separate M-07 parser, whose legacy status grammar
-    # and identity behavior must remain unchanged.
+    # M-05 and M-07 share the canonical lifecycle enum; M-05 additionally
+    # validates replacement links and the deterministic before/after evidence.
     m05_compact_rows = re.findall(
         r"(?im)^\s*[-*•]\s*([\w.:-]+)\s*\|\s*Version\s+(\d+)\s*"
         r"\|\s*Status\s+([^|\r\n]+)",
@@ -1350,9 +1825,15 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                     m05_payload.get("theses", [])
                     if isinstance(m05_payload, dict) else []
                 )
-                m05_structured_checks.append(bool(
-                    isinstance(m05_records, list) and m05_records
+                records_by_id = {
+                    str(item.get("thesis_id", "")).strip(): item
+                    for item in m05_records
+                    if isinstance(item, dict) and str(item.get("thesis_id", "")).strip()
+                } if isinstance(m05_records, list) else {}
+                records_valid = (
+                    isinstance(m05_records, list) and bool(m05_records)
                     and all(isinstance(item, dict) for item in m05_records)
+                    and len(records_by_id) == len(m05_records)
                     and all(
                         _m05_record_valid(
                             item.get("thesis_id"),
@@ -1361,7 +1842,28 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                         )
                         for item in m05_records
                     )
-                ))
+                )
+                if records_valid:
+                    for item in m05_records:
+                        item_status = canonicalize_thesis_status(item.get("status"))
+                        if "replaced_by" not in item and item_status != "ERSETZT":
+                            item["replaced_by"] = None
+                        successor = item.get("replaced_by")
+                        if item_status == "ERSETZT":
+                            target = records_by_id.get(successor) if isinstance(successor, str) else None
+                            if (
+                                not isinstance(successor, str) or not successor.strip()
+                                or successor != successor.strip()
+                                or successor == item.get("thesis_id")
+                                or target is None
+                                or canonicalize_thesis_status(target.get("status")) in TERMINAL_STATUSES
+                            ):
+                                records_valid = False
+                                break
+                        elif successor is not None:
+                            records_valid = False
+                            break
+                m05_structured_checks.append(bool(records_valid))
             except (TypeError, ValueError, json.JSONDecodeError):
                 m05_structured_checks.append(False)
 
@@ -1378,12 +1880,15 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"(?i)^\s*("
             + "|".join(
                 re.escape(value)
-                for value in sorted(m05_allowed_statuses, key=len, reverse=True)
+                for value in sorted(CANONICAL_STATUSES, key=len, reverse=True)
             )
             + r")(?=$|[\s.,;:])",
             str(m05_status or ""),
         )
-        m05_status_value = m05_status_prefix.group(1).upper() if m05_status_prefix else m05_status
+        m05_status_value = (
+            canonicalize_thesis_status(m05_status_prefix.group(1))
+            if m05_status_prefix else m05_status
+        )
         m05_version_match = re.fullmatch(r"\d+", str(m05_version or "").strip())
         m05_identity_valid = bool(
             m05_thesis_id and m05_version_match
@@ -1392,8 +1897,8 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
 
     if not m05_identity_valid and not (no_thesis_update and register_evidence_ok):
         errors.append("M-05: Thesen-Update benötigt Thesen-ID, positive Version und zulässigen Status oder einen technisch belegten unveränderten Registervergleich.")
-    # Keep the pre-existing M-07 identity/version/status predicate and
-    # diagnostic unchanged; M-05 now performs its own placeholder-aware check.
+    # M-07 uses the same canonical lifecycle enum as the prompt, JSON validator
+    # and M-05 evidence contract.
     if not (
         thesis_id and version_match and int(version_match.group(0)) >= 1 and status_ok
     ) and not (no_thesis_update and register_evidence_ok):
@@ -2389,6 +2894,8 @@ def validate_report(text: str) -> list[str]:
         errors.append("Fachstatusmarker fehlt oder ist nicht eindeutig")
     elif status[0] != "FINAL":
         errors.append("Fachstatus NICHT_FINAL: reguläre Veröffentlichung gesperrt")
+
+    errors.extend(validate_scenario_condition_consistency(text))
 
     # M-02: a market-regime label must be tied to the actual market snapshot.
     # A qualitative label alone is insufficient: breadth, rates and

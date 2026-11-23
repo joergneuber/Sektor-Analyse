@@ -72,6 +72,8 @@ def parse_and_validate_register(data: bytes) -> dict:
         thesis_id = thesis.get("thesis_id")
         if not isinstance(thesis_id, str) or not thesis_id.strip():
             raise ValueError(f"These[{index}] besitzt keine thesis_id")
+        if thesis_id != thesis_id.strip():
+            raise ValueError(f"These[{index}] besitzt eine thesis_id mit führenden oder nachgestellten Leerzeichen")
         if thesis_id in seen:
             raise ValueError(f"Doppelte thesis_id im Register: {thesis_id}")
         seen.add(thesis_id)
@@ -126,6 +128,11 @@ def validate_manifest_against_register(
     for index, thesis in enumerate(register["theses"]):
         if not isinstance(thesis, dict) or type(thesis.get("active", True)) is not bool:
             raise ValueError(f"These[{index}] besitzt keinen booleschen active-Status")
+        thesis_id = thesis.get("thesis_id")
+        if not isinstance(thesis_id, str) or not thesis_id.strip():
+            raise ValueError(f"These[{index}] besitzt keine thesis_id")
+        if thesis_id != thesis_id.strip():
+            raise ValueError(f"These[{index}] besitzt eine thesis_id mit führenden oder nachgestellten Leerzeichen")
     if manifest.get("register_sha256") != sha256_bytes(register_bytes):
         raise ValueError("Manifest-Hash stimmt nicht mit Register überein")
     if manifest.get("register_schema_version") != register.get("schema_version"):

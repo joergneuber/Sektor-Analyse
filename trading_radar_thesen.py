@@ -16,31 +16,35 @@ from pathlib import Path
 from typing import Any
 
 BLOCK_RE = re.compile(r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", re.S)
-REQUIRED = {
-    "thesis_id", "thesis", "horizon", "alternative", "evidence", "counter_evidence",
-    "confidence", "confirm_triggers", "invalidate_triggers",
-    "event_dependencies", "asset_classes", "candidates", "status",
-}
-VALID_STATUS = {
-    # Zielarchitektur v2.1 (Unicode-Schreibweise) plus Altregister-Kompatibilität.
+CANONICAL_STATUSES = frozenset({
     "NEU", "BESTÄTIGT", "ABGESCHWÄCHT", "WARTET AUF EREIGNIS",
     "INVALIDIERT", "ERSETZT",
-    "BESTAETIGT", "VERSTAERKT", "ABGESCHWAECHT", "WARTET_AUF_EVENT",
-    "WIDERLEGT", "UNKLAR",
-}
-
-
+})
+TERMINAL_STATUSES = frozenset({"INVALIDIERT", "ERSETZT"})
+# Historical values are tolerated only on already archived persisted records;
+# they are not valid states for incoming JSON or active theses.
+LEGACY_ARCHIVE_STATUSES = frozenset({"VERSTAERKT", "WIDERLEGT", "UNKLAR"})
+# These spellings are accepted only as legacy input aliases and are always
+# normalized before validation/persistence. Prompts must emit canonical Unicode.
 STATUS_ALIASES = {
     "BESTAETIGT": "BESTÄTIGT",
     "ABGESCHWAECHT": "ABGESCHWÄCHT",
     "WARTET_AUF_EVENT": "WARTET AUF EREIGNIS",
 }
+VALID_STATUS = CANONICAL_STATUSES | frozenset(STATUS_ALIASES)
+
+REQUIRED = {
+    "thesis_id", "thesis", "horizon", "alternative", "evidence", "counter_evidence",
+    "confidence", "confirm_triggers", "invalidate_triggers",
+    "event_dependencies", "asset_classes", "candidates", "status", "replaced_by",
+}
 
 
 def canonicalize_thesis_status(value: Any) -> str:
-    """Store one canonical Unicode spelling for known legacy ASCII aliases."""
-    raw = re.sub(r"\\s+", " ", str(value or "").strip()).upper()
+    """Normalize only the three documented legacy ASCII aliases."""
+    raw = re.sub(r"\s+", " ", str(value or "").strip()).upper()
     return STATUS_ALIASES.get(raw, raw)
+
 
 
 def _find_thesis_json_block(report: str):
@@ -97,26 +101,51 @@ def extract_thesis_payload(report: str) -> dict[str, Any] | None:
 
 
 def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate the canonical thesis payload and its replacement references."""
     theses = payload.get("theses")
     if not isinstance(theses, list):
         raise ValueError("theses muss eine Liste sein")
     checked: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
     for index, thesis in enumerate(theses):
         if not isinstance(thesis, dict):
             raise ValueError(f"These {index}: Eintrag muss ein Objekt sein")
+        # Backward-compatible, deterministic migration: for every non-ERSETZT
+        # legacy thesis, the only valid replacement value is null.
+        if (
+            "replaced_by" not in thesis
+            and canonicalize_thesis_status(thesis.get("status")) != "ERSETZT"
+        ):
+            thesis["replaced_by"] = None
         missing = REQUIRED - thesis.keys()
         if missing:
             raise ValueError(f"These {index}: Pflichtfelder fehlen: {', '.join(sorted(missing))}")
         tid = thesis["thesis_id"]
         if not isinstance(tid, str) or not tid.strip():
             raise ValueError(f"These {index}: thesis_id muss ein nichtleerer Text sein")
+        if tid != tid.strip():
+            raise ValueError(
+                f"These {index}: thesis_id darf keine umgebenden Leerzeichen enthalten"
+            )
         if tid in seen:
             raise ValueError(f"Doppelte thesis_id im Lauf: {tid}")
         seen.add(tid)
+        by_id[tid] = thesis
         thesis["status"] = canonicalize_thesis_status(thesis["status"])
-        if thesis["status"] not in VALID_STATUS:
-            raise ValueError(f"These {tid}: ungueltiger Status {thesis['status']!r}")
+        status = thesis["status"]
+        if status not in CANONICAL_STATUSES:
+            raise ValueError(f"These {tid}: ungueltiger Status {status!r}")
+        successor = thesis["replaced_by"]
+        if status == "ERSETZT":
+            if not isinstance(successor, str) or not successor.strip():
+                raise ValueError(f"These {tid}: ERSETZT benötigt eine nichtleere replaced_by-ID")
+            if successor != successor.strip():
+                raise ValueError(f"These {tid}: replaced_by darf keine umgebenden Leerzeichen enthalten")
+            if successor == tid:
+                raise ValueError(f"These {tid}: replaced_by darf nicht auf dieselbe thesis_id zeigen")
+        elif successor is not None:
+            raise ValueError(f"These {tid}: replaced_by muss bei Status {status} null sein")
         for field in ("evidence", "counter_evidence", "confirm_triggers", "invalidate_triggers", "event_dependencies", "asset_classes", "candidates"):
             if not isinstance(thesis[field], list):
                 raise ValueError(f"These {tid}: {field} muss eine Liste sein")
@@ -127,6 +156,23 @@ def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if not thesis[field] or any(not isinstance(item, str) or not item.strip() for item in thesis[field]):
                 raise ValueError(f"These {tid}: {field} benötigt konkrete, nichtleere Einträge")
         checked.append(thesis)
+
+    for thesis in checked:
+        if thesis["status"] != "ERSETZT":
+            continue
+        successor_id = thesis["replaced_by"]
+        successor = by_id.get(successor_id)
+        if successor is None:
+            raise ValueError(
+                f"These {thesis['thesis_id']}: replaced_by {successor_id!r} "
+                "muss im selben Thesenpayload vorhanden sein"
+            )
+        successor_status = canonicalize_thesis_status(successor.get("status"))
+        if successor_status in TERMINAL_STATUSES:
+            raise ValueError(
+                f"These {thesis['thesis_id']}: replaced_by {successor_id!r} "
+                "muss auf eine aktive Nachfolger-ID zeigen (aktiven Nachfolger-ID-Nachweis erforderlich)"
+            )
     return checked
 
 
@@ -223,7 +269,7 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
     return text[:body_start] + body + text[body_end:]
 
 def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, Any]]:
-    """Validate a persisted register before it can be used as comparison baseline."""
+    """Validate a persisted register, including terminal replacement links."""
     if (
         not isinstance(payload, dict)
         or type(payload.get("schema_version")) is not int
@@ -234,6 +280,7 @@ def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, A
     if not isinstance(theses, list) or not theses:
         raise ValueError(f"{label}: theses[] fehlt oder ist leer")
     seen = set()
+    by_id: dict[str, dict[str, Any]] = {}
     active_count = 0
     for index, item in enumerate(theses):
         if not isinstance(item, dict):
@@ -242,9 +289,14 @@ def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, A
         version = item.get("version")
         if not isinstance(thesis_id, str) or not thesis_id.strip():
             raise ValueError(f"{label}: These[{index}] besitzt keine thesis_id")
+        if thesis_id != thesis_id.strip():
+            raise ValueError(
+                f"{label}: These[{index}] thesis_id darf keine umgebenden Leerzeichen enthalten"
+            )
         if thesis_id in seen:
             raise ValueError(f"{label}: doppelte thesis_id {thesis_id}")
         seen.add(thesis_id)
+        by_id[thesis_id] = item
         if type(version) is not int or version < 1:
             raise ValueError(f"{label}: {thesis_id} besitzt keine positive Version")
         active = item.get("active", True)
@@ -252,11 +304,37 @@ def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, A
             raise ValueError(f"{label}: {thesis_id} besitzt keinen booleschen active-Status")
         if active:
             active_count += 1
+        status = canonicalize_thesis_status(item.get("status")) if item.get("status") else ""
+        successor = item.get("replaced_by")
+        if status not in CANONICAL_STATUSES and not (
+            active is False and status in LEGACY_ARCHIVE_STATUSES
+        ):
+            raise ValueError(f"{label}: {thesis_id} besitzt einen nicht vertragskonformen Status {status!r}")
+        if active is False and status not in TERMINAL_STATUSES and status not in LEGACY_ARCHIVE_STATUSES:
+            raise ValueError(f"{label}: nichtterminale These {thesis_id} darf nicht archiviert sein")
+        if status == "ERSETZT":
+            if not isinstance(successor, str) or not successor.strip() or successor.strip() == thesis_id:
+                raise ValueError(f"{label}: {thesis_id} besitzt keinen gültigen replaced_by-Nachfolger")
+            if active:
+                raise ValueError(f"{label}: terminale These {thesis_id} darf nicht aktiv sein")
+        elif successor is not None:
+            raise ValueError(f"{label}: {thesis_id} darf bei Status {status or 'ALT'} keinen replaced_by-Wert besitzen")
+        if status == "INVALIDIERT" and active:
+            raise ValueError(f"{label}: terminale These {thesis_id} darf nicht aktiv sein")
+    for thesis_id, item in by_id.items():
+        status = canonicalize_thesis_status(item.get("status")) if item.get("status") else ""
+        if status == "ERSETZT":
+            successor = by_id.get(item.get("replaced_by"))
+            if successor is None or successor.get("active", True) is not True:
+                raise ValueError(f"{label}: {thesis_id} verweist nicht auf eine aktive Nachfolger-These")
     return [
         {"thesis_id": item["thesis_id"], "version": item["version"],
-         "active": item.get("active", True)}
+         "active": item.get("active", True),
+         "status": canonicalize_thesis_status(item.get("status")) if item.get("status") else "",
+         "replaced_by": item.get("replaced_by")}
         for item in theses
     ]
+
 
 
 def _register_comparison_sha256(previous_sha256: str, current_sha256: str) -> str:
@@ -322,9 +400,41 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     unchanged_ids: list[str] = []
     archived_ids: list[str] = []
     current_ids = {item["thesis_id"] for item in theses}
+    current_status_by_id = {item["thesis_id"]: item.get("status") for item in theses}
+    # An active thesis may not disappear merely because the model omitted it.
+    # The v2.1 contract requires an explicit INVALIDIERT/ERSETZT lifecycle
+    # record under the same stable ID. Silent omission used to turn an
+    # accidental model omission into an apparently valid archive transition.
+    missing_active_ids = sorted(
+        str(old_id) for old_id, old in old_by_id.items()
+        if old.get("active", True) is True
+        and old_id not in current_ids
+    )
+    if missing_active_ids:
+        raise ValueError(
+            "Aktive Thesen fehlen im aktuellen JSON-Block; stabile IDs müssen "
+            "mit Status INVALIDIERT/ERSETZT explizit fortgeführt werden: "
+            + ", ".join(missing_active_ids)
+        )
     for item in theses:
         old = old_by_id.get(item["thesis_id"], {})
         entry = dict(item)
+        if old and old.get("active", True) is False:
+            raise ValueError(
+                f"Archivierte These {entry['thesis_id']} darf nicht reaktiviert werden; "
+                "eine neue These benötigt eine neue thesis_id und Status NEU"
+            )
+        if old and entry.get("status") == "NEU":
+            raise ValueError(
+                f"Bestehende These {entry['thesis_id']} darf nicht erneut Status NEU erhalten; "
+                "NEU ist ausschließlich für eine bislang unbekannte thesis_id zulässig"
+            )
+        if previous_exists and not old and entry.get("status") != "NEU":
+            raise ValueError(
+                f"Neue These {entry['thesis_id']} muss gegenüber dem vorhandenen Register "
+                "explizit Status NEU und Version 1 erhalten; BESTÄTIGT/andere Status "
+                "dürfen keine neue Identität kaschieren"
+            )
         # Versionen repraesentieren fachliche Aenderungen, nicht jeden Lauf.
         # Vergleich nur ueber den inhaltlichen Thesen-Payload; Laufzeitfelder
         # und Daten-Cutoff werden separat aktualisiert.
@@ -332,7 +442,7 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
             "thesis", "expected_movement", "horizon", "time_horizon", "alternative", "evidence",
             "counter_evidence", "confidence", "confirm_triggers",
             "invalidate_triggers", "event_dependencies", "asset_classes",
-            "candidates", "status",
+            "candidates", "status", "replaced_by",
         )
         changed = not old or any(old.get(field) != entry.get(field) for field in content_fields)
         old_version = int(old.get("version", 0) or 0)
@@ -346,18 +456,47 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
         entry["created_at"] = old.get("created_at", now)
         entry["updated_at"] = now if changed else old.get("updated_at", now)
         entry["data_cutoff"] = cutoff
-        entry["active"] = True
+        terminal_status = entry.get("status") in TERMINAL_STATUSES
+        if entry.get("status") == "ERSETZT":
+            successor = entry.get("replaced_by")
+            if (
+                not isinstance(successor, str) or not successor.strip()
+                or successor == entry["thesis_id"]
+                or successor not in current_ids
+                or current_status_by_id.get(successor) in TERMINAL_STATUSES
+            ):
+                raise ValueError(
+                    f"These {entry['thesis_id']}: ERSETZT benötigt replaced_by "
+                    "mit einer aktiven Nachfolger-ID im aktuellen Thesenblock"
+                )
+        entry["active"] = not terminal_status
+        if terminal_status:
+            entry["archived_at"] = old.get("archived_at", now) if old.get("active", True) is False else now
+            entry["archive_reason"] = old.get("archive_reason") if old.get("active", True) is False else (
+                "Expliziter Status INVALIDIERT" if entry["status"] == "INVALIDIERT"
+                else f"Explizit ersetzt durch {entry['replaced_by']}"
+            )
+            if old.get("active", True) is True:
+                archived_ids.append(str(entry["thesis_id"]))
+        else:
+            entry.pop("archived_at", None)
+            entry.pop("archive_reason", None)
         entry["last_seen_at"] = now
         current.append(entry)
-    # Nicht mehr ausgegebene Thesen werden archiviert, nicht still geloescht.
+    # Already inactive historical records remain in the register unchanged;
+    # they are not re-archived or assigned a new archive timestamp each run.
     for old_id, old in old_by_id.items():
         if old_id not in current_ids:
-            archived = dict(old)
-            archived["active"] = False
-            archived["archived_at"] = now
-            archived["archive_reason"] = "Im aktuellen Thesenblock nicht enthalten; nicht stillschweigend gelöscht."
             if old.get("active", True) is True:
-                archived_ids.append(str(old_id))
+                # Defensive assertion: the fail-closed check above should make
+                # this branch unreachable for active records.
+                raise ValueError(f"Aktive These {old_id} darf nicht automatisch archiviert werden")
+            archived = dict(old)
+            archived_status = canonicalize_thesis_status(archived.get("status"))
+            if archived_status in VALID_STATUS:
+                archived["status"] = archived_status
+            if "replaced_by" not in archived and archived_status != "ERSETZT":
+                archived["replaced_by"] = None
             current.append(archived)
     merged = {"schema_version": 1, "updated_at": now, "theses": current}
     _validate_register_snapshot(merged, label="Nachzustand")

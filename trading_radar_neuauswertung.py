@@ -5,34 +5,21 @@ from pathlib import Path
 from typing import Any
 
 from trading_radar_placeholders import is_placeholder_value
+from trading_radar_thesen import (
+    CANONICAL_STATUSES as THESIS_STATUSES,
+    TERMINAL_STATUSES,
+    canonicalize_thesis_status,
+)
 
 RADAR_SECTIONS = (
     "1 · Trading-Radar", "2 · Thesen-Update", "3 · Ereignisradar",
     "4 · Assetklassenvergleich", "5 · Technische Kandidaten",
     "6 · Portfolio & Risiko", "7 · MSCI-Vergleich", "8 · Daten-/Prüfanhang",
 )
-# Keep the strict report gate aligned with trading_radar_thesen.VALID_STATUS.
-# The three legacy lifecycle values are still accepted by the persistence layer;
-# rejecting them here would make a valid register impossible to persist.
-THESIS_STATUSES = {
-    "NEU", "BESTÄTIGT", "ABGESCHWÄCHT", "WARTET AUF EREIGNIS",
-    "INVALIDIERT", "ERSETZT", "VERSTAERKT", "WIDERLEGT", "UNKLAR",
-}
-THESIS_STATUS_ALIASES = {
-    "BESTAETIGT": "BESTÄTIGT",
-    "ABGESCHWAECHT": "ABGESCHWÄCHT",
-    "WARTET_AUF_EVENT": "WARTET AUF EREIGNIS",
-}
-
-
-def canonicalize_thesis_status(value: Any) -> str:
-    """Map known ASCII prompt spellings to the single canonical report status."""
-    raw = re.sub(r"\s+", " ", str(value or "").strip()).upper()
-    return THESIS_STATUS_ALIASES.get(raw, raw)
-
+# Canonical status vocabulary is imported from the persistence contract.
 REQUIRED = {"thesis_id", "version", "updated_at", "data_cutoff", "thesis", "horizon", "alternative", "evidence",
             "counter_evidence", "confidence", "confirm_triggers", "invalidate_triggers",
-            "event_dependencies", "asset_classes", "candidates", "status"}
+            "event_dependencies", "asset_classes", "candidates", "status", "replaced_by"}
 LIST_FIELDS = {"evidence", "counter_evidence", "confirm_triggers", "invalidate_triggers",
               "event_dependencies", "asset_classes", "candidates"}
 
@@ -60,8 +47,14 @@ MARKT-FIRST-ABNAHME:
 - Abschnitt 1 muss explizit die Felder "Marktregime:", "Indizes/Marktbreite:",
   "Zinsen/Renditen:", "Dollar/Liquidität/Volatilität:" und "Basisszenario:" enthalten.
   Zusätzlich "Positives Alternativszenario:" und "Negatives Alternativszenario:" mit
-  Eintrittsbedingungen, Bestätigungs- und Invalidierungstriggern ausweisen. Wenn Daten fehlen,
-  "NICHT ABLEITBAR" plus konkrete Datenlücke/Begründung nennen.
+  Eintrittsbedingungen, Bestätigungs- und Invalidierungstriggern ausweisen. Jedes Szenario
+  muss außerdem einen expliziten Status tragen: "Status: ERFÜLLT", "Status: NICHT ERFÜLLT",
+  "Status: TRIGGER AUSGELÖST" oder "Status: NICHT ABLEITBAR". Status und Eintrittsbedingungen
+  müssen gegen die im selben Szenariodatensatz genannten aktuellen Indikatorwerte geprüft werden;
+  widersprüchliche Status sind unzulässig. Basisszenario und positives Alternativszenario erhalten
+  ERFÜLLT nur bei erfüllter Eintrittsbedingung; das negative Alternativszenario erhält bei erfüllter
+  negativer Eintrittsbedingung TRIGGER AUSGELÖST. Nicht erfüllte Bedingungen erhalten NICHT ERFÜLLT;
+  fehlende Werte erhalten NICHT ABLEITBAR plus konkrete Datenlücke/Begründung.
   Die eingefuegten Live-Marktbelege sind Datenfakten; Interpretation klar davon trennen.
 - Abschnitt 2 muss JEDE These als eigenen Datensatz mit stabiler "thesis_id", positiver
   "version", "updated_at", "data_cutoff", "Thesen-Name:", "Gegenbelege:", "Alternative:",
@@ -73,6 +66,16 @@ MARKT-FIRST-ABNAHME:
   Invalidierungstrigger, Zeithorizont, relevante Indikatoren und Konsequenz für die
   Markteinschätzung. Nicht belastbar ableitbare Szenarien ausdrücklich mit konkreter Datenlücke
   begründen; keine Szenariowerte erfinden.
+- M-09-Eintrittsbedingungen nur als parserfähige Atome formulieren: Marktbreite mit
+  mindestens/mind./>=, über/oberhalb von, unter/unterhalb von oder höchstens/<= plus Bruch x/y;
+  XLV/XLE mit positiver oder nicht-positiver 3M-Relative-Stärke bzw. explizitem Vergleich zu 0 %.
+  Indikatoren exakt messbar ausweisen, z. B. "Marktbreite 8/11", "XLV 3M +1.84%",
+  "XLE 3M -3.55%"; fehlende Werte mit NICHT ABLEITBAR und einer konkret benannten Datenlücke
+  ausweisen (z. B. "Datenlücke: XLV 3M-Relative-Stärke fehlt").
+  Nur explizite UND/ODER-Verknüpfungen und Klammern verwenden; UND hat Vorrang vor ODER,
+  "sowie" bedeutet UND. "bzw." ist nur innerhalb eines gemeinsamen XLV/XLE-Paares ODER.
+  Keine freien Ersatzmetriken oder impliziten Verknüpfungen. Unbekannte Bedingungen dürfen
+  niemals als geprüft/erfüllt ausgegeben werden; sie führen zum Fail-Closed-Gate.
 - Abschnitt 4 muss eine explizite Relative-Stärke-Matrix für Regionen, Indizes, Sektoren und
   Anlageklassen mit EINEM gemeinsamen Datenstichtag und identischen 1M-/3M-Fenstern enthalten.
   Je Bereich beide Fenster als Werte oder als konkrete Datenlücke ausweisen; nicht vergleichbare
@@ -104,8 +107,18 @@ REGELN:
 - Keine Trades, Stops, Positionsgroessen, Portfoliohistorie oder Handelsregeln aendern.
 - Technische Kandidaten von tatsaechlichen Portfolio-Positionen trennen.
 - Thesenregister deterministisch mit Vorzustand vergleichen: stabile thesis_id, Version,
-  updated_at, Daten-Cutoff, Belege/Gegenbelege, Alternativen und Trigger. Eine Aussage
-  "keine Änderung" darf nur nach tatsächlichem Registervergleich erfolgen.
+  updated_at, Daten-Cutoff, Belege/Gegenbelege, Alternativen und Trigger. Jede aktive These
+  aus dem Vorregister muss im aktuellen JSON-Block unter derselben thesis_id fortgeführt werden.
+  Neue IDs sind nur für tatsächlich neue Thesen zulässig. Eine These darf nur mit derselben ID
+  und explizitem Status INVALIDIERT oder ERSETZT beendet werden; ERSETZT benötigt zusätzlich
+  replaced_by mit einer im aktuellen Block vorhandenen Nachfolger-ID. Aktive Vorregister-Thesen
+  niemals allein wegen fehlender Ausgabe archivieren. Wenn eine alte These nicht belastbar
+  bewertet werden kann, unter stabiler ID mit Status WARTET AUF EREIGNIS fortführen.
+  Eine bereits archivierte thesis_id ist endgültig gesperrt und darf niemals reaktiviert
+  oder erneut für einen aktiven Datensatz verwendet werden. Taucht ein Thema nach einer
+  abgeschlossenen Archivierung erneut als eigenständige belastbare These auf, ist eine neue,
+  deterministische thesis_id mit Status NEU und Version 1 zu vergeben; die alte ID bleibt
+  unverändert archiviert. Eine Aussage "keine Änderung" darf nur nach tatsächlichem Registervergleich erfolgen.
 - Bei abweichenden Makro-/Live-Werten (insbesondere 10Y Treasury) für jede konkrete Beobachtung
   Quelle, Abrufzeit, Datenstichtag und Einheit dokumentieren. Alternativ eine einzelne Zeile
   "QUELLENKONFLIKT: OFFEN" ausgeben, die das Instrument und beide abweichenden Zahlenwerte
@@ -150,13 +163,14 @@ AUSGABE mit genau diesen acht Ueberschriften:
 
 Am Ende genau einen JSON-Block:
 ```TRADING_RADAR_THESEN_JSON
-{"data_cutoff":"...","theses":[...]}
+{"data_cutoff":"<ISO-8601-Datenstand>","theses":[{"thesis_id":"<ID>","status":"NEU","replaced_by":null}]}
 ```
 Jede These enthaelt thesis_id, version, updated_at, data_cutoff, thesis, horizon,
 alternative, evidence, counter_evidence, confidence, confirm_triggers, invalidate_triggers,
-event_dependencies, asset_classes, candidates, status. Listen als JSON-Arrays;
+event_dependencies, asset_classes, candidates, status, replaced_by. Listen als JSON-Arrays;
 status ausschließlich exakt aus NEU, BESTÄTIGT, ABGESCHWÄCHT, WARTET AUF EREIGNIS, INVALIDIERT, ERSETZT wählen.
 Keine ASCII-Umschreibungen wie BESTAETIGT und keine zusätzlichen Statuswerte verwenden.
+replaced_by ist bei ERSETZT eine vorhandene, aktive Nachfolger-ID; sonst null.
 confidence qualitativ begruenden, keine scheinexakte Wahrscheinlichkeit. JSON muss gueltig sein.
 '''
 
@@ -409,7 +423,7 @@ def validate_thesis_ids_match_report(report: str, payload: Any | None = None) ->
     return []
 
 def validate_thesis_register(payload: Any) -> list[str]:
-    """Validate register shape, required fields, IDs, versions, statuses and list types."""
+    """Validate the shared canonical thesis contract and replacement links."""
     if not isinstance(payload, dict):
         return ["Thesenregister muss ein JSON-Objekt sein"]
     errors: list[str] = []
@@ -419,30 +433,69 @@ def validate_thesis_register(payload: Any) -> list[str]:
     if not isinstance(theses, list):
         return errors + ["Register: theses muss ein JSON-Array sein"]
     seen: set[str] = set()
+    by_id: dict[str, dict[str, Any]] = {}
     for i, thesis in enumerate(theses):
         prefix = f"These[{i}]"
         if not isinstance(thesis, dict):
             errors.append(f"{prefix}: muss ein JSON-Objekt sein")
             continue
+        # Legacy JSON without replaced_by is migrated to null only for
+        # non-ERSETZT states; an erased successor is never guessed.
+        if (
+            "replaced_by" not in thesis
+            and canonicalize_thesis_status(thesis.get("status")) != "ERSETZT"
+        ):
+            thesis["replaced_by"] = None
         errors.extend(f"{prefix}: Pflichtfeld fehlt: {k}" for k in sorted(REQUIRED - thesis.keys()))
         tid = thesis.get("thesis_id")
         if not isinstance(tid, str) or not tid.strip():
             errors.append(f"{prefix}: thesis_id muss nichtleerer String sein")
+        elif tid != tid.strip():
+            errors.append(f"{prefix}: thesis_id darf keine umgebenden Leerzeichen enthalten")
         elif tid in seen:
             errors.append(f"{prefix}: doppelte thesis_id: {tid}")
         else:
             seen.add(tid)
+            by_id[tid] = thesis
         ver = thesis.get("version")
         if not isinstance(ver, int) or isinstance(ver, bool) or ver < 1:
             errors.append(f"{prefix}: version muss positive Ganzzahl sein")
-        if canonicalize_thesis_status(thesis.get("status")) not in THESIS_STATUSES:
-            errors.append(f"{prefix}: unzulaessiger Status {thesis.get('status')!r}; erlaubt: {sorted(THESIS_STATUSES)}")
+        raw_status = thesis.get("status")
+        status = canonicalize_thesis_status(raw_status)
+        if status not in THESIS_STATUSES:
+            errors.append(f"{prefix}: unzulaessiger Status {raw_status!r}; erlaubt: {sorted(THESIS_STATUSES)}")
+        elif raw_status != status:
+            thesis["status"] = status
+        successor = thesis.get("replaced_by")
+        if status == "ERSETZT":
+            if not isinstance(successor, str) or not successor.strip():
+                errors.append(f"{prefix}: Status ERSETZT benötigt eine nichtleere replaced_by-ID")
+            elif successor != successor.strip():
+                errors.append(f"{prefix}: replaced_by darf keine umgebenden Leerzeichen enthalten")
+            elif isinstance(tid, str) and successor == tid:
+                errors.append(f"{prefix}: replaced_by darf nicht auf dieselbe thesis_id zeigen")
+        elif successor is not None:
+            errors.append(f"{prefix}: replaced_by muss bei Status {status} null sein")
         if not isinstance(thesis.get("alternative"), str) or not thesis.get("alternative", "").strip():
             errors.append(f"{prefix}: alternative muss ein nichtleerer String sein")
         for field in LIST_FIELDS:
             if field in thesis and not isinstance(thesis[field], list):
                 errors.append(f"{prefix}: {field} muss JSON-Array sein")
+    for thesis in theses:
+        if not isinstance(thesis, dict) or canonicalize_thesis_status(thesis.get("status")) != "ERSETZT":
+            continue
+        successor_id = thesis.get("replaced_by")
+        successor = by_id.get(successor_id) if isinstance(successor_id, str) else None
+        if successor is None:
+            errors.append(
+                f"These {thesis.get('thesis_id')}: replaced_by muss auf eine vorhandene These zeigen"
+            )
+        elif canonicalize_thesis_status(successor.get("status")) in TERMINAL_STATUSES:
+            errors.append(
+                f"These {thesis.get('thesis_id')}: replaced_by muss auf eine aktive Nachfolger-ID zeigen"
+            )
     return errors
+
 
 def _canonicalize_radar_heading_style(report: str) -> str:
     """Normalize only numbered section-heading punctuation for validation.
@@ -1286,6 +1339,16 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         match = re.search(pattern, body, re.I | re.M)
         return match.group(1).strip().strip(" -*") if match else ""
 
+    def add_legacy_replaced_by_null(thesis_item):
+        # Legacy payloads without the new field can be migrated only when they
+        # are not marked ERSETZT; a successor must never be guessed.
+        if "replaced_by" not in thesis_item and canonicalize_thesis_status(
+            thesis_item.get("status")
+        ) != "ERSETZT":
+            thesis_item["replaced_by"] = None
+            return True
+        return False
+
     def remove_unmarked_json_drafts(source: str) -> tuple[str, bool]:
         section2_match = re.search(
             r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*$",
@@ -1449,6 +1512,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
                         canonical_status = canonicalize_thesis_status(raw_status)
                         if canonical_status in THESIS_STATUSES:
                             thesis_item["status"] = canonical_status
+                        add_legacy_replaced_by_null(thesis_item)
                         alternative = thesis_item.get("alternative")
                         if not isinstance(alternative, str) or not alternative.strip():
                             thesis_id = str(thesis_item.get("thesis_id", "")).strip()
@@ -1521,6 +1585,8 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
             if canonical_status != raw_status and canonical_status in THESIS_STATUSES:
                 thesis_item["status"] = canonical_status
                 changed = True
+            if add_legacy_replaced_by_null(thesis_item):
+                changed = True
 
             alternative = thesis_item.get("alternative")
             if not isinstance(alternative, str) or not alternative.strip():
@@ -1592,7 +1658,9 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
 
     thesis_id = one(r"^\s*(?:[-*•]\s*)?(?:Thesen-ID|thesis_id)\s*:\s*([^\r\n]+)", thesis_section)
     version_raw = one(r"^\s*(?:[-*•]\s*)?Version\s*:\s*([^\r\n]+)", thesis_section)
-    status = one(r"^\s*(?:[-*•]\s*)?Status\s*:\s*([^\r\n]+)", thesis_section).upper()
+    status = canonicalize_thesis_status(
+        one(r"^\s*(?:[-*•]\s*)?Status\s*:\s*([^\r\n]+)", thesis_section)
+    )
     version_match = re.search(r"\d+", version_raw)
     thesis = one(r"^\s*(?:Hauptanalyse|Hauptthese)\s*:\s*([^\r\n]+)", executive)
     horizon = one(r"^\s*Zeithorizont\s*:\s*([^\r\n]+)", executive)
@@ -1650,6 +1718,11 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
         return text, False
     if status not in THESIS_STATUSES:
         return text, False
+    # This text-only fallback can synthesize exactly one thesis record. It cannot
+    # prove an ERSETZT successor in the same JSON payload, so fail closed rather
+    # than emitting the contract-invalid replaced_by=null record.
+    if status == "ERSETZT":
+        return text, False
 
     payload = {
         "data_cutoff": cutoff,
@@ -1670,6 +1743,7 @@ def ensure_structured_thesis_block(report: str) -> tuple[str, bool]:
             "asset_classes": asset_classes,
             "candidates": candidates,
             "status": status,
+            "replaced_by": None,
         }],
     }
     block = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```\n\n"
