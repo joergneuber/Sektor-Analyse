@@ -103,7 +103,7 @@ jobs:
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py==0.45.0 "pandas<3.1" exchange-calendars google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy scikit-learn google-genai requests lxml xlrd cme-fedwatch openpyxl
+          pip install alpaca-py==0.45.0 "pandas<3.1" exchange-calendars google-auth-oauthlib google-api-python-client google-auth-httplib2 groq yfinance scipy scikit-learn google-genai requests lxml xlrd cme-fedwatch openpyxl pytest
 
       - name: Alpaca-Split-Adjustment-Vertrag pruefen
         run: python -m unittest tests.test_alpaca_split_adjustment_contract
@@ -114,9 +114,6 @@ jobs:
         run: python -m unittest discover -s tests -p "test_trading_radar_data_contract.py"
 
       # Neue deterministische Markt-First- und Ereignis-/OHLCV-Regressionen.
-      - name: Pytest fuer Markt-First-Integration installieren
-        run: python -m pip install pytest
-
       - name: Trading-Radar Markt-First-Qualitätsregression
         id: trading-radar-market-first
         env:
