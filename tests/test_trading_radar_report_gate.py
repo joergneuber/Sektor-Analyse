@@ -2,6 +2,7 @@
 import importlib.util
 import hashlib
 import json
+import pytest
 import re
 from pathlib import Path
 import unittest
@@ -40,16 +41,17 @@ def report_fixture(*, quantity_line="", tab2_count=2, ohlcv_warning=True):
         "- Volatilität VIX: 18.00 | Quelle: Yahoo Finance (^VIX); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.\n"
         "- Dollar-Proxy DXY (DX-Y.NYB): 100.00 | Quelle: Yahoo Finance (DX-Y.NYB); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.\n"
         "Index S&P 500: 1M +1,0%; 3M +2,0%.\nIndex Nasdaq: 1M +0,5%; 3M +1,5%.\n"
-        "Basisszenario: Seitwärts bis aufwärts. Eintritt: Marktbreite stabil. Bestätigungstrigger: Ausbruch. Invalidierungstrigger: Bruch 200-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite. Konsequenz: selektive Longs.\n"
-        "Positives Alternativszenario: Beschleunigter Aufwärtstrend. Eintritt: Renditen fallen. Bestätigungstrigger: neue Hochs. Invalidierungstrigger: Rückfall unter Ausbruchsniveau. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko erhöhen.\n"
-        "Negatives Alternativszenario: Korrektur. Eintritt: Renditen steigen. Bestätigungstrigger: Marktbreite bricht. Invalidierungstrigger: Rückeroberung 50-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Renditen, Breite. Konsequenz: Risiko reduzieren.",
+        "Basisszenario: Seitwärts bis aufwärts. Eintrittsbedingung: Marktbreite mindestens 3/11. Bestätigungstrigger: Ausbruch. Status: ERFÜLLT. Invalidierungstrigger: Bruch 200-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite 8/11. Konsequenz: selektive Longs.\n"
+        "Positives Alternativszenario: Beschleunigter Aufwärtstrend. Eintrittsbedingung: Marktbreite mindestens 9/11. Bestätigungstrigger: neue Hochs. Status: NICHT ERFÜLLT. Invalidierungstrigger: Rückfall unter Ausbruchsniveau. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite 8/11. Konsequenz: Risiko erhöhen.\n"
+        "Negatives Alternativszenario: Korrektur. Eintrittsbedingung: Marktbreite unter 3/11. Bestätigungstrigger: Marktbreite bricht. Status: NICHT ERFÜLLT. Invalidierungstrigger: Rückeroberung 50-Tage-Linie. Zeithorizont: 4 Wochen. Indikatoren: Marktbreite 8/11. Konsequenz: Risiko reduzieren.",
         "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.\n"
         "THESENREGISTER-VERGLEICH: PASS\nVORHER-SHA256: " + before_hash + "\nNACHHER-SHA256: " + after_hash + "\n"
         "THESENREGISTER-VERGLEICH-ID: " + comparison_id + "\n"
         "VORHER_THESEN_COUNT: 1\nVORHER_AKTIVE_THESEN: 1\nNACHHER_THESEN_COUNT: 1\nNACHHER_AKTIVE_THESEN: 1\n"
         "VORHER-THESIS-ID: T-1\nVORHER-REGISTER-VERSION: 1\nVORHER-THESIS-ACTIVE: YES\n"
         "THESEN_NEU: KEINE\nTHESEN_AKTUALISIERT: T-1\nTHESEN_UNVERAENDERT: KEINE\nTHESEN_ARCHIVIERT: KEINE\n"
-        "THESIS_ID: T-1\nREGISTER-VERSION: 2\nTHESIS_ACTIVE: YES\nVERSION: 2",
+        "THESIS_ID: T-1\nREGISTER-VERSION: 2\nTHESIS_ACTIVE: YES\n"
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE\nVERSION: 2",
         "3. Ereignisradar\nUhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.",
         "4. Assetklassenvergleich\nRelative-Stärke-Matrix / Kapitalrotationsvergleich\nDatenstichtag: 2026-10-30. Fenster: 1M und 3M.\n"
         "Gewinner: NICHT VERFÜGBAR (Datenlücke: keine vergleichbaren Reihen). Verlierer: NICHT VERFÜGBAR. Divergenzen: keine belastbaren Daten.\n"
@@ -122,12 +124,12 @@ class ReportGateTests(unittest.TestCase):
         )
         self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
 
-    def test_m07_accepts_updated_thesis_status(self):
+    def test_m07_rejects_noncanonical_change_descriptor_as_lifecycle_status(self):
         text = report_fixture().replace(
             "Status: BESTÄTIGT",
             "Status: Aktualisiert",
         )
-        self.assertFalse(any("M-07" in e for e in gate.validate_report(text)))
+        self.assertTrue(any("M-07" in e for e in gate.validate_report(text)))
 
     def test_m08_requires_event_detail(self):
         text = report_fixture().replace("Uhrzeit: 14:30 | Zeitzone: ET | Kennzahl: CPI | Berichtszeitraum: Q3 2026 | letzter Wert: 2.8 | Konsens: 2.9.", "Ein wichtiges makroökonomisches Ereignis wurde angekündigt und wird beobachtet.")
@@ -899,6 +901,7 @@ def test_m05_producer_writes_machine_checkable_before_after_comparison():
             "asset_classes": ["Aktien"],
             "candidates": [],
             "status": "NEU",
+            "replaced_by": None,
         }],
     }
     def thesis_report(data):
@@ -935,6 +938,7 @@ def test_m05_bootstrap_snapshot_is_never_misreported_as_comparison_pass():
             "alternative": "Alternative", "evidence": ["Beleg"], "counter_evidence": ["Gegenbeleg"],
             "confidence": "mittel", "confirm_triggers": ["Trigger"], "invalidate_triggers": ["Invalidierung"],
             "event_dependencies": [], "asset_classes": ["Aktien"], "candidates": [], "status": "NEU",
+            "replaced_by": None,
         }],
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -1277,7 +1281,7 @@ def test_m05_gate_applies_shared_placeholder_rules_to_structured_identity_withou
     assert not any(item.startswith("M-07") for item in errors), errors
 
 
-def test_m05_parses_multiword_compact_status_independently_of_m07():
+def test_m05_and_m07_accept_multiword_canonical_compact_statuses():
     text = report_fixture().replace(
         "Thesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT | gegenüber Vorversion aktualisiert.",
         "Thesen-ID: T-1\nStatus: BESTÄTIGT\n"
@@ -1291,9 +1295,8 @@ def test_m05_parses_multiword_compact_status_independently_of_m07():
     text = text.replace("VERSION: 2", "VERSION: NICHT VERFÜGBAR")
     errors = gate.validate_report(text)
     assert not any("Thesen-Update benötigt" in item for item in errors), errors
-    # The legacy M-07 parser remains unchanged and still reports its
-    # pre-existing single-token compact-status limitation.
-    assert any(item.startswith("M-07") for item in errors), errors
+    # Both validators now use the same canonical multiword lifecycle status.
+    assert not any(item.startswith("M-07") for item in errors), errors
 
 
 def test_m05_compact_register_rejects_placeholder_identity_values():
@@ -1327,6 +1330,7 @@ def test_m05_accepts_fully_proven_archive_only_register_without_active_thesis():
         "THESEN_UNVERAENDERT: KEINE\n"
         "THESEN_ARCHIVIERT: T-1\n"
         "THESIS_ID: T-1\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: NO\n"
+        "THESIS_STATUS: INVALIDIERT\nTHESIS_REPLACED_BY: KEINE\n"
         "7. MSCI-Vergleich\n"
         "Portfolio-Gesamtperformance: NICHT VERFÜGBAR\n"
         "Ø Positionsperformance: NICHT VERFÜGBAR\n"
@@ -1358,3 +1362,484 @@ def test_m05_does_not_accept_archive_only_register_with_inconsistent_change_list
     errors = []
     gate._validate_m05_m10(text, errors)
     assert any(error.startswith("M-05:") for error in errors), errors
+
+
+def test_scenario_entry_conditions_are_checked_against_indicator_values():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenarios = (
+        "Basisszenario: Makro bleibt robust. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
+        "Status: NICHT ERFÜLLT. Bestätigungstrigger: beide Sektoren positiv. "
+        "Invalidierungstrigger: Marktbreite unter 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; "
+        "Energie-ETF (XLE) 3M -3.55%. Konsequenz: beobachten.\n"
+        "Positives Alternativszenario: Rotation setzt sich fort. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und 3M-Relative-Stärke Gesundheit-ETF (XLV) und Energie-ETF (XLE) jeweils über 0,00%. "
+        "Status: NICHT ERFÜLLT. Bestätigungstrigger: beide Werte positiv. "
+        "Invalidierungstrigger: einer der Werte nicht positiv. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; "
+        "Energie-ETF (XLE) 3M -3.55%. Konsequenz: abwarten.\n"
+        "Negatives Alternativszenario: Sektorrotation schwächt sich ab. Eintrittsbedingung: Marktbreite fällt unter 3/11 "
+        "oder Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) weist eine nicht-positive 3M-Relative-Stärke auf. "
+        "Status: TRIGGER AUSGELÖST. Bestätigungstrigger: nächster gemeinsamer Stichtag. "
+        "Invalidierungstrigger: beide Sektoren wieder positiv. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; "
+        "Energie-ETF (XLE) 3M -3.55%. Konsequenz: Risiko prüfen."
+    )
+    report = report[:start] + scenarios + report[end:]
+    errors = gate.validate_report(report)
+    assert not [item for item in errors if "M-09-SZENARIO" in item], errors
+
+
+def test_scenario_gate_rejects_positive_baseline_when_one_required_sector_is_negative():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenarios = (
+        "Basisszenario: Zyklische Rotation. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
+        "Status: ERFÜLLT. Bestätigungstrigger: beide positiv. Invalidierungstrigger: einer negativ. "
+        "Zeithorizont: 1 bis 3 Monate. Indikatoren: Marktbreite 3/11; "
+        "Gesundheit-ETF (XLV) 3M +1.84%; Energie-ETF (XLE) 3M -3.55%. Konsequenz: aktiv.\n"
+        "Positives Alternativszenario: Stärke. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) positiv. Status: NICHT ERFÜLLT. "
+        "Bestätigungstrigger: beide positiv. Invalidierungstrigger: Werte negativ. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; Energie-ETF (XLE) 3M -3.55%. Konsequenz: warten.\n"
+        "Negatives Alternativszenario: Schwäche. Eintrittsbedingung: Energie-ETF (XLE) weist eine nicht-positive 3M-Relative-Stärke auf. "
+        "Status: TRIGGER AUSGELÖST. Bestätigungstrigger: Wert bleibt negativ. Invalidierungstrigger: Wert positiv. "
+        "Zeithorizont: 1 bis 3 Monate. Indikatoren: Energie-ETF (XLE) 3M -3.55%. Konsequenz: defensiv."
+    )
+    report = report[:start] + scenarios + report[end:]
+    errors = gate.validate_report(report)
+    assert any("Basisszenario widerspricht den Messwerten" in item for item in errors), errors
+
+
+def test_scenario_gate_requires_status_when_entry_condition_is_measurable():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenarios = (
+        "Basisszenario: Zyklische Rotation. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
+        "Bestätigungstrigger: beide positiv. Invalidierungstrigger: einer negativ. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; Energie-ETF (XLE) 3M -3.55%. Konsequenz: aktiv."
+    )
+    report = report[:start] + scenarios + report[end:]
+    errors = gate.validate_report(report)
+    assert any("benötigt einen expliziten Status" in item for item in errors), errors
+
+
+def test_m05_rejects_archiving_active_thesis_without_terminal_status():
+    text = (
+        "2. Thesen-Update\nThesen-ID: T-1 | Version: 2 | Status: BESTÄTIGT.\n"
+        "THESENREGISTER-VERGLEICH: PASS\n"
+        "VORHER-SHA256: " + "a" * 64 + "\nNACHHER-SHA256: " + "b" * 64 + "\n"
+        "THESENREGISTER-VERGLEICH-ID: " + hashlib.sha256(json.dumps({
+            "previous_sha256": "a" * 64, "current_sha256": "b" * 64,
+            "schema": "trading-radar-thesis-register-comparison-v1"
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest() + "\n"
+        "VORHER_THESEN_COUNT: 1\nVORHER_AKTIVE_THESEN: 1\nNACHHER_THESEN_COUNT: 1\nNACHHER_AKTIVE_THESEN: 0\n"
+        "VORHER-THESIS-ID: T-1\nVORHER-REGISTER-VERSION: 1\nVORHER-THESIS-ACTIVE: YES\n"
+        "THESEN_NEU: KEINE\nTHESEN_AKTUALISIERT: KEINE\nTHESEN_UNVERAENDERT: KEINE\nTHESEN_ARCHIVIERT: T-1\n"
+        "THESIS_ID: T-1\nREGISTER-VERSION: 2\nTHESIS_ACTIVE: NO\n"
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE\n"
+    )
+    errors = []
+    gate._validate_m05_m10(text, errors)
+    assert any("ohne expliziten Status INVALIDIERT/ERSETZT" in item for item in errors), errors
+
+
+def test_m05_rejects_new_id_marked_as_already_confirmed():
+    text = report_fixture().replace(
+        "THESIS_ID: T-1\nREGISTER-VERSION: 2\nTHESIS_ACTIVE: YES\n"
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE",
+        "THESIS_ID: T-2\nREGISTER-VERSION: 1\nTHESIS_ACTIVE: YES\n"
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE",
+    ).replace(
+        "THESEN_AKTUALISIERT: T-1", "THESEN_NEU: T-2"
+    ).replace(
+        "THESEN_NEU: KEINE\nTHESEN_AKTUALISIERT: T-1", "THESEN_NEU: T-2\nTHESEN_AKTUALISIERT: KEINE"
+    )
+    errors = gate.validate_report(text)
+    assert any("Neue These T-2 muss mit explizitem Status NEU" in item for item in errors), errors
+
+
+def test_scenario_gate_requires_nicht_ableitbar_when_required_indicator_is_missing():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenario = (
+        "Basisszenario: Zyklische Rotation. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
+        "Status: ERFÜLLT. Bestätigungstrigger: beide Sektoren positiv. Invalidierungstrigger: einer negativ. "
+        "Zeithorizont: 1 bis 3 Monate. Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%. "
+        "Konsequenz: aktiv."
+    )
+    report = report[:start] + scenario + report[end:]
+    errors = gate.validate_report(report)
+    assert any("Indikatorwerte fehlen" in item for item in errors), errors
+
+
+def test_m05_rejects_existing_thesis_marked_neu():
+    report = report_fixture().replace(
+        "THESIS_STATUS: BESTÄTIGT",
+        "THESIS_STATUS: NEU",
+    )
+    errors = gate.validate_report(report)
+    assert any("Bestehende These T-1 darf nicht erneut Status NEU tragen" in item for item in errors), errors
+
+
+def test_negative_alternative_requires_trigger_ausgeloest_when_condition_is_true():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenarios = (
+        "Basisszenario: Wachstum bleibt robust. Eintrittsbedingung: Marktbreite mindestens 3/11. "
+        "Status: ERFÜLLT. Bestätigungstrigger: Marktbreite bleibt mindestens 3/11. "
+        "Invalidierungstrigger: Marktbreite fällt unter 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten.\n"
+        "Positives Alternativszenario: Rotation setzt sich fort. Eintrittsbedingung: Marktbreite mindestens 3/11. "
+        "Status: ERFÜLLT. Bestätigungstrigger: Marktbreite bleibt mindestens 3/11. "
+        "Invalidierungstrigger: Marktbreite fällt unter 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten.\n"
+        "Negatives Alternativszenario: Breite schwächt sich ab. Eintrittsbedingung: Marktbreite fällt unter 4/11. "
+        "Status: ERFÜLLT. Bestätigungstrigger: Marktbreite bleibt unter 4/11. "
+        "Invalidierungstrigger: Marktbreite erreicht mindestens 4/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: defensiv."
+    )
+    report = report[:start] + scenarios + report[end:]
+    errors = gate.validate_report(report)
+    assert any("erwarteter Status=TRIGGER AUSGELÖST" in item for item in errors), errors
+
+
+def test_breadth_over_threshold_is_strict_not_greater_or_equal():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenarios = (
+        "Basisszenario: Marktbreite verbessert sich. Eintrittsbedingung: Marktbreite über 3/11. "
+        "Status: ERFÜLLT. Bestätigungstrigger: Marktbreite bleibt über 3/11. "
+        "Invalidierungstrigger: Marktbreite fällt auf 3/11 oder darunter. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten.\n"
+        "Positives Alternativszenario: Marktbreite verbessert sich. Eintrittsbedingung: Marktbreite mindestens 3/11. "
+        "Status: ERFÜLLT. Bestätigungstrigger: Marktbreite bleibt mindestens 3/11. "
+        "Invalidierungstrigger: Marktbreite fällt unter 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten.\n"
+        "Negatives Alternativszenario: Marktbreite fällt. Eintrittsbedingung: Marktbreite fällt unter 3/11. "
+        "Status: NICHT ERFÜLLT. Bestätigungstrigger: Marktbreite bleibt unter 3/11. "
+        "Invalidierungstrigger: Marktbreite erreicht mindestens 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten."
+    )
+    report = report[:start] + scenarios + report[end:]
+    errors = gate.validate_report(report)
+    assert any("Basisszenario widerspricht den Messwerten" in item for item in errors), errors
+
+
+def test_m05_requires_status_and_successor_evidence_for_every_current_thesis():
+    report = report_fixture().replace(
+        "THESIS_STATUS: BESTÄTIGT\nTHESIS_REPLACED_BY: KEINE\n",
+        "",
+    )
+    errors = gate.validate_report(report)
+    assert any("THESIS_STATUS-Nachweis" in item for item in errors), errors
+    assert any("THESIS_REPLACED_BY-Nachweis" in item for item in errors), errors
+
+
+def test_scenario_parser_uses_and_precedence_over_or():
+    indicators = "Marktbreite 3/11; XLV 3M +1.84%; XLE 3M -3.55%"
+    # A OR B AND C must be A OR (B AND C), not (A OR B) AND C.
+    result = gate._evaluate_scenario_entry(
+        "Marktbreite mindestens 3/11 oder XLV positive 3M-Relative-Stärke "
+        "und XLE positive 3M-Relative-Stärke",
+        indicators,
+    )
+    assert result.value is True
+
+    grouped = gate._evaluate_scenario_entry(
+        "(Marktbreite mindestens 3/11 oder XLV positive 3M-Relative-Stärke) "
+        "und XLE positive 3M-Relative-Stärke",
+        indicators,
+    )
+    assert grouped.value is False
+
+
+def test_scenario_parser_respects_explicit_parentheses_and_nested_logic():
+    indicators = "Marktbreite 2/11; XLV 3M +1.84%; XLE 3M -3.55%"
+    result = gate._evaluate_scenario_entry(
+        "Marktbreite mindestens 3/11 oder "
+        "(XLV positive 3M-Relative-Stärke und XLE nicht-positive 3M-Relative-Stärke)",
+        indicators,
+    )
+    assert result.value is True
+
+
+def test_scenario_parser_supports_liegt_oberhalb_von_as_strict_comparison():
+    result = gate._evaluate_scenario_entry(
+        "Marktbreite liegt oberhalb von 3/11",
+        "Marktbreite 4/11",
+    )
+    assert result.value is True
+
+
+def test_scenario_parser_recognizes_paired_sector_predicates_and_bzw_or():
+    indicators = "Marktbreite 2/11; Gesundheit-ETF (XLV) 3M +1.84%; Energie-ETF (XLE) 3M -3.55%"
+    both_positive = gate._evaluate_scenario_entry(
+        "Marktbreite mindestens 3/11 oder Gesundheit-ETF (XLV) sowie "
+        "Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf",
+        indicators,
+    )
+    assert both_positive.value is False
+    either_nonpositive = gate._evaluate_scenario_entry(
+        "Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) weist eine "
+        "nicht-positive 3M-Relative-Stärke auf",
+        indicators,
+    )
+    assert either_nonpositive.value is True
+
+
+def test_scenario_parser_returns_missing_metric_only_for_recognized_condition():
+    result = gate._evaluate_scenario_entry(
+        "Marktbreite mindestens 3/11 und XLV positive 3M-Relative-Stärke",
+        "Marktbreite 3/11",
+    )
+    assert result.value is None
+    assert result.missing_metrics == ("XLV",)
+
+
+def test_scenario_parser_fails_closed_on_unknown_indicator_and_unknown_quantifier():
+    for expression in (
+        "Marktbreite mindestens 3/11 und XLF positive 3M-Relative-Stärke",
+        "Marktbreite nimmt deutlich gegenüber dem Vormonat zu",
+        "Marktbreite mindestens 3/11 ODER",
+        "Marktbreite mindestens 3/11 und (XLV positive 3M-Relative-Stärke",
+    ):
+        try:
+            gate._evaluate_scenario_entry(expression, "Marktbreite 3/11; XLV 3M +1.84%")
+        except gate._ScenarioConditionError:
+            pass
+        else:
+            raise AssertionError(f"Unbekannte/ungültige Bedingung wurde nicht fail-closed abgelehnt: {expression}")
+
+
+def test_scenario_gate_rejects_unknown_condition_even_when_status_claims_not_ableitbar():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\nPositives Alternativszenario:", start)
+    scenario = (
+        "Basisszenario: Marktregime. Eintrittsbedingung: Marktbreite zeigt ein "
+        "ungewöhnliches Momentum. Bestätigungstrigger: Bestätigung. Status: NICHT ABLEITBAR. "
+        "Invalidierungstrigger: Invalidierung. Zeithorizont: 4 Wochen. "
+        "Indikatoren: Marktbreite 8/11. Datenlücke: unbekannte Momentumdefinition. "
+        "Konsequenz: beobachten."
+    )
+    report = report[:start] + scenario + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert any("Fail-Closed" in item for item in errors), errors
+
+
+def test_m05_rejects_reactivation_of_previously_archived_thesis_id():
+    report = report_fixture().replace(
+        "VORHER_AKTIVE_THESEN: 1", "VORHER_AKTIVE_THESEN: 0"
+    ).replace(
+        "VORHER-THESIS-ACTIVE: YES", "VORHER-THESIS-ACTIVE: NO"
+    )
+    errors = gate.validate_report(report)
+    assert any("darf nicht reaktiviert werden" in item for item in errors), errors
+
+
+def test_scenario_gate_accepts_not_ableitbar_only_for_a_named_missing_metric():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\nPositives Alternativszenario:", start)
+    scenario = (
+        "Basisszenario: Marktregime. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und XLV positive 3M-Relative-Stärke. Bestätigungstrigger: Datenwert nachreichen. "
+        "Status: NICHT ABLEITBAR. Invalidierungstrigger: Marktbreite unter 3/11. "
+        "Zeithorizont: 4 Wochen. Indikatoren: Marktbreite 8/11. "
+        "Datenlücke: XLV 3M-Relative-Stärke fehlt. Konsequenz: beobachten."
+    )
+    report = report[:start] + scenario + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert not errors, errors
+
+
+def test_scenario_parser_supports_single_sector_verb_and_article_form():
+    result = gate._evaluate_scenario_entry(
+        "Energie-ETF (XLE) weist eine nicht-positive 3M-Relative-Stärke auf",
+        "Energie-ETF (XLE) 3M -0.25%",
+    )
+    assert result.value is True
+
+
+def test_scenario_gate_rejects_duplicate_condition_indicator_or_status_fields():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\nPositives Alternativszenario:", start)
+    scenario = (
+        "Basisszenario: Marktregime. Eintrittsbedingung: Marktbreite mindestens 3/11. "
+        "Eintrittsbedingung: Marktbreite unter 3/11. Bestätigungstrigger: Bestätigung. "
+        "Status: ERFÜLLT. Status: NICHT ERFÜLLT. Invalidierungstrigger: Invalidierung. "
+        "Zeithorizont: 4 Wochen. Indikatoren: Marktbreite 8/11. Konsequenz: beobachten."
+    )
+    report = report[:start] + scenario + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert any("genau eine explizite Eintrittsbedingung" in item for item in errors)
+
+
+def test_scenario_parser_uses_three_valued_logic_when_a_metric_is_missing():
+    assert gate._evaluate_scenario_entry(
+        "Marktbreite mindestens 3/11 oder XLV positive 3M-Relative-Stärke",
+        "Marktbreite 4/11",
+    ).value is True
+    assert gate._evaluate_scenario_entry(
+        "Marktbreite unter 3/11 und XLV positive 3M-Relative-Stärke",
+        "Marktbreite 2/11",
+    ).value is None
+    assert gate._evaluate_scenario_entry(
+        "Marktbreite unter 3/11 und XLV positive 3M-Relative-Stärke",
+        "Marktbreite 4/11",
+    ).value is False
+
+
+def test_m07_validator_uses_canonical_lifecycle_status_contract():
+    report = report_fixture().replace("Status: BESTÄTIGT", "Status: WIDERLEGT", 1)
+    errors = gate.validate_report(report)
+    assert any(item.startswith("M-07:") for item in errors), errors
+    assert any(item.startswith("M-05:") for item in errors), errors
+
+
+def test_m07_validator_normalizes_documented_ascii_status_alias():
+    report = report_fixture().replace("Status: BESTÄTIGT", "Status: BESTAETIGT", 1)
+    errors = gate.validate_report(report)
+    assert not any(item.startswith("M-07:") for item in errors), errors
+
+
+def test_m05_json_validator_requires_replaced_by_for_ersetzt_and_active_target():
+    def add_json(report, records):
+        start = report.index("3. Ereignisradar")
+        block = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps({
+            "data_cutoff": "2026-11-02T08:11:03+00:00",
+            "theses": records,
+        }) + "\n```\n"
+        return report[:start] + block + report[start:]
+
+    base = {
+        "version": 2,
+        "thesis": "Alte These",
+        "horizon": "4 Wochen",
+        "alternative": "Nachfolgerthese",
+        "evidence": ["Beleg"],
+        "counter_evidence": ["Gegenbeleg"],
+        "confidence": "mittel",
+        "confirm_triggers": ["Trigger"],
+        "invalidate_triggers": ["Invalidierung"],
+        "event_dependencies": [],
+        "asset_classes": ["Aktien"],
+        "candidates": [],
+    }
+    old_missing_link = dict(base, thesis_id="T-OLD", status="ERSETZT")
+    errors = gate.validate_report(add_json(report_fixture(), [old_missing_link]))
+    assert any(item.startswith("M-05:") for item in errors), errors
+
+    old = dict(base, thesis_id="T-OLD", status="ERSETZT", replaced_by="T-NEW")
+    successor = dict(base, thesis_id="T-NEW", status="NEU", replaced_by=None)
+    errors = gate.validate_report(add_json(report_fixture(), [old, successor]))
+    assert not any(item.startswith("M-05:") for item in errors), errors
+
+    inactive_successor = dict(base, thesis_id="T-NEW", status="INVALIDIERT", replaced_by=None)
+    errors = gate.validate_report(add_json(report_fixture(), [old, inactive_successor]))
+    assert any(item.startswith("M-05:") for item in errors), errors
+
+
+def test_scenario_parser_rejects_impossible_breadth_fractions():
+    for expression, indicators in (
+        ("Marktbreite mindestens 12/11", "Marktbreite 8/11"),
+        ("Marktbreite mindestens 3/11", "Marktbreite 12/11"),
+    ):
+        try:
+            gate._evaluate_scenario_entry(expression, indicators)
+        except gate._ScenarioConditionError:
+            pass
+        else:
+            raise AssertionError("Unmögliche Marktbreitenquote wurde akzeptiert")
+
+
+@pytest.mark.parametrize(
+    "invalid_status",
+    [
+        "ERFÜLLTBOGUS",
+        "NICHT ABLEITBARXYZ",
+        "TRIGGER AUSGELÖST_UNBEKANNT",
+        "ERFÜLLT unbekannt",
+        "ERFÜLLT. BOGUS",
+        "ERFÜLLT; BOGUS",
+        "ERFÜLLT, BOGUS",
+    ],
+)
+def test_scenario_gate_rejects_status_with_unknown_suffix(invalid_status):
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\nPositives Alternativszenario:", start)
+    scenario = (
+        "Basisszenario: Wachstum bleibt robust. Eintrittsbedingung: Marktbreite mindestens 3/11. "
+        f"Status: {invalid_status}. Bestätigungstrigger: Marktbreite bleibt mindestens 3/11. "
+        "Invalidierungstrigger: Marktbreite fällt unter 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten."
+    )
+    report = report[:start] + scenario + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert any("benötigt einen expliziten Status genau einmal" in item for item in errors), errors
+
+
+@pytest.mark.parametrize(
+    "status_line",
+    [
+        "Status: ERFÜLLT",
+        "Status: ERFÜLLT — Eintrittsbedingung anhand der genannten Messwerte erfüllt",
+        "Status: ERFÜLLT (Messwerte stimmen mit der Bedingung überein)",
+    ],
+)
+def test_scenario_gate_accepts_canonical_status_with_explicit_explanation(status_line):
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\nPositives Alternativszenario:", start)
+    scenario = (
+        "Basisszenario: Wachstum bleibt robust. Eintrittsbedingung: Marktbreite mindestens 3/11. "
+        f"{status_line}. Bestätigungstrigger: Marktbreite bleibt mindestens 3/11. "
+        "Invalidierungstrigger: Marktbreite fällt unter 3/11. Zeithorizont: 1 bis 3 Monate. "
+        "Indikatoren: Marktbreite 3/11. Konsequenz: beobachten."
+    )
+    report = report[:start] + scenario + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert not any("benötigt einen expliziten Status genau einmal" in item for item in errors), errors
+
+
+
+@pytest.mark.parametrize(
+    ("breadth", "xlv", "and_expected", "or_expected"),
+    [
+        ("4/11", "+1.0%", True, True),
+        ("4/11", "-1.0%", False, True),
+        ("2/11", "+1.0%", False, True),
+        ("2/11", "-1.0%", False, False),
+    ],
+)
+def test_scenario_parser_truth_table_for_and_and_or(breadth, xlv, and_expected, or_expected):
+    indicators = f"Marktbreite {breadth}; XLV 3M {xlv}"
+    atom_a = "Marktbreite mindestens 3/11"
+    atom_b = "XLV positive 3M-Relative-Stärke"
+    assert gate._evaluate_scenario_entry(f"{atom_a} UND {atom_b}", indicators).value is and_expected
+    assert gate._evaluate_scenario_entry(f"{atom_a} ODER {atom_b}", indicators).value is or_expected
+
+
+def test_scenario_parser_truth_table_confirms_and_has_precedence_over_or():
+    # A is true, B and C are false. A OR (B AND C) must be true;
+    # a left-to-right fold (A OR B) AND C would incorrectly be false.
+    result = gate._evaluate_scenario_entry(
+        "Marktbreite mindestens 3/11 ODER XLV positive 3M-Relative-Stärke "
+        "UND XLE positive 3M-Relative-Stärke",
+        "Marktbreite 4/11; XLV 3M -1.0%; XLE 3M -2.0%",
+    )
+    assert result.value is True

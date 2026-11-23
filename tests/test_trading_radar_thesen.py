@@ -6,14 +6,14 @@ import pytest
 from trading_radar_thesen import extract_thesis_payload, update_register, synchronize_report_versions
 
 
-def payload(status="NEU"):
+def payload(status="BESTÄTIGT"):
     return {"data_cutoff": "2026-10-21T18:00:00+02:00", "theses": [{
         "thesis_id": "macro-usd-001", "thesis": "Dollarthese", "horizon": "2-4 Wochen",
         "alternative": "DXY stabilisiert sich trotz Renditedifferenz.",
         "evidence": ["Renditedifferenz"], "counter_evidence": ["Risiko"],
         "confidence": "mittel", "confirm_triggers": ["DXY bestaetigt"],
         "invalidate_triggers": ["DXY bricht"], "event_dependencies": [],
-        "asset_classes": ["Gold"], "candidates": [], "status": status,
+        "asset_classes": ["Gold"], "candidates": [], "status": status, "replaced_by": None,
     }]}
 
 
@@ -30,7 +30,7 @@ def test_no_block_does_not_create_register(tmp_path):
 
 def test_register_is_written_and_versions_stable_ids(tmp_path):
     path = tmp_path / "register.json"
-    first = update_register(report(payload()), str(path))
+    first = update_register(report(payload("NEU")), str(path))
     assert first["updated"] is True and first["count"] == 1
     first_doc = json.loads(path.read_text())
     assert first_doc["theses"][0]["version"] == 1
@@ -184,10 +184,12 @@ def test_register_comparison_generates_real_before_after_audit(tmp_path):
     assert second["previous_sha256"] == before_sha
     assert second["current_sha256"] == after_sha
     assert second["previous_thesis_versions"] == [
-        {"thesis_id": "macro-usd-001", "version": 1, "active": True}
+        {"thesis_id": "macro-usd-001", "version": 1, "active": True,
+         "status": "BESTÄTIGT", "replaced_by": None}
     ]
     assert second["thesis_versions"] == [
-        {"thesis_id": "macro-usd-001", "version": 1, "active": True}
+        {"thesis_id": "macro-usd-001", "version": 1, "active": True,
+         "status": "BESTÄTIGT", "replaced_by": None}
     ]
     expected_payload = {
         "previous_sha256": before_sha,
@@ -245,14 +247,193 @@ def test_register_change_lists_reflect_new_update_unchanged_and_archive_transiti
 
     replacement = payload()
     replacement["theses"][0]["thesis_id"] = "macro-usd-002"
+    replacement["theses"][0]["status"] = "NEU"
+    explicit_transition = payload("ERSETZT")
+    explicit_transition["theses"][0]["replaced_by"] = "macro-usd-002"
+    replacement["theses"].append(explicit_transition["theses"][0])
     second = update_register(report(replacement), str(path))
     assert second["new_theses"] == ["macro-usd-002"]
     assert second["archived_theses"] == ["macro-usd-001"]
-    assert second["updated_theses"] == []
+    assert second["updated_theses"] == ["macro-usd-001"]
     assert second["unchanged_theses"] == []
+    saved = json.loads(path.read_text())
+    old = next(item for item in saved["theses"] if item["thesis_id"] == "macro-usd-001")
+    assert old["active"] is False and old["status"] == "ERSETZT"
+    assert old["replaced_by"] == "macro-usd-002"
 
-    third = update_register(report(replacement), str(path))
+    confirmed = json.loads(json.dumps(replacement))
+    # Archived IDs stay in the register history but are not reintroduced into
+    # the current report payload.
+    confirmed["theses"] = [
+        item for item in confirmed["theses"] if item["thesis_id"] == "macro-usd-002"
+    ]
+    confirmed["theses"][0]["status"] = "BESTÄTIGT"
+    third = update_register(report(confirmed), str(path))
     assert third["new_theses"] == []
     assert third["archived_theses"] == []
-    assert third["updated_theses"] == []
-    assert third["unchanged_theses"] == ["macro-usd-002"]
+    assert third["updated_theses"] == ["macro-usd-002"]
+    assert third["unchanged_theses"] == []  # archived history is retained, not re-emitted as current input
+
+
+def test_omitted_active_thesis_fails_closed_without_archiving_or_overwriting(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload()), str(path))
+    before = path.read_bytes()
+    replacement = payload()
+    replacement["theses"][0]["thesis_id"] = "new-id"
+    replacement["theses"][0]["status"] = "NEU"
+    with pytest.raises(ValueError, match="Aktive Thesen fehlen"):
+        update_register(report(replacement), str(path))
+    assert path.read_bytes() == before
+
+
+def test_replaced_thesis_requires_existing_successor(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload()), str(path))
+    before = path.read_bytes()
+    invalid = payload("ERSETZT")
+    invalid["theses"][0]["replaced_by"] = "missing-successor"
+    with pytest.raises(ValueError, match="replaced_by"):
+        update_register(report(invalid), str(path))
+    assert path.read_bytes() == before
+
+
+def test_replaced_thesis_cannot_point_to_inactive_successor(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload()), str(path))
+    before = path.read_bytes()
+    old = payload("ERSETZT")["theses"][0]
+    old["replaced_by"] = "successor"
+    successor = payload("INVALIDIERT")["theses"][0]
+    successor["thesis_id"] = "successor"
+    with pytest.raises(ValueError, match="aktiven Nachfolger-ID"):
+        update_register(report({"data_cutoff": payload()["data_cutoff"], "theses": [old, successor]}), str(path))
+    assert path.read_bytes() == before
+
+
+def test_existing_thesis_cannot_be_reclassified_as_new(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload("BESTÄTIGT")), str(path))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="darf nicht erneut Status NEU"):
+        update_register(report(payload("NEU")), str(path))
+    assert path.read_bytes() == before
+
+
+def test_legacy_widerlegt_status_is_rejected_instead_of_remaining_active():
+    with pytest.raises(ValueError, match="ungueltiger Status"):
+        update_register(report(payload("WIDERLEGT")), "/tmp/should-not-be-written.json")
+
+
+def test_archived_thesis_id_cannot_be_reactivated(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload("BESTÄTIGT")), str(path))
+    invalidated = payload("INVALIDIERT")
+    update_register(report(invalidated), str(path))
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError, match="Archivierte These.*nicht reaktiviert"):
+        update_register(report(payload("BESTÄTIGT")), str(path))
+    assert path.read_bytes() == before
+
+
+def test_archived_thesis_can_be_followed_by_a_new_neu_id(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload("BESTÄTIGT")), str(path))
+    update_register(report(payload("INVALIDIERT")), str(path))
+    successor = payload("NEU")
+    successor["theses"][0]["thesis_id"] = "macro-usd-002"
+    result = update_register(report(successor), str(path))
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    archived = next(item for item in saved["theses"] if item["thesis_id"] == "macro-usd-001")
+    active = next(item for item in saved["theses"] if item["thesis_id"] == "macro-usd-002")
+    assert archived["active"] is False
+    assert active["active"] is True and active["status"] == "NEU"
+    assert result["new_theses"] == ["macro-usd-002"]
+
+
+def test_replaced_by_is_normalized_to_null_for_legacy_non_replaced_theses():
+    from trading_radar_thesen import validate_theses
+
+    missing = payload()
+    missing["theses"][0].pop("replaced_by")
+    validate_theses(missing)
+    assert missing["theses"][0]["replaced_by"] is None
+
+    replaced_without_successor = payload("ERSETZT")
+    replaced_without_successor["theses"][0].pop("replaced_by")
+    with pytest.raises(ValueError, match="replaced_by"):
+        validate_theses(replaced_without_successor)
+
+    invalid_null = payload()
+    invalid_null["theses"][0]["replaced_by"] = "some-successor"
+    with pytest.raises(ValueError, match="muss.*null"):
+        validate_theses(invalid_null)
+
+
+def test_replaced_by_must_reference_a_nonterminal_thesis_in_same_payload():
+    from trading_radar_thesen import validate_theses
+
+    old = payload("ERSETZT")["theses"][0]
+    old["replaced_by"] = "successor"
+    successor = payload("INVALIDIERT")["theses"][0]
+    successor["thesis_id"] = "successor"
+    with pytest.raises(ValueError, match="aktive Nachfolger-ID"):
+        validate_theses({"theses": [old, successor]})
+
+
+def test_legacy_archived_status_is_preserved_but_replaced_by_is_migrated_to_null(tmp_path):
+    path = tmp_path / "register.json"
+    legacy = {
+        "schema_version": 1,
+        "updated_at": "2026-11-02T08:11:03+00:00",
+        "theses": [{
+            "thesis_id": "legacy-archived-001",
+            "version": 1,
+            "active": False,
+            "status": "WIDERLEGT",
+            "archived_at": "2026-11-01T08:00:00+00:00",
+        }],
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    current = payload("NEU")
+    current["theses"][0]["thesis_id"] = "new-thesis-002"
+    update_register(report(current), str(path))
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    archived = next(item for item in saved["theses"] if item["thesis_id"] == "legacy-archived-001")
+    assert archived["status"] == "WIDERLEGT"
+    assert archived["active"] is False
+    assert archived["replaced_by"] is None
+
+
+@pytest.mark.parametrize("bad_id", [" macro-usd-001", "macro-usd-001 "])
+def test_thesis_id_with_surrounding_whitespace_is_rejected(tmp_path, bad_id):
+    invalid = payload("NEU")
+    invalid["theses"][0]["thesis_id"] = bad_id
+    with pytest.raises(ValueError, match="umgebenden Leerzeichen"):
+        update_register(report(invalid), str(tmp_path / "register.json"))
+
+
+@pytest.mark.parametrize("bad_id", ["macro-usd-001 ", " macro-usd-001"])
+def test_archived_thesis_cannot_be_reintroduced_with_whitespace_variant(tmp_path, bad_id):
+    path = tmp_path / "register.json"
+    update_register(report(payload("BESTÄTIGT")), str(path))
+    update_register(report(payload("INVALIDIERT")), str(path))
+    before = path.read_bytes()
+
+    variant = payload("NEU")
+    variant["theses"][0]["thesis_id"] = bad_id
+    with pytest.raises(ValueError, match="umgebenden Leerzeichen"):
+        update_register(report(variant), str(path))
+    assert path.read_bytes() == before
+
+
+def test_persisted_register_snapshot_rejects_thesis_id_with_surrounding_whitespace():
+    from trading_radar_thesen import _validate_register_snapshot
+
+    invalid = {
+        "schema_version": 1,
+        "theses": [{"thesis_id": "T-1 ", "version": 1, "active": True}],
+    }
+    with pytest.raises(ValueError, match="umgebenden Leerzeichen"):
+        _validate_register_snapshot(invalid, label="Test")

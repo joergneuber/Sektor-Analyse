@@ -379,6 +379,7 @@ def test_restored_run_artifact_becomes_real_before_after_comparison_baseline(tmp
             "asset_classes": ["Aktien"],
             "candidates": [],
             "status": "NEU",
+            "replaced_by": None,
         }],
     }
     report = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload) + "\n```"
@@ -400,13 +401,16 @@ def test_restored_run_artifact_becomes_real_before_after_comparison_baseline(tmp
     assert path.read_bytes() == prior_bytes
     assert persistence.verify_local_snapshot(path) == (True, "CACHE_VERIFIED")
 
+    payload["theses"][0]["status"] = "BESTÄTIGT"
+    report = "```TRADING_RADAR_THESEN_JSON\n" + json.dumps(payload) + "\n```"
     compared = update_register(report, str(path))
     assert compared["comparison_status"] == "PASS"
     assert compared["previous_sha256"] == prior_sha
     assert compared["current_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert compared["comparison_sha256"]
     assert compared["previous_thesis_versions"] == [
-        {"thesis_id": "THESIS_ARTIFACT_BASELINE", "version": 1, "active": True}
+        {"thesis_id": "THESIS_ARTIFACT_BASELINE", "version": 1, "active": True,
+         "status": "NEU", "replaced_by": None}
     ]
 
 
@@ -423,3 +427,60 @@ def test_parse_and_validate_register_rejects_non_strict_schema_and_active_types(
     raw = json.dumps(register).encode("utf-8")
     with pytest.raises(ValueError):
         persistence.parse_and_validate_register(raw)
+
+
+@pytest.mark.parametrize("thesis_id", [" T1", "T1 ", " T1 "])
+def test_parse_and_validate_register_rejects_thesis_ids_with_surrounding_whitespace(thesis_id):
+    raw = json.dumps({
+        "schema_version": 1,
+        "theses": [{"thesis_id": thesis_id, "version": 1, "active": True}],
+    }).encode("utf-8")
+
+    with pytest.raises(ValueError, match="führenden oder nachgestellten Leerzeichen"):
+        persistence.parse_and_validate_register(raw)
+
+
+def test_parse_and_validate_register_accepts_trimmed_thesis_id():
+    raw = json.dumps({
+        "schema_version": 1,
+        "theses": [{"thesis_id": "T1", "version": 1, "active": True}],
+    }).encode("utf-8")
+
+    assert persistence.parse_and_validate_register(raw)["theses"][0]["thesis_id"] == "T1"
+
+
+def test_artifact_restore_rejects_thesis_id_with_trailing_whitespace_before_writing(tmp_path):
+    path = tmp_path / ".trading_radar_thesen.json"
+    malformed = json.dumps({
+        "schema_version": 1,
+        "theses": [{"thesis_id": "macro-usd-001 ", "version": 1, "active": False}],
+    }).encode("utf-8")
+
+    register = json.loads(malformed.decode("utf-8"))
+    manifest = persistence.build_manifest(malformed, register, origin="current_run")
+    manifest.update({"repository": "owner/repo", "branch": "main", "run_id": "12345"})
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(path.name, malformed)
+        archive.writestr(persistence.manifest_path(path).name, json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(ValueError, match="führenden oder nachgestellten Leerzeichen"):
+        persistence.restore_from_artifact(
+            path, archive_buffer.getvalue(), "12345",
+            expected_repo="owner/repo", expected_branch="main",
+        )
+
+    assert not path.exists()
+    assert not persistence.manifest_path(path).exists()
+
+
+def test_manifest_validation_rejects_whitespace_thesis_id_even_without_parser_precheck():
+    raw = json.dumps({
+        "schema_version": 1,
+        "theses": [{"thesis_id": "T1 ", "version": 1, "active": False}],
+    }).encode("utf-8")
+    register = json.loads(raw.decode("utf-8"))
+    manifest = persistence.build_manifest(raw, {"schema_version": 1, "theses": [{"thesis_id": "T1 ", "active": False}]}, origin="test")
+
+    with pytest.raises(ValueError, match="führenden oder nachgestellten Leerzeichen"):
+        persistence.validate_manifest_against_register(manifest, register, raw)
