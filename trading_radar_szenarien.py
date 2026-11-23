@@ -98,11 +98,11 @@ def trading_radar_szenarien_ergänzen(text: str) -> str:
         body,
     )
     breadth_label = f"{breadth[0]}/{breadth[1]}" if breadth is not None else None
-    breadth_indicator = breadth_label if breadth_label is not None else "NICHT VERFÜGBAR"
-    xlv_label = f"{xlv:+.2f}%" if xlv is not None else "NICHT VERFÜGBAR"
-    xle_label = f"{xle:+.2f}%" if xle is not None else "NICHT VERFÜGBAR"
-    vix_label = f"{vix:.2f}" if vix is not None else "NICHT VERFÜGBAR"
-    cutoff_label = common_cutoff if common_cutoff is not None else "NICHT VERFÜGBAR"
+    breadth_indicator = breadth_label if breadth_label is not None else "nicht gemessen"
+    xlv_label = f"{xlv:+.2f}%" if xlv is not None else "nicht gemessen"
+    xle_label = f"{xle:+.2f}%" if xle is not None else "nicht gemessen"
+    vix_label = f"{vix:.2f}" if vix is not None else "nicht gemessen"
+    cutoff_label = common_cutoff if common_cutoff is not None else "nicht vorhanden"
     indicators = (
         f"Marktbreite {breadth_indicator}; Gesundheit-ETF (XLV) 3M {xlv_label}; "
         f"Energie-ETF (XLE) 3M {xle_label}; Gemeinsamer Datenstichtag: {cutoff_label}."
@@ -190,12 +190,28 @@ def trading_radar_szenarien_ergänzen(text: str) -> str:
         f"Zeithorizont: {horizon}. "
         f"Indikatoren: {indicators} VIX {vix_label}. "
     )
+    # Zero is the sign boundary for measured relative returns. Do not print it
+    # as a concrete trigger while either sector measurement is unavailable:
+    # that would make an unsupported numeric threshold look evidence-based.
+    sector_thresholds_measured = (
+        xlv is not None and xle is not None and common_cutoff is not None
+    )
+    sector_positive_trigger = (
+        "Gesundheit-ETF (XLV) und Energie-ETF (XLE) bleiben über 0,00%."
+        if sector_thresholds_measured else
+        "Gesundheit-ETF (XLV) und Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf."
+    )
+    sector_nonpositive_trigger = (
+        "Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter."
+        if sector_thresholds_measured else
+        "Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) weist keine positive 3M-Relative-Stärke auf."
+    )
     baseline_block = (
         f"Basisszenario: {baseline_text}. Eintrittsbedingung: {baseline_entry}. "
         f"Status: {base_status}. Bestätigungstrigger: {breadth_condition}; "
-        "Gesundheit-ETF (XLV) und Energie-ETF (XLE) bleiben über 0,00%. "
+        + sector_positive_trigger + " "
         f"Invalidierungstrigger: {breadth_invalidation} oder "
-        "Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter. "
+        + sector_nonpositive_trigger + " "
         + common_fields + base_gap + " Konsequenz: Marktregime weiter beobachten; technische Einzelfreigaben "
         "bleiben den Scanner- und CRV-Regeln vorbehalten."
     )
@@ -205,8 +221,8 @@ def trading_radar_szenarien_ergänzen(text: str) -> str:
            "Fortsetzung der beobachteten relativen Stärke von Gesundheit-ETF (XLV) und Energie-ETF (XLE). ")
         + f"Eintrittsbedingung: {positive_entry}. Status: {positive_status}. "
         "Bestätigungstrigger: Die drei Bedingungen bleiben zum nächsten gemeinsamen "
-        f"Tagesdatenstichtag erfüllt. Invalidierungstrigger: {breadth_invalidation} "
-        "oder Gesundheit-ETF (XLV) bzw. Energie-ETF (XLE) fällt auf 0,00% oder darunter. "
+        f"Tagesdatenstichtag erfüllt. Invalidierungstrigger: {breadth_invalidation} oder "
+        + sector_nonpositive_trigger + " "
         + common_fields + positive_gap + " Konsequenz: keine technische Handelsfreigabe; Kandidaten bleiben den separaten "
         "Scanner- und CRV-Regeln unterworfen."
     )
@@ -218,7 +234,7 @@ def trading_radar_szenarien_ergänzen(text: str) -> str:
         "Bestätigungstrigger: mindestens eine dieser gemessenen Bedingungen wird am "
         "nächsten gemeinsamen Tagesdatenstichtag bestätigt. "
         f"Invalidierungstrigger: {breadth_recovery} "
-        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen erneut positive 3M-Werte auf. "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen erneut positive 3M-Relative-Stärke auf. "
         + common_fields + negative_gap + " Konsequenz: keine neuen technischen Freigaben aus dem Szenario ableiten; "
         "bestehende Positionen nach den jeweiligen Stop-Regeln führen."
     )
