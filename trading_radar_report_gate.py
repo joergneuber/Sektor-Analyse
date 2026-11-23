@@ -101,6 +101,9 @@ def _scenario_metrics(indicators: str) -> dict[str, float | tuple[int, int]]:
             metrics[ticker] = _scenario_number(found[0].group(1))
     return metrics
 
+_BREADTH_MISSING_ATOM = re.compile(
+    r"(?i)\bMarktbreite\s+muss\s+messbar\s+vorliegen\b"
+)
 _BREADTH_ATOM = re.compile(
     r"(?i)\bMarktbreite\s+(?:(?:liegt|fällt|faellt)\s+)?"
     r"(?P<op>mindestens|mind\.?|>=|über|oberhalb\s+von|unter|unterhalb\s+von|höchstens|hoechstens|<=|<|>)\s*"
@@ -161,6 +164,13 @@ def _sector_predicate(value: float, pred: str | None, op: str | None = None) -> 
 
 def _scenario_atom_matches(entry: str, metrics: dict):
     matches = []
+    for m in _BREADTH_MISSING_ATOM.finditer(entry):
+        current = metrics.get("MARKTBREITE")
+        if isinstance(current, tuple) and current[1] > 0:
+            value, missing = True, ()
+        else:
+            value, missing = None, ("Marktbreite",)
+        matches.append((m.start(), m.end(), value, missing, "breadth"))
     for m in _BREADTH_ATOM.finditer(entry):
         op = re.sub(r"\s+", " ", m.group("op").casefold())
         num, den = int(m.group("num")), int(m.group("den"))
@@ -303,14 +313,16 @@ def validate_scenario_condition_consistency(text: str) -> list[str]:
         ("Negatives Alternativszenario", r"Negatives\s+Alternativszenario"),
     )
     starts = []
+    errors = []
     for display, pattern in labels:
         found = list(re.finditer(r"(?im)^\s*" + pattern + r"\s*:", executive))
         if len(found) > 1:
             return [f"M-09-SZENARIO: {display} ist mehrfach definiert; eindeutiger Szenarioblock erforderlich."]
-        if found:
+        if not found:
+            errors.append(f"M-09-SZENARIO: {display} fehlt im Trading-Radar.")
+        else:
             starts.append((found[0].start(), found[0].end(), display))
     starts.sort()
-    errors = []
     for index, (start, body_start, display) in enumerate(starts):
         end = starts[index + 1][0] if index + 1 < len(starts) else len(executive)
         block = executive[body_start:end].strip()
@@ -366,9 +378,25 @@ def validate_scenario_condition_consistency(text: str) -> list[str]:
             continue
         entry_match = entry_matches[0]
         indicators_match = indicators_matches[0]
+        indicators_text = indicators_match.group(1)
+        cutoff_required = bool(re.search(
+            r"(?i)\bGemeinsamer\s+Datenstichtag\s*[:=]", indicators_text
+        ))
+        cutoff_match = re.search(
+            r"(?i)\bGemeinsamer\s+Datenstichtag\s*[:=]\s*(\d{4}-\d{2}-\d{2})\b",
+            indicators_text,
+        )
+        cutoff_valid = not cutoff_required
+        if cutoff_match:
+            try:
+                datetime.date.fromisoformat(cutoff_match.group(1))
+                cutoff_valid = True
+            except ValueError:
+                cutoff_valid = False
+
         try:
             evaluated = _evaluate_scenario_entry(
-                entry_match.group(1), indicators_match.group(1)
+                entry_match.group(1), indicators_text
             )
         except _ScenarioConditionError as exc:
             errors.append(
@@ -378,9 +406,10 @@ def validate_scenario_condition_consistency(text: str) -> list[str]:
             continue
 
         status = re.sub(r"\s+", " ", status_matches[0].group(1).upper())
-        if evaluated.value is None:
+        if evaluated.value is None or not cutoff_valid:
             required_labels = {
                 "MARKTBREITE": "Marktbreite",
+                "Marktbreite": "Marktbreite",
                 "XLV": "XLV",
                 "XLE": "XLE",
             }
@@ -393,15 +422,18 @@ def validate_scenario_condition_consistency(text: str) -> list[str]:
                 required_labels[item] for item in evaluated.missing_metrics
                 if required_labels[item].casefold() not in gap_text.casefold()
             ]
+            if not cutoff_valid and "gemeinsamer datenstichtag" not in gap_text.casefold():
+                missing_named.append("gemeinsamer Datenstichtag")
             if (
                 status != "NICHT ABLEITBAR"
                 or not re.search(r"(?i)Datenlücke|Datenluecke|Quelle fehlt|Wert fehlt", block)
                 or missing_named
             ):
                 errors.append(
-                    f"M-09-SZENARIO: {display}: Indikatorwerte fehlen "
-                    f"{list(evaluated.missing_metrics)}; NICHT ABLEITBAR mit konkret "
-                    "benannter Datenlücke ist erforderlich."
+                    f"M-09-SZENARIO: {display}: Indikatorwerte fehlen bzw. Datenbasis unvollständig "
+                    f"(fehlende Kennzahlen={list(evaluated.missing_metrics)}, "
+                    f"gemeinsamer Datenstichtag gültig={cutoff_valid}); "
+                    "NICHT ABLEITBAR mit konkret benannter Datenlücke ist erforderlich."
                 )
         else:
             expected_status = (

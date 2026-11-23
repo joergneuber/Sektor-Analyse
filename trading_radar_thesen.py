@@ -23,7 +23,17 @@ CANONICAL_STATUSES = frozenset({
 TERMINAL_STATUSES = frozenset({"INVALIDIERT", "ERSETZT"})
 # Historical values are tolerated only on already archived persisted records;
 # they are not valid states for incoming JSON or active theses.
-LEGACY_ARCHIVE_STATUSES = frozenset({"VERSTAERKT", "WIDERLEGT", "UNKLAR"})
+LEGACY_ARCHIVE_STATUSES = frozenset({"VERSTAERKT", "WIDERLEGT", "UNKLAR", "ARCHIVIERT"})
+# Exact marker emitted by the pre-lifecycle implementation when it archived a
+# thesis merely because the model omitted it from the current report. Such
+# records must remain inactive, but must not block every later register update.
+LEGACY_OMISSION_ARCHIVE_REASON = (
+    "Im aktuellen Thesenblock nicht enthalten; nicht stillschweigend gelöscht."
+)
+MIGRATED_LEGACY_OMISSION_ARCHIVE_REASON = (
+    "Legacy-Archivierung durch frühere Auslassungslogik; keine explizite "
+    "Invalidierung oder Ersetzung belegt."
+)
 # These spellings are accepted only as legacy input aliases and are always
 # normalized before validation/persistence. Prompts must emit canonical Unicode.
 STATUS_ALIASES = {
@@ -306,11 +316,28 @@ def _validate_register_snapshot(payload: Any, *, label: str) -> list[dict[str, A
             active_count += 1
         status = canonicalize_thesis_status(item.get("status")) if item.get("status") else ""
         successor = item.get("replaced_by")
+        legacy_omission_archive = (
+            active is False
+            and status in CANONICAL_STATUSES - TERMINAL_STATUSES
+            and successor is None
+            and (
+                item.get("archive_reason") == LEGACY_OMISSION_ARCHIVE_REASON
+                or (
+                    item.get("legacy_archive") is True
+                    and item.get("archive_reason") == MIGRATED_LEGACY_OMISSION_ARCHIVE_REASON
+                )
+            )
+        )
         if status not in CANONICAL_STATUSES and not (
             active is False and status in LEGACY_ARCHIVE_STATUSES
         ):
             raise ValueError(f"{label}: {thesis_id} besitzt einen nicht vertragskonformen Status {status!r}")
-        if active is False and status not in TERMINAL_STATUSES and status not in LEGACY_ARCHIVE_STATUSES:
+        if (
+            active is False
+            and status not in TERMINAL_STATUSES
+            and status not in LEGACY_ARCHIVE_STATUSES
+            and not legacy_omission_archive
+        ):
             raise ValueError(f"{label}: nichtterminale These {thesis_id} darf nicht archiviert sein")
         if status == "ERSETZT":
             if not isinstance(successor, str) or not successor.strip() or successor.strip() == thesis_id:
@@ -497,6 +524,19 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
                 archived["status"] = archived_status
             if "replaced_by" not in archived and archived_status != "ERSETZT":
                 archived["replaced_by"] = None
+            if (
+                archived.get("active", True) is False
+                and archived_status in CANONICAL_STATUSES - TERMINAL_STATUSES
+                and archived.get("archive_reason") == LEGACY_OMISSION_ARCHIVE_REASON
+                and archived.get("replaced_by") is None
+            ):
+                # Preserve the historical status and inactive identity. Make
+                # the old omission-based archive explicit without pretending
+                # that INVALIDIERT or ERSETZT was ever established.
+                archived["legacy_archive"] = True
+                archived["historical_status"] = archived_status
+                archived["status"] = "ARCHIVIERT"
+                archived["archive_reason"] = MIGRATED_LEGACY_OMISSION_ARCHIVE_REASON
             current.append(archived)
     merged = {"schema_version": 1, "updated_at": now, "theses": current}
     _validate_register_snapshot(merged, label="Nachzustand")
