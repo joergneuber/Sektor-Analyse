@@ -76,7 +76,8 @@ def test_missing_common_cutoff_marks_all_scenarios_not_ableitbar():
     assert result.count("Eintrittsbedingung:") == 3
     assert result.count("Status: NICHT ABLEITBAR") == 3
     assert result.count("Datenlücke: gemeinsamer Datenstichtag fehlt") == 3
-    assert "Gemeinsamer Datenstichtag: NICHT VERFÜGBAR" in result
+    assert "Gemeinsamer Datenstichtag: nicht vorhanden" in result
+    assert "0,00%" not in result
 
 
 def test_missing_breadth_and_cutoff_are_both_named_without_inventing_values():
@@ -112,3 +113,41 @@ def test_missing_breadth_with_positive_sectors_keeps_statuses_not_ableitbar():
     assert result.count("Status: NICHT ABLEITBAR") == 2
     assert result.count("Status: NICHT ERFÜLLT") == 1
     assert result.count("Datenlücke: Marktbreite fehlt") == 3
+
+
+def test_missing_sector_measurement_does_not_emit_numeric_zero_threshold():
+    result = trading_radar_szenarien_ergänzen(
+        _report(xle_3m="NICHT VERFÜGBAR")
+    )
+
+    assert "0,00%" not in result
+    assert "0.00%" not in result
+    assert "weisen positive 3M-Relative-Stärke auf" in result
+    assert "weist keine positive 3M-Relative-Stärke auf" in result
+
+
+def test_numeric_zero_threshold_is_only_rendered_when_both_sector_metrics_are_measured():
+    result = trading_radar_szenarien_ergänzen(_report())
+
+    assert "0,00%" in result
+    assert "fällt auf 0,00% oder darunter" in result
+
+
+
+def test_no_numeric_threshold_or_placeholder_when_all_scenario_indicators_are_missing():
+    report = (
+        "1. Trading-Radar\n"
+        "Zeithorizont: 4 bis 12 Wochen\n"
+        "Basisszenario: Fortsetzung der Seitwärtsbewegung\n"
+        "\n4. Assetklassenvergleich\n"
+        "\n2. Thesen-Update\n"
+    )
+    result = trading_radar_szenarien_ergänzen(report)
+
+    assert result.count("NICHT ABLEITBAR – Datenlücke:") == 3
+    assert "0,00%" not in result
+    assert "0.00%" not in result
+    assert "NICHT VERFÜGBAR" not in result
+    assert "200-Tage-Linie" not in result
+    assert result.count("Eintrittsbedingung:") == 3
+    assert result.count("Status: NICHT ABLEITBAR") == 3
