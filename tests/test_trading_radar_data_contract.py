@@ -48,6 +48,18 @@ class TradingRadarDataContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.radar_source = RADAR.read_text(encoding="utf-8-sig")
 
+    def test_pytest_is_installed_before_unittest_imports_pytest_fixture(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        dependency_start = workflow.index("- name: Abhängigkeiten installieren")
+        dependency_end = workflow.index("- name: Alpaca-Split-Adjustment-Vertrag", dependency_start)
+        dependency_block = workflow[dependency_start:dependency_end]
+        contract_test = workflow.index(
+            'python -m unittest discover -s tests -p "test_trading_radar_data_contract.py"'
+        )
+        self.assertRegex(dependency_block, r"(?m)^\s+pip install .*\bpytest\b")
+        self.assertLess(dependency_start, contract_test)
+        self.assertNotIn("pip install pytest", workflow[contract_test:])
+
     def test_workflow_presence_is_reported_not_assumed(self):
         if not WORKFLOW.is_file():
             self.skipTest("Runner-/Workflow-End-to-End nicht pruefbar: .github/workflows/main.yml fehlt in dieser Anlage")
