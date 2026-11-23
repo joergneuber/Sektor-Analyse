@@ -1482,6 +1482,34 @@ def test_scenario_gate_requires_nicht_ableitbar_when_required_indicator_is_missi
     assert any("Indikatorwerte fehlen" in item for item in errors), errors
 
 
+def test_scenario_gate_requires_a_valid_common_cutoff_when_explicitly_declared():
+    report = report_fixture()
+    start = report.index("Basisszenario:")
+    end = report.index("\n\n2. Thesen-Update", start)
+    scenarios = (
+        "Basisszenario: Zyklische Rotation. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
+        "Status: ERFÜLLT. Bestätigungstrigger: beide Sektoren positiv. Invalidierungstrigger: einer negativ. "
+        "Zeithorizont: 1 bis 3 Monate. Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; "
+        "Energie-ETF (XLE) 3M -3.55%; Gemeinsamer Datenstichtag: NICHT VERFÜGBAR. "
+        "Datenlücke: gemeinsamer Datenstichtag fehlt. Konsequenz: beobachten.\n"
+        "Positives Alternativszenario: Stärke. Eintrittsbedingung: Marktbreite mindestens 3/11 "
+        "und Gesundheit-ETF (XLV) sowie Energie-ETF (XLE) weisen positive 3M-Relative-Stärke auf. "
+        "Status: ERFÜLLT. Bestätigungstrigger: beide positiv. Invalidierungstrigger: einer negativ. "
+        "Zeithorizont: 1 bis 3 Monate. Indikatoren: Marktbreite 3/11; Gesundheit-ETF (XLV) 3M +1.84%; "
+        "Energie-ETF (XLE) 3M -3.55%; Gemeinsamer Datenstichtag: NICHT VERFÜGBAR. "
+        "Datenlücke: gemeinsamer Datenstichtag fehlt. Konsequenz: warten.\n"
+        "Negatives Alternativszenario: Schwäche. Eintrittsbedingung: Gesundheit-ETF (XLV) bzw. "
+        "Energie-ETF (XLE) weist eine nicht-positive 3M-Relative-Stärke auf. "
+        "Status: TRIGGER AUSGELÖST. Bestätigungstrigger: Wert bleibt negativ. Invalidierungstrigger: Wert positiv. "
+        "Zeithorizont: 1 bis 3 Monate. Indikatoren: Gesundheit-ETF (XLV) 3M +1.84%; "
+        "Energie-ETF (XLE) 3M -3.55%; Gemeinsamer Datenstichtag: NICHT VERFÜGBAR. "
+        "Datenlücke: gemeinsamer Datenstichtag fehlt. Konsequenz: defensiv."
+    )
+    report = report[:start] + scenarios + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert len([item for item in errors if "Datenbasis unvollständig" in item]) == 3, errors
+
 def test_m05_rejects_existing_thesis_marked_neu():
     report = report_fixture().replace(
         "THESIS_STATUS: BESTÄTIGT",
@@ -1843,3 +1871,55 @@ def test_scenario_parser_truth_table_confirms_and_has_precedence_over_or():
         "Marktbreite 4/11; XLV 3M -1.0%; XLE 3M -2.0%",
     )
     assert result.value is True
+
+
+def test_scenario_gate_requires_all_three_scenario_blocks():
+    report = report_fixture()
+    start = report.index("Positives Alternativszenario:")
+    end = report.index("Negatives Alternativszenario:", start)
+    report = report[:start] + report[end:]
+    errors = gate.validate_scenario_condition_consistency(report)
+    assert any("Positives Alternativszenario fehlt" in item for item in errors), errors
+
+
+def test_m05_accepts_explicit_legacy_archiviert_record_without_claiming_invalidation():
+    import hashlib
+    import json
+
+    previous_hash = "a" * 64
+    current_hash = "b" * 64
+    comparison_payload = {
+        "previous_sha256": previous_hash,
+        "current_sha256": current_hash,
+        "schema": "trading-radar-thesis-register-comparison-v1",
+    }
+    comparison_id = hashlib.sha256(
+        json.dumps(comparison_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    report = "\n".join((
+        "2. Thesen-Update",
+        "THESENREGISTER-VERGLEICH: PASS",
+        f"VORHER-SHA256: {previous_hash}",
+        f"NACHHER-SHA256: {current_hash}",
+        f"THESENREGISTER-VERGLEICH-ID: {comparison_id}",
+        "VORHER_THESEN_COUNT: 1",
+        "VORHER_AKTIVE_THESEN: 0",
+        "NACHHER_THESEN_COUNT: 1",
+        "NACHHER_AKTIVE_THESEN: 0",
+        "THESEN_NEU: KEINE",
+        "THESEN_AKTUALISIERT: KEINE",
+        "THESEN_UNVERAENDERT: KEINE",
+        "THESEN_ARCHIVIERT: KEINE",
+        "VORHER-THESIS-ID: LEGACY-001",
+        "VORHER-REGISTER-VERSION: 1",
+        "VORHER-THESIS-ACTIVE: NO",
+        "THESIS_ID: LEGACY-001",
+        "REGISTER-VERSION: 1",
+        "THESIS_ACTIVE: NO",
+        "THESIS_STATUS: ARCHIVIERT",
+        "THESIS_REPLACED_BY: KEINE",
+        "3. Ereignisradar",
+    ))
+    errors = []
+    gate._validate_m05_m10(report, errors)
+    assert not any("Semantischer Thesenregistervergleich widersprüchlich" in item for item in errors), errors

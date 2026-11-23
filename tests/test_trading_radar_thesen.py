@@ -437,3 +437,44 @@ def test_persisted_register_snapshot_rejects_thesis_id_with_surrounding_whitespa
     }
     with pytest.raises(ValueError, match="umgebenden Leerzeichen"):
         _validate_register_snapshot(invalid, label="Test")
+
+
+def test_legacy_omission_archives_are_migrated_without_fabricating_terminal_status(tmp_path):
+    path = tmp_path / "register.json"
+    active = dict(payload("BESTÄTIGT")["theses"][0])
+    active["version"] = 1
+    active["active"] = True
+    legacy = dict(active)
+    legacy.update({
+        "thesis_id": "legacy-omitted-001",
+        "active": False,
+        "status": "BESTÄTIGT",
+        "replaced_by": None,
+        "archived_at": "2026-11-22T18:43:35+00:00",
+        "archive_reason": "Im aktuellen Thesenblock nicht enthalten; nicht stillschweigend gelöscht.",
+    })
+    path.write_text(json.dumps({"schema_version": 1, "theses": [active, legacy]}), encoding="utf-8")
+
+    result = update_register(report(payload("BESTÄTIGT")), str(path))
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    migrated = next(item for item in saved["theses"] if item["thesis_id"] == "legacy-omitted-001")
+
+    assert result["updated"] is True
+    assert migrated["active"] is False
+    assert migrated["status"] == "ARCHIVIERT"
+    assert migrated["historical_status"] == "BESTÄTIGT"  # original status remains auditable
+    assert migrated["replaced_by"] is None  # no successor is invented
+    assert migrated["legacy_archive"] is True
+    assert migrated["archive_reason"] == (
+        "Legacy-Archivierung durch frühere Auslassungslogik; keine explizite "
+        "Invalidierung oder Ersetzung belegt."
+    )
+
+
+def test_inactive_nonterminal_thesis_without_exact_legacy_marker_is_rejected(tmp_path):
+    path = tmp_path / "register.json"
+    inactive = dict(payload("BESTÄTIGT")["theses"][0])
+    inactive.update({"version": 1, "active": False, "archive_reason": "irgendein Grund"})
+    path.write_text(json.dumps({"schema_version": 1, "theses": [inactive]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="nichtterminale These.*darf nicht archiviert sein"):
+        update_register(report(payload("BESTÄTIGT")), str(path))
