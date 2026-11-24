@@ -882,7 +882,7 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
     tnx = (tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw) if tnx_raw is not None else None
     tnx_series = series_for("^TNX")
     tnx_observation_date = (
-        tnx_series.index[-1].isoformat() if tnx_series is not None and len(tnx_series)
+        tnx_series.index[-1].date().isoformat() if tnx_series is not None and len(tnx_series)
         else "NICHT VERFÜGBAR"
     )
     lines.extend([
