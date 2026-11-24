@@ -64,15 +64,21 @@ class TradingRadarReleaseContractTests(unittest.TestCase):
             third = thesen.update_register(report([thesis(text="Yields remain elevated")]), path)
             third_doc = json.loads(Path(path).read_text(encoding="utf-8"))
             self.assertEqual(third_doc["theses"][0]["version"], 2, "material change must increment version")
-            before_omission_attempt = Path(path).read_bytes()
-            with self.assertRaisesRegex(
-                ValueError, "Aktive Thesen fehlen im aktuellen JSON-Block"
-            ):
-                thesen.update_register(report([]), path)
-            self.assertEqual(
-                Path(path).read_bytes(), before_omission_attempt,
-                "failed silent-omission attempt must leave the register unchanged",
-            )
+
+            # Omission is not evidence of invalidation: the active thesis must be
+            # carried forward unchanged, not silently archived or deleted.
+            omission = thesen.update_register(report([]), path)
+            omission_doc = json.loads(Path(path).read_text(encoding="utf-8"))
+            carried = omission_doc["theses"][0]
+            self.assertTrue(omission["updated"])
+            self.assertEqual(omission["carried_forward_theses"][0]["thesis_id"], "T-RATES-01")
+            self.assertEqual(omission["archived_theses"], [])
+            self.assertTrue(carried["active"])
+            self.assertEqual(carried["status"], "BESTÄTIGT")
+            self.assertEqual(carried["version"], 2)
+            self.assertEqual(carried["thesis"], "Yields remain elevated")
+            self.assertNotIn("archived_at", carried)
+
             thesen.update_register(report([thesis(status="INVALIDIERT")]), path)
             archived = json.loads(Path(path).read_text(encoding="utf-8"))["theses"][0]
             self.assertFalse(archived["active"], "explicitly invalidated thesis must be archived")
