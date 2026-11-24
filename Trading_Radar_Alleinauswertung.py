@@ -5249,6 +5249,30 @@ def _gemini_503_aeussere_retry_aktion(
     return "terminal", None
 
 
+def _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext):
+    """Erkennt ausschliesslich modellbezogene 404-Fehler der CountTokens-API.
+
+    Ein solcher Fehler bedeutet nicht, dass der API-Key oder der gesamte
+    Gemini-Dienst ungueltig ist. Er wird nur fuer den gerade geprueften
+    Modellkandidaten als nicht fuer CountTokens verfuegbar behandelt.
+    Andere 404-Fehler bleiben terminal.
+    """
+    text_klein = str(fehlertext or "").lower()
+    ist_404 = bool(re.search(r"\b404\b", text_klein)) or "not_found" in text_klein
+    modellbezug = "models/" in text_klein or "model " in text_klein
+    counttokens_bezug = (
+        "counttokens" in text_klein
+        or "count tokens" in text_klein
+    )
+    nicht_verfuegbar = (
+        "not found" in text_klein
+        or "not_found" in text_klein
+        or "not supported" in text_klein
+        or "does not support" in text_klein
+    )
+    return bool(ist_404 and modellbezug and counttokens_bezug and nicht_verfuegbar)
+
+
 def _gemini_radar_response_diagnose(response, label):
     """Loggt Abschlussgrund und Token-Nutzung, sofern das SDK sie bereitstellt."""
     candidates = getattr(response, "candidates", None) or []
@@ -5499,15 +5523,19 @@ __QUELLEN__
     contents = [prompt]
     modell = preferred_modell or globals().get("_gemini_last_request_model") or MODELL
     try:
-        token_count = _gemini_tokenzahl(client, modell, contents, None, label="Trading-Radar-Eigenlauf")
-        # Der eigenstaendige Radar-Request liegt nach der klassischen Hauptauswertung
-        # und durchlaeuft deren aeussere Retry-Schleife nicht. Deshalb braucht er
-        # einen eigenen, begrenzten Modellwechsel fuer transiente 503-/Netzwerkfehler.
-        # Der Request-Inhalt und die logische Request-ID bleiben dabei identisch.
+        # CountTokens gehoert in denselben begrenzten Modellpool wie
+        # GenerateContent. Insbesondere darf ein modellbezogener CountTokens-
+        # 404 nicht ausserhalb der Schleife den naechsten Kandidaten verhindern.
         radar_failed_models = set()
         radar_pool_passes = 0
         while True:
+            phase = "CountTokens"
             try:
+                token_count = _gemini_tokenzahl(
+                    client, modell, contents, None,
+                    label=f"Trading-Radar-Eigenlauf {phase} {modell}",
+                )
+                phase = "GenerateContent"
                 response = _gemini_generate_content_quota_safe(
                     client, modell, contents, {"temperature": 0.2}, token_count,
                     "Trading-Radar-Eigenlauf",
@@ -5515,11 +5543,25 @@ __QUELLEN__
                 )
                 break
             except Exception as send_exc:
-                action, next_model = _gemini_503_aeussere_retry_aktion(
-                    str(send_exc), modell,
-                    modell_reihenfolge=GEMINI_MODELLREIHENFOLGE,
-                    fehlgeschlagene_modelle=radar_failed_models,
-                )
+                fehlertext = str(send_exc)
+                if phase == "CountTokens" and _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext):
+                    # Deterministischer modellbezogener CountTokens-404:
+                    # Kandidat ueberspringen, aber keine globale 404-Retryregel.
+                    radar_failed_models.add(modell)
+                    next_model = _gemini_503_naechstes_modell(
+                        modell, GEMINI_MODELLREIHENFOLGE, radar_failed_models
+                    )
+                    action = "switch" if next_model else "terminal"
+                    wait_seconds = 0.0
+                    retry_kind = "CountTokens-Modell nicht unterstuetzt"
+                else:
+                    action, next_model = _gemini_503_aeussere_retry_aktion(
+                        fehlertext, modell,
+                        modell_reihenfolge=GEMINI_MODELLREIHENFOLGE,
+                        fehlgeschlagene_modelle=radar_failed_models,
+                    )
+                    retry_kind = f"{phase}-Fehler"
+                    wait_seconds = None
                 if (
                     action != "switch"
                     or not next_model
@@ -5527,20 +5569,18 @@ __QUELLEN__
                 ):
                     raise
                 radar_pool_passes += 1
-                wait_seconds = GEMINI_503_POOL_BACKOFF_SECONDS * (2 ** (radar_pool_passes - 1))
+                if wait_seconds is None:
+                    wait_seconds = GEMINI_503_POOL_BACKOFF_SECONDS * (2 ** (radar_pool_passes - 1))
                 print(
-                    f"TRADING_RADAR_RETRY | transient={type(send_exc).__name__}: {send_exc} | "
+                    f"TRADING_RADAR_RETRY | {retry_kind}={type(send_exc).__name__}: {send_exc} | "
                     f"Modellwechsel={modell}->{next_model} | "
                     f"Pool-Runde={radar_pool_passes + 1}/"
                     f"{GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN} | "
                     f"Backoff={wait_seconds:.0f}s"
                 )
-                time.sleep(wait_seconds)
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
                 modell = next_model
-                token_count = _gemini_tokenzahl(
-                    client, modell, contents, None,
-                    label=f"Trading-Radar-Eigenlauf Modellwechsel {modell}",
-                )
         _gemini_radar_response_diagnose(response, "Trading-Radar-Eigenlauf")
         radar_text = str(getattr(response, "text", response) or "").strip()
         required = (
