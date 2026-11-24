@@ -287,12 +287,14 @@ GEMINI_SPLIT_RESUME_DONE_DATEI = ".gemini_request_split_resume_done"
 _GEMINI_SPLIT_RESUME_VERSION = 2
 _GEMINI_RUN_ID = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{os.getpid()}"
 # Maximal zwei echte GenerateContent-Sendungen je Request UND Modell in einem Lauf.
-# Der Modellpool darf bis zu drei Runden durchlaufen; bereits erfolgreiche Splits
-# bleiben gecacht. Das Sendungslimit gilt pro Request/Modell und verhindert,
-# dass derselbe Modell-Request bei anhaltender Ueberlast unbegrenzt wiederholt wird.
+# Der allgemeine Stufen-/Splitpfad bleibt auf drei Poolrunden begrenzt.
+# Der eigenstaendige Trading-Radar-Request nutzt dagegen den gesamten deklarierten
+# Modellpool; bei fuenf Modellen sind damit bis zu fuenf Modellversuche moeglich.
+# Bereits erfolgreiche Splits bleiben gecacht; das Sendungslimit gilt je Request/Modell.
 # 503 UNAVAILABLE ist meist transient; zwischen Poolrunden wird progressiv gewartet.
 GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN = 2
 GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 3
+GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = len(GEMINI_MODELLREIHENFOLGE)
 GEMINI_503_POOL_BACKOFF_SECONDS = 60.0
 # Tatsächliche Sendungen werden pro Request-Fingerprint UND Modell gezählt.
 # Damit blockiert ein 503 bei einem Modell nicht pauschal alle anderen Splits.
@@ -5521,7 +5523,7 @@ __QUELLEN__
                 if (
                     action != "switch"
                     or not next_model
-                    or radar_pool_passes >= GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN - 1
+                    or radar_pool_passes >= GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN - 1
                 ):
                     raise
                 radar_pool_passes += 1
@@ -5530,7 +5532,7 @@ __QUELLEN__
                     f"TRADING_RADAR_RETRY | transient={type(send_exc).__name__}: {send_exc} | "
                     f"Modellwechsel={modell}->{next_model} | "
                     f"Pool-Runde={radar_pool_passes + 1}/"
-                    f"{GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN} | "
+                    f"{GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN} | "
                     f"Backoff={wait_seconds:.0f}s"
                 )
                 time.sleep(wait_seconds)
