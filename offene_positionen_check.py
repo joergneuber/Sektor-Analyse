@@ -1778,7 +1778,6 @@ def _load_private_recovery_history(
     return initial[HISTORY_HEADERS].copy()
 
 
-
 def _private_recovery_integrity_config() -> tuple[str, int]:
     """Liefert Hash und exakte Anzahl aus dem Recovery-Manifest.
 
@@ -2050,7 +2049,7 @@ def _write_sheet(sheets, spreadsheet_id: str, title: str, values: list[list],
     format_numeric = HISTORY_NUMERIC_COLUMNS if is_history_sheet else NUMERIC_COLUMNS
     for i,col in enumerate(values[1]):
         if col in {"Einstiegsdatum", "Ausstiegsdatum"}:
-            requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"DATE","pattern":"dd.MM.yyyy"}}},"fields":"userEnteredFormat.numberFormat"}})
+            requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"DATE","pattern":"dd.MM.yyyy"},"horizontalAlignment":"LEFT"}},"fields":"userEnteredFormat.numberFormat,userEnteredFormat.horizontalAlignment"}})
         if col == "Nr.":
             requests.append({"repeatCell":{"range":{"sheetId":sheet_id,"startRowIndex":2,"endRowIndex":len(values),"startColumnIndex":i,"endColumnIndex":i+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":"NUMBER","pattern":"0"}}},"fields":"userEnteredFormat.numberFormat"}})
         elif col in format_numeric or col.endswith("%"):
@@ -2190,14 +2189,12 @@ def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
     return copied.get("id")
 
 
-
 def _history_key(row) -> tuple:
     """Verbindlicher Positionsschlüssel der historischen Faktenbasis.
     Name + Ticker + Einstieg + Einstiegsdatum identifizieren einen Trade.
     Ausstiegsdatum/Status dürfen NICHT zur Identität gehören.
     """
     return _position_key(row)
-
 
 
 def merge_closed_history(existing_rows: list[list] | pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
@@ -2447,9 +2444,8 @@ def read_existing_history(sheets, spreadsheet_id: str, *, allow_missing: bool = 
         raise RuntimeError(f"Sicherheitsabbruch: Bestehende Historie konnte nicht zuverlässig gelesen werden: {exc}") from exc
 
 
-
 def _format_history_range(sheets, spreadsheet_id: str, sheet_id: int, start_row_index: int, end_row_index: int):
-    """Formatiert nur die neu geschriebenen Historienzeilen numerisch."""
+    """Formatiert neu geschriebene Historienzeilen numerisch und ihre Datumsfelder linksbündig."""
     if end_row_index <= start_row_index:
         return
     requests = []
@@ -2470,14 +2466,76 @@ def _format_history_range(sheets, spreadsheet_id: str, sheet_id: int, start_row_
                     "startColumnIndex": i,
                     "endColumnIndex": i + 1,
                 },
-                "cell": {"userEnteredFormat": {"numberFormat": number_format}},
-                "fields": "userEnteredFormat.numberFormat",
+                "cell": {"userEnteredFormat": {
+                    "numberFormat": number_format,
+                    **({"horizontalAlignment": "LEFT"} if col in {"Einstiegsdatum", "Ausstiegsdatum"} else {}),
+                }},
+                "fields": (
+                    "userEnteredFormat.numberFormat,userEnteredFormat.horizontalAlignment"
+                    if col in {"Einstiegsdatum", "Ausstiegsdatum"}
+                    else "userEnteredFormat.numberFormat"
+                ),
             }
         })
     if requests:
         _google_batch_update_with_retry(
             sheets, spreadsheet_id, {"requests": requests}, context="Format neue Historienzeilen"
         )
+
+
+def _align_history_date_columns(sheets, spreadsheet_id: str) -> None:
+    """Richtet sämtliche Datumszellen in Tab 2 dauerhaft linksbündig aus."""
+    ss = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    history = next(
+        (
+            item["properties"]
+            for item in ss.get("sheets", [])
+            if item.get("properties", {}).get("title") == "Geschlossene Positionen"
+        ),
+        None,
+    )
+    if history is None:
+        raise RuntimeError("Sicherheitsabbruch: Historien-Tab fehlt für Datumsformatierung.")
+
+    requests = []
+    for column in ("Einstiegsdatum", "Ausstiegsdatum"):
+        index = HISTORY_HEADERS.index(column)
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": history["sheetId"],
+                    "startRowIndex": 2,
+                    "startColumnIndex": index,
+                    "endColumnIndex": index + 1,
+                },
+                "cell": {"userEnteredFormat": {"horizontalAlignment": "LEFT"}},
+                "fields": "userEnteredFormat.horizontalAlignment",
+            }
+        })
+    _google_batch_update_with_retry(
+        sheets, spreadsheet_id, {"requests": requests},
+        context="Linksbündige Datumsformatierung Tab 2",
+    )
+
+
+def _align_history_date_columns_best_effort(sheets, spreadsheet_id: str) -> bool:
+    """Versucht die reine Anzeigeformatierung; Fehler blockieren keine Datenaktualisierung.
+
+    Die nachfolgende Historien-Verifikation bleibt der verbindliche Integritätscheck.
+    Ein fehlender oder nicht lesbarer Historien-Tab wird dort weiterhin fatal erkannt.
+    """
+    try:
+        _align_history_date_columns(sheets, spreadsheet_id)
+    except Exception as exc:
+        print(
+            "WARNUNG: Linksbündige Datumsformatierung in Tab 2 fehlgeschlagen; "
+            "Positions-/Historienaktualisierung wird fortgesetzt. "
+            f"Ursache: {type(exc).__name__}: {exc}"
+        )
+        return False
+    return True
 
 
 def _append_missing_history_rows(sheets, spreadsheet_id: str, new_closed_df: pd.DataFrame, *, allow_initialize: bool = False) -> int:
@@ -3222,6 +3280,10 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             print(f"PERSISTENZ: {appended_history} neue geschlossene Position(en) in Tab 2 archiviert.")
 
         _sort_and_number_closed_history(sheets, spreadsheet_id)
+        # Reine Darstellungsformatierung darf den Positions-Upload nicht blockieren.
+        # Die anschließende Historien-Lese-/Integritätsprüfung bleibt davon unabhängig
+        # verpflichtend und bricht bei fehlendem/inkonsistentem Tab 2 weiterhin ab.
+        _align_history_date_columns_best_effort(sheets, spreadsheet_id)
 
         def _column_letter(n: int) -> str:
             result = ""
