@@ -127,8 +127,8 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                 os.chdir(old_cwd)
 
 
-    def test_standalone_radar_uses_the_entire_five_model_pool_after_503(self):
-        """Der eigenstaendige Radar darf die Modelle 4 und 5 nicht auslassen."""
+    def test_standalone_radar_reaches_model_five_after_model_four_counttokens_404(self):
+        """Produktionsfolge: 3x GenerateContent-503, Modell-4-CountTokens-404, Modell 5 Erfolg."""
         with tempfile.TemporaryDirectory() as temp_dir:
             radar = load_radar_module()
             old_cwd = os.getcwd()
@@ -148,7 +148,16 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                 radar._gemini_503_failures_this_run.clear()
                 radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
                 radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
-                radar._gemini_tokenzahl = lambda *a, **k: 100
+                token_calls = []
+                def fake_token_count(client, model, contents, system_instruction=None, label=""):
+                    token_calls.append(model)
+                    if model == models[-2]:
+                        raise RuntimeError(
+                            "404 NOT_FOUND: models/gemini-3-flash-preview is not found "
+                            "for API version v1, or is not supported for countTokens."
+                        )
+                    return 100
+                radar._gemini_tokenzahl = fake_token_count
                 calls = []
                 report = "\n".join((
                     "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
@@ -174,10 +183,110 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                         client=client, preferred_modell=models[0],
                         eingabedateien={}, bestehende_auswertung="",
                     )
-                self.assertEqual(calls, list(models))
+                self.assertEqual(calls, list(models[:-2]) + [models[-1]])
+                self.assertEqual(token_calls, list(models))
                 self.assertEqual(result, report)
                 self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+                self.assertIn(f"Modellwechsel={models[-2]}->{models[-1]}", output.getvalue())
                 self.assertIn(f"Pool-Runde={len(models)}/{len(models)}", output.getvalue())
+            finally:
+                os.chdir(old_cwd)
+
+    def test_counttokens_model_specific_404_is_narrowly_classified(self):
+        radar = load_radar_module()
+        self.assertTrue(radar._gemini_counttokens_modell_nicht_unterstuetzt(
+            "404 NOT_FOUND: models/gemini-x is not found for API version v1, "
+            "or is not supported for countTokens"
+        ))
+        self.assertFalse(radar._gemini_counttokens_modell_nicht_unterstuetzt(
+            "404 NOT_FOUND: requested resource was not found"
+        ))
+        self.assertFalse(radar._gemini_counttokens_modell_nicht_unterstuetzt(
+            "403 PERMISSION_DENIED: countTokens not supported"
+        ))
+        self.assertFalse(radar._gemini_counttokens_modell_nicht_unterstuetzt(
+            "404 NOT_FOUND: models/gemini-x is not found for API version v1"
+        ))
+
+    def test_standalone_radar_switches_model_after_counttokens_503(self):
+        """Ein transienter CountTokens-503 wird wie ein GenerateContent-503 behandelt."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+                radar.time.sleep = lambda *_: None
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                token_calls = []
+                def fake_token_count(client, model, contents, system_instruction=None, label=""):
+                    token_calls.append(model)
+                    if model == "model-a":
+                        raise RuntimeError("503 UNAVAILABLE: high demand")
+                    return 100
+                radar._gemini_tokenzahl = fake_token_count
+                report = "\n".join((
+                    "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+                    "4. Assetklassenvergleich", "5. Technische Kandidaten",
+                    "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+                ))
+                calls = []
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        calls.append(model)
+                        return types.SimpleNamespace(text=report)
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                radar._gemini_quota_waehlen = lambda preferred, tokens, **kwargs: (preferred, 0.0)
+                radar._gemini_quota_registriere_sendung = lambda model, tokens: (model, tokens)
+                radar._gemini_quota_rollback_sendung = lambda reservation: None
+                with redirect_stdout(StringIO()):
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+                self.assertEqual(token_calls, ["model-a", "model-b"])
+                self.assertEqual(calls, ["model-b"])
+                self.assertEqual(result, report)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+            finally:
+                os.chdir(old_cwd)
+
+    def test_standalone_radar_all_counttokens_fail_without_generate_or_publication(self):
+        """Wenn CountTokens auf allen Modellen scheitert, wird nichts gesendet/publiziert."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                radar._gemini_tokenzahl = lambda *a, **k: (_ for _ in ()).throw(
+                    RuntimeError("404 NOT_FOUND: models/model is not found for API version v1, "
+                                 "or is not supported for countTokens")
+                )
+                generate_calls = []
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        generate_calls.append(model)
+                        raise AssertionError("GenerateContent darf ohne Tokenmessung nicht laufen")
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                with redirect_stdout(StringIO()):
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+                self.assertIsNone(result)
+                self.assertEqual(generate_calls, [])
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "REQUEST_FEHLER")
+                self.assertTrue(os.path.isfile(os.path.join(temp_dir, "Trading_Radar_Fehler.log")))
             finally:
                 os.chdir(old_cwd)
 
