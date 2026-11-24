@@ -410,7 +410,6 @@ def test_duplicate_open_ticker_positions_are_not_collapsed():
     assert selected["Ticker"].tolist() == ["AAA.DE", "AAA.DE"]
 
 
-
 def test_gold_twelvedata_fallback_is_persisted_after_quality_pass(monkeypatch):
     frame = _history(100)
     frame.attrs["ohlcv_quality"] = _quality()
@@ -468,7 +467,6 @@ def test_provider_fallback_is_not_returned_as_usable_when_persistence_fails(monk
     assert "PERSISTENCE_ERROR:OSError" in result.attrs["history_error"]
 
 
-
 def test_yahoo_fallback_persists_full_quality_frame_not_truncated_analysis_tail(monkeypatch):
     db = _history(99)
     db.attrs["ohlcv_quality"] = _quality()
@@ -519,7 +517,6 @@ def test_twelvedata_persists_full_quality_frame_not_truncated_analysis_tail(monk
 
     assert len(result) == 69
     assert persisted == [(100, "TwelveData")]
-
 
 
 def test_read_positions_rejects_german_grouped_excel_date_serial_as_stop(tmp_path):
@@ -660,6 +657,133 @@ def test_write_sheet_uploads_stop_value_and_formats_it_as_numeric():
     assert stop_format[0]["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] == "0.00"
 
 
+def test_write_sheet_formats_all_position_dates_left_aligned():
+    class _Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+
+    class _Values:
+        def clear(self, **kwargs):
+            return _Request()
+        def update(self, **kwargs):
+            return _Request()
+
+    class _Sheets:
+        def __init__(self):
+            self.batch_body = None
+        def get(self, **kwargs):
+            return _Request({"sheets": [{"properties": {
+                "title": "Geschlossene Positionen", "sheetId": 78
+            }}]})
+        def values(self):
+            return _Values()
+        def batchUpdate(self, **kwargs):
+            self.batch_body = kwargs["body"]
+            return _Request()
+
+    class _Service:
+        def __init__(self):
+            self.api = _Sheets()
+        def spreadsheets(self):
+            return self.api
+
+    service = _Service()
+    headers = checker.HISTORY_DISPLAY_HEADERS
+    values = [
+        ["Geschlossene Positionen | Test"] + [""] * (len(headers) - 1),
+        headers,
+        ["XAU/USD", "Gold Spot", "", "", "", "Long", "Manuell",
+         "04.11.2026", 4037.0, 3790.03, 3800.0, 4185.0, 4270.0,
+         "Gestoppt", "18.11.2026", 3790.03, -6.12] + [""] * (len(headers) - 17),
+    ]
+    checker._write_sheet(
+        service, "spreadsheet-id", "Geschlossene Positionen", values,
+        {"Einstiegsdatum": 110, "Ausstiegsdatum": 110}, 2,
+        target_title="Geschlossene Positionen",
+    )
+
+    requests = service.api.batch_body["requests"]
+    for column in ("Einstiegsdatum", "Ausstiegsdatum"):
+        index = headers.index(column)
+        matching = [
+            item["repeatCell"] for item in requests
+            if item.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == index
+            and "horizontalAlignment" in item.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat", {})
+        ]
+        assert matching
+        assert matching[0]["cell"]["userEnteredFormat"]["horizontalAlignment"] == "LEFT"
+        assert matching[0]["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] == "dd.MM.yyyy"
+
+
+def test_align_history_date_columns_covers_existing_rows(monkeypatch):
+    captured = {}
+
+    class _Request:
+        def execute(self):
+            return {"sheets": [{"properties": {
+                "title": "Geschlossene Positionen", "sheetId": 91
+            }}]}
+
+    class _Sheets:
+        def get(self, **kwargs):
+            return _Request()
+
+    class _Service:
+        def spreadsheets(self):
+            return _Sheets()
+
+    def _capture(sheets, spreadsheet_id, body, *, context):
+        captured["body"] = body
+        captured["context"] = context
+
+    monkeypatch.setattr(checker, "_google_batch_update_with_retry", _capture)
+    checker._align_history_date_columns(_Service(), "spreadsheet-id")
+
+    requests = captured["body"]["requests"]
+    assert len(requests) == 2
+    for column, request in zip(("Einstiegsdatum", "Ausstiegsdatum"), requests):
+        repeat = request["repeatCell"]
+        assert repeat["range"]["sheetId"] == 91
+        assert repeat["range"]["startRowIndex"] == 2
+        assert "endRowIndex" not in repeat["range"]
+        assert repeat["range"]["startColumnIndex"] == checker.HISTORY_HEADERS.index(column)
+        assert repeat["cell"]["userEnteredFormat"]["horizontalAlignment"] == "LEFT"
+
+
+def test_history_date_alignment_failure_is_non_blocking(monkeypatch, capsys):
+    def fail_alignment(*args, **kwargs):
+        raise RuntimeError("simulierter Google-Sheets-Formatierungsfehler")
+
+    monkeypatch.setattr(checker, "_align_history_date_columns", fail_alignment)
+
+    result = checker._align_history_date_columns_best_effort(
+        object(), "spreadsheet-id"
+    )
+
+    assert result is False
+    output = capsys.readouterr().out
+    assert "WARNUNG: Linksbündige Datumsformatierung" in output
+    assert "Positions-/Historienaktualisierung wird fortgesetzt" in output
+    assert "simulierter Google-Sheets-Formatierungsfehler" in output
+
+
+def test_history_date_alignment_best_effort_returns_true_when_formatting_succeeds(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        checker, "_align_history_date_columns",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = checker._align_history_date_columns_best_effort(
+        "sheets-service", "spreadsheet-id"
+    )
+
+    assert result is True
+    assert len(calls) == 1
+    assert calls[0][0] == ("sheets-service", "spreadsheet-id")
+
 
 def test_make_row_uses_tracker_current_price_for_visible_price_and_performance_without_relaxing_quality_gate():
     tech = checker.TechnicalResult(
@@ -707,7 +831,6 @@ def test_closed_history_sorts_oldest_first_and_numbers_contiguously():
     ]
     assert [row[-1] for row in numbered] == [1, 2, 3, 4]
     assert checker.HISTORY_DISPLAY_HEADERS == checker.HISTORY_HEADERS + ["Nr."]
-
 
 
 def test_google_history_tab_uses_three_level_sort_and_numbers_after_sort(monkeypatch):
@@ -849,7 +972,6 @@ def test_merge_closed_history_ignores_display_number_column():
     assert len(merged) == 1
     assert merged.iloc[0]["Ticker"] == "OLD"
     assert list(merged.columns) == checker.HISTORY_HEADERS
-
 
 
 def test_27_column_display_header_is_stripped_for_archive_and_recovery_contract():
@@ -1809,6 +1931,83 @@ def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
         assert state["updates"][0]["body"]["values"] == [[state["a1"]]]
         assert state["updates"][0]["valueInputOption"] == "RAW"
 
+
+@pytest.mark.parametrize("history_integrity_fails", [False, True], ids=["historie-valide", "historie-inkonsistent"])
+def test_upsert_continues_after_history_formatting_failure_but_keeps_integrity_gate(
+    monkeypatch, tmp_path, history_integrity_fails
+):
+    """Formatierungsfehler sind nicht fatal; ein anschließender Integritätsfehler bleibt fatal."""
+    state = {"history_reads": 0, "swap_calls": 0, "rollback_calls": 0}
+    archive_rows = []
+    for number in range(checker.MINIMUM_PROTECTED_HISTORY_ROWS):
+        row = {column: "" for column in checker.HISTORY_HEADERS}
+        row.update({"Name": f"Firma {number}", "Ticker": f"INT{number:03d}",
+                    "Einstieg": str(100 + number), "Einstiegsdatum": "01.01.2025",
+                    "Ausstiegsdatum": "02.02.2026", "Ausstiegskurs": str(101 + number),
+                    "Status": "Verkauft"})
+        archive_rows.append(row)
+    history_rows = [["Geschlossene Positionen | Stand"], checker.HISTORY_DISPLAY_HEADERS]
+    history_rows.extend([row[column] for column in checker.HISTORY_HEADERS] + [i + 1]
+                        for i, row in enumerate(archive_rows))
+
+    class Request:
+        def __init__(self, result=None): self.result = result or {}
+        def execute(self): return self.result
+    class Values:
+        def get(self, **kwargs):
+            requested_range = kwargs["range"]
+            if requested_range == "Geschlossene Positionen!A1:AA":
+                state["history_reads"] += 1
+                rows = [list(row) for row in history_rows]
+                if history_integrity_fails: rows[1] = ["FALSCHER_HEADER"]
+                return Request({"values": rows})
+            if requested_range.startswith("Offene Positionen+Check!A1:"):
+                return Request({"values": [["Offene Positionen+Check | Stand"], checker.HEADERS]})
+            raise AssertionError(f"Unerwarteter Google-Sheets-Read: {requested_range}")
+    class SpreadsheetResource:
+        def get(self, **kwargs):
+            return Request({"sheets": [
+                {"properties": {"title": "Offene Positionen+Check", "sheetId": 1}},
+                {"properties": {"title": "Geschlossene Positionen", "sheetId": 2}},
+            ]})
+        def batchUpdate(self, **kwargs): return Request()
+        def values(self): return Values()
+    class Sheets:
+        def spreadsheets(self): return SpreadsheetResource()
+
+    sheets = Sheets()
+    monkeypatch.setattr(checker, "_validate_output_before_upload", lambda *args: None)
+    monkeypatch.setattr(checker, "build", lambda *args, **kwargs: sheets, raising=False)
+    monkeypatch.setattr(checker, "_find_or_initialize_master", lambda *args: ("spreadsheet-id", False, None))
+    monkeypatch.setattr(checker, "read_existing_history", lambda *args, **kwargs: history_rows)
+    monkeypatch.setattr(checker, "_snapshot_google_sheet", lambda *args, **kwargs: "backup-id")
+    monkeypatch.setattr(checker, "_write_sheet", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args, **kwargs: len(archive_rows))
+    monkeypatch.setattr(checker, "_align_history_date_columns", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulierter Formatierungsfehler")))
+    def swap(*args, **kwargs):
+        state["swap_calls"] += 1
+        return {"Offene Positionen+Check": "__BACKUP_OFFEN__"}
+    monkeypatch.setattr(checker, "_swap_temp_tabs", swap)
+    monkeypatch.setattr(checker, "_rollback_productive_swap", lambda *args, **kwargs: state.__setitem__("rollback_calls", state["rollback_calls"] + 1))
+    monkeypatch.setattr(checker, "_enforce_productive_tab_order", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_update_closed_history_timestamp", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_finalize_new_master", lambda *args, **kwargs: None)
+    monkeypatch.chdir(tmp_path)
+
+    if history_integrity_fails:
+        with pytest.raises(RuntimeError, match="Header der Historie stimmt nicht"):
+            checker.upsert_google_sheet(pd.DataFrame(columns=checker.HEADERS),
+                                        pd.DataFrame(columns=checker.HISTORY_HEADERS), creds=object())
+        assert state["history_reads"] == 1
+        assert state["swap_calls"] == 0
+    else:
+        result = checker.upsert_google_sheet(pd.DataFrame(columns=checker.HEADERS),
+                                             pd.DataFrame(columns=checker.HISTORY_HEADERS), creds=object())
+        assert result == "spreadsheet-id"
+        assert state["history_reads"] == 1
+        assert state["swap_calls"] == 1
+    assert state["rollback_calls"] == 0
 
 
 def test_closed_history_timestamp_restores_previous_a1_when_readback_mismatches(monkeypatch):
