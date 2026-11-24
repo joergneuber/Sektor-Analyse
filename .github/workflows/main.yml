@@ -1064,11 +1064,11 @@ jobs:
         env:
           TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
-          TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
-          TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate }}
-          TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
+          TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate || 'NOT_RUN' }}
+          TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate || 'NOT_RUN' }}
+          TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate || 'NOT_RUN' }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL' }}
         run: python trading_radar_run_evidence.py gate-result
 
       - name: Trading-Radar Evidence final validieren
@@ -1077,11 +1077,11 @@ jobs:
         env:
           TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
-          TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate }}
-          TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate }}
-          TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate }}
+          TRADING_RADAR_OHLCV_PERSISTENCE_GATE: ${{ steps.trading-radar.outputs.ohlcv_persistence_gate || 'NOT_RUN' }}
+          TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate || 'NOT_RUN' }}
+          TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate || 'NOT_RUN' }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL' }}
         run: python trading_radar_run_evidence.py validate-final
 
       - name: Trading-Radar Laufnachweis als Artifact sichern
