@@ -2,6 +2,7 @@
 import csv
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +146,37 @@ class RunEvidenceTests(unittest.TestCase):
         }
         summary = {"start": start, "end": end, "run_identity": end_id}
         return end, summary
+
+
+    def test_failed_gemini_run_records_not_run_gates_as_valid_nicht_final_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            end, summary = self._valid_final_evidence_payloads()
+            end_file, summary_file = root / "end.json", root / "summary.json"
+            end_file.write_text(json.dumps(end), encoding="utf-8")
+            summary_file.write_text(json.dumps(summary), encoding="utf-8")
+            env = {
+                "TRADING_RADAR_CONTRACT_OUTCOME": "success",
+                "TRADING_RADAR_STEP_OUTCOME": "failure",
+                "TRADING_RADAR_OHLCV_PERSISTENCE_GATE": "NOT_RUN",
+                "TRADING_RADAR_OHLCV_QUEUE_GATE": "NOT_RUN",
+                "TRADING_RADAR_MARKET_FIRST_GATE": "NOT_RUN",
+                "TRADING_RADAR_REPORT_GATE": "failure",
+                "TRADING_RADAR_FACHLICH_FINAL": "NICHT_FINAL",
+            }
+            with patch.object(evidence, "ROOT", root), \
+                 patch.object(evidence, "END_FILE", end_file), \
+                 patch.object(evidence, "SUMMARY_FILE", summary_file), \
+                 patch.dict(os.environ, env, clear=False):
+                self.assertEqual(evidence.finalize_gate_result(), 0)
+                finalized = json.loads(end_file.read_text(encoding="utf-8"))
+                gates = finalized["run_identity"]["gate_results"]
+                self.assertEqual(gates["TRADING_RADAR_STEP_OUTCOME"], "failure")
+                self.assertEqual(gates["TRADING_RADAR_OHLCV_PERSISTENCE_GATE"], "NOT_RUN")
+                self.assertEqual(gates["TRADING_RADAR_OHLCV_QUEUE_GATE"], "NOT_RUN")
+                self.assertEqual(gates["TRADING_RADAR_MARKET_FIRST_GATE"], "NOT_RUN")
+                self.assertEqual(gates["TRADING_RADAR_FACHLICH_FINAL"], "NICHT_FINAL")
+                self.assertEqual(evidence.validate_final_evidence(), 0)
 
     def test_final_evidence_rejects_final_when_pending_queue_gate_failed(self):
         with tempfile.TemporaryDirectory() as temp:
