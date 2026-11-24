@@ -377,26 +377,23 @@ def test_xnys_weekend_uses_friday_as_last_completed_session(weekend_date):
     assert f"gemeinsamer abgeschlossener Datenstichtag {weekend_date}" not in result
 
 
-@pytest.mark.parametrize(
-    ("clock", "expected_date"),
-    [
-        ("2026-06-05 16:14", "2026-06-04"),
-        ("2026-06-05 16:15", "2026-06-05"),
-    ],
-)
-def test_missing_exchange_calendars_uses_fixed_1615_fallback_on_regular_day(
-    monkeypatch, clock, expected_date
-):
+@pytest.mark.parametrize("clock", ["2026-06-05 16:14", "2026-06-05 16:15"])
+def test_missing_exchange_calendars_fails_closed_on_regular_day(monkeypatch, clock):
     blocked = _block_exchange_calendars_import(monkeypatch)
-    data = _time_test_data_with_current_session("2026-06-05", prior_end="2026-06-04")
+    fetch_calls = []
+    report = "1. Trading-Radar\nIndizes/Marktbreite: vorhanden.\n2. Thesen-Update\n"
+
     result, findings = append_live_market_snapshot(
-        "1. Trading-Radar\nIndizes/Marktbreite: vorhanden.\n2. Thesen-Update\n",
-        fetcher=lambda _: data,
+        report,
+        fetcher=lambda _: fetch_calls.append(True),
         as_of_time=pd.Timestamp(clock, tz="America/New_York"),
     )
-    assert not findings
+
+    assert result == report
     assert blocked == ["exchange_calendars"]
-    _assert_common_cutoff(result, expected_date)
+    assert fetch_calls == []
+    assert len(findings) == 1
+    assert "NYSE-Kalenderfehler" in findings[0]
 
 
 def test_xnys_early_close_is_recognized_at_1315_with_publication_buffer():
@@ -412,19 +409,23 @@ def test_xnys_early_close_is_recognized_at_1315_with_publication_buffer():
     _assert_common_cutoff(regular_result, "2026-11-27")
 
 
-def test_missing_exchange_calendars_fallback_is_conservative_on_early_close_day(monkeypatch):
-    """Fallback test must run even when exchange_calendars is not installed."""
-    data = _time_test_data_with_current_session("2026-11-27", prior_end="2026-11-25")
+def test_missing_exchange_calendars_fails_closed_on_early_close_day(monkeypatch):
+    """No guessed regular close may replace the missing XNYS calendar."""
     blocked = _block_exchange_calendars_import(monkeypatch)
-    fallback_result, fallback_findings = append_live_market_snapshot(
-        "1. Trading-Radar\nIndizes/Marktbreite: vorhanden.\n2. Thesen-Update\n",
-        fetcher=lambda _: data,
+    fetch_calls = []
+    report = "1. Trading-Radar\nIndizes/Marktbreite: vorhanden.\n2. Thesen-Update\n"
+
+    result, findings = append_live_market_snapshot(
+        report,
+        fetcher=lambda _: fetch_calls.append(True),
         as_of_time=pd.Timestamp("2026-11-27 13:15", tz="America/New_York"),
     )
-    assert not fallback_findings
+
+    assert result == report
     assert blocked == ["exchange_calendars"]
-    _assert_common_cutoff(fallback_result, "2026-11-25")
-    assert "gemeinsamer abgeschlossener Datenstichtag 2026-11-27" not in fallback_result
+    assert fetch_calls == []
+    assert len(findings) == 1
+    assert "NYSE-Kalenderfehler" in findings[0]
 
 
 def test_naive_new_york_and_equivalent_utc_aware_timestamp_have_same_cutoff():

@@ -1,5 +1,9 @@
 from pathlib import Path
-from trading_radar_neuauswertung import RADAR_INSTRUCTION, audit_market_first_content
+from trading_radar_neuauswertung import (
+    RADAR_INSTRUCTION,
+    audit_market_first_content,
+    validate_thesis_ids_match_report,
+)
 
 
 def test_prompt_declares_market_first_and_portfolio_last():
@@ -386,3 +390,135 @@ def test_shared_thesis_register_validator_rejects_surrounding_id_whitespace():
         "theses": [thesis],
     })
     assert any("umgebenden Leerzeichen" in error for error in errors)
+
+
+def _compact_register_fallback_report(*, comparison_status="PASS", include_counter_evidence=True):
+    counter = (
+        "  - Gegenbelege: Steigende Realzinsen belasten die Bewertungen defensiver Versorger.\n"
+        if include_counter_evidence else ""
+    )
+    return (
+        "1. Trading-Radar\n"
+        "Indizes/Marktbreite: S&P 500 +0.8%; Nasdaq -0.4%; Marktbreite 5/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury Rendite 4.92%; Realzins 2.88%.\n"
+        "Dollar/Liquidität/Volatilität: VIX 26.62; Dollarproxy 28.50; Liquidität eng.\n"
+        "Marktregime: Restriktives Zinsregime mit selektiver defensiver Rotation.\n"
+        "Basisszenario: Defensive Seitwärtsbewegung mit Abwärtsrisiko bei Tech. "
+        "Eintrittsbedingung: Marktbreite mindestens 5/11. Status: NICHT ABLEITBAR. "
+        "Bestätigungstrigger: Marktbreite und Sektorwerte am gemeinsamen Stichtag messen. "
+        "Invalidierungstrigger: Marktbreite fällt unter 5/11. "
+        "Datenlücke: XLV/XLE 3M-Relative-Stärke fehlt.\n"
+        "2. Thesen-Update\n"
+        "Thesenregister – kompakte Übersicht:\n"
+        "- Thesen-ID: DEF_VERSORGER_2026 | Version 1 | Status NEU | Konfidenz mittel\n"
+        "  - Datenstichtag: 2026-11-24T04:59:12+00:00\n"
+        "  - Aktualisiert: 2026-11-24T04:59:12+00:00\n"
+        "  - These: Versorger als defensiver Anker bei hoher Zinsunsicherheit\n"
+        "  - Horizont: Mittelfristig\n"
+        "  - Alternative: Sektor-Rotation in zyklische Werte setzt sich fort\n"
+        "  - Belege: AEP und ED als KAUFKANDIDAT A identifiziert\n"
+        + counter
+        + "  - Bestätigungstrigger: AEP/ED Ausbruch über 52W-Hoch\n"
+        "  - Invalidierungstrigger: Versorger-Sektor-RS fällt unter 0\n"
+        "  - Ereignisabhängigkeiten: keine\n"
+        "  - Assetklassen: Versorger\n"
+        "  - Verknüpfte Kandidaten: AEP; ED\n"
+        f"THESENREGISTER-VERGLEICH: {comparison_status}\n"
+        "3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+        "4. Assetklassenvergleich\nRelative Stärke und Kapitalrotation zeigen defensive Gewinner und Tech-Verlierer.\n"
+        "5. Technische Kandidaten\n"
+        "JETZT TECHNISCH PRÜFEN: Keine Kandidaten\n"
+        "AUF TRIGGER WARTEN: Keine Kandidaten\n"
+        "EREIGNIS ABWARTEN: Keine Kandidaten\n"
+        "NICHT HANDELBAR: Keine Kandidaten\n"
+        "6. Portfolio & Risiko\nRisiko kontrolliert.\n"
+        "7. MSCI-Vergleich\nBenchmark-Vergleich.\n"
+        "8. Daten-/Prüfanhang\nDatenstatus dokumentiert.\n"
+    )
+
+
+def test_market_first_accepts_complete_compact_register_only_after_persisted_comparison_pass():
+    report = _compact_register_fallback_report()
+    assert audit_market_first_content(report) == []
+
+
+def test_market_first_does_not_treat_compact_register_as_primary_without_comparison_pass():
+    report = _compact_register_fallback_report(comparison_status="NICHT_NACHWEISBAR")
+    errors = audit_market_first_content(report)
+    assert any("keine einzeln abgrenzbaren Thesen-Datensätze" in item for item in errors)
+
+
+def test_market_first_rejects_compact_register_fallback_with_missing_counter_evidence():
+    report = _compact_register_fallback_report(include_counter_evidence=False)
+    errors = audit_market_first_content(report)
+    assert any("keine einzeln abgrenzbaren Thesen-Datensätze" in item for item in errors)
+
+
+def test_thesis_id_match_accepts_single_character_id_in_compact_register():
+    report = """2. Thesen-Update
+Thesenregister – kompakte Übersicht:
+T | Version: 2 | Status: BESTÄTIGT | Konfidenz: 70%
+THESENREGISTER-VERGLEICH: PASS
+3. Ereignisradar
+CPI."""
+    payload = {"theses": [{"thesis_id": "T"}]}
+    assert validate_thesis_ids_match_report(report, payload) == []
+
+
+def test_thesis_id_match_detects_mismatch_for_single_character_compact_id():
+    report = """2. Thesen-Update
+Thesenregister – kompakte Übersicht:
+T | Version: 2 | Status: BESTÄTIGT | Konfidenz: 70%
+THESENREGISTER-VERGLEICH: PASS
+3. Ereignisradar
+CPI."""
+    payload = {"theses": [{"thesis_id": "OTHER"}]}
+    findings = validate_thesis_ids_match_report(report, payload)
+    assert findings and "fehlgeschlagen" in findings[0], findings
+
+
+def test_market_first_audit_accepts_single_character_id_in_compact_fallback():
+    report = """### 1. Trading-Radar
+Indizes/Marktbreite: S&P 500 breadth 8/11.
+Zinsen/Renditen: US 10Y Treasury yield 4.2%.
+Dollar/Liquidität/Volatilität: DXY 102.3 and VIX 18.4.
+Marktregime: risk-off.
+Basisszenario: defensive market conditions.
+### 2. Thesen-Update
+Thesenregister – kompakte Übersicht:
+T | Version: 2 | Status: BESTÄTIGT | Konfidenz: 70%
+These: Defensive Marktthese mit bestätigtem Trend.
+Horizont: 3 Monate.
+Alternative: Seitwärtsbewegung bei nachlassender Volatilität.
+Belege: Marktbreite bleibt schwach.
+Gegenbelege: Unternehmensgewinne bleiben robust.
+Bestätigungstrigger: Marktbreite fällt weiter.
+Invalidierungstrigger: Marktbreite steigt über 9/11.
+Assetklassen: Anleihen; Gold.
+Ereignisabhängigkeiten: keine.
+Verknüpfte Kandidaten: keine.
+Datenstichtag: 2026-11-24T10:00:00Z
+Aktualisiert: 2026-11-24T10:00:00Z
+THESENREGISTER-VERGLEICH: PASS
+### 3. Ereignisradar
+CPI.
+### 4. Assetklassenvergleich
+Relative Stärke zeigt Rotation aus Growth in Energie; Gewinner und Verlierer divergieren.
+### 5. Technische Kandidaten
+### JETZT TECHNISCH PRÜFEN
+Keine Kandidaten.
+### AUF TRIGGER WARTEN
+Keine Kandidaten.
+### EREIGNIS ABWARTEN
+Keine Kandidaten.
+### NICHT HANDELBAR
+Keine Kandidaten.
+### 6. Portfolio & Risiko
+Relevante Auswirkungen.
+### 7. MSCI-Vergleich
+Vergleich.
+### 8. Daten-/Prüfanhang
+Daten."""
+    errors = audit_market_first_content(report)
+    assert not any("keine einzeln abgrenzbaren Thesen-Datensätze" in error for error in errors), errors
+    assert not any("Pflichtfeld" in error and "These 1" in error for error in errors), errors

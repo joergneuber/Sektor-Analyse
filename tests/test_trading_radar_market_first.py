@@ -22,6 +22,110 @@ def test_event_duplicates_are_collapsed():
     assert len(deduplicate_events(rows)) == 1
 
 
+def test_event_deduplication_is_casefolded_and_preserves_first_record():
+    first = {
+        "event_id": "FOMC-Decision",
+        "name": "Federal Reserve Rate Decision",
+        "date": "2026-11-05",
+        "source": "HTTPS://WWW.FEDERALRESERVE.GOV/newsevents/2026-November.htm",
+    }
+    duplicate = {
+        "event_id": "fomc-decision",
+        "name": "federal reserve rate decision",
+        "date": " 2026-11-05 ",
+        "source": "https://www.federalreserve.gov/newsevents/2026-November.htm",
+    }
+
+    result = deduplicate_events([first, duplicate])
+
+    assert len(result) == 1
+    assert result[0]["event_id"] == "FOMC-Decision"
+    assert result[0]["name"] == "Federal Reserve Rate Decision"
+    assert result[0]["source"] == first["source"]
+
+
+def test_event_deduplication_normalizes_unicode_and_whitespace_only_for_key():
+    rows = [
+        {"event_id": "ＣＰＩ", "name": "  Core   CPI ", "date": "2026-11-05", "source": "BLS"},
+        {"event_id": "cpi", "name": "core cpi", "date": "2026-11-05", "source": "bls"},
+    ]
+    assert len(deduplicate_events(rows)) == 1
+
+
+def test_event_deduplication_does_not_casefold_case_sensitive_url_paths():
+    rows = [
+        {"event_id": "E1", "name": "CPI", "date": "2026-11-05", "source": "Official calendar (https://example.org/Calendar)"},
+        {"event_id": "E1", "name": "CPI", "date": "2026-11-05", "source": "official calendar (https://example.org/calendar)"},
+    ]
+    assert len(deduplicate_events(rows)) == 2
+
+
+@pytest.mark.parametrize(
+    ("clock", "expected"),
+    [
+        ("2026-11-20T21:14:00+00:00", "2026-11-19"),  # 14 minutes after Friday close
+        ("2026-11-20T21:15:00+00:00", "2026-11-20"),  # publication buffer elapsed
+        ("2026-11-21T17:00:00+00:00", "2026-11-20"),  # Saturday
+        ("2026-11-22T23:00:00+00:00", "2026-11-20"),  # Sunday
+        ("2026-11-23T14:00:00+00:00", "2026-11-20"),  # Monday before close
+        ("2026-11-23T21:16:00+00:00", "2026-11-23"),  # Monday after close + buffer
+        ("2026-11-26T22:00:00+00:00", "2026-11-25"),  # Thanksgiving
+        ("2026-11-27T18:00:00+00:00", "2026-11-25"),  # Black Friday before 13:15 ET
+        ("2026-11-27T18:16:00+00:00", "2026-11-27"),  # Black Friday after early close + buffer
+    ],
+)
+def test_completed_nyse_session_cutoff_uses_real_xnys_sessions(clock, expected):
+    from trading_radar_market_first import _completed_nyse_session_cutoff
+
+    assert _completed_nyse_session_cutoff(clock).isoformat() == expected
+
+
+def test_completed_nyse_session_cutoff_fails_closed_on_calendar_runtime_error(monkeypatch):
+    import exchange_calendars
+    from trading_radar_market_first import _completed_nyse_session_cutoff
+
+    def broken_calendar(_name):
+        raise RuntimeError("calendar database unavailable")
+
+    monkeypatch.setattr(exchange_calendars, "get_calendar", broken_calendar)
+    with pytest.raises(RuntimeError, match="calendar database unavailable"):
+        _completed_nyse_session_cutoff("2026-11-22T22:00:00+00:00")
+
+
+def test_market_snapshot_fails_closed_when_xnys_calendar_is_unavailable(monkeypatch):
+    import builtins
+    from trading_radar_market_first import append_live_market_snapshot
+
+    report = (
+        "1. Trading-Radar\nIndizes/Marktbreite: neutral.\nBasisszenario: neutral.\n"
+        "2. Thesen-Update\n3. Ereignisradar\n"
+        "4. Assetklassenvergleich\n5. Technische Kandidaten\n"
+    )
+    fetch_called = False
+    original_import = builtins.__import__
+
+    def import_without_exchange_calendar(name, *args, **kwargs):
+        if name == "exchange_calendars":
+            raise ImportError("calendar deliberately unavailable in regression test")
+        return original_import(name, *args, **kwargs)
+
+    def fetcher(_symbols):
+        nonlocal fetch_called
+        fetch_called = True
+        raise AssertionError("fetcher must not run without a trusted session cutoff")
+
+    monkeypatch.setattr(builtins, "__import__", import_without_exchange_calendar)
+    output, findings = append_live_market_snapshot(
+        report, fetcher=fetcher, as_of_time="2026-11-22T22:00:00+00:00"
+    )
+
+    assert output == report
+    assert not fetch_called
+    assert len(findings) == 1
+    assert "NYSE-Kalenderfehler" in findings[0]
+    assert "calendar deliberately unavailable" in findings[0]
+
+
 def test_event_missing_required_fields_are_explicit():
     row = normalize_event({"name": "CPI"})
     assert row["status"] == "INCOMPLETE"
@@ -208,7 +312,10 @@ def test_live_market_snapshot_adds_real_numeric_market_evidence():
     columns = pd.MultiIndex.from_product([symbols, ["Close"]])
     data = pd.DataFrame({col: [100 + i * 0.2 for i in range(len(index))] for col in columns}, index=index)
     report = "### 1. Trading-Radar\nMarktregime konstruktiv.\n\n### 2. Thesen-Update\n"
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert not findings
     assert "Index S&P 500" in result
     assert "Marktbreite-Proxy: 11/11" in result
@@ -230,7 +337,10 @@ def test_live_market_snapshot_populates_canonical_m02_fields_from_real_snapshot(
         "Dollar/Liquidität/Volatilität: M2-Geldmenge 23.413,90 Mrd. USD; Name nicht aufgelöst (VIX).\n"
         "### 2. Thesen-Update\n"
     )
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert findings == []
     risk = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
     assert "VIX: 18.79" in risk
@@ -247,7 +357,10 @@ def test_live_market_snapshot_inserts_inside_section_one_with_decorated_heading(
     columns = pd.MultiIndex.from_product([symbols, ["Close"]])
     data = pd.DataFrame({col: [100 + i * 0.2 for i in range(len(index))] for col in columns}, index=index)
     report = "### 1. Trading-Radar — Executive-Entscheidung\nMarktregime: konstruktiv.\n\n### 2. Thesen-Update (Register)\n"
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert findings == []
     assert result.index("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") < result.index("### 2. Thesen-Update")
     assert "Index S&P 500" in result.split("### 2. Thesen-Update")[0]
@@ -255,7 +368,10 @@ def test_live_market_snapshot_inserts_inside_section_one_with_decorated_heading(
 
     # Reprocessing must replace the previous snapshot, not duplicate it,
     # even when section 2 has a decorated heading suffix.
-    repeated, repeated_findings = append_live_market_snapshot(result, fetcher=lambda requested: data)
+    repeated, repeated_findings = append_live_market_snapshot(
+        result, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert repeated_findings == []
     assert repeated.count("**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**") == 1
     assert "### 2. Thesen-Update (Register)" in repeated
@@ -1119,7 +1235,10 @@ def test_relative_strength_matrix_uses_common_cutoff_and_identical_21_63_day_win
         "### 4. Assetklassenvergleich\nVergleich.\n"
         "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
     )
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert findings == []
     assert "Relative-Stärke-Matrix" in result
     assert "Gemeinsamer Datenstichtag: 2026-" in result
@@ -1149,7 +1268,10 @@ def test_live_snapshot_labels_distinct_treasury_dates_as_temporal_observations()
         "### 4. Assetklassenvergleich\nVergleich.\n"
         "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
     )
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert findings == []
     assert "GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN" in result
     assert "QUELLENKONFLIKT: OFFEN" not in result
@@ -1158,9 +1280,10 @@ def test_live_snapshot_labels_distinct_treasury_dates_as_temporal_observations()
 
 
 
-def test_relative_strength_excludes_series_without_exact_common_cutoff():
+def test_relative_strength_keeps_expected_session_when_one_core_ticker_is_stale():
     import pandas as pd
     from trading_radar_market_first import append_live_market_snapshot
+
     symbols = [
         "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
@@ -1168,19 +1291,38 @@ def test_relative_strength_excludes_series_without_exact_common_cutoff():
     ]
     index = pd.date_range("2026-05-01", periods=100, freq="B")
     columns = pd.MultiIndex.from_product([symbols, ["Close"]])
-    data = pd.DataFrame({col: [100.0 + i * 0.1 for i in range(99)] for col in columns}, index=index[:-1]).reindex(index)
-    # Other series define the common cutoff at index[-2]. ^GSPC has a later
-    # maximum but is missing exactly the common-cutoff observation.
-    data[("^GSPC", "Close")] = pd.Series(
-        [100.0 + i * 0.1 for i in list(range(98)) + [99]], index=index[:-2].append(index[-1:])
+    data = pd.DataFrame(
+        {col: [100.0 + i * 0.1 for i in range(len(index))] for col in columns},
+        index=index,
     )
-    report = "### 1. Trading-Radar\nMarktregime: neutral.\n### 2. Thesen-Update\nKeine neue These.\n### 4. Assetklassenvergleich\nVergleich.\n### 5. Technische Kandidaten\nKeine Kandidaten.\n"
-    result, _ = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    # One core index is stale. It must be reported as a gap, not move the
+    # common expected session backwards for every other index/region/sector.
+    data[("^GSPC", "Close")] = pd.Series(
+        [100.0 + i * 0.1 for i in range(len(index) - 1)], index=index[:-1]
+    )
+    report = (
+        "### 1. Trading-Radar\nMarktregime: neutral.\n"
+        "### 2. Thesen-Update\nKeine neue These.\n"
+        "### 4. Assetklassenvergleich\nVergleich.\n"
+        "### 5. Technische Kandidaten\nKeine Kandidaten.\n"
+    )
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
+    assert "Relative-Stärke-Matrix" in result, f"findings={findings!r}; tail={result[-1000:]!r}"
     matrix = result.split("Relative-Stärke-Matrix", 1)[1].split("### 5.", 1)[0]
-    assert "S&P 500 (^GSPC) 1M NICHT VERFÜGBAR" in matrix
+    assert findings == []
+    assert f"Gemeinsamer Datenstichtag: {index[-1].date().isoformat()}T00:00:00+00:00" in matrix
+    sp500 = next(line for line in matrix.splitlines() if "S&P 500 (^GSPC)" in line)
+    assert "1M NICHT VERFÜGBAR" in sp500
+    assert "kein Kurs exakt am gemeinsamen Stichtag" in sp500
+    assert "- Index S&P 500 (^GSPC): NICHT VERFÜGBAR." in result
+    assert "Nasdaq (^IXIC) 1M +" in matrix
+    assert "Russell 2000 (^RUT) 1M +" in matrix
 
 
-def test_m02_dxy_is_not_carried_forward_when_missing_on_common_cutoff():
+def test_m02_uses_explicit_uup_proxy_when_spot_dxy_missing_on_core_cutoff():
     import pandas as pd
     from trading_radar_market_first import append_live_market_snapshot
     symbols = ["^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
@@ -1189,21 +1331,25 @@ def test_m02_dxy_is_not_carried_forward_when_missing_on_common_cutoff():
     index = pd.date_range("2026-06-01", periods=80, freq="B", tz="UTC")
     columns = pd.MultiIndex.from_product([symbols, ["Close"]])
     data = pd.DataFrame({col: [100.0 + i * 0.2 for i in range(len(index))] for col in columns}, index=index)
-    # Force the shared cutoff to the penultimate session, while DXY has a later
-    # close but no observation on that exact shared date.
-    data.loc[index[-1], ("BTC-USD", "Close")] = float("nan")
-    data.loc[index[-2], ("DX-Y.NYB", "Close")] = float("nan")
+    # Crypto must not move the core equity cutoff. Spot DXY is missing on that
+    # date, so the UUP ETF is an explicitly named, same-date dollar proxy.
+    data.loc[index[-1], ("DX-Y.NYB", "Close")] = float("nan")
     report = (
         "### 1. Trading-Radar\nMarktregime: konstruktiv.\n"
         "Dollar/Liquidität/Volatilität: M2-Liquidität wird beobachtet.\n"
         "### 2. Thesen-Update\n"
     )
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert findings == []
-    assert "Marktregime-Datenstichtag: 2026-09-17" in result
-    assert "Dollar-Proxy DXY: NICHT VERFÜGBAR" in result
+    assert "Marktregime-Datenstichtag: 2026-09-18" in result
+    assert "Dollar-Proxy UUP (US-Dollar-ETF):" in result
+    assert "Quelle: Yahoo Finance (UUP)" in result
     risk = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
-    assert "DXY: NICHT VERFÜGBAR" in risk
+    assert "Dollarproxy:" in risk
+    assert "DXY: NICHT VERFÜGBAR" not in risk
 
 
 def test_event_date_is_promoted_from_one_explicit_valid_period_date():
@@ -2004,7 +2150,10 @@ def test_live_snapshot_replaces_only_attached_vix_dxy_values_and_preserves_neigh
     report = ("### 1. Trading-Radar\nMarktregime: konstruktiv.\nIndizes/Marktbreite: S&P stabil.\n"
               "Dollar/Liquidität/Volatilität: USD-Liquidität stabil; VIX NICHT VERFÜGBAR; Liquiditätsindikator 42; DXY 99,90; Treasury-Narrativ 4,5%.\n"
               "\n### 2. Thesen-Update\n")
-    result, findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert not findings
     risk_line = next(line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
     assert risk_line.count("VIX:") == 1 and risk_line.count("DXY:") == 1
@@ -2012,7 +2161,10 @@ def test_live_snapshot_replaces_only_attached_vix_dxy_values_and_preserves_neigh
     assert "NICHT VERFÜGBAR" not in risk_line
     assert sum("- Volatilität VIX:" in line for line in result.splitlines()) == 1
     assert sum("- Dollar-Proxy DXY" in line for line in result.splitlines()) == 1
-    second_pass, second_findings = append_live_market_snapshot(result, fetcher=lambda requested: data)
+    second_pass, second_findings = append_live_market_snapshot(
+        result, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
     assert not second_findings
     second_risk_line = next(line for line in second_pass.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:"))
     assert second_risk_line == risk_line
@@ -2055,8 +2207,14 @@ def test_live_snapshot_repetition_preserves_all_scenarios_and_eight_sections():
         "8. Daten-/Prüfanhang\nPrüfprotokoll.\n"
     )
 
-    first, first_findings = append_live_market_snapshot(report, fetcher=lambda requested: data)
-    second, second_findings = append_live_market_snapshot(first, fetcher=lambda requested: data)
+    first, first_findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
+    second, second_findings = append_live_market_snapshot(
+        first, fetcher=lambda requested: data,
+        as_of_time=f"{index[-1].date()}T23:00:00+00:00",
+    )
 
     assert not first_findings and not second_findings
     for marker in (
@@ -2077,3 +2235,138 @@ def test_live_snapshot_repetition_preserves_all_scenarios_and_eight_sections():
         start=1,
     ):
         assert re.search(rf"(?m)^{number}\. {re.escape(title)}$", second)
+
+
+def test_pipe_delimited_forexfactory_event_header_is_normalized_and_live_verified():
+    from trading_radar_market_first import normalize_event_section
+
+    class Response:
+        status_code = 200
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        text = json.dumps([{
+            "id": "adp-weekly-20261124",
+            "country": "USD",
+            "title": "ADP Weekly Employment Change",
+            "date": "2026-11-24T14:15:00+01:00",
+        }])
+
+        def json(self):
+            return json.loads(self.text)
+
+    report = (
+        "3. Ereignisradar\n"
+        "* ADP Weekly Employment Change | 2026-11-24 | 14:15 MEZ | "
+        "Erwartung: NICHT VERFÜGBAR | Quelle: ForexFactory.\n"
+        "- Datum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        "- Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt; Quelle fehlt)\n"
+        "Uhrzeit: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        "Zeitzone: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        "Kennzahl: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        "Berichtszeitraum: NICHT VERFÜGBAR (keine verifizierte Ereignisquelle)\n"
+        "* Auswirkung: Volatilität bei Zins-Assets; bestätigt die These bei hoher Arbeitsmarktaktivität.\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report,
+        forexfactory_requester=lambda requested_url, **kwargs: Response(),
+    )
+
+    assert findings == []
+    assert normalized.count("ADP Weekly Employment Change") >= 1
+    assert "Datum: 2026-11-24" in normalized
+    assert "Uhrzeit: 14:15" in normalized
+    assert "Zeitzone: UTC+01:00" in normalized
+    assert "ForexFactory LIVE adapter" in normalized
+    assert "LIVE_VERIFIZIERT" in normalized
+    assert "Auswirkung:" in normalized
+    assert "Ereignis ohne Datum" not in findings
+
+
+def test_live_snapshot_uses_core_market_session_not_weekend_crypto_and_falls_back_to_uup():
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+
+    symbols = [
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "DX=F", "^TNX", "TLT",
+        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
+    ]
+    business_dates = pd.date_range(end="2026-11-23", periods=80, freq="B", tz="UTC")
+    sunday = pd.DatetimeIndex([pd.Timestamp("2026-11-22", tz="UTC")])
+    index = business_dates.union(sunday).sort_values()
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    values = {}
+    for symbol in symbols:
+        if symbol == "BTC-USD":
+            series = pd.Series(float("nan"), index=index)
+            series.loc[business_dates[-3]] = 90.0
+            series.loc[sunday[0]] = 91.0
+        else:
+            series = pd.Series(float("nan"), index=index)
+            series.loc[business_dates] = [100.0 + i * 0.25 for i in range(len(business_dates))]
+        if symbol == "^VIX":
+            series.loc[business_dates] = [18.0 + i * 0.01 for i in range(len(business_dates))]
+        if symbol in {"DX-Y.NYB", "DX=F"}:
+            # Both index feeds stop on Friday; UUP is the only exact Monday proxy.
+            series.loc[business_dates[-1]] = float("nan")
+        if symbol == "UUP":
+            series.loc[business_dates] = [25.0 + i * 0.01 for i in range(len(business_dates))]
+        values[(symbol, "Close")] = series.to_numpy()
+    data = pd.DataFrame(values, index=index, columns=columns)
+    report = (
+        "1. Trading-Radar\nMarktregime: konstruktiv.\n"
+        "Indizes/Marktbreite: Marktbreite 8/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury bei 4,00%.\n"
+        "Dollar/Liquidität/Volatilität: VIX NICHT VERFÜGBAR; DXY NICHT VERFÜGBAR; Liquiditätslage stabil.\n\n"
+        "2. Thesen-Update\n\n3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+        "4. Assetklassenvergleich\n\n5. Technische Kandidaten\n"
+    )
+    result, findings = append_live_market_snapshot(
+        report, fetcher=lambda requested: data,
+        as_of_time="2026-11-24T05:30:00+00:00",
+    )
+
+    assert findings == []
+    assert "Gemeinsamer Datenstichtag: 2026-11-23T00:00:00+00:00" in result
+    assert "- Volatilität VIX:" in result and "Datenstichtag: 2026-11-23" in result
+    assert "- Dollar-Proxy UUP (US-Dollar-ETF):" in result
+    assert "Quelle: Yahoo Finance (UUP)" in result
+    assert "Dollarproxy:" in next(
+        line for line in result.splitlines() if line.startswith("Dollar/Liquidität/Volatilität:")
+    )
+    assert "Datenlücke: kein Kurs exakt am gemeinsamen Stichtag" in result
+
+
+def test_pipe_delimited_event_header_does_not_claim_live_verification_without_feed_match():
+    import json
+    from trading_radar_market_first import normalize_event_section
+
+    class Response:
+        status_code = 200
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        text = "[]"
+
+        def json(self):
+            return json.loads(self.text)
+
+    report = (
+        "3. Ereignisradar\n"
+        "* ADP Weekly Employment Change | 2026-11-24 | 14:15 MEZ | Quelle: ForexFactory.\n"
+        "- Datum: NICHT VERFÜGBAR\n"
+        "- Quellenprüfung: NICHT VERIFIZIERT (Datum nicht belegt; Quelle fehlt)\n"
+        "Uhrzeit: NICHT VERFÜGBAR\n"
+        "Zeitzone: NICHT VERFÜGBAR\n"
+        "Kennzahl: NICHT VERFÜGBAR\n"
+        "Berichtszeitraum: NICHT VERFÜGBAR\n"
+        "* Auswirkung: Volatilität bei Zins-Assets.\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, forexfactory_requester=lambda requested_url, **kwargs: Response()
+    )
+
+    assert "Datum: 2026-11-24" in normalized
+    assert "Uhrzeit: 14:15" in normalized
+    assert "Zeitzone: Europe/Berlin" in normalized
+    assert "LIVE_VERIFIZIERT" not in normalized
+    assert any("Ereignis ohne verifizierte Quelle" in item for item in findings)

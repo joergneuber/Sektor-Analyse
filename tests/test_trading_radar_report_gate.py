@@ -165,7 +165,8 @@ class ReportGateTests(unittest.TestCase):
             "- Szenarien unter Konsens: unerwartete Zinssenkung\n"
             "- Szenarien entsprechend Konsens: Korridor bleibt unverändert\n"
             "- Szenarien über Konsens: unerwartete Zinserhöhung\n"
-            "- Reaktionskanäle: Anleihen, Devisen, Aktien",
+            "- Reaktionskanäle: Anleihen, Devisen, Aktien\n"
+            "- Auswirkung: Volatilität bei Zins-Assets; keine zweite Ereignisidentität.",
         )
         errors = gate.validate_report(text)
         self.assertFalse(any("M-08" in e for e in errors), errors)
@@ -1206,6 +1207,70 @@ def test_m02_fails_closed_outside_verified_calendar_window():
     from datetime import datetime
     assert gate._m02_expected_common_session_date(datetime.fromisoformat("2028-01-04T22:30:00+00:00")) is None
 
+
+
+def test_m02_accepts_explicit_uup_dollar_etf_proxy_when_spot_dxy_is_unavailable():
+    text = report_fixture().replace(
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00; Liquiditätslage stabil.",
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; Dollarproxy: 28,50; Liquiditätslage stabil.",
+        1,
+    ).replace(
+        "- Dollar-Proxy DXY (DX-Y.NYB): 100.00 | Quelle: Yahoo Finance (DX-Y.NYB); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.",
+        "- Dollar-Proxy UUP (US-Dollar-ETF): 28.50 | Quelle: Yahoo Finance (UUP); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: USD je Anteil; Verzögerung: Tages-Schlusskurs.",
+        1,
+    )
+    errors = gate.validate_report(text)
+    assert not any(item.startswith("M-02:") for item in errors), errors
+
+
+
+def test_m02_accepts_dx_f_as_explicit_dollar_index_futures_proxy():
+    text = report_fixture().replace(
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; DXY: 100,00; Liquiditätslage stabil.",
+        "Dollar/Liquidität/Volatilität: VIX: 18,00; Dollarproxy: 105,50; Liquiditätslage stabil.",
+        1,
+    ).replace(
+        "- Dollar-Proxy DXY (DX-Y.NYB): 100.00 | Quelle: Yahoo Finance (DX-Y.NYB); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.",
+        "- Dollar-Proxy DX-Future (DX=F): 105.50 | Quelle: Yahoo Finance (DX=F); Abrufzeit: 2026-10-30T21:20:00Z; Datenstichtag: 2026-10-30; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs.",
+        1,
+    )
+    errors = gate.validate_report(text)
+    assert not any(item.startswith("M-02:") for item in errors), errors
+
+def test_m04_accepts_explicit_exact_cutoff_data_gap_in_each_matrix_group():
+    text = report_fixture()
+    for group in ("Indizes", "Regionen", "Sektoren", "Anlageklassen"):
+        text = re.sub(
+            rf"(?m)^{group}: 1M/3M NICHT VERFÜGBAR \(Datenlücke: keine vergleichbaren Reihen\)\.$",
+            f"{group}: NICHT VERFÜGBAR (Datenlücke: kein Kurs exakt am gemeinsamen Stichtag).",
+            text,
+            count=1,
+        )
+    errors = gate.validate_report(text)
+    assert not any(item.startswith("M-04:") for item in errors), errors
+
+
+def test_m08_pipe_delimited_event_header_and_auswirkung_remain_one_record():
+    text = report_fixture()
+    start = text.index("3. Ereignisradar")
+    end = text.index("4. Assetklassenvergleich", start)
+    event_section = (
+        "3. Ereignisradar\n"
+        "* ADP Weekly Employment Change | 2026-11-24 | 14:15 MEZ | "
+        "Erwartung: NICHT VERFÜGBAR | Quelle: ForexFactory\n"
+        "- Datum: 2026-11-24\n"
+        "- Quellenprüfung: LIVE_VERIFIZIERT (ForexFactory; Datum und Ereignisidentität abgeglichen)\n"
+        "Uhrzeit: 14:15\n"
+        "Zeitzone: Europe/Berlin\n"
+        "Kennzahl: NICHT VERFÜGBAR\n"
+        "Berichtszeitraum: NICHT VERFÜGBAR\n"
+        "Letzter Wert: NICHT VERFÜGBAR\n"
+        "Konsens: NICHT VERFÜGBAR\n"
+        "* Auswirkung: Volatilität bei Zins-Assets; keine zweite Ereignisidentität.\n\n"
+    )
+    text = text[:start] + event_section + text[end:]
+    errors = gate.validate_report(text)
+    assert not any(item.startswith("M-08:") for item in errors), errors
 
 def test_m05_thesis_identity_uses_shared_placeholder_rules_without_changing_m07_parser():
     text = report_fixture().replace("Thesen-ID: T-1", "Thesen-ID: NICHT ANGEGEBEN", 1)

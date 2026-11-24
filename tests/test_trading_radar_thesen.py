@@ -275,16 +275,143 @@ def test_register_change_lists_reflect_new_update_unchanged_and_archive_transiti
     assert third["unchanged_theses"] == []  # archived history is retained, not re-emitted as current input
 
 
-def test_omitted_active_thesis_fails_closed_without_archiving_or_overwriting(tmp_path):
+def test_omitted_active_thesis_is_carried_forward_unchanged_without_archiving(tmp_path):
     path = tmp_path / "register.json"
-    update_register(report(payload()), str(path))
-    before = path.read_bytes()
-    replacement = payload()
+    first = update_register(report(payload()), str(path))
+    before = json.loads(path.read_text(encoding="utf-8"))
+    old = dict(before["theses"][0])
+    replacement = payload("NEU")
     replacement["theses"][0]["thesis_id"] = "new-id"
-    replacement["theses"][0]["status"] = "NEU"
-    with pytest.raises(ValueError, match="Aktive Thesen fehlen"):
-        update_register(report(replacement), str(path))
-    assert path.read_bytes() == before
+    second = update_register(report(replacement), str(path))
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    carried = next(item for item in saved["theses"] if item["thesis_id"] == "macro-usd-001")
+
+    assert second["updated"] is True
+    assert second["new_theses"] == ["new-id"]
+    assert second["unchanged_theses"] == ["macro-usd-001"]
+    assert second["archived_theses"] == []
+    assert carried["active"] is True
+    assert carried["status"] == old["status"]
+    assert carried["version"] == old["version"]
+    assert carried["thesis"] == old["thesis"]
+    assert second["carried_forward_theses"][0]["thesis_id"] == "macro-usd-001"
+
+
+
+def test_omitted_active_neu_thesis_is_carried_forward_without_reclassifying_it_as_new():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "register.json"
+        first_payload = payload("NEU")
+        first_payload["theses"][0]["thesis_id"] = "new-id-1"
+        first = update_register(report(first_payload), str(path))
+        assert first["comparison_status"] == "BASELINE_MISSING"
+
+        second_payload = payload("NEU")
+        second_payload["theses"][0]["thesis_id"] = "new-id-2"
+        second = update_register(report(second_payload), str(path))
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        carried = next(item for item in saved["theses"] if item["thesis_id"] == "new-id-1")
+
+        assert second["comparison_status"] == "PASS"
+        assert second["new_theses"] == ["new-id-2"]
+        assert second["unchanged_theses"] == ["new-id-1"]
+        assert carried["active"] is True
+        assert carried["status"] == "NEU"
+        assert carried["version"] == 1
+
+def test_synchronize_report_versions_adds_carried_forward_active_thesis_to_json_and_compact_view():
+    import re
+    import tempfile
+
+    from trading_radar_thesen import synchronize_report_versions
+
+    def report_with_compact_register(data):
+        thesis = data["theses"][0]
+        compact = (
+            "Thesenregister – kompakte Übersicht:\n"
+            f"- {thesis['thesis_id']} | Version 1 | Status {thesis['status']} | Konfidenz {thesis['confidence']}\n"
+            f"  - Datenstichtag: {data['data_cutoff']}\n"
+            f"  - Aktualisiert: {data['data_cutoff']}\n"
+            f"  - These: {thesis['thesis']}\n"
+            f"  - Horizont: {thesis['horizon']}\n"
+            f"  - Alternative: {thesis['alternative']}\n"
+            f"  - Belege: {'; '.join(thesis['evidence'])}\n"
+            f"  - Gegenbelege: {'; '.join(thesis['counter_evidence'])}\n"
+            f"  - Bestätigungstrigger: {'; '.join(thesis['confirm_triggers'])}\n"
+            f"  - Invalidierungstrigger: {'; '.join(thesis['invalidate_triggers'])}\n"
+            "  - Ereignisabhängigkeiten: keine\n"
+            f"  - Assetklassen: {'; '.join(thesis['asset_classes'])}\n"
+            f"  - Verknüpfte Kandidaten: {'; '.join(thesis['candidates']) or 'keine'}\n"
+        )
+        return (
+            "1. Trading-Radar\nMarktregime: neutral.\n"
+            "2. Thesen-Update\n"
+            + report(data) + "\n" + compact
+            + "3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+        )
+
+    with tempfile.TemporaryDirectory() as directory:
+        register_path = Path(directory) / "register.json"
+        initial = payload()
+        update_register(report(initial), str(register_path))
+        replacement = payload("NEU")
+        replacement["theses"][0]["thesis_id"] = "new-id"
+        result = update_register(report(replacement), str(register_path))
+        synchronized = synchronize_report_versions(report_with_compact_register(replacement), result)
+        match = re.search(r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", synchronized, re.S)
+        assert match
+        current = json.loads(match.group(1))
+        ids = {item["thesis_id"] for item in current["theses"]}
+        assert ids == {"new-id", "macro-usd-001"}
+        compact = synchronized.split("Thesenregister – kompakte Übersicht:", 1)[1].split("3. Ereignisradar", 1)[0]
+        assert "- Thesen-ID: new-id | Version 1 | Status NEU" in compact
+        assert "- Thesen-ID: macro-usd-001 | Version 1 | Status BESTÄTIGT" in compact
+        assert "  - These: Dollarthese" in compact
+        from trading_radar_neuauswertung import validate_thesis_ids_match_report
+        assert validate_thesis_ids_match_report(synchronized, current) == []
+
+
+def test_synchronize_report_versions_recognizes_single_character_compact_id_once():
+    import re
+
+    carried = {
+        "thesis_id": "T",
+        "status": "BESTÄTIGT",
+        "confidence": "mittel",
+        "data_cutoff": "2026-11-20",
+        "updated_at": "2026-11-20",
+        "thesis": "Einzelzeichen-These",
+        "horizon": "2 Wochen",
+        "alternative": "Alternative",
+        "evidence": ["Beleg"],
+        "counter_evidence": ["Gegenbeleg"],
+        "confirm_triggers": ["Trigger"],
+        "invalidate_triggers": ["Invalidierung"],
+        "event_dependencies": [],
+        "asset_classes": ["Aktien"],
+        "candidates": [],
+        "replaced_by": None,
+    }
+    report_text = (
+        "2. Thesen-Update\n"
+        "Thesenregister – kompakte Übersicht:\n"
+        "- Thesen-ID: T | Version 1 | Status BESTÄTIGT | Konfidenz mittel\n"
+        "3. Ereignisradar\n"
+    )
+    register_result = {
+        "thesis_versions": [{"thesis_id": "T", "version": 2}],
+        "carried_forward_theses": [carried],
+    }
+
+    synchronized = synchronize_report_versions(report_text, register_result)
+
+    compact = synchronized.split("Thesenregister – kompakte Übersicht:", 1)[1]
+    compact = compact.split("3. Ereignisradar", 1)[0]
+    assert len(re.findall(r"(?m)^- Thesen-ID: T \\| Version ", compact)) == 1
+    assert "- Thesen-ID: T | Version 2 | Status BESTÄTIGT" in compact
+    assert "Einzelzeichen-These" not in compact
 
 
 def test_replaced_thesis_requires_existing_successor(tmp_path):
@@ -478,3 +605,59 @@ def test_inactive_nonterminal_thesis_without_exact_legacy_marker_is_rejected(tmp
     path.write_text(json.dumps({"schema_version": 1, "theses": [inactive]}), encoding="utf-8")
     with pytest.raises(ValueError, match="nichtterminale These.*darf nicht archiviert sein"):
         update_register(report(payload("BESTÄTIGT")), str(path))
+
+
+def test_thesis_id_match_deduplicates_primary_and_compact_views_and_ignores_register_evidence():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+
+    payload_data = {"theses": [
+        {"thesis_id": "THESIS-01"},
+        {"thesis_id": "THESIS-02"},
+    ]}
+    report_text = (
+        "2. Thesen-Update\n"
+        "These 1: Defensive Rotation\n"
+        "Thesen-ID: THESIS-01\n"
+        "Status: BESTÄTIGT\n"
+        "Thesenregister – kompakte Übersicht:\n"
+        "- Thesen-ID: THESIS-01 | Version 1 | Status BESTÄTIGT | Konfidenz mittel\n"
+        "- Thesen-ID: THESIS-02 | Version 1 | Status NEU | Konfidenz mittel\n"
+        "THESENREGISTER-VERGLEICH: PASS\n"
+        "THESIS_ID: THESIS-01\nTHESIS_ID: THESIS-02\n"
+        "3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+    )
+
+    assert validate_thesis_ids_match_report(report_text, payload_data) == []
+
+
+def test_thesis_id_match_rejects_duplicate_records_inside_compact_register():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+
+    payload_data = {"theses": [{"thesis_id": "THESIS-01"}]}
+    report_text = (
+        "2. Thesen-Update\n"
+        "Thesenregister – kompakte Übersicht:\n"
+        "- Thesen-ID: THESIS-01 | Version 1 | Status BESTÄTIGT | Konfidenz mittel\n"
+        "- Thesen-ID: THESIS-01 | Version 1 | Status BESTÄTIGT | Konfidenz mittel\n"
+        "THESENREGISTER-VERGLEICH: PASS\nTHESIS_ID: THESIS-01\n"
+        "3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+    )
+
+    findings = validate_thesis_ids_match_report(report_text, payload_data)
+    assert findings and "doppelte These-IDs" in findings[0]
+
+
+def test_thesis_id_match_requires_explicit_label_for_hyphenated_compact_ids():
+    from trading_radar_neuauswertung import validate_thesis_ids_match_report
+
+    payload_data = {"theses": [{"thesis_id": "THESIS-01"}]}
+    report_text = (
+        "2. Thesen-Update\n"
+        "Thesenregister – kompakte Übersicht:\n"
+        "- THESIS-01 | Version 1 | Status BESTÄTIGT | Konfidenz mittel\n"
+        "THESENREGISTER-VERGLEICH: PASS\n"
+        "3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+    )
+
+    findings = validate_thesis_ids_match_report(report_text, payload_data)
+    assert findings and "keine eindeutigen These-IDs" in findings[0]
