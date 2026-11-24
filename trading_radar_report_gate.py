@@ -1964,7 +1964,7 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
             r"Unter Konsens|Entsprechend Konsens|Über Konsens|Ueber Konsens|"
-            r"Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+            r"Reaktionskanäle|Wirkung|Auswirkung|Erwartung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
             r"Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|"
             r"Betroffene These/Assetklasse/konkrete offene Positionen|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?)(?:\*\*)?\s*[:=](?:\*\*)?"
@@ -1972,6 +1972,10 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         bullet = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.*)$")
         named_event = re.compile(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:Ereignis(?:[- ]Uhrzeit)?|Termin|Event)\s*[:=]"
+        )
+        compact_event_header = re.compile(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)[^|]+\|\s*20\d{2}-\d{2}-\d{2}"
+            r"\s*\|\s*(?:[01]?\d|2[0-3]):[0-5]\d\b"
         )
 
         def fomc_event_kind(value):
@@ -1995,7 +1999,10 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             return None
 
         section_lines = section_body.splitlines()
-        has_named_event_records = any(named_event.match(line) for line in section_lines)
+        has_named_event_records = any(
+            named_event.match(line) or compact_event_header.match(line)
+            for line in section_lines
+        )
         for line in section_lines:
             match = bullet.match(line)
             same_fomc_event = False
@@ -2966,14 +2973,18 @@ def validate_report(text: str) -> list[str]:
     if len(risk_lines) != 1:
         errors.append("M-02: kanonisches Dollar/Liquidität/Volatilität-Feld muss genau einmal vorkommen.")
     vix_risk_values = re.findall(r"(?i)(?<![A-Z0-9])VIX\s*[:=]?\s*([+-]?\d+(?:[,.]\d+)?)", risk_line)
-    dxy_risk_values = re.findall(r"(?i)(?<![A-Z0-9])DXY\s*[:=]?\s*([+-]?\d+(?:[,.]\d+)?)", risk_line)
+    dxy_risk_values = re.findall(
+        r"(?i)(?<![A-Z0-9])(?:DXY|Dollarproxy)\s*[:=]?\s*([+-]?\d+(?:[,.]\d+)?)",
+        risk_line,
+    )
     if len(vix_risk_values) != 1:
         errors.append("M-02: genau eine numerische VIX-Beobachtung im kanonischen Risikofeld erforderlich.")
     if len(dxy_risk_values) != 1:
         errors.append("M-02: genau eine numerische DXY-/Dollarproxy-Beobachtung im kanonischen Risikofeld erforderlich.")
 
-    # M-02 requires the last actually completed common VIX/USDX close.
-    # UTC date rollover is not a substitute for either market's local close.
+    # M-02 requires the last actually completed VIX and dollar-proxy close.
+    # Spot DXY/USDX futures use the common index close; UUP is checked against
+    # the completed VIX/ETF session and is never labelled as the DXY index.
     run_match = re.search(
         r"(?im)^\s*(?:[-*•]\s*)?Datenstand UTC\s*:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\s*$",
         executive,
@@ -2987,7 +2998,7 @@ def validate_report(text: str) -> list[str]:
 
     live_specs = (
         ("VIX", r"(?i)^\s*[-*•]\s*Volatilität VIX\s*:", r"(?i)Quelle\s*:\s*Yahoo Finance\s*\(\^VIX\)", r"(?i)Volatilität VIX\s*:\s*([+-]?\d+(?:[,.]\d+)?)"),
-        ("DXY", r"(?i)^\s*[-*•]\s*Dollar-Proxy DXY(?:\s*\(DX-Y\.NYB\))?\s*:", r"(?i)Quelle\s*:\s*Yahoo Finance\s*\(DX-Y\.NYB\)", r"(?i)Dollar-Proxy DXY(?:\s*\(DX-Y\.NYB\))?\s*:\s*([+-]?\d+(?:[,.]\d+)?)"),
+        ("Dollarproxy", r"(?i)^\s*[-*•]\s*Dollar-Proxy\b", None, r"(?i)Dollar-Proxy(?:\s+[^:]+)?\s*:\s*([+-]?\d+(?:[,.]\d+)?)"),
     )
     for label, line_re, source_re, value_re in live_specs:
         source_lines = [line for line in executive.splitlines() if re.search(line_re, line)]
@@ -3007,8 +3018,24 @@ def validate_report(text: str) -> list[str]:
             retrieved_dt = observed_date = None
         snapshot_value = re.search(value_re, observation_line)
         risk_values = vix_risk_values if label == "VIX" else dxy_risk_values
-        source_ok = bool(re.search(source_re, observation_line))
-        unit_ok = bool(re.search(r"(?i)Einheit\s*:\s*Indexpunkte\b", observation_line))
+        dollar_ticker = None
+        if label == "Dollarproxy":
+            ticker_match = re.search(r"(?i)\((DX-Y\.NYB|DX=F|UUP)\)", observation_line)
+            dollar_ticker = ticker_match.group(1).upper() if ticker_match else None
+            source_ok = bool(
+                dollar_ticker
+                and re.search(
+                    rf"(?i)Quelle\s*:\s*Yahoo Finance\s*\({re.escape(dollar_ticker)}\)",
+                    observation_line,
+                )
+            )
+            expected_unit = "USD je Anteil" if dollar_ticker == "UUP" else "Indexpunkte"
+            unit_ok = bool(re.search(
+                rf"(?i)Einheit\s*:\s*{re.escape(expected_unit)}\b", observation_line
+            ))
+        else:
+            source_ok = bool(re.search(source_re, observation_line))
+            unit_ok = bool(re.search(r"(?i)Einheit\s*:\s*Indexpunkte\b", observation_line))
         delay_ok = bool(re.search(r"(?i)Verzögerung\s*:\s*Tages-Schlusskurs\b", observation_line))
         date_ok = bool(cutoff_match and observed_date is not None and observed_date.isoformat() == cutoff_match.group(1))
         chronology_ok = False
@@ -3019,8 +3046,12 @@ def validate_report(text: str) -> list[str]:
         ):
             retrieved_utc = retrieved_dt.astimezone(datetime.timezone.utc)
             run_utc = run_dt.astimezone(datetime.timezone.utc)
-            expected_at_retrieval = _m02_expected_common_session_date(retrieved_utc)
-            expected_at_run = _m02_expected_common_session_date(run_utc)
+            if label == "Dollarproxy" and dollar_ticker == "UUP":
+                expected_at_retrieval = _m02_expected_vix_session_date(retrieved_utc)
+                expected_at_run = _m02_expected_vix_session_date(run_utc)
+            else:
+                expected_at_retrieval = _m02_expected_common_session_date(retrieved_utc)
+                expected_at_run = _m02_expected_common_session_date(run_utc)
             chronology_ok = bool(
                 retrieved_utc <= run_utc
                 and expected_at_retrieval is not None

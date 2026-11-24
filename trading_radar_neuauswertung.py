@@ -350,44 +350,101 @@ def validate_thesis_ids_match_report(report: str, payload: Any | None = None) ->
             readable_text = readable_text[:naked_marker.start()] + readable_text[naked_marker.end():]
     readable_text = re.sub(r"(?i)TRADING_RADAR_THESEN_JSON", "", readable_text)
 
-    # Capture IDs only from lines that actually represent a readable thesis
-    # record or an explicit thesis-ID declaration. This avoids treating IDs in
-    # diagnostics, explanatory prose, or code-marker names as thesis records.
-    # Explicit labels are authoritative and may use stable IDs with hyphens
-    # (e.g. THESIS-01) as well as underscore-separated IDs. Restrict extraction
-    # to thesis-record/ID lines so ordinary hyphenated prose is not promoted.
-    # Legacy compact records may contain underscore IDs beside a status but
-    # no explicit field label. Keep that conservative grammar; hyphenated IDs
-    # are accepted only through an explicit Thesen-ID/thesis_id field.
+    # Register comparison evidence is a diagnostic appendix, not another
+    # readable thesis record. Its THESIS_ID lines intentionally repeat the IDs
+    # already represented in the JSON/compact register and must not be counted.
+    evidence_marker = re.search(
+        r"(?im)^[ \t]*THESENREGISTER-(?:VERGLEICH|GRUND)\s*:",
+        readable_text,
+    )
+    if evidence_marker:
+        readable_text = readable_text[:evidence_marker.start()]
+
+    compact_marker = re.search(
+        r"(?im)^[ \t]*Thesenregister\s*[–-]\s*kompakte Übersicht\s*:",
+        readable_text,
+    )
+    primary_text = readable_text[:compact_marker.start()] if compact_marker else readable_text
+    compact_text = readable_text[compact_marker.end():] if compact_marker else ""
+
     id_pattern = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+){2,})(?![A-Za-z0-9])")
     explicit_id_pattern = re.compile(
         r"(?i)\b(?:Thesen-ID|thesis_id)\s*[:=]\s*([A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*)"
     )
-    candidate_lines = []
-    for line in readable_text.splitlines():
-        is_numbered_thesis = re.search(r"(?i)\bThese\s+\d+\s*:", line)
-        is_explicit_id = re.search(r"(?i)\b(?:Thesen-ID|thesis_id)\b", line)
-        is_compact_status = re.search(
-            r"(?i)\b(?:NEU|BESTÄTIGT|BESTAETIGT|ABGESCHWÄCHT|ABGESCHWAECHT|"
-            r"WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|VERSTAERKT|WIDERLEGT|UNKLAR)\b",
-            line,
-        )
-        if is_numbered_thesis or is_explicit_id or (is_compact_status and id_pattern.search(line)):
-            candidate_lines.append(line)
-    prose_ids = []
-    for line in candidate_lines:
-        # Only a labelled field proves a hyphenated identity. Legacy compact
-        # status rows retain the stricter underscore-only compatibility path.
-        explicit = explicit_id_pattern.search(line)
-        if explicit:
-            prose_ids.append(explicit.group(1).strip())
-        elif re.search(
-            r"(?i)\b(?:NEU|BESTÄTIGT|BESTAETIGT|ABGESCHWÄCHT|ABGESCHWAECHT|"
-            r"WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|VERSTAERKT|WIDERLEGT|UNKLAR)\b",
-            line,
-        ):
-            prose_ids.extend(value.strip() for value in id_pattern.findall(line))
 
+    compact_record_id_pattern = re.compile(
+        r"(?i)^[ \t]*(?:[-*•]\s*)?(?:Thesen-ID\s*:\s*)?"
+        r"(?P<id>[A-Z0-9])"
+        r"\s*\|\s*Version\s*:?[ \t]*\d+\s*\|\s*Status\b"
+    )
+
+    def extract_readable_ids(source_text: str) -> list[str]:
+        candidate_lines = []
+        for line in source_text.splitlines():
+            is_numbered_thesis = re.search(r"(?i)\bThese\s+\d+\s*:", line)
+            is_explicit_id = re.search(r"(?i)\b(?:Thesen-ID|thesis_id)\b", line)
+            is_compact_status = re.search(
+                r"(?i)\b(?:NEU|BESTÄTIGT|BESTAETIGT|ABGESCHWÄCHT|ABGESCHWAECHT|"
+                r"WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|VERSTAERKT|WIDERLEGT|UNKLAR)\b",
+                line,
+            )
+            if (
+                is_numbered_thesis
+                or is_explicit_id
+                or (
+                    is_compact_status
+                    and (id_pattern.search(line) or compact_record_id_pattern.match(line))
+                )
+            ):
+                candidate_lines.append(line)
+        result = []
+        for line in candidate_lines:
+            # Explicit labels are authoritative for hyphenated and underscore IDs.
+            explicit = explicit_id_pattern.search(line)
+            if explicit:
+                result.append(explicit.group(1).strip())
+            elif re.search(
+                r"(?i)\b(?:NEU|BESTÄTIGT|BESTAETIGT|ABGESCHWÄCHT|ABGESCHWAECHT|"
+                r"WARTET AUF EREIGNIS|INVALIDIERT|ERSETZT|VERSTAERKT|WIDERLEGT|UNKLAR)\b",
+                line,
+            ):
+                compact_record = compact_record_id_pattern.match(line)
+                if compact_record:
+                    result.append(compact_record.group("id").strip())
+                else:
+                    result.extend(value.strip() for value in id_pattern.findall(line))
+        return result
+
+    primary_ids = extract_readable_ids(primary_text)
+    compact_ids = extract_readable_ids(compact_text) if compact_marker else []
+    # The same thesis may be rendered once as a primary record and once in the
+    # compact appendix. Deduplicate exactly one cross-view occurrence, while
+    # retaining duplicates within either view so genuine duplicate records fail.
+    primary_counts = {}
+    compact_counts = {}
+    for thesis_id in primary_ids:
+        primary_counts[thesis_id] = primary_counts.get(thesis_id, 0) + 1
+    for thesis_id in compact_ids:
+        compact_counts[thesis_id] = compact_counts.get(thesis_id, 0) + 1
+    prose_ids = list(primary_ids)
+    for thesis_id, count in compact_counts.items():
+        excess = count - (1 if primary_counts.get(thesis_id, 0) else 0)
+        if excess > 0:
+            prose_ids.extend([thesis_id] * excess)
+
+    readable_records = re.findall(
+        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?These\s+\d+\s*:",
+        primary_text,
+    )
+    compact_record_headers = re.findall(
+        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:Thesen-ID\s*:\s*)?[A-Z0-9][A-Z0-9._-]{0,127}"
+        r"\s*\|\s*Version\s*:?[ \t]*\d+\s*\|\s*Status\b",
+        compact_text,
+    )
+    if readable_records and not primary_ids:
+        return ["Thesen-ID-Abgleich: lesbare Thesen vorhanden, aber keine eindeutigen These-IDs extrahierbar"]
+    if compact_record_headers and not compact_ids:
+        return ["Thesen-ID-Abgleich: kompakte Registerdatensätze vorhanden, aber keine eindeutigen These-IDs extrahierbar"]
     theses = payload.get("theses") if isinstance(payload, dict) else None
     if not isinstance(theses, list):
         return ["Thesen-ID-Abgleich: JSON theses[] fehlt oder ist ungültig"]
@@ -395,13 +452,6 @@ def validate_thesis_ids_match_report(report: str, payload: Any | None = None) ->
     if len(json_ids) != len(theses) or any(not isinstance(value, str) or not value.strip() for value in json_ids):
         return ["Thesen-ID-Abgleich: JSON enthält einen Datensatz ohne gültige thesis_id"]
 
-    # A readable thesis record without an extractable ID is ambiguous and must
-    # never be interpreted as an empty, successful comparison.
-    readable_records = re.findall(
-        r"(?im)^[ \t]*(?:[-*•]\s*)?(?:\*\*)?These\s+\d+\s*:", readable_text
-    )
-    if readable_records and not prose_ids:
-        return ["Thesen-ID-Abgleich: lesbare Thesen vorhanden, aber keine eindeutigen These-IDs extrahierbar"]
     # Older reports sometimes contain only a structured payload and no separate
     # readable thesis records. Preserve that legacy form; fail closed whenever
     # readable thesis records are present but their IDs cannot be reconciled.
@@ -894,16 +944,19 @@ def audit_market_first_content(report: str) -> list[str]:
 
     market = body_for("trading-radar")
     rotation = body_for("assetklassenvergleich")
-    thesis = body_for("thesen-update")
-    # The compact register is a secondary appendix rendering. Its nested
-    # "These:" labels must not be interpreted as additional primary Gemini
-    # thesis records; the primary records above it remain subject to the gate.
+    thesis_full = body_for("thesen-update")
+    thesis = thesis_full
+    compact_register_body = ""
+    # The compact register is not a primary prose record. It may be used only
+    # as a strict structured fallback when the deterministic persisted register
+    # comparison is PASS and every required field is explicitly present.
     compact_register = re.search(
         r"(?im)^[ \t]*Thesenregister\s*[–-]\s*kompakte Übersicht\s*:",
-        thesis,
+        thesis_full,
     )
     if compact_register:
-        thesis = thesis[:compact_register.start()]
+        compact_register_body = thesis_full[compact_register.start():]
+        thesis = thesis_full[:compact_register.start()]
     candidates = body_for("technische kandidaten")
     if not market:
         errors.append("MARKT-FIRST: Marktregime-Abschnitt fehlt")
@@ -962,6 +1015,21 @@ def audit_market_first_content(report: str) -> list[str]:
                 )
                 or bool(generic_only.fullmatch((value or "").strip()))
             )
+            if label == "Basisszenario" and value:
+                narrative = re.split(r"(?i)\bEintrittsbedingung\s*:", value, maxsplit=1)[0].strip()
+                has_scenario_logic = all(re.search(
+                    rf"(?i)\b{field}\s*:", value
+                ) for field in ("Eintrittsbedingung", "Bestätigungstrigger", "Invalidierungstrigger"))
+                substantive_narrative = bool(
+                    len(narrative) >= 15
+                    and not is_placeholder_value(narrative)
+                    and not generic_only.fullmatch(narrative)
+                )
+                if substantive_narrative and has_scenario_logic:
+                    # Missing XLV/XLE or a missing common cutoff may correctly
+                    # leave the scenario NICHT ABLEITBAR. That data gap must not
+                    # erase the existence of an explicit, conditional baseline.
+                    invalid = False
             if label == "Indizes/Marktbreite" and value:
                 invalid = invalid or not re.search(r"[-+]?\d+(?:[.,]\d+)?", value)
             elif label == "Zinsen/Renditen" and value:
@@ -1044,6 +1112,111 @@ def audit_market_first_content(report: str) -> list[str]:
                         structured_theses = [item for item in candidate_theses if isinstance(item, dict)]
                 except (ValueError, TypeError, AttributeError):
                     structured_theses = []
+                comparison_pass = bool(re.search(
+                    r"(?im)^\s*THESENREGISTER-VERGLEICH\s*:\s*PASS\s*$",
+                    thesis_full,
+                ))
+                if not structured_theses and comparison_pass and compact_register_body:
+                    header_pattern = re.compile(
+                        r"(?im)^\s*(?:[-*•]\s*)?(?:Thesen-ID\s*:\s*)?(?P<id>[A-Z0-9][A-Z0-9._-]{0,127})"
+                        r"\s*\|\s*Version\s*:?\s*(?P<version>\d+)"
+                        r"\s*\|\s*Status\s*:?\s*(?P<status>.+?)"
+                        r"\s*\|\s*Konfidenz\s*:?\s*(?P<confidence>[^\r\n|]+)\s*$"
+                    )
+                    compact_starts = list(header_pattern.finditer(compact_register_body))
+                    field_names = {
+                        "These": "thesis", "Horizont": "horizon",
+                        "Alternative": "alternative", "Belege": "evidence",
+                        "Gegenbelege": "counter_evidence",
+                        "Bestätigungstrigger": "confirm_triggers",
+                        "Invalidierungstrigger": "invalidate_triggers",
+                        "Ereignisabhängigkeiten": "event_dependencies",
+                        "Assetklassen": "asset_classes",
+                        "Verknüpfte Kandidaten": "candidates",
+                    }
+                    def compact_list(value: str) -> list[str]:
+                        value = value.strip()
+                        if value.casefold().rstrip(".") in {"keine", "keiner", "keines", "none"}:
+                            return []
+                        return [part.strip() for part in re.split(r"\s*;\s*", value) if part.strip()]
+                    for record_index, header in enumerate(compact_starts):
+                        record_end = (
+                            compact_starts[record_index + 1].start()
+                            if record_index + 1 < len(compact_starts) else len(compact_register_body)
+                        )
+                        record = compact_register_body[header.end():record_end]
+                        fields = {}
+                        for label, field_name in field_names.items():
+                            match = re.search(
+                                rf"(?im)^\s*(?:[-*•]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*:\s*([^\r\n]+)",
+                                record,
+                            )
+                            if match:
+                                value = match.group(1).strip().strip("*` ")
+                                fields[field_name] = compact_list(value) if field_name in {
+                                    "evidence", "counter_evidence", "confirm_triggers",
+                                    "invalidate_triggers", "event_dependencies",
+                                    "asset_classes", "candidates",
+                                } else value
+                        status = canonicalize_thesis_status(header.group("status").strip())
+                        required_text = ("thesis", "horizon", "alternative")
+                        required_lists = (
+                            "evidence", "counter_evidence", "confirm_triggers",
+                            "invalidate_triggers", "asset_classes",
+                        )
+                        metadata = {}
+                        for label, field_name in (("Datenstichtag", "data_cutoff"), ("Aktualisiert", "updated_at")):
+                            match = re.search(
+                                rf"(?im)^\s*(?:[-*•]\s*)?{label}\s*:\s*([^\r\n]+)",
+                                record,
+                            )
+                            value = match.group(1).strip() if match else ""
+                            if not re.fullmatch(
+                                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+                                value,
+                            ):
+                                metadata = {}
+                                break
+                            metadata[field_name] = value
+                        replaced_match = re.search(
+                            r"(?im)^\s*(?:[-*•]\s*)?(?:Ersetzt durch|replaced_by)\s*:\s*([^\r\n]+)",
+                            record,
+                        )
+                        replaced_by = replaced_match.group(1).strip() if replaced_match else None
+                        if replaced_by and is_placeholder_value(replaced_by):
+                            replaced_by = None
+                        if (
+                            not header.group("id").strip()
+                            or int(header.group("version")) < 1
+                            or status not in THESIS_STATUSES
+                            or is_placeholder_value(header.group("confidence"))
+                            or len(metadata) != 2
+                            or any(
+                                not isinstance(fields.get(name), str)
+                                or not fields[name].strip()
+                                or is_placeholder_value(fields[name])
+                                for name in required_text
+                            )
+                            or any(
+                                not isinstance(fields.get(name), list) or not fields[name]
+                                or any(is_placeholder_value(item) for item in fields[name])
+                                for name in required_lists
+                            )
+                            or not isinstance(fields.get("event_dependencies"), list)
+                            or not isinstance(fields.get("candidates"), list)
+                            or (status == "ERSETZT" and not replaced_by)
+                            or (status != "ERSETZT" and replaced_by is not None)
+                        ):
+                            continue
+                        structured_theses.append({
+                            "thesis_id": header.group("id").strip(),
+                            "version": int(header.group("version")),
+                            "status": status,
+                            "confidence": header.group("confidence").strip(),
+                            "replaced_by": replaced_by,
+                            **metadata,
+                            **fields,
+                        })
             if explicit_no_update:
                 pass
             elif not structured_theses:

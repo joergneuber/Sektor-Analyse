@@ -188,7 +188,7 @@ def validate_theses(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def synchronize_report_versions(report: str, register_result: dict[str, Any]) -> str:
-    """Align visible and JSON thesis versions with the versions actually persisted."""
+    """Align report JSON/compact records with the versions actually persisted."""
     versions = {
         str(item.get("thesis_id")): int(item["version"])
         for item in register_result.get("thesis_versions", [])
@@ -206,6 +206,28 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
     if found:
         block_match, payload = found
         changed = False
+        existing_ids = {
+            str(item.get("thesis_id", "")) for item in payload["theses"]
+            if isinstance(item, dict)
+        }
+        for carried in register_result.get("carried_forward_theses", []):
+            if not isinstance(carried, dict):
+                continue
+            thesis_id = str(carried.get("thesis_id", ""))
+            if not thesis_id or thesis_id in existing_ids:
+                continue
+            # Only canonical thesis content and lifecycle version are copied
+            # into the report. Persistence-only timestamps/flags stay in the
+            # register file and are not promoted to model-authored content.
+            carried_payload = {key: carried[key] for key in REQUIRED if key in carried}
+            if isinstance(carried.get("version"), int):
+                carried_payload["version"] = carried["version"]
+            for key in ("updated_at", "data_cutoff"):
+                if isinstance(carried.get(key), str) and carried[key].strip():
+                    carried_payload[key] = carried[key]
+            payload["theses"].append(carried_payload)
+            existing_ids.add(thesis_id)
+            changed = True
         for thesis in payload["theses"]:
             if not isinstance(thesis, dict):
                 continue
@@ -231,6 +253,80 @@ def synchronize_report_versions(report: str, register_result: dict[str, Any]) ->
         return text
     body_start, body_end = section2.end(), section3.start()
     body = text[body_start:body_end]
+    compact_heading = re.search(
+        r"(?im)^[ \t]*Thesenregister\s*[–-]\s*kompakte Übersicht\s*:",
+        body,
+    )
+    if compact_heading:
+        compact_body = body[compact_heading.end():]
+        compact_header_pattern = re.compile(
+            r"(?im)^(?P<prefix>[ \t]*(?:[-*•][ \t]*)?)"
+            r"(?:(?:Thesen-ID)[ \t]*:[ \t]*)?"
+            r"(?P<id>[A-Z0-9][A-Z0-9._-]{0,127})"
+            r"(?P<version_prefix>[ \t]*\|[ \t]*Version[ \t]*:?[ \t]*)"
+            r"(?P<version>\d+)"
+        )
+        existing_compact_ids = {
+            match.group("id") for match in compact_header_pattern.finditer(compact_body)
+        }
+        rendered_records = []
+        for carried in register_result.get("carried_forward_theses", []):
+            if not isinstance(carried, dict):
+                continue
+            thesis_id = str(carried.get("thesis_id", "")).strip()
+            version = versions.get(thesis_id)
+            if not thesis_id or thesis_id in existing_compact_ids or version is None:
+                continue
+            def compact_scalar(value: Any) -> str:
+                return " ".join(str(value or "").split()).replace("|", "/")
+            def compact_values(value: Any) -> str:
+                if not isinstance(value, list) or not value:
+                    return "keine"
+                return "; ".join(compact_scalar(item) for item in value if compact_scalar(item)) or "keine"
+            rendered = [
+                f"- Thesen-ID: {thesis_id} | Version {version} | Status {compact_scalar(carried.get('status'))} "
+                f"| Konfidenz {compact_scalar(carried.get('confidence'))}",
+                f"  - Datenstichtag: {compact_scalar(carried.get('data_cutoff'))}",
+                f"  - Aktualisiert: {compact_scalar(carried.get('updated_at'))}",
+                f"  - These: {compact_scalar(carried.get('thesis'))}",
+                f"  - Horizont: {compact_scalar(carried.get('horizon'))}",
+                f"  - Alternative: {compact_scalar(carried.get('alternative'))}",
+                f"  - Belege: {compact_values(carried.get('evidence'))}",
+                f"  - Gegenbelege: {compact_values(carried.get('counter_evidence'))}",
+                f"  - Bestätigungstrigger: {compact_values(carried.get('confirm_triggers'))}",
+                f"  - Invalidierungstrigger: {compact_values(carried.get('invalidate_triggers'))}",
+                f"  - Ereignisabhängigkeiten: {compact_values(carried.get('event_dependencies'))}",
+                f"  - Assetklassen: {compact_values(carried.get('asset_classes'))}",
+                f"  - Verknüpfte Kandidaten: {compact_values(carried.get('candidates'))}",
+            ]
+            if carried.get("replaced_by"):
+                rendered.append(f"  - Ersetzt durch: {compact_scalar(carried.get('replaced_by'))}")
+            rendered_records.append("\n".join(rendered))
+            existing_compact_ids.add(thesis_id)
+        if rendered_records:
+            evidence_marker = re.search(
+                r"(?im)^[ \t]*THESENREGISTER-(?:VERGLEICH|GRUND)\s*:",
+                compact_body,
+            )
+            insertion = evidence_marker.start() if evidence_marker else len(compact_body)
+            prefix = compact_body[:insertion].rstrip()
+            suffix = compact_body[insertion:]
+            compact_body = (
+                prefix + "\n\n" + "\n\n".join(rendered_records) + "\n" + suffix
+            )
+        # Keep visible compact versions aligned with the persisted register.
+        def replace_compact_version(match: re.Match[str]) -> str:
+            version = versions.get(match.group("id"))
+            if version is None:
+                return match.group(0)
+            # An explicit label keeps hyphenated stable IDs auditable by the
+            # strict readable-text ↔ JSON identity comparison.
+            return (
+                match.group("prefix") + "Thesen-ID: " + match.group("id")
+                + match.group("version_prefix") + str(version)
+            )
+        compact_body = compact_header_pattern.sub(replace_compact_version, compact_body)
+        body = body[:compact_heading.end()] + compact_body
     heading_pattern = re.compile(
         r"(?im)^[ \t]*(?:[-*•][ \t]*)?(?:\*\*|__)?"
         r"(?:These(?:s)?(?:\s+\d+)?|Thesen(?:\s+\d+)?|Thesis|Thesen-Name)"
@@ -391,6 +487,9 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     if parsed_cutoff.tzinfo is None:
         raise ValueError("data_cutoff muss eine Zeitzone enthalten")
     cutoff = parsed_cutoff.isoformat(timespec="seconds")
+    # Validate model-supplied records before consulting the persisted baseline.
+    # Omitted active IDs are added below from that baseline, never inferred from
+    # model prose and never converted into an invalidation/archive transition.
     theses = validate_theses(payload)
     path = Path(register_path)
     previous: dict[str, Any] = {"schema_version": 1, "theses": []}
@@ -420,6 +519,23 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
         previous_thesis_count = len(previous_thesis_versions)
         previous_active_count = sum(1 for item in previous_thesis_versions if item["active"])
     old_by_id = {item.get("thesis_id"): item for item in previous["theses"] if isinstance(item, dict)}
+    incoming_ids = {item["thesis_id"] for item in theses}
+    carried_forward_ids: list[str] = []
+    # Omission is not evidence of invalidation. Preserve every omitted active
+    # thesis byte-for-byte at the content-field level, keep its stable ID/status
+    # and version, and expose it in the current structured payload as unchanged.
+    # An actual lifecycle transition still requires an explicit INVALIDIERT or
+    # ERSETZT record supplied under the same ID.
+    for old_id, old in old_by_id.items():
+        if old.get("active", True) is True and old_id not in incoming_ids:
+            carried = dict(old)
+            if "replaced_by" not in carried:
+                carried["replaced_by"] = None
+            payload["theses"].append(carried)
+            carried_forward_ids.append(str(old_id))
+    if carried_forward_ids:
+        theses = validate_theses(payload)
+    carried_forward_id_set = set(carried_forward_ids)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     current = []
     new_ids: list[str] = []
@@ -428,21 +544,6 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
     archived_ids: list[str] = []
     current_ids = {item["thesis_id"] for item in theses}
     current_status_by_id = {item["thesis_id"]: item.get("status") for item in theses}
-    # An active thesis may not disappear merely because the model omitted it.
-    # The v2.1 contract requires an explicit INVALIDIERT/ERSETZT lifecycle
-    # record under the same stable ID. Silent omission used to turn an
-    # accidental model omission into an apparently valid archive transition.
-    missing_active_ids = sorted(
-        str(old_id) for old_id, old in old_by_id.items()
-        if old.get("active", True) is True
-        and old_id not in current_ids
-    )
-    if missing_active_ids:
-        raise ValueError(
-            "Aktive Thesen fehlen im aktuellen JSON-Block; stabile IDs müssen "
-            "mit Status INVALIDIERT/ERSETZT explizit fortgeführt werden: "
-            + ", ".join(missing_active_ids)
-        )
     for item in theses:
         old = old_by_id.get(item["thesis_id"], {})
         entry = dict(item)
@@ -451,7 +552,10 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
                 f"Archivierte These {entry['thesis_id']} darf nicht reaktiviert werden; "
                 "eine neue These benötigt eine neue thesis_id und Status NEU"
             )
-        if old and entry.get("status") == "NEU":
+        if (
+            old and entry.get("status") == "NEU"
+            and entry["thesis_id"] not in carried_forward_id_set
+        ):
             raise ValueError(
                 f"Bestehende These {entry['thesis_id']} darf nicht erneut Status NEU erhalten; "
                 "NEU ist ausschließlich für eine bislang unbekannte thesis_id zulässig"
@@ -580,4 +684,7 @@ def update_register(report: str, register_path: str, *, data_cutoff: str | None 
         "unchanged_theses": sorted(unchanged_ids),
         "archived_theses": sorted(archived_ids),
         "thesis_versions": current_thesis_versions,
+        "carried_forward_theses": [
+            dict(item) for item in current if item.get("thesis_id") in carried_forward_id_set
+        ],
     }

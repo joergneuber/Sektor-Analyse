@@ -12,7 +12,8 @@ from pathlib import Path
 import json
 from typing import Any
 import re
-from urllib.parse import urlsplit
+import unicodedata
+from urllib.parse import urlsplit, urlunsplit
 
 MISSING_TOKENS = {"", "-", "—", "n/a", "na", "nicht verfügbar", "nicht verfuegbar",
                   "unbekannt", "fehlt", "unklar", "none", "null"}
@@ -638,13 +639,70 @@ def normalize_event(event: Mapping[str, Any], *, verification_evidence=None) -> 
     return out
 
 
+def _event_dedup_text(value: Any) -> str:
+    """Normalize free-text identity fields without changing the emitted event."""
+    if value is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(value))
+    return " ".join(normalized.split()).casefold()
+
+
+def _event_dedup_source(value: Any) -> str:
+    """Normalize source labels and URL hosts without folding case-sensitive paths."""
+    if value is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(value))
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return ""
+
+    # A source can be a bare URL or a label containing a URL. Normalize only
+    # the URI scheme/host; paths, query strings and fragments remain untouched.
+    match = re.search(r"(?i)https?://[^\s)<>]+", normalized)
+    if match:
+        raw_url = match.group(0)
+        candidate = raw_url.rstrip(".,;]")
+        trailing = raw_url[len(candidate):]
+        try:
+            parsed = urlsplit(candidate)
+            if parsed.scheme and parsed.netloc and parsed.hostname:
+                port = parsed.port
+                userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+                host = parsed.hostname.casefold()
+                if ":" in host and not host.startswith("["):
+                    host = f"[{host}]"
+                netloc = userinfo + host + (f":{port}" if port is not None else "")
+                canonical_url = urlunsplit((
+                    parsed.scheme.casefold(), netloc, parsed.path, parsed.query, parsed.fragment
+                ))
+                return (
+                    normalized[:match.start()].casefold()
+                    + canonical_url
+                    + trailing.casefold()
+                    + normalized[match.end():].casefold()
+                )
+        except ValueError:
+            pass
+    return normalized.casefold()
+
+
 def deduplicate_events(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate events by stable ID, else by normalized name/date/source."""
+    """Deduplicate events by stable ID/name/date/source, case-insensitively.
+
+    Only the comparison key is normalized. The first normalized event record
+    remains untouched so original casing and source evidence are preserved.
+    URL schemes/hosts are case-insensitive; URL paths and query strings are not.
+    """
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
     for raw in events:
         item = normalize_event(raw)
-        key = (item["event_id"] or "", item["name"] or "", item["date"] or "", item["source"] or "")
+        key = (
+            _event_dedup_text(item["event_id"]),
+            _event_dedup_text(item["name"]),
+            _event_dedup_text(item["date"]),
+            _event_dedup_source(item["source"]),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -687,6 +745,35 @@ def summarize_ohlcv_status(statuses: Iterable[str]) -> dict[str, int]:
 
 
 
+def _completed_nyse_session_cutoff(clock_utc):
+    """Return the latest completed XNYS session, including the 15-minute buffer.
+
+    Calendar uncertainty is an error, never a reason to substitute a weekday or
+    calendar date. The caller must fail closed rather than publish a false cutoff.
+    """
+    import pandas as pd
+
+    clock = pd.Timestamp(clock_utc)
+    if clock.tzinfo is None:
+        raise ValueError("Stichtagsuhr muss timezone-aware sein")
+    clock = clock.tz_convert("UTC")
+    try:
+        import exchange_calendars as xc
+
+        calendar = xc.get_calendar("XNYS")
+        start = (clock - pd.Timedelta(days=14)).date().isoformat()
+        end = clock.date().isoformat()
+        schedule = calendar.schedule.loc[start:end]
+        eligible = schedule[schedule["close"] + pd.Timedelta(minutes=15) <= clock]
+    except Exception as exc:
+        raise RuntimeError(
+            f"zuverlässiger XNYS-Kalender nicht verfügbar ({type(exc).__name__}: {exc})"
+        ) from exc
+    if eligible.empty:
+        raise RuntimeError("keine abgeschlossene XNYS-Sitzung im geprüften Kalenderfenster")
+    return eligible.index[-1].date()
+
+
 def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=None) -> tuple[str, list[str]]:
     """Append source-stamped live market data and a common-cutoff 1M/3M matrix."""
     import pandas as pd
@@ -695,32 +782,11 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
     if snapshot_clock.tzinfo is None:
         snapshot_clock = snapshot_clock.tz_localize("America/New_York")
     snapshot_clock = snapshot_clock.tz_convert("UTC")
-    snapshot_ny = snapshot_clock.tz_convert("America/New_York")
 
-    def completed_nyse_session_cutoff(clock_utc):
-        """Latest NYSE session whose close plus 15-minute publication buffer elapsed."""
-        try:
-            import exchange_calendars as xc
-            calendar = xc.get_calendar("XNYS")
-            start = (clock_utc - pd.Timedelta(days=14)).date().isoformat()
-            end = clock_utc.date().isoformat()
-            schedule = calendar.schedule.loc[start:end]
-            eligible = schedule[schedule["close"] + pd.Timedelta(minutes=15) <= clock_utc]
-            if not eligible.empty:
-                return eligible.index[-1].date()
-            prior = calendar.schedule.loc[:start]
-            if not prior.empty:
-                return prior.index[-1].date()
-        except (ImportError, KeyError, ValueError, TypeError, AttributeError):
-            # Conservative compatibility fallback when the optional exchange
-            # calendar package is not installed: regular NYSE close + buffer.
-            pass
-        cutoff = snapshot_ny.date()
-        if (snapshot_ny.hour, snapshot_ny.minute) < (16, 15):
-            cutoff = (snapshot_ny.normalize() - pd.Timedelta(days=1)).date()
-        return cutoff
-
-    session_cutoff = completed_nyse_session_cutoff(snapshot_clock)
+    try:
+        session_cutoff = _completed_nyse_session_cutoff(snapshot_clock)
+    except RuntimeError as exc:
+        return report_text, [f"Markt-Snapshot nicht erstellt: NYSE-Kalenderfehler: {exc}"]
     if fetcher is None:
         try:
             import yfinance as yf
@@ -730,7 +796,7 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
             return yf.download(tickers=symbols, period="6mo", interval="1d",
                                auto_adjust=True, group_by="ticker", progress=False, threads=True)
     symbols = [
-        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "^TNX", "TLT",
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "DX=F", "^TNX", "TLT",
         "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
         "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
     ]
@@ -755,25 +821,41 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
             if values is None or len(values) < 2:
                 return None
             values = values.copy()
-            values.index = pd.to_datetime(values.index, utc=True, errors="coerce")
+            # Yahoo daily bars can carry different timezone offsets/times for
+            # indices and ETFs even when they represent the same exchange date.
+            # Normalize to the provider's displayed daily date before comparing
+            # sessions; UTC-converting midnight timestamps can move a US close
+            # onto the previous calendar day and falsely create a Sunday cutoff.
+            parsed_index = pd.to_datetime(values.index, errors="coerce")
+            if isinstance(parsed_index, pd.DatetimeIndex) and parsed_index.tz is not None:
+                parsed_index = parsed_index.tz_localize(None)
+            values.index = pd.DatetimeIndex(parsed_index).normalize()
             values = values[~values.index.isna()].sort_index()
             values = values[~values.index.duplicated(keep="last")]
             # All symbols use the same immutable NYSE-session cutoff. This also
             # handles exchange holidays and shortened sessions via XNYS schedule.
             values = values[values.index.date <= session_cutoff]
             return values
-        except (KeyError, TypeError, AttributeError):
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             return None
 
-    def latest(symbol):
+    def latest(symbol, *, require_session=False):
         values = series_for(symbol)
+        if require_session and (
+            values is None or values.empty or values.index[-1].date() != session_cutoff
+        ):
+            return None
         try:
             return float(values.iloc[-1]) if values is not None else None
         except (ValueError, TypeError, IndexError):
             return None
 
-    def pct(symbol, periods):
+    def pct(symbol, periods, *, require_session=False):
         values = series_for(symbol)
+        if require_session and (
+            values is None or values.empty or values.index[-1].date() != session_cutoff
+        ):
+            return None
         if values is None or len(values) <= periods:
             return None
         try:
@@ -789,7 +871,9 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
     lines = ["", "**Live-Marktbelege (Yahoo Finance; Schlusskurse, keine Prognose):**",
              f"- Datenstand UTC: {now}"]
     for symbol, label in (("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq Composite"), ("^RUT", "Russell 2000")):
-        close, r1, r3 = latest(symbol), pct(symbol, 21), pct(symbol, 63)
+        close = latest(symbol, require_session=True)
+        r1 = pct(symbol, 21, require_session=True)
+        r3 = pct(symbol, 63, require_session=True)
         lines.append(
             f"- Index {label} ({symbol}): letzter Schluss {close:.2f}; 1M {fmt(r1, '%')}; 3M {fmt(r3, '%')}."
             if close is not None else f"- Index {label} ({symbol}): NICHT VERFÜGBAR."
@@ -1125,29 +1209,54 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
                           ("TLT", "US-Anleihen"), ("UUP", "US-Dollar"), ("BTC-USD", "Bitcoin")],
     }
     all_series = {sym: series_for(sym) for rows in groups.values() for sym, _ in rows}
-    # Volatility and dollar observations are part of the same regime snapshot,
-    # so they participate in (and must match) the common observation cutoff.
+    # Keep all comparison series available, but do not let 24/7 crypto bars or
+    # a differently timed asset-class feed move the equity-session cutoff to a
+    # Sunday/holiday. The expected matrix date comes from the completed NYSE
+    # session calendar, not from an intersection of observed ticker histories.
+    # Every row must have an actual observation on that date or show a data gap.
     all_series["^VIX"] = series_for("^VIX")
     all_series["DX-Y.NYB"] = series_for("DX-Y.NYB")
+    all_series["DX=F"] = series_for("DX=F")
     all_series = {sym: ser for sym, ser in all_series.items() if ser is not None and not ser.empty}
-    common_cutoff = min((ser.index.max() for ser in all_series.values()), default=None)
-    # Never fall back to independently-latest VIX/DXY values when no common
-    # market observation cutoff can be established.
-    vix = dxy = None
-    if common_cutoff is not None:
-        def close_at_common_cutoff(symbol):
-            series = all_series.get(symbol)
-            if series is None:
-                return None
-            eligible = series.loc[series.index <= common_cutoff]
-            if eligible.empty or eligible.index[-1] != common_cutoff:
-                return None
-            try:
-                return float(eligible.iloc[-1])
-            except (TypeError, ValueError):
-                return None
-        vix = close_at_common_cutoff("^VIX")
-        dxy = close_at_common_cutoff("DX-Y.NYB")
+    # The expected session is determined independently from the observed
+    # ticker histories. Never let one stale core instrument move the whole
+    # matrix backwards to an older date shared by every remaining series.
+    # Each instrument is checked below for an actual observation on this
+    # completed NYSE session; missing/stale rows remain explicit data gaps.
+    common_cutoff = pd.Timestamp(session_cutoff) if session_cutoff is not None else None
+
+    def close_at_common_cutoff(symbol):
+        series = all_series.get(symbol)
+        if series is None or common_cutoff is None:
+            return None
+        eligible = series.loc[series.index.date == common_cutoff.date()]
+        if eligible.empty:
+            return None
+        try:
+            return float(eligible.iloc[-1])
+        except (TypeError, ValueError):
+            return None
+
+    # VIX and the dollar proxy must be observed on the core market date. Prefer
+    # spot DXY, then ICE USDX futures, then the UUP dollar ETF. The fallback is
+    # named explicitly; a fund price is never relabelled as the DXY index.
+    vix = close_at_common_cutoff("^VIX")
+    dxy = None
+    dxy_source_symbol = None
+    for candidate in ("DX-Y.NYB", "DX=F", "UUP"):
+        candidate_value = close_at_common_cutoff(candidate)
+        if candidate_value is not None:
+            dxy = candidate_value
+            dxy_source_symbol = candidate
+            break
+    dxy_descriptors = {
+        "DX-Y.NYB": ("DXY (DX-Y.NYB)", "Indexpunkte"),
+        "DX=F": ("DX-Future (DX=F)", "Indexpunkte"),
+        "UUP": ("UUP (US-Dollar-ETF)", "USD je Anteil"),
+    }
+    dxy_descriptor, dxy_unit = dxy_descriptors.get(
+        dxy_source_symbol, ("Dollarproxy", "NICHT VERFÜGBAR")
+    )
     cutoff_date = common_cutoff.date().isoformat() if common_cutoff is not None else "NICHT VERFÜGBAR"
     for index, line in enumerate(lines):
         if line.startswith("- Volatilität VIX:"):
@@ -1156,11 +1265,13 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
                 f"Datenstichtag: {cutoff_date}; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs."
                 if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Datenstichtag)."
             )
-        elif line.startswith("- Dollar-Proxy DXY"):
+        elif line.startswith("- Dollar-Proxy"):
             lines[index] = (
-                f"- Dollar-Proxy DXY (DX-Y.NYB): {dxy:.2f} | Quelle: Yahoo Finance (DX-Y.NYB); Abrufzeit: {now}; "
-                f"Datenstichtag: {cutoff_date}; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs."
-                if dxy is not None else "- Dollar-Proxy DXY: NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Datenstichtag)."
+                f"- Dollar-Proxy {dxy_descriptor}: {dxy:.2f} | Quelle: Yahoo Finance ({dxy_source_symbol}); "
+                f"Abrufzeit: {now}; Datenstichtag: {cutoff_date}; Einheit: {dxy_unit}; "
+                "Verzögerung: Tages-Schlusskurs."
+                if dxy is not None and dxy_source_symbol is not None
+                else "- Dollar-Proxy: NICHT VERFÜGBAR (keine bestätigte Beobachtung am gemeinsamen Datenstichtag)."
             )
     # M-02 consumes the same real market-data cutoff as the relative-strength
     # matrix. Retrieval time is not substituted for an observation date.
@@ -1189,7 +1300,7 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
             r"(?i)Name nicht aufgelöst\s*\(VIX\)|Name nicht aufgeloest\s*\(VIX\)",
             "", context,
         )
-        for instrument in ("VIX", "DXY"):
+        for instrument in ("VIX", "DXY", "Dollarproxy"):
             context = re.sub(
                 rf"(?i)(?<![A-Z0-9]){instrument}\s*(?:[:=]\s*)?(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|UNBEKANNT|FEHLT)",
                 "", context,
@@ -1205,7 +1316,11 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
         context = re.sub(r"(?:\s*[;|,]\s*){2,}", "; ", context)
         context = re.sub(r"^[\s;|,]+|[\s;|,]+$", "", context).strip(" ;,.\t")
         facts = [f"VIX: {vix:.2f}" if vix is not None else "VIX: NICHT VERFÜGBAR"]
-        facts.append(f"DXY: {dxy:.2f}" if dxy is not None else "DXY: NICHT VERFÜGBAR")
+        dollar_risk_label = "DXY" if dxy_source_symbol == "DX-Y.NYB" else "Dollarproxy"
+        facts.append(
+            f"{dollar_risk_label}: {dxy:.2f}" if dxy is not None
+            else f"Dollarproxy: NICHT VERFÜGBAR"
+        )
         facts.append(
             "gemeinsamer Datenstichtag: "
             + (common_cutoff.date().isoformat() if common_cutoff is not None else "NICHT VERFÜGBAR")
@@ -1221,21 +1336,26 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
         report_text = re.sub(risk_field_pattern, enrich_risk_line, report_text, count=1)
     matrix_results = {}
     matrix_lines = ["Relative-Stärke-Matrix (adjusted close; 1M=21 Handelstage, 3M=63 Handelstage):"]
-    matrix_lines.append(f"Gemeinsamer Datenstichtag: {common_cutoff.isoformat()}" if common_cutoff is not None
-                        else "Gemeinsamer Datenstichtag: NICHT VERFÜGBAR")
+    matrix_lines.append(
+        f"Gemeinsamer Datenstichtag: {common_cutoff.date().isoformat()}T00:00:00+00:00"
+        if common_cutoff is not None else "Gemeinsamer Datenstichtag: NICHT VERFÜGBAR"
+    )
     for group, rows in groups.items():
         row_text = []
         for sym, label in rows:
             ser = all_series.get(sym)
-            eligible = ser.loc[ser.index <= common_cutoff] if ser is not None and common_cutoff is not None else None
-            # A common cutoff is only comparable when every included series has
-            # an observation exactly at that cutoff. Do not silently substitute
-            # an older last close for a missing market session.
+            eligible = (
+                ser.loc[ser.index.date <= common_cutoff.date()]
+                if ser is not None and common_cutoff is not None else None
+            )
+            # A common cutoff is comparable only when the series has an actual
+            # observation on that calendar session. Different intraday/timezone
+            # stamps for the same daily bar are equivalent; an older close is not.
             if (eligible is None or eligible.empty or common_cutoff is None
-                    or eligible.index[-1] != common_cutoff or len(eligible) <= 63):
+                    or eligible.index[-1].date() != common_cutoff.date() or len(eligible) <= 63):
                 row_text.append(
-                    f"{label} ({sym}) 1M NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Stichtag); "
-                    "3M NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Stichtag)"
+                    f"{label} ({sym}) 1M NICHT VERFÜGBAR (Datenlücke: kein Kurs exakt am gemeinsamen Stichtag); "
+                    "3M NICHT VERFÜGBAR (Datenlücke: kein Kurs exakt am gemeinsamen Stichtag)"
                 )
                 continue
             last = float(eligible.iloc[-1])
@@ -1678,7 +1798,7 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         "Szenarien(?:\\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\\s+Konsens)?|"
         "Unter Konsens|Entsprechend Konsens|Über Konsens|Ueber Konsens|"
         "Betroffene Thesen/Assetklassen/Positionen|"
-        "Reaktionskanäle|Wirkung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+        "Reaktionskanäle|Wirkung|Auswirkung|Erwartung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
         "Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|Status"
     )
     field = re.compile(rf"(?i)^\s*(?:{field_labels})\s*[:=]")
@@ -1696,6 +1816,10 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)(?:Ereignis(?:[- ]Uhrzeit)?|Termin|Event)\s*[:=]",
             line,
         )
+        or bool(re.match(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)[^|]+\|\s*20\d{2}-\d{2}-\d{2}\s*\|\s*(?:[01]?\d|2[0-3]):[0-5]\d\b",
+            line,
+        ))
         for line in lines
     )
     for i, line in enumerate(lines):
@@ -1743,7 +1867,60 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
     for rec_lines in records:
         rec = "\n".join(rec_lines).strip()
         name_m = re.search(r"(?im)^\s*(?:[-*•]\s*)?(?:Ereignis|Termin|Event|Kennzahl|Indikator)?\s*[:=]?\s*(.+?)\s*$", rec_lines[0])
-        name = (name_m.group(1) if name_m else rec_lines[0]).strip().casefold()
+        name = (name_m.group(1) if name_m else rec_lines[0]).strip()
+        # Some generators emit one compact, pipe-delimited event row instead
+        # of separate Datum/Uhrzeit/Zeitzone fields. Promote only a strict
+        # ISO-date + clock tuple from that structured row. It is still only a
+        # lookup key: ForexFactory must independently verify the event identity
+        # and date before the source can be marked LIVE_VERIFIZIERT.
+        header_parts = [part.strip() for part in rec_lines[0].split("|")]
+        header_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", rec_lines[0])
+        header_clock = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", rec_lines[0])
+        if len(header_parts) >= 3 and header_date and header_clock:
+            header_name = re.sub(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)", "", header_parts[0]).strip()
+            header_name = re.sub(r"(?i)^(?:Ereignis|Termin|Event)\s*[:=]\s*", "", header_name).strip()
+            if header_name:
+                name = header_name
+            def upsert_header_field(record: str, label: str, value: str) -> str:
+                field_pattern = re.compile(
+                    rf"(?im)^([ \t]*(?:[-*•][ \t]*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?[ \t]*[:=][ \t]*)([^\r\n]*)$"
+                )
+                matches = list(field_pattern.finditer(record))
+                if not matches:
+                    return record.rstrip() + f"\n- {label}: {value}"
+                first = matches[0]
+                current = first.group(2).strip()
+                is_placeholder = bool(re.fullmatch(
+                    r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|NICHT VERFUEGBAR|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR|[-–—])",
+                    current,
+                ))
+                if is_placeholder:
+                    record = record[:first.start()] + first.group(1) + value + record[first.end():]
+                    # Remove only duplicate placeholders after the valid value;
+                    # unrelated explanatory fields remain byte-for-byte intact.
+                    matches = list(field_pattern.finditer(record))
+                    for duplicate in reversed(matches[1:]):
+                        duplicate_value = duplicate.group(2).strip()
+                        if re.fullmatch(
+                            r"(?i)(?:NICHT VERFÜGBAR(?:\s*\([^)]*\))?|NICHT VERFUEGBAR|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR|[-–—])",
+                            duplicate_value,
+                        ):
+                            start, end = duplicate.span()
+                            record = record[:start] + record[end:]
+                return record
+
+            upserted_date = re.search(
+                r"(?im)^\s*(?:[-*•]\s*)?(?:Datum|Date)\s*[:=]\s*([^\r\n]+)", rec
+            )
+            if not upserted_date or re.match(r"(?i)\s*(?:NICHT VERFÜGBAR|NICHT VERFUEGBAR|TBD|TBA|N/?A|NA|UNBEKANNT|FEHLT|UNKLAR)", upserted_date.group(1)):
+                rec = upsert_header_field(rec, "Datum", header_date.group(1))
+            rec = upsert_header_field(rec, "Uhrzeit", header_clock.group(0))
+            zone_match = re.search(r"(?i)\b(MEZ|MESZ|CET|CEST|ET|UTC)\b", rec_lines[0])
+            if zone_match:
+                zone = "Europe/Berlin" if zone_match.group(1).upper() in {"MEZ", "MESZ", "CET", "CEST"} else (
+                    "America/New_York" if zone_match.group(1).upper() == "ET" else "UTC"
+                )
+                rec = upsert_header_field(rec, "Zeitzone", zone)
         # Strip markdown emphasis before extracting labels. Both **Quelle:** and
         # **Quelle**: are common generator outputs and mean the same field.
         plain_rec = re.sub(r"\*\*([^*]+)\*\*", r"\1", rec)
