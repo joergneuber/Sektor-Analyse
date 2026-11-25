@@ -2,6 +2,7 @@ import ast
 import json
 from decimal import Decimal
 import re
+import pytest
 from pathlib import Path
 
 import Trading_Radar_Alleinauswertung as production
@@ -1924,3 +1925,203 @@ def test_short_scanner_direction_defaults_to_short_for_legacy_csv(tmp_path):
     assert len(candidates) == 1
     assert candidates[0]["direction"] == "SHORT"
 
+
+
+def test_unavailable_portfolio_calculation_suppresses_free_gemini_aggregates_only():
+    report = (
+        "Portfolio-Performance (Ø -22,81 %) zeigt Underperformance. "
+        "Einzelposition A: -12,00 %.\n"
+        "Portfolio-Gesamtperformance (-22,81 %) belastet den Vergleich."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "-22,81 %" not in result
+    assert result.count("Portfolio-Gesamtperformance: NICHT VERFÜGBAR") == 2
+    assert "zeigt Underperformance" not in result
+    assert "belastet den Vergleich" not in result
+    assert "Einzelposition A: -12,00 %" in result
+
+
+def test_unprovenanced_treasury_number_in_thesis_prose_is_qualified_not_register_mutated():
+    report = (
+        "1. Trading-Radar\nMarktregime: neutral.\n"
+        "2. Thesen-Update\n"
+        "Belege: US 10Y Treasury bei 5.0400%; Realzins 10Y TIPS bei 2.8800%.\n"
+        "3. Ereignisradar\n"
+    )
+    result = production._trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(report)
+    assert "US 10Y Treasury bei 5.0400%" not in result
+    assert "Registerbeleg ohne separate Quellenprovenienz" in result
+    assert "Realzins 10Y TIPS bei 2.8800%" in result
+
+
+def test_treasury_qualifier_preserves_section_line_endings_and_next_heading():
+    report = (
+        "1. Trading-Radar\r\n"
+        "2. Thesen-Update\r\n"
+        "Beleg: US 10Y Treasury bei 5.0400%.\r\n"
+        "3. Ereignisradar\r\n"
+        "Ereignis: Beispiel.\r\n"
+    )
+    result = production._trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(report)
+    assert "\r\n3. Ereignisradar\r\n" in result
+    assert "verwendet)3. Ereignisradar" not in result
+    assert result.count("\r\n") == report.count("\r\n")
+
+
+def test_treasury_qualifier_changes_only_the_unprovenanced_observation_on_same_line():
+    report = (
+        "2. Thesen-Update\n"
+        "US 10Y Treasury bei 4.98% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-11-02T20:00:00+00:00 | Datenstichtag: 2026-11-02 | "
+        "Einheit: % | Verzögerung: 1 Börsentag | "
+        "US 10Y Treasury bei 4.93%.\n"
+        "3. Ereignisradar\n"
+    )
+    result = production._trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(report)
+    assert "US 10Y Treasury bei 4.98%" in result
+    assert "US 10Y Treasury bei 4.93%" not in result
+    assert result.count("Registerbeleg ohne separate Quellenprovenienz") == 1
+
+
+def test_treasury_qualifier_covers_all_explicit_us10y_label_variants():
+    report = (
+        "2. Thesen-Update\n"
+        "10-year US yield at 4.85%; 10-jähriger US-Staatsanleihenzins bei 4.86%.\n"
+        "3. Ereignisradar\n"
+    )
+    result = production._trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(report)
+    assert "10-year US yield at 4.85%" not in result
+    assert "10-jähriger US-Staatsanleihenzins bei 4.86%" not in result
+    assert result.count("Registerbeleg ohne separate Quellenprovenienz") == 2
+
+
+def test_treasury_qualifier_fails_closed_if_report_gate_parser_cannot_be_imported(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name == "trading_radar_report_gate":
+            raise ImportError("simulated missing report gate")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    report = (
+        "2. Thesen-Update\n"
+        "10-year US yield at 4.85%.\n"
+        "3. Ereignisradar\n"
+    )
+    result = production._trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(report)
+    assert "10-year US yield at 4.85%" not in result
+    assert "Registerbeleg ohne separate Quellenprovenienz" in result
+
+
+def test_portfolio_prose_suppression_preserves_previous_sentence_and_decimal_values():
+    report = (
+        "Versionshinweis 1.2. "
+        "Portfolio-Performance (-22.81 %) zeigt Underperformance. "
+        "Einzelposition B: -12.00 %."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert result.startswith("Versionshinweis 1.2. ")
+    assert "zeigt Underperformance" not in result
+    assert "-22.81 %" not in result
+    assert "Einzelposition B: -12.00 %" in result
+
+
+
+def test_portfolio_prose_suppression_preserves_individual_position_after_semicolon():
+    report = (
+        "Portfolio-Performance (-22,81 %) zeigt Underperformance; "
+        "Einzelposition A: -12,00 %."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "Portfolio-Gesamtperformance: NICHT VERFÜGBAR." in result
+    assert "zeigt Underperformance" not in result
+    assert "Einzelposition A: -12,00 %" in result
+
+
+def test_portfolio_prose_suppression_removes_multiline_qualitative_conclusion():
+    report = (
+        "Portfolio-Performance (-22,81 %)\n"
+        "zeigt Underperformance.\n"
+        "Einzelposition B: -12,00 %."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "Portfolio-Gesamtperformance: NICHT VERFÜGBAR." in result
+    assert "zeigt Underperformance" not in result
+    assert "Einzelposition B: -12,00 %" in result
+
+
+def test_portfolio_prose_suppression_keeps_independent_following_sentence_and_section():
+    report = (
+        "Versionshinweis 1.2. Portfolio-Performance (-22.81 %) "
+        "belastet den Vergleich. Einzelposition C: -8.25 %.\n"
+        "3. Ereignisradar\n"
+        "Ereignis: Beispiel.\n"
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert result.startswith("Versionshinweis 1.2. ")
+    assert "belastet den Vergleich" not in result
+    assert "Einzelposition C: -8.25 %" in result
+    assert "3. Ereignisradar\nEreignis: Beispiel." in result
+
+
+def test_portfolio_prose_suppression_preserves_ticker_labelled_fact_after_semicolon():
+    report = (
+        "Portfolio-Performance (-22,81 %) belastet den Vergleich; "
+        "AAPL: -12,00 %."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "belastet den Vergleich" not in result
+    assert "AAPL: -12,00 %" in result
+
+def test_portfolio_prose_suppression_preserves_section_heading_and_individual_context():
+    report = (
+        "### 6. Portfolio & Risiko\n\n"
+        "* Xtrackers MSCI World Quality UCITS ETF 1C (XDEQ.DE): "
+        "Rückenwind durch Qualität, aber Portfolio-Gesamtperformance "
+        "(-22,81 %) belastet.\n"
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "### 6. Portfolio & Risiko" in result
+    assert "Xtrackers MSCI World Quality UCITS ETF 1C (XDEQ.DE)" in result
+    assert "Rückenwind durch Qualität" in result
+    assert "Portfolio-Gesamtperformance: NICHT VERFÜGBAR." in result
+    assert "-22,81 %" not in result
+
+
+def test_portfolio_prose_suppression_does_not_keep_unrelated_tail_after_position():
+    report = (
+        "Portfolio-Performance -22.81 % zeigt Underperformance; "
+        "AAPL: -12.00%; MSFT: +3.00%; das Portfolio ist trotzdem robust."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "Portfolio-Gesamtperformance: NICHT VERFÜGBAR." in result
+    assert "AAPL: -12.00%" in result
+    assert "MSFT: +3.00%" in result
+    assert "das Portfolio ist trotzdem robust" not in result
+    assert "zeigt Underperformance" not in result
+
+
+
+@pytest.mark.parametrize("label", ["Portfolio", "Position", "INFO", "STATUS", "HINWEIS"])
+def test_portfolio_prose_suppression_does_not_preserve_generic_labels_after_semicolon(label):
+    report = (
+        "Portfolio-Performance -22.81 % belastet; "
+        f"{label}: das Portfolio bleibt trotzdem robust."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "Portfolio-Gesamtperformance: NICHT VERFÜGBAR." in result
+    assert f"{label}: das Portfolio bleibt trotzdem robust" not in result
+
+
+def test_portfolio_prose_suppression_still_preserves_real_ticker_after_semicolon():
+    report = (
+        "Portfolio-Performance -22.81 % belastet; "
+        "AAPL: -12.00%; MSFT: +3.00%; das Portfolio bleibt robust."
+    )
+    result = production._trading_radar_performance_aussagen_sperren(report)
+    assert "AAPL: -12.00%" in result
+    assert "MSFT: +3.00%" in result
+    assert "das Portfolio bleibt robust" not in result

@@ -117,10 +117,11 @@ def _namespace_for_perf(monkeypatch, ticker, alpaca_frame, yahoo_fetch):
     return ns
 
 
-def _quality_checked_yahoo(frame, ticker):
+def _quality_checked_yahoo(frame, ticker, **kwargs):
     checked, quality = gate.apply_ohlcv_quality_gate(
         frame,
         ticker,
+        **kwargs,
         registry_path=gate.DEFAULT_REGISTRY,
         gap_registry_path=gate.DEFAULT_GAP_REGISTRY,
         window_sessions=252,
@@ -136,7 +137,7 @@ def test_get_perf_uses_alpaca_when_gate_and_rotation_windows_pass(monkeypatch, t
     yahoo_calls = []
     ns = _namespace_for_perf(
         monkeypatch, "XLK", raw,
-        lambda ticker: yahoo_calls.append(ticker) or pd.DataFrame(),
+        lambda ticker, **kwargs: yahoo_calls.append(ticker) or pd.DataFrame(),
     )
 
     result = ns["get_perf"]("XLK", "Technologie")
@@ -155,7 +156,7 @@ def test_get_perf_falls_back_to_direct_yahoo_for_missing_alpaca_rotation_session
     yahoo = _frame(dates)
     yahoo_calls = []
 
-    def yahoo_fetch(ticker):
+    def yahoo_fetch(ticker, **kwargs):
         yahoo_calls.append(ticker)
         return _quality_checked_yahoo(yahoo, ticker)
 
@@ -181,7 +182,7 @@ def test_get_perf_blocks_rotation_when_both_sources_have_incomplete_windows(
 
     ns = _namespace_for_perf(
         monkeypatch, "XLK", alpaca,
-        lambda ticker: _quality_checked_yahoo(yahoo, ticker),
+        lambda ticker, **kwargs: _quality_checked_yahoo(yahoo, ticker, **kwargs),
     )
     result = ns["get_perf"]("XLK", "Technologie")
 
@@ -193,7 +194,7 @@ def test_get_perf_blocks_rotation_when_both_sources_have_incomplete_windows(
 
 def test_eu_performance_missing_data_does_not_create_zero_rotation_score():
     ns = _load_analysis_functions()
-    ns["get_yf_history"] = lambda ticker: pd.DataFrame()
+    ns["get_yf_history"] = lambda ticker, **kwargs: pd.DataFrame()
     result = ns["get_perf_yf"]("EXV1.DE", "Finanzen")
     assert result["5T"] is None
     assert result["12T"] is None
@@ -203,7 +204,7 @@ def test_eu_performance_missing_data_does_not_create_zero_rotation_score():
 def test_eu_performance_provider_exception_does_not_create_zero_rotation_score():
     ns = _load_analysis_functions()
 
-    def fail(ticker):
+    def fail(ticker, **kwargs):
         raise TimeoutError("provider timeout")
 
     ns["get_yf_history"] = fail
@@ -259,8 +260,10 @@ def test_direct_yahoo_fallback_bypasses_project_cache_and_runs_quality_gate(
     marker.attrs["ohlcv_quality"] = {"quality_status": "PASS"}
     gate_calls = {}
 
-    def fake_quality(ticker, raw, *, window_sessions):
-        gate_calls.update(ticker=ticker, window_sessions=window_sessions)
+    def fake_quality(ticker, raw, *, window_sessions, **kwargs):
+        gate_calls.update(
+            ticker=ticker, window_sessions=window_sessions, **kwargs
+        )
         return marker
 
     monkeypatch.setattr(market_cache, "_quality_checked_frame", fake_quality)
@@ -271,7 +274,10 @@ def test_direct_yahoo_fallback_bypasses_project_cache_and_runs_quality_gate(
     assert calls["history_kwargs"] == {
         "period": "1y", "interval": "1d", "auto_adjust": False, "actions": False
     }
-    assert gate_calls == {"ticker": "XLK", "window_sessions": 252}
+    assert gate_calls == {
+        "ticker": "XLK", "window_sessions": 252,
+        "instrument_type": None, "instrument_name": None,
+    }
     assert result.attrs["ohlcv_quality"]["quality_status"] == "PASS"
 
 
@@ -309,7 +315,7 @@ def test_eu_performance_requires_six_closes_for_5t_and_thirteen_for_12t():
     missing_12t = complete.copy()
     missing_12t.iloc[-13, missing_12t.columns.get_loc("Close")] = np.nan
     frames = {"5T": missing_5t, "12T": missing_12t}
-    ns["get_yf_history"] = lambda ticker: frames[ticker]
+    ns["get_yf_history"] = lambda ticker, **kwargs: frames[ticker]
     result_5t = ns["get_perf_yf"]("5T", "Test")
     result_12t = ns["get_perf_yf"]("12T", "Test")
     assert result_5t["5T"] is None
@@ -322,7 +328,7 @@ def test_eu_performance_uses_same_n_plus_one_session_semantics_as_us():
     ns = _load_analysis_functions()
     dates = _dates()
     frame = _frame(dates)
-    ns["get_yf_history"] = lambda ticker: frame
+    ns["get_yf_history"] = lambda ticker, **kwargs: frame
     result = ns["get_perf_yf"]("EXV1.DE", "Finanzen")
     expected_5t = round(
         (float(frame["Close"].iloc[-1]) / float(frame["Close"].iloc[-6]) - 1) * 100,
@@ -347,7 +353,7 @@ def test_alpaca_wrong_single_symbol_is_rejected_and_yahoo_fallback_used(
     yahoo_calls = []
     ns = _namespace_for_perf(
         monkeypatch, "XLK", _frame(dates),
-        lambda ticker: yahoo_calls.append(ticker) or _quality_checked_yahoo(yahoo, ticker),
+        lambda ticker, **kwargs: yahoo_calls.append(ticker) or _quality_checked_yahoo(yahoo, ticker, **kwargs),
     )
     wrong_multi = pd.concat({"WRONG": wrong}, names=["symbol", "timestamp"])
     ns["alpaca_client"] = SimpleNamespace(
@@ -373,7 +379,7 @@ def test_alpaca_exact_symbol_is_still_accepted_after_strict_symbol_check(
     yahoo_calls = []
     ns = _namespace_for_perf(
         monkeypatch, "XLK", _frame(dates),
-        lambda ticker: yahoo_calls.append(ticker) or pd.DataFrame(),
+        lambda ticker, **kwargs: yahoo_calls.append(ticker) or pd.DataFrame(),
     )
     result = ns["get_perf"]("XLK", "Technologie")
     assert result["Rotation-Score"] is not None
@@ -393,7 +399,7 @@ def test_eu_missing_expected_session_is_blocked_after_real_quality_gate(
     assert pd.isna(gated["Close"].iloc[-13])
 
     ns = _load_analysis_functions()
-    ns["get_yf_history"] = lambda ticker: gated
+    ns["get_yf_history"] = lambda ticker, **kwargs: gated
     result = ns["get_perf_yf"]("EXV1.DE", "Finanzen")
 
     assert result["12T"] is None
@@ -527,3 +533,22 @@ def test_rotation_filter_debug_iterates_over_unfiltered_setup_snapshot():
         and node.iter.func.value.value.id == "df_s_vor_rotation_filter"
     ]
     assert debug_loops, "DEBUG-Schleife verwendet nicht die ungefilterte Diagnosekopie"
+
+
+def test_eu_sector_performance_passes_etf_metadata_to_shared_history_gate():
+    ns = _load_analysis_functions()
+    seen = {}
+    frame = _frame(_dates())
+
+    def fetch(ticker, **kwargs):
+        seen.update(ticker=ticker, **kwargs)
+        return frame
+
+    ns["get_yf_history"] = fetch
+    result = ns["get_perf_yf"]("EXV1.DE", "Finanzen")
+    assert result["Ticker"] == "EXV1.DE"
+    assert seen == {
+        "ticker": "EXV1.DE",
+        "instrument_type": "ETF",
+        "instrument_name": "Finanzen",
+    }
