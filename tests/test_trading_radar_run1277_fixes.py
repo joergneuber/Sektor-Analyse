@@ -152,7 +152,7 @@ def test_treasury_gov_fallback_is_not_mislabelled_as_fred(monkeypatch):
     assert "SOURCE=FRED DGS10" not in result
 
 
-def test_federal_reserve_h15_fallback_keeps_its_own_provider_identity(monkeypatch):
+def test_legacy_h15_cache_is_identified_but_rejected_as_current_dgs10_provenance(monkeypatch):
     import datetime as dt
     import sys
     import types
@@ -172,10 +172,14 @@ def test_federal_reserve_h15_fallback_keeps_its_own_provider_identity(monkeypatc
         lambda: {"fred": {"DGS10": {"saved_at": saved_at, "source": source, "status": "REAL"}}},
     )
     result = macro_module.fred_snapshot("US 10Y Treasury", "DGS10")
-    assert "SOURCE=Federal Reserve Board H.15 10Y Treasury yield (" + source + ")" in result
+    assert "SOURCE=Legacy Federal Reserve Board H.15 DGS10 cache (" + source + ")" in result
     assert "SOURCE=FRED DGS10" not in result
+    assert not macro_module._us10y_cache_provenance_valid(
+        {"saved_at": saved_at, "source": source, "status": "REAL"},
+        now_timestamp=saved_at + 60,
+    )
     line = (
-        "US 10Y Treasury 4.98% (Quelle: Federal Reserve Board H.15 10Y Treasury yield; "
+        "US 10Y Treasury 4.98% (Quelle: Legacy Federal Reserve Board H.15 DGS10 cache; "
         "Abrufzeit: 2026-11-04T08:00:00+00:00; Datenstichtag: 2026-10-29; "
         "Einheit: %; Verzögerung: 6 Kalendertage)"
     )
@@ -193,8 +197,9 @@ def test_dgs10_cache_is_refreshed_each_run_even_when_still_within_age_limit(monk
     cache_dir = tmp_path / ".macro_cache"
     cache_file = cache_dir / "macro_cache.json"
     cache_dir.mkdir()
+    recent_observation = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)
     stale_payload = pd.DataFrame({
-        "DATE": [pd.Timestamp("2026-11-13")], "DGS10": [5.15]
+        "DATE": [recent_observation], "DGS10": [5.15]
     }).to_json(orient="split", date_format="iso")
     cache_file.write_text(json.dumps({
         "version": macro_module.CACHE_VERSION,
@@ -216,7 +221,7 @@ def test_dgs10_cache_is_refreshed_each_run_even_when_still_within_age_limit(monk
 
         def json(self):
             return {"observations": [
-                {"date": "2026-11-16", "value": "5.12"},
+                {"date": recent_observation.date().isoformat(), "value": "5.12"},
             ]}
 
     calls = []
@@ -244,8 +249,10 @@ def test_dgs10_cache_without_saved_retrieval_metadata_is_refreshed(monkeypatch, 
     cache_dir = tmp_path / ".macro_cache"
     cache_file = cache_dir / "macro_cache.json"
     cache_dir.mkdir()
+    recent_observation_1 = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2)
+    recent_observation_2 = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)
     stale_payload = pd.DataFrame({
-        "DATE": [pd.Timestamp("2026-10-29")], "DGS10": [4.98]
+        "DATE": [recent_observation_1], "DGS10": [4.98]
     }).to_json(orient="split", date_format="iso")
     cache_file.write_text(json.dumps({
         "version": macro_module.CACHE_VERSION,
@@ -263,8 +270,8 @@ def test_dgs10_cache_without_saved_retrieval_metadata_is_refreshed(monkeypatch, 
 
         def json(self):
             return {"observations": [
-                {"date": "2026-11-03", "value": "4.97"},
-                {"date": "2026-11-04", "value": "4.96"},
+                {"date": recent_observation_1.date().isoformat(), "value": "4.97"},
+                {"date": recent_observation_2.date().isoformat(), "value": "4.96"},
             ]}
 
     calls = []
@@ -278,3 +285,66 @@ def test_dgs10_cache_without_saved_retrieval_metadata_is_refreshed(monkeypatch, 
     refreshed = json.loads(cache_file.read_text(encoding="utf-8"))["fred"]["DGS10"]
     assert isinstance(refreshed.get("saved_at"), (int, float))
     assert refreshed.get("source") == "https://api.stlouisfed.org/fred/series/observations"
+
+
+def test_dgs10_stale_fred_observation_uses_official_treasury_fallback(monkeypatch, tmp_path):
+    import json
+    import sys
+    import types
+    import pandas as pd
+
+    sys.modules.setdefault("yfinance", types.SimpleNamespace(download=lambda *a, **k: pd.DataFrame()))
+    import makro_szenario as macro_module
+    cache_dir = tmp_path / ".macro_cache"
+    cache_file = cache_dir / "macro_cache.json"
+    monkeypatch.setattr(macro_module, "MACRO_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(macro_module, "MACRO_CACHE_FILE", cache_file)
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    stale_fred_date = today - pd.Timedelta(days=8)
+    current_treasury_date = today - pd.Timedelta(days=1)
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, *, observations=None, text=""):
+            self._observations = observations or []
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"observations": self._observations}
+
+    calls = []
+
+    def fake_get(url, *args, **kwargs):
+        calls.append((url, kwargs))
+        if "api.stlouisfed.org/fred/series/observations" in url:
+            return FakeResponse(observations=[{
+                "date": stale_fred_date.date().isoformat(), "value": "4.98",
+            }])
+        if "home.treasury.gov" in url:
+            return FakeResponse(text=(
+                "Date,10 yr\n"
+                f"{current_treasury_date.date().isoformat()},4.75\n"
+            ))
+        raise AssertionError(f"Unexpected DGS10 provider URL: {url}")
+
+    monkeypatch.setattr(macro_module.requests, "get", fake_get)
+    result = macro_module.fred_series("DGS10")
+
+    assert len(calls) == 2
+    assert "api.stlouisfed.org/fred/series/observations" in calls[0][0]
+    assert "home.treasury.gov" in calls[1][0]
+    assert result.iloc[-1]["DATE"].date() == current_treasury_date.date()
+    assert result.iloc[-1]["DGS10"] == 4.75
+    cached = json.loads(cache_file.read_text(encoding="utf-8"))["fred"]["DGS10"]
+    assert cached["source"] == calls[1][0]
+    assert cached["series_id"] == "DGS10"
+    assert cached["instrument"] == "US10Y_NOMINAL"
+    assert cached["unit"] == "%"
+    assert isinstance(cached.get("saved_at"), (int, float))
+    assert cached.get("retrieved_at")

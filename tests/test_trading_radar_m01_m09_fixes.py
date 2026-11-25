@@ -290,12 +290,26 @@ def test_thesis_evidence_replaces_false_no_change_claim_when_baseline_missing():
 
 def test_thesis_register_update_in_exclusive_radar_branch_uses_radar_text():
     source = (ROOT / "Trading_Radar_Alleinauswertung.py").read_text(encoding="utf-8")
-    start = source.index("# M-05: Register aus genau diesem eigenständigen Radar-Bericht")
-    end = source.index("# The persisted status marker", start)
-    block = source[start:end]
-    assert "update_register(" in block
-    assert "text, os.path.join(os.getcwd(), \".trading_radar_thesen.json\")" in block
-    assert "_trading_radar_thesenregister_nachweis_text" in block
+    module = ast.parse(source)
+    producer = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "speichere_ergebnis"
+    )
+    calls = [
+        node for node in ast.walk(producer)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "update_register"
+    ]
+    assert len(calls) == 1
+    call = calls[0]
+    assert len(call.args) >= 2
+    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "text"
+    assert isinstance(call.args[1], ast.Name) and call.args[1].id == "thesis_register_path"
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    assert isinstance(keywords.get("data_cutoff"), ast.Name)
+    assert keywords["data_cutoff"].id == "report_cutoff"
+    assert "_trading_radar_thesenregister_nachweis_text" in source
 
 
 def test_performance_tab2_presence_checks_actual_supplied_source_path():
