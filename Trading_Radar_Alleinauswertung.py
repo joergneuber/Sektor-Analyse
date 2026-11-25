@@ -288,13 +288,20 @@ _GEMINI_SPLIT_RESUME_VERSION = 2
 _GEMINI_RUN_ID = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{os.getpid()}"
 # Maximal zwei echte GenerateContent-Sendungen je Request UND Modell in einem Lauf.
 # Der allgemeine Stufen-/Splitpfad bleibt auf drei Poolrunden begrenzt.
-# Der eigenstaendige Trading-Radar-Request nutzt dagegen den gesamten deklarierten
-# Modellpool; bei fuenf Modellen sind damit bis zu fuenf Modellversuche moeglich.
+# Der eigenstaendige Trading-Radar-Request nutzt zuerst den gesamten deklarierten
+# Modellpool und danach bei Bedarf genau eine zweite Runde nur fuer transiente
+# 503-/Netzwerk-Ausfaelle; bei fuenf Modellen sind damit maximal zehn Modellversuche moeglich.
 # Bereits erfolgreiche Splits bleiben gecacht; das Sendungslimit gilt je Request/Modell.
 # 503 UNAVAILABLE ist meist transient; zwischen Poolrunden wird progressiv gewartet.
 GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN = 2
 GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 3
 GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = len(GEMINI_MODELLREIHENFOLGE)
+# Nach einem vollstaendig durchlaufenen Modellpool duerfen ausschliesslich
+# Modelle mit transientem 503-/Netzwerkfehler genau einmal erneut versucht werden.
+# Die zweite Runde wartet vorher einmalig fuenf Minuten; pro Request/Modell bleibt
+# das globale Limit von zwei echten GenerateContent-Sendungen verbindlich.
+GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 300.0
 GEMINI_503_POOL_BACKOFF_SECONDS = 60.0
 # Tatsächliche Sendungen werden pro Request-Fingerprint UND Modell gezählt.
 # Damit blockiert ein 503 bei einem Modell nicht pauschal alle anderen Splits.
@@ -5249,6 +5256,20 @@ def _gemini_503_aeussere_retry_aktion(
     return "terminal", None
 
 
+def _gemini_radar_503_zweitversuch_zulaessig(fehlertext):
+    """Nur echte transiente Ueberlast-/Netzwerkfehler duerfen Runde 2 erreichen.
+
+    Insbesondere werden 429-Quotenfehler, Tageslimits, Konfigurationsfehler und
+    bereits terminal markierte Fehler nicht erneut gesendet. CountTokens-404
+    werden separat als nicht unterstuetzte Modelle uebersprungen.
+    """
+    text = str(fehlertext or "")
+    if "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in text:
+        return False
+    _retryable, _wait, category = analysiere_api_fehler(text)
+    return category in ("ueberlast", "netzwerk")
+
+
 def _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext):
     """Erkennt ausschliesslich modellbezogene 404-Fehler der CountTokens-API.
 
@@ -5527,7 +5548,12 @@ __QUELLEN__
         # GenerateContent. Insbesondere darf ein modellbezogener CountTokens-
         # 404 nicht ausserhalb der Schleife den naechsten Kandidaten verhindern.
         radar_failed_models = set()
+        radar_retryable_models = []
         radar_pool_passes = 0
+        radar_transient_backoff_count = 0
+        radar_second_pass_started = False
+        radar_second_pass_models = []
+        radar_second_pass_index = 0
         while True:
             phase = "CountTokens"
             try:
@@ -5544,9 +5570,57 @@ __QUELLEN__
                 break
             except Exception as send_exc:
                 fehlertext = str(send_exc)
-                if phase == "CountTokens" and _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext):
+                if "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in fehlertext:
+                    raise
+                counttokens_unsupported = (
+                    phase == "CountTokens"
+                    and _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext)
+                )
+                transient_second_pass = _gemini_radar_503_zweitversuch_zulaessig(
+                    fehlertext
+                )
+
+                if radar_second_pass_started:
+                    # Runde 2 ist eine feste, einmalige Warteschlange aus den
+                    # Modellen, die in Runde 1 mit 503/Netzwerk gescheitert sind.
+                    # Ein CountTokens-404 und ein bekanntes modellbezogenes
+                    # RPM-429 werden uebersprungen; sie loesen keinen dritten
+                    # Versuch aus und duerfen die restliche Warteschlange nicht
+                    # blockieren. Harte/unklare Fehler bleiben terminal.
+                    _retryable, _retry_wait, second_pass_category = analysiere_api_fehler(
+                        fehlertext
+                    )
+                    second_pass_skip = (
+                        counttokens_unsupported
+                        or transient_second_pass
+                        or second_pass_category == "quota_temporär"
+                    )
+                    if not second_pass_skip:
+                        raise
+                    radar_failed_models.add(modell)
+                    radar_second_pass_index += 1
+                    if radar_second_pass_index >= len(radar_second_pass_models):
+                        raise
+                    next_model = radar_second_pass_models[radar_second_pass_index]
+                    if counttokens_unsupported:
+                        skip_reason = "CountTokens-Modell nicht unterstuetzt"
+                    elif second_pass_category == "quota_temporär":
+                        skip_reason = "bekanntes RPM-Quota; Modell uebersprungen"
+                    else:
+                        skip_reason = "transienter Fehler"
+                    print(
+                        f"TRADING_RADAR_RETRY_SECOND_PASS | "
+                        f"Modell={modell}->{next_model} | "
+                        f"Modellversuch={radar_second_pass_index + 1}/"
+                        f"{len(radar_second_pass_models)} | "
+                        f"Grund={skip_reason}"
+                    )
+                    modell = next_model
+                    continue
+
+                if counttokens_unsupported:
                     # Deterministischer modellbezogener CountTokens-404:
-                    # Kandidat ueberspringen, aber keine globale 404-Retryregel.
+                    # Kandidat ueberspringen, aber niemals in Runde 2 aufnehmen.
                     radar_failed_models.add(modell)
                     next_model = _gemini_503_naechstes_modell(
                         modell, GEMINI_MODELLREIHENFOLGE, radar_failed_models
@@ -5555,6 +5629,8 @@ __QUELLEN__
                     wait_seconds = 0.0
                     retry_kind = "CountTokens-Modell nicht unterstuetzt"
                 else:
+                    if transient_second_pass and modell not in radar_retryable_models:
+                        radar_retryable_models.append(modell)
                     action, next_model = _gemini_503_aeussere_retry_aktion(
                         fehlertext, modell,
                         modell_reihenfolge=GEMINI_MODELLREIHENFOLGE,
@@ -5562,25 +5638,65 @@ __QUELLEN__
                     )
                     retry_kind = f"{phase}-Fehler"
                     wait_seconds = None
-                if (
-                    action != "switch"
-                    or not next_model
-                    or radar_pool_passes >= GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN - 1
-                ):
+
+                if action == "other":
+                    # Harte/quota- oder Konfigurationsfehler werden nicht durch
+                    # einen spaeteren Modellversuch verdeckt.
                     raise
-                radar_pool_passes += 1
-                if wait_seconds is None:
-                    wait_seconds = GEMINI_503_POOL_BACKOFF_SECONDS * (2 ** (radar_pool_passes - 1))
-                print(
-                    f"TRADING_RADAR_RETRY | {retry_kind}={type(send_exc).__name__}: {send_exc} | "
-                    f"Modellwechsel={modell}->{next_model} | "
-                    f"Pool-Runde={radar_pool_passes + 1}/"
-                    f"{GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN} | "
-                    f"Backoff={wait_seconds:.0f}s"
-                )
-                if wait_seconds > 0:
-                    time.sleep(wait_seconds)
-                modell = next_model
+
+                if (
+                    action == "switch"
+                    and next_model
+                    and radar_pool_passes < GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN - 1
+                ):
+                    radar_pool_passes += 1
+                    if wait_seconds is None:
+                        radar_transient_backoff_count += 1
+                        wait_seconds = GEMINI_503_POOL_BACKOFF_SECONDS * (
+                            2 ** (radar_transient_backoff_count - 1)
+                        )
+                    print(
+                        f"TRADING_RADAR_RETRY | {retry_kind}={type(send_exc).__name__}: {send_exc} | "
+                        f"Modellwechsel={modell}->{next_model} | "
+                        f"Pool-Runde={radar_pool_passes + 1}/"
+                        f"{GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN} | "
+                        f"Backoff={wait_seconds:.0f}s"
+                    )
+                    if wait_seconds > 0:
+                        time.sleep(wait_seconds)
+                    modell = next_model
+                    continue
+
+                # Erst nach dem vollstaendigen ersten Pooldurchlauf wird eine
+                # zweite Runde gestartet. Sie enthaelt nur echte 503-/Netzwerk-
+                # Ausfaelle; 404-CountTokens-Kandidaten und 429 bleiben draussen.
+                if (
+                    radar_retryable_models
+                    and GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN >= 2
+                ):
+                    modellreihenfolge = list(dict.fromkeys(GEMINI_MODELLREIHENFOLGE))
+                    radar_second_pass_models = [
+                        candidate for candidate in modellreihenfolge
+                        if candidate in radar_retryable_models
+                    ]
+                    if radar_second_pass_models:
+                        radar_second_pass_started = True
+                        radar_second_pass_index = 0
+                        wait_seconds = max(
+                            0.0,
+                            float(GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS),
+                        )
+                        print(
+                            "TRADING_RADAR_RETRY_SECOND_PASS_START | "
+                            f"Modelle={','.join(radar_second_pass_models)} | "
+                            f"Backoff={wait_seconds:.0f}s | "
+                            "maximal ein zweiter Versuch je Modell"
+                        )
+                        if wait_seconds > 0:
+                            time.sleep(wait_seconds)
+                        modell = radar_second_pass_models[0]
+                        continue
+                raise
         _gemini_radar_response_diagnose(response, "Trading-Radar-Eigenlauf")
         radar_text = str(getattr(response, "text", response) or "").strip()
         required = (
