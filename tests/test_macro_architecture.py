@@ -676,3 +676,239 @@ def test_trade_story_name_lookup_is_deferred_and_cached():
     source=(ROOT/"analyse.py").read_text(encoding="utf-8")
     _assert("@lru_cache(maxsize=2048)" in source,"Name lookup cache missing")
     _assert("firma_name = _hole_firma_name(ticker) if collect_hebeltrader else ticker" in source,"Name lookup still unconditional")
+
+
+def test_us10y_retries_only_transient_http_failures(monkeypatch):
+    class Response:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.text = "ok"
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise m.requests.HTTPError(f"HTTP {self.status_code}", response=self)
+
+    calls = []
+    sleeps = []
+    responses = [Response(503), Response(200)]
+    def fake_get(*args, **kwargs):
+        calls.append((args, kwargs))
+        return responses.pop(0)
+    monkeypatch.setattr(m.requests, "get", fake_get)
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: sleeps.append(seconds))
+    result = m._us10y_http_get("https://fred.example/DGS10", timeout=1)
+    _assert(result.status_code == 200, "US10Y 503 retry did not recover")
+    _assert(len(calls) == 2 and sleeps == [1.0], "US10Y retry count/backoff is not bounded")
+
+
+def test_us10y_does_not_retry_rate_limit_or_permission_errors(monkeypatch):
+    class Response:
+        status_code = 429
+        def raise_for_status(self):
+            raise m.requests.HTTPError("HTTP 429", response=self)
+    calls = []
+    monkeypatch.setattr(m.requests, "get", lambda *a, **k: calls.append(1) or Response())
+    try:
+        m._us10y_http_get("https://fred.example/DGS10", timeout=1)
+    except m.requests.HTTPError:
+        pass
+    else:
+        raise AssertionError("HTTP 429 must remain terminal for the same source")
+    _assert(len(calls) == 1, "HTTP 429 was retried")
+
+
+def test_us10y_validation_rejects_future_stale_and_implausible_observations():
+    import pandas as pd
+    today = dt.datetime.now(dt.timezone.utc).date()
+    valid = pd.DataFrame({"DATE": [today.isoformat()], "DGS10": [4.25]})
+    _assert(m._us10y_frame_validieren(valid).iloc[-1]["DGS10"] == 4.25, "valid DGS10 rejected")
+    for bad in (
+        pd.DataFrame({"DATE": [(today + dt.timedelta(days=1)).isoformat()], "DGS10": [4.25]}),
+        pd.DataFrame({"DATE": [(today - dt.timedelta(days=9)).isoformat()], "DGS10": [4.25]}),
+        pd.DataFrame({"DATE": [today.isoformat()], "DGS10": [30.0]}),
+    ):
+        try:
+            m._us10y_frame_validieren(bad)
+        except ValueError:
+            continue
+        raise AssertionError("future/stale/implausible DGS10 observation was accepted")
+
+
+def test_dgs10_has_no_undated_h15_html_fallback(monkeypatch):
+    import pandas as pd
+    monkeypatch.setattr(m, "_treasury_series", lambda _series: (pd.DataFrame(), None))
+    def forbidden(_series):
+        raise AssertionError("H.15 HTML fallback must not be used for DGS10")
+    monkeypatch.setattr(m, "_h15_series", forbidden)
+    df, source = m._alternate_series("DGS10")
+    _assert(df.empty and source is None, "DGS10 must fail closed without dated official observations")
+
+
+def test_dgs10_cache_status_preserves_original_retrieval_time(monkeypatch):
+    entry = {"saved_at": 123.0, "retrieved_at": "2026-11-25T12:00:00+00:00", "payload": "x", "status": "REAL"}
+    cache = {"fred": {"DGS10": entry}}
+    saved = {}
+    monkeypatch.setattr(m, "_cache_load", lambda: cache)
+    monkeypatch.setattr(m, "_cache_save", lambda value: saved.update(value))
+    m._mark_series_cache_status("DGS10", "REAL_CACHED")
+    _assert(saved["fred"]["DGS10"]["status"] == "REAL_CACHED", "cache fallback status not persisted")
+    _assert(saved["fred"]["DGS10"]["saved_at"] == 123.0, "cache retrieval timestamp was refreshed")
+
+
+def test_dgs10_cache_accepts_only_fred_or_treasury_source_provenance():
+    common = {"saved_at": 123.0, "payload": "x"}
+    fred = {**common, "source": "https://api.stlouisfed.org/fred/series/observations"}
+    treasury = {**common, "source": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve"}
+    legacy_h15 = {**common, "source": "https://www.federalreserve.gov/releases/h15/current/"}
+    _assert(m._us10y_cache_provenance_valid(fred), "canonical FRED DGS10 cache rejected")
+    _assert(m._us10y_cache_provenance_valid(treasury), "canonical Treasury.gov cache rejected")
+    _assert(not m._us10y_cache_provenance_valid(legacy_h15), "legacy H.15 cache must not feed DGS10")
+
+
+def test_dgs10_snapshot_exposes_series_retrieval_and_cache_status(monkeypatch):
+    import pandas as pd
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    df = pd.DataFrame({"DATE": [pd.Timestamp(today)], "DGS10": [4.25]})
+    entry = {
+        "source": "https://api.stlouisfed.org/fred/series/observations",
+        "status": "REAL_CACHED",
+        "saved_at": 123.0,
+        "retrieved_at": "2026-11-25T12:00:00+00:00",
+    }
+    monkeypatch.setattr(m, "fred_series", lambda _series: df)
+    monkeypatch.setattr(m, "_cache_load", lambda: {"fred": {"DGS10": entry}})
+    line = m.fred_snapshot("US 10Y Treasury", "DGS10")
+    _assert("STATUS=REAL_CACHED" in line, "cached US10Y not marked as cached")
+    _assert("SERIES_ID=DGS10" in line and "INSTRUMENT=US10Y_NOMINAL" in line, "US10Y series identity missing")
+    _assert("RETRIEVED_AT=2026-11-25T12:00:00+00:00" in line, "US10Y retrieval time missing")
+    _assert("UNIT=%" in line and "DELAY_DAYS=0" in line, "US10Y unit/delay provenance missing")
+
+
+def test_us10y_retries_connection_errors_but_stops_after_three_attempts(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def failing_get(*args, **kwargs):
+        calls.append(1)
+        raise m.requests.exceptions.ConnectionError("temporary network failure")
+
+    monkeypatch.setattr(m.requests, "get", failing_get)
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: sleeps.append(seconds))
+    try:
+        m._us10y_http_get("https://api.stlouisfed.org/fred/series/observations", timeout=1)
+    except m.requests.exceptions.ConnectionError:
+        pass
+    else:
+        raise AssertionError("persistent network failure must remain visible")
+    _assert(len(calls) == 3, "network retry exceeded or missed the configured attempt bound")
+    _assert(sleeps == [1.0, 2.0], "network retry backoff sequence changed")
+
+
+def test_us10y_cache_provenance_rejects_future_timestamps_and_url_spoofing():
+    now = 1_800_000_000.0
+    base = {"saved_at": now - 10, "source": "https://api.stlouisfed.org/fred/series/observations"}
+    _assert(m._us10y_cache_provenance_valid(base, now_timestamp=now), "valid FRED cache rejected")
+    invalid = [
+        {**base, "saved_at": now + 600},
+        {**base, "source": "https://api.stlouisfed.org.evil.example/fred/series/observations"},
+        {**base, "source": "https://user@api.stlouisfed.org/fred/series/observations"},
+        {**base, "source": "http://api.stlouisfed.org/fred/series/observations"},
+        {**base, "source": "https://api.stlouisfed.org/fred/series/observations/other"},
+        {**base, "source": "https://api.stlouisfed.org/fred/series/observations?series_id=DGS2"},
+        {**base, "source": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_real_yield_curve"},
+        {**base, "saved_at": True},
+        {**base, "series_id": "DGS2"},
+        {**base, "instrument": "US10Y_REAL"},
+        {**base, "unit": "basis points"},
+        {**base, "retrieved_at": "not-a-timestamp"},
+    ]
+    for entry in invalid:
+        _assert(
+            not m._us10y_cache_provenance_valid(entry, now_timestamp=now),
+            f"invalid DGS10 cache provenance accepted: {entry}",
+        )
+
+
+def test_us10y_treasury_gov_fallback_preserves_real_observation_date(monkeypatch):
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+
+    class Response:
+        status_code = 200
+        text = f"Date,10 Yr\n{today},4.25\n"
+        def raise_for_status(self):
+            return None
+
+    requested = []
+    def fake_get(url, **kwargs):
+        requested.append(url)
+        return Response()
+
+    monkeypatch.setattr(m.requests, "get", fake_get)
+    frame, source = m._treasury_series("DGS10")
+    _assert(not frame.empty, "official Treasury.gov DGS10 fallback failed")
+    _assert(frame.iloc[-1]["DATE"].date().isoformat() == today, "Treasury observation date changed")
+    _assert(frame.iloc[-1]["DGS10"] == 4.25, "Treasury nominal yield value changed")
+    _assert(source in requested and "home.treasury.gov" in source, "Treasury.gov source URL not retained")
+
+
+def test_us10y_cache_fallback_requires_matching_payload_date_and_marks_cached(monkeypatch):
+    import pandas as pd
+
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    frame = pd.DataFrame({"DATE": [pd.Timestamp(today)], "DGS10": [4.25]})
+    saved_at = m.time.time() - 5
+    retrieved_at = dt.datetime.fromtimestamp(saved_at, tz=dt.timezone.utc).isoformat(timespec="seconds")
+    entry = {
+        "saved_at": saved_at,
+        "retrieved_at": retrieved_at,
+        "data_date": today,
+        "payload": frame.to_json(orient="split", date_format="iso"),
+        "status": "REAL",
+        "source": "https://api.stlouisfed.org/fred/series/observations",
+        "series_id": "DGS10",
+        "instrument": "US10Y_NOMINAL",
+        "unit": "%",
+    }
+    cache = {"version": m.CACHE_VERSION, "fred": {"DGS10": entry}}
+    saved = []
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.setattr(m, "_cache_load", lambda: cache)
+    monkeypatch.setattr(m, "_cache_save", lambda value: saved.append(value))
+    monkeypatch.setattr(m, "_alternate_series", lambda _series: (pd.DataFrame(), None))
+
+    result = m.fred_series("DGS10")
+    _assert(not result.empty and result.iloc[-1]["DGS10"] == 4.25, "valid DGS10 cache fallback not returned")
+    _assert(cache["fred"]["DGS10"]["status"] == "REAL_CACHED", "cache fallback status not persisted")
+    _assert(cache["fred"]["DGS10"]["saved_at"] == saved_at, "cache fallback refreshed retrieval time")
+    _assert(cache["fred"]["DGS10"]["retrieved_at"] == retrieved_at, "cache fallback rewrote retrieval time")
+    _assert(saved, "cache status change was not persisted")
+
+    cache["fred"]["DGS10"]["data_date"] = "2020-01-01"
+    result_mismatch = m.fred_series("DGS10")
+    _assert(result_mismatch.empty, "cache with data_date/payload mismatch was accepted")
+
+
+def test_us10y_cache_write_rejects_untrusted_source_and_records_instrument_metadata(monkeypatch):
+    import pandas as pd
+
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    frame = pd.DataFrame({"DATE": [pd.Timestamp(today)], "DGS10": [4.25]})
+    cache = {"version": m.CACHE_VERSION, "fred": {}}
+    monkeypatch.setattr(m, "_cache_load", lambda: cache)
+    monkeypatch.setattr(m, "_cache_save", lambda value: None)
+    try:
+        m._save_series_cache("DGS10", frame, "https://evil.example/dgs10", "REAL")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("untrusted DGS10 cache source was persisted")
+
+    m._save_series_cache(
+        "DGS10", frame,
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve",
+        "REAL",
+    )
+    entry = cache["fred"]["DGS10"]
+    _assert(entry["series_id"] == "DGS10", "DGS10 series identity missing in cache")
+    _assert(entry["instrument"] == "US10Y_NOMINAL", "DGS10 instrument identity missing in cache")
+    _assert(entry["unit"] == "%", "DGS10 unit missing in cache")
+    _assert(bool(entry.get("retrieved_at")), "DGS10 cache retrieval timestamp missing")

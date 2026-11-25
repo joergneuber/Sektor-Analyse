@@ -473,6 +473,16 @@ def test_v3_extracts_json_fence_with_marker_as_first_content_line():
     assert parsed == expected
 
 
+def test_v3_extracts_json_fence_with_marker_suffix_on_opening_line():
+    from trading_radar_neuauswertung import extract_thesis_json
+    report, expected = _run1269_unmarked_thesis_report()
+    marker_json = report.replace(
+        "```json\n" + json.dumps(expected, ensure_ascii=False, indent=2),
+        "```json TRADING_RADAR_THESEN_JSON\n" + json.dumps(expected, ensure_ascii=False, indent=2),
+    )
+    assert extract_thesis_json(marker_json) == expected
+
+
 def test_v3_rejects_readable_thesis_missing_from_structured_json():
     from trading_radar_neuauswertung import validate_thesis_ids_match_report
     report, payload = _run1269_unmarked_thesis_report()

@@ -392,3 +392,19 @@ US-10J-Rendite (^TNX): 5,05% (Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-2
     assert "Uhrzeit: 13:25" in normalized
     assert "Zeitzone: UTC" in normalized
     assert "Federal Reserve official calendar" in normalized
+
+
+def test_m07_complete_paired_conflict_row_satisfies_each_distinct_value_provenance():
+    from trading_radar_report_gate import _validate_m05_m10
+
+    report = """1. Trading-Radar
+2. Thesen-Update
+3. Ereignisradar
+4. Assetklassenvergleich
+5. Zinsen/Renditen
+- GETRENNT DOKUMENTIERTE US-10Y-BEOBACHTUNGEN: Makro-Wert: 4.9200% (Makro-Provenienz: Quelle=FRED DGS10; Abrufzeit=2026-11-25T16:00:00+00:00; Datenstichtag=2026-11-24; Einheit=%; Verzögerung=1 Kalendertage) | Live-Wert: 4.9040% (Live-Provenienz: Quelle=Yahoo Finance ^TNX; Abrufzeit=2026-11-25T16:01:00+00:00; Datenstichtag=2026-11-24; Einheit=%; Verzögerung=Schlusskurs)
+- Einschätzung: Gegenwind. Anhaltend hohe Zinsen (US 10Y 4.92% (Quelle: NICHT VERFÜGBAR; Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: NICHT VERFÜGBAR; Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR))
+"""
+    errors = []
+    _validate_m05_m10(report, errors)
+    assert not any("Jede abweichende US-10Y-Beobachtung" in error for error in errors)

@@ -110,6 +110,7 @@ esac
     shutil.copy2(ROOT / "ohlcv_ticker.py", tmp_path / "ohlcv_ticker.py")
     (tmp_path / "scripts").mkdir()
     shutil.copy2(ROOT / "scripts" / "get_gh_release_assets.sh", tmp_path / "scripts" / "get_gh_release_assets.sh")
+    shutil.copy2(ROOT / "scripts" / "cleanup_ohlcv_release_assets.sh", tmp_path / "scripts" / "cleanup_ohlcv_release_assets.sh")
     for name, source in remote_assets.items():
         (remote / name).write_bytes(source.read_bytes())
     assets_with_digests = []
@@ -425,7 +426,7 @@ def test_restore_bootstrap_requires_explicit_switch(tmp_path):
     assert "Erstaufbau ist gesperrt" in result.stdout
 
 
-def _run_archive(tmp_path: Path, *, fail_upload="0", seed_previous=False, seed_legacy=False, seed_count=0, seed_corrupt=False, bad_digest=False, missing_digest=False, fail_api=False, malformed_api=False, release_missing=False, fail_create=False, corrupt_db=False):
+def _run_archive(tmp_path: Path, *, fail_upload="0", fail_upload_http500_no_persist="0", fail_upload_after_persist="0", seed_previous=False, seed_legacy=False, seed_count=0, seed_corrupt=False, bad_digest=False, missing_digest=False, fail_api=False, malformed_api=False, release_missing=False, fail_create=False, corrupt_db=False):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     remote = tmp_path / "remote"
@@ -434,6 +435,7 @@ def _run_archive(tmp_path: Path, *, fail_upload="0", seed_previous=False, seed_l
     shutil.copy2(ROOT / "ohlcv_ticker.py", tmp_path / "ohlcv_ticker.py")
     (tmp_path / "scripts").mkdir()
     shutil.copy2(ROOT / "scripts" / "get_gh_release_assets.sh", tmp_path / "scripts" / "get_gh_release_assets.sh")
+    shutil.copy2(ROOT / "scripts" / "cleanup_ohlcv_release_assets.sh", tmp_path / "scripts" / "cleanup_ohlcv_release_assets.sh")
     gh = bin_dir / "gh"
     gh.write_text(r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -469,9 +471,18 @@ case "$command" in
   "release view") [[ "$TEST_RELEASE_MISSING" != "1" ]] ;;
   "release create") [[ "$TEST_FAIL_CREATE" != "1" ]] ;;
   "release upload")
+    echo upload >> "$TEST_UPLOAD_LOG"
+    if [[ "$TEST_FAIL_UPLOAD_HTTP500_NO_PERSIST" == "1" ]]; then
+      echo "HTTP 500 Internal Server Error before persistence" >&2
+      exit 21
+    fi
     [[ "$TEST_FAIL_UPLOAD" != "1" ]] || exit 21
     shift
     cp "$1" "$TEST_REMOTE_DIR/$(basename "$1")"
+    if [[ "$TEST_FAIL_UPLOAD_AFTER_PERSIST" == "1" ]]; then
+      echo "HTTP 500 Internal Server Error after server-side persistence" >&2
+      exit 21
+    fi
     ;;
   "release download")
     pattern=""
@@ -523,6 +534,9 @@ esac
         "GITHUB_RUN_ATTEMPT": "1",
         "TEST_REMOTE_DIR": str(remote),
         "TEST_FAIL_UPLOAD": fail_upload,
+        "TEST_FAIL_UPLOAD_HTTP500_NO_PERSIST": fail_upload_http500_no_persist,
+        "TEST_FAIL_UPLOAD_AFTER_PERSIST": fail_upload_after_persist,
+        "TEST_UPLOAD_LOG": str(tmp_path / "upload_calls.log"),
         "TEST_BAD_DIGEST": "1" if bad_digest else "0",
         "TEST_MISSING_DIGEST": "1" if missing_digest else "0",
         "TEST_FAIL_API": "1" if fail_api else "0",
@@ -601,16 +615,44 @@ def test_cleanup_keeps_two_valid_bundles_and_does_not_count_corrupt_newer_asset(
     assert all("corrupt" not in item.name for item in bundles)
 
 
-def test_release_api_failure_aborts_after_upload_without_pruning(tmp_path):
+def test_release_api_failure_aborts_before_upload_without_pruning(tmp_path):
     result, remote = _run_archive(tmp_path, seed_previous=True, fail_api=True)
     assert result.returncode != 0
-    assert len(list(remote.glob("historical_ohlcv_bundle_*.zip"))) == 2
+    bundles = list(remote.glob("historical_ohlcv_bundle_*.zip"))
+    assert len(bundles) == 1
+    assert bundles[0].name == "historical_ohlcv_bundle_previous_1.zip"
+    assert not (tmp_path / "upload_calls.log").exists()
 
 
-def test_malformed_release_api_json_aborts_without_pruning(tmp_path):
+def test_malformed_release_api_json_aborts_before_upload_without_pruning(tmp_path):
     result, remote = _run_archive(tmp_path, seed_previous=True, malformed_api=True)
     assert result.returncode != 0
+    bundles = list(remote.glob("historical_ohlcv_bundle_*.zip"))
+    assert len(bundles) == 1
+    assert bundles[0].name == "historical_ohlcv_bundle_previous_1.zip"
+    assert not (tmp_path / "upload_calls.log").exists()
+
+
+def test_ambiguous_upload_http_500_without_persistence_fails_without_reupload_or_pruning(tmp_path):
+    result, remote = _run_archive(
+        tmp_path, fail_upload_http500_no_persist="1", seed_previous=True,
+    )
+    assert result.returncode != 0
+    assert len((tmp_path / "upload_calls.log").read_text(encoding="utf-8").splitlines()) == 1
+    bundles = list(remote.glob("historical_ohlcv_bundle_*.zip"))
+    assert len(bundles) == 1
+    assert bundles[0].name == "historical_ohlcv_bundle_previous_1.zip"
+    assert "OHLCV-Bundle konnte nicht remote verifiziert werden" in result.stderr or "OHLCV-Bundle konnte nicht remote verifiziert werden" in result.stdout
+
+
+def test_ambiguous_upload_http_500_is_verified_without_a_second_upload(tmp_path):
+    result, remote = _run_archive(
+        tmp_path, fail_upload_after_persist="1", seed_previous=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert len((tmp_path / "upload_calls.log").read_text(encoding="utf-8").splitlines()) == 1
     assert len(list(remote.glob("historical_ohlcv_bundle_*.zip"))) == 2
+    assert "OHLCV_RELEASE_UPLOAD=VERIFIED_AFTER_ERROR" in result.stdout
 
 
 def test_release_creation_failure_blocks_archive_upload(tmp_path):
@@ -640,7 +682,8 @@ def test_release_step_runs_full_integrity_check_and_reports_persistence_failure_
     assert "zwei inhaltlich und remote verifizierte Bundles" in section
     assert "PRAGMA integrity_check" in (ROOT / "ohlcv_release_bundle.py").read_text(encoding="utf-8")
     assert 'gh release upload historical-ohlcv "$bundle_name" --clobber' not in section
-    assert "gh release delete-asset" in section
+    assert "bash scripts/cleanup_ohlcv_release_assets.sh" in section
+    assert "gh release delete-asset" not in section
     assert 'bash scripts/get_gh_release_assets.sh "$GITHUB_REPOSITORY" historical-ohlcv' in section
     assert "MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024 - 1))" in section
     assert "bundle_size=\"$(stat -c '%s' \"$bundle_name\")\"" in section

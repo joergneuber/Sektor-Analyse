@@ -869,5 +869,300 @@ class TradingRadarFailureContractTests(unittest.TestCase):
         )
 
 
+    def test_thesis_register_retry_switches_model_after_transient_503(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+        radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 1
+        radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+        radar.time.sleep = lambda *_: None
+        token_models = []
+        send_models = []
+
+        def token_count(_client, model, *_args, **_kwargs):
+            token_models.append(model)
+            return 12
+
+        def generate(_client, model, *_args, **_kwargs):
+            send_models.append(model)
+            if model == "model-a":
+                raise RuntimeError("503 UNAVAILABLE: high demand")
+            return types.SimpleNamespace(text='{"ok": true}')
+
+        radar._gemini_tokenzahl = token_count
+        radar._gemini_generate_content_quota_safe = generate
+        response, used_model = radar._gemini_thesenregister_struktur_retry_aufruf(
+            object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+        )
+        self.assertEqual(send_models, ["model-a", "model-b"])
+        self.assertEqual(token_models, ["model-a", "model-b"])
+        self.assertEqual(used_model, "model-b")
+        self.assertEqual(response.text, '{"ok": true}')
+
+    def test_thesis_register_retry_reports_actual_quota_fallback_model(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+        radar._gemini_last_request_model = "model-a"
+        send_candidates = []
+
+        def token_count(_client, model, *_args, **_kwargs):
+            return 12
+
+        def quota_safe(_client, preferred_model, *_args, **_kwargs):
+            send_candidates.append(preferred_model)
+            # Simuliert den internen Modellwechsel in der produktiven
+            # quota-sicheren Sendefunktion (z.B. wegen lokalem/Server-Quota).
+            radar._gemini_last_request_model = "model-b"
+            return types.SimpleNamespace(text="response-from-model-b")
+
+        radar._gemini_tokenzahl = token_count
+        radar._gemini_generate_content_quota_safe = quota_safe
+        response, used_model = radar._gemini_thesenregister_struktur_retry_aufruf(
+            object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+        )
+        self.assertEqual(send_candidates, ["model-a"])
+        self.assertEqual(response.text, "response-from-model-b")
+        self.assertEqual(used_model, "model-b")
+        self.assertEqual(radar._gemini_last_request_model, "model-b")
+
+    def test_thesis_register_production_path_snapshots_hash_before_update_and_passes_it_to_evidence(self):
+        import ast
+
+        source = RADAR.read_text(encoding="utf-8-sig")
+        tree = ast.parse(source)
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "speichere_ergebnis"
+        )
+        digest_calls = [
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_trading_radar_thesenregister_digest"
+        ]
+        update_calls = [
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "update_register"
+        ]
+        evidence_calls = [
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_trading_radar_thesenregister_unveraendert_evidenz"
+        ]
+        self.assertTrue(update_calls, "produktiver Register-Update-Aufruf fehlt")
+        self.assertTrue(digest_calls, "Vorher-SHA-Snapshot fehlt")
+        self.assertTrue(evidence_calls, "Fehlernachweis-Aufruf fehlt")
+        self.assertTrue(
+            any(call.lineno < update_calls[0].lineno for call in digest_calls),
+            "Vorher-SHA muss vor update_register berechnet werden",
+        )
+        for call in evidence_calls:
+            self.assertIn(
+                "before_digest",
+                {kw.arg for kw in call.keywords},
+                "jeder Fehlernachweis muss den zuvor gesicherten SHA erhalten",
+            )
+
+    def test_thesis_register_failure_evidence_uses_pre_update_hash(self):
+        import hashlib
+
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            register = Path(temp_dir) / ".trading_radar_thesen.json"
+            before_bytes = b'{"theses":[{"thesis_id":"T-1","version":1}]}'
+            after_bytes = b'{"theses":[{"thesis_id":"T-1","version":2}]}'
+            register.write_bytes(before_bytes)
+            before_digest = hashlib.sha256(before_bytes).hexdigest()
+
+            # Simuliert einen Update-Aufruf, der den Registerbestand teilweise
+            # persistiert und danach mit einem Fehler abbricht.
+            register.write_bytes(after_bytes)
+            evidence = radar._trading_radar_thesenregister_unveraendert_evidenz(
+                register, "simulierter Fehler nach Teilpersistenz",
+                before_digest=before_digest,
+            )
+            joined = "\\n".join(evidence)
+            self.assertIn("THESENREGISTER-VERGLEICH: CHANGED_DURING_FAILED_UPDATE", joined)
+            self.assertIn(f"VORHER-SHA256: {before_digest}", joined)
+            self.assertIn(
+                f"NACHHER-SHA256: {hashlib.sha256(after_bytes).hexdigest()}",
+                joined,
+            )
+            self.assertNotIn("THESENREGISTER-VERGLEICH: NOT_UPDATED", joined)
+
+    def test_thesis_register_failure_evidence_marks_identical_hash_as_not_updated(self):
+        import hashlib
+
+        radar = load_radar_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            register = Path(temp_dir) / ".trading_radar_thesen.json"
+            register.write_bytes(b'{"theses":[]}')
+            before_digest = hashlib.sha256(register.read_bytes()).hexdigest()
+            evidence = radar._trading_radar_thesenregister_unveraendert_evidenz(
+                register, "Update abgelehnt", before_digest=before_digest,
+            )
+            joined = "\\n".join(evidence)
+            self.assertIn("THESENREGISTER-VERGLEICH: NOT_UPDATED", joined)
+            self.assertEqual(
+                [line for line in evidence if line.startswith("VORHER-SHA256:")][0],
+                [line for line in evidence if line.startswith("NACHHER-SHA256:")][0].replace(
+                    "NACHHER-SHA256", "VORHER-SHA256"
+                ),
+            )
+
+    def test_thesis_register_retry_skips_counttokens_404_without_sending(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+        token_models = []
+        send_models = []
+
+        def token_count(_client, model, *_args, **_kwargs):
+            token_models.append(model)
+            if model == "model-a":
+                raise RuntimeError(
+                    "404 NOT_FOUND: models/model-a is not found for API version v1 "
+                    "or is not supported for countTokens"
+                )
+            return 12
+
+        radar._gemini_tokenzahl = token_count
+        radar._gemini_generate_content_quota_safe = (
+            lambda _client, model, *_args, **_kwargs: (
+                send_models.append(model) or types.SimpleNamespace(text="valid")
+            )
+        )
+        response, used_model = radar._gemini_thesenregister_struktur_retry_aufruf(
+            object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+        )
+        self.assertEqual(token_models, ["model-a", "model-b"])
+        self.assertEqual(send_models, ["model-b"])
+        self.assertEqual((response.text, used_model), ("valid", "model-b"))
+
+    def test_thesis_register_retry_skips_rpm_quota_but_does_not_retry_it(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+        send_models = []
+
+        def generate(_client, model, *_args, **_kwargs):
+            send_models.append(model)
+            if model == "model-a":
+                raise RuntimeError(
+                    "429 RESOURCE_EXHAUSTED: requests per minute quota exceeded"
+                )
+            return types.SimpleNamespace(text="valid")
+
+        radar._gemini_tokenzahl = lambda *_a, **_k: 12
+        radar._gemini_generate_content_quota_safe = generate
+        response, used_model = radar._gemini_thesenregister_struktur_retry_aufruf(
+            object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+        )
+        self.assertEqual(send_models, ["model-a", "model-b"])
+        self.assertEqual((response.text, used_model), ("valid", "model-b"))
+
+    def test_thesis_register_retry_does_not_switch_after_hard_error(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+        send_models = []
+
+        def generate(_client, model, *_args, **_kwargs):
+            send_models.append(model)
+            raise RuntimeError("403 PERMISSION_DENIED: API key not valid")
+
+        radar._gemini_tokenzahl = lambda *_a, **_k: 12
+        radar._gemini_generate_content_quota_safe = generate
+        with self.assertRaisesRegex(RuntimeError, "403 PERMISSION_DENIED"):
+            radar._gemini_thesenregister_struktur_retry_aufruf(
+                object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+            )
+        self.assertEqual(send_models, ["model-a"])
+
+    def test_thesis_register_retry_second_pass_retries_only_transient_models_once(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b", "model-c")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 3
+        radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+        radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+        radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+        radar.time.sleep = lambda *_: None
+        send_models = []
+
+        def generate(_client, model, *_args, **_kwargs):
+            send_models.append(model)
+            if model in ("model-a", "model-b") and send_models.count(model) == 1:
+                raise RuntimeError("503 UNAVAILABLE: high demand")
+            if model == "model-c":
+                raise RuntimeError("503 UNAVAILABLE: transient third model")
+            return types.SimpleNamespace(text="valid")
+
+        radar._gemini_tokenzahl = lambda *_a, **_k: 12
+        radar._gemini_generate_content_quota_safe = generate
+        response, used_model = radar._gemini_thesenregister_struktur_retry_aufruf(
+            object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+        )
+        self.assertEqual(send_models, ["model-a", "model-b", "model-c", "model-a"])
+        self.assertEqual((response.text, used_model), ("valid", "model-a"))
+
+
+    def test_thesis_register_retry_second_pass_continues_after_repeated_503_on_first_model(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b", "model-c")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 3
+        radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+        radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+        radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+        radar.time.sleep = lambda *_: None
+        send_models = []
+
+        def generate(_client, model, *_args, **_kwargs):
+            send_models.append(model)
+            if model in ("model-a", "model-b") and send_models.count(model) == 1:
+                raise RuntimeError("503 UNAVAILABLE: first pool pass")
+            if model == "model-a" and send_models.count(model) == 2:
+                raise RuntimeError("503 UNAVAILABLE: second pool pass still unavailable")
+            if model == "model-c":
+                raise RuntimeError("503 UNAVAILABLE: third model not eligible for second pass")
+            return types.SimpleNamespace(text="valid-from-model-b")
+
+        radar._gemini_tokenzahl = lambda *_a, **_k: 12
+        radar._gemini_generate_content_quota_safe = generate
+        response, used_model = radar._gemini_thesenregister_struktur_retry_aufruf(
+            object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+        )
+        self.assertEqual(
+            send_models, ["model-a", "model-b", "model-c", "model-a", "model-b"]
+        )
+        self.assertEqual((response.text, used_model), ("valid-from-model-b", "model-b"))
+
+
+    def test_thesis_register_retry_does_not_restart_after_inner_pool_is_terminal(self):
+        radar = load_radar_module()
+        radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+        radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+        send_models = []
+
+        def generate(_client, model, *_args, **_kwargs):
+            send_models.append(model)
+            raise RuntimeError(
+                "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL: all configured models "
+                "were already unavailable for this exact request"
+            )
+
+        radar._gemini_tokenzahl = lambda *_a, **_k: 12
+        radar._gemini_generate_content_quota_safe = generate
+        with self.assertRaisesRegex(RuntimeError, "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL"):
+            radar._gemini_thesenregister_struktur_retry_aufruf(
+                object(), ["prompt"], "model-a", "thesis-retry", "logical-thesis-retry"
+            )
+        self.assertEqual(send_models, ["model-a"])
+
+
 if __name__ == "__main__":
     unittest.main()

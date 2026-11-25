@@ -438,6 +438,18 @@ def test_replaced_thesis_cannot_point_to_inactive_successor(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_new_thesis_identity_must_start_neu_version_one_when_register_exists(tmp_path):
+    path = tmp_path / "register.json"
+    update_register(report(payload("BESTÄTIGT")), str(path))
+    before = path.read_bytes()
+    candidate = payload("ABGESCHWÄCHT")
+    candidate["theses"][0]["thesis_id"] = "new-unmapped-identity"
+    candidate["theses"][0]["version"] = 2
+    with pytest.raises(ValueError, match="Neue These new-unmapped-identity.*Status NEU und Version 1"):
+        update_register(report(candidate), str(path))
+    assert path.read_bytes() == before
+
+
 def test_existing_thesis_cannot_be_reclassified_as_new(tmp_path):
     path = tmp_path / "register.json"
     update_register(report(payload("BESTÄTIGT")), str(path))
@@ -661,3 +673,16 @@ def test_thesis_id_match_requires_explicit_label_for_hyphenated_compact_ids():
 
     findings = validate_thesis_ids_match_report(report_text, payload_data)
     assert findings and "keine eindeutigen These-IDs" in findings[0]
+
+
+def test_extract_thesis_payload_accepts_json_fence_with_canonical_marker_suffix():
+    data = payload()
+    text = (
+        "1. Trading-Radar\n"
+        "2. Thesen-Update\n"
+        "```json TRADING_RADAR_THESEN_JSON\n"
+        + json.dumps(data, ensure_ascii=False)
+        + "\n```\n"
+        "3. Ereignisradar\n"
+    )
+    assert extract_thesis_payload(text) == data

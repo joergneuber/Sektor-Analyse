@@ -2370,3 +2370,162 @@ def test_pipe_delimited_event_header_does_not_claim_live_verification_without_fe
     assert "Zeitzone: Europe/Berlin" in normalized
     assert "LIVE_VERIFIZIERT" not in normalized
     assert any("Ereignis ohne verifizierte Quelle" in item for item in findings)
+
+
+def test_us_prefixed_forexfactory_events_bind_live_values_and_payload_provenance():
+    from trading_radar_market_first import normalize_event_section
+
+    class FFResponse:
+        status_code = 200
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+
+        def __init__(self):
+            self.text = json.dumps([
+                {
+                    "id": "eur-decoy",
+                    "country": "EUR",
+                    "date": "2026-11-25T08:30:00-05:00",
+                    "title": "Prelim GDP q/q",
+                    "previous": "9.9%",
+                    "forecast": "9.9%",
+                },
+                {
+                    "id": "usd-gdp",
+                    "country": "USD",
+                    "date": "2026-11-25T08:30:00-05:00",
+                    "title": "Prelim GDP q/q",
+                    "period": "Q3 2026",
+                    "previous": "3.4%",
+                    "forecast": "3.5%",
+                    "actual": "4.3%",
+                },
+            ])
+
+        def json(self):
+            return json.loads(self.text)
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: US Prelim GDP q/q (Q3 2026)\n"
+        "- Datum: 2026-11-25\n"
+        "- Ereignis-Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Zeitzone: NICHT VERFÜGBAR\n"
+        "- Kennzahl: US Bruttoinlandsprodukt\n"
+        "- Berichtszeitraum: HEUTE (2026-11-25)\n"
+        "- Letzter Wert: 1.5% (Q2 2026)\n"
+        "- Konsens: NICHT VERFÜGBAR\n"
+        "- Quelle: ForexFactory LIVE\n"
+        "- Istwert: NICHT VERFÜGBAR\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, forexfactory_requester=lambda *_a, **_k: FFResponse()
+    )
+
+    assert findings == []
+    assert "Uhrzeit: 08:30" in normalized
+    assert "Zeitzone: UTC-05:00" in normalized
+    assert "Berichtszeitraum: Q3 2026" in normalized
+    assert "Letzter Wert: 3.4%" in normalized
+    assert "Konsens: 3.5%" in normalized
+    assert "Istwert: 4.3%" in normalized
+    assert "Wert-Provenienz: ForexFactory JSON" in normalized
+    assert "Payload-SHA256=" in normalized
+    assert "ForexFactory LIVE adapter" in normalized
+
+
+def test_ecb_non_monetary_council_meeting_is_verified_without_inventing_a_clock():
+    from trading_radar_market_first import normalize_event_section
+
+    class ECBResponse:
+        status_code = 200
+        url = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
+        text = (
+            "<html><body><div>25/11/2026</div>"
+            "<div>Governing Council of the ECB: non-monetary policy meeting (in Frankfurt)</div>"
+            "</body></html>"
+        )
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: EZB-Rat Nicht-geldpolitische Sitzung\n"
+        "- Datum: 2026-11-25\n"
+        "- Ereignis-Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Zeitzone: UTC / MEZ\n"
+        "- Kennzahl: Nicht-geldpolitische Sitzung des EZB-Rats\n"
+        "- Berichtszeitraum: HEUTE (2026-11-25)\n"
+        "- Letzter Wert: NICHT VERFÜGBAR\n"
+        "- Konsens: NICHT VERFÜGBAR\n"
+        "- Quelle: ECB official calendar\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, ecb_requester=lambda *_a, **_k: ECBResponse()
+    )
+
+    assert findings == []
+    assert "ECB official calendar (https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html)" in normalized
+    assert "Zeitzone: Europe/Berlin" in normalized
+    assert "Berichtszeitraum: NICHT VERFÜGBAR (Sitzungstermin; kein statistischer Berichtszeitraum)" in normalized
+    assert "Uhrzeit: NICHT VERFÜGBAR" in normalized
+    assert "LIVE_VERIFIZIERT" in normalized
+    assert "Payload-SHA256=" in normalized
+
+
+def test_ecb_event_is_not_verified_when_date_and_event_are_not_in_same_calendar_context():
+    from trading_radar_market_first import _verify_ecb_governing_council_event
+
+    class ECBResponse:
+        status_code = 200
+        url = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
+        text = (
+            "<html><body><div>25/11/2026</div><div>Other meeting</div>"
+            "<div>26/11/2026</div>"
+            "<div>Governing Council of the ECB: non-monetary policy meeting (in Frankfurt)</div>"
+            "</body></html>"
+        )
+
+    evidence, detail = _verify_ecb_governing_council_event(
+        "EZB-Rat Nicht-geldpolitische Sitzung",
+        "2026-11-25",
+        requester=lambda *_a, **_k: ECBResponse(),
+    )
+    assert evidence is None
+    assert "0 exakt datums- und ereignisgebundene Treffer" in detail
+
+
+def test_fomc_calendar_does_not_masquerade_as_a_live_rate_or_futures_consensus_source():
+    from trading_radar_market_first import normalize_event_section
+
+    class FedResponse:
+        status_code = 200
+        url = "https://www.federalreserve.gov/newsevents/2026-december.htm"
+        text = (
+            "<html><body><table><tr><td>December 8-9, 2026</td>"
+            "<td>FOMC Meeting</td><td>2:00 p.m.</td></tr></table></body></html>"
+        )
+
+    report = (
+        "3. Ereignisradar\n"
+        "- Ereignis: FOMC Leitzinsentscheidung (Fed)\n"
+        "- Datum: 2026-12-09\n"
+        "- Ereignis-Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Uhrzeit: NICHT VERFÜGBAR\n"
+        "- Zeitzone: NICHT VERFÜGBAR\n"
+        "- Kennzahl: Fed Target Range\n"
+        "- Zeitraum: 2026-12-09\n"
+        "- Letzter Wert: 3.75%-4.00% (EFFR 3.88%)\n"
+        "- Konsens: Hold 66%, Hike 34% (Impliziert aus Futures ZQ)\n"
+        "- Quelle: Federal Reserve / FOMC Termine\n"
+        "\n4. Assetklassenvergleich\n"
+    )
+    normalized, findings = normalize_event_section(
+        report, fomc_requester=lambda *_a, **_k: FedResponse()
+    )
+    assert findings == []
+    assert "Letzter Wert: NICHT VERFÜGBAR (Fed-Kalender bestätigt keinen vorherigen Zielkorridor)" in normalized
+    assert "Konsens: NICHT VERFÜGBAR (keine separat live verifizierte Futures-Quelle)" in normalized
+    assert "Unverifizierter Vorwert: 3.75%-4.00% (EFFR 3.88%)" in normalized
+    assert "Unverifizierte Markterwartung: Hold 66%, Hike 34% (Impliziert aus Futures ZQ)" in normalized

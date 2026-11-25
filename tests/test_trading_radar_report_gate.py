@@ -1988,3 +1988,30 @@ def test_m05_accepts_explicit_legacy_archiviert_record_without_claiming_invalida
     errors = []
     gate._validate_m05_m10(report, errors)
     assert not any("Semantischer Thesenregistervergleich widersprüchlich" in item for item in errors), errors
+
+
+def test_m08_scenario_bullets_are_continuations_not_independent_event_records():
+    from trading_radar_report_gate import validate_report
+
+    report = """1. Trading-Radar
+2. Thesen-Update
+3. Ereignisradar
+- US Prelim GDP q/q
+  Datum: 2026-11-25
+  Uhrzeit: 13:30
+  Zeitzone: America/New_York
+  Kennzahl: US Bruttoinlandsprodukt
+  Berichtszeitraum: Q3 2026
+  Letzter Wert: 3.4%
+  Konsens: 3.5%
+  Quelle: ForexFactory LIVE adapter
+  Quellenprüfung: LIVE_VERIFIZIERT (test fixture; no live claim)
+  Szenarien:
+- Über Konsens/Erwartung (>2.0%): positive surprise
+- Unter Konsens (<1.0%): negative surprise
+- Zinsschritt +25bp: policy tightening
+- Pause (Hold): no change
+4. Assetklassenvergleich
+"""
+    errors = validate_report(report)
+    assert not any(error.startswith("M-08") for error in errors)

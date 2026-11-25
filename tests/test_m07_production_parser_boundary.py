@@ -435,3 +435,83 @@ def test_report_gate_accepts_nested_narrative_parentheses_around_sourced_us10y()
         "Datenstichtag: 2026-11-09; Einheit: %; Verzögerung: 6 Kalendertage))."
     )
     assert _treasury_observation_has_complete_provenance(line)
+
+
+def test_thesisregister_prompt_context_is_compact_hash_bound_and_preserves_terminal_ids(tmp_path):
+    import hashlib
+    import json
+
+    register_path = tmp_path / ".trading_radar_thesen.json"
+    raw = json.dumps({
+        "schema_version": 1,
+        "theses": [
+            {
+                "thesis_id": "active_macro_01", "version": 3, "status": "BESTÄTIGT",
+                "thesis": "Aktive Makrothese", "horizon": "2-4 Wochen", "alternative": "Keine",
+                "active": True, "replaced_by": None,
+                "evidence": ["FRED DGS10"], "counter_evidence": [],
+                "confidence": "mittel", "confirm_triggers": [], "invalidate_triggers": [],
+                "event_dependencies": [], "asset_classes": ["Gold"], "candidates": [],
+            },
+            {
+                "thesis_id": "closed_macro_02", "version": 2, "status": "ARCHIVIERT",
+                "thesis": "Archivierte These", "horizon": "alt", "alternative": "alt",
+                "active": False, "replaced_by": None, "evidence": [], "counter_evidence": [],
+                "confidence": "niedrig", "confirm_triggers": [], "invalidate_triggers": [],
+                "event_dependencies": [], "asset_classes": [], "candidates": [],
+            },
+        ],
+    }, ensure_ascii=False).encode("utf-8")
+    register_path.write_bytes(raw)
+
+    context = json.loads(
+        production._trading_radar_thesenregister_prompt_context(str(register_path))
+    )
+    assert context["register_status"] == "VERIFIZIERT"
+    assert context["register_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert context["active_theses"][0]["thesis_id"] == "active_macro_01"
+    assert context["active_theses"][0]["version"] == 3
+    assert context["terminal_ids"] == [{
+        "thesis_id": "closed_macro_02", "version": 2, "status": "ARCHIVIERT", "replaced_by": None
+    }]
+
+
+def test_failed_thesisregister_update_reports_real_unchanged_hashes_without_pass(tmp_path):
+    import hashlib
+
+    register_path = tmp_path / ".trading_radar_thesen.json"
+    raw = b'{"schema_version":1,"theses":[]}'
+    register_path.write_bytes(raw)
+    evidence = production._trading_radar_thesenregister_unveraendert_evidenz(
+        str(register_path), "new identity has invalid version"
+    )
+    digest = hashlib.sha256(raw).hexdigest()
+    assert "THESENREGISTER-VERGLEICH: NOT_UPDATED" in evidence
+    assert f"VORHER-SHA256: {digest}" in evidence
+    assert f"NACHHER-SHA256: {digest}" in evidence
+    assert not any("THESENREGISTER-VERGLEICH: PASS" in line for line in evidence)
+
+
+def test_invalid_thesis_register_is_not_exposed_as_trusted_prompt_context(tmp_path):
+    import json
+
+    register_path = tmp_path / ".trading_radar_thesen.json"
+    register_path.write_text(json.dumps({
+        "schema_version": 1,
+        "theses": [{
+            "thesis_id": "invalid_archive", "version": 1,
+            "status": "ARCHIVIERT", "active": True,
+            "thesis": "Invalid active archive", "horizon": "kurz",
+            "alternative": "Keine", "replaced_by": None,
+            "evidence": [], "counter_evidence": [], "confidence": "niedrig",
+            "confirm_triggers": [], "invalidate_triggers": [],
+            "event_dependencies": [], "asset_classes": [], "candidates": [],
+        }],
+    }, ensure_ascii=False), encoding="utf-8")
+    context = json.loads(
+        production._trading_radar_thesenregister_prompt_context(str(register_path))
+    )
+    assert context["register_status"] == "UNGÜLTIG"
+    assert context["active_theses"] == []
+    assert context["terminal_ids"] == []
+    assert context["validation_errors"]
