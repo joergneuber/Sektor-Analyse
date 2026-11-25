@@ -740,26 +740,161 @@ jobs:
           if ! gh release view historical-ohlcv >/dev/null 2>&1; then
             gh release create historical-ohlcv --title "Historical OHLCV Database" --notes "Einziger dauerhafter Speicher fuer gemeinsame, integritaetsgepruefte OHLCV-Snapshots."
           fi
-          # Unveraenderlicher Asset-Name. Vorhandene Snapshots werden erst
-          # nach Remote-Digest UND inhaltlicher Bundle-Pruefung bereinigt.
-          gh release upload historical-ohlcv "$bundle_name"
+          # Unveraenderlicher Asset-Name: bei einem Retry zuerst den Remote-
+          # Zustand lesen. Ein vorhandenes Asset wird nur akzeptiert, wenn
+          # Remote-Digest, Bundle-Integritaet und Payload-Manifest uebereinstimmen.
+          upload_check_dir="$(mktemp -d)"
+          validation_dir="$(mktemp -d)"
+          trap 'rm -rf "$upload_check_dir" "$validation_dir"' EXIT
+          upload_verified=0
+          upload_request_accepted=0
+          upload_attempted=0
 
-          # GitHub kann den Asset-Digest kurz nach Upload noch nicht ausliefern.
-          # In diesem Fall wird abgebrochen; es wird nichts Altes geloescht.
-          local_sha="$(sha256sum "$bundle_name" | awk '{print $1}')"
-          remote_digest=""
-          for attempt in 1 2 3 4 5; do
+          verify_existing_ohlcv_asset() {
+            local expected_digest="$1"
+            local remote_path="$upload_check_dir/$bundle_name"
+            if ! [[ "$expected_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+              return 1
+            fi
+            rm -f "$remote_path"
+            if ! gh release download historical-ohlcv --pattern "$bundle_name" --dir "$upload_check_dir" --clobber; then
+              echo "::warning::Vorhandenes OHLCV-Asset konnte nicht geladen werden."
+              return 1
+            fi
+            existing_local_sha="$(sha256sum "$remote_path" | awk '{print $1}')"
+            if [ "$existing_local_sha" != "${expected_digest#sha256:}" ]; then
+              echo "::error::Vorhandenes OHLCV-Asset weicht vom GitHub-Remote-Digest ab."
+              return 2
+            fi
+            python ohlcv_release_bundle.py verify --bundle "$remote_path" || {
+              echo "::error::Vorhandenes OHLCV-Asset besteht die Bundle-Integritaetspruefung nicht."
+              return 2
+            }
+            python - "$bundle_name" "$remote_path" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          def manifest(path):
+              with zipfile.ZipFile(path, "r") as archive:
+                  return json.loads(archive.read("manifest.json").decode("utf-8"))
+
+          if manifest(sys.argv[1]) != manifest(sys.argv[2]):
+              raise SystemExit("Vorhandenes OHLCV-Asset besitzt einen anderen Payload-Manifeststand.")
+          PY
+            if [ "$?" -ne 0 ]; then
+              echo "::error::Vorhandenes OHLCV-Asset besitzt einen anderen Payload-Manifeststand."
+              return 2
+            fi
+          }
+
+          for attempt in 1 2 3; do
             release_assets="$(bash scripts/get_gh_release_assets.sh "$GITHUB_REPOSITORY" historical-ohlcv)"
             printf '%s' "$release_assets" | jq -e 'type == "array"' >/dev/null
-            MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024 - 1))
-            remote_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].digest // empty')"
-            if [[ "$remote_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+            existing_name="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].name // empty')"
+            if [ "$existing_name" = "$bundle_name" ]; then
+              existing_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].digest // empty')"
+              if [[ "$existing_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+                if verify_existing_ohlcv_asset "$existing_digest"; then
+                  upload_verified=1
+                  echo "OHLCV_RELEASE_UPLOAD=ALREADY_PRESENT_AND_VERIFIED | $bundle_name"
+                  break
+                else
+                  verify_rc=$?
+                  if [ "$verify_rc" -eq 2 ]; then
+                    echo "::error::Vorhandenes OHLCV-Asset ist inhaltlich ungueltig."
+                    exit 1
+                  fi
+                  echo "::warning::Vorhandenes OHLCV-Asset ist temporaer nicht ladbar (attempt ${attempt}/3)."
+                  sleep 2
+                  continue
+                fi
+              fi
+              echo "::warning::Vorhandenes OHLCV-Asset hat noch keinen verifizierbaren Digest (attempt ${attempt}/3)."
+              sleep 2
+              continue
+            fi
+
+            if [ "$upload_attempted" -ne 0 ]; then
+              echo "::error::OHLCV-Upload wurde bereits einmal versucht; ein weiterer Upload könnte ein Duplikat erzeugen."
               break
             fi
-            sleep 2
+            upload_attempted=1
+            if upload_output="$(gh release upload historical-ohlcv "$bundle_name" 2>&1)"; then
+              echo "OHLCV_RELEASE_UPLOAD=REQUEST_ACCEPTED | $bundle_name"
+              upload_request_accepted=1
+              break
+            else
+              upload_rc=$?
+              echo "::warning::OHLCV-Upload lieferte Exitcode ${upload_rc}: ${upload_output}"
+              # Ein fehlgeschlagener Upload-Aufruf kann serverseitig bereits
+              # erfolgreich gewesen sein. Erst Remote-Status lesen, nie blind
+              # denselben Assetnamen erneut hochladen.
+              release_assets="$(bash scripts/get_gh_release_assets.sh "$GITHUB_REPOSITORY" historical-ohlcv)"
+              printf '%s' "$release_assets" | jq -e 'type == "array"' >/dev/null
+              existing_name="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].name // empty')"
+              if [ "$existing_name" = "$bundle_name" ]; then
+                existing_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].digest // empty')"
+                if [[ "$existing_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+                  if verify_existing_ohlcv_asset "$existing_digest"; then
+                    upload_verified=1
+                    echo "OHLCV_RELEASE_UPLOAD=VERIFIED_AFTER_ERROR | $bundle_name"
+                    break
+                  else
+                    verify_rc=$?
+                    if [ "$verify_rc" -eq 2 ]; then
+                      echo "::error::Nach HTTP-Fehler vorhandenes OHLCV-Asset ist inhaltlich ungueltig."
+                      exit 1
+                    fi
+                    echo "::warning::Nach HTTP-Fehler ist das vorhandene Asset temporaer nicht ladbar."
+                    sleep 2
+                    continue
+                  fi
+                fi
+                sleep 2
+                continue
+              fi
+              if [[ "$upload_output" =~ (HTTP[[:space:]]*500|status[[:space:]]*500|500[[:space:]]+Internal[[:space:]]+Server[[:space:]]+Error|timed[[:space:]]*out|timeout|connection[[:space:]]+reset|connection[[:space:]]+refused|unexpected[[:space:]]+EOF) ]]; then
+                echo "::warning::Upload-Ausgang ist mehrdeutig; es wird ausschließlich der Remote-Zustand weiter geprüft, nicht erneut hochgeladen."
+                sleep 2
+                break
+              fi
+              echo "::error::Nicht-transienter OHLCV-Uploadfehler; kein weiterer Uploadversuch."
+              exit 1
+            fi
           done
-          if ! [[ "$remote_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || [ "$local_sha" != "${remote_digest#sha256:}" ]; then
-            echo "::error::Remote-SHA-256 des neuen OHLCV-Bundles fehlt oder stimmt nicht ueberein. Vorherige Assets bleiben unangetastet."
+
+          # Nach akzeptiertem Upload oder letztem transientem Fehler nur noch
+          # pollen und verifizieren; kein weiterer Upload mit demselben Namen.
+          if [ "$upload_verified" -eq 0 ]; then
+            for verify_attempt in 1 2 3 4 5; do
+              release_assets="$(bash scripts/get_gh_release_assets.sh "$GITHUB_REPOSITORY" historical-ohlcv)"
+              printf '%s' "$release_assets" | jq -e 'type == "array"' >/dev/null
+              existing_name="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].name // empty')"
+              existing_digest="$(printf '%s' "$release_assets" | jq -r --arg name "$bundle_name" '[.[] | select(.name == $name)][0].digest // empty')"
+              if [ "$existing_name" = "$bundle_name" ] && [[ "$existing_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+                if verify_existing_ohlcv_asset "$existing_digest"; then
+                  upload_verified=1
+                  if [ "$upload_request_accepted" -eq 1 ]; then
+                    echo "OHLCV_RELEASE_UPLOAD=VERIFIED_AFTER_ACCEPTED_REQUEST | $bundle_name"
+                  else
+                    echo "OHLCV_RELEASE_UPLOAD=VERIFIED_AFTER_RETRY | $bundle_name"
+                  fi
+                  break
+                else
+                  verify_rc=$?
+                  if [ "$verify_rc" -eq 2 ]; then
+                    echo "::error::Remote OHLCV-Asset besteht die Integritaetspruefung nicht."
+                    exit 1
+                  fi
+                  echo "::warning::Remote OHLCV-Asset noch nicht vollstaendig abrufbar (verify attempt ${verify_attempt}/5)."
+                fi
+              fi
+              sleep 2
+            done
+          fi
+          if [ "$upload_verified" -ne 1 ]; then
+            echo "::error::OHLCV-Bundle konnte nicht remote verifiziert werden. Vorherige Assets bleiben unangetastet."
             exit 1
           fi
           python ohlcv_release_bundle.py verify --bundle "$bundle_name"
@@ -768,8 +903,7 @@ jobs:
           # Vor jeder Bereinigung ALLE Kandidaten anhand Remote-Digest und
           # Bundle-Manifest/SQLite-Integritaet pruefen. Es bleiben die zwei
           # neuesten gueltigen Bundles, nicht bloss die zwei neuesten Dateinamen.
-          validation_dir="$(mktemp -d)"
-          trap 'rm -rf "$validation_dir"' EXIT
+          # Cleanup nur bei zwei inhaltlich und remote verifizierte Bundles.
           mapfile -t all_bundle_names < <(printf '%s' "$release_assets" | jq -r '[.[] | select(.name | test("^historical_ohlcv_bundle_[A-Za-z0-9_.-]+\\.zip$"))] | sort_by([.created_at, .name]) | reverse | .[].name')
           valid_bundle_names=()
           for asset_name in "${all_bundle_names[@]}"; do
@@ -804,23 +938,22 @@ jobs:
 
           if [ "${#valid_bundle_names[@]}" -ge 2 ]; then
             keep_bundle_names=("${valid_bundle_names[@]:0:2}")
+            # Jede Loeschung wird durch erneutes Lesen der Release-Assets
+            # bestaetigt. HTTP-500 ist mehrdeutig und darf den Zustand nicht
+            # ersetzen; bereits fehlende Assets gelten als idempotent erledigt.
+            cleanup_bundle_names=()
             for asset_name in "${all_bundle_names[@]}"; do
               keep=0
               for keep_name in "${keep_bundle_names[@]}"; do
                 [ "$asset_name" != "$keep_name" ] || keep=1
               done
               if [ "$keep" -eq 0 ]; then
-                gh release delete-asset historical-ohlcv "$asset_name" --yes
+                cleanup_bundle_names+=("$asset_name")
               fi
             done
-            # Legacy-Assets erst entfernen, wenn zwei unabhaengig verifizierte
-            # Bundle-Versionen als aktueller und Rollback-Stand erhalten bleiben.
-            for legacy_asset in historical_ohlcv.sqlite historical_ohlcv_universe.json; do
-              if printf '%s' "$release_assets" | jq -e --arg name "$legacy_asset" 'any(.[]; .name == $name)' >/dev/null; then
-                gh release delete-asset historical-ohlcv "$legacy_asset" --yes
-              fi
-            done
-            echo "OHLCV-Release-Bereinigung PASS: zwei inhaltlich und remote verifizierte Bundles bleiben erhalten."
+            bash scripts/cleanup_ohlcv_release_assets.sh \
+              "${keep_bundle_names[0]}" "${keep_bundle_names[1]}" \
+              "${cleanup_bundle_names[@]}"
           else
             echo "::warning::Nur ${#valid_bundle_names[@]} gueltige Bundle-Version(en) vorhanden. Alte Bundles und Legacy-Assets bleiben vollstaendig erhalten."
           fi
