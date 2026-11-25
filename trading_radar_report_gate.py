@@ -17,6 +17,7 @@ from trading_radar_thesen import (
     TERMINAL_STATUSES,
     LEGACY_ARCHIVE_STATUSES,
     canonicalize_thesis_status,
+    extract_thesis_payload,
 )
 
 
@@ -1497,13 +1498,12 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
                 for _row_id, _version, row_status in compact_rows
             )
             structured_identity_valid = True
-        blocks = re.findall(
-            r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```", thesis,
-            flags=re.DOTALL,
-        )
-        if len(blocks) == 1:
+        try:
+            payload = extract_thesis_payload(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if payload is not None:
             try:
-                payload = json.loads(blocks[0])
                 records = payload.get("theses", []) if isinstance(payload, dict) else []
                 if isinstance(records, list) and records and all(isinstance(item, dict) for item in records):
                     records_by_id = {
@@ -1836,69 +1836,67 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         r"\|\s*Status\s+([^|\r\n]+)",
         thesis,
     )
-    m05_json_blocks = re.findall(
-        r"```TRADING_RADAR_THESEN_JSON\s*(.*?)\s*```",
-        thesis,
-        flags=re.DOTALL,
-    )
+    try:
+        m05_payload = extract_thesis_payload(text)
+        m05_payload_error = False
+    except (TypeError, ValueError, json.JSONDecodeError):
+        m05_payload = None
+        m05_payload_error = True
     m05_structured_checks = []
     if m05_compact_rows:
         m05_structured_checks.append(
             all(_m05_record_valid(row_id, row_version, row_status)
                 for row_id, row_version, row_status in m05_compact_rows)
         )
-    if m05_json_blocks:
-        if len(m05_json_blocks) != 1:
-            m05_structured_checks.append(False)
-        else:
-            try:
-                m05_payload = json.loads(m05_json_blocks[0])
-                m05_records = (
-                    m05_payload.get("theses", [])
-                    if isinstance(m05_payload, dict) else []
-                )
-                records_by_id = {
-                    str(item.get("thesis_id", "")).strip(): item
-                    for item in m05_records
-                    if isinstance(item, dict) and str(item.get("thesis_id", "")).strip()
-                } if isinstance(m05_records, list) else {}
-                records_valid = (
-                    isinstance(m05_records, list) and bool(m05_records)
-                    and all(isinstance(item, dict) for item in m05_records)
-                    and len(records_by_id) == len(m05_records)
-                    and all(
-                        _m05_record_valid(
-                            item.get("thesis_id"),
-                            item.get("version"),
-                            item.get("status"),
-                        )
-                        for item in m05_records
+    if m05_payload_error:
+        m05_structured_checks.append(False)
+    elif m05_payload is not None:
+        try:
+            m05_records = (
+                m05_payload.get("theses", [])
+                if isinstance(m05_payload, dict) else []
+            )
+            records_by_id = {
+                str(item.get("thesis_id", "")).strip(): item
+                for item in m05_records
+                if isinstance(item, dict) and str(item.get("thesis_id", "")).strip()
+            } if isinstance(m05_records, list) else {}
+            records_valid = (
+                isinstance(m05_records, list) and bool(m05_records)
+                and all(isinstance(item, dict) for item in m05_records)
+                and len(records_by_id) == len(m05_records)
+                and all(
+                    _m05_record_valid(
+                        item.get("thesis_id"),
+                        item.get("version"),
+                        item.get("status"),
                     )
+                    for item in m05_records
                 )
-                if records_valid:
-                    for item in m05_records:
-                        item_status = canonicalize_thesis_status(item.get("status"))
-                        if "replaced_by" not in item and item_status != "ERSETZT":
-                            item["replaced_by"] = None
-                        successor = item.get("replaced_by")
-                        if item_status == "ERSETZT":
-                            target = records_by_id.get(successor) if isinstance(successor, str) else None
-                            if (
-                                not isinstance(successor, str) or not successor.strip()
-                                or successor != successor.strip()
-                                or successor == item.get("thesis_id")
-                                or target is None
-                                or canonicalize_thesis_status(target.get("status")) in TERMINAL_STATUSES
-                            ):
-                                records_valid = False
-                                break
-                        elif successor is not None:
+            )
+            if records_valid:
+                for item in m05_records:
+                    item_status = canonicalize_thesis_status(item.get("status"))
+                    if "replaced_by" not in item and item_status != "ERSETZT":
+                        item["replaced_by"] = None
+                    successor = item.get("replaced_by")
+                    if item_status == "ERSETZT":
+                        target = records_by_id.get(successor) if isinstance(successor, str) else None
+                        if (
+                            not isinstance(successor, str) or not successor.strip()
+                            or successor != successor.strip()
+                            or successor == item.get("thesis_id")
+                            or target is None
+                            or canonicalize_thesis_status(target.get("status")) in TERMINAL_STATUSES
+                        ):
                             records_valid = False
                             break
-                m05_structured_checks.append(bool(records_valid))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                m05_structured_checks.append(False)
-
+                    elif successor is not None:
+                        records_valid = False
+                        break
+            m05_structured_checks.append(bool(records_valid))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            m05_structured_checks.append(False)
     if m05_structured_checks:
         m05_identity_valid = all(m05_structured_checks)
     else:
@@ -1960,12 +1958,14 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
         current = []
         field_only = re.compile(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-            r"(?:Datum|Date|Uhrzeit/Zeitzone|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+            r"(?:Datum|Date|Uhrzeit/Zeitzone|Ereignis-Uhrzeit|Ereignis Uhrzeit|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
             r"letzter Wert|Vorwert|Konsens|Istwert|Quelle|Source|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
-            r"Unter Konsens|Entsprechend Konsens|Über Konsens|Ueber Konsens|"
-            r"Reaktionskanäle|Wirkung|Auswirkung|Erwartung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
-            r"Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|"
+            r"(?:Unter|Entsprechend|Über|Ueber) (?:Konsens|Erwartung)(?:/Erwartung)?(?:\s*\([^:\r\n]*\))?|"
+            r"Zinsschritt(?:\s*\+?\d+\s*bp)?|Pause(?:\s*\([^)]*\))?|Hold|Hike|Reaktionskanäle|Wirkung|Auswirkung|Erwartung|"
+            r"Bestätigung/Invalidierung|Bestaetigung/Invalidierung|"
+            r"Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+            r"Was die These bestätigen/widerlegen würde|Wert-Provenienz|Ereigniswerte-Provenienz|Unverifizierter Vorwert|Unverifizierte Markterwartung|Quellenprüfung|Quellenpruefung|"
             r"Betroffene These/Assetklasse/konkrete offene Positionen|"
             r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?)(?:\*\*)?\s*[:=](?:\*\*)?"
         )
@@ -2000,7 +2000,9 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
 
         section_lines = section_body.splitlines()
         has_named_event_records = any(
-            named_event.match(line) or compact_event_header.match(line)
+            named_event.match(line)
+            or compact_event_header.match(line)
+            or (bullet.match(line) and not field_only.match(line))
             for line in section_lines
         )
         for line in section_lines:
@@ -2413,15 +2415,20 @@ def _validate_m05_m10(text: str, errors: list[str]) -> None:
             _us10y_observation_records(line, allow_run1270_context=contextual)
         )
 
-    distinct_treasury_values = sorted({value for value, _ in observation_records})
+    value_bound_observation_records = list(observation_records) + [
+        (value, line) for _role, value, line in conflict_observation_records
+    ]
+    distinct_treasury_values = sorted({
+        value for value, _line in value_bound_observation_records
+    })
     if observation_records or conflict_observation_records:
-        # Every distinct value must have a complete source record, even when
-        # the report contains only one US-10Y observation.
+        # Paired Makro/Live conflict rows are value-bound source records too.
+        # They must count here while still passing the stricter role check below.
         provenance_complete = all(
             any(
                 observed_value == expected_value
                 and _treasury_observation_has_complete_provenance(line)
-                for observed_value, line in observation_records
+                for observed_value, line in value_bound_observation_records
             )
             for expected_value in distinct_treasury_values
         )

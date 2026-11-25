@@ -88,7 +88,7 @@ def _find_thesis_json_block(report: str):
     if section2.start() >= section3.start():
         return None
     region_start, region_end = section2.end(), section3.start()
-    generic_pattern = re.compile(r"(?ms)^```json[ \t]*\r?\n(.*?)^```[ \t]*$", re.IGNORECASE)
+    generic_pattern = re.compile(r"(?ms)^```json(?:[ \t]+TRADING_RADAR_THESEN_JSON)?[ \t]*\r?\n(.*?)^```[ \t]*$", re.IGNORECASE)
     candidates = []
     for match in generic_pattern.finditer(text, region_start, region_end):
         try:

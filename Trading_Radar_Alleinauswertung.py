@@ -5294,6 +5294,159 @@ def _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext):
     return bool(ist_404 and modellbezug and counttokens_bezug and nicht_verfuegbar)
 
 
+
+def _gemini_thesenregister_struktur_retry_aufruf(
+    client, contents, preferred_modell, token_label, logical_request_id,
+):
+    """Begrenzter Modellpool-Fallback nur fuer den separaten Thesenregister-Retry.
+
+    CountTokens-404 und bekannte temporaere RPM-429 ueberspringen den
+    betroffenen Kandidaten. Nur transiente 503-/Netzwerkfehler duerfen nach
+    einem vollstaendigen ersten Pooldurchlauf in genau einen zweiten Versuch
+    aufgenommen werden. Harte, Tagesquota- und fachliche Fehler bleiben terminal.
+    """
+    modellreihenfolge = list(dict.fromkeys(GEMINI_MODELLREIHENFOLGE))
+    if preferred_modell:
+        modellreihenfolge = [preferred_modell] + [
+            kandidat for kandidat in modellreihenfolge
+            if kandidat != preferred_modell
+        ]
+    if not modellreihenfolge:
+        raise RuntimeError("Kein Gemini-Modell fuer den Thesenregister-Retry konfiguriert")
+
+    max_attempts = max(
+        1, int(GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN)
+    )
+    kandidaten = modellreihenfolge[:max_attempts]
+    retryable_models = []
+    second_pass = False
+    second_pass_models = []
+    second_pass_index = 0
+    pool_index = 0
+    transient_backoff_count = 0
+
+    while True:
+        if second_pass:
+            if second_pass_index >= len(second_pass_models):
+                raise RuntimeError(
+                    "Thesenregister-Retry: transienter Modellpool ausgeschoepft"
+                )
+            modell = second_pass_models[second_pass_index]
+        else:
+            if pool_index >= len(kandidaten):
+                if (
+                    retryable_models
+                    and int(GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN) >= 2
+                ):
+                    second_pass = True
+                    second_pass_models = [
+                        kandidat for kandidat in kandidaten
+                        if kandidat in retryable_models
+                    ]
+                    second_pass_index = 0
+                    wait_seconds = max(
+                        0.0, float(GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS)
+                    )
+                    print(
+                        "TRADING_RADAR_THESEN_RETRY_SECOND_PASS_START | "
+                        f"Modelle={','.join(second_pass_models)} | "
+                        f"Backoff={wait_seconds:.0f}s"
+                    )
+                    if wait_seconds > 0:
+                        time.sleep(wait_seconds)
+                    continue
+                raise RuntimeError(
+                    "Thesenregister-Retry: kein Modell mit erfolgreicher Antwort"
+                )
+            modell = kandidaten[pool_index]
+
+        phase = "CountTokens"
+        try:
+            retry_token_count = _gemini_tokenzahl(
+                client, modell, contents, None,
+                label=f"{token_label} {modell}",
+            )
+            phase = "GenerateContent"
+            response = _gemini_generate_content_quota_safe(
+                client,
+                modell,
+                contents,
+                {"temperature": 0.1},
+                retry_token_count,
+                token_label,
+                logical_request_id=logical_request_id,
+            )
+            # Die quota-sichere Sendefunktion darf intern auf ein anderes
+            # verfuegbares Modell wechseln. Deren Zustand ist die Quelle der
+            # Wahrheit; den urspruenglichen Kandidaten hier nicht zurueckschreiben.
+            actual_model_used = (
+                globals().get("_gemini_last_request_model") or modell
+            )
+            return response, actual_model_used
+        except Exception as retry_exc:
+            fehlertext = str(retry_exc)
+            if "GEMINI_TECHNISCHER_FALLBACK_503_TERMINAL" in fehlertext:
+                raise
+
+            counttokens_unsupported = (
+                phase == "CountTokens"
+                and _gemini_counttokens_modell_nicht_unterstuetzt(fehlertext)
+            )
+            _retryable, _wait, category = analysiere_api_fehler(fehlertext)
+            transient = _gemini_radar_503_zweitversuch_zulaessig(fehlertext)
+
+            if second_pass:
+                # Der zweite Durchlauf darf ausschliesslich den bereits
+                # identifizierten transienten Modellen einen letzten Versuch geben.
+                # Ein weiterer 503/Netzwerkfehler auf Modell A beendet nicht den
+                # gesamten Durchlauf: Modell B aus derselben Retry-Liste erhält
+                # ebenfalls genau einen letzten Versuch. Harte Fehler und Tages-
+                # quota bleiben dagegen terminal.
+                if transient:
+                    print(
+                        "TRADING_RADAR_THESEN_RETRY_SECOND_PASS_MODEL_STILL_UNAVAILABLE | "
+                        f"Modell={modell} | Fehler={phase}"
+                    )
+                    second_pass_index += 1
+                    continue
+                if counttokens_unsupported or category == "quota_temporär":
+                    second_pass_index += 1
+                    continue
+                raise
+
+            pool_index += 1
+            if transient and modell not in retryable_models:
+                retryable_models.append(modell)
+                transient_backoff_count += 1
+                wait_seconds = GEMINI_503_POOL_BACKOFF_SECONDS * (
+                    2 ** (transient_backoff_count - 1)
+                )
+                print(
+                    "TRADING_RADAR_THESEN_RETRY_MODEL_SWITCH | "
+                    f"Modell={modell} | Fehler={phase} | "
+                    f"Backoff={wait_seconds:.0f}s"
+                )
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                continue
+
+            if counttokens_unsupported:
+                print(
+                    "TRADING_RADAR_THESEN_RETRY_MODEL_SKIP | "
+                    f"Modell={modell} | CountTokens nicht unterstuetzt"
+                )
+                continue
+
+            if category == "quota_temporär":
+                print(
+                    "TRADING_RADAR_THESEN_RETRY_MODEL_SKIP | "
+                    f"Modell={modell} | temporaeres RPM-Quota"
+                )
+                continue
+
+            # Unbekannte, harte und Tagesquota-Fehler niemals verschleiern.
+            raise
+
 def _gemini_radar_response_diagnose(response, label):
     """Loggt Abschlussgrund und Token-Nutzung, sofern das SDK sie bereitstellt."""
     candidates = getattr(response, "candidates", None) or []
@@ -5414,6 +5567,135 @@ def _gemini_radar_abschnitte_zusammenfuehren(original, ergaenzung, required, feh
     if remaining:
         return None, remaining
     return "\n\n".join(merged[heading] for heading in required), []
+
+
+def _trading_radar_thesenregister_prompt_context(register_path=None):
+    """Compact, hash-bound register context for Gemini; never truncate JSON."""
+    path = Path(register_path or (Path.cwd() / ".trading_radar_thesen.json"))
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return json.dumps({
+            "register_status": "NICHT VORHANDEN",
+            "register_sha256": None,
+            "active_theses": [],
+            "terminal_ids": [],
+        }, ensure_ascii=False, sort_keys=True)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return json.dumps({
+            "register_status": "NICHT LESBAR",
+            "register_sha256": None,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "active_theses": [],
+            "terminal_ids": [],
+        }, ensure_ascii=False, sort_keys=True)
+
+    records = payload.get("theses") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return json.dumps({
+            "register_status": "UNGÜLTIGES FORMAT",
+            "register_sha256": hashlib.sha256(raw).hexdigest(),
+            "active_theses": [],
+            "terminal_ids": [],
+        }, ensure_ascii=False, sort_keys=True)
+    try:
+        from trading_radar_thesen import (
+            _validate_register_snapshot, TERMINAL_STATUSES, LEGACY_ARCHIVE_STATUSES,
+            canonicalize_thesis_status,
+        )
+        _validate_register_snapshot(payload, label="Prompt-Baseline")
+        validation_errors = []
+    except Exception as exc:
+        validation_errors = [f"{type(exc).__name__}: {exc}"]
+    if validation_errors:
+        return json.dumps({
+            "register_status": "UNGÜLTIG",
+            "register_sha256": hashlib.sha256(raw).hexdigest(),
+            "validation_errors": [str(error) for error in validation_errors[:20]],
+            "active_theses": [],
+            "terminal_ids": [],
+        }, ensure_ascii=False, sort_keys=True)
+
+    active_theses = []
+    terminal_ids = []
+    terminal_statuses = set(TERMINAL_STATUSES)
+    legacy_archive_statuses = set(LEGACY_ARCHIVE_STATUSES)
+    active_fields = (
+        "thesis_id", "version", "status", "thesis", "horizon",
+        "alternative", "evidence", "counter_evidence", "confidence",
+        "confirm_triggers", "invalidate_triggers", "event_dependencies",
+        "asset_classes", "candidates", "replaced_by", "active", "archive_reason", "legacy_archive",
+    )
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        thesis_id = str(item.get("thesis_id") or "").strip()
+        status = canonicalize_thesis_status(item.get("status"))
+        inactive_legacy_archive = item.get("active", True) is False and status in legacy_archive_statuses
+        if not thesis_id:
+            continue
+        if status in terminal_statuses or inactive_legacy_archive:
+            terminal_ids.append({
+                "thesis_id": thesis_id,
+                "version": item.get("version"),
+                "status": status,
+                "replaced_by": item.get("replaced_by"),
+            })
+        else:
+            active_theses.append({
+                key: item.get(key) for key in active_fields if key in item
+            })
+
+    compact = {
+        "register_status": "VERIFIZIERT",
+        "register_sha256": hashlib.sha256(raw).hexdigest(),
+        "active_theses": active_theses,
+        "terminal_ids": terminal_ids,
+    }
+    return json.dumps(compact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _trading_radar_thesenregister_digest(register_path):
+    """Liefert den SHA-256-Snapshot des Registers oder einen expliziten Fehlstatus."""
+    try:
+        return hashlib.sha256(Path(register_path).read_bytes()).hexdigest()
+    except OSError:
+        return "NICHT VERFÜGBAR"
+
+
+def _trading_radar_thesenregister_unveraendert_evidenz(
+    register_path, reason, before_digest=None
+):
+    """Vergleicht einen vor dem Update gesicherten Hash mit dem Zustand danach."""
+    if before_digest is None:
+        # Nur fuer Fehlerpfade, in denen noch kein Update begonnen wurde.
+        before_digest = _trading_radar_thesenregister_digest(register_path)
+    after_digest = _trading_radar_thesenregister_digest(register_path)
+    if (
+        before_digest == "NICHT VERFÜGBAR"
+        or after_digest == "NICHT VERFÜGBAR"
+    ):
+        comparison_status = "NOT_VERIFIABLE"
+    elif before_digest == after_digest:
+        comparison_status = "NOT_UPDATED"
+    else:
+        # Ein Fehler nach einem partiellen/erfolgreichen Schreibvorgang darf
+        # niemals als unveraenderter Registerbestand ausgewiesen werden.
+        comparison_status = "CHANGED_DURING_FAILED_UPDATE"
+    return [
+        f"THESENREGISTER-VERGLEICH: {comparison_status}",
+        f"VORHER-SHA256: {before_digest}",
+        f"NACHHER-SHA256: {after_digest}",
+        "AKTIVE_THESEN: NICHT NACHWEISBAR",
+        "THESEN_NEU: NICHT NACHWEISBAR",
+        "THESEN_AKTUALISIERT: NICHT NACHWEISBAR",
+        "THESEN_UNVERAENDERT: NICHT NACHWEISBAR",
+        "THESEN_ARCHIVIERT: NICHT NACHWEISBAR",
+        "THESIS_ID: NICHT NACHWEISBAR",
+        "REGISTER-VERSION: NICHT NACHWEISBAR",
+        "THESENREGISTER-GRUND: " + str(reason or "Vergleich nicht möglich"),
+    ]
 
 def _gemini_trading_radar_eigenstaendig(client, preferred_modell, eingabedateien, bestehende_auswertung):
     """Erzeugt den Radar-Bericht durch einen eigenen quota-sicheren Gemini-Request."""
@@ -5541,6 +5823,16 @@ __GESCHLOSSENE_POSITIONEN__
 PROJEKTQUELLEN:
 __QUELLEN__
 """.replace("CUTOFF", cutoff).replace("__ALTBERICHT__", str(bestehende_auswertung or "")[:40000]).replace("__OFFENE_POSITIONEN__", offene_positionen_fakten or "QUELLE FEHLT/LEER: offene Positionsliste nicht belastbar verfügbar.").replace("__GESCHLOSSENE_POSITIONEN__", geschlossene_positionen_fakten or "TAB 2: keine Datensätze im relevanten Zeitraum.").replace("__QUELLEN__", "".join(quellen)[:140000])
+    register_prompt_context = _trading_radar_thesenregister_prompt_context()
+    prompt += (
+        "\n\nVERBINDLICHER THESENREGISTER-VORZUSTAND (read-only; SHA-256 gebunden):\n"
+        + register_prompt_context
+        + "\nBestehende aktive thesis_id/version unverändert fortführen. "
+        "Terminale IDs niemals reaktivieren. Neue ID nur für tatsächlich neue These, "
+        "Status NEU und Version 1. Bei unklarer Identität keine These als aktualisiert ausgeben. "
+        "Wenn register_status nicht VERIFIZIERT ist, keine Registeränderung behaupten; "
+        "Registervergleich ausdrücklich NICHT VERIFIZIERBAR ausweisen."
+    )
     contents = [prompt]
     modell = preferred_modell or globals().get("_gemini_last_request_model") or MODELL
     try:
@@ -5779,7 +6071,7 @@ __QUELLEN__
                 generic_match = None
             else:
                 generic_pattern = re.compile(
-                    r"(?ms)^```(?:json)?[ \t]*\r?\n(.*?)^```[ \t]*$",
+                    r"(?ms)^```(?:json(?:[ \t]+TRADING_RADAR_THESEN_JSON)?)?[ \t]*\r?\n(.*?)^```[ \t]*$",
                     re.IGNORECASE,
                 )
                 generic = list(generic_pattern.finditer(text_candidate))
@@ -5815,6 +6107,28 @@ __QUELLEN__
                     return None
                 comparison_report = str(report_context if report_context is not None else text_candidate)
                 if validate_thesis_ids_match_report(comparison_report, parsed):
+                    return None
+
+                # Validate the candidate's lifecycle against a temporary copy of
+                # the real register. This reuses update_register's exact rules
+                # without mutating the production register during prompt repair.
+                try:
+                    from trading_radar_thesen import update_register
+                    baseline_path = Path.cwd() / ".trading_radar_thesen.json"
+                    with tempfile.TemporaryDirectory(prefix="trading-radar-thesis-check-") as temp_dir:
+                        check_path = Path(temp_dir) / ".trading_radar_thesen.json"
+                        if baseline_path.is_file():
+                            check_path.write_bytes(baseline_path.read_bytes())
+                        update_register(
+                            text_candidate,
+                            str(check_path),
+                            data_cutoff=payload.get("data_cutoff"),
+                        )
+                except Exception as lifecycle_exc:
+                    print(
+                        "TRADING_RADAR_THESEN_BLOCK_REJECTED_BY_REGISTER_LIFECYCLE | "
+                        f"{type(lifecycle_exc).__name__}: {lifecycle_exc}"
+                    )
                     return None
                 payload = parsed
             except Exception:
@@ -5852,15 +6166,8 @@ __QUELLEN__
 
         if radar_text and _has_substantive_thesis_context(radar_text) and not _valid_thesis_block(radar_text):
             try:
-                register_context = "KEIN VORHANDENES REGISTER; Vorzustand nicht nachweisbar."
                 register_path = os.path.join(os.getcwd(), ".trading_radar_thesen.json")
-                if os.path.isfile(register_path):
-                    with open(register_path, "r", encoding="utf-8") as register_handle:
-                        register_payload = json.load(register_handle)
-                    if isinstance(register_payload, dict) and isinstance(register_payload.get("theses"), list):
-                        register_context = json.dumps(
-                            register_payload, ensure_ascii=False, sort_keys=True
-                        )[:40000]
+                register_context = _trading_radar_thesenregister_prompt_context(register_path)
                 section_context = []
                 for section_number, next_number in ((1, 2), (2, 3), (4, 5)):
                     section_match = re.search(
@@ -5904,21 +6211,22 @@ __QUELLEN__
                 )
                 retry_contents = [thesis_retry_prompt]
                 retry_label = "Trading-Radar-Thesenregister-Struktur-Retry"
-                retry_token_count = _gemini_tokenzahl(
-                    client, modell, retry_contents, None, label=retry_label
+                thesis_response, thesis_retry_model = (
+                    _gemini_thesenregister_struktur_retry_aufruf(
+                        client=client,
+                        contents=retry_contents,
+                        preferred_modell=modell,
+                        token_label=retry_label,
+                        logical_request_id=(
+                            "Trading-Radar-Eigenlauf:"
+                            + datetime.date.today().isoformat()
+                            + ":thesen-json-retry"
+                        ),
+                    )
                 )
-                thesis_response = _gemini_generate_content_quota_safe(
-                    client,
-                    modell,
-                    retry_contents,
-                    {"temperature": 0.1},
-                    retry_token_count,
-                    retry_label,
-                    logical_request_id=(
-                        "Trading-Radar-Eigenlauf:"
-                        + datetime.date.today().isoformat()
-                        + ":thesen-json-retry"
-                    ),
+                print(
+                    "TRADING_RADAR_THESEN_JSON_RETRY_MODEL="
+                    + str(thesis_retry_model)
                 )
                 _gemini_radar_response_diagnose(thesis_response, retry_label)
                 thesis_retry_text = str(getattr(thesis_response, "text", thesis_response) or "").strip()
@@ -17305,11 +17613,15 @@ def _trading_radar_berichtsfelder_normalisieren(text):
         if not no_events:
             field_only = re.compile(
                 r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?"
-                r"(?:Datum|Date|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
+                r"(?:Datum|Date|Ereignis-Uhrzeit|Ereignis Uhrzeit|Uhrzeit|Zeit|Zeitzone|Kennzahl|Indikator|Berichtszeitraum|Zeitraum|"
                 r"Letzter Wert|Vorwert|Konsens|Istwert|"
                 r"Betroffene These/Assetklasse/konkrete offene Positionen|"
                 r"Szenarien(?:\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\s+Konsens)?|"
+                r"(?:Unter|Entsprechend|Über|Ueber) (?:Konsens|Erwartung)(?:/Erwartung)?(?:\s*\([^:\r\n]*\))?|"
+                r"Bestätigung/Invalidierung|Bestaetigung/Invalidierung|"
+                r"Zinsschritt(?:\s*\+?\d+\s*bp)?|Pause(?:\s*\([^)]*\))?|Hold|Hike|"
                 r"Reaktionskanäle|Wirkung|Quelle|Source|Was die These bestätigen/widerlegen würde|"
+                r"Wert-Provenienz|Ereigniswerte-Provenienz|Unverifizierter Vorwert|Unverifizierte Markterwartung|"
                 r"Bestaetigung/Widerlegung|Bestätigung/Widerlegung|Quellenprüfung|Quellenpruefung)"
                 r"(?:\*\*)?\s*[:=](?:\*\*)?"
             )
@@ -17330,6 +17642,17 @@ def _trading_radar_berichtsfelder_normalisieren(text):
                 return None
 
             lines = body.splitlines()
+            has_named_event_records = any(
+                named_event.match(line) or (bullet.match(line) and not field_only.match(line))
+                for line in lines
+            )
+            has_event_clock_headers = any(
+                bool(
+                    (match := bullet.match(line))
+                    and re.match(r"(?i)^Ereignis[- ]Uhrzeit\s*[:=]", match.group(1).strip())
+                )
+                for line in lines
+            )
             records = []
             current = []
             started = False
@@ -17348,9 +17671,19 @@ def _trading_radar_berichtsfelder_normalisieren(text):
                         and current_kind is not None
                         and current_kind == next_kind
                     )
+                date_led_record = bool(
+                    match and not has_named_event_records and not has_event_clock_headers
+                    and re.match(r"(?i)^Datum\s*[:=]", match.group(1).strip())
+                )
+                event_clock_header = bool(
+                    match and not has_named_event_records
+                    and re.match(r"(?i)^Ereignis[- ]Uhrzeit\s*[:=]", match.group(1).strip())
+                )
                 starts_record = (
                     (bool(match) and not field_only.match(line) and not same_fomc_event)
                     or (bool(named_event.match(line)) and not field_only.match(line))
+                    or date_led_record
+                    or event_clock_header
                 )
                 if starts_record:
                     if current:
@@ -17456,6 +17789,8 @@ def _trading_radar_berichtsfelder_normalisieren(text):
                     body = "\n".join(prefix + [line for record in normalized_records for line in record])
                 else:
                     body = "\n".join(line for record in normalized_records for line in record)
+        if body and not body.startswith(("\n", "\r")):
+            body = "\n" + body
         if body_trailing_newline and body and not body.endswith("\n"):
             body += "\n"
         text = text[:body_start] + body + text[body_end:]
@@ -21073,6 +21408,8 @@ def speichere_ergebnis(text, eingabedateien=None):
         # M-05: Register aus genau diesem eigenständigen Radar-Bericht
         # fortschreiben. Das Register darf nicht aus der separaten allgemeinen
         # Auswertung gelesen werden. Ein fehlender Vorzustand bleibt BASELINE_MISSING.
+        thesis_register_path = os.path.join(os.getcwd(), ".trading_radar_thesen.json")
+        thesis_register_before_digest = None
         try:
             from trading_radar_thesen import update_register, synchronize_report_versions
             from trading_radar_neuauswertung import (
@@ -21096,6 +21433,12 @@ def speichere_ergebnis(text, eingabedateien=None):
                 report_cutoff += "T00:00:00+00:00"
             elif report_cutoff and report_cutoff.endswith("Z"):
                 report_cutoff = report_cutoff[:-1] + "+00:00"
+            # Den Vorher-Hash unmittelbar vor der Entscheidung bzw. dem
+            # persistierenden Update sichern. Ein Fehler waehrend update_register
+            # muss spaeter gegen genau diesen Zustand verglichen werden.
+            thesis_register_before_digest = _trading_radar_thesenregister_digest(
+                thesis_register_path
+            )
             if strict_thesis_findings:
                 register_result = {
                     "updated": False,
@@ -21108,8 +21451,7 @@ def speichere_ergebnis(text, eingabedateien=None):
                 # thesis baseline even when the overall report remains NICHT_FINAL;
                 # the report gate still controls publication separately.
                 register_result = update_register(
-                    text, os.path.join(os.getcwd(), ".trading_radar_thesen.json"),
-                    data_cutoff=report_cutoff,
+                    text, thesis_register_path, data_cutoff=report_cutoff,
                 )
             if register_result.get("updated"):
                 # The register's deterministic lifecycle version is the
@@ -21117,17 +21459,11 @@ def speichere_ergebnis(text, eingabedateien=None):
                 text = synchronize_report_versions(text, register_result)
                 thesis_evidence = _trading_radar_thesenregister_evidence_lines(register_result)
             else:
-                thesis_evidence = [
-                    f"THESENREGISTER-VERGLEICH: {register_result.get('comparison_status', 'NICHT_NACHWEISBAR')}",
-                    "VORHER-SHA256: NICHT VERFÜGBAR",
-                    "NACHHER-SHA256: NICHT VERFÜGBAR",
-                    "AKTIVE_THESEN: NICHT VERFÜGBAR",
-                    "THESEN_NEU: NICHT NACHWEISBAR",
-                    "THESEN_AKTUALISIERT: NICHT NACHWEISBAR",
-                    "THESEN_UNVERAENDERT: NICHT NACHWEISBAR",
-                    "THESEN_ARCHIVIERT: NICHT NACHWEISBAR",
-                    "THESENREGISTER-GRUND: " + str(register_result.get("reason", "Vergleich nicht möglich")),
-                ]
+                thesis_evidence = _trading_radar_thesenregister_unveraendert_evidenz(
+                    thesis_register_path,
+                    register_result.get("reason", "Vergleich nicht möglich"),
+                    before_digest=thesis_register_before_digest,
+                )
             text = _trading_radar_thesenregister_nachweis_text(text, thesis_evidence)
             print("TRADING_RADAR_THESENREGISTER=" + str(register_result.get("comparison_status", "NICHT_NACHWEISBAR")))
         except Exception as thesis_exc:
@@ -21135,12 +21471,18 @@ def speichere_ergebnis(text, eingabedateien=None):
                 f"Thesenregister nicht nachweisbar: {type(thesis_exc).__name__}: {thesis_exc}"
             )
             try:
-                text = _trading_radar_thesenregister_nachweis_text(text, [
-                    "THESENREGISTER-VERGLEICH: NICHT_NACHWEISBAR",
-                    "VORHER-SHA256: NICHT VERFÜGBAR",
-                    "NACHHER-SHA256: NICHT VERFÜGBAR",
-                    "THESENREGISTER-GRUND: " + f"{type(thesis_exc).__name__}: {thesis_exc}",
-                ])
+                text = _trading_radar_thesenregister_nachweis_text(
+                    text,
+                    _trading_radar_thesenregister_unveraendert_evidenz(
+                        thesis_register_path,
+                        f"{type(thesis_exc).__name__}: {thesis_exc}",
+                        before_digest=(
+                            thesis_register_before_digest
+                            if thesis_register_before_digest is not None
+                            else _trading_radar_thesenregister_digest(thesis_register_path)
+                        ),
+                    ),
+                )
             except Exception as evidence_exc:
                 validation_errors.append(
                     f"Thesenregister-Nachweis konnte nicht eingesetzt werden: {type(evidence_exc).__name__}: {evidence_exc}"

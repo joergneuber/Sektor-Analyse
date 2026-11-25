@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from pathlib import Path
 from io import StringIO, BytesIO
+from urllib.parse import parse_qs, urlsplit
 
 import pandas as pd
 import requests
@@ -174,6 +175,8 @@ GEO_NEWS_CACHE_MAX_AGE_HOURS = 24
 GEO_NEWS_TIMEOUT = 15
 NFP_CACHE_FILE = MACRO_CACHE_DIR / "nfp_cache.json"
 FRED_TIMEOUT = float(os.environ.get("NMM_FRED_TIMEOUT_SECONDS", "8"))
+US10Y_HTTP_MAX_ATTEMPTS = 3
+US10Y_HTTP_RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
 MARKET_TIMEOUT = float(os.environ.get("NMM_MARKET_TIMEOUT_SECONDS", "12"))
 CACHE_VERSION = 7
 # ISM cache schema marker: invalidates legacy/field-merged ISM cache entries
@@ -600,6 +603,138 @@ def _fmt(value, decimals=4):
     return "NICHT VERFUEGBAR" if value is None else f"{value:.{decimals}f}"
 
 
+def _us10y_http_get(url, *, timeout, headers=None, params=None):
+    """Retry only transient transport/5xx failures for nominal US-10Y feeds."""
+    for attempt in range(1, US10Y_HTTP_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(url, timeout=timeout, headers=headers, params=params)
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in US10Y_HTTP_RETRYABLE_STATUS and attempt < US10Y_HTTP_MAX_ATTEMPTS:
+                close_response = getattr(response, "close", None)
+                if callable(close_response):
+                    close_response()
+                time.sleep(float(attempt))
+                continue
+            response.raise_for_status()
+            return response
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt >= US10Y_HTTP_MAX_ATTEMPTS:
+                raise
+            time.sleep(float(attempt))
+    raise RuntimeError("US10Y_HTTP_RETRY_EXHAUSTED")
+
+
+def _us10y_frame_validieren(df, series_id="DGS10"):
+    """Validate nominal US-10Y values, observation dates and freshness."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        raise ValueError("US10Y-Datenreihe ist leer")
+    if "DATE" not in df.columns or series_id not in df.columns:
+        raise ValueError("US10Y-Datenreihe benötigt DATE und DGS10")
+    out = df[["DATE", series_id]].copy()
+    out["DATE"] = pd.to_datetime(out["DATE"], errors="coerce", utc=True).dt.tz_localize(None)
+    out[series_id] = pd.to_numeric(out[series_id], errors="coerce")
+    out = out.dropna(subset=["DATE", series_id]).sort_values("DATE")
+    if out.empty:
+        raise ValueError("US10Y-Datenreihe enthält keine numerischen Beobachtungen")
+    if not all(math.isfinite(float(value)) for value in out[series_id]):
+        raise ValueError("US10Y-Datenreihe enthält nicht-endliche Werte")
+    if ((out[series_id] < -2.0) | (out[series_id] > 25.0)).any():
+        raise ValueError("US10Y-Nominalrendite außerhalb des Plausibilitätsbereichs -2 bis 25 Prozent")
+    today_utc = dt.datetime.now(dt.timezone.utc).date()
+    dates = out["DATE"].dt.date
+    if any(value > today_utc for value in dates):
+        raise ValueError("US10Y-Datenreihe enthält einen zukünftigen Datenstichtag")
+    delay_days = (today_utc - dates.iloc[-1]).days
+    max_age = int(FRED_MAX_AGE_DAYS.get(series_id, 7))
+    if delay_days < 0 or delay_days > max_age:
+        raise ValueError(f"US10Y-Beobachtung zu alt: {delay_days} Kalendertage (maximal {max_age})")
+    return out.drop_duplicates("DATE", keep="last").reset_index(drop=True)
+
+
+def _us10y_cache_provenance_valid(entry, *, now_timestamp=None):
+    """Accept only timestamped FRED DGS10 or official Treasury.gov cache rows."""
+    if not isinstance(entry, dict):
+        return False
+    saved_at = entry.get("saved_at")
+    source = entry.get("source")
+    now_timestamp = time.time() if now_timestamp is None else float(now_timestamp)
+    if not math.isfinite(now_timestamp):
+        return False
+    if not (
+        isinstance(saved_at, (int, float)) and not isinstance(saved_at, bool)
+        and math.isfinite(saved_at) and saved_at > 0 and saved_at <= now_timestamp + 300
+        and isinstance(source, str) and source.strip()
+    ):
+        return False
+    # New cache rows carry explicit instrument metadata. Legacy rows may omit
+    # these fields, but contradictory metadata is never accepted.
+    if entry.get("series_id") not in (None, "DGS10"):
+        return False
+    if entry.get("instrument") not in (None, "US10Y_NOMINAL"):
+        return False
+    if entry.get("unit") not in (None, "%"):
+        return False
+    retrieved_at = entry.get("retrieved_at")
+    if retrieved_at is not None:
+        if not isinstance(retrieved_at, str) or not retrieved_at.strip():
+            return False
+        try:
+            retrieved = dt.datetime.fromisoformat(retrieved_at.strip().replace("Z", "+00:00"))
+            if retrieved.tzinfo is None or retrieved.timestamp() > now_timestamp + 300:
+                return False
+            # Retrieval and persistence timestamps are created together. A
+            # materially different pair is a corrupted or hand-edited record.
+            if abs(retrieved.timestamp() - float(saved_at)) > 300:
+                return False
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+    try:
+        parsed = urlsplit(source.strip())
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme.lower() != "https" or port not in (None, 443)
+        or parsed.username is not None or parsed.password is not None
+        or parsed.fragment
+    ):
+        return False
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if host == "api.stlouisfed.org":
+        series_values = query.get("series_id", [])
+        return (
+            parsed.path == "/fred/series/observations"
+            and (not series_values or series_values == ["DGS10"])
+        )
+    if host == "fred.stlouisfed.org":
+        if parsed.path == "/series/DGS10":
+            return True
+        return (
+            parsed.path == "/graph/fredgraph.csv"
+            and query.get("id", []) == ["DGS10"]
+        )
+    if host == "home.treasury.gov":
+        return (
+            parsed.path.startswith(
+                "/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/"
+            )
+            and query.get("type", []) == ["daily_treasury_yield_curve"]
+        )
+    return False
+
+
+def _mark_series_cache_status(series_id, status):
+    """Change status without refreshing the original retrieval timestamp."""
+    with CACHE_WRITE_LOCK:
+        cache = _cache_load()
+        entry = cache.get("fred", {}).get(series_id)
+        if not isinstance(entry, dict) or not entry.get("payload"):
+            raise ValueError(f"Kein persistenter Cacheeintrag für {series_id}")
+        entry["status"] = status
+        _cache_save(cache)
+
+
 def _df_from_cache_entry(entry, series_id):
     if not entry or not entry.get("payload"):
         return pd.DataFrame()
@@ -607,7 +742,10 @@ def _df_from_cache_entry(entry, series_id):
         df = pd.read_json(StringIO(entry["payload"]), orient="split")
         df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
         df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
-        return df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+        df = df.dropna(subset=["DATE", series_id]).sort_values("DATE")
+        if series_id == "DGS10":
+            return _us10y_frame_validieren(df, series_id)
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -615,15 +753,27 @@ def _df_from_cache_entry(entry, series_id):
 def _save_series_cache(series_id, df, source, status="REAL"):
     if df is None or df.empty:
         return
+    if series_id == "DGS10":
+        df = _us10y_frame_validieren(df, series_id)
+        if not isinstance(source, str) or not _us10y_cache_provenance_valid({
+            "saved_at": time.time(), "source": source,
+            "series_id": "DGS10", "instrument": "US10Y_NOMINAL", "unit": "%",
+        }):
+            raise ValueError("DGS10-Cache benötigt eine verifizierte FRED- oder Treasury.gov-Quelle")
     with CACHE_WRITE_LOCK:
         cache = _cache_load()
-        cache.setdefault("fred", {})[series_id] = {
-            "saved_at": time.time(),
+        saved_at = time.time()
+        entry = {
+            "saved_at": saved_at,
+            "retrieved_at": dt.datetime.fromtimestamp(saved_at, tz=dt.timezone.utc).isoformat(timespec="seconds"),
             "data_date": df["DATE"].iloc[-1].date().isoformat(),
             "payload": df.to_json(orient="split", date_format="iso"),
             "status": status,
             "source": source,
         }
+        if series_id == "DGS10":
+            entry.update({"series_id": "DGS10", "instrument": "US10Y_NOMINAL", "unit": "%"})
+        cache.setdefault("fred", {})[series_id] = entry
         _cache_save(cache)
 
 
@@ -753,8 +903,11 @@ def _treasury_series(series_id):
     try:
         year = dt.date.today().year
         url = (TREASURY_YIELD_URL if series_id in nominal else TREASURY_REAL_YIELD_URL).format(year=year)
-        r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
-        r.raise_for_status()
+        if series_id == "DGS10":
+            r = _us10y_http_get(url, timeout=10, headers=REQUEST_HEADERS)
+        else:
+            r = requests.get(url, timeout=10, headers=REQUEST_HEADERS)
+            r.raise_for_status()
         df = pd.read_csv(StringIO(r.text))
 
         date_col = next((c for c in df.columns if str(c).strip().lower() == "date"), None)
@@ -795,6 +948,8 @@ def _treasury_series(series_id):
 
         if out.empty:
             raise ValueError(f"keine numerischen Treasury-Werte fuer {series_id}")
+        if series_id == "DGS10":
+            out = _us10y_frame_validieren(out, series_id)
 
         return out, url
 
@@ -1122,6 +1277,11 @@ def _alternate_series(series_id):
         treasury, source = _treasury_series(series_id)
         if not treasury.empty:
             return treasury, source
+        # DGS10 is restricted to FRED DGS10 and Treasury.gov. The legacy H.15
+        # HTML parser attached today's date to a historical row; it is not a
+        # valid fallback for the nominal US-10Y observation.
+        if series_id == "DGS10":
+            return pd.DataFrame(), None
         return _h15_series(series_id)
     if series_id in BLS_SERIES:
         bls, source = _bls_series(series_id)
@@ -1306,8 +1466,11 @@ def fred_series(series_id, limit_days=5000):
         if limit_days:
             observation_start = (dt.date.today() - dt.timedelta(days=limit_days)).isoformat()
             params["observation_start"] = observation_start
-        r = requests.get(api_url, params=params, timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
-        r.raise_for_status()
+        if series_id == "DGS10":
+            r = _us10y_http_get(api_url, params=params, timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
+        else:
+            r = requests.get(api_url, params=params, timeout=FRED_TIMEOUT, headers=REQUEST_HEADERS)
+            r.raise_for_status()
         observations = r.json().get("observations", [])
         parsed = []
         for observation in observations:
@@ -1318,6 +1481,8 @@ def fred_series(series_id, limit_days=5000):
         if not parsed:
             raise ValueError(f"FRED API lieferte keine verwertbaren {series_id}-Beobachtungen")
         df = pd.DataFrame(parsed, columns=["DATE", series_id]).drop_duplicates("DATE").sort_values("DATE")
+        if series_id == "DGS10":
+            df = _us10y_frame_validieren(df, series_id)
         if not df.empty:
             _save_series_cache(series_id, df, api_url, "REAL")
         return df
@@ -1327,6 +1492,8 @@ def fred_series(series_id, limit_days=5000):
     # Offizielle bzw. klar dokumentierte kostenlose Fallbacks.
     alt, source = _alternate_series(series_id)
     if alt is not None and not alt.empty:
+        if series_id == "DGS10":
+            alt = _us10y_frame_validieren(alt, series_id)
         _save_series_cache(series_id, alt, source, "REAL_PUBLIC_SECONDARY" if series_id == "BAMLH0A0HYM2" and "autario.com" in str(source) else "REAL")
         print(f"INFO: Fallback erfolgreich fuer {series_id}: {source}")
         return alt
@@ -1334,7 +1501,21 @@ def fred_series(series_id, limit_days=5000):
     # Nur ein noch innerhalb der Datenaltersgrenze liegender echter Cachewert.
     if entry and entry.get("payload"):
         df = _df_from_cache_entry(entry, series_id)
-        if not df.empty and _cache_valid(df["DATE"].iloc[-1].date().isoformat(), FRED_MAX_AGE_DAYS.get(series_id,60)):
+        cache_provenance_valid = (
+            _us10y_cache_provenance_valid(entry) if series_id == "DGS10" else True
+        )
+        if series_id == "DGS10" and not df.empty:
+            payload_date = df["DATE"].iloc[-1].date().isoformat()
+            cache_provenance_valid = cache_provenance_valid and entry.get("data_date") == payload_date
+        if (not df.empty and cache_provenance_valid
+                and _cache_valid(df["DATE"].iloc[-1].date().isoformat(), FRED_MAX_AGE_DAYS.get(series_id,60))):
+            if series_id == "DGS10":
+                try:
+                    _mark_series_cache_status(series_id, "REAL_CACHED")
+                except Exception as cache_status_exc:
+                    print("WARNUNG: US10Y-Cache-Fallback wegen fehlender Statuspersistenz verworfen: "
+                          f"{type(cache_status_exc).__name__}: {cache_status_exc}")
+                    return pd.DataFrame()
             return df
     return pd.DataFrame()
 def _fred_yoy(df, series_id):
@@ -1388,20 +1569,31 @@ def fred_snapshot(name, series_id):
             # nominal 10-year instrument and retain the exact official URL.
             source_label = f"U.S. Treasury 10Y yield ({source_label})"
         elif re.search(r"(?i)federalreserve\.gov", source_label):
-            # The H.15 fallback is an official Federal Reserve Board source,
-            # but not a FRED API observation. Keep that distinction explicit.
-            source_label = f"Federal Reserve Board H.15 10Y Treasury yield ({source_label})"
+            # Diagnostic label for legacy cache inspection only. Current DGS10
+            # cache fallback rejects H.15 because its old HTML parser did not
+            # preserve an actual observation date.
+            source_label = f"Legacy Federal Reserve Board H.15 DGS10 cache ({source_label})"
     base = f"{name}: {_fmt(value,4)} | Datenstand={date} | STATUS={status} | SOURCE={source_label}"
     if name == "US 10Y Treasury":
         # saved_at is written atomically with the FRED cache entry after the
         # actual source request. A missing timestamp remains unavailable;
         # report-generation time is never substituted for retrieval time.
-        saved_at = entry.get("saved_at")
-        if isinstance(saved_at, (int, float)) and math.isfinite(saved_at) and saved_at > 0:
-            retrieved_at = dt.datetime.fromtimestamp(saved_at, tz=dt.timezone.utc)
-            base += f" | RETRIEVED_AT={retrieved_at.isoformat(timespec='seconds')}"
-        else:
-            base += " | RETRIEVED_AT=NICHT VERFUEGBAR"
+        retrieved_at_raw = entry.get("retrieved_at")
+        retrieved_at_text = None
+        if isinstance(retrieved_at_raw, str) and retrieved_at_raw.strip():
+            try:
+                parsed_retrieved_at = dt.datetime.fromisoformat(retrieved_at_raw.replace("Z", "+00:00"))
+                if parsed_retrieved_at.tzinfo is not None:
+                    retrieved_at_text = parsed_retrieved_at.astimezone(dt.timezone.utc).isoformat(timespec="seconds")
+            except (TypeError, ValueError, OverflowError):
+                retrieved_at_text = None
+        if retrieved_at_text is None:
+            saved_at = entry.get("saved_at")
+            if isinstance(saved_at, (int, float)) and math.isfinite(saved_at) and saved_at > 0:
+                retrieved_at = dt.datetime.fromtimestamp(saved_at, tz=dt.timezone.utc)
+                retrieved_at_text = retrieved_at.isoformat(timespec="seconds")
+        base += f" | SERIES_ID={series_id} | INSTRUMENT=US10Y_NOMINAL"
+        base += f" | RETRIEVED_AT={retrieved_at_text or 'NICHT VERFUEGBAR'}"
         delay_days = (dt.datetime.now(dt.timezone.utc).date() - observation_date).days
         base += f" | DELAY_DAYS={max(0, delay_days)} | UNIT=%"
     if name in {"CPI", "Core CPI", "PCE", "Core PCE", "PPI"}:

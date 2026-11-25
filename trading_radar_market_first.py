@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime, date, timezone
 from dataclasses import dataclass
 import hashlib
+import html
 from pathlib import Path
 import json
 from typing import Any
@@ -39,6 +40,10 @@ class _EventVerificationEvidence:
     verified: bool
     detail: str
     press_conference_verified: bool = False
+    reporting_period: str | None = None
+    previous: str | None = None
+    consensus: str | None = None
+    actual: str | None = None
 
     def __iter__(self):
         # Backward-compatible diagnostic unpacking; production validation uses
@@ -89,6 +94,13 @@ def _event_identity_matches(report_name: Any, source_name: Any) -> bool:
         primary_identity = _normalized_event_identity(primary_title)
         if primary_identity and primary_identity == source_identity:
             return True
+    # ForexFactory's USD calendar titles omit the report's explicit country
+    # prefix (e.g. "US Prelim GDP q/q" vs "Prelim GDP q/q"). The verifier has
+    # already restricted the candidate row to USD before this comparison.
+    countryless_title = re.sub(r"(?i)^\s*(?:US|USA|United States)\s+", "", primary_title).strip()
+    countryless_identity = _normalized_event_identity(countryless_title)
+    if countryless_identity and countryless_identity == source_identity:
+        return True
     # The macro snapshot prefixes some event titles with its deterministic
     # canonical category (for example "ADP: ADP Weekly Employment Change").
     if ":" in str(report_name or ""):
@@ -100,6 +112,18 @@ def _event_identity_matches(report_name: Any, source_name: Any) -> bool:
             return True
     return False
 
+
+
+def _is_ecb_council_event(value: Any) -> bool:
+    text = _normalized_event_identity(value)
+    has_ecb_identity = "ecb" in text or "ezb" in text
+    has_council_identity = "governing council" in text or "rat" in text
+    has_non_monetary_meeting = (
+        "non monetary policy meeting" in text
+        or "nicht geldpolitische sitzung" in text
+        or "nicht geldpolitisch" in text
+    )
+    return bool(has_ecb_identity and has_council_identity and has_non_monetary_meeting)
 
 def _is_fomc_press_conference_event(value: Any) -> bool:
     text = _normalized_event_identity(value)
@@ -115,7 +139,7 @@ def _is_fomc_decision_event(value: Any) -> bool:
     text = _normalized_event_identity(value)
     if "fomc" not in text or _is_fomc_minutes_event(value) or _is_fomc_press_conference_event(value):
         return False
-    return bool(re.search(r"\b(?:zinsentscheid(?:ung)?|entscheidung|decision|rate decision|statement|fed funds rate)\b", text))
+    return bool(re.search(r"\b(?:leitzinsentscheid(?:ung)?|zinsentscheid(?:ung)?|entscheidung|decision|rate decision|statement|fed funds rate)\b", text))
 
 
 def _fomc_event_kind(value: Any) -> str | None:
@@ -124,7 +148,7 @@ def _fomc_event_kind(value: Any) -> str | None:
     is_press = _is_fomc_press_conference_event(value)
     is_decision_label = bool(
         "fomc" in text
-        and re.search(r"\b(?:zinsentscheid(?:ung)?|entscheidung|decision|rate decision|statement|fed funds rate)\b", text)
+        and re.search(r"\b(?:leitzinsentscheid(?:ung)?|zinsentscheid(?:ung)?|entscheidung|decision|rate decision|statement|fed funds rate)\b", text)
     )
     if is_minutes:
         return None if (is_press or is_decision_label) else "MINUTES"
@@ -160,6 +184,18 @@ def _is_trusted_event_evidence(
             _normalized_event_identity(event_name)
             and _event_identity_matches(event_name, evidence.event_name)
             and evidence.adapter == "forexfactory_weekly_json_adapter"
+        )
+    if kind == "ECB_COUNCIL":
+        final = urlsplit(evidence.final_url)
+        return bool(
+            _is_ecb_council_event(event_name)
+            and evidence.event_id == "ECB_GOVERNING_COUNCIL_NON_MONETARY"
+            and evidence.adapter == "ecb_governing_council_calendar_verifier"
+            and final.scheme.lower() == "https"
+            and (final.hostname or "").lower() in {"ecb.europa.eu", "www.ecb.europa.eu"}
+            and "/press/calendars/mgcgc/html/" in final.path
+            and "governing council" in _normalized_event_identity(evidence.event_name)
+            and "non monetary policy meeting" in _normalized_event_identity(evidence.event_name)
         )
     if kind == "FED_SPEAKER":
         return bool(
@@ -254,9 +290,23 @@ def _verify_forexfactory_event(event_name: str, event_date: str, *, requester=No
             offset = event_datetime.strftime("%z")
             if offset:
                 event_timezone = f"UTC{offset[:3]}:{offset[3:]}"
+        def source_value(*keys):
+            for key in keys:
+                value = _clean(item.get(key))
+                if value and value.casefold() not in MISSING_TOKENS:
+                    return value
+            return None
+
+        reporting_period = source_value("period", "reporting_period", "reference_period")
+        previous = source_value("previous", "previous_value")
+        consensus = source_value("forecast", "consensus", "expected")
+        actual = source_value("actual", "actual_value")
         detail = (
             f"ForexFactory LIVE-Adapter: HTTP 200; Event={title}; Datum={actual_date}; "
             f"Uhrzeit={event_time or 'NICHT VERFÜGBAR'}; Zeitzone={event_timezone or 'NICHT VERFÜGBAR'}; "
+            f"Berichtszeitraum={reporting_period or 'NICHT VERFÜGBAR'}; "
+            f"Vorwert={previous or 'NICHT VERFÜGBAR'}; Konsens={consensus or 'NICHT VERFÜGBAR'}; "
+            f"Istwert={actual or 'NICHT VERFÜGBAR'}; Payload-SHA256={response_hash}; "
             f"Abrufzeit={retrieved_at}; Abruf={requested_url}; Final={final_url}"
         )
         evidence = _EventVerificationEvidence(
@@ -265,11 +315,152 @@ def _verify_forexfactory_event(event_name: str, event_date: str, *, requester=No
             final_url=final_url, http_status=status, retrieved_at=retrieved_at,
             content_match=True, adapter="forexfactory_weekly_json_adapter",
             response_sha256=response_hash, verified=True, detail=detail,
+            reporting_period=reporting_period, previous=previous,
+            consensus=consensus, actual=actual,
         )
         return _register_verified_evidence(evidence), detail
     except Exception as exc:
         return None, f"ForexFactory-Adapter fehlgeschlagen: {type(exc).__name__}: {exc}"
 
+
+
+def _verify_ecb_governing_council_event(event_name: str, event_date: str, *, requester=None):
+    """Verify an ECB non-monetary Governing Council meeting against its official calendar."""
+    if not _is_ecb_council_event(event_name):
+        return None, "ECB-Kalender: Ereignisidentität ist keine nicht-geldpolitische Ratssitzung"
+    requested_url = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
+    if requester is None:
+        import requests
+        requester = requests.get
+    try:
+        response = requester(
+            requested_url, timeout=20,
+            headers={"User-Agent": "NeuberMacro/1.0 TradingRadar-ECB-event-verification"},
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        final_url = str(getattr(response, "url", requested_url) or requested_url)
+        if status != 200:
+            return None, f"ECB-Kalender HTTP {status}; Ereignis nicht verifiziert"
+        final = urlsplit(final_url)
+        if (
+            final.scheme.lower() != "https"
+            or (final.hostname or "").lower() not in {"ecb.europa.eu", "www.ecb.europa.eu"}
+            or "/press/calendars/mgcgc/html/" not in final.path
+        ):
+            return None, "ECB-Kalender: unzulässige finale URL; Ereignis nicht verifiziert"
+
+        raw_text = getattr(response, "text", None)
+        if not isinstance(raw_text, str) or not raw_text:
+            return None, "ECB-Kalender: leere HTML-Antwort"
+        plain_text = html.unescape(re.sub(r"<[^>]+>", " ", raw_text))
+        plain_text = re.sub(r"\s+", " ", plain_text).strip()
+        expected_date = date.fromisoformat(str(event_date)[:10])
+        month_name = expected_date.strftime("%B")
+        date_variants = (
+            expected_date.isoformat(),
+            expected_date.strftime("%d/%m/%Y"),
+            expected_date.strftime("%d.%m.%Y"),
+            f"{expected_date.day} {month_name} {expected_date.year}",
+            f"{month_name} {expected_date.day}, {expected_date.year}",
+        )
+        matching_snippets = []
+        structured_blocks = re.findall(
+            r"(?is)<(?:tr|li|article)\b[^>]*>.*?</(?:tr|li|article)>",
+            raw_text,
+        )
+        for block in structured_blocks:
+            block_text = html.unescape(re.sub(r"<[^>]+>", " ", block))
+            block_text = re.sub(r"\s+", " ", block_text).strip()
+            normalized = _normalized_event_identity(block_text)
+            date_matches = any(
+                re.search(re.escape(variant), block_text, flags=re.IGNORECASE)
+                for variant in date_variants
+            )
+            if (
+                date_matches
+                and "governing council" in normalized
+                and "non monetary policy meeting" in normalized
+                and "frankfurt" in normalized
+            ):
+                matching_snippets.append(block_text)
+        if not matching_snippets:
+            # The live ECB page may render the date and event title as adjacent
+            # text blocks instead of one table row. Bind the title to the nearest
+            # preceding date token; a nearby different date must not be borrowed.
+            date_token = re.compile(
+                r"(?i)\b(?:\d{1,2}/\d{1,2}/20\d{2}|"
+                r"\d{1,2}\.\d{1,2}\.20\d{2}|"
+                r"20\d{2}-\d{2}-\d{2}|"
+                r"\d{1,2}\s+[A-Za-z]+\s+20\d{2}|"
+                r"[A-Za-z]+\s+\d{1,2},\s*20\d{2})\b"
+            )
+            title_pattern = re.compile(
+                r"(?i)Governing Council of the ECB\s*:\s*"
+                r"non[- ]monetary policy meeting"
+            )
+            for title_match in title_pattern.finditer(plain_text):
+                before = plain_text[max(0, title_match.start() - 180):title_match.start()]
+                tokens = list(date_token.finditer(before))
+                if not tokens:
+                    continue
+                nearest = tokens[-1].group(0)
+                parsed_nearest = None
+                for date_format in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d", "%d %B %Y", "%B %d, %Y"):
+                    try:
+                        parsed_nearest = datetime.strptime(nearest, date_format).date()
+                        break
+                    except ValueError:
+                        continue
+                after = plain_text[title_match.end():title_match.end() + 180]
+                if parsed_nearest == expected_date and re.search(r"(?i)\bFrankfurt\b", after):
+                    matching_snippets.append(
+                        before[-80:] + " " + plain_text[title_match.start():title_match.end()] + " " + after[:100]
+                    )
+
+        if len(matching_snippets) != 1:
+            return None, (
+                "ECB-Kalender: "
+                f"{len(matching_snippets)} exakt datums- und ereignisgebundene Treffer "
+                f"für {expected_date.isoformat()}; Ereignis nicht verifiziert"
+            )
+
+        snippet = matching_snippets[0]
+        time_match = re.search(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", snippet)
+        event_time = time_match.group(0) if time_match else None
+        event_timezone = "Europe/Berlin"
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        response_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        canonical_name = "ECB Governing Council non-monetary policy meeting"
+        reporting_period = "NICHT VERFÜGBAR (Sitzungstermin; kein statistischer Berichtszeitraum)"
+        detail = (
+            f"ECB LIVE-Kalender: HTTP 200; Event={canonical_name}; "
+            f"Datum={expected_date.isoformat()}; "
+            f"Uhrzeit={event_time or 'im offiziellen Kalender nicht veröffentlicht'}; "
+            f"Ort=Frankfurt; Zeitzone={event_timezone}; "
+            f"Berichtszeitraum={reporting_period}; Payload-SHA256={response_hash}; "
+            f"Abrufzeit={retrieved_at}; Abruf={requested_url}; Final={final_url}"
+        )
+        evidence = _EventVerificationEvidence(
+            kind="ECB_COUNCIL",
+            event_id="ECB_GOVERNING_COUNCIL_NON_MONETARY",
+            event_name=canonical_name,
+            event_date=expected_date.isoformat(),
+            event_time=event_time,
+            timezone=event_timezone,
+            requested_url=requested_url,
+            final_url=final_url,
+            http_status=status,
+            retrieved_at=retrieved_at,
+            content_match=True,
+            adapter="ecb_governing_council_calendar_verifier",
+            response_sha256=response_hash,
+            verified=True,
+            detail=detail,
+            reporting_period=reporting_period,
+        )
+        return _register_verified_evidence(evidence), detail
+    except Exception as exc:
+        return None, f"ECB-Kalender-Adapter fehlgeschlagen: {type(exc).__name__}: {exc}"
 
 def _is_fed_waller_speaker_event(value: Any) -> bool:
     text = _normalized_event_identity(value)
@@ -1737,7 +1928,7 @@ def _enrich_fomc_event(
 
 
 
-def normalize_event_section(report_text: str, *, forexfactory_requester=None, fomc_requester=None, fed_speaker_requester=None, today=None) -> tuple[str, list[str]]:
+def normalize_event_section(report_text: str, *, forexfactory_requester=None, fomc_requester=None, fed_speaker_requester=None, ecb_requester=None, today=None) -> tuple[str, list[str]]:
     """Canonicalize event records in report section 3 and remove duplicates.
 
     This is intentionally conservative: it does not invent values or infer dates.
@@ -1796,10 +1987,11 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         "Kennzahl|Indikator|Berichtszeitraum|Zeitraum|Vorwert|Letzter Wert|"
         "Konsens|Istwert|Quelle|Source|Betroffene These/Assetklasse/konkrete offene Positionen|"
         "Szenarien(?:\\s+(?:unter/entsprechend/über|unter|entsprechend|über|ueber)\\s+Konsens)?|"
-        "Unter Konsens|Entsprechend Konsens|Über Konsens|Ueber Konsens|"
+        "(?:Unter|Entsprechend|Über|Ueber) (?:Konsens|Erwartung)(?:/Erwartung)?(?:\\s*\\([^:\\r\\n]*\\))?|"
+        "Bestätigung/Invalidierung|Bestaetigung/Invalidierung|"
         "Betroffene Thesen/Assetklassen/Positionen|"
-        "Reaktionskanäle|Wirkung|Auswirkung|Erwartung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
-        "Was die These bestätigen/widerlegen würde|Quellenprüfung|Quellenpruefung|Status"
+        "Zinsschritt(?:\\s*\\+?\\d+\\s*bp)?|Pause(?:\\s*\\([^)]*\\))?|Hold|Hike|Reaktionskanäle|Wirkung|Auswirkung|Erwartung|Bestätigung/Widerlegung|Bestaetigung/Widerlegung|"
+        "Was die These bestätigen/widerlegen würde|Wert-Provenienz|Ereigniswerte-Provenienz|Unverifizierter Vorwert|Unverifizierte Markterwartung|Quellenprüfung|Quellenpruefung|Status"
     )
     field = re.compile(rf"(?i)^\s*(?:{field_labels})\s*[:=]")
     def is_field_line(line: str) -> bool:
@@ -1811,25 +2003,36 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         return _fomc_event_kind(value)
 
     starts = []
+    has_event_clock_headers = any(
+        bool(re.match(
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)Ereignis[- ]Uhrzeit\s*[:=]",
+            line,
+        ))
+        for line in lines
+    )
     has_named_event_bullets = any(
         re.match(
-            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)(?:Ereignis(?:[- ]Uhrzeit)?|Termin|Event)\s*[:=]",
+            r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)(?:Ereignis|Termin|Event)\s*[:=]",
             line,
         )
         or bool(re.match(
             r"(?i)^\s*(?:[-*•]\s+|\d+[.)]\s+)[^|]+\|\s*20\d{2}-\d{2}-\d{2}\s*\|\s*(?:[01]?\d|2[0-3]):[0-5]\d\b",
             line,
         ))
+        or bool(re.match(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)", line) and not is_field_line(line))
         for line in lines
     )
     for i, line in enumerate(lines):
         m = re.match(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)(.+)$", line)
-        is_event_header = bool(m and re.match(r"(?i)^Ereignis[- ]Uhrzeit\s*[:=]", m.group(1).strip()))
+        is_event_header = bool(
+            m and not has_named_event_bullets
+            and re.match(r"(?i)^Ereignis[- ]Uhrzeit\s*[:=]", m.group(1).strip())
+        )
         # Legacy report layout: if no explicit Ereignis-/Termin-/Event header
         # exists, each dated bullet begins one record; following labels remain
         # fields of that record (including the combined Uhrzeit/Zeitzone field).
         is_date_record = bool(
-            m and not has_named_event_bullets
+            m and not has_named_event_bullets and not has_event_clock_headers
             and re.match(r"(?i)^Datum\s*[:=]", m.group(1).strip())
         )
         is_same_fomc_event = False
@@ -2036,7 +2239,14 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
         date_value = date_m.group(1).strip() if date_m else ""
         evidence = None
         event_fomc_kind = _fomc_event_kind(plain_rec)
-        if event_fomc_kind and date_value and _is_valid_calendar_event_date(date_value):
+        if _is_ecb_council_event(name) and date_value and _is_valid_calendar_event_date(date_value):
+            evidence, adapter_detail = _verify_ecb_governing_council_event(
+                name, date_value, requester=ecb_requester
+            )
+            source_live_verified = bool(evidence is not None)
+            if evidence is None:
+                verification_value = "NICHT VERIFIZIERT (" + adapter_detail + ")"
+        elif event_fomc_kind and date_value and _is_valid_calendar_event_date(date_value):
             evidence = fomc_verification_results.get((date_value[:10], event_fomc_kind))
             if evidence is None:
                 try:
@@ -2099,6 +2309,11 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
                 evidence, kind="FOMC", event_name=plain_rec, event_date=date_value
             )
         )
+        structured_ecb_verified = bool(
+            evidence is not None and _is_trusted_event_evidence(
+                evidence, kind="ECB_COUNCIL", event_name=name, event_date=date_value
+            )
+        )
         structured_forexfactory_verified = bool(
             evidence is not None and _is_trusted_event_evidence(
                 evidence, kind="FOREXFACTORY", event_name=name, event_date=date_value
@@ -2109,7 +2324,9 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
                 evidence, kind="FED_SPEAKER", event_name=name, event_date=date_value
             )
         )
-        if event_fomc_kind:
+        if _is_ecb_council_event(name):
+            source_present = structured_ecb_verified
+        elif event_fomc_kind:
             source_present = structured_fomc_verified
         elif _is_fed_waller_speaker_event(name):
             source_present = structured_fed_speaker_verified
@@ -2133,7 +2350,11 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
             canonical_source = (
                 f"Federal Reserve official calendar ({evidence.final_url})"
                 if evidence.kind in {"FOMC", "FED_SPEAKER"}
-                else f"ForexFactory LIVE adapter ({evidence.final_url})"
+                else (
+                    f"ECB official calendar ({evidence.final_url})"
+                    if evidence.kind == "ECB_COUNCIL"
+                    else f"ForexFactory LIVE adapter ({evidence.final_url})"
+                )
             )
             source_line_pattern = re.compile(r"(?im)^\s*(?:[-*•]\s*)?(?:Quelle|Source)\s*[:=].*$")
             inline_source_pattern = re.compile(r"(?i)(\|\s*(?:Quelle|Source)\s*[:=]\s*)[^|;\r\n]*")
@@ -2181,6 +2402,78 @@ def normalize_event_section(report_text: str, *, forexfactory_requester=None, fo
 
             rec = upsert_verified_event_field(rec, "Uhrzeit", evidence.event_time)
             rec = upsert_verified_event_field(rec, "Zeitzone", evidence.timezone)
+            if evidence.kind == "ECB_COUNCIL":
+                rec = upsert_verified_event_field(
+                    rec, "Berichtszeitraum", evidence.reporting_period
+                )
+            elif evidence.kind == "FOMC":
+                last_value_match = re.search(
+                    r"(?im)^\s*(?:[-*•]\s*)?Letzter Wert\s*[:=]\s*([^\r\n]+)", rec
+                )
+                consensus_match = re.search(
+                    r"(?im)^\s*(?:[-*•]\s*)?Konsens\s*[:=]\s*([^\r\n]+)", rec
+                )
+                if last_value_match and not re.match(
+                    r"(?i)NICHT VERFÜGBAR", last_value_match.group(1).strip()
+                ):
+                    rec = upsert_verified_event_field(
+                        rec, "Unverifizierter Vorwert", last_value_match.group(1).strip()
+                    )
+                if consensus_match and not re.match(
+                    r"(?i)NICHT VERFÜGBAR", consensus_match.group(1).strip()
+                ):
+                    rec = upsert_verified_event_field(
+                        rec, "Unverifizierte Markterwartung", consensus_match.group(1).strip()
+                    )
+                rec = upsert_verified_event_field(
+                    rec, "Letzter Wert",
+                    "NICHT VERFÜGBAR (Fed-Kalender bestätigt keinen vorherigen Zielkorridor)",
+                )
+                rec = upsert_verified_event_field(
+                    rec, "Konsens",
+                    "NICHT VERFÜGBAR (keine separat live verifizierte Futures-Quelle)",
+                )
+                rec = upsert_verified_event_field(
+                    rec, "Berichtszeitraum",
+                    "NICHT VERFÜGBAR (Sitzungstermin; kein statistischer Berichtszeitraum)",
+                )
+            elif evidence.kind == "FOREXFACTORY":
+                rec = upsert_verified_event_field(
+                    rec, "Berichtszeitraum",
+                    evidence.reporting_period
+                    or "NICHT VERFÜGBAR (ForexFactory-Feed enthält keinen Berichtszeitraum)",
+                )
+                rec = upsert_verified_event_field(
+                    rec, "Letzter Wert",
+                    evidence.previous
+                    or "NICHT VERFÜGBAR (ForexFactory-Feed enthält keinen Vorwert)",
+                )
+                rec = upsert_verified_event_field(
+                    rec, "Konsens",
+                    evidence.consensus
+                    or "NICHT VERFÜGBAR (ForexFactory-Feed enthält keinen Konsens)",
+                )
+                rec = upsert_verified_event_field(
+                    rec, "Istwert",
+                    evidence.actual
+                    or "NICHT VERFÜGBAR (ForexFactory-Feed enthält keinen Istwert)",
+                )
+                value_fields = [
+                    name for name, value in (
+                        ("Berichtszeitraum", evidence.reporting_period),
+                        ("Vorwert", evidence.previous),
+                        ("Konsens", evidence.consensus),
+                        ("Istwert", evidence.actual),
+                    ) if value
+                ]
+                rec = upsert_verified_event_field(
+                    rec,
+                    "Wert-Provenienz",
+                    (
+                        f"ForexFactory JSON; Felder={','.join(value_fields) or 'keine Wertfelder geliefert'}; "
+                        f"URL={evidence.final_url}; Payload-SHA256={evidence.response_sha256}"
+                    ),
+                )
         if date_inferred_from_period and date_m and _is_valid_calendar_event_date(date_m.group(1).strip()):
             rec = re.sub(
                 r"(?im)^(\s*(?:[-*•]\s*)?(?:\*\*)?(?:Quellenprüfung|Quellenpruefung)(?:\*\*)?\s*[:=]\s*)"

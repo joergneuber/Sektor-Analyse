@@ -209,6 +209,9 @@ def _thesis_json_fences(report: str) -> list[tuple[re.Match, str, str]]:
         if language.casefold() == "trading_radar_thesen_json":
             found.append((match, body, "canonical"))
             continue
+        if language.casefold() == "json trading_radar_thesen_json":
+            found.append((match, body, "json_marker_suffix"))
+            continue
         if language.casefold() == "json":
             if re.match(r"(?i)^TRADING_RADAR_THESEN_JSON\s*\r?\n", body):
                 body = re.sub(r"(?i)^TRADING_RADAR_THESEN_JSON\s*\r?\n", "", body, count=1)
