@@ -43,8 +43,8 @@ def test_exsa_uses_direct_yahoo_fallback_only_after_primary_quality_rejection():
         calls.append(("raw", ticker))
         return pd.DataFrame({"Close": [100.0]})
 
-    def quality_check(ticker, frame):
-        calls.append(("quality", ticker))
+    def quality_check(ticker, frame, *, instrument_type=None, instrument_name=None):
+        calls.append(("quality", ticker, instrument_type, instrument_name))
         return primary
 
     def direct_fetch(ticker, *, period):
@@ -60,11 +60,13 @@ def test_exsa_uses_direct_yahoo_fallback_only_after_primary_quality_rejection():
     }
     function = _load_function("market_cache.py", "get_yf_history", namespace)
 
-    result = function("EXSA.DE")
+    result = function(
+        "EXSA.DE", instrument_type="ETF", instrument_name="Example ETF"
+    )
 
     assert calls == [
         ("raw", "EXSA.DE"),
-        ("quality", "EXSA.DE"),
+        ("quality", "EXSA.DE", "ETF", "Example ETF"),
         ("direct", "EXSA.DE", "1y"),
     ]
     assert result.iloc[-1]["Close"] == 123.45
@@ -87,8 +89,11 @@ def test_exsa_uses_direct_yahoo_fallback_when_primary_fetch_raises():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": raw_fetch,
-        "_quality_checked_frame": lambda ticker, frame: (_ for _ in ()).throw(
-            AssertionError("Quality gate must not run without primary data")
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None:
+                (_ for _ in ()).throw(
+                    AssertionError("Quality gate must not run without primary data")
+                )
         ),
         "get_yf_history_from_yahoo": direct_fetch,
         "print": lambda *args, **kwargs: None,
@@ -119,7 +124,9 @@ def test_exsa_primary_exception_and_failed_direct_fallback_remain_fail_closed():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": raw_fetch,
-        "_quality_checked_frame": lambda ticker, frame: frame,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None: frame
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: fallback,
         "print": lambda *args, **kwargs: None,
     }
@@ -136,7 +143,9 @@ def test_non_benchmark_primary_fetch_exception_keeps_legacy_propagation():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": raw_fetch,
-        "_quality_checked_frame": lambda ticker, frame: frame,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None: frame
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: (_ for _ in ()).throw(
             AssertionError("No new retry for non-benchmark tickers")
         ),
@@ -161,7 +170,9 @@ def test_exsa_accepts_pass_with_exclusions_from_quality_gate():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": lambda ticker: pd.DataFrame({"Close": [100.0]}),
-        "_quality_checked_frame": lambda ticker, frame: primary,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None: primary
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: fallback,
         "print": lambda *args, **kwargs: None,
     }
@@ -178,7 +189,10 @@ def test_exsa_does_not_retry_when_primary_quality_gate_passes():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": lambda ticker: pd.DataFrame({"Close": [120.0]}),
-        "_quality_checked_frame": lambda ticker, frame: calls.append(("quality", ticker)) or primary,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None:
+                calls.append(("quality", ticker)) or primary
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: (_ for _ in ()).throw(
             AssertionError("Direct fallback must not run for a valid primary result")
         ),
@@ -204,7 +218,9 @@ def test_exsa_remains_fail_closed_when_direct_yahoo_also_fails_quality_gate():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": lambda ticker: pd.DataFrame({"Close": [100.0]}),
-        "_quality_checked_frame": lambda ticker, frame: primary,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None: primary
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: fallback,
         "print": lambda *args, **kwargs: None,
     }
@@ -222,7 +238,9 @@ def test_exsa_rejects_nonempty_direct_fallback_without_pass_quality_status():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": lambda ticker: pd.DataFrame({"Close": [100.0]}),
-        "_quality_checked_frame": lambda ticker, frame: primary,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None: primary
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: fallback,
         "print": lambda *args, **kwargs: None,
     }
@@ -240,7 +258,9 @@ def test_non_benchmark_ticker_does_not_receive_new_direct_retry():
     namespace = {
         "pd": pd,
         "_get_yf_history_raw": lambda ticker: pd.DataFrame({"Close": [100.0]}),
-        "_quality_checked_frame": lambda ticker, frame: primary,
+        "_quality_checked_frame": (
+            lambda ticker, frame, *, instrument_type=None, instrument_name=None: primary
+        ),
         "get_yf_history_from_yahoo": lambda ticker, *, period: calls.append(ticker),
         "print": lambda *args, **kwargs: None,
     }

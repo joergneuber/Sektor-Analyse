@@ -244,7 +244,7 @@ def test_provider_quality_gate_uses_historical_cutoff_only_for_etf_etc(
         def history(self, **kwargs):
             return provider_frame.copy()
 
-    monkeypatch.setattr(checker.yf, "Ticker", lambda ticker: FakeTicker())
+    monkeypatch.setattr(checker.yf, "Ticker", lambda ticker: FakeTicker(), raising=False)
     expected_as_of = pd.Timestamp("2026-11-23T23:59:00Z")
     gate_calls = []
 
